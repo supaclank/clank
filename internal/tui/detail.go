@@ -45,8 +45,8 @@ func (m *detailModel) buildEditFields() {
 		{name: "status", value: string(m.ticket.Status), options: []string{"new", "triaged", "backlog", "doing", "done", "discarded"}},
 		{name: "title", value: m.ticket.Title},
 		{name: "summary", value: m.ticket.Summary},
-		{name: "complexity", value: fmt.Sprintf("%d", m.ticket.Complexity), options: []string{"1", "2", "3", "4", "5"}},
-		{name: "impact", value: fmt.Sprintf("%d", m.ticket.Impact), options: []string{"1", "2", "3", "4", "5"}},
+		{name: "complexity", value: fmt.Sprintf("%d", m.ticket.Complexity), options: []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}},
+		{name: "impact", value: fmt.Sprintf("%d", m.ticket.Impact), options: []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}},
 		{name: "labels", value: strings.Join(m.ticket.Labels, ", ")},
 		{name: "user_notes", value: m.ticket.UserNotes},
 	}

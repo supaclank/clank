@@ -10,6 +10,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
 	"github.com/acksell/clank/internal/analyzer"
@@ -57,15 +58,11 @@ func openStore() (*store.Store, error) {
 	return store.Open(filepath.Join(dir, "clank.db"))
 }
 
-func newLLMClient(cfg config.Config) *llm.Client {
-	apiKey := cfg.LLM.APIKey
-	if apiKey == "" {
-		apiKey = os.Getenv("OPENAI_API_KEY")
+func newLLMClient(cfg config.Config) (*llm.Client, error) {
+	if cfg.LLM.ResolveAPIKey() == "" {
+		return nil, fmt.Errorf("no API key configured. Run 'clank config' to set up your LLM provider")
 	}
-	if apiKey == "" {
-		return nil
-	}
-	return llm.NewClient(cfg.LLM.BaseURL, apiKey, cfg.LLM.Model)
+	return llm.NewClient(cfg.LLM)
 }
 
 func scanCmd() *cobra.Command {
@@ -78,9 +75,9 @@ func scanCmd() *cobra.Command {
 				return fmt.Errorf("load config: %w", err)
 			}
 
-			client := newLLMClient(cfg)
-			if client == nil {
-				return fmt.Errorf("no LLM API key configured. Set llm.api_key in ~/.clank/config.toml or OPENAI_API_KEY env var")
+			client, err := newLLMClient(cfg)
+			if err != nil {
+				return fmt.Errorf("LLM client: %w", err)
 			}
 
 			s, err := openStore()
@@ -198,9 +195,9 @@ func triageCmd() *cobra.Command {
 			}
 			defer s.Close()
 
-			client := newLLMClient(cfg)
+			client, err := newLLMClient(cfg)
 			var az *analyzer.Analyzer
-			if client != nil {
+			if err == nil {
 				az = analyzer.New(client)
 			}
 
@@ -302,8 +299,8 @@ func showCmd() *cobra.Command {
 			fmt.Printf("Repo:        %s\n", t.RepoPath)
 			fmt.Printf("Session:     %s (%s)\n", t.SessionTitle, t.SessionID)
 			fmt.Printf("Date:        %s\n", t.SessionDate.Format("2006-01-02 15:04"))
-			fmt.Printf("Complexity:  %d/5\n", t.Complexity)
-			fmt.Printf("Impact:      %d/5\n", t.Impact)
+			fmt.Printf("Complexity:  %d/10\n", t.Complexity)
+			fmt.Printf("Impact:      %d/10\n", t.Impact)
 			q := string(t.Quadrant())
 			if q == "" {
 				q = "(unscored)"
@@ -453,7 +450,120 @@ func initCmd() *cobra.Command {
 func configCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "Show or set configuration",
+		Short: "Configure clank interactively",
+		Long:  "Run the interactive setup form to configure your LLM provider, or use 'config show' to view and 'config set' to update individual values.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+
+			// Build provider options, annotating those with detected env keys.
+			detected := config.DetectEnvKeys()
+			providers := config.Providers()
+			providerOpts := make([]huh.Option[string], 0, len(providers))
+			for _, p := range providers {
+				label := p.Name
+				if _, ok := detected[p.ID]; ok {
+					label += fmt.Sprintf("  (found %s)", p.EnvKey)
+				}
+				providerOpts = append(providerOpts, huh.NewOption(label, p.ID))
+			}
+
+			// Pre-fill from existing config (or defaults).
+			provider := cfg.LLM.Provider
+			if provider == "" {
+				provider = config.ProviderOpenAI
+			}
+			apiKey := cfg.LLM.APIKey
+			model := cfg.LLM.Model
+			openCodeDB := cfg.Scan.OpenCodeDB
+
+			// Step 1: Pick provider.
+			form1 := huh.NewForm(
+				huh.NewGroup(
+					huh.NewSelect[string]().
+						Title("LLM Provider").
+						Options(providerOpts...).
+						Value(&provider),
+				),
+			)
+			if err := form1.Run(); err != nil {
+				return err
+			}
+
+			// After provider is chosen, set model default if empty or if it
+			// belongs to a different provider.
+			pInfo, _ := config.ProviderByID(provider)
+			if model == "" || !isModelForProvider(model, provider) {
+				model = pInfo.DefaultModel
+			}
+
+			// Pre-fill API key from env if not already set.
+			envKey := detected[provider]
+			apiKeyDescription := "Paste your API key"
+			if envKey != "" && apiKey == "" {
+				apiKeyDescription = fmt.Sprintf("Using %s from environment. Press enter to keep, or paste a new key", pInfo.EnvKey)
+			}
+
+			// Step 2: API key + model + opencode DB.
+			form2 := huh.NewForm(
+				huh.NewGroup(
+					huh.NewInput().
+						Title("API Key").
+						Description(apiKeyDescription).
+						EchoMode(huh.EchoModePassword).
+						Value(&apiKey),
+
+					huh.NewInput().
+						Title("Model").
+						Description("Which model to use").
+						Value(&model).
+						Validate(huh.ValidateNotEmpty()),
+
+					huh.NewInput().
+						Title("OpenCode DB Path").
+						Description("Path to the opencode database").
+						Value(&openCodeDB).
+						Validate(huh.ValidateNotEmpty()),
+				),
+			)
+			if err := form2.Run(); err != nil {
+				return err
+			}
+
+			// If user left API key blank but env var exists, don't store it
+			// (it'll be resolved from env at runtime).
+			cfg.LLM.Provider = provider
+			cfg.LLM.APIKey = apiKey
+			cfg.LLM.Model = model
+			cfg.Scan.OpenCodeDB = openCodeDB
+
+			if err := config.Save(cfg); err != nil {
+				return err
+			}
+
+			p, _ := config.Path()
+			fmt.Printf("\nConfig saved to %s\n", p)
+
+			// Show what will be used at runtime.
+			resolvedKey := cfg.LLM.ResolveAPIKey()
+			if resolvedKey == "" {
+				fmt.Printf("\nWarning: no API key configured. Set %s or re-run 'clank config'.\n", pInfo.EnvKey)
+			} else {
+				source := "config"
+				if apiKey == "" {
+					source = pInfo.EnvKey + " env"
+				}
+				fmt.Printf("API key: (%s)\n", source)
+			}
+			return nil
+		},
+	}
+
+	showCmd := &cobra.Command{
+		Use:   "show",
+		Short: "Show current configuration",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {
@@ -462,21 +572,31 @@ func configCmd() *cobra.Command {
 			p, _ := config.Path()
 			fmt.Printf("Config file: %s\n\n", p)
 
-			apiKey := cfg.LLM.APIKey
-			if apiKey == "" {
-				apiKey = os.Getenv("OPENAI_API_KEY")
-				if apiKey != "" {
-					apiKey = "(from OPENAI_API_KEY env)"
-				} else {
-					apiKey = "(not set)"
-				}
-			} else if len(apiKey) > 8 {
-				apiKey = apiKey[:4] + "..." + apiKey[len(apiKey)-4:]
+			providerLabel := cfg.LLM.Provider
+			if pInfo, ok := config.ProviderByID(cfg.LLM.Provider); ok {
+				providerLabel = pInfo.Name
 			}
 
-			fmt.Printf("LLM Base URL:  %s\n", cfg.LLM.BaseURL)
-			fmt.Printf("LLM Model:     %s\n", cfg.LLM.Model)
-			fmt.Printf("LLM API Key:   %s\n", apiKey)
+			resolvedKey := cfg.LLM.ResolveAPIKey()
+			apiKeyDisplay := "(not set)"
+			if resolvedKey != "" {
+				if cfg.LLM.APIKey != "" {
+					if len(resolvedKey) > 8 {
+						apiKeyDisplay = resolvedKey[:4] + "..." + resolvedKey[len(resolvedKey)-4:]
+					} else {
+						apiKeyDisplay = "****"
+					}
+				} else if pInfo, ok := config.ProviderByID(cfg.LLM.Provider); ok {
+					apiKeyDisplay = fmt.Sprintf("(from %s env)", pInfo.EnvKey)
+				}
+			}
+
+			fmt.Printf("Provider:      %s\n", providerLabel)
+			fmt.Printf("Model:         %s\n", cfg.LLM.Model)
+			fmt.Printf("API Key:       %s\n", apiKeyDisplay)
+			if cfg.LLM.BaseURL != "" {
+				fmt.Printf("Base URL:      %s\n", cfg.LLM.BaseURL)
+			}
 			fmt.Printf("OpenCode DB:   %s\n", cfg.Scan.OpenCodeDB)
 			fmt.Printf("Repos:         %d registered\n", len(cfg.Repos))
 			return nil
@@ -485,7 +605,7 @@ func configCmd() *cobra.Command {
 
 	setCmd := &cobra.Command{
 		Use:   "set <key> <value>",
-		Short: "Set a config value (e.g., llm.api_key, llm.model, llm.base_url)",
+		Short: "Set a config value (e.g., llm.provider, llm.api_key, llm.model, llm.base_url)",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
@@ -493,6 +613,16 @@ func configCmd() *cobra.Command {
 				return err
 			}
 			switch args[0] {
+			case "llm.provider":
+				if _, ok := config.ProviderByID(args[1]); !ok {
+					providers := config.Providers()
+					ids := make([]string, len(providers))
+					for i, p := range providers {
+						ids[i] = p.ID
+					}
+					return fmt.Errorf("unknown provider: %s\nValid providers: %s", args[1], strings.Join(ids, ", "))
+				}
+				cfg.LLM.Provider = args[1]
 			case "llm.api_key":
 				cfg.LLM.APIKey = args[1]
 			case "llm.model":
@@ -502,7 +632,7 @@ func configCmd() *cobra.Command {
 			case "scan.opencode_db":
 				cfg.Scan.OpenCodeDB = args[1]
 			default:
-				return fmt.Errorf("unknown config key: %s\nValid keys: llm.api_key, llm.model, llm.base_url, scan.opencode_db", args[0])
+				return fmt.Errorf("unknown config key: %s\nValid keys: llm.provider, llm.api_key, llm.model, llm.base_url, scan.opencode_db", args[0])
 			}
 			if err := config.Save(cfg); err != nil {
 				return err
@@ -512,8 +642,24 @@ func configCmd() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(setCmd)
+	cmd.AddCommand(showCmd, setCmd)
 	return cmd
+}
+
+// isModelForProvider does a rough check of whether a model name
+// belongs to the given provider, to decide if we should reset the
+// default when switching providers.
+func isModelForProvider(model, provider string) bool {
+	switch provider {
+	case config.ProviderOpenAI:
+		return strings.HasPrefix(model, "gpt-") || strings.HasPrefix(model, "o1") || strings.HasPrefix(model, "o3") || strings.HasPrefix(model, "o4")
+	case config.ProviderAnthropic:
+		return strings.HasPrefix(model, "claude-")
+	case config.ProviderGemini:
+		return strings.HasPrefix(model, "gemini-")
+	default:
+		return true
+	}
 }
 
 func shortTyp(t string) string {
@@ -533,16 +679,16 @@ func backfillCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "backfill",
 		Short: "Backfill impact scores for tickets missing them",
-		Long:  "Uses the LLM to score the impact (1-5) of tickets that have impact=0. This is useful for scoring existing tickets after adding the impact dimension.",
+		Long:  "Uses the LLM to score the impact (1-10) of tickets that have impact=0. This is useful for scoring existing tickets after adding the impact dimension.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
 
-			client := newLLMClient(cfg)
-			if client == nil {
-				return fmt.Errorf("no LLM API key configured. Set llm.api_key in ~/.clank/config.toml or OPENAI_API_KEY env var")
+			client, err := newLLMClient(cfg)
+			if err != nil {
+				return fmt.Errorf("LLM client: %w", err)
 			}
 
 			s, err := openStore()
@@ -621,8 +767,8 @@ func quadrantLabel(impact, complexity int) string {
 	if impact == 0 || complexity == 0 {
 		return "unscored"
 	}
-	hi := impact >= 3
-	hc := complexity >= 3
+	hi := impact >= 6
+	hc := complexity >= 6
 	switch {
 	case hi && !hc:
 		return "quickwin"

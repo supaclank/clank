@@ -1,97 +1,109 @@
 package llm
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
-	"net/http"
-	"time"
+
+	"github.com/tmc/langchaingo/llms"
+	"github.com/tmc/langchaingo/llms/anthropic"
+	"github.com/tmc/langchaingo/llms/googleai"
+	"github.com/tmc/langchaingo/llms/openai"
+
+	"github.com/acksell/clank/internal/config"
 )
 
-type Client struct {
-	BaseURL    string
-	APIKey     string
-	Model      string
-	HTTPClient *http.Client
-}
-
+// Message is a chat message for the LLM.
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string // "system", "user", "assistant"
+	Content string
 }
 
-type ChatRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Temperature float64   `json:"temperature,omitempty"`
+// Client wraps a langchaingo model for simple chat completion.
+type Client struct {
+	model    llms.Model
+	provider string
 }
 
-type ChatResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
-}
+// NewClient creates a Client from the given config.
+func NewClient(cfg config.LLMConfig) (*Client, error) {
+	apiKey := cfg.ResolveAPIKey()
 
-func NewClient(baseURL, apiKey, model string) *Client {
-	return &Client{
-		BaseURL: baseURL,
-		APIKey:  apiKey,
-		Model:   model,
-		HTTPClient: &http.Client{
-			Timeout: 120 * time.Second,
-		},
+	var model llms.Model
+	var err error
+
+	switch cfg.Provider {
+	case config.ProviderOpenAI:
+		opts := []openai.Option{openai.WithModel(cfg.Model)}
+		if apiKey != "" {
+			opts = append(opts, openai.WithToken(apiKey))
+		}
+		if cfg.BaseURL != "" {
+			opts = append(opts, openai.WithBaseURL(cfg.BaseURL))
+		}
+		model, err = openai.New(opts...)
+
+	case config.ProviderAnthropic:
+		opts := []anthropic.Option{anthropic.WithModel(cfg.Model)}
+		if apiKey != "" {
+			opts = append(opts, anthropic.WithToken(apiKey))
+		}
+		if cfg.BaseURL != "" {
+			opts = append(opts, anthropic.WithBaseURL(cfg.BaseURL))
+		}
+		model, err = anthropic.New(opts...)
+
+	case config.ProviderGemini:
+		opts := []googleai.Option{googleai.WithDefaultModel(cfg.Model)}
+		if apiKey != "" {
+			opts = append(opts, googleai.WithAPIKey(apiKey))
+		}
+		model, err = googleai.New(context.Background(), opts...)
+
+	default:
+		return nil, fmt.Errorf("unsupported LLM provider: %q", cfg.Provider)
 	}
+
+	if err != nil {
+		return nil, fmt.Errorf("create %s client: %w", cfg.Provider, err)
+	}
+
+	return &Client{model: model, provider: cfg.Provider}, nil
 }
 
+// ChatCompletion sends messages to the LLM and returns the response text.
 func (c *Client) ChatCompletion(messages []Message) (string, error) {
 	return c.ChatCompletionWithTemp(messages, 0.2)
 }
 
+// ChatCompletionWithTemp sends messages with a specific temperature.
 func (c *Client) ChatCompletionWithTemp(messages []Message, temp float64) (string, error) {
-	req := ChatRequest{
-		Model:       c.Model,
-		Messages:    messages,
-		Temperature: temp,
+	msgs := make([]llms.MessageContent, 0, len(messages))
+	for _, m := range messages {
+		var role llms.ChatMessageType
+		switch m.Role {
+		case "system":
+			role = llms.ChatMessageTypeSystem
+		case "user":
+			role = llms.ChatMessageTypeHuman
+		case "assistant":
+			role = llms.ChatMessageTypeAI
+		default:
+			role = llms.ChatMessageTypeGeneric
+		}
+		msgs = append(msgs, llms.TextParts(role, m.Content))
 	}
-	body, err := json.Marshal(req)
+
+	resp, err := c.model.GenerateContent(
+		context.Background(),
+		msgs,
+		llms.WithTemperature(temp),
+	)
 	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
+		return "", fmt.Errorf("LLM generate: %w", err)
 	}
 
-	url := c.BaseURL + "/chat/completions"
-	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if c.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
-	}
-
-	resp, err := c.HTTPClient.Do(httpReq)
-	if err != nil {
-		return "", fmt.Errorf("send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("LLM API error %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var chatResp ChatResponse
-	if err := json.Unmarshal(respBody, &chatResp); err != nil {
-		return "", fmt.Errorf("parse response: %w", err)
-	}
-	if len(chatResp.Choices) == 0 {
+	if len(resp.Choices) == 0 {
 		return "", fmt.Errorf("no choices in response")
 	}
-	return chatResp.Choices[0].Message.Content, nil
+	return resp.Choices[0].Content, nil
 }

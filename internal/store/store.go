@@ -62,13 +62,13 @@ type Ticket struct {
 
 // Quadrant returns the ticket's quadrant based on impact and complexity scores.
 // Returns QuadrantUnscored if either score is 0 (not yet scored).
-// Threshold: high >= 3, low <= 2.
+// Threshold: high >= 6, low <= 5.
 func (t Ticket) Quadrant() Quadrant {
 	if t.Impact == 0 || t.Complexity == 0 {
 		return QuadrantUnscored
 	}
-	highImpact := t.Impact >= 3
-	highComplexity := t.Complexity >= 3
+	highImpact := t.Impact >= 6
+	highComplexity := t.Complexity >= 6
 	switch {
 	case highImpact && !highComplexity:
 		return QuadrantQuickWin
@@ -227,13 +227,13 @@ func (s *Store) ListTickets(f TicketFilter) ([]Ticket, error) {
 	if f.Quadrant != "" {
 		switch f.Quadrant {
 		case QuadrantQuickWin:
-			conditions = append(conditions, "impact >= 3 AND complexity > 0 AND complexity <= 2")
+			conditions = append(conditions, "impact >= 6 AND complexity > 0 AND complexity <= 5")
 		case QuadrantValueBet:
-			conditions = append(conditions, "impact >= 3 AND complexity >= 3")
+			conditions = append(conditions, "impact >= 6 AND complexity >= 6")
 		case QuadrantDistraction:
-			conditions = append(conditions, "impact > 0 AND impact <= 2 AND complexity >= 3")
+			conditions = append(conditions, "impact > 0 AND impact <= 5 AND complexity >= 6")
 		case QuadrantTidyUp:
-			conditions = append(conditions, "impact > 0 AND impact <= 2 AND complexity > 0 AND complexity <= 2")
+			conditions = append(conditions, "impact > 0 AND impact <= 5 AND complexity > 0 AND complexity <= 5")
 		}
 	}
 	if len(conditions) > 0 {
@@ -243,10 +243,10 @@ func (s *Store) ListTickets(f TicketFilter) ([]Ticket, error) {
 	// tidyup, distraction. Unscored tickets last. Within each group, by impact desc.
 	query += ` ORDER BY
 		CASE
-			WHEN impact >= 3 AND complexity >= 3 THEN 1
-			WHEN impact >= 3 AND complexity > 0 AND complexity <= 2 THEN 2
-			WHEN impact > 0 AND impact <= 2 AND complexity > 0 AND complexity <= 2 THEN 3
-			WHEN impact > 0 AND impact <= 2 AND complexity >= 3 THEN 4
+			WHEN impact >= 6 AND complexity >= 6 THEN 1
+			WHEN impact >= 6 AND complexity > 0 AND complexity <= 5 THEN 2
+			WHEN impact > 0 AND impact <= 5 AND complexity > 0 AND complexity <= 5 THEN 3
+			WHEN impact > 0 AND impact <= 5 AND complexity >= 6 THEN 4
 			ELSE 5
 		END,
 		impact DESC,

@@ -132,14 +132,14 @@ clank backfill --dry-run
 
 ## Data model
 
-Tickets are scored on two dimensions (1-5 each) and mapped to quadrants:
+Tickets are scored on two dimensions (1-10 each) and mapped to quadrants:
 
 | Quadrant | Impact | Complexity | Meaning |
 |----------|--------|------------|---------|
-| Quick Win | >= 3 | < 3 | High value, easy to do |
-| Value Bet | >= 3 | >= 3 | High value, significant effort |
-| Tidy Up | < 3 | < 3 | Low stakes, easy to do |
-| Distraction | < 3 | >= 3 | Low value, high effort |
+| Quick Win | >= 6 | < 6 | High value, easy to do |
+| Value Bet | >= 6 | >= 6 | High value, significant effort |
+| Tidy Up | < 6 | < 6 | Low stakes, easy to do |
+| Distraction | < 6 | >= 6 | Low value, high effort |
 
 Tickets flow through statuses: `new` -> `triaged` -> `backlog` -> `doing` -> `done` (or `discarded`).
 

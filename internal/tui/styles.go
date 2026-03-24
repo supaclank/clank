@@ -83,7 +83,7 @@ func styledType(t string) string {
 
 func styledComplexity(c int) string {
 	s := ""
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 10; i++ {
 		if i < c {
 			s += lipgloss.NewStyle().Foreground(warningColor).Render("*")
 		} else {
@@ -95,7 +95,7 @@ func styledComplexity(c int) string {
 
 func styledImpact(i int) string {
 	s := ""
-	for j := 0; j < 5; j++ {
+	for j := 0; j < 10; j++ {
 		if j < i {
 			s += lipgloss.NewStyle().Foreground(secondaryColor).Render("*")
 		} else {

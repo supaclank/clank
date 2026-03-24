@@ -24,8 +24,8 @@ type extractedTicket struct {
 	Summary      string   `json:"summary"`
 	Description  string   `json:"description"`
 	SourceQuotes []string `json:"source_quotes"`
-	Complexity   int      `json:"complexity_score_1_to_5"`
-	Impact       int      `json:"impact_score_1_to_5"`
+	Complexity   int      `json:"complexity_score_1_to_10"`
+	Impact       int      `json:"impact_score_1_to_10"`
 	Labels       []string `json:"labels"`
 }
 
@@ -61,8 +61,8 @@ func (a *Analyzer) TriageTicket(ticket store.Ticket, centralContext string) (str
 	prompt := fmt.Sprintf(`Here is a ticket extracted from a coding session. Please suggest:
 1. Whether this should be kept (backlog) or discarded
 2. Suggested labels (from: bug, feature, refactor, test, documentation, research, security)
-3. Complexity score (1-5, where 1=trivial, 5=major effort)
-4. Impact score (1-5, where 1=trivial/cosmetic, 5=critical/blocking)
+3. Complexity score (1-10, where 1=trivial, 10=major effort)
+4. Impact score (1-10, where 1=trivial/cosmetic, 10=critical/blocking)
 5. Suggested next steps or action items
 6. Any connections to the product context provided
 
@@ -131,16 +131,16 @@ Return a JSON object with this exact structure:
       "summary": "One or two sentence summary",
       "description": "Detailed description with context",
       "source_quotes": ["Relevant quotes from the session"],
-      "complexity_score_1_to_5": 3,
-      "impact_score_1_to_5": 3,
+      "complexity_score_1_to_10": 3,
+      "impact_score_1_to_10": 3,
       "labels": ["feature", "refactor", etc.]
     }
   ]
 }
 
-Complexity measures implementation effort: 1=trivial (minutes), 5=major (days/weeks of work).
+Complexity measures implementation effort: 1=trivial (minutes), 10=major (days/weeks of work).
 Impact measures how much value fixing/implementing this would deliver to the user or product:
-  1=trivial/cosmetic, 2=minor convenience, 3=meaningful improvement, 4=significant value, 5=critical/blocking.
+  1=trivial/cosmetic, 2-3=minor convenience, 4-5=meaningful improvement, 6-7=significant value, 8-9=very high value, 10=critical/blocking.
 
 Labels must be from: bug, feature, refactor, test, documentation, research, security.
 Only include genuinely useful items. Skip trivial or already-completed tasks.
@@ -198,16 +198,16 @@ func parseResponse(resp string, session scanner.RawSession) ([]store.Ticket, err
 }
 
 type impactResult struct {
-	Impact int `json:"impact_score_1_to_5"`
+	Impact int `json:"impact_score_1_to_10"`
 }
 
 // ScoreImpact asks the LLM to score just the impact of a ticket.
 // Used for backfilling existing tickets that have no impact score.
 func (a *Analyzer) ScoreImpact(ticket store.Ticket, centralContext string) (int, error) {
-	prompt := fmt.Sprintf(`Score the impact of this ticket on a scale of 1-5.
+	prompt := fmt.Sprintf(`Score the impact of this ticket on a scale of 1-10.
 
 Impact measures how much value fixing/implementing this would deliver to the user or product:
-  1=trivial/cosmetic, 2=minor convenience, 3=meaningful improvement, 4=significant value, 5=critical/blocking.
+  1=trivial/cosmetic, 2-3=minor convenience, 4-5=meaningful improvement, 6-7=significant value, 8-9=very high value, 10=critical/blocking.
 
 Ticket:
 - Title: %s
@@ -218,7 +218,7 @@ Ticket:
 Product context:
 %s
 
-Return ONLY a JSON object: {"impact_score_1_to_5": N}`,
+Return ONLY a JSON object: {"impact_score_1_to_10": N}`,
 		ticket.Title, ticket.Summary, ticket.Description,
 		strings.Join(ticket.Labels, ", "), centralContext)
 
@@ -240,7 +240,7 @@ Return ONLY a JSON object: {"impact_score_1_to_5": N}`,
 	if err := json.Unmarshal([]byte(resp), &result); err != nil {
 		return 0, fmt.Errorf("parse impact response: %w", err)
 	}
-	if result.Impact < 1 || result.Impact > 5 {
+	if result.Impact < 1 || result.Impact > 10 {
 		return 0, fmt.Errorf("impact score out of range: %d", result.Impact)
 	}
 	return result.Impact, nil
