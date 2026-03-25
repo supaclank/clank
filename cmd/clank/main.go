@@ -33,6 +33,7 @@ func main() {
 	root.AddCommand(
 		scanCmd(),
 		triageCmd(),
+		sessionsCmd(),
 		listCmd(),
 		showCmd(),
 		contextCmd(),
@@ -208,6 +209,35 @@ func triageCmd() *cobra.Command {
 			return err
 		},
 	}
+}
+
+func sessionsCmd() *cobra.Command {
+	var limit int
+	cmd := &cobra.Command{
+		Use:   "sessions",
+		Short: "Interactive session dashboard (kanban board)",
+		Long:  "View and manage your coding sessions in a kanban-style board. Shows idle, busy, error, and follow-up sessions, plus top backlog tickets.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+
+			s, err := openStore()
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+
+			sc := opencode.New(cfg.Scan.OpenCodeDB)
+			app := tui.NewSessionsModel(s, sc, limit)
+			p := tea.NewProgram(app, tea.WithAltScreen())
+			_, err = p.Run()
+			return err
+		},
+	}
+	cmd.Flags().IntVarP(&limit, "limit", "n", 50, "Maximum number of recent sessions to show")
+	return cmd
 }
 
 func listCmd() *cobra.Command {

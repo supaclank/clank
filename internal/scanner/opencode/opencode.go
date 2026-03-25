@@ -4,11 +4,23 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/acksell/clank/internal/scanner"
 	_ "modernc.org/sqlite"
 )
+
+// SessionInfo is a lightweight session record (no messages/parts loaded).
+type SessionInfo struct {
+	ID        string
+	Title     string
+	Directory string
+	RepoName  string // basename of the project worktree
+	Worktree  string // full path to the project worktree
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
 
 type Scanner struct {
 	dbPath string
@@ -71,6 +83,47 @@ func (s *Scanner) ListProjects() ([]string, error) {
 		paths = append(paths, p)
 	}
 	return paths, rows.Err()
+}
+
+// ListRecentSessions returns lightweight session info (no messages/parts).
+// Results are ordered by time_updated DESC. Pass limit=0 for no limit.
+func (s *Scanner) ListRecentSessions(limit int) ([]SessionInfo, error) {
+	db, err := s.open()
+	if err != nil {
+		return nil, fmt.Errorf("open opencode db: %w", err)
+	}
+	defer db.Close()
+
+	query := `
+		SELECT s.id, s.title, s.directory, p.worktree, s.time_created, s.time_updated
+		FROM session s
+		JOIN project p ON s.project_id = p.id
+		WHERE (s.parent_id IS NULL OR s.parent_id = '')
+		ORDER BY s.time_updated DESC
+	`
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", limit)
+	}
+
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("query recent sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []SessionInfo
+	for rows.Next() {
+		var si SessionInfo
+		var createdAt, updatedAt int64
+		if err := rows.Scan(&si.ID, &si.Title, &si.Directory, &si.Worktree, &createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan session: %w", err)
+		}
+		si.CreatedAt = time.UnixMilli(createdAt)
+		si.UpdatedAt = time.UnixMilli(updatedAt)
+		si.RepoName = filepath.Base(si.Worktree)
+		sessions = append(sessions, si)
+	}
+	return sessions, rows.Err()
 }
 
 func (s *Scanner) querySessions(db *sql.DB, query string, args ...any) ([]scanner.RawSession, error) {

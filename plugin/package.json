@@ -1,0 +1,10 @@
+{
+  "name": "@acksell/clank-session-tracker",
+  "version": "0.1.0",
+  "description": "OpenCode plugin that tracks session lifecycle events for Clank",
+  "main": "index.ts",
+  "type": "module",
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.3.0"
+  }
+}

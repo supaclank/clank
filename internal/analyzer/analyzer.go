@@ -62,7 +62,7 @@ func (a *Analyzer) TriageTicket(ticket store.Ticket, centralContext string) (str
 1. Whether this should be kept (backlog) or discarded
 2. Suggested labels (from: bug, feature, refactor, test, documentation, research, security)
 3. Complexity score (1-10, where 1=trivial, 10=major effort)
-4. Impact score (1-10, where 1=trivial/cosmetic, 10=critical/blocking)
+4. Impact score (1-10, relative to the product context provided: 1-2=trivial/cosmetic, 5-6=meaningful improvement, 7-8=directly supports product goals, 9-10=advances top-priority objectives or unblocks key work)
 5. Suggested next steps or action items
 6. Any connections to the product context provided
 
@@ -139,8 +139,15 @@ Return a JSON object with this exact structure:
 }
 
 Complexity measures implementation effort: 1=trivial (minutes), 10=major (days/weeks of work).
-Impact measures how much value fixing/implementing this would deliver to the user or product:
-  1=trivial/cosmetic, 2-3=minor convenience, 4-5=meaningful improvement, 6-7=significant value, 8-9=very high value, 10=critical/blocking.
+
+Impact measures how much value this delivers relative to the product/company context provided.
+Score higher when an item directly advances stated business objectives or unblocks key work:
+  1-2: trivial/cosmetic, no meaningful user or business value
+  3-4: minor convenience or code quality improvement
+  5-6: meaningful improvement with clear user benefit
+  7-8: significant value, directly supports product goals from the provided context
+  9-10: critical — directly advances top-priority objectives, unblocks key work, or addresses a limiting factor
+If no product context is provided, score based on general engineering value and user benefit.
 
 Labels must be from: bug, feature, refactor, test, documentation, research, security.
 Only include genuinely useful items. Skip trivial or already-completed tasks.
@@ -206,8 +213,14 @@ type impactResult struct {
 func (a *Analyzer) ScoreImpact(ticket store.Ticket, centralContext string) (int, error) {
 	prompt := fmt.Sprintf(`Score the impact of this ticket on a scale of 1-10.
 
-Impact measures how much value fixing/implementing this would deliver to the user or product:
-  1=trivial/cosmetic, 2-3=minor convenience, 4-5=meaningful improvement, 6-7=significant value, 8-9=very high value, 10=critical/blocking.
+Impact measures how much value this delivers relative to the product/company context provided.
+Score higher when an item directly advances stated business objectives or unblocks key work:
+  1-2: trivial/cosmetic, no meaningful user or business value
+  3-4: minor convenience or code quality improvement
+  5-6: meaningful improvement with clear user benefit
+  7-8: significant value, directly supports product goals from the provided context
+  9-10: critical — directly advances top-priority objectives, unblocks key work, or addresses a limiting factor
+If no product context is provided, score based on general engineering value and user benefit.
 
 Ticket:
 - Title: %s
@@ -219,8 +232,8 @@ Product context:
 %s
 
 Return ONLY a JSON object: {"impact_score_1_to_10": N}`,
-		ticket.Title, ticket.Summary, ticket.Description,
-		strings.Join(ticket.Labels, ", "), centralContext)
+		ticket.Title, ticket.Summary, ticket.Description, strings.Join(ticket.Labels, ", "),
+		centralContext)
 
 	resp, err := a.client.ChatCompletion([]llm.Message{
 		{Role: "system", Content: "You are a senior engineering manager scoring ticket impact. Return only JSON."},

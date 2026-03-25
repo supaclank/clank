@@ -11,6 +11,27 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// SessionState represents the lifecycle state of a coding session.
+type SessionState string
+
+const (
+	SessionBusy     SessionState = "busy"     // Agent is actively working (set by plugin)
+	SessionIdle     SessionState = "idle"     // Agent finished, awaiting human review (set by plugin)
+	SessionError    SessionState = "error"    // Session errored (set by plugin)
+	SessionApproved SessionState = "approved" // User tested/QA'd, confirmed good
+	SessionArchived SessionState = "archived" // User dismissed without testing
+	SessionFollowup SessionState = "followup" // Needs more work, will revisit
+)
+
+// SessionStatus tracks a coding session's lifecycle state in Clank.
+type SessionStatus struct {
+	SessionID string       `json:"session_id"`
+	Status    SessionState `json:"status"`
+	Source    string       `json:"source"` // "opencode", "claude-code", etc.
+	Unread    bool         `json:"unread"` // true if agent responded and user hasn't opened it
+	UpdatedAt time.Time    `json:"updated_at"`
+}
+
 type TicketType string
 
 const (
@@ -123,6 +144,8 @@ func (s *Store) migrate() error {
 	}
 	// Add impact column to existing databases (idempotent).
 	s.db.Exec("ALTER TABLE ticket ADD COLUMN impact INTEGER NOT NULL DEFAULT 0")
+	// Add unread column to existing session_status tables (idempotent).
+	s.db.Exec("ALTER TABLE session_status ADD COLUMN unread INTEGER NOT NULL DEFAULT 1")
 	return nil
 }
 
@@ -158,6 +181,16 @@ CREATE TABLE IF NOT EXISTS repo (
 CREATE INDEX IF NOT EXISTS idx_ticket_status ON ticket(status);
 CREATE INDEX IF NOT EXISTS idx_ticket_repo ON ticket(repo_path);
 CREATE INDEX IF NOT EXISTS idx_ticket_session ON ticket(session_id);
+
+CREATE TABLE IF NOT EXISTS session_status (
+	session_id  TEXT PRIMARY KEY,
+	status      TEXT NOT NULL DEFAULT 'idle',
+	source      TEXT NOT NULL DEFAULT 'opencode',
+	unread      INTEGER NOT NULL DEFAULT 1,
+	updated_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_status_status ON session_status(status);
 `
 
 func (s *Store) SaveTicket(t *Ticket) error {
@@ -347,4 +380,102 @@ func scanTicketFromRow(row *sql.Row) (*Ticket, error) {
 
 func scanTicketFromRows(rows *sql.Rows) (*Ticket, error) {
 	return scanTicketFromScannable(rows)
+}
+
+// SetSessionStatus upserts a session's status in Clank's DB.
+// Does not change the unread flag — use MarkSessionRead for that.
+func (s *Store) SetSessionStatus(sessionID string, status SessionState, source string) error {
+	now := time.Now().UnixMilli()
+	_, err := s.db.Exec(`
+		INSERT INTO session_status (session_id, status, source, unread, updated_at)
+		VALUES (?, ?, ?, 1, ?)
+		ON CONFLICT(session_id) DO UPDATE SET
+			status=excluded.status, source=excluded.source, updated_at=excluded.updated_at
+	`, sessionID, status, source, now)
+	return err
+}
+
+// MarkSessionRead marks a session as read (user has seen the agent response).
+func (s *Store) MarkSessionRead(sessionID string) error {
+	_, err := s.db.Exec(
+		"UPDATE session_status SET unread=0 WHERE session_id=?", sessionID)
+	return err
+}
+
+// GetSessionStatus returns the status for a single session, or nil if not tracked.
+func (s *Store) GetSessionStatus(sessionID string) (*SessionStatus, error) {
+	var ss SessionStatus
+	var updatedAt int64
+	var unread int
+	err := s.db.QueryRow(
+		"SELECT session_id, status, source, unread, updated_at FROM session_status WHERE session_id=?",
+		sessionID,
+	).Scan(&ss.SessionID, &ss.Status, &ss.Source, &unread, &updatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	ss.Unread = unread != 0
+	ss.UpdatedAt = time.UnixMilli(updatedAt)
+	return &ss, nil
+}
+
+// ListSessionStatuses returns all tracked session statuses, optionally filtered.
+func (s *Store) ListSessionStatuses(statuses ...SessionState) (map[string]*SessionStatus, error) {
+	query := "SELECT session_id, status, source, unread, updated_at FROM session_status"
+	var args []any
+	if len(statuses) > 0 {
+		placeholders := make([]string, len(statuses))
+		for i, st := range statuses {
+			placeholders[i] = "?"
+			args = append(args, string(st))
+		}
+		query += " WHERE status IN (" + strings.Join(placeholders, ",") + ")"
+	}
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]*SessionStatus)
+	for rows.Next() {
+		var ss SessionStatus
+		var updatedAt int64
+		var unread int
+		if err := rows.Scan(&ss.SessionID, &ss.Status, &ss.Source, &unread, &updatedAt); err != nil {
+			return nil, err
+		}
+		ss.Unread = unread != 0
+		ss.UpdatedAt = time.UnixMilli(updatedAt)
+		result[ss.SessionID] = &ss
+	}
+	return result, rows.Err()
+}
+
+// TopTicketsByImpact returns the top N tickets sorted by impact DESC.
+func (s *Store) TopTicketsByImpact(limit int) ([]Ticket, error) {
+	query := `SELECT id, type, status, title, summary, description, repo_path,
+		session_id, session_title, session_date, source_quotes, labels, complexity,
+		impact, ai_notes, user_notes, created_at, updated_at FROM ticket
+		WHERE status NOT IN ('done', 'discarded')
+		ORDER BY impact DESC, created_at DESC
+		LIMIT ?`
+	rows, err := s.db.Query(query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tickets []Ticket
+	for rows.Next() {
+		t, err := scanTicketFromRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		tickets = append(tickets, *t)
+	}
+	return tickets, rows.Err()
 }
