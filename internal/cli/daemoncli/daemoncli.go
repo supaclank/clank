@@ -15,12 +15,12 @@ import (
 	"github.com/acksell/clank/internal/daemon"
 )
 
-// Command returns the "daemon" cobra command with start/stop/status subcommands.
+// Command returns the root cobra command for the clankd binary with start/stop/status subcommands.
 func Command() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "daemon",
-		Short: "Manage the Clank background daemon",
-		Long:  "The daemon manages coding agent sessions in the background. It starts automatically when needed.",
+		Use:   "clankd",
+		Short: "Clank daemon manager",
+		Long:  "clankd manages the Clank background daemon that runs coding agent sessions.",
 	}
 
 	startCmd := &cobra.Command{
