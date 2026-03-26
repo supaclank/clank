@@ -181,6 +181,17 @@ type ErrorData struct {
 	Message string `json:"message"`
 }
 
+// AgentInfo is a lightweight summary of an OpenCode agent, used by the TUI
+// to display and cycle through available agents. We define our own struct
+// rather than using the SDK's Agent type because the SDK is missing the
+// "hidden" field that OpenCode returns in GET /agent.
+type AgentInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Mode        string `json:"mode"`   // "primary", "subagent", or "all"
+	Hidden      bool   `json:"hidden"` // Internal agents (compaction, title, summary)
+}
+
 // StartRequest contains the parameters needed to start a new agent session.
 type StartRequest struct {
 	Backend    BackendType `json:"backend"`
@@ -188,6 +199,7 @@ type StartRequest struct {
 	Prompt     string      `json:"prompt"`
 	SessionID  string      `json:"session_id,omitempty"` // Empty = new session, set = resume
 	TicketID   string      `json:"ticket_id,omitempty"`  // Optional backlog ticket link
+	Agent      string      `json:"agent,omitempty"`      // OpenCode agent name (e.g. "build", "plan")
 }
 
 // Validate checks that required fields are set.
@@ -216,6 +228,7 @@ type SessionInfo struct {
 	ProjectName string        `json:"project_name"`
 	Prompt      string        `json:"prompt"`
 	TicketID    string        `json:"ticket_id,omitempty"`
+	Agent       string        `json:"agent,omitempty"` // Current OpenCode agent (e.g. "build", "plan")
 	CreatedAt   time.Time     `json:"created_at"`
 	UpdatedAt   time.Time     `json:"updated_at"`
 	LastReadAt  time.Time     `json:"last_read_at,omitempty"`
@@ -224,6 +237,12 @@ type SessionInfo struct {
 // Unread returns true if the session has activity the user hasn't seen.
 func (s SessionInfo) Unread() bool {
 	return s.LastReadAt.IsZero() || s.UpdatedAt.After(s.LastReadAt)
+}
+
+// SendMessageOpts contains options for sending a follow-up message.
+type SendMessageOpts struct {
+	Text  string `json:"text"`
+	Agent string `json:"agent,omitempty"` // OpenCode agent name; empty = use session default
 }
 
 // Backend is the interface that each agent backend must implement.
@@ -235,7 +254,7 @@ type Backend interface {
 	Start(ctx context.Context, req StartRequest) error
 
 	// SendMessage sends a follow-up message to the running agent.
-	SendMessage(ctx context.Context, text string) error
+	SendMessage(ctx context.Context, opts SendMessageOpts) error
 
 	// Abort interrupts the currently running agent task.
 	Abort(ctx context.Context) error

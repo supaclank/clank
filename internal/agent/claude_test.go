@@ -550,7 +550,7 @@ func TestClaudeCodeBackendSendMessageErrors(t *testing.T) {
 	b := agent.NewClaudeCodeBackend()
 
 	// Before start.
-	err := b.SendMessage(context.Background(), "hello")
+	err := b.SendMessage(context.Background(), agent.SendMessageOpts{Text: "hello"})
 	if err == nil {
 		t.Error("expected error sending message before Start")
 	}

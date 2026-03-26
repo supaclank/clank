@@ -51,6 +51,17 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.SetWidth(m.width - promptInputBorderSize)
 		return m, nil
 
+	case agentsResultMsg:
+		m.agents = msg.agents
+		// Default to "build" if present.
+		for i, a := range m.agents {
+			if a.Name == "build" {
+				m.selectedAgent = i
+				break
+			}
+		}
+		return m, nil
+
 	case sessionCreateResultMsg:
 		return m.handleCreateResult(msg)
 
@@ -84,6 +95,13 @@ func (m *SessionViewModel) handleComposeKey(msg tea.KeyPressMsg) (tea.Model, tea
 		}
 		return m, nil
 
+	case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
+		// Cycle through agents (only when agents are loaded).
+		if len(m.agents) > 1 {
+			m.selectedAgent = (m.selectedAgent + 1) % len(m.agents)
+		}
+		return m, nil
+
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 		// Send prompt — shift+enter inserts newline (handled by textarea keybinding).
 		return m.launchSession()
@@ -113,6 +131,9 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 		Backend:    m.backend,
 		ProjectDir: m.projectDir,
 		Prompt:     prompt,
+	}
+	if len(m.agents) > 0 {
+		req.Agent = m.agents[m.selectedAgent].Name
 	}
 
 	return m, m.createSessionCmd(req)
@@ -208,6 +229,12 @@ func (m *SessionViewModel) viewCompose() tea.View {
 	sb.WriteString(m.renderBackendSelector())
 	sb.WriteString("\n")
 
+	// Agent selector (OpenCode only, when agents are loaded).
+	if m.backend == agent.BackendOpenCode && len(m.agents) > 0 {
+		sb.WriteString(m.renderAgentSelector())
+		sb.WriteString("\n")
+	}
+
 	// Project directory.
 	labelSty := lipgloss.NewStyle().Foreground(dimColor).Width(12)
 	sb.WriteString("  " + labelSty.Render("Project:"))
@@ -225,7 +252,12 @@ func (m *SessionViewModel) viewCompose() tea.View {
 	if m.standalone {
 		qLabel = "esc: quit"
 	}
-	help := helpStyle.Render("enter: launch | shift+enter: newline | ctrl+b: toggle backend | " + qLabel)
+	helpParts := []string{"enter: launch", "shift+enter: newline", "ctrl+b: toggle backend"}
+	if m.backend == agent.BackendOpenCode && len(m.agents) > 1 {
+		helpParts = append(helpParts, "tab: cycle agent")
+	}
+	helpParts = append(helpParts, qLabel)
+	help := helpStyle.Render(strings.Join(helpParts, " | "))
 	sb.WriteString(help)
 
 	v := tea.NewView(sb.String())
@@ -264,4 +296,19 @@ func (m *SessionViewModel) renderBackendSelector() string {
 		ocStyle.Render("OpenCode"),
 		ccStyle.Render("Claude Code"),
 	)
+}
+
+func (m *SessionViewModel) renderAgentSelector() string {
+	labelSty := lipgloss.NewStyle().Foreground(dimColor).Width(12)
+	label := labelSty.Render("Agent:")
+
+	var parts []string
+	for i, a := range m.agents {
+		style := lipgloss.NewStyle().Foreground(dimColor)
+		if i == m.selectedAgent {
+			style = lipgloss.NewStyle().Foreground(successColor).Bold(true)
+		}
+		parts = append(parts, "["+style.Render(a.Name)+"]")
+	}
+	return "  " + label + strings.Join(parts, "  ")
 }

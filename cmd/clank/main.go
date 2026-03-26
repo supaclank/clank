@@ -859,6 +859,7 @@ func runDaemonStart(foreground bool) error {
 		// Wire in real backend factory.
 		factory := daemon.NewDefaultBackendFactory()
 		d.BackendFactory = factory.Create
+		d.AgentLister = factory.ListAgents
 		d.OnShutdown = factory.StopAll
 		return d.Run()
 	}

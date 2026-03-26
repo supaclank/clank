@@ -35,6 +35,11 @@ type sessionInfoMsg struct {
 	info *agent.SessionInfo
 }
 
+// agentsResultMsg carries the result of fetching available agents.
+type agentsResultMsg struct {
+	agents []agent.AgentInfo
+}
+
 // sessionMessagesMsg delivers the full message history to the model.
 type sessionMessagesMsg struct {
 	messages []agent.MessageData
@@ -88,6 +93,11 @@ type SessionViewModel struct {
 	composing  bool
 	backend    agent.BackendType
 	projectDir string
+
+	// Agent selection — populated eagerly when compose view loads.
+	// For existing sessions opened from inbox, agents are fetched on Init.
+	agents        []agent.AgentInfo
+	selectedAgent int // index into agents slice
 }
 
 // displayEntry is a rendered item in the session transcript.
@@ -137,7 +147,7 @@ func (m *SessionViewModel) SetEventChannel(ch <-chan agent.Event, cancel context
 func (m *SessionViewModel) Init() tea.Cmd {
 	// In composing mode, no session exists yet — nothing to subscribe to.
 	if m.composing {
-		return m.input.Focus()
+		return tea.Batch(m.input.Focus(), m.fetchAgents())
 	}
 	cmds := []tea.Cmd{m.fetchSessionInfo(), m.fetchSessionMessages()}
 	if m.eventsCh != nil {
@@ -172,6 +182,24 @@ func (m *SessionViewModel) fetchSessionMessages() tea.Cmd {
 			return sessionEventsErrMsg{err: err}
 		}
 		return sessionMessagesMsg{messages: messages}
+	}
+}
+
+// fetchAgents loads the available agents for the current backend/project.
+// Fired eagerly on compose init; the result arrives before the user finishes typing.
+func (m *SessionViewModel) fetchAgents() tea.Cmd {
+	client := m.client
+	backend := m.backend
+	projectDir := m.projectDir
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		agents, err := client.ListAgents(ctx, backend, projectDir)
+		if err != nil {
+			// Non-fatal: degrade gracefully with no agent selector.
+			return agentsResultMsg{}
+		}
+		return agentsResultMsg{agents: agents}
 	}
 }
 
@@ -245,6 +273,31 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				kind:    entryUser,
 				content: m.info.Prompt,
 			})
+		}
+		// Fetch agents if we don't have them yet (existing sessions opened from inbox).
+		if len(m.agents) == 0 && m.info.Backend == agent.BackendOpenCode && m.info.ProjectDir != "" {
+			m.backend = m.info.Backend
+			m.projectDir = m.info.ProjectDir
+			// Restore the selected agent from session info.
+			if m.info.Agent != "" {
+				// Will be matched against the fetched list in agentsResultMsg.
+			}
+			return m, m.fetchAgents()
+		}
+		return m, nil
+
+	case agentsResultMsg:
+		m.agents = msg.agents
+		// Try to match the session's current agent.
+		selectedName := "build"
+		if m.info != nil && m.info.Agent != "" {
+			selectedName = m.info.Agent
+		}
+		for i, a := range m.agents {
+			if a.Name == selectedName {
+				m.selectedAgent = i
+				break
+			}
 		}
 		return m, nil
 
@@ -327,6 +380,12 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
 			m.inputActive = false
 			m.input.Blur()
+			return m, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
+			// Cycle through agents.
+			if len(m.agents) > 1 {
+				m.selectedAgent = (m.selectedAgent + 1) % len(m.agents)
+			}
 			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 			// Send the message. Shift+enter inserts newline (handled by textarea).
@@ -641,10 +700,15 @@ func (m *SessionViewModel) statusIcon(status agent.PartStatus) string {
 }
 
 func (m *SessionViewModel) sendMessage(text string) tea.Cmd {
+	selectedAgent := ""
+	if len(m.agents) > 0 {
+		selectedAgent = m.agents[m.selectedAgent].Name
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		err := m.client.SendMessage(ctx, m.sessionID, text)
+		opts := agent.SendMessageOpts{Text: text, Agent: selectedAgent}
+		err := m.client.SendMessage(ctx, m.sessionID, opts)
 		return sessionSendResultMsg{err: err}
 	}
 }
@@ -721,10 +785,20 @@ func (m *SessionViewModel) View() tea.View {
 
 	// Input area.
 	if m.inputActive {
+		// Show agent selector inline when agents are loaded.
+		if len(m.agents) > 1 {
+			agentName := m.agents[m.selectedAgent].Name
+			agentLabel := lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("[" + agentName + "]")
+			sb.WriteString("\n  " + agentLabel + "\n")
+		}
 		sb.WriteString("\n")
 		sb.WriteString(promptInputStyle(m.input.Focused()).Render(m.input.View()))
 		sb.WriteString("\n")
-		sb.WriteString(helpStyle.Render("enter: send | shift+enter: newline | esc: cancel"))
+		inputHelp := "enter: send | shift+enter: newline | esc: cancel"
+		if len(m.agents) > 1 {
+			inputHelp = "enter: send | shift+enter: newline | tab: cycle agent | esc: cancel"
+		}
+		sb.WriteString(helpStyle.Render(inputHelp))
 	} else {
 		// Help bar.
 		help := m.buildHelpText()
@@ -760,11 +834,26 @@ func (m *SessionViewModel) renderHeader() string {
 
 	left := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render(title)
 	right := statusStyle.Render("[" + statusStr + "]")
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+
+	// Show agent indicator if set.
+	agentStr := ""
+	if len(m.agents) > 0 {
+		agentName := m.agents[m.selectedAgent].Name
+		agentStr = lipgloss.NewStyle().Foreground(secondaryColor).Render("[" + agentName + "]")
+	} else if m.info != nil && m.info.Agent != "" {
+		agentStr = lipgloss.NewStyle().Foreground(secondaryColor).Render("[" + m.info.Agent + "]")
+	}
+
+	rightParts := right
+	if agentStr != "" {
+		rightParts = agentStr + " " + right
+	}
+
+	gap := m.width - lipgloss.Width(left) - lipgloss.Width(rightParts)
 	if gap < 2 {
 		gap = 2
 	}
-	return left + strings.Repeat(" ", gap) + right
+	return left + strings.Repeat(" ", gap) + rightParts
 }
 
 func (m *SessionViewModel) buildContentLines() []string {

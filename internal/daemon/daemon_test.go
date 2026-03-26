@@ -61,9 +61,9 @@ func (m *mockBackend) Start(ctx context.Context, req agent.StartRequest) error {
 	return nil
 }
 
-func (m *mockBackend) SendMessage(ctx context.Context, text string) error {
+func (m *mockBackend) SendMessage(ctx context.Context, opts agent.SendMessageOpts) error {
 	m.mu.Lock()
-	m.messages = append(m.messages, text)
+	m.messages = append(m.messages, opts.Text)
 	m.mu.Unlock()
 
 	// Emit a message event.
@@ -72,7 +72,7 @@ func (m *mockBackend) SendMessage(ctx context.Context, text string) error {
 		Timestamp: time.Now(),
 		Data: agent.MessageData{
 			Role:    "user",
-			Content: text,
+			Content: opts.Text,
 		},
 	}
 	return nil
@@ -557,7 +557,7 @@ func TestDaemonSendMessage(t *testing.T) {
 	// Wait for backend to start.
 	time.Sleep(100 * time.Millisecond)
 
-	err = client.SendMessage(ctx, info.ID, "follow-up message")
+	err = client.SendMessage(ctx, info.ID, agent.SendMessageOpts{Text: "follow-up message"})
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
@@ -826,7 +826,7 @@ func TestDaemonSendMessageToNonexistentSession(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	err := client.SendMessage(ctx, "nonexistent", "hello")
+	err := client.SendMessage(ctx, "nonexistent", agent.SendMessageOpts{Text: "hello"})
 	if err == nil {
 		t.Error("expected error sending to non-existent session")
 	}
@@ -848,7 +848,7 @@ func TestDaemonSendEmptyMessage(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	err = client.SendMessage(ctx, info.ID, "")
+	err = client.SendMessage(ctx, info.ID, agent.SendMessageOpts{Text: ""})
 	if err == nil {
 		t.Error("expected error sending empty message")
 	}
@@ -1454,6 +1454,116 @@ func eventTypes(events []agent.Event) []string {
 		types[i] = string(e.Type)
 	}
 	return types
+}
+
+func TestDaemonListAgents(t *testing.T) {
+	t.Parallel()
+	dir := shortTempDir(t)
+	sockPath := filepath.Join(dir, "test.sock")
+	pidPath := filepath.Join(dir, "test.pid")
+
+	d := daemon.NewWithPaths(sockPath, pidPath)
+	d.BackendFactory = func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
+		return newMockBackend(), nil
+	}
+	d.AgentLister = func(ctx context.Context, bt agent.BackendType, projectDir string) ([]agent.AgentInfo, error) {
+		if bt == agent.BackendOpenCode {
+			return []agent.AgentInfo{
+				{Name: "build", Description: "Build agent", Mode: "primary"},
+				{Name: "plan", Description: "Plan agent", Mode: "primary"},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run() }()
+
+	client := daemon.NewClient(sockPath)
+	waitForDaemon(t, client)
+	defer d.Stop()
+
+	ctx := context.Background()
+
+	// List agents for OpenCode backend.
+	agents, err := client.ListAgents(ctx, agent.BackendOpenCode, "/tmp/test")
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(agents) != 2 {
+		t.Fatalf("expected 2 agents, got %d", len(agents))
+	}
+	if agents[0].Name != "build" || agents[1].Name != "plan" {
+		t.Errorf("unexpected agents: %+v", agents)
+	}
+
+	// List agents for Claude Code (no agent lister support).
+	agents, err = client.ListAgents(ctx, agent.BackendClaudeCode, "/tmp/test")
+	if err != nil {
+		t.Fatalf("ListAgents for Claude Code: %v", err)
+	}
+	if len(agents) != 0 {
+		t.Errorf("expected 0 agents for Claude Code, got %d", len(agents))
+	}
+}
+
+func TestDaemonListAgentsMissingParams(t *testing.T) {
+	t.Parallel()
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	// Missing backend param — should return an error.
+	_, err := client.ListAgents(ctx, "", "/tmp/test")
+	if err == nil {
+		t.Error("expected error for missing backend param")
+	}
+}
+
+func TestDaemonAgentStoredOnSession(t *testing.T) {
+	t.Parallel()
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create session with agent specified.
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test with agent",
+		Agent:      "plan",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify agent is stored on session info.
+	got, err := client.GetSession(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.Agent != "plan" {
+		t.Errorf("session agent = %q, want %q", got.Agent, "plan")
+	}
+
+	// Send a message with a different agent — should update the session's agent.
+	err = client.SendMessage(ctx, info.ID, agent.SendMessageOpts{Text: "follow up", Agent: "build"})
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	got, err = client.GetSession(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetSession after SendMessage: %v", err)
+	}
+	if got.Agent != "build" {
+		t.Errorf("session agent after SendMessage = %q, want %q", got.Agent, "build")
+	}
 }
 
 func waitForDaemon(t *testing.T, client *daemon.Client) {

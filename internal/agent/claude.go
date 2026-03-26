@@ -102,7 +102,7 @@ func (b *ClaudeCodeBackend) Start(ctx context.Context, req StartRequest) error {
 	return nil
 }
 
-func (b *ClaudeCodeBackend) SendMessage(ctx context.Context, text string) error {
+func (b *ClaudeCodeBackend) SendMessage(ctx context.Context, opts SendMessageOpts) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 

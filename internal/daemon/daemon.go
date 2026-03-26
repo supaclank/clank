@@ -60,6 +60,16 @@ func (f *DefaultBackendFactory) Create(bt agent.BackendType, req agent.StartRequ
 	}
 }
 
+// ListAgents returns available agents for a backend/project combination.
+func (f *DefaultBackendFactory) ListAgents(ctx context.Context, bt agent.BackendType, projectDir string) ([]agent.AgentInfo, error) {
+	switch bt {
+	case agent.BackendOpenCode:
+		return f.serverMgr.ListAgents(ctx, projectDir)
+	default:
+		return nil, nil
+	}
+}
+
 // StopAll stops all managed OpenCode servers.
 func (f *DefaultBackendFactory) StopAll() {
 	f.serverMgr.StopAll()
@@ -86,6 +96,10 @@ type Daemon struct {
 	// Defaults to returning an error (no backends registered).
 	// Set by the caller before Run() to wire in real backends.
 	BackendFactory func(agent.BackendType, agent.StartRequest) (agent.Backend, error)
+
+	// AgentLister returns available agents for a backend/project combination.
+	// Set by the caller before Run(). Returns nil, nil if not supported.
+	AgentLister func(ctx context.Context, backend agent.BackendType, projectDir string) ([]agent.AgentInfo, error)
 
 	// OnShutdown is called during graceful shutdown, after stopping all sessions
 	// but before cleaning up files. Use this to stop managed resources like
@@ -317,6 +331,7 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /events", d.handleEvents)
 	mux.HandleFunc("POST /permissions/{id}/reply", d.handlePermissionReply)
 	mux.HandleFunc("GET /status", d.handleStatus)
+	mux.HandleFunc("GET /agents", d.handleListAgents)
 }
 
 // --- HTTP Handlers ---
@@ -336,6 +351,32 @@ func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"uptime":   time.Since(d.startTime).String(),
 		"sessions": d.snapshotSessions(),
 	})
+}
+
+func (d *Daemon) handleListAgents(w http.ResponseWriter, r *http.Request) {
+	backendStr := r.URL.Query().Get("backend")
+	projectDir := r.URL.Query().Get("project_dir")
+
+	if backendStr == "" || projectDir == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "backend and project_dir query params are required"})
+		return
+	}
+
+	bt := agent.BackendType(backendStr)
+	if d.AgentLister == nil {
+		writeJSON(w, http.StatusOK, []agent.AgentInfo{})
+		return
+	}
+
+	agents, err := d.AgentLister(r.Context(), bt, projectDir)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if agents == nil {
+		agents = []agent.AgentInfo{}
+	}
+	writeJSON(w, http.StatusOK, agents)
 }
 
 func (d *Daemon) handleCreateSession(w http.ResponseWriter, r *http.Request) {
@@ -405,7 +446,8 @@ func (d *Daemon) handleGetSessionMessages(w http.ResponseWriter, r *http.Request
 func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
-		Text string `json:"text"`
+		Text  string `json:"text"`
+		Agent string `json:"agent"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
@@ -428,10 +470,22 @@ func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Update the session's current agent if one was specified.
+	if body.Agent != "" {
+		d.mu.Lock()
+		ms.info.Agent = body.Agent
+		d.mu.Unlock()
+	}
+
+	opts := agent.SendMessageOpts{
+		Text:  body.Text,
+		Agent: body.Agent,
+	}
+
 	// Dispatch asynchronously — SendMessage blocks until the LLM responds.
 	// The TUI tracks progress via the SSE event stream instead.
 	go func() {
-		if err := ms.backend.SendMessage(d.ctx, body.Text); err != nil {
+		if err := ms.backend.SendMessage(d.ctx, opts); err != nil {
 			d.log.Printf("session %s: send message error: %v", id, err)
 			d.broadcast(agent.Event{
 				Type:      agent.EventError,
@@ -590,6 +644,7 @@ func (d *Daemon) createSession(req agent.StartRequest) (*agent.SessionInfo, erro
 		ProjectName: filepath.Base(req.ProjectDir),
 		Prompt:      req.Prompt,
 		TicketID:    req.TicketID,
+		Agent:       req.Agent,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}

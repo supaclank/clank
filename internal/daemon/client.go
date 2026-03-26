@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -133,9 +134,18 @@ func (c *Client) GetSessionMessages(ctx context.Context, sessionID string) ([]ag
 }
 
 // SendMessage sends a follow-up message to a running session.
-func (c *Client) SendMessage(ctx context.Context, sessionID, text string) error {
-	body := map[string]string{"text": text}
-	return c.post(ctx, "/sessions/"+sessionID+"/message", body, nil)
+func (c *Client) SendMessage(ctx context.Context, sessionID string, opts agent.SendMessageOpts) error {
+	return c.post(ctx, "/sessions/"+sessionID+"/message", opts, nil)
+}
+
+// ListAgents returns available agents for the given backend and project directory.
+func (c *Client) ListAgents(ctx context.Context, backend agent.BackendType, projectDir string) ([]agent.AgentInfo, error) {
+	path := "/agents?backend=" + url.QueryEscape(string(backend)) + "&project_dir=" + url.QueryEscape(projectDir)
+	var agents []agent.AgentInfo
+	if err := c.get(ctx, path, &agents); err != nil {
+		return nil, err
+	}
+	return agents, nil
 }
 
 // AbortSession interrupts a running session.

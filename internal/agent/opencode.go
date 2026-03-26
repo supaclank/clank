@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -76,14 +77,18 @@ func (b *OpenCodeBackend) Start(ctx context.Context, req StartRequest) error {
 
 	// Send the initial prompt via SDK. This blocks until the full response
 	// is received, but events stream in via SSE in the background.
-	_, err := b.client.Session.Prompt(ctx, b.sessionID, opencode.SessionPromptParams{
+	params := opencode.SessionPromptParams{
 		Parts: opencode.F([]opencode.SessionPromptParamsPartUnion{
 			opencode.TextPartInputParam{
 				Text: opencode.F(req.Prompt),
 				Type: opencode.F(opencode.TextPartInputTypeText),
 			},
 		}),
-	})
+	}
+	if req.Agent != "" {
+		params.Agent = opencode.F(req.Agent)
+	}
+	_, err := b.client.Session.Prompt(ctx, b.sessionID, params)
 	if err != nil {
 		b.setStatus(StatusError)
 		return fmt.Errorf("send prompt: %w", err)
@@ -94,7 +99,7 @@ func (b *OpenCodeBackend) Start(ctx context.Context, req StartRequest) error {
 	return nil
 }
 
-func (b *OpenCodeBackend) SendMessage(ctx context.Context, text string) error {
+func (b *OpenCodeBackend) SendMessage(ctx context.Context, opts SendMessageOpts) error {
 	if b.sessionID == "" {
 		return fmt.Errorf("session not started")
 	}
@@ -102,14 +107,18 @@ func (b *OpenCodeBackend) SendMessage(ctx context.Context, text string) error {
 	// Mark as busy BEFORE sending, so the TUI shows the correct status.
 	b.setStatus(StatusBusy)
 
-	_, err := b.client.Session.Prompt(ctx, b.sessionID, opencode.SessionPromptParams{
+	params := opencode.SessionPromptParams{
 		Parts: opencode.F([]opencode.SessionPromptParamsPartUnion{
 			opencode.TextPartInputParam{
-				Text: opencode.F(text),
+				Text: opencode.F(opts.Text),
 				Type: opencode.F(opencode.TextPartInputTypeText),
 			},
 		}),
-	})
+	}
+	if opts.Agent != "" {
+		params.Agent = opencode.F(opts.Agent)
+	}
+	_, err := b.client.Session.Prompt(ctx, b.sessionID, params)
 	if err != nil {
 		b.setStatus(StatusError)
 		return fmt.Errorf("send message: %w", err)
@@ -463,12 +472,14 @@ type OpenCodeServer struct {
 type OpenCodeServerManager struct {
 	mu      sync.Mutex
 	servers map[string]*OpenCodeServer // keyed by project dir
+	agents  map[string][]AgentInfo     // cached agents per server URL
 }
 
 // NewOpenCodeServerManager creates a new server manager.
 func NewOpenCodeServerManager() *OpenCodeServerManager {
 	return &OpenCodeServerManager{
 		servers: make(map[string]*OpenCodeServer),
+		agents:  make(map[string][]AgentInfo),
 	}
 }
 
@@ -582,4 +593,67 @@ func (m *OpenCodeServerManager) healthCheck(url string) bool {
 	}
 	resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
+}
+
+// ListAgents returns the primary, non-hidden agents for the given project
+// directory. Results are cached per server (agents don't change during a
+// server's lifetime). If the server isn't running yet, it will be started.
+func (m *OpenCodeServerManager) ListAgents(ctx context.Context, projectDir string) ([]AgentInfo, error) {
+	serverURL, err := m.GetOrStartServer(ctx, projectDir)
+	if err != nil {
+		return nil, err
+	}
+
+	m.mu.Lock()
+	if cached, ok := m.agents[serverURL]; ok {
+		m.mu.Unlock()
+		return cached, nil
+	}
+	m.mu.Unlock()
+
+	agents, err := fetchAgents(ctx, serverURL)
+	if err != nil {
+		return nil, err
+	}
+
+	m.mu.Lock()
+	m.agents[serverURL] = agents
+	m.mu.Unlock()
+
+	return agents, nil
+}
+
+// fetchAgents calls GET /agent on the OpenCode server and returns primary,
+// non-hidden agents. We make a direct HTTP call instead of using the SDK
+// because the SDK's Agent struct doesn't include the "hidden" field.
+func fetchAgents(ctx context.Context, serverURL string) ([]AgentInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", serverURL+"/agent", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch agents: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch agents: status %d", resp.StatusCode)
+	}
+
+	var raw []AgentInfo
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("decode agents: %w", err)
+	}
+
+	// Filter to primary, non-hidden agents only.
+	var result []AgentInfo
+	for _, a := range raw {
+		if a.Mode == "primary" && !a.Hidden {
+			result = append(result, a)
+		}
+	}
+	return result, nil
 }

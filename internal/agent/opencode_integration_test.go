@@ -274,7 +274,7 @@ func TestIntegrationOpenCodeBackend_FollowUp(t *testing.T) {
 	t.Logf("first prompt completed, sending follow-up")
 
 	// Send follow-up.
-	if err := backend.SendMessage(ctx, "Now say exactly: second. Nothing else."); err != nil {
+	if err := backend.SendMessage(ctx, SendMessageOpts{Text: "Now say exactly: second. Nothing else."}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
