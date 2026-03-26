@@ -19,20 +19,12 @@ import (
 type inboxScreen int
 
 const (
-	screenInbox      inboxScreen = iota
-	screenSession                // Viewing a specific session
-	screenNewSession             // New session dialog
+	screenInbox   inboxScreen = iota
+	screenSession             // Viewing a specific session (or composing a new one)
 )
 
 // inboxRefreshMsg triggers a data reload from the daemon.
 type inboxRefreshMsg struct{}
-
-// newSessionCreatedMsg is sent when a session has been created via the new session dialog.
-type newSessionCreatedMsg struct {
-	sessionID string
-	events    <-chan agent.Event
-	cancel    context.CancelFunc
-}
 
 // inboxRow is one selectable row in the inbox.
 type inboxRow struct {
@@ -70,9 +62,6 @@ type InboxModel struct {
 	sessionView  *SessionViewModel
 	activeConnID string // session ID of the detail view
 
-	// New session dialog.
-	newSession newSessionModel
-
 	width  int
 	height int
 	err    error
@@ -85,21 +74,10 @@ func NewInboxModel(client *daemon.Client) *InboxModel {
 	}
 }
 
-// NewInboxModelWithNewSession creates the inbox TUI with the new session
-// dialog already open. Used by `clank code` when no prompt is provided.
-func NewInboxModelWithNewSession(client *daemon.Client) *InboxModel {
-	m := NewInboxModel(client)
-	m.screen = screenNewSession
-	return m
-}
-
 func (m *InboxModel) Init() tea.Cmd {
 	cmds := []tea.Cmd{func() tea.Msg { return tea.RequestWindowSize }, m.loadDataCmd(), m.autoRefreshCmd()}
-	if m.screen == screenNewSession {
-		// Initialize the new session dialog with CWD.
-		projectDir, _ := os.Getwd()
-		m.newSession = newNewSessionModel(projectDir)
-		cmds = append(cmds, m.newSession.Init())
+	if m.screen == screenSession && m.sessionView != nil {
+		cmds = append(cmds, m.sessionView.Init())
 	}
 	return tea.Batch(cmds...)
 }
@@ -132,14 +110,9 @@ func (m *InboxModel) autoRefreshCmd() tea.Cmd {
 }
 
 func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// If we're in session detail view, delegate.
+	// If we're in session detail view (or composing), delegate.
 	if m.screen == screenSession && m.sessionView != nil {
 		return m.updateSessionView(msg)
-	}
-
-	// If we're in the new session dialog, delegate.
-	if m.screen == screenNewSession {
-		return m.updateNewSession(msg)
 	}
 
 	// If menu is open, delegate to menu.
@@ -167,9 +140,6 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.loadDataCmd(), m.autoRefreshCmd())
 		}
 		return m, m.autoRefreshCmd()
-
-	case newSessionCreatedMsg:
-		return m, m.openSessionWithEvents(msg.sessionID, msg.events, msg.cancel)
 
 	case tea.KeyPressMsg:
 		return m.handleInboxKey(msg)
@@ -220,70 +190,20 @@ func (m *InboxModel) updateMenu(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
-func (m *InboxModel) updateNewSession(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case newSessionCancelMsg:
-		m.screen = screenInbox
-		return m, nil
+// openComposingSession opens a composing SessionViewModel where the user
+// types their first prompt. The session is created on send.
+func (m *InboxModel) openComposingSession() tea.Cmd {
+	m.screen = screenSession
+	m.activeConnID = ""
 
-	case newSessionLaunchMsg:
-		m.screen = screenInbox
-		return m, m.createAndOpenSession(msg.req)
-
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		var cmd tea.Cmd
-		m.newSession, cmd = m.newSession.Update(msg)
-		return m, cmd
-
-	default:
-		var cmd tea.Cmd
-		m.newSession, cmd = m.newSession.Update(msg)
-		return m, cmd
-	}
-}
-
-func (m *InboxModel) openNewSession() tea.Cmd {
-	m.screen = screenNewSession
-	// Default project dir to CWD. The user can't edit it in the dialog
-	// (that's a future enhancement), but it's set correctly.
 	projectDir, _ := os.Getwd()
-	m.newSession = newNewSessionModel(projectDir)
-	m.newSession.width = m.width
-	m.newSession.height = m.height
-	if m.width > 8 {
-		m.newSession.prompt.SetWidth(m.width - 8)
+	m.sessionView = NewSessionViewComposing(m.client, projectDir)
+	m.sessionView.width = m.width
+	m.sessionView.height = m.height
+	if m.width > 0 {
+		m.sessionView.input.SetWidth(m.width)
 	}
-	return m.newSession.Init()
-}
-
-// createAndOpenSession creates a session via the daemon then opens the detail view.
-func (m *InboxModel) createAndOpenSession(req agent.StartRequest) tea.Cmd {
-	return func() tea.Msg {
-		// Subscribe to SSE before creating session.
-		sseCtx, sseCancel := context.WithCancel(context.Background())
-		events, err := m.client.SubscribeEvents(sseCtx)
-		if err != nil {
-			sseCancel()
-			return inboxDataMsg{err: fmt.Errorf("subscribe events: %w", err)}
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		info, err := m.client.CreateSession(ctx, req)
-		if err != nil {
-			sseCancel()
-			return inboxDataMsg{err: fmt.Errorf("create session: %w", err)}
-		}
-
-		return newSessionCreatedMsg{
-			sessionID: info.ID,
-			events:    events,
-			cancel:    sseCancel,
-		}
-	}
+	return m.sessionView.Init()
 }
 
 func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -329,7 +249,7 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("n"))):
-		return m, m.openNewSession()
+		return m, m.openComposingSession()
 	}
 	return m, nil
 }
@@ -355,26 +275,8 @@ func (m *InboxModel) openSession(sessionID string) tea.Cmd {
 	// Forward current dimensions so the session view doesn't stay at "Loading...".
 	m.sessionView.width = m.width
 	m.sessionView.height = m.height
-	if m.width > 4 {
-		m.sessionView.input.SetWidth(m.width - 4)
-	}
-	return m.sessionView.Init()
-}
-
-// openSessionWithEvents opens the session detail view with a pre-connected SSE channel.
-// Used after creating a session from the new session dialog — the SSE subscription
-// was established before session creation to avoid missing early events.
-func (m *InboxModel) openSessionWithEvents(sessionID string, events <-chan agent.Event, cancel context.CancelFunc) tea.Cmd {
-	m.screen = screenSession
-	m.activeConnID = sessionID
-
-	m.sessionView = NewSessionViewModel(m.client, sessionID)
-	m.sessionView.SetEventChannel(events, cancel)
-
-	m.sessionView.width = m.width
-	m.sessionView.height = m.height
-	if m.width > 4 {
-		m.sessionView.input.SetWidth(m.width - 4)
+	if m.width > 0 {
+		m.sessionView.input.SetWidth(m.width)
 	}
 	return m.sessionView.Init()
 }
@@ -494,12 +396,6 @@ func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
 func (m *InboxModel) View() tea.View {
 	if m.screen == screenSession && m.sessionView != nil {
 		return m.sessionView.View()
-	}
-
-	if m.screen == screenNewSession {
-		v := tea.NewView(m.newSession.View())
-		v.AltScreen = true
-		return v
 	}
 
 	if m.width == 0 {

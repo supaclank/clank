@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textarea"
 	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/store"
@@ -118,4 +120,31 @@ func styledQuadrant(q store.Quadrant) string {
 	default:
 		return lipgloss.NewStyle().Foreground(dimColor).Render("—")
 	}
+}
+
+// newPromptTextarea creates a textarea configured for prompt input.
+// Enter sends; shift+enter inserts a newline.
+func newPromptTextarea(placeholder string, height int) textarea.Model {
+	ta := textarea.New()
+	ta.Placeholder = placeholder
+	ta.CharLimit = 4096
+	ta.SetHeight(height)
+	ta.ShowLineNumbers = false
+	styles := ta.Styles()
+	styles.Focused.CursorLine = lipgloss.NewStyle()
+	styles.Focused.Base = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(primaryColor).
+		Padding(0, 1)
+	styles.Blurred.Base = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(mutedColor).
+		Padding(0, 1)
+	ta.SetStyles(styles)
+	// Shift+Enter inserts newline; plain Enter is handled by the parent model.
+	ta.KeyMap.InsertNewline = key.NewBinding(
+		key.WithKeys("shift+enter"),
+		key.WithHelp("shift+enter", "newline"),
+	)
+	return ta
 }

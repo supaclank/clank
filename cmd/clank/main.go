@@ -31,6 +31,9 @@ func main() {
 		Use:   "clank",
 		Short: "AI-powered coding session backlog triager",
 		Long:  "Clank scans your coding sessions, extracts unfinished threads and opportunities, and helps you triage them.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runInbox()
+		},
 	}
 
 	root.AddCommand(
@@ -1019,8 +1022,8 @@ The daemon is auto-started if not already running.`,
 			// Determine prompt.
 			prompt := strings.Join(args, " ")
 			if prompt == "" {
-				// No prompt — open new session dialog.
-				return runNewSession()
+				// No prompt — open composing view standalone.
+				return runComposing(projectDir)
 			}
 
 			// Determine project directory.
@@ -1111,14 +1114,24 @@ func runInbox() error {
 	return err
 }
 
-// runNewSession opens the inbox TUI with the new session dialog already shown.
-func runNewSession() error {
+// runComposing opens the composing view standalone (not inside inbox).
+// The user types their first prompt and the session is created on send.
+func runComposing(projectDir string) error {
 	client, err := ensureDaemon()
 	if err != nil {
 		return fmt.Errorf("daemon: %w", err)
 	}
 
-	model := tui.NewInboxModelWithNewSession(client)
+	if projectDir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("get working directory: %w", err)
+		}
+		projectDir = cwd
+	}
+
+	model := tui.NewSessionViewComposing(client, projectDir)
+	model.SetStandalone(true)
 	p := tea.NewProgram(model)
 	_, err = p.Run()
 	return err

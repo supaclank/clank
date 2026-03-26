@@ -39,6 +39,8 @@ type sessionInfoMsg struct {
 type backToInboxMsg struct{}
 
 // SessionViewModel shows a single agent session with streaming output.
+// It also handles the "composing" mode where no session exists yet —
+// the user types their first prompt and the session is created on send.
 type SessionViewModel struct {
 	client    *daemon.Client
 	sessionID string
@@ -69,6 +71,12 @@ type SessionViewModel struct {
 	standalone bool
 
 	cancelEvents context.CancelFunc
+
+	// Composing mode — no daemon session yet. The user is writing their
+	// first prompt. After sending, this transitions to the normal session view.
+	composing  bool
+	backend    agent.BackendType
+	projectDir string
 }
 
 // displayEntry is a rendered item in the session transcript.
@@ -90,25 +98,9 @@ const (
 	entryStatus                  // Status change
 )
 
-// NewSessionViewModel creates a session detail TUI.
+// NewSessionViewModel creates a session detail TUI for an existing session.
 func NewSessionViewModel(client *daemon.Client, sessionID string) *SessionViewModel {
-	ta := textarea.New()
-	ta.Placeholder = "Type a follow-up message..."
-	ta.CharLimit = 4096
-	ta.SetHeight(3)
-	ta.ShowLineNumbers = false
-	styles := ta.Styles()
-	styles.Focused.CursorLine = lipgloss.NewStyle()
-	styles.Focused.Base = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(primaryColor).
-		Padding(0, 1)
-	styles.Blurred.Base = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(mutedColor).
-		Padding(0, 1)
-	ta.SetStyles(styles)
-
+	ta := newPromptTextarea("Type a follow-up message...", 3)
 	return &SessionViewModel{
 		client:    client,
 		sessionID: sessionID,
@@ -132,6 +124,10 @@ func (m *SessionViewModel) SetEventChannel(ch <-chan agent.Event, cancel context
 }
 
 func (m *SessionViewModel) Init() tea.Cmd {
+	// In composing mode, no session exists yet — nothing to subscribe to.
+	if m.composing {
+		return m.input.Focus()
+	}
 	cmds := []tea.Cmd{m.fetchSessionInfo()}
 	if m.eventsCh != nil {
 		// Already connected — start reading immediately.
@@ -202,11 +198,18 @@ type sseSkipMsg struct {
 }
 
 func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Composing mode has its own update path.
+	if m.composing {
+		return m.updateCompose(msg)
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.input.SetWidth(m.width - 4)
+		// SetWidth takes total outer width (including border/padding),
+		// so pass the full width — the textarea handles frame internally.
+		m.input.SetWidth(m.width)
 		return m, nil
 
 	case sessionInfoMsg:
@@ -296,8 +299,8 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.inputActive = false
 			m.input.Blur()
 			return m, nil
-		case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+s"))):
-			// Send the message.
+		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+			// Send the message. Shift+enter inserts newline (handled by textarea).
 			text := strings.TrimSpace(m.input.Value())
 			if text != "" {
 				m.entries = append(m.entries, displayEntry{
@@ -570,6 +573,11 @@ func (m *SessionViewModel) replyPermission(requestID, reply string) tea.Cmd {
 // --- View ---
 
 func (m *SessionViewModel) View() tea.View {
+	// Composing mode has its own view.
+	if m.composing {
+		return m.viewCompose()
+	}
+
 	if m.width == 0 {
 		v := tea.NewView("Loading...")
 		v.AltScreen = true
@@ -628,7 +636,7 @@ func (m *SessionViewModel) View() tea.View {
 		sb.WriteString("\n")
 		sb.WriteString(m.input.View())
 		sb.WriteString("\n")
-		sb.WriteString(helpStyle.Render("ctrl+s: send | esc: cancel"))
+		sb.WriteString(helpStyle.Render("enter: send | shift+enter: newline | esc: cancel"))
 	} else {
 		// Help bar.
 		help := m.buildHelpText()
