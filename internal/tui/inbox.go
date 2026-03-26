@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -338,6 +339,19 @@ func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
 		}
 	}
 
+	// Sort each bucket by UpdatedAt descending so the ordering is
+	// deterministic across refreshes (most recently active first).
+	byUpdatedDesc := func(rows []inboxRow) {
+		sort.Slice(rows, func(i, j int) bool {
+			return rows[i].session.UpdatedAt.After(rows[j].session.UpdatedAt)
+		})
+	}
+	byUpdatedDesc(busyRows)
+	byUpdatedDesc(unreadRows)
+	byUpdatedDesc(idleRows)
+	byUpdatedDesc(errorRows)
+	byUpdatedDesc(deadRows)
+
 	m.groups = nil
 
 	if len(busyRows) > 0 {
@@ -518,18 +532,15 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 		unreadMark = lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("*")
 	}
 
-	backendStr := lipgloss.NewStyle().Foreground(dimColor).Render(string(s.Backend))
-
-	prompt := truncateStr(s.Prompt, m.width-60)
+	prompt := truncateStr(s.Prompt, m.width-50)
 	if prompt == "" {
 		prompt = "(no prompt)"
 	}
 
-	line := fmt.Sprintf("  %-12s %s %s %-8s %s  %s",
+	line := fmt.Sprintf("  %-12s %s %s %s  %s",
 		lipgloss.NewStyle().Foreground(secondaryColor).Render(s.ProjectName),
 		stateIcon,
 		unreadMark,
-		backendStr,
 		prompt,
 		lipgloss.NewStyle().Foreground(dimColor).Render(ago),
 	)
