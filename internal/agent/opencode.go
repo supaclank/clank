@@ -315,6 +315,23 @@ func (b *OpenCodeBackend) handleSDKEvent(event opencode.EventListResponse) {
 				Description: perm.Title,
 			},
 		})
+
+	case opencode.EventListResponseEventSessionUpdated:
+		sess := e.Properties.Info
+		if sess.ID != b.sessionID {
+			return
+		}
+		// Emit a title change event when the session title is updated
+		// (e.g. by OpenCode's hidden "title" agent after the first response).
+		if sess.Title != "" {
+			b.emit(Event{
+				Type:      EventTitleChange,
+				Timestamp: time.Now(),
+				Data: TitleChangeData{
+					Title: sess.Title,
+				},
+			})
+		}
 	}
 }
 

@@ -541,6 +541,9 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	}
 
 	prompt := truncateStr(s.Prompt, m.width-50)
+	if s.Title != "" {
+		prompt = truncateStr(s.Title, m.width-50)
+	}
 	if prompt == "" {
 		prompt = "(no prompt)"
 	}

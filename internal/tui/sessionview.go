@@ -505,6 +505,13 @@ func (m *SessionViewModel) handleEvent(evt agent.Event) {
 				content: "Session deleted",
 			})
 		}
+
+	case agent.EventTitleChange:
+		if data, ok := evt.Data.(agent.TitleChangeData); ok {
+			if m.info != nil {
+				m.info.Title = data.Title
+			}
+		}
 	}
 }
 
@@ -814,6 +821,9 @@ func (m *SessionViewModel) renderHeader() string {
 	title := "Session"
 	if m.info != nil {
 		title = truncateStr(m.info.Prompt, 50)
+		if m.info.Title != "" {
+			title = truncateStr(m.info.Title, 50)
+		}
 	}
 
 	statusStr := "..."

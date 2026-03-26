@@ -1446,6 +1446,158 @@ func TestEventRoundTrip_SessionID(t *testing.T) {
 	}
 }
 
+// TestEventRoundTrip_TitleChange verifies that TitleChangeData survives the
+// backend -> daemon SSE -> client JSON round-trip as a concrete type.
+func TestEventRoundTrip_TitleChange(t *testing.T) {
+	t.Parallel()
+	_, client, getBackend, cleanup := testDaemonWithBackendAccess(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	events, err := client.SubscribeEvents(ctx)
+	if err != nil {
+		t.Fatalf("SubscribeEvents: %v", err)
+	}
+
+	_, err = client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "hello",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	receiveEvents(events, 3, 500*time.Millisecond) // drain initial events
+
+	b := getBackend()
+	if b == nil {
+		t.Fatal("no backend created")
+	}
+	b.events <- agent.Event{
+		Type:      agent.EventTitleChange,
+		Timestamp: time.Now(),
+		Data: agent.TitleChangeData{
+			Title: "Fix authentication bug in login flow",
+		},
+	}
+
+	received := receiveEvents(events, 1, 2*time.Second)
+	if len(received) == 0 {
+		t.Fatal("no event received")
+	}
+	if received[0].Type != agent.EventTitleChange {
+		t.Fatalf("event type = %q, want %q", received[0].Type, agent.EventTitleChange)
+	}
+	data, ok := received[0].Data.(agent.TitleChangeData)
+	if !ok {
+		t.Fatalf("Data type = %T, want agent.TitleChangeData", received[0].Data)
+	}
+	if data.Title != "Fix authentication bug in login flow" {
+		t.Errorf("Title = %q, want %q", data.Title, "Fix authentication bug in login flow")
+	}
+}
+
+// TestDaemonTitleUpdateOnSession verifies that when a backend emits a title
+// change event, the daemon updates the session info's Title field.
+func TestDaemonTitleUpdateOnSession(t *testing.T) {
+	t.Parallel()
+	_, client, getBackend, cleanup := testDaemonWithBackendAccess(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	created, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test-project",
+		Prompt:     "Fix the login bug",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify title is initially empty.
+	info, err := client.GetSession(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if info.Title != "" {
+		t.Errorf("expected empty title initially, got %q", info.Title)
+	}
+
+	// Emit a title change via the backend.
+	backend := getBackend()
+	backend.events <- agent.Event{
+		Type:      agent.EventTitleChange,
+		Timestamp: time.Now(),
+		Data: agent.TitleChangeData{
+			Title: "Fix authentication bug in login flow",
+		},
+	}
+
+	// Give the event relay a moment to propagate.
+	time.Sleep(200 * time.Millisecond)
+
+	// Session should now have the title.
+	info, err = client.GetSession(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetSession after title change: %v", err)
+	}
+	if info.Title != "Fix authentication bug in login flow" {
+		t.Errorf("title = %q, want %q", info.Title, "Fix authentication bug in login flow")
+	}
+}
+
+// TestDaemonTitleVisibleInList verifies that the title field is returned
+// in the session list after being updated by a backend event.
+func TestDaemonTitleVisibleInList(t *testing.T) {
+	t.Parallel()
+	_, client, getBackend, cleanup := testDaemonWithBackendAccess(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	_, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test-project",
+		Prompt:     "Fix the login bug",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Emit a title change via the backend.
+	backend := getBackend()
+	backend.events <- agent.Event{
+		Type:      agent.EventTitleChange,
+		Timestamp: time.Now(),
+		Data: agent.TitleChangeData{
+			Title: "Fix authentication bug in login flow",
+		},
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Title should be visible in session list.
+	sessions, err := client.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].Title != "Fix authentication bug in login flow" {
+		t.Errorf("title in list = %q, want %q", sessions[0].Title, "Fix authentication bug in login flow")
+	}
+}
+
 // --- Helpers ---
 
 func eventTypes(events []agent.Event) []string {

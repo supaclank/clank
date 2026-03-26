@@ -694,6 +694,11 @@ func (d *Daemon) runBackend(id string, ms *managedSession, req agent.StartReques
 					d.updateSessionStatus(id, data.NewStatus)
 				}
 			}
+			if evt.Type == agent.EventTitleChange {
+				if data, ok := evt.Data.(agent.TitleChangeData); ok {
+					d.updateSessionTitle(id, data.Title)
+				}
+			}
 		}
 	}()
 	defer func() { <-done }() // wait for relay goroutine to finish
@@ -727,6 +732,16 @@ func (d *Daemon) updateSessionStatus(id string, status agent.SessionStatus) {
 	d.mu.Lock()
 	if ms, ok := d.sessions[id]; ok {
 		ms.info.Status = status
+		ms.info.UpdatedAt = time.Now()
+	}
+	d.mu.Unlock()
+}
+
+// updateSessionTitle updates the cached title and UpdatedAt.
+func (d *Daemon) updateSessionTitle(id string, title string) {
+	d.mu.Lock()
+	if ms, ok := d.sessions[id]; ok {
+		ms.info.Title = title
 		ms.info.UpdatedAt = time.Now()
 	}
 	d.mu.Unlock()

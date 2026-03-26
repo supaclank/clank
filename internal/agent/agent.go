@@ -39,6 +39,7 @@ const (
 	EventPartUpdate    EventType = "part"       // Part updated (tool call progress, text delta)
 	EventPermission    EventType = "permission" // Agent requests permission for a tool
 	EventError         EventType = "error"      // Error occurred
+	EventTitleChange   EventType = "title"      // Session title updated
 	EventSessionCreate EventType = "session.create"
 	EventSessionDelete EventType = "session.delete"
 )
@@ -106,6 +107,12 @@ func (e *Event) UnmarshalJSON(b []byte) error {
 		var d ErrorData
 		if err := json.Unmarshal(raw.Data, &d); err != nil {
 			return fmt.Errorf("unmarshal ErrorData: %w", err)
+		}
+		e.Data = d
+	case EventTitleChange:
+		var d TitleChangeData
+		if err := json.Unmarshal(raw.Data, &d); err != nil {
+			return fmt.Errorf("unmarshal TitleChangeData: %w", err)
 		}
 		e.Data = d
 	default:
@@ -181,6 +188,11 @@ type ErrorData struct {
 	Message string `json:"message"`
 }
 
+// TitleChangeData is the payload for EventTitleChange.
+type TitleChangeData struct {
+	Title string `json:"title"`
+}
+
 // AgentInfo is a lightweight summary of an OpenCode agent, used by the TUI
 // to display and cycle through available agents. We define our own struct
 // rather than using the SDK's Agent type because the SDK is missing the
@@ -227,6 +239,7 @@ type SessionInfo struct {
 	ProjectDir  string        `json:"project_dir"`
 	ProjectName string        `json:"project_name"`
 	Prompt      string        `json:"prompt"`
+	Title       string        `json:"title,omitempty"` // AI-generated session title from OpenCode
 	TicketID    string        `json:"ticket_id,omitempty"`
 	Agent       string        `json:"agent,omitempty"` // Current OpenCode agent (e.g. "build", "plan")
 	CreatedAt   time.Time     `json:"created_at"`

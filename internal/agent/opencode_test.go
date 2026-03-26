@@ -754,6 +754,85 @@ func TestOpenCodeBackendSSEEventTypes(t *testing.T) {
 			},
 		},
 		{
+			name: "SessionUpdatedWithTitle",
+			sseEvents: []sseEvent{
+				{
+					eventType: "session.updated",
+					properties: func(sid string) interface{} {
+						return map[string]interface{}{
+							"info": map[string]interface{}{
+								"id":        sid,
+								"directory": "/tmp/test",
+								"projectID": "proj-1",
+								"title":     "Fix authentication bug in login flow",
+								"version":   "1",
+								"time": map[string]interface{}{
+									"created": float64(1234567890),
+									"updated": float64(1234567891),
+								},
+							},
+						}
+					},
+				},
+			},
+			totalEvents: 2, // starting->busy, title change
+			check: func(t *testing.T, events []agent.Event) {
+				var found bool
+				for _, evt := range events {
+					if evt.Type == agent.EventTitleChange {
+						data, ok := evt.Data.(agent.TitleChangeData)
+						if !ok {
+							t.Fatalf("Data type = %T, want TitleChangeData", evt.Data)
+						}
+						if data.Title != "Fix authentication bug in login flow" {
+							t.Errorf("title = %q, want %q", data.Title, "Fix authentication bug in login flow")
+						}
+						found = true
+					}
+				}
+				if !found {
+					t.Error("no title change event found")
+				}
+			},
+		},
+		{
+			name: "SessionUpdatedFiltersOtherSessions",
+			sseEvents: []sseEvent{
+				{
+					eventType: "session.updated",
+					properties: func(sid string) interface{} {
+						return map[string]interface{}{
+							"info": map[string]interface{}{
+								"id":        "other-session-id",
+								"directory": "/tmp/test",
+								"projectID": "proj-1",
+								"title":     "Should be filtered out",
+								"version":   "1",
+								"time": map[string]interface{}{
+									"created": float64(1234567890),
+									"updated": float64(1234567891),
+								},
+							},
+						}
+					},
+				},
+				{
+					eventType: "session.idle",
+					properties: func(sid string) interface{} {
+						return map[string]interface{}{"sessionID": sid}
+					},
+				},
+			},
+			totalEvents: 2, // starting->busy, busy->idle (session.updated for other session filtered)
+			check: func(t *testing.T, events []agent.Event) {
+				for _, evt := range events {
+					if evt.Type == agent.EventTitleChange {
+						t.Error("should not receive title change for other session")
+					}
+				}
+			},
+		},
+		{
 			name: "IgnoresUnknownEventTypes",
 			sseEvents: []sseEvent{
 				{
