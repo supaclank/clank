@@ -1,7 +1,7 @@
 package tui
 
 import (
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/acksell/clank/internal/analyzer"
 	"github.com/acksell/clank/internal/store"
@@ -40,7 +40,7 @@ func NewApp(s *store.Store, a *analyzer.Analyzer, centralCtx string) *App {
 }
 
 func (a *App) Init() tea.Cmd {
-	return tea.WindowSize()
+	return func() tea.Msg { return tea.RequestWindowSize }
 }
 
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -50,7 +50,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.height = msg.Height
 		a.loadTickets()
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "ctrl+c":
 			return a, tea.Quit
@@ -110,15 +110,19 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, cmd
 }
 
-func (a *App) View() string {
+func (a *App) View() tea.View {
+	var content string
 	switch a.screen {
 	case screenDetail:
-		return a.detail.View()
+		content = a.detail.View()
 	case screenTriage:
-		return a.triage.View()
+		content = a.triage.View()
 	default:
-		return a.list.View()
+		content = a.list.View()
 	}
+	v := tea.NewView(content)
+	v.AltScreen = true
+	return v
 }
 
 func (a *App) loadTickets() {

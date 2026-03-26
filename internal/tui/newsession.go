@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textarea"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/agent"
 )
@@ -48,7 +48,15 @@ func newNewSessionModel(projectDir string) newSessionModel {
 	ta.CharLimit = 4096
 	ta.SetHeight(5)
 	ta.ShowLineNumbers = false
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	styles := ta.Styles()
+	styles.Focused.CursorLine = lipgloss.NewStyle()
+	ta.SetStyles(styles)
+	// Shift+Enter inserts newline; plain Enter launches the session.
+	// Requires Kitty keyboard protocol (bubbletea v2) for shift detection.
+	ta.KeyMap.InsertNewline = key.NewBinding(
+		key.WithKeys("shift+enter"),
+		key.WithHelp("shift+enter", "newline"),
+	)
 
 	m := newSessionModel{
 		backend:    agent.BackendOpenCode,
@@ -76,7 +84,7 @@ func (m newSessionModel) Update(msg tea.Msg) (newSessionModel, tea.Cmd) {
 		m.prompt.SetWidth(promptWidth)
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
 
@@ -90,7 +98,7 @@ func (m newSessionModel) Update(msg tea.Msg) (newSessionModel, tea.Cmd) {
 	return m, nil
 }
 
-func (m newSessionModel) handleKey(msg tea.KeyMsg) (newSessionModel, tea.Cmd) {
+func (m newSessionModel) handleKey(msg tea.KeyPressMsg) (newSessionModel, tea.Cmd) {
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))):
 		return m, tea.Quit
@@ -113,24 +121,14 @@ func (m newSessionModel) handleKey(msg tea.KeyMsg) (newSessionModel, tea.Cmd) {
 		return m.launch()
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
-		// Enter on backend/project fields moves to next field.
-		// Enter in prompt inserts a newline (handled by textarea).
-		if m.focus != fieldPrompt {
-			m.focus++
-			m.updateFocus()
-			return m, nil
-		}
-		// Alt+Enter or Ctrl+Enter in prompt to launch? No — just use Ctrl+L.
-		// Let textarea handle enter for newlines.
-		var cmd tea.Cmd
-		m.prompt, cmd = m.prompt.Update(msg)
-		return m, cmd
+		// Enter on any field launches the session (shift+enter inserts newline in prompt).
+		return m.launch()
 	}
 
 	// Backend field: left/right or h/l to toggle.
 	if m.focus == fieldBackend {
 		switch {
-		case key.Matches(msg, key.NewBinding(key.WithKeys("left", "right", "h", "l", " "))):
+		case key.Matches(msg, key.NewBinding(key.WithKeys("left", "right", "h", "l", "space"))):
 			if m.backend == agent.BackendOpenCode {
 				m.backend = agent.BackendClaudeCode
 			} else {
@@ -252,7 +250,7 @@ func (m newSessionModel) View() string {
 	sb.WriteString("\n\n")
 
 	// Help.
-	help := helpStyle.Render("tab: next field | ←/→: toggle backend | ctrl+l: launch | esc: cancel")
+	help := helpStyle.Render("tab: next field | ←/→: toggle backend | enter: launch | shift+enter: newline | esc: cancel")
 	sb.WriteString(help)
 
 	return sb.String()

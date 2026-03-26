@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/scanner/opencode"
 	"github.com/acksell/clank/internal/store"
@@ -79,7 +79,7 @@ func NewSessionsModel(s *store.Store, sc *opencode.Scanner, sessionLimit int) *S
 }
 
 func (m *SessionsModel) Init() tea.Cmd {
-	return tea.Batch(tea.WindowSize(), m.refreshCmd())
+	return tea.Batch(func() tea.Msg { return tea.RequestWindowSize }, m.refreshCmd())
 }
 
 func (m *SessionsModel) refreshCmd() tea.Cmd {
@@ -220,7 +220,7 @@ func (m *SessionsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loadData()
 		return m, m.refreshCmd()
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))):
 			return m, tea.Quit
@@ -458,9 +458,11 @@ func (m *SessionsModel) ensureCursorVisible() {
 	}
 }
 
-func (m *SessionsModel) View() string {
+func (m *SessionsModel) View() tea.View {
 	if m.width == 0 {
-		return "Loading..."
+		v := tea.NewView("Loading...")
+		v.AltScreen = true
+		return v
 	}
 
 	var sb strings.Builder
@@ -527,7 +529,9 @@ func (m *SessionsModel) View() string {
 		content = m.overlayMenu(content)
 	}
 
-	return content
+	v := tea.NewView(content)
+	v.AltScreen = true
+	return v
 }
 
 func (m *SessionsModel) renderRow(row sessionsRow, selected bool) string {

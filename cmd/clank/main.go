@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/huh"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
 	"github.com/spf13/cobra"
 
 	"github.com/acksell/clank/internal/agent"
@@ -210,7 +210,7 @@ func triageCmd() *cobra.Command {
 
 			ctx, _ := clankctx.LoadAll()
 			app := tui.NewApp(s, az, ctx)
-			p := tea.NewProgram(app, tea.WithAltScreen())
+			p := tea.NewProgram(app)
 			_, err = p.Run()
 			return err
 		},
@@ -237,7 +237,7 @@ func sessionsCmd() *cobra.Command {
 
 			sc := opencode.New(cfg.Scan.OpenCodeDB)
 			app := tui.NewSessionsModel(s, sc, limit)
-			p := tea.NewProgram(app, tea.WithAltScreen())
+			p := tea.NewProgram(app)
 			_, err = p.Run()
 			return err
 		},
@@ -1074,7 +1074,7 @@ The daemon is auto-started if not already running.`,
 			model := tui.NewSessionViewModel(client, info.ID)
 			model.SetStandalone(true)
 			model.SetEventChannel(events, sseCancel)
-			p := tea.NewProgram(model, tea.WithAltScreen())
+			p := tea.NewProgram(model)
 			_, err = p.Run()
 			return err
 		},
@@ -1106,7 +1106,7 @@ func runInbox() error {
 	}
 
 	model := tui.NewInboxModel(client)
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	p := tea.NewProgram(model)
 	_, err = p.Run()
 	return err
 }
@@ -1119,7 +1119,7 @@ func runNewSession() error {
 	}
 
 	model := tui.NewInboxModelWithNewSession(client)
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	p := tea.NewProgram(model)
 	_, err = p.Run()
 	return err
 }

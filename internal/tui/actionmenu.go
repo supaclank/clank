@@ -3,9 +3,9 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // actionMenuItem represents a single item in the action menu.
@@ -53,7 +53,7 @@ func (m actionMenuModel) Init() tea.Cmd {
 
 func (m actionMenuModel) Update(msg tea.Msg) (actionMenuModel, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "q"))):
 			return m, func() tea.Msg { return actionMenuCancelMsg{} }

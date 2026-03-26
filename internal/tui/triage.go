@@ -3,9 +3,9 @@ package tui
 import (
 	"fmt"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/analyzer"
 	"github.com/acksell/clank/internal/store"
@@ -69,7 +69,7 @@ func (m triageModel) Update(msg tea.Msg) (triageModel, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "esc", "q":
 			return m, func() tea.Msg { return backToDetailMsg{} }

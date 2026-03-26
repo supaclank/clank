@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/store"
 )
@@ -54,7 +54,7 @@ func (m *detailModel) buildEditFields() {
 
 func (m *detailModel) updateViewport() {
 	content := m.renderContent()
-	vp := viewport.New(m.width, m.height-4)
+	vp := viewport.New(viewport.WithWidth(m.width), viewport.WithHeight(m.height-4))
 	vp.SetContent(content)
 	m.viewport = vp
 }
@@ -150,7 +150,7 @@ type ticketUpdatedMsg struct {
 
 func (m detailModel) Update(msg tea.Msg) (detailModel, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if m.editing {
 			return m.updateEditing(msg)
 		}
@@ -173,7 +173,7 @@ func (m detailModel) Update(msg tea.Msg) (detailModel, tea.Cmd) {
 	return m, cmd
 }
 
-func (m detailModel) updateEditing(msg tea.KeyMsg) (detailModel, tea.Cmd) {
+func (m detailModel) updateEditing(msg tea.KeyPressMsg) (detailModel, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
 		m.editing = false
@@ -188,7 +188,7 @@ func (m detailModel) updateEditing(msg tea.KeyMsg) (detailModel, tea.Cmd) {
 			m.editField++
 			m.updateViewport()
 		}
-	case "enter", " ", "tab":
+	case "enter", "space", "tab":
 		f := &m.editFields[m.editField]
 		if f.options != nil {
 			for i, opt := range f.options {

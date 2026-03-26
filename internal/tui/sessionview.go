@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textarea"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/daemon"
@@ -97,15 +97,17 @@ func NewSessionViewModel(client *daemon.Client, sessionID string) *SessionViewMo
 	ta.CharLimit = 4096
 	ta.SetHeight(3)
 	ta.ShowLineNumbers = false
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.FocusedStyle.Base = lipgloss.NewStyle().
+	styles := ta.Styles()
+	styles.Focused.CursorLine = lipgloss.NewStyle()
+	styles.Focused.Base = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(primaryColor).
 		Padding(0, 1)
-	ta.BlurredStyle.Base = lipgloss.NewStyle().
+	styles.Blurred.Base = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(mutedColor).
 		Padding(0, 1)
+	ta.SetStyles(styles)
 
 	return &SessionViewModel{
 		client:    client,
@@ -249,7 +251,7 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
 
@@ -263,7 +265,7 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *SessionViewModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Permission prompt takes priority.
 	if m.pendingPerm != nil {
 		switch msg.String() {
@@ -567,9 +569,11 @@ func (m *SessionViewModel) replyPermission(requestID, reply string) tea.Cmd {
 
 // --- View ---
 
-func (m *SessionViewModel) View() string {
+func (m *SessionViewModel) View() tea.View {
 	if m.width == 0 {
-		return "Loading..."
+		v := tea.NewView("Loading...")
+		v.AltScreen = true
+		return v
 	}
 
 	var sb strings.Builder
@@ -631,7 +635,9 @@ func (m *SessionViewModel) View() string {
 		sb.WriteString(helpStyle.Render(help))
 	}
 
-	return sb.String()
+	v := tea.NewView(sb.String())
+	v.AltScreen = true
+	return v
 }
 
 func (m *SessionViewModel) renderHeader() string {

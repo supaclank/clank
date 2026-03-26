@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/daemon"
@@ -94,7 +94,7 @@ func NewInboxModelWithNewSession(client *daemon.Client) *InboxModel {
 }
 
 func (m *InboxModel) Init() tea.Cmd {
-	cmds := []tea.Cmd{tea.WindowSize(), m.loadDataCmd(), m.autoRefreshCmd()}
+	cmds := []tea.Cmd{func() tea.Msg { return tea.RequestWindowSize }, m.loadDataCmd(), m.autoRefreshCmd()}
 	if m.screen == screenNewSession {
 		// Initialize the new session dialog with CWD.
 		projectDir, _ := os.Getwd()
@@ -171,7 +171,7 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case newSessionCreatedMsg:
 		return m, m.openSessionWithEvents(msg.sessionID, msg.events, msg.cancel)
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleInboxKey(msg)
 	}
 
@@ -286,7 +286,7 @@ func (m *InboxModel) createAndOpenSession(req agent.StartRequest) tea.Cmd {
 	}
 }
 
-func (m *InboxModel) handleInboxKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))):
 		return m, tea.Quit
@@ -491,17 +491,21 @@ func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
 
 // --- View ---
 
-func (m *InboxModel) View() string {
+func (m *InboxModel) View() tea.View {
 	if m.screen == screenSession && m.sessionView != nil {
 		return m.sessionView.View()
 	}
 
 	if m.screen == screenNewSession {
-		return m.newSession.View()
+		v := tea.NewView(m.newSession.View())
+		v.AltScreen = true
+		return v
 	}
 
 	if m.width == 0 {
-		return "Loading..."
+		v := tea.NewView("Loading...")
+		v.AltScreen = true
+		return v
 	}
 
 	var sb strings.Builder
@@ -570,7 +574,9 @@ func (m *InboxModel) View() string {
 		content = m.overlayMenu(content)
 	}
 
-	return content
+	v := tea.NewView(content)
+	v.AltScreen = true
+	return v
 }
 
 func (m *InboxModel) buildDisplayLines() {
