@@ -140,7 +140,7 @@ func testDaemon(t *testing.T) (*daemon.Daemon, *daemon.Client, func()) {
 	// Wire up mock backend factory.
 	var lastBackend *mockBackend
 	var backendMu sync.Mutex
-	d.BackendFactory = func(bt agent.BackendType) (agent.Backend, error) {
+	d.BackendFactory = func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
 		b := newMockBackend()
 		backendMu.Lock()
 		lastBackend = b
@@ -416,7 +416,7 @@ func TestDaemonSendMessage(t *testing.T) {
 	pidPath := filepath.Join(dir, "test.pid")
 
 	d := daemon.NewWithPaths(sockPath, pidPath)
-	d.BackendFactory = func(bt agent.BackendType) (agent.Backend, error) {
+	d.BackendFactory = func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
 		b := newMockBackend()
 		backendMu.Lock()
 		latestBackend = b
@@ -474,7 +474,7 @@ func TestDaemonAbortSession(t *testing.T) {
 	pidPath := filepath.Join(dir, "test.pid")
 
 	d := daemon.NewWithPaths(sockPath, pidPath)
-	d.BackendFactory = func(bt agent.BackendType) (agent.Backend, error) {
+	d.BackendFactory = func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
 		b := newMockBackend()
 		backendMu.Lock()
 		latestBackend = b
@@ -655,7 +655,7 @@ func TestDaemonGracefulShutdownStopsBackends(t *testing.T) {
 	pidPath := filepath.Join(dir, "test.pid")
 
 	d := daemon.NewWithPaths(sockPath, pidPath)
-	d.BackendFactory = func(bt agent.BackendType) (agent.Backend, error) {
+	d.BackendFactory = func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
 		b := newMockBackend()
 		backendMu.Lock()
 		backends = append(backends, b)
@@ -822,7 +822,420 @@ func TestDaemonSessionInfoUnread(t *testing.T) {
 	}
 }
 
+// --- Event Round-Trip Tests ---
+//
+// These tests verify that Event.Data survives the full path:
+//   backend emit -> daemon broadcast -> SSE serialize -> client parse -> concrete type
+//
+// This is the critical path for the TUI to receive properly-typed events.
+
+// testDaemonWithBackendAccess is like testDaemon but returns a function to get
+// the most recently created mock backend.
+func testDaemonWithBackendAccess(t *testing.T) (*daemon.Daemon, *daemon.Client, func() *mockBackend, func()) {
+	t.Helper()
+
+	dir := shortTempDir(t)
+	sockPath := filepath.Join(dir, "test.sock")
+	pidPath := filepath.Join(dir, "test.pid")
+
+	d := daemon.NewWithPaths(sockPath, pidPath)
+
+	var latestBackend *mockBackend
+	var backendMu sync.Mutex
+	d.BackendFactory = func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
+		b := newMockBackend()
+		backendMu.Lock()
+		latestBackend = b
+		backendMu.Unlock()
+		return b, nil
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run() }()
+
+	client := daemon.NewClient(sockPath)
+	waitForDaemon(t, client)
+
+	getBackend := func() *mockBackend {
+		backendMu.Lock()
+		defer backendMu.Unlock()
+		return latestBackend
+	}
+
+	cleanup := func() {
+		d.Stop()
+		select {
+		case <-errCh:
+		case <-time.After(5 * time.Second):
+			t.Error("daemon did not stop in time")
+		}
+	}
+
+	return d, client, getBackend, cleanup
+}
+
+// receiveEvents collects up to n events from the channel, timing out after d.
+func receiveEvents(ch <-chan agent.Event, n int, timeout time.Duration) []agent.Event {
+	var result []agent.Event
+	timer := time.After(timeout)
+	for len(result) < n {
+		select {
+		case evt, ok := <-ch:
+			if !ok {
+				return result
+			}
+			result = append(result, evt)
+		case <-timer:
+			return result
+		}
+	}
+	return result
+}
+
+// TestEventRoundTrip_StatusChange verifies that StatusChangeData survives
+// the backend -> daemon SSE -> client JSON round-trip as a concrete type.
+// This test is separate because the event originates from Start(), not injection.
+func TestEventRoundTrip_StatusChange(t *testing.T) {
+	_, client, _, cleanup := testDaemonWithBackendAccess(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	events, err := client.SubscribeEvents(ctx)
+	if err != nil {
+		t.Fatalf("SubscribeEvents: %v", err)
+	}
+
+	_, err = client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "hello",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	received := receiveEvents(events, 3, 2*time.Second)
+
+	var statusEvt *agent.Event
+	for i := range received {
+		if received[i].Type == agent.EventStatusChange {
+			statusEvt = &received[i]
+			break
+		}
+	}
+	if statusEvt == nil {
+		t.Fatalf("no status change event received; got %d events: %v", len(received), eventTypes(received))
+	}
+
+	data, ok := statusEvt.Data.(agent.StatusChangeData)
+	if !ok {
+		t.Fatalf("Event.Data type = %T, want agent.StatusChangeData", statusEvt.Data)
+	}
+	if data.OldStatus != agent.StatusStarting {
+		t.Errorf("OldStatus = %q, want %q", data.OldStatus, agent.StatusStarting)
+	}
+	if data.NewStatus != agent.StatusBusy {
+		t.Errorf("NewStatus = %q, want %q", data.NewStatus, agent.StatusBusy)
+	}
+}
+
+// TestEventRoundTrip_InjectedEvents verifies that various event types survive
+// the backend -> daemon SSE -> client JSON round-trip with correct concrete types.
+func TestEventRoundTrip_InjectedEvents(t *testing.T) {
+	tests := []struct {
+		name  string
+		event agent.Event
+		check func(t *testing.T, evt agent.Event)
+	}{
+		{
+			name: "PartUpdate",
+			event: agent.Event{
+				Type:      agent.EventPartUpdate,
+				Timestamp: time.Now(),
+				Data: agent.PartUpdateData{
+					MessageID: "msg-123",
+					Part: agent.Part{
+						ID:   "part-456",
+						Type: agent.PartText,
+						Text: "Hello world",
+					},
+				},
+			},
+			check: func(t *testing.T, evt agent.Event) {
+				data, ok := evt.Data.(agent.PartUpdateData)
+				if !ok {
+					t.Fatalf("Data type = %T, want PartUpdateData", evt.Data)
+				}
+				if data.MessageID != "msg-123" {
+					t.Errorf("MessageID = %q, want %q", data.MessageID, "msg-123")
+				}
+				if data.Part.ID != "part-456" || data.Part.Type != agent.PartText || data.Part.Text != "Hello world" {
+					t.Errorf("Part = %+v, unexpected", data.Part)
+				}
+			},
+		},
+		{
+			name: "Message",
+			event: agent.Event{
+				Type:      agent.EventMessage,
+				Timestamp: time.Now(),
+				Data: agent.MessageData{
+					Role:    "assistant",
+					Content: "Here is my response",
+					Parts: []agent.Part{
+						{ID: "p1", Type: agent.PartText, Text: "Here is my response"},
+					},
+				},
+			},
+			check: func(t *testing.T, evt agent.Event) {
+				data, ok := evt.Data.(agent.MessageData)
+				if !ok {
+					t.Fatalf("Data type = %T, want MessageData", evt.Data)
+				}
+				if data.Role != "assistant" || data.Content != "Here is my response" {
+					t.Errorf("Role=%q Content=%q, unexpected", data.Role, data.Content)
+				}
+				if len(data.Parts) != 1 || data.Parts[0].ID != "p1" {
+					t.Errorf("Parts = %+v, unexpected", data.Parts)
+				}
+			},
+		},
+		{
+			name: "Permission",
+			event: agent.Event{
+				Type:      agent.EventPermission,
+				Timestamp: time.Now(),
+				Data: agent.PermissionData{
+					RequestID:   "perm-789",
+					Tool:        "bash",
+					Description: "Run: rm -rf /",
+				},
+			},
+			check: func(t *testing.T, evt agent.Event) {
+				data, ok := evt.Data.(agent.PermissionData)
+				if !ok {
+					t.Fatalf("Data type = %T, want PermissionData", evt.Data)
+				}
+				if data.RequestID != "perm-789" || data.Tool != "bash" || data.Description != "Run: rm -rf /" {
+					t.Errorf("Data = %+v, unexpected", data)
+				}
+			},
+		},
+		{
+			name: "Error",
+			event: agent.Event{
+				Type:      agent.EventError,
+				Timestamp: time.Now(),
+				Data: agent.ErrorData{
+					Message: "something went wrong",
+				},
+			},
+			check: func(t *testing.T, evt agent.Event) {
+				data, ok := evt.Data.(agent.ErrorData)
+				if !ok {
+					t.Fatalf("Data type = %T, want ErrorData", evt.Data)
+				}
+				if data.Message != "something went wrong" {
+					t.Errorf("Message = %q, want %q", data.Message, "something went wrong")
+				}
+			},
+		},
+		{
+			name: "ToolPartWithStatus",
+			event: agent.Event{
+				Type:      agent.EventPartUpdate,
+				Timestamp: time.Now(),
+				Data: agent.PartUpdateData{
+					Part: agent.Part{
+						ID:     "tool-1",
+						Type:   agent.PartToolCall,
+						Tool:   "bash",
+						Text:   "ls -la",
+						Status: agent.PartRunning,
+					},
+				},
+			},
+			check: func(t *testing.T, evt agent.Event) {
+				data, ok := evt.Data.(agent.PartUpdateData)
+				if !ok {
+					t.Fatalf("Data type = %T, want PartUpdateData", evt.Data)
+				}
+				if data.Part.Tool != "bash" || data.Part.Status != agent.PartRunning || data.Part.Text != "ls -la" {
+					t.Errorf("Part = %+v, unexpected", data.Part)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, client, getBackend, cleanup := testDaemonWithBackendAccess(t)
+			defer cleanup()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			events, err := client.SubscribeEvents(ctx)
+			if err != nil {
+				t.Fatalf("SubscribeEvents: %v", err)
+			}
+
+			_, err = client.CreateSession(ctx, agent.StartRequest{
+				Backend:    agent.BackendOpenCode,
+				ProjectDir: "/tmp/test",
+				Prompt:     "hello",
+			})
+			if err != nil {
+				t.Fatalf("CreateSession: %v", err)
+			}
+
+			time.Sleep(100 * time.Millisecond)
+			receiveEvents(events, 3, 500*time.Millisecond) // drain initial events
+
+			b := getBackend()
+			if b == nil {
+				t.Fatal("no backend created")
+			}
+			b.events <- tt.event
+
+			received := receiveEvents(events, 1, 2*time.Second)
+			if len(received) == 0 {
+				t.Fatal("no event received")
+			}
+			if received[0].Type != tt.event.Type {
+				t.Fatalf("event type = %q, want %q", received[0].Type, tt.event.Type)
+			}
+			tt.check(t, received[0])
+		})
+	}
+}
+
+// TestEventRoundTrip_StreamingTextDeltas verifies that multiple PartUpdate
+// events with text deltas all arrive on the client with correct Part.ID and
+// Part.Text, simulating streaming output from an agent.
+func TestEventRoundTrip_StreamingTextDeltas(t *testing.T) {
+	_, client, getBackend, cleanup := testDaemonWithBackendAccess(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	events, err := client.SubscribeEvents(ctx)
+	if err != nil {
+		t.Fatalf("SubscribeEvents: %v", err)
+	}
+
+	_, err = client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "hello",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	receiveEvents(events, 3, 500*time.Millisecond)
+
+	b := getBackend()
+	if b == nil {
+		t.Fatal("no backend created")
+	}
+
+	deltas := []string{"Hello", " world", "!"}
+	for _, delta := range deltas {
+		b.events <- agent.Event{
+			Type:      agent.EventPartUpdate,
+			Timestamp: time.Now(),
+			Data: agent.PartUpdateData{
+				Part: agent.Part{
+					ID:   "text-part-1",
+					Type: agent.PartText,
+					Text: delta,
+				},
+			},
+		}
+	}
+
+	received := receiveEvents(events, 3, 2*time.Second)
+	if len(received) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(received))
+	}
+
+	for i, evt := range received {
+		data, ok := evt.Data.(agent.PartUpdateData)
+		if !ok {
+			t.Errorf("event[%d].Data type = %T, want agent.PartUpdateData", i, evt.Data)
+			continue
+		}
+		if data.Part.ID != "text-part-1" {
+			t.Errorf("event[%d].Part.ID = %q, want %q", i, data.Part.ID, "text-part-1")
+		}
+		if data.Part.Text != deltas[i] {
+			t.Errorf("event[%d].Part.Text = %q, want %q", i, data.Part.Text, deltas[i])
+		}
+	}
+}
+
+// TestEventRoundTrip_SessionID verifies that the daemon stamps SessionID
+// on events before broadcasting, and that it survives the round-trip.
+func TestEventRoundTrip_SessionID(t *testing.T) {
+	_, client, getBackend, cleanup := testDaemonWithBackendAccess(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	events, err := client.SubscribeEvents(ctx)
+	if err != nil {
+		t.Fatalf("SubscribeEvents: %v", err)
+	}
+
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "hello",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	receiveEvents(events, 3, 500*time.Millisecond)
+
+	b := getBackend()
+	if b == nil {
+		t.Fatal("no backend created")
+	}
+
+	b.events <- agent.Event{
+		Type:      agent.EventPartUpdate,
+		Timestamp: time.Now(),
+		Data: agent.PartUpdateData{
+			Part: agent.Part{ID: "x", Type: agent.PartText, Text: "hi"},
+		},
+	}
+
+	received := receiveEvents(events, 1, 2*time.Second)
+	if len(received) == 0 {
+		t.Fatal("no event received")
+	}
+	if received[0].SessionID != info.ID {
+		t.Errorf("SessionID = %q, want %q (daemon should stamp it)", received[0].SessionID, info.ID)
+	}
+}
+
 // --- Helpers ---
+
+func eventTypes(events []agent.Event) []string {
+	types := make([]string, len(events))
+	for i, e := range events {
+		types[i] = string(e.Type)
+	}
+	return types
+}
 
 func waitForDaemon(t *testing.T, client *daemon.Client) {
 	t.Helper()

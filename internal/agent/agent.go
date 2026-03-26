@@ -6,6 +6,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -49,6 +50,75 @@ type Event struct {
 	SessionID string      `json:"session_id"`
 	Timestamp time.Time   `json:"timestamp"`
 	Data      interface{} `json:"data"`
+}
+
+// UnmarshalJSON implements custom JSON unmarshalling for Event.
+// It examines the "type" field to deserialize "data" into the correct concrete
+// Go type instead of the default map[string]interface{}.
+func (e *Event) UnmarshalJSON(b []byte) error {
+	// First, decode into a raw structure to inspect the type field.
+	var raw struct {
+		Type      EventType       `json:"type"`
+		SessionID string          `json:"session_id"`
+		Timestamp time.Time       `json:"timestamp"`
+		Data      json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+
+	e.Type = raw.Type
+	e.SessionID = raw.SessionID
+	e.Timestamp = raw.Timestamp
+
+	// If no data payload, leave Data as nil.
+	if len(raw.Data) == 0 || string(raw.Data) == "null" {
+		return nil
+	}
+
+	// Deserialize Data into the correct concrete type based on event type.
+	switch raw.Type {
+	case EventStatusChange:
+		var d StatusChangeData
+		if err := json.Unmarshal(raw.Data, &d); err != nil {
+			return fmt.Errorf("unmarshal StatusChangeData: %w", err)
+		}
+		e.Data = d
+	case EventMessage:
+		var d MessageData
+		if err := json.Unmarshal(raw.Data, &d); err != nil {
+			return fmt.Errorf("unmarshal MessageData: %w", err)
+		}
+		e.Data = d
+	case EventPartUpdate:
+		var d PartUpdateData
+		if err := json.Unmarshal(raw.Data, &d); err != nil {
+			return fmt.Errorf("unmarshal PartUpdateData: %w", err)
+		}
+		e.Data = d
+	case EventPermission:
+		var d PermissionData
+		if err := json.Unmarshal(raw.Data, &d); err != nil {
+			return fmt.Errorf("unmarshal PermissionData: %w", err)
+		}
+		e.Data = d
+	case EventError:
+		var d ErrorData
+		if err := json.Unmarshal(raw.Data, &d); err != nil {
+			return fmt.Errorf("unmarshal ErrorData: %w", err)
+		}
+		e.Data = d
+	default:
+		// For unknown event types (session.create, session.delete, future types),
+		// fall back to generic interface{}.
+		var d interface{}
+		if err := json.Unmarshal(raw.Data, &d); err != nil {
+			return fmt.Errorf("unmarshal event data: %w", err)
+		}
+		e.Data = d
+	}
+
+	return nil
 }
 
 // StatusChangeData is the payload for EventStatusChange.

@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
+	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/analyzer"
 	"github.com/acksell/clank/internal/config"
 	clankctx "github.com/acksell/clank/internal/context"
@@ -44,6 +45,8 @@ func main() {
 		configCmd(),
 		backfillCmd(),
 		daemonCmd(),
+		codeCmd(),
+		inboxCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -850,6 +853,10 @@ func runDaemonStart(foreground bool) error {
 		if err != nil {
 			return err
 		}
+		// Wire in real backend factory.
+		factory := daemon.NewDefaultBackendFactory()
+		d.BackendFactory = factory.Create
+		d.OnShutdown = factory.StopAll
 		return d.Run()
 	}
 
@@ -990,4 +997,146 @@ func quadrantLabel(impact, complexity int) string {
 	default:
 		return "tidyup"
 	}
+}
+
+// --- clank code ---
+
+func codeCmd() *cobra.Command {
+	var backend string
+	var projectDir string
+	var ticketID string
+
+	cmd := &cobra.Command{
+		Use:   "code [prompt]",
+		Short: "Launch a new coding agent session",
+		Long: `Launch a new coding agent session managed by the Clank daemon.
+
+If a prompt is provided, the session starts immediately and opens the
+session detail TUI. Without a prompt, opens the inbox TUI.
+
+The daemon is auto-started if not already running.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Determine prompt.
+			prompt := strings.Join(args, " ")
+			if prompt == "" {
+				// No prompt — open inbox TUI.
+				return runInbox()
+			}
+
+			// Determine project directory.
+			if projectDir == "" {
+				cwd, err := os.Getwd()
+				if err != nil {
+					return fmt.Errorf("get working directory: %w", err)
+				}
+				projectDir = cwd
+			}
+
+			// Resolve backend type.
+			bt := agent.BackendOpenCode // default
+			if backend == "claude" || backend == "claude-code" {
+				bt = agent.BackendClaudeCode
+			} else if backend != "" && backend != "opencode" {
+				return fmt.Errorf("unknown backend: %s (valid: opencode, claude)", backend)
+			}
+
+			// Ensure daemon is running.
+			client, err := ensureDaemon()
+			if err != nil {
+				return fmt.Errorf("daemon: %w", err)
+			}
+
+			// Subscribe to SSE BEFORE creating the session so we don't miss
+			// events emitted during session startup.
+			sseCtx, sseCancel := context.WithCancel(context.Background())
+			events, err := client.SubscribeEvents(sseCtx)
+			if err != nil {
+				sseCancel()
+				return fmt.Errorf("subscribe events: %w", err)
+			}
+
+			// Create the session.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			info, err := client.CreateSession(ctx, agent.StartRequest{
+				Backend:    bt,
+				ProjectDir: projectDir,
+				Prompt:     prompt,
+				TicketID:   ticketID,
+			})
+			if err != nil {
+				sseCancel()
+				return fmt.Errorf("create session: %w", err)
+			}
+
+			// Open session detail TUI with pre-connected event channel.
+			model := tui.NewSessionViewModel(client, info.ID)
+			model.SetStandalone(true)
+			model.SetEventChannel(events, sseCancel)
+			p := tea.NewProgram(model, tea.WithAltScreen())
+			_, err = p.Run()
+			return err
+		},
+	}
+
+	cmd.Flags().StringVar(&backend, "backend", "", "Backend to use: opencode (default), claude")
+	cmd.Flags().StringVar(&projectDir, "project", "", "Project directory (default: current directory)")
+	cmd.Flags().StringVar(&ticketID, "ticket", "", "Link to backlog ticket ID")
+
+	return cmd
+}
+
+func inboxCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "inbox",
+		Short: "Open the agent session inbox",
+		Long:  "View and manage daemon-managed coding agent sessions in an interactive TUI.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runInbox()
+		},
+	}
+}
+
+// runInbox opens the inbox TUI. Ensures the daemon is running first.
+func runInbox() error {
+	client, err := ensureDaemon()
+	if err != nil {
+		return fmt.Errorf("daemon: %w", err)
+	}
+
+	model := tui.NewInboxModel(client)
+	p := tea.NewProgram(model, tea.WithAltScreen())
+	_, err = p.Run()
+	return err
+}
+
+// ensureDaemon makes sure the daemon is running, starting it if needed.
+// Returns a connected client.
+func ensureDaemon() (*daemon.Client, error) {
+	running, _, err := daemon.IsRunning()
+	if err != nil {
+		return nil, err
+	}
+
+	if !running {
+		fmt.Println("Starting daemon...")
+		if err := runDaemonStart(false); err != nil {
+			return nil, fmt.Errorf("start daemon: %w", err)
+		}
+	}
+
+	client, err := daemon.NewDefaultClient()
+	if err != nil {
+		return nil, err
+	}
+
+	// Verify reachable.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Ping(ctx); err != nil {
+		return nil, fmt.Errorf("daemon not reachable: %w", err)
+	}
+
+	return client, nil
 }

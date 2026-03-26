@@ -27,6 +27,44 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
+// DefaultBackendFactory creates real backend instances and manages
+// OpenCode server lifecycle. It holds an OpenCodeServerManager to
+// reuse servers across sessions for the same project directory.
+type DefaultBackendFactory struct {
+	serverMgr *agent.OpenCodeServerManager
+}
+
+// NewDefaultBackendFactory creates a factory with a new server manager.
+func NewDefaultBackendFactory() *DefaultBackendFactory {
+	return &DefaultBackendFactory{
+		serverMgr: agent.NewOpenCodeServerManager(),
+	}
+}
+
+// Create returns a Backend for the given type. For OpenCode backends,
+// it first ensures an OpenCode server is running for the project directory.
+func (f *DefaultBackendFactory) Create(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
+	switch bt {
+	case agent.BackendOpenCode:
+		serverURL, err := f.serverMgr.GetOrStartServer(context.Background(), req.ProjectDir)
+		if err != nil {
+			return nil, fmt.Errorf("start opencode server for %s: %w", req.ProjectDir, err)
+		}
+		return agent.NewOpenCodeBackend(serverURL), nil
+
+	case agent.BackendClaudeCode:
+		return agent.NewClaudeCodeBackend(), nil
+
+	default:
+		return nil, fmt.Errorf("unknown backend type: %s", bt)
+	}
+}
+
+// StopAll stops all managed OpenCode servers.
+func (f *DefaultBackendFactory) StopAll() {
+	f.serverMgr.StopAll()
+}
+
 // Daemon is the long-lived background process that manages agent sessions.
 type Daemon struct {
 	sockPath string
@@ -44,10 +82,15 @@ type Daemon struct {
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 
-	// BackendFactory creates a Backend for a given BackendType.
+	// BackendFactory creates a Backend for a given BackendType and StartRequest.
 	// Defaults to returning an error (no backends registered).
 	// Set by the caller before Run() to wire in real backends.
-	BackendFactory func(agent.BackendType) (agent.Backend, error)
+	BackendFactory func(agent.BackendType, agent.StartRequest) (agent.Backend, error)
+
+	// OnShutdown is called during graceful shutdown, after stopping all sessions
+	// but before cleaning up files. Use this to stop managed resources like
+	// OpenCode servers.
+	OnShutdown func()
 
 	log *log.Logger
 }
@@ -77,7 +120,7 @@ func New() (*Daemon, error) {
 		ctx:         ctx,
 		cancel:      cancel,
 		log:         log.New(os.Stderr, "[clank-daemon] ", log.LstdFlags|log.Lmsgprefix),
-		BackendFactory: func(bt agent.BackendType) (agent.Backend, error) {
+		BackendFactory: func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
 			return nil, fmt.Errorf("no backend registered for %s", bt)
 		},
 	}, nil
@@ -96,7 +139,7 @@ func NewWithPaths(sockPath, pidPath string) *Daemon {
 		ctx:         ctx,
 		cancel:      cancel,
 		log:         log.New(os.Stderr, "[clank-daemon] ", log.LstdFlags|log.Lmsgprefix),
-		BackendFactory: func(bt agent.BackendType) (agent.Backend, error) {
+		BackendFactory: func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
 			return nil, fmt.Errorf("no backend registered for %s", bt)
 		},
 	}
@@ -226,6 +269,11 @@ func (d *Daemon) shutdown(server *http.Server) error {
 	}
 	d.mu.Unlock()
 
+	// Run shutdown hooks (e.g., stop OpenCode servers).
+	if d.OnShutdown != nil {
+		d.OnShutdown()
+	}
+
 	// Close all subscriber channels.
 	d.subMu.Lock()
 	for id, ch := range d.subscribers {
@@ -281,21 +329,10 @@ func (d *Daemon) handlePing(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
-	d.mu.RLock()
-	sessions := make([]agent.SessionInfo, 0, len(d.sessions))
-	for _, ms := range d.sessions {
-		info := ms.info
-		if ms.backend != nil {
-			info.Status = ms.backend.Status()
-		}
-		sessions = append(sessions, info)
-	}
-	d.mu.RUnlock()
-
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"pid":      os.Getpid(),
 		"uptime":   time.Since(d.startTime).String(),
-		"sessions": sessions,
+		"sessions": d.snapshotSessions(),
 	})
 }
 
@@ -319,18 +356,7 @@ func (d *Daemon) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Daemon) handleListSessions(w http.ResponseWriter, r *http.Request) {
-	d.mu.RLock()
-	sessions := make([]agent.SessionInfo, 0, len(d.sessions))
-	for _, ms := range d.sessions {
-		info := ms.info
-		if ms.backend != nil {
-			info.Status = ms.backend.Status()
-		}
-		sessions = append(sessions, info)
-	}
-	d.mu.RUnlock()
-
-	writeJSON(w, http.StatusOK, sessions)
+	writeJSON(w, http.StatusOK, d.snapshotSessions())
 }
 
 func (d *Daemon) handleGetSession(w http.ResponseWriter, r *http.Request) {
@@ -375,10 +401,19 @@ func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := ms.backend.SendMessage(r.Context(), body.Text); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
+	// Dispatch asynchronously — SendMessage blocks until the LLM responds.
+	// The TUI tracks progress via the SSE event stream instead.
+	go func() {
+		if err := ms.backend.SendMessage(d.ctx, body.Text); err != nil {
+			d.log.Printf("session %s: send message error: %v", id, err)
+			d.broadcast(agent.Event{
+				Type:      agent.EventError,
+				SessionID: id,
+				Timestamp: time.Now(),
+				Data:      agent.ErrorData{Message: err.Error()},
+			})
+		}
+	}()
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "sent"})
 }
 
@@ -480,9 +515,25 @@ func (d *Daemon) handlePermissionReply(w http.ResponseWriter, r *http.Request) {
 
 // --- Internal Methods ---
 
+// snapshotSessions returns a point-in-time copy of all session infos
+// with live status from backends.
+func (d *Daemon) snapshotSessions() []agent.SessionInfo {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	sessions := make([]agent.SessionInfo, 0, len(d.sessions))
+	for _, ms := range d.sessions {
+		info := ms.info
+		if ms.backend != nil {
+			info.Status = ms.backend.Status()
+		}
+		sessions = append(sessions, info)
+	}
+	return sessions
+}
+
 // createSession creates a new managed session and starts the backend.
 func (d *Daemon) createSession(req agent.StartRequest) (*agent.SessionInfo, error) {
-	backend, err := d.BackendFactory(req.Backend)
+	backend, err := d.BackendFactory(req.Backend, req)
 	if err != nil {
 		return nil, fmt.Errorf("create backend: %w", err)
 	}
@@ -531,6 +582,26 @@ func (d *Daemon) createSession(req agent.StartRequest) (*agent.SessionInfo, erro
 
 // runBackend starts the backend and relays its events.
 func (d *Daemon) runBackend(id string, ms *managedSession, req agent.StartRequest) {
+	// Start relaying events BEFORE calling Start(), because Start() blocks
+	// for the entire LLM response (Prompt() is synchronous). Events emitted
+	// by the backend's SSE goroutine during Start() must be relayed in real time.
+	events := ms.backend.Events()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for evt := range events {
+			evt.SessionID = id
+			d.broadcast(evt)
+
+			if evt.Type == agent.EventStatusChange {
+				if data, ok := evt.Data.(agent.StatusChangeData); ok {
+					d.updateSessionStatus(id, data.NewStatus)
+				}
+			}
+		}
+	}()
+	defer func() { <-done }() // wait for relay goroutine to finish
+
 	if err := ms.backend.Start(d.ctx, req); err != nil {
 		d.log.Printf("session %s: backend start error: %v", id, err)
 		d.updateSessionStatus(id, agent.StatusError)
@@ -541,23 +612,6 @@ func (d *Daemon) runBackend(id string, ms *managedSession, req agent.StartReques
 			Data:      agent.ErrorData{Message: err.Error()},
 		})
 		return
-	}
-
-	// Relay events from the backend to all subscribers.
-	events := ms.backend.Events()
-	if events == nil {
-		return
-	}
-	for evt := range events {
-		evt.SessionID = id // ensure daemon ID is set
-		d.broadcast(evt)
-
-		// Update session status if it's a status change event.
-		if evt.Type == agent.EventStatusChange {
-			if data, ok := evt.Data.(agent.StatusChangeData); ok {
-				d.updateSessionStatus(id, data.NewStatus)
-			}
-		}
 	}
 
 	// Backend event channel closed — mark as dead if still busy.
