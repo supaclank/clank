@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -85,17 +84,7 @@ func RunStart(foreground bool) error {
 		return fmt.Errorf("find executable: %w", err)
 	}
 
-	// If invoked as "clankd", the daemon commands are at the root level,
-	// so we fork with "clankd start --foreground". Otherwise (e.g. "clank"),
-	// the daemon is a subcommand: "clank daemon start --foreground".
-	var args []string
-	if filepath.Base(exe) == "clankd" {
-		args = []string{"start", "--foreground"}
-	} else {
-		args = []string{"daemon", "start", "--foreground"}
-	}
-
-	bgCmd := exec.Command(exe, args...)
+	bgCmd := exec.Command(exe, "start", "--foreground")
 	bgCmd.Stdout = nil
 	bgCmd.Stderr = nil
 	bgCmd.Stdin = nil
