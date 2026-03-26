@@ -122,24 +122,40 @@ func styledQuadrant(q store.Quadrant) string {
 	}
 }
 
+// promptInputBorder is the external border+padding applied around the textarea.
+// We render this outside the textarea because bubbles v2 has a bug where
+// placeholderView() applies Base.Render() internally, and then View() applies
+// it again — causing a double border when the textarea is empty.
+var promptInputBorderSize = 2 + 2 // border (1+1) + padding (1+1)
+
+func promptInputStyle(focused bool) lipgloss.Style {
+	bc := mutedColor
+	if focused {
+		bc = primaryColor
+	}
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(bc).
+		Padding(0, 1)
+}
+
 // newPromptTextarea creates a textarea configured for prompt input.
 // Enter sends; shift+enter inserts a newline.
+//
+// The textarea itself has NO border — callers must wrap View() output with
+// promptInputStyle(focused).Render(...) and pass (width - promptInputBorderSize)
+// to SetWidth.
 func newPromptTextarea(placeholder string, height int) textarea.Model {
 	ta := textarea.New()
 	ta.Placeholder = placeholder
 	ta.CharLimit = 4096
 	ta.SetHeight(height)
 	ta.ShowLineNumbers = false
+	ta.Prompt = ""
 	styles := ta.Styles()
 	styles.Focused.CursorLine = lipgloss.NewStyle()
-	styles.Focused.Base = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(primaryColor).
-		Padding(0, 1)
-	styles.Blurred.Base = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(mutedColor).
-		Padding(0, 1)
+	styles.Focused.Base = lipgloss.NewStyle()
+	styles.Blurred.Base = lipgloss.NewStyle()
 	ta.SetStyles(styles)
 	// Shift+Enter inserts newline; plain Enter is handled by the parent model.
 	ta.KeyMap.InsertNewline = key.NewBinding(

@@ -207,9 +207,9 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// SetWidth takes total outer width (including border/padding),
-		// so pass the full width — the textarea handles frame internally.
-		m.input.SetWidth(m.width)
+		// SetWidth takes the textarea's own outer width. Since we render the
+		// border externally, subtract the external frame.
+		m.input.SetWidth(m.width - promptInputBorderSize)
 		return m, nil
 
 	case sessionInfoMsg:
@@ -634,7 +634,7 @@ func (m *SessionViewModel) View() tea.View {
 	// Input area.
 	if m.inputActive {
 		sb.WriteString("\n")
-		sb.WriteString(m.input.View())
+		sb.WriteString(promptInputStyle(m.input.Focused()).Render(m.input.View()))
 		sb.WriteString("\n")
 		sb.WriteString(helpStyle.Render("enter: send | shift+enter: newline | esc: cancel"))
 	} else {

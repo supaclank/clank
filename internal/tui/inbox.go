@@ -201,7 +201,7 @@ func (m *InboxModel) openComposingSession() tea.Cmd {
 	m.sessionView.width = m.width
 	m.sessionView.height = m.height
 	if m.width > 0 {
-		m.sessionView.input.SetWidth(m.width)
+		m.sessionView.input.SetWidth(m.width - promptInputBorderSize)
 	}
 	return m.sessionView.Init()
 }
@@ -276,7 +276,7 @@ func (m *InboxModel) openSession(sessionID string) tea.Cmd {
 	m.sessionView.width = m.width
 	m.sessionView.height = m.height
 	if m.width > 0 {
-		m.sessionView.input.SetWidth(m.width)
+		m.sessionView.input.SetWidth(m.width - promptInputBorderSize)
 	}
 	return m.sessionView.Init()
 }

@@ -48,7 +48,7 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.input.SetWidth(m.width)
+		m.input.SetWidth(m.width - promptInputBorderSize)
 		return m, nil
 
 	case sessionCreateResultMsg:
@@ -173,7 +173,7 @@ func (m *SessionViewModel) handleCreateResult(msg sessionCreateResultMsg) (tea.M
 	// Reset the textarea for follow-up messages.
 	m.input = newPromptTextarea("Type a follow-up message...", 3)
 	if m.width > 0 {
-		m.input.SetWidth(m.width)
+		m.input.SetWidth(m.width - promptInputBorderSize)
 	}
 
 	// Start reading events + fetch session info.
@@ -217,7 +217,7 @@ func (m *SessionViewModel) viewCompose() tea.View {
 	// Prompt textarea.
 	sb.WriteString("  " + labelSty.Render("Prompt:"))
 	sb.WriteString("\n")
-	sb.WriteString(m.input.View())
+	sb.WriteString(promptInputStyle(m.input.Focused()).Render(m.input.View()))
 	sb.WriteString("\n\n")
 
 	// Help bar.
