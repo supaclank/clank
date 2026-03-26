@@ -1,2 +1,2 @@
 install:
-	go install ./cmd/clank/
+	go install ./cmd/clank/ ./cmd/clankd/
