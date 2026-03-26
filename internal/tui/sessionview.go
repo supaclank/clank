@@ -35,6 +35,11 @@ type sessionInfoMsg struct {
 	info *agent.SessionInfo
 }
 
+// sessionMessagesMsg delivers the full message history to the model.
+type sessionMessagesMsg struct {
+	messages []agent.MessageData
+}
+
 // backToInboxMsg signals navigation back to the inbox.
 type backToInboxMsg struct{}
 
@@ -60,6 +65,12 @@ type SessionViewModel struct {
 
 	// SSE event channel (stored so we can re-schedule waitForEvent).
 	eventsCh <-chan agent.Event
+
+	// History deduplication. seenParts tracks part IDs loaded from history
+	// so that overlapping SSE events can be skipped. historyLoaded is set
+	// after the history response is processed.
+	seenParts     map[string]bool
+	historyLoaded bool
 
 	// Layout.
 	width  int
@@ -128,7 +139,7 @@ func (m *SessionViewModel) Init() tea.Cmd {
 	if m.composing {
 		return m.input.Focus()
 	}
-	cmds := []tea.Cmd{m.fetchSessionInfo()}
+	cmds := []tea.Cmd{m.fetchSessionInfo(), m.fetchSessionMessages()}
 	if m.eventsCh != nil {
 		// Already connected — start reading immediately.
 		cmds = append(cmds, waitForEvent(m.eventsCh, m.sessionID))
@@ -148,6 +159,19 @@ func (m *SessionViewModel) fetchSessionInfo() tea.Cmd {
 			return sessionEventsErrMsg{err: err}
 		}
 		return sessionInfoMsg{info: info}
+	}
+}
+
+// fetchSessionMessages loads the full message history from the daemon.
+func (m *SessionViewModel) fetchSessionMessages() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		messages, err := m.client.GetSessionMessages(ctx, m.sessionID)
+		if err != nil {
+			return sessionEventsErrMsg{err: err}
+		}
+		return sessionMessagesMsg{messages: messages}
 	}
 }
 
@@ -214,13 +238,18 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionInfoMsg:
 		m.info = msg.info
-		// Add the initial prompt as the first user message if entries are empty.
-		if len(m.entries) == 0 && m.info.Prompt != "" {
+		// Add the initial prompt as the first user message if entries are empty
+		// and history hasn't been loaded yet (history will provide the full picture).
+		if len(m.entries) == 0 && !m.historyLoaded && m.info.Prompt != "" {
 			m.entries = append(m.entries, displayEntry{
 				kind:    entryUser,
 				content: m.info.Prompt,
 			})
 		}
+		return m, nil
+
+	case sessionMessagesMsg:
+		m.handleSessionMessages(msg.messages)
 		return m, nil
 
 	case sseSetupMsg:
@@ -444,6 +473,12 @@ func (m *SessionViewModel) handleMessage(data agent.MessageData) {
 		// when the user sends them via the input box.
 		return
 	}
+	// After history is loaded, skip SSE message events entirely —
+	// history already contains the complete messages, and SSE only delivers
+	// redundant shells. New parts arrive via EventPartUpdate.
+	if m.historyLoaded {
+		return
+	}
 	// Skip empty assistant messages (no content and no parts).
 	if data.Content == "" && len(data.Parts) == 0 {
 		return
@@ -463,7 +498,60 @@ func (m *SessionViewModel) handleMessage(data agent.MessageData) {
 	}
 }
 
+// handleSessionMessages processes the full message history response.
+// It replaces any existing entries with the complete history and builds
+// the seenParts set for deduplication with subsequent SSE events.
+func (m *SessionViewModel) handleSessionMessages(messages []agent.MessageData) {
+	m.seenParts = make(map[string]bool)
+	m.entries = nil
+
+	for _, msg := range messages {
+		if msg.Role == "user" {
+			// Reconstruct user message content from text parts.
+			var text string
+			for _, p := range msg.Parts {
+				if p.Type == agent.PartText {
+					text += p.Text
+				}
+			}
+			if text == "" {
+				text = msg.Content
+			}
+			if text != "" {
+				m.entries = append(m.entries, displayEntry{
+					kind:    entryUser,
+					content: text,
+				})
+			}
+			continue
+		}
+
+		// Assistant message: render parts.
+		if msg.Content != "" && len(msg.Parts) == 0 {
+			m.entries = append(m.entries, displayEntry{
+				kind:    entryText,
+				content: msg.Content,
+			})
+		}
+		for _, p := range msg.Parts {
+			if p.ID != "" {
+				m.seenParts[p.ID] = true
+			}
+			m.addPartEntry(p)
+		}
+	}
+
+	m.historyLoaded = true
+	if m.follow {
+		m.scrollToBottom()
+	}
+}
+
 func (m *SessionViewModel) handlePartUpdate(data agent.PartUpdateData) {
+	// Skip parts already loaded from history to avoid duplicates.
+	if m.seenParts[data.Part.ID] {
+		return
+	}
 	m.upsertPartEntry(data.Part)
 	if m.follow {
 		m.scrollToBottom()

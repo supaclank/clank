@@ -368,6 +368,78 @@ func (b *OpenCodeBackend) handlePartUpdate(p opencode.Part) {
 	}
 }
 
+// Messages returns the full message history for this session by calling
+// the OpenCode SDK's Session.Messages API and translating to our types.
+func (b *OpenCodeBackend) Messages(ctx context.Context) ([]MessageData, error) {
+	if b.sessionID == "" {
+		return nil, fmt.Errorf("session not started")
+	}
+
+	resp, err := b.client.Session.Messages(ctx, b.sessionID, opencode.SessionMessagesParams{})
+	if err != nil {
+		return nil, fmt.Errorf("fetch messages: %w", err)
+	}
+	if resp == nil {
+		return nil, nil
+	}
+
+	var messages []MessageData
+	for _, msg := range *resp {
+		md := MessageData{
+			Role: string(msg.Info.Role),
+		}
+
+		for _, p := range msg.Parts {
+			converted := b.convertSDKPart(p)
+			if converted != nil {
+				md.Parts = append(md.Parts, *converted)
+			}
+		}
+
+		messages = append(messages, md)
+	}
+	return messages, nil
+}
+
+// convertSDKPart translates an OpenCode SDK Part into our Part type.
+// Returns nil for part types we don't display (StepStart, StepFinish, etc.).
+func (b *OpenCodeBackend) convertSDKPart(p opencode.Part) *Part {
+	switch concrete := p.AsUnion().(type) {
+	case opencode.TextPart:
+		return &Part{
+			ID:   concrete.ID,
+			Type: PartText,
+			Text: concrete.Text,
+		}
+	case opencode.ToolPart:
+		var partStatus PartStatus
+		switch concrete.State.Status {
+		case opencode.ToolPartStateStatusPending:
+			partStatus = PartPending
+		case opencode.ToolPartStateStatusRunning:
+			partStatus = PartRunning
+		case opencode.ToolPartStateStatusCompleted:
+			partStatus = PartCompleted
+		case opencode.ToolPartStateStatusError:
+			partStatus = PartFailed
+		}
+		return &Part{
+			ID:     concrete.ID,
+			Type:   PartToolCall,
+			Tool:   concrete.Tool,
+			Status: partStatus,
+		}
+	case opencode.ReasoningPart:
+		return &Part{
+			ID:   concrete.ID,
+			Type: PartThinking,
+			Text: concrete.Text,
+		}
+	default:
+		return nil
+	}
+}
+
 func (b *OpenCodeBackend) emitError(msg string) {
 	b.emit(Event{
 		Type:      EventError,

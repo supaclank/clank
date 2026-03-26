@@ -170,6 +170,14 @@ func (b *ClaudeCodeBackend) SessionID() string {
 	return b.sessionID
 }
 
+// Messages is not yet implemented for Claude Code.
+// Claude Code supports --resume with --replay-user-messages for streaming
+// history, and the --ide flag may provide structured output. The long-term
+// plan is to store messages in our own DB from the stream-json output.
+func (b *ClaudeCodeBackend) Messages(ctx context.Context) ([]MessageData, error) {
+	return nil, nil
+}
+
 func (b *ClaudeCodeBackend) setStatus(s SessionStatus) {
 	b.mu.Lock()
 	old := b.status

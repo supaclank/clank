@@ -23,6 +23,10 @@ type mockBackend struct {
 	messages  []string
 	aborted   bool
 
+	// history is returned by Messages(). Tests can set it to control
+	// the message history returned by the backend.
+	history []agent.MessageData
+
 	// onStart is called during Start, allowing tests to control behavior.
 	onStart func(ctx context.Context, req agent.StartRequest) error
 }
@@ -111,6 +115,12 @@ func (m *mockBackend) Status() agent.SessionStatus {
 
 func (m *mockBackend) SessionID() string {
 	return m.sessionID
+}
+
+func (m *mockBackend) Messages(ctx context.Context) ([]agent.MessageData, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.history, nil
 }
 
 // shortTempDir creates a temp directory with a short path suitable for Unix sockets.
@@ -402,6 +412,106 @@ func TestDaemonGetSession(t *testing.T) {
 
 	// Non-existent session.
 	_, err = client.GetSession(ctx, "nonexistent")
+	if err == nil {
+		t.Error("expected error for non-existent session")
+	}
+}
+
+func TestDaemonGetSessionMessages(t *testing.T) {
+	t.Parallel()
+	_, client, getBackend, cleanup := testDaemonWithBackendAccess(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test prompt",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Set up history on the mock backend.
+	b := getBackend()
+	b.mu.Lock()
+	b.history = []agent.MessageData{
+		{
+			Role:    "user",
+			Content: "test prompt",
+			Parts: []agent.Part{
+				{ID: "p1", Type: agent.PartText, Text: "test prompt"},
+			},
+		},
+		{
+			Role: "assistant",
+			Parts: []agent.Part{
+				{ID: "p2", Type: agent.PartText, Text: "Here is my response"},
+				{ID: "p3", Type: agent.PartToolCall, Tool: "bash", Status: agent.PartCompleted},
+			},
+		},
+	}
+	b.mu.Unlock()
+
+	messages, err := client.GetSessionMessages(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetSessionMessages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(messages))
+	}
+	if messages[0].Role != "user" {
+		t.Errorf("expected first message role=user, got %s", messages[0].Role)
+	}
+	if messages[1].Role != "assistant" {
+		t.Errorf("expected second message role=assistant, got %s", messages[1].Role)
+	}
+	if len(messages[1].Parts) != 2 {
+		t.Errorf("expected 2 parts in assistant message, got %d", len(messages[1].Parts))
+	}
+	if messages[1].Parts[0].ID != "p2" || messages[1].Parts[0].Text != "Here is my response" {
+		t.Errorf("unexpected first part: %+v", messages[1].Parts[0])
+	}
+	if messages[1].Parts[1].Tool != "bash" || messages[1].Parts[1].Status != agent.PartCompleted {
+		t.Errorf("unexpected second part: %+v", messages[1].Parts[1])
+	}
+}
+
+func TestDaemonGetSessionMessagesEmpty(t *testing.T) {
+	t.Parallel()
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Backend returns nil history by default — should get empty array.
+	messages, err := client.GetSessionMessages(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetSessionMessages: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Errorf("expected 0 messages, got %d", len(messages))
+	}
+}
+
+func TestDaemonGetSessionMessagesNotFound(t *testing.T) {
+	t.Parallel()
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	_, err := client.GetSessionMessages(context.Background(), "nonexistent")
 	if err == nil {
 		t.Error("expected error for non-existent session")
 	}

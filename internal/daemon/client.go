@@ -123,6 +123,15 @@ func (c *Client) GetSession(ctx context.Context, id string) (*agent.SessionInfo,
 	return &info, nil
 }
 
+// GetSessionMessages returns the full message history for a session.
+func (c *Client) GetSessionMessages(ctx context.Context, sessionID string) ([]agent.MessageData, error) {
+	var messages []agent.MessageData
+	if err := c.get(ctx, "/sessions/"+sessionID+"/messages", &messages); err != nil {
+		return nil, err
+	}
+	return messages, nil
+}
+
 // SendMessage sends a follow-up message to a running session.
 func (c *Client) SendMessage(ctx context.Context, sessionID, text string) error {
 	body := map[string]string{"text": text}

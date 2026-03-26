@@ -252,4 +252,9 @@ type Backend interface {
 
 	// SessionID returns the agent-assigned session ID (may differ from the daemon's ID).
 	SessionID() string
+
+	// Messages returns the full message history for this session.
+	// Each MessageData includes role, content, and parts.
+	// Returns nil, nil if the backend does not support history retrieval.
+	Messages(ctx context.Context) ([]MessageData, error)
 }

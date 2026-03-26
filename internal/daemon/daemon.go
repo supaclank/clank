@@ -309,6 +309,7 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /sessions", d.handleCreateSession)
 	mux.HandleFunc("GET /sessions", d.handleListSessions)
 	mux.HandleFunc("GET /sessions/{id}", d.handleGetSession)
+	mux.HandleFunc("GET /sessions/{id}/messages", d.handleGetSessionMessages)
 	mux.HandleFunc("POST /sessions/{id}/message", d.handleSendMessage)
 	mux.HandleFunc("POST /sessions/{id}/abort", d.handleAbortSession)
 	mux.HandleFunc("POST /sessions/{id}/read", d.handleMarkSessionRead)
@@ -374,6 +375,31 @@ func (d *Daemon) handleGetSession(w http.ResponseWriter, r *http.Request) {
 		info.Status = ms.backend.Status()
 	}
 	writeJSON(w, http.StatusOK, info)
+}
+
+func (d *Daemon) handleGetSessionMessages(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	d.mu.RLock()
+	ms, ok := d.sessions[id]
+	d.mu.RUnlock()
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	if ms.backend == nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "session has no active backend"})
+		return
+	}
+
+	messages, err := ms.backend.Messages(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if messages == nil {
+		messages = []agent.MessageData{}
+	}
+	writeJSON(w, http.StatusOK, messages)
 }
 
 func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
