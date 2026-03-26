@@ -134,6 +134,11 @@ func (c *Client) AbortSession(ctx context.Context, sessionID string) error {
 	return c.post(ctx, "/sessions/"+sessionID+"/abort", nil, nil)
 }
 
+// MarkSessionRead marks a session as read by setting its LastReadAt timestamp.
+func (c *Client) MarkSessionRead(ctx context.Context, sessionID string) error {
+	return c.post(ctx, "/sessions/"+sessionID+"/read", nil, nil)
+}
+
 // DeleteSession stops and removes a session.
 func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
 	return c.do(ctx, "DELETE", "/sessions/"+sessionID, nil, nil)

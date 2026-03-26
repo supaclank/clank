@@ -152,6 +152,11 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg.(type) {
 	case backToInboxMsg:
+		// Mark the session as read on close to capture any activity
+		// that occurred while the user was viewing it.
+		if m.activeConnID != "" {
+			go m.client.MarkSessionRead(context.Background(), m.activeConnID)
+		}
 		m.screen = screenInbox
 		m.sessionView = nil
 		m.activeConnID = ""
@@ -258,6 +263,9 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m *InboxModel) openSession(sessionID string) tea.Cmd {
 	m.screen = screenSession
 	m.activeConnID = sessionID
+
+	// Mark session as read so the inbox reflects the change immediately.
+	go m.client.MarkSessionRead(context.Background(), sessionID)
 
 	// Pre-subscribe to SSE before creating the view model to avoid missing
 	// events from an already-busy session. The connect is to a local Unix

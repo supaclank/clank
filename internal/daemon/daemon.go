@@ -311,6 +311,7 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /sessions/{id}", d.handleGetSession)
 	mux.HandleFunc("POST /sessions/{id}/message", d.handleSendMessage)
 	mux.HandleFunc("POST /sessions/{id}/abort", d.handleAbortSession)
+	mux.HandleFunc("POST /sessions/{id}/read", d.handleMarkSessionRead)
 	mux.HandleFunc("DELETE /sessions/{id}", d.handleDeleteSession)
 	mux.HandleFunc("GET /events", d.handleEvents)
 	mux.HandleFunc("POST /permissions/{id}/reply", d.handlePermissionReply)
@@ -436,6 +437,20 @@ func (d *Daemon) handleAbortSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "aborted"})
+}
+
+func (d *Daemon) handleMarkSessionRead(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	d.mu.Lock()
+	ms, ok := d.sessions[id]
+	if !ok {
+		d.mu.Unlock()
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	ms.info.LastReadAt = time.Now()
+	d.mu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (d *Daemon) handleDeleteSession(w http.ResponseWriter, r *http.Request) {

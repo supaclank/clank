@@ -822,6 +822,115 @@ func TestDaemonSessionInfoUnread(t *testing.T) {
 	}
 }
 
+func TestDaemonMarkSessionRead(t *testing.T) {
+	t.Parallel()
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create a session.
+	created, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test-project",
+		Prompt:     "test prompt",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Newly created session should be unread (LastReadAt is zero).
+	info, err := client.GetSession(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if !info.Unread() {
+		t.Error("expected new session to be unread")
+	}
+
+	// Mark the session as read.
+	if err := client.MarkSessionRead(ctx, created.ID); err != nil {
+		t.Fatalf("MarkSessionRead: %v", err)
+	}
+
+	// Session should now be read.
+	info, err = client.GetSession(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetSession after mark read: %v", err)
+	}
+	if info.Unread() {
+		t.Error("expected session to be read after MarkSessionRead")
+	}
+	if info.LastReadAt.IsZero() {
+		t.Error("expected LastReadAt to be set")
+	}
+}
+
+func TestDaemonMarkSessionReadNotFound(t *testing.T) {
+	t.Parallel()
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	err := client.MarkSessionRead(context.Background(), "nonexistent-id")
+	if err == nil {
+		t.Error("expected error for nonexistent session")
+	}
+}
+
+func TestDaemonMarkSessionReadThenUpdate(t *testing.T) {
+	t.Parallel()
+	_, client, getBackend, cleanup := testDaemonWithBackendAccess(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	created, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test-project",
+		Prompt:     "test prompt",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Mark as read.
+	if err := client.MarkSessionRead(ctx, created.ID); err != nil {
+		t.Fatalf("MarkSessionRead: %v", err)
+	}
+
+	// Verify it's read.
+	info, err := client.GetSession(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if info.Unread() {
+		t.Fatal("expected session to be read")
+	}
+
+	// Emit a status change via the backend to bump UpdatedAt.
+	backend := getBackend()
+	backend.events <- agent.Event{
+		Type:      agent.EventStatusChange,
+		Timestamp: time.Now(),
+		Data: agent.StatusChangeData{
+			OldStatus: agent.StatusBusy,
+			NewStatus: agent.StatusIdle,
+		},
+	}
+
+	// Give the event relay a moment to propagate.
+	time.Sleep(200 * time.Millisecond)
+
+	// Session should be unread again because UpdatedAt was bumped.
+	info, err = client.GetSession(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetSession after status change: %v", err)
+	}
+	if !info.Unread() {
+		t.Error("expected session to be unread after status change")
+	}
+}
+
 // --- Event Round-Trip Tests ---
 //
 // These tests verify that Event.Data survives the full path:
