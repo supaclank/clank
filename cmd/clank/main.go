@@ -1019,8 +1019,8 @@ The daemon is auto-started if not already running.`,
 			// Determine prompt.
 			prompt := strings.Join(args, " ")
 			if prompt == "" {
-				// No prompt — open inbox TUI.
-				return runInbox()
+				// No prompt — open new session dialog.
+				return runNewSession()
 			}
 
 			// Determine project directory.
@@ -1106,6 +1106,19 @@ func runInbox() error {
 	}
 
 	model := tui.NewInboxModel(client)
+	p := tea.NewProgram(model, tea.WithAltScreen())
+	_, err = p.Run()
+	return err
+}
+
+// runNewSession opens the inbox TUI with the new session dialog already shown.
+func runNewSession() error {
+	client, err := ensureDaemon()
+	if err != nil {
+		return fmt.Errorf("daemon: %w", err)
+	}
+
+	model := tui.NewInboxModelWithNewSession(client)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	_, err = p.Run()
 	return err
