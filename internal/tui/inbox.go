@@ -53,6 +53,10 @@ type InboxModel struct {
 	showMenu     bool
 	menu         actionMenuModel
 
+	// Confirm dialog state.
+	showConfirm bool
+	confirm     confirmDialogModel
+
 	// Pre-built display data.
 	displayLines     []string
 	rowToLine        []int
@@ -131,6 +135,11 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// If we're in session detail view (or composing), delegate.
 	if m.screen == screenSession && m.sessionView != nil {
 		return m.updateSessionView(msg)
+	}
+
+	// If confirm dialog is open, delegate.
+	if m.showConfirm {
+		return m.updateConfirm(msg)
 	}
 
 	// If menu is open, delegate to menu.
@@ -213,6 +222,22 @@ func (m *InboxModel) updateMenu(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m *InboxModel) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case confirmResultMsg:
+		m.showConfirm = false
+		if msg.confirmed {
+			return m, m.handleConfirmAction(msg.action)
+		}
+		return m, nil
+
+	default:
+		var cmd tea.Cmd
+		m.confirm, cmd = m.confirm.Update(msg)
+		return m, cmd
+	}
+}
+
 // openComposingSession opens a composing SessionViewModel where the user
 // types their first prompt. The session is created on send.
 func (m *InboxModel) openComposingSession() tea.Cmd {
@@ -273,6 +298,38 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("n"))):
 		return m, m.openComposingSession()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("d"))):
+		if m.cursor >= 0 && m.cursor < len(m.flatRows) {
+			row := m.flatRows[m.cursor]
+			if row.session != nil {
+				title := row.session.Title
+				if title == "" {
+					title = truncateStr(row.session.Prompt, 40)
+				}
+				m.showConfirm = true
+				m.confirm = newConfirmDialog(
+					"Mark as Done",
+					fmt.Sprintf("Mark '%s' as done?\nIt will be hidden from the inbox.", title),
+					"done:"+row.session.ID,
+				)
+			}
+		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("x"))):
+		if m.cursor >= 0 && m.cursor < len(m.flatRows) {
+			row := m.flatRows[m.cursor]
+			if row.session != nil {
+				title := row.session.Title
+				if title == "" {
+					title = truncateStr(row.session.Prompt, 40)
+				}
+				m.showConfirm = true
+				m.confirm = newConfirmDialog(
+					"Archive Session",
+					fmt.Sprintf("Archive '%s'?\nIt will be hidden from the inbox.", title),
+					"archive:"+row.session.ID,
+				)
+			}
+		}
 	}
 	return m, nil
 }
@@ -338,12 +395,49 @@ func (m *InboxModel) deleteSession(sessionID string) tea.Cmd {
 	}
 }
 
+func (m *InboxModel) handleConfirmAction(action string) tea.Cmd {
+	parts := strings.SplitN(action, ":", 2)
+	if len(parts) != 2 {
+		return nil
+	}
+	verb, id := parts[0], parts[1]
+
+	switch verb {
+	case "done":
+		return m.setSessionVisibility(id, agent.VisibilityDone)
+	case "archive":
+		return m.setSessionVisibility(id, agent.VisibilityArchived)
+	}
+	return nil
+}
+
+func (m *InboxModel) setSessionVisibility(sessionID string, visibility agent.SessionVisibility) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := m.client.SetVisibility(ctx, sessionID, visibility); err != nil {
+			return inboxDataMsg{err: err}
+		}
+		// Reload data after visibility change.
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel2()
+		sessions, err := m.client.ListSessions(ctx2)
+		return inboxDataMsg{sessions: sessions, err: err}
+	}
+}
+
 // buildGroups organizes sessions into display groups.
 func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
 	var busyRows, followUpRows, unreadRows, idleRows, errorRows, deadRows []inboxRow
 
 	for i := range sessions {
 		s := &sessions[i]
+
+		// Skip sessions the user has marked as done or archived.
+		if s.Hidden() {
+			continue
+		}
+
 		row := inboxRow{session: s}
 
 		// Follow-up is an orthogonal user flag — pull these sessions into
@@ -514,7 +608,7 @@ func (m *InboxModel) View() tea.View {
 	}
 
 	// Help bar.
-	help := helpStyle.Render("j/k: navigate | enter: open | n: new | r: refresh | q: quit")
+	help := helpStyle.Render("j/k: navigate | enter: open | n: new | d: done | x: archive | r: refresh | q: quit")
 	sb.WriteString(help)
 
 	content := sb.String()
@@ -522,6 +616,11 @@ func (m *InboxModel) View() tea.View {
 	// Overlay menu if open.
 	if m.showMenu {
 		content = m.overlayMenu(content)
+	}
+
+	// Overlay confirm dialog if open.
+	if m.showConfirm {
+		content = m.overlayConfirm(content)
 	}
 
 	v := tea.NewView(content)
@@ -671,7 +770,14 @@ func (m *InboxModel) ensureCursorVisible() {
 }
 
 func (m *InboxModel) overlayMenu(base string) string {
-	popup := m.menu.View()
+	return m.overlayPopup(base, m.menu.View())
+}
+
+func (m *InboxModel) overlayConfirm(base string) string {
+	return m.overlayPopup(base, m.confirm.View())
+}
+
+func (m *InboxModel) overlayPopup(base string, popup string) string {
 	popupLines := strings.Split(popup, "\n")
 	baseLines := strings.Split(base, "\n")
 

@@ -351,6 +351,7 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /sessions/{id}/abort", d.handleAbortSession)
 	mux.HandleFunc("POST /sessions/{id}/read", d.handleMarkSessionRead)
 	mux.HandleFunc("POST /sessions/{id}/followup", d.handleToggleFollowUp)
+	mux.HandleFunc("POST /sessions/{id}/visibility", d.handleSetVisibility)
 	mux.HandleFunc("DELETE /sessions/{id}", d.handleDeleteSession)
 	mux.HandleFunc("GET /events", d.handleEvents)
 	mux.HandleFunc("POST /permissions/{id}/reply", d.handlePermissionReply)
@@ -680,6 +681,36 @@ func (d *Daemon) handleToggleFollowUp(w http.ResponseWriter, r *http.Request) {
 	followUp := ms.info.FollowUp
 	d.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]bool{"follow_up": followUp})
+}
+
+func (d *Daemon) handleSetVisibility(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		Visibility agent.SessionVisibility `json:"visibility"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	switch body.Visibility {
+	case agent.VisibilityVisible, agent.VisibilityDone, agent.VisibilityArchived:
+		// valid
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid visibility: %q", body.Visibility)})
+		return
+	}
+
+	d.mu.Lock()
+	ms, ok := d.sessions[id]
+	if !ok {
+		d.mu.Unlock()
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	ms.info.Visibility = body.Visibility
+	d.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]string{"visibility": string(body.Visibility)})
 }
 
 func (d *Daemon) handleDeleteSession(w http.ResponseWriter, r *http.Request) {

@@ -36,6 +36,11 @@ type sessionFollowUpResultMsg struct {
 	err      error
 }
 
+// sessionVisibilityResultMsg is the result of setting visibility on a session.
+type sessionVisibilityResultMsg struct {
+	err error
+}
+
 // sessionInfoMsg delivers a refreshed SessionInfo to the model.
 type sessionInfoMsg struct {
 	info *agent.SessionInfo
@@ -87,6 +92,10 @@ type SessionViewModel struct {
 	width  int
 	height int
 	err    error
+
+	// Confirm dialog state.
+	showConfirm bool
+	confirm     confirmDialogModel
 
 	// standalone is true when this model is run directly (not inside InboxModel).
 	// When true, 'q' quits the program instead of emitting backToInboxMsg.
@@ -261,6 +270,22 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateCompose(msg)
 	}
 
+	// Confirm dialog takes priority when open.
+	if m.showConfirm {
+		switch msg := msg.(type) {
+		case confirmResultMsg:
+			m.showConfirm = false
+			if msg.confirmed {
+				return m, m.handleConfirmAction(msg.action)
+			}
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.confirm, cmd = m.confirm.Update(msg)
+			return m, cmd
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -345,6 +370,17 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.info.FollowUp = msg.followUp
 		}
 		return m, nil
+
+	case sessionVisibilityResultMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		// After successfully marking done/archived, go back to inbox.
+		if m.cancelEvents != nil {
+			m.cancelEvents()
+		}
+		return m, func() tea.Msg { return backToInboxMsg{} }
 
 	case sessionEventsErrMsg:
 		m.err = msg.err
@@ -465,8 +501,38 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// TODO: approve session
 	case key.Matches(msg, key.NewBinding(key.WithKeys("f"))):
 		return m, m.toggleFollowUp()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("d"))):
+		title := "this session"
+		if m.info != nil {
+			if m.info.Title != "" {
+				title = truncateStr(m.info.Title, 40)
+			} else if m.info.Prompt != "" {
+				title = truncateStr(m.info.Prompt, 40)
+			}
+		}
+		m.showConfirm = true
+		m.confirm = newConfirmDialog(
+			"Mark as Done",
+			fmt.Sprintf("Mark '%s' as done?\nIt will be hidden from the inbox.", title),
+			"done",
+		)
+		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("x"))):
-		// TODO: archive session
+		title := "this session"
+		if m.info != nil {
+			if m.info.Title != "" {
+				title = truncateStr(m.info.Title, 40)
+			} else if m.info.Prompt != "" {
+				title = truncateStr(m.info.Prompt, 40)
+			}
+		}
+		m.showConfirm = true
+		m.confirm = newConfirmDialog(
+			"Archive Session",
+			fmt.Sprintf("Archive '%s'?\nIt will be hidden from the inbox.", title),
+			"archive",
+		)
+		return m, nil
 	}
 
 	return m, nil
@@ -754,6 +820,27 @@ func (m *SessionViewModel) toggleFollowUp() tea.Cmd {
 	}
 }
 
+func (m *SessionViewModel) handleConfirmAction(action string) tea.Cmd {
+	switch action {
+	case "done":
+		return m.setVisibility(agent.VisibilityDone)
+	case "archive":
+		return m.setVisibility(agent.VisibilityArchived)
+	}
+	return nil
+}
+
+func (m *SessionViewModel) setVisibility(visibility agent.SessionVisibility) tea.Cmd {
+	client := m.client
+	sessionID := m.sessionID
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err := client.SetVisibility(ctx, sessionID, visibility)
+		return sessionVisibilityResultMsg{err: err}
+	}
+}
+
 // --- View ---
 
 func (m *SessionViewModel) View() tea.View {
@@ -831,7 +918,7 @@ func (m *SessionViewModel) View() tea.View {
 		sb.WriteString(helpStyle.Render(help))
 	}
 
-	v := tea.NewView(sb.String())
+	v := tea.NewView(m.overlaySessionConfirm(sb.String()))
 	v.AltScreen = true
 	return v
 }
@@ -970,7 +1057,7 @@ func (m *SessionViewModel) buildHelpText() string {
 	if m.standalone {
 		qLabel = "q: quit"
 	}
-	parts := []string{"m: message", "f: follow-up", qLabel}
+	parts := []string{"m: message", "f: follow-up", "d: done", "x: archive", qLabel}
 	return strings.Join(parts, " | ")
 }
 
@@ -1015,6 +1102,52 @@ func (m *SessionViewModel) clampScrollWithLines(lines []string) {
 	if m.scrollOffset < 0 {
 		m.scrollOffset = 0
 	}
+}
+
+// overlaySessionConfirm overlays the confirm dialog onto the base content if active.
+func (m *SessionViewModel) overlaySessionConfirm(base string) string {
+	if !m.showConfirm {
+		return base
+	}
+
+	popup := m.confirm.View()
+	popupLines := strings.Split(popup, "\n")
+	baseLines := strings.Split(base, "\n")
+
+	popupH := len(popupLines)
+	popupW := 0
+	for _, l := range popupLines {
+		if w := lipgloss.Width(l); w > popupW {
+			popupW = w
+		}
+	}
+
+	startRow := (m.height - popupH) / 2
+	if startRow < 0 {
+		startRow = 0
+	}
+	startCol := (m.width - popupW) / 2
+	if startCol < 0 {
+		startCol = 0
+	}
+
+	for len(baseLines) < startRow+popupH {
+		baseLines = append(baseLines, "")
+	}
+
+	for i, popLine := range popupLines {
+		row := startRow + i
+		if row >= len(baseLines) {
+			break
+		}
+		baseLine := baseLines[row]
+		for lipgloss.Width(baseLine) < startCol {
+			baseLine += " "
+		}
+		baseLines[row] = baseLine[:startCol] + popLine
+	}
+
+	return strings.Join(baseLines, "\n")
 }
 
 // --- Helpers ---

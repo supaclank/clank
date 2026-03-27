@@ -30,6 +30,17 @@ const (
 	StatusDead     SessionStatus = "dead"     // Process exited
 )
 
+// SessionVisibility controls whether a session appears in the default inbox view.
+// It is orthogonal to SessionStatus — a session can be idle at the system level
+// but marked "done" by the user.
+type SessionVisibility string
+
+const (
+	VisibilityVisible  SessionVisibility = ""         // Default: shown in inbox
+	VisibilityDone     SessionVisibility = "done"     // User marked as completed
+	VisibilityArchived SessionVisibility = "archived" // User archived (won't do / irrelevant)
+)
+
 // EventType classifies daemon events.
 type EventType string
 
@@ -233,20 +244,21 @@ func (r StartRequest) Validate() error {
 
 // SessionInfo is a snapshot of a managed session, returned by the daemon API.
 type SessionInfo struct {
-	ID          string        `json:"id"`
-	ExternalID  string        `json:"external_id,omitempty"` // Backend's native session ID (e.g. OpenCode session ID)
-	Backend     BackendType   `json:"backend"`
-	Status      SessionStatus `json:"status"`
-	FollowUp    bool          `json:"follow_up,omitempty"` // User-set flag to mark session for follow-up
-	ProjectDir  string        `json:"project_dir"`
-	ProjectName string        `json:"project_name"`
-	Prompt      string        `json:"prompt"`
-	Title       string        `json:"title,omitempty"` // AI-generated session title from OpenCode
-	TicketID    string        `json:"ticket_id,omitempty"`
-	Agent       string        `json:"agent,omitempty"` // Current OpenCode agent (e.g. "build", "plan")
-	CreatedAt   time.Time     `json:"created_at"`
-	UpdatedAt   time.Time     `json:"updated_at"`
-	LastReadAt  time.Time     `json:"last_read_at,omitempty"`
+	ID          string            `json:"id"`
+	ExternalID  string            `json:"external_id,omitempty"` // Backend's native session ID (e.g. OpenCode session ID)
+	Backend     BackendType       `json:"backend"`
+	Status      SessionStatus     `json:"status"`
+	Visibility  SessionVisibility `json:"visibility,omitempty"` // User-set: "", "done", or "archived"
+	FollowUp    bool              `json:"follow_up,omitempty"`  // User-set flag to mark session for follow-up
+	ProjectDir  string            `json:"project_dir"`
+	ProjectName string            `json:"project_name"`
+	Prompt      string            `json:"prompt"`
+	Title       string            `json:"title,omitempty"` // AI-generated session title from OpenCode
+	TicketID    string            `json:"ticket_id,omitempty"`
+	Agent       string            `json:"agent,omitempty"` // Current OpenCode agent (e.g. "build", "plan")
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+	LastReadAt  time.Time         `json:"last_read_at,omitempty"`
 }
 
 // ProjectInfo is a lightweight project summary from the OpenCode API.
@@ -268,6 +280,11 @@ type SessionSnapshot struct {
 // Unread returns true if the session has activity the user hasn't seen.
 func (s SessionInfo) Unread() bool {
 	return s.LastReadAt.IsZero() || s.UpdatedAt.After(s.LastReadAt)
+}
+
+// Hidden returns true if the session should not appear in the default inbox view.
+func (s SessionInfo) Hidden() bool {
+	return s.Visibility == VisibilityDone || s.Visibility == VisibilityArchived
 }
 
 // SendMessageOpts contains options for sending a follow-up message.

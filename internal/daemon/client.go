@@ -169,6 +169,14 @@ func (c *Client) ToggleFollowUp(ctx context.Context, sessionID string) (bool, er
 	return resp.FollowUp, nil
 }
 
+// SetVisibility sets the visibility state of a session (visible, done, or archived).
+func (c *Client) SetVisibility(ctx context.Context, sessionID string, visibility agent.SessionVisibility) error {
+	body := struct {
+		Visibility agent.SessionVisibility `json:"visibility"`
+	}{Visibility: visibility}
+	return c.post(ctx, "/sessions/"+sessionID+"/visibility", body, nil)
+}
+
 // DeleteSession stops and removes a session.
 func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
 	return c.do(ctx, "DELETE", "/sessions/"+sessionID, nil, nil)

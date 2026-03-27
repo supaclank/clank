@@ -85,6 +85,61 @@ func TestBuildGroups_StableAcrossRepeatedCalls(t *testing.T) {
 	}
 }
 
+func TestBuildGroups_FiltersHiddenSessions(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "visible-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), LastReadAt: now},
+		{ID: "done-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now, Visibility: agent.VisibilityDone},
+		{ID: "archived-1", Status: agent.StatusBusy, UpdatedAt: now.Add(-30 * time.Minute), Visibility: agent.VisibilityArchived},
+		{ID: "visible-2", Status: agent.StatusBusy, UpdatedAt: now.Add(-15 * time.Minute)},
+	}
+
+	m := &InboxModel{}
+	m.buildGroups(sessions)
+
+	// Collect all session IDs across all groups.
+	var ids []string
+	for _, g := range m.groups {
+		for _, r := range g.rows {
+			ids = append(ids, r.session.ID)
+		}
+	}
+
+	// Only visible sessions should be present.
+	for _, id := range ids {
+		if id == "done-1" || id == "archived-1" {
+			t.Errorf("hidden session %q should not appear in groups", id)
+		}
+	}
+	if len(ids) != 2 {
+		t.Errorf("expected 2 visible sessions, got %d: %v", len(ids), ids)
+	}
+}
+
+func TestBuildGroups_AllHiddenResultsInEmptyGroups(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "done-1", Status: agent.StatusIdle, UpdatedAt: now, Visibility: agent.VisibilityDone},
+		{ID: "archived-1", Status: agent.StatusIdle, UpdatedAt: now, Visibility: agent.VisibilityArchived},
+	}
+
+	m := &InboxModel{}
+	m.buildGroups(sessions)
+
+	// All sessions hidden — no groups should be created.
+	var totalRows int
+	for _, g := range m.groups {
+		totalRows += len(g.rows)
+	}
+	if totalRows != 0 {
+		t.Errorf("expected 0 rows when all sessions are hidden, got %d", totalRows)
+	}
+}
+
 func TestRenderRow_ShowsAgentMode(t *testing.T) {
 	t.Parallel()
 

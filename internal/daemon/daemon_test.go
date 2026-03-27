@@ -2054,6 +2054,148 @@ func TestHistoricalSessionResumeActivatesBackend(t *testing.T) {
 	}
 }
 
+// --- SetVisibility Tests ---
+
+func TestDaemonSetVisibilityDone(t *testing.T) {
+	t.Parallel()
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test prompt",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Mark as done.
+	if err := client.SetVisibility(ctx, info.ID, agent.VisibilityDone); err != nil {
+		t.Fatalf("SetVisibility(done): %v", err)
+	}
+
+	got, err := client.GetSession(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.Visibility != agent.VisibilityDone {
+		t.Errorf("visibility = %q, want %q", got.Visibility, agent.VisibilityDone)
+	}
+	if !got.Hidden() {
+		t.Error("expected session to be hidden after marking done")
+	}
+}
+
+func TestDaemonSetVisibilityArchived(t *testing.T) {
+	t.Parallel()
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test prompt",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Mark as archived.
+	if err := client.SetVisibility(ctx, info.ID, agent.VisibilityArchived); err != nil {
+		t.Fatalf("SetVisibility(archived): %v", err)
+	}
+
+	got, err := client.GetSession(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.Visibility != agent.VisibilityArchived {
+		t.Errorf("visibility = %q, want %q", got.Visibility, agent.VisibilityArchived)
+	}
+	if !got.Hidden() {
+		t.Error("expected session to be hidden after archiving")
+	}
+}
+
+func TestDaemonSetVisibilityBackToVisible(t *testing.T) {
+	t.Parallel()
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test prompt",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Mark done, then revert to visible.
+	if err := client.SetVisibility(ctx, info.ID, agent.VisibilityDone); err != nil {
+		t.Fatalf("SetVisibility(done): %v", err)
+	}
+	if err := client.SetVisibility(ctx, info.ID, agent.VisibilityVisible); err != nil {
+		t.Fatalf("SetVisibility(visible): %v", err)
+	}
+
+	got, err := client.GetSession(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.Visibility != agent.VisibilityVisible {
+		t.Errorf("visibility = %q, want %q", got.Visibility, agent.VisibilityVisible)
+	}
+	if got.Hidden() {
+		t.Error("expected session to not be hidden after reverting to visible")
+	}
+}
+
+func TestDaemonSetVisibilityInvalid(t *testing.T) {
+	t.Parallel()
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test prompt",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Invalid visibility value should fail.
+	err = client.SetVisibility(ctx, info.ID, agent.SessionVisibility("invalid"))
+	if err == nil {
+		t.Error("expected error for invalid visibility value")
+	}
+}
+
+func TestDaemonSetVisibilityNotFound(t *testing.T) {
+	t.Parallel()
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	err := client.SetVisibility(context.Background(), "nonexistent-id", agent.VisibilityDone)
+	if err == nil {
+		t.Error("expected error for nonexistent session")
+	}
+}
+
 func waitForDaemon(t *testing.T, client *daemon.Client) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
