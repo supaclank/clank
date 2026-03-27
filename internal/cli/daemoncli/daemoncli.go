@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/daemon"
 	"github.com/acksell/clank/internal/store"
@@ -86,15 +87,10 @@ func RunStart(foreground bool) error {
 		}
 		d.Store = st
 
-		// Wire in real backend factory.
-		factory := daemon.NewDefaultBackendFactory()
-		d.BackendFactory = factory.Create
-		d.AgentLister = factory.ListAgents
-		d.SessionDiscoverer = factory.DiscoverSessions
-		d.OnShutdown = func() {
-			factory.StopAll()
-			st.Close()
-		}
+		// Wire in backend managers.
+		d.BackendManagers[agent.BackendOpenCode] = daemon.NewOpenCodeBackendManager()
+		d.BackendManagers[agent.BackendClaudeCode] = daemon.NewClaudeBackendManager()
+
 		return d.Run()
 	}
 

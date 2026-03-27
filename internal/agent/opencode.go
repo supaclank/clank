@@ -31,6 +31,7 @@ type OpenCodeBackend struct {
 	events       chan Event
 	eventOnce    sync.Once // protects close(events)
 	eventsClosed bool      // true after events channel is closed
+	watchOnce    sync.Once // ensures streamEvents is started at most once
 	ctx          context.Context
 	cancel       context.CancelFunc
 	client       *opencode.Client
@@ -76,8 +77,8 @@ func (b *OpenCodeBackend) Start(ctx context.Context, req StartRequest) error {
 		b.mu.Unlock()
 	}
 
-	// Start SSE event listener in background.
-	go b.streamEvents()
+	// Start SSE event listener in background (idempotent — skips if already watching).
+	b.startWatching()
 
 	// Mark as busy BEFORE sending the prompt, so the TUI shows the correct
 	// status while the agent is working.
@@ -105,6 +106,24 @@ func (b *OpenCodeBackend) Start(ctx context.Context, req StartRequest) error {
 	// Don't set status here — the SSE stream will deliver session.idle
 	// which triggers the idle transition.
 	return nil
+}
+
+// Watch starts listening for SSE events on this session without sending a
+// prompt. Use this to observe a discovered/historical session that may be
+// active. The Events channel will produce events after Watch returns.
+func (b *OpenCodeBackend) Watch(ctx context.Context) error {
+	if b.SessionID() == "" {
+		return fmt.Errorf("cannot watch: session ID not set")
+	}
+	b.startWatching()
+	return nil
+}
+
+// startWatching launches the SSE event listener goroutine if not already running.
+func (b *OpenCodeBackend) startWatching() {
+	b.watchOnce.Do(func() {
+		go b.streamEvents()
+	})
 }
 
 func (b *OpenCodeBackend) SendMessage(ctx context.Context, opts SendMessageOpts) error {

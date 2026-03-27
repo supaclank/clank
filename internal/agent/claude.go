@@ -116,6 +116,12 @@ func (b *ClaudeCodeBackend) SendMessage(ctx context.Context, opts SendMessageOpt
 	return fmt.Errorf("claude code follow-up requires a new process with --resume; use Start with SessionID set")
 }
 
+// Watch is a no-op for Claude Code. The CLI doesn't support passive
+// observation of a session — events only flow while a subprocess is running.
+func (b *ClaudeCodeBackend) Watch(ctx context.Context) error {
+	return nil
+}
+
 func (b *ClaudeCodeBackend) Abort(ctx context.Context) error {
 	b.mu.Lock()
 	cmd := b.cmd

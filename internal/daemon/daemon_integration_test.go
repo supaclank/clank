@@ -21,7 +21,7 @@ import (
 )
 
 // startTestDaemonWithRealOpenCode creates a daemon that uses
-// DefaultBackendFactory (real opencode server management).
+// OpenCodeBackendManager and ClaudeBackendManager (real opencode server management).
 func startTestDaemonWithRealOpenCode(t *testing.T) (*Client, func()) {
 	t.Helper()
 
@@ -33,9 +33,8 @@ func startTestDaemonWithRealOpenCode(t *testing.T) (*Client, func()) {
 	pidPath := sockDir + "/test.pid"
 
 	d := NewWithPaths(sockPath, pidPath)
-	factory := NewDefaultBackendFactory()
-	d.BackendFactory = factory.Create
-	d.OnShutdown = factory.StopAll
+	d.BackendManagers[agent.BackendOpenCode] = NewOpenCodeBackendManager()
+	d.BackendManagers[agent.BackendClaudeCode] = NewClaudeBackendManager()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	started := make(chan struct{})

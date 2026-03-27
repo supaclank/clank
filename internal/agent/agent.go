@@ -294,13 +294,19 @@ type SendMessageOpts struct {
 	Agent string `json:"agent,omitempty"` // OpenCode agent name; empty = use session default
 }
 
-// Backend is the interface that each agent backend must implement.
-// The daemon creates one Backend instance per session.
-type Backend interface {
+// SessionBackend is the interface that each agent backend must implement.
+// The daemon creates one SessionBackend instance per session.
+type SessionBackend interface {
 	// Start launches the agent with the given request.
-	// It should return quickly; the agent runs asynchronously.
-	// Events are delivered via the Events channel.
+	// It blocks for the duration of the LLM turn; events stream via Events().
 	Start(ctx context.Context, req StartRequest) error
+
+	// Watch starts listening for events on this session without sending a
+	// prompt. Use this to observe a session that may already be active
+	// (e.g. a discovered/historical session). Backends that don't support
+	// passive observation (like Claude CLI) should return nil (no-op).
+	// The Events channel must produce events after Watch returns.
+	Watch(ctx context.Context) error
 
 	// SendMessage sends a follow-up message to the running agent.
 	SendMessage(ctx context.Context, opts SendMessageOpts) error
@@ -325,4 +331,29 @@ type Backend interface {
 	// Each MessageData includes role, content, and parts.
 	// Returns nil, nil if the backend does not support history retrieval.
 	Messages(ctx context.Context) ([]MessageData, error)
+}
+
+// BackendManager creates and manages SessionBackend instances for a specific
+// backend type. Each implementation handles its own resource sharing (e.g.,
+// OpenCode shares one server per project directory, Claude manages
+// subprocesses independently).
+type BackendManager interface {
+	// CreateBackend creates a new SessionBackend for the given request.
+	// The backend is not started — call Start() or Watch() on it.
+	CreateBackend(req StartRequest) (SessionBackend, error)
+
+	// Shutdown cleans up all managed resources (servers, connections, etc.).
+	Shutdown()
+}
+
+// AgentLister is an optional interface that BackendManagers can implement
+// to expose available agents for a project.
+type AgentLister interface {
+	ListAgents(ctx context.Context, projectDir string) ([]AgentInfo, error)
+}
+
+// SessionDiscoverer is an optional interface that BackendManagers can
+// implement to discover historical sessions from the underlying backend.
+type SessionDiscoverer interface {
+	DiscoverSessions(ctx context.Context, seedDir string) ([]SessionSnapshot, error)
 }

@@ -13,7 +13,7 @@ import (
 	"github.com/acksell/clank/internal/store"
 )
 
-// mockBackend implements agent.Backend for testing.
+// mockBackend implements agent.SessionBackend for testing.
 type mockBackend struct {
 	mu        sync.Mutex
 	events    chan agent.Event
@@ -59,6 +59,10 @@ func (m *mockBackend) Start(ctx context.Context, req agent.StartRequest) error {
 	if m.onStart != nil {
 		return m.onStart(ctx, req)
 	}
+	return nil
+}
+
+func (m *mockBackend) Watch(ctx context.Context) error {
 	return nil
 }
 
@@ -124,6 +128,76 @@ func (m *mockBackend) Messages(ctx context.Context) ([]agent.MessageData, error)
 	return m.history, nil
 }
 
+// mockBackendManager implements agent.BackendManager for testing. It wraps
+// a creation function so tests can intercept and track created backends.
+type mockBackendManager struct {
+	mu      sync.Mutex
+	create  func(req agent.StartRequest) *mockBackend // custom creation logic; nil = newMockBackend()
+	latest  *mockBackend                              // last created backend
+	all     []*mockBackend                            // all created backends
+	stopped bool
+}
+
+func newMockBackendManager() *mockBackendManager {
+	return &mockBackendManager{}
+}
+
+func (m *mockBackendManager) CreateBackend(req agent.StartRequest) (agent.SessionBackend, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var b *mockBackend
+	if m.create != nil {
+		b = m.create(req)
+	} else {
+		b = newMockBackend()
+	}
+	m.latest = b
+	m.all = append(m.all, b)
+	return b, nil
+}
+
+func (m *mockBackendManager) Shutdown() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stopped = true
+}
+
+// getLatest returns the most recently created mockBackend.
+func (m *mockBackendManager) getLatest() *mockBackend {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.latest
+}
+
+// getAll returns all created mockBackends.
+func (m *mockBackendManager) getAll() []*mockBackend {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]*mockBackend, len(m.all))
+	copy(cp, m.all)
+	return cp
+}
+
+// mockDiscovererManager implements BackendManager + SessionDiscoverer.
+type mockDiscovererManager struct {
+	mockBackendManager
+	snapshots []agent.SessionSnapshot
+}
+
+func (m *mockDiscovererManager) DiscoverSessions(ctx context.Context, seedDir string) ([]agent.SessionSnapshot, error) {
+	return m.snapshots, nil
+}
+
+// mockAgentListerManager implements BackendManager + AgentLister.
+type mockAgentListerManager struct {
+	mockBackendManager
+	agents func(ctx context.Context, projectDir string) ([]agent.AgentInfo, error)
+}
+
+func (m *mockAgentListerManager) ListAgents(ctx context.Context, projectDir string) ([]agent.AgentInfo, error) {
+	return m.agents(ctx, projectDir)
+}
+
 // shortTempDir creates a temp directory with a short path suitable for Unix sockets.
 // macOS has a 104-char limit on socket paths, and t.TempDir() can produce
 // paths that exceed this when combined with long test names.
@@ -148,16 +222,10 @@ func testDaemon(t *testing.T) (*daemon.Daemon, *daemon.Client, func()) {
 
 	d := daemon.NewWithPaths(sockPath, pidPath)
 
-	// Wire up mock backend factory.
-	var lastBackend *mockBackend
-	var backendMu sync.Mutex
-	d.BackendFactory = func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
-		b := newMockBackend()
-		backendMu.Lock()
-		lastBackend = b
-		backendMu.Unlock()
-		return b, nil
-	}
+	// Wire up mock backend manager for all backend types.
+	mgr := newMockBackendManager()
+	d.BackendManagers[agent.BackendOpenCode] = mgr
+	d.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	// Start daemon in background.
 	errCh := make(chan error, 1)
@@ -193,7 +261,7 @@ func testDaemon(t *testing.T) (*daemon.Daemon, *daemon.Client, func()) {
 
 	// Store lastBackend accessor on test via a helper.
 	// We'll access it through the test closure.
-	_ = lastBackend
+	_ = mgr
 
 	return d, client, cleanup
 }
@@ -519,21 +587,15 @@ func TestDaemonGetSessionMessagesNotFound(t *testing.T) {
 }
 
 func TestDaemonSendMessage(t *testing.T) {
-	var latestBackend *mockBackend
-	var backendMu sync.Mutex
+	mgr := newMockBackendManager()
 
 	dir := shortTempDir(t)
 	sockPath := filepath.Join(dir, "test.sock")
 	pidPath := filepath.Join(dir, "test.pid")
 
 	d := daemon.NewWithPaths(sockPath, pidPath)
-	d.BackendFactory = func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
-		b := newMockBackend()
-		backendMu.Lock()
-		latestBackend = b
-		backendMu.Unlock()
-		return b, nil
-	}
+	d.BackendManagers[agent.BackendOpenCode] = mgr
+	d.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- d.Run() }()
@@ -564,9 +626,7 @@ func TestDaemonSendMessage(t *testing.T) {
 	}
 
 	// Verify the backend received the message.
-	backendMu.Lock()
-	b := latestBackend
-	backendMu.Unlock()
+	b := mgr.getLatest()
 
 	time.Sleep(50 * time.Millisecond)
 	b.mu.Lock()
@@ -577,21 +637,15 @@ func TestDaemonSendMessage(t *testing.T) {
 }
 
 func TestDaemonAbortSession(t *testing.T) {
-	var latestBackend *mockBackend
-	var backendMu sync.Mutex
+	mgr := newMockBackendManager()
 
 	dir := shortTempDir(t)
 	sockPath := filepath.Join(dir, "test.sock")
 	pidPath := filepath.Join(dir, "test.pid")
 
 	d := daemon.NewWithPaths(sockPath, pidPath)
-	d.BackendFactory = func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
-		b := newMockBackend()
-		backendMu.Lock()
-		latestBackend = b
-		backendMu.Unlock()
-		return b, nil
-	}
+	d.BackendManagers[agent.BackendOpenCode] = mgr
+	d.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- d.Run() }()
@@ -620,9 +674,7 @@ func TestDaemonAbortSession(t *testing.T) {
 		t.Fatalf("AbortSession: %v", err)
 	}
 
-	backendMu.Lock()
-	b := latestBackend
-	backendMu.Unlock()
+	b := mgr.getLatest()
 
 	time.Sleep(50 * time.Millisecond)
 	b.mu.Lock()
@@ -758,21 +810,15 @@ func TestDaemonStatus(t *testing.T) {
 }
 
 func TestDaemonGracefulShutdownStopsBackends(t *testing.T) {
-	var backends []*mockBackend
-	var backendMu sync.Mutex
+	mgr := newMockBackendManager()
 
 	dir := shortTempDir(t)
 	sockPath := filepath.Join(dir, "test.sock")
 	pidPath := filepath.Join(dir, "test.pid")
 
 	d := daemon.NewWithPaths(sockPath, pidPath)
-	d.BackendFactory = func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
-		b := newMockBackend()
-		backendMu.Lock()
-		backends = append(backends, b)
-		backendMu.Unlock()
-		return b, nil
-	}
+	d.BackendManagers[agent.BackendOpenCode] = mgr
+	d.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- d.Run() }()
@@ -811,8 +857,7 @@ func TestDaemonGracefulShutdownStopsBackends(t *testing.T) {
 	}
 
 	// All backends should have been stopped.
-	backendMu.Lock()
-	defer backendMu.Unlock()
+	backends := mgr.getAll()
 	for i, b := range backends {
 		b.mu.Lock()
 		if !b.stopped {
@@ -1060,15 +1105,9 @@ func testDaemonWithBackendAccess(t *testing.T) (*daemon.Daemon, *daemon.Client, 
 
 	d := daemon.NewWithPaths(sockPath, pidPath)
 
-	var latestBackend *mockBackend
-	var backendMu sync.Mutex
-	d.BackendFactory = func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
-		b := newMockBackend()
-		backendMu.Lock()
-		latestBackend = b
-		backendMu.Unlock()
-		return b, nil
-	}
+	mgr := newMockBackendManager()
+	d.BackendManagers[agent.BackendOpenCode] = mgr
+	d.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- d.Run() }()
@@ -1077,9 +1116,7 @@ func testDaemonWithBackendAccess(t *testing.T) (*daemon.Daemon, *daemon.Client, 
 	waitForDaemon(t, client)
 
 	getBackend := func() *mockBackend {
-		backendMu.Lock()
-		defer backendMu.Unlock()
-		return latestBackend
+		return mgr.getLatest()
 	}
 
 	cleanup := func() {
@@ -1616,18 +1653,20 @@ func TestDaemonListAgents(t *testing.T) {
 	pidPath := filepath.Join(dir, "test.pid")
 
 	d := daemon.NewWithPaths(sockPath, pidPath)
-	d.BackendFactory = func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
-		return newMockBackend(), nil
-	}
-	d.AgentLister = func(ctx context.Context, bt agent.BackendType, projectDir string) ([]agent.AgentInfo, error) {
-		if bt == agent.BackendOpenCode {
+
+	// OpenCode manager with agent listing support.
+	ocMgr := &mockAgentListerManager{
+		agents: func(ctx context.Context, projectDir string) ([]agent.AgentInfo, error) {
 			return []agent.AgentInfo{
 				{Name: "build", Description: "Build agent", Mode: "primary"},
 				{Name: "plan", Description: "Plan agent", Mode: "primary"},
 			}, nil
-		}
-		return nil, nil
+		},
 	}
+	d.BackendManagers[agent.BackendOpenCode] = ocMgr
+
+	// Claude manager — no agent lister support.
+	d.BackendManagers[agent.BackendClaudeCode] = newMockBackendManager()
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- d.Run() }()
@@ -1722,7 +1761,7 @@ func TestDaemonAgentStoredOnSession(t *testing.T) {
 // --- Discover + Historical Session Tests ---
 
 // testDaemonWithDiscover creates a daemon with a mock SessionDiscoverer and
-// a backend factory that records created backends. Returns the daemon, client,
+// a backend manager that records created backends. Returns the daemon, client,
 // a function to get the latest backend, and a cleanup function.
 func testDaemonWithDiscover(t *testing.T, snapshots []agent.SessionSnapshot) (*daemon.Daemon, *daemon.Client, func() *mockBackend, func()) {
 	t.Helper()
@@ -1733,22 +1772,17 @@ func testDaemonWithDiscover(t *testing.T, snapshots []agent.SessionSnapshot) (*d
 
 	d := daemon.NewWithPaths(sockPath, pidPath)
 
-	var latestBackend *mockBackend
-	var backendMu sync.Mutex
-	d.BackendFactory = func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
+	discMgr := &mockDiscovererManager{
+		snapshots: snapshots,
+	}
+	// Custom create func to propagate sessionID from the request.
+	discMgr.create = func(req agent.StartRequest) *mockBackend {
 		b := newMockBackend()
-		// Propagate the session ID from the request so the backend knows which
-		// OpenCode session it represents (mirrors real DefaultBackendFactory).
 		b.sessionID = req.SessionID
-		backendMu.Lock()
-		latestBackend = b
-		backendMu.Unlock()
-		return b, nil
+		return b
 	}
-
-	d.SessionDiscoverer = func(ctx context.Context, seedDir string) ([]agent.SessionSnapshot, error) {
-		return snapshots, nil
-	}
+	d.BackendManagers[agent.BackendOpenCode] = discMgr
+	d.BackendManagers[agent.BackendClaudeCode] = &discMgr.mockBackendManager
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- d.Run() }()
@@ -1757,9 +1791,7 @@ func testDaemonWithDiscover(t *testing.T, snapshots []agent.SessionSnapshot) (*d
 	waitForDaemon(t, client)
 
 	getBackend := func() *mockBackend {
-		backendMu.Lock()
-		defer backendMu.Unlock()
-		return latestBackend
+		return discMgr.getLatest()
 	}
 
 	cleanup := func() {
@@ -1877,15 +1909,8 @@ func TestDiscoverSessionsSkipsManagedSessions(t *testing.T) {
 
 	// The mock backend returns "oc-real-session" as its SessionID, mimicking
 	// what happens when OpenCodeBackend.Start() creates a real session.
-	d.BackendFactory = func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
-		b := newMockBackend()
-		b.sessionID = "oc-real-session"
-		return b, nil
-	}
-
-	// The discoverer returns a snapshot with the same external ID.
-	d.SessionDiscoverer = func(ctx context.Context, seedDir string) ([]agent.SessionSnapshot, error) {
-		return []agent.SessionSnapshot{
+	discMgr := &mockDiscovererManager{
+		snapshots: []agent.SessionSnapshot{
 			{
 				ID:        "oc-real-session",
 				Title:     "Already running",
@@ -1893,8 +1918,15 @@ func TestDiscoverSessionsSkipsManagedSessions(t *testing.T) {
 				CreatedAt: time.Now().Add(-1 * time.Hour),
 				UpdatedAt: time.Now(),
 			},
-		}, nil
+		},
 	}
+	discMgr.create = func(req agent.StartRequest) *mockBackend {
+		b := newMockBackend()
+		b.sessionID = "oc-real-session"
+		return b
+	}
+	d.BackendManagers[agent.BackendOpenCode] = discMgr
+	d.BackendManagers[agent.BackendClaudeCode] = &discMgr.mockBackendManager
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- d.Run() }()
@@ -2368,10 +2400,10 @@ func testDaemonWithStore(t *testing.T, dir string) (d *daemon.Daemon, client *da
 	d = daemon.NewWithPaths(sockPath, pidPath)
 	d.Store = st
 
-	// Wire up mock backend factory.
-	d.BackendFactory = func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
-		return newMockBackend(), nil
-	}
+	// Wire up mock backend manager.
+	mgr := newMockBackendManager()
+	d.BackendManagers[agent.BackendOpenCode] = mgr
+	d.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- d.Run() }()
@@ -2386,7 +2418,6 @@ func testDaemonWithStore(t *testing.T, dir string) (d *daemon.Daemon, client *da
 		case <-time.After(5 * time.Second):
 			t.Error("daemon did not stop in time")
 		}
-		st.Close()
 	}
 	return
 }
@@ -2451,9 +2482,9 @@ func TestPersistence_RoundTrip(t *testing.T) {
 	}
 	d2 := daemon.NewWithPaths(sockPath, pidPath)
 	d2.Store = st2
-	d2.BackendFactory = func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
-		return newMockBackend(), nil
-	}
+	mgr2 := newMockBackendManager()
+	d2.BackendManagers[agent.BackendOpenCode] = mgr2
+	d2.BackendManagers[agent.BackendClaudeCode] = mgr2
 
 	errCh2 := make(chan error, 1)
 	go func() { errCh2 <- d2.Run() }()
@@ -2468,7 +2499,6 @@ func TestPersistence_RoundTrip(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Error("daemon 2 did not stop in time")
 		}
-		st2.Close()
 	}()
 
 	// The session should survive the restart.
@@ -2618,9 +2648,8 @@ func TestPersistence_DiscoverMergePreservesUserFields(t *testing.T) {
 	}
 
 	d1, client1, sockPath, pidPath, dbPath, cleanup1 := testDaemonWithStore(t, dir)
-	d1.SessionDiscoverer = func(ctx context.Context, seedDir string) ([]agent.SessionSnapshot, error) {
-		return snapshots, nil
-	}
+	discMgr1 := &mockDiscovererManager{snapshots: snapshots}
+	d1.BackendManagers[agent.BackendOpenCode] = discMgr1
 	ctx := context.Background()
 
 	if err := client1.DiscoverSessions(ctx, "/tmp/merge-project"); err != nil {
@@ -2669,12 +2698,9 @@ func TestPersistence_DiscoverMergePreservesUserFields(t *testing.T) {
 	}
 	d2 := daemon.NewWithPaths(sockPath, pidPath)
 	d2.Store = st2
-	d2.BackendFactory = func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
-		return newMockBackend(), nil
-	}
-	d2.SessionDiscoverer = func(ctx context.Context, seedDir string) ([]agent.SessionSnapshot, error) {
-		return updatedSnapshots, nil
-	}
+	discMgr2 := &mockDiscovererManager{snapshots: updatedSnapshots}
+	d2.BackendManagers[agent.BackendOpenCode] = discMgr2
+	d2.BackendManagers[agent.BackendClaudeCode] = &discMgr2.mockBackendManager
 
 	errCh2 := make(chan error, 1)
 	go func() { errCh2 <- d2.Run() }()
@@ -2688,7 +2714,6 @@ func TestPersistence_DiscoverMergePreservesUserFields(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Error("daemon did not stop in time")
 		}
-		st2.Close()
 	}()
 
 	// Re-discover — the session should be a duplicate (already loaded from DB).

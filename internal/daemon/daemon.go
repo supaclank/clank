@@ -28,65 +28,51 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-// DefaultBackendFactory creates real backend instances and manages
-// OpenCode server lifecycle. It holds an OpenCodeServerManager to
-// reuse servers across sessions for the same project directory.
-type DefaultBackendFactory struct {
+// OpenCodeBackendManager implements agent.BackendManager, agent.AgentLister,
+// and agent.SessionDiscoverer for OpenCode sessions. It manages one OpenCode
+// server per project directory via OpenCodeServerManager.
+type OpenCodeBackendManager struct {
 	serverMgr *agent.OpenCodeServerManager
 }
 
-// NewDefaultBackendFactory creates a factory with a new server manager.
-func NewDefaultBackendFactory() *DefaultBackendFactory {
-	return &DefaultBackendFactory{
+// NewOpenCodeBackendManager creates a manager with a new server manager.
+func NewOpenCodeBackendManager() *OpenCodeBackendManager {
+	return &OpenCodeBackendManager{
 		serverMgr: agent.NewOpenCodeServerManager(),
 	}
 }
 
-// Create returns a Backend for the given type. For OpenCode backends,
-// it first ensures an OpenCode server is running for the project directory.
-func (f *DefaultBackendFactory) Create(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
-	switch bt {
-	case agent.BackendOpenCode:
-		serverURL, err := f.serverMgr.GetOrStartServer(context.Background(), req.ProjectDir)
-		if err != nil {
-			return nil, fmt.Errorf("start opencode server for %s: %w", req.ProjectDir, err)
-		}
-		return agent.NewOpenCodeBackend(serverURL, req.SessionID), nil
-
-	case agent.BackendClaudeCode:
-		return agent.NewClaudeCodeBackend(), nil
-
-	default:
-		return nil, fmt.Errorf("unknown backend type: %s", bt)
+// CreateBackend creates an OpenCode SessionBackend. It ensures an OpenCode
+// server is running for the project directory before creating the backend.
+func (m *OpenCodeBackendManager) CreateBackend(req agent.StartRequest) (agent.SessionBackend, error) {
+	serverURL, err := m.serverMgr.GetOrStartServer(context.Background(), req.ProjectDir)
+	if err != nil {
+		return nil, fmt.Errorf("start opencode server for %s: %w", req.ProjectDir, err)
 	}
+	return agent.NewOpenCodeBackend(serverURL, req.SessionID), nil
 }
 
-// ListAgents returns available agents for a backend/project combination.
-func (f *DefaultBackendFactory) ListAgents(ctx context.Context, bt agent.BackendType, projectDir string) ([]agent.AgentInfo, error) {
-	switch bt {
-	case agent.BackendOpenCode:
-		return f.serverMgr.ListAgents(ctx, projectDir)
-	default:
-		return nil, nil
-	}
+// Shutdown stops all managed OpenCode servers.
+func (m *OpenCodeBackendManager) Shutdown() {
+	m.serverMgr.StopAll()
 }
 
-// StopAll stops all managed OpenCode servers.
-func (f *DefaultBackendFactory) StopAll() {
-	f.serverMgr.StopAll()
+// ListAgents returns available agents for the given project directory.
+func (m *OpenCodeBackendManager) ListAgents(ctx context.Context, projectDir string) ([]agent.AgentInfo, error) {
+	return m.serverMgr.ListAgents(ctx, projectDir)
 }
 
 // DiscoverSessions lists all projects from the OpenCode server, then lists
-// all sessions for each project. Returns SessionInfo entries ready to be
+// all sessions for each project. Returns SessionSnapshot entries ready to be
 // registered by the daemon.
-func (f *DefaultBackendFactory) DiscoverSessions(ctx context.Context, seedDir string) ([]agent.SessionSnapshot, error) {
-	projects, err := f.serverMgr.ListProjects(ctx, seedDir)
+func (m *OpenCodeBackendManager) DiscoverSessions(ctx context.Context, seedDir string) ([]agent.SessionSnapshot, error) {
+	projects, err := m.serverMgr.ListProjects(ctx, seedDir)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
 	var all []agent.SessionSnapshot
 	for _, proj := range projects {
-		sessions, err := f.serverMgr.ListSessions(ctx, proj.Worktree)
+		sessions, err := m.serverMgr.ListSessions(ctx, proj.Worktree)
 		if err != nil {
 			continue // best-effort: skip projects that fail
 		}
@@ -94,6 +80,22 @@ func (f *DefaultBackendFactory) DiscoverSessions(ctx context.Context, seedDir st
 	}
 	return all, nil
 }
+
+// ClaudeBackendManager implements agent.BackendManager for Claude Code sessions.
+type ClaudeBackendManager struct{}
+
+// NewClaudeBackendManager creates a new Claude backend manager.
+func NewClaudeBackendManager() *ClaudeBackendManager {
+	return &ClaudeBackendManager{}
+}
+
+// CreateBackend creates a Claude Code SessionBackend.
+func (m *ClaudeBackendManager) CreateBackend(req agent.StartRequest) (agent.SessionBackend, error) {
+	return agent.NewClaudeCodeBackend(), nil
+}
+
+// Shutdown is a no-op for Claude — each session is an independent subprocess.
+func (m *ClaudeBackendManager) Shutdown() {}
 
 // Daemon is the long-lived background process that manages agent sessions.
 type Daemon struct {
@@ -112,23 +114,12 @@ type Daemon struct {
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 
-	// BackendFactory creates a Backend for a given BackendType and StartRequest.
-	// Defaults to returning an error (no backends registered).
-	// Set by the caller before Run() to wire in real backends.
-	BackendFactory func(agent.BackendType, agent.StartRequest) (agent.Backend, error)
-
-	// AgentLister returns available agents for a backend/project combination.
-	// Set by the caller before Run(). Returns nil, nil if not supported.
-	AgentLister func(ctx context.Context, backend agent.BackendType, projectDir string) ([]agent.AgentInfo, error)
-
-	// OnShutdown is called during graceful shutdown, after stopping all sessions
-	// but before cleaning up files. Use this to stop managed resources like
-	// OpenCode servers.
-	OnShutdown func()
-
-	// SessionDiscoverer fetches historical sessions from a backend (e.g. OpenCode)
-	// for a given seed project directory. Set by the caller before Run().
-	SessionDiscoverer func(ctx context.Context, seedDir string) ([]agent.SessionSnapshot, error)
+	// BackendManagers maps each backend type to its manager. The manager
+	// creates SessionBackend instances and owns shared resources (e.g.,
+	// OpenCode servers). Managers that also implement agent.AgentLister or
+	// agent.SessionDiscoverer gain agent listing and session discovery
+	// capabilities automatically.
+	BackendManagers map[agent.BackendType]agent.BackendManager
 
 	// Store is the optional SQLite persistence layer. When non-nil, session
 	// metadata is written through on every mutation and loaded on startup.
@@ -140,8 +131,9 @@ type Daemon struct {
 
 // managedSession tracks a running agent session.
 type managedSession struct {
-	info    agent.SessionInfo
-	backend agent.Backend // nil until started
+	info      agent.SessionInfo
+	backend   agent.SessionBackend // nil until started
+	watchOnly bool                 // true when backend was started via Watch() (no prompt sent yet)
 }
 
 // New creates a new daemon instance. It does not start listening.
@@ -155,17 +147,15 @@ func New() (*Daemon, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Daemon{
-		sockPath:    filepath.Join(dir, "daemon.sock"),
-		pidPath:     filepath.Join(dir, "daemon.pid"),
-		sessions:    make(map[string]*managedSession),
-		subscribers: make(map[string]chan agent.Event),
-		startTime:   time.Now(),
-		ctx:         ctx,
-		cancel:      cancel,
-		log:         log.New(os.Stderr, "[clank-daemon] ", log.LstdFlags|log.Lmsgprefix),
-		BackendFactory: func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
-			return nil, fmt.Errorf("no backend registered for %s", bt)
-		},
+		sockPath:        filepath.Join(dir, "daemon.sock"),
+		pidPath:         filepath.Join(dir, "daemon.pid"),
+		sessions:        make(map[string]*managedSession),
+		subscribers:     make(map[string]chan agent.Event),
+		startTime:       time.Now(),
+		ctx:             ctx,
+		cancel:          cancel,
+		log:             log.New(os.Stderr, "[clank-daemon] ", log.LstdFlags|log.Lmsgprefix),
+		BackendManagers: make(map[agent.BackendType]agent.BackendManager),
 	}, nil
 }
 
@@ -174,17 +164,15 @@ func New() (*Daemon, error) {
 func NewWithPaths(sockPath, pidPath string) *Daemon {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Daemon{
-		sockPath:    sockPath,
-		pidPath:     pidPath,
-		sessions:    make(map[string]*managedSession),
-		subscribers: make(map[string]chan agent.Event),
-		startTime:   time.Now(),
-		ctx:         ctx,
-		cancel:      cancel,
-		log:         log.New(os.Stderr, "[clank-daemon] ", log.LstdFlags|log.Lmsgprefix),
-		BackendFactory: func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
-			return nil, fmt.Errorf("no backend registered for %s", bt)
-		},
+		sockPath:        sockPath,
+		pidPath:         pidPath,
+		sessions:        make(map[string]*managedSession),
+		subscribers:     make(map[string]chan agent.Event),
+		startTime:       time.Now(),
+		ctx:             ctx,
+		cancel:          cancel,
+		log:             log.New(os.Stderr, "[clank-daemon] ", log.LstdFlags|log.Lmsgprefix),
+		BackendManagers: make(map[agent.BackendType]agent.BackendManager),
 	}
 }
 
@@ -329,9 +317,17 @@ func (d *Daemon) shutdown(server *http.Server) error {
 	}
 	d.mu.Unlock()
 
-	// Run shutdown hooks (e.g., stop OpenCode servers).
-	if d.OnShutdown != nil {
-		d.OnShutdown()
+	// Shut down all backend managers (e.g., stop OpenCode servers).
+	for bt, mgr := range d.BackendManagers {
+		d.log.Printf("shutting down %s backend manager", bt)
+		mgr.Shutdown()
+	}
+
+	// Close the persistence store.
+	if d.Store != nil {
+		if err := d.Store.Close(); err != nil {
+			d.log.Printf("error closing store: %v", err)
+		}
 	}
 
 	// Close all subscriber channels.
@@ -413,12 +409,18 @@ func (d *Daemon) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bt := agent.BackendType(backendStr)
-	if d.AgentLister == nil {
+	mgr, ok := d.BackendManagers[bt]
+	if !ok {
+		writeJSON(w, http.StatusOK, []agent.AgentInfo{})
+		return
+	}
+	lister, ok := mgr.(agent.AgentLister)
+	if !ok {
 		writeJSON(w, http.StatusOK, []agent.AgentInfo{})
 		return
 	}
 
-	agents, err := d.AgentLister(r.Context(), bt, projectDir)
+	agents, err := lister.ListAgents(r.Context(), projectDir)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -441,14 +443,22 @@ func (d *Daemon) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_dir is required"})
 		return
 	}
-	if d.SessionDiscoverer == nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"discovered": 0, "total": 0})
-		return
+	// Try each backend manager that supports session discovery.
+	var snapshots []agent.SessionSnapshot
+	for _, mgr := range d.BackendManagers {
+		discoverer, ok := mgr.(agent.SessionDiscoverer)
+		if !ok {
+			continue
+		}
+		found, err := discoverer.DiscoverSessions(r.Context(), body.ProjectDir)
+		if err != nil {
+			d.log.Printf("discover sessions: %v", err)
+			continue // best-effort: try other managers
+		}
+		snapshots = append(snapshots, found...)
 	}
-
-	snapshots, err := d.SessionDiscoverer(r.Context(), body.ProjectDir)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	if snapshots == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"discovered": 0, "total": 0})
 		return
 	}
 
@@ -549,10 +559,16 @@ func (d *Daemon) handleGetSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // activateBackend creates and attaches a backend to a historical session
-// (one loaded via discover that has backend == nil). The backend is ready
-// for Messages() calls but does NOT start SSE streaming or send a prompt.
+// (one loaded via discover that has backend == nil). The backend is started
+// via Watch() to enable SSE streaming without sending a prompt. An event
+// relay goroutine is started so that events from the backend flow through
+// the daemon's broadcast system.
 func (d *Daemon) activateBackend(id string, ms *managedSession) error {
-	backend, err := d.BackendFactory(ms.info.Backend, agent.StartRequest{
+	mgr, ok := d.BackendManagers[ms.info.Backend]
+	if !ok {
+		return fmt.Errorf("no backend manager registered for %s", ms.info.Backend)
+	}
+	backend, err := mgr.CreateBackend(agent.StartRequest{
 		Backend:    ms.info.Backend,
 		ProjectDir: ms.info.ProjectDir,
 		SessionID:  ms.info.ExternalID,
@@ -560,9 +576,38 @@ func (d *Daemon) activateBackend(id string, ms *managedSession) error {
 	if err != nil {
 		return fmt.Errorf("activate backend: %w", err)
 	}
+
+	// Start watching for events (SSE) without sending a prompt.
+	if err := backend.Watch(d.ctx); err != nil {
+		return fmt.Errorf("watch backend: %w", err)
+	}
+
 	d.mu.Lock()
 	ms.backend = backend
+	ms.watchOnly = true
 	d.mu.Unlock()
+
+	// Start event relay goroutine so backend events flow through broadcast.
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		for evt := range backend.Events() {
+			evt.SessionID = id
+			d.broadcast(evt)
+
+			if evt.Type == agent.EventStatusChange {
+				if data, ok := evt.Data.(agent.StatusChangeData); ok {
+					d.updateSessionStatus(id, data.NewStatus)
+				}
+			}
+			if evt.Type == agent.EventTitleChange {
+				if data, ok := evt.Data.(agent.TitleChangeData); ok {
+					d.updateSessionTitle(id, data.Title)
+				}
+			}
+		}
+	}()
+
 	return nil
 }
 
@@ -627,11 +672,12 @@ func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	d.mu.Unlock()
 
 	if ms.backend == nil {
-		// Historical session — activate the backend and start it with the
-		// follow-up prompt. Start() handles resume: it skips Session.New()
+		// Historical session with no backend — create one and start it with
+		// the follow-up prompt. Start() handles resume: it skips Session.New()
 		// because sessionID is already set, starts SSE, then sends the prompt.
-		if err := d.activateBackend(id, ms); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		mgr, ok := d.BackendManagers[ms.info.Backend]
+		if !ok {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "no backend manager for " + string(ms.info.Backend)})
 			return
 		}
 		req := agent.StartRequest{
@@ -641,6 +687,16 @@ func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 			Prompt:     body.Text,
 			Agent:      body.Agent,
 		}
+		backend, err := mgr.CreateBackend(req)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		d.mu.Lock()
+		ms.backend = backend
+		ms.watchOnly = false
+		d.mu.Unlock()
+
 		d.wg.Add(1)
 		go func() {
 			defer d.wg.Done()
@@ -648,6 +704,16 @@ func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		}()
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "sent"})
 		return
+	}
+
+	if ms.watchOnly {
+		// Backend was started via Watch() (read-only observation). Try
+		// SendMessage first — OpenCode supports this. If it fails (e.g.,
+		// Claude), fall back to stopping the watch-only backend and starting
+		// a fresh one via Start().
+		d.mu.Lock()
+		ms.watchOnly = false
+		d.mu.Unlock()
 	}
 
 	opts := agent.SendMessageOpts{
@@ -870,7 +936,11 @@ func (d *Daemon) snapshotSessions() []agent.SessionInfo {
 
 // createSession creates a new managed session and starts the backend.
 func (d *Daemon) createSession(req agent.StartRequest) (*agent.SessionInfo, error) {
-	backend, err := d.BackendFactory(req.Backend, req)
+	mgr, ok := d.BackendManagers[req.Backend]
+	if !ok {
+		return nil, fmt.Errorf("no backend manager registered for %s", req.Backend)
+	}
+	backend, err := mgr.CreateBackend(req)
 	if err != nil {
 		return nil, fmt.Errorf("create backend: %w", err)
 	}
