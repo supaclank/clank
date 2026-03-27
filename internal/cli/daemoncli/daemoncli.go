@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/daemon"
+	"github.com/acksell/clank/internal/store"
 )
 
 // Command returns the root cobra command for the clankd binary with start/stop/status subcommands.
@@ -70,12 +73,28 @@ func RunStart(foreground bool) error {
 		if err != nil {
 			return err
 		}
+
+		// Open SQLite store for session persistence.
+		dir, err := config.Dir()
+		if err != nil {
+			return fmt.Errorf("config dir: %w", err)
+		}
+		dbPath := filepath.Join(dir, "clank.db")
+		st, err := store.Open(dbPath)
+		if err != nil {
+			return fmt.Errorf("open store: %w", err)
+		}
+		d.Store = st
+
 		// Wire in real backend factory.
 		factory := daemon.NewDefaultBackendFactory()
 		d.BackendFactory = factory.Create
 		d.AgentLister = factory.ListAgents
 		d.SessionDiscoverer = factory.DiscoverSessions
-		d.OnShutdown = factory.StopAll
+		d.OnShutdown = func() {
+			factory.StopAll()
+			st.Close()
+		}
 		return d.Run()
 	}
 

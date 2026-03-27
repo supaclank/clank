@@ -24,6 +24,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
+	"github.com/acksell/clank/internal/store"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -128,6 +129,11 @@ type Daemon struct {
 	// SessionDiscoverer fetches historical sessions from a backend (e.g. OpenCode)
 	// for a given seed project directory. Set by the caller before Run().
 	SessionDiscoverer func(ctx context.Context, seedDir string) ([]agent.SessionSnapshot, error)
+
+	// Store is the optional SQLite persistence layer. When non-nil, session
+	// metadata is written through on every mutation and loaded on startup.
+	// When nil (e.g. in tests), the daemon operates purely in-memory.
+	Store *store.Store
 
 	log *log.Logger
 }
@@ -260,6 +266,23 @@ func (d *Daemon) Run() error {
 	}
 
 	d.log.Printf("daemon started (pid=%d, socket=%s)", os.Getpid(), d.sockPath)
+
+	// Load persisted sessions from the store (if available).
+	if d.Store != nil {
+		sessions, err := d.Store.LoadSessions()
+		if err != nil {
+			d.log.Printf("warning: failed to load sessions from store: %v", err)
+		} else {
+			d.mu.Lock()
+			for _, info := range sessions {
+				d.sessions[info.ID] = &managedSession{info: info, backend: nil}
+			}
+			d.mu.Unlock()
+			if len(sessions) > 0 {
+				d.log.Printf("loaded %d sessions from store", len(sessions))
+			}
+		}
+	}
 
 	mux := http.NewServeMux()
 	d.registerRoutes(mux)
@@ -433,21 +456,32 @@ func (d *Daemon) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 	// (i.e., sessions the daemon is already managing from a previous create or discover).
 	// Also check backend.SessionID() to catch sessions whose Start() is still
 	// in progress (ExternalID not yet written back to info).
+	//
+	// For duplicates, refresh backend-owned fields (title, timestamps) from the
+	// snapshot while preserving user-owned fields (visibility, follow_up, draft,
+	// last_read_at) from the in-memory/DB copy.
 	added := 0
 	d.mu.Lock()
 	for _, snap := range snapshots {
-		duplicate := false
+		var existingMS *managedSession
 		for _, existing := range d.sessions {
 			if existing.info.ExternalID == snap.ID {
-				duplicate = true
+				existingMS = existing
 				break
 			}
 			if existing.backend != nil && existing.backend.SessionID() == snap.ID {
-				duplicate = true
+				existingMS = existing
 				break
 			}
 		}
-		if duplicate {
+		if existingMS != nil {
+			// Refresh backend-owned fields from the snapshot.
+			existingMS.info.Title = snap.Title
+			existingMS.info.CreatedAt = snap.CreatedAt
+			existingMS.info.UpdatedAt = snap.UpdatedAt
+			existingMS.info.ProjectDir = snap.Directory
+			existingMS.info.ProjectName = filepath.Base(snap.Directory)
+			d.persistSession(existingMS)
 			continue
 		}
 		id := ulid.Make().String()
@@ -464,6 +498,7 @@ func (d *Daemon) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 			LastReadAt:  snap.UpdatedAt, // Mark as read — they're not new activity
 		}
 		d.sessions[id] = &managedSession{info: info, backend: nil}
+		d.persistSession(d.sessions[id])
 		added++
 	}
 	d.mu.Unlock()
@@ -588,6 +623,7 @@ func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		ms.info.Agent = body.Agent
 	}
 	ms.info.Draft = ""
+	d.persistSession(ms)
 	d.mu.Unlock()
 
 	if ms.backend == nil {
@@ -666,6 +702,7 @@ func (d *Daemon) handleMarkSessionRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ms.info.LastReadAt = time.Now()
+	d.persistSession(ms)
 	d.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -681,6 +718,7 @@ func (d *Daemon) handleToggleFollowUp(w http.ResponseWriter, r *http.Request) {
 	}
 	ms.info.FollowUp = !ms.info.FollowUp
 	followUp := ms.info.FollowUp
+	d.persistSession(ms)
 	d.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]bool{"follow_up": followUp})
 }
@@ -710,9 +748,8 @@ func (d *Daemon) handleSetVisibility(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ms.info.Visibility = body.Visibility
+	d.persistSession(ms)
 	d.mu.Unlock()
-
-	writeJSON(w, http.StatusOK, map[string]string{"visibility": string(body.Visibility)})
 }
 
 func (d *Daemon) handleSetDraft(w http.ResponseWriter, r *http.Request) {
@@ -733,9 +770,8 @@ func (d *Daemon) handleSetDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ms.info.Draft = body.Draft
+	d.persistSession(ms)
 	d.mu.Unlock()
-
-	writeJSON(w, http.StatusOK, map[string]string{"draft": body.Draft})
 }
 
 func (d *Daemon) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
@@ -749,6 +785,7 @@ func (d *Daemon) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	delete(d.sessions, id)
+	d.deletePersistedSession(id)
 	d.mu.Unlock()
 
 	if ms.backend != nil {
@@ -861,6 +898,7 @@ func (d *Daemon) createSession(req agent.StartRequest) (*agent.SessionInfo, erro
 
 	d.mu.Lock()
 	d.sessions[id] = ms
+	d.persistSession(ms)
 	d.mu.Unlock()
 
 	// Broadcast session creation.
@@ -926,6 +964,7 @@ func (d *Daemon) runBackend(id string, ms *managedSession, req agent.StartReques
 		d.mu.Lock()
 		if ms2, ok := d.sessions[id]; ok {
 			ms2.info.ExternalID = extID
+			d.persistSession(ms2)
 		}
 		d.mu.Unlock()
 	}
@@ -948,6 +987,7 @@ func (d *Daemon) updateSessionStatus(id string, status agent.SessionStatus) {
 	if ms, ok := d.sessions[id]; ok {
 		ms.info.Status = status
 		ms.info.UpdatedAt = time.Now()
+		d.persistSession(ms)
 	}
 	d.mu.Unlock()
 }
@@ -958,8 +998,30 @@ func (d *Daemon) updateSessionTitle(id string, title string) {
 	if ms, ok := d.sessions[id]; ok {
 		ms.info.Title = title
 		ms.info.UpdatedAt = time.Now()
+		d.persistSession(ms)
 	}
 	d.mu.Unlock()
+}
+
+// persistSession writes the session to the store if persistence is enabled.
+// Must be called while d.mu is held (read or write lock).
+func (d *Daemon) persistSession(ms *managedSession) {
+	if d.Store == nil {
+		return
+	}
+	if err := d.Store.UpsertSession(ms.info); err != nil {
+		d.log.Printf("warning: persist session %s: %v", ms.info.ID, err)
+	}
+}
+
+// deletePersistedSession removes the session from the store if persistence is enabled.
+func (d *Daemon) deletePersistedSession(id string) {
+	if d.Store == nil {
+		return
+	}
+	if err := d.Store.DeleteSession(id); err != nil {
+		d.log.Printf("warning: delete persisted session %s: %v", id, err)
+	}
 }
 
 // broadcast sends an event to all connected subscribers.
