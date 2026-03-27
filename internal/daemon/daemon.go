@@ -352,6 +352,7 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /sessions/{id}/read", d.handleMarkSessionRead)
 	mux.HandleFunc("POST /sessions/{id}/followup", d.handleToggleFollowUp)
 	mux.HandleFunc("POST /sessions/{id}/visibility", d.handleSetVisibility)
+	mux.HandleFunc("POST /sessions/{id}/draft", d.handleSetDraft)
 	mux.HandleFunc("DELETE /sessions/{id}", d.handleDeleteSession)
 	mux.HandleFunc("GET /events", d.handleEvents)
 	mux.HandleFunc("POST /permissions/{id}/reply", d.handlePermissionReply)
@@ -581,12 +582,13 @@ func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update the session's current agent if one was specified.
+	// Update the session's current agent if one was specified, and clear any draft.
+	d.mu.Lock()
 	if body.Agent != "" {
-		d.mu.Lock()
 		ms.info.Agent = body.Agent
-		d.mu.Unlock()
 	}
+	ms.info.Draft = ""
+	d.mu.Unlock()
 
 	if ms.backend == nil {
 		// Historical session — activate the backend and start it with the
@@ -711,6 +713,29 @@ func (d *Daemon) handleSetVisibility(w http.ResponseWriter, r *http.Request) {
 	d.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]string{"visibility": string(body.Visibility)})
+}
+
+func (d *Daemon) handleSetDraft(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		Draft string `json:"draft"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	d.mu.Lock()
+	ms, ok := d.sessions[id]
+	if !ok {
+		d.mu.Unlock()
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	ms.info.Draft = body.Draft
+	d.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]string{"draft": body.Draft})
 }
 
 func (d *Daemon) handleDeleteSession(w http.ResponseWriter, r *http.Request) {

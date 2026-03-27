@@ -140,6 +140,170 @@ func TestBuildGroups_AllHiddenResultsInEmptyGroups(t *testing.T) {
 	}
 }
 
+func TestRenderRow_DraftLabelShown(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	m := &InboxModel{width: 120}
+
+	session := &agent.SessionInfo{
+		ID:          "draft-session",
+		Status:      agent.StatusIdle,
+		ProjectName: "myproject",
+		Prompt:      "work in progress",
+		UpdatedAt:   now,
+		LastReadAt:  now,
+		Draft:       "some unsent text",
+	}
+	row := inboxRow{session: session}
+	rendered := m.renderRow(row, false)
+
+	if !strings.Contains(rendered, "DRAFT") {
+		t.Errorf("expected row to contain DRAFT label, got: %s", rendered)
+	}
+}
+
+func TestRenderRow_DraftLabelPriorityOverUnreadAndFollowUp(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	m := &InboxModel{width: 120}
+
+	tests := []struct {
+		name      string
+		session   *agent.SessionInfo
+		wantDRAFT bool
+		wantBang  bool
+		wantStar  bool
+	}{
+		{
+			name: "draft takes priority over unread",
+			session: &agent.SessionInfo{
+				ID:          "draft-unread",
+				Status:      agent.StatusIdle,
+				ProjectName: "proj",
+				Prompt:      "test",
+				UpdatedAt:   now,
+				// LastReadAt zero => Unread() is true
+				Draft: "half-typed message",
+			},
+			wantDRAFT: true,
+			wantBang:  false,
+			wantStar:  false,
+		},
+		{
+			name: "draft takes priority over follow-up",
+			session: &agent.SessionInfo{
+				ID:          "draft-followup",
+				Status:      agent.StatusIdle,
+				ProjectName: "proj",
+				Prompt:      "test",
+				UpdatedAt:   now,
+				LastReadAt:  now,
+				FollowUp:    true,
+				Draft:       "half-typed message",
+			},
+			wantDRAFT: true,
+			wantBang:  false,
+			wantStar:  false,
+		},
+		{
+			name: "no draft shows unread star",
+			session: &agent.SessionInfo{
+				ID:          "no-draft-unread",
+				Status:      agent.StatusIdle,
+				ProjectName: "proj",
+				Prompt:      "test",
+				UpdatedAt:   now,
+				// LastReadAt zero => Unread() is true
+			},
+			wantDRAFT: false,
+			wantBang:  false,
+			wantStar:  true,
+		},
+		{
+			name: "no draft shows follow-up bang",
+			session: &agent.SessionInfo{
+				ID:          "no-draft-followup",
+				Status:      agent.StatusIdle,
+				ProjectName: "proj",
+				Prompt:      "test",
+				UpdatedAt:   now,
+				LastReadAt:  now,
+				FollowUp:    true,
+			},
+			wantDRAFT: false,
+			wantBang:  true,
+			wantStar:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			row := inboxRow{session: tt.session}
+			rendered := m.renderRow(row, false)
+
+			hasDraft := strings.Contains(rendered, "DRAFT")
+			// Check for isolated "!" — the follow-up mark is a standalone bold "!".
+			hasBang := strings.Contains(rendered, "!")
+			hasStar := strings.Contains(rendered, "*")
+
+			if hasDraft != tt.wantDRAFT {
+				t.Errorf("DRAFT: got %v, want %v; rendered: %s", hasDraft, tt.wantDRAFT, rendered)
+			}
+			if hasBang != tt.wantBang {
+				t.Errorf("!: got %v, want %v; rendered: %s", hasBang, tt.wantBang, rendered)
+			}
+			if hasStar != tt.wantStar {
+				t.Errorf("*: got %v, want %v; rendered: %s", hasStar, tt.wantStar, rendered)
+			}
+		})
+	}
+}
+
+func TestBuildGroups_DraftSessionStaysInNormalGroup(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "idle-with-draft", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), LastReadAt: now, Draft: "wip text"},
+		{ID: "idle-no-draft", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now},
+		{ID: "busy-with-draft", Status: agent.StatusBusy, UpdatedAt: now.Add(-30 * time.Minute), Draft: "busy draft"},
+	}
+
+	m := &InboxModel{}
+	m.buildGroups(sessions)
+
+	// There should be no DRAFT group — sessions stay in their normal groups.
+	for _, g := range m.groups {
+		if strings.Contains(g.name, "DRAFT") {
+			t.Errorf("unexpected DRAFT group: %q; drafts should stay in their normal group", g.name)
+		}
+	}
+
+	// Verify the draft sessions are in the expected groups.
+	groupForSession := make(map[string]string)
+	for _, g := range m.groups {
+		for _, r := range g.rows {
+			groupForSession[r.session.ID] = g.name
+		}
+	}
+
+	if g, ok := groupForSession["idle-with-draft"]; !ok {
+		t.Error("idle-with-draft not found in any group")
+	} else if !strings.HasPrefix(g, "IDLE") {
+		t.Errorf("idle-with-draft: expected IDLE group, got %q", g)
+	}
+
+	if g, ok := groupForSession["busy-with-draft"]; !ok {
+		t.Error("busy-with-draft not found in any group")
+	} else if !strings.HasPrefix(g, "BUSY") {
+		t.Errorf("busy-with-draft: expected BUSY group, got %q", g)
+	}
+}
+
 func TestRenderRow_ShowsAgentMode(t *testing.T) {
 	t.Parallel()
 

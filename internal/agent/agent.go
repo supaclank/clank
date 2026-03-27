@@ -256,6 +256,7 @@ type SessionInfo struct {
 	Title       string            `json:"title,omitempty"` // AI-generated session title from OpenCode
 	TicketID    string            `json:"ticket_id,omitempty"`
 	Agent       string            `json:"agent,omitempty"` // Current OpenCode agent (e.g. "build", "plan")
+	Draft       string            `json:"draft,omitempty"` // Unsent follow-up text the user was composing
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`
 	LastReadAt  time.Time         `json:"last_read_at,omitempty"`

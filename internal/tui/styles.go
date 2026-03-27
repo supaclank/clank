@@ -19,6 +19,7 @@ var (
 	mutedColor     = lipgloss.Color("#6B7280")
 	textColor      = lipgloss.Color("#F9FAFB")
 	dimColor       = lipgloss.Color("#9CA3AF")
+	draftColor     = lipgloss.Color("#EC4899") // Magenta — visually distinct from warning/idle yellow
 
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).

@@ -151,6 +151,19 @@ func (m *SessionViewModel) SetStandalone(v bool) {
 	m.standalone = v
 }
 
+// DraftText returns the current unsent text in the input textarea.
+func (m *SessionViewModel) DraftText() string {
+	return m.input.Value()
+}
+
+// RestoreDraft sets the textarea content to the given draft text and
+// activates the input so the user can continue typing immediately.
+func (m *SessionViewModel) RestoreDraft(text string) {
+	m.input.SetValue(text)
+	m.inputActive = true
+	m.input.Focus()
+}
+
 // SetEventChannel provides a pre-connected SSE event channel and cancel func.
 // When set, Init() skips subscribing and immediately starts reading events.
 // This avoids the race where CreateSession emits events before the TUI subscribes.

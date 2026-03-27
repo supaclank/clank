@@ -178,6 +178,11 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg.(type) {
 	case backToInboxMsg:
+		// Persist any unsent text as a draft before leaving the session.
+		if m.activeConnID != "" && m.sessionView != nil {
+			draft := strings.TrimSpace(m.sessionView.DraftText())
+			go m.client.SetDraft(context.Background(), m.activeConnID, draft)
+		}
 		// Mark the session as read on close to capture any activity
 		// that occurred while the user was viewing it.
 		if m.activeConnID != "" {
@@ -361,6 +366,15 @@ func (m *InboxModel) openSession(sessionID string) tea.Cmd {
 	if m.width > 0 {
 		m.sessionView.input.SetWidth(m.width - promptInputBorderSize)
 	}
+
+	// Restore draft text if the session has one, so the user can continue typing.
+	for _, row := range m.flatRows {
+		if row.session != nil && row.session.ID == sessionID && row.session.Draft != "" {
+			m.sessionView.RestoreDraft(row.session.Draft)
+			break
+		}
+	}
+
 	return m.sessionView.Init()
 }
 
@@ -667,7 +681,9 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	stateIcon := m.styledAgentStatus(s.Status)
 
 	unreadMark := " "
-	if s.FollowUp {
+	if s.Draft != "" {
+		unreadMark = lipgloss.NewStyle().Foreground(draftColor).Bold(true).Render("DRAFT")
+	} else if s.FollowUp {
 		unreadMark = lipgloss.NewStyle().Foreground(warningColor).Bold(true).Render("!")
 	} else if s.Unread() {
 		unreadMark = lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("*")

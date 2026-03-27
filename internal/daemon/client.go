@@ -177,6 +177,15 @@ func (c *Client) SetVisibility(ctx context.Context, sessionID string, visibility
 	return c.post(ctx, "/sessions/"+sessionID+"/visibility", body, nil)
 }
 
+// SetDraft sets or clears the draft text for a session.
+// Pass an empty string to clear the draft.
+func (c *Client) SetDraft(ctx context.Context, sessionID string, draft string) error {
+	body := struct {
+		Draft string `json:"draft"`
+	}{Draft: draft}
+	return c.post(ctx, "/sessions/"+sessionID+"/draft", body, nil)
+}
+
 // DeleteSession stops and removes a session.
 func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
 	return c.do(ctx, "DELETE", "/sessions/"+sessionID, nil, nil)

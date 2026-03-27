@@ -2196,6 +2196,155 @@ func TestDaemonSetVisibilityNotFound(t *testing.T) {
 	}
 }
 
+// --- SetDraft Tests ---
+
+func TestDaemonSetDraft(t *testing.T) {
+	t.Parallel()
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test prompt",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Set a draft.
+	if err := client.SetDraft(ctx, info.ID, "work in progress"); err != nil {
+		t.Fatalf("SetDraft: %v", err)
+	}
+
+	got, err := client.GetSession(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.Draft != "work in progress" {
+		t.Errorf("draft = %q, want %q", got.Draft, "work in progress")
+	}
+}
+
+func TestDaemonSetDraftClear(t *testing.T) {
+	t.Parallel()
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test prompt",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Set then clear.
+	if err := client.SetDraft(ctx, info.ID, "draft text"); err != nil {
+		t.Fatalf("SetDraft: %v", err)
+	}
+	if err := client.SetDraft(ctx, info.ID, ""); err != nil {
+		t.Fatalf("SetDraft(clear): %v", err)
+	}
+
+	got, err := client.GetSession(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.Draft != "" {
+		t.Errorf("draft = %q, want empty", got.Draft)
+	}
+}
+
+func TestDaemonSetDraftNotFound(t *testing.T) {
+	t.Parallel()
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	err := client.SetDraft(context.Background(), "nonexistent-id", "draft")
+	if err == nil {
+		t.Error("expected error for nonexistent session")
+	}
+}
+
+func TestDaemonDraftVisibleInList(t *testing.T) {
+	t.Parallel()
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test prompt",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	if err := client.SetDraft(ctx, info.ID, "my draft"); err != nil {
+		t.Fatalf("SetDraft: %v", err)
+	}
+
+	sessions, err := client.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].Draft != "my draft" {
+		t.Errorf("draft in list = %q, want %q", sessions[0].Draft, "my draft")
+	}
+}
+
+func TestDaemonDraftClearedOnSendMessage(t *testing.T) {
+	t.Parallel()
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test prompt",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Set a draft.
+	if err := client.SetDraft(ctx, info.ID, "my draft"); err != nil {
+		t.Fatalf("SetDraft: %v", err)
+	}
+
+	// Send a message — should clear the draft.
+	if err := client.SendMessage(ctx, info.ID, agent.SendMessageOpts{Text: "real message"}); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	got, err := client.GetSession(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.Draft != "" {
+		t.Errorf("draft = %q after send, want empty", got.Draft)
+	}
+}
+
 func waitForDaemon(t *testing.T, client *daemon.Client) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
