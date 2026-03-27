@@ -723,7 +723,7 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 		prompt = truncateStr(s.Title, m.width-50-agentColWidth)
 	}
 	if prompt == "" {
-		prompt = "(no prompt)"
+		prompt = lipgloss.NewStyle().Foreground(dimColor).Render(truncateStr(s.ID, 8))
 	}
 
 	paddedAgo := fmt.Sprintf("%-8s", ago)

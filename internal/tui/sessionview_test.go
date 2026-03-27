@@ -92,3 +92,39 @@ func TestSetEventChannel_SkipsSubscribe(t *testing.T) {
 		t.Errorf("expected at least 2 status entries, got %d", foundStatus)
 	}
 }
+
+// TestTruncateStr_NarrowWidth is a regression test for the panic caused by
+// negative slice bounds in truncateStr when the terminal is very narrow
+// (m.width - 50 becomes negative in inbox.go renderRow).
+func TestTruncateStr_NarrowWidth(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		s    string
+		n    int
+		want string
+	}{
+		{name: "negative n", s: "hello world", n: -17, want: ""},
+		{name: "zero n", s: "hello world", n: 0, want: ""},
+		{name: "n=1", s: "hello world", n: 1, want: "h"},
+		{name: "n=2", s: "hello world", n: 2, want: "he"},
+		{name: "n=3", s: "hello world", n: 3, want: "hel"},
+		{name: "n=4 truncates with ellipsis", s: "hello world", n: 4, want: "h..."},
+		{name: "n=len(s) no truncation", s: "hello", n: 5, want: "hello"},
+		{name: "n>len(s) no truncation", s: "hello", n: 100, want: "hello"},
+		{name: "normal truncation", s: "hello world", n: 8, want: "hello..."},
+		{name: "empty string", s: "", n: 5, want: ""},
+		{name: "empty string negative n", s: "", n: -1, want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := truncateStr(tt.s, tt.n)
+			if got != tt.want {
+				t.Errorf("truncateStr(%q, %d) = %q, want %q", tt.s, tt.n, got, tt.want)
+			}
+		})
+	}
+}

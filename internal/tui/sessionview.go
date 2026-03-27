@@ -1197,8 +1197,14 @@ func wrapText(s string, width int) string {
 }
 
 func truncateStr(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
 	if len(s) <= n {
 		return s
+	}
+	if n <= 3 {
+		return s[:n]
 	}
 	return s[:n-3] + "..."
 }
