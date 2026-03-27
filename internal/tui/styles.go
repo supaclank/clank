@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -55,6 +56,19 @@ var (
 			Padding(0, 1).
 			MarginTop(1)
 )
+
+// agentColor returns a distinct color for the given agent name so that modes
+// are visually distinguishable at a glance.
+func agentColor(name string) color.Color {
+	switch name {
+	case "build":
+		return successColor // green – constructive/active
+	case "plan":
+		return secondaryColor // cyan – deliberate/reflective
+	default:
+		return dimColor
+	}
+}
 
 // promptInputBorder is the external border+padding applied around the textarea.
 // We render this outside the textarea because bubbles v2 has a bug where

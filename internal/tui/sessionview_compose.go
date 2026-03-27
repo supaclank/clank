@@ -254,7 +254,7 @@ func (m *SessionViewModel) viewCompose() tea.View {
 	}
 	helpParts := []string{"enter: launch", "shift+enter: newline", "ctrl+b: toggle backend"}
 	if m.backend == agent.BackendOpenCode && len(m.agents) > 1 {
-		helpParts = append(helpParts, "tab: cycle agent")
+		helpParts = append(helpParts, "tab: cycle mode")
 	}
 	helpParts = append(helpParts, qLabel)
 	help := helpStyle.Render(strings.Join(helpParts, " | "))
@@ -300,15 +300,9 @@ func (m *SessionViewModel) renderBackendSelector() string {
 
 func (m *SessionViewModel) renderAgentSelector() string {
 	labelSty := lipgloss.NewStyle().Foreground(dimColor).Width(12)
-	label := labelSty.Render("Agent:")
+	label := labelSty.Render("Mode:")
 
-	var parts []string
-	for i, a := range m.agents {
-		style := lipgloss.NewStyle().Foreground(dimColor)
-		if i == m.selectedAgent {
-			style = lipgloss.NewStyle().Foreground(successColor).Bold(true)
-		}
-		parts = append(parts, "["+style.Render(a.Name)+"]")
-	}
-	return "  " + label + strings.Join(parts, "  ")
+	agentName := m.agents[m.selectedAgent].Name
+	style := lipgloss.NewStyle().Foreground(agentColor(agentName)).Bold(true)
+	return "  " + label + style.Render(agentName)
 }

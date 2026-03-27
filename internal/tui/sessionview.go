@@ -849,9 +849,9 @@ func (m *SessionViewModel) renderHeader() string {
 	agentStr := ""
 	if len(m.agents) > 0 {
 		agentName := m.agents[m.selectedAgent].Name
-		agentStr = lipgloss.NewStyle().Foreground(secondaryColor).Render("[" + agentName + "]")
+		agentStr = lipgloss.NewStyle().Foreground(agentColor(agentName)).Bold(true).Render(agentName)
 	} else if m.info != nil && m.info.Agent != "" {
-		agentStr = lipgloss.NewStyle().Foreground(secondaryColor).Render("[" + m.info.Agent + "]")
+		agentStr = lipgloss.NewStyle().Foreground(agentColor(m.info.Agent)).Bold(true).Render(m.info.Agent)
 	}
 
 	rightParts := right
