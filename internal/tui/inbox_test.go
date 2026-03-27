@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -81,5 +82,50 @@ func TestBuildGroups_StableAcrossRepeatedCalls(t *testing.T) {
 				t.Fatalf("iter %d: row[%d] = %q, want %q (full order: %v)", iter, i, id, want[i], ids)
 			}
 		}
+	}
+}
+
+func TestRenderRow_ShowsAgentMode(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	m := &InboxModel{width: 120}
+
+	tests := []struct {
+		name      string
+		agent     string
+		wantInRow string // substring expected in rendered output
+	}{
+		{name: "build agent shown", agent: "build", wantInRow: "build"},
+		{name: "plan agent shown", agent: "plan", wantInRow: "plan"},
+		{name: "empty agent shows blank", agent: "", wantInRow: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			session := &agent.SessionInfo{
+				ID:          "test-session",
+				Status:      agent.StatusIdle,
+				ProjectName: "myproject",
+				Prompt:      "do something",
+				Agent:       tt.agent,
+				UpdatedAt:   now,
+				LastReadAt:  now,
+			}
+			row := inboxRow{session: session}
+			rendered := m.renderRow(row, false)
+
+			if tt.wantInRow != "" && !strings.Contains(rendered, tt.wantInRow) {
+				t.Errorf("expected row to contain %q, got: %s", tt.wantInRow, rendered)
+			}
+			// When agent is empty, verify neither "build" nor "plan" appears.
+			if tt.agent == "" {
+				if strings.Contains(rendered, "build") || strings.Contains(rendered, "plan") {
+					t.Errorf("expected no agent name in row, got: %s", rendered)
+				}
+			}
+		})
 	}
 }

@@ -574,9 +574,16 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 		unreadMark = lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("*")
 	}
 
-	prompt := truncateStr(s.Prompt, m.width-50)
+	// Agent mode badge — colored so users can quickly triage build vs plan sessions.
+	agentBadge := fmt.Sprintf("%-5s", "")
+	if s.Agent != "" {
+		agentBadge = lipgloss.NewStyle().Foreground(agentColor(s.Agent)).Render(fmt.Sprintf("%-5s", s.Agent))
+	}
+
+	const agentColWidth = 6 // 5 chars + 1 space separator
+	prompt := truncateStr(s.Prompt, m.width-50-agentColWidth)
 	if s.Title != "" {
-		prompt = truncateStr(s.Title, m.width-50)
+		prompt = truncateStr(s.Title, m.width-50-agentColWidth)
 	}
 	if prompt == "" {
 		prompt = "(no prompt)"
@@ -588,10 +595,11 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	paddedProject := fmt.Sprintf("%-12s", s.ProjectName)
 	styledProject := lipgloss.NewStyle().Foreground(secondaryColor).Render(paddedProject)
 
-	line := fmt.Sprintf("  %s %s %s %s %s",
+	line := fmt.Sprintf("  %s %s %s %s %s %s",
 		styledAgo,
 		styledProject,
 		stateIcon,
+		agentBadge,
 		unreadMark,
 		prompt,
 	)
