@@ -817,18 +817,12 @@ func (m *SessionViewModel) View() tea.View {
 
 	// Input area.
 	if m.inputActive {
-		// Show agent selector inline when agents are loaded.
-		if len(m.agents) > 1 {
-			agentName := m.agents[m.selectedAgent].Name
-			agentLabel := lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("[" + agentName + "]")
-			sb.WriteString("\n  " + agentLabel + "\n")
-		}
 		sb.WriteString("\n")
-		sb.WriteString(promptInputStyle(m.input.Focused()).Render(m.input.View()))
+		sb.WriteString(m.renderPromptBox())
 		sb.WriteString("\n")
 		inputHelp := "enter: send | shift+enter: newline | esc: cancel"
 		if len(m.agents) > 1 {
-			inputHelp = "enter: send | shift+enter: newline | tab: cycle agent | esc: cancel"
+			inputHelp = "enter: send | shift+enter: newline | tab: cycle mode | esc: cancel"
 		}
 		sb.WriteString(helpStyle.Render(inputHelp))
 	} else {

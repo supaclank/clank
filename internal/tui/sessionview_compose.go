@@ -229,22 +229,14 @@ func (m *SessionViewModel) viewCompose() tea.View {
 	sb.WriteString(m.renderBackendSelector())
 	sb.WriteString("\n")
 
-	// Agent selector (OpenCode only, when agents are loaded).
-	if m.backend == agent.BackendOpenCode && len(m.agents) > 0 {
-		sb.WriteString(m.renderAgentSelector())
-		sb.WriteString("\n")
-	}
-
 	// Project directory.
 	labelSty := lipgloss.NewStyle().Foreground(dimColor).Width(12)
 	sb.WriteString("  " + labelSty.Render("Project:"))
 	sb.WriteString(lipgloss.NewStyle().Foreground(textColor).Render(m.projectDir))
 	sb.WriteString("\n\n")
 
-	// Prompt textarea.
-	sb.WriteString("  " + labelSty.Render("Prompt:"))
-	sb.WriteString("\n")
-	sb.WriteString(promptInputStyle(m.input.Focused()).Render(m.input.View()))
+	// Prompt textarea with integrated mode badge.
+	sb.WriteString(m.renderPromptBox())
 	sb.WriteString("\n\n")
 
 	// Help bar.
@@ -298,11 +290,30 @@ func (m *SessionViewModel) renderBackendSelector() string {
 	)
 }
 
-func (m *SessionViewModel) renderAgentSelector() string {
-	labelSty := lipgloss.NewStyle().Foreground(dimColor).Width(12)
-	label := labelSty.Render("Mode:")
+// renderPromptBox renders the prompt textarea with an integrated mode badge
+// inside the border. The border color matches the current agent mode.
+func (m *SessionViewModel) renderPromptBox() string {
+	// Determine mode badge and border color.
+	modeBadge := ""
+	bc := mutedColor // default border color when unfocused
+	if m.input.Focused() {
+		bc = primaryColor
+	}
 
-	agentName := m.agents[m.selectedAgent].Name
-	style := lipgloss.NewStyle().Foreground(agentColor(agentName)).Bold(true)
-	return "  " + label + style.Render(agentName)
+	if len(m.agents) > 0 {
+		agentName := m.agents[m.selectedAgent].Name
+		mc := agentColor(agentName)
+		bc = mc
+		modeBadge = lipgloss.NewStyle().Foreground(mc).Bold(true).Render(agentName)
+	}
+
+	// Build inner content: mode badge line + textarea.
+	var inner strings.Builder
+	if modeBadge != "" {
+		inner.WriteString(modeBadge)
+		inner.WriteString("\n")
+	}
+	inner.WriteString(m.input.View())
+
+	return promptInputStyleWithColor(bc).Render(inner.String())
 }

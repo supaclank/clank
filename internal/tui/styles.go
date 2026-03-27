@@ -81,9 +81,14 @@ func promptInputStyle(focused bool) lipgloss.Style {
 	if focused {
 		bc = primaryColor
 	}
+	return promptInputStyleWithColor(bc)
+}
+
+// promptInputStyleWithColor returns a prompt box style with the given border color.
+func promptInputStyleWithColor(borderColor color.Color) lipgloss.Style {
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(bc).
+		BorderForeground(borderColor).
 		Padding(0, 1)
 }
 
