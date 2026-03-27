@@ -340,11 +340,18 @@ func (m *InboxModel) deleteSession(sessionID string) tea.Cmd {
 
 // buildGroups organizes sessions into display groups.
 func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
-	var busyRows, unreadRows, idleRows, errorRows, deadRows []inboxRow
+	var busyRows, followUpRows, unreadRows, idleRows, errorRows, deadRows []inboxRow
 
 	for i := range sessions {
 		s := &sessions[i]
 		row := inboxRow{session: s}
+
+		// Follow-up is an orthogonal user flag — pull these sessions into
+		// their own group regardless of status, unless they're actively busy.
+		if s.FollowUp && s.Status != agent.StatusBusy && s.Status != agent.StatusStarting {
+			followUpRows = append(followUpRows, row)
+			continue
+		}
 
 		switch s.Status {
 		case agent.StatusBusy, agent.StatusStarting:
@@ -372,6 +379,7 @@ func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
 		})
 	}
 	byUpdatedDesc(busyRows)
+	byUpdatedDesc(followUpRows)
 	byUpdatedDesc(unreadRows)
 	byUpdatedDesc(idleRows)
 	byUpdatedDesc(errorRows)
@@ -384,6 +392,13 @@ func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
 			name:  fmt.Sprintf("BUSY (%d)", len(busyRows)),
 			style: lipgloss.NewStyle().Foreground(successColor).Bold(true),
 			rows:  busyRows,
+		})
+	}
+	if len(followUpRows) > 0 {
+		m.groups = append(m.groups, inboxGroup{
+			name:  fmt.Sprintf("FOLLOW UP (%d)", len(followUpRows)),
+			style: lipgloss.NewStyle().Foreground(warningColor).Bold(true),
+			rows:  followUpRows,
 		})
 	}
 	if len(unreadRows) > 0 {
@@ -553,7 +568,9 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	stateIcon := m.styledAgentStatus(s.Status)
 
 	unreadMark := " "
-	if s.Unread() {
+	if s.FollowUp {
+		unreadMark = lipgloss.NewStyle().Foreground(warningColor).Bold(true).Render("!")
+	} else if s.Unread() {
 		unreadMark = lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("*")
 	}
 

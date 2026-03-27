@@ -158,6 +158,17 @@ func (c *Client) MarkSessionRead(ctx context.Context, sessionID string) error {
 	return c.post(ctx, "/sessions/"+sessionID+"/read", nil, nil)
 }
 
+// ToggleFollowUp toggles the follow-up flag on a session and returns the new state.
+func (c *Client) ToggleFollowUp(ctx context.Context, sessionID string) (bool, error) {
+	var resp struct {
+		FollowUp bool `json:"follow_up"`
+	}
+	if err := c.post(ctx, "/sessions/"+sessionID+"/followup", nil, &resp); err != nil {
+		return false, err
+	}
+	return resp.FollowUp, nil
+}
+
 // DeleteSession stops and removes a session.
 func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
 	return c.do(ctx, "DELETE", "/sessions/"+sessionID, nil, nil)

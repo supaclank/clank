@@ -30,6 +30,12 @@ type sessionSendResultMsg struct {
 	err error
 }
 
+// sessionFollowUpResultMsg is the result of toggling follow-up on a session.
+type sessionFollowUpResultMsg struct {
+	followUp bool
+	err      error
+}
+
 // sessionInfoMsg delivers a refreshed SessionInfo to the model.
 type sessionInfoMsg struct {
 	info *agent.SessionInfo
@@ -332,6 +338,14 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case sessionFollowUpResultMsg:
+		if msg.err != nil {
+			m.err = msg.err
+		} else if m.info != nil {
+			m.info.FollowUp = msg.followUp
+		}
+		return m, nil
+
 	case sessionEventsErrMsg:
 		m.err = msg.err
 		return m, nil
@@ -450,7 +464,7 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("a"))):
 		// TODO: approve session
 	case key.Matches(msg, key.NewBinding(key.WithKeys("f"))):
-		// TODO: mark follow-up
+		return m, m.toggleFollowUp()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("x"))):
 		// TODO: archive session
 	}
@@ -729,6 +743,17 @@ func (m *SessionViewModel) replyPermission(requestID, reply string) tea.Cmd {
 	}
 }
 
+func (m *SessionViewModel) toggleFollowUp() tea.Cmd {
+	client := m.client
+	sessionID := m.sessionID
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		followUp, err := client.ToggleFollowUp(ctx, sessionID)
+		return sessionFollowUpResultMsg{followUp: followUp, err: err}
+	}
+}
+
 // --- View ---
 
 func (m *SessionViewModel) View() tea.View {
@@ -845,6 +870,12 @@ func (m *SessionViewModel) renderHeader() string {
 	left := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render(title)
 	right := statusStyle.Render("[" + statusStr + "]")
 
+	// Show follow-up badge if flagged.
+	followUpStr := ""
+	if m.info != nil && m.info.FollowUp {
+		followUpStr = lipgloss.NewStyle().Foreground(warningColor).Bold(true).Render("[follow-up]")
+	}
+
 	// Show agent indicator if set.
 	agentStr := ""
 	if len(m.agents) > 0 {
@@ -857,6 +888,9 @@ func (m *SessionViewModel) renderHeader() string {
 	rightParts := right
 	if agentStr != "" {
 		rightParts = agentStr + " " + right
+	}
+	if followUpStr != "" {
+		rightParts = followUpStr + " " + rightParts
 	}
 
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(rightParts)
@@ -942,7 +976,7 @@ func (m *SessionViewModel) buildHelpText() string {
 	if m.standalone {
 		qLabel = "q: quit"
 	}
-	parts := []string{"m: message", qLabel}
+	parts := []string{"m: message", "f: follow-up", qLabel}
 	return strings.Join(parts, " | ")
 }
 

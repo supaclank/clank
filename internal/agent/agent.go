@@ -237,6 +237,7 @@ type SessionInfo struct {
 	ExternalID  string        `json:"external_id,omitempty"` // Backend's native session ID (e.g. OpenCode session ID)
 	Backend     BackendType   `json:"backend"`
 	Status      SessionStatus `json:"status"`
+	FollowUp    bool          `json:"follow_up,omitempty"` // User-set flag to mark session for follow-up
 	ProjectDir  string        `json:"project_dir"`
 	ProjectName string        `json:"project_name"`
 	Prompt      string        `json:"prompt"`
