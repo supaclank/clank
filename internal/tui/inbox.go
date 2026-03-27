@@ -478,17 +478,23 @@ func (m *InboxModel) toggleFollowUp(sessionID string) tea.Cmd {
 
 // buildGroups organizes sessions into display groups.
 func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
-	var busyRows, followUpRows, unreadRows, idleRows, errorRows, deadRows []inboxRow
+	var busyRows, followUpRows, unreadRows, idleRows, errorRows, deadRows, doneRows []inboxRow
 
 	for i := range sessions {
 		s := &sessions[i]
 
-		// Skip sessions the user has marked as done or archived.
-		if s.Hidden() {
+		// Skip archived sessions entirely.
+		if s.Visibility == agent.VisibilityArchived {
 			continue
 		}
 
 		row := inboxRow{session: s}
+
+		// Done sessions go into their own group at the bottom.
+		if s.Visibility == agent.VisibilityDone {
+			doneRows = append(doneRows, row)
+			continue
+		}
 
 		// Follow-up is an orthogonal user flag — pull these sessions into
 		// their own group regardless of status, unless they're actively busy.
@@ -528,6 +534,7 @@ func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
 	byUpdatedDesc(idleRows)
 	byUpdatedDesc(errorRows)
 	byUpdatedDesc(deadRows)
+	byUpdatedDesc(doneRows)
 
 	m.groups = nil
 
@@ -571,6 +578,13 @@ func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
 			name:  fmt.Sprintf("DEAD (%d)", len(deadRows)),
 			style: lipgloss.NewStyle().Foreground(mutedColor).Bold(true),
 			rows:  deadRows,
+		})
+	}
+	if len(doneRows) > 0 {
+		m.groups = append(m.groups, inboxGroup{
+			name:  fmt.Sprintf("DONE (%d)", len(doneRows)),
+			style: lipgloss.NewStyle().Foreground(mutedColor).Bold(true),
+			rows:  doneRows,
 		})
 	}
 

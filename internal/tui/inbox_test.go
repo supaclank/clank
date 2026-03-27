@@ -101,20 +101,34 @@ func TestBuildGroups_FiltersHiddenSessions(t *testing.T) {
 
 	// Collect all session IDs across all groups.
 	var ids []string
+	groupForSession := make(map[string]string)
 	for _, g := range m.groups {
 		for _, r := range g.rows {
 			ids = append(ids, r.session.ID)
+			groupForSession[r.session.ID] = g.name
 		}
 	}
 
-	// Only visible sessions should be present.
+	// Archived sessions should not appear.
 	for _, id := range ids {
-		if id == "done-1" || id == "archived-1" {
-			t.Errorf("hidden session %q should not appear in groups", id)
+		if id == "archived-1" {
+			t.Errorf("archived session %q should not appear in groups", id)
 		}
 	}
-	if len(ids) != 2 {
-		t.Errorf("expected 2 visible sessions, got %d: %v", len(ids), ids)
+	// Done sessions should appear in the DONE group at the bottom.
+	if g, ok := groupForSession["done-1"]; !ok {
+		t.Error("done session done-1 should appear in DONE group")
+	} else if !strings.HasPrefix(g, "DONE") {
+		t.Errorf("done-1: expected DONE group, got %q", g)
+	}
+	// visible-1, visible-2, and done-1 should all be present.
+	if len(ids) != 3 {
+		t.Errorf("expected 3 sessions, got %d: %v", len(ids), ids)
+	}
+	// DONE group should be last.
+	lastGroup := m.groups[len(m.groups)-1]
+	if !strings.HasPrefix(lastGroup.name, "DONE") {
+		t.Errorf("expected DONE to be the last group, got %q", lastGroup.name)
 	}
 }
 
@@ -130,13 +144,20 @@ func TestBuildGroups_AllHiddenResultsInEmptyGroups(t *testing.T) {
 	m := &InboxModel{}
 	m.buildGroups(sessions)
 
-	// All sessions hidden — no groups should be created.
+	// The done session should appear in a DONE group; archived should be hidden.
 	var totalRows int
 	for _, g := range m.groups {
 		totalRows += len(g.rows)
 	}
-	if totalRows != 0 {
-		t.Errorf("expected 0 rows when all sessions are hidden, got %d", totalRows)
+	if totalRows != 1 {
+		t.Errorf("expected 1 row (done session visible, archived hidden), got %d", totalRows)
+	}
+	if len(m.groups) != 1 || !strings.HasPrefix(m.groups[0].name, "DONE") {
+		names := make([]string, len(m.groups))
+		for i, g := range m.groups {
+			names[i] = g.name
+		}
+		t.Errorf("expected single DONE group, got groups: %v", names)
 	}
 }
 
