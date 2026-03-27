@@ -229,7 +229,7 @@ func TestOpenCodeBackendStartCreatesSession(t *testing.T) {
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
-	b := agent.NewOpenCodeBackend(mock.URL())
+	b := agent.NewOpenCodeBackend(mock.URL(), "")
 	defer b.Stop()
 
 	ctx := context.Background()
@@ -280,7 +280,7 @@ func TestOpenCodeBackendStartResumesSession(t *testing.T) {
 	mock.sessions["existing-session"] = true
 	mock.mu.Unlock()
 
-	b := agent.NewOpenCodeBackend(mock.URL())
+	b := agent.NewOpenCodeBackend(mock.URL(), "")
 	defer b.Stop()
 
 	ctx := context.Background()
@@ -313,7 +313,7 @@ func TestOpenCodeBackendSendMessage(t *testing.T) {
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
-	b := agent.NewOpenCodeBackend(mock.URL())
+	b := agent.NewOpenCodeBackend(mock.URL(), "")
 	defer b.Stop()
 
 	ctx := context.Background()
@@ -344,7 +344,7 @@ func TestOpenCodeBackendSendMessageBeforeStart(t *testing.T) {
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
-	b := agent.NewOpenCodeBackend(mock.URL())
+	b := agent.NewOpenCodeBackend(mock.URL(), "")
 	defer b.Stop()
 
 	err := b.SendMessage(context.Background(), agent.SendMessageOpts{Text: "hello"})
@@ -357,7 +357,7 @@ func TestOpenCodeBackendAbort(t *testing.T) {
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
-	b := agent.NewOpenCodeBackend(mock.URL())
+	b := agent.NewOpenCodeBackend(mock.URL(), "")
 	defer b.Stop()
 
 	ctx := context.Background()
@@ -388,7 +388,7 @@ func TestOpenCodeBackendAbortBeforeStart(t *testing.T) {
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
-	b := agent.NewOpenCodeBackend(mock.URL())
+	b := agent.NewOpenCodeBackend(mock.URL(), "")
 	defer b.Stop()
 
 	err := b.Abort(context.Background())
@@ -422,7 +422,7 @@ func TestOpenCodeBackendSSESessionIdle(t *testing.T) {
 		<-r.Context().Done()
 	})
 
-	b := agent.NewOpenCodeBackend(mock.URL())
+	b := agent.NewOpenCodeBackend(mock.URL(), "")
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
@@ -436,15 +436,15 @@ func TestOpenCodeBackendSSESessionIdle(t *testing.T) {
 
 	sseReady <- b.SessionID()
 
-	// Expect: starting->busy, then busy->idle.
+	// Expect: idle->busy, then busy->idle.
 	events := collectEvents(b.Events(), 2, 3*time.Second)
 	if len(events) < 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
 
 	if data, ok := events[0].Data.(agent.StatusChangeData); ok {
-		if data.OldStatus != agent.StatusStarting || data.NewStatus != agent.StatusBusy {
-			t.Errorf("event 0: expected starting->busy, got %s->%s", data.OldStatus, data.NewStatus)
+		if data.OldStatus != agent.StatusIdle || data.NewStatus != agent.StatusBusy {
+			t.Errorf("event 0: expected idle->busy, got %s->%s", data.OldStatus, data.NewStatus)
 		}
 	}
 	if data, ok := events[1].Data.(agent.StatusChangeData); ok {
@@ -513,7 +513,7 @@ func TestOpenCodeBackendSSEMessagePartUpdated(t *testing.T) {
 		<-r.Context().Done()
 	})
 
-	b := agent.NewOpenCodeBackend(mock.URL())
+	b := agent.NewOpenCodeBackend(mock.URL(), "")
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
@@ -588,7 +588,7 @@ func TestOpenCodeBackendSSEFiltersOtherSessions(t *testing.T) {
 		<-r.Context().Done()
 	})
 
-	b := agent.NewOpenCodeBackend(mock.URL())
+	b := agent.NewOpenCodeBackend(mock.URL(), "")
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
@@ -915,7 +915,7 @@ func TestOpenCodeBackendSSEEventTypes(t *testing.T) {
 				<-r.Context().Done()
 			})
 
-			b := agent.NewOpenCodeBackend(mock.URL())
+			b := agent.NewOpenCodeBackend(mock.URL(), "")
 			defer b.Stop()
 
 			err := b.Start(context.Background(), agent.StartRequest{
@@ -999,7 +999,7 @@ func TestAgentFieldThreadedInSendMessage(t *testing.T) {
 	// Add a /agent handler to the mock.
 	// Note: mock server is already started, so we just test agent field in prompts.
 
-	b := agent.NewOpenCodeBackend(mock.URL())
+	b := agent.NewOpenCodeBackend(mock.URL(), "")
 	defer b.Stop()
 
 	ctx := context.Background()

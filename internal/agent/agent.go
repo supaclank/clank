@@ -234,6 +234,7 @@ func (r StartRequest) Validate() error {
 // SessionInfo is a snapshot of a managed session, returned by the daemon API.
 type SessionInfo struct {
 	ID          string        `json:"id"`
+	ExternalID  string        `json:"external_id,omitempty"` // Backend's native session ID (e.g. OpenCode session ID)
 	Backend     BackendType   `json:"backend"`
 	Status      SessionStatus `json:"status"`
 	ProjectDir  string        `json:"project_dir"`
@@ -245,6 +246,22 @@ type SessionInfo struct {
 	CreatedAt   time.Time     `json:"created_at"`
 	UpdatedAt   time.Time     `json:"updated_at"`
 	LastReadAt  time.Time     `json:"last_read_at,omitempty"`
+}
+
+// ProjectInfo is a lightweight project summary from the OpenCode API.
+type ProjectInfo struct {
+	ID       string `json:"id"`
+	Worktree string `json:"worktree"`
+}
+
+// SessionSnapshot is a lightweight session summary from the OpenCode API,
+// used during discovery to populate the daemon's session list.
+type SessionSnapshot struct {
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	Directory string    `json:"directory"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Unread returns true if the session has activity the user hasn't seen.

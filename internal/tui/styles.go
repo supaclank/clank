@@ -1,11 +1,12 @@
 package tui
 
 import (
+	"fmt"
+	"time"
+
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/lipgloss/v2"
-
-	"github.com/acksell/clank/internal/store"
 )
 
 var (
@@ -39,20 +40,6 @@ var (
 			Bold(true).
 			Padding(0, 1)
 
-	statusStyles = map[string]lipgloss.Style{
-		"new":       lipgloss.NewStyle().Foreground(secondaryColor).Bold(true),
-		"triaged":   lipgloss.NewStyle().Foreground(primaryColor),
-		"backlog":   lipgloss.NewStyle().Foreground(warningColor),
-		"doing":     lipgloss.NewStyle().Foreground(successColor).Bold(true),
-		"done":      lipgloss.NewStyle().Foreground(successColor),
-		"discarded": lipgloss.NewStyle().Foreground(mutedColor).Strikethrough(true),
-	}
-
-	typeStyles = map[string]lipgloss.Style{
-		"unfinished_thread": lipgloss.NewStyle().Foreground(warningColor),
-		"opportunity":       lipgloss.NewStyle().Foreground(secondaryColor),
-	}
-
 	helpStyle = lipgloss.NewStyle().
 			Foreground(dimColor).
 			MarginTop(1)
@@ -68,59 +55,6 @@ var (
 			Padding(0, 1).
 			MarginTop(1)
 )
-
-func styledStatus(status string) string {
-	if s, ok := statusStyles[status]; ok {
-		return s.Render(status)
-	}
-	return status
-}
-
-func styledType(t string) string {
-	if s, ok := typeStyles[t]; ok {
-		return s.Render(t)
-	}
-	return t
-}
-
-func styledComplexity(c int) string {
-	s := ""
-	for i := 0; i < 10; i++ {
-		if i < c {
-			s += lipgloss.NewStyle().Foreground(warningColor).Render("*")
-		} else {
-			s += lipgloss.NewStyle().Foreground(mutedColor).Render(".")
-		}
-	}
-	return s
-}
-
-func styledImpact(i int) string {
-	s := ""
-	for j := 0; j < 10; j++ {
-		if j < i {
-			s += lipgloss.NewStyle().Foreground(secondaryColor).Render("*")
-		} else {
-			s += lipgloss.NewStyle().Foreground(mutedColor).Render(".")
-		}
-	}
-	return s
-}
-
-func styledQuadrant(q store.Quadrant) string {
-	switch q {
-	case store.QuadrantQuickWin:
-		return lipgloss.NewStyle().Foreground(successColor).Bold(true).Render("quickwin")
-	case store.QuadrantValueBet:
-		return lipgloss.NewStyle().Foreground(dangerColor).Bold(true).Render("valuebet")
-	case store.QuadrantDistraction:
-		return lipgloss.NewStyle().Foreground(mutedColor).Render("distraction")
-	case store.QuadrantTidyUp:
-		return lipgloss.NewStyle().Foreground(secondaryColor).Render("tidyup")
-	default:
-		return lipgloss.NewStyle().Foreground(dimColor).Render("—")
-	}
-}
 
 // promptInputBorder is the external border+padding applied around the textarea.
 // We render this outside the textarea because bubbles v2 has a bug where
@@ -163,4 +97,22 @@ func newPromptTextarea(placeholder string, height int) textarea.Model {
 		key.WithHelp("shift+enter", "newline"),
 	)
 	return ta
+}
+
+// timeAgo returns a human-readable relative time string.
+func timeAgo(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		m := int(d.Minutes())
+		return fmt.Sprintf("%dm ago", m)
+	case d < 24*time.Hour:
+		h := int(d.Hours())
+		return fmt.Sprintf("%dh ago", h)
+	default:
+		days := int(d.Hours() / 24)
+		return fmt.Sprintf("%dd ago", days)
+	}
 }

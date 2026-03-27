@@ -1718,6 +1718,342 @@ func TestDaemonAgentStoredOnSession(t *testing.T) {
 	}
 }
 
+// --- Discover + Historical Session Tests ---
+
+// testDaemonWithDiscover creates a daemon with a mock SessionDiscoverer and
+// a backend factory that records created backends. Returns the daemon, client,
+// a function to get the latest backend, and a cleanup function.
+func testDaemonWithDiscover(t *testing.T, snapshots []agent.SessionSnapshot) (*daemon.Daemon, *daemon.Client, func() *mockBackend, func()) {
+	t.Helper()
+
+	dir := shortTempDir(t)
+	sockPath := filepath.Join(dir, "test.sock")
+	pidPath := filepath.Join(dir, "test.pid")
+
+	d := daemon.NewWithPaths(sockPath, pidPath)
+
+	var latestBackend *mockBackend
+	var backendMu sync.Mutex
+	d.BackendFactory = func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
+		b := newMockBackend()
+		// Propagate the session ID from the request so the backend knows which
+		// OpenCode session it represents (mirrors real DefaultBackendFactory).
+		b.sessionID = req.SessionID
+		backendMu.Lock()
+		latestBackend = b
+		backendMu.Unlock()
+		return b, nil
+	}
+
+	d.SessionDiscoverer = func(ctx context.Context, seedDir string) ([]agent.SessionSnapshot, error) {
+		return snapshots, nil
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run() }()
+
+	client := daemon.NewClient(sockPath)
+	waitForDaemon(t, client)
+
+	getBackend := func() *mockBackend {
+		backendMu.Lock()
+		defer backendMu.Unlock()
+		return latestBackend
+	}
+
+	cleanup := func() {
+		d.Stop()
+		select {
+		case <-errCh:
+		case <-time.After(5 * time.Second):
+			t.Error("daemon did not stop in time")
+		}
+	}
+
+	return d, client, getBackend, cleanup
+}
+
+func TestDiscoverSessionsAddsHistoricalSessions(t *testing.T) {
+	t.Parallel()
+	snapshots := []agent.SessionSnapshot{
+		{
+			ID:        "oc-session-aaa",
+			Title:     "Fix login bug",
+			Directory: "/tmp/project-alpha",
+			CreatedAt: time.Now().Add(-2 * time.Hour),
+			UpdatedAt: time.Now().Add(-1 * time.Hour),
+		},
+		{
+			ID:        "oc-session-bbb",
+			Title:     "Add dark mode",
+			Directory: "/tmp/project-beta",
+			CreatedAt: time.Now().Add(-3 * time.Hour),
+			UpdatedAt: time.Now().Add(-2 * time.Hour),
+		},
+	}
+
+	_, client, _, cleanup := testDaemonWithDiscover(t, snapshots)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Trigger discovery.
+	if err := client.DiscoverSessions(ctx, "/tmp/project-alpha"); err != nil {
+		t.Fatalf("DiscoverSessions: %v", err)
+	}
+
+	// Both sessions should now appear in the list.
+	sessions, err := client.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(sessions))
+	}
+
+	// Verify the sessions have the right data.
+	titles := map[string]bool{}
+	for _, s := range sessions {
+		titles[s.Title] = true
+		if s.ExternalID == "" {
+			t.Errorf("expected non-empty ExternalID for session %q", s.Title)
+		}
+		if s.Status != agent.StatusIdle {
+			t.Errorf("expected status=idle for discovered session, got %s", s.Status)
+		}
+		if s.Backend != agent.BackendOpenCode {
+			t.Errorf("expected backend=opencode, got %s", s.Backend)
+		}
+	}
+	if !titles["Fix login bug"] || !titles["Add dark mode"] {
+		t.Errorf("unexpected titles: %v", titles)
+	}
+}
+
+func TestDiscoverSessionsDeduplicates(t *testing.T) {
+	t.Parallel()
+	snapshots := []agent.SessionSnapshot{
+		{
+			ID:        "oc-session-xxx",
+			Title:     "Refactor auth",
+			Directory: "/tmp/project-x",
+			CreatedAt: time.Now().Add(-1 * time.Hour),
+			UpdatedAt: time.Now().Add(-30 * time.Minute),
+		},
+	}
+
+	_, client, _, cleanup := testDaemonWithDiscover(t, snapshots)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Discover twice.
+	if err := client.DiscoverSessions(ctx, "/tmp/project-x"); err != nil {
+		t.Fatalf("DiscoverSessions (1st): %v", err)
+	}
+	if err := client.DiscoverSessions(ctx, "/tmp/project-x"); err != nil {
+		t.Fatalf("DiscoverSessions (2nd): %v", err)
+	}
+
+	// Should still only have 1 session (not duplicated).
+	sessions, err := client.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Errorf("expected 1 session after double-discover, got %d", len(sessions))
+	}
+}
+
+func TestDiscoverSessionsSkipsManagedSessions(t *testing.T) {
+	t.Parallel()
+
+	dir := shortTempDir(t)
+	sockPath := filepath.Join(dir, "test.sock")
+	pidPath := filepath.Join(dir, "test.pid")
+
+	d := daemon.NewWithPaths(sockPath, pidPath)
+
+	// The mock backend returns "oc-real-session" as its SessionID, mimicking
+	// what happens when OpenCodeBackend.Start() creates a real session.
+	d.BackendFactory = func(bt agent.BackendType, req agent.StartRequest) (agent.Backend, error) {
+		b := newMockBackend()
+		b.sessionID = "oc-real-session"
+		return b, nil
+	}
+
+	// The discoverer returns a snapshot with the same external ID.
+	d.SessionDiscoverer = func(ctx context.Context, seedDir string) ([]agent.SessionSnapshot, error) {
+		return []agent.SessionSnapshot{
+			{
+				ID:        "oc-real-session",
+				Title:     "Already running",
+				Directory: "/tmp/project-z",
+				CreatedAt: time.Now().Add(-1 * time.Hour),
+				UpdatedAt: time.Now(),
+			},
+		}, nil
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run() }()
+
+	client := daemon.NewClient(sockPath)
+	waitForDaemon(t, client)
+	defer func() {
+		d.Stop()
+		<-errCh
+	}()
+
+	ctx := context.Background()
+
+	// Create a real session first. runBackend will set ExternalID to "oc-real-session".
+	_, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/project-z",
+		Prompt:     "do stuff",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Wait for runBackend to capture the ExternalID.
+	time.Sleep(200 * time.Millisecond)
+
+	// Now discover — should NOT create a duplicate.
+	if err := client.DiscoverSessions(ctx, "/tmp/project-z"); err != nil {
+		t.Fatalf("DiscoverSessions: %v", err)
+	}
+
+	sessions, err := client.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Errorf("expected 1 session (no duplicate from discover), got %d", len(sessions))
+	}
+}
+
+func TestHistoricalSessionMessagesActivatesBackend(t *testing.T) {
+	t.Parallel()
+	snapshots := []agent.SessionSnapshot{
+		{
+			ID:        "oc-hist-msg",
+			Title:     "Old session",
+			Directory: "/tmp/project-msg",
+			CreatedAt: time.Now().Add(-1 * time.Hour),
+			UpdatedAt: time.Now().Add(-30 * time.Minute),
+		},
+	}
+
+	_, client, getBackend, cleanup := testDaemonWithDiscover(t, snapshots)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Discover the historical session.
+	if err := client.DiscoverSessions(ctx, "/tmp/project-msg"); err != nil {
+		t.Fatalf("DiscoverSessions: %v", err)
+	}
+
+	// Find the discovered session's daemon ID.
+	sessions, err := client.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	sessionID := sessions[0].ID
+
+	// Backend should be nil before fetching messages — no getBackend() yet.
+	if getBackend() != nil {
+		t.Fatal("expected no backend before message fetch")
+	}
+
+	// Fetch messages — this should trigger lazy backend activation.
+	messages, err := client.GetSessionMessages(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("GetSessionMessages: %v", err)
+	}
+	// Default mock returns nil history → empty array from the handler.
+	if len(messages) != 0 {
+		t.Errorf("expected 0 messages from fresh mock, got %d", len(messages))
+	}
+
+	// Backend should now be activated.
+	b := getBackend()
+	if b == nil {
+		t.Fatal("expected backend to be activated after message fetch")
+	}
+	// The backend should have been created with the correct external session ID.
+	if b.sessionID != "oc-hist-msg" {
+		t.Errorf("backend sessionID = %q, want %q", b.sessionID, "oc-hist-msg")
+	}
+}
+
+func TestHistoricalSessionResumeActivatesBackend(t *testing.T) {
+	t.Parallel()
+	snapshots := []agent.SessionSnapshot{
+		{
+			ID:        "oc-hist-resume",
+			Title:     "Resume me",
+			Directory: "/tmp/project-resume",
+			CreatedAt: time.Now().Add(-1 * time.Hour),
+			UpdatedAt: time.Now().Add(-30 * time.Minute),
+		},
+	}
+
+	_, client, getBackend, cleanup := testDaemonWithDiscover(t, snapshots)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Discover the historical session.
+	if err := client.DiscoverSessions(ctx, "/tmp/project-resume"); err != nil {
+		t.Fatalf("DiscoverSessions: %v", err)
+	}
+
+	sessions, err := client.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	sessionID := sessions[0].ID
+
+	// No backend yet.
+	if getBackend() != nil {
+		t.Fatal("expected no backend before resume")
+	}
+
+	// Send a follow-up message — this triggers resume (activateBackend + runBackend).
+	err = client.SendMessage(ctx, sessionID, agent.SendMessageOpts{Text: "continue from here"})
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	// Give runBackend time to start.
+	time.Sleep(200 * time.Millisecond)
+
+	b := getBackend()
+	if b == nil {
+		t.Fatal("expected backend to be activated after resume")
+	}
+	if b.sessionID != "oc-hist-resume" {
+		t.Errorf("backend sessionID = %q, want %q", b.sessionID, "oc-hist-resume")
+	}
+
+	// Backend.Start() should have been called (runBackend calls it).
+	b.mu.Lock()
+	started := b.started
+	b.mu.Unlock()
+	if !started {
+		t.Error("expected backend.Start() to have been called for resume")
+	}
+}
+
 func waitForDaemon(t *testing.T, client *daemon.Client) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

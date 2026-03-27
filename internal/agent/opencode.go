@@ -24,28 +24,32 @@ import (
 //   - Each backend instance corresponds to one session on that server.
 //   - Events are streamed via SSE from GET /event on the server (using SDK's ListStreaming).
 type OpenCodeBackend struct {
-	mu        sync.Mutex
-	status    SessionStatus
-	sessionID string // OpenCode's session ID (assigned by server)
-	serverURL string // e.g. "http://127.0.0.1:4123"
-	events    chan Event
-	eventOnce sync.Once // protects close(events)
-	ctx       context.Context
-	cancel    context.CancelFunc
-	client    *opencode.Client
+	mu           sync.Mutex
+	status       SessionStatus
+	sessionID    string // OpenCode's session ID (assigned by server)
+	serverURL    string // e.g. "http://127.0.0.1:4123"
+	events       chan Event
+	eventOnce    sync.Once // protects close(events)
+	eventsClosed bool      // true after events channel is closed
+	ctx          context.Context
+	cancel       context.CancelFunc
+	client       *opencode.Client
 
 	// messageRoles tracks message ID -> role so we can skip user part updates.
 	messageRoles sync.Map // map[string]opencode.MessageRole
 }
 
 // NewOpenCodeBackend creates a new OpenCode backend that communicates with
-// an already-running OpenCode server at the given URL.
-func NewOpenCodeBackend(serverURL string) *OpenCodeBackend {
+// an already-running OpenCode server at the given URL. If sessionID is
+// non-empty, the backend is pre-associated with that session (used for
+// historical/resume sessions loaded from discover).
+func NewOpenCodeBackend(serverURL string, sessionID string) *OpenCodeBackend {
 	ctx, cancel := context.WithCancel(context.Background())
 	client := opencode.NewClient(option.WithBaseURL(strings.TrimRight(serverURL, "/")))
 	return &OpenCodeBackend{
-		status:    StatusStarting,
+		status:    StatusIdle,
 		serverURL: strings.TrimRight(serverURL, "/"),
+		sessionID: sessionID,
 		events:    make(chan Event, 128),
 		ctx:       ctx,
 		cancel:    cancel,
@@ -56,16 +60,20 @@ func NewOpenCodeBackend(serverURL string) *OpenCodeBackend {
 func (b *OpenCodeBackend) Start(ctx context.Context, req StartRequest) error {
 	if req.SessionID != "" {
 		// Resume existing session.
+		b.mu.Lock()
 		b.sessionID = req.SessionID
+		b.mu.Unlock()
 	}
 
-	if b.sessionID == "" {
+	if b.SessionID() == "" {
 		// Create new session via SDK.
 		session, err := b.client.Session.New(ctx, opencode.SessionNewParams{})
 		if err != nil {
 			return fmt.Errorf("create session: %w", err)
 		}
+		b.mu.Lock()
 		b.sessionID = session.ID
+		b.mu.Unlock()
 	}
 
 	// Start SSE event listener in background.
@@ -140,8 +148,7 @@ func (b *OpenCodeBackend) Abort(ctx context.Context) error {
 
 func (b *OpenCodeBackend) Stop() error {
 	b.cancel()
-	// Close events channel if streamEvents hasn't already.
-	b.eventOnce.Do(func() { close(b.events) })
+	b.closeEvents()
 	return nil
 }
 
@@ -156,6 +163,8 @@ func (b *OpenCodeBackend) Status() SessionStatus {
 }
 
 func (b *OpenCodeBackend) SessionID() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	return b.sessionID
 }
 
@@ -194,9 +203,26 @@ func (b *OpenCodeBackend) setStatus(s SessionStatus) {
 	}
 }
 
+func (b *OpenCodeBackend) closeEvents() {
+	b.eventOnce.Do(func() {
+		b.mu.Lock()
+		b.eventsClosed = true
+		b.mu.Unlock()
+		close(b.events)
+	})
+}
+
 func (b *OpenCodeBackend) emit(evt Event) {
-	// Channel close is protected by eventOnce, so this is safe as long as
-	// all senders finish before Stop()/streamEvents() close the channel.
+	// Recover from send-on-closed-channel if the SSE stream goroutine
+	// closed the events channel between our check and the send.
+	defer func() { recover() }()
+
+	b.mu.Lock()
+	closed := b.eventsClosed
+	b.mu.Unlock()
+	if closed {
+		return
+	}
 	select {
 	case b.events <- evt:
 	default:
@@ -206,7 +232,7 @@ func (b *OpenCodeBackend) emit(evt Event) {
 
 // streamEvents connects to the OpenCode SSE endpoint via the SDK and translates events.
 func (b *OpenCodeBackend) streamEvents() {
-	defer b.eventOnce.Do(func() { close(b.events) })
+	defer b.closeEvents()
 
 	stream := b.client.Event.ListStreaming(b.ctx, opencode.EventListParams{})
 	defer stream.Close()
@@ -671,6 +697,60 @@ func fetchAgents(ctx context.Context, serverURL string) ([]AgentInfo, error) {
 		if a.Mode == "primary" && !a.Hidden {
 			result = append(result, a)
 		}
+	}
+	return result, nil
+}
+
+// ListProjects queries the OpenCode server for all known projects.
+// The server for seedDir must already be running or will be started.
+func (m *OpenCodeServerManager) ListProjects(ctx context.Context, seedDir string) ([]ProjectInfo, error) {
+	serverURL, err := m.GetOrStartServer(ctx, seedDir)
+	if err != nil {
+		return nil, err
+	}
+	client := opencode.NewClient(option.WithBaseURL(strings.TrimRight(serverURL, "/")))
+	projects, err := client.Project.List(ctx, opencode.ProjectListParams{})
+	if err != nil {
+		return nil, fmt.Errorf("list projects: %w", err)
+	}
+	if projects == nil {
+		return nil, nil
+	}
+	var result []ProjectInfo
+	for _, p := range *projects {
+		result = append(result, ProjectInfo{ID: p.ID, Worktree: p.Worktree})
+	}
+	return result, nil
+}
+
+// ListSessions queries the OpenCode server for all sessions belonging to
+// the given project directory. Child/forked sessions (non-empty ParentID)
+// are filtered out.
+func (m *OpenCodeServerManager) ListSessions(ctx context.Context, projectDir string) ([]SessionSnapshot, error) {
+	serverURL, err := m.GetOrStartServer(ctx, projectDir)
+	if err != nil {
+		return nil, err
+	}
+	client := opencode.NewClient(option.WithBaseURL(strings.TrimRight(serverURL, "/")))
+	sessions, err := client.Session.List(ctx, opencode.SessionListParams{})
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	if sessions == nil {
+		return nil, nil
+	}
+	var result []SessionSnapshot
+	for _, s := range *sessions {
+		if s.ParentID != "" {
+			continue // Skip child/forked sessions
+		}
+		result = append(result, SessionSnapshot{
+			ID:        s.ID,
+			Title:     s.Title,
+			Directory: s.Directory,
+			CreatedAt: time.UnixMilli(int64(s.Time.Created)),
+			UpdatedAt: time.UnixMilli(int64(s.Time.Updated)),
+		})
 	}
 	return result, nil
 }

@@ -76,11 +76,28 @@ func NewInboxModel(client *daemon.Client) *InboxModel {
 }
 
 func (m *InboxModel) Init() tea.Cmd {
-	cmds := []tea.Cmd{func() tea.Msg { return tea.RequestWindowSize }, m.loadDataCmd(), m.autoRefreshCmd()}
+	cmds := []tea.Cmd{func() tea.Msg { return tea.RequestWindowSize }, m.discoverCmd(), m.loadDataCmd(), m.autoRefreshCmd()}
 	if m.screen == screenSession && m.sessionView != nil {
 		cmds = append(cmds, m.sessionView.Init())
 	}
 	return tea.Batch(cmds...)
+}
+
+// discoverCmd asks the daemon to discover historical sessions from the
+// OpenCode backend. Runs asynchronously; when done it triggers a refresh
+// so newly-discovered sessions appear in the inbox.
+func (m *InboxModel) discoverCmd() tea.Cmd {
+	return func() tea.Msg {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil // Non-fatal: discovery is best-effort
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = m.client.DiscoverSessions(ctx, cwd)
+		// After discovery completes, trigger a refresh to show new sessions.
+		return inboxRefreshMsg{}
+	}
 }
 
 // loadDataCmd fetches sessions from the daemon.
@@ -548,12 +565,18 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 		prompt = "(no prompt)"
 	}
 
-	line := fmt.Sprintf("  %-12s %s %s %s  %s",
-		lipgloss.NewStyle().Foreground(secondaryColor).Render(s.ProjectName),
+	paddedAgo := fmt.Sprintf("%-8s", ago)
+	styledAgo := lipgloss.NewStyle().Foreground(dimColor).Render(paddedAgo)
+
+	paddedProject := fmt.Sprintf("%-12s", s.ProjectName)
+	styledProject := lipgloss.NewStyle().Foreground(secondaryColor).Render(paddedProject)
+
+	line := fmt.Sprintf("  %s %s %s %s %s",
+		styledAgo,
+		styledProject,
 		stateIcon,
 		unreadMark,
 		prompt,
-		lipgloss.NewStyle().Foreground(dimColor).Render(ago),
 	)
 
 	if selected {

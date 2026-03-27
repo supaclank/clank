@@ -74,6 +74,7 @@ func RunStart(foreground bool) error {
 		factory := daemon.NewDefaultBackendFactory()
 		d.BackendFactory = factory.Create
 		d.AgentLister = factory.ListAgents
+		d.SessionDiscoverer = factory.DiscoverSessions
 		d.OnShutdown = factory.StopAll
 		return d.Run()
 	}

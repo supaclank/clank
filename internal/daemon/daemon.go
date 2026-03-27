@@ -50,7 +50,7 @@ func (f *DefaultBackendFactory) Create(bt agent.BackendType, req agent.StartRequ
 		if err != nil {
 			return nil, fmt.Errorf("start opencode server for %s: %w", req.ProjectDir, err)
 		}
-		return agent.NewOpenCodeBackend(serverURL), nil
+		return agent.NewOpenCodeBackend(serverURL, req.SessionID), nil
 
 	case agent.BackendClaudeCode:
 		return agent.NewClaudeCodeBackend(), nil
@@ -73,6 +73,25 @@ func (f *DefaultBackendFactory) ListAgents(ctx context.Context, bt agent.Backend
 // StopAll stops all managed OpenCode servers.
 func (f *DefaultBackendFactory) StopAll() {
 	f.serverMgr.StopAll()
+}
+
+// DiscoverSessions lists all projects from the OpenCode server, then lists
+// all sessions for each project. Returns SessionInfo entries ready to be
+// registered by the daemon.
+func (f *DefaultBackendFactory) DiscoverSessions(ctx context.Context, seedDir string) ([]agent.SessionSnapshot, error) {
+	projects, err := f.serverMgr.ListProjects(ctx, seedDir)
+	if err != nil {
+		return nil, fmt.Errorf("list projects: %w", err)
+	}
+	var all []agent.SessionSnapshot
+	for _, proj := range projects {
+		sessions, err := f.serverMgr.ListSessions(ctx, proj.Worktree)
+		if err != nil {
+			continue // best-effort: skip projects that fail
+		}
+		all = append(all, sessions...)
+	}
+	return all, nil
 }
 
 // Daemon is the long-lived background process that manages agent sessions.
@@ -105,6 +124,10 @@ type Daemon struct {
 	// but before cleaning up files. Use this to stop managed resources like
 	// OpenCode servers.
 	OnShutdown func()
+
+	// SessionDiscoverer fetches historical sessions from a backend (e.g. OpenCode)
+	// for a given seed project directory. Set by the caller before Run().
+	SessionDiscoverer func(ctx context.Context, seedDir string) ([]agent.SessionSnapshot, error)
 
 	log *log.Logger
 }
@@ -332,6 +355,7 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /permissions/{id}/reply", d.handlePermissionReply)
 	mux.HandleFunc("GET /status", d.handleStatus)
 	mux.HandleFunc("GET /agents", d.handleListAgents)
+	mux.HandleFunc("POST /sessions/discover", d.handleDiscoverSessions)
 }
 
 // --- HTTP Handlers ---
@@ -379,6 +403,74 @@ func (d *Daemon) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, agents)
 }
 
+func (d *Daemon) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ProjectDir string `json:"project_dir"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if body.ProjectDir == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_dir is required"})
+		return
+	}
+	if d.SessionDiscoverer == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"discovered": 0, "total": 0})
+		return
+	}
+
+	snapshots, err := d.SessionDiscoverer(r.Context(), body.ProjectDir)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Register discovered sessions, skipping any whose ExternalID already exists
+	// (i.e., sessions the daemon is already managing from a previous create or discover).
+	// Also check backend.SessionID() to catch sessions whose Start() is still
+	// in progress (ExternalID not yet written back to info).
+	added := 0
+	d.mu.Lock()
+	for _, snap := range snapshots {
+		duplicate := false
+		for _, existing := range d.sessions {
+			if existing.info.ExternalID == snap.ID {
+				duplicate = true
+				break
+			}
+			if existing.backend != nil && existing.backend.SessionID() == snap.ID {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		id := ulid.Make().String()
+		info := agent.SessionInfo{
+			ID:          id,
+			ExternalID:  snap.ID,
+			Backend:     agent.BackendOpenCode,
+			Status:      agent.StatusIdle,
+			ProjectDir:  snap.Directory,
+			ProjectName: filepath.Base(snap.Directory),
+			Title:       snap.Title,
+			CreatedAt:   snap.CreatedAt,
+			UpdatedAt:   snap.UpdatedAt,
+			LastReadAt:  snap.UpdatedAt, // Mark as read — they're not new activity
+		}
+		d.sessions[id] = &managedSession{info: info, backend: nil}
+		added++
+	}
+	d.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"discovered": added,
+		"total":      len(snapshots),
+	})
+}
+
 func (d *Daemon) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var req agent.StartRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -418,6 +510,24 @@ func (d *Daemon) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, info)
 }
 
+// activateBackend creates and attaches a backend to a historical session
+// (one loaded via discover that has backend == nil). The backend is ready
+// for Messages() calls but does NOT start SSE streaming or send a prompt.
+func (d *Daemon) activateBackend(id string, ms *managedSession) error {
+	backend, err := d.BackendFactory(ms.info.Backend, agent.StartRequest{
+		Backend:    ms.info.Backend,
+		ProjectDir: ms.info.ProjectDir,
+		SessionID:  ms.info.ExternalID,
+	})
+	if err != nil {
+		return fmt.Errorf("activate backend: %w", err)
+	}
+	d.mu.Lock()
+	ms.backend = backend
+	d.mu.Unlock()
+	return nil
+}
+
 func (d *Daemon) handleGetSessionMessages(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	d.mu.RLock()
@@ -428,8 +538,11 @@ func (d *Daemon) handleGetSessionMessages(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if ms.backend == nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "session has no active backend"})
-		return
+		// Historical session — activate a read-only backend to fetch messages.
+		if err := d.activateBackend(id, ms); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 
 	messages, err := ms.backend.Messages(r.Context())
@@ -465,16 +578,36 @@ func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
-	if ms.backend == nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "session has no active backend"})
-		return
-	}
 
 	// Update the session's current agent if one was specified.
 	if body.Agent != "" {
 		d.mu.Lock()
 		ms.info.Agent = body.Agent
 		d.mu.Unlock()
+	}
+
+	if ms.backend == nil {
+		// Historical session — activate the backend and start it with the
+		// follow-up prompt. Start() handles resume: it skips Session.New()
+		// because sessionID is already set, starts SSE, then sends the prompt.
+		if err := d.activateBackend(id, ms); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		req := agent.StartRequest{
+			Backend:    ms.info.Backend,
+			ProjectDir: ms.info.ProjectDir,
+			SessionID:  ms.info.ExternalID,
+			Prompt:     body.Text,
+			Agent:      body.Agent,
+		}
+		d.wg.Add(1)
+		go func() {
+			defer d.wg.Done()
+			d.runBackend(id, ms, req)
+		}()
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "sent"})
+		return
 	}
 
 	opts := agent.SendMessageOpts{
@@ -713,6 +846,16 @@ func (d *Daemon) runBackend(id string, ms *managedSession, req agent.StartReques
 			Data:      agent.ErrorData{Message: err.Error()},
 		})
 		return
+	}
+
+	// After Start() returns, capture the backend's native session ID so
+	// future discover calls can deduplicate against it.
+	if extID := ms.backend.SessionID(); extID != "" {
+		d.mu.Lock()
+		if ms2, ok := d.sessions[id]; ok {
+			ms2.info.ExternalID = extID
+		}
+		d.mu.Unlock()
 	}
 
 	// Backend event channel closed — mark as dead if still busy.

@@ -16,9 +16,8 @@ const (
 )
 
 type Config struct {
-	LLM   LLMConfig  `toml:"llm"`
-	Repos []string   `toml:"repos"`
-	Scan  ScanConfig `toml:"scan"`
+	LLM   LLMConfig `toml:"llm"`
+	Repos []string  `toml:"repos"`
 }
 
 type LLMConfig struct {
@@ -26,10 +25,6 @@ type LLMConfig struct {
 	APIKey   string `toml:"api_key"`
 	Model    string `toml:"model"`
 	BaseURL  string `toml:"base_url,omitempty"`
-}
-
-type ScanConfig struct {
-	OpenCodeDB string `toml:"opencode_db"`
 }
 
 // ProviderInfo describes a supported LLM provider.
@@ -76,15 +71,7 @@ func DefaultConfig() Config {
 			Provider: ProviderOpenAI,
 			Model:    "gpt-4o-mini",
 		},
-		Scan: ScanConfig{
-			OpenCodeDB: defaultOpenCodeDB(),
-		},
 	}
-}
-
-func defaultOpenCodeDB() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "opencode", "opencode.db")
 }
 
 func Dir() (string, error) {

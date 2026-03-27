@@ -163,6 +163,15 @@ func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
 	return c.do(ctx, "DELETE", "/sessions/"+sessionID, nil, nil)
 }
 
+// DiscoverSessions asks the daemon to discover and register historical sessions
+// from the OpenCode backend for the given project directory.
+func (c *Client) DiscoverSessions(ctx context.Context, projectDir string) error {
+	body := struct {
+		ProjectDir string `json:"project_dir"`
+	}{ProjectDir: projectDir}
+	return c.post(ctx, "/sessions/discover", body, nil)
+}
+
 // SubscribeEvents opens an SSE stream and delivers events to the returned channel.
 // The channel is closed when the context is cancelled or the connection drops.
 func (c *Client) SubscribeEvents(ctx context.Context) (<-chan agent.Event, error) {
