@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
@@ -67,6 +68,9 @@ type InboxModel struct {
 	sessionView  *SessionViewModel
 	activeConnID string // session ID of the detail view
 
+	// Spinner for busy session indicators.
+	spinner spinner.Model
+
 	width  int
 	height int
 	err    error
@@ -74,13 +78,18 @@ type InboxModel struct {
 
 // NewInboxModel creates the inbox TUI connected to the given daemon client.
 func NewInboxModel(client *daemon.Client) *InboxModel {
+	sp := spinner.New(
+		spinner.WithSpinner(spinner.MiniDot),
+		spinner.WithStyle(lipgloss.NewStyle().Foreground(successColor)),
+	)
 	return &InboxModel{
-		client: client,
+		client:  client,
+		spinner: sp,
 	}
 }
 
 func (m *InboxModel) Init() tea.Cmd {
-	cmds := []tea.Cmd{func() tea.Msg { return tea.RequestWindowSize }, m.discoverCmd(), m.loadDataCmd(), m.autoRefreshCmd()}
+	cmds := []tea.Cmd{func() tea.Msg { return tea.RequestWindowSize }, m.discoverCmd(), m.loadDataCmd(), m.autoRefreshCmd(), m.spinner.Tick}
 	if m.screen == screenSession && m.sessionView != nil {
 		cmds = append(cmds, m.sessionView.Init())
 	}
@@ -153,6 +162,11 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		return m, nil
 
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+
 	case inboxDataMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -191,8 +205,8 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.screen = screenInbox
 		m.sessionView = nil
 		m.activeConnID = ""
-		// Refresh data when returning.
-		return m, m.loadDataCmd()
+		// Refresh data and restart spinner when returning.
+		return m, tea.Batch(m.loadDataCmd(), m.spinner.Tick)
 
 	case tea.WindowSizeMsg:
 		// Forward to both.
@@ -751,7 +765,7 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 func (m *InboxModel) styledAgentStatus(status agent.SessionStatus) string {
 	switch status {
 	case agent.StatusBusy, agent.StatusStarting:
-		return lipgloss.NewStyle().Foreground(successColor).Bold(true).Render("●")
+		return m.spinner.View()
 	case agent.StatusIdle:
 		return lipgloss.NewStyle().Foreground(warningColor).Render("○")
 	case agent.StatusError:

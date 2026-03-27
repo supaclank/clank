@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
@@ -31,6 +32,10 @@ type sessionCreateResultMsg struct {
 func NewSessionViewComposing(client *daemon.Client, projectDir string) *SessionViewModel {
 	ta := newPromptTextarea("Describe the task for the agent...", 5)
 	ta.Focus()
+	sp := spinner.New(
+		spinner.WithSpinner(spinner.MiniDot),
+		spinner.WithStyle(lipgloss.NewStyle().Foreground(successColor)),
+	)
 	return &SessionViewModel{
 		client:      client,
 		composing:   true,
@@ -39,6 +44,7 @@ func NewSessionViewComposing(client *daemon.Client, projectDir string) *SessionV
 		projectDir:  projectDir,
 		follow:      true,
 		input:       ta,
+		spinner:     sp,
 	}
 }
 
@@ -197,10 +203,11 @@ func (m *SessionViewModel) handleCreateResult(msg sessionCreateResultMsg) (tea.M
 		m.input.SetWidth(m.width - promptInputBorderSize)
 	}
 
-	// Start reading events + fetch session info.
+	// Start reading events + fetch session info + start spinner.
 	return m, tea.Batch(
 		m.fetchSessionInfo(),
 		waitForEvent(m.eventsCh, m.sessionID),
+		m.spinner.Tick,
 	)
 }
 

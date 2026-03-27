@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -88,6 +89,9 @@ type SessionViewModel struct {
 	seenParts     map[string]bool
 	historyLoaded bool
 
+	// Spinner for busy/running state animation.
+	spinner spinner.Model
+
 	// Layout.
 	width  int
 	height int
@@ -137,11 +141,16 @@ const (
 // NewSessionViewModel creates a session detail TUI for an existing session.
 func NewSessionViewModel(client *daemon.Client, sessionID string) *SessionViewModel {
 	ta := newPromptTextarea("Type a follow-up message...", 3)
+	sp := spinner.New(
+		spinner.WithSpinner(spinner.MiniDot),
+		spinner.WithStyle(lipgloss.NewStyle().Foreground(successColor)),
+	)
 	return &SessionViewModel{
 		client:    client,
 		sessionID: sessionID,
 		follow:    true,
 		input:     ta,
+		spinner:   sp,
 	}
 }
 
@@ -177,7 +186,7 @@ func (m *SessionViewModel) Init() tea.Cmd {
 	if m.composing {
 		return tea.Batch(m.input.Focus(), m.fetchAgents())
 	}
-	cmds := []tea.Cmd{m.fetchSessionInfo(), m.fetchSessionMessages()}
+	cmds := []tea.Cmd{m.fetchSessionInfo(), m.fetchSessionMessages(), m.spinner.Tick}
 	if m.eventsCh != nil {
 		// Already connected — start reading immediately.
 		cmds = append(cmds, waitForEvent(m.eventsCh, m.sessionID))
@@ -307,6 +316,11 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// border externally, subtract the external frame.
 		m.input.SetWidth(m.width - promptInputBorderSize)
 		return m, nil
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
 
 	case sessionInfoMsg:
 		m.info = msg.info
@@ -789,7 +803,7 @@ func (m *SessionViewModel) renderToolLine(p agent.Part) string {
 func (m *SessionViewModel) statusIcon(status agent.PartStatus) string {
 	switch status {
 	case agent.PartRunning:
-		return lipgloss.NewStyle().Foreground(successColor).Render("●")
+		return m.spinner.View()
 	case agent.PartCompleted:
 		return lipgloss.NewStyle().Foreground(successColor).Render("✓")
 	case agent.PartFailed:
@@ -909,9 +923,10 @@ func (m *SessionViewModel) View() tea.View {
 		sb.WriteString("\n")
 	}
 
-	// Streaming cursor when busy.
+	// Streaming spinner when busy.
 	if m.info != nil && m.info.Status == agent.StatusBusy {
-		sb.WriteString(lipgloss.NewStyle().Foreground(successColor).Bold(true).Render("  ▊"))
+		sb.WriteString("  ")
+		sb.WriteString(m.spinner.View())
 		sb.WriteString("\n")
 	}
 
@@ -937,20 +952,13 @@ func (m *SessionViewModel) View() tea.View {
 }
 
 func (m *SessionViewModel) renderHeader() string {
-	title := "Session"
-	if m.info != nil {
-		title = truncateStr(m.info.Prompt, 50)
-		if m.info.Title != "" {
-			title = truncateStr(m.info.Title, 50)
-		}
-	}
-
 	statusStr := "..."
 	statusStyle := lipgloss.NewStyle().Foreground(dimColor)
 	if m.info != nil {
 		statusStr = string(m.info.Status)
 		switch m.info.Status {
 		case agent.StatusBusy:
+			statusStr = m.spinner.View() + " " + statusStr
 			statusStyle = lipgloss.NewStyle().Foreground(successColor).Bold(true)
 		case agent.StatusIdle:
 			statusStyle = lipgloss.NewStyle().Foreground(warningColor)
@@ -961,7 +969,6 @@ func (m *SessionViewModel) renderHeader() string {
 		}
 	}
 
-	left := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render(title)
 	right := statusStyle.Render("[" + statusStr + "]")
 
 	// Show follow-up badge if flagged.
@@ -986,6 +993,19 @@ func (m *SessionViewModel) renderHeader() string {
 	if followUpStr != "" {
 		rightParts = followUpStr + " " + rightParts
 	}
+
+	// Compute max title width dynamically based on available space
+	// after accounting for the right-side badges and a minimum gap of 2.
+	maxTitleWidth := m.width - lipgloss.Width(rightParts) - 2
+	title := "Session"
+	if m.info != nil {
+		title = truncateStr(m.info.Prompt, maxTitleWidth)
+		if m.info.Title != "" {
+			title = truncateStr(m.info.Title, maxTitleWidth)
+		}
+	}
+
+	left := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render(title)
 
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(rightParts)
 	if gap < 2 {
