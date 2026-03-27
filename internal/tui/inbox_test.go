@@ -304,6 +304,70 @@ func TestBuildGroups_DraftSessionStaysInNormalGroup(t *testing.T) {
 	}
 }
 
+func TestBuildGroups_FollowUpToggleMovesSessionBetweenGroups(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+
+	// Start with a session that is NOT follow-up — it should be in the IDLE group.
+	sessions := []agent.SessionInfo{
+		{ID: "s1", Status: agent.StatusIdle, UpdatedAt: now, LastReadAt: now, FollowUp: false},
+	}
+
+	m := &InboxModel{}
+	m.buildGroups(sessions)
+
+	if len(m.groups) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(m.groups))
+	}
+	if !strings.HasPrefix(m.groups[0].name, "IDLE") {
+		t.Fatalf("expected IDLE group, got %q", m.groups[0].name)
+	}
+
+	// Toggle follow-up on — session should move to the FOLLOW UP group.
+	sessions[0].FollowUp = true
+	m.buildGroups(sessions)
+
+	if len(m.groups) != 1 {
+		t.Fatalf("expected 1 group after follow-up toggle, got %d", len(m.groups))
+	}
+	if !strings.HasPrefix(m.groups[0].name, "FOLLOW UP") {
+		t.Fatalf("expected FOLLOW UP group, got %q", m.groups[0].name)
+	}
+
+	// Toggle follow-up off — session should move back to the IDLE group.
+	sessions[0].FollowUp = false
+	m.buildGroups(sessions)
+
+	if len(m.groups) != 1 {
+		t.Fatalf("expected 1 group after follow-up untoggle, got %d", len(m.groups))
+	}
+	if !strings.HasPrefix(m.groups[0].name, "IDLE") {
+		t.Fatalf("expected IDLE group after untoggle, got %q", m.groups[0].name)
+	}
+}
+
+func TestBuildGroups_FollowUpBusySessionStaysInBusy(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+
+	// A busy session with follow-up should stay in the BUSY group, not FOLLOW UP.
+	sessions := []agent.SessionInfo{
+		{ID: "busy-fu", Status: agent.StatusBusy, UpdatedAt: now, FollowUp: true},
+	}
+
+	m := &InboxModel{}
+	m.buildGroups(sessions)
+
+	if len(m.groups) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(m.groups))
+	}
+	if !strings.HasPrefix(m.groups[0].name, "BUSY") {
+		t.Errorf("expected BUSY group for busy+follow-up session, got %q", m.groups[0].name)
+	}
+}
+
 func TestRenderRow_ShowsAgentMode(t *testing.T) {
 	t.Parallel()
 

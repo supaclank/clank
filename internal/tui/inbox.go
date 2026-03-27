@@ -319,6 +319,13 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				)
 			}
 		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("f"))):
+		if m.cursor >= 0 && m.cursor < len(m.flatRows) {
+			row := m.flatRows[m.cursor]
+			if row.session != nil {
+				return m, m.toggleFollowUp(row.session.ID)
+			}
+		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("x"))):
 		if m.cursor >= 0 && m.cursor < len(m.flatRows) {
 			row := m.flatRows[m.cursor]
@@ -433,6 +440,21 @@ func (m *InboxModel) setSessionVisibility(sessionID string, visibility agent.Ses
 			return inboxDataMsg{err: err}
 		}
 		// Reload data after visibility change.
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel2()
+		sessions, err := m.client.ListSessions(ctx2)
+		return inboxDataMsg{sessions: sessions, err: err}
+	}
+}
+
+func (m *InboxModel) toggleFollowUp(sessionID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := m.client.ToggleFollowUp(ctx, sessionID); err != nil {
+			return inboxDataMsg{err: err}
+		}
+		// Reload data so the session moves to/from the FOLLOW UP group.
 		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel2()
 		sessions, err := m.client.ListSessions(ctx2)
@@ -622,7 +644,7 @@ func (m *InboxModel) View() tea.View {
 	}
 
 	// Help bar.
-	help := helpStyle.Render("j/k: navigate | enter: open | n: new | d: done | x: archive | r: refresh | q: quit")
+	help := helpStyle.Render("j/k: navigate | enter: open | n: new | f: follow-up | d: done | x: archive | r: refresh | q: quit")
 	sb.WriteString(help)
 
 	content := sb.String()

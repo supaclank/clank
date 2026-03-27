@@ -475,7 +475,7 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))):
 		return m, tea.Quit
-	case key.Matches(msg, key.NewBinding(key.WithKeys("q"))):
+	case key.Matches(msg, key.NewBinding(key.WithKeys("q", "esc"))):
 		if m.cancelEvents != nil {
 			m.cancelEvents()
 		}
