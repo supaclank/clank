@@ -5,8 +5,9 @@
 2. Add comments where helpful, especially for non-obvious "why" decisions. Do not add redundant comments.
 3. NEVER use "fallbacks" for missing parameters. Makes it harder to debug and reason about the code's true happy path. Prefer fast failures.
 
-## Testing 
+## Testing & debugging
 
+0. Don't guess - add logs or TDD tests to verify your hypothesis before implementing.
 1. Add regression tests for every bug fix.
 2. If you think you found a bug, write a test to verify it before fixing it. This way we can use tests as documentation for why a feature needs to exist. This helps make it easier to delete things in the future.
 3. Every functional change should include or update tests.
