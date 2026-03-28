@@ -70,8 +70,13 @@ type SessionViewModel struct {
 
 	// Display state.
 	entries      []displayEntry // rendered message/tool entries
+	cursor       int            // index into entries for the selected message
 	scrollOffset int            // first visible display line
 	follow       bool           // auto-follow tail when true (default when busy)
+
+	// Entry-to-line mapping (rebuilt by buildContentLines).
+	entryStartLine []int // entryStartLine[i] = first display line for entries[i]
+	entryEndLine   []int // entryEndLine[i] = last display line (exclusive) for entries[i]
 
 	// Input state.
 	inputActive bool
@@ -415,6 +420,23 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		return m, nil
 
+	case tea.MouseWheelMsg:
+		// Mouse scroll is line-by-line, independent of cursor selection.
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			m.follow = false
+			if m.scrollOffset > 0 {
+				m.scrollOffset -= 3
+				if m.scrollOffset < 0 {
+					m.scrollOffset = 0
+				}
+			}
+		case tea.MouseWheelDown:
+			m.scrollOffset += 3
+			m.clampScroll()
+		}
+		return m, nil
+
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
@@ -510,27 +532,60 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.input.Focus()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k"))):
 		m.follow = false
-		if m.scrollOffset > 0 {
-			m.scrollOffset--
+		if idx := m.prevNavigableEntry(m.cursor); idx >= 0 {
+			m.cursor = idx
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("down", "j"))):
-		m.scrollOffset++
-		m.clampScroll()
+		if idx := m.nextNavigableEntry(m.cursor); idx >= 0 {
+			m.follow = false
+			m.cursor = idx
+		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+up"))):
+		m.follow = false
+		if idx := m.prevUserEntry(m.cursor); idx >= 0 {
+			m.cursor = idx
+		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+down"))):
+		if idx := m.nextUserEntry(m.cursor); idx >= 0 {
+			m.follow = false
+			m.cursor = idx
+		} else {
+			// No more user messages below — jump to last navigable entry and follow.
+			m.follow = true
+			m.cursor = m.lastNavigableEntry()
+		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("pgup", "ctrl+u"))):
 		m.follow = false
-		m.scrollOffset -= m.contentHeight() / 2
-		if m.scrollOffset < 0 {
-			m.scrollOffset = 0
+		// Jump cursor by ~half viewport worth of navigable entries.
+		jumps := m.contentHeight() / 4 // approximate: entries are ~2-4 lines each
+		if jumps < 1 {
+			jumps = 1
+		}
+		for i := 0; i < jumps; i++ {
+			if idx := m.prevNavigableEntry(m.cursor); idx >= 0 {
+				m.cursor = idx
+			} else {
+				break
+			}
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("pgdown", "ctrl+d"))):
-		m.scrollOffset += m.contentHeight() / 2
-		m.clampScroll()
+		jumps := m.contentHeight() / 4
+		if jumps < 1 {
+			jumps = 1
+		}
+		for i := 0; i < jumps; i++ {
+			if idx := m.nextNavigableEntry(m.cursor); idx >= 0 {
+				m.cursor = idx
+			} else {
+				break
+			}
+		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("G", "end"))):
 		m.follow = true
-		m.scrollToBottom()
+		m.cursor = m.lastNavigableEntry()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("g", "home"))):
 		m.follow = false
-		m.scrollOffset = 0
+		m.cursor = m.firstNavigableEntry()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("a"))):
 		// TODO: approve session
 	case key.Matches(msg, key.NewBinding(key.WithKeys("f"))):
@@ -906,12 +961,16 @@ func (m *SessionViewModel) View() tea.View {
 	contentLines := m.buildContentLines()
 	ch := m.contentHeight()
 
-	// Auto-follow to bottom.
+	// Auto-follow: move cursor to the latest navigable entry and scroll to bottom.
 	if m.follow {
+		m.cursor = m.lastNavigableEntry()
 		m.scrollOffset = len(contentLines) - ch
 		if m.scrollOffset < 0 {
 			m.scrollOffset = 0
 		}
+	} else {
+		// Manual navigation: position cursor entry near top of viewport.
+		m.scrollToCursor()
 	}
 	m.clampScrollWithLines(contentLines)
 
@@ -955,6 +1014,7 @@ func (m *SessionViewModel) View() tea.View {
 
 	v := tea.NewView(m.overlaySessionConfirm(sb.String()))
 	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
 	return v
 }
 
@@ -1023,9 +1083,14 @@ func (m *SessionViewModel) renderHeader() string {
 
 func (m *SessionViewModel) buildContentLines() []string {
 	var lines []string
-	for _, e := range m.entries {
-		entryLines := m.renderEntry(e)
+	m.entryStartLine = make([]int, len(m.entries))
+	m.entryEndLine = make([]int, len(m.entries))
+	for i, e := range m.entries {
+		m.entryStartLine[i] = len(lines)
+		selected := i == m.cursor
+		entryLines := m.renderEntry(e, selected)
 		lines = append(lines, entryLines...)
+		m.entryEndLine[i] = len(lines)
 	}
 	if len(lines) == 0 {
 		lines = append(lines, lipgloss.NewStyle().Foreground(dimColor).Render("  Waiting for agent output..."))
@@ -1033,11 +1098,26 @@ func (m *SessionViewModel) buildContentLines() []string {
 	return lines
 }
 
-func (m *SessionViewModel) renderEntry(e displayEntry) []string {
+func (m *SessionViewModel) renderEntry(e displayEntry, selected bool) []string {
 	maxWidth := m.width - 4
 	if maxWidth < 20 {
 		maxWidth = 20
 	}
+
+	// borderSize accounts for the rounded border (1+1) + padding (1+1) = 4 chars.
+	const borderSize = 4
+	navigable := isNavigable(e.kind)
+
+	// When selected, content is narrower to fit inside the border.
+	contentWidth := maxWidth
+	if selected && navigable {
+		contentWidth = maxWidth - borderSize
+		if contentWidth < 16 {
+			contentWidth = 16
+		}
+	}
+
+	var contentLines []string
 
 	switch e.kind {
 	case entryUser:
@@ -1046,51 +1126,72 @@ func (m *SessionViewModel) renderEntry(e displayEntry) []string {
 			badge := lipgloss.NewStyle().Foreground(agentColor(e.agent)).Bold(true).Render("[" + e.agent + "]")
 			header += " " + badge
 		}
-		wrapped := wrapText(e.content, maxWidth)
-		lines := []string{"", "  " + header}
+		wrapped := wrapText(e.content, contentWidth)
+		contentLines = []string{header}
 		for _, l := range strings.Split(wrapped, "\n") {
-			lines = append(lines, "  "+l)
+			contentLines = append(contentLines, l)
 		}
-		return lines
 
 	case entryText:
 		header := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("Agent:")
-		wrapped := wrapText(e.content, maxWidth)
-		lines := []string{"", "  " + header}
+		wrapped := wrapText(e.content, contentWidth)
+		contentLines = []string{header}
 		for _, l := range strings.Split(wrapped, "\n") {
-			lines = append(lines, "  "+l)
+			contentLines = append(contentLines, l)
 		}
-		return lines
 
 	case entryTool:
 		styled := lipgloss.NewStyle().Foreground(dimColor).Render("  " + e.content)
 		return []string{styled}
 
 	case entryThink:
-		header := lipgloss.NewStyle().Foreground(dimColor).Italic(true).Render("  (thinking)")
-		wrapped := wrapText(e.content, maxWidth)
-		lines := []string{header}
+		header := lipgloss.NewStyle().Foreground(dimColor).Italic(true).Render("(thinking)")
+		wrapped := wrapText(e.content, contentWidth)
+		contentLines = []string{header}
 		for _, l := range strings.Split(wrapped, "\n") {
-			styled := lipgloss.NewStyle().Foreground(dimColor).Italic(true).Render("  " + l)
-			lines = append(lines, styled)
+			styled := lipgloss.NewStyle().Foreground(dimColor).Italic(true).Render(l)
+			contentLines = append(contentLines, styled)
 		}
-		return lines
 
 	case entryError:
-		styled := lipgloss.NewStyle().Foreground(dangerColor).Render("  [error] " + e.content)
-		return []string{styled}
+		styled := lipgloss.NewStyle().Foreground(dangerColor).Render("[error] " + e.content)
+		contentLines = []string{styled}
 
 	case entryPerm:
-		styled := lipgloss.NewStyle().Foreground(warningColor).Bold(true).Render("  [Permission] " + e.content)
-		return []string{"", styled}
+		styled := lipgloss.NewStyle().Foreground(warningColor).Bold(true).Render("[Permission] " + e.content)
+		contentLines = []string{styled}
 
 	case entryStatus:
 		styled := lipgloss.NewStyle().Foreground(dimColor).Render("  --- " + e.content + " ---")
 		return []string{styled}
 
 	default:
-		return []string{"  " + e.content}
+		contentLines = []string{e.content}
 	}
+
+	if selected && navigable {
+		// Wrap content in a rounded border.
+		inner := strings.Join(contentLines, "\n")
+		bordered := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(primaryColor).
+			Padding(0, 1).
+			Render(inner)
+		lines := strings.Split(bordered, "\n")
+		// Prepend a blank separator line.
+		return append([]string{""}, lines...)
+	}
+
+	// Unselected navigable entries: indent with 2 spaces, prepend blank separator.
+	if navigable {
+		lines := []string{""}
+		for _, l := range contentLines {
+			lines = append(lines, "  "+l)
+		}
+		return lines
+	}
+
+	return contentLines
 }
 
 func (m *SessionViewModel) buildHelpText() string {
@@ -1192,6 +1293,99 @@ func (m *SessionViewModel) overlaySessionConfirm(base string) string {
 	}
 
 	return strings.Join(baseLines, "\n")
+}
+
+// --- Navigation helpers ---
+
+// isNavigable returns true for entry kinds that the cursor can land on.
+// Tool calls and status entries are skipped during navigation.
+func isNavigable(k entryKind) bool {
+	switch k {
+	case entryUser, entryText, entryThink, entryError, entryPerm:
+		return true
+	default:
+		return false
+	}
+}
+
+// nextNavigableEntry returns the index of the next navigable entry after from,
+// or -1 if there is none.
+func (m *SessionViewModel) nextNavigableEntry(from int) int {
+	for i := from + 1; i < len(m.entries); i++ {
+		if isNavigable(m.entries[i].kind) {
+			return i
+		}
+	}
+	return -1
+}
+
+// prevNavigableEntry returns the index of the previous navigable entry before from,
+// or -1 if there is none.
+func (m *SessionViewModel) prevNavigableEntry(from int) int {
+	for i := from - 1; i >= 0; i-- {
+		if isNavigable(m.entries[i].kind) {
+			return i
+		}
+	}
+	return -1
+}
+
+// nextUserEntry returns the index of the next user message after from,
+// or -1 if there is none.
+func (m *SessionViewModel) nextUserEntry(from int) int {
+	for i := from + 1; i < len(m.entries); i++ {
+		if m.entries[i].kind == entryUser {
+			return i
+		}
+	}
+	return -1
+}
+
+// prevUserEntry returns the index of the previous user message before from,
+// or -1 if there is none.
+func (m *SessionViewModel) prevUserEntry(from int) int {
+	for i := from - 1; i >= 0; i-- {
+		if m.entries[i].kind == entryUser {
+			return i
+		}
+	}
+	return -1
+}
+
+// firstNavigableEntry returns the index of the first navigable entry, or 0.
+func (m *SessionViewModel) firstNavigableEntry() int {
+	for i := 0; i < len(m.entries); i++ {
+		if isNavigable(m.entries[i].kind) {
+			return i
+		}
+	}
+	return 0
+}
+
+// lastNavigableEntry returns the index of the last navigable entry, or 0.
+func (m *SessionViewModel) lastNavigableEntry() int {
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if isNavigable(m.entries[i].kind) {
+			return i
+		}
+	}
+	return 0
+}
+
+// scrollToCursor sets scrollOffset so the cursor entry's start line is near the
+// top of the viewport, with a small margin. This gives a consistent reading
+// position — the selected entry is always near the top with context below.
+func (m *SessionViewModel) scrollToCursor() {
+	if m.cursor < 0 || m.cursor >= len(m.entryStartLine) {
+		return
+	}
+	const topMargin = 2
+	m.scrollOffset = m.entryStartLine[m.cursor] - topMargin
+	if m.scrollOffset < 0 {
+		m.scrollOffset = 0
+	}
+	// Clamp so we don't scroll past the end of content.
+	// (clampScrollWithLines will handle this in View, but be safe here.)
 }
 
 // --- Helpers ---
