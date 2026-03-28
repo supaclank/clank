@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -249,28 +250,165 @@ func (b *OpenCodeBackend) emit(evt Event) {
 	}
 }
 
-// streamEvents connects to the OpenCode SSE endpoint via the SDK and translates events.
+// streamEvents connects to the OpenCode SSE endpoint directly (instead of using SDK)
+//
+// A bug was the reason for not using SDK's Event.ListStreaming():
+// New event "message.part.delta" is not supported by SDK.
+// Similar issue in vibe-kanban upon further research:
+// https://github.com/BloopAI/vibe-kanban/issues/3123.
+//
+// Last update to the Go SDK was 3 months ago, probably causing this
+// discrepancy between what the server sends and what the SDK handles.
+//
+// The server's /event endpoint uses Bus.subscribeAll(), which publishes message.part.delta
+// events containing token-level streaming deltas — exactly what we need for
+// real-time text display. The SDK's Stream[EventListResponse] either silently
+// drops these (unknown union variant) or may break the stream entirely.
 func (b *OpenCodeBackend) streamEvents() {
 	defer b.closeEvents()
 
-	stream := b.client.Event.ListStreaming(b.ctx, opencode.EventListParams{})
-	defer stream.Close()
-
-	for stream.Next() {
-		event := stream.Current()
-		b.handleSDKEvent(event)
+	req, err := http.NewRequestWithContext(b.ctx, http.MethodGet, b.serverURL+"/event", nil)
+	if err != nil {
+		b.emitError("build SSE request: " + err.Error())
+		return
 	}
+	req.Header.Set("Accept", "text/event-stream")
 
-	// If stream ended due to error (and not intentional cancellation), emit error.
-	if err := stream.Err(); err != nil {
-		// Don't emit error if we're shutting down.
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
 		select {
 		case <-b.ctx.Done():
 			return
 		default:
-			b.emitError("event stream: " + err.Error())
+			b.emitError("SSE connect: " + err.Error())
+			return
 		}
 	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b.emitError(fmt.Sprintf("SSE endpoint returned %d", resp.StatusCode))
+		return
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	// Allow large SSE payloads (e.g. full part snapshots with large text).
+	scanner.Buffer(nil, bufio.MaxScanTokenSize<<4)
+
+	var dataBuf bytes.Buffer
+	for scanner.Scan() {
+		line := scanner.Bytes()
+
+		// Empty line = dispatch the accumulated event.
+		if len(line) == 0 {
+			if dataBuf.Len() > 0 {
+				b.handleRawSSEEvent(dataBuf.Bytes())
+				dataBuf.Reset()
+			}
+			continue
+		}
+
+		// Parse SSE field.
+		name, value, _ := bytes.Cut(line, []byte(":"))
+		if len(value) > 0 && value[0] == ' ' {
+			value = value[1:]
+		}
+
+		switch string(name) {
+		case "data":
+			dataBuf.Write(value)
+			dataBuf.WriteByte('\n')
+		case "":
+			// Comment line (": something"), ignore.
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		select {
+		case <-b.ctx.Done():
+			return
+		default:
+			b.emitError("SSE stream: " + err.Error())
+		}
+	}
+}
+
+// partDeltaEvent is the JSON shape of a "message.part.delta" BusEvent as
+// sent by the OpenCode server. This event carries token-level streaming
+// deltas and is NOT modeled by the Go SDK.
+type partDeltaEvent struct {
+	Type       string `json:"type"`
+	Properties struct {
+		SessionID string `json:"sessionID"`
+		MessageID string `json:"messageID"`
+		PartID    string `json:"partID"`
+		Field     string `json:"field"`
+		Delta     string `json:"delta"`
+	} `json:"properties"`
+}
+
+// handleRawSSEEvent processes a single SSE data payload (raw JSON bytes).
+// It checks for "message.part.delta" first (our custom handling), then
+// falls back to the SDK's EventListResponse unmarshalling for all other types.
+func (b *OpenCodeBackend) handleRawSSEEvent(data []byte) {
+	// Quick peek at the "type" field to decide how to route.
+	var peek struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &peek); err != nil {
+		return // Malformed JSON, skip.
+	}
+
+	if peek.Type == "message.part.delta" {
+		var delta partDeltaEvent
+		if err := json.Unmarshal(data, &delta); err != nil {
+			return
+		}
+		b.handlePartDelta(delta)
+		return
+	}
+
+	// For all other event types, delegate to the SDK's typed unmarshaller.
+	var event opencode.EventListResponse
+	if err := json.Unmarshal(data, &event); err != nil {
+		// Unknown event type the SDK can't parse — silently skip.
+		return
+	}
+	b.handleSDKEvent(event)
+}
+
+// handlePartDelta processes a message.part.delta event (token-level streaming).
+func (b *OpenCodeBackend) handlePartDelta(delta partDeltaEvent) {
+	props := delta.Properties
+
+	// Filter to our session.
+	if props.SessionID != b.SessionID() {
+		return
+	}
+
+	// Skip parts belonging to user messages.
+	if role, ok := b.messageRoles.Load(props.MessageID); ok {
+		if role == opencode.MessageRoleUser {
+			return
+		}
+	}
+
+	// Only handle text content deltas (field="text" for text parts).
+	if props.Delta == "" {
+		return
+	}
+
+	b.emit(Event{
+		Type:      EventPartUpdate,
+		Timestamp: time.Now(),
+		Data: PartUpdateData{
+			Part: Part{
+				ID:   props.PartID,
+				Type: PartText,
+				Text: props.Delta,
+			},
+		},
+	})
 }
 
 // handleSDKEvent translates an OpenCode SDK event into our unified Event type.
@@ -327,7 +465,9 @@ func (b *OpenCodeBackend) handleSDKEvent(event opencode.EventListResponse) {
 			}
 		}
 
-		// If there's a delta, emit it as a text part update (streaming text).
+		// If the SDK ever populates delta (future SDK version), use it.
+		// Currently, token-level deltas arrive via message.part.delta events
+		// handled in handlePartDelta, so this is a fallback only.
 		if delta != "" {
 			b.emit(Event{
 				Type:      EventPartUpdate,
