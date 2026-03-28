@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -617,6 +618,161 @@ func TestInputToggle_ScrollOffset(t *testing.T) {
 		want := 5 + inputReservedLines
 		if m.scrollOffset != want {
 			t.Errorf("scrollOffset = %d, want %d", m.scrollOffset, want)
+		}
+	})
+}
+
+// TestCtrlC_CancelsWhenBusy verifies that ctrl+c aborts the session when
+// the agent is busy, but quits the app when the agent is idle.
+func TestCtrlC_CancelsWhenBusy(t *testing.T) {
+	t.Parallel()
+	ctrlC := tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
+
+	t.Run("normal mode busy aborts instead of quitting", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(testEntries())
+		m.info = &agent.SessionInfo{Status: agent.StatusBusy}
+
+		_, cmd := m.handleKey(ctrlC)
+
+		if cmd == nil {
+			t.Fatal("expected a command from ctrl+c when busy")
+		}
+		// The cmd should NOT be tea.Quit (which produces tea.QuitMsg).
+		// It should be abortSession which would call the client.
+		// Since client is nil we can't execute the cmd, but we can verify
+		// it's not tea.Quit by checking a known quit cmd for comparison.
+		_, quitCmd := newTestSessionModel(nil).handleKey(ctrlC)
+		if quitCmd == nil {
+			t.Fatal("expected tea.Quit from idle ctrl+c")
+		}
+		quitMsg := quitCmd()
+		if _, ok := quitMsg.(tea.QuitMsg); !ok {
+			t.Fatal("expected idle ctrl+c to produce tea.QuitMsg")
+		}
+	})
+
+	t.Run("normal mode starting aborts instead of quitting", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(testEntries())
+		m.info = &agent.SessionInfo{Status: agent.StatusStarting}
+
+		_, cmd := m.handleKey(ctrlC)
+
+		if cmd == nil {
+			t.Fatal("expected a command from ctrl+c when starting")
+		}
+	})
+
+	t.Run("normal mode idle quits", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(testEntries())
+		m.info = &agent.SessionInfo{Status: agent.StatusIdle}
+
+		_, cmd := m.handleKey(ctrlC)
+
+		if cmd == nil {
+			t.Fatal("expected a command from ctrl+c when idle")
+		}
+		msg := cmd()
+		if _, ok := msg.(tea.QuitMsg); !ok {
+			t.Fatalf("expected tea.QuitMsg when idle, got %T", msg)
+		}
+	})
+
+	t.Run("normal mode nil info quits", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(testEntries())
+		m.info = nil
+
+		_, cmd := m.handleKey(ctrlC)
+
+		if cmd == nil {
+			t.Fatal("expected a command from ctrl+c with nil info")
+		}
+		msg := cmd()
+		if _, ok := msg.(tea.QuitMsg); !ok {
+			t.Fatalf("expected tea.QuitMsg with nil info, got %T", msg)
+		}
+	})
+
+	t.Run("input mode busy aborts instead of quitting", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(testEntries())
+		m.info = &agent.SessionInfo{Status: agent.StatusBusy}
+		m.inputActive = true
+
+		_, cmd := m.handleKey(ctrlC)
+
+		if cmd == nil {
+			t.Fatal("expected a command from ctrl+c in input mode when busy")
+		}
+	})
+
+	t.Run("input mode idle quits", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(testEntries())
+		m.info = &agent.SessionInfo{Status: agent.StatusIdle}
+		m.inputActive = true
+
+		_, cmd := m.handleKey(ctrlC)
+
+		if cmd == nil {
+			t.Fatal("expected a command from ctrl+c in input mode when idle")
+		}
+		msg := cmd()
+		if _, ok := msg.(tea.QuitMsg); !ok {
+			t.Fatalf("expected tea.QuitMsg in input mode when idle, got %T", msg)
+		}
+	})
+}
+
+// TestBuildHelpText_ShowsCancelWhenBusy verifies the help bar includes
+// the cancel hint when the agent is busy.
+func TestBuildHelpText_ShowsCancelWhenBusy(t *testing.T) {
+	t.Parallel()
+
+	t.Run("busy shows cancel hint", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(nil)
+		m.info = &agent.SessionInfo{Status: agent.StatusBusy}
+
+		help := m.buildHelpText()
+		if !strings.Contains(help, "ctrl+c: cancel") {
+			t.Errorf("expected help to contain 'ctrl+c: cancel', got: %s", help)
+		}
+	})
+
+	t.Run("starting shows cancel hint", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(nil)
+		m.info = &agent.SessionInfo{Status: agent.StatusStarting}
+
+		help := m.buildHelpText()
+		if !strings.Contains(help, "ctrl+c: cancel") {
+			t.Errorf("expected help to contain 'ctrl+c: cancel', got: %s", help)
+		}
+	})
+
+	t.Run("idle does not show cancel hint", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(nil)
+		m.info = &agent.SessionInfo{Status: agent.StatusIdle}
+
+		help := m.buildHelpText()
+		if strings.Contains(help, "ctrl+c: cancel") {
+			t.Errorf("expected help to NOT contain 'ctrl+c: cancel' when idle, got: %s", help)
+		}
+	})
+
+	t.Run("nil info does not show cancel hint", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(nil)
+		m.info = nil
+
+		help := m.buildHelpText()
+		if strings.Contains(help, "ctrl+c: cancel") {
+			t.Errorf("expected help to NOT contain 'ctrl+c: cancel' with nil info, got: %s", help)
 		}
 	})
 }

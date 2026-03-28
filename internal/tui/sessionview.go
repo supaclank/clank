@@ -42,6 +42,11 @@ type sessionVisibilityResultMsg struct {
 	err error
 }
 
+// sessionAbortResultMsg is the result of aborting a running session.
+type sessionAbortResultMsg struct {
+	err error
+}
+
 // sessionInfoMsg delivers a refreshed SessionInfo to the model.
 type sessionInfoMsg struct {
 	info *agent.SessionInfo
@@ -430,6 +435,12 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		return m, nil
 
+	case sessionAbortResultMsg:
+		if msg.err != nil {
+			m.err = fmt.Errorf("abort: %w", msg.err)
+		}
+		return m, nil
+
 	case tea.MouseWheelMsg:
 		// Mouse scroll is line-by-line, independent of cursor selection.
 		switch msg.Button {
@@ -488,6 +499,11 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Input mode.
 	if m.inputActive {
 		switch {
+		case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))):
+			if m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting) {
+				return m, m.abortSession()
+			}
+			return m, tea.Quit
 		case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
 			m.inputActive = false
 			m.input.Blur()
@@ -535,6 +551,9 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Normal mode.
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))):
+		if m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting) {
+			return m, m.abortSession()
+		}
 		return m, tea.Quit
 	case key.Matches(msg, key.NewBinding(key.WithKeys("q", "esc"))):
 		if m.cancelEvents != nil {
@@ -942,6 +961,17 @@ func (m *SessionViewModel) toggleFollowUp() tea.Cmd {
 	}
 }
 
+func (m *SessionViewModel) abortSession() tea.Cmd {
+	client := m.client
+	sessionID := m.sessionID
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err := client.AbortSession(ctx, sessionID)
+		return sessionAbortResultMsg{err: err}
+	}
+}
+
 func (m *SessionViewModel) handleConfirmAction(action string) tea.Cmd {
 	switch action {
 	case "done":
@@ -1239,6 +1269,9 @@ func (m *SessionViewModel) buildHelpText() string {
 		qLabel = "q: quit"
 	}
 	parts := []string{"m: message", "f: follow-up", "d: done", "x: archive", qLabel}
+	if m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting) {
+		parts = append([]string{"ctrl+c: cancel"}, parts...)
+	}
 	return strings.Join(parts, " | ")
 }
 
