@@ -145,6 +145,12 @@ const (
 	entryStatus                  // Status change
 )
 
+// inputReservedLines is the number of terminal lines reserved for the
+// textarea + help when the input prompt is visible. Used by contentHeight
+// and the scroll-offset adjustments that keep the viewport anchored when
+// the input is toggled.
+const inputReservedLines = 6
+
 // NewSessionViewModel creates a session detail TUI for an existing session.
 func NewSessionViewModel(client *daemon.Client, sessionID string) *SessionViewModel {
 	ta := newPromptTextarea("Type a follow-up message...", 3)
@@ -177,6 +183,9 @@ func (m *SessionViewModel) DraftText() string {
 func (m *SessionViewModel) RestoreDraft(text string) {
 	m.input.SetValue(text)
 	m.inputActive = true
+	if !m.follow {
+		m.scrollOffset += inputReservedLines
+	}
 	m.input.Focus()
 }
 
@@ -482,6 +491,14 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
 			m.inputActive = false
 			m.input.Blur()
+			if !m.follow {
+				// Shift content back down: the viewport just grew by
+				// inputReservedLines, so undo the offset bump from opening.
+				m.scrollOffset -= inputReservedLines
+				if m.scrollOffset < 0 {
+					m.scrollOffset = 0
+				}
+			}
 			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
 			// Cycle through agents.
@@ -529,7 +546,11 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, func() tea.Msg { return backToInboxMsg{} }
 	case key.Matches(msg, key.NewBinding(key.WithKeys("m"))):
 		m.inputActive = true
-		m.input.Focus()
+		if !m.follow {
+			// Shift content up so the bottom of the visible window stays
+			// anchored when the input prompt appears and shrinks the viewport.
+			m.scrollOffset += inputReservedLines
+		}
 		return m, m.input.Focus()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k"))):
 		m.follow = false
@@ -1230,7 +1251,7 @@ func (m *SessionViewModel) contentHeight() int {
 		reserved++ // streaming cursor line
 	}
 	if m.inputActive {
-		reserved += 6 // textarea + help
+		reserved += inputReservedLines // textarea + help
 	}
 	h := m.height - reserved
 	if h < 3 {

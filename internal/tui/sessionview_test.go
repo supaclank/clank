@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/acksell/clank/internal/agent"
 )
 
@@ -500,6 +502,121 @@ func TestCursorNavigation(t *testing.T) {
 		}
 		if m.cursorMoved {
 			t.Error("cursorMoved should be reset to false after scrollToCursor")
+		}
+	})
+}
+
+// TestInputToggle_ScrollOffset is a regression test verifying that toggling the
+// input prompt shifts the viewport content rather than overlaying it.
+// Bug: when follow=false, pressing 'm' shrinks contentHeight by
+// inputReservedLines but scrollOffset was left unchanged, hiding the bottom
+// lines of content behind the prompt.
+func TestInputToggle_ScrollOffset(t *testing.T) {
+	t.Parallel()
+
+	t.Run("opening input shifts scrollOffset up when follow is false", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(testEntries())
+		m.follow = false
+		m.scrollOffset = 10
+
+		m.handleKey(tea.KeyPressMsg{Code: 'm'})
+
+		if !m.inputActive {
+			t.Fatal("expected inputActive=true after pressing m")
+		}
+		want := 10 + inputReservedLines
+		if m.scrollOffset != want {
+			t.Errorf("scrollOffset = %d, want %d", m.scrollOffset, want)
+		}
+	})
+
+	t.Run("opening input does not shift scrollOffset when follow is true", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(testEntries())
+		m.follow = true
+		m.scrollOffset = 10
+
+		m.handleKey(tea.KeyPressMsg{Code: 'm'})
+
+		if !m.inputActive {
+			t.Fatal("expected inputActive=true after pressing m")
+		}
+		// follow mode recalculates scrollOffset in View(), so handleKey
+		// should not touch it.
+		if m.scrollOffset != 10 {
+			t.Errorf("scrollOffset = %d, want 10 (unchanged)", m.scrollOffset)
+		}
+	})
+
+	t.Run("closing input shifts scrollOffset back down when follow is false", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(testEntries())
+		m.follow = false
+		m.inputActive = true
+		m.scrollOffset = 10 + inputReservedLines // as if opened via 'm'
+
+		m.handleKey(tea.KeyPressMsg{Code: tea.KeyEscape})
+
+		if m.inputActive {
+			t.Fatal("expected inputActive=false after pressing esc")
+		}
+		if m.scrollOffset != 10 {
+			t.Errorf("scrollOffset = %d, want 10", m.scrollOffset)
+		}
+	})
+
+	t.Run("closing input clamps scrollOffset to zero", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(testEntries())
+		m.follow = false
+		m.inputActive = true
+		m.scrollOffset = 2 // less than inputReservedLines
+
+		m.handleKey(tea.KeyPressMsg{Code: tea.KeyEscape})
+
+		if m.inputActive {
+			t.Fatal("expected inputActive=false after pressing esc")
+		}
+		if m.scrollOffset != 0 {
+			t.Errorf("scrollOffset = %d, want 0 (clamped)", m.scrollOffset)
+		}
+	})
+
+	t.Run("open then close round-trips scrollOffset", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(testEntries())
+		m.follow = false
+		original := 7
+		m.scrollOffset = original
+
+		// Open input.
+		m.handleKey(tea.KeyPressMsg{Code: 'm'})
+		if m.scrollOffset != original+inputReservedLines {
+			t.Fatalf("after open: scrollOffset = %d, want %d", m.scrollOffset, original+inputReservedLines)
+		}
+
+		// Close input.
+		m.handleKey(tea.KeyPressMsg{Code: tea.KeyEscape})
+		if m.scrollOffset != original {
+			t.Errorf("after close: scrollOffset = %d, want %d (original)", m.scrollOffset, original)
+		}
+	})
+
+	t.Run("RestoreDraft shifts scrollOffset when follow is false", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(testEntries())
+		m.follow = false
+		m.scrollOffset = 5
+
+		m.RestoreDraft("some draft text")
+
+		if !m.inputActive {
+			t.Fatal("expected inputActive=true after RestoreDraft")
+		}
+		want := 5 + inputReservedLines
+		if m.scrollOffset != want {
+			t.Errorf("scrollOffset = %d, want %d", m.scrollOffset, want)
 		}
 	})
 }
