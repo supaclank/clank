@@ -153,6 +153,12 @@ type displayEntry struct {
 	partID  string // Part ID for tracking updates (text deltas, tool status)
 	content string // pre-rendered line(s), may contain ANSI
 	agent   string // agent mode used for this entry (only set for entryUser)
+
+	// Markdown render cache. Populated lazily in renderEntry() to avoid
+	// re-running glamour on every View() cycle. Invalidated when content
+	// changes (e.g. streaming deltas) by clearing renderedMD.
+	renderedMD    string // cached glamour output (empty = not yet rendered)
+	renderedWidth int    // terminal width the cache was computed at
 }
 
 type entryKind int
@@ -929,6 +935,7 @@ func (m *SessionViewModel) upsertPartEntry(p agent.Part, isDelta bool) {
 					} else {
 						e.content = p.Text
 					}
+					e.renderedMD = "" // invalidate markdown cache
 				}
 				return
 			}
@@ -993,6 +1000,11 @@ func (m *SessionViewModel) statusIcon(status agent.PartStatus) string {
 	default:
 		return lipgloss.NewStyle().Foreground(dimColor).Render("○")
 	}
+}
+
+// isBusy returns true when the agent is actively streaming output.
+func (m *SessionViewModel) isBusy() bool {
+	return m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting)
 }
 
 func (m *SessionViewModel) sendMessage(text string) tea.Cmd {
@@ -1257,10 +1269,10 @@ func (m *SessionViewModel) buildContentLines() []string {
 	var lines []string
 	m.entryStartLine = make([]int, len(m.entries))
 	m.entryEndLine = make([]int, len(m.entries))
-	for i, e := range m.entries {
+	for i := range m.entries {
 		m.entryStartLine[i] = len(lines)
 		selected := i == m.cursor
-		entryLines := m.renderEntry(e, selected)
+		entryLines := m.renderEntry(&m.entries[i], selected)
 		lines = append(lines, entryLines...)
 		m.entryEndLine[i] = len(lines)
 	}
@@ -1270,7 +1282,7 @@ func (m *SessionViewModel) buildContentLines() []string {
 	return lines
 }
 
-func (m *SessionViewModel) renderEntry(e displayEntry, selected bool) []string {
+func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool) []string {
 	maxWidth := m.width - 4
 	if maxWidth < 20 {
 		maxWidth = 20
@@ -1306,9 +1318,23 @@ func (m *SessionViewModel) renderEntry(e displayEntry, selected bool) []string {
 
 	case entryText:
 		header := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("Agent:")
-		wrapped := wrapText(e.content, contentWidth)
+		var rendered string
+		if m.isBusy() {
+			// During streaming, use plain word-wrap to avoid garbled
+			// output from incomplete markdown (e.g. unclosed code fences).
+			rendered = wrapText(e.content, contentWidth)
+		} else {
+			// Use cached glamour output when available and width hasn't changed.
+			if e.renderedMD != "" && e.renderedWidth == contentWidth {
+				rendered = e.renderedMD
+			} else {
+				rendered = renderMarkdown(e.content, contentWidth)
+				e.renderedMD = rendered
+				e.renderedWidth = contentWidth
+			}
+		}
 		contentLines = []string{header}
-		for _, l := range strings.Split(wrapped, "\n") {
+		for _, l := range strings.Split(rendered, "\n") {
 			contentLines = append(contentLines, l)
 		}
 
