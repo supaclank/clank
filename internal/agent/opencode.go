@@ -407,6 +407,7 @@ func (b *OpenCodeBackend) handlePartDelta(delta partDeltaEvent) {
 				Type: PartText,
 				Text: props.Delta,
 			},
+			IsDelta: true,
 		},
 	})
 }
@@ -478,6 +479,7 @@ func (b *OpenCodeBackend) handleSDKEvent(event opencode.EventListResponse) {
 						Type: PartText,
 						Text: delta,
 					},
+					IsDelta: true,
 				},
 			})
 			return

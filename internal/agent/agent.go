@@ -185,6 +185,10 @@ const (
 type PartUpdateData struct {
 	MessageID string `json:"message_id,omitempty"`
 	Part      Part   `json:"part"`
+	// IsDelta indicates this is an incremental text chunk (append to existing
+	// content). When false, Part.Text is the authoritative full snapshot and
+	// should replace whatever text the TUI has accumulated for this part.
+	IsDelta bool `json:"is_delta,omitempty"`
 }
 
 // PermissionData is the payload for EventPermission.

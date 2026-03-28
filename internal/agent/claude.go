@@ -417,6 +417,7 @@ func (b *ClaudeCodeBackend) emitContentBlockDelta(index int, delta claudeContent
 					Type: PartText,
 					Text: delta.Text,
 				},
+				IsDelta: true,
 			},
 		})
 	}

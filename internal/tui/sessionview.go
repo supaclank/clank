@@ -818,16 +818,17 @@ func (m *SessionViewModel) handlePartUpdate(data agent.PartUpdateData) {
 	if m.seenParts[data.Part.ID] {
 		return
 	}
-	m.upsertPartEntry(data.Part)
+	m.upsertPartEntry(data.Part, data.IsDelta)
 	if m.follow {
 		m.scrollToBottom()
 	}
 }
 
 // upsertPartEntry updates an existing entry with the same Part ID, or appends a new one.
-// For text parts, deltas are accumulated (appended) to the existing entry's content.
-// For tool parts, the entry is replaced with the new status/text.
-func (m *SessionViewModel) upsertPartEntry(p agent.Part) {
+// For text/thinking parts: isDelta=true appends the text chunk; isDelta=false replaces
+// the entry with the authoritative full snapshot (self-healing if deltas were dropped).
+// For tool parts, the entry is always replaced with the new status.
+func (m *SessionViewModel) upsertPartEntry(p agent.Part, isDelta bool) {
 	if p.ID != "" {
 		for i := len(m.entries) - 1; i >= 0; i-- {
 			e := &m.entries[i]
@@ -835,11 +836,12 @@ func (m *SessionViewModel) upsertPartEntry(p agent.Part) {
 				switch p.Type {
 				case agent.PartToolCall, agent.PartToolResult:
 					e.content = m.renderToolLine(p)
-				case agent.PartText:
-					// Accumulate text deltas into the same entry.
-					e.content += p.Text
-				case agent.PartThinking:
-					e.content += p.Text
+				case agent.PartText, agent.PartThinking:
+					if isDelta {
+						e.content += p.Text
+					} else {
+						e.content = p.Text
+					}
 				}
 				return
 			}
