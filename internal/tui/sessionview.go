@@ -47,6 +47,9 @@ type sessionAbortResultMsg struct {
 	err error
 }
 
+// clearCtrlCHintMsg is sent after a delay to clear the "press ctrl+c again" hint.
+type clearCtrlCHintMsg struct{}
+
 // sessionInfoMsg delivers a refreshed SessionInfo to the model.
 type sessionInfoMsg struct {
 	info *agent.SessionInfo
@@ -117,6 +120,15 @@ type SessionViewModel struct {
 	standalone bool
 
 	cancelEvents context.CancelFunc
+
+	// Abort state — tracks in-flight cancellation so noisy backend events
+	// (status transitions, MessageAbortedError) can be suppressed.
+	aborting      bool
+	abortEntryIdx int // index into entries for the "Cancelling..." line
+
+	// Double-tap ctrl+c to quit. First press records the time; second
+	// press within 1 second actually quits.
+	lastCtrlC time.Time
 
 	// Composing mode — no daemon session yet. The user is writing their
 	// first prompt. After sending, this transitions to the normal session view.
@@ -438,7 +450,15 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionAbortResultMsg:
 		if msg.err != nil {
 			m.err = fmt.Errorf("abort: %w", msg.err)
+			if m.aborting && m.abortEntryIdx < len(m.entries) {
+				m.entries[m.abortEntryIdx].content = "Cancel failed"
+			}
+			m.aborting = false
 		}
+		return m, nil
+
+	case clearCtrlCHintMsg:
+		m.lastCtrlC = time.Time{}
 		return m, nil
 
 	case tea.MouseWheelMsg:
@@ -501,9 +521,9 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))):
 			if m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting) {
-				return m, m.abortSession()
+				return m, m.startAbort()
 			}
-			return m, tea.Quit
+			return m.handleCtrlCQuit()
 		case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
 			m.inputActive = false
 			m.input.Blur()
@@ -552,9 +572,9 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))):
 		if m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting) {
-			return m, m.abortSession()
+			return m, m.startAbort()
 		}
-		return m, tea.Quit
+		return m.handleCtrlCQuit()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("q", "esc"))):
 		if m.cancelEvents != nil {
 			m.cancelEvents()
@@ -707,6 +727,11 @@ func (m *SessionViewModel) handleEvent(evt agent.Event) {
 		}
 
 	case agent.EventError:
+		if m.aborting {
+			// Suppress abort-related error noise (e.g. MessageAbortedError).
+			// The "Cancelled" status entry handles the UX.
+			break
+		}
 		if data, ok := evt.Data.(agent.ErrorData); ok {
 			m.entries = append(m.entries, displayEntry{
 				kind:    entryError,
@@ -737,6 +762,20 @@ func (m *SessionViewModel) handleEvent(evt agent.Event) {
 func (m *SessionViewModel) handleStatusChange(data agent.StatusChangeData) {
 	if m.info != nil {
 		m.info.Status = data.NewStatus
+	}
+	if m.aborting {
+		// Suppress noisy intermediate status entries during cancellation.
+		// When the agent settles, update the existing "Cancelling..." entry.
+		if data.NewStatus != agent.StatusBusy && data.NewStatus != agent.StatusStarting {
+			if m.abortEntryIdx < len(m.entries) {
+				m.entries[m.abortEntryIdx].content = "Cancelled"
+			}
+			m.aborting = false
+		}
+		if m.follow {
+			m.scrollToBottom()
+		}
+		return
 	}
 	m.entries = append(m.entries, displayEntry{
 		kind:    entryStatus,
@@ -969,6 +1008,35 @@ func (m *SessionViewModel) abortSession() tea.Cmd {
 		defer cancel()
 		err := client.AbortSession(ctx, sessionID)
 		return sessionAbortResultMsg{err: err}
+	}
+}
+
+// startAbort sets up the abort state and appends a "Cancelling..." entry.
+// Returns the tea.Cmd that performs the actual abort HTTP call.
+func (m *SessionViewModel) startAbort() tea.Cmd {
+	m.aborting = true
+	m.abortEntryIdx = len(m.entries)
+	m.entries = append(m.entries, displayEntry{
+		kind:    entryStatus,
+		content: "Cancelling...",
+	})
+	if m.follow {
+		m.scrollToBottom()
+	}
+	return m.abortSession()
+}
+
+// handleCtrlCQuit implements double-tap ctrl+c to quit. On the first press
+// it records the time and schedules a hint-clear; on the second press within
+// 1 second it quits.
+func (m *SessionViewModel) handleCtrlCQuit() (tea.Model, tea.Cmd) {
+	if !m.lastCtrlC.IsZero() && time.Since(m.lastCtrlC) < time.Second {
+		return m, tea.Quit
+	}
+	m.lastCtrlC = time.Now()
+	return m, func() tea.Msg {
+		time.Sleep(time.Second)
+		return clearCtrlCHintMsg{}
 	}
 }
 
@@ -1261,6 +1329,9 @@ func (m *SessionViewModel) renderEntry(e displayEntry, selected bool) []string {
 }
 
 func (m *SessionViewModel) buildHelpText() string {
+	if !m.lastCtrlC.IsZero() && time.Since(m.lastCtrlC) < time.Second {
+		return "press ctrl+c again to quit"
+	}
 	if m.pendingPerm != nil {
 		return "y: allow | n: deny"
 	}

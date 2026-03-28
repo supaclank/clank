@@ -71,6 +71,10 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionCreateResultMsg:
 		return m.handleCreateResult(msg)
 
+	case clearCtrlCHintMsg:
+		m.lastCtrlC = time.Time{}
+		return m, nil
+
 	case tea.KeyPressMsg:
 		return m.handleComposeKey(msg)
 	}
@@ -84,7 +88,7 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *SessionViewModel) handleComposeKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))):
-		return m, tea.Quit
+		return m.handleCtrlCQuit()
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
 		if m.standalone {
@@ -319,10 +323,23 @@ func (m *SessionViewModel) renderPromptBox() string {
 		modeBadge = lipgloss.NewStyle().Foreground(mc).Bold(true).Render(agentName)
 	}
 
-	// Build inner content: mode badge line + textarea.
+	// Double-tap ctrl+c hint (shown briefly after first press).
+	ctrlCHint := ""
+	if !m.lastCtrlC.IsZero() && time.Since(m.lastCtrlC) < time.Second {
+		ctrlCHint = lipgloss.NewStyle().Foreground(warningColor).Render("press ctrl+c again to quit")
+	}
+
+	// Build inner content: badge line (with optional hint) + textarea.
 	var inner strings.Builder
-	if modeBadge != "" {
-		inner.WriteString(modeBadge)
+	innerWidth := m.width - promptInputBorderSize
+	if modeBadge != "" || ctrlCHint != "" {
+		badgeWidth := lipgloss.Width(modeBadge)
+		hintWidth := lipgloss.Width(ctrlCHint)
+		gap := innerWidth - badgeWidth - hintWidth
+		if gap < 1 {
+			gap = 1
+		}
+		inner.WriteString(modeBadge + strings.Repeat(" ", gap) + ctrlCHint)
 		inner.WriteString("\n")
 	}
 	inner.WriteString(m.input.View())
