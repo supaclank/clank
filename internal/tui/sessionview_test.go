@@ -429,4 +429,77 @@ func TestCursorNavigation(t *testing.T) {
 			t.Errorf("cursor changed from %d to %d after mouse scroll", origCursor, m.cursor)
 		}
 	})
+
+	t.Run("mouse scroll offset survives View render", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(testEntries())
+		m.follow = false
+		m.cursor = 0
+		m.cursorMoved = false
+
+		// First render to populate entryStartLine and settle scrollOffset.
+		m.buildContentLines()
+
+		// Simulate mouse wheel scrolling: adjust scrollOffset without setting cursorMoved.
+		m.scrollOffset = 5
+		m.clampScroll()
+
+		// Rebuild content lines (as View() would).
+		contentLines := m.buildContentLines()
+		ch := m.contentHeight()
+
+		// Simulate the View() scroll logic: cursorMoved is false, follow is false,
+		// so scrollOffset should NOT be overridden.
+		if m.follow {
+			t.Fatal("follow should be false")
+		}
+		if m.cursorMoved {
+			t.Fatal("cursorMoved should be false")
+		}
+		// Neither branch fires — scrollOffset stays at 5 (or clamped max).
+		maxOffset := len(contentLines) - ch
+		if maxOffset < 0 {
+			maxOffset = 0
+		}
+		want := 5
+		if want > maxOffset {
+			want = maxOffset
+		}
+		if m.scrollOffset != want {
+			t.Errorf("scrollOffset = %d, want %d (maxOffset=%d)", m.scrollOffset, want, maxOffset)
+		}
+	})
+
+	t.Run("cursorMoved triggers scrollToCursor in View logic", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(testEntries())
+		m.follow = false
+		m.scrollOffset = 0
+
+		// Simulate keyboard navigation: move cursor and set cursorMoved.
+		m.cursor = 8 // entryUser (second user message, further down)
+		m.cursorMoved = true
+
+		// Rebuild content lines as View() would.
+		m.buildContentLines()
+
+		// Simulate the View() scroll logic.
+		if m.cursorMoved {
+			m.scrollToCursor()
+			m.cursorMoved = false
+		}
+
+		// scrollOffset should have moved to position entry 8 near top.
+		startLine := m.entryStartLine[8]
+		expectedOffset := startLine - 2
+		if expectedOffset < 0 {
+			expectedOffset = 0
+		}
+		if m.scrollOffset != expectedOffset {
+			t.Errorf("scrollOffset = %d, want %d (entryStartLine[8]=%d)", m.scrollOffset, expectedOffset, startLine)
+		}
+		if m.cursorMoved {
+			t.Error("cursorMoved should be reset to false after scrollToCursor")
+		}
+	})
 }

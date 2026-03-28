@@ -71,6 +71,7 @@ type SessionViewModel struct {
 	// Display state.
 	entries      []displayEntry // rendered message/tool entries
 	cursor       int            // index into entries for the selected message
+	cursorMoved  bool           // true when cursor changed since last render
 	scrollOffset int            // first visible display line
 	follow       bool           // auto-follow tail when true (default when busy)
 
@@ -534,25 +535,30 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.follow = false
 		if idx := m.prevNavigableEntry(m.cursor); idx >= 0 {
 			m.cursor = idx
+			m.cursorMoved = true
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("down", "j"))):
 		if idx := m.nextNavigableEntry(m.cursor); idx >= 0 {
 			m.follow = false
 			m.cursor = idx
+			m.cursorMoved = true
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+up"))):
 		m.follow = false
 		if idx := m.prevUserEntry(m.cursor); idx >= 0 {
 			m.cursor = idx
+			m.cursorMoved = true
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+down"))):
 		if idx := m.nextUserEntry(m.cursor); idx >= 0 {
 			m.follow = false
 			m.cursor = idx
+			m.cursorMoved = true
 		} else {
 			// No more user messages below — jump to last navigable entry and follow.
 			m.follow = true
 			m.cursor = m.lastNavigableEntry()
+			m.cursorMoved = true
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("pgup", "ctrl+u"))):
 		m.follow = false
@@ -564,6 +570,7 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		for i := 0; i < jumps; i++ {
 			if idx := m.prevNavigableEntry(m.cursor); idx >= 0 {
 				m.cursor = idx
+				m.cursorMoved = true
 			} else {
 				break
 			}
@@ -576,6 +583,7 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		for i := 0; i < jumps; i++ {
 			if idx := m.nextNavigableEntry(m.cursor); idx >= 0 {
 				m.cursor = idx
+				m.cursorMoved = true
 			} else {
 				break
 			}
@@ -583,9 +591,11 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("G", "end"))):
 		m.follow = true
 		m.cursor = m.lastNavigableEntry()
+		m.cursorMoved = true
 	case key.Matches(msg, key.NewBinding(key.WithKeys("g", "home"))):
 		m.follow = false
 		m.cursor = m.firstNavigableEntry()
+		m.cursorMoved = true
 	case key.Matches(msg, key.NewBinding(key.WithKeys("a"))):
 		// TODO: approve session
 	case key.Matches(msg, key.NewBinding(key.WithKeys("f"))):
@@ -964,14 +974,17 @@ func (m *SessionViewModel) View() tea.View {
 	// Auto-follow: move cursor to the latest navigable entry and scroll to bottom.
 	if m.follow {
 		m.cursor = m.lastNavigableEntry()
+		m.cursorMoved = false
 		m.scrollOffset = len(contentLines) - ch
 		if m.scrollOffset < 0 {
 			m.scrollOffset = 0
 		}
-	} else {
-		// Manual navigation: position cursor entry near top of viewport.
+	} else if m.cursorMoved {
+		// Keyboard navigation: position cursor entry near top of viewport.
 		m.scrollToCursor()
+		m.cursorMoved = false
 	}
+	// Otherwise (mouse scroll, no cursor change): leave scrollOffset as-is.
 	m.clampScrollWithLines(contentLines)
 
 	// Render visible window.
