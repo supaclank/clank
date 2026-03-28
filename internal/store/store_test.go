@@ -1,8 +1,10 @@
 package store_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -467,20 +469,20 @@ func TestMultipleSessions(t *testing.T) {
 	}
 }
 
-func TestLoadAgentsEmpty(t *testing.T) {
+func TestLoadPrimaryAgentsEmpty(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))
 
-	agents, err := s.LoadAgents(agent.BackendOpenCode, "/tmp/project")
+	agents, err := s.LoadPrimaryAgents(agent.BackendOpenCode, "/tmp/project")
 	if err != nil {
-		t.Fatalf("LoadAgents: %v", err)
+		t.Fatalf("LoadPrimaryAgents: %v", err)
 	}
 	if agents != nil {
 		t.Errorf("expected nil for uncached project, got %v", agents)
 	}
 }
 
-func TestUpsertAndLoadAgents(t *testing.T) {
+func TestUpsertAndLoadPrimaryAgents(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))
 
@@ -489,13 +491,13 @@ func TestUpsertAndLoadAgents(t *testing.T) {
 		{Name: "plan", Description: "Plan agent", Mode: "primary", Hidden: false},
 	}
 
-	if err := s.UpsertAgents(agent.BackendOpenCode, "/tmp/project", agents); err != nil {
-		t.Fatalf("UpsertAgents: %v", err)
+	if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "/tmp/project", agents); err != nil {
+		t.Fatalf("UpsertPrimaryAgents: %v", err)
 	}
 
-	got, err := s.LoadAgents(agent.BackendOpenCode, "/tmp/project")
+	got, err := s.LoadPrimaryAgents(agent.BackendOpenCode, "/tmp/project")
 	if err != nil {
-		t.Fatalf("LoadAgents: %v", err)
+		t.Fatalf("LoadPrimaryAgents: %v", err)
 	}
 	if len(got) != 2 {
 		t.Fatalf("expected 2 agents, got %d", len(got))
@@ -508,28 +510,28 @@ func TestUpsertAndLoadAgents(t *testing.T) {
 	}
 }
 
-func TestUpsertAgentsOverwrites(t *testing.T) {
+func TestUpsertPrimaryAgentsOverwrites(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))
 
 	initial := []agent.AgentInfo{
 		{Name: "build", Description: "Build agent", Mode: "primary"},
 	}
-	if err := s.UpsertAgents(agent.BackendOpenCode, "/tmp/project", initial); err != nil {
-		t.Fatalf("UpsertAgents (initial): %v", err)
+	if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "/tmp/project", initial); err != nil {
+		t.Fatalf("UpsertPrimaryAgents (initial): %v", err)
 	}
 
 	updated := []agent.AgentInfo{
 		{Name: "build", Description: "Build agent v2", Mode: "primary"},
 		{Name: "plan", Description: "Plan agent", Mode: "primary"},
 	}
-	if err := s.UpsertAgents(agent.BackendOpenCode, "/tmp/project", updated); err != nil {
-		t.Fatalf("UpsertAgents (update): %v", err)
+	if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "/tmp/project", updated); err != nil {
+		t.Fatalf("UpsertPrimaryAgents (update): %v", err)
 	}
 
-	got, err := s.LoadAgents(agent.BackendOpenCode, "/tmp/project")
+	got, err := s.LoadPrimaryAgents(agent.BackendOpenCode, "/tmp/project")
 	if err != nil {
-		t.Fatalf("LoadAgents: %v", err)
+		t.Fatalf("LoadPrimaryAgents: %v", err)
 	}
 	if len(got) != 2 {
 		t.Fatalf("expected 2 agents after update, got %d", len(got))
@@ -539,40 +541,40 @@ func TestUpsertAgentsOverwrites(t *testing.T) {
 	}
 }
 
-func TestLoadAgentsIsolatedByBackendAndProject(t *testing.T) {
+func TestLoadPrimaryAgentsIsolatedByBackendAndProject(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))
 
 	agentsA := []agent.AgentInfo{{Name: "build", Mode: "primary"}}
 	agentsB := []agent.AgentInfo{{Name: "plan", Mode: "primary"}}
 
-	if err := s.UpsertAgents(agent.BackendOpenCode, "/tmp/project-a", agentsA); err != nil {
-		t.Fatalf("UpsertAgents A: %v", err)
+	if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "/tmp/project-a", agentsA); err != nil {
+		t.Fatalf("UpsertPrimaryAgents A: %v", err)
 	}
-	if err := s.UpsertAgents(agent.BackendOpenCode, "/tmp/project-b", agentsB); err != nil {
-		t.Fatalf("UpsertAgents B: %v", err)
+	if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "/tmp/project-b", agentsB); err != nil {
+		t.Fatalf("UpsertPrimaryAgents B: %v", err)
 	}
 
-	gotA, err := s.LoadAgents(agent.BackendOpenCode, "/tmp/project-a")
+	gotA, err := s.LoadPrimaryAgents(agent.BackendOpenCode, "/tmp/project-a")
 	if err != nil {
-		t.Fatalf("LoadAgents A: %v", err)
+		t.Fatalf("LoadPrimaryAgents A: %v", err)
 	}
 	if len(gotA) != 1 || gotA[0].Name != "build" {
 		t.Errorf("project-a agents = %v, want [{build}]", gotA)
 	}
 
-	gotB, err := s.LoadAgents(agent.BackendOpenCode, "/tmp/project-b")
+	gotB, err := s.LoadPrimaryAgents(agent.BackendOpenCode, "/tmp/project-b")
 	if err != nil {
-		t.Fatalf("LoadAgents B: %v", err)
+		t.Fatalf("LoadPrimaryAgents B: %v", err)
 	}
 	if len(gotB) != 1 || gotB[0].Name != "plan" {
 		t.Errorf("project-b agents = %v, want [{plan}]", gotB)
 	}
 
 	// Different backend, same project — should be empty.
-	gotC, err := s.LoadAgents(agent.BackendClaudeCode, "/tmp/project-a")
+	gotC, err := s.LoadPrimaryAgents(agent.BackendClaudeCode, "/tmp/project-a")
 	if err != nil {
-		t.Fatalf("LoadAgents claude: %v", err)
+		t.Fatalf("LoadPrimaryAgents claude: %v", err)
 	}
 	if gotC != nil {
 		t.Errorf("expected nil for claude-code backend, got %v", gotC)
@@ -628,14 +630,14 @@ func TestMigrationV2Idempotent(t *testing.T) {
 	t.Parallel()
 	path := tempDBPath(t)
 
-	// Open, write agents, close.
+	// Open, write primary agents, close.
 	s1, err := store.Open(path)
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
 	agents := []agent.AgentInfo{{Name: "build", Mode: "primary"}}
-	if err := s1.UpsertAgents(agent.BackendOpenCode, "/tmp/proj", agents); err != nil {
-		t.Fatalf("UpsertAgents: %v", err)
+	if err := s1.UpsertPrimaryAgents(agent.BackendOpenCode, "/tmp/proj", agents); err != nil {
+		t.Fatalf("UpsertPrimaryAgents: %v", err)
 	}
 	s1.Close()
 
@@ -646,11 +648,76 @@ func TestMigrationV2Idempotent(t *testing.T) {
 	}
 	defer s2.Close()
 
-	got, err := s2.LoadAgents(agent.BackendOpenCode, "/tmp/proj")
+	got, err := s2.LoadPrimaryAgents(agent.BackendOpenCode, "/tmp/proj")
 	if err != nil {
-		t.Fatalf("LoadAgents: %v", err)
+		t.Fatalf("LoadPrimaryAgents: %v", err)
 	}
 	if len(got) != 1 || got[0].Name != "build" {
 		t.Errorf("expected [{build}] after reopen, got %v", got)
+	}
+}
+
+// TestConcurrentWrites verifies that many goroutines can write to the store
+// simultaneously without SQLITE_BUSY errors. Before the SetMaxOpenConns(1)
+// fix, pooled connections lacked the busy_timeout PRAGMA and this test
+// would fail with "database is locked (5) (SQLITE_BUSY)".
+func TestConcurrentWrites(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t, tempDBPath(t))
+
+	const numWriters = 20
+	now := time.Now().Truncate(time.Millisecond)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, numWriters*2) // sessions + primary agents
+
+	// Launch concurrent session upserts.
+	for i := range numWriters {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			info := agent.SessionInfo{
+				ID:          fmt.Sprintf("ses-concurrent-%d", i),
+				Backend:     agent.BackendOpenCode,
+				Status:      agent.StatusIdle,
+				ProjectDir:  fmt.Sprintf("/tmp/project-%d", i),
+				ProjectName: fmt.Sprintf("project-%d", i),
+				CreatedAt:   now,
+				UpdatedAt:   now,
+			}
+			if err := s.UpsertSession(info); err != nil {
+				errs <- fmt.Errorf("UpsertSession(%d): %w", i, err)
+			}
+		}()
+	}
+
+	// Launch concurrent primary agent upserts.
+	for i := range numWriters {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			agents := []agent.AgentInfo{
+				{Name: fmt.Sprintf("agent-%d", i), Mode: "primary"},
+			}
+			if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, fmt.Sprintf("/tmp/project-%d", i), agents); err != nil {
+				errs <- fmt.Errorf("UpsertPrimaryAgents(%d): %w", i, err)
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Error(err)
+	}
+
+	// Verify all sessions were written.
+	sessions, err := s.LoadSessions()
+	if err != nil {
+		t.Fatalf("LoadSessions: %v", err)
+	}
+	if len(sessions) != numWriters {
+		t.Errorf("expected %d sessions, got %d", numWriters, len(sessions))
 	}
 }

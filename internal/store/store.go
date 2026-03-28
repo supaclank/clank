@@ -30,6 +30,13 @@ func Open(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("open sqlite %s: %w", dbPath, err)
 	}
 
+	// SQLite only supports a single concurrent writer. Limiting the pool
+	// to one connection ensures all PRAGMAs apply to every query (they are
+	// per-connection state) and serialises writes through Go's sql.DB,
+	// avoiding SQLITE_BUSY errors from pool-spawned connections that would
+	// otherwise lack the busy_timeout PRAGMA.
+	db.SetMaxOpenConns(1)
+
 	// Configure SQLite for concurrent access and durability.
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL",
@@ -105,6 +112,18 @@ func (s *Store) migrate() error {
 		`)
 		if err != nil {
 			return fmt.Errorf("migration v2: %w", err)
+		}
+		version = 2
+	}
+
+	if version < 3 {
+		_, err := s.db.Exec(`
+			ALTER TABLE agents RENAME TO primary_agents;
+			ALTER TABLE primary_agents RENAME COLUMN agents_json TO primary_agents_json;
+			PRAGMA user_version = 3;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v3: %w", err)
 		}
 	}
 
@@ -218,45 +237,47 @@ func (s *Store) DeleteSession(id string) error {
 	return nil
 }
 
-// LoadAgents returns the cached agent list for the given backend and project
-// directory. Returns nil (not an error) if no cached entry exists.
-func (s *Store) LoadAgents(backend agent.BackendType, projectDir string) ([]agent.AgentInfo, error) {
+// LoadPrimaryAgents returns the cached primary agent list for the given
+// backend and project directory. Returns nil (not an error) if no cached
+// entry exists.
+func (s *Store) LoadPrimaryAgents(backend agent.BackendType, projectDir string) ([]agent.AgentInfo, error) {
 	var agentsJSON string
 	err := s.db.QueryRow(`
-		SELECT agents_json FROM agents WHERE backend = ? AND project_dir = ?
+		SELECT primary_agents_json FROM primary_agents WHERE backend = ? AND project_dir = ?
 	`, string(backend), projectDir).Scan(&agentsJSON)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("load agents for %s/%s: %w", backend, projectDir, err)
+		return nil, fmt.Errorf("load primary agents for %s/%s: %w", backend, projectDir, err)
 	}
 	var agents []agent.AgentInfo
 	if err := json.Unmarshal([]byte(agentsJSON), &agents); err != nil {
-		return nil, fmt.Errorf("decode agents for %s/%s: %w", backend, projectDir, err)
+		return nil, fmt.Errorf("decode primary agents for %s/%s: %w", backend, projectDir, err)
 	}
 	return agents, nil
 }
 
-// UpsertAgents stores the agent list for the given backend and project directory.
-func (s *Store) UpsertAgents(backend agent.BackendType, projectDir string, agents []agent.AgentInfo) error {
+// UpsertPrimaryAgents stores the primary agent list for the given backend
+// and project directory.
+func (s *Store) UpsertPrimaryAgents(backend agent.BackendType, projectDir string, agents []agent.AgentInfo) error {
 	data, err := json.Marshal(agents)
 	if err != nil {
-		return fmt.Errorf("encode agents: %w", err)
+		return fmt.Errorf("encode primary agents: %w", err)
 	}
 	_, err = s.db.Exec(`
-		INSERT OR REPLACE INTO agents (backend, project_dir, agents_json, updated_at)
+		INSERT OR REPLACE INTO primary_agents (backend, project_dir, primary_agents_json, updated_at)
 		VALUES (?, ?, ?, ?)
 	`, string(backend), projectDir, string(data), time.Now())
 	if err != nil {
-		return fmt.Errorf("upsert agents for %s/%s: %w", backend, projectDir, err)
+		return fmt.Errorf("upsert primary agents for %s/%s: %w", backend, projectDir, err)
 	}
 	return nil
 }
 
 // KnownProjectDirs returns the distinct project directories that have at
 // least one session for the given backend type. Used to know which projects
-// to pre-warm agent caches for.
+// to pre-warm primary agent caches for.
 func (s *Store) KnownProjectDirs(backend agent.BackendType) ([]string, error) {
 	rows, err := s.db.Query(`
 		SELECT DISTINCT project_dir FROM sessions WHERE backend = ?

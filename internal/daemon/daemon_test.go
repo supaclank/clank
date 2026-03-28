@@ -1730,7 +1730,7 @@ func TestDaemonListAgentsReturnsCachedFromStore(t *testing.T) {
 	pidPath := filepath.Join(dir, "test.pid")
 	dbPath := filepath.Join(dir, "test.db")
 
-	// Pre-seed the store with cached agents.
+	// Pre-seed the store with cached primary agents.
 	st, err := store.Open(dbPath)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
@@ -1739,8 +1739,8 @@ func TestDaemonListAgentsReturnsCachedFromStore(t *testing.T) {
 		{Name: "build", Description: "Cached build", Mode: "primary"},
 		{Name: "plan", Description: "Cached plan", Mode: "primary"},
 	}
-	if err := st.UpsertAgents(agent.BackendOpenCode, "/tmp/test-proj", cachedAgents); err != nil {
-		t.Fatalf("UpsertAgents: %v", err)
+	if err := st.UpsertPrimaryAgents(agent.BackendOpenCode, "/tmp/test-proj", cachedAgents); err != nil {
+		t.Fatalf("UpsertPrimaryAgents: %v", err)
 	}
 
 	d := daemon.NewWithPaths(sockPath, pidPath)
@@ -1865,9 +1865,9 @@ func TestDaemonListAgentsFallsBackToListerOnCacheMiss(t *testing.T) {
 	}
 
 	// After the synchronous call, the result should be persisted.
-	cached, err := st.LoadAgents(agent.BackendOpenCode, "/tmp/uncached-proj")
+	cached, err := st.LoadPrimaryAgents(agent.BackendOpenCode, "/tmp/uncached-proj")
 	if err != nil {
-		t.Fatalf("LoadAgents: %v", err)
+		t.Fatalf("LoadPrimaryAgents: %v", err)
 	}
 	if len(cached) != 1 || cached[0].Name != "build" {
 		t.Errorf("expected persisted agents, got %+v", cached)
