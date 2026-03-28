@@ -357,3 +357,18 @@ type AgentLister interface {
 type SessionDiscoverer interface {
 	DiscoverSessions(ctx context.Context, seedDir string) ([]SessionSnapshot, error)
 }
+
+// ServerInfo is a snapshot of a running backend server process (e.g. an
+// `opencode serve` instance). Used by debugging/status commands.
+type ServerInfo struct {
+	URL        string    `json:"url"`
+	ProjectDir string    `json:"project_dir"`
+	PID        int       `json:"pid"`
+	StartedAt  time.Time `json:"started_at"`
+}
+
+// ServerLister is an optional interface that BackendManagers can implement
+// to expose information about running backend server processes.
+type ServerLister interface {
+	ListServers() []ServerInfo
+}

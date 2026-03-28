@@ -62,6 +62,11 @@ func (m *OpenCodeBackendManager) ListAgents(ctx context.Context, projectDir stri
 	return m.serverMgr.ListAgents(ctx, projectDir)
 }
 
+// ListServers returns running OpenCode server info from the server manager.
+func (m *OpenCodeBackendManager) ListServers() []agent.ServerInfo {
+	return m.serverMgr.ListServers()
+}
+
 // DiscoverSessions lists all projects from the OpenCode server, then lists
 // all sessions for each project. Returns SessionSnapshot entries ready to be
 // registered by the daemon.
@@ -389,6 +394,7 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /status", d.handleStatus)
 	mux.HandleFunc("GET /agents", d.handleListAgents)
 	mux.HandleFunc("POST /sessions/discover", d.handleDiscoverSessions)
+	mux.HandleFunc("GET /servers", d.handleListServers)
 }
 
 // --- HTTP Handlers ---
@@ -457,6 +463,42 @@ func (d *Daemon) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	d.persistAgents(bt, projectDir, agents)
 	writeJSON(w, http.StatusOK, agents)
+}
+
+// handleListServers returns running backend server processes. It iterates
+// all BackendManagers and collects info from those implementing ServerLister.
+// The response also includes a session count per server (matched by project dir).
+func (d *Daemon) handleListServers(w http.ResponseWriter, r *http.Request) {
+	type serverWithSessions struct {
+		agent.ServerInfo
+		SessionCount int `json:"session_count"`
+	}
+
+	// Count sessions per project dir.
+	d.mu.RLock()
+	projectSessions := make(map[string]int)
+	for _, ms := range d.sessions {
+		projectSessions[ms.info.ProjectDir]++
+	}
+	d.mu.RUnlock()
+
+	var result []serverWithSessions
+	for _, mgr := range d.BackendManagers {
+		lister, ok := mgr.(agent.ServerLister)
+		if !ok {
+			continue
+		}
+		for _, srv := range lister.ListServers() {
+			result = append(result, serverWithSessions{
+				ServerInfo:   srv,
+				SessionCount: projectSessions[srv.ProjectDir],
+			})
+		}
+	}
+	if result == nil {
+		result = []serverWithSessions{}
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (d *Daemon) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) {

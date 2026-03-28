@@ -571,6 +571,26 @@ func (m *OpenCodeServerManager) GetOrStartServer(ctx context.Context, projectDir
 	return srv.URL, nil
 }
 
+// ListServers returns a snapshot of all currently tracked servers.
+func (m *OpenCodeServerManager) ListServers() []ServerInfo {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	servers := make([]ServerInfo, 0, len(m.servers))
+	for _, srv := range m.servers {
+		pid := 0
+		if srv.Cmd != nil && srv.Cmd.Process != nil {
+			pid = srv.Cmd.Process.Pid
+		}
+		servers = append(servers, ServerInfo{
+			URL:        srv.URL,
+			ProjectDir: srv.ProjectDir,
+			PID:        pid,
+			StartedAt:  srv.StartedAt,
+		})
+	}
+	return servers
+}
+
 // StopAll stops all managed servers.
 func (m *OpenCodeServerManager) StopAll() {
 	m.mu.Lock()

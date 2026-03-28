@@ -198,6 +198,16 @@ func (m *mockAgentListerManager) ListAgents(ctx context.Context, projectDir stri
 	return m.agents(ctx, projectDir)
 }
 
+// mockServerListerManager implements BackendManager + ServerLister.
+type mockServerListerManager struct {
+	mockBackendManager
+	servers []agent.ServerInfo
+}
+
+func (m *mockServerListerManager) ListServers() []agent.ServerInfo {
+	return m.servers
+}
+
 // shortTempDir creates a temp directory with a short path suitable for Unix sockets.
 // macOS has a 104-char limit on socket paths, and t.TempDir() can produce
 // paths that exceed this when combined with long test names.
@@ -2897,6 +2907,108 @@ func TestPersistence_DiscoverMergePreservesUserFields(t *testing.T) {
 	}
 	if merged.Draft != "my followup draft" {
 		t.Errorf("Draft = %q, want %q", merged.Draft, "my followup draft")
+	}
+}
+
+func TestDaemonListServers(t *testing.T) {
+	t.Parallel()
+	dir := shortTempDir(t)
+	sockPath := filepath.Join(dir, "test.sock")
+	pidPath := filepath.Join(dir, "test.pid")
+
+	d := daemon.NewWithPaths(sockPath, pidPath)
+
+	startedAt := time.Now().Add(-2 * time.Hour)
+	ocMgr := &mockServerListerManager{
+		servers: []agent.ServerInfo{
+			{URL: "http://127.0.0.1:54321", ProjectDir: "/tmp/project-a", PID: 1234, StartedAt: startedAt},
+			{URL: "http://127.0.0.1:54322", ProjectDir: "/tmp/project-b", PID: 5678, StartedAt: startedAt},
+		},
+	}
+	d.BackendManagers[agent.BackendOpenCode] = ocMgr
+	d.BackendManagers[agent.BackendClaudeCode] = newMockBackendManager()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run() }()
+
+	client := daemon.NewClient(sockPath)
+	waitForDaemon(t, client)
+	defer d.Stop()
+
+	ctx := context.Background()
+
+	// Create a session in project-a so we can verify session counting.
+	_, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/project-a",
+		Prompt:     "test",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	servers, err := client.ListServers(ctx)
+	if err != nil {
+		t.Fatalf("ListServers: %v", err)
+	}
+	if len(servers) != 2 {
+		t.Fatalf("expected 2 servers, got %d", len(servers))
+	}
+
+	// Find the server for project-a and verify session count.
+	var foundA, foundB bool
+	for _, srv := range servers {
+		switch srv.ProjectDir {
+		case "/tmp/project-a":
+			foundA = true
+			if srv.URL != "http://127.0.0.1:54321" {
+				t.Errorf("project-a URL = %q, want %q", srv.URL, "http://127.0.0.1:54321")
+			}
+			if srv.PID != 1234 {
+				t.Errorf("project-a PID = %d, want 1234", srv.PID)
+			}
+			if srv.SessionCount != 1 {
+				t.Errorf("project-a sessions = %d, want 1", srv.SessionCount)
+			}
+		case "/tmp/project-b":
+			foundB = true
+			if srv.SessionCount != 0 {
+				t.Errorf("project-b sessions = %d, want 0", srv.SessionCount)
+			}
+		}
+	}
+	if !foundA {
+		t.Error("server for project-a not found")
+	}
+	if !foundB {
+		t.Error("server for project-b not found")
+	}
+}
+
+func TestDaemonListServersEmpty(t *testing.T) {
+	t.Parallel()
+	// When no BackendManager implements ServerLister, the endpoint
+	// should return an empty list, not an error.
+	dir := shortTempDir(t)
+	sockPath := filepath.Join(dir, "test.sock")
+	pidPath := filepath.Join(dir, "test.pid")
+
+	d := daemon.NewWithPaths(sockPath, pidPath)
+	d.BackendManagers[agent.BackendOpenCode] = newMockBackendManager()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run() }()
+
+	client := daemon.NewClient(sockPath)
+	waitForDaemon(t, client)
+	defer d.Stop()
+
+	servers, err := client.ListServers(context.Background())
+	if err != nil {
+		t.Fatalf("ListServers: %v", err)
+	}
+	if len(servers) != 0 {
+		t.Errorf("expected 0 servers, got %d", len(servers))
 	}
 }
 

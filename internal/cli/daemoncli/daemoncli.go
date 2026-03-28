@@ -52,7 +52,7 @@ func Command() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(startCmd, stopCmd, statusCmd)
+	cmd.AddCommand(startCmd, stopCmd, statusCmd, opencodeCmd())
 	return cmd
 }
 
@@ -211,6 +211,64 @@ func runStatus() error {
 			}
 			fmt.Printf("  [%s] %-8s %-12s %s\n", s.ID[:8], s.Status, s.ProjectName, prompt)
 		}
+	}
+	return nil
+}
+
+// opencodeCmd returns the "opencode" subcommand group with its own subcommands.
+func opencodeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "opencode",
+		Short: "OpenCode backend management",
+	}
+
+	statusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show running OpenCode servers",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runOpenCodeStatus()
+		},
+	}
+
+	cmd.AddCommand(statusCmd)
+	return cmd
+}
+
+// runOpenCodeStatus lists running OpenCode server processes and their session counts.
+func runOpenCodeStatus() error {
+	running, pid, err := daemon.IsRunning()
+	if err != nil {
+		return fmt.Errorf("check daemon: %w", err)
+	}
+	if !running {
+		fmt.Println("Daemon is not running")
+		return nil
+	}
+
+	client, err := daemon.NewDefaultClient()
+	if err != nil {
+		return fmt.Errorf("create client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	servers, err := client.ListServers(ctx)
+	if err != nil {
+		fmt.Printf("Daemon process exists (pid=%d) but API is not reachable: %v\n", pid, err)
+		return nil
+	}
+
+	if len(servers) == 0 {
+		fmt.Println("No OpenCode servers running")
+		return nil
+	}
+
+	fmt.Printf("%d OpenCode server(s):\n", len(servers))
+	for _, srv := range servers {
+		uptime := time.Since(srv.StartedAt).Truncate(time.Second)
+		fmt.Printf("  %s  pid=%-6d  uptime=%-12s  sessions=%-3d  %s\n",
+			srv.URL, srv.PID, uptime, srv.SessionCount, srv.ProjectDir)
 	}
 	return nil
 }
