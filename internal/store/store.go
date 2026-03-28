@@ -7,6 +7,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -87,6 +88,23 @@ func (s *Store) migrate() error {
 		`)
 		if err != nil {
 			return fmt.Errorf("migration v1: %w", err)
+		}
+		version = 1
+	}
+
+	if version < 2 {
+		_, err := s.db.Exec(`
+			CREATE TABLE IF NOT EXISTS agents (
+				backend      TEXT NOT NULL,
+				project_dir  TEXT NOT NULL,
+				agents_json  TEXT NOT NULL DEFAULT '[]',
+				updated_at   DATETIME NOT NULL,
+				PRIMARY KEY (backend, project_dir)
+			);
+			PRAGMA user_version = 2;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v2: %w", err)
 		}
 	}
 
@@ -198,6 +216,64 @@ func (s *Store) DeleteSession(id string) error {
 		return fmt.Errorf("delete session %s: %w", id, err)
 	}
 	return nil
+}
+
+// LoadAgents returns the cached agent list for the given backend and project
+// directory. Returns nil (not an error) if no cached entry exists.
+func (s *Store) LoadAgents(backend agent.BackendType, projectDir string) ([]agent.AgentInfo, error) {
+	var agentsJSON string
+	err := s.db.QueryRow(`
+		SELECT agents_json FROM agents WHERE backend = ? AND project_dir = ?
+	`, string(backend), projectDir).Scan(&agentsJSON)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load agents for %s/%s: %w", backend, projectDir, err)
+	}
+	var agents []agent.AgentInfo
+	if err := json.Unmarshal([]byte(agentsJSON), &agents); err != nil {
+		return nil, fmt.Errorf("decode agents for %s/%s: %w", backend, projectDir, err)
+	}
+	return agents, nil
+}
+
+// UpsertAgents stores the agent list for the given backend and project directory.
+func (s *Store) UpsertAgents(backend agent.BackendType, projectDir string, agents []agent.AgentInfo) error {
+	data, err := json.Marshal(agents)
+	if err != nil {
+		return fmt.Errorf("encode agents: %w", err)
+	}
+	_, err = s.db.Exec(`
+		INSERT OR REPLACE INTO agents (backend, project_dir, agents_json, updated_at)
+		VALUES (?, ?, ?, ?)
+	`, string(backend), projectDir, string(data), time.Now())
+	if err != nil {
+		return fmt.Errorf("upsert agents for %s/%s: %w", backend, projectDir, err)
+	}
+	return nil
+}
+
+// KnownProjectDirs returns the distinct project directories that have at
+// least one session for the given backend type. Used to know which projects
+// to pre-warm agent caches for.
+func (s *Store) KnownProjectDirs(backend agent.BackendType) ([]string, error) {
+	rows, err := s.db.Query(`
+		SELECT DISTINCT project_dir FROM sessions WHERE backend = ?
+	`, string(backend))
+	if err != nil {
+		return nil, fmt.Errorf("query project dirs: %w", err)
+	}
+	defer rows.Close()
+	var dirs []string
+	for rows.Next() {
+		var dir string
+		if err := rows.Scan(&dir); err != nil {
+			return nil, fmt.Errorf("scan project dir: %w", err)
+		}
+		dirs = append(dirs, dir)
+	}
+	return dirs, rows.Err()
 }
 
 // FindByExternalID returns the persisted session matching the given

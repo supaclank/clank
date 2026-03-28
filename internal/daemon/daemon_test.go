@@ -1712,6 +1712,158 @@ func TestDaemonListAgentsMissingParams(t *testing.T) {
 	}
 }
 
+func TestDaemonListAgentsReturnsCachedFromStore(t *testing.T) {
+	t.Parallel()
+
+	dir := shortTempDir(t)
+	sockPath := filepath.Join(dir, "test.sock")
+	pidPath := filepath.Join(dir, "test.pid")
+	dbPath := filepath.Join(dir, "test.db")
+
+	// Pre-seed the store with cached agents.
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	cachedAgents := []agent.AgentInfo{
+		{Name: "build", Description: "Cached build", Mode: "primary"},
+		{Name: "plan", Description: "Cached plan", Mode: "primary"},
+	}
+	if err := st.UpsertAgents(agent.BackendOpenCode, "/tmp/test-proj", cachedAgents); err != nil {
+		t.Fatalf("UpsertAgents: %v", err)
+	}
+
+	d := daemon.NewWithPaths(sockPath, pidPath)
+	d.Store = st
+
+	// Use an agent lister that tracks whether it was called synchronously.
+	// The lister blocks until explicitly unblocked, so if the handler
+	// returns before unblocking, we know it served from cache.
+	listerCalled := make(chan struct{}, 1)
+	ocMgr := &mockAgentListerManager{
+		agents: func(ctx context.Context, projectDir string) ([]agent.AgentInfo, error) {
+			listerCalled <- struct{}{}
+			return []agent.AgentInfo{
+				{Name: "build", Description: "Fresh build", Mode: "primary"},
+				{Name: "plan", Description: "Fresh plan", Mode: "primary"},
+				{Name: "debug", Description: "Fresh debug", Mode: "primary"},
+			}, nil
+		},
+	}
+	d.BackendManagers[agent.BackendOpenCode] = ocMgr
+	d.BackendManagers[agent.BackendClaudeCode] = newMockBackendManager()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run() }()
+
+	client := daemon.NewClient(sockPath)
+	waitForDaemon(t, client)
+	defer func() {
+		d.Stop()
+		<-errCh
+	}()
+
+	ctx := context.Background()
+
+	// Drain any background refresh triggered by warmAgentCaches (from
+	// KnownProjectDirs finding sessions in the store — but we didn't
+	// create any sessions, so this shouldn't fire).
+
+	// Request agents — should return cached data immediately.
+	agents, err := client.ListAgents(ctx, agent.BackendOpenCode, "/tmp/test-proj")
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+
+	// Should get the CACHED agents (2 agents, not 3).
+	if len(agents) != 2 {
+		t.Fatalf("expected 2 cached agents, got %d: %+v", len(agents), agents)
+	}
+	if agents[0].Description != "Cached build" {
+		t.Errorf("expected cached description, got %q", agents[0].Description)
+	}
+
+	// The background refresh should have been triggered.
+	select {
+	case <-listerCalled:
+		// Good — background refresh happened.
+	case <-time.After(5 * time.Second):
+		t.Error("expected background refresh to be triggered")
+	}
+
+	// After the refresh completes, subsequent requests should get the fresh data.
+	time.Sleep(200 * time.Millisecond)
+
+	agents, err = client.ListAgents(ctx, agent.BackendOpenCode, "/tmp/test-proj")
+	if err != nil {
+		t.Fatalf("ListAgents (2nd call): %v", err)
+	}
+	if len(agents) != 3 {
+		t.Fatalf("expected 3 fresh agents after refresh, got %d: %+v", len(agents), agents)
+	}
+	if agents[0].Description != "Fresh build" {
+		t.Errorf("expected fresh description, got %q", agents[0].Description)
+	}
+}
+
+func TestDaemonListAgentsFallsBackToListerOnCacheMiss(t *testing.T) {
+	t.Parallel()
+
+	dir := shortTempDir(t)
+	sockPath := filepath.Join(dir, "test.sock")
+	pidPath := filepath.Join(dir, "test.pid")
+	dbPath := filepath.Join(dir, "test.db")
+
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	// No pre-seeded agents — cache miss.
+
+	d := daemon.NewWithPaths(sockPath, pidPath)
+	d.Store = st
+
+	ocMgr := &mockAgentListerManager{
+		agents: func(ctx context.Context, projectDir string) ([]agent.AgentInfo, error) {
+			return []agent.AgentInfo{
+				{Name: "build", Description: "Build agent", Mode: "primary"},
+			}, nil
+		},
+	}
+	d.BackendManagers[agent.BackendOpenCode] = ocMgr
+	d.BackendManagers[agent.BackendClaudeCode] = newMockBackendManager()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run() }()
+
+	client := daemon.NewClient(sockPath)
+	waitForDaemon(t, client)
+	defer func() {
+		d.Stop()
+		<-errCh
+	}()
+
+	ctx := context.Background()
+
+	// No cache — should fall back to synchronous lister call.
+	agents, err := client.ListAgents(ctx, agent.BackendOpenCode, "/tmp/uncached-proj")
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(agents) != 1 || agents[0].Name != "build" {
+		t.Errorf("unexpected agents: %+v", agents)
+	}
+
+	// After the synchronous call, the result should be persisted.
+	cached, err := st.LoadAgents(agent.BackendOpenCode, "/tmp/uncached-proj")
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	if len(cached) != 1 || cached[0].Name != "build" {
+		t.Errorf("expected persisted agents, got %+v", cached)
+	}
+}
+
 func TestDaemonAgentStoredOnSession(t *testing.T) {
 	t.Parallel()
 	_, client, cleanup := testDaemon(t)

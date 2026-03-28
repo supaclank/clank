@@ -126,6 +126,10 @@ type Daemon struct {
 	// When nil (e.g. in tests), the daemon operates purely in-memory.
 	Store *store.Store
 
+	// agentRefreshMu guards agentRefreshInFlight.
+	agentRefreshMu       sync.Mutex
+	agentRefreshInFlight map[string]bool // keyed by "backend\x00projectDir"
+
 	log *log.Logger
 }
 
@@ -147,15 +151,16 @@ func New() (*Daemon, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Daemon{
-		sockPath:        filepath.Join(dir, "daemon.sock"),
-		pidPath:         filepath.Join(dir, "daemon.pid"),
-		sessions:        make(map[string]*managedSession),
-		subscribers:     make(map[string]chan agent.Event),
-		startTime:       time.Now(),
-		ctx:             ctx,
-		cancel:          cancel,
-		log:             log.New(os.Stderr, "[clank-daemon] ", log.LstdFlags|log.Lmsgprefix),
-		BackendManagers: make(map[agent.BackendType]agent.BackendManager),
+		sockPath:             filepath.Join(dir, "daemon.sock"),
+		pidPath:              filepath.Join(dir, "daemon.pid"),
+		sessions:             make(map[string]*managedSession),
+		subscribers:          make(map[string]chan agent.Event),
+		startTime:            time.Now(),
+		ctx:                  ctx,
+		cancel:               cancel,
+		log:                  log.New(os.Stderr, "[clank-daemon] ", log.LstdFlags|log.Lmsgprefix),
+		BackendManagers:      make(map[agent.BackendType]agent.BackendManager),
+		agentRefreshInFlight: make(map[string]bool),
 	}, nil
 }
 
@@ -164,15 +169,16 @@ func New() (*Daemon, error) {
 func NewWithPaths(sockPath, pidPath string) *Daemon {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Daemon{
-		sockPath:        sockPath,
-		pidPath:         pidPath,
-		sessions:        make(map[string]*managedSession),
-		subscribers:     make(map[string]chan agent.Event),
-		startTime:       time.Now(),
-		ctx:             ctx,
-		cancel:          cancel,
-		log:             log.New(os.Stderr, "[clank-daemon] ", log.LstdFlags|log.Lmsgprefix),
-		BackendManagers: make(map[agent.BackendType]agent.BackendManager),
+		sockPath:             sockPath,
+		pidPath:              pidPath,
+		sessions:             make(map[string]*managedSession),
+		subscribers:          make(map[string]chan agent.Event),
+		startTime:            time.Now(),
+		ctx:                  ctx,
+		cancel:               cancel,
+		log:                  log.New(os.Stderr, "[clank-daemon] ", log.LstdFlags|log.Lmsgprefix),
+		BackendManagers:      make(map[agent.BackendType]agent.BackendManager),
+		agentRefreshInFlight: make(map[string]bool),
 	}
 }
 
@@ -271,6 +277,11 @@ func (d *Daemon) Run() error {
 			}
 		}
 	}
+
+	// Warm agent caches in the background for all known project directories.
+	// This starts OpenCode servers and fetches agent lists so that subsequent
+	// ListAgents requests are served from the SQLite cache instantly.
+	d.warmAgentCaches()
 
 	mux := http.NewServeMux()
 	d.registerRoutes(mux)
@@ -420,6 +431,22 @@ func (d *Daemon) handleListAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Try to serve from the persistent cache (SQLite) first. This avoids
+	// blocking on the OpenCode server starting up — the response is instant.
+	if d.Store != nil {
+		cached, err := d.Store.LoadAgents(bt, projectDir)
+		if err != nil {
+			d.log.Printf("warning: load cached agents: %v", err)
+		}
+		if cached != nil {
+			// Return cached data immediately and refresh in the background.
+			d.refreshAgentsInBackground(bt, projectDir, lister)
+			writeJSON(w, http.StatusOK, cached)
+			return
+		}
+	}
+
+	// No cache — must fetch synchronously (first time for this project).
 	agents, err := lister.ListAgents(r.Context(), projectDir)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -428,6 +455,7 @@ func (d *Daemon) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	if agents == nil {
 		agents = []agent.AgentInfo{}
 	}
+	d.persistAgents(bt, projectDir, agents)
 	writeJSON(w, http.StatusOK, agents)
 }
 
@@ -1091,6 +1119,75 @@ func (d *Daemon) deletePersistedSession(id string) {
 	}
 	if err := d.Store.DeleteSession(id); err != nil {
 		d.log.Printf("warning: delete persisted session %s: %v", id, err)
+	}
+}
+
+// persistAgents writes the agent list to the store for future cache hits.
+func (d *Daemon) persistAgents(bt agent.BackendType, projectDir string, agents []agent.AgentInfo) {
+	if d.Store == nil {
+		return
+	}
+	if err := d.Store.UpsertAgents(bt, projectDir, agents); err != nil {
+		d.log.Printf("warning: persist agents for %s/%s: %v", bt, projectDir, err)
+	}
+}
+
+// refreshAgentsInBackground kicks off an async refresh of the agent list
+// for the given backend/project. The result is persisted to SQLite so that
+// subsequent requests get the updated list. Safe to call multiple times —
+// concurrent refreshes for the same key are deduplicated.
+func (d *Daemon) refreshAgentsInBackground(bt agent.BackendType, projectDir string, lister agent.AgentLister) {
+	d.agentRefreshMu.Lock()
+	key := string(bt) + "\x00" + projectDir
+	if d.agentRefreshInFlight[key] {
+		d.agentRefreshMu.Unlock()
+		return
+	}
+	d.agentRefreshInFlight[key] = true
+	d.agentRefreshMu.Unlock()
+
+	go func() {
+		defer func() {
+			d.agentRefreshMu.Lock()
+			delete(d.agentRefreshInFlight, key)
+			d.agentRefreshMu.Unlock()
+		}()
+
+		ctx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
+		defer cancel()
+
+		agents, err := lister.ListAgents(ctx, projectDir)
+		if err != nil {
+			d.log.Printf("background agent refresh for %s/%s: %v", bt, projectDir, err)
+			return
+		}
+		if agents == nil {
+			agents = []agent.AgentInfo{}
+		}
+		d.persistAgents(bt, projectDir, agents)
+	}()
+}
+
+// warmAgentCaches fetches and persists agent lists for all known project
+// directories. Called once on daemon startup so that subsequent ListAgents
+// requests are served from the SQLite cache instantly.
+func (d *Daemon) warmAgentCaches() {
+	if d.Store == nil {
+		return
+	}
+	for bt, mgr := range d.BackendManagers {
+		lister, ok := mgr.(agent.AgentLister)
+		if !ok {
+			continue
+		}
+		dirs, err := d.Store.KnownProjectDirs(bt)
+		if err != nil {
+			d.log.Printf("warning: load project dirs for %s: %v", bt, err)
+			continue
+		}
+		for _, dir := range dirs {
+			d.refreshAgentsInBackground(bt, dir, lister)
+		}
 	}
 }
 

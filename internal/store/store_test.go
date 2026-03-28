@@ -466,3 +466,191 @@ func TestMultipleSessions(t *testing.T) {
 		t.Errorf("expected ses-a and ses-c to remain, got %v", ids)
 	}
 }
+
+func TestLoadAgentsEmpty(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t, tempDBPath(t))
+
+	agents, err := s.LoadAgents(agent.BackendOpenCode, "/tmp/project")
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	if agents != nil {
+		t.Errorf("expected nil for uncached project, got %v", agents)
+	}
+}
+
+func TestUpsertAndLoadAgents(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t, tempDBPath(t))
+
+	agents := []agent.AgentInfo{
+		{Name: "build", Description: "Build agent", Mode: "primary", Hidden: false},
+		{Name: "plan", Description: "Plan agent", Mode: "primary", Hidden: false},
+	}
+
+	if err := s.UpsertAgents(agent.BackendOpenCode, "/tmp/project", agents); err != nil {
+		t.Fatalf("UpsertAgents: %v", err)
+	}
+
+	got, err := s.LoadAgents(agent.BackendOpenCode, "/tmp/project")
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 agents, got %d", len(got))
+	}
+	if got[0].Name != "build" {
+		t.Errorf("agents[0].Name = %q, want %q", got[0].Name, "build")
+	}
+	if got[1].Name != "plan" {
+		t.Errorf("agents[1].Name = %q, want %q", got[1].Name, "plan")
+	}
+}
+
+func TestUpsertAgentsOverwrites(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t, tempDBPath(t))
+
+	initial := []agent.AgentInfo{
+		{Name: "build", Description: "Build agent", Mode: "primary"},
+	}
+	if err := s.UpsertAgents(agent.BackendOpenCode, "/tmp/project", initial); err != nil {
+		t.Fatalf("UpsertAgents (initial): %v", err)
+	}
+
+	updated := []agent.AgentInfo{
+		{Name: "build", Description: "Build agent v2", Mode: "primary"},
+		{Name: "plan", Description: "Plan agent", Mode: "primary"},
+	}
+	if err := s.UpsertAgents(agent.BackendOpenCode, "/tmp/project", updated); err != nil {
+		t.Fatalf("UpsertAgents (update): %v", err)
+	}
+
+	got, err := s.LoadAgents(agent.BackendOpenCode, "/tmp/project")
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 agents after update, got %d", len(got))
+	}
+	if got[0].Description != "Build agent v2" {
+		t.Errorf("agents[0].Description = %q, want %q", got[0].Description, "Build agent v2")
+	}
+}
+
+func TestLoadAgentsIsolatedByBackendAndProject(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t, tempDBPath(t))
+
+	agentsA := []agent.AgentInfo{{Name: "build", Mode: "primary"}}
+	agentsB := []agent.AgentInfo{{Name: "plan", Mode: "primary"}}
+
+	if err := s.UpsertAgents(agent.BackendOpenCode, "/tmp/project-a", agentsA); err != nil {
+		t.Fatalf("UpsertAgents A: %v", err)
+	}
+	if err := s.UpsertAgents(agent.BackendOpenCode, "/tmp/project-b", agentsB); err != nil {
+		t.Fatalf("UpsertAgents B: %v", err)
+	}
+
+	gotA, err := s.LoadAgents(agent.BackendOpenCode, "/tmp/project-a")
+	if err != nil {
+		t.Fatalf("LoadAgents A: %v", err)
+	}
+	if len(gotA) != 1 || gotA[0].Name != "build" {
+		t.Errorf("project-a agents = %v, want [{build}]", gotA)
+	}
+
+	gotB, err := s.LoadAgents(agent.BackendOpenCode, "/tmp/project-b")
+	if err != nil {
+		t.Fatalf("LoadAgents B: %v", err)
+	}
+	if len(gotB) != 1 || gotB[0].Name != "plan" {
+		t.Errorf("project-b agents = %v, want [{plan}]", gotB)
+	}
+
+	// Different backend, same project — should be empty.
+	gotC, err := s.LoadAgents(agent.BackendClaudeCode, "/tmp/project-a")
+	if err != nil {
+		t.Fatalf("LoadAgents claude: %v", err)
+	}
+	if gotC != nil {
+		t.Errorf("expected nil for claude-code backend, got %v", gotC)
+	}
+}
+
+func TestKnownProjectDirs(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t, tempDBPath(t))
+
+	now := time.Now().Truncate(time.Millisecond)
+	for _, dir := range []string{"/tmp/project-a", "/tmp/project-b", "/tmp/project-a"} {
+		info := agent.SessionInfo{
+			ID:          "ses-" + dir,
+			Backend:     agent.BackendOpenCode,
+			Status:      agent.StatusIdle,
+			ProjectDir:  dir,
+			ProjectName: "proj",
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+		if err := s.UpsertSession(info); err != nil {
+			t.Fatalf("UpsertSession: %v", err)
+		}
+	}
+
+	dirs, err := s.KnownProjectDirs(agent.BackendOpenCode)
+	if err != nil {
+		t.Fatalf("KnownProjectDirs: %v", err)
+	}
+	dirSet := map[string]bool{}
+	for _, d := range dirs {
+		dirSet[d] = true
+	}
+	if len(dirSet) != 2 {
+		t.Errorf("expected 2 distinct dirs, got %d: %v", len(dirSet), dirs)
+	}
+	if !dirSet["/tmp/project-a"] || !dirSet["/tmp/project-b"] {
+		t.Errorf("expected project-a and project-b, got %v", dirs)
+	}
+
+	// Different backend should return empty.
+	dirs, err = s.KnownProjectDirs(agent.BackendClaudeCode)
+	if err != nil {
+		t.Fatalf("KnownProjectDirs claude: %v", err)
+	}
+	if len(dirs) != 0 {
+		t.Errorf("expected 0 dirs for claude-code, got %d", len(dirs))
+	}
+}
+
+func TestMigrationV2Idempotent(t *testing.T) {
+	t.Parallel()
+	path := tempDBPath(t)
+
+	// Open, write agents, close.
+	s1, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	agents := []agent.AgentInfo{{Name: "build", Mode: "primary"}}
+	if err := s1.UpsertAgents(agent.BackendOpenCode, "/tmp/proj", agents); err != nil {
+		t.Fatalf("UpsertAgents: %v", err)
+	}
+	s1.Close()
+
+	// Re-open — migration should be idempotent and data should survive.
+	s2, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	defer s2.Close()
+
+	got, err := s2.LoadAgents(agent.BackendOpenCode, "/tmp/proj")
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "build" {
+		t.Errorf("expected [{build}] after reopen, got %v", got)
+	}
+}
