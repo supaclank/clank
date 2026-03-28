@@ -474,7 +474,9 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case tea.MouseWheelDown:
 			m.scrollOffset += 3
-			m.clampScroll()
+			if m.clampScroll() {
+				m.follow = true
+			}
 		}
 		return m, nil
 
@@ -1371,12 +1373,14 @@ func (m *SessionViewModel) scrollToBottom() {
 	m.scrollOffset = 999999
 }
 
-func (m *SessionViewModel) clampScroll() {
+func (m *SessionViewModel) clampScroll() bool {
 	lines := m.buildContentLines()
-	m.clampScrollWithLines(lines)
+	return m.clampScrollWithLines(lines)
 }
 
-func (m *SessionViewModel) clampScrollWithLines(lines []string) {
+// clampScrollWithLines clamps scrollOffset to valid bounds and reports whether
+// the viewport is now showing the very bottom of the content.
+func (m *SessionViewModel) clampScrollWithLines(lines []string) bool {
 	maxOffset := len(lines) - m.contentHeight()
 	if maxOffset < 0 {
 		maxOffset = 0
@@ -1387,6 +1391,7 @@ func (m *SessionViewModel) clampScrollWithLines(lines []string) {
 	if m.scrollOffset < 0 {
 		m.scrollOffset = 0
 	}
+	return m.scrollOffset >= maxOffset
 }
 
 // overlaySessionConfirm overlays the confirm dialog onto the base content if active.

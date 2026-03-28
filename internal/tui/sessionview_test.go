@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -622,37 +623,85 @@ func TestInputToggle_ScrollOffset(t *testing.T) {
 	})
 }
 
+// TestMouseScrollDown_ReenablesFollow verifies that scrolling down to the
+// bottom of content with the mouse wheel re-enables follow mode, so that
+// new messages auto-scroll and the input prompt layout works correctly.
+func TestMouseScrollDown_ReenablesFollow(t *testing.T) {
+	t.Parallel()
+
+	t.Run("scroll to bottom re-enables follow", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(testEntries())
+		m.follow = false
+		// Put scrollOffset near the bottom so one scroll-down step reaches it.
+		lines := m.buildContentLines()
+		maxOffset := len(lines) - m.contentHeight()
+		if maxOffset < 3 {
+			// Content is too short for the test to be meaningful; set a
+			// large enough scrollOffset to trigger clamping to maxOffset.
+			m.scrollOffset = 0
+		} else {
+			m.scrollOffset = maxOffset - 2 // close to bottom, within one scroll step (3 lines)
+		}
+
+		m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+
+		if !m.follow {
+			t.Error("expected follow=true after scrolling to bottom")
+		}
+	})
+
+	t.Run("scroll not at bottom keeps follow false", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(testEntries())
+		// Ensure enough content to scroll through.
+		for i := 0; i < 20; i++ {
+			m.entries = append(m.entries, displayEntry{kind: entryText, content: "padding line"})
+		}
+		m.follow = false
+		m.scrollOffset = 0
+
+		m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+
+		if m.follow {
+			t.Error("expected follow=false when not at bottom")
+		}
+	})
+}
+
 // TestCtrlC_CancelsWhenBusy verifies that ctrl+c aborts the session when
-// the agent is busy, but quits the app when the agent is idle.
+// the agent is busy, setting the aborting flag and appending a "Cancelling..."
+// entry. When idle, ctrl+c uses double-tap to quit.
 func TestCtrlC_CancelsWhenBusy(t *testing.T) {
 	t.Parallel()
 	ctrlC := tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 
-	t.Run("normal mode busy aborts instead of quitting", func(t *testing.T) {
+	t.Run("normal mode busy sets aborting state", func(t *testing.T) {
 		t.Parallel()
 		m := newTestSessionModel(testEntries())
 		m.info = &agent.SessionInfo{Status: agent.StatusBusy}
+		entriesBefore := len(m.entries)
 
 		_, cmd := m.handleKey(ctrlC)
 
 		if cmd == nil {
 			t.Fatal("expected a command from ctrl+c when busy")
 		}
-		// The cmd should NOT be tea.Quit (which produces tea.QuitMsg).
-		// It should be abortSession which would call the client.
-		// Since client is nil we can't execute the cmd, but we can verify
-		// it's not tea.Quit by checking a known quit cmd for comparison.
-		_, quitCmd := newTestSessionModel(nil).handleKey(ctrlC)
-		if quitCmd == nil {
-			t.Fatal("expected tea.Quit from idle ctrl+c")
+		if !m.aborting {
+			t.Error("expected aborting=true")
 		}
-		quitMsg := quitCmd()
-		if _, ok := quitMsg.(tea.QuitMsg); !ok {
-			t.Fatal("expected idle ctrl+c to produce tea.QuitMsg")
+		if m.abortEntryIdx != entriesBefore {
+			t.Errorf("abortEntryIdx = %d, want %d", m.abortEntryIdx, entriesBefore)
+		}
+		if len(m.entries) != entriesBefore+1 {
+			t.Fatalf("expected %d entries, got %d", entriesBefore+1, len(m.entries))
+		}
+		if m.entries[m.abortEntryIdx].content != "Cancelling..." {
+			t.Errorf("abort entry content = %q, want %q", m.entries[m.abortEntryIdx].content, "Cancelling...")
 		}
 	})
 
-	t.Run("normal mode starting aborts instead of quitting", func(t *testing.T) {
+	t.Run("normal mode starting sets aborting state", func(t *testing.T) {
 		t.Parallel()
 		m := newTestSessionModel(testEntries())
 		m.info = &agent.SessionInfo{Status: agent.StatusStarting}
@@ -662,41 +711,59 @@ func TestCtrlC_CancelsWhenBusy(t *testing.T) {
 		if cmd == nil {
 			t.Fatal("expected a command from ctrl+c when starting")
 		}
+		if !m.aborting {
+			t.Error("expected aborting=true")
+		}
 	})
 
-	t.Run("normal mode idle quits", func(t *testing.T) {
+	t.Run("normal mode idle uses double-tap", func(t *testing.T) {
 		t.Parallel()
 		m := newTestSessionModel(testEntries())
 		m.info = &agent.SessionInfo{Status: agent.StatusIdle}
 
+		// First press: no quit, sets lastCtrlC.
 		_, cmd := m.handleKey(ctrlC)
-
 		if cmd == nil {
-			t.Fatal("expected a command from ctrl+c when idle")
+			t.Fatal("expected a command (hint timer) from first ctrl+c")
+		}
+		if m.lastCtrlC.IsZero() {
+			t.Fatal("expected lastCtrlC to be set after first ctrl+c")
+		}
+
+		// Second press within window: quits.
+		_, cmd = m.handleKey(ctrlC)
+		if cmd == nil {
+			t.Fatal("expected a command from second ctrl+c")
 		}
 		msg := cmd()
 		if _, ok := msg.(tea.QuitMsg); !ok {
-			t.Fatalf("expected tea.QuitMsg when idle, got %T", msg)
+			t.Fatalf("expected tea.QuitMsg on double-tap, got %T", msg)
 		}
 	})
 
-	t.Run("normal mode nil info quits", func(t *testing.T) {
+	t.Run("normal mode nil info uses double-tap", func(t *testing.T) {
 		t.Parallel()
 		m := newTestSessionModel(testEntries())
 		m.info = nil
 
-		_, cmd := m.handleKey(ctrlC)
+		// First press: no quit.
+		_, _ = m.handleKey(ctrlC)
+		if m.lastCtrlC.IsZero() {
+			t.Fatal("expected lastCtrlC to be set")
+		}
 
+		// Second press: quits.
+		_, cmd := m.handleKey(ctrlC)
 		if cmd == nil {
-			t.Fatal("expected a command from ctrl+c with nil info")
+			t.Fatal("expected a command from second ctrl+c")
 		}
 		msg := cmd()
 		if _, ok := msg.(tea.QuitMsg); !ok {
-			t.Fatalf("expected tea.QuitMsg with nil info, got %T", msg)
+			t.Fatalf("expected tea.QuitMsg on double-tap, got %T", msg)
 		}
 	})
 
-	t.Run("input mode busy aborts instead of quitting", func(t *testing.T) {
+	t.Run("input mode busy sets aborting state", func(t *testing.T) {
 		t.Parallel()
 		m := newTestSessionModel(testEntries())
 		m.info = &agent.SessionInfo{Status: agent.StatusBusy}
@@ -707,22 +774,157 @@ func TestCtrlC_CancelsWhenBusy(t *testing.T) {
 		if cmd == nil {
 			t.Fatal("expected a command from ctrl+c in input mode when busy")
 		}
+		if !m.aborting {
+			t.Error("expected aborting=true in input mode")
+		}
 	})
 
-	t.Run("input mode idle quits", func(t *testing.T) {
+	t.Run("input mode idle uses double-tap", func(t *testing.T) {
 		t.Parallel()
 		m := newTestSessionModel(testEntries())
 		m.info = &agent.SessionInfo{Status: agent.StatusIdle}
 		m.inputActive = true
 
-		_, cmd := m.handleKey(ctrlC)
+		// First press.
+		_, _ = m.handleKey(ctrlC)
+		if m.lastCtrlC.IsZero() {
+			t.Fatal("expected lastCtrlC to be set")
+		}
 
+		// Second press: quits.
+		_, cmd := m.handleKey(ctrlC)
 		if cmd == nil {
-			t.Fatal("expected a command from ctrl+c in input mode when idle")
+			t.Fatal("expected a command from second ctrl+c")
 		}
 		msg := cmd()
 		if _, ok := msg.(tea.QuitMsg); !ok {
-			t.Fatalf("expected tea.QuitMsg in input mode when idle, got %T", msg)
+			t.Fatalf("expected tea.QuitMsg on double-tap, got %T", msg)
+		}
+	})
+}
+
+// TestAbortSuppressesEvents verifies that status change and error events
+// are suppressed during an active abort, and the "Cancelling..." entry is
+// updated to "Cancelled" in place.
+func TestAbortSuppressesEvents(t *testing.T) {
+	t.Parallel()
+
+	t.Run("status change during abort updates entry in place", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(nil)
+		m.info = &agent.SessionInfo{Status: agent.StatusBusy}
+		m.aborting = true
+		m.abortEntryIdx = len(m.entries)
+		m.entries = append(m.entries, displayEntry{
+			kind:    entryStatus,
+			content: "Cancelling...",
+		})
+		entriesAfterAbort := len(m.entries)
+
+		// Simulate busy -> idle status change.
+		m.handleStatusChange(agent.StatusChangeData{
+			OldStatus: agent.StatusBusy,
+			NewStatus: agent.StatusIdle,
+		})
+
+		// Should NOT have appended a new entry.
+		if len(m.entries) != entriesAfterAbort {
+			t.Errorf("expected %d entries (no new ones), got %d", entriesAfterAbort, len(m.entries))
+		}
+		// Should have updated existing entry.
+		if m.entries[m.abortEntryIdx].content != "Cancelled" {
+			t.Errorf("abort entry = %q, want %q", m.entries[m.abortEntryIdx].content, "Cancelled")
+		}
+		if m.aborting {
+			t.Error("expected aborting=false after terminal status")
+		}
+	})
+
+	t.Run("intermediate status change during abort is suppressed", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(nil)
+		m.info = &agent.SessionInfo{Status: agent.StatusBusy}
+		m.aborting = true
+		m.abortEntryIdx = 0
+		m.entries = []displayEntry{{kind: entryStatus, content: "Cancelling..."}}
+
+		// Simulate busy -> busy (intermediate, should be suppressed).
+		m.handleStatusChange(agent.StatusChangeData{
+			OldStatus: agent.StatusBusy,
+			NewStatus: agent.StatusBusy,
+		})
+
+		if len(m.entries) != 1 {
+			t.Errorf("expected 1 entry, got %d", len(m.entries))
+		}
+		if m.entries[0].content != "Cancelling..." {
+			t.Errorf("entry should still be 'Cancelling...', got %q", m.entries[0].content)
+		}
+		if !m.aborting {
+			t.Error("should still be aborting during intermediate status")
+		}
+	})
+
+	t.Run("error event during abort is suppressed", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(nil)
+		m.info = &agent.SessionInfo{Status: agent.StatusBusy}
+		m.aborting = true
+		m.abortEntryIdx = 0
+		m.entries = []displayEntry{{kind: entryStatus, content: "Cancelling..."}}
+
+		m.handleEvent(agent.Event{
+			Type:      agent.EventError,
+			SessionID: m.sessionID,
+			Data:      agent.ErrorData{Message: "MessageAbortedError"},
+		})
+
+		// Should NOT have appended an error entry.
+		if len(m.entries) != 1 {
+			t.Errorf("expected 1 entry (error suppressed), got %d", len(m.entries))
+		}
+	})
+
+	t.Run("error event when not aborting is shown", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(nil)
+		m.info = &agent.SessionInfo{Status: agent.StatusBusy}
+		m.aborting = false
+
+		m.handleEvent(agent.Event{
+			Type:      agent.EventError,
+			SessionID: m.sessionID,
+			Data:      agent.ErrorData{Message: "some real error"},
+		})
+
+		found := false
+		for _, e := range m.entries {
+			if e.kind == entryError && e.content == "some real error" {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("expected error entry to be appended when not aborting")
+		}
+	})
+
+	t.Run("abort HTTP failure updates entry to Cancel failed", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(nil)
+		m.aborting = true
+		m.abortEntryIdx = 0
+		m.entries = []displayEntry{{kind: entryStatus, content: "Cancelling..."}}
+
+		m.Update(sessionAbortResultMsg{err: fmt.Errorf("connection refused")})
+
+		if m.entries[0].content != "Cancel failed" {
+			t.Errorf("entry = %q, want %q", m.entries[0].content, "Cancel failed")
+		}
+		if m.aborting {
+			t.Error("expected aborting=false after failure")
+		}
+		if m.err == nil {
+			t.Error("expected m.err to be set")
 		}
 	})
 }
@@ -773,6 +975,18 @@ func TestBuildHelpText_ShowsCancelWhenBusy(t *testing.T) {
 		help := m.buildHelpText()
 		if strings.Contains(help, "ctrl+c: cancel") {
 			t.Errorf("expected help to NOT contain 'ctrl+c: cancel' with nil info, got: %s", help)
+		}
+	})
+
+	t.Run("double-tap hint overrides normal help", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(nil)
+		m.info = &agent.SessionInfo{Status: agent.StatusIdle}
+		m.lastCtrlC = time.Now()
+
+		help := m.buildHelpText()
+		if !strings.Contains(help, "press ctrl+c again to quit") {
+			t.Errorf("expected double-tap hint, got: %s", help)
 		}
 	})
 }
