@@ -192,9 +192,14 @@ func (m *SessionViewModel) handleCreateResult(msg sessionCreateResultMsg) (tea.M
 	m.input.Reset()
 
 	// Show the user's prompt as the first entry.
+	agentName := ""
+	if len(m.agents) > 0 {
+		agentName = m.agents[m.selectedAgent].Name
+	}
 	m.entries = append(m.entries, displayEntry{
 		kind:    entryUser,
 		content: prompt,
+		agent:   agentName,
 	})
 
 	// Reset the textarea for follow-up messages.

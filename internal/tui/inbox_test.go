@@ -389,6 +389,177 @@ func TestBuildGroups_FollowUpBusySessionStaysInBusy(t *testing.T) {
 	}
 }
 
+func TestCategoryNavigation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	// 3 groups: BUSY (2 rows), FOLLOW UP (3 rows), IDLE (2 rows)
+	// flatRows indices: 0,1 = BUSY; 2,3,4 = FOLLOW UP; 5,6 = IDLE
+	sessions := []agent.SessionInfo{
+		{ID: "busy-1", Status: agent.StatusBusy, UpdatedAt: now.Add(-1 * time.Hour)},
+		{ID: "busy-2", Status: agent.StatusBusy, UpdatedAt: now.Add(-2 * time.Hour)},
+		{ID: "fu-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), LastReadAt: now, FollowUp: true},
+		{ID: "fu-2", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now, FollowUp: true},
+		{ID: "fu-3", Status: agent.StatusIdle, UpdatedAt: now.Add(-3 * time.Hour), LastReadAt: now, FollowUp: true},
+		{ID: "idle-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), LastReadAt: now},
+		{ID: "idle-2", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now},
+	}
+
+	setup := func() *InboxModel {
+		m := &InboxModel{}
+		m.buildGroups(sessions)
+		return m
+	}
+
+	t.Run("cursorGroupIndex", func(t *testing.T) {
+		t.Parallel()
+		m := setup()
+
+		tests := []struct {
+			cursor    int
+			wantGroup int
+		}{
+			{0, 0}, {1, 0}, // BUSY
+			{2, 1}, {3, 1}, {4, 1}, // FOLLOW UP
+			{5, 2}, {6, 2}, // IDLE
+		}
+		for _, tt := range tests {
+			m.cursor = tt.cursor
+			got := m.cursorGroupIndex()
+			if got != tt.wantGroup {
+				t.Errorf("cursor=%d: cursorGroupIndex()=%d, want %d", tt.cursor, got, tt.wantGroup)
+			}
+		}
+	})
+
+	t.Run("groupFirstRow", func(t *testing.T) {
+		t.Parallel()
+		m := setup()
+
+		tests := []struct {
+			groupIdx int
+			wantRow  int
+		}{
+			{0, 0}, // BUSY starts at 0
+			{1, 2}, // FOLLOW UP starts at 2
+			{2, 5}, // IDLE starts at 5
+		}
+		for _, tt := range tests {
+			got := m.groupFirstRow(tt.groupIdx)
+			if got != tt.wantRow {
+				t.Errorf("groupFirstRow(%d)=%d, want %d", tt.groupIdx, got, tt.wantRow)
+			}
+		}
+	})
+
+	t.Run("cmd+up from middle of category goes to top of that category", func(t *testing.T) {
+		t.Parallel()
+		m := setup()
+
+		// Cursor at fu-2 (index 3, middle of FOLLOW UP group)
+		m.cursor = 3
+		gi := m.cursorGroupIndex()
+		first := m.groupFirstRow(gi)
+		if m.cursor != first {
+			m.cursor = first
+		}
+		if m.cursor != 2 {
+			t.Errorf("cursor=%d, want 2 (top of FOLLOW UP)", m.cursor)
+		}
+	})
+
+	t.Run("cmd+up from top of category goes to top of category above", func(t *testing.T) {
+		t.Parallel()
+		m := setup()
+
+		// Cursor at fu-1 (index 2, top of FOLLOW UP)
+		m.cursor = 2
+		gi := m.cursorGroupIndex()
+		first := m.groupFirstRow(gi)
+		if m.cursor == first && gi > 0 {
+			m.cursor = m.groupFirstRow(gi - 1)
+		}
+		if m.cursor != 0 {
+			t.Errorf("cursor=%d, want 0 (top of BUSY)", m.cursor)
+		}
+	})
+
+	t.Run("cmd+up from top of first category stays put", func(t *testing.T) {
+		t.Parallel()
+		m := setup()
+
+		m.cursor = 0
+		gi := m.cursorGroupIndex()
+		first := m.groupFirstRow(gi)
+		if m.cursor == first && gi > 0 {
+			m.cursor = m.groupFirstRow(gi - 1)
+		} else if m.cursor != first {
+			m.cursor = first
+		}
+		if m.cursor != 0 {
+			t.Errorf("cursor=%d, want 0 (should stay at top of first category)", m.cursor)
+		}
+	})
+
+	t.Run("cmd+down goes to top of next category", func(t *testing.T) {
+		t.Parallel()
+		m := setup()
+
+		// From middle of BUSY (index 1)
+		m.cursor = 1
+		gi := m.cursorGroupIndex()
+		if gi < len(m.groups)-1 {
+			m.cursor = m.groupFirstRow(gi + 1)
+		}
+		if m.cursor != 2 {
+			t.Errorf("cursor=%d, want 2 (top of FOLLOW UP)", m.cursor)
+		}
+
+		// From top of FOLLOW UP (index 2) to top of IDLE
+		gi = m.cursorGroupIndex()
+		if gi < len(m.groups)-1 {
+			m.cursor = m.groupFirstRow(gi + 1)
+		}
+		if m.cursor != 5 {
+			t.Errorf("cursor=%d, want 5 (top of IDLE)", m.cursor)
+		}
+	})
+
+	t.Run("cmd+down from last category goes to very last row", func(t *testing.T) {
+		t.Parallel()
+		m := setup()
+
+		// Cursor at idle-1 (index 5, top of last group IDLE)
+		m.cursor = 5
+		gi := m.cursorGroupIndex()
+		if gi < len(m.groups)-1 {
+			m.cursor = m.groupFirstRow(gi + 1)
+		} else {
+			m.cursor = len(m.flatRows) - 1
+		}
+		if m.cursor != 6 {
+			t.Errorf("cursor=%d, want 6 (last row of inbox)", m.cursor)
+		}
+	})
+
+	t.Run("cmd+down from very last row stays put", func(t *testing.T) {
+		t.Parallel()
+		m := setup()
+
+		// Cursor already at the very last row
+		m.cursor = 6
+		gi := m.cursorGroupIndex()
+		if gi < len(m.groups)-1 {
+			m.cursor = m.groupFirstRow(gi + 1)
+		} else {
+			m.cursor = len(m.flatRows) - 1
+		}
+		if m.cursor != 6 {
+			t.Errorf("cursor=%d, want 6 (should stay at last row)", m.cursor)
+		}
+	})
+}
+
 func TestRenderRow_ShowsAgentMode(t *testing.T) {
 	t.Parallel()
 

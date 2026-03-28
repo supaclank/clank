@@ -300,6 +300,27 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+up"))):
+		// Jump to top of current category; if already there, top of the one above.
+		if len(m.flatRows) > 0 {
+			gi := m.cursorGroupIndex()
+			first := m.groupFirstRow(gi)
+			if m.cursor == first && gi > 0 {
+				m.cursor = m.groupFirstRow(gi - 1)
+			} else {
+				m.cursor = first
+			}
+		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+down"))):
+		// Jump to top of the next category; if in the last category, jump to the very last row.
+		if len(m.flatRows) > 0 {
+			gi := m.cursorGroupIndex()
+			if gi < len(m.groups)-1 {
+				m.cursor = m.groupFirstRow(gi + 1)
+			} else {
+				m.cursor = len(m.flatRows) - 1
+			}
+		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("home", "g"))):
 		m.cursor = 0
 	case key.Matches(msg, key.NewBinding(key.WithKeys("end", "G"))):
@@ -583,7 +604,7 @@ func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
 	if len(doneRows) > 0 {
 		m.groups = append(m.groups, inboxGroup{
 			name:  fmt.Sprintf("DONE (%d)", len(doneRows)),
-			style: lipgloss.NewStyle().Foreground(mutedColor).Bold(true),
+			style: lipgloss.NewStyle().Foreground(successColor).Bold(true),
 			rows:  doneRows,
 		})
 	}
@@ -801,6 +822,28 @@ func (m *InboxModel) viewportHeight() int {
 		h = 3
 	}
 	return h
+}
+
+// cursorGroupIndex returns the index into m.groups for the group that
+// contains the current cursor position. Returns 0 if flatRows is empty.
+func (m *InboxModel) cursorGroupIndex() int {
+	offset := 0
+	for i, g := range m.groups {
+		if m.cursor < offset+len(g.rows) {
+			return i
+		}
+		offset += len(g.rows)
+	}
+	return len(m.groups) - 1
+}
+
+// groupFirstRow returns the flatRows index of the first row in the given group.
+func (m *InboxModel) groupFirstRow(groupIdx int) int {
+	offset := 0
+	for i := 0; i < groupIdx; i++ {
+		offset += len(m.groups[i].rows)
+	}
+	return offset
 }
 
 func (m *InboxModel) ensureCursorVisible() {

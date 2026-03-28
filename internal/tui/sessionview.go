@@ -124,6 +124,7 @@ type displayEntry struct {
 	kind    entryKind
 	partID  string // Part ID for tracking updates (text deltas, tool status)
 	content string // pre-rendered line(s), may contain ANSI
+	agent   string // agent mode used for this entry (only set for entryUser)
 }
 
 type entryKind int
@@ -330,6 +331,7 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.entries = append(m.entries, displayEntry{
 				kind:    entryUser,
 				content: m.info.Prompt,
+				agent:   m.info.Agent,
 			})
 		}
 		// Fetch agents if we don't have them yet (existing sessions opened from inbox).
@@ -468,9 +470,14 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// Send the message. Shift+enter inserts newline (handled by textarea).
 			text := strings.TrimSpace(m.input.Value())
 			if text != "" {
+				agentName := ""
+				if len(m.agents) > 0 {
+					agentName = m.agents[m.selectedAgent].Name
+				}
 				m.entries = append(m.entries, displayEntry{
 					kind:    entryUser,
 					content: text,
+					agent:   agentName,
 				})
 				m.input.Reset()
 				m.inputActive = false
@@ -1035,6 +1042,10 @@ func (m *SessionViewModel) renderEntry(e displayEntry) []string {
 	switch e.kind {
 	case entryUser:
 		header := lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("You:")
+		if e.agent != "" {
+			badge := lipgloss.NewStyle().Foreground(agentColor(e.agent)).Bold(true).Render("[" + e.agent + "]")
+			header += " " + badge
+		}
 		wrapped := wrapText(e.content, maxWidth)
 		lines := []string{"", "  " + header}
 		for _, l := range strings.Split(wrapped, "\n") {
