@@ -368,15 +368,10 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionInfoMsg:
 		m.info = msg.info
-		// Add the initial prompt as the first user message if entries are empty
-		// and history hasn't been loaded yet (history will provide the full picture).
-		if len(m.entries) == 0 && !m.historyLoaded && m.info.Prompt != "" {
-			m.entries = append(m.entries, displayEntry{
-				kind:    entryUser,
-				content: m.info.Prompt,
-				agent:   m.info.Agent,
-			})
-		}
+		// Don't seed entries from session info — wait for the full message
+		// history (sessionMessagesMsg) to avoid a flash of the bare prompt
+		// before the complete conversation renders.
+
 		// Fetch agents if we don't have them yet (existing sessions opened from inbox).
 		if len(m.agents) == 0 && m.info.Backend == agent.BackendOpenCode && m.info.ProjectDir != "" {
 			m.backend = m.info.Backend
@@ -1129,6 +1124,12 @@ func (m *SessionViewModel) View() tea.View {
 		sb.WriteString("\n\n")
 	}
 
+	// Update cursor before building content so the correct entry gets the
+	// selection border on this frame (avoids a one-frame layout shift).
+	if m.follow {
+		m.cursor = m.lastNavigableEntry()
+	}
+
 	// Content area: rendered entries.
 	contentLines := m.buildContentLines()
 	ch := m.contentHeight()
@@ -1140,9 +1141,8 @@ func (m *SessionViewModel) View() tea.View {
 	}
 	m.cachedContent = contentLines
 
-	// Auto-follow: move cursor to the latest navigable entry and scroll to bottom.
+	// Auto-follow: scroll to bottom.
 	if m.follow {
-		m.cursor = m.lastNavigableEntry()
 		m.cursorMoved = false
 		m.scrollOffset = len(contentLines) - ch
 		if m.scrollOffset < 0 {
@@ -1277,7 +1277,11 @@ func (m *SessionViewModel) buildContentLines() []string {
 		m.entryEndLine[i] = len(lines)
 	}
 	if len(lines) == 0 {
-		lines = append(lines, lipgloss.NewStyle().Foreground(dimColor).Render("  Waiting for agent output..."))
+		msg := "  Waiting for agent output..."
+		if !m.historyLoaded {
+			msg = "  Loading conversation..."
+		}
+		lines = append(lines, lipgloss.NewStyle().Foreground(dimColor).Render(msg))
 	}
 	return lines
 }
