@@ -733,12 +733,17 @@ func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update the session's current agent if one was specified, and clear any draft.
+	// Update the session's current agent if one was specified, clear any draft,
+	// and reset visibility if the session was marked done (user re-engaging
+	// means it's no longer done).
 	d.mu.Lock()
 	if body.Agent != "" {
 		ms.info.Agent = body.Agent
 	}
 	ms.info.Draft = ""
+	if ms.info.Visibility == agent.VisibilityDone {
+		ms.info.Visibility = agent.VisibilityVisible
+	}
 	d.persistSession(ms)
 	d.mu.Unlock()
 
