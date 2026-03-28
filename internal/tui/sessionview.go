@@ -115,8 +115,13 @@ type SessionViewModel struct {
 	showConfirm bool
 	confirm     confirmDialogModel
 
+	// Mouse text selection state.
+	selection        textSelection
+	cachedContent    []string // content lines from last View(), used for selection extraction
+	cachedHeaderRows int      // number of screen rows before the content area
+
 	// standalone is true when this model is run directly (not inside InboxModel).
-	// When true, 'q' quits the program instead of emitting backToInboxMsg.
+	// When true, 'q' quits the program instead of navigating back to inbox.
 	standalone bool
 
 	cancelEvents context.CancelFunc
@@ -463,6 +468,7 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseWheelMsg:
 		// Mouse scroll is line-by-line, independent of cursor selection.
+		m.selection.Clear()
 		switch msg.Button {
 		case tea.MouseWheelUp:
 			m.follow = false
@@ -477,6 +483,27 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.clampScroll() {
 				m.follow = true
 			}
+		}
+		return m, nil
+
+	case tea.MouseClickMsg:
+		if msg.Button == tea.MouseLeft {
+			m.selection.Start(msg.X, msg.Y)
+		}
+		return m, nil
+
+	case tea.MouseMotionMsg:
+		// MouseMotionMsg with button held (cell-motion mode) — update drag.
+		if msg.Button == tea.MouseLeft {
+			m.selection.Update(msg.X, msg.Y)
+		}
+		return m, nil
+
+	case tea.MouseReleaseMsg:
+		if m.selection.HasSelection() {
+			m.selection.Finish(m.cachedContent, m.cachedHeaderRows, m.scrollOffset)
+		} else {
+			m.selection.Clear()
 		}
 		return m, nil
 
@@ -1094,6 +1121,13 @@ func (m *SessionViewModel) View() tea.View {
 	contentLines := m.buildContentLines()
 	ch := m.contentHeight()
 
+	// Cache for mouse selection: count how many screen rows precede the content area.
+	m.cachedHeaderRows = 2 // header line + blank line
+	if m.err != nil {
+		m.cachedHeaderRows += 2 // error line + blank line
+	}
+	m.cachedContent = contentLines
+
 	// Auto-follow: move cursor to the latest navigable entry and scroll to bottom.
 	if m.follow {
 		m.cursor = m.lastNavigableEntry()
@@ -1116,7 +1150,9 @@ func (m *SessionViewModel) View() tea.View {
 		end = len(contentLines)
 	}
 	for i := m.scrollOffset; i < end; i++ {
-		sb.WriteString(contentLines[i])
+		screenRow := m.cachedHeaderRows + (i - m.scrollOffset)
+		line := m.selection.highlightLine(contentLines[i], screenRow)
+		sb.WriteString(line)
 		sb.WriteString("\n")
 	}
 	// Pad remaining lines.
@@ -1341,7 +1377,7 @@ func (m *SessionViewModel) buildHelpText() string {
 	if m.standalone {
 		qLabel = "q: quit"
 	}
-	parts := []string{"m: message", "f: follow-up", "d: done", "x: archive", qLabel}
+	parts := []string{"m: message", "f: follow-up", "d: done", "x: archive", "drag: copy", qLabel}
 	if m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting) {
 		parts = append([]string{"ctrl+c: cancel"}, parts...)
 	}
