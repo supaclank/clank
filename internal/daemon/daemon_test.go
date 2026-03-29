@@ -2437,6 +2437,52 @@ func TestDaemonSendMessageClearsDoneVisibility(t *testing.T) {
 	}
 }
 
+func TestDaemonSendMessageClearsArchivedVisibility(t *testing.T) {
+	t.Parallel()
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test prompt",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Mark session as archived.
+	if err := client.SetVisibility(ctx, info.ID, agent.VisibilityArchived); err != nil {
+		t.Fatalf("SetVisibility(archived): %v", err)
+	}
+	got, err := client.GetSession(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.Visibility != agent.VisibilityArchived {
+		t.Fatalf("visibility = %q, want %q", got.Visibility, agent.VisibilityArchived)
+	}
+
+	// Send a follow-up message to the archived session.
+	if err := client.SendMessage(ctx, info.ID, agent.SendMessageOpts{Text: "follow up"}); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Visibility should be reset to visible.
+	got, err = client.GetSession(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetSession after SendMessage: %v", err)
+	}
+	if got.Visibility != agent.VisibilityVisible {
+		t.Errorf("visibility after SendMessage = %q, want %q (empty/visible)", got.Visibility, agent.VisibilityVisible)
+	}
+}
+
 // --- SetDraft Tests ---
 
 func TestDaemonSetDraft(t *testing.T) {
