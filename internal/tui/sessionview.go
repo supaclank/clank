@@ -353,6 +353,15 @@ type sseSkipMsg struct {
 }
 
 func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Always keep the spinner ticking, regardless of modal/composing state.
+	// The spinner's tick chain is self-sustaining: each Update schedules
+	// the next tick. Swallowing a single TickMsg permanently kills it.
+	if tickMsg, ok := msg.(spinner.TickMsg); ok {
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(tickMsg)
+		return m, cmd
+	}
+
 	// Composing mode has its own update path.
 	if m.composing {
 		return m.updateCompose(msg)
@@ -382,11 +391,6 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// border externally, subtract the external frame.
 		m.input.SetWidth(m.width - promptInputBorderSize)
 		return m, nil
-
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
 
 	case sessionInfoMsg:
 		m.info = msg.info

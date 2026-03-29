@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/spinner"
 	"github.com/acksell/clank/internal/agent"
 )
 
@@ -1496,5 +1497,56 @@ func TestRenderRow_UnreadRedAsterisk(t *testing.T) {
 	}
 	if strings.Contains(readRendered, "*") {
 		t.Errorf("expected read row to NOT contain '*', got: %s", readRendered)
+	}
+}
+
+// TestSpinnerTickSurvivesConfirmDialog is a regression test for the bug where
+// opening a confirm dialog swallowed spinner.TickMsg, permanently breaking the
+// spinner's self-sustaining tick chain.
+func TestSpinnerTickSurvivesConfirmDialog(t *testing.T) {
+	t.Parallel()
+
+	m := NewInboxModel(nil)
+	m.showConfirm = true
+	m.confirm = newConfirmDialog("Delete?", "Are you sure?", "delete")
+
+	// Generate a valid tick message from the spinner's own state.
+	tickMsg := m.spinner.Tick()
+
+	_, cmd := m.Update(tickMsg)
+
+	// The spinner must schedule the next tick (non-nil cmd) to keep
+	// the animation alive.
+	if cmd == nil {
+		t.Fatal("spinner tick was swallowed by confirm dialog; expected a follow-up tick command")
+	}
+
+	// The returned command should produce another spinner.TickMsg.
+	nextMsg := cmd()
+	if _, ok := nextMsg.(spinner.TickMsg); !ok {
+		t.Fatalf("expected spinner.TickMsg, got %T", nextMsg)
+	}
+}
+
+// TestSpinnerTickSurvivesActionMenu is a regression test for the bug where
+// opening the action menu swallowed spinner.TickMsg.
+func TestSpinnerTickSurvivesActionMenu(t *testing.T) {
+	t.Parallel()
+
+	m := NewInboxModel(nil)
+	m.showMenu = true
+	m.menu = newActionMenu("Actions", nil)
+
+	tickMsg := m.spinner.Tick()
+
+	_, cmd := m.Update(tickMsg)
+
+	if cmd == nil {
+		t.Fatal("spinner tick was swallowed by action menu; expected a follow-up tick command")
+	}
+
+	nextMsg := cmd()
+	if _, ok := nextMsg.(spinner.TickMsg); !ok {
+		t.Fatalf("expected spinner.TickMsg, got %T", nextMsg)
 	}
 }

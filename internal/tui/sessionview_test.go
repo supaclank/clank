@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/acksell/clank/internal/agent"
@@ -1020,4 +1021,32 @@ func TestBuildHelpText_ShowsCancelWhenBusy(t *testing.T) {
 			t.Errorf("expected double-tap hint, got: %s", help)
 		}
 	})
+}
+
+// TestSpinnerTickSurvivesSessionConfirmDialog is a regression test for the bug
+// where opening a confirm dialog in SessionViewModel swallowed spinner.TickMsg,
+// permanently breaking the spinner's self-sustaining tick chain.
+func TestSpinnerTickSurvivesSessionConfirmDialog(t *testing.T) {
+	t.Parallel()
+
+	m := NewSessionViewModel(nil, "test-session")
+	m.showConfirm = true
+	m.confirm = newConfirmDialog("Mark done?", "Are you sure?", "done")
+
+	// Generate a valid tick message from the spinner's own state.
+	tickMsg := m.spinner.Tick()
+
+	_, cmd := m.Update(tickMsg)
+
+	// The spinner must schedule the next tick (non-nil cmd) to keep
+	// the animation alive.
+	if cmd == nil {
+		t.Fatal("spinner tick was swallowed by confirm dialog; expected a follow-up tick command")
+	}
+
+	// The returned command should produce another spinner.TickMsg.
+	nextMsg := cmd()
+	if _, ok := nextMsg.(spinner.TickMsg); !ok {
+		t.Fatalf("expected spinner.TickMsg, got %T", nextMsg)
+	}
 }
