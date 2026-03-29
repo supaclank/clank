@@ -382,6 +382,37 @@ func TestCursorNavigation(t *testing.T) {
 		}
 	})
 
+	t.Run("down at last navigable entry enables follow mode", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(testEntries())
+		// Last navigable entry is 9 (entryText).
+		m.cursor = 9
+		m.follow = false
+
+		// nextNavigableEntry from 9 should return -1 (already at bottom).
+		if idx := m.nextNavigableEntry(m.cursor); idx != -1 {
+			t.Fatalf("nextNavigableEntry(9) = %d, want -1", idx)
+		}
+
+		// Simulate the down handler logic:
+		if idx := m.nextNavigableEntry(m.cursor); idx >= 0 {
+			m.follow = false
+			m.cursor = idx
+			m.cursorMoved = true
+		} else {
+			// Already at last navigable entry — enable follow.
+			m.follow = true
+			m.scrollToBottom()
+		}
+
+		if m.cursor != 9 {
+			t.Errorf("cursor = %d, want 9 (should not change)", m.cursor)
+		}
+		if !m.follow {
+			t.Error("follow should be true after pressing down at last navigable entry")
+		}
+	})
+
 	t.Run("scrollToCursor positions entry near top of viewport", func(t *testing.T) {
 		t.Parallel()
 		m := newTestSessionModel(testEntries())

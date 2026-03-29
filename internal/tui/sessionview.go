@@ -632,6 +632,10 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.follow = false
 			m.cursor = idx
 			m.cursorMoved = true
+		} else {
+			// Already at last navigable entry — enable follow.
+			m.follow = true
+			m.scrollToBottom()
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+up"))):
 		m.follow = false
