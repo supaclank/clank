@@ -852,3 +852,140 @@ func TestEnsureCursorVisible_ContentShorterThanViewport(t *testing.T) {
 		}
 	}
 }
+
+func TestDateLabel(t *testing.T) {
+	t.Parallel()
+
+	// Fix "now" to a known point so tests are deterministic.
+	now := time.Date(2025, time.March, 15, 14, 30, 0, 0, time.Local)
+
+	tests := []struct {
+		name string
+		t    time.Time
+		want string
+	}{
+		{"same day", time.Date(2025, time.March, 15, 9, 0, 0, 0, time.Local), "Today"},
+		{"yesterday", time.Date(2025, time.March, 14, 23, 59, 0, 0, time.Local), "Yesterday"},
+		{"two days ago", time.Date(2025, time.March, 13, 12, 0, 0, 0, time.Local), "Thu, Mar 13"},
+		{"last week", time.Date(2025, time.March, 8, 12, 0, 0, 0, time.Local), "Sat, Mar 8"},
+		{"different year", time.Date(2024, time.December, 25, 10, 0, 0, 0, time.Local), "Wed, Dec 25, 2024"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := dateLabel(tt.t, now)
+			if got != tt.want {
+				t.Errorf("dateLabel(%v, %v) = %q, want %q", tt.t, now, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildDisplayLines_DateSeparatorsWithinGroup(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "today-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), LastReadAt: now},
+		{ID: "today-2", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now},
+		{ID: "yesterday-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-25 * time.Hour), LastReadAt: now},
+		{ID: "old-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-50 * time.Hour), LastReadAt: now},
+	}
+
+	m := &InboxModel{width: 120, height: 50}
+	m.buildGroups(sessions)
+	m.buildDisplayLines()
+
+	// Count date separator lines (they contain "──").
+	var sepLines []string
+	for _, line := range m.displayLines {
+		if strings.Contains(line, "──") {
+			sepLines = append(sepLines, line)
+		}
+	}
+
+	// We should have 3 date separators: Today, Yesterday, and the older day.
+	if len(sepLines) != 3 {
+		t.Errorf("expected 3 date separator lines, got %d", len(sepLines))
+		for i, l := range m.displayLines {
+			t.Logf("  displayLines[%d]: %s", i, l)
+		}
+	}
+
+	// Verify "Today" and "Yesterday" appear in separators.
+	allSeps := strings.Join(sepLines, "\n")
+	if !strings.Contains(allSeps, "Today") {
+		t.Errorf("expected a 'Today' separator, got: %v", sepLines)
+	}
+	if !strings.Contains(allSeps, "Yesterday") {
+		t.Errorf("expected a 'Yesterday' separator, got: %v", sepLines)
+	}
+}
+
+func TestBuildDisplayLines_SingleDayStillShowsSeparator(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "a", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), LastReadAt: now},
+		{ID: "b", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now},
+	}
+
+	m := &InboxModel{width: 120, height: 50}
+	m.buildGroups(sessions)
+	m.buildDisplayLines()
+
+	// Even a single day should show one date separator (so you always see context).
+	var sepCount int
+	for _, line := range m.displayLines {
+		if strings.Contains(line, "──") && strings.Contains(line, "Today") {
+			sepCount++
+		}
+	}
+	if sepCount != 1 {
+		t.Errorf("expected 1 'Today' separator for single-day group, got %d", sepCount)
+		for i, l := range m.displayLines {
+			t.Logf("  displayLines[%d]: %s", i, l)
+		}
+	}
+}
+
+func TestBuildDisplayLines_RowToLineAccountsForSeparators(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "today", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), LastReadAt: now},
+		{ID: "yesterday", Status: agent.StatusIdle, UpdatedAt: now.Add(-25 * time.Hour), LastReadAt: now},
+	}
+
+	m := &InboxModel{width: 120, height: 50}
+	m.buildGroups(sessions)
+	m.buildDisplayLines()
+
+	// With 1 group header + "Today" separator + row + "Yesterday" separator + row
+	// = 5 lines total. rowToLine should map:
+	//   flatRows[0] -> line 2 (after group header + Today separator)
+	//   flatRows[1] -> line 4 (after Yesterday separator)
+	if len(m.flatRows) != 2 {
+		t.Fatalf("expected 2 flatRows, got %d", len(m.flatRows))
+	}
+
+	// The key invariant: each row's display line must point at a valid line
+	// that is strictly after the previous row's line (accounting for separators).
+	for i := 1; i < len(m.flatRows); i++ {
+		if m.rowToLine[i] <= m.rowToLine[i-1] {
+			t.Errorf("rowToLine[%d]=%d should be > rowToLine[%d]=%d",
+				i, m.rowToLine[i], i-1, m.rowToLine[i-1])
+		}
+	}
+
+	// And each rowToLine value must be a valid index into displayLines.
+	for i, lineIdx := range m.rowToLine {
+		if lineIdx < 0 || lineIdx >= len(m.displayLines) {
+			t.Errorf("rowToLine[%d]=%d out of bounds (displayLines has %d entries)",
+				i, lineIdx, len(m.displayLines))
+		}
+	}
+}

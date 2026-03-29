@@ -725,11 +725,24 @@ func (m *InboxModel) buildDisplayLines() {
 	m.displayLines = nil
 	m.rowToLine = make([]int, len(m.flatRows))
 
+	now := time.Now()
+	sepStyle := lipgloss.NewStyle().Foreground(dimColor)
+
 	flatIdx := 0
 	for gi, g := range m.groups {
 		m.displayLines = append(m.displayLines, g.style.Render(g.name))
 
+		var prevLabel string
 		for ri := range g.rows {
+			// Insert a date separator when the day changes within a group.
+			if g.rows[ri].session != nil {
+				label := dateLabel(g.rows[ri].session.UpdatedAt, now)
+				if label != prevLabel {
+					m.displayLines = append(m.displayLines, m.renderDateSeparator(label, sepStyle))
+					prevLabel = label
+				}
+			}
+
 			m.rowToLine[flatIdx] = len(m.displayLines)
 			m.displayLines = append(m.displayLines, m.renderRow(g.rows[ri], false))
 			flatIdx++
@@ -745,6 +758,35 @@ func (m *InboxModel) buildDisplayLines() {
 			lipgloss.NewStyle().Foreground(mutedColor).Render(
 				"No sessions. Press 'n' to start a new session, or run 'clank code <prompt>'."))
 	}
+}
+
+// renderDateSeparator renders a day separator line like "  ── Today ──".
+func (m *InboxModel) renderDateSeparator(label string, style lipgloss.Style) string {
+	const prefix = "  "
+	const dash = "─"
+	const pad = 1 // space on each side of the label
+
+	labelWidth := len(label) + 2*pad // " Today "
+	lineWidth := m.width - len(prefix)
+	if lineWidth < labelWidth+4 {
+		// Terminal too narrow for decoration; just show the label.
+		return style.Render(prefix + label)
+	}
+
+	leftDashes := 2
+	rightDashes := lineWidth - leftDashes - labelWidth
+	if rightDashes < 0 {
+		rightDashes = 0
+	}
+
+	sep := prefix +
+		strings.Repeat(dash, leftDashes) +
+		strings.Repeat(" ", pad) +
+		label +
+		strings.Repeat(" ", pad) +
+		strings.Repeat(dash, rightDashes)
+
+	return style.Render(sep)
 }
 
 func (m *InboxModel) renderRow(row inboxRow, selected bool) string {

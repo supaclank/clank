@@ -136,3 +136,22 @@ func timeAgo(t time.Time) string {
 		return fmt.Sprintf("%dd ago", days)
 	}
 }
+
+// dateLabel returns a human-readable day label for t relative to now.
+// "Today", "Yesterday", or "Mon, Jan 2" (with year appended when != now's year).
+func dateLabel(t time.Time, now time.Time) string {
+	tDate := t.Local().Truncate(24 * time.Hour)
+	nowDate := now.Local().Truncate(24 * time.Hour)
+
+	switch {
+	case tDate.Equal(nowDate):
+		return "Today"
+	case tDate.Equal(nowDate.Add(-24 * time.Hour)):
+		return "Yesterday"
+	default:
+		if t.Year() == now.Year() {
+			return t.Local().Format("Mon, Jan 2")
+		}
+		return t.Local().Format("Mon, Jan 2, 2006")
+	}
+}
