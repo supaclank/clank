@@ -757,9 +757,7 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	stateIcon := m.styledAgentStatus(s.Status)
 
 	unreadMark := " "
-	if s.Draft != "" {
-		unreadMark = lipgloss.NewStyle().Foreground(draftColor).Bold(true).Render("DRAFT")
-	} else if s.FollowUp {
+	if s.FollowUp {
 		unreadMark = lipgloss.NewStyle().Foreground(warningColor).Bold(true).Render("!")
 	} else if s.Unread() {
 		unreadMark = lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("*")
@@ -771,29 +769,56 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 		agentBadge = lipgloss.NewStyle().Foreground(agentColor(s.Agent)).Render(fmt.Sprintf("%-5s", s.Agent))
 	}
 
-	const agentColWidth = 6 // 5 chars + 1 space separator
-	prompt := truncateStr(s.Prompt, m.width-50-agentColWidth)
+	paddedProject := fmt.Sprintf("%-12s", s.ProjectName)
+	styledProject := lipgloss.NewStyle().Foreground(secondaryColor).Render(paddedProject)
+
+	// Fixed-width columns before the prompt: "  " (2) + project (12) + " " (1) + stateIcon (1) + " " (1) + agent (5) + " " (1) + unread (1) + " " (1)
+	// We also reserve 9 chars on the right for the timestamp (8 chars padded + 1 space).
+	const agoWidth = 9
+	const draftSuffix = " draft"                         // 6 chars when present
+	leftFixedWidth := 2 + 12 + 1 + 1 + 1 + 5 + 1 + 1 + 1 // 25
+	draftExtra := 0
+	if s.Draft != "" {
+		draftExtra = len(draftSuffix)
+	}
+	maxPromptWidth := m.width - leftFixedWidth - agoWidth - draftExtra
+	if maxPromptWidth < 10 {
+		maxPromptWidth = 10
+	}
+
+	prompt := truncateStr(s.Prompt, maxPromptWidth)
 	if s.Title != "" {
-		prompt = truncateStr(s.Title, m.width-50-agentColWidth)
+		prompt = truncateStr(s.Title, maxPromptWidth)
 	}
 	if prompt == "" {
 		prompt = lipgloss.NewStyle().Foreground(dimColor).Render(truncateStr(s.ID, 8))
 	}
 
-	paddedAgo := fmt.Sprintf("%-8s", ago)
-	styledAgo := lipgloss.NewStyle().Foreground(dimColor).Render(paddedAgo)
+	// Append lowercase red "draft" label right after the title.
+	if s.Draft != "" {
+		prompt += lipgloss.NewStyle().Foreground(dangerColor).Render(draftSuffix)
+	}
 
-	paddedProject := fmt.Sprintf("%-12s", s.ProjectName)
-	styledProject := lipgloss.NewStyle().Foreground(secondaryColor).Render(paddedProject)
+	styledAgo := lipgloss.NewStyle().Foreground(dimColor).Render(ago)
 
-	line := fmt.Sprintf("  %s %s %s %s %s %s",
-		styledAgo,
+	// Build the left portion of the line (everything except the timestamp).
+	left := fmt.Sprintf("  %s %s %s %s %s",
 		styledProject,
 		stateIcon,
 		agentBadge,
 		unreadMark,
 		prompt,
 	)
+
+	// Pad the gap between left content and right-aligned timestamp.
+	// Use ANSI-unaware length for the visible width of left.
+	leftVisible := lipgloss.Width(left)
+	agoVisible := lipgloss.Width(styledAgo)
+	gap := m.width - leftVisible - agoVisible
+	if gap < 1 {
+		gap = 1
+	}
+	line := left + strings.Repeat(" ", gap) + styledAgo
 
 	if selected {
 		prefix := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ")

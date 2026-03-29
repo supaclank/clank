@@ -185,12 +185,12 @@ func TestRenderRow_DraftLabelShown(t *testing.T) {
 	row := inboxRow{session: session}
 	rendered := m.renderRow(row, false)
 
-	if !strings.Contains(rendered, "DRAFT") {
-		t.Errorf("expected row to contain DRAFT label, got: %s", rendered)
+	if !strings.Contains(rendered, "draft") {
+		t.Errorf("expected row to contain draft label, got: %s", rendered)
 	}
 }
 
-func TestRenderRow_DraftLabelPriorityOverUnreadAndFollowUp(t *testing.T) {
+func TestRenderRow_DraftLabelCoexistsWithUnreadMarks(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
@@ -199,12 +199,12 @@ func TestRenderRow_DraftLabelPriorityOverUnreadAndFollowUp(t *testing.T) {
 	tests := []struct {
 		name      string
 		session   *agent.SessionInfo
-		wantDRAFT bool
+		wantDraft bool
 		wantBang  bool
 		wantStar  bool
 	}{
 		{
-			name: "draft takes priority over unread",
+			name: "draft with unread shows both draft and star",
 			session: &agent.SessionInfo{
 				ID:          "draft-unread",
 				Status:      agent.StatusIdle,
@@ -214,12 +214,12 @@ func TestRenderRow_DraftLabelPriorityOverUnreadAndFollowUp(t *testing.T) {
 				// LastReadAt zero => Unread() is true
 				Draft: "half-typed message",
 			},
-			wantDRAFT: true,
+			wantDraft: true,
 			wantBang:  false,
-			wantStar:  false,
+			wantStar:  true,
 		},
 		{
-			name: "draft takes priority over follow-up",
+			name: "draft with follow-up shows both draft and bang",
 			session: &agent.SessionInfo{
 				ID:          "draft-followup",
 				Status:      agent.StatusIdle,
@@ -230,8 +230,8 @@ func TestRenderRow_DraftLabelPriorityOverUnreadAndFollowUp(t *testing.T) {
 				FollowUp:    true,
 				Draft:       "half-typed message",
 			},
-			wantDRAFT: true,
-			wantBang:  false,
+			wantDraft: true,
+			wantBang:  true,
 			wantStar:  false,
 		},
 		{
@@ -244,7 +244,7 @@ func TestRenderRow_DraftLabelPriorityOverUnreadAndFollowUp(t *testing.T) {
 				UpdatedAt:   now,
 				// LastReadAt zero => Unread() is true
 			},
-			wantDRAFT: false,
+			wantDraft: false,
 			wantBang:  false,
 			wantStar:  true,
 		},
@@ -259,7 +259,7 @@ func TestRenderRow_DraftLabelPriorityOverUnreadAndFollowUp(t *testing.T) {
 				LastReadAt:  now,
 				FollowUp:    true,
 			},
-			wantDRAFT: false,
+			wantDraft: false,
 			wantBang:  true,
 			wantStar:  false,
 		},
@@ -272,13 +272,13 @@ func TestRenderRow_DraftLabelPriorityOverUnreadAndFollowUp(t *testing.T) {
 			row := inboxRow{session: tt.session}
 			rendered := m.renderRow(row, false)
 
-			hasDraft := strings.Contains(rendered, "DRAFT")
+			hasDraft := strings.Contains(rendered, "draft")
 			// Check for isolated "!" — the follow-up mark is a standalone bold "!".
 			hasBang := strings.Contains(rendered, "!")
 			hasStar := strings.Contains(rendered, "*")
 
-			if hasDraft != tt.wantDRAFT {
-				t.Errorf("DRAFT: got %v, want %v; rendered: %s", hasDraft, tt.wantDRAFT, rendered)
+			if hasDraft != tt.wantDraft {
+				t.Errorf("draft: got %v, want %v; rendered: %s", hasDraft, tt.wantDraft, rendered)
 			}
 			if hasBang != tt.wantBang {
 				t.Errorf("!: got %v, want %v; rendered: %s", hasBang, tt.wantBang, rendered)
