@@ -59,9 +59,8 @@ type InboxModel struct {
 	confirm     confirmDialogModel
 
 	// Pre-built display data.
-	displayLines     []string
-	rowToLine        []int
-	rowToGroupHeader []int
+	displayLines []string
+	rowToLine    []int
 
 	// Session detail sub-view.
 	screen       inboxScreen
@@ -725,16 +724,13 @@ func (m *InboxModel) View() tea.View {
 func (m *InboxModel) buildDisplayLines() {
 	m.displayLines = nil
 	m.rowToLine = make([]int, len(m.flatRows))
-	m.rowToGroupHeader = make([]int, len(m.flatRows))
 
 	flatIdx := 0
 	for gi, g := range m.groups {
-		headerLine := len(m.displayLines)
 		m.displayLines = append(m.displayLines, g.style.Render(g.name))
 
 		for ri := range g.rows {
 			m.rowToLine[flatIdx] = len(m.displayLines)
-			m.rowToGroupHeader[flatIdx] = headerLine
 			m.displayLines = append(m.displayLines, m.renderRow(g.rows[ri], false))
 			flatIdx++
 		}
@@ -862,19 +858,29 @@ func (m *InboxModel) ensureCursorVisible() {
 	}
 	vh := m.viewportHeight()
 	cursorLine := m.rowToLine[m.cursor]
-	groupHeader := m.rowToGroupHeader[m.cursor]
 
-	topLine := cursorLine
-	if groupHeader < topLine {
-		topLine = groupHeader
+	// Keep the cursor away from the edges of the viewport by maintaining
+	// a scroll margin of ~10% of the viewport height (minimum 2 lines).
+	margin := vh * 10 / 100
+	if margin < 2 {
+		margin = 2
+	}
+	// Margin can't exceed half the viewport, otherwise the two margins
+	// overlap and the cursor has nowhere valid to sit.
+	if margin > vh/2 {
+		margin = vh / 2
 	}
 
-	if topLine < m.scrollOffset {
-		m.scrollOffset = topLine
+	// If the cursor is too close to the top, scroll up.
+	if cursorLine < m.scrollOffset+margin {
+		m.scrollOffset = cursorLine - margin
 	}
-	if cursorLine >= m.scrollOffset+vh {
-		m.scrollOffset = cursorLine - vh + 1
+	// If the cursor is too close to the bottom, scroll down.
+	if cursorLine >= m.scrollOffset+vh-margin {
+		m.scrollOffset = cursorLine - vh + margin + 1
 	}
+
+	// Clamp to valid range.
 	maxOffset := len(m.displayLines) - vh
 	if maxOffset < 0 {
 		maxOffset = 0

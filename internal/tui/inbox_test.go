@@ -610,3 +610,245 @@ func TestRenderRow_ShowsAgentMode(t *testing.T) {
 		})
 	}
 }
+
+// setupScrollModel creates an InboxModel with the given number of idle sessions
+// and a viewport height of vh (sets m.height = vh + 4 to account for reserved lines).
+// It builds groups and display lines so ensureCursorVisible can be tested directly.
+func setupScrollModel(t *testing.T, numSessions int, vh int) *InboxModel {
+	t.Helper()
+
+	now := time.Now()
+	sessions := make([]agent.SessionInfo, numSessions)
+	for i := range sessions {
+		sessions[i] = agent.SessionInfo{
+			ID:         "s" + time.Duration(i).String(),
+			Status:     agent.StatusIdle,
+			UpdatedAt:  now.Add(-time.Duration(i) * time.Hour),
+			LastReadAt: now,
+		}
+	}
+
+	m := &InboxModel{
+		height: vh + 4, // viewportHeight() = height - 4
+		width:  120,
+	}
+	m.buildGroups(sessions)
+	m.buildDisplayLines()
+	return m
+}
+
+func TestEnsureCursorVisible_ScrollsDownWithMargin(t *testing.T) {
+	t.Parallel()
+
+	// vh=30, margin = 30*10/100 = 3.
+	// 40 sessions in one IDLE group => display lines: 1 header + 40 rows = 41 lines.
+	// rowToLine[0]=1, rowToLine[1]=2, ..., rowToLine[i]=i+1.
+	m := setupScrollModel(t, 40, 30)
+	m.scrollOffset = 0
+	m.cursor = 0
+
+	// Walk the cursor down one-by-one and verify scrolling behavior.
+	for i := 0; i < len(m.flatRows); i++ {
+		m.cursor = i
+		m.ensureCursorVisible()
+
+		cursorLine := m.rowToLine[m.cursor]
+		vh := m.viewportHeight()
+		margin := vh * 10 / 100
+		if margin < 2 {
+			margin = 2
+		}
+
+		// Cursor should never be in the bottom margin zone (unless clamped at the end).
+		maxOffset := len(m.displayLines) - vh
+		if maxOffset < 0 {
+			maxOffset = 0
+		}
+		if m.scrollOffset < maxOffset {
+			bottomEdge := m.scrollOffset + vh - margin
+			if cursorLine >= bottomEdge {
+				t.Errorf("cursor=%d cursorLine=%d is in the bottom margin (scrollOffset=%d, vh=%d, margin=%d, bottomEdge=%d)",
+					m.cursor, cursorLine, m.scrollOffset, vh, margin, bottomEdge)
+			}
+		}
+	}
+}
+
+func TestEnsureCursorVisible_ScrollsUpWithMargin(t *testing.T) {
+	t.Parallel()
+
+	// vh=30, margin=3, 40 sessions.
+	m := setupScrollModel(t, 40, 30)
+
+	// Start with cursor at the bottom.
+	m.cursor = len(m.flatRows) - 1
+	m.ensureCursorVisible()
+
+	// Walk the cursor up one-by-one.
+	for i := len(m.flatRows) - 1; i >= 0; i-- {
+		m.cursor = i
+		m.ensureCursorVisible()
+
+		cursorLine := m.rowToLine[m.cursor]
+		vh := m.viewportHeight()
+		margin := vh * 10 / 100
+		if margin < 2 {
+			margin = 2
+		}
+
+		// Cursor should never be in the top margin zone (unless clamped at offset 0).
+		if m.scrollOffset > 0 {
+			topEdge := m.scrollOffset + margin
+			if cursorLine < topEdge {
+				t.Errorf("cursor=%d cursorLine=%d is in the top margin (scrollOffset=%d, margin=%d, topEdge=%d)",
+					m.cursor, cursorLine, m.scrollOffset, margin, topEdge)
+			}
+		}
+	}
+}
+
+func TestEnsureCursorVisible_CursorNeverOutsideViewport(t *testing.T) {
+	t.Parallel()
+
+	m := setupScrollModel(t, 50, 20)
+
+	// Sweep cursor through every position.
+	for i := 0; i < len(m.flatRows); i++ {
+		m.cursor = i
+		m.ensureCursorVisible()
+
+		cursorLine := m.rowToLine[m.cursor]
+		vh := m.viewportHeight()
+
+		if cursorLine < m.scrollOffset {
+			t.Errorf("cursor=%d cursorLine=%d above viewport (scrollOffset=%d)", m.cursor, cursorLine, m.scrollOffset)
+		}
+		if cursorLine >= m.scrollOffset+vh {
+			t.Errorf("cursor=%d cursorLine=%d below viewport (scrollOffset=%d, vh=%d)", m.cursor, cursorLine, m.scrollOffset, vh)
+		}
+	}
+}
+
+func TestEnsureCursorVisible_SmallViewportMinMargin(t *testing.T) {
+	t.Parallel()
+
+	// vh=10, margin = 10*10/100 = 1, but min is 2. So margin=2.
+	m := setupScrollModel(t, 20, 10)
+	m.cursor = 0
+	m.scrollOffset = 0
+
+	for i := 0; i < len(m.flatRows); i++ {
+		m.cursor = i
+		m.ensureCursorVisible()
+
+		cursorLine := m.rowToLine[m.cursor]
+		vh := m.viewportHeight()
+		margin := 2 // min margin
+
+		maxOffset := len(m.displayLines) - vh
+		if maxOffset < 0 {
+			maxOffset = 0
+		}
+		if m.scrollOffset > 0 && m.scrollOffset < maxOffset {
+			if cursorLine < m.scrollOffset+margin {
+				t.Errorf("cursor=%d cursorLine=%d too close to top (scrollOffset=%d, margin=%d)",
+					m.cursor, cursorLine, m.scrollOffset, margin)
+			}
+			if cursorLine >= m.scrollOffset+vh-margin {
+				t.Errorf("cursor=%d cursorLine=%d too close to bottom (scrollOffset=%d, vh=%d, margin=%d)",
+					m.cursor, cursorLine, m.scrollOffset, vh, margin)
+			}
+		}
+	}
+}
+
+func TestEnsureCursorVisible_CategoryBoundaryNoJump(t *testing.T) {
+	t.Parallel()
+
+	// Create a model with 2 groups: a large BUSY group and a large IDLE group.
+	// This tests that crossing the category boundary doesn't cause a large jump.
+	now := time.Now()
+	sessions := make([]agent.SessionInfo, 0, 40)
+	for i := 0; i < 20; i++ {
+		sessions = append(sessions, agent.SessionInfo{
+			ID:         "busy-" + time.Duration(i).String(),
+			Status:     agent.StatusBusy,
+			UpdatedAt:  now.Add(-time.Duration(i) * time.Hour),
+			LastReadAt: now,
+		})
+	}
+	for i := 0; i < 20; i++ {
+		sessions = append(sessions, agent.SessionInfo{
+			ID:         "idle-" + time.Duration(i).String(),
+			Status:     agent.StatusIdle,
+			UpdatedAt:  now.Add(-time.Duration(i) * time.Hour),
+			LastReadAt: now,
+		})
+	}
+
+	vh := 30
+	m := &InboxModel{
+		height: vh + 4,
+		width:  120,
+	}
+	m.buildGroups(sessions)
+	m.buildDisplayLines()
+
+	// Position cursor in the IDLE group (second group), somewhere in the middle.
+	// First group has 20 rows, so flatRows[20] is the first IDLE row.
+	m.cursor = 25
+	m.ensureCursorVisible()
+	prevOffset := m.scrollOffset
+
+	// Move cursor up across the category boundary (from IDLE into BUSY).
+	for i := m.cursor; i >= 15; i-- {
+		m.cursor = i
+		m.ensureCursorVisible()
+
+		// The scroll offset should change smoothly — never jumping more than
+		// a few lines at a time for single-step cursor movements.
+		delta := prevOffset - m.scrollOffset
+		if delta < 0 {
+			delta = -delta
+		}
+		// A single cursor move should shift the viewport by at most ~2 lines
+		// (1 for the row + possibly 1 for a blank separator or header entering view).
+		// Allow up to 3 to be safe.
+		if delta > 3 {
+			t.Errorf("cursor=%d: scrollOffset jumped by %d (from %d to %d) — expected smooth scrolling across category boundary",
+				m.cursor, delta, prevOffset, m.scrollOffset)
+		}
+		prevOffset = m.scrollOffset
+	}
+}
+
+func TestEnsureCursorVisible_EmptyList(t *testing.T) {
+	t.Parallel()
+
+	m := &InboxModel{height: 34, width: 120}
+	m.buildGroups(nil)
+	m.buildDisplayLines()
+	m.ensureCursorVisible()
+
+	if m.scrollOffset != 0 {
+		t.Errorf("expected scrollOffset=0 for empty list, got %d", m.scrollOffset)
+	}
+}
+
+func TestEnsureCursorVisible_ContentShorterThanViewport(t *testing.T) {
+	t.Parallel()
+
+	// Only 3 sessions with vh=30 — content fits entirely on screen.
+	m := setupScrollModel(t, 3, 30)
+
+	for i := 0; i < len(m.flatRows); i++ {
+		m.cursor = i
+		m.ensureCursorVisible()
+
+		// scrollOffset should stay 0 since everything fits.
+		if m.scrollOffset != 0 {
+			t.Errorf("cursor=%d: expected scrollOffset=0 when content fits in viewport, got %d",
+				m.cursor, m.scrollOffset)
+		}
+	}
+}
