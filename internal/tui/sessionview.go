@@ -12,6 +12,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/atotto/clipboard"
+
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/daemon"
 )
@@ -134,6 +136,16 @@ type SessionViewModel struct {
 	// Double-tap ctrl+c to quit. First press records the time; second
 	// press within 1 second actually quits.
 	lastCtrlC time.Time
+
+	// Copy feedback: timestamp of the last keyboard-triggered copy so
+	// renderEntry can briefly show "✓ copied" instead of "[copy]".
+	copiedAt     time.Time
+	copiedCursor int // entry index that was copied (flash only applies to this entry)
+
+	// Copy button hit region (screen coordinates), set during View().
+	copyBtnRow    int // screen row of the [copy] label (-1 = not visible)
+	copyBtnColMin int // first column of the label (inclusive)
+	copyBtnColMax int // last column of the label (exclusive)
 
 	// Composing mode — no daemon session yet. The user is writing their
 	// first prompt. After sending, this transitions to the normal session view.
@@ -510,6 +522,17 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selection.Finish(m.cachedContent, m.cachedHeaderRows, m.scrollOffset)
 		} else {
 			m.selection.Clear()
+			// Check if the click landed on the [copy] button.
+			if m.copyBtnRow >= 0 && msg.Y == m.copyBtnRow && msg.X >= m.copyBtnColMin && msg.X < m.copyBtnColMax {
+				if m.cursor >= 0 && m.cursor < len(m.entries) {
+					e := m.entries[m.cursor]
+					if e.content != "" {
+						_ = clipboard.WriteAll(e.content)
+						m.copiedAt = time.Now()
+						m.copiedCursor = m.cursor
+					}
+				}
+			}
 		}
 		return m, nil
 
@@ -697,6 +720,15 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.cursorMoved = true
 	case key.Matches(msg, key.NewBinding(key.WithKeys("a"))):
 		// TODO: approve session
+	case key.Matches(msg, key.NewBinding(key.WithKeys("c"))):
+		if m.cursor >= 0 && m.cursor < len(m.entries) {
+			e := m.entries[m.cursor]
+			if e.content != "" {
+				_ = clipboard.WriteAll(e.content)
+				m.copiedAt = time.Now()
+				m.copiedCursor = m.cursor
+			}
+		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("f"))):
 		return m, m.toggleFollowUp()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("d"))):
@@ -1177,6 +1209,32 @@ func (m *SessionViewModel) View() tea.View {
 	// Otherwise (mouse scroll, no cursor change): leave scrollOffset as-is.
 	m.clampScrollWithLines(contentLines)
 
+	// Compute copy button hit region for mouse click handling.
+	m.copyBtnRow = -1 // reset; set below if visible.
+	if m.cursor >= 0 && m.cursor < len(m.entries) && m.entries[m.cursor].content != "" && isNavigable(m.entries[m.cursor].kind) {
+		// The selected entry's rendered lines start with a blank separator,
+		// so the top border line is entryStartLine[cursor] + 1.
+		borderLineIdx := m.entryStartLine[m.cursor] + 1
+		if borderLineIdx >= m.scrollOffset && borderLineIdx < m.scrollOffset+ch {
+			screenRow := m.cachedHeaderRows + (borderLineIdx - m.scrollOffset)
+			borderWidth := lipgloss.Width(contentLines[borderLineIdx])
+			// Label sits at: ╭──── label ╮  →  label starts at (borderWidth - 1 - labelWidth - 1)
+			// where 1 = corner char, 1 = space padding on each side.
+			// "[copy]" = 6 chars, "✓ copied" = 8 chars; use the actual rendered label width.
+			labelW := 6 // "[copy]"
+			if !m.copiedAt.IsZero() && time.Since(m.copiedAt) < 1500*time.Millisecond && m.copiedCursor == m.cursor {
+				labelW = 8 // "✓ copied"
+			}
+			colStart := borderWidth - 1 - 1 - labelW // skip trailing ╮ and space
+			if colStart < 0 {
+				colStart = 0
+			}
+			m.copyBtnRow = screenRow
+			m.copyBtnColMin = colStart
+			m.copyBtnColMax = colStart + labelW
+		}
+	}
+
 	// Render visible window.
 	end := m.scrollOffset + ch
 	if end > len(contentLines) {
@@ -1403,6 +1461,13 @@ func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool) []string 
 			Padding(0, 1).
 			Render(inner)
 		lines := strings.Split(bordered, "\n")
+
+		// Overlay a [copy] / ✓ copied label on the top-right of the border
+		// when the entry has copyable content.
+		if len(lines) > 0 && e.content != "" {
+			lines[0] = m.overlayBorderLabel(lines[0])
+		}
+
 		// Prepend a blank separator line.
 		return append([]string{""}, lines...)
 	}
@@ -1419,6 +1484,55 @@ func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool) []string 
 	return contentLines
 }
 
+// overlayBorderLabel splices a [copy] or ✓ copied label into the top border
+// line of a selected entry, positioned at the right side just before the
+// closing corner character (╮).
+func (m *SessionViewModel) overlayBorderLabel(topLine string) string {
+	borderStyle := lipgloss.NewStyle().Foreground(primaryColor)
+
+	const copiedDuration = 1500 * time.Millisecond
+
+	var label string
+	if !m.copiedAt.IsZero() && time.Since(m.copiedAt) < copiedDuration && m.copiedCursor == m.cursor {
+		check := lipgloss.NewStyle().Foreground(successColor).Render("✓")
+		text := lipgloss.NewStyle().Foreground(successColor).Render("copied")
+		label = check + " " + text
+	} else {
+		label = lipgloss.NewStyle().Foreground(dimColor).Render("[copy]")
+	}
+
+	// The top border line is: ╭─────...─────╮ (with ANSI color codes).
+	// We measure its visual width and rebuild it with the label spliced in.
+	lineWidth := lipgloss.Width(topLine)
+	labelWidth := lipgloss.Width(label)
+
+	// Need room for: ╭ + at least 1 dash + space + label + space + ╮
+	minWidth := 1 + 1 + 1 + labelWidth + 1 + 1
+	if lineWidth < minWidth {
+		return topLine
+	}
+
+	// Number of ─ characters: total width minus corners (2) minus label minus surrounding spaces (2).
+	dashCount := lineWidth - 2 - labelWidth - 2
+	if dashCount < 1 {
+		return topLine
+	}
+
+	corner := borderStyle.Render
+	dash := borderStyle.Render("─")
+
+	var sb strings.Builder
+	sb.WriteString(corner("╭"))
+	for i := 0; i < dashCount; i++ {
+		sb.WriteString(dash)
+	}
+	sb.WriteString(corner(" "))
+	sb.WriteString(label)
+	sb.WriteString(corner(" ╮"))
+
+	return sb.String()
+}
+
 func (m *SessionViewModel) buildHelpText() string {
 	if !m.lastCtrlC.IsZero() && time.Since(m.lastCtrlC) < time.Second {
 		return "press ctrl+c again to quit"
@@ -1430,7 +1544,7 @@ func (m *SessionViewModel) buildHelpText() string {
 	if m.standalone {
 		qLabel = "q: quit"
 	}
-	parts := []string{"m: message", "f: follow-up", "d: done", "x: archive", "drag: copy", qLabel}
+	parts := []string{"m: message", "c: copy", "f: follow-up", "d: done", "x: archive", "drag: copy", qLabel}
 	if m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting) {
 		parts = append([]string{"ctrl+c: cancel"}, parts...)
 	}
