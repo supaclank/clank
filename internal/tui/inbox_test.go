@@ -1825,3 +1825,32 @@ func TestSpinnerTickSurvivesActionMenu(t *testing.T) {
 		t.Fatalf("expected spinner.TickMsg, got %T", nextMsg)
 	}
 }
+
+// TestSpinnerTickForwardedToSessionView is a regression test for the bug where
+// the InboxModel intercepted all spinner.TickMsg before delegating to the
+// session view. Since each spinner has a unique ID, the inbox spinner silently
+// rejected session-view ticks (returning nil cmd), permanently killing the
+// session spinner's tick chain.
+func TestSpinnerTickForwardedToSessionView(t *testing.T) {
+	t.Parallel()
+
+	m := NewInboxModel(nil)
+	m.screen = screenSession
+	m.sessionView = NewSessionViewModel(nil, "test-session")
+
+	// Generate a tick that belongs to the session view's spinner.
+	sessionTickMsg := m.sessionView.spinner.Tick()
+
+	_, cmd := m.Update(sessionTickMsg)
+
+	if cmd == nil {
+		t.Fatal("session spinner tick was swallowed by InboxModel; expected a follow-up tick command")
+	}
+
+	// Feed a second tick to confirm the chain is alive.
+	secondTick := m.sessionView.spinner.Tick()
+	_, cmd2 := m.Update(secondTick)
+	if cmd2 == nil {
+		t.Fatal("session spinner second tick returned nil cmd; tick chain is broken")
+	}
+}

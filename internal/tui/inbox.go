@@ -145,13 +145,25 @@ func (m *InboxModel) autoRefreshCmd() tea.Cmd {
 }
 
 func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Always keep the spinner ticking, regardless of modal/screen state.
+	// Always keep the inbox spinner ticking, regardless of modal/screen state.
 	// The spinner's tick chain is self-sustaining: each Update schedules
 	// the next tick. Swallowing a single TickMsg permanently kills it.
+	//
+	// When the session view is active its spinner also uses TickMsg. Each
+	// spinner has a unique ID so Update returns nil for ticks it doesn't
+	// own — but we must still forward the message so the session spinner
+	// can process its own ticks.
 	if tickMsg, ok := msg.(spinner.TickMsg); ok {
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(tickMsg)
-		return m, cmd
+		var inboxCmd tea.Cmd
+		m.spinner, inboxCmd = m.spinner.Update(tickMsg)
+
+		// Forward to session view so its spinner keeps ticking too.
+		if m.screen == screenSession && m.sessionView != nil {
+			model, sessionCmd := m.sessionView.Update(tickMsg)
+			m.sessionView = model.(*SessionViewModel)
+			return m, tea.Batch(inboxCmd, sessionCmd)
+		}
+		return m, inboxCmd
 	}
 
 	// If we're in session detail view (or composing), delegate.
