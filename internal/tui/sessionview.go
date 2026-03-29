@@ -154,6 +154,11 @@ type displayEntry struct {
 	content string // pre-rendered line(s), may contain ANSI
 	agent   string // agent mode used for this entry (only set for entryUser)
 
+	// streaming is true while the entry is still receiving streamed deltas.
+	// Only the actively-streaming entry uses plain wrapText; completed
+	// entries render full markdown even when the session is busy.
+	streaming bool
+
 	// Markdown render cache. Populated lazily in renderEntry() to avoid
 	// re-running glamour on every View() cycle. Invalidated when content
 	// changes (e.g. streaming deltas) by clearing renderedMD.
@@ -797,6 +802,14 @@ func (m *SessionViewModel) handleStatusChange(data agent.StatusChangeData) {
 	if m.info != nil {
 		m.info.Status = data.NewStatus
 	}
+	// When the agent is no longer streaming, mark all entries as
+	// non-streaming so they switch from plain wrapText to full
+	// markdown rendering on the next View() cycle.
+	if data.NewStatus != agent.StatusBusy && data.NewStatus != agent.StatusStarting {
+		for i := range m.entries {
+			m.entries[i].streaming = false
+		}
+	}
 	if m.aborting {
 		// Suppress noisy intermediate status entries during cancellation.
 		// When the agent settles, update the existing "Cancelling..." entry.
@@ -931,8 +944,10 @@ func (m *SessionViewModel) upsertPartEntry(p agent.Part, isDelta bool) {
 				case agent.PartText, agent.PartThinking:
 					if isDelta {
 						e.content += p.Text
+						e.streaming = true
 					} else {
 						e.content = p.Text
+						e.streaming = false
 					}
 					e.renderedMD = "" // invalidate markdown cache
 				}
@@ -954,16 +969,18 @@ func (m *SessionViewModel) addPartEntry(p agent.Part) {
 	case agent.PartThinking:
 		if p.Text != "" {
 			m.entries = append(m.entries, displayEntry{
-				kind:    entryThink,
-				partID:  p.ID,
-				content: p.Text,
+				kind:      entryThink,
+				partID:    p.ID,
+				content:   p.Text,
+				streaming: m.isBusy(),
 			})
 		}
 	case agent.PartText:
 		m.entries = append(m.entries, displayEntry{
-			kind:    entryText,
-			partID:  p.ID,
-			content: p.Text,
+			kind:      entryText,
+			partID:    p.ID,
+			content:   p.Text,
+			streaming: m.isBusy(),
 		})
 	}
 }
@@ -1327,9 +1344,11 @@ func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool) []string 
 	case entryText:
 		header := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("Agent:")
 		var rendered string
-		if m.isBusy() {
-			// During streaming, use plain word-wrap to avoid garbled
-			// output from incomplete markdown (e.g. unclosed code fences).
+		if e.streaming {
+			// While this entry is still receiving streamed deltas, use
+			// plain word-wrap to avoid garbled output from incomplete
+			// markdown (e.g. unclosed code fences). Previous entries
+			// whose content is stable render full markdown.
 			rendered = wrapText(e.content, contentWidth)
 		} else {
 			// Use cached glamour output when available and width hasn't changed.

@@ -82,21 +82,43 @@ func TestRenderEntry_MarkdownWhenIdle(t *testing.T) {
 	}
 }
 
-func TestRenderEntry_PlainTextWhenBusy(t *testing.T) {
+func TestRenderEntry_PlainTextWhenStreaming(t *testing.T) {
 	t.Parallel()
 
 	m := newTestSessionModel(nil)
 	m.info = &agent.SessionInfo{Status: agent.StatusBusy}
-	e := displayEntry{kind: entryText, content: "This is **bold** text"}
+	e := displayEntry{kind: entryText, content: "This is **bold** text", streaming: true}
 
 	lines := m.renderEntry(&e, false)
 	joined := strings.Join(lines, "\n")
 	plain := ansi.Strip(joined)
 
-	// When busy (streaming), renderEntry should use plain wrapText.
+	// When the entry is actively streaming, renderEntry should use plain wrapText.
 	// The ** markers should still be present in the raw output.
 	if !strings.Contains(plain, "**bold**") {
-		t.Errorf("busy renderEntry should show raw markdown, got:\n%s", plain)
+		t.Errorf("streaming renderEntry should show raw markdown, got:\n%s", plain)
+	}
+}
+
+func TestRenderEntry_MarkdownForCompletedEntryWhileBusy(t *testing.T) {
+	t.Parallel()
+
+	// Regression test: previous agent replies should render markdown
+	// even while the session is busy streaming a new reply.
+	m := newTestSessionModel(nil)
+	m.info = &agent.SessionInfo{Status: agent.StatusBusy}
+	completed := displayEntry{kind: entryText, content: "This is **bold** text", streaming: false}
+
+	lines := m.renderEntry(&completed, false)
+	joined := strings.Join(lines, "\n")
+	plain := ansi.Strip(joined)
+
+	// The completed entry should render markdown (consume **).
+	if strings.Contains(plain, "**") {
+		t.Errorf("completed entry during busy session should render markdown (no raw **), got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "bold") {
+		t.Errorf("completed entry should contain 'bold', got:\n%s", plain)
 	}
 }
 
