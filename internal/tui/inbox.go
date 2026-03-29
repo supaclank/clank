@@ -567,18 +567,18 @@ func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
 			rows:  busyRows,
 		})
 	}
-	if len(followUpRows) > 0 {
-		m.groups = append(m.groups, inboxGroup{
-			name:  fmt.Sprintf("FOLLOW UP (%d)", len(followUpRows)),
-			style: lipgloss.NewStyle().Foreground(warningColor).Bold(true),
-			rows:  followUpRows,
-		})
-	}
 	if len(unreadRows) > 0 {
 		m.groups = append(m.groups, inboxGroup{
 			name:  fmt.Sprintf("UNREAD (%d)", len(unreadRows)),
 			style: lipgloss.NewStyle().Foreground(secondaryColor).Bold(true),
 			rows:  unreadRows,
+		})
+	}
+	if len(followUpRows) > 0 {
+		m.groups = append(m.groups, inboxGroup{
+			name:  fmt.Sprintf("FOLLOW UP (%d)", len(followUpRows)),
+			style: lipgloss.NewStyle().Foreground(warningColor).Bold(true),
+			rows:  followUpRows,
 		})
 	}
 	if len(idleRows) > 0 {
