@@ -340,7 +340,7 @@ func TestBuildGroups_FollowUpSortsPriorityWithinDateGroup(t *testing.T) {
 		t.Fatalf("expected 'Today' group, got %q", m.groups[0].name)
 	}
 
-	// Follow-up has higher priority (1) than idle (4), so it should come first.
+	// Follow-up has higher priority (2) than read-idle (5), so it should come first.
 	if m.groups[0].rows[0].session.ID != "followup" {
 		t.Errorf("expected follow-up session first, got %q", m.groups[0].rows[0].session.ID)
 	}
@@ -368,7 +368,7 @@ func TestBuildGroups_BusySessionSortsFirst(t *testing.T) {
 		t.Fatalf("expected 1 group, got %d", len(m.groups))
 	}
 
-	// Busy (priority 0) should come before idle (priority 4).
+	// Busy (priority 0) should come before read-idle (priority 5).
 	if m.groups[0].rows[0].session.ID != "busy-fu" {
 		t.Errorf("expected busy session first, got %q", m.groups[0].rows[0].session.ID)
 	}
@@ -1398,5 +1398,103 @@ func TestRenderRow_ArchivedSessionGrayedOut(t *testing.T) {
 	// Title text should still be present.
 	if !strings.Contains(archivedRendered, "Old task") {
 		t.Errorf("expected archived row to contain title, got: %s", archivedRendered)
+	}
+}
+
+func TestBuildGroups_UnreadSortsAboveFollowUp(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "followup", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), LastReadAt: now, FollowUp: true},
+		{ID: "unread", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour)},
+	}
+
+	m := &InboxModel{}
+	m.buildGroups(sessions)
+
+	if len(m.groups) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(m.groups))
+	}
+
+	// Unread (priority 1) should sort above follow-up (priority 2).
+	if m.groups[0].rows[0].session.ID != "unread" {
+		t.Errorf("expected unread session first, got %q", m.groups[0].rows[0].session.ID)
+	}
+	if m.groups[0].rows[1].session.ID != "followup" {
+		t.Errorf("expected follow-up session second, got %q", m.groups[0].rows[1].session.ID)
+	}
+}
+
+func TestRenderRow_UnreadBoldTitle(t *testing.T) {
+	t.Parallel()
+
+	m := &InboxModel{width: 120}
+	now := time.Now()
+
+	unreadSession := &agent.SessionInfo{
+		ID:          "unread-1",
+		Status:      agent.StatusIdle,
+		Title:       "New changes",
+		ProjectName: "proj",
+		UpdatedAt:   now,
+		// LastReadAt zero => Unread() is true
+	}
+	readSession := &agent.SessionInfo{
+		ID:          "read-1",
+		Status:      agent.StatusIdle,
+		Title:       "New changes",
+		ProjectName: "proj",
+		UpdatedAt:   now,
+		LastReadAt:  now,
+	}
+
+	unreadRendered := m.renderRow(inboxRow{session: unreadSession}, false)
+	readRendered := m.renderRow(inboxRow{session: readSession}, false)
+
+	// Unread should render differently from read — bold title vs dimmed title.
+	if unreadRendered == readRendered {
+		t.Error("expected unread session to render differently from read session")
+	}
+
+	// Both should contain the title text.
+	if !strings.Contains(unreadRendered, "New changes") {
+		t.Errorf("expected unread row to contain title, got: %s", unreadRendered)
+	}
+	if !strings.Contains(readRendered, "New changes") {
+		t.Errorf("expected read row to contain title, got: %s", readRendered)
+	}
+}
+
+func TestRenderRow_UnreadRedAsterisk(t *testing.T) {
+	t.Parallel()
+
+	m := &InboxModel{width: 120}
+	now := time.Now()
+
+	unreadSession := &agent.SessionInfo{
+		ID:        "unread-1",
+		Status:    agent.StatusIdle,
+		Title:     "Something",
+		UpdatedAt: now,
+		// LastReadAt zero => Unread() is true
+	}
+	readSession := &agent.SessionInfo{
+		ID:         "read-1",
+		Status:     agent.StatusIdle,
+		Title:      "Something",
+		UpdatedAt:  now,
+		LastReadAt: now,
+	}
+
+	unreadRendered := m.renderRow(inboxRow{session: unreadSession}, false)
+	readRendered := m.renderRow(inboxRow{session: readSession}, false)
+
+	// Unread row should contain an asterisk; read row should not.
+	if !strings.Contains(unreadRendered, "*") {
+		t.Errorf("expected unread row to contain '*', got: %s", unreadRendered)
+	}
+	if strings.Contains(readRendered, "*") {
+		t.Errorf("expected read row to NOT contain '*', got: %s", readRendered)
 	}
 }

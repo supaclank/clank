@@ -515,19 +515,19 @@ func sessionSortPriority(s *agent.SessionInfo) int {
 	switch {
 	// Done/archived always sink to the bottom regardless of status.
 	case s.Visibility == agent.VisibilityDone:
-		return 5
-	case s.Visibility == agent.VisibilityArchived:
 		return 6
+	case s.Visibility == agent.VisibilityArchived:
+		return 7
 	case s.Status == agent.StatusBusy || s.Status == agent.StatusStarting:
 		return 0
-	case s.FollowUp:
-		return 1
-	case s.Status == agent.StatusError:
-		return 2
 	case s.Unread():
+		return 1
+	case s.FollowUp:
+		return 2
+	case s.Status == agent.StatusError:
 		return 3
 	default:
-		return 4 // idle, dead, etc.
+		return 5 // idle, dead, etc.
 	}
 }
 
@@ -806,7 +806,7 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	if s.FollowUp {
 		unreadMark = lipgloss.NewStyle().Foreground(warningColor).Bold(true).Render("!")
 	} else if s.Unread() {
-		unreadMark = lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("*")
+		unreadMark = lipgloss.NewStyle().Foreground(dangerColor).Bold(true).Render("*")
 	}
 
 	// Agent mode badge — colored so users can quickly triage build vs plan sessions.
@@ -854,6 +854,12 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	} else if isDone {
 		// Done sessions: green title text.
 		prompt = lipgloss.NewStyle().Foreground(successColor).Render(prompt)
+	} else if s.Unread() {
+		// Unread sessions: bold title to stand out.
+		prompt = lipgloss.NewStyle().Bold(true).Render(prompt)
+	} else {
+		// Read sessions: dimmed title.
+		prompt = lipgloss.NewStyle().Foreground(dimColor).Render(prompt)
 	}
 
 	// Append lowercase red "draft" label right after the title.
