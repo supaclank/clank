@@ -309,25 +309,20 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.cursor = 0
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+up"))):
-		// Jump to top of current category; if already there, top of the one above.
+		// Jump to the previous breakpoint. Breakpoints within each group are:
+		//   1. groupFirstRow (top of group)
+		//   2. groupLastNonDoneRow (idle/done boundary, if distinct from first)
 		if len(m.flatRows) > 0 {
-			gi := m.cursorGroupIndex()
-			first := m.groupFirstRow(gi)
-			if m.cursor == first && gi > 0 {
-				m.cursor = m.groupFirstRow(gi - 1)
-			} else {
-				m.cursor = first
-			}
+			bp := m.buildBreakpoints()
+			m.cursor = prevBreakpoint(bp, m.cursor)
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+down"))):
-		// Jump to top of the next category; if in the last category, jump to the very last row.
+		// Jump to the next breakpoint. Breakpoints within each group are:
+		//   1. groupFirstRow (top of group)
+		//   2. groupLastNonDoneRow (idle/done boundary, if distinct from first)
 		if len(m.flatRows) > 0 {
-			gi := m.cursorGroupIndex()
-			if gi < len(m.groups)-1 {
-				m.cursor = m.groupFirstRow(gi + 1)
-			} else {
-				m.cursor = len(m.flatRows) - 1
-			}
+			bp := m.buildBreakpoints()
+			m.cursor = nextBreakpoint(bp, m.cursor)
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("home", "g"))):
 		m.cursor = 0
@@ -960,6 +955,58 @@ func (m *InboxModel) groupFirstRow(groupIdx int) int {
 		offset += m.groupFlatRowCount(m.groups[i])
 	}
 	return offset
+}
+
+// groupLastNonDoneRow returns the flatRows index of the last non-done session
+// row in the given group. This is the idle/done boundary — the row right above
+// the topmost done session. Returns -1 if the group has no non-done session rows.
+func (m *InboxModel) groupLastNonDoneRow(groupIdx int) int {
+	g := m.groups[groupIdx]
+	offset := m.groupFirstRow(groupIdx)
+	lastNonDone := -1
+	for i, row := range g.rows {
+		if row.session != nil && row.session.Visibility != agent.VisibilityDone {
+			lastNonDone = offset + i
+		}
+	}
+	return lastNonDone
+}
+
+// buildBreakpoints returns the sorted, deduplicated list of flatRow indices
+// that shift+up/down should cycle through. For each date group the breakpoints
+// are the first row and (if distinct) the idle/done boundary.
+func (m *InboxModel) buildBreakpoints() []int {
+	var bp []int
+	for gi := range m.groups {
+		first := m.groupFirstRow(gi)
+		bp = append(bp, first)
+		if boundary := m.groupLastNonDoneRow(gi); boundary >= 0 && boundary != first {
+			bp = append(bp, boundary)
+		}
+	}
+	return bp
+}
+
+// nextBreakpoint returns the smallest breakpoint strictly greater than cursor.
+// If cursor is already at or past the last breakpoint, it returns the last one.
+func nextBreakpoint(bp []int, cursor int) int {
+	for _, b := range bp {
+		if b > cursor {
+			return b
+		}
+	}
+	return bp[len(bp)-1]
+}
+
+// prevBreakpoint returns the largest breakpoint strictly less than cursor.
+// If cursor is already at or before the first breakpoint, it returns the first one.
+func prevBreakpoint(bp []int, cursor int) int {
+	for i := len(bp) - 1; i >= 0; i-- {
+		if bp[i] < cursor {
+			return bp[i]
+		}
+	}
+	return bp[0]
 }
 
 func (m *InboxModel) ensureCursorVisible() {

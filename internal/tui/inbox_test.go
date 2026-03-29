@@ -647,6 +647,281 @@ func TestCategoryNavigation_WithArchivedRows(t *testing.T) {
 	})
 }
 
+func TestBreakpointNavigation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+
+	t.Run("groupLastNonDoneRow returns last non-done row", func(t *testing.T) {
+		t.Parallel()
+		// Today: busy(0), idle(1), done(2)
+		sessions := []agent.SessionInfo{
+			{ID: "busy", Status: agent.StatusBusy, UpdatedAt: now.Add(-1 * time.Hour)},
+			{ID: "idle", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now},
+			{ID: "done", Status: agent.StatusIdle, UpdatedAt: now.Add(-3 * time.Hour), LastReadAt: now, Visibility: agent.VisibilityDone},
+		}
+		m := &InboxModel{}
+		m.buildGroups(sessions)
+
+		got := m.groupLastNonDoneRow(0)
+		// busy(0), idle(1) are non-done; done(2) is done. Last non-done is index 1.
+		if got != 1 {
+			t.Errorf("groupLastNonDoneRow(0) = %d, want 1", got)
+		}
+	})
+
+	t.Run("groupLastNonDoneRow returns -1 when all rows are done", func(t *testing.T) {
+		t.Parallel()
+		sessions := []agent.SessionInfo{
+			{ID: "done-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), Visibility: agent.VisibilityDone},
+			{ID: "done-2", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), Visibility: agent.VisibilityDone},
+		}
+		m := &InboxModel{}
+		m.buildGroups(sessions)
+
+		got := m.groupLastNonDoneRow(0)
+		if got != -1 {
+			t.Errorf("groupLastNonDoneRow(0) = %d, want -1 (all done)", got)
+		}
+	})
+
+	t.Run("groupLastNonDoneRow no boundary when no done sessions", func(t *testing.T) {
+		t.Parallel()
+		sessions := []agent.SessionInfo{
+			{ID: "idle-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), LastReadAt: now},
+			{ID: "idle-2", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now},
+		}
+		m := &InboxModel{}
+		m.buildGroups(sessions)
+
+		got := m.groupLastNonDoneRow(0)
+		// Both rows are non-done, so last non-done is index 1.
+		if got != 1 {
+			t.Errorf("groupLastNonDoneRow(0) = %d, want 1", got)
+		}
+	})
+
+	t.Run("buildBreakpoints includes idle/done boundary", func(t *testing.T) {
+		t.Parallel()
+		// Today: busy(0), idle(1), done(2)
+		// Yesterday: idle(3)
+		sessions := []agent.SessionInfo{
+			{ID: "busy", Status: agent.StatusBusy, UpdatedAt: now.Add(-1 * time.Hour)},
+			{ID: "idle", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now},
+			{ID: "done", Status: agent.StatusIdle, UpdatedAt: now.Add(-3 * time.Hour), LastReadAt: now, Visibility: agent.VisibilityDone},
+			{ID: "yest", Status: agent.StatusIdle, UpdatedAt: now.Add(-25 * time.Hour), LastReadAt: now},
+		}
+		m := &InboxModel{}
+		m.buildGroups(sessions)
+
+		bp := m.buildBreakpoints()
+		// Today first=0, boundary=1; Yesterday first=3 (no boundary since single non-done row = first).
+		want := []int{0, 1, 3}
+		if len(bp) != len(want) {
+			t.Fatalf("buildBreakpoints() = %v, want %v", bp, want)
+		}
+		for i := range want {
+			if bp[i] != want[i] {
+				t.Errorf("bp[%d] = %d, want %d (full: %v)", i, bp[i], want[i], bp)
+			}
+		}
+	})
+
+	t.Run("buildBreakpoints omits boundary when same as first", func(t *testing.T) {
+		t.Parallel()
+		// Single non-done row per group — boundary == first, so no extra breakpoint.
+		sessions := []agent.SessionInfo{
+			{ID: "today", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), LastReadAt: now},
+			{ID: "yest", Status: agent.StatusIdle, UpdatedAt: now.Add(-25 * time.Hour), LastReadAt: now},
+		}
+		m := &InboxModel{}
+		m.buildGroups(sessions)
+
+		bp := m.buildBreakpoints()
+		want := []int{0, 1}
+		if len(bp) != len(want) {
+			t.Fatalf("buildBreakpoints() = %v, want %v", bp, want)
+		}
+		for i := range want {
+			if bp[i] != want[i] {
+				t.Errorf("bp[%d] = %d, want %d", i, bp[i], want[i])
+			}
+		}
+	})
+
+	t.Run("shift+down cycles through breakpoints", func(t *testing.T) {
+		t.Parallel()
+		// Today: busy(0), follow-up(1), idle(2), done(3)
+		// Yesterday: idle(4)
+		sessions := []agent.SessionInfo{
+			{ID: "busy", Status: agent.StatusBusy, UpdatedAt: now.Add(-1 * time.Hour)},
+			{ID: "followup", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now, FollowUp: true},
+			{ID: "idle", Status: agent.StatusIdle, UpdatedAt: now.Add(-3 * time.Hour), LastReadAt: now},
+			{ID: "done", Status: agent.StatusIdle, UpdatedAt: now.Add(-4 * time.Hour), LastReadAt: now, Visibility: agent.VisibilityDone},
+			{ID: "yest", Status: agent.StatusIdle, UpdatedAt: now.Add(-25 * time.Hour), LastReadAt: now},
+		}
+		m := &InboxModel{}
+		m.buildGroups(sessions)
+
+		// Breakpoints: Today first=0, boundary=2, Yesterday first=4.
+		bp := m.buildBreakpoints()
+		wantBP := []int{0, 2, 4}
+		if len(bp) != len(wantBP) {
+			t.Fatalf("buildBreakpoints() = %v, want %v", bp, wantBP)
+		}
+
+		// From 0, shift+down -> 2 (idle/done boundary).
+		m.cursor = 0
+		m.cursor = nextBreakpoint(bp, m.cursor)
+		if m.cursor != 2 {
+			t.Errorf("shift+down from 0: cursor=%d, want 2", m.cursor)
+		}
+
+		// From 2, shift+down -> 4 (top of Yesterday).
+		m.cursor = nextBreakpoint(bp, m.cursor)
+		if m.cursor != 4 {
+			t.Errorf("shift+down from 2: cursor=%d, want 4", m.cursor)
+		}
+
+		// From 4 (last breakpoint), shift+down stays at 4.
+		m.cursor = nextBreakpoint(bp, m.cursor)
+		if m.cursor != 4 {
+			t.Errorf("shift+down from 4: cursor=%d, want 4 (last breakpoint)", m.cursor)
+		}
+	})
+
+	t.Run("shift+up cycles through breakpoints", func(t *testing.T) {
+		t.Parallel()
+		// Same setup as shift+down test.
+		sessions := []agent.SessionInfo{
+			{ID: "busy", Status: agent.StatusBusy, UpdatedAt: now.Add(-1 * time.Hour)},
+			{ID: "followup", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now, FollowUp: true},
+			{ID: "idle", Status: agent.StatusIdle, UpdatedAt: now.Add(-3 * time.Hour), LastReadAt: now},
+			{ID: "done", Status: agent.StatusIdle, UpdatedAt: now.Add(-4 * time.Hour), LastReadAt: now, Visibility: agent.VisibilityDone},
+			{ID: "yest", Status: agent.StatusIdle, UpdatedAt: now.Add(-25 * time.Hour), LastReadAt: now},
+		}
+		m := &InboxModel{}
+		m.buildGroups(sessions)
+
+		bp := m.buildBreakpoints()
+
+		// From 4, shift+up -> 2 (idle/done boundary).
+		m.cursor = 4
+		m.cursor = prevBreakpoint(bp, m.cursor)
+		if m.cursor != 2 {
+			t.Errorf("shift+up from 4: cursor=%d, want 2", m.cursor)
+		}
+
+		// From 2, shift+up -> 0 (top of Today).
+		m.cursor = prevBreakpoint(bp, m.cursor)
+		if m.cursor != 0 {
+			t.Errorf("shift+up from 2: cursor=%d, want 0", m.cursor)
+		}
+
+		// From 0 (first breakpoint), shift+up stays at 0.
+		m.cursor = prevBreakpoint(bp, m.cursor)
+		if m.cursor != 0 {
+			t.Errorf("shift+up from 0: cursor=%d, want 0 (first breakpoint)", m.cursor)
+		}
+	})
+
+	t.Run("shift+down from non-breakpoint position jumps to next breakpoint", func(t *testing.T) {
+		t.Parallel()
+		sessions := []agent.SessionInfo{
+			{ID: "busy", Status: agent.StatusBusy, UpdatedAt: now.Add(-1 * time.Hour)},
+			{ID: "followup", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now, FollowUp: true},
+			{ID: "idle", Status: agent.StatusIdle, UpdatedAt: now.Add(-3 * time.Hour), LastReadAt: now},
+			{ID: "done", Status: agent.StatusIdle, UpdatedAt: now.Add(-4 * time.Hour), LastReadAt: now, Visibility: agent.VisibilityDone},
+			{ID: "yest", Status: agent.StatusIdle, UpdatedAt: now.Add(-25 * time.Hour), LastReadAt: now},
+		}
+		m := &InboxModel{}
+		m.buildGroups(sessions)
+
+		bp := m.buildBreakpoints()
+		// Breakpoints: 0, 2, 4. Cursor at 1 (follow-up, not a breakpoint).
+		m.cursor = 1
+		m.cursor = nextBreakpoint(bp, m.cursor)
+		if m.cursor != 2 {
+			t.Errorf("shift+down from 1: cursor=%d, want 2 (boundary)", m.cursor)
+		}
+	})
+
+	t.Run("shift+up from non-breakpoint position jumps to previous breakpoint", func(t *testing.T) {
+		t.Parallel()
+		sessions := []agent.SessionInfo{
+			{ID: "busy", Status: agent.StatusBusy, UpdatedAt: now.Add(-1 * time.Hour)},
+			{ID: "followup", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now, FollowUp: true},
+			{ID: "idle", Status: agent.StatusIdle, UpdatedAt: now.Add(-3 * time.Hour), LastReadAt: now},
+			{ID: "done", Status: agent.StatusIdle, UpdatedAt: now.Add(-4 * time.Hour), LastReadAt: now, Visibility: agent.VisibilityDone},
+			{ID: "yest", Status: agent.StatusIdle, UpdatedAt: now.Add(-25 * time.Hour), LastReadAt: now},
+		}
+		m := &InboxModel{}
+		m.buildGroups(sessions)
+
+		bp := m.buildBreakpoints()
+		// Cursor at 3 (done row, not a breakpoint). Previous breakpoint is 2.
+		m.cursor = 3
+		m.cursor = prevBreakpoint(bp, m.cursor)
+		if m.cursor != 2 {
+			t.Errorf("shift+up from 3: cursor=%d, want 2 (boundary)", m.cursor)
+		}
+	})
+
+	t.Run("no done sessions means no extra breakpoint", func(t *testing.T) {
+		t.Parallel()
+		// All non-done sessions — breakpoints are only at group tops.
+		sessions := []agent.SessionInfo{
+			{ID: "today-1", Status: agent.StatusBusy, UpdatedAt: now.Add(-1 * time.Hour)},
+			{ID: "today-2", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now},
+			{ID: "today-3", Status: agent.StatusIdle, UpdatedAt: now.Add(-3 * time.Hour), LastReadAt: now},
+			{ID: "yest-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-25 * time.Hour), LastReadAt: now},
+		}
+		m := &InboxModel{}
+		m.buildGroups(sessions)
+
+		bp := m.buildBreakpoints()
+		// Today: first=0, boundary=2. 2 != 0 so it IS included.
+		// Yesterday: first=3, boundary=3 (single row). 3 == 3 so NOT included.
+		want := []int{0, 2, 3}
+		if len(bp) != len(want) {
+			t.Fatalf("buildBreakpoints() = %v, want %v", bp, want)
+		}
+		for i := range want {
+			if bp[i] != want[i] {
+				t.Errorf("bp[%d] = %d, want %d", i, bp[i], want[i])
+			}
+		}
+	})
+
+	t.Run("with archived rows breakpoints skip accordion", func(t *testing.T) {
+		t.Parallel()
+		// Today: busy(0), idle(1), done(2), accordion(3)
+		// Yesterday: idle(4), accordion(5)
+		sessions := []agent.SessionInfo{
+			{ID: "busy", Status: agent.StatusBusy, UpdatedAt: now.Add(-1 * time.Hour)},
+			{ID: "idle", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now},
+			{ID: "done", Status: agent.StatusIdle, UpdatedAt: now.Add(-3 * time.Hour), LastReadAt: now, Visibility: agent.VisibilityDone},
+			{ID: "today-arch", Status: agent.StatusIdle, UpdatedAt: now.Add(-4 * time.Hour), Visibility: agent.VisibilityArchived},
+			{ID: "yest", Status: agent.StatusIdle, UpdatedAt: now.Add(-25 * time.Hour), LastReadAt: now},
+			{ID: "yest-arch", Status: agent.StatusIdle, UpdatedAt: now.Add(-26 * time.Hour), Visibility: agent.VisibilityArchived},
+		}
+		m := &InboxModel{}
+		m.buildGroups(sessions)
+
+		bp := m.buildBreakpoints()
+		// Today: first=0, boundary=1 (idle is last non-done in rows). Yesterday: first=4.
+		want := []int{0, 1, 4}
+		if len(bp) != len(want) {
+			t.Fatalf("buildBreakpoints() = %v, want %v", bp, want)
+		}
+		for i := range want {
+			if bp[i] != want[i] {
+				t.Errorf("bp[%d] = %d, want %d", i, bp[i], want[i])
+			}
+		}
+	})
+}
+
 func TestRenderRow_ShowsAgentMode(t *testing.T) {
 	t.Parallel()
 
