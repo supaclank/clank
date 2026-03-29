@@ -499,13 +499,14 @@ func (m *InboxModel) toggleFollowUp(sessionID string) tea.Cmd {
 
 // buildGroups organizes sessions into display groups.
 func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
-	var busyRows, followUpRows, unreadRows, idleRows, errorRows, deadRows, doneRows []inboxRow
+	var busyRows, followUpRows, unreadRows, idleRows, errorRows, deadRows, doneRows, archivedRows []inboxRow
 
 	for i := range sessions {
 		s := &sessions[i]
 
-		// Skip archived sessions entirely.
+		// Archived sessions go into their own group at the very bottom.
 		if s.Visibility == agent.VisibilityArchived {
+			archivedRows = append(archivedRows, inboxRow{session: s})
 			continue
 		}
 
@@ -556,6 +557,7 @@ func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
 	byUpdatedDesc(errorRows)
 	byUpdatedDesc(deadRows)
 	byUpdatedDesc(doneRows)
+	byUpdatedDesc(archivedRows)
 
 	m.groups = nil
 
@@ -606,6 +608,13 @@ func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
 			name:  fmt.Sprintf("DONE (%d)", len(doneRows)),
 			style: lipgloss.NewStyle().Foreground(successColor).Bold(true),
 			rows:  doneRows,
+		})
+	}
+	if len(archivedRows) > 0 {
+		m.groups = append(m.groups, inboxGroup{
+			name:  fmt.Sprintf("ARCHIVED (%d)", len(archivedRows)),
+			style: lipgloss.NewStyle().Foreground(mutedColor).Bold(true),
+			rows:  archivedRows,
 		})
 	}
 

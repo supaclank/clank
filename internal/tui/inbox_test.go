@@ -109,26 +109,26 @@ func TestBuildGroups_FiltersHiddenSessions(t *testing.T) {
 		}
 	}
 
-	// Archived sessions should not appear.
-	for _, id := range ids {
-		if id == "archived-1" {
-			t.Errorf("archived session %q should not appear in groups", id)
-		}
+	// Archived sessions should appear in the ARCHIVED group.
+	if g, ok := groupForSession["archived-1"]; !ok {
+		t.Error("archived session archived-1 should appear in ARCHIVED group")
+	} else if !strings.HasPrefix(g, "ARCHIVED") {
+		t.Errorf("archived-1: expected ARCHIVED group, got %q", g)
 	}
-	// Done sessions should appear in the DONE group at the bottom.
+	// Done sessions should appear in the DONE group.
 	if g, ok := groupForSession["done-1"]; !ok {
 		t.Error("done session done-1 should appear in DONE group")
 	} else if !strings.HasPrefix(g, "DONE") {
 		t.Errorf("done-1: expected DONE group, got %q", g)
 	}
-	// visible-1, visible-2, and done-1 should all be present.
-	if len(ids) != 3 {
-		t.Errorf("expected 3 sessions, got %d: %v", len(ids), ids)
+	// All four sessions should be present.
+	if len(ids) != 4 {
+		t.Errorf("expected 4 sessions, got %d: %v", len(ids), ids)
 	}
-	// DONE group should be last.
+	// ARCHIVED group should be last.
 	lastGroup := m.groups[len(m.groups)-1]
-	if !strings.HasPrefix(lastGroup.name, "DONE") {
-		t.Errorf("expected DONE to be the last group, got %q", lastGroup.name)
+	if !strings.HasPrefix(lastGroup.name, "ARCHIVED") {
+		t.Errorf("expected ARCHIVED to be the last group, got %q", lastGroup.name)
 	}
 }
 
@@ -144,20 +144,26 @@ func TestBuildGroups_AllHiddenResultsInEmptyGroups(t *testing.T) {
 	m := &InboxModel{}
 	m.buildGroups(sessions)
 
-	// The done session should appear in a DONE group; archived should be hidden.
+	// Both done and archived sessions should appear in their own groups.
 	var totalRows int
 	for _, g := range m.groups {
 		totalRows += len(g.rows)
 	}
-	if totalRows != 1 {
-		t.Errorf("expected 1 row (done session visible, archived hidden), got %d", totalRows)
+	if totalRows != 2 {
+		t.Errorf("expected 2 rows (done + archived), got %d", totalRows)
 	}
-	if len(m.groups) != 1 || !strings.HasPrefix(m.groups[0].name, "DONE") {
+	if len(m.groups) != 2 {
 		names := make([]string, len(m.groups))
 		for i, g := range m.groups {
 			names[i] = g.name
 		}
-		t.Errorf("expected single DONE group, got groups: %v", names)
+		t.Errorf("expected DONE and ARCHIVED groups, got groups: %v", names)
+	}
+	if !strings.HasPrefix(m.groups[0].name, "DONE") {
+		t.Errorf("expected first group to be DONE, got %q", m.groups[0].name)
+	}
+	if !strings.HasPrefix(m.groups[1].name, "ARCHIVED") {
+		t.Errorf("expected second group to be ARCHIVED, got %q", m.groups[1].name)
 	}
 }
 
