@@ -166,6 +166,11 @@ type displayEntry struct {
 	content string // pre-rendered line(s), may contain ANSI
 	agent   string // agent mode used for this entry (only set for entryUser)
 
+	// toolPart stores the original Part data for entryTool entries so the
+	// tool line (including its spinner) can be rendered live during View()
+	// instead of being baked into content once.
+	toolPart *agent.Part
+
 	// streaming is true while the entry is still receiving streamed deltas.
 	// Only the actively-streaming entry uses plain wrapText; completed
 	// entries render full markdown even when the session is busy.
@@ -972,7 +977,8 @@ func (m *SessionViewModel) upsertPartEntry(p agent.Part, isDelta bool) {
 			if e.partID == p.ID {
 				switch p.Type {
 				case agent.PartToolCall, agent.PartToolResult:
-					e.content = m.renderToolLine(p)
+					pCopy := p
+					e.toolPart = &pCopy
 				case agent.PartText, agent.PartThinking:
 					if isDelta {
 						e.content += p.Text
@@ -993,10 +999,11 @@ func (m *SessionViewModel) upsertPartEntry(p agent.Part, isDelta bool) {
 func (m *SessionViewModel) addPartEntry(p agent.Part) {
 	switch p.Type {
 	case agent.PartToolCall, agent.PartToolResult:
+		pCopy := p
 		m.entries = append(m.entries, displayEntry{
-			kind:    entryTool,
-			partID:  p.ID,
-			content: m.renderToolLine(p),
+			kind:     entryTool,
+			partID:   p.ID,
+			toolPart: &pCopy,
 		})
 	case agent.PartThinking:
 		if p.Text != "" {
@@ -1424,7 +1431,11 @@ func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool) []string 
 		}
 
 	case entryTool:
-		styled := lipgloss.NewStyle().Foreground(dimColor).Render("  " + e.content)
+		line := e.content
+		if e.toolPart != nil {
+			line = m.renderToolLine(*e.toolPart)
+		}
+		styled := lipgloss.NewStyle().Foreground(dimColor).Render("  " + line)
 		return []string{styled}
 
 	case entryThink:
