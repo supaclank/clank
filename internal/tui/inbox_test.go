@@ -13,43 +13,28 @@ func TestBuildGroups_SortsByUpdatedAtDescending(t *testing.T) {
 
 	now := time.Now()
 	sessions := []agent.SessionInfo{
-		{ID: "busy-old", Status: agent.StatusBusy, UpdatedAt: now.Add(-2 * time.Hour)},
-		{ID: "busy-new", Status: agent.StatusBusy, UpdatedAt: now.Add(-1 * time.Hour)},
-		{ID: "idle-old", Status: agent.StatusIdle, UpdatedAt: now.Add(-3 * time.Hour), LastReadAt: now},
-		{ID: "idle-new", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), LastReadAt: now},
-		{ID: "unread-old", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour)},
-		{ID: "unread-new", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour)},
-		{ID: "error-old", Status: agent.StatusError, UpdatedAt: now.Add(-2 * time.Hour)},
-		{ID: "error-new", Status: agent.StatusError, UpdatedAt: now.Add(-1 * time.Hour)},
-		{ID: "dead-old", Status: agent.StatusDead, UpdatedAt: now.Add(-2 * time.Hour)},
-		{ID: "dead-new", Status: agent.StatusDead, UpdatedAt: now.Add(-1 * time.Hour)},
+		{ID: "old", Status: agent.StatusIdle, UpdatedAt: now.Add(-3 * time.Hour), LastReadAt: now},
+		{ID: "new", Status: agent.StatusBusy, UpdatedAt: now.Add(-1 * time.Hour)},
+		{ID: "mid", Status: agent.StatusError, UpdatedAt: now.Add(-2 * time.Hour)},
 	}
 
 	m := &InboxModel{}
 	m.buildGroups(sessions)
 
-	// Verify group order: busy, unread, idle, error, dead.
-	wantGroupOrder := []string{
-		"BUSY (2)",
-		"UNREAD (2)",
-		"IDLE (2)",
-		"ERROR (2)",
-		"DEAD (2)",
+	// All sessions are from "Today", so there should be a single group.
+	if len(m.groups) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(m.groups))
 	}
-	if len(m.groups) != len(wantGroupOrder) {
-		t.Fatalf("expected %d groups, got %d", len(wantGroupOrder), len(m.groups))
-	}
-	for i, g := range m.groups {
-		if g.name != wantGroupOrder[i] {
-			t.Errorf("group[%d]: got name %q, want %q", i, g.name, wantGroupOrder[i])
-		}
+	if m.groups[0].name != "Today" {
+		t.Errorf("expected group name 'Today', got %q", m.groups[0].name)
 	}
 
-	// Within each group, the newer session (larger UpdatedAt) should come first.
-	wantFirstIDs := []string{"busy-new", "unread-new", "idle-new", "error-new", "dead-new"}
-	for i, g := range m.groups {
-		if g.rows[0].session.ID != wantFirstIDs[i] {
-			t.Errorf("group %q: first row ID = %q, want %q", g.name, g.rows[0].session.ID, wantFirstIDs[i])
+	// Within the group, higher-priority statuses (busy) should come first,
+	// then error, then idle — all sorted by status priority then UpdatedAt desc.
+	wantOrder := []string{"new", "mid", "old"}
+	for i, r := range m.groups[0].rows {
+		if r.session.ID != wantOrder[i] {
+			t.Errorf("row[%d]: got %q, want %q", i, r.session.ID, wantOrder[i])
 		}
 	}
 }
@@ -99,40 +84,44 @@ func TestBuildGroups_FiltersHiddenSessions(t *testing.T) {
 	m := &InboxModel{}
 	m.buildGroups(sessions)
 
-	// Collect all session IDs across all groups.
-	var ids []string
-	groupForSession := make(map[string]string)
-	for _, g := range m.groups {
-		for _, r := range g.rows {
-			ids = append(ids, r.session.ID)
-			groupForSession[r.session.ID] = g.name
-		}
+	// All non-archived sessions are from today, so there should be one date group.
+	if len(m.groups) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(m.groups))
 	}
 
-	// Archived sessions should appear in the ARCHIVED group.
-	if g, ok := groupForSession["archived-1"]; !ok {
-		t.Error("archived session archived-1 should appear in ARCHIVED group")
-	} else if !strings.HasPrefix(g, "ARCHIVED") {
-		t.Errorf("archived-1: expected ARCHIVED group, got %q", g)
+	// The date group should contain 3 sessions (archived excluded).
+	var ids []string
+	for _, r := range m.groups[0].rows {
+		ids = append(ids, r.session.ID)
 	}
-	// Done sessions should appear in the DONE group.
-	if g, ok := groupForSession["done-1"]; !ok {
-		t.Error("done session done-1 should appear in DONE group")
-	} else if !strings.HasPrefix(g, "DONE") {
-		t.Errorf("done-1: expected DONE group, got %q", g)
+	if len(ids) != 3 {
+		t.Errorf("expected 3 sessions in date group, got %d: %v", len(ids), ids)
 	}
-	// All four sessions should be present.
-	if len(ids) != 4 {
-		t.Errorf("expected 4 sessions, got %d: %v", len(ids), ids)
+
+	// Done session should be at the end of the date group.
+	if ids[len(ids)-1] != "done-1" {
+		t.Errorf("expected done session at the bottom of date group, got %v", ids)
 	}
-	// ARCHIVED group should be last.
-	lastGroup := m.groups[len(m.groups)-1]
-	if !strings.HasPrefix(lastGroup.name, "ARCHIVED") {
-		t.Errorf("expected ARCHIVED to be the last group, got %q", lastGroup.name)
+
+	// Archived session should be stored in the group's archivedRows.
+	if len(m.groups[0].archivedRows) != 1 {
+		t.Fatalf("expected 1 archived session in group, got %d", len(m.groups[0].archivedRows))
+	}
+	if m.groups[0].archivedRows[0].session.ID != "archived-1" {
+		t.Errorf("expected archived session 'archived-1', got %q", m.groups[0].archivedRows[0].session.ID)
+	}
+
+	// flatRows should have 3 date group rows + 1 accordion toggle = 4 total
+	// (accordion is collapsed by default, so archived session rows are not included).
+	if len(m.flatRows) != 4 {
+		t.Errorf("expected 4 flatRows (3 sessions + 1 accordion), got %d", len(m.flatRows))
+	}
+	if m.flatRows[3].accordion == "" {
+		t.Error("expected last flatRow to be the archive accordion toggle")
 	}
 }
 
-func TestBuildGroups_AllHiddenResultsInEmptyGroups(t *testing.T) {
+func TestBuildGroups_AllHiddenResultsInDateGroup(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
@@ -144,26 +133,31 @@ func TestBuildGroups_AllHiddenResultsInEmptyGroups(t *testing.T) {
 	m := &InboxModel{}
 	m.buildGroups(sessions)
 
-	// Both done and archived sessions should appear in their own groups.
-	var totalRows int
-	for _, g := range m.groups {
-		totalRows += len(g.rows)
-	}
-	if totalRows != 2 {
-		t.Errorf("expected 2 rows (done + archived), got %d", totalRows)
-	}
-	if len(m.groups) != 2 {
+	// Done session goes in a "Today" date group; archived is separate.
+	if len(m.groups) != 1 {
 		names := make([]string, len(m.groups))
 		for i, g := range m.groups {
 			names[i] = g.name
 		}
-		t.Errorf("expected DONE and ARCHIVED groups, got groups: %v", names)
+		t.Fatalf("expected 1 group, got %d: %v", len(m.groups), names)
 	}
-	if !strings.HasPrefix(m.groups[0].name, "DONE") {
-		t.Errorf("expected first group to be DONE, got %q", m.groups[0].name)
+	if m.groups[0].name != "Today" {
+		t.Errorf("expected group name 'Today', got %q", m.groups[0].name)
 	}
-	if !strings.HasPrefix(m.groups[1].name, "ARCHIVED") {
-		t.Errorf("expected second group to be ARCHIVED, got %q", m.groups[1].name)
+
+	// Only the done session should be in the date group.
+	if len(m.groups[0].rows) != 1 {
+		t.Errorf("expected 1 row in date group (done only), got %d", len(m.groups[0].rows))
+	}
+
+	// Archived session stored in the group's archivedRows.
+	if len(m.groups[0].archivedRows) != 1 {
+		t.Errorf("expected 1 archived session in group, got %d", len(m.groups[0].archivedRows))
+	}
+
+	// flatRows: 1 done row + 1 accordion toggle = 2.
+	if len(m.flatRows) != 2 {
+		t.Errorf("expected 2 flatRows, got %d", len(m.flatRows))
 	}
 }
 
@@ -290,7 +284,7 @@ func TestRenderRow_DraftLabelCoexistsWithUnreadMarks(t *testing.T) {
 	}
 }
 
-func TestBuildGroups_DraftSessionStaysInNormalGroup(t *testing.T) {
+func TestBuildGroups_DraftSessionStaysInDateGroup(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
@@ -303,42 +297,37 @@ func TestBuildGroups_DraftSessionStaysInNormalGroup(t *testing.T) {
 	m := &InboxModel{}
 	m.buildGroups(sessions)
 
-	// There should be no DRAFT group — sessions stay in their normal groups.
+	// All sessions are from today — should be one "Today" group.
+	if len(m.groups) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(m.groups))
+	}
+	if m.groups[0].name != "Today" {
+		t.Errorf("expected group name 'Today', got %q", m.groups[0].name)
+	}
+
+	// There should be no DRAFT group.
 	for _, g := range m.groups {
 		if strings.Contains(g.name, "DRAFT") {
-			t.Errorf("unexpected DRAFT group: %q; drafts should stay in their normal group", g.name)
+			t.Errorf("unexpected DRAFT group: %q; drafts should stay in their date group", g.name)
 		}
 	}
 
-	// Verify the draft sessions are in the expected groups.
-	groupForSession := make(map[string]string)
-	for _, g := range m.groups {
-		for _, r := range g.rows {
-			groupForSession[r.session.ID] = g.name
-		}
-	}
-
-	if g, ok := groupForSession["idle-with-draft"]; !ok {
-		t.Error("idle-with-draft not found in any group")
-	} else if !strings.HasPrefix(g, "IDLE") {
-		t.Errorf("idle-with-draft: expected IDLE group, got %q", g)
-	}
-
-	if g, ok := groupForSession["busy-with-draft"]; !ok {
-		t.Error("busy-with-draft not found in any group")
-	} else if !strings.HasPrefix(g, "BUSY") {
-		t.Errorf("busy-with-draft: expected BUSY group, got %q", g)
+	// All 3 sessions should be present.
+	if len(m.flatRows) != 3 {
+		t.Errorf("expected 3 flatRows, got %d", len(m.flatRows))
 	}
 }
 
-func TestBuildGroups_FollowUpToggleMovesSessionBetweenGroups(t *testing.T) {
+func TestBuildGroups_FollowUpSortsPriorityWithinDateGroup(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
 
-	// Start with a session that is NOT follow-up — it should be in the IDLE group.
+	// A follow-up session and a normal idle session on the same day.
+	// Follow-up should appear above normal idle due to higher priority.
 	sessions := []agent.SessionInfo{
-		{ID: "s1", Status: agent.StatusIdle, UpdatedAt: now, LastReadAt: now, FollowUp: false},
+		{ID: "idle", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), LastReadAt: now, FollowUp: false},
+		{ID: "followup", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now, FollowUp: true},
 	}
 
 	m := &InboxModel{}
@@ -347,41 +336,29 @@ func TestBuildGroups_FollowUpToggleMovesSessionBetweenGroups(t *testing.T) {
 	if len(m.groups) != 1 {
 		t.Fatalf("expected 1 group, got %d", len(m.groups))
 	}
-	if !strings.HasPrefix(m.groups[0].name, "IDLE") {
-		t.Fatalf("expected IDLE group, got %q", m.groups[0].name)
+	if m.groups[0].name != "Today" {
+		t.Fatalf("expected 'Today' group, got %q", m.groups[0].name)
 	}
 
-	// Toggle follow-up on — session should move to the FOLLOW UP group.
-	sessions[0].FollowUp = true
-	m.buildGroups(sessions)
-
-	if len(m.groups) != 1 {
-		t.Fatalf("expected 1 group after follow-up toggle, got %d", len(m.groups))
+	// Follow-up has higher priority (1) than idle (4), so it should come first.
+	if m.groups[0].rows[0].session.ID != "followup" {
+		t.Errorf("expected follow-up session first, got %q", m.groups[0].rows[0].session.ID)
 	}
-	if !strings.HasPrefix(m.groups[0].name, "FOLLOW UP") {
-		t.Fatalf("expected FOLLOW UP group, got %q", m.groups[0].name)
-	}
-
-	// Toggle follow-up off — session should move back to the IDLE group.
-	sessions[0].FollowUp = false
-	m.buildGroups(sessions)
-
-	if len(m.groups) != 1 {
-		t.Fatalf("expected 1 group after follow-up untoggle, got %d", len(m.groups))
-	}
-	if !strings.HasPrefix(m.groups[0].name, "IDLE") {
-		t.Fatalf("expected IDLE group after untoggle, got %q", m.groups[0].name)
+	if m.groups[0].rows[1].session.ID != "idle" {
+		t.Errorf("expected idle session second, got %q", m.groups[0].rows[1].session.ID)
 	}
 }
 
-func TestBuildGroups_FollowUpBusySessionStaysInBusy(t *testing.T) {
+func TestBuildGroups_BusySessionSortsFirst(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
 
-	// A busy session with follow-up should stay in the BUSY group, not FOLLOW UP.
+	// A busy session with follow-up should still appear first due to
+	// busy having the highest status priority (0).
 	sessions := []agent.SessionInfo{
-		{ID: "busy-fu", Status: agent.StatusBusy, UpdatedAt: now, FollowUp: true},
+		{ID: "idle", Status: agent.StatusIdle, UpdatedAt: now.Add(-30 * time.Minute), LastReadAt: now},
+		{ID: "busy-fu", Status: agent.StatusBusy, UpdatedAt: now.Add(-1 * time.Hour), FollowUp: true},
 	}
 
 	m := &InboxModel{}
@@ -390,8 +367,10 @@ func TestBuildGroups_FollowUpBusySessionStaysInBusy(t *testing.T) {
 	if len(m.groups) != 1 {
 		t.Fatalf("expected 1 group, got %d", len(m.groups))
 	}
-	if !strings.HasPrefix(m.groups[0].name, "BUSY") {
-		t.Errorf("expected BUSY group for busy+follow-up session, got %q", m.groups[0].name)
+
+	// Busy (priority 0) should come before idle (priority 4).
+	if m.groups[0].rows[0].session.ID != "busy-fu" {
+		t.Errorf("expected busy session first, got %q", m.groups[0].rows[0].session.ID)
 	}
 }
 
@@ -399,16 +378,16 @@ func TestCategoryNavigation(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
-	// 3 groups: BUSY (2 rows), FOLLOW UP (3 rows), IDLE (2 rows)
-	// flatRows indices: 0,1 = BUSY; 2,3,4 = FOLLOW UP; 5,6 = IDLE
+	// 3 date groups: Today (3 rows), Yesterday (2 rows), Older (2 rows)
+	// flatRows indices: 0,1,2 = Today; 3,4 = Yesterday; 5,6 = Older
 	sessions := []agent.SessionInfo{
-		{ID: "busy-1", Status: agent.StatusBusy, UpdatedAt: now.Add(-1 * time.Hour)},
-		{ID: "busy-2", Status: agent.StatusBusy, UpdatedAt: now.Add(-2 * time.Hour)},
-		{ID: "fu-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), LastReadAt: now, FollowUp: true},
-		{ID: "fu-2", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now, FollowUp: true},
-		{ID: "fu-3", Status: agent.StatusIdle, UpdatedAt: now.Add(-3 * time.Hour), LastReadAt: now, FollowUp: true},
-		{ID: "idle-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), LastReadAt: now},
-		{ID: "idle-2", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now},
+		{ID: "today-1", Status: agent.StatusBusy, UpdatedAt: now.Add(-1 * time.Hour)},
+		{ID: "today-2", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now},
+		{ID: "today-3", Status: agent.StatusIdle, UpdatedAt: now.Add(-3 * time.Hour), LastReadAt: now},
+		{ID: "yest-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-25 * time.Hour), LastReadAt: now},
+		{ID: "yest-2", Status: agent.StatusIdle, UpdatedAt: now.Add(-26 * time.Hour), LastReadAt: now},
+		{ID: "old-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-50 * time.Hour), LastReadAt: now},
+		{ID: "old-2", Status: agent.StatusIdle, UpdatedAt: now.Add(-51 * time.Hour), LastReadAt: now},
 	}
 
 	setup := func() *InboxModel {
@@ -425,9 +404,9 @@ func TestCategoryNavigation(t *testing.T) {
 			cursor    int
 			wantGroup int
 		}{
-			{0, 0}, {1, 0}, // BUSY
-			{2, 1}, {3, 1}, {4, 1}, // FOLLOW UP
-			{5, 2}, {6, 2}, // IDLE
+			{0, 0}, {1, 0}, {2, 0}, // Today
+			{3, 1}, {4, 1}, // Yesterday
+			{5, 2}, {6, 2}, // Older
 		}
 		for _, tt := range tests {
 			m.cursor = tt.cursor
@@ -446,9 +425,9 @@ func TestCategoryNavigation(t *testing.T) {
 			groupIdx int
 			wantRow  int
 		}{
-			{0, 0}, // BUSY starts at 0
-			{1, 2}, // FOLLOW UP starts at 2
-			{2, 5}, // IDLE starts at 5
+			{0, 0}, // Today starts at 0
+			{1, 3}, // Yesterday starts at 3
+			{2, 5}, // Older starts at 5
 		}
 		for _, tt := range tests {
 			got := m.groupFirstRow(tt.groupIdx)
@@ -462,15 +441,15 @@ func TestCategoryNavigation(t *testing.T) {
 		t.Parallel()
 		m := setup()
 
-		// Cursor at fu-2 (index 3, middle of FOLLOW UP group)
-		m.cursor = 3
+		// Cursor at today-2 (index 1, middle of Today group)
+		m.cursor = 1
 		gi := m.cursorGroupIndex()
 		first := m.groupFirstRow(gi)
 		if m.cursor != first {
 			m.cursor = first
 		}
-		if m.cursor != 2 {
-			t.Errorf("cursor=%d, want 2 (top of FOLLOW UP)", m.cursor)
+		if m.cursor != 0 {
+			t.Errorf("cursor=%d, want 0 (top of Today)", m.cursor)
 		}
 	})
 
@@ -478,15 +457,15 @@ func TestCategoryNavigation(t *testing.T) {
 		t.Parallel()
 		m := setup()
 
-		// Cursor at fu-1 (index 2, top of FOLLOW UP)
-		m.cursor = 2
+		// Cursor at yest-1 (index 3, top of Yesterday)
+		m.cursor = 3
 		gi := m.cursorGroupIndex()
 		first := m.groupFirstRow(gi)
 		if m.cursor == first && gi > 0 {
 			m.cursor = m.groupFirstRow(gi - 1)
 		}
 		if m.cursor != 0 {
-			t.Errorf("cursor=%d, want 0 (top of BUSY)", m.cursor)
+			t.Errorf("cursor=%d, want 0 (top of Today)", m.cursor)
 		}
 	})
 
@@ -511,23 +490,23 @@ func TestCategoryNavigation(t *testing.T) {
 		t.Parallel()
 		m := setup()
 
-		// From middle of BUSY (index 1)
+		// From middle of Today (index 1)
 		m.cursor = 1
 		gi := m.cursorGroupIndex()
 		if gi < len(m.groups)-1 {
 			m.cursor = m.groupFirstRow(gi + 1)
 		}
-		if m.cursor != 2 {
-			t.Errorf("cursor=%d, want 2 (top of FOLLOW UP)", m.cursor)
+		if m.cursor != 3 {
+			t.Errorf("cursor=%d, want 3 (top of Yesterday)", m.cursor)
 		}
 
-		// From top of FOLLOW UP (index 2) to top of IDLE
+		// From top of Yesterday (index 3) to top of Older
 		gi = m.cursorGroupIndex()
 		if gi < len(m.groups)-1 {
 			m.cursor = m.groupFirstRow(gi + 1)
 		}
 		if m.cursor != 5 {
-			t.Errorf("cursor=%d, want 5 (top of IDLE)", m.cursor)
+			t.Errorf("cursor=%d, want 5 (top of Older day)", m.cursor)
 		}
 	})
 
@@ -535,7 +514,7 @@ func TestCategoryNavigation(t *testing.T) {
 		t.Parallel()
 		m := setup()
 
-		// Cursor at idle-1 (index 5, top of last group IDLE)
+		// Cursor at old-1 (index 5, top of last group)
 		m.cursor = 5
 		gi := m.cursorGroupIndex()
 		if gi < len(m.groups)-1 {
@@ -562,6 +541,107 @@ func TestCategoryNavigation(t *testing.T) {
 		}
 		if m.cursor != 6 {
 			t.Errorf("cursor=%d, want 6 (should stay at last row)", m.cursor)
+		}
+	})
+}
+
+func TestCategoryNavigation_WithArchivedRows(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	// Today: 2 active + 1 archived, Yesterday: 1 active + 1 archived
+	sessions := []agent.SessionInfo{
+		{ID: "today-1", Status: agent.StatusBusy, UpdatedAt: now.Add(-1 * time.Hour)},
+		{ID: "today-2", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now},
+		{ID: "today-arch", Status: agent.StatusIdle, UpdatedAt: now.Add(-3 * time.Hour), LastReadAt: now, Visibility: agent.VisibilityArchived},
+		{ID: "yest-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-25 * time.Hour), LastReadAt: now},
+		{ID: "yest-arch", Status: agent.StatusIdle, UpdatedAt: now.Add(-26 * time.Hour), LastReadAt: now, Visibility: agent.VisibilityArchived},
+	}
+
+	t.Run("collapsed: shift+down jumps over accordion to next group", func(t *testing.T) {
+		t.Parallel()
+		m := &InboxModel{}
+		m.buildGroups(sessions)
+
+		// flatRows (collapsed): today-1(0), today-2(1), accordion-Today(2), yest-1(3), accordion-Yesterday(4)
+		if len(m.flatRows) != 5 {
+			t.Fatalf("expected 5 flatRows, got %d", len(m.flatRows))
+		}
+
+		// From Today group, shift+down should jump to Yesterday's first row (yest-1).
+		m.cursor = 0
+		gi := m.cursorGroupIndex()
+		if gi < len(m.groups)-1 {
+			m.cursor = m.groupFirstRow(gi + 1)
+		}
+		if m.cursor != 3 {
+			t.Errorf("cursor=%d, want 3 (top of Yesterday, skipping accordion)", m.cursor)
+		}
+	})
+
+	t.Run("collapsed: shift+up from yesterday jumps to top of today", func(t *testing.T) {
+		t.Parallel()
+		m := &InboxModel{}
+		m.buildGroups(sessions)
+
+		// Cursor at yest-1 (index 3)
+		m.cursor = 3
+		gi := m.cursorGroupIndex()
+		first := m.groupFirstRow(gi)
+		if m.cursor == first && gi > 0 {
+			m.cursor = m.groupFirstRow(gi - 1)
+		} else {
+			m.cursor = first
+		}
+		if m.cursor != 0 {
+			t.Errorf("cursor=%d, want 0 (top of Today)", m.cursor)
+		}
+	})
+
+	t.Run("expanded: shift+down jumps over accordion and archived rows", func(t *testing.T) {
+		t.Parallel()
+		m := &InboxModel{archiveExpanded: map[string]bool{"Today": true}}
+		m.buildGroups(sessions)
+
+		// flatRows (Today expanded): today-1(0), today-2(1), accordion-Today(2), today-arch(3),
+		//                            yest-1(4), accordion-Yesterday(5)
+		if len(m.flatRows) != 6 {
+			t.Fatalf("expected 6 flatRows, got %d", len(m.flatRows))
+		}
+
+		// From Today group, shift+down should jump to yest-1.
+		m.cursor = 0
+		gi := m.cursorGroupIndex()
+		if gi < len(m.groups)-1 {
+			m.cursor = m.groupFirstRow(gi + 1)
+		}
+		if m.cursor != 4 {
+			t.Errorf("cursor=%d, want 4 (top of Yesterday, skipping accordion+archived)", m.cursor)
+		}
+	})
+
+	t.Run("expanded: cursorGroupIndex correct for accordion and archived rows", func(t *testing.T) {
+		t.Parallel()
+		m := &InboxModel{archiveExpanded: map[string]bool{"Today": true}}
+		m.buildGroups(sessions)
+
+		tests := []struct {
+			cursor    int
+			wantGroup int
+		}{
+			{0, 0}, // today-1
+			{1, 0}, // today-2
+			{2, 0}, // accordion-Today
+			{3, 0}, // today-arch (expanded archived row)
+			{4, 1}, // yest-1
+			{5, 1}, // accordion-Yesterday
+		}
+		for _, tt := range tests {
+			m.cursor = tt.cursor
+			got := m.cursorGroupIndex()
+			if got != tt.wantGroup {
+				t.Errorf("cursor=%d: cursorGroupIndex()=%d, want %d", tt.cursor, got, tt.wantGroup)
+			}
 		}
 	})
 }
@@ -882,7 +962,7 @@ func TestDateLabel(t *testing.T) {
 	}
 }
 
-func TestBuildDisplayLines_DateSeparatorsWithinGroup(t *testing.T) {
+func TestBuildGroups_DateGrouping(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
@@ -895,35 +975,34 @@ func TestBuildDisplayLines_DateSeparatorsWithinGroup(t *testing.T) {
 
 	m := &InboxModel{width: 120, height: 50}
 	m.buildGroups(sessions)
-	m.buildDisplayLines()
 
-	// Count date separator lines (they contain "──").
-	var sepLines []string
-	for _, line := range m.displayLines {
-		if strings.Contains(line, "──") {
-			sepLines = append(sepLines, line)
+	// Should have 3 date groups: Today, Yesterday, and an older day.
+	if len(m.groups) != 3 {
+		names := make([]string, len(m.groups))
+		for i, g := range m.groups {
+			names[i] = g.name
 		}
+		t.Fatalf("expected 3 date groups, got %d: %v", len(m.groups), names)
 	}
 
-	// We should have 3 date separators: Today, Yesterday, and the older day.
-	if len(sepLines) != 3 {
-		t.Errorf("expected 3 date separator lines, got %d", len(sepLines))
-		for i, l := range m.displayLines {
-			t.Logf("  displayLines[%d]: %s", i, l)
-		}
+	if m.groups[0].name != "Today" {
+		t.Errorf("expected first group 'Today', got %q", m.groups[0].name)
+	}
+	if m.groups[1].name != "Yesterday" {
+		t.Errorf("expected second group 'Yesterday', got %q", m.groups[1].name)
+	}
+	// Third group is an older date — just verify it's not Today or Yesterday.
+	if m.groups[2].name == "Today" || m.groups[2].name == "Yesterday" {
+		t.Errorf("expected third group to be an older date, got %q", m.groups[2].name)
 	}
 
-	// Verify "Today" and "Yesterday" appear in separators.
-	allSeps := strings.Join(sepLines, "\n")
-	if !strings.Contains(allSeps, "Today") {
-		t.Errorf("expected a 'Today' separator, got: %v", sepLines)
-	}
-	if !strings.Contains(allSeps, "Yesterday") {
-		t.Errorf("expected a 'Yesterday' separator, got: %v", sepLines)
+	// Today group should have 2 sessions.
+	if len(m.groups[0].rows) != 2 {
+		t.Errorf("Today group: expected 2 rows, got %d", len(m.groups[0].rows))
 	}
 }
 
-func TestBuildDisplayLines_SingleDayStillShowsSeparator(t *testing.T) {
+func TestBuildGroups_SingleDayGroup(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
@@ -934,24 +1013,66 @@ func TestBuildDisplayLines_SingleDayStillShowsSeparator(t *testing.T) {
 
 	m := &InboxModel{width: 120, height: 50}
 	m.buildGroups(sessions)
-	m.buildDisplayLines()
 
-	// Even a single day should show one date separator (so you always see context).
-	var sepCount int
-	for _, line := range m.displayLines {
-		if strings.Contains(line, "──") && strings.Contains(line, "Today") {
-			sepCount++
-		}
+	// All sessions from today — should be one "Today" group.
+	if len(m.groups) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(m.groups))
 	}
-	if sepCount != 1 {
-		t.Errorf("expected 1 'Today' separator for single-day group, got %d", sepCount)
-		for i, l := range m.displayLines {
-			t.Logf("  displayLines[%d]: %s", i, l)
-		}
+	if m.groups[0].name != "Today" {
+		t.Errorf("expected group name 'Today', got %q", m.groups[0].name)
 	}
 }
 
-func TestBuildDisplayLines_RowToLineAccountsForSeparators(t *testing.T) {
+func TestBuildGroups_DoneArchivedSinkToBottomOfDay(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "done", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), LastReadAt: now, Visibility: agent.VisibilityDone},
+		{ID: "busy", Status: agent.StatusBusy, UpdatedAt: now.Add(-2 * time.Hour)},
+		{ID: "archived", Status: agent.StatusIdle, UpdatedAt: now.Add(-30 * time.Minute), LastReadAt: now, Visibility: agent.VisibilityArchived},
+		{ID: "idle", Status: agent.StatusIdle, UpdatedAt: now.Add(-3 * time.Hour), LastReadAt: now},
+	}
+
+	m := &InboxModel{}
+	m.buildGroups(sessions)
+
+	if len(m.groups) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(m.groups))
+	}
+
+	rows := m.groups[0].rows
+	// Only non-archived sessions in the date group: busy, idle, done.
+	if len(rows) != 3 {
+		ids := make([]string, len(rows))
+		for i, r := range rows {
+			ids[i] = r.session.ID
+		}
+		t.Fatalf("expected 3 rows in date group, got %d: %v", len(rows), ids)
+	}
+
+	// Busy (priority 0) should be first, idle (priority 4) in the middle,
+	// done (priority 5) at the end.
+	if rows[0].session.ID != "busy" {
+		t.Errorf("row[0]: expected 'busy', got %q", rows[0].session.ID)
+	}
+	if rows[1].session.ID != "idle" {
+		t.Errorf("row[1]: expected 'idle', got %q", rows[1].session.ID)
+	}
+	if rows[2].session.ID != "done" {
+		t.Errorf("row[2]: expected 'done', got %q", rows[2].session.ID)
+	}
+
+	// Archived session should be stored in the group's archivedRows.
+	if len(m.groups[0].archivedRows) != 1 {
+		t.Fatalf("expected 1 archived session in group, got %d", len(m.groups[0].archivedRows))
+	}
+	if m.groups[0].archivedRows[0].session.ID != "archived" {
+		t.Errorf("expected archived session 'archived', got %q", m.groups[0].archivedRows[0].session.ID)
+	}
+}
+
+func TestBuildDisplayLines_RowToLineAccountsForGroupHeaders(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
@@ -964,16 +1085,12 @@ func TestBuildDisplayLines_RowToLineAccountsForSeparators(t *testing.T) {
 	m.buildGroups(sessions)
 	m.buildDisplayLines()
 
-	// With 1 group header + "Today" separator + row + "Yesterday" separator + row
-	// = 5 lines total. rowToLine should map:
-	//   flatRows[0] -> line 2 (after group header + Today separator)
-	//   flatRows[1] -> line 4 (after Yesterday separator)
 	if len(m.flatRows) != 2 {
 		t.Fatalf("expected 2 flatRows, got %d", len(m.flatRows))
 	}
 
 	// The key invariant: each row's display line must point at a valid line
-	// that is strictly after the previous row's line (accounting for separators).
+	// that is strictly after the previous row's line (accounting for headers).
 	for i := 1; i < len(m.flatRows); i++ {
 		if m.rowToLine[i] <= m.rowToLine[i-1] {
 			t.Errorf("rowToLine[%d]=%d should be > rowToLine[%d]=%d",
@@ -987,5 +1104,299 @@ func TestBuildDisplayLines_RowToLineAccountsForSeparators(t *testing.T) {
 			t.Errorf("rowToLine[%d]=%d out of bounds (displayLines has %d entries)",
 				i, lineIdx, len(m.displayLines))
 		}
+	}
+}
+
+func TestArchiveAccordion_CollapsedByDefault(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "active", Status: agent.StatusIdle, UpdatedAt: now, LastReadAt: now},
+		{ID: "archived-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), Visibility: agent.VisibilityArchived},
+		{ID: "archived-2", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), Visibility: agent.VisibilityArchived},
+	}
+
+	m := &InboxModel{}
+	m.buildGroups(sessions)
+
+	// 1 active session in date group + 1 accordion toggle = 2 flatRows.
+	if len(m.flatRows) != 2 {
+		t.Fatalf("expected 2 flatRows (1 session + 1 accordion), got %d", len(m.flatRows))
+	}
+	if m.flatRows[1].accordion == "" {
+		t.Error("expected last flatRow to be the accordion toggle")
+	}
+	if m.archiveExpanded != nil && m.archiveExpanded["Today"] {
+		t.Error("expected archiveExpanded['Today'] to be false by default")
+	}
+	if len(m.groups[0].archivedRows) != 2 {
+		t.Errorf("expected 2 archived sessions in group, got %d", len(m.groups[0].archivedRows))
+	}
+}
+
+func TestArchiveAccordion_ExpandedShowsArchivedRows(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "active", Status: agent.StatusIdle, UpdatedAt: now, LastReadAt: now},
+		{ID: "archived-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), Visibility: agent.VisibilityArchived},
+		{ID: "archived-2", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), Visibility: agent.VisibilityArchived},
+	}
+
+	m := &InboxModel{archiveExpanded: map[string]bool{"Today": true}}
+	m.buildGroups(sessions)
+
+	// 1 active + 1 accordion + 2 archived = 4 flatRows.
+	if len(m.flatRows) != 4 {
+		t.Fatalf("expected 4 flatRows, got %d", len(m.flatRows))
+	}
+	if m.flatRows[1].accordion == "" {
+		t.Error("expected flatRows[1] to be the accordion toggle")
+	}
+	if m.flatRows[2].session == nil || m.flatRows[2].session.ID != "archived-1" {
+		t.Error("expected flatRows[2] to be archived-1")
+	}
+	if m.flatRows[3].session == nil || m.flatRows[3].session.ID != "archived-2" {
+		t.Error("expected flatRows[3] to be archived-2")
+	}
+}
+
+func TestArchiveAccordion_ToggleExpandCollapse(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "active", Status: agent.StatusIdle, UpdatedAt: now, LastReadAt: now},
+		{ID: "archived-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), Visibility: agent.VisibilityArchived},
+	}
+
+	m := &InboxModel{}
+	m.buildGroups(sessions)
+
+	// Initially collapsed: 1 active + 1 accordion = 2 flatRows.
+	if len(m.flatRows) != 2 {
+		t.Fatalf("collapsed: expected 2 flatRows, got %d", len(m.flatRows))
+	}
+
+	// Expand.
+	m.archiveExpanded = map[string]bool{"Today": true}
+	m.rebuildFlatRows()
+
+	// Expanded: 1 active + 1 accordion + 1 archived = 3 flatRows.
+	if len(m.flatRows) != 3 {
+		t.Fatalf("expanded: expected 3 flatRows, got %d", len(m.flatRows))
+	}
+
+	// Collapse again.
+	m.archiveExpanded["Today"] = false
+	m.rebuildFlatRows()
+
+	if len(m.flatRows) != 2 {
+		t.Fatalf("re-collapsed: expected 2 flatRows, got %d", len(m.flatRows))
+	}
+}
+
+func TestArchiveAccordion_NoArchivedSessionsNoAccordion(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "active", Status: agent.StatusIdle, UpdatedAt: now, LastReadAt: now},
+	}
+
+	m := &InboxModel{}
+	m.buildGroups(sessions)
+
+	// No archived sessions — no accordion row.
+	if len(m.flatRows) != 1 {
+		t.Fatalf("expected 1 flatRow, got %d", len(m.flatRows))
+	}
+	for _, r := range m.flatRows {
+		if r.accordion != "" {
+			t.Error("unexpected accordion row when there are no archived sessions")
+		}
+	}
+}
+
+func TestArchiveAccordion_DisplayLines(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "active", Status: agent.StatusIdle, UpdatedAt: now, LastReadAt: now},
+		{ID: "archived-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), Visibility: agent.VisibilityArchived},
+	}
+
+	m := &InboxModel{width: 120, height: 50}
+	m.buildGroups(sessions)
+	m.buildDisplayLines()
+
+	// All rowToLine values should be valid indices into displayLines.
+	for i, lineIdx := range m.rowToLine {
+		if lineIdx < 0 || lineIdx >= len(m.displayLines) {
+			t.Errorf("rowToLine[%d]=%d out of bounds (displayLines has %d entries)",
+				i, lineIdx, len(m.displayLines))
+		}
+	}
+
+	// The accordion line should contain "Archive" and a count.
+	accordionLineIdx := m.rowToLine[1] // flatRows[1] is the accordion
+	if !strings.Contains(m.displayLines[accordionLineIdx], "Archive") {
+		t.Errorf("expected accordion line to contain 'Archive', got: %s", m.displayLines[accordionLineIdx])
+	}
+	if !strings.Contains(m.displayLines[accordionLineIdx], "1") {
+		t.Errorf("expected accordion line to contain count '1', got: %s", m.displayLines[accordionLineIdx])
+	}
+}
+
+func TestArchiveAccordion_ExpandedDisplayLinesIncludeArchivedRows(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "active", Status: agent.StatusIdle, UpdatedAt: now, LastReadAt: now},
+		{ID: "archived-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), Visibility: agent.VisibilityArchived},
+		{ID: "archived-2", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), Visibility: agent.VisibilityArchived},
+	}
+
+	m := &InboxModel{width: 120, height: 50, archiveExpanded: map[string]bool{"Today": true}}
+	m.buildGroups(sessions)
+	m.buildDisplayLines()
+
+	// flatRows: 1 active + 1 accordion + 2 archived = 4
+	if len(m.flatRows) != 4 {
+		t.Fatalf("expected 4 flatRows, got %d", len(m.flatRows))
+	}
+
+	// All rowToLine values should be valid and strictly increasing.
+	for i, lineIdx := range m.rowToLine {
+		if lineIdx < 0 || lineIdx >= len(m.displayLines) {
+			t.Errorf("rowToLine[%d]=%d out of bounds (displayLines has %d entries)",
+				i, lineIdx, len(m.displayLines))
+		}
+	}
+	for i := 1; i < len(m.rowToLine); i++ {
+		if m.rowToLine[i] <= m.rowToLine[i-1] {
+			t.Errorf("rowToLine[%d]=%d should be > rowToLine[%d]=%d",
+				i, m.rowToLine[i], i-1, m.rowToLine[i-1])
+		}
+	}
+}
+
+func TestRenderRow_DoneSessionGreenTitle(t *testing.T) {
+	t.Parallel()
+
+	m := &InboxModel{width: 120}
+	now := time.Now()
+
+	doneSession := &agent.SessionInfo{
+		ID:         "done-1",
+		Status:     agent.StatusIdle,
+		Title:      "Fix the bug",
+		UpdatedAt:  now,
+		LastReadAt: now,
+		Visibility: agent.VisibilityDone,
+	}
+
+	rendered := m.renderRow(inboxRow{session: doneSession}, false)
+
+	// The title text should be present in the rendered output.
+	if !strings.Contains(rendered, "Fix the bug") {
+		t.Errorf("expected done row to contain title, got: %s", rendered)
+	}
+
+	// The rendered output should contain the ANSI escape for successColor (#10B981).
+	// Lip Gloss renders this as an SGR sequence. We check for the color being applied.
+	// successColor = "#10B981" — the exact escape depends on terminal capabilities,
+	// but the title should NOT use the default text color.
+	normalSession := &agent.SessionInfo{
+		ID:         "normal-1",
+		Status:     agent.StatusIdle,
+		Title:      "Fix the bug",
+		UpdatedAt:  now,
+		LastReadAt: now,
+	}
+	normalRendered := m.renderRow(inboxRow{session: normalSession}, false)
+
+	// The done session rendering should differ from the normal one
+	// because the title has green styling applied.
+	if rendered == normalRendered {
+		t.Error("expected done session rendering to differ from normal session (green title)")
+	}
+}
+
+func TestRenderRow_DoneSessionMutedProject(t *testing.T) {
+	t.Parallel()
+
+	m := &InboxModel{width: 120}
+	now := time.Now()
+
+	doneSession := &agent.SessionInfo{
+		ID:          "done-1",
+		Status:      agent.StatusIdle,
+		Title:       "My task",
+		ProjectName: "myproject",
+		UpdatedAt:   now,
+		LastReadAt:  now,
+		Visibility:  agent.VisibilityDone,
+	}
+	normalSession := &agent.SessionInfo{
+		ID:          "normal-1",
+		Status:      agent.StatusIdle,
+		Title:       "My task",
+		ProjectName: "myproject",
+		UpdatedAt:   now,
+		LastReadAt:  now,
+	}
+
+	doneRendered := m.renderRow(inboxRow{session: doneSession}, false)
+	normalRendered := m.renderRow(inboxRow{session: normalSession}, false)
+
+	// Done row should render differently due to muted project color and green title.
+	if doneRendered == normalRendered {
+		t.Error("expected done session to render differently from normal session")
+	}
+}
+
+func TestRenderRow_ArchivedSessionGrayedOut(t *testing.T) {
+	t.Parallel()
+
+	m := &InboxModel{width: 120}
+	now := time.Now()
+
+	archivedSession := &agent.SessionInfo{
+		ID:          "arch-1",
+		Status:      agent.StatusIdle,
+		Title:       "Old task",
+		ProjectName: "myproject",
+		Agent:       "build",
+		UpdatedAt:   now,
+		LastReadAt:  now,
+		Visibility:  agent.VisibilityArchived,
+	}
+	normalSession := &agent.SessionInfo{
+		ID:          "normal-1",
+		Status:      agent.StatusIdle,
+		Title:       "Old task",
+		ProjectName: "myproject",
+		Agent:       "build",
+		UpdatedAt:   now,
+		LastReadAt:  now,
+	}
+
+	archivedRendered := m.renderRow(inboxRow{session: archivedSession}, false)
+	normalRendered := m.renderRow(inboxRow{session: normalSession}, false)
+
+	// Archived row should render differently — title, project, and agent badge
+	// all use dimColor instead of their normal colors.
+	if archivedRendered == normalRendered {
+		t.Error("expected archived session to render differently from normal session (grayed out)")
+	}
+
+	// Title text should still be present.
+	if !strings.Contains(archivedRendered, "Old task") {
+		t.Errorf("expected archived row to contain title, got: %s", archivedRendered)
 	}
 }

@@ -30,14 +30,16 @@ type inboxRefreshMsg struct{}
 
 // inboxRow is one selectable row in the inbox.
 type inboxRow struct {
-	session *agent.SessionInfo // nil if this is a placeholder or info row
+	session   *agent.SessionInfo // nil for non-session rows (e.g. accordion)
+	accordion string             // non-empty = archive accordion for this date group label
 }
 
 // inboxGroup is a named section of rows.
 type inboxGroup struct {
-	name  string
-	style lipgloss.Style
-	rows  []inboxRow
+	name         string
+	style        lipgloss.Style
+	rows         []inboxRow // active (non-archived) rows
+	archivedRows []inboxRow // archived rows shown when accordion is expanded
 }
 
 // InboxModel is the top-level Bubble Tea model for the agent inbox.
@@ -53,6 +55,9 @@ type InboxModel struct {
 	scrollOffset int
 	showMenu     bool
 	menu         actionMenuModel
+
+	// Archive accordion state — tracks which date groups have their archive expanded.
+	archiveExpanded map[string]bool // keyed by date group label
 
 	// Confirm dialog state.
 	showConfirm bool
@@ -331,6 +336,14 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 		if m.cursor >= 0 && m.cursor < len(m.flatRows) {
 			row := m.flatRows[m.cursor]
+			if row.accordion != "" {
+				if m.archiveExpanded == nil {
+					m.archiveExpanded = make(map[string]bool)
+				}
+				m.archiveExpanded[row.accordion] = !m.archiveExpanded[row.accordion]
+				m.rebuildFlatRows()
+				return m, nil
+			}
 			if row.session != nil {
 				return m, m.openSession(row.session.ID)
 			}
@@ -496,131 +509,113 @@ func (m *InboxModel) toggleFollowUp(sessionID string) tea.Cmd {
 	}
 }
 
-// buildGroups organizes sessions into display groups.
+// sessionSortPriority returns a numeric priority for sorting within a day group.
+// Active/attention-needing sessions float to the top; done/archived sink to the bottom.
+func sessionSortPriority(s *agent.SessionInfo) int {
+	switch {
+	// Done/archived always sink to the bottom regardless of status.
+	case s.Visibility == agent.VisibilityDone:
+		return 5
+	case s.Visibility == agent.VisibilityArchived:
+		return 6
+	case s.Status == agent.StatusBusy || s.Status == agent.StatusStarting:
+		return 0
+	case s.FollowUp:
+		return 1
+	case s.Status == agent.StatusError:
+		return 2
+	case s.Unread():
+		return 3
+	default:
+		return 4 // idle, dead, etc.
+	}
+}
+
+// buildGroups organises sessions into date-based groups (Today, Yesterday, …).
+// Within each day, sessions are sorted by status priority then by UpdatedAt
+// descending so active/attention-needing sessions appear first and
+// done sessions sink to the bottom.
+//
+// Archived sessions are stored in each group's archivedRows and hidden
+// behind a per-group accordion toggle. When a group's accordion is
+// expanded (tracked by m.archiveExpanded[label]), the archived rows
+// appear below the accordion in flatRows.
 func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
-	var busyRows, followUpRows, unreadRows, idleRows, errorRows, deadRows, doneRows, archivedRows []inboxRow
+	now := time.Now()
+
+	// Sort all sessions by UpdatedAt descending so day buckets are in
+	// chronological order and the most recent day appears first.
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt)
+	})
+
+	// Bucket sessions by day label, preserving insertion order.
+	// Archived sessions go into a separate slice per bucket.
+	type dayBucket struct {
+		label    string
+		rows     []inboxRow
+		archived []inboxRow
+	}
+	var buckets []dayBucket
+	bucketIdx := make(map[string]int) // label -> index into buckets
 
 	for i := range sessions {
 		s := &sessions[i]
+		label := dateLabel(s.UpdatedAt, now)
 
-		// Archived sessions go into their own group at the very bottom.
-		if s.Visibility == agent.VisibilityArchived {
-			archivedRows = append(archivedRows, inboxRow{session: s})
-			continue
+		idx, ok := bucketIdx[label]
+		if !ok {
+			idx = len(buckets)
+			bucketIdx[label] = idx
+			buckets = append(buckets, dayBucket{label: label})
 		}
-
 		row := inboxRow{session: s}
-
-		// Done sessions go into their own group at the bottom.
-		if s.Visibility == agent.VisibilityDone {
-			doneRows = append(doneRows, row)
-			continue
+		if s.Visibility == agent.VisibilityArchived {
+			buckets[idx].archived = append(buckets[idx].archived, row)
+		} else {
+			buckets[idx].rows = append(buckets[idx].rows, row)
 		}
+	}
 
-		// Follow-up is an orthogonal user flag — pull these sessions into
-		// their own group regardless of status, unless they're actively busy.
-		if s.FollowUp && s.Status != agent.StatusBusy && s.Status != agent.StatusStarting {
-			followUpRows = append(followUpRows, row)
-			continue
-		}
-
-		switch s.Status {
-		case agent.StatusBusy, agent.StatusStarting:
-			busyRows = append(busyRows, row)
-		case agent.StatusIdle:
-			if s.Unread() {
-				unreadRows = append(unreadRows, row)
-			} else {
-				idleRows = append(idleRows, row)
+	// Within each day, sort active rows by status priority then UpdatedAt descending.
+	for i := range buckets {
+		sort.SliceStable(buckets[i].rows, func(a, b int) bool {
+			pa := sessionSortPriority(buckets[i].rows[a].session)
+			pb := sessionSortPriority(buckets[i].rows[b].session)
+			if pa != pb {
+				return pa < pb
 			}
-		case agent.StatusError:
-			errorRows = append(errorRows, row)
-		case agent.StatusDead:
-			deadRows = append(deadRows, row)
-		default:
-			idleRows = append(idleRows, row)
-		}
-	}
-
-	// Sort each bucket by UpdatedAt descending so the ordering is
-	// deterministic across refreshes (most recently active first).
-	byUpdatedDesc := func(rows []inboxRow) {
-		sort.Slice(rows, func(i, j int) bool {
-			return rows[i].session.UpdatedAt.After(rows[j].session.UpdatedAt)
+			return buckets[i].rows[a].session.UpdatedAt.After(buckets[i].rows[b].session.UpdatedAt)
 		})
 	}
-	byUpdatedDesc(busyRows)
-	byUpdatedDesc(followUpRows)
-	byUpdatedDesc(unreadRows)
-	byUpdatedDesc(idleRows)
-	byUpdatedDesc(errorRows)
-	byUpdatedDesc(deadRows)
-	byUpdatedDesc(doneRows)
-	byUpdatedDesc(archivedRows)
 
+	headerStyle := lipgloss.NewStyle().Foreground(dimColor).Bold(true)
 	m.groups = nil
-
-	if len(busyRows) > 0 {
+	for _, b := range buckets {
 		m.groups = append(m.groups, inboxGroup{
-			name:  fmt.Sprintf("BUSY (%d)", len(busyRows)),
-			style: lipgloss.NewStyle().Foreground(successColor).Bold(true),
-			rows:  busyRows,
-		})
-	}
-	if len(unreadRows) > 0 {
-		m.groups = append(m.groups, inboxGroup{
-			name:  fmt.Sprintf("UNREAD (%d)", len(unreadRows)),
-			style: lipgloss.NewStyle().Foreground(secondaryColor).Bold(true),
-			rows:  unreadRows,
-		})
-	}
-	if len(followUpRows) > 0 {
-		m.groups = append(m.groups, inboxGroup{
-			name:  fmt.Sprintf("FOLLOW UP (%d)", len(followUpRows)),
-			style: lipgloss.NewStyle().Foreground(warningColor).Bold(true),
-			rows:  followUpRows,
-		})
-	}
-	if len(idleRows) > 0 {
-		m.groups = append(m.groups, inboxGroup{
-			name:  fmt.Sprintf("IDLE (%d)", len(idleRows)),
-			style: lipgloss.NewStyle().Foreground(warningColor).Bold(true),
-			rows:  idleRows,
-		})
-	}
-	if len(errorRows) > 0 {
-		m.groups = append(m.groups, inboxGroup{
-			name:  fmt.Sprintf("ERROR (%d)", len(errorRows)),
-			style: lipgloss.NewStyle().Foreground(dangerColor).Bold(true),
-			rows:  errorRows,
-		})
-	}
-	if len(deadRows) > 0 {
-		m.groups = append(m.groups, inboxGroup{
-			name:  fmt.Sprintf("DEAD (%d)", len(deadRows)),
-			style: lipgloss.NewStyle().Foreground(mutedColor).Bold(true),
-			rows:  deadRows,
-		})
-	}
-	if len(doneRows) > 0 {
-		m.groups = append(m.groups, inboxGroup{
-			name:  fmt.Sprintf("DONE (%d)", len(doneRows)),
-			style: lipgloss.NewStyle().Foreground(successColor).Bold(true),
-			rows:  doneRows,
-		})
-	}
-	if len(archivedRows) > 0 {
-		m.groups = append(m.groups, inboxGroup{
-			name:  fmt.Sprintf("ARCHIVED (%d)", len(archivedRows)),
-			style: lipgloss.NewStyle().Foreground(mutedColor).Bold(true),
-			rows:  archivedRows,
+			name:         b.label,
+			style:        headerStyle,
+			rows:         b.rows,
+			archivedRows: b.archived,
 		})
 	}
 
-	// Flatten for cursor navigation.
+	m.rebuildFlatRows()
+}
+
+// rebuildFlatRows reconstructs flatRows from m.groups, inserting per-group
+// accordion toggles and optionally expanded archived rows.
+// Called by buildGroups and when toggling an archive accordion.
+func (m *InboxModel) rebuildFlatRows() {
 	m.flatRows = nil
 	for _, g := range m.groups {
 		m.flatRows = append(m.flatRows, g.rows...)
+		if len(g.archivedRows) > 0 {
+			m.flatRows = append(m.flatRows, inboxRow{accordion: g.name})
+			if m.archiveExpanded[g.name] {
+				m.flatRows = append(m.flatRows, g.archivedRows...)
+			}
+		}
 	}
 
 	// Clamp cursor.
@@ -668,7 +663,12 @@ func (m *InboxModel) View() tea.View {
 	if m.cursor >= 0 && m.cursor < len(m.flatRows) {
 		lineIdx := m.rowToLine[m.cursor]
 		if lineIdx < len(m.displayLines) {
-			m.displayLines[lineIdx] = m.renderRow(m.flatRows[m.cursor], true)
+			row := m.flatRows[m.cursor]
+			if row.accordion != "" {
+				m.displayLines[lineIdx] = m.renderArchiveAccordion(row.accordion, true)
+			} else {
+				m.displayLines[lineIdx] = m.renderRow(row, true)
+			}
 		}
 	}
 	m.ensureCursorVisible()
@@ -725,29 +725,36 @@ func (m *InboxModel) buildDisplayLines() {
 	m.displayLines = nil
 	m.rowToLine = make([]int, len(m.flatRows))
 
-	now := time.Now()
-	sepStyle := lipgloss.NewStyle().Foreground(dimColor)
-
 	flatIdx := 0
 	for gi, g := range m.groups {
+		// Group header.
 		m.displayLines = append(m.displayLines, g.style.Render(g.name))
 
-		var prevLabel string
+		// Active/done session rows.
 		for ri := range g.rows {
-			// Insert a date separator when the day changes within a group.
-			if g.rows[ri].session != nil {
-				label := dateLabel(g.rows[ri].session.UpdatedAt, now)
-				if label != prevLabel {
-					m.displayLines = append(m.displayLines, m.renderDateSeparator(label, sepStyle))
-					prevLabel = label
-				}
-			}
-
 			m.rowToLine[flatIdx] = len(m.displayLines)
 			m.displayLines = append(m.displayLines, m.renderRow(g.rows[ri], false))
 			flatIdx++
 		}
 
+		// Per-group archive accordion + expanded rows.
+		if len(g.archivedRows) > 0 {
+			// Accordion toggle row.
+			m.rowToLine[flatIdx] = len(m.displayLines)
+			m.displayLines = append(m.displayLines, m.renderArchiveAccordion(g.name, false))
+			flatIdx++
+
+			// Expanded archived session rows.
+			if m.archiveExpanded[g.name] {
+				for range g.archivedRows {
+					m.rowToLine[flatIdx] = len(m.displayLines)
+					m.displayLines = append(m.displayLines, m.renderRow(m.flatRows[flatIdx], false))
+					flatIdx++
+				}
+			}
+		}
+
+		// Blank separator between groups (not after the last one).
 		if gi < len(m.groups)-1 {
 			m.displayLines = append(m.displayLines, "")
 		}
@@ -760,33 +767,28 @@ func (m *InboxModel) buildDisplayLines() {
 	}
 }
 
-// renderDateSeparator renders a day separator line like "  ── Today ──".
-func (m *InboxModel) renderDateSeparator(label string, style lipgloss.Style) string {
-	const prefix = "  "
-	const dash = "─"
-	const pad = 1 // space on each side of the label
-
-	labelWidth := len(label) + 2*pad // " Today "
-	lineWidth := m.width - len(prefix)
-	if lineWidth < labelWidth+4 {
-		// Terminal too narrow for decoration; just show the label.
-		return style.Render(prefix + label)
+// renderArchiveAccordion renders the collapsible archive toggle line for a date group.
+func (m *InboxModel) renderArchiveAccordion(groupLabel string, selected bool) string {
+	chevron := "▸"
+	if m.archiveExpanded[groupLabel] {
+		chevron = "▾"
 	}
-
-	leftDashes := 2
-	rightDashes := lineWidth - leftDashes - labelWidth
-	if rightDashes < 0 {
-		rightDashes = 0
+	// Find the archived count for this group.
+	count := 0
+	for _, g := range m.groups {
+		if g.name == groupLabel {
+			count = len(g.archivedRows)
+			break
+		}
 	}
+	label := fmt.Sprintf("%s Archive (%d)", chevron, count)
 
-	sep := prefix +
-		strings.Repeat(dash, leftDashes) +
-		strings.Repeat(" ", pad) +
-		label +
-		strings.Repeat(" ", pad) +
-		strings.Repeat(dash, rightDashes)
-
-	return style.Render(sep)
+	style := lipgloss.NewStyle().Foreground(mutedColor)
+	if selected {
+		prefix := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ")
+		return prefix + style.Render(label)
+	}
+	return "  " + style.Render(label)
 }
 
 func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
@@ -795,6 +797,8 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	}
 
 	s := row.session
+	isDone := s.Visibility == agent.VisibilityDone
+	isArchived := s.Visibility == agent.VisibilityArchived
 	ago := timeAgo(s.UpdatedAt)
 	stateIcon := m.styledAgentStatus(s.Status)
 
@@ -808,11 +812,21 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	// Agent mode badge — colored so users can quickly triage build vs plan sessions.
 	agentBadge := fmt.Sprintf("%-5s", "")
 	if s.Agent != "" {
-		agentBadge = lipgloss.NewStyle().Foreground(agentColor(s.Agent)).Render(fmt.Sprintf("%-5s", s.Agent))
+		badgeColor := agentColor(s.Agent)
+		if isDone || isArchived {
+			badgeColor = mutedColor
+		}
+		agentBadge = lipgloss.NewStyle().Foreground(badgeColor).Render(fmt.Sprintf("%-5s", s.Agent))
 	}
 
 	paddedProject := fmt.Sprintf("%-12s", s.ProjectName)
-	styledProject := lipgloss.NewStyle().Foreground(secondaryColor).Render(paddedProject)
+	projectColor := secondaryColor
+	if isDone {
+		projectColor = mutedColor
+	} else if isArchived {
+		projectColor = mutedColor
+	}
+	styledProject := lipgloss.NewStyle().Foreground(projectColor).Render(paddedProject)
 
 	// Fixed-width columns before the prompt: "  " (2) + project (12) + " " (1) + stateIcon (1) + " " (1) + agent (5) + " " (1) + unread (1) + " " (1)
 	// We also reserve 9 chars on the right for the timestamp (8 chars padded + 1 space).
@@ -834,6 +848,12 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	}
 	if prompt == "" {
 		prompt = lipgloss.NewStyle().Foreground(dimColor).Render(truncateStr(s.ID, 8))
+	} else if isArchived {
+		// Archived sessions: fully grayed-out title.
+		prompt = lipgloss.NewStyle().Foreground(mutedColor).Render(prompt)
+	} else if isDone {
+		// Done sessions: green title text.
+		prompt = lipgloss.NewStyle().Foreground(successColor).Render(prompt)
 	}
 
 	// Append lowercase red "draft" label right after the title.
@@ -896,15 +916,29 @@ func (m *InboxModel) viewportHeight() int {
 	return h
 }
 
+// groupFlatRowCount returns the number of flatRows occupied by the given group,
+// including active rows, the accordion toggle (if any), and expanded archived rows.
+func (m *InboxModel) groupFlatRowCount(g inboxGroup) int {
+	n := len(g.rows)
+	if len(g.archivedRows) > 0 {
+		n++ // accordion toggle
+		if m.archiveExpanded[g.name] {
+			n += len(g.archivedRows)
+		}
+	}
+	return n
+}
+
 // cursorGroupIndex returns the index into m.groups for the group that
 // contains the current cursor position. Returns 0 if flatRows is empty.
 func (m *InboxModel) cursorGroupIndex() int {
 	offset := 0
 	for i, g := range m.groups {
-		if m.cursor < offset+len(g.rows) {
+		count := m.groupFlatRowCount(g)
+		if m.cursor < offset+count {
 			return i
 		}
-		offset += len(g.rows)
+		offset += count
 	}
 	return len(m.groups) - 1
 }
@@ -913,7 +947,7 @@ func (m *InboxModel) cursorGroupIndex() int {
 func (m *InboxModel) groupFirstRow(groupIdx int) int {
 	offset := 0
 	for i := 0; i < groupIdx; i++ {
-		offset += len(m.groups[i].rows)
+		offset += m.groupFlatRowCount(m.groups[i])
 	}
 	return offset
 }
