@@ -115,6 +115,16 @@ func (m *SessionViewModel) handleComposeKey(msg tea.KeyPressMsg) (tea.Model, tea
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 		// Send prompt — shift+enter inserts newline (handled by textarea keybinding).
 		return m.launchSession()
+
+	case key.Matches(msg, wordBackwardBinding):
+		// Workaround: upstream bubbles textarea.wordLeft() has an
+		// unconditional for{} loop that never terminates when the cursor
+		// is at (0,0) — the empty-input case. Intercept and no-op here
+		// to prevent an infinite loop that freezes the entire UI.
+		// See: https://github.com/charmbracelet/bubbles/issues/XXX
+		if wordLeftWouldHang(m.input) {
+			return m, nil
+		}
 	}
 
 	// Forward to textarea.

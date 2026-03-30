@@ -70,6 +70,22 @@ type sessionMessagesMsg struct {
 // backToInboxMsg signals navigation back to the inbox.
 type backToInboxMsg struct{}
 
+// wordBackwardBinding matches the textarea's WordBackward keys (alt+left, alt+b).
+// Used to intercept the key before it reaches the textarea in cases where the
+// upstream wordLeft() implementation would infinite-loop.
+var wordBackwardBinding = key.NewBinding(key.WithKeys("alt+left", "alt+b"))
+
+// wordLeftWouldHang reports whether forwarding a WordBackward key to the
+// textarea would trigger the upstream infinite loop in textarea.wordLeft().
+//
+// The bug: wordLeft() contains an unconditional for{} loop that calls
+// characterLeft(true) and breaks only when it finds a non-space rune under
+// the cursor. At position (0,0) characterLeft is a no-op and the break
+// condition can never be satisfied, so the loop spins forever.
+func wordLeftWouldHang(ta textarea.Model) bool {
+	return ta.Line() == 0 && ta.Column() == 0
+}
+
 // SessionViewModel shows a single agent session with streaming output.
 // It also handles the "composing" mode where no session exists yet —
 // the user types their first prompt and the session is created on send.
@@ -629,6 +645,15 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, m.sendMessage(text)
 			}
 			return m, nil
+		case key.Matches(msg, wordBackwardBinding):
+			// Workaround: upstream bubbles textarea.wordLeft() has an
+			// unconditional for{} loop that never terminates when the cursor
+			// is at (0,0) — the empty-input case. Intercept and no-op here
+			// to prevent an infinite loop that freezes the entire UI.
+			// See: https://github.com/charmbracelet/bubbles/issues/XXX
+			if wordLeftWouldHang(m.input) {
+				return m, nil
+			}
 		}
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)

@@ -1050,3 +1050,36 @@ func TestSpinnerTickSurvivesSessionConfirmDialog(t *testing.T) {
 		t.Fatalf("expected spinner.TickMsg, got %T", nextMsg)
 	}
 }
+
+// TestSession_WordBackwardOnEmptyInput is a regression test for an upstream
+// bug in bubbles textarea.wordLeft() that causes an infinite loop when the
+// cursor is at position (0,0) — i.e. when the input is empty. Without the
+// workaround this test hangs forever.
+func TestSession_WordBackwardOnEmptyInput(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		msg  tea.KeyPressMsg
+	}{
+		{name: "alt+b", msg: tea.KeyPressMsg{Code: 'b', Mod: tea.ModAlt}},
+		{name: "alt+left", msg: tea.KeyPressMsg{Code: tea.KeyLeft, Mod: tea.ModAlt}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := NewSessionViewModel(nil, "test-session")
+			m.width = 80
+			m.height = 40
+			m.inputActive = true
+			m.input.Focus()
+
+			// Must return immediately instead of hanging.
+			model, _ := m.Update(tt.msg)
+			m = model.(*SessionViewModel)
+			if m.input.Value() != "" {
+				t.Fatalf("expected empty input, got %q", m.input.Value())
+			}
+		})
+	}
+}
