@@ -1105,14 +1105,10 @@ func (m *SessionViewModel) renderToolLine(p agent.Part) string {
 		desc = desc[:77] + "..."
 	}
 
-	statusStr := string(p.Status)
-	if statusStr == "" {
-		statusStr = "pending"
-	}
 	if desc != "" {
-		return fmt.Sprintf("[%s] %s %s %s", label, desc, icon, statusStr)
+		return fmt.Sprintf("[%s] %s %s", label, icon, desc)
 	}
-	return fmt.Sprintf("[%s] %s %s", label, icon, statusStr)
+	return fmt.Sprintf("[%s] %s", label, icon)
 }
 
 // toolSummary returns a short description extracted from the tool's input
