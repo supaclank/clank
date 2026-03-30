@@ -1259,3 +1259,161 @@ func TestHighlightLinePair_IdenticalLines(t *testing.T) {
 		t.Errorf("expected new to contain '+ same': %q", newR)
 	}
 }
+
+// --- toolSummary / relPath tests ---
+
+func TestToolSummary_ReadWithLineRange(t *testing.T) {
+	t.Parallel()
+	m := NewSessionViewModel(nil, "test")
+	m.projectDir = "/Users/me/project"
+
+	p := agent.Part{
+		Tool: "Read",
+		Input: map[string]any{
+			"filePath": "/Users/me/project/src/main.go",
+			"offset":   float64(100),
+			"limit":    float64(20),
+		},
+	}
+	got := m.toolSummary(p)
+	if got != "src/main.go:100-119" {
+		t.Errorf("expected 'src/main.go:100-119', got %q", got)
+	}
+}
+
+func TestToolSummary_ReadOffsetOnly(t *testing.T) {
+	t.Parallel()
+	m := NewSessionViewModel(nil, "test")
+	m.projectDir = "/Users/me/project"
+
+	p := agent.Part{
+		Tool: "read", // lowercase (OpenCode)
+		Input: map[string]any{
+			"filePath": "/Users/me/project/src/main.go",
+			"offset":   float64(50),
+		},
+	}
+	got := m.toolSummary(p)
+	if got != "src/main.go:50" {
+		t.Errorf("expected 'src/main.go:50', got %q", got)
+	}
+}
+
+func TestToolSummary_ReadNoOffsetNoLimit(t *testing.T) {
+	t.Parallel()
+	m := NewSessionViewModel(nil, "test")
+	m.projectDir = "/Users/me/project"
+
+	p := agent.Part{
+		Tool:  "Read",
+		Input: map[string]any{"filePath": "/Users/me/project/src/main.go"},
+	}
+	got := m.toolSummary(p)
+	if got != "src/main.go" {
+		t.Errorf("expected 'src/main.go', got %q", got)
+	}
+}
+
+func TestToolSummary_EditRelativePath(t *testing.T) {
+	t.Parallel()
+	m := NewSessionViewModel(nil, "test")
+	m.projectDir = "/Users/me/project"
+
+	p := agent.Part{
+		Tool:  "edit",
+		Input: map[string]any{"filePath": "/Users/me/project/internal/foo.go"},
+	}
+	got := m.toolSummary(p)
+	if got != "internal/foo.go" {
+		t.Errorf("expected 'internal/foo.go', got %q", got)
+	}
+}
+
+func TestToolSummary_PathOutsideProject(t *testing.T) {
+	t.Parallel()
+	m := NewSessionViewModel(nil, "test")
+	m.projectDir = "/Users/me/project"
+
+	p := agent.Part{
+		Tool:  "Write",
+		Input: map[string]any{"filePath": "/tmp/other/file.go"},
+	}
+	got := m.toolSummary(p)
+	// Path outside project dir should be returned as-is.
+	if got != "/tmp/other/file.go" {
+		t.Errorf("expected '/tmp/other/file.go', got %q", got)
+	}
+}
+
+func TestRelPath_NoProjectDir(t *testing.T) {
+	t.Parallel()
+	m := NewSessionViewModel(nil, "test")
+	// projectDir is empty.
+	got := m.relPath("/some/absolute/path.go")
+	if got != "/some/absolute/path.go" {
+		t.Errorf("expected unchanged path, got %q", got)
+	}
+}
+
+func TestRelPath_EmptyInput(t *testing.T) {
+	t.Parallel()
+	m := NewSessionViewModel(nil, "test")
+	m.projectDir = "/Users/me/project"
+	got := m.relPath("")
+	if got != "" {
+		t.Errorf("expected empty string, got %q", got)
+	}
+}
+
+// --- renderTodoList tests ---
+
+func TestRenderTodoList_RendersAllStatuses(t *testing.T) {
+	t.Parallel()
+	dim := lipgloss.NewStyle()
+	p := agent.Part{
+		Tool: "TodoWrite",
+		Input: map[string]any{
+			"todos": []interface{}{
+				map[string]interface{}{"content": "Done task", "status": "completed", "priority": "high"},
+				map[string]interface{}{"content": "Working on it", "status": "in_progress", "priority": "high"},
+				map[string]interface{}{"content": "Not started", "status": "pending", "priority": "medium"},
+				map[string]interface{}{"content": "Dropped", "status": "cancelled", "priority": "low"},
+			},
+		},
+	}
+	lines := renderTodoList(p, "  ", dim)
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 lines, got %d", len(lines))
+	}
+	// Check that each line contains the correct icon and content.
+	expects := []struct {
+		icon    string
+		content string
+	}{
+		{"✓", "Done task"},
+		{"◉", "Working on it"},
+		{"○", "Not started"},
+		{"✗", "Dropped"},
+	}
+	for i, e := range expects {
+		if !strings.Contains(lines[i], e.icon) {
+			t.Errorf("line %d: expected icon %q, got %q", i, e.icon, lines[i])
+		}
+		if !strings.Contains(lines[i], e.content) {
+			t.Errorf("line %d: expected content %q, got %q", i, e.content, lines[i])
+		}
+	}
+}
+
+func TestRenderTodoList_EmptyTodos(t *testing.T) {
+	t.Parallel()
+	dim := lipgloss.NewStyle()
+	p := agent.Part{
+		Tool:  "todowrite",
+		Input: map[string]any{"todos": []interface{}{}},
+	}
+	lines := renderTodoList(p, "  ", dim)
+	if lines != nil {
+		t.Errorf("expected nil for empty todos, got %v", lines)
+	}
+}

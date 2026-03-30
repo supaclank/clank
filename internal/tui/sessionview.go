@@ -1097,7 +1097,7 @@ func (m *SessionViewModel) renderToolLine(p agent.Part) string {
 	// Extract a concise, always-visible description from the tool input.
 	// File tools show their path; Bash shows the command; search tools show
 	// the pattern. Falls back to Part.Text when Input is unavailable.
-	desc := toolSummary(p)
+	desc := m.toolSummary(p)
 	if desc == "" {
 		desc = p.Text
 	}
@@ -1116,19 +1116,41 @@ func (m *SessionViewModel) renderToolLine(p agent.Part) string {
 }
 
 // toolSummary returns a short description extracted from the tool's input
-// arguments. For file tools this is the file path; for Bash it's the command.
-func toolSummary(p agent.Part) string {
+// arguments. File tools show project-relative paths; Read includes a line
+// range; Bash shows the command; search tools show the pattern.
+func (m *SessionViewModel) toolSummary(p agent.Part) string {
 	if p.Input == nil {
 		return ""
 	}
 	switch strings.ToLower(p.Tool) {
-	case "read", "write", "edit":
+	case "read":
+		fp, _ := p.Input["filePath"].(string)
+		if fp == "" {
+			return ""
+		}
+		fp = m.relPath(fp)
+		// Build line range from offset/limit (JSON numbers arrive as float64).
+		offset, _ := p.Input["offset"].(float64)
+		limit, _ := p.Input["limit"].(float64)
+		start := int(offset)
+		if start < 1 {
+			start = 1
+		}
+		if limit > 0 {
+			return fmt.Sprintf("%s:%d-%d", fp, start, start+int(limit)-1)
+		}
+		if start > 1 {
+			return fmt.Sprintf("%s:%d", fp, start)
+		}
+		return fp
+	case "write", "edit":
 		if fp, ok := p.Input["filePath"].(string); ok {
-			return fp
+			return m.relPath(fp)
 		}
 	case "glob":
 		pat, _ := p.Input["pattern"].(string)
 		dir, _ := p.Input["path"].(string)
+		dir = m.relPath(dir)
 		if dir != "" {
 			return dir + "/" + pat
 		}
@@ -1158,6 +1180,23 @@ func toolSummary(p agent.Part) string {
 	return ""
 }
 
+// relPath strips the project directory prefix from an absolute path,
+// returning a project-relative path. Returns the input unchanged if it
+// doesn't start with the project dir or projectDir is unset.
+func (m *SessionViewModel) relPath(fp string) string {
+	if m.projectDir == "" || fp == "" {
+		return fp
+	}
+	prefix := m.projectDir
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	if rel, ok := strings.CutPrefix(fp, prefix); ok {
+		return rel
+	}
+	return fp
+}
+
 // renderToolVerbose returns additional indented lines showing the full tool
 // input and output. For the Edit tool it renders a coloured inline diff.
 func (m *SessionViewModel) renderToolVerbose(p agent.Part, width int) []string {
@@ -1168,17 +1207,22 @@ func (m *SessionViewModel) renderToolVerbose(p agent.Part, width int) []string {
 		return m.renderEditDiff(p, width, indent)
 	}
 
+	// Read: summary line already has path:range — nothing more to show.
+	if strings.EqualFold(p.Tool, "read") {
+		return nil
+	}
+
+	// TodoWrite: render a styled checklist instead of raw JSON.
+	if strings.EqualFold(p.Tool, "todowrite") {
+		return renderTodoList(p, indent, dim)
+	}
+
 	var lines []string
 
-	// Render input arguments (skip keys already shown in the summary line).
+	// Render input arguments.
 	if len(p.Input) > 0 {
 		lines = append(lines, dim.Render(indent+"input:"))
 		lines = append(lines, renderInputMap(p.Input, width, indent+"  ", dim)...)
-	}
-
-	// Skip output for Read — file contents are too long to be useful inline.
-	if strings.EqualFold(p.Tool, "read") {
-		return lines
 	}
 
 	// Render output.
@@ -1338,6 +1382,48 @@ func (m *SessionViewModel) renderEditDiff(p agent.Part, width int, indent string
 			lines = append(lines, add.Render(indent+"+ "+op.text))
 			i++
 		}
+	}
+	return lines
+}
+
+// renderTodoList renders a TodoWrite tool call as a styled checklist.
+// Each todo item shows a status icon and the content text.
+func renderTodoList(p agent.Part, indent string, dim lipgloss.Style) []string {
+	done := lipgloss.NewStyle().Foreground(successColor)
+	prog := lipgloss.NewStyle().Foreground(warningColor)
+
+	// Todos arrive as []interface{} from JSON-decoded Input map.
+	todosRaw, _ := p.Input["todos"].([]interface{})
+	if len(todosRaw) == 0 {
+		return nil
+	}
+
+	var lines []string
+	for _, raw := range todosRaw {
+		item, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		content, _ := item["content"].(string)
+		status, _ := item["status"].(string)
+
+		var icon string
+		var style lipgloss.Style
+		switch status {
+		case "completed":
+			icon = "✓"
+			style = done
+		case "in_progress":
+			icon = "◉"
+			style = prog
+		case "cancelled":
+			icon = "✗"
+			style = dim
+		default: // pending
+			icon = "○"
+			style = dim
+		}
+		lines = append(lines, style.Render(indent+icon+" "+content))
 	}
 	return lines
 }
@@ -1784,7 +1870,9 @@ func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool) []string 
 		lines := []string{styled}
 
 		// Verbose detail: use cache when available and valid.
-		if m.verbose && e.toolPart != nil {
+		// TodoWrite always shows its checklist, regardless of verbose mode.
+		showDetail := e.toolPart != nil && (m.verbose || strings.EqualFold(e.toolPart.Tool, "todowrite"))
+		if showDetail {
 			verboseW := maxWidth - 4
 			if e.verboseLines != nil && e.verboseWidth == verboseW {
 				lines = append(lines, e.verboseLines...)
