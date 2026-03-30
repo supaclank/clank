@@ -1192,38 +1192,153 @@ func (m *SessionViewModel) renderToolVerbose(p agent.Part, width int) []string {
 	return lines
 }
 
-// renderEditDiff renders an Edit tool call as an inline diff showing removed
-// (red) and added (green) lines, similar to a unified diff.
-func (m *SessionViewModel) renderEditDiff(p agent.Part, width int, indent string) []string {
-	dim := lipgloss.NewStyle().Foreground(dimColor)
-	del := lipgloss.NewStyle().Foreground(dangerColor)  // red for removed
-	add := lipgloss.NewStyle().Foreground(successColor) // green for added
+// diffOp represents a single line-level diff operation.
+type diffOp int
 
-	filePath, _ := p.Input["filePath"].(string)
-	oldStr, _ := p.Input["oldString"].(string)
-	newStr, _ := p.Input["newString"].(string)
+const (
+	diffEqual  diffOp = iota // line is unchanged
+	diffDelete               // line was removed from old
+	diffInsert               // line was added in new
+)
 
-	var lines []string
-	if filePath != "" {
-		lines = append(lines, dim.Render(indent+"--- "+filePath))
-		lines = append(lines, dim.Render(indent+"+++ "+filePath))
+// diffLine pairs a diff operation with the line text.
+type diffLine struct {
+	op   diffOp
+	text string
+}
+
+// diffLines computes a line-level diff between old and new using the LCS
+// (longest common subsequence) algorithm. Returns a sequence of operations
+// that interleaves context, deletions, and insertions — like git diff output.
+func diffLines(old, new []string) []diffLine {
+	n, m := len(old), len(new)
+
+	// Build LCS table.
+	dp := make([][]int, n+1)
+	for i := range dp {
+		dp[i] = make([]int, m+1)
 	}
-
-	for _, ol := range strings.Split(oldStr, "\n") {
-		lines = append(lines, del.Render(indent+"- "+ol))
-	}
-	for _, nl := range strings.Split(newStr, "\n") {
-		lines = append(lines, add.Render(indent+"+ "+nl))
-	}
-
-	// Show output (e.g. error message) if present.
-	if p.Output != "" {
-		lines = append(lines, dim.Render(indent+"output:"))
-		for _, ol := range strings.Split(p.Output, "\n") {
-			lines = append(lines, dim.Render(indent+"  "+ol))
+	for i := 1; i <= n; i++ {
+		for j := 1; j <= m; j++ {
+			if old[i-1] == new[j-1] {
+				dp[i][j] = dp[i-1][j-1] + 1
+			} else if dp[i-1][j] >= dp[i][j-1] {
+				dp[i][j] = dp[i-1][j]
+			} else {
+				dp[i][j] = dp[i][j-1]
+			}
 		}
 	}
 
+	// Backtrack to produce the diff sequence.
+	var result []diffLine
+	i, j := n, m
+	for i > 0 || j > 0 {
+		if i > 0 && j > 0 && old[i-1] == new[j-1] {
+			result = append(result, diffLine{diffEqual, old[i-1]})
+			i--
+			j--
+		} else if j > 0 && (i == 0 || dp[i][j-1] >= dp[i-1][j]) {
+			result = append(result, diffLine{diffInsert, new[j-1]})
+			j--
+		} else {
+			result = append(result, diffLine{diffDelete, old[i-1]})
+			i--
+		}
+	}
+
+	// Reverse — backtracking produces the sequence in reverse order.
+	for l, r := 0, len(result)-1; l < r; l, r = l+1, r-1 {
+		result[l], result[r] = result[r], result[l]
+	}
+	return result
+}
+
+// highlightLinePair renders a paired delete/insert line with character-level
+// highlighting. The common prefix and suffix are rendered in dim; only the
+// differing middle span is colored red (old) or green (new).
+func highlightLinePair(oldLine, newLine, indent string, dim, del, add lipgloss.Style) (string, string) {
+	// Find common prefix length.
+	pfx := 0
+	for pfx < len(oldLine) && pfx < len(newLine) && oldLine[pfx] == newLine[pfx] {
+		pfx++
+	}
+	// Find common suffix length (not overlapping prefix).
+	sfx := 0
+	for sfx < len(oldLine)-pfx && sfx < len(newLine)-pfx &&
+		oldLine[len(oldLine)-1-sfx] == newLine[len(newLine)-1-sfx] {
+		sfx++
+	}
+
+	oldMid := oldLine[pfx : len(oldLine)-sfx]
+	newMid := newLine[pfx : len(newLine)-sfx]
+	prefix := oldLine[:pfx]
+	suffix := oldLine[len(oldLine)-sfx:]
+
+	oldRendered := indent + "- " + dim.Render(prefix) + del.Render(oldMid) + dim.Render(suffix)
+	newRendered := indent + "+ " + dim.Render(prefix) + add.Render(newMid) + dim.Render(suffix)
+	return oldRendered, newRendered
+}
+
+// renderEditDiff renders an Edit tool call as a unified-style diff with
+// context lines and character-level highlighting on changed lines.
+func (m *SessionViewModel) renderEditDiff(p agent.Part, width int, indent string) []string {
+	dim := lipgloss.NewStyle().Foreground(dimColor)
+	del := lipgloss.NewStyle().Foreground(dangerColor)
+	add := lipgloss.NewStyle().Foreground(successColor)
+
+	oldStr, _ := p.Input["oldString"].(string)
+	newStr, _ := p.Input["newString"].(string)
+
+	oldLines := strings.Split(oldStr, "\n")
+	newLines := strings.Split(newStr, "\n")
+	ops := diffLines(oldLines, newLines)
+
+	var lines []string
+	for i := 0; i < len(ops); {
+		op := ops[i]
+		switch op.op {
+		case diffEqual:
+			lines = append(lines, dim.Render(indent+"  "+op.text))
+			i++
+
+		case diffDelete:
+			// Collect consecutive delete+insert pairs for char-level highlight.
+			delStart := i
+			for i < len(ops) && ops[i].op == diffDelete {
+				i++
+			}
+			insStart := i
+			for i < len(ops) && ops[i].op == diffInsert {
+				i++
+			}
+			delCount := insStart - delStart
+			insCount := i - insStart
+
+			// Pair up deletes and inserts for character-level highlighting.
+			paired := delCount
+			if insCount < paired {
+				paired = insCount
+			}
+			for k := 0; k < paired; k++ {
+				ol, nl := highlightLinePair(ops[delStart+k].text, ops[insStart+k].text, indent, dim, del, add)
+				lines = append(lines, ol, nl)
+			}
+			// Remaining unpaired deletes.
+			for k := paired; k < delCount; k++ {
+				lines = append(lines, del.Render(indent+"- "+ops[delStart+k].text))
+			}
+			// Remaining unpaired inserts.
+			for k := paired; k < insCount; k++ {
+				lines = append(lines, add.Render(indent+"+ "+ops[insStart+k].text))
+			}
+
+		case diffInsert:
+			// Pure inserts with no preceding delete.
+			lines = append(lines, add.Render(indent+"+ "+op.text))
+			i++
+		}
+	}
 	return lines
 }
 

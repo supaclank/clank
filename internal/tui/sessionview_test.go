@@ -9,6 +9,7 @@ import (
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/agent"
 )
@@ -1081,5 +1082,180 @@ func TestSession_WordBackwardOnEmptyInput(t *testing.T) {
 				t.Fatalf("expected empty input, got %q", m.input.Value())
 			}
 		})
+	}
+}
+
+// --- diffLines tests ---
+
+func TestDiffLines_IdenticalInput(t *testing.T) {
+	t.Parallel()
+	lines := []string{"a", "b", "c"}
+	ops := diffLines(lines, lines)
+	for i, op := range ops {
+		if op.op != diffEqual {
+			t.Fatalf("op[%d]: expected diffEqual, got %d", i, op.op)
+		}
+		if op.text != lines[i] {
+			t.Fatalf("op[%d]: expected %q, got %q", i, lines[i], op.text)
+		}
+	}
+}
+
+func TestDiffLines_PureDeletion(t *testing.T) {
+	t.Parallel()
+	old := []string{"a", "b", "c"}
+	ops := diffLines(old, nil)
+	if len(ops) != 3 {
+		t.Fatalf("expected 3 ops, got %d", len(ops))
+	}
+	for _, op := range ops {
+		if op.op != diffDelete {
+			t.Fatalf("expected diffDelete, got %d", op.op)
+		}
+	}
+}
+
+func TestDiffLines_PureInsertion(t *testing.T) {
+	t.Parallel()
+	newLines := []string{"x", "y"}
+	ops := diffLines(nil, newLines)
+	if len(ops) != 2 {
+		t.Fatalf("expected 2 ops, got %d", len(ops))
+	}
+	for _, op := range ops {
+		if op.op != diffInsert {
+			t.Fatalf("expected diffInsert, got %d", op.op)
+		}
+	}
+}
+
+func TestDiffLines_SingleLineChange(t *testing.T) {
+	t.Parallel()
+	old := []string{"hello world"}
+	newLines := []string{"hello there"}
+	ops := diffLines(old, newLines)
+	// No common lines, so expect delete then insert.
+	if len(ops) != 2 {
+		t.Fatalf("expected 2 ops, got %d: %+v", len(ops), ops)
+	}
+	if ops[0].op != diffDelete || ops[0].text != "hello world" {
+		t.Fatalf("expected delete 'hello world', got %+v", ops[0])
+	}
+	if ops[1].op != diffInsert || ops[1].text != "hello there" {
+		t.Fatalf("expected insert 'hello there', got %+v", ops[1])
+	}
+}
+
+func TestDiffLines_WithContext(t *testing.T) {
+	t.Parallel()
+	old := []string{"ctx before", "old line", "ctx after"}
+	newLines := []string{"ctx before", "new line", "ctx after"}
+	ops := diffLines(old, newLines)
+
+	// Should be: equal, delete, insert, equal.
+	expected := []struct {
+		op   diffOp
+		text string
+	}{
+		{diffEqual, "ctx before"},
+		{diffDelete, "old line"},
+		{diffInsert, "new line"},
+		{diffEqual, "ctx after"},
+	}
+	if len(ops) != len(expected) {
+		t.Fatalf("expected %d ops, got %d: %+v", len(expected), len(ops), ops)
+	}
+	for i, e := range expected {
+		if ops[i].op != e.op || ops[i].text != e.text {
+			t.Fatalf("op[%d]: expected {%d, %q}, got {%d, %q}", i, e.op, e.text, ops[i].op, ops[i].text)
+		}
+	}
+}
+
+func TestDiffLines_MultiLineChange(t *testing.T) {
+	t.Parallel()
+	old := []string{
+		"\tswitch p.Tool {",
+		"\tcase \"Read\", \"Write\", \"Edit\":",
+		"\t\tif fp, ok := p.Input[\"filePath\"].(string); ok {",
+		"\t\t\treturn fp",
+		"\t\t}",
+		"\tcase \"Glob\":",
+	}
+	newLines := []string{
+		"\tswitch strings.ToLower(p.Tool) {",
+		"\tcase \"read\", \"write\", \"edit\":",
+		"\t\tif fp, ok := p.Input[\"filePath\"].(string); ok {",
+		"\t\t\treturn fp",
+		"\t\t}",
+		"\tcase \"glob\":",
+	}
+	ops := diffLines(old, newLines)
+
+	// Lines 3-5 are identical context. Lines 1,2,6 are changed.
+	var deletes, inserts, equals int
+	for _, op := range ops {
+		switch op.op {
+		case diffEqual:
+			equals++
+		case diffDelete:
+			deletes++
+		case diffInsert:
+			inserts++
+		}
+	}
+	if equals != 3 {
+		t.Errorf("expected 3 equal ops, got %d", equals)
+	}
+	if deletes != 3 {
+		t.Errorf("expected 3 deletes, got %d", deletes)
+	}
+	if inserts != 3 {
+		t.Errorf("expected 3 inserts, got %d", inserts)
+	}
+}
+
+// --- highlightLinePair tests ---
+
+func TestHighlightLinePair_CommonPrefixSuffix(t *testing.T) {
+	t.Parallel()
+	// Use plain styles (no ANSI) so we can inspect text structure.
+	noop := lipgloss.NewStyle()
+	oldR, newR := highlightLinePair(
+		"case \"Read\":",
+		"case \"read\":",
+		"    ", noop, noop, noop,
+	)
+	// Both should contain the diff marker.
+	if !strings.Contains(oldR, "- ") {
+		t.Errorf("old line missing '- ' prefix: %q", oldR)
+	}
+	if !strings.Contains(newR, "+ ") {
+		t.Errorf("new line missing '+ ' prefix: %q", newR)
+	}
+}
+
+func TestHighlightLinePair_FullyDifferent(t *testing.T) {
+	t.Parallel()
+	noop := lipgloss.NewStyle()
+	oldR, newR := highlightLinePair("aaa", "bbb", "", noop, noop, noop)
+	if !strings.Contains(oldR, "- ") {
+		t.Errorf("old line missing '- ': %q", oldR)
+	}
+	if !strings.Contains(newR, "+ ") {
+		t.Errorf("new line missing '+ ': %q", newR)
+	}
+}
+
+func TestHighlightLinePair_IdenticalLines(t *testing.T) {
+	t.Parallel()
+	noop := lipgloss.NewStyle()
+	oldR, newR := highlightLinePair("same", "same", "  ", noop, noop, noop)
+	// Common prefix covers entire string; diff middle is empty.
+	if !strings.Contains(oldR, "- same") {
+		t.Errorf("expected old to contain '- same': %q", oldR)
+	}
+	if !strings.Contains(newR, "+ same") {
+		t.Errorf("expected new to contain '+ same': %q", newR)
 	}
 }
