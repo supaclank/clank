@@ -1709,6 +1709,7 @@ func TestClaudeCodeBackendToolCallSpinnerCompletion(t *testing.T) {
 
 	// Collect all EventPartUpdate events for the tool call.
 	var toolCallRunning, toolCallCompleted bool
+	var completedToolName string
 	for _, evt := range events {
 		if evt.Type != agent.EventPartUpdate {
 			continue
@@ -1725,6 +1726,7 @@ func TestClaudeCodeBackendToolCallSpinnerCompletion(t *testing.T) {
 		}
 		if data.Part.Type == agent.PartToolCall && data.Part.Status == agent.PartCompleted {
 			toolCallCompleted = true
+			completedToolName = data.Part.Tool
 		}
 	}
 
@@ -1738,9 +1740,14 @@ func TestClaudeCodeBackendToolCallSpinnerCompletion(t *testing.T) {
 			t.Logf("event %d: type=%s data=%+v", i, evt.Type, evt.Data)
 		}
 	}
+	// The completion event must carry the tool name so the TUI doesn't
+	// fall back to showing "tool_call" (the Part.Type) as the label.
+	if completedToolName != "Write" {
+		t.Errorf("PartCompleted event: expected Tool='Write', got %q", completedToolName)
+	}
 
 	// Verify that the text block's content_block_stop does NOT emit a spurious
-	// PartCompleted (only tool_use blocks are tracked in activeBlocks).
+	// PartCompleted (only tool_use blocks are tracked in activeToolBlocks).
 	for _, evt := range events {
 		if evt.Type != agent.EventPartUpdate {
 			continue

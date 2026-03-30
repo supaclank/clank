@@ -10,6 +10,14 @@ import (
 	claudecode "github.com/severity1/claude-agent-sdk-go"
 )
 
+// activeToolBlock tracks metadata for an in-progress tool_use block so that
+// handleContentBlockStop can emit a PartCompleted event with the correct ID
+// and tool name (the TUI replaces the entire toolPart on upsert).
+type activeToolBlock struct {
+	partID string
+	tool   string
+}
+
 // ClaudeCodeBackend manages a single Claude Code session using the
 // claude-agent-sdk-go SDK's Client API. The SDK handles CLI discovery,
 // subprocess lifecycle, JSON parsing, streaming, and the control protocol.
@@ -48,12 +56,13 @@ type ClaudeCodeBackend struct {
 	// Only accessed from receiveLoop goroutine — no lock required.
 	currentMsgID string
 
-	// activeBlocks maps block index → part ID for the current message cycle.
-	// Populated by handleContentBlockStart, consumed by handleContentBlockStop
-	// to emit PartCompleted for tool_use blocks (fixing the stuck spinner).
+	// activeToolBlocks maps block index → tool metadata for the current message
+	// cycle. Populated by handleContentBlockStart for tool_use blocks, consumed
+	// by handleContentBlockStop to emit PartCompleted with the correct ID and
+	// tool name (fixing the stuck spinner and blank tool label).
 	// Reset on each message_start since block indices restart at 0 per cycle.
 	// Only accessed from receiveLoop goroutine — no lock required.
-	activeBlocks map[int]string
+	activeToolBlocks map[int]activeToolBlock
 
 	// messages accumulates MessageData from the stream for Messages() retrieval.
 	// Lost on daemon restart; future: persist to SQLite or use SDK session history.
@@ -69,11 +78,11 @@ type ClaudeCodeBackend struct {
 func NewClaudeCodeBackend() *ClaudeCodeBackend {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ClaudeCodeBackend{
-		status:       StatusStarting,
-		events:       make(chan Event, 128),
-		activeBlocks: make(map[int]string),
-		ctx:          ctx,
-		cancel:       cancel,
+		status:           StatusStarting,
+		events:           make(chan Event, 128),
+		activeToolBlocks: make(map[int]activeToolBlock),
+		ctx:              ctx,
+		cancel:           cancel,
 	}
 }
 
@@ -392,8 +401,8 @@ func (b *ClaudeCodeBackend) handleStreamEvent(m *claudecode.StreamEvent) {
 				b.currentMsgID = msgID
 			}
 		}
-		// Reset activeBlocks — block indices restart at 0 in each message cycle.
-		b.activeBlocks = make(map[int]string)
+		// Reset activeToolBlocks — block indices restart at 0 in each message cycle.
+		b.activeToolBlocks = make(map[int]activeToolBlock)
 	case claudecode.StreamEventTypeContentBlockStart:
 		b.handleContentBlockStart(m.Event)
 	case claudecode.StreamEventTypeContentBlockDelta:
@@ -439,8 +448,9 @@ func (b *ClaudeCodeBackend) handleContentBlockStart(event map[string]any) {
 	case "tool_use":
 		id, _ := block["id"].(string)
 		name, _ := block["name"].(string)
-		// Track this tool_use block so handleContentBlockStop can emit PartCompleted.
-		b.activeBlocks[index] = id
+		// Track this tool_use block so handleContentBlockStop can emit PartCompleted
+		// with the correct tool name.
+		b.activeToolBlocks[index] = activeToolBlock{partID: id, tool: name}
 		b.emit(Event{
 			Type:      EventPartUpdate,
 			Timestamp: time.Now(),
@@ -523,21 +533,22 @@ func (b *ClaudeCodeBackend) handleContentBlockDelta(event map[string]any) {
 func (b *ClaudeCodeBackend) handleContentBlockStop(event map[string]any) {
 	index := intFromAny(event["index"])
 
-	// Only tool_use blocks are tracked in activeBlocks. If the index is present,
-	// emit a PartCompleted update so the TUI replaces the spinner with ✓.
-	partID, ok := b.activeBlocks[index]
+	// Only tool_use blocks are tracked in activeToolBlocks. If the index is
+	// present, emit a PartCompleted update so the TUI replaces the spinner with ✓.
+	tb, ok := b.activeToolBlocks[index]
 	if !ok {
 		return
 	}
-	delete(b.activeBlocks, index)
+	delete(b.activeToolBlocks, index)
 
 	b.emit(Event{
 		Type:      EventPartUpdate,
 		Timestamp: time.Now(),
 		Data: PartUpdateData{
 			Part: Part{
-				ID:     partID,
+				ID:     tb.partID,
 				Type:   PartToolCall,
+				Tool:   tb.tool,
 				Status: PartCompleted,
 			},
 		},
