@@ -204,6 +204,30 @@ func TestClaudeCodeHelper(t *testing.T) {
 			"is_error": false,
 		})
 
+	case "follow_up":
+		// Simulate: follow-up on a resumed session (second process invocation).
+		// The test helper checks for --resume in args to verify it's a follow-up.
+		writeJSON(os.Stdout, map[string]interface{}{
+			"type":       "system",
+			"subtype":    "init",
+			"session_id": "claude-session-abc123",
+		})
+		writeJSON(os.Stdout, map[string]interface{}{
+			"type": "assistant",
+			"message": map[string]interface{}{
+				"id":   "msg-follow",
+				"role": "assistant",
+				"content": []map[string]interface{}{
+					{"type": "text", "text": "Here is the follow-up response."},
+				},
+			},
+		})
+		writeJSON(os.Stdout, map[string]interface{}{
+			"type":     "result",
+			"result":   "Follow-up done",
+			"is_error": false,
+		})
+
 	default:
 		fmt.Fprintf(os.Stderr, "unknown scenario: %s\n", scenario)
 		os.Exit(2)
@@ -231,9 +255,30 @@ func helperCmdFactory(scenario string) func(ctx context.Context, args []string, 
 	}
 }
 
+// helperCmdFactorySequence creates a CmdFactory that runs different scenarios
+// on successive invocations. Used to test follow-ups where the first process
+// runs one scenario and the second runs another.
+func helperCmdFactorySequence(scenarios ...string) func(ctx context.Context, args []string, dir string) *exec.Cmd {
+	var call int
+	return func(ctx context.Context, args []string, dir string) *exec.Cmd {
+		scenario := scenarios[0]
+		if call < len(scenarios) {
+			scenario = scenarios[call]
+		}
+		call++
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestClaudeCodeHelper")
+		cmd.Env = append(os.Environ(),
+			"TEST_CLAUDE_HELPER=1",
+			"TEST_CLAUDE_SCENARIO="+scenario,
+		)
+		return cmd
+	}
+}
+
 // --- Tests ---
 
 func TestClaudeCodeBackendBasicSession(t *testing.T) {
+	t.Parallel()
 	b := agent.NewClaudeCodeBackend()
 	b.CmdFactory = helperCmdFactory("basic")
 	defer b.Stop()
@@ -252,14 +297,14 @@ func TestClaudeCodeBackendBasicSession(t *testing.T) {
 	// 2. Message (assistant)
 	// 3. PartUpdate (text)
 	// 4. StatusChange busy->idle (from result)
-	// 5. Message (result)
-	events := collectEvents(b.Events(), 5, 5*time.Second)
+	// Note: result no longer emits a separate EventMessage.
+	events := collectEvents(b.Events(), 4, 5*time.Second)
 
-	if len(events) < 5 {
+	if len(events) < 4 {
 		for i, e := range events {
 			t.Logf("event %d: type=%s data=%+v", i, e.Type, e.Data)
 		}
-		t.Fatalf("expected at least 5 events, got %d", len(events))
+		t.Fatalf("expected at least 4 events, got %d", len(events))
 	}
 
 	// Check session ID was set.
@@ -302,6 +347,18 @@ func TestClaudeCodeBackendBasicSession(t *testing.T) {
 		t.Error("expected text part update with 'I'll fix the bug now.'")
 	}
 
+	// Verify no duplicate result message — the result event should NOT emit
+	// a second EventMessage with the full text.
+	var msgCount int
+	for _, evt := range events {
+		if evt.Type == agent.EventMessage {
+			msgCount++
+		}
+	}
+	if msgCount != 1 {
+		t.Errorf("expected exactly 1 message event (no result duplicate), got %d", msgCount)
+	}
+
 	// Final status should be idle.
 	// Give a moment for the process to fully exit and status to update.
 	time.Sleep(100 * time.Millisecond)
@@ -312,6 +369,7 @@ func TestClaudeCodeBackendBasicSession(t *testing.T) {
 }
 
 func TestClaudeCodeBackendToolUse(t *testing.T) {
+	t.Parallel()
 	b := agent.NewClaudeCodeBackend()
 	b.CmdFactory = helperCmdFactory("tool_use")
 	defer b.Stop()
@@ -359,6 +417,7 @@ func TestClaudeCodeBackendToolUse(t *testing.T) {
 }
 
 func TestClaudeCodeBackendErrorResult(t *testing.T) {
+	t.Parallel()
 	b := agent.NewClaudeCodeBackend()
 	b.CmdFactory = helperCmdFactory("error_result")
 	defer b.Stop()
@@ -396,6 +455,7 @@ func TestClaudeCodeBackendErrorResult(t *testing.T) {
 }
 
 func TestClaudeCodeBackendStreamingDeltas(t *testing.T) {
+	t.Parallel()
 	b := agent.NewClaudeCodeBackend()
 	b.CmdFactory = helperCmdFactory("streaming_deltas")
 	defer b.Stop()
@@ -441,6 +501,7 @@ func TestClaudeCodeBackendStreamingDeltas(t *testing.T) {
 }
 
 func TestClaudeCodeBackendThinking(t *testing.T) {
+	t.Parallel()
 	b := agent.NewClaudeCodeBackend()
 	b.CmdFactory = helperCmdFactory("thinking")
 	defer b.Stop()
@@ -454,7 +515,7 @@ func TestClaudeCodeBackendThinking(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Events: starting->busy, message, thinking part, text part, busy->idle, result message
+	// Events: starting->busy, message, thinking part, text part, busy->idle
 	events := collectEvents(b.Events(), 10, 3*time.Second)
 
 	// Find thinking part.
@@ -477,6 +538,7 @@ func TestClaudeCodeBackendThinking(t *testing.T) {
 }
 
 func TestClaudeCodeBackendCrash(t *testing.T) {
+	t.Parallel()
 	b := agent.NewClaudeCodeBackend()
 	b.CmdFactory = helperCmdFactory("crash")
 	defer b.Stop()
@@ -490,8 +552,30 @@ func TestClaudeCodeBackendCrash(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Wait for events channel to close.
-	events := collectEvents(b.Events(), 10, 5*time.Second)
+	// Wait for process to die and status to update.
+	// Events channel stays open (closed in Stop()), so we collect with a timeout.
+	var events []agent.Event
+	timer := time.After(5 * time.Second)
+outer:
+	for {
+		select {
+		case evt, ok := <-b.Events():
+			if !ok {
+				break outer
+			}
+			events = append(events, evt)
+			// Check if we got the dead status and can stop collecting.
+			if evt.Type == agent.EventStatusChange {
+				if data, ok := evt.Data.(agent.StatusChangeData); ok {
+					if data.NewStatus == agent.StatusDead {
+						break outer
+					}
+				}
+			}
+		case <-timer:
+			break outer
+		}
+	}
 
 	// Should eventually get a dead status.
 	var foundDead bool
@@ -510,6 +594,7 @@ func TestClaudeCodeBackendCrash(t *testing.T) {
 }
 
 func TestClaudeCodeBackendResume(t *testing.T) {
+	t.Parallel()
 	b := agent.NewClaudeCodeBackend()
 	b.CmdFactory = helperCmdFactory("resume")
 	defer b.Stop()
@@ -524,7 +609,7 @@ func TestClaudeCodeBackendResume(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Events: starting->busy, message, text part, busy->idle, result message
+	// Events: starting->busy, message, text part, busy->idle
 	events := collectEvents(b.Events(), 10, 3*time.Second)
 	if b.SessionID() != "existing-session-id" {
 		t.Errorf("expected session ID=existing-session-id, got %s", b.SessionID())
@@ -546,18 +631,130 @@ func TestClaudeCodeBackendResume(t *testing.T) {
 	}
 }
 
-func TestClaudeCodeBackendSendMessageErrors(t *testing.T) {
+func TestClaudeCodeBackendSendMessageBeforeStart(t *testing.T) {
+	t.Parallel()
 	b := agent.NewClaudeCodeBackend()
+	defer b.Stop()
 
-	// Before start.
+	// Before start — no session ID available.
 	err := b.SendMessage(context.Background(), agent.SendMessageOpts{Text: "hello"})
 	if err == nil {
 		t.Error("expected error sending message before Start")
 	}
 }
 
-func TestClaudeCodeBackendAbortBeforeStart(t *testing.T) {
+func TestClaudeCodeBackendSendMessageFollowUp(t *testing.T) {
+	t.Parallel()
 	b := agent.NewClaudeCodeBackend()
+	// First invocation: "basic" scenario (sets session ID).
+	// Second invocation: "follow_up" scenario (simulates the resumed session).
+	b.CmdFactory = helperCmdFactorySequence("basic", "follow_up")
+	defer b.Stop()
+
+	// Start the initial session.
+	err := b.Start(context.Background(), agent.StartRequest{
+		Backend:    agent.BackendClaudeCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "Fix the bug",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Drain events from the first prompt until we get idle status.
+	waitForIdle(t, b.Events(), 5*time.Second)
+
+	if b.SessionID() != "claude-session-abc123" {
+		t.Fatalf("expected session ID=claude-session-abc123, got %s", b.SessionID())
+	}
+
+	// Now send a follow-up — this should spawn a new process with --resume.
+	err = b.SendMessage(context.Background(), agent.SendMessageOpts{Text: "What about the other bug?"})
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	// Collect events from the follow-up process.
+	var followUpEvents []agent.Event
+	timer := time.After(5 * time.Second)
+followUpLoop:
+	for {
+		select {
+		case evt, ok := <-b.Events():
+			if !ok {
+				break followUpLoop
+			}
+			followUpEvents = append(followUpEvents, evt)
+			// Stop after getting idle from the follow-up.
+			if evt.Type == agent.EventStatusChange {
+				if data, ok := evt.Data.(agent.StatusChangeData); ok {
+					if data.NewStatus == agent.StatusIdle {
+						break followUpLoop
+					}
+				}
+			}
+		case <-timer:
+			break followUpLoop
+		}
+	}
+
+	// Verify we got the follow-up response text.
+	var foundFollowUp bool
+	for _, evt := range followUpEvents {
+		if evt.Type == agent.EventPartUpdate {
+			if data, ok := evt.Data.(agent.PartUpdateData); ok {
+				if data.Part.Text == "Here is the follow-up response." {
+					foundFollowUp = true
+				}
+			}
+		}
+	}
+	if !foundFollowUp {
+		for i, e := range followUpEvents {
+			t.Logf("follow-up event %d: type=%s data=%+v", i, e.Type, e.Data)
+		}
+		t.Error("expected text part with 'Here is the follow-up response.' from follow-up")
+	}
+
+	// Session ID should remain the same.
+	if b.SessionID() != "claude-session-abc123" {
+		t.Errorf("session ID changed after follow-up: got %s", b.SessionID())
+	}
+}
+
+func TestClaudeCodeBackendSendMessageCancelledContext(t *testing.T) {
+	t.Parallel()
+	b := agent.NewClaudeCodeBackend()
+	b.CmdFactory = helperCmdFactory("basic")
+	defer b.Stop()
+
+	err := b.Start(context.Background(), agent.StartRequest{
+		Backend:    agent.BackendClaudeCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Cancel the context before the first process has finished. SendMessage
+	// should return ctx.Err() instead of blocking indefinitely on the wait.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// The first process may or may not have finished yet. If it hasn't,
+	// SendMessage should detect the cancelled context while waiting for
+	// processDone and return an error. If the process already finished,
+	// it proceeds to startProcess (which is fine).
+	err = b.SendMessage(ctx, agent.SendMessageOpts{Text: "follow up"})
+	// We don't assert the specific outcome since it depends on timing,
+	// but the critical invariant is that it doesn't hang.
+}
+
+func TestClaudeCodeBackendAbortBeforeStart(t *testing.T) {
+	t.Parallel()
+	b := agent.NewClaudeCodeBackend()
+	defer b.Stop()
 
 	err := b.Abort(context.Background())
 	if err == nil {
@@ -566,6 +763,7 @@ func TestClaudeCodeBackendAbortBeforeStart(t *testing.T) {
 }
 
 func TestClaudeCodeBackendStopClosesEvents(t *testing.T) {
+	t.Parallel()
 	b := agent.NewClaudeCodeBackend()
 	b.CmdFactory = helperCmdFactory("basic")
 
@@ -582,7 +780,7 @@ func TestClaudeCodeBackendStopClosesEvents(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	b.Stop()
 
-	// Events channel should close.
+	// Events channel should close after Stop().
 	select {
 	case _, ok := <-b.Events():
 		if ok {
@@ -593,5 +791,80 @@ func TestClaudeCodeBackendStopClosesEvents(t *testing.T) {
 		// Channel closed — good.
 	case <-time.After(5 * time.Second):
 		t.Error("events channel did not close after Stop")
+	}
+}
+
+func TestClaudeCodeBackendNoDuplicateResultMessage(t *testing.T) {
+	t.Parallel()
+	b := agent.NewClaudeCodeBackend()
+	b.CmdFactory = helperCmdFactory("streaming_deltas")
+	defer b.Stop()
+
+	err := b.Start(context.Background(), agent.StartRequest{
+		Backend:    agent.BackendClaudeCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Collect all events until idle.
+	var events []agent.Event
+	timer := time.After(5 * time.Second)
+loop:
+	for {
+		select {
+		case evt, ok := <-b.Events():
+			if !ok {
+				break loop
+			}
+			events = append(events, evt)
+			if evt.Type == agent.EventStatusChange {
+				if data, ok := evt.Data.(agent.StatusChangeData); ok {
+					if data.NewStatus == agent.StatusIdle {
+						break loop
+					}
+				}
+			}
+		case <-timer:
+			break loop
+		}
+	}
+
+	// The result event should NOT produce an EventMessage. Only
+	// content_block_delta events produce text. Verify no EventMessage
+	// contains the result text "Completed".
+	for _, evt := range events {
+		if evt.Type == agent.EventMessage {
+			if data, ok := evt.Data.(agent.MessageData); ok {
+				if data.Content == "Completed" {
+					t.Error("result text 'Completed' should not appear as an EventMessage — it duplicates streamed content")
+				}
+			}
+		}
+	}
+}
+
+// waitForIdle drains the events channel until a StatusIdle event is received.
+func waitForIdle(t *testing.T, ch <-chan agent.Event, timeout time.Duration) {
+	t.Helper()
+	timer := time.After(timeout)
+	for {
+		select {
+		case evt, ok := <-ch:
+			if !ok {
+				t.Fatal("events channel closed before idle")
+			}
+			if evt.Type == agent.EventStatusChange {
+				if data, ok := evt.Data.(agent.StatusChangeData); ok {
+					if data.NewStatus == agent.StatusIdle {
+						return
+					}
+				}
+			}
+		case <-timer:
+			t.Fatal("timed out waiting for idle status")
+		}
 	}
 }

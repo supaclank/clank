@@ -21,16 +21,24 @@ import (
 //   - The subprocess is started in the project directory.
 //   - Events are parsed from stdout (--output-format stream-json).
 //   - Resume uses --resume <session_id>.
+//   - Follow-ups spawn a new `claude -p --resume` process (the CLI is
+//     one-shot: one prompt per process invocation).
 //   - Abort sends SIGINT to the process.
 type ClaudeCodeBackend struct {
-	mu        sync.Mutex
-	status    SessionStatus
-	sessionID string // Claude's session ID (parsed from "system" init event)
-	events    chan Event
-	ctx       context.Context
-	cancel    context.CancelFunc
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
+	mu         sync.Mutex
+	status     SessionStatus
+	sessionID  string // Claude's session ID (parsed from "system" init event)
+	projectDir string // Working directory for subprocess
+	events     chan Event
+	ctx        context.Context
+	cancel     context.CancelFunc
+	cmd        *exec.Cmd
+	stdin      io.WriteCloser
+
+	// processDone is closed when the current subprocess's parseOutput
+	// goroutine finishes. This lets SendMessage wait for the previous
+	// process to exit before spawning a new one.
+	processDone chan struct{}
 
 	// CmdFactory allows tests to inject a custom command builder.
 	// If nil, uses the default `claude` CLI.
@@ -49,23 +57,39 @@ func NewClaudeCodeBackend() *ClaudeCodeBackend {
 }
 
 func (b *ClaudeCodeBackend) Start(ctx context.Context, req StartRequest) error {
+	b.mu.Lock()
+	b.projectDir = req.ProjectDir
+	b.mu.Unlock()
+
+	return b.startProcess(req.Prompt, req.SessionID)
+}
+
+// startProcess launches a new `claude -p` subprocess. It is used both for
+// the initial Start() call and for follow-up messages via SendMessage().
+func (b *ClaudeCodeBackend) startProcess(prompt, sessionID string) error {
 	args := []string{
-		"-p", req.Prompt,
+		"-p", prompt,
 		"--output-format", "stream-json",
 		"--verbose",
 	}
 
-	if req.SessionID != "" {
-		args = append(args, "--resume", req.SessionID)
-		b.sessionID = req.SessionID
+	if sessionID != "" {
+		args = append(args, "--resume", sessionID)
+		b.mu.Lock()
+		b.sessionID = sessionID
+		b.mu.Unlock()
 	}
+
+	b.mu.Lock()
+	dir := b.projectDir
+	b.mu.Unlock()
 
 	var cmd *exec.Cmd
 	if b.CmdFactory != nil {
-		cmd = b.CmdFactory(b.ctx, args, req.ProjectDir)
+		cmd = b.CmdFactory(b.ctx, args, dir)
 	} else {
 		cmd = exec.CommandContext(b.ctx, "claude", args...)
-		cmd.Dir = req.ProjectDir
+		cmd.Dir = dir
 		// Own process group so it can be signalled independently.
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	}
@@ -89,31 +113,44 @@ func (b *ClaudeCodeBackend) Start(ctx context.Context, req StartRequest) error {
 		return fmt.Errorf("start claude: %w", err)
 	}
 
+	done := make(chan struct{})
+
 	b.mu.Lock()
 	b.cmd = cmd
 	b.stdin = stdin
+	b.processDone = done
 	b.mu.Unlock()
 
 	b.setStatus(StatusBusy)
 
-	// Parse stdout in background.
-	go b.parseOutput(stdout, stderr)
+	// Parse stdout in background; closes `done` when the process exits.
+	go b.parseOutput(stdout, stderr, done)
 
 	return nil
 }
 
 func (b *ClaudeCodeBackend) SendMessage(ctx context.Context, opts SendMessageOpts) error {
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	sid := b.sessionID
+	done := b.processDone
+	b.mu.Unlock()
 
-	if b.cmd == nil || b.cmd.Process == nil {
-		return fmt.Errorf("session not started")
+	if sid == "" {
+		return fmt.Errorf("session not started: no session ID available for --resume")
 	}
 
-	// For follow-up messages, we need to start a new process with --resume.
-	// Claude Code doesn't support writing to stdin of an existing -p session.
-	// The caller (daemon) should create a new backend with SessionID set.
-	return fmt.Errorf("claude code follow-up requires a new process with --resume; use Start with SessionID set")
+	// Wait for the previous process to finish (it's one-shot).
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-b.ctx.Done():
+			return b.ctx.Err()
+		}
+	}
+
+	return b.startProcess(opts.Text, sid)
 }
 
 // Watch is a no-op for Claude Code. The CLI doesn't support passive
@@ -140,22 +177,28 @@ func (b *ClaudeCodeBackend) Abort(ctx context.Context) error {
 }
 
 func (b *ClaudeCodeBackend) Stop() error {
+	// Cancel the context — exec.CommandContext will send SIGKILL to the
+	// subprocess, causing parseOutput to finish and close processDone.
 	b.cancel()
 
 	b.mu.Lock()
+	pd := b.processDone
 	cmd := b.cmd
 	b.mu.Unlock()
 
-	if cmd != nil && cmd.Process != nil {
-		// Give it a moment to exit gracefully.
-		done := make(chan error, 1)
-		go func() { done <- cmd.Wait() }()
+	if pd != nil {
+		// Wait for parseOutput to finish (it owns cmd.Wait()).
 		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-			cmd.Process.Kill()
+		case <-pd:
+		case <-time.After(5 * time.Second):
+			// If parseOutput is stuck, force-kill the process directly.
+			if cmd != nil && cmd.Process != nil {
+				cmd.Process.Kill()
+			}
+			<-pd
 		}
 	}
+	close(b.events)
 
 	return nil
 }
@@ -221,8 +264,13 @@ func (b *ClaudeCodeBackend) emitError(msg string) {
 // parseOutput reads stdout line-by-line, parsing each JSON object.
 // Each line from `claude -p --output-format stream-json` is a JSON object
 // with a `type` field.
-func (b *ClaudeCodeBackend) parseOutput(stdout, stderr io.Reader) {
-	defer close(b.events)
+//
+// The done channel is closed when this goroutine finishes, signalling that
+// the subprocess has exited and a new one can be spawned for follow-ups.
+// The events channel is NOT closed here — it stays open across process
+// lifetimes and is only closed in Stop().
+func (b *ClaudeCodeBackend) parseOutput(stdout, stderr io.Reader, done chan struct{}) {
+	defer close(done)
 
 	// Drain stderr in a separate goroutine.
 	go func() {
@@ -350,16 +398,10 @@ func (b *ClaudeCodeBackend) handleClaudeMessage(msg claudeMessage, raw []byte) {
 		} else {
 			b.setStatus(StatusIdle)
 		}
-
-		// Emit a message event with the result.
-		b.emit(Event{
-			Type:      EventMessage,
-			Timestamp: time.Now(),
-			Data: MessageData{
-				Role:    "assistant",
-				Content: msg.Result,
-			},
-		})
+		// Note: we intentionally do NOT emit an EventMessage with the result
+		// text here. The assistant's response is already streamed to the TUI
+		// via content_block_delta / assistant message events. Re-emitting the
+		// full text as a separate message would cause duplicates.
 	}
 }
 
