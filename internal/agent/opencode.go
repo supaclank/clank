@@ -550,6 +550,7 @@ func (b *OpenCodeBackend) handlePartUpdate(p opencode.Part) {
 		case opencode.ToolPartStateStatusError:
 			partStatus = PartFailed
 		}
+		inputMap, _ := concrete.State.Input.(map[string]interface{})
 		b.emit(Event{
 			Type:      EventPartUpdate,
 			Timestamp: time.Now(),
@@ -559,6 +560,8 @@ func (b *OpenCodeBackend) handlePartUpdate(p opencode.Part) {
 					Type:   PartToolCall,
 					Tool:   concrete.Tool,
 					Status: partStatus,
+					Input:  inputMap,
+					Output: concrete.State.Output,
 				},
 			},
 		})
@@ -636,11 +639,14 @@ func (b *OpenCodeBackend) convertSDKPart(p opencode.Part) *Part {
 		case opencode.ToolPartStateStatusError:
 			partStatus = PartFailed
 		}
+		inputMap, _ := concrete.State.Input.(map[string]interface{})
 		return &Part{
 			ID:     concrete.ID,
 			Type:   PartToolCall,
 			Tool:   concrete.Tool,
 			Status: partStatus,
+			Input:  inputMap,
+			Output: concrete.State.Output,
 		}
 	case opencode.ReasoningPart:
 		return &Part{

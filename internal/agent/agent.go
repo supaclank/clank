@@ -154,11 +154,13 @@ type MessageData struct {
 
 // Part represents a piece of an assistant message (text block, tool call, etc.).
 type Part struct {
-	ID     string     `json:"id"`
-	Type   PartType   `json:"type"`
-	Text   string     `json:"text,omitempty"`
-	Tool   string     `json:"tool,omitempty"` // Tool name if tool call/result
-	Status PartStatus `json:"status,omitempty"`
+	ID     string         `json:"id"`
+	Type   PartType       `json:"type"`
+	Text   string         `json:"text,omitempty"`
+	Tool   string         `json:"tool,omitempty"` // Tool name if tool call/result
+	Status PartStatus     `json:"status,omitempty"`
+	Input  map[string]any `json:"input,omitempty"`  // Tool call arguments (e.g. filePath, command)
+	Output string         `json:"output,omitempty"` // Tool result text
 }
 
 // PartType classifies the content of a Part.

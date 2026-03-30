@@ -2,7 +2,9 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -100,6 +102,7 @@ type SessionViewModel struct {
 	cursorMoved  bool           // true when cursor changed since last render
 	scrollOffset int            // first visible display line
 	follow       bool           // auto-follow tail when true (default when busy)
+	verbose      bool           // show full tool call input/output when true
 
 	// Entry-to-line mapping (rebuilt by buildContentLines).
 	entryStartLine []int // entryStartLine[i] = first display line for entries[i]
@@ -197,6 +200,14 @@ type displayEntry struct {
 	// changes (e.g. streaming deltas) by clearing renderedMD.
 	renderedMD    string // cached glamour output (empty = not yet rendered)
 	renderedWidth int    // terminal width the cache was computed at
+
+	// Tool render caches. The summary line is cached for tools in terminal
+	// status (completed/error) so the spinner can still animate for running
+	// tools. Verbose lines are cached separately.
+	// Both are invalidated when toolPart changes or terminal width changes.
+	toolLine     string   // cached summary line (empty = not yet rendered or running)
+	verboseLines []string // cached verbose output lines (nil = not yet rendered)
+	verboseWidth int      // width the verbose cache was computed at
 }
 
 type entryKind int
@@ -754,6 +765,12 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.cursorMoved = true
 	case key.Matches(msg, key.NewBinding(key.WithKeys("a"))):
 		// TODO: approve session
+	case key.Matches(msg, key.NewBinding(key.WithKeys("v"))):
+		m.verbose = !m.verbose
+		// Invalidate verbose caches so they're rebuilt on next View().
+		for i := range m.entries {
+			m.entries[i].verboseLines = nil
+		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("c"))):
 		if m.cursor >= 0 && m.cursor < len(m.entries) {
 			e := m.entries[m.cursor]
@@ -1006,8 +1023,25 @@ func (m *SessionViewModel) upsertPartEntry(p agent.Part, isDelta bool) {
 			if e.partID == p.ID {
 				switch p.Type {
 				case agent.PartToolCall, agent.PartToolResult:
+					// Merge: preserve Input/Output from the existing entry
+					// when the new update doesn't carry them. This handles
+					// the Claude pattern where PartToolCall has Input and
+					// a later PartToolResult has Output for the same ID.
 					pCopy := p
+					if e.toolPart != nil {
+						if pCopy.Input == nil && e.toolPart.Input != nil {
+							pCopy.Input = e.toolPart.Input
+						}
+						if pCopy.Output == "" && e.toolPart.Output != "" {
+							pCopy.Output = e.toolPart.Output
+						}
+						if pCopy.Tool == "" && e.toolPart.Tool != "" {
+							pCopy.Tool = e.toolPart.Tool
+						}
+					}
 					e.toolPart = &pCopy
+					e.toolLine = ""      // invalidate summary cache
+					e.verboseLines = nil // invalidate verbose cache
 				case agent.PartText, agent.PartThinking:
 					if isDelta {
 						e.content += p.Text
@@ -1059,10 +1093,18 @@ func (m *SessionViewModel) renderToolLine(p agent.Part) string {
 	if label == "" {
 		label = string(p.Type)
 	}
-	desc := p.Text
-	if len(desc) > 60 {
-		desc = desc[:57] + "..."
+
+	// Extract a concise, always-visible description from the tool input.
+	// File tools show their path; Bash shows the command; search tools show
+	// the pattern. Falls back to Part.Text when Input is unavailable.
+	desc := toolSummary(p)
+	if desc == "" {
+		desc = p.Text
 	}
+	if len(desc) > 80 {
+		desc = desc[:77] + "..."
+	}
+
 	statusStr := string(p.Status)
 	if statusStr == "" {
 		statusStr = "pending"
@@ -1071,6 +1113,153 @@ func (m *SessionViewModel) renderToolLine(p agent.Part) string {
 		return fmt.Sprintf("[%s] %s %s %s", label, desc, icon, statusStr)
 	}
 	return fmt.Sprintf("[%s] %s %s", label, icon, statusStr)
+}
+
+// toolSummary returns a short description extracted from the tool's input
+// arguments. For file tools this is the file path; for Bash it's the command.
+func toolSummary(p agent.Part) string {
+	if p.Input == nil {
+		return ""
+	}
+	switch strings.ToLower(p.Tool) {
+	case "read", "write", "edit":
+		if fp, ok := p.Input["filePath"].(string); ok {
+			return fp
+		}
+	case "glob":
+		pat, _ := p.Input["pattern"].(string)
+		dir, _ := p.Input["path"].(string)
+		if dir != "" {
+			return dir + "/" + pat
+		}
+		return pat
+	case "grep":
+		pat, _ := p.Input["pattern"].(string)
+		inc, _ := p.Input["include"].(string)
+		if inc != "" {
+			return pat + " (" + inc + ")"
+		}
+		return pat
+	case "bash":
+		if cmd, ok := p.Input["command"].(string); ok {
+			return cmd
+		}
+	case "task":
+		if desc, ok := p.Input["description"].(string); ok {
+			return desc
+		}
+	}
+	// Generic fallback: look for common keys.
+	for _, k := range []string{"filePath", "path", "url", "command", "description"} {
+		if v, ok := p.Input[k].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// renderToolVerbose returns additional indented lines showing the full tool
+// input and output. For the Edit tool it renders a coloured inline diff.
+func (m *SessionViewModel) renderToolVerbose(p agent.Part, width int) []string {
+	dim := lipgloss.NewStyle().Foreground(dimColor)
+	indent := "    " // 4-space indent for verbose content
+
+	if strings.EqualFold(p.Tool, "edit") {
+		return m.renderEditDiff(p, width, indent)
+	}
+
+	var lines []string
+
+	// Render input arguments (skip keys already shown in the summary line).
+	if len(p.Input) > 0 {
+		lines = append(lines, dim.Render(indent+"input:"))
+		lines = append(lines, renderInputMap(p.Input, width, indent+"  ", dim)...)
+	}
+
+	// Skip output for Read — file contents are too long to be useful inline.
+	if strings.EqualFold(p.Tool, "read") {
+		return lines
+	}
+
+	// Render output.
+	if p.Output != "" {
+		lines = append(lines, dim.Render(indent+"output:"))
+		for _, ol := range strings.Split(p.Output, "\n") {
+			lines = append(lines, dim.Render(indent+"  "+ol))
+		}
+	}
+
+	return lines
+}
+
+// renderEditDiff renders an Edit tool call as an inline diff showing removed
+// (red) and added (green) lines, similar to a unified diff.
+func (m *SessionViewModel) renderEditDiff(p agent.Part, width int, indent string) []string {
+	dim := lipgloss.NewStyle().Foreground(dimColor)
+	del := lipgloss.NewStyle().Foreground(dangerColor)  // red for removed
+	add := lipgloss.NewStyle().Foreground(successColor) // green for added
+
+	filePath, _ := p.Input["filePath"].(string)
+	oldStr, _ := p.Input["oldString"].(string)
+	newStr, _ := p.Input["newString"].(string)
+
+	var lines []string
+	if filePath != "" {
+		lines = append(lines, dim.Render(indent+"--- "+filePath))
+		lines = append(lines, dim.Render(indent+"+++ "+filePath))
+	}
+
+	for _, ol := range strings.Split(oldStr, "\n") {
+		lines = append(lines, del.Render(indent+"- "+ol))
+	}
+	for _, nl := range strings.Split(newStr, "\n") {
+		lines = append(lines, add.Render(indent+"+ "+nl))
+	}
+
+	// Show output (e.g. error message) if present.
+	if p.Output != "" {
+		lines = append(lines, dim.Render(indent+"output:"))
+		for _, ol := range strings.Split(p.Output, "\n") {
+			lines = append(lines, dim.Render(indent+"  "+ol))
+		}
+	}
+
+	return lines
+}
+
+// renderInputMap formats a map[string]any as indented key: value lines.
+// Long string values are wrapped; non-string values are JSON-encoded.
+func renderInputMap(m map[string]any, width int, indent string, style lipgloss.Style) []string {
+	// Sort keys for stable output.
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var lines []string
+	for _, k := range keys {
+		v := m[k]
+		switch val := v.(type) {
+		case string:
+			if len(val) <= 80 && !strings.Contains(val, "\n") {
+				lines = append(lines, style.Render(fmt.Sprintf("%s%s: %s", indent, k, val)))
+			} else {
+				lines = append(lines, style.Render(fmt.Sprintf("%s%s:", indent, k)))
+				for _, sl := range strings.Split(val, "\n") {
+					lines = append(lines, style.Render(indent+"  "+sl))
+				}
+			}
+		default:
+			b, err := json.Marshal(val)
+			if err != nil {
+				lines = append(lines, style.Render(fmt.Sprintf("%s%s: %v", indent, k, val)))
+			} else {
+				lines = append(lines, style.Render(fmt.Sprintf("%s%s: %s", indent, k, string(b))))
+			}
+		}
+	}
+	return lines
 }
 
 func (m *SessionViewModel) statusIcon(status agent.PartStatus) string {
@@ -1460,12 +1649,38 @@ func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool) []string 
 		}
 
 	case entryTool:
-		line := e.content
+		// Summary line: use cache for terminal-status tools, render live
+		// for running/pending (spinner animation needs fresh renders).
+		var line string
 		if e.toolPart != nil {
-			line = m.renderToolLine(*e.toolPart)
+			isTerminal := e.toolPart.Status == agent.PartCompleted || e.toolPart.Status == agent.PartFailed
+			if isTerminal && e.toolLine != "" {
+				line = e.toolLine
+			} else {
+				line = m.renderToolLine(*e.toolPart)
+				if isTerminal {
+					e.toolLine = line
+				}
+			}
+		} else {
+			line = e.content
 		}
 		styled := lipgloss.NewStyle().Foreground(dimColor).Render("  " + line)
-		return []string{styled}
+		lines := []string{styled}
+
+		// Verbose detail: use cache when available and valid.
+		if m.verbose && e.toolPart != nil {
+			verboseW := maxWidth - 4
+			if e.verboseLines != nil && e.verboseWidth == verboseW {
+				lines = append(lines, e.verboseLines...)
+			} else {
+				vl := m.renderToolVerbose(*e.toolPart, verboseW)
+				e.verboseLines = vl
+				e.verboseWidth = verboseW
+				lines = append(lines, vl...)
+			}
+		}
+		return lines
 
 	case entryThink:
 		header := lipgloss.NewStyle().Foreground(dimColor).Italic(true).Render("(thinking)")
@@ -1584,7 +1799,7 @@ func (m *SessionViewModel) buildHelpText() string {
 	if m.standalone {
 		qLabel = "q: quit"
 	}
-	parts := []string{"m: message", "c: copy", "f: follow-up", "d: done", "x: archive", "drag: copy", qLabel}
+	parts := []string{"m: message", "v: verbose", "c: copy", "f: follow-up", "d: done", "x: archive", "drag: copy", qLabel}
 	if m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting) {
 		parts = append([]string{"ctrl+c: cancel"}, parts...)
 	}

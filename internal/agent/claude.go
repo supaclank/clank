@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,8 +15,9 @@ import (
 // handleContentBlockStop can emit a PartCompleted event with the correct ID
 // and tool name (the TUI replaces the entire toolPart on upsert).
 type activeToolBlock struct {
-	partID string
-	tool   string
+	partID   string
+	tool     string
+	inputBuf strings.Builder // accumulates input_json_delta chunks
 }
 
 // ClaudeCodeBackend manages a single Claude Code session using the
@@ -522,8 +524,15 @@ func (b *ClaudeCodeBackend) handleContentBlockDelta(event map[string]any) {
 			})
 		}
 	case "input_json_delta":
-		// Tool input arriving incrementally. We could accumulate it, but
-		// the full input arrives with the AssistantMessage. Skip for now.
+		// Accumulate tool input JSON incrementally so it's available at
+		// content_block_stop (and ultimately in the Part.Input field).
+		partial, _ := delta["partial_json"].(string)
+		if partial != "" {
+			if tb, ok := b.activeToolBlocks[index]; ok {
+				tb.inputBuf.WriteString(partial)
+				b.activeToolBlocks[index] = tb
+			}
+		}
 	}
 }
 
@@ -541,6 +550,12 @@ func (b *ClaudeCodeBackend) handleContentBlockStop(event map[string]any) {
 	}
 	delete(b.activeToolBlocks, index)
 
+	// Parse accumulated input JSON into a map for the Part.Input field.
+	var inputMap map[string]any
+	if raw := tb.inputBuf.String(); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &inputMap)
+	}
+
 	b.emit(Event{
 		Type:      EventPartUpdate,
 		Timestamp: time.Now(),
@@ -550,6 +565,7 @@ func (b *ClaudeCodeBackend) handleContentBlockStop(event map[string]any) {
 				Type:   PartToolCall,
 				Tool:   tb.tool,
 				Status: PartCompleted,
+				Input:  inputMap,
 			},
 		},
 	})
@@ -570,21 +586,23 @@ func contentBlockToPart(block claudecode.ContentBlock, msgID string, index int) 
 			Text: b.Text,
 		}, true
 	case *claudecode.ToolUseBlock:
-		// History-loaded tool calls have already completed. Don't set Text
-		// (the JSON input) — it would leak into renderToolLine's description.
-		// This keeps history Parts consistent with the live SSE streaming path.
 		return Part{
 			ID:     b.ToolUseID,
 			Type:   PartToolCall,
 			Tool:   b.Name,
 			Status: PartCompleted,
+			Input:  b.Input,
 		}, true
 	case *claudecode.ToolResultBlock:
-		// Don't set Text (raw tool output) — same reasoning as ToolUseBlock.
+		var output string
+		if s, ok := b.Content.(string); ok {
+			output = s
+		}
 		return Part{
 			ID:     b.ToolUseID,
 			Type:   PartToolResult,
 			Status: PartCompleted,
+			Output: output,
 		}, true
 	case *claudecode.ThinkingBlock:
 		return Part{
