@@ -1,48 +1,61 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
-	"os/exec"
 	"sync"
-	"syscall"
 	"time"
+
+	claudecode "github.com/severity1/claude-agent-sdk-go"
 )
 
-// ClaudeCodeBackend manages a single Claude Code session by spawning
-// `claude -p` as a subprocess and parsing its streaming JSON output.
+// ClaudeCodeBackend manages a single Claude Code session using the
+// claude-agent-sdk-go SDK's Client API. The SDK handles CLI discovery,
+// subprocess lifecycle, JSON parsing, streaming, and the control protocol.
 //
 // Architecture:
 //   - Each backend instance corresponds to one session.
-//   - The subprocess is started in the project directory.
-//   - Events are parsed from stdout (--output-format stream-json).
-//   - Resume uses --resume <session_id>.
-//   - Follow-ups spawn a new `claude -p --resume` process (the CLI is
-//     one-shot: one prompt per process invocation).
-//   - Abort sends SIGINT to the process.
+//   - Connect() spawns a persistent Claude CLI subprocess.
+//   - Multi-turn: Query() sends follow-up prompts over the same connection.
+//   - Abort uses the SDK's control protocol (Interrupt), not raw SIGINT.
+//   - receiveLoop maps SDK messages → clank Event types.
+//
+// Future: When the SDK adds list_sessions() and get_session_messages()
+// (see https://github.com/severity1/claude-agent-sdk-go/issues/107),
+// Messages() can retrieve full history from Claude's native storage
+// instead of relying on in-memory accumulation.
 type ClaudeCodeBackend struct {
 	mu         sync.Mutex
 	status     SessionStatus
-	sessionID  string // Claude's session ID (parsed from "system" init event)
-	projectDir string // Working directory for subprocess
+	sessionID  string // Claude's CLI session UUID (from ResultMessage)
+	projectDir string
 	events     chan Event
+	stopped    bool // guards against double-close of events channel
 	ctx        context.Context
 	cancel     context.CancelFunc
-	cmd        *exec.Cmd
-	stdin      io.WriteCloser
 
-	// processDone is closed when the current subprocess's parseOutput
-	// goroutine finishes. This lets SendMessage wait for the previous
-	// process to exit before spawning a new one.
-	processDone chan struct{}
+	client claudecode.Client // SDK client (persistent connection)
 
-	// CmdFactory allows tests to inject a custom command builder.
-	// If nil, uses the default `claude` CLI.
-	CmdFactory func(ctx context.Context, args []string, dir string) *exec.Cmd
+	// currentMsgID is the Anthropic API message ID (e.g. "msg_01XFD...") extracted
+	// from the most recent message_start stream event. It's used to build part IDs
+	// for text/thinking blocks as "{msgID}-{blockIndex}".
+	//
+	// This is naturally unique across both message cycles within a turn (each tool
+	// use triggers a new API call with a new message ID) and across turns (each
+	// Query() produces new API calls). No synthetic counters needed.
+	//
+	// Only accessed from receiveLoop goroutine — no lock required.
+	currentMsgID string
+
+	// messages accumulates MessageData from the stream for Messages() retrieval.
+	// Lost on daemon restart; future: persist to SQLite or use SDK session history.
+	messages []MessageData
+
+	// ClientFactory builds a claudecode.Client for a given set of options.
+	// Tests inject a factory that returns a client backed by a mock transport.
+	// If nil, the default claudecode.NewClient is used.
+	ClientFactory func(opts ...claudecode.Option) claudecode.Client
 }
 
 // NewClaudeCodeBackend creates a new Claude Code backend.
@@ -61,145 +74,123 @@ func (b *ClaudeCodeBackend) Start(ctx context.Context, req StartRequest) error {
 	b.projectDir = req.ProjectDir
 	b.mu.Unlock()
 
-	return b.startProcess(req.Prompt, req.SessionID)
-}
-
-// startProcess launches a new `claude -p` subprocess. It is used both for
-// the initial Start() call and for follow-up messages via SendMessage().
-func (b *ClaudeCodeBackend) startProcess(prompt, sessionID string) error {
-	args := []string{
-		"-p", prompt,
-		"--output-format", "stream-json",
-		"--verbose",
+	opts := []claudecode.Option{
+		claudecode.WithCwd(req.ProjectDir),
+		claudecode.WithPartialStreaming(),
+		claudecode.WithPermissionMode(claudecode.PermissionModeAcceptEdits),
 	}
 
-	if sessionID != "" {
-		args = append(args, "--resume", sessionID)
+	if req.SessionID != "" {
+		opts = append(opts, claudecode.WithResume(req.SessionID))
 		b.mu.Lock()
-		b.sessionID = sessionID
+		b.sessionID = req.SessionID
 		b.mu.Unlock()
 	}
 
+	// Build the client — use the test factory if provided.
+	var client claudecode.Client
 	b.mu.Lock()
-	dir := b.projectDir
+	factory := b.ClientFactory
 	b.mu.Unlock()
 
-	var cmd *exec.Cmd
-	if b.CmdFactory != nil {
-		cmd = b.CmdFactory(b.ctx, args, dir)
+	if factory != nil {
+		client = factory(opts...)
 	} else {
-		cmd = exec.CommandContext(b.ctx, "claude", args...)
-		cmd.Dir = dir
-		// Own process group so it can be signalled independently.
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		client = claudecode.NewClient(opts...)
 	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("stdout pipe: %w", err)
-	}
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("stderr pipe: %w", err)
-	}
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return fmt.Errorf("stdin pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start claude: %w", err)
-	}
-
-	done := make(chan struct{})
 
 	b.mu.Lock()
-	b.cmd = cmd
-	b.stdin = stdin
-	b.processDone = done
+	b.client = client
 	b.mu.Unlock()
+
+	if err := b.client.Connect(b.ctx); err != nil {
+		b.setStatus(StatusError)
+		return fmt.Errorf("connect to claude CLI: %w", err)
+	}
 
 	b.setStatus(StatusBusy)
 
-	// Parse stdout in background; closes `done` when the process exits.
-	go b.parseOutput(stdout, stderr, done)
+	// Start receiving messages from the SDK in the background.
+	go b.receiveLoop()
+
+	// Send the initial prompt.
+	if err := b.client.Query(b.ctx, req.Prompt); err != nil {
+		b.setStatus(StatusError)
+		return fmt.Errorf("send initial prompt: %w", err)
+	}
 
 	return nil
 }
 
 func (b *ClaudeCodeBackend) SendMessage(ctx context.Context, opts SendMessageOpts) error {
 	b.mu.Lock()
-	sid := b.sessionID
-	done := b.processDone
+	client := b.client
 	b.mu.Unlock()
 
-	if sid == "" {
-		return fmt.Errorf("session not started: no session ID available for --resume")
+	if client == nil {
+		return fmt.Errorf("session not started: client not connected")
 	}
 
-	// Wait for the previous process to finish (it's one-shot).
-	if done != nil {
-		select {
-		case <-done:
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-b.ctx.Done():
-			return b.ctx.Err()
-		}
+	// Emit user message event so the TUI sees it.
+	b.emit(Event{
+		Type:      EventMessage,
+		Timestamp: time.Now(),
+		Data: MessageData{
+			Role:    "user",
+			Content: opts.Text,
+		},
+	})
+
+	b.mu.Lock()
+	b.messages = append(b.messages, MessageData{
+		Role:    "user",
+		Content: opts.Text,
+	})
+	b.mu.Unlock()
+
+	b.setStatus(StatusBusy)
+
+	if err := client.Query(b.ctx, opts.Text); err != nil {
+		return fmt.Errorf("send follow-up: %w", err)
 	}
 
-	return b.startProcess(opts.Text, sid)
+	return nil
 }
 
 // Watch is a no-op for Claude Code. The CLI doesn't support passive
-// observation of a session — events only flow while a subprocess is running.
+// observation — events only flow while the subprocess is running.
 func (b *ClaudeCodeBackend) Watch(ctx context.Context) error {
 	return nil
 }
 
 func (b *ClaudeCodeBackend) Abort(ctx context.Context) error {
 	b.mu.Lock()
-	cmd := b.cmd
+	client := b.client
 	b.mu.Unlock()
 
-	if cmd == nil || cmd.Process == nil {
+	if client == nil {
 		return fmt.Errorf("session not started")
 	}
 
-	// Send SIGINT to the process group.
-	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGINT); err != nil {
-		// Fallback to sending directly to the process.
-		return cmd.Process.Signal(os.Interrupt)
-	}
-	return nil
+	return client.Interrupt(ctx)
 }
 
 func (b *ClaudeCodeBackend) Stop() error {
-	// Cancel the context — exec.CommandContext will send SIGKILL to the
-	// subprocess, causing parseOutput to finish and close processDone.
 	b.cancel()
 
 	b.mu.Lock()
-	pd := b.processDone
-	cmd := b.cmd
+	client := b.client
+	alreadyStopped := b.stopped
+	b.stopped = true
 	b.mu.Unlock()
 
-	if pd != nil {
-		// Wait for parseOutput to finish (it owns cmd.Wait()).
-		select {
-		case <-pd:
-		case <-time.After(5 * time.Second):
-			// If parseOutput is stuck, force-kill the process directly.
-			if cmd != nil && cmd.Process != nil {
-				cmd.Process.Kill()
-			}
-			<-pd
-		}
+	if client != nil {
+		client.Disconnect()
 	}
-	close(b.events)
 
+	if !alreadyStopped {
+		close(b.events)
+	}
 	return nil
 }
 
@@ -219,13 +210,26 @@ func (b *ClaudeCodeBackend) SessionID() string {
 	return b.sessionID
 }
 
-// Messages is not yet implemented for Claude Code.
-// Claude Code supports --resume with --replay-user-messages for streaming
-// history, and the --ide flag may provide structured output. The long-term
-// plan is to store messages in our own DB from the stream-json output.
+// Messages returns the conversation history accumulated during this session.
+// Each assistant turn and user follow-up is recorded as the stream is processed.
+//
+// Future: When the SDK adds list_sessions() / get_session_messages()
+// (https://github.com/severity1/claude-agent-sdk-go/issues/107),
+// this can retrieve full history from Claude's native session storage
+// instead of relying on in-memory accumulation.
 func (b *ClaudeCodeBackend) Messages(ctx context.Context) ([]MessageData, error) {
-	return nil, nil
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.messages == nil {
+		return nil, nil
+	}
+	// Return a copy to avoid races.
+	msgs := make([]MessageData, len(b.messages))
+	copy(msgs, b.messages)
+	return msgs, nil
 }
+
+// --- Internal helpers ---
 
 func (b *ClaudeCodeBackend) setStatus(s SessionStatus) {
 	b.mu.Lock()
@@ -246,10 +250,18 @@ func (b *ClaudeCodeBackend) setStatus(s SessionStatus) {
 }
 
 func (b *ClaudeCodeBackend) emit(evt Event) {
+	b.mu.Lock()
+	stopped := b.stopped
+	b.mu.Unlock()
+
+	if stopped {
+		return
+	}
+
 	select {
 	case b.events <- evt:
 	default:
-		// Drop if full.
+		// Drop if buffer full — avoids blocking the receive loop.
 	}
 }
 
@@ -261,206 +273,330 @@ func (b *ClaudeCodeBackend) emitError(msg string) {
 	})
 }
 
-// parseOutput reads stdout line-by-line, parsing each JSON object.
-// Each line from `claude -p --output-format stream-json` is a JSON object
-// with a `type` field.
-//
-// The done channel is closed when this goroutine finishes, signalling that
-// the subprocess has exited and a new one can be spawned for follow-ups.
-// The events channel is NOT closed here — it stays open across process
-// lifetimes and is only closed in Stop().
-func (b *ClaudeCodeBackend) parseOutput(stdout, stderr io.Reader, done chan struct{}) {
-	defer close(done)
+// receiveLoop reads messages from the SDK's ReceiveMessages channel and
+// translates them into clank Event types. It runs for the lifetime of the
+// client connection.
+func (b *ClaudeCodeBackend) receiveLoop() {
+	msgChan := b.client.ReceiveMessages(b.ctx)
 
-	// Drain stderr in a separate goroutine.
-	go func() {
-		io.Copy(io.Discard, stderr)
-	}()
-
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
+	for msg := range msgChan {
+		if msg == nil {
 			continue
 		}
 
-		var msg claudeMessage
-		if err := json.Unmarshal(line, &msg); err != nil {
-			continue // Skip non-JSON lines.
+		switch m := msg.(type) {
+		case *claudecode.SystemMessage:
+			b.handleSystemMessage(m)
+		case *claudecode.AssistantMessage:
+			b.handleAssistantMessage(m)
+		case *claudecode.ResultMessage:
+			b.handleResult(m)
+		case *claudecode.StreamEvent:
+			b.handleStreamEvent(m)
 		}
-
-		b.handleClaudeMessage(msg, line)
 	}
 
-	// Process exited — wait for it and update status.
-	b.mu.Lock()
-	cmd := b.cmd
-	b.mu.Unlock()
-
-	if cmd != nil {
-		cmd.Wait()
-	}
-
+	// Channel closed — connection ended.
 	if b.Status() == StatusBusy || b.Status() == StatusStarting {
 		b.setStatus(StatusDead)
 	}
 }
 
-// claudeMessage is the raw shape of each streaming JSON line.
-type claudeMessage struct {
-	Type    string `json:"type"`
-	Subtype string `json:"subtype,omitempty"`
-
-	// For type=system, subtype=init
-	SessionID string `json:"session_id,omitempty"`
-
-	// For type=assistant
-	Message *claudeAssistantMessage `json:"message,omitempty"`
-
-	// For type=result
-	Result   string  `json:"result,omitempty"`
-	CostUSD  float64 `json:"total_cost_usd,omitempty"`
-	Duration float64 `json:"duration_ms,omitempty"`
-	IsError  bool    `json:"is_error,omitempty"`
-
-	// For type=content_block_start, content_block_delta, content_block_stop
-	Index        int                 `json:"index,omitempty"`
-	ContentBlock *claudeContentBlock `json:"content_block,omitempty"`
-	Delta        *claudeContentBlock `json:"delta,omitempty"`
-}
-
-type claudeAssistantMessage struct {
-	ID      string               `json:"id,omitempty"`
-	Role    string               `json:"role,omitempty"`
-	Content []claudeContentBlock `json:"content,omitempty"`
-}
-
-type claudeContentBlock struct {
-	Type string `json:"type,omitempty"` // "text", "tool_use", "tool_result", "thinking"
-	Text string `json:"text,omitempty"`
-
-	// Tool use fields
-	ID    string          `json:"id,omitempty"`
-	Name  string          `json:"name,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
-
-	// Tool result fields
-	ToolUseID string `json:"tool_use_id,omitempty"`
-	Content   string `json:"content,omitempty"`
-}
-
-func (b *ClaudeCodeBackend) handleClaudeMessage(msg claudeMessage, raw []byte) {
-	switch msg.Type {
-	case "system":
-		if msg.Subtype == "init" && msg.SessionID != "" {
+func (b *ClaudeCodeBackend) handleSystemMessage(m *claudecode.SystemMessage) {
+	// The init message carries the session ID in SystemMessage.Data.
+	if m.Subtype == "init" {
+		if sid, ok := m.Data["session_id"].(string); ok && sid != "" {
 			b.mu.Lock()
-			b.sessionID = msg.SessionID
+			b.sessionID = sid
 			b.mu.Unlock()
 		}
-
-	case "assistant":
-		if msg.Message == nil {
-			return
-		}
-		// Emit a message event.
-		b.emit(Event{
-			Type:      EventMessage,
-			Timestamp: time.Now(),
-			Data: MessageData{
-				Role: msg.Message.Role,
-			},
-		})
-
-		// Emit part updates for each content block.
-		for _, block := range msg.Message.Content {
-			b.emitContentBlock(block)
-		}
-
-	case "content_block_start":
-		if msg.ContentBlock != nil {
-			b.emitContentBlock(*msg.ContentBlock)
-		}
-
-	case "content_block_delta":
-		if msg.Delta != nil {
-			b.emitContentBlockDelta(msg.Index, *msg.Delta)
-		}
-
-	case "content_block_stop":
-		// Could track completion of individual blocks if needed.
-
-	case "result":
-		if msg.IsError {
-			b.setStatus(StatusError)
-			b.emitError(msg.Result)
-		} else {
-			b.setStatus(StatusIdle)
-		}
-		// Note: we intentionally do NOT emit an EventMessage with the result
-		// text here. The assistant's response is already streamed to the TUI
-		// via content_block_delta / assistant message events. Re-emitting the
-		// full text as a separate message would cause duplicates.
 	}
 }
 
-func (b *ClaudeCodeBackend) emitContentBlock(block claudeContentBlock) {
-	var partType PartType
-	var partStatus PartStatus
-	var tool string
-	var text string
-
-	switch block.Type {
-	case "text":
-		partType = PartText
-		text = block.Text
-	case "tool_use":
-		partType = PartToolCall
-		tool = block.Name
-		partStatus = PartRunning
-		if block.Input != nil {
-			text = string(block.Input)
+func (b *ClaudeCodeBackend) handleAssistantMessage(m *claudecode.AssistantMessage) {
+	// Build parts from the SDK's typed content blocks for Messages() accumulation.
+	// IDs use currentMsgID matching the streaming path so that seenParts dedup
+	// (populated from Messages() between turns) correctly matches streaming IDs.
+	var parts []Part
+	for i, block := range m.Content {
+		if p, ok := contentBlockToPart(block, b.currentMsgID, i); ok {
+			parts = append(parts, p)
 		}
-	case "tool_result":
-		partType = PartToolResult
-		partStatus = PartCompleted
-		text = block.Content
-	case "thinking":
-		partType = PartThinking
-		text = block.Text
-	default:
-		return
 	}
 
+	// Accumulate for Messages().
+	md := MessageData{
+		Role:  "assistant",
+		Parts: parts,
+	}
+	b.mu.Lock()
+	b.messages = append(b.messages, md)
+	b.mu.Unlock()
+
+	// Emit a content-less shell — matching the OpenCode pattern.
+	// The TUI ignores EventMessage content after history loads, and new
+	// content arrives exclusively via EventPartUpdate from streaming deltas
+	// (handleContentBlockStart/Delta). Emitting parts here would duplicate
+	// what the streaming path already delivered.
 	b.emit(Event{
-		Type:      EventPartUpdate,
+		Type:      EventMessage,
 		Timestamp: time.Now(),
-		Data: PartUpdateData{
-			Part: Part{
-				ID:     block.ID,
-				Type:   partType,
-				Text:   text,
-				Tool:   tool,
-				Status: partStatus,
-			},
+		Data: MessageData{
+			Role: "assistant",
 		},
 	})
 }
 
-func (b *ClaudeCodeBackend) emitContentBlockDelta(index int, delta claudeContentBlock) {
-	if delta.Type == "text_delta" || delta.Text != "" {
+func (b *ClaudeCodeBackend) handleResult(m *claudecode.ResultMessage) {
+	// The result carries the authoritative CLI session UUID.
+	if m.SessionID != "" {
+		b.mu.Lock()
+		b.sessionID = m.SessionID
+		b.mu.Unlock()
+	}
+
+	if m.IsError {
+		errMsg := "unknown error"
+		if m.Result != nil {
+			errMsg = *m.Result
+		}
+		b.emitError(errMsg)
+		b.setStatus(StatusError)
+	} else {
+		b.setStatus(StatusIdle)
+	}
+}
+
+// handleStreamEvent processes partial streaming updates (content_block_start,
+// content_block_delta, content_block_stop) and tracks the current Anthropic
+// message ID from message_start events.
+func (b *ClaudeCodeBackend) handleStreamEvent(m *claudecode.StreamEvent) {
+	eventType, _ := m.Event["type"].(string)
+
+	switch eventType {
+	case claudecode.StreamEventTypeMessageStart:
+		// Extract the Anthropic API message ID (e.g. "msg_01XFD...") from the
+		// nested message object. Each API call produces a unique message ID,
+		// so this changes on every message cycle (including within a single turn
+		// when tool use triggers additional API calls).
+		if msgData, ok := m.Event["message"].(map[string]any); ok {
+			if msgID, ok := msgData["id"].(string); ok {
+				b.currentMsgID = msgID
+			}
+		}
+	case claudecode.StreamEventTypeContentBlockStart:
+		b.handleContentBlockStart(m.Event)
+	case claudecode.StreamEventTypeContentBlockDelta:
+		b.handleContentBlockDelta(m.Event)
+	case claudecode.StreamEventTypeContentBlockStop:
+		b.handleContentBlockStop(m.Event)
+	}
+}
+
+// blockID returns a part ID scoped to the current Anthropic message and block index.
+// The message ID (from message_start) is naturally unique across message cycles
+// and turns, so no synthetic counters are needed. This mirrors how OpenCode uses
+// server-assigned part IDs — we use the API's own message ID as the scope.
+func (b *ClaudeCodeBackend) blockID(index int) string {
+	// currentMsgID is only read/written from receiveLoop (single goroutine),
+	// so no lock is needed here.
+	return fmt.Sprintf("%s-%d", b.currentMsgID, index)
+}
+
+func (b *ClaudeCodeBackend) handleContentBlockStart(event map[string]any) {
+	block, ok := event["content_block"].(map[string]any)
+	if !ok {
+		return
+	}
+
+	index := intFromAny(event["index"])
+	blockType, _ := block["type"].(string)
+
+	switch blockType {
+	case "text":
+		text, _ := block["text"].(string)
 		b.emit(Event{
 			Type:      EventPartUpdate,
 			Timestamp: time.Now(),
 			Data: PartUpdateData{
 				Part: Part{
-					ID:   fmt.Sprintf("block-%d", index),
+					ID:   b.blockID(index),
 					Type: PartText,
-					Text: delta.Text,
+					Text: text,
 				},
-				IsDelta: true,
 			},
 		})
+	case "tool_use":
+		id, _ := block["id"].(string)
+		name, _ := block["name"].(string)
+		b.emit(Event{
+			Type:      EventPartUpdate,
+			Timestamp: time.Now(),
+			Data: PartUpdateData{
+				Part: Part{
+					ID:     id,
+					Type:   PartToolCall,
+					Tool:   name,
+					Status: PartRunning,
+				},
+			},
+		})
+	case "thinking":
+		text, _ := block["thinking"].(string)
+		b.emit(Event{
+			Type:      EventPartUpdate,
+			Timestamp: time.Now(),
+			Data: PartUpdateData{
+				Part: Part{
+					ID:   b.blockID(index),
+					Type: PartThinking,
+					Text: text,
+				},
+			},
+		})
+	}
+}
+
+func (b *ClaudeCodeBackend) handleContentBlockDelta(event map[string]any) {
+	delta, ok := event["delta"].(map[string]any)
+	if !ok {
+		return
+	}
+
+	index := intFromAny(event["index"])
+	deltaType, _ := delta["type"].(string)
+
+	switch deltaType {
+	case "text_delta":
+		text, _ := delta["text"].(string)
+		if text != "" {
+			b.emit(Event{
+				Type:      EventPartUpdate,
+				Timestamp: time.Now(),
+				Data: PartUpdateData{
+					Part: Part{
+						ID:   b.blockID(index),
+						Type: PartText,
+						Text: text,
+					},
+					IsDelta: true,
+				},
+			})
+		}
+	case "thinking_delta":
+		text, _ := delta["thinking"].(string)
+		if text != "" {
+			b.emit(Event{
+				Type:      EventPartUpdate,
+				Timestamp: time.Now(),
+				Data: PartUpdateData{
+					Part: Part{
+						ID:   b.blockID(index),
+						Type: PartThinking,
+						Text: text,
+					},
+					IsDelta: true,
+				},
+			})
+		}
+	case "input_json_delta":
+		// Tool input arriving incrementally. We could accumulate it, but
+		// the full input arrives with the AssistantMessage. Skip for now.
+	}
+}
+
+// handleContentBlockStop transitions tool call parts to completed status.
+// This fixes the "spinner stuck" bug where tool calls stayed in PartRunning
+// indefinitely because tool_result arrives as a separate block.
+func (b *ClaudeCodeBackend) handleContentBlockStop(event map[string]any) {
+	// content_block_stop doesn't carry the block details in the SDK's
+	// StreamEvent, only the index. We can't reliably determine the block
+	// type from just the index without tracking state. The tool_result
+	// blocks from AssistantMessage handle completion via contentBlockToPart.
+}
+
+// --- Type mapping helpers ---
+
+// contentBlockToPart maps an SDK ContentBlock to a clank Part.
+// The msgID and index parameters produce a message-scoped ID ("{msgID}-{index}")
+// matching the IDs emitted by the streaming handlers.
+func contentBlockToPart(block claudecode.ContentBlock, msgID string, index int) (Part, bool) {
+	id := fmt.Sprintf("%s-%d", msgID, index)
+	switch b := block.(type) {
+	case *claudecode.TextBlock:
+		return Part{
+			ID:   id,
+			Type: PartText,
+			Text: b.Text,
+		}, true
+	case *claudecode.ToolUseBlock:
+		return Part{
+			ID:     b.ToolUseID,
+			Type:   PartToolCall,
+			Tool:   b.Name,
+			Text:   formatToolInput(b.Input),
+			Status: PartRunning,
+		}, true
+	case *claudecode.ToolResultBlock:
+		return Part{
+			ID:     b.ToolUseID,
+			Type:   PartToolResult,
+			Text:   stringifyContent(b.Content),
+			Status: PartCompleted,
+		}, true
+	case *claudecode.ThinkingBlock:
+		return Part{
+			ID:   id,
+			Type: PartThinking,
+			Text: b.Thinking,
+		}, true
+	default:
+		return Part{}, false
+	}
+}
+
+// formatToolInput produces a human-readable representation of tool input.
+// The SDK parses input into map[string]any, so we pretty-print it instead
+// of dumping raw JSON.
+func formatToolInput(input map[string]any) string {
+	if len(input) == 0 {
+		return ""
+	}
+	data, err := json.MarshalIndent(input, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("%v", input)
+	}
+	return string(data)
+}
+
+// stringifyContent converts a ToolResultBlock's Content (string or structured)
+// to a display string.
+func stringifyContent(content interface{}) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case nil:
+		return ""
+	default:
+		data, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprintf("%v", v)
+		}
+		return string(data)
+	}
+}
+
+// intFromAny extracts an int from a JSON-decoded value (usually float64).
+func intFromAny(v any) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case json.Number:
+		i, _ := n.Int64()
+		return int(i)
+	default:
+		return 0
 	}
 }

@@ -99,7 +99,7 @@ func (m *ClaudeBackendManager) CreateBackend(req agent.StartRequest) (agent.Sess
 	return agent.NewClaudeCodeBackend(), nil
 }
 
-// Shutdown is a no-op for Claude — each session is an independent subprocess.
+// Shutdown is a no-op for Claude — each session manages its own SDK client connection.
 func (m *ClaudeBackendManager) Shutdown() {}
 
 // Daemon is the long-lived background process that manages agent sessions.
