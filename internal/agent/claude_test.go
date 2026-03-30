@@ -1582,3 +1582,175 @@ func keys[V any](m map[string]V) []string {
 	}
 	return ks
 }
+
+// TestClaudeCodeBackendToolCallSpinnerCompletion is a regression test for the
+// "stuck spinner" bug. When a tool_use block finishes (content_block_stop),
+// the backend must emit an EventPartUpdate with Status=PartCompleted so the
+// TUI transitions from the spinning indicator to ✓. Without this, tool calls
+// show a spinner indefinitely because the tool_result arrives in a separate
+// message cycle and doesn't update the original tool_call part's status.
+func TestClaudeCodeBackendToolCallSpinnerCompletion(t *testing.T) {
+	t.Parallel()
+
+	sessionID := "session-spinner"
+
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.SystemMessage{
+			MessageType: "system",
+			Subtype:     "init",
+			Data:        map[string]any{"session_id": sessionID},
+		},
+		// message_start establishes the message scope.
+		&claudecode.StreamEvent{
+			SessionID: sessionID,
+			Event: map[string]any{
+				"type":    "message_start",
+				"message": map[string]any{"id": "msg_spinner_001"},
+			},
+		},
+		// text block at index 0
+		&claudecode.StreamEvent{
+			SessionID: sessionID,
+			Event: map[string]any{
+				"type":  "content_block_start",
+				"index": float64(0),
+				"content_block": map[string]any{
+					"type": "text",
+					"text": "",
+				},
+			},
+		},
+		&claudecode.StreamEvent{
+			SessionID: sessionID,
+			Event: map[string]any{
+				"type":  "content_block_delta",
+				"index": float64(0),
+				"delta": map[string]any{
+					"type": "text_delta",
+					"text": "Let me edit the file.",
+				},
+			},
+		},
+		&claudecode.StreamEvent{
+			SessionID: sessionID,
+			Event: map[string]any{
+				"type":  "content_block_stop",
+				"index": float64(0),
+			},
+		},
+		// tool_use block at index 1
+		&claudecode.StreamEvent{
+			SessionID: sessionID,
+			Event: map[string]any{
+				"type":  "content_block_start",
+				"index": float64(1),
+				"content_block": map[string]any{
+					"type": "tool_use",
+					"id":   "toolu_spinner_001",
+					"name": "Write",
+				},
+			},
+		},
+		// tool input arrives incrementally (we skip it, but it's realistic)
+		&claudecode.StreamEvent{
+			SessionID: sessionID,
+			Event: map[string]any{
+				"type":  "content_block_delta",
+				"index": float64(1),
+				"delta": map[string]any{
+					"type":         "input_json_delta",
+					"partial_json": `{"path":"main.go"}`,
+				},
+			},
+		},
+		// content_block_stop for the tool_use block — THIS must trigger PartCompleted.
+		&claudecode.StreamEvent{
+			SessionID: sessionID,
+			Event: map[string]any{
+				"type":  "content_block_stop",
+				"index": float64(1),
+			},
+		},
+		// AssistantMessage snapshot (for Messages() accumulation).
+		&claudecode.AssistantMessage{
+			MessageType: "assistant",
+			Content: []claudecode.ContentBlock{
+				&claudecode.TextBlock{
+					MessageType: "text",
+					Text:        "Let me edit the file.",
+				},
+				&claudecode.ToolUseBlock{
+					MessageType: "tool_use",
+					ToolUseID:   "toolu_spinner_001",
+					Name:        "Write",
+					Input:       map[string]any{"path": "main.go"},
+				},
+			},
+		},
+		&claudecode.ResultMessage{
+			MessageType: "result",
+			SessionID:   sessionID,
+		},
+	})
+
+	b := newTestBackend(transport)
+	defer b.Stop()
+
+	err := b.Start(context.Background(), agent.StartRequest{
+		Backend:    agent.BackendClaudeCode,
+		ProjectDir: t.TempDir(),
+		Prompt:     "Edit the file",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	events := waitForStatus(t, b.Events(), agent.StatusIdle, 5*time.Second)
+
+	// Collect all EventPartUpdate events for the tool call.
+	var toolCallRunning, toolCallCompleted bool
+	for _, evt := range events {
+		if evt.Type != agent.EventPartUpdate {
+			continue
+		}
+		data, ok := evt.Data.(agent.PartUpdateData)
+		if !ok {
+			continue
+		}
+		if data.Part.ID != "toolu_spinner_001" {
+			continue
+		}
+		if data.Part.Type == agent.PartToolCall && data.Part.Status == agent.PartRunning {
+			toolCallRunning = true
+		}
+		if data.Part.Type == agent.PartToolCall && data.Part.Status == agent.PartCompleted {
+			toolCallCompleted = true
+		}
+	}
+
+	if !toolCallRunning {
+		t.Error("expected a PartRunning event for tool call 'toolu_spinner_001'")
+	}
+	if !toolCallCompleted {
+		t.Error("expected a PartCompleted event for tool call 'toolu_spinner_001' (spinner should stop)")
+		t.Log("This is the 'stuck spinner' regression — content_block_stop must emit PartCompleted")
+		for i, evt := range events {
+			t.Logf("event %d: type=%s data=%+v", i, evt.Type, evt.Data)
+		}
+	}
+
+	// Verify that the text block's content_block_stop does NOT emit a spurious
+	// PartCompleted (only tool_use blocks are tracked in activeBlocks).
+	for _, evt := range events {
+		if evt.Type != agent.EventPartUpdate {
+			continue
+		}
+		data, ok := evt.Data.(agent.PartUpdateData)
+		if !ok {
+			continue
+		}
+		if data.Part.ID == "msg_spinner_001-0" && data.Part.Status == agent.PartCompleted {
+			t.Error("text block should NOT receive a PartCompleted event from content_block_stop")
+		}
+	}
+}

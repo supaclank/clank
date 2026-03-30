@@ -48,6 +48,13 @@ type ClaudeCodeBackend struct {
 	// Only accessed from receiveLoop goroutine — no lock required.
 	currentMsgID string
 
+	// activeBlocks maps block index → part ID for the current message cycle.
+	// Populated by handleContentBlockStart, consumed by handleContentBlockStop
+	// to emit PartCompleted for tool_use blocks (fixing the stuck spinner).
+	// Reset on each message_start since block indices restart at 0 per cycle.
+	// Only accessed from receiveLoop goroutine — no lock required.
+	activeBlocks map[int]string
+
 	// messages accumulates MessageData from the stream for Messages() retrieval.
 	// Lost on daemon restart; future: persist to SQLite or use SDK session history.
 	messages []MessageData
@@ -62,10 +69,11 @@ type ClaudeCodeBackend struct {
 func NewClaudeCodeBackend() *ClaudeCodeBackend {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ClaudeCodeBackend{
-		status: StatusStarting,
-		events: make(chan Event, 128),
-		ctx:    ctx,
-		cancel: cancel,
+		status:       StatusStarting,
+		events:       make(chan Event, 128),
+		activeBlocks: make(map[int]string),
+		ctx:          ctx,
+		cancel:       cancel,
 	}
 }
 
@@ -384,6 +392,8 @@ func (b *ClaudeCodeBackend) handleStreamEvent(m *claudecode.StreamEvent) {
 				b.currentMsgID = msgID
 			}
 		}
+		// Reset activeBlocks — block indices restart at 0 in each message cycle.
+		b.activeBlocks = make(map[int]string)
 	case claudecode.StreamEventTypeContentBlockStart:
 		b.handleContentBlockStart(m.Event)
 	case claudecode.StreamEventTypeContentBlockDelta:
@@ -429,6 +439,8 @@ func (b *ClaudeCodeBackend) handleContentBlockStart(event map[string]any) {
 	case "tool_use":
 		id, _ := block["id"].(string)
 		name, _ := block["name"].(string)
+		// Track this tool_use block so handleContentBlockStop can emit PartCompleted.
+		b.activeBlocks[index] = id
 		b.emit(Event{
 			Type:      EventPartUpdate,
 			Timestamp: time.Now(),
@@ -507,12 +519,29 @@ func (b *ClaudeCodeBackend) handleContentBlockDelta(event map[string]any) {
 
 // handleContentBlockStop transitions tool call parts to completed status.
 // This fixes the "spinner stuck" bug where tool calls stayed in PartRunning
-// indefinitely because tool_result arrives as a separate block.
+// indefinitely because the tool_result arrives as a separate message cycle.
 func (b *ClaudeCodeBackend) handleContentBlockStop(event map[string]any) {
-	// content_block_stop doesn't carry the block details in the SDK's
-	// StreamEvent, only the index. We can't reliably determine the block
-	// type from just the index without tracking state. The tool_result
-	// blocks from AssistantMessage handle completion via contentBlockToPart.
+	index := intFromAny(event["index"])
+
+	// Only tool_use blocks are tracked in activeBlocks. If the index is present,
+	// emit a PartCompleted update so the TUI replaces the spinner with ✓.
+	partID, ok := b.activeBlocks[index]
+	if !ok {
+		return
+	}
+	delete(b.activeBlocks, index)
+
+	b.emit(Event{
+		Type:      EventPartUpdate,
+		Timestamp: time.Now(),
+		Data: PartUpdateData{
+			Part: Part{
+				ID:     partID,
+				Type:   PartToolCall,
+				Status: PartCompleted,
+			},
+		},
+	})
 }
 
 // --- Type mapping helpers ---
