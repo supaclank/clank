@@ -321,6 +321,13 @@ func (m *SessionViewModel) renderPromptBox() string {
 		mc := agentColor(agentName)
 		bc = mc
 		modeBadge = lipgloss.NewStyle().Foreground(mc).Bold(true).Render(agentName)
+	} else if m.info != nil && m.info.Agent != "" {
+		// Agents list not loaded yet (or not available for this backend).
+		// Fall back to session info's agent name for the correct color,
+		// mirroring the fallback in renderHeader().
+		mc := agentColor(m.info.Agent)
+		bc = mc
+		modeBadge = lipgloss.NewStyle().Foreground(mc).Bold(true).Render(m.info.Agent)
 	}
 
 	// Double-tap ctrl+c hint (shown briefly after first press).

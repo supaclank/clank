@@ -1575,6 +1575,130 @@ func TestClaudeCodeBackendMultiCyclePartIDs(t *testing.T) {
 	}
 }
 
+// TestClaudeCodeBackendHistoryToolPartsNoJSON is a regression test for the bug
+// where reopening a session showed tool calls with full JSON input and spinning
+// indicators. The root cause was contentBlockToPart setting Text to the
+// pretty-printed JSON input and Status to PartRunning for ToolUseBlock entries
+// in the Messages() history. History-loaded tool calls must have:
+//   - Text empty (no JSON leak into renderToolLine's description)
+//   - Status PartCompleted (no spinner animation on completed tools)
+func TestClaudeCodeBackendHistoryToolPartsNoJSON(t *testing.T) {
+	t.Parallel()
+
+	sessionID := "session-history-tool"
+	result := "Done"
+
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.SystemMessage{
+			MessageType: "system",
+			Subtype:     "init",
+			Data:        map[string]any{"session_id": sessionID},
+		},
+		// Streaming: tool_use block.
+		&claudecode.StreamEvent{
+			SessionID: sessionID,
+			Event: map[string]any{
+				"type":    "message_start",
+				"message": map[string]any{"id": "msg_hist_001"},
+			},
+		},
+		&claudecode.StreamEvent{
+			SessionID: sessionID,
+			Event: map[string]any{
+				"type":  "content_block_start",
+				"index": float64(0),
+				"content_block": map[string]any{
+					"type": "tool_use",
+					"id":   "toolu_hist_001",
+					"name": "Bash",
+				},
+			},
+		},
+		&claudecode.StreamEvent{
+			SessionID: sessionID,
+			Event: map[string]any{
+				"type":  "content_block_stop",
+				"index": float64(0),
+			},
+		},
+		// AssistantMessage snapshot with tool_use + tool_result (for Messages()).
+		&claudecode.AssistantMessage{
+			MessageType: "assistant",
+			Content: []claudecode.ContentBlock{
+				&claudecode.ToolUseBlock{
+					MessageType: "tool_use",
+					ToolUseID:   "toolu_hist_001",
+					Name:        "Bash",
+					Input:       map[string]any{"command": "pwd", "description": "print working directory"},
+				},
+			},
+		},
+		&claudecode.AssistantMessage{
+			MessageType: "assistant",
+			Content: []claudecode.ContentBlock{
+				&claudecode.ToolResultBlock{
+					MessageType: "tool_result",
+					ToolUseID:   "toolu_hist_001",
+					Content:     "/home/user/project",
+				},
+			},
+		},
+		&claudecode.ResultMessage{
+			MessageType: "result",
+			SessionID:   sessionID,
+			Result:      &result,
+		},
+	})
+
+	b := newTestBackend(transport)
+	defer b.Stop()
+
+	err := b.Start(context.Background(), agent.StartRequest{
+		Backend:    agent.BackendClaudeCode,
+		ProjectDir: t.TempDir(),
+		Prompt:     "run pwd",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitForStatus(t, b.Events(), agent.StatusIdle, 5*time.Second)
+
+	// Inspect the accumulated Messages() — this is what the TUI loads on reopen.
+	msgs, err := b.Messages(context.Background())
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+
+	for _, msg := range msgs {
+		for _, p := range msg.Parts {
+			switch p.Type {
+			case agent.PartToolCall:
+				// Must NOT contain JSON input text.
+				if p.Text != "" {
+					t.Errorf("PartToolCall Text should be empty on history reload, got %q", p.Text)
+				}
+				// Must be completed, not running (no spinner).
+				if p.Status != agent.PartCompleted {
+					t.Errorf("PartToolCall Status should be %q on history reload, got %q", agent.PartCompleted, p.Status)
+				}
+				// Must still carry the tool name.
+				if p.Tool != "Bash" {
+					t.Errorf("PartToolCall Tool should be 'Bash', got %q", p.Tool)
+				}
+			case agent.PartToolResult:
+				// Must NOT contain raw tool output text.
+				if p.Text != "" {
+					t.Errorf("PartToolResult Text should be empty on history reload, got %q", p.Text)
+				}
+				if p.Status != agent.PartCompleted {
+					t.Errorf("PartToolResult Status should be %q, got %q", agent.PartCompleted, p.Status)
+				}
+			}
+		}
+	}
+}
+
 func keys[V any](m map[string]V) []string {
 	ks := make([]string, 0, len(m))
 	for k := range m {

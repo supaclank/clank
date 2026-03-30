@@ -570,18 +570,20 @@ func contentBlockToPart(block claudecode.ContentBlock, msgID string, index int) 
 			Text: b.Text,
 		}, true
 	case *claudecode.ToolUseBlock:
+		// History-loaded tool calls have already completed. Don't set Text
+		// (the JSON input) — it would leak into renderToolLine's description.
+		// This keeps history Parts consistent with the live SSE streaming path.
 		return Part{
 			ID:     b.ToolUseID,
 			Type:   PartToolCall,
 			Tool:   b.Name,
-			Text:   formatToolInput(b.Input),
-			Status: PartRunning,
+			Status: PartCompleted,
 		}, true
 	case *claudecode.ToolResultBlock:
+		// Don't set Text (raw tool output) — same reasoning as ToolUseBlock.
 		return Part{
 			ID:     b.ToolUseID,
 			Type:   PartToolResult,
-			Text:   stringifyContent(b.Content),
 			Status: PartCompleted,
 		}, true
 	case *claudecode.ThinkingBlock:
@@ -592,37 +594,6 @@ func contentBlockToPart(block claudecode.ContentBlock, msgID string, index int) 
 		}, true
 	default:
 		return Part{}, false
-	}
-}
-
-// formatToolInput produces a human-readable representation of tool input.
-// The SDK parses input into map[string]any, so we pretty-print it instead
-// of dumping raw JSON.
-func formatToolInput(input map[string]any) string {
-	if len(input) == 0 {
-		return ""
-	}
-	data, err := json.MarshalIndent(input, "", "  ")
-	if err != nil {
-		return fmt.Sprintf("%v", input)
-	}
-	return string(data)
-}
-
-// stringifyContent converts a ToolResultBlock's Content (string or structured)
-// to a display string.
-func stringifyContent(content interface{}) string {
-	switch v := content.(type) {
-	case string:
-		return v
-	case nil:
-		return ""
-	default:
-		data, err := json.Marshal(v)
-		if err != nil {
-			return fmt.Sprintf("%v", v)
-		}
-		return string(data)
 	}
 }
 
