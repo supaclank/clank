@@ -102,7 +102,7 @@ type SessionViewModel struct {
 	cursorMoved  bool           // true when cursor changed since last render
 	scrollOffset int            // first visible display line
 	follow       bool           // auto-follow tail when true (default when busy)
-	verbose      bool           // show full tool call input/output when true
+	verbose      bool           // when true, the selected entry's tool calls show detail
 
 	// Entry-to-line mapping (rebuilt by buildContentLines).
 	entryStartLine []int // entryStartLine[i] = first display line for entries[i]
@@ -767,10 +767,6 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// TODO: approve session
 	case key.Matches(msg, key.NewBinding(key.WithKeys("v"))):
 		m.verbose = !m.verbose
-		// Invalidate verbose caches so they're rebuilt on next View().
-		for i := range m.entries {
-			m.entries[i].verboseLines = nil
-		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("c"))):
 		if m.cursor >= 0 && m.cursor < len(m.entries) {
 			e := m.entries[m.cursor]
@@ -1770,10 +1766,20 @@ func (m *SessionViewModel) buildContentLines() []string {
 	var lines []string
 	m.entryStartLine = make([]int, len(m.entries))
 	m.entryEndLine = make([]int, len(m.entries))
+	// Track the index of the most recent navigable entry so tool entries
+	// beneath it know whether they belong to the selected (cursor) entry.
+	ownerIdx := -1
 	for i := range m.entries {
+		if isNavigable(m.entries[i].kind) {
+			ownerIdx = i
+		}
+		// Tool entries are expanded when verbose is on and their owning
+		// navigable entry is the cursor entry. During follow mode, the
+		// latest entry auto-expands so you see tool detail while streaming.
+		ownerExpanded := (m.verbose || m.follow) && ownerIdx == m.cursor
 		m.entryStartLine[i] = len(lines)
 		selected := i == m.cursor
-		entryLines := m.renderEntry(&m.entries[i], selected)
+		entryLines := m.renderEntry(&m.entries[i], selected, ownerExpanded)
 		lines = append(lines, entryLines...)
 		m.entryEndLine[i] = len(lines)
 	}
@@ -1787,7 +1793,7 @@ func (m *SessionViewModel) buildContentLines() []string {
 	return lines
 }
 
-func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool) []string {
+func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool, ownerExpanded bool) []string {
 	maxWidth := m.width - 4
 	if maxWidth < 20 {
 		maxWidth = 20
@@ -1865,9 +1871,8 @@ func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool) []string 
 		styled := lipgloss.NewStyle().Foreground(dimColor).Render("  " + line)
 		lines := []string{styled}
 
-		// Verbose detail: use cache when available and valid.
-		// TodoWrite always shows its checklist, regardless of verbose mode.
-		showDetail := e.toolPart != nil && (m.verbose || strings.EqualFold(e.toolPart.Tool, "todowrite"))
+		// Show detail when owning navigable entry is expanded, or always for TodoWrite.
+ 		showDetail := e.toolPart != nil && (ownerExpanded || strings.EqualFold(e.toolPart.Tool, "todowrite"))
 		if showDetail {
 			verboseW := maxWidth - 4
 			if e.verboseLines != nil && e.verboseWidth == verboseW {

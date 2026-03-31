@@ -71,7 +71,7 @@ func TestRenderEntry_MarkdownWhenIdle(t *testing.T) {
 	m.info = &agent.SessionInfo{Status: agent.StatusIdle}
 	e := displayEntry{kind: entryText, content: "This is **bold** text"}
 
-	lines := m.renderEntry(&e, false)
+	lines := m.renderEntry(&e, false, false)
 	joined := strings.Join(lines, "\n")
 	plain := ansi.Strip(joined)
 
@@ -89,7 +89,7 @@ func TestRenderEntry_PlainTextWhenStreaming(t *testing.T) {
 	m.info = &agent.SessionInfo{Status: agent.StatusBusy}
 	e := displayEntry{kind: entryText, content: "This is **bold** text", streaming: true}
 
-	lines := m.renderEntry(&e, false)
+	lines := m.renderEntry(&e, false, false)
 	joined := strings.Join(lines, "\n")
 	plain := ansi.Strip(joined)
 
@@ -109,7 +109,7 @@ func TestRenderEntry_MarkdownForCompletedEntryWhileBusy(t *testing.T) {
 	m.info = &agent.SessionInfo{Status: agent.StatusBusy}
 	completed := displayEntry{kind: entryText, content: "This is **bold** text", streaming: false}
 
-	lines := m.renderEntry(&completed, false)
+	lines := m.renderEntry(&completed, false, false)
 	joined := strings.Join(lines, "\n")
 	plain := ansi.Strip(joined)
 
@@ -130,7 +130,7 @@ func TestRenderEntry_MarkdownCacheReused(t *testing.T) {
 	e := displayEntry{kind: entryText, content: "Hello **world**"}
 
 	// First render populates the cache.
-	lines1 := m.renderEntry(&e, false)
+	lines1 := m.renderEntry(&e, false, false)
 	if e.renderedMD == "" {
 		t.Fatal("renderedMD should be populated after first render")
 	}
@@ -140,7 +140,7 @@ func TestRenderEntry_MarkdownCacheReused(t *testing.T) {
 	cachedMD := e.renderedMD
 
 	// Second render should reuse the cache (same width, same content).
-	lines2 := m.renderEntry(&e, false)
+	lines2 := m.renderEntry(&e, false, false)
 	if e.renderedMD != cachedMD {
 		t.Error("renderedMD should not change on second render with same width")
 	}
@@ -157,14 +157,14 @@ func TestRenderEntry_MarkdownCacheInvalidatedOnContentChange(t *testing.T) {
 	e := displayEntry{kind: entryText, content: "Hello **world**"}
 
 	// Populate cache.
-	m.renderEntry(&e, false)
+	m.renderEntry(&e, false, false)
 	oldCache := e.renderedMD
 
 	// Simulate content change (like upsertPartEntry does).
 	e.content = "Hello **universe**"
 	e.renderedMD = "" // invalidate
 
-	m.renderEntry(&e, false)
+	m.renderEntry(&e, false, false)
 	if e.renderedMD == oldCache {
 		t.Error("renderedMD should change after content update")
 	}
@@ -182,7 +182,7 @@ func TestRenderEntry_MarkdownPreservesSelectionHighlight(t *testing.T) {
 	m.info = &agent.SessionInfo{Status: agent.StatusIdle}
 	e := displayEntry{kind: entryText, content: "This is **bold** text with `code`"}
 
-	lines := m.renderEntry(&e, false)
+	lines := m.renderEntry(&e, false, false)
 	// Simulate selection across the rendered lines.
 	sel := &textSelection{active: true, startX: 0, startY: 0, endX: 20, endY: 0}
 	for _, line := range lines {
@@ -202,7 +202,7 @@ func TestRenderEntry_MarkdownExtractAfterStrip(t *testing.T) {
 	m.info = &agent.SessionInfo{Status: agent.StatusIdle}
 	e := displayEntry{kind: entryText, content: "Hello **world**"}
 
-	lines := m.renderEntry(&e, false)
+	lines := m.renderEntry(&e, false, false)
 
 	sel := &textSelection{
 		active: true,
