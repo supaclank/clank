@@ -636,6 +636,8 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	msg = normalizeKeyCase(msg)
+
 	// Permission prompt takes priority.
 	if m.pendingPerm != nil {
 		switch msg.String() {

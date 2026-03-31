@@ -294,6 +294,8 @@ func (m *InboxModel) openComposingSession() tea.Cmd {
 }
 
 func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	msg = normalizeKeyCase(msg)
+
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))):
 		return m, tea.Quit

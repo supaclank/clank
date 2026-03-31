@@ -34,6 +34,7 @@ func newConfirmDialog(title, message, action string) confirmDialogModel {
 func (m confirmDialogModel) Update(msg tea.Msg) (confirmDialogModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
+		msg = normalizeKeyCase(msg)
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "q", "n"))):
 			return m, func() tea.Msg {

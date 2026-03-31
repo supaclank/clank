@@ -54,6 +54,7 @@ func (m actionMenuModel) Init() tea.Cmd {
 func (m actionMenuModel) Update(msg tea.Msg) (actionMenuModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
+		msg = normalizeKeyCase(msg)
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "q"))):
 			return m, func() tea.Msg { return actionMenuCancelMsg{} }
