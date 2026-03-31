@@ -205,10 +205,21 @@ type displayEntry struct {
 	// status (completed/error) so the spinner can still animate for running
 	// tools. Verbose lines are cached separately.
 	// Both are invalidated when toolPart changes or terminal width changes.
-	toolLine     string   // cached summary line (empty = not yet rendered or running)
-	verboseLines []string // cached verbose output lines (nil = not yet rendered)
-	verboseWidth int      // width the verbose cache was computed at
+	toolLine     string      // cached summary line (empty = not yet rendered or running)
+	verboseLines []string    // cached verbose output lines (nil = not yet rendered)
+	verboseWidth int         // width the verbose cache was computed at
+	expand       expandState // click-toggled detail expansion for individual tool entries
 }
+
+// expandState controls per-entry detail visibility relative to the owning
+// navigable entry's expanded state.
+type expandState int8
+
+const (
+	expandDefault   expandState = 0  // follow ownerExpanded
+	expandForceShow expandState = 1  // always show detail (clicked open outside verbose)
+	expandForceHide expandState = -1 // always hide detail (clicked closed inside verbose)
+)
 
 type entryKind int
 
@@ -568,6 +579,33 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.copiedCursor = m.cursor
 					}
 				}
+			} else if idx := m.entryAtScreenY(msg.Y); idx >= 0 && idx < len(m.entries) && m.entries[idx].kind == entryTool {
+				// Click on a tool entry toggles its detail.
+				// Determine whether the owning navigable entry is expanded.
+				ownerExpanded := false
+				for j := idx - 1; j >= 0; j-- {
+					if isNavigable(m.entries[j].kind) {
+						ownerExpanded = (m.verbose || m.follow) && j == m.cursor
+						break
+					}
+				}
+				e := &m.entries[idx]
+				if ownerExpanded {
+					// Owner is expanded: toggle between default (visible) and forceHide.
+					if e.expand == expandForceHide {
+						e.expand = expandDefault
+					} else {
+						e.expand = expandForceHide
+					}
+				} else {
+					// Owner not expanded: toggle between default (hidden) and forceShow.
+					if e.expand == expandForceShow {
+						e.expand = expandDefault
+					} else {
+						e.expand = expandForceShow
+					}
+				}
+				e.verboseLines = nil
 			}
 		}
 		return m, nil
@@ -767,6 +805,12 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// TODO: approve session
 	case key.Matches(msg, key.NewBinding(key.WithKeys("v"))):
 		m.verbose = !m.verbose
+		for i := range m.entries {
+			if m.entries[i].expand != expandDefault {
+				m.entries[i].expand = expandDefault
+				m.entries[i].verboseLines = nil
+			}
+		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("c"))):
 		if m.cursor >= 0 && m.cursor < len(m.entries) {
 			e := m.entries[m.cursor]
@@ -1872,7 +1916,10 @@ func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool, ownerExpa
 		lines := []string{styled}
 
 		// Show detail when owning navigable entry is expanded, or always for TodoWrite.
- 		showDetail := e.toolPart != nil && (ownerExpanded || strings.EqualFold(e.toolPart.Tool, "todowrite"))
+		// expandForceShow overrides a collapsed owner; expandForceHide overrides an expanded owner.
+		showDetail := e.toolPart != nil && (strings.EqualFold(e.toolPart.Tool, "todowrite") ||
+			e.expand == expandForceShow ||
+			(e.expand == expandDefault && ownerExpanded))
 		if showDetail {
 			verboseW := maxWidth - 4
 			if e.verboseLines != nil && e.verboseWidth == verboseW {
@@ -2177,6 +2224,21 @@ func (m *SessionViewModel) lastNavigableEntry() int {
 		}
 	}
 	return 0
+}
+
+// entryAtScreenY maps a screen row (from a mouse event) to the index of
+// the entry rendered at that row. Returns -1 if no entry matches.
+func (m *SessionViewModel) entryAtScreenY(screenY int) int {
+	contentLine := screenY - m.cachedHeaderRows + m.scrollOffset
+	if contentLine < 0 {
+		return -1
+	}
+	for i, start := range m.entryStartLine {
+		if contentLine >= start && contentLine < m.entryEndLine[i] {
+			return i
+		}
+	}
+	return -1
 }
 
 // scrollToCursor sets scrollOffset so the cursor entry's start line is near the
