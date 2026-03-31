@@ -587,7 +587,7 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					ownerExpanded := false
 					for j := idx - 1; j >= 0; j-- {
 						if isNavigable(m.entries[j].kind) {
-							ownerExpanded = (m.verbose || m.follow) && j == m.cursor
+							ownerExpanded = m.verbose && j == m.cursor
 							break
 						}
 					}
@@ -1831,9 +1831,8 @@ func (m *SessionViewModel) buildContentLines() []string {
 			ownerIdx = i
 		}
 		// Tool entries are expanded when verbose is on and their owning
-		// navigable entry is the cursor entry. During follow mode, the
-		// latest entry auto-expands so you see tool detail while streaming.
-		ownerExpanded := (m.verbose || m.follow) && ownerIdx == m.cursor
+		// navigable entry is the cursor entry.
+		ownerExpanded := m.verbose && ownerIdx == m.cursor
 		m.entryStartLine[i] = len(lines)
 		selected := i == m.cursor
 		entryLines := m.renderEntry(&m.entries[i], selected, ownerExpanded)
