@@ -579,33 +579,44 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.copiedCursor = m.cursor
 					}
 				}
-			} else if idx := m.entryAtScreenY(msg.Y); idx >= 0 && idx < len(m.entries) && m.entries[idx].kind == entryTool {
-				// Click on a tool entry toggles its detail.
-				// Determine whether the owning navigable entry is expanded.
-				ownerExpanded := false
-				for j := idx - 1; j >= 0; j-- {
-					if isNavigable(m.entries[j].kind) {
-						ownerExpanded = (m.verbose || m.follow) && j == m.cursor
-						break
+			} else if idx := m.entryAtScreenY(msg.Y); idx >= 0 && idx < len(m.entries) {
+				entry := &m.entries[idx]
+				if entry.kind == entryTool {
+					// Click on a tool entry toggles its detail.
+					// Determine whether the owning navigable entry is expanded.
+					ownerExpanded := false
+					for j := idx - 1; j >= 0; j-- {
+						if isNavigable(m.entries[j].kind) {
+							ownerExpanded = (m.verbose || m.follow) && j == m.cursor
+							break
+						}
+					}
+					if ownerExpanded {
+						// Owner is expanded: toggle between default (visible) and forceHide.
+						if entry.expand == expandForceHide {
+							entry.expand = expandDefault
+						} else {
+							entry.expand = expandForceHide
+						}
+					} else {
+						// Owner not expanded: toggle between default (hidden) and forceShow.
+						if entry.expand == expandForceShow {
+							entry.expand = expandDefault
+						} else {
+							entry.expand = expandForceShow
+						}
+					}
+					entry.verboseLines = nil
+				} else if isNavigable(entry.kind) && idx != m.cursor {
+					// Click-to-select: move cursor but don't scroll (no m.cursorMoved)
+					// to avoid layout shift — the clicked entry is already visible.
+					m.cursor = idx
+					// Disable follow mode if selecting an earlier entry; clicking the
+					// last navigable entry keeps follow active.
+					if idx != m.lastNavigableEntry() {
+						m.follow = false
 					}
 				}
-				e := &m.entries[idx]
-				if ownerExpanded {
-					// Owner is expanded: toggle between default (visible) and forceHide.
-					if e.expand == expandForceHide {
-						e.expand = expandDefault
-					} else {
-						e.expand = expandForceHide
-					}
-				} else {
-					// Owner not expanded: toggle between default (hidden) and forceShow.
-					if e.expand == expandForceShow {
-						e.expand = expandDefault
-					} else {
-						e.expand = expandForceShow
-					}
-				}
-				e.verboseLines = nil
 			}
 		}
 		return m, nil
