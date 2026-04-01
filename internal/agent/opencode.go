@@ -166,6 +166,19 @@ func (b *OpenCodeBackend) Abort(ctx context.Context) error {
 	return nil
 }
 
+func (b *OpenCodeBackend) Revert(ctx context.Context, messageID string) error {
+	if b.sessionID == "" {
+		return fmt.Errorf("session not started")
+	}
+	_, err := b.client.Session.Revert(ctx, b.sessionID, opencode.SessionRevertParams{
+		MessageID: opencode.F(messageID),
+	})
+	if err != nil {
+		return fmt.Errorf("revert: %w", err)
+	}
+	return nil
+}
+
 func (b *OpenCodeBackend) Stop() error {
 	b.cancel()
 	b.closeEvents()
@@ -602,6 +615,7 @@ func (b *OpenCodeBackend) Messages(ctx context.Context) ([]MessageData, error) {
 	var messages []MessageData
 	for _, msg := range *resp {
 		md := MessageData{
+			ID:   msg.Info.ID,
 			Role: string(msg.Info.Role),
 		}
 

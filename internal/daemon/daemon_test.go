@@ -15,14 +15,16 @@ import (
 
 // mockBackend implements agent.SessionBackend for testing.
 type mockBackend struct {
-	mu        sync.Mutex
-	events    chan agent.Event
-	status    agent.SessionStatus
-	sessionID string
-	started   bool
-	stopped   bool
-	messages  []string
-	aborted   bool
+	mu                sync.Mutex
+	events            chan agent.Event
+	status            agent.SessionStatus
+	sessionID         string
+	started           bool
+	stopped           bool
+	messages          []string
+	aborted           bool
+	reverted          bool
+	revertedMessageID string
 
 	// history is returned by Messages(). Tests can set it to control
 	// the message history returned by the backend.
@@ -126,6 +128,14 @@ func (m *mockBackend) Messages(ctx context.Context) ([]agent.MessageData, error)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.history, nil
+}
+
+func (m *mockBackend) Revert(ctx context.Context, messageID string) error {
+	m.mu.Lock()
+	m.reverted = true
+	m.revertedMessageID = messageID
+	m.mu.Unlock()
+	return nil
 }
 
 // mockBackendManager implements agent.BackendManager for testing. It wraps
@@ -691,6 +701,90 @@ func TestDaemonAbortSession(t *testing.T) {
 	defer b.mu.Unlock()
 	if !b.aborted {
 		t.Error("expected backend to be aborted")
+	}
+}
+
+func TestDaemonRevertSession(t *testing.T) {
+	mgr := newMockBackendManager()
+
+	dir := shortTempDir(t)
+	sockPath := filepath.Join(dir, "test.sock")
+	pidPath := filepath.Join(dir, "test.pid")
+
+	d := daemon.NewWithPaths(sockPath, pidPath)
+	d.BackendManagers[agent.BackendOpenCode] = mgr
+	d.BackendManagers[agent.BackendClaudeCode] = mgr
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run() }()
+
+	client := daemon.NewClient(sockPath)
+	waitForDaemon(t, client)
+	defer func() {
+		d.Stop()
+		<-errCh
+	}()
+
+	ctx := context.Background()
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "do stuff",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	err = client.RevertSession(ctx, info.ID, "msg-abc-123")
+	if err != nil {
+		t.Fatalf("RevertSession: %v", err)
+	}
+
+	b := mgr.getLatest()
+
+	time.Sleep(50 * time.Millisecond)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.reverted {
+		t.Error("expected backend to be reverted")
+	}
+	if b.revertedMessageID != "msg-abc-123" {
+		t.Errorf("expected revertedMessageID=msg-abc-123, got %s", b.revertedMessageID)
+	}
+}
+
+func TestDaemonRevertSessionMissingMessageID(t *testing.T) {
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Empty message_id should return an error.
+	err = client.RevertSession(ctx, info.ID, "")
+	if err == nil {
+		t.Error("expected error for empty message_id")
+	}
+}
+
+func TestDaemonRevertSessionNotFound(t *testing.T) {
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	err := client.RevertSession(context.Background(), "nonexistent", "msg-123")
+	if err == nil {
+		t.Error("expected error reverting non-existent session")
 	}
 }
 

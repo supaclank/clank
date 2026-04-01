@@ -384,6 +384,7 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /sessions/{id}", d.handleGetSession)
 	mux.HandleFunc("GET /sessions/{id}/messages", d.handleGetSessionMessages)
 	mux.HandleFunc("POST /sessions/{id}/message", d.handleSendMessage)
+	mux.HandleFunc("POST /sessions/{id}/revert", d.handleRevertSession)
 	mux.HandleFunc("POST /sessions/{id}/abort", d.handleAbortSession)
 	mux.HandleFunc("POST /sessions/{id}/read", d.handleMarkSessionRead)
 	mux.HandleFunc("POST /sessions/{id}/followup", d.handleToggleFollowUp)
@@ -832,6 +833,39 @@ func (d *Daemon) handleAbortSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "aborted"})
+}
+
+func (d *Daemon) handleRevertSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		MessageID string `json:"message_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if body.MessageID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "message_id is required"})
+		return
+	}
+
+	d.mu.RLock()
+	ms, ok := d.sessions[id]
+	d.mu.RUnlock()
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	if ms.backend == nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "session has no active backend"})
+		return
+	}
+
+	if err := ms.backend.Revert(r.Context(), body.MessageID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "reverted"})
 }
 
 func (d *Daemon) handleMarkSessionRead(w http.ResponseWriter, r *http.Request) {

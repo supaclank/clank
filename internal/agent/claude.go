@@ -248,6 +248,10 @@ func (b *ClaudeCodeBackend) Messages(ctx context.Context) ([]MessageData, error)
 	return msgs, nil
 }
 
+func (b *ClaudeCodeBackend) Revert(ctx context.Context, messageID string) error {
+	return fmt.Errorf("revert is not supported by Claude Code backend")
+}
+
 // --- Internal helpers ---
 
 func (b *ClaudeCodeBackend) setStatus(s SessionStatus) {

@@ -136,6 +136,12 @@ type SessionViewModel struct {
 	showConfirm bool
 	confirm     confirmDialogModel
 
+	// Action menu state (e.g. revert on user messages).
+	showMenu           bool
+	menu               actionMenuModel
+	menuMessageID      string // message ID the menu action targets
+	menuMessageContent string // message content for prompt prefill after revert
+
 	// Mouse text selection state.
 	selection        textSelection
 	cachedContent    []string // content lines from last View(), used for selection extraction
@@ -180,10 +186,11 @@ type SessionViewModel struct {
 
 // displayEntry is a rendered item in the session transcript.
 type displayEntry struct {
-	kind    entryKind
-	partID  string // Part ID for tracking updates (text deltas, tool status)
-	content string // pre-rendered line(s), may contain ANSI
-	agent   string // agent mode used for this entry (only set for entryUser)
+	kind      entryKind
+	partID    string // Part ID for tracking updates (text deltas, tool status)
+	messageID string // Backend message ID (for revert targeting)
+	content   string // pre-rendered line(s), may contain ANSI
+	agent     string // agent mode used for this entry (only set for entryUser)
 
 	// toolPart stores the original Part data for entryTool entries so the
 	// tool line (including its spinner) can be rendered live during View()
@@ -421,6 +428,22 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Action menu takes priority when open.
+	if m.showMenu {
+		switch msg := msg.(type) {
+		case actionMenuCancelMsg:
+			m.showMenu = false
+			return m, nil
+		case actionMenuResultMsg:
+			m.showMenu = false
+			return m, m.handleMenuAction(msg.action)
+		default:
+			var cmd tea.Cmd
+			m.menu, cmd = m.menu.Update(msg)
+			return m, cmd
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -512,6 +535,20 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancelEvents()
 		}
 		return m, func() tea.Msg { return backToInboxMsg{} }
+
+	case revertResultMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		// Reload the message history and prefill the prompt with the
+		// reverted user message so the user can edit and resend.
+		m.err = nil
+		m.input.SetValue(msg.prompt)
+		m.inputActive = true
+		m.input.Focus()
+		m.follow = true
+		return m, m.fetchSessionMessages()
 
 	case sessionEventsErrMsg:
 		m.err = msg.err
@@ -816,6 +853,20 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.cursorMoved = true
 	case key.Matches(msg, key.NewBinding(key.WithKeys("a"))):
 		// TODO: approve session
+	case key.Matches(msg, key.NewBinding(key.WithKeys("enter", ":"))):
+		// Open action menu for the selected entry.
+		if m.cursor >= 0 && m.cursor < len(m.entries) {
+			entry := m.entries[m.cursor]
+			if entry.kind == entryUser && entry.messageID != "" {
+				m.menuMessageID = entry.messageID
+				m.menuMessageContent = entry.content
+				m.showMenu = true
+				m.menu = newActionMenu("Actions", []actionMenuItem{
+					{label: "Revert to this message", key: "r", action: "revert"},
+				})
+				return m, nil
+			}
+		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("v"))):
 		m.verbose = !m.verbose
 		for i := range m.entries {
@@ -1026,8 +1077,9 @@ func (m *SessionViewModel) handleSessionMessages(messages []agent.MessageData) {
 			}
 			if text != "" {
 				m.entries = append(m.entries, displayEntry{
-					kind:    entryUser,
-					content: text,
+					kind:      entryUser,
+					messageID: msg.ID,
+					content:   text,
 				})
 			}
 			continue
@@ -1610,8 +1662,44 @@ func (m *SessionViewModel) handleConfirmAction(action string) tea.Cmd {
 		return m.setVisibility(agent.VisibilityDone)
 	case "archive":
 		return m.setVisibility(agent.VisibilityArchived)
+	case "revert":
+		return m.revertSession(m.menuMessageID)
 	}
 	return nil
+}
+
+func (m *SessionViewModel) handleMenuAction(action string) tea.Cmd {
+	switch action {
+	case "revert":
+		m.showConfirm = true
+		m.confirm = newConfirmDialog(
+			"Revert",
+			"Revert to this message?\nAll messages after it will be removed.",
+			"revert",
+		)
+		return nil
+	}
+	return nil
+}
+
+// revertResultMsg carries the result of a revert operation back to the TUI.
+type revertResultMsg struct {
+	prompt string // the user message content to prefill in the prompt
+	err    error
+}
+
+func (m *SessionViewModel) revertSession(messageID string) tea.Cmd {
+	client := m.client
+	sessionID := m.sessionID
+	prompt := m.menuMessageContent
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := client.RevertSession(ctx, sessionID, messageID); err != nil {
+			return revertResultMsg{err: err}
+		}
+		return revertResultMsg{prompt: prompt}
+	}
 }
 
 func (m *SessionViewModel) setVisibility(visibility agent.SessionVisibility) tea.Cmd {
@@ -1750,7 +1838,9 @@ func (m *SessionViewModel) View() tea.View {
 		sb.WriteString(helpStyle.Render(help))
 	}
 
-	v := tea.NewView(m.overlaySessionConfirm(sb.String()))
+	output := m.overlaySessionConfirm(sb.String())
+	output = m.overlaySessionMenu(output)
+	v := tea.NewView(output)
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
@@ -2062,7 +2152,7 @@ func (m *SessionViewModel) buildHelpText() string {
 	if m.standalone {
 		qLabel = "q: quit"
 	}
-	parts := []string{"m: message", "v: verbose", "c: copy", "f: follow-up", "d: done", "x: archive", "drag: copy", qLabel}
+	parts := []string{"m: message", "enter: actions", "v: verbose", "c: copy", "f: follow-up", "d: done", "x: archive", "drag: copy", qLabel}
 	if m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting) {
 		parts = append([]string{"ctrl+c: cancel"}, parts...)
 	}
@@ -2122,6 +2212,52 @@ func (m *SessionViewModel) overlaySessionConfirm(base string) string {
 	}
 
 	popup := m.confirm.View()
+	popupLines := strings.Split(popup, "\n")
+	baseLines := strings.Split(base, "\n")
+
+	popupH := len(popupLines)
+	popupW := 0
+	for _, l := range popupLines {
+		if w := lipgloss.Width(l); w > popupW {
+			popupW = w
+		}
+	}
+
+	startRow := (m.height - popupH) / 2
+	if startRow < 0 {
+		startRow = 0
+	}
+	startCol := (m.width - popupW) / 2
+	if startCol < 0 {
+		startCol = 0
+	}
+
+	for len(baseLines) < startRow+popupH {
+		baseLines = append(baseLines, "")
+	}
+
+	for i, popLine := range popupLines {
+		row := startRow + i
+		if row >= len(baseLines) {
+			break
+		}
+		baseLine := baseLines[row]
+		for lipgloss.Width(baseLine) < startCol {
+			baseLine += " "
+		}
+		baseLines[row] = baseLine[:startCol] + popLine
+	}
+
+	return strings.Join(baseLines, "\n")
+}
+
+// overlaySessionMenu overlays the action menu onto the base content if active.
+func (m *SessionViewModel) overlaySessionMenu(base string) string {
+	if !m.showMenu {
+		return base
+	}
+
+	popup := m.menu.View()
 	popupLines := strings.Split(popup, "\n")
 	baseLines := strings.Split(base, "\n")
 

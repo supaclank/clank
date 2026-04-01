@@ -1417,3 +1417,162 @@ func TestRenderTodoList_EmptyTodos(t *testing.T) {
 		t.Errorf("expected nil for empty todos, got %v", lines)
 	}
 }
+
+func TestEnterOpensActionMenu_OnUserMessage(t *testing.T) {
+	t.Parallel()
+	enter := tea.KeyPressMsg{Code: tea.KeyEnter}
+
+	t.Run("opens menu on user entry with messageID", func(t *testing.T) {
+		t.Parallel()
+		entries := []displayEntry{
+			{kind: entryUser, content: "hello world", messageID: "msg-123"},
+			{kind: entryText, content: "agent response"},
+		}
+		m := newTestSessionModel(entries)
+		m.cursor = 0
+
+		_, _ = m.handleKey(enter)
+
+		if !m.showMenu {
+			t.Fatal("expected showMenu=true after Enter on user message")
+		}
+		if m.menuMessageID != "msg-123" {
+			t.Errorf("menuMessageID = %q, want %q", m.menuMessageID, "msg-123")
+		}
+		if m.menuMessageContent != "hello world" {
+			t.Errorf("menuMessageContent = %q, want %q", m.menuMessageContent, "hello world")
+		}
+	})
+
+	t.Run("does not open menu on user entry without messageID", func(t *testing.T) {
+		t.Parallel()
+		// User entries added inline (follow-up) don't have messageIDs
+		// until history is reloaded. Enter should be a no-op.
+		entries := []displayEntry{
+			{kind: entryUser, content: "follow-up"},
+		}
+		m := newTestSessionModel(entries)
+		m.cursor = 0
+
+		_, _ = m.handleKey(enter)
+
+		if m.showMenu {
+			t.Error("expected showMenu=false for user entry without messageID")
+		}
+	})
+
+	t.Run("does not open menu on non-user entry", func(t *testing.T) {
+		t.Parallel()
+		entries := []displayEntry{
+			{kind: entryUser, content: "user msg", messageID: "msg-1"},
+			{kind: entryText, content: "agent response"},
+		}
+		m := newTestSessionModel(entries)
+		m.cursor = 1 // on the agent text entry
+
+		_, _ = m.handleKey(enter)
+
+		if m.showMenu {
+			t.Error("expected showMenu=false for non-user entry")
+		}
+	})
+
+	t.Run("colon also opens menu", func(t *testing.T) {
+		t.Parallel()
+		entries := []displayEntry{
+			{kind: entryUser, content: "prompt", messageID: "msg-42"},
+		}
+		m := newTestSessionModel(entries)
+		m.cursor = 0
+
+		colon := tea.KeyPressMsg{Code: ':'}
+		_, _ = m.handleKey(colon)
+
+		if !m.showMenu {
+			t.Fatal("expected showMenu=true after ':' on user message")
+		}
+	})
+}
+
+func TestActionMenu_RevertTriggersConfirmDialog(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel([]displayEntry{
+		{kind: entryUser, content: "original prompt", messageID: "msg-10"},
+	})
+	m.cursor = 0
+	m.menuMessageID = "msg-10"
+	m.menuMessageContent = "original prompt"
+	m.showMenu = true
+
+	// Simulate selecting "revert" from the action menu.
+	cmd := m.handleMenuAction("revert")
+
+	if cmd != nil {
+		t.Error("expected no command from handleMenuAction (it opens a confirm dialog)")
+	}
+	if !m.showConfirm {
+		t.Fatal("expected showConfirm=true after selecting revert")
+	}
+}
+
+func TestHandleSessionMessages_PopulatesMessageID(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel(nil)
+	messages := []agent.MessageData{
+		{
+			ID:   "msg-abc",
+			Role: "user",
+			Parts: []agent.Part{
+				{Type: agent.PartText, Text: "hello"},
+			},
+		},
+		{
+			ID:   "msg-def",
+			Role: "assistant",
+			Parts: []agent.Part{
+				{ID: "p1", Type: agent.PartText, Text: "world"},
+			},
+		},
+		{
+			ID:   "msg-ghi",
+			Role: "user",
+			Parts: []agent.Part{
+				{Type: agent.PartText, Text: "follow-up"},
+			},
+		},
+	}
+
+	m.handleSessionMessages(messages)
+
+	// Should have 3 entries: user, text, user
+	if len(m.entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(m.entries))
+	}
+
+	// First user entry should have messageID.
+	if m.entries[0].messageID != "msg-abc" {
+		t.Errorf("entries[0].messageID = %q, want %q", m.entries[0].messageID, "msg-abc")
+	}
+	if m.entries[0].kind != entryUser {
+		t.Errorf("entries[0].kind = %d, want entryUser", m.entries[0].kind)
+	}
+
+	// Second user entry should have messageID.
+	if m.entries[2].messageID != "msg-ghi" {
+		t.Errorf("entries[2].messageID = %q, want %q", m.entries[2].messageID, "msg-ghi")
+	}
+}
+
+func TestBuildHelpText_ShowsActionsHint(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel(nil)
+	m.info = &agent.SessionInfo{Status: agent.StatusIdle}
+
+	help := m.buildHelpText()
+	if !strings.Contains(help, "enter: actions") {
+		t.Errorf("expected help to contain 'enter: actions', got: %s", help)
+	}
+}

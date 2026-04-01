@@ -147,7 +147,8 @@ type StatusChangeData struct {
 
 // MessageData is the payload for EventMessage.
 type MessageData struct {
-	Role    string `json:"role"` // "user" or "assistant"
+	ID      string `json:"id,omitempty"` // Backend-assigned message ID (e.g. OpenCode message ID)
+	Role    string `json:"role"`         // "user" or "assistant"
 	Content string `json:"content"`
 	Parts   []Part `json:"parts,omitempty"`
 }
@@ -337,6 +338,11 @@ type SessionBackend interface {
 	// Each MessageData includes role, content, and parts.
 	// Returns nil, nil if the backend does not support history retrieval.
 	Messages(ctx context.Context) ([]MessageData, error)
+
+	// Revert reverts the session to the specified message, removing all
+	// subsequent messages. Returns an error if the backend does not support
+	// reverting (e.g. Claude Code).
+	Revert(ctx context.Context, messageID string) error
 }
 
 // BackendManager creates and manages SessionBackend instances for a specific

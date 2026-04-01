@@ -171,6 +171,15 @@ func (c *Client) AbortSession(ctx context.Context, sessionID string) error {
 	return c.post(ctx, "/sessions/"+sessionID+"/abort", nil, nil)
 }
 
+// RevertSession reverts a session to the specified message, removing all
+// subsequent messages.
+func (c *Client) RevertSession(ctx context.Context, sessionID, messageID string) error {
+	body := struct {
+		MessageID string `json:"message_id"`
+	}{MessageID: messageID}
+	return c.post(ctx, "/sessions/"+sessionID+"/revert", body, nil)
+}
+
 // MarkSessionRead marks a session as read by setting its LastReadAt timestamp.
 func (c *Client) MarkSessionRead(ctx context.Context, sessionID string) error {
 	return c.post(ctx, "/sessions/"+sessionID+"/read", nil, nil)
