@@ -319,13 +319,14 @@ func TestBuildGroups_DraftSessionStaysInDateGroup(t *testing.T) {
 	}
 }
 
-func TestBuildGroups_FollowUpSortsPriorityWithinDateGroup(t *testing.T) {
+func TestBuildGroups_FollowUpDoesNotAffectSorting(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
 
 	// A follow-up session and a normal idle session on the same day.
-	// Follow-up should appear above normal idle due to higher priority.
+	// Follow-up should NOT affect sort order; both are idle+read so
+	// they sort by UpdatedAt descending (idle is more recent).
 	sessions := []agent.SessionInfo{
 		{ID: "idle", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), LastReadAt: now, FollowUp: false},
 		{ID: "followup", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now, FollowUp: true},
@@ -341,12 +342,12 @@ func TestBuildGroups_FollowUpSortsPriorityWithinDateGroup(t *testing.T) {
 		t.Fatalf("expected 'Today' group, got %q", m.groups[0].name)
 	}
 
-	// Follow-up has higher priority (2) than read-idle (5), so it should come first.
-	if m.groups[0].rows[0].session.ID != "followup" {
-		t.Errorf("expected follow-up session first, got %q", m.groups[0].rows[0].session.ID)
+	// Both have the same sort priority; idle is more recently updated so it comes first.
+	if m.groups[0].rows[0].session.ID != "idle" {
+		t.Errorf("expected idle session first (more recent), got %q", m.groups[0].rows[0].session.ID)
 	}
-	if m.groups[0].rows[1].session.ID != "idle" {
-		t.Errorf("expected idle session second, got %q", m.groups[0].rows[1].session.ID)
+	if m.groups[0].rows[1].session.ID != "followup" {
+		t.Errorf("expected follow-up session second (older), got %q", m.groups[0].rows[1].session.ID)
 	}
 }
 
@@ -1693,7 +1694,7 @@ func TestBuildGroups_UnreadSortsAboveFollowUp(t *testing.T) {
 		t.Fatalf("expected 1 group, got %d", len(m.groups))
 	}
 
-	// Unread (priority 1) should sort above follow-up (priority 2).
+	// Unread (priority 1) should sort above follow-up (same as idle, priority 5).
 	if m.groups[0].rows[0].session.ID != "unread" {
 		t.Errorf("expected unread session first, got %q", m.groups[0].rows[0].session.ID)
 	}

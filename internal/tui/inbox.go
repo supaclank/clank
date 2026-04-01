@@ -535,8 +535,6 @@ func sessionSortPriority(s *agent.SessionInfo) int {
 		return 0
 	case s.Unread():
 		return 1
-	case s.FollowUp:
-		return 2
 	case s.Status == agent.StatusError:
 		return 3
 	default:
