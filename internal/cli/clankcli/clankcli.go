@@ -31,6 +31,7 @@ func Command() *cobra.Command {
 	root.AddCommand(
 		codeCmd(),
 		inboxCmd(),
+		voiceCmd(),
 	)
 
 	return root

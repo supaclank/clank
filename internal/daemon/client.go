@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/coder/websocket"
 )
 
 // Client communicates with the daemon over its Unix domain socket.
@@ -305,6 +306,61 @@ func parseSSEStream(r io.Reader, ch chan<- agent.Event) {
 func (c *Client) ReplyPermission(ctx context.Context, requestID, reply string) error {
 	body := map[string]string{"reply": reply}
 	return c.post(ctx, "/permissions/"+requestID+"/reply", body, nil)
+}
+
+// --- Voice methods ---
+
+// VoiceStart creates a new voice session on the daemon. The audio
+// WebSocket must be connected first via VoiceAudioStream.
+func (c *Client) VoiceStart(ctx context.Context) error {
+	return c.post(ctx, "/voice/start", nil, nil)
+}
+
+// VoiceStop tears down the active voice session.
+func (c *Client) VoiceStop(ctx context.Context) error {
+	return c.post(ctx, "/voice/stop", nil, nil)
+}
+
+// VoiceListen starts a user voice turn (unmute mic on daemon side).
+func (c *Client) VoiceListen(ctx context.Context) error {
+	return c.post(ctx, "/voice/listen", nil, nil)
+}
+
+// VoiceUnlisten ends a user voice turn (mute mic, trigger model response).
+func (c *Client) VoiceUnlisten(ctx context.Context) error {
+	return c.post(ctx, "/voice/unlisten", nil, nil)
+}
+
+// VoiceStatusResponse is the response from GET /voice/status.
+type VoiceStatusResponse struct {
+	Active string `json:"active"`
+	Status string `json:"status"`
+}
+
+// VoiceStatus returns the current voice session state.
+func (c *Client) VoiceStatus(ctx context.Context) (*VoiceStatusResponse, error) {
+	var resp VoiceStatusResponse
+	if err := c.get(ctx, "/voice/status", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// VoiceAudioStream opens a WebSocket connection for bidirectional PCM
+// audio streaming. The caller sends mic PCM as binary messages and
+// receives speaker PCM back. A zero-length binary message from the
+// server signals a flush (barge-in / discard playback buffer).
+//
+// The returned *websocket.Conn must be closed by the caller.
+func (c *Client) VoiceAudioStream(ctx context.Context) (*websocket.Conn, error) {
+	conn, _, err := websocket.Dial(ctx, "ws://daemon/voice/audio", &websocket.DialOptions{
+		HTTPClient: c.httpClient,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("voice audio websocket: %w", err)
+	}
+	conn.SetReadLimit(256 * 1024)
+	return conn, nil
 }
 
 // --- HTTP helpers ---

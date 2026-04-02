@@ -25,6 +25,9 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/store"
+	"github.com/acksell/clank/internal/voice"
+	"github.com/acksell/mindmouth"
+	"github.com/coder/websocket"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -134,6 +137,12 @@ type Daemon struct {
 	// primaryAgentsRefreshMu guards primaryAgentsRefreshInFlight.
 	primaryAgentsRefreshMu       sync.Mutex
 	primaryAgentsRefreshInFlight map[string]bool // keyed by "backend\x00projectDir"
+
+	// voice is the singleton voice session (nil when inactive).
+	voice            *voice.Session
+	voiceAudioConn   *websocket.Conn
+	voiceAudioSource mindmouth.AudioSource
+	voiceAudioSink   mindmouth.AudioSink
 
 	log *log.Logger
 }
@@ -322,6 +331,19 @@ func (d *Daemon) Run() error {
 func (d *Daemon) shutdown(server *http.Server) error {
 	d.cancel()
 
+	// Stop the voice session if active.
+	d.mu.Lock()
+	if d.voice != nil {
+		d.log.Println("stopping voice session")
+		d.voice.Close()
+		d.voice = nil
+	}
+	if d.voiceAudioConn != nil {
+		d.voiceAudioConn.CloseNow()
+		d.voiceAudioConn = nil
+	}
+	d.mu.Unlock()
+
 	// Stop all managed sessions.
 	d.mu.Lock()
 	for id, ms := range d.sessions {
@@ -397,6 +419,14 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /agents", d.handleListAgents)
 	mux.HandleFunc("POST /sessions/discover", d.handleDiscoverSessions)
 	mux.HandleFunc("GET /servers", d.handleListServers)
+
+	// Voice endpoints.
+	mux.HandleFunc("GET /voice/audio", d.handleVoiceAudio)
+	mux.HandleFunc("POST /voice/start", d.handleVoiceStart)
+	mux.HandleFunc("POST /voice/stop", d.handleVoiceStop)
+	mux.HandleFunc("POST /voice/listen", d.handleVoiceListen)
+	mux.HandleFunc("POST /voice/unlisten", d.handleVoiceUnlisten)
+	mux.HandleFunc("GET /voice/status", d.handleVoiceStatus)
 }
 
 // --- HTTP Handlers ---

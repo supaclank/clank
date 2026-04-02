@@ -53,6 +53,11 @@ const (
 	EventTitleChange   EventType = "title"      // Session title updated
 	EventSessionCreate EventType = "session.create"
 	EventSessionDelete EventType = "session.delete"
+
+	// Voice events — emitted by the voice agent running on the daemon.
+	EventVoiceTranscript EventType = "voice.transcript" // Model's spoken response as text
+	EventVoiceStatus     EventType = "voice.status"     // Voice state changes (listening, thinking, speaking, idle)
+	EventVoiceToolCall   EventType = "voice.tool_call"  // Voice agent called a tool
 )
 
 // Event is the unified event type emitted by all backends and forwarded
@@ -124,6 +129,24 @@ func (e *Event) UnmarshalJSON(b []byte) error {
 		var d TitleChangeData
 		if err := json.Unmarshal(raw.Data, &d); err != nil {
 			return fmt.Errorf("unmarshal TitleChangeData: %w", err)
+		}
+		e.Data = d
+	case EventVoiceTranscript:
+		var d VoiceTranscriptData
+		if err := json.Unmarshal(raw.Data, &d); err != nil {
+			return fmt.Errorf("unmarshal VoiceTranscriptData: %w", err)
+		}
+		e.Data = d
+	case EventVoiceStatus:
+		var d VoiceStatusData
+		if err := json.Unmarshal(raw.Data, &d); err != nil {
+			return fmt.Errorf("unmarshal VoiceStatusData: %w", err)
+		}
+		e.Data = d
+	case EventVoiceToolCall:
+		var d VoiceToolCallData
+		if err := json.Unmarshal(raw.Data, &d); err != nil {
+			return fmt.Errorf("unmarshal VoiceToolCallData: %w", err)
 		}
 		e.Data = d
 	default:
@@ -209,6 +232,34 @@ type ErrorData struct {
 // TitleChangeData is the payload for EventTitleChange.
 type TitleChangeData struct {
 	Title string `json:"title"`
+}
+
+// VoiceTranscriptData is the payload for EventVoiceTranscript.
+type VoiceTranscriptData struct {
+	Text string `json:"text"`           // Incremental or final transcript text
+	Done bool   `json:"done,omitempty"` // True when transcript is final
+}
+
+// VoiceStatus represents the voice agent's current state.
+type VoiceStatus string
+
+const (
+	VoiceStatusIdle      VoiceStatus = "idle"      // No voice session active
+	VoiceStatusListening VoiceStatus = "listening" // Mic is live, user is speaking
+	VoiceStatusThinking  VoiceStatus = "thinking"  // Audio committed, waiting for model
+	VoiceStatusSpeaking  VoiceStatus = "speaking"  // Model is producing audio response
+)
+
+// VoiceStatusData is the payload for EventVoiceStatus.
+type VoiceStatusData struct {
+	Status VoiceStatus `json:"status"`
+}
+
+// VoiceToolCallData is the payload for EventVoiceToolCall.
+type VoiceToolCallData struct {
+	Name   string `json:"name"`             // Tool name (e.g. "list_sessions")
+	Args   string `json:"args,omitempty"`   // JSON-encoded arguments
+	Result string `json:"result,omitempty"` // Tool result (empty if still running)
 }
 
 // AgentInfo is a lightweight summary of an OpenCode agent, used by the TUI
