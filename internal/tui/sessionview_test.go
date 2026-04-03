@@ -1685,3 +1685,177 @@ func TestHandleSessionMessages_ReplacesEntries(t *testing.T) {
 		t.Errorf("entries[0].content = %q, want %q", m.entries[0].content, "first prompt")
 	}
 }
+
+// allMessages returns a full message history as the OpenCode server would
+// return it — always all messages, regardless of revert state.
+func allMessages() []agent.MessageData {
+	return []agent.MessageData{
+		{
+			ID:   "msg-1",
+			Role: "user",
+			Parts: []agent.Part{
+				{Type: agent.PartText, Text: "first prompt"},
+			},
+		},
+		{
+			ID:   "msg-2",
+			Role: "assistant",
+			Parts: []agent.Part{
+				{ID: "p1", Type: agent.PartText, Text: "first response"},
+			},
+		},
+		{
+			ID:   "msg-3",
+			Role: "user",
+			Parts: []agent.Part{
+				{Type: agent.PartText, Text: "follow-up"},
+			},
+		},
+		{
+			ID:   "msg-4",
+			Role: "assistant",
+			Parts: []agent.Part{
+				{ID: "p2", Type: agent.PartText, Text: "second response"},
+			},
+		},
+	}
+}
+
+func TestHandleSessionMessages_FiltersByRevertMessageID(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no revert shows all messages", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(nil)
+		m.info = &agent.SessionInfo{} // RevertMessageID is empty
+
+		m.handleSessionMessages(allMessages())
+
+		// 4 messages: user, text, user, text
+		if len(m.entries) != 4 {
+			t.Fatalf("expected 4 entries, got %d", len(m.entries))
+		}
+	})
+
+	t.Run("revert to msg-3 hides msg-3 and msg-4", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(nil)
+		m.info = &agent.SessionInfo{RevertMessageID: "msg-3"}
+
+		m.handleSessionMessages(allMessages())
+
+		// Should only show msg-1 (user) and msg-2 (assistant text)
+		if len(m.entries) != 2 {
+			t.Fatalf("expected 2 entries, got %d", len(m.entries))
+		}
+		if m.entries[0].messageID != "msg-1" {
+			t.Errorf("entries[0].messageID = %q, want %q", m.entries[0].messageID, "msg-1")
+		}
+		if m.entries[1].kind != entryText {
+			t.Errorf("entries[1].kind = %d, want entryText", m.entries[1].kind)
+		}
+	})
+
+	t.Run("revert to msg-1 hides everything", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(nil)
+		m.info = &agent.SessionInfo{RevertMessageID: "msg-1"}
+
+		m.handleSessionMessages(allMessages())
+
+		if len(m.entries) != 0 {
+			t.Fatalf("expected 0 entries when reverting to first message, got %d", len(m.entries))
+		}
+	})
+
+	t.Run("revert to nonexistent ID shows all messages", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(nil)
+		m.info = &agent.SessionInfo{RevertMessageID: "msg-nonexistent"}
+
+		m.handleSessionMessages(allMessages())
+
+		// No matching ID means no filtering — all messages shown.
+		if len(m.entries) != 4 {
+			t.Fatalf("expected 4 entries, got %d", len(m.entries))
+		}
+	})
+
+	t.Run("nil info shows all messages", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(nil)
+		m.info = nil
+
+		m.handleSessionMessages(allMessages())
+
+		if len(m.entries) != 4 {
+			t.Fatalf("expected 4 entries, got %d", len(m.entries))
+		}
+	})
+}
+
+func TestEventRevertChange_UpdatesInfoRevertMessageID(t *testing.T) {
+	t.Parallel()
+
+	t.Run("sets RevertMessageID from SSE event", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(nil)
+		m.info = &agent.SessionInfo{}
+
+		m.handleEvent(agent.Event{
+			Type:      agent.EventRevertChange,
+			SessionID: m.sessionID,
+			Data:      agent.RevertChangeData{MessageID: "msg-42"},
+		})
+
+		if m.info.RevertMessageID != "msg-42" {
+			t.Errorf("RevertMessageID = %q, want %q", m.info.RevertMessageID, "msg-42")
+		}
+	})
+
+	t.Run("clears RevertMessageID on unrevert", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(nil)
+		m.info = &agent.SessionInfo{RevertMessageID: "msg-old"}
+
+		m.handleEvent(agent.Event{
+			Type:      agent.EventRevertChange,
+			SessionID: m.sessionID,
+			Data:      agent.RevertChangeData{MessageID: ""},
+		})
+
+		if m.info.RevertMessageID != "" {
+			t.Errorf("RevertMessageID = %q, want empty", m.info.RevertMessageID)
+		}
+	})
+
+	t.Run("no-op when info is nil", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(nil)
+		m.info = nil
+
+		// Should not panic.
+		m.handleEvent(agent.Event{
+			Type:      agent.EventRevertChange,
+			SessionID: m.sessionID,
+			Data:      agent.RevertChangeData{MessageID: "msg-42"},
+		})
+	})
+}
+
+func TestSendMessage_ClearsRevertMessageID(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel(nil)
+	m.info = &agent.SessionInfo{RevertMessageID: "msg-99"}
+	m.inputActive = true
+	m.input.Focus()
+	m.input.SetValue("new message")
+
+	enter := tea.KeyPressMsg{Code: tea.KeyEnter}
+	_, _ = m.handleKey(enter)
+
+	if m.info.RevertMessageID != "" {
+		t.Errorf("RevertMessageID = %q, want empty after sending message", m.info.RevertMessageID)
+	}
+}
