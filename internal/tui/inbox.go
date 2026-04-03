@@ -169,13 +169,13 @@ func (m *InboxModel) autoRefreshCmd() tea.Cmd {
 }
 
 // searchCmd performs a case-insensitive substring search against the daemon.
-// Multiple words are AND-ed: all terms must appear in the session metadata.
+// Supports pipe-separated OR groups with space-separated AND terms.
 func (m *InboxModel) searchCmd(query string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		sessions, err := m.client.SearchSessions(ctx, query)
+		sessions, err := m.client.SearchSessions(ctx, agent.SearchParams{Query: query})
 		return inboxSearchResultMsg{query: query, sessions: sessions, err: err}
 	}
 }

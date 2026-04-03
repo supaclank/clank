@@ -117,11 +117,23 @@ func (c *Client) ListSessions(ctx context.Context) ([]agent.SessionInfo, error) 
 }
 
 // SearchSessions searches session metadata (title, prompt, draft, project
-// name) using case-insensitive substring matching. Multiple words in the
-// query are AND-ed: all terms must appear.
-func (c *Client) SearchSessions(ctx context.Context, query string) ([]agent.SessionInfo, error) {
+// name) using case-insensitive substring matching. The query supports
+// pipe-separated OR groups with space-separated AND terms within each group.
+// Since/Until filter on UpdatedAt using relative durations (e.g. "7d") or
+// RFC 3339 timestamps.
+func (c *Client) SearchSessions(ctx context.Context, p agent.SearchParams) ([]agent.SessionInfo, error) {
+	v := url.Values{}
+	if p.Query != "" {
+		v.Set("q", p.Query)
+	}
+	if !p.Since.IsZero() {
+		v.Set("since", p.Since.Format(time.RFC3339))
+	}
+	if !p.Until.IsZero() {
+		v.Set("until", p.Until.Format(time.RFC3339))
+	}
 	var sessions []agent.SessionInfo
-	if err := c.get(ctx, "/sessions/search?q="+url.QueryEscape(query), &sessions); err != nil {
+	if err := c.get(ctx, "/sessions/search?"+v.Encode(), &sessions); err != nil {
 		return nil, err
 	}
 	return sessions, nil

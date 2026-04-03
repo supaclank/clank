@@ -3408,14 +3408,15 @@ func TestDaemonSearchSessions(t *testing.T) {
 		t.Fatalf("store.Open: %v", err)
 	}
 
-	// Seed sessions with distinct timestamps so we can verify date ordering.
+	// Seed sessions with distinct timestamps so we can verify date ordering
+	// and time filtering.
 	now := time.Now().Truncate(time.Millisecond)
 	for _, info := range []agent.SessionInfo{
 		{
 			ID: "ses-s1", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
 			ProjectDir: "/tmp/proj", ProjectName: "myproject",
 			Title: "Fix authentication bug", Prompt: "fix login",
-			CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-2 * time.Hour),
+			CreatedAt: now.Add(-48 * time.Hour), UpdatedAt: now.Add(-48 * time.Hour),
 		},
 		{
 			ID: "ses-s2", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
@@ -3452,9 +3453,12 @@ func TestDaemonSearchSessions(t *testing.T) {
 	}()
 
 	ctx := context.Background()
+	search := func(q string) agent.SearchParams { return agent.SearchParams{Query: q} }
+
+	// --- Substring AND matching ---
 
 	// Substring match: "authentication" appears in ses-s1 title.
-	results, err := client.SearchSessions(ctx, "authentication")
+	results, err := client.SearchSessions(ctx, search("authentication"))
 	if err != nil {
 		t.Fatalf("SearchSessions(authentication): %v", err)
 	}
@@ -3465,8 +3469,88 @@ func TestDaemonSearchSessions(t *testing.T) {
 		t.Errorf("expected ses-s1, got %s", results[0].ID)
 	}
 
+	// Multi-word AND: both "dark" and "toggle" must appear.
+	results, err = client.SearchSessions(ctx, search("dark toggle"))
+	if err != nil {
+		t.Fatalf("SearchSessions(dark toggle): %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for 'dark toggle', got %d", len(results))
+	}
+	if results[0].ID != "ses-s2" {
+		t.Errorf("expected ses-s2, got %s", results[0].ID)
+	}
+
+	// Multi-word AND where one term doesn't match: "dark queries" returns nothing.
+	results, err = client.SearchSessions(ctx, search("dark queries"))
+	if err != nil {
+		t.Fatalf("SearchSessions(dark queries): %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for 'dark queries', got %d", len(results))
+	}
+
+	// Case insensitive: "DATABASE" matches "database" in ses-s3.
+	results, err = client.SearchSessions(ctx, search("DATABASE"))
+	if err != nil {
+		t.Fatalf("SearchSessions(DATABASE): %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for 'DATABASE', got %d", len(results))
+	}
+	if results[0].ID != "ses-s3" {
+		t.Errorf("expected ses-s3, got %s", results[0].ID)
+	}
+
+	// --- OR matching ---
+
+	// Pipe-separated OR: "auth|dark" matches ses-s1 and ses-s2.
+	results, err = client.SearchSessions(ctx, search("auth|dark"))
+	if err != nil {
+		t.Fatalf("SearchSessions(auth|dark): %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results for 'auth|dark', got %d", len(results))
+	}
+	// Most recent first.
+	if results[0].ID != "ses-s2" {
+		t.Errorf("expected ses-s2 first, got %s", results[0].ID)
+	}
+	if results[1].ID != "ses-s1" {
+		t.Errorf("expected ses-s1 second, got %s", results[1].ID)
+	}
+
+	// OR with AND groups: "auth bug|database layer" matches ses-s1 and ses-s3.
+	results, err = client.SearchSessions(ctx, search("auth bug|database layer"))
+	if err != nil {
+		t.Fatalf("SearchSessions(auth bug|database layer): %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results for 'auth bug|database layer', got %d", len(results))
+	}
+	if results[0].ID != "ses-s3" {
+		t.Errorf("expected ses-s3 first (most recent), got %s", results[0].ID)
+	}
+	if results[1].ID != "ses-s1" {
+		t.Errorf("expected ses-s1 second (oldest), got %s", results[1].ID)
+	}
+
+	// OR where one branch matches nothing: "xyznotfound|dark" matches only ses-s2.
+	results, err = client.SearchSessions(ctx, search("xyznotfound|dark"))
+	if err != nil {
+		t.Fatalf("SearchSessions(xyznotfound|dark): %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for 'xyznotfound|dark', got %d", len(results))
+	}
+	if results[0].ID != "ses-s2" {
+		t.Errorf("expected ses-s2, got %s", results[0].ID)
+	}
+
+	// --- Date ordering ---
+
 	// "myproject" matches two sessions; most recent UpdatedAt should come first.
-	results, err = client.SearchSessions(ctx, "myproject")
+	results, err = client.SearchSessions(ctx, search("myproject"))
 	if err != nil {
 		t.Fatalf("SearchSessions(myproject): %v", err)
 	}
@@ -3480,53 +3564,75 @@ func TestDaemonSearchSessions(t *testing.T) {
 		t.Errorf("expected ses-s1 second (older), got %s", results[1].ID)
 	}
 
-	// Substring within a word: "dark" matches "Add dark mode".
-	results, err = client.SearchSessions(ctx, "dark")
-	if err != nil {
-		t.Fatalf("SearchSessions(dark): %v", err)
-	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result for 'dark', got %d", len(results))
-	}
-	if results[0].ID != "ses-s2" {
-		t.Errorf("expected ses-s2, got %s", results[0].ID)
-	}
+	// --- Time filtering ---
 
-	// Multi-word AND: both "dark" and "toggle" must appear.
-	results, err = client.SearchSessions(ctx, "dark toggle")
+	// Since 2 hours ago: should exclude ses-s1 (48h ago), include ses-s2 and ses-s3.
+	results, err = client.SearchSessions(ctx, agent.SearchParams{
+		Since: now.Add(-2 * time.Hour),
+	})
 	if err != nil {
-		t.Fatalf("SearchSessions(dark toggle): %v", err)
+		t.Fatalf("SearchSessions(since=2h): %v", err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result for 'dark toggle', got %d", len(results))
-	}
-	if results[0].ID != "ses-s2" {
-		t.Errorf("expected ses-s2, got %s", results[0].ID)
-	}
-
-	// Multi-word AND where one term doesn't match: "dark queries" should return nothing.
-	results, err = client.SearchSessions(ctx, "dark queries")
-	if err != nil {
-		t.Fatalf("SearchSessions(dark queries): %v", err)
-	}
-	if len(results) != 0 {
-		t.Errorf("expected 0 results for 'dark queries', got %d", len(results))
-	}
-
-	// Case insensitive: "DATABASE" should match "database" in ses-s3.
-	results, err = client.SearchSessions(ctx, "DATABASE")
-	if err != nil {
-		t.Fatalf("SearchSessions(DATABASE): %v", err)
-	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result for 'DATABASE', got %d", len(results))
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results for since=2h, got %d", len(results))
 	}
 	if results[0].ID != "ses-s3" {
-		t.Errorf("expected ses-s3, got %s", results[0].ID)
+		t.Errorf("expected ses-s3 first, got %s", results[0].ID)
 	}
 
-	// No match: gibberish returns nothing.
-	results, err = client.SearchSessions(ctx, "xyznotfound")
+	// Until 30 minutes ago: should include ses-s1 (48h ago) and ses-s2 (1h ago),
+	// exclude ses-s3 (now).
+	results, err = client.SearchSessions(ctx, agent.SearchParams{
+		Until: now.Add(-30 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("SearchSessions(until=30m): %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results for until=30m, got %d", len(results))
+	}
+	if results[0].ID != "ses-s2" {
+		t.Errorf("expected ses-s2 first, got %s", results[0].ID)
+	}
+	if results[1].ID != "ses-s1" {
+		t.Errorf("expected ses-s1 second, got %s", results[1].ID)
+	}
+
+	// Since + Until window: 3h ago to 30min ago — only ses-s2 (1h ago).
+	results, err = client.SearchSessions(ctx, agent.SearchParams{
+		Since: now.Add(-3 * time.Hour),
+		Until: now.Add(-30 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("SearchSessions(since=3h,until=30m): %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for since=3h+until=30m, got %d", len(results))
+	}
+	if results[0].ID != "ses-s2" {
+		t.Errorf("expected ses-s2, got %s", results[0].ID)
+	}
+
+	// --- Combined query + time filter ---
+
+	// "myproject" with since=2h: only ses-s2 (ses-s1 is 48h old).
+	results, err = client.SearchSessions(ctx, agent.SearchParams{
+		Query: "myproject",
+		Since: now.Add(-2 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("SearchSessions(myproject,since=2h): %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for myproject+since=2h, got %d", len(results))
+	}
+	if results[0].ID != "ses-s2" {
+		t.Errorf("expected ses-s2, got %s", results[0].ID)
+	}
+
+	// --- No match ---
+
+	results, err = client.SearchSessions(ctx, search("xyznotfound"))
 	if err != nil {
 		t.Fatalf("SearchSessions(xyznotfound): %v", err)
 	}
@@ -3535,41 +3641,18 @@ func TestDaemonSearchSessions(t *testing.T) {
 	}
 }
 
-func TestDaemonSearchSessionsMissingQuery(t *testing.T) {
+func TestDaemonSearchSessionsAllParamsEmpty(t *testing.T) {
 	t.Parallel()
 
-	dir := shortTempDir(t)
-	sockPath := filepath.Join(dir, "test.sock")
-	pidPath := filepath.Join(dir, "test.pid")
-	dbPath := filepath.Join(dir, "test.db")
-
-	st, err := store.Open(dbPath)
-	if err != nil {
-		t.Fatalf("store.Open: %v", err)
-	}
-
-	d := daemon.NewWithPaths(sockPath, pidPath)
-	d.Store = st
-	mgr := newMockBackendManager()
-	d.BackendManagers[agent.BackendOpenCode] = mgr
-	d.BackendManagers[agent.BackendClaudeCode] = mgr
-
-	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run() }()
-
-	client := daemon.NewClient(sockPath)
-	waitForDaemon(t, client)
-	defer func() {
-		d.Stop()
-		<-errCh
-	}()
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
 
 	ctx := context.Background()
 
-	// Missing q param should return an error.
-	_, err = client.SearchSessions(ctx, "")
+	// All params empty should return an error.
+	_, err := client.SearchSessions(ctx, agent.SearchParams{})
 	if err == nil {
-		t.Fatal("expected error for empty query")
+		t.Fatal("expected error when all search params are empty")
 	}
 }
 

@@ -749,12 +749,36 @@ func (d *Daemon) handleListSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Daemon) handleSearchSessions(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query().Get("q")
-	if query == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing required query parameter: q"})
+	q := r.URL.Query().Get("q")
+	sinceRaw := r.URL.Query().Get("since")
+	untilRaw := r.URL.Query().Get("until")
+
+	if q == "" && sinceRaw == "" && untilRaw == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one of q, since, or until is required"})
 		return
 	}
-	writeJSON(w, http.StatusOK, d.searchSessions(query))
+
+	var p agent.SearchParams
+	p.Query = q
+
+	if sinceRaw != "" {
+		t, err := parseTimeParam(sinceRaw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid since param: " + err.Error()})
+			return
+		}
+		p.Since = t
+	}
+	if untilRaw != "" {
+		t, err := parseTimeParam(untilRaw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid until param: " + err.Error()})
+			return
+		}
+		p.Until = t
+	}
+
+	writeJSON(w, http.StatusOK, d.searchSessions(p))
 }
 
 func (d *Daemon) handleGetSession(w http.ResponseWriter, r *http.Request) {
@@ -1196,29 +1220,68 @@ func (d *Daemon) snapshotSessions() []agent.SessionInfo {
 	return sessions
 }
 
-// searchSessions returns sessions whose metadata contains all whitespace-
-// separated terms in query (case-insensitive substring match). Results are
-// sorted by updated_at descending.
-func (d *Daemon) searchSessions(query string) []agent.SessionInfo {
-	terms := strings.Fields(strings.ToLower(query))
-	if len(terms) == 0 {
+// searchSessions returns sessions matching the given search parameters.
+//
+// Query supports pipe-separated OR groups: "auth bug|dark mode" matches
+// sessions containing ("auth" AND "bug") OR ("dark" AND "mode"). All
+// matching is case-insensitive substring matching against the concatenation
+// of title, prompt, draft, and project_name.
+//
+// Since/Until filter on UpdatedAt. Results are sorted by updated_at descending.
+func (d *Daemon) searchSessions(p agent.SearchParams) []agent.SessionInfo {
+	// Parse OR groups from the query. Each group is a slice of AND terms.
+	var orGroups [][]string
+	if p.Query != "" {
+		for _, group := range strings.Split(p.Query, "|") {
+			terms := strings.Fields(strings.ToLower(strings.TrimSpace(group)))
+			if len(terms) > 0 {
+				orGroups = append(orGroups, terms)
+			}
+		}
+	}
+
+	hasQuery := len(orGroups) > 0
+	hasSince := !p.Since.IsZero()
+	hasUntil := !p.Until.IsZero()
+
+	if !hasQuery && !hasSince && !hasUntil {
 		return nil
 	}
 
 	all := d.snapshotSessions()
 	results := make([]agent.SessionInfo, 0)
 	for _, si := range all {
-		hay := strings.ToLower(si.Title + " " + si.Prompt + " " + si.Draft + " " + si.ProjectName)
-		match := true
-		for _, term := range terms {
-			if !strings.Contains(hay, term) {
-				match = false
-				break
+		// Time filter.
+		if hasSince && si.UpdatedAt.Before(p.Since) {
+			continue
+		}
+		if hasUntil && !si.UpdatedAt.Before(p.Until) {
+			continue
+		}
+
+		// Text filter: match if ANY OR group matches (all terms in the group present).
+		if hasQuery {
+			hay := strings.ToLower(si.Title + " " + si.Prompt + " " + si.Draft + " " + si.ProjectName)
+			matched := false
+			for _, terms := range orGroups {
+				allMatch := true
+				for _, term := range terms {
+					if !strings.Contains(hay, term) {
+						allMatch = false
+						break
+					}
+				}
+				if allMatch {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
 			}
 		}
-		if match {
-			results = append(results, si)
-		}
+
+		results = append(results, si)
 	}
 
 	sort.Slice(results, func(i, j int) bool {
@@ -1226,6 +1289,36 @@ func (d *Daemon) searchSessions(query string) []agent.SessionInfo {
 	})
 
 	return results
+}
+
+// parseTimeParam parses a time parameter that is either an RFC 3339 timestamp
+// or a relative duration suffix (e.g. "7d", "24h") interpreted as "ago from now".
+// Supported units: h (hours), d (days).
+func parseTimeParam(s string) (time.Time, error) {
+	if len(s) < 2 {
+		return time.Time{}, fmt.Errorf("too short: %q", s)
+	}
+
+	unit := s[len(s)-1]
+	if unit == 'h' || unit == 'd' {
+		numStr := s[:len(s)-1]
+		n, err := strconv.Atoi(numStr)
+		if err == nil && n > 0 {
+			switch unit {
+			case 'h':
+				return time.Now().Add(-time.Duration(n) * time.Hour), nil
+			case 'd':
+				return time.Now().Add(-time.Duration(n) * 24 * time.Hour), nil
+			}
+		}
+	}
+
+	// Fall back to RFC 3339.
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("expected relative duration (e.g. 7d, 24h) or RFC 3339 timestamp, got %q", s)
+	}
+	return t, nil
 }
 
 // createSession creates a new managed session and starts the backend.

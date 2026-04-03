@@ -361,6 +361,21 @@ type SessionInfo struct {
 	LastReadAt      time.Time         `json:"last_read_at,omitempty"`
 }
 
+// SearchParams defines the parameters for searching sessions.
+//
+// Query supports pipe-separated OR groups with space-separated AND terms
+// within each group. For example, "auth bug|dark mode" matches sessions
+// containing ("auth" AND "bug") OR ("dark" AND "mode"). All matching is
+// case-insensitive substring matching.
+//
+// Since and Until filter on UpdatedAt. Both are optional; when omitted
+// the corresponding bound is open.
+type SearchParams struct {
+	Query string    `json:"query,omitempty"` // pipe-separated OR groups
+	Since time.Time `json:"since,omitempty"` // only sessions updated at or after this time
+	Until time.Time `json:"until,omitempty"` // only sessions updated before this time
+}
+
 // ProjectInfo is a lightweight project summary from the OpenCode API.
 type ProjectInfo struct {
 	ID       string `json:"id"`
