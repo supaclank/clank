@@ -2247,45 +2247,7 @@ func (m *SessionViewModel) overlaySessionConfirm(base string) string {
 	if !m.showConfirm {
 		return base
 	}
-
-	popup := m.confirm.View()
-	popupLines := strings.Split(popup, "\n")
-	baseLines := strings.Split(base, "\n")
-
-	popupH := len(popupLines)
-	popupW := 0
-	for _, l := range popupLines {
-		if w := lipgloss.Width(l); w > popupW {
-			popupW = w
-		}
-	}
-
-	startRow := (m.height - popupH) / 2
-	if startRow < 0 {
-		startRow = 0
-	}
-	startCol := (m.width - popupW) / 2
-	if startCol < 0 {
-		startCol = 0
-	}
-
-	for len(baseLines) < startRow+popupH {
-		baseLines = append(baseLines, "")
-	}
-
-	for i, popLine := range popupLines {
-		row := startRow + i
-		if row >= len(baseLines) {
-			break
-		}
-		baseLine := baseLines[row]
-		for lipgloss.Width(baseLine) < startCol {
-			baseLine += " "
-		}
-		baseLines[row] = baseLine[:startCol] + popLine
-	}
-
-	return strings.Join(baseLines, "\n")
+	return overlayCenter(base, m.confirm.View(), m.width, m.height)
 }
 
 // overlaySessionMenu overlays the action menu onto the base content if active.
@@ -2293,45 +2255,7 @@ func (m *SessionViewModel) overlaySessionMenu(base string) string {
 	if !m.showMenu {
 		return base
 	}
-
-	popup := m.menu.View()
-	popupLines := strings.Split(popup, "\n")
-	baseLines := strings.Split(base, "\n")
-
-	popupH := len(popupLines)
-	popupW := 0
-	for _, l := range popupLines {
-		if w := lipgloss.Width(l); w > popupW {
-			popupW = w
-		}
-	}
-
-	startRow := (m.height - popupH) / 2
-	if startRow < 0 {
-		startRow = 0
-	}
-	startCol := (m.width - popupW) / 2
-	if startCol < 0 {
-		startCol = 0
-	}
-
-	for len(baseLines) < startRow+popupH {
-		baseLines = append(baseLines, "")
-	}
-
-	for i, popLine := range popupLines {
-		row := startRow + i
-		if row >= len(baseLines) {
-			break
-		}
-		baseLine := baseLines[row]
-		for lipgloss.Width(baseLine) < startCol {
-			baseLine += " "
-		}
-		baseLines[row] = baseLine[:startCol] + popLine
-	}
-
-	return strings.Join(baseLines, "\n")
+	return overlayCenter(base, m.menu.View(), m.width, m.height)
 }
 
 // --- Navigation helpers ---
