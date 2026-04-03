@@ -97,6 +97,12 @@ func (m *OpenCodeBackendManager) ListAgents(ctx context.Context, projectDir stri
 	return m.serverMgr.ListAgents(ctx, projectDir)
 }
 
+// ServerManager returns the underlying server manager. Exported for tests
+// that need to configure the manager (e.g. injecting a fake startServerFn).
+func (m *OpenCodeBackendManager) ServerManager() *agent.OpenCodeServerManager {
+	return m.serverMgr
+}
+
 // ListServers returns running OpenCode server info from the server manager.
 func (m *OpenCodeBackendManager) ListServers() []agent.ServerInfo {
 	return m.serverMgr.ListServers()
@@ -499,7 +505,8 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /status", d.handleStatus)
 	mux.HandleFunc("GET /agents", d.handleListAgents)
 	mux.HandleFunc("POST /sessions/discover", d.handleDiscoverSessions)
-	mux.HandleFunc("GET /servers", d.handleListServers)
+	// Debug endpoints — backend-specific, not part of the general API.
+	mux.HandleFunc("GET /debug/opencode/servers", d.handleDebugOpenCodeServers)
 
 	// Voice endpoints.
 	mux.HandleFunc("GET /voice/audio", d.handleVoiceAudio)
@@ -578,13 +585,19 @@ func (d *Daemon) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, agents)
 }
 
-// handleListServers returns running backend server processes. It iterates
-// all BackendManagers and collects info from those implementing ServerLister.
-// The response also includes a session count per server (matched by project dir).
-func (d *Daemon) handleListServers(w http.ResponseWriter, r *http.Request) {
+// handleDebugOpenCodeServers returns running OpenCode server processes.
+// This is a debug endpoint specific to the OpenCode backend — it type-asserts
+// directly to *OpenCodeBackendManager rather than going through an interface.
+func (d *Daemon) handleDebugOpenCodeServers(w http.ResponseWriter, r *http.Request) {
 	type serverWithSessions struct {
 		agent.ServerInfo
 		SessionCount int `json:"session_count"`
+	}
+
+	ocMgr, ok := d.BackendManagers[agent.BackendOpenCode].(*OpenCodeBackendManager)
+	if !ok {
+		writeJSON(w, http.StatusOK, []serverWithSessions{})
+		return
 	}
 
 	// Count sessions per project dir.
@@ -596,17 +609,11 @@ func (d *Daemon) handleListServers(w http.ResponseWriter, r *http.Request) {
 	d.mu.RUnlock()
 
 	var result []serverWithSessions
-	for _, mgr := range d.BackendManagers {
-		lister, ok := mgr.(agent.ServerLister)
-		if !ok {
-			continue
-		}
-		for _, srv := range lister.ListServers() {
-			result = append(result, serverWithSessions{
-				ServerInfo:   srv,
-				SessionCount: projectSessions[srv.ProjectDir],
-			})
-		}
+	for _, srv := range ocMgr.ListServers() {
+		result = append(result, serverWithSessions{
+			ServerInfo:   srv,
+			SessionCount: projectSessions[srv.ProjectDir],
+		})
 	}
 	if result == nil {
 		result = []serverWithSessions{}

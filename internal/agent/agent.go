@@ -478,9 +478,3 @@ type ServerInfo struct {
 	PID        int       `json:"pid"`
 	StartedAt  time.Time `json:"started_at"`
 }
-
-// ServerLister is an optional interface that BackendManagers can implement
-// to expose information about running backend server processes.
-type ServerLister interface {
-	ListServers() []ServerInfo
-}

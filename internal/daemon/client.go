@@ -149,7 +149,7 @@ func (c *Client) ListAgents(ctx context.Context, backend agent.BackendType, proj
 	return agents, nil
 }
 
-// ServerStatus is a running backend server with its session count.
+// ServerStatus is a running OpenCode server with its session count.
 type ServerStatus struct {
 	URL          string    `json:"url"`
 	ProjectDir   string    `json:"project_dir"`
@@ -158,10 +158,10 @@ type ServerStatus struct {
 	SessionCount int       `json:"session_count"`
 }
 
-// ListServers returns all running backend server processes.
-func (c *Client) ListServers(ctx context.Context) ([]ServerStatus, error) {
+// ListOpenCodeServers returns running OpenCode server processes.
+func (c *Client) ListOpenCodeServers(ctx context.Context) ([]ServerStatus, error) {
 	var servers []ServerStatus
-	if err := c.get(ctx, "/servers", &servers); err != nil {
+	if err := c.get(ctx, "/debug/opencode/servers", &servers); err != nil {
 		return nil, err
 	}
 	return servers, nil

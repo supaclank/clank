@@ -253,7 +253,7 @@ func runOpenCodeStatus() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	servers, err := client.ListServers(ctx)
+	servers, err := client.ListOpenCodeServers(ctx)
 	if err != nil {
 		fmt.Printf("Daemon process exists (pid=%d) but API is not reachable: %v\n", pid, err)
 		return nil
