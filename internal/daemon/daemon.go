@@ -593,21 +593,23 @@ func (d *Daemon) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 			existingMS.info.UpdatedAt = snap.UpdatedAt
 			existingMS.info.ProjectDir = snap.Directory
 			existingMS.info.ProjectName = filepath.Base(snap.Directory)
+			existingMS.info.RevertMessageID = snap.RevertMessageID
 			d.persistSession(existingMS)
 			continue
 		}
 		id := ulid.Make().String()
 		info := agent.SessionInfo{
-			ID:          id,
-			ExternalID:  snap.ID,
-			Backend:     agent.BackendOpenCode,
-			Status:      agent.StatusIdle,
-			ProjectDir:  snap.Directory,
-			ProjectName: filepath.Base(snap.Directory),
-			Title:       snap.Title,
-			CreatedAt:   snap.CreatedAt,
-			UpdatedAt:   snap.UpdatedAt,
-			LastReadAt:  snap.UpdatedAt, // Mark as read — they're not new activity
+			ID:              id,
+			ExternalID:      snap.ID,
+			Backend:         agent.BackendOpenCode,
+			Status:          agent.StatusIdle,
+			ProjectDir:      snap.Directory,
+			ProjectName:     filepath.Base(snap.Directory),
+			Title:           snap.Title,
+			RevertMessageID: snap.RevertMessageID,
+			CreatedAt:       snap.CreatedAt,
+			UpdatedAt:       snap.UpdatedAt,
+			LastReadAt:      snap.UpdatedAt, // Mark as read — they're not new activity
 		}
 		d.sessions[id] = &managedSession{info: info, backend: nil}
 		d.persistSession(d.sessions[id])
@@ -705,6 +707,11 @@ func (d *Daemon) activateBackend(id string, ms *managedSession) error {
 			if evt.Type == agent.EventTitleChange {
 				if data, ok := evt.Data.(agent.TitleChangeData); ok {
 					d.updateSessionTitle(id, data.Title)
+				}
+			}
+			if evt.Type == agent.EventRevertChange {
+				if data, ok := evt.Data.(agent.RevertChangeData); ok {
+					d.updateSessionRevert(id, data.MessageID)
 				}
 			}
 		}
@@ -895,6 +902,10 @@ func (d *Daemon) handleRevertSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	d.mu.Lock()
+	ms.info.RevertMessageID = body.MessageID
+	d.persistSession(ms)
+	d.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reverted"})
 }
 
@@ -1152,6 +1163,11 @@ func (d *Daemon) runBackend(id string, ms *managedSession, req agent.StartReques
 					d.updateSessionTitle(id, data.Title)
 				}
 			}
+			if evt.Type == agent.EventRevertChange {
+				if data, ok := evt.Data.(agent.RevertChangeData); ok {
+					d.updateSessionRevert(id, data.MessageID)
+				}
+			}
 		}
 	}()
 	defer func() { <-done }() // wait for relay goroutine to finish
@@ -1208,6 +1224,16 @@ func (d *Daemon) updateSessionTitle(id string, title string) {
 	if ms, ok := d.sessions[id]; ok {
 		ms.info.Title = title
 		ms.info.UpdatedAt = time.Now()
+		d.persistSession(ms)
+	}
+	d.mu.Unlock()
+}
+
+// updateSessionRevert updates the cached revert message ID.
+func (d *Daemon) updateSessionRevert(id string, messageID string) {
+	d.mu.Lock()
+	if ms, ok := d.sessions[id]; ok {
+		ms.info.RevertMessageID = messageID
 		d.persistSession(ms)
 	}
 	d.mu.Unlock()

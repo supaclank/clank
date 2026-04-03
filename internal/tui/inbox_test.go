@@ -30,8 +30,8 @@ func TestBuildGroups_SortsByUpdatedAtDescending(t *testing.T) {
 		t.Errorf("expected group name 'Today', got %q", m.groups[0].name)
 	}
 
-	// Within the group, higher-priority statuses (busy) should come first,
-	// then error, then idle — all sorted by status priority then UpdatedAt desc.
+	// Within the group, busy sorts first (priority 0); error and idle share the
+	// same priority (5) so they sort by UpdatedAt descending.
 	wantOrder := []string{"new", "mid", "old"}
 	for i, r := range m.groups[0].rows {
 		if r.session.ID != wantOrder[i] {
@@ -1678,7 +1678,7 @@ func TestRenderRow_ArchivedSessionGrayedOut(t *testing.T) {
 	}
 }
 
-func TestBuildGroups_UnreadSortsAboveFollowUp(t *testing.T) {
+func TestBuildGroups_UnreadDoesNotAffectOrdering(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
@@ -1694,12 +1694,39 @@ func TestBuildGroups_UnreadSortsAboveFollowUp(t *testing.T) {
 		t.Fatalf("expected 1 group, got %d", len(m.groups))
 	}
 
-	// Unread (priority 1) should sort above follow-up (same as idle, priority 5).
-	if m.groups[0].rows[0].session.ID != "unread" {
-		t.Errorf("expected unread session first, got %q", m.groups[0].rows[0].session.ID)
+	// Unread status should not boost sort priority; both sessions have the
+	// same priority so the more recently updated one ("followup") comes first.
+	if m.groups[0].rows[0].session.ID != "followup" {
+		t.Errorf("expected follow-up session first, got %q", m.groups[0].rows[0].session.ID)
 	}
-	if m.groups[0].rows[1].session.ID != "followup" {
-		t.Errorf("expected follow-up session second, got %q", m.groups[0].rows[1].session.ID)
+	if m.groups[0].rows[1].session.ID != "unread" {
+		t.Errorf("expected unread session second, got %q", m.groups[0].rows[1].session.ID)
+	}
+}
+
+func TestBuildGroups_ErrorDoesNotAffectOrdering(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "error", Status: agent.StatusError, UpdatedAt: now.Add(-2 * time.Hour)},
+		{ID: "idle", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), LastReadAt: now},
+	}
+
+	m := &InboxModel{}
+	m.buildGroups(sessions)
+
+	if len(m.groups) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(m.groups))
+	}
+
+	// Error status should not boost sort priority; both have the same
+	// priority so the more recently updated one ("idle") comes first.
+	if m.groups[0].rows[0].session.ID != "idle" {
+		t.Errorf("expected idle session first, got %q", m.groups[0].rows[0].session.ID)
+	}
+	if m.groups[0].rows[1].session.ID != "error" {
+		t.Errorf("expected error session second, got %q", m.groups[0].rows[1].session.ID)
 	}
 }
 

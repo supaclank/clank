@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -304,16 +305,20 @@ func (b *OpenCodeBackend) streamEvents() {
 		return
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
-	// Allow large SSE payloads (e.g. full part snapshots with large text).
-	scanner.Buffer(nil, bufio.MaxScanTokenSize<<4)
+	// Use bufio.Reader instead of bufio.Scanner to avoid a hard upper
+	// limit on line length. Scanner fails permanently with "token too
+	// long" when a single SSE data line exceeds its buffer cap (common
+	// with large session snapshots for long conversations). ReadBytes
+	// allocates dynamically, eliminating this class of failure.
+	reader := bufio.NewReader(resp.Body)
 
 	var dataBuf bytes.Buffer
-	for scanner.Scan() {
-		line := scanner.Bytes()
+	for {
+		line, err := reader.ReadBytes('\n')
+		line = bytes.TrimRight(line, "\r\n")
 
-		// Empty line = dispatch the accumulated event.
-		if len(line) == 0 {
+		if len(line) == 0 && err == nil {
+			// Empty line = dispatch the accumulated event.
 			if dataBuf.Len() > 0 {
 				b.handleRawSSEEvent(dataBuf.Bytes())
 				dataBuf.Reset()
@@ -321,27 +326,37 @@ func (b *OpenCodeBackend) streamEvents() {
 			continue
 		}
 
-		// Parse SSE field.
-		name, value, _ := bytes.Cut(line, []byte(":"))
-		if len(value) > 0 && value[0] == ' ' {
-			value = value[1:]
+		if len(line) > 0 {
+			// Parse SSE field.
+			name, value, _ := bytes.Cut(line, []byte(":"))
+			if len(value) > 0 && value[0] == ' ' {
+				value = value[1:]
+			}
+
+			switch string(name) {
+			case "data":
+				dataBuf.Write(value)
+				dataBuf.WriteByte('\n')
+			case "":
+				// Comment line (": something"), ignore.
+			}
 		}
 
-		switch string(name) {
-		case "data":
-			dataBuf.Write(value)
-			dataBuf.WriteByte('\n')
-		case "":
-			// Comment line (": something"), ignore.
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		select {
-		case <-b.ctx.Done():
+		if err != nil {
+			// Dispatch any buffered event before exiting.
+			if dataBuf.Len() > 0 {
+				b.handleRawSSEEvent(dataBuf.Bytes())
+				dataBuf.Reset()
+			}
+			select {
+			case <-b.ctx.Done():
+				return
+			default:
+				if err != io.EOF {
+					b.emitError("SSE stream: " + err.Error())
+				}
+			}
 			return
-		default:
-			b.emitError("SSE stream: " + err.Error())
 		}
 	}
 }
@@ -449,9 +464,19 @@ func (b *OpenCodeBackend) handleSDKEvent(event opencode.EventListResponse) {
 		// Track message ID -> role so we can filter user parts.
 		b.messageRoles.Store(msg.ID, msg.Role)
 
-		// Skip user messages — the TUI already shows the user's prompt
-		// from the initial request, and follow-ups from the input box.
+		// Emit user messages so the TUI can backfill the messageID on
+		// inline user entries (which are created before the server assigns
+		// an ID). The TUI skips rendering but uses the ID for revert.
+		// TODO(ae): don't do this async, TUI should get ID from SendMessage instead.
 		if msg.Role == opencode.MessageRoleUser {
+			b.emit(Event{
+				Type:      EventMessage,
+				Timestamp: time.Now(),
+				Data: MessageData{
+					ID:   msg.ID,
+					Role: string(msg.Role),
+				},
+			})
 			return
 		}
 
@@ -532,6 +557,14 @@ func (b *OpenCodeBackend) handleSDKEvent(event opencode.EventListResponse) {
 				},
 			})
 		}
+		// Emit a revert change event so the TUI can filter messages accordingly.
+		b.emit(Event{
+			Type:      EventRevertChange,
+			Timestamp: time.Now(),
+			Data: RevertChangeData{
+				MessageID: sess.Revert.MessageID,
+			},
+		})
 	}
 }
 
@@ -946,11 +979,12 @@ func (m *OpenCodeServerManager) ListSessions(ctx context.Context, projectDir str
 			continue // Skip child/forked sessions
 		}
 		result = append(result, SessionSnapshot{
-			ID:        s.ID,
-			Title:     s.Title,
-			Directory: s.Directory,
-			CreatedAt: time.UnixMilli(int64(s.Time.Created)),
-			UpdatedAt: time.UnixMilli(int64(s.Time.Updated)),
+			ID:              s.ID,
+			Title:           s.Title,
+			Directory:       s.Directory,
+			RevertMessageID: s.Revert.MessageID,
+			CreatedAt:       time.UnixMilli(int64(s.Time.Created)),
+			UpdatedAt:       time.UnixMilli(int64(s.Time.Updated)),
 		})
 	}
 	return result, nil

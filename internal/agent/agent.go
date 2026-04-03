@@ -51,6 +51,7 @@ const (
 	EventPermission    EventType = "permission" // Agent requests permission for a tool
 	EventError         EventType = "error"      // Error occurred
 	EventTitleChange   EventType = "title"      // Session title updated
+	EventRevertChange  EventType = "revert"     // Session revert state changed
 	EventSessionCreate EventType = "session.create"
 	EventSessionDelete EventType = "session.delete"
 
@@ -129,6 +130,12 @@ func (e *Event) UnmarshalJSON(b []byte) error {
 		var d TitleChangeData
 		if err := json.Unmarshal(raw.Data, &d); err != nil {
 			return fmt.Errorf("unmarshal TitleChangeData: %w", err)
+		}
+		e.Data = d
+	case EventRevertChange:
+		var d RevertChangeData
+		if err := json.Unmarshal(raw.Data, &d); err != nil {
+			return fmt.Errorf("unmarshal RevertChangeData: %w", err)
 		}
 		e.Data = d
 	case EventVoiceTranscript:
@@ -234,6 +241,11 @@ type TitleChangeData struct {
 	Title string `json:"title"`
 }
 
+// RevertChangeData is the payload for EventRevertChange.
+type RevertChangeData struct {
+	MessageID string `json:"message_id"` // The message ID from which onward is reverted; empty means unrevert
+}
+
 // VoiceTranscriptData is the payload for EventVoiceTranscript.
 type VoiceTranscriptData struct {
 	Text string `json:"text"`           // Incremental or final transcript text
@@ -302,22 +314,23 @@ func (r StartRequest) Validate() error {
 
 // SessionInfo is a snapshot of a managed session, returned by the daemon API.
 type SessionInfo struct {
-	ID          string            `json:"id"`
-	ExternalID  string            `json:"external_id,omitempty"` // Backend's native session ID (e.g. OpenCode session ID)
-	Backend     BackendType       `json:"backend"`
-	Status      SessionStatus     `json:"status"`
-	Visibility  SessionVisibility `json:"visibility,omitempty"` // User-set: "", "done", or "archived"
-	FollowUp    bool              `json:"follow_up,omitempty"`  // User-set flag to mark session for follow-up
-	ProjectDir  string            `json:"project_dir"`
-	ProjectName string            `json:"project_name"`
-	Prompt      string            `json:"prompt"`
-	Title       string            `json:"title,omitempty"` // AI-generated session title from OpenCode
-	TicketID    string            `json:"ticket_id,omitempty"`
-	Agent       string            `json:"agent,omitempty"` // Current OpenCode agent (e.g. "build", "plan")
-	Draft       string            `json:"draft,omitempty"` // Unsent follow-up text the user was composing
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
-	LastReadAt  time.Time         `json:"last_read_at,omitempty"`
+	ID              string            `json:"id"`
+	ExternalID      string            `json:"external_id,omitempty"` // Backend's native session ID (e.g. OpenCode session ID)
+	Backend         BackendType       `json:"backend"`
+	Status          SessionStatus     `json:"status"`
+	Visibility      SessionVisibility `json:"visibility,omitempty"` // User-set: "", "done", or "archived"
+	FollowUp        bool              `json:"follow_up,omitempty"`  // User-set flag to mark session for follow-up
+	ProjectDir      string            `json:"project_dir"`
+	ProjectName     string            `json:"project_name"`
+	Prompt          string            `json:"prompt"`
+	Title           string            `json:"title,omitempty"` // AI-generated session title from OpenCode
+	TicketID        string            `json:"ticket_id,omitempty"`
+	Agent           string            `json:"agent,omitempty"`             // Current OpenCode agent (e.g. "build", "plan")
+	Draft           string            `json:"draft,omitempty"`             // Unsent follow-up text the user was composing
+	RevertMessageID string            `json:"revert_message_id,omitempty"` // When set, messages from this ID onward are reverted (hidden)
+	CreatedAt       time.Time         `json:"created_at"`
+	UpdatedAt       time.Time         `json:"updated_at"`
+	LastReadAt      time.Time         `json:"last_read_at,omitempty"`
 }
 
 // ProjectInfo is a lightweight project summary from the OpenCode API.
@@ -329,11 +342,12 @@ type ProjectInfo struct {
 // SessionSnapshot is a lightweight session summary from the OpenCode API,
 // used during discovery to populate the daemon's session list.
 type SessionSnapshot struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
-	Directory string    `json:"directory"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID              string    `json:"id"`
+	Title           string    `json:"title"`
+	Directory       string    `json:"directory"`
+	RevertMessageID string    `json:"revert_message_id,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // Unread returns true if the session has activity the user hasn't seen.

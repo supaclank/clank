@@ -523,7 +523,8 @@ func (m *InboxModel) toggleFollowUp(sessionID string) tea.Cmd {
 }
 
 // sessionSortPriority returns a numeric priority for sorting within a day group.
-// Active/attention-needing sessions float to the top; done/archived sink to the bottom.
+// Busy/starting sessions float to the top; done/archived sink to the bottom.
+// Everything else (idle, error, unread, dead, …) sorts equally by UpdatedAt.
 func sessionSortPriority(s *agent.SessionInfo) int {
 	switch {
 	// Done/archived always sink to the bottom regardless of status.
@@ -533,19 +534,15 @@ func sessionSortPriority(s *agent.SessionInfo) int {
 		return 7
 	case s.Status == agent.StatusBusy || s.Status == agent.StatusStarting:
 		return 0
-	case s.Unread():
-		return 1
-	case s.Status == agent.StatusError:
-		return 3
 	default:
-		return 5 // idle, dead, etc.
+		return 5 // idle, error, unread, dead, etc.
 	}
 }
 
 // buildGroups organises sessions into date-based groups (Today, Yesterday, …).
 // Within each day, sessions are sorted by status priority then by UpdatedAt
-// descending so active/attention-needing sessions appear first and
-// done sessions sink to the bottom.
+// descending so busy/starting sessions appear first and done sessions sink
+// to the bottom. Error and unread status do not affect ordering.
 //
 // Archived sessions are stored in each group's archivedRows and hidden
 // behind a per-group accordion toggle. When a group's accordion is

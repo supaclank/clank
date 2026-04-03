@@ -541,6 +541,8 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 			return m, nil
 		}
+		// Store the revert state so handleSessionMessages can filter messages.
+		m.info.RevertMessageID = msg.messageID
 		// Reload the message history and prefill the prompt with the
 		// reverted user message so the user can edit and resend.
 		m.err = nil
@@ -732,6 +734,11 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				if len(m.agents) > 0 {
 					agentName = m.agents[m.selectedAgent].Name
 				}
+				// Clear revert state — the user is sending a new message,
+				// so any previously reverted messages should reappear.
+				if m.info != nil {
+					m.info.RevertMessageID = ""
+				}
 				m.entries = append(m.entries, displayEntry{
 					kind:    entryUser,
 					content: text,
@@ -853,7 +860,7 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.cursorMoved = true
 	case key.Matches(msg, key.NewBinding(key.WithKeys("a"))):
 		// TODO: approve session
-	case key.Matches(msg, key.NewBinding(key.WithKeys("enter", ":"))):
+	case key.Matches(msg, key.NewBinding(key.WithKeys(":"))):
 		// Open action menu for the selected entry.
 		if m.cursor >= 0 && m.cursor < len(m.entries) {
 			entry := m.entries[m.cursor]
@@ -982,6 +989,13 @@ func (m *SessionViewModel) handleEvent(evt agent.Event) {
 				m.info.Title = data.Title
 			}
 		}
+
+	case agent.EventRevertChange:
+		if data, ok := evt.Data.(agent.RevertChangeData); ok {
+			if m.info != nil {
+				m.info.RevertMessageID = data.MessageID
+			}
+		}
 	}
 }
 
@@ -1026,9 +1040,18 @@ func (m *SessionViewModel) handleStatusChange(data agent.StatusChangeData) {
 
 func (m *SessionViewModel) handleMessage(data agent.MessageData) {
 	if data.Role == "user" {
-		// Skip user messages from SSE — the initial prompt is already
-		// added from sessionInfoMsg. Follow-up messages are added inline
-		// when the user sends them via the input box.
+		// Backfill messageID on the most recent user entry that lacks one.
+		// Inline user entries (added when the user sends a message) are
+		// created before the server assigns an ID. The SSE event carries
+		// the server-assigned ID so we can enable actions (e.g. revert).
+		if data.ID != "" {
+			for i := len(m.entries) - 1; i >= 0; i-- {
+				if m.entries[i].kind == entryUser && m.entries[i].messageID == "" {
+					m.entries[i].messageID = data.ID
+					break
+				}
+			}
+		}
 		return
 	}
 	// After history is loaded, skip SSE message events entirely —
@@ -1059,11 +1082,24 @@ func (m *SessionViewModel) handleMessage(data agent.MessageData) {
 // handleSessionMessages processes the full message history response.
 // It replaces any existing entries with the complete history and builds
 // the seenParts set for deduplication with subsequent SSE events.
+// When a revert is active (m.info.RevertMessageID is set), messages from
+// the revert target onward are excluded from the display.
 func (m *SessionViewModel) handleSessionMessages(messages []agent.MessageData) {
 	m.seenParts = make(map[string]bool)
 	m.entries = nil
 
+	revertID := ""
+	if m.info != nil {
+		revertID = m.info.RevertMessageID
+	}
+
 	for _, msg := range messages {
+		// If this message is the revert target, stop — exclude it and
+		// everything after it.
+		if revertID != "" && msg.ID == revertID {
+			break
+		}
+
 		if msg.Role == "user" {
 			// Reconstruct user message content from text parts.
 			var text string
@@ -1684,8 +1720,9 @@ func (m *SessionViewModel) handleMenuAction(action string) tea.Cmd {
 
 // revertResultMsg carries the result of a revert operation back to the TUI.
 type revertResultMsg struct {
-	prompt string // the user message content to prefill in the prompt
-	err    error
+	messageID string // the target message ID that was reverted to
+	prompt    string // the user message content to prefill in the prompt
+	err       error
 }
 
 func (m *SessionViewModel) revertSession(messageID string) tea.Cmd {
@@ -1698,7 +1735,7 @@ func (m *SessionViewModel) revertSession(messageID string) tea.Cmd {
 		if err := client.RevertSession(ctx, sessionID, messageID); err != nil {
 			return revertResultMsg{err: err}
 		}
-		return revertResultMsg{prompt: prompt}
+		return revertResultMsg{messageID: messageID, prompt: prompt}
 	}
 }
 
@@ -2152,7 +2189,7 @@ func (m *SessionViewModel) buildHelpText() string {
 	if m.standalone {
 		qLabel = "q: quit"
 	}
-	parts := []string{"m: message", "enter: actions", "v: verbose", "c: copy", "f: follow-up", "d: done", "x: archive", "drag: copy", qLabel}
+	parts := []string{"m: message", ":: actions", "v: verbose", "c: copy", "f: follow-up", "d: done", "x: archive", "drag: copy", qLabel}
 	if m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting) {
 		parts = append([]string{"ctrl+c: cancel"}, parts...)
 	}

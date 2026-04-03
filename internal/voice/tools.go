@@ -57,17 +57,7 @@ func listSessionsTool(tp ToolProvider) *tools.Tool {
 			if len(sessions) == 0 {
 				return "No sessions found.", nil
 			}
-			// Show only the 10 most recent sessions to limit token usage.
-			const maxSessions = 10
-			truncated := false
-			if len(sessions) > maxSessions {
-				sessions = sessions[len(sessions)-maxSessions:]
-				truncated = true
-			}
 			var b strings.Builder
-			if truncated {
-				fmt.Fprintf(&b, "(showing last %d sessions)\n", maxSessions)
-			}
 			for _, s := range sessions {
 				unread := ""
 				if s.Unread() {

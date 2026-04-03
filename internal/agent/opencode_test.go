@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1025,5 +1026,81 @@ func TestAgentFieldThreadedInSendMessage(t *testing.T) {
 	prompts := mock.getPrompts()
 	if len(prompts) != 2 {
 		t.Errorf("expected 2 prompts (initial + follow-up), got %d", len(prompts))
+	}
+}
+
+// TestOpenCodeBackendSSELargePayload verifies that SSE events with payloads
+// exceeding the old bufio.Scanner 1MB limit are parsed correctly. This is a
+// regression test for the "bufio.Scanner: token too long" error that occurred
+// when opening older sessions with long conversation histories.
+func TestOpenCodeBackendSSELargePayload(t *testing.T) {
+	t.Parallel()
+
+	mock := newMockOpenCodeServer()
+	defer mock.Close()
+
+	// 2MB text payload — well above the old 1MB scanner limit.
+	largeText := strings.Repeat("x", 2*1024*1024)
+
+	sseReady := make(chan string, 1)
+	mock.setSSEHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		flusher.Flush()
+
+		var sessionID string
+		select {
+		case sessionID = <-sseReady:
+		case <-r.Context().Done():
+			return
+		}
+
+		writeSSEEvent(w, flusher, "message.part.updated", map[string]interface{}{
+			"part": map[string]interface{}{
+				"id": "part-large", "type": "text", "text": largeText,
+				"sessionID": sessionID, "messageID": "msg-1",
+			},
+		})
+
+		<-r.Context().Done()
+	})
+
+	b := agent.NewOpenCodeBackend(mock.URL(), "")
+	defer b.Stop()
+
+	err := b.Start(context.Background(), agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	sseReady <- b.SessionID()
+
+	// Expect: status change (idle->busy) + the large part update.
+	events := collectEvents(b.Events(), 2, 5*time.Second)
+
+	var partEvents []agent.Event
+	for _, evt := range events {
+		if evt.Type == agent.EventPartUpdate {
+			partEvents = append(partEvents, evt)
+		}
+	}
+	if len(partEvents) != 1 {
+		var types []string
+		for _, e := range events {
+			types = append(types, string(e.Type))
+		}
+		t.Fatalf("expected 1 part event, got %d (all events: %v)", len(partEvents), types)
+	}
+
+	p := partEvents[0].Data.(agent.PartUpdateData)
+	if p.Part.Type != agent.PartText {
+		t.Errorf("part type = %s, want text", p.Part.Type)
+	}
+	if len(p.Part.Text) != 2*1024*1024 {
+		t.Errorf("part text length = %d, want %d", len(p.Part.Text), 2*1024*1024)
 	}
 }

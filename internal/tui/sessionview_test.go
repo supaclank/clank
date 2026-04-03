@@ -1418,9 +1418,9 @@ func TestRenderTodoList_EmptyTodos(t *testing.T) {
 	}
 }
 
-func TestEnterOpensActionMenu_OnUserMessage(t *testing.T) {
+func TestColonOpensActionMenu_OnUserMessage(t *testing.T) {
 	t.Parallel()
-	enter := tea.KeyPressMsg{Code: tea.KeyEnter}
+	colon := tea.KeyPressMsg{Code: ':'}
 
 	t.Run("opens menu on user entry with messageID", func(t *testing.T) {
 		t.Parallel()
@@ -1431,10 +1431,10 @@ func TestEnterOpensActionMenu_OnUserMessage(t *testing.T) {
 		m := newTestSessionModel(entries)
 		m.cursor = 0
 
-		_, _ = m.handleKey(enter)
+		_, _ = m.handleKey(colon)
 
 		if !m.showMenu {
-			t.Fatal("expected showMenu=true after Enter on user message")
+			t.Fatal("expected showMenu=true after ':' on user message")
 		}
 		if m.menuMessageID != "msg-123" {
 			t.Errorf("menuMessageID = %q, want %q", m.menuMessageID, "msg-123")
@@ -1447,14 +1447,14 @@ func TestEnterOpensActionMenu_OnUserMessage(t *testing.T) {
 	t.Run("does not open menu on user entry without messageID", func(t *testing.T) {
 		t.Parallel()
 		// User entries added inline (follow-up) don't have messageIDs
-		// until history is reloaded. Enter should be a no-op.
+		// until history is reloaded. Colon should be a no-op.
 		entries := []displayEntry{
 			{kind: entryUser, content: "follow-up"},
 		}
 		m := newTestSessionModel(entries)
 		m.cursor = 0
 
-		_, _ = m.handleKey(enter)
+		_, _ = m.handleKey(colon)
 
 		if m.showMenu {
 			t.Error("expected showMenu=false for user entry without messageID")
@@ -1470,14 +1470,14 @@ func TestEnterOpensActionMenu_OnUserMessage(t *testing.T) {
 		m := newTestSessionModel(entries)
 		m.cursor = 1 // on the agent text entry
 
-		_, _ = m.handleKey(enter)
+		_, _ = m.handleKey(colon)
 
 		if m.showMenu {
 			t.Error("expected showMenu=false for non-user entry")
 		}
 	})
 
-	t.Run("colon also opens menu", func(t *testing.T) {
+	t.Run("enter does not open menu (no regression)", func(t *testing.T) {
 		t.Parallel()
 		entries := []displayEntry{
 			{kind: entryUser, content: "prompt", messageID: "msg-42"},
@@ -1485,11 +1485,11 @@ func TestEnterOpensActionMenu_OnUserMessage(t *testing.T) {
 		m := newTestSessionModel(entries)
 		m.cursor = 0
 
-		colon := tea.KeyPressMsg{Code: ':'}
-		_, _ = m.handleKey(colon)
+		enter := tea.KeyPressMsg{Code: tea.KeyEnter}
+		_, _ = m.handleKey(enter)
 
-		if !m.showMenu {
-			t.Fatal("expected showMenu=true after ':' on user message")
+		if m.showMenu {
+			t.Error("expected showMenu=false — Enter should not open action menu")
 		}
 	})
 }
@@ -1572,7 +1572,116 @@ func TestBuildHelpText_ShowsActionsHint(t *testing.T) {
 	m.info = &agent.SessionInfo{Status: agent.StatusIdle}
 
 	help := m.buildHelpText()
-	if !strings.Contains(help, "enter: actions") {
-		t.Errorf("expected help to contain 'enter: actions', got: %s", help)
+	if !strings.Contains(help, ":: actions") {
+		t.Errorf("expected help to contain ':: actions', got: %s", help)
+	}
+}
+
+func TestHandleMessage_BackfillsUserMessageID(t *testing.T) {
+	t.Parallel()
+
+	t.Run("backfills messageID on most recent user entry without one", func(t *testing.T) {
+		t.Parallel()
+		// Simulate: user sent a message (inline entry, no messageID),
+		// then SSE delivers the user message event with the server-assigned ID.
+		entries := []displayEntry{
+			{kind: entryUser, content: "first", messageID: "msg-1"},
+			{kind: entryText, content: "response"},
+			{kind: entryUser, content: "second"}, // no messageID yet
+		}
+		m := newTestSessionModel(entries)
+
+		m.handleMessage(agent.MessageData{
+			ID:   "msg-2",
+			Role: "user",
+		})
+
+		if m.entries[2].messageID != "msg-2" {
+			t.Errorf("entries[2].messageID = %q, want %q", m.entries[2].messageID, "msg-2")
+		}
+		// Ensure earlier entry was not modified.
+		if m.entries[0].messageID != "msg-1" {
+			t.Errorf("entries[0].messageID = %q, want %q (should be unchanged)", m.entries[0].messageID, "msg-1")
+		}
+	})
+
+	t.Run("no-op when all user entries already have messageID", func(t *testing.T) {
+		t.Parallel()
+		entries := []displayEntry{
+			{kind: entryUser, content: "first", messageID: "msg-1"},
+		}
+		m := newTestSessionModel(entries)
+
+		m.handleMessage(agent.MessageData{
+			ID:   "msg-dup",
+			Role: "user",
+		})
+
+		// Should not overwrite existing messageID.
+		if m.entries[0].messageID != "msg-1" {
+			t.Errorf("entries[0].messageID = %q, want %q", m.entries[0].messageID, "msg-1")
+		}
+	})
+
+	t.Run("no-op when SSE user message has no ID", func(t *testing.T) {
+		t.Parallel()
+		entries := []displayEntry{
+			{kind: entryUser, content: "pending"},
+		}
+		m := newTestSessionModel(entries)
+
+		m.handleMessage(agent.MessageData{
+			Role: "user",
+		})
+
+		if m.entries[0].messageID != "" {
+			t.Errorf("entries[0].messageID = %q, want empty", m.entries[0].messageID)
+		}
+	})
+}
+
+func TestHandleSessionMessages_ReplacesEntries(t *testing.T) {
+	t.Parallel()
+
+	// Simulate a session with 3 messages, then revert to the first user
+	// message. After handleSessionMessages with the post-revert data,
+	// entries should reflect only the first user message.
+	entries := []displayEntry{
+		{kind: entryUser, content: "first prompt", messageID: "msg-1"},
+		{kind: entryText, content: "agent response"},
+		{kind: entryUser, content: "follow-up", messageID: "msg-2"},
+		{kind: entryText, content: "second response"},
+	}
+	m := newTestSessionModel(entries)
+	m.historyLoaded = true
+
+	if len(m.entries) != 4 {
+		t.Fatalf("pre-condition: expected 4 entries, got %d", len(m.entries))
+	}
+
+	// Simulate post-revert message list: only the first user message remains.
+	postRevertMessages := []agent.MessageData{
+		{
+			ID:   "msg-1",
+			Role: "user",
+			Parts: []agent.Part{
+				{Type: agent.PartText, Text: "first prompt"},
+			},
+		},
+	}
+
+	m.handleSessionMessages(postRevertMessages)
+
+	if len(m.entries) != 1 {
+		t.Fatalf("expected 1 entry after revert, got %d", len(m.entries))
+	}
+	if m.entries[0].kind != entryUser {
+		t.Errorf("entries[0].kind = %d, want entryUser", m.entries[0].kind)
+	}
+	if m.entries[0].messageID != "msg-1" {
+		t.Errorf("entries[0].messageID = %q, want %q", m.entries[0].messageID, "msg-1")
+	}
+	if m.entries[0].content != "first prompt" {
+		t.Errorf("entries[0].content = %q, want %q", m.entries[0].content, "first prompt")
 	}
 }

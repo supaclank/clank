@@ -269,15 +269,19 @@ func (c *Client) SubscribeEvents(ctx context.Context) (<-chan agent.Event, error
 }
 
 // parseSSEStream reads SSE events from the reader and sends them to the channel.
+// Uses bufio.Reader instead of bufio.Scanner to avoid a hard upper limit on
+// line length — Scanner fails permanently with "token too long" on large
+// payloads (common with session snapshots for long conversations).
 func parseSSEStream(r io.Reader, ch chan<- agent.Event) {
-	scanner := bufio.NewScanner(r)
+	reader := bufio.NewReader(r)
 	var eventType string
 	var dataLines []string
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	for {
+		line, err := reader.ReadBytes('\n')
+		lineStr := strings.TrimRight(string(line), "\r\n")
 
-		if line == "" {
+		if lineStr == "" && err == nil {
 			// Empty line = end of event.
 			if eventType != "" && len(dataLines) > 0 {
 				data := strings.Join(dataLines, "\n")
@@ -294,10 +298,35 @@ func parseSSEStream(r io.Reader, ch chan<- agent.Event) {
 			continue
 		}
 
-		if strings.HasPrefix(line, "event: ") {
-			eventType = strings.TrimPrefix(line, "event: ")
-		} else if strings.HasPrefix(line, "data: ") {
-			dataLines = append(dataLines, strings.TrimPrefix(line, "data: "))
+		if lineStr != "" {
+			if strings.HasPrefix(lineStr, "event: ") {
+				eventType = strings.TrimPrefix(lineStr, "event: ")
+			} else if strings.HasPrefix(lineStr, "data: ") {
+				dataLines = append(dataLines, strings.TrimPrefix(lineStr, "data: "))
+			}
+		}
+
+		if err != nil {
+			// Dispatch any buffered event before exiting.
+			if eventType != "" && len(dataLines) > 0 {
+				data := strings.Join(dataLines, "\n")
+				if eventType != "connected" {
+					var evt agent.Event
+					if err := json.Unmarshal([]byte(data), &evt); err == nil {
+						ch <- evt
+					}
+				}
+			}
+			if err != io.EOF {
+				// Report the error so the TUI can display it instead
+				// of silently losing the event stream.
+				ch <- agent.Event{
+					Type:      agent.EventError,
+					Timestamp: time.Now(),
+					Data:      agent.ErrorData{Message: "SSE stream: " + err.Error()},
+				}
+			}
+			return
 		}
 	}
 }
