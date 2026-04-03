@@ -166,6 +166,18 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, inboxCmd
 	}
 
+	// Always keep the refresh timer ticking, regardless of screen state.
+	// Same rationale as the spinner tick chain above: the timer is
+	// self-sustaining (each handler schedules the next tick). Letting it
+	// fall through to the session view delegation would swallow it and
+	// permanently kill the refresh loop.
+	if _, ok := msg.(inboxRefreshMsg); ok {
+		if m.screen == screenInbox {
+			return m, tea.Batch(m.loadDataCmd(), m.autoRefreshCmd())
+		}
+		return m, m.autoRefreshCmd()
+	}
+
 	// If we're in session detail view (or composing), delegate.
 	if m.screen == screenSession && m.sessionView != nil {
 		return m.updateSessionView(msg)
@@ -196,12 +208,6 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case inboxRefreshMsg:
-		if m.screen == screenInbox {
-			return m, tea.Batch(m.loadDataCmd(), m.autoRefreshCmd())
-		}
-		return m, m.autoRefreshCmd()
-
 	case tea.KeyPressMsg:
 		return m.handleInboxKey(msg)
 	}
@@ -225,8 +231,9 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.screen = screenInbox
 		m.sessionView = nil
 		m.activeConnID = ""
-		// Refresh data and restart spinner when returning.
-		return m, tea.Batch(m.loadDataCmd(), m.spinner.Tick)
+		// Refresh data, restart spinner, and ensure the auto-refresh
+		// timer is running (safety net in case it was lost).
+		return m, tea.Batch(m.loadDataCmd(), m.autoRefreshCmd(), m.spinner.Tick)
 
 	case tea.WindowSizeMsg:
 		// Forward to both.
@@ -912,7 +919,7 @@ func (m *InboxModel) styledAgentStatus(status agent.SessionStatus) string {
 	case agent.StatusError:
 		return lipgloss.NewStyle().Foreground(dangerColor).Render("✗")
 	case agent.StatusDead:
-		return lipgloss.NewStyle().Foreground(mutedColor).Render("✗")
+		return lipgloss.NewStyle().Foreground(mutedColor).Render("·")
 	default:
 		return lipgloss.NewStyle().Foreground(dimColor).Render("·")
 	}

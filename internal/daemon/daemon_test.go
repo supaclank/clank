@@ -2943,6 +2943,214 @@ func TestPersistence_DeleteSurvivesRestart(t *testing.T) {
 	}
 }
 
+// TestPersistence_StaleBusyStatusNormalizedOnRestart verifies that sessions
+// persisted with a busy or starting status are normalized to idle when the
+// daemon restarts. Without this fix, the inbox shows an infinite spinner for
+// sessions that were interrupted by a daemon restart.
+func TestPersistence_StaleBusyStatusNormalizedOnRestart(t *testing.T) {
+	t.Parallel()
+
+	dir := shortTempDir(t)
+
+	// Phase 1: create a session and leave it in a busy state.
+	d1, client1, sockPath, pidPath, dbPath, cleanup1 := testDaemonWithStore(t, dir)
+	_ = d1
+	ctx := context.Background()
+
+	info, err := client1.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/stale-proj",
+		Prompt:     "do something",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+
+	// Verify the session is busy (mockBackend transitions to busy on Start).
+	session, err := client1.GetSession(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if session.Status != agent.StatusBusy {
+		t.Fatalf("expected status=busy before shutdown, got %s", session.Status)
+	}
+
+	// Kill daemon without letting the backend transition to idle.
+	cleanup1()
+
+	// Phase 2: restart daemon — the session should be normalized to idle.
+	os.Remove(sockPath)
+	os.Remove(pidPath)
+
+	st2, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	d2 := daemon.NewWithPaths(sockPath, pidPath)
+	d2.Store = st2
+	mgr2 := newMockBackendManager()
+	d2.BackendManagers[agent.BackendOpenCode] = mgr2
+	d2.BackendManagers[agent.BackendClaudeCode] = mgr2
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d2.Run() }()
+
+	client2 := daemon.NewClient(sockPath)
+	waitForDaemon(t, client2)
+
+	defer func() {
+		d2.Stop()
+		select {
+		case <-errCh:
+		case <-time.After(5 * time.Second):
+			t.Error("daemon did not stop in time")
+		}
+		st2.Close()
+	}()
+
+	sessions, err := client2.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session after restart, got %d", len(sessions))
+	}
+	if sessions[0].Status != agent.StatusIdle {
+		t.Errorf("expected status=idle after restart, got %s (stale busy status was not normalized)", sessions[0].Status)
+	}
+}
+
+// TestDiscoverSessions_NormalizesStaleStatusOnRediscover verifies that
+// rediscovery normalizes stale busy/starting statuses for backend-less
+// sessions.
+func TestDiscoverSessions_NormalizesStaleStatusOnRediscover(t *testing.T) {
+	t.Parallel()
+
+	dir := shortTempDir(t)
+	now := time.Now()
+
+	snapshots := []agent.SessionSnapshot{
+		{
+			ID:        "ext-stale-1",
+			Title:     "Stale session",
+			Directory: "/tmp/stale-project",
+			CreatedAt: now.Add(-1 * time.Hour),
+			UpdatedAt: now,
+		},
+	}
+
+	// Phase 1: create daemon with store, discover session, then
+	// manually corrupt the status by writing busy to the DB.
+	sockPath := filepath.Join(dir, "test.sock")
+	pidPath := filepath.Join(dir, "test.pid")
+	dbPath := filepath.Join(dir, "test.db")
+
+	st1, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+
+	d1 := daemon.NewWithPaths(sockPath, pidPath)
+	d1.Store = st1
+	discMgr1 := &mockDiscovererManager{snapshots: snapshots}
+	d1.BackendManagers[agent.BackendOpenCode] = discMgr1
+	d1.BackendManagers[agent.BackendClaudeCode] = &discMgr1.mockBackendManager
+
+	errCh1 := make(chan error, 1)
+	go func() { errCh1 <- d1.Run() }()
+	client1 := daemon.NewClient(sockPath)
+	waitForDaemon(t, client1)
+
+	ctx := context.Background()
+	if err := client1.DiscoverSessions(ctx, "/tmp/stale-project"); err != nil {
+		t.Fatalf("DiscoverSessions: %v", err)
+	}
+
+	sessions1, err := client1.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions1) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions1))
+	}
+	if sessions1[0].Status != agent.StatusIdle {
+		t.Fatalf("expected idle after discover, got %s", sessions1[0].Status)
+	}
+
+	// Corrupt the persisted status to simulate a stale busy state
+	// (as if the daemon had been killed while the session was active).
+	corruptedInfo := sessions1[0]
+	corruptedInfo.Status = agent.StatusBusy
+	if err := st1.UpsertSession(corruptedInfo); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+
+	d1.Stop()
+	<-errCh1
+	st1.Close()
+
+	// Phase 2: restart and re-discover. The stale busy status
+	// should be normalized to idle.
+	os.Remove(sockPath)
+	os.Remove(pidPath)
+
+	st2, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+
+	d2 := daemon.NewWithPaths(sockPath, pidPath)
+	d2.Store = st2
+	discMgr2 := &mockDiscovererManager{snapshots: snapshots}
+	d2.BackendManagers[agent.BackendOpenCode] = discMgr2
+	d2.BackendManagers[agent.BackendClaudeCode] = &discMgr2.mockBackendManager
+
+	errCh2 := make(chan error, 1)
+	go func() { errCh2 <- d2.Run() }()
+	client2 := daemon.NewClient(sockPath)
+	waitForDaemon(t, client2)
+
+	defer func() {
+		d2.Stop()
+		select {
+		case <-errCh2:
+		case <-time.After(5 * time.Second):
+			t.Error("daemon did not stop in time")
+		}
+		st2.Close()
+	}()
+
+	// After restart, the session loaded from DB should already be idle
+	// (normalized on load).
+	sessions2, err := client2.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions (after restart): %v", err)
+	}
+	if len(sessions2) != 1 {
+		t.Fatalf("expected 1 session after restart, got %d", len(sessions2))
+	}
+	if sessions2[0].Status != agent.StatusIdle {
+		t.Errorf("expected status=idle after restart, got %s", sessions2[0].Status)
+	}
+
+	// Re-discover — should also not revert to stale status.
+	if err := client2.DiscoverSessions(ctx, "/tmp/stale-project"); err != nil {
+		t.Fatalf("DiscoverSessions (phase 2): %v", err)
+	}
+
+	sessions3, err := client2.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions (after re-discover): %v", err)
+	}
+	if len(sessions3) != 1 {
+		t.Fatalf("expected 1 session after re-discover, got %d", len(sessions3))
+	}
+	if sessions3[0].Status != agent.StatusIdle {
+		t.Errorf("expected status=idle after re-discover, got %s (rediscovery did not normalize stale status)", sessions3[0].Status)
+	}
+}
+
 func TestPersistence_NilStoreDoesNotPanic(t *testing.T) {
 	t.Parallel()
 

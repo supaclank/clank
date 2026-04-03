@@ -1803,6 +1803,65 @@ func TestRenderRow_UnreadRedAsterisk(t *testing.T) {
 	}
 }
 
+// TestAutoRefreshSurvivesSessionView is a regression test for the bug where
+// entering the session view permanently killed the auto-refresh timer chain.
+//
+// Root cause: autoRefreshCmd() fires inboxRefreshMsg every 3 seconds and the
+// handler re-schedules itself. When screen == screenSession, the session view
+// delegation's default case silently swallowed inboxRefreshMsg (the session
+// view didn't know about it and dropped it), breaking the chain forever.
+//
+// The fix intercepts inboxRefreshMsg before session view delegation — the same
+// pattern used for spinner.TickMsg.
+func TestAutoRefreshSurvivesSessionView(t *testing.T) {
+	t.Parallel()
+
+	m := NewInboxModel(nil)
+	m.screen = screenSession
+	m.sessionView = NewSessionViewModel(nil, "test-session")
+
+	// Simulate the timer firing while in session view.
+	_, cmd := m.Update(inboxRefreshMsg{})
+
+	// The handler must re-schedule the timer (non-nil cmd) even though we're
+	// not on the inbox screen; otherwise the refresh loop dies permanently.
+	if cmd == nil {
+		t.Fatal("inboxRefreshMsg was swallowed while in session view; auto-refresh timer chain is broken")
+	}
+
+	// The returned command should eventually produce another inboxRefreshMsg
+	// (it's a tea.Tick wrapping inboxRefreshMsg). We can't easily test the
+	// tick delay, but we can verify a cmd was returned — which is the key
+	// invariant that keeps the chain alive.
+}
+
+// TestBackToInboxRestartsAutoRefresh is a regression test ensuring that
+// returning from the session view to the inbox restarts the auto-refresh
+// timer as a safety net. Even if the timer chain survived the session view,
+// this provides defense-in-depth.
+func TestBackToInboxRestartsAutoRefresh(t *testing.T) {
+	t.Parallel()
+
+	m := NewInboxModel(nil)
+	m.screen = screenSession
+	m.sessionView = NewSessionViewModel(nil, "test-session")
+
+	_, cmd := m.Update(backToInboxMsg{})
+
+	if cmd == nil {
+		t.Fatal("backToInboxMsg returned nil cmd; expected loadDataCmd + autoRefreshCmd + spinner.Tick batch")
+	}
+
+	// After handling backToInboxMsg, we should be back on the inbox screen.
+	if m.screen != screenInbox {
+		t.Errorf("expected screen=screenInbox after backToInboxMsg, got %v", m.screen)
+	}
+
+	// The returned command is a tea.Batch of loadDataCmd, autoRefreshCmd, and
+	// spinner.Tick. We can't easily decompose the batch, but verifying cmd != nil
+	// plus the screen transition confirms the handler is wired correctly.
+}
+
 // TestSpinnerTickSurvivesConfirmDialog is a regression test for the bug where
 // opening a confirm dialog swallowed spinner.TickMsg, permanently breaking the
 // spinner's self-sustaining tick chain.

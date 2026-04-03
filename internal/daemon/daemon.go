@@ -355,6 +355,13 @@ func (d *Daemon) Run() error {
 		} else {
 			d.mu.Lock()
 			for _, info := range sessions {
+				// Sessions loaded from DB have no backend — they can't
+				// be actively busy. Normalize stale statuses to idle so
+				// the inbox doesn't show spinners or dead markers for
+				// sessions interrupted by a daemon restart.
+				if info.Status == agent.StatusBusy || info.Status == agent.StatusStarting || info.Status == agent.StatusDead {
+					info.Status = agent.StatusIdle
+				}
 				d.sessions[info.ID] = &managedSession{info: info, backend: nil}
 			}
 			d.mu.Unlock()
@@ -682,6 +689,11 @@ func (d *Daemon) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 			existingMS.info.ProjectDir = snap.Directory
 			existingMS.info.ProjectName = filepath.Base(snap.Directory)
 			existingMS.info.RevertMessageID = snap.RevertMessageID
+			// Normalize stale statuses for backend-less sessions —
+			// same rationale as the startup normalization.
+			if existingMS.backend == nil && (existingMS.info.Status == agent.StatusBusy || existingMS.info.Status == agent.StatusStarting || existingMS.info.Status == agent.StatusDead) {
+				existingMS.info.Status = agent.StatusIdle
+			}
 			d.persistSession(existingMS)
 			continue
 		}
