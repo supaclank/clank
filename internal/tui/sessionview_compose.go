@@ -137,6 +137,10 @@ func (m *SessionViewModel) handleComposeKey(msg tea.KeyPressMsg) (tea.Model, tea
 
 // launchSession validates the prompt, subscribes to SSE, and creates the session.
 func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
+	if m.submitting {
+		return m, nil // Already in flight — ignore duplicate Enter.
+	}
+
 	prompt := strings.TrimSpace(m.input.Value())
 	if prompt == "" {
 		m.err = fmt.Errorf("prompt is required")
@@ -148,6 +152,7 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 	}
 
 	m.err = nil
+	m.submitting = true
 
 	req := agent.StartRequest{
 		Backend:    m.backend,
@@ -192,6 +197,7 @@ func (m *SessionViewModel) createSessionCmd(req agent.StartRequest) tea.Cmd {
 
 // handleCreateResult transitions from composing mode to the normal session view.
 func (m *SessionViewModel) handleCreateResult(msg sessionCreateResultMsg) (tea.Model, tea.Cmd) {
+	m.submitting = false
 	if msg.err != nil {
 		m.err = msg.err
 		return m, nil

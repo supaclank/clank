@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -230,7 +231,7 @@ func TestOpenCodeBackendStartCreatesSession(t *testing.T) {
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
-	b := agent.NewOpenCodeBackend(mock.URL(), "")
+	b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
 	defer b.Stop()
 
 	ctx := context.Background()
@@ -281,7 +282,7 @@ func TestOpenCodeBackendStartResumesSession(t *testing.T) {
 	mock.sessions["existing-session"] = true
 	mock.mu.Unlock()
 
-	b := agent.NewOpenCodeBackend(mock.URL(), "")
+	b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
 	defer b.Stop()
 
 	ctx := context.Background()
@@ -314,7 +315,7 @@ func TestOpenCodeBackendSendMessage(t *testing.T) {
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
-	b := agent.NewOpenCodeBackend(mock.URL(), "")
+	b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
 	defer b.Stop()
 
 	ctx := context.Background()
@@ -345,7 +346,7 @@ func TestOpenCodeBackendSendMessageBeforeStart(t *testing.T) {
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
-	b := agent.NewOpenCodeBackend(mock.URL(), "")
+	b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
 	defer b.Stop()
 
 	err := b.SendMessage(context.Background(), agent.SendMessageOpts{Text: "hello"})
@@ -358,7 +359,7 @@ func TestOpenCodeBackendAbort(t *testing.T) {
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
-	b := agent.NewOpenCodeBackend(mock.URL(), "")
+	b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
 	defer b.Stop()
 
 	ctx := context.Background()
@@ -389,7 +390,7 @@ func TestOpenCodeBackendAbortBeforeStart(t *testing.T) {
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
-	b := agent.NewOpenCodeBackend(mock.URL(), "")
+	b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
 	defer b.Stop()
 
 	err := b.Abort(context.Background())
@@ -423,7 +424,7 @@ func TestOpenCodeBackendSSESessionIdle(t *testing.T) {
 		<-r.Context().Done()
 	})
 
-	b := agent.NewOpenCodeBackend(mock.URL(), "")
+	b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
@@ -514,7 +515,7 @@ func TestOpenCodeBackendSSEMessagePartUpdated(t *testing.T) {
 		<-r.Context().Done()
 	})
 
-	b := agent.NewOpenCodeBackend(mock.URL(), "")
+	b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
@@ -589,7 +590,7 @@ func TestOpenCodeBackendSSEFiltersOtherSessions(t *testing.T) {
 		<-r.Context().Done()
 	})
 
-	b := agent.NewOpenCodeBackend(mock.URL(), "")
+	b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
@@ -916,7 +917,7 @@ func TestOpenCodeBackendSSEEventTypes(t *testing.T) {
 				<-r.Context().Done()
 			})
 
-			b := agent.NewOpenCodeBackend(mock.URL(), "")
+			b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
 			defer b.Stop()
 
 			err := b.Start(context.Background(), agent.StartRequest{
@@ -1000,7 +1001,7 @@ func TestAgentFieldThreadedInSendMessage(t *testing.T) {
 	// Add a /agent handler to the mock.
 	// Note: mock server is already started, so we just test agent field in prompts.
 
-	b := agent.NewOpenCodeBackend(mock.URL(), "")
+	b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
 	defer b.Stop()
 
 	ctx := context.Background()
@@ -1065,7 +1066,7 @@ func TestOpenCodeBackendSSELargePayload(t *testing.T) {
 		<-r.Context().Done()
 	})
 
-	b := agent.NewOpenCodeBackend(mock.URL(), "")
+	b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
@@ -1102,5 +1103,842 @@ func TestOpenCodeBackendSSELargePayload(t *testing.T) {
 	}
 	if len(p.Part.Text) != 2*1024*1024 {
 		t.Errorf("part text length = %d, want %d", len(p.Part.Text), 2*1024*1024)
+	}
+}
+
+// --- Reconnect Tests ---
+
+// collectEventsOfType collects events matching the given type(s).
+func collectEventsOfType(ch <-chan agent.Event, types []agent.EventType, count int, timeout time.Duration) []agent.Event {
+	typeSet := make(map[agent.EventType]bool, len(types))
+	for _, t := range types {
+		typeSet[t] = true
+	}
+	var events []agent.Event
+	timer := time.After(timeout)
+	for {
+		if len(events) >= count {
+			return events
+		}
+		select {
+		case evt, ok := <-ch:
+			if !ok {
+				return events
+			}
+			if typeSet[evt.Type] {
+				events = append(events, evt)
+			}
+		case <-timer:
+			return events
+		}
+	}
+}
+
+// TestOpenCodeBackendSSEReconnectAfterDrop verifies that when the SSE stream
+// drops (server closes connection), the backend reconnects and continues
+// delivering events.
+func TestOpenCodeBackendSSEReconnectAfterDrop(t *testing.T) {
+	t.Parallel()
+
+	connectionCount := 0
+	var connMu sync.Mutex
+	sseReady := make(chan string, 1)
+
+	mock := newMockOpenCodeServer()
+	defer mock.Close()
+
+	mock.setSSEHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		flusher := w.(http.Flusher)
+		flusher.Flush()
+
+		connMu.Lock()
+		connectionCount++
+		connNum := connectionCount
+		connMu.Unlock()
+
+		var sessionID string
+		select {
+		case sessionID = <-sseReady:
+		case <-r.Context().Done():
+			return
+		}
+
+		if connNum == 1 {
+			// First connection: send one event, then close abruptly.
+			writeSSEEvent(w, flusher, "session.idle", map[string]interface{}{
+				"sessionID": sessionID,
+			})
+			// Return to close connection (simulates server crash).
+			return
+		}
+
+		// Second connection (reconnect): send another event and stay open.
+		writeSSEEvent(w, flusher, "session.idle", map[string]interface{}{
+			"sessionID": sessionID,
+		})
+		<-r.Context().Done()
+	})
+
+	// Use the mock's URL as a static resolver (same server both times).
+	resolver := func(ctx context.Context) (string, error) {
+		return mock.URL(), nil
+	}
+
+	b := agent.NewOpenCodeBackend(mock.URL(), "", resolver)
+	defer b.Stop()
+
+	err := b.Start(context.Background(), agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Feed session ID for both connections.
+	sseReady <- b.SessionID()
+	sseReady <- b.SessionID()
+
+	// We expect:
+	// 1. idle->busy (from Start)
+	// 2. busy->idle (from first SSE idle event)
+	// 3. reconnecting event (SSE dropped)
+	// 4. reconnected event (SSE reconnected)
+	// 5. idle->idle or another idle event from second connection
+	//
+	// Let's collect reconnecting + reconnected events specifically.
+	reconnectEvents := collectEventsOfType(
+		b.Events(),
+		[]agent.EventType{agent.EventReconnecting, agent.EventReconnected},
+		2, // want at least 1 reconnecting + 1 reconnected
+		10*time.Second,
+	)
+
+	var gotReconnecting, gotReconnected bool
+	for _, evt := range reconnectEvents {
+		switch evt.Type {
+		case agent.EventReconnecting:
+			gotReconnecting = true
+			data := evt.Data.(agent.ReconnectingData)
+			if data.GaveUp {
+				t.Error("backend gave up, expected it to reconnect")
+			}
+		case agent.EventReconnected:
+			gotReconnected = true
+		}
+	}
+
+	if !gotReconnecting {
+		t.Error("expected EventReconnecting after SSE drop")
+	}
+	if !gotReconnected {
+		t.Error("expected EventReconnected after successful reconnect")
+	}
+
+	connMu.Lock()
+	finalCount := connectionCount
+	connMu.Unlock()
+	if finalCount < 2 {
+		t.Errorf("expected at least 2 SSE connections (original + reconnect), got %d", finalCount)
+	}
+}
+
+// TestOpenCodeBackendSSEReconnectWithURLChange verifies that when the server
+// restarts on a different port, the backend resolves the new URL and reconnects.
+func TestOpenCodeBackendSSEReconnectWithURLChange(t *testing.T) {
+	t.Parallel()
+
+	// Start first mock server.
+	mock1 := newMockOpenCodeServer()
+	sseReady := make(chan string, 2)
+	mock1.setSSEHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		flusher.Flush()
+
+		select {
+		case <-sseReady:
+		case <-r.Context().Done():
+			return
+		}
+		// Close immediately to simulate crash.
+	})
+
+	// Start second mock server (the "restarted" server on new port).
+	mock2 := newMockOpenCodeServer()
+	mock2.setSSEHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		flusher.Flush()
+
+		var sessionID string
+		select {
+		case sessionID = <-sseReady:
+		case <-r.Context().Done():
+			return
+		}
+
+		writeSSEEvent(w, flusher, "session.idle", map[string]interface{}{
+			"sessionID": sessionID,
+		})
+		<-r.Context().Done()
+	})
+	defer mock2.Close()
+
+	// Resolver: first call returns mock1 URL, after mock1 is closed returns mock2 URL.
+	var resolveCount int
+	var resolveMu sync.Mutex
+	resolver := func(ctx context.Context) (string, error) {
+		resolveMu.Lock()
+		defer resolveMu.Unlock()
+		resolveCount++
+		if resolveCount <= 1 {
+			return mock1.URL(), nil
+		}
+		return mock2.URL(), nil
+	}
+
+	b := agent.NewOpenCodeBackend(mock1.URL(), "", resolver)
+	defer b.Stop()
+
+	err := b.Start(context.Background(), agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Trigger first SSE to read session ID and immediately close.
+	sseReady <- b.SessionID()
+
+	// Close mock1 to make it unreachable for reconnect.
+	mock1.Close()
+
+	// Provide session ID for mock2's SSE handler.
+	sseReady <- b.SessionID()
+
+	// Collect reconnect events.
+	reconnectEvents := collectEventsOfType(
+		b.Events(),
+		[]agent.EventType{agent.EventReconnected},
+		1,
+		15*time.Second,
+	)
+
+	if len(reconnectEvents) == 0 {
+		t.Fatal("expected EventReconnected after server URL change, got none")
+	}
+}
+
+// TestOpenCodeBackendSSEGivesUpAfterMaxRetries verifies the backend emits
+// a final reconnecting event with GaveUp=true after exhausting retries.
+func TestOpenCodeBackendSSEGivesUpAfterMaxRetries(t *testing.T) {
+	t.Parallel()
+
+	// Start a server, then close it immediately.
+	mock := newMockOpenCodeServer()
+	mock.setSSEHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.(http.Flusher).Flush()
+		// Close immediately to trigger reconnect.
+	})
+
+	b := agent.NewOpenCodeBackend(mock.URL(), "", func(ctx context.Context) (string, error) {
+		return mock.URL(), nil
+	})
+	defer b.Stop()
+
+	err := b.Start(context.Background(), agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Close the mock so all reconnect attempts fail.
+	mock.Close()
+
+	// Collect all events until the channel closes (backend gives up).
+	var events []agent.Event
+	timer := time.After(90 * time.Second) // backoff sum is 1+2+4+8+16=31s + overhead
+	for {
+		select {
+		case evt, ok := <-b.Events():
+			if !ok {
+				goto done
+			}
+			events = append(events, evt)
+		case <-timer:
+			goto done
+		}
+	}
+done:
+
+	var gaveUp bool
+	for _, evt := range events {
+		if evt.Type == agent.EventReconnecting {
+			data := evt.Data.(agent.ReconnectingData)
+			if data.GaveUp {
+				gaveUp = true
+			}
+		}
+	}
+
+	if !gaveUp {
+		t.Error("expected backend to give up after max retries (GaveUp=true)")
+	}
+}
+
+// TestOpenCodeBackendMessagesRetryOnConnectionError verifies that Messages()
+// retries once via the resolver when a connection error occurs.
+func TestOpenCodeBackendMessagesRetryOnConnectionError(t *testing.T) {
+	t.Parallel()
+
+	// mock2 is the "restarted" server on a new port. It serves both
+	// the SSE endpoint and the messages endpoint.
+	mock2 := newMockOpenCodeServer()
+	defer mock2.Close()
+	mock2.setSSEHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	})
+
+	// mock1 is the "original" server. Its SSE handler closes immediately
+	// so the backend's streamEvents loop starts reconnecting.
+	mock1 := newMockOpenCodeServer()
+	mock1.setSSEHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	})
+
+	// Resolver: starts returning mock2 after we switch it.
+	var resolveMu sync.Mutex
+	resolvedURL := mock1.URL()
+	resolver := func(ctx context.Context) (string, error) {
+		resolveMu.Lock()
+		defer resolveMu.Unlock()
+		return resolvedURL, nil
+	}
+
+	b := agent.NewOpenCodeBackend(mock1.URL(), "", resolver)
+	defer b.Stop()
+
+	err := b.Start(context.Background(), agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Stop the backend's SSE connection cleanly, then close mock1.
+	// We only care about testing Messages() retry, not SSE reconnect.
+	b.Stop()
+
+	// Now close mock1 so Messages() gets connection refused.
+	mock1.Close()
+
+	// Switch resolver to mock2.
+	resolveMu.Lock()
+	resolvedURL = mock2.URL()
+	resolveMu.Unlock()
+
+	// Create a fresh backend pointing to the dead mock1, with resolver returning mock2.
+	b2 := agent.NewOpenCodeBackend(mock1.URL(), "oc-session-1", resolver)
+	defer b2.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Messages() should fail on mock1 (connection refused), resolve to mock2, retry.
+	// mock2 doesn't have data for this session but should connect successfully.
+	_, err = b2.Messages(ctx)
+	if err != nil && strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("Messages() should have retried with new URL, but got: %v", err)
+	}
+}
+
+// TestServerManagerHealthCheck verifies that the health check correctly
+// distinguishes live vs dead servers.
+func TestServerManagerHealthCheck(t *testing.T) {
+	t.Parallel()
+
+	mgr := agent.NewOpenCodeServerManager()
+
+	// Live server: returns 200 on /global/health.
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer live.Close()
+
+	if !mgr.HealthCheck(live.URL) {
+		t.Error("expected health check to pass for live server")
+	}
+
+	// Dead server: closed.
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	dead.Close() // close immediately
+
+	if mgr.HealthCheck(dead.URL) {
+		t.Error("expected health check to fail for dead server")
+	}
+
+	// Server returning 500: should fail health check.
+	unhealthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer unhealthy.Close()
+
+	if mgr.HealthCheck(unhealthy.URL) {
+		t.Error("expected health check to fail for unhealthy server (500)")
+	}
+}
+
+// --- Reconciler tests ---
+
+// newTestServerManager creates an OpenCodeServerManager with a custom
+// startServerFn that creates httptest servers instead of spawning processes.
+// The returned cleanup function stops all httptest servers.
+func newTestServerManager(t *testing.T) (*agent.OpenCodeServerManager, func()) {
+	t.Helper()
+	mgr := agent.NewOpenCodeServerManager()
+
+	var mu sync.Mutex
+	var servers []*httptest.Server
+
+	mgr.SetStartServerFn(func(ctx context.Context, projectDir string) (*agent.OpenCodeServer, error) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		mu.Lock()
+		servers = append(servers, srv)
+		mu.Unlock()
+		return &agent.OpenCodeServer{
+			URL:        srv.URL,
+			ProjectDir: projectDir,
+			StartedAt:  time.Now(),
+		}, nil
+	})
+
+	cleanup := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, s := range servers {
+			s.Close()
+		}
+	}
+	return mgr, cleanup
+}
+
+// TestReconcilerStartsDesiredServers verifies that the reconciler starts
+// servers for all desired directories on its first tick.
+func TestReconcilerStartsDesiredServers(t *testing.T) {
+	t.Parallel()
+
+	mgr, cleanup := newTestServerManager(t)
+	defer cleanup()
+
+	mgr.AddDesired("/tmp/project-a", "/tmp/project-b")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Run reconciler in background.
+	go mgr.Run(ctx)
+
+	// GetOrStartServer should return quickly since the reconciler starts
+	// servers immediately on Run().
+	urlA, err := mgr.GetOrStartServer(ctx, "/tmp/project-a")
+	if err != nil {
+		t.Fatalf("GetOrStartServer(project-a): %v", err)
+	}
+	if urlA == "" {
+		t.Error("expected non-empty URL for project-a")
+	}
+
+	urlB, err := mgr.GetOrStartServer(ctx, "/tmp/project-b")
+	if err != nil {
+		t.Fatalf("GetOrStartServer(project-b): %v", err)
+	}
+	if urlB == "" {
+		t.Error("expected non-empty URL for project-b")
+	}
+
+	// URLs should be different (different httptest servers).
+	if urlA == urlB {
+		t.Errorf("expected different URLs, got same: %s", urlA)
+	}
+}
+
+// TestReconcilerGetOrStartServerAddsToDesired verifies that calling
+// GetOrStartServer for an unknown dir adds it to the desired set and
+// the reconciler starts a server for it.
+func TestReconcilerGetOrStartServerAddsToDesired(t *testing.T) {
+	t.Parallel()
+
+	mgr, cleanup := newTestServerManager(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go mgr.Run(ctx)
+
+	// Call GetOrStartServer for a dir NOT in the initial desired set.
+	url, err := mgr.GetOrStartServer(ctx, "/tmp/new-project")
+	if err != nil {
+		t.Fatalf("GetOrStartServer: %v", err)
+	}
+	if url == "" {
+		t.Error("expected non-empty URL")
+	}
+
+	// Server should appear in ListServers.
+	servers := mgr.ListServers()
+	if len(servers) != 1 {
+		t.Fatalf("expected 1 server, got %d", len(servers))
+	}
+	if servers[0].ProjectDir != "/tmp/new-project" {
+		t.Errorf("expected project dir /tmp/new-project, got %s", servers[0].ProjectDir)
+	}
+}
+
+// TestReconcilerConcurrentGetOrStartServer verifies that multiple concurrent
+// callers for the same dir coalesce on a single server start.
+func TestReconcilerConcurrentGetOrStartServer(t *testing.T) {
+	t.Parallel()
+
+	var startCount int32
+	mgr := agent.NewOpenCodeServerManager()
+
+	var mu sync.Mutex
+	var servers []*httptest.Server
+
+	mgr.SetStartServerFn(func(ctx context.Context, projectDir string) (*agent.OpenCodeServer, error) {
+		atomic.AddInt32(&startCount, 1)
+		// Simulate slow startup.
+		time.Sleep(50 * time.Millisecond)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		mu.Lock()
+		servers = append(servers, srv)
+		mu.Unlock()
+		return &agent.OpenCodeServer{
+			URL:        srv.URL,
+			ProjectDir: projectDir,
+			StartedAt:  time.Now(),
+		}, nil
+	})
+	defer func() {
+		mu.Lock()
+		for _, s := range servers {
+			s.Close()
+		}
+		mu.Unlock()
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go mgr.Run(ctx)
+
+	// Launch 5 concurrent GetOrStartServer calls for the same dir.
+	const N = 5
+	var wg sync.WaitGroup
+	urls := make([]string, N)
+	errs := make([]error, N)
+
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			urls[idx], errs[idx] = mgr.GetOrStartServer(ctx, "/tmp/concurrent-project")
+		}(i)
+	}
+	wg.Wait()
+
+	// All should succeed with the same URL.
+	for i := 0; i < N; i++ {
+		if errs[i] != nil {
+			t.Errorf("goroutine %d: unexpected error: %v", i, errs[i])
+		}
+	}
+	for i := 1; i < N; i++ {
+		if urls[i] != urls[0] {
+			t.Errorf("goroutine %d got URL %s, expected %s", i, urls[i], urls[0])
+		}
+	}
+
+	// The server should only have been started once.
+	count := atomic.LoadInt32(&startCount)
+	if count != 1 {
+		t.Errorf("expected 1 start call, got %d", count)
+	}
+}
+
+// TestReconcilerRestartsDeadServer verifies that the reconciler detects a
+// dead server and starts a replacement on the next tick.
+func TestReconcilerRestartsDeadServer(t *testing.T) {
+	t.Parallel()
+
+	var startCount int32
+	mgr := agent.NewOpenCodeServerManager()
+
+	var mu sync.Mutex
+	var testServers []*httptest.Server
+
+	mgr.SetStartServerFn(func(ctx context.Context, projectDir string) (*agent.OpenCodeServer, error) {
+		atomic.AddInt32(&startCount, 1)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		mu.Lock()
+		testServers = append(testServers, srv)
+		mu.Unlock()
+		return &agent.OpenCodeServer{
+			URL:        srv.URL,
+			ProjectDir: projectDir,
+			StartedAt:  time.Now(),
+		}, nil
+	})
+	defer func() {
+		mu.Lock()
+		for _, s := range testServers {
+			s.Close()
+		}
+		mu.Unlock()
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mgr.AddDesired("/tmp/flaky-project")
+	go mgr.Run(ctx)
+
+	// Wait for initial server.
+	url1, err := mgr.GetOrStartServer(ctx, "/tmp/flaky-project")
+	if err != nil {
+		t.Fatalf("first GetOrStartServer: %v", err)
+	}
+
+	// Kill the server to simulate death.
+	mu.Lock()
+	testServers[0].Close()
+	mu.Unlock()
+
+	// Next GetOrStartServer should detect the dead server, add a waiter,
+	// nudge the reconciler, and get a new URL.
+	url2, err := mgr.GetOrStartServer(ctx, "/tmp/flaky-project")
+	if err != nil {
+		t.Fatalf("second GetOrStartServer: %v", err)
+	}
+
+	if url2 == url1 {
+		t.Error("expected a different URL after server restart")
+	}
+
+	count := atomic.LoadInt32(&startCount)
+	if count != 2 {
+		t.Errorf("expected 2 start calls, got %d", count)
+	}
+}
+
+// TestReconcilerStopAllNotifiesWaiters verifies that StopAll notifies any
+// pending waiters with an error.
+func TestReconcilerStopAllNotifiesWaiters(t *testing.T) {
+	t.Parallel()
+
+	mgr := agent.NewOpenCodeServerManager()
+
+	// Slow start function — will be interrupted by StopAll.
+	mgr.SetStartServerFn(func(ctx context.Context, projectDir string) (*agent.OpenCodeServer, error) {
+		select {
+		case <-time.After(10 * time.Second):
+			return nil, fmt.Errorf("should not reach here")
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go mgr.Run(ctx)
+
+	// Start a GetOrStartServer in background — it will block waiting.
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := mgr.GetOrStartServer(context.Background(), "/tmp/stopping-project")
+		errCh <- err
+	}()
+
+	// Give the goroutine time to register as a waiter.
+	time.Sleep(50 * time.Millisecond)
+
+	// Stop everything.
+	cancel()
+	mgr.StopAll()
+
+	// The waiter should get an error.
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Error("expected error from GetOrStartServer after StopAll")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for GetOrStartServer to return")
+	}
+}
+
+// TestReconcilerGetOrStartServerFastPath verifies that GetOrStartServer
+// returns immediately when a healthy server is already registered.
+func TestReconcilerGetOrStartServerFastPath(t *testing.T) {
+	t.Parallel()
+
+	mgr, cleanup := newTestServerManager(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mgr.AddDesired("/tmp/fast-project")
+	go mgr.Run(ctx)
+
+	// First call waits for reconciler.
+	url1, err := mgr.GetOrStartServer(ctx, "/tmp/fast-project")
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+
+	// Second call should be instant (fast path).
+	start := time.Now()
+	url2, err := mgr.GetOrStartServer(ctx, "/tmp/fast-project")
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	if url1 != url2 {
+		t.Errorf("expected same URL, got %s and %s", url1, url2)
+	}
+	// Fast path should take < 100ms (health check is 2s timeout but local httptest is instant).
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("fast path took too long: %s", elapsed)
+	}
+}
+
+// TestReconcilerParallelDirStarts verifies that the reconciler starts
+// servers for multiple dirs in parallel, not serially.
+func TestReconcilerParallelDirStarts(t *testing.T) {
+	t.Parallel()
+
+	const numDirs = 5
+	const startDelay = 100 * time.Millisecond
+
+	mgr := agent.NewOpenCodeServerManager()
+	var mu sync.Mutex
+	var testServers []*httptest.Server
+
+	mgr.SetStartServerFn(func(ctx context.Context, projectDir string) (*agent.OpenCodeServer, error) {
+		// Each start takes startDelay. If serial, total would be N*startDelay.
+		time.Sleep(startDelay)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		mu.Lock()
+		testServers = append(testServers, srv)
+		mu.Unlock()
+		return &agent.OpenCodeServer{
+			URL:        srv.URL,
+			ProjectDir: projectDir,
+			StartedAt:  time.Now(),
+		}, nil
+	})
+	defer func() {
+		mu.Lock()
+		for _, s := range testServers {
+			s.Close()
+		}
+		mu.Unlock()
+	}()
+
+	dirs := make([]string, numDirs)
+	for i := 0; i < numDirs; i++ {
+		dirs[i] = fmt.Sprintf("/tmp/parallel-%d", i)
+	}
+	mgr.AddDesired(dirs...)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	start := time.Now()
+	go mgr.Run(ctx)
+
+	// Wait for all to be ready.
+	var wg sync.WaitGroup
+	for _, dir := range dirs {
+		wg.Add(1)
+		go func(d string) {
+			defer wg.Done()
+			mgr.GetOrStartServer(ctx, d)
+		}(dir)
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	// If parallel, total time should be ~startDelay (100ms), not N*startDelay (500ms).
+	// Use generous upper bound to avoid flakiness.
+	maxExpected := startDelay * 3
+	if elapsed > maxExpected {
+		t.Errorf("expected parallel starts in < %s, took %s (serial would be %s)",
+			maxExpected, elapsed, startDelay*numDirs)
+	}
+
+	servers := mgr.ListServers()
+	if len(servers) != numDirs {
+		t.Errorf("expected %d servers, got %d", numDirs, len(servers))
+	}
+}
+
+// TestReconcilerStartFailureNotifiesWaiters verifies that when a server
+// fails to start, all waiters get the error.
+func TestReconcilerStartFailureNotifiesWaiters(t *testing.T) {
+	t.Parallel()
+
+	mgr := agent.NewOpenCodeServerManager()
+
+	startErr := fmt.Errorf("simulated start failure")
+	mgr.SetStartServerFn(func(ctx context.Context, projectDir string) (*agent.OpenCodeServer, error) {
+		return nil, startErr
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go mgr.Run(ctx)
+
+	_, err := mgr.GetOrStartServer(ctx, "/tmp/failing-project")
+	if err == nil {
+		t.Fatal("expected error from GetOrStartServer")
+	}
+	if !strings.Contains(err.Error(), "simulated start failure") {
+		t.Errorf("expected simulated error, got: %v", err)
+	}
+
+	// Server should not appear in ListServers.
+	servers := mgr.ListServers()
+	if len(servers) != 0 {
+		t.Errorf("expected 0 servers after failure, got %d", len(servers))
 	}
 }

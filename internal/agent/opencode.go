@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -18,18 +19,27 @@ import (
 	"github.com/sst/opencode-sdk-go/option"
 )
 
+// ServerResolver returns the current server URL for a project directory.
+// It may start a new server if the previous one died. Backends call this
+// on reconnect to discover port changes after a server restart.
+type ServerResolver func(ctx context.Context) (string, error)
+
 // OpenCodeBackend manages a single OpenCode session via the OpenCode Go SDK.
 //
 // Architecture:
 //   - The daemon manages one OpenCode server per project directory
-//     (via OpenCodeServerManager). The backend receives the server URL.
+//     (via OpenCodeServerManager). The backend receives a ServerResolver
+//     to dynamically discover the server URL (which may change across restarts).
 //   - Each backend instance corresponds to one session on that server.
-//   - Events are streamed via SSE from GET /event on the server (using SDK's ListStreaming).
+//   - Events are streamed via SSE from GET /event on the server.
+//   - On disconnect, the SSE stream reconnects with exponential backoff,
+//     re-resolving the server URL each time (handles port changes).
 type OpenCodeBackend struct {
 	mu           sync.Mutex
 	status       SessionStatus
-	sessionID    string // OpenCode's session ID (assigned by server)
-	serverURL    string // e.g. "http://127.0.0.1:4123"
+	sessionID    string         // OpenCode's session ID (assigned by server)
+	serverURL    string         // e.g. "http://127.0.0.1:4123"
+	resolver     ServerResolver // resolves current server URL (may restart server)
 	events       chan Event
 	eventOnce    sync.Once // protects close(events)
 	eventsClosed bool      // true after events channel is closed
@@ -46,12 +56,19 @@ type OpenCodeBackend struct {
 // an already-running OpenCode server at the given URL. If sessionID is
 // non-empty, the backend is pre-associated with that session (used for
 // historical/resume sessions loaded from discover).
-func NewOpenCodeBackend(serverURL string, sessionID string) *OpenCodeBackend {
+//
+// The resolver is called on SSE reconnect and API retry to discover the
+// current server URL, which may change if the server restarts on a new port.
+// If resolver is nil, the backend uses the initial serverURL permanently
+// (no reconnect capability).
+func NewOpenCodeBackend(serverURL string, sessionID string, resolver ServerResolver) *OpenCodeBackend {
 	ctx, cancel := context.WithCancel(context.Background())
-	client := opencode.NewClient(option.WithBaseURL(strings.TrimRight(serverURL, "/")))
+	serverURL = strings.TrimRight(serverURL, "/")
+	client := opencode.NewClient(option.WithBaseURL(serverURL))
 	return &OpenCodeBackend{
 		status:    StatusIdle,
-		serverURL: strings.TrimRight(serverURL, "/"),
+		serverURL: serverURL,
+		resolver:  resolver,
 		sessionID: sessionID,
 		events:    make(chan Event, 128),
 		ctx:       ctx,
@@ -71,6 +88,11 @@ func (b *OpenCodeBackend) Start(ctx context.Context, req StartRequest) error {
 	if b.SessionID() == "" {
 		// Create new session via SDK.
 		session, err := b.client.Session.New(ctx, opencode.SessionNewParams{})
+		if err != nil && isConnectionError(err) && b.resolver != nil {
+			if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
+				session, err = b.client.Session.New(ctx, opencode.SessionNewParams{})
+			}
+		}
 		if err != nil {
 			return fmt.Errorf("create session: %w", err)
 		}
@@ -100,6 +122,11 @@ func (b *OpenCodeBackend) Start(ctx context.Context, req StartRequest) error {
 		params.Agent = opencode.F(req.Agent)
 	}
 	_, err := b.client.Session.Prompt(ctx, b.sessionID, params)
+	if err != nil && isConnectionError(err) && b.resolver != nil {
+		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
+			_, err = b.client.Session.Prompt(ctx, b.sessionID, params)
+		}
+	}
 	if err != nil {
 		b.setStatus(StatusError)
 		return fmt.Errorf("send prompt: %w", err)
@@ -148,6 +175,11 @@ func (b *OpenCodeBackend) SendMessage(ctx context.Context, opts SendMessageOpts)
 		params.Agent = opencode.F(opts.Agent)
 	}
 	_, err := b.client.Session.Prompt(ctx, b.sessionID, params)
+	if err != nil && isConnectionError(err) && b.resolver != nil {
+		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
+			_, err = b.client.Session.Prompt(ctx, b.sessionID, params)
+		}
+	}
 	if err != nil {
 		b.setStatus(StatusError)
 		return fmt.Errorf("send message: %w", err)
@@ -161,6 +193,11 @@ func (b *OpenCodeBackend) Abort(ctx context.Context) error {
 		return fmt.Errorf("session not started")
 	}
 	_, err := b.client.Session.Abort(ctx, b.sessionID, opencode.SessionAbortParams{})
+	if err != nil && isConnectionError(err) && b.resolver != nil {
+		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
+			_, err = b.client.Session.Abort(ctx, b.sessionID, opencode.SessionAbortParams{})
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("abort: %w", err)
 	}
@@ -174,6 +211,13 @@ func (b *OpenCodeBackend) Revert(ctx context.Context, messageID string) error {
 	_, err := b.client.Session.Revert(ctx, b.sessionID, opencode.SessionRevertParams{
 		MessageID: opencode.F(messageID),
 	})
+	if err != nil && isConnectionError(err) && b.resolver != nil {
+		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
+			_, err = b.client.Session.Revert(ctx, b.sessionID, opencode.SessionRevertParams{
+				MessageID: opencode.F(messageID),
+			})
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("revert: %w", err)
 	}
@@ -213,6 +257,13 @@ func (b *OpenCodeBackend) RespondPermission(ctx context.Context, permissionID st
 	_, err := b.client.Session.Permissions.Respond(ctx, b.sessionID, permissionID, opencode.SessionPermissionRespondParams{
 		Response: opencode.F(response),
 	})
+	if err != nil && isConnectionError(err) && b.resolver != nil {
+		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
+			_, err = b.client.Session.Permissions.Respond(ctx, b.sessionID, permissionID, opencode.SessionPermissionRespondParams{
+				Response: opencode.F(response),
+			})
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("respond permission: %w", err)
 	}
@@ -264,7 +315,104 @@ func (b *OpenCodeBackend) emit(evt Event) {
 	}
 }
 
-// streamEvents connects to the OpenCode SSE endpoint directly (instead of using SDK)
+// streamEvents connects to the OpenCode SSE endpoint and reconnects with
+// exponential backoff when the connection drops. On each reconnect attempt,
+// it re-resolves the server URL via the ServerResolver, which handles
+// server restarts (potentially on a new port).
+//
+// Uses the raw /event endpoint instead of the SDK — see connectAndStreamSSE
+// for the rationale.
+func (b *OpenCodeBackend) streamEvents() {
+	defer b.closeEvents()
+
+	// Backoff schedule: 1s, 2s, 4s, 8s, 16s, then give up.
+	backoff := []time.Duration{
+		1 * time.Second,
+		2 * time.Second,
+		4 * time.Second,
+		8 * time.Second,
+		16 * time.Second,
+	}
+
+	attempt := 0
+	for {
+		wasConnected, err := b.connectAndStreamSSE(attempt)
+
+		// Context cancelled = intentional shutdown, exit cleanly.
+		if b.ctx.Err() != nil {
+			return
+		}
+
+		// If we were connected and streaming successfully before the drop,
+		// reset the attempt counter — the server was alive, this is a fresh
+		// failure (not a continuation of a previous failure).
+		if wasConnected {
+			attempt = 0
+		}
+
+		// No resolver = can't reconnect, give up immediately.
+		if b.resolver == nil {
+			if err != nil {
+				b.emitError("SSE stream: " + err.Error())
+			}
+			return
+		}
+
+		if attempt >= len(backoff) {
+			b.emit(Event{
+				Type:      EventReconnecting,
+				Timestamp: time.Now(),
+				Data: ReconnectingData{
+					Attempt: attempt + 1,
+					GaveUp:  true,
+					Error:   fmt.Sprintf("SSE: giving up after %d reconnect attempts", attempt),
+				},
+			})
+			return
+		}
+
+		delay := backoff[attempt]
+		errMsg := ""
+		if err != nil {
+			errMsg = err.Error()
+		}
+		b.emit(Event{
+			Type:      EventReconnecting,
+			Timestamp: time.Now(),
+			Data: ReconnectingData{
+				Attempt: attempt + 1,
+				Delay:   delay,
+				Error:   errMsg,
+			},
+		})
+
+		select {
+		case <-time.After(delay):
+		case <-b.ctx.Done():
+			return
+		}
+
+		// Re-resolve server URL before reconnecting. The server may have
+		// restarted on a different port.
+		urlChanged, resolveErr := b.refreshServerURL()
+		if resolveErr != nil {
+			b.emitError("SSE reconnect: " + resolveErr.Error())
+			attempt++
+			continue
+		}
+
+		_ = urlChanged // logged by refreshServerURL if needed
+		attempt++
+	}
+}
+
+// connectAndStreamSSE performs a single SSE connection to the OpenCode
+// server's /event endpoint and processes events until the stream ends or
+// errors. Returns (true, nil) if it received at least one SSE event before
+// disconnecting, (false, err) if the connection failed or closed before any
+// data arrived. The bool indicates whether the connection was productive
+// (used by the caller to reset backoff — a 200+immediate-EOF is not
+// considered productive).
 //
 // A bug was the reason for not using SDK's Event.ListStreaming():
 // New event "message.part.delta" is not supported by SDK.
@@ -278,13 +426,14 @@ func (b *OpenCodeBackend) emit(evt Event) {
 // events containing token-level streaming deltas — exactly what we need for
 // real-time text display. The SDK's Stream[EventListResponse] either silently
 // drops these (unknown union variant) or may break the stream entirely.
-func (b *OpenCodeBackend) streamEvents() {
-	defer b.closeEvents()
+func (b *OpenCodeBackend) connectAndStreamSSE(attempt int) (connected bool, err error) {
+	b.mu.Lock()
+	serverURL := b.serverURL
+	b.mu.Unlock()
 
-	req, err := http.NewRequestWithContext(b.ctx, http.MethodGet, b.serverURL+"/event", nil)
+	req, err := http.NewRequestWithContext(b.ctx, http.MethodGet, serverURL+"/event", nil)
 	if err != nil {
-		b.emitError("build SSE request: " + err.Error())
-		return
+		return false, fmt.Errorf("build SSE request: %w", err)
 	}
 	req.Header.Set("Accept", "text/event-stream")
 
@@ -292,17 +441,26 @@ func (b *OpenCodeBackend) streamEvents() {
 	if err != nil {
 		select {
 		case <-b.ctx.Done():
-			return
+			return false, b.ctx.Err()
 		default:
-			b.emitError("SSE connect: " + err.Error())
-			return
+			return false, fmt.Errorf("SSE connect: %w", err)
 		}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		b.emitError(fmt.Sprintf("SSE endpoint returned %d", resp.StatusCode))
-		return
+		return false, fmt.Errorf("SSE endpoint returned %d", resp.StatusCode)
+	}
+
+	// Successfully connected.
+	if attempt > 0 {
+		b.emit(Event{
+			Type:      EventReconnected,
+			Timestamp: time.Now(),
+			Data: ReconnectedData{
+				Attempts: attempt,
+			},
+		})
 	}
 
 	// Use bufio.Reader instead of bufio.Scanner to avoid a hard upper
@@ -311,6 +469,10 @@ func (b *OpenCodeBackend) streamEvents() {
 	// with large session snapshots for long conversations). ReadBytes
 	// allocates dynamically, eliminating this class of failure.
 	reader := bufio.NewReader(resp.Body)
+
+	// Track whether we received any meaningful data. Only reset the caller's
+	// backoff counter if we actually streamed events (not just 200 + EOF).
+	receivedData := false
 
 	var dataBuf bytes.Buffer
 	for {
@@ -322,6 +484,7 @@ func (b *OpenCodeBackend) streamEvents() {
 			if dataBuf.Len() > 0 {
 				b.handleRawSSEEvent(dataBuf.Bytes())
 				dataBuf.Reset()
+				receivedData = true
 			}
 			continue
 		}
@@ -343,20 +506,21 @@ func (b *OpenCodeBackend) streamEvents() {
 		}
 
 		if err != nil {
-			// Dispatch any buffered event before exiting.
+			// Dispatch any buffered event before returning.
 			if dataBuf.Len() > 0 {
 				b.handleRawSSEEvent(dataBuf.Bytes())
 				dataBuf.Reset()
+				receivedData = true
+			}
+			if err == io.EOF {
+				return receivedData, nil // clean close
 			}
 			select {
 			case <-b.ctx.Done():
-				return
+				return receivedData, b.ctx.Err()
 			default:
-				if err != io.EOF {
-					b.emitError("SSE stream: " + err.Error())
-				}
+				return receivedData, fmt.Errorf("SSE stream: %w", err)
 			}
-			return
 		}
 	}
 }
@@ -632,12 +796,20 @@ func (b *OpenCodeBackend) handlePartUpdate(p opencode.Part) {
 
 // Messages returns the full message history for this session by calling
 // the OpenCode SDK's Session.Messages API and translating to our types.
+// On connection errors, it re-resolves the server URL (which may trigger
+// a server restart) and retries once.
 func (b *OpenCodeBackend) Messages(ctx context.Context) ([]MessageData, error) {
 	if b.sessionID == "" {
 		return nil, fmt.Errorf("session not started")
 	}
 
 	resp, err := b.client.Session.Messages(ctx, b.sessionID, opencode.SessionMessagesParams{})
+	if err != nil && isConnectionError(err) && b.resolver != nil {
+		// Server may have restarted on a new port. Re-resolve and retry once.
+		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
+			resp, err = b.client.Session.Messages(ctx, b.sessionID, opencode.SessionMessagesParams{})
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("fetch messages: %w", err)
 	}
@@ -714,7 +886,58 @@ func (b *OpenCodeBackend) emitError(msg string) {
 	})
 }
 
+// refreshServerURL calls the resolver to get the current server URL. If the
+// URL changed (e.g. server restarted on a new port), it recreates the SDK
+// client. Returns true if the URL changed. Returns an error if resolution fails
+// or no resolver is configured.
+func (b *OpenCodeBackend) refreshServerURL() (changed bool, err error) {
+	if b.resolver == nil {
+		return false, fmt.Errorf("no server resolver configured")
+	}
+	newURL, err := b.resolver(b.ctx)
+	if err != nil {
+		return false, fmt.Errorf("resolve server URL: %w", err)
+	}
+	newURL = strings.TrimRight(newURL, "/")
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if newURL == b.serverURL {
+		return false, nil
+	}
+	b.serverURL = newURL
+	b.client = opencode.NewClient(option.WithBaseURL(newURL))
+	return true, nil
+}
+
+// isConnectionError returns true if the error indicates a network-level
+// failure (connection refused, reset, timeout) where retrying with a
+// potentially new server URL could succeed.
+func isConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "connection refused") ||
+		strings.Contains(s, "connection reset") ||
+		strings.Contains(s, "dial tcp") ||
+		strings.Contains(s, "i/o timeout")
+}
+
 // --- OpenCode Server Manager ---
+//
+// Architecture: Kubernetes-style reconciler pattern.
+//
+// The server manager owns a "desired set" of project directories that should
+// have a running OpenCode server. A single reconcile loop (Run) is the ONLY
+// code path that starts or stops servers. All other code (GetOrStartServer,
+// CreateBackend, DiscoverSessions, etc.) adds directories to the desired set
+// and waits for the reconciler to fulfill the request.
+//
+// This eliminates the previous bugs where servers were started as side effects
+// of 5+ uncoordinated code paths (warmPrimaryAgentCaches, DiscoverSessions,
+// CreateBackend, handleListAgents, health loop), causing triple-starts on
+// startup and port collisions.
 
 // OpenCodeServer tracks a running `opencode serve` process for a project.
 type OpenCodeServer struct {
@@ -724,46 +947,298 @@ type OpenCodeServer struct {
 	StartedAt  time.Time
 }
 
-// OpenCodeServerManager manages one OpenCode server per project directory.
-// The daemon uses this to reuse servers across sessions for the same project.
-type OpenCodeServerManager struct {
-	mu      sync.Mutex
-	servers map[string]*OpenCodeServer // keyed by project dir
-	agents  map[string][]AgentInfo     // cached agents per server URL
+// serverWaiter is a channel that receives a result when the reconciler
+// finishes starting (or failing to start) a server for a project dir.
+type serverWaiter struct {
+	ch chan serverStartResult
 }
 
-// NewOpenCodeServerManager creates a new server manager.
+// serverStartResult holds the outcome of a startServer call.
+type serverStartResult struct {
+	url string
+	err error
+}
+
+// OpenCodeServerManager manages one OpenCode server per project directory
+// using a reconciler pattern. The reconcile loop (Run) is the single owner
+// of server lifecycle — it's the only code that calls startServer.
+//
+// External callers use:
+//   - AddDesired(dir): declare that a server should exist for dir
+//   - GetOrStartServer(ctx, dir): get URL, waiting for reconciler if needed
+//   - StopAll(): graceful shutdown
+type OpenCodeServerManager struct {
+	mu      sync.Mutex
+	servers map[string]*OpenCodeServer // keyed by project dir; only written by reconciler
+	agents  map[string][]AgentInfo     // cached agents per server URL
+
+	// desired is the set of project dirs that should have a running server.
+	// Only added to, never removed (servers are removed by StopAll or when
+	// a dir is explicitly removed in the future).
+	desired map[string]bool
+
+	// waiters are callers blocked in GetOrStartServer waiting for the
+	// reconciler to start a server for their project dir. The reconciler
+	// notifies all waiters for a dir after attempting to start it.
+	waiters map[string][]serverWaiter
+
+	// nudge signals the reconcile loop to run immediately. Buffered so
+	// senders never block. The reconciler drains it before each tick.
+	nudge chan struct{}
+
+	// startServerFn is the function called by the reconciler to start a
+	// server. Defaults to startServer (spawns opencode serve). Replaced
+	// in tests for dependency injection.
+	startServerFn func(ctx context.Context, projectDir string) (*OpenCodeServer, error)
+}
+
+// NewOpenCodeServerManager creates a new server manager. The caller must
+// call Run() to start the reconcile loop.
 func NewOpenCodeServerManager() *OpenCodeServerManager {
-	return &OpenCodeServerManager{
+	m := &OpenCodeServerManager{
 		servers: make(map[string]*OpenCodeServer),
 		agents:  make(map[string][]AgentInfo),
+		desired: make(map[string]bool),
+		waiters: make(map[string][]serverWaiter),
+		nudge:   make(chan struct{}, 1),
+	}
+	m.startServerFn = m.startServer
+	return m
+}
+
+// SetStartServerFn replaces the function used to start servers. This is
+// intended for testing only — production code uses the default (startServer).
+func (m *OpenCodeServerManager) SetStartServerFn(fn func(ctx context.Context, projectDir string) (*OpenCodeServer, error)) {
+	m.startServerFn = fn
+}
+
+// AddDesired adds project directories to the desired set. The reconciler
+// will start servers for any dirs that don't already have one on its next
+// tick. Safe to call before Run().
+func (m *OpenCodeServerManager) AddDesired(dirs ...string) {
+	m.mu.Lock()
+	for _, dir := range dirs {
+		m.desired[dir] = true
+	}
+	m.mu.Unlock()
+
+	// Nudge the reconciler to pick up the new dirs immediately.
+	select {
+	case m.nudge <- struct{}{}:
+	default: // already nudged
+	}
+}
+
+// Run is the reconcile loop. It is the ONLY goroutine that starts servers.
+// It runs until ctx is cancelled. Call this once from the daemon's Run().
+//
+// Behavior:
+//  1. On each tick (or nudge), snapshot desired dirs and current servers.
+//  2. For each desired dir without a healthy server, start one in parallel.
+//  3. Notify any waiters (from GetOrStartServer) with the result.
+//  4. Health-check existing servers and remove dead ones (they'll be
+//     restarted on the next tick since the dir is still in desired).
+func (m *OpenCodeServerManager) Run(ctx context.Context) {
+	const reconcileInterval = 5 * time.Second
+
+	// Run the first reconcile immediately on startup for fast server starts.
+	m.reconcile(ctx)
+
+	ticker := time.NewTicker(reconcileInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.reconcile(ctx)
+		case <-m.nudge:
+			// Drain any additional nudges that piled up.
+			for {
+				select {
+				case <-m.nudge:
+				default:
+					goto drained
+				}
+			}
+		drained:
+			m.reconcile(ctx)
+		}
+	}
+}
+
+// reconcile is one pass of the reconciliation loop. It:
+// 1. Health-checks existing servers, kills dead ones.
+// 2. Starts servers for desired dirs that don't have a healthy server.
+// 3. Notifies waiters with results.
+func (m *OpenCodeServerManager) reconcile(ctx context.Context) {
+	// --- Phase 1: Health-check existing servers ---
+	m.mu.Lock()
+	type snapshot struct {
+		dir string
+		url string
+		cmd *exec.Cmd
+	}
+	existing := make([]snapshot, 0, len(m.servers))
+	for dir, srv := range m.servers {
+		existing = append(existing, snapshot{dir: dir, url: srv.URL, cmd: srv.Cmd})
+	}
+	m.mu.Unlock()
+
+	// Health-check WITHOUT holding lock.
+	var deadDirs []string
+	for _, snap := range existing {
+		if !m.HealthCheck(snap.url) {
+			log.Printf("[reconciler] server for %s at %s is dead", snap.dir, snap.url)
+			if snap.cmd != nil && snap.cmd.Process != nil {
+				snap.cmd.Process.Kill()
+			}
+			deadDirs = append(deadDirs, snap.dir)
+		}
+	}
+
+	// Remove dead servers under lock.
+	if len(deadDirs) > 0 {
+		m.mu.Lock()
+		for _, dir := range deadDirs {
+			delete(m.servers, dir)
+		}
+		m.mu.Unlock()
+	}
+
+	// --- Phase 2: Determine which dirs need a server started ---
+	m.mu.Lock()
+	var toStart []string
+	for dir := range m.desired {
+		if _, hasServer := m.servers[dir]; !hasServer {
+			toStart = append(toStart, dir)
+		}
+	}
+	m.mu.Unlock()
+
+	if len(toStart) == 0 {
+		return
+	}
+
+	log.Printf("[reconciler] starting servers for %d dirs: %v", len(toStart), toStart)
+
+	// --- Phase 3: Start servers in parallel ---
+	type startResult struct {
+		dir string
+		srv *OpenCodeServer
+		err error
+	}
+	results := make(chan startResult, len(toStart))
+
+	var wg sync.WaitGroup
+	for _, dir := range toStart {
+		wg.Add(1)
+		go func(d string) {
+			defer wg.Done()
+			srv, err := m.startServerFn(ctx, d)
+			results <- startResult{dir: d, srv: srv, err: err}
+		}(dir)
+	}
+
+	// Close results channel when all goroutines finish.
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// --- Phase 4: Register results and notify waiters ---
+	for res := range results {
+		m.mu.Lock()
+		if res.err == nil {
+			m.servers[res.dir] = res.srv
+			log.Printf("[reconciler] server for %s ready at %s", res.dir, res.srv.URL)
+		} else {
+			log.Printf("[reconciler] failed to start server for %s: %v", res.dir, res.err)
+		}
+
+		// Notify all waiters for this dir.
+		waiters := m.waiters[res.dir]
+		delete(m.waiters, res.dir)
+		m.mu.Unlock()
+
+		result := serverStartResult{err: res.err}
+		if res.err == nil {
+			result.url = res.srv.URL
+		}
+		for _, w := range waiters {
+			w.ch <- result
+		}
 	}
 }
 
 // GetOrStartServer returns a running server URL for the given project dir.
-// If no server is running, it starts one.
+// If a healthy server exists, it returns immediately. Otherwise, it adds
+// the dir to the desired set, nudges the reconciler, and blocks until the
+// reconciler starts the server (or fails).
+//
+// This method does NOT start servers itself — only the reconciler does.
 func (m *OpenCodeServerManager) GetOrStartServer(ctx context.Context, projectDir string) (string, error) {
+	// Fast path: healthy server already exists.
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Check if we already have a server for this project.
 	if srv, ok := m.servers[projectDir]; ok {
-		// Verify it's still alive with a health check.
-		if m.healthCheck(srv.URL) {
-			return srv.URL, nil
+		url := srv.URL
+		m.mu.Unlock()
+
+		if m.HealthCheck(url) {
+			return url, nil
 		}
-		// Dead server — clean up and start a new one.
-		srv.Cmd.Process.Kill()
-		delete(m.servers, projectDir)
+
+		// Dead — remove it. The reconciler will restart since dir is
+		// still in desired. We could return immediately and wait, but
+		// it's better to fall through and register as a waiter so we
+		// block until the new server is ready.
+		m.mu.Lock()
+		if cur, ok := m.servers[projectDir]; ok && cur.URL == url {
+			if cur.Cmd != nil && cur.Cmd.Process != nil {
+				cur.Cmd.Process.Kill()
+			}
+			delete(m.servers, projectDir)
+		} else if cur, ok := m.servers[projectDir]; ok && cur.URL != url {
+			// Another goroutine (or the reconciler) already replaced the
+			// server with a new one. Return it directly.
+			newURL := cur.URL
+			m.mu.Unlock()
+			return newURL, nil
+		}
+		// Fall through with lock held.
 	}
 
-	// Start a new server.
-	srv, err := m.startServer(ctx, projectDir)
-	if err != nil {
-		return "", err
+	// Lock is held here. Check one more time if a server appeared while we
+	// were doing the health check (the reconciler may have started one).
+	if srv, ok := m.servers[projectDir]; ok {
+		url := srv.URL
+		m.mu.Unlock()
+		return url, nil
 	}
-	m.servers[projectDir] = srv
-	return srv.URL, nil
+
+	// Register as a waiter and add to desired set.
+	w := serverWaiter{ch: make(chan serverStartResult, 1)}
+	m.waiters[projectDir] = append(m.waiters[projectDir], w)
+	m.desired[projectDir] = true
+	m.mu.Unlock()
+
+	// Nudge the reconciler to handle this immediately.
+	select {
+	case m.nudge <- struct{}{}:
+	default:
+	}
+
+	// Wait for the reconciler to start the server.
+	select {
+	case result := <-w.ch:
+		if result.err != nil {
+			return "", result.err
+		}
+		return result.url, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 }
 
 // ListServers returns a snapshot of all currently tracked servers.
@@ -786,14 +1261,28 @@ func (m *OpenCodeServerManager) ListServers() []ServerInfo {
 	return servers
 }
 
-// StopAll stops all managed servers.
+// StopAll stops all managed servers and clears the desired set.
+// Any pending waiters are notified with an error.
 func (m *OpenCodeServerManager) StopAll() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+
+	// Notify pending waiters that we're shutting down.
+	for dir, ws := range m.waiters {
+		for _, w := range ws {
+			w.ch <- serverStartResult{err: fmt.Errorf("server manager shutting down")}
+		}
+		delete(m.waiters, dir)
+	}
+
+	// Clear desired set so the reconciler won't restart anything.
+	for dir := range m.desired {
+		delete(m.desired, dir)
+	}
+
+	// Stop all servers with graceful shutdown.
 	for dir, srv := range m.servers {
-		if srv.Cmd.Process != nil {
+		if srv.Cmd != nil && srv.Cmd.Process != nil {
 			srv.Cmd.Process.Signal(os.Interrupt)
-			// Give it a moment to clean up.
 			done := make(chan error, 1)
 			go func() { done <- srv.Cmd.Wait() }()
 			select {
@@ -804,6 +1293,7 @@ func (m *OpenCodeServerManager) StopAll() {
 		}
 		delete(m.servers, dir)
 	}
+	m.mu.Unlock()
 }
 
 // startServer spawns `opencode serve` and waits for it to print the listening URL.
@@ -846,6 +1336,18 @@ func (m *OpenCodeServerManager) startServer(ctx context.Context, projectDir stri
 			cmd.Process.Kill()
 			return nil, fmt.Errorf("opencode serve exited without printing URL")
 		}
+
+		// Wait for the server to be fully ready (not just listening).
+		// The URL being printed only means the port is bound; the server
+		// may still be initializing internally. Poll /global/health to
+		// confirm it can actually serve requests before we return.
+		log.Printf("[server] %s: port open at %s, waiting for readiness...", projectDir, url)
+		if err := m.waitForReady(ctx, url, 10*time.Second); err != nil {
+			cmd.Process.Kill()
+			return nil, fmt.Errorf("server not ready after startup: %w", err)
+		}
+		log.Printf("[server] %s: ready at %s", projectDir, url)
+
 		return &OpenCodeServer{
 			URL:        url,
 			ProjectDir: projectDir,
@@ -861,8 +1363,30 @@ func (m *OpenCodeServerManager) startServer(ctx context.Context, projectDir stri
 	}
 }
 
-// healthCheck pings the server's health endpoint.
-func (m *OpenCodeServerManager) healthCheck(url string) bool {
+// waitForReady polls the server's health endpoint until it returns 200 or
+// the timeout expires. This ensures the server is fully initialized (not
+// just listening on a port) before we hand out its URL.
+func (m *OpenCodeServerManager) waitForReady(ctx context.Context, url string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if m.HealthCheck(url) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("health check at %s did not pass within %s", url, timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// HealthCheck pings the server's health endpoint.
+func (m *OpenCodeServerManager) HealthCheck(url string) bool {
 	client := &http.Client{Timeout: 2 * time.Second}
 	resp, err := client.Get(url + "/global/health")
 	if err != nil {
@@ -965,6 +1489,12 @@ func (m *OpenCodeServerManager) ListSessions(ctx context.Context, projectDir str
 	if err != nil {
 		return nil, err
 	}
+	return m.ListSessionsFromServer(ctx, serverURL)
+}
+
+// ListSessionsFromServer queries an already-known server URL for sessions.
+// Used by DiscoverSessions to avoid starting new servers per worktree.
+func (m *OpenCodeServerManager) ListSessionsFromServer(ctx context.Context, serverURL string) ([]SessionSnapshot, error) {
 	client := opencode.NewClient(option.WithBaseURL(strings.TrimRight(serverURL, "/")))
 	sessions, err := client.Session.List(ctx, opencode.SessionListParams{})
 	if err != nil {

@@ -182,6 +182,10 @@ type SessionViewModel struct {
 	// For existing sessions opened from inbox, agents are fetched on Init.
 	agents        []agent.AgentInfo
 	selectedAgent int // index into agents slice
+
+	// submitting guards against duplicate sends. Set true when a session
+	// creation or message send is in flight; cleared on result.
+	submitting bool
 }
 
 // displayEntry is a rendered item in the session transcript.
@@ -512,6 +516,7 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case sessionSendResultMsg:
+		m.submitting = false
 		if msg.err != nil {
 			m.err = msg.err
 		}
@@ -728,6 +733,9 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 			// Send the message. Shift+enter inserts newline (handled by textarea).
+			if m.submitting {
+				return m, nil // Already in flight — ignore duplicate Enter.
+			}
 			text := strings.TrimSpace(m.input.Value())
 			if text != "" {
 				agentName := ""
@@ -748,6 +756,7 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.inputActive = false
 				m.input.Blur()
 				m.follow = true
+				m.submitting = true
 				return m, m.sendMessage(text)
 			}
 			return m, nil

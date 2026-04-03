@@ -166,6 +166,10 @@ func (m *mockBackendManager) CreateBackend(req agent.StartRequest) (agent.Sessio
 	return b, nil
 }
 
+func (m *mockBackendManager) Init(ctx context.Context, knownDirs func() ([]string, error)) error {
+	return nil
+}
+
 func (m *mockBackendManager) Shutdown() {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -45,13 +45,15 @@ const (
 type EventType string
 
 const (
-	EventStatusChange  EventType = "status"     // Session status changed
-	EventMessage       EventType = "message"    // New message (user or assistant)
-	EventPartUpdate    EventType = "part"       // Part updated (tool call progress, text delta)
-	EventPermission    EventType = "permission" // Agent requests permission for a tool
-	EventError         EventType = "error"      // Error occurred
-	EventTitleChange   EventType = "title"      // Session title updated
-	EventRevertChange  EventType = "revert"     // Session revert state changed
+	EventStatusChange  EventType = "status"       // Session status changed
+	EventMessage       EventType = "message"      // New message (user or assistant)
+	EventPartUpdate    EventType = "part"         // Part updated (tool call progress, text delta)
+	EventPermission    EventType = "permission"   // Agent requests permission for a tool
+	EventError         EventType = "error"        // Error occurred
+	EventTitleChange   EventType = "title"        // Session title updated
+	EventRevertChange  EventType = "revert"       // Session revert state changed
+	EventReconnecting  EventType = "reconnecting" // Backend is reconnecting to server
+	EventReconnected   EventType = "reconnected"  // Backend successfully reconnected
 	EventSessionCreate EventType = "session.create"
 	EventSessionDelete EventType = "session.delete"
 
@@ -136,6 +138,18 @@ func (e *Event) UnmarshalJSON(b []byte) error {
 		var d RevertChangeData
 		if err := json.Unmarshal(raw.Data, &d); err != nil {
 			return fmt.Errorf("unmarshal RevertChangeData: %w", err)
+		}
+		e.Data = d
+	case EventReconnecting:
+		var d ReconnectingData
+		if err := json.Unmarshal(raw.Data, &d); err != nil {
+			return fmt.Errorf("unmarshal ReconnectingData: %w", err)
+		}
+		e.Data = d
+	case EventReconnected:
+		var d ReconnectedData
+		if err := json.Unmarshal(raw.Data, &d); err != nil {
+			return fmt.Errorf("unmarshal ReconnectedData: %w", err)
 		}
 		e.Data = d
 	case EventVoiceTranscript:
@@ -244,6 +258,20 @@ type TitleChangeData struct {
 // RevertChangeData is the payload for EventRevertChange.
 type RevertChangeData struct {
 	MessageID string `json:"message_id"` // The message ID from which onward is reverted; empty means unrevert
+}
+
+// ReconnectingData is the payload for EventReconnecting.
+type ReconnectingData struct {
+	Attempt int           `json:"attempt"` // Current retry attempt (1-based)
+	Delay   time.Duration `json:"delay"`   // How long until the next retry
+	Error   string        `json:"error"`   // The error that triggered the reconnect
+	GaveUp  bool          `json:"gave_up"` // True if this is the final failure (no more retries)
+}
+
+// ReconnectedData is the payload for EventReconnected.
+type ReconnectedData struct {
+	Attempts   int  `json:"attempts"`    // How many attempts it took
+	URLChanged bool `json:"url_changed"` // Whether the server URL changed (new port)
 }
 
 // VoiceTranscriptData is the payload for EventVoiceTranscript.
@@ -415,6 +443,13 @@ type SessionBackend interface {
 // OpenCode shares one server per project directory, Claude manages
 // subprocesses independently).
 type BackendManager interface {
+	// Init performs eager initialization such as starting servers for known
+	// project directories. Called once by the daemon on startup before any
+	// other method. Long-running work (like reconciler loops) should be
+	// launched as goroutines that respect ctx cancellation.
+	// knownDirs returns project directories previously seen for this backend.
+	Init(ctx context.Context, knownDirs func() ([]string, error)) error
+
 	// CreateBackend creates a new SessionBackend for the given request.
 	// The backend is not started — call Start() or Watch() on it.
 	CreateBackend(req StartRequest) (SessionBackend, error)

@@ -92,7 +92,7 @@ func TestIntegrationOpenCodeBackend_SendPrompt(t *testing.T) {
 	serverURL, cleanup := startRealOpenCodeServer(t, projectDir)
 	defer cleanup()
 
-	backend := NewOpenCodeBackend(serverURL)
+	backend := NewOpenCodeBackend(serverURL, "", nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -165,7 +165,7 @@ func TestIntegrationOpenCodeBackend_EventTypes(t *testing.T) {
 	serverURL, cleanup := startRealOpenCodeServer(t, projectDir)
 	defer cleanup()
 
-	backend := NewOpenCodeBackend(serverURL)
+	backend := NewOpenCodeBackend(serverURL, "", nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -251,7 +251,7 @@ func TestIntegrationOpenCodeBackend_FollowUp(t *testing.T) {
 	serverURL, cleanup := startRealOpenCodeServer(t, projectDir)
 	defer cleanup()
 
-	backend := NewOpenCodeBackend(serverURL)
+	backend := NewOpenCodeBackend(serverURL, "", nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()

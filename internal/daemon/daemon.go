@@ -45,14 +45,46 @@ func NewOpenCodeBackendManager() *OpenCodeBackendManager {
 	}
 }
 
+// Init populates the desired server set from known project directories and
+// starts the reconciler loop. The reconciler is the single owner of server
+// lifecycle — it is the only code path that starts or stops servers.
+// The first reconcile tick runs immediately, starting all known servers
+// in parallel for fast startup.
+func (m *OpenCodeBackendManager) Init(ctx context.Context, knownDirs func() ([]string, error)) error {
+	dirs, err := knownDirs()
+	if err != nil {
+		return fmt.Errorf("load known dirs: %w", err)
+	}
+	var validDirs []string
+	for _, dir := range dirs {
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			log.Printf("[opencode] skipping desired dir %s: directory does not exist", dir)
+			continue
+		}
+		validDirs = append(validDirs, dir)
+	}
+	if len(validDirs) > 0 {
+		m.serverMgr.AddDesired(validDirs...)
+		log.Printf("[opencode] added %d project dirs to desired set", len(validDirs))
+	}
+
+	go m.serverMgr.Run(ctx)
+	return nil
+}
+
 // CreateBackend creates an OpenCode SessionBackend. It ensures an OpenCode
 // server is running for the project directory before creating the backend.
+// The backend receives a resolver closure that re-resolves the server URL
+// on reconnect (handles server restarts on new ports).
 func (m *OpenCodeBackendManager) CreateBackend(req agent.StartRequest) (agent.SessionBackend, error) {
 	serverURL, err := m.serverMgr.GetOrStartServer(context.Background(), req.ProjectDir)
 	if err != nil {
 		return nil, fmt.Errorf("start opencode server for %s: %w", req.ProjectDir, err)
 	}
-	return agent.NewOpenCodeBackend(serverURL, req.SessionID), nil
+	resolver := func(ctx context.Context) (string, error) {
+		return m.serverMgr.GetOrStartServer(ctx, req.ProjectDir)
+	}
+	return agent.NewOpenCodeBackend(serverURL, req.SessionID, resolver), nil
 }
 
 // Shutdown stops all managed OpenCode servers.
@@ -71,22 +103,51 @@ func (m *OpenCodeBackendManager) ListServers() []agent.ServerInfo {
 }
 
 // DiscoverSessions lists all projects from the OpenCode server, then lists
-// all sessions for each project. Returns SessionSnapshot entries ready to be
-// registered by the daemon.
+// all sessions using the same seed server. This avoids starting a new server
+// per worktree (the old bug that caused triple-starts on startup).
+//
+// Worktrees that are clearly invalid (e.g. "/") are filtered out. Valid
+// worktrees are added to the desired set so the reconciler starts servers
+// for them (needed for future backend connections), but session listing
+// uses the existing seed server.
 func (m *OpenCodeBackendManager) DiscoverSessions(ctx context.Context, seedDir string) ([]agent.SessionSnapshot, error) {
+	// Get the seed server URL — this will wait for the reconciler if needed.
+	seedURL, err := m.serverMgr.GetOrStartServer(ctx, seedDir)
+	if err != nil {
+		return nil, fmt.Errorf("get seed server: %w", err)
+	}
+
 	projects, err := m.serverMgr.ListProjects(ctx, seedDir)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
-	var all []agent.SessionSnapshot
+
+	// Collect valid worktrees for the reconciler's desired set.
+	var validDirs []string
 	for _, proj := range projects {
-		sessions, err := m.serverMgr.ListSessions(ctx, proj.Worktree)
-		if err != nil {
-			continue // best-effort: skip projects that fail
+		// Filter bogus dirs: root dir, empty, or non-existent.
+		if proj.Worktree == "" || proj.Worktree == "/" {
+			continue
 		}
-		all = append(all, sessions...)
+		if _, err := os.Stat(proj.Worktree); os.IsNotExist(err) {
+			continue
+		}
+		validDirs = append(validDirs, proj.Worktree)
 	}
-	return all, nil
+
+	// Add discovered worktrees to desired set so they get servers for
+	// future backend operations. The reconciler will start them.
+	if len(validDirs) > 0 {
+		m.serverMgr.AddDesired(validDirs...)
+	}
+
+	// List sessions from the SEED server — all projects share the same
+	// OpenCode database, so one server can return all sessions.
+	sessions, err := m.serverMgr.ListSessionsFromServer(ctx, seedURL)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	return sessions, nil
 }
 
 // ClaudeBackendManager implements agent.BackendManager for Claude Code sessions.
@@ -100,6 +161,11 @@ func NewClaudeBackendManager() *ClaudeBackendManager {
 // CreateBackend creates a Claude Code SessionBackend.
 func (m *ClaudeBackendManager) CreateBackend(req agent.StartRequest) (agent.SessionBackend, error) {
 	return agent.NewClaudeCodeBackend(), nil
+}
+
+// Init is a no-op for Claude — there are no long-lived servers to manage.
+func (m *ClaudeBackendManager) Init(ctx context.Context, knownDirs func() ([]string, error)) error {
+	return nil
 }
 
 // Shutdown is a no-op for Claude — each session manages its own SDK client connection.
@@ -292,10 +358,25 @@ func (d *Daemon) Run() error {
 		}
 	}
 
-	// Warm primary agent caches in the background for all known project
-	// directories. This starts OpenCode servers and fetches agent lists so
-	// that subsequent ListAgents requests are served from the SQLite cache
-	// instantly.
+	// Populate the desired server set from known project dirs and start
+	// the reconciler loop. This is the ONLY mechanism that starts servers.
+	// The first reconcile tick runs immediately, starting all known servers
+	// in parallel.
+	for bt, mgr := range d.BackendManagers {
+		knownDirs := func() ([]string, error) {
+			if d.Store == nil {
+				return nil, nil
+			}
+			return d.Store.KnownProjectDirs(bt)
+		}
+		if err := mgr.Init(d.ctx, knownDirs); err != nil {
+			d.log.Printf("warning: init %s backend: %v", bt, err)
+		}
+	}
+
+	// Warm primary agent caches AFTER the reconciler has started. The
+	// cache warmer uses GetOrStartServer which will wait for the reconciler
+	// to finish starting servers rather than starting them itself.
 	d.warmPrimaryAgentCaches()
 
 	mux := http.NewServeMux()
@@ -1307,8 +1388,10 @@ func (d *Daemon) refreshPrimaryAgentsInBackground(bt agent.BackendType, projectD
 }
 
 // warmPrimaryAgentCaches fetches and persists primary agent lists for all
-// known project directories. Called once on daemon startup so that subsequent
-// ListAgents requests are served from the SQLite cache instantly.
+// known project directories. Called once on daemon startup after the
+// reconciler has been started. The refreshPrimaryAgentsInBackground calls
+// use GetOrStartServer which will wait for the reconciler to provide a
+// running server — this method does NOT start servers itself.
 func (d *Daemon) warmPrimaryAgentCaches() {
 	if d.Store == nil {
 		return
@@ -1324,6 +1407,9 @@ func (d *Daemon) warmPrimaryAgentCaches() {
 			continue
 		}
 		for _, dir := range dirs {
+			if _, err := os.Stat(dir); os.IsNotExist(err) {
+				continue
+			}
 			d.refreshPrimaryAgentsInBackground(bt, dir, lister)
 		}
 	}
