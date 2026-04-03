@@ -116,6 +116,17 @@ func (c *Client) ListSessions(ctx context.Context) ([]agent.SessionInfo, error) 
 	return sessions, nil
 }
 
+// SearchSessions searches session metadata (title, prompt, draft, project
+// name) using case-insensitive substring matching. Multiple words in the
+// query are AND-ed: all terms must appear.
+func (c *Client) SearchSessions(ctx context.Context, query string) ([]agent.SessionInfo, error) {
+	var sessions []agent.SessionInfo
+	if err := c.get(ctx, "/sessions/search?q="+url.QueryEscape(query), &sessions); err != nil {
+		return nil, err
+	}
+	return sessions, nil
+}
+
 // GetSession returns a single session by ID.
 func (c *Client) GetSession(ctx context.Context, id string) (*agent.SessionInfo, error) {
 	var info agent.SessionInfo

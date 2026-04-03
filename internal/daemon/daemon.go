@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -497,6 +498,7 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ping", d.handlePing)
 	mux.HandleFunc("POST /sessions", d.handleCreateSession)
 	mux.HandleFunc("GET /sessions", d.handleListSessions)
+	mux.HandleFunc("GET /sessions/search", d.handleSearchSessions)
 	mux.HandleFunc("GET /sessions/{id}", d.handleGetSession)
 	mux.HandleFunc("GET /sessions/{id}/messages", d.handleGetSessionMessages)
 	mux.HandleFunc("POST /sessions/{id}/message", d.handleSendMessage)
@@ -744,6 +746,15 @@ func (d *Daemon) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 func (d *Daemon) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, d.snapshotSessions())
+}
+
+func (d *Daemon) handleSearchSessions(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("q")
+	if query == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing required query parameter: q"})
+		return
+	}
+	writeJSON(w, http.StatusOK, d.searchSessions(query))
 }
 
 func (d *Daemon) handleGetSession(w http.ResponseWriter, r *http.Request) {
@@ -1183,6 +1194,38 @@ func (d *Daemon) snapshotSessions() []agent.SessionInfo {
 		sessions = append(sessions, info)
 	}
 	return sessions
+}
+
+// searchSessions returns sessions whose metadata contains all whitespace-
+// separated terms in query (case-insensitive substring match). Results are
+// sorted by updated_at descending.
+func (d *Daemon) searchSessions(query string) []agent.SessionInfo {
+	terms := strings.Fields(strings.ToLower(query))
+	if len(terms) == 0 {
+		return nil
+	}
+
+	all := d.snapshotSessions()
+	results := make([]agent.SessionInfo, 0)
+	for _, si := range all {
+		hay := strings.ToLower(si.Title + " " + si.Prompt + " " + si.Draft + " " + si.ProjectName)
+		match := true
+		for _, term := range terms {
+			if !strings.Contains(hay, term) {
+				match = false
+				break
+			}
+		}
+		if match {
+			results = append(results, si)
+		}
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].UpdatedAt.After(results[j].UpdatedAt)
+	})
+
+	return results
 }
 
 // createSession creates a new managed session and starts the backend.

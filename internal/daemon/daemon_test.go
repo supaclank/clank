@@ -3395,6 +3395,184 @@ func TestDaemonDebugOpenCodeServersEmpty(t *testing.T) {
 	}
 }
 
+func TestDaemonSearchSessions(t *testing.T) {
+	t.Parallel()
+
+	dir := shortTempDir(t)
+	sockPath := filepath.Join(dir, "test.sock")
+	pidPath := filepath.Join(dir, "test.pid")
+	dbPath := filepath.Join(dir, "test.db")
+
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+
+	// Seed sessions with distinct timestamps so we can verify date ordering.
+	now := time.Now().Truncate(time.Millisecond)
+	for _, info := range []agent.SessionInfo{
+		{
+			ID: "ses-s1", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
+			ProjectDir: "/tmp/proj", ProjectName: "myproject",
+			Title: "Fix authentication bug", Prompt: "fix login",
+			CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-2 * time.Hour),
+		},
+		{
+			ID: "ses-s2", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
+			ProjectDir: "/tmp/proj", ProjectName: "myproject",
+			Title: "Add dark mode", Prompt: "implement dark mode toggle",
+			CreatedAt: now.Add(-1 * time.Hour), UpdatedAt: now.Add(-1 * time.Hour),
+		},
+		{
+			ID: "ses-s3", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
+			ProjectDir: "/tmp/other", ProjectName: "otherproject",
+			Title: "Refactor database layer", Prompt: "clean up db queries",
+			CreatedAt: now, UpdatedAt: now,
+		},
+	} {
+		if err := st.UpsertSession(info); err != nil {
+			t.Fatalf("UpsertSession: %v", err)
+		}
+	}
+
+	d := daemon.NewWithPaths(sockPath, pidPath)
+	d.Store = st
+	mgr := newMockBackendManager()
+	d.BackendManagers[agent.BackendOpenCode] = mgr
+	d.BackendManagers[agent.BackendClaudeCode] = mgr
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run() }()
+
+	client := daemon.NewClient(sockPath)
+	waitForDaemon(t, client)
+	defer func() {
+		d.Stop()
+		<-errCh
+	}()
+
+	ctx := context.Background()
+
+	// Substring match: "authentication" appears in ses-s1 title.
+	results, err := client.SearchSessions(ctx, "authentication")
+	if err != nil {
+		t.Fatalf("SearchSessions(authentication): %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for 'authentication', got %d", len(results))
+	}
+	if results[0].ID != "ses-s1" {
+		t.Errorf("expected ses-s1, got %s", results[0].ID)
+	}
+
+	// "myproject" matches two sessions; most recent UpdatedAt should come first.
+	results, err = client.SearchSessions(ctx, "myproject")
+	if err != nil {
+		t.Fatalf("SearchSessions(myproject): %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results for 'myproject', got %d", len(results))
+	}
+	if results[0].ID != "ses-s2" {
+		t.Errorf("expected ses-s2 first (more recent), got %s", results[0].ID)
+	}
+	if results[1].ID != "ses-s1" {
+		t.Errorf("expected ses-s1 second (older), got %s", results[1].ID)
+	}
+
+	// Substring within a word: "dark" matches "Add dark mode".
+	results, err = client.SearchSessions(ctx, "dark")
+	if err != nil {
+		t.Fatalf("SearchSessions(dark): %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for 'dark', got %d", len(results))
+	}
+	if results[0].ID != "ses-s2" {
+		t.Errorf("expected ses-s2, got %s", results[0].ID)
+	}
+
+	// Multi-word AND: both "dark" and "toggle" must appear.
+	results, err = client.SearchSessions(ctx, "dark toggle")
+	if err != nil {
+		t.Fatalf("SearchSessions(dark toggle): %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for 'dark toggle', got %d", len(results))
+	}
+	if results[0].ID != "ses-s2" {
+		t.Errorf("expected ses-s2, got %s", results[0].ID)
+	}
+
+	// Multi-word AND where one term doesn't match: "dark queries" should return nothing.
+	results, err = client.SearchSessions(ctx, "dark queries")
+	if err != nil {
+		t.Fatalf("SearchSessions(dark queries): %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for 'dark queries', got %d", len(results))
+	}
+
+	// Case insensitive: "DATABASE" should match "database" in ses-s3.
+	results, err = client.SearchSessions(ctx, "DATABASE")
+	if err != nil {
+		t.Fatalf("SearchSessions(DATABASE): %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for 'DATABASE', got %d", len(results))
+	}
+	if results[0].ID != "ses-s3" {
+		t.Errorf("expected ses-s3, got %s", results[0].ID)
+	}
+
+	// No match: gibberish returns nothing.
+	results, err = client.SearchSessions(ctx, "xyznotfound")
+	if err != nil {
+		t.Fatalf("SearchSessions(xyznotfound): %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for 'xyznotfound', got %d", len(results))
+	}
+}
+
+func TestDaemonSearchSessionsMissingQuery(t *testing.T) {
+	t.Parallel()
+
+	dir := shortTempDir(t)
+	sockPath := filepath.Join(dir, "test.sock")
+	pidPath := filepath.Join(dir, "test.pid")
+	dbPath := filepath.Join(dir, "test.db")
+
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+
+	d := daemon.NewWithPaths(sockPath, pidPath)
+	d.Store = st
+	mgr := newMockBackendManager()
+	d.BackendManagers[agent.BackendOpenCode] = mgr
+	d.BackendManagers[agent.BackendClaudeCode] = mgr
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run() }()
+
+	client := daemon.NewClient(sockPath)
+	waitForDaemon(t, client)
+	defer func() {
+		d.Stop()
+		<-errCh
+	}()
+
+	ctx := context.Background()
+
+	// Missing q param should return an error.
+	_, err = client.SearchSessions(ctx, "")
+	if err == nil {
+		t.Fatal("expected error for empty query")
+	}
+}
+
 func waitForDaemon(t *testing.T, client *daemon.Client) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

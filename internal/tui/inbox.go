@@ -10,6 +10,7 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
@@ -63,6 +64,12 @@ type InboxModel struct {
 	showConfirm bool
 	confirm     confirmDialogModel
 
+	// Search state.
+	searching      bool                // true when the search bar is active
+	searchInput    textinput.Model     // text input for search queries
+	searchQuery    string              // last query sent to the daemon
+	cachedSessions []agent.SessionInfo // last full session list from the daemon
+
 	// Pre-built display data.
 	displayLines []string
 	rowToLine    []int
@@ -86,9 +93,19 @@ func NewInboxModel(client *daemon.Client) *InboxModel {
 		spinner.WithSpinner(spinner.MiniDot),
 		spinner.WithStyle(lipgloss.NewStyle().Foreground(successColor)),
 	)
+	ti := textinput.New()
+	ti.Placeholder = "Search sessions..."
+	ti.CharLimit = 256
+	ti.Prompt = "/ "
+	styles := ti.Styles()
+	styles.Focused.Prompt = lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
+	styles.Focused.Text = lipgloss.NewStyle().Foreground(textColor)
+	styles.Focused.Placeholder = lipgloss.NewStyle().Foreground(mutedColor)
+	ti.SetStyles(styles)
 	return &InboxModel{
-		client:  client,
-		spinner: sp,
+		client:      client,
+		spinner:     sp,
+		searchInput: ti,
 	}
 }
 
@@ -137,11 +154,30 @@ type inboxDataMsg struct {
 	err      error
 }
 
+// inboxSearchResultMsg carries search results from the daemon.
+type inboxSearchResultMsg struct {
+	query    string // the query that produced these results
+	sessions []agent.SessionInfo
+	err      error
+}
+
 // autoRefreshCmd schedules periodic data refresh.
 func (m *InboxModel) autoRefreshCmd() tea.Cmd {
 	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
 		return inboxRefreshMsg{}
 	})
+}
+
+// searchCmd performs a case-insensitive substring search against the daemon.
+// Multiple words are AND-ed: all terms must appear in the session metadata.
+func (m *InboxModel) searchCmd(query string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		sessions, err := m.client.SearchSessions(ctx, query)
+		return inboxSearchResultMsg{query: query, sessions: sessions, err: err}
+	}
 }
 
 func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -193,6 +229,11 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateMenu(msg)
 	}
 
+	// If searching, delegate keyboard input to search handler.
+	if m.searching {
+		return m.updateSearch(msg)
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -204,8 +245,13 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 		} else {
 			m.err = nil
+			m.cachedSessions = msg.sessions
 			m.buildGroups(msg.sessions)
 		}
+		return m, nil
+
+	case inboxSearchResultMsg:
+		// Late-arriving search result after exiting search mode — ignore.
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -300,6 +346,162 @@ func (m *InboxModel) openComposingSession() tea.Cmd {
 	return m.sessionView.Init()
 }
 
+// --- Search mode ---
+
+// enterSearch switches the inbox into search mode. The search bar appears
+// at the top and the current session list remains visible as a starting point.
+func (m *InboxModel) enterSearch() tea.Cmd {
+	m.searching = true
+	m.searchQuery = ""
+	m.searchInput.SetValue("")
+	return m.searchInput.Focus()
+}
+
+// exitSearch hides the search bar and restores the full session list.
+func (m *InboxModel) exitSearch() tea.Cmd {
+	m.searching = false
+	m.searchQuery = ""
+	m.searchInput.Blur()
+
+	// Rebuild the normal view from cached sessions.
+	if m.cachedSessions != nil {
+		m.buildGroups(m.cachedSessions)
+	}
+
+	// Trigger a fresh data load to pick up any changes that occurred while searching.
+	return m.loadDataCmd()
+}
+
+// updateSearch handles messages while in search mode.
+func (m *InboxModel) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
+
+	case inboxSearchResultMsg:
+		// Only apply results if the query still matches what the user typed.
+		if msg.query != m.searchQuery {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.err = nil
+		m.buildSearchResults(msg.sessions)
+		return m, nil
+
+	case inboxDataMsg:
+		// Always cache the full session list so we can restore on exit
+		// or when the search query is cleared.
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.err = nil
+			m.cachedSessions = msg.sessions
+			// Only rebuild from this data if not actively filtering.
+			if m.searchQuery == "" {
+				m.buildGroups(msg.sessions)
+			}
+		}
+		return m, nil
+
+	case tea.KeyPressMsg:
+		return m.handleSearchKey(msg)
+	}
+
+	return m, nil
+}
+
+// handleSearchKey processes keyboard input during search mode.
+func (m *InboxModel) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		return m, m.exitSearch()
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))):
+		return m, tea.Quit
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+		if m.cursor >= 0 && m.cursor < len(m.flatRows) {
+			row := m.flatRows[m.cursor]
+			if row.session != nil {
+				m.searching = false
+				m.searchInput.Blur()
+				return m, m.openSession(row.session.ID)
+			}
+		}
+		return m, nil
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "ctrl+p"))):
+		if m.cursor > 0 {
+			m.cursor--
+		}
+		return m, nil
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("down", "ctrl+n"))):
+		if m.cursor < len(m.flatRows)-1 {
+			m.cursor++
+		}
+		return m, nil
+
+	default:
+		// Forward to text input.
+		var cmd tea.Cmd
+		m.searchInput, cmd = m.searchInput.Update(msg)
+
+		// If the text changed, fire a new search.
+		newValue := m.searchInput.Value()
+		if newValue != m.searchQuery {
+			m.searchQuery = newValue
+			if newValue == "" {
+				// Query cleared — restore the full session list.
+				if m.cachedSessions != nil {
+					m.buildGroups(m.cachedSessions)
+				}
+				return m, cmd
+			}
+			return m, tea.Batch(cmd, m.searchCmd(newValue))
+		}
+		return m, cmd
+	}
+}
+
+// buildSearchResults populates the inbox groups/rows from search results.
+// Results are shown in a single flat "Results" group, ranked by relevance
+// (the order returned by the daemon).
+func (m *InboxModel) buildSearchResults(sessions []agent.SessionInfo) {
+	if len(sessions) == 0 {
+		m.groups = nil
+		m.flatRows = nil
+		m.cursor = 0
+		return
+	}
+
+	headerStyle := lipgloss.NewStyle().Foreground(dimColor).Bold(true)
+	rows := make([]inboxRow, len(sessions))
+	for i := range sessions {
+		rows[i] = inboxRow{session: &sessions[i]}
+	}
+
+	m.groups = []inboxGroup{{
+		name:  fmt.Sprintf("Results (%d)", len(sessions)),
+		style: headerStyle,
+		rows:  rows,
+	}}
+	m.flatRows = rows
+
+	// Clamp cursor.
+	if m.cursor >= len(m.flatRows) {
+		m.cursor = len(m.flatRows) - 1
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+}
+
 func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	msg = normalizeKeyCase(msg)
 
@@ -370,6 +572,8 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("n"))):
 		return m, m.openComposingSession()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("/", "ctrl+f", "ctrl+k"))):
+		return m, m.enterSearch()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("d"))):
 		if m.cursor >= 0 && m.cursor < len(m.flatRows) {
 			row := m.flatRows[m.cursor]
@@ -665,6 +869,12 @@ func (m *InboxModel) View() tea.View {
 	sb.WriteString(header)
 	sb.WriteString("\n\n")
 
+	// Search bar (rendered below the header when in search mode).
+	if m.searching {
+		sb.WriteString(m.searchInput.View())
+		sb.WriteString("\n")
+	}
+
 	// Error.
 	if m.err != nil {
 		errMsg := lipgloss.NewStyle().Foreground(dangerColor).Render(fmt.Sprintf("Error: %v", m.err))
@@ -716,7 +926,12 @@ func (m *InboxModel) View() tea.View {
 	}
 
 	// Help bar.
-	help := helpStyle.Render("j/k: navigate | enter: open | n: new | f: follow-up | d: done | x: archive | r: refresh | q: quit")
+	var help string
+	if m.searching {
+		help = helpStyle.Render("esc: cancel | enter: open | up/down: navigate")
+	} else {
+		help = helpStyle.Render("j/k: navigate | enter: open | n: new | /: search | f: follow-up | d: done | x: archive | r: refresh | q: quit")
+	}
 	sb.WriteString(help)
 
 	content := sb.String()
@@ -776,9 +991,14 @@ func (m *InboxModel) buildDisplayLines() {
 	}
 
 	if len(m.flatRows) == 0 {
+		var emptyMsg string
+		if m.searching && m.searchQuery != "" {
+			emptyMsg = "No matching sessions."
+		} else {
+			emptyMsg = "No sessions. Press 'n' to start a new session, or run 'clank code <prompt>'."
+		}
 		m.displayLines = append(m.displayLines,
-			lipgloss.NewStyle().Foreground(mutedColor).Render(
-				"No sessions. Press 'n' to start a new session, or run 'clank code <prompt>'."))
+			lipgloss.NewStyle().Foreground(mutedColor).Render(emptyMsg))
 	}
 }
 
@@ -929,6 +1149,9 @@ func (m *InboxModel) viewportHeight() int {
 	reserved := 4
 	if m.err != nil {
 		reserved += 2
+	}
+	if m.searching {
+		reserved += 1 // search bar line
 	}
 	h := m.height - reserved
 	if h < 3 {

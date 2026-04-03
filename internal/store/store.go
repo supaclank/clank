@@ -125,6 +125,7 @@ func (s *Store) migrate() error {
 		if err != nil {
 			return fmt.Errorf("migration v3: %w", err)
 		}
+		version = 3
 	}
 
 	return nil
