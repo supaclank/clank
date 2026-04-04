@@ -117,7 +117,7 @@ func (c *Client) ListSessions(ctx context.Context) ([]agent.SessionInfo, error) 
 }
 
 // SearchSessions searches session metadata (title, prompt, draft, project
-// name) using case-insensitive substring matching. The query supports
+// name) using case-insensitive word-boundary matching. The query supports
 // pipe-separated OR groups with space-separated AND terms within each group.
 // Since/Until filter on UpdatedAt using relative durations (e.g. "7d") or
 // RFC 3339 timestamps.

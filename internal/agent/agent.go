@@ -367,8 +367,10 @@ type SessionInfo struct {
 //
 // Query supports pipe-separated OR groups with space-separated AND terms
 // within each group. For example, "auth bug|dark mode" matches sessions
-// containing ("auth" AND "bug") OR ("dark" AND "mode"). All matching is
-// case-insensitive substring matching.
+// containing ("auth" AND "bug") OR ("dark" AND "mode"). Matching is
+// case-insensitive and word-boundary-aware: each term must appear at the
+// start of a word (e.g. "auth" matches "authentication" but "hey" does not
+// match "they").
 //
 // Since and Until filter on UpdatedAt. Both are optional; when omitted
 // the corresponding bound is open.
