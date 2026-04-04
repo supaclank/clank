@@ -1308,30 +1308,7 @@ func (d *Daemon) searchSessions(p agent.SearchParams) []agent.SessionInfo {
 // or a relative duration suffix (e.g. "7d", "24h") interpreted as "ago from now".
 // Supported units: h (hours), d (days).
 func parseTimeParam(s string) (time.Time, error) {
-	if len(s) < 2 {
-		return time.Time{}, fmt.Errorf("too short: %q", s)
-	}
-
-	unit := s[len(s)-1]
-	if unit == 'h' || unit == 'd' {
-		numStr := s[:len(s)-1]
-		n, err := strconv.Atoi(numStr)
-		if err == nil && n > 0 {
-			switch unit {
-			case 'h':
-				return time.Now().Add(-time.Duration(n) * time.Hour), nil
-			case 'd':
-				return time.Now().Add(-time.Duration(n) * 24 * time.Hour), nil
-			}
-		}
-	}
-
-	// Fall back to RFC 3339.
-	t, err := time.Parse(time.RFC3339, s)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("expected relative duration (e.g. 7d, 24h) or RFC 3339 timestamp, got %q", s)
-	}
-	return t, nil
+	return agent.ParseTimeParam(s)
 }
 
 // createSession creates a new managed session and starts the backend.

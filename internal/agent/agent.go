@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -376,6 +377,36 @@ type SearchParams struct {
 	Since      time.Time         `json:"since,omitempty"`      // only sessions updated at or after this time
 	Until      time.Time         `json:"until,omitempty"`      // only sessions updated before this time
 	Visibility SessionVisibility `json:"visibility,omitempty"` // "" = active only, "all" = everything, "done"/"archived" = only that
+}
+
+// ParseTimeParam parses a time string that is either a relative duration
+// suffix (e.g. "7d", "24h") interpreted as "ago from now", or an RFC 3339
+// timestamp. Supported relative units: h (hours), d (days).
+func ParseTimeParam(s string) (time.Time, error) {
+	if len(s) < 2 {
+		return time.Time{}, fmt.Errorf("too short: %q", s)
+	}
+
+	unit := s[len(s)-1]
+	if unit == 'h' || unit == 'd' {
+		numStr := s[:len(s)-1]
+		n, err := strconv.Atoi(numStr)
+		if err == nil && n > 0 {
+			switch unit {
+			case 'h':
+				return time.Now().Add(-time.Duration(n) * time.Hour), nil
+			case 'd':
+				return time.Now().Add(-time.Duration(n) * 24 * time.Hour), nil
+			}
+		}
+	}
+
+	// Fall back to RFC 3339.
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("expected relative duration (e.g. 7d, 24h) or RFC 3339 timestamp, got %q", s)
+	}
+	return t, nil
 }
 
 // ProjectInfo is a lightweight project summary from the OpenCode API.

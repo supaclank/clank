@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,8 +14,9 @@ import (
 	"github.com/acksell/mindmouth/tools"
 )
 
-// Instructions is the system prompt for the voice supervisor agent.
-const Instructions = `You are the user's chief of staff for their fleet of coding agents managed by the Clank daemon.
+// baseInstructions is the core system prompt for the voice supervisor agent.
+// buildInstructions appends dynamic context (known projects, etc.).
+const baseInstructions = `You are the user's chief of staff for their fleet of coding agents managed by the Clank daemon.
 
 Your role:
 - Help the user stay on top of what their agents are doing
@@ -26,7 +29,24 @@ When the user starts talking, first check if they're asking about a specific ses
 
 When the user makes a decision (approves a plan, answers an agent's question, gives feedback), use send_message to relay it. Summarize what you're sending before you send it.
 
+When creating a session, you MUST use an exact project_dir from the known projects list below. NEVER guess or construct a path yourself.
+
 Be conversational and concise. Speak in short sentences. Focus on what needs the user's attention: questions, blockers, completed work needing review. Don't list every session unless asked — highlight what's changed or needs action.`
+
+// buildInstructions appends the known project directories to the base
+// system prompt so the voice agent can reference exact paths.
+func buildInstructions(knownDirs []string) string {
+	if len(knownDirs) == 0 {
+		return baseInstructions + "\n\nNo known projects yet. The user must provide an exact absolute project path when creating a session."
+	}
+	var b strings.Builder
+	b.WriteString(baseInstructions)
+	b.WriteString("\n\nKnown projects:\n")
+	for _, dir := range knownDirs {
+		fmt.Fprintf(&b, "- %s (%s)\n", dir, filepath.Base(dir))
+	}
+	return b.String()
+}
 
 // Session manages a single voice agent backed by the OpenAI Realtime
 // API. It wraps mindmouth.Agent and bridges audio from an external
@@ -104,10 +124,17 @@ func NewSession(ctx context.Context, cfg Config) (*Session, error) {
 	reg := tools.NewRegistry()
 	RegisterTools(reg, cfg.ToolProvider)
 
+	// Query known project directories to ground the agent's context.
+	knownDirs, err := cfg.ToolProvider.KnownProjectDirs(ctx)
+	if err != nil {
+		logger.Printf("warning: failed to load known project dirs: %v", err)
+	}
+	instructions := buildInstructions(knownDirs)
+
 	// Create mindmouth agent.
 	mmAgent, err := mindmouth.NewAgent(mindmouth.AgentConfig{
 		APIKey:       cfg.APIKey,
-		Instructions: Instructions,
+		Instructions: instructions,
 		Source:       cfg.Source,
 		Sink:         cfg.Sink,
 		Tools:        reg.RealtimeTools(),

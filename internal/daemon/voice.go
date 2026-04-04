@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
@@ -276,4 +277,26 @@ func (tp *daemonToolProvider) AbortSession(ctx context.Context, sessionID string
 		return fmt.Errorf("session %s has no active backend", sessionID)
 	}
 	return ms.backend.Abort(ctx)
+}
+
+func (tp *daemonToolProvider) KnownProjectDirs(ctx context.Context) ([]string, error) {
+	if tp.d.Store == nil {
+		return nil, nil
+	}
+	seen := make(map[string]struct{})
+	for bt := range tp.d.BackendManagers {
+		dirs, err := tp.d.Store.KnownProjectDirs(bt)
+		if err != nil {
+			return nil, fmt.Errorf("known dirs for %s: %w", bt, err)
+		}
+		for _, dir := range dirs {
+			seen[dir] = struct{}{}
+		}
+	}
+	dirs := make([]string, 0, len(seen))
+	for dir := range seen {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	return dirs, nil
 }

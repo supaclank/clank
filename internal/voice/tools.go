@@ -26,6 +26,11 @@ type ToolProvider interface {
 	SendMessage(ctx context.Context, sessionID string, text string) error
 	CreateSession(ctx context.Context, req agent.StartRequest) (*agent.SessionInfo, error)
 	AbortSession(ctx context.Context, sessionID string) error
+
+	// KnownProjectDirs returns the deduplicated set of project directories
+	// that have existing sessions across all backends. Used to ground the
+	// voice agent's context and validate create_session calls.
+	KnownProjectDirs(ctx context.Context) ([]string, error)
 }
 
 // RegisterTools adds clankd tools to the given registry. Each tool
@@ -84,14 +89,14 @@ func listSessionsTool(tp ToolProvider) *tools.Tool {
 			p.Visibility = agent.SessionVisibility(args.Visibility)
 
 			if args.Since != "" {
-				t, err := time.Parse(time.RFC3339, args.Since)
+				t, err := agent.ParseTimeParam(args.Since)
 				if err != nil {
 					return "", fmt.Errorf("invalid since: %w", err)
 				}
 				p.Since = t
 			}
 			if args.Until != "" {
-				t, err := time.Parse(time.RFC3339, args.Until)
+				t, err := agent.ParseTimeParam(args.Until)
 				if err != nil {
 					return "", fmt.Errorf("invalid until: %w", err)
 				}
@@ -118,7 +123,7 @@ func listSessionsTool(tp ToolProvider) *tools.Tool {
 					title = truncate(s.Prompt, 60)
 				}
 				fmt.Fprintf(&b, "- %s | %s | %s | %s | %s%s\n",
-					s.ID[:8], s.Status, s.Backend, s.ProjectName, title, unread)
+					s.ID[:8], s.Status, s.Backend, s.ProjectDir, title, unread)
 			}
 			return b.String(), nil
 		},
@@ -279,8 +284,8 @@ func sendMessageTool(tp ToolProvider) *tools.Tool {
 
 func createSessionTool(tp ToolProvider) *tools.Tool {
 	return &tools.Tool{
-		Name:        "create_session",
-		Description: "Create a new coding agent session with the given backend, project directory, and prompt.",
+		Name:        "new_session",
+		Description: "Create a new coding agent session with the given backend, project directory, and prompt. The project_dir MUST be one of the known project directories.",
 		Schema: tools.InputSchema{
 			Properties: map[string]any{
 				"backend": map[string]any{
@@ -290,7 +295,7 @@ func createSessionTool(tp ToolProvider) *tools.Tool {
 				},
 				"project_dir": map[string]any{
 					"type":        "string",
-					"description": "Absolute path to the project directory.",
+					"description": "Absolute path to the project directory. Must be one of the known project directories from the system prompt.",
 				},
 				"prompt": map[string]any{
 					"type":        "string",
@@ -308,6 +313,12 @@ func createSessionTool(tp ToolProvider) *tools.Tool {
 			}
 			if err := json.Unmarshal(input, &args); err != nil {
 				return "", fmt.Errorf("parse args: %w", err)
+			}
+
+			// Validate project_dir is a known directory. This prevents
+			// the voice agent from hallucinating paths.
+			if err := validateKnownProjectDir(tp, args.ProjectDir); err != nil {
+				return "", err
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -362,6 +373,33 @@ func abortSessionTool(tp ToolProvider) *tools.Tool {
 			return fmt.Sprintf("Session %s aborted.", id[:8]), nil
 		},
 	}
+}
+
+// validateKnownProjectDir checks that the given directory is in the set of
+// known project directories. Returns a descriptive error listing valid
+// directories if not found — this helps the voice agent self-correct.
+func validateKnownProjectDir(tp ToolProvider, dir string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	known, err := tp.KnownProjectDirs(ctx)
+	if err != nil {
+		return fmt.Errorf("check known dirs: %w", err)
+	}
+	for _, d := range known {
+		if d == dir {
+			return nil
+		}
+	}
+	if len(known) == 0 {
+		return fmt.Errorf("project_dir %q is not a known project directory (no known projects exist)", dir)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "project_dir %q is not a known project directory. Valid directories:\n", dir)
+	for _, d := range known {
+		fmt.Fprintf(&b, "- %s\n", d)
+	}
+	return fmt.Errorf("%s", b.String())
 }
 
 // resolveSessionID looks up a session by its full ID. Partial IDs are not
