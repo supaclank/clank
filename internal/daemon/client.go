@@ -132,6 +132,9 @@ func (c *Client) SearchSessions(ctx context.Context, p agent.SearchParams) ([]ag
 	if !p.Until.IsZero() {
 		v.Set("until", p.Until.Format(time.RFC3339))
 	}
+	if p.Visibility != "" {
+		v.Set("visibility", string(p.Visibility))
+	}
 	var sessions []agent.SessionInfo
 	if err := c.get(ctx, "/sessions/search?"+v.Encode(), &sessions); err != nil {
 		return nil, err

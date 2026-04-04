@@ -20,7 +20,7 @@ import (
 // is ever extracted into a separate process, swap in an implementation
 // that shells out to the clank CLI or calls the HTTP API.
 type ToolProvider interface {
-	ListSessions(ctx context.Context) ([]agent.SessionInfo, error)
+	SearchSessions(ctx context.Context, p agent.SearchParams) ([]agent.SessionInfo, error)
 	GetSession(ctx context.Context, id string) (*agent.SessionInfo, error)
 	GetSessionMessages(ctx context.Context, sessionID string) ([]agent.MessageData, error)
 	SendMessage(ctx context.Context, sessionID string, text string) error
@@ -41,18 +41,68 @@ func RegisterTools(reg *tools.Registry, tp ToolProvider) {
 
 func listSessionsTool(tp ToolProvider) *tools.Tool {
 	return &tools.Tool{
-		Name:        "list_sessions",
-		Description: "List all coding agent sessions with their status, title, project, and whether they need attention.",
+		Name: "list_sessions",
+		Description: "List coding agent sessions. By default only shows active (unfinished) sessions. " +
+			"Use 'query' to filter by text (pipe-separated OR groups, space-separated AND terms). " +
+			"Use 'since'/'until' to filter by time (relative durations like '7d'/'24h' or RFC 3339 timestamps). " +
+			"Use 'visibility' to include done/archived sessions. ",
 		Schema: tools.InputSchema{
-			Properties: map[string]any{},
+			Properties: map[string]any{
+				"query": map[string]any{
+					"type":        "string",
+					"description": "Search query. Pipe-separated OR groups with space-separated AND terms. E.g. 'auth bug|dark mode'. Parenthesis not supported.",
+				},
+				"since": map[string]any{
+					"type":        "string",
+					"description": "Only sessions updated at or after this time. Relative duration (e.g. '7d', '24h') or RFC 3339 timestamp.",
+				},
+				"until": map[string]any{
+					"type":        "string",
+					"description": "Only sessions updated before this time. Relative duration (e.g. '7d', '24h') or RFC 3339 timestamp.",
+				},
+				"visibility": map[string]any{
+					"type":        "string",
+					"description": "Filter by visibility. '' (default) = active only, 'all' = everything, 'done' = done only, 'archived' = archived only.",
+					"enum":        []string{"", "all", "done", "archived"},
+				},
+			},
 		},
 		Effect: tools.ReadOnly,
 		Fn: func(input json.RawMessage) (string, error) {
+			var args struct {
+				Query      string `json:"query"`
+				Since      string `json:"since"`
+				Until      string `json:"until"`
+				Visibility string `json:"visibility"`
+			}
+			if err := json.Unmarshal(input, &args); err != nil {
+				return "", fmt.Errorf("parse args: %w", err)
+			}
+
+			var p agent.SearchParams
+			p.Query = args.Query
+			p.Visibility = agent.SessionVisibility(args.Visibility)
+
+			if args.Since != "" {
+				t, err := time.Parse(time.RFC3339, args.Since)
+				if err != nil {
+					return "", fmt.Errorf("invalid since: %w", err)
+				}
+				p.Since = t
+			}
+			if args.Until != "" {
+				t, err := time.Parse(time.RFC3339, args.Until)
+				if err != nil {
+					return "", fmt.Errorf("invalid until: %w", err)
+				}
+				p.Until = t
+			}
+
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			sessions, err := tp.ListSessions(ctx)
+			sessions, err := tp.SearchSessions(ctx, p)
 			if err != nil {
-				return "", fmt.Errorf("list sessions: %w", err)
+				return "", fmt.Errorf("search sessions: %w", err)
 			}
 			if len(sessions) == 0 {
 				return "No sessions found.", nil
@@ -78,12 +128,12 @@ func listSessionsTool(tp ToolProvider) *tools.Tool {
 func getSessionTool(tp ToolProvider) *tools.Tool {
 	return &tools.Tool{
 		Name:        "get_session",
-		Description: "Get detailed information about a specific session by its ID (or ID prefix).",
+		Description: "Get detailed information about a specific session by its full ID. Use list_sessions first to find the ID.",
 		Schema: tools.InputSchema{
 			Properties: map[string]any{
 				"session_id": map[string]any{
 					"type":        "string",
-					"description": "The session ID or prefix (at least 4 characters).",
+					"description": "The full session ID. Use list_sessions to find it.",
 				},
 			},
 			Required: []string{"session_id"},
@@ -123,7 +173,7 @@ func getMessagesTool(tp ToolProvider) *tools.Tool {
 			Properties: map[string]any{
 				"session_id": map[string]any{
 					"type":        "string",
-					"description": "The session ID or prefix.",
+					"description": "The full session ID. Use list_sessions to find it.",
 				},
 				"last_n": map[string]any{
 					"type":        "integer",
@@ -189,7 +239,7 @@ func sendMessageTool(tp ToolProvider) *tools.Tool {
 			Properties: map[string]any{
 				"session_id": map[string]any{
 					"type":        "string",
-					"description": "The session ID or prefix.",
+					"description": "The full session ID. Use list_sessions to find it.",
 				},
 				"text": map[string]any{
 					"type":        "string",
@@ -284,7 +334,7 @@ func abortSessionTool(tp ToolProvider) *tools.Tool {
 			Properties: map[string]any{
 				"session_id": map[string]any{
 					"type":        "string",
-					"description": "The session ID or prefix.",
+					"description": "The full session ID. Use list_sessions to find it.",
 				},
 			},
 			Required: []string{"session_id"},
@@ -314,37 +364,18 @@ func abortSessionTool(tp ToolProvider) *tools.Tool {
 	}
 }
 
-// resolveSessionID matches a prefix to a full session ID by listing
-// sessions and finding a unique prefix match.
-func resolveSessionID(ctx context.Context, tp ToolProvider, prefix string) (string, error) {
-	if prefix == "" {
+// resolveSessionID looks up a session by its full ID. Partial IDs are not
+// supported — if the exact ID is not found, the error directs the caller to
+// use list_sessions to find the correct full ID.
+func resolveSessionID(ctx context.Context, tp ToolProvider, id string) (string, error) {
+	if id == "" {
 		return "", fmt.Errorf("session_id is required")
 	}
-	// Try exact match first via GetSession.
-	info, err := tp.GetSession(ctx, prefix)
-	if err == nil && info != nil {
-		return info.ID, nil
-	}
-
-	// Fall back to prefix match.
-	sessions, err := tp.ListSessions(ctx)
+	info, err := tp.GetSession(ctx, id)
 	if err != nil {
-		return "", fmt.Errorf("list sessions for prefix resolution: %w", err)
+		return "", fmt.Errorf("session %q not found — use list_sessions to find the correct full session ID", id)
 	}
-	var matches []string
-	for _, s := range sessions {
-		if strings.HasPrefix(s.ID, prefix) {
-			matches = append(matches, s.ID)
-		}
-	}
-	switch len(matches) {
-	case 0:
-		return "", fmt.Errorf("no session found matching prefix %q", prefix)
-	case 1:
-		return matches[0], nil
-	default:
-		return "", fmt.Errorf("ambiguous prefix %q matches %d sessions", prefix, len(matches))
-	}
+	return info.ID, nil
 }
 
 func truncate(s string, max int) string {

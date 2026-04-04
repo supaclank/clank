@@ -39,6 +39,7 @@ const (
 	VisibilityVisible  SessionVisibility = ""         // Default: shown in inbox
 	VisibilityDone     SessionVisibility = "done"     // User marked as completed
 	VisibilityArchived SessionVisibility = "archived" // User archived (won't do / irrelevant)
+	VisibilityAll      SessionVisibility = "all"      // Pseudo-value: include all visibilities
 )
 
 // EventType classifies daemon events.
@@ -371,9 +372,10 @@ type SessionInfo struct {
 // Since and Until filter on UpdatedAt. Both are optional; when omitted
 // the corresponding bound is open.
 type SearchParams struct {
-	Query string    `json:"query,omitempty"` // pipe-separated OR groups
-	Since time.Time `json:"since,omitempty"` // only sessions updated at or after this time
-	Until time.Time `json:"until,omitempty"` // only sessions updated before this time
+	Query      string            `json:"query,omitempty"`      // pipe-separated OR groups
+	Since      time.Time         `json:"since,omitempty"`      // only sessions updated at or after this time
+	Until      time.Time         `json:"until,omitempty"`      // only sessions updated before this time
+	Visibility SessionVisibility `json:"visibility,omitempty"` // "" = active only, "all" = everything, "done"/"archived" = only that
 }
 
 // ProjectInfo is a lightweight project summary from the OpenCode API.

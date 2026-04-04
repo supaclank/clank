@@ -752,6 +752,7 @@ func (d *Daemon) handleSearchSessions(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 	sinceRaw := r.URL.Query().Get("since")
 	untilRaw := r.URL.Query().Get("until")
+	visibility := agent.SessionVisibility(r.URL.Query().Get("visibility"))
 
 	if q == "" && sinceRaw == "" && untilRaw == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one of q, since, or until is required"})
@@ -760,6 +761,7 @@ func (d *Daemon) handleSearchSessions(w http.ResponseWriter, r *http.Request) {
 
 	var p agent.SearchParams
 	p.Query = q
+	p.Visibility = visibility
 
 	if sinceRaw != "" {
 		t, err := parseTimeParam(sinceRaw)
@@ -1244,13 +1246,24 @@ func (d *Daemon) searchSessions(p agent.SearchParams) []agent.SessionInfo {
 	hasSince := !p.Since.IsZero()
 	hasUntil := !p.Until.IsZero()
 
-	if !hasQuery && !hasSince && !hasUntil {
-		return nil
-	}
-
 	all := d.snapshotSessions()
 	results := make([]agent.SessionInfo, 0)
 	for _, si := range all {
+		// Visibility filter.
+		switch p.Visibility {
+		case agent.VisibilityAll:
+			// No filter — include everything.
+		case agent.VisibilityDone, agent.VisibilityArchived:
+			if si.Visibility != p.Visibility {
+				continue
+			}
+		default:
+			// Default ("") — active sessions only.
+			if si.Hidden() {
+				continue
+			}
+		}
+
 		// Time filter.
 		if hasSince && si.UpdatedAt.Before(p.Since) {
 			continue

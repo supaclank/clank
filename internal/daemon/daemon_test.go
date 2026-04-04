@@ -3656,6 +3656,122 @@ func TestDaemonSearchSessionsAllParamsEmpty(t *testing.T) {
 	}
 }
 
+func TestDaemonSearchSessionsVisibility(t *testing.T) {
+	t.Parallel()
+
+	dir := shortTempDir(t)
+	sockPath := filepath.Join(dir, "test.sock")
+	pidPath := filepath.Join(dir, "test.pid")
+	dbPath := filepath.Join(dir, "test.db")
+
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+
+	now := time.Now().Truncate(time.Millisecond)
+	for _, info := range []agent.SessionInfo{
+		{
+			ID: "ses-active", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
+			ProjectDir: "/tmp/proj", ProjectName: "proj",
+			Title: "active session", Prompt: "do stuff",
+			Visibility: agent.VisibilityVisible,
+			CreatedAt:  now.Add(-3 * time.Hour), UpdatedAt: now.Add(-3 * time.Hour),
+		},
+		{
+			ID: "ses-done", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
+			ProjectDir: "/tmp/proj", ProjectName: "proj",
+			Title: "done session", Prompt: "finished task",
+			Visibility: agent.VisibilityDone,
+			CreatedAt:  now.Add(-2 * time.Hour), UpdatedAt: now.Add(-2 * time.Hour),
+		},
+		{
+			ID: "ses-archived", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
+			ProjectDir: "/tmp/proj", ProjectName: "proj",
+			Title: "archived session", Prompt: "old stuff",
+			Visibility: agent.VisibilityArchived,
+			CreatedAt:  now.Add(-1 * time.Hour), UpdatedAt: now.Add(-1 * time.Hour),
+		},
+	} {
+		if err := st.UpsertSession(info); err != nil {
+			t.Fatalf("UpsertSession: %v", err)
+		}
+	}
+
+	d := daemon.NewWithPaths(sockPath, pidPath)
+	d.Store = st
+	mgr := newMockBackendManager()
+	d.BackendManagers[agent.BackendOpenCode] = mgr
+	d.BackendManagers[agent.BackendClaudeCode] = mgr
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run() }()
+
+	client := daemon.NewClient(sockPath)
+	waitForDaemon(t, client)
+	defer func() {
+		d.Stop()
+		<-errCh
+	}()
+
+	ctx := context.Background()
+
+	// Default visibility (empty): only active sessions. Must provide at
+	// least one search param for the HTTP handler, so use a broad query.
+	results, err := client.SearchSessions(ctx, agent.SearchParams{Query: "session"})
+	if err != nil {
+		t.Fatalf("SearchSessions(default visibility): %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 active session, got %d", len(results))
+	}
+	if results[0].ID != "ses-active" {
+		t.Errorf("expected ses-active, got %s", results[0].ID)
+	}
+
+	// Visibility "all": returns all three sessions.
+	results, err = client.SearchSessions(ctx, agent.SearchParams{
+		Query:      "session",
+		Visibility: agent.VisibilityAll,
+	})
+	if err != nil {
+		t.Fatalf("SearchSessions(visibility=all): %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 sessions for visibility=all, got %d", len(results))
+	}
+
+	// Visibility "done": only done sessions.
+	results, err = client.SearchSessions(ctx, agent.SearchParams{
+		Query:      "session",
+		Visibility: agent.VisibilityDone,
+	})
+	if err != nil {
+		t.Fatalf("SearchSessions(visibility=done): %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 done session, got %d", len(results))
+	}
+	if results[0].ID != "ses-done" {
+		t.Errorf("expected ses-done, got %s", results[0].ID)
+	}
+
+	// Visibility "archived": only archived sessions.
+	results, err = client.SearchSessions(ctx, agent.SearchParams{
+		Query:      "session",
+		Visibility: agent.VisibilityArchived,
+	})
+	if err != nil {
+		t.Fatalf("SearchSessions(visibility=archived): %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 archived session, got %d", len(results))
+	}
+	if results[0].ID != "ses-archived" {
+		t.Errorf("expected ses-archived, got %s", results[0].ID)
+	}
+}
+
 func waitForDaemon(t *testing.T, client *daemon.Client) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

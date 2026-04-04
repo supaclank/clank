@@ -203,8 +203,8 @@ type daemonToolProvider struct {
 	d *Daemon
 }
 
-func (tp *daemonToolProvider) ListSessions(ctx context.Context) ([]agent.SessionInfo, error) {
-	return tp.d.snapshotSessions(), nil
+func (tp *daemonToolProvider) SearchSessions(ctx context.Context, p agent.SearchParams) ([]agent.SessionInfo, error) {
+	return tp.d.searchSessions(p), nil
 }
 
 func (tp *daemonToolProvider) GetSession(ctx context.Context, id string) (*agent.SessionInfo, error) {
