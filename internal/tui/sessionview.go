@@ -147,6 +147,9 @@ type SessionViewModel struct {
 	menuNextMessageID  string // next message ID after the target (for fork; empty = last message)
 	menuMessageContent string // message content for prompt prefill after revert
 
+	// Help overlay state.
+	showHelp bool
+
 	// Mouse text selection state.
 	selection        textSelection
 	cachedContent    []string // content lines from last View(), used for selection extraction
@@ -451,6 +454,14 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.menu, cmd = m.menu.Update(msg)
 			return m, cmd
+		}
+	}
+
+	// Help overlay takes priority when open — dismiss on any key.
+	if m.showHelp {
+		if _, ok := msg.(tea.KeyPressMsg); ok {
+			m.showHelp = false
+			return m, nil
 		}
 	}
 
@@ -962,6 +973,9 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("o"))):
 		return m, openNativeCLI(m.info)
+	case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
+		m.showHelp = true
+		return m, nil
 	}
 
 	return m, nil
@@ -1974,6 +1988,7 @@ func (m *SessionViewModel) View() tea.View {
 
 	output := m.overlaySessionConfirm(sb.String())
 	output = m.overlaySessionMenu(output)
+	output = m.overlaySessionHelp(output)
 	v := tea.NewView(output)
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
@@ -2286,10 +2301,7 @@ func (m *SessionViewModel) buildHelpText() string {
 	if m.standalone {
 		qLabel = "q: quit"
 	}
-	parts := []string{"m: message", ":: actions", "v: verbose", "c: copy", "f: follow-up", "d: done", "x: archive", "drag: copy", qLabel}
-	if m.info != nil && m.info.Backend == agent.BackendOpenCode && m.info.ExternalID != "" {
-		parts = append(parts[:len(parts)-1], "o: open cli", parts[len(parts)-1])
-	}
+	parts := []string{"m: message", ":: actions", "c: copy", "?: help", qLabel}
 	if m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting) {
 		parts = append([]string{"ctrl+c: cancel"}, parts...)
 	}
@@ -2356,6 +2368,84 @@ func (m *SessionViewModel) overlaySessionMenu(base string) string {
 		return base
 	}
 	return overlayCenter(base, m.menu.View(), m.width, m.height)
+}
+
+// overlaySessionHelp overlays the help popup onto the base content if active.
+func (m *SessionViewModel) overlaySessionHelp(base string) string {
+	if !m.showHelp {
+		return base
+	}
+
+	var sb strings.Builder
+
+	innerWidth := 44
+
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(textColor).
+		Width(innerWidth).
+		Render("Keybindings")
+	sb.WriteString(title)
+	sb.WriteString("\n")
+
+	sep := lipgloss.NewStyle().
+		Foreground(mutedColor).
+		Render(strings.Repeat("─", innerWidth))
+
+	helpLine := func(key, desc string) {
+		k := lipgloss.NewStyle().Foreground(textColor).Bold(true).Render(key)
+		d := lipgloss.NewStyle().Foreground(dimColor).Render(desc)
+		padding := innerWidth - lipgloss.Width(k) - lipgloss.Width(d)
+		if padding < 1 {
+			padding = 1
+		}
+		sb.WriteString(k + strings.Repeat(" ", padding) + d + "\n")
+	}
+
+	// Navigation section.
+	sb.WriteString(lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("Navigation"))
+	sb.WriteString("\n")
+	helpLine("j / k", "move down / up")
+	helpLine("shift+down/up", "jump to user messages")
+	helpLine("g / G", "go to top / bottom")
+	helpLine("ctrl+d / ctrl+u", "half-page down / up")
+	sb.WriteString(sep + "\n")
+
+	// Actions section.
+	sb.WriteString(lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("Actions"))
+	sb.WriteString("\n")
+	helpLine("m", "compose message")
+	helpLine(":", "actions menu")
+	helpLine("v", "toggle verbose")
+	helpLine("c", "copy entry")
+	helpLine("o", "open in native CLI")
+	sb.WriteString(sep + "\n")
+
+	// Session management section.
+	sb.WriteString(lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("Session"))
+	sb.WriteString("\n")
+	helpLine("f", "toggle follow-up")
+	helpLine("d", "mark as done")
+	helpLine("x", "archive")
+	sb.WriteString(sep + "\n")
+
+	qLabel := "back"
+	if m.standalone {
+		qLabel = "quit"
+	}
+	helpLine("q", qLabel)
+
+	sb.WriteString("\n")
+	hint := lipgloss.NewStyle().Foreground(dimColor).Render("press any key to dismiss")
+	sb.WriteString(hint)
+
+	popup := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(primaryColor).
+		Padding(1, 2).
+		Render(sb.String())
+
+	return overlayCenter(base, popup, m.width, m.height)
 }
 
 // --- Navigation helpers ---

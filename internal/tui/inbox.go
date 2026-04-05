@@ -69,6 +69,9 @@ type InboxModel struct {
 	showConfirm bool
 	confirm     confirmDialogModel
 
+	// Help overlay state.
+	showHelp bool
+
 	// Search state.
 	searching      bool                // true when the search bar is active
 	searchInput    textinput.Model     // text input for search queries
@@ -222,6 +225,14 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// If we're in session detail view (or composing), delegate.
 	if m.screen == screenSession && m.sessionView != nil {
 		return m.updateSessionView(msg)
+	}
+
+	// If help overlay is open, dismiss on any key press.
+	if m.showHelp {
+		if _, ok := msg.(tea.KeyPressMsg); ok {
+			m.showHelp = false
+			return m, nil
+		}
 	}
 
 	// If confirm dialog is open, delegate.
@@ -661,6 +672,9 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, openNativeCLI(row.session)
 			}
 		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
+		m.showHelp = true
+		return m, nil
 	}
 	return m, nil
 }
@@ -993,13 +1007,7 @@ func (m *InboxModel) View() tea.View {
 	if m.searching {
 		help = helpStyle.Render("esc: cancel | enter: open | up/down: navigate")
 	} else {
-		archiveLabel := "x: archive"
-		if m.cursor >= 0 && m.cursor < len(m.flatRows) {
-			if row := m.flatRows[m.cursor]; row.session != nil && row.session.Visibility == agent.VisibilityArchived {
-				archiveLabel = "x: unarchive"
-			}
-		}
-		help = helpStyle.Render("j/k: navigate | enter: open | o: open cli | n: new | /: search | f: follow-up | d: done | " + archiveLabel + " | r: refresh | q: quit")
+		help = helpStyle.Render("enter: open | n: new | /: search | ?: help | q: quit")
 	}
 	sb.WriteString(help)
 
@@ -1013,6 +1021,11 @@ func (m *InboxModel) View() tea.View {
 	// Overlay confirm dialog if open.
 	if m.showConfirm {
 		content = m.overlayConfirm(content)
+	}
+
+	// Overlay help if open.
+	if m.showHelp {
+		content = m.overlayHelp(content)
 	}
 
 	v := tea.NewView(content)
@@ -1408,4 +1421,73 @@ func (m *InboxModel) overlayMenu(base string) string {
 
 func (m *InboxModel) overlayConfirm(base string) string {
 	return overlayCenter(base, m.confirm.View(), m.width, m.height)
+}
+
+func (m *InboxModel) overlayHelp(base string) string {
+	var sb strings.Builder
+
+	innerWidth := 44
+
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(textColor).
+		Width(innerWidth).
+		Render("Keybindings")
+	sb.WriteString(title)
+	sb.WriteString("\n")
+
+	sep := lipgloss.NewStyle().
+		Foreground(mutedColor).
+		Render(strings.Repeat("─", innerWidth))
+
+	helpLine := func(key, desc string) {
+		k := lipgloss.NewStyle().Foreground(textColor).Bold(true).Render(key)
+		d := lipgloss.NewStyle().Foreground(dimColor).Render(desc)
+		padding := innerWidth - lipgloss.Width(k) - lipgloss.Width(d)
+		if padding < 1 {
+			padding = 1
+		}
+		sb.WriteString(k + strings.Repeat(" ", padding) + d + "\n")
+	}
+
+	// Navigation section.
+	sb.WriteString(lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("Navigation"))
+	sb.WriteString("\n")
+	helpLine("j / k", "move down / up")
+	helpLine("shift+down/up", "jump to next group")
+	helpLine("g / G", "go to top / bottom")
+	helpLine("ctrl+d / ctrl+u", "half-page down / up")
+	sb.WriteString(sep + "\n")
+
+	// Actions section.
+	sb.WriteString(lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("Actions"))
+	sb.WriteString("\n")
+	helpLine("enter", "open session")
+	helpLine("n", "new session")
+	helpLine("o", "open in native CLI")
+	helpLine("/", "search")
+	helpLine("r", "refresh")
+	sb.WriteString(sep + "\n")
+
+	// Session management section.
+	sb.WriteString(lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("Session"))
+	sb.WriteString("\n")
+	helpLine("f", "toggle follow-up")
+	helpLine("d", "mark as done")
+	helpLine("x", "archive / unarchive")
+	sb.WriteString(sep + "\n")
+
+	helpLine("q", "quit")
+
+	sb.WriteString("\n")
+	hint := lipgloss.NewStyle().Foreground(dimColor).Render("press any key to dismiss")
+	sb.WriteString(hint)
+
+	popup := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(primaryColor).
+		Padding(1, 2).
+		Render(sb.String())
+
+	return overlayCenter(base, popup, m.width, m.height)
 }
