@@ -3,7 +3,9 @@ package tui
 import (
 	"context"
 	"fmt"
+	"image/color"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -78,6 +80,11 @@ type InboxModel struct {
 	searchQuery    string              // last query sent to the daemon
 	cachedSessions []agent.SessionInfo // last full session list from the daemon
 
+	// Filter state — structured filters applied as pills in the search bar.
+	projectDir    string // absolute path of the cwd when the inbox was launched
+	projectName   string // basename of projectDir, used for display
+	projectFilter bool   // when true, only show sessions matching projectDir
+
 	// Pre-built display data.
 	displayLines []string
 	rowToLine    []int
@@ -109,11 +116,18 @@ func NewInboxModel(client *daemon.Client) *InboxModel {
 	styles.Focused.Prompt = lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
 	styles.Focused.Text = lipgloss.NewStyle().Foreground(textColor)
 	styles.Focused.Placeholder = lipgloss.NewStyle().Foreground(mutedColor)
+	styles.Blurred.Prompt = lipgloss.NewStyle().Foreground(dimColor)
+	styles.Blurred.Text = lipgloss.NewStyle().Foreground(textColor)
+	styles.Blurred.Placeholder = lipgloss.NewStyle().Foreground(mutedColor)
 	ti.SetStyles(styles)
+
+	cwd, _ := os.Getwd()
 	return &InboxModel{
 		client:      client,
 		spinner:     sp,
 		searchInput: ti,
+		projectDir:  cwd,
+		projectName: filepath.Base(cwd),
 	}
 }
 
@@ -254,6 +268,7 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.searchInput.SetWidth(m.width)
 		return m, nil
 
 	case inboxDataMsg:
@@ -262,7 +277,7 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.err = nil
 			m.cachedSessions = msg.sessions
-			m.buildGroups(msg.sessions)
+			m.buildGroups(m.filteredSessions())
 		}
 		return m, nil
 
@@ -322,6 +337,7 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		wMsg := msg.(tea.WindowSizeMsg)
 		m.width = wMsg.Width
 		m.height = wMsg.Height
+		m.searchInput.SetWidth(m.width)
 		model, cmd := m.sessionView.Update(msg)
 		m.sessionView = model.(*SessionViewModel)
 		return m, cmd
@@ -397,15 +413,41 @@ func (m *InboxModel) enterSearch() tea.Cmd {
 func (m *InboxModel) exitSearch() tea.Cmd {
 	m.searching = false
 	m.searchQuery = ""
+	m.searchInput.SetValue("")
 	m.searchInput.Blur()
 
-	// Rebuild the normal view from cached sessions.
+	// Rebuild the normal view from cached sessions (with active filters).
 	if m.cachedSessions != nil {
-		m.buildGroups(m.cachedSessions)
+		m.buildGroups(m.filteredSessions())
 	}
 
 	// Trigger a fresh data load to pick up any changes that occurred while searching.
 	return m.loadDataCmd()
+}
+
+// filteredSessions returns cachedSessions with active structured filters
+// (e.g. project filter) applied. Text search is handled separately by the
+// daemon, so it is not applied here.
+func (m *InboxModel) filteredSessions() []agent.SessionInfo {
+	sessions := m.cachedSessions
+	if !m.projectFilter || m.projectDir == "" {
+		return sessions
+	}
+	filtered := make([]agent.SessionInfo, 0, len(sessions))
+	for _, s := range sessions {
+		if s.ProjectDir == m.projectDir {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered
+}
+
+// applyFiltersAndRebuild rebuilds the inbox view from cached sessions with
+// current filters applied. Call this after toggling a filter.
+func (m *InboxModel) applyFiltersAndRebuild() {
+	if m.cachedSessions != nil {
+		m.buildGroups(m.filteredSessions())
+	}
 }
 
 // updateSearch handles messages while in search mode.
@@ -414,6 +456,7 @@ func (m *InboxModel) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.searchInput.SetWidth(m.width)
 		return m, nil
 
 	case inboxSearchResultMsg:
@@ -439,7 +482,7 @@ func (m *InboxModel) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cachedSessions = msg.sessions
 			// Only rebuild from this data if not actively filtering.
 			if m.searchQuery == "" {
-				m.buildGroups(msg.sessions)
+				m.buildGroups(m.filteredSessions())
 			}
 		}
 		return m, nil
@@ -464,8 +507,6 @@ func (m *InboxModel) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.cursor >= 0 && m.cursor < len(m.flatRows) {
 			row := m.flatRows[m.cursor]
 			if row.session != nil {
-				m.searching = false
-				m.searchInput.Blur()
 				return m, m.openSession(row.session.ID)
 			}
 		}
@@ -495,7 +536,7 @@ func (m *InboxModel) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if newValue == "" {
 				// Query cleared — restore the full session list.
 				if m.cachedSessions != nil {
-					m.buildGroups(m.cachedSessions)
+					m.buildGroups(m.filteredSessions())
 				}
 				return m, cmd
 			}
@@ -509,6 +550,18 @@ func (m *InboxModel) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // Results are shown in a single flat "Results" group, ranked by relevance
 // (the order returned by the daemon).
 func (m *InboxModel) buildSearchResults(sessions []agent.SessionInfo) {
+	// Apply client-side structured filters (e.g. project) on top of
+	// the daemon's text search results.
+	if m.projectFilter && m.projectDir != "" {
+		filtered := make([]agent.SessionInfo, 0, len(sessions))
+		for _, s := range sessions {
+			if s.ProjectDir == m.projectDir {
+				filtered = append(filtered, s)
+			}
+		}
+		sessions = filtered
+	}
+
 	if len(sessions) == 0 {
 		m.groups = nil
 		m.flatRows = nil
@@ -618,6 +671,9 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.openComposingSession()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("/", "ctrl+f", "ctrl+k"))):
 		return m, m.enterSearch()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("."))):
+		m.projectFilter = !m.projectFilter
+		m.applyFiltersAndRebuild()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("d"))):
 		if m.cursor >= 0 && m.cursor < len(m.flatRows) {
 			row := m.flatRows[m.cursor]
@@ -923,6 +979,44 @@ func (m *InboxModel) rebuildFlatRows() {
 
 // --- View ---
 
+// renderFilterBar renders the always-visible filter/search bar.
+// When searching (text input focused): pills + text input.
+// When not searching: pills + dimmed placeholder.
+func (m *InboxModel) renderFilterBar() string {
+	var parts []string
+
+	// Render active filter pills.
+	if m.projectFilter && m.projectName != "" {
+		pill := renderPill(m.projectName, secondaryColor)
+		parts = append(parts, pill)
+	}
+
+	if m.searching {
+		// Focused text input — the textinput widget renders its own prompt,
+		// cursor, and placeholder.
+		parts = append(parts, m.searchInput.View())
+	} else if m.searchQuery != "" {
+		// Shouldn't normally happen (searchQuery is cleared on exit),
+		// but display it if present.
+		prompt := lipgloss.NewStyle().Foreground(dimColor).Render("/ ")
+		text := lipgloss.NewStyle().Foreground(textColor).Render(m.searchQuery)
+		parts = append(parts, prompt+text)
+	} else {
+		// Blurred state — show the search input so the placeholder renders.
+		parts = append(parts, m.searchInput.View())
+	}
+
+	return strings.Join(parts, " ")
+}
+
+// renderPill renders a styled filter pill badge, e.g. "[clank]".
+func renderPill(label string, fg color.Color) string {
+	return lipgloss.NewStyle().
+		Foreground(fg).
+		Bold(true).
+		Render("[" + label + "]")
+}
+
 func (m *InboxModel) View() tea.View {
 	if m.screen == screenSession && m.sessionView != nil {
 		return m.sessionView.View()
@@ -944,11 +1038,11 @@ func (m *InboxModel) View() tea.View {
 	sb.WriteString(header)
 	sb.WriteString("\n\n")
 
-	// Search bar (rendered below the header when in search mode).
-	if m.searching {
-		sb.WriteString(m.searchInput.View())
-		sb.WriteString("\n")
-	}
+	// Filter bar — always visible below the header.
+	// Shows filter pills and the search input (focused when searching,
+	// blurred placeholder otherwise).
+	sb.WriteString(m.renderFilterBar())
+	sb.WriteString("\n")
 
 	// Error.
 	if m.err != nil {
@@ -1005,9 +1099,9 @@ func (m *InboxModel) View() tea.View {
 	// Help bar.
 	var help string
 	if m.searching {
-		help = helpStyle.Render("esc: cancel | enter: open | up/down: navigate")
+		help = helpStyle.Render("esc: cancel | enter: open | .: this project | up/down: navigate")
 	} else {
-		help = helpStyle.Render("enter: open | n: new | /: search | ?: help | q: quit")
+		help = helpStyle.Render("enter: open | n: new | /: search | .: this project | ?: help | q: quit")
 	}
 	sb.WriteString(help)
 
@@ -1269,12 +1363,9 @@ func (m *InboxModel) styledAgentStatus(status agent.SessionStatus) string {
 }
 
 func (m *InboxModel) viewportHeight() int {
-	reserved := 4
+	reserved := 5 // header (1) + blank (1) + filter bar (1) + help bar (~1) + padding (1)
 	if m.err != nil {
 		reserved += 2
-	}
-	if m.searching {
-		reserved += 1 // search bar line
 	}
 	h := m.height - reserved
 	if h < 3 {

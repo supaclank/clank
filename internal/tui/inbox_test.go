@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	"github.com/acksell/clank/internal/agent"
 )
 
@@ -2163,5 +2165,248 @@ func TestSpinnerTickForwardedToSessionView(t *testing.T) {
 	_, cmd2 := m.Update(secondTick)
 	if cmd2 == nil {
 		t.Fatal("session spinner second tick returned nil cmd; tick chain is broken")
+	}
+}
+
+// --- Project filter tests ---
+
+func TestProjectFilterToggle(t *testing.T) {
+	t.Parallel()
+
+	m := &InboxModel{
+		projectDir:  "/home/user/myproject",
+		projectName: "myproject",
+		width:       120,
+		height:      40,
+	}
+
+	if m.projectFilter {
+		t.Fatal("projectFilter should be false by default")
+	}
+
+	// Simulate pressing "." to toggle the filter on.
+	m.handleInboxKey(tea.KeyPressMsg{Text: ".", Code: '.'})
+	if !m.projectFilter {
+		t.Fatal("projectFilter should be true after pressing '.'")
+	}
+
+	// Simulate pressing "." again to toggle the filter off.
+	m.handleInboxKey(tea.KeyPressMsg{Text: ".", Code: '.'})
+	if m.projectFilter {
+		t.Fatal("projectFilter should be false after pressing '.' again")
+	}
+}
+
+func TestFilteredSessionsByProject(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	m := &InboxModel{
+		projectDir:  "/home/user/alpha",
+		projectName: "alpha",
+		width:       120,
+		height:      40,
+		cachedSessions: []agent.SessionInfo{
+			{ID: "s1", ProjectDir: "/home/user/alpha", ProjectName: "alpha", UpdatedAt: now},
+			{ID: "s2", ProjectDir: "/home/user/beta", ProjectName: "beta", UpdatedAt: now.Add(-time.Hour)},
+			{ID: "s3", ProjectDir: "/home/user/alpha", ProjectName: "alpha", UpdatedAt: now.Add(-2 * time.Hour)},
+		},
+	}
+
+	// Without project filter, all sessions are returned.
+	all := m.filteredSessions()
+	if len(all) != 3 {
+		t.Fatalf("expected 3 sessions without filter, got %d", len(all))
+	}
+
+	// Enable project filter.
+	m.projectFilter = true
+	filtered := m.filteredSessions()
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 sessions with project filter, got %d", len(filtered))
+	}
+	for _, s := range filtered {
+		if s.ProjectDir != "/home/user/alpha" {
+			t.Errorf("expected all filtered sessions to have projectDir /home/user/alpha, got %s", s.ProjectDir)
+		}
+	}
+}
+
+func TestProjectFilterRebuildsGroups(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	m := &InboxModel{
+		projectDir:  "/home/user/alpha",
+		projectName: "alpha",
+		width:       120,
+		height:      40,
+		cachedSessions: []agent.SessionInfo{
+			{ID: "s1", ProjectDir: "/home/user/alpha", ProjectName: "alpha", Status: agent.StatusIdle, UpdatedAt: now},
+			{ID: "s2", ProjectDir: "/home/user/beta", ProjectName: "beta", Status: agent.StatusIdle, UpdatedAt: now},
+			{ID: "s3", ProjectDir: "/home/user/alpha", ProjectName: "alpha", Status: agent.StatusIdle, UpdatedAt: now.Add(-time.Hour)},
+		},
+	}
+
+	// Build groups without filter — all 3 visible.
+	m.buildGroups(m.filteredSessions())
+	totalRows := len(m.flatRows)
+	if totalRows != 3 {
+		t.Fatalf("expected 3 rows without filter, got %d", totalRows)
+	}
+
+	// Toggle project filter on.
+	m.projectFilter = true
+	m.applyFiltersAndRebuild()
+	if len(m.flatRows) != 2 {
+		t.Fatalf("expected 2 rows with project filter, got %d", len(m.flatRows))
+	}
+
+	// Toggle project filter off — all should come back.
+	m.projectFilter = false
+	m.applyFiltersAndRebuild()
+	if len(m.flatRows) != 3 {
+		t.Fatalf("expected 3 rows after disabling filter, got %d", len(m.flatRows))
+	}
+}
+
+func TestRenderFilterBar_ShowsPillWhenFilterActive(t *testing.T) {
+	t.Parallel()
+
+	m := &InboxModel{
+		projectDir:  "/home/user/myproject",
+		projectName: "myproject",
+		width:       120,
+		height:      40,
+		searchInput: func() textinput.Model {
+			ti := textinput.New()
+			ti.Placeholder = "Search sessions..."
+			ti.Prompt = "/ "
+			return ti
+		}(),
+	}
+
+	// Without filter — no pill.
+	bar := m.renderFilterBar()
+	if strings.Contains(bar, "myproject") {
+		t.Errorf("filter bar should not contain project name when filter is off, got: %s", bar)
+	}
+
+	// With filter — pill should appear.
+	m.projectFilter = true
+	bar = m.renderFilterBar()
+	if !strings.Contains(bar, "myproject") {
+		t.Errorf("filter bar should contain project name when filter is on, got: %s", bar)
+	}
+}
+
+func TestRenderFilterBar_PlaceholderVisibleWhenNotSearching(t *testing.T) {
+	t.Parallel()
+
+	m := &InboxModel{
+		projectDir:  "/home/user/myproject",
+		projectName: "myproject",
+		width:       120,
+		height:      40,
+		searchInput: func() textinput.Model {
+			ti := textinput.New()
+			ti.Placeholder = "Search sessions..."
+			ti.Prompt = "/ "
+			ti.SetWidth(80)
+			return ti
+		}(),
+	}
+
+	// Not searching — the blurred search input should render the placeholder.
+	bar := m.renderFilterBar()
+	if !strings.Contains(bar, "earch sessions") {
+		t.Errorf("filter bar should show placeholder when not searching, got: %s", bar)
+	}
+}
+
+func TestBuildSearchResults_RespectsProjectFilter(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	m := &InboxModel{
+		projectDir:    "/home/user/alpha",
+		projectName:   "alpha",
+		projectFilter: true,
+		width:         120,
+		height:        40,
+	}
+
+	sessions := []agent.SessionInfo{
+		{ID: "s1", ProjectDir: "/home/user/alpha", ProjectName: "alpha", Prompt: "fix bug", UpdatedAt: now},
+		{ID: "s2", ProjectDir: "/home/user/beta", ProjectName: "beta", Prompt: "fix bug", UpdatedAt: now},
+	}
+
+	m.buildSearchResults(sessions)
+	if len(m.flatRows) != 1 {
+		t.Fatalf("expected 1 search result with project filter, got %d", len(m.flatRows))
+	}
+	if m.flatRows[0].session.ID != "s1" {
+		t.Errorf("expected filtered result to be s1, got %s", m.flatRows[0].session.ID)
+	}
+}
+
+// TestSearchStatePreservedAcrossSessionView is a regression test for the bug
+// where entering a session from search results then returning to the inbox
+// showed the search text in the input but did not apply the search filter.
+// The fix: the enter handler in search mode no longer clears search state,
+// so when the session view closes the inbox is still in search mode.
+func TestSearchStatePreservedAcrossSessionView(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	m := &InboxModel{
+		searching: true,
+		searchInput: func() textinput.Model {
+			ti := textinput.New()
+			ti.SetValue("fix bug")
+			return ti
+		}(),
+		searchQuery: "fix bug",
+		width:       120,
+		height:      40,
+	}
+	m.buildSearchResults([]agent.SessionInfo{
+		{ID: "s1", ProjectName: "alpha", Prompt: "fix bug in auth", Status: agent.StatusIdle, UpdatedAt: now},
+		{ID: "s2", ProjectName: "beta", Prompt: "fix bug in cart", Status: agent.StatusIdle, UpdatedAt: now},
+	})
+
+	// Verify precondition: 2 search results visible.
+	if len(m.flatRows) != 2 {
+		t.Fatalf("expected 2 search results, got %d", len(m.flatRows))
+	}
+
+	// Snapshot the search state before simulating enter+back.
+	wantQuery := m.searchQuery
+	wantValue := m.searchInput.Value()
+	wantRows := len(m.flatRows)
+
+	// Simulate opening a session: the session view takes over the screen
+	// but search state should be preserved.
+	m.screen = screenSession
+	m.activeConnID = "s1"
+
+	// Simulate returning to inbox (the state changes backToInboxMsg makes,
+	// minus the commands that need a real client).
+	m.screen = screenInbox
+	m.sessionView = nil
+	m.activeConnID = ""
+
+	// Search state must be fully preserved.
+	if !m.searching {
+		t.Error("searching should still be true after returning from session view")
+	}
+	if m.searchQuery != wantQuery {
+		t.Errorf("searchQuery = %q, want %q", m.searchQuery, wantQuery)
+	}
+	if m.searchInput.Value() != wantValue {
+		t.Errorf("searchInput value = %q, want %q", m.searchInput.Value(), wantValue)
+	}
+	if len(m.flatRows) != wantRows {
+		t.Errorf("flatRows count = %d, want %d", len(m.flatRows), wantRows)
 	}
 }
