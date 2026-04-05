@@ -511,7 +511,7 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /sessions/{id}/draft", d.handleSetDraft)
 	mux.HandleFunc("DELETE /sessions/{id}", d.handleDeleteSession)
 	mux.HandleFunc("GET /events", d.handleEvents)
-	mux.HandleFunc("POST /permissions/{id}/reply", d.handlePermissionReply)
+	mux.HandleFunc("POST /sessions/{id}/permissions/{permID}/reply", d.handlePermissionReply)
 	mux.HandleFunc("GET /status", d.handleStatus)
 	mux.HandleFunc("GET /agents", d.handleListAgents)
 	mux.HandleFunc("POST /sessions/discover", d.handleDiscoverSessions)
@@ -1273,8 +1273,34 @@ func (d *Daemon) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Daemon) handlePermissionReply(w http.ResponseWriter, r *http.Request) {
-	// TODO: wire up when backends support permission handling
-	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not yet implemented"})
+	sessionID := r.PathValue("id")
+	permID := r.PathValue("permID")
+
+	var body struct {
+		Allow bool `json:"allow"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	d.mu.RLock()
+	ms, ok := d.sessions[sessionID]
+	d.mu.RUnlock()
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	if ms.backend == nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "session has no active backend"})
+		return
+	}
+
+	if err := ms.backend.RespondPermission(r.Context(), permID, body.Allow); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // --- Internal Methods ---

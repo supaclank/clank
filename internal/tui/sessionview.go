@@ -714,7 +714,7 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				kind:    entryStatus,
 				content: "Permission granted: " + perm.Tool,
 			})
-			return m, m.replyPermission(perm.RequestID, "allow")
+			return m, m.replyPermission(perm.RequestID, true)
 		case "n":
 			perm := m.pendingPerm
 			m.pendingPerm = nil
@@ -722,7 +722,7 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				kind:    entryStatus,
 				content: "Permission denied: " + perm.Tool,
 			})
-			return m, m.replyPermission(perm.RequestID, "deny")
+			return m, m.replyPermission(perm.RequestID, false)
 		}
 		return m, nil
 	}
@@ -1698,11 +1698,12 @@ func (m *SessionViewModel) sendMessage(text string) tea.Cmd {
 	}
 }
 
-func (m *SessionViewModel) replyPermission(requestID, reply string) tea.Cmd {
+func (m *SessionViewModel) replyPermission(requestID string, allow bool) tea.Cmd {
+	sessionID := m.sessionID
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		err := m.client.ReplyPermission(ctx, requestID, reply)
+		err := m.client.ReplyPermission(ctx, sessionID, requestID, allow)
 		return sessionSendResultMsg{err: err}
 	}
 }

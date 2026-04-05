@@ -372,9 +372,9 @@ func parseSSEStream(r io.Reader, ch chan<- agent.Event) {
 }
 
 // ReplyPermission replies to a permission request.
-func (c *Client) ReplyPermission(ctx context.Context, requestID, reply string) error {
-	body := map[string]string{"reply": reply}
-	return c.post(ctx, "/permissions/"+requestID+"/reply", body, nil)
+func (c *Client) ReplyPermission(ctx context.Context, sessionID, permissionID string, allow bool) error {
+	body := map[string]bool{"allow": allow}
+	return c.post(ctx, "/sessions/"+sessionID+"/permissions/"+permissionID+"/reply", body, nil)
 }
 
 // --- Voice methods ---

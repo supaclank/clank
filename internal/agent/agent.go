@@ -498,6 +498,11 @@ type SessionBackend interface {
 	// Returns the new session's external ID and title.
 	// Returns an error if the backend does not support forking.
 	Fork(ctx context.Context, messageID string) (ForkResult, error)
+
+	// RespondPermission replies to a pending permission prompt.
+	// allow=true sends "once", allow=false sends "reject".
+	// Returns an error if the backend does not support permissions.
+	RespondPermission(ctx context.Context, permissionID string, allow bool) error
 }
 
 // BackendManager creates and manages SessionBackend instances for a specific

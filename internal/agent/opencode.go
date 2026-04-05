@@ -595,9 +595,30 @@ type partDeltaEvent struct {
 	} `json:"properties"`
 }
 
+// permissionAskedEvent is the JSON shape of a "permission.asked" BusEvent
+// as sent by the OpenCode server. This event is emitted when the server
+// needs user approval for a tool call and is NOT modeled by the Go SDK
+// (which only has "permission.updated" / "permission.replied").
+type permissionAskedEvent struct {
+	Type       string `json:"type"`
+	Properties struct {
+		ID         string                 `json:"id"`
+		Permission string                 `json:"permission"` // e.g. "bash", "write"
+		Patterns   []string               `json:"patterns"`   // e.g. ["npx cowsay hello"]
+		Always     []string               `json:"always"`     // broader pattern for "always allow"
+		SessionID  string                 `json:"sessionID"`
+		Metadata   map[string]interface{} `json:"metadata"`
+		Tool       struct {
+			MessageID string `json:"messageID"`
+			CallID    string `json:"callID"`
+		} `json:"tool"`
+	} `json:"properties"`
+}
+
 // handleRawSSEEvent processes a single SSE data payload (raw JSON bytes).
-// It checks for "message.part.delta" first (our custom handling), then
-// falls back to the SDK's EventListResponse unmarshalling for all other types.
+// It handles event types not modeled by the SDK ("message.part.delta",
+// "permission.asked") with custom parsing, then falls back to the SDK's
+// EventListResponse unmarshalling for all other types.
 func (b *OpenCodeBackend) handleRawSSEEvent(data []byte) {
 	// Quick peek at the "type" field to decide how to route.
 	var peek struct {
@@ -607,12 +628,23 @@ func (b *OpenCodeBackend) handleRawSSEEvent(data []byte) {
 		return // Malformed JSON, skip.
 	}
 
-	if peek.Type == "message.part.delta" {
+	switch peek.Type {
+	case "message.part.delta":
 		var delta partDeltaEvent
 		if err := json.Unmarshal(data, &delta); err != nil {
 			return
 		}
 		b.handlePartDelta(delta)
+		return
+
+	case "permission.asked":
+		// "permission.asked" is emitted when OpenCode needs user approval
+		// for a tool call. Not modeled by the SDK — handle directly.
+		var asked permissionAskedEvent
+		if err := json.Unmarshal(data, &asked); err != nil {
+			return
+		}
+		b.handlePermissionAsked(asked)
 		return
 	}
 
@@ -623,6 +655,32 @@ func (b *OpenCodeBackend) handleRawSSEEvent(data []byte) {
 		return
 	}
 	b.handleSDKEvent(event)
+}
+
+// handlePermissionAsked processes a "permission.asked" event from the
+// OpenCode server. This event type is not modeled by the SDK.
+func (b *OpenCodeBackend) handlePermissionAsked(asked permissionAskedEvent) {
+	props := asked.Properties
+	if props.SessionID != b.SessionID() {
+		return
+	}
+
+	// Build a human-readable description from the permission fields.
+	// e.g. "bash: npx cowsay hello"
+	description := props.Permission
+	if len(props.Patterns) > 0 {
+		description += ": " + strings.Join(props.Patterns, ", ")
+	}
+
+	b.emit(Event{
+		Type:      EventPermission,
+		Timestamp: time.Now(),
+		Data: PermissionData{
+			RequestID:   props.ID,
+			Tool:        props.Permission,
+			Description: description,
+		},
+	})
 }
 
 // handlePartDelta processes a message.part.delta event (token-level streaming).
@@ -746,6 +804,11 @@ func (b *OpenCodeBackend) handleSDKEvent(event opencode.EventListResponse) {
 		// Handle full part update based on part type.
 		b.handlePartUpdate(part)
 
+	// TODO(opencode-sdk-go#57): This case is likely dead code. The OpenCode server
+	// sends "permission.asked" (handled in handleRawSSEEvent), not
+	// "permission.updated". Remove once the SDK models permission.asked and
+	// this path is confirmed unreachable.
+	// https://github.com/anomalyco/opencode-sdk-go/issues/57
 	case opencode.EventListResponseEventPermissionUpdated:
 		perm := e.Properties
 		if perm.SessionID != b.sessionID {

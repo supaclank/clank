@@ -698,6 +698,52 @@ func TestOpenCodeBackendSSEEventTypes(t *testing.T) {
 			},
 		},
 		{
+			name: "PermissionAsked",
+			sseEvents: []sseEvent{
+				{
+					eventType: "permission.asked",
+					properties: func(sid string) interface{} {
+						return map[string]interface{}{
+							"id":         "per_abc123",
+							"permission": "bash",
+							"patterns":   []string{"npx cowsay hello"},
+							"always":     []string{"npx *"},
+							"sessionID":  sid,
+							"metadata":   map[string]interface{}{},
+							"tool": map[string]interface{}{
+								"messageID": "msg_1",
+								"callID":    "tooluse_1",
+							},
+						}
+					},
+				},
+			},
+			totalEvents: 2, // starting->busy, permission
+			check: func(t *testing.T, events []agent.Event) {
+				for _, evt := range events {
+					if evt.Type == agent.EventPermission {
+						data := evt.Data.(agent.PermissionData)
+						if data.RequestID != "per_abc123" {
+							t.Errorf("RequestID = %q, want %q", data.RequestID, "per_abc123")
+						}
+						if data.Tool != "bash" {
+							t.Errorf("Tool = %q, want %q", data.Tool, "bash")
+						}
+						if data.Description != "bash: npx cowsay hello" {
+							t.Errorf("Description = %q, want %q", data.Description, "bash: npx cowsay hello")
+						}
+						return
+					}
+				}
+				t.Error("no permission event found")
+			},
+		},
+		{
+			// TODO(opencode-sdk-go#57): This tests the SDK's "permission.updated"
+			// event path which is likely dead code — the server sends
+			// "permission.asked" instead (see PermissionAsked test above).
+			// Remove once the SDK models permission.asked.
+			// https://github.com/anomalyco/opencode-sdk-go/issues/57
 			name: "PermissionUpdated",
 			sseEvents: []sseEvent{
 				{

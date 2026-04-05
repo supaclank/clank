@@ -27,6 +27,9 @@ type mockBackend struct {
 	revertedMessageID string
 	forked            bool
 	forkedMessageID   string
+	permissionReplied bool
+	permissionID      string
+	permissionAllow   bool
 
 	// history is returned by Messages(). Tests can set it to control
 	// the message history returned by the backend.
@@ -146,6 +149,15 @@ func (m *mockBackend) Fork(ctx context.Context, messageID string) (agent.ForkRes
 	m.forkedMessageID = messageID
 	m.mu.Unlock()
 	return agent.ForkResult{ID: "forked-external-id", Title: "Forked session"}, nil
+}
+
+func (m *mockBackend) RespondPermission(ctx context.Context, permissionID string, allow bool) error {
+	m.mu.Lock()
+	m.permissionReplied = true
+	m.permissionID = permissionID
+	m.permissionAllow = allow
+	m.mu.Unlock()
+	return nil
 }
 
 // mockBackendManager implements agent.BackendManager for testing. It wraps
@@ -923,6 +935,69 @@ func TestDaemonForkSessionNotFound(t *testing.T) {
 	_, err := client.ForkSession(context.Background(), "nonexistent", "msg-123")
 	if err == nil {
 		t.Error("expected error forking non-existent session")
+	}
+}
+
+func TestDaemonPermissionReply(t *testing.T) {
+	mgr := newMockBackendManager()
+
+	dir := shortTempDir(t)
+	sockPath := filepath.Join(dir, "test.sock")
+	pidPath := filepath.Join(dir, "test.pid")
+
+	d := daemon.NewWithPaths(sockPath, pidPath)
+	d.BackendManagers[agent.BackendOpenCode] = mgr
+	d.BackendManagers[agent.BackendClaudeCode] = mgr
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run() }()
+
+	client := daemon.NewClient(sockPath)
+	waitForDaemon(t, client)
+	defer func() {
+		d.Stop()
+		<-errCh
+	}()
+
+	ctx := context.Background()
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "do stuff",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	err = client.ReplyPermission(ctx, info.ID, "perm-42", true)
+	if err != nil {
+		t.Fatalf("ReplyPermission: %v", err)
+	}
+
+	b := mgr.getLatest()
+	time.Sleep(50 * time.Millisecond)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.permissionReplied {
+		t.Error("expected backend to have received permission reply")
+	}
+	if b.permissionID != "perm-42" {
+		t.Errorf("permissionID = %q, want %q", b.permissionID, "perm-42")
+	}
+	if !b.permissionAllow {
+		t.Error("expected permissionAllow = true")
+	}
+}
+
+func TestDaemonPermissionReplyNotFound(t *testing.T) {
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	err := client.ReplyPermission(context.Background(), "nonexistent", "perm-1", true)
+	if err == nil {
+		t.Error("expected error replying to permission on non-existent session")
 	}
 }
 

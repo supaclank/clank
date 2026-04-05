@@ -256,6 +256,10 @@ func (b *ClaudeCodeBackend) Fork(ctx context.Context, messageID string) (ForkRes
 	return ForkResult{}, fmt.Errorf("fork is not supported by Claude Code backend")
 }
 
+func (b *ClaudeCodeBackend) RespondPermission(ctx context.Context, permissionID string, allow bool) error {
+	return fmt.Errorf("permissions are not supported by Claude Code backend")
+}
+
 // --- Internal helpers ---
 
 func (b *ClaudeCodeBackend) setStatus(s SessionStatus) {
