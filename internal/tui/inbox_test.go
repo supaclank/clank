@@ -90,18 +90,21 @@ func TestBuildGroups_FiltersHiddenSessions(t *testing.T) {
 		t.Fatalf("expected 1 group, got %d", len(m.groups))
 	}
 
-	// The date group should contain 3 sessions (archived excluded).
+	// The date group should contain 2 active sessions (done and archived excluded).
 	var ids []string
 	for _, r := range m.groups[0].rows {
 		ids = append(ids, r.session.ID)
 	}
-	if len(ids) != 3 {
-		t.Errorf("expected 3 sessions in date group, got %d: %v", len(ids), ids)
+	if len(ids) != 2 {
+		t.Errorf("expected 2 active sessions in date group, got %d: %v", len(ids), ids)
 	}
 
-	// Done session should be at the end of the date group.
-	if ids[len(ids)-1] != "done-1" {
-		t.Errorf("expected done session at the bottom of date group, got %v", ids)
+	// Done session should be stored in the group's doneRows.
+	if len(m.groups[0].doneRows) != 1 {
+		t.Fatalf("expected 1 done session in group, got %d", len(m.groups[0].doneRows))
+	}
+	if m.groups[0].doneRows[0].session.ID != "done-1" {
+		t.Errorf("expected done session 'done-1', got %q", m.groups[0].doneRows[0].session.ID)
 	}
 
 	// Archived session should be stored in the group's archivedRows.
@@ -112,13 +115,16 @@ func TestBuildGroups_FiltersHiddenSessions(t *testing.T) {
 		t.Errorf("expected archived session 'archived-1', got %q", m.groups[0].archivedRows[0].session.ID)
 	}
 
-	// flatRows should have 3 date group rows + 1 accordion toggle = 4 total
-	// (accordion is collapsed by default, so archived session rows are not included).
+	// flatRows should have 2 active rows + 1 done accordion + 1 archive accordion = 4 total
+	// (both accordions are collapsed by default).
 	if len(m.flatRows) != 4 {
-		t.Errorf("expected 4 flatRows (3 sessions + 1 accordion), got %d", len(m.flatRows))
+		t.Errorf("expected 4 flatRows (2 sessions + 1 done accordion + 1 archive accordion), got %d", len(m.flatRows))
+	}
+	if m.flatRows[2].doneAccordion == "" {
+		t.Error("expected flatRows[2] to be the done accordion toggle")
 	}
 	if m.flatRows[3].accordion == "" {
-		t.Error("expected last flatRow to be the archive accordion toggle")
+		t.Error("expected flatRows[3] to be the archive accordion toggle")
 	}
 }
 
@@ -146,9 +152,12 @@ func TestBuildGroups_AllHiddenResultsInDateGroup(t *testing.T) {
 		t.Errorf("expected group name 'Today', got %q", m.groups[0].name)
 	}
 
-	// Only the done session should be in the date group.
-	if len(m.groups[0].rows) != 1 {
-		t.Errorf("expected 1 row in date group (done only), got %d", len(m.groups[0].rows))
+	// Done session should be in doneRows, not in active rows.
+	if len(m.groups[0].rows) != 0 {
+		t.Errorf("expected 0 active rows in date group, got %d", len(m.groups[0].rows))
+	}
+	if len(m.groups[0].doneRows) != 1 {
+		t.Errorf("expected 1 done session in group, got %d", len(m.groups[0].doneRows))
 	}
 
 	// Archived session stored in the group's archivedRows.
@@ -156,7 +165,7 @@ func TestBuildGroups_AllHiddenResultsInDateGroup(t *testing.T) {
 		t.Errorf("expected 1 archived session in group, got %d", len(m.groups[0].archivedRows))
 	}
 
-	// flatRows: 1 done row + 1 accordion toggle = 2.
+	// flatRows: 1 done accordion + 1 archive accordion = 2.
 	if len(m.flatRows) != 2 {
 		t.Errorf("expected 2 flatRows, got %d", len(m.flatRows))
 	}
@@ -653,9 +662,9 @@ func TestBreakpointNavigation(t *testing.T) {
 
 	now := time.Now()
 
-	t.Run("groupLastNonDoneRow returns last non-done row", func(t *testing.T) {
+	t.Run("groupLastActiveRow returns last active row", func(t *testing.T) {
 		t.Parallel()
-		// Today: busy(0), idle(1), done(2)
+		// Today: busy(0), idle(1) — done is in doneRows accordion
 		sessions := []agent.SessionInfo{
 			{ID: "busy", Status: agent.StatusBusy, UpdatedAt: now.Add(-1 * time.Hour)},
 			{ID: "idle", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: now},
@@ -664,14 +673,14 @@ func TestBreakpointNavigation(t *testing.T) {
 		m := &InboxModel{}
 		m.buildGroups(sessions)
 
-		got := m.groupLastNonDoneRow(0)
-		// busy(0), idle(1) are non-done; done(2) is done. Last non-done is index 1.
+		got := m.groupLastActiveRow(0)
+		// busy(0), idle(1) are active rows; done is in doneRows. Last active is index 1.
 		if got != 1 {
-			t.Errorf("groupLastNonDoneRow(0) = %d, want 1", got)
+			t.Errorf("groupLastActiveRow(0) = %d, want 1", got)
 		}
 	})
 
-	t.Run("groupLastNonDoneRow returns -1 when all rows are done", func(t *testing.T) {
+	t.Run("groupLastActiveRow returns -1 when all rows are done", func(t *testing.T) {
 		t.Parallel()
 		sessions := []agent.SessionInfo{
 			{ID: "done-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), Visibility: agent.VisibilityDone},
@@ -680,13 +689,13 @@ func TestBreakpointNavigation(t *testing.T) {
 		m := &InboxModel{}
 		m.buildGroups(sessions)
 
-		got := m.groupLastNonDoneRow(0)
+		got := m.groupLastActiveRow(0)
 		if got != -1 {
-			t.Errorf("groupLastNonDoneRow(0) = %d, want -1 (all done)", got)
+			t.Errorf("groupLastActiveRow(0) = %d, want -1 (all done, no active rows)", got)
 		}
 	})
 
-	t.Run("groupLastNonDoneRow no boundary when no done sessions", func(t *testing.T) {
+	t.Run("groupLastActiveRow no boundary when no done sessions", func(t *testing.T) {
 		t.Parallel()
 		sessions := []agent.SessionInfo{
 			{ID: "idle-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), LastReadAt: now},
@@ -695,10 +704,10 @@ func TestBreakpointNavigation(t *testing.T) {
 		m := &InboxModel{}
 		m.buildGroups(sessions)
 
-		got := m.groupLastNonDoneRow(0)
-		// Both rows are non-done, so last non-done is index 1.
+		got := m.groupLastActiveRow(0)
+		// Both rows are active, so last active is index 1.
 		if got != 1 {
-			t.Errorf("groupLastNonDoneRow(0) = %d, want 1", got)
+			t.Errorf("groupLastActiveRow(0) = %d, want 1", got)
 		}
 	})
 
@@ -1319,25 +1328,29 @@ func TestBuildGroups_DoneArchivedSinkToBottomOfDay(t *testing.T) {
 	}
 
 	rows := m.groups[0].rows
-	// Only non-archived sessions in the date group: busy, idle, done.
-	if len(rows) != 3 {
+	// Only active (non-done, non-archived) sessions in the date group: busy, idle.
+	if len(rows) != 2 {
 		ids := make([]string, len(rows))
 		for i, r := range rows {
 			ids[i] = r.session.ID
 		}
-		t.Fatalf("expected 3 rows in date group, got %d: %v", len(rows), ids)
+		t.Fatalf("expected 2 rows in date group, got %d: %v", len(rows), ids)
 	}
 
-	// Busy (priority 0) should be first, idle (priority 4) in the middle,
-	// done (priority 5) at the end.
+	// Busy (priority 0) should be first, idle (priority 5) second.
 	if rows[0].session.ID != "busy" {
 		t.Errorf("row[0]: expected 'busy', got %q", rows[0].session.ID)
 	}
 	if rows[1].session.ID != "idle" {
 		t.Errorf("row[1]: expected 'idle', got %q", rows[1].session.ID)
 	}
-	if rows[2].session.ID != "done" {
-		t.Errorf("row[2]: expected 'done', got %q", rows[2].session.ID)
+
+	// Done session should be stored in the group's doneRows.
+	if len(m.groups[0].doneRows) != 1 {
+		t.Fatalf("expected 1 done session in group, got %d", len(m.groups[0].doneRows))
+	}
+	if m.groups[0].doneRows[0].session.ID != "done" {
+		t.Errorf("expected done session 'done', got %q", m.groups[0].doneRows[0].session.ID)
 	}
 
 	// Archived session should be stored in the group's archivedRows.
@@ -1559,6 +1572,217 @@ func TestArchiveAccordion_ExpandedDisplayLinesIncludeArchivedRows(t *testing.T) 
 			t.Errorf("rowToLine[%d]=%d should be > rowToLine[%d]=%d",
 				i, m.rowToLine[i], i-1, m.rowToLine[i-1])
 		}
+	}
+}
+
+func TestDoneAccordion_CollapsedByDefault(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "active", Status: agent.StatusIdle, UpdatedAt: now, LastReadAt: now},
+		{ID: "done-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), Visibility: agent.VisibilityDone},
+		{ID: "done-2", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), Visibility: agent.VisibilityDone},
+	}
+
+	m := &InboxModel{}
+	m.buildGroups(sessions)
+
+	// 1 active session + 1 done accordion toggle = 2 flatRows.
+	if len(m.flatRows) != 2 {
+		t.Fatalf("expected 2 flatRows (1 session + 1 done accordion), got %d", len(m.flatRows))
+	}
+	if m.flatRows[1].doneAccordion == "" {
+		t.Error("expected last flatRow to be the done accordion toggle")
+	}
+	if m.doneExpanded != nil && m.doneExpanded["Today"] {
+		t.Error("expected doneExpanded['Today'] to be false by default")
+	}
+	if len(m.groups[0].doneRows) != 2 {
+		t.Errorf("expected 2 done sessions in group, got %d", len(m.groups[0].doneRows))
+	}
+}
+
+func TestDoneAccordion_ExpandedShowsDoneRows(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "active", Status: agent.StatusIdle, UpdatedAt: now, LastReadAt: now},
+		{ID: "done-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), Visibility: agent.VisibilityDone},
+		{ID: "done-2", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), Visibility: agent.VisibilityDone},
+	}
+
+	m := &InboxModel{doneExpanded: map[string]bool{"Today": true}}
+	m.buildGroups(sessions)
+
+	// 1 active + 1 done accordion + 2 done rows = 4 flatRows.
+	if len(m.flatRows) != 4 {
+		t.Fatalf("expected 4 flatRows, got %d", len(m.flatRows))
+	}
+	if m.flatRows[1].doneAccordion == "" {
+		t.Error("expected flatRows[1] to be the done accordion toggle")
+	}
+	if m.flatRows[2].session == nil || m.flatRows[2].session.ID != "done-1" {
+		t.Error("expected flatRows[2] to be done-1")
+	}
+	if m.flatRows[3].session == nil || m.flatRows[3].session.ID != "done-2" {
+		t.Error("expected flatRows[3] to be done-2")
+	}
+}
+
+func TestDoneAccordion_ToggleExpandCollapse(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "active", Status: agent.StatusIdle, UpdatedAt: now, LastReadAt: now},
+		{ID: "done-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), Visibility: agent.VisibilityDone},
+	}
+
+	m := &InboxModel{}
+	m.buildGroups(sessions)
+
+	// Initially collapsed: 1 active + 1 done accordion = 2 flatRows.
+	if len(m.flatRows) != 2 {
+		t.Fatalf("collapsed: expected 2 flatRows, got %d", len(m.flatRows))
+	}
+
+	// Expand.
+	m.doneExpanded = map[string]bool{"Today": true}
+	m.rebuildFlatRows()
+
+	// Expanded: 1 active + 1 done accordion + 1 done row = 3 flatRows.
+	if len(m.flatRows) != 3 {
+		t.Fatalf("expanded: expected 3 flatRows, got %d", len(m.flatRows))
+	}
+
+	// Collapse again.
+	m.doneExpanded["Today"] = false
+	m.rebuildFlatRows()
+
+	if len(m.flatRows) != 2 {
+		t.Fatalf("re-collapsed: expected 2 flatRows, got %d", len(m.flatRows))
+	}
+}
+
+func TestDoneAccordion_NoDoneSessionsNoAccordion(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "active", Status: agent.StatusIdle, UpdatedAt: now, LastReadAt: now},
+	}
+
+	m := &InboxModel{}
+	m.buildGroups(sessions)
+
+	// No done sessions — no done accordion row.
+	if len(m.flatRows) != 1 {
+		t.Fatalf("expected 1 flatRow, got %d", len(m.flatRows))
+	}
+	for _, r := range m.flatRows {
+		if r.doneAccordion != "" {
+			t.Error("unexpected done accordion row when there are no done sessions")
+		}
+	}
+}
+
+func TestDoneAccordion_DisplayLines(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "active", Status: agent.StatusIdle, UpdatedAt: now, LastReadAt: now},
+		{ID: "done-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), Visibility: agent.VisibilityDone},
+	}
+
+	m := &InboxModel{width: 120, height: 50}
+	m.buildGroups(sessions)
+	m.buildDisplayLines()
+
+	// All rowToLine values should be valid indices into displayLines.
+	for i, lineIdx := range m.rowToLine {
+		if lineIdx < 0 || lineIdx >= len(m.displayLines) {
+			t.Errorf("rowToLine[%d]=%d out of bounds (displayLines has %d entries)",
+				i, lineIdx, len(m.displayLines))
+		}
+	}
+
+	// The accordion line should contain "Done" and a count.
+	accordionLineIdx := m.rowToLine[1] // flatRows[1] is the done accordion
+	if !strings.Contains(m.displayLines[accordionLineIdx], "Done") {
+		t.Errorf("expected done accordion line to contain 'Done', got: %s", m.displayLines[accordionLineIdx])
+	}
+	if !strings.Contains(m.displayLines[accordionLineIdx], "1") {
+		t.Errorf("expected done accordion line to contain count '1', got: %s", m.displayLines[accordionLineIdx])
+	}
+}
+
+func TestDoneAccordion_ExpandedDisplayLinesIncludeDoneRows(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "active", Status: agent.StatusIdle, UpdatedAt: now, LastReadAt: now},
+		{ID: "done-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), Visibility: agent.VisibilityDone},
+		{ID: "done-2", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), Visibility: agent.VisibilityDone},
+	}
+
+	m := &InboxModel{width: 120, height: 50, doneExpanded: map[string]bool{"Today": true}}
+	m.buildGroups(sessions)
+	m.buildDisplayLines()
+
+	// flatRows: 1 active + 1 done accordion + 2 done rows = 4
+	if len(m.flatRows) != 4 {
+		t.Fatalf("expected 4 flatRows, got %d", len(m.flatRows))
+	}
+
+	// All rowToLine values should be valid and strictly increasing.
+	for i, lineIdx := range m.rowToLine {
+		if lineIdx < 0 || lineIdx >= len(m.displayLines) {
+			t.Errorf("rowToLine[%d]=%d out of bounds (displayLines has %d entries)",
+				i, lineIdx, len(m.displayLines))
+		}
+	}
+	for i := 1; i < len(m.rowToLine); i++ {
+		if m.rowToLine[i] <= m.rowToLine[i-1] {
+			t.Errorf("rowToLine[%d]=%d should be > rowToLine[%d]=%d",
+				i, m.rowToLine[i], i-1, m.rowToLine[i-1])
+		}
+	}
+}
+
+func TestDoneAndArchiveAccordions_BothPresent(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sessions := []agent.SessionInfo{
+		{ID: "active", Status: agent.StatusIdle, UpdatedAt: now, LastReadAt: now},
+		{ID: "done-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-1 * time.Hour), Visibility: agent.VisibilityDone},
+		{ID: "archived-1", Status: agent.StatusIdle, UpdatedAt: now.Add(-2 * time.Hour), Visibility: agent.VisibilityArchived},
+	}
+
+	m := &InboxModel{}
+	m.buildGroups(sessions)
+
+	// 1 active + 1 done accordion + 1 archive accordion = 3 flatRows.
+	if len(m.flatRows) != 3 {
+		t.Fatalf("expected 3 flatRows, got %d", len(m.flatRows))
+	}
+	if m.flatRows[1].doneAccordion == "" {
+		t.Error("expected flatRows[1] to be the done accordion toggle")
+	}
+	if m.flatRows[2].accordion == "" {
+		t.Error("expected flatRows[2] to be the archive accordion toggle")
+	}
+
+	// Done accordion appears before archive accordion.
+	if m.flatRows[1].doneAccordion != "Today" {
+		t.Errorf("expected done accordion for 'Today', got %q", m.flatRows[1].doneAccordion)
+	}
+	if m.flatRows[2].accordion != "Today" {
+		t.Errorf("expected archive accordion for 'Today', got %q", m.flatRows[2].accordion)
 	}
 }
 

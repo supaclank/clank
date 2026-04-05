@@ -31,15 +31,17 @@ type inboxRefreshMsg struct{}
 
 // inboxRow is one selectable row in the inbox.
 type inboxRow struct {
-	session   *agent.SessionInfo // nil for non-session rows (e.g. accordion)
-	accordion string             // non-empty = archive accordion for this date group label
+	session       *agent.SessionInfo // nil for non-session rows (e.g. accordion)
+	accordion     string             // non-empty = archive accordion for this date group label
+	doneAccordion string             // non-empty = done accordion for this date group label
 }
 
 // inboxGroup is a named section of rows.
 type inboxGroup struct {
 	name         string
 	style        lipgloss.Style
-	rows         []inboxRow // active (non-archived) rows
+	rows         []inboxRow // active (non-done, non-archived) rows
+	doneRows     []inboxRow // done rows shown when accordion is expanded
 	archivedRows []inboxRow // archived rows shown when accordion is expanded
 }
 
@@ -59,6 +61,9 @@ type InboxModel struct {
 
 	// Archive accordion state — tracks which date groups have their archive expanded.
 	archiveExpanded map[string]bool // keyed by date group label
+
+	// Done accordion state — tracks which date groups have their done section expanded.
+	doneExpanded map[string]bool // keyed by date group label
 
 	// Confirm dialog state.
 	showConfirm bool
@@ -578,6 +583,14 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 		if m.cursor >= 0 && m.cursor < len(m.flatRows) {
 			row := m.flatRows[m.cursor]
+			if row.doneAccordion != "" {
+				if m.doneExpanded == nil {
+					m.doneExpanded = make(map[string]bool)
+				}
+				m.doneExpanded[row.doneAccordion] = !m.doneExpanded[row.doneAccordion]
+				m.rebuildFlatRows()
+				return m, nil
+			}
 			if row.accordion != "" {
 				if m.archiveExpanded == nil {
 					m.archiveExpanded = make(map[string]bool)
@@ -761,7 +774,8 @@ func (m *InboxModel) toggleFollowUp(sessionID string) tea.Cmd {
 }
 
 // sessionSortPriority returns a numeric priority for sorting within a day group.
-// Busy/starting sessions float to the top; done/archived sink to the bottom.
+// Busy/starting sessions float to the top; done/archived are in separate
+// accordion sections so they don't normally reach this function.
 // Everything else (idle, error, unread, dead, …) sorts equally by UpdatedAt.
 func sessionSortPriority(s *agent.SessionInfo) int {
 	switch {
@@ -779,13 +793,12 @@ func sessionSortPriority(s *agent.SessionInfo) int {
 
 // buildGroups organises sessions into date-based groups (Today, Yesterday, …).
 // Within each day, sessions are sorted by status priority then by UpdatedAt
-// descending so busy/starting sessions appear first and done sessions sink
-// to the bottom. Error and unread status do not affect ordering.
+// descending so busy/starting sessions appear first.
 //
+// Done sessions are stored in each group's doneRows and hidden behind a
+// per-group accordion toggle (tracked by m.doneExpanded[label]).
 // Archived sessions are stored in each group's archivedRows and hidden
-// behind a per-group accordion toggle. When a group's accordion is
-// expanded (tracked by m.archiveExpanded[label]), the archived rows
-// appear below the accordion in flatRows.
+// behind a per-group accordion toggle (tracked by m.archiveExpanded[label]).
 func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
 	now := time.Now()
 
@@ -796,10 +809,11 @@ func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
 	})
 
 	// Bucket sessions by day label, preserving insertion order.
-	// Archived sessions go into a separate slice per bucket.
+	// Done and archived sessions go into separate slices per bucket.
 	type dayBucket struct {
 		label    string
 		rows     []inboxRow
+		done     []inboxRow
 		archived []inboxRow
 	}
 	var buckets []dayBucket
@@ -816,9 +830,12 @@ func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
 			buckets = append(buckets, dayBucket{label: label})
 		}
 		row := inboxRow{session: s}
-		if s.Visibility == agent.VisibilityArchived {
+		switch s.Visibility {
+		case agent.VisibilityArchived:
 			buckets[idx].archived = append(buckets[idx].archived, row)
-		} else {
+		case agent.VisibilityDone:
+			buckets[idx].done = append(buckets[idx].done, row)
+		default:
 			buckets[idx].rows = append(buckets[idx].rows, row)
 		}
 	}
@@ -842,6 +859,7 @@ func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
 			name:         b.label,
 			style:        headerStyle,
 			rows:         b.rows,
+			doneRows:     b.done,
 			archivedRows: b.archived,
 		})
 	}
@@ -850,12 +868,18 @@ func (m *InboxModel) buildGroups(sessions []agent.SessionInfo) {
 }
 
 // rebuildFlatRows reconstructs flatRows from m.groups, inserting per-group
-// accordion toggles and optionally expanded archived rows.
-// Called by buildGroups and when toggling an archive accordion.
+// accordion toggles and optionally expanded done/archived rows.
+// Called by buildGroups and when toggling an accordion.
 func (m *InboxModel) rebuildFlatRows() {
 	m.flatRows = nil
 	for _, g := range m.groups {
 		m.flatRows = append(m.flatRows, g.rows...)
+		if len(g.doneRows) > 0 {
+			m.flatRows = append(m.flatRows, inboxRow{doneAccordion: g.name})
+			if m.doneExpanded[g.name] {
+				m.flatRows = append(m.flatRows, g.doneRows...)
+			}
+		}
 		if len(g.archivedRows) > 0 {
 			m.flatRows = append(m.flatRows, inboxRow{accordion: g.name})
 			if m.archiveExpanded[g.name] {
@@ -916,7 +940,9 @@ func (m *InboxModel) View() tea.View {
 		lineIdx := m.rowToLine[m.cursor]
 		if lineIdx < len(m.displayLines) {
 			row := m.flatRows[m.cursor]
-			if row.accordion != "" {
+			if row.doneAccordion != "" {
+				m.displayLines[lineIdx] = m.renderDoneAccordion(row.doneAccordion, true)
+			} else if row.accordion != "" {
 				m.displayLines[lineIdx] = m.renderArchiveAccordion(row.accordion, true)
 			} else {
 				m.displayLines[lineIdx] = m.renderRow(row, true)
@@ -987,11 +1013,28 @@ func (m *InboxModel) buildDisplayLines() {
 		// Group header.
 		m.displayLines = append(m.displayLines, g.style.Render(g.name))
 
-		// Active/done session rows.
+		// Active session rows.
 		for ri := range g.rows {
 			m.rowToLine[flatIdx] = len(m.displayLines)
 			m.displayLines = append(m.displayLines, m.renderRow(g.rows[ri], false))
 			flatIdx++
+		}
+
+		// Per-group done accordion + expanded rows.
+		if len(g.doneRows) > 0 {
+			// Accordion toggle row.
+			m.rowToLine[flatIdx] = len(m.displayLines)
+			m.displayLines = append(m.displayLines, m.renderDoneAccordion(g.name, false))
+			flatIdx++
+
+			// Expanded done session rows.
+			if m.doneExpanded[g.name] {
+				for range g.doneRows {
+					m.rowToLine[flatIdx] = len(m.displayLines)
+					m.displayLines = append(m.displayLines, m.renderRow(m.flatRows[flatIdx], false))
+					flatIdx++
+				}
+			}
 		}
 
 		// Per-group archive accordion + expanded rows.
@@ -1027,6 +1070,30 @@ func (m *InboxModel) buildDisplayLines() {
 		m.displayLines = append(m.displayLines,
 			lipgloss.NewStyle().Foreground(mutedColor).Render(emptyMsg))
 	}
+}
+
+// renderDoneAccordion renders the collapsible done toggle line for a date group.
+func (m *InboxModel) renderDoneAccordion(groupLabel string, selected bool) string {
+	chevron := "▸"
+	if m.doneExpanded[groupLabel] {
+		chevron = "▾"
+	}
+	// Find the done count for this group.
+	count := 0
+	for _, g := range m.groups {
+		if g.name == groupLabel {
+			count = len(g.doneRows)
+			break
+		}
+	}
+	label := fmt.Sprintf("%s ✓ Done (%d)", chevron, count)
+
+	style := lipgloss.NewStyle().Foreground(successColor)
+	if selected {
+		prefix := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ")
+		return prefix + style.Render(label)
+	}
+	return "  " + style.Render(label)
 }
 
 // renderArchiveAccordion renders the collapsible archive toggle line for a date group.
@@ -1188,11 +1255,17 @@ func (m *InboxModel) viewportHeight() int {
 }
 
 // groupFlatRowCount returns the number of flatRows occupied by the given group,
-// including active rows, the accordion toggle (if any), and expanded archived rows.
+// including active rows, accordion toggles (if any), and expanded done/archived rows.
 func (m *InboxModel) groupFlatRowCount(g inboxGroup) int {
 	n := len(g.rows)
+	if len(g.doneRows) > 0 {
+		n++ // done accordion toggle
+		if m.doneExpanded[g.name] {
+			n += len(g.doneRows)
+		}
+	}
 	if len(g.archivedRows) > 0 {
-		n++ // accordion toggle
+		n++ // archive accordion toggle
 		if m.archiveExpanded[g.name] {
 			n += len(g.archivedRows)
 		}
@@ -1223,30 +1296,26 @@ func (m *InboxModel) groupFirstRow(groupIdx int) int {
 	return offset
 }
 
-// groupLastNonDoneRow returns the flatRows index of the last non-done session
-// row in the given group. This is the idle/done boundary — the row right above
-// the topmost done session. Returns -1 if the group has no non-done session rows.
-func (m *InboxModel) groupLastNonDoneRow(groupIdx int) int {
+// groupLastActiveRow returns the flatRows index of the last active (non-accordion)
+// session row in the given group. Returns -1 if the group has no active session rows.
+func (m *InboxModel) groupLastActiveRow(groupIdx int) int {
 	g := m.groups[groupIdx]
-	offset := m.groupFirstRow(groupIdx)
-	lastNonDone := -1
-	for i, row := range g.rows {
-		if row.session != nil && row.session.Visibility != agent.VisibilityDone {
-			lastNonDone = offset + i
-		}
+	if len(g.rows) == 0 {
+		return -1
 	}
-	return lastNonDone
+	offset := m.groupFirstRow(groupIdx)
+	return offset + len(g.rows) - 1
 }
 
 // buildBreakpoints returns the sorted, deduplicated list of flatRow indices
 // that shift+up/down should cycle through. For each date group the breakpoints
-// are the first row and (if distinct) the idle/done boundary.
+// are the first row and (if distinct) the last active session row.
 func (m *InboxModel) buildBreakpoints() []int {
 	var bp []int
 	for gi := range m.groups {
 		first := m.groupFirstRow(gi)
 		bp = append(bp, first)
-		if boundary := m.groupLastNonDoneRow(gi); boundary >= 0 && boundary != first {
+		if boundary := m.groupLastActiveRow(gi); boundary >= 0 && boundary != first {
 			bp = append(bp, boundary)
 		}
 	}
