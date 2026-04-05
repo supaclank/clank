@@ -1461,19 +1461,38 @@ func TestColonOpensActionMenu_OnUserMessage(t *testing.T) {
 		}
 	})
 
-	t.Run("does not open menu on non-user entry", func(t *testing.T) {
+	t.Run("does not open menu on entry without messageID", func(t *testing.T) {
 		t.Parallel()
 		entries := []displayEntry{
 			{kind: entryUser, content: "user msg", messageID: "msg-1"},
 			{kind: entryText, content: "agent response"},
 		}
 		m := newTestSessionModel(entries)
-		m.cursor = 1 // on the agent text entry
+		m.cursor = 1 // on the agent text entry (no messageID)
 
 		_, _ = m.handleKey(colon)
 
 		if m.showMenu {
-			t.Error("expected showMenu=false for non-user entry")
+			t.Error("expected showMenu=false for entry without messageID")
+		}
+	})
+
+	t.Run("opens menu on agent entry with messageID", func(t *testing.T) {
+		t.Parallel()
+		entries := []displayEntry{
+			{kind: entryUser, content: "prompt", messageID: "msg-1"},
+			{kind: entryText, content: "agent response", messageID: "msg-2"},
+		}
+		m := newTestSessionModel(entries)
+		m.cursor = 1 // on the agent text entry (has messageID)
+
+		_, _ = m.handleKey(colon)
+
+		if !m.showMenu {
+			t.Fatal("expected showMenu=true after ':' on agent entry with messageID")
+		}
+		if m.menuMessageID != "msg-2" {
+			t.Errorf("menuMessageID = %q, want %q", m.menuMessageID, "msg-2")
 		}
 	})
 
@@ -1559,9 +1578,77 @@ func TestHandleSessionMessages_PopulatesMessageID(t *testing.T) {
 		t.Errorf("entries[0].kind = %d, want entryUser", m.entries[0].kind)
 	}
 
+	// Assistant text entry should have messageID.
+	if m.entries[1].messageID != "msg-def" {
+		t.Errorf("entries[1].messageID = %q, want %q", m.entries[1].messageID, "msg-def")
+	}
+	if m.entries[1].kind != entryText {
+		t.Errorf("entries[1].kind = %d, want entryText", m.entries[1].kind)
+	}
+
 	// Second user entry should have messageID.
 	if m.entries[2].messageID != "msg-ghi" {
 		t.Errorf("entries[2].messageID = %q, want %q", m.entries[2].messageID, "msg-ghi")
+	}
+}
+
+func TestHandleSessionMessages_PopulatesNextMessageID(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel(nil)
+	messages := []agent.MessageData{
+		{
+			ID:   "msg-1",
+			Role: "user",
+			Parts: []agent.Part{
+				{Type: agent.PartText, Text: "first"},
+			},
+		},
+		{
+			ID:   "msg-2",
+			Role: "assistant",
+			Parts: []agent.Part{
+				{ID: "p1", Type: agent.PartText, Text: "reply"},
+			},
+		},
+		{
+			ID:   "msg-3",
+			Role: "user",
+			Parts: []agent.Part{
+				{Type: agent.PartText, Text: "second"},
+			},
+		},
+		{
+			ID:   "msg-4",
+			Role: "assistant",
+			Parts: []agent.Part{
+				{ID: "p2", Type: agent.PartText, Text: "final reply"},
+			},
+		},
+	}
+
+	m.handleSessionMessages(messages)
+
+	// Should have 4 entries: user, text, user, text
+	if len(m.entries) != 4 {
+		t.Fatalf("expected 4 entries, got %d", len(m.entries))
+	}
+
+	// msg-1 → next is msg-2
+	if m.entries[0].nextMessageID != "msg-2" {
+		t.Errorf("entries[0].nextMessageID = %q, want %q", m.entries[0].nextMessageID, "msg-2")
+	}
+	// msg-2 → next is msg-3
+	if m.entries[1].nextMessageID != "msg-3" {
+		t.Errorf("entries[1].nextMessageID = %q, want %q", m.entries[1].nextMessageID, "msg-3")
+	}
+	// msg-3 → next is msg-4
+	if m.entries[2].nextMessageID != "msg-4" {
+		t.Errorf("entries[2].nextMessageID = %q, want %q", m.entries[2].nextMessageID, "msg-4")
+	}
+	// msg-4 is last → nextMessageID should be empty (fork entire session)
+	if m.entries[3].nextMessageID != "" {
+		t.Errorf("entries[3].nextMessageID = %q, want empty (last message)", m.entries[3].nextMessageID)
 	}
 }
 
@@ -1857,5 +1944,143 @@ func TestSendMessage_ClearsRevertMessageID(t *testing.T) {
 
 	if m.info.RevertMessageID != "" {
 		t.Errorf("RevertMessageID = %q, want empty after sending message", m.info.RevertMessageID)
+	}
+}
+
+func TestActionMenu_ForkFromUserMessage(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel([]displayEntry{
+		{kind: entryUser, content: "original prompt", messageID: "msg-10"},
+	})
+	m.cursor = 0
+	m.menuMessageID = "msg-10"
+	m.menuMessageContent = "original prompt"
+	m.showMenu = true
+
+	// Simulate selecting "fork" from the action menu.
+	cmd := m.handleMenuAction("fork")
+
+	// Fork is non-destructive — no confirm dialog, returns a command directly.
+	if m.showConfirm {
+		t.Error("fork should not show a confirm dialog")
+	}
+	if cmd == nil {
+		t.Fatal("expected a command from handleMenuAction(fork)")
+	}
+}
+
+func TestActionMenu_ForkFromAssistantMessage(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel([]displayEntry{
+		{kind: entryUser, content: "prompt", messageID: "msg-1"},
+		{kind: entryText, content: "agent response", messageID: "msg-2"},
+	})
+	m.cursor = 1
+	m.menuMessageID = "msg-2"
+	m.showMenu = true
+
+	cmd := m.handleMenuAction("fork")
+
+	if m.showConfirm {
+		t.Error("fork should not show a confirm dialog")
+	}
+	if cmd == nil {
+		t.Fatal("expected a command from handleMenuAction(fork)")
+	}
+}
+
+func TestActionMenu_UserMessageHasRevertAndFork(t *testing.T) {
+	t.Parallel()
+	colon := tea.KeyPressMsg{Code: ':'}
+
+	entries := []displayEntry{
+		{kind: entryUser, content: "hello", messageID: "msg-1"},
+	}
+	m := newTestSessionModel(entries)
+	m.cursor = 0
+
+	_, _ = m.handleKey(colon)
+
+	if !m.showMenu {
+		t.Fatal("expected menu to open")
+	}
+	// User messages should have both revert and fork.
+	items := m.menu.items
+	if len(items) != 2 {
+		t.Fatalf("expected 2 menu items, got %d", len(items))
+	}
+	if items[0].action != "revert" {
+		t.Errorf("first item action = %q, want revert", items[0].action)
+	}
+	if items[1].action != "fork" {
+		t.Errorf("second item action = %q, want fork", items[1].action)
+	}
+}
+
+func TestActionMenu_AssistantMessageHasForkOnly(t *testing.T) {
+	t.Parallel()
+	colon := tea.KeyPressMsg{Code: ':'}
+
+	entries := []displayEntry{
+		{kind: entryText, content: "agent response", messageID: "msg-2"},
+	}
+	m := newTestSessionModel(entries)
+	m.cursor = 0
+
+	_, _ = m.handleKey(colon)
+
+	if !m.showMenu {
+		t.Fatal("expected menu to open")
+	}
+	// Assistant messages should only have fork (no revert).
+	items := m.menu.items
+	if len(items) != 1 {
+		t.Fatalf("expected 1 menu item, got %d", len(items))
+	}
+	if items[0].action != "fork" {
+		t.Errorf("item action = %q, want fork", items[0].action)
+	}
+}
+
+func TestForkResultMsg_ErrorSetsErr(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel(nil)
+	errMsg := forkResultMsg{err: fmt.Errorf("fork failed")}
+
+	result, _ := m.Update(errMsg)
+	updated := result.(*SessionViewModel)
+
+	if updated.err == nil {
+		t.Fatal("expected error to be set")
+	}
+	if updated.err.Error() != "fork failed" {
+		t.Errorf("err = %q, want %q", updated.err.Error(), "fork failed")
+	}
+}
+
+func TestForkResultMsg_SuccessEmitsOpenForkedSessionMsg(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel(nil)
+	m.width = 80
+	m.height = 40
+	successMsg := forkResultMsg{sessionID: "new-session-id"}
+
+	_, cmd := m.Update(successMsg)
+
+	if cmd == nil {
+		t.Fatal("expected a command to navigate to the forked session")
+	}
+	// Execute the command and verify it produces openForkedSessionMsg.
+	msg := cmd()
+	forkNav, ok := msg.(openForkedSessionMsg)
+	if !ok {
+		t.Fatalf("expected openForkedSessionMsg, got %T", msg)
+	}
+	if forkNav.sessionID != "new-session-id" {
+		t.Errorf("sessionID = %q, want %q", forkNav.sessionID, "new-session-id")
 	}
 }

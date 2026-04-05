@@ -289,6 +289,18 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// timer is running (safety net in case it was lost).
 		return m, tea.Batch(m.loadDataCmd(), m.autoRefreshCmd(), m.spinner.Tick)
 
+	case openForkedSessionMsg:
+		forkMsg := msg.(openForkedSessionMsg)
+		// Clean up the current session view before switching.
+		if m.sessionView != nil && m.sessionView.cancelEvents != nil {
+			m.sessionView.cancelEvents()
+		}
+		if m.activeConnID != "" {
+			go m.client.MarkSessionRead(context.Background(), m.activeConnID)
+		}
+		// Navigate to the forked session.
+		return m, m.openSession(forkMsg.sessionID)
+
 	case tea.WindowSizeMsg:
 		// Forward to both.
 		wMsg := msg.(tea.WindowSizeMsg)

@@ -144,6 +144,7 @@ type SessionViewModel struct {
 	showMenu           bool
 	menu               actionMenuModel
 	menuMessageID      string // message ID the menu action targets
+	menuNextMessageID  string // next message ID after the target (for fork; empty = last message)
 	menuMessageContent string // message content for prompt prefill after revert
 
 	// Mouse text selection state.
@@ -194,11 +195,12 @@ type SessionViewModel struct {
 
 // displayEntry is a rendered item in the session transcript.
 type displayEntry struct {
-	kind      entryKind
-	partID    string // Part ID for tracking updates (text deltas, tool status)
-	messageID string // Backend message ID (for revert targeting)
-	content   string // pre-rendered line(s), may contain ANSI
-	agent     string // agent mode used for this entry (only set for entryUser)
+	kind          entryKind
+	partID        string // Part ID for tracking updates (text deltas, tool status)
+	messageID     string // Backend message ID (for revert targeting)
+	nextMessageID string // ID of the next message in conversation order (for fork targeting; empty = last message)
+	content       string // pre-rendered line(s), may contain ANSI
+	agent         string // agent mode used for this entry (only set for entryUser)
 
 	// toolPart stores the original Part data for entryTool entries so the
 	// tool line (including its spinner) can be rendered live during View()
@@ -569,6 +571,14 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.follow = true
 		return m, m.fetchSessionMessages()
 
+	case forkResultMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		// Tell the inbox to navigate to the new forked session.
+		return m, func() tea.Msg { return openForkedSessionMsg{sessionID: msg.sessionID} }
+
 	case sessionEventsErrMsg:
 		m.err = msg.err
 		return m, nil
@@ -885,13 +895,17 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Open action menu for the selected entry.
 		if m.cursor >= 0 && m.cursor < len(m.entries) {
 			entry := m.entries[m.cursor]
-			if entry.kind == entryUser && entry.messageID != "" {
+			if entry.messageID != "" {
 				m.menuMessageID = entry.messageID
+				m.menuNextMessageID = entry.nextMessageID
 				m.menuMessageContent = entry.content
 				m.showMenu = true
-				m.menu = newActionMenu("Actions", []actionMenuItem{
-					{label: "Revert to this message", key: "r", action: "revert"},
-				})
+				var items []actionMenuItem
+				if entry.kind == entryUser {
+					items = append(items, actionMenuItem{label: "Revert to this message", key: "r", action: "revert"})
+				}
+				items = append(items, actionMenuItem{label: "Fork from here", key: "f", action: "fork"})
+				m.menu = newActionMenu("Actions", items)
 				return m, nil
 			}
 		}
@@ -1116,11 +1130,18 @@ func (m *SessionViewModel) handleSessionMessages(messages []agent.MessageData) {
 		revertID = m.info.RevertMessageID
 	}
 
+	// Collect ordered message IDs for building the nextMessageID mapping.
+	var msgIDs []string
+
 	for _, msg := range messages {
 		// If this message is the revert target, stop — exclude it and
 		// everything after it.
 		if revertID != "" && msg.ID == revertID {
 			break
+		}
+
+		if msg.ID != "" {
+			msgIDs = append(msgIDs, msg.ID)
 		}
 
 		if msg.Role == "user" {
@@ -1147,15 +1168,30 @@ func (m *SessionViewModel) handleSessionMessages(messages []agent.MessageData) {
 		// Assistant message: render parts.
 		if msg.Content != "" && len(msg.Parts) == 0 {
 			m.entries = append(m.entries, displayEntry{
-				kind:    entryText,
-				content: msg.Content,
+				kind:      entryText,
+				messageID: msg.ID,
+				content:   msg.Content,
 			})
 		}
 		for _, p := range msg.Parts {
 			if p.ID != "" {
 				m.seenParts[p.ID] = true
 			}
-			m.addPartEntry(p)
+			m.addPartEntry(p, msg.ID)
+		}
+	}
+
+	// Build messageID → nextMessageID mapping and apply to entries.
+	nextMap := make(map[string]string, len(msgIDs))
+	for i, id := range msgIDs {
+		if i+1 < len(msgIDs) {
+			nextMap[id] = msgIDs[i+1]
+		}
+		// Last message: nextMap[id] remains "" (fork entire session).
+	}
+	for i := range m.entries {
+		if m.entries[i].messageID != "" {
+			m.entries[i].nextMessageID = nextMap[m.entries[i].messageID]
 		}
 	}
 
@@ -1223,20 +1259,26 @@ func (m *SessionViewModel) upsertPartEntry(p agent.Part, isDelta bool) {
 	m.addPartEntry(p)
 }
 
-func (m *SessionViewModel) addPartEntry(p agent.Part) {
+func (m *SessionViewModel) addPartEntry(p agent.Part, messageID ...string) {
+	msgID := ""
+	if len(messageID) > 0 {
+		msgID = messageID[0]
+	}
 	switch p.Type {
 	case agent.PartToolCall, agent.PartToolResult:
 		pCopy := p
 		m.entries = append(m.entries, displayEntry{
-			kind:     entryTool,
-			partID:   p.ID,
-			toolPart: &pCopy,
+			kind:      entryTool,
+			partID:    p.ID,
+			messageID: msgID,
+			toolPart:  &pCopy,
 		})
 	case agent.PartThinking:
 		if p.Text != "" {
 			m.entries = append(m.entries, displayEntry{
 				kind:      entryThink,
 				partID:    p.ID,
+				messageID: msgID,
 				content:   p.Text,
 				streaming: m.isBusy(),
 			})
@@ -1245,6 +1287,7 @@ func (m *SessionViewModel) addPartEntry(p agent.Part) {
 		m.entries = append(m.entries, displayEntry{
 			kind:      entryText,
 			partID:    p.ID,
+			messageID: msgID,
 			content:   p.Text,
 			streaming: m.isBusy(),
 		})
@@ -1737,6 +1780,8 @@ func (m *SessionViewModel) handleMenuAction(action string) tea.Cmd {
 			"revert",
 		)
 		return nil
+	case "fork":
+		return m.forkSession(m.menuNextMessageID)
 	}
 	return nil
 }
@@ -1746,6 +1791,17 @@ type revertResultMsg struct {
 	messageID string // the target message ID that was reverted to
 	prompt    string // the user message content to prefill in the prompt
 	err       error
+}
+
+// forkResultMsg carries the result of a fork operation back to the TUI.
+type forkResultMsg struct {
+	sessionID string // the new forked session's daemon ID
+	err       error
+}
+
+// openForkedSessionMsg tells the inbox to navigate to the forked session.
+type openForkedSessionMsg struct {
+	sessionID string
 }
 
 func (m *SessionViewModel) revertSession(messageID string) tea.Cmd {
@@ -1759,6 +1815,23 @@ func (m *SessionViewModel) revertSession(messageID string) tea.Cmd {
 			return revertResultMsg{err: err}
 		}
 		return revertResultMsg{messageID: messageID, prompt: prompt}
+	}
+}
+
+// forkSession creates a new session forked from the current one.
+// nextMessageID is the exclusive upper bound: the fork includes all messages
+// before this ID. When empty, the entire session is forked.
+func (m *SessionViewModel) forkSession(nextMessageID string) tea.Cmd {
+	client := m.client
+	sessionID := m.sessionID
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		info, err := client.ForkSession(ctx, sessionID, nextMessageID)
+		if err != nil {
+			return forkResultMsg{err: err}
+		}
+		return forkResultMsg{sessionID: info.ID}
 	}
 }
 

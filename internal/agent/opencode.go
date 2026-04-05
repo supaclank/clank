@@ -224,6 +224,62 @@ func (b *OpenCodeBackend) Revert(ctx context.Context, messageID string) error {
 	return nil
 }
 
+func (b *OpenCodeBackend) Fork(ctx context.Context, messageID string) (ForkResult, error) {
+	if b.sessionID == "" {
+		return ForkResult{}, fmt.Errorf("session not started")
+	}
+
+	doFork := func() (ForkResult, error) {
+		url := b.serverURL + "/session/" + b.sessionID + "/fork"
+		var bodyMap map[string]string
+		if messageID != "" {
+			bodyMap = map[string]string{"messageID": messageID}
+		} else {
+			bodyMap = map[string]string{}
+		}
+		body, err := json.Marshal(bodyMap)
+		if err != nil {
+			return ForkResult{}, fmt.Errorf("fork: marshal body: %w", err)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return ForkResult{}, fmt.Errorf("fork: create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return ForkResult{}, err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			return ForkResult{}, fmt.Errorf("fork: server returned %d: %s", resp.StatusCode, string(respBody))
+		}
+
+		var result struct {
+			ID    string `json:"id"`
+			Title string `json:"title"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return ForkResult{}, fmt.Errorf("fork: decode response: %w", err)
+		}
+		return ForkResult{ID: result.ID, Title: result.Title}, nil
+	}
+
+	res, err := doFork()
+	if err != nil && isConnectionError(err) && b.resolver != nil {
+		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
+			res, err = doFork()
+		}
+	}
+	if err != nil {
+		return ForkResult{}, fmt.Errorf("fork: %w", err)
+	}
+	return res, nil
+}
+
 func (b *OpenCodeBackend) Stop() error {
 	b.cancel()
 	b.closeEvents()

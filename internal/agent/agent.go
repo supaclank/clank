@@ -257,6 +257,12 @@ type TitleChangeData struct {
 	Title string `json:"title"`
 }
 
+// ForkResult holds the result of a Fork operation.
+type ForkResult struct {
+	ID    string // External (backend) session ID
+	Title string // AI-generated title carried over from the source session
+}
+
 // RevertChangeData is the payload for EventRevertChange.
 type RevertChangeData struct {
 	MessageID string `json:"message_id"` // The message ID from which onward is reverted; empty means unrevert
@@ -487,6 +493,11 @@ type SessionBackend interface {
 	// subsequent messages. Returns an error if the backend does not support
 	// reverting (e.g. Claude Code).
 	Revert(ctx context.Context, messageID string) error
+
+	// Fork creates a new session forked from the given message.
+	// Returns the new session's external ID and title.
+	// Returns an error if the backend does not support forking.
+	Fork(ctx context.Context, messageID string) (ForkResult, error)
 }
 
 // BackendManager creates and manages SessionBackend instances for a specific

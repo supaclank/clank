@@ -503,6 +503,7 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /sessions/{id}/messages", d.handleGetSessionMessages)
 	mux.HandleFunc("POST /sessions/{id}/message", d.handleSendMessage)
 	mux.HandleFunc("POST /sessions/{id}/revert", d.handleRevertSession)
+	mux.HandleFunc("POST /sessions/{id}/fork", d.handleForkSession)
 	mux.HandleFunc("POST /sessions/{id}/abort", d.handleAbortSession)
 	mux.HandleFunc("POST /sessions/{id}/read", d.handleMarkSessionRead)
 	mux.HandleFunc("POST /sessions/{id}/followup", d.handleToggleFollowUp)
@@ -1049,6 +1050,73 @@ func (d *Daemon) handleRevertSession(w http.ResponseWriter, r *http.Request) {
 	d.persistSession(ms)
 	d.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reverted"})
+}
+
+func (d *Daemon) handleForkSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		MessageID string `json:"message_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	// message_id is optional: empty means "fork the entire session".
+
+	d.mu.RLock()
+	ms, ok := d.sessions[id]
+	d.mu.RUnlock()
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	if ms.backend == nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "session has no active backend"})
+		return
+	}
+
+	// Ask the backend to fork — returns the new session's external ID and title.
+	forkResult, err := ms.backend.Fork(r.Context(), body.MessageID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Create a new managed session for the fork.
+	newID := ulid.Make().String()
+	now := time.Now()
+	newInfo := agent.SessionInfo{
+		ID:          newID,
+		ExternalID:  forkResult.ID,
+		Backend:     ms.info.Backend,
+		Status:      agent.StatusIdle,
+		ProjectDir:  ms.info.ProjectDir,
+		ProjectName: ms.info.ProjectName,
+		Title:       forkResult.Title,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	newMS := &managedSession{info: newInfo}
+
+	d.mu.Lock()
+	d.sessions[newID] = newMS
+	d.persistSession(newMS)
+	d.mu.Unlock()
+
+	// Activate the backend so the forked session can stream events and accept prompts.
+	if err := d.activateBackend(newID, newMS); err != nil {
+		log.Printf("[daemon] fork: failed to activate backend for %s: %v", newID, err)
+		// Session is persisted but backend is inactive; user can still navigate to it.
+	}
+
+	d.broadcast(agent.Event{
+		Type:      agent.EventSessionCreate,
+		SessionID: newID,
+		Timestamp: now,
+		Data:      newInfo,
+	})
+
+	writeJSON(w, http.StatusOK, newInfo)
 }
 
 func (d *Daemon) handleMarkSessionRead(w http.ResponseWriter, r *http.Request) {

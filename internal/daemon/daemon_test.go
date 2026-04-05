@@ -25,6 +25,8 @@ type mockBackend struct {
 	aborted           bool
 	reverted          bool
 	revertedMessageID string
+	forked            bool
+	forkedMessageID   string
 
 	// history is returned by Messages(). Tests can set it to control
 	// the message history returned by the backend.
@@ -136,6 +138,14 @@ func (m *mockBackend) Revert(ctx context.Context, messageID string) error {
 	m.revertedMessageID = messageID
 	m.mu.Unlock()
 	return nil
+}
+
+func (m *mockBackend) Fork(ctx context.Context, messageID string) (agent.ForkResult, error) {
+	m.mu.Lock()
+	m.forked = true
+	m.forkedMessageID = messageID
+	m.mu.Unlock()
+	return agent.ForkResult{ID: "forked-external-id", Title: "Forked session"}, nil
 }
 
 // mockBackendManager implements agent.BackendManager for testing. It wraps
@@ -779,6 +789,140 @@ func TestDaemonRevertSessionNotFound(t *testing.T) {
 	err := client.RevertSession(context.Background(), "nonexistent", "msg-123")
 	if err == nil {
 		t.Error("expected error reverting non-existent session")
+	}
+}
+
+func TestDaemonForkSession(t *testing.T) {
+	mgr := newMockBackendManager()
+
+	dir := shortTempDir(t)
+	sockPath := filepath.Join(dir, "test.sock")
+	pidPath := filepath.Join(dir, "test.pid")
+
+	d := daemon.NewWithPaths(sockPath, pidPath)
+	d.BackendManagers[agent.BackendOpenCode] = mgr
+	d.BackendManagers[agent.BackendClaudeCode] = mgr
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run() }()
+
+	client := daemon.NewClient(sockPath)
+	waitForDaemon(t, client)
+	defer func() {
+		d.Stop()
+		<-errCh
+	}()
+
+	ctx := context.Background()
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "original session",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	forked, err := client.ForkSession(ctx, info.ID, "msg-fork-point")
+	if err != nil {
+		t.Fatalf("ForkSession: %v", err)
+	}
+
+	// The forked session should have a different daemon ID.
+	if forked.ID == info.ID {
+		t.Error("forked session should have a different ID")
+	}
+	if forked.ID == "" {
+		t.Error("forked session ID should not be empty")
+	}
+	if forked.ExternalID != "forked-external-id" {
+		t.Errorf("expected ExternalID=forked-external-id, got %s", forked.ExternalID)
+	}
+	if forked.Title != "Forked session" {
+		t.Errorf("expected Title=%q, got %q", "Forked session", forked.Title)
+	}
+	if forked.ProjectDir != info.ProjectDir {
+		t.Errorf("expected ProjectDir=%s, got %s", info.ProjectDir, forked.ProjectDir)
+	}
+	if forked.Backend != info.Backend {
+		t.Errorf("expected Backend=%s, got %s", info.Backend, forked.Backend)
+	}
+
+	// Verify the original backend received the fork call.
+	origBackend := mgr.all[0]
+	origBackend.mu.Lock()
+	defer origBackend.mu.Unlock()
+	if !origBackend.forked {
+		t.Error("expected original backend to be forked")
+	}
+	if origBackend.forkedMessageID != "msg-fork-point" {
+		t.Errorf("expected forkedMessageID=msg-fork-point, got %s", origBackend.forkedMessageID)
+	}
+}
+
+func TestDaemonForkSessionEmptyMessageID(t *testing.T) {
+	mgr := newMockBackendManager()
+
+	dir := shortTempDir(t)
+	sockPath := filepath.Join(dir, "test.sock")
+	pidPath := filepath.Join(dir, "test.pid")
+
+	d := daemon.NewWithPaths(sockPath, pidPath)
+	d.BackendManagers[agent.BackendOpenCode] = mgr
+	d.BackendManagers[agent.BackendClaudeCode] = mgr
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run() }()
+
+	client := daemon.NewClient(sockPath)
+	waitForDaemon(t, client)
+	defer func() {
+		d.Stop()
+		<-errCh
+	}()
+
+	ctx := context.Background()
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Empty message_id should fork the entire session (not return an error).
+	forked, err := client.ForkSession(ctx, info.ID, "")
+	if err != nil {
+		t.Fatalf("ForkSession with empty messageID: %v", err)
+	}
+	if forked.ID == "" {
+		t.Error("forked session ID should not be empty")
+	}
+
+	// Verify the backend received an empty messageID.
+	origBackend := mgr.all[0]
+	origBackend.mu.Lock()
+	defer origBackend.mu.Unlock()
+	if !origBackend.forked {
+		t.Error("expected original backend to be forked")
+	}
+	if origBackend.forkedMessageID != "" {
+		t.Errorf("expected empty forkedMessageID, got %s", origBackend.forkedMessageID)
+	}
+}
+
+func TestDaemonForkSessionNotFound(t *testing.T) {
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	_, err := client.ForkSession(context.Background(), "nonexistent", "msg-123")
+	if err == nil {
+		t.Error("expected error forking non-existent session")
 	}
 }
 

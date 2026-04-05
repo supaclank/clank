@@ -207,6 +207,20 @@ func (c *Client) RevertSession(ctx context.Context, sessionID, messageID string)
 	return c.post(ctx, "/sessions/"+sessionID+"/revert", body, nil)
 }
 
+// ForkSession forks a session from the given message, creating a new session
+// with the message history up to (but not including) the specified message.
+// If messageID is empty, the entire session is forked.
+func (c *Client) ForkSession(ctx context.Context, sessionID, messageID string) (*agent.SessionInfo, error) {
+	body := struct {
+		MessageID string `json:"message_id,omitempty"`
+	}{MessageID: messageID}
+	var info agent.SessionInfo
+	if err := c.post(ctx, "/sessions/"+sessionID+"/fork", body, &info); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
 // MarkSessionRead marks a session as read by setting its LastReadAt timestamp.
 func (c *Client) MarkSessionRead(ctx context.Context, sessionID string) error {
 	return c.post(ctx, "/sessions/"+sessionID+"/read", nil, nil)

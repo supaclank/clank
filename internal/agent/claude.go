@@ -252,6 +252,10 @@ func (b *ClaudeCodeBackend) Revert(ctx context.Context, messageID string) error 
 	return fmt.Errorf("revert is not supported by Claude Code backend")
 }
 
+func (b *ClaudeCodeBackend) Fork(ctx context.Context, messageID string) (ForkResult, error) {
+	return ForkResult{}, fmt.Errorf("fork is not supported by Claude Code backend")
+}
+
 // --- Internal helpers ---
 
 func (b *ClaudeCodeBackend) setStatus(s SessionStatus) {
