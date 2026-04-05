@@ -1306,6 +1306,9 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	} else if isDone {
 		// Done sessions: green title text.
 		prompt = lipgloss.NewStyle().Foreground(successColor).Render(prompt)
+	} else if s.FollowUp {
+		// Follow-up sessions: dark orange title to stand out.
+		prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("#D97706")).Bold(true).Render(prompt)
 	} else if s.Unread() {
 		// Unread sessions: bold title to stand out.
 		prompt = lipgloss.NewStyle().Bold(true).Render(prompt)
