@@ -2663,6 +2663,56 @@ func TestDaemonSetVisibilityBackToVisible(t *testing.T) {
 	}
 }
 
+func TestDaemonUnarchiveSession(t *testing.T) {
+	t.Parallel()
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "test prompt",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Archive the session.
+	if err := client.SetVisibility(ctx, info.ID, agent.VisibilityArchived); err != nil {
+		t.Fatalf("SetVisibility(archived): %v", err)
+	}
+
+	got, err := client.GetSession(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetSession after archive: %v", err)
+	}
+	if got.Visibility != agent.VisibilityArchived {
+		t.Errorf("visibility = %q, want %q", got.Visibility, agent.VisibilityArchived)
+	}
+	if !got.Hidden() {
+		t.Error("expected session to be hidden after archiving")
+	}
+
+	// Unarchive the session.
+	if err := client.SetVisibility(ctx, info.ID, agent.VisibilityVisible); err != nil {
+		t.Fatalf("SetVisibility(visible): %v", err)
+	}
+
+	got, err = client.GetSession(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetSession after unarchive: %v", err)
+	}
+	if got.Visibility != agent.VisibilityVisible {
+		t.Errorf("visibility = %q, want %q", got.Visibility, agent.VisibilityVisible)
+	}
+	if got.Hidden() {
+		t.Error("expected session to not be hidden after unarchiving")
+	}
+}
+
 func TestDaemonSetVisibilityInvalid(t *testing.T) {
 	t.Parallel()
 	_, client, cleanup := testDaemon(t)

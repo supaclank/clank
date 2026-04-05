@@ -639,11 +639,19 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					title = truncateStr(row.session.Prompt, 40)
 				}
 				m.showConfirm = true
-				m.confirm = newConfirmDialog(
-					"Archive Session",
-					fmt.Sprintf("Archive '%s'?\nIt will be hidden from the inbox.", title),
-					"archive:"+row.session.ID,
-				)
+				if row.session.Visibility == agent.VisibilityArchived {
+					m.confirm = newConfirmDialog(
+						"Unarchive Session",
+						fmt.Sprintf("Unarchive '%s'?\nIt will reappear in the inbox.", title),
+						"unarchive:"+row.session.ID,
+					)
+				} else {
+					m.confirm = newConfirmDialog(
+						"Archive Session",
+						fmt.Sprintf("Archive '%s'?\nIt will be hidden from the inbox.", title),
+						"archive:"+row.session.ID,
+					)
+				}
 			}
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("o"))):
@@ -739,6 +747,8 @@ func (m *InboxModel) handleConfirmAction(action string) tea.Cmd {
 		return m.setSessionVisibility(id, agent.VisibilityDone)
 	case "archive":
 		return m.setSessionVisibility(id, agent.VisibilityArchived)
+	case "unarchive":
+		return m.setSessionVisibility(id, agent.VisibilityVisible)
 	}
 	return nil
 }
@@ -983,7 +993,13 @@ func (m *InboxModel) View() tea.View {
 	if m.searching {
 		help = helpStyle.Render("esc: cancel | enter: open | up/down: navigate")
 	} else {
-		help = helpStyle.Render("j/k: navigate | enter: open | o: open cli | n: new | /: search | f: follow-up | d: done | x: archive | r: refresh | q: quit")
+		archiveLabel := "x: archive"
+		if m.cursor >= 0 && m.cursor < len(m.flatRows) {
+			if row := m.flatRows[m.cursor]; row.session != nil && row.session.Visibility == agent.VisibilityArchived {
+				archiveLabel = "x: unarchive"
+			}
+		}
+		help = helpStyle.Render("j/k: navigate | enter: open | o: open cli | n: new | /: search | f: follow-up | d: done | " + archiveLabel + " | r: refresh | q: quit")
 	}
 	sb.WriteString(help)
 
