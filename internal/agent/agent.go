@@ -358,6 +358,7 @@ type SessionInfo struct {
 	Agent           string            `json:"agent,omitempty"`             // Current OpenCode agent (e.g. "build", "plan")
 	Draft           string            `json:"draft,omitempty"`             // Unsent follow-up text the user was composing
 	RevertMessageID string            `json:"revert_message_id,omitempty"` // When set, messages from this ID onward are reverted (hidden)
+	ServerURL       string            `json:"server_url,omitempty"`        // Runtime-only: backend server URL (e.g. OpenCode serve endpoint). Not persisted.
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`
 	LastReadAt      time.Time         `json:"last_read_at,omitempty"`

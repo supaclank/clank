@@ -22,7 +22,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"unicode"
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
@@ -797,6 +796,11 @@ func (d *Daemon) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	if ms.backend != nil {
 		info.Status = ms.backend.Status()
 	}
+	if info.Backend == agent.BackendOpenCode {
+		if urls := d.openCodeServerURLs(); urls != nil {
+			info.ServerURL = urls[info.ProjectDir]
+		}
+	}
 	writeJSON(w, http.StatusOK, info)
 }
 
@@ -1207,9 +1211,26 @@ func (d *Daemon) handlePermissionReply(w http.ResponseWriter, r *http.Request) {
 
 // --- Internal Methods ---
 
+// openCodeServerURLs returns a map from project directory to server URL
+// for all running OpenCode servers. Returns nil if no OpenCode backend
+// manager is registered.
+func (d *Daemon) openCodeServerURLs() map[string]string {
+	ocMgr, ok := d.BackendManagers[agent.BackendOpenCode].(*OpenCodeBackendManager)
+	if !ok {
+		return nil
+	}
+	urls := make(map[string]string)
+	for _, srv := range ocMgr.ListServers() {
+		urls[srv.ProjectDir] = srv.URL
+	}
+	return urls
+}
+
 // snapshotSessions returns a point-in-time copy of all session infos
-// with live status from backends.
+// with live status from backends and populated ServerURL for OpenCode sessions.
 func (d *Daemon) snapshotSessions() []agent.SessionInfo {
+	serverURLs := d.openCodeServerURLs()
+
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	sessions := make([]agent.SessionInfo, 0, len(d.sessions))
@@ -1217,6 +1238,9 @@ func (d *Daemon) snapshotSessions() []agent.SessionInfo {
 		info := ms.info
 		if ms.backend != nil {
 			info.Status = ms.backend.Status()
+		}
+		if info.Backend == agent.BackendOpenCode && serverURLs != nil {
+			info.ServerURL = serverURLs[info.ProjectDir]
 		}
 		sessions = append(sessions, info)
 	}
@@ -1226,10 +1250,9 @@ func (d *Daemon) snapshotSessions() []agent.SessionInfo {
 // searchSessions returns sessions matching the given search parameters.
 //
 // Query supports pipe-separated OR groups: "auth bug|dark mode" matches
-// sessions containing ("auth" AND "bug") OR ("dark" AND "mode"). Matching
-// is case-insensitive and word-boundary-aware (each term must appear at the
-// start of a word) against the concatenation of title, prompt, draft, and
-// project_name.
+// sessions containing ("auth" AND "bug") OR ("dark" AND "mode"). All
+// matching is case-insensitive substring matching against the concatenation
+// of title, prompt, draft, and project_name.
 //
 // Since/Until filter on UpdatedAt. Results are sorted by updated_at descending.
 func (d *Daemon) searchSessions(p agent.SearchParams) []agent.SessionInfo {
@@ -1281,7 +1304,7 @@ func (d *Daemon) searchSessions(p agent.SearchParams) []agent.SessionInfo {
 			for _, terms := range orGroups {
 				allMatch := true
 				for _, term := range terms {
-					if !containsAtWordBoundary(hay, term) {
+					if !strings.Contains(hay, term) {
 						allMatch = false
 						break
 					}
@@ -1304,24 +1327,6 @@ func (d *Daemon) searchSessions(p agent.SearchParams) []agent.SessionInfo {
 	})
 
 	return results
-}
-
-// containsAtWordBoundary reports whether term appears in hay starting at a
-// word boundary — i.e. the match is at position 0 or preceded by a non-letter.
-// Both hay and term must already be lowercased.
-func containsAtWordBoundary(hay, term string) bool {
-	start := 0
-	for {
-		i := strings.Index(hay[start:], term)
-		if i < 0 {
-			return false
-		}
-		pos := start + i
-		if pos == 0 || !unicode.IsLetter(rune(hay[pos-1])) {
-			return true
-		}
-		start = pos + 1
-	}
 }
 
 // parseTimeParam parses a time parameter that is either an RFC 3339 timestamp

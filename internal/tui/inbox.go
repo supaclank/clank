@@ -254,6 +254,14 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Late-arriving search result after exiting search mode — ignore.
 		return m, nil
 
+	case nativeCLIReturnMsg:
+		// User returned from native CLI — refresh inbox to pick up any
+		// changes made in the external session.
+		if msg.err != nil {
+			m.err = msg.err
+		}
+		return m, m.loadDataCmd()
+
 	case tea.KeyPressMsg:
 		return m.handleInboxKey(msg)
 	}
@@ -613,6 +621,13 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				)
 			}
 		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("o"))):
+		if m.cursor >= 0 && m.cursor < len(m.flatRows) {
+			row := m.flatRows[m.cursor]
+			if row.session != nil {
+				return m, openNativeCLI(row.session)
+			}
+		}
 	}
 	return m, nil
 }
@@ -930,7 +945,7 @@ func (m *InboxModel) View() tea.View {
 	if m.searching {
 		help = helpStyle.Render("esc: cancel | enter: open | up/down: navigate")
 	} else {
-		help = helpStyle.Render("j/k: navigate | enter: open | n: new | /: search | f: follow-up | d: done | x: archive | r: refresh | q: quit")
+		help = helpStyle.Render("j/k: navigate | enter: open | o: open cli | n: new | /: search | f: follow-up | d: done | x: archive | r: refresh | q: quit")
 	}
 	sb.WriteString(help)
 

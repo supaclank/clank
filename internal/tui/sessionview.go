@@ -75,6 +75,8 @@ type backToInboxMsg struct{}
 // wordBackwardBinding matches the textarea's WordBackward keys (alt+left, alt+b).
 // Used to intercept the key before it reaches the textarea in cases where the
 // upstream wordLeft() implementation would infinite-loop.
+//
+// https://github.com/charmbracelet/bubbletea/issues/1652
 var wordBackwardBinding = key.NewBinding(key.WithKeys("alt+left", "alt+b"))
 
 // wordLeftWouldHang reports whether forwarding a WordBackward key to the
@@ -84,6 +86,8 @@ var wordBackwardBinding = key.NewBinding(key.WithKeys("alt+left", "alt+b"))
 // characterLeft(true) and breaks only when it finds a non-space rune under
 // the cursor. At position (0,0) characterLeft is a no-op and the break
 // condition can never be satisfied, so the loop spins forever.
+//
+// https://github.com/charmbracelet/bubbletea/issues/1652
 func wordLeftWouldHang(ta textarea.Model) bool {
 	return ta.Line() == 0 && ta.Column() == 0
 }
@@ -474,6 +478,14 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.fetchAgents()
 		}
 		return m, nil
+
+	case nativeCLIReturnMsg:
+		// User returned from native CLI — re-fetch session state to pick
+		// up messages and status changes made in the external TUI.
+		if msg.err != nil {
+			m.err = msg.err
+		}
+		return m, tea.Batch(m.fetchSessionInfo(), m.fetchSessionMessages())
 
 	case agentsResultMsg:
 		m.agents = msg.agents
@@ -934,6 +946,8 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			"archive",
 		)
 		return m, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("o"))):
+		return m, openNativeCLI(m.info)
 	}
 
 	return m, nil
@@ -2199,6 +2213,9 @@ func (m *SessionViewModel) buildHelpText() string {
 		qLabel = "q: quit"
 	}
 	parts := []string{"m: message", ":: actions", "v: verbose", "c: copy", "f: follow-up", "d: done", "x: archive", "drag: copy", qLabel}
+	if m.info != nil && m.info.Backend == agent.BackendOpenCode && m.info.ExternalID != "" {
+		parts = append(parts[:len(parts)-1], "o: open cli", parts[len(parts)-1])
+	}
 	if m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting) {
 		parts = append([]string{"ctrl+c: cancel"}, parts...)
 	}
