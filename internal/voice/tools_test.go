@@ -220,3 +220,89 @@ func TestListSessionsTool_IncludesProjectDir(t *testing.T) {
 		t.Errorf("expected full project dir in output, got: %s", result)
 	}
 }
+
+func TestListSessionsTool_OutputsFullSessionID(t *testing.T) {
+	t.Parallel()
+
+	fullID := "01ABCDEF01ABCDEF01ABCDEF01"
+	tp := &stubToolProvider{
+		sessions: []agent.SessionInfo{
+			{
+				ID:      fullID,
+				Status:  agent.StatusBusy,
+				Backend: agent.BackendOpenCode,
+				Prompt:  "do stuff",
+			},
+		},
+	}
+	tool := listSessionsTool(tp)
+	input, _ := json.Marshal(map[string]string{})
+	result, err := tool.Fn(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, fullID) {
+		t.Errorf("list_sessions should output full session ID %q, got: %s", fullID, result)
+	}
+}
+
+func TestResolveSessionID(t *testing.T) {
+	t.Parallel()
+
+	sessions := []agent.SessionInfo{
+		{ID: "01AAAA0000AAAA0000AAAA0001"},
+		{ID: "01BBBB0000BBBB0000BBBB0001"},
+	}
+	tp := &stubToolProvider{sessions: sessions}
+
+	t.Run("exact match", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		got, err := resolveSessionID(ctx, tp, "01AAAA0000AAAA0000AAAA0001")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "01AAAA0000AAAA0000AAAA0001" {
+			t.Errorf("got %q, want %q", got, "01AAAA0000AAAA0000AAAA0001")
+		}
+	})
+
+	t.Run("partial id rejected", func(t *testing.T) {
+		t.Parallel()
+		// Regression: voice agent was passing truncated 8-char IDs from
+		// list_sessions output. Now list_sessions outputs full IDs, and
+		// resolveSessionID requires an exact match.
+		ctx := context.Background()
+		_, err := resolveSessionID(ctx, tp, "01BBBB00")
+		if err == nil {
+			t.Fatal("expected error for partial ID")
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			t.Errorf("expected 'not found' in error, got: %v", err)
+		}
+	})
+
+	t.Run("no match", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		_, err := resolveSessionID(ctx, tp, "ZZZZNOTFOUND0000000000000000")
+		if err == nil {
+			t.Fatal("expected error for no match")
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			t.Errorf("expected 'not found' in error, got: %v", err)
+		}
+	})
+
+	t.Run("empty id", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		_, err := resolveSessionID(ctx, tp, "")
+		if err == nil {
+			t.Fatal("expected error for empty id")
+		}
+		if !strings.Contains(err.Error(), "session_id is required") {
+			t.Errorf("expected 'session_id is required' in error, got: %v", err)
+		}
+	})
+}

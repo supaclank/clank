@@ -123,7 +123,7 @@ func listSessionsTool(tp ToolProvider) *tools.Tool {
 					title = truncate(s.Prompt, 60)
 				}
 				fmt.Fprintf(&b, "- %s | %s | %s | %s | %s%s\n",
-					s.ID[:8], s.Status, s.Backend, s.ProjectDir, title, unread)
+					s.ID, s.Status, s.Backend, s.ProjectDir, title, unread)
 			}
 			return b.String(), nil
 		},
@@ -402,9 +402,9 @@ func validateKnownProjectDir(tp ToolProvider, dir string) error {
 	return fmt.Errorf("%s", b.String())
 }
 
-// resolveSessionID looks up a session by its full ID. Partial IDs are not
-// supported — if the exact ID is not found, the error directs the caller to
-// use list_sessions to find the correct full ID.
+// resolveSessionID looks up a session by its full ID. If the exact ID is
+// not found, the error directs the caller to use list_sessions to find
+// the correct full ID.
 func resolveSessionID(ctx context.Context, tp ToolProvider, id string) (string, error) {
 	if id == "" {
 		return "", fmt.Errorf("session_id is required")

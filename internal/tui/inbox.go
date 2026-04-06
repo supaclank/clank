@@ -1042,7 +1042,7 @@ func (m *InboxModel) View() tea.View {
 	// Shows filter pills and the search input (focused when searching,
 	// blurred placeholder otherwise).
 	sb.WriteString(m.renderFilterBar())
-	sb.WriteString("\n")
+	sb.WriteString("\n\n")
 
 	// Error.
 	if m.err != nil {
@@ -1366,7 +1366,7 @@ func (m *InboxModel) styledAgentStatus(status agent.SessionStatus) string {
 }
 
 func (m *InboxModel) viewportHeight() int {
-	reserved := 5 // header (1) + blank (1) + filter bar (1) + help bar (~1) + padding (1)
+	reserved := 6 // header (1) + blank (1) + filter bar (1) + blank (1) + help bar (~1) + padding (1)
 	if m.err != nil {
 		reserved += 2
 	}
