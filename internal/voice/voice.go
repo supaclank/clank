@@ -89,9 +89,9 @@ type Config struct {
 	Logger *log.Logger
 }
 
-// NewSession creates a voice session, connects to the OpenAI Realtime
-// API, and starts the audio pipeline. The session is ready for
-// StartListening/StopListening calls after this returns.
+// NewSession creates a voice session and starts the event-driven audio
+// pipeline. The OpenAI connection is deferred until the first turn
+// start event arrives from the AudioSource.
 func NewSession(ctx context.Context, cfg Config) (*Session, error) {
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("voice: APIKey is required")
@@ -211,23 +211,6 @@ func NewSession(ctx context.Context, cfg Config) (*Session, error) {
 	s.agent = mmAgent
 	s.log.Println("voice session started")
 	return s, nil
-}
-
-// StartListening begins a user voice turn (unmute mic, flush playback).
-func (s *Session) StartListening() {
-	s.agent.StartListening()
-}
-
-// StopListening ends a user voice turn (mute mic, trigger model response).
-func (s *Session) StopListening() {
-	committed := s.agent.StopListening()
-	if committed {
-		s.setStatus(agent.VoiceStatusSpeaking)
-	} else {
-		// No audio was sent (or commit failed). No response will
-		// arrive from OpenAI, so go straight back to idle.
-		s.setStatus(agent.VoiceStatusIdle)
-	}
 }
 
 // Status returns the current voice state.

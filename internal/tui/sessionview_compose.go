@@ -241,8 +241,7 @@ func (m *SessionViewModel) handleCreateResult(msg sessionCreateResultMsg) (tea.M
 // viewCompose renders the composing mode screen.
 func (m *SessionViewModel) viewCompose() tea.View {
 	if m.width == 0 {
-		v := tea.NewView("Loading...")
-		v.AltScreen = true
+		v := newVoiceEnabledView("Loading...")
 		return v
 	}
 
@@ -286,8 +285,7 @@ func (m *SessionViewModel) viewCompose() tea.View {
 	help := helpStyle.Render(strings.Join(helpParts, " | "))
 	sb.WriteString(help)
 
-	v := tea.NewView(sb.String())
-	v.AltScreen = true
+	v := newVoiceEnabledView(sb.String())
 	return v
 }
 

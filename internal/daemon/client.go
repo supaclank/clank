@@ -379,25 +379,9 @@ func (c *Client) ReplyPermission(ctx context.Context, sessionID, permissionID st
 
 // --- Voice methods ---
 
-// VoiceStart creates a new voice session on the daemon. The audio
-// WebSocket must be connected first via VoiceAudioStream.
-func (c *Client) VoiceStart(ctx context.Context) error {
-	return c.post(ctx, "/voice/start", nil, nil)
-}
-
 // VoiceStop tears down the active voice session.
 func (c *Client) VoiceStop(ctx context.Context) error {
 	return c.post(ctx, "/voice/stop", nil, nil)
-}
-
-// VoiceListen starts a user voice turn (unmute mic on daemon side).
-func (c *Client) VoiceListen(ctx context.Context) error {
-	return c.post(ctx, "/voice/listen", nil, nil)
-}
-
-// VoiceUnlisten ends a user voice turn (mute mic, trigger model response).
-func (c *Client) VoiceUnlisten(ctx context.Context) error {
-	return c.post(ctx, "/voice/unlisten", nil, nil)
 }
 
 // VoiceStatusResponse is the response from GET /voice/status.

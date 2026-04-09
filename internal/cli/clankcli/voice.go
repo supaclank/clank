@@ -2,6 +2,7 @@ package clankcli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -58,17 +59,14 @@ func runVoice() error {
 	}
 	defer player.Close()
 
-	// Connect audio WebSocket to daemon.
+	// Connect audio WebSocket to daemon. This also creates the voice
+	// session on the daemon side (session is created when WS connects).
 	wsConn, err := client.VoiceAudioStream(ctx)
 	if err != nil {
 		return fmt.Errorf("connect audio stream: %w", err)
 	}
 	defer wsConn.CloseNow()
 
-	// Start the voice session on the daemon.
-	if err := client.VoiceStart(ctx); err != nil {
-		return fmt.Errorf("start voice session: %w", err)
-	}
 	defer func() {
 		client.VoiceStop(context.Background())
 	}()
@@ -185,18 +183,27 @@ func runVoice() error {
 			if !recording {
 				recording = true
 				recorder.Unmute()
-				if err := client.VoiceListen(ctx); err != nil {
-					fmt.Fprintf(os.Stderr, "[ERROR] listen: %v\n", err)
+				if err := sendCLITurnSignal(wsConn, "turn_start"); err != nil {
+					fmt.Fprintf(os.Stderr, "[ERROR] turn_start: %v\n", err)
 					continue
 				}
 			} else {
 				recording = false
 				recorder.Mute()
-				if err := client.VoiceUnlisten(ctx); err != nil {
-					fmt.Fprintf(os.Stderr, "[ERROR] unlisten: %v\n", err)
+				if err := sendCLITurnSignal(wsConn, "turn_end"); err != nil {
+					fmt.Fprintf(os.Stderr, "[ERROR] turn_end: %v\n", err)
 					continue
 				}
 			}
 		}
 	}
+}
+
+// sendCLITurnSignal sends a JSON turn signal over the WebSocket.
+func sendCLITurnSignal(conn *websocket.Conn, signalType string) error {
+	data, err := json.Marshal(map[string]string{"type": signalType})
+	if err != nil {
+		return fmt.Errorf("marshal turn signal: %w", err)
+	}
+	return conn.Write(context.Background(), websocket.MessageText, data)
 }

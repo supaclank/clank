@@ -13,19 +13,22 @@ import (
 	"github.com/coder/websocket"
 )
 
-// handleVoiceStart creates a new voice session. Only one voice session
-// can be active at a time (singleton). The caller must first connect
-// an audio WebSocket via /voice/audio before starting the voice session.
-func (d *Daemon) handleVoiceStart(w http.ResponseWriter, r *http.Request) {
+// handleVoiceAudio upgrades to a WebSocket for bidirectional audio and
+// turn-signal streaming, then creates the voice session immediately.
+//
+// Protocol:
+//   - Client → Server text:   {"type":"turn_start"} / {"type":"turn_end"}
+//   - Client → Server binary: PCM audio chunks (24kHz 16-bit signed LE mono)
+//   - Server → Client binary: PCM audio chunks (speaker)
+//   - Server → Client binary (len=0): flush signal (barge-in)
+//
+// Only one voice session can be active at a time (singleton). The
+// session is torn down when the WebSocket disconnects.
+func (d *Daemon) handleVoiceAudio(w http.ResponseWriter, r *http.Request) {
 	d.mu.Lock()
 	if d.voice != nil {
 		d.mu.Unlock()
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "voice session already active"})
-		return
-	}
-	if d.voiceAudioConn == nil {
-		d.mu.Unlock()
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "connect audio WebSocket first (GET /voice/audio)"})
 		return
 	}
 	d.mu.Unlock()
@@ -36,14 +39,21 @@ func (d *Daemon) handleVoiceStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		// No origin check — Unix socket is already authenticated.
+	})
+	if err != nil {
+		d.log.Printf("voice audio websocket accept: %v", err)
+		return
+	}
+
+	// Increase read limit for audio frames.
+	conn.SetReadLimit(256 * 1024)
+
+	source, sink := voice.NewWSAudioAdapters(conn)
 	tp := &daemonToolProvider{d: d}
 
-	d.mu.Lock()
-	source, sink := d.voiceAudioSource, d.voiceAudioSink
-	d.mu.Unlock()
-
-	// Use the daemon's long-lived context, not the HTTP request context
-	// which is cancelled as soon as the response is written.
+	// Use the daemon's long-lived context, not the HTTP request context.
 	sess, err := voice.NewSession(d.ctx, voice.Config{
 		APIKey:       apiKey,
 		Source:       source,
@@ -53,13 +63,24 @@ func (d *Daemon) handleVoiceStart(w http.ResponseWriter, r *http.Request) {
 		Logger:       d.log,
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		d.log.Printf("voice session create error: %v", err)
+		conn.Close(websocket.StatusInternalError, err.Error())
 		return
 	}
 
 	d.mu.Lock()
+	// Re-check under lock to avoid races with concurrent connects.
+	if d.voice != nil {
+		d.mu.Unlock()
+		sess.Close()
+		conn.Close(websocket.StatusPolicyViolation, "voice session already active")
+		return
+	}
 	d.voice = sess
+	d.voiceAudioConn = conn
 	d.mu.Unlock()
+
+	d.log.Println("voice audio WebSocket connected, session created")
 
 	// Monitor voice session in background — clean up when it ends.
 	d.wg.Add(1)
@@ -75,7 +96,26 @@ func (d *Daemon) handleVoiceStart(w http.ResponseWriter, r *http.Request) {
 		d.mu.Unlock()
 	}()
 
-	writeJSON(w, http.StatusCreated, map[string]string{"status": "voice session started"})
+	// Keep the handler alive until the connection closes — the HTTP
+	// handler goroutine must outlive the WebSocket.
+	<-r.Context().Done()
+
+	d.mu.Lock()
+	if d.voiceAudioConn == conn {
+		d.voiceAudioConn = nil
+	}
+	// Tear down the voice session when the audio WebSocket disconnects.
+	activeSess := d.voice
+	if activeSess == sess {
+		d.voice = nil
+	} else {
+		activeSess = nil // another session replaced ours
+	}
+	d.mu.Unlock()
+
+	if activeSess != nil {
+		activeSess.Close()
+	}
 }
 
 // handleVoiceStop tears down the active voice session.
@@ -85,8 +125,6 @@ func (d *Daemon) handleVoiceStop(w http.ResponseWriter, r *http.Request) {
 	d.voice = nil
 	conn := d.voiceAudioConn
 	d.voiceAudioConn = nil
-	d.voiceAudioSource = nil
-	d.voiceAudioSink = nil
 	d.mu.Unlock()
 
 	if sess != nil {
@@ -97,88 +135,6 @@ func (d *Daemon) handleVoiceStop(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "voice session stopped"})
-}
-
-// handleVoiceListen starts a user voice turn (unmute mic).
-func (d *Daemon) handleVoiceListen(w http.ResponseWriter, r *http.Request) {
-	d.mu.RLock()
-	sess := d.voice
-	d.mu.RUnlock()
-
-	if sess == nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "no active voice session"})
-		return
-	}
-
-	sess.StartListening()
-	writeJSON(w, http.StatusOK, map[string]string{"status": "listening"})
-}
-
-// handleVoiceUnlisten ends a user voice turn (mute mic, trigger response).
-func (d *Daemon) handleVoiceUnlisten(w http.ResponseWriter, r *http.Request) {
-	d.mu.RLock()
-	sess := d.voice
-	d.mu.RUnlock()
-
-	if sess == nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "no active voice session"})
-		return
-	}
-
-	sess.StopListening()
-	writeJSON(w, http.StatusOK, map[string]string{"status": "processing"})
-}
-
-// handleVoiceAudio upgrades to a WebSocket for bidirectional PCM
-// audio streaming. The client sends mic PCM as binary messages; the
-// server sends speaker PCM back as binary messages. A zero-length
-// binary message from the server signals a flush (barge-in).
-//
-// This must be connected before calling POST /voice/start.
-func (d *Daemon) handleVoiceAudio(w http.ResponseWriter, r *http.Request) {
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// No origin check — Unix socket is already authenticated.
-	})
-	if err != nil {
-		d.log.Printf("voice audio websocket accept: %v", err)
-		return
-	}
-
-	// Increase read limit for audio frames.
-	conn.SetReadLimit(256 * 1024)
-
-	d.mu.Lock()
-	if d.voiceAudioConn != nil {
-		d.mu.Unlock()
-		conn.Close(websocket.StatusPolicyViolation, "audio connection already established")
-		return
-	}
-	source, sink := voice.NewWSAudioAdapters(conn)
-	d.voiceAudioConn = conn
-	d.voiceAudioSource = source
-	d.voiceAudioSink = sink
-	d.mu.Unlock()
-
-	d.log.Println("voice audio WebSocket connected")
-
-	// Keep the handler alive until the connection closes — the HTTP
-	// handler goroutine must outlive the WebSocket.
-	<-r.Context().Done()
-
-	d.mu.Lock()
-	if d.voiceAudioConn == conn {
-		d.voiceAudioConn = nil
-		d.voiceAudioSource = nil
-		d.voiceAudioSink = nil
-	}
-	// Also tear down the voice session if audio disconnects.
-	sess := d.voice
-	d.voice = nil
-	d.mu.Unlock()
-
-	if sess != nil {
-		sess.Close()
-	}
 }
 
 // handleVoiceStatus returns the current voice session state.

@@ -2,69 +2,94 @@ package voice
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"sync"
-	"sync/atomic"
 
+	"github.com/acksell/mindmouth"
 	"github.com/coder/websocket"
 )
 
-// wsSource implements mindmouth.AudioSource, receiving PCM audio from
-// a WebSocket connection (the CLI streams mic data to the daemon).
+// turnSignal is the JSON structure for in-band turn signals sent as
+// WebSocket text messages. Binary messages carry PCM audio data.
+type turnSignal struct {
+	Type string `json:"type"` // "turn_start" or "turn_end"
+}
+
+// wsSource implements mindmouth.AudioSource by reading from a WebSocket
+// connection. The client sends:
+//   - MessageText with {"type":"turn_start"} / {"type":"turn_end"} for turn boundaries
+//   - MessageBinary for PCM audio chunks
+//
+// This replaces the old Record/Mute/Unmute API: turn management is now
+// in-band on the same WebSocket, eliminating the race between HTTP
+// listen/unlisten POSTs and audio data arrival.
 type wsSource struct {
 	conn *websocket.Conn
-
-	mu     sync.Mutex
-	muted  atomic.Int32
-	ch     chan []byte
-	cancel context.CancelFunc
 }
 
 // NewWSAudioAdapters creates a paired AudioSource and AudioSink that
 // communicate over a single WebSocket connection. The source reads
-// binary messages from the client (mic PCM), and the sink writes
+// from the client (turn signals + mic PCM), and the sink writes
 // binary messages back (speaker PCM).
 func NewWSAudioAdapters(conn *websocket.Conn) (*wsSource, *wsSink) {
-	return newWSSource(conn), newWSSink(conn)
+	return &wsSource{conn: conn}, newWSSink(conn)
 }
 
-func newWSSource(conn *websocket.Conn) *wsSource {
-	return &wsSource{conn: conn}
-}
-
-// Record starts reading binary WebSocket messages and forwarding them
-// as PCM audio chunks. The channel is closed when ctx is cancelled or
-// the connection drops.
-func (s *wsSource) Record(ctx context.Context) (<-chan []byte, error) {
-	ctx, cancel := context.WithCancel(ctx)
-	s.cancel = cancel
-	ch := make(chan []byte, 64)
-	s.ch = ch
-
-	// Start muted (caller unmutes via StartListening).
-	s.muted.Store(1)
+// Stream implements mindmouth.AudioSource. It reads WebSocket messages
+// and translates them into AudioEvents:
+//   - Text message {"type":"turn_start"} → EventTurnStart
+//   - Binary message (len > 0)           → EventAudio
+//   - Text message {"type":"turn_end"}   → EventTurnEnd
+//
+// The channel is closed when ctx is cancelled or the connection drops.
+func (s *wsSource) Stream(ctx context.Context) (<-chan mindmouth.AudioEvent, error) {
+	ch := make(chan mindmouth.AudioEvent, 64)
 
 	go func() {
 		defer close(ch)
-		defer cancel()
-		var received, forwarded, dropped int64
 		for {
-			_, data, err := s.conn.Read(ctx)
+			typ, data, err := s.conn.Read(ctx)
 			if err != nil {
-				log.Printf("wsSource: exiting (forwarded=%d dropped=%d): %v", forwarded, dropped, err)
+				if ctx.Err() == nil {
+					log.Printf("wsSource: read error: %v", err)
+				}
 				return
 			}
-			received++
-			if s.muted.Load() == 1 {
-				continue // drop audio while muted
-			}
-			select {
-			case ch <- data:
-				forwarded++
-			default:
-				dropped++
-				if dropped == 1 || dropped%50 == 0 {
-					log.Printf("wsSource: dropped chunk (consumer slow), total=%d", dropped)
+
+			switch typ {
+			case websocket.MessageText:
+				var sig turnSignal
+				if err := json.Unmarshal(data, &sig); err != nil {
+					log.Printf("wsSource: invalid text message: %v", err)
+					continue
+				}
+				switch sig.Type {
+				case "turn_start":
+					select {
+					case ch <- mindmouth.AudioEvent{Type: mindmouth.EventTurnStart}:
+					case <-ctx.Done():
+						return
+					}
+				case "turn_end":
+					select {
+					case ch <- mindmouth.AudioEvent{Type: mindmouth.EventTurnEnd}:
+					case <-ctx.Done():
+						return
+					}
+				default:
+					log.Printf("wsSource: unknown signal type: %q", sig.Type)
+				}
+
+			case websocket.MessageBinary:
+				if len(data) == 0 {
+					continue // ignore zero-length binary (reserved for sink flush)
+				}
+				select {
+				case ch <- mindmouth.AudioEvent{Type: mindmouth.EventAudio, PCM: data}:
+				default:
+					// Drop audio if consumer is slow — same policy as before.
+					log.Printf("wsSource: dropped audio chunk (consumer slow)")
 				}
 			}
 		}
@@ -72,9 +97,6 @@ func (s *wsSource) Record(ctx context.Context) (<-chan []byte, error) {
 
 	return ch, nil
 }
-
-func (s *wsSource) Mute()   { s.muted.Store(1) }
-func (s *wsSource) Unmute() { s.muted.Store(0) }
 
 // wsSink implements mindmouth.AudioSink, sending PCM audio back to
 // the CLI over a WebSocket connection for local playback.

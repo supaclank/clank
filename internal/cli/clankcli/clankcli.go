@@ -4,6 +4,7 @@ package clankcli
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -112,6 +113,8 @@ The daemon is auto-started if not already running.`,
 			model := tui.NewSessionViewModel(client, info.ID)
 			model.SetStandalone(true)
 			model.SetEventChannel(events, sseCancel)
+			cleanup := redirectLogToFile()
+			defer cleanup()
 			p := tea.NewProgram(model)
 			_, err = p.Run()
 			return err
@@ -144,6 +147,8 @@ func runInbox() error {
 	}
 
 	model := tui.NewInboxModel(client)
+	cleanup := redirectLogToFile()
+	defer cleanup()
 	p := tea.NewProgram(model)
 	_, err = p.Run()
 	return err
@@ -167,9 +172,30 @@ func runComposing(projectDir string) error {
 
 	model := tui.NewSessionViewComposing(client, projectDir)
 	model.SetStandalone(true)
+	cleanup := redirectLogToFile()
+	defer cleanup()
 	p := tea.NewProgram(model)
 	_, err = p.Run()
 	return err
+}
+
+// redirectLogToFile sends the default logger's output to a PID-scoped
+// file so that log.Printf calls from audio goroutines and other
+// background work don't overwrite the TUI (stderr is not captured by
+// Bubble Tea's alt screen). Returns a cleanup function that should be
+// deferred.
+func redirectLogToFile() func() {
+	path := fmt.Sprintf("/tmp/clank-tui-%d.log", os.Getpid())
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		// Non-fatal: if we can't open the file, just leave stderr as-is.
+		return func() {}
+	}
+	log.SetOutput(f)
+	return func() {
+		log.SetOutput(os.Stderr)
+		f.Close()
+	}
 }
 
 // ensureDaemon makes sure the daemon is running, starting it if needed.

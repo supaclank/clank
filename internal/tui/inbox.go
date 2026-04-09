@@ -97,6 +97,18 @@ type InboxModel struct {
 	// Spinner for busy session indicators.
 	spinner spinner.Model
 
+	// Voice state — persists across inbox/session navigation.
+	voice voiceState
+
+	// kittyKeyboard is true when the terminal supports the Kitty keyboard
+	// protocol (specifically ReportEventTypes, which delivers KeyReleaseMsg).
+	// Set once via KeyboardEnhancementsMsg during startup. Push-to-talk
+	// requires this; without it we show a warning popup instead.
+	kittyKeyboard bool
+
+	// showKittyWarning is true when the Kitty keyboard warning popup is visible.
+	showKittyWarning bool
+
 	width  int
 	height int
 	err    error
@@ -234,6 +246,45 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.loadDataCmd(), m.autoRefreshCmd())
 		}
 		return m, m.autoRefreshCmd()
+	}
+
+	// Detect Kitty keyboard protocol support. Bubble Tea sends this once
+	// after startup when the View requests ReportEventTypes.
+	if msg, ok := msg.(tea.KeyboardEnhancementsMsg); ok {
+		m.kittyKeyboard = msg.SupportsEventTypes()
+		return m, nil
+	}
+
+	// Voice messages are handled at the inbox level regardless of screen,
+	// since voice state persists across navigation.
+	if handled, model, cmd := m.handleVoiceMsg(msg); handled {
+		return model, cmd
+	}
+
+	// Dismiss the Kitty keyboard warning popup on any key press.
+	if m.showKittyWarning {
+		if _, ok := msg.(tea.KeyPressMsg); ok {
+			m.showKittyWarning = false
+			return m, nil
+		}
+	}
+
+	// Push-to-talk: intercept SPACE press/release before any screen-specific
+	// handling so voice works on both inbox and session screens.
+	switch msg := msg.(type) {
+	case tea.KeyPressMsg:
+		if handled, cmd := m.handleVoiceKeyPress(msg); handled {
+			return m, cmd
+		}
+	case tea.KeyReleaseMsg:
+		if handled, cmd := m.handleVoiceKeyRelease(msg); handled {
+			return m, cmd
+		}
+	case sessionEventMsg:
+		// Intercept voice SSE events before delegating to session view.
+		m.handleVoiceSSE(msg)
+		// Don't return — let the event continue to the session view for
+		// non-voice handling (or be ignored if it was voice-only).
 	}
 
 	// If we're in session detail view (or composing), delegate.
@@ -390,6 +441,7 @@ func (m *InboxModel) openComposingSession() tea.Cmd {
 
 	projectDir, _ := os.Getwd()
 	m.sessionView = NewSessionViewComposing(m.client, projectDir)
+	m.sessionView.voice = &m.voice
 	m.sessionView.width = m.width
 	m.sessionView.height = m.height
 	if m.width > 0 {
@@ -596,8 +648,10 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))):
+		m.cleanupVoice()
 		return m, tea.Quit
 	case key.Matches(msg, key.NewBinding(key.WithKeys("q"))):
+		m.cleanupVoice()
 		return m, tea.Quit
 	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k"))):
 		if m.cursor > 0 {
@@ -749,6 +803,7 @@ func (m *InboxModel) openSession(sessionID string) tea.Cmd {
 	events, err := m.client.SubscribeEvents(sseCtx)
 
 	m.sessionView = NewSessionViewModel(m.client, sessionID)
+	m.sessionView.voice = &m.voice
 	if err == nil {
 		m.sessionView.SetEventChannel(events, sseCancel)
 	} else {
@@ -1023,18 +1078,22 @@ func (m *InboxModel) View() tea.View {
 	}
 
 	if m.width == 0 {
-		v := tea.NewView("Loading...")
-		v.AltScreen = true
+		v := newVoiceEnabledView("Loading...")
 		return v
 	}
 
 	var sb strings.Builder
 
 	// Header.
+	headerText := "CLANK  Inbox"
 	header := lipgloss.NewStyle().
 		Foreground(primaryColor).
 		Bold(true).
-		Render("CLANK  Inbox")
+		Render(headerText)
+	badge := voiceHeaderBadge(m.voice)
+	if badge != "" {
+		header = header + " " + badge
+	}
 	sb.WriteString(header)
 	sb.WriteString("\n\n")
 
@@ -1101,7 +1160,8 @@ func (m *InboxModel) View() tea.View {
 	if m.searching {
 		help = helpStyle.Render("esc: cancel | enter: open | .: this project | up/down: navigate")
 	} else {
-		help = helpStyle.Render("enter: open | n: new | /: search | .: this project | ?: help | q: quit")
+		parts := []string{voiceHelpItem(m.voice), "enter: open", "n: new", "/: search", ".: this project", "?: help", "q: quit"}
+		help = helpStyle.Render(strings.Join(parts, " | "))
 	}
 	sb.WriteString(help)
 
@@ -1122,8 +1182,12 @@ func (m *InboxModel) View() tea.View {
 		content = m.overlayHelp(content)
 	}
 
-	v := tea.NewView(content)
-	v.AltScreen = true
+	// Overlay Kitty keyboard warning if shown.
+	if m.showKittyWarning {
+		content = m.overlayKittyWarning(content)
+	}
+
+	v := newVoiceEnabledView(content)
 	return v
 }
 
@@ -1569,6 +1633,12 @@ func (m *InboxModel) overlayHelp(base string) string {
 	helpLine("f", "toggle follow-up")
 	helpLine("d", "mark as done")
 	helpLine("x", "archive / unarchive")
+	sb.WriteString(sep + "\n")
+
+	// Voice section.
+	sb.WriteString(lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("Voice"))
+	sb.WriteString("\n")
+	helpLine("space (hold)", "push-to-talk")
 	sb.WriteString(sep + "\n")
 
 	helpLine("q", "quit")

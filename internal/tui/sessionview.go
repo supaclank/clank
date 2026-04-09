@@ -194,6 +194,11 @@ type SessionViewModel struct {
 	// submitting guards against duplicate sends. Set true when a session
 	// creation or message send is in flight; cleared on result.
 	submitting bool
+
+	// voice points to the InboxModel's voice state for rendering
+	// (header badge, help bar). Nil when running standalone without
+	// an InboxModel parent.
+	voice *voiceState
 }
 
 // displayEntry is a rendered item in the session transcript.
@@ -1870,8 +1875,7 @@ func (m *SessionViewModel) View() tea.View {
 	}
 
 	if m.width == 0 {
-		v := tea.NewView("Loading...")
-		v.AltScreen = true
+		v := newVoiceEnabledView("Loading...")
 		return v
 	}
 
@@ -1989,9 +1993,7 @@ func (m *SessionViewModel) View() tea.View {
 	output := m.overlaySessionConfirm(sb.String())
 	output = m.overlaySessionMenu(output)
 	output = m.overlaySessionHelp(output)
-	v := tea.NewView(output)
-	v.AltScreen = true
-	v.MouseMode = tea.MouseModeCellMotion
+	v := newVoiceEnabledViewWithMouse(output)
 	return v
 }
 
@@ -2036,6 +2038,12 @@ func (m *SessionViewModel) renderHeader() string {
 	}
 	if followUpStr != "" {
 		rightParts = followUpStr + " " + rightParts
+	}
+	if m.voice != nil {
+		badge := voiceHeaderBadge(*m.voice)
+		if badge != "" {
+			rightParts = badge + " " + rightParts
+		}
 	}
 
 	// Compute max title width dynamically based on available space
@@ -2305,6 +2313,9 @@ func (m *SessionViewModel) buildHelpText() string {
 	if m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting) {
 		parts = append([]string{"ctrl+c: cancel"}, parts...)
 	}
+	if m.voice != nil {
+		parts = append([]string{voiceHelpItem(*m.voice)}, parts...)
+	}
 	return strings.Join(parts, " | ")
 }
 
@@ -2427,6 +2438,12 @@ func (m *SessionViewModel) overlaySessionHelp(base string) string {
 	helpLine("f", "toggle follow-up")
 	helpLine("d", "mark as done")
 	helpLine("x", "archive")
+	sb.WriteString(sep + "\n")
+
+	// Voice section.
+	sb.WriteString(lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("Voice"))
+	sb.WriteString("\n")
+	helpLine("space (hold)", "push-to-talk")
 	sb.WriteString(sep + "\n")
 
 	qLabel := "back"

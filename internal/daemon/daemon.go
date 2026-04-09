@@ -27,7 +27,6 @@ import (
 	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/store"
 	"github.com/acksell/clank/internal/voice"
-	"github.com/acksell/mindmouth"
 	"github.com/coder/websocket"
 	"github.com/oklog/ulid/v2"
 )
@@ -212,10 +211,8 @@ type Daemon struct {
 	primaryAgentsRefreshInFlight map[string]bool // keyed by "backend\x00projectDir"
 
 	// voice is the singleton voice session (nil when inactive).
-	voice            *voice.Session
-	voiceAudioConn   *websocket.Conn
-	voiceAudioSource mindmouth.AudioSource
-	voiceAudioSink   mindmouth.AudioSink
+	voice          *voice.Session
+	voiceAudioConn *websocket.Conn
 
 	log *log.Logger
 }
@@ -520,10 +517,7 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 
 	// Voice endpoints.
 	mux.HandleFunc("GET /voice/audio", d.handleVoiceAudio)
-	mux.HandleFunc("POST /voice/start", d.handleVoiceStart)
 	mux.HandleFunc("POST /voice/stop", d.handleVoiceStop)
-	mux.HandleFunc("POST /voice/listen", d.handleVoiceListen)
-	mux.HandleFunc("POST /voice/unlisten", d.handleVoiceUnlisten)
 	mux.HandleFunc("GET /voice/status", d.handleVoiceStatus)
 }
 
