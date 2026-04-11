@@ -18,8 +18,8 @@ import (
 //	bridge, err := voice.NewClientBridge(wsConn)
 //	defer bridge.Close()
 //
-//	bridge.Start() // unmute mic + send start signal
-//	bridge.Stop()  // mute mic + send end signal
+//	bridge.Unmute() // unmute mic — audio starts flowing to daemon
+//	bridge.Mute()   // mute mic + send end signal
 type ClientBridge struct {
 	recorder *audio.Recorder
 	player   *audio.Player
@@ -91,14 +91,16 @@ func NewClientBridge(conn *websocket.Conn) (*ClientBridge, error) {
 	}, nil
 }
 
-// Start unmutes the mic and sends a start signal to the daemon.
-func (b *ClientBridge) Start() error {
+// Unmute unmutes the mic so audio frames start flowing to the daemon.
+// The agent on the daemon side infers the start of a new sequence from
+// the first audio data frame it receives.
+func (b *ClientBridge) Unmute() {
 	b.recorder.Unmute()
-	return SendStart(b.conn)
 }
 
-// Stop mutes the mic and sends an end signal to the daemon.
-func (b *ClientBridge) Stop() error {
+// Mute mutes the mic and sends an end signal to the daemon, which
+// triggers the agent to commit the audio buffer and generate a response.
+func (b *ClientBridge) Mute() error {
 	b.recorder.Mute()
 	return SendEnd(b.conn)
 }

@@ -58,9 +58,7 @@ func runVoice() error {
 	}
 	defer bridge.Close()
 
-	defer func() {
-		client.VoiceStop(context.Background())
-	}()
+	defer cancel()
 
 	// Goroutine: display SSE events (transcripts, status changes).
 	go func() {
@@ -140,13 +138,10 @@ func runVoice() error {
 		if key == keyboard.KeySpace || char == ' ' {
 			if !recording {
 				recording = true
-				if err := bridge.Start(); err != nil {
-					fmt.Fprintf(os.Stderr, "[ERROR] start: %v\n", err)
-					continue
-				}
+				bridge.Unmute()
 			} else {
 				recording = false
-				if err := bridge.Stop(); err != nil {
+				if err := bridge.Mute(); err != nil {
 					fmt.Fprintf(os.Stderr, "[ERROR] stop: %v\n", err)
 					continue
 				}

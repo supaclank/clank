@@ -13,17 +13,7 @@ import (
 // wsEvent is the JSON structure for in-band control messages sent as
 // WebSocket text messages. Binary messages carry PCM audio data.
 type wsEvent struct {
-	Type string `json:"type"` // "start" or "end"
-}
-
-// SendStart sends a start signal over the WebSocket as a text message,
-// indicating that audio data will follow.
-func SendStart(conn *websocket.Conn) error {
-	data, err := json.Marshal(wsEvent{Type: "start"})
-	if err != nil {
-		return err
-	}
-	return conn.Write(context.Background(), websocket.MessageText, data)
+	Type string `json:"type"` // "end"
 }
 
 // SendEnd sends an end signal over the WebSocket as a text message,
@@ -38,9 +28,11 @@ func SendEnd(conn *websocket.Conn) error {
 
 // wsSource implements mindmouth.AudioSource by reading from a WebSocket
 // connection. The client sends:
-//   - MessageText with {"type":"start"} / {"type":"end"} for boundaries
+//   - MessageText with {"type":"end"} for end-of-sequence
 //   - MessageBinary for PCM audio chunks
 //
+// There is no explicit start signal — the agent infers the start of a
+// new sequence from the first audio data frame after an end.
 // Boundary signals and audio travel on the same WebSocket, eliminating
 // the race between HTTP POSTs and audio data arrival.
 type wsSource struct {
@@ -57,7 +49,6 @@ func NewWSAudioAdapters(conn *websocket.Conn) (*wsSource, *wsSink) {
 
 // Receive implements mindmouth.AudioSource. It reads WebSocket messages
 // and translates them into AudioFrames:
-//   - Text message {"type":"start"} → AudioFrameStart
 //   - Binary message (len > 0)      → AudioFrameData
 //   - Text message {"type":"end"}   → AudioFrameEnd
 //
@@ -84,12 +75,6 @@ func (s *wsSource) Receive(ctx context.Context) (<-chan mindmouth.AudioFrame, er
 					continue
 				}
 				switch ev.Type {
-				case "start":
-					select {
-					case ch <- mindmouth.AudioFrame{Type: mindmouth.AudioFrameStart}:
-					case <-ctx.Done():
-						return
-					}
 				case "end":
 					select {
 					case ch <- mindmouth.AudioFrame{Type: mindmouth.AudioFrameEnd}:

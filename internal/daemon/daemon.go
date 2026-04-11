@@ -517,7 +517,6 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 
 	// Voice endpoints.
 	mux.HandleFunc("GET /voice/audio", d.handleVoiceAudio)
-	mux.HandleFunc("POST /voice/stop", d.handleVoiceStop)
 	mux.HandleFunc("GET /voice/status", d.handleVoiceStatus)
 }
 

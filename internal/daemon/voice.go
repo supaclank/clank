@@ -13,14 +13,17 @@ import (
 	"github.com/coder/websocket"
 )
 
-// handleVoiceAudio upgrades to a WebSocket for bidirectional audio and
-// turn-signal streaming, then creates the voice session immediately.
+// handleVoiceAudio upgrades to a WebSocket for bidirectional audio
+// streaming, then creates the voice session immediately.
 //
 // Protocol:
-//   - Client → Server text:   {"type":"start"} / {"type":"end"}
+//   - Client → Server text:   {"type":"end"} (end of audio sequence)
 //   - Client → Server binary: PCM audio chunks (24kHz 16-bit signed LE mono)
 //   - Server → Client binary: PCM audio chunks (speaker)
 //   - Server → Client binary (len=0): flush signal (barge-in)
+//
+// There is no explicit start signal — the agent infers the start of a
+// new audio sequence from the first binary data frame after an end.
 //
 // Only one voice session can be active at a time (singleton). The
 // session is torn down when the WebSocket disconnects.
@@ -116,25 +119,6 @@ func (d *Daemon) handleVoiceAudio(w http.ResponseWriter, r *http.Request) {
 	if activeSess != nil {
 		activeSess.Close()
 	}
-}
-
-// handleVoiceStop tears down the active voice session.
-func (d *Daemon) handleVoiceStop(w http.ResponseWriter, r *http.Request) {
-	d.mu.Lock()
-	sess := d.voice
-	d.voice = nil
-	conn := d.voiceAudioConn
-	d.voiceAudioConn = nil
-	d.mu.Unlock()
-
-	if sess != nil {
-		sess.Close()
-	}
-	if conn != nil {
-		conn.CloseNow()
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{"status": "voice session stopped"})
 }
 
 // handleVoiceStatus returns the current voice session state.

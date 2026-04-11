@@ -12,10 +12,12 @@ package tui
 // terminal lacks it, pressing SPACE shows an informational popup
 // instead of starting voice.
 //
-// Turn signals (start/stop) are sent as in-band WebSocket text
+// Turn signals (end-of-sequence) are sent as in-band WebSocket text
 // messages on the same connection that carries audio, guaranteeing
 // message ordering and eliminating the race between HTTP POSTs and
-// audio data that plagued the old architecture.
+// audio data that plagued the old architecture. There is no explicit
+// start signal — the daemon infers the start of a new sequence from
+// the first audio data frame after an end.
 
 import (
 	"context"
@@ -86,28 +88,26 @@ func (m *InboxModel) stopVoice() tea.Cmd {
 	}
 }
 
-// voiceListen sends a start signal via the bridge, which unmutes the
-// mic and sends an in-band start event to the daemon.
+// voiceListen unmutes the mic via the bridge. The daemon infers the
+// start of a new audio sequence from the first data frame.
 func (m *InboxModel) voiceListen() tea.Cmd {
 	return func() tea.Msg {
 		if m.voice.bridge == nil {
 			return voiceListenResultMsg{err: fmt.Errorf("voice: no active bridge")}
 		}
-		if err := m.voice.bridge.Start(); err != nil {
-			return voiceListenResultMsg{err: err}
-		}
+		m.voice.bridge.Unmute()
 		return voiceListenResultMsg{}
 	}
 }
 
-// voiceUnlisten sends a stop signal via the bridge, which mutes the
-// mic and sends an in-band end event to the daemon.
+// voiceUnlisten mutes the mic and sends an end signal via the bridge,
+// which triggers the daemon to process the user's speech.
 func (m *InboxModel) voiceUnlisten() tea.Cmd {
 	return func() tea.Msg {
 		if m.voice.bridge == nil {
 			return voiceUnlistenResultMsg{err: fmt.Errorf("voice: no active bridge")}
 		}
-		if err := m.voice.bridge.Stop(); err != nil {
+		if err := m.voice.bridge.Mute(); err != nil {
 			return voiceUnlistenResultMsg{err: err}
 		}
 		return voiceUnlistenResultMsg{}
@@ -122,10 +122,6 @@ func (m *InboxModel) cleanupVoice() {
 	}
 	if m.voice.bridge != nil {
 		m.voice.bridge.Close()
-	}
-	// Best-effort stop on daemon side.
-	if m.client != nil {
-		_ = m.client.VoiceStop(context.Background())
 	}
 	m.voice = voiceState{}
 }

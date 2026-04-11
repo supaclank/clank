@@ -379,11 +379,6 @@ func (c *Client) ReplyPermission(ctx context.Context, sessionID, permissionID st
 
 // --- Voice methods ---
 
-// VoiceStop tears down the active voice session.
-func (c *Client) VoiceStop(ctx context.Context) error {
-	return c.post(ctx, "/voice/stop", nil, nil)
-}
-
 // VoiceAudioStream opens a WebSocket connection for bidirectional PCM
 // audio streaming. The caller sends mic PCM as binary messages and
 // receives speaker PCM back. A zero-length binary message from the
