@@ -2,8 +2,10 @@ package voice
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -87,6 +89,11 @@ type Config struct {
 
 	// Logger for voice session messages. If nil, a default is used.
 	Logger *log.Logger
+
+	// Debug enables verbose tool-call logging (full request/response
+	// bodies). When false, only a summary of each tool-call result is
+	// logged. Controlled by the CLANK_DEBUG=1 environment variable.
+	Debug bool
 }
 
 // NewSession creates a voice session and starts the event-driven audio
@@ -132,13 +139,14 @@ func NewSession(ctx context.Context, cfg Config) (*Session, error) {
 	instructions := buildInstructions(knownDirs)
 
 	// Create mindmouth agent.
+	toolExecutor := loggingToolExecutor(reg.Execute, logger, cfg.Debug)
 	mmAgent, err := mindmouth.NewAgent(mindmouth.AgentConfig{
 		APIKey:       cfg.APIKey,
 		Instructions: instructions,
 		Source:       cfg.Source,
 		Sink:         cfg.Sink,
 		Tools:        reg.RealtimeTools(),
-		ToolExecutor: reg.Execute,
+		ToolExecutor: toolExecutor,
 		Voice:        "coral",
 		Callbacks: mindmouth.Callbacks{
 			OnTranscript: func(text string, done bool) {
@@ -251,4 +259,42 @@ func (s *Session) setStatus(status agent.VoiceStatus) {
 		Timestamp: time.Now(),
 		Data:      agent.VoiceStatusData{Status: status},
 	})
+}
+
+// loggingToolExecutor wraps a ToolExecutor to log every tool call's
+// name, args, result summary, and duration. When debug is true (or
+// CLANK_DEBUG=1 is set), the full result body is logged.
+func loggingToolExecutor(
+	inner func(string, json.RawMessage) (string, error),
+	logger *log.Logger,
+	debug bool,
+) func(string, json.RawMessage) (string, error) {
+	if os.Getenv("CLANK_DEBUG") == "1" {
+		debug = true
+	}
+	return func(name string, args json.RawMessage) (string, error) {
+		logger.Printf("[voice-tool] %s args=%s", name, string(args))
+		start := time.Now()
+
+		result, err := inner(name, args)
+		dur := time.Since(start)
+
+		if err != nil {
+			logger.Printf("[voice-tool] %s error=%v (%s)", name, err, dur)
+			return result, err
+		}
+
+		if debug || len(result) < 500 {
+			// Short result or debug mode: log the whole thing.
+			logger.Printf("[voice-tool] %s result=%s (%s)", name, result, dur)
+		} else {
+			// Summarize: byte count + first 200 chars.
+			preview := result[:200]
+			// Count newlines as a rough proxy for "number of items" in list results.
+			lines := strings.Count(result, "\n")
+			logger.Printf("[voice-tool] %s returned %d bytes, %d lines, preview=%q (%s)",
+				name, len(result), lines, preview, dur)
+		}
+		return result, nil
+	}
 }

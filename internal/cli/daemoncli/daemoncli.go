@@ -5,6 +5,8 @@ package daemoncli
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -87,6 +89,20 @@ func RunStart(foreground bool) error {
 		}
 		d.Store = st
 
+		// Open persistent log file. Truncated on each start so it
+		// doesn't grow unbounded across daemon restarts.
+		logPath := filepath.Join(dir, "daemon.log")
+		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		if err != nil {
+			return fmt.Errorf("open daemon log: %w", err)
+		}
+		defer logFile.Close()
+		// Foreground: write to both stderr (live) and the log file.
+		d.SetLogOutput(io.MultiWriter(os.Stderr, logFile))
+		// Also redirect the global logger so that subsystems using
+		// log.Printf (audio, reconciler) are captured.
+		log.SetOutput(io.MultiWriter(os.Stderr, logFile))
+
 		// Wire in backend managers.
 		d.BackendManagers[agent.BackendOpenCode] = daemon.NewOpenCodeBackendManager()
 		d.BackendManagers[agent.BackendClaudeCode] = daemon.NewClaudeBackendManager()
@@ -94,22 +110,40 @@ func RunStart(foreground bool) error {
 		return d.Run()
 	}
 
-	// Fork a background process.
+	// Fork a background process. The forked process runs with
+	// --foreground, which opens ~/.clank/daemon.log for persistent
+	// output. We still redirect stdout/stderr to the log file here
+	// so that any early output before the daemon's logger is set up
+	// is captured.
+	dir, err := config.Dir()
+	if err != nil {
+		return fmt.Errorf("config dir: %w", err)
+	}
+	logPath := filepath.Join(dir, "daemon.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("open daemon log: %w", err)
+	}
+
 	exe, err := os.Executable()
 	if err != nil {
+		logFile.Close()
 		return fmt.Errorf("find executable: %w", err)
 	}
 
 	bgCmd := exec.Command(exe, "start", "--foreground")
-	bgCmd.Stdout = nil
-	bgCmd.Stderr = nil
+	bgCmd.Stdout = logFile
+	bgCmd.Stderr = logFile
 	bgCmd.Stdin = nil
 	// Start in a new process group so it doesn't get signals from our terminal.
 	bgCmd.SysProcAttr = daemonSysProcAttr()
 
 	if err := bgCmd.Start(); err != nil {
+		logFile.Close()
 		return fmt.Errorf("start daemon: %w", err)
 	}
+	// Child process inherited the fd; close our copy.
+	logFile.Close()
 
 	// Wait briefly for the daemon to be reachable.
 	client, err := daemon.NewDefaultClient()

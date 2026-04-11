@@ -485,6 +485,12 @@ func (d *Daemon) shutdown(server *http.Server) error {
 	return nil
 }
 
+// SetLogOutput redirects the daemon's logger to the given writer.
+// Call before Run() to capture all daemon output.
+func (d *Daemon) SetLogOutput(w io.Writer) {
+	d.log.SetOutput(w)
+}
+
 // Stop requests the daemon to shut down.
 func (d *Daemon) Stop() {
 	d.cancel()

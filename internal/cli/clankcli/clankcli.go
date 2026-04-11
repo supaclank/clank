@@ -33,6 +33,7 @@ func Command() *cobra.Command {
 		codeCmd(),
 		inboxCmd(),
 		voiceCmd(),
+		sessionsCmd(),
 	)
 
 	return root
