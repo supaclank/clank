@@ -384,21 +384,6 @@ func (c *Client) VoiceStop(ctx context.Context) error {
 	return c.post(ctx, "/voice/stop", nil, nil)
 }
 
-// VoiceStatusResponse is the response from GET /voice/status.
-type VoiceStatusResponse struct {
-	Active string `json:"active"`
-	Status string `json:"status"`
-}
-
-// VoiceStatus returns the current voice session state.
-func (c *Client) VoiceStatus(ctx context.Context) (*VoiceStatusResponse, error) {
-	var resp VoiceStatusResponse
-	if err := c.get(ctx, "/voice/status", &resp); err != nil {
-		return nil, err
-	}
-	return &resp, nil
-}
-
 // VoiceAudioStream opens a WebSocket connection for bidirectional PCM
 // audio streaming. The caller sends mic PCM as binary messages and
 // receives speaker PCM back. A zero-length binary message from the

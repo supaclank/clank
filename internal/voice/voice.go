@@ -190,12 +190,11 @@ func NewSession(ctx context.Context, cfg Config) (*Session, error) {
 			OnResponseDone: func() {
 				s.setStatus(agent.VoiceStatusIdle)
 			},
-			OnListening: func(listening bool) {
-				if listening {
-					s.setStatus(agent.VoiceStatusListening)
-				} else {
-					s.setStatus(agent.VoiceStatusThinking)
-				}
+			OnListeningStart: func() {
+				s.setStatus(agent.VoiceStatusListening)
+			},
+			OnListeningEnd: func() {
+				s.setStatus(agent.VoiceStatusThinking)
 			},
 		},
 	})

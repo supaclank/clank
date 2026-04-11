@@ -2,14 +2,11 @@ package clankcli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/mindmouth/audio"
-	"github.com/coder/websocket"
+	"github.com/acksell/clank/internal/voice"
 	"github.com/eiannone/keyboard"
 	"github.com/spf13/cobra"
 )
@@ -47,61 +44,22 @@ func runVoice() error {
 	}
 
 	// Start local audio devices.
-	recorder, err := audio.NewRecorder()
-	if err != nil {
-		return fmt.Errorf("init microphone: %w", err)
-	}
-	defer recorder.Close()
-
-	player, err := audio.NewPlayer()
-	if err != nil {
-		return fmt.Errorf("init speaker: %w", err)
-	}
-	defer player.Close()
-
 	// Connect audio WebSocket to daemon. This also creates the voice
 	// session on the daemon side (session is created when WS connects).
 	wsConn, err := client.VoiceAudioStream(ctx)
 	if err != nil {
 		return fmt.Errorf("connect audio stream: %w", err)
 	}
-	defer wsConn.CloseNow()
+
+	bridge, err := voice.NewClientBridge(wsConn)
+	if err != nil {
+		wsConn.CloseNow()
+		return fmt.Errorf("init audio bridge: %w", err)
+	}
+	defer bridge.Close()
 
 	defer func() {
 		client.VoiceStop(context.Background())
-	}()
-
-	// Start mic capture — audio goes to the daemon over WebSocket.
-	recorder.Mute() // Start muted, toggle with SPACE.
-	micCh, err := recorder.Record(ctx)
-	if err != nil {
-		return fmt.Errorf("start recording: %w", err)
-	}
-
-	// Goroutine: send mic PCM to daemon via WebSocket.
-	go func() {
-		for pcm := range micCh {
-			if err := wsConn.Write(ctx, websocket.MessageBinary, pcm); err != nil {
-				log.Printf("voice client: ws write error: %v", err)
-				return
-			}
-		}
-	}()
-
-	// Goroutine: receive speaker PCM from daemon via WebSocket, play locally.
-	go func() {
-		for {
-			_, data, err := wsConn.Read(ctx)
-			if err != nil {
-				return
-			}
-			// Zero-length binary message = flush signal (barge-in).
-			if len(data) == 0 {
-				player.Flush()
-				continue
-			}
-			player.Enqueue(data)
-		}
 	}()
 
 	// Goroutine: display SSE events (transcripts, status changes).
@@ -182,28 +140,17 @@ func runVoice() error {
 		if key == keyboard.KeySpace || char == ' ' {
 			if !recording {
 				recording = true
-				recorder.Unmute()
-				if err := sendCLITurnSignal(wsConn, "turn_start"); err != nil {
-					fmt.Fprintf(os.Stderr, "[ERROR] turn_start: %v\n", err)
+				if err := bridge.Start(); err != nil {
+					fmt.Fprintf(os.Stderr, "[ERROR] start: %v\n", err)
 					continue
 				}
 			} else {
 				recording = false
-				recorder.Mute()
-				if err := sendCLITurnSignal(wsConn, "turn_end"); err != nil {
-					fmt.Fprintf(os.Stderr, "[ERROR] turn_end: %v\n", err)
+				if err := bridge.Stop(); err != nil {
+					fmt.Fprintf(os.Stderr, "[ERROR] stop: %v\n", err)
 					continue
 				}
 			}
 		}
 	}
-}
-
-// sendCLITurnSignal sends a JSON turn signal over the WebSocket.
-func sendCLITurnSignal(conn *websocket.Conn, signalType string) error {
-	data, err := json.Marshal(map[string]string{"type": signalType})
-	if err != nil {
-		return fmt.Errorf("marshal turn signal: %w", err)
-	}
-	return conn.Write(context.Background(), websocket.MessageText, data)
 }

@@ -12,16 +12,14 @@ package tui
 // terminal lacks it, pressing SPACE shows an informational popup
 // instead of starting voice.
 //
-// Turn signals (start/stop speaking) are sent as in-band WebSocket text
+// Turn signals (start/stop) are sent as in-band WebSocket text
 // messages on the same connection that carries audio, guaranteeing
 // message ordering and eliminating the race between HTTP POSTs and
 // audio data that plagued the old architecture.
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -29,8 +27,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/daemon"
-	"github.com/acksell/mindmouth/audio"
-	"github.com/coder/websocket"
+	"github.com/acksell/clank/internal/voice"
 )
 
 // voiceState holds the runtime state for a TUI voice session.
@@ -40,10 +37,7 @@ type voiceState struct {
 	recording bool // mic is unmuted, user is speaking
 	speaking  bool // assistant is currently outputting audio
 
-	recorder    *audio.Recorder
-	player      *audio.Player
-	wsConn      *websocket.Conn
-	cancelAudio context.CancelFunc // cancels the audio goroutines
+	bridge *voice.ClientBridge
 }
 
 // --- Bubble Tea messages ---
@@ -65,78 +59,21 @@ type voiceAudioErrMsg struct{ err error }
 
 // --- Commands (methods on InboxModel) ---
 
-// startVoice initialises local audio devices and opens the WebSocket to the
-// daemon. The voice session is created server-side when the WebSocket
-// connects. The mic starts muted. Audio send/receive goroutines run in
-// the background until cancelAudio is called.
+// startVoice opens the WebSocket to the daemon and creates a ClientBridge
+// that owns local audio devices and the goroutines that shuttle PCM
+// between them and the daemon. The mic starts muted.
 func (m *InboxModel) startVoice() tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
-
-		recorder, err := audio.NewRecorder()
+		wsConn, err := m.client.VoiceAudioStream(context.Background())
 		if err != nil {
-			return voiceStartResultMsg{err: fmt.Errorf("init microphone: %w", err)}
-		}
-
-		player, err := audio.NewPlayer()
-		if err != nil {
-			recorder.Close()
-			return voiceStartResultMsg{err: fmt.Errorf("init speaker: %w", err)}
-		}
-
-		wsConn, err := m.client.VoiceAudioStream(ctx)
-		if err != nil {
-			recorder.Close()
-			player.Close()
 			return voiceStartResultMsg{err: fmt.Errorf("connect audio stream: %w", err)}
 		}
-
-		// Start mic capture — muted by default.
-		recorder.Mute()
-		audioCtx, cancelAudio := context.WithCancel(ctx)
-		micCh, err := recorder.Record(audioCtx)
+		bridge, err := voice.NewClientBridge(wsConn)
 		if err != nil {
-			cancelAudio()
-			recorder.Close()
-			player.Close()
 			wsConn.CloseNow()
-			return voiceStartResultMsg{err: fmt.Errorf("start recording: %w", err)}
+			return voiceStartResultMsg{err: err}
 		}
-
-		// Goroutine: send mic PCM to daemon via WebSocket.
-		go func() {
-			for pcm := range micCh {
-				if err := wsConn.Write(audioCtx, websocket.MessageBinary, pcm); err != nil {
-					log.Printf("voice tui: ws write error: %v", err)
-					return
-				}
-			}
-		}()
-
-		// Goroutine: receive speaker PCM from daemon, play locally.
-		go func() {
-			for {
-				_, data, err := wsConn.Read(audioCtx)
-				if err != nil {
-					return
-				}
-				// Zero-length binary message = flush signal (barge-in).
-				if len(data) == 0 {
-					player.Flush()
-					continue
-				}
-				player.Enqueue(data)
-			}
-		}()
-
-		// Store state on the model. This is safe because the Bubble Tea
-		// runtime processes the returned message synchronously before any
-		// other Update call.
-		m.voice.recorder = recorder
-		m.voice.player = player
-		m.voice.wsConn = wsConn
-		m.voice.cancelAudio = cancelAudio
-
+		m.voice.bridge = bridge
 		return voiceStartResultMsg{err: nil}
 	}
 }
@@ -149,44 +86,32 @@ func (m *InboxModel) stopVoice() tea.Cmd {
 	}
 }
 
-// voiceListen unmutes the mic and sends an in-band turn_start signal
-// to the daemon over the existing WebSocket.
+// voiceListen sends a start signal via the bridge, which unmutes the
+// mic and sends an in-band start event to the daemon.
 func (m *InboxModel) voiceListen() tea.Cmd {
 	return func() tea.Msg {
-		if m.voice.recorder != nil {
-			m.voice.recorder.Unmute()
+		if m.voice.bridge == nil {
+			return voiceListenResultMsg{err: fmt.Errorf("voice: no active bridge")}
 		}
-		if err := sendTurnSignal(m.voice.wsConn, "turn_start"); err != nil {
+		if err := m.voice.bridge.Start(); err != nil {
 			return voiceListenResultMsg{err: err}
 		}
 		return voiceListenResultMsg{}
 	}
 }
 
-// voiceUnlisten mutes the mic and sends an in-band turn_end signal
-// to the daemon, which triggers the model to process the user's speech.
+// voiceUnlisten sends a stop signal via the bridge, which mutes the
+// mic and sends an in-band end event to the daemon.
 func (m *InboxModel) voiceUnlisten() tea.Cmd {
 	return func() tea.Msg {
-		if m.voice.recorder != nil {
-			m.voice.recorder.Mute()
+		if m.voice.bridge == nil {
+			return voiceUnlistenResultMsg{err: fmt.Errorf("voice: no active bridge")}
 		}
-		if err := sendTurnSignal(m.voice.wsConn, "turn_end"); err != nil {
+		if err := m.voice.bridge.Stop(); err != nil {
 			return voiceUnlistenResultMsg{err: err}
 		}
 		return voiceUnlistenResultMsg{}
 	}
-}
-
-// sendTurnSignal sends a JSON turn signal over the WebSocket as a text message.
-func sendTurnSignal(conn *websocket.Conn, signalType string) error {
-	if conn == nil {
-		return fmt.Errorf("voice: no WebSocket connection")
-	}
-	data, err := json.Marshal(map[string]string{"type": signalType})
-	if err != nil {
-		return fmt.Errorf("voice: marshal turn signal: %w", err)
-	}
-	return conn.Write(context.Background(), websocket.MessageText, data)
 }
 
 // cleanupVoice synchronously releases all voice resources. Safe to call
@@ -195,23 +120,13 @@ func (m *InboxModel) cleanupVoice() {
 	if !m.voice.active {
 		return
 	}
-	if m.voice.cancelAudio != nil {
-		m.voice.cancelAudio()
-	}
-	if m.voice.recorder != nil {
-		m.voice.recorder.Close()
-	}
-	if m.voice.player != nil {
-		m.voice.player.Close()
-	}
-	if m.voice.wsConn != nil {
-		m.voice.wsConn.CloseNow()
+	if m.voice.bridge != nil {
+		m.voice.bridge.Close()
 	}
 	// Best-effort stop on daemon side.
 	if m.client != nil {
 		_ = m.client.VoiceStop(context.Background())
 	}
-
 	m.voice = voiceState{}
 }
 

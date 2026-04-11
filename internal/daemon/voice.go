@@ -17,7 +17,7 @@ import (
 // turn-signal streaming, then creates the voice session immediately.
 //
 // Protocol:
-//   - Client → Server text:   {"type":"turn_start"} / {"type":"turn_end"}
+//   - Client → Server text:   {"type":"start"} / {"type":"end"}
 //   - Client → Server binary: PCM audio chunks (24kHz 16-bit signed LE mono)
 //   - Server → Client binary: PCM audio chunks (speaker)
 //   - Server → Client binary (len=0): flush signal (barge-in)
