@@ -4200,8 +4200,9 @@ func TestMergeWorktree_DirtyMainFails(t *testing.T) {
 	gitRun(t, wtDir, "add", ".")
 	gitRun(t, wtDir, "commit", "-m", "add change")
 
-	// Make main dirty.
-	gitWriteFile(t, filepath.Join(repoDir, "dirty.txt"), "dirty\n")
+	// Make main dirty by modifying a tracked file (untracked files are
+	// ignored by IsClean so they wouldn't block the merge).
+	gitWriteFile(t, filepath.Join(repoDir, "README.md"), "dirty modification\n")
 
 	_, client, cleanup := testDaemon(t)
 	defer cleanup()

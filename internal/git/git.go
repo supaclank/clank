@@ -270,7 +270,9 @@ func sanitizeBranchName(branch string) string {
 // (no staged, unstaged, or untracked files). Used to verify the main worktree
 // is safe to merge into.
 func IsClean(dir string) (bool, error) {
-	out, err := gitCmd(dir, "status", "--porcelain")
+	// --untracked-files=no: ignore untracked files. We only care about
+	// uncommitted changes to tracked files (staged or unstaged).
+	out, err := gitCmd(dir, "status", "--porcelain", "--untracked-files=no")
 	if err != nil {
 		return false, fmt.Errorf("git status: %w", err)
 	}

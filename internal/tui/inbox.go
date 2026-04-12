@@ -293,7 +293,7 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// handling so voice works on both inbox and session screens.
 	// Skip when the branch pane is in text-input mode (creating a new branch)
 	// so that space goes to the text input instead.
-	voiceInterceptOK := !(m.pane == paneBranches && m.branchPane.creating)
+	voiceInterceptOK := !(m.pane == paneBranches && m.branchPane.creating) && !m.showMerge
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		if voiceInterceptOK {

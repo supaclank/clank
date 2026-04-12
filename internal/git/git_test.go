@@ -413,18 +413,30 @@ func TestIsClean(t *testing.T) {
 		t.Error("expected clean repo after init")
 	}
 
-	// Create an untracked file — should be dirty.
-	writeFile(t, filepath.Join(dir, "dirty.txt"), "dirty\n")
+	// Untracked files should NOT make the repo dirty — IsClean only
+	// checks tracked files so that untracked build artifacts, docs, etc.
+	// don't block merges.
+	writeFile(t, filepath.Join(dir, "untracked.txt"), "untracked\n")
+	clean, err = IsClean(dir)
+	if err != nil {
+		t.Fatalf("IsClean: %v", err)
+	}
+	if !clean {
+		t.Error("expected clean repo with only untracked files")
+	}
+
+	// A modified tracked file should be dirty.
+	writeFile(t, filepath.Join(dir, "README.md"), "modified\n")
 	clean, err = IsClean(dir)
 	if err != nil {
 		t.Fatalf("IsClean: %v", err)
 	}
 	if clean {
-		t.Error("expected dirty repo with untracked file")
+		t.Error("expected dirty repo with modified tracked file")
 	}
 
-	// Stage the file — still dirty.
-	run(t, dir, "git", "add", "dirty.txt")
+	// Stage the change — still dirty.
+	run(t, dir, "git", "add", "README.md")
 	clean, err = IsClean(dir)
 	if err != nil {
 		t.Fatalf("IsClean: %v", err)
@@ -434,7 +446,7 @@ func TestIsClean(t *testing.T) {
 	}
 
 	// Commit it — clean again.
-	run(t, dir, "git", "commit", "-m", "add dirty.txt")
+	run(t, dir, "git", "commit", "-m", "update README")
 	clean, err = IsClean(dir)
 	if err != nil {
 		t.Fatalf("IsClean: %v", err)
