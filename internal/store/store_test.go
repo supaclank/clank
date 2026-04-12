@@ -86,6 +86,8 @@ func TestUpsertAndLoad(t *testing.T) {
 		FollowUp:    true,
 		ProjectDir:  "/tmp/project-a",
 		ProjectName: "project-a",
+		Branch:      "feat/login",
+		WorktreeDir: "/home/user/.clank/worktrees/project-a/feat-login",
 		Prompt:      "Fix the login bug",
 		Title:       "Fix authentication",
 		TicketID:    "TICKET-42",
@@ -132,6 +134,12 @@ func TestUpsertAndLoad(t *testing.T) {
 	}
 	if got.ProjectName != info.ProjectName {
 		t.Errorf("ProjectName = %q, want %q", got.ProjectName, info.ProjectName)
+	}
+	if got.Branch != info.Branch {
+		t.Errorf("Branch = %q, want %q", got.Branch, info.Branch)
+	}
+	if got.WorktreeDir != info.WorktreeDir {
+		t.Errorf("WorktreeDir = %q, want %q", got.WorktreeDir, info.WorktreeDir)
 	}
 	if got.Prompt != info.Prompt {
 		t.Errorf("Prompt = %q, want %q", got.Prompt, info.Prompt)

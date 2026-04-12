@@ -45,6 +45,7 @@ func codeCmd() *cobra.Command {
 	var backend string
 	var projectDir string
 	var ticketID string
+	var branch string
 
 	cmd := &cobra.Command{
 		Use:   "code [prompt]",
@@ -60,7 +61,7 @@ The daemon is auto-started if not already running.`,
 			prompt := strings.Join(args, " ")
 			if prompt == "" {
 				// No prompt — open composing view standalone.
-				return runComposing(projectDir)
+				return runComposing(projectDir, branch)
 			}
 
 			// Determine project directory.
@@ -102,6 +103,7 @@ The daemon is auto-started if not already running.`,
 			info, err := client.CreateSession(ctx, agent.StartRequest{
 				Backend:    bt,
 				ProjectDir: projectDir,
+				Branch:     branch,
 				Prompt:     prompt,
 				TicketID:   ticketID,
 			})
@@ -125,6 +127,7 @@ The daemon is auto-started if not already running.`,
 	cmd.Flags().StringVar(&backend, "backend", "", "Backend to use: opencode (default), claude")
 	cmd.Flags().StringVar(&projectDir, "project", "", "Project directory (default: current directory)")
 	cmd.Flags().StringVar(&ticketID, "ticket", "", "Link to backlog ticket ID")
+	cmd.Flags().StringVar(&branch, "branch", "", "Git branch to work on (creates worktree if needed)")
 
 	return cmd
 }
@@ -157,7 +160,7 @@ func runInbox() error {
 
 // runComposing opens the composing view standalone (not inside inbox).
 // The user types their first prompt and the session is created on send.
-func runComposing(projectDir string) error {
+func runComposing(projectDir, branch string) error {
 	client, err := ensureDaemon()
 	if err != nil {
 		return fmt.Errorf("daemon: %w", err)
@@ -172,6 +175,7 @@ func runComposing(projectDir string) error {
 	}
 
 	model := tui.NewSessionViewComposing(client, projectDir)
+	model.SetBranch(branch)
 	model.SetStandalone(true)
 	cleanup := redirectLogToFile()
 	defer cleanup()

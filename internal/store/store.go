@@ -128,6 +128,18 @@ func (s *Store) migrate() error {
 		version = 3
 	}
 
+	if version < 9 {
+		_, err := s.db.Exec(`
+			ALTER TABLE sessions ADD COLUMN branch TEXT NOT NULL DEFAULT '';
+			ALTER TABLE sessions ADD COLUMN worktree_dir TEXT NOT NULL DEFAULT '';
+			PRAGMA user_version = 9;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v9: %w", err)
+		}
+		version = 9
+	}
+
 	return nil
 }
 
@@ -136,7 +148,8 @@ func (s *Store) migrate() error {
 func (s *Store) LoadSessions() ([]agent.SessionInfo, error) {
 	rows, err := s.db.Query(`
 		SELECT id, external_id, backend, status, visibility, follow_up,
-		       project_dir, project_name, prompt, title, ticket_id, agent, draft,
+		       project_dir, project_name, branch, worktree_dir,
+		       prompt, title, ticket_id, agent, draft,
 		       created_at, updated_at, last_read_at
 		FROM sessions
 	`)
@@ -159,6 +172,8 @@ func (s *Store) LoadSessions() ([]agent.SessionInfo, error) {
 			&followUp,
 			&info.ProjectDir,
 			&info.ProjectName,
+			&info.Branch,
+			&info.WorktreeDir,
 			&info.Prompt,
 			&info.Title,
 			&info.TicketID,
@@ -202,9 +217,10 @@ func (s *Store) UpsertSession(info agent.SessionInfo) error {
 	_, err := s.db.Exec(`
 		INSERT OR REPLACE INTO sessions
 			(id, external_id, backend, status, visibility, follow_up,
-			 project_dir, project_name, prompt, title, ticket_id, agent, draft,
+			 project_dir, project_name, branch, worktree_dir,
+			 prompt, title, ticket_id, agent, draft,
 			 created_at, updated_at, last_read_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		info.ID,
 		info.ExternalID,
@@ -214,6 +230,8 @@ func (s *Store) UpsertSession(info agent.SessionInfo) error {
 		followUp,
 		info.ProjectDir,
 		info.ProjectName,
+		info.Branch,
+		info.WorktreeDir,
 		info.Prompt,
 		info.Title,
 		info.TicketID,
@@ -306,7 +324,8 @@ func (s *Store) FindByExternalID(externalID string) (*agent.SessionInfo, error) 
 	var lastReadAt sql.NullTime
 	err := s.db.QueryRow(`
 		SELECT id, external_id, backend, status, visibility, follow_up,
-		       project_dir, project_name, prompt, title, ticket_id, agent, draft,
+		       project_dir, project_name, branch, worktree_dir,
+		       prompt, title, ticket_id, agent, draft,
 		       created_at, updated_at, last_read_at
 		FROM sessions
 		WHERE external_id = ?
@@ -319,6 +338,8 @@ func (s *Store) FindByExternalID(externalID string) (*agent.SessionInfo, error) 
 		&followUp,
 		&info.ProjectDir,
 		&info.ProjectName,
+		&info.Branch,
+		&info.WorktreeDir,
 		&info.Prompt,
 		&info.Title,
 		&info.TicketID,

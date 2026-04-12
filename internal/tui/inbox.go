@@ -28,6 +28,14 @@ const (
 	screenSession             // Viewing a specific session (or composing a new one)
 )
 
+// inboxPane tracks which pane has keyboard focus in the two-pane layout.
+type inboxPane int
+
+const (
+	paneSessions inboxPane = iota // Right pane: session list (default)
+	paneBranches                  // Left pane: branch list
+)
+
 // inboxRefreshMsg triggers a data reload from the daemon.
 type inboxRefreshMsg struct{}
 
@@ -48,12 +56,17 @@ type inboxGroup struct {
 }
 
 // InboxModel is the top-level Bubble Tea model for the agent inbox.
-// It lists daemon-managed sessions grouped by status and can navigate
-// into a SessionViewModel for a specific session.
+// It uses a two-pane layout: left pane shows branches, right pane shows
+// sessions. In narrow terminals, only the session pane is shown.
 type InboxModel struct {
 	client *daemon.Client
 
-	// Inbox list state.
+	// Two-pane layout state.
+	pane             inboxPane       // which pane has keyboard focus
+	branchPane       BranchPaneModel // left pane: branch list
+	branchPaneHidden bool            // true when user toggled sidebar off with 'w'
+
+	// Inbox list state (right pane).
 	groups       []inboxGroup
 	flatRows     []inboxRow
 	cursor       int
@@ -134,8 +147,11 @@ func NewInboxModel(client *daemon.Client) *InboxModel {
 	ti.SetStyles(styles)
 
 	cwd, _ := os.Getwd()
+	bp := NewBranchPaneModel(client, cwd)
 	return &InboxModel{
 		client:      client,
+		pane:        paneSessions,
+		branchPane:  bp,
 		spinner:     sp,
 		searchInput: ti,
 		projectDir:  cwd,
@@ -144,7 +160,7 @@ func NewInboxModel(client *daemon.Client) *InboxModel {
 }
 
 func (m *InboxModel) Init() tea.Cmd {
-	cmds := []tea.Cmd{func() tea.Msg { return tea.RequestWindowSize }, m.discoverCmd(), m.loadDataCmd(), m.autoRefreshCmd(), m.spinner.Tick}
+	cmds := []tea.Cmd{func() tea.Msg { return tea.RequestWindowSize }, m.discoverCmd(), m.loadDataCmd(), m.autoRefreshCmd(), m.spinner.Tick, m.branchPane.Init()}
 	if m.screen == screenSession && m.sessionView != nil {
 		cmds = append(cmds, m.sessionView.Init())
 	}
@@ -243,7 +259,7 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// permanently kill the refresh loop.
 	if _, ok := msg.(inboxRefreshMsg); ok {
 		if m.screen == screenInbox {
-			return m, tea.Batch(m.loadDataCmd(), m.autoRefreshCmd())
+			return m, tea.Batch(m.loadDataCmd(), m.branchPane.loadBranches(), m.autoRefreshCmd())
 		}
 		return m, m.autoRefreshCmd()
 	}
@@ -271,14 +287,21 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Push-to-talk: intercept SPACE press/release before any screen-specific
 	// handling so voice works on both inbox and session screens.
+	// Skip when the branch pane is in text-input mode (creating a new branch)
+	// so that space goes to the text input instead.
+	voiceInterceptOK := !(m.pane == paneBranches && m.branchPane.creating)
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
-		if handled, cmd := m.handleVoiceKeyPress(msg); handled {
-			return m, cmd
+		if voiceInterceptOK {
+			if handled, cmd := m.handleVoiceKeyPress(msg); handled {
+				return m, cmd
+			}
 		}
 	case tea.KeyReleaseMsg:
-		if handled, cmd := m.handleVoiceKeyRelease(msg); handled {
-			return m, cmd
+		if voiceInterceptOK {
+			if handled, cmd := m.handleVoiceKeyRelease(msg); handled {
+				return m, cmd
+			}
 		}
 	case sessionEventMsg:
 		// Intercept voice SSE events before delegating to session view.
@@ -319,8 +342,13 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.searchInput.SetWidth(m.width)
+		m.searchInput.SetWidth(m.sessionPaneWidth())
+		m.branchPane.SetSize(m.branchPaneRenderWidth(), m.height)
 		return m, nil
+
+	case branchLoadedMsg, branchWorktreeCreatedMsg:
+		cmd := m.branchPane.Update(msg)
+		return m, cmd
 
 	case inboxDataMsg:
 		if msg.err != nil {
@@ -328,6 +356,7 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.err = nil
 			m.cachedSessions = msg.sessions
+			m.updateBranchSessionCounts()
 			m.buildGroups(m.filteredSessions())
 		}
 		return m, nil
@@ -345,6 +374,42 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.loadDataCmd()
 
 	case tea.KeyPressMsg:
+		// Tab/Shift+Tab switch panes (only in two-pane mode).
+		if m.showTwoPanes() {
+			if key.Matches(msg, key.NewBinding(key.WithKeys("tab"))) {
+				prevBranch := m.branchPane.SelectedBranch()
+				if m.pane == paneSessions {
+					m.pane = paneBranches
+					m.branchPane.SetFocused(true)
+				} else {
+					m.pane = paneSessions
+					m.branchPane.SetFocused(false)
+				}
+				if m.branchPane.SelectedBranch() != prevBranch {
+					m.applyFiltersAndRebuild()
+				}
+				return m, nil
+			}
+			if key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab"))) {
+				prevBranch := m.branchPane.SelectedBranch()
+				if m.pane == paneBranches {
+					m.pane = paneSessions
+					m.branchPane.SetFocused(false)
+				} else {
+					m.pane = paneBranches
+					m.branchPane.SetFocused(true)
+				}
+				if m.branchPane.SelectedBranch() != prevBranch {
+					m.applyFiltersAndRebuild()
+				}
+				return m, nil
+			}
+		}
+
+		// Route to the focused pane.
+		if m.pane == paneBranches {
+			return m.handleBranchPaneKey(msg)
+		}
 		return m.handleInboxKey(msg)
 	}
 
@@ -369,7 +434,7 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activeConnID = ""
 		// Refresh data, restart spinner, and ensure the auto-refresh
 		// timer is running (safety net in case it was lost).
-		return m, tea.Batch(m.loadDataCmd(), m.autoRefreshCmd(), m.spinner.Tick)
+		return m, tea.Batch(m.loadDataCmd(), m.branchPane.loadBranches(), m.autoRefreshCmd(), m.spinner.Tick)
 
 	case openForkedSessionMsg:
 		forkMsg := msg.(openForkedSessionMsg)
@@ -388,7 +453,8 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		wMsg := msg.(tea.WindowSizeMsg)
 		m.width = wMsg.Width
 		m.height = wMsg.Height
-		m.searchInput.SetWidth(m.width)
+		m.searchInput.SetWidth(m.sessionPaneWidth())
+		m.branchPane.SetSize(m.branchPaneRenderWidth(), m.height)
 		model, cmd := m.sessionView.Update(msg)
 		m.sessionView = model.(*SessionViewModel)
 		return m, cmd
@@ -435,12 +501,15 @@ func (m *InboxModel) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // openComposingSession opens a composing SessionViewModel where the user
 // types their first prompt. The session is created on send.
+// If a branch is selected in the branch pane, it's passed through to the
+// session so the backend runs in the corresponding worktree.
 func (m *InboxModel) openComposingSession() tea.Cmd {
 	m.screen = screenSession
 	m.activeConnID = ""
 
 	projectDir, _ := os.Getwd()
 	m.sessionView = NewSessionViewComposing(m.client, projectDir)
+	m.sessionView.branch = m.branchPane.SelectedBranch()
 	m.sessionView.voice = &m.voice
 	m.sessionView.width = m.width
 	m.sessionView.height = m.height
@@ -482,16 +551,31 @@ func (m *InboxModel) exitSearch() tea.Cmd {
 // daemon, so it is not applied here.
 func (m *InboxModel) filteredSessions() []agent.SessionInfo {
 	sessions := m.cachedSessions
-	if !m.projectFilter || m.projectDir == "" {
-		return sessions
-	}
-	filtered := make([]agent.SessionInfo, 0, len(sessions))
-	for _, s := range sessions {
-		if s.ProjectDir == m.projectDir {
-			filtered = append(filtered, s)
+
+	// Filter by project directory.
+	if m.projectFilter && m.projectDir != "" {
+		filtered := make([]agent.SessionInfo, 0, len(sessions))
+		for _, s := range sessions {
+			if s.ProjectDir == m.projectDir {
+				filtered = append(filtered, s)
+			}
 		}
+		sessions = filtered
 	}
-	return filtered
+
+	// Filter by selected branch.
+	branch := m.branchPane.SelectedBranch()
+	if branch != "" {
+		filtered := make([]agent.SessionInfo, 0, len(sessions))
+		for _, s := range sessions {
+			if s.Branch == branch {
+				filtered = append(filtered, s)
+			}
+		}
+		sessions = filtered
+	}
+
+	return sessions
 }
 
 // applyFiltersAndRebuild rebuilds the inbox view from cached sessions with
@@ -508,7 +592,8 @@ func (m *InboxModel) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.searchInput.SetWidth(m.width)
+		m.searchInput.SetWidth(m.sessionPaneWidth())
+		m.branchPane.SetSize(m.branchPaneRenderWidth(), m.height)
 		return m, nil
 
 	case inboxSearchResultMsg:
@@ -781,6 +866,15 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if row.session != nil {
 				return m, openNativeCLI(row.session)
 			}
+		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("w"))):
+		m.branchPaneHidden = !m.branchPaneHidden
+		if m.branchPaneHidden {
+			m.pane = paneSessions
+			m.branchPane.SetFocused(false)
+		} else {
+			m.pane = paneBranches
+			m.branchPane.SetFocused(true)
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
 		m.showHelp = true
@@ -1082,6 +1176,42 @@ func (m *InboxModel) View() tea.View {
 		return v
 	}
 
+	sessionContent := m.renderSessionPane()
+	var content string
+
+	if m.showTwoPanes() {
+		branchView := m.branchPane.View()
+		content = lipgloss.JoinHorizontal(lipgloss.Top, branchView, " ", sessionContent)
+	} else {
+		content = sessionContent
+	}
+
+	// Overlay menu if open.
+	if m.showMenu {
+		content = m.overlayMenu(content)
+	}
+
+	// Overlay confirm dialog if open.
+	if m.showConfirm {
+		content = m.overlayConfirm(content)
+	}
+
+	// Overlay help if open.
+	if m.showHelp {
+		content = m.overlayHelp(content)
+	}
+
+	// Overlay Kitty keyboard warning if shown.
+	if m.showKittyWarning {
+		content = m.overlayKittyWarning(content)
+	}
+
+	v := newVoiceEnabledView(content)
+	return v
+}
+
+// renderSessionPane renders the right pane (session list) content as a string.
+func (m *InboxModel) renderSessionPane() string {
 	var sb strings.Builder
 
 	// Header.
@@ -1098,8 +1228,6 @@ func (m *InboxModel) View() tea.View {
 	sb.WriteString("\n\n")
 
 	// Filter bar — always visible below the header.
-	// Shows filter pills and the search input (focused when searching,
-	// blurred placeholder otherwise).
 	sb.WriteString(m.renderFilterBar())
 	sb.WriteString("\n\n")
 
@@ -1112,8 +1240,8 @@ func (m *InboxModel) View() tea.View {
 
 	// Build display lines.
 	m.buildDisplayLines()
-	// Highlight selected row.
-	if m.cursor >= 0 && m.cursor < len(m.flatRows) {
+	// Highlight selected row (only when session pane has focus).
+	if m.pane == paneSessions && m.cursor >= 0 && m.cursor < len(m.flatRows) {
 		lineIdx := m.rowToLine[m.cursor]
 		if lineIdx < len(m.displayLines) {
 			row := m.flatRows[m.cursor]
@@ -1160,35 +1288,107 @@ func (m *InboxModel) View() tea.View {
 	if m.searching {
 		help = helpStyle.Render("esc: cancel | enter: open | .: this project | up/down: navigate")
 	} else {
-		parts := []string{voiceHelpItem(m.voice), "enter: open", "n: new", "/: search", ".: this project", "?: help", "q: quit"}
+		parts := []string{voiceHelpItem(m.voice), "enter: open", "n: new", "/: search", "w: worktrees", "?: help", "q: quit"}
 		help = helpStyle.Render(strings.Join(parts, " | "))
 	}
 	sb.WriteString(help)
 
-	content := sb.String()
+	return sb.String()
+}
 
-	// Overlay menu if open.
-	if m.showMenu {
-		content = m.overlayMenu(content)
+// --- Two-pane layout helpers ---
+
+// minTwoPaneWidth is the minimum terminal width to show both panes.
+// Below this, only the session pane is shown.
+const minTwoPaneWidth = 80
+
+// showTwoPanes returns true when the terminal is wide enough and the user
+// hasn't manually hidden the sidebar with 'w'.
+func (m *InboxModel) showTwoPanes() bool {
+	return m.width >= minTwoPaneWidth && !m.branchPaneHidden
+}
+
+// branchPaneRenderWidth returns the width allocated to the branch pane (including border).
+func (m *InboxModel) branchPaneRenderWidth() int {
+	return branchPaneWidth
+}
+
+// sessionPaneWidth returns the width available for the session list pane.
+func (m *InboxModel) sessionPaneWidth() int {
+	if m.showTwoPanes() {
+		return m.width - m.branchPaneRenderWidth() - 1 // 1 for gap
+	}
+	return m.width
+}
+
+// updateBranchSessionCounts computes per-branch active session counts
+// from cachedSessions and passes them to the branch pane for display.
+func (m *InboxModel) updateBranchSessionCounts() {
+	counts := make(map[string]int)
+	for _, s := range m.cachedSessions {
+		if s.Branch != "" && s.Visibility != agent.VisibilityArchived {
+			counts[s.Branch]++
+		}
+	}
+	m.branchPane.SetSessionCounts(counts)
+}
+
+// handleBranchPaneKey forwards key events to the branch pane while it's focused.
+// Global keys (q, ctrl+c) are still handled at the inbox level.
+func (m *InboxModel) handleBranchPaneKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	msg = normalizeKeyCase(msg)
+
+	// Global keys handled even when branch pane is focused.
+	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))):
+		m.cleanupVoice()
+		return m, tea.Quit
+	case key.Matches(msg, key.NewBinding(key.WithKeys("q"))):
+		// Don't quit while typing a branch name.
+		if m.branchPane.creating {
+			break
+		}
+		m.cleanupVoice()
+		return m, tea.Quit
+	case key.Matches(msg, key.NewBinding(key.WithKeys("w"))):
+		// Don't toggle sidebar while typing a branch name.
+		if m.branchPane.creating {
+			break
+		}
+		m.branchPaneHidden = !m.branchPaneHidden
+		if m.branchPaneHidden {
+			m.pane = paneSessions
+			m.branchPane.SetFocused(false)
+		} else {
+			m.pane = paneBranches
+			m.branchPane.SetFocused(true)
+		}
+		return m, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
+		m.showHelp = true
+		return m, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+		// While creating a new branch, let the branch pane handle Enter.
+		if m.branchPane.creating {
+			break
+		}
+		// Enter on a branch selects it and switches focus to session pane.
+		prevBranch := m.branchPane.SelectedBranch()
+		m.pane = paneSessions
+		m.branchPane.SetFocused(false)
+		if m.branchPane.SelectedBranch() != prevBranch {
+			m.applyFiltersAndRebuild()
+		}
+		return m, nil
 	}
 
-	// Overlay confirm dialog if open.
-	if m.showConfirm {
-		content = m.overlayConfirm(content)
+	// Track branch selection before and after to detect changes.
+	prevBranch := m.branchPane.SelectedBranch()
+	cmd := m.branchPane.Update(msg)
+	if m.branchPane.SelectedBranch() != prevBranch {
+		m.applyFiltersAndRebuild()
 	}
-
-	// Overlay help if open.
-	if m.showHelp {
-		content = m.overlayHelp(content)
-	}
-
-	// Overlay Kitty keyboard warning if shown.
-	if m.showKittyWarning {
-		content = m.overlayKittyWarning(content)
-	}
-
-	v := newVoiceEnabledView(content)
-	return v
+	return m, cmd
 }
 
 func (m *InboxModel) buildDisplayLines() {
@@ -1335,6 +1535,24 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 		agentBadge = lipgloss.NewStyle().Foreground(badgeColor).Render(fmt.Sprintf("%-5s", s.Agent))
 	}
 
+	// Branch badge — shown only when viewing all branches (no branch filter active).
+	const branchBadgeWidth = 12
+	branchBadge := ""
+	branchExtra := 0
+	if m.branchPane.SelectedBranch() == "" && s.Branch != "" {
+		branchLabel := s.Branch
+		if len(branchLabel) > branchBadgeWidth-2 {
+			branchLabel = branchLabel[:branchBadgeWidth-3] + "…"
+		}
+		branchLabel = fmt.Sprintf("%-*s", branchBadgeWidth-2, branchLabel)
+		bc := secondaryColor
+		if isDone || isArchived {
+			bc = mutedColor
+		}
+		branchBadge = lipgloss.NewStyle().Foreground(bc).Render(branchLabel) + " "
+		branchExtra = branchBadgeWidth - 1 // visible width including trailing space
+	}
+
 	paddedProject := fmt.Sprintf("%-12s", s.ProjectName)
 	projectColor := secondaryColor
 	if isDone {
@@ -1353,7 +1571,7 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	if s.Draft != "" {
 		draftExtra = len(draftSuffix)
 	}
-	maxPromptWidth := m.width - leftFixedWidth - agoWidth - draftExtra
+	maxPromptWidth := m.sessionPaneWidth() - leftFixedWidth - branchExtra - agoWidth - draftExtra
 	if maxPromptWidth < 10 {
 		maxPromptWidth = 10
 	}
@@ -1389,10 +1607,11 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	styledAgo := lipgloss.NewStyle().Foreground(dimColor).Render(ago)
 
 	// Build the left portion of the line (everything except the timestamp).
-	left := fmt.Sprintf("  %s %s %s %s %s",
+	left := fmt.Sprintf("  %s %s %s %s%s %s",
 		styledProject,
 		stateIcon,
 		agentBadge,
+		branchBadge,
 		unreadMark,
 		prompt,
 	)
@@ -1401,7 +1620,7 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	// Use ANSI-unaware length for the visible width of left.
 	leftVisible := lipgloss.Width(left)
 	agoVisible := lipgloss.Width(styledAgo)
-	gap := m.width - leftVisible - agoVisible
+	gap := m.sessionPaneWidth() - leftVisible - agoVisible
 	if gap < 1 {
 		gap = 1
 	}
@@ -1633,6 +1852,15 @@ func (m *InboxModel) overlayHelp(base string) string {
 	helpLine("f", "toggle follow-up")
 	helpLine("d", "mark as done")
 	helpLine("x", "archive / unarchive")
+	sb.WriteString(sep + "\n")
+
+	// Branches section.
+	sb.WriteString(lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("Worktrees"))
+	sb.WriteString("\n")
+	helpLine("w", "toggle worktree sidebar")
+	helpLine("tab", "switch panes")
+	helpLine("n", "new branch (in sidebar)")
+	helpLine("r", "refresh branches")
 	sb.WriteString(sep + "\n")
 
 	// Voice section.

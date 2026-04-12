@@ -185,6 +185,7 @@ type SessionViewModel struct {
 	composing  bool
 	backend    agent.BackendType
 	projectDir string
+	branch     string // optional branch to create the session on
 
 	// Agent selection — populated eagerly when compose view loads.
 	// For existing sessions opened from inbox, agents are fetched on Init.
@@ -284,6 +285,11 @@ func NewSessionViewModel(client *daemon.Client, sessionID string) *SessionViewMo
 // When standalone, 'q' quits the program instead of navigating back to inbox.
 func (m *SessionViewModel) SetStandalone(v bool) {
 	m.standalone = v
+}
+
+// SetBranch sets the git branch for the session (used in composing mode).
+func (m *SessionViewModel) SetBranch(branch string) {
+	m.branch = branch
 }
 
 // DraftText returns the current unsent text in the input textarea.

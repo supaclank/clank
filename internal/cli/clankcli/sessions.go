@@ -197,6 +197,7 @@ func sessionsSendCmd() *cobra.Command {
 func sessionsNewCmd() *cobra.Command {
 	var backend string
 	var projectDir string
+	var branch string
 
 	cmd := &cobra.Command{
 		Use:   "new <prompt>...",
@@ -230,6 +231,7 @@ func sessionsNewCmd() *cobra.Command {
 			info, err := client.CreateSession(ctx, agent.StartRequest{
 				Backend:    bt,
 				ProjectDir: projectDir,
+				Branch:     branch,
 				Prompt:     prompt,
 			})
 			if err != nil {
@@ -241,6 +243,7 @@ func sessionsNewCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&backend, "backend", "", "Backend: opencode (default), claude-code")
 	cmd.Flags().StringVar(&projectDir, "project", "", "Project directory (default: cwd)")
+	cmd.Flags().StringVar(&branch, "branch", "", "Git branch to work on (creates worktree if needed)")
 
 	return cmd
 }

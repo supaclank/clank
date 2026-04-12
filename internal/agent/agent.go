@@ -329,6 +329,7 @@ type StartRequest struct {
 	SessionID  string      `json:"session_id,omitempty"` // Empty = new session, set = resume
 	TicketID   string      `json:"ticket_id,omitempty"`  // Optional backlog ticket link
 	Agent      string      `json:"agent,omitempty"`      // OpenCode agent name (e.g. "build", "plan")
+	Branch     string      `json:"branch,omitempty"`     // Git branch name; when set, the daemon creates/reuses a worktree
 }
 
 // Validate checks that required fields are set.
@@ -358,6 +359,8 @@ type SessionInfo struct {
 	FollowUp        bool              `json:"follow_up,omitempty"`  // User-set flag to mark session for follow-up
 	ProjectDir      string            `json:"project_dir"`
 	ProjectName     string            `json:"project_name"`
+	Branch          string            `json:"branch,omitempty"`       // Git branch this session operates on
+	WorktreeDir     string            `json:"worktree_dir,omitempty"` // Filesystem path of the git worktree (may differ from ProjectDir)
 	Prompt          string            `json:"prompt"`
 	Title           string            `json:"title,omitempty"` // AI-generated session title from OpenCode
 	TicketID        string            `json:"ticket_id,omitempty"`

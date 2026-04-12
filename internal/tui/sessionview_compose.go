@@ -157,6 +157,7 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 	req := agent.StartRequest{
 		Backend:    m.backend,
 		ProjectDir: m.projectDir,
+		Branch:     m.branch,
 		Prompt:     prompt,
 	}
 	if len(m.agents) > 0 {
@@ -266,7 +267,15 @@ func (m *SessionViewModel) viewCompose() tea.View {
 	labelSty := lipgloss.NewStyle().Foreground(dimColor).Width(12)
 	sb.WriteString("  " + labelSty.Render("Project:"))
 	sb.WriteString(lipgloss.NewStyle().Foreground(textColor).Render(m.projectDir))
-	sb.WriteString("\n\n")
+	sb.WriteString("\n")
+
+	// Branch (if selected).
+	if m.branch != "" {
+		sb.WriteString("  " + labelSty.Render("Branch:"))
+		sb.WriteString(lipgloss.NewStyle().Foreground(secondaryColor).Render(m.branch))
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\n")
 
 	// Prompt textarea with integrated mode badge.
 	sb.WriteString(m.renderPromptBox())

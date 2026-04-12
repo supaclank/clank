@@ -25,6 +25,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
+	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/store"
 	"github.com/acksell/clank/internal/voice"
 	"github.com/coder/websocket"
@@ -518,6 +519,11 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /status", d.handleStatus)
 	mux.HandleFunc("GET /agents", d.handleListAgents)
 	mux.HandleFunc("POST /sessions/discover", d.handleDiscoverSessions)
+	// Worktree / branch endpoints.
+	mux.HandleFunc("GET /branches", d.handleListBranches)
+	mux.HandleFunc("POST /worktrees", d.handleCreateWorktree)
+	mux.HandleFunc("DELETE /worktrees", d.handleRemoveWorktree)
+
 	// Debug endpoints — backend-specific, not part of the general API.
 	mux.HandleFunc("GET /debug/opencode/servers", d.handleDebugOpenCodeServers)
 
@@ -1430,7 +1436,24 @@ func parseTimeParam(s string) (time.Time, error) {
 }
 
 // createSession creates a new managed session and starts the backend.
+// When req.Branch is set, a git worktree is created (or reused) for that
+// branch, and the backend is started in the worktree directory instead of
+// the original ProjectDir.
 func (d *Daemon) createSession(req agent.StartRequest) (*agent.SessionInfo, error) {
+	// Resolve worktree if a branch is requested.
+	var branch, worktreeDir string
+	if req.Branch != "" {
+		wt, err := d.resolveWorktree(req.ProjectDir, req.Branch)
+		if err != nil {
+			return nil, fmt.Errorf("resolve worktree for branch %q: %w", req.Branch, err)
+		}
+		branch = req.Branch
+		worktreeDir = wt
+		// Point the backend at the worktree directory so the agent
+		// operates on the correct branch.
+		req.ProjectDir = wt
+	}
+
 	mgr, ok := d.BackendManagers[req.Backend]
 	if !ok {
 		return nil, fmt.Errorf("no backend manager registered for %s", req.Backend)
@@ -1449,6 +1472,8 @@ func (d *Daemon) createSession(req agent.StartRequest) (*agent.SessionInfo, erro
 		Status:      agent.StatusStarting,
 		ProjectDir:  req.ProjectDir,
 		ProjectName: filepath.Base(req.ProjectDir),
+		Branch:      branch,
+		WorktreeDir: worktreeDir,
 		Prompt:      req.Prompt,
 		TicketID:    req.TicketID,
 		Agent:       req.Agent,
@@ -1482,6 +1507,185 @@ func (d *Daemon) createSession(req agent.StartRequest) (*agent.SessionInfo, erro
 	}()
 
 	return &info, nil
+}
+
+// resolveWorktree ensures a git worktree exists for the given branch in the
+// repository at projectDir. Returns the worktree's filesystem path.
+//
+// If the branch already has a worktree checked out, returns the existing path.
+// If the branch exists locally but has no worktree, creates one.
+// If the branch doesn't exist, creates a new branch based on the default branch.
+func (d *Daemon) resolveWorktree(projectDir, branch string) (string, error) {
+	// Check if a worktree already exists for this branch.
+	wt, err := git.FindWorktreeForBranch(projectDir, branch)
+	if err != nil {
+		return "", err
+	}
+	if wt != nil {
+		return wt.Path, nil
+	}
+
+	// Determine the worktree directory path.
+	projectName := filepath.Base(projectDir)
+	wtDir, err := git.WorktreeDir(projectName, branch)
+	if err != nil {
+		return "", err
+	}
+
+	// Check if the branch already exists locally.
+	exists, err := git.BranchExists(projectDir, branch)
+	if err != nil {
+		return "", err
+	}
+
+	if exists {
+		if err := git.AddWorktree(projectDir, wtDir, branch); err != nil {
+			return "", err
+		}
+	} else {
+		// New branch: base off the default branch.
+		base, err := git.DefaultBranch(projectDir)
+		if err != nil {
+			return "", fmt.Errorf("determine default branch: %w", err)
+		}
+		if err := git.AddWorktreeNewBranch(projectDir, wtDir, branch, base); err != nil {
+			return "", err
+		}
+	}
+
+	d.log.Printf("created worktree for branch %q at %s", branch, wtDir)
+	return wtDir, nil
+}
+
+// --- Worktree / Branch API ---
+
+// BranchInfo describes a worktree entry (including the main working tree).
+type BranchInfo struct {
+	Name         string `json:"name"`
+	WorktreeDir  string `json:"worktree_dir,omitempty"`  // Non-empty if a worktree is checked out for this branch
+	IsDefault    bool   `json:"is_default,omitempty"`    // True if this is the repo's default branch (main/master)
+	IsCurrent    bool   `json:"is_current,omitempty"`    // True if this branch is checked out in the main working tree
+	LinesAdded   int    `json:"lines_added,omitempty"`   // Lines added vs default branch
+	LinesRemoved int    `json:"lines_removed,omitempty"` // Lines removed vs default branch
+}
+
+func (d *Daemon) handleListBranches(w http.ResponseWriter, r *http.Request) {
+	projectDir := r.URL.Query().Get("project_dir")
+	if projectDir == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_dir is required"})
+		return
+	}
+
+	worktrees, err := git.ListWorktrees(projectDir)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	defaultBranch, _ := git.DefaultBranch(projectDir)
+	currentBranch, _ := git.CurrentBranch(projectDir)
+
+	result := make([]BranchInfo, 0, len(worktrees))
+	for _, wt := range worktrees {
+		if wt.Bare || wt.Branch == "" {
+			continue
+		}
+
+		info := BranchInfo{
+			Name:        wt.Branch,
+			WorktreeDir: wt.Path,
+			IsDefault:   wt.Branch == defaultBranch,
+			IsCurrent:   wt.Branch == currentBranch,
+		}
+
+		// Compute diff stats against the default branch.
+		// Skip for the default branch itself (diff would be empty).
+		if wt.Branch != defaultBranch {
+			added, removed, err := git.DiffStat(wt.Path, defaultBranch)
+			if err == nil {
+				info.LinesAdded = added
+				info.LinesRemoved = removed
+			}
+		}
+
+		result = append(result, info)
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// CreateWorktreeRequest is the request body for POST /worktrees.
+type CreateWorktreeRequest struct {
+	ProjectDir string `json:"project_dir"`
+	Branch     string `json:"branch"`
+	NewBranch  bool   `json:"new_branch,omitempty"` // If true, create a new branch
+	Base       string `json:"base,omitempty"`       // Base ref for new branches (default: repo default branch)
+}
+
+// WorktreeInfo is the response for POST /worktrees.
+type WorktreeInfo struct {
+	Branch      string `json:"branch"`
+	WorktreeDir string `json:"worktree_dir"`
+}
+
+func (d *Daemon) handleCreateWorktree(w http.ResponseWriter, r *http.Request) {
+	var req CreateWorktreeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if req.ProjectDir == "" || req.Branch == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_dir and branch are required"})
+		return
+	}
+
+	wtDir, err := d.resolveWorktree(req.ProjectDir, req.Branch)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, WorktreeInfo{
+		Branch:      req.Branch,
+		WorktreeDir: wtDir,
+	})
+}
+
+// RemoveWorktreeRequest is the request body for DELETE /worktrees.
+type RemoveWorktreeRequest struct {
+	ProjectDir string `json:"project_dir"`
+	Branch     string `json:"branch"`
+	Force      bool   `json:"force,omitempty"`
+}
+
+func (d *Daemon) handleRemoveWorktree(w http.ResponseWriter, r *http.Request) {
+	var req RemoveWorktreeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if req.ProjectDir == "" || req.Branch == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_dir and branch are required"})
+		return
+	}
+
+	wt, err := git.FindWorktreeForBranch(req.ProjectDir, req.Branch)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if wt == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("no worktree found for branch %q", req.Branch)})
+		return
+	}
+
+	if err := git.RemoveWorktree(req.ProjectDir, wt.Path, req.Force); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	d.log.Printf("removed worktree for branch %q at %s", req.Branch, wt.Path)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 }
 
 // runBackend starts the backend and relays its events.

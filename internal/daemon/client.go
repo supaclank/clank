@@ -377,6 +377,32 @@ func (c *Client) ReplyPermission(ctx context.Context, sessionID, permissionID st
 	return c.post(ctx, "/sessions/"+sessionID+"/permissions/"+permissionID+"/reply", body, nil)
 }
 
+// --- Worktree / Branch methods ---
+
+// ListBranches returns local branches for the given project directory, with
+// worktree and default-branch info.
+func (c *Client) ListBranches(ctx context.Context, projectDir string) ([]BranchInfo, error) {
+	var branches []BranchInfo
+	if err := c.get(ctx, "/branches?project_dir="+url.QueryEscape(projectDir), &branches); err != nil {
+		return nil, err
+	}
+	return branches, nil
+}
+
+// CreateWorktree creates (or reuses) a git worktree for the given branch.
+func (c *Client) CreateWorktree(ctx context.Context, req CreateWorktreeRequest) (*WorktreeInfo, error) {
+	var info WorktreeInfo
+	if err := c.post(ctx, "/worktrees", req, &info); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
+// RemoveWorktree removes the git worktree for the given branch.
+func (c *Client) RemoveWorktree(ctx context.Context, req RemoveWorktreeRequest) error {
+	return c.do(ctx, "DELETE", "/worktrees", req, nil)
+}
+
 // --- Voice methods ---
 
 // VoiceAudioStream opens a WebSocket connection for bidirectional PCM
