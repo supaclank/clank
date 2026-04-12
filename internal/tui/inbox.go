@@ -900,6 +900,17 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, openNativeCLI(row.session)
 			}
 		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("left"))):
+		// Left arrow navigates to the branch pane when it's visible.
+		if m.showTwoPanes() {
+			prevBranch := m.branchPane.SelectedBranch()
+			m.pane = paneBranches
+			m.branchPane.SetFocused(true)
+			if m.branchPane.SelectedBranch() != prevBranch {
+				m.applyFiltersAndRebuild()
+			}
+			return m, nil
+		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("w"))):
 		m.branchPaneHidden = !m.branchPaneHidden
 		if m.branchPaneHidden {
@@ -1423,6 +1434,18 @@ func (m *InboxModel) handleBranchPaneKey(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 			m.showMerge = true
 		}
 		return m, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("right"))):
+		// Right arrow navigates to the session pane.
+		if m.branchPane.creating {
+			break
+		}
+		prevBranch := m.branchPane.SelectedBranch()
+		m.pane = paneSessions
+		m.branchPane.SetFocused(false)
+		if m.branchPane.SelectedBranch() != prevBranch {
+			m.applyFiltersAndRebuild()
+		}
+		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 		// While creating a new branch, let the branch pane handle Enter.
 		if m.branchPane.creating {
@@ -1914,7 +1937,7 @@ func (m *InboxModel) overlayHelp(base string) string {
 	sb.WriteString(lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("Worktrees"))
 	sb.WriteString("\n")
 	helpLine("w", "toggle worktree sidebar")
-	helpLine("tab", "switch panes")
+	helpLine("tab / ← →", "switch panes")
 	helpLine("n", "new branch (in sidebar)")
 	helpLine("m", "merge branch (in sidebar)")
 	helpLine("r", "refresh branches")

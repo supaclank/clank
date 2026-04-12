@@ -2324,6 +2324,143 @@ func TestRenderFilterBar_PlaceholderVisibleWhenNotSearching(t *testing.T) {
 	}
 }
 
+// --- Arrow key pane navigation tests ---
+
+func TestLeftArrow_FromSessionPane_NavigatesToBranchPane(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	m := &InboxModel{
+		width:  120,
+		height: 40,
+		pane:   paneSessions,
+		branchPane: BranchPaneModel{
+			projectDir: "/tmp/test",
+		},
+	}
+	m.buildGroups([]agent.SessionInfo{
+		{ID: "s1", Status: agent.StatusIdle, UpdatedAt: now, LastReadAt: now},
+	})
+
+	// Precondition: session pane has focus, two-pane mode active.
+	if !m.showTwoPanes() {
+		t.Fatal("expected two-pane mode to be active")
+	}
+	if m.pane != paneSessions {
+		t.Fatal("expected pane to be paneSessions")
+	}
+
+	m.handleInboxKey(tea.KeyPressMsg{Code: tea.KeyLeft})
+
+	if m.pane != paneBranches {
+		t.Error("expected pane to switch to paneBranches after left arrow")
+	}
+	if !m.branchPane.Focused() {
+		t.Error("expected branch pane to be focused after left arrow")
+	}
+}
+
+func TestLeftArrow_NarrowTerminal_NoOp(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	m := &InboxModel{
+		width:  60, // below minTwoPaneWidth (80)
+		height: 40,
+		pane:   paneSessions,
+	}
+	m.buildGroups([]agent.SessionInfo{
+		{ID: "s1", Status: agent.StatusIdle, UpdatedAt: now, LastReadAt: now},
+	})
+
+	if m.showTwoPanes() {
+		t.Fatal("expected two-pane mode to be inactive in narrow terminal")
+	}
+
+	m.handleInboxKey(tea.KeyPressMsg{Code: tea.KeyLeft})
+
+	if m.pane != paneSessions {
+		t.Error("expected pane to remain paneSessions when two-pane mode is inactive")
+	}
+}
+
+func TestLeftArrow_SidebarHidden_NoOp(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	m := &InboxModel{
+		width:            120,
+		height:           40,
+		pane:             paneSessions,
+		branchPaneHidden: true,
+	}
+	m.buildGroups([]agent.SessionInfo{
+		{ID: "s1", Status: agent.StatusIdle, UpdatedAt: now, LastReadAt: now},
+	})
+
+	if m.showTwoPanes() {
+		t.Fatal("expected two-pane mode to be inactive when sidebar is hidden")
+	}
+
+	m.handleInboxKey(tea.KeyPressMsg{Code: tea.KeyLeft})
+
+	if m.pane != paneSessions {
+		t.Error("expected pane to remain paneSessions when sidebar is hidden")
+	}
+}
+
+func TestRightArrow_FromBranchPane_NavigatesToSessionPane(t *testing.T) {
+	t.Parallel()
+
+	m := &InboxModel{
+		width:  120,
+		height: 40,
+		pane:   paneBranches,
+		branchPane: BranchPaneModel{
+			projectDir: "/tmp/test",
+			focused:    true,
+		},
+	}
+
+	if m.pane != paneBranches {
+		t.Fatal("expected pane to be paneBranches")
+	}
+
+	m.handleBranchPaneKey(tea.KeyPressMsg{Code: tea.KeyRight})
+
+	if m.pane != paneSessions {
+		t.Error("expected pane to switch to paneSessions after right arrow")
+	}
+	if m.branchPane.Focused() {
+		t.Error("expected branch pane to lose focus after right arrow")
+	}
+}
+
+func TestRightArrow_WhileCreatingBranch_PassesThrough(t *testing.T) {
+	t.Parallel()
+
+	ti := textinput.New()
+	ti.Focus()
+	m := &InboxModel{
+		width:  120,
+		height: 40,
+		pane:   paneBranches,
+		branchPane: BranchPaneModel{
+			projectDir: "/tmp/test",
+			focused:    true,
+			creating:   true,
+			input:      ti,
+		},
+	}
+
+	m.handleBranchPaneKey(tea.KeyPressMsg{Code: tea.KeyRight})
+
+	// Should remain on branch pane because we're in text-input mode.
+	if m.pane != paneBranches {
+		t.Error("expected pane to remain paneBranches while creating a branch")
+	}
+}
+
 func TestBuildSearchResults_RespectsProjectFilter(t *testing.T) {
 	t.Parallel()
 
