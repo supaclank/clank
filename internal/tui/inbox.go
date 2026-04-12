@@ -87,6 +87,10 @@ type InboxModel struct {
 	// Help overlay state.
 	showHelp bool
 
+	// Merge overlay state.
+	showMerge    bool
+	mergeOverlay mergeOverlayModel
+
 	// Search state.
 	searching      bool                // true when the search bar is active
 	searchInput    textinput.Model     // text input for search queries
@@ -328,6 +332,11 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateConfirm(msg)
 	}
 
+	// If merge overlay is open, delegate.
+	if m.showMerge {
+		return m.updateMerge(msg)
+	}
+
 	// If menu is open, delegate to menu.
 	if m.showMenu {
 		return m.updateMenu(msg)
@@ -344,6 +353,9 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.searchInput.SetWidth(m.sessionPaneWidth())
 		m.branchPane.SetSize(m.branchPaneRenderWidth(), m.height)
+		if m.showMerge {
+			m.mergeOverlay.SetSize(m.width, m.height)
+		}
 		return m, nil
 
 	case branchLoadedMsg, branchWorktreeCreatedMsg:
@@ -499,6 +511,25 @@ func (m *InboxModel) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m *InboxModel) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case mergeResultMsg:
+		m.showMerge = false
+		if msg.err != nil {
+			m.err = msg.err
+		} else if msg.merged {
+			// Refresh data to reflect the merge (sessions marked done,
+			// worktree removed, branch deleted).
+			return m, tea.Batch(m.loadDataCmd(), m.branchPane.loadBranches())
+		}
+		return m, nil
+
+	default:
+		cmd := m.mergeOverlay.Update(msg)
+		return m, cmd
+	}
+}
+
 // openComposingSession opens a composing SessionViewModel where the user
 // types their first prompt. The session is created on send.
 // If a branch is selected in the branch pane, it's passed through to the
@@ -509,7 +540,7 @@ func (m *InboxModel) openComposingSession() tea.Cmd {
 
 	projectDir, _ := os.Getwd()
 	m.sessionView = NewSessionViewComposing(m.client, projectDir)
-	m.sessionView.branch = m.branchPane.SelectedBranch()
+	m.sessionView.worktreeBranch = m.branchPane.SelectedBranch()
 	m.sessionView.voice = &m.voice
 	m.sessionView.width = m.width
 	m.sessionView.height = m.height
@@ -563,12 +594,14 @@ func (m *InboxModel) filteredSessions() []agent.SessionInfo {
 		sessions = filtered
 	}
 
-	// Filter by selected branch.
-	branch := m.branchPane.SelectedBranch()
-	if branch != "" {
+	// Filter by selected worktree. Matches sessions whose ProjectDir is the
+	// selected worktree's path — works for both Clank-created worktrees and
+	// the main working tree.
+	wtDir := m.branchPane.SelectedWorktreeDir()
+	if wtDir != "" {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
-			if s.Branch == branch {
+			if s.ProjectDir == wtDir {
 				filtered = append(filtered, s)
 			}
 		}
@@ -1196,6 +1229,11 @@ func (m *InboxModel) View() tea.View {
 		content = m.overlayConfirm(content)
 	}
 
+	// Overlay merge dialog if open.
+	if m.showMerge {
+		content = overlayCenter(content, m.mergeOverlay.View(), m.width, m.height)
+	}
+
 	// Overlay help if open.
 	if m.showHelp {
 		content = m.overlayHelp(content)
@@ -1323,11 +1361,17 @@ func (m *InboxModel) sessionPaneWidth() int {
 
 // updateBranchSessionCounts computes per-branch active session counts
 // from cachedSessions and passes them to the branch pane for display.
+// Sessions are attributed to branches by matching ProjectDir against
+// worktree paths, not by the WorktreeBranch field.
 func (m *InboxModel) updateBranchSessionCounts() {
+	wtDirToBranch := m.branchPane.WorktreeDirToBranch()
 	counts := make(map[string]int)
 	for _, s := range m.cachedSessions {
-		if s.Branch != "" && s.Visibility != agent.VisibilityArchived {
-			counts[s.Branch]++
+		if s.Visibility == agent.VisibilityArchived {
+			continue
+		}
+		if branch, ok := wtDirToBranch[s.ProjectDir]; ok {
+			counts[branch]++
 		}
 	}
 	m.branchPane.SetSessionCounts(counts)
@@ -1366,6 +1410,18 @@ func (m *InboxModel) handleBranchPaneKey(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
 		m.showHelp = true
+		return m, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("m"))):
+		// Don't open merge overlay while typing a branch name.
+		if m.branchPane.creating {
+			break
+		}
+		bi := m.branchPane.SelectedBranchInfo()
+		if bi != nil && !bi.IsDefault {
+			m.mergeOverlay = newMergeOverlay(m.client, m.branchPane.projectDir, *bi)
+			m.mergeOverlay.SetSize(m.width, m.height)
+			m.showMerge = true
+		}
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 		// While creating a new branch, let the branch pane handle Enter.
@@ -1539,8 +1595,8 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	const branchBadgeWidth = 12
 	branchBadge := ""
 	branchExtra := 0
-	if m.branchPane.SelectedBranch() == "" && s.Branch != "" {
-		branchLabel := s.Branch
+	if m.branchPane.SelectedBranch() == "" && s.WorktreeBranch != "" {
+		branchLabel := s.WorktreeBranch
 		if len(branchLabel) > branchBadgeWidth-2 {
 			branchLabel = branchLabel[:branchBadgeWidth-3] + "…"
 		}
@@ -1860,6 +1916,7 @@ func (m *InboxModel) overlayHelp(base string) string {
 	helpLine("w", "toggle worktree sidebar")
 	helpLine("tab", "switch panes")
 	helpLine("n", "new branch (in sidebar)")
+	helpLine("m", "merge branch (in sidebar)")
 	helpLine("r", "refresh branches")
 	sb.WriteString(sep + "\n")
 

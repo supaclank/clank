@@ -266,6 +266,103 @@ func sanitizeBranchName(branch string) string {
 	return r.Replace(branch)
 }
 
+// IsClean returns true if the working tree at dir has no uncommitted changes
+// (no staged, unstaged, or untracked files). Used to verify the main worktree
+// is safe to merge into.
+func IsClean(dir string) (bool, error) {
+	out, err := gitCmd(dir, "status", "--porcelain")
+	if err != nil {
+		return false, fmt.Errorf("git status: %w", err)
+	}
+	return strings.TrimSpace(out) == "", nil
+}
+
+// CommitsAhead returns the number of commits that branch has ahead of base.
+// For example, CommitsAhead(dir, "main", "feat/login") returns how many
+// commits feat/login has that main does not.
+func CommitsAhead(dir, base, branch string) (int, error) {
+	out, err := gitCmd(dir, "rev-list", "--count", base+".."+branch)
+	if err != nil {
+		return 0, fmt.Errorf("count commits ahead: %w", err)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0, fmt.Errorf("parse commit count: %w", err)
+	}
+	return n, nil
+}
+
+// CommitLog returns a one-line-per-commit log of commits on branch that are
+// not on base. Format: "<short-hash> <subject>". Newest first.
+func CommitLog(dir, base, branch string) (string, error) {
+	out, err := gitCmd(dir, "log", "--oneline", base+".."+branch)
+	if err != nil {
+		return "", fmt.Errorf("commit log: %w", err)
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// Checkout switches the working tree at dir to the given branch.
+func Checkout(dir, branch string) error {
+	_, err := gitCmd(dir, "checkout", branch)
+	if err != nil {
+		return fmt.Errorf("checkout %s: %w", branch, err)
+	}
+	return nil
+}
+
+// MergeNoFF merges the given branch into the current branch using --no-ff
+// (always creates a merge commit). The message is the commit message for
+// the merge commit. Returns nil on success, an error if conflicts occur
+// or the merge fails for another reason.
+func MergeNoFF(dir, branch, message string) error {
+	_, err := gitCmd(dir, "merge", "--no-ff", "-m", message, branch)
+	if err != nil {
+		return fmt.Errorf("merge %s: %w", branch, err)
+	}
+	return nil
+}
+
+// IsMerging returns true if the repository at dir is in the middle of a merge
+// (i.e., MERGE_HEAD exists). This is useful to detect conflicts after a
+// failed merge.
+func IsMerging(dir string) bool {
+	// MERGE_HEAD exists when a merge is in progress.
+	gitDir, err := gitCmd(dir, "rev-parse", "--git-dir")
+	if err != nil {
+		return false
+	}
+	mergeHead := filepath.Join(strings.TrimSpace(gitDir), "MERGE_HEAD")
+	if !filepath.IsAbs(mergeHead) {
+		mergeHead = filepath.Join(dir, mergeHead)
+	}
+	_, err = os.Stat(mergeHead)
+	return err == nil
+}
+
+// AbortMerge aborts an in-progress merge.
+func AbortMerge(dir string) error {
+	_, err := gitCmd(dir, "merge", "--abort")
+	if err != nil {
+		return fmt.Errorf("abort merge: %w", err)
+	}
+	return nil
+}
+
+// DeleteBranch deletes a local branch. If force is true, uses -D (force delete)
+// instead of -d (safe delete, requires branch to be fully merged).
+func DeleteBranch(dir, branch string, force bool) error {
+	flag := "-d"
+	if force {
+		flag = "-D"
+	}
+	_, err := gitCmd(dir, "branch", flag, branch)
+	if err != nil {
+		return fmt.Errorf("delete branch %s: %w", branch, err)
+	}
+	return nil
+}
+
 // gitCmd runs a git command in the given directory and returns its stdout.
 func gitCmd(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)

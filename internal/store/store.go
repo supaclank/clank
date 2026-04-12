@@ -140,6 +140,18 @@ func (s *Store) migrate() error {
 		version = 9
 	}
 
+	if version < 10 {
+		_, err := s.db.Exec(`
+			ALTER TABLE sessions RENAME COLUMN branch TO worktree_branch;
+			PRAGMA user_version = 10;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v10: %w", err)
+		}
+		version = 10
+	}
+	_ = version // suppress unused warning after last migration
+
 	return nil
 }
 
@@ -148,7 +160,7 @@ func (s *Store) migrate() error {
 func (s *Store) LoadSessions() ([]agent.SessionInfo, error) {
 	rows, err := s.db.Query(`
 		SELECT id, external_id, backend, status, visibility, follow_up,
-		       project_dir, project_name, branch, worktree_dir,
+		       project_dir, project_name, worktree_branch, worktree_dir,
 		       prompt, title, ticket_id, agent, draft,
 		       created_at, updated_at, last_read_at
 		FROM sessions
@@ -172,7 +184,7 @@ func (s *Store) LoadSessions() ([]agent.SessionInfo, error) {
 			&followUp,
 			&info.ProjectDir,
 			&info.ProjectName,
-			&info.Branch,
+			&info.WorktreeBranch,
 			&info.WorktreeDir,
 			&info.Prompt,
 			&info.Title,
@@ -217,7 +229,7 @@ func (s *Store) UpsertSession(info agent.SessionInfo) error {
 	_, err := s.db.Exec(`
 		INSERT OR REPLACE INTO sessions
 			(id, external_id, backend, status, visibility, follow_up,
-			 project_dir, project_name, branch, worktree_dir,
+			 project_dir, project_name, worktree_branch, worktree_dir,
 			 prompt, title, ticket_id, agent, draft,
 			 created_at, updated_at, last_read_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -230,7 +242,7 @@ func (s *Store) UpsertSession(info agent.SessionInfo) error {
 		followUp,
 		info.ProjectDir,
 		info.ProjectName,
-		info.Branch,
+		info.WorktreeBranch,
 		info.WorktreeDir,
 		info.Prompt,
 		info.Title,
@@ -324,7 +336,7 @@ func (s *Store) FindByExternalID(externalID string) (*agent.SessionInfo, error) 
 	var lastReadAt sql.NullTime
 	err := s.db.QueryRow(`
 		SELECT id, external_id, backend, status, visibility, follow_up,
-		       project_dir, project_name, branch, worktree_dir,
+		       project_dir, project_name, worktree_branch, worktree_dir,
 		       prompt, title, ticket_id, agent, draft,
 		       created_at, updated_at, last_read_at
 		FROM sessions
@@ -338,7 +350,7 @@ func (s *Store) FindByExternalID(externalID string) (*agent.SessionInfo, error) 
 		&followUp,
 		&info.ProjectDir,
 		&info.ProjectName,
-		&info.Branch,
+		&info.WorktreeBranch,
 		&info.WorktreeDir,
 		&info.Prompt,
 		&info.Title,

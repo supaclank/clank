@@ -96,6 +96,32 @@ func (m *BranchPaneModel) SelectedBranch() string {
 	return m.branches[idx].Name
 }
 
+// SelectedWorktreeDir returns the worktree directory path for the currently
+// selected entry. Empty string means "all worktrees" (no filter).
+func (m *BranchPaneModel) SelectedWorktreeDir() string {
+	if m.cursor == 0 || len(m.branches) == 0 {
+		return ""
+	}
+	idx := m.cursor - 1
+	if idx >= len(m.branches) {
+		return ""
+	}
+	return m.branches[idx].WorktreeDir
+}
+
+// SelectedBranchInfo returns the full BranchInfo for the currently selected
+// entry, or nil if "All" is selected.
+func (m *BranchPaneModel) SelectedBranchInfo() *daemon.BranchInfo {
+	if m.cursor == 0 || len(m.branches) == 0 {
+		return nil
+	}
+	idx := m.cursor - 1
+	if idx >= len(m.branches) {
+		return nil
+	}
+	return &m.branches[idx]
+}
+
 // SetFocused sets whether this pane has keyboard focus.
 func (m *BranchPaneModel) SetFocused(focused bool) {
 	m.focused = focused
@@ -115,6 +141,19 @@ func (m *BranchPaneModel) SetSize(width, height int) {
 // SetSessionCounts updates the per-branch session counts displayed in the pane.
 func (m *BranchPaneModel) SetSessionCounts(counts map[string]int) {
 	m.sessionCounts = counts
+}
+
+// WorktreeDirToBranch returns a map from worktree directory path to branch name
+// for all branches that have an active worktree. The inbox uses this to count
+// sessions by matching SessionInfo.ProjectDir against worktree paths.
+func (m *BranchPaneModel) WorktreeDirToBranch() map[string]string {
+	result := make(map[string]string, len(m.branches))
+	for _, b := range m.branches {
+		if b.WorktreeDir != "" {
+			result[b.WorktreeDir] = b.Name
+		}
+	}
+	return result
 }
 
 // Update handles messages for the branch pane.

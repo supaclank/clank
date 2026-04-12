@@ -45,7 +45,7 @@ func codeCmd() *cobra.Command {
 	var backend string
 	var projectDir string
 	var ticketID string
-	var branch string
+	var worktreeBranch string
 
 	cmd := &cobra.Command{
 		Use:   "code [prompt]",
@@ -61,7 +61,7 @@ The daemon is auto-started if not already running.`,
 			prompt := strings.Join(args, " ")
 			if prompt == "" {
 				// No prompt — open composing view standalone.
-				return runComposing(projectDir, branch)
+				return runComposing(projectDir, worktreeBranch)
 			}
 
 			// Determine project directory.
@@ -101,11 +101,11 @@ The daemon is auto-started if not already running.`,
 			defer cancel()
 
 			info, err := client.CreateSession(ctx, agent.StartRequest{
-				Backend:    bt,
-				ProjectDir: projectDir,
-				Branch:     branch,
-				Prompt:     prompt,
-				TicketID:   ticketID,
+				Backend:        bt,
+				ProjectDir:     projectDir,
+				WorktreeBranch: worktreeBranch,
+				Prompt:         prompt,
+				TicketID:       ticketID,
 			})
 			if err != nil {
 				sseCancel()
@@ -127,7 +127,9 @@ The daemon is auto-started if not already running.`,
 	cmd.Flags().StringVar(&backend, "backend", "", "Backend to use: opencode (default), claude")
 	cmd.Flags().StringVar(&projectDir, "project", "", "Project directory (default: current directory)")
 	cmd.Flags().StringVar(&ticketID, "ticket", "", "Link to backlog ticket ID")
-	cmd.Flags().StringVar(&branch, "branch", "", "Git branch to work on (creates worktree if needed)")
+	cmd.Flags().StringVar(&worktreeBranch, "worktree", "", "Git branch to work on (creates worktree if needed)")
+	cmd.Flags().StringVar(&worktreeBranch, "branch", "", "Git branch to work on (creates worktree if needed)")
+	_ = cmd.Flags().MarkHidden("branch") // hidden alias for familiarity
 
 	return cmd
 }
@@ -160,7 +162,7 @@ func runInbox() error {
 
 // runComposing opens the composing view standalone (not inside inbox).
 // The user types their first prompt and the session is created on send.
-func runComposing(projectDir, branch string) error {
+func runComposing(projectDir, worktreeBranch string) error {
 	client, err := ensureDaemon()
 	if err != nil {
 		return fmt.Errorf("daemon: %w", err)
@@ -175,7 +177,7 @@ func runComposing(projectDir, branch string) error {
 	}
 
 	model := tui.NewSessionViewComposing(client, projectDir)
-	model.SetBranch(branch)
+	model.SetWorktreeBranch(worktreeBranch)
 	model.SetStandalone(true)
 	cleanup := redirectLogToFile()
 	defer cleanup()

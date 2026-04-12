@@ -155,10 +155,10 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 	m.submitting = true
 
 	req := agent.StartRequest{
-		Backend:    m.backend,
-		ProjectDir: m.projectDir,
-		Branch:     m.branch,
-		Prompt:     prompt,
+		Backend:        m.backend,
+		ProjectDir:     m.projectDir,
+		WorktreeBranch: m.worktreeBranch,
+		Prompt:         prompt,
 	}
 	if len(m.agents) > 0 {
 		req.Agent = m.agents[m.selectedAgent].Name
@@ -269,10 +269,10 @@ func (m *SessionViewModel) viewCompose() tea.View {
 	sb.WriteString(lipgloss.NewStyle().Foreground(textColor).Render(m.projectDir))
 	sb.WriteString("\n")
 
-	// Branch (if selected).
-	if m.branch != "" {
+	// Worktree branch (if selected).
+	if m.worktreeBranch != "" {
 		sb.WriteString("  " + labelSty.Render("Branch:"))
-		sb.WriteString(lipgloss.NewStyle().Foreground(secondaryColor).Render(m.branch))
+		sb.WriteString(lipgloss.NewStyle().Foreground(secondaryColor).Render(m.worktreeBranch))
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")

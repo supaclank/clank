@@ -78,24 +78,24 @@ func TestUpsertAndLoad(t *testing.T) {
 
 	now := time.Now().Truncate(time.Millisecond)
 	info := agent.SessionInfo{
-		ID:          "ses-001",
-		ExternalID:  "oc-ext-001",
-		Backend:     agent.BackendOpenCode,
-		Status:      agent.StatusBusy,
-		Visibility:  agent.VisibilityDone,
-		FollowUp:    true,
-		ProjectDir:  "/tmp/project-a",
-		ProjectName: "project-a",
-		Branch:      "feat/login",
-		WorktreeDir: "/home/user/.clank/worktrees/project-a/feat-login",
-		Prompt:      "Fix the login bug",
-		Title:       "Fix authentication",
-		TicketID:    "TICKET-42",
-		Agent:       "plan",
-		Draft:       "work in progress",
-		CreatedAt:   now.Add(-2 * time.Hour),
-		UpdatedAt:   now.Add(-1 * time.Hour),
-		LastReadAt:  now,
+		ID:             "ses-001",
+		ExternalID:     "oc-ext-001",
+		Backend:        agent.BackendOpenCode,
+		Status:         agent.StatusBusy,
+		Visibility:     agent.VisibilityDone,
+		FollowUp:       true,
+		ProjectDir:     "/tmp/project-a",
+		ProjectName:    "project-a",
+		WorktreeBranch: "feat/login",
+		WorktreeDir:    "/home/user/.clank/worktrees/project-a/feat-login",
+		Prompt:         "Fix the login bug",
+		Title:          "Fix authentication",
+		TicketID:       "TICKET-42",
+		Agent:          "plan",
+		Draft:          "work in progress",
+		CreatedAt:      now.Add(-2 * time.Hour),
+		UpdatedAt:      now.Add(-1 * time.Hour),
+		LastReadAt:     now,
 	}
 
 	if err := s.UpsertSession(info); err != nil {
@@ -135,8 +135,8 @@ func TestUpsertAndLoad(t *testing.T) {
 	if got.ProjectName != info.ProjectName {
 		t.Errorf("ProjectName = %q, want %q", got.ProjectName, info.ProjectName)
 	}
-	if got.Branch != info.Branch {
-		t.Errorf("Branch = %q, want %q", got.Branch, info.Branch)
+	if got.WorktreeBranch != info.WorktreeBranch {
+		t.Errorf("WorktreeBranch = %q, want %q", got.WorktreeBranch, info.WorktreeBranch)
 	}
 	if got.WorktreeDir != info.WorktreeDir {
 		t.Errorf("WorktreeDir = %q, want %q", got.WorktreeDir, info.WorktreeDir)

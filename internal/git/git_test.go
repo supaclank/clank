@@ -399,3 +399,291 @@ branch refs/heads/feat/login
 		t.Errorf("worktree[1].Branch = %q", worktrees[1].Branch)
 	}
 }
+
+func TestIsClean(t *testing.T) {
+	t.Parallel()
+	dir := initTestRepo(t)
+
+	// A fresh repo with no changes should be clean.
+	clean, err := IsClean(dir)
+	if err != nil {
+		t.Fatalf("IsClean: %v", err)
+	}
+	if !clean {
+		t.Error("expected clean repo after init")
+	}
+
+	// Create an untracked file — should be dirty.
+	writeFile(t, filepath.Join(dir, "dirty.txt"), "dirty\n")
+	clean, err = IsClean(dir)
+	if err != nil {
+		t.Fatalf("IsClean: %v", err)
+	}
+	if clean {
+		t.Error("expected dirty repo with untracked file")
+	}
+
+	// Stage the file — still dirty.
+	run(t, dir, "git", "add", "dirty.txt")
+	clean, err = IsClean(dir)
+	if err != nil {
+		t.Fatalf("IsClean: %v", err)
+	}
+	if clean {
+		t.Error("expected dirty repo with staged file")
+	}
+
+	// Commit it — clean again.
+	run(t, dir, "git", "commit", "-m", "add dirty.txt")
+	clean, err = IsClean(dir)
+	if err != nil {
+		t.Fatalf("IsClean: %v", err)
+	}
+	if !clean {
+		t.Error("expected clean repo after commit")
+	}
+}
+
+func TestCommitsAhead(t *testing.T) {
+	t.Parallel()
+	dir := initTestRepo(t)
+
+	defaultBranch, err := DefaultBranch(dir)
+	if err != nil {
+		t.Fatalf("DefaultBranch: %v", err)
+	}
+
+	// Create a feature branch with 3 commits ahead of main.
+	run(t, dir, "git", "checkout", "-b", "feat/ahead-test")
+	for i := 0; i < 3; i++ {
+		writeFile(t, filepath.Join(dir, "file"+string(rune('a'+i))+".txt"), "content\n")
+		run(t, dir, "git", "add", ".")
+		run(t, dir, "git", "commit", "-m", "commit "+string(rune('a'+i)))
+	}
+
+	n, err := CommitsAhead(dir, defaultBranch, "feat/ahead-test")
+	if err != nil {
+		t.Fatalf("CommitsAhead: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("CommitsAhead = %d, want 3", n)
+	}
+
+	// Default branch should be 0 ahead of itself.
+	n, err = CommitsAhead(dir, defaultBranch, defaultBranch)
+	if err != nil {
+		t.Fatalf("CommitsAhead: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("CommitsAhead(main, main) = %d, want 0", n)
+	}
+}
+
+func TestCommitLog(t *testing.T) {
+	t.Parallel()
+	dir := initTestRepo(t)
+
+	defaultBranch, err := DefaultBranch(dir)
+	if err != nil {
+		t.Fatalf("DefaultBranch: %v", err)
+	}
+
+	run(t, dir, "git", "checkout", "-b", "feat/log-test")
+	writeFile(t, filepath.Join(dir, "log-a.txt"), "a\n")
+	run(t, dir, "git", "add", ".")
+	run(t, dir, "git", "commit", "-m", "add log-a")
+	writeFile(t, filepath.Join(dir, "log-b.txt"), "b\n")
+	run(t, dir, "git", "add", ".")
+	run(t, dir, "git", "commit", "-m", "add log-b")
+
+	log, err := CommitLog(dir, defaultBranch, "feat/log-test")
+	if err != nil {
+		t.Fatalf("CommitLog: %v", err)
+	}
+
+	lines := strings.Split(log, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 log lines, got %d: %q", len(lines), log)
+	}
+	// Newest first.
+	if !strings.Contains(lines[0], "add log-b") {
+		t.Errorf("line[0] = %q, expected to contain 'add log-b'", lines[0])
+	}
+	if !strings.Contains(lines[1], "add log-a") {
+		t.Errorf("line[1] = %q, expected to contain 'add log-a'", lines[1])
+	}
+}
+
+func TestCheckout(t *testing.T) {
+	t.Parallel()
+	dir := initTestRepo(t)
+
+	run(t, dir, "git", "branch", "feat/checkout-test")
+	if err := Checkout(dir, "feat/checkout-test"); err != nil {
+		t.Fatalf("Checkout: %v", err)
+	}
+
+	branch, err := CurrentBranch(dir)
+	if err != nil {
+		t.Fatalf("CurrentBranch: %v", err)
+	}
+	if branch != "feat/checkout-test" {
+		t.Errorf("CurrentBranch = %q, want feat/checkout-test", branch)
+	}
+}
+
+func TestMergeNoFF_HappyPath(t *testing.T) {
+	t.Parallel()
+	dir := initTestRepo(t)
+
+	defaultBranch, err := DefaultBranch(dir)
+	if err != nil {
+		t.Fatalf("DefaultBranch: %v", err)
+	}
+
+	// Create a feature branch with a commit.
+	run(t, dir, "git", "checkout", "-b", "feat/merge-test")
+	writeFile(t, filepath.Join(dir, "feature.txt"), "feature\n")
+	run(t, dir, "git", "add", ".")
+	run(t, dir, "git", "commit", "-m", "add feature")
+
+	// Switch back to default branch and merge.
+	if err := Checkout(dir, defaultBranch); err != nil {
+		t.Fatalf("Checkout: %v", err)
+	}
+
+	err = MergeNoFF(dir, "feat/merge-test", "Merge branch 'feat/merge-test'")
+	if err != nil {
+		t.Fatalf("MergeNoFF: %v", err)
+	}
+
+	// Verify the feature file exists on the default branch.
+	if _, statErr := os.Stat(filepath.Join(dir, "feature.txt")); os.IsNotExist(statErr) {
+		t.Error("feature.txt not present after merge")
+	}
+
+	// Verify a merge commit was created (not fast-forward).
+	// A merge commit has 2+ parents.
+	out := run(t, dir, "git", "cat-file", "-p", "HEAD")
+	parentCount := strings.Count(out, "parent ")
+	if parentCount < 2 {
+		t.Errorf("expected merge commit with 2+ parents, got %d", parentCount)
+	}
+}
+
+func TestMergeNoFF_Conflict(t *testing.T) {
+	t.Parallel()
+	dir := initTestRepo(t)
+
+	defaultBranch, err := DefaultBranch(dir)
+	if err != nil {
+		t.Fatalf("DefaultBranch: %v", err)
+	}
+
+	// Create conflicting changes on a branch and default.
+	run(t, dir, "git", "checkout", "-b", "feat/conflict-test")
+	writeFile(t, filepath.Join(dir, "README.md"), "branch version\n")
+	run(t, dir, "git", "add", ".")
+	run(t, dir, "git", "commit", "-m", "branch change")
+
+	if err := Checkout(dir, defaultBranch); err != nil {
+		t.Fatalf("Checkout: %v", err)
+	}
+	writeFile(t, filepath.Join(dir, "README.md"), "main version\n")
+	run(t, dir, "git", "add", ".")
+	run(t, dir, "git", "commit", "-m", "main change")
+
+	// Attempt merge — should fail due to conflict.
+	err = MergeNoFF(dir, "feat/conflict-test", "Merge conflict branch")
+	if err == nil {
+		t.Fatal("expected merge conflict error, got nil")
+	}
+
+	// Should be in merging state.
+	if !IsMerging(dir) {
+		t.Error("expected IsMerging to be true after conflict")
+	}
+
+	// Abort the merge.
+	if err := AbortMerge(dir); err != nil {
+		t.Fatalf("AbortMerge: %v", err)
+	}
+
+	// Should no longer be merging.
+	if IsMerging(dir) {
+		t.Error("expected IsMerging to be false after abort")
+	}
+}
+
+func TestDeleteBranch(t *testing.T) {
+	t.Parallel()
+	dir := initTestRepo(t)
+
+	defaultBranch, err := DefaultBranch(dir)
+	if err != nil {
+		t.Fatalf("DefaultBranch: %v", err)
+	}
+
+	// Create and merge a branch so it can be safely deleted with -d.
+	run(t, dir, "git", "checkout", "-b", "feat/delete-test")
+	writeFile(t, filepath.Join(dir, "delete.txt"), "delete me\n")
+	run(t, dir, "git", "add", ".")
+	run(t, dir, "git", "commit", "-m", "add delete.txt")
+	if err := Checkout(dir, defaultBranch); err != nil {
+		t.Fatalf("Checkout: %v", err)
+	}
+	// Merge so the branch is fully merged (allows -d).
+	if err := MergeNoFF(dir, "feat/delete-test", "merge for delete test"); err != nil {
+		t.Fatalf("MergeNoFF: %v", err)
+	}
+
+	// Delete with safe flag.
+	if err := DeleteBranch(dir, "feat/delete-test", false); err != nil {
+		t.Fatalf("DeleteBranch: %v", err)
+	}
+
+	exists, err := BranchExists(dir, "feat/delete-test")
+	if err != nil {
+		t.Fatalf("BranchExists: %v", err)
+	}
+	if exists {
+		t.Error("expected branch to be deleted")
+	}
+}
+
+func TestDeleteBranch_ForceUnmerged(t *testing.T) {
+	t.Parallel()
+	dir := initTestRepo(t)
+
+	// Create an unmerged branch.
+	run(t, dir, "git", "checkout", "-b", "feat/force-delete")
+	writeFile(t, filepath.Join(dir, "unmerged.txt"), "unmerged\n")
+	run(t, dir, "git", "add", ".")
+	run(t, dir, "git", "commit", "-m", "unmerged commit")
+
+	defaultBranch, err := DefaultBranch(dir)
+	if err != nil {
+		t.Fatalf("DefaultBranch: %v", err)
+	}
+	if err := Checkout(dir, defaultBranch); err != nil {
+		t.Fatalf("Checkout: %v", err)
+	}
+
+	// Safe delete should fail (unmerged).
+	if err := DeleteBranch(dir, "feat/force-delete", false); err == nil {
+		t.Error("expected error deleting unmerged branch with safe flag")
+	}
+
+	// Force delete should succeed.
+	if err := DeleteBranch(dir, "feat/force-delete", true); err != nil {
+		t.Fatalf("DeleteBranch -D: %v", err)
+	}
+
+	exists, err := BranchExists(dir, "feat/force-delete")
+	if err != nil {
+		t.Fatalf("BranchExists: %v", err)
+	}
+	if exists {
+		t.Error("expected branch to be force-deleted")
+	}
+}

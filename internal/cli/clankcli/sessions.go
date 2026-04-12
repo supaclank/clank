@@ -197,7 +197,7 @@ func sessionsSendCmd() *cobra.Command {
 func sessionsNewCmd() *cobra.Command {
 	var backend string
 	var projectDir string
-	var branch string
+	var worktreeBranch string
 
 	cmd := &cobra.Command{
 		Use:   "new <prompt>...",
@@ -229,10 +229,10 @@ func sessionsNewCmd() *cobra.Command {
 
 			prompt := strings.Join(args, " ")
 			info, err := client.CreateSession(ctx, agent.StartRequest{
-				Backend:    bt,
-				ProjectDir: projectDir,
-				Branch:     branch,
-				Prompt:     prompt,
+				Backend:        bt,
+				ProjectDir:     projectDir,
+				WorktreeBranch: worktreeBranch,
+				Prompt:         prompt,
 			})
 			if err != nil {
 				return fmt.Errorf("create session: %w", err)
@@ -243,7 +243,9 @@ func sessionsNewCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&backend, "backend", "", "Backend: opencode (default), claude-code")
 	cmd.Flags().StringVar(&projectDir, "project", "", "Project directory (default: cwd)")
-	cmd.Flags().StringVar(&branch, "branch", "", "Git branch to work on (creates worktree if needed)")
+	cmd.Flags().StringVar(&worktreeBranch, "worktree", "", "Git branch to work on (creates worktree if needed)")
+	cmd.Flags().StringVar(&worktreeBranch, "branch", "", "Git branch to work on (creates worktree if needed)")
+	_ = cmd.Flags().MarkHidden("branch") // hidden alias for familiarity
 
 	return cmd
 }

@@ -403,6 +403,16 @@ func (c *Client) RemoveWorktree(ctx context.Context, req RemoveWorktreeRequest) 
 	return c.do(ctx, "DELETE", "/worktrees", req, nil)
 }
 
+// MergeWorktree merges a branch into the default branch via --no-ff, then
+// cleans up the worktree and branch. Sessions on the worktree are marked done.
+func (c *Client) MergeWorktree(ctx context.Context, req MergeWorktreeRequest) (*MergeWorktreeResponse, error) {
+	var resp MergeWorktreeResponse
+	if err := c.post(ctx, "/worktrees/merge", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // --- Voice methods ---
 
 // VoiceAudioStream opens a WebSocket connection for bidirectional PCM

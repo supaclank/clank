@@ -182,10 +182,10 @@ type SessionViewModel struct {
 
 	// Composing mode — no daemon session yet. The user is writing their
 	// first prompt. After sending, this transitions to the normal session view.
-	composing  bool
-	backend    agent.BackendType
-	projectDir string
-	branch     string // optional branch to create the session on
+	composing      bool
+	backend        agent.BackendType
+	projectDir     string
+	worktreeBranch string // optional worktree branch to create the session on
 
 	// Agent selection — populated eagerly when compose view loads.
 	// For existing sessions opened from inbox, agents are fetched on Init.
@@ -287,9 +287,9 @@ func (m *SessionViewModel) SetStandalone(v bool) {
 	m.standalone = v
 }
 
-// SetBranch sets the git branch for the session (used in composing mode).
-func (m *SessionViewModel) SetBranch(branch string) {
-	m.branch = branch
+// SetWorktreeBranch sets the git worktree branch for the session (used in composing mode).
+func (m *SessionViewModel) SetWorktreeBranch(branch string) {
+	m.worktreeBranch = branch
 }
 
 // DraftText returns the current unsent text in the input textarea.

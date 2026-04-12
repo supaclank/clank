@@ -523,6 +523,7 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /branches", d.handleListBranches)
 	mux.HandleFunc("POST /worktrees", d.handleCreateWorktree)
 	mux.HandleFunc("DELETE /worktrees", d.handleRemoveWorktree)
+	mux.HandleFunc("POST /worktrees/merge", d.handleMergeWorktree)
 
 	// Debug endpoints — backend-specific, not part of the general API.
 	mux.HandleFunc("GET /debug/opencode/servers", d.handleDebugOpenCodeServers)
@@ -667,6 +668,19 @@ func (d *Daemon) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Build a worktree path → branch name map so we can attribute discovered
+	// sessions to the correct worktree. This lets the TUI filter sessions by
+	// worktree directory (ProjectDir).
+	wtPathToBranch := make(map[string]string)
+	worktrees, err := git.ListWorktrees(body.ProjectDir)
+	if err == nil {
+		for _, wt := range worktrees {
+			if !wt.Bare && wt.Branch != "" {
+				wtPathToBranch[wt.Path] = wt.Branch
+			}
+		}
+	}
+
 	// Register discovered sessions, skipping any whose ExternalID already exists
 	// (i.e., sessions the daemon is already managing from a previous create or discover).
 	// Also check backend.SessionID() to catch sessions whose Start() is still
@@ -697,6 +711,13 @@ func (d *Daemon) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 			existingMS.info.ProjectDir = snap.Directory
 			existingMS.info.ProjectName = filepath.Base(snap.Directory)
 			existingMS.info.RevertMessageID = snap.RevertMessageID
+			// Backfill worktree attribution if not already set.
+			if existingMS.info.WorktreeBranch == "" {
+				if branch, ok := wtPathToBranch[snap.Directory]; ok {
+					existingMS.info.WorktreeBranch = branch
+					existingMS.info.WorktreeDir = snap.Directory
+				}
+			}
 			// Normalize stale statuses for backend-less sessions —
 			// same rationale as the startup normalization.
 			if existingMS.backend == nil && (existingMS.info.Status == agent.StatusBusy || existingMS.info.Status == agent.StatusStarting || existingMS.info.Status == agent.StatusDead) {
@@ -705,6 +726,15 @@ func (d *Daemon) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 			d.persistSession(existingMS)
 			continue
 		}
+
+		// Attribute the session to a worktree by matching its directory
+		// against known worktree paths.
+		var wtBranch, wtDir string
+		if branch, ok := wtPathToBranch[snap.Directory]; ok {
+			wtBranch = branch
+			wtDir = snap.Directory
+		}
+
 		id := ulid.Make().String()
 		info := agent.SessionInfo{
 			ID:              id,
@@ -713,6 +743,8 @@ func (d *Daemon) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 			Status:          agent.StatusIdle,
 			ProjectDir:      snap.Directory,
 			ProjectName:     filepath.Base(snap.Directory),
+			WorktreeBranch:  wtBranch,
+			WorktreeDir:     wtDir,
 			Title:           snap.Title,
 			RevertMessageID: snap.RevertMessageID,
 			CreatedAt:       snap.CreatedAt,
@@ -1436,18 +1468,18 @@ func parseTimeParam(s string) (time.Time, error) {
 }
 
 // createSession creates a new managed session and starts the backend.
-// When req.Branch is set, a git worktree is created (or reused) for that
-// branch, and the backend is started in the worktree directory instead of
+// When req.WorktreeBranch is set, a git worktree is created (or reused) for
+// that branch, and the backend is started in the worktree directory instead of
 // the original ProjectDir.
 func (d *Daemon) createSession(req agent.StartRequest) (*agent.SessionInfo, error) {
 	// Resolve worktree if a branch is requested.
-	var branch, worktreeDir string
-	if req.Branch != "" {
-		wt, err := d.resolveWorktree(req.ProjectDir, req.Branch)
+	var wtBranch, worktreeDir string
+	if req.WorktreeBranch != "" {
+		wt, err := d.resolveWorktree(req.ProjectDir, req.WorktreeBranch)
 		if err != nil {
-			return nil, fmt.Errorf("resolve worktree for branch %q: %w", req.Branch, err)
+			return nil, fmt.Errorf("resolve worktree for branch %q: %w", req.WorktreeBranch, err)
 		}
-		branch = req.Branch
+		wtBranch = req.WorktreeBranch
 		worktreeDir = wt
 		// Point the backend at the worktree directory so the agent
 		// operates on the correct branch.
@@ -1467,18 +1499,18 @@ func (d *Daemon) createSession(req agent.StartRequest) (*agent.SessionInfo, erro
 	now := time.Now()
 
 	info := agent.SessionInfo{
-		ID:          id,
-		Backend:     req.Backend,
-		Status:      agent.StatusStarting,
-		ProjectDir:  req.ProjectDir,
-		ProjectName: filepath.Base(req.ProjectDir),
-		Branch:      branch,
-		WorktreeDir: worktreeDir,
-		Prompt:      req.Prompt,
-		TicketID:    req.TicketID,
-		Agent:       req.Agent,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:             id,
+		Backend:        req.Backend,
+		Status:         agent.StatusStarting,
+		ProjectDir:     req.ProjectDir,
+		ProjectName:    filepath.Base(req.ProjectDir),
+		WorktreeBranch: wtBranch,
+		WorktreeDir:    worktreeDir,
+		Prompt:         req.Prompt,
+		TicketID:       req.TicketID,
+		Agent:          req.Agent,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 
 	ms := &managedSession{
@@ -1567,6 +1599,7 @@ type BranchInfo struct {
 	IsCurrent    bool   `json:"is_current,omitempty"`    // True if this branch is checked out in the main working tree
 	LinesAdded   int    `json:"lines_added,omitempty"`   // Lines added vs default branch
 	LinesRemoved int    `json:"lines_removed,omitempty"` // Lines removed vs default branch
+	CommitsAhead int    `json:"commits_ahead,omitempty"` // Commits ahead of default branch
 }
 
 func (d *Daemon) handleListBranches(w http.ResponseWriter, r *http.Request) {
@@ -1598,13 +1631,17 @@ func (d *Daemon) handleListBranches(w http.ResponseWriter, r *http.Request) {
 			IsCurrent:   wt.Branch == currentBranch,
 		}
 
-		// Compute diff stats against the default branch.
+		// Compute diff stats and commit count against the default branch.
 		// Skip for the default branch itself (diff would be empty).
 		if wt.Branch != defaultBranch {
 			added, removed, err := git.DiffStat(wt.Path, defaultBranch)
 			if err == nil {
 				info.LinesAdded = added
 				info.LinesRemoved = removed
+			}
+			ahead, err := git.CommitsAhead(projectDir, defaultBranch, wt.Branch)
+			if err == nil {
+				info.CommitsAhead = ahead
 			}
 		}
 
@@ -1686,6 +1723,135 @@ func (d *Daemon) handleRemoveWorktree(w http.ResponseWriter, r *http.Request) {
 
 	d.log.Printf("removed worktree for branch %q at %s", req.Branch, wt.Path)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+}
+
+// MergeWorktreeRequest is the request body for POST /worktrees/merge.
+type MergeWorktreeRequest struct {
+	ProjectDir    string `json:"project_dir"`
+	Branch        string `json:"branch"`         // Branch to merge into the default branch
+	CommitMessage string `json:"commit_message"` // Merge commit message
+}
+
+// MergeWorktreeResponse is the response from POST /worktrees/merge.
+type MergeWorktreeResponse struct {
+	Status          string `json:"status"`           // "merged"
+	MergedBranch    string `json:"merged_branch"`    // Branch that was merged
+	SessionsDone    int    `json:"sessions_done"`    // Number of sessions marked done
+	WorktreeRemoved bool   `json:"worktree_removed"` // Whether the worktree was cleaned up
+	BranchDeleted   bool   `json:"branch_deleted"`   // Whether the branch was deleted
+}
+
+func (d *Daemon) handleMergeWorktree(w http.ResponseWriter, r *http.Request) {
+	var req MergeWorktreeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if req.ProjectDir == "" || req.Branch == "" || req.CommitMessage == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_dir, branch, and commit_message are required"})
+		return
+	}
+
+	// Determine the default (target) branch.
+	defaultBranch, err := git.DefaultBranch(req.ProjectDir)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "determine default branch: " + err.Error()})
+		return
+	}
+	if req.Branch == defaultBranch {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot merge the default branch into itself"})
+		return
+	}
+
+	// Find the main worktree (the one with the default branch checked out).
+	mainWt, err := git.FindWorktreeForBranch(req.ProjectDir, defaultBranch)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "find main worktree: " + err.Error()})
+		return
+	}
+	if mainWt == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("no worktree found for default branch %q", defaultBranch)})
+		return
+	}
+
+	// Verify the main worktree is clean.
+	clean, err := git.IsClean(mainWt.Path)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "check worktree clean: " + err.Error()})
+		return
+	}
+	if !clean {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "main worktree has uncommitted changes; commit or stash them first"})
+		return
+	}
+
+	// Perform the merge (--no-ff).
+	if err := git.MergeNoFF(mainWt.Path, req.Branch, req.CommitMessage); err != nil {
+		// If merge failed, check for conflicts and abort.
+		if git.IsMerging(mainWt.Path) {
+			_ = git.AbortMerge(mainWt.Path)
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "merge conflict: resolve manually or choose a different approach"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "merge failed: " + err.Error()})
+		return
+	}
+
+	d.log.Printf("merged branch %q into %q in %s", req.Branch, defaultBranch, mainWt.Path)
+
+	resp := MergeWorktreeResponse{
+		Status:       "merged",
+		MergedBranch: req.Branch,
+	}
+
+	// Post-merge: mark sessions on this worktree as done.
+	branchWt, _ := git.FindWorktreeForBranch(req.ProjectDir, req.Branch)
+	var worktreePath string
+	if branchWt != nil {
+		worktreePath = branchWt.Path
+	}
+	if worktreePath != "" {
+		resp.SessionsDone = d.markWorktreeSessionsDone(worktreePath)
+	}
+
+	// Post-merge: remove worktree (non-destructive — only if clean).
+	if branchWt != nil {
+		if err := git.RemoveWorktree(req.ProjectDir, branchWt.Path, false); err != nil {
+			d.log.Printf("warning: could not remove worktree after merge: %v", err)
+		} else {
+			resp.WorktreeRemoved = true
+		}
+	}
+
+	// Post-merge: delete the branch (safe delete, only if fully merged).
+	if err := git.DeleteBranch(req.ProjectDir, req.Branch, false); err != nil {
+		d.log.Printf("warning: could not delete branch after merge: %v", err)
+	} else {
+		resp.BranchDeleted = true
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// markWorktreeSessionsDone marks all non-archived sessions whose ProjectDir
+// matches the given worktree path as "done". Returns the count of sessions updated.
+func (d *Daemon) markWorktreeSessionsDone(worktreePath string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	count := 0
+	for _, ms := range d.sessions {
+		if ms.info.ProjectDir != worktreePath {
+			continue
+		}
+		if ms.info.Visibility == agent.VisibilityArchived || ms.info.Visibility == agent.VisibilityDone {
+			continue
+		}
+		ms.info.Visibility = agent.VisibilityDone
+		d.persistSession(ms)
+		count++
+	}
+	return count
 }
 
 // runBackend starts the backend and relays its events.
