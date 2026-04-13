@@ -1,6 +1,6 @@
 package tui
 
-// BranchPaneModel is the left pane of the two-pane inbox layout.
+// SidebarModel is the navigation sidebar of the inbox layout.
 // It shows local git branches for the current project, with visual
 // indicators for worktrees, the default branch, and the current branch.
 // Users can navigate with up/down and press 'n' to create a new branch.
@@ -19,8 +19,8 @@ import (
 	"github.com/acksell/clank/internal/daemon"
 )
 
-// branchPaneWidth is the fixed width of the branch pane (including border).
-const branchPaneWidth = 30
+// sidebarWidth is the fixed width of the sidebar (including border).
+const sidebarWidth = 30
 
 // branchLoadedMsg carries the result of loading branches from the daemon.
 type branchLoadedMsg struct {
@@ -54,8 +54,8 @@ func (s branchSessionStatus) IsArchived() bool {
 	return s.Total > 0 && s.Archived == s.Total
 }
 
-// BranchPaneModel displays local git branches and allows selection.
-type BranchPaneModel struct {
+// SidebarModel displays local git branches in a navigation sidebar and allows selection.
+type SidebarModel struct {
 	client     *daemon.Client
 	projectDir string
 
@@ -78,8 +78,8 @@ type BranchPaneModel struct {
 	err     error
 }
 
-// NewBranchPaneModel creates a branch pane for the given project directory.
-func NewBranchPaneModel(client *daemon.Client, projectDir string) BranchPaneModel {
+// NewSidebarModel creates a sidebar for the given project directory.
+func NewSidebarModel(client *daemon.Client, projectDir string) SidebarModel {
 	ti := textinput.New()
 	ti.Placeholder = "branch-name"
 	ti.CharLimit = 128
@@ -90,7 +90,7 @@ func NewBranchPaneModel(client *daemon.Client, projectDir string) BranchPaneMode
 	styles.Focused.Placeholder = lipgloss.NewStyle().Foreground(mutedColor)
 	ti.SetStyles(styles)
 
-	return BranchPaneModel{
+	return SidebarModel{
 		client:     client,
 		projectDir: projectDir,
 		input:      ti,
@@ -99,13 +99,13 @@ func NewBranchPaneModel(client *daemon.Client, projectDir string) BranchPaneMode
 }
 
 // Init fetches branches from the daemon.
-func (m *BranchPaneModel) Init() tea.Cmd {
+func (m *SidebarModel) Init() tea.Cmd {
 	return m.loadBranches()
 }
 
 // SelectedBranch returns the currently selected branch name.
 // Empty string means "all branches" (no filter).
-func (m *BranchPaneModel) SelectedBranch() string {
+func (m *SidebarModel) SelectedBranch() string {
 	if m.cursor == 0 || len(m.branches) == 0 {
 		return ""
 	}
@@ -118,7 +118,7 @@ func (m *BranchPaneModel) SelectedBranch() string {
 
 // SelectedWorktreeDir returns the worktree directory path for the currently
 // selected entry. Empty string means "all worktrees" (no filter).
-func (m *BranchPaneModel) SelectedWorktreeDir() string {
+func (m *SidebarModel) SelectedWorktreeDir() string {
 	if m.cursor == 0 || len(m.branches) == 0 {
 		return ""
 	}
@@ -131,7 +131,7 @@ func (m *BranchPaneModel) SelectedWorktreeDir() string {
 
 // SelectedBranchInfo returns the full BranchInfo for the currently selected
 // entry, or nil if "All" is selected.
-func (m *BranchPaneModel) SelectedBranchInfo() *daemon.BranchInfo {
+func (m *SidebarModel) SelectedBranchInfo() *daemon.BranchInfo {
 	if m.cursor == 0 || len(m.branches) == 0 {
 		return nil
 	}
@@ -142,31 +142,31 @@ func (m *BranchPaneModel) SelectedBranchInfo() *daemon.BranchInfo {
 	return &m.branches[idx]
 }
 
-// SetFocused sets whether this pane has keyboard focus.
-func (m *BranchPaneModel) SetFocused(focused bool) {
+// SetFocused sets whether the sidebar has keyboard focus.
+func (m *SidebarModel) SetFocused(focused bool) {
 	m.focused = focused
 }
 
-// Focused returns whether the pane has keyboard focus.
-func (m *BranchPaneModel) Focused() bool {
+// Focused returns whether the sidebar has keyboard focus.
+func (m *SidebarModel) Focused() bool {
 	return m.focused
 }
 
-// SetSize sets the pane dimensions.
-func (m *BranchPaneModel) SetSize(width, height int) {
+// SetSize sets the sidebar dimensions.
+func (m *SidebarModel) SetSize(width, height int) {
 	m.width = width
 	m.height = height
 }
 
-// SetSessionStatus updates the per-branch session status displayed in the pane.
-func (m *BranchPaneModel) SetSessionStatus(status map[string]branchSessionStatus) {
+// SetSessionStatus updates the per-branch session status displayed in the sidebar.
+func (m *SidebarModel) SetSessionStatus(status map[string]branchSessionStatus) {
 	m.sessionStatus = status
 }
 
 // WorktreeDirToBranch returns a map from worktree directory path to branch name
 // for all branches that have an active worktree. The inbox uses this to count
 // sessions by matching SessionInfo.ProjectDir against worktree paths.
-func (m *BranchPaneModel) WorktreeDirToBranch() map[string]string {
+func (m *SidebarModel) WorktreeDirToBranch() map[string]string {
 	result := make(map[string]string, len(m.branches))
 	for _, b := range m.branches {
 		if b.WorktreeDir != "" {
@@ -176,8 +176,8 @@ func (m *BranchPaneModel) WorktreeDirToBranch() map[string]string {
 	return result
 }
 
-// Update handles messages for the branch pane.
-func (m *BranchPaneModel) Update(msg tea.Msg) tea.Cmd {
+// Update handles messages for the sidebar.
+func (m *SidebarModel) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case branchLoadedMsg:
 		if msg.err != nil {
@@ -211,7 +211,7 @@ func (m *BranchPaneModel) Update(msg tea.Msg) tea.Cmd {
 }
 
 // handleKey handles keyboard input when focused and not creating.
-func (m *BranchPaneModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
+func (m *SidebarModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	msg = normalizeKeyCase(msg)
 
 	maxIdx := len(m.branches) // 0 = "All", 1..len = branches
@@ -245,7 +245,7 @@ func (m *BranchPaneModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 }
 
 // updateCreating handles input while creating a new branch.
-func (m *BranchPaneModel) updateCreating(msg tea.Msg) tea.Cmd {
+func (m *SidebarModel) updateCreating(msg tea.Msg) tea.Cmd {
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
 		keyMsg = normalizeKeyCase(keyMsg)
 
@@ -270,14 +270,14 @@ func (m *BranchPaneModel) updateCreating(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-// View renders the branch pane.
-func (m *BranchPaneModel) View() string {
+// View renders the sidebar.
+func (m *SidebarModel) View() string {
 	w := m.width
 	if w <= 0 {
-		w = branchPaneWidth
+		w = sidebarWidth
 	}
 
-	// Content width is pane width minus border (2) minus padding (2).
+	// Content width is sidebar width minus border (2) minus padding (2).
 	contentWidth := w - 4
 	if contentWidth < 10 {
 		contentWidth = 10
@@ -346,7 +346,7 @@ func (m *BranchPaneModel) View() string {
 }
 
 // renderBranch renders a single worktree entry with diff stats.
-func (m *BranchPaneModel) renderBranch(b daemon.BranchInfo, idx, maxWidth int) string {
+func (m *SidebarModel) renderBranch(b daemon.BranchInfo, idx, maxWidth int) string {
 	selected := m.cursor == idx && m.focused
 
 	// Diff stat string: "+123 -45" or empty for the default branch.
@@ -424,7 +424,7 @@ func (m *BranchPaneModel) renderBranch(b daemon.BranchInfo, idx, maxWidth int) s
 }
 
 // listHeight returns the height available for the branch list (excluding border).
-func (m *BranchPaneModel) listHeight() int {
+func (m *SidebarModel) listHeight() int {
 	h := m.height - 4 // border top/bottom + some padding
 	if h < 5 {
 		h = 5
@@ -433,7 +433,7 @@ func (m *BranchPaneModel) listHeight() int {
 }
 
 // ensureVisible scrolls to keep the cursor visible.
-func (m *BranchPaneModel) ensureVisible() {
+func (m *SidebarModel) ensureVisible() {
 	vh := m.listHeight() - 3 // header + blank line + some margin
 	if vh < 1 {
 		vh = 1
@@ -450,7 +450,7 @@ func (m *BranchPaneModel) ensureVisible() {
 }
 
 // loadBranches fetches branches from the daemon.
-func (m *BranchPaneModel) loadBranches() tea.Cmd {
+func (m *SidebarModel) loadBranches() tea.Cmd {
 	client := m.client
 	projectDir := m.projectDir
 	return func() tea.Msg {
@@ -465,7 +465,7 @@ func (m *BranchPaneModel) loadBranches() tea.Cmd {
 }
 
 // createWorktree asks the daemon to create a worktree for the given branch.
-func (m *BranchPaneModel) createWorktree(branch string) tea.Cmd {
+func (m *SidebarModel) createWorktree(branch string) tea.Cmd {
 	client := m.client
 	projectDir := m.projectDir
 	return func() tea.Msg {

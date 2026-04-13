@@ -2326,7 +2326,7 @@ func TestRenderFilterBar_PlaceholderVisibleWhenNotSearching(t *testing.T) {
 
 // --- Arrow key pane navigation tests ---
 
-func TestLeftArrow_FromSessionPane_NavigatesToBranchPane(t *testing.T) {
+func TestLeftArrow_FromSessionPane_NavigatesToSidebar(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
@@ -2334,7 +2334,7 @@ func TestLeftArrow_FromSessionPane_NavigatesToBranchPane(t *testing.T) {
 		width:  120,
 		height: 40,
 		pane:   paneSessions,
-		branchPane: BranchPaneModel{
+		sidebar: SidebarModel{
 			projectDir: "/tmp/test",
 		},
 	}
@@ -2352,11 +2352,11 @@ func TestLeftArrow_FromSessionPane_NavigatesToBranchPane(t *testing.T) {
 
 	m.handleInboxKey(tea.KeyPressMsg{Code: tea.KeyLeft})
 
-	if m.pane != paneBranches {
-		t.Error("expected pane to switch to paneBranches after left arrow")
+	if m.pane != paneSidebar {
+		t.Error("expected pane to switch to paneSidebar after left arrow")
 	}
-	if !m.branchPane.Focused() {
-		t.Error("expected branch pane to be focused after left arrow")
+	if !m.sidebar.Focused() {
+		t.Error("expected sidebar to be focused after left arrow")
 	}
 }
 
@@ -2389,10 +2389,10 @@ func TestLeftArrow_SidebarHidden_NoOp(t *testing.T) {
 
 	now := time.Now()
 	m := &InboxModel{
-		width:            120,
-		height:           40,
-		pane:             paneSessions,
-		branchPaneHidden: true,
+		width:         120,
+		height:        40,
+		pane:          paneSessions,
+		sidebarHidden: true,
 	}
 	m.buildGroups([]agent.SessionInfo{
 		{ID: "s1", Status: agent.StatusIdle, UpdatedAt: now, LastReadAt: now},
@@ -2409,30 +2409,30 @@ func TestLeftArrow_SidebarHidden_NoOp(t *testing.T) {
 	}
 }
 
-func TestRightArrow_FromBranchPane_NavigatesToSessionPane(t *testing.T) {
+func TestRightArrow_FromSidebar_NavigatesToSessionPane(t *testing.T) {
 	t.Parallel()
 
 	m := &InboxModel{
 		width:  120,
 		height: 40,
-		pane:   paneBranches,
-		branchPane: BranchPaneModel{
+		pane:   paneSidebar,
+		sidebar: SidebarModel{
 			projectDir: "/tmp/test",
 			focused:    true,
 		},
 	}
 
-	if m.pane != paneBranches {
-		t.Fatal("expected pane to be paneBranches")
+	if m.pane != paneSidebar {
+		t.Fatal("expected pane to be paneSidebar")
 	}
 
-	m.handleBranchPaneKey(tea.KeyPressMsg{Code: tea.KeyRight})
+	m.handleSidebarKey(tea.KeyPressMsg{Code: tea.KeyRight})
 
 	if m.pane != paneSessions {
 		t.Error("expected pane to switch to paneSessions after right arrow")
 	}
-	if m.branchPane.Focused() {
-		t.Error("expected branch pane to lose focus after right arrow")
+	if m.sidebar.Focused() {
+		t.Error("expected sidebar to lose focus after right arrow")
 	}
 }
 
@@ -2444,8 +2444,8 @@ func TestRightArrow_WhileCreatingBranch_PassesThrough(t *testing.T) {
 	m := &InboxModel{
 		width:  120,
 		height: 40,
-		pane:   paneBranches,
-		branchPane: BranchPaneModel{
+		pane:   paneSidebar,
+		sidebar: SidebarModel{
 			projectDir: "/tmp/test",
 			focused:    true,
 			creating:   true,
@@ -2453,11 +2453,11 @@ func TestRightArrow_WhileCreatingBranch_PassesThrough(t *testing.T) {
 		},
 	}
 
-	m.handleBranchPaneKey(tea.KeyPressMsg{Code: tea.KeyRight})
+	m.handleSidebarKey(tea.KeyPressMsg{Code: tea.KeyRight})
 
-	// Should remain on branch pane because we're in text-input mode.
-	if m.pane != paneBranches {
-		t.Error("expected pane to remain paneBranches while creating a branch")
+	// Should remain on sidebar because we're in text-input mode.
+	if m.pane != paneSidebar {
+		t.Error("expected pane to remain paneSidebar while creating a branch")
 	}
 }
 
