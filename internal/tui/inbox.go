@@ -1370,22 +1370,31 @@ func (m *InboxModel) sessionPaneWidth() int {
 	return m.width
 }
 
-// updateBranchSessionCounts computes per-branch active session counts
+// updateBranchSessionCounts computes per-branch session status summaries
 // from cachedSessions and passes them to the branch pane for display.
 // Sessions are attributed to branches by matching ProjectDir against
 // worktree paths, not by the WorktreeBranch field.
 func (m *InboxModel) updateBranchSessionCounts() {
 	wtDirToBranch := m.branchPane.WorktreeDirToBranch()
-	counts := make(map[string]int)
+	statusMap := make(map[string]branchSessionStatus)
 	for _, s := range m.cachedSessions {
-		if s.Visibility == agent.VisibilityArchived {
+		branch, ok := wtDirToBranch[s.ProjectDir]
+		if !ok {
 			continue
 		}
-		if branch, ok := wtDirToBranch[s.ProjectDir]; ok {
-			counts[branch]++
+		st := statusMap[branch]
+		st.Total++
+		switch s.Visibility {
+		case agent.VisibilityArchived:
+			st.Archived++
+		case agent.VisibilityDone:
+			st.Done++
+		default:
+			st.Active++
 		}
+		statusMap[branch] = st
 	}
-	m.branchPane.SetSessionCounts(counts)
+	m.branchPane.SetSessionStatus(statusMap)
 }
 
 // handleBranchPaneKey forwards key events to the branch pane while it's focused.

@@ -1,6 +1,7 @@
 package git
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -660,6 +661,103 @@ func TestDeleteBranch(t *testing.T) {
 	}
 	if exists {
 		t.Error("expected branch to be deleted")
+	}
+}
+
+func TestAddAll(t *testing.T) {
+	t.Parallel()
+	dir := initTestRepo(t)
+
+	// Create untracked files and modify a tracked file.
+	writeFile(t, filepath.Join(dir, "new.txt"), "new file\n")
+	if err := os.MkdirAll(filepath.Join(dir, "subdir"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFile(t, filepath.Join(dir, "subdir", "nested.txt"), "nested\n")
+	writeFile(t, filepath.Join(dir, "README.md"), "modified\n")
+
+	if err := AddAll(dir); err != nil {
+		t.Fatalf("AddAll: %v", err)
+	}
+
+	// Verify everything is staged.
+	out := run(t, dir, "git", "diff", "--cached", "--name-only")
+	if !strings.Contains(out, "new.txt") {
+		t.Error("expected new.txt to be staged")
+	}
+	if !strings.Contains(out, "README.md") {
+		t.Error("expected README.md to be staged")
+	}
+	if !strings.Contains(out, "subdir/nested.txt") {
+		t.Error("expected subdir/nested.txt to be staged")
+	}
+}
+
+func TestCommit(t *testing.T) {
+	t.Parallel()
+	dir := initTestRepo(t)
+
+	writeFile(t, filepath.Join(dir, "commit-test.txt"), "content\n")
+	run(t, dir, "git", "add", ".")
+
+	if err := Commit(dir, "test commit message"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// Verify the commit was created with the correct message.
+	out := run(t, dir, "git", "log", "-1", "--format=%s")
+	if strings.TrimSpace(out) != "test commit message" {
+		t.Errorf("commit message = %q, want %q", strings.TrimSpace(out), "test commit message")
+	}
+}
+
+func TestCommit_NothingToCommit(t *testing.T) {
+	t.Parallel()
+	dir := initTestRepo(t)
+
+	// No changes — should return ErrNothingToCommit.
+	err := Commit(dir, "empty commit")
+	if err == nil {
+		t.Fatal("expected error for nothing to commit")
+	}
+	if !errors.Is(err, ErrNothingToCommit) {
+		t.Errorf("error = %v, want ErrNothingToCommit", err)
+	}
+}
+
+func TestHasStagedChanges(t *testing.T) {
+	t.Parallel()
+	dir := initTestRepo(t)
+
+	// Clean repo — no staged changes.
+	has, err := HasStagedChanges(dir)
+	if err != nil {
+		t.Fatalf("HasStagedChanges: %v", err)
+	}
+	if has {
+		t.Error("expected no staged changes in clean repo")
+	}
+
+	// Stage a change.
+	writeFile(t, filepath.Join(dir, "staged.txt"), "staged\n")
+	run(t, dir, "git", "add", "staged.txt")
+
+	has, err = HasStagedChanges(dir)
+	if err != nil {
+		t.Fatalf("HasStagedChanges: %v", err)
+	}
+	if !has {
+		t.Error("expected staged changes after git add")
+	}
+
+	// Commit — no more staged changes.
+	run(t, dir, "git", "commit", "-m", "commit staged")
+	has, err = HasStagedChanges(dir)
+	if err != nil {
+		t.Fatalf("HasStagedChanges: %v", err)
+	}
+	if has {
+		t.Error("expected no staged changes after commit")
 	}
 }
 

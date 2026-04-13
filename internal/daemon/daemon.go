@@ -1728,8 +1728,8 @@ func (d *Daemon) handleRemoveWorktree(w http.ResponseWriter, r *http.Request) {
 // MergeWorktreeRequest is the request body for POST /worktrees/merge.
 type MergeWorktreeRequest struct {
 	ProjectDir    string `json:"project_dir"`
-	Branch        string `json:"branch"`         // Branch to merge into the default branch
-	CommitMessage string `json:"commit_message"` // Merge commit message
+	Branch        string `json:"branch"`                   // Branch to merge into the default branch
+	CommitMessage string `json:"commit_message,omitempty"` // Worktree commit message (used to commit uncommitted work before merging)
 }
 
 // MergeWorktreeResponse is the response from POST /worktrees/merge.
@@ -1747,8 +1747,8 @@ func (d *Daemon) handleMergeWorktree(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	if req.ProjectDir == "" || req.Branch == "" || req.CommitMessage == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_dir, branch, and commit_message are required"})
+	if req.ProjectDir == "" || req.Branch == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_dir and branch are required"})
 		return
 	}
 
@@ -1763,6 +1763,54 @@ func (d *Daemon) handleMergeWorktree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Find the feature branch worktree.
+	branchWt, err := git.FindWorktreeForBranch(req.ProjectDir, req.Branch)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "find branch worktree: " + err.Error()})
+		return
+	}
+	if branchWt == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("no worktree found for branch %q", req.Branch)})
+		return
+	}
+
+	// Stage all work in the worktree (including untracked agent-created files).
+	if err := git.AddAll(branchWt.Path); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "git add -A in worktree: " + err.Error()})
+		return
+	}
+
+	// Check if there's anything to merge: staged changes after add-all,
+	// or commits already ahead of the default branch.
+	hasStagedWork, err := git.HasStagedChanges(branchWt.Path)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "check staged changes: " + err.Error()})
+		return
+	}
+	commitsAhead, err := git.CommitsAhead(req.ProjectDir, defaultBranch, req.Branch)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "count commits ahead: " + err.Error()})
+		return
+	}
+	if !hasStagedWork && commitsAhead == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nothing to merge: branch has no commits ahead and worktree is clean"})
+		return
+	}
+
+	// Commit staged work in the worktree (skip if nothing was staged).
+	if hasStagedWork {
+		commitMsg := req.CommitMessage
+		if commitMsg == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "commit_message is required when worktree has uncommitted changes"})
+			return
+		}
+		if err := git.Commit(branchWt.Path, commitMsg); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "commit worktree changes: " + err.Error()})
+			return
+		}
+		d.log.Printf("committed worktree changes in %s on branch %q", branchWt.Path, req.Branch)
+	}
+
 	// Find the main worktree (the one with the default branch checked out).
 	mainWt, err := git.FindWorktreeForBranch(req.ProjectDir, defaultBranch)
 	if err != nil {
@@ -1774,7 +1822,7 @@ func (d *Daemon) handleMergeWorktree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the main worktree is clean.
+	// Verify the main worktree is clean (tracked files only).
 	clean, err := git.IsClean(mainWt.Path)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "check worktree clean: " + err.Error()})
@@ -1785,8 +1833,9 @@ func (d *Daemon) handleMergeWorktree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Perform the merge (--no-ff).
-	if err := git.MergeNoFF(mainWt.Path, req.Branch, req.CommitMessage); err != nil {
+	// Perform the merge (--no-ff) with auto-generated merge commit message.
+	mergeMsg := fmt.Sprintf("Merge branch '%s'", req.Branch)
+	if err := git.MergeNoFF(mainWt.Path, req.Branch, mergeMsg); err != nil {
 		// If merge failed, check for conflicts and abort.
 		if git.IsMerging(mainWt.Path) {
 			_ = git.AbortMerge(mainWt.Path)
@@ -1805,22 +1854,13 @@ func (d *Daemon) handleMergeWorktree(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Post-merge: mark sessions on this worktree as done.
-	branchWt, _ := git.FindWorktreeForBranch(req.ProjectDir, req.Branch)
-	var worktreePath string
-	if branchWt != nil {
-		worktreePath = branchWt.Path
-	}
-	if worktreePath != "" {
-		resp.SessionsDone = d.markWorktreeSessionsDone(worktreePath)
-	}
+	resp.SessionsDone = d.markWorktreeSessionsDone(branchWt.Path)
 
-	// Post-merge: remove worktree (non-destructive — only if clean).
-	if branchWt != nil {
-		if err := git.RemoveWorktree(req.ProjectDir, branchWt.Path, false); err != nil {
-			d.log.Printf("warning: could not remove worktree after merge: %v", err)
-		} else {
-			resp.WorktreeRemoved = true
-		}
+	// Post-merge: remove worktree (force — worktrees often have untracked files).
+	if err := git.RemoveWorktree(req.ProjectDir, branchWt.Path, true); err != nil {
+		d.log.Printf("warning: could not remove worktree after merge: %v", err)
+	} else {
+		resp.WorktreeRemoved = true
 	}
 
 	// Post-merge: delete the branch (safe delete, only if fully merged).

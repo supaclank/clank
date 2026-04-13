@@ -37,11 +37,9 @@ type mergeOverlayModel struct {
 }
 
 func newMergeOverlay(client *daemon.Client, projectDir string, branch daemon.BranchInfo) mergeOverlayModel {
-	// Build default commit message: "Merge branch '<name>'"
-	msg := fmt.Sprintf("Merge branch '%s'", branch.Name)
-
 	ta := textarea.New()
-	ta.SetValue(msg)
+	ta.SetValue("")
+	ta.Placeholder = "Describe the work done on this branch..."
 	ta.CharLimit = 4096
 	ta.SetHeight(3)
 	ta.ShowLineNumbers = false
@@ -108,9 +106,6 @@ func (m *mergeOverlayModel) Update(msg tea.Msg) tea.Cmd {
 			}
 		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 			commitMsg := strings.TrimSpace(m.commitMsg.Value())
-			if commitMsg == "" {
-				return nil
-			}
 			m.merging = true
 			return m.doMerge(commitMsg)
 		}
@@ -155,7 +150,7 @@ func (m *mergeOverlayModel) View() string {
 		Bold(true).
 		Foreground(primaryColor).
 		Width(innerW).
-		Render("Merge Branch")
+		Render("Commit & Merge")
 	sb.WriteString(title)
 	sb.WriteString("\n")
 
@@ -212,7 +207,7 @@ func (m *mergeOverlayModel) View() string {
 		sb.WriteString(status)
 	} else {
 		hint := lipgloss.NewStyle().Foreground(dimColor).
-			Render("enter: merge  shift+enter: newline  esc: cancel")
+			Render("enter: commit & merge  shift+enter: newline  esc: cancel")
 		sb.WriteString(hint)
 	}
 

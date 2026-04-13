@@ -4105,10 +4105,13 @@ func TestMergeWorktree_HappyPath(t *testing.T) {
 	gitRun(t, repoDir, "worktree", "add", "-b", "feat/merge", wtDir, "main")
 	wtDir, _ = filepath.EvalSymlinks(wtDir)
 
-	// Make a commit on the feature branch.
+	// Make a commit on the feature branch (pre-existing committed work).
 	gitWriteFile(t, filepath.Join(wtDir, "feature.txt"), "feature work\n")
 	gitRun(t, wtDir, "add", ".")
 	gitRun(t, wtDir, "commit", "-m", "add feature work")
+
+	// Also leave an uncommitted file — the daemon should auto-commit it.
+	gitWriteFile(t, filepath.Join(wtDir, "uncommitted.txt"), "agent-created file\n")
 
 	// Start the daemon with sessions on the worktree.
 	d, client, cleanup := testDaemon(t)
@@ -4143,11 +4146,12 @@ func TestMergeWorktree_HappyPath(t *testing.T) {
 		t.Fatal("injected session not found in ListSessions")
 	}
 
-	// Merge the feature branch.
+	// Merge the feature branch. CommitMessage is the worktree commit message
+	// (used to commit the uncommitted.txt file before merging).
 	resp, err := client.MergeWorktree(ctx, daemon.MergeWorktreeRequest{
 		ProjectDir:    repoDir,
 		Branch:        "feat/merge",
-		CommitMessage: "Merge branch 'feat/merge'",
+		CommitMessage: "commit remaining agent work",
 	})
 	if err != nil {
 		t.Fatalf("MergeWorktree: %v", err)
@@ -4169,9 +4173,18 @@ func TestMergeWorktree_HappyPath(t *testing.T) {
 		t.Error("expected branch_deleted = true")
 	}
 
-	// Verify the feature file exists on main.
+	// Verify both the pre-committed and auto-committed files exist on main.
 	if _, err := os.Stat(filepath.Join(repoDir, "feature.txt")); os.IsNotExist(err) {
 		t.Error("feature.txt not present on main after merge")
+	}
+	if _, err := os.Stat(filepath.Join(repoDir, "uncommitted.txt")); os.IsNotExist(err) {
+		t.Error("uncommitted.txt not present on main after merge (auto-commit failed)")
+	}
+
+	// Verify the merge commit message was auto-generated.
+	mergeLog := gitRun(t, repoDir, "log", "-1", "--format=%s")
+	if !strings.Contains(mergeLog, "Merge branch 'feat/merge'") {
+		t.Errorf("merge commit message = %q, expected auto-generated message", strings.TrimSpace(mergeLog))
 	}
 
 	// Verify the session was marked as done.
@@ -4209,9 +4222,8 @@ func TestMergeWorktree_DirtyMainFails(t *testing.T) {
 
 	ctx := context.Background()
 	_, err := client.MergeWorktree(ctx, daemon.MergeWorktreeRequest{
-		ProjectDir:    repoDir,
-		Branch:        "feat/dirty-test",
-		CommitMessage: "Merge feat/dirty-test",
+		ProjectDir: repoDir,
+		Branch:     "feat/dirty-test",
 	})
 	if err == nil {
 		t.Fatal("expected error for dirty main worktree")
@@ -4243,9 +4255,8 @@ func TestMergeWorktree_ConflictAborts(t *testing.T) {
 
 	ctx := context.Background()
 	_, err := client.MergeWorktree(ctx, daemon.MergeWorktreeRequest{
-		ProjectDir:    repoDir,
-		Branch:        "feat/conflict",
-		CommitMessage: "Merge conflict branch",
+		ProjectDir: repoDir,
+		Branch:     "feat/conflict",
 	})
 	if err == nil {
 		t.Fatal("expected error for merge conflict")
@@ -4258,5 +4269,78 @@ func TestMergeWorktree_ConflictAborts(t *testing.T) {
 	out := gitRun(t, repoDir, "status", "--porcelain")
 	if strings.TrimSpace(out) != "" {
 		t.Errorf("main worktree not clean after aborted merge: %s", out)
+	}
+}
+
+func TestMergeWorktree_NothingToMerge(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initGitRepo(t)
+
+	// Create a feature branch worktree with 0 commits ahead and no changes.
+	wtDir := filepath.Join(t.TempDir(), "wt-nothing")
+	gitRun(t, repoDir, "worktree", "add", "-b", "feat/nothing", wtDir, "main")
+
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	_, err := client.MergeWorktree(ctx, daemon.MergeWorktreeRequest{
+		ProjectDir: repoDir,
+		Branch:     "feat/nothing",
+	})
+	if err == nil {
+		t.Fatal("expected error for nothing to merge")
+	}
+	if !strings.Contains(err.Error(), "nothing to merge") {
+		t.Errorf("error = %q, expected to mention 'nothing to merge'", err.Error())
+	}
+}
+
+func TestMergeWorktree_AutoCommitsThenMerges(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initGitRepo(t)
+
+	// Create a feature branch worktree with 0 pre-existing commits ahead,
+	// but with uncommitted files (simulating agent work that was never committed).
+	wtDir := filepath.Join(t.TempDir(), "wt-autocommit")
+	gitRun(t, repoDir, "worktree", "add", "-b", "feat/autocommit", wtDir, "main")
+	wtDir, _ = filepath.EvalSymlinks(wtDir)
+
+	// Write files in the worktree but do NOT commit them.
+	gitWriteFile(t, filepath.Join(wtDir, "agent-output.txt"), "agent generated code\n")
+	gitWriteFile(t, filepath.Join(wtDir, "new-module.go"), "package newmodule\n")
+
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	resp, err := client.MergeWorktree(ctx, daemon.MergeWorktreeRequest{
+		ProjectDir:    repoDir,
+		Branch:        "feat/autocommit",
+		CommitMessage: "auto-commit agent work",
+	})
+	if err != nil {
+		t.Fatalf("MergeWorktree: %v", err)
+	}
+
+	if resp.Status != "merged" {
+		t.Errorf("status = %q, want merged", resp.Status)
+	}
+
+	// Verify agent files ended up on main.
+	if _, err := os.Stat(filepath.Join(repoDir, "agent-output.txt")); os.IsNotExist(err) {
+		t.Error("agent-output.txt not present on main after merge")
+	}
+	if _, err := os.Stat(filepath.Join(repoDir, "new-module.go")); os.IsNotExist(err) {
+		t.Error("new-module.go not present on main after merge")
+	}
+
+	if !resp.WorktreeRemoved {
+		t.Error("expected worktree_removed = true")
+	}
+	if !resp.BranchDeleted {
+		t.Error("expected branch_deleted = true")
 	}
 }

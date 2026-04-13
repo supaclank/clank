@@ -351,6 +351,54 @@ func AbortMerge(dir string) error {
 	return nil
 }
 
+// AddAll stages all changes (tracked and untracked) in the working tree at dir.
+// Equivalent to `git add -A`.
+func AddAll(dir string) error {
+	_, err := gitCmd(dir, "add", "-A")
+	if err != nil {
+		return fmt.Errorf("git add -A: %w", err)
+	}
+	return nil
+}
+
+// Commit creates a commit in the repository at dir with the given message.
+// Returns ErrNothingToCommit if the working tree is clean (nothing staged).
+func Commit(dir, message string) error {
+	// Use commitCmd instead of gitCmd because git writes "nothing to commit"
+	// to stdout, not stderr, so we need to check both streams.
+	cmd := exec.Command("git", "commit", "-m", message)
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		combined := stdout.String() + stderr.String()
+		if strings.Contains(combined, "nothing to commit") {
+			return ErrNothingToCommit
+		}
+		return fmt.Errorf("git commit: %s %s (%w)", strings.TrimSpace(stderr.String()), strings.TrimSpace(stdout.String()), err)
+	}
+	return nil
+}
+
+// ErrNothingToCommit is returned by Commit when there are no staged changes.
+var ErrNothingToCommit = fmt.Errorf("nothing to commit")
+
+// HasStagedChanges returns true if there are staged changes ready to commit.
+// This checks the index against HEAD, ignoring unstaged and untracked files.
+func HasStagedChanges(dir string) (bool, error) {
+	out, err := gitCmd(dir, "diff", "--cached", "--quiet")
+	if err != nil {
+		// Exit code 1 means there ARE differences (staged changes).
+		if strings.Contains(err.Error(), "exit status 1") {
+			return true, nil
+		}
+		return false, fmt.Errorf("git diff --cached: %w", err)
+	}
+	_ = out
+	return false, nil
+}
+
 // DeleteBranch deletes a local branch. If force is true, uses -D (force delete)
 // instead of -d (safe delete, requires branch to be fully merged).
 func DeleteBranch(dir, branch string, force bool) error {

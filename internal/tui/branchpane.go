@@ -34,6 +34,26 @@ type branchWorktreeCreatedMsg struct {
 	err    error
 }
 
+// branchSessionStatus summarises session states for a single worktree branch.
+type branchSessionStatus struct {
+	Total    int // Total sessions on this worktree
+	Active   int // Visible / in-progress sessions
+	Done     int // Sessions marked done
+	Archived int // Sessions archived
+}
+
+// IsDone returns true when the worktree has sessions and every session is
+// either done or archived.
+func (s branchSessionStatus) IsDone() bool {
+	return s.Total > 0 && s.Active == 0
+}
+
+// IsArchived returns true when the worktree has sessions and every session
+// is archived (none merely "done").
+func (s branchSessionStatus) IsArchived() bool {
+	return s.Total > 0 && s.Archived == s.Total
+}
+
 // BranchPaneModel displays local git branches and allows selection.
 type BranchPaneModel struct {
 	client     *daemon.Client
@@ -43,8 +63,8 @@ type BranchPaneModel struct {
 	cursor   int
 	scroll   int
 
-	// Session counts per branch (set by the inbox when sessions are loaded).
-	sessionCounts map[string]int // branch name -> active session count
+	// Session status per branch (set by the inbox when sessions are loaded).
+	sessionStatus map[string]branchSessionStatus // branch name -> session status summary
 
 	// New branch input mode.
 	creating bool
@@ -138,9 +158,9 @@ func (m *BranchPaneModel) SetSize(width, height int) {
 	m.height = height
 }
 
-// SetSessionCounts updates the per-branch session counts displayed in the pane.
-func (m *BranchPaneModel) SetSessionCounts(counts map[string]int) {
-	m.sessionCounts = counts
+// SetSessionStatus updates the per-branch session status displayed in the pane.
+func (m *BranchPaneModel) SetSessionStatus(status map[string]branchSessionStatus) {
+	m.sessionStatus = status
 }
 
 // WorktreeDirToBranch returns a map from worktree directory path to branch name
@@ -335,11 +355,20 @@ func (m *BranchPaneModel) renderBranch(b daemon.BranchInfo, idx, maxWidth int) s
 		diffStr = fmt.Sprintf("+%d -%d", b.LinesAdded, b.LinesRemoved)
 	}
 
-	// Session count badge.
-	count := m.sessionCounts[b.Name]
+	// Session status badge.
+	status := m.sessionStatus[b.Name]
 	countBadge := ""
-	if count > 0 {
-		countBadge = fmt.Sprintf(" (%d)", count)
+	badgeColor := dimColor
+	if status.Total > 0 {
+		if status.IsArchived() {
+			countBadge = fmt.Sprintf(" (%d)", status.Total)
+			badgeColor = mutedColor
+		} else if status.IsDone() {
+			countBadge = fmt.Sprintf(" (%d)", status.Total)
+			badgeColor = successColor
+		} else {
+			countBadge = fmt.Sprintf(" (%d)", status.Active)
+		}
 	}
 
 	// Reserve space for suffix items on the right.
@@ -361,17 +390,15 @@ func (m *BranchPaneModel) renderBranch(b daemon.BranchInfo, idx, maxWidth int) s
 
 	// Style choices.
 	nameStyle := lipgloss.NewStyle()
-	countStyle := lipgloss.NewStyle()
 
 	if selected {
 		nameStyle = nameStyle.Foreground(textColor).Bold(true)
-		countStyle = countStyle.Foreground(dimColor).Bold(true)
-	} else if b.IsCurrent {
-		nameStyle = nameStyle.Foreground(textColor)
-		countStyle = countStyle.Foreground(dimColor)
+	} else if status.IsArchived() {
+		nameStyle = nameStyle.Foreground(mutedColor)
+	} else if status.IsDone() {
+		nameStyle = nameStyle.Foreground(dimColor)
 	} else {
 		nameStyle = nameStyle.Foreground(textColor)
-		countStyle = countStyle.Foreground(dimColor)
 	}
 
 	prefix := "  "
@@ -391,7 +418,7 @@ func (m *BranchPaneModel) renderBranch(b daemon.BranchInfo, idx, maxWidth int) s
 		line += styledDiff
 	}
 
-	line += countStyle.Render(countBadge)
+	line += lipgloss.NewStyle().Foreground(badgeColor).Render(countBadge)
 
 	return line
 }
