@@ -727,7 +727,7 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	msg = normalizeKeyCase(msg)
 
 	// Permission prompt takes priority.
-	if m.pendingPerm != nil {
+	if m.pendingPerm != nil && !m.inputActive {
 		switch msg.String() {
 		case "y":
 			perm := m.pendingPerm
@@ -746,7 +746,6 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			})
 			return m, m.replyPermission(perm.RequestID, false)
 		}
-		return m, nil
 	}
 
 	// Input mode.
