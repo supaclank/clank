@@ -75,9 +75,9 @@ type sessionMessagesMsg struct {
 	messages []agent.MessageData
 }
 
-// pendingPermissionMsg delivers a restored pending permission prompt.
+// pendingPermissionMsg delivers restored pending permission prompts.
 type pendingPermissionMsg struct {
-	perm *agent.PermissionData
+	perms []agent.PermissionData
 }
 
 // backToInboxMsg signals navigation back to the inbox.
@@ -128,7 +128,7 @@ type SessionViewModel struct {
 	input       textarea.Model
 
 	// Permission state.
-	pendingPerm *agent.PermissionData
+	pendingPerms []agent.PermissionData
 
 	// SSE event channel (stored so we can re-schedule waitForEvent).
 	eventsCh <-chan agent.Event
@@ -381,18 +381,18 @@ func (m *SessionViewModel) fetchSessionMessages() tea.Cmd {
 	}
 }
 
-// fetchPendingPermission checks if the daemon has a pending permission for
-// this session that was emitted while the TUI was disconnected.
+// fetchPendingPermission checks if the daemon has pending permissions for
+// this session that were emitted while the TUI was disconnected.
 func (m *SessionViewModel) fetchPendingPermission() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		perm, err := m.client.GetPendingPermission(ctx, m.sessionID)
+		perms, err := m.client.GetPendingPermissions(ctx, m.sessionID)
 		if err != nil {
 			// Non-critical; the live SSE stream will deliver new prompts.
 			return nil
 		}
-		return pendingPermissionMsg{perm: perm}
+		return pendingPermissionMsg{perms: perms}
 	}
 }
 
@@ -622,17 +622,25 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case pendingPermissionMsg:
-		// Restore a pending permission that was emitted while the TUI was
-		// disconnected. Skip if we already have one (from the live SSE stream).
-		if msg.perm != nil && m.pendingPerm == nil {
-			m.pendingPerm = msg.perm
+		// Restore pending permissions that were emitted while the TUI was
+		// disconnected. Skip any that are already in our queue (from the live
+		// SSE stream) by checking request IDs.
+		seen := make(map[string]bool, len(m.pendingPerms))
+		for _, p := range m.pendingPerms {
+			seen[p.RequestID] = true
+		}
+		for _, p := range msg.perms {
+			if seen[p.RequestID] {
+				continue
+			}
+			m.pendingPerms = append(m.pendingPerms, p)
 			m.entries = append(m.entries, displayEntry{
 				kind:    entryPerm,
-				content: fmt.Sprintf("Allow %s: %s? [y/n]", msg.perm.Tool, msg.perm.Description),
+				content: fmt.Sprintf("Allow %s: %s? [y/n]", p.Tool, p.Description),
 			})
-			if m.follow {
-				m.scrollToBottom()
-			}
+		}
+		if len(msg.perms) > 0 && m.follow {
+			m.scrollToBottom()
 		}
 		return m, nil
 
@@ -832,20 +840,20 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	msg = normalizeKeyCase(msg)
 
-	// Permission prompt takes priority.
-	if m.pendingPerm != nil && !m.inputActive {
+	// Permission prompt takes priority — respond to the front of the queue.
+	if len(m.pendingPerms) > 0 && !m.inputActive {
 		switch msg.String() {
 		case "y":
-			perm := m.pendingPerm
-			m.pendingPerm = nil
+			perm := m.pendingPerms[0]
+			m.pendingPerms = m.pendingPerms[1:]
 			m.entries = append(m.entries, displayEntry{
 				kind:    entryStatus,
 				content: "Permission granted: " + perm.Tool,
 			})
 			return m, m.replyPermission(perm.RequestID, true)
 		case "n":
-			perm := m.pendingPerm
-			m.pendingPerm = nil
+			perm := m.pendingPerms[0]
+			m.pendingPerms = m.pendingPerms[1:]
 			m.entries = append(m.entries, displayEntry{
 				kind:    entryStatus,
 				content: "Permission denied: " + perm.Tool,
@@ -1123,7 +1131,7 @@ func (m *SessionViewModel) handleEvent(evt agent.Event) {
 
 	case agent.EventPermission:
 		if data, ok := evt.Data.(agent.PermissionData); ok {
-			m.pendingPerm = &data
+			m.pendingPerms = append(m.pendingPerms, data)
 			m.entries = append(m.entries, displayEntry{
 				kind:    entryPerm,
 				content: fmt.Sprintf("Allow %s: %s? [y/n]", data.Tool, data.Description),
@@ -2466,7 +2474,7 @@ func (m *SessionViewModel) buildHelpText() string {
 	if !m.lastCtrlC.IsZero() && time.Since(m.lastCtrlC) < time.Second {
 		return "press ctrl+c again to quit"
 	}
-	if m.pendingPerm != nil {
+	if len(m.pendingPerms) > 0 {
 		return "y: allow | n: deny"
 	}
 	qLabel := "q: back"

@@ -225,10 +225,10 @@ type Daemon struct {
 
 // managedSession tracks a running agent session.
 type managedSession struct {
-	info        agent.SessionInfo
-	backend     agent.SessionBackend  // nil until started
-	watchOnly   bool                  // true when backend was started via Watch() (no prompt sent yet)
-	pendingPerm *agent.PermissionData // non-nil while a permission prompt awaits a response
+	info         agent.SessionInfo
+	backend      agent.SessionBackend   // nil until started
+	watchOnly    bool                   // true when backend was started via Watch() (no prompt sent yet)
+	pendingPerms []agent.PermissionData // queue of permission prompts awaiting responses
 }
 
 // New creates a new daemon instance. It does not start listening.
@@ -938,7 +938,7 @@ func (d *Daemon) activateBackend(id string, ms *managedSession) error {
 			if evt.Type == agent.EventPermission {
 				if data, ok := evt.Data.(agent.PermissionData); ok {
 					d.mu.Lock()
-					ms.pendingPerm = &data
+					ms.pendingPerms = append(ms.pendingPerms, data)
 					d.mu.Unlock()
 				}
 			}
@@ -1390,7 +1390,14 @@ func (d *Daemon) handlePermissionReply(w http.ResponseWriter, r *http.Request) {
 	}
 
 	d.mu.Lock()
-	ms.pendingPerm = nil
+	// Remove the replied permission from the queue.
+	filtered := ms.pendingPerms[:0]
+	for _, p := range ms.pendingPerms {
+		if p.RequestID != permID {
+			filtered = append(filtered, p)
+		}
+	}
+	ms.pendingPerms = filtered
 	d.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -1408,14 +1415,11 @@ func (d *Daemon) handleGetPendingPermission(w http.ResponseWriter, r *http.Reque
 	}
 
 	d.mu.RLock()
-	perm := ms.pendingPerm
+	perms := make([]agent.PermissionData, len(ms.pendingPerms))
+	copy(perms, ms.pendingPerms)
 	d.mu.RUnlock()
 
-	if perm == nil {
-		writeJSON(w, http.StatusOK, nil)
-		return
-	}
-	writeJSON(w, http.StatusOK, perm)
+	writeJSON(w, http.StatusOK, perms)
 }
 
 // --- Internal Methods ---
@@ -2003,7 +2007,7 @@ func (d *Daemon) runBackend(id string, ms *managedSession, req agent.StartReques
 			if evt.Type == agent.EventPermission {
 				if data, ok := evt.Data.(agent.PermissionData); ok {
 					d.mu.Lock()
-					ms.pendingPerm = &data
+					ms.pendingPerms = append(ms.pendingPerms, data)
 					d.mu.Unlock()
 				}
 			}

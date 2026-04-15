@@ -160,7 +160,7 @@ func (m *InboxModel) voiceInputBlocked() bool {
 	// Session view modal/input states.
 	if m.screen == screenSession && m.sessionView != nil {
 		sv := m.sessionView
-		if sv.inputActive || sv.showHelp || sv.showConfirm || sv.showMenu || sv.pendingPerm != nil {
+		if sv.inputActive || sv.showHelp || sv.showConfirm || sv.showMenu || len(sv.pendingPerms) > 0 {
 			return true
 		}
 	}

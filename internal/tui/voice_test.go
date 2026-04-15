@@ -178,7 +178,7 @@ func TestVoiceInputBlocked_SessionPermission(t *testing.T) {
 	t.Parallel()
 	m := &InboxModel{
 		screen:      screenSession,
-		sessionView: &SessionViewModel{pendingPerm: &agent.PermissionData{}},
+		sessionView: &SessionViewModel{pendingPerms: []agent.PermissionData{{}}},
 	}
 	if !m.voiceInputBlocked() {
 		t.Error("expected voice input blocked when session has pending permission")

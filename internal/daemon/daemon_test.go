@@ -1022,12 +1022,12 @@ func TestDaemonPendingPermission(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// No pending permission yet.
-	perm, err := client.GetPendingPermission(ctx, info.ID)
+	perms, err := client.GetPendingPermissions(ctx, info.ID)
 	if err != nil {
-		t.Fatalf("GetPendingPermission: %v", err)
+		t.Fatalf("GetPendingPermissions: %v", err)
 	}
-	if perm != nil {
-		t.Fatalf("expected no pending permission, got %+v", perm)
+	if len(perms) != 0 {
+		t.Fatalf("expected no pending permissions, got %d", len(perms))
 	}
 
 	// Simulate the backend emitting a permission event.
@@ -1046,21 +1046,21 @@ func TestDaemonPendingPermission(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Now pending permission should be available.
-	perm, err = client.GetPendingPermission(ctx, info.ID)
+	perms, err = client.GetPendingPermissions(ctx, info.ID)
 	if err != nil {
-		t.Fatalf("GetPendingPermission after emit: %v", err)
+		t.Fatalf("GetPendingPermissions after emit: %v", err)
 	}
-	if perm == nil {
-		t.Fatal("expected pending permission, got nil")
+	if len(perms) != 1 {
+		t.Fatalf("expected 1 pending permission, got %d", len(perms))
 	}
-	if perm.RequestID != "perm-99" {
-		t.Errorf("RequestID = %q, want %q", perm.RequestID, "perm-99")
+	if perms[0].RequestID != "perm-99" {
+		t.Errorf("RequestID = %q, want %q", perms[0].RequestID, "perm-99")
 	}
-	if perm.Tool != "bash" {
-		t.Errorf("Tool = %q, want %q", perm.Tool, "bash")
+	if perms[0].Tool != "bash" {
+		t.Errorf("Tool = %q, want %q", perms[0].Tool, "bash")
 	}
-	if perm.Description != "rm -rf /" {
-		t.Errorf("Description = %q, want %q", perm.Description, "rm -rf /")
+	if perms[0].Description != "rm -rf /" {
+		t.Errorf("Description = %q, want %q", perms[0].Description, "rm -rf /")
 	}
 
 	// Reply to the permission — should clear the pending state.
@@ -1068,12 +1068,12 @@ func TestDaemonPendingPermission(t *testing.T) {
 		t.Fatalf("ReplyPermission: %v", err)
 	}
 
-	perm, err = client.GetPendingPermission(ctx, info.ID)
+	perms, err = client.GetPendingPermissions(ctx, info.ID)
 	if err != nil {
-		t.Fatalf("GetPendingPermission after reply: %v", err)
+		t.Fatalf("GetPendingPermissions after reply: %v", err)
 	}
-	if perm != nil {
-		t.Fatalf("expected pending permission cleared after reply, got %+v", perm)
+	if len(perms) != 0 {
+		t.Fatalf("expected pending permissions cleared after reply, got %d", len(perms))
 	}
 }
 
@@ -1083,9 +1083,97 @@ func TestDaemonPendingPermissionNotFound(t *testing.T) {
 	_, client, cleanup := testDaemon(t)
 	defer cleanup()
 
-	_, err := client.GetPendingPermission(context.Background(), "nonexistent")
+	_, err := client.GetPendingPermissions(context.Background(), "nonexistent")
 	if err == nil {
 		t.Error("expected error for non-existent session")
+	}
+}
+
+// TestDaemonPendingPermissionQueue verifies that two rapid permission events
+// both survive in the daemon's queue (the second must not overwrite the first).
+// Regression test for: reading ~/.opencode and ~/.clank concurrently caused
+// the first permission to be lost, hanging the agent.
+func TestDaemonPendingPermissionQueue(t *testing.T) {
+	t.Parallel()
+
+	_, client, getBackend, cleanup := testDaemonWithBackendAccess(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "read two dirs",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	b := getBackend()
+
+	// Emit two permission events in quick succession.
+	b.events <- agent.Event{
+		Type:      agent.EventPermission,
+		Timestamp: time.Now(),
+		Data: agent.PermissionData{
+			RequestID:   "perm-opencode",
+			Tool:        "read",
+			Description: "~/.opencode",
+		},
+	}
+	b.events <- agent.Event{
+		Type:      agent.EventPermission,
+		Timestamp: time.Now(),
+		Data: agent.PermissionData{
+			RequestID:   "perm-clank",
+			Tool:        "read",
+			Description: "~/.clank",
+		},
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Both permissions must be present.
+	perms, err := client.GetPendingPermissions(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetPendingPermissions: %v", err)
+	}
+	if len(perms) != 2 {
+		t.Fatalf("expected 2 pending permissions, got %d", len(perms))
+	}
+	if perms[0].RequestID != "perm-opencode" {
+		t.Errorf("perms[0].RequestID = %q, want %q", perms[0].RequestID, "perm-opencode")
+	}
+	if perms[1].RequestID != "perm-clank" {
+		t.Errorf("perms[1].RequestID = %q, want %q", perms[1].RequestID, "perm-clank")
+	}
+
+	// Reply to the first — only the second should remain.
+	if err := client.ReplyPermission(ctx, info.ID, "perm-opencode", true); err != nil {
+		t.Fatalf("ReplyPermission (first): %v", err)
+	}
+	perms, err = client.GetPendingPermissions(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetPendingPermissions after first reply: %v", err)
+	}
+	if len(perms) != 1 {
+		t.Fatalf("expected 1 pending permission after first reply, got %d", len(perms))
+	}
+	if perms[0].RequestID != "perm-clank" {
+		t.Errorf("remaining perm RequestID = %q, want %q", perms[0].RequestID, "perm-clank")
+	}
+
+	// Reply to the second — queue should be empty.
+	if err := client.ReplyPermission(ctx, info.ID, "perm-clank", false); err != nil {
+		t.Fatalf("ReplyPermission (second): %v", err)
+	}
+	perms, err = client.GetPendingPermissions(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetPendingPermissions after second reply: %v", err)
+	}
+	if len(perms) != 0 {
+		t.Fatalf("expected 0 pending permissions after both replies, got %d", len(perms))
 	}
 }
 

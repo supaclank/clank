@@ -2155,20 +2155,18 @@ func TestPendingPermissionMsg_RestoresPrompt(t *testing.T) {
 	t.Parallel()
 
 	m := newTestSessionModel(nil)
-	perm := &agent.PermissionData{
-		RequestID:   "perm-42",
-		Tool:        "bash",
-		Description: "echo hello",
+	perms := []agent.PermissionData{
+		{RequestID: "perm-42", Tool: "bash", Description: "echo hello"},
 	}
 
-	result, _ := m.Update(pendingPermissionMsg{perm: perm})
+	result, _ := m.Update(pendingPermissionMsg{perms: perms})
 	updated := result.(*SessionViewModel)
 
-	if updated.pendingPerm == nil {
-		t.Fatal("expected pendingPerm to be set")
+	if len(updated.pendingPerms) != 1 {
+		t.Fatalf("expected 1 pending perm, got %d", len(updated.pendingPerms))
 	}
-	if updated.pendingPerm.RequestID != "perm-42" {
-		t.Errorf("RequestID = %q, want %q", updated.pendingPerm.RequestID, "perm-42")
+	if updated.pendingPerms[0].RequestID != "perm-42" {
+		t.Errorf("RequestID = %q, want %q", updated.pendingPerms[0].RequestID, "perm-42")
 	}
 
 	// Should have added an entryPerm to entries.
@@ -2186,41 +2184,48 @@ func TestPendingPermissionMsg_RestoresPrompt(t *testing.T) {
 	}
 }
 
-func TestPendingPermissionMsg_SkipsWhenAlreadyPending(t *testing.T) {
+func TestPendingPermissionMsg_SkipsDuplicates(t *testing.T) {
 	t.Parallel()
 
 	m := newTestSessionModel(nil)
-	// Pre-set a pending permission.
-	m.pendingPerm = &agent.PermissionData{
-		RequestID: "existing",
-		Tool:      "read_file",
+	// Pre-set a pending permission (arrived via live SSE).
+	m.pendingPerms = []agent.PermissionData{
+		{RequestID: "existing", Tool: "read_file"},
 	}
 	initialEntryCount := len(m.entries)
 
-	// A second pending permission should not overwrite the existing one.
-	result, _ := m.Update(pendingPermissionMsg{perm: &agent.PermissionData{
-		RequestID: "new-one",
-		Tool:      "bash",
+	// Restore delivers the same permission plus a new one.
+	result, _ := m.Update(pendingPermissionMsg{perms: []agent.PermissionData{
+		{RequestID: "existing", Tool: "read_file"},
+		{RequestID: "new-one", Tool: "bash"},
 	}})
 	updated := result.(*SessionViewModel)
 
-	if updated.pendingPerm.RequestID != "existing" {
-		t.Errorf("expected existing perm to be kept, got RequestID = %q", updated.pendingPerm.RequestID)
+	// Should have 2 total: the existing one + the genuinely new one.
+	if len(updated.pendingPerms) != 2 {
+		t.Fatalf("expected 2 pending perms, got %d", len(updated.pendingPerms))
 	}
-	if len(updated.entries) != initialEntryCount {
-		t.Error("expected no new entry when permission already pending")
+	if updated.pendingPerms[0].RequestID != "existing" {
+		t.Errorf("perms[0].RequestID = %q, want %q", updated.pendingPerms[0].RequestID, "existing")
+	}
+	if updated.pendingPerms[1].RequestID != "new-one" {
+		t.Errorf("perms[1].RequestID = %q, want %q", updated.pendingPerms[1].RequestID, "new-one")
+	}
+	// Only 1 new entry should have been added (the duplicate was skipped).
+	if len(updated.entries) != initialEntryCount+1 {
+		t.Errorf("expected %d entries (1 new), got %d", initialEntryCount+1, len(updated.entries))
 	}
 }
 
-func TestPendingPermissionMsg_NilPermIsNoop(t *testing.T) {
+func TestPendingPermissionMsg_EmptyIsNoop(t *testing.T) {
 	t.Parallel()
 
 	m := newTestSessionModel(nil)
 
-	result, _ := m.Update(pendingPermissionMsg{perm: nil})
+	result, _ := m.Update(pendingPermissionMsg{perms: nil})
 	updated := result.(*SessionViewModel)
 
-	if updated.pendingPerm != nil {
-		t.Error("expected pendingPerm to remain nil")
+	if len(updated.pendingPerms) != 0 {
+		t.Errorf("expected 0 pending perms, got %d", len(updated.pendingPerms))
 	}
 }
