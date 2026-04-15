@@ -1641,7 +1641,11 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 		branchExtra = branchBadgeWidth - 1 // visible width including trailing space
 	}
 
-	paddedProject := fmt.Sprintf("%-12s", s.ProjectName)
+	projectName := s.ProjectName
+	if len(projectName) > 12 {
+		projectName = projectName[:11] + "…"
+	}
+	paddedProject := fmt.Sprintf("%-12s", projectName)
 	projectColor := secondaryColor
 	if isDone {
 		projectColor = mutedColor
@@ -1713,6 +1717,10 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 		gap = 1
 	}
 	line := left + strings.Repeat(" ", gap) + styledAgo
+
+	// Hard-truncate to pane width so overlong rows are clipped rather than
+	// word-wrapped when an overlay applies a Width/MaxWidth style.
+	line = lipgloss.NewStyle().MaxWidth(m.sessionPaneWidth()).Render(line)
 
 	if selected {
 		prefix := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ")

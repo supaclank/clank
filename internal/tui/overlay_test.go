@@ -116,3 +116,36 @@ func TestOverlayCenter_MultiLinePopup(t *testing.T) {
 		t.Errorf("expected background dots on top row, got: %q", topPlain)
 	}
 }
+
+// TestOverlayCenter_OverlongLinesNotWrapped is a regression test for a bug
+// where lines wider than the terminal (e.g. inbox rows with gap=1 timestamps)
+// would word-wrap when the overlay applied Width(width), causing text like
+// "2m ago" to spill onto the next line when a confirm dialog was toggled.
+func TestOverlayCenter_OverlongLinesNotWrapped(t *testing.T) {
+	t.Parallel()
+
+	const width = 40
+	const height = 5
+
+	// Build a base where each line is wider than the canvas (50 > 40).
+	// This simulates narrow-terminal inbox rows that trail past the edge.
+	longLine := strings.Repeat("x", 50)
+	base := strings.Join([]string{longLine, longLine, longLine, longLine, longLine}, "\n")
+
+	popup := "OK"
+	result := overlayCenter(base, popup, width, height)
+	lines := strings.Split(result, "\n")
+
+	// The output must still be exactly 5 lines — no wrapping.
+	if len(lines) != height {
+		t.Errorf("expected %d lines (no wrapping), got %d:\n%s", height, len(lines), result)
+	}
+
+	// Each non-popup line should be at most width visible chars (truncated).
+	for i, line := range lines {
+		vis := lipgloss.Width(line)
+		if vis > width {
+			t.Errorf("line %d visible width %d exceeds canvas width %d: %q", i, vis, width, ansi.Strip(line))
+		}
+	}
+}

@@ -22,7 +22,7 @@ func overlayCenter(base, popup string, width, height int) string {
 	// Size the background layer to the full terminal area so the
 	// compositor canvas covers the entire screen.
 	bg := lipgloss.NewLayer(
-		lipgloss.NewStyle().Width(width).Height(height).Render(base),
+		lipgloss.NewStyle().MaxWidth(width).Height(height).Render(base),
 	).Z(0)
 	fg := lipgloss.NewLayer(popup).X(x).Y(y).Z(1)
 
