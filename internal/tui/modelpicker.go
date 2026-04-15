@@ -81,7 +81,7 @@ func newModelPicker(models []agent.ModelInfo, selected int, backend agent.Backen
 
 	// Set up the search text input.
 	ti := textinput.New()
-	ti.Placeholder = "filter..."
+	ti.Placeholder = "Search..."
 	ti.CharLimit = 128
 	ti.Prompt = "/ "
 	styles := ti.Styles()
@@ -114,7 +114,7 @@ func newModelPicker(models []agent.ModelInfo, selected int, backend agent.Backen
 }
 
 func (m modelPickerModel) Init() tea.Cmd {
-	return nil
+	return func() tea.Msg { return textinput.Blink() }
 }
 
 func (m modelPickerModel) Update(msg tea.Msg) (modelPickerModel, tea.Cmd) {

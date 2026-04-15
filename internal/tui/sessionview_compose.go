@@ -155,7 +155,7 @@ func (m *SessionViewModel) handleComposeKey(msg tea.KeyPressMsg) (tea.Model, tea
 			m.showModelPicker = true
 			m.modelPicker = newModelPicker(m.models, m.selectedModel, m.backend)
 		}
-		return m, nil
+		return m, m.modelPicker.Init()
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 		// Send prompt — shift+enter inserts newline (handled by textarea keybinding).
