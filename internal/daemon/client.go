@@ -387,6 +387,15 @@ func (c *Client) ReplyPermission(ctx context.Context, sessionID, permissionID st
 	return c.post(ctx, "/sessions/"+sessionID+"/permissions/"+permissionID+"/reply", body, nil)
 }
 
+// GetPendingPermission returns the pending permission for a session, or nil if none.
+func (c *Client) GetPendingPermission(ctx context.Context, sessionID string) (*agent.PermissionData, error) {
+	var perm *agent.PermissionData
+	if err := c.get(ctx, "/sessions/"+sessionID+"/pending-permission", &perm); err != nil {
+		return nil, err
+	}
+	return perm, nil
+}
+
 // --- Worktree / Branch methods ---
 
 // ListBranches returns local branches for the given project directory, with

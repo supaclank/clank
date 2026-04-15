@@ -1003,6 +1003,92 @@ func TestDaemonPermissionReplyNotFound(t *testing.T) {
 	}
 }
 
+func TestDaemonPendingPermission(t *testing.T) {
+	t.Parallel()
+
+	_, client, getBackend, cleanup := testDaemonWithBackendAccess(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "do stuff",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// No pending permission yet.
+	perm, err := client.GetPendingPermission(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetPendingPermission: %v", err)
+	}
+	if perm != nil {
+		t.Fatalf("expected no pending permission, got %+v", perm)
+	}
+
+	// Simulate the backend emitting a permission event.
+	b := getBackend()
+	b.events <- agent.Event{
+		Type:      agent.EventPermission,
+		Timestamp: time.Now(),
+		Data: agent.PermissionData{
+			RequestID:   "perm-99",
+			Tool:        "bash",
+			Description: "rm -rf /",
+		},
+	}
+
+	// Give the event relay goroutine time to process.
+	time.Sleep(200 * time.Millisecond)
+
+	// Now pending permission should be available.
+	perm, err = client.GetPendingPermission(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetPendingPermission after emit: %v", err)
+	}
+	if perm == nil {
+		t.Fatal("expected pending permission, got nil")
+	}
+	if perm.RequestID != "perm-99" {
+		t.Errorf("RequestID = %q, want %q", perm.RequestID, "perm-99")
+	}
+	if perm.Tool != "bash" {
+		t.Errorf("Tool = %q, want %q", perm.Tool, "bash")
+	}
+	if perm.Description != "rm -rf /" {
+		t.Errorf("Description = %q, want %q", perm.Description, "rm -rf /")
+	}
+
+	// Reply to the permission — should clear the pending state.
+	if err := client.ReplyPermission(ctx, info.ID, "perm-99", true); err != nil {
+		t.Fatalf("ReplyPermission: %v", err)
+	}
+
+	perm, err = client.GetPendingPermission(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetPendingPermission after reply: %v", err)
+	}
+	if perm != nil {
+		t.Fatalf("expected pending permission cleared after reply, got %+v", perm)
+	}
+}
+
+func TestDaemonPendingPermissionNotFound(t *testing.T) {
+	t.Parallel()
+
+	_, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	_, err := client.GetPendingPermission(context.Background(), "nonexistent")
+	if err == nil {
+		t.Error("expected error for non-existent session")
+	}
+}
+
 func TestDaemonDeleteSession(t *testing.T) {
 	_, client, cleanup := testDaemon(t)
 	defer cleanup()

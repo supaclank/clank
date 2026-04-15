@@ -2084,3 +2084,143 @@ func TestForkResultMsg_SuccessEmitsOpenForkedSessionMsg(t *testing.T) {
 		t.Errorf("sessionID = %q, want %q", forkNav.sessionID, "new-session-id")
 	}
 }
+
+func TestRenderEntry_PermMultilineWraps(t *testing.T) {
+	t.Parallel()
+
+	// A long permission description that exceeds the content width should
+	// produce multiple lines in the rendered output so that
+	// entryStartLine/entryEndLine bookkeeping stays correct.
+	longDesc := strings.Repeat("word ", 40) // ~200 chars
+	m := newTestSessionModel([]displayEntry{
+		{kind: entryPerm, content: "Allow bash: " + longDesc + "? [y/n]"},
+	})
+	m.width = 80
+
+	lines := m.buildContentLines()
+
+	// With width=80, the ~200 char content must wrap to multiple lines.
+	// At minimum: 1 header line + ceil(200/76) content lines > 2.
+	if len(lines) < 3 {
+		t.Errorf("expected at least 3 lines for wrapped permission, got %d", len(lines))
+	}
+
+	// entryEndLine should match the actual line count.
+	if m.entryEndLine[0] != len(lines) {
+		t.Errorf("entryEndLine[0] = %d, want %d (actual line count)", m.entryEndLine[0], len(lines))
+	}
+}
+
+func TestRenderEntry_PermNewlinesInDescription(t *testing.T) {
+	t.Parallel()
+
+	// Permission descriptions with embedded newlines should each become
+	// a separate rendered line so coordinate mapping stays accurate.
+	m := newTestSessionModel([]displayEntry{
+		{kind: entryPerm, content: "Allow bash: line1\nline2\nline3? [y/n]"},
+	})
+	m.width = 200 // wide enough that wrapping doesn't add extra lines
+
+	lines := m.buildContentLines()
+
+	// Content: 1 header + 3 description lines = 4 contentLines.
+	// The entry at index 0 is selected+navigable, so it gets a rounded border
+	// (top+bottom border lines = +2) and a blank separator (+1) = 7 total.
+	if len(lines) != 7 {
+		t.Errorf("expected 7 lines (blank + border-top + header + 3 content + border-bottom), got %d", len(lines))
+	}
+}
+
+func TestRenderEntry_ErrorMultilineWraps(t *testing.T) {
+	t.Parallel()
+
+	longErr := strings.Repeat("x", 200)
+	m := newTestSessionModel([]displayEntry{
+		{kind: entryError, content: longErr},
+	})
+	m.width = 80
+
+	lines := m.buildContentLines()
+
+	// With width=80, a 200-char error must wrap.
+	if len(lines) < 3 {
+		t.Errorf("expected at least 3 lines for wrapped error, got %d", len(lines))
+	}
+	if m.entryEndLine[0] != len(lines) {
+		t.Errorf("entryEndLine[0] = %d, want %d", m.entryEndLine[0], len(lines))
+	}
+}
+
+func TestPendingPermissionMsg_RestoresPrompt(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel(nil)
+	perm := &agent.PermissionData{
+		RequestID:   "perm-42",
+		Tool:        "bash",
+		Description: "echo hello",
+	}
+
+	result, _ := m.Update(pendingPermissionMsg{perm: perm})
+	updated := result.(*SessionViewModel)
+
+	if updated.pendingPerm == nil {
+		t.Fatal("expected pendingPerm to be set")
+	}
+	if updated.pendingPerm.RequestID != "perm-42" {
+		t.Errorf("RequestID = %q, want %q", updated.pendingPerm.RequestID, "perm-42")
+	}
+
+	// Should have added an entryPerm to entries.
+	found := false
+	for _, e := range updated.entries {
+		if e.kind == entryPerm {
+			found = true
+			if !strings.Contains(e.content, "bash") || !strings.Contains(e.content, "echo hello") {
+				t.Errorf("entry content = %q, want it to contain tool and description", e.content)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected an entryPerm entry after pendingPermissionMsg")
+	}
+}
+
+func TestPendingPermissionMsg_SkipsWhenAlreadyPending(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel(nil)
+	// Pre-set a pending permission.
+	m.pendingPerm = &agent.PermissionData{
+		RequestID: "existing",
+		Tool:      "read_file",
+	}
+	initialEntryCount := len(m.entries)
+
+	// A second pending permission should not overwrite the existing one.
+	result, _ := m.Update(pendingPermissionMsg{perm: &agent.PermissionData{
+		RequestID: "new-one",
+		Tool:      "bash",
+	}})
+	updated := result.(*SessionViewModel)
+
+	if updated.pendingPerm.RequestID != "existing" {
+		t.Errorf("expected existing perm to be kept, got RequestID = %q", updated.pendingPerm.RequestID)
+	}
+	if len(updated.entries) != initialEntryCount {
+		t.Error("expected no new entry when permission already pending")
+	}
+}
+
+func TestPendingPermissionMsg_NilPermIsNoop(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel(nil)
+
+	result, _ := m.Update(pendingPermissionMsg{perm: nil})
+	updated := result.(*SessionViewModel)
+
+	if updated.pendingPerm != nil {
+		t.Error("expected pendingPerm to remain nil")
+	}
+}

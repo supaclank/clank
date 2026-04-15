@@ -75,6 +75,11 @@ type sessionMessagesMsg struct {
 	messages []agent.MessageData
 }
 
+// pendingPermissionMsg delivers a restored pending permission prompt.
+type pendingPermissionMsg struct {
+	perm *agent.PermissionData
+}
+
 // backToInboxMsg signals navigation back to the inbox.
 type backToInboxMsg struct{}
 
@@ -340,7 +345,7 @@ func (m *SessionViewModel) Init() tea.Cmd {
 	if m.composing {
 		return tea.Batch(m.input.Focus(), m.fetchAgents(), m.fetchModels())
 	}
-	cmds := []tea.Cmd{m.fetchSessionInfo(), m.fetchSessionMessages(), m.spinner.Tick}
+	cmds := []tea.Cmd{m.fetchSessionInfo(), m.fetchSessionMessages(), m.fetchPendingPermission(), m.spinner.Tick}
 	if m.eventsCh != nil {
 		// Already connected — start reading immediately.
 		cmds = append(cmds, waitForEvent(m.eventsCh, m.sessionID))
@@ -373,6 +378,21 @@ func (m *SessionViewModel) fetchSessionMessages() tea.Cmd {
 			return sessionEventsErrMsg{err: err}
 		}
 		return sessionMessagesMsg{messages: messages}
+	}
+}
+
+// fetchPendingPermission checks if the daemon has a pending permission for
+// this session that was emitted while the TUI was disconnected.
+func (m *SessionViewModel) fetchPendingPermission() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		perm, err := m.client.GetPendingPermission(ctx, m.sessionID)
+		if err != nil {
+			// Non-critical; the live SSE stream will deliver new prompts.
+			return nil
+		}
+		return pendingPermissionMsg{perm: perm}
 	}
 }
 
@@ -599,6 +619,21 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionMessagesMsg:
 		m.handleSessionMessages(msg.messages)
+		return m, nil
+
+	case pendingPermissionMsg:
+		// Restore a pending permission that was emitted while the TUI was
+		// disconnected. Skip if we already have one (from the live SSE stream).
+		if msg.perm != nil && m.pendingPerm == nil {
+			m.pendingPerm = msg.perm
+			m.entries = append(m.entries, displayEntry{
+				kind:    entryPerm,
+				content: fmt.Sprintf("Allow %s: %s? [y/n]", msg.perm.Tool, msg.perm.Description),
+			})
+			if m.follow {
+				m.scrollToBottom()
+			}
+		}
 		return m, nil
 
 	case sseSetupMsg:
@@ -2321,12 +2356,22 @@ func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool, ownerExpa
 		}
 
 	case entryError:
-		styled := lipgloss.NewStyle().Foreground(dangerColor).Render("[error] " + e.content)
-		contentLines = []string{styled}
+		header := lipgloss.NewStyle().Foreground(dangerColor).Render("[error]")
+		wrapped := wrapText(e.content, contentWidth)
+		contentLines = []string{header}
+		for _, l := range strings.Split(wrapped, "\n") {
+			styled := lipgloss.NewStyle().Foreground(dangerColor).Render(l)
+			contentLines = append(contentLines, styled)
+		}
 
 	case entryPerm:
-		styled := lipgloss.NewStyle().Foreground(warningColor).Bold(true).Render("[Permission] " + e.content)
-		contentLines = []string{styled}
+		header := lipgloss.NewStyle().Foreground(warningColor).Bold(true).Render("[Permission]")
+		wrapped := wrapText(e.content, contentWidth)
+		contentLines = []string{header}
+		for _, l := range strings.Split(wrapped, "\n") {
+			styled := lipgloss.NewStyle().Foreground(warningColor).Bold(true).Render(l)
+			contentLines = append(contentLines, styled)
+		}
 
 	case entryStatus:
 		styled := lipgloss.NewStyle().Foreground(dimColor).Render("  --- " + e.content + " ---")

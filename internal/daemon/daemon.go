@@ -225,9 +225,10 @@ type Daemon struct {
 
 // managedSession tracks a running agent session.
 type managedSession struct {
-	info      agent.SessionInfo
-	backend   agent.SessionBackend // nil until started
-	watchOnly bool                 // true when backend was started via Watch() (no prompt sent yet)
+	info        agent.SessionInfo
+	backend     agent.SessionBackend  // nil until started
+	watchOnly   bool                  // true when backend was started via Watch() (no prompt sent yet)
+	pendingPerm *agent.PermissionData // non-nil while a permission prompt awaits a response
 }
 
 // New creates a new daemon instance. It does not start listening.
@@ -521,6 +522,7 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /sessions/{id}", d.handleDeleteSession)
 	mux.HandleFunc("GET /events", d.handleEvents)
 	mux.HandleFunc("POST /sessions/{id}/permissions/{permID}/reply", d.handlePermissionReply)
+	mux.HandleFunc("GET /sessions/{id}/pending-permission", d.handleGetPendingPermission)
 	mux.HandleFunc("GET /status", d.handleStatus)
 	mux.HandleFunc("GET /agents", d.handleListAgents)
 	mux.HandleFunc("GET /models", d.handleListModels)
@@ -931,6 +933,13 @@ func (d *Daemon) activateBackend(id string, ms *managedSession) error {
 			if evt.Type == agent.EventRevertChange {
 				if data, ok := evt.Data.(agent.RevertChangeData); ok {
 					d.updateSessionRevert(id, data.MessageID)
+				}
+			}
+			if evt.Type == agent.EventPermission {
+				if data, ok := evt.Data.(agent.PermissionData); ok {
+					d.mu.Lock()
+					ms.pendingPerm = &data
+					d.mu.Unlock()
 				}
 			}
 		}
@@ -1379,7 +1388,34 @@ func (d *Daemon) handlePermissionReply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+
+	d.mu.Lock()
+	ms.pendingPerm = nil
+	d.mu.Unlock()
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (d *Daemon) handleGetPendingPermission(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("id")
+
+	d.mu.RLock()
+	ms, ok := d.sessions[sessionID]
+	d.mu.RUnlock()
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+
+	d.mu.RLock()
+	perm := ms.pendingPerm
+	d.mu.RUnlock()
+
+	if perm == nil {
+		writeJSON(w, http.StatusOK, nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, perm)
 }
 
 // --- Internal Methods ---
@@ -1962,6 +1998,13 @@ func (d *Daemon) runBackend(id string, ms *managedSession, req agent.StartReques
 			if evt.Type == agent.EventRevertChange {
 				if data, ok := evt.Data.(agent.RevertChangeData); ok {
 					d.updateSessionRevert(id, data.MessageID)
+				}
+			}
+			if evt.Type == agent.EventPermission {
+				if data, ok := evt.Data.(agent.PermissionData); ok {
+					d.mu.Lock()
+					ms.pendingPerm = &data
+					d.mu.Unlock()
 				}
 			}
 		}
