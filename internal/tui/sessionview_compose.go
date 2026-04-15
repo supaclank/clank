@@ -16,6 +16,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/daemon"
 )
 
@@ -50,6 +51,24 @@ func NewSessionViewComposing(client *daemon.Client, projectDir string) *SessionV
 
 // updateCompose handles all messages while in composing mode.
 func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Model picker takes priority when open.
+	if m.showModelPicker {
+		switch msg := msg.(type) {
+		case modelPickerResultMsg:
+			m.showModelPicker = false
+			m.selectedModel = msg.selectedModel
+			go m.persistModelPreference()
+			return m, nil
+		case modelPickerCancelMsg:
+			m.showModelPicker = false
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.modelPicker, cmd = m.modelPicker.Update(msg)
+			return m, cmd
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -64,6 +83,22 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.Name == "build" {
 				m.selectedAgent = i
 				break
+			}
+		}
+		return m, nil
+
+	case modelsResultMsg:
+		m.models = msg.models
+		m.selectedModel = -1 // default: no override
+
+		// Try to restore the user's preferred model from preferences.
+		prefs, _ := config.LoadPreferences()
+		if prefs.Model != nil {
+			for i, model := range m.models {
+				if model.ID == prefs.Model.ModelID && model.ProviderID == prefs.Model.ProviderID {
+					m.selectedModel = i
+					break
+				}
 			}
 		}
 		return m, nil
@@ -111,6 +146,14 @@ func (m *SessionViewModel) handleComposeKey(msg tea.KeyPressMsg) (tea.Model, tea
 		// Cycle through agents (only when agents are loaded).
 		if len(m.agents) > 1 {
 			m.selectedAgent = (m.selectedAgent + 1) % len(m.agents)
+		}
+		return m, nil
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab"))):
+		// Open model picker modal.
+		if len(m.models) > 0 {
+			m.showModelPicker = true
+			m.modelPicker = newModelPicker(m.models, m.selectedModel, m.backend)
 		}
 		return m, nil
 
@@ -162,6 +205,13 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 	}
 	if len(m.agents) > 0 {
 		req.Agent = m.agents[m.selectedAgent].Name
+	}
+	if m.selectedModel >= 0 && m.selectedModel < len(m.models) {
+		model := m.models[m.selectedModel]
+		req.Model = &agent.ModelOverride{
+			ModelID:    model.ID,
+			ProviderID: model.ProviderID,
+		}
 	}
 
 	return m, m.createSessionCmd(req)
@@ -290,11 +340,16 @@ func (m *SessionViewModel) viewCompose() tea.View {
 	if m.backend == agent.BackendOpenCode && len(m.agents) > 1 {
 		helpParts = append(helpParts, "tab: cycle mode")
 	}
+	if m.backend == agent.BackendOpenCode && len(m.models) > 0 {
+		helpParts = append(helpParts, "shift+tab: select model")
+	}
 	helpParts = append(helpParts, qLabel)
 	help := helpStyle.Render(strings.Join(helpParts, " | "))
 	sb.WriteString(help)
 
-	v := newVoiceEnabledView(sb.String())
+	output := sb.String()
+	output = m.overlayModelPicker(output)
+	v := newVoiceEnabledView(output)
 	return v
 }
 
@@ -355,6 +410,13 @@ func (m *SessionViewModel) renderPromptBox() string {
 		modeBadge = lipgloss.NewStyle().Foreground(mc).Bold(true).Render(m.info.Agent)
 	}
 
+	// Model badge (shown after mode badge when a model override is selected).
+	modelBadge := ""
+	if m.selectedModel >= 0 && m.selectedModel < len(m.models) {
+		model := m.models[m.selectedModel]
+		modelBadge = lipgloss.NewStyle().Foreground(secondaryColor).Render(model.ProviderID + "/" + model.ID)
+	}
+
 	// Double-tap ctrl+c hint (shown briefly after first press).
 	ctrlCHint := ""
 	if !m.lastCtrlC.IsZero() && time.Since(m.lastCtrlC) < time.Second {
@@ -364,14 +426,25 @@ func (m *SessionViewModel) renderPromptBox() string {
 	// Build inner content: badge line (with optional hint) + textarea.
 	var inner strings.Builder
 	innerWidth := m.width - promptInputBorderSize
-	if modeBadge != "" || ctrlCHint != "" {
-		badgeWidth := lipgloss.Width(modeBadge)
+
+	// Combine mode badge and model badge.
+	combinedBadge := modeBadge
+	if modelBadge != "" {
+		if combinedBadge != "" {
+			combinedBadge += " " + modelBadge
+		} else {
+			combinedBadge = modelBadge
+		}
+	}
+
+	if combinedBadge != "" || ctrlCHint != "" {
+		badgeWidth := lipgloss.Width(combinedBadge)
 		hintWidth := lipgloss.Width(ctrlCHint)
 		gap := innerWidth - badgeWidth - hintWidth
 		if gap < 1 {
 			gap = 1
 		}
-		inner.WriteString(modeBadge + strings.Repeat(" ", gap) + ctrlCHint)
+		inner.WriteString(combinedBadge + strings.Repeat(" ", gap) + ctrlCHint)
 		inner.WriteString("\n")
 	}
 	inner.WriteString(m.input.View())

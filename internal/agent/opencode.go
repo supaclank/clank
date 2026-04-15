@@ -121,6 +121,12 @@ func (b *OpenCodeBackend) Start(ctx context.Context, req StartRequest) error {
 	if req.Agent != "" {
 		params.Agent = opencode.F(req.Agent)
 	}
+	if req.Model != nil {
+		params.Model = opencode.F(opencode.SessionPromptParamsModel{
+			ModelID:    opencode.F(req.Model.ModelID),
+			ProviderID: opencode.F(req.Model.ProviderID),
+		})
+	}
 	_, err := b.client.Session.Prompt(ctx, b.sessionID, params)
 	if err != nil && isConnectionError(err) && b.resolver != nil {
 		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
@@ -173,6 +179,12 @@ func (b *OpenCodeBackend) SendMessage(ctx context.Context, opts SendMessageOpts)
 	}
 	if opts.Agent != "" {
 		params.Agent = opencode.F(opts.Agent)
+	}
+	if opts.Model != nil {
+		params.Model = opencode.F(opencode.SessionPromptParamsModel{
+			ModelID:    opencode.F(opts.Model.ModelID),
+			ProviderID: opencode.F(opts.Model.ProviderID),
+		})
 	}
 	_, err := b.client.Session.Prompt(ctx, b.sessionID, params)
 	if err != nil && isConnectionError(err) && b.resolver != nil {
@@ -762,7 +774,9 @@ func (b *OpenCodeBackend) handleSDKEvent(event opencode.EventListResponse) {
 			Type:      EventMessage,
 			Timestamp: time.Now(),
 			Data: MessageData{
-				Role: string(msg.Role),
+				Role:       string(msg.Role),
+				ModelID:    msg.ModelID,
+				ProviderID: msg.ProviderID,
 			},
 		})
 
@@ -939,8 +953,10 @@ func (b *OpenCodeBackend) Messages(ctx context.Context) ([]MessageData, error) {
 	var messages []MessageData
 	for _, msg := range *resp {
 		md := MessageData{
-			ID:   msg.Info.ID,
-			Role: string(msg.Info.Role),
+			ID:         msg.Info.ID,
+			Role:       string(msg.Info.Role),
+			ModelID:    msg.Info.ModelID,
+			ProviderID: msg.Info.ProviderID,
 		}
 
 		for _, p := range msg.Parts {
@@ -1090,6 +1106,7 @@ type OpenCodeServerManager struct {
 	mu      sync.Mutex
 	servers map[string]*OpenCodeServer // keyed by project dir; only written by reconciler
 	agents  map[string][]AgentInfo     // cached agents per server URL
+	models  map[string][]ModelInfo     // cached models per server URL
 
 	// desired is the set of project dirs that should have a running server.
 	// Only added to, never removed (servers are removed by StopAll or when
@@ -1117,6 +1134,7 @@ func NewOpenCodeServerManager() *OpenCodeServerManager {
 	m := &OpenCodeServerManager{
 		servers: make(map[string]*OpenCodeServer),
 		agents:  make(map[string][]AgentInfo),
+		models:  make(map[string][]ModelInfo),
 		desired: make(map[string]bool),
 		waiters: make(map[string][]serverWaiter),
 		nudge:   make(chan struct{}, 1),
@@ -1573,6 +1591,64 @@ func fetchAgents(ctx context.Context, serverURL string) ([]AgentInfo, error) {
 	for _, a := range raw {
 		if a.Mode == "primary" && !a.Hidden {
 			result = append(result, a)
+		}
+	}
+	return result, nil
+}
+
+// ListModels returns available models from connected providers for the given
+// project directory. Results are cached per server (providers don't change
+// during a server's lifetime). If the server isn't running yet, it will be started.
+func (m *OpenCodeServerManager) ListModels(ctx context.Context, projectDir string) ([]ModelInfo, error) {
+	serverURL, err := m.GetOrStartServer(ctx, projectDir)
+	if err != nil {
+		return nil, err
+	}
+
+	m.mu.Lock()
+	if cached, ok := m.models[serverURL]; ok {
+		m.mu.Unlock()
+		return cached, nil
+	}
+	m.mu.Unlock()
+
+	models, err := fetchModels(ctx, serverURL)
+	if err != nil {
+		return nil, err
+	}
+
+	m.mu.Lock()
+	m.models[serverURL] = models
+	m.mu.Unlock()
+
+	return models, nil
+}
+
+// fetchModels calls GET /config/providers on the OpenCode server via the SDK
+// and flattens all models from connected providers into a flat list.
+func fetchModels(ctx context.Context, serverURL string) ([]ModelInfo, error) {
+	client := opencode.NewClient(option.WithBaseURL(strings.TrimRight(serverURL, "/")))
+	resp, err := client.App.Providers(ctx, opencode.AppProvidersParams{})
+	if err != nil {
+		return nil, fmt.Errorf("fetch providers: %w", err)
+	}
+	if resp == nil {
+		return nil, nil
+	}
+
+	var result []ModelInfo
+	for _, provider := range resp.Providers {
+		// Skip providers with no models (not connected).
+		if len(provider.Models) == 0 {
+			continue
+		}
+		for _, model := range provider.Models {
+			result = append(result, ModelInfo{
+				ID:           model.ID,
+				Name:         model.Name,
+				ProviderID:   provider.ID,
+				ProviderName: provider.Name,
+			})
 		}
 	}
 	return result, nil

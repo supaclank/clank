@@ -193,10 +193,12 @@ type StatusChangeData struct {
 
 // MessageData is the payload for EventMessage.
 type MessageData struct {
-	ID      string `json:"id,omitempty"` // Backend-assigned message ID (e.g. OpenCode message ID)
-	Role    string `json:"role"`         // "user" or "assistant"
-	Content string `json:"content"`
-	Parts   []Part `json:"parts,omitempty"`
+	ID         string `json:"id,omitempty"` // Backend-assigned message ID (e.g. OpenCode message ID)
+	Role       string `json:"role"`         // "user" or "assistant"
+	Content    string `json:"content"`
+	Parts      []Part `json:"parts,omitempty"`
+	ModelID    string `json:"model_id,omitempty"`    // Model that produced this message (assistant only)
+	ProviderID string `json:"provider_id,omitempty"` // Provider of the model (assistant only)
 }
 
 // Part represents a piece of an assistant message (text block, tool call, etc.).
@@ -323,13 +325,14 @@ type AgentInfo struct {
 
 // StartRequest contains the parameters needed to start a new agent session.
 type StartRequest struct {
-	Backend        BackendType `json:"backend"`
-	ProjectDir     string      `json:"project_dir"`
-	Prompt         string      `json:"prompt"`
-	SessionID      string      `json:"session_id,omitempty"`      // Empty = new session, set = resume
-	TicketID       string      `json:"ticket_id,omitempty"`       // Optional backlog ticket link
-	Agent          string      `json:"agent,omitempty"`           // OpenCode agent name (e.g. "build", "plan")
-	WorktreeBranch string      `json:"worktree_branch,omitempty"` // Git branch name; when set, the daemon creates/reuses a worktree
+	Backend        BackendType    `json:"backend"`
+	ProjectDir     string         `json:"project_dir"`
+	Prompt         string         `json:"prompt"`
+	SessionID      string         `json:"session_id,omitempty"`      // Empty = new session, set = resume
+	TicketID       string         `json:"ticket_id,omitempty"`       // Optional backlog ticket link
+	Agent          string         `json:"agent,omitempty"`           // OpenCode agent name (e.g. "build", "plan")
+	Model          *ModelOverride `json:"model,omitempty"`           // Per-message model override; nil = use default
+	WorktreeBranch string         `json:"worktree_branch,omitempty"` // Git branch name; when set, the daemon creates/reuses a worktree
 }
 
 // Validate checks that required fields are set.
@@ -448,10 +451,18 @@ func (s SessionInfo) Hidden() bool {
 	return s.Visibility == VisibilityDone || s.Visibility == VisibilityArchived
 }
 
+// ModelOverride specifies a model+provider to use for a single message,
+// overriding the backend's default.
+type ModelOverride struct {
+	ModelID    string `json:"model_id"`
+	ProviderID string `json:"provider_id"`
+}
+
 // SendMessageOpts contains options for sending a follow-up message.
 type SendMessageOpts struct {
-	Text  string `json:"text"`
-	Agent string `json:"agent,omitempty"` // OpenCode agent name; empty = use session default
+	Text  string         `json:"text"`
+	Agent string         `json:"agent,omitempty"` // OpenCode agent name; empty = use session default
+	Model *ModelOverride `json:"model,omitempty"` // Per-message model override; nil = use default
 }
 
 // SessionBackend is the interface that each agent backend must implement.
@@ -532,6 +543,21 @@ type BackendManager interface {
 // to expose available agents for a project.
 type AgentLister interface {
 	ListAgents(ctx context.Context, projectDir string) ([]AgentInfo, error)
+}
+
+// ModelInfo is a lightweight summary of an available LLM model, used by the
+// TUI to display and cycle through models.
+type ModelInfo struct {
+	ID           string `json:"id"`            // Model ID (e.g. "claude-opus-4-20250514")
+	Name         string `json:"name"`          // Human-readable name (e.g. "Claude Opus")
+	ProviderID   string `json:"provider_id"`   // Provider ID (e.g. "github-copilot")
+	ProviderName string `json:"provider_name"` // Human-readable provider name
+}
+
+// ModelLister is an optional interface that BackendManagers can implement
+// to expose available models for a project.
+type ModelLister interface {
+	ListModels(ctx context.Context, projectDir string) ([]ModelInfo, error)
 }
 
 // SessionDiscoverer is an optional interface that BackendManagers can

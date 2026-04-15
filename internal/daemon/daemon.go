@@ -98,6 +98,11 @@ func (m *OpenCodeBackendManager) ListAgents(ctx context.Context, projectDir stri
 	return m.serverMgr.ListAgents(ctx, projectDir)
 }
 
+// ListModels returns available models from connected providers for the given project directory.
+func (m *OpenCodeBackendManager) ListModels(ctx context.Context, projectDir string) ([]agent.ModelInfo, error) {
+	return m.serverMgr.ListModels(ctx, projectDir)
+}
+
 // ServerManager returns the underlying server manager. Exported for tests
 // that need to configure the manager (e.g. injecting a fake startServerFn).
 func (m *OpenCodeBackendManager) ServerManager() *agent.OpenCodeServerManager {
@@ -518,6 +523,7 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /sessions/{id}/permissions/{permID}/reply", d.handlePermissionReply)
 	mux.HandleFunc("GET /status", d.handleStatus)
 	mux.HandleFunc("GET /agents", d.handleListAgents)
+	mux.HandleFunc("GET /models", d.handleListModels)
 	mux.HandleFunc("POST /sessions/discover", d.handleDiscoverSessions)
 	// Worktree / branch endpoints.
 	mux.HandleFunc("GET /branches", d.handleListBranches)
@@ -599,6 +605,39 @@ func (d *Daemon) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	d.persistPrimaryAgents(bt, projectDir, agents)
 	writeJSON(w, http.StatusOK, agents)
+}
+
+// handleListModels returns available models for a given backend and project.
+func (d *Daemon) handleListModels(w http.ResponseWriter, r *http.Request) {
+	backendStr := r.URL.Query().Get("backend")
+	projectDir := r.URL.Query().Get("project_dir")
+
+	if backendStr == "" || projectDir == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "backend and project_dir query params are required"})
+		return
+	}
+
+	bt := agent.BackendType(backendStr)
+	mgr, ok := d.BackendManagers[bt]
+	if !ok {
+		writeJSON(w, http.StatusOK, []agent.ModelInfo{})
+		return
+	}
+	lister, ok := mgr.(agent.ModelLister)
+	if !ok {
+		writeJSON(w, http.StatusOK, []agent.ModelInfo{})
+		return
+	}
+
+	models, err := lister.ListModels(r.Context(), projectDir)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if models == nil {
+		models = []agent.ModelInfo{}
+	}
+	writeJSON(w, http.StatusOK, models)
 }
 
 // handleDebugOpenCodeServers returns running OpenCode server processes.
@@ -931,8 +970,9 @@ func (d *Daemon) handleGetSessionMessages(w http.ResponseWriter, r *http.Request
 func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
-		Text  string `json:"text"`
-		Agent string `json:"agent"`
+		Text  string               `json:"text"`
+		Agent string               `json:"agent"`
+		Model *agent.ModelOverride `json:"model,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
@@ -980,6 +1020,7 @@ func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 			SessionID:  ms.info.ExternalID,
 			Prompt:     body.Text,
 			Agent:      body.Agent,
+			Model:      body.Model,
 		}
 		backend, err := mgr.CreateBackend(req)
 		if err != nil {
@@ -1013,6 +1054,7 @@ func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	opts := agent.SendMessageOpts{
 		Text:  body.Text,
 		Agent: body.Agent,
+		Model: body.Model,
 	}
 
 	// Dispatch asynchronously — SendMessage blocks until the LLM responds.

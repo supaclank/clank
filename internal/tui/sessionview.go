@@ -17,6 +17,7 @@ import (
 	"github.com/atotto/clipboard"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/daemon"
 )
 
@@ -62,6 +63,11 @@ type sessionInfoMsg struct {
 // agentsResultMsg carries the result of fetching available agents.
 type agentsResultMsg struct {
 	agents []agent.AgentInfo
+}
+
+// modelsResultMsg carries the result of fetching available models.
+type modelsResultMsg struct {
+	models []agent.ModelInfo
 }
 
 // sessionMessagesMsg delivers the full message history to the model.
@@ -147,6 +153,10 @@ type SessionViewModel struct {
 	menuNextMessageID  string // next message ID after the target (for fork; empty = last message)
 	menuMessageContent string // message content for prompt prefill after revert
 
+	// Model picker modal state.
+	showModelPicker bool
+	modelPicker     modelPickerModel
+
 	// Help overlay state.
 	showHelp bool
 
@@ -191,6 +201,15 @@ type SessionViewModel struct {
 	// For existing sessions opened from inbox, agents are fetched on Init.
 	agents        []agent.AgentInfo
 	selectedAgent int // index into agents slice
+
+	// Model selection — populated eagerly when compose view loads.
+	// The user cycles models with Shift+Tab.
+	models        []agent.ModelInfo
+	selectedModel int // index into models slice; -1 = use default
+	// lastModelID/lastProviderID track the model from the latest assistant
+	// message, used to display the active model in the header.
+	lastModelID    string
+	lastProviderID string
 
 	// submitting guards against duplicate sends. Set true when a session
 	// creation or message send is in flight; cleared on result.
@@ -319,7 +338,7 @@ func (m *SessionViewModel) SetEventChannel(ch <-chan agent.Event, cancel context
 func (m *SessionViewModel) Init() tea.Cmd {
 	// In composing mode, no session exists yet — nothing to subscribe to.
 	if m.composing {
-		return tea.Batch(m.input.Focus(), m.fetchAgents())
+		return tea.Batch(m.input.Focus(), m.fetchAgents(), m.fetchModels())
 	}
 	cmds := []tea.Cmd{m.fetchSessionInfo(), m.fetchSessionMessages(), m.spinner.Tick}
 	if m.eventsCh != nil {
@@ -372,6 +391,24 @@ func (m *SessionViewModel) fetchAgents() tea.Cmd {
 			return agentsResultMsg{}
 		}
 		return agentsResultMsg{agents: agents}
+	}
+}
+
+// fetchModels loads available models for the current backend/project.
+// Fired eagerly on compose init alongside fetchAgents.
+func (m *SessionViewModel) fetchModels() tea.Cmd {
+	client := m.client
+	backend := m.backend
+	projectDir := m.projectDir
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		models, err := client.ListModels(ctx, backend, projectDir)
+		if err != nil {
+			// Non-fatal: degrade gracefully with no model selector.
+			return modelsResultMsg{}
+		}
+		return modelsResultMsg{models: models}
 	}
 }
 
@@ -468,6 +505,24 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Model picker takes priority when open.
+	if m.showModelPicker {
+		switch msg := msg.(type) {
+		case modelPickerResultMsg:
+			m.showModelPicker = false
+			m.selectedModel = msg.selectedModel
+			go m.persistModelPreference()
+			return m, nil
+		case modelPickerCancelMsg:
+			m.showModelPicker = false
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.modelPicker, cmd = m.modelPicker.Update(msg)
+			return m, cmd
+		}
+	}
+
 	// Help overlay takes priority when open — dismiss on any key.
 	if m.showHelp {
 		if _, ok := msg.(tea.KeyPressMsg); ok {
@@ -499,7 +554,7 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.info.Agent != "" {
 				// Will be matched against the fetched list in agentsResultMsg.
 			}
-			return m, m.fetchAgents()
+			return m, tea.Batch(m.fetchAgents(), m.fetchModels())
 		}
 		return m, nil
 
@@ -522,6 +577,22 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.Name == selectedName {
 				m.selectedAgent = i
 				break
+			}
+		}
+		return m, nil
+
+	case modelsResultMsg:
+		m.models = msg.models
+		m.selectedModel = -1 // default: no override
+
+		// Try to restore the user's preferred model from preferences.
+		prefs, _ := config.LoadPreferences()
+		if prefs.Model != nil {
+			for i, model := range m.models {
+				if model.ID == prefs.Model.ModelID && model.ProviderID == prefs.Model.ProviderID {
+					m.selectedModel = i
+					break
+				}
 			}
 		}
 		return m, nil
@@ -772,6 +843,13 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// Cycle through agents.
 			if len(m.agents) > 1 {
 				m.selectedAgent = (m.selectedAgent + 1) % len(m.agents)
+			}
+			return m, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab"))):
+			// Open model picker modal.
+			if len(m.models) > 0 {
+				m.showModelPicker = true
+				m.modelPicker = newModelPicker(m.models, m.selectedModel, m.backend)
 			}
 			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
@@ -1115,6 +1193,12 @@ func (m *SessionViewModel) handleMessage(data agent.MessageData) {
 		}
 		return
 	}
+
+	// Track the model used by the latest assistant message for header display.
+	if data.ModelID != "" {
+		m.lastModelID = data.ModelID
+		m.lastProviderID = data.ProviderID
+	}
 	// After history is loaded, skip SSE message events entirely —
 	// history already contains the complete messages, and SSE only delivers
 	// redundant shells. New parts arrive via EventPartUpdate.
@@ -1187,6 +1271,12 @@ func (m *SessionViewModel) handleSessionMessages(messages []agent.MessageData) {
 				})
 			}
 			continue
+		}
+
+		// Track model from assistant messages for header display.
+		if msg.ModelID != "" {
+			m.lastModelID = msg.ModelID
+			m.lastProviderID = msg.ProviderID
 		}
 
 		// Assistant message: render parts.
@@ -1713,10 +1803,18 @@ func (m *SessionViewModel) sendMessage(text string) tea.Cmd {
 	if len(m.agents) > 0 {
 		selectedAgent = m.agents[m.selectedAgent].Name
 	}
+	var modelOverride *agent.ModelOverride
+	if m.selectedModel >= 0 && m.selectedModel < len(m.models) {
+		model := m.models[m.selectedModel]
+		modelOverride = &agent.ModelOverride{
+			ModelID:    model.ID,
+			ProviderID: model.ProviderID,
+		}
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		opts := agent.SendMessageOpts{Text: text, Agent: selectedAgent}
+		opts := agent.SendMessageOpts{Text: text, Agent: selectedAgent, Model: modelOverride}
 		err := m.client.SendMessage(ctx, m.sessionID, opts)
 		return sessionSendResultMsg{err: err}
 	}
@@ -1988,6 +2086,9 @@ func (m *SessionViewModel) View() tea.View {
 		if len(m.agents) > 1 {
 			inputHelp = "enter: send | shift+enter: newline | tab: cycle mode | esc: cancel"
 		}
+		if len(m.models) > 0 {
+			inputHelp += " | shift+tab: select model"
+		}
 		sb.WriteString(helpStyle.Render(inputHelp))
 	} else {
 		// Help bar.
@@ -1997,6 +2098,7 @@ func (m *SessionViewModel) View() tea.View {
 
 	output := m.overlaySessionConfirm(sb.String())
 	output = m.overlaySessionMenu(output)
+	output = m.overlayModelPicker(output)
 	output = m.overlaySessionHelp(output)
 	v := newVoiceEnabledViewWithMouse(output)
 	return v
@@ -2037,9 +2139,21 @@ func (m *SessionViewModel) renderHeader() string {
 		agentStr = lipgloss.NewStyle().Foreground(agentColor(m.info.Agent)).Bold(true).Render(m.info.Agent)
 	}
 
+	// Show model indicator: user-selected override or last-used from assistant messages.
+	modelStr := ""
+	if m.selectedModel >= 0 && m.selectedModel < len(m.models) {
+		model := m.models[m.selectedModel]
+		modelStr = lipgloss.NewStyle().Foreground(secondaryColor).Render(model.ProviderID + "/" + model.ID)
+	} else if m.lastProviderID != "" && m.lastModelID != "" {
+		modelStr = lipgloss.NewStyle().Foreground(dimColor).Render(m.lastProviderID + "/" + m.lastModelID)
+	}
+
 	rightParts := right
+	if modelStr != "" {
+		rightParts = modelStr + " " + rightParts
+	}
 	if agentStr != "" {
-		rightParts = agentStr + " " + right
+		rightParts = agentStr + " " + rightParts
 	}
 	if followUpStr != "" {
 		rightParts = followUpStr + " " + rightParts
@@ -2386,6 +2500,14 @@ func (m *SessionViewModel) overlaySessionMenu(base string) string {
 	return overlayCenter(base, m.menu.View(), m.width, m.height)
 }
 
+// overlayModelPicker overlays the model picker onto the base content if active.
+func (m *SessionViewModel) overlayModelPicker(base string) string {
+	if !m.showModelPicker {
+		return base
+	}
+	return overlayCenter(base, m.modelPicker.View(), m.width, m.height)
+}
+
 // overlaySessionHelp overlays the help popup onto the base content if active.
 func (m *SessionViewModel) overlaySessionHelp(base string) string {
 	if !m.showHelp {
@@ -2622,4 +2744,20 @@ func truncateStr(s string, n int) string {
 		return s[:n]
 	}
 	return s[:n-3] + "..."
+}
+
+// persistModelPreference saves the currently selected model to preferences.
+// Safe to call from a goroutine.
+func (m *SessionViewModel) persistModelPreference() {
+	prefs, _ := config.LoadPreferences()
+	if m.selectedModel >= 0 && m.selectedModel < len(m.models) {
+		model := m.models[m.selectedModel]
+		prefs.Model = &config.ModelPreference{
+			ModelID:    model.ID,
+			ProviderID: model.ProviderID,
+		}
+	} else {
+		prefs.Model = nil
+	}
+	_ = config.SavePreferences(prefs)
 }

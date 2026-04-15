@@ -175,6 +175,16 @@ func (c *Client) ListAgents(ctx context.Context, backend agent.BackendType, proj
 	return agents, nil
 }
 
+// ListModels returns available models for the given backend and project directory.
+func (c *Client) ListModels(ctx context.Context, backend agent.BackendType, projectDir string) ([]agent.ModelInfo, error) {
+	path := "/models?backend=" + url.QueryEscape(string(backend)) + "&project_dir=" + url.QueryEscape(projectDir)
+	var models []agent.ModelInfo
+	if err := c.get(ctx, path, &models); err != nil {
+		return nil, err
+	}
+	return models, nil
+}
+
 // ServerStatus is a running OpenCode server with its session count.
 type ServerStatus struct {
 	URL          string    `json:"url"`
