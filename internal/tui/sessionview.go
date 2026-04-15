@@ -785,7 +785,11 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				entry := &m.entries[idx]
 				if entry.kind == entryTool {
 					// Click on a tool entry toggles its detail.
-					// Determine whether the owning navigable entry is expanded.
+					// Determine whether the entry is currently visible, accounting for
+					// always-expanded tools (edit, todowrite) and owner expansion state.
+					alwaysExpand := entry.toolPart != nil &&
+						(strings.EqualFold(entry.toolPart.Tool, "todowrite") ||
+							strings.EqualFold(entry.toolPart.Tool, "edit"))
 					ownerExpanded := false
 					for j := idx - 1; j >= 0; j-- {
 						if isNavigable(m.entries[j].kind) {
@@ -793,15 +797,16 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							break
 						}
 					}
-					if ownerExpanded {
-						// Owner is expanded: toggle between default (visible) and forceHide.
+					defaultVisible := alwaysExpand || ownerExpanded
+					if defaultVisible {
+						// Currently visible by default: toggle between default (visible) and forceHide.
 						if entry.expand == expandForceHide {
 							entry.expand = expandDefault
 						} else {
 							entry.expand = expandForceHide
 						}
 					} else {
-						// Owner not expanded: toggle between default (hidden) and forceShow.
+						// Currently hidden by default: toggle between default (hidden) and forceShow.
 						if entry.expand == expandForceShow {
 							entry.expand = expandDefault
 						} else {
@@ -2336,9 +2341,12 @@ func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool, ownerExpa
 		styled := lipgloss.NewStyle().Foreground(dimColor).Render("  " + line)
 		lines := []string{styled}
 
-		// Show detail when owning navigable entry is expanded, or always for TodoWrite.
+		// Show detail when owning navigable entry is expanded, or always for TodoWrite/Edit.
 		// expandForceShow overrides a collapsed owner; expandForceHide overrides an expanded owner.
-		showDetail := e.toolPart != nil && (strings.EqualFold(e.toolPart.Tool, "todowrite") ||
+		// Edit diffs and TodoWrite are expanded by default; edit diffs can be collapsed via click.
+		alwaysExpand := strings.EqualFold(e.toolPart.Tool, "todowrite") ||
+			strings.EqualFold(e.toolPart.Tool, "edit")
+		showDetail := e.toolPart != nil && ((alwaysExpand && e.expand != expandForceHide) ||
 			e.expand == expandForceShow ||
 			(e.expand == expandDefault && ownerExpanded))
 		if showDetail {
