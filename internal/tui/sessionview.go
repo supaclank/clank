@@ -36,6 +36,16 @@ type sessionSendResultMsg struct {
 	err error
 }
 
+// permissionReplyResultMsg is sent after the daemon accepts or rejects
+// a permission reply. On denial the TUI re-fetches the authoritative
+// pending-permission queue from the daemon because the backend may
+// auto-reject subsequent queued permissions.
+type permissionReplyResultMsg struct {
+	perm  agent.PermissionData
+	allow bool
+	err   error
+}
+
 // sessionFollowUpResultMsg is the result of toggling follow-up on a session.
 type sessionFollowUpResultMsg struct {
 	followUp bool
@@ -128,7 +138,8 @@ type SessionViewModel struct {
 	input       textarea.Model
 
 	// Permission state.
-	pendingPerms []agent.PermissionData
+	pendingPerms   []agent.PermissionData
+	replyingPermID string // non-empty while a reply is in flight (prevents double-tap)
 
 	// SSE event channel (stored so we can re-schedule waitForEvent).
 	eventsCh <-chan agent.Event
@@ -259,6 +270,7 @@ type displayEntry struct {
 	verboseLines []string    // cached verbose output lines (nil = not yet rendered)
 	verboseWidth int         // width the verbose cache was computed at
 	expand       expandState // click-toggled detail expansion for individual tool entries
+	permGranted  bool        // true = granted, false = denied (only for entryPermResult)
 }
 
 // expandState controls per-entry detail visibility relative to the owning
@@ -274,13 +286,13 @@ const (
 type entryKind int
 
 const (
-	entryUser   entryKind = iota // User message
-	entryText                    // Agent text
-	entryTool                    // Tool call line
-	entryThink                   // Thinking block
-	entryError                   // Error message
-	entryPerm                    // Permission prompt
-	entryStatus                  // Status change
+	entryUser       entryKind = iota // User message
+	entryText                        // Agent text
+	entryTool                        // Tool call line
+	entryThink                       // Thinking block
+	entryError                       // Error message
+	entryPermResult                  // Resolved permission (granted/denied)
+	entryStatus                      // Status change
 )
 
 // inputReservedLines is the number of terminal lines reserved for the
@@ -622,23 +634,10 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case pendingPermissionMsg:
-		// Restore pending permissions that were emitted while the TUI was
-		// disconnected. Skip any that are already in our queue (from the live
-		// SSE stream) by checking request IDs.
-		seen := make(map[string]bool, len(m.pendingPerms))
-		for _, p := range m.pendingPerms {
-			seen[p.RequestID] = true
-		}
-		for _, p := range msg.perms {
-			if seen[p.RequestID] {
-				continue
-			}
-			m.pendingPerms = append(m.pendingPerms, p)
-			m.entries = append(m.entries, displayEntry{
-				kind:    entryPerm,
-				content: fmt.Sprintf("Allow %s: %s? [y/n]", p.Tool, p.Description),
-			})
-		}
+		// Replace local queue with the authoritative daemon state.
+		// This handles both initial restore (TUI reconnect) and resync
+		// after a denial where the backend may auto-reject remaining perms.
+		m.pendingPerms = msg.perms
 		if len(msg.perms) > 0 && m.follow {
 			m.scrollToBottom()
 		}
@@ -669,6 +668,42 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.submitting = false
 		if msg.err != nil {
 			m.err = msg.err
+		}
+		return m, nil
+
+	case permissionReplyResultMsg:
+		m.replyingPermID = ""
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		// Pop the replied permission from the local queue.
+		filtered := m.pendingPerms[:0]
+		for _, p := range m.pendingPerms {
+			if p.RequestID != msg.perm.RequestID {
+				filtered = append(filtered, p)
+			}
+		}
+		m.pendingPerms = filtered
+		// Record the result as a display entry.
+		granted := msg.allow
+		icon := "Allowed"
+		if !granted {
+			icon = "Denied"
+		}
+		m.entries = append(m.entries, displayEntry{
+			kind:        entryPermResult,
+			content:     fmt.Sprintf("%s %s: %s", icon, msg.perm.Tool, msg.perm.Description),
+			permGranted: granted,
+		})
+		if m.follow {
+			m.scrollToBottom()
+		}
+		// On denial the backend may auto-reject remaining permissions.
+		// Re-fetch the authoritative queue from the daemon.
+		if !granted {
+			m.markRunningToolsFailed()
+			return m, tea.Batch(m.fetchPendingPermission(), m.fetchSessionMessages())
 		}
 		return m, nil
 
@@ -814,7 +849,7 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 					entry.verboseLines = nil
-				} else if isNavigable(entry.kind) && idx != m.cursor {
+				} else if isNavigable(entry.kind) && idx != m.cursor && len(m.pendingPerms) == 0 && m.replyingPermID == "" {
 					// Click-to-select: move cursor but don't scroll (no m.cursorMoved)
 					// to avoid layout shift — the clicked entry is already visible.
 					m.cursor = idx
@@ -846,25 +881,31 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	msg = normalizeKeyCase(msg)
 
 	// Permission prompt takes priority — respond to the front of the queue.
-	if len(m.pendingPerms) > 0 && !m.inputActive {
+	// Block while a reply is already in flight (replyingPermID != "").
+	if len(m.pendingPerms) > 0 && m.replyingPermID == "" && !m.inputActive {
 		switch msg.String() {
 		case "y":
 			perm := m.pendingPerms[0]
-			m.pendingPerms = m.pendingPerms[1:]
-			m.entries = append(m.entries, displayEntry{
-				kind:    entryStatus,
-				content: "Permission granted: " + perm.Tool,
-			})
-			return m, m.replyPermission(perm.RequestID, true)
+			m.replyingPermID = perm.RequestID
+			return m, m.replyPermission(perm, true)
 		case "n":
 			perm := m.pendingPerms[0]
-			m.pendingPerms = m.pendingPerms[1:]
-			m.entries = append(m.entries, displayEntry{
-				kind:    entryStatus,
-				content: "Permission denied: " + perm.Tool,
-			})
-			return m, m.replyPermission(perm.RequestID, false)
+			m.replyingPermID = perm.RequestID
+			return m, m.replyPermission(perm, false)
 		}
+	}
+
+	// While a permission prompt is active, lock out all other keys except
+	// ctrl+c (cancel/quit). This prevents confusing cursor movement while
+	// the user should be focused on the permission decision.
+	if len(m.pendingPerms) > 0 || m.replyingPermID != "" {
+		if key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))) {
+			if m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting) {
+				return m, m.startAbort()
+			}
+			return m.handleCtrlCQuit()
+		}
+		return m, nil
 	}
 
 	// Input mode.
@@ -1137,10 +1178,6 @@ func (m *SessionViewModel) handleEvent(evt agent.Event) {
 	case agent.EventPermission:
 		if data, ok := evt.Data.(agent.PermissionData); ok {
 			m.pendingPerms = append(m.pendingPerms, data)
-			m.entries = append(m.entries, displayEntry{
-				kind:    entryPerm,
-				content: fmt.Sprintf("Allow %s: %s? [y/n]", data.Tool, data.Description),
-			})
 			if m.follow {
 				m.scrollToBottom()
 			}
@@ -1360,6 +1397,25 @@ func (m *SessionViewModel) handleSessionMessages(messages []agent.MessageData) {
 	m.historyLoaded = true
 	if m.follow {
 		m.scrollToBottom()
+	}
+}
+
+// markRunningToolsFailed stops any visible spinners for tool entries that are
+// still pending/running after a terminal permission denial. The backend may
+// cancel the batch without streaming individual tool-error updates, so the TUI
+// needs to pessimistically settle the visible tool rows until a later history
+// refresh or part update provides authoritative state.
+func (m *SessionViewModel) markRunningToolsFailed() {
+	for i := range m.entries {
+		e := &m.entries[i]
+		if e.kind != entryTool || e.toolPart == nil {
+			continue
+		}
+		if e.toolPart.Status == agent.PartPending || e.toolPart.Status == agent.PartRunning {
+			e.toolPart.Status = agent.PartFailed
+			e.toolLine = ""
+			e.verboseLines = nil
+		}
 	}
 }
 
@@ -1868,13 +1924,13 @@ func (m *SessionViewModel) sendMessage(text string) tea.Cmd {
 	}
 }
 
-func (m *SessionViewModel) replyPermission(requestID string, allow bool) tea.Cmd {
+func (m *SessionViewModel) replyPermission(perm agent.PermissionData, allow bool) tea.Cmd {
 	sessionID := m.sessionID
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		err := m.client.ReplyPermission(ctx, sessionID, requestID, allow)
-		return sessionSendResultMsg{err: err}
+		err := m.client.ReplyPermission(ctx, sessionID, perm.RequestID, allow)
+		return permissionReplyResultMsg{perm: perm, allow: allow, err: err}
 	}
 }
 
@@ -2248,7 +2304,7 @@ func (m *SessionViewModel) buildContentLines() []string {
 		// navigable entry is the cursor entry.
 		ownerExpanded := m.verbose && ownerIdx == m.cursor
 		m.entryStartLine[i] = len(lines)
-		selected := i == m.cursor
+		selected := i == m.cursor && len(m.pendingPerms) == 0 && m.replyingPermID == ""
 		entryLines := m.renderEntry(&m.entries[i], selected, ownerExpanded)
 		lines = append(lines, entryLines...)
 		m.entryEndLine[i] = len(lines)
@@ -2260,6 +2316,51 @@ func (m *SessionViewModel) buildContentLines() []string {
 		}
 		lines = append(lines, lipgloss.NewStyle().Foreground(dimColor).Render(msg))
 	}
+
+	// Append virtual active permission prompt (not a real entry).
+	if len(m.pendingPerms) > 0 {
+		perm := m.pendingPerms[0]
+		prompt := fmt.Sprintf("Allow %s: %s?", perm.Tool, perm.Description)
+		if len(m.pendingPerms) > 1 {
+			prompt += fmt.Sprintf("  (%d/%d)", 1, len(m.pendingPerms))
+		}
+
+		// Build inner content: header + description + hint.
+		maxWidth := m.width - 4
+		if maxWidth < 20 {
+			maxWidth = 20
+		}
+		// Account for border (2) + padding (2) = 4 chars.
+		innerWidth := maxWidth - 4
+		if innerWidth < 16 {
+			innerWidth = 16
+		}
+
+		warnStyle := lipgloss.NewStyle().Foreground(warningColor).Bold(true)
+		header := warnStyle.Render("⚠ Permission")
+		wrapped := wrapText(prompt, innerWidth)
+		var contentParts []string
+		contentParts = append(contentParts, header)
+		for _, l := range strings.Split(wrapped, "\n") {
+			contentParts = append(contentParts, warnStyle.Render(l))
+		}
+		if m.replyingPermID != "" {
+			contentParts = append(contentParts, lipgloss.NewStyle().Foreground(dimColor).Render("Sending..."))
+		} else {
+			contentParts = append(contentParts, lipgloss.NewStyle().Foreground(dimColor).Render("[y] Allow  [n] Deny"))
+		}
+		inner := strings.Join(contentParts, "\n")
+
+		bordered := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(warningColor).
+			Padding(0, 1).
+			Render(inner)
+
+		lines = append(lines, "")
+		lines = append(lines, strings.Split(bordered, "\n")...)
+	}
+
 	return lines
 }
 
@@ -2344,8 +2445,9 @@ func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool, ownerExpa
 		// Show detail when owning navigable entry is expanded, or always for TodoWrite/Edit.
 		// expandForceShow overrides a collapsed owner; expandForceHide overrides an expanded owner.
 		// Edit diffs and TodoWrite are expanded by default; edit diffs can be collapsed via click.
-		alwaysExpand := strings.EqualFold(e.toolPart.Tool, "todowrite") ||
-			strings.EqualFold(e.toolPart.Tool, "edit")
+		alwaysExpand := e.toolPart != nil &&
+			(strings.EqualFold(e.toolPart.Tool, "todowrite") ||
+				strings.EqualFold(e.toolPart.Tool, "edit"))
 		showDetail := e.toolPart != nil && ((alwaysExpand && e.expand != expandForceHide) ||
 			e.expand == expandForceShow ||
 			(e.expand == expandDefault && ownerExpanded))
@@ -2380,14 +2482,15 @@ func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool, ownerExpa
 			contentLines = append(contentLines, styled)
 		}
 
-	case entryPerm:
-		header := lipgloss.NewStyle().Foreground(warningColor).Bold(true).Render("[Permission]")
-		wrapped := wrapText(e.content, contentWidth)
-		contentLines = []string{header}
-		for _, l := range strings.Split(wrapped, "\n") {
-			styled := lipgloss.NewStyle().Foreground(warningColor).Bold(true).Render(l)
-			contentLines = append(contentLines, styled)
+	case entryPermResult:
+		icon := "✓"
+		clr := successColor
+		if !e.permGranted {
+			icon = "✗"
+			clr = dangerColor
 		}
+		styled := lipgloss.NewStyle().Foreground(clr).Render("  " + icon + " " + e.content)
+		contentLines = []string{styled}
 
 	case entryStatus:
 		styled := lipgloss.NewStyle().Foreground(dimColor).Render("  --- " + e.content + " ---")
@@ -2659,7 +2762,7 @@ func (m *SessionViewModel) overlaySessionHelp(base string) string {
 // Tool calls and status entries are skipped during navigation.
 func isNavigable(k entryKind) bool {
 	switch k {
-	case entryUser, entryText, entryThink, entryError, entryPerm:
+	case entryUser, entryText, entryThink, entryError, entryPermResult:
 		return true
 	default:
 		return false

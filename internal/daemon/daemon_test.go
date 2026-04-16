@@ -1149,7 +1149,7 @@ func TestDaemonPendingPermissionQueue(t *testing.T) {
 		t.Errorf("perms[1].RequestID = %q, want %q", perms[1].RequestID, "perm-clank")
 	}
 
-	// Reply to the first — only the second should remain.
+	// Reply to the first with allow — only the second should remain.
 	if err := client.ReplyPermission(ctx, info.ID, "perm-opencode", true); err != nil {
 		t.Fatalf("ReplyPermission (first): %v", err)
 	}
@@ -1164,7 +1164,7 @@ func TestDaemonPendingPermissionQueue(t *testing.T) {
 		t.Errorf("remaining perm RequestID = %q, want %q", perms[0].RequestID, "perm-clank")
 	}
 
-	// Reply to the second — queue should be empty.
+	// Reply to the second with deny — the queue should be fully cleared.
 	if err := client.ReplyPermission(ctx, info.ID, "perm-clank", false); err != nil {
 		t.Fatalf("ReplyPermission (second): %v", err)
 	}
@@ -1174,6 +1174,70 @@ func TestDaemonPendingPermissionQueue(t *testing.T) {
 	}
 	if len(perms) != 0 {
 		t.Fatalf("expected 0 pending permissions after both replies, got %d", len(perms))
+	}
+}
+
+// TestDaemonPendingPermissionRejectClearsQueue verifies that rejecting one
+// permission clears the remaining queued prompts from the daemon, matching the
+// backend behavior where a deny cancels the current permission batch.
+func TestDaemonPendingPermissionRejectClearsQueue(t *testing.T) {
+	t.Parallel()
+
+	_, client, getBackend, cleanup := testDaemonWithBackendAccess(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	info, err := client.CreateSession(ctx, agent.StartRequest{
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/tmp/test",
+		Prompt:     "read two dirs",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	b := getBackend()
+
+	b.events <- agent.Event{
+		Type:      agent.EventPermission,
+		Timestamp: time.Now(),
+		Data: agent.PermissionData{
+			RequestID:   "perm-a",
+			Tool:        "external_directory",
+			Description: "/Users/test/a",
+		},
+	}
+	b.events <- agent.Event{
+		Type:      agent.EventPermission,
+		Timestamp: time.Now(),
+		Data: agent.PermissionData{
+			RequestID:   "perm-b",
+			Tool:        "external_directory",
+			Description: "/Users/test/b",
+		},
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	perms, err := client.GetPendingPermissions(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetPendingPermissions before deny: %v", err)
+	}
+	if len(perms) != 2 {
+		t.Fatalf("expected 2 pending permissions before deny, got %d", len(perms))
+	}
+
+	if err := client.ReplyPermission(ctx, info.ID, "perm-a", false); err != nil {
+		t.Fatalf("ReplyPermission (deny): %v", err)
+	}
+
+	perms, err = client.GetPendingPermissions(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetPendingPermissions after deny: %v", err)
+	}
+	if len(perms) != 0 {
+		t.Fatalf("expected 0 pending permissions after deny, got %d", len(perms))
 	}
 }
 

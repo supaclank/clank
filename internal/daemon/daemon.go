@@ -1390,14 +1390,20 @@ func (d *Daemon) handlePermissionReply(w http.ResponseWriter, r *http.Request) {
 	}
 
 	d.mu.Lock()
-	// Remove the replied permission from the queue.
-	filtered := ms.pendingPerms[:0]
-	for _, p := range ms.pendingPerms {
-		if p.RequestID != permID {
-			filtered = append(filtered, p)
+	// OpenCode may cancel the remaining permission batch after a rejection.
+	// Keep the daemon queue aligned with that behavior so reconnect/resync
+	// never re-surface stale prompts the backend will not honor.
+	if body.Allow {
+		filtered := ms.pendingPerms[:0]
+		for _, p := range ms.pendingPerms {
+			if p.RequestID != permID {
+				filtered = append(filtered, p)
+			}
 		}
+		ms.pendingPerms = filtered
+	} else {
+		ms.pendingPerms = nil
 	}
-	ms.pendingPerms = filtered
 	d.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

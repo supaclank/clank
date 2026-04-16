@@ -147,7 +147,7 @@ func TestIsNavigable(t *testing.T) {
 		{entryText, true},
 		{entryThink, true},
 		{entryError, true},
-		{entryPerm, true},
+		{entryPermResult, true},
 		{entryTool, false},
 		{entryStatus, false},
 	}
@@ -2085,49 +2085,46 @@ func TestForkResultMsg_SuccessEmitsOpenForkedSessionMsg(t *testing.T) {
 	}
 }
 
-func TestRenderEntry_PermMultilineWraps(t *testing.T) {
+func TestRenderEntry_PermResultGranted(t *testing.T) {
 	t.Parallel()
 
-	// A long permission description that exceeds the content width should
-	// produce multiple lines in the rendered output so that
-	// entryStartLine/entryEndLine bookkeeping stays correct.
-	longDesc := strings.Repeat("word ", 40) // ~200 chars
 	m := newTestSessionModel([]displayEntry{
-		{kind: entryPerm, content: "Allow bash: " + longDesc + "? [y/n]"},
+		{kind: entryPermResult, content: "Allowed bash: echo hello", permGranted: true},
 	})
 	m.width = 80
 
 	lines := m.buildContentLines()
 
-	// With width=80, the ~200 char content must wrap to multiple lines.
-	// At minimum: 1 header line + ceil(200/76) content lines > 2.
-	if len(lines) < 3 {
-		t.Errorf("expected at least 3 lines for wrapped permission, got %d", len(lines))
+	// entryPermResult is navigable; when selected it gets a border.
+	// Should have at least 1 content line.
+	if len(lines) == 0 {
+		t.Error("expected at least 1 line for permission result")
 	}
 
-	// entryEndLine should match the actual line count.
-	if m.entryEndLine[0] != len(lines) {
-		t.Errorf("entryEndLine[0] = %d, want %d (actual line count)", m.entryEndLine[0], len(lines))
+	// Verify the rendered output contains the checkmark.
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "✓") {
+		t.Error("expected ✓ in granted permission result")
 	}
 }
 
-func TestRenderEntry_PermNewlinesInDescription(t *testing.T) {
+func TestRenderEntry_PermResultDenied(t *testing.T) {
 	t.Parallel()
 
-	// Permission descriptions with embedded newlines should each become
-	// a separate rendered line so coordinate mapping stays accurate.
 	m := newTestSessionModel([]displayEntry{
-		{kind: entryPerm, content: "Allow bash: line1\nline2\nline3? [y/n]"},
+		{kind: entryPermResult, content: "Denied bash: echo hello", permGranted: false},
 	})
-	m.width = 200 // wide enough that wrapping doesn't add extra lines
+	m.width = 80
 
 	lines := m.buildContentLines()
 
-	// Content: 1 header + 3 description lines = 4 contentLines.
-	// The entry at index 0 is selected+navigable, so it gets a rounded border
-	// (top+bottom border lines = +2) and a blank separator (+1) = 7 total.
-	if len(lines) != 7 {
-		t.Errorf("expected 7 lines (blank + border-top + header + 3 content + border-bottom), got %d", len(lines))
+	if len(lines) == 0 {
+		t.Error("expected at least 1 line for permission result")
+	}
+
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "✗") {
+		t.Error("expected ✗ in denied permission result")
 	}
 }
 
@@ -2169,51 +2166,42 @@ func TestPendingPermissionMsg_RestoresPrompt(t *testing.T) {
 		t.Errorf("RequestID = %q, want %q", updated.pendingPerms[0].RequestID, "perm-42")
 	}
 
-	// Should have added an entryPerm to entries.
-	found := false
+	// Should NOT have added any entry — the active prompt is rendered
+	// virtually at the bottom of buildContentLines instead.
 	for _, e := range updated.entries {
-		if e.kind == entryPerm {
-			found = true
-			if !strings.Contains(e.content, "bash") || !strings.Contains(e.content, "echo hello") {
-				t.Errorf("entry content = %q, want it to contain tool and description", e.content)
-			}
+		if e.kind == entryPermResult {
+			t.Error("did not expect an entryPermResult entry from pendingPermissionMsg (only from user response)")
 		}
-	}
-	if !found {
-		t.Error("expected an entryPerm entry after pendingPermissionMsg")
 	}
 }
 
-func TestPendingPermissionMsg_SkipsDuplicates(t *testing.T) {
+func TestPendingPermissionMsg_ReplacesQueue(t *testing.T) {
 	t.Parallel()
 
 	m := newTestSessionModel(nil)
 	// Pre-set a pending permission (arrived via live SSE).
 	m.pendingPerms = []agent.PermissionData{
 		{RequestID: "existing", Tool: "read_file"},
+		{RequestID: "stale", Tool: "write_file"},
 	}
 	initialEntryCount := len(m.entries)
 
-	// Restore delivers the same permission plus a new one.
+	// Daemon says only one perm remains (the other was auto-rejected).
 	result, _ := m.Update(pendingPermissionMsg{perms: []agent.PermissionData{
 		{RequestID: "existing", Tool: "read_file"},
-		{RequestID: "new-one", Tool: "bash"},
 	}})
 	updated := result.(*SessionViewModel)
 
-	// Should have 2 total: the existing one + the genuinely new one.
-	if len(updated.pendingPerms) != 2 {
-		t.Fatalf("expected 2 pending perms, got %d", len(updated.pendingPerms))
+	// Queue is replaced with the daemon's authoritative state.
+	if len(updated.pendingPerms) != 1 {
+		t.Fatalf("expected 1 pending perm, got %d", len(updated.pendingPerms))
 	}
 	if updated.pendingPerms[0].RequestID != "existing" {
 		t.Errorf("perms[0].RequestID = %q, want %q", updated.pendingPerms[0].RequestID, "existing")
 	}
-	if updated.pendingPerms[1].RequestID != "new-one" {
-		t.Errorf("perms[1].RequestID = %q, want %q", updated.pendingPerms[1].RequestID, "new-one")
-	}
-	// Only 1 new entry should have been added (the duplicate was skipped).
-	if len(updated.entries) != initialEntryCount+1 {
-		t.Errorf("expected %d entries (1 new), got %d", initialEntryCount+1, len(updated.entries))
+	// No new entries should have been added.
+	if len(updated.entries) != initialEntryCount {
+		t.Errorf("expected %d entries (unchanged), got %d", initialEntryCount, len(updated.entries))
 	}
 }
 
@@ -2227,5 +2215,228 @@ func TestPendingPermissionMsg_EmptyIsNoop(t *testing.T) {
 
 	if len(updated.pendingPerms) != 0 {
 		t.Errorf("expected 0 pending perms, got %d", len(updated.pendingPerms))
+	}
+}
+
+func TestBuildContentLines_VirtualPermPrompt(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel([]displayEntry{
+		{kind: entryText, content: "I will read a file."},
+	})
+	m.width = 80
+	m.pendingPerms = []agent.PermissionData{
+		{RequestID: "p1", Tool: "Read", Description: "~/.config/app.toml"},
+		{RequestID: "p2", Tool: "Write", Description: "~/.config/app.toml"},
+	}
+
+	lines := m.buildContentLines()
+	joined := strings.Join(lines, "\n")
+
+	// The virtual prompt for the first pending perm should appear.
+	if !strings.Contains(joined, "Read") {
+		t.Error("expected virtual prompt to contain tool name 'Read'")
+	}
+	if !strings.Contains(joined, "~/.config/app.toml") {
+		t.Error("expected virtual prompt to contain description")
+	}
+	// Queue counter should show (1/2).
+	if !strings.Contains(joined, "(1/2)") {
+		t.Error("expected queue counter (1/2) in virtual prompt")
+	}
+	// Should NOT show the second permission prompt.
+	if strings.Contains(joined, "Write") {
+		t.Error("expected only the first pending perm to be shown, but found 'Write'")
+	}
+	// Should contain the [y]/[n] hint.
+	if !strings.Contains(joined, "[y]") || !strings.Contains(joined, "[n]") {
+		t.Error("expected [y] Allow / [n] Deny hint in virtual prompt")
+	}
+}
+
+func TestPermission_NavigationLockedWhilePending(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel([]displayEntry{
+		{kind: entryText, content: "first message"},
+		{kind: entryText, content: "second message"},
+	})
+	m.width = 80
+	m.cursor = 1 // start at second entry
+	m.pendingPerms = []agent.PermissionData{
+		{RequestID: "p1", Tool: "Read", Description: "some file"},
+	}
+
+	// Try pressing 'k' (up) — cursor should NOT move.
+	m.handleKey(tea.KeyPressMsg{Code: 'k'})
+	if m.cursor != 1 {
+		t.Errorf("cursor moved to %d during pending permission, expected 1", m.cursor)
+	}
+
+	// Try pressing 'j' (down) — cursor should NOT move.
+	m.handleKey(tea.KeyPressMsg{Code: 'j'})
+	if m.cursor != 1 {
+		t.Errorf("cursor moved to %d during pending permission, expected 1", m.cursor)
+	}
+
+	// Try pressing 'm' (message) — input should NOT activate.
+	m.handleKey(tea.KeyPressMsg{Code: 'm'})
+	if m.inputActive {
+		t.Error("input activated during pending permission")
+	}
+}
+
+func TestPermission_ReplyInFlightBlocksDoubleRespond(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel(nil)
+	m.width = 80
+	m.pendingPerms = []agent.PermissionData{
+		{RequestID: "p1", Tool: "Read", Description: "file1"},
+		{RequestID: "p2", Tool: "Write", Description: "file2"},
+	}
+
+	// Press 'y' — should set replyingPermID and fire a command.
+	_, cmd := m.handleKey(tea.KeyPressMsg{Code: 'y'})
+	if m.replyingPermID != "p1" {
+		t.Fatalf("replyingPermID = %q, want %q", m.replyingPermID, "p1")
+	}
+	if cmd == nil {
+		t.Fatal("expected a command from permission reply")
+	}
+	// Queue should NOT have been popped yet.
+	if len(m.pendingPerms) != 2 {
+		t.Errorf("pendingPerms len = %d, want 2 (not yet popped)", len(m.pendingPerms))
+	}
+
+	// Press 'y' again while reply is in flight — should be no-op.
+	_, cmd2 := m.handleKey(tea.KeyPressMsg{Code: 'y'})
+	if cmd2 != nil {
+		t.Error("expected no command while reply is in flight")
+	}
+}
+
+func TestPermission_ReplyResultPopsQueue(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel(nil)
+	m.width = 80
+	m.pendingPerms = []agent.PermissionData{
+		{RequestID: "p1", Tool: "Read", Description: "file1"},
+		{RequestID: "p2", Tool: "Write", Description: "file2"},
+	}
+	m.replyingPermID = "p1"
+
+	// Simulate successful grant reply.
+	result, _ := m.Update(permissionReplyResultMsg{
+		perm:  agent.PermissionData{RequestID: "p1", Tool: "Read", Description: "file1"},
+		allow: true,
+	})
+	updated := result.(*SessionViewModel)
+
+	if updated.replyingPermID != "" {
+		t.Errorf("replyingPermID = %q, want empty", updated.replyingPermID)
+	}
+	if len(updated.pendingPerms) != 1 {
+		t.Fatalf("expected 1 remaining perm, got %d", len(updated.pendingPerms))
+	}
+	if updated.pendingPerms[0].RequestID != "p2" {
+		t.Errorf("remaining perm = %q, want %q", updated.pendingPerms[0].RequestID, "p2")
+	}
+	// Should have appended a granted result entry.
+	found := false
+	for _, e := range updated.entries {
+		if e.kind == entryPermResult && e.permGranted {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a granted entryPermResult entry")
+	}
+}
+
+func TestPermission_DenyMarksRunningToolsFailed(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel([]displayEntry{
+		{
+			kind: entryTool,
+			toolPart: &agent.Part{
+				ID:     "tool-1",
+				Type:   agent.PartToolCall,
+				Tool:   "glob",
+				Status: agent.PartRunning,
+				Input:  map[string]any{"path": "/Users/test"},
+			},
+		},
+		{
+			kind: entryTool,
+			toolPart: &agent.Part{
+				ID:     "tool-2",
+				Type:   agent.PartToolCall,
+				Tool:   "read",
+				Status: agent.PartPending,
+				Input:  map[string]any{"filePath": "/Users/test/file"},
+			},
+		},
+	})
+	m.width = 80
+	m.pendingPerms = []agent.PermissionData{{RequestID: "p1", Tool: "external_directory", Description: "/Users/test/*"}}
+	m.replyingPermID = "p1"
+
+	result, cmd := m.Update(permissionReplyResultMsg{
+		perm:  agent.PermissionData{RequestID: "p1", Tool: "external_directory", Description: "/Users/test/*"},
+		allow: false,
+	})
+	updated := result.(*SessionViewModel)
+
+	if cmd == nil {
+		t.Fatal("expected follow-up fetch commands on denial")
+	}
+	for i, e := range updated.entries {
+		if e.kind != entryTool || e.toolPart == nil {
+			continue
+		}
+		if e.toolPart.Status != agent.PartFailed {
+			t.Fatalf("tool entry %d status = %q, want %q", i, e.toolPart.Status, agent.PartFailed)
+		}
+	}
+}
+
+func TestRenderEntry_NilToolPartNoPanic(t *testing.T) {
+	t.Parallel()
+
+	// An entryTool with nil toolPart should not panic.
+	m := newTestSessionModel([]displayEntry{
+		{kind: entryText, content: "some text"},
+		{kind: entryTool, content: "[tool] something", toolPart: nil},
+	})
+	m.width = 80
+
+	// This previously panicked with nil pointer dereference.
+	lines := m.buildContentLines()
+	if len(lines) == 0 {
+		t.Error("expected at least 1 line")
+	}
+}
+
+func TestBuildContentLines_VirtualPermPromptHasBorder(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel(nil)
+	m.width = 80
+	m.pendingPerms = []agent.PermissionData{
+		{RequestID: "p1", Tool: "Read", Description: "~/.config/app.toml"},
+	}
+
+	lines := m.buildContentLines()
+	joined := strings.Join(lines, "\n")
+
+	// Should contain the rounded border characters.
+	if !strings.Contains(joined, "╭") || !strings.Contains(joined, "╰") {
+		t.Error("expected orange rounded border (╭/╰) around permission prompt")
+	}
+	if !strings.Contains(joined, "Permission") {
+		t.Error("expected 'Permission' header in prompt")
 	}
 }
