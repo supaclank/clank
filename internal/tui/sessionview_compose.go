@@ -58,10 +58,10 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showModelPicker = false
 			m.selectedModel = msg.selectedModel
 			go m.persistModelPreference()
-			return m, nil
+			return m, m.input.Focus()
 		case modelPickerCancelMsg:
 			m.showModelPicker = false
-			return m, nil
+			return m, m.input.Focus()
 		default:
 			var cmd tea.Cmd
 			m.modelPicker, cmd = m.modelPicker.Update(msg)
