@@ -132,6 +132,11 @@ type SessionViewModel struct {
 	// Entry-to-line mapping (rebuilt by buildContentLines).
 	entryStartLine []int // entryStartLine[i] = first display line for entries[i]
 	entryEndLine   []int // entryEndLine[i] = last display line (exclusive) for entries[i]
+	// lastContentLineCount is the number of display lines from the most
+	// recent View() pass. Used by clampScroll on mouse wheel so we don't
+	// rebuild all entries just to learn the total height — the next View
+	// rebuilds and re-clamps anyway, so a slightly-stale count is safe.
+	lastContentLineCount int
 
 	// Input state.
 	inputActive bool
@@ -271,6 +276,32 @@ type displayEntry struct {
 	verboseWidth int         // width the verbose cache was computed at
 	expand       expandState // click-toggled detail expansion for individual tool entries
 	permGranted  bool        // true = granted, false = denied (only for entryPermResult)
+
+	// Final-line cache. renderEntry composes wrap/markdown/border/label into
+	// the display-line slice returned to buildContentLines. For long chats
+	// this composition dominates per-scroll cost, so we memoize it keyed on
+	// every input that affects the output. Invalidation is implicit: a key
+	// mismatch produces a miss. Content/tool mutations must nil cachedLines
+	// explicitly since they don't change the key.
+	cachedLines []string
+	cachedKey   entryRenderKey
+}
+
+// entryRenderKey captures every input that affects renderEntry's output.
+// Two entries with equal keys produce byte-identical lines, so we can serve
+// the cache without re-running glamour/lipgloss.
+type entryRenderKey struct {
+	width         int
+	selected      bool
+	ownerExpanded bool
+	streaming     bool
+	showCopied    bool // selected entry's [copy] vs ✓ copied state
+	// contentLen and renderedMDLen are belt-and-suspenders: if a mutation
+	// site forgets to nil cachedLines but does update content or clear
+	// renderedMD (the more common invalidation signals), the key still
+	// differs and we re-render instead of serving stale output.
+	contentLen    int
+	renderedMDLen int
 }
 
 // expandState controls per-entry detail visibility relative to the owning
@@ -849,6 +880,7 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 					entry.verboseLines = nil
+					entry.cachedLines = nil
 				} else if isNavigable(entry.kind) && idx != m.cursor && len(m.pendingPerms) == 0 && m.replyingPermID == "" {
 					// Click-to-select: move cursor but don't scroll (no m.cursorMoved)
 					// to avoid layout shift — the clicked entry is already visible.
@@ -1103,6 +1135,7 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if m.entries[i].expand != expandDefault {
 				m.entries[i].expand = expandDefault
 				m.entries[i].verboseLines = nil
+				m.entries[i].cachedLines = nil
 			}
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("c"))):
@@ -1460,6 +1493,7 @@ func (m *SessionViewModel) upsertPartEntry(p agent.Part, isDelta bool) {
 					e.toolPart = &pCopy
 					e.toolLine = ""      // invalidate summary cache
 					e.verboseLines = nil // invalidate verbose cache
+					e.cachedLines = nil  // invalidate final-line cache
 				case agent.PartText, agent.PartThinking:
 					if isDelta {
 						e.content += p.Text
@@ -1469,6 +1503,7 @@ func (m *SessionViewModel) upsertPartEntry(p agent.Part, isDelta bool) {
 						e.streaming = false
 					}
 					e.renderedMD = "" // invalidate markdown cache
+					e.cachedLines = nil
 				}
 				return
 			}
@@ -1625,7 +1660,7 @@ func (m *SessionViewModel) renderToolVerbose(p agent.Part, width int) []string {
 	indent := "    " // 4-space indent for verbose content
 
 	if strings.EqualFold(p.Tool, "edit") {
-		return m.renderEditDiff(p, width, indent)
+		return m.renderEditDiff(p, indent)
 	}
 
 	// Read: summary line already has path:range — nothing more to show.
@@ -1643,7 +1678,7 @@ func (m *SessionViewModel) renderToolVerbose(p agent.Part, width int) []string {
 	// Render input arguments.
 	if len(p.Input) > 0 {
 		lines = append(lines, dim.Render(indent+"input:"))
-		lines = append(lines, renderInputMap(p.Input, width, indent+"  ", dim)...)
+		lines = append(lines, renderInputMap(p.Input, indent+"  ", dim)...)
 	}
 
 	// Render output.
@@ -1747,7 +1782,7 @@ func highlightLinePair(oldLine, newLine, indent string, dim, del, add lipgloss.S
 
 // renderEditDiff renders an Edit tool call as a unified-style diff with
 // context lines and character-level highlighting on changed lines.
-func (m *SessionViewModel) renderEditDiff(p agent.Part, width int, indent string) []string {
+func (m *SessionViewModel) renderEditDiff(p agent.Part, indent string) []string {
 	dim := lipgloss.NewStyle().Foreground(dimColor)
 	del := lipgloss.NewStyle().Foreground(dangerColor)
 	add := lipgloss.NewStyle().Foreground(successColor)
@@ -1851,7 +1886,7 @@ func renderTodoList(p agent.Part, indent string, dim lipgloss.Style) []string {
 
 // renderInputMap formats a map[string]any as indented key: value lines.
 // Long string values are wrapped; non-string values are JSON-encoded.
-func renderInputMap(m map[string]any, width int, indent string, style lipgloss.Style) []string {
+func renderInputMap(m map[string]any, indent string, style lipgloss.Style) []string {
 	// Sort keys for stable output.
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -2361,6 +2396,7 @@ func (m *SessionViewModel) buildContentLines() []string {
 		lines = append(lines, strings.Split(bordered, "\n")...)
 	}
 
+	m.lastContentLineCount = len(lines)
 	return lines
 }
 
@@ -2370,6 +2406,44 @@ func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool, ownerExpa
 		maxWidth = 20
 	}
 
+	// Check the per-entry final-line cache before doing any work. Tool
+	// entries with a running spinner are uncacheable (the summary line
+	// changes every tick); everything else can hit the cache whenever the
+	// render key matches.
+	toolRunning := e.kind == entryTool && e.toolPart != nil &&
+		!(e.toolPart.Status == agent.PartCompleted || e.toolPart.Status == agent.PartFailed)
+	key := entryRenderKey{
+		width:         maxWidth,
+		selected:      selected,
+		ownerExpanded: ownerExpanded,
+		streaming:     e.streaming,
+		showCopied:    selected && m.isShowingCopied(),
+		contentLen:    len(e.content),
+		renderedMDLen: len(e.renderedMD),
+	}
+	if !toolRunning && e.cachedLines != nil && e.cachedKey == key {
+		return e.cachedLines
+	}
+
+	out := m.renderEntryUncached(e, selected, ownerExpanded, maxWidth)
+	if !toolRunning {
+		e.cachedLines = out
+		e.cachedKey = key
+	}
+	return out
+}
+
+// isShowingCopied reports whether the cursor entry should render ✓ copied
+// instead of [copy] right now. Used as part of the entry cache key so the
+// cache naturally invalidates when the flash starts/ends.
+func (m *SessionViewModel) isShowingCopied() bool {
+	const copiedDuration = 1500 * time.Millisecond
+	return !m.copiedAt.IsZero() &&
+		time.Since(m.copiedAt) < copiedDuration &&
+		m.copiedCursor == m.cursor
+}
+
+func (m *SessionViewModel) renderEntryUncached(e *displayEntry, selected bool, ownerExpanded bool, maxWidth int) []string {
 	// borderSize accounts for the rounded border (1+1) + padding (1+1) = 4 chars.
 	const borderSize = 4
 	navigable := isNavigable(e.kind)
@@ -2538,10 +2612,8 @@ func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool, ownerExpa
 func (m *SessionViewModel) overlayBorderLabel(topLine string) string {
 	borderStyle := lipgloss.NewStyle().Foreground(primaryColor)
 
-	const copiedDuration = 1500 * time.Millisecond
-
 	var label string
-	if !m.copiedAt.IsZero() && time.Since(m.copiedAt) < copiedDuration && m.copiedCursor == m.cursor {
+	if m.isShowingCopied() {
 		check := lipgloss.NewStyle().Foreground(successColor).Render("✓")
 		text := lipgloss.NewStyle().Foreground(successColor).Render("copied")
 		label = check + " " + text
@@ -2627,9 +2699,26 @@ func (m *SessionViewModel) scrollToBottom() {
 	m.scrollOffset = 999999
 }
 
+// clampScroll uses lastContentLineCount from the most recent buildContentLines
+// (populated by View or lazily below on first use). The next View re-clamps
+// with the fresh count, so any staleness self-corrects within one frame.
 func (m *SessionViewModel) clampScroll() bool {
-	lines := m.buildContentLines()
-	return m.clampScrollWithLines(lines)
+	if m.lastContentLineCount == 0 {
+		// First-use path (e.g. wheel event before any View): build once so
+		// we have a real maxOffset. Subsequent wheel events reuse the count.
+		m.buildContentLines()
+	}
+	maxOffset := m.lastContentLineCount - m.contentHeight()
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if m.scrollOffset > maxOffset {
+		m.scrollOffset = maxOffset
+	}
+	if m.scrollOffset < 0 {
+		m.scrollOffset = 0
+	}
+	return m.scrollOffset >= maxOffset
 }
 
 // clampScrollWithLines clamps scrollOffset to valid bounds and reports whether
