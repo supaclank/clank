@@ -93,6 +93,10 @@ func writeError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusConflict, errResp{Code: "main_dirty", Error: err.Error()})
 	case errors.Is(err, host.ErrMergeConflict):
 		writeJSON(w, http.StatusConflict, errResp{Code: "merge_conflict", Error: err.Error()})
+	case errors.Is(err, host.ErrReservedBranch):
+		writeJSON(w, http.StatusConflict, errResp{Code: "reserved_branch", Error: err.Error()})
+	case errors.Is(err, host.ErrInvalidBranchName):
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_branch_name", Error: err.Error()})
 	default:
 		writeJSON(w, http.StatusInternalServerError, errResp{Code: "internal", Error: err.Error()})
 	}

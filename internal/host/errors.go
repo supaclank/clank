@@ -33,4 +33,17 @@ var (
 	// ErrMergeConflict is returned when the merge produces a conflict
 	// that MergeBranch has already rolled back.
 	ErrMergeConflict = errors.New("host: merge conflict: resolve manually or choose a different approach")
+
+	// ErrReservedBranch is returned when ResolveWorktree is asked to
+	// create a worktree for the repository's default branch (e.g.
+	// "main"/"master"). The default branch is reserved for the primary
+	// checkout — putting it in a separate worktree would prevent
+	// `git checkout <default>` from working in the original repo
+	// directory and breaks the user's mental model that worktrees are
+	// for *other* branches.
+	ErrReservedBranch = errors.New("host: cannot create a worktree for the default branch; it is reserved for the primary checkout")
+
+	// ErrInvalidBranchName is returned when ResolveWorktree is given an
+	// empty or whitespace-only branch name.
+	ErrInvalidBranchName = errors.New("host: branch name must be non-empty")
 )

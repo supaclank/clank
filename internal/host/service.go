@@ -15,6 +15,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -585,13 +586,35 @@ func (s *Service) listBranches(_ context.Context, projectDir string) ([]BranchIn
 // If the branch has a worktree, returns its path; otherwise creates one.
 // If the branch does not exist locally, creates a new branch from the
 // repo's default branch.
+//
+// Refuses to *create* a worktree for the repo's default branch (returns
+// ErrReservedBranch). Lookup of an existing default-branch worktree is
+// still allowed: the original repo's checkout legitimately holds the
+// default branch and callers (e.g. session bootstrap) need to find it.
+// Without this guard, asking for "main" while the original repo is on
+// some other branch would silently create ~/.clank/worktrees/<repo>/main
+// and lock the default branch out of the original repo, breaking
+// `git checkout main` there.
 func (s *Service) resolveWorktree(_ context.Context, projectDir, branch string) (WorktreeInfo, error) {
+	if strings.TrimSpace(branch) == "" {
+		return WorktreeInfo{}, ErrInvalidBranchName
+	}
 	wt, err := git.FindWorktreeForBranch(projectDir, branch)
 	if err != nil {
 		return WorktreeInfo{}, err
 	}
 	if wt != nil {
 		return WorktreeInfo{Branch: branch, WorktreeDir: wt.Path}, nil
+	}
+
+	// No existing worktree → we'd be creating one. Reject the default
+	// branch here (not earlier) so the lookup path above keeps working.
+	defaultBranch, err := git.DefaultBranch(projectDir)
+	if err != nil {
+		return WorktreeInfo{}, fmt.Errorf("determine default branch: %w", err)
+	}
+	if branch == defaultBranch {
+		return WorktreeInfo{}, ErrReservedBranch
 	}
 
 	projectName := filepath.Base(projectDir)
@@ -610,11 +633,7 @@ func (s *Service) resolveWorktree(_ context.Context, projectDir, branch string) 
 			return WorktreeInfo{}, err
 		}
 	} else {
-		base, err := git.DefaultBranch(projectDir)
-		if err != nil {
-			return WorktreeInfo{}, fmt.Errorf("determine default branch: %w", err)
-		}
-		if err := git.AddWorktreeNewBranch(projectDir, wtDir, branch, base); err != nil {
+		if err := git.AddWorktreeNewBranch(projectDir, wtDir, branch, defaultBranch); err != nil {
 			return WorktreeInfo{}, err
 		}
 	}
