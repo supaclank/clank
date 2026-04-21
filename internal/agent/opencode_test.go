@@ -26,6 +26,7 @@ type mockOpenCodeServer struct {
 	aborts       []string         // session IDs that were aborted
 	sessionIDSeq int              // auto-increment for session IDs
 	sseHandler   http.HandlerFunc // custom SSE handler for tests
+	promptBlock  chan struct{}    // if non-nil, handlePrompt waits on this before responding
 
 	server *httptest.Server
 }
@@ -106,7 +107,16 @@ func (m *mockOpenCodeServer) handlePrompt(w http.ResponseWriter, r *http.Request
 		return
 	}
 	m.prompts = append(m.prompts, mockPrompt{SessionID: id, Parts: body.Parts})
+	block := m.promptBlock
 	m.mu.Unlock()
+
+	if block != nil {
+		select {
+		case <-block:
+		case <-r.Context().Done():
+			return
+		}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	// SDK expects a SessionPromptResponse with info and parts.
@@ -225,7 +235,88 @@ func collectEvents(ch <-chan agent.Event, count int, timeout time.Duration) []ag
 	}
 }
 
+// setPromptBlock makes handlePrompt wait on the given channel before
+// returning. Use to simulate a long-running LLM response.
+func (m *mockOpenCodeServer) setPromptBlock(ch chan struct{}) {
+	m.mu.Lock()
+	m.promptBlock = ch
+	m.mu.Unlock()
+}
+
+// waitForPrompts blocks until at least n prompts have been recorded or
+// the timeout elapses. Returns the recorded prompts.
+func (m *mockOpenCodeServer) waitForPrompts(n int, timeout time.Duration) []mockPrompt {
+	deadline := time.Now().Add(timeout)
+	for {
+		got := m.getPrompts()
+		if len(got) >= n {
+			return got
+		}
+		if time.Now().After(deadline) {
+			return got
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // --- Tests ---
+
+// TestOpenCodeBackend_StartReturnsBeforePromptCompletes is the regression test
+// for the "duplicate sessions in inbox" race. The OpenCode SDK's Session.Prompt
+// blocks for the entire LLM response (often 5–60s). If Start() blocked on
+// Prompt, the hub would not learn the backend's SessionID until the response
+// finished, leaving a long window where a concurrent discover would create a
+// duplicate session row keyed on the same external session.
+//
+// Plan A makes Start() return as soon as Session.New completes, dispatching
+// the Prompt call in a goroutine. This test enforces that contract: with the
+// mock server blocking inside handlePrompt, Start() must still return promptly
+// with SessionID() populated.
+func TestOpenCodeBackend_StartReturnsBeforePromptCompletes(t *testing.T) {
+	mock := newMockOpenCodeServer()
+	defer mock.Close()
+
+	promptBlock := make(chan struct{})
+	defer close(promptBlock)
+	mock.setPromptBlock(promptBlock)
+
+	b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
+	defer b.Stop()
+
+	ctx := context.Background()
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		done <- b.Start(ctx, agent.StartRequest{
+			Backend: agent.BackendOpenCode,
+			Prompt:  "stream me a long response",
+		})
+	}()
+
+	select {
+	case err := <-done:
+		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if elapsed > 500*time.Millisecond {
+			t.Errorf("Start took %v; expected fast return (Session.Prompt should be async)", elapsed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not return within 2s while Prompt was blocked — Plan A regression")
+	}
+
+	// SessionID must be set so the hub can persist ExternalID immediately.
+	if b.SessionID() == "" {
+		t.Error("SessionID empty after Start; hub cannot dedup against discover")
+	}
+
+	// And the Prompt request must actually have been dispatched (still in flight).
+	if got := mock.waitForPrompts(1, 1*time.Second); len(got) != 1 {
+		t.Errorf("expected Prompt to be dispatched, got %d recorded prompts", len(got))
+	}
+}
 
 func TestOpenCodeBackendStartCreatesSession(t *testing.T) {
 	mock := newMockOpenCodeServer()
@@ -236,9 +327,8 @@ func TestOpenCodeBackendStartCreatesSession(t *testing.T) {
 
 	ctx := context.Background()
 	err := b.Start(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "Fix the bug in main.go",
+		Backend: agent.BackendOpenCode,
+		Prompt:  "Fix the bug in main.go",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -258,7 +348,7 @@ func TestOpenCodeBackendStartCreatesSession(t *testing.T) {
 	}
 
 	// The prompt should have been sent.
-	prompts := mock.getPrompts()
+	prompts := mock.waitForPrompts(1, 2*time.Second)
 	if len(prompts) != 1 {
 		t.Fatalf("expected 1 prompt, got %d", len(prompts))
 	}
@@ -287,10 +377,9 @@ func TestOpenCodeBackendStartResumesSession(t *testing.T) {
 
 	ctx := context.Background()
 	err := b.Start(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "Continue working",
-		SessionID:  "existing-session",
+		Backend:   agent.BackendOpenCode,
+		Prompt:    "Continue working",
+		SessionID: "existing-session",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -302,7 +391,7 @@ func TestOpenCodeBackendStartResumesSession(t *testing.T) {
 	}
 
 	// Prompt should have been sent to the existing session.
-	prompts := mock.getPrompts()
+	prompts := mock.waitForPrompts(1, 2*time.Second)
 	if len(prompts) != 1 {
 		t.Fatalf("expected 1 prompt, got %d", len(prompts))
 	}
@@ -320,12 +409,18 @@ func TestOpenCodeBackendSendMessage(t *testing.T) {
 
 	ctx := context.Background()
 	err := b.Start(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "Start task",
+		Backend: agent.BackendOpenCode,
+		Prompt:  "Start task",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait for the initial async Prompt to be dispatched so the follow-up
+	// is reliably recorded as the second entry. Otherwise goroutine
+	// scheduling may interleave the two prompts.
+	if got := mock.waitForPrompts(1, 2*time.Second); len(got) != 1 {
+		t.Fatalf("initial prompt not dispatched, got %d", len(got))
 	}
 
 	err = b.SendMessage(ctx, agent.SendMessageOpts{Text: "Follow up on the task"})
@@ -333,7 +428,7 @@ func TestOpenCodeBackendSendMessage(t *testing.T) {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
-	prompts := mock.getPrompts()
+	prompts := mock.waitForPrompts(2, 2*time.Second)
 	if len(prompts) != 2 {
 		t.Fatalf("expected 2 prompts (initial + follow-up), got %d", len(prompts))
 	}
@@ -364,9 +459,8 @@ func TestOpenCodeBackendAbort(t *testing.T) {
 
 	ctx := context.Background()
 	err := b.Start(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "Do stuff",
+		Backend: agent.BackendOpenCode,
+		Prompt:  "Do stuff",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -428,9 +522,8 @@ func TestOpenCodeBackendSSESessionIdle(t *testing.T) {
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "test",
+		Backend: agent.BackendOpenCode,
+		Prompt:  "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -519,9 +612,8 @@ func TestOpenCodeBackendSSEMessagePartUpdated(t *testing.T) {
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "test",
+		Backend: agent.BackendOpenCode,
+		Prompt:  "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -594,9 +686,8 @@ func TestOpenCodeBackendSSEFiltersOtherSessions(t *testing.T) {
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "test",
+		Backend: agent.BackendOpenCode,
+		Prompt:  "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -967,9 +1058,8 @@ func TestOpenCodeBackendSSEEventTypes(t *testing.T) {
 			defer b.Stop()
 
 			err := b.Start(context.Background(), agent.StartRequest{
-				Backend:    agent.BackendOpenCode,
-				ProjectDir: "/tmp/test",
-				Prompt:     "test",
+				Backend: agent.BackendOpenCode,
+				Prompt:  "test",
 			})
 			if err != nil {
 				t.Fatalf("Start: %v", err)
@@ -1052,13 +1142,17 @@ func TestAgentFieldThreadedInSendMessage(t *testing.T) {
 
 	ctx := context.Background()
 	err := b.Start(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "initial prompt",
-		Agent:      "plan",
+		Backend: agent.BackendOpenCode,
+		Prompt:  "initial prompt",
+		Agent:   "plan",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait for the initial async Prompt to land.
+	if got := mock.waitForPrompts(1, 2*time.Second); len(got) != 1 {
+		t.Fatalf("initial prompt not dispatched, got %d", len(got))
 	}
 
 	// Send a follow-up with agent set.
@@ -1070,7 +1164,7 @@ func TestAgentFieldThreadedInSendMessage(t *testing.T) {
 	// The mock records prompts but doesn't have visibility into the SDK's Agent
 	// param. This test verifies the call doesn't error out — the actual agent
 	// field threading is verified at the integration level against a real OpenCode server.
-	prompts := mock.getPrompts()
+	prompts := mock.waitForPrompts(2, 2*time.Second)
 	if len(prompts) != 2 {
 		t.Errorf("expected 2 prompts (initial + follow-up), got %d", len(prompts))
 	}
@@ -1116,9 +1210,8 @@ func TestOpenCodeBackendSSELargePayload(t *testing.T) {
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "test",
+		Backend: agent.BackendOpenCode,
+		Prompt:  "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1236,9 +1329,8 @@ func TestOpenCodeBackendSSEReconnectAfterDrop(t *testing.T) {
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "test",
+		Backend: agent.BackendOpenCode,
+		Prompt:  "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1351,9 +1443,8 @@ func TestOpenCodeBackendSSEReconnectWithURLChange(t *testing.T) {
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "test",
+		Backend: agent.BackendOpenCode,
+		Prompt:  "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1400,9 +1491,8 @@ func TestOpenCodeBackendSSEGivesUpAfterMaxRetries(t *testing.T) {
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "test",
+		Backend: agent.BackendOpenCode,
+		Prompt:  "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1479,9 +1569,8 @@ func TestOpenCodeBackendMessagesRetryOnConnectionError(t *testing.T) {
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "test",
+		Backend: agent.BackendOpenCode,
+		Prompt:  "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)

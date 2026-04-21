@@ -11,7 +11,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/acksell/clank/internal/daemon"
+	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/host"
+	hubclient "github.com/acksell/clank/internal/hub/client"
 )
 
 // mergeResultMsg is emitted when the merge overlay completes (success or cancel).
@@ -25,9 +27,10 @@ type mergeResultMsg struct {
 // a branch merge. It shows branch info, diff stats, a commit log, and an
 // editable textarea for the merge commit message.
 type mergeOverlayModel struct {
-	client     *daemon.Client
-	projectDir string
-	branch     daemon.BranchInfo
+	client   *hubclient.Client
+	hostname host.Hostname
+	gitRef   agent.GitRef
+	branch   host.BranchInfo
 
 	commitMsg textarea.Model
 	merging   bool // true while the merge request is in flight
@@ -36,7 +39,7 @@ type mergeOverlayModel struct {
 	height int
 }
 
-func newMergeOverlay(client *daemon.Client, projectDir string, branch daemon.BranchInfo) mergeOverlayModel {
+func newMergeOverlay(client *hubclient.Client, hostname host.Hostname, gitRef agent.GitRef, branch host.BranchInfo) mergeOverlayModel {
 	ta := textarea.New()
 	ta.SetValue("")
 	ta.Placeholder = "Describe the work done on this branch..."
@@ -57,10 +60,11 @@ func newMergeOverlay(client *daemon.Client, projectDir string, branch daemon.Bra
 	ta.Focus()
 
 	return mergeOverlayModel{
-		client:     client,
-		projectDir: projectDir,
-		branch:     branch,
-		commitMsg:  ta,
+		client:    client,
+		hostname:  hostname,
+		gitRef:    gitRef,
+		branch:    branch,
+		commitMsg: ta,
 	}
 }
 
@@ -124,16 +128,13 @@ func (m *mergeOverlayModel) Update(msg tea.Msg) tea.Cmd {
 
 func (m *mergeOverlayModel) doMerge(commitMsg string) tea.Cmd {
 	client := m.client
-	projectDir := m.projectDir
+	hostname := m.hostname
+	gitRef := m.gitRef
 	branch := m.branch.Name
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_, err := client.MergeWorktree(ctx, daemon.MergeWorktreeRequest{
-			ProjectDir:    projectDir,
-			Branch:        branch,
-			CommitMessage: commitMsg,
-		})
+		_, err := client.Host(hostname).MergeBranch(ctx, gitRef, branch, commitMsg)
 		if err != nil {
 			return mergeResultMsg{merged: false, err: err, branch: branch}
 		}

@@ -33,6 +33,72 @@ func RepoRoot(dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// RemoteURL returns the URL of the named remote (typically "origin") for
+// the repository containing dir. Returns an error when the remote is not
+// configured — callers must decide whether to treat that as fatal or
+// degrade gracefully (a brand-new local repo may have no remotes yet).
+func RemoteURL(dir, remote string) (string, error) {
+	out, err := gitCmd(dir, "config", "--get", "remote."+remote+".url")
+	if err != nil {
+		return "", fmt.Errorf("get remote %q url: %w", remote, err)
+	}
+	url := strings.TrimSpace(out)
+	if url == "" {
+		return "", fmt.Errorf("remote %q has no url configured", remote)
+	}
+	return url, nil
+}
+
+// RemoteURLs returns every configured remote's URL, keyed by remote name.
+// Used by the host's CreateSession when a caller passes Dir: any remote
+// whose canonical form matches the requested GitRef counts as a valid
+// match (people fork-then-add-upstream all the time).
+func RemoteURLs(dir string) (map[string]string, error) {
+	out, err := gitCmd(dir, "remote", "-v")
+	if err != nil {
+		return nil, fmt.Errorf("list remotes: %w", err)
+	}
+	urls := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Format: "<name>\t<url> (fetch|push)" — git emits one line per
+		// (remote, direction). Skip the push line so we don't silently
+		// overwrite the fetch URL when a remote is configured with
+		// distinct fetch/push targets (a real, if uncommon, setup).
+		// Callers want the fetch URL — that's the canonical identity
+		// for matching against GitRef.RemoteURL.
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		if fields[2] != "(fetch)" {
+			continue
+		}
+		urls[fields[0]] = fields[1]
+	}
+	return urls, nil
+}
+
+// Clone runs `git clone <url> <destDir>`. destDir must not exist (git
+// creates it). Used by the host when a caller asks for implicit cloning
+// via StartRequest.AllowClone.
+func Clone(url, destDir string) error {
+	parent := filepath.Dir(destDir)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("create clone parent %s: %w", parent, err)
+	}
+	cmd := exec.Command("git", "clone", url, destDir)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git clone %s: %s (%w)", url, strings.TrimSpace(stderr.String()), err)
+	}
+	return nil
+}
+
 // CurrentBranch returns the currently checked-out branch in dir.
 // Returns "HEAD" if in detached HEAD state.
 func CurrentBranch(dir string) (string, error) {

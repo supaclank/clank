@@ -16,7 +16,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/acksell/clank/internal/daemon"
+	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/host"
+	hubclient "github.com/acksell/clank/internal/hub/client"
 )
 
 // sidebarWidth is the fixed width of the sidebar (including border).
@@ -24,7 +26,7 @@ const sidebarWidth = 30
 
 // branchLoadedMsg carries the result of loading branches from the daemon.
 type branchLoadedMsg struct {
-	branches []daemon.BranchInfo
+	branches []host.BranchInfo
 	err      error
 }
 
@@ -56,10 +58,15 @@ func (s branchSessionStatus) IsArchived() bool {
 
 // SidebarModel displays local git branches in a navigation sidebar and allows selection.
 type SidebarModel struct {
-	client     *daemon.Client
+	client *hubclient.Client
+	// projectDir is the cwd the inbox was launched from. Kept for display
+	// and for non-branch concerns (project filter); branch operations now
+	// route through hostname/gitRef instead.
 	projectDir string
+	hostname   host.Hostname
+	gitRef     agent.GitRef
 
-	branches []daemon.BranchInfo
+	branches []host.BranchInfo
 	cursor   int
 	scroll   int
 
@@ -78,8 +85,10 @@ type SidebarModel struct {
 	err     error
 }
 
-// NewSidebarModel creates a sidebar for the given project directory.
-func NewSidebarModel(client *daemon.Client, projectDir string) SidebarModel {
+// NewSidebarModel creates a sidebar for the given repo identity.
+// projectDir is retained for display purposes only; branch/worktree ops
+// are addressed by (hostname, gitRef).
+func NewSidebarModel(client *hubclient.Client, hostname host.Hostname, gitRef agent.GitRef, projectDir string) SidebarModel {
 	ti := textinput.New()
 	ti.Placeholder = "branch-name"
 	ti.CharLimit = 128
@@ -92,6 +101,8 @@ func NewSidebarModel(client *daemon.Client, projectDir string) SidebarModel {
 
 	return SidebarModel{
 		client:     client,
+		hostname:   hostname,
+		gitRef:     gitRef,
 		projectDir: projectDir,
 		input:      ti,
 		cursor:     0, // "All branches" selected by default
@@ -131,7 +142,7 @@ func (m *SidebarModel) SelectedWorktreeDir() string {
 
 // SelectedBranchInfo returns the full BranchInfo for the currently selected
 // entry, or nil if "All" is selected.
-func (m *SidebarModel) SelectedBranchInfo() *daemon.BranchInfo {
+func (m *SidebarModel) SelectedBranchInfo() *host.BranchInfo {
 	if m.cursor == 0 || len(m.branches) == 0 {
 		return nil
 	}
@@ -346,7 +357,7 @@ func (m *SidebarModel) View() string {
 }
 
 // renderBranch renders a single worktree entry with diff stats.
-func (m *SidebarModel) renderBranch(b daemon.BranchInfo, idx, maxWidth int) string {
+func (m *SidebarModel) renderBranch(b host.BranchInfo, idx, maxWidth int) string {
 	selected := m.cursor == idx && m.focused
 
 	// Diff stat string: "+123 -45" or empty for the default branch.
@@ -449,14 +460,15 @@ func (m *SidebarModel) ensureVisible() {
 	}
 }
 
-// loadBranches fetches branches from the daemon.
+// loadBranches fetches branches from the daemon for this sidebar's repo.
 func (m *SidebarModel) loadBranches() tea.Cmd {
 	client := m.client
-	projectDir := m.projectDir
+	hostname := m.hostname
+	gitRef := m.gitRef
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		branches, err := client.ListBranches(ctx, projectDir)
+		branches, err := client.Host(hostname).ListBranches(ctx, gitRef)
 		if err != nil {
 			return branchLoadedMsg{err: err}
 		}
@@ -467,14 +479,12 @@ func (m *SidebarModel) loadBranches() tea.Cmd {
 // createWorktree asks the daemon to create a worktree for the given branch.
 func (m *SidebarModel) createWorktree(branch string) tea.Cmd {
 	client := m.client
-	projectDir := m.projectDir
+	hostname := m.hostname
+	gitRef := m.gitRef
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		_, err := client.CreateWorktree(ctx, daemon.CreateWorktreeRequest{
-			ProjectDir: projectDir,
-			Branch:     branch,
-		})
+		_, err := client.Host(hostname).ResolveWorktree(ctx, gitRef, branch)
 		return branchWorktreeCreatedMsg{branch: branch, err: err}
 	}
 }

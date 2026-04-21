@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/store"
+
+	_ "modernc.org/sqlite"
 )
 
 func tempDBPath(t *testing.T) string {
@@ -78,24 +81,21 @@ func TestUpsertAndLoad(t *testing.T) {
 
 	now := time.Now().Truncate(time.Millisecond)
 	info := agent.SessionInfo{
-		ID:             "ses-001",
-		ExternalID:     "oc-ext-001",
-		Backend:        agent.BackendOpenCode,
-		Status:         agent.StatusBusy,
-		Visibility:     agent.VisibilityDone,
-		FollowUp:       true,
-		ProjectDir:     "/tmp/project-a",
-		ProjectName:    "project-a",
-		WorktreeBranch: "feat/login",
-		WorktreeDir:    "/home/user/.clank/worktrees/project-a/feat-login",
-		Prompt:         "Fix the login bug",
-		Title:          "Fix authentication",
-		TicketID:       "TICKET-42",
-		Agent:          "plan",
-		Draft:          "work in progress",
-		CreatedAt:      now.Add(-2 * time.Hour),
-		UpdatedAt:      now.Add(-1 * time.Hour),
-		LastReadAt:     now,
+		ID:         "ses-001",
+		ExternalID: "oc-ext-001",
+		Backend:    agent.BackendOpenCode,
+		Status:     agent.StatusBusy,
+		Visibility: agent.VisibilityDone,
+		FollowUp:   true,
+		GitRef:     agent.GitRef{LocalPath: "/tmp/repo", WorktreeBranch: "feat/login"},
+		Prompt:     "Fix the login bug",
+		Title:      "Fix authentication",
+		TicketID:   "TICKET-42",
+		Agent:      "plan",
+		Draft:      "work in progress",
+		CreatedAt:  now.Add(-2 * time.Hour),
+		UpdatedAt:  now.Add(-1 * time.Hour),
+		LastReadAt: now,
 	}
 
 	if err := s.UpsertSession(info); err != nil {
@@ -129,17 +129,8 @@ func TestUpsertAndLoad(t *testing.T) {
 	if got.FollowUp != info.FollowUp {
 		t.Errorf("FollowUp = %v, want %v", got.FollowUp, info.FollowUp)
 	}
-	if got.ProjectDir != info.ProjectDir {
-		t.Errorf("ProjectDir = %q, want %q", got.ProjectDir, info.ProjectDir)
-	}
-	if got.ProjectName != info.ProjectName {
-		t.Errorf("ProjectName = %q, want %q", got.ProjectName, info.ProjectName)
-	}
-	if got.WorktreeBranch != info.WorktreeBranch {
-		t.Errorf("WorktreeBranch = %q, want %q", got.WorktreeBranch, info.WorktreeBranch)
-	}
-	if got.WorktreeDir != info.WorktreeDir {
-		t.Errorf("WorktreeDir = %q, want %q", got.WorktreeDir, info.WorktreeDir)
+	if got.GitRef.WorktreeBranch != info.GitRef.WorktreeBranch {
+		t.Errorf("Branch = %q, want %q", got.GitRef.WorktreeBranch, info.GitRef.WorktreeBranch)
 	}
 	if got.Prompt != info.Prompt {
 		t.Errorf("Prompt = %q, want %q", got.Prompt, info.Prompt)
@@ -173,14 +164,12 @@ func TestUpsertUpdatesExisting(t *testing.T) {
 
 	now := time.Now().Truncate(time.Millisecond)
 	info := agent.SessionInfo{
-		ID:          "ses-002",
-		Backend:     agent.BackendOpenCode,
-		Status:      agent.StatusIdle,
-		ProjectDir:  "/tmp/project-b",
-		ProjectName: "project-b",
-		Prompt:      "original prompt",
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:        "ses-002",
+		Backend:   agent.BackendOpenCode,
+		Status:    agent.StatusIdle,
+		Prompt:    "original prompt",
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	if err := s.UpsertSession(info); err != nil {
 		t.Fatalf("UpsertSession (initial): %v", err)
@@ -225,13 +214,11 @@ func TestDeleteSession(t *testing.T) {
 
 	now := time.Now().Truncate(time.Millisecond)
 	info := agent.SessionInfo{
-		ID:          "ses-003",
-		Backend:     agent.BackendOpenCode,
-		Status:      agent.StatusIdle,
-		ProjectDir:  "/tmp/project-c",
-		ProjectName: "project-c",
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:        "ses-003",
+		Backend:   agent.BackendOpenCode,
+		Status:    agent.StatusIdle,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	if err := s.UpsertSession(info); err != nil {
 		t.Fatalf("UpsertSession: %v", err)
@@ -282,13 +269,11 @@ func TestLastReadAtZeroValue(t *testing.T) {
 
 	now := time.Now().Truncate(time.Millisecond)
 	info := agent.SessionInfo{
-		ID:          "ses-004",
-		Backend:     agent.BackendOpenCode,
-		Status:      agent.StatusIdle,
-		ProjectDir:  "/tmp/project-d",
-		ProjectName: "project-d",
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:        "ses-004",
+		Backend:   agent.BackendOpenCode,
+		Status:    agent.StatusIdle,
+		CreatedAt: now,
+		UpdatedAt: now,
 		// LastReadAt intentionally left as zero value.
 	}
 	if err := s.UpsertSession(info); err != nil {
@@ -313,17 +298,15 @@ func TestFindByExternalID(t *testing.T) {
 
 	now := time.Now().Truncate(time.Millisecond)
 	info := agent.SessionInfo{
-		ID:          "ses-005",
-		ExternalID:  "oc-ext-005",
-		Backend:     agent.BackendOpenCode,
-		Status:      agent.StatusIdle,
-		Visibility:  agent.VisibilityDone,
-		FollowUp:    true,
-		ProjectDir:  "/tmp/project-e",
-		ProjectName: "project-e",
-		Draft:       "saved draft",
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:         "ses-005",
+		ExternalID: "oc-ext-005",
+		Backend:    agent.BackendOpenCode,
+		Status:     agent.StatusIdle,
+		Visibility: agent.VisibilityDone,
+		FollowUp:   true,
+		Draft:      "saved draft",
+		CreatedAt:  now,
+		UpdatedAt:  now,
 	}
 	if err := s.UpsertSession(info); err != nil {
 		t.Fatalf("UpsertSession: %v", err)
@@ -366,20 +349,18 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 
 	now := time.Now().Truncate(time.Millisecond)
 	info := agent.SessionInfo{
-		ID:          "ses-006",
-		ExternalID:  "oc-ext-006",
-		Backend:     agent.BackendOpenCode,
-		Status:      agent.StatusBusy,
-		Visibility:  agent.VisibilityDone,
-		FollowUp:    true,
-		ProjectDir:  "/tmp/project-f",
-		ProjectName: "project-f",
-		Prompt:      "do stuff",
-		Title:       "Doing stuff",
-		Draft:       "my draft",
-		CreatedAt:   now.Add(-1 * time.Hour),
-		UpdatedAt:   now,
-		LastReadAt:  now,
+		ID:         "ses-006",
+		ExternalID: "oc-ext-006",
+		Backend:    agent.BackendOpenCode,
+		Status:     agent.StatusBusy,
+		Visibility: agent.VisibilityDone,
+		FollowUp:   true,
+		Prompt:     "do stuff",
+		Title:      "Doing stuff",
+		Draft:      "my draft",
+		CreatedAt:  now.Add(-1 * time.Hour),
+		UpdatedAt:  now,
+		LastReadAt: now,
 	}
 
 	// Write with first store instance.
@@ -432,13 +413,11 @@ func TestMultipleSessions(t *testing.T) {
 	now := time.Now().Truncate(time.Millisecond)
 	for i, id := range []string{"ses-a", "ses-b", "ses-c"} {
 		info := agent.SessionInfo{
-			ID:          id,
-			Backend:     agent.BackendOpenCode,
-			Status:      agent.StatusIdle,
-			ProjectDir:  "/tmp/project",
-			ProjectName: "project",
-			CreatedAt:   now.Add(time.Duration(i) * time.Minute),
-			UpdatedAt:   now.Add(time.Duration(i) * time.Minute),
+			ID:        id,
+			Backend:   agent.BackendOpenCode,
+			Status:    agent.StatusIdle,
+			CreatedAt: now.Add(time.Duration(i) * time.Minute),
+			UpdatedAt: now.Add(time.Duration(i) * time.Minute),
 		}
 		if err := s.UpsertSession(info); err != nil {
 			t.Fatalf("UpsertSession(%s): %v", id, err)
@@ -481,12 +460,13 @@ func TestLoadPrimaryAgentsEmpty(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))
 
-	agents, err := s.LoadPrimaryAgents(agent.BackendOpenCode, "/tmp/project")
+	ref := agent.GitRef{RemoteURL: "git@github.com:acksell/clank.git"}
+	agents, err := s.LoadPrimaryAgents(agent.BackendOpenCode, "local", ref)
 	if err != nil {
 		t.Fatalf("LoadPrimaryAgents: %v", err)
 	}
 	if agents != nil {
-		t.Errorf("expected nil for uncached project, got %v", agents)
+		t.Errorf("expected nil for uncached target, got %v", agents)
 	}
 }
 
@@ -494,16 +474,17 @@ func TestUpsertAndLoadPrimaryAgents(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))
 
+	ref := agent.GitRef{RemoteURL: "git@github.com:acksell/clank.git"}
 	agents := []agent.AgentInfo{
 		{Name: "build", Description: "Build agent", Mode: "primary", Hidden: false},
 		{Name: "plan", Description: "Plan agent", Mode: "primary", Hidden: false},
 	}
 
-	if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "/tmp/project", agents); err != nil {
+	if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "local", ref, agents); err != nil {
 		t.Fatalf("UpsertPrimaryAgents: %v", err)
 	}
 
-	got, err := s.LoadPrimaryAgents(agent.BackendOpenCode, "/tmp/project")
+	got, err := s.LoadPrimaryAgents(agent.BackendOpenCode, "local", ref)
 	if err != nil {
 		t.Fatalf("LoadPrimaryAgents: %v", err)
 	}
@@ -516,16 +497,27 @@ func TestUpsertAndLoadPrimaryAgents(t *testing.T) {
 	if got[1].Name != "plan" {
 		t.Errorf("agents[1].Name = %q, want %q", got[1].Name, "plan")
 	}
+
+	// Hostname defaulting: empty hostname is treated as "local" for both
+	// upsert and load (parity with sessions table convention).
+	if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "", ref, agents); err != nil {
+		t.Fatalf("UpsertPrimaryAgents (empty hostname): %v", err)
+	}
+	got2, err := s.LoadPrimaryAgents(agent.BackendOpenCode, "", ref)
+	if err != nil || len(got2) != 2 {
+		t.Errorf("LoadPrimaryAgents (empty hostname): err=%v len=%d", err, len(got2))
+	}
 }
 
 func TestUpsertPrimaryAgentsOverwrites(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))
 
+	ref := agent.GitRef{RemoteURL: "git@github.com:acksell/clank.git"}
 	initial := []agent.AgentInfo{
 		{Name: "build", Description: "Build agent", Mode: "primary"},
 	}
-	if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "/tmp/project", initial); err != nil {
+	if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "local", ref, initial); err != nil {
 		t.Fatalf("UpsertPrimaryAgents (initial): %v", err)
 	}
 
@@ -533,11 +525,11 @@ func TestUpsertPrimaryAgentsOverwrites(t *testing.T) {
 		{Name: "build", Description: "Build agent v2", Mode: "primary"},
 		{Name: "plan", Description: "Plan agent", Mode: "primary"},
 	}
-	if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "/tmp/project", updated); err != nil {
+	if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "local", ref, updated); err != nil {
 		t.Fatalf("UpsertPrimaryAgents (update): %v", err)
 	}
 
-	got, err := s.LoadPrimaryAgents(agent.BackendOpenCode, "/tmp/project")
+	got, err := s.LoadPrimaryAgents(agent.BackendOpenCode, "local", ref)
 	if err != nil {
 		t.Fatalf("LoadPrimaryAgents: %v", err)
 	}
@@ -549,88 +541,123 @@ func TestUpsertPrimaryAgentsOverwrites(t *testing.T) {
 	}
 }
 
-func TestLoadPrimaryAgentsIsolatedByBackendAndProject(t *testing.T) {
+func TestLoadPrimaryAgentsIsolatedByBackendHostAndRepo(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))
 
+	refA := agent.GitRef{RemoteURL: "git@github.com:acksell/repo-a.git"}
+	refB := agent.GitRef{RemoteURL: "git@github.com:acksell/repo-b.git"}
 	agentsA := []agent.AgentInfo{{Name: "build", Mode: "primary"}}
 	agentsB := []agent.AgentInfo{{Name: "plan", Mode: "primary"}}
 
-	if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "/tmp/project-a", agentsA); err != nil {
+	if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "local", refA, agentsA); err != nil {
 		t.Fatalf("UpsertPrimaryAgents A: %v", err)
 	}
-	if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "/tmp/project-b", agentsB); err != nil {
+	if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "local", refB, agentsB); err != nil {
 		t.Fatalf("UpsertPrimaryAgents B: %v", err)
 	}
 
-	gotA, err := s.LoadPrimaryAgents(agent.BackendOpenCode, "/tmp/project-a")
+	gotA, err := s.LoadPrimaryAgents(agent.BackendOpenCode, "local", refA)
 	if err != nil {
 		t.Fatalf("LoadPrimaryAgents A: %v", err)
 	}
 	if len(gotA) != 1 || gotA[0].Name != "build" {
-		t.Errorf("project-a agents = %v, want [{build}]", gotA)
+		t.Errorf("repo-a agents = %v, want [{build}]", gotA)
 	}
 
-	gotB, err := s.LoadPrimaryAgents(agent.BackendOpenCode, "/tmp/project-b")
+	gotB, err := s.LoadPrimaryAgents(agent.BackendOpenCode, "local", refB)
 	if err != nil {
 		t.Fatalf("LoadPrimaryAgents B: %v", err)
 	}
 	if len(gotB) != 1 || gotB[0].Name != "plan" {
-		t.Errorf("project-b agents = %v, want [{plan}]", gotB)
+		t.Errorf("repo-b agents = %v, want [{plan}]", gotB)
 	}
 
-	// Different backend, same project — should be empty.
-	gotC, err := s.LoadPrimaryAgents(agent.BackendClaudeCode, "/tmp/project-a")
+	// Different backend, same repo — should be empty.
+	gotC, err := s.LoadPrimaryAgents(agent.BackendClaudeCode, "local", refA)
 	if err != nil {
 		t.Fatalf("LoadPrimaryAgents claude: %v", err)
 	}
 	if gotC != nil {
 		t.Errorf("expected nil for claude-code backend, got %v", gotC)
 	}
+
+	// Different host, same backend+repo — should be empty.
+	gotD, err := s.LoadPrimaryAgents(agent.BackendOpenCode, "remote-1", refA)
+	if err != nil {
+		t.Fatalf("LoadPrimaryAgents remote host: %v", err)
+	}
+	if gotD != nil {
+		t.Errorf("expected nil for remote-1 host, got %v", gotD)
+	}
 }
 
-func TestKnownProjectDirs(t *testing.T) {
+func TestUpsertPrimaryAgents_RejectsEmptyGitRef(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t, tempDBPath(t))
+
+	if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "local", agent.GitRef{}, nil); err == nil {
+		t.Error("expected error for empty GitRef")
+	}
+}
+
+func TestKnownAgentTargets(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))
 
 	now := time.Now().Truncate(time.Millisecond)
-	for _, dir := range []string{"/tmp/project-a", "/tmp/project-b", "/tmp/project-a"} {
-		info := agent.SessionInfo{
-			ID:          "ses-" + dir,
-			Backend:     agent.BackendOpenCode,
-			Status:      agent.StatusIdle,
-			ProjectDir:  dir,
-			ProjectName: "proj",
-			CreatedAt:   now,
-			UpdatedAt:   now,
-		}
-		if err := s.UpsertSession(info); err != nil {
-			t.Fatalf("UpsertSession: %v", err)
+	refA := agent.GitRef{RemoteURL: "git@github.com:acksell/repo-a.git"}
+	refB := agent.GitRef{RemoteURL: "git@github.com:acksell/repo-b.git"}
+	// Two sessions on local/repo-a (should dedupe), one on local/repo-b,
+	// one on remote-1/repo-a, one with no GitRef (must be skipped).
+	rows := []agent.SessionInfo{
+		{ID: "s1", Backend: agent.BackendOpenCode, Status: agent.StatusIdle, Hostname: "local", GitRef: refA, CreatedAt: now, UpdatedAt: now},
+		{ID: "s2", Backend: agent.BackendOpenCode, Status: agent.StatusIdle, Hostname: "local", GitRef: refA, CreatedAt: now, UpdatedAt: now},
+		{ID: "s3", Backend: agent.BackendOpenCode, Status: agent.StatusIdle, Hostname: "local", GitRef: refB, CreatedAt: now, UpdatedAt: now},
+		{ID: "s4", Backend: agent.BackendClaudeCode, Status: agent.StatusIdle, Hostname: "remote-1", GitRef: refA, CreatedAt: now, UpdatedAt: now},
+		{ID: "s5", Backend: agent.BackendOpenCode, Status: agent.StatusIdle, Hostname: "local", CreatedAt: now, UpdatedAt: now},
+	}
+	for _, r := range rows {
+		if err := s.UpsertSession(r); err != nil {
+			t.Fatalf("UpsertSession %s: %v", r.ID, err)
 		}
 	}
 
-	dirs, err := s.KnownProjectDirs(agent.BackendOpenCode)
+	got, err := s.KnownAgentTargets()
 	if err != nil {
-		t.Fatalf("KnownProjectDirs: %v", err)
+		t.Fatalf("KnownAgentTargets: %v", err)
 	}
-	dirSet := map[string]bool{}
-	for _, d := range dirs {
-		dirSet[d] = true
+	type key struct {
+		Backend  agent.BackendType
+		Hostname string
+		Ref      string
 	}
-	if len(dirSet) != 2 {
-		t.Errorf("expected 2 distinct dirs, got %d: %v", len(dirSet), dirs)
+	seen := map[key]bool{}
+	refKey := func(r agent.GitRef) string {
+		switch {
+		case r.RemoteURL != "":
+			return "remote:" + r.RemoteURL
+		case r.LocalPath != "":
+			return "local:" + r.LocalPath
+		default:
+			return ""
+		}
 	}
-	if !dirSet["/tmp/project-a"] || !dirSet["/tmp/project-b"] {
-		t.Errorf("expected project-a and project-b, got %v", dirs)
+	for _, t := range got {
+		seen[key{t.Backend, t.Hostname, refKey(t.GitRef)}] = true
 	}
-
-	// Different backend should return empty.
-	dirs, err = s.KnownProjectDirs(agent.BackendClaudeCode)
-	if err != nil {
-		t.Fatalf("KnownProjectDirs claude: %v", err)
+	want := []key{
+		{agent.BackendOpenCode, "local", refKey(refA)},
+		{agent.BackendOpenCode, "local", refKey(refB)},
+		{agent.BackendClaudeCode, "remote-1", refKey(refA)},
 	}
-	if len(dirs) != 0 {
-		t.Errorf("expected 0 dirs for claude-code, got %d", len(dirs))
+	if len(seen) != len(want) {
+		t.Errorf("got %d targets, want %d: %+v", len(seen), len(want), got)
+	}
+	for _, k := range want {
+		if !seen[k] {
+			t.Errorf("missing target %+v in %+v", k, got)
+		}
 	}
 }
 
@@ -644,7 +671,8 @@ func TestMigrationV2Idempotent(t *testing.T) {
 		t.Fatalf("first Open: %v", err)
 	}
 	agents := []agent.AgentInfo{{Name: "build", Mode: "primary"}}
-	if err := s1.UpsertPrimaryAgents(agent.BackendOpenCode, "/tmp/proj", agents); err != nil {
+	ref := agent.GitRef{RemoteURL: "git@github.com:acksell/clank.git"}
+	if err := s1.UpsertPrimaryAgents(agent.BackendOpenCode, "local", ref, agents); err != nil {
 		t.Fatalf("UpsertPrimaryAgents: %v", err)
 	}
 	s1.Close()
@@ -656,7 +684,7 @@ func TestMigrationV2Idempotent(t *testing.T) {
 	}
 	defer s2.Close()
 
-	got, err := s2.LoadPrimaryAgents(agent.BackendOpenCode, "/tmp/proj")
+	got, err := s2.LoadPrimaryAgents(agent.BackendOpenCode, "local", ref)
 	if err != nil {
 		t.Fatalf("LoadPrimaryAgents: %v", err)
 	}
@@ -685,13 +713,11 @@ func TestConcurrentWrites(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			info := agent.SessionInfo{
-				ID:          fmt.Sprintf("ses-concurrent-%d", i),
-				Backend:     agent.BackendOpenCode,
-				Status:      agent.StatusIdle,
-				ProjectDir:  fmt.Sprintf("/tmp/project-%d", i),
-				ProjectName: fmt.Sprintf("project-%d", i),
-				CreatedAt:   now,
-				UpdatedAt:   now,
+				ID:        fmt.Sprintf("ses-concurrent-%d", i),
+				Backend:   agent.BackendOpenCode,
+				Status:    agent.StatusIdle,
+				CreatedAt: now,
+				UpdatedAt: now,
 			}
 			if err := s.UpsertSession(info); err != nil {
 				errs <- fmt.Errorf("UpsertSession(%d): %w", i, err)
@@ -707,7 +733,8 @@ func TestConcurrentWrites(t *testing.T) {
 			agents := []agent.AgentInfo{
 				{Name: fmt.Sprintf("agent-%d", i), Mode: "primary"},
 			}
-			if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, fmt.Sprintf("/tmp/project-%d", i), agents); err != nil {
+			ref := agent.GitRef{RemoteURL: fmt.Sprintf("git@github.com:acksell/repo-%d.git", i)}
+			if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "local", ref, agents); err != nil {
 				errs <- fmt.Errorf("UpsertPrimaryAgents(%d): %w", i, err)
 			}
 		}()
@@ -727,5 +754,211 @@ func TestConcurrentWrites(t *testing.T) {
 	}
 	if len(sessions) != numWriters {
 		t.Errorf("expected %d sessions, got %d", numWriters, len(sessions))
+	}
+}
+
+// TestUpsertAndLoadHostScopedIdentity verifies the path-free identity fields
+// (Hostname, GitRef, WorktreeBranch) round-trip through the JSON-encoded
+// git_ref column alongside the legacy path-style fields.
+func TestUpsertAndLoadHostScopedIdentity(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t, tempDBPath(t))
+
+	now := time.Now().Truncate(time.Millisecond)
+	info := agent.SessionInfo{
+		ID:        "ses-host-1",
+		Backend:   agent.BackendOpenCode,
+		Status:    agent.StatusIdle,
+		Hostname:  "local",
+		GitRef:    agent.GitRef{RemoteURL: "git@github.com:acksell/clank.git", WorktreeBranch: "feat/x"},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	if err := s.UpsertSession(info); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+
+	sessions, err := s.LoadSessions()
+	if err != nil {
+		t.Fatalf("LoadSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	got := sessions[0]
+	if got.Hostname != "local" {
+		t.Errorf("Hostname = %q, want local", got.Hostname)
+	}
+	if got.GitRef.RemoteURL == "" || got.GitRef.RemoteURL != "git@github.com:acksell/clank.git" {
+		t.Errorf("GitRef.RemoteURL = %q, want git@github.com:acksell/clank.git", got.GitRef.RemoteURL)
+	}
+	if got.GitRef.LocalPath != "" {
+		t.Errorf("GitRef.LocalPath = %q, want empty", got.GitRef.LocalPath)
+	}
+	// Branch round-trips through GitRef.WorktreeBranch.
+	if got.GitRef.WorktreeBranch != "feat/x" {
+		t.Errorf("Branch = %q, want feat/x", got.GitRef.WorktreeBranch)
+	}
+}
+
+// TestUpsertDefaultsHostnameToLocal verifies that legacy callers that never
+// set Hostname still produce rows with host_id='local' (the migration default
+// also covers this for pre-v11 rows).
+func TestUpsertDefaultsHostnameToLocal(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t, tempDBPath(t))
+
+	now := time.Now().Truncate(time.Millisecond)
+	info := agent.SessionInfo{
+		ID:        "ses-legacy-1",
+		Backend:   agent.BackendOpenCode,
+		Status:    agent.StatusIdle,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := s.UpsertSession(info); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	sessions, err := s.LoadSessions()
+	if err != nil {
+		t.Fatalf("LoadSessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].Hostname != "local" {
+		t.Fatalf("expected Hostname=local, got %+v", sessions)
+	}
+}
+
+// TestMigrationV12_SplitsRepoRemoteURLIntoGitRefColumns verifies that
+// the v11→v12 migration renames repo_remote_url to git_ref_url, adds
+// git_ref_kind / git_ref_path, and backfills kind='remote' for rows
+// that had a populated URL. Empty rows stay empty (kind=”) so they get
+// re-resolved on next session start instead of being stamped with a
+// bogus remote.
+func TestMigrationV12_SplitsRepoRemoteURLIntoGitRefColumns(t *testing.T) {
+	t.Parallel()
+	path := tempDBPath(t)
+
+	// Bootstrap a v11-shaped database directly via the sqlite driver:
+	// run the same DDL the historical migrations did, insert two rows
+	// (one populated, one empty repo_remote_url), leave user_version=11.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE sessions (
+			id              TEXT PRIMARY KEY,
+			external_id     TEXT NOT NULL DEFAULT '',
+			backend         TEXT NOT NULL,
+			status          TEXT NOT NULL DEFAULT 'idle',
+			visibility      TEXT NOT NULL DEFAULT '',
+			follow_up       INTEGER NOT NULL DEFAULT 0,
+			project_dir     TEXT NOT NULL,
+			project_name    TEXT NOT NULL,
+			prompt          TEXT NOT NULL DEFAULT '',
+			title           TEXT NOT NULL DEFAULT '',
+			ticket_id       TEXT NOT NULL DEFAULT '',
+			agent           TEXT NOT NULL DEFAULT '',
+			draft           TEXT NOT NULL DEFAULT '',
+			created_at      DATETIME NOT NULL,
+			updated_at      DATETIME NOT NULL,
+			last_read_at    DATETIME,
+			worktree_branch TEXT NOT NULL DEFAULT '',
+			worktree_dir    TEXT NOT NULL DEFAULT '',
+			host_id         TEXT NOT NULL DEFAULT 'local',
+			repo_remote_url TEXT NOT NULL DEFAULT ''
+		);
+		PRAGMA user_version = 11;
+	`); err != nil {
+		t.Fatalf("seed v11 schema: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	if _, err := db.Exec(`
+		INSERT INTO sessions
+			(id, backend, status, project_dir, project_name,
+			 created_at, updated_at, host_id, repo_remote_url)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "ses-old-1", string(agent.BackendOpenCode), string(agent.StatusIdle),
+		"/tmp/old", "old", now, now, "local",
+		"git@github.com:acksell/clank.git"); err != nil {
+		t.Fatalf("seed populated row: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO sessions
+			(id, backend, status, project_dir, project_name,
+			 created_at, updated_at, host_id, repo_remote_url)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "ses-old-2", string(agent.BackendOpenCode), string(agent.StatusIdle),
+		"/tmp/old2", "old2", now, now, "local", ""); err != nil {
+		t.Fatalf("seed empty row: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// Re-open via store.Open to apply v12.
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	sessions, err := s.LoadSessions()
+	if err != nil {
+		t.Fatalf("LoadSessions: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(sessions))
+	}
+	byID := map[string]agent.SessionInfo{}
+	for _, info := range sessions {
+		byID[info.ID] = info
+	}
+	got1, ok := byID["ses-old-1"]
+	if !ok {
+		t.Fatal("missing ses-old-1 after migration")
+	}
+	if got1.GitRef.RemoteURL == "" || got1.GitRef.RemoteURL != "git@github.com:acksell/clank.git" {
+		t.Errorf("ses-old-1 GitRef.RemoteURL = %q, want git@github.com:acksell/clank.git", got1.GitRef.RemoteURL)
+	}
+	got2, ok := byID["ses-old-2"]
+	if !ok {
+		t.Fatal("missing ses-old-2 after migration")
+	}
+	if got2.GitRef.RemoteURL != "" || got2.GitRef.LocalPath != "" {
+		t.Errorf("ses-old-2 GitRef = %+v, want zero (empty repo_remote_url stays empty)", got2.GitRef)
+	}
+
+	// Verify the underlying schema actually has the discrete columns
+	// (catches a future regression where the migration silently no-ops).
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("reopen raw: %v", err)
+	}
+	defer raw.Close()
+	cols, err := raw.Query(`SELECT name FROM pragma_table_info('sessions') WHERE name IN ('project_dir', 'git_remote_url', 'git_ref_kind', 'git_ref_path', 'git_ref_url') ORDER BY name`)
+	if err != nil {
+		t.Fatalf("pragma_table_info: %v", err)
+	}
+	defer cols.Close()
+	var names []string
+	for cols.Next() {
+		var n string
+		if err := cols.Scan(&n); err != nil {
+			t.Fatalf("scan col name: %v", err)
+		}
+		names = append(names, n)
+	}
+	// After v15: legacy git_ref_* columns are gone, replaced by the
+	// pointer-shape (project_dir, git_remote_url) pair.
+	wantCols := []string{"git_remote_url", "project_dir"}
+	if len(names) != len(wantCols) {
+		t.Fatalf("identity columns = %v, want %v", names, wantCols)
+	}
+	for i, want := range wantCols {
+		if names[i] != want {
+			t.Errorf("col[%d] = %q, want %q", i, names[i], want)
+		}
 	}
 }

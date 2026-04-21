@@ -2440,3 +2440,54 @@ func TestBuildContentLines_VirtualPermPromptHasBorder(t *testing.T) {
 		t.Error("expected 'Permission' header in prompt")
 	}
 }
+
+// TestBuildContentLines_ToolVerboseWrapsToWidth is a regression test for the
+// bug where multiline/long tool output (e.g. bash command output) was emitted
+// as a single []string entry per newline-separated chunk without wrapping to
+// the terminal width. The terminal would visually wrap those rows, but the
+// scroll/selection model counted them as one row each — so the scroll maximum
+// was underestimated and the input box got pushed off the bottom of the
+// screen. Every line returned by buildContentLines must fit within m.width.
+func TestBuildContentLines_ToolVerboseWrapsToWidth(t *testing.T) {
+	t.Parallel()
+
+	long := strings.Repeat("abcdefghij", 20) // 200 chars, no spaces — a "URL-like" token
+	output := "first short line\n" + long + "\n" + strings.Repeat("word ", 40) + "\nlast"
+
+	m := newTestSessionModel([]displayEntry{
+		{
+			kind: entryTool,
+			toolPart: &agent.Part{
+				ID:     "tool-1",
+				Type:   agent.PartToolCall,
+				Tool:   "bash",
+				Status: agent.PartCompleted,
+				Input: map[string]any{
+					"command": "echo " + long, // long single-line input value too
+				},
+				Output: output,
+			},
+			expand: expandForceShow, // force verbose expansion
+		},
+	})
+	m.width = 60
+
+	lines := m.buildContentLines()
+	if len(lines) == 0 {
+		t.Fatal("expected at least one content line")
+	}
+	for i, l := range lines {
+		if w := lipgloss.Width(l); w > m.width {
+			t.Errorf("line %d width=%d exceeds m.width=%d: %q", i, w, m.width, l)
+		}
+	}
+
+	// The verbose block must span more than one logical line per wrapped
+	// chunk — otherwise buildContentLines will under-count and scrollToBottom
+	// will stop short of showing the input box.
+	// Sanity: total line count should exceed the raw newline count of the output.
+	rawNewlines := strings.Count(output, "\n") + 1
+	if len(lines) <= rawNewlines+2 {
+		t.Errorf("expected wrapped verbose output to produce more lines than raw newlines (%d), got %d", rawNewlines, len(lines))
+	}
+}

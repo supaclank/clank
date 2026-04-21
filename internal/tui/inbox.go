@@ -17,7 +17,9 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/daemon"
+	"github.com/acksell/clank/internal/git"
+	"github.com/acksell/clank/internal/host"
+	hubclient "github.com/acksell/clank/internal/hub/client"
 )
 
 // inboxScreen tracks which screen is active within the inbox app.
@@ -59,7 +61,7 @@ type inboxGroup struct {
 // It uses a sidebar + main layout: sidebar shows branches, main area shows
 // sessions. In narrow terminals, only the session pane is shown.
 type InboxModel struct {
-	client *daemon.Client
+	client *hubclient.Client
 
 	// Two-pane layout state.
 	pane          inboxPane    // which pane has keyboard focus
@@ -99,8 +101,15 @@ type InboxModel struct {
 
 	// Filter state — structured filters applied as pills in the search bar.
 	projectDir    string // absolute path of the cwd when the inbox was launched
-	projectName   string // basename of projectDir, used for display
-	projectFilter bool   // when true, only show sessions matching projectDir
+	projectName   string // basename of projectDir, used for the filter pill label
+	projectFilter bool   // when true, only show sessions whose canonical GitRef matches gitRef
+
+	// Repo identity for branch/worktree ops. Resolved from cwd at startup
+	// via hubclient.ResolveRepo. If resolution failed (e.g. cwd not in a
+	// git repo with an origin remote), these stay zero and the sidebar will
+	// surface the underlying load error.
+	hostname host.Hostname
+	gitRef   agent.GitRef
 
 	// Pre-built display data.
 	displayLines []string
@@ -131,8 +140,39 @@ type InboxModel struct {
 	err    error
 }
 
+// resolveLocalRepo turns the user's current working directory into the
+// (hostname, canonical GitRef) the Hub expects on StartRequest. It is the
+// shell→API bridge: shells out to git for the repo root + origin URL.
+//
+// Sends BOTH LocalPath (the repo root, used by co-located hosts to skip
+// cloning) AND RemoteURL when available (cross-host stable identity,
+// fallback if a remote host doesn't have LocalPath). See agent.GitRef
+// godoc for resolution precedence on the host.
+//
+// On any failure (cwd not in a git repo) it returns zero values;
+// callers surface the underlying problem via the subsequent sidebar
+// branch-load error rather than blocking startup. Repos with no origin
+// are still usable on the local host.
+//
+// Hostname is currently always HostLocal; remote hosts will be plumbed
+// through when they exist.
+func resolveLocalRepo(cwd string) (host.Hostname, agent.GitRef) {
+	root, err := git.RepoRoot(cwd)
+	if err != nil {
+		return "", agent.GitRef{}
+	}
+	ref := agent.GitRef{LocalPath: root}
+	if url, err := git.RemoteURL(root, "origin"); err == nil {
+		ref.RemoteURL = url
+	}
+	if err := ref.Validate(); err != nil {
+		return "", agent.GitRef{}
+	}
+	return host.HostLocal, ref
+}
+
 // NewInboxModel creates the inbox TUI connected to the given daemon client.
-func NewInboxModel(client *daemon.Client) *InboxModel {
+func NewInboxModel(client *hubclient.Client) *InboxModel {
 	sp := spinner.New(
 		spinner.WithSpinner(spinner.MiniDot),
 		spinner.WithStyle(lipgloss.NewStyle().Foreground(successColor)),
@@ -151,7 +191,12 @@ func NewInboxModel(client *daemon.Client) *InboxModel {
 	ti.SetStyles(styles)
 
 	cwd, _ := os.Getwd()
-	bp := NewSidebarModel(client, cwd)
+	// Resolve cwd → (hostname, gitRef). On failure we leave both zero; the
+	// sidebar's branch load will then return a clear error to the user.
+	// The host adds the repo to its registry implicitly on the first
+	// CreateSession that carries Dir / AllowClone (§7.5).
+	hostname, gitRef := resolveLocalRepo(cwd)
+	bp := NewSidebarModel(client, hostname, gitRef, cwd)
 	return &InboxModel{
 		client:      client,
 		pane:        paneSessions,
@@ -160,11 +205,18 @@ func NewInboxModel(client *daemon.Client) *InboxModel {
 		searchInput: ti,
 		projectDir:  cwd,
 		projectName: filepath.Base(cwd),
+		hostname:    hostname,
+		gitRef:      gitRef,
 	}
 }
 
 func (m *InboxModel) Init() tea.Cmd {
-	cmds := []tea.Cmd{func() tea.Msg { return tea.RequestWindowSize }, m.discoverCmd(), m.loadDataCmd(), m.autoRefreshCmd(), m.spinner.Tick, m.sidebar.Init()}
+	// Note: discoverCmd is intentionally NOT in the Init batch. Each TUI
+	// startup used to fire discover, which races with in-flight CreateSession
+	// calls in other TUIs/agents and produced duplicate inbox rows. Discover
+	// at daemon startup (hub/discover_startup.go) covers the cold-boot case;
+	// future explicit rediscover will be a keybind.
+	cmds := []tea.Cmd{func() tea.Msg { return tea.RequestWindowSize }, m.loadDataCmd(), m.autoRefreshCmd(), m.spinner.Tick, m.sidebar.Init()}
 	if m.screen == screenSession && m.sessionView != nil {
 		cmds = append(cmds, m.sessionView.Init())
 	}
@@ -182,7 +234,7 @@ func (m *InboxModel) discoverCmd() tea.Cmd {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = m.client.DiscoverSessions(ctx, cwd)
+		_ = m.client.Sessions().Discover(ctx, cwd)
 		// After discovery completes, trigger a refresh to show new sessions.
 		return inboxRefreshMsg{}
 	}
@@ -194,7 +246,7 @@ func (m *InboxModel) loadDataCmd() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		sessions, err := m.client.ListSessions(ctx)
+		sessions, err := m.client.Sessions().List(ctx)
 		if err != nil {
 			return inboxDataMsg{err: err}
 		}
@@ -229,7 +281,7 @@ func (m *InboxModel) searchCmd(query string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		sessions, err := m.client.SearchSessions(ctx, agent.SearchParams{Query: query})
+		sessions, err := m.client.Sessions().Search(ctx, agent.SearchParams{Query: query})
 		return inboxSearchResultMsg{query: query, sessions: sessions, err: err}
 	}
 }
@@ -434,12 +486,12 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Persist any unsent text as a draft before leaving the session.
 		if m.activeConnID != "" && m.sessionView != nil {
 			draft := strings.TrimSpace(m.sessionView.DraftText())
-			go m.client.SetDraft(context.Background(), m.activeConnID, draft)
+			go m.client.Session(m.activeConnID).SetDraft(context.Background(), draft)
 		}
 		// Mark the session as read on close to capture any activity
 		// that occurred while the user was viewing it.
 		if m.activeConnID != "" {
-			go m.client.MarkSessionRead(context.Background(), m.activeConnID)
+			go m.client.Session(m.activeConnID).MarkRead(context.Background())
 		}
 		m.screen = screenInbox
 		m.sessionView = nil
@@ -455,7 +507,7 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sessionView.cancelEvents()
 		}
 		if m.activeConnID != "" {
-			go m.client.MarkSessionRead(context.Background(), m.activeConnID)
+			go m.client.Session(m.activeConnID).MarkRead(context.Background())
 		}
 		// Navigate to the forked session.
 		return m, m.openSession(forkMsg.sessionID)
@@ -583,25 +635,26 @@ func (m *InboxModel) exitSearch() tea.Cmd {
 func (m *InboxModel) filteredSessions() []agent.SessionInfo {
 	sessions := m.cachedSessions
 
-	// Filter by project directory.
-	if m.projectFilter && m.projectDir != "" {
+	// Filter by repo identity (canonical GitRef). Sessions without a
+	// GitRef (e.g. adopted backends with no origin remote) are dropped
+	// from the project view since they can't be attributed to this repo.
+	if m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.RemoteURL != "") {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
-			if s.ProjectDir == m.projectDir {
+			if agent.RepoKey(s.GitRef) == agent.RepoKey(m.gitRef) {
 				filtered = append(filtered, s)
 			}
 		}
 		sessions = filtered
 	}
 
-	// Filter by selected worktree. Matches sessions whose ProjectDir is the
-	// selected worktree's path — works for both Clank-created worktrees and
-	// the main working tree.
-	wtDir := m.sidebar.SelectedWorktreeDir()
-	if wtDir != "" {
+	// Filter by branch (if a branch is selected in the sidebar). Match by
+	// branch name only, not on-disk path: a branch is a logical identity
+	// regardless of where the host materialized the worktree on disk.
+	if branch := m.sidebar.SelectedBranch(); branch != "" {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
-			if s.ProjectDir == wtDir {
+			if s.GitRef.WorktreeBranch == branch {
 				filtered = append(filtered, s)
 			}
 		}
@@ -720,12 +773,22 @@ func (m *InboxModel) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // Results are shown in a single flat "Results" group, ranked by relevance
 // (the order returned by the daemon).
 func (m *InboxModel) buildSearchResults(sessions []agent.SessionInfo) {
-	// Apply client-side structured filters (e.g. project) on top of
-	// the daemon's text search results.
-	if m.projectFilter && m.projectDir != "" {
+	// Apply client-side structured filters (e.g. project, branch) on
+	// top of the daemon's text search results so the search view
+	// honours the same sidebar selection as the unfiltered list.
+	if m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.RemoteURL != "") {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
-			if s.ProjectDir == m.projectDir {
+			if agent.RepoKey(s.GitRef) == agent.RepoKey(m.gitRef) {
+				filtered = append(filtered, s)
+			}
+		}
+		sessions = filtered
+	}
+	if branch := m.sidebar.SelectedBranch(); branch != "" {
+		filtered := make([]agent.SessionInfo, 0, len(sessions))
+		for _, s := range sessions {
+			if s.GitRef.WorktreeBranch == branch {
 				filtered = append(filtered, s)
 			}
 		}
@@ -932,13 +995,13 @@ func (m *InboxModel) openSession(sessionID string) tea.Cmd {
 	m.activeConnID = sessionID
 
 	// Mark session as read so the inbox reflects the change immediately.
-	go m.client.MarkSessionRead(context.Background(), sessionID)
+	go m.client.Session(sessionID).MarkRead(context.Background())
 
 	// Pre-subscribe to SSE before creating the view model to avoid missing
 	// events from an already-busy session. The connect is to a local Unix
 	// socket so it completes near-instantly.
 	sseCtx, sseCancel := context.WithCancel(context.Background())
-	events, err := m.client.SubscribeEvents(sseCtx)
+	events, err := m.client.Sessions().Subscribe(sseCtx)
 
 	m.sessionView = NewSessionViewModel(m.client, sessionID)
 	m.sessionView.voice = &m.voice
@@ -987,13 +1050,13 @@ func (m *InboxModel) deleteSession(sessionID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := m.client.DeleteSession(ctx, sessionID); err != nil {
+		if err := m.client.Session(sessionID).Delete(ctx); err != nil {
 			return inboxDataMsg{err: err}
 		}
 		// Reload data after delete.
 		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel2()
-		sessions, err := m.client.ListSessions(ctx2)
+		sessions, err := m.client.Sessions().List(ctx2)
 		return inboxDataMsg{sessions: sessions, err: err}
 	}
 }
@@ -1020,13 +1083,13 @@ func (m *InboxModel) setSessionVisibility(sessionID string, visibility agent.Ses
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := m.client.SetVisibility(ctx, sessionID, visibility); err != nil {
+		if err := m.client.Session(sessionID).SetVisibility(ctx, visibility); err != nil {
 			return inboxDataMsg{err: err}
 		}
 		// Reload data after visibility change.
 		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel2()
-		sessions, err := m.client.ListSessions(ctx2)
+		sessions, err := m.client.Sessions().List(ctx2)
 		return inboxDataMsg{sessions: sessions, err: err}
 	}
 }
@@ -1035,13 +1098,13 @@ func (m *InboxModel) toggleFollowUp(sessionID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if _, err := m.client.ToggleFollowUp(ctx, sessionID); err != nil {
+		if _, err := m.client.Session(sessionID).ToggleFollowUp(ctx); err != nil {
 			return inboxDataMsg{err: err}
 		}
 		// Reload data so the session moves to/from the FOLLOW UP group.
 		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel2()
-		sessions, err := m.client.ListSessions(ctx2)
+		sessions, err := m.client.Sessions().List(ctx2)
 		return inboxDataMsg{sessions: sessions, err: err}
 	}
 }
@@ -1282,8 +1345,7 @@ func (m *InboxModel) renderSessionPane() string {
 
 	// Error.
 	if m.err != nil {
-		errMsg := lipgloss.NewStyle().Foreground(dangerColor).Render(fmt.Sprintf("Error: %v", m.err))
-		sb.WriteString(errMsg)
+		sb.WriteString(renderError(m.err, m.width))
 		sb.WriteString("\n\n")
 	}
 
@@ -1372,14 +1434,24 @@ func (m *InboxModel) sessionPaneWidth() int {
 
 // updateBranchSessionCounts computes per-branch session status summaries
 // from cachedSessions and passes them to the sidebar for display.
-// Sessions are attributed to branches by matching ProjectDir against
-// worktree paths, not by the WorktreeBranch field.
+// Sessions are attributed to branches by WorktreeBranch — the canonical
+// branch identity carried on the wire (§7.1). When a project filter is
+// active the counts are scoped to that repo so the sidebar reflects the
+// same world the main pane is showing; otherwise unrelated repos that
+// happen to share a branch name (e.g. "main") would inflate the count.
 func (m *InboxModel) updateBranchSessionCounts() {
-	wtDirToBranch := m.sidebar.WorktreeDirToBranch()
 	statusMap := make(map[string]branchSessionStatus)
+	scoped := m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.RemoteURL != "")
+	repoKey := ""
+	if scoped {
+		repoKey = agent.RepoKey(m.gitRef)
+	}
 	for _, s := range m.cachedSessions {
-		branch, ok := wtDirToBranch[s.ProjectDir]
-		if !ok {
+		branch := s.GitRef.WorktreeBranch
+		if branch == "" {
+			continue
+		}
+		if scoped && agent.RepoKey(s.GitRef) != repoKey {
 			continue
 		}
 		st := statusMap[branch]
@@ -1438,7 +1510,7 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		}
 		bi := m.sidebar.SelectedBranchInfo()
 		if bi != nil && !bi.IsDefault {
-			m.mergeOverlay = newMergeOverlay(m.client, m.sidebar.projectDir, *bi)
+			m.mergeOverlay = newMergeOverlay(m.client, m.hostname, m.gitRef, *bi)
 			m.mergeOverlay.SetSize(m.width, m.height)
 			m.showMerge = true
 		}
@@ -1627,8 +1699,8 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	const branchBadgeWidth = 12
 	branchBadge := ""
 	branchExtra := 0
-	if m.sidebar.SelectedBranch() == "" && s.WorktreeBranch != "" {
-		branchLabel := s.WorktreeBranch
+	if m.sidebar.SelectedBranch() == "" && s.GitRef.WorktreeBranch != "" {
+		branchLabel := s.GitRef.WorktreeBranch
 		if len(branchLabel) > branchBadgeWidth-2 {
 			branchLabel = branchLabel[:branchBadgeWidth-3] + "…"
 		}
@@ -1641,7 +1713,7 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 		branchExtra = branchBadgeWidth - 1 // visible width including trailing space
 	}
 
-	projectName := s.ProjectName
+	projectName := agent.RepoDisplayName(s.GitRef)
 	if len(projectName) > 12 {
 		projectName = projectName[:11] + "…"
 	}

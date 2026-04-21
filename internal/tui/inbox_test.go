@@ -180,13 +180,12 @@ func TestRenderRow_DraftLabelShown(t *testing.T) {
 	m := &InboxModel{width: 120}
 
 	session := &agent.SessionInfo{
-		ID:          "draft-session",
-		Status:      agent.StatusIdle,
-		ProjectName: "myproject",
-		Prompt:      "work in progress",
-		UpdatedAt:   now,
-		LastReadAt:  now,
-		Draft:       "some unsent text",
+		ID:         "draft-session",
+		Status:     agent.StatusIdle,
+		Prompt:     "work in progress",
+		UpdatedAt:  now,
+		LastReadAt: now,
+		Draft:      "some unsent text",
 	}
 	row := inboxRow{session: session}
 	rendered := m.renderRow(row, false)
@@ -212,11 +211,10 @@ func TestRenderRow_DraftLabelCoexistsWithUnreadMarks(t *testing.T) {
 		{
 			name: "draft with unread shows both draft and star",
 			session: &agent.SessionInfo{
-				ID:          "draft-unread",
-				Status:      agent.StatusIdle,
-				ProjectName: "proj",
-				Prompt:      "test",
-				UpdatedAt:   now,
+				ID:        "draft-unread",
+				Status:    agent.StatusIdle,
+				Prompt:    "test",
+				UpdatedAt: now,
 				// LastReadAt zero => Unread() is true
 				Draft: "half-typed message",
 			},
@@ -227,14 +225,13 @@ func TestRenderRow_DraftLabelCoexistsWithUnreadMarks(t *testing.T) {
 		{
 			name: "draft with follow-up shows both draft and bang",
 			session: &agent.SessionInfo{
-				ID:          "draft-followup",
-				Status:      agent.StatusIdle,
-				ProjectName: "proj",
-				Prompt:      "test",
-				UpdatedAt:   now,
-				LastReadAt:  now,
-				FollowUp:    true,
-				Draft:       "half-typed message",
+				ID:         "draft-followup",
+				Status:     agent.StatusIdle,
+				Prompt:     "test",
+				UpdatedAt:  now,
+				LastReadAt: now,
+				FollowUp:   true,
+				Draft:      "half-typed message",
 			},
 			wantDraft: true,
 			wantBang:  true,
@@ -243,11 +240,10 @@ func TestRenderRow_DraftLabelCoexistsWithUnreadMarks(t *testing.T) {
 		{
 			name: "no draft shows unread star",
 			session: &agent.SessionInfo{
-				ID:          "no-draft-unread",
-				Status:      agent.StatusIdle,
-				ProjectName: "proj",
-				Prompt:      "test",
-				UpdatedAt:   now,
+				ID:        "no-draft-unread",
+				Status:    agent.StatusIdle,
+				Prompt:    "test",
+				UpdatedAt: now,
 				// LastReadAt zero => Unread() is true
 			},
 			wantDraft: false,
@@ -257,13 +253,12 @@ func TestRenderRow_DraftLabelCoexistsWithUnreadMarks(t *testing.T) {
 		{
 			name: "no draft shows follow-up bang",
 			session: &agent.SessionInfo{
-				ID:          "no-draft-followup",
-				Status:      agent.StatusIdle,
-				ProjectName: "proj",
-				Prompt:      "test",
-				UpdatedAt:   now,
-				LastReadAt:  now,
-				FollowUp:    true,
+				ID:         "no-draft-followup",
+				Status:     agent.StatusIdle,
+				Prompt:     "test",
+				UpdatedAt:  now,
+				LastReadAt: now,
+				FollowUp:   true,
 			},
 			wantDraft: false,
 			wantBang:  true,
@@ -955,13 +950,12 @@ func TestRenderRow_ShowsAgentMode(t *testing.T) {
 			t.Parallel()
 
 			session := &agent.SessionInfo{
-				ID:          "test-session",
-				Status:      agent.StatusIdle,
-				ProjectName: "myproject",
-				Prompt:      "do something",
-				Agent:       tt.agent,
-				UpdatedAt:   now,
-				LastReadAt:  now,
+				ID:         "test-session",
+				Status:     agent.StatusIdle,
+				Prompt:     "do something",
+				Agent:      tt.agent,
+				UpdatedAt:  now,
+				LastReadAt: now,
 			}
 			row := inboxRow{session: session}
 			rendered := m.renderRow(row, false)
@@ -1837,21 +1831,19 @@ func TestRenderRow_DoneSessionMutedProject(t *testing.T) {
 	now := time.Now()
 
 	doneSession := &agent.SessionInfo{
-		ID:          "done-1",
-		Status:      agent.StatusIdle,
-		Title:       "My task",
-		ProjectName: "myproject",
-		UpdatedAt:   now,
-		LastReadAt:  now,
-		Visibility:  agent.VisibilityDone,
+		ID:         "done-1",
+		Status:     agent.StatusIdle,
+		Title:      "My task",
+		UpdatedAt:  now,
+		LastReadAt: now,
+		Visibility: agent.VisibilityDone,
 	}
 	normalSession := &agent.SessionInfo{
-		ID:          "normal-1",
-		Status:      agent.StatusIdle,
-		Title:       "My task",
-		ProjectName: "myproject",
-		UpdatedAt:   now,
-		LastReadAt:  now,
+		ID:         "normal-1",
+		Status:     agent.StatusIdle,
+		Title:      "My task",
+		UpdatedAt:  now,
+		LastReadAt: now,
 	}
 
 	doneRendered := m.renderRow(inboxRow{session: doneSession}, false)
@@ -1870,23 +1862,21 @@ func TestRenderRow_ArchivedSessionGrayedOut(t *testing.T) {
 	now := time.Now()
 
 	archivedSession := &agent.SessionInfo{
-		ID:          "arch-1",
-		Status:      agent.StatusIdle,
-		Title:       "Old task",
-		ProjectName: "myproject",
-		Agent:       "build",
-		UpdatedAt:   now,
-		LastReadAt:  now,
-		Visibility:  agent.VisibilityArchived,
+		ID:         "arch-1",
+		Status:     agent.StatusIdle,
+		Title:      "Old task",
+		Agent:      "build",
+		UpdatedAt:  now,
+		LastReadAt: now,
+		Visibility: agent.VisibilityArchived,
 	}
 	normalSession := &agent.SessionInfo{
-		ID:          "normal-1",
-		Status:      agent.StatusIdle,
-		Title:       "Old task",
-		ProjectName: "myproject",
-		Agent:       "build",
-		UpdatedAt:   now,
-		LastReadAt:  now,
+		ID:         "normal-1",
+		Status:     agent.StatusIdle,
+		Title:      "Old task",
+		Agent:      "build",
+		UpdatedAt:  now,
+		LastReadAt: now,
 	}
 
 	archivedRendered := m.renderRow(inboxRow{session: archivedSession}, false)
@@ -1963,20 +1953,18 @@ func TestRenderRow_UnreadBoldTitle(t *testing.T) {
 	now := time.Now()
 
 	unreadSession := &agent.SessionInfo{
-		ID:          "unread-1",
-		Status:      agent.StatusIdle,
-		Title:       "New changes",
-		ProjectName: "proj",
-		UpdatedAt:   now,
+		ID:        "unread-1",
+		Status:    agent.StatusIdle,
+		Title:     "New changes",
+		UpdatedAt: now,
 		// LastReadAt zero => Unread() is true
 	}
 	readSession := &agent.SessionInfo{
-		ID:          "read-1",
-		Status:      agent.StatusIdle,
-		Title:       "New changes",
-		ProjectName: "proj",
-		UpdatedAt:   now,
-		LastReadAt:  now,
+		ID:         "read-1",
+		Status:     agent.StatusIdle,
+		Title:      "New changes",
+		UpdatedAt:  now,
+		LastReadAt: now,
 	}
 
 	unreadRendered := m.renderRow(inboxRow{session: unreadSession}, false)
@@ -2200,16 +2188,20 @@ func TestProjectFilterToggle(t *testing.T) {
 func TestFilteredSessionsByProject(t *testing.T) {
 	t.Parallel()
 
+	alpha := agent.GitRef{LocalPath: "/home/user/alpha"}
+	beta := agent.GitRef{LocalPath: "/home/user/beta"}
+
 	now := time.Now()
 	m := &InboxModel{
 		projectDir:  "/home/user/alpha",
 		projectName: "alpha",
+		gitRef:      alpha,
 		width:       120,
 		height:      40,
 		cachedSessions: []agent.SessionInfo{
-			{ID: "s1", ProjectDir: "/home/user/alpha", ProjectName: "alpha", UpdatedAt: now},
-			{ID: "s2", ProjectDir: "/home/user/beta", ProjectName: "beta", UpdatedAt: now.Add(-time.Hour)},
-			{ID: "s3", ProjectDir: "/home/user/alpha", ProjectName: "alpha", UpdatedAt: now.Add(-2 * time.Hour)},
+			{ID: "s1", GitRef: alpha, UpdatedAt: now},
+			{ID: "s2", GitRef: beta, UpdatedAt: now.Add(-time.Hour)},
+			{ID: "s3", GitRef: alpha, UpdatedAt: now.Add(-2 * time.Hour)},
 		},
 	}
 
@@ -2226,8 +2218,8 @@ func TestFilteredSessionsByProject(t *testing.T) {
 		t.Fatalf("expected 2 sessions with project filter, got %d", len(filtered))
 	}
 	for _, s := range filtered {
-		if s.ProjectDir != "/home/user/alpha" {
-			t.Errorf("expected all filtered sessions to have projectDir /home/user/alpha, got %s", s.ProjectDir)
+		if agent.RepoKey(s.GitRef) != agent.RepoKey(alpha) {
+			t.Errorf("expected all filtered sessions to match alpha gitref, got %+v", s.GitRef)
 		}
 	}
 }
@@ -2235,16 +2227,20 @@ func TestFilteredSessionsByProject(t *testing.T) {
 func TestProjectFilterRebuildsGroups(t *testing.T) {
 	t.Parallel()
 
+	alpha := agent.GitRef{LocalPath: "/home/user/alpha"}
+	beta := agent.GitRef{LocalPath: "/home/user/beta"}
+
 	now := time.Now()
 	m := &InboxModel{
 		projectDir:  "/home/user/alpha",
 		projectName: "alpha",
+		gitRef:      alpha,
 		width:       120,
 		height:      40,
 		cachedSessions: []agent.SessionInfo{
-			{ID: "s1", ProjectDir: "/home/user/alpha", ProjectName: "alpha", Status: agent.StatusIdle, UpdatedAt: now},
-			{ID: "s2", ProjectDir: "/home/user/beta", ProjectName: "beta", Status: agent.StatusIdle, UpdatedAt: now},
-			{ID: "s3", ProjectDir: "/home/user/alpha", ProjectName: "alpha", Status: agent.StatusIdle, UpdatedAt: now.Add(-time.Hour)},
+			{ID: "s1", GitRef: alpha, Status: agent.StatusIdle, UpdatedAt: now},
+			{ID: "s2", GitRef: beta, Status: agent.StatusIdle, UpdatedAt: now},
+			{ID: "s3", GitRef: alpha, Status: agent.StatusIdle, UpdatedAt: now.Add(-time.Hour)},
 		},
 	}
 
@@ -2464,18 +2460,22 @@ func TestRightArrow_WhileCreatingBranch_PassesThrough(t *testing.T) {
 func TestBuildSearchResults_RespectsProjectFilter(t *testing.T) {
 	t.Parallel()
 
+	alpha := agent.GitRef{LocalPath: "/home/user/alpha"}
+	beta := agent.GitRef{LocalPath: "/home/user/beta"}
+
 	now := time.Now()
 	m := &InboxModel{
 		projectDir:    "/home/user/alpha",
 		projectName:   "alpha",
+		gitRef:        alpha,
 		projectFilter: true,
 		width:         120,
 		height:        40,
 	}
 
 	sessions := []agent.SessionInfo{
-		{ID: "s1", ProjectDir: "/home/user/alpha", ProjectName: "alpha", Prompt: "fix bug", UpdatedAt: now},
-		{ID: "s2", ProjectDir: "/home/user/beta", ProjectName: "beta", Prompt: "fix bug", UpdatedAt: now},
+		{ID: "s1", GitRef: alpha, Prompt: "fix bug", UpdatedAt: now},
+		{ID: "s2", GitRef: beta, Prompt: "fix bug", UpdatedAt: now},
 	}
 
 	m.buildSearchResults(sessions)
@@ -2508,8 +2508,8 @@ func TestSearchStatePreservedAcrossSessionView(t *testing.T) {
 		height:      40,
 	}
 	m.buildSearchResults([]agent.SessionInfo{
-		{ID: "s1", ProjectName: "alpha", Prompt: "fix bug in auth", Status: agent.StatusIdle, UpdatedAt: now},
-		{ID: "s2", ProjectName: "beta", Prompt: "fix bug in cart", Status: agent.StatusIdle, UpdatedAt: now},
+		{ID: "s1", GitRef: agent.GitRef{RemoteURL: "git@github.com:acme/alpha.git"}, Prompt: "fix bug in auth", Status: agent.StatusIdle, UpdatedAt: now},
+		{ID: "s2", GitRef: agent.GitRef{RemoteURL: "git@github.com:acme/beta.git"}, Prompt: "fix bug in cart", Status: agent.StatusIdle, UpdatedAt: now},
 	})
 
 	// Verify precondition: 2 search results visible.

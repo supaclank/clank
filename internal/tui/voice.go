@@ -28,7 +28,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/daemon"
+	hubclient "github.com/acksell/clank/internal/hub/client"
 	"github.com/acksell/clank/internal/voice"
 )
 
@@ -464,6 +464,6 @@ func (m *InboxModel) passVoiceState() {
 // This means voice indicators won't update on the inbox screen unless
 // a session is open. This is acceptable for v1 since voice is most
 // useful while viewing a session.
-func ensureVoiceEventSubscription(_ *daemon.Client) {
+func ensureVoiceEventSubscription(_ *hubclient.Client) {
 	// Placeholder for future inbox-level SSE subscription.
 }

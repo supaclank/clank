@@ -17,7 +17,9 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
-	"github.com/acksell/clank/internal/daemon"
+	"github.com/acksell/clank/internal/git"
+	"github.com/acksell/clank/internal/host"
+	hubclient "github.com/acksell/clank/internal/hub/client"
 )
 
 // sessionCreateResultMsg carries the result of creating a session from composing mode.
@@ -30,19 +32,33 @@ type sessionCreateResultMsg struct {
 
 // NewSessionViewComposing creates a SessionViewModel in composing mode.
 // No daemon session exists yet — the user writes their first prompt here.
-func NewSessionViewComposing(client *daemon.Client, projectDir string) *SessionViewModel {
+//
+// The gitRef is resolved eagerly from projectDir's `origin` remote so the
+// background fetchAgents/fetchModels prefetch can target it. If the
+// project isn't a git repo, gitRef stays empty and the prefetch becomes
+// a no-op (the user will see the failure on launch).
+func NewSessionViewComposing(client *hubclient.Client, projectDir string) *SessionViewModel {
 	ta := newPromptTextarea("Describe the task for the agent...", 5)
 	ta.Focus()
 	sp := spinner.New(
 		spinner.WithSpinner(spinner.MiniDot),
 		spinner.WithStyle(lipgloss.NewStyle().Foreground(successColor)),
 	)
+	// Send both LocalPath (so the local host skips cloning) and the
+	// origin URL when available (cross-host stable identity for future
+	// remote-host targeting). See agent.GitRef godoc.
+	ref := agent.GitRef{LocalPath: projectDir}
+	if remoteURL, err := git.RemoteURL(projectDir, "origin"); err == nil {
+		ref.RemoteURL = remoteURL
+	}
 	return &SessionViewModel{
 		client:      client,
 		composing:   true,
 		inputActive: true,
 		backend:     agent.BackendOpenCode,
 		projectDir:  projectDir,
+		hostname:    host.HostLocal,
+		gitRef:      ref,
 		follow:      true,
 		input:       ta,
 		spinner:     sp,
@@ -197,11 +213,22 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 	m.err = nil
 	m.submitting = true
 
-	req := agent.StartRequest{
-		Backend:        m.backend,
-		ProjectDir:     m.projectDir,
+	// Both LocalPath and RemoteURL — local host uses path, future
+	// remote hosts fall through to clone. RemoteURL is best-effort
+	// (repos without origin still work locally).
+	gitRef := agent.GitRef{
+		LocalPath:      m.projectDir,
 		WorktreeBranch: m.worktreeBranch,
-		Prompt:         prompt,
+	}
+	if remoteURL, err := git.RemoteURL(m.projectDir, "origin"); err == nil {
+		gitRef.RemoteURL = remoteURL
+	}
+
+	req := agent.StartRequest{
+		Backend:  m.backend,
+		Hostname: string(host.HostLocal),
+		GitRef:   gitRef,
+		Prompt:   prompt,
 	}
 	if len(m.agents) > 0 {
 		req.Agent = m.agents[m.selectedAgent].Name
@@ -223,7 +250,7 @@ func (m *SessionViewModel) createSessionCmd(req agent.StartRequest) tea.Cmd {
 	client := m.client
 	return func() tea.Msg {
 		sseCtx, sseCancel := context.WithCancel(context.Background())
-		events, err := client.SubscribeEvents(sseCtx)
+		events, err := client.Sessions().Subscribe(sseCtx)
 		if err != nil {
 			sseCancel()
 			return sessionCreateResultMsg{err: fmt.Errorf("subscribe events: %w", err)}
@@ -232,7 +259,7 @@ func (m *SessionViewModel) createSessionCmd(req agent.StartRequest) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		info, err := client.CreateSession(ctx, req)
+		info, err := client.Sessions().Create(ctx, req)
 		if err != nil {
 			sseCancel()
 			return sessionCreateResultMsg{err: fmt.Errorf("create session: %w", err)}
@@ -304,8 +331,7 @@ func (m *SessionViewModel) viewCompose() tea.View {
 
 	// Error banner.
 	if m.err != nil {
-		errMsg := lipgloss.NewStyle().Foreground(dangerColor).Render(fmt.Sprintf("Error: %v", m.err))
-		sb.WriteString(errMsg)
+		sb.WriteString(renderError(m.err, m.width))
 		sb.WriteString("\n\n")
 	}
 

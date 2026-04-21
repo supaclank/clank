@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/git"
+	"github.com/acksell/clank/internal/host"
 	"github.com/acksell/mindmouth/tools"
 )
 
@@ -122,8 +124,9 @@ func listSessionsTool(tp ToolProvider) *tools.Tool {
 				if title == "" {
 					title = truncate(s.Prompt, 60)
 				}
+				project := agent.RepoDisplayName(s.GitRef)
 				fmt.Fprintf(&b, "- %s | %s | %s | %s | %s%s\n",
-					s.ID, s.Status, s.Backend, s.ProjectDir, title, unread)
+					s.ID, s.Status, s.Backend, project, title, unread)
 			}
 			return b.String(), nil
 		},
@@ -324,15 +327,24 @@ func createSessionTool(tp ToolProvider) *tools.Tool {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 
+			// Derive the canonical repo identity from the validated path.
+			// The voice tool still takes a path (matches user mental model);
+			// the wire identity is path-free per Phase 3D-2.
+			remote, err := git.RemoteURL(args.ProjectDir, "origin")
+			if err != nil {
+				return "", fmt.Errorf("derive repo remote for %s: %w", args.ProjectDir, err)
+			}
 			info, err := tp.CreateSession(ctx, agent.StartRequest{
-				Backend:    agent.BackendType(args.Backend),
-				ProjectDir: args.ProjectDir,
-				Prompt:     args.Prompt,
+				Backend:  agent.BackendType(args.Backend),
+				Hostname: string(host.HostLocal),
+				GitRef:   agent.GitRef{RemoteURL: remote},
+				Prompt:   args.Prompt,
 			})
 			if err != nil {
 				return "", fmt.Errorf("create session: %w", err)
 			}
-			return fmt.Sprintf("Session created: %s (%s)", info.ID[:8], info.ProjectName), nil
+			display := agent.RepoDisplayName(info.GitRef)
+			return fmt.Sprintf("Session created: %s (%s)", info.ID[:8], display), nil
 		},
 	}
 }

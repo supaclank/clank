@@ -108,8 +108,15 @@ func (b *OpenCodeBackend) Start(ctx context.Context, req StartRequest) error {
 	// status while the agent is working.
 	b.setStatus(StatusBusy)
 
-	// Send the initial prompt via SDK. This blocks until the full response
-	// is received, but events stream in via SSE in the background.
+	// Build prompt params now (cheap), then dispatch the actual Prompt
+	// call asynchronously. The SDK's Session.Prompt blocks for the entire
+	// LLM response (often 5–60s). Returning early lets the hub observe
+	// SessionID() immediately and persist ExternalID, which closes the
+	// race window where a concurrent discover would create a duplicate
+	// session row. See TestDiscoverWhileSessionPromptInflight.
+	//
+	// We use b.ctx (not the caller's ctx) so the prompt survives the
+	// /start HTTP request lifetime; it is cancelled by Stop().
 	params := opencode.SessionPromptParams{
 		Parts: opencode.F([]opencode.SessionPromptParamsPartUnion{
 			opencode.TextPartInputParam{
@@ -127,20 +134,32 @@ func (b *OpenCodeBackend) Start(ctx context.Context, req StartRequest) error {
 			ProviderID: opencode.F(req.Model.ProviderID),
 		})
 	}
-	_, err := b.client.Session.Prompt(ctx, b.sessionID, params)
-	if err != nil && isConnectionError(err) && b.resolver != nil {
-		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
-			_, err = b.client.Session.Prompt(ctx, b.sessionID, params)
-		}
-	}
-	if err != nil {
-		b.setStatus(StatusError)
-		return fmt.Errorf("send prompt: %w", err)
-	}
+	sid := b.sessionID
+	go b.runPrompt(sid, params)
 
 	// Don't set status here — the SSE stream will deliver session.idle
 	// which triggers the idle transition.
 	return nil
+}
+
+// runPrompt dispatches Session.Prompt and translates errors into a status
+// transition + EventError. Used by Start to keep the prompt async without
+// losing failure visibility.
+func (b *OpenCodeBackend) runPrompt(sid string, params opencode.SessionPromptParams) {
+	_, err := b.client.Session.Prompt(b.ctx, sid, params)
+	if err != nil && isConnectionError(err) && b.resolver != nil {
+		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
+			_, err = b.client.Session.Prompt(b.ctx, sid, params)
+		}
+	}
+	if err != nil {
+		// Don't surface ctx-cancelled errors from Stop().
+		if b.ctx.Err() != nil {
+			return
+		}
+		b.setStatus(StatusError)
+		b.emitError(fmt.Sprintf("send prompt: %v", err))
+	}
 }
 
 // Watch starts listening for SSE events on this session without sending a
@@ -1687,11 +1706,25 @@ func (m *OpenCodeServerManager) ListSessions(ctx context.Context, projectDir str
 	return m.ListSessionsFromServer(ctx, serverURL)
 }
 
+// sessionListLimit is the page size used when querying the opencode
+// /session endpoint. opencode defaults to 100, which silently truncates for
+// users with hundreds of sessions per project. The SDK's SessionListParams
+// does not expose Limit/Offset, so we override the query param directly via
+// option.WithQuery (verified end-to-end by TestDiscoverSessions_PaginatesPastDefaultLimit).
+// We pick a value comfortably above any realistic single-project session
+// count; if a user ever exceeds this we should switch to proper pagination.
+const sessionListLimit = "100000"
+
 // ListSessionsFromServer queries an already-known server URL for sessions.
 // Used by DiscoverSessions to avoid starting new servers per worktree.
+//
+// Note: opencode's HTTP /session API is project-scoped to the server's
+// startup directory, even though the underlying SQLite DB is global. To
+// list sessions across all projects, callers must hit one server per
+// project worktree (see DiscoverSessions).
 func (m *OpenCodeServerManager) ListSessionsFromServer(ctx context.Context, serverURL string) ([]SessionSnapshot, error) {
 	client := opencode.NewClient(option.WithBaseURL(strings.TrimRight(serverURL, "/")))
-	sessions, err := client.Session.List(ctx, opencode.SessionListParams{})
+	sessions, err := client.Session.List(ctx, opencode.SessionListParams{}, option.WithQuery("limit", sessionListLimit))
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
@@ -1701,7 +1734,7 @@ func (m *OpenCodeServerManager) ListSessionsFromServer(ctx context.Context, serv
 	var result []SessionSnapshot
 	for _, s := range *sessions {
 		if s.ParentID != "" {
-			continue // Skip child/forked sessions
+			continue // Skip subtask sessions
 		}
 		result = append(result, SessionSnapshot{
 			ID:              s.ID,

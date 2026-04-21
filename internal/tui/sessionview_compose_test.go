@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -8,6 +11,30 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 )
+
+// initGitRepoForCompose creates a real git repo with an "origin" remote
+// so the compose view's launchSession can resolve the repo identity.
+func initGitRepoForCompose(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	run("git", "init", "-b", "main")
+	run("git", "config", "user.email", "t@t")
+	run("git", "config", "user.name", "T")
+	run("git", "remote", "add", "origin", "git@github.com:acksell/clank.git")
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("git", "add", ".")
+	run("git", "commit", "-m", "initial")
+	return dir
+}
 
 func TestCompose_BackendToggle(t *testing.T) {
 	t.Parallel()
@@ -55,7 +82,8 @@ func TestCompose_EnterWithEmptyPromptShowsError(t *testing.T) {
 
 func TestCompose_EnterWithPromptCreatesSession(t *testing.T) {
 	t.Parallel()
-	m := NewSessionViewComposing(nil, "/tmp/project")
+	dir := initGitRepoForCompose(t)
+	m := NewSessionViewComposing(nil, dir)
 	m.width = 80
 	m.height = 40
 

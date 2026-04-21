@@ -3,7 +3,8 @@
 ## Coding structure
 1. Prefer multiple files instead of long files; consider per-method files for a struct, especially endpoints.
 2. Add comments where helpful, especially for non-obvious "why" decisions. Do not add redundant comments.
-3. NEVER use "fallbacks" for missing parameters. Makes it harder to debug and reason about the code's true happy path. Prefer fast failures.
+3. NEVER use "fallbacks" for missing parameters. Makes it harder to debug and reason about the code's true happy path. Prefer fast failures and clear API's.
+4. No magic strings. Prefer constant global variables, and consider whether a type alias (enum) is necessary for preventing mistakes via better type-safety.
 
 ## Testing & debugging
 

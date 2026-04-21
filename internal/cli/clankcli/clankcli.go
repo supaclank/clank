@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,7 +15,9 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/cli/daemoncli"
-	"github.com/acksell/clank/internal/daemon"
+	"github.com/acksell/clank/internal/git"
+	"github.com/acksell/clank/internal/host"
+	hubclient "github.com/acksell/clank/internal/hub/client"
 	"github.com/acksell/clank/internal/tui"
 )
 
@@ -33,7 +36,6 @@ func Command() *cobra.Command {
 		codeCmd(),
 		inboxCmd(),
 		voiceCmd(),
-		sessionsCmd(),
 	)
 
 	return root
@@ -64,7 +66,10 @@ The daemon is auto-started if not already running.`,
 				return runComposing(projectDir, worktreeBranch)
 			}
 
-			// Determine project directory.
+			// Determine project directory. Resolve to an absolute path
+			// so that GitRef.LocalPath is stable regardless of where
+			// the daemon happens to be running from when it consumes
+			// the request.
 			if projectDir == "" {
 				cwd, err := os.Getwd()
 				if err != nil {
@@ -72,6 +77,11 @@ The daemon is auto-started if not already running.`,
 				}
 				projectDir = cwd
 			}
+			absProjectDir, err := filepath.Abs(projectDir)
+			if err != nil {
+				return fmt.Errorf("resolve project dir %q: %w", projectDir, err)
+			}
+			projectDir = absProjectDir
 
 			// Resolve backend type.
 			bt := agent.BackendOpenCode // default
@@ -90,7 +100,7 @@ The daemon is auto-started if not already running.`,
 			// Subscribe to SSE BEFORE creating the session so we don't miss
 			// events emitted during session startup.
 			sseCtx, sseCancel := context.WithCancel(context.Background())
-			events, err := client.SubscribeEvents(sseCtx)
+			events, err := client.Sessions().Subscribe(sseCtx)
 			if err != nil {
 				sseCancel()
 				return fmt.Errorf("subscribe events: %w", err)
@@ -100,12 +110,18 @@ The daemon is auto-started if not already running.`,
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			info, err := client.CreateSession(ctx, agent.StartRequest{
-				Backend:        bt,
-				ProjectDir:     projectDir,
-				WorktreeBranch: worktreeBranch,
-				Prompt:         prompt,
-				TicketID:       ticketID,
+			remoteURL, _ := git.RemoteURL(projectDir, "origin") // best-effort; LocalPath alone is sufficient on co-located host
+
+			info, err := client.Sessions().Create(ctx, agent.StartRequest{
+				Backend:  bt,
+				Hostname: string(host.HostLocal),
+				GitRef: agent.GitRef{
+					LocalPath:      projectDir,
+					RemoteURL:      remoteURL,
+					WorktreeBranch: worktreeBranch,
+				},
+				Prompt:   prompt,
+				TicketID: ticketID,
 			})
 			if err != nil {
 				sseCancel()
@@ -175,6 +191,11 @@ func runComposing(projectDir, worktreeBranch string) error {
 		}
 		projectDir = cwd
 	}
+	absProjectDir, err := filepath.Abs(projectDir)
+	if err != nil {
+		return fmt.Errorf("resolve project dir %q: %w", projectDir, err)
+	}
+	projectDir = absProjectDir
 
 	model := tui.NewSessionViewComposing(client, projectDir)
 	model.SetWorktreeBranch(worktreeBranch)
@@ -207,8 +228,8 @@ func redirectLogToFile() func() {
 
 // ensureDaemon makes sure the daemon is running, starting it if needed.
 // Returns a connected client.
-func ensureDaemon() (*daemon.Client, error) {
-	running, _, err := daemon.IsRunning()
+func ensureDaemon() (*hubclient.Client, error) {
+	running, _, err := hubclient.IsRunning()
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +241,7 @@ func ensureDaemon() (*daemon.Client, error) {
 		}
 	}
 
-	client, err := daemon.NewDefaultClient()
+	client, err := hubclient.NewDefaultClient()
 	if err != nil {
 		return nil, err
 	}

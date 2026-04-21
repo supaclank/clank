@@ -8,7 +8,27 @@ import (
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
+
+// renderError renders a top-of-view error banner. The message is wrapped at
+// `width` columns (hard-breaking long unbreakable tokens such as URLs or file
+// paths) so the entire text remains visible and copy-pasteable instead of
+// being clipped by the terminal or a parent MaxWidth style.
+//
+// width <= 0 disables wrapping (caller's responsibility to fall back safely).
+func renderError(err error, width int) string {
+	if err == nil {
+		return ""
+	}
+	msg := fmt.Sprintf("Error: %v", err)
+	if width > 0 {
+		// " 	-" lets ansi.Wrap break on space/tab/hyphen, and falls back
+		// to a hard break at `width` for long tokens.
+		msg = ansi.Wrap(msg, width, " \t-")
+	}
+	return lipgloss.NewStyle().Foreground(dangerColor).Render(msg)
+}
 
 var (
 	primaryColor   = lipgloss.Color("#7C3AED")

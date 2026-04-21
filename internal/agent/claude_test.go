@@ -132,8 +132,10 @@ func (t *mockTransport) GetValidator() *claudecode.StreamValidator { return nil 
 
 // newTestBackend creates a ClaudeCodeBackend wired to the given mock transport.
 // The ClientFactory bypasses CLI discovery by using NewClientWithTransport.
-func newTestBackend(transport *mockTransport) *agent.ClaudeCodeBackend {
-	b := agent.NewClaudeCodeBackend()
+// workDir is set at construction (Phase 3D-2).
+func newTestBackend(t *testing.T, transport *mockTransport) *agent.ClaudeCodeBackend {
+	t.Helper()
+	b := agent.NewClaudeCodeBackend(t.TempDir())
 	b.ClientFactory = func(opts ...claudecode.Option) claudecode.Client {
 		return claudecode.NewClientWithTransport(transport, opts...)
 	}
@@ -234,12 +236,11 @@ func TestClaudeCodeBackendBasicSession(t *testing.T) {
 		},
 	})
 
-	b := newTestBackend(transport)
+	b := newTestBackend(t, transport)
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendClaudeCode,
-		ProjectDir: t.TempDir(),
 		Prompt:     "Fix the bug",
 	})
 	if err != nil {
@@ -382,12 +383,11 @@ func TestClaudeCodeBackendToolUse(t *testing.T) {
 		},
 	})
 
-	b := newTestBackend(transport)
+	b := newTestBackend(t, transport)
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendClaudeCode,
-		ProjectDir: t.TempDir(),
 		Prompt:     "Read and fix",
 	})
 	if err != nil {
@@ -450,12 +450,11 @@ func TestClaudeCodeBackendErrorResult(t *testing.T) {
 		},
 	})
 
-	b := newTestBackend(transport)
+	b := newTestBackend(t, transport)
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendClaudeCode,
-		ProjectDir: t.TempDir(),
 		Prompt:     "test",
 	})
 	if err != nil {
@@ -534,12 +533,11 @@ func TestClaudeCodeBackendStreamingDeltas(t *testing.T) {
 		},
 	})
 
-	b := newTestBackend(transport)
+	b := newTestBackend(t, transport)
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendClaudeCode,
-		ProjectDir: t.TempDir(),
 		Prompt:     "test",
 	})
 	if err != nil {
@@ -650,12 +648,11 @@ func TestClaudeCodeBackendThinking(t *testing.T) {
 		},
 	})
 
-	b := newTestBackend(transport)
+	b := newTestBackend(t, transport)
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendClaudeCode,
-		ProjectDir: t.TempDir(),
 		Prompt:     "test",
 	})
 	if err != nil {
@@ -691,11 +688,10 @@ func TestClaudeCodeBackendConnectionClosed(t *testing.T) {
 		},
 	})
 
-	b := newTestBackend(transport)
+	b := newTestBackend(t, transport)
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendClaudeCode,
-		ProjectDir: t.TempDir(),
 		Prompt:     "test",
 	})
 	if err != nil {
@@ -773,12 +769,11 @@ func TestClaudeCodeBackendResume(t *testing.T) {
 		},
 	})
 
-	b := newTestBackend(transport)
+	b := newTestBackend(t, transport)
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendClaudeCode,
-		ProjectDir: t.TempDir(),
 		Prompt:     "Continue the work",
 		SessionID:  "existing-session-id",
 	})
@@ -809,7 +804,7 @@ func TestClaudeCodeBackendResume(t *testing.T) {
 
 func TestClaudeCodeBackendSendMessageBeforeStart(t *testing.T) {
 	t.Parallel()
-	b := agent.NewClaudeCodeBackend()
+	b := agent.NewClaudeCodeBackend(t.TempDir())
 	defer b.Stop()
 
 	err := b.SendMessage(context.Background(), agent.SendMessageOpts{Text: "hello"})
@@ -867,12 +862,11 @@ func TestClaudeCodeBackendSendMessageFollowUp(t *testing.T) {
 		},
 	})
 
-	b := newTestBackend(transport)
+	b := newTestBackend(t, transport)
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendClaudeCode,
-		ProjectDir: t.TempDir(),
 		Prompt:     "Fix the bug",
 	})
 	if err != nil {
@@ -977,7 +971,7 @@ func TestClaudeCodeBackendSendMessageFollowUp(t *testing.T) {
 
 func TestClaudeCodeBackendAbortBeforeStart(t *testing.T) {
 	t.Parallel()
-	b := agent.NewClaudeCodeBackend()
+	b := agent.NewClaudeCodeBackend(t.TempDir())
 	defer b.Stop()
 
 	err := b.Abort(context.Background())
@@ -997,12 +991,11 @@ func TestClaudeCodeBackendAbortCallsInterrupt(t *testing.T) {
 		},
 	})
 
-	b := newTestBackend(transport)
+	b := newTestBackend(t, transport)
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendClaudeCode,
-		ProjectDir: t.TempDir(),
 		Prompt:     "test",
 	})
 	if err != nil {
@@ -1041,11 +1034,10 @@ func TestClaudeCodeBackendStopClosesEvents(t *testing.T) {
 		},
 	})
 
-	b := newTestBackend(transport)
+	b := newTestBackend(t, transport)
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendClaudeCode,
-		ProjectDir: t.TempDir(),
 		Prompt:     "test",
 	})
 	if err != nil {
@@ -1100,12 +1092,11 @@ func TestClaudeCodeBackendNoDuplicateResultMessage(t *testing.T) {
 		},
 	})
 
-	b := newTestBackend(transport)
+	b := newTestBackend(t, transport)
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendClaudeCode,
-		ProjectDir: t.TempDir(),
 		Prompt:     "test",
 	})
 	if err != nil {
@@ -1178,12 +1169,11 @@ func TestClaudeCodeBackendNoDuplicateContent(t *testing.T) {
 		},
 	})
 
-	b := newTestBackend(transport)
+	b := newTestBackend(t, transport)
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendClaudeCode,
-		ProjectDir: t.TempDir(),
 		Prompt:     "test",
 	})
 	if err != nil {
@@ -1262,12 +1252,11 @@ func TestClaudeCodeBackendMessagesAccumulation(t *testing.T) {
 		},
 	})
 
-	b := newTestBackend(transport)
+	b := newTestBackend(t, transport)
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendClaudeCode,
-		ProjectDir: t.TempDir(),
 		Prompt:     "First prompt",
 	})
 	if err != nil {
@@ -1497,12 +1486,11 @@ func TestClaudeCodeBackendMultiCyclePartIDs(t *testing.T) {
 		},
 	})
 
-	b := newTestBackend(transport)
+	b := newTestBackend(t, transport)
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendClaudeCode,
-		ProjectDir: t.TempDir(),
 		Prompt:     "Read the file",
 	})
 	if err != nil {
@@ -1650,12 +1638,11 @@ func TestClaudeCodeBackendHistoryToolPartsNoJSON(t *testing.T) {
 		},
 	})
 
-	b := newTestBackend(transport)
+	b := newTestBackend(t, transport)
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendClaudeCode,
-		ProjectDir: t.TempDir(),
 		Prompt:     "run pwd",
 	})
 	if err != nil {
@@ -1817,12 +1804,11 @@ func TestClaudeCodeBackendToolCallSpinnerCompletion(t *testing.T) {
 		},
 	})
 
-	b := newTestBackend(transport)
+	b := newTestBackend(t, transport)
 	defer b.Stop()
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendClaudeCode,
-		ProjectDir: t.TempDir(),
 		Prompt:     "Edit the file",
 	})
 	if err != nil {

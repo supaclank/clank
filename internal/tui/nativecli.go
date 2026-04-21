@@ -18,7 +18,11 @@ type nativeCLIReturnMsg struct {
 // nativeCLICmd builds the exec.Cmd for opening a session in its native backend
 // CLI. Currently only supports OpenCode sessions.
 //
-// For OpenCode: runs `opencode attach <serverURL> --session <externalID> --dir <projectDir>`
+// For OpenCode: runs `opencode attach <serverURL> --session <externalID>`.
+// `opencode attach`'s --dir flag is optional — when omitted it derives the
+// project from the server URL — so we don't pass it. This keeps nativecli
+// path-free, in line with §7.1's "TUI uses ExternalID+Backend for native-CLI
+// shell-out, derives display name from GitRef".
 func nativeCLICmd(info *agent.SessionInfo) (*exec.Cmd, error) {
 	if info == nil {
 		return nil, fmt.Errorf("no session info")
@@ -29,11 +33,10 @@ func nativeCLICmd(info *agent.SessionInfo) (*exec.Cmd, error) {
 			return nil, fmt.Errorf("session has no external ID (still starting?)")
 		}
 		if info.ServerURL == "" {
-			return nil, fmt.Errorf("no OpenCode server URL for project %q (daemon may still be starting the server)", info.ProjectDir)
+			return nil, fmt.Errorf("no OpenCode server URL for session %q (daemon may still be starting the server)", info.ID)
 		}
 		return exec.Command("opencode", "attach", info.ServerURL,
 			"--session", info.ExternalID,
-			"--dir", info.ProjectDir,
 		), nil
 	default:
 		return nil, fmt.Errorf("native CLI not supported for %s backend", info.Backend)

@@ -62,3 +62,71 @@ func TestParseTimeParam(t *testing.T) {
 		}
 	})
 }
+
+// §7.3: GitRef is the sole repo-identity field on StartRequest. Validate
+// must accept remote and local refs, reject when missing, and propagate
+// GitRef.Validate failures.
+func TestStartRequest_Validate_GitRef(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		req     agent.StartRequest
+		wantErr bool
+	}{
+		{
+			name: "git_ref_remote_ok",
+			req: agent.StartRequest{
+				Backend: agent.BackendOpenCode,
+				GitRef:  agent.GitRef{RemoteURL: "git@github.com:acksell/clank.git"},
+				Prompt:  "hi",
+			},
+		},
+		{
+			name: "git_ref_local_ok",
+			req: agent.StartRequest{
+				Backend: agent.BackendClaudeCode,
+				GitRef:  agent.GitRef{LocalPath: "/tmp/repo"},
+				Prompt:  "hi",
+			},
+		},
+		{
+			name: "git_ref_missing_rejected",
+			req: agent.StartRequest{
+				Backend: agent.BackendOpenCode,
+				Prompt:  "hi",
+			},
+			wantErr: true,
+		},
+		{
+			name: "git_ref_invalid_propagates",
+			req: agent.StartRequest{
+				Backend: agent.BackendOpenCode,
+				GitRef:  agent.GitRef{RemoteURL: ""}, // missing URL
+				Prompt:  "hi",
+			},
+			wantErr: true,
+		},
+		{
+			name: "git_ref_both_set_allowed",
+			req: agent.StartRequest{
+				Backend: agent.BackendOpenCode,
+				GitRef: agent.GitRef{
+					LocalPath: "/tmp/repo",
+					RemoteURL: "https://github.com/x/y",
+				},
+				Prompt: "hi",
+			},
+			wantErr: false,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := tc.req.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Validate() err=%v wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
+}

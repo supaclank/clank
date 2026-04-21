@@ -324,18 +324,26 @@ type AgentInfo struct {
 }
 
 // StartRequest contains the parameters needed to start a new agent session.
+//
+// Identity is path-free post Phase 3D-2 (hub_host_refactor.md):
+// (Hostname, GitRef, WorktreeBranch). The Host resolves these to a working
+// directory inside CreateSession; the wire never carries filesystem paths.
+//
+// GitRef is the sole repo identity on the wire (§7.3 of
+// hub_host_refactor_code_review.md).
 type StartRequest struct {
-	Backend        BackendType    `json:"backend"`
-	ProjectDir     string         `json:"project_dir"`
-	Prompt         string         `json:"prompt"`
-	SessionID      string         `json:"session_id,omitempty"`      // Empty = new session, set = resume
-	TicketID       string         `json:"ticket_id,omitempty"`       // Optional backlog ticket link
-	Agent          string         `json:"agent,omitempty"`           // OpenCode agent name (e.g. "build", "plan")
-	Model          *ModelOverride `json:"model,omitempty"`           // Per-message model override; nil = use default
-	WorktreeBranch string         `json:"worktree_branch,omitempty"` // Git branch name; when set, the daemon creates/reuses a worktree
+	Backend   BackendType    `json:"backend"`
+	Hostname  string         `json:"hostname,omitempty"` // Target host; empty defaults to "local" at the hub.
+	GitRef    GitRef         `json:"git_ref"`            // Wire-canonical repo identity; required. WorktreeBranch lives inside.
+	Prompt    string         `json:"prompt"`
+	SessionID string         `json:"session_id,omitempty"` // Backend-external session ID for resume; empty = new session.
+	TicketID  string         `json:"ticket_id,omitempty"`  // Optional backlog ticket link
+	Agent     string         `json:"agent,omitempty"`      // OpenCode agent name (e.g. "build", "plan")
+	Model     *ModelOverride `json:"model,omitempty"`      // Per-message model override; nil = use default
 }
 
-// Validate checks that required fields are set.
+// Validate checks that required fields are set per §7.3 of
+// hub_host_refactor_code_review.md.
 func (r StartRequest) Validate() error {
 	if r.Backend == "" {
 		return fmt.Errorf("backend is required")
@@ -343,8 +351,8 @@ func (r StartRequest) Validate() error {
 	if r.Backend != BackendOpenCode && r.Backend != BackendClaudeCode {
 		return fmt.Errorf("unknown backend: %s", r.Backend)
 	}
-	if r.ProjectDir == "" {
-		return fmt.Errorf("project_dir is required")
+	if err := r.GitRef.Validate(); err != nil {
+		return fmt.Errorf("git_ref: %w", err)
 	}
 	if r.Prompt == "" {
 		return fmt.Errorf("prompt is required")
@@ -360,10 +368,8 @@ type SessionInfo struct {
 	Status          SessionStatus     `json:"status"`
 	Visibility      SessionVisibility `json:"visibility,omitempty"` // User-set: "", "done", or "archived"
 	FollowUp        bool              `json:"follow_up,omitempty"`  // User-set flag to mark session for follow-up
-	ProjectDir      string            `json:"project_dir"`
-	ProjectName     string            `json:"project_name"`
-	WorktreeBranch  string            `json:"worktree_branch,omitempty"` // Git branch this session operates on
-	WorktreeDir     string            `json:"worktree_dir,omitempty"`    // Filesystem path of the git worktree (may differ from ProjectDir)
+	Hostname        string            `json:"hostname,omitempty"`   // Canonical identity: host (Phase 3); "local" by default.
+	GitRef          GitRef            `json:"git_ref,omitempty"`    // Canonical identity: repo (LocalPath and/or RemoteURL + WorktreeBranch).
 	Prompt          string            `json:"prompt"`
 	Title           string            `json:"title,omitempty"` // AI-generated session title from OpenCode
 	TicketID        string            `json:"ticket_id,omitempty"`
@@ -519,6 +525,22 @@ type SessionBackend interface {
 	RespondPermission(ctx context.Context, permissionID string, allow bool) error
 }
 
+// BackendInvocation is the host-resolved, backend-only view of a session
+// start. It is constructed inside host.Service.CreateSession after the
+// (GitRef, WorktreeBranch) → workDir resolution; it never appears on the
+// wire. See §7.4 of hub_host_refactor_code_review.md.
+type BackendInvocation struct {
+	// WorkDir is the resolved filesystem path where the backend should run
+	// (a repo root, or a worktree path when WorktreeBranch was set).
+	WorkDir string
+
+	// ResumeExternalID is the backend's own session ID for resume; empty
+	// means start a new backend session. Currently this is sourced from
+	// StartRequest.SessionID (which doubles as the host-side session ID).
+	// A future split may decouple the two.
+	ResumeExternalID string
+}
+
 // BackendManager creates and manages SessionBackend instances for a specific
 // backend type. Each implementation handles its own resource sharing (e.g.,
 // OpenCode shares one server per project directory, Claude manages
@@ -531,9 +553,12 @@ type BackendManager interface {
 	// knownDirs returns project directories previously seen for this backend.
 	Init(ctx context.Context, knownDirs func() ([]string, error)) error
 
-	// CreateBackend creates a new SessionBackend for the given request.
+	// CreateBackend creates a new SessionBackend from a host-resolved
+	// invocation. The wire StartRequest is path-free; the Host resolves
+	// (RepoRef, Branch) → workDir and constructs a BackendInvocation
+	// before invoking this method. See §7.4 of hub_host_refactor_code_review.md.
 	// The backend is not started — call Start() or Watch() on it.
-	CreateBackend(req StartRequest) (SessionBackend, error)
+	CreateBackend(ctx context.Context, inv BackendInvocation) (SessionBackend, error)
 
 	// Shutdown cleans up all managed resources (servers, connections, etc.).
 	Shutdown()

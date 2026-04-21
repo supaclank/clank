@@ -83,6 +83,31 @@ func TestRepoRootNotARepo(t *testing.T) {
 	}
 }
 
+func TestRemoteURL(t *testing.T) {
+	t.Parallel()
+	dir := initTestRepo(t)
+
+	// Brand-new repos have no remote — RemoteURL must surface that
+	// rather than silently returning an empty string. The TUI's
+	// resolveLocalRepo and the host's CreateSession verify-and-add
+	// path rely on a clear error here to know the cwd can't be
+	// mapped to a remote-kind GitRef.
+	if _, err := RemoteURL(dir, "origin"); err == nil {
+		t.Fatal("expected error for repo with no origin remote")
+	}
+
+	const want = "git@github.com:acksell/clank.git"
+	run(t, dir, "git", "remote", "add", "origin", want)
+
+	got, err := RemoteURL(dir, "origin")
+	if err != nil {
+		t.Fatalf("RemoteURL: %v", err)
+	}
+	if got != want {
+		t.Errorf("RemoteURL = %q, want %q", got, want)
+	}
+}
+
 func TestCurrentBranch(t *testing.T) {
 	t.Parallel()
 	dir := initTestRepo(t)

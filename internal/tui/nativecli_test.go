@@ -13,7 +13,6 @@ func TestNativeCLICmd_OpenCode(t *testing.T) {
 		ID:         "ses-123",
 		ExternalID: "oc-ext-456",
 		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/home/user/project",
 		ServerURL:  "http://127.0.0.1:4123",
 	}
 
@@ -23,7 +22,7 @@ func TestNativeCLICmd_OpenCode(t *testing.T) {
 	}
 
 	args := cmd.Args
-	want := []string{"opencode", "attach", "http://127.0.0.1:4123", "--session", "oc-ext-456", "--dir", "/home/user/project"}
+	want := []string{"opencode", "attach", "http://127.0.0.1:4123", "--session", "oc-ext-456"}
 	if len(args) != len(want) {
 		t.Fatalf("args length = %d, want %d\ngot:  %v\nwant: %v", len(args), len(want), args, want)
 	}
@@ -56,7 +55,6 @@ func TestNativeCLICmd_MissingServerURL(t *testing.T) {
 		ID:         "ses-123",
 		ExternalID: "oc-ext-456",
 		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/home/user/project",
 	}
 
 	_, err := nativeCLICmd(info)

@@ -15,10 +15,12 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/atotto/clipboard"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
-	"github.com/acksell/clank/internal/daemon"
+	"github.com/acksell/clank/internal/host"
+	hubclient "github.com/acksell/clank/internal/hub/client"
 )
 
 // sessionEventMsg wraps a daemon event delivered to the TUI.
@@ -117,7 +119,7 @@ func wordLeftWouldHang(ta textarea.Model) bool {
 // It also handles the "composing" mode where no session exists yet —
 // the user types their first prompt and the session is created on send.
 type SessionViewModel struct {
-	client    *daemon.Client
+	client    *hubclient.Client
 	sessionID string
 	info      *agent.SessionInfo
 
@@ -215,7 +217,9 @@ type SessionViewModel struct {
 	// first prompt. After sending, this transitions to the normal session view.
 	composing      bool
 	backend        agent.BackendType
-	projectDir     string
+	projectDir     string // local on-disk path; used for display + relPath stripping. Wire identity is hostname+gitRef below.
+	hostname       host.Hostname
+	gitRef         agent.GitRef
 	worktreeBranch string // optional worktree branch to create the session on
 
 	// Agent selection — populated eagerly when compose view loads.
@@ -333,7 +337,7 @@ const (
 const inputReservedLines = 6
 
 // NewSessionViewModel creates a session detail TUI for an existing session.
-func NewSessionViewModel(client *daemon.Client, sessionID string) *SessionViewModel {
+func NewSessionViewModel(client *hubclient.Client, sessionID string) *SessionViewModel {
 	ta := newPromptTextarea("Type a follow-up message...", 3)
 	sp := spinner.New(
 		spinner.WithSpinner(spinner.MiniDot),
@@ -403,7 +407,7 @@ func (m *SessionViewModel) fetchSessionInfo() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		info, err := m.client.GetSession(ctx, m.sessionID)
+		info, err := m.client.Session(m.sessionID).Get(ctx)
 		if err != nil {
 			return sessionEventsErrMsg{err: err}
 		}
@@ -416,7 +420,7 @@ func (m *SessionViewModel) fetchSessionMessages() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		messages, err := m.client.GetSessionMessages(ctx, m.sessionID)
+		messages, err := m.client.Session(m.sessionID).Messages(ctx)
 		if err != nil {
 			return sessionEventsErrMsg{err: err}
 		}
@@ -430,7 +434,7 @@ func (m *SessionViewModel) fetchPendingPermission() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		perms, err := m.client.GetPendingPermissions(ctx, m.sessionID)
+		perms, err := m.client.Session(m.sessionID).PendingPermissions(ctx)
 		if err != nil {
 			// Non-critical; the live SSE stream will deliver new prompts.
 			return nil
@@ -439,16 +443,21 @@ func (m *SessionViewModel) fetchPendingPermission() tea.Cmd {
 	}
 }
 
-// fetchAgents loads the available agents for the current backend/project.
+// fetchAgents loads the available agents for the current backend/repo.
 // Fired eagerly on compose init; the result arrives before the user finishes typing.
+// Skipped when gitRef is unresolved — the wire surface requires a real ref (§7.3).
 func (m *SessionViewModel) fetchAgents() tea.Cmd {
 	client := m.client
 	backend := m.backend
-	projectDir := m.projectDir
+	hostname := m.hostname
+	ref := m.gitRef
+	if ref.LocalPath == "" && ref.RemoteURL == "" {
+		return func() tea.Msg { return agentsResultMsg{} }
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		agents, err := client.ListAgents(ctx, backend, projectDir)
+		agents, err := client.Backend(backend).Agents(ctx, hostname, ref)
 		if err != nil {
 			// Non-fatal: degrade gracefully with no agent selector.
 			return agentsResultMsg{}
@@ -457,16 +466,20 @@ func (m *SessionViewModel) fetchAgents() tea.Cmd {
 	}
 }
 
-// fetchModels loads available models for the current backend/project.
+// fetchModels loads available models for the current backend/repo.
 // Fired eagerly on compose init alongside fetchAgents.
 func (m *SessionViewModel) fetchModels() tea.Cmd {
 	client := m.client
 	backend := m.backend
-	projectDir := m.projectDir
+	hostname := m.hostname
+	ref := m.gitRef
+	if ref.LocalPath == "" && ref.RemoteURL == "" {
+		return func() tea.Msg { return modelsResultMsg{} }
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		models, err := client.ListModels(ctx, backend, projectDir)
+		models, err := client.Backend(backend).Models(ctx, hostname, ref)
 		if err != nil {
 			// Non-fatal: degrade gracefully with no model selector.
 			return modelsResultMsg{}
@@ -479,7 +492,7 @@ func (m *SessionViewModel) fetchModels() tea.Cmd {
 func (m *SessionViewModel) subscribeEvents() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
-		events, err := m.client.SubscribeEvents(ctx)
+		events, err := m.client.Sessions().Subscribe(ctx)
 		if err != nil {
 			cancel()
 			return sessionEventsErrMsg{err: err}
@@ -610,9 +623,16 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// before the complete conversation renders.
 
 		// Fetch agents if we don't have them yet (existing sessions opened from inbox).
-		if len(m.agents) == 0 && m.info.Backend == agent.BackendOpenCode && m.info.ProjectDir != "" {
+		if len(m.agents) == 0 && m.info.Backend == agent.BackendOpenCode && (m.info.GitRef.LocalPath != "" || m.info.GitRef.RemoteURL != "") {
 			m.backend = m.info.Backend
-			m.projectDir = m.info.ProjectDir
+			// projectDir is not on SessionInfo (path-free wire per §7);
+			// relPath becomes a no-op for sessions opened from the inbox.
+			// TODO: resolve via host repo lookup if/when needed for UX.
+			m.hostname = host.Hostname(m.info.Hostname)
+			if m.hostname == "" {
+				m.hostname = host.HostLocal
+			}
+			m.gitRef = m.info.GitRef
 			// Restore the selected agent from session info.
 			if m.info.Agent != "" {
 				// Will be matched against the fetched list in agentsResultMsg.
@@ -1675,21 +1695,47 @@ func (m *SessionViewModel) renderToolVerbose(p agent.Part, width int) []string {
 
 	var lines []string
 
+	// Width available for content after the 4-char indent. The nested
+	// "  " prefix inside input/output blocks costs another 2 chars, so
+	// wrap at width-2 there to make every returned line fit m.width.
+	innerWidth := width - 2
+	if innerWidth < 8 {
+		innerWidth = 8
+	}
+
 	// Render input arguments.
 	if len(p.Input) > 0 {
 		lines = append(lines, dim.Render(indent+"input:"))
-		lines = append(lines, renderInputMap(p.Input, indent+"  ", dim)...)
+		lines = append(lines, renderInputMap(p.Input, indent+"  ", innerWidth, dim)...)
 	}
 
 	// Render output.
 	if p.Output != "" {
 		lines = append(lines, dim.Render(indent+"output:"))
 		for _, ol := range strings.Split(p.Output, "\n") {
-			lines = append(lines, dim.Render(indent+"  "+ol))
+			for _, wrapped := range wrapToolLine(ol, innerWidth) {
+				lines = append(lines, dim.Render(indent+"  "+wrapped))
+			}
 		}
 	}
 
 	return lines
+}
+
+// wrapToolLine hard-wraps a single logical line of tool input/output so that
+// each returned chunk fits within `width` display columns. Long unbreakable
+// tokens (URLs, paths, base64 blobs) are force-broken at width; spaces are
+// preferred break points. An empty input yields a single empty string so the
+// caller preserves blank lines in the output.
+func wrapToolLine(s string, width int) []string {
+	if width <= 0 {
+		return []string{s}
+	}
+	if s == "" {
+		return []string{""}
+	}
+	wrapped := ansi.Wrap(s, width, " \t-")
+	return strings.Split(wrapped, "\n")
 }
 
 // diffOp represents a single line-level diff operation.
@@ -1885,8 +1931,9 @@ func renderTodoList(p agent.Part, indent string, dim lipgloss.Style) []string {
 }
 
 // renderInputMap formats a map[string]any as indented key: value lines.
-// Long string values are wrapped; non-string values are JSON-encoded.
-func renderInputMap(m map[string]any, indent string, style lipgloss.Style) []string {
+// Long string values are wrapped to fit `width` columns; non-string values
+// are JSON-encoded.
+func renderInputMap(m map[string]any, indent string, width int, style lipgloss.Style) []string {
 	// Sort keys for stable output.
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -1894,17 +1941,28 @@ func renderInputMap(m map[string]any, indent string, style lipgloss.Style) []str
 	}
 	sort.Strings(keys)
 
+	// Nested content lives under "  " inside the map block.
+	innerWidth := width - 2
+	if innerWidth < 8 {
+		innerWidth = 8
+	}
+
 	var lines []string
 	for _, k := range keys {
 		v := m[k]
 		switch val := v.(type) {
 		case string:
-			if len(val) <= 80 && !strings.Contains(val, "\n") {
+			// Short, single-line values stay inline on the key line; the
+			// whole "key: value" string is still wrapped so narrow terminals
+			// don't visually wrap it into multiple rows behind our back.
+			if !strings.Contains(val, "\n") && len(val) <= 80 && len(indent)+len(k)+2+len(val) <= width {
 				lines = append(lines, style.Render(fmt.Sprintf("%s%s: %s", indent, k, val)))
 			} else {
 				lines = append(lines, style.Render(fmt.Sprintf("%s%s:", indent, k)))
 				for _, sl := range strings.Split(val, "\n") {
-					lines = append(lines, style.Render(indent+"  "+sl))
+					for _, wrapped := range wrapToolLine(sl, innerWidth) {
+						lines = append(lines, style.Render(indent+"  "+wrapped))
+					}
 				}
 			}
 		default:
@@ -1954,7 +2012,7 @@ func (m *SessionViewModel) sendMessage(text string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		opts := agent.SendMessageOpts{Text: text, Agent: selectedAgent, Model: modelOverride}
-		err := m.client.SendMessage(ctx, m.sessionID, opts)
+		err := m.client.Session(m.sessionID).Send(ctx, opts)
 		return sessionSendResultMsg{err: err}
 	}
 }
@@ -1964,7 +2022,7 @@ func (m *SessionViewModel) replyPermission(perm agent.PermissionData, allow bool
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		err := m.client.ReplyPermission(ctx, sessionID, perm.RequestID, allow)
+		err := m.client.Session(sessionID).ReplyPermission(ctx, perm.RequestID, allow)
 		return permissionReplyResultMsg{perm: perm, allow: allow, err: err}
 	}
 }
@@ -1975,7 +2033,7 @@ func (m *SessionViewModel) toggleFollowUp() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		followUp, err := client.ToggleFollowUp(ctx, sessionID)
+		followUp, err := client.Session(sessionID).ToggleFollowUp(ctx)
 		return sessionFollowUpResultMsg{followUp: followUp, err: err}
 	}
 }
@@ -1986,7 +2044,7 @@ func (m *SessionViewModel) abortSession() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		err := client.AbortSession(ctx, sessionID)
+		err := client.Session(sessionID).Abort(ctx)
 		return sessionAbortResultMsg{err: err}
 	}
 }
@@ -2073,7 +2131,7 @@ func (m *SessionViewModel) revertSession(messageID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := client.RevertSession(ctx, sessionID, messageID); err != nil {
+		if err := client.Session(sessionID).Revert(ctx, messageID); err != nil {
 			return revertResultMsg{err: err}
 		}
 		return revertResultMsg{messageID: messageID, prompt: prompt}
@@ -2089,7 +2147,7 @@ func (m *SessionViewModel) forkSession(nextMessageID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		info, err := client.ForkSession(ctx, sessionID, nextMessageID)
+		info, err := client.Session(sessionID).Fork(ctx, nextMessageID)
 		if err != nil {
 			return forkResultMsg{err: err}
 		}
@@ -2103,7 +2161,7 @@ func (m *SessionViewModel) setVisibility(visibility agent.SessionVisibility) tea
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		err := client.SetVisibility(ctx, sessionID, visibility)
+		err := client.Session(sessionID).SetVisibility(ctx, visibility)
 		return sessionVisibilityResultMsg{err: err}
 	}
 }
@@ -2128,9 +2186,10 @@ func (m *SessionViewModel) View() tea.View {
 	sb.WriteString("\n\n")
 
 	// Error banner.
+	var errBanner string
 	if m.err != nil {
-		errMsg := lipgloss.NewStyle().Foreground(dangerColor).Render(fmt.Sprintf("Error: %v", m.err))
-		sb.WriteString(errMsg)
+		errBanner = renderError(m.err, m.width)
+		sb.WriteString(errBanner)
 		sb.WriteString("\n\n")
 	}
 
@@ -2147,7 +2206,10 @@ func (m *SessionViewModel) View() tea.View {
 	// Cache for mouse selection: count how many screen rows precede the content area.
 	m.cachedHeaderRows = 2 // header line + blank line
 	if m.err != nil {
-		m.cachedHeaderRows += 2 // error line + blank line
+		// Account for the actual rendered height — long errors wrap to
+		// multiple lines, otherwise mouse-selection coordinates would
+		// drift after the error appears.
+		m.cachedHeaderRows += lipgloss.Height(errBanner) + 1 // wrapped error + trailing blank line
 	}
 	m.cachedContent = contentLines
 
@@ -2514,7 +2576,17 @@ func (m *SessionViewModel) renderEntryUncached(e *displayEntry, selected bool, o
 			line = e.content
 		}
 		styled := lipgloss.NewStyle().Foreground(dimColor).Render("  " + line)
-		lines := []string{styled}
+		// The summary line is hard-truncated to 80 chars inside
+		// renderToolLine, but on narrow terminals (< 84 cols once the
+		// 2-char prefix + 4-char outer margin are counted) it can still
+		// exceed m.width. Wrap it so buildContentLines's logical line
+		// count matches what the terminal actually renders — otherwise
+		// scrollToBottom under-counts rows and the input box is pushed
+		// off-screen.
+		var lines []string
+		for _, wl := range strings.Split(ansi.Wrap(styled, maxWidth, " \t-"), "\n") {
+			lines = append(lines, wl)
+		}
 
 		// Show detail when owning navigable entry is expanded, or always for TodoWrite/Edit.
 		// expandForceShow overrides a collapsed owner; expandForceHide overrides an expanded owner.

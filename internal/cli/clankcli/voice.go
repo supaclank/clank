@@ -38,7 +38,7 @@ func runVoice() error {
 	defer cancel()
 
 	// Subscribe to SSE events for transcript/status display.
-	events, err := client.SubscribeEvents(ctx)
+	events, err := client.Sessions().Subscribe(ctx)
 	if err != nil {
 		return fmt.Errorf("subscribe events: %w", err)
 	}

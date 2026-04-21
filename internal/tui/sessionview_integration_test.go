@@ -64,14 +64,14 @@ func TestIntegrationSessionView_EntriesFromRealEvents(t *testing.T) {
 	defer cancel()
 
 	// Subscribe to events.
-	events, err := client.SubscribeEvents(ctx)
+	events, err := client.Sessions().Subscribe(ctx)
 	if err != nil {
 		t.Fatalf("SubscribeEvents: %v", err)
 	}
 
 	// Create session.
 	projectDir := findProjectRoot(t)
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:    agent.BackendOpenCode,
 		ProjectDir: projectDir,
 		Prompt:     "Say exactly: tui-test. Nothing else.",
