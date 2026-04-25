@@ -68,10 +68,12 @@ const (
 // Event is the unified event type emitted by all backends and forwarded
 // through the daemon to connected TUI clients.
 type Event struct {
-	Type      EventType   `json:"type"`
-	SessionID string      `json:"session_id"`
-	Timestamp time.Time   `json:"timestamp"`
-	Data      interface{} `json:"data"`
+	Type      EventType `json:"type"`
+	SessionID string    `json:"session_id"` // hub session id (set by hub relay)
+	// ExternalID carries the session-backend's native session ID. TODO rename
+	ExternalID string      `json:"external_id,omitempty"`
+	Timestamp  time.Time   `json:"timestamp"`
+	Data       interface{} `json:"data"`
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for Event.
@@ -80,10 +82,11 @@ type Event struct {
 func (e *Event) UnmarshalJSON(b []byte) error {
 	// First, decode into a raw structure to inspect the type field.
 	var raw struct {
-		Type      EventType       `json:"type"`
-		SessionID string          `json:"session_id"`
-		Timestamp time.Time       `json:"timestamp"`
-		Data      json.RawMessage `json:"data"`
+		Type       EventType       `json:"type"`
+		SessionID  string          `json:"session_id"`
+		ExternalID string          `json:"external_id"`
+		Timestamp  time.Time       `json:"timestamp"`
+		Data       json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return err
@@ -91,6 +94,7 @@ func (e *Event) UnmarshalJSON(b []byte) error {
 
 	e.Type = raw.Type
 	e.SessionID = raw.SessionID
+	e.ExternalID = raw.ExternalID
 	e.Timestamp = raw.Timestamp
 
 	// If no data payload, leave Data as nil.
@@ -436,15 +440,25 @@ type ProjectInfo struct {
 	Worktree string `json:"worktree"`
 }
 
-// SessionSnapshot is a lightweight session summary from the OpenCode API,
-// used during discovery to populate the daemon's session list.
+// SessionSnapshot is a lightweight session summary returned by a backend
+// manager's DiscoverSessions, used to populate the daemon's session list.
+//
+// Backend identifies which backend produced the snapshot. The hub aggregates
+// snapshots from multiple backends in a single slice, so without this field
+// it is impossible to attribute a snapshot to its source backend at the
+// registration site. Persisting the wrong Backend on a discovered session
+// causes activateBackend (after a daemon restart) to route the reopen
+// through the wrong backend manager, which manifests as a permanent
+// "Waiting for agent output..." hang for Claude sessions that were
+// mis-tagged as opencode.
 type SessionSnapshot struct {
-	ID              string    `json:"id"`
-	Title           string    `json:"title"`
-	Directory       string    `json:"directory"`
-	RevertMessageID string    `json:"revert_message_id,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID              string      `json:"id"`
+	Backend         BackendType `json:"backend"`
+	Title           string      `json:"title"`
+	Directory       string      `json:"directory"`
+	RevertMessageID string      `json:"revert_message_id,omitempty"`
+	CreatedAt       time.Time   `json:"created_at"`
+	UpdatedAt       time.Time   `json:"updated_at"`
 }
 
 // Unread returns true if the session has activity the user hasn't seen.
@@ -471,52 +485,76 @@ type SendMessageOpts struct {
 	Model *ModelOverride `json:"model,omitempty"` // Per-message model override; nil = use default
 }
 
-// SessionBackend is the interface that each agent backend must implement.
-// The daemon creates one SessionBackend instance per session.
+// Lifecycle: NewBackend → Open (or OpenAndSend) → Send* → Abort? → Stop
+//
+// Concurrency: all methods must be safe to call concurrently from
+// multiple goroutines.
+//
+// Event timing: backends emit events asynchronously via Events(). Method
+// returns describe what their *return* signals — typically "request
+// dispatched" — NOT when the agent has finished work. Observe completion
+// via Events() (StatusChange to Idle) and ExternalID via Event.ExternalID.
+//
+// Session-scoped configuration (workDir, resume external ID, host/server
+// selection) is supplied to the constructor, not to these methods. The
+// methods below carry only per-prompt data.
 type SessionBackend interface {
-	// Start launches the agent with the given request.
-	// It blocks for the duration of the LLM turn; events stream via Events().
-	Start(ctx context.Context, req StartRequest) error
+	// Open establishes (or re-attaches to) the session and begins event
+	// production into Events(). Idempotent — safe to call on an
+	// already-open session.
+	Open(ctx context.Context) error
 
-	// Watch starts listening for events on this session without sending a
-	// prompt. Use this to observe a session that may already be active
-	// (e.g. a discovered/historical session). Backends that don't support
-	// passive observation (like Claude CLI) should return nil (no-op).
-	// The Events channel must produce events after Watch returns.
-	Watch(ctx context.Context) error
+	// Send dispatches a prompt to an Open session. Fast-fails if the
+	// session is not open. Returns once the prompt is handed off to
+	// the agent runtime, NOT when the LLM finishes.
+	Send(ctx context.Context, opts SendMessageOpts) error
 
-	// SendMessage sends a follow-up message to the running agent.
-	SendMessage(ctx context.Context, opts SendMessageOpts) error
+	// OpenAndSend is the new-session convenience: Open followed by Send.
+	// Backends MAY fuse the two operations when their runtime supports
+	// it (e.g. dispatching the prompt as part of session creation).
+	OpenAndSend(ctx context.Context, opts SendMessageOpts) error
 
-	// Abort interrupts the currently running agent task.
+	// Abort signals the agent to interrupt the current turn. Best-effort:
+	// returns once the signal has been delivered, not when the agent has
+	// actually stopped. Observe StatusChange events for completion.
 	Abort(ctx context.Context) error
 
-	// Stop gracefully shuts down the backend and cleans up resources.
+	// Stop performs a graceful shutdown: closes the event channel,
+	// terminates child processes, and releases resources. Blocks until
+	// teardown completes. Safe to call multiple times.
 	Stop() error
 
-	// Events returns a channel that receives all events from this backend.
-	// The channel is closed when the backend stops.
+	// Events returns the event stream for this backend. The channel is
+	// closed when the backend stops. All events for a session flow
+	// through this channel
 	Events() <-chan Event
 
-	// Status returns the current session status.
+	// Status returns the current session status snapshot. May change
+	// concurrently; treat as a hint, not authoritative.
 	Status() SessionStatus
 
-	// SessionID returns the agent-assigned session ID (may differ from the daemon's ID).
+	// SessionID returns the agent-assigned native session ID, or "" if
+	// not yet known. Used by HTTP handlers to serialize ExternalID and
+	// by discover for deduplication. Hub code MUST NOT poll this after
+	// Open to persist the ID — use Event.ExternalID instead, which is
+	// the single source of truth that survives daemon restarts.
 	SessionID() string
 
-	// Messages returns the full message history for this session.
-	// Each MessageData includes role, content, and parts.
-	// Returns nil, nil if the backend does not support history retrieval.
+	// Messages returns the on-disk transcript for this session. Reads
+	// fresh from the backend's storage on each call (no in-memory
+	// accumulation fallback). Returns (nil, nil) if no transcript
+	// exists yet (e.g. session ID not learned, or backend doesn't
+	// support history retrieval).
 	Messages(ctx context.Context) ([]MessageData, error)
 
-	// Revert reverts the session to the specified message, removing all
-	// subsequent messages. Returns an error if the backend does not support
-	// reverting (e.g. Claude Code).
+	// Revert removes the specified message and all subsequent messages.
+	// Returns an error if the backend does not support reverting
+	// (e.g. Claude Code).
 	Revert(ctx context.Context, messageID string) error
 
-	// Fork creates a new session forked from the given message.
-	// Returns the new session's external ID and title.
-	// Returns an error if the backend does not support forking.
+	// Fork creates a new session branched from the given message.
+	// Returns the new session's external ID and title. Returns an error
+	// if the backend does not support forking.
 	Fork(ctx context.Context, messageID string) (ForkResult, error)
 
 	// RespondPermission replies to a pending permission prompt.
@@ -589,6 +627,23 @@ type ModelLister interface {
 // implement to discover historical sessions from the underlying backend.
 type SessionDiscoverer interface {
 	DiscoverSessions(ctx context.Context, seedDir string) ([]SessionSnapshot, error)
+}
+
+// AllSessionDiscoverer is an optional interface for BackendManagers whose
+// underlying storage allows enumerating every historical session globally
+// (across all known projects) without first naming a seed directory.
+//
+// Used by the hub's startup-discover pass to heal mis-tagged info.Backend
+// rows: after a corrupted persistence (Backend=opencode for what is really
+// a Claude session), the hub does not know which project dir to query, so
+// the per-seedDir DiscoverSessions path can't find it. AllSessionDiscoverer
+// lets the hub enumerate every snapshot the backend knows about, regardless
+// of the persisted (and potentially wrong) GitRef.LocalPath.
+//
+// Backends whose discovery model is per-project (e.g. opencode, which boots
+// one HTTP server per project worktree) deliberately do NOT implement this.
+type AllSessionDiscoverer interface {
+	DiscoverAllSessions(ctx context.Context) ([]SessionSnapshot, error)
 }
 
 // ServerInfo is a snapshot of a running backend server process (e.g. an

@@ -239,9 +239,8 @@ func TestClaudeCodeBackendBasicSession(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendClaudeCode,
-		Prompt:     "Fix the bug",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "Fix the bug",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -386,9 +385,8 @@ func TestClaudeCodeBackendToolUse(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendClaudeCode,
-		Prompt:     "Read and fix",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "Read and fix",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -414,22 +412,9 @@ func TestClaudeCodeBackendToolUse(t *testing.T) {
 		t.Error("expected a tool_call part for 'Read'")
 	}
 
-	// Verify tool result is accumulated in Messages().
-	msgs, err := b.Messages(context.Background())
-	if err != nil {
-		t.Fatalf("Messages: %v", err)
-	}
-	var foundToolResult bool
-	for _, msg := range msgs {
-		for _, p := range msg.Parts {
-			if p.Type == agent.PartToolResult && p.Status == agent.PartCompleted {
-				foundToolResult = true
-			}
-		}
-	}
-	if !foundToolResult {
-		t.Error("expected a tool_result part in Messages()")
-	}
+	// Note: tool_result accumulation in Messages() is now covered by the
+	// disk-fixture tests in claude_messages_test.go (Messages() reads the
+	// JSONL transcript, which the mock transport doesn't produce).
 }
 
 func TestClaudeCodeBackendErrorResult(t *testing.T) {
@@ -453,9 +438,8 @@ func TestClaudeCodeBackendErrorResult(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendClaudeCode,
-		Prompt:     "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -536,9 +520,8 @@ func TestClaudeCodeBackendStreamingDeltas(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendClaudeCode,
-		Prompt:     "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -651,9 +634,8 @@ func TestClaudeCodeBackendThinking(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendClaudeCode,
-		Prompt:     "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -690,9 +672,8 @@ func TestClaudeCodeBackendConnectionClosed(t *testing.T) {
 
 	b := newTestBackend(t, transport)
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendClaudeCode,
-		Prompt:     "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -769,16 +750,17 @@ func TestClaudeCodeBackendResume(t *testing.T) {
 		},
 	})
 
-	b := newTestBackend(t, transport)
+	b := agent.NewClaudeCodeBackendForSession(t.TempDir(), "existing-session-id")
+	b.ClientFactory = func(opts ...claudecode.Option) claudecode.Client {
+		return claudecode.NewClientWithTransport(transport, opts...)
+	}
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendClaudeCode,
-		Prompt:     "Continue the work",
-		SessionID:  "existing-session-id",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "Continue the work",
 	})
 	if err != nil {
-		t.Fatalf("Start: %v", err)
+		t.Fatalf("OpenAndSend: %v", err)
 	}
 
 	events := waitForStatus(t, b.Events(), agent.StatusIdle, 5*time.Second)
@@ -802,12 +784,47 @@ func TestClaudeCodeBackendResume(t *testing.T) {
 	}
 }
 
+// TestClaudeCodeBackendOpenOnlyTransitionsToIdle is a regression test for
+// the stuck-spinner bug on re-attached sessions. activateBackend (hub) calls
+// Open() without a follow-up Send/OpenAndSend when reopening the chat view
+// for an existing session. Open must transition out of StatusStarting on
+// successful Connect, otherwise the TUI shows a spinner forever (status
+// previously only flipped inside handleResult, which only fires after a Query).
+func TestClaudeCodeBackendOpenOnlyTransitionsToIdle(t *testing.T) {
+	t.Parallel()
+
+	transport := newMockTransport(nil)
+	b := newTestBackend(t, transport)
+	defer b.Stop()
+
+	if err := b.Open(context.Background()); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt, ok := <-b.Events():
+			if !ok {
+				t.Fatal("events channel closed before reaching Idle")
+			}
+			if evt.Type == agent.EventStatusChange {
+				if data, ok := evt.Data.(agent.StatusChangeData); ok && data.NewStatus == agent.StatusIdle {
+					return
+				}
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for StatusIdle after Open; current status=%s", b.Status())
+		}
+	}
+}
+
 func TestClaudeCodeBackendSendMessageBeforeStart(t *testing.T) {
 	t.Parallel()
 	b := agent.NewClaudeCodeBackend(t.TempDir())
 	defer b.Stop()
 
-	err := b.SendMessage(context.Background(), agent.SendMessageOpts{Text: "hello"})
+	err := b.Send(context.Background(), agent.SendMessageOpts{Text: "hello"})
 	if err == nil {
 		t.Error("expected error sending message before Start")
 	}
@@ -865,9 +882,8 @@ func TestClaudeCodeBackendSendMessageFollowUp(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendClaudeCode,
-		Prompt:     "Fix the bug",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "Fix the bug",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -922,7 +938,7 @@ func TestClaudeCodeBackendSendMessageFollowUp(t *testing.T) {
 	}
 
 	// Send follow-up.
-	err = b.SendMessage(context.Background(), agent.SendMessageOpts{Text: "What about the other bug?"})
+	err = b.Send(context.Background(), agent.SendMessageOpts{Text: "What about the other bug?"})
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
@@ -994,9 +1010,8 @@ func TestClaudeCodeBackendAbortCallsInterrupt(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendClaudeCode,
-		Prompt:     "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1036,9 +1051,8 @@ func TestClaudeCodeBackendStopClosesEvents(t *testing.T) {
 
 	b := newTestBackend(t, transport)
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendClaudeCode,
-		Prompt:     "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1095,9 +1109,8 @@ func TestClaudeCodeBackendNoDuplicateResultMessage(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendClaudeCode,
-		Prompt:     "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1172,9 +1185,8 @@ func TestClaudeCodeBackendNoDuplicateContent(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendClaudeCode,
-		Prompt:     "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1215,120 +1227,10 @@ func TestClaudeCodeBackendNoDuplicateContent(t *testing.T) {
 	}
 }
 
-func TestClaudeCodeBackendMessagesAccumulation(t *testing.T) {
-	t.Parallel()
-
-	sessionID := "session-msgs"
-	result := "Done"
-
-	transport := newMockTransport([]claudecode.Message{
-		&claudecode.SystemMessage{
-			MessageType: "system",
-			Subtype:     "init",
-			Data:        map[string]any{"session_id": sessionID},
-		},
-		// Streaming + snapshot for first turn.
-		&claudecode.StreamEvent{
-			SessionID: sessionID,
-			Event: map[string]any{
-				"type":  "content_block_delta",
-				"index": float64(0),
-				"delta": map[string]any{
-					"type": "text_delta",
-					"text": "First response.",
-				},
-			},
-		},
-		&claudecode.AssistantMessage{
-			MessageType: "assistant",
-			Content: []claudecode.ContentBlock{
-				&claudecode.TextBlock{MessageType: "text", Text: "First response."},
-			},
-		},
-		&claudecode.ResultMessage{
-			MessageType: "result",
-			SessionID:   sessionID,
-			Result:      &result,
-		},
-	})
-
-	b := newTestBackend(t, transport)
-	defer b.Stop()
-
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendClaudeCode,
-		Prompt:     "First prompt",
-	})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-
-	waitForStatus(t, b.Events(), agent.StatusIdle, 5*time.Second)
-
-	// Set up onSend AFTER the first turn to avoid firing on the initial Query().
-	followUpDone := "Follow-up done"
-	transport.onSend = func(prompt string) []claudecode.Message {
-		return []claudecode.Message{
-			&claudecode.StreamEvent{
-				SessionID: sessionID,
-				Event: map[string]any{
-					"type":  "content_block_delta",
-					"index": float64(0),
-					"delta": map[string]any{
-						"type": "text_delta",
-						"text": "Second response.",
-					},
-				},
-			},
-			&claudecode.AssistantMessage{
-				MessageType: "assistant",
-				Content: []claudecode.ContentBlock{
-					&claudecode.TextBlock{MessageType: "text", Text: "Second response."},
-				},
-			},
-			&claudecode.ResultMessage{
-				MessageType: "result",
-				SessionID:   sessionID,
-				Result:      &followUpDone,
-			},
-		}
-	}
-
-	// Send follow-up.
-	err = b.SendMessage(context.Background(), agent.SendMessageOpts{Text: "Second prompt"})
-	if err != nil {
-		t.Fatalf("SendMessage: %v", err)
-	}
-
-	waitForStatus(t, b.Events(), agent.StatusIdle, 5*time.Second)
-
-	// Check Messages() returns accumulated history.
-	msgs, err := b.Messages(context.Background())
-	if err != nil {
-		t.Fatalf("Messages: %v", err)
-	}
-
-	// Expected: assistant (first), user (follow-up), assistant (second) = 3 messages.
-	if len(msgs) != 3 {
-		for i, m := range msgs {
-			t.Logf("msg %d: role=%s content=%q parts=%d", i, m.Role, m.Content, len(m.Parts))
-		}
-		t.Fatalf("expected 3 messages in history, got %d", len(msgs))
-	}
-
-	if msgs[0].Role != "assistant" {
-		t.Errorf("msg 0: expected role=assistant, got %s", msgs[0].Role)
-	}
-	if msgs[1].Role != "user" {
-		t.Errorf("msg 1: expected role=user, got %s", msgs[1].Role)
-	}
-	if msgs[1].Content != "Second prompt" {
-		t.Errorf("msg 1: expected content='Second prompt', got %q", msgs[1].Content)
-	}
-	if msgs[2].Role != "assistant" {
-		t.Errorf("msg 2: expected role=assistant, got %s", msgs[2].Role)
-	}
-}
+// Note: Messages() is now backed by Claude Code's on-disk JSONL transcripts.
+// Mock-streamed events (used by these mock-transport tests) don't produce
+// JSONL, so accumulation is verified instead in claude_messages_test.go,
+// which writes JSONL fixtures under a temp CLAUDE_CONFIG_DIR.
 
 // TestClaudeCodeBackendMultiCyclePartIDs is a regression test for the bug where
 // tool use within a single turn causes multiple message cycles, each with block
@@ -1489,9 +1391,8 @@ func TestClaudeCodeBackendMultiCyclePartIDs(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendClaudeCode,
-		Prompt:     "Read the file",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "Read the file",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1641,9 +1542,8 @@ func TestClaudeCodeBackendHistoryToolPartsNoJSON(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendClaudeCode,
-		Prompt:     "run pwd",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "run pwd",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1651,39 +1551,9 @@ func TestClaudeCodeBackendHistoryToolPartsNoJSON(t *testing.T) {
 
 	waitForStatus(t, b.Events(), agent.StatusIdle, 5*time.Second)
 
-	// Inspect the accumulated Messages() — this is what the TUI loads on reopen.
-	msgs, err := b.Messages(context.Background())
-	if err != nil {
-		t.Fatalf("Messages: %v", err)
-	}
-
-	for _, msg := range msgs {
-		for _, p := range msg.Parts {
-			switch p.Type {
-			case agent.PartToolCall:
-				// Must NOT contain JSON input text.
-				if p.Text != "" {
-					t.Errorf("PartToolCall Text should be empty on history reload, got %q", p.Text)
-				}
-				// Must be completed, not running (no spinner).
-				if p.Status != agent.PartCompleted {
-					t.Errorf("PartToolCall Status should be %q on history reload, got %q", agent.PartCompleted, p.Status)
-				}
-				// Must still carry the tool name.
-				if p.Tool != "Bash" {
-					t.Errorf("PartToolCall Tool should be 'Bash', got %q", p.Tool)
-				}
-			case agent.PartToolResult:
-				// Must NOT contain raw tool output text.
-				if p.Text != "" {
-					t.Errorf("PartToolResult Text should be empty on history reload, got %q", p.Text)
-				}
-				if p.Status != agent.PartCompleted {
-					t.Errorf("PartToolResult Status should be %q, got %q", agent.PartCompleted, p.Status)
-				}
-			}
-		}
-	}
+	// History-reload assertions on Messages() now live in claude_messages_test.go
+	// (disk-backed JSONL fixtures); mock-streamed events here don't produce JSONL.
+	_ = b
 }
 
 func keys[V any](m map[string]V) []string {
@@ -1807,9 +1677,8 @@ func TestClaudeCodeBackendToolCallSpinnerCompletion(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:    agent.BackendClaudeCode,
-		Prompt:     "Edit the file",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "Edit the file",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)

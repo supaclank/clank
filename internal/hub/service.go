@@ -64,6 +64,13 @@ type Service struct {
 	stopOnce sync.Once
 	wg       sync.WaitGroup
 
+	// startupDiscoverDone is closed when runStartupDiscover has finished
+	// its single startup pass. Tests (and any caller that needs a
+	// deterministic post-boot state) wait on it via WaitStartupDiscover.
+	// Created fresh in New(); closed exactly once by the goroutine that
+	// runs the discover pass in Run().
+	startupDiscoverDone chan struct{}
+
 	// BackendManagers maps each backend type to its manager. The manager
 	// creates SessionBackend instances and owns shared resources (e.g.,
 	// OpenCode servers). Managers that also implement agent.AgentLister or
@@ -117,6 +124,7 @@ func New() *Service {
 		ctx:                          ctx,
 		cancel:                       cancel,
 		stopCh:                       make(chan struct{}),
+		startupDiscoverDone:          make(chan struct{}),
 		log:                          log.New(os.Stderr, "[clank-hub] ", log.LstdFlags|log.Lmsgprefix),
 		BackendManagers:              make(map[agent.BackendType]agent.BackendManager),
 		primaryAgentsRefreshInFlight: make(map[string]bool),
@@ -181,6 +189,7 @@ func (s *Service) Run(listener net.Listener, handler http.Handler) error {
 	go func() {
 		defer s.wg.Done()
 		s.runStartupDiscover(s.ctx)
+		close(s.startupDiscoverDone)
 	}()
 
 	server := &http.Server{Handler: handler}
@@ -324,6 +333,27 @@ func (s *Service) SetHostClient(c *hostclient.HTTP) {
 // goroutine; idempotent.
 func (s *Service) Stop() {
 	s.triggerStop()
+}
+
+// WaitStartupDiscover blocks until the post-Run() startup-discover pass
+// (which heals mis-tagged info.Backend rows and backfills GitRef.LocalPath)
+// has completed, or until ctx is cancelled. Returns ctx.Err() on timeout.
+//
+// Used by tests that exercise the post-restart "reopen a corrupted Claude
+// session" code path: without this barrier, a caller can race the heal and
+// hit the pre-fix bug (dispatch to the wrong backend manager → hang).
+//
+// In production, the daemon does not call this — handlers tolerate the
+// brief window because (a) the inbox's user-triggered Discover also heals,
+// and (b) most user clicks land after the goroutine completes given how
+// fast Claude's file-IO discovery is.
+func (s *Service) WaitStartupDiscover(ctx context.Context) error {
+	select {
+	case <-s.startupDiscoverDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // triggerStop closes stopCh exactly once. Used by Stop() and by the

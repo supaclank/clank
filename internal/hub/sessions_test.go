@@ -913,6 +913,7 @@ func TestDiscoverSessionsAddsHistoricalSessions(t *testing.T) {
 	snapshots := []agent.SessionSnapshot{
 		{
 			ID:        "oc-session-aaa",
+			Backend:   agent.BackendOpenCode,
 			Title:     "Fix login bug",
 			Directory: "/tmp/project-alpha",
 			CreatedAt: time.Now().Add(-2 * time.Hour),
@@ -920,6 +921,7 @@ func TestDiscoverSessionsAddsHistoricalSessions(t *testing.T) {
 		},
 		{
 			ID:        "oc-session-bbb",
+			Backend:   agent.BackendOpenCode,
 			Title:     "Add dark mode",
 			Directory: "/tmp/project-beta",
 			CreatedAt: time.Now().Add(-3 * time.Hour),
@@ -970,6 +972,7 @@ func TestDiscoverSessionsDeduplicates(t *testing.T) {
 	snapshots := []agent.SessionSnapshot{
 		{
 			ID:        "oc-session-xxx",
+			Backend:   agent.BackendOpenCode,
 			Title:     "Refactor auth",
 			Directory: "/tmp/project-x",
 			CreatedAt: time.Now().Add(-1 * time.Hour),
@@ -1011,6 +1014,7 @@ func TestDiscoverSessionsSkipsManagedSessions(t *testing.T) {
 		snapshots: []agent.SessionSnapshot{
 			{
 				ID:        "oc-real-session",
+				Backend:   agent.BackendOpenCode,
 				Title:     "Already running",
 				Directory: "/tmp/project-z",
 				CreatedAt: time.Now().Add(-1 * time.Hour),
@@ -1064,6 +1068,7 @@ func TestHistoricalSessionMessagesActivatesBackend(t *testing.T) {
 	snapshots := []agent.SessionSnapshot{
 		{
 			ID:        "oc-hist-msg",
+			Backend:   agent.BackendOpenCode,
 			Title:     "Old session",
 			CreatedAt: time.Now().Add(-1 * time.Hour),
 			UpdatedAt: time.Now().Add(-30 * time.Minute),
@@ -1125,6 +1130,7 @@ func TestHistoricalSessionResumeActivatesBackend(t *testing.T) {
 	snapshots := []agent.SessionSnapshot{
 		{
 			ID:        "oc-hist-resume",
+			Backend:   agent.BackendOpenCode,
 			Title:     "Resume me",
 			CreatedAt: time.Now().Add(-1 * time.Hour),
 			UpdatedAt: time.Now().Add(-30 * time.Minute),
@@ -1976,5 +1982,143 @@ func TestDaemonSearchSessionsVisibility(t *testing.T) {
 	}
 	if results[0].ID != "ses-archived" {
 		t.Errorf("expected ses-archived, got %s", results[0].ID)
+	}
+}
+
+// TestDiscoverSessionsAttributesBackendPerSnapshot is the regression test
+// for the bug where discoverSessions hardcoded info.Backend = opencode for
+// every snapshot regardless of source backend. After a clankd restart the
+// activate path would dispatch a Claude session through the OpenCode
+// backend manager, leaving the TUI hung on "Waiting for agent output...".
+//
+// We register two backend managers (opencode + claude-code), each
+// returning one snapshot tagged with its own Backend, and assert that the
+// persisted SessionInfo.Backend matches the snapshot's source.
+func TestDiscoverSessionsAttributesBackendPerSnapshot(t *testing.T) {
+	t.Parallel()
+
+	s := hub.New()
+
+	ocSnap := agent.SessionSnapshot{
+		ID:        "oc-attrib-1",
+		Backend:   agent.BackendOpenCode,
+		Title:     "OpenCode session",
+		Directory: "/tmp/attrib-oc",
+		CreatedAt: time.Now().Add(-2 * time.Hour),
+		UpdatedAt: time.Now().Add(-1 * time.Hour),
+	}
+	clSnap := agent.SessionSnapshot{
+		ID:        "cl-attrib-1",
+		Backend:   agent.BackendClaudeCode,
+		Title:     "Claude session",
+		Directory: "/tmp/attrib-cl",
+		CreatedAt: time.Now().Add(-2 * time.Hour),
+		UpdatedAt: time.Now().Add(-1 * time.Hour),
+	}
+
+	s.BackendManagers[agent.BackendOpenCode] = &mockDiscovererManager{snapshots: []agent.SessionSnapshot{ocSnap}}
+	s.BackendManagers[agent.BackendClaudeCode] = &mockDiscovererManager{snapshots: []agent.SessionSnapshot{clSnap}}
+
+	client, _, cleanup := startHubOnSocket(t, s)
+	defer cleanup()
+	registerTestRepo(t, s)
+
+	ctx := context.Background()
+	if err := client.Sessions().Discover(ctx, "/tmp/attrib"); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+
+	sessions, err := client.Sessions().List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	got := map[string]agent.BackendType{}
+	for _, ses := range sessions {
+		got[ses.ExternalID] = ses.Backend
+	}
+	if got["oc-attrib-1"] != agent.BackendOpenCode {
+		t.Errorf("oc-attrib-1: expected backend=opencode, got %q", got["oc-attrib-1"])
+	}
+	if got["cl-attrib-1"] != agent.BackendClaudeCode {
+		t.Errorf("cl-attrib-1: expected backend=claude-code, got %q", got["cl-attrib-1"])
+	}
+}
+
+// TestDiscoverSessionsHealsMistaggedBackend verifies that if a session
+// was previously persisted with the wrong backend (e.g. before the
+// per-snapshot Backend attribution fix landed), the next Discover call
+// corrects info.Backend to match the snapshot's source. Without this
+// healing, existing daemon installs would remain stuck reopening Claude
+// sessions through the OpenCode manager.
+func TestDiscoverSessionsHealsMistaggedBackend(t *testing.T) {
+	t.Parallel()
+
+	s := hub.New()
+
+	clSnap := agent.SessionSnapshot{
+		ID:        "cl-heal-1",
+		Backend:   agent.BackendClaudeCode,
+		Title:     "Mistagged Claude session",
+		Directory: "/tmp/heal-cl",
+		CreatedAt: time.Now().Add(-2 * time.Hour),
+		UpdatedAt: time.Now().Add(-1 * time.Hour),
+	}
+	// First discovery returns the snapshot pretending to be OpenCode (i.e.
+	// the bug). After the corrupt row is in place we swap to the correct
+	// backend tag and rediscover.
+	bug := &mockDiscovererManager{snapshots: []agent.SessionSnapshot{{
+		ID:        clSnap.ID,
+		Backend:   agent.BackendOpenCode,
+		Title:     clSnap.Title,
+		Directory: clSnap.Directory,
+		CreatedAt: clSnap.CreatedAt,
+		UpdatedAt: clSnap.UpdatedAt,
+	}}}
+	s.BackendManagers[agent.BackendOpenCode] = bug
+	// Empty for now — we'll inject the real Claude snapshot below.
+	cl := &mockDiscovererManager{snapshots: nil}
+	s.BackendManagers[agent.BackendClaudeCode] = cl
+
+	client, _, cleanup := startHubOnSocket(t, s)
+	defer cleanup()
+	registerTestRepo(t, s)
+
+	ctx := context.Background()
+	if err := client.Sessions().Discover(ctx, "/tmp/heal"); err != nil {
+		t.Fatalf("Discover (corrupt phase): %v", err)
+	}
+
+	// Confirm the row is mis-tagged.
+	sessions, err := client.Sessions().List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].Backend != agent.BackendOpenCode {
+		t.Fatalf("expected 1 mis-tagged opencode session, got %+v", sessions)
+	}
+
+	// Now flip: opencode no longer returns it, claude-code does — with the
+	// correct Backend tag. The dedupe-and-heal branch should overwrite
+	// info.Backend.
+	bug.snapshots = nil
+	cl.snapshots = []agent.SessionSnapshot{clSnap}
+
+	if err := client.Sessions().Discover(ctx, "/tmp/heal"); err != nil {
+		t.Fatalf("Discover (heal phase): %v", err)
+	}
+
+	sessions, err = client.Sessions().List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session after heal, got %d", len(sessions))
+	}
+	if sessions[0].Backend != agent.BackendClaudeCode {
+		t.Errorf("heal failed: expected backend=claude-code, got %q", sessions[0].Backend)
+	}
+	if sessions[0].ExternalID != clSnap.ID {
+		t.Errorf("expected externalID=%s, got %s", clSnap.ID, sessions[0].ExternalID)
 	}
 }

@@ -229,12 +229,24 @@ func (s *Service) ListModels(ctx context.Context, bt agent.BackendType, ref agen
 }
 
 // DiscoverSessions asks the given backend manager for historical sessions
-// it already knows about. Returns nil, nil for managers that do not
-// implement discovery (e.g. Claude Code, which is stateless across runs).
+// it already knows about. Routing:
+//   - seedDir == "" and the manager implements AllSessionDiscoverer →
+//     DiscoverAllSessions. Used by the hub's startup heal pass to
+//     enumerate every session globally without needing a project
+//     directory hint (which may be wrong on a corrupted persistence row).
+//   - otherwise, if the manager implements SessionDiscoverer →
+//     DiscoverSessions(seedDir).
+//   - managers that implement neither (or no manager registered for bt)
+//     return nil, nil.
 func (s *Service) DiscoverSessions(ctx context.Context, bt agent.BackendType, seedDir string) ([]agent.SessionSnapshot, error) {
 	mgr, ok := s.backendManagers[bt]
 	if !ok {
 		return nil, nil
+	}
+	if seedDir == "" {
+		if all, ok := mgr.(agent.AllSessionDiscoverer); ok {
+			return all.DiscoverAllSessions(ctx)
+		}
 	}
 	disc, ok := mgr.(agent.SessionDiscoverer)
 	if !ok {

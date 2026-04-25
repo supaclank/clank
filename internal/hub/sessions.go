@@ -67,8 +67,16 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 	added := 0
 	matchedExt := 0
 	matchedSID := 0
+	healed := 0
 	s.mu.Lock()
 	for _, snap := range snapshots {
+		// Fast-fail rather than silently mis-tagging the session. A snapshot
+		// without a Backend is a backend-manager bug; persisting it would
+		// break activateBackend on restart (wrong manager dispatch).
+		if snap.Backend == "" {
+			s.log.Printf("discover: WARN snapshot extID=%s has empty Backend; skipping", snap.ID)
+			continue
+		}
 		var existingMS *managedSession
 		var matchKind string
 		for _, existing := range s.sessions {
@@ -90,6 +98,17 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 				matchedSID++
 			}
 			s.log.Printf("discover: snap extID=%s matched existing hub_id=%s via %s", snap.ID, existingMS.info.ID, matchKind)
+			// Heal a mis-tagged backend (regression: prior versions of
+			// discoverSessions hardcoded BackendOpenCode for every snapshot
+			// regardless of source, leaving Claude sessions persisted as
+			// opencode in sqlite. On reopen the host would dispatch to the
+			// wrong backend manager and hang). Trust the snapshot — it came
+			// straight from the backend that owns the session.
+			if existingMS.info.Backend != snap.Backend {
+				s.log.Printf("discover: HEAL hub_id=%s backend %s → %s (extID=%s)", existingMS.info.ID, existingMS.info.Backend, snap.Backend, snap.ID)
+				existingMS.info.Backend = snap.Backend
+				healed++
+			}
 			existingMS.info.Title = snap.Title
 			existingMS.info.CreatedAt = snap.CreatedAt
 			existingMS.info.UpdatedAt = snap.UpdatedAt
@@ -124,7 +143,7 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 		info := agent.SessionInfo{
 			ID:              id,
 			ExternalID:      snap.ID,
-			Backend:         agent.BackendOpenCode,
+			Backend:         snap.Backend,
 			Status:          agent.StatusIdle,
 			GitRef:          gitRef,
 			Title:           snap.Title,
@@ -135,12 +154,12 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 		}
 		s.sessions[id] = &managedSession{info: info, backend: nil}
 		s.persistSession(s.sessions[id])
-		s.log.Printf("discover: snap extID=%s NEW → hub_id=%s dir=%s", snap.ID, id, snap.Directory)
+		s.log.Printf("discover: snap extID=%s NEW → hub_id=%s backend=%s dir=%s", snap.ID, id, snap.Backend, snap.Directory)
 		added++
 	}
 	s.mu.Unlock()
 
-	s.log.Printf("discover: %d snapshots, %d matched (extID=%d, backendSID=%d), %d added", len(snapshots), matchedExt+matchedSID, matchedExt, matchedSID, added)
+	s.log.Printf("discover: %d snapshots, %d matched (extID=%d, backendSID=%d), %d added, %d healed", len(snapshots), matchedExt+matchedSID, matchedExt, matchedSID, added, healed)
 
 	return DiscoverResult{Discovered: added, Total: len(snapshots)}, nil
 }
@@ -166,9 +185,10 @@ func (s *Service) activateBackend(id string, ms *managedSession) error {
 		return fmt.Errorf("activate backend: %w", err)
 	}
 
-	// Start watching for events (SSE) without sending a prompt.
-	if err := backend.Watch(s.ctx); err != nil {
-		return fmt.Errorf("watch backend: %w", err)
+	// Open the backend without dispatching a prompt so SSE events
+	// (for OpenCode) start flowing for this re-attached session.
+	if err := backend.Open(s.ctx); err != nil {
+		return fmt.Errorf("open backend: %w", err)
 	}
 
 	s.mu.Lock()
@@ -406,6 +426,16 @@ func (s *Service) runBackend(id string, ms *managedSession, req agent.StartReque
 			evt.SessionID = id
 			s.broadcast(evt)
 
+			// Persist ExternalID the moment the backend learns it
+			if evt.ExternalID != "" {
+				s.mu.Lock()
+				if ms2, ok := s.sessions[id]; ok && ms2.info.ExternalID != evt.ExternalID {
+					ms2.info.ExternalID = evt.ExternalID
+					s.persistSession(ms2)
+				}
+				s.mu.Unlock()
+			}
+
 			if evt.Type == agent.EventStatusChange {
 				if data, ok := evt.Data.(agent.StatusChangeData); ok {
 					s.updateSessionStatus(id, data.NewStatus)
@@ -432,7 +462,12 @@ func (s *Service) runBackend(id string, ms *managedSession, req agent.StartReque
 	}()
 	defer func() { <-done }() // wait for relay goroutine to finish
 
-	if err := ms.backend.Start(s.ctx, req); err != nil {
+	sendOpts := agent.SendMessageOpts{
+		Text:  req.Prompt,
+		Agent: req.Agent,
+		Model: req.Model,
+	}
+	if err := ms.backend.OpenAndSend(s.ctx, sendOpts); err != nil {
 		s.log.Printf("session %s: backend start error: %v", id, err)
 		s.updateSessionStatus(id, agent.StatusError)
 		s.broadcast(agent.Event{
@@ -442,18 +477,6 @@ func (s *Service) runBackend(id string, ms *managedSession, req agent.StartReque
 			Data:      agent.ErrorData{Message: err.Error()},
 		})
 		return
-	}
-
-	// After Start() returns, capture the backend's native session ID so
-	// future discover calls can deduplicate against it.
-	extID := ms.backend.SessionID()
-	if extID != "" {
-		s.mu.Lock()
-		if ms2, ok := s.sessions[id]; ok {
-			ms2.info.ExternalID = extID
-			s.persistSession(ms2)
-		}
-		s.mu.Unlock()
 	}
 
 	// Backend event channel closed — mark as dead if still busy.

@@ -44,8 +44,9 @@ type mockBackend struct {
 	// the message history returned by the backend.
 	history []agent.MessageData
 
-	// onStart is called during Start, allowing tests to control behavior.
-	onStart func(ctx context.Context, req agent.StartRequest) error
+	// onOpenAndSend is called during OpenAndSend, allowing tests to
+	// control behavior (e.g. simulate a long-running prompt).
+	onOpenAndSend func(ctx context.Context, opts agent.SendMessageOpts) error
 }
 
 func newMockBackend() *mockBackend {
@@ -56,7 +57,7 @@ func newMockBackend() *mockBackend {
 	}
 }
 
-func (m *mockBackend) Start(ctx context.Context, req agent.StartRequest) error {
+func (m *mockBackend) Open(ctx context.Context) error {
 	m.mu.Lock()
 	m.started = true
 	m.status = agent.StatusBusy
@@ -71,10 +72,19 @@ func (m *mockBackend) Start(ctx context.Context, req agent.StartRequest) error {
 			NewStatus: agent.StatusBusy,
 		},
 	}
+	return nil
+}
 
-	if m.onStart != nil {
-		return m.onStart(ctx, req)
+func (m *mockBackend) OpenAndSend(ctx context.Context, opts agent.SendMessageOpts) error {
+	if err := m.Open(ctx); err != nil {
+		return err
 	}
+	if m.onOpenAndSend != nil {
+		return m.onOpenAndSend(ctx, opts)
+	}
+	// NOTE: do not append to m.messages — that field tracks follow-up
+	// Send() calls explicitly. Initial prompts go through OpenAndSend
+	// and are tracked separately by tests that care.
 	return nil
 }
 
@@ -82,7 +92,7 @@ func (m *mockBackend) Watch(ctx context.Context) error {
 	return nil
 }
 
-func (m *mockBackend) SendMessage(ctx context.Context, opts agent.SendMessageOpts) error {
+func (m *mockBackend) Send(ctx context.Context, opts agent.SendMessageOpts) error {
 	m.mu.Lock()
 	m.messages = append(m.messages, opts.Text)
 	m.mu.Unlock()

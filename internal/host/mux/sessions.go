@@ -74,52 +74,30 @@ func (m *Mux) handleSessionSnapshot(w http.ResponseWriter, r *http.Request) {
 }
 
 // HOST
-func (m *Mux) handleStartSession(w http.ResponseWriter, r *http.Request) {
+func (m *Mux) handleOpenSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	b, ok := m.svc.Session(id)
 	if !ok {
 		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
 		return
 	}
-	var req agent.StartRequest
-	if err := decodeJSON(r.Body, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
-		return
-	}
-	if err := b.Start(r.Context(), req); err != nil {
+	if err := b.Open(r.Context()); err != nil {
 		writeError(w, err)
 		return
 	}
-	snap := SessionSnapshot{
+	// Return the post-Open snapshot so the client can refresh its
+	// cached ExternalID/Status. The ID may not be known yet for
+	// async-init backends (e.g. Claude); the caller will pick it up
+	// later via Event.ExternalID on the SSE stream.
+	writeJSON(w, http.StatusOK, SessionSnapshot{
 		SessionID:  id,
 		ExternalID: b.SessionID(),
 		Status:     b.Status(),
-	}
-	// Return the post-Start snapshot so the client can refresh its
-	// cached ExternalID/Status. Some backends (opencode) only learn
-	// their sessionID inside Start; without this the client keeps the
-	// empty ExternalID it received from POST /sessions and persists
-	// external_id="" on the Hub, which breaks session deduplication.
-	writeJSON(w, http.StatusOK, snap)
+	})
 }
 
 // HOST
-func (m *Mux) handleWatchSession(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	b, ok := m.svc.Session(id)
-	if !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
-		return
-	}
-	if err := b.Watch(r.Context()); err != nil {
-		writeError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// HOST
-func (m *Mux) handleSendMessage(w http.ResponseWriter, r *http.Request) {
+func (m *Mux) handleSendSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	b, ok := m.svc.Session(id)
 	if !ok {
@@ -131,11 +109,41 @@ func (m *Mux) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	if err := b.SendMessage(r.Context(), opts); err != nil {
+	if err := b.Send(r.Context(), opts); err != nil {
 		writeError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// HOST
+func (m *Mux) handleOpenAndSendSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	b, ok := m.svc.Session(id)
+	if !ok {
+		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
+		return
+	}
+	var opts agent.SendMessageOpts
+	if err := decodeJSON(r.Body, &opts); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
+		return
+	}
+	if err := b.OpenAndSend(r.Context(), opts); err != nil {
+		writeError(w, err)
+		return
+	}
+	// Return the post-OpenAndSend snapshot so the client can refresh
+	// its cached ExternalID/Status. Some backends (opencode) learn
+	// their sessionID inside Open synchronously; without this the
+	// client keeps the empty ExternalID it received from POST
+	// /sessions and persists external_id="" on the Hub. Async-init
+	// backends (claude) still rely on Event.ExternalID.
+	writeJSON(w, http.StatusOK, SessionSnapshot{
+		SessionID:  id,
+		ExternalID: b.SessionID(),
+		Status:     b.Status(),
+	})
 }
 
 // HOST

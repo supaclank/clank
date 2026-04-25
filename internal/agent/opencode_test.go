@@ -273,6 +273,7 @@ func (m *mockOpenCodeServer) waitForPrompts(n int, timeout time.Duration) []mock
 // mock server blocking inside handlePrompt, Start() must still return promptly
 // with SessionID() populated.
 func TestOpenCodeBackend_StartReturnsBeforePromptCompletes(t *testing.T) {
+	t.Parallel()
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
@@ -288,9 +289,8 @@ func TestOpenCodeBackend_StartReturnsBeforePromptCompletes(t *testing.T) {
 	done := make(chan error, 1)
 	start := time.Now()
 	go func() {
-		done <- b.Start(ctx, agent.StartRequest{
-			Backend: agent.BackendOpenCode,
-			Prompt:  "stream me a long response",
+		done <- b.OpenAndSend(ctx, agent.SendMessageOpts{
+			Text: "stream me a long response",
 		})
 	}()
 
@@ -319,6 +319,7 @@ func TestOpenCodeBackend_StartReturnsBeforePromptCompletes(t *testing.T) {
 }
 
 func TestOpenCodeBackendStartCreatesSession(t *testing.T) {
+	t.Parallel()
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
@@ -326,9 +327,8 @@ func TestOpenCodeBackendStartCreatesSession(t *testing.T) {
 	defer b.Stop()
 
 	ctx := context.Background()
-	err := b.Start(ctx, agent.StartRequest{
-		Backend: agent.BackendOpenCode,
-		Prompt:  "Fix the bug in main.go",
+	err := b.OpenAndSend(ctx, agent.SendMessageOpts{
+		Text: "Fix the bug in main.go",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -364,6 +364,7 @@ func TestOpenCodeBackendStartCreatesSession(t *testing.T) {
 }
 
 func TestOpenCodeBackendStartResumesSession(t *testing.T) {
+	t.Parallel()
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
@@ -372,17 +373,15 @@ func TestOpenCodeBackendStartResumesSession(t *testing.T) {
 	mock.sessions["existing-session"] = true
 	mock.mu.Unlock()
 
-	b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
+	b := agent.NewOpenCodeBackend(mock.URL(), "existing-session", nil)
 	defer b.Stop()
 
 	ctx := context.Background()
-	err := b.Start(ctx, agent.StartRequest{
-		Backend:   agent.BackendOpenCode,
-		Prompt:    "Continue working",
-		SessionID: "existing-session",
+	err := b.OpenAndSend(ctx, agent.SendMessageOpts{
+		Text: "Continue working",
 	})
 	if err != nil {
-		t.Fatalf("Start: %v", err)
+		t.Fatalf("OpenAndSend: %v", err)
 	}
 
 	// Should use the existing session ID, not create a new one.
@@ -401,6 +400,7 @@ func TestOpenCodeBackendStartResumesSession(t *testing.T) {
 }
 
 func TestOpenCodeBackendSendMessage(t *testing.T) {
+	t.Parallel()
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
@@ -408,9 +408,8 @@ func TestOpenCodeBackendSendMessage(t *testing.T) {
 	defer b.Stop()
 
 	ctx := context.Background()
-	err := b.Start(ctx, agent.StartRequest{
-		Backend: agent.BackendOpenCode,
-		Prompt:  "Start task",
+	err := b.OpenAndSend(ctx, agent.SendMessageOpts{
+		Text: "Start task",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -423,7 +422,7 @@ func TestOpenCodeBackendSendMessage(t *testing.T) {
 		t.Fatalf("initial prompt not dispatched, got %d", len(got))
 	}
 
-	err = b.SendMessage(ctx, agent.SendMessageOpts{Text: "Follow up on the task"})
+	err = b.Send(ctx, agent.SendMessageOpts{Text: "Follow up on the task"})
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
@@ -438,19 +437,21 @@ func TestOpenCodeBackendSendMessage(t *testing.T) {
 }
 
 func TestOpenCodeBackendSendMessageBeforeStart(t *testing.T) {
+	t.Parallel()
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
 	b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
 	defer b.Stop()
 
-	err := b.SendMessage(context.Background(), agent.SendMessageOpts{Text: "hello"})
+	err := b.Send(context.Background(), agent.SendMessageOpts{Text: "hello"})
 	if err == nil {
 		t.Error("expected error sending message before Start")
 	}
 }
 
 func TestOpenCodeBackendAbort(t *testing.T) {
+	t.Parallel()
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
@@ -458,9 +459,8 @@ func TestOpenCodeBackendAbort(t *testing.T) {
 	defer b.Stop()
 
 	ctx := context.Background()
-	err := b.Start(ctx, agent.StartRequest{
-		Backend: agent.BackendOpenCode,
-		Prompt:  "Do stuff",
+	err := b.OpenAndSend(ctx, agent.SendMessageOpts{
+		Text: "Do stuff",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -481,6 +481,7 @@ func TestOpenCodeBackendAbort(t *testing.T) {
 }
 
 func TestOpenCodeBackendAbortBeforeStart(t *testing.T) {
+	t.Parallel()
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
@@ -494,6 +495,7 @@ func TestOpenCodeBackendAbortBeforeStart(t *testing.T) {
 }
 
 func TestOpenCodeBackendSSESessionIdle(t *testing.T) {
+	t.Parallel()
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
@@ -521,9 +523,8 @@ func TestOpenCodeBackendSSESessionIdle(t *testing.T) {
 	b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendOpenCode,
-		Prompt:  "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -554,6 +555,7 @@ func TestOpenCodeBackendSSESessionIdle(t *testing.T) {
 }
 
 func TestOpenCodeBackendSSEMessagePartUpdated(t *testing.T) {
+	t.Parallel()
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
@@ -611,9 +613,8 @@ func TestOpenCodeBackendSSEMessagePartUpdated(t *testing.T) {
 	b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendOpenCode,
-		Prompt:  "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -654,6 +655,7 @@ func TestOpenCodeBackendSSEMessagePartUpdated(t *testing.T) {
 }
 
 func TestOpenCodeBackendSSEFiltersOtherSessions(t *testing.T) {
+	t.Parallel()
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
@@ -685,9 +687,8 @@ func TestOpenCodeBackendSSEFiltersOtherSessions(t *testing.T) {
 	b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendOpenCode,
-		Prompt:  "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -710,6 +711,7 @@ func TestOpenCodeBackendSSEFiltersOtherSessions(t *testing.T) {
 // TestOpenCodeBackendSSEEventTypes verifies that various SSE event types
 // from the OpenCode server are correctly translated into agent events.
 func TestOpenCodeBackendSSEEventTypes(t *testing.T) {
+	t.Parallel()
 	type sseEvent struct {
 		eventType  string
 		properties func(sessionID string) interface{}
@@ -1031,6 +1033,7 @@ func TestOpenCodeBackendSSEEventTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			mock := newMockOpenCodeServer()
 			defer mock.Close()
 
@@ -1057,9 +1060,8 @@ func TestOpenCodeBackendSSEEventTypes(t *testing.T) {
 			b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
 			defer b.Stop()
 
-			err := b.Start(context.Background(), agent.StartRequest{
-				Backend: agent.BackendOpenCode,
-				Prompt:  "test",
+			err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+				Text: "test",
 			})
 			if err != nil {
 				t.Fatalf("Start: %v", err)
@@ -1141,13 +1143,12 @@ func TestAgentFieldThreadedInSendMessage(t *testing.T) {
 	defer b.Stop()
 
 	ctx := context.Background()
-	err := b.Start(ctx, agent.StartRequest{
-		Backend: agent.BackendOpenCode,
-		Prompt:  "initial prompt",
-		Agent:   "plan",
+	err := b.OpenAndSend(ctx, agent.SendMessageOpts{
+		Text:  "initial prompt",
+		Agent: "plan",
 	})
 	if err != nil {
-		t.Fatalf("Start: %v", err)
+		t.Fatalf("OpenAndSend: %v", err)
 	}
 
 	// Wait for the initial async Prompt to land.
@@ -1156,7 +1157,7 @@ func TestAgentFieldThreadedInSendMessage(t *testing.T) {
 	}
 
 	// Send a follow-up with agent set.
-	err = b.SendMessage(ctx, agent.SendMessageOpts{Text: "follow up", Agent: "build"})
+	err = b.Send(ctx, agent.SendMessageOpts{Text: "follow up", Agent: "build"})
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
@@ -1209,9 +1210,8 @@ func TestOpenCodeBackendSSELargePayload(t *testing.T) {
 	b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendOpenCode,
-		Prompt:  "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1328,9 +1328,8 @@ func TestOpenCodeBackendSSEReconnectAfterDrop(t *testing.T) {
 	b := agent.NewOpenCodeBackend(mock.URL(), "", resolver)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendOpenCode,
-		Prompt:  "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1442,9 +1441,8 @@ func TestOpenCodeBackendSSEReconnectWithURLChange(t *testing.T) {
 	b := agent.NewOpenCodeBackend(mock1.URL(), "", resolver)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendOpenCode,
-		Prompt:  "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1490,9 +1488,8 @@ func TestOpenCodeBackendSSEGivesUpAfterMaxRetries(t *testing.T) {
 	})
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendOpenCode,
-		Prompt:  "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1568,9 +1565,8 @@ func TestOpenCodeBackendMessagesRetryOnConnectionError(t *testing.T) {
 	b := agent.NewOpenCodeBackend(mock1.URL(), "", resolver)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendOpenCode,
-		Prompt:  "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)

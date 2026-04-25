@@ -194,7 +194,7 @@ func (s *Service) SendMessage(ctx context.Context, id string, in SendMessageInpu
 	// Dispatch asynchronously — backend.SendMessage blocks for the LLM
 	// response. Errors arrive via the event stream as EventError.
 	go func() {
-		if err := ms.backend.SendMessage(s.ctx, opts); err != nil {
+		if err := ms.backend.Send(s.ctx, opts); err != nil {
 			s.log.Printf("session %s: send message error: %v", id, err)
 			s.broadcast(agent.Event{
 				Type:      agent.EventError,

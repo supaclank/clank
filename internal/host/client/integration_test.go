@@ -42,15 +42,19 @@ func newStubBackend(id string) *stubBackend {
 	}
 }
 
-func (b *stubBackend) Start(_ context.Context, req agent.StartRequest) error {
-	b.startedReq = req
+func (b *stubBackend) Open(_ context.Context) error {
 	if b.idAfterStart != "" {
 		b.id = b.idAfterStart
 	}
 	return nil
 }
-func (b *stubBackend) Watch(_ context.Context) error { return nil }
-func (b *stubBackend) SendMessage(_ context.Context, o agent.SendMessageOpts) error {
+func (b *stubBackend) OpenAndSend(ctx context.Context, opts agent.SendMessageOpts) error {
+	if err := b.Open(ctx); err != nil {
+		return err
+	}
+	return b.Send(ctx, opts)
+}
+func (b *stubBackend) Send(_ context.Context, o agent.SendMessageOpts) error {
 	b.sentMsg = o
 	return nil
 }
@@ -224,8 +228,8 @@ func TestHTTPRoundTrip_SendMessageAndAbort(t *testing.T) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
-	if err := be.SendMessage(ctx, agent.SendMessageOpts{Text: "hello"}); err != nil {
-		t.Fatalf("SendMessage: %v", err)
+	if err := be.Send(ctx, agent.SendMessageOpts{Text: "hello"}); err != nil {
+		t.Fatalf("Send: %v", err)
 	}
 	if stub.sentMsg.Text != "hello" {
 		t.Errorf("stub.sentMsg.Text = %q, want %q", stub.sentMsg.Text, "hello")
@@ -293,13 +297,13 @@ func TestHTTPRoundTrip_StartPopulatesExternalID(t *testing.T) {
 		t.Errorf("before Start: SessionID = %q, want empty", got)
 	}
 
-	if err := be.Start(ctx, agent.StartRequest{Backend: agent.BackendOpenCode}); err != nil {
-		t.Fatalf("Start: %v", err)
+	if err := be.Open(ctx); err != nil {
+		t.Fatalf("Open: %v", err)
 	}
-	// After Start the host backend knows its external ID; the client
-	// must learn it from the Start response.
+	// After Open the host backend knows its external ID; the client
+	// must learn it from the Open response.
 	if got := be.SessionID(); got != "ext-late" {
-		t.Errorf("after Start: SessionID = %q, want ext-late", got)
+		t.Errorf("after Open: SessionID = %q, want ext-late", got)
 	}
 }
 

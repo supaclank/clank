@@ -241,6 +241,7 @@ func TestDiscoverSessions_NormalizesStaleStatusOnRediscover(t *testing.T) {
 	snapshots := []agent.SessionSnapshot{
 		{
 			ID:        "ext-stale-1",
+			Backend:   agent.BackendOpenCode,
 			Title:     "Stale session",
 			Directory: "/tmp/stale-project",
 			CreatedAt: now.Add(-1 * time.Hour),
@@ -381,6 +382,7 @@ func TestPersistence_DiscoverMergePreservesUserFields(t *testing.T) {
 	snapshots := []agent.SessionSnapshot{
 		{
 			ID:        "ext-merge-1",
+			Backend:   agent.BackendOpenCode,
 			Title:     "Original title",
 			Directory: "/tmp/merge-project",
 			CreatedAt: now.Add(-2 * time.Hour),
@@ -422,7 +424,8 @@ func TestPersistence_DiscoverMergePreservesUserFields(t *testing.T) {
 	// Phase 2: restart daemon, re-discover with updated backend fields.
 	updatedSnapshots := []agent.SessionSnapshot{
 		{
-			ID:        "ext-merge-1",                // same external ID
+			ID:        "ext-merge-1", // same external ID
+			Backend:   agent.BackendOpenCode,
 			Title:     "Updated title from backend", // backend changed the title
 			Directory: "/tmp/merge-project",
 			CreatedAt: now.Add(-2 * time.Hour),

@@ -58,9 +58,9 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("POST /worktrees/merge", m.handleMergeBranch)
 
 	mx.HandleFunc("POST /sessions", m.handleCreateSession)
-	mx.HandleFunc("POST /sessions/{id}/start", m.handleStartSession)
-	mx.HandleFunc("POST /sessions/{id}/watch", m.handleWatchSession)
-	mx.HandleFunc("POST /sessions/{id}/message", m.handleSendMessage)
+	mx.HandleFunc("POST /sessions/{id}/open", m.handleOpenSession)
+	mx.HandleFunc("POST /sessions/{id}/send", m.handleSendSession)
+	mx.HandleFunc("POST /sessions/{id}/open-and-send", m.handleOpenAndSendSession)
 	mx.HandleFunc("POST /sessions/{id}/abort", m.handleAbortSession)
 	mx.HandleFunc("POST /sessions/{id}/revert", m.handleRevertSession)
 	mx.HandleFunc("POST /sessions/{id}/fork", m.handleForkSession)

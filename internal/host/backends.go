@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	claudecode "github.com/severity1/claude-agent-sdk-go"
 )
 
 // OpenCodeBackendManager implements agent.BackendManager, agent.AgentLister,
@@ -152,6 +154,11 @@ func (m *OpenCodeBackendManager) DiscoverSessions(ctx context.Context, seedDir s
 				continue
 			}
 			seen[s.ID] = struct{}{}
+			// Tag the snapshot with its source backend so the hub can
+			// persist info.Backend correctly. Without this, all discovered
+			// sessions would be hardcoded to opencode at the registration
+			// site, breaking reopen-after-restart for any other backend.
+			s.Backend = agent.BackendOpenCode
 			all = append(all, s)
 		}
 	}
@@ -166,9 +173,13 @@ func NewClaudeBackendManager() *ClaudeBackendManager {
 	return &ClaudeBackendManager{}
 }
 
-// CreateBackend creates a Claude Code SessionBackend.
+// CreateBackend creates a Claude Code SessionBackend. When inv.ResumeExternalID
+// is set (reopening a historical session), the backend is constructed with the
+// session ID pre-seeded so Messages() can serve transcript history immediately,
+// without needing Start to fire (activateBackend in the hub only calls Watch,
+// which is a no-op for Claude — there is no long-lived process to attach to).
 func (m *ClaudeBackendManager) CreateBackend(ctx context.Context, inv agent.BackendInvocation) (agent.SessionBackend, error) {
-	return agent.NewClaudeCodeBackend(inv.WorkDir), nil
+	return agent.NewClaudeCodeBackendForSession(inv.WorkDir, inv.ResumeExternalID), nil
 }
 
 // Init is a no-op for Claude — there are no long-lived servers to manage.
@@ -178,3 +189,70 @@ func (m *ClaudeBackendManager) Init(ctx context.Context, knownDirs func() ([]str
 
 // Shutdown is a no-op for Claude — each session manages its own SDK client connection.
 func (m *ClaudeBackendManager) Shutdown() {}
+
+// DiscoverSessions returns historical Claude Code sessions visible to seedDir
+// by reading the on-disk JSONL transcripts via the SDK's ListSessions. The
+// SDK expands seedDir to include any git worktrees by default, mirroring how
+// `claude --resume` resolves sessions across worktrees of the same repo.
+//
+// Sessions whose Cwd cannot be determined fall back to seedDir so the hub
+// always has a directory to associate the session with.
+func (m *ClaudeBackendManager) DiscoverSessions(ctx context.Context, seedDir string) ([]agent.SessionSnapshot, error) {
+	if seedDir == "" {
+		return nil, fmt.Errorf("claude discover: seedDir is required")
+	}
+	infos, err := claudecode.ListSessions(claudecode.WithSessionDirectory(seedDir))
+	if err != nil {
+		return nil, fmt.Errorf("list claude sessions for %s: %w", seedDir, err)
+	}
+
+	out := make([]agent.SessionSnapshot, 0, len(infos))
+	for _, info := range infos {
+		out = append(out, claudeSessionSnapshot(info, seedDir))
+	}
+	return out, nil
+}
+
+// DiscoverAllSessions enumerates every Claude Code session known to the SDK,
+// across all projects under CLAUDE_CONFIG_DIR. Used by the hub's startup-
+// discover pass to heal sessions whose persisted backend tag is wrong (and
+// therefore whose GitRef.LocalPath cannot be trusted as a seed).
+//
+// Sessions whose Cwd is unset fall back to an empty Directory; the hub will
+// preserve any existing GitRef.LocalPath on the persisted row in that case.
+func (m *ClaudeBackendManager) DiscoverAllSessions(ctx context.Context) ([]agent.SessionSnapshot, error) {
+	infos, err := claudecode.ListSessions()
+	if err != nil {
+		return nil, fmt.Errorf("list all claude sessions: %w", err)
+	}
+	out := make([]agent.SessionSnapshot, 0, len(infos))
+	for _, info := range infos {
+		out = append(out, claudeSessionSnapshot(info, ""))
+	}
+	return out, nil
+}
+
+// claudeSessionSnapshot maps SDK metadata to the daemon's SessionSnapshot.
+// The SDK already prioritizes custom_title > ai_title > first_prompt > timestamp
+// when computing Summary, so we reuse it directly as Title.
+func claudeSessionSnapshot(info claudecode.SDKSessionInfo, seedDir string) agent.SessionSnapshot {
+	dir := seedDir
+	if info.Cwd != nil && *info.Cwd != "" {
+		dir = *info.Cwd
+	}
+
+	updated := time.UnixMilli(info.LastModified)
+	created := updated
+	if info.CreatedAt != nil {
+		created = time.UnixMilli(*info.CreatedAt)
+	}
+
+	return agent.SessionSnapshot{
+		ID:        info.SessionID,
+		Backend:   agent.BackendClaudeCode,
+		Title:     info.Summary,
+		Directory: dir,
+		CreatedAt: created,
+		UpdatedAt: updated,
+	}
+}

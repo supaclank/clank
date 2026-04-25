@@ -28,9 +28,11 @@ func (m *noopBackendManager) Shutdown() {}
 
 type noopBackend struct{}
 
-func (b *noopBackend) Start(_ context.Context, _ agent.StartRequest) error { return nil }
-func (b *noopBackend) Watch(_ context.Context) error                       { return nil }
-func (b *noopBackend) SendMessage(_ context.Context, _ agent.SendMessageOpts) error {
+func (b *noopBackend) Open(_ context.Context) error { return nil }
+func (b *noopBackend) OpenAndSend(_ context.Context, _ agent.SendMessageOpts) error {
+	return nil
+}
+func (b *noopBackend) Send(_ context.Context, _ agent.SendMessageOpts) error {
 	return nil
 }
 func (b *noopBackend) Abort(_ context.Context) error { return nil }

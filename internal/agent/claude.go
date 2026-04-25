@@ -30,13 +30,11 @@ type activeToolBlock struct {
 //   - Multi-turn: Query() sends follow-up prompts over the same connection.
 //   - Abort uses the SDK's control protocol (Interrupt), not raw SIGINT.
 //   - receiveLoop maps SDK messages → clank Event types.
-//
-// Future: When the SDK adds list_sessions() and get_session_messages()
-// (see https://github.com/severity1/claude-agent-sdk-go/issues/107),
-// Messages() can retrieve full history from Claude's native storage
-// instead of relying on in-memory accumulation.
+//   - Messages() reads the full history from Claude's on-disk JSONL transcript
+//     via the SDK's GetSessionMessages, so history survives daemon restarts.
 type ClaudeCodeBackend struct {
 	mu         sync.Mutex
+	openMu     sync.Mutex // serializes Open() so check-and-create is atomic
 	status     SessionStatus
 	sessionID  string // Claude's CLI session UUID (from ResultMessage)
 	projectDir string
@@ -66,10 +64,6 @@ type ClaudeCodeBackend struct {
 	// Only accessed from receiveLoop goroutine — no lock required.
 	activeToolBlocks map[int]activeToolBlock
 
-	// messages accumulates MessageData from the stream for Messages() retrieval.
-	// Lost on daemon restart; future: persist to SQLite or use SDK session history.
-	messages []MessageData
-
 	// ClientFactory builds a claudecode.Client for a given set of options.
 	// Tests inject a factory that returns a client backed by a mock transport.
 	// If nil, the default claudecode.NewClient is used.
@@ -80,10 +74,20 @@ type ClaudeCodeBackend struct {
 // the host-resolved working directory (worktree or repo root) the
 // claude CLI will be launched in.
 func NewClaudeCodeBackend(workDir string) *ClaudeCodeBackend {
+	return NewClaudeCodeBackendForSession(workDir, "")
+}
+
+// NewClaudeCodeBackendForSession is the resume variant. It pre-seeds the
+// SDK session ID so that Messages() can read the on-disk JSONL transcript
+// immediately, and so that Open() launches the CLI with --resume to
+// reattach the persistent subprocess for the existing conversation.
+// resumeSessionID may be empty for fresh sessions.
+func NewClaudeCodeBackendForSession(workDir, resumeSessionID string) *ClaudeCodeBackend {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ClaudeCodeBackend{
 		status:           StatusStarting,
 		projectDir:       workDir,
+		sessionID:        resumeSessionID,
 		events:           make(chan Event, 128),
 		activeToolBlocks: make(map[int]activeToolBlock),
 		ctx:              ctx,
@@ -91,9 +95,25 @@ func NewClaudeCodeBackend(workDir string) *ClaudeCodeBackend {
 	}
 }
 
-func (b *ClaudeCodeBackend) Start(ctx context.Context, req StartRequest) error {
+// Open spawns the Claude CLI subprocess (via the SDK) and starts the
+// receiveLoop. If the constructor was given a resumeSessionID, the CLI
+// is launched with --resume so the JSONL transcript is reattached.
+//
+// Idempotent: a second call while already connected returns nil. openMu
+// serializes the check-and-create so concurrent callers can't both spawn
+// a CLI subprocess and orphan one of them.
+func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
+	b.openMu.Lock()
+	defer b.openMu.Unlock()
+
 	b.mu.Lock()
+	if b.client != nil {
+		b.mu.Unlock()
+		return nil
+	}
 	workDir := b.projectDir
+	resumeID := b.sessionID
+	factory := b.ClientFactory
 	b.mu.Unlock()
 
 	// Defensive guard: an empty workDir would silently inherit the
@@ -110,56 +130,96 @@ func (b *ClaudeCodeBackend) Start(ctx context.Context, req StartRequest) error {
 		claudecode.WithPartialStreaming(),
 		claudecode.WithPermissionMode(claudecode.PermissionModeAcceptEdits),
 	}
-
-	if req.SessionID != "" {
-		opts = append(opts, claudecode.WithResume(req.SessionID))
-		b.mu.Lock()
-		b.sessionID = req.SessionID
-		b.mu.Unlock()
+	if resumeID != "" {
+		opts = append(opts, claudecode.WithResume(resumeID))
 	}
 
 	// Build the client — use the test factory if provided.
 	var client claudecode.Client
-	b.mu.Lock()
-	factory := b.ClientFactory
-	b.mu.Unlock()
-
 	if factory != nil {
 		client = factory(opts...)
 	} else {
 		client = claudecode.NewClient(opts...)
 	}
 
-	b.mu.Lock()
-	b.client = client
-	b.mu.Unlock()
-
-	if err := b.client.Connect(b.ctx); err != nil {
+	// Only commit b.client after a successful Connect, so a failed Open
+	// leaves the backend retryable instead of stuck in a half-open state.
+	if err := client.Connect(b.ctx); err != nil {
 		b.setStatus(StatusError)
 		return fmt.Errorf("connect to claude CLI: %w", err)
 	}
 
-	b.setStatus(StatusBusy)
+	b.mu.Lock()
+	b.client = client
+	b.mu.Unlock()
+
+	// Connection established. Transition out of StatusStarting so the
+	// TUI's spinner clears for re-attached sessions (those that only
+	// call Open without a follow-up Send/OpenAndSend). For the create
+	// path, OpenAndSend has already flipped status to Busy before
+	// calling us, so this conditional leaves it alone.
+	b.mu.Lock()
+	if b.status == StatusStarting {
+		b.mu.Unlock()
+		b.setStatus(StatusIdle)
+	} else {
+		b.mu.Unlock()
+	}
 
 	// Start receiving messages from the SDK in the background.
 	go b.receiveLoop()
-
-	// Send the initial prompt.
-	if err := b.client.Query(b.ctx, req.Prompt); err != nil {
-		b.setStatus(StatusError)
-		return fmt.Errorf("send initial prompt: %w", err)
-	}
-
 	return nil
 }
 
-func (b *ClaudeCodeBackend) SendMessage(ctx context.Context, opts SendMessageOpts) error {
+// OpenAndSend opens the session and dispatches the initial prompt. The
+// CLI subprocess is connected before the prompt is queued so the
+// receiveLoop is in place to observe SystemMessage{init} (which carries
+// the external session ID).
+//
+// Unlike Send, OpenAndSend does NOT emit an EventMessage{Role:user} for
+// the prompt: the hub already persists the initial prompt out-of-band
+// when creating the session, so emitting one here would duplicate it in
+// the TUI history. Follow-up prompts go through Send and DO emit the
+// user message because there's no other place that records them.
+//
+// Query is dispatched on b.ctx (not the caller's ctx) so the prompt is
+// tied to backend lifetime, not request lifetime, mirroring OpenCode's
+// Send. The actual LLM response streams via receiveLoop on b.ctx, so
+// honoring the caller's ctx for the synchronous handoff would only
+// surface "cancel mid-enqueue" as a spurious StatusError without
+// stopping the work that has already started.
+func (b *ClaudeCodeBackend) OpenAndSend(ctx context.Context, opts SendMessageOpts) error {
+	// Mark Busy before Open so Open's "Starting → Idle" conditional
+	// is bypassed on the create path; we go directly Starting → Busy.
+	b.setStatus(StatusBusy)
+
+	if err := b.Open(ctx); err != nil {
+		return err
+	}
+
+	b.mu.Lock()
+	client := b.client
+	b.mu.Unlock()
+	if client == nil {
+		return fmt.Errorf("session not open after Open")
+	}
+
+	if err := client.Query(b.ctx, opts.Text); err != nil {
+		b.setStatus(StatusError)
+		return fmt.Errorf("send initial prompt: %w", err)
+	}
+	return nil
+}
+
+// Send dispatches a prompt to an already-Open session. Query runs on
+// b.ctx (not the caller's ctx) — see OpenAndSend's doc for the rationale.
+func (b *ClaudeCodeBackend) Send(ctx context.Context, opts SendMessageOpts) error {
 	b.mu.Lock()
 	client := b.client
 	b.mu.Unlock()
 
 	if client == nil {
-		return fmt.Errorf("session not started: client not connected")
+		return fmt.Errorf("session not open: client not connected")
 	}
 
 	// Emit user message event so the TUI sees it.
@@ -172,25 +232,13 @@ func (b *ClaudeCodeBackend) SendMessage(ctx context.Context, opts SendMessageOpt
 		},
 	})
 
-	b.mu.Lock()
-	b.messages = append(b.messages, MessageData{
-		Role:    "user",
-		Content: opts.Text,
-	})
-	b.mu.Unlock()
-
 	b.setStatus(StatusBusy)
 
 	if err := client.Query(b.ctx, opts.Text); err != nil {
-		return fmt.Errorf("send follow-up: %w", err)
+		b.setStatus(StatusError)
+		return fmt.Errorf("send prompt: %w", err)
 	}
 
-	return nil
-}
-
-// Watch is a no-op for Claude Code. The CLI doesn't support passive
-// observation — events only flow while the subprocess is running.
-func (b *ClaudeCodeBackend) Watch(ctx context.Context) error {
 	return nil
 }
 
@@ -241,23 +289,43 @@ func (b *ClaudeCodeBackend) SessionID() string {
 	return b.sessionID
 }
 
-// Messages returns the conversation history accumulated during this session.
-// Each assistant turn and user follow-up is recorded as the stream is processed.
+// Messages returns the conversation history for this session by reading
+// Claude Code's on-disk JSONL transcript via the SDK's GetSessionMessages.
+// History therefore survives daemon restarts and matches what `claude --resume`
+// would replay.
 //
-// Future: When the SDK adds list_sessions() / get_session_messages()
-// (https://github.com/severity1/claude-agent-sdk-go/issues/107),
-// this can retrieve full history from Claude's native session storage
-// instead of relying on in-memory accumulation.
+// Returns nil, nil before the SDK has assigned a session ID (i.e. before the
+// first ResultMessage / system init has landed). The caller can call this
+// again once a session ID is available.
 func (b *ClaudeCodeBackend) Messages(ctx context.Context) ([]MessageData, error) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.messages == nil {
+	sessionID := b.sessionID
+	workDir := b.projectDir
+	b.mu.Unlock()
+
+	if sessionID == "" {
 		return nil, nil
 	}
-	// Return a copy to avoid races.
-	msgs := make([]MessageData, len(b.messages))
-	copy(msgs, b.messages)
-	return msgs, nil
+
+	opts := []claudecode.SessionOption{}
+	if workDir != "" {
+		opts = append(opts, claudecode.WithSessionDirectory(workDir))
+	}
+
+	sdkMsgs, err := claudecode.GetSessionMessages(sessionID, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("read claude session %s: %w", sessionID, err)
+	}
+
+	out := make([]MessageData, 0, len(sdkMsgs))
+	for _, m := range sdkMsgs {
+		md, ok := sessionMessageToData(m)
+		if !ok {
+			continue
+		}
+		out = append(out, md)
+	}
+	return out, nil
 }
 
 func (b *ClaudeCodeBackend) Revert(ctx context.Context, messageID string) error {
@@ -295,6 +363,13 @@ func (b *ClaudeCodeBackend) setStatus(s SessionStatus) {
 func (b *ClaudeCodeBackend) emit(evt Event) {
 	b.mu.Lock()
 	stopped := b.stopped
+	// Stamp the backend's native session ID on every event so the
+	// host→hub HTTP boundary can propagate it without bespoke signalling.
+	// Empty until the first SystemMessage{init} arrives; once set it
+	// rides every subsequent event for free.
+	if evt.ExternalID == "" {
+		evt.ExternalID = b.sessionID
+	}
 	b.mu.Unlock()
 
 	if stopped {
@@ -347,6 +422,8 @@ func (b *ClaudeCodeBackend) receiveLoop() {
 
 func (b *ClaudeCodeBackend) handleSystemMessage(m *claudecode.SystemMessage) {
 	// The init message carries the session ID in SystemMessage.Data.
+	// Once stored, every subsequent emit() stamps it onto Event.ExternalID
+	// so the hub captures it the moment any event flows.
 	if m.Subtype == "init" {
 		if sid, ok := m.Data["session_id"].(string); ok && sid != "" {
 			b.mu.Lock()
@@ -357,30 +434,14 @@ func (b *ClaudeCodeBackend) handleSystemMessage(m *claudecode.SystemMessage) {
 }
 
 func (b *ClaudeCodeBackend) handleAssistantMessage(m *claudecode.AssistantMessage) {
-	// Build parts from the SDK's typed content blocks for Messages() accumulation.
-	// IDs use currentMsgID matching the streaming path so that seenParts dedup
-	// (populated from Messages() between turns) correctly matches streaming IDs.
-	var parts []Part
-	for i, block := range m.Content {
-		if p, ok := contentBlockToPart(block, b.currentMsgID, i); ok {
-			parts = append(parts, p)
-		}
-	}
-
-	// Accumulate for Messages().
-	md := MessageData{
-		Role:  "assistant",
-		Parts: parts,
-	}
-	b.mu.Lock()
-	b.messages = append(b.messages, md)
-	b.mu.Unlock()
-
 	// Emit a content-less shell — matching the OpenCode pattern.
 	// The TUI ignores EventMessage content after history loads, and new
 	// content arrives exclusively via EventPartUpdate from streaming deltas
 	// (handleContentBlockStart/Delta). Emitting parts here would duplicate
 	// what the streaming path already delivered.
+	//
+	// Full message content (including parts) is reconstructed on demand by
+	// Messages() reading the on-disk JSONL transcript via the SDK.
 	b.emit(Event{
 		Type:      EventMessage,
 		Timestamp: time.Now(),
@@ -597,45 +658,130 @@ func (b *ClaudeCodeBackend) handleContentBlockStop(event map[string]any) {
 
 // --- Type mapping helpers ---
 
-// contentBlockToPart maps an SDK ContentBlock to a clank Part.
-// The msgID and index parameters produce a message-scoped ID ("{msgID}-{index}")
-// matching the IDs emitted by the streaming handlers.
-func contentBlockToPart(block claudecode.ContentBlock, msgID string, index int) (Part, bool) {
-	id := fmt.Sprintf("%s-%d", msgID, index)
-	switch b := block.(type) {
-	case *claudecode.TextBlock:
+// sessionMessageToData converts an SDK SessionMessage (parsed from the on-disk
+// JSONL transcript) into a clank MessageData. Returns ok=false for messages
+// that should be skipped (meta/system/unknown types, no content).
+//
+// Part IDs are scoped to mirror what the streaming handlers emit so that a
+// future TUI dedup pass between live deltas and reloaded history can match
+// them up:
+//   - For tool_use / tool_result blocks the ID is the tool_use_id (same as
+//     handleContentBlockStart and handleContentBlockStop).
+//   - For text / thinking blocks the ID is "{apiMsgID}-{blockIdx}", where
+//     apiMsgID is the Anthropic API message ID stored under msg.message.id
+//     (matches blockID()). Falls back to the JSONL-level UUID when absent.
+func sessionMessageToData(m claudecode.SessionMessage) (MessageData, bool) {
+	if m.IsMeta {
+		return MessageData{}, false
+	}
+
+	var role string
+	switch m.Type {
+	case "user":
+		role = "user"
+	case "assistant":
+		role = "assistant"
+	default:
+		return MessageData{}, false
+	}
+
+	// Anthropic API message ID lives inside the nested "message" object;
+	// fall back to the transcript-level UUID when missing (e.g. for user
+	// messages which have no API id).
+	msgID, _ := m.RawMessage["id"].(string)
+	if msgID == "" {
+		msgID = m.UUID
+	}
+
+	md := MessageData{
+		ID:   msgID,
+		Role: role,
+	}
+
+	if model, ok := m.RawMessage["model"].(string); ok {
+		md.ModelID = model
+	}
+
+	if m.Content == nil {
+		return md, true
+	}
+
+	switch m.Content.Kind {
+	case claudecode.SessionContentTypeString:
+		md.Content = m.Content.String
+	case claudecode.SessionContentTypeBlocks:
+		for i, block := range m.Content.Blocks {
+			if p, ok := sessionBlockToPart(block, msgID, i); ok {
+				md.Parts = append(md.Parts, p)
+			}
+		}
+	}
+	return md, true
+}
+
+// sessionBlockToPart converts an SDK session ContentBlock to a clank Part.
+// The msgID/index pair scopes text/thinking IDs to match the streaming path.
+func sessionBlockToPart(block claudecode.SessionContentBlock, msgID string, index int) (Part, bool) {
+	switch block.Type {
+	case claudecode.SessionBlockTypeText:
 		return Part{
-			ID:   id,
+			ID:   fmt.Sprintf("%s-%d", msgID, index),
 			Type: PartText,
-			Text: b.Text,
+			Text: block.Text,
 		}, true
-	case *claudecode.ToolUseBlock:
+	case claudecode.SessionBlockTypeThinking:
 		return Part{
-			ID:     b.ToolUseID,
-			Type:   PartToolCall,
-			Tool:   b.Name,
-			Status: PartCompleted,
-			Input:  b.Input,
+			ID:   fmt.Sprintf("%s-%d", msgID, index),
+			Type: PartThinking,
+			Text: block.Thinking,
 		}, true
-	case *claudecode.ToolResultBlock:
-		var output string
-		if s, ok := b.Content.(string); ok {
-			output = s
+	case claudecode.SessionBlockTypeToolUse, claudecode.SessionBlockTypeServerToolUse:
+		return Part{
+			ID:     block.ID,
+			Type:   PartToolCall,
+			Tool:   block.Name,
+			Status: PartCompleted,
+			Input:  block.Input,
+		}, true
+	case claudecode.SessionBlockTypeToolResult:
+		status := PartCompleted
+		if block.IsError != nil && *block.IsError {
+			status = PartFailed
 		}
 		return Part{
-			ID:     b.ToolUseID,
+			ID:     block.ToolUseID,
 			Type:   PartToolResult,
-			Status: PartCompleted,
-			Output: output,
-		}, true
-	case *claudecode.ThinkingBlock:
-		return Part{
-			ID:   id,
-			Type: PartThinking,
-			Text: b.Thinking,
+			Status: status,
+			Output: toolResultOutput(block.Content),
 		}, true
 	default:
 		return Part{}, false
+	}
+}
+
+// toolResultOutput extracts the human-readable text from a tool_result's
+// content field. The SDK leaves it as `any` because the JSONL format admits
+// either a string or an array of nested blocks (typically text blocks).
+func toolResultOutput(content any) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []any:
+		var parts []string
+		for _, item := range v {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, _ := m["type"].(string); t == claudecode.SessionBlockTypeText {
+				if s, ok := m["text"].(string); ok {
+					parts = append(parts, s)
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
 	}
 }
 

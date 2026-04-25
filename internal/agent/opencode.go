@@ -36,6 +36,7 @@ type ServerResolver func(ctx context.Context) (string, error)
 //     re-resolving the server URL each time (handles port changes).
 type OpenCodeBackend struct {
 	mu           sync.Mutex
+	openMu       sync.Mutex     // serializes Open() so check-and-create is atomic
 	status       SessionStatus
 	sessionID    string         // OpenCode's session ID (assigned by server)
 	serverURL    string         // e.g. "http://127.0.0.1:4123"
@@ -77,13 +78,16 @@ func NewOpenCodeBackend(serverURL string, sessionID string, resolver ServerResol
 	}
 }
 
-func (b *OpenCodeBackend) Start(ctx context.Context, req StartRequest) error {
-	if req.SessionID != "" {
-		// Resume existing session.
-		b.mu.Lock()
-		b.sessionID = req.SessionID
-		b.mu.Unlock()
-	}
+// Open establishes (or re-attaches to) the OpenCode session and starts
+// the SSE event stream. If the constructor was given a sessionID, that
+// existing session is reattached; otherwise a new session is created via
+// Session.New(). Idempotent — repeat calls are no-ops once the SSE
+// listener is running. openMu serializes the check-and-create so two
+// concurrent callers can't both observe an empty sessionID and create
+// duplicate remote sessions.
+func (b *OpenCodeBackend) Open(ctx context.Context) error {
+	b.openMu.Lock()
+	defer b.openMu.Unlock()
 
 	if b.SessionID() == "" {
 		// Create new session via SDK.
@@ -103,91 +107,37 @@ func (b *OpenCodeBackend) Start(ctx context.Context, req StartRequest) error {
 
 	// Start SSE event listener in background (idempotent — skips if already watching).
 	b.startWatching()
-
-	// Mark as busy BEFORE sending the prompt, so the TUI shows the correct
-	// status while the agent is working.
-	b.setStatus(StatusBusy)
-
-	// Build prompt params now (cheap), then dispatch the actual Prompt
-	// call asynchronously. The SDK's Session.Prompt blocks for the entire
-	// LLM response (often 5–60s). Returning early lets the hub observe
-	// SessionID() immediately and persist ExternalID, which closes the
-	// race window where a concurrent discover would create a duplicate
-	// session row. See TestDiscoverWhileSessionPromptInflight.
-	//
-	// We use b.ctx (not the caller's ctx) so the prompt survives the
-	// /start HTTP request lifetime; it is cancelled by Stop().
-	params := opencode.SessionPromptParams{
-		Parts: opencode.F([]opencode.SessionPromptParamsPartUnion{
-			opencode.TextPartInputParam{
-				Text: opencode.F(req.Prompt),
-				Type: opencode.F(opencode.TextPartInputTypeText),
-			},
-		}),
-	}
-	if req.Agent != "" {
-		params.Agent = opencode.F(req.Agent)
-	}
-	if req.Model != nil {
-		params.Model = opencode.F(opencode.SessionPromptParamsModel{
-			ModelID:    opencode.F(req.Model.ModelID),
-			ProviderID: opencode.F(req.Model.ProviderID),
-		})
-	}
-	sid := b.sessionID
-	go b.runPrompt(sid, params)
-
-	// Don't set status here — the SSE stream will deliver session.idle
-	// which triggers the idle transition.
 	return nil
 }
 
-// runPrompt dispatches Session.Prompt and translates errors into a status
-// transition + EventError. Used by Start to keep the prompt async without
-// losing failure visibility.
-func (b *OpenCodeBackend) runPrompt(sid string, params opencode.SessionPromptParams) {
-	_, err := b.client.Session.Prompt(b.ctx, sid, params)
-	if err != nil && isConnectionError(err) && b.resolver != nil {
-		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
-			_, err = b.client.Session.Prompt(b.ctx, sid, params)
-		}
+// OpenAndSend opens the session and dispatches the initial prompt.
+// Send is fire-and-forget (see Send), so this returns once the SSE
+// listener is up and the prompt goroutine has been scheduled.
+func (b *OpenCodeBackend) OpenAndSend(ctx context.Context, opts SendMessageOpts) error {
+	if err := b.Open(ctx); err != nil {
+		return err
 	}
-	if err != nil {
-		// Don't surface ctx-cancelled errors from Stop().
-		if b.ctx.Err() != nil {
-			return
-		}
-		b.setStatus(StatusError)
-		b.emitError(fmt.Sprintf("send prompt: %v", err))
-	}
+	return b.Send(ctx, opts)
 }
 
-// Watch starts listening for SSE events on this session without sending a
-// prompt. Use this to observe a discovered/historical session that may be
-// active. The Events channel will produce events after Watch returns.
-func (b *OpenCodeBackend) Watch(ctx context.Context) error {
+// Send dispatches a prompt to an already-Open session. Fire-and-forget:
+// Session.Prompt is dispatched on b.ctx (not the caller's ctx) in a
+// background goroutine so the prompt survives the HTTP request lifetime
+// (it is cancelled by Stop()). Errors surface as EventError +
+// StatusError, mirroring the Claude backend's structurally async Query.
+func (b *OpenCodeBackend) Send(ctx context.Context, opts SendMessageOpts) error {
 	if b.SessionID() == "" {
-		return fmt.Errorf("cannot watch: session ID not set")
+		return fmt.Errorf("session not open")
 	}
-	b.startWatching()
+
+	b.setStatus(StatusBusy)
+	params := b.buildPromptParams(opts)
+	sid := b.SessionID()
+	go b.runPrompt(sid, params)
 	return nil
 }
 
-// startWatching launches the SSE event listener goroutine if not already running.
-func (b *OpenCodeBackend) startWatching() {
-	b.watchOnce.Do(func() {
-		go b.streamEvents()
-	})
-}
-
-func (b *OpenCodeBackend) SendMessage(ctx context.Context, opts SendMessageOpts) error {
-	if b.sessionID == "" {
-		return fmt.Errorf("session not started")
-	}
-
-	// Mark as busy BEFORE sending, so the TUI shows the correct status.
-	b.setStatus(StatusBusy)
-
+func (b *OpenCodeBackend) buildPromptParams(opts SendMessageOpts) opencode.SessionPromptParams {
 	params := opencode.SessionPromptParams{
 		Parts: opencode.F([]opencode.SessionPromptParamsPartUnion{
 			opencode.TextPartInputParam{
@@ -205,18 +155,34 @@ func (b *OpenCodeBackend) SendMessage(ctx context.Context, opts SendMessageOpts)
 			ProviderID: opencode.F(opts.Model.ProviderID),
 		})
 	}
-	_, err := b.client.Session.Prompt(ctx, b.sessionID, params)
+	return params
+}
+
+// runPrompt dispatches Session.Prompt and translates errors into a status
+// transition + EventError. Used by Send to keep the prompt fire-and-forget
+// without losing failure visibility.
+func (b *OpenCodeBackend) runPrompt(sid string, params opencode.SessionPromptParams) {
+	_, err := b.client.Session.Prompt(b.ctx, sid, params)
 	if err != nil && isConnectionError(err) && b.resolver != nil {
 		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
-			_, err = b.client.Session.Prompt(ctx, b.sessionID, params)
+			_, err = b.client.Session.Prompt(b.ctx, sid, params)
 		}
 	}
 	if err != nil {
+		// Don't surface ctx-cancelled errors from Stop().
+		if b.ctx.Err() != nil {
+			return
+		}
 		b.setStatus(StatusError)
-		return fmt.Errorf("send message: %w", err)
+		b.emitError(fmt.Sprintf("send prompt: %v", err))
 	}
-	// Don't set status here — SSE session.idle will trigger the transition.
-	return nil
+}
+
+// startWatching launches the SSE event listener goroutine if not already running.
+func (b *OpenCodeBackend) startWatching() {
+	b.watchOnce.Do(func() {
+		go b.streamEvents()
+	})
 }
 
 func (b *OpenCodeBackend) Abort(ctx context.Context) error {
@@ -391,6 +357,12 @@ func (b *OpenCodeBackend) emit(evt Event) {
 
 	b.mu.Lock()
 	closed := b.eventsClosed
+	// Stamp the backend's native session ID on every event so the
+	// host→hub HTTP boundary can propagate it without bespoke signalling.
+	// See Event.ExternalID docstring.
+	if evt.ExternalID == "" {
+		evt.ExternalID = b.sessionID
+	}
 	b.mu.Unlock()
 	if closed {
 		return

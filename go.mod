@@ -72,3 +72,5 @@ require (
 )
 
 replace github.com/acksell/mindmouth => ../mindmouth
+
+replace github.com/severity1/claude-agent-sdk-go => /Users/axelengstrom/github.com/acksell/claude-agent-sdk-go

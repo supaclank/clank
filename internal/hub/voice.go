@@ -247,7 +247,7 @@ func (tp *hubToolProvider) SendMessage(ctx context.Context, sessionID string, te
 	// shutdown, defeating per-request cancellation.
 	sendCtx := ctx
 	go func() {
-		if err := backend.SendMessage(sendCtx, agent.SendMessageOpts{Text: text}); err != nil {
+		if err := backend.Send(sendCtx, agent.SendMessageOpts{Text: text}); err != nil {
 			tp.s.log.Printf("voice send_message to %s: %v", sessionID, err)
 			tp.s.broadcast(agent.Event{
 				Type:      agent.EventError,
