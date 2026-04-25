@@ -63,13 +63,72 @@ func TestNativeCLICmd_MissingServerURL(t *testing.T) {
 	}
 }
 
-func TestNativeCLICmd_UnsupportedBackend(t *testing.T) {
+func TestNativeCLICmd_Claude(t *testing.T) {
 	t.Parallel()
 
 	info := &agent.SessionInfo{
 		ID:         "ses-123",
 		ExternalID: "claude-ext-789",
 		Backend:    agent.BackendClaudeCode,
+		GitRef:     agent.GitRef{LocalPath: "/repo/clank"},
+	}
+
+	cmd, err := nativeCLICmd(info)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := []string{"claude", "--resume", "claude-ext-789"}
+	if len(cmd.Args) != len(want) {
+		t.Fatalf("args length = %d, want %d\ngot:  %v\nwant: %v", len(cmd.Args), len(want), cmd.Args, want)
+	}
+	for i := range want {
+		if cmd.Args[i] != want[i] {
+			t.Errorf("args[%d] = %q, want %q", i, cmd.Args[i], want[i])
+		}
+	}
+	if cmd.Dir != "/repo/clank" {
+		t.Errorf("cmd.Dir = %q, want %q", cmd.Dir, "/repo/clank")
+	}
+}
+
+func TestNativeCLICmd_Claude_MissingExternalID(t *testing.T) {
+	t.Parallel()
+
+	info := &agent.SessionInfo{
+		ID:      "ses-123",
+		Backend: agent.BackendClaudeCode,
+		GitRef:  agent.GitRef{LocalPath: "/repo/clank"},
+	}
+
+	_, err := nativeCLICmd(info)
+	if err == nil {
+		t.Fatal("expected error for missing ExternalID")
+	}
+}
+
+func TestNativeCLICmd_Claude_MissingLocalPath(t *testing.T) {
+	t.Parallel()
+
+	info := &agent.SessionInfo{
+		ID:         "ses-123",
+		ExternalID: "claude-ext-789",
+		Backend:    agent.BackendClaudeCode,
+	}
+
+	_, err := nativeCLICmd(info)
+	if err == nil {
+		t.Fatal("expected error for missing LocalPath")
+	}
+}
+
+func TestNativeCLICmd_UnsupportedBackend(t *testing.T) {
+	t.Parallel()
+
+	info := &agent.SessionInfo{
+		ID:         "ses-123",
+		ExternalID: "ext-id",
+		Backend:    agent.BackendType("not-a-real-backend"),
 	}
 
 	_, err := nativeCLICmd(info)
@@ -90,10 +149,10 @@ func TestNativeCLICmd_NilInfo(t *testing.T) {
 func TestOpenNativeCLI_ErrorReturnsMsg(t *testing.T) {
 	t.Parallel()
 
-	// Claude backend is unsupported — should return an error message immediately.
+	// Unknown backend — should return an error message immediately.
 	info := &agent.SessionInfo{
 		ID:      "ses-123",
-		Backend: agent.BackendClaudeCode,
+		Backend: agent.BackendType("not-a-real-backend"),
 	}
 
 	cmd := openNativeCLI(info)
