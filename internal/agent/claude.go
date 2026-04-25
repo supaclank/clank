@@ -62,7 +62,7 @@ type ClaudeCodeBackend struct {
 	// tool name (fixing the stuck spinner and blank tool label).
 	// Reset on each message_start since block indices restart at 0 per cycle.
 	// Only accessed from receiveLoop goroutine — no lock required.
-	activeToolBlocks map[int]activeToolBlock
+	activeToolBlocks map[int]*activeToolBlock
 
 	// ClientFactory builds a claudecode.Client for a given set of options.
 	// Tests inject a factory that returns a client backed by a mock transport.
@@ -89,7 +89,7 @@ func NewClaudeCodeBackendForSession(workDir, resumeSessionID string) *ClaudeCode
 		projectDir:       workDir,
 		sessionID:        resumeSessionID,
 		events:           make(chan Event, 128),
-		activeToolBlocks: make(map[int]activeToolBlock),
+		activeToolBlocks: make(map[int]*activeToolBlock),
 		ctx:              ctx,
 		cancel:           cancel,
 	}
@@ -489,7 +489,7 @@ func (b *ClaudeCodeBackend) handleStreamEvent(m *claudecode.StreamEvent) {
 			}
 		}
 		// Reset activeToolBlocks — block indices restart at 0 in each message cycle.
-		b.activeToolBlocks = make(map[int]activeToolBlock)
+		b.activeToolBlocks = make(map[int]*activeToolBlock)
 	case claudecode.StreamEventTypeContentBlockStart:
 		b.handleContentBlockStart(m.Event)
 	case claudecode.StreamEventTypeContentBlockDelta:
@@ -537,7 +537,7 @@ func (b *ClaudeCodeBackend) handleContentBlockStart(event map[string]any) {
 		name, _ := block["name"].(string)
 		// Track this tool_use block so handleContentBlockStop can emit PartCompleted
 		// with the correct tool name.
-		b.activeToolBlocks[index] = activeToolBlock{partID: id, tool: name}
+		b.activeToolBlocks[index] = &activeToolBlock{partID: id, tool: name}
 		b.emit(Event{
 			Type:      EventPartUpdate,
 			Timestamp: time.Now(),
@@ -615,7 +615,6 @@ func (b *ClaudeCodeBackend) handleContentBlockDelta(event map[string]any) {
 		if partial != "" {
 			if tb, ok := b.activeToolBlocks[index]; ok {
 				tb.inputBuf.WriteString(partial)
-				b.activeToolBlocks[index] = tb
 			}
 		}
 	}
