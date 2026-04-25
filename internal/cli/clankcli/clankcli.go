@@ -15,6 +15,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/cli/daemoncli"
+	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host"
 	hubclient "github.com/acksell/clank/internal/hub/client"
@@ -83,12 +84,25 @@ The daemon is auto-started if not already running.`,
 			}
 			projectDir = absProjectDir
 
-			// Resolve backend type.
-			bt := agent.BackendOpenCode // default
-			if backend == "claude" || backend == "claude-code" {
-				bt = agent.BackendClaudeCode
-			} else if backend != "" && backend != "opencode" {
-				return fmt.Errorf("unknown backend: %s (valid: opencode, claude)", backend)
+			// Resolve backend type. Precedence:
+			//   1. --backend flag (explicit override)
+			//   2. preferences.json default_backend
+			//   3. agent.DefaultBackend
+			var bt agent.BackendType
+			if backend != "" {
+				parsed, err := agent.ParseBackend(backend)
+				if err != nil {
+					return err
+				}
+				bt = parsed
+			} else {
+				prefs, _ := config.LoadPreferences()
+				resolved, err := agent.ResolveBackendPreference(prefs.DefaultBackend)
+				if err != nil {
+					// Corrupt preference: warn but proceed with default.
+					fmt.Fprintf(os.Stderr, "warning: %v; using %s\n", err, resolved)
+				}
+				bt = resolved
 			}
 
 			// Ensure daemon is running.

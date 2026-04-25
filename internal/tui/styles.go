@@ -91,6 +91,39 @@ func agentColor(name string) color.Color {
 	}
 }
 
+// paneBorderInset is the total horizontal/vertical space consumed by a
+// pane's border (1 cell on each side). Layout helpers subtract this when
+// computing the inner content area available inside a bordered pane.
+const paneBorderInset = 2
+
+// paneWrapBuffer is the number of extra cells reserved between the inner
+// content width and the bordered Style's Width. lipgloss v2 wraps when an
+// input line meets the Width boundary (sometimes due to trailing spaces or
+// emoji-width mismatches), so callers build content `paneWrapBuffer` cells
+// narrower than the bordered Style's Width. See sidebar.go:375-385 for the
+// original instance of this pattern.
+const paneWrapBuffer = 2
+
+// paneBorderStyle returns the focus-aware border for a top-level pane
+// (sidebar, session list, settings). Focused panes get a visible rounded
+// primary-color border; unfocused panes get a hidden border in the muted
+// color so the layout doesn't shift on focus changes.
+//
+// Callers provide width/height via .Width(...).Height(...) on the
+// returned style; both are inner content dimensions (lipgloss adds the
+// border outside).
+func paneBorderStyle(focused bool) lipgloss.Style {
+	border := lipgloss.HiddenBorder()
+	borderColor := mutedColor
+	if focused {
+		border = lipgloss.RoundedBorder()
+		borderColor = primaryColor
+	}
+	return lipgloss.NewStyle().
+		Border(border).
+		BorderForeground(borderColor)
+}
+
 // promptInputBorder is the external border+padding applied around the textarea.
 // We render this outside the textarea because bubbles v2 has a bug where
 // placeholderView() applies Base.Render() internally, and then View() applies

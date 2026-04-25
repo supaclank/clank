@@ -1,9 +1,22 @@
 package tui
 
 // SidebarModel is the navigation sidebar of the inbox layout.
-// It shows local git branches for the current project, with visual
-// indicators for worktrees, the default branch, and the current branch.
-// Users can navigate with up/down and press 'n' to create a new branch.
+//
+// It contains two sections, selectable with one cursor:
+//
+//   - Worktrees (top): "All" plus every git branch in the active repo.
+//   - Settings (footer): the "⚙ Settings" entry, anchored to the
+//     bottom of the sidebar; activating it opens the settings page
+//     in the right pane.
+//
+// Cursor model: linear `cursor int` across both sections. Layout:
+//
+//	[0]                 → "All" worktrees
+//	[1 .. M]            → branches (M rows)
+//	[M+1]               → "⚙ Settings" footer
+//
+// Section boundaries are computed at use-time (cursorSection /
+// settingsCursorIndex) so adding rows doesn't require renumbering.
 
 import (
 	"context"
@@ -24,6 +37,16 @@ import (
 // sidebarWidth is the fixed width of the sidebar (including border).
 const sidebarWidth = 30
 
+// sidebarSection identifies which section the cursor is in. Used by
+// key dispatch and by selection accessors that should return zero-value
+// when the cursor isn't in their section.
+type sidebarSection int
+
+const (
+	sectionWorktrees sidebarSection = iota
+	sectionSettings
+)
+
 // branchLoadedMsg carries the result of loading branches from the daemon.
 type branchLoadedMsg struct {
 	branches []host.BranchInfo
@@ -35,6 +58,11 @@ type branchWorktreeCreatedMsg struct {
 	branch string
 	err    error
 }
+
+// SettingsRequestedMsg is emitted by the inbox when the user activates the
+// "⚙ Settings" footer entry in the sidebar. It's defined here (rather than
+// in inbox.go) so sidebar consumers can react without importing inbox types.
+type SettingsRequestedMsg struct{}
 
 // branchSessionStatus summarises session states for a single worktree branch.
 type branchSessionStatus struct {
@@ -56,7 +84,7 @@ func (s branchSessionStatus) IsArchived() bool {
 	return s.Total > 0 && s.Archived == s.Total
 }
 
-// SidebarModel displays local git branches in a navigation sidebar and allows selection.
+// SidebarModel displays worktrees + a settings footer
 type SidebarModel struct {
 	client *hubclient.Client
 	// projectDir is the cwd the inbox was launched from. Kept for display
@@ -114,8 +142,54 @@ func (m *SidebarModel) Init() tea.Cmd {
 	return m.loadBranches()
 }
 
-// SelectedBranch returns the currently selected branch name.
-// Empty string means "all branches" (no filter).
+// --- Cursor / section helpers ---
+
+// totalRows is the number of selectable rows across both sections.
+// Layout: [1 "All"][len(branches) branches][1 settings].
+func (m *SidebarModel) totalRows() int {
+	return 1 + len(m.branches) + 1
+}
+
+// settingsCursorIndex returns the cursor value of the "⚙ Settings"
+// footer row. Always the last row in the sidebar.
+func (m *SidebarModel) settingsCursorIndex() int {
+	return m.totalRows() - 1
+}
+
+// CursorOnSettings reports whether the cursor is on the settings row.
+func (m *SidebarModel) CursorOnSettings() bool {
+	return m.cursor == m.settingsCursorIndex()
+}
+
+// cursorSection returns which section the cursor is in and the
+// section-local index. For sectionWorktrees, idx==0 means the "All"
+// row; idx>=1 means branches[idx-1]. For sectionSettings, idx is
+// always 0 (single row).
+func (m *SidebarModel) cursorSection() (sidebarSection, int) {
+	if m.cursor >= m.settingsCursorIndex() {
+		return sectionSettings, 0
+	}
+	return sectionWorktrees, m.cursor
+}
+
+// sectionBreakpoints returns the cursor positions that shift+up/shift+down
+// snap between. Breakpoints, in order:
+//
+//   - 0                       — top of worktrees ("All")
+//   - len(branches)           — last worktree row (omitted when there are
+//     no branches, since it would coincide with "All")
+//   - settingsCursorIndex()   — Settings footer
+func (m *SidebarModel) sectionBreakpoints() []int {
+	bp := []int{0}
+	if last := len(m.branches); last > 0 {
+		bp = append(bp, last)
+	}
+	bp = append(bp, m.settingsCursorIndex())
+	return bp
+}
+
+// SelectedBranch returns the currently selected branch name. Empty
+// string means "All" or the settings row is selected.
 func (m *SidebarModel) SelectedBranch() string {
 	if m.cursor == 0 || len(m.branches) == 0 {
 		return ""
@@ -196,6 +270,13 @@ func (m *SidebarModel) Update(msg tea.Msg) tea.Cmd {
 		} else {
 			m.branches = msg.branches
 			m.err = nil
+			// Clamp the cursor: if the branch list shrank, the prior
+			// cursor may now exceed settingsCursorIndex(), leaving
+			// CursorOnSettings() (strict equality) and cursorSection()
+			// (>=) disagreeing about where the cursor is.
+			if max := m.settingsCursorIndex(); m.cursor > max {
+				m.cursor = max
+			}
 		}
 		return nil
 
@@ -225,7 +306,7 @@ func (m *SidebarModel) Update(msg tea.Msg) tea.Cmd {
 func (m *SidebarModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	msg = normalizeKeyCase(msg)
 
-	maxIdx := len(m.branches) // 0 = "All", 1..len = branches
+	maxIdx := m.settingsCursorIndex() // last row (settings footer)
 
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k"))):
@@ -238,6 +319,12 @@ func (m *SidebarModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 			m.cursor++
 			m.ensureVisible()
 		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+up"))):
+		m.cursor = prevBreakpoint(m.sectionBreakpoints(), m.cursor)
+		m.ensureVisible()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+down"))):
+		m.cursor = nextBreakpoint(m.sectionBreakpoints(), m.cursor)
+		m.ensureVisible()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("home", "g"))):
 		m.cursor = 0
 		m.ensureVisible()
@@ -245,9 +332,13 @@ func (m *SidebarModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		m.cursor = maxIdx
 		m.ensureVisible()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("n"))):
-		m.creating = true
-		m.input.SetValue("")
-		return m.input.Focus()
+		// New branch only makes sense in the worktrees section; pressing
+		// 'n' on the Settings row should be a no-op, not open the prompt.
+		if sec, _ := m.cursorSection(); sec == sectionWorktrees {
+			m.creating = true
+			m.input.SetValue("")
+			return m.input.Focus()
+		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("r"))):
 		return m.loadBranches()
 	}
@@ -288,7 +379,13 @@ func (m *SidebarModel) View() string {
 		w = sidebarWidth
 	}
 
-	// Content width is sidebar width minus border (2) minus padding (2).
+	// Inner content width available after the border. lipgloss v2 treats
+	// the style's Width as the total rendered width (border included), so
+	// we subtract 2 here and pass the full `w` as the outer Width below.
+	// A further -2 buffer is kept so lines never render exactly up to the
+	// right edge — that margin is what prevents wrap from tiny rounding or
+	// emoji-width mismatches (the ⚙ in the footer can be double-width in
+	// some fonts).
 	contentWidth := w - 4
 	if contentWidth < 10 {
 		contentWidth = 10
@@ -337,20 +434,26 @@ func (m *SidebarModel) View() string {
 		lines = append(lines, errLine)
 	}
 
+	// Footer: pad with blank lines to push the settings row to the bottom
+	// of the sidebar, separated from the branch list by a dim rule. The
+	// footer is always rendered so it's discoverable even when the branch
+	// list is empty.
+	listH := m.listHeight()
+	footer := m.renderFooter(contentWidth)
+	footerLines := strings.Count(footer, "\n") + 1
+	if pad := listH - len(lines) - footerLines; pad > 0 {
+		for i := 0; i < pad; i++ {
+			lines = append(lines, "")
+		}
+	}
+	lines = append(lines, footer)
+
 	content := strings.Join(lines, "\n")
 
-	// Wrap in a border. Focused: visible rounded border. Unfocused: hidden
-	// border (same spacing, no visible line) to avoid visual clutter.
-	border := lipgloss.HiddenBorder()
-	borderColor := mutedColor
-	if m.focused {
-		border = lipgloss.RoundedBorder()
-		borderColor = primaryColor
-	}
-	style := lipgloss.NewStyle().
-		Border(border).
-		BorderForeground(borderColor).
-		Width(contentWidth).
+	// Wrap in a focus-aware pane border (shared with the right pane so
+	// both panes use one source of truth for focus-vs-unfocused styling).
+	style := paneBorderStyle(m.focused).
+		Width(w - paneBorderInset).
 		Height(m.listHeight())
 
 	return style.Render(content)
@@ -434,7 +537,30 @@ func (m *SidebarModel) renderBranch(b host.BranchInfo, idx, maxWidth int) string
 	return line
 }
 
-// listHeight returns the height available for the branch list (excluding border).
+// renderFooter renders the bottom-anchored block of the sidebar. Today
+// it contains a single "⚙ Settings" entry; additional footer rows can
+// be added here in the future (they'd need their own cursor slots).
+func (m *SidebarModel) renderFooter(maxWidth int) string {
+	sep := lipgloss.NewStyle().
+		Foreground(mutedColor).
+		Render(strings.Repeat("─", maxWidth))
+
+	label := "⚙ Settings"
+	selected := m.CursorOnSettings() && m.focused
+	var row string
+	if selected {
+		prefix := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ")
+		name := lipgloss.NewStyle().Foreground(textColor).Bold(true).Render(label)
+		row = prefix + name
+	} else if m.CursorOnSettings() {
+		row = lipgloss.NewStyle().Foreground(textColor).Render("  " + label)
+	} else {
+		row = lipgloss.NewStyle().Foreground(dimColor).Render("  " + label)
+	}
+	return sep + "\n" + row
+}
+
+// listHeight returns the height available for the body (excluding border).
 func (m *SidebarModel) listHeight() int {
 	h := m.height - 4 // border top/bottom + some padding
 	if h < 5 {

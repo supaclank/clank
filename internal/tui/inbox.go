@@ -17,6 +17,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host"
 	hubclient "github.com/acksell/clank/internal/hub/client"
@@ -26,8 +27,9 @@ import (
 type inboxScreen int
 
 const (
-	screenInbox   inboxScreen = iota
-	screenSession             // Viewing a specific session (or composing a new one)
+	screenInbox    inboxScreen = iota
+	screenSession              // Viewing a specific session (or composing a new one)
+	screenSettings             // Viewing the settings page in the right pane
 )
 
 // inboxPane tracks which pane has keyboard focus in the two-pane layout.
@@ -120,6 +122,15 @@ type InboxModel struct {
 	sessionView  *SessionViewModel
 	activeConnID string // session ID of the detail view
 
+	// Settings page state (shown when screen == screenSettings).
+	settings settingsView
+
+	// Color-scheme picker overlay (modal). Rendered on top of whatever
+	// screen is currently active. Showing is independent of `screen` so
+	// the user can tweak theming from anywhere in the future.
+	showThemePicker bool
+	themePicker     themePickerModel
+
 	// Spinner for busy session indicators.
 	spinner spinner.Model
 
@@ -173,6 +184,13 @@ func resolveLocalRepo(cwd string) (host.Hostname, agent.GitRef) {
 
 // NewInboxModel creates the inbox TUI connected to the given daemon client.
 func NewInboxModel(client *hubclient.Client) *InboxModel {
+	// Apply the user's persisted color scheme (if any) before any styles
+	// are constructed for this session. Unknown names silently fall back
+	// to the default scheme so a corrupt preferences file can't brick the
+	// TUI.
+	prefs, _ := config.LoadPreferences()
+	applySchemeFromPreference(prefs.ColorScheme)
+
 	sp := spinner.New(
 		spinner.WithSpinner(spinner.MiniDot),
 		spinner.WithStyle(lipgloss.NewStyle().Foreground(successColor)),
@@ -371,6 +389,11 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateSessionView(msg)
 	}
 
+	// If we're on the Settings page, delegate there.
+	if m.screen == screenSettings {
+		return m.updateSettings(msg)
+	}
+
 	// If help overlay is open, dismiss on any key press.
 	if m.showHelp {
 		if _, ok := msg.(tea.KeyPressMsg); ok {
@@ -443,11 +466,9 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if key.Matches(msg, key.NewBinding(key.WithKeys("tab"))) {
 				prevBranch := m.sidebar.SelectedBranch()
 				if m.pane == paneSessions {
-					m.pane = paneSidebar
-					m.sidebar.SetFocused(true)
+					m.setPane(paneSidebar)
 				} else {
-					m.pane = paneSessions
-					m.sidebar.SetFocused(false)
+					m.setPane(paneSessions)
 				}
 				if m.sidebar.SelectedBranch() != prevBranch {
 					m.applyFiltersAndRebuild()
@@ -457,11 +478,9 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab"))) {
 				prevBranch := m.sidebar.SelectedBranch()
 				if m.pane == paneSidebar {
-					m.pane = paneSessions
-					m.sidebar.SetFocused(false)
+					m.setPane(paneSessions)
 				} else {
-					m.pane = paneSidebar
-					m.sidebar.SetFocused(true)
+					m.setPane(paneSidebar)
 				}
 				if m.sidebar.SelectedBranch() != prevBranch {
 					m.applyFiltersAndRebuild()
@@ -967,8 +986,7 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Left arrow navigates to the sidebar when it's visible.
 		if m.showTwoPanes() {
 			prevBranch := m.sidebar.SelectedBranch()
-			m.pane = paneSidebar
-			m.sidebar.SetFocused(true)
+			m.setPane(paneSidebar)
 			if m.sidebar.SelectedBranch() != prevBranch {
 				m.applyFiltersAndRebuild()
 			}
@@ -977,11 +995,9 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("w"))):
 		m.sidebarHidden = !m.sidebarHidden
 		if m.sidebarHidden {
-			m.pane = paneSessions
-			m.sidebar.SetFocused(false)
+			m.setPane(paneSessions)
 		} else {
-			m.pane = paneSidebar
-			m.sidebar.SetFocused(true)
+			m.setPane(paneSidebar)
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
 		m.showHelp = true
@@ -1284,11 +1300,20 @@ func (m *InboxModel) View() tea.View {
 	}
 
 	sessionContent := m.renderSessionPane()
+	// When the Settings screen is active, swap the right pane for the
+	// settings page. The sidebar remains on the left exactly as usual.
+	if m.screen == screenSettings {
+		sessionContent = m.settings.View()
+	}
 	var content string
 
 	if m.showTwoPanes() {
 		sidebarView := m.sidebar.View()
-		content = lipgloss.JoinHorizontal(lipgloss.Top, sidebarView, " ", sessionContent)
+		// Wrap the right pane in a focus-aware border via the shared
+		// helper so View()'s no-wrap invariant is testable in isolation
+		// (see rightPaneBorder).
+		rightPane := m.rightPaneBorder().Render(sessionContent)
+		content = lipgloss.JoinHorizontal(lipgloss.Top, sidebarView, " ", rightPane)
 	} else {
 		content = sessionContent
 	}
@@ -1306,6 +1331,12 @@ func (m *InboxModel) View() tea.View {
 	// Overlay merge dialog if open.
 	if m.showMerge {
 		content = overlayCenter(content, m.mergeOverlay.View(), m.width, m.height)
+	}
+
+	// Overlay theme picker if open (shown above everything else so it's
+	// unambiguous that the background palette is a live preview).
+	if m.showThemePicker {
+		content = overlayCenter(content, m.themePicker.View(), m.width, m.height)
 	}
 
 	// Overlay help if open.
@@ -1413,10 +1444,23 @@ func (m *InboxModel) renderSessionPane() string {
 // Below this, only the session pane is shown.
 const minTwoPaneWidth = 80
 
+// sidebarGap is the number of blank columns between the sidebar and the
+// session pane in two-pane layout.
+const sidebarGap = 1
+
 // showTwoPanes returns true when the terminal is wide enough and the user
 // hasn't manually hidden the sidebar with 'w'.
 func (m *InboxModel) showTwoPanes() bool {
 	return m.width >= minTwoPaneWidth && !m.sidebarHidden
+}
+
+// setPane is the single point of truth for which top-level pane has
+// keyboard focus. It keeps SidebarModel.focused in sync with m.pane so
+// callers can't drift the two flags apart (which would silently break
+// the focus border on either pane).
+func (m *InboxModel) setPane(p inboxPane) {
+	m.pane = p
+	m.sidebar.SetFocused(p == paneSidebar)
 }
 
 // sidebarRenderWidth returns the width allocated to the sidebar (including border).
@@ -1424,12 +1468,28 @@ func (m *InboxModel) sidebarRenderWidth() int {
 	return sidebarWidth
 }
 
-// sessionPaneWidth returns the width available for the session list pane.
+// sessionPaneWidth returns the inner content width of the session pane
+// (excluding its focus border and a small wrap-safety buffer in two-pane
+// mode). Callers that build content lines must use this value; the
+// bordered Style's Width adds paneWrapBuffer back so the visible bordered
+// area fills the allocated space.
 func (m *InboxModel) sessionPaneWidth() int {
 	if m.showTwoPanes() {
-		return m.width - m.sidebarRenderWidth() - 1 // 1 for gap
+		return m.width - m.sidebarRenderWidth() - sidebarGap - paneBorderInset - paneWrapBuffer
 	}
 	return m.width
+}
+
+// rightPaneBorder returns the bordered Style used by View() to wrap the
+// right pane in two-pane mode. The Style's Width is sessionPaneWidth() +
+// paneWrapBuffer — strictly greater than what renderRow produces, so
+// lipgloss does not wrap content lines at the boundary. Exposed as a
+// method (rather than inlined in View()) so tests can verify the
+// no-wrap invariant against the same code path the UI uses.
+func (m *InboxModel) rightPaneBorder() lipgloss.Style {
+	return paneBorderStyle(m.pane == paneSessions).
+		Width(m.sessionPaneWidth() + paneWrapBuffer).
+		Height(m.height - paneBorderInset)
 }
 
 // updateBranchSessionCounts computes per-branch session status summaries
@@ -1493,11 +1553,9 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		}
 		m.sidebarHidden = !m.sidebarHidden
 		if m.sidebarHidden {
-			m.pane = paneSessions
-			m.sidebar.SetFocused(false)
+			m.setPane(paneSessions)
 		} else {
-			m.pane = paneSidebar
-			m.sidebar.SetFocused(true)
+			m.setPane(paneSidebar)
 		}
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
@@ -1520,9 +1578,15 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		if m.sidebar.creating {
 			break
 		}
+		// On the "⚙ Settings" row, right arrow opens the settings page
+		// (mirrors Enter, and matches how the user said they expect
+		// left/right to navigate between sidebar and page).
+		if m.sidebar.CursorOnSettings() {
+			m.openSettings()
+			return m, nil
+		}
 		prevBranch := m.sidebar.SelectedBranch()
-		m.pane = paneSessions
-		m.sidebar.SetFocused(false)
+		m.setPane(paneSessions)
 		if m.sidebar.SelectedBranch() != prevBranch {
 			m.applyFiltersAndRebuild()
 		}
@@ -1532,10 +1596,16 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		if m.sidebar.creating {
 			break
 		}
+		// Enter on the "⚙ Settings" footer row opens the settings page
+		// in the right pane. The sidebar stays visible and focused so
+		// the user can still navigate back into it.
+		if m.sidebar.CursorOnSettings() {
+			m.openSettings()
+			return m, nil
+		}
 		// Enter on a branch selects it and switches focus to session pane.
 		prevBranch := m.sidebar.SelectedBranch()
-		m.pane = paneSessions
-		m.sidebar.SetFocused(false)
+		m.setPane(paneSessions)
 		if m.sidebar.SelectedBranch() != prevBranch {
 			m.applyFiltersAndRebuild()
 		}
@@ -1547,6 +1617,15 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 	cmd := m.sidebar.Update(msg)
 	if m.sidebar.SelectedBranch() != prevBranch {
 		m.applyFiltersAndRebuild()
+	}
+	// Mirror the branch-hover behaviour for the ⚙ Settings footer: if
+	// the cursor lands on it, render the settings page in the right pane
+	// without stealing focus from the sidebar. The reverse transition
+	// (cursor moves off Settings → revert to inbox) is handled in
+	// updateSettings, since at that point the screen is screenSettings
+	// and key routing has already moved over there.
+	if m.screen == screenInbox && m.sidebar.CursorOnSettings() {
+		m.showSettings()
 	}
 	return m, cmd
 }
@@ -1821,6 +1900,9 @@ func (m *InboxModel) viewportHeight() int {
 	if m.err != nil {
 		reserved += 2
 	}
+	if m.showTwoPanes() {
+		reserved += paneBorderInset // top/bottom border lines around the pane
+	}
 	h := m.height - reserved
 	if h < 3 {
 		h = 3
@@ -1894,28 +1976,6 @@ func (m *InboxModel) buildBreakpoints() []int {
 		}
 	}
 	return bp
-}
-
-// nextBreakpoint returns the smallest breakpoint strictly greater than cursor.
-// If cursor is already at or past the last breakpoint, it returns the last one.
-func nextBreakpoint(bp []int, cursor int) int {
-	for _, b := range bp {
-		if b > cursor {
-			return b
-		}
-	}
-	return bp[len(bp)-1]
-}
-
-// prevBreakpoint returns the largest breakpoint strictly less than cursor.
-// If cursor is already at or before the first breakpoint, it returns the first one.
-func prevBreakpoint(bp []int, cursor int) int {
-	for i := len(bp) - 1; i >= 0; i-- {
-		if bp[i] < cursor {
-			return bp[i]
-		}
-	}
-	return bp[0]
 }
 
 func (m *InboxModel) ensureCursorVisible() {

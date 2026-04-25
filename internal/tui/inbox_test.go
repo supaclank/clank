@@ -8,6 +8,7 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/acksell/clank/internal/agent"
 )
 
@@ -2545,5 +2546,59 @@ func TestSearchStatePreservedAcrossSessionView(t *testing.T) {
 	}
 	if len(m.flatRows) != wantRows {
 		t.Errorf("flatRows count = %d, want %d", len(m.flatRows), wantRows)
+	}
+}
+
+// TestRightPaneBorder_NoWrapOnTimestamp regresses the bug where session rows
+// rendered in the bordered right pane wrapped the trailing timestamp onto a
+// new line (e.g. "just  \nnow"). The fix introduces paneWrapBuffer so the
+// bordered Style's Width strictly exceeds renderRow's output width.
+//
+// Two assertions:
+//
+//  1. The View()'s bordered Width must be > renderRow's output width.
+//     If the buffer is dropped from either side, this inequality fails
+//     and lipgloss wraps the row inside the bordered area.
+//
+//  2. Empirically demonstrate (and lock in) that lipgloss DOES wrap when
+//     a content line meets the Style's Width — this is the underlying
+//     property that motivates paneWrapBuffer's existence.
+func TestRightPaneBorder_NoWrapOnTimestamp(t *testing.T) {
+	t.Parallel()
+
+	// Width chosen so the row's right-aligned timestamp would sit at the
+	// boundary cell — this is the regime where the wrap previously fired.
+	// Height = 3 makes rightPaneBorder set Height(1), so the bordered
+	// output is exactly 3 lines (top border + 1 content + bottom border)
+	// when no wrap occurs.
+	m := &InboxModel{width: 160, height: 3}
+
+	now := time.Now()
+	row := inboxRow{session: &agent.SessionInfo{
+		ID:        "wrap-regression",
+		Status:    agent.StatusIdle,
+		Prompt:    "New session - 2026-04-25T20:14:47.963Z",
+		UpdatedAt: now, // produces "just now" via timeAgo
+	}}
+	rendered := m.renderRow(row, false)
+	rowWidth := lipgloss.Width(rendered)
+
+	// (1) Empirically demonstrate (and lock in) that lipgloss DOES wrap
+	// when a content line meets the Style's Width — this is the
+	// underlying property that motivates paneWrapBuffer's existence.
+	at := strings.Repeat("X", rowWidth)
+	atBordered := paneBorderStyle(true).Width(rowWidth).Render(at)
+	if got := strings.Count(atBordered, "\n") + 1; got <= 3 {
+		t.Fatalf("lipgloss no longer wraps at Width boundary (got %d lines for content==Width); paneWrapBuffer may no longer be needed", got)
+	}
+
+	// (2) End-to-end: feed the row through the same border helper
+	// View() uses and confirm exactly 3 lines (top border, content,
+	// bottom border). A wrap pushes it to 4+. Going through
+	// rightPaneBorder() ensures the test breaks if the buffer is
+	// dropped from EITHER side of the equation.
+	bordered := m.rightPaneBorder().Render(rendered)
+	if got, want := strings.Count(bordered, "\n")+1, 3; got != want {
+		t.Fatalf("bordered right-pane row produced %d lines, want %d (timestamp wrap regression)\nrendered:\n%s", got, want, bordered)
 	}
 }

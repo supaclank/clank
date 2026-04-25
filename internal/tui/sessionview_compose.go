@@ -51,11 +51,17 @@ func NewSessionViewComposing(client *hubclient.Client, projectDir string) *Sessi
 	if remoteURL, err := git.RemoteURL(projectDir, "origin"); err == nil {
 		ref.RemoteURL = remoteURL
 	}
+	// Default backend: prefer the user's saved choice, falling back to
+	// agent.DefaultBackend. Errors (corrupt prefs) silently fall back —
+	// the picker UI will show the resolved choice and the user can
+	// toggle from there.
+	prefs, _ := config.LoadPreferences()
+	defaultBackend, _ := agent.ResolveBackendPreference(prefs.DefaultBackend)
 	return &SessionViewModel{
 		client:      client,
 		composing:   true,
 		inputActive: true,
-		backend:     agent.BackendOpenCode,
+		backend:     defaultBackend,
 		projectDir:  projectDir,
 		hostname:    host.HostLocal,
 		gitRef:      ref,
