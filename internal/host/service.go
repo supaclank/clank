@@ -68,6 +68,13 @@ type Service struct {
 	// Sandboxes set this; laptop hosts leave it empty.
 	gitSyncSource string
 	gitSyncToken  string
+
+	// branches caches listBranches results per projectDir for a short
+	// TTL. The TUI inbox polls every 3s on each open worktree; without
+	// this cache each poll fans out to ~4 git subprocesses per active
+	// worktree (DiffStat + CommitsAhead) and one of them runs
+	// `git diff --numstat HEAD` which stat()s the working tree.
+	branches *branchCache
 }
 
 // Options configures a Service at construction time.
@@ -90,6 +97,15 @@ type Options struct {
 	// token the cloud hub validates).
 	GitSyncSource string
 	GitSyncToken  string
+
+	// BranchCacheTTL overrides the default TTL for the listBranches
+	// cache. Zero uses DefaultBranchCacheTTL. Tests set this to control
+	// staleness behavior.
+	BranchCacheTTL time.Duration
+	// Now overrides the clock used by the listBranches cache. Tests
+	// inject a controllable clock to assert cache hit/miss behavior
+	// without sleeping. Nil means time.Now.
+	Now func() time.Time
 }
 
 // New creates a Service. Panics if opts.BackendManagers is nil — the Host
@@ -116,6 +132,7 @@ func New(opts Options) *Service {
 		clonesDir:       opts.ClonesDir,
 		gitSyncSource:   opts.GitSyncSource,
 		gitSyncToken:    opts.GitSyncToken,
+		branches:        newBranchCache(opts.BranchCacheTTL, opts.Now),
 	}
 	if s.clonesDir == "" {
 		// Best-effort default; if the home dir lookup fails the field
@@ -571,7 +588,11 @@ func (s *Service) ResolveWorktree(ctx context.Context, ref agent.GitRef, branch 
 	if err != nil {
 		return WorktreeInfo{}, err
 	}
-	return s.resolveWorktree(ctx, root, branch)
+	wt, err := s.resolveWorktree(ctx, root, branch)
+	if err == nil {
+		s.branches.invalidate(root)
+	}
+	return wt, err
 }
 
 // RemoveWorktree removes the worktree for (ref's repo, branch).
@@ -582,7 +603,11 @@ func (s *Service) RemoveWorktree(ctx context.Context, ref agent.GitRef, branch s
 	if err != nil {
 		return err
 	}
-	return s.removeWorktree(ctx, root, branch, force)
+	if err := s.removeWorktree(ctx, root, branch, force); err != nil {
+		return err
+	}
+	s.branches.invalidate(root)
+	return nil
 }
 
 // MergeBranch merges branch into ref's repo's default branch.
@@ -593,12 +618,27 @@ func (s *Service) MergeBranch(ctx context.Context, ref agent.GitRef, branch, com
 	if err != nil {
 		return MergeResult{}, err
 	}
-	return s.mergeBranch(ctx, root, branch, commitMessage)
+	res, err := s.mergeBranch(ctx, root, branch, commitMessage)
+	if err == nil {
+		s.branches.invalidate(root)
+	}
+	return res, err
 }
 
 // listBranches returns the branches (and their checked-out worktrees)
 // for the repository at projectDir. Skips bare and detached entries.
+//
+// Results are cached per projectDir for a short TTL (see branchCache).
+// The inbox view polls this every few seconds for every open session;
+// without the cache the per-poll cost is O(active_worktrees) git
+// subprocesses including a working-tree-stat'ing `git diff HEAD`.
+// Operations that mutate worktree state (resolveWorktree,
+// removeWorktree, mergeBranch) call branches.invalidate(projectDir).
 func (s *Service) listBranches(_ context.Context, projectDir string) ([]BranchInfo, error) {
+	if cached, ok := s.branches.get(projectDir); ok {
+		return cached, nil
+	}
+
 	worktrees, err := git.ListWorktrees(projectDir)
 	if err != nil {
 		return nil, err
@@ -630,6 +670,7 @@ func (s *Service) listBranches(_ context.Context, projectDir string) ([]BranchIn
 		}
 		result = append(result, info)
 	}
+	s.branches.put(projectDir, result)
 	return result, nil
 }
 

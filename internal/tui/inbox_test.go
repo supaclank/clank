@@ -2050,11 +2050,15 @@ func TestAutoRefreshSurvivesSessionView(t *testing.T) {
 	// invariant that keeps the chain alive.
 }
 
-// TestBackToInboxRestartsAutoRefresh is a regression test ensuring that
-// returning from the session view to the inbox restarts the auto-refresh
-// timer as a safety net. Even if the timer chain survived the session view,
-// this provides defense-in-depth.
-func TestBackToInboxRestartsAutoRefresh(t *testing.T) {
+// TestBackToInboxDoesNotReseedTimers is a regression test for a CPU spike in
+// clank-host: every nav round-trip (inbox→session→inbox) used to re-seed
+// autoRefreshCmd and spinner.Tick. The pre-existing chains kept ticking the
+// whole time the user was in the session view, so re-seeding spawned a
+// duplicate chain. After K nav round-trips, K parallel pollers fired
+// loadBranches every 3s, fanning out to expensive git subprocesses on the
+// host. Returning to the inbox should issue exactly one one-shot refresh
+// (loadDataCmd + sidebar.loadBranches) and rely on the existing chains.
+func TestBackToInboxDoesNotReseedTimers(t *testing.T) {
 	t.Parallel()
 
 	m := NewInboxModel(nil)
@@ -2064,17 +2068,23 @@ func TestBackToInboxRestartsAutoRefresh(t *testing.T) {
 	_, cmd := m.Update(backToInboxMsg{})
 
 	if cmd == nil {
-		t.Fatal("backToInboxMsg returned nil cmd; expected loadDataCmd + autoRefreshCmd + spinner.Tick batch")
+		t.Fatal("backToInboxMsg returned nil cmd; expected one-shot refresh batch")
 	}
 
-	// After handling backToInboxMsg, we should be back on the inbox screen.
 	if m.screen != screenInbox {
 		t.Errorf("expected screen=screenInbox after backToInboxMsg, got %v", m.screen)
 	}
 
-	// The returned command is a tea.Batch of loadDataCmd, autoRefreshCmd, and
-	// spinner.Tick. We can't easily decompose the batch, but verifying cmd != nil
-	// plus the screen transition confirms the handler is wired correctly.
+	// Decompose the batch and assert exactly two one-shot cmds (loadDataCmd
+	// and sidebar.loadBranches). A larger batch indicates a re-seed of
+	// autoRefreshCmd or spinner.Tick — the leak being prevented here.
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg, got %T", cmd())
+	}
+	if got, want := len(batch), 2; got != want {
+		t.Fatalf("backToInboxMsg returned %d cmds; want %d (re-seeding autoRefreshCmd or spinner.Tick leaks chains, causing CPU spike on clank-host after repeated nav)", got, want)
+	}
 }
 
 // TestSpinnerTickSurvivesConfirmDialog is a regression test for the bug where

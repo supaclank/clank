@@ -515,9 +515,13 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.screen = screenInbox
 		m.sessionView = nil
 		m.activeConnID = ""
-		// Refresh data, restart spinner, and ensure the auto-refresh
-		// timer is running (safety net in case it was lost).
-		return m, tea.Batch(m.loadDataCmd(), m.sidebar.loadBranches(), m.autoRefreshCmd(), m.spinner.Tick)
+		// One-shot refresh on return. Do NOT re-seed autoRefreshCmd or
+		// spinner.Tick: their chains keep ticking the whole time the user
+		// is in the session view (see Update handlers above), so re-seeding
+		// would spawn a duplicate chain on every nav round-trip — leading
+		// to K parallel pollers after K nav round-trips, which fan out to
+		// expensive git subprocesses in clank-host's ListBranches.
+		return m, tea.Batch(m.loadDataCmd(), m.sidebar.loadBranches())
 
 	case openForkedSessionMsg:
 		forkMsg := msg.(openForkedSessionMsg)
