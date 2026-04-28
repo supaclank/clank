@@ -32,6 +32,7 @@ type settingsEntryKind int
 const (
 	settingsEntryColorScheme settingsEntryKind = iota
 	settingsEntryDefaultBackend
+	settingsEntryActiveHub
 )
 
 // settingsEntry is one row on the settings page.
@@ -70,9 +71,17 @@ type settingsView struct {
 	focused bool
 }
 
-// newSettingsView builds a settings page with the current preference
-// values baked in so they render in the "value" column.
-func newSettingsView(currentColorScheme, currentDefaultBackend string) settingsView {
+// newSettingsView builds the settings page with current preference
+// values baked in. A non-empty overrideURL renders the active-hub row
+// as "overridden (URL)" and disables its toggle.
+func newSettingsView(currentColorScheme, currentDefaultBackend, currentActiveHub, remoteHubURL, overrideURL string) settingsView {
+	hubLabel := "Active hub"
+	hubDesc := "Which clankd this TUI/CLI talks to. Press enter to toggle. Restart the TUI for changes to take effect."
+	hubValue := resolveActiveHubName(currentActiveHub, remoteHubURL)
+	if strings.TrimSpace(overrideURL) != "" {
+		hubDesc = "Pinned by --hub-url for this process; toggle disabled. Restart without the flag to switch via preferences."
+		hubValue = "overridden (" + overrideURL + ")"
+	}
 	return settingsView{
 		entries: []settingsEntry{
 			{
@@ -86,6 +95,12 @@ func newSettingsView(currentColorScheme, currentDefaultBackend string) settingsV
 				label:       "Default agent backend",
 				description: "Backend used for new sessions when no override is given. Press enter to cycle.",
 				value:       resolveDefaultBackendName(currentDefaultBackend),
+			},
+			{
+				kind:        settingsEntryActiveHub,
+				label:       hubLabel,
+				description: hubDesc,
+				value:       hubValue,
 			},
 		},
 	}
@@ -140,6 +155,18 @@ func (s *settingsView) DefaultBackendValue() string {
 	return ""
 }
 
+// SetActiveHubValue updates the "current value" text for the active-
+// hub entry, mirroring the default-backend pattern.
+func (s *settingsView) SetActiveHubValue(activeHub, remoteHubURL string) {
+	display := resolveActiveHubName(activeHub, remoteHubURL)
+	for i := range s.entries {
+		if s.entries[i].kind == settingsEntryActiveHub {
+			s.entries[i].value = display
+			return
+		}
+	}
+}
+
 // resolveColorSchemeName returns the scheme name to display, falling back
 // to the first built-in (the default) when no preference is set.
 func resolveColorSchemeName(name string) string {
@@ -149,13 +176,25 @@ func resolveColorSchemeName(name string) string {
 	return name
 }
 
-// resolveDefaultBackendName returns the backend name to display, falling
-// back to the package-level default when no preference is set or the
-// stored value is unknown. Unknown values are treated as "default" so
-// the settings UI never displays a string that the runtime would reject.
+// resolveDefaultBackendName returns the backend name to display.
+// Unknown values fall back to agent.DefaultBackend.
 func resolveDefaultBackendName(name string) string {
 	bt, _ := agent.ResolveBackendPreference(name)
 	return string(bt)
+}
+
+// resolveActiveHubName renders the active-hub field. "remote" with no
+// URL configured renders as "remote (not configured)".
+func resolveActiveHubName(activeHub, remoteHubURL string) string {
+	switch activeHub {
+	case "remote":
+		if strings.TrimSpace(remoteHubURL) == "" {
+			return "remote (not configured)"
+		}
+		return "remote (" + remoteHubURL + ")"
+	default:
+		return "local"
+	}
 }
 
 func (s settingsView) Update(msg tea.Msg) (settingsView, tea.Cmd) {

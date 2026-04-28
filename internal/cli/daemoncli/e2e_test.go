@@ -88,7 +88,7 @@ func TestE2E_HubHostOpenCode_StartsSession(t *testing.T) {
 	d.SetHostClient(hh.client)
 
 	hubErr := make(chan error, 1)
-	go func() { hubErr <- runHubServer(d) }()
+	go func() { hubErr <- runHubServer(d, ServerOptions{}) }()
 	t.Cleanup(func() {
 		d.Stop()
 		select {

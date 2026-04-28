@@ -23,6 +23,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/git"
+	clanksync "github.com/acksell/clank/internal/sync"
 )
 
 // Service is the Host plane's domain object. Construct with New; call
@@ -59,6 +60,14 @@ type Service struct {
 	// past the os.Stat-not-exist check would otherwise both invoke
 	// `git clone` into the same target dir; the loser fails noisily.
 	cloneSF singleflight.Group
+
+	// gitSyncSource (when non-empty) is the cloud hub's base URL.
+	// workDirFor clones from <gitSyncSource>/sync/repos/<repo_key>/git
+	// instead of ref.RemoteURL — the cloud hub mirror is the source of
+	// truth, including unpushed commits the laptop has bundled in.
+	// Sandboxes set this; laptop hosts leave it empty.
+	gitSyncSource string
+	gitSyncToken  string
 }
 
 // Options configures a Service at construction time.
@@ -74,6 +83,13 @@ type Options struct {
 	// remote refs on first use. Defaults to ~/.clank/clones when empty.
 	// Tests should set this to a t.TempDir().
 	ClonesDir string
+	// GitSyncSource (optional) redirects clones through a cloud-hub
+	// mirror at <GitSyncSource>/sync/repos/<repo_key>/git. Sandboxes
+	// set this; the laptop's clank-host leaves it empty so clones go
+	// directly to ref.RemoteURL. Requires GitSyncToken (the bearer
+	// token the cloud hub validates).
+	GitSyncSource string
+	GitSyncToken  string
 }
 
 // New creates a Service. Panics if opts.BackendManagers is nil — the Host
@@ -98,6 +114,8 @@ func New(opts Options) *Service {
 		log:             lg,
 		sessions:        make(map[string]agent.SessionBackend),
 		clonesDir:       opts.ClonesDir,
+		gitSyncSource:   opts.GitSyncSource,
+		gitSyncToken:    opts.GitSyncToken,
 	}
 	if s.clonesDir == "" {
 		// Best-effort default; if the home dir lookup fails the field
@@ -404,9 +422,10 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 				if mkErr := os.MkdirAll(s.clonesDir, 0o755); mkErr != nil {
 					return nil, fmt.Errorf("create clones dir %q: %w", s.clonesDir, mkErr)
 				}
-				s.log.Printf("cloning %s into %s", ref.RemoteURL, base)
-				if cloneErr := git.Clone(ref.RemoteURL, base); cloneErr != nil {
-					return nil, fmt.Errorf("clone %q: %w", ref.RemoteURL, cloneErr)
+				cloneURL, cloneCfg := s.cloneSourceFor(ref.RemoteURL)
+				s.log.Printf("cloning %s into %s", cloneURL, base)
+				if cloneErr := git.CloneWithConfig(cloneURL, base, cloneCfg); cloneErr != nil {
+					return nil, fmt.Errorf("clone %q: %w", cloneURL, cloneErr)
 				}
 				return nil, nil
 			})
@@ -426,6 +445,26 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 		return wt.WorktreeDir, nil
 	}
 	return base, nil
+}
+
+// cloneSourceFor returns the URL workDirFor should pass to git-clone,
+// plus any extra `git -c key=value` overrides that need to ride along.
+//
+// When gitSyncSource is configured (sandbox mode) we redirect clones
+// to <sync-source>/sync/repos/<repo_key>/git and inject the bearer
+// token as an extra HTTP header. When it is empty (laptop mode) the
+// remote URL is used as-is.
+func (s *Service) cloneSourceFor(remoteURL string) (string, []string) {
+	if s.gitSyncSource == "" {
+		return remoteURL, nil
+	}
+	repoKey := clanksync.RepoKey(remoteURL)
+	cloneURL := strings.TrimRight(s.gitSyncSource, "/") + "/sync/repos/" + repoKey + "/git"
+	var cfg []string
+	if s.gitSyncToken != "" {
+		cfg = []string{"http.extraHeader=Authorization: Bearer " + s.gitSyncToken}
+	}
+	return cloneURL, cfg
 }
 
 // tryLocalPath inspects path and reports whether it can be used as a

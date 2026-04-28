@@ -17,6 +17,7 @@ import (
 	"github.com/acksell/clank/internal/agent"
 
 	"github.com/acksell/clank/internal/config"
+	locallauncher "github.com/acksell/clank/internal/host/launcher/local"
 	hub "github.com/acksell/clank/internal/hub"
 	hubclient "github.com/acksell/clank/internal/hub/client"
 	"github.com/acksell/clank/internal/store"
@@ -35,10 +36,17 @@ func Command() *cobra.Command {
 		Short: "Start the background daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			foreground, _ := cmd.Flags().GetBool("foreground")
-			return RunStart(foreground)
+			listen, _ := cmd.Flags().GetString("listen")
+			publicBaseURL, _ := cmd.Flags().GetString("public-base-url")
+			return RunStart(foreground, ServerOptions{
+				Listen:        listen,
+				PublicBaseURL: publicBaseURL,
+			})
 		},
 	}
 	startCmd.Flags().Bool("foreground", false, "Run in foreground (don't daemonize)")
+	startCmd.Flags().String("listen", "", "Listener address override, e.g. tcp://0.0.0.0:7878. Empty (default) = Unix socket. TCP mode requires preferences.remote_hub.auth_token to be set and authorizes inbound calls with that bearer token.")
+	startCmd.Flags().String("public-base-url", "", "Externally-reachable base URL of this hub. Used by TCP-mode hubs to tell sandboxes where to fetch git mirrors from.")
 
 	stopCmd := &cobra.Command{
 		Use:   "stop",
@@ -60,9 +68,18 @@ func Command() *cobra.Command {
 	return cmd
 }
 
+// ServerOptions configures the listener for the clankd Hub. Empty Listen
+// means default Unix socket mode; "tcp://addr:port" enables TCP mode with
+// bearer-token auth. PublicBaseURL is the externally-reachable URL of
+// the hub, used in TCP mode to tell sandboxes where to fetch synced data.
+type ServerOptions struct {
+	Listen        string
+	PublicBaseURL string
+}
+
 // RunStart starts the daemon, either in foreground or as a background process.
 // Exported so that ensureDaemon in the clank binary can call it directly.
-func RunStart(foreground bool) error {
+func RunStart(foreground bool, opts ServerOptions) error {
 	running, pid, err := hubclient.IsRunning()
 	if err != nil {
 		return fmt.Errorf("check daemon: %w", err)
@@ -117,7 +134,60 @@ func RunStart(foreground bool) error {
 
 		d.SetHostClient(hh.client)
 
-		return runHubServer(d)
+		// Start the laptop-side sync agent if the user has configured a
+		// remote hub. The agent owns its own goroutine; Stop() blocks
+		// until the loop exits, so we defer it before runHubServer takes
+		// over. Errors here are fatal: a misconfigured agent should not
+		// silently fail.
+		stopAgent, err := maybeStartSyncAgent(context.Background(), d.Store)
+		if err != nil {
+			return fmt.Errorf("start sync agent: %w", err)
+		}
+		if stopAgent != nil {
+			defer stopAgent()
+		}
+
+		// In TCP/cloud-hub mode the local-stub launcher clones from the
+		// hub's own mirror so spawned hosts behave like a real sandbox.
+		launcherOpts := locallauncher.Options{}
+		if opts.Listen != "" && opts.PublicBaseURL != "" {
+			launcherOpts.GitSyncSource = opts.PublicBaseURL
+			prefs, perr := config.LoadPreferences()
+			if perr != nil {
+				log.Printf("local launcher: preferences load failed (%v) — GitSyncToken will be empty", perr)
+			} else if prefs.RemoteHub != nil {
+				launcherOpts.GitSyncToken = prefs.RemoteHub.AuthToken
+			}
+		}
+		localLauncher := locallauncher.New(launcherOpts, nil)
+		d.SetHostLauncher("local-stub", localLauncher)
+		defer localLauncher.Stop()
+		// Validate default_launch_host_provider against actually-registered launchers.
+		registeredLaunchers := map[string]bool{"local-stub": true}
+
+		// Daytona launcher: TCP mode only, preferences.daytona.api_key required.
+		// Misconfiguration is logged but non-fatal.
+		if opts.Listen != "" {
+			if dl, err := buildDaytonaLauncher(opts); err != nil {
+				log.Printf("daytona launcher: not registered: %v", err)
+			} else if dl != nil {
+				d.SetHostLauncher("daytona", dl)
+				registeredLaunchers["daytona"] = true
+				defer dl.Stop()
+			}
+		}
+
+		// Apply the configured default launch host only if its launcher is registered.
+		if prefs, err := config.LoadPreferences(); err == nil && prefs.DefaultLaunchHostProvider != "" {
+			if registeredLaunchers[prefs.DefaultLaunchHostProvider] {
+				d.SetDefaultLaunchHost(&agent.LaunchHostSpec{Provider: prefs.DefaultLaunchHostProvider})
+				log.Printf("default launch host: %s (applied to sessions without an explicit LaunchHost)", prefs.DefaultLaunchHostProvider)
+			} else {
+				log.Printf("default launch host %q ignored: launcher not registered", prefs.DefaultLaunchHostProvider)
+			}
+		}
+
+		return runHubServer(d, opts)
 	}
 
 	// Fork a background process. The forked process runs with
@@ -141,7 +211,14 @@ func RunStart(foreground bool) error {
 		return fmt.Errorf("find executable: %w", err)
 	}
 
-	bgCmd := exec.Command(exe, "start", "--foreground")
+	bgArgs := []string{"start", "--foreground"}
+	if opts.Listen != "" {
+		bgArgs = append(bgArgs, "--listen", opts.Listen)
+	}
+	if opts.PublicBaseURL != "" {
+		bgArgs = append(bgArgs, "--public-base-url", opts.PublicBaseURL)
+	}
+	bgCmd := exec.Command(exe, bgArgs...)
 	bgCmd.Stdout = logFile
 	bgCmd.Stderr = logFile
 	bgCmd.Stdin = nil
@@ -155,8 +232,11 @@ func RunStart(foreground bool) error {
 	// Child process inherited the fd; close our copy.
 	logFile.Close()
 
-	// Wait briefly for the daemon to be reachable.
-	client, err := hubclient.NewDefaultClient()
+	// Wait briefly for the daemon to be reachable. Always probe the
+	// local socket here — we just spawned a local daemon. NewLocalClient
+	// (rather than NewDefaultClient) keeps this immune to ActiveHub
+	// flipping the user-facing transport to a remote hub.
+	client, err := hubclient.NewLocalClient()
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
 	}
@@ -228,7 +308,10 @@ func runStatus() error {
 		return nil
 	}
 
-	client, err := hubclient.NewDefaultClient()
+	// `clankd status` reports on the local daemon — IsRunning already
+	// checked the local PID file, so the client must target the local
+	// socket too even when ActiveHub points at a remote hub.
+	client, err := hubclient.NewLocalClient()
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
 	}

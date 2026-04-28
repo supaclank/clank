@@ -327,6 +327,18 @@ type AgentInfo struct {
 	Hidden      bool   `json:"hidden"` // Internal agents (compaction, title, summary)
 }
 
+// LaunchHostSpec asks the Hub to provision a fresh Host (sandbox) for
+// this session before dispatching it. When set, the Hub consults a
+// registered HostLauncher (e.g. "daytona", "local-stub") which spins
+// up a Host, registers it in the catalog, and rewrites Hostname to
+// the launcher-chosen name.
+//
+// Mutually exclusive with Hostname (Hostname is the launcher's output,
+// not its input).
+type LaunchHostSpec struct {
+	Provider string `json:"provider"` // "daytona", "local-stub", ...
+}
+
 // StartRequest contains the parameters needed to start a new agent session.
 //
 // Identity is path-free post Phase 3D-2 (hub_host_refactor.md):
@@ -336,14 +348,15 @@ type AgentInfo struct {
 // GitRef is the sole repo identity on the wire (§7.3 of
 // hub_host_refactor_code_review.md).
 type StartRequest struct {
-	Backend   BackendType    `json:"backend"`
-	Hostname  string         `json:"hostname,omitempty"` // Target host; empty defaults to "local" at the hub.
-	GitRef    GitRef         `json:"git_ref"`            // Wire-canonical repo identity; required. WorktreeBranch lives inside.
-	Prompt    string         `json:"prompt"`
-	SessionID string         `json:"session_id,omitempty"` // Backend-external session ID for resume; empty = new session.
-	TicketID  string         `json:"ticket_id,omitempty"`  // Optional backlog ticket link
-	Agent     string         `json:"agent,omitempty"`      // OpenCode agent name (e.g. "build", "plan")
-	Model     *ModelOverride `json:"model,omitempty"`      // Per-message model override; nil = use default
+	Backend    BackendType     `json:"backend"`
+	Hostname   string          `json:"hostname,omitempty"`    // Target host; empty defaults to "local" at the hub.
+	LaunchHost *LaunchHostSpec `json:"launch_host,omitempty"` // When set, Hub provisions a fresh host before dispatching.
+	GitRef     GitRef          `json:"git_ref"`               // Wire-canonical repo identity; required. WorktreeBranch lives inside.
+	Prompt     string          `json:"prompt"`
+	SessionID  string          `json:"session_id,omitempty"` // Backend-external session ID for resume; empty = new session.
+	TicketID   string          `json:"ticket_id,omitempty"`  // Optional backlog ticket link
+	Agent      string          `json:"agent,omitempty"`      // OpenCode agent name (e.g. "build", "plan")
+	Model      *ModelOverride  `json:"model,omitempty"`      // Per-message model override; nil = use default
 }
 
 // Validate checks that required fields are set per §7.3 of

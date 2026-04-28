@@ -34,6 +34,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -47,39 +48,145 @@ import (
 	"github.com/acksell/clank/internal/config"
 )
 
-// Client communicates with clankd's Hub API over its Unix domain socket.
+// Client communicates with clankd's Hub API over either a Unix
+// socket (local) or TCP+bearer (remote). Wire protocol is identical;
+// only transport and auth differ.
 type Client struct {
-	sockPath   string
+	sockPath   string // empty when in TCP mode
+	baseURL    string // "http://daemon" (Unix) or "http://host:port" (TCP)
+	authToken  string // bearer token in TCP mode
 	httpClient *http.Client
 }
 
-// NewClient creates a client that connects to clankd at the given socket path.
-//
-// The http.Client has no overall Timeout; long-poll, SSE, and websocket
-// upgrade endpoints rely on caller-supplied context for cancellation.
-// Per-request deadlines should be set via ctx.
+// hubResponseHeaderTimeout caps the wait for response headers. Sized
+// for /sessions when LaunchHost provisions a sandbox (cold Daytona
+// launches routinely take minutes).
+const hubResponseHeaderTimeout = 5 * time.Minute
+
+// NewClient connects to a local clankd via Unix socket. Use NewTCPClient for remote.
+// No overall Timeout — long-poll/SSE rely on caller ctx.
 func NewClient(sockPath string) *Client {
 	return &Client{
 		sockPath: sockPath,
+		baseURL:  "http://daemon",
 		httpClient: &http.Client{
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 					var d net.Dialer
 					return d.DialContext(ctx, "unix", sockPath)
 				},
-				ResponseHeaderTimeout: 30 * time.Second,
+				ResponseHeaderTimeout: hubResponseHeaderTimeout,
 			},
 		},
 	}
 }
 
-// NewDefaultClient creates a client using the default socket path.
+// NewTCPClient creates a client that talks to a remote clankd over
+// TCP. baseURL must be the externally-reachable hub URL (no trailing
+// slash); authToken is sent as `Authorization: Bearer <token>` on
+// every request and must match the remote hub's
+// preferences.remote_hub.auth_token.
+func NewTCPClient(baseURL, authToken string) *Client {
+	// Clone DefaultTransport to keep Proxy/Idle/TLS defaults.
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.ResponseHeaderTimeout = hubResponseHeaderTimeout
+	return &Client{
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		authToken:  authToken,
+		httpClient: &http.Client{Transport: tr},
+	}
+}
+
+// Process-wide CLI-flag override populated by SetOverride before any
+// client is constructed; takes priority over preferences.json.
+var (
+	overrideURL   string
+	overrideToken string
+)
+
+// SetOverride sets the CLI-flag-level hub transport override.
+// Empty url restores preferences.json as the source of truth.
+func SetOverride(url, token string) {
+	overrideURL = url
+	overrideToken = token
+}
+
+// ResetOverride clears any active override.
+func ResetOverride() {
+	overrideURL = ""
+	overrideToken = ""
+}
+
+// OverrideURL returns the CLI-flag override URL, or "" if none.
+func OverrideURL() string {
+	return strings.TrimSpace(overrideURL)
+}
+
+// NewDefaultClient creates a client using, in priority order:
+//  1. CLI-flag overrides (SetOverride).
+//  2. preferences.ActiveHub == "remote" with a configured remote_hub URL.
+//  3. The local Unix socket.
+//
+// Use NewLocalClient for daemon-control commands instead.
 func NewDefaultClient() (*Client, error) {
+	if strings.TrimSpace(overrideURL) != "" {
+		return NewTCPClient(overrideURL, overrideToken), nil
+	}
+	prefs, err := config.LoadPreferences()
+	if err != nil {
+		// A corrupt prefs file must surface, not silently fall back to local.
+		return nil, fmt.Errorf("load preferences: %w", err)
+	}
+	if prefs.ActiveHub == "remote" && prefs.RemoteHub != nil && strings.TrimSpace(prefs.RemoteHub.URL) != "" {
+		return NewTCPClient(prefs.RemoteHub.URL, prefs.RemoteHub.AuthToken), nil
+	}
 	sockPath, err := SocketPath()
 	if err != nil {
 		return nil, err
 	}
 	return NewClient(sockPath), nil
+}
+
+// NewLocalClient returns a Unix-socket client for the local clankd,
+// ignoring ActiveHub. Use for daemon-control (start/stop/status).
+func NewLocalClient() (*Client, error) {
+	sockPath, err := SocketPath()
+	if err != nil {
+		return nil, err
+	}
+	return NewClient(sockPath), nil
+}
+
+// IsRemoteActive reports whether NewDefaultClient would target a
+// remote hub. Logs and degrades to false on prefs load failure.
+func IsRemoteActive() bool {
+	if strings.TrimSpace(overrideURL) != "" {
+		return true
+	}
+	prefs, err := config.LoadPreferences()
+	if err != nil {
+		log.Printf("hubclient.IsRemoteActive: prefs load failed (%v) — assuming local; fix the file to switch hubs", err)
+		return false
+	}
+	return prefs.ActiveHub == "remote" && prefs.RemoteHub != nil && strings.TrimSpace(prefs.RemoteHub.URL) != ""
+}
+
+// ActiveHubLabel returns a short human-readable description of the
+// hub NewDefaultClient would target. Logs and labels as broken on
+// prefs load failure.
+func ActiveHubLabel() string {
+	if u := strings.TrimSpace(overrideURL); u != "" {
+		return "override (" + u + ")"
+	}
+	prefs, err := config.LoadPreferences()
+	if err != nil {
+		log.Printf("hubclient.ActiveHubLabel: prefs load failed: %v", err)
+		return "unknown (prefs unreadable)"
+	}
+	if prefs.ActiveHub == "remote" && prefs.RemoteHub != nil && strings.TrimSpace(prefs.RemoteHub.URL) != "" {
+		return "remote (" + prefs.RemoteHub.URL + ")"
+	}
+	return "local"
 }
 
 // SocketPath returns the Unix socket path for clankd's Hub API.
@@ -176,9 +283,12 @@ func IsRunning() (bool, int, error) {
 
 // Ping checks if clankd is reachable.
 func (c *Client) Ping(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", "http://daemon/ping", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/ping", nil)
 	if err != nil {
 		return err
+	}
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

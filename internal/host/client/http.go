@@ -48,9 +48,10 @@ func NewUnixHTTP(socketPath string) *HTTP {
 }
 
 // Close releases the underlying transport's idle connections.
+// Interface check so wrapping RoundTrippers can delegate.
 func (c *HTTP) Close() error {
-	if t, ok := c.httpc.Transport.(*http.Transport); ok {
-		t.CloseIdleConnections()
+	if i, ok := c.httpc.Transport.(interface{ CloseIdleConnections() }); ok {
+		i.CloseIdleConnections()
 	}
 	return nil
 }

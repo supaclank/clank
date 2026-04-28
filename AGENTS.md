@@ -2,9 +2,8 @@
 
 ## Coding structure
 1. Prefer multiple files instead of long files; consider per-method files for a struct, especially endpoints.
-2. Add comments where helpful, especially for non-obvious "why" decisions. Do not add redundant comments.
-3. NEVER use "fallbacks" for missing parameters. Makes it harder to debug and reason about the code's true happy path. Prefer fast failures and clear API's.
-4. No magic strings. Prefer constant global variables, and consider whether a type alias (enum) is necessary for preventing mistakes via better type-safety.
+2. NEVER use "fallbacks" for missing parameters. Makes it harder to debug and reason about the code's true happy path. Prefer fast failures and clear API's.
+3. No magic strings. Prefer constant global variables, and consider whether a type alias (enum) is necessary for preventing mistakes via better type-safety.
 
 ## Testing & debugging
 
@@ -17,8 +16,15 @@
 
 ## Comments And Documentation
 
-- Add brief comments ahead of tricky blocks
-- Keep documentation aligned with current implementation, not planned behavior unless explicitly marked.
+Code should be self-documenting; comments are reader overhead. Optimize for short comments (1-2 lines) over multi-line paragraphs (>3 lines).
+
+- Multi-line paragraphs are reserved for external-system constraints with no other home (third-party bug links, protocol quirks). If a rationale fits in code or a test, put it there instead.
+- Avoid line-number or specific-implementation references in other files — they decay. Reference packages, types, or contracts instead.
+- Comments on exported funcs/types describe **what** the code does. Skip rationale unless it's genuinely tricky.
+- Inline `why` notes are fine when the code's *goal* is non-obvious — keep them goal-oriented and brief: "prevent race", "avoid leak", "Clone DefaultTransport so Proxy/Idle/TLS defaults aren't dropped".
+- Don't restate the obvious. A comment that paraphrases the next line is overhead with no payoff.
+- Don't narrate history. "Previously we…", "the old version…", "this used to…" belong in `git log`, not in code. Regression tests should document this instead.
+- Keep prose aligned with current implementation. Mark deliberate forward-looking notes with TODO/Future.
 
 ## Feedback Expectations
 

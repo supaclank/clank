@@ -24,14 +24,31 @@ import (
 
 // Command returns the root cobra command for the clank binary with all subcommands.
 func Command() *cobra.Command {
+	var (
+		hubURL   string
+		hubToken string
+	)
 	root := &cobra.Command{
 		Use:   "clank",
 		Short: "AI-powered coding session manager",
 		Long:  "Clank manages your coding agent sessions and helps you track what's in flight.",
+		// PersistentPreRun wins over preferences.json — used for ad-hoc
+		// dev iteration ("point this clank at a different hub for one
+		// command without messing with files or env vars"). Empty flags
+		// are no-ops, so default behavior is unchanged.
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			hubclient.SetOverride(hubURL, hubToken)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInbox()
 		},
 	}
+
+	// Hub-target overrides. These bypass preferences.active_hub so a
+	// user with CLANK_DIR set to a daemon's data dir (laptop or cloud)
+	// can still point their TUI at any hub URL without juggling files.
+	root.PersistentFlags().StringVar(&hubURL, "hub-url", "", "Override the active hub URL (e.g. http://127.0.0.1:7878). Bypasses preferences.active_hub for this invocation.")
+	root.PersistentFlags().StringVar(&hubToken, "hub-token", "", "Bearer token for --hub-url. Required when --hub-url points at a TCP-mode hub.")
 
 	root.AddCommand(
 		codeCmd(),
@@ -120,8 +137,13 @@ The daemon is auto-started if not already running.`,
 				return fmt.Errorf("subscribe events: %w", err)
 			}
 
-			// Create the session.
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			// Create the session. Generous timeout because Daytona-
+			// launched sessions block here while the cloud hub
+			// provisions a sandbox (image build + boot + readiness
+			// probe routinely takes 1-3 minutes for a cold start).
+			// Local-only sessions return in well under a second; the
+			// upper bound only matters for slow paths.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
 
 			remoteURL, _ := git.RemoteURL(projectDir, "origin") // best-effort; LocalPath alone is sufficient on co-located host
@@ -240,9 +262,31 @@ func redirectLogToFile() func() {
 	}
 }
 
-// ensureDaemon makes sure the daemon is running, starting it if needed.
-// Returns a connected client.
+// ensureDaemon makes sure the active hub is reachable, starting the
+// local daemon if needed. Returns a connected client.
+//
+// In remote mode (preferences.active_hub == "remote"), we don't try
+// to spawn anything — the remote clankd is the user's responsibility.
+// We just build a TCP client and ping; if it fails the user gets a
+// clear "remote hub <url> not reachable" error so they know to start
+// it themselves rather than wondering why their local clankd isn't up.
+//
+// In local mode (the default), we keep the historical "auto-start the
+// local daemon" UX so `clank tui` just works after install.
 func ensureDaemon() (*hubclient.Client, error) {
+	if hubclient.IsRemoteActive() {
+		client, err := hubclient.NewDefaultClient()
+		if err != nil {
+			return nil, err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := client.Ping(ctx); err != nil {
+			return nil, fmt.Errorf("remote hub %s not reachable: %w", hubclient.ActiveHubLabel(), err)
+		}
+		return client, nil
+	}
+
 	running, _, err := hubclient.IsRunning()
 	if err != nil {
 		return nil, err
@@ -250,7 +294,7 @@ func ensureDaemon() (*hubclient.Client, error) {
 
 	if !running {
 		fmt.Println("Starting daemon...")
-		if err := daemoncli.RunStart(false); err != nil {
+		if err := daemoncli.RunStart(false, daemoncli.ServerOptions{}); err != nil {
 			return nil, fmt.Errorf("start daemon: %w", err)
 		}
 	}

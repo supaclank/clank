@@ -36,12 +36,15 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 		bodyReader = bytes.NewReader(data)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, "http://daemon"+path, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bodyReader)
 	if err != nil {
 		return err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -73,30 +76,26 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 	return nil
 }
 
-// openSSE opens an SSE GET to path on a no-timeout client and returns
-// the response. Caller is responsible for closing resp.Body.
-//
-// We allocate a fresh *http.Client (and *http.Transport) per call rather
-// than reusing c.httpClient because the latter has request timeouts
-// that would prematurely close long-lived event streams. The cost is
-// one transport per subscription; in practice the TUI subscribes once
-// per process, so this is not a hot path. If callers ever start
-// subscribing repeatedly, hoist a single SSE-tuned client onto Client
-// (idle conns disabled, no Timeout) instead of caching this one.
+// openSSE opens an SSE GET on a no-timeout client. Caller closes resp.Body.
+// Fresh transport per call so c.httpClient's request timeouts can't kill
+// long-lived event streams. Cloning DefaultTransport keeps Proxy/Idle/TLS defaults.
 func (c *Client) openSSE(ctx context.Context, path string) (*http.Response, error) {
-	sseClient := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, "unix", c.sockPath)
-			},
-		},
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if c.sockPath != "" {
+		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", c.sockPath)
+		}
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", "http://daemon"+path, nil)
+	sseClient := &http.Client{Transport: transport}
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+path, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", "text/event-stream")
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
 	resp, err := sseClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("connect to event stream: %w", err)

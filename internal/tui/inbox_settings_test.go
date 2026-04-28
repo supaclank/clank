@@ -83,7 +83,7 @@ func TestInbox_NavigatingOffSettingsRow_ClosesSettingsScreen(t *testing.T) {
 			focused:    true,
 			branches:   []host.BranchInfo{{Name: "main"}},
 		},
-		settings: newSettingsView("", ""),
+		settings: newSettingsView("", "", "", "", ""),
 	}
 	// Park cursor on the settings row.
 	m.sidebar.cursor = m.sidebar.settingsCursorIndex()
@@ -152,7 +152,7 @@ func TestInbox_CloseSettingsReturnsToInbox(t *testing.T) {
 		sidebar: SidebarModel{
 			projectDir: "/tmp/test",
 		},
-		settings: newSettingsView("", ""),
+		settings: newSettingsView("", "", "", "", ""),
 	}
 	m.settings.SetFocused(true)
 

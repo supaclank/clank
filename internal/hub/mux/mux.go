@@ -18,12 +18,14 @@ import (
 	"net/http"
 
 	"github.com/acksell/clank/internal/hub"
+	clanksync "github.com/acksell/clank/internal/sync"
 )
 
 // Mux wraps a *hub.Service with an http.Handler.
 type Mux struct {
-	svc *hub.Service
-	log *log.Logger
+	svc  *hub.Service
+	log  *log.Logger
+	sync *clanksync.Receiver // nil = /sync/* endpoints disabled
 }
 
 // New constructs a Mux. log may be nil.
@@ -35,6 +37,14 @@ func New(svc *hub.Service, lg *log.Logger) *Mux {
 		lg = log.Default()
 	}
 	return &Mux{svc: svc, log: lg}
+}
+
+// WithSync attaches a sync.Receiver. The hub-to-hub /sync/* endpoints
+// are registered only when one is set; tests that don't exercise sync
+// can skip this.
+func (m *Mux) WithSync(r *clanksync.Receiver) *Mux {
+	m.sync = r
+	return m
 }
 
 // Handler returns an http.Handler with all routes registered.
@@ -89,6 +99,13 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// only delegates.
 	mx.HandleFunc("GET /voice/audio", m.svc.HandleVoiceAudio)
 	mx.HandleFunc("GET /voice/status", m.handleVoiceStatus)
+
+	// Hub-to-hub sync. Registered only when a sync.Receiver is wired up
+	// (cloud-hub mode) — the laptop hub does not expose these. See
+	// internal/hub/mux/sync.go.
+	if m.sync != nil {
+		m.registerSync(mx)
+	}
 }
 
 // --- helpers ---

@@ -1,13 +1,19 @@
 // clank-host is the Host plane binary. It owns the BackendManagers and
-// SessionBackends and serves the host HTTP API on a Unix socket.
+// SessionBackends and serves the host HTTP API on either a Unix socket
+// (default for laptop hubs) or a TCP listener (for cloud sandboxes /
+// in-process LocalLauncher tests).
 //
 // In production it is spawned as a child process by clankd (the Hub).
-// clankd connects via internal/host/client.NewUnixHTTP and routes every
-// HUB-tagged operation through the wire.
+// clankd connects via internal/host/client and routes every HUB-tagged
+// operation through the wire.
 //
 // Usage:
 //
 //	clank-host --socket /path/to/host.sock
+//	clank-host --listen tcp://127.0.0.1:0    # auto-pick port
+//
+// On startup prints "listening on <addr>" — parents that picked port 0
+// read this to discover the bound address.
 //
 // On SIGINT/SIGTERM the server shuts down gracefully and host.Service
 // stops every registered backend.
@@ -22,6 +28,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -32,49 +39,48 @@ import (
 )
 
 func main() {
-	socket := flag.String("socket", "", "Path to Unix socket to listen on (required)")
+	socket := flag.String("socket", "", "Path to Unix socket to listen on (mutually exclusive with --listen)")
+	listen := flag.String("listen", "", "Listener address: tcp://host:port (use :0 for auto-pick) or unix:///path. Mutually exclusive with --socket.")
+	gitSyncSource := flag.String("git-sync-source", "", "Cloud-hub base URL to clone from instead of GitHub (e.g. http://hub.internal:7878). Empty = clone from RemoteURL directly. Used by sandboxes.")
+	gitSyncToken := flag.String("git-sync-token", "", "Bearer token paired with --git-sync-source. Injected as Authorization header on clone.")
 	flag.Parse()
 
-	if *socket == "" {
-		fmt.Fprintln(os.Stderr, "clank-host: --socket is required")
+	if *socket == "" && *listen == "" {
+		fmt.Fprintln(os.Stderr, "clank-host: --socket or --listen is required")
+		os.Exit(2)
+	}
+	if *socket != "" && *listen != "" {
+		fmt.Fprintln(os.Stderr, "clank-host: --socket and --listen are mutually exclusive")
 		os.Exit(2)
 	}
 
-	if err := run(*socket); err != nil {
+	addr := *listen
+	if addr == "" {
+		addr = "unix://" + *socket
+	}
+	if err := run(addr, *gitSyncSource, *gitSyncToken); err != nil {
 		log.Fatalf("clank-host: %v", err)
 	}
 }
 
-func run(socket string) error {
+// run binds the listener for addr (a "tcp://host:port" or "unix:///path"
+// URL) and serves the host API on it until SIGINT/SIGTERM.
+func run(addr, gitSyncSource, gitSyncToken string) error {
 	lg := log.New(os.Stderr, "[clank-host] ", log.LstdFlags)
 
-	// Remove stale socket file from a prior crashed run. Refuses to
-	// touch non-socket files so a bad --socket value cannot clobber
-	// user data.
-	if err := socketutil.RemoveStale(socket); err != nil {
+	ln, kind, sockPath, err := openListener(addr)
+	if err != nil {
 		return err
 	}
 
-	ln, err := net.Listen("unix", socket)
-	if err != nil {
-		return fmt.Errorf("listen %s: %w", socket, err)
-	}
-	// Restrict the socket to the owner. Without an explicit chmod the
-	// socket inherits the process umask and any local user could reach
-	// the host control plane.
-	if err := os.Chmod(socket, 0o600); err != nil {
-		_ = ln.Close()
-		return fmt.Errorf("chmod %s: %w", socket, err)
-	}
-
-	// Build host with both backend managers. Phase 1: hard-coded set
-	// matching daemoncli's old population.
 	svc := host.New(host.Options{
 		BackendManagers: map[agent.BackendType]agent.BackendManager{
 			agent.BackendOpenCode:   host.NewOpenCodeBackendManager(),
 			agent.BackendClaudeCode: host.NewClaudeBackendManager(),
 		},
-		Log: lg,
+		Log:           lg,
+		GitSyncSource: gitSyncSource,
+		GitSyncToken:  gitSyncToken,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -91,7 +97,9 @@ func run(socket string) error {
 
 	serveErr := make(chan error, 1)
 	go func() {
-		lg.Printf("listening on %s", socket)
+		// Print the actual bound address so parents that asked for
+		// port :0 (LocalLauncher) can read it from stderr.
+		lg.Printf("listening on %s://%s", kind, ln.Addr().String())
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			serveErr <- err
 		}
@@ -114,9 +122,47 @@ func run(socket string) error {
 	}
 	svc.Shutdown()
 	cancel()
-	if err := socketutil.RemoveStale(socket); err != nil {
-		lg.Printf("socket cleanup: %v", err)
+	if sockPath != "" {
+		if err := socketutil.RemoveStale(sockPath); err != nil {
+			lg.Printf("socket cleanup: %v", err)
+		}
 	}
 	lg.Println("stopped")
 	return nil
+}
+
+// openListener parses addr and binds the appropriate listener. Returns
+// the listener, the scheme ("tcp" or "unix"), and the socket path (for
+// unix mode; empty for tcp).
+func openListener(addr string) (net.Listener, string, string, error) {
+	switch {
+	case strings.HasPrefix(addr, "tcp://"):
+		host := strings.TrimPrefix(addr, "tcp://")
+		ln, err := net.Listen("tcp", host)
+		if err != nil {
+			return nil, "", "", fmt.Errorf("listen tcp %s: %w", host, err)
+		}
+		return ln, "tcp", "", nil
+
+	case strings.HasPrefix(addr, "unix://"):
+		path := strings.TrimPrefix(addr, "unix://")
+		// Remove stale socket file from a prior crashed run. Refuses to
+		// touch non-socket files so a bad path cannot clobber user data.
+		if err := socketutil.RemoveStale(path); err != nil {
+			return nil, "", "", err
+		}
+		ln, err := net.Listen("unix", path)
+		if err != nil {
+			return nil, "", "", fmt.Errorf("listen %s: %w", path, err)
+		}
+		// Restrict the socket to the owner.
+		if err := os.Chmod(path, 0o600); err != nil {
+			_ = ln.Close()
+			return nil, "", "", fmt.Errorf("chmod %s: %w", path, err)
+		}
+		return ln, "unix", path, nil
+
+	default:
+		return nil, "", "", fmt.Errorf("unsupported listen address %q (want tcp:// or unix://)", addr)
+	}
 }

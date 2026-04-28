@@ -350,6 +350,42 @@ func parseTimeParam(s string) (time.Time, error) {
 // returns a per-session serverURL (empty for backends without an HTTP
 // server, e.g. Claude Code).
 func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, error) {
+	// LaunchHost (if set) provisions a fresh sandbox host before
+	// dispatching the session there. The launcher chooses the
+	// hostname; we register the resulting client and overwrite
+	// req.Hostname so the rest of the flow runs unchanged.
+	//
+	// When the request omits LaunchHost, fall back to the hub's
+	// service-level default (set from preferences on cloud hubs).
+	// This is what makes TUI-created sessions auto-spawn a Daytona
+	// sandbox: the TUI doesn't know about launchers, but the cloud
+	// hub does. Read defensively under launchersMu and copy the
+	// pointed-to value so a concurrent SetDefaultLaunchHost can't
+	// tear the spec we just captured.
+	if req.LaunchHost == nil {
+		s.launchersMu.RLock()
+		if s.defaultLaunchHostSpec != nil {
+			cp := *s.defaultLaunchHostSpec
+			req.LaunchHost = &cp
+		}
+		s.launchersMu.RUnlock()
+	}
+	if req.LaunchHost != nil {
+		launcher, err := s.hostLauncher(req.LaunchHost.Provider)
+		if err != nil {
+			return nil, err
+		}
+		name, client, err := launcher.Launch(s.ctx, *req.LaunchHost)
+		if err != nil {
+			return nil, fmt.Errorf("launch host: %w", err)
+		}
+		if _, regErr := s.RegisterHost(name, client); regErr != nil {
+			_ = client.Close()
+			return nil, fmt.Errorf("register launched host: %w", regErr)
+		}
+		req.Hostname = string(name)
+	}
+
 	if req.Hostname == "" {
 		req.Hostname = string(host.HostLocal)
 	}

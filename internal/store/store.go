@@ -211,6 +211,13 @@ func (s *Store) migrate() error {
 		}
 		version = 15
 	}
+	if version < 16 {
+		// Hub-to-hub sync tables. See migrate_v16.go for shape rationale.
+		if err := s.migrateV16(); err != nil {
+			return fmt.Errorf("migration v16: %w", err)
+		}
+		version = 16
+	}
 	_ = version // suppress unused warning after last migration
 
 	return nil
