@@ -422,24 +422,29 @@ func (m *SessionViewModel) renderBackendSelector() string {
 // inside the border. The border color matches the current agent mode.
 func (m *SessionViewModel) renderPromptBox() string {
 	// Determine mode badge and border color.
+	// Border color follows focus: muted when blurred so it doesn't
+	// compete visually with other highlighted UI (e.g. permission prompt).
+	// The mode badge always uses the agent color for identification.
 	modeBadge := ""
-	bc := mutedColor // default border color when unfocused
-	if m.input.Focused() {
-		bc = primaryColor
-	}
+	bc := mutedColor
 
+	var agentName string
 	if len(m.agents) > 0 {
-		agentName := m.agents[m.selectedAgent].Name
-		mc := agentColor(agentName)
-		bc = mc
-		modeBadge = lipgloss.NewStyle().Foreground(mc).Bold(true).Render(agentName)
+		agentName = m.agents[m.selectedAgent].Name
 	} else if m.info != nil && m.info.Agent != "" {
 		// Agents list not loaded yet (or not available for this backend).
 		// Fall back to session info's agent name for the correct color,
 		// mirroring the fallback in renderHeader().
-		mc := agentColor(m.info.Agent)
-		bc = mc
-		modeBadge = lipgloss.NewStyle().Foreground(mc).Bold(true).Render(m.info.Agent)
+		agentName = m.info.Agent
+	}
+	if agentName != "" {
+		mc := agentColor(agentName)
+		modeBadge = lipgloss.NewStyle().Foreground(mc).Bold(true).Render(agentName)
+		if m.input.Focused() {
+			bc = mc
+		}
+	} else if m.input.Focused() {
+		bc = primaryColor
 	}
 
 	// Model badge (shown after mode badge when a model override is selected).

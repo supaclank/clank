@@ -2286,6 +2286,60 @@ func TestPermission_NavigationLockedWhilePending(t *testing.T) {
 	}
 }
 
+// Regression: permission arriving while the prompt textarea is open must
+// auto-blur the textarea so y/n directly answer the permission instead of
+// being typed into the message draft.
+func TestPermission_AutoBlursOpenPromptBox(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel(nil)
+	m.width = 80
+	// User opens the prompt box first.
+	m.inputActive = true
+	m.input.Focus()
+
+	// Permission arrives via SSE event.
+	m.handleEvent(agent.Event{
+		Type: agent.EventPermission,
+		Data: agent.PermissionData{RequestID: "p1", Tool: "Read", Description: "file1"},
+	})
+
+	if m.inputActive {
+		t.Fatal("expected inputActive=false after permission arrived; user is locked out otherwise")
+	}
+	if m.input.Focused() {
+		t.Error("expected textarea blurred after permission arrived")
+	}
+
+	// y should now resolve the permission.
+	_, cmd := m.handleKey(tea.KeyPressMsg{Code: 'y'})
+	if m.replyingPermID != "p1" {
+		t.Fatalf("replyingPermID = %q, want %q", m.replyingPermID, "p1")
+	}
+	if cmd == nil {
+		t.Fatal("expected a command from permission reply")
+	}
+}
+
+// Regression: pendingPermissionMsg (initial restore on TUI reconnect) must
+// also blur the prompt box if the user happened to have it open.
+func TestPermission_PendingMsgBlursOpenPromptBox(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel(nil)
+	m.width = 80
+	m.inputActive = true
+	m.input.Focus()
+
+	m.Update(pendingPermissionMsg{perms: []agent.PermissionData{
+		{RequestID: "p1", Tool: "Read", Description: "file1"},
+	}})
+
+	if m.inputActive {
+		t.Error("expected inputActive=false after pendingPermissionMsg with perms")
+	}
+}
+
 func TestPermission_ReplyInFlightBlocksDoubleRespond(t *testing.T) {
 	t.Parallel()
 

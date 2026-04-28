@@ -689,8 +689,13 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// This handles both initial restore (TUI reconnect) and resync
 		// after a denial where the backend may auto-reject remaining perms.
 		m.pendingPerms = msg.perms
-		if len(msg.perms) > 0 && m.follow {
-			m.scrollToBottom()
+		if len(msg.perms) > 0 {
+			// A permission needs an answer — release the textarea so y/n
+			// keys reach the permission handler instead of being typed in.
+			m.deactivateInput()
+			if m.follow {
+				m.scrollToBottom()
+			}
 		}
 		return m, nil
 
@@ -929,6 +934,24 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// deactivateInput closes the prompt textarea and undoes the viewport offset
+// bump from opening it. Safe to call when input is already inactive.
+func (m *SessionViewModel) deactivateInput() {
+	if !m.inputActive {
+		return
+	}
+	m.inputActive = false
+	m.input.Blur()
+	if !m.follow {
+		// Shift content back down: the viewport just grew by
+		// inputReservedLines, so undo the offset bump from opening.
+		m.scrollOffset -= inputReservedLines
+		if m.scrollOffset < 0 {
+			m.scrollOffset = 0
+		}
+	}
+}
+
 func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	msg = normalizeKeyCase(msg)
 
@@ -969,16 +992,7 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m.handleCtrlCQuit()
 		case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
-			m.inputActive = false
-			m.input.Blur()
-			if !m.follow {
-				// Shift content back down: the viewport just grew by
-				// inputReservedLines, so undo the offset bump from opening.
-				m.scrollOffset -= inputReservedLines
-				if m.scrollOffset < 0 {
-					m.scrollOffset = 0
-				}
-			}
+			m.deactivateInput()
 			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
 			// Cycle through agents.
@@ -1231,6 +1245,9 @@ func (m *SessionViewModel) handleEvent(evt agent.Event) {
 	case agent.EventPermission:
 		if data, ok := evt.Data.(agent.PermissionData); ok {
 			m.pendingPerms = append(m.pendingPerms, data)
+			// A permission needs an answer — release the textarea so y/n
+			// keys reach the permission handler instead of being typed in.
+			m.deactivateInput()
 			if m.follow {
 				m.scrollToBottom()
 			}
