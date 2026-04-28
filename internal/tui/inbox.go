@@ -982,7 +982,7 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, openNativeCLI(row.session)
 			}
 		}
-	case key.Matches(msg, key.NewBinding(key.WithKeys("left"))):
+	case key.Matches(msg, key.NewBinding(key.WithKeys("left", "shift+left"))):
 		// Left arrow navigates to the sidebar when it's visible.
 		if m.showTwoPanes() {
 			prevBranch := m.sidebar.SelectedBranch()
@@ -1573,7 +1573,7 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			m.showMerge = true
 		}
 		return m, nil
-	case key.Matches(msg, key.NewBinding(key.WithKeys("right"))):
+	case key.Matches(msg, key.NewBinding(key.WithKeys("right", "shift+right"))):
 		// Right arrow navigates to the session pane.
 		if m.sidebar.creating {
 			break
