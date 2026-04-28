@@ -312,13 +312,17 @@ func (m *SidebarModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k"))):
 		if m.cursor > 0 {
 			m.cursor--
-			m.ensureVisible()
+		} else {
+			m.cursor = maxIdx
 		}
+		m.ensureVisible()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("down", "j"))):
 		if m.cursor < maxIdx {
 			m.cursor++
-			m.ensureVisible()
+		} else {
+			m.cursor = 0
 		}
+		m.ensureVisible()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+up"))):
 		m.cursor = prevBreakpoint(m.sectionBreakpoints(), m.cursor)
 		m.ensureVisible()

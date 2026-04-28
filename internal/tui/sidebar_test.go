@@ -112,6 +112,56 @@ func TestSidebar_ShiftDown_EnsuresVisible(t *testing.T) {
 
 // --- helpers ---
 
+func upKey() tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: tea.KeyUp}
+}
+
+func downKey() tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: tea.KeyDown}
+}
+
+// TestSidebar_ArrowNavigationWraps verifies that pressing up at the top
+// wraps to the bottom (Settings row) and pressing down at the bottom wraps
+// to the top (All row).
+func TestSidebar_ArrowNavigationWraps(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		branches   int
+		startCur   int
+		key        tea.KeyPressMsg
+		wantCursor int
+	}{
+		// 3 branches → maxIdx = 4 (Settings row)
+		{"3b: up from All wraps to Settings", 3, 0, upKey(), 4},
+		{"3b: down from Settings wraps to All", 3, 4, downKey(), 0},
+		{"3b: up from middle moves up", 3, 2, upKey(), 1},
+		{"3b: down from middle moves down", 3, 2, downKey(), 3},
+
+		// 0 branches → maxIdx = 1
+		{"0b: up from All wraps to Settings", 0, 0, upKey(), 1},
+		{"0b: down from Settings wraps to All", 0, 1, downKey(), 0},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m := SidebarModel{
+				branches: makeBranches(tc.branches),
+				cursor:   tc.startCur,
+				focused:  true,
+				height:   20,
+			}
+			m.handleKey(tc.key)
+			if m.cursor != tc.wantCursor {
+				t.Errorf("cursor after key: got %d, want %d", m.cursor, tc.wantCursor)
+			}
+		})
+	}
+}
+
 func makeBranches(n int) []host.BranchInfo {
 	out := make([]host.BranchInfo, n)
 	for i := 0; i < n; i++ {

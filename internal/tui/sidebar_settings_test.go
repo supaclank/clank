@@ -52,10 +52,10 @@ func TestSidebar_CursorOnSettings_TrackingMoves(t *testing.T) {
 		t.Errorf("expected CursorOnSettings after 2x down; cursor=%d", m.cursor)
 	}
 
-	// Can't go past settings.
+	// Down from settings wraps back to the top (All).
 	m.handleKey(tea.KeyPressMsg{Code: tea.KeyDown})
-	if m.cursor != 2 {
-		t.Errorf("cursor moved past settings: got %d, want 2", m.cursor)
+	if m.cursor != 0 {
+		t.Errorf("cursor did not wrap from settings to All: got %d, want 0", m.cursor)
 	}
 }
 
