@@ -78,7 +78,12 @@ type RemoteHubPreference struct {
 // has sensible defaults. Forwarded into spawned sandboxes via env so
 // the agent backend has the credentials it needs.
 type DaytonaPreference struct {
-	APIKey   string            `json:"api_key,omitempty"`
+	APIKey string `json:"api_key,omitempty"`
+	// Snapshot is a Daytona-side snapshot name (created via `daytona
+	// snapshot create`). When set, sandboxes are spawned from the
+	// pre-warmed snapshot and boot in ~hundreds of ms vs. seconds for
+	// cold OCI image pulls. Takes precedence over Image.
+	Snapshot string            `json:"snapshot,omitempty"`
 	Image    string            `json:"image,omitempty"`
 	BaseURL  string            `json:"base_url,omitempty"`
 	ExtraEnv map[string]string `json:"extra_env,omitempty"`

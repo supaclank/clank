@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/daytonaio/daytona/libs/sdk-go/pkg/daytona"
+	sdkopts "github.com/daytonaio/daytona/libs/sdk-go/pkg/options"
 	"github.com/daytonaio/daytona/libs/sdk-go/pkg/types"
 
 	"github.com/acksell/clank/internal/agent"
@@ -31,8 +32,18 @@ type Options struct {
 	// APIKey is the Daytona API key. Required when SDKClient is nil.
 	APIKey string
 
-	// Image is the OCI image Daytona will pull.
-	// Defaults to the published clank-host image.
+	// Snapshot is the name of a Daytona-side snapshot to spawn sandboxes
+	// from. Pre-warmed snapshots boot in ~hundreds of ms vs. several
+	// seconds for cold OCI image pulls.
+	//
+	// Exactly one of Snapshot or Image must be set; New returns an error
+	// otherwise. We intentionally don't default either: an unconfigured
+	// launcher in a cloud-hub deployment is a config bug, and a silent
+	// fallback would hide it.
+	Snapshot string
+
+	// Image is the OCI image Daytona will pull. See Snapshot for the
+	// mutual-exclusion contract.
 	Image string
 
 	// HubBaseURL is the externally-reachable URL of the cloud hub. Required.
@@ -81,8 +92,14 @@ func New(opts Options, lg *log.Logger) (*Launcher, error) {
 	if opts.HubAuthToken == "" {
 		return nil, fmt.Errorf("daytona launcher: HubAuthToken is required")
 	}
-	if opts.Image == "" {
-		opts.Image = "ghcr.io/acksell/clank-host:latest"
+	// Exactly one of Snapshot/Image — fail loud on a misconfigured
+	// launcher rather than silently spawning sandboxes from a default
+	// image that may not exist or may not match the operator's intent.
+	switch {
+	case opts.Snapshot == "" && opts.Image == "":
+		return nil, fmt.Errorf("daytona launcher: one of Snapshot or Image must be set")
+	case opts.Snapshot != "" && opts.Image != "":
+		return nil, fmt.Errorf("daytona launcher: Snapshot and Image are mutually exclusive (got Snapshot=%q, Image=%q)", opts.Snapshot, opts.Image)
 	}
 	if opts.ProvisionTimeout == 0 {
 		opts.ProvisionTimeout = 5 * time.Minute
@@ -132,24 +149,46 @@ func (l *Launcher) Launch(ctx context.Context, _ agent.LaunchHostSpec) (host.Hos
 		envVars[k] = v
 	}
 
-	// Set ENTRYPOINT explicitly: Daytona drops base-image ENTRYPOINT on
-	// `FROM <image>` wrapping (daytonaio/daytona#3853). Path mirrors
-	// cmd/clank-host/Dockerfile.
-	img := daytona.Base(l.opts.Image).
-		Entrypoint([]string{"/usr/local/bin/entrypoint.sh"})
+	base := types.SandboxBaseParams{
+		EnvVars: envVars,
+		// Public=true exposes the preview port; the preview token still gates auth.
+		Public: true,
+	}
 
-	sandbox, err := l.client.Create(ctx, types.ImageParams{
-		SandboxBaseParams: types.SandboxBaseParams{
-			EnvVars: envVars,
-			// Public=true exposes the preview port; the preview token still gates auth.
-			Public: true,
-		},
-		Image:     img,
-		Resources: l.opts.Resources,
-	})
+	// Prefer pre-warmed snapshots (boot in ~hundreds of ms). Fall back to
+	// cold OCI image pulls when no snapshot is configured.
+	//
+	// WithWaitForStart(false): the SDK's default polls Daytona for sandbox
+	// state every ~100ms until STARTED, adding 1–2s. Our own
+	// waitForHostReady below polls clank-host's /status which only
+	// succeeds once the container is up and clank-host has bound its
+	// port — same gate, one less round-trip path.
+	startCreate := time.Now()
+	createOpts := []func(*sdkopts.CreateSandbox){sdkopts.WithWaitForStart(false)}
+	var sandbox *daytona.Sandbox
+	var err error
+	if l.opts.Snapshot != "" {
+		sandbox, err = l.client.Create(ctx, types.SnapshotParams{
+			SandboxBaseParams: base,
+			Snapshot:          l.opts.Snapshot,
+		}, createOpts...)
+	} else {
+		// Set ENTRYPOINT explicitly: Daytona drops base-image ENTRYPOINT on
+		// `FROM <image>` wrapping (daytonaio/daytona#3853). Path mirrors
+		// cmd/clank-host/Dockerfile.
+		img := daytona.Base(l.opts.Image).
+			Entrypoint([]string{"/usr/local/bin/entrypoint.sh"})
+		sandbox, err = l.client.Create(ctx, types.ImageParams{
+			SandboxBaseParams: base,
+			Image:             img,
+			Resources:         l.opts.Resources,
+		}, createOpts...)
+	}
 	if err != nil {
 		return "", nil, fmt.Errorf("create sandbox: %w", err)
 	}
+	l.log.Printf("daytona launcher: sandbox %s created in %s (snapshot=%q image=%q)",
+		sandbox.ID, time.Since(startCreate).Round(time.Millisecond), l.opts.Snapshot, l.opts.Image)
 	l.createdMu.Lock()
 	if l.stopping {
 		l.createdMu.Unlock()
@@ -161,7 +200,10 @@ func (l *Launcher) Launch(ctx context.Context, _ agent.LaunchHostSpec) (host.Hos
 
 	hostname := host.Hostname("daytona-" + safeHostnameSuffix(sandbox.ID))
 
-	preview, err := sandbox.GetPreviewLink(ctx, HostPort)
+	// With WithWaitForStart(false) the sandbox may not yet be in a state
+	// where Daytona will mint a preview link. Retry briefly. The total
+	// retry budget is bounded by the parent ctx (ProvisionTimeout).
+	preview, err := getPreviewLinkWithRetry(ctx, sandbox, HostPort)
 	if err != nil {
 		l.untrackAndDelete(sandbox)
 		return "", nil, fmt.Errorf("get preview link: %w", err)
@@ -184,8 +226,34 @@ func (l *Launcher) Launch(ctx context.Context, _ agent.LaunchHostSpec) (host.Hos
 		return "", nil, fmt.Errorf("wait for clank-host: %w", err)
 	}
 
-	l.log.Printf("daytona launcher: sandbox %s ready at %s (host=%s)", sandbox.ID, preview.URL, hostname)
+	l.log.Printf("daytona launcher: sandbox %s ready at %s (host=%s, total=%s)",
+		sandbox.ID, preview.URL, hostname, time.Since(startCreate).Round(time.Millisecond))
 	return hostname, client, nil
+}
+
+// getPreviewLinkWithRetry calls GetPreviewLink with a tight backoff so a
+// no-wait Create that hasn't finished provisioning the preview routing
+// layer doesn't blow up the launch.
+func getPreviewLinkWithRetry(ctx context.Context, sandbox *daytona.Sandbox, port int) (*types.PreviewLink, error) {
+	delay := 50 * time.Millisecond
+	const maxDelay = 500 * time.Millisecond
+	var lastErr error
+	for {
+		preview, err := sandbox.GetPreviewLink(ctx, port)
+		if err == nil {
+			return preview, nil
+		}
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("preview link not ready (last error: %v)", lastErr)
+		case <-time.After(delay):
+		}
+		delay *= 2
+		if delay > maxDelay {
+			delay = maxDelay
+		}
+	}
 }
 
 // fetchEntrypointLogs is best-effort. Returns "" on any failure.
@@ -216,8 +284,12 @@ func (l *Launcher) fetchEntrypointLogs(s *daytona.Sandbox) string {
 // waitForHostReady polls /status until 2xx or ctx expires. Bridges
 // the gap between Daytona's "started" state and clank-host actually
 // binding its port.
+//
+// Poll cadence is tight (100ms) because clank-host is typically up in
+// a few hundred ms once Daytona reports the sandbox started — a 500ms
+// tick wastes a full interval on average waiting for the next probe.
 func (l *Launcher) waitForHostReady(ctx context.Context, c *hostclient.HTTP, sandboxID string) error {
-	t := time.NewTicker(500 * time.Millisecond)
+	t := time.NewTicker(100 * time.Millisecond)
 	defer t.Stop()
 	var lastErr error
 	for {

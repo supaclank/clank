@@ -31,6 +31,7 @@ func buildDaytonaLauncher(opts ServerOptions) (*daytonalauncher.Launcher, error)
 	}
 	return daytonalauncher.New(daytonalauncher.Options{
 		APIKey:       prefs.Daytona.APIKey,
+		Snapshot:     prefs.Daytona.Snapshot,
 		Image:        prefs.Daytona.Image,
 		APIUrl:       prefs.Daytona.BaseURL, // pref name kept for back-compat; SDK calls it APIUrl
 		ExtraEnv:     prefs.Daytona.ExtraEnv,
