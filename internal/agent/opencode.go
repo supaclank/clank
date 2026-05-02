@@ -1389,6 +1389,54 @@ func (m *OpenCodeServerManager) ListServers() []ServerInfo {
 	return servers
 }
 
+// RestartAllServers kills every running OpenCode server, clears all
+// cached agents/models, and blocks until the reconciler has every
+// previously-desired dir healthy again. Returns the first error
+// encountered (if any) but always tries to restart every server first.
+//
+// Used by the auth wrapper after writing auth.json: OpenCode reads
+// provider credentials at process start and never re-reads them, so
+// adding/removing a provider requires a process restart. Project dirs
+// share a global SQLite DB, so we restart all of them rather than
+// trying to identify which dirs need the new auth.
+//
+// Active sessions are interrupted — any in-flight prompt/tool call
+// dies with the process. The reconnect loop in OpenCodeBackend
+// re-resolves the new server URL via the resolver closure passed to
+// CreateBackend, so historical session state survives.
+func (m *OpenCodeServerManager) RestartAllServers(ctx context.Context) error {
+	m.mu.Lock()
+	dirs := make([]string, 0, len(m.servers))
+	for dir, srv := range m.servers {
+		if srv.Cmd != nil && srv.Cmd.Process != nil {
+			srv.Cmd.Process.Kill()
+		}
+		delete(m.agents, srv.URL)
+		delete(m.models, srv.URL)
+		delete(m.servers, dir)
+		dirs = append(dirs, dir)
+	}
+	m.mu.Unlock()
+
+	// Nudge the reconciler so the dirs (still in m.desired) get
+	// restarted on the next tick rather than waiting for the 5s
+	// reconcileInterval.
+	select {
+	case m.nudge <- struct{}{}:
+	default:
+	}
+
+	// Block until each dir has a healthy server again. GetOrStartServer
+	// registers as a waiter against the in-flight reconciler tick.
+	var firstErr error
+	for _, dir := range dirs {
+		if _, err := m.GetOrStartServer(ctx, dir); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 // StopAll stops all managed servers and clears the desired set.
 // Any pending waiters are notified with an error.
 func (m *OpenCodeServerManager) StopAll() {

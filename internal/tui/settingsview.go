@@ -33,6 +33,7 @@ const (
 	settingsEntryColorScheme settingsEntryKind = iota
 	settingsEntryDefaultBackend
 	settingsEntryActiveHub
+	settingsEntryProviders
 )
 
 // settingsEntry is one row on the settings page.
@@ -101,6 +102,11 @@ func newSettingsView(currentColorScheme, currentDefaultBackend, currentActiveHub
 				label:       hubLabel,
 				description: hubDesc,
 				value:       hubValue,
+			},
+			{
+				kind:        settingsEntryProviders,
+				label:       "Connect provider",
+				description: "Authenticate an AI provider (e.g. GitHub Copilot) for the active host.",
 			},
 		},
 	}

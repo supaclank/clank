@@ -565,6 +565,69 @@ func (s *Service) MergeBranchOnHost(ctx context.Context, hostname host.Hostname,
 	return res, nil
 }
 
+// --- Auth (host pass-throughs) ---
+
+// ListAuthProvidersOnHost returns the auth providers known to the
+// named host plus their current connection state.
+func (s *Service) ListAuthProvidersOnHost(ctx context.Context, hostname host.Hostname) ([]agent.ProviderAuthInfo, error) {
+	hc, ok := s.Host(hostname)
+	if !ok {
+		return nil, ErrHostNotRegistered(hostname)
+	}
+	return hc.ListAuthProviders(ctx)
+}
+
+// StartAuthDeviceFlowOnHost kicks off device-flow auth for providerID
+// on the named host, returning the user-facing fields the TUI shows.
+func (s *Service) StartAuthDeviceFlowOnHost(ctx context.Context, hostname host.Hostname, providerID string) (agent.DeviceFlowStart, error) {
+	hc, ok := s.Host(hostname)
+	if !ok {
+		return agent.DeviceFlowStart{}, ErrHostNotRegistered(hostname)
+	}
+	return hc.StartDeviceFlow(ctx, providerID)
+}
+
+// SubmitAuthAPIKeyOnHost stores an API key (and any provider-specific
+// metadata) for providerID on the named host and returns a flow_id
+// the client polls until the post-write OpenCode restart finishes.
+func (s *Service) SubmitAuthAPIKeyOnHost(ctx context.Context, hostname host.Hostname, providerID, key string, metadata map[string]string) (agent.DeviceFlowStart, error) {
+	hc, ok := s.Host(hostname)
+	if !ok {
+		return agent.DeviceFlowStart{}, ErrHostNotRegistered(hostname)
+	}
+	return hc.SubmitAPIKey(ctx, providerID, key, metadata)
+}
+
+// AuthFlowStatusOnHost returns the current state of an in-progress
+// flow on the named host. Works for both device-flow and api-key
+// flows (the flow_id is opaque). Pure read.
+func (s *Service) AuthFlowStatusOnHost(ctx context.Context, hostname host.Hostname, providerID, flowID string) (agent.DeviceFlowStatus, error) {
+	hc, ok := s.Host(hostname)
+	if !ok {
+		return agent.DeviceFlowStatus{}, ErrHostNotRegistered(hostname)
+	}
+	return hc.FlowStatus(ctx, providerID, flowID)
+}
+
+// CancelAuthFlowOnHost aborts an in-progress flow.
+func (s *Service) CancelAuthFlowOnHost(ctx context.Context, hostname host.Hostname, providerID, flowID string) error {
+	hc, ok := s.Host(hostname)
+	if !ok {
+		return ErrHostNotRegistered(hostname)
+	}
+	return hc.CancelFlow(ctx, providerID, flowID)
+}
+
+// DeleteAuthCredentialOnHost removes the stored credential and
+// triggers an OpenCode restart on the named host.
+func (s *Service) DeleteAuthCredentialOnHost(ctx context.Context, hostname host.Hostname, providerID string) error {
+	hc, ok := s.Host(hostname)
+	if !ok {
+		return ErrHostNotRegistered(hostname)
+	}
+	return hc.DeleteAuthCredential(ctx, providerID)
+}
+
 // --- Hosts ---
 
 // ErrHostNotRegisteredErr is the typed error for unknown hostname lookups.

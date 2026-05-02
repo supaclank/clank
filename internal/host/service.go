@@ -39,6 +39,7 @@ type Service struct {
 	id              Hostname
 	startedAt       time.Time
 	backendManagers map[agent.BackendType]agent.BackendManager
+	auth            *AuthManager
 	log             *log.Logger
 
 	mu       sync.RWMutex
@@ -142,8 +143,31 @@ func New(opts Options) *Service {
 			s.clonesDir = filepath.Join(home, ".clank", "clones")
 		}
 	}
+
+	// Auth manager is best-effort: it requires the OpenCode backend
+	// (since auth.json is read by `opencode serve` and a restart is
+	// needed to pick up changes). If OpenCode isn't registered we
+	// log and leave Auth() nil — the mux's auth handlers will return
+	// a clear "not available" error rather than panicking.
+	if oc, ok := s.backendManagers[agent.BackendOpenCode].(*OpenCodeBackendManager); ok {
+		am, err := NewAuthManager(func(ctx context.Context) error {
+			return oc.ServerManager().RestartAllServers(ctx)
+		})
+		if err != nil {
+			s.log.Printf("auth manager unavailable: %v", err)
+		} else {
+			s.auth = am
+		}
+	} else {
+		s.log.Printf("auth manager unavailable: opencode backend not registered")
+	}
+
 	return s
 }
+
+// Auth returns the AuthManager, or nil if none is wired (e.g. the
+// host has no OpenCode backend registered). Callers must nil-check.
+func (s *Service) Auth() *AuthManager { return s.auth }
 
 // ID returns the host's ID.
 func (s *Service) ID() Hostname { return s.id }

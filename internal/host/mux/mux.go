@@ -69,6 +69,9 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("POST /sessions/{id}/permissions/{permID}/reply", m.handlePermissionReply)
 	mx.HandleFunc("POST /sessions/{id}/stop", m.handleStopSession)
 	mx.HandleFunc("GET /sessions/{id}", m.handleSessionSnapshot)
+
+	// Provider authentication. See internal/host/mux/auth.go.
+	m.registerAuth(mx)
 }
 
 // --- helpers ---

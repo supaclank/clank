@@ -63,6 +63,11 @@ func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateThemePicker(msg)
 	}
 
+	// Provider auth modal takes precedence too.
+	if m.showProviderAuth {
+		return m.updateProviderAuth(msg)
+	}
+
 	switch msg := msg.(type) {
 	case branchLoadedMsg, branchWorktreeCreatedMsg:
 		cmd := m.sidebar.Update(msg)
@@ -103,6 +108,10 @@ func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.settings.SetActiveHubValue(next, remoteURL)
 			persistActiveHub(next)
 			return m, nil
+		case settingsEntryProviders:
+			m.providerAuth = newProviderAuthModel(m.client, m.hostname)
+			m.showProviderAuth = true
+			return m, m.providerAuth.Init()
 		}
 		return m, nil
 
@@ -132,6 +141,22 @@ func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Otherwise delegate to the settings view itself.
 	var cmd tea.Cmd
 	m.settings, cmd = m.settings.Update(msg)
+	return m, cmd
+}
+
+// updateProviderAuth forwards messages to the provider auth modal and
+// handles its terminal messages (done/cancel).
+func (m *InboxModel) updateProviderAuth(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg.(type) {
+	case providerAuthDoneMsg:
+		m.showProviderAuth = false
+		return m, nil
+	case providerAuthCancelMsg:
+		m.showProviderAuth = false
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.providerAuth, cmd = m.providerAuth.Update(msg)
 	return m, cmd
 }
 

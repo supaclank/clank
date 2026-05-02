@@ -94,6 +94,9 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("POST /hosts/{hostname}/worktrees/remove", m.handleRemoveWorktreeOnHost)
 	mx.HandleFunc("POST /hosts/{hostname}/worktrees/merge", m.handleMergeBranchOnHost)
 
+	// Provider authentication. See internal/hub/mux/auth.go.
+	m.registerAuth(mx)
+
 	// Voice. The websocket handler stays on *hub.Service because it owns
 	// the voice singleton state and the long-lived ws connection; mux
 	// only delegates.
