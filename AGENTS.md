@@ -19,7 +19,7 @@
 Code should be self-documenting; comments are reader overhead. Optimize for short comments (1-2 lines) over multi-line paragraphs (>3 lines).
 
 - Multi-line paragraphs are reserved for external-system constraints with no other home (third-party bug links, protocol quirks). If a rationale fits in code or a test, put it there instead.
-- Avoid line-number or specific-implementation references in other files — they decay. Reference packages, types, or contracts instead.
+- Avoid line-number or specific-implementation references in other files or documents — they decay. Reference packages, types, or contracts instead.
 - Comments on exported funcs/types describe **what** the code does. Skip rationale unless it's genuinely tricky.
 - Inline `why` notes are fine when the code's *goal* is non-obvious — keep them goal-oriented and brief: "prevent race", "avoid leak", "Clone DefaultTransport so Proxy/Idle/TLS defaults aren't dropped".
 - Don't restate the obvious. A comment that paraphrases the next line is overhead with no payoff.

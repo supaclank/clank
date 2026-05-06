@@ -15,11 +15,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/acksell/clank/internal/agent"
-
 	"github.com/acksell/clank/internal/config"
-	locallauncher "github.com/acksell/clank/internal/host/launcher/local"
-	hub "github.com/acksell/clank/internal/hub"
-	hubclient "github.com/acksell/clank/internal/hub/client"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/store"
 )
 
@@ -80,7 +77,7 @@ type ServerOptions struct {
 // RunStart starts the daemon, either in foreground or as a background process.
 // Exported so that ensureDaemon in the clank binary can call it directly.
 func RunStart(foreground bool, opts ServerOptions) error {
-	running, pid, err := hubclient.IsRunning()
+	running, pid, err := daemonclient.IsRunning()
 	if err != nil {
 		return fmt.Errorf("check daemon: %w", err)
 	}
@@ -90,10 +87,18 @@ func RunStart(foreground bool, opts ServerOptions) error {
 	}
 
 	if foreground {
-		// Run in foreground — useful for debugging.
-		d := hub.New()
+		// PR 3 wiring: gateway + provisioner replaces the legacy hub
+		// stack. The daemon picks one provisioner based on
+		// preferences.default_launch_host_provider (default "local")
+		// and mounts the gateway on opts.Listen. Every request flows
+		// gateway → user's host (subprocess for "local", Daytona
+		// sandbox or Fly Sprite for the cloud variants).
 
-		// Open SQLite store for session persistence.
+		// Open SQLite store for the host registry. Session metadata
+		// now lives on the host's own host.db (managed by clank-host
+		// inside its --data-dir); this store holds only the hosts
+		// table the provisioner uses for cross-restart sandbox
+		// identity (PR 1).
 		dir, err := config.Dir()
 		if err != nil {
 			return fmt.Errorf("config dir: %w", err)
@@ -106,7 +111,7 @@ func RunStart(foreground bool, opts ServerOptions) error {
 		if err != nil {
 			return fmt.Errorf("open store: %w", err)
 		}
-		d.Store = st
+		defer st.Close()
 
 		// Open persistent log file. Truncated on each start so it
 		// doesn't grow unbounded across daemon restarts.
@@ -116,78 +121,19 @@ func RunStart(foreground bool, opts ServerOptions) error {
 			return fmt.Errorf("open daemon log: %w", err)
 		}
 		defer logFile.Close()
-		// Foreground: write to both stderr (live) and the log file.
-		d.SetLogOutput(io.MultiWriter(os.Stderr, logFile))
-		// Also redirect the global logger so that subsystems using
-		// log.Printf (audio, reconciler) are captured.
+		// Redirect the global logger so subsystems using log.Printf
+		// land in the same file.
 		log.SetOutput(io.MultiWriter(os.Stderr, logFile))
 
-		// Spawn the clank-host subprocess. The Hub (this daemon)
-		// communicates with the Host via a Unix socket; backend managers
-		// and SessionBackends live in clank-host's address space.
-		hh, err := startHost(context.Background(), dir, io.MultiWriter(os.Stderr, logFile))
+		prov, cleanup, err := buildProvisioner(opts, st)
 		if err != nil {
-			return fmt.Errorf("start clank-host: %w", err)
+			return fmt.Errorf("build provisioner: %w", err)
 		}
-		// Stop the child after daemon.Run returns (graceful or not).
-		defer hh.stop()
-
-		d.SetHostClient(hh.client)
-
-		// Start the laptop-side sync agent if the user has configured a
-		// remote hub. The agent owns its own goroutine; Stop() blocks
-		// until the loop exits, so we defer it before runHubServer takes
-		// over. Errors here are fatal: a misconfigured agent should not
-		// silently fail.
-		stopAgent, err := maybeStartSyncAgent(context.Background(), d.Store)
-		if err != nil {
-			return fmt.Errorf("start sync agent: %w", err)
-		}
-		if stopAgent != nil {
-			defer stopAgent()
+		if cleanup != nil {
+			defer cleanup()
 		}
 
-		// In TCP/cloud-hub mode the local-stub launcher clones from the
-		// hub's own mirror so spawned hosts behave like a real sandbox.
-		launcherOpts := locallauncher.Options{}
-		if opts.Listen != "" && opts.PublicBaseURL != "" {
-			launcherOpts.GitSyncSource = opts.PublicBaseURL
-			prefs, perr := config.LoadPreferences()
-			if perr != nil {
-				log.Printf("local launcher: preferences load failed (%v) — GitSyncToken will be empty", perr)
-			} else if prefs.RemoteHub != nil {
-				launcherOpts.GitSyncToken = prefs.RemoteHub.AuthToken
-			}
-		}
-		localLauncher := locallauncher.New(launcherOpts, nil)
-		d.SetHostLauncher("local-stub", localLauncher)
-		defer localLauncher.Stop()
-		// Validate default_launch_host_provider against actually-registered launchers.
-		registeredLaunchers := map[string]bool{"local-stub": true}
-
-		// Daytona launcher: TCP mode only, preferences.daytona.api_key required.
-		// Misconfiguration is logged but non-fatal.
-		if opts.Listen != "" {
-			if dl, err := buildDaytonaLauncher(opts); err != nil {
-				log.Printf("daytona launcher: not registered: %v", err)
-			} else if dl != nil {
-				d.SetHostLauncher("daytona", dl)
-				registeredLaunchers["daytona"] = true
-				defer dl.Stop()
-			}
-		}
-
-		// Apply the configured default launch host only if its launcher is registered.
-		if prefs, err := config.LoadPreferences(); err == nil && prefs.DefaultLaunchHostProvider != "" {
-			if registeredLaunchers[prefs.DefaultLaunchHostProvider] {
-				d.SetDefaultLaunchHost(&agent.LaunchHostSpec{Provider: prefs.DefaultLaunchHostProvider})
-				log.Printf("default launch host: %s (applied to sessions without an explicit LaunchHost)", prefs.DefaultLaunchHostProvider)
-			} else {
-				log.Printf("default launch host %q ignored: launcher not registered", prefs.DefaultLaunchHostProvider)
-			}
-		}
-
-		return runHubServer(d, opts)
+		return runGatewayServer(prov, opts)
 	}
 
 	// Fork a background process. The forked process runs with
@@ -236,7 +182,7 @@ func RunStart(foreground bool, opts ServerOptions) error {
 	// local socket here — we just spawned a local daemon. NewLocalClient
 	// (rather than NewDefaultClient) keeps this immune to ActiveHub
 	// flipping the user-facing transport to a remote hub.
-	client, err := hubclient.NewLocalClient()
+	client, err := daemonclient.NewLocalClient()
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
 	}
@@ -260,7 +206,7 @@ func RunStart(foreground bool, opts ServerOptions) error {
 
 // runStop sends SIGTERM to the running daemon.
 func runStop() error {
-	running, pid, err := hubclient.IsRunning()
+	running, pid, err := daemonclient.IsRunning()
 	if err != nil {
 		return fmt.Errorf("check daemon: %w", err)
 	}
@@ -283,7 +229,7 @@ func runStop() error {
 	defer cancel()
 
 	for {
-		stillRunning, _, _ := hubclient.IsRunning()
+		stillRunning, _, _ := daemonclient.IsRunning()
 		if !stillRunning {
 			fmt.Printf("Daemon stopped (was pid=%d)\n", pid)
 			return nil
@@ -299,7 +245,7 @@ func runStop() error {
 
 // runStatus shows daemon info and managed sessions.
 func runStatus() error {
-	running, pid, err := hubclient.IsRunning()
+	running, pid, err := daemonclient.IsRunning()
 	if err != nil {
 		return fmt.Errorf("check daemon: %w", err)
 	}
@@ -311,7 +257,7 @@ func runStatus() error {
 	// `clankd status` reports on the local daemon — IsRunning already
 	// checked the local PID file, so the client must target the local
 	// socket too even when ActiveHub points at a remote hub.
-	client, err := hubclient.NewLocalClient()
+	client, err := daemonclient.NewLocalClient()
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
 	}

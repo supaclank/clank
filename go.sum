@@ -8,6 +8,8 @@ github.com/Acksell/claude-agent-sdk-go v0.0.0-20260424151828-708a654d0bbe h1:fZC
 github.com/Acksell/claude-agent-sdk-go v0.0.0-20260424151828-708a654d0bbe/go.mod h1:1581ih7J7T89idAMBfrtVAcQfNGkFWUtWcnQ1O9efYA=
 github.com/MakeNowJust/heredoc v1.0.0 h1:cXCdzVdstXyiTqTvfqk9SDHpKNjxuom+DOlyEeQ4pzQ=
 github.com/MakeNowJust/heredoc v1.0.0/go.mod h1:mG5amYoWBHf8vpLOuehzbGGw0EHxpZZ6lCpQ4fNJ8LE=
+github.com/Masterminds/semver/v3 v3.2.1 h1:RN9w6+7QoMeJVGyfmbcgs28Br8cvmnucEXnY0rYXWg0=
+github.com/Masterminds/semver/v3 v3.2.1/go.mod h1:qvl/7zhW3nngYb5+80sSMF+FG2BjYrf8m9wsX0PNOMQ=
 github.com/acksell/mindmouth v0.0.1 h1:PrpI+aBQ+mipH0qAo1YJMm4wJYD/9ez0i+HgvQQ5ArA=
 github.com/acksell/mindmouth v0.0.1/go.mod h1:ElZtBinXfGlu/d3fgCsQjK+1a3+9hECDcD2muMNU02g=
 github.com/alecthomas/assert/v2 v2.11.0 h1:2Q9r3ki8+JYXvGsDyBXwH3LcJ+WK5D0gc5E8vS6K3D0=
@@ -159,6 +161,8 @@ github.com/sst/opencode-sdk-go v0.19.2 h1:ffgQpE+ms4F0Wop/tT4tqTvFAbocyWYM8iy543
 github.com/sst/opencode-sdk-go v0.19.2/go.mod h1:rrpo5n0Be43y6tJ29TeMxH1/zeoDcB0D43nJh6gnL34=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
+github.com/superfly/sprites-go v0.0.0-20260421132718-b8bf80ad51d3 h1:NknzzbBtCjf2yjBsYQPMxE8Hki06WXgCxj2r2HZzUtI=
+github.com/superfly/sprites-go v0.0.0-20260421132718-b8bf80ad51d3/go.mod h1:4zltGIGJa3HV+XumRyNn4BmhlavbUZH3Uh5xJNaDwsY=
 github.com/tidwall/gjson v1.14.2/go.mod h1:/wbyibRr2FHMks5tjHJ5F8dMZh3AcwJEMf5vlfC0lxk=
 github.com/tidwall/gjson v1.17.1 h1:wlYEnwqAHgzmhNUFfw7Xalt2JzQvsMx2Se4PcoFCT/U=
 github.com/tidwall/gjson v1.17.1/go.mod h1:/wbyibRr2FHMks5tjHJ5F8dMZh3AcwJEMf5vlfC0lxk=

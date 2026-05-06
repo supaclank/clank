@@ -20,32 +20,17 @@ func (c *HTTP) Sessions() *SessionsClient {
 	return &SessionsClient{c: c}
 }
 
-// Create starts a new session on the host. Returns a SessionBackend
-// adapter bound to the new session and the host-resolved server URL
-// (empty string for backends without an HTTP server, e.g. Claude Code).
-func (s *SessionsClient) Create(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, string, error) {
-	body := struct {
-		SessionID string             `json:"session_id"`
-		Request   agent.StartRequest `json:"request"`
-	}{sessionID, req}
-	var snap struct {
-		SessionID  string              `json:"session_id"`
-		ExternalID string              `json:"external_id"`
-		Status     agent.SessionStatus `json:"status"`
-		ServerURL  string              `json:"server_url"`
-	}
-	if err := s.c.do(ctx, http.MethodPost, "/sessions", body, &snap); err != nil {
+// Create starts a new session on the host. The host generates the
+// session ID. Returns a SessionBackend adapter bound to the new session
+// and the host-resolved server URL (empty string for backends without
+// an HTTP server, e.g. Claude Code).
+func (s *SessionsClient) Create(ctx context.Context, req agent.StartRequest) (agent.SessionBackend, string, error) {
+	var info agent.SessionInfo
+	if err := s.c.do(ctx, http.MethodPost, "/sessions", req, &info); err != nil {
 		return nil, "", err
 	}
-	// Bind the backend to the id the host actually returned. The host
-	// is the source of truth: if it allocated a different id (or none
-	// at all) we must not silently keep operating against the caller's
-	// assumed id, which would target a nonexistent session.
-	if snap.SessionID == "" {
-		return nil, "", fmt.Errorf("hostclient: server returned empty session id (requested %q)", sessionID)
+	if info.ID == "" {
+		return nil, "", fmt.Errorf("hostclient: server returned empty session id")
 	}
-	if sessionID != "" && snap.SessionID != sessionID {
-		return nil, "", fmt.Errorf("hostclient: server returned session id %q, expected %q", snap.SessionID, sessionID)
-	}
-	return newHTTPSessionBackend(s.c, snap.SessionID, snap.ExternalID, snap.Status), snap.ServerURL, nil
+	return newHTTPSessionBackend(s.c, info.ID, info.ExternalID, info.Status), info.ServerURL, nil
 }

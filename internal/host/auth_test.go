@@ -107,6 +107,53 @@ func TestAuthManager_WriteAndReadAuthJSON(t *testing.T) {
 	}
 }
 
+// TestAuthManager_OAuthCredentialOnDiskMatchesOpenCodeSchema pins the
+// invariant that the JSON we write to ~/.local/share/opencode/auth.json
+// satisfies opencode's OAuth schema validator (see
+// packages/opencode/src/auth/index.ts upstream): `expires` is REQUIRED.
+//
+// Regression coverage for a silent-drop bug: AuthCredential.Expires used
+// to carry json:"expires,omitempty", which omits the field when zero
+// (the upstream-blessed value for Copilot tokens that have no tracked
+// TTL). opencode's schema then rejected the entry, the credential never
+// reached the provider plugin, and the only thing showing up in the
+// model picker was the OpenCode Zen free tier.
+func TestAuthManager_OAuthCredentialOnDiskMatchesOpenCodeSchema(t *testing.T) {
+	t.Parallel()
+	a, home := newTestAuthManager(t)
+
+	cred := agent.AuthCredential{
+		Type:    "oauth",
+		Refresh: "gho_tok",
+		Access:  "gho_tok",
+		Expires: 0,
+	}
+	if err := a.writeAuthJSON("github-copilot", cred); err != nil {
+		t.Fatalf("writeAuthJSON: %v", err)
+	}
+
+	path := filepath.Join(home, ".local", "share", "opencode", "auth.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read auth.json: %v", err)
+	}
+	// Decode into a generic map so we observe what's literally on disk —
+	// not what struct unmarshalling would re-default.
+	var raw map[string]map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("decode auth.json: %v", err)
+	}
+	entry, ok := raw["github-copilot"]
+	if !ok {
+		t.Fatalf("github-copilot entry missing from auth.json")
+	}
+	for _, required := range []string{"type", "refresh", "access", "expires"} {
+		if _, present := entry[required]; !present {
+			t.Errorf("auth.json[github-copilot] missing required field %q. opencode's OAuth schema rejects entries without it. Got: %v", required, entry)
+		}
+	}
+}
+
 func TestAuthManager_DeleteCredentialRoundTrip(t *testing.T) {
 	t.Parallel()
 	a, _ := newTestAuthManager(t)

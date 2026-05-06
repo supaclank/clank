@@ -87,6 +87,36 @@ type DaytonaPreference struct {
 	Image    string            `json:"image,omitempty"`
 	BaseURL  string            `json:"base_url,omitempty"`
 	ExtraEnv map[string]string `json:"extra_env,omitempty"`
+
+	// SuspendOnStop, when true, asks the daemon to suspend the
+	// persistent sandbox on shutdown (Daytona Stop) so it stops
+	// billing for compute. Default false: leaves the sandbox
+	// running for zero cold-resume latency on the next start.
+	// Daytona bills per-second and a quick laptop reboot costs
+	// cents, so the default favors latency over cost.
+	SuspendOnStop bool `json:"suspend_on_stop,omitempty"`
+}
+
+// FlyIOPreference configures the Fly.io Sprites host launcher.
+// APIToken (a SPRITES_TOKEN) enables the launcher; everything else
+// is optional with sensible defaults.
+//
+// Sprites are persistent per-user — one sprite is created the first
+// time EnsureHost runs and reused indefinitely. The sprite's public
+// URL is set to "public" auth mode; clank-host's bearer-token
+// middleware (see PR 2) is the only auth gate.
+type FlyIOPreference struct {
+	APIToken         string `json:"api_token,omitempty"`
+	OrganizationSlug string `json:"organization_slug,omitempty"`
+	Region           string `json:"region,omitempty"`
+	// SpriteNamePrefix is prepended to the user identifier to form
+	// the sprite name. Empty defaults to "clank-host" (yielding e.g.
+	// "clank-host-local" in the single-user laptop daemon).
+	SpriteNamePrefix string `json:"sprite_name_prefix,omitempty"`
+	// Resource pins for the sprite. 0 uses Sprites' defaults.
+	RamMB     int `json:"ram_mb,omitempty"`
+	CPUs      int `json:"cpus,omitempty"`
+	StorageGB int `json:"storage_gb,omitempty"`
 }
 
 // Preferences stores user preferences that persist across sessions.
@@ -117,7 +147,7 @@ type Preferences struct {
 	//   "remote"  — talk to RemoteHub.URL with RemoteHub.AuthToken
 	//               over TCP. Requires RemoteHub to be set.
 	//
-	// Used by hubclient.NewDefaultClient to pick the transport. Only
+	// Used by daemonclient.NewDefaultClient to pick the transport. Only
 	// affects clients (TUI, clankcli); the local clankd daemon always
 	// listens on its own socket regardless of this value.
 	ActiveHub string `json:"active_hub,omitempty"`
@@ -131,6 +161,12 @@ type Preferences struct {
 	// effective on a TCP-listening hub. Empty = launcher disabled
 	// (sessions requesting launch_host.provider="daytona" will 4xx).
 	Daytona *DaytonaPreference `json:"daytona,omitempty"`
+
+	// FlyIO configures the cloud-hub-side Fly.io Sprites launcher.
+	// Only effective on a TCP-listening hub. Empty = launcher
+	// disabled (sessions requesting launch_host.provider="flyio"
+	// will 4xx).
+	FlyIO *FlyIOPreference `json:"flyio,omitempty"`
 
 	// DefaultLaunchHostProvider, when set, is applied to every new
 	// session whose StartRequest omits LaunchHost. Use this on a

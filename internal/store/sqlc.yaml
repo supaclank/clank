@@ -1,0 +1,21 @@
+version: "2"
+# sqlc generates type-safe Go code for queries declared in queries/ against
+# the schema in schema/. The schema files mirror the post-migration state of
+# the database — they are NOT run as migrations (the existing migrate()
+# function in store.go owns that). Keep them in sync as new tables join the
+# sqlc-managed surface.
+#
+# Regenerate with:  sqlc generate -f internal/store/sqlc.yaml
+sql:
+  - engine: "sqlite"
+    queries: "queries"
+    schema: "schema"
+    gen:
+      go:
+        package: "sqlitedb"
+        out: "sqlitedb"
+        sql_package: "database/sql"
+        emit_interface: true
+        emit_json_tags: false
+        emit_prepared_queries: false
+        emit_pointers_for_null_types: false

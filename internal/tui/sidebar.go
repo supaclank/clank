@@ -31,7 +31,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
-	hubclient "github.com/acksell/clank/internal/hub/client"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 )
 
 // sidebarWidth is the fixed width of the sidebar (including border).
@@ -86,7 +86,7 @@ func (s branchSessionStatus) IsArchived() bool {
 
 // SidebarModel displays worktrees + a settings footer
 type SidebarModel struct {
-	client *hubclient.Client
+	client *daemonclient.Client
 	// projectDir is the cwd the inbox was launched from. Kept for display
 	// and for non-branch concerns (project filter); branch operations now
 	// route through hostname/gitRef instead.
@@ -116,7 +116,7 @@ type SidebarModel struct {
 // NewSidebarModel creates a sidebar for the given repo identity.
 // projectDir is retained for display purposes only; branch/worktree ops
 // are addressed by (hostname, gitRef).
-func NewSidebarModel(client *hubclient.Client, hostname host.Hostname, gitRef agent.GitRef, projectDir string) SidebarModel {
+func NewSidebarModel(client *daemonclient.Client, hostname host.Hostname, gitRef agent.GitRef, projectDir string) SidebarModel {
 	ti := textinput.New()
 	ti.Placeholder = "branch-name"
 	ti.CharLimit = 128

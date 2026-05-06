@@ -22,7 +22,14 @@ type AuthCredential struct {
 	Type    string `json:"type"`
 	Refresh string `json:"refresh,omitempty"`
 	Access  string `json:"access,omitempty"`
-	Expires int64  `json:"expires,omitempty"`
+	// Expires must always be serialized even when zero. OpenCode's
+	// OAuth schema (packages/opencode/src/auth/index.ts) requires the
+	// field; an entry without it is silently dropped at load time —
+	// the credential never reaches the provider plugin and the
+	// provider stops appearing in /config/providers. Copilot tokens
+	// don't have a tracked TTL so 0 is the upstream-blessed value,
+	// but it must be present.
+	Expires int64 `json:"expires"`
 	Key     string `json:"key,omitempty"`
 
 	// EnterpriseURL carries through extra fields the github-copilot

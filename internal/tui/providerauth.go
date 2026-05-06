@@ -33,7 +33,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
-	hubclient "github.com/acksell/clank/internal/hub/client"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 )
 
 // providerAuthCancelMsg signals the inbox to dismiss the modal.
@@ -87,7 +87,7 @@ const providerAuthPollInterval = 2 * time.Second
 // providerAuthModel is the modal's state. Constructed via
 // newProviderAuthModel; rendered through overlayCenter by the inbox.
 type providerAuthModel struct {
-	hub      *hubclient.Client
+	hub      *daemonclient.Client
 	hostname host.Hostname
 
 	phase providerAuthPhase
@@ -125,7 +125,7 @@ type providerAuthModel struct {
 	spinner spinner.Model
 }
 
-func newProviderAuthModel(c *hubclient.Client, hostname host.Hostname) providerAuthModel {
+func newProviderAuthModel(c *daemonclient.Client, hostname host.Hostname) providerAuthModel {
 	if hostname == "" {
 		hostname = host.HostLocal
 	}

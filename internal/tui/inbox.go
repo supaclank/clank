@@ -20,7 +20,7 @@ import (
 	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host"
-	hubclient "github.com/acksell/clank/internal/hub/client"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 )
 
 // inboxScreen tracks which screen is active within the inbox app.
@@ -63,7 +63,7 @@ type inboxGroup struct {
 // It uses a sidebar + main layout: sidebar shows branches, main area shows
 // sessions. In narrow terminals, only the session pane is shown.
 type InboxModel struct {
-	client *hubclient.Client
+	client *daemonclient.Client
 
 	// Two-pane layout state.
 	pane          inboxPane    // which pane has keyboard focus
@@ -107,7 +107,7 @@ type InboxModel struct {
 	projectFilter bool   // when true, only show sessions whose canonical GitRef matches gitRef
 
 	// Repo identity for branch/worktree ops. Resolved from cwd at startup
-	// via hubclient.ResolveRepo. If resolution failed (e.g. cwd not in a
+	// via daemonclient.ResolveRepo. If resolution failed (e.g. cwd not in a
 	// git repo with an origin remote), these stay zero and the sidebar will
 	// surface the underlying load error.
 	hostname host.Hostname
@@ -188,7 +188,7 @@ func resolveLocalRepo(cwd string) (host.Hostname, agent.GitRef) {
 }
 
 // NewInboxModel creates the inbox TUI connected to the given daemon client.
-func NewInboxModel(client *hubclient.Client) *InboxModel {
+func NewInboxModel(client *daemonclient.Client) *InboxModel {
 	// Apply the user's persisted color scheme (if any) before any styles
 	// are constructed for this session. Unknown names silently fall back
 	// to the default scheme so a corrupt preferences file can't brick the
@@ -513,17 +513,32 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg.(type) {
+	case openProviderAuthFromSessionMsg:
+		// Tear down the session view (same path as backToInboxMsg) and
+		// land the user on the settings page with the provider-auth
+		// modal open. The modal lives on InboxModel and overlays the
+		// inbox-level view; the session view doesn't render it.
+		if m.activeConnID != "" && m.sessionView != nil {
+			draft := strings.TrimSpace(m.sessionView.DraftText())
+			go m.client.Session(m.activeConnID).SetDraft(context.Background(), draft)
+		}
+		if m.activeConnID != "" {
+			go m.client.Session(m.activeConnID).MarkRead(context.Background())
+		}
+		m.sessionView = nil
+		m.activeConnID = ""
+		m.openSettings()
+		m.providerAuth = newProviderAuthModel(m.client, m.hostname)
+		m.showProviderAuth = true
+		return m, m.providerAuth.Init()
+
 	case backToInboxMsg:
 		// Persist any unsent text as a draft before leaving the session.
 		if m.activeConnID != "" && m.sessionView != nil {
 			draft := strings.TrimSpace(m.sessionView.DraftText())
 			go m.client.Session(m.activeConnID).SetDraft(context.Background(), draft)
 		}
-		// Mark the session as read on close to capture any activity
-		// that occurred while the user was viewing it.
-		if m.activeConnID != "" {
-			go m.client.Session(m.activeConnID).MarkRead(context.Background())
-		}
+		closingID := m.activeConnID
 		m.screen = screenInbox
 		m.sessionView = nil
 		m.activeConnID = ""
@@ -533,7 +548,25 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// would spawn a duplicate chain on every nav round-trip — leading
 		// to K parallel pollers after K nav round-trips, which fan out to
 		// expensive git subprocesses in clank-host's ListBranches.
-		return m, tea.Batch(m.loadDataCmd(), m.sidebar.loadBranches())
+		//
+		// Mark-read happens *before* the list refresh inside a single
+		// command using tea.Sequence so the subsequent List sees the
+		// updated LastReadAt. A previous goroutine + tea.Batch raced
+		// the List call against the in-flight POST, so the inbox kept
+		// rendering the row as unread until the next autoRefresh tick.
+		markRead := tea.Cmd(nil)
+		if closingID != "" {
+			markRead = func() tea.Msg {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				_ = m.client.Session(closingID).MarkRead(ctx)
+				return nil
+			}
+		}
+		return m, tea.Batch(
+			tea.Sequence(markRead, m.loadDataCmd()),
+			m.sidebar.loadBranches(),
+		)
 
 	case openForkedSessionMsg:
 		forkMsg := msg.(openForkedSessionMsg)
@@ -1451,7 +1484,7 @@ func (m *InboxModel) renderSessionPane() string {
 	if m.searching {
 		help = helpStyle.Render("esc: cancel | enter: open | .: this project | up/down: navigate")
 	} else {
-		parts := []string{voiceHelpItem(m.voice), "enter: open", "n: new", "/: search", "w: worktrees", "?: help", "q: quit"}
+		parts := []string{"enter: open", "n: new", "/: search", "w: worktrees", "?: help", "q: quit"}
 		help = helpStyle.Render(strings.Join(parts, " | "))
 	}
 	sb.WriteString(help)

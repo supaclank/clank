@@ -13,7 +13,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
-	hubclient "github.com/acksell/clank/internal/hub/client"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 )
 
 // mergeResultMsg is emitted when the merge overlay completes (success or cancel).
@@ -27,7 +27,7 @@ type mergeResultMsg struct {
 // a branch merge. It shows branch info, diff stats, a commit log, and an
 // editable textarea for the merge commit message.
 type mergeOverlayModel struct {
-	client   *hubclient.Client
+	client   *daemonclient.Client
 	hostname host.Hostname
 	gitRef   agent.GitRef
 	branch   host.BranchInfo
@@ -39,7 +39,7 @@ type mergeOverlayModel struct {
 	height int
 }
 
-func newMergeOverlay(client *hubclient.Client, hostname host.Hostname, gitRef agent.GitRef, branch host.BranchInfo) mergeOverlayModel {
+func newMergeOverlay(client *daemonclient.Client, hostname host.Hostname, gitRef agent.GitRef, branch host.BranchInfo) mergeOverlayModel {
 	ta := textarea.New()
 	ta.SetValue("")
 	ta.Placeholder = "Describe the work done on this branch..."

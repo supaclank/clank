@@ -4,29 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
+
+	"github.com/oklog/ulid/v2"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
 )
 
-// CreateSessionRequest is the body for POST /sessions.
-//
-// SessionID is the Hub-assigned ULID under which the Host registers the
-// new SessionBackend. The Host does not generate session IDs; the Hub
-// owns that responsibility because the Hub holds the durable registry.
-type CreateSessionRequest struct {
-	SessionID string             `json:"session_id"`
-	Request   agent.StartRequest `json:"request"`
-}
-
-// SessionSnapshot summarizes a registered session for HTTP responses. It
-// is not the same as agent.SessionInfo (Hub-side metadata); it carries
-// only what the Host knows about its own backend instance.
-//
-// ServerURL is populated on POST /sessions responses for backends that
-// expose an HTTP server (currently only OpenCode); empty otherwise. The
-// Hub uses it for per-session shell-out (e.g. `opencode attach <url>`).
-// Other endpoints (GET /sessions/{id}) leave it empty.
+// SessionSnapshot is the runtime-fields shape returned by endpoints
+// where the caller already has the full SessionInfo. ServerURL is
+// populated for backends that expose an HTTP server (OpenCode only).
 type SessionSnapshot struct {
 	SessionID  string              `json:"session_id"`
 	ExternalID string              `json:"external_id"`
@@ -34,127 +21,148 @@ type SessionSnapshot struct {
 	ServerURL  string              `json:"server_url,omitempty"`
 }
 
-// HOST
+// POST /sessions takes a StartRequest, mints a session ID, and returns
+// the persisted SessionInfo.
 func (m *Mux) handleCreateSession(w http.ResponseWriter, r *http.Request) {
-	var req CreateSessionRequest
+	var req agent.StartRequest
 	if err := decodeJSON(r.Body, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	if req.SessionID == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Error: "session_id is required"})
+	if err := req.Validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	b, serverURL, err := m.svc.CreateSession(r.Context(), req.SessionID, req.Request)
+	sessionID := ulid.Make().String()
+	_, serverURL, err := m.svc.CreateSession(r.Context(), sessionID, req)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, SessionSnapshot{
-		SessionID:  req.SessionID,
-		ExternalID: b.SessionID(),
-		Status:     b.Status(),
+
+	// Open creates the remote session (sync, stamps the external ID);
+	// Send is fire-and-forget on the backend's long-lived context.
+	// Failure tears down the host-side registration so retry works.
+	status, extID, err := m.svc.OpenAndSend(r.Context(), sessionID, agent.SendMessageOpts{
+		Text:  req.Prompt,
+		Agent: req.Agent,
+		Model: req.Model,
+	})
+	if err != nil {
+		_ = m.svc.StopSession(sessionID)
+		writeError(w, fmt.Errorf("open session: %w", err))
+		return
+	}
+
+	now := time.Now()
+	info := agent.SessionInfo{
+		ID:         sessionID,
+		ExternalID: extID,
+		Backend:    req.Backend,
+		Status:     status,
+		Hostname:   req.Hostname,
+		GitRef:     req.GitRef,
+		Prompt:     req.Prompt,
+		TicketID:   req.TicketID,
+		Agent:      req.Agent,
 		ServerURL:  serverURL,
-	})
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	writeJSON(w, http.StatusCreated, info)
 }
 
-// HOST
-func (m *Mux) handleSessionSnapshot(w http.ResponseWriter, r *http.Request) {
+// GET /sessions/{id} returns the persisted SessionInfo, augmented
+// with runtime fields from the live backend when registered.
+// 404 if neither the store nor the live registry has it.
+func (m *Mux) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, ok := m.svc.Session(id)
-	if !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
-		return
-	}
-	writeJSON(w, http.StatusOK, SessionSnapshot{
-		SessionID:  id,
-		ExternalID: b.SessionID(),
-		Status:     b.Status(),
-	})
-}
-
-// HOST
-func (m *Mux) handleOpenSession(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	b, ok := m.svc.Session(id)
-	if !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
-		return
-	}
-	if err := b.Open(r.Context()); err != nil {
+	info, err := m.svc.GetSessionMetadata(r.Context(), id)
+	if err != nil {
 		writeError(w, err)
 		return
 	}
-	// Return the post-Open snapshot so the client can refresh its
-	// cached ExternalID/Status. The ID may not be known yet for
-	// async-init backends (e.g. Claude); the caller will pick it up
-	// later via Event.ExternalID on the SSE stream.
+	if b, ok := m.svc.Session(id); ok {
+		info.Status = b.Status()
+		if extID := b.SessionID(); extID != "" {
+			info.ExternalID = extID
+		}
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+// handleSessionSnapshot serves the lightweight response shape used by
+// the in-process host/client path; the gateway-facing GET routes to
+// handleGetSession.
+func (m *Mux) handleSessionSnapshot(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	status, extID, err := m.svc.OpenSession(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, SessionSnapshot{
 		SessionID:  id,
-		ExternalID: b.SessionID(),
-		Status:     b.Status(),
+		ExternalID: extID,
+		Status:     status,
 	})
 }
 
-// HOST
-func (m *Mux) handleSendSession(w http.ResponseWriter, r *http.Request) {
+func (m *Mux) handleOpenSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, ok := m.svc.Session(id)
-	if !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
+	status, extID, err := m.svc.OpenSession(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
 		return
 	}
+	// Async-init backends (Claude) leave extID empty here; the caller
+	// picks it up via Event.ExternalID later on the SSE stream.
+	writeJSON(w, http.StatusOK, SessionSnapshot{
+		SessionID:  id,
+		ExternalID: extID,
+		Status:     status,
+	})
+}
+
+func (m *Mux) handleSendSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
 	var opts agent.SendMessageOpts
 	if err := decodeJSON(r.Body, &opts); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	if err := b.Send(r.Context(), opts); err != nil {
+	if err := m.svc.SendMessage(r.Context(), id, opts); err != nil {
 		writeError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// HOST
 func (m *Mux) handleOpenAndSendSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, ok := m.svc.Session(id)
-	if !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
-		return
-	}
 	var opts agent.SendMessageOpts
 	if err := decodeJSON(r.Body, &opts); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	if err := b.OpenAndSend(r.Context(), opts); err != nil {
+	status, extID, err := m.svc.OpenAndSend(r.Context(), id, opts)
+	if err != nil {
 		writeError(w, err)
 		return
 	}
-	// Return the post-OpenAndSend snapshot so the client can refresh
-	// its cached ExternalID/Status. Some backends (opencode) learn
-	// their sessionID inside Open synchronously; without this the
-	// client keeps the empty ExternalID it received from POST
-	// /sessions and persists external_id="" on the Hub. Async-init
-	// backends (claude) still rely on Event.ExternalID.
+	// Sync-init backends (opencode) learn their sessionID inside
+	// Open; without surfacing it here the client persists external_id="".
+	// Async-init backends (claude) still rely on Event.ExternalID.
 	writeJSON(w, http.StatusOK, SessionSnapshot{
 		SessionID:  id,
-		ExternalID: b.SessionID(),
-		Status:     b.Status(),
+		ExternalID: extID,
+		Status:     status,
 	})
 }
 
-// HOST
 func (m *Mux) handleAbortSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, ok := m.svc.Session(id)
-	if !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
-		return
-	}
-	if err := b.Abort(r.Context()); err != nil {
+	if err := m.svc.AbortSession(r.Context(), id); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -166,14 +174,8 @@ type RevertRequest struct {
 	MessageID string `json:"message_id"`
 }
 
-// HOST
 func (m *Mux) handleRevertSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, ok := m.svc.Session(id)
-	if !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
-		return
-	}
 	var req RevertRequest
 	if err := decodeJSON(r.Body, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
@@ -183,7 +185,7 @@ func (m *Mux) handleRevertSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: "message_id is required"})
 		return
 	}
-	if err := b.Revert(r.Context(), req.MessageID); err != nil {
+	if err := m.svc.RevertSession(r.Context(), id, req.MessageID); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -195,22 +197,15 @@ type ForkRequest struct {
 	MessageID string `json:"message_id"`
 }
 
-// HOST
 func (m *Mux) handleForkSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, ok := m.svc.Session(id)
-	if !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
-		return
-	}
 	var req ForkRequest
 	if err := decodeJSON(r.Body, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	// Empty MessageID is valid: it forks the entire session from
-	// scratch. Backends interpret it as "no truncation point".
-	res, err := b.Fork(r.Context(), req.MessageID)
+	// Empty MessageID forks the whole session ("no truncation").
+	res, err := m.svc.ForkSession(r.Context(), id, req.MessageID)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -218,15 +213,9 @@ func (m *Mux) handleForkSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
-// HOST
 func (m *Mux) handleGetMessages(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, ok := m.svc.Session(id)
-	if !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
-		return
-	}
-	msgs, err := b.Messages(r.Context())
+	msgs, err := m.svc.SessionMessages(r.Context(), id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -240,28 +229,37 @@ type PermissionReplyRequest struct {
 	Allow bool `json:"allow"`
 }
 
-// HOST
+// GET /sessions/{id}/pending-permission returns blocked permission
+// requests. The host doesn't snapshot these yet — the SSE stream is
+// the canonical source — so this returns an empty list to keep the
+// TUI's recovery path from 404'ing.
+//
+// TODO: persistent permission snapshot.
+func (m *Mux) handlePendingPermissions(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	// Store-only lookup — don't rehydrate a backend just to return [].
+	if _, err := m.svc.GetSessionMetadata(r.Context(), id); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, []any{})
+}
+
 func (m *Mux) handlePermissionReply(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	permID := r.PathValue("permID")
-	b, ok := m.svc.Session(id)
-	if !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
-		return
-	}
 	var req PermissionReplyRequest
 	if err := decodeJSON(r.Body, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	if err := b.RespondPermission(r.Context(), permID, req.Allow); err != nil {
+	if err := m.svc.RespondPermission(r.Context(), id, permID, req.Allow); err != nil {
 		writeError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// HOST
 func (m *Mux) handleStopSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := m.svc.StopSession(id); err != nil {
@@ -271,20 +269,17 @@ func (m *Mux) handleStopSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// HOST
+// handleSessionEvents streams agent events as SSE filtered to one
+// session id. Subscribes to the global broadcast and filters client-
+// side so multiple consumers can share one source.
 //
-// handleSessionEvents bridges SessionBackend.Events() to Server-Sent
-// Events. The handler holds the response open until either the client
-// disconnects (ctx done) or the backend's Events channel closes.
-//
-// Each event is encoded as `event: <type>\ndata: <json>\n\n`. The HTTP
-// adapter on the Hub side reconstructs an agent.Event channel from this
-// stream.
+// Encoding: `event: <type>\ndata: <json>\n\n`.
 func (m *Mux) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, ok := m.svc.Session(id)
-	if !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
+	// Existence check only — don't rehydrate the backend on the SSE
+	// path. Events flow once Send/Messages/etc trigger a rehydrate.
+	if _, err := m.svc.GetSessionMetadata(r.Context(), id); err != nil {
+		writeError(w, err)
 		return
 	}
 
@@ -299,7 +294,9 @@ func (m *Mux) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	ch := b.Events()
+	subID, ch := m.svc.Subscribe()
+	defer m.svc.Unsubscribe(subID)
+
 	ctx := r.Context()
 	for {
 		select {
@@ -307,10 +304,13 @@ func (m *Mux) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		case ev, ok := <-ch:
 			if !ok {
-				// Backend stopped — signal end of stream and return.
+				// Subscriber channel closed (host shutting down).
 				fmt.Fprintf(w, "event: end\ndata: {}\n\n")
 				flusher.Flush()
 				return
+			}
+			if ev.SessionID != id {
+				continue
 			}
 			data, err := json.Marshal(ev)
 			if err != nil {

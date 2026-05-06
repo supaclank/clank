@@ -21,6 +21,12 @@ set -eu
 : "${CLANK_HUB_TOKEN:?CLANK_HUB_TOKEN is required}"
 : "${CLANK_HOST_PORT:=7878}"
 
+# CLANK_HOST_AUTH_TOKEN is optional: when set, clank-host will require
+# every HTTP request to carry a matching Authorization: Bearer header.
+# The provisioner that created the sandbox (Daytona/Sprites) injects
+# this value at create time. Empty value preserves the unauthenticated
+# laptop-local mode for backward compatibility.
+
 # Bind on the IPv6 wildcard. On Linux this is dual-stack by default
 # (IPV6_V6ONLY=0), so the listener accepts both IPv4 and IPv6
 # connections. Daytona's toolbox proxy dials `[::1]:<port>` (IPv6
@@ -31,4 +37,5 @@ set -eu
 exec /usr/local/bin/clank-host \
   --listen "tcp://[::]:${CLANK_HOST_PORT}" \
   --git-sync-source "${CLANK_HUB_URL}" \
-  --git-sync-token "${CLANK_HUB_TOKEN}"
+  --git-sync-token "${CLANK_HUB_TOKEN}" \
+  ${CLANK_HOST_AUTH_TOKEN:+--listen-auth-token "${CLANK_HOST_AUTH_TOKEN}"}

@@ -1,430 +1,58 @@
 package tui
 
-// Voice integration for the TUI. Provides push-to-talk (hold SPACE to
-// record, release to stop) using the daemon's voice API and local audio
-// devices. Voice state lives on InboxModel so it persists across
-// inbox <-> session navigation.
-//
-// Push-to-talk relies on Bubble Tea v2's KeyReleaseMsg which requires
-// the Kitty keyboard protocol. Terminals that do not support this
-// protocol (e.g. macOS Terminal.app) will not deliver KeyReleaseMsg.
-// At startup we detect support via KeyboardEnhancementsMsg; if the
-// terminal lacks it, pressing SPACE shows an informational popup
-// instead of starting voice.
-//
-// Turn signals (end-of-sequence) are sent as in-band WebSocket text
-// messages on the same connection that carries audio, guaranteeing
-// message ordering and eliminating the race between HTTP POSTs and
-// audio data that plagued the old architecture. There is no explicit
-// start signal — the daemon infers the start of a new sequence from
-// the first audio data frame after an end.
+// Voice support is removed in PR 3 (hub deletion). The TUI voice plumbing
+// is preserved as a no-op so existing key bindings and UI hooks compile.
+// Voice will be re-introduced in a future PR once it has a cleaner home
+// outside the hub.
 
 import (
-	"context"
-	"fmt"
-	"strings"
-
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/agent"
-	hubclient "github.com/acksell/clank/internal/hub/client"
-	"github.com/acksell/clank/internal/voice"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 )
 
-// voiceState holds the runtime state for a TUI voice session.
-type voiceState struct {
-	active    bool // voice session is connected to the daemon
-	starting  bool // voiceStartAndListen command is in flight
-	recording bool // mic is unmuted, user is speaking
-	speaking  bool // assistant is currently outputting audio
+// voiceState is an empty placeholder for the former TUI voice session
+// state.
+type voiceState struct{}
 
-	bridge *voice.ClientBridge
-}
-
-// --- Bubble Tea messages ---
-
-// voiceStartResultMsg is sent after the voice session startup attempt.
+// Bubble Tea message stubs retained so call sites continue to compile.
 type voiceStartResultMsg struct{ err error }
-
-// voiceStopResultMsg is sent after the voice session teardown.
 type voiceStopResultMsg struct{ err error }
-
-// voiceListenResultMsg is sent after unmuting the mic.
 type voiceListenResultMsg struct{ err error }
-
-// voiceUnlistenResultMsg is sent after muting the mic.
 type voiceUnlistenResultMsg struct{ err error }
-
-// voiceAudioErrMsg is sent when an audio goroutine encounters an error.
 type voiceAudioErrMsg struct{ err error }
-
-// --- Commands (methods on InboxModel) ---
-
-// startVoice opens the WebSocket to the daemon and creates a ClientBridge
-// that owns local audio devices and the goroutines that shuttle PCM
-// between them and the daemon. The mic starts muted.
-func (m *InboxModel) startVoice() tea.Cmd {
-	return func() tea.Msg {
-		wsConn, err := m.client.VoiceAudioStream(context.Background())
-		if err != nil {
-			return voiceStartResultMsg{err: fmt.Errorf("connect audio stream: %w", err)}
-		}
-		bridge, err := voice.NewClientBridge(wsConn)
-		if err != nil {
-			wsConn.CloseNow()
-			return voiceStartResultMsg{err: err}
-		}
-		m.voice.bridge = bridge
-		return voiceStartResultMsg{err: nil}
-	}
-}
-
-// stopVoice tears down the voice session and releases all resources.
-func (m *InboxModel) stopVoice() tea.Cmd {
-	return func() tea.Msg {
-		m.cleanupVoice()
-		return voiceStopResultMsg{}
-	}
-}
-
-// voiceListen unmutes the mic via the bridge. The daemon infers the
-// start of a new audio sequence from the first data frame.
-func (m *InboxModel) voiceListen() tea.Cmd {
-	return func() tea.Msg {
-		if m.voice.bridge == nil {
-			return voiceListenResultMsg{err: fmt.Errorf("voice: no active bridge")}
-		}
-		m.voice.bridge.Unmute()
-		return voiceListenResultMsg{}
-	}
-}
-
-// voiceUnlisten mutes the mic and sends an end signal via the bridge,
-// which triggers the daemon to process the user's speech.
-func (m *InboxModel) voiceUnlisten() tea.Cmd {
-	return func() tea.Msg {
-		if m.voice.bridge == nil {
-			return voiceUnlistenResultMsg{err: fmt.Errorf("voice: no active bridge")}
-		}
-		if err := m.voice.bridge.Mute(); err != nil {
-			return voiceUnlistenResultMsg{err: err}
-		}
-		return voiceUnlistenResultMsg{}
-	}
-}
-
-// cleanupVoice synchronously releases all voice resources. Safe to call
-// multiple times or when voice is not active.
-func (m *InboxModel) cleanupVoice() {
-	if !m.voice.active {
-		return
-	}
-	if m.voice.bridge != nil {
-		m.voice.bridge.Close()
-	}
-	m.voice = voiceState{}
-}
-
-// handleVoiceEvent updates voice state from SSE events. Called from the
-// event handling path in both inbox and session views.
-func (m *InboxModel) handleVoiceEvent(evt agent.Event) {
-	switch evt.Type {
-	case agent.EventVoiceStatus:
-		if data, ok := evt.Data.(agent.VoiceStatusData); ok {
-			switch data.Status {
-			case agent.VoiceStatusListening:
-				m.voice.speaking = false
-			case agent.VoiceStatusSpeaking:
-				m.voice.speaking = true
-			case agent.VoiceStatusThinking:
-				m.voice.speaking = false
-			case agent.VoiceStatusIdle:
-				m.voice.speaking = false
-			}
-		}
-	// EventVoiceTranscript and EventVoiceToolCall are intentionally
-	// ignored for now — no transcript UX yet.
-	case agent.EventVoiceTranscript:
-	case agent.EventVoiceToolCall:
-	}
-}
-
-// voiceInputBlocked reports whether SPACE should be treated as a normal
-// character (e.g. the user is typing text) rather than a voice trigger.
-func (m *InboxModel) voiceInputBlocked() bool {
-	// Inbox-level modal states.
-	if m.showHelp || m.showConfirm || m.showMenu || m.searching || m.showKittyWarning {
-		return true
-	}
-	// Session view modal/input states.
-	if m.screen == screenSession && m.sessionView != nil {
-		sv := m.sessionView
-		if sv.inputActive || sv.showHelp || sv.showConfirm || sv.showMenu || len(sv.pendingPerms) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-// --- Rendering helpers ---
-
-// voiceHeaderBadge returns a styled badge string reflecting the current
-// voice state, or "" when voice is inactive.
-func voiceHeaderBadge(v voiceState) string {
-	if !v.active && !v.starting {
-		return ""
-	}
-	if v.recording {
-		return lipgloss.NewStyle().Foreground(dangerColor).Bold(true).Render("[REC]")
-	}
-	if v.speaking {
-		return lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("[VOICE]")
-	}
-	// Active but idle — show a subtle indicator so the user knows
-	// the voice session is still connected.
-	return lipgloss.NewStyle().Foreground(dimColor).Render("[voice]")
-}
-
-// voiceHelpItem returns the help bar fragment for voice, or "".
-func voiceHelpItem(v voiceState) string {
-	if v.recording {
-		return "space: stop"
-	}
-	return "space: talk"
-}
-
-// overlayKittyWarning renders a centered popup explaining that push-to-talk
-// requires a terminal with Kitty keyboard protocol support.
-func (m *InboxModel) overlayKittyWarning(base string) string {
-	var sb strings.Builder
-
-	innerWidth := 50
-
-	title := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(warningColor).
-		Width(innerWidth).
-		Render("Push-to-Talk Unavailable")
-	sb.WriteString(title)
-	sb.WriteString("\n\n")
-
-	msg := lipgloss.NewStyle().
-		Foreground(textColor).
-		Width(innerWidth).
-		Render("Push-to-talk requires a terminal that supports " +
-			"the Kitty keyboard protocol (key release events).")
-	sb.WriteString(msg)
-	sb.WriteString("\n\n")
-
-	supported := lipgloss.NewStyle().
-		Foreground(dimColor).
-		Width(innerWidth).
-		Render("Supported terminals: Kitty, WezTerm, Ghostty, " +
-			"foot, Rio, iTerm2 (with Kitty keyboard mode enabled).")
-	sb.WriteString(supported)
-	sb.WriteString("\n\n")
-
-	hint := lipgloss.NewStyle().
-		Foreground(dimColor).
-		Render("press any key to dismiss")
-	sb.WriteString(hint)
-
-	popup := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(warningColor).
-		Padding(1, 2).
-		Render(sb.String())
-
-	return overlayCenter(base, popup, m.width, m.height)
-}
-
-// --- Daemon SSE event subscription for voice ---
-
-// subscribeVoiceEvents starts an SSE subscription filtered for voice
-// events. Voice events are global (not per-session) so they arrive on
-// any subscription. We reuse the session view's existing subscription
-// when on the session screen; on the inbox screen we need our own.
-//
-// For simplicity, the current implementation relies on the inbox's
-// periodic data refresh and the session view's SSE subscription to
-// forward voice events. This avoids a second SSE connection.
-//
-// Voice status changes are delivered via sessionEventMsg, which the
-// inbox Update() intercepts before delegating to the session view.
-
-// isVoiceEvent reports whether the event is a voice-related SSE event.
-func isVoiceEvent(evt agent.Event) bool {
-	switch evt.Type {
-	case agent.EventVoiceTranscript, agent.EventVoiceStatus, agent.EventVoiceToolCall:
-		return true
-	}
-	return false
-}
-
-// voiceStartAndListen is a convenience that starts the voice session and
-// immediately begins listening. Used on the first SPACE press.
-func (m *InboxModel) voiceStartAndListen() tea.Cmd {
-	return func() tea.Msg {
-		// Run startVoice inline.
-		startMsg := m.startVoice()().(voiceStartResultMsg)
-		if startMsg.err != nil {
-			return startMsg
-		}
-		// Now listen.
-		listenMsg := m.voiceListen()().(voiceListenResultMsg)
-		if listenMsg.err != nil {
-			// Voice started but listen failed — still return the listen error.
-			// Voice state is active, user can retry.
-			return voiceListenResultMsg{err: listenMsg.err}
-		}
-		// Return a composite: start succeeded, listen succeeded.
-		// We use voiceStartResultMsg so the Update handler sets active=true
-		// and then we immediately set recording=true.
-		return voiceStartAndListenResultMsg{}
-	}
-}
-
-// voiceStartAndListenResultMsg signals that both startVoice and voiceListen
-// completed successfully.
 type voiceStartAndListenResultMsg struct{}
 
-// handleVoiceMsg processes voice-related messages in InboxModel.Update.
-// Returns (handled bool, model, cmd).
-func (m *InboxModel) handleVoiceMsg(msg tea.Msg) (bool, tea.Model, tea.Cmd) {
-	switch msg.(type) {
-	case voiceStartResultMsg:
-		vmsg := msg.(voiceStartResultMsg)
-		m.voice.starting = false
-		if vmsg.err != nil {
-			// Revert optimistic recording flag from key press.
-			m.voice.recording = false
-			m.err = vmsg.err
-			return true, m, nil
-		}
-		m.voice.active = true
-		return true, m, nil
+func (m *InboxModel) startVoice() tea.Cmd                                            { return nil }
+func (m *InboxModel) stopVoice() tea.Cmd                                             { return nil }
+func (m *InboxModel) voiceListen() tea.Cmd                                           { return nil }
+func (m *InboxModel) voiceUnlisten() tea.Cmd                                         { return nil }
+func (m *InboxModel) cleanupVoice()                                                  {}
+func (m *InboxModel) handleVoiceEvent(_ agent.Event)                                 {}
+func (m *InboxModel) voiceInputBlocked() bool                                        { return false }
+func (m *InboxModel) voiceStartAndListen() tea.Cmd                                   { return nil }
+func (m *InboxModel) handleVoiceMsg(tea.Msg) (bool, tea.Model, tea.Cmd)              { return false, m, nil }
+func (m *InboxModel) handleVoiceKeyPress(tea.KeyPressMsg) (bool, tea.Cmd)            { return false, nil }
+func (m *InboxModel) handleVoiceKeyRelease(tea.KeyReleaseMsg) (bool, tea.Cmd)        { return false, nil }
+func (m *InboxModel) handleVoiceSSE(sessionEventMsg) bool                            { return false }
+func (m *InboxModel) overlayKittyWarning(base string) string                         { return base }
+func (m *InboxModel) voiceCleanupOnQuit() tea.Cmd                                    { return nil }
+func (m *InboxModel) passVoiceState()                                                {}
 
-	case voiceStartAndListenResultMsg:
-		m.voice.starting = false
-		m.voice.active = true
-		// recording was already set optimistically on key press.
-		return true, m, nil
+func voiceHeaderBadge(_ voiceState) string { return "" }
+func voiceHelpItem(_ voiceState) string    { return "" }
+func isVoiceEvent(_ agent.Event) bool      { return false }
 
-	case voiceStopResultMsg:
-		m.voice = voiceState{}
-		return true, m, nil
-
-	case voiceListenResultMsg:
-		vmsg := msg.(voiceListenResultMsg)
-		if vmsg.err != nil {
-			// Revert optimistic recording flag.
-			m.voice.recording = false
-			m.err = vmsg.err
-			return true, m, nil
-		}
-		// recording was already set optimistically on key press.
-		return true, m, nil
-
-	case voiceUnlistenResultMsg:
-		vmsg := msg.(voiceUnlistenResultMsg)
-		if vmsg.err != nil {
-			// Revert optimistic recording flag.
-			m.voice.recording = true
-			m.err = vmsg.err
-			return true, m, nil
-		}
-		// recording was already cleared optimistically on key release.
-		return true, m, nil
-
-	case voiceAudioErrMsg:
-		vmsg := msg.(voiceAudioErrMsg)
-		m.err = vmsg.err
-		m.cleanupVoice()
-		return true, m, nil
-	}
-	return false, m, nil
-}
-
-// handleVoiceKeyPress handles SPACE key press for push-to-talk.
-// Returns (handled bool, cmd).
-func (m *InboxModel) handleVoiceKeyPress(msg tea.KeyPressMsg) (bool, tea.Cmd) {
-	if msg.String() != "space" {
-		return false, nil
-	}
-	// Suppress key repeats from holding SPACE. The Kitty keyboard
-	// protocol reports these with IsRepeat=true.
-	if msg.IsRepeat {
-		return true, nil
-	}
-	if m.voiceInputBlocked() {
-		return false, nil
-	}
-
-	// Push-to-talk requires the Kitty keyboard protocol for
-	// KeyReleaseMsg. Without it, show a one-time warning popup.
-	if !m.kittyKeyboard {
-		m.showKittyWarning = true
-		return true, nil
-	}
-
-	// Guard against concurrent startup: if a voiceStartAndListen
-	// command is already in flight, absorb the press.
-	if m.voice.starting {
-		return true, nil
-	}
-
-	if !m.voice.active {
-		// First press: start voice session + begin listening.
-		// Set recording optimistically so the UI reflects it immediately.
-		m.voice.starting = true
-		m.voice.recording = true
-		return true, m.voiceStartAndListen()
-	}
-	if !m.voice.recording {
-		// Session active but not recording: resume listening.
-		// Set recording optimistically; reverted on error.
-		m.voice.recording = true
-		return true, m.voiceListen()
-	}
-	// Already recording — absorb. On Kitty terminals the release
-	// event stops recording; this branch is unreachable in practice
-	// because IsRepeat filters held-key repeats above.
-	return true, nil
-}
-
-// handleVoiceKeyRelease handles SPACE key release for push-to-talk.
-// Returns (handled bool, cmd).
-func (m *InboxModel) handleVoiceKeyRelease(msg tea.KeyReleaseMsg) (bool, tea.Cmd) {
-	if msg.String() != "space" {
-		return false, nil
-	}
-	if !m.voice.active || !m.voice.recording {
-		return false, nil
-	}
-	// Set recording=false optimistically; reverted on error.
-	m.voice.recording = false
-	return true, m.voiceUnlisten()
-}
-
-// handleVoiceSSE checks if a sessionEventMsg contains a voice event and
-// handles it. Returns true if the event was consumed.
-func (m *InboxModel) handleVoiceSSE(msg sessionEventMsg) bool {
-	if isVoiceEvent(msg.event) {
-		m.handleVoiceEvent(msg.event)
-		return true
-	}
-	return false
-}
-
-// newVoiceEnabledView wraps tea.NewView and enables the keyboard
-// enhancements needed for push-to-talk (KeyReleaseMsg).
+// newVoiceEnabledView (legacy name) builds the standard inbox/session
+// View with AltScreen turned on so the TUI restores the user's terminal
+// buffer on exit. The "voice-enabled" naming is historical — voice was
+// removed in PR 3 — but the alt-screen + keyboard-enhancements wiring
+// is what kept the inbox feel right and is preserved here.
 func newVoiceEnabledView(content string) tea.View {
 	v := tea.NewView(content)
 	v.AltScreen = true
-	v.KeyboardEnhancements = tea.KeyboardEnhancements{
-		ReportEventTypes: true,
-	}
+	v.KeyboardEnhancements = tea.KeyboardEnhancements{ReportEventTypes: true}
 	return v
 }
 
@@ -436,34 +64,4 @@ func newVoiceEnabledViewWithMouse(content string) tea.View {
 	return v
 }
 
-// voiceCleanupOnQuit returns a tea.Cmd that cleans up voice before
-// sending tea.Quit.
-func (m *InboxModel) voiceCleanupOnQuit() tea.Cmd {
-	return func() tea.Msg {
-		m.cleanupVoice()
-		return tea.QuitMsg{}
-	}
-}
-
-// passVoiceState gives a SessionViewModel read access to the current
-// voice state for rendering purposes (header badge, help bar).
-func (m *InboxModel) passVoiceState() {
-	if m.sessionView != nil {
-		m.sessionView.voice = &m.voice
-	}
-}
-
-// ensureVoiceEventSubscription makes sure voice SSE events reach the
-// inbox model. When on the session screen, the session view's SSE
-// subscription already delivers all events (including voice). When on
-// the inbox screen, we rely on voice events being handled when the
-// session view forwards them via sessionEventMsg, or when the inbox
-// has its own subscription (if we add one in the future).
-//
-// For now, voice events piggyback on the session view's SSE channel.
-// This means voice indicators won't update on the inbox screen unless
-// a session is open. This is acceptable for v1 since voice is most
-// useful while viewing a session.
-func ensureVoiceEventSubscription(_ *hubclient.Client) {
-	// Placeholder for future inbox-level SSE subscription.
-}
+func ensureVoiceEventSubscription(_ *daemonclient.Client) {}

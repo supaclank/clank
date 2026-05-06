@@ -18,7 +18,7 @@ import (
 	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host"
-	hubclient "github.com/acksell/clank/internal/hub/client"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/tui"
 )
 
@@ -37,7 +37,7 @@ func Command() *cobra.Command {
 		// command without messing with files or env vars"). Empty flags
 		// are no-ops, so default behavior is unchanged.
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
-			hubclient.SetOverride(hubURL, hubToken)
+			daemonclient.SetOverride(hubURL, hubToken)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInbox()
@@ -53,7 +53,6 @@ func Command() *cobra.Command {
 	root.AddCommand(
 		codeCmd(),
 		inboxCmd(),
-		voiceCmd(),
 	)
 
 	return root
@@ -273,21 +272,21 @@ func redirectLogToFile() func() {
 //
 // In local mode (the default), we keep the historical "auto-start the
 // local daemon" UX so `clank tui` just works after install.
-func ensureDaemon() (*hubclient.Client, error) {
-	if hubclient.IsRemoteActive() {
-		client, err := hubclient.NewDefaultClient()
+func ensureDaemon() (*daemonclient.Client, error) {
+	if daemonclient.IsRemoteActive() {
+		client, err := daemonclient.NewDefaultClient()
 		if err != nil {
 			return nil, err
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := client.Ping(ctx); err != nil {
-			return nil, fmt.Errorf("remote hub %s not reachable: %w", hubclient.ActiveHubLabel(), err)
+			return nil, fmt.Errorf("remote hub %s not reachable: %w", daemonclient.ActiveHubLabel(), err)
 		}
 		return client, nil
 	}
 
-	running, _, err := hubclient.IsRunning()
+	running, _, err := daemonclient.IsRunning()
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +298,7 @@ func ensureDaemon() (*hubclient.Client, error) {
 		}
 	}
 
-	client, err := hubclient.NewDefaultClient()
+	client, err := daemonclient.NewDefaultClient()
 	if err != nil {
 		return nil, err
 	}

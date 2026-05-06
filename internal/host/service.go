@@ -1,16 +1,13 @@
 package host
 
-// Service is the in-process domain object for the Host plane. It owns the
-// BackendManagers that run agent sessions and the git/worktree logic tied
-// to repos on this host's filesystem.
-//
-// The Host has NO repo registry. It resolves a wire GitRef to a working
-// directory on demand via workDirFor(): local refs use the path
-// directly; remote refs are cloned into a deterministic
-// <ClonesDir>/<CloneDirName(remote)>/ on first use.
+// Service is the Host plane's domain object: it owns BackendManagers
+// for agent sessions and resolves GitRefs to working directories
+// (local refs use the path directly; remote refs clone-on-first-use
+// into <ClonesDir>/<CloneDirName(remote)>/).
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -23,18 +20,12 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/git"
-	clanksync "github.com/acksell/clank/internal/sync"
+	"github.com/acksell/clank/internal/host/store"
 )
 
 // Service is the Host plane's domain object. Construct with New; call
-// Init to kick off background goroutines, and Shutdown to release
-// resources.
-//
-// Service owns a registry of live SessionBackends keyed by the
-// Hub-assigned session ID (a ULID). The Hub is the source of truth for
-// session IDs because it owns the durable registry; the Host stores
-// backends under those IDs so HTTP handlers can look them up by URL
-// path.
+// Init to start background goroutines and Shutdown to release them.
+// Owns a registry of live SessionBackends keyed by session ULID.
 type Service struct {
 	id              Hostname
 	startedAt       time.Time
@@ -44,38 +35,34 @@ type Service struct {
 
 	mu       sync.RWMutex
 	sessions map[string]agent.SessionBackend
-	// closed is set by Shutdown under s.mu and gates new session
-	// registrations. CreateSession checks it both at entry and after the
-	// (potentially slow) mgr.CreateBackend call so a backend created
-	// concurrently with Shutdown cannot leak into a torn-down registry.
+	// closed gates new registrations. CreateSession re-checks after
+	// the slow CreateBackend call to avoid leaking into a torn-down
+	// registry.
 	closed bool
 
-	// clonesDir is the parent directory under which workDirFor clones
-	// remote refs on first use. Each clone lands in
-	// `<clonesDir>/<CloneDirName(remote)>/`. Defaults to ~/.clank/clones
-	// at construction time; tests override via Options.ClonesDir.
+	// clonesDir parents per-remote clones at <clonesDir>/<CloneDirName>/.
+	// Defaults to ~/.clank/clones; tests override via Options.
 	clonesDir string
 
 	// cloneSF deduplicates concurrent first-use clones of the same
-	// remote URL. Two CreateSession calls for the same remote that race
-	// past the os.Stat-not-exist check would otherwise both invoke
-	// `git clone` into the same target dir; the loser fails noisily.
+	// remote URL.
 	cloneSF singleflight.Group
 
-	// gitSyncSource (when non-empty) is the cloud hub's base URL.
-	// workDirFor clones from <gitSyncSource>/sync/repos/<repo_key>/git
-	// instead of ref.RemoteURL — the cloud hub mirror is the source of
-	// truth, including unpushed commits the laptop has bundled in.
-	// Sandboxes set this; laptop hosts leave it empty.
-	gitSyncSource string
-	gitSyncToken  string
-
-	// branches caches listBranches results per projectDir for a short
-	// TTL. The TUI inbox polls every 3s on each open worktree; without
-	// this cache each poll fans out to ~4 git subprocesses per active
-	// worktree (DiffStat + CommitsAhead) and one of them runs
-	// `git diff --numstat HEAD` which stat()s the working tree.
+	// branches caches listBranches per projectDir. Without it, the
+	// inbox poll fans out to ~4 git subprocesses per worktree every
+	// 3s.
 	branches *branchCache
+
+	// sessionsStore persists session metadata. Nil in tests that don't
+	// need persistence; production wiring always provides one.
+	sessionsStore *store.Store
+
+	// subscribers fans out backend events to SSE/WebSocket handlers.
+	subscribers *subscriberRegistry
+
+	// wg tracks per-session event-relay goroutines so Shutdown can
+	// wait for them before closing the subscriber registry.
+	wg sync.WaitGroup
 }
 
 // Options configures a Service at construction time.
@@ -91,14 +78,6 @@ type Options struct {
 	// remote refs on first use. Defaults to ~/.clank/clones when empty.
 	// Tests should set this to a t.TempDir().
 	ClonesDir string
-	// GitSyncSource (optional) redirects clones through a cloud-hub
-	// mirror at <GitSyncSource>/sync/repos/<repo_key>/git. Sandboxes
-	// set this; the laptop's clank-host leaves it empty so clones go
-	// directly to ref.RemoteURL. Requires GitSyncToken (the bearer
-	// token the cloud hub validates).
-	GitSyncSource string
-	GitSyncToken  string
-
 	// BranchCacheTTL overrides the default TTL for the listBranches
 	// cache. Zero uses DefaultBranchCacheTTL. Tests set this to control
 	// staleness behavior.
@@ -107,11 +86,15 @@ type Options struct {
 	// inject a controllable clock to assert cache hit/miss behavior
 	// without sleeping. Nil means time.Now.
 	Now func() time.Time
+
+	// SessionsStore persists session metadata. Required in production;
+	// optional in tests. When nil, session-metadata methods return
+	// SessionStoreNotConfigured.
+	SessionsStore *store.Store
 }
 
-// New creates a Service. Panics if opts.BackendManagers is nil — the Host
-// is not useful without at least one backend manager, and a fast failure
-// at construction time is clearer than a nil deref later.
+// New creates a Service. Panics on missing BackendManagers — fast
+// failure beats a later nil deref.
 func New(opts Options) *Service {
 	if opts.BackendManagers == nil {
 		panic("host.New: BackendManagers is required")
@@ -131,24 +114,21 @@ func New(opts Options) *Service {
 		log:             lg,
 		sessions:        make(map[string]agent.SessionBackend),
 		clonesDir:       opts.ClonesDir,
-		gitSyncSource:   opts.GitSyncSource,
-		gitSyncToken:    opts.GitSyncToken,
 		branches:        newBranchCache(opts.BranchCacheTTL, opts.Now),
+		sessionsStore:   opts.SessionsStore,
+		subscribers:     newSubscriberRegistry(),
 	}
 	if s.clonesDir == "" {
-		// Best-effort default; if the home dir lookup fails the field
-		// stays empty and workDirFor will reject remote refs with a
-		// loud error rather than guessing a path.
+		// On home-dir lookup failure leave the field empty —
+		// workDirFor will reject remote refs loudly instead of guessing.
 		if home, err := os.UserHomeDir(); err == nil {
 			s.clonesDir = filepath.Join(home, ".clank", "clones")
 		}
 	}
 
-	// Auth manager is best-effort: it requires the OpenCode backend
-	// (since auth.json is read by `opencode serve` and a restart is
-	// needed to pick up changes). If OpenCode isn't registered we
-	// log and leave Auth() nil — the mux's auth handlers will return
-	// a clear "not available" error rather than panicking.
+	// Auth manager is opencode-only: it tells the OpenCode backend to
+	// restart its servers when auth.json changes. Skip silently when
+	// the backend isn't registered.
 	if oc, ok := s.backendManagers[agent.BackendOpenCode].(*OpenCodeBackendManager); ok {
 		am, err := NewAuthManager(func(ctx context.Context) error {
 			return oc.ServerManager().RestartAllServers(ctx)
@@ -165,21 +145,24 @@ func New(opts Options) *Service {
 	return s
 }
 
-// Auth returns the AuthManager, or nil if none is wired (e.g. the
-// host has no OpenCode backend registered). Callers must nil-check.
+// Auth returns the AuthManager, or nil when the OpenCode backend
+// isn't registered. Callers must nil-check.
 func (s *Service) Auth() *AuthManager { return s.auth }
 
 // ID returns the host's ID.
 func (s *Service) ID() Hostname { return s.id }
 
-// Init initializes all BackendManagers. knownDirs is a per-backend lookup
-// that returns previously-seen project directories (used to warm
-// long-lived servers like OpenCode). Pass a func returning nil, nil to
-// skip warm-up.
-//
-// Init does NOT block — initialization kicks off reconciler goroutines that
-// live for the duration of ctx.
+// Init initializes all BackendManagers. knownDirs returns previously-
+// seen project directories per backend (used to warm long-lived
+// servers like OpenCode); pass a func returning nil to skip warm-up.
+// Non-blocking — managers run reconciler goroutines for the lifetime
+// of ctx.
 func (s *Service) Init(ctx context.Context, knownDirs func(agent.BackendType) ([]string, error)) error {
+	// Normalize stale runtime statuses from the previous daemon run —
+	// busy/starting sessions have no live backend now, and without
+	// this sweep the inbox would show them as forever-spinners.
+	s.normalizeStaleSessionStatus(ctx)
+
 	for bt, mgr := range s.backendManagers {
 		bt := bt
 		fn := func() ([]string, error) {
@@ -195,10 +178,40 @@ func (s *Service) Init(ctx context.Context, knownDirs func(agent.BackendType) ([
 	return nil
 }
 
-// Shutdown stops all live SessionBackends and then shuts down all
-// BackendManagers. Safe to call multiple times — subsequent calls are
-// no-ops. After Shutdown returns, CreateSession will reject new
-// registrations rather than leaking backends into a torn-down service.
+// normalizeStaleSessionStatus rewrites busy/starting/dead sessions
+// (states that require a live backend to advance) back to idle.
+// idle/error are stable enough to leave alone.
+func (s *Service) normalizeStaleSessionStatus(ctx context.Context) {
+	if s.sessionsStore == nil {
+		return
+	}
+	sessions, err := s.sessionsStore.ListSessions(ctx)
+	if err != nil {
+		s.log.Printf("warning: list sessions for status sweep: %v", err)
+		return
+	}
+	var fixed int
+	for _, info := range sessions {
+		switch info.Status {
+		case agent.StatusBusy, agent.StatusStarting, agent.StatusDead:
+			info.Status = agent.StatusIdle
+			// Don't bump UpdatedAt — a cleanup shouldn't hoist every
+			// recovered session to the top of the inbox.
+			if err := s.sessionsStore.UpsertSession(ctx, info); err != nil {
+				s.log.Printf("warning: normalize status for %s: %v", info.ID, err)
+				continue
+			}
+			fixed++
+		}
+	}
+	if fixed > 0 {
+		s.log.Printf("normalized %d stale session status(es) to idle", fixed)
+	}
+}
+
+// Shutdown stops live backends and then BackendManagers. Idempotent.
+// Order: mark closed → stop backends (closes Events() → relays exit)
+// → wait for relays → close subscribers → shut down managers.
 func (s *Service) Shutdown() {
 	s.mu.Lock()
 	if s.closed {
@@ -213,6 +226,19 @@ func (s *Service) Shutdown() {
 		if err := b.Stop(); err != nil {
 			s.log.Printf("warning: stop session %s: %v", id, err)
 		}
+	}
+	// Wait for relays before closing subscribers (a Broadcast in
+	// flight against a closed registry would race). Bounded — a
+	// misbehaving backend mustn't hang shutdown forever.
+	relayDone := make(chan struct{})
+	go func() { s.wg.Wait(); close(relayDone) }()
+	select {
+	case <-relayDone:
+	case <-time.After(2 * time.Second):
+		s.log.Printf("warning: event-relay goroutines did not drain within 2s; continuing shutdown")
+	}
+	if s.subscribers != nil {
+		s.subscribers.CloseAll()
 	}
 	for bt, mgr := range s.backendManagers {
 		s.log.Printf("shutting down %s backend manager", bt)
@@ -246,14 +272,9 @@ func (s *Service) ListBackends(_ context.Context) ([]BackendInfo, error) {
 	return out, nil
 }
 
-// ListAgents returns the agents supported by the given backend for the
-// repo identified by ref. Per §7.3 of hub_host_refactor_code_review.md
-// the wire is path-free: callers send a GitRef and the host resolves it
-// to a working directory via workDirFor.
-//
-// Returns (nil, nil) when the backend is unknown to this host or its
-// manager does not implement listing — both are normal "this host does
-// not surface that capability" answers, not errors.
+// ListAgents returns the agents the backend supports for ref's repo.
+// (nil, nil) means the backend is unknown or doesn't implement listing
+// — neither is an error.
 func (s *Service) ListAgents(ctx context.Context, bt agent.BackendType, ref agent.GitRef) ([]AgentInfo, error) {
 	mgr, ok := s.backendManagers[bt]
 	if !ok {
@@ -287,16 +308,10 @@ func (s *Service) ListModels(ctx context.Context, bt agent.BackendType, ref agen
 	return lister.ListModels(ctx, workDir)
 }
 
-// DiscoverSessions asks the given backend manager for historical sessions
-// it already knows about. Routing:
-//   - seedDir == "" and the manager implements AllSessionDiscoverer →
-//     DiscoverAllSessions. Used by the hub's startup heal pass to
-//     enumerate every session globally without needing a project
-//     directory hint (which may be wrong on a corrupted persistence row).
-//   - otherwise, if the manager implements SessionDiscoverer →
-//     DiscoverSessions(seedDir).
-//   - managers that implement neither (or no manager registered for bt)
-//     return nil, nil.
+// DiscoverSessions asks the backend manager for historical sessions.
+// seedDir=="" hits AllSessionDiscoverer if implemented (global heal);
+// otherwise SessionDiscoverer(seedDir). nil, nil for managers that
+// implement neither.
 func (s *Service) DiscoverSessions(ctx context.Context, bt agent.BackendType, seedDir string) ([]agent.SessionSnapshot, error) {
 	mgr, ok := s.backendManagers[bt]
 	if !ok {
@@ -314,18 +329,12 @@ func (s *Service) DiscoverSessions(ctx context.Context, bt agent.BackendType, se
 	return disc.DiscoverSessions(ctx, seedDir)
 }
 
-// CreateSession creates a fresh SessionBackend for req and registers it
-// under the given Hub-assigned session ID. The backend is NOT started —
-// callers call Start() or Watch() on the returned backend.
+// CreateSession registers a fresh SessionBackend under sessionID. The
+// backend is NOT started — callers call Start() or Watch().
 //
-// Returns the resolved serverURL (empty string for backends without an
-// HTTP server, e.g. Claude Code). The hub uses serverURL on a per-session
-// basis (e.g. for `opencode attach <url>` shell-out).
-//
-// Identity (Hostname, GitRef) is path-free. The host resolves
-// req.GitRef → workDir via workDirFor (clone-on-first-use for Remote
-// refs, direct path for Local refs, plus optional WorktreeBranch
-// resolution).
+// Returns the resolved serverURL (empty for backends without an HTTP
+// server, e.g. Claude Code). req.GitRef is resolved to workDir via
+// workDirFor.
 func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, string, error) {
 	if sessionID == "" {
 		return nil, "", fmt.Errorf("session id is required")
@@ -363,10 +372,9 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	if err != nil {
 		return nil, "", err
 	}
-	// Re-check closed AND duplicate sessionID under the lock before
-	// publishing. mgr.CreateBackend can take seconds (process spawn,
-	// HTTP probe) and Shutdown — or another CreateSession racing on
-	// the same sessionID — may have run in the interim.
+	// Re-check closed and duplicate-id under the lock — CreateBackend
+	// can take seconds, so a Shutdown or racing CreateSession could
+	// have run in between.
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -385,9 +393,34 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	s.sessions[sessionID] = b
 	s.mu.Unlock()
 
-	// Resolve per-session serverURL for backends that expose one. Only
-	// OpenCode currently does; iterate ListServers (no fresh start —
-	// CreateBackend already ensured a server exists for workDir).
+	// Persist initial metadata. Errors are logged, not surfaced —
+	// rolling back a running backend is worse UX than an unpersisted
+	// row.
+	if s.sessionsStore != nil {
+		now := time.Now()
+		info := agent.SessionInfo{
+			ID:         sessionID,
+			ExternalID: req.SessionID, // empty for fresh; populated for resume
+			Backend:    req.Backend,
+			Status:     agent.StatusStarting,
+			GitRef:     req.GitRef,
+			Prompt:     req.Prompt,
+			TicketID:   req.TicketID,
+			Agent:      req.Agent,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		if err := s.sessionsStore.UpsertSession(ctx, info); err != nil {
+			s.log.Printf("warning: persist session %s metadata: %v", sessionID, err)
+		}
+	}
+
+	// Sole drain on b.Events(); subscribers fan out to SSE handlers.
+	s.wg.Add(1)
+	go s.relayBackendEvents(sessionID, b)
+
+	// Per-session serverURL is OpenCode-only; CreateBackend already
+	// ensured a server exists for workDir.
 	serverURL := ""
 	if oc, ok := mgr.(*OpenCodeBackendManager); ok {
 		for _, srv := range oc.ListServers() {
@@ -401,25 +434,93 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	return b, serverURL, nil
 }
 
-// workDirFor resolves a GitRef to an absolute working directory on this
-// host.
+// relayBackendEvents drains backend.Events() into the subscriber
+// registry and applies metadata side-effects. Exits when Events()
+// closes; tracked by s.wg so Shutdown can wait it out.
+func (s *Service) relayBackendEvents(sessionID string, b agent.SessionBackend) {
+	defer s.wg.Done()
+	for evt := range b.Events() {
+		evt.SessionID = sessionID
+		s.subscribers.Broadcast(evt)
+		s.applyEventToMetadata(sessionID, evt)
+	}
+}
+
+// applyEventToMetadata persists status/title changes and the first-
+// time ExternalID stamp (Claude only learns its remote session ID
+// mid-stream during Open; if the daemon dies before Open returns the
+// binding would be lost).
 //
-// Resolution precedence (matches the GitRef godoc):
-//  1. If ref.LocalPath is set AND it exists on this host AND it is the
-//     repo root → use it directly. No clone.
-//  2. Else if ref.RemoteURL is set → clone into
-//     <clonesDir>/<CloneDirName(RemoteURL)>/ and use that.
-//  3. Else → error.
+// UpdatedAt only bumps on a user-visible change so MarkRead stays
+// sticky against the steady stream of backend events.
+func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
+	if s.sessionsStore == nil {
+		return
+	}
+	hasExternalID := evt.ExternalID != ""
+	hasStatus := false
+	var statusValue agent.SessionStatus
+	if evt.Type == agent.EventStatusChange {
+		if d, ok := evt.Data.(agent.StatusChangeData); ok {
+			hasStatus = true
+			statusValue = d.NewStatus
+		}
+	}
+	hasTitle := false
+	var titleValue string
+	if evt.Type == agent.EventTitleChange {
+		if d, ok := evt.Data.(agent.TitleChangeData); ok {
+			hasTitle = true
+			titleValue = d.Title
+		}
+	}
+	if !hasExternalID && !hasStatus && !hasTitle {
+		return
+	}
+
+	ctx := context.Background()
+	info, err := s.sessionsStore.GetSession(ctx, sessionID)
+	if errors.Is(err, store.ErrSessionNotFound) {
+		// Out-of-band session (e.g. tests that didn't pre-persist).
+		return
+	}
+	if err != nil {
+		// A real DB error here would silently lose the first-time
+		// ExternalID stamp; log so a daemon-side outage is visible in
+		// the host's stderr instead of disappearing into the relay.
+		s.log.Printf("warning: load session %s metadata for %s event: %v", sessionID, evt.Type, err)
+		return
+	}
+
+	dirty := false
+	if hasExternalID && info.ExternalID == "" {
+		info.ExternalID = evt.ExternalID
+		dirty = true
+	}
+	if hasStatus && info.Status != statusValue {
+		info.Status = statusValue
+		dirty = true
+	}
+	if hasTitle && info.Title != titleValue {
+		info.Title = titleValue
+		dirty = true
+	}
+	if !dirty {
+		return
+	}
+	info.UpdatedAt = time.Now()
+	if err := s.sessionsStore.UpsertSession(ctx, info); err != nil {
+		s.log.Printf("warning: update session %s metadata for %s event: %v", sessionID, evt.Type, err)
+	}
+}
+
+// workDirFor resolves a GitRef to an absolute working directory.
+// Precedence: usable LocalPath → clone of RemoteURL into
+// <clonesDir>/<CloneDirName>/ → error. WorktreeBranch is resolved
+// under the base when set.
 //
-// When ref.WorktreeBranch is non-empty, the result is the worktree path
-// for that branch under the resolved base; otherwise it is the repo
-// root.
-//
-// Step 1 failing (path missing or not a repo root) is *not* an error
-// when RemoteURL is set — it falls through to step 2. This is the
-// "laptop TUI sent a path that doesn't exist on this remote host" case;
-// the host clones from the remote and proceeds. Step 1 failing with
-// no RemoteURL set IS an error.
+// LocalPath failing soft (missing / not a repo) falls through to a
+// remote clone; it's a hard error only when no RemoteURL is set.
 func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, error) {
 	var base string
 
@@ -431,9 +532,6 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 		if res.Usable {
 			base = ref.LocalPath
 		} else if ref.RemoteURL == "" {
-			// Surface the actual reason rather than a generic "not
-			// usable" — the caller has no remote fallback, so they
-			// need to know why their path was rejected.
 			return "", fmt.Errorf("local_path %q not usable: %w", ref.LocalPath, res.SoftFail)
 		}
 	}
@@ -451,22 +549,20 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 		}
 		base = filepath.Join(s.clonesDir, name)
 		if _, err := os.Stat(base); os.IsNotExist(err) {
-			// Singleflight on the clone target so concurrent
-			// CreateSession calls for the same remote don't both
-			// invoke `git clone` into the same dir.
+			// Singleflight so concurrent first-uses don't race on
+			// `git clone` into the same dir.
 			_, cloneErr, _ := s.cloneSF.Do(base, func() (any, error) {
-				// Re-check under the singleflight: a peer may have
-				// finished cloning while we were queued.
+				// Re-check inside the singleflight in case a peer
+				// finished while we were queued.
 				if _, statErr := os.Stat(base); statErr == nil {
 					return nil, nil
 				}
 				if mkErr := os.MkdirAll(s.clonesDir, 0o755); mkErr != nil {
 					return nil, fmt.Errorf("create clones dir %q: %w", s.clonesDir, mkErr)
 				}
-				cloneURL, cloneCfg := s.cloneSourceFor(ref.RemoteURL)
-				s.log.Printf("cloning %s into %s", cloneURL, base)
-				if cloneErr := git.CloneWithConfig(cloneURL, base, cloneCfg); cloneErr != nil {
-					return nil, fmt.Errorf("clone %q: %w", cloneURL, cloneErr)
+				s.log.Printf("cloning %s into %s", ref.RemoteURL, base)
+				if cloneErr := git.CloneWithConfig(ref.RemoteURL, base, nil); cloneErr != nil {
+					return nil, fmt.Errorf("clone %q: %w", ref.RemoteURL, cloneErr)
 				}
 				return nil, nil
 			})
@@ -488,50 +584,21 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 	return base, nil
 }
 
-// cloneSourceFor returns the URL workDirFor should pass to git-clone,
-// plus any extra `git -c key=value` overrides that need to ride along.
-//
-// When gitSyncSource is configured (sandbox mode) we redirect clones
-// to <sync-source>/sync/repos/<repo_key>/git and inject the bearer
-// token as an extra HTTP header. When it is empty (laptop mode) the
-// remote URL is used as-is.
-func (s *Service) cloneSourceFor(remoteURL string) (string, []string) {
-	if s.gitSyncSource == "" {
-		return remoteURL, nil
-	}
-	repoKey := clanksync.RepoKey(remoteURL)
-	cloneURL := strings.TrimRight(s.gitSyncSource, "/") + "/sync/repos/" + repoKey + "/git"
-	var cfg []string
-	if s.gitSyncToken != "" {
-		cfg = []string{"http.extraHeader=Authorization: Bearer " + s.gitSyncToken}
-	}
-	return cloneURL, cfg
-}
-
-// tryLocalPath inspects path and reports whether it can be used as a
-// local repo root on this host.
-//
-// localPathResult is the structured outcome of tryLocalPath, replacing
-// the prior (bool, error, error) return shape that conflated three
-// distinct cases. Exactly one of {Usable, SoftFail, HardErr} is
-// meaningful per result:
-//
-//   - Usable=true:                use the path directly.
-//   - SoftFail!=nil:              path is missing or not a git repo on
-//     this host. Caller may fall back to cloning RemoteURL; the reason
-//     is surfaced if no fallback exists.
-//   - HardErr!=nil:               caller bug — relative path, symlink
-//     failure, or a path that IS inside a git repo but isn't its root.
-//     Never fall back.
+// localPathResult is the outcome of tryLocalPath. Exactly one field
+// is meaningful:
+//   - Usable: path is the repo root, use it directly.
+//   - SoftFail: path missing or not a git repo — caller may fall back
+//     to a remote clone.
+//   - HardErr: caller bug (relative path, not the repo root, etc.) —
+//     never fall back.
 type localPathResult struct {
 	Usable   bool
 	SoftFail error
 	HardErr  error
 }
 
-// tryLocalPath inspects path and reports whether it can be used as a
-// session work directory on this host. See localPathResult for the
-// semantics of each field.
+// tryLocalPath checks whether path is usable as a session work
+// directory; see localPathResult for the field semantics.
 func (s *Service) tryLocalPath(path string) localPathResult {
 	if !filepath.IsAbs(path) {
 		return localPathResult{HardErr: fmt.Errorf("local_path must be absolute, got %q", path)}
@@ -546,8 +613,8 @@ func (s *Service) tryLocalPath(path string) localPathResult {
 	if err != nil {
 		return localPathResult{SoftFail: fmt.Errorf("not a git repo")}
 	}
-	// Resolve symlinks on both sides because macOS reports /var/folders
-	// as /private/var/folders for the root.
+	// EvalSymlinks both sides — macOS reports /var/folders as
+	// /private/var/folders for the root.
 	givenAbs, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return localPathResult{HardErr: fmt.Errorf("resolve symlinks for %q: %w", path, err)}
@@ -562,13 +629,104 @@ func (s *Service) tryLocalPath(path string) localPathResult {
 	return localPathResult{Usable: true}
 }
 
-// Session returns the SessionBackend registered under id, or nil and
-// false if there is no such session.
+// Session returns the live SessionBackend for id, or (nil, false).
+// Does NOT rehydrate — callers that need cross-restart resume use
+// ensureBackend (via the typed live-session ops below).
 func (s *Service) Session(id string) (agent.SessionBackend, bool) {
 	s.mu.RLock()
 	b, ok := s.sessions[id]
 	s.mu.RUnlock()
 	return b, ok
+}
+
+// ensureBackend returns the live backend for id, lazily rebuilding
+// the wrapper from the persisted store row if the registry missed.
+// Without this lazy rebuild every session-op would 404 after a daemon
+// restart until the user manually recreated the session.
+//
+// Rebuild only recreates the Go-side wrapper (SDK client + event
+// channel); the agent subprocess and its session DB are untouched —
+// the wrapper is pointed at the persisted ExternalID via
+// BackendInvocation.ResumeExternalID.
+//
+// Returns ErrNotFound when id is in neither the registry nor the
+// store. Real store errors (DB lock, disk full) are surfaced wrapped,
+// not coerced into ErrNotFound — same pattern as GetSessionMetadata.
+func (s *Service) ensureBackend(ctx context.Context, id string) (agent.SessionBackend, error) {
+	if b, ok := s.Session(id); ok {
+		return b, nil
+	}
+	if s.sessionsStore == nil {
+		return nil, ErrNotFound
+	}
+	info, err := s.sessionsStore.GetSession(ctx, id)
+	if errors.Is(err, store.ErrSessionNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("ensure backend %s: load session: %w", id, err)
+	}
+
+	mgr, ok := s.backendManagers[info.Backend]
+	if !ok {
+		return nil, fmt.Errorf("ensure backend %s: no backend manager for %s", id, info.Backend)
+	}
+	s.mu.RLock()
+	closedBeforeWork := s.closed
+	s.mu.RUnlock()
+	if closedBeforeWork {
+		return nil, fmt.Errorf("ensure backend %s: host is shut down", id)
+	}
+
+	workDir, err := s.workDirFor(ctx, info.GitRef)
+	if err != nil {
+		return nil, fmt.Errorf("ensure backend %s: %w", id, err)
+	}
+	b, err := mgr.CreateBackend(ctx, agent.BackendInvocation{
+		WorkDir:          workDir,
+		ResumeExternalID: info.ExternalID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ensure backend %s: %w", id, err)
+	}
+
+	s.mu.Lock()
+	if existing, ok := s.sessions[id]; ok {
+		s.mu.Unlock()
+		// Lost the race; tear down our spare backend.
+		if stopErr := b.Stop(); stopErr != nil {
+			s.log.Printf("warning: stop backend lost-race for %s: %v", id, stopErr)
+		}
+		return existing, nil
+	}
+	if s.closed {
+		s.mu.Unlock()
+		if stopErr := b.Stop(); stopErr != nil {
+			s.log.Printf("warning: stop backend after shutdown for %s: %v", id, stopErr)
+		}
+		return nil, fmt.Errorf("ensure backend %s: host is shut down", id)
+	}
+	s.sessions[id] = b
+	s.mu.Unlock()
+
+	s.wg.Add(1)
+	go s.relayBackendEvents(id, b)
+
+	// Open is required by the SessionBackend contract — Send/Messages
+	// fast-fail on an unopened backend. On Open failure tear down the
+	// registration so the next call re-runs ensureBackend instead of
+	// finding a broken wrapper in s.sessions.
+	if err := b.Open(ctx); err != nil {
+		s.mu.Lock()
+		delete(s.sessions, id)
+		s.mu.Unlock()
+		if stopErr := b.Stop(); stopErr != nil {
+			s.log.Printf("warning: stop backend after open failure for %s: %v", id, stopErr)
+		}
+		return nil, fmt.Errorf("ensure backend %s: open: %w", id, err)
+	}
+
+	return b, nil
 }
 
 // StopSession stops the SessionBackend registered under id and removes
@@ -584,6 +742,94 @@ func (s *Service) StopSession(id string) error {
 	delete(s.sessions, id)
 	s.mu.Unlock()
 	return b.Stop()
+}
+
+// --- Live session ops ---------------------------------------------------
+//
+// Every action needing the in-memory backend wrapper goes through one
+// of these. The mux/HTTP layer never touches s.sessions directly;
+// ensureBackend handles lazy rehydration on first use after a restart.
+
+// SendMessage dispatches opts to the session's live backend.
+func (s *Service) SendMessage(ctx context.Context, id string, opts agent.SendMessageOpts) error {
+	b, err := s.ensureBackend(ctx, id)
+	if err != nil {
+		return err
+	}
+	return b.Send(ctx, opts)
+}
+
+// AbortSession asks the agent to stop streaming.
+func (s *Service) AbortSession(ctx context.Context, id string) error {
+	b, err := s.ensureBackend(ctx, id)
+	if err != nil {
+		return err
+	}
+	return b.Abort(ctx)
+}
+
+// RevertSession truncates the conversation at messageID.
+func (s *Service) RevertSession(ctx context.Context, id, messageID string) error {
+	b, err := s.ensureBackend(ctx, id)
+	if err != nil {
+		return err
+	}
+	return b.Revert(ctx, messageID)
+}
+
+// ForkSession creates a sibling session forked off messageID.
+func (s *Service) ForkSession(ctx context.Context, id, messageID string) (agent.ForkResult, error) {
+	b, err := s.ensureBackend(ctx, id)
+	if err != nil {
+		return agent.ForkResult{}, err
+	}
+	return b.Fork(ctx, messageID)
+}
+
+// SessionMessages returns the conversation history.
+func (s *Service) SessionMessages(ctx context.Context, id string) ([]agent.MessageData, error) {
+	b, err := s.ensureBackend(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return b.Messages(ctx)
+}
+
+// OpenSession ensures the backend is live and its SSE listener is
+// attached. Returns the post-Open snapshot (status, external session
+// id) — async-init backends like Claude only learn their session id
+// inside Open. Idempotent.
+func (s *Service) OpenSession(ctx context.Context, id string) (agent.SessionStatus, string, error) {
+	b, err := s.ensureBackend(ctx, id)
+	if err != nil {
+		return "", "", err
+	}
+	if err := b.Open(ctx); err != nil {
+		return "", "", err
+	}
+	return b.Status(), b.SessionID(), nil
+}
+
+// OpenAndSend opens the backend and dispatches opts as the initial
+// turn (or a follow-up after resume).
+func (s *Service) OpenAndSend(ctx context.Context, id string, opts agent.SendMessageOpts) (agent.SessionStatus, string, error) {
+	b, err := s.ensureBackend(ctx, id)
+	if err != nil {
+		return "", "", err
+	}
+	if err := b.OpenAndSend(ctx, opts); err != nil {
+		return "", "", err
+	}
+	return b.Status(), b.SessionID(), nil
+}
+
+// RespondPermission replies to a pending tool-use permission prompt.
+func (s *Service) RespondPermission(ctx context.Context, id, permissionID string, allow bool) error {
+	b, err := s.ensureBackend(ctx, id)
+	if err != nil {
+		return err
+	}
+	return b.RespondPermission(ctx, permissionID, allow)
 }
 
 // --- Worktree / branch ops ----------------------------------------------
@@ -649,15 +895,9 @@ func (s *Service) MergeBranch(ctx context.Context, ref agent.GitRef, branch, com
 	return res, err
 }
 
-// listBranches returns the branches (and their checked-out worktrees)
-// for the repository at projectDir. Skips bare and detached entries.
-//
-// Results are cached per projectDir for a short TTL (see branchCache).
-// The inbox view polls this every few seconds for every open session;
-// without the cache the per-poll cost is O(active_worktrees) git
-// subprocesses including a working-tree-stat'ing `git diff HEAD`.
-// Operations that mutate worktree state (resolveWorktree,
-// removeWorktree, mergeBranch) call branches.invalidate(projectDir).
+// listBranches lists branches (and their worktrees) at projectDir,
+// skipping bare/detached. Cached per projectDir; mutating ops call
+// branches.invalidate.
 func (s *Service) listBranches(_ context.Context, projectDir string) ([]BranchInfo, error) {
 	if cached, ok := s.branches.get(projectDir); ok {
 		return cached, nil
@@ -682,7 +922,7 @@ func (s *Service) listBranches(_ context.Context, projectDir string) ([]BranchIn
 			IsDefault:   wt.Branch == defaultBranch,
 			IsCurrent:   wt.Branch == currentBranch,
 		}
-		// Diff stats + ahead count only make sense for non-default branches.
+		// Diff stats + ahead count are only meaningful off-default.
 		if wt.Branch != defaultBranch {
 			if added, removed, err := git.DiffStat(wt.Path, defaultBranch); err == nil {
 				info.LinesAdded = added
@@ -698,19 +938,11 @@ func (s *Service) listBranches(_ context.Context, projectDir string) ([]BranchIn
 	return result, nil
 }
 
-// resolveWorktree ensures a git worktree exists for (projectDir, branch).
-// If the branch has a worktree, returns its path; otherwise creates one.
-// If the branch does not exist locally, creates a new branch from the
-// repo's default branch.
-//
-// Refuses to *create* a worktree for the repo's default branch (returns
-// ErrReservedBranch). Lookup of an existing default-branch worktree is
-// still allowed: the original repo's checkout legitimately holds the
-// default branch and callers (e.g. session bootstrap) need to find it.
-// Without this guard, asking for "main" while the original repo is on
-// some other branch would silently create ~/.clank/worktrees/<repo>/main
-// and lock the default branch out of the original repo, breaking
-// `git checkout main` there.
+// resolveWorktree ensures a worktree exists for (projectDir, branch),
+// creating the branch off the default if missing. Refuses to *create*
+// a worktree for the default branch (ErrReservedBranch) so the
+// original checkout retains it; lookups of an existing default-branch
+// worktree still succeed.
 func (s *Service) resolveWorktree(_ context.Context, projectDir, branch string) (WorktreeInfo, error) {
 	if strings.TrimSpace(branch) == "" {
 		return WorktreeInfo{}, ErrInvalidBranchName
@@ -723,8 +955,8 @@ func (s *Service) resolveWorktree(_ context.Context, projectDir, branch string) 
 		return WorktreeInfo{Branch: branch, WorktreeDir: wt.Path}, nil
 	}
 
-	// No existing worktree → we'd be creating one. Reject the default
-	// branch here (not earlier) so the lookup path above keeps working.
+	// Reject the default branch here (post-lookup) so the lookup path
+	// above keeps working for an existing default worktree.
 	defaultBranch, err := git.DefaultBranch(projectDir)
 	if err != nil {
 		return WorktreeInfo{}, fmt.Errorf("determine default branch: %w", err)

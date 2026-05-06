@@ -9,7 +9,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
-	hubclient "github.com/acksell/clank/internal/hub/client"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 )
 
 // showSettings renders the Settings page in the right pane without
@@ -21,7 +21,7 @@ func (m *InboxModel) showSettings() {
 	if prefs.RemoteHub != nil {
 		remoteURL = prefs.RemoteHub.URL
 	}
-	m.settings = newSettingsView(prefs.ColorScheme, prefs.DefaultBackend, prefs.ActiveHub, remoteURL, hubclient.OverrideURL())
+	m.settings = newSettingsView(prefs.ColorScheme, prefs.DefaultBackend, prefs.ActiveHub, remoteURL, daemonclient.OverrideURL())
 	m.settings.SetSize(m.sessionPaneWidth(), m.height)
 	m.screen = screenSettings
 }
@@ -94,7 +94,7 @@ func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case settingsEntryActiveHub:
 			// --hub-url override wins for the whole process; toggling prefs would mislead.
-			if hubclient.OverrideURL() != "" {
+			if daemonclient.OverrideURL() != "" {
 				return m, nil
 			}
 			// Toggle local <-> remote. Persist only; user restarts the

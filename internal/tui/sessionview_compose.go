@@ -19,7 +19,7 @@ import (
 	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host"
-	hubclient "github.com/acksell/clank/internal/hub/client"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 )
 
 // sessionCreateResultMsg carries the result of creating a session from composing mode.
@@ -37,7 +37,7 @@ type sessionCreateResultMsg struct {
 // background fetchAgents/fetchModels prefetch can target it. If the
 // project isn't a git repo, gitRef stays empty and the prefetch becomes
 // a no-op (the user will see the failure on launch).
-func NewSessionViewComposing(client *hubclient.Client, projectDir string) *SessionViewModel {
+func NewSessionViewComposing(client *daemonclient.Client, projectDir string) *SessionViewModel {
 	ta := newPromptTextarea("Describe the task for the agent...", 5)
 	ta.Focus()
 	sp := spinner.New(
@@ -84,6 +84,9 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case modelPickerCancelMsg:
 			m.showModelPicker = false
 			return m, m.input.Focus()
+		case modelPickerConnectProviderMsg:
+			m.showModelPicker = false
+			return m, func() tea.Msg { return openProviderAuthFromSessionMsg{} }
 		default:
 			var cmd tea.Cmd
 			m.modelPicker, cmd = m.modelPicker.Update(msg)

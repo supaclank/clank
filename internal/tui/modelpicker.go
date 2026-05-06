@@ -24,14 +24,26 @@ type modelPickerResultMsg struct {
 // modelPickerCancelMsg is sent when the user dismisses the picker.
 type modelPickerCancelMsg struct{}
 
-// modelPickerItem is a single entry in the picker list. Index -1 is
-// the synthetic "(default)" entry.
+// modelPickerConnectProviderMsg is sent when the user activates the
+// "Connect provider…" entry. Containing screens close the picker and
+// navigate to the settings page with the provider-auth modal open.
+type modelPickerConnectProviderMsg struct{}
+
+// modelPickerItem is a single entry in the picker list.
+//   - index >=0: real model (offset into the unfiltered models slice).
+//   - index = -1: synthetic "(default)" entry.
+//   - index = -2: synthetic "Connect provider…" action entry.
 type modelPickerItem struct {
-	index      int    // index into the original models slice; -1 = default
+	index      int    // see above
 	modelID    string // e.g. "claude-opus-4-20250514"
 	providerID string // e.g. "github-copilot"
 	display    string // pre-built display string for matching: "model  provider"
 }
+
+const (
+	modelPickerIndexDefault         = -1
+	modelPickerIndexConnectProvider = -2
+)
 
 type modelPickerModel struct {
 	items     []modelPickerItem // all items (unfiltered)
@@ -63,10 +75,10 @@ func newModelPicker(models []agent.ModelInfo, selected int, backend agent.Backen
 		origIndex[m.ProviderID+"\x00"+m.ID] = i
 	}
 
-	items := make([]modelPickerItem, 0, len(sorted)+1)
+	items := make([]modelPickerItem, 0, len(sorted)+2)
 	// Synthetic "(default)" entry.
 	items = append(items, modelPickerItem{
-		index:   -1,
+		index:   modelPickerIndexDefault,
 		display: "(default)",
 	})
 	for _, m := range sorted {
@@ -76,6 +88,14 @@ func newModelPicker(models []agent.ModelInfo, selected int, backend agent.Backen
 			modelID:    m.ID,
 			providerID: m.ProviderID,
 			display:    m.ID + "  " + m.ProviderID,
+		})
+	}
+	// Synthetic "Connect provider…" action — only meaningful for
+	// OpenCode (Claude Code uses Anthropic's own auth flow).
+	if backend == agent.BackendOpenCode {
+		items = append(items, modelPickerItem{
+			index:   modelPickerIndexConnectProvider,
+			display: "+ Connect provider…",
 		})
 	}
 
@@ -128,6 +148,9 @@ func (m modelPickerModel) Update(msg tea.Msg) (modelPickerModel, tea.Cmd) {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 			if m.cursor >= 0 && m.cursor < len(m.filtered) {
 				idx := m.filtered[m.cursor].index
+				if idx == modelPickerIndexConnectProvider {
+					return m, func() tea.Msg { return modelPickerConnectProviderMsg{} }
+				}
 				return m, func() tea.Msg { return modelPickerResultMsg{selectedModel: idx} }
 			}
 			return m, nil
@@ -146,6 +169,33 @@ func (m modelPickerModel) Update(msg tea.Msg) (modelPickerModel, tea.Cmd) {
 			}
 			return m, nil
 		}
+
+	case tea.MouseWheelMsg:
+		// The chat view enables cell-motion mouse capture so the
+		// terminal forwards wheel events to bubbletea instead of
+		// scrolling its own buffer. Without explicit handling here,
+		// trackpad scroll over the picker silently does nothing
+		// (the compose view doesn't capture mouse, so the terminal
+		// scrolls there — which is why the bug only showed up in chat).
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			if m.cursor > 0 {
+				m.cursor--
+				m.ensureVisible()
+			}
+		case tea.MouseWheelDown:
+			if m.cursor < len(m.filtered)-1 {
+				m.cursor++
+				m.ensureVisible()
+			}
+		}
+		return m, nil
+
+	// Swallow other mouse events so they don't reach the underlying
+	// chat view's wheel/click handlers (which would scroll the
+	// transcript or place a selection while the picker is open).
+	case tea.MouseClickMsg, tea.MouseMotionMsg, tea.MouseReleaseMsg:
+		return m, nil
 	}
 
 	// Forward all other messages to the text input.
@@ -162,6 +212,13 @@ func (m modelPickerModel) Update(msg tea.Msg) (modelPickerModel, tea.Cmd) {
 }
 
 // applyFilter rebuilds the filtered list from the query and resets cursor.
+//
+// The "+ Connect provider…" action is always pinned to the bottom of
+// the filtered results regardless of query. Its whole reason to exist
+// is that the user is searching for a model that isn't there yet
+// because their auth.json is missing or stale — hiding it on a
+// non-matching search defeats the point. The "(default)" entry
+// behaves like a model and is filtered normally.
 func (m *modelPickerModel) applyFilter() {
 	q := strings.ToLower(m.search.Value())
 	if q == "" {
@@ -169,8 +226,17 @@ func (m *modelPickerModel) applyFilter() {
 	} else {
 		m.filtered = nil
 		for _, item := range m.items {
+			if item.index == modelPickerIndexConnectProvider {
+				continue // re-appended below so it stays last
+			}
 			if strings.Contains(strings.ToLower(item.display), q) {
 				m.filtered = append(m.filtered, item)
+			}
+		}
+		for _, item := range m.items {
+			if item.index == modelPickerIndexConnectProvider {
+				m.filtered = append(m.filtered, item)
+				break
 			}
 		}
 	}
@@ -279,13 +345,15 @@ func (m modelPickerModel) View() string {
 		Render("↑↓ navigate  type to filter  enter select  esc cancel")
 	sb.WriteString(hint)
 
-	// Informational note (OpenCode only).
+	// Informational note (OpenCode only). Points the user at the
+	// in-list "Connect provider…" action rather than at opencode's own
+	// CLI — clank now owns the auth flow end-to-end.
 	if m.backend == agent.BackendOpenCode {
 		sb.WriteString("\n")
 		note := lipgloss.NewStyle().
 			Foreground(mutedColor).
 			Italic(true).
-			Render("missing a model? connect providers via ctrl+p in opencode")
+			Render("missing a model? select \"+ Connect provider…\" below")
 		sb.WriteString("\n")
 		sb.WriteString(note)
 	}
@@ -301,13 +369,17 @@ func (m modelPickerModel) View() string {
 
 // renderItem builds the display string for a single item row.
 func (m modelPickerModel) renderItem(item modelPickerItem, width int) string {
-	if item.index == -1 {
+	if item.index == modelPickerIndexDefault {
 		// Default entry.
 		label := "(default)"
-		if m.selected == -1 {
+		if m.selected == modelPickerIndexDefault {
 			label += "  ●"
 		}
 		return label
+	}
+	if item.index == modelPickerIndexConnectProvider {
+		// Action row, styled distinctly so it doesn't look like a model.
+		return lipgloss.NewStyle().Foreground(secondaryColor).Render(item.display)
 	}
 
 	providerSuffix := lipgloss.NewStyle().Foreground(dimColor).Render(item.providerID)

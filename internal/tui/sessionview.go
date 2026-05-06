@@ -20,7 +20,7 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/host"
-	hubclient "github.com/acksell/clank/internal/hub/client"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 )
 
 // sessionEventMsg wraps a daemon event delivered to the TUI.
@@ -95,6 +95,12 @@ type pendingPermissionMsg struct {
 // backToInboxMsg signals navigation back to the inbox.
 type backToInboxMsg struct{}
 
+// openProviderAuthFromSessionMsg bubbles up from the model picker's
+// "+ Connect provider…" entry. The inbox closes the session view, opens
+// settings, and surfaces the provider-auth modal (which it owns —
+// SessionViewModel doesn't render that overlay).
+type openProviderAuthFromSessionMsg struct{}
+
 // wordBackwardBinding matches the textarea's WordBackward keys (alt+left, alt+b).
 // Used to intercept the key before it reaches the textarea in cases where the
 // upstream wordLeft() implementation would infinite-loop.
@@ -119,7 +125,7 @@ func wordLeftWouldHang(ta textarea.Model) bool {
 // It also handles the "composing" mode where no session exists yet —
 // the user types their first prompt and the session is created on send.
 type SessionViewModel struct {
-	client    *hubclient.Client
+	client    *daemonclient.Client
 	sessionID string
 	info      *agent.SessionInfo
 
@@ -337,7 +343,7 @@ const (
 const inputReservedLines = 6
 
 // NewSessionViewModel creates a session detail TUI for an existing session.
-func NewSessionViewModel(client *hubclient.Client, sessionID string) *SessionViewModel {
+func NewSessionViewModel(client *daemonclient.Client, sessionID string) *SessionViewModel {
 	ta := newPromptTextarea("Type a follow-up message...", 3)
 	sp := spinner.New(
 		spinner.WithSpinner(spinner.MiniDot),
@@ -592,6 +598,11 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case modelPickerCancelMsg:
 			m.showModelPicker = false
 			return m, m.input.Focus()
+		case modelPickerConnectProviderMsg:
+			// Close the picker and bubble up — the inbox owns the
+			// settings + provider-auth modal lifecycle.
+			m.showModelPicker = false
+			return m, func() tea.Msg { return openProviderAuthFromSessionMsg{} }
 		default:
 			var cmd tea.Cmd
 			m.modelPicker, cmd = m.modelPicker.Update(msg)
@@ -2756,9 +2767,6 @@ func (m *SessionViewModel) buildHelpText() string {
 	parts := []string{"m: message", ":: actions", "c: copy", "?: help", qLabel}
 	if m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting) {
 		parts = append([]string{"ctrl+c: cancel"}, parts...)
-	}
-	if m.voice != nil {
-		parts = append([]string{voiceHelpItem(*m.voice)}, parts...)
 	}
 	return strings.Join(parts, " | ")
 }
