@@ -20,9 +20,9 @@ import (
 
 	sprites "github.com/superfly/sprites-go"
 
-	"github.com/acksell/clank/gateway"
-	"github.com/acksell/clank/provisioner"
-	"github.com/acksell/clank/provisioner/flyio"
+	"github.com/acksell/clank/pkg/gateway"
+	"github.com/acksell/clank/pkg/provisioner"
+	"github.com/acksell/clank/pkg/provisioner/flyio"
 	"github.com/acksell/clank/internal/store"
 )
 

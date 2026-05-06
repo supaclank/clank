@@ -16,8 +16,8 @@ import (
 
 	"github.com/acksell/clank/internal/config"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/gateway"
-	"github.com/acksell/clank/provisioner"
+	"github.com/acksell/clank/pkg/gateway"
+	"github.com/acksell/clank/pkg/provisioner"
 	"github.com/acksell/clank/internal/socketutil"
 )
 

@@ -35,7 +35,7 @@ import (
 
 	hostclient "github.com/acksell/clank/internal/host/client"
 	"github.com/acksell/clank/internal/store"
-	"github.com/acksell/clank/provisioner"
+	"github.com/acksell/clank/pkg/provisioner"
 )
 
 // Options configures the Daytona provisioner.

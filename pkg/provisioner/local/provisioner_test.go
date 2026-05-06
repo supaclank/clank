@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/provisioner/local"
+	"github.com/acksell/clank/pkg/provisioner/local"
 )
 
 // fakeHostBin compiles a tiny Go program that prints the

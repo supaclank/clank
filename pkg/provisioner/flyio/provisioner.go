@@ -27,8 +27,8 @@ import (
 	sprites "github.com/superfly/sprites-go"
 
 	"github.com/acksell/clank/internal/store"
-	"github.com/acksell/clank/provisioner"
-	transportpkg "github.com/acksell/clank/provisioner/transport"
+	"github.com/acksell/clank/pkg/provisioner"
+	transportpkg "github.com/acksell/clank/pkg/provisioner/transport"
 )
 
 // clankHostHashHex is the SHA-256 of the embedded clank-host binary,

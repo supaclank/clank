@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/provisioner"
+	"github.com/acksell/clank/pkg/provisioner"
 )
 
 // stubProvisioner is a minimal provisioner.Provisioner that returns
