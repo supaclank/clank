@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 
 	"github.com/acksell/clank/internal/config"
-	"github.com/acksell/clank/internal/provisioner"
-	daytonaprov "github.com/acksell/clank/internal/provisioner/daytona"
-	flyioprov "github.com/acksell/clank/internal/provisioner/flyio"
-	localprov "github.com/acksell/clank/internal/provisioner/local"
+	"github.com/acksell/clank/provisioner"
+	daytonaprov "github.com/acksell/clank/provisioner/daytona"
+	flyioprov "github.com/acksell/clank/provisioner/flyio"
+	localprov "github.com/acksell/clank/provisioner/local"
 	"github.com/acksell/clank/internal/store"
 )
 

@@ -101,7 +101,7 @@ type SidebarModel struct {
 	// and for non-branch concerns (project filter); branch operations now
 	// route through hostname/gitRef instead.
 	projectDir string
-	hostname   host.Hostname
+	hostname   string
 	gitRef     agent.GitRef
 
 	entries []worktreeEntry
@@ -123,7 +123,7 @@ type SidebarModel struct {
 // NewSidebarModel creates a sidebar for the given repo identity.
 // projectDir is retained for display purposes only; branch/worktree ops
 // are addressed by (hostname, gitRef).
-func NewSidebarModel(client *daemonclient.Client, hostname host.Hostname, gitRef agent.GitRef, projectDir string) SidebarModel {
+func NewSidebarModel(client *daemonclient.Client, hostname string, gitRef agent.GitRef, projectDir string) SidebarModel {
 	ti := textinput.New()
 	ti.Placeholder = "branch-name"
 	ti.CharLimit = 128

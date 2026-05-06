@@ -28,7 +28,7 @@ type mergeResultMsg struct {
 // editable textarea for the merge commit message.
 type mergeOverlayModel struct {
 	client   *daemonclient.Client
-	hostname host.Hostname
+	hostname string
 	gitRef   agent.GitRef
 	branch   host.BranchInfo
 
@@ -39,7 +39,7 @@ type mergeOverlayModel struct {
 	height int
 }
 
-func newMergeOverlay(client *daemonclient.Client, hostname host.Hostname, gitRef agent.GitRef, branch host.BranchInfo) mergeOverlayModel {
+func newMergeOverlay(client *daemonclient.Client, hostname string, gitRef agent.GitRef, branch host.BranchInfo) mergeOverlayModel {
 	ta := textarea.New()
 	ta.SetValue("")
 	ta.Placeholder = "Describe the work done on this branch..."

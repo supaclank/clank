@@ -13,11 +13,11 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/gateway"
+	"github.com/acksell/clank/gateway"
 	"github.com/acksell/clank/internal/host"
 	hostmux "github.com/acksell/clank/internal/host/mux"
 	hoststore "github.com/acksell/clank/internal/host/store"
-	"github.com/acksell/clank/internal/provisioner"
+	"github.com/acksell/clank/provisioner"
 )
 
 // TestLocalE2E_TUICreatesSession_AndFetches drives the full local-mode

@@ -6,16 +6,16 @@ require (
 	charm.land/bubbles/v2 v2.0.0
 	charm.land/bubbletea/v2 v2.0.2
 	charm.land/lipgloss/v2 v2.0.2
-	github.com/acksell/mindmouth v0.0.1
 	github.com/atotto/clipboard v0.1.4
 	github.com/charmbracelet/glamour v1.0.0
 	github.com/charmbracelet/x/ansi v0.11.6
 	github.com/coder/websocket v1.8.14
+	github.com/daytonaio/daytona/libs/api-client-go v0.170.0
 	github.com/daytonaio/daytona/libs/sdk-go v0.170.0
-	github.com/eiannone/keyboard v0.0.0-20220611211555-0d226195f203
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/spf13/cobra v1.10.2
 	github.com/sst/opencode-sdk-go v0.19.2
+	github.com/superfly/sprites-go v0.0.0-20260421132718-b8bf80ad51d3
 	golang.org/x/sync v0.20.0
 	modernc.org/sqlite v1.47.0
 )
@@ -36,14 +36,11 @@ require (
 	github.com/aws/smithy-go v1.24.2 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/daytonaio/daytona/libs/api-client-go v0.170.0 // indirect
 	github.com/daytonaio/daytona/libs/toolbox-api-client-go v0.170.0 // indirect
-	github.com/gen2brain/malgo v0.11.24 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
-	github.com/superfly/sprites-go v0.0.0-20260421132718-b8bf80ad51d3 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel v1.43.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.43.0 // indirect

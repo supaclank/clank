@@ -33,10 +33,9 @@ import (
 	"github.com/daytonaio/daytona/libs/sdk-go/pkg/types"
 	"github.com/oklog/ulid/v2"
 
-	"github.com/acksell/clank/internal/host"
 	hostclient "github.com/acksell/clank/internal/host/client"
-	"github.com/acksell/clank/internal/provisioner"
 	"github.com/acksell/clank/internal/store"
+	"github.com/acksell/clank/provisioner"
 )
 
 // Options configures the Daytona provisioner.
@@ -111,7 +110,7 @@ type cachedHost struct {
 	client    *hostclient.HTTP
 	transport http.RoundTripper
 	hostID    string
-	hostname  host.Hostname
+	hostname  string
 	url       string
 	token     string // preview-token (provider-edge layer)
 	authToken string // clank-host bearer-token (universal app layer)
@@ -119,6 +118,8 @@ type cachedHost struct {
 
 // New constructs a Provisioner. Returns an error if required options
 // are missing or the SDK client fails to initialize.
+//
+// todo(ae): don't use central store package (un-necessary abstraction), use custom instead.
 func New(opts Options, st *store.Store, lg *log.Logger) (*Provisioner, error) {
 	if st == nil {
 		return nil, fmt.Errorf("daytona provisioner: store is required")
@@ -262,7 +263,7 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 		return provisioner.HostRef{}, fmt.Errorf("wait for clank-host: %w", err)
 	}
 
-	hostname := host.Hostname("daytona-" + safeHostnameSuffix(sandbox.ID))
+	hostname := "daytona-" + safeHostnameSuffix(sandbox.ID)
 
 	// Persist the latest known-good URL/token. On a fresh Create we
 	// also need the row in the first place.

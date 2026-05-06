@@ -26,10 +26,9 @@ import (
 	"github.com/oklog/ulid/v2"
 	sprites "github.com/superfly/sprites-go"
 
-	"github.com/acksell/clank/internal/host"
-	"github.com/acksell/clank/internal/provisioner"
-	transportpkg "github.com/acksell/clank/internal/provisioner/transport"
 	"github.com/acksell/clank/internal/store"
+	"github.com/acksell/clank/provisioner"
+	transportpkg "github.com/acksell/clank/provisioner/transport"
 )
 
 // clankHostHashHex is the SHA-256 of the embedded clank-host binary,
@@ -108,12 +107,14 @@ type cachedHost struct {
 	sprite    *sprites.Sprite
 	transport http.RoundTripper
 	hostID    string
-	hostname  host.Hostname
+	hostname  string
 	url       string
 	authToken string
 }
 
 // New constructs a Provisioner.
+//
+// todo(ae): don't use central store package (un-necessary abstraction), use custom instead.
 func New(opts Options, st *store.Store, lg *log.Logger) (*Provisioner, error) {
 	if st == nil {
 		return nil, fmt.Errorf("flyio provisioner: store is required")
@@ -207,7 +208,7 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 		return provisioner.HostRef{}, fmt.Errorf("parse sprite URL %q: %w", fresh.URL, err)
 	}
 	transport := &transportpkg.BearerInjector{Token: authToken, Host: parsedURL.Host}
-	hostname := host.Hostname("flyio-" + safeHostnameSuffix(spriteName))
+	hostname := "flyio-" + safeHostnameSuffix(spriteName)
 
 	// The Service "started" event only means the process is running;
 	// the edge still serves a 404 page until clank-host binds its port.

@@ -18,8 +18,6 @@ package provisioner
 import (
 	"context"
 	"net/http"
-
-	"github.com/acksell/clank/internal/host"
 )
 
 // HostRef carries everything the gateway needs to reach a user's host.
@@ -59,12 +57,13 @@ type HostRef struct {
 	// for Sprites; false for Daytona. The gateway uses this to decide
 	// whether a probe failure means "stale URL, re-resolve" (false) or
 	// "edge will wake on retry" (true).
+	// todo(ae): Leaky abstraction. The provisioner should instead always implement auto-wake.
 	AutoWake bool
 
 	// Hostname is the stable identifier surfaced to upper layers
 	// (session metadata, hub catalog). Stable across stop/resume of
 	// the same underlying host.
-	Hostname host.Hostname
+	Hostname string
 }
 
 // Provisioner is the interface the gateway/hub uses to obtain and

@@ -235,7 +235,7 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 
 	req := agent.StartRequest{
 		Backend:  m.backend,
-		Hostname: string(host.HostLocal),
+		Hostname: host.HostLocal,
 		GitRef:   gitRef,
 		Prompt:   prompt,
 	}

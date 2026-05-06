@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"net/url"
 
-	transportpkg "github.com/acksell/clank/internal/provisioner/transport"
+	transportpkg "github.com/acksell/clank/provisioner/transport"
 )
 
 // previewTokenInjector adds Daytona's `x-daytona-preview-token`

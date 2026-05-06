@@ -149,7 +149,7 @@ The daemon is auto-started if not already running.`,
 
 			info, err := client.Sessions().Create(ctx, agent.StartRequest{
 				Backend:  bt,
-				Hostname: string(host.HostLocal),
+				Hostname: host.HostLocal,
 				GitRef: agent.GitRef{
 					LocalPath:      projectDir,
 					RemoteURL:      remoteURL,

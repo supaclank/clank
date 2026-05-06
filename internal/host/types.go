@@ -9,16 +9,12 @@ import (
 	"github.com/acksell/clank/internal/agent"
 )
 
-// Hostname identifies a Host within the Hub's catalog. It is a short,
-// human-readable slug ("local", "daytona-abc123") chosen by whoever
-// registers the Host. The Hub treats it as an opaque key.
-type Hostname string
-
-const (
-	// HostLocal is the canonical ID for the laptop's supervised clank-host
-	// child. The TUI defaults to this until the host-selection UX lands.
-	HostLocal Hostname = "local"
-)
+// HostLocal is the canonical hostname for the laptop's supervised
+// clank-host child. The TUI defaults to this until the host-selection
+// UX lands. Hostnames are arbitrary strings — short, human-readable
+// slugs ("local", "daytona-abc123") chosen by whoever registers the
+// Host. The Hub treats them as opaque keys.
+const HostLocal = "local"
 
 // BackendInfo describes one backend installed on a Host (e.g. "opencode",
 // "claude-code"). Catalog endpoints return slices of these.
@@ -62,7 +58,7 @@ type WorktreeInfo struct {
 // HostStatus is the response body of `GET /status` on the Host API. Hub
 // surfaces a derived view (online/offline + last seen) to clients.
 type HostStatus struct {
-	Hostname  Hostname  `json:"hostname"`
+	Hostname  string    `json:"hostname"`
 	Version   string    `json:"version"`
 	StartedAt time.Time `json:"started_at"`
 	Sessions  int       `json:"sessions"` // Number of live (backend-attached) sessions

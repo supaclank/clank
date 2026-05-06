@@ -29,7 +29,7 @@ import (
 // Init to start background goroutines and Shutdown to release them.
 // Owns a registry of live SessionBackends keyed by session ULID.
 type Service struct {
-	id              Hostname
+	id              string
 	startedAt       time.Time
 	backendManagers map[agent.BackendType]agent.BackendManager
 	auth            *AuthManager
@@ -70,7 +70,7 @@ type Service struct {
 // Options configures a Service at construction time.
 type Options struct {
 	// ID is the host identifier. Defaults to HostLocal when empty.
-	ID Hostname
+	ID string
 	// BackendManagers maps each backend type to its manager. Required.
 	BackendManagers map[agent.BackendType]agent.BackendManager
 	// Log is the logger. Defaults to a logger writing to stderr with the
@@ -152,7 +152,7 @@ func New(opts Options) *Service {
 func (s *Service) Auth() *AuthManager { return s.auth }
 
 // ID returns the host's ID.
-func (s *Service) ID() Hostname { return s.id }
+func (s *Service) ID() string { return s.id }
 
 // Init initializes all BackendManagers. knownDirs returns previously-
 // seen project directories per backend (used to warm long-lived

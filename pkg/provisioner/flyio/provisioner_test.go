@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/internal/provisioner"
+	"github.com/acksell/clank/provisioner"
 	"github.com/acksell/clank/internal/store"
 )
 

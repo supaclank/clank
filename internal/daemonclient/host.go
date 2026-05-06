@@ -17,16 +17,16 @@ import (
 // no per-repo handle to bind to.
 type HostClient struct {
 	c        *Client
-	hostname host.Hostname
+	hostname string
 }
 
 // Host returns a handle for the named host.
-func (c *Client) Host(hostname host.Hostname) *HostClient {
+func (c *Client) Host(hostname string) *HostClient {
 	return &HostClient{c: c, hostname: hostname}
 }
 
 // Hostname returns the hostname this handle is bound to.
-func (h *HostClient) Hostname() host.Hostname { return h.hostname }
+func (h *HostClient) Hostname() string { return h.hostname }
 
 func (h *HostClient) base() string {
 	return "/hosts/" + url.PathEscape(string(h.hostname))

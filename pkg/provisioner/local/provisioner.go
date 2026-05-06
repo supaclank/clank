@@ -29,9 +29,8 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"github.com/acksell/clank/internal/host"
-	"github.com/acksell/clank/internal/provisioner"
-	transportpkg "github.com/acksell/clank/internal/provisioner/transport"
+	"github.com/acksell/clank/provisioner"
+	transportpkg "github.com/acksell/clank/provisioner/transport"
 )
 
 // Options configures the local-subprocess provisioner.
@@ -61,7 +60,7 @@ type Provisioner struct {
 type child struct {
 	cmd       *exec.Cmd
 	hostID    string
-	hostname  host.Hostname
+	hostname  string
 	url       string
 	authToken string
 	transport http.RoundTripper
@@ -154,7 +153,7 @@ func (p *Provisioner) EnsureHost(_ context.Context, _ string) (provisioner.HostR
 
 	httpURL := strings.Replace(addr, "tcp://", "http://", 1)
 	id := ulid.Make().String()
-	hostname := host.Hostname("local-" + id[len(id)-8:])
+	hostname := "local-" + id[len(id)-8:]
 	hostID := ulid.Make().String()
 
 	parsedURL, err := url.Parse(httpURL)

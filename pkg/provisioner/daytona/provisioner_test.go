@@ -13,7 +13,7 @@ import (
 	"time"
 
 	hostclient "github.com/acksell/clank/internal/host/client"
-	"github.com/acksell/clank/internal/provisioner"
+	"github.com/acksell/clank/provisioner"
 	"github.com/acksell/clank/internal/store"
 )
 

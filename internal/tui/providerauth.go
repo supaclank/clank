@@ -88,7 +88,7 @@ const providerAuthPollInterval = 2 * time.Second
 // newProviderAuthModel; rendered through overlayCenter by the inbox.
 type providerAuthModel struct {
 	hub      *daemonclient.Client
-	hostname host.Hostname
+	hostname string
 
 	phase providerAuthPhase
 
@@ -125,7 +125,7 @@ type providerAuthModel struct {
 	spinner spinner.Model
 }
 
-func newProviderAuthModel(c *daemonclient.Client, hostname host.Hostname) providerAuthModel {
+func newProviderAuthModel(c *daemonclient.Client, hostname string) providerAuthModel {
 	if hostname == "" {
 		hostname = host.HostLocal
 	}

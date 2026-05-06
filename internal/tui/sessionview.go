@@ -224,7 +224,7 @@ type SessionViewModel struct {
 	composing      bool
 	backend        agent.BackendType
 	projectDir     string // local on-disk path; used for display + relPath stripping. Wire identity is hostname+gitRef below.
-	hostname       host.Hostname
+	hostname       string
 	gitRef         agent.GitRef
 	worktreeBranch string // optional worktree branch to create the session on
 	isNewWorktree  bool   // true when this compose session is for a newly created worktree
@@ -641,7 +641,7 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// projectDir is not on SessionInfo (path-free wire per §7);
 			// relPath becomes a no-op for sessions opened from the inbox.
 			// TODO: resolve via host repo lookup if/when needed for UX.
-			m.hostname = host.Hostname(m.info.Hostname)
+			m.hostname = m.info.Hostname
 			if m.hostname == "" {
 				m.hostname = host.HostLocal
 			}

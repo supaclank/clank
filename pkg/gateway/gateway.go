@@ -12,7 +12,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/acksell/clank/internal/provisioner"
+	"github.com/acksell/clank/provisioner"
 )
 
 // Config wires the gateway's dependencies. All fields except

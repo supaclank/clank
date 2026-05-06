@@ -115,7 +115,7 @@ type InboxModel struct {
 	// via daemonclient.ResolveRepo. If resolution failed (e.g. cwd not in a
 	// git repo with an origin remote), these stay zero and the sidebar will
 	// surface the underlying load error.
-	hostname host.Hostname
+	hostname string
 	gitRef   agent.GitRef
 
 	// Pre-built display data.
@@ -177,7 +177,7 @@ type InboxModel struct {
 //
 // Hostname is currently always HostLocal; remote hosts will be plumbed
 // through when they exist.
-func resolveLocalRepo(cwd string) (host.Hostname, agent.GitRef) {
+func resolveLocalRepo(cwd string) (string, agent.GitRef) {
 	root, err := git.RepoRoot(cwd)
 	if err != nil {
 		return "", agent.GitRef{}

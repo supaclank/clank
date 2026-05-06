@@ -8,8 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/internal/host"
-	"github.com/acksell/clank/internal/provisioner"
+	"github.com/acksell/clank/provisioner"
 )
 
 // stubProvisioner is a minimal provisioner.Provisioner that returns
@@ -117,7 +116,7 @@ func TestProxy_ForwardsToUpstream(t *testing.T) {
 		ref: provisioner.HostRef{
 			URL:       upstream.URL,
 			Transport: http.DefaultTransport,
-			Hostname:  host.Hostname("test-host"),
+			Hostname:  "test-host",
 		},
 	}
 	g, _ := NewGateway(Config{Provisioner: prov}, nil)

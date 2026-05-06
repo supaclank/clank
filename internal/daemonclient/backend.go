@@ -5,7 +5,6 @@ import (
 	"net/url"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
 )
 
 // BackendClient is bound to a backend type. Backend selection on the wire
@@ -25,7 +24,7 @@ func (c *Client) Backend(backend agent.BackendType) *BackendClient {
 // host resolves ref→workdir internally. The three discrete GitRef
 // fields are sent verbatim so the hub mux can reconstruct the struct
 // without canonical-form parsing.
-func (b *BackendClient) Agents(ctx context.Context, hostname host.Hostname, ref agent.GitRef) ([]agent.AgentInfo, error) {
+func (b *BackendClient) Agents(ctx context.Context, hostname string, ref agent.GitRef) ([]agent.AgentInfo, error) {
 	path := "/agents?" + catalogQuery(b.backend, hostname, ref).Encode()
 	var out []agent.AgentInfo
 	if err := b.c.get(ctx, path, &out); err != nil {
@@ -36,7 +35,7 @@ func (b *BackendClient) Agents(ctx context.Context, hostname host.Hostname, ref 
 
 // Models returns available models for this backend, scoped to the
 // (hostname, gitRef) tuple. Same wire shape as Agents (§7.3).
-func (b *BackendClient) Models(ctx context.Context, hostname host.Hostname, ref agent.GitRef) ([]agent.ModelInfo, error) {
+func (b *BackendClient) Models(ctx context.Context, hostname string, ref agent.GitRef) ([]agent.ModelInfo, error) {
 	path := "/models?" + catalogQuery(b.backend, hostname, ref).Encode()
 	var out []agent.ModelInfo
 	if err := b.c.get(ctx, path, &out); err != nil {
@@ -45,7 +44,7 @@ func (b *BackendClient) Models(ctx context.Context, hostname host.Hostname, ref 
 	return out, nil
 }
 
-func catalogQuery(bt agent.BackendType, hostname host.Hostname, ref agent.GitRef) url.Values {
+func catalogQuery(bt agent.BackendType, hostname string, ref agent.GitRef) url.Values {
 	v := url.Values{
 		"backend":  {string(bt)},
 		"hostname": {string(hostname)},
