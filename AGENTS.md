@@ -14,6 +14,9 @@
 4. NEVER mock dependencies. Prefer integration tests, or refactor code to be unit-testable. I can't stress this enough.
 5. Use `t.Parallel()` where safe.
 
+## Naming
+1. Boolean variables should be phrased as an affirmative statement that evaluates to either true or false. Prefixes: Is, Has, Can, Should, Must, etc.
+
 ## Comments And Documentation
 
 Code should be self-documenting; comments are reader overhead. Optimize for short comments (1-2 lines) over multi-line paragraphs (>3 lines).
