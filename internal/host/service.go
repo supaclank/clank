@@ -18,6 +18,8 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/oklog/ulid/v2"
+
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host/store"
@@ -319,14 +321,58 @@ func (s *Service) DiscoverSessions(ctx context.Context, bt agent.BackendType, se
 	}
 	if seedDir == "" {
 		if all, ok := mgr.(agent.AllSessionDiscoverer); ok {
-			return all.DiscoverAllSessions(ctx)
+			snaps, err := all.DiscoverAllSessions(ctx)
+			return s.persistSnapshots(ctx, snaps, err)
 		}
 	}
 	disc, ok := mgr.(agent.SessionDiscoverer)
 	if !ok {
 		return nil, nil
 	}
-	return disc.DiscoverSessions(ctx, seedDir)
+	snaps, err := disc.DiscoverSessions(ctx, seedDir)
+	return s.persistSnapshots(ctx, snaps, err)
+}
+
+// persistSnapshots upserts newly-discovered session snapshots into the store,
+// skipping any that already have a matching ExternalID. Returns all snapshots
+// (including pre-existing ones) so callers can report totals.
+func (s *Service) persistSnapshots(ctx context.Context, snaps []agent.SessionSnapshot, err error) ([]agent.SessionSnapshot, error) {
+	if err != nil || s.sessionsStore == nil {
+		return snaps, err
+	}
+	for _, snap := range snaps {
+		if snap.ID == "" {
+			continue
+		}
+		_, lookupErr := s.sessionsStore.FindSessionByExternalID(ctx, snap.ID)
+		if lookupErr == nil {
+			// Already registered — skip.
+			continue
+		}
+		if !errors.Is(lookupErr, store.ErrSessionNotFound) {
+			// Treat any non-NotFound store error as a real failure: skip
+			// this snapshot rather than fall through to UpsertSession,
+			// which could otherwise compound a lookup failure into an
+			// unrelated insert.
+			s.log.Printf("discover: lookup snapshot extID=%s: %v", snap.ID, lookupErr)
+			continue
+		}
+		info := agent.SessionInfo{
+			ID:              ulid.Make().String(),
+			ExternalID:      snap.ID,
+			Backend:         snap.Backend,
+			Status:          agent.StatusIdle,
+			Title:           snap.Title,
+			RevertMessageID: snap.RevertMessageID,
+			GitRef:          agent.GitRef{LocalPath: snap.Directory},
+			CreatedAt:       snap.CreatedAt,
+			UpdatedAt:       snap.UpdatedAt,
+		}
+		if err := s.sessionsStore.UpsertSession(ctx, info); err != nil {
+			s.log.Printf("discover: persist snapshot extID=%s: %v", snap.ID, err)
+		}
+	}
+	return snaps, nil
 }
 
 // CreateSession registers a fresh SessionBackend under sessionID. The
@@ -911,6 +957,17 @@ func (s *Service) listBranches(_ context.Context, projectDir string) ([]BranchIn
 	defaultBranch, _ := git.DefaultBranch(projectDir)
 	currentBranch, _ := git.CurrentBranch(projectDir)
 
+	// Derive the repo label: use the remote name when available so that
+	// forks of the same directory name are distinguishable; fall back to
+	// the basename of projectDir for local-only repos.
+	repoLabel := filepath.Base(projectDir)
+	if remoteURL, err := git.RemoteURL(projectDir, "origin"); err == nil && remoteURL != "" {
+		// Strip common git URL noise to produce a short, readable label.
+		// e.g. "https://github.com/acme/api.git" → "api"
+		//      "git@github.com:acme/api.git"     → "api"
+		repoLabel = repoLabelFromURL(remoteURL, repoLabel)
+	}
+
 	result := make([]BranchInfo, 0, len(worktrees))
 	for _, wt := range worktrees {
 		if wt.Bare || wt.Branch == "" {
@@ -921,6 +978,7 @@ func (s *Service) listBranches(_ context.Context, projectDir string) ([]BranchIn
 			WorktreeDir: wt.Path,
 			IsDefault:   wt.Branch == defaultBranch,
 			IsCurrent:   wt.Branch == currentBranch,
+			RepoLabel:   repoLabel,
 		}
 		// Diff stats + ahead count are only meaningful off-default.
 		if wt.Branch != defaultBranch {

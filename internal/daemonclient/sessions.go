@@ -60,11 +60,12 @@ func (s *SessionsClient) Search(ctx context.Context, p agent.SearchParams) ([]ag
 }
 
 // Discover asks clankd to discover and register historical sessions for
-// the given project directory.
-func (s *SessionsClient) Discover(ctx context.Context, projectDir string) error {
+// the given backend and seed directory.
+func (s *SessionsClient) Discover(ctx context.Context, backend agent.BackendType, seedDir string) error {
 	body := struct {
-		ProjectDir string `json:"project_dir"`
-	}{ProjectDir: projectDir}
+		Backend agent.BackendType `json:"backend"`
+		SeedDir string            `json:"seed_dir"`
+	}{Backend: backend, SeedDir: seedDir}
 	return s.c.post(ctx, "/sessions/discover", body, nil)
 }
 

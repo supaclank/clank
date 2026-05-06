@@ -69,7 +69,7 @@ func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
-	case branchLoadedMsg, branchWorktreeCreatedMsg:
+	case branchWorktreeCreatedMsg:
 		cmd := m.sidebar.Update(msg)
 		return m, cmd
 

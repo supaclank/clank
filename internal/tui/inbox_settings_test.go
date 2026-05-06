@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/acksell/clank/internal/host"
 )
 
 // TestInbox_EnterOnSettingsFooter_OpensSettingsScreen verifies the full
@@ -21,7 +20,7 @@ func TestInbox_EnterOnSettingsFooter_OpensSettingsScreen(t *testing.T) {
 		sidebar: SidebarModel{
 			projectDir: "/tmp/test",
 			focused:    true,
-			branches:   []host.BranchInfo{{Name: "main"}},
+			entries:    makeEntries(1),
 		},
 	}
 	// Park cursor on the settings footer row.
@@ -81,14 +80,14 @@ func TestInbox_NavigatingOffSettingsRow_ClosesSettingsScreen(t *testing.T) {
 		sidebar: SidebarModel{
 			projectDir: "/tmp/test",
 			focused:    true,
-			branches:   []host.BranchInfo{{Name: "main"}},
+			entries:    makeEntries(1),
 		},
 		settings: newSettingsView("", "", "", "", ""),
 	}
 	// Park cursor on the settings row.
 	m.sidebar.cursor = m.sidebar.settingsCursorIndex()
 
-	// Press up to move onto a branch row.
+	// Press up to move onto an entry row.
 	m.updateSettings(tea.KeyPressMsg{Code: tea.KeyUp})
 
 	if m.sidebar.CursorOnSettings() {
@@ -103,7 +102,7 @@ func TestInbox_NavigatingOffSettingsRow_ClosesSettingsScreen(t *testing.T) {
 // counterpart to TestInbox_NavigatingOffSettingsRow_ClosesSettingsScreen:
 // when the sidebar cursor lands on the ⚙ Settings footer (e.g. via j/down
 // from a branch row), the right pane should auto-render the settings page
-// — mirroring how hovering a branch updates the session list. Focus must
+// — mirroring how hovering a worktree updates the session list. Focus must
 // stay on the sidebar so the user can keep navigating with j/k.
 func TestInbox_HoveringSettingsRow_ShowsSettingsScreen(t *testing.T) {
 	t.Parallel()
@@ -116,7 +115,7 @@ func TestInbox_HoveringSettingsRow_ShowsSettingsScreen(t *testing.T) {
 		sidebar: SidebarModel{
 			projectDir: "/tmp/test",
 			focused:    true,
-			branches:   []host.BranchInfo{{Name: "main"}},
+			entries:    makeEntries(1),
 		},
 	}
 	// Start one row above settings so a single 'down' lands on it.

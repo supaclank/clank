@@ -137,6 +137,11 @@ type Preferences struct {
 	// Validate at the boundary via agent.ResolveBackendPreference.
 	DefaultBackend string `json:"default_backend,omitempty"`
 
+	// SidebarWidthRatio is the sidebar width as a percentage of the terminal
+	// width, adjusted with +/- in the TUI. Zero means "use the built-in
+	// default" (defaultSidebarWidthRatio).
+	SidebarWidthRatio int `json:"sidebar_width_ratio,omitempty"`
+
 	// RemoteHub configures hub-to-hub sync. See RemoteHubPreference.
 	RemoteHub *RemoteHubPreference `json:"remote_hub,omitempty"`
 

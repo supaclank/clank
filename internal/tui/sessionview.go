@@ -19,8 +19,8 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
-	"github.com/acksell/clank/internal/host"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
+	"github.com/acksell/clank/internal/host"
 )
 
 // sessionEventMsg wraps a daemon event delivered to the TUI.
@@ -227,6 +227,8 @@ type SessionViewModel struct {
 	hostname       host.Hostname
 	gitRef         agent.GitRef
 	worktreeBranch string // optional worktree branch to create the session on
+	isNewWorktree  bool   // true when this compose session is for a newly created worktree
+	baseBranch     string // base branch for new worktree indicator (e.g. "main")
 
 	// Agent selection — populated eagerly when compose view loads.
 	// For existing sessions opened from inbox, agents are fetched on Init.

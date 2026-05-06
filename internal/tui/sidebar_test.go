@@ -1,40 +1,42 @@
 package tui
 
 import (
+	"errors"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/acksell/clank/internal/host"
+	"github.com/acksell/clank/internal/agent"
 )
 
 // TestSidebar_SectionBreakpoints verifies the breakpoint list adapts to the
-// number of branches:
+// number of entries:
 //
-//   - 0 branches: [0 (All), 1 (Settings)]   — no separate "end of worktrees"
-//   - 1 branch:   [0, 1, 2]
-//   - 3 branches: [0, 3, 4]
+//   - 0 entries: [0 (All), 1 (Import), 2 (Settings)]
+//   - 1 entry:   [0, 1, 2, 3]
+//   - 3 entries: [0, 3, 4, 5]
 func TestSidebar_SectionBreakpoints(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name     string
-		branches int
-		want     []int
+		name    string
+		entries int
+		want    []int
 	}{
-		{"no branches", 0, []int{0, 1}},
-		{"one branch", 1, []int{0, 1, 2}},
-		{"three branches", 3, []int{0, 3, 4}},
+		{"no entries", 0, []int{0, 1, 2}},
+		{"one entry", 1, []int{0, 1, 2, 3}},
+		{"three entries", 3, []int{0, 1, 3, 4, 5}},
 	}
 
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			m := SidebarModel{branches: makeBranches(tc.branches)}
+			m := SidebarModel{entries: makeEntries(tc.entries)}
 			got := m.sectionBreakpoints()
 			if !equalInts(got, tc.want) {
-				t.Errorf("sectionBreakpoints(%d branches) = %v, want %v", tc.branches, got, tc.want)
+				t.Errorf("sectionBreakpoints(%d entries) = %v, want %v", tc.entries, got, tc.want)
 			}
 		})
 	}
@@ -47,28 +49,35 @@ func TestSidebar_ShiftArrowNavigation(t *testing.T) {
 
 	cases := []struct {
 		name       string
-		branches   int
+		entries    int
 		startCur   int
 		key        tea.KeyPressMsg
 		wantCursor int
 	}{
-		// 3 branches → breakpoints [0, 3, 4]
-		{"3b: shift+down from All -> end of worktrees", 3, 0, shiftDownKey(), 3},
-		{"3b: shift+down from middle -> end of worktrees", 3, 2, shiftDownKey(), 3},
-		{"3b: shift+down from end of worktrees -> Settings", 3, 3, shiftDownKey(), 4},
-		{"3b: shift+down from Settings clamps", 3, 4, shiftDownKey(), 4},
-		{"3b: shift+up from Settings -> end of worktrees", 3, 4, shiftUpKey(), 3},
-		{"3b: shift+up from end of worktrees -> All", 3, 3, shiftUpKey(), 0},
-		{"3b: shift+up from middle -> All", 3, 1, shiftUpKey(), 0},
-		{"3b: shift+up from All clamps", 3, 0, shiftUpKey(), 0},
+		// 3 entries → breakpoints [0, 1, 3, 4, 5]
+		{"3e: shift+down from All -> first entry", 3, 0, shiftDownKey(), 1},
+		{"3e: shift+down from first entry -> end of worktrees", 3, 1, shiftDownKey(), 3},
+		{"3e: shift+down from middle -> end of worktrees", 3, 2, shiftDownKey(), 3},
+		{"3e: shift+down from end of worktrees -> Import", 3, 3, shiftDownKey(), 4},
+		{"3e: shift+down from Import -> Settings", 3, 4, shiftDownKey(), 5},
+		{"3e: shift+down from Settings clamps", 3, 5, shiftDownKey(), 5},
+		{"3e: shift+up from Settings -> Import", 3, 5, shiftUpKey(), 4},
+		{"3e: shift+up from Import -> end of worktrees", 3, 4, shiftUpKey(), 3},
+		{"3e: shift+up from end of worktrees -> first entry", 3, 3, shiftUpKey(), 1},
+		{"3e: shift+up from middle -> first entry", 3, 2, shiftUpKey(), 1},
+		{"3e: shift+up from first entry -> All", 3, 1, shiftUpKey(), 0},
+		{"3e: shift+up from All clamps", 3, 0, shiftUpKey(), 0},
 
-		// 0 branches → breakpoints [0, 1]
-		{"0b: shift+down from All -> Settings", 0, 0, shiftDownKey(), 1},
-		{"0b: shift+up from Settings -> All", 0, 1, shiftUpKey(), 0},
+		// 0 entries → breakpoints [0, 1, 2]
+		{"0e: shift+down from All -> Import", 0, 0, shiftDownKey(), 1},
+		{"0e: shift+down from Import -> Settings", 0, 1, shiftDownKey(), 2},
+		{"0e: shift+up from Settings -> Import", 0, 2, shiftUpKey(), 1},
+		{"0e: shift+up from Import -> All", 0, 1, shiftUpKey(), 0},
 
-		// 1 branch → breakpoints [0, 1, 2]
-		{"1b: shift+down from All -> branch", 1, 0, shiftDownKey(), 1},
-		{"1b: shift+down from branch -> Settings", 1, 1, shiftDownKey(), 2},
+		// 1 entry → breakpoints [0, 1, 2, 3]
+		{"1e: shift+down from All -> entry", 1, 0, shiftDownKey(), 1},
+		{"1e: shift+down from entry -> Import", 1, 1, shiftDownKey(), 2},
+		{"1e: shift+down from Import -> Settings", 1, 2, shiftDownKey(), 3},
 	}
 
 	for _, tc := range cases {
@@ -76,10 +85,10 @@ func TestSidebar_ShiftArrowNavigation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			m := SidebarModel{
-				branches: makeBranches(tc.branches),
-				cursor:   tc.startCur,
-				focused:  true,
-				height:   20,
+				entries: makeEntries(tc.entries),
+				cursor:  tc.startCur,
+				focused: true,
+				height:  20,
 			}
 			m.handleKey(tc.key)
 			if m.cursor != tc.wantCursor {
@@ -96,13 +105,14 @@ func TestSidebar_ShiftDown_EnsuresVisible(t *testing.T) {
 	t.Parallel()
 
 	m := SidebarModel{
-		branches: makeBranches(20),
-		cursor:   0,
-		focused:  true,
-		height:   8, // listHeight clamps small but viewport stays smaller than list
+		entries: makeEntries(20),
+		cursor:  0,
+		focused: true,
+		height:  8, // listHeight clamps small but viewport stays smaller than list
 	}
-	m.handleKey(shiftDownKey())
-	if m.cursor != 20 { // end of worktrees
+	m.handleKey(shiftDownKey()) // All → first entry (cursor=1)
+	m.handleKey(shiftDownKey()) // first entry → last entry (cursor=20)
+	if m.cursor != 20 {
 		t.Fatalf("cursor: got %d, want 20", m.cursor)
 	}
 	if m.scroll == 0 {
@@ -128,20 +138,20 @@ func TestSidebar_ArrowNavigationWraps(t *testing.T) {
 
 	cases := []struct {
 		name       string
-		branches   int
+		entries    int
 		startCur   int
 		key        tea.KeyPressMsg
 		wantCursor int
 	}{
-		// 3 branches → maxIdx = 4 (Settings row)
-		{"3b: up from All wraps to Settings", 3, 0, upKey(), 4},
-		{"3b: down from Settings wraps to All", 3, 4, downKey(), 0},
-		{"3b: up from middle moves up", 3, 2, upKey(), 1},
-		{"3b: down from middle moves down", 3, 2, downKey(), 3},
+		// 3 entries → maxIdx = 5 (Settings row)
+		{"3e: up from All wraps to Settings", 3, 0, upKey(), 5},
+		{"3e: down from Settings wraps to All", 3, 5, downKey(), 0},
+		{"3e: up from middle moves up", 3, 2, upKey(), 1},
+		{"3e: down from middle moves down", 3, 2, downKey(), 3},
 
-		// 0 branches → maxIdx = 1
-		{"0b: up from All wraps to Settings", 0, 0, upKey(), 1},
-		{"0b: down from Settings wraps to All", 0, 1, downKey(), 0},
+		// 0 entries → maxIdx = 2
+		{"0e: up from All wraps to Settings", 0, 0, upKey(), 2},
+		{"0e: down from Settings wraps to All", 0, 2, downKey(), 0},
 	}
 
 	for _, tc := range cases {
@@ -149,10 +159,10 @@ func TestSidebar_ArrowNavigationWraps(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			m := SidebarModel{
-				branches: makeBranches(tc.branches),
-				cursor:   tc.startCur,
-				focused:  true,
-				height:   20,
+				entries: makeEntries(tc.entries),
+				cursor:  tc.startCur,
+				focused: true,
+				height:  20,
 			}
 			m.handleKey(tc.key)
 			if m.cursor != tc.wantCursor {
@@ -162,15 +172,18 @@ func TestSidebar_ArrowNavigationWraps(t *testing.T) {
 	}
 }
 
-func makeBranches(n int) []host.BranchInfo {
-	out := make([]host.BranchInfo, n)
+func makeEntries(n int) []worktreeEntry {
+	out := make([]worktreeEntry, n)
 	for i := 0; i < n; i++ {
-		out[i] = host.BranchInfo{Name: branchName(i)}
+		out[i] = worktreeEntry{
+			LocalPath: "/repo/" + entryName(i),
+			Label:     entryName(i),
+		}
 	}
 	return out
 }
 
-func branchName(i int) string {
+func entryName(i int) string {
 	return "b" + string(rune('a'+i))
 }
 
@@ -192,4 +205,95 @@ func equalInts(a, b []int) bool {
 		}
 	}
 	return true
+}
+
+// TestSidebar_BranchWorktreeCreatedClearsStaleErr is a regression test:
+// after a failed ResolveWorktree set m.err, a subsequent successful
+// branchWorktreeCreatedMsg must clear it so the old error doesn't render
+// while the new composing session opens.
+func TestSidebar_BranchWorktreeCreatedClearsStaleErr(t *testing.T) {
+	t.Parallel()
+
+	m := SidebarModel{
+		err:      errors.New("prior resolve failure"),
+		creating: true,
+	}
+
+	cmd := m.Update(branchWorktreeCreatedMsg{worktreeDir: "/tmp/wt"})
+
+	if m.err != nil {
+		t.Errorf("expected m.err cleared on success, got %v", m.err)
+	}
+	if m.creating {
+		t.Errorf("expected creating=false on success")
+	}
+	if cmd == nil {
+		t.Fatalf("expected non-nil cmd emitting newWorktreeSessionRequestMsg")
+	}
+	got, ok := cmd().(newWorktreeSessionRequestMsg)
+	if !ok {
+		t.Fatalf("expected newWorktreeSessionRequestMsg, got %T", cmd())
+	}
+	if got.worktreeDir != "/tmp/wt" {
+		t.Errorf("worktreeDir: got %q, want %q", got.worktreeDir, "/tmp/wt")
+	}
+}
+
+// TestSidebar_SetSessionsClampsScroll is a regression test: when the
+// session list shrinks below m.scroll, renderWorktreeEntries would slice
+// m.entries[m.scroll:end] with m.scroll > end and panic. SetSessions
+// must clamp m.scroll alongside m.cursor.
+func TestSidebar_SetSessionsClampsScroll(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	tenSessions := make([]agent.SessionInfo, 10)
+	for i := range tenSessions {
+		tenSessions[i] = agent.SessionInfo{
+			GitRef:    agent.GitRef{LocalPath: "/repo/" + entryName(i)},
+			UpdatedAt: now.Add(time.Duration(i) * time.Second),
+		}
+	}
+
+	m := SidebarModel{height: 20, focused: true}
+	m.SetSessions(tenSessions)
+	if len(m.entries) != 10 {
+		t.Fatalf("entries: got %d, want 10", len(m.entries))
+	}
+	m.scroll = 5
+
+	twoSessions := []agent.SessionInfo{
+		{GitRef: agent.GitRef{LocalPath: "/repo/a"}, UpdatedAt: now},
+		{GitRef: agent.GitRef{LocalPath: "/repo/b"}, UpdatedAt: now},
+	}
+	m.SetSessions(twoSessions)
+
+	if len(m.entries) != 2 {
+		t.Fatalf("entries after shrink: got %d, want 2", len(m.entries))
+	}
+	if m.scroll > len(m.entries)-1 {
+		t.Errorf("scroll not clamped: got %d, want <= %d", m.scroll, len(m.entries)-1)
+	}
+
+	// View() must not panic with the now-shrunken state.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("View panicked after shrink: %v", r)
+		}
+	}()
+	_ = m.View()
+}
+
+// TestSidebar_SetSessionsClampsScrollToZeroOnEmpty covers the empty case.
+func TestSidebar_SetSessionsClampsScrollToZeroOnEmpty(t *testing.T) {
+	t.Parallel()
+
+	m := SidebarModel{
+		entries: makeEntries(5),
+		scroll:  3,
+	}
+	m.SetSessions(nil)
+	if m.scroll != 0 {
+		t.Errorf("scroll: got %d, want 0", m.scroll)
+	}
 }

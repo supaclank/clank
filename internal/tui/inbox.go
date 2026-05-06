@@ -18,9 +18,9 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host"
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
 )
 
 // inboxScreen tracks which screen is active within the inbox app.
@@ -66,9 +66,10 @@ type InboxModel struct {
 	client *daemonclient.Client
 
 	// Two-pane layout state.
-	pane          inboxPane    // which pane has keyboard focus
-	sidebar       SidebarModel // sidebar: branch list
-	sidebarHidden bool         // true when user toggled sidebar off with 'w'
+	pane              inboxPane    // which pane has keyboard focus
+	sidebar           SidebarModel // sidebar: branch list
+	sidebarHidden     bool         // true when user toggled sidebar off with 'w'
+	sidebarWidthRatio int          // sidebar width as % of screen width; adjusted with +/-
 
 	// Inbox list state (right pane).
 	groups       []inboxGroup
@@ -87,6 +88,10 @@ type InboxModel struct {
 	// Confirm dialog state.
 	showConfirm bool
 	confirm     confirmDialogModel
+
+	// Import Sessions modal state.
+	showImportSessions bool
+	importSessions     importSessionsModel
 
 	// Help overlay state.
 	showHelp bool
@@ -221,15 +226,16 @@ func NewInboxModel(client *daemonclient.Client) *InboxModel {
 	hostname, gitRef := resolveLocalRepo(cwd)
 	bp := NewSidebarModel(client, hostname, gitRef, cwd)
 	return &InboxModel{
-		client:      client,
-		pane:        paneSessions,
-		sidebar:     bp,
-		spinner:     sp,
-		searchInput: ti,
-		projectDir:  cwd,
-		projectName: filepath.Base(cwd),
-		hostname:    hostname,
-		gitRef:      gitRef,
+		client:            client,
+		pane:              paneSessions,
+		sidebar:           bp,
+		spinner:           sp,
+		searchInput:       ti,
+		projectDir:        cwd,
+		projectName:       filepath.Base(cwd),
+		hostname:          hostname,
+		gitRef:            gitRef,
+		sidebarWidthRatio: sidebarWidthRatioFromPrefs(prefs),
 	}
 }
 
@@ -257,9 +263,54 @@ func (m *InboxModel) discoverCmd() tea.Cmd {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = m.client.Sessions().Discover(ctx, cwd)
+		_ = m.client.Sessions().Discover(ctx, agent.BackendOpenCode, cwd)
+		_ = m.client.Sessions().Discover(ctx, agent.BackendClaudeCode, cwd)
 		// After discovery completes, trigger a refresh to show new sessions.
 		return inboxRefreshMsg{}
+	}
+}
+
+// discoverResultMsg carries the outcome of a user-initiated import.
+type discoverResultMsg struct {
+	imported int // number of sessions imported (best-effort count)
+	err      error
+}
+
+// discoverForProvidersCmd runs discovery for the given providers and returns
+// a discoverResultMsg with the number of newly-imported sessions.
+func (m *InboxModel) discoverForProvidersCmd(providers []importProvider) tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return discoverResultMsg{err: err}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		// Count sessions before discovery so we can report a delta.
+		before, _ := client.Sessions().List(ctx)
+		beforeCount := len(before)
+
+		for _, p := range providers {
+			var backend agent.BackendType
+			switch p {
+			case importProviderClaude:
+				backend = agent.BackendClaudeCode
+			case importProviderOpenCode:
+				backend = agent.BackendOpenCode
+			default:
+				continue
+			}
+			_ = client.Sessions().Discover(ctx, backend, cwd)
+		}
+
+		after, _ := client.Sessions().List(ctx)
+		imported := len(after) - beforeCount
+		if imported < 0 {
+			imported = 0
+		}
+		return discoverResultMsg{imported: imported}
 	}
 }
 
@@ -345,7 +396,7 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// permanently kill the refresh loop.
 	if _, ok := msg.(inboxRefreshMsg); ok {
 		if m.screen == screenInbox {
-			return m, tea.Batch(m.loadDataCmd(), m.sidebar.loadBranches(), m.autoRefreshCmd())
+			return m, tea.Batch(m.loadDataCmd(), m.autoRefreshCmd())
 		}
 		return m, m.autoRefreshCmd()
 	}
@@ -419,6 +470,11 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateConfirm(msg)
 	}
 
+	// If import sessions modal is open, delegate.
+	if m.showImportSessions {
+		return m.updateImportSessions(msg)
+	}
+
 	// If merge overlay is open, delegate.
 	if m.showMerge {
 		return m.updateMerge(msg)
@@ -445,9 +501,12 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case branchLoadedMsg, branchWorktreeCreatedMsg:
+	case branchWorktreeCreatedMsg:
 		cmd := m.sidebar.Update(msg)
 		return m, cmd
+
+	case newWorktreeSessionRequestMsg:
+		return m, m.openNewWorktreeSession(msg.worktreeDir)
 
 	case inboxDataMsg:
 		if msg.err != nil {
@@ -455,7 +514,7 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.err = nil
 			m.cachedSessions = msg.sessions
-			m.updateBranchSessionCounts()
+			m.sidebar.SetSessions(m.cachedSessions)
 			m.buildGroups(m.filteredSessions())
 		}
 		return m, nil
@@ -463,6 +522,23 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case inboxSearchResultMsg:
 		// Late-arriving search result after exiting search mode — ignore.
 		return m, nil
+
+	case discoverResultMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, m.loadDataCmd()
+		}
+		noun := "session"
+		if msg.imported != 1 {
+			noun = "sessions"
+		}
+		body := fmt.Sprintf("Found %d new %s.\nAdd them to your inbox?", msg.imported, noun)
+		if msg.imported == 0 {
+			body = "No new sessions found."
+		}
+		m.showConfirm = true
+		m.confirm = newConfirmDialog("Import Sessions", body, "import-done:")
+		return m, m.loadDataCmd()
 
 	case nativeCLIReturnMsg:
 		// User returned from native CLI — refresh inbox to pick up any
@@ -563,10 +639,7 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return nil
 			}
 		}
-		return m, tea.Batch(
-			tea.Sequence(markRead, m.loadDataCmd()),
-			m.sidebar.loadBranches(),
-		)
+		return m, tea.Sequence(markRead, m.loadDataCmd())
 
 	case openForkedSessionMsg:
 		forkMsg := msg.(openForkedSessionMsg)
@@ -631,6 +704,26 @@ func (m *InboxModel) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m *InboxModel) updateImportSessions(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case importSessionsCancelMsg:
+		m.showImportSessions = false
+		return m, nil
+
+	case importSessionsConfirmMsg:
+		m.showImportSessions = false
+		if len(msg.providers) == 0 {
+			return m, nil
+		}
+		return m, m.discoverForProvidersCmd(msg.providers)
+
+	default:
+		var cmd tea.Cmd
+		m.importSessions, cmd = m.importSessions.Update(msg)
+		return m, cmd
+	}
+}
+
 func (m *InboxModel) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case mergeResultMsg:
@@ -640,7 +733,7 @@ func (m *InboxModel) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else if msg.merged {
 			// Refresh data to reflect the merge (sessions marked done,
 			// worktree removed, branch deleted).
-			return m, tea.Batch(m.loadDataCmd(), m.sidebar.loadBranches())
+			return m, m.loadDataCmd()
 		}
 		return m, nil
 
@@ -652,15 +745,39 @@ func (m *InboxModel) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // openComposingSession opens a composing SessionViewModel where the user
 // types their first prompt. The session is created on send.
-// If a branch is selected in the sidebar, it's passed through to the
-// session so the backend runs in the corresponding worktree.
+// If a worktree is selected in the sidebar, the session is opened in that directory.
 func (m *InboxModel) openComposingSession() tea.Cmd {
 	m.screen = screenSession
 	m.activeConnID = ""
 
 	projectDir, _ := os.Getwd()
+	if dir := m.sidebar.SelectedWorktreeDir(); dir != "" {
+		projectDir = dir
+	}
 	m.sessionView = NewSessionViewComposing(m.client, projectDir)
-	m.sessionView.worktreeBranch = m.sidebar.SelectedBranch()
+	m.sessionView.voice = &m.voice
+	m.sessionView.width = m.width
+	m.sessionView.height = m.height
+	if m.width > 0 {
+		m.sessionView.input.SetWidth(m.width - promptInputBorderSize)
+	}
+	return m.sessionView.Init()
+}
+
+// openNewWorktreeSession opens a composing session inside a newly created
+// worktree and marks the compose view with the new-worktree indicator.
+func (m *InboxModel) openNewWorktreeSession(worktreeDir string) tea.Cmd {
+	m.screen = screenSession
+	m.activeConnID = ""
+
+	m.sessionView = NewSessionViewComposing(m.client, worktreeDir)
+	m.sessionView.isNewWorktree = true
+	// Best-effort: resolve the default branch for the indicator label.
+	// Errors (non-git dir, etc.) leave baseBranch empty and the indicator
+	// omits the base name gracefully.
+	if base, err := git.DefaultBranch(worktreeDir); err == nil {
+		m.sessionView.baseBranch = base
+	}
 	m.sessionView.voice = &m.voice
 	m.sessionView.width = m.width
 	m.sessionView.height = m.height
@@ -716,13 +833,14 @@ func (m *InboxModel) filteredSessions() []agent.SessionInfo {
 		sessions = filtered
 	}
 
-	// Filter by branch (if a branch is selected in the sidebar). Match by
-	// branch name only, not on-disk path: a branch is a logical identity
-	// regardless of where the host materialized the worktree on disk.
-	if branch := m.sidebar.SelectedBranch(); branch != "" {
+	// Filter by worktree directory (if a worktree is selected in the sidebar).
+	// Match by LocalPath so discovered sessions (which only have LocalPath set)
+	// are correctly included.
+	// TODO: investigate whether WorktreeBranch field can be deprecated.
+	if dir := m.sidebar.SelectedWorktreeDir(); dir != "" {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
-			if s.GitRef.WorktreeBranch == branch {
+			if s.GitRef.LocalPath == dir {
 				filtered = append(filtered, s)
 			}
 		}
@@ -771,6 +889,7 @@ func (m *InboxModel) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.err = nil
 			m.cachedSessions = msg.sessions
+			m.sidebar.SetSessions(m.cachedSessions)
 			// Only rebuild from this data if not actively filtering.
 			if m.searchQuery == "" {
 				m.buildGroups(m.filteredSessions())
@@ -853,10 +972,10 @@ func (m *InboxModel) buildSearchResults(sessions []agent.SessionInfo) {
 		}
 		sessions = filtered
 	}
-	if branch := m.sidebar.SelectedBranch(); branch != "" {
+	if dir := m.sidebar.SelectedWorktreeDir(); dir != "" {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
-			if s.GitRef.WorktreeBranch == branch {
+			if s.GitRef.LocalPath == dir {
 				filtered = append(filtered, s)
 			}
 		}
@@ -1140,6 +1259,9 @@ func (m *InboxModel) handleConfirmAction(action string) tea.Cmd {
 		return m.setSessionVisibility(id, agent.VisibilityArchived)
 	case "unarchive":
 		return m.setSessionVisibility(id, agent.VisibilityVisible)
+	case "import-done":
+		// User confirmed the import summary — just reload.
+		return m.loadDataCmd()
 	}
 	return nil
 }
@@ -1393,6 +1515,11 @@ func (m *InboxModel) View() tea.View {
 		content = overlayCenter(content, m.providerAuth.View(), m.width, m.height)
 	}
 
+	// Overlay import sessions modal if open.
+	if m.showImportSessions {
+		content = overlayCenter(content, m.importSessions.View(), m.width, m.height)
+	}
+
 	// Overlay help if open.
 	if m.showHelp {
 		content = m.overlayHelp(content)
@@ -1502,6 +1629,10 @@ const minTwoPaneWidth = 80
 // session pane in two-pane layout.
 const sidebarGap = 1
 
+// defaultSidebarWidthRatio is the default sidebar width as a percentage of
+// the terminal width. Adjustable at runtime with the +/- keys.
+const defaultSidebarWidthRatio = 40
+
 // showTwoPanes returns true when the terminal is wide enough and the user
 // hasn't manually hidden the sidebar with 'w'.
 func (m *InboxModel) showTwoPanes() bool {
@@ -1517,8 +1648,41 @@ func (m *InboxModel) setPane(p inboxPane) {
 	m.sidebar.SetFocused(p == paneSidebar)
 }
 
+// sidebarWidthRatioFromPrefs returns the persisted sidebar width ratio, or the
+// default if none has been saved yet.
+func sidebarWidthRatioFromPrefs(prefs config.Preferences) int {
+	if prefs.SidebarWidthRatio > 0 {
+		return prefs.SidebarWidthRatio
+	}
+	return defaultSidebarWidthRatio
+}
+
+// persistSidebarWidthRatio saves the given ratio to the preferences file.
+// Intended to be called in a goroutine so the TUI doesn't block on disk
+// I/O. The ratio is passed in (rather than read from m.sidebarWidthRatio
+// inside the goroutine) so concurrent main-loop updates don't race with
+// the disk write. Receiver is kept for symmetry with other InboxModel
+// methods.
+func (m *InboxModel) persistSidebarWidthRatio(ratio int) {
+	prefs, _ := config.LoadPreferences()
+	prefs.SidebarWidthRatio = ratio
+	_ = config.SavePreferences(prefs)
+}
+
 // sidebarRenderWidth returns the width allocated to the sidebar (including border).
+// The width scales with the terminal: sidebarWidthRatio% of screen width, clamped to [22, 60].
+// Falls back to the sidebarWidth constant when the screen width is not yet known.
 func (m *InboxModel) sidebarRenderWidth() int {
+	if m.width > 0 {
+		w := m.width * m.sidebarWidthRatio / 100
+		if w < 22 {
+			w = 22
+		}
+		if w > 60 {
+			w = 60
+		}
+		return w
+	}
 	return sidebarWidth
 }
 
@@ -1544,43 +1708,6 @@ func (m *InboxModel) rightPaneBorder() lipgloss.Style {
 	return paneBorderStyle(m.pane == paneSessions).
 		Width(m.sessionPaneWidth() + paneWrapBuffer).
 		Height(m.height - paneBorderInset)
-}
-
-// updateBranchSessionCounts computes per-branch session status summaries
-// from cachedSessions and passes them to the sidebar for display.
-// Sessions are attributed to branches by WorktreeBranch — the canonical
-// branch identity carried on the wire (§7.1). When a project filter is
-// active the counts are scoped to that repo so the sidebar reflects the
-// same world the main pane is showing; otherwise unrelated repos that
-// happen to share a branch name (e.g. "main") would inflate the count.
-func (m *InboxModel) updateBranchSessionCounts() {
-	statusMap := make(map[string]branchSessionStatus)
-	scoped := m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.RemoteURL != "")
-	repoKey := ""
-	if scoped {
-		repoKey = agent.RepoKey(m.gitRef)
-	}
-	for _, s := range m.cachedSessions {
-		branch := s.GitRef.WorktreeBranch
-		if branch == "" {
-			continue
-		}
-		if scoped && agent.RepoKey(s.GitRef) != repoKey {
-			continue
-		}
-		st := statusMap[branch]
-		st.Total++
-		switch s.Visibility {
-		case agent.VisibilityArchived:
-			st.Archived++
-		case agent.VisibilityDone:
-			st.Done++
-		default:
-			st.Active++
-		}
-		statusMap[branch] = st
-	}
-	m.sidebar.SetSessionStatus(statusMap)
 }
 
 // handleSidebarKey forwards key events to the sidebar while it's focused.
@@ -1627,6 +1754,43 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			m.showMerge = true
 		}
 		return m, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("+", "="))):
+		// Don't resize while typing a branch name.
+		if m.sidebar.creating {
+			break
+		}
+		// Increase sidebar width by one character.
+		if m.width > 0 {
+			target := m.sidebarRenderWidth() + 1
+			newRatio := target * 100 / m.width
+			if newRatio <= m.sidebarWidthRatio {
+				newRatio = m.sidebarWidthRatio + 1
+			}
+			m.sidebarWidthRatio = newRatio
+			m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
+			go m.persistSidebarWidthRatio(m.sidebarWidthRatio)
+		}
+		return m, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("-"))):
+		// Don't resize while typing a branch name.
+		if m.sidebar.creating {
+			break
+		}
+		// Decrease sidebar width by one character.
+		if m.width > 0 {
+			target := m.sidebarRenderWidth() - 1
+			newRatio := target * 100 / m.width
+			if newRatio >= m.sidebarWidthRatio {
+				newRatio = m.sidebarWidthRatio - 1
+			}
+			if newRatio < 1 {
+				newRatio = 1
+			}
+			m.sidebarWidthRatio = newRatio
+			m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
+			go m.persistSidebarWidthRatio(m.sidebarWidthRatio)
+		}
+		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("right", "shift+right"))):
 		// Right arrow navigates to the session pane.
 		if m.sidebar.creating {
@@ -1655,6 +1819,12 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		// the user can still navigate back into it.
 		if m.sidebar.CursorOnSettings() {
 			m.openSettings()
+			return m, nil
+		}
+		// Enter on the "↓ Import Sessions" row opens the provider selector.
+		if m.sidebar.CursorOnImport() {
+			m.showImportSessions = true
+			m.importSessions = newImportSessionsModel()
 			return m, nil
 		}
 		// Enter on a branch selects it and switches focus to session pane.
@@ -1818,16 +1988,6 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 		unreadMark = lipgloss.NewStyle().Foreground(dangerColor).Bold(true).Render("*")
 	}
 
-	// Agent mode badge — colored so users can quickly triage build vs plan sessions.
-	agentBadge := fmt.Sprintf("%-5s", "")
-	if s.Agent != "" {
-		badgeColor := agentColor(s.Agent)
-		if isDone || isArchived {
-			badgeColor = mutedColor
-		}
-		agentBadge = lipgloss.NewStyle().Foreground(badgeColor).Render(fmt.Sprintf("%-5s", s.Agent))
-	}
-
 	// Branch badge — shown only when viewing all branches (no branch filter active).
 	const branchBadgeWidth = 12
 	branchBadge := ""
@@ -1846,24 +2006,32 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 		branchExtra = branchBadgeWidth - 1 // visible width including trailing space
 	}
 
-	projectName := agent.RepoDisplayName(s.GitRef)
-	if len(projectName) > 12 {
-		projectName = projectName[:11] + "…"
+	// Project badge — shown only in "All" view; redundant when a specific folder is selected.
+	const projectBadgeWidth = 13 // 12 chars + 1 trailing space
+	styledProject := ""
+	isAllView := m.sidebar.SelectedBranch() == ""
+	if isAllView {
+		projectName := agent.RepoDisplayName(s.GitRef)
+		if len(projectName) > 12 {
+			projectName = projectName[:11] + "…"
+		}
+		paddedProject := fmt.Sprintf("%-12s", projectName)
+		projectColor := secondaryColor
+		if isDone || isArchived {
+			projectColor = mutedColor
+		}
+		styledProject = lipgloss.NewStyle().Foreground(projectColor).Render(paddedProject) + " "
 	}
-	paddedProject := fmt.Sprintf("%-12s", projectName)
-	projectColor := secondaryColor
-	if isDone {
-		projectColor = mutedColor
-	} else if isArchived {
-		projectColor = mutedColor
-	}
-	styledProject := lipgloss.NewStyle().Foreground(projectColor).Render(paddedProject)
 
-	// Fixed-width columns before the prompt: "  " (2) + project (12) + " " (1) + stateIcon (1) + " " (1) + agent (5) + " " (1) + unread (1) + " " (1)
+	// Fixed-width columns before the prompt: "  " (2) + stateIcon (1) + " " (1) + unread (1) + " " (1)
+	// project badge (13) is added on top when in "All" view.
 	// We also reserve 9 chars on the right for the timestamp (8 chars padded + 1 space).
 	const agoWidth = 9
-	const draftSuffix = " draft"                         // 6 chars when present
-	leftFixedWidth := 2 + 12 + 1 + 1 + 1 + 5 + 1 + 1 + 1 // 25
+	const draftSuffix = " draft"        // 6 chars when present
+	leftFixedWidth := 2 + 1 + 1 + 1 + 1 // 6
+	if isAllView {
+		leftFixedWidth += projectBadgeWidth
+	}
 	draftExtra := 0
 	if s.Draft != "" {
 		draftExtra = len(draftSuffix)
@@ -1904,10 +2072,10 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	styledAgo := lipgloss.NewStyle().Foreground(dimColor).Render(ago)
 
 	// Build the left portion of the line (everything except the timestamp).
-	left := fmt.Sprintf("  %s %s %s %s%s %s",
+	// styledProject already includes its trailing space when non-empty.
+	left := fmt.Sprintf("  %s%s %s%s %s",
 		styledProject,
 		stateIcon,
-		agentBadge,
 		branchBadge,
 		unreadMark,
 		prompt,

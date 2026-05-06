@@ -47,6 +47,10 @@ type BranchInfo struct {
 	LinesAdded   int    `json:"lines_added,omitempty"`
 	LinesRemoved int    `json:"lines_removed,omitempty"`
 	CommitsAhead int    `json:"commits_ahead,omitempty"`
+	// RepoLabel is the display name used to group branches in the sidebar.
+	// Set to the remote name when available; falls back to the basename of
+	// the repo root so it is always non-empty and unique for local repos.
+	RepoLabel string `json:"repo_label,omitempty"`
 }
 
 // WorktreeInfo describes a single worktree managed by the Host.

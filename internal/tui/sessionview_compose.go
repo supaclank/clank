@@ -17,9 +17,9 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host"
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
 )
 
 // sessionCreateResultMsg carries the result of creating a session from composing mode.
@@ -399,7 +399,17 @@ func (m *SessionViewModel) renderComposeHeader() string {
 	if gap < 2 {
 		gap = 2
 	}
-	return title + strings.Repeat(" ", gap) + backendStr
+	header := title + strings.Repeat(" ", gap) + backendStr
+
+	if m.isNewWorktree {
+		indicator := "  New Worktree"
+		if m.baseBranch != "" {
+			indicator += " | base: " + m.baseBranch
+		}
+		header += "\n" + lipgloss.NewStyle().Foreground(secondaryColor).Render(indicator)
+	}
+
+	return header
 }
 
 func (m *SessionViewModel) renderBackendSelector() string {
