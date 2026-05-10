@@ -388,6 +388,9 @@ func (m *SidebarModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		if sec, _ := m.cursorSection(); sec == sectionWorktrees {
 			m.creating = true
 			m.input.SetValue("")
+			// Entering creating mode shrinks entryViewportH; rescroll so
+			// the cursor's entry stays inside the smaller window.
+			m.ensureVisible()
 			return m.input.Focus()
 		}
 	}
@@ -619,11 +622,16 @@ func (m *SidebarModel) listHeight() int {
 // entryViewportH returns the number of entry rows that fit in the scrollable
 // middle section. Fixed lines consumed: header(1)+blank(1)+All(1)+blank(1)+
 // footer_sep(1)+import(1)+cloud(1)+settings(1) = 8. When creating, the
-// inline input takes 2 additional lines.
+// inline input takes additional lines: 2 in the All section (input + blank)
+// or 1 inside the entries list (input only).
 func (m *SidebarModel) entryViewportH() int {
 	extra := 0
 	if m.creating {
-		extra = 2
+		if m.cursor == 0 {
+			extra = 2
+		} else {
+			extra = 1
+		}
 	}
 	vh := m.listHeight() - 8 - extra
 	if vh < 1 {

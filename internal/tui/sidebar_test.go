@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -300,5 +301,44 @@ func TestSidebar_SetSessionsClampsScrollToZeroOnEmpty(t *testing.T) {
 	m.SetSessions(nil)
 	if m.scroll != 0 {
 		t.Errorf("scroll: got %d, want 0", m.scroll)
+	}
+}
+
+// TestSidebar_CreateOnLastVisibleEntry_KeepsCursorAndInputVisible is a
+// regression for a bug where pressing 'n' on the last visible entry of a
+// scrollable sidebar made the cursor's row and the input row both vanish:
+// entering creating mode shrinks entryViewportH but ensureVisible was not
+// called, so the cursor entry fell outside entries[scroll:scroll+vh].
+func TestSidebar_CreateOnLastVisibleEntry_KeepsCursorAndInputVisible(t *testing.T) {
+	t.Parallel()
+
+	// height=18 → listHeight=14, vh=6 normally, vh=5 when creating on an
+	// entry. With 20 entries the list is scrollable.
+	m := NewSidebarModel(nil, "local", agent.GitRef{LocalPath: "/tmp"}, "/tmp")
+	m.entries = makeEntries(20)
+	m.focused = true
+	m.width = 30
+	m.height = 18
+	m.cursor = 6 // last visible entry (entries[5], label "bf") at scroll=0
+
+	if vh := m.entryViewportH(); vh != 6 {
+		t.Fatalf("precondition: vh=%d, want 6", vh)
+	}
+
+	m.handleKey(tea.KeyPressMsg{Text: "n", Code: 'n'})
+
+	if !m.creating {
+		t.Fatal("expected creating=true after 'n'")
+	}
+
+	out := m.View()
+	wantLabel := entryName(5) // "bf"
+	if !strings.Contains(out, wantLabel) {
+		t.Errorf("cursor entry %q missing from view after 'n':\n%s", wantLabel, out)
+	}
+	// The new-branch input shows a placeholder ending in "ranch-name"
+	// (the leading "b" gets wrapped in cursor-highlight ANSI codes).
+	if !strings.Contains(out, "ranch-name") {
+		t.Errorf("input row missing from view after 'n':\n%s", out)
 	}
 }
