@@ -342,3 +342,50 @@ func TestSidebar_CreateOnLastVisibleEntry_KeepsCursorAndInputVisible(t *testing.
 		t.Errorf("input row missing from view after 'n':\n%s", out)
 	}
 }
+
+// TestSidebar_CreateMovesSelectionMarkerToInputRow verifies the "> " marker
+// follows where the user is typing: while creating, the parent entry no
+// longer carries the marker and the input row carries it instead.
+func TestSidebar_CreateMovesSelectionMarkerToInputRow(t *testing.T) {
+	t.Parallel()
+
+	m := NewSidebarModel(nil, "local", agent.GitRef{LocalPath: "/tmp"}, "/tmp")
+	m.entries = makeEntries(3)
+	m.focused = true
+	m.width = 30
+	m.height = 24
+	m.cursor = 1 // first entry "bb"
+
+	beforeLines := splitVisibleLines(m.View())
+	parentBefore := lineContaining(beforeLines, entryName(0))
+	if !strings.Contains(parentBefore, "> ") {
+		t.Fatalf("precondition: parent row should carry '> ' before 'n':\n%s", parentBefore)
+	}
+
+	m.handleKey(tea.KeyPressMsg{Text: "n", Code: 'n'})
+
+	afterLines := splitVisibleLines(m.View())
+	parentAfter := lineContaining(afterLines, entryName(0))
+	if strings.Contains(parentAfter, "> ") {
+		t.Errorf("parent row should not carry '> ' while creating:\n%s", parentAfter)
+	}
+	inputRow := lineContaining(afterLines, "ranch-name")
+	if !strings.Contains(inputRow, "> ") {
+		t.Errorf("input row should carry '> ' while creating:\n%s", inputRow)
+	}
+}
+
+// splitVisibleLines splits a rendered view into raw lines (ANSI preserved).
+func splitVisibleLines(out string) []string {
+	return strings.Split(out, "\n")
+}
+
+// lineContaining returns the first line containing substr, or "" if none.
+func lineContaining(lines []string, substr string) string {
+	for _, l := range lines {
+		if strings.Contains(l, substr) {
+			return l
+		}
+	}
+	return ""
+}

@@ -453,9 +453,12 @@ func (m *SidebarModel) View() string {
 	lines = append(lines, header)
 	lines = append(lines, "")
 
-	// "All" entry (no filter).
+	// "All" entry (no filter). When creating with cursor on All, the
+	// selection marker moves down to the input row so the highlight
+	// follows where the user is typing.
+	allSelected := m.cursor == 0 && m.focused && !m.creating
 	allLabel := "  All"
-	if m.cursor == 0 && m.focused {
+	if allSelected {
 		allLabel = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ") +
 			lipgloss.NewStyle().Foreground(textColor).Bold(true).Render("All")
 	} else if m.cursor == 0 {
@@ -469,7 +472,7 @@ func (m *SidebarModel) View() string {
 	// When creating a new worktree with cursor on "All", show input here.
 	if m.creating && m.cursor == 0 {
 		m.input.SetWidth(contentWidth - 2)
-		lines = append(lines, "  "+m.input.View())
+		lines = append(lines, m.renderInputRow())
 		lines = append(lines, "")
 	}
 
@@ -527,15 +530,28 @@ func (m *SidebarModel) renderWorktreeEntries(contentWidth int) []string {
 		lines = append(lines, m.renderWorktreeEntry(e, idx, contentWidth))
 		if m.creating && m.cursor == idx {
 			m.input.SetWidth(contentWidth - 2)
-			lines = append(lines, "  "+m.input.View())
+			lines = append(lines, m.renderInputRow())
 		}
 	}
 	return lines
 }
 
+// renderInputRow renders the inline new-branch input. The "> " marker is
+// placed here (not on the parent entry) so the selection follows where the
+// user is actually typing.
+func (m *SidebarModel) renderInputRow() string {
+	prefix := "  "
+	if m.focused {
+		prefix = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ")
+	}
+	return prefix + m.input.View()
+}
+
 // renderWorktreeEntry renders a single worktree entry with session count badge.
 func (m *SidebarModel) renderWorktreeEntry(e worktreeEntry, idx, maxWidth int) string {
-	selected := m.cursor == idx && m.focused
+	// While creating, the selection marker moves to the input row below
+	// this entry, so the parent renders un-selected.
+	selected := m.cursor == idx && m.focused && !m.creating
 
 	countBadge := ""
 	badgeColor := dimColor
