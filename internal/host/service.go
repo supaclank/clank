@@ -824,13 +824,44 @@ func (s *Service) RevertSession(ctx context.Context, id, messageID string) error
 	return b.Revert(ctx, messageID)
 }
 
-// ForkSession creates a sibling session forked off messageID.
-func (s *Service) ForkSession(ctx context.Context, id, messageID string) (agent.ForkResult, error) {
+// ForkSession creates a sibling session forked off messageID and
+// persists it as a new row so callers can navigate to it by the host's
+// internal ID. Without this the wire response would only carry the
+// backend's external session id (e.g. "ses_…"), which doesn't map to
+// anything the host can look up.
+func (s *Service) ForkSession(ctx context.Context, id, messageID string) (agent.SessionInfo, error) {
 	b, err := s.ensureBackend(ctx, id)
 	if err != nil {
-		return agent.ForkResult{}, err
+		return agent.SessionInfo{}, err
 	}
-	return b.Fork(ctx, messageID)
+	fork, err := b.Fork(ctx, messageID)
+	if err != nil {
+		return agent.SessionInfo{}, err
+	}
+
+	src, err := s.sessionsStore.GetSession(ctx, id)
+	if err != nil {
+		return agent.SessionInfo{}, fmt.Errorf("fork: load source %s: %w", id, err)
+	}
+	now := time.Now()
+	info := agent.SessionInfo{
+		ID:         ulid.Make().String(),
+		ExternalID: fork.ID,
+		Backend:    src.Backend,
+		Status:     agent.StatusIdle,
+		Hostname:   src.Hostname,
+		GitRef:     src.GitRef,
+		Prompt:     src.Prompt,
+		TicketID:   src.TicketID,
+		Agent:      src.Agent,
+		Title:      fork.Title,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := s.sessionsStore.UpsertSession(ctx, info); err != nil {
+		return agent.SessionInfo{}, fmt.Errorf("fork: persist new session: %w", err)
+	}
+	return info, nil
 }
 
 // SessionMessages returns the conversation history.

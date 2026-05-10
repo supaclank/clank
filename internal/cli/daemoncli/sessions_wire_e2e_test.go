@@ -85,6 +85,13 @@ func TestWire_RevertSession(t *testing.T) {
 	}
 }
 
+// Regression: the daemon used to return ForkResult ({ID, Title} with
+// uppercase JSON keys) which case-insensitively unmarshalled into
+// SessionInfo so the client received SessionInfo.ID = backend's external
+// session id (e.g. "ses_…"). The TUI then navigated to /sessions/ses_…
+// and saw "host: not found" because the host store is keyed by internal
+// ULID. Assert the response has a fresh ULID id, a populated external
+// id, and is reachable through GetSession.
 func TestWire_ForkSession(t *testing.T) {
 	t.Parallel()
 	td := newTestDaemon(t)
@@ -104,6 +111,22 @@ func TestWire_ForkSession(t *testing.T) {
 	b.mu.Unlock()
 	if gotID != "msg-7" {
 		t.Errorf("backend.Fork message_id = %q, want %q", gotID, "msg-7")
+	}
+	if got.ID == info.ID {
+		t.Errorf("Fork should return a fresh session ID, got the source's: %q", got.ID)
+	}
+	if strings.HasPrefix(got.ID, "ext-forked-") {
+		t.Errorf("Fork returned the backend's external id as SessionInfo.ID: %q (the bug)", got.ID)
+	}
+	if got.ExternalID != "ext-forked-msg-7" {
+		t.Errorf("Fork SessionInfo.ExternalID = %q, want %q", got.ExternalID, "ext-forked-msg-7")
+	}
+	roundTrip, err := td.Client.Session(got.ID).Get(ctx)
+	if err != nil {
+		t.Fatalf("GetSession on forked id: %v", err)
+	}
+	if roundTrip.ID != got.ID {
+		t.Errorf("round-trip id mismatch: got %q want %q", roundTrip.ID, got.ID)
 	}
 }
 
