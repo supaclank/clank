@@ -150,6 +150,11 @@ type InboxModel struct {
 	showProviderAuth bool
 	providerAuth     providerAuthModel
 
+	// Cloud URL picker modal. Lets the user select from known cloud
+	// providers or enter a custom URL.
+	showCloudURLPicker bool
+	cloudURLPicker     cloudURLPickerModel
+
 	// Spinner for busy session indicators.
 	spinner spinner.Model
 
@@ -1564,6 +1569,11 @@ func (m *InboxModel) View() tea.View {
 	// Overlay provider auth modal if open.
 	if m.showProviderAuth {
 		content = overlayCenter(content, m.providerAuth.View(), m.width, m.height)
+	}
+
+	// Overlay cloud URL picker modal if open.
+	if m.showCloudURLPicker {
+		content = overlayCenter(content, m.cloudURLPicker.View(), m.width, m.height)
 	}
 
 	// Overlay import sessions modal if open.

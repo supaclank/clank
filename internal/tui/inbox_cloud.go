@@ -9,6 +9,8 @@ package tui
 import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/acksell/clank/internal/config"
 )
 
 // showCloud renders the Cloud panel in the right pane without shifting
@@ -64,6 +66,24 @@ func (m *InboxModel) updateCloud(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Cloud URL picker modal takes precedence when open.
+	if m.showCloudURLPicker {
+		return m.updateCloudURLPicker(msg)
+	}
+
+	// cloudOpenURLPickerMsg is emitted by cloudView when the user presses
+	// 'u'. The inbox owns the picker state, so it's handled here.
+	if _, ok := msg.(cloudOpenURLPickerMsg); ok {
+		prefs, _ := config.LoadPreferences()
+		currentURL := ""
+		if prefs.Cloud != nil {
+			currentURL = prefs.Cloud.CloudURL
+		}
+		m.cloudURLPicker = newCloudURLPicker(currentURL)
+		m.showCloudURLPicker = true
+		return m, m.cloudURLPicker.Init()
+	}
+
 	// Global key handling that the cloud view itself doesn't own.
 	// Quit and "back to inbox" must work from any cloud phase so the
 	// user is never stuck. Phase-specific keys (Enter to start the
@@ -115,4 +135,36 @@ func (m *InboxModel) updateCloud(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// (checking/unavailable) without the sidebar owning either.
 	m.sidebar.SetCloudStatus(m.cloud.Status())
 	return m, cmd
+}
+
+// updateCloudURLPicker forwards messages to the cloud URL picker modal
+// and handles its terminal messages (result/cancel).
+func (m *InboxModel) updateCloudURLPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case cloudURLPickerResultMsg:
+		m.showCloudURLPicker = false
+		persistCloudURL(msg.url)
+		// Reinitialize the cloud view so it picks up the new URL immediately.
+		m.cloud = newCloudView()
+		m.cloud.SetSize(m.sessionPaneWidth(), m.height)
+		m.cloudInitialized = true
+		return m, m.cloud.Init()
+	case cloudURLPickerCancelMsg:
+		m.showCloudURLPicker = false
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.cloudURLPicker, cmd = m.cloudURLPicker.Update(msg)
+	return m, cmd
+}
+
+// persistCloudURL writes the chosen cloud URL to preferences.json.
+// An empty url clears the field, disabling cloud features.
+func persistCloudURL(url string) {
+	_ = config.UpdatePreferences(func(p *config.Preferences) {
+		if p.Cloud == nil {
+			p.Cloud = &config.CloudPreference{}
+		}
+		p.Cloud.CloudURL = url
+	})
 }

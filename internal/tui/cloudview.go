@@ -60,6 +60,10 @@ type cloudMeResultMsg struct {
 	err error
 }
 
+// cloudOpenURLPickerMsg is emitted when the user requests to change
+// the cloud URL. The inbox intercepts it and opens the URL picker modal.
+type cloudOpenURLPickerMsg struct{}
+
 // --- model ----------------------------------------------------------
 
 type cloudView struct {
@@ -269,6 +273,12 @@ func (m cloudView) Update(msg tea.Msg) (cloudView, tea.Cmd) {
 
 func (m cloudView) handleKey(msg tea.KeyPressMsg) (cloudView, tea.Cmd) {
 	switch m.phase {
+	case cloudPhaseNotConfigured:
+		if key.Matches(msg, key.NewBinding(key.WithKeys("enter"))) {
+			return m, func() tea.Msg { return cloudOpenURLPickerMsg{} }
+		}
+		return m, nil
+
 	case cloudPhaseSignedOut:
 		// Enter starts the device flow; any other key is a no-op so
 		// the user can navigate back to the sidebar.
@@ -426,21 +436,7 @@ func (m cloudView) View() string {
 
 func (m cloudView) viewNotConfigured() string {
 	muted := lipgloss.NewStyle().Foreground(mutedColor)
-	prefsPath := "~/.clank/preferences.json"
-	if dir, err := config.Dir(); err == nil && dir != "" {
-		prefsPath = dir + "/preferences.json"
-	}
-	return muted.Render(strings.Join([]string{
-		"Cloud is not configured.",
-		"",
-		"Set the cloud URL in your preferences (" + prefsPath + "):",
-		"",
-		`  "cloud": {`,
-		`    "cloud_url": "https://your-cloud.example.com"`,
-		`  }`,
-		"",
-		"clank speaks RFC 8628 device flow to the cloud — the cloud handles user auth.",
-	}, "\n"))
+	return muted.Render("Cloud credentials not set up.\n\npress Enter to configure.")
 }
 
 func (m cloudView) viewSignedOut() string {
@@ -449,7 +445,7 @@ func (m cloudView) viewSignedOut() string {
 	parts := []string{
 		text.Render("Connect this device to the cloud."),
 		"",
-		muted.Render("press Enter to start. We'll open your browser to confirm."),
+		muted.Render("press Enter to sign in."),
 	}
 	if m.err != "" {
 		parts = append([]string{lipgloss.NewStyle().Foreground(dangerColor).Render(m.err), ""}, parts...)
