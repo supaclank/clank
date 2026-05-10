@@ -87,14 +87,19 @@ func TestInbox_NavigatingOffSettingsRow_ClosesSettingsScreen(t *testing.T) {
 	// Park cursor on the settings row.
 	m.sidebar.cursor = m.sidebar.settingsCursorIndex()
 
-	// Press up to move onto an entry row.
+	// Press up to move off Settings. Cloud sits just above Settings in
+	// the footer (added after this test was written), so the immediate
+	// up-arrow lands on Cloud — that previews its own panel, making
+	// screenCloud a valid post-move state. The contract this test
+	// guards is "Settings is no longer the showing screen", not "we
+	// always return to Inbox."
 	m.updateSettings(tea.KeyPressMsg{Code: tea.KeyUp})
 
 	if m.sidebar.CursorOnSettings() {
 		t.Fatalf("precondition: cursor should have moved off settings row")
 	}
-	if m.screen != screenInbox {
-		t.Errorf("expected screenInbox after cursor left settings row, got %v", m.screen)
+	if m.screen == screenSettings {
+		t.Errorf("expected settings to no longer be showing after cursor left settings row, got screenSettings")
 	}
 }
 

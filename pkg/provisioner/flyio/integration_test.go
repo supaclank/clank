@@ -91,18 +91,27 @@ func newIntegrationProvisioner(t *testing.T) *flyio.Provisioner {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	// Best-effort cleanup; a leftover sprite would block resolveOrCreate.
-	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// Best-effort cleanup before the test runs; a leftover sprite from
+	// a crashed previous run would otherwise block resolveOrCreate.
 	rawClient := sprites.New(token)
-	if err := rawClient.DeleteSprite(cleanupCtx, integrationSpriteName); err != nil && !strings.Contains(err.Error(), "404") {
-		t.Logf("integration test: pre-cleanup of %s: %v (continuing)", integrationSpriteName, err)
+	deleteSprite := func(label string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := rawClient.DeleteSprite(ctx, integrationSpriteName); err != nil && !strings.Contains(err.Error(), "404") {
+			t.Logf("integration test: %s of %s: %v (continuing)", label, integrationSpriteName, err)
+		}
 	}
+	deleteSprite("pre-cleanup")
+	// Always destroy on exit so the sprite never lingers between runs
+	// (no orphaned billing, no stale resource conflicting with the next
+	// developer to run these tests). Registered before flyio.New so the
+	// cleanup fires even if New fails.
+	t.Cleanup(func() { deleteSprite("post-cleanup") })
 
 	prov, err := flyio.New(flyio.Options{
 		APIToken:         token,
-		HubBaseURL:       "https://test.example.invalid",
-		HubAuthToken:     "test-bearer-token",
+		MirrorBaseURL:       "https://test.example.invalid",
+		MirrorAuthToken:     "test-bearer-token",
 		OrganizationSlug: org,
 	}, st, nil)
 	if err != nil {
@@ -193,6 +202,12 @@ func TestIntegration_FlyIO_PingRouteIsReachable(t *testing.T) {
 // cloud-hub sprite (clank-host-local) without recreating it — picks
 // up whatever URL settings have accumulated across daemon versions.
 //
+// Skips if the row is missing in the store rather than cold-creating
+// a sprite — that name (`clank-host-local`) collides with what the
+// laptop daemon uses in production, and an integration test must
+// never plant a sprite there. To run this test you need to have
+// already provisioned via `make cloud-hub` (or equivalent).
+//
 //	CLANK_DIR=$HOME/.clank-cloud go test -count=1 -run TestIntegration_FlyIO_RealSpriteEventsRoute -v ./internal/provisioner/flyio/...
 func TestIntegration_FlyIO_RealSpriteEventsRoute(t *testing.T) {
 	token, org := loadFlyIOCreds(t)
@@ -211,10 +226,22 @@ func TestIntegration_FlyIO_RealSpriteEventsRoute(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 
+	// Refuse to cold-create. If the row's missing, the sprite either
+	// doesn't exist yet (run cloud-hub first) or it exists upstream
+	// without a row pointing at it (corrupt state — fix manually rather
+	// than letting a test claim it).
+	skipCtx, skipCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer skipCancel()
+	if _, err := st.GetHostByUser(skipCtx, "local", "flyio"); errors.Is(err, store.ErrHostNotFound) {
+		t.Skipf("real-sprite test: no (local, flyio) row in %s — run cloud-hub first; refusing to cold-create a sprite named clank-host-local (collides with laptop-mode production)", dbPath)
+	} else if err != nil {
+		t.Fatalf("look up real sprite row: %v", err)
+	}
+
 	prov, err := flyio.New(flyio.Options{
 		APIToken:         token,
-		HubBaseURL:       "https://test.example.invalid",
-		HubAuthToken:     "test-bearer-token",
+		MirrorBaseURL:       "https://test.example.invalid",
+		MirrorAuthToken:     "test-bearer-token",
 		OrganizationSlug: org,
 	}, st, nil)
 	if err != nil {
@@ -310,10 +337,20 @@ func TestIntegration_FlyIO_GatewayProxyToRealSpriteEvents(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 
+	// Same refusal as TestIntegration_FlyIO_RealSpriteEventsRoute: skip
+	// rather than cold-create a sprite at the production name.
+	skipCtx, skipCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer skipCancel()
+	if _, err := st.GetHostByUser(skipCtx, "local", "flyio"); errors.Is(err, store.ErrHostNotFound) {
+		t.Skipf("gateway-proxy test: no (local, flyio) row in %s — run cloud-hub first; refusing to cold-create clank-host-local", dbPath)
+	} else if err != nil {
+		t.Fatalf("look up real sprite row: %v", err)
+	}
+
 	prov, err := flyio.New(flyio.Options{
 		APIToken:         token,
-		HubBaseURL:       "https://test.example.invalid",
-		HubAuthToken:     "test-bearer-token",
+		MirrorBaseURL:       "https://test.example.invalid",
+		MirrorAuthToken:     "test-bearer-token",
 		OrganizationSlug: org,
 	}, st, nil)
 	if err != nil {

@@ -122,6 +122,7 @@ func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
 		ResolveUserID: func(*http.Request) string {
 			return "local" // single-user laptop today
 		},
+		SyncBaseURL: opts.SyncBaseURL,
 	}, log.Default())
 	if err != nil {
 		return fmt.Errorf("build gateway: %w", err)

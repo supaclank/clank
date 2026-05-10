@@ -54,7 +54,6 @@ func TestLocalE2E_TUICreatesSession_AndFetches(t *testing.T) {
 		BackendManagers: map[agent.BackendType]agent.BackendManager{
 			agent.BackendOpenCode: stub,
 		},
-		ClonesDir:     t.TempDir(),
 		SessionsStore: hs,
 	})
 	t.Cleanup(svc.Shutdown)
@@ -86,7 +85,7 @@ func TestLocalE2E_TUICreatesSession_AndFetches(t *testing.T) {
 
 	created, err := cli.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{LocalPath: repo, RemoteURL: "git@example.com:acme/repo.git"},
+		GitRef:  agent.GitRef{LocalPath: repo, WorktreeID: "01JV7T7F9Y6XQ1R6M8R2W4K3NZ"},
 		Prompt:  "hello",
 	})
 	if err != nil {

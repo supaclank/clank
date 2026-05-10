@@ -16,7 +16,6 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/cli/daemoncli"
 	"github.com/acksell/clank/internal/config"
-	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/tui"
@@ -53,6 +52,8 @@ func Command() *cobra.Command {
 	root.AddCommand(
 		codeCmd(),
 		inboxCmd(),
+		pushCmd(),
+		pullCmd(),
 	)
 
 	return root
@@ -145,14 +146,14 @@ The daemon is auto-started if not already running.`,
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
 
-			remoteURL, _ := git.RemoteURL(projectDir, "origin") // best-effort; LocalPath alone is sufficient on co-located host
+			worktreeID, _ := agent.ReadLocalWorktreeID(projectDir) // empty if `clank sync push` hasn't been run
 
 			info, err := client.Sessions().Create(ctx, agent.StartRequest{
 				Backend:  bt,
 				Hostname: host.HostLocal,
 				GitRef: agent.GitRef{
 					LocalPath:      projectDir,
-					RemoteURL:      remoteURL,
+					WorktreeID:     worktreeID,
 					WorktreeBranch: worktreeBranch,
 				},
 				Prompt:   prompt,

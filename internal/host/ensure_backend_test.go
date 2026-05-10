@@ -86,7 +86,6 @@ func TestEnsureBackend_OpenFailureTearsDownRegistration(t *testing.T) {
 		BackendManagers: map[agent.BackendType]agent.BackendManager{
 			agent.BackendOpenCode: mgr,
 		},
-		ClonesDir:     t.TempDir(),
 		SessionsStore: st,
 	})
 	t.Cleanup(svc.Shutdown)
@@ -152,7 +151,6 @@ func TestEnsureBackend_NotFoundIsErrNotFound(t *testing.T) {
 		BackendManagers: map[agent.BackendType]agent.BackendManager{
 			agent.BackendOpenCode: &noopBackendManager{},
 		},
-		ClonesDir:     t.TempDir(),
 		SessionsStore: st,
 	})
 	t.Cleanup(svc.Shutdown)

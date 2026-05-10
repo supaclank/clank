@@ -30,6 +30,7 @@ const (
 	screenInbox    inboxScreen = iota
 	screenSession              // Viewing a specific session (or composing a new one)
 	screenSettings             // Viewing the settings page in the right pane
+	screenCloud                // Viewing the cloud (cloud auth + /me) panel
 )
 
 // inboxPane tracks which pane has keyboard focus in the two-pane layout.
@@ -130,6 +131,14 @@ type InboxModel struct {
 	// Settings page state (shown when screen == screenSettings).
 	settings settingsView
 
+	// Cloud panel state (shown when screen == screenCloud). Persistent
+	// across hovers — the panel does its own /me caching by simply
+	// keeping m.me / m.session populated between visits, so re-hovering
+	// the ☁ row doesn't re-fire the request. Refresh requires either a
+	// sign-out + sign-in or pressing 'r' inside the panel.
+	cloud            cloudView
+	cloudInitialized bool
+
 	// Color-scheme picker overlay (modal). Rendered on top of whatever
 	// screen is currently active. Showing is independent of `screen` so
 	// the user can tweak theming from anywhere in the future.
@@ -183,8 +192,8 @@ func resolveLocalRepo(cwd string) (string, agent.GitRef) {
 		return "", agent.GitRef{}
 	}
 	ref := agent.GitRef{LocalPath: root}
-	if url, err := git.RemoteURL(root, "origin"); err == nil {
-		ref.RemoteURL = url
+	if id, _ := agent.ReadLocalWorktreeID(root); id != "" {
+		ref.WorktreeID = id
 	}
 	if err := ref.Validate(); err != nil {
 		return "", agent.GitRef{}
@@ -222,7 +231,7 @@ func NewInboxModel(client *daemonclient.Client) *InboxModel {
 	// Resolve cwd → (hostname, gitRef). On failure we leave both zero; the
 	// sidebar's branch load will then return a clear error to the user.
 	// The host adds the repo to its registry implicitly on the first
-	// CreateSession that carries Dir / AllowClone (§7.5).
+	// CreateSession that carries Dir (§7.5).
 	hostname, gitRef := resolveLocalRepo(cwd)
 	bp := NewSidebarModel(client, hostname, gitRef, cwd)
 	return &InboxModel{
@@ -380,13 +389,22 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.providerAuth, providerAuthCmd = m.providerAuth.Update(tickMsg)
 		}
 
+		// Forward to cloud panel so its spinner animates during the
+		// loading / awaiting / fetching-me phases. Only when the cloud
+		// is showing — outside screenCloud the panel's tick chain
+		// would die anyway because the cloud isn't rendering.
+		var cloudCmd tea.Cmd
+		if m.screen == screenCloud {
+			m.cloud, cloudCmd = m.cloud.Update(tickMsg)
+		}
+
 		// Forward to session view so its spinner keeps ticking too.
 		if m.screen == screenSession && m.sessionView != nil {
 			model, sessionCmd := m.sessionView.Update(tickMsg)
 			m.sessionView = model.(*SessionViewModel)
-			return m, tea.Batch(inboxCmd, providerAuthCmd, sessionCmd)
+			return m, tea.Batch(inboxCmd, providerAuthCmd, cloudCmd, sessionCmd)
 		}
-		return m, tea.Batch(inboxCmd, providerAuthCmd)
+		return m, tea.Batch(inboxCmd, providerAuthCmd, cloudCmd)
 	}
 
 	// Always keep the refresh timer ticking, regardless of screen state.
@@ -455,6 +473,11 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// If we're on the Settings page, delegate there.
 	if m.screen == screenSettings {
 		return m.updateSettings(msg)
+	}
+
+	// If we're on the Cloud panel, delegate there.
+	if m.screen == screenCloud {
+		return m.updateCloud(msg)
 	}
 
 	// If help overlay is open, dismiss on any key press.
@@ -823,7 +846,7 @@ func (m *InboxModel) filteredSessions() []agent.SessionInfo {
 	// Filter by repo identity (canonical GitRef). Sessions without a
 	// GitRef (e.g. adopted backends with no origin remote) are dropped
 	// from the project view since they can't be attributed to this repo.
-	if m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.RemoteURL != "") {
+	if m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.WorktreeID != "") {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
 			if agent.RepoKey(s.GitRef) == agent.RepoKey(m.gitRef) {
@@ -963,7 +986,7 @@ func (m *InboxModel) buildSearchResults(sessions []agent.SessionInfo) {
 	// Apply client-side structured filters (e.g. project, branch) on
 	// top of the daemon's text search results so the search view
 	// honours the same sidebar selection as the unfiltered list.
-	if m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.RemoteURL != "") {
+	if m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.WorktreeID != "") {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
 			if agent.RepoKey(s.GitRef) == agent.RepoKey(m.gitRef) {
@@ -1471,10 +1494,13 @@ func (m *InboxModel) View() tea.View {
 	}
 
 	sessionContent := m.renderSessionPane()
-	// When the Settings screen is active, swap the right pane for the
-	// settings page. The sidebar remains on the left exactly as usual.
+	// When the Settings or Cloud screen is active, swap the right pane.
+	// The sidebar remains on the left exactly as usual.
 	if m.screen == screenSettings {
 		sessionContent = m.settings.View()
+	}
+	if m.screen == screenCloud {
+		sessionContent = m.cloud.View()
 	}
 	var content string
 
@@ -1803,6 +1829,10 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			m.openSettings()
 			return m, nil
 		}
+		// On the "☁ Cloud" row, right arrow opens the cloud panel.
+		if m.sidebar.CursorOnCloud() {
+			return m, m.openCloud()
+		}
 		prevBranch := m.sidebar.SelectedBranch()
 		m.setPane(paneSessions)
 		if m.sidebar.SelectedBranch() != prevBranch {
@@ -1820,6 +1850,10 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		if m.sidebar.CursorOnSettings() {
 			m.openSettings()
 			return m, nil
+		}
+		// Enter on the "☁ Cloud" footer row opens the Cloud panel.
+		if m.sidebar.CursorOnCloud() {
+			return m, m.openCloud()
 		}
 		// Enter on the "↓ Import Sessions" row opens the provider selector.
 		if m.sidebar.CursorOnImport() {
@@ -1842,14 +1876,35 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 	if m.sidebar.SelectedBranch() != prevBranch {
 		m.applyFiltersAndRebuild()
 	}
-	// Mirror the branch-hover behaviour for the ⚙ Settings footer: if
-	// the cursor lands on it, render the settings page in the right pane
-	// without stealing focus from the sidebar. The reverse transition
-	// (cursor moves off Settings → revert to inbox) is handled in
-	// updateSettings, since at that point the screen is screenSettings
-	// and key routing has already moved over there.
-	if m.screen == screenInbox && m.sidebar.CursorOnSettings() {
-		m.showSettings()
+	// Hover preview: keep the right pane in sync with the sidebar
+	// cursor. Cloud / Settings rows show their respective panels;
+	// any other row snaps back to the inbox. Unified here so navigation
+	// like Settings → Cloud (cursor moving across both footer rows)
+	// transitions cleanly in one pass instead of stalling on whichever
+	// screen happened to be showing.
+	switch {
+	case m.sidebar.CursorOnCloud():
+		if m.screen != screenCloud {
+			// Batch the cloud's Init Cmd (loads prefs, fires /me if
+			// a saved session exists) into the sidebar dispatch's
+			// return so the panel's async work runs without the user
+			// having to press Enter first.
+			cmd = tea.Batch(cmd, m.showCloud())
+		}
+	case m.sidebar.CursorOnSettings():
+		if m.screen != screenSettings {
+			m.showSettings()
+		}
+	default:
+		// Cursor moved off both Cloud and Settings — drop back to
+		// inbox if we were previewing either.
+		if m.screen == screenCloud {
+			m.screen = screenInbox
+			m.cloud.SetFocused(false)
+		} else if m.screen == screenSettings {
+			m.screen = screenInbox
+			m.settings.SetFocused(false)
+		}
 	}
 	return m, cmd
 }

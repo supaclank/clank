@@ -61,7 +61,6 @@ func newTestDaemonAt(t *testing.T, dbPath string) *testDaemon {
 			agent.BackendOpenCode:   stub,
 			agent.BackendClaudeCode: stub,
 		},
-		ClonesDir:     t.TempDir(),
 		SessionsStore: hs,
 	})
 	t.Cleanup(svc.Shutdown)
@@ -105,7 +104,7 @@ func (td *testDaemon) CreateOpenCodeSession(t *testing.T, prompt string) (*agent
 
 	info, err := td.Client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{LocalPath: repo, RemoteURL: "git@example.com:acme/repo.git"},
+		GitRef:  agent.GitRef{LocalPath: repo, WorktreeID: "git@example.com:acme/repo.git"},
 		Prompt:  prompt,
 	})
 	if err != nil {

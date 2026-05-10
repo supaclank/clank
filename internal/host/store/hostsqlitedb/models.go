@@ -12,7 +12,7 @@ import (
 type PrimaryAgent struct {
 	Backend           string
 	ProjectDir        string
-	GitRemote         string
+	WorktreeID        string
 	PrimaryAgentsJson string
 	UpdatedAt         time.Time
 }
@@ -25,7 +25,7 @@ type Session struct {
 	Visibility     string
 	FollowUp       int64
 	ProjectDir     string
-	GitRemote      string
+	WorktreeID     string
 	WorktreeBranch string
 	Prompt         string
 	Title          string

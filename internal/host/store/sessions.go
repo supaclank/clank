@@ -124,7 +124,7 @@ func (s *Store) UpsertSession(ctx context.Context, info agent.SessionInfo) error
 		Visibility:     string(info.Visibility),
 		FollowUp:       followUp,
 		ProjectDir:     info.GitRef.LocalPath,
-		GitRemote:      info.GitRef.RemoteURL,
+		WorktreeID:     info.GitRef.WorktreeID,
 		WorktreeBranch: info.GitRef.WorktreeBranch,
 		Prompt:         info.Prompt,
 		Title:          info.Title,
@@ -151,7 +151,7 @@ func (s *Store) LoadPrimaryAgents(ctx context.Context, backend agent.BackendType
 	jsonBytes, err := s.q.ListPrimaryAgents(ctx, hostsqlitedb.ListPrimaryAgentsParams{
 		Backend:    string(backend),
 		ProjectDir: ref.LocalPath,
-		GitRemote:  ref.RemoteURL,
+		WorktreeID:     ref.WorktreeID,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -171,7 +171,7 @@ func (s *Store) LoadPrimaryAgents(ctx context.Context, backend agent.BackendType
 
 // UpsertPrimaryAgents stores the agent list for (backend, ref).
 func (s *Store) UpsertPrimaryAgents(ctx context.Context, backend agent.BackendType, ref agent.GitRef, agents []agent.AgentInfo) error {
-	if ref.LocalPath == "" && ref.RemoteURL == "" {
+	if ref.LocalPath == "" && ref.WorktreeID == "" {
 		return fmt.Errorf("upsert primary agents: git ref required")
 	}
 	data, err := json.Marshal(agents)
@@ -181,7 +181,7 @@ func (s *Store) UpsertPrimaryAgents(ctx context.Context, backend agent.BackendTy
 	return s.q.UpsertPrimaryAgents(ctx, hostsqlitedb.UpsertPrimaryAgentsParams{
 		Backend:           string(backend),
 		ProjectDir:        ref.LocalPath,
-		GitRemote:         ref.RemoteURL,
+		WorktreeID:     ref.WorktreeID,
 		PrimaryAgentsJson: string(data),
 		UpdatedAt:         time.Now(),
 	})
@@ -197,7 +197,7 @@ func sessionFromRow(r hostsqlitedb.Session) agent.SessionInfo {
 		FollowUp:   r.FollowUp != 0,
 		GitRef: agent.GitRef{
 			LocalPath:      r.ProjectDir,
-			RemoteURL:      r.GitRemote,
+			WorktreeID:     r.WorktreeID,
 			WorktreeBranch: r.WorktreeBranch,
 		},
 		Prompt:    r.Prompt,

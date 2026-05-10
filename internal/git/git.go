@@ -82,38 +82,6 @@ func RemoteURLs(dir string) (map[string]string, error) {
 	return urls, nil
 }
 
-// Clone runs `git clone <url> <destDir>`. destDir must not exist (git
-// creates it). Used by the host when a caller asks for implicit cloning
-// via StartRequest.AllowClone.
-func Clone(url, destDir string) error {
-	return CloneWithConfig(url, destDir, nil)
-}
-
-// CloneWithConfig is Clone plus per-clone `git config` overrides
-// (passed as `-c key=value`). Use it to attach an HTTP auth header for
-// fetching from a hub-managed mirror without writing credentials to the
-// destination's git config:
-//
-//	CloneWithConfig(url, dest, []string{"http.extraHeader=Authorization: Bearer xyz"})
-func CloneWithConfig(url, destDir string, cfg []string) error {
-	parent := filepath.Dir(destDir)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return fmt.Errorf("create clone parent %s: %w", parent, err)
-	}
-	args := make([]string, 0, 4+2*len(cfg))
-	for _, c := range cfg {
-		args = append(args, "-c", c)
-	}
-	args = append(args, "clone", url, destDir)
-	cmd := exec.Command("git", args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git clone %s: %s (%w)", url, strings.TrimSpace(stderr.String()), err)
-	}
-	return nil
-}
-
 // CurrentBranch returns the currently checked-out branch in dir.
 // Returns "HEAD" if in detached HEAD state.
 func CurrentBranch(dir string) (string, error) {

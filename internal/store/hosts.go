@@ -8,48 +8,27 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/store/sqlitedb"
+	"github.com/acksell/clank/pkg/provisioner/hoststore"
 )
 
-// HostStatus is the lifecycle state of a persistent host as the
-// provisioner most recently observed it. Values are strings rather than
-// an enum so adding a new state (e.g. "archived") doesn't require a
-// schema migration.
-type HostStatus string
+// Type aliases — the canonical definitions live in
+// pkg/provisioner/hoststore so cloud provisioners can take the
+// HostStore interface without depending on internal/. Existing
+// in-repo callers keep using store.Host etc. unchanged.
+type (
+	HostStatus = hoststore.HostStatus
+	Host       = hoststore.Host
+)
 
 const (
-	HostStatusRunning HostStatus = "running"
-	HostStatusStopped HostStatus = "stopped"
-	HostStatusError   HostStatus = "error"
+	HostStatusRunning = hoststore.HostStatusRunning
+	HostStatusStopped = hoststore.HostStatusStopped
+	HostStatusError   = hoststore.HostStatusError
 )
 
-// Host is the persistent record of a user's host across daemon restarts.
-// One row per (user_id, provider) — see UNIQUE constraint in the schema.
-//
-// LastURL/LastToken are cache hints, not the source of truth: a stale
-// entry is expected after stop/resume and the provisioner refreshes
-// them when /status fails.
-//
-// AuthToken is the clank-host bearer token, baked into the
-// sandbox/sprite at create time. Stable across stop/resume — re-read
-// on every EnsureHost so the local-side transport stays in sync.
-type Host struct {
-	ID         string
-	UserID     string
-	Provider   string
-	ExternalID string
-	Hostname   string
-	Status     HostStatus
-	LastURL    string
-	LastToken  string
-	AuthToken   string
-	AutoWake   bool
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-}
-
-// ErrHostNotFound is returned by GetHostByUser when no host matches.
-// Callers should treat this as a non-error signal to provision.
-var ErrHostNotFound = errors.New("host not found")
+// ErrHostNotFound aliases hoststore.ErrHostNotFound so errors.Is keeps
+// working across the package boundary.
+var ErrHostNotFound = hoststore.ErrHostNotFound
 
 // GetHostByUser returns the single host for (userID, provider) or
 // ErrHostNotFound. Other errors propagate as-is.

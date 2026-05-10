@@ -186,6 +186,38 @@ type Preferences struct {
 	// into the config package — the value is validated at the
 	// hub when a launcher is looked up.
 	DefaultLaunchHostProvider string `json:"default_launch_host_provider,omitempty"`
+
+	// Cloud configures the TUI's "Cloud" panel — Supabase auth +
+	// the upstream cloud control plane. The endpoint URLs identify which
+	// cloud deployment to talk to; the session fields
+	// hold the access/refresh tokens after a successful sign-in. See
+	// internal/cloud and internal/tui/cloudview.
+	Cloud *CloudPreference `json:"cloud,omitempty"`
+}
+
+// CloudPreference configures the TUI's Cloud panel.
+//
+// Provider-agnostic on purpose: clank speaks RFC 8628 device flow to
+// the cloud, and the cloud (hosted or self-hosted)
+// owns the user-auth mechanism — Supabase, GitHub OIDC, magic links,
+// whatever. clank only needs the cloud's base URL.
+//
+// Session fields are populated after a successful device-flow grant
+// and used for subsequent /me lookups. AccessToken expires; the user
+// is prompted to sign in again on 401. Refresh-token rotation is a
+// follow-up.
+type CloudPreference struct {
+	// CloudURL is the base URL of the cloud deployment, e.g.
+	// "https://your-cloud.example.com" or a self-hosted equivalent. Required
+	// for the Cloud panel to work.
+	CloudURL string `json:"cloud_url,omitempty"`
+
+	AccessToken  string `json:"access_token,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	UserEmail    string `json:"user_email,omitempty"`
+	UserID       string `json:"user_id,omitempty"`
+	// ExpiresAt is unix-seconds. Zero when no session.
+	ExpiresAt int64 `json:"expires_at,omitempty"`
 }
 
 // preferencesPath returns the path to the preferences file.

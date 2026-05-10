@@ -2470,8 +2470,8 @@ func TestSearchStatePreservedAcrossSessionView(t *testing.T) {
 		height:      40,
 	}
 	m.buildSearchResults([]agent.SessionInfo{
-		{ID: "s1", GitRef: agent.GitRef{RemoteURL: "git@github.com:acme/alpha.git"}, Prompt: "fix bug in auth", Status: agent.StatusIdle, UpdatedAt: now},
-		{ID: "s2", GitRef: agent.GitRef{RemoteURL: "git@github.com:acme/beta.git"}, Prompt: "fix bug in cart", Status: agent.StatusIdle, UpdatedAt: now},
+		{ID: "s1", GitRef: agent.GitRef{WorktreeID: "git@github.com:acme/alpha.git"}, Prompt: "fix bug in auth", Status: agent.StatusIdle, UpdatedAt: now},
+		{ID: "s2", GitRef: agent.GitRef{WorktreeID: "git@github.com:acme/beta.git"}, Prompt: "fix bug in cart", Status: agent.StatusIdle, UpdatedAt: now},
 	})
 
 	// Verify precondition: 2 search results visible.

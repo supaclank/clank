@@ -57,7 +57,6 @@ func TestPersistSnapshotsSkipsOnNonNotFoundLookupError(t *testing.T) {
 				},
 			},
 		},
-		ClonesDir:     t.TempDir(),
 		SessionsStore: st,
 		Log:           log.New(&logBuf, "", 0),
 	})

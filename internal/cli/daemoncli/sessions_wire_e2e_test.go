@@ -254,7 +254,7 @@ func TestWire_CreateRequiresPrompt(t *testing.T) {
 
 	_, err := td.Client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{LocalPath: repo, RemoteURL: "git@example.com:x/y.git"},
+		GitRef:  agent.GitRef{LocalPath: repo, WorktreeID: "git@example.com:x/y.git"},
 		// Prompt intentionally empty.
 	})
 	if err == nil {

@@ -2,10 +2,13 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host/store"
@@ -63,7 +66,7 @@ func TestUpsertAndGetSession(t *testing.T) {
 		Status:     agent.StatusBusy,
 		Visibility: agent.VisibilityDone,
 		FollowUp:   true,
-		GitRef:     agent.GitRef{LocalPath: "/tmp/repo", RemoteURL: "https://github.com/x/y", WorktreeBranch: "feat/login"},
+		GitRef:     agent.GitRef{LocalPath: "/tmp/repo", WorktreeID: "https://github.com/x/y", WorktreeBranch: "feat/login"},
 		Prompt:     "Fix the login bug",
 		Title:      "Fix authentication",
 		TicketID:   "TICKET-42",
@@ -91,7 +94,7 @@ func TestUpsertAndGetSession(t *testing.T) {
 	if !got.FollowUp {
 		t.Error("follow_up was lost")
 	}
-	if got.GitRef.LocalPath != info.GitRef.LocalPath || got.GitRef.RemoteURL != info.GitRef.RemoteURL || got.GitRef.WorktreeBranch != info.GitRef.WorktreeBranch {
+	if got.GitRef.LocalPath != info.GitRef.LocalPath || got.GitRef.WorktreeID != info.GitRef.WorktreeID || got.GitRef.WorktreeBranch != info.GitRef.WorktreeBranch {
 		t.Errorf("gitref:\n got %+v\nwant %+v", got.GitRef, info.GitRef)
 	}
 	if !got.LastReadAt.Equal(now) {
@@ -246,7 +249,7 @@ func TestPrimaryAgents_RoundTrip(t *testing.T) {
 	s := mustOpen(t)
 	ctx := context.Background()
 
-	ref := agent.GitRef{LocalPath: "/repo", RemoteURL: "https://github.com/x/y"}
+	ref := agent.GitRef{LocalPath: "/repo", WorktreeID: "https://github.com/x/y"}
 	want := []agent.AgentInfo{
 		{Name: "plan", Description: "Plan", Mode: "primary"},
 		{Name: "code", Description: "Code", Mode: "primary"},
@@ -300,5 +303,74 @@ func TestPersistsAcrossReopen(t *testing.T) {
 	}
 	if got.ID != "p" {
 		t.Errorf("after reopen: got %+v", got)
+	}
+}
+
+// TestOpen_MigrationV1ToV2_RenamesGitRemoteToWorktreeID exercises the
+// in-place column rename for dev installs whose host.db was created
+// when sessions/primary_agents had a `git_remote` column. After
+// re-Open, queries against the new `worktree_id` column must work.
+func TestOpen_MigrationV1ToV2_RenamesGitRemoteToWorktreeID(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "host.db")
+
+	// Hand-craft a v1 database with the legacy git_remote column.
+	rawDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rawDB.Exec(`
+		CREATE TABLE sessions (
+			id TEXT PRIMARY KEY,
+			external_id TEXT NOT NULL DEFAULT '',
+			backend TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'idle',
+			visibility TEXT NOT NULL DEFAULT '',
+			follow_up INTEGER NOT NULL DEFAULT 0,
+			project_dir TEXT NOT NULL DEFAULT '',
+			git_remote TEXT NOT NULL DEFAULT '',
+			worktree_branch TEXT NOT NULL DEFAULT '',
+			prompt TEXT NOT NULL DEFAULT '',
+			title TEXT NOT NULL DEFAULT '',
+			ticket_id TEXT NOT NULL DEFAULT '',
+			agent TEXT NOT NULL DEFAULT '',
+			draft TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			last_read_at DATETIME
+		);
+		CREATE TABLE primary_agents (
+			backend TEXT NOT NULL,
+			project_dir TEXT NOT NULL DEFAULT '',
+			git_remote TEXT NOT NULL DEFAULT '',
+			primary_agents_json TEXT NOT NULL DEFAULT '[]',
+			updated_at DATETIME NOT NULL,
+			PRIMARY KEY (backend, project_dir, git_remote)
+		);
+		INSERT INTO sessions(id, backend, git_remote, created_at, updated_at)
+		    VALUES ('legacy-1', 'opencode', 'git@github.com:x/y.git', '2026-01-01', '2026-01-01');
+		PRAGMA user_version = 1;
+	`); err != nil {
+		rawDB.Close()
+		t.Fatalf("seed v1 DB: %v", err)
+	}
+	rawDB.Close()
+
+	// Re-open with the new code; v2 migration should rename the
+	// column AND clear the URL-shaped value (we want a fresh slate
+	// since the column's meaning changed, not just its name).
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("re-open after v2: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	got, err := s.GetSession(context.Background(), "legacy-1")
+	if err != nil {
+		t.Fatalf("GetSession after migration: %v", err)
+	}
+	if got.GitRef.WorktreeID != "" {
+		t.Errorf("expected legacy git URL cleared, got %q", got.GitRef.WorktreeID)
 	}
 }

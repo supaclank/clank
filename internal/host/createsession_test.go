@@ -3,6 +3,7 @@ package host_test
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,21 +11,6 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
 )
-
-// newTestServiceWithClonesDir builds a Service with a temp clones_dir so
-// remote-ref tests don't pollute ~/.clank/clones.
-func newTestServiceWithClonesDir(t *testing.T) (*host.Service, string) {
-	t.Helper()
-	clonesDir := t.TempDir()
-	svc := host.New(host.Options{
-		BackendManagers: map[agent.BackendType]agent.BackendManager{
-			agent.BackendOpenCode: &noopBackendManager{},
-		},
-		ClonesDir: clonesDir,
-	})
-	t.Cleanup(svc.Shutdown)
-	return svc, clonesDir
-}
 
 // TestCreateSession_LocalRef_Success exercises the §7 happy path: a
 // GitRef.Local pointing at an existing git repo root resolves to a
@@ -105,136 +91,75 @@ func TestCreateSession_LocalRef_RejectsSubdir(t *testing.T) {
 	}
 }
 
-// TestCreateSession_BothRefs_PrefersLocalPath is the regression test for
-// Bug 3: clients (TUI, clankcli) running on the same host as the daemon
-// send BOTH LocalPath and RemoteURL. Before the fix, the host ignored
-// LocalPath and always cloned RemoteURL into ~/.clank/clones/, so the
-// agent ran against a fresh clone instead of the user's working tree.
-//
-// The contract: when LocalPath is set, exists, and is a repo root, the
-// host MUST use it directly and MUST NOT touch ClonesDir.
-func TestCreateSession_BothRefs_PrefersLocalPath(t *testing.T) {
-	t.Parallel()
-	svc, clonesDir := newTestServiceWithClonesDir(t)
 
-	const remoteURL = "git@github.com:acksell/clank.git"
-	dir := initGitRepo(t, remoteURL)
+// TestCreateSession_WorktreeRef_Success exercises the new sync-path:
+// when a worktree has been migrated to ~/work/<id>/, a session with
+// only WorktreeID set resolves to that directory.
+func TestCreateSession_WorktreeRef_Success(t *testing.T) {
+	// Override the host's workRoot lookup. NOT parallel because the
+	// override is a package-level singleton.
+	tmpHome := t.TempDir()
+	prev := host.SetWorkRootForTest(filepath.Join(tmpHome, "work"))
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
 
-	req := agent.StartRequest{
-		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{LocalPath: dir, RemoteURL: remoteURL},
-		Prompt:  "hi",
+	worktreeID := "01HTEST123"
+	dir := filepath.Join(tmpHome, "work", worktreeID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if _, _, err := svc.CreateSession(context.Background(), "sid-bug3", req); err != nil {
-		t.Fatalf("CreateSession: %v", err)
+	// initGitRepo expects to create the dir; instead init in place.
+	if out, err := exec.Command("git", "-C", dir, "init", "--initial-branch=main", "--quiet").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %s: %v", out, err)
 	}
-
-	entries, err := os.ReadDir(clonesDir)
-	if err != nil {
-		t.Fatalf("read clonesDir: %v", err)
-	}
-	if len(entries) != 0 {
-		var names []string
-		for _, e := range entries {
-			names = append(names, e.Name())
+	for _, args := range [][]string{
+		{"config", "user.email", "t@t"},
+		{"config", "user.name", "t"},
+		{"config", "commit.gpgsign", "false"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s: %v", args, out, err)
 		}
-		t.Fatalf("expected no clones (LocalPath should win), got %v", names)
 	}
-}
+	if err := os.WriteFile(filepath.Join(dir, "x.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "."}, {"commit", "-m", "x"}} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s: %v", args, out, err)
+		}
+	}
 
-// TestCreateSession_BothRefs_FallsBackToCloneWhenLocalMissing covers the
-// remote-host scenario: a TUI on machine A targeting a daemon on machine
-// B sends both fields, but A's LocalPath does not exist on B. The host
-// must silently fall through to cloning RemoteURL.
-func TestCreateSession_BothRefs_FallsBackToCloneWhenLocalMissing(t *testing.T) {
-	t.Parallel()
-	svc, clonesDir := newTestServiceWithClonesDir(t)
-
-	source := initGitRepo(t, "git@github.com:acksell/clank.git")
-	sourceURL := "file://" + source
-
+	svc := newTestService(t)
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef: agent.GitRef{
-			LocalPath: "/nonexistent/path/on/this/host",
-			RemoteURL: sourceURL,
-		},
-		Prompt: "hi",
-	}
-	if _, _, err := svc.CreateSession(context.Background(), "sid-fallback", req); err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-
-	entries, err := os.ReadDir(clonesDir)
-	if err != nil {
-		t.Fatalf("read clonesDir: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 clone (LocalPath missing → fall back), got %d", len(entries))
-	}
-}
-
-// TestCreateSession_RemoteRef_ClonesIntoClonesDir exercises the §7
-// auto-clone path: the host derives a deterministic directory from the
-// remote URL and clones into it on first use. Uses file:// so no daemon
-// is needed.
-func TestCreateSession_RemoteRef_ClonesIntoClonesDir(t *testing.T) {
-	t.Parallel()
-	svc, clonesDir := newTestServiceWithClonesDir(t)
-
-	source := initGitRepo(t, "git@github.com:acksell/clank.git")
-	sourceURL := "file://" + source
-
-	req := agent.StartRequest{
-		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{RemoteURL: sourceURL},
+		GitRef:  agent.GitRef{WorktreeID: worktreeID},
 		Prompt:  "hi",
 	}
-	if _, _, err := svc.CreateSession(context.Background(), "sid-clone", req); err != nil {
+	if _, _, err := svc.CreateSession(context.Background(), "sid-wt", req); err != nil {
 		t.Fatalf("CreateSession: %v", err)
-	}
-
-	// Verify the host materialized a clone under clonesDir/<deterministic name>/.
-	entries, err := os.ReadDir(clonesDir)
-	if err != nil {
-		t.Fatalf("read clonesDir: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 clone, got %d", len(entries))
-	}
-	clonePath := filepath.Join(clonesDir, entries[0].Name())
-	if _, err := os.Stat(filepath.Join(clonePath, ".git")); err != nil {
-		t.Errorf("clone destination missing .git: %v", err)
 	}
 }
 
-// TestCreateSession_RemoteRef_ReusesExistingClone verifies the second
-// call with the same remote does not re-clone — the resolver finds the
-// existing directory and uses it.
-func TestCreateSession_RemoteRef_ReusesExistingClone(t *testing.T) {
-	t.Parallel()
-	svc, clonesDir := newTestServiceWithClonesDir(t)
+// TestCreateSession_WorktreeRef_MissingErrors guards the explicit
+// "no fall back to clone" contract: WorktreeID for which no
+// ~/work/<id>/ has been materialized yields a clear error pointing
+// at MigrateWorktree.
+func TestCreateSession_WorktreeRef_MissingErrors(t *testing.T) {
+	tmpHome := t.TempDir()
+	prev := host.SetWorkRootForTest(filepath.Join(tmpHome, "work"))
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
 
-	source := initGitRepo(t, "git@github.com:acksell/clank.git")
-	sourceURL := "file://" + source
-
+	svc := newTestService(t)
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{RemoteURL: sourceURL},
+		GitRef:  agent.GitRef{WorktreeID: "01HTESTMISSING"},
 		Prompt:  "hi",
 	}
-	if _, _, err := svc.CreateSession(context.Background(), "sid-clone-1", req); err != nil {
-		t.Fatalf("CreateSession #1: %v", err)
+	_, _, err := svc.CreateSession(context.Background(), "sid-missing", req)
+	if err == nil {
+		t.Fatal("expected error for unmigrated worktree, got nil")
 	}
-	if _, _, err := svc.CreateSession(context.Background(), "sid-clone-2", req); err != nil {
-		t.Fatalf("CreateSession #2: %v", err)
-	}
-
-	entries, err := os.ReadDir(clonesDir)
-	if err != nil {
-		t.Fatalf("read clonesDir: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("expected reuse (1 dir), got %d", len(entries))
+	if !strings.Contains(err.Error(), "MigrateWorktree") {
+		t.Fatalf("expected error to point at MigrateWorktree, got: %v", err)
 	}
 }

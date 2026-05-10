@@ -37,11 +37,11 @@ func TestNew_FailsFastOnMissingOptions(t *testing.T) {
 		opts Options
 	}{
 		// SDKClient is nil + APIKey empty → SDK construction fails.
-		{"missing-api-key", Options{HubBaseURL: "http://h", HubAuthToken: "t", Snapshot: "snap"}},
-		{"missing-hub-url", Options{APIKey: "k", HubAuthToken: "t", Snapshot: "snap"}},
-		{"missing-hub-token", Options{APIKey: "k", HubBaseURL: "http://h", Snapshot: "snap"}},
-		{"missing-snapshot-and-image", Options{APIKey: "k", HubBaseURL: "http://h", HubAuthToken: "t"}},
-		{"both-snapshot-and-image", Options{APIKey: "k", HubBaseURL: "http://h", HubAuthToken: "t", Snapshot: "snap", Image: "img"}},
+		{"missing-api-key", Options{MirrorBaseURL: "http://h", MirrorAuthToken: "t", Snapshot: "snap"}},
+		{"missing-hub-url", Options{APIKey: "k", MirrorAuthToken: "t", Snapshot: "snap"}},
+		{"missing-hub-token", Options{APIKey: "k", MirrorBaseURL: "http://h", Snapshot: "snap"}},
+		{"missing-snapshot-and-image", Options{APIKey: "k", MirrorBaseURL: "http://h", MirrorAuthToken: "t"}},
+		{"both-snapshot-and-image", Options{APIKey: "k", MirrorBaseURL: "http://h", MirrorAuthToken: "t", Snapshot: "snap", Image: "img"}},
 	}
 	for _, c := range cases {
 		c := c
@@ -59,7 +59,7 @@ func TestNew_FailsFastOnMissingOptions(t *testing.T) {
 // provisioner) is silently broken.
 func TestNew_RejectsNilStore(t *testing.T) {
 	t.Parallel()
-	if _, err := New(Options{APIKey: "k", HubBaseURL: "http://h", HubAuthToken: "t", Snapshot: "snap"}, nil, nil); err == nil {
+	if _, err := New(Options{APIKey: "k", MirrorBaseURL: "http://h", MirrorAuthToken: "t", Snapshot: "snap"}, nil, nil); err == nil {
 		t.Error("New with nil store returned nil error")
 	}
 }
@@ -74,7 +74,7 @@ func TestNew_RejectsReservedExtraEnv(t *testing.T) {
 		t.Run(key, func(t *testing.T) {
 			t.Parallel()
 			opts := Options{
-				APIKey: "k", HubBaseURL: "http://h", HubAuthToken: "t",
+				APIKey: "k", MirrorBaseURL: "http://h", MirrorAuthToken: "t",
 				Snapshot: "snap",
 				ExtraEnv: map[string]string{key: "rogue-value"},
 			}

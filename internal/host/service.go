@@ -1,9 +1,11 @@
 package host
 
 // Service is the Host plane's domain object: it owns BackendManagers
-// for agent sessions and resolves GitRefs to working directories
-// (local refs use the path directly; remote refs clone-on-first-use
-// into <ClonesDir>/<CloneDirName(remote)>/).
+// for agent sessions and resolves GitRefs to working directories.
+// LocalPath refs use the path on this host directly; WorktreeID refs
+// resolve to ~/work/<WorktreeID>/, which the gateway populates during
+// MigrateWorktree. There is no clone-from-origin path — the model is
+// "synced worktree, single happy path".
 
 import (
 	"context"
@@ -15,8 +17,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/sync/singleflight"
 
 	"github.com/oklog/ulid/v2"
 
@@ -41,14 +41,6 @@ type Service struct {
 	// the slow CreateBackend call to avoid leaking into a torn-down
 	// registry.
 	closed bool
-
-	// clonesDir parents per-remote clones at <clonesDir>/<CloneDirName>/.
-	// Defaults to ~/.clank/clones; tests override via Options.
-	clonesDir string
-
-	// cloneSF deduplicates concurrent first-use clones of the same
-	// remote URL.
-	cloneSF singleflight.Group
 
 	// branches caches listBranches per projectDir. Without it, the
 	// inbox poll fans out to ~4 git subprocesses per worktree every
@@ -76,10 +68,6 @@ type Options struct {
 	// Log is the logger. Defaults to a logger writing to stderr with the
 	// "[clank-host]" prefix.
 	Log *log.Logger
-	// ClonesDir is the parent directory under which workDirFor clones
-	// remote refs on first use. Defaults to ~/.clank/clones when empty.
-	// Tests should set this to a t.TempDir().
-	ClonesDir string
 	// BranchCacheTTL overrides the default TTL for the listBranches
 	// cache. Zero uses DefaultBranchCacheTTL. Tests set this to control
 	// staleness behavior.
@@ -115,17 +103,9 @@ func New(opts Options) *Service {
 		backendManagers: opts.BackendManagers,
 		log:             lg,
 		sessions:        make(map[string]agent.SessionBackend),
-		clonesDir:       opts.ClonesDir,
 		branches:        newBranchCache(opts.BranchCacheTTL, opts.Now),
 		sessionsStore:   opts.SessionsStore,
 		subscribers:     newSubscriberRegistry(),
-	}
-	if s.clonesDir == "" {
-		// On home-dir lookup failure leave the field empty —
-		// workDirFor will reject remote refs loudly instead of guessing.
-		if home, err := os.UserHomeDir(); err == nil {
-			s.clonesDir = filepath.Join(home, ".clank", "clones")
-		}
 	}
 
 	// Auth manager is opencode-only: it tells the OpenCode backend to
@@ -561,12 +541,17 @@ func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
 }
 
 // workDirFor resolves a GitRef to an absolute working directory.
-// Precedence: usable LocalPath → clone of RemoteURL into
-// <clonesDir>/<CloneDirName>/ → error. WorktreeBranch is resolved
-// under the base when set.
 //
-// LocalPath failing soft (missing / not a repo) falls through to a
-// remote clone; it's a hard error only when no RemoteURL is set.
+// Precedence (per the GitRef contract):
+//  1. LocalPath set + usable as a repo on this host → use it.
+//  2. WorktreeID set → use ~/work/<WorktreeID>/. Errors with a clear
+//     message if that directory is missing — the gateway must
+//     MigrateWorktree this worktree to this host first. We do NOT
+//     fall back to cloning.
+//  3. Neither set / not usable → error.
+//
+// WorktreeBranch (when set) resolves to an additional git worktree
+// rooted under base.
 func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, error) {
 	var base string
 
@@ -577,46 +562,28 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 		}
 		if res.Usable {
 			base = ref.LocalPath
-		} else if ref.RemoteURL == "" {
-			return "", fmt.Errorf("local_path %q not usable: %w", ref.LocalPath, res.SoftFail)
+		} else if ref.WorktreeID == "" {
+			return "", fmt.Errorf("local_path %q not usable on this host (%w) and no worktree_id was provided — run `clank push` to register and sync this repo, then retry", ref.LocalPath, res.SoftFail)
 		}
 	}
 
 	if base == "" {
-		if ref.RemoteURL == "" {
-			return "", fmt.Errorf("git ref must set at least one of local_path or remote_url")
+		if ref.WorktreeID == "" {
+			return "", fmt.Errorf("git ref must set at least one of local_path or worktree_id — run `clank push` from your repo to register a worktree")
 		}
-		if s.clonesDir == "" {
-			return "", fmt.Errorf("cannot resolve remote ref: host has no clones_dir configured")
-		}
-		name, err := agent.CloneDirName(ref.RemoteURL)
+		root, err := workRootDir()
 		if err != nil {
-			return "", fmt.Errorf("clone dir name for %q: %w", ref.RemoteURL, err)
+			return "", err
 		}
-		base = filepath.Join(s.clonesDir, name)
-		if _, err := os.Stat(base); os.IsNotExist(err) {
-			// Singleflight so concurrent first-uses don't race on
-			// `git clone` into the same dir.
-			_, cloneErr, _ := s.cloneSF.Do(base, func() (any, error) {
-				// Re-check inside the singleflight in case a peer
-				// finished while we were queued.
-				if _, statErr := os.Stat(base); statErr == nil {
-					return nil, nil
-				}
-				if mkErr := os.MkdirAll(s.clonesDir, 0o755); mkErr != nil {
-					return nil, fmt.Errorf("create clones dir %q: %w", s.clonesDir, mkErr)
-				}
-				s.log.Printf("cloning %s into %s", ref.RemoteURL, base)
-				if cloneErr := git.CloneWithConfig(ref.RemoteURL, base, nil); cloneErr != nil {
-					return nil, fmt.Errorf("clone %q: %w", ref.RemoteURL, cloneErr)
-				}
-				return nil, nil
-			})
-			if cloneErr != nil {
-				return "", cloneErr
-			}
-		} else if err != nil {
-			return "", fmt.Errorf("stat clone dir %q: %w", base, err)
+		base = filepath.Join(root, ref.WorktreeID)
+		fi, err := os.Stat(base)
+		switch {
+		case os.IsNotExist(err):
+			return "", fmt.Errorf("worktree %s not present at %s — run MigrateWorktree first (or `clank push` to sync, then migrate)", ref.WorktreeID, base)
+		case err != nil:
+			return "", fmt.Errorf("stat worktree dir %q: %w", base, err)
+		case !fi.IsDir():
+			return "", fmt.Errorf("worktree %s path %q is not a directory", ref.WorktreeID, base)
 		}
 	}
 
@@ -628,6 +595,40 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 		return wt.WorktreeDir, nil
 	}
 	return base, nil
+}
+
+// workRootForTest, when non-empty, overrides the $HOME/work parent
+// for migrated worktrees. Test-only hook — production callers leave
+// this empty and rely on $HOME via os.UserHomeDir(). Avoids t.Setenv
+// in parallel-heavy test packages.
+//
+// TODO(coderabbit): add sync.RWMutex if any test ever runs SetWorkRootForTest with t.Parallel()
+// https://github.com/Acksell/clank/pull/16#discussion_r3213461979
+var workRootForTest string
+
+// workRootDir returns $HOME/work — the parent under which migrated
+// worktrees land at /<WorktreeID>/. Mirrors internal/host/mux's
+// workRoot; consolidating to one helper would require pkg-cycle
+// refactoring (the mux import-path-traverses through hostmux).
+func workRootDir() (string, error) {
+	if workRootForTest != "" {
+		return workRootForTest, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("user home: %w", err)
+	}
+	return filepath.Join(home, "work"), nil
+}
+
+// SetWorkRootForTest overrides workRootDir's lookup for the duration
+// of a test. Returns the previous value so the caller can restore it
+// in cleanup. Concurrent test access is unsafe — the override is a
+// package-level singleton, so callers must serialize tests that use it.
+func SetWorkRootForTest(path string) string {
+	prev := workRootForTest
+	workRootForTest = path
+	return prev
 }
 
 // localPathResult is the outcome of tryLocalPath. Exactly one field

@@ -27,9 +27,9 @@ func TestNew_FailsFastOnMissingOptions(t *testing.T) {
 		name string
 		opts Options
 	}{
-		{"missing-api-token", Options{HubBaseURL: "http://h", HubAuthToken: "t"}},
-		{"missing-hub-url", Options{APIToken: "tok", HubAuthToken: "t"}},
-		{"missing-hub-token", Options{APIToken: "tok", HubBaseURL: "http://h"}},
+		{"missing-api-token", Options{MirrorBaseURL: "http://h", MirrorAuthToken: "t"}},
+		{"missing-hub-url", Options{APIToken: "tok", MirrorAuthToken: "t"}},
+		{"missing-hub-token", Options{APIToken: "tok", MirrorBaseURL: "http://h"}},
 	}
 	for _, c := range cases {
 		c := c
@@ -46,7 +46,7 @@ func TestNew_FailsFastOnMissingOptions(t *testing.T) {
 // is wired in. Without it, persistence is silently broken.
 func TestNew_RejectsNilStore(t *testing.T) {
 	t.Parallel()
-	if _, err := New(Options{APIToken: "tok", HubBaseURL: "http://h", HubAuthToken: "t"}, nil, nil); err == nil {
+	if _, err := New(Options{APIToken: "tok", MirrorBaseURL: "http://h", MirrorAuthToken: "t"}, nil, nil); err == nil {
 		t.Error("New with nil store returned nil error")
 	}
 }

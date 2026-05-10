@@ -29,6 +29,17 @@ type Config struct {
 	// ResolveUserID maps a verified request to a userID. Defaults to
 	// returning "local".
 	ResolveUserID func(*http.Request) string
+
+	// SyncBaseURL is the clank-sync HTTP base URL (e.g.
+	// "https://sync.example.com" or "http://localhost:8081").
+	// Required to enable POST /v1/migrate/worktrees/{id}; if unset, the
+	// migration route returns 503.
+	SyncBaseURL string
+
+	// SyncHTTPClient overrides the http.Client used for outbound
+	// migration requests to clank-sync and the sprite. Optional; tests
+	// inject one for httptest plumbing.
+	SyncHTTPClient *http.Client
 }
 
 // Gateway is the public ingress.
@@ -57,11 +68,14 @@ func NewGateway(cfg Config, lg *log.Logger) (*Gateway, error) {
 // Handler returns the public-listener http.Handler.
 //
 // /ping and /gateway/health answer locally without waking a host;
-// every other path proxies to the user's host.
+// /v1/migrate/worktrees/{id} runs the gateway-orchestrated migration
+// flow when SyncBaseURL is configured; every other path proxies to
+// the user's host.
 func (g *Gateway) Handler() http.Handler {
 	mx := http.NewServeMux()
 	mx.HandleFunc("GET /ping", g.handlePing)
 	mx.HandleFunc("GET /gateway/health", g.handleGatewayHealth)
+	mx.HandleFunc("POST /v1/migrate/worktrees/{id}", g.handleMigrateWorktree)
 	mx.HandleFunc("/", g.proxyToHost)
 	return mx
 }

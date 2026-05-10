@@ -34,8 +34,8 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	hostclient "github.com/acksell/clank/internal/host/client"
-	"github.com/acksell/clank/internal/store"
 	"github.com/acksell/clank/pkg/provisioner"
+	"github.com/acksell/clank/pkg/provisioner/hoststore"
 )
 
 // Options configures the Daytona provisioner.
@@ -54,12 +54,15 @@ type Options struct {
 	// mutual-exclusion contract.
 	Image string
 
-	// HubBaseURL is the externally-reachable URL of the cloud hub the
-	// sandbox should clone from. Required.
-	HubBaseURL string
+	// MirrorBaseURL is the externally-reachable URL the sandbox clones
+	// user code from on wake. Required. Historically named
+	// "HubBaseURL" — the "hub" layer is gone but the env-var name
+	// (CLANK_HUB_URL) is kept to avoid breaking sandbox images
+	// mid-migration.
+	MirrorBaseURL string
 
-	// HubAuthToken is the bearer token paired with HubBaseURL.
-	HubAuthToken string
+	// MirrorAuthToken is the bearer token paired with MirrorBaseURL.
+	MirrorAuthToken string
 
 	// ExtraEnv is forwarded into the sandbox. Keys colliding with
 	// reservedSandboxEnv are rejected at New time.
@@ -90,7 +93,7 @@ type Provisioner struct {
 	opts   Options
 	log    *log.Logger
 	client *daytona.Client
-	store  *store.Store
+	store  hoststore.HostStore
 
 	// keyMu serializes EnsureHost calls per userID. Two parallel
 	// callers see the same single sandbox instead of racing to
@@ -117,18 +120,17 @@ type cachedHost struct {
 }
 
 // New constructs a Provisioner. Returns an error if required options
-// are missing or the SDK client fails to initialize.
-//
-// todo(ae): don't use central store package (un-necessary abstraction), use custom instead.
-func New(opts Options, st *store.Store, lg *log.Logger) (*Provisioner, error) {
+// are missing or the SDK client fails to initialize. The HostStore is
+// the persistence boundary — see pkg/provisioner/hoststore.
+func New(opts Options, st hoststore.HostStore, lg *log.Logger) (*Provisioner, error) {
 	if st == nil {
 		return nil, fmt.Errorf("daytona provisioner: store is required")
 	}
-	if opts.HubBaseURL == "" {
-		return nil, fmt.Errorf("daytona provisioner: HubBaseURL is required")
+	if opts.MirrorBaseURL == "" {
+		return nil, fmt.Errorf("daytona provisioner: MirrorBaseURL is required")
 	}
-	if opts.HubAuthToken == "" {
-		return nil, fmt.Errorf("daytona provisioner: HubAuthToken is required")
+	if opts.MirrorAuthToken == "" {
+		return nil, fmt.Errorf("daytona provisioner: MirrorAuthToken is required")
 	}
 	switch {
 	case opts.Snapshot == "" && opts.Image == "":
@@ -245,7 +247,7 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 		row, err := p.store.GetHostByUser(ctx, userID, "daytona")
 		if err == nil {
 			authToken = row.AuthToken
-		} else if !errors.Is(err, store.ErrHostNotFound) {
+		} else if !errors.Is(err, hoststore.ErrHostNotFound) {
 			return provisioner.HostRef{}, fmt.Errorf("read auth-token: %w", err)
 		}
 	}
@@ -320,7 +322,7 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID string) (*dayt
 		} else {
 			return nil, false, "", fmt.Errorf("get sandbox %s: %w", row.ExternalID, fetchErr)
 		}
-	} else if !errors.Is(err, store.ErrHostNotFound) {
+	} else if !errors.Is(err, hoststore.ErrHostNotFound) {
 		return nil, false, "", fmt.Errorf("look up host: %w", err)
 	}
 
@@ -347,8 +349,8 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID string) (*dayt
 // user → sandbox binding.
 func (p *Provisioner) create(ctx context.Context, authToken string) (*daytona.Sandbox, error) {
 	envVars := map[string]string{
-		"CLANK_HUB_URL":         p.opts.HubBaseURL,
-		"CLANK_HUB_TOKEN":       p.opts.HubAuthToken,
+		"CLANK_HUB_URL":         p.opts.MirrorBaseURL,
+		"CLANK_HUB_TOKEN":       p.opts.MirrorAuthToken,
 		"CLANK_HOST_PORT":       fmt.Sprintf("%d", HostPort),
 		"CLANK_HOST_AUTH_TOKEN": authToken,
 	}
@@ -453,20 +455,20 @@ func (p *Provisioner) persistRow(ctx context.Context, userID, externalID, hostna
 	hostID := ""
 	if existing, err := p.store.GetHostByUser(ctx, userID, "daytona"); err == nil {
 		hostID = existing.ID
-	} else if !errors.Is(err, store.ErrHostNotFound) {
+	} else if !errors.Is(err, hoststore.ErrHostNotFound) {
 		return "", err
 	}
 	if hostID == "" {
 		hostID = ulid.Make().String()
 	}
 
-	rec := store.Host{
+	rec := hoststore.Host{
 		ID:         hostID,
 		UserID:     userID,
 		Provider:   "daytona",
 		ExternalID: externalID,
 		Hostname:   hostname,
-		Status:     store.HostStatusRunning,
+		Status:     hoststore.HostStatusRunning,
 		LastURL:    url,
 		LastToken:  token,
 		AuthToken:  authToken,
@@ -491,7 +493,7 @@ func (p *Provisioner) persistRow(ctx context.Context, userID, externalID, hostna
 // Returns nil if no host is recorded for this user (nothing to do).
 func (p *Provisioner) SuspendByUser(ctx context.Context, userID string) error {
 	row, err := p.store.GetHostByUser(ctx, userID, "daytona")
-	if errors.Is(err, store.ErrHostNotFound) {
+	if errors.Is(err, hoststore.ErrHostNotFound) {
 		return nil
 	}
 	if err != nil {
@@ -524,7 +526,7 @@ func (p *Provisioner) SuspendHost(ctx context.Context, hostID string) error {
 	if err := sandbox.Stop(stopCtx); err != nil {
 		return fmt.Errorf("stop sandbox %s: %w", row.ExternalID, err)
 	}
-	row.Status = store.HostStatusStopped
+	row.Status = hoststore.HostStatusStopped
 	row.UpdatedAt = time.Now()
 	if err := p.store.UpsertHost(ctx, row); err != nil {
 		p.log.Printf("daytona provisioner: update status after suspend %s: %v", hostID, err)

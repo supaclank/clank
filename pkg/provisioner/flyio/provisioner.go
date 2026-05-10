@@ -26,8 +26,8 @@ import (
 	"github.com/oklog/ulid/v2"
 	sprites "github.com/superfly/sprites-go"
 
-	"github.com/acksell/clank/internal/store"
 	"github.com/acksell/clank/pkg/provisioner"
+	"github.com/acksell/clank/pkg/provisioner/hoststore"
 	transportpkg "github.com/acksell/clank/pkg/provisioner/transport"
 )
 
@@ -76,10 +76,14 @@ type Options struct {
 	CPUs      int // 0 = sprite default
 	StorageGB int // 0 = sprite default
 
-	// HubBaseURL/HubAuthToken pass through to clank-host so the sprite
-	// can clone from the cloud-hub mirror.
-	HubBaseURL   string
-	HubAuthToken string
+	// MirrorBaseURL is the externally-reachable URL the sprite clones
+	// user code from on wake. Historically named "HubBaseURL" — the
+	// "hub" layer is gone but the env-var name (CLANK_HUB_URL) is kept
+	// to avoid breaking sandbox images mid-migration.
+	MirrorBaseURL string
+
+	// MirrorAuthToken is the bearer token paired with MirrorBaseURL.
+	MirrorAuthToken string
 
 	// ProvisionTimeout caps how long EnsureHost waits for the sprite
 	// to become reachable. Default: 5 minutes.
@@ -94,7 +98,7 @@ type Provisioner struct {
 	opts   Options
 	log    *log.Logger
 	client *sprites.Client
-	store  *store.Store
+	store  hoststore.HostStore
 
 	keyMuMap sync.Mutex
 	keyMu    map[string]*sync.Mutex
@@ -112,18 +116,19 @@ type cachedHost struct {
 	authToken string
 }
 
-// New constructs a Provisioner.
-//
-// todo(ae): don't use central store package (un-necessary abstraction), use custom instead.
-func New(opts Options, st *store.Store, lg *log.Logger) (*Provisioner, error) {
+// New constructs a Provisioner. The HostStore is the persistence
+// boundary — laptop daemons pass the SQLite-backed store from
+// clank/internal/store; external integrators (e.g. multi-tenant cloud control planes) pass
+// a Postgres-backed implementation. See pkg/provisioner/hoststore.
+func New(opts Options, st hoststore.HostStore, lg *log.Logger) (*Provisioner, error) {
 	if st == nil {
 		return nil, fmt.Errorf("flyio provisioner: store is required")
 	}
-	if opts.HubBaseURL == "" {
-		return nil, fmt.Errorf("flyio provisioner: HubBaseURL is required")
+	if opts.MirrorBaseURL == "" {
+		return nil, fmt.Errorf("flyio provisioner: MirrorBaseURL is required")
 	}
-	if opts.HubAuthToken == "" {
-		return nil, fmt.Errorf("flyio provisioner: HubAuthToken is required")
+	if opts.MirrorAuthToken == "" {
+		return nil, fmt.Errorf("flyio provisioner: MirrorAuthToken is required")
 	}
 	if opts.SpriteNamePrefix == "" {
 		opts.SpriteNamePrefix = defaultSpriteNamePrefix
@@ -193,12 +198,18 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 	_ = isNew
 
 	// Re-read the sprite to pick up the URL populated after public mode.
-	fresh, err := p.client.GetSprite(ctx, spriteName)
+	// IMPORTANT: re-read by sprite.Name(), not the requested spriteName.
+	// resolveOrCreate may return a sprite from a stale hoststore row whose
+	// name differs from spriteName (the operator changed prefix). Using
+	// spriteName here would 404 even though installAndStart succeeded
+	// against the actual sprite.
+	actualName := sprite.Name()
+	fresh, err := p.client.GetSprite(ctx, actualName)
 	if err != nil {
-		return provisioner.HostRef{}, fmt.Errorf("get sprite %s: %w", spriteName, err)
+		return provisioner.HostRef{}, fmt.Errorf("get sprite %s: %w", actualName, err)
 	}
 	if fresh.URL == "" {
-		return provisioner.HostRef{}, fmt.Errorf("sprite %s has no public URL after provisioning; check sprites-go SDK behavior", spriteName)
+		return provisioner.HostRef{}, fmt.Errorf("sprite %s has no public URL after provisioning; check sprites-go SDK behavior", actualName)
 	}
 
 	// Pin the bearer to fresh.URL's host so a cross-host redirect
@@ -208,15 +219,18 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 		return provisioner.HostRef{}, fmt.Errorf("parse sprite URL %q: %w", fresh.URL, err)
 	}
 	transport := &transportpkg.BearerInjector{Token: authToken, Host: parsedURL.Host}
-	hostname := "flyio-" + safeHostnameSuffix(spriteName)
+	hostname := "flyio-" + safeHostnameSuffix(actualName)
 
 	// The Service "started" event only means the process is running;
 	// the edge still serves a 404 page until clank-host binds its port.
 	if err := waitForSpriteReady(ctx, fresh.URL, transport, p.log); err != nil {
-		return provisioner.HostRef{}, fmt.Errorf("sprite %s never reached ready: %w", spriteName, err)
+		return provisioner.HostRef{}, fmt.Errorf("sprite %s never reached ready: %w", actualName, err)
 	}
 
-	hostID, err := p.persistRow(ctx, userID, spriteName, string(hostname), fresh.URL, authToken, isNew)
+	// Persist the actual sprite name, not the requested spriteName.
+	// Otherwise a stale row from a previous prefix would keep
+	// resolving to the old sprite forever (the bug this commit fixes).
+	hostID, err := p.persistRow(ctx, userID, actualName, string(hostname), fresh.URL, authToken, isNew)
 	if err != nil {
 		return provisioner.HostRef{}, fmt.Errorf("persist host row: %w", err)
 	}
@@ -322,7 +336,7 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID, spriteName st
 		} else {
 			return nil, false, "", fmt.Errorf("get sprite %s: %w", row.ExternalID, fetchErr)
 		}
-	} else if !errors.Is(err, store.ErrHostNotFound) {
+	} else if !errors.Is(err, hoststore.ErrHostNotFound) {
 		return nil, false, "", fmt.Errorf("look up host: %w", err)
 	}
 
@@ -753,20 +767,20 @@ func (p *Provisioner) persistRow(ctx context.Context, userID, externalID, hostna
 	hostID := ""
 	if existing, err := p.store.GetHostByUser(ctx, userID, "flyio"); err == nil {
 		hostID = existing.ID
-	} else if !errors.Is(err, store.ErrHostNotFound) {
+	} else if !errors.Is(err, hoststore.ErrHostNotFound) {
 		return "", err
 	}
 	if hostID == "" {
 		hostID = newHostID()
 	}
 
-	rec := store.Host{
+	rec := hoststore.Host{
 		ID:         hostID,
 		UserID:     userID,
 		Provider:   "flyio",
 		ExternalID: externalID,
 		Hostname:   hostname,
-		Status:     store.HostStatusRunning,
+		Status:     hoststore.HostStatusRunning,
 		LastURL:    url,
 		LastToken:  "", // Sprites have no provider-edge token; leave empty
 		AuthToken:  authToken,

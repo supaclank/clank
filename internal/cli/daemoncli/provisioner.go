@@ -75,8 +75,8 @@ func buildDaytonaProvisioner(opts ServerOptions, st *store.Store, prefs config.P
 		Image:        prefs.Daytona.Image,
 		APIUrl:       prefs.Daytona.BaseURL,
 		ExtraEnv:     prefs.Daytona.ExtraEnv,
-		HubBaseURL:   opts.PublicBaseURL,
-		HubAuthToken: prefs.RemoteHub.AuthToken,
+		MirrorBaseURL:   opts.PublicBaseURL,
+		MirrorAuthToken: prefs.RemoteHub.AuthToken,
 	}, st, log.Default())
 	if err != nil {
 		return nil, nil, fmt.Errorf("build daytona provisioner: %w", err)
@@ -102,8 +102,8 @@ func buildFlyIOProvisioner(opts ServerOptions, st *store.Store, prefs config.Pre
 		RamMB:            prefs.FlyIO.RamMB,
 		CPUs:             prefs.FlyIO.CPUs,
 		StorageGB:        prefs.FlyIO.StorageGB,
-		HubBaseURL:       opts.PublicBaseURL,
-		HubAuthToken:     prefs.RemoteHub.AuthToken,
+		MirrorBaseURL:    opts.PublicBaseURL,
+		MirrorAuthToken:  prefs.RemoteHub.AuthToken,
 	}, st, log.Default())
 	if err != nil {
 		return nil, nil, fmt.Errorf("build flyio provisioner: %w", err)

@@ -49,8 +49,8 @@ func refQuery(bt agent.BackendType, ref agent.GitRef) url.Values {
 	if ref.LocalPath != "" {
 		v.Set("git_local_path", ref.LocalPath)
 	}
-	if ref.RemoteURL != "" {
-		v.Set("git_remote_url", ref.RemoteURL)
+	if ref.WorktreeID != "" {
+		v.Set("git_worktree_id", ref.WorktreeID)
 	}
 	if ref.WorktreeBranch != "" {
 		v.Set("worktree_branch", ref.WorktreeBranch)

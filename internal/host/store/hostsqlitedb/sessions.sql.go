@@ -21,7 +21,7 @@ func (q *Queries) DeleteSession(ctx context.Context, id string) error {
 }
 
 const findSessionByExternalID = `-- name: FindSessionByExternalID :one
-SELECT id, external_id, backend, status, visibility, follow_up, project_dir, git_remote, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions WHERE external_id = ? LIMIT 1
+SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions WHERE external_id = ? LIMIT 1
 `
 
 func (q *Queries) FindSessionByExternalID(ctx context.Context, externalID string) (Session, error) {
@@ -35,7 +35,7 @@ func (q *Queries) FindSessionByExternalID(ctx context.Context, externalID string
 		&i.Visibility,
 		&i.FollowUp,
 		&i.ProjectDir,
-		&i.GitRemote,
+		&i.WorktreeID,
 		&i.WorktreeBranch,
 		&i.Prompt,
 		&i.Title,
@@ -50,7 +50,7 @@ func (q *Queries) FindSessionByExternalID(ctx context.Context, externalID string
 }
 
 const getSession = `-- name: GetSession :one
-SELECT id, external_id, backend, status, visibility, follow_up, project_dir, git_remote, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions WHERE id = ?
+SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions WHERE id = ?
 `
 
 func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
@@ -64,7 +64,7 @@ func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
 		&i.Visibility,
 		&i.FollowUp,
 		&i.ProjectDir,
-		&i.GitRemote,
+		&i.WorktreeID,
 		&i.WorktreeBranch,
 		&i.Prompt,
 		&i.Title,
@@ -80,24 +80,24 @@ func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
 
 const listPrimaryAgents = `-- name: ListPrimaryAgents :one
 SELECT primary_agents_json FROM primary_agents
-WHERE backend = ? AND project_dir = ? AND git_remote = ?
+WHERE backend = ? AND project_dir = ? AND worktree_id = ?
 `
 
 type ListPrimaryAgentsParams struct {
 	Backend    string
 	ProjectDir string
-	GitRemote  string
+	WorktreeID string
 }
 
 func (q *Queries) ListPrimaryAgents(ctx context.Context, arg ListPrimaryAgentsParams) (string, error) {
-	row := q.db.QueryRowContext(ctx, listPrimaryAgents, arg.Backend, arg.ProjectDir, arg.GitRemote)
+	row := q.db.QueryRowContext(ctx, listPrimaryAgents, arg.Backend, arg.ProjectDir, arg.WorktreeID)
 	var primary_agents_json string
 	err := row.Scan(&primary_agents_json)
 	return primary_agents_json, err
 }
 
 const listSessions = `-- name: ListSessions :many
-SELECT id, external_id, backend, status, visibility, follow_up, project_dir, git_remote, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions ORDER BY updated_at DESC
+SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions ORDER BY updated_at DESC
 `
 
 func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
@@ -117,7 +117,7 @@ func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
 			&i.Visibility,
 			&i.FollowUp,
 			&i.ProjectDir,
-			&i.GitRemote,
+			&i.WorktreeID,
 			&i.WorktreeBranch,
 			&i.Prompt,
 			&i.Title,
@@ -142,7 +142,7 @@ func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
 }
 
 const searchSessions = `-- name: SearchSessions :many
-SELECT id, external_id, backend, status, visibility, follow_up, project_dir, git_remote, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions
+SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions
 WHERE
     (CAST(?1 AS TEXT) = '' OR title LIKE '%' || ?1 || '%' OR prompt LIKE '%' || ?1 || '%' OR draft LIKE '%' || ?1 || '%' OR project_dir LIKE '%' || ?1 || '%')
     AND (CAST(?2 AS TEXT) = '' OR visibility = ?2)
@@ -186,7 +186,7 @@ func (q *Queries) SearchSessions(ctx context.Context, arg SearchSessionsParams) 
 			&i.Visibility,
 			&i.FollowUp,
 			&i.ProjectDir,
-			&i.GitRemote,
+			&i.WorktreeID,
 			&i.WorktreeBranch,
 			&i.Prompt,
 			&i.Title,
@@ -212,9 +212,9 @@ func (q *Queries) SearchSessions(ctx context.Context, arg SearchSessionsParams) 
 
 const upsertPrimaryAgents = `-- name: UpsertPrimaryAgents :exec
 INSERT INTO primary_agents (
-    backend, project_dir, git_remote, primary_agents_json, updated_at
+    backend, project_dir, worktree_id, primary_agents_json, updated_at
 ) VALUES (?, ?, ?, ?, ?)
-ON CONFLICT (backend, project_dir, git_remote) DO UPDATE SET
+ON CONFLICT (backend, project_dir, worktree_id) DO UPDATE SET
     primary_agents_json = excluded.primary_agents_json,
     updated_at          = excluded.updated_at
 `
@@ -222,7 +222,7 @@ ON CONFLICT (backend, project_dir, git_remote) DO UPDATE SET
 type UpsertPrimaryAgentsParams struct {
 	Backend           string
 	ProjectDir        string
-	GitRemote         string
+	WorktreeID        string
 	PrimaryAgentsJson string
 	UpdatedAt         time.Time
 }
@@ -231,7 +231,7 @@ func (q *Queries) UpsertPrimaryAgents(ctx context.Context, arg UpsertPrimaryAgen
 	_, err := q.db.ExecContext(ctx, upsertPrimaryAgents,
 		arg.Backend,
 		arg.ProjectDir,
-		arg.GitRemote,
+		arg.WorktreeID,
 		arg.PrimaryAgentsJson,
 		arg.UpdatedAt,
 	)
@@ -241,7 +241,7 @@ func (q *Queries) UpsertPrimaryAgents(ctx context.Context, arg UpsertPrimaryAgen
 const upsertSession = `-- name: UpsertSession :exec
 INSERT INTO sessions (
     id, external_id, backend, status, visibility, follow_up,
-    project_dir, git_remote, worktree_branch, prompt, title,
+    project_dir, worktree_id, worktree_branch, prompt, title,
     ticket_id, agent, draft, created_at, updated_at, last_read_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
@@ -251,7 +251,7 @@ ON CONFLICT (id) DO UPDATE SET
     visibility      = excluded.visibility,
     follow_up       = excluded.follow_up,
     project_dir     = excluded.project_dir,
-    git_remote      = excluded.git_remote,
+    worktree_id      = excluded.worktree_id,
     worktree_branch = excluded.worktree_branch,
     prompt          = excluded.prompt,
     title           = excluded.title,
@@ -270,7 +270,7 @@ type UpsertSessionParams struct {
 	Visibility     string
 	FollowUp       int64
 	ProjectDir     string
-	GitRemote      string
+	WorktreeID     string
 	WorktreeBranch string
 	Prompt         string
 	Title          string
@@ -291,7 +291,7 @@ func (q *Queries) UpsertSession(ctx context.Context, arg UpsertSessionParams) er
 		arg.Visibility,
 		arg.FollowUp,
 		arg.ProjectDir,
-		arg.GitRemote,
+		arg.WorktreeID,
 		arg.WorktreeBranch,
 		arg.Prompt,
 		arg.Title,

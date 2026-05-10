@@ -61,7 +61,6 @@ func newTestService(t *testing.T) *host.Service {
 		BackendManagers: map[agent.BackendType]agent.BackendManager{
 			agent.BackendOpenCode: &noopBackendManager{},
 		},
-		ClonesDir: t.TempDir(),
 	})
 	t.Cleanup(svc.Shutdown)
 	return svc

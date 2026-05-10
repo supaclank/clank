@@ -81,8 +81,8 @@ func refFromQuery(r *http.Request) (agent.GitRef, error) {
 	if p := q.Get("git_local_path"); p != "" {
 		ref.LocalPath = p
 	}
-	if u := q.Get("git_remote_url"); u != "" {
-		ref.RemoteURL = u
+	if id := q.Get("git_worktree_id"); id != "" {
+		ref.WorktreeID = id
 	}
 	if err := ref.Validate(); err != nil {
 		return agent.GitRef{}, err

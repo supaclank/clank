@@ -15,14 +15,22 @@ as suggestions, not gospel.
 2. **Verify each finding against the code** — CR sometimes references
    stale lines, misreads Go semantics, or overshoots a fix. Always
    read the actual file before forming a verdict.
-3. **Triage** into Do / Defer / Won't-do, ranked by impact and LoC.
+3. **Triage** into Do / Defer / Won't-do / Skip, ranked by impact
+   and LoC.
 4. **Confirm scope** with the user if unsure (you can always present
-   the table and ask which tier to act on).
+   the table and ask which tier to act on). Watch for user redirects
+   that demote items to Skip — "I already rotated", "single-user
+   concern, already fixed" — and update the table before coding.
 5. **Implement in small thematic commits** (correctness batch,
    lifecycle, tests, etc.). Don't lump unrelated fixes.
-6. **Reply on PR** for every Defer and Won't-do, so CR's learning
-   store records the rationale and stops re-flagging. Don't reply on
-   addressed items — the diff speaks for itself.
+6. **Anchor every Defer with a `TODO(coderabbit)`** comment at the
+   call site so the deferred work doesn't get lost (see "TODO
+   markers" below). Won't-do and Skip items get no in-code marker.
+7. **Reply on PR** for every Defer and Won't-do, so CR's learning
+   store records the rationale and stops re-flagging. Skip items
+   need no per-comment reply (the user has already decided
+   externally). Don't reply on addressed items — the diff speaks for
+   itself.
 
 ## Fetching comments
 
@@ -84,10 +92,17 @@ Rank with a small markdown table for the user:
 - **Do**: high-value-per-LoC. Ship it in this PR.
 - **Defer**: real concern, but cost-benefit doesn't justify *now*.
   Always pair with a concrete `revisit when…` trigger (file size
-  threshold, second host added, CI shipped). Reply on the comment.
+  threshold, second host added, CI shipped) AND a `TODO(coderabbit)`
+  marker in the code at the relevant location. Reply on the comment.
 - **Won't do**: CR is wrong, or the suggested fix is worse than the
   current code. Reply with the explicit reasoning so CR's learning
-  store records the disagreement.
+  store records the disagreement. No in-code marker — the reply is
+  the closure.
+- **Skip**: user has decided this is out of scope for the triage
+  (already fixed externally, single-user concern, deliberate accept-
+  the-risk). No code change, no per-comment PR reply, no in-code
+  marker. Note the rationale in the triage table so a future
+  reviewer doesn't re-litigate it.
 
 ## Implementation patterns
 
@@ -127,14 +142,46 @@ EOF
 Reply shapes:
 
 - **Defer**: lead with `**Deferred**`, list the trade-off in 2-4
-  bullets, end with `**Revisit when** <trigger>`. Keep under 200
-  words.
+  bullets, end with `**Revisit when** <trigger>`. Reference the
+  in-code anchor: `Marked with TODO(coderabbit) at <function>.` Keep
+  under 200 words.
 - **Won't do**: lead with `**Won't do**` and the *correct* reading.
   Don't be defensive — explain the Go semantic / runtime constraint
   CR missed.
 - **Addressed**: skip. CR resolves itself when it scans the new diff.
   Posting "addressed in <sha>" replies is just noise next to the
   strikethrough that's about to appear.
+
+## TODO(coderabbit) markers
+
+For every Defer verdict, leave a one-line marker at the place the
+deferred work would land:
+
+```go
+// TODO(coderabbit): <short issue> https://github.com/<owner>/<repo>/pull/<n>#discussion_r<id>
+```
+
+A PR reply records the rationale once, but PR threads age out of
+view fast. The in-code anchor keeps the deferred work findable when
+a future contributor edits that exact function and links straight
+back to CR's analysis chain.
+
+Conventions:
+
+- **Body is one short sentence**, no rationale (the PR thread carries
+  that). Match AGENTS.md's "code is self-documenting" — long TODOs
+  rot the same way long comments do.
+- **Anchor at the call site**, not at the package top. The signal is
+  "edit here, remember this".
+- **Outside-the-diff defers** (review-summary items with no
+  `discussion_r` anchor) link to the PR root: `.../pull/<n>` — no
+  comment ID. CR can't auto-resolve these even when fixed, so a
+  human will eventually need to grep for `TODO(coderabbit)` and
+  match them up.
+- **Won't-do and Skip items get no marker.** A TODO would invite a
+  future reader to re-litigate a closed thread.
+- **Multiple defers in the same function** can share one TODO
+  block, one line per item, each with its own discussion link.
 
 ## Comment style during fixes
 
@@ -167,3 +214,7 @@ overhead. When fixing a CR finding:
 - **Don't accumulate CR comments across rounds without acking.**
   Reply on each defer/wont-do once so CR's learning store captures
   the rationale and stops re-flagging in future PRs.
+- **Don't ship a Defer without a `TODO(coderabbit)` marker.** Reply
+  alone is forgettable; the in-code anchor is what survives. (And
+  conversely: never add a TODO marker for a Won't-do or Skip — the
+  signal would invite re-litigation of a closed thread.)

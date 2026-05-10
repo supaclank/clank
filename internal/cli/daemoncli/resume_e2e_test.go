@@ -37,7 +37,7 @@ func TestResume_SendToPersistedSessionRehydrates(t *testing.T) {
 		ExternalID: "ext-from-previous-run",
 		Backend:    agent.BackendOpenCode,
 		Status:     agent.StatusIdle,
-		GitRef:     agent.GitRef{LocalPath: repo, RemoteURL: "git@example.com:acme/repo.git"},
+		GitRef:     agent.GitRef{LocalPath: repo, WorktreeID: "git@example.com:acme/repo.git"},
 		Prompt:     "first turn from yesterday",
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -73,7 +73,7 @@ func TestResume_GetMessagesRehydrates(t *testing.T) {
 		ExternalID: "ext-prev",
 		Backend:    agent.BackendOpenCode,
 		Status:     agent.StatusIdle,
-		GitRef:     agent.GitRef{LocalPath: repo, RemoteURL: "git@example.com:acme/repo.git"},
+		GitRef:     agent.GitRef{LocalPath: repo, WorktreeID: "git@example.com:acme/repo.git"},
 		Prompt:     "old",
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -99,7 +99,7 @@ func TestResume_MarkReadOnPersistedSession(t *testing.T) {
 		ID:      id,
 		Backend: agent.BackendOpenCode,
 		Status:  agent.StatusIdle,
-		GitRef:  agent.GitRef{LocalPath: repo, RemoteURL: "git@example.com:acme/repo.git"},
+		GitRef:  agent.GitRef{LocalPath: repo, WorktreeID: "git@example.com:acme/repo.git"},
 		Prompt:  "old",
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -183,7 +183,7 @@ func TestResume_SurvivesAcrossNewStoreOpen(t *testing.T) {
 		ID:      id,
 		Backend: agent.BackendOpenCode,
 		Status:  agent.StatusIdle,
-		GitRef:  agent.GitRef{LocalPath: repo, RemoteURL: "git@example.com:acme/repo.git"},
+		GitRef:  agent.GitRef{LocalPath: repo, WorktreeID: "git@example.com:acme/repo.git"},
 		Prompt:  "from before",
 	}); err != nil {
 		t.Fatalf("seed: %v", err)

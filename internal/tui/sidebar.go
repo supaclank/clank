@@ -210,14 +210,20 @@ func (m *SidebarModel) SetSessions(sessions []agent.SessionInfo) {
 // --- Cursor / section helpers ---
 
 // totalRows is the number of selectable rows across all sections.
-// Layout: [1 "All"][len(entries) entries][1 import][1 settings].
+// Layout: [1 "All"][len(entries) entries][1 import][1 cloud][1 settings].
 func (m *SidebarModel) totalRows() int {
-	return 1 + len(m.entries) + 2
+	return 1 + len(m.entries) + 3
 }
 
 // importCursorIndex returns the cursor value of the "↓ Import Sessions"
-// footer row. Always second-to-last.
+// footer row. Third-to-last.
 func (m *SidebarModel) importCursorIndex() int {
+	return m.totalRows() - 3
+}
+
+// cloudCursorIndex returns the cursor value of the "☁ Cloud" footer
+// row. Second-to-last.
+func (m *SidebarModel) cloudCursorIndex() int {
 	return m.totalRows() - 2
 }
 
@@ -230,6 +236,11 @@ func (m *SidebarModel) settingsCursorIndex() int {
 // CursorOnImport reports whether the cursor is on the import row.
 func (m *SidebarModel) CursorOnImport() bool {
 	return m.cursor == m.importCursorIndex()
+}
+
+// CursorOnCloud reports whether the cursor is on the cloud row.
+func (m *SidebarModel) CursorOnCloud() bool {
+	return m.cursor == m.cloudCursorIndex()
 }
 
 // CursorOnSettings reports whether the cursor is on the settings row.
@@ -260,6 +271,7 @@ func (m *SidebarModel) sectionBreakpoints() []int {
 		}
 	}
 	bp = append(bp, m.importCursorIndex())
+	bp = append(bp, m.cloudCursorIndex())
 	bp = append(bp, m.settingsCursorIndex())
 	return bp
 }
@@ -567,40 +579,32 @@ func (m *SidebarModel) renderWorktreeEntry(e worktreeEntry, idx, maxWidth int) s
 	return line
 }
 
-// renderFooter renders the bottom-anchored block of the sidebar containing
-// "↓ Import Sessions" and "⚙ Settings".
+// renderFooter renders the bottom-anchored block of the sidebar
+// containing "↓ Import Sessions", "☁ Cloud", and "⚙ Settings".
 func (m *SidebarModel) renderFooter(maxWidth int) string {
 	sep := lipgloss.NewStyle().
 		Foreground(mutedColor).
 		Render(strings.Repeat("─", maxWidth))
 
-	importLabel := "↓ Import Sessions"
-	importSelected := m.CursorOnImport() && m.focused
-	var importRow string
-	if importSelected {
-		prefix := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ")
-		name := lipgloss.NewStyle().Foreground(textColor).Bold(true).Render(importLabel)
-		importRow = prefix + name
-	} else if m.CursorOnImport() {
-		importRow = lipgloss.NewStyle().Foreground(textColor).Render("  " + importLabel)
-	} else {
-		importRow = lipgloss.NewStyle().Foreground(dimColor).Render("  " + importLabel)
-	}
+	importRow := m.renderFooterRow("↓ Import Sessions", m.CursorOnImport())
+	cloudRow := m.renderFooterRow("☁ Cloud", m.CursorOnCloud())
+	settingsRow := m.renderFooterRow("⚙ Settings", m.CursorOnSettings())
 
-	settingsLabel := "⚙ Settings"
-	settingsSelected := m.CursorOnSettings() && m.focused
-	var settingsRow string
-	if settingsSelected {
-		prefix := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ")
-		name := lipgloss.NewStyle().Foreground(textColor).Bold(true).Render(settingsLabel)
-		settingsRow = prefix + name
-	} else if m.CursorOnSettings() {
-		settingsRow = lipgloss.NewStyle().Foreground(textColor).Render("  " + settingsLabel)
-	} else {
-		settingsRow = lipgloss.NewStyle().Foreground(dimColor).Render("  " + settingsLabel)
-	}
+	return sep + "\n" + importRow + "\n" + cloudRow + "\n" + settingsRow
+}
 
-	return sep + "\n" + importRow + "\n" + settingsRow
+// renderFooterRow renders one footer row with the right styling for
+// its hover/selected state. Extracted from renderFooter to avoid the
+// repeated five-line if/else block as the footer grows.
+func (m *SidebarModel) renderFooterRow(label string, cursorOn bool) string {
+	if cursorOn && m.focused {
+		prefix := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ")
+		return prefix + lipgloss.NewStyle().Foreground(textColor).Bold(true).Render(label)
+	}
+	if cursorOn {
+		return lipgloss.NewStyle().Foreground(textColor).Render("  " + label)
+	}
+	return lipgloss.NewStyle().Foreground(dimColor).Render("  " + label)
 }
 
 // listHeight returns the height available for the body (excluding border).
@@ -614,14 +618,14 @@ func (m *SidebarModel) listHeight() int {
 
 // entryViewportH returns the number of entry rows that fit in the scrollable
 // middle section. Fixed lines consumed: header(1)+blank(1)+All(1)+blank(1)+
-// footer_sep(1)+import(1)+settings(1) = 7. When creating, the inline input
-// takes 2 additional lines.
+// footer_sep(1)+import(1)+cloud(1)+settings(1) = 8. When creating, the
+// inline input takes 2 additional lines.
 func (m *SidebarModel) entryViewportH() int {
 	extra := 0
 	if m.creating {
 		extra = 2
 	}
-	vh := m.listHeight() - 7 - extra
+	vh := m.listHeight() - 8 - extra
 	if vh < 1 {
 		vh = 1
 	}

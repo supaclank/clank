@@ -42,7 +42,6 @@ func TestListBranches_CachedWithinTTL(t *testing.T) {
 		BackendManagers: map[agent.BackendType]agent.BackendManager{
 			agent.BackendOpenCode: &noopBackendManager{},
 		},
-		ClonesDir:      t.TempDir(),
 		BranchCacheTTL: 5 * time.Second,
 		Now:            now,
 	})
@@ -112,7 +111,6 @@ func TestListBranches_InvalidatedOnResolveWorktree(t *testing.T) {
 		BackendManagers: map[agent.BackendType]agent.BackendManager{
 			agent.BackendOpenCode: &noopBackendManager{},
 		},
-		ClonesDir:      t.TempDir(),
 		BranchCacheTTL: time.Hour, // long TTL to prove invalidation, not expiry, fixes it
 		Now:            now,
 	})

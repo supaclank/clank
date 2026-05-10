@@ -18,7 +18,6 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host"
 )
 
@@ -33,10 +32,11 @@ type sessionCreateResultMsg struct {
 // NewSessionViewComposing creates a SessionViewModel in composing mode.
 // No daemon session exists yet — the user writes their first prompt here.
 //
-// The gitRef is resolved eagerly from projectDir's `origin` remote so the
-// background fetchAgents/fetchModels prefetch can target it. If the
-// project isn't a git repo, gitRef stays empty and the prefetch becomes
-// a no-op (the user will see the failure on launch).
+// The gitRef is built from projectDir (LocalPath) plus the worktree ID
+// cached by an earlier `clank push` (read via agent.ReadLocalWorktreeID),
+// so the background fetchAgents/fetchModels prefetch can target it.
+// Until a push has populated the cache the ref is local-only and any
+// cross-host operations will fail at launch.
 func NewSessionViewComposing(client *daemonclient.Client, projectDir string) *SessionViewModel {
 	ta := newPromptTextarea("Describe the task for the agent...", 5)
 	ta.Focus()
@@ -44,12 +44,12 @@ func NewSessionViewComposing(client *daemonclient.Client, projectDir string) *Se
 		spinner.WithSpinner(spinner.MiniDot),
 		spinner.WithStyle(lipgloss.NewStyle().Foreground(successColor)),
 	)
-	// Send both LocalPath (so the local host skips cloning) and the
-	// origin URL when available (cross-host stable identity for future
-	// remote-host targeting). See agent.GitRef godoc.
+	// Send LocalPath (laptop-local host uses it directly) plus the
+	// cached worktree ID (cross-host stable identity, set by
+	// `clank push`). See agent.GitRef godoc.
 	ref := agent.GitRef{LocalPath: projectDir}
-	if remoteURL, err := git.RemoteURL(projectDir, "origin"); err == nil {
-		ref.RemoteURL = remoteURL
+	if id, _ := agent.ReadLocalWorktreeID(projectDir); id != "" {
+		ref.WorktreeID = id
 	}
 	// Default backend: prefer the user's saved choice, falling back to
 	// agent.DefaultBackend. Errors (corrupt prefs) silently fall back —
@@ -222,15 +222,14 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 	m.err = nil
 	m.submitting = true
 
-	// Both LocalPath and RemoteURL — local host uses path, future
-	// remote hosts fall through to clone. RemoteURL is best-effort
-	// (repos without origin still work locally).
+	// LocalPath for the laptop-local host; WorktreeID for cross-host
+	// targeting once `clank sync push` has registered the worktree.
 	gitRef := agent.GitRef{
 		LocalPath:      m.projectDir,
 		WorktreeBranch: m.worktreeBranch,
 	}
-	if remoteURL, err := git.RemoteURL(m.projectDir, "origin"); err == nil {
-		gitRef.RemoteURL = remoteURL
+	if id, _ := agent.ReadLocalWorktreeID(m.projectDir); id != "" {
+		gitRef.WorktreeID = id
 	}
 
 	req := agent.StartRequest{

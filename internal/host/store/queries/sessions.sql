@@ -23,7 +23,7 @@ LIMIT @lim;
 -- name: UpsertSession :exec
 INSERT INTO sessions (
     id, external_id, backend, status, visibility, follow_up,
-    project_dir, git_remote, worktree_branch, prompt, title,
+    project_dir, worktree_id, worktree_branch, prompt, title,
     ticket_id, agent, draft, created_at, updated_at, last_read_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
@@ -33,7 +33,7 @@ ON CONFLICT (id) DO UPDATE SET
     visibility      = excluded.visibility,
     follow_up       = excluded.follow_up,
     project_dir     = excluded.project_dir,
-    git_remote      = excluded.git_remote,
+    worktree_id      = excluded.worktree_id,
     worktree_branch = excluded.worktree_branch,
     prompt          = excluded.prompt,
     title           = excluded.title,
@@ -48,12 +48,12 @@ DELETE FROM sessions WHERE id = ?;
 
 -- name: ListPrimaryAgents :one
 SELECT primary_agents_json FROM primary_agents
-WHERE backend = ? AND project_dir = ? AND git_remote = ?;
+WHERE backend = ? AND project_dir = ? AND worktree_id = ?;
 
 -- name: UpsertPrimaryAgents :exec
 INSERT INTO primary_agents (
-    backend, project_dir, git_remote, primary_agents_json, updated_at
+    backend, project_dir, worktree_id, primary_agents_json, updated_at
 ) VALUES (?, ?, ?, ?, ?)
-ON CONFLICT (backend, project_dir, git_remote) DO UPDATE SET
+ON CONFLICT (backend, project_dir, worktree_id) DO UPDATE SET
     primary_agents_json = excluded.primary_agents_json,
     updated_at          = excluded.updated_at;

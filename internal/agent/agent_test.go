@@ -77,7 +77,7 @@ func TestStartRequest_Validate_GitRef(t *testing.T) {
 			name: "git_ref_remote_ok",
 			req: agent.StartRequest{
 				Backend: agent.BackendOpenCode,
-				GitRef:  agent.GitRef{RemoteURL: "git@github.com:acksell/clank.git"},
+				GitRef:  agent.GitRef{WorktreeID: "01HXYZWORKTREE"},
 				Prompt:  "hi",
 			},
 		},
@@ -101,7 +101,7 @@ func TestStartRequest_Validate_GitRef(t *testing.T) {
 			name: "git_ref_invalid_propagates",
 			req: agent.StartRequest{
 				Backend: agent.BackendOpenCode,
-				GitRef:  agent.GitRef{RemoteURL: ""}, // missing URL
+				GitRef:  agent.GitRef{LocalPath: "rel"}, // present but invalid: not absolute
 				Prompt:  "hi",
 			},
 			wantErr: true,
@@ -112,7 +112,7 @@ func TestStartRequest_Validate_GitRef(t *testing.T) {
 				Backend: agent.BackendOpenCode,
 				GitRef: agent.GitRef{
 					LocalPath: "/tmp/repo",
-					RemoteURL: "https://github.com/x/y",
+					WorktreeID: "01HXYZWORKTREE",
 				},
 				Prompt: "hi",
 			},
