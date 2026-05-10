@@ -14,7 +14,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/cli/daemoncli"
 	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/host"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
@@ -294,7 +293,7 @@ func ensureDaemon() (*daemonclient.Client, error) {
 
 	if !running {
 		fmt.Println("Starting daemon...")
-		if err := daemoncli.RunStart(false, daemoncli.ServerOptions{}); err != nil {
+		if err := spawnLocalDaemon(); err != nil {
 			return nil, fmt.Errorf("start daemon: %w", err)
 		}
 	}
