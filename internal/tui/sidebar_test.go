@@ -389,3 +389,88 @@ func lineContaining(lines []string, substr string) string {
 	}
 	return ""
 }
+
+// TestSidebar_CloudFooterShowsConnectionStatus verifies the "☁ Cloud"
+// footer row reflects the cloud auth status pushed via SetCloudStatus.
+// Each status renders its own short indicator; not-configured renders
+// nothing so we don't surface a state the user didn't opt in to.
+func TestSidebar_CloudFooterShowsConnectionStatus(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		status  cloudAuthStatus
+		spinner string
+		// wantSubs are each checked independently — glyph and label are
+		// separate Render calls so they won't appear as a single substring
+		// in the ANSI-encoded output.
+		wantSubs    []string
+		wantNotSubs []string
+	}{
+		{
+			name:        "online shows online indicator",
+			status:      cloudStatusOnline,
+			wantSubs:    []string{"●"},
+			wantNotSubs: []string{"offline", "unavailable", "checking"},
+		},
+		{
+			name:        "offline shows offline indicator",
+			status:      cloudStatusOffline,
+			wantSubs:    []string{"○"},
+			wantNotSubs: []string{"unavailable", "checking"},
+		},
+		{
+			name:        "checking shows spinner frame",
+			status:      cloudStatusChecking,
+			spinner:     "⠋",
+			wantSubs:    []string{"⠋"},
+			wantNotSubs: []string{"unavailable", "checking"},
+		},
+		{
+			name:        "checking falls back to static glyph without spinner frame",
+			status:      cloudStatusChecking,
+			wantSubs:    []string{"◌"},
+			wantNotSubs: []string{"unavailable", "checking"},
+		},
+		{
+			name:        "unavailable shows danger indicator",
+			status:      cloudStatusUnavailable,
+			wantSubs:    []string{"●"},
+			wantNotSubs: []string{"offline", "checking"},
+		},
+		{
+			name:        "not configured shows no indicator",
+			status:      cloudStatusNotConfigured,
+			wantNotSubs: []string{"unavailable", "checking"},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m := NewSidebarModel(nil, "local", agent.GitRef{LocalPath: "/tmp"}, "/tmp")
+			m.entries = makeEntries(2)
+			m.focused = true
+			m.width = 40
+			m.height = 24
+			m.SetCloudStatus(tc.status)
+			m.SetCloudSpinnerFrame(tc.spinner)
+
+			cloudLine := lineContaining(splitVisibleLines(m.View()), "Cloud")
+			if cloudLine == "" {
+				t.Fatalf("cloud footer row missing from view")
+			}
+			for _, s := range tc.wantSubs {
+				if !strings.Contains(cloudLine, s) {
+					t.Errorf("cloud row missing %q:\n%s", s, cloudLine)
+				}
+			}
+			for _, ns := range tc.wantNotSubs {
+				if strings.Contains(cloudLine, ns) {
+					t.Errorf("cloud row should not contain %q:\n%s", ns, cloudLine)
+				}
+			}
+		})
+	}
+}

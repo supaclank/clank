@@ -15,11 +15,10 @@ import (
 // focus from the sidebar. Used for hover-preview when the cursor lands
 // on the ☁ row.
 //
-// First entry initializes the cloud view (loads prefs, fires /me if a
-// saved session exists). Subsequent entries reuse the existing state —
-// /me is not re-fetched on hover, which keeps cursor navigation cheap
-// and avoids a network roundtrip every time the user passes through
-// the row. The user can refresh explicitly with 'r' inside the panel.
+// The cloud view is now eagerly initialized in InboxModel.Init so a
+// saved session gets verified in the background. We only set the size
+// and screen here; the cloudInitialized fallback remains for safety in
+// case Init was bypassed.
 func (m *InboxModel) showCloud() tea.Cmd {
 	if !m.cloudInitialized {
 		m.cloud = newCloudView()
@@ -110,5 +109,10 @@ func (m *InboxModel) updateCloud(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Otherwise delegate to the cloud view itself.
 	var cmd tea.Cmd
 	m.cloud, cmd = m.cloud.Update(msg)
+	// cloudView.Status combines the disk-derived identity baseline
+	// with in-memory reachability tracking, so the sidebar reflects
+	// both auth state (online/offline) and server health
+	// (checking/unavailable) without the sidebar owning either.
+	m.sidebar.SetCloudStatus(m.cloud.Status())
 	return m, cmd
 }

@@ -94,6 +94,39 @@ type cloudView struct {
 
 	cloudURL string
 	client   *cloud.Client
+
+	// Reachability tracking — fed into Status() so the sidebar
+	// indicator can distinguish "identity ok, server unreachable"
+	// from "identity ok, all good". Updated by message handlers
+	// for /me and the device-flow calls.
+	hasCalled   bool
+	lastCallErr error
+}
+
+// Status combines the disk-derived identity baseline with in-memory
+// reachability tracking. Sidebar reads this every cloud Update tick.
+//
+// The disk baseline is authoritative for NotConfigured and Offline
+// (no token → reachability is moot). Once a token is on disk we move
+// through Checking → Online | Unavailable based on the most recent
+// server call we've made.
+func (m *cloudView) Status() cloudAuthStatus {
+	base := loadCloudAuthStatus()
+	if base != cloudStatusChecking {
+		return base
+	}
+	if !m.hasCalled {
+		return cloudStatusChecking
+	}
+	if m.lastCallErr == nil {
+		return cloudStatusOnline
+	}
+	if errors.Is(m.lastCallErr, cloud.ErrUnauthorized) {
+		// Defensive: clearSession() should already have flipped the
+		// disk baseline to Offline before we get here.
+		return cloudStatusOffline
+	}
+	return cloudStatusUnavailable
 }
 
 func newCloudView() cloudView {
@@ -137,7 +170,7 @@ func (m *cloudView) Init() tea.Cmd {
 	return nil
 }
 
-func (m *cloudView) SetSize(w, h int) { m.width = w; m.height = h }
+func (m *cloudView) SetSize(w, h int)  { m.width = w; m.height = h }
 func (m *cloudView) SetFocused(f bool) { m.focused = f }
 
 // Update handles the panel's messages.
@@ -203,6 +236,8 @@ func (m cloudView) Update(msg tea.Msg) (cloudView, tea.Cmd) {
 		}
 
 	case cloudMeResultMsg:
+		m.hasCalled = true
+		m.lastCallErr = msg.err
 		if errors.Is(msg.err, cloud.ErrUnauthorized) {
 			m.session = nil
 			_ = clearSession()

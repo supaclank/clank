@@ -234,6 +234,7 @@ func NewInboxModel(client *daemonclient.Client) *InboxModel {
 	// CreateSession that carries Dir (§7.5).
 	hostname, gitRef := resolveLocalRepo(cwd)
 	bp := NewSidebarModel(client, hostname, gitRef, cwd)
+	bp.SetCloudStatus(loadCloudAuthStatus())
 	return &InboxModel{
 		client:            client,
 		pane:              paneSessions,
@@ -255,6 +256,15 @@ func (m *InboxModel) Init() tea.Cmd {
 	// at daemon startup (hub/discover_startup.go) covers the cold-boot case;
 	// future explicit rediscover will be a keybind.
 	cmds := []tea.Cmd{func() tea.Msg { return tea.RequestWindowSize }, m.loadDataCmd(), m.autoRefreshCmd(), m.spinner.Tick, m.sidebar.Init()}
+	// Eagerly initialize the cloud view so a saved token gets verified
+	// against the server in the background, even if the user never opens
+	// the cloud panel. This drives the sidebar indicator from "checking"
+	// to "online" / "unavailable" without requiring a hover.
+	if !m.cloudInitialized {
+		m.cloud = newCloudView()
+		m.cloudInitialized = true
+		cmds = append(cmds, m.cloud.Init())
+	}
 	if m.screen == screenSession && m.sessionView != nil {
 		cmds = append(cmds, m.sessionView.Init())
 	}
@@ -381,6 +391,10 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if tickMsg, ok := msg.(spinner.TickMsg); ok {
 		var inboxCmd tea.Cmd
 		m.spinner, inboxCmd = m.spinner.Update(tickMsg)
+		// Feed the freshly-advanced spinner frame to the sidebar so
+		// the cloud "checking" indicator animates without the sidebar
+		// owning its own ticker.
+		m.sidebar.SetCloudSpinnerFrame(m.spinner.View())
 
 		// Forward to provider auth modal too — its spinner has its own
 		// ID, so the modal's Update will only advance for its own ticks.
@@ -478,6 +492,17 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// If we're on the Cloud panel, delegate there.
 	if m.screen == screenCloud {
 		return m.updateCloud(msg)
+	}
+
+	// Route background cloud results (e.g. the eager /me from Init)
+	// to the cloud view even when its panel isn't visible, so the
+	// sidebar indicator can flip from "checking" to "online" /
+	// "unavailable" without a hover.
+	if _, ok := msg.(cloudMeResultMsg); ok && m.cloudInitialized {
+		var cmd tea.Cmd
+		m.cloud, cmd = m.cloud.Update(msg)
+		m.sidebar.SetCloudStatus(m.cloud.Status())
+		return m, cmd
 	}
 
 	// If help overlay is open, dismiss on any key press.

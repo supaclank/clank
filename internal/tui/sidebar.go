@@ -118,7 +118,27 @@ type SidebarModel struct {
 	width   int
 	height  int
 	err     error
+
+	// cloudStatus is mirrored from the inbox so the "☁ Cloud" footer
+	// row can render a connection indicator. Defaults to
+	// cloudStatusNotConfigured (zero value) until SetCloudStatus is called.
+	cloudStatus cloudAuthStatus
+	// cloudSpinnerFrame is the latest spinner glyph pushed by the inbox
+	// each tick. Rendered in front of the "checking" label so the
+	// indicator animates while we're waiting on the first /me result.
+	cloudSpinnerFrame string
 }
+
+// SetCloudStatus updates the cloud connection indicator shown next to
+// the "☁ Cloud" footer row. Callers (the inbox) are responsible for
+// pushing the latest status whenever it can change (startup, sign-in,
+// sign-out, /me result, server failure).
+func (m *SidebarModel) SetCloudStatus(s cloudAuthStatus) { m.cloudStatus = s }
+
+// SetCloudSpinnerFrame feeds the current spinner glyph from the inbox
+// into the sidebar. The frame is only rendered when cloudStatus ==
+// cloudStatusChecking; outside that state it's ignored.
+func (m *SidebarModel) SetCloudSpinnerFrame(frame string) { m.cloudSpinnerFrame = frame }
 
 // NewSidebarModel creates a sidebar for the given repo identity.
 // projectDir is retained for display purposes only; branch/worktree ops
@@ -606,10 +626,44 @@ func (m *SidebarModel) renderFooter(maxWidth int) string {
 		Render(strings.Repeat("─", maxWidth))
 
 	importRow := m.renderFooterRow("↓ Import Sessions", m.CursorOnImport())
-	cloudRow := m.renderFooterRow("☁ Cloud", m.CursorOnCloud())
+	cloudRow := m.renderCloudFooterRow()
 	settingsRow := m.renderFooterRow("⚙ Settings", m.CursorOnSettings())
 
 	return sep + "\n" + importRow + "\n" + cloudRow + "\n" + settingsRow
+}
+
+// renderCloudFooterRow renders the "☁ Cloud" row with the connection
+// indicator placed inline, immediately after the label.
+func (m *SidebarModel) renderCloudFooterRow() string {
+	indicator := m.renderCloudStatusIndicator()
+	if indicator == "" {
+		return m.renderFooterRow("☁ Cloud", m.CursorOnCloud())
+	}
+	return m.renderFooterRow("☁ Cloud "+indicator, m.CursorOnCloud())
+}
+
+// renderCloudStatusIndicator renders the small dot+label shown on the
+// right side of the cloud footer row. Returns "" when no cloud_url is
+// configured (no point hinting at a status the user hasn't opted in to).
+// Only the glyph carries color; the label is always dim so it doesn't
+// compete with the row text.
+func (m *SidebarModel) renderCloudStatusIndicator() string {
+	switch m.cloudStatus {
+	case cloudStatusOnline:
+		return lipgloss.NewStyle().Foreground(successColor).Render("●")
+	case cloudStatusChecking:
+		glyph := m.cloudSpinnerFrame
+		if glyph == "" {
+			glyph = "◌"
+		}
+		return lipgloss.NewStyle().Foreground(secondaryColor).Render(glyph)
+	case cloudStatusUnavailable:
+		return lipgloss.NewStyle().Foreground(dangerColor).Render("●")
+	case cloudStatusOffline:
+		return lipgloss.NewStyle().Foreground(dimColor).Render("○")
+	default:
+		return ""
+	}
 }
 
 // renderFooterRow renders one footer row with the right styling for
