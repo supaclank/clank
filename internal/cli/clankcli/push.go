@@ -12,7 +12,7 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/pkg/syncclient"
+	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
 
 func envOrDefault(key, def string) string {

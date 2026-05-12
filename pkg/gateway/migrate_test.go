@@ -27,7 +27,7 @@ import (
 	clanksync "github.com/acksell/clank/pkg/sync"
 	"github.com/acksell/clank/pkg/sync/checkpoint"
 	"github.com/acksell/clank/pkg/sync/storage"
-	"github.com/acksell/clank/pkg/syncclient"
+	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
 
 // TestMigrate_ToSprite_EndToEnd is the P3 happy-path test.

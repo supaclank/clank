@@ -21,7 +21,7 @@ import (
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host"
-	"github.com/acksell/clank/pkg/syncclient"
+	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
 
 // inboxScreen tracks which screen is active within the inbox app.

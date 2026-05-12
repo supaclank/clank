@@ -16,8 +16,8 @@ import (
 	"github.com/acksell/clank/pkg/auth"
 	clanksync "github.com/acksell/clank/pkg/sync"
 	"github.com/acksell/clank/pkg/sync/checkpoint"
+	syncclient "github.com/acksell/clank/pkg/sync/client"
 	"github.com/acksell/clank/pkg/sync/storage"
-	"github.com/acksell/clank/pkg/syncclient"
 )
 
 // fixedPrincipalMiddleware injects a fixed Principal so every request
