@@ -71,6 +71,82 @@ func TestPreferences_LoadBackwardCompat(t *testing.T) {
 	}
 }
 
+// TestPreferences_LegacyCloudFlatShapeMigrates ensures a preferences.json
+// written before the cloud-as-list refactor (single inline profile under
+// "cloud") loads into a single "default" profile and ActiveCloud returns
+// it. Guards the user's existing on-disk configs from breaking silently.
+func TestPreferences_LegacyCloudFlatShapeMigrates(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".clank")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{
+		"cloud": {
+			"gateway_url":  "https://gw.example.com",
+			"auth_url":     "https://auth.example.com",
+			"access_token": "tok-legacy",
+			"user_email":   "u@example.com"
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "preferences.json"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prefs, err := LoadPreferences()
+	if err != nil {
+		t.Fatalf("LoadPreferences: %v", err)
+	}
+	if prefs.Remote == nil {
+		t.Fatal("Cloud should not be nil after legacy migration")
+	}
+	if prefs.Remote.Active != "default" {
+		t.Errorf("Active: got %q, want default", prefs.Remote.Active)
+	}
+	p := prefs.ActiveRemote()
+	if p == nil {
+		t.Fatal("ActiveCloud should resolve to the migrated profile")
+	}
+	if p.GatewayURL != "https://gw.example.com" || p.AccessToken != "tok-legacy" || p.UserEmail != "u@example.com" {
+		t.Errorf("migrated profile: %+v", p)
+	}
+}
+
+// TestPreferences_MultiProfileLoads verifies the new shape round-trips
+// and ActiveCloud honors the Active selector.
+func TestPreferences_MultiProfileLoads(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".clank")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	doc := `{
+		"cloud": {
+			"active": "managed",
+			"profiles": {
+				"dev":     {"gateway_url": "http://localhost:7878", "access_token": "dev-tok"},
+				"managed": {"gateway_url": "https://api.example.com", "access_token": "prod-tok"}
+			}
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "preferences.json"), []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prefs, err := LoadPreferences()
+	if err != nil {
+		t.Fatalf("LoadPreferences: %v", err)
+	}
+	if prefs.Remote == nil || len(prefs.Remote.Profiles) != 2 {
+		t.Fatalf("expected 2 profiles, got %+v", prefs.Remote)
+	}
+	p := prefs.ActiveRemote()
+	if p == nil || p.GatewayURL != "https://api.example.com" {
+		t.Errorf("ActiveCloud should resolve to managed profile, got %+v", p)
+	}
+}
+
 // TestPreferences_MissingFileIsZero verifies the "no file yet" path returns
 // a zero-value Preferences without error. Important so a first-run TUI
 // doesn't error out at startup.

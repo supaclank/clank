@@ -12,20 +12,24 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/store"
+	"github.com/acksell/clank/pkg/auth"
 	clanksync "github.com/acksell/clank/pkg/sync"
 	"github.com/acksell/clank/pkg/sync/storage"
 )
 
-// headerUserAuth pulls userID from X-Test-User-Id so each request can
-// assert as a different principal without a real token issuer.
-type headerUserAuth struct{}
-
-func (headerUserAuth) Verify(r *http.Request) (map[string]any, error) {
-	u := r.Header.Get("X-Test-User-Id")
-	if u == "" {
-		return nil, errors.New("missing X-Test-User-Id")
-	}
-	return map[string]any{"sub": u}, nil
+// headerPrincipalMiddleware pulls UserID from X-Test-User-Id and
+// injects it as an auth.Principal so each request can assert as a
+// different user without a real token issuer.
+func headerPrincipalMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u := r.Header.Get("X-Test-User-Id")
+		if u == "" {
+			http.Error(w, "missing X-Test-User-Id", http.StatusUnauthorized)
+			return
+		}
+		ctx := auth.WithPrincipal(r.Context(), auth.Principal{UserID: u})
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 // TestRemoteCaller_RejectedWhenHostStoreUnset pins the
@@ -46,7 +50,6 @@ func TestRemoteCaller_RejectedWhenHostStoreUnset(t *testing.T) {
 	t.Cleanup(mem.Close)
 
 	srv, err := clanksync.NewServer(clanksync.Config{
-		Auth:       headerUserAuth{},
 		Store:      st,
 		Storage:    mem,
 		PresignTTL: time.Minute,
@@ -56,20 +59,19 @@ func TestRemoteCaller_RejectedWhenHostStoreUnset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	httpSrv := httptest.NewServer(srv.Handler())
+	httpSrv := httptest.NewServer(headerPrincipalMiddleware(srv.Handler()))
 	t.Cleanup(httpSrv.Close)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Seed a worktree as a normal laptop caller so there's something to read.
-	worktreeID, err := callRegisterWorktree(ctx, httpSrv.URL, "user-A", "dev-A", "wt")
+	worktreeID, err := callRegisterWorktree(ctx, httpSrv.URL, "user-A", "wt")
 	if err != nil {
 		t.Fatalf("register worktree: %v", err)
 	}
 
-	// Read it as a sprite caller (X-Clank-Host-Id instead of
-	// X-Clank-Device-Id). Must 403, not 200.
+	// Read it as a sprite caller (X-Clank-Host-Id). Must 403, not 200.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		httpSrv.URL+"/v1/worktrees/"+worktreeID, nil)
 	if err != nil {
@@ -88,12 +90,12 @@ func TestRemoteCaller_RejectedWhenHostStoreUnset(t *testing.T) {
 	}
 }
 
-func callRegisterWorktree(ctx context.Context, baseURL, userID, deviceID, displayName string) (string, error) {
+func callRegisterWorktree(ctx context.Context, baseURL, userID, displayName string) (string, error) {
 	var resp struct {
 		ID string `json:"id"`
 	}
 	body := map[string]string{"display_name": displayName}
-	if err := callJSON(ctx, http.MethodPost, baseURL+"/v1/worktrees", userID, deviceID, body, &resp); err != nil {
+	if err := callJSON(ctx, http.MethodPost, baseURL+"/v1/worktrees", userID, body, &resp); err != nil {
 		return "", err
 	}
 	if resp.ID == "" {
@@ -102,7 +104,7 @@ func callRegisterWorktree(ctx context.Context, baseURL, userID, deviceID, displa
 	return resp.ID, nil
 }
 
-func callJSON(ctx context.Context, method, url, userID, deviceID string, body any, into any) error {
+func callJSON(ctx context.Context, method, url, userID string, body any, into any) error {
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -113,7 +115,6 @@ func callJSON(ctx context.Context, method, url, userID, deviceID string, body an
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Test-User-Id", userID)
-	req.Header.Set("X-Clank-Device-Id", deviceID)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err

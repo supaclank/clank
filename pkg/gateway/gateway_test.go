@@ -2,14 +2,22 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
 
+	"github.com/acksell/clank/pkg/auth"
 	"github.com/acksell/clank/pkg/provisioner"
 )
+
+// localAuth wraps next so each request gets a fixed test Principal.
+// Mirrors what auth.Middleware + auth.AllowAll do in production but
+// lets a test inject any UserID it wants.
+func localAuth(next http.Handler, userID string) http.Handler {
+	return auth.Middleware(next, &auth.AllowAll{UserID: userID})
+}
 
 // stubProvisioner is a minimal provisioner.Provisioner that returns
 // a fixed HostRef. Tests configure the URL and Transport per case;
@@ -29,18 +37,18 @@ func (*stubProvisioner) SuspendHost(context.Context, string) error { return nil 
 func (*stubProvisioner) DestroyHost(context.Context, string) error { return nil }
 
 // captureAuth records every Verify call so tests can assert the
-// gateway invokes auth.
+// auth.Middleware invokes the configured Authenticator.
 type captureAuth struct {
 	calls   int
 	allowed bool
 }
 
-func (c *captureAuth) Verify(*http.Request) (map[string]any, error) {
+func (c *captureAuth) Verify(*http.Request) (auth.Principal, error) {
 	c.calls++
 	if !c.allowed {
-		return nil, http.ErrNoCookie // any non-nil error
+		return auth.Principal{}, errors.New("denied")
 	}
-	return map[string]any{"sub": "tester"}, nil
+	return auth.Principal{UserID: "tester"}, nil
 }
 
 func TestNewGateway_RequiresProvisioner(t *testing.T) {
@@ -57,7 +65,7 @@ func TestPing_DoesNotTouchProvisioner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGateway: %v", err)
 	}
-	srv := httptest.NewServer(g.Handler())
+	srv := httptest.NewServer(localAuth(g.Handler(), "test"))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/ping")
@@ -77,10 +85,10 @@ func TestPing_DoesNotTouchProvisioner(t *testing.T) {
 
 func TestProxy_RejectsOnAuthFailure(t *testing.T) {
 	t.Parallel()
-	auth := &captureAuth{allowed: false}
+	a := &captureAuth{allowed: false}
 	prov := &stubProvisioner{}
-	g, _ := NewGateway(Config{Provisioner: prov, Auth: auth}, nil)
-	srv := httptest.NewServer(g.Handler())
+	g, _ := NewGateway(Config{Provisioner: prov}, nil)
+	srv := httptest.NewServer(auth.Middleware(g.Handler(), a))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/sessions")
@@ -91,11 +99,8 @@ func TestProxy_RejectsOnAuthFailure(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status: got %d, want 401", resp.StatusCode)
 	}
-	if got := resp.Header.Get("WWW-Authenticate"); !strings.Contains(got, "Bearer") {
-		t.Errorf("WWW-Authenticate: got %q, want to contain Bearer", got)
-	}
-	if auth.calls != 1 {
-		t.Errorf("auth.Verify call count: got %d, want 1", auth.calls)
+	if a.calls != 1 {
+		t.Errorf("auth.Verify call count: got %d, want 1", a.calls)
 	}
 }
 
@@ -120,7 +125,7 @@ func TestProxy_ForwardsToUpstream(t *testing.T) {
 		},
 	}
 	g, _ := NewGateway(Config{Provisioner: prov}, nil)
-	srv := httptest.NewServer(g.Handler())
+	srv := httptest.NewServer(localAuth(g.Handler(), "test"))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/sessions/abc/messages")
@@ -136,6 +141,51 @@ func TestProxy_ForwardsToUpstream(t *testing.T) {
 	}
 	if m := <-gotMethod; m != http.MethodGet {
 		t.Errorf("upstream got method %q, want GET", m)
+	}
+}
+
+// TestProxy_BlocksSyncPathsWhenSyncNil locks in the laptop-gateway
+// security boundary: when Sync is unconfigured (laptop mode), the
+// gateway must refuse to forward /sync/* requests to its local
+// clank-host subprocess. Otherwise any process with socket access
+// could push a checkpoint into ~/work/ on the laptop.
+func TestProxy_BlocksSyncPathsWhenSyncNil(t *testing.T) {
+	t.Parallel()
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	prov := &stubProvisioner{
+		ref: provisioner.HostRef{
+			URL:       upstream.URL,
+			Transport: http.DefaultTransport,
+			Hostname:  "test-host",
+		},
+	}
+	g, _ := NewGateway(Config{Provisioner: prov /* Sync intentionally nil */}, nil)
+	srv := httptest.NewServer(localAuth(g.Handler(), "test"))
+	t.Cleanup(srv.Close)
+
+	// Both the direct path and the host-prefixed path must be blocked;
+	// the gateway strips /hosts/<name>/ during proxying, so guarding only
+	// the raw incoming path would let /hosts/local/sync/* bypass the
+	// boundary and reach the host mux's unconditional /sync/* handlers.
+	for _, path := range []string{"/sync/apply?repo=foo", "/hosts/local/sync/apply-from-urls"} {
+		upstreamCalled = false
+		resp, err := http.Post(srv.URL+path, "application/octet-stream", nil)
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("POST %s status: got %d, want 404", path, resp.StatusCode)
+		}
+		resp.Body.Close()
+		if upstreamCalled {
+			t.Errorf("POST %s reached upstream; the gateway should have denied before proxying", path)
+		}
 	}
 }
 
@@ -158,7 +208,7 @@ func TestProxy_UsesHostRefTransport(t *testing.T) {
 		ref: provisioner.HostRef{URL: upstream.URL, Transport: tr},
 	}
 	g, _ := NewGateway(Config{Provisioner: prov}, nil)
-	srv := httptest.NewServer(g.Handler())
+	srv := httptest.NewServer(localAuth(g.Handler(), "test"))
 	t.Cleanup(srv.Close)
 
 	if _, err := http.Get(srv.URL + "/anything"); err != nil {
@@ -184,7 +234,7 @@ func TestProxy_SurfacesProvisionerFailure(t *testing.T) {
 	t.Parallel()
 	prov := &stubProvisioner{err: errSimulated}
 	g, _ := NewGateway(Config{Provisioner: prov}, nil)
-	srv := httptest.NewServer(g.Handler())
+	srv := httptest.NewServer(localAuth(g.Handler(), "test"))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/sessions")
@@ -206,7 +256,7 @@ func TestProxy_SurfacesUpstreamFailure(t *testing.T) {
 		ref: provisioner.HostRef{URL: "http://127.0.0.1:1", Transport: http.DefaultTransport},
 	}
 	g, _ := NewGateway(Config{Provisioner: prov}, nil)
-	srv := httptest.NewServer(g.Handler())
+	srv := httptest.NewServer(localAuth(g.Handler(), "test"))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/sessions")
@@ -242,7 +292,7 @@ func TestProxy_StripsHostsPrefix(t *testing.T) {
 
 	prov := &stubProvisioner{ref: provisioner.HostRef{URL: upstream.URL, Transport: http.DefaultTransport}}
 	g, _ := NewGateway(Config{Provisioner: prov}, nil)
-	srv := httptest.NewServer(g.Handler())
+	srv := httptest.NewServer(localAuth(g.Handler(), "test"))
 	t.Cleanup(srv.Close)
 
 	cases := []struct {
@@ -293,7 +343,7 @@ func TestProxy_StripsHostsPrefixWithTargetPath(t *testing.T) {
 
 	prov := &stubProvisioner{ref: provisioner.HostRef{URL: upstream.URL + "/v1", Transport: http.DefaultTransport}}
 	g, _ := NewGateway(Config{Provisioner: prov}, nil)
-	srv := httptest.NewServer(g.Handler())
+	srv := httptest.NewServer(localAuth(g.Handler(), "test"))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/hosts/local/auth/providers")

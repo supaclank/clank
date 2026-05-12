@@ -1,9 +1,8 @@
 # syntax=docker/dockerfile:1.6
 #
-# Multi-stage build that produces /usr/local/bin/{clank-sync,clankd,clank-host}
-# in a small runtime image. The same image is used for both the
-# clank-sync and clankd services in docker-compose.yml; the CMD
-# selects which binary runs.
+# Multi-stage build that produces /usr/local/bin/{clankd,clank-host,
+# clank-auth-stub} in a small runtime image. clankd embeds the sync
+# server in TCP mode when CLANK_SYNC_S3_* env vars are present.
 
 ARG GO_VERSION=1.25.8
 
@@ -26,9 +25,9 @@ COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags "-s -w" -o /out/clank-sync   ./cmd/clank-sync && \
-    go build -trimpath -ldflags "-s -w" -o /out/clankd       ./cmd/clankd     && \
-    go build -trimpath -ldflags "-s -w" -o /out/clank-host   ./cmd/clank-host
+    go build -trimpath -ldflags "-s -w" -o /out/clankd          ./cmd/clankd     && \
+    go build -trimpath -ldflags "-s -w" -o /out/clank-host      ./cmd/clank-host && \
+    go build -trimpath -ldflags "-s -w" -o /out/clank-auth-stub ./cmd/clank-auth-stub
 
 FROM debian:bookworm-slim AS runtime
 
@@ -54,15 +53,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # resolves on PATH for the clank-host subprocess.
 RUN npm install -g opencode-ai && opencode --version
 
-# Persistent state. clank-sync writes its sqlite db here; clankd's local
+# Persistent state. clankd writes its embedded sync sqlite db here when
+# the gateway is in TCP mode with CLANK_SYNC_S3_* configured; its local
 # provisioner stores host.db here too. Mount as a named volume in
 # docker-compose so it survives container rebuilds.
 RUN mkdir -p /var/lib/clank /root/.clank
 ENV HOME=/root
 
-COPY --from=builder /out/clank-sync   /usr/local/bin/clank-sync
-COPY --from=builder /out/clankd       /usr/local/bin/clankd
-COPY --from=builder /out/clank-host   /usr/local/bin/clank-host
+COPY --from=builder /out/clankd          /usr/local/bin/clankd
+COPY --from=builder /out/clank-host      /usr/local/bin/clank-host
+COPY --from=builder /out/clank-auth-stub /usr/local/bin/clank-auth-stub
 
 # clankd's local provisioner does exec.LookPath("clank-host"); having
 # it on PATH satisfies that without an explicit BinPath option.

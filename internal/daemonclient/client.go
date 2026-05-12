@@ -82,10 +82,10 @@ func NewClient(sockPath string) *Client {
 }
 
 // NewTCPClient creates a client that talks to a remote clankd over
-// TCP. baseURL must be the externally-reachable hub URL (no trailing
-// slash); authToken is sent as `Authorization: Bearer <token>` on
-// every request and must match the remote hub's
-// preferences.remote_hub.auth_token.
+// TCP. baseURL must be the externally-reachable gateway URL (no
+// trailing slash); authToken is sent as `Authorization: Bearer
+// <token>` on every request. The gateway's Authenticator (HS256
+// JWT, OIDC, or opt-in static bearer) verifies it.
 func NewTCPClient(baseURL, authToken string) *Client {
 	// Clone DefaultTransport to keep Proxy/Idle/TLS defaults.
 	tr := http.DefaultTransport.(*http.Transport).Clone()
@@ -97,48 +97,22 @@ func NewTCPClient(baseURL, authToken string) *Client {
 	}
 }
 
-// Process-wide CLI-flag override populated by SetOverride before any
-// client is constructed; takes priority over preferences.json.
-var (
-	overrideURL   string
-	overrideToken string
-)
-
-// SetOverride sets the CLI-flag-level hub transport override.
-// Empty url restores preferences.json as the source of truth.
-func SetOverride(url, token string) {
-	overrideURL = url
-	overrideToken = token
-}
-
-// ResetOverride clears any active override.
-func ResetOverride() {
-	overrideURL = ""
-	overrideToken = ""
-}
-
-// OverrideURL returns the CLI-flag override URL, or "" if none.
-func OverrideURL() string {
-	return strings.TrimSpace(overrideURL)
-}
-
 // NewDefaultClient creates a client using, in priority order:
-//  1. CLI-flag overrides (SetOverride).
-//  2. preferences.ActiveHub == "remote" with a configured remote_hub URL.
-//  3. The local Unix socket.
+//  1. preferences.ActiveHub == "remote" with the active remote's
+//     gateway_url set.
+//  2. The local Unix socket.
 //
 // Use NewLocalClient for daemon-control commands instead.
 func NewDefaultClient() (*Client, error) {
-	if strings.TrimSpace(overrideURL) != "" {
-		return NewTCPClient(overrideURL, overrideToken), nil
-	}
 	prefs, err := config.LoadPreferences()
 	if err != nil {
 		// A corrupt prefs file must surface, not silently fall back to local.
 		return nil, fmt.Errorf("load preferences: %w", err)
 	}
-	if prefs.ActiveHub == "remote" && prefs.RemoteHub != nil && strings.TrimSpace(prefs.RemoteHub.URL) != "" {
-		return NewTCPClient(prefs.RemoteHub.URL, prefs.RemoteHub.AuthToken), nil
+	if prefs.ActiveHub == "remote" {
+		if p := prefs.ActiveRemote(); p != nil && strings.TrimSpace(p.GatewayURL) != "" {
+			return NewTCPClient(p.GatewayURL, p.AccessToken), nil
+		}
 	}
 	sockPath, err := SocketPath()
 	if err != nil {
@@ -157,34 +131,55 @@ func NewLocalClient() (*Client, error) {
 	return NewClient(sockPath), nil
 }
 
-// IsRemoteActive reports whether NewDefaultClient would target a
-// remote hub. Logs and degrades to false on prefs load failure.
-func IsRemoteActive() bool {
-	if strings.TrimSpace(overrideURL) != "" {
-		return true
-	}
+// NewRemoteClient returns a TCP client targeting the active remote's
+// gateway_url with its access_token as the bearer. Use for sync/
+// migration calls that must hit the remote gateway regardless of
+// ActiveHub (the laptop daemon's gateway has Sync=nil and doesn't
+// orchestrate migration).
+//
+// Returns an error when no active remote is configured — surfaces a
+// clear setup message rather than silently falling back to a
+// transport that would fail later.
+func NewRemoteClient() (*Client, error) {
 	prefs, err := config.LoadPreferences()
 	if err != nil {
-		log.Printf("hubclient.IsRemoteActive: prefs load failed (%v) — assuming local; fix the file to switch hubs", err)
+		return nil, fmt.Errorf("load preferences: %w", err)
+	}
+	p := prefs.ActiveRemote()
+	if p == nil || strings.TrimSpace(p.GatewayURL) == "" {
+		return nil, fmt.Errorf("no active remote configured; run `clank remote add <name> --gateway-url=...`")
+	}
+	return NewTCPClient(p.GatewayURL, p.AccessToken), nil
+}
+
+// IsRemoteActive reports whether NewDefaultClient would target a
+// remote clankd. Logs and degrades to false on prefs load failure.
+func IsRemoteActive() bool {
+	prefs, err := config.LoadPreferences()
+	if err != nil {
+		log.Printf("daemonclient.IsRemoteActive: prefs load failed (%v) — assuming local; fix the file to switch", err)
 		return false
 	}
-	return prefs.ActiveHub == "remote" && prefs.RemoteHub != nil && strings.TrimSpace(prefs.RemoteHub.URL) != ""
+	if prefs.ActiveHub != "remote" {
+		return false
+	}
+	p := prefs.ActiveRemote()
+	return p != nil && strings.TrimSpace(p.GatewayURL) != ""
 }
 
 // ActiveHubLabel returns a short human-readable description of the
-// hub NewDefaultClient would target. Logs and labels as broken on
+// clankd NewDefaultClient would target. Logs and labels as broken on
 // prefs load failure.
 func ActiveHubLabel() string {
-	if u := strings.TrimSpace(overrideURL); u != "" {
-		return "override (" + u + ")"
-	}
 	prefs, err := config.LoadPreferences()
 	if err != nil {
-		log.Printf("hubclient.ActiveHubLabel: prefs load failed: %v", err)
+		log.Printf("daemonclient.ActiveHubLabel: prefs load failed: %v", err)
 		return "unknown (prefs unreadable)"
 	}
-	if prefs.ActiveHub == "remote" && prefs.RemoteHub != nil && strings.TrimSpace(prefs.RemoteHub.URL) != "" {
-		return "remote (" + prefs.RemoteHub.URL + ")"
+	if prefs.ActiveHub == "remote" {
+		if p := prefs.ActiveRemote(); p != nil && strings.TrimSpace(p.GatewayURL) != "" {
+			return "remote (" + p.GatewayURL + ")"
+		}
 	}
 	return "local"
 }

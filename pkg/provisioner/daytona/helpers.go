@@ -19,8 +19,6 @@ const HostPort = 7878
 // reservedSandboxEnv keys are populated by the provisioner; ExtraEnv
 // must not override them.
 var reservedSandboxEnv = []string{
-	"CLANK_HUB_URL",
-	"CLANK_HUB_TOKEN",
 	"CLANK_HOST_PORT",
 	"CLANK_HOST_AUTH_TOKEN",
 }

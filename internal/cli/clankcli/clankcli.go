@@ -22,37 +22,22 @@ import (
 
 // Command returns the root cobra command for the clank binary with all subcommands.
 func Command() *cobra.Command {
-	var (
-		hubURL   string
-		hubToken string
-	)
 	root := &cobra.Command{
 		Use:   "clank",
 		Short: "AI-powered coding session manager",
 		Long:  "Clank manages your coding agent sessions and helps you track what's in flight.",
-		// PersistentPreRun wins over preferences.json — used for ad-hoc
-		// dev iteration ("point this clank at a different hub for one
-		// command without messing with files or env vars"). Empty flags
-		// are no-ops, so default behavior is unchanged.
-		PersistentPreRun: func(cmd *cobra.Command, args []string) {
-			daemonclient.SetOverride(hubURL, hubToken)
-		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInbox()
 		},
 	}
-
-	// Hub-target overrides. These bypass preferences.active_hub so a
-	// user with CLANK_DIR set to a daemon's data dir (laptop or cloud)
-	// can still point their TUI at any hub URL without juggling files.
-	root.PersistentFlags().StringVar(&hubURL, "hub-url", "", "Override the active hub URL (e.g. http://127.0.0.1:7878). Bypasses preferences.active_hub for this invocation.")
-	root.PersistentFlags().StringVar(&hubToken, "hub-token", "", "Bearer token for --hub-url. Required when --hub-url points at a TCP-mode hub.")
 
 	root.AddCommand(
 		codeCmd(),
 		inboxCmd(),
 		pushCmd(),
 		pullCmd(),
+		remoteCmd(),
+		loginCmd(),
 	)
 
 	return root

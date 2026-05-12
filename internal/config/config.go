@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 )
 
@@ -61,16 +62,6 @@ func expandHome(p string) (string, error) {
 type ModelPreference struct {
 	ModelID    string `json:"model_id"`
 	ProviderID string `json:"provider_id"`
-}
-
-// RemoteHubPreference configures hub-to-hub sync. Populated symmetrically
-// on both ends: the laptop hub sets URL+AuthToken to know where to push
-// synced git data; a TCP-listening hub uses AuthToken to validate inbound
-// bearer tokens. URL may be empty on a hub that only acts as a sync
-// receiver.
-type RemoteHubPreference struct {
-	URL       string `json:"url,omitempty"`
-	AuthToken string `json:"auth_token,omitempty"`
 }
 
 // DaytonaPreference configures the Daytona host launcher on a cloud
@@ -142,25 +133,17 @@ type Preferences struct {
 	// default" (defaultSidebarWidthRatio).
 	SidebarWidthRatio int `json:"sidebar_width_ratio,omitempty"`
 
-	// RemoteHub configures hub-to-hub sync. See RemoteHubPreference.
-	RemoteHub *RemoteHubPreference `json:"remote_hub,omitempty"`
-
-	// ActiveHub picks which hub the local TUI/CLI talks to:
+	// ActiveHub picks which clankd the local TUI/CLI talks to:
 	//
 	//   ""        — implicit "local"; the local Unix-socket daemon.
 	//   "local"   — explicit "local"; same behavior as "".
-	//   "remote"  — talk to RemoteHub.URL with RemoteHub.AuthToken
-	//               over TCP. Requires RemoteHub to be set.
+	//   "remote"  — talk to cloud.gateway_url with cloud.access_token
+	//               over TCP. Requires the Cloud preference to be set.
 	//
 	// Used by daemonclient.NewDefaultClient to pick the transport. Only
 	// affects clients (TUI, clankcli); the local clankd daemon always
 	// listens on its own socket regardless of this value.
 	ActiveHub string `json:"active_hub,omitempty"`
-
-	// SyncedRepos lists git RemoteURLs that the laptop sync agent will
-	// push to RemoteHub. Repos not on this list are ignored — explicit
-	// opt-in avoids accidental data exfiltration.
-	SyncedRepos []string `json:"synced_repos,omitempty"`
 
 	// Daytona configures the cloud-hub-side Daytona launcher. Only
 	// effective on a TCP-listening hub. Empty = launcher disabled
@@ -187,30 +170,60 @@ type Preferences struct {
 	// hub when a launcher is looked up.
 	DefaultLaunchHostProvider string `json:"default_launch_host_provider,omitempty"`
 
-	// Cloud configures the TUI's "Cloud" panel — Supabase auth +
-	// the upstream cloud control plane. The endpoint URLs identify which
-	// cloud deployment to talk to; the session fields
-	// hold the access/refresh tokens after a successful sign-in. See
-	// internal/cloud and internal/tui/cloudview.
-	Cloud *CloudPreference `json:"cloud,omitempty"`
+	// Remote configures the user's named clank deployments. One or more
+	// remotes, each with its own gateway/auth endpoint and session, plus
+	// an Active selector pointing at the live one. Modeled on git
+	// remotes: same mental model, same `add/list/switch/remove` UX.
+	// clank push/pull, the TUI auth panel, and `clank remote` all read
+	// the active remote via Preferences.ActiveRemote().
+	Remote *RemoteConfig `json:"remote,omitempty"`
 }
 
-// CloudPreference configures the TUI's Cloud panel.
+// RemoteConfig holds one or more named clank deployments plus the
+// Active selector. Lets the user switch between e.g. a dev docker
+// stack, a managed cloud, and an enterprise self-hosted instance
+// without rewriting preferences.
+//
+// JSON marshalling auto-detects the legacy flat shape (single profile
+// inline under "cloud" or "remote") and normalizes to the multi-profile
+// shape on load — saves rewrite to the new shape on the next
+// SavePreferences.
+type RemoteConfig struct {
+	// Active is the key in Profiles whose endpoints/session are used by
+	// push/pull/TUI right now. Empty falls back to "default".
+	Active string `json:"active,omitempty"`
+
+	// Profiles maps a user-chosen name to its configuration. At least
+	// one entry is expected when Remote is set at all; an Active that
+	// points at a missing entry renders ActiveRemote() nil.
+	Profiles map[string]*Remote `json:"profiles,omitempty"`
+}
+
+// Remote holds one clank deployment's endpoints + device-flow session.
+// Mirrors a single entry in a git-remote-style config.
 //
 // Provider-agnostic on purpose: clank speaks RFC 8628 device flow to
-// the cloud, and the cloud (hosted or self-hosted)
+// the gateway's auth plane, and the deployment (hosted or self-hosted)
 // owns the user-auth mechanism — Supabase, GitHub OIDC, magic links,
-// whatever. clank only needs the cloud's base URL.
+// whatever. clank only needs two URLs: one for auth and one for the
+// gateway.
+//
+// AuthURL and GatewayURL are intentionally separate so they can live
+// on different hosts today (auth plane vs. gateway/sync plane) and be
+// unified later without a config-schema change.
 //
 // Session fields are populated after a successful device-flow grant
-// and used for subsequent /me lookups. AccessToken expires; the user
-// is prompted to sign in again on 401. Refresh-token rotation is a
-// follow-up.
-type CloudPreference struct {
-	// CloudURL is the base URL of the cloud deployment, e.g.
-	// "https://your-cloud.example.com" or a self-hosted equivalent. Required
-	// for the Cloud panel to work.
-	CloudURL string `json:"cloud_url,omitempty"`
+// and used for subsequent /me and sync calls. AccessToken expires;
+// the user is prompted to sign in again on 401.
+type Remote struct {
+	// AuthURL is the base URL of the cloud auth plane, e.g.
+	// "https://auth.example.com". Required for sign-in (/me, device flow).
+	AuthURL string `json:"auth_url,omitempty"`
+
+	// GatewayURL is the base URL of the cloud gateway (sessions + sync),
+	// e.g. "https://gateway.example.com". Required for push/pull and
+	// session proxying. May be the same host as AuthURL once consolidated.
+	GatewayURL string `json:"gateway_url,omitempty"`
 
 	AccessToken  string `json:"access_token,omitempty"`
 	RefreshToken string `json:"refresh_token,omitempty"`
@@ -218,6 +231,100 @@ type CloudPreference struct {
 	UserID       string `json:"user_id,omitempty"`
 	// ExpiresAt is unix-seconds. Zero when no session.
 	ExpiresAt int64 `json:"expires_at,omitempty"`
+}
+
+// UnmarshalJSON accepts both the multi-profile shape and the legacy
+// single-profile flat shape. Legacy gets normalized to a single
+// "default" entry selected as Active.
+func (c *RemoteConfig) UnmarshalJSON(data []byte) error {
+	// Multi-profile shape first.
+	type alias struct {
+		Active   string             `json:"active"`
+		Profiles map[string]*Remote `json:"profiles"`
+	}
+	var newShape alias
+	if err := json.Unmarshal(data, &newShape); err == nil && len(newShape.Profiles) > 0 {
+		c.Active = newShape.Active
+		c.Profiles = newShape.Profiles
+		if c.Active == "" {
+			// Pick a deterministic default so callers don't randomly
+			// resolve to different profiles between runs.
+			c.Active = firstRemoteName(c.Profiles)
+		}
+		return nil
+	}
+	// Legacy flat shape. Tolerate Profiles being absent and trust the
+	// inline fields. Empty object {} also lands here and yields no
+	// active profile.
+	var legacy Remote
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	if isZeroRemote(legacy) {
+		c.Active = ""
+		c.Profiles = nil
+		return nil
+	}
+	c.Active = "default"
+	c.Profiles = map[string]*Remote{"default": &legacy}
+	return nil
+}
+
+// ActiveProfile returns the active Remote or nil if none.
+func (c *RemoteConfig) ActiveProfile() *Remote {
+	if c == nil || len(c.Profiles) == 0 {
+		return nil
+	}
+	if p, ok := c.Profiles[c.Active]; ok {
+		return p
+	}
+	return c.Profiles[firstRemoteName(c.Profiles)]
+}
+
+// ActiveRemote is a Preferences-level convenience for the very common
+// "what's the live remote" check. Returns nil if Remote or its Active
+// entry is unset.
+func (p *Preferences) ActiveRemote() *Remote {
+	if p == nil || p.Remote == nil {
+		return nil
+	}
+	return p.Remote.ActiveProfile()
+}
+
+func firstRemoteName(m map[string]*Remote) string {
+	names := make([]string, 0, len(m))
+	for k := range m {
+		names = append(names, k)
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	// Sort for determinism. Single-profile case is the common one;
+	// O(n log n) on a tiny map is fine.
+	sort.Strings(names)
+	return names[0]
+}
+
+func isZeroRemote(p Remote) bool {
+	return p == Remote{}
+}
+
+// UnmarshalJSON on Preferences migrates the legacy top-level "cloud"
+// key to "remote" when the new key is absent. The next SavePreferences
+// emits only "remote", quietly upgrading the file.
+func (p *Preferences) UnmarshalJSON(data []byte) error {
+	type alias Preferences
+	aux := struct {
+		*alias
+		LegacyCloud *RemoteConfig `json:"cloud,omitempty"`
+	}{alias: (*alias)(p)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if p.Remote == nil && aux.LegacyCloud != nil {
+		p.Remote = aux.LegacyCloud
+	}
+	return nil
 }
 
 // preferencesPath returns the path to the preferences file.

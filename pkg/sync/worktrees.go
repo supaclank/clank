@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -19,6 +20,24 @@ var ErrCheckpointNotFound = errors.New("sync: checkpoint not found")
 // did not match what's in the row, indicating a concurrent migration
 // or a stale read. Callers should retry from a fresh read.
 var ErrOwnerMismatch = errors.New("sync: worktree owner mismatch (concurrent migration?)")
+
+// ErrForbidden is returned by service-layer methods when the supplied
+// userID doesn't own the requested resource (tenancy check failed).
+// Caller-identity authorization (laptop vs sprite, etc.) is the HTTP
+// handler's job and uses different error paths.
+var ErrForbidden = errors.New("sync: forbidden")
+
+// ErrBlobNotUploaded is returned by Server.CommitCheckpoint when one
+// of the three required blobs hasn't shown up in object storage yet.
+// HTTP handlers map this to 409 Conflict; gateway callers can retry
+// after re-uploading.
+var ErrBlobNotUploaded = errors.New("sync: blob not yet uploaded")
+
+// ErrInvalidRequest is returned by service-layer methods when the
+// supplied request fails validation (missing required fields, etc.).
+// HTTP handlers map this to 400 Bad Request rather than letting plain
+// validation errors flatten to 500.
+var ErrInvalidRequest = errors.New("sync: invalid request")
 
 // OwnerKind enumerates which actor type owns a worktree's write
 // authority. New values require schema-level coordination — never use
@@ -86,4 +105,58 @@ type SyncStore interface {
 	ListCheckpointsByWorktree(ctx context.Context, worktreeID string, limit int) ([]Checkpoint, error)
 	InsertCheckpoint(ctx context.Context, c Checkpoint) error
 	MarkCheckpointUploaded(ctx context.Context, id string, when time.Time) error
+}
+
+// GetWorktree looks up a worktree by ID and verifies it belongs to
+// userID (tenancy check). Service-layer counterpart to GET
+// /v1/worktrees/{id}; gateway calls it directly during migration.
+// Returns ErrWorktreeNotFound if missing, ErrForbidden if tenancy fails.
+func (s *Server) GetWorktree(ctx context.Context, userID, worktreeID string) (Worktree, error) {
+	wt, err := s.cfg.Store.GetWorktreeByID(ctx, worktreeID)
+	if err != nil {
+		return Worktree{}, err
+	}
+	if wt.UserID != userID {
+		return Worktree{}, fmt.Errorf("%w: worktree %s", ErrForbidden, worktreeID)
+	}
+	return wt, nil
+}
+
+// ListWorktrees returns all worktrees belonging to userID. Used by the
+// TUI to render ownership glyphs in the sidebar. Tenancy is enforced
+// at the store level (ListWorktreesByUser).
+func (s *Server) ListWorktrees(ctx context.Context, userID string) ([]Worktree, error) {
+	return s.cfg.Store.ListWorktreesByUser(ctx, userID)
+}
+
+// TransferOwnership atomically transfers a worktree's owner. userID
+// is the tenancy gate; toKind/toID/expectedOwnerID are forwarded to
+// the store's optimistic-concurrency guard. Returns ErrOwnerMismatch
+// on a lost-update race; callers retry from a fresh read.
+func (s *Server) TransferOwnership(ctx context.Context, userID, worktreeID string, toKind OwnerKind, toID, expectedOwnerID string) (Worktree, error) {
+	wt, err := s.cfg.Store.GetWorktreeByID(ctx, worktreeID)
+	if errors.Is(err, ErrWorktreeNotFound) {
+		return Worktree{}, err
+	}
+	if err != nil {
+		return Worktree{}, fmt.Errorf("sync: get worktree: %w", err)
+	}
+	if wt.UserID != userID {
+		return Worktree{}, fmt.Errorf("%w: worktree %s", ErrForbidden, worktreeID)
+	}
+
+	expected := expectedOwnerID
+	if expected == "" {
+		expected = wt.OwnerID
+	}
+
+	if err := s.cfg.Store.UpdateWorktreeOwner(ctx, worktreeID, wt.OwnerKind, expected, toKind, toID); err != nil {
+		return Worktree{}, err
+	}
+
+	updated, err := s.cfg.Store.GetWorktreeByID(ctx, worktreeID)
+	if err != nil {
+		return Worktree{}, fmt.Errorf("sync: re-read after transfer: %w", err)
+	}
+	return updated, nil
 }

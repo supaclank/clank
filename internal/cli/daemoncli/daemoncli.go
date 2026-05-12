@@ -18,6 +18,7 @@ import (
 	"github.com/acksell/clank/internal/config"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/store"
+	"github.com/acksell/clank/pkg/auth"
 )
 
 // Command returns the root cobra command for the clankd binary with start/stop/status subcommands.
@@ -34,19 +35,11 @@ func Command() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			foreground, _ := cmd.Flags().GetBool("foreground")
 			listen, _ := cmd.Flags().GetString("listen")
-			publicBaseURL, _ := cmd.Flags().GetString("public-base-url")
-			syncBaseURL, _ := cmd.Flags().GetString("sync-base-url")
-			return RunStart(foreground, ServerOptions{
-				Listen:        listen,
-				PublicBaseURL: publicBaseURL,
-				SyncBaseURL:   syncBaseURL,
-			})
+			return RunStart(foreground, ServerOptions{Listen: listen})
 		},
 	}
 	startCmd.Flags().Bool("foreground", false, "Run in foreground (don't daemonize)")
-	startCmd.Flags().String("listen", "", "Listener address override, e.g. tcp://0.0.0.0:7878. Empty (default) = Unix socket. TCP mode requires preferences.remote_hub.auth_token to be set and authorizes inbound calls with that bearer token.")
-	startCmd.Flags().String("public-base-url", "", "Externally-reachable base URL of this hub. Used by TCP-mode hubs to tell sandboxes where to fetch git mirrors from.")
-	startCmd.Flags().String("sync-base-url", "", "Base URL of clank-sync (the checkpoint substrate). Required to enable POST /v1/migrate/worktrees/{id}; if unset, the migration route returns 503.")
+	startCmd.Flags().String("listen", "", "Listener address override, e.g. tcp://0.0.0.0:7878. Empty (default) = Unix socket. TCP mode requires exactly one of CLANK_AUTH_OIDC_ISSUER, CLANK_AUTH_JWT_SECRET, or CLANK_AUTH_TOKEN (with CLANK_AUTH_ALLOW_STATIC=true).")
 
 	stopCmd := &cobra.Command{
 		Use:   "stop",
@@ -69,15 +62,23 @@ func Command() *cobra.Command {
 }
 
 // ServerOptions configures the listener for the clankd Hub. Empty Listen
-// means default Unix socket mode; "tcp://addr:port" enables TCP mode with
-// bearer-token auth. PublicBaseURL is the externally-reachable URL of
-// the hub, used in TCP mode to tell sandboxes where to fetch synced data.
-// SyncBaseURL is the clank-sync URL the gateway calls during the
-// MigrateWorktree flow; empty disables that route.
+// means default Unix socket mode (laptop); "tcp://addr:port" enables TCP
+// mode (self-hosted/cloud) with bearer-token auth.
+//
+// In TCP mode, runGatewayServer reads CLANK_SYNC_S3_* env vars via
+// loadSyncFromEnv and, when present, mounts an embedded sync server in
+// the gateway. Unix-socket mode keeps Sync nil — the laptop has no S3
+// access and exposes no sync routes.
 type ServerOptions struct {
-	Listen        string
-	PublicBaseURL string
-	SyncBaseURL   string
+	Listen string
+
+	// Auth, when non-nil, overrides env-driven auth selection.
+	// Embedders (supaclank, custom deployments) pass their own
+	// pkg/auth.Authenticator here — Supabase, Auth0, custom DB
+	// lookups, anything implementing the interface. When nil, TCP
+	// mode picks an Authenticator from env vars (OIDC, HS256, or
+	// opt-in static). Unix-socket mode always uses auth.AllowAll.
+	Auth auth.Authenticator
 }
 
 // RunStart starts the daemon, either in foreground or as a background process.
@@ -166,12 +167,6 @@ func RunStart(foreground bool, opts ServerOptions) error {
 	bgArgs := []string{"start", "--foreground"}
 	if opts.Listen != "" {
 		bgArgs = append(bgArgs, "--listen", opts.Listen)
-	}
-	if opts.PublicBaseURL != "" {
-		bgArgs = append(bgArgs, "--public-base-url", opts.PublicBaseURL)
-	}
-	if opts.SyncBaseURL != "" {
-		bgArgs = append(bgArgs, "--sync-base-url", opts.SyncBaseURL)
 	}
 	bgCmd := exec.Command(exe, bgArgs...)
 	bgCmd.Stdout = logFile

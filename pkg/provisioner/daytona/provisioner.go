@@ -54,16 +54,6 @@ type Options struct {
 	// mutual-exclusion contract.
 	Image string
 
-	// MirrorBaseURL is the externally-reachable URL the sandbox clones
-	// user code from on wake. Required. Historically named
-	// "HubBaseURL" — the "hub" layer is gone but the env-var name
-	// (CLANK_HUB_URL) is kept to avoid breaking sandbox images
-	// mid-migration.
-	MirrorBaseURL string
-
-	// MirrorAuthToken is the bearer token paired with MirrorBaseURL.
-	MirrorAuthToken string
-
 	// ExtraEnv is forwarded into the sandbox. Keys colliding with
 	// reservedSandboxEnv are rejected at New time.
 	ExtraEnv map[string]string
@@ -125,12 +115,6 @@ type cachedHost struct {
 func New(opts Options, st hoststore.HostStore, lg *log.Logger) (*Provisioner, error) {
 	if st == nil {
 		return nil, fmt.Errorf("daytona provisioner: store is required")
-	}
-	if opts.MirrorBaseURL == "" {
-		return nil, fmt.Errorf("daytona provisioner: MirrorBaseURL is required")
-	}
-	if opts.MirrorAuthToken == "" {
-		return nil, fmt.Errorf("daytona provisioner: MirrorAuthToken is required")
 	}
 	switch {
 	case opts.Snapshot == "" && opts.Image == "":
@@ -349,8 +333,6 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID string) (*dayt
 // user → sandbox binding.
 func (p *Provisioner) create(ctx context.Context, authToken string) (*daytona.Sandbox, error) {
 	envVars := map[string]string{
-		"CLANK_HUB_URL":         p.opts.MirrorBaseURL,
-		"CLANK_HUB_TOKEN":       p.opts.MirrorAuthToken,
 		"CLANK_HOST_PORT":       fmt.Sprintf("%d", HostPort),
 		"CLANK_HOST_AUTH_TOKEN": authToken,
 	}

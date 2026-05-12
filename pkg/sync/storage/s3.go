@@ -23,10 +23,25 @@ type S3Config struct {
 	// Region (required by AWS even for S3-alikes; e.g. R2 wants "auto").
 	Region string
 
-	// Endpoint overrides the default AWS S3 endpoint. Set for R2
-	// (https://<account>.r2.cloudflarestorage.com), Tigris, MinIO, etc.
-	// Leave empty for AWS S3.
+	// Endpoint is the URL the gateway uses for its own direct SDK calls
+	// (HeadObject during checkpoint commit, etc.). Should be reachable
+	// from inside the gateway — for docker-compose dev that's the
+	// internal docker hostname like http://clank-minio:9000. Leave
+	// empty for AWS S3.
 	Endpoint string
+
+	// PublicEndpoint is the URL baked into presigned URLs handed out to
+	// the laptop and any remote sprite. Must resolve from BOTH ends to
+	// the same backing storage (because SigV4 binds the host into the
+	// signature). When empty, falls back to Endpoint.
+	//
+	// Why two endpoints: the docker dev stack wraps minio behind a
+	// Cloudflare quick tunnel so a fly.io sprite can pull from it; the
+	// tunnel rewrites the Host header on inbound requests, which breaks
+	// SigV4 if the gateway itself goes through it. The gateway short-
+	// circuits to the docker-internal hostname for its own calls while
+	// minting presigned URLs with the tunnel hostname.
+	PublicEndpoint string
 
 	// AccessKey + SecretKey for the bucket. Required.
 	AccessKey string
@@ -66,23 +81,50 @@ func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}
 
-	clientOpts := []func(*s3.Options){}
-	if cfg.Endpoint != "" {
-		clientOpts = append(clientOpts, func(o *s3.Options) {
-			o.BaseEndpoint = aws.String(cfg.Endpoint)
+	// aws-sdk-go-v2/service/s3 v1.x defaults to "WhenSupported" for both
+	// request-checksum-calc and response-checksum-validation, which means
+	// the SDK adds x-amz-checksum-* / x-amz-checksum-mode headers on PUT
+	// and HEAD. MinIO recent releases accept PUT with these but reject
+	// HEAD with 403 SignatureDoesNotMatch when the checksum-mode header
+	// gets included in the signed canonical request. R2 / Tigris have
+	// similar quirks. Forcing WhenRequired keeps the SDK out of the
+	// checksum-extension business unless an operation strictly needs it
+	// (which our manifest+bundle puts don't).
+	commonOpts := func(o *s3.Options) {
+		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
+		if cfg.UsePathStyle {
+			o.UsePathStyle = true
+		}
+	}
+
+	internalEndpoint := cfg.Endpoint
+	publicEndpoint := cfg.PublicEndpoint
+	if publicEndpoint == "" {
+		publicEndpoint = internalEndpoint
+	}
+
+	directOpts := []func(*s3.Options){commonOpts}
+	if internalEndpoint != "" {
+		directOpts = append(directOpts, func(o *s3.Options) {
+			o.BaseEndpoint = aws.String(internalEndpoint)
 		})
 	}
-	if cfg.UsePathStyle {
-		clientOpts = append(clientOpts, func(o *s3.Options) {
-			o.UsePathStyle = true
+	presignOpts := []func(*s3.Options){commonOpts}
+	if publicEndpoint != "" {
+		presignOpts = append(presignOpts, func(o *s3.Options) {
+			o.BaseEndpoint = aws.String(publicEndpoint)
 		})
 	}
 
-	client := s3.NewFromConfig(awsCfg, clientOpts...)
+	client := s3.NewFromConfig(awsCfg, directOpts...)
+	// Use a separate client for presigning so URLs are signed for the
+	// public hostname even when the gateway dials the internal one.
+	presignClient := s3.NewFromConfig(awsCfg, presignOpts...)
 	return &S3{
 		cfg:       cfg,
 		client:    client,
-		presigner: s3.NewPresignClient(client),
+		presigner: s3.NewPresignClient(presignClient),
 	}, nil
 }
 

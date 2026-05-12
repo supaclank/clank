@@ -2,8 +2,9 @@ package sync
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
+
+	"github.com/acksell/clank/pkg/auth"
 )
 
 // CallerKind enumerates the actor types that can call the sync API.
@@ -16,77 +17,58 @@ const (
 )
 
 // Caller is the authenticated identity of an inbound request to the
-// /v1/worktrees + /v1/checkpoints endpoints. UserID always comes from
-// verified claims; DeviceID or HostID identifies the specific device
-// or remote host (exactly one is non-empty per Kind).
+// /v1/worktrees + /v1/checkpoints endpoints. UserID comes from the
+// auth.Principal injected by the outer auth middleware. HostID is
+// set only when Kind == remote (sprite caller pushing a checkpoint,
+// post-MVP).
 type Caller struct {
-	UserID   string
-	Kind     CallerKind
-	DeviceID string // set when Kind == local
-	HostID   string // set when Kind == remote
+	UserID string
+	Kind   CallerKind
+	HostID string // set when Kind == remote
 }
 
 // CallerVerifier extracts and validates a Caller from an HTTP request.
-// Production deployments will plug in a JWT verifier that pulls
-// device_id/host_id from claims; MVP uses HeaderCallerVerifier which
-// trusts request headers (combined with the existing Authenticator
-// for userID).
+// Production deployments will plug in a verifier that pulls all
+// values from claims; MVP uses HeaderCallerVerifier which reads
+// UserID from r.Context() (via pkg/auth) and Kind/HostID from a
+// request header.
 type CallerVerifier interface {
 	VerifyCaller(r *http.Request) (Caller, error)
 }
 
-// HeaderCallerVerifier wraps an existing Authenticator + UserIDFromClaims
-// and reads device_id / host_id from request headers. Used for MVP
-// pre-JWT deployments and tests. P2 follow-up: a JWT verifier that
-// puts device_id/host_id in claims.
-type HeaderCallerVerifier struct {
-	Auth             Authenticator
-	UserIDFromClaims func(claims map[string]any) (string, error)
-}
-
-// HeaderDeviceID is the request header carrying the laptop's device
-// identifier. Pinned as a constant so client and server agree on the
-// exact spelling.
-const HeaderDeviceID = "X-Clank-Device-Id"
+// HeaderCallerVerifier is the default sync CallerVerifier. It reads
+// UserID from the auth.Principal in r.Context() (which the outer
+// auth.Middleware injected). Kind defaults to "local"; when
+// X-Clank-Host-Id is present (sprite caller post-MVP), Kind flips to
+// "remote" with that header's value as HostID.
+//
+// Stateless — no fields. Tests inject Principal via
+// r.WithContext(auth.WithPrincipal(ctx, ...)).
+type HeaderCallerVerifier struct{}
 
 // HeaderHostID is the request header carrying a sprite host's ID
 // (used post-MVP when sprites push their own checkpoints).
 const HeaderHostID = "X-Clank-Host-Id"
 
-// ErrNoCallerIdentity is returned by VerifyCaller when neither
-// X-Clank-Device-Id nor X-Clank-Host-Id is present.
-var ErrNoCallerIdentity = errors.New("sync: missing X-Clank-Device-Id or X-Clank-Host-Id header")
+// ErrNoPrincipal is returned when the request has no auth.Principal
+// in context — the outer middleware didn't run. Maps to 500 not 401:
+// it's a server misconfiguration, not a client problem.
+var ErrNoPrincipal = errors.New("sync: no auth principal in request context")
 
-// ErrAmbiguousCaller is returned when both headers are present —
-// callers must declare exactly one identity per request.
-var ErrAmbiguousCaller = errors.New("sync: cannot specify both X-Clank-Device-Id and X-Clank-Host-Id")
+// ErrEmptyUserID is returned when the Principal carries an empty
+// UserID. Maps to 401 since the caller's identity is unverified.
+var ErrEmptyUserID = errors.New("sync: empty user identity from principal")
 
 func (v *HeaderCallerVerifier) VerifyCaller(r *http.Request) (Caller, error) {
-	if v.Auth == nil || v.UserIDFromClaims == nil {
-		return Caller{}, errors.New("sync: HeaderCallerVerifier needs Auth and UserIDFromClaims")
+	p, ok := auth.PrincipalFrom(r.Context())
+	if !ok {
+		return Caller{}, ErrNoPrincipal
 	}
-	claims, err := v.Auth.Verify(r)
-	if err != nil {
-		return Caller{}, err
+	if p.UserID == "" {
+		return Caller{}, ErrEmptyUserID
 	}
-	userID, err := v.UserIDFromClaims(claims)
-	if err != nil {
-		return Caller{}, fmt.Errorf("user identity: %w", err)
+	if hostID := r.Header.Get(HeaderHostID); hostID != "" {
+		return Caller{UserID: p.UserID, Kind: CallerKindRemote, HostID: hostID}, nil
 	}
-	if userID == "" {
-		return Caller{}, errors.New("sync: empty user identity from claims")
-	}
-
-	deviceID := r.Header.Get(HeaderDeviceID)
-	hostID := r.Header.Get(HeaderHostID)
-	switch {
-	case deviceID != "" && hostID != "":
-		return Caller{}, ErrAmbiguousCaller
-	case deviceID != "":
-		return Caller{UserID: userID, Kind: CallerKindLocal, DeviceID: deviceID}, nil
-	case hostID != "":
-		return Caller{UserID: userID, Kind: CallerKindRemote, HostID: hostID}, nil
-	default:
-		return Caller{}, ErrNoCallerIdentity
-	}
+	return Caller{UserID: p.UserID, Kind: CallerKindLocal}, nil
 }

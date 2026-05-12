@@ -76,15 +76,6 @@ type Options struct {
 	CPUs      int // 0 = sprite default
 	StorageGB int // 0 = sprite default
 
-	// MirrorBaseURL is the externally-reachable URL the sprite clones
-	// user code from on wake. Historically named "HubBaseURL" — the
-	// "hub" layer is gone but the env-var name (CLANK_HUB_URL) is kept
-	// to avoid breaking sandbox images mid-migration.
-	MirrorBaseURL string
-
-	// MirrorAuthToken is the bearer token paired with MirrorBaseURL.
-	MirrorAuthToken string
-
 	// ProvisionTimeout caps how long EnsureHost waits for the sprite
 	// to become reachable. Default: 5 minutes.
 	ProvisionTimeout time.Duration
@@ -123,12 +114,6 @@ type cachedHost struct {
 func New(opts Options, st hoststore.HostStore, lg *log.Logger) (*Provisioner, error) {
 	if st == nil {
 		return nil, fmt.Errorf("flyio provisioner: store is required")
-	}
-	if opts.MirrorBaseURL == "" {
-		return nil, fmt.Errorf("flyio provisioner: MirrorBaseURL is required")
-	}
-	if opts.MirrorAuthToken == "" {
-		return nil, fmt.Errorf("flyio provisioner: MirrorAuthToken is required")
 	}
 	if opts.SpriteNamePrefix == "" {
 		opts.SpriteNamePrefix = defaultSpriteNamePrefix
@@ -390,14 +375,18 @@ func (p *Provisioner) installAndStart(ctx context.Context, sprite *sprites.Sprit
 	// conn race on a freshly-hibernated VM, and an HTTP hit avoids it.
 	p.wakeViaHTTP(ctx, sprite)
 
-	if err := p.ensureBinaryInstalled(ctx, sprite); err != nil {
+	binReplaced, err := p.ensureBinaryInstalled(ctx, sprite)
+	if err != nil {
 		return err
 	}
 	// Sprites' base image ships Claude/Gemini/Codex but not opencode.
 	if err := p.ensureOpenCodeInstalled(ctx, sprite); err != nil {
 		return err
 	}
-	if err := p.ensureServiceRunning(ctx, sprite, authToken); err != nil {
+	// When the binary was swapped, the old process keeps the prior
+	// inode in memory (POSIX unlink semantics). Force a service
+	// recreate so the new endpoints actually start serving.
+	if err := p.ensureServiceRunning(ctx, sprite, authToken, binReplaced); err != nil {
 		return err
 	}
 	// Re-apply on every run so a manually-disabled URL re-opens.
@@ -412,12 +401,15 @@ func (p *Provisioner) installAndStart(ctx context.Context, sprite *sprites.Sprit
 //
 // Replacement uses unlink-then-write: Linux returns ETXTBSY on writing
 // to a running executable, and POSIX unlink keeps the running inode
-// alive while the path resolves to the new file.
-func (p *Provisioner) ensureBinaryInstalled(ctx context.Context, sprite *sprites.Sprite) error {
+// alive while the path resolves to the new file. Returns replaced=true
+// when the binary on disk was rewritten — callers use that to force a
+// service restart so the new binary actually runs (the original process
+// keeps the old inode otherwise).
+func (p *Provisioner) ensureBinaryInstalled(ctx context.Context, sprite *sprites.Sprite) (replaced bool, err error) {
 	fsys := sprite.Filesystem()
 	wf, ok := fsys.(spriteFSWriter)
 	if !ok {
-		return fmt.Errorf("sprites filesystem does not support WriteFileContext+RemoveContext (SDK API drift)")
+		return false, fmt.Errorf("sprites filesystem does not support WriteFileContext+RemoveContext (SDK API drift)")
 	}
 	return p.ensureBinaryInstalledOn(ctx, fsys, wf, installPath, clankHostBinary, clankHostHashHex)
 }
@@ -433,7 +425,10 @@ type spriteFSWriter interface {
 // wantHashHex is the sha256 of want. After a size match, the sidecar
 // file at path+hashSidecarSuffix is also compared so that two builds
 // with the same byte length but different content trigger a reinstall.
-func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, wf spriteFSWriter, path string, want []byte, wantHashHex string) error {
+// Returns replaced=true iff the binary on disk was rewritten so callers
+// can force a service restart (Linux keeps the old inode running for
+// the original process).
+func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, wf spriteFSWriter, path string, want []byte, wantHashHex string) (replaced bool, err error) {
 	var info fs.FileInfo
 	statErr := retryClosedConn(ctx, p.log, func() error {
 		var err error
@@ -445,7 +440,7 @@ func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, w
 		// Missing/mismatched sidecar means the size collision is
 		// hiding a real version skew, so fall through to reinstall.
 		if got, ok := readSidecar(stat, path+hashSidecarSuffix); ok && got == wantHashHex {
-			return nil
+			return false, nil
 		}
 		p.log.Printf("flyio provisioner: clank-host size matches but hash sidecar missing/stale; reinstalling")
 	} else if statErr == nil {
@@ -470,7 +465,7 @@ func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, w
 		}
 		return nil
 	}); err != nil {
-		return err
+		return false, err
 	}
 
 	// Stamp the sidecar so the next EnsureHost can short-circuit on a
@@ -481,7 +476,7 @@ func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, w
 	}); err != nil {
 		p.log.Printf("flyio provisioner: stamp hash sidecar: %v (binary still up to date)", err)
 	}
-	return nil
+	return true, nil
 }
 
 // readSidecar reads the hash sidecar file from the sprite filesystem.
@@ -644,10 +639,15 @@ echo "::: done"
 }
 
 // ensureServiceRunning registers the clank-host Service, recreating it
-// if the persisted Cmd/Args drifted from what this daemon expects.
-// Without drift detection, a flag rename would crash-loop the service
-// across the hibernate/wake cycle and the edge would serve 404s.
-func (p *Provisioner) ensureServiceRunning(ctx context.Context, sprite *sprites.Sprite, authToken string) error {
+// if the persisted Cmd/Args drifted from what this daemon expects OR
+// when forceRecreate is set (the caller just replaced the on-disk
+// binary; the existing service is still running the prior inode in
+// memory and won't pick up the new endpoints until restart).
+//
+// Drift detection without forceRecreate also catches the historical
+// case where a flag rename would crash-loop the service across the
+// hibernate/wake cycle and the edge would serve 404s.
+func (p *Provisioner) ensureServiceRunning(ctx context.Context, sprite *sprites.Sprite, authToken string, forceRecreate bool) error {
 	wantReq := buildServiceRequest(authToken)
 
 	var existing *sprites.ServiceWithState
@@ -659,10 +659,14 @@ func (p *Provisioner) ensureServiceRunning(ctx context.Context, sprite *sprites.
 		return err
 	})
 	if getErr == nil && existing != nil {
-		if serviceMatches(&existing.Service, wantReq) {
+		if !forceRecreate && serviceMatches(&existing.Service, wantReq) {
 			return nil
 		}
-		p.log.Printf("flyio provisioner: service %s args drifted; recreating", serviceName)
+		if forceRecreate {
+			p.log.Printf("flyio provisioner: service %s binary swapped; restarting", serviceName)
+		} else {
+			p.log.Printf("flyio provisioner: service %s args drifted; recreating", serviceName)
+		}
 		if err := retryClosedConn(ctx, p.log, func() error {
 			return sprite.DeleteService(ctx, serviceName)
 		}); err != nil {

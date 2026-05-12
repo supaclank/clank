@@ -14,9 +14,8 @@
 # Run locally (mostly for image smoke-testing — production deploys go
 # through Daytona):
 #   docker run --rm -p 7878:7878 \
-#     -e CLANK_HUB_URL=http://host.docker.internal:7878 \
-#     -e CLANK_HUB_TOKEN=tkn \
 #     -e CLANK_HOST_PORT=7878 \
+#     -e CLANK_HOST_AUTH_TOKEN=tkn \
 #     ghcr.io/acksell/clank-host:dev
 
 # ---- builder ---------------------------------------------------------

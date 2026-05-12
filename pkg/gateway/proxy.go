@@ -5,24 +5,35 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+
+	"github.com/acksell/clank/pkg/auth"
 )
 
-// proxyToHost authenticates, resolves the userID, asks the provisioner
-// for the user's HostRef, and reverse-proxies through. HostRef.Transport
-// injects per-request upstream auth. ReverseProxy upgrades HTTP/1.1
-// natively, so WebSocket (/events) flows through this same path.
+// proxyToHost resolves the userID (from the verified Principal in
+// context), asks the provisioner for the user's HostRef, and reverse-
+// proxies through. HostRef.Transport injects per-request upstream auth.
+// ReverseProxy upgrades HTTP/1.1 natively, so WebSocket (/events)
+// flows through this same path. Bearer auth happens once at the TCP
+// edge (pkg/auth.Middleware), so we don't re-verify here.
+//
+// Sync-path policy: when Sync is unconfigured (laptop mode), refuse to
+// proxy /sync/* requests to the local clank-host. The host registers
+// those routes for sandbox use; on a laptop they'd let any client with
+// socket access write code into ~/work/. Cloud gateways (Sync != nil)
+// keep proxying so sprite-side /sync/apply-from-urls / build / upload
+// still work.
 func (g *Gateway) proxyToHost(w http.ResponseWriter, r *http.Request) {
-	if _, err := g.cfg.Auth.Verify(r); err != nil {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="clank"`)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	// Check the effective (post-strip) path: a request to
+	// /hosts/<host>/sync/* would otherwise bypass the guard and reach
+	// the host mux's unconditional /sync/* handlers.
+	effectivePath := stripHostsPrefix(r.URL.Path)
+	if g.cfg.Sync == nil && (effectivePath == "/sync" || strings.HasPrefix(effectivePath, "/sync/")) {
+		g.log.Printf("gateway: denied %s %s (sync routes blocked on laptop gateway)", r.Method, r.URL.Path)
+		http.NotFound(w, r)
 		return
 	}
 
-	userID := g.cfg.ResolveUserID(r)
-	if userID == "" {
-		http.Error(w, "no user identity", http.StatusUnauthorized)
-		return
-	}
+	userID := auth.MustPrincipal(r.Context()).UserID
 
 	ref, err := g.cfg.Provisioner.EnsureHost(r.Context(), userID)
 	if err != nil {

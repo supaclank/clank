@@ -3,6 +3,9 @@
 // host record. Splitting it out lets the laptop daemon back it with
 // SQLite and lets external integrators (e.g. multi-tenant cloud control planes) back it with
 // Postgres without modifying the provisioners themselves.
+//
+// Contrary to what the name might suggest it's not the host's internal store,
+// it's instead a registry to keep track of hosts (sandboxes/sprites).
 package hoststore
 
 import (

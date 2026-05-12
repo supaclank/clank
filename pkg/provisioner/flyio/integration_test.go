@@ -20,24 +20,23 @@ import (
 
 	sprites "github.com/superfly/sprites-go"
 
+	"github.com/acksell/clank/internal/store"
+	"github.com/acksell/clank/pkg/auth"
 	"github.com/acksell/clank/pkg/gateway"
 	"github.com/acksell/clank/pkg/provisioner"
 	"github.com/acksell/clank/pkg/provisioner/flyio"
-	"github.com/acksell/clank/internal/store"
 )
 
 // newGatewayHandler builds a real gateway.Gateway in front of prov so
 // the test exercises the same proxy path daemoncli mounts.
 func newGatewayHandler(prov provisioner.Provisioner) (http.Handler, error) {
 	gw, err := gateway.NewGateway(gateway.Config{
-		Provisioner:   prov,
-		Auth:          gateway.PermissiveAuth{},
-		ResolveUserID: func(*http.Request) string { return "local" },
+		Provisioner: prov,
 	}, nil)
 	if err != nil {
 		return nil, err
 	}
-	return gw.Handler(), nil
+	return auth.Middleware(gw.Handler(), &auth.AllowAll{UserID: "local"}), nil
 }
 
 // loadFlyIOCreds returns Sprites creds from SPRITES_TOKEN, falling
@@ -110,8 +109,6 @@ func newIntegrationProvisioner(t *testing.T) *flyio.Provisioner {
 
 	prov, err := flyio.New(flyio.Options{
 		APIToken:         token,
-		MirrorBaseURL:       "https://test.example.invalid",
-		MirrorAuthToken:     "test-bearer-token",
 		OrganizationSlug: org,
 	}, st, nil)
 	if err != nil {
@@ -240,8 +237,6 @@ func TestIntegration_FlyIO_RealSpriteEventsRoute(t *testing.T) {
 
 	prov, err := flyio.New(flyio.Options{
 		APIToken:         token,
-		MirrorBaseURL:       "https://test.example.invalid",
-		MirrorAuthToken:     "test-bearer-token",
 		OrganizationSlug: org,
 	}, st, nil)
 	if err != nil {
@@ -349,8 +344,6 @@ func TestIntegration_FlyIO_GatewayProxyToRealSpriteEvents(t *testing.T) {
 
 	prov, err := flyio.New(flyio.Options{
 		APIToken:         token,
-		MirrorBaseURL:       "https://test.example.invalid",
-		MirrorAuthToken:     "test-bearer-token",
 		OrganizationSlug: org,
 	}, st, nil)
 	if err != nil {

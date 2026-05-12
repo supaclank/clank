@@ -35,10 +35,6 @@ type Config struct {
 	// upload. Required for non-permissive deployments.
 	AuthToken string
 
-	// DeviceID identifies this laptop in worktree ownership records.
-	// Sent as X-Clank-Device-Id on every request.
-	DeviceID string
-
 	// HTTPClient overrides the default http.Client. Optional.
 	HTTPClient *http.Client
 }

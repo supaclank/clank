@@ -5,9 +5,10 @@
 // HTTP. Bundle bytes never traverse the sync server in either
 // direction — laptop and gateway upload/download via presigned URLs.
 //
-// Auth is pluggable — pass an Authenticator. The library provides
-// PermissiveAuth (any bearer accepted) for laptop-local dev; production
-// wraps the cloud's JWT verifier.
+// Authentication is the caller's responsibility — mount the handler
+// behind pkg/auth.Middleware (or any other middleware that puts an
+// auth.Principal in the request context). Sync handlers read
+// caller.UserID from that Principal.
 package sync
 
 import (
@@ -20,30 +21,8 @@ import (
 	"github.com/acksell/clank/pkg/sync/storage"
 )
 
-// Authenticator verifies the inbound bearer token and returns claims.
-// The userID extractor (Config.UserIDFromClaims) maps those claims to
-// the userID downstream code expects.
-type Authenticator interface {
-	Verify(r *http.Request) (claims map[string]any, err error)
-}
-
-// PermissiveAuth accepts every request. Useful for laptop-local dev;
-// do not deploy publicly without replacing it.
-type PermissiveAuth struct{}
-
-func (PermissiveAuth) Verify(*http.Request) (map[string]any, error) {
-	return map[string]any{"sub": "local"}, nil
-}
-
 // Config configures the sync Server. Store and Storage are required.
 type Config struct {
-	// Auth verifies the inbound bearer. Defaults to PermissiveAuth.
-	Auth Authenticator
-
-	// UserIDFromClaims maps the Authenticator's claim map to the
-	// per-tenant userID. Defaults to claims["sub"].
-	UserIDFromClaims func(claims map[string]any) (string, error)
-
 	// Store backs worktree + checkpoint metadata.
 	Store SyncStore
 
@@ -57,10 +36,9 @@ type Config struct {
 	PresignTTL time.Duration
 
 	// CallerVerifier extracts a Caller from inbound requests. Defaults
-	// to a HeaderCallerVerifier wrapping Auth + UserIDFromClaims with
-	// X-Clank-Device-Id / X-Clank-Host-Id headers. Production
-	// deployments will plug in a JWT verifier that puts those values
-	// in claims directly.
+	// to a stateless HeaderCallerVerifier that reads UserID from the
+	// auth.Principal in r.Context() and X-Clank-Host-Id from headers
+	// (for sprite callers). Tests can swap in their own verifier.
 	CallerVerifier CallerVerifier
 
 	// HostStore enables the sprite-kind cross-check: every sprite-kind
@@ -84,25 +62,11 @@ func NewServer(cfg Config, lg *log.Logger) (*Server, error) {
 	if cfg.Storage == nil {
 		return nil, fmt.Errorf("sync: Storage is required")
 	}
-	if cfg.Auth == nil {
-		cfg.Auth = PermissiveAuth{}
-	}
-	if cfg.UserIDFromClaims == nil {
-		cfg.UserIDFromClaims = func(claims map[string]any) (string, error) {
-			if s, ok := claims["sub"].(string); ok && s != "" {
-				return s, nil
-			}
-			return "", fmt.Errorf("no sub claim")
-		}
-	}
 	if cfg.PresignTTL == 0 {
 		cfg.PresignTTL = 5 * time.Minute
 	}
 	if cfg.CallerVerifier == nil {
-		cfg.CallerVerifier = &HeaderCallerVerifier{
-			Auth:             cfg.Auth,
-			UserIDFromClaims: cfg.UserIDFromClaims,
-		}
+		cfg.CallerVerifier = &HeaderCallerVerifier{}
 	}
 	if lg == nil {
 		lg = log.Default()
@@ -113,6 +77,7 @@ func NewServer(cfg Config, lg *log.Logger) (*Server, error) {
 // Handler returns the public HTTP handler. Routes:
 //
 //	GET  /v1/health                       — liveness (no auth)
+//	GET  /v1/worktrees                    — list the caller's worktrees with owner info
 //	POST /v1/worktrees                    — register a worktree, returns ID
 //	GET  /v1/worktrees/{id}               — read worktree state (gateway uses on migration)
 //	POST /v1/worktrees/{id}/owner         — atomic ownership transfer
@@ -122,6 +87,7 @@ func NewServer(cfg Config, lg *log.Logger) (*Server, error) {
 func (s *Server) Handler() http.Handler {
 	mx := http.NewServeMux()
 	mx.HandleFunc("GET /v1/health", s.handleHealth)
+	mx.HandleFunc("GET /v1/worktrees", s.handleListWorktrees)
 	mx.HandleFunc("POST /v1/worktrees", s.handleRegisterWorktree)
 	mx.HandleFunc("GET /v1/worktrees/{id}", s.handleGetWorktree)
 	mx.HandleFunc("POST /v1/worktrees/{id}/owner", s.handleTransferOwnership)

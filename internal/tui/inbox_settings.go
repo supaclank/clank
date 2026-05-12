@@ -9,7 +9,6 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
 )
 
 // showSettings renders the Settings page in the right pane without
@@ -18,10 +17,10 @@ import (
 func (m *InboxModel) showSettings() {
 	prefs, _ := config.LoadPreferences()
 	remoteURL := ""
-	if prefs.RemoteHub != nil {
-		remoteURL = prefs.RemoteHub.URL
+	if p := prefs.ActiveRemote(); p != nil {
+		remoteURL = p.GatewayURL
 	}
-	m.settings = newSettingsView(prefs.ColorScheme, prefs.DefaultBackend, prefs.ActiveHub, remoteURL, daemonclient.OverrideURL())
+	m.settings = newSettingsView(prefs.ColorScheme, prefs.DefaultBackend, prefs.ActiveHub, remoteURL)
 	m.settings.SetSize(m.sessionPaneWidth(), m.height)
 	m.screen = screenSettings
 }
@@ -93,16 +92,12 @@ func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 			persistDefaultBackend(next)
 			return m, nil
 		case settingsEntryActiveHub:
-			// --hub-url override wins for the whole process; toggling prefs would mislead.
-			if daemonclient.OverrideURL() != "" {
-				return m, nil
-			}
 			// Toggle local <-> remote. Persist only; user restarts the
 			// TUI for it to take effect (hot-swap would orphan the SSE).
 			prefs, _ := config.LoadPreferences()
 			remoteURL := ""
-			if prefs.RemoteHub != nil {
-				remoteURL = prefs.RemoteHub.URL
+			if p := prefs.ActiveRemote(); p != nil {
+				remoteURL = p.GatewayURL
 			}
 			next := nextActiveHub(prefs.ActiveHub)
 			m.settings.SetActiveHubValue(next, remoteURL)

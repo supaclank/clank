@@ -13,18 +13,20 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/store"
+	"github.com/acksell/clank/pkg/auth"
 	clanksync "github.com/acksell/clank/pkg/sync"
 	"github.com/acksell/clank/pkg/sync/checkpoint"
 	"github.com/acksell/clank/pkg/sync/storage"
 	"github.com/acksell/clank/pkg/syncclient"
 )
 
-// fixedUserAuth returns the same userID for every request — stand-in
-// for real JWT verification in MVP.
-type fixedUserAuth struct{ userID string }
-
-func (f fixedUserAuth) Verify(*http.Request) (map[string]any, error) {
-	return map[string]any{"sub": f.userID}, nil
+// fixedPrincipalMiddleware injects a fixed Principal so every request
+// resolves to the same UserID — stand-in for real auth in tests.
+func fixedPrincipalMiddleware(userID string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := auth.WithPrincipal(r.Context(), auth.Principal{UserID: userID})
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 // TestCheckpointFlow_EndToEnd builds a real git repo, pushes it via
@@ -47,21 +49,19 @@ func TestCheckpointFlow_EndToEnd(t *testing.T) {
 	defer mem.Close()
 
 	srv, err := clanksync.NewServer(clanksync.Config{
-		Auth:        fixedUserAuth{userID: "user-A"},
-		Store:       st,
-		Storage:     mem,
-		PresignTTL:  time.Minute,
+		Store:      st,
+		Storage:    mem,
+		PresignTTL: time.Minute,
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	httpSrv := httptest.NewServer(srv.Handler())
+	httpSrv := httptest.NewServer(fixedPrincipalMiddleware("user-A", srv.Handler()))
 	defer httpSrv.Close()
 
 	cli, err := syncclient.New(syncclient.Config{
 		BaseURL:   httpSrv.URL,
-		AuthToken: "ignored-by-permissive-auth",
-		DeviceID:  "dev-laptop-1",
+		AuthToken: "test-bearer",
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -73,16 +73,11 @@ type settingsView struct {
 }
 
 // newSettingsView builds the settings page with current preference
-// values baked in. A non-empty overrideURL renders the active-hub row
-// as "overridden (URL)" and disables its toggle.
-func newSettingsView(currentColorScheme, currentDefaultBackend, currentActiveHub, remoteHubURL, overrideURL string) settingsView {
+// values baked in.
+func newSettingsView(currentColorScheme, currentDefaultBackend, currentActiveHub, cloudGatewayURL string) settingsView {
 	hubLabel := "Active hub"
 	hubDesc := "Which clankd this TUI/CLI talks to. Press enter to toggle. Restart the TUI for changes to take effect."
-	hubValue := resolveActiveHubName(currentActiveHub, remoteHubURL)
-	if strings.TrimSpace(overrideURL) != "" {
-		hubDesc = "Pinned by --hub-url for this process; toggle disabled. Restart without the flag to switch via preferences."
-		hubValue = "overridden (" + overrideURL + ")"
-	}
+	hubValue := resolveActiveHubName(currentActiveHub, cloudGatewayURL)
 	return settingsView{
 		entries: []settingsEntry{
 			{
@@ -163,8 +158,8 @@ func (s *settingsView) DefaultBackendValue() string {
 
 // SetActiveHubValue updates the "current value" text for the active-
 // hub entry, mirroring the default-backend pattern.
-func (s *settingsView) SetActiveHubValue(activeHub, remoteHubURL string) {
-	display := resolveActiveHubName(activeHub, remoteHubURL)
+func (s *settingsView) SetActiveHubValue(activeHub, cloudGatewayURL string) {
+	display := resolveActiveHubName(activeHub, cloudGatewayURL)
 	for i := range s.entries {
 		if s.entries[i].kind == settingsEntryActiveHub {
 			s.entries[i].value = display
@@ -191,13 +186,13 @@ func resolveDefaultBackendName(name string) string {
 
 // resolveActiveHubName renders the active-hub field. "remote" with no
 // URL configured renders as "remote (not configured)".
-func resolveActiveHubName(activeHub, remoteHubURL string) string {
+func resolveActiveHubName(activeHub, cloudGatewayURL string) string {
 	switch activeHub {
 	case "remote":
-		if strings.TrimSpace(remoteHubURL) == "" {
+		if strings.TrimSpace(cloudGatewayURL) == "" {
 			return "remote (not configured)"
 		}
-		return "remote (" + remoteHubURL + ")"
+		return "remote (" + cloudGatewayURL + ")"
 	default:
 		return "local"
 	}

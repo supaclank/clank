@@ -150,8 +150,12 @@ func TestEnsureBinaryInstalled_SkipsOnSizeAndHashMatch(t *testing.T) {
 	stub.seed("usr/local/bin/clank-host"+hashSidecarSuffix, []byte(hashHex(want)))
 
 	p := newTestProvisioner(t)
-	if err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", want, hashHex(want)); err != nil {
+	replaced, err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", want, hashHex(want))
+	if err != nil {
 		t.Fatalf("install: %v", err)
+	}
+	if replaced {
+		t.Errorf("hash-match fast path should report replaced=false")
 	}
 	if got := stub.ops(); len(got) != 0 {
 		t.Errorf("unexpected fs ops on hash-match fast path: %v", got)
@@ -174,8 +178,12 @@ func TestEnsureBinaryInstalled_SameSizeDifferentHashReinstalls(t *testing.T) {
 	stub.seed("usr/local/bin/clank-host"+hashSidecarSuffix, []byte(hashHex(old)))
 
 	p := newTestProvisioner(t)
-	if err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", new, hashHex(new)); err != nil {
+	replaced, err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", new, hashHex(new))
+	if err != nil {
 		t.Fatalf("install: %v", err)
+	}
+	if !replaced {
+		t.Errorf("hash-mismatch reinstall should report replaced=true")
 	}
 	ops := stub.ops()
 	hasBinaryWrite := false
@@ -204,8 +212,12 @@ func TestEnsureBinaryInstalled_ColdInstallWritesBinaryAndSidecar(t *testing.T) {
 	want := []byte("fresh binary")
 
 	p := newTestProvisioner(t)
-	if err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", want, hashHex(want)); err != nil {
+	replaced, err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", want, hashHex(want))
+	if err != nil {
 		t.Fatalf("install: %v", err)
+	}
+	if !replaced {
+		t.Errorf("cold install should report replaced=true")
 	}
 	got := stub.ops()
 	if len(got) != 3 ||
@@ -226,7 +238,7 @@ func TestEnsureBinaryInstalled_RemoveBeforeWrite(t *testing.T) {
 	want := []byte("new binary, larger payload")
 
 	p := newTestProvisioner(t)
-	if err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", want, hashHex(want)); err != nil {
+	if _, err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", want, hashHex(want)); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	got := stub.ops()
@@ -259,7 +271,7 @@ func TestEnsureBinaryInstalled_RemoveErrorIsBestEffort(t *testing.T) {
 	}
 
 	p := newTestProvisioner(t)
-	if err := p.ensureBinaryInstalledOn(context.Background(), stub, wfStub, "/usr/local/bin/clank-host", want, hashHex(want)); err != nil {
+	if _, err := p.ensureBinaryInstalledOn(context.Background(), stub, wfStub, "/usr/local/bin/clank-host", want, hashHex(want)); err != nil {
 		t.Fatalf("install: %v (Write should have proceeded despite Remove failure)", err)
 	}
 	if len(calls) != 1 || calls[0] != "Remove:/usr/local/bin/clank-host" {
@@ -287,7 +299,7 @@ func TestEnsureBinaryInstalled_WriteErrorPropagates(t *testing.T) {
 	stub.onWrite = func(_ string, _ []byte) error { return bang }
 
 	p := newTestProvisioner(t)
-	err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", []byte("data"), hashHex([]byte("data")))
+	_, err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", []byte("data"), hashHex([]byte("data")))
 	if err == nil {
 		t.Fatal("expected write error to surface, got nil")
 	}

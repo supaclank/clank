@@ -1,31 +1,20 @@
 #!/bin/sh
-# Entrypoint for the clank-host sandbox image. Reads cloud-hub
-# coordinates from env, then invokes clank-host with the matching
-# flags.
+# Entrypoint for the clank-host sandbox image. Reads minimal env and
+# invokes clank-host. The sprite-side sync flow (P6) doesn't need any
+# long-lived sync credentials on the sandbox — the gateway hands them
+# in per-request when it calls POST /sync/checkpoint.
 #
 # Required env:
-#   CLANK_HUB_URL    — cloud hub's externally-reachable base URL.
-#                      In dev: typically the trycloudflare URL emitted
-#                      by `make cloud-hub`. In prod: the deployed cloud
-#                      hub's public domain.
-#   CLANK_HUB_TOKEN  — bearer token paired with CLANK_HUB_URL.
 #   CLANK_HOST_PORT  — TCP port to bind. Defaults to 7878.
 #
-# Failures are loud: missing required env crashes the container so
-# the sandbox host (Daytona, etc.) surfaces the problem instead of
-# leaving an idle sandbox.
+# Optional:
+#   CLANK_HOST_AUTH_TOKEN — bearer the gateway uses to call this host.
+#                            Empty preserves the unauthenticated
+#                            laptop-local mode.
 
 set -eu
 
-: "${CLANK_HUB_URL:?CLANK_HUB_URL is required}"
-: "${CLANK_HUB_TOKEN:?CLANK_HUB_TOKEN is required}"
 : "${CLANK_HOST_PORT:=7878}"
-
-# CLANK_HOST_AUTH_TOKEN is optional: when set, clank-host will require
-# every HTTP request to carry a matching Authorization: Bearer header.
-# The provisioner that created the sandbox (Daytona/Sprites) injects
-# this value at create time. Empty value preserves the unauthenticated
-# laptop-local mode for backward compatibility.
 
 # Bind on the IPv6 wildcard. On Linux this is dual-stack by default
 # (IPV6_V6ONLY=0), so the listener accepts both IPv4 and IPv6
@@ -36,6 +25,4 @@ set -eu
 # `0.0.0.0` and `::` behave nearly identically).
 exec /usr/local/bin/clank-host \
   --listen "tcp://[::]:${CLANK_HOST_PORT}" \
-  --git-sync-source "${CLANK_HUB_URL}" \
-  --git-sync-token "${CLANK_HUB_TOKEN}" \
   ${CLANK_HOST_AUTH_TOKEN:+--listen-auth-token "${CLANK_HOST_AUTH_TOKEN}"}

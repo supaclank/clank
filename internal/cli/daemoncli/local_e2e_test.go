@@ -13,10 +13,11 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/pkg/gateway"
 	"github.com/acksell/clank/internal/host"
 	hostmux "github.com/acksell/clank/internal/host/mux"
 	hoststore "github.com/acksell/clank/internal/host/store"
+	"github.com/acksell/clank/pkg/auth"
+	"github.com/acksell/clank/pkg/gateway"
 	"github.com/acksell/clank/pkg/provisioner"
 )
 
@@ -61,20 +62,19 @@ func TestLocalE2E_TUICreatesSession_AndFetches(t *testing.T) {
 	hostHTTP := httptest.NewServer(hostmux.New(svc, nil).Handler())
 	t.Cleanup(hostHTTP.Close)
 
-	// Gateway in front of the host. ResolveUserID returns the laptop
-	// "local" sentinel; PermissiveAuth lets every request through.
+	// Gateway in front of the host. AllowAll resolves every request to
+	// the "local" laptop user — file-perms gate the unix socket in
+	// production; tests just inject the principal directly.
 	gw, err := gateway.NewGateway(gateway.Config{
 		Provisioner: &fixedHostProvisioner{
 			url:       hostHTTP.URL,
 			transport: http.DefaultTransport,
 		},
-		Auth:          gateway.PermissiveAuth{},
-		ResolveUserID: func(*http.Request) string { return "local" },
 	}, nil)
 	if err != nil {
 		t.Fatalf("gateway.NewGateway: %v", err)
 	}
-	gwSrv := httptest.NewServer(gw.Handler())
+	gwSrv := httptest.NewServer(auth.Middleware(gw.Handler(), &auth.AllowAll{UserID: "local"}))
 	t.Cleanup(gwSrv.Close)
 
 	// daemonclient is the TUI's HTTP client; same one production wires.

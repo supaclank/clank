@@ -76,8 +76,8 @@ func (m *InboxModel) updateCloud(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if _, ok := msg.(cloudOpenURLPickerMsg); ok {
 		prefs, _ := config.LoadPreferences()
 		currentURL := ""
-		if prefs.Cloud != nil {
-			currentURL = prefs.Cloud.CloudURL
+		if p := prefs.ActiveRemote(); p != nil {
+			currentURL = p.AuthURL
 		}
 		m.cloudURLPicker = newCloudURLPicker(currentURL)
 		m.showCloudURLPicker = true
@@ -158,13 +158,12 @@ func (m *InboxModel) updateCloudURLPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// persistCloudURL writes the chosen cloud URL to preferences.json.
-// An empty url clears the field, disabling cloud features.
+// persistCloudURL writes the chosen cloud URL to the active profile
+// (creating one named "default" if none exists). Empty url clears the
+// field, disabling cloud features for that profile.
 func persistCloudURL(url string) {
 	_ = config.UpdatePreferences(func(p *config.Preferences) {
-		if p.Cloud == nil {
-			p.Cloud = &config.CloudPreference{}
-		}
-		p.Cloud.CloudURL = url
+		profile := ensureActiveProfile(p)
+		profile.AuthURL = url
 	})
 }

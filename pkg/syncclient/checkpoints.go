@@ -24,11 +24,9 @@ type CheckpointResult struct {
 // RegisterWorktree registers a new worktree with clank-sync and returns
 // the server-assigned ID. Callers should persist the ID locally and
 // pass it to subsequent PushCheckpoint invocations for the same
-// working directory.
+// working directory. The sync server only accepts laptop-kind callers
+// here; sprite-kind callers (X-Clank-Host-Id) get 403.
 func (c *Client) RegisterWorktree(ctx context.Context, displayName string) (string, error) {
-	if c.cfg.DeviceID == "" {
-		return "", errors.New("syncclient: DeviceID is required for the checkpoint flow")
-	}
 	if displayName == "" {
 		return "", errors.New("syncclient: displayName is required")
 	}
@@ -52,9 +50,6 @@ func (c *Client) RegisterWorktree(ctx context.Context, displayName string) (stri
 // bundles, request presigned URLs, upload each blob, commit. Cleans up
 // the temp bundle files on return.
 func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath string) (*CheckpointResult, error) {
-	if c.cfg.DeviceID == "" {
-		return nil, errors.New("syncclient: DeviceID is required for the checkpoint flow")
-	}
 	if worktreeID == "" {
 		return nil, errors.New("syncclient: worktreeID is required")
 	}
@@ -63,7 +58,9 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath string
 	// the server assigns the canonical ID on /v1/checkpoints. We use
 	// the server's ID as the manifest's CheckpointID at the end.
 	tempID := "pending-" + randString(12)
-	builder := checkpoint.NewBuilder(repoPath, "laptop:"+c.cfg.DeviceID)
+	// CreatedBy is informational on the manifest — sync's CallerVerifier
+	// derives the authoritative caller identity from the bearer.
+	builder := checkpoint.NewBuilder(repoPath, "laptop")
 	res, err := builder.Build(ctx, tempID)
 	if err != nil {
 		return nil, fmt.Errorf("build checkpoint: %w", err)
@@ -132,12 +129,6 @@ func (c *Client) postJSON(ctx context.Context, path string, body any, into any) 
 	req.Header.Set("Content-Type", "application/json")
 	if c.cfg.AuthToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.cfg.AuthToken)
-	}
-	if c.cfg.DeviceID != "" {
-		// X-Clank-Device-Id is the laptop's identity for checkpoint
-		// authorization. P2 will move this into JWT claims; for MVP it
-		// rides as a header. Pinned in pkg/sync.HeaderDeviceID.
-		req.Header.Set("X-Clank-Device-Id", c.cfg.DeviceID)
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {

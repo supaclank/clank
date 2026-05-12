@@ -16,10 +16,11 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/pkg/gateway"
 	"github.com/acksell/clank/internal/host"
 	hostmux "github.com/acksell/clank/internal/host/mux"
 	hoststore "github.com/acksell/clank/internal/host/store"
+	"github.com/acksell/clank/pkg/auth"
+	"github.com/acksell/clank/pkg/gateway"
 )
 
 // testDaemon is the assembled stack one test owns: a daemonclient
@@ -73,13 +74,11 @@ func newTestDaemonAt(t *testing.T, dbPath string) *testDaemon {
 			url:       hostHTTP.URL,
 			transport: http.DefaultTransport,
 		},
-		Auth:          gateway.PermissiveAuth{},
-		ResolveUserID: func(*http.Request) string { return "local" },
 	}, nil)
 	if err != nil {
 		t.Fatalf("gateway.NewGateway: %v", err)
 	}
-	gwSrv := httptest.NewServer(gw.Handler())
+	gwSrv := httptest.NewServer(auth.Middleware(gw.Handler(), &auth.AllowAll{UserID: "local"}))
 	t.Cleanup(gwSrv.Close)
 
 	return &testDaemon{

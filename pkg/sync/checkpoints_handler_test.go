@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acksell/clank/pkg/auth"
 	clanksync "github.com/acksell/clank/pkg/sync"
 	"github.com/acksell/clank/pkg/sync/storage"
 )
@@ -134,11 +135,14 @@ func (m *memSyncStore) MarkCheckpointUploaded(_ context.Context, id string, when
 	return nil
 }
 
-// fixedUserAuth returns the same userID for every request.
-type fixedUserAuth struct{ userID string }
-
-func (f fixedUserAuth) Verify(*http.Request) (map[string]any, error) {
-	return map[string]any{"sub": f.userID}, nil
+// fixedPrincipalMiddleware injects a fixed Principal so every request
+// resolves to the same UserID — replaces the older fixedUserAuth that
+// implemented the now-removed sync.Authenticator.
+func fixedPrincipalMiddleware(userID string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := auth.WithPrincipal(r.Context(), auth.Principal{UserID: userID})
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 func newTestServer(t *testing.T) (*httptest.Server, *memSyncStore, *storage.Memory) {
@@ -148,16 +152,15 @@ func newTestServer(t *testing.T) (*httptest.Server, *memSyncStore, *storage.Memo
 	t.Cleanup(mem.Close)
 
 	srv, err := clanksync.NewServer(clanksync.Config{
-		Auth:        fixedUserAuth{userID: "user-A"},
-		Store:       store,
-		Storage:     mem,
-		PresignTTL:  time.Minute,
+		Store:      store,
+		Storage:    mem,
+		PresignTTL: time.Minute,
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
 
-	httpSrv := httptest.NewServer(srv.Handler())
+	httpSrv := httptest.NewServer(fixedPrincipalMiddleware("user-A", srv.Handler()))
 	t.Cleanup(httpSrv.Close)
 	return httpSrv, store, mem
 }
@@ -257,9 +260,10 @@ func TestCommitCheckpoint_RejectsIfBlobMissing(t *testing.T) {
 	}
 }
 
-// TestCreateCheckpoint_RejectsForeignOwner ensures the ownership
-// check fires when device_id differs from the worktree owner.
-func TestCreateCheckpoint_RejectsForeignOwner(t *testing.T) {
+// TestCreateCheckpoint_MissingFieldsReturns400 pins the validation
+// status: an empty required field must surface as 400 with a body that
+// names the missing fields, not as a 500 with a wrapped service error.
+func TestCreateCheckpoint_MissingFieldsReturns400(t *testing.T) {
 	t.Parallel()
 	httpSrv, _, _ := newTestServer(t)
 	wt := postJSON[map[string]any](t, httpSrv.URL+"/v1/worktrees", map[string]string{
@@ -267,27 +271,43 @@ func TestCreateCheckpoint_RejectsForeignOwner(t *testing.T) {
 	})
 	worktreeID := wt["id"].(string)
 
-	resp := mustPostExpectStatusAsDevice(t, httpSrv.URL+"/v1/checkpoints", map[string]string{
+	// head_commit omitted.
+	resp := mustPostExpectStatus(t, httpSrv.URL+"/v1/checkpoints", map[string]string{
+		"worktree_id":        worktreeID,
+		"index_tree":         "x",
+		"worktree_tree":      "x",
+		"incremental_commit": "x",
+	}, http.StatusBadRequest)
+	if !strings.Contains(string(resp), "head_commit") {
+		t.Fatalf("400 body should name the missing field, got %q", resp)
+	}
+}
+
+// TestMultipleLaptopsSameUserShare regression-tests the removal of
+// per-device ownership: any laptop of the same user can push to the
+// same worktree without a 403 (last-write-wins is the new model).
+func TestMultipleLaptopsSameUserShare(t *testing.T) {
+	t.Parallel()
+	httpSrv, _, _ := newTestServer(t)
+	wt := postJSON[map[string]any](t, httpSrv.URL+"/v1/worktrees", map[string]string{
+		"display_name": "r",
+	})
+	worktreeID := wt["id"].(string)
+
+	// Any laptop of user-A may push (no DeviceID disambiguation).
+	create := postJSON[map[string]any](t, httpSrv.URL+"/v1/checkpoints", map[string]string{
 		"worktree_id":        worktreeID,
 		"head_commit":        "x",
 		"index_tree":         "x",
 		"worktree_tree":      "x",
 		"incremental_commit": "x",
-	}, "evil-dev", http.StatusForbidden)
-	if !strings.Contains(string(resp), "owner") {
-		t.Fatalf("expected ownership error, got %q", resp)
+	})
+	if id, _ := create["checkpoint_id"].(string); id == "" {
+		t.Fatalf("expected checkpoint_id, got %v", create)
 	}
 }
 
-// defaultTestDevice is the device_id every helper uses by default.
-// Tests that need to simulate a foreign device use *AsDevice variants.
-const defaultTestDevice = "test-dev-1"
-
 func postJSON[T any](t *testing.T, url string, body any) T {
-	return postJSONAsDevice[T](t, url, body, defaultTestDevice)
-}
-
-func postJSONAsDevice[T any](t *testing.T, url string, body any, deviceID string) T {
 	t.Helper()
 	buf, err := json.Marshal(body)
 	if err != nil {
@@ -298,9 +318,6 @@ func postJSONAsDevice[T any](t *testing.T, url string, body any, deviceID string
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if deviceID != "" {
-		req.Header.Set("X-Clank-Device-Id", deviceID)
-	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -318,10 +335,6 @@ func postJSONAsDevice[T any](t *testing.T, url string, body any, deviceID string
 }
 
 func mustPostExpectStatus(t *testing.T, url string, body any, want int) []byte {
-	return mustPostExpectStatusAsDevice(t, url, body, defaultTestDevice, want)
-}
-
-func mustPostExpectStatusAsDevice(t *testing.T, url string, body any, deviceID string, want int) []byte {
 	t.Helper()
 	var buf []byte
 	if body != nil {
@@ -336,9 +349,6 @@ func mustPostExpectStatusAsDevice(t *testing.T, url string, body any, deviceID s
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if deviceID != "" {
-		req.Header.Set("X-Clank-Device-Id", deviceID)
-	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)

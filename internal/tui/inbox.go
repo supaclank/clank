@@ -21,6 +21,7 @@ import (
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host"
+	"github.com/acksell/clank/pkg/syncclient"
 )
 
 // inboxScreen tracks which screen is active within the inbox app.
@@ -73,12 +74,16 @@ type InboxModel struct {
 	sidebarWidthRatio int          // sidebar width as % of screen width; adjusted with +/-
 
 	// Inbox list state (right pane).
-	groups       []inboxGroup
-	flatRows     []inboxRow
-	cursor       int
-	scrollOffset int
-	showMenu     bool
-	menu         actionMenuModel
+	groups           []inboxGroup
+	flatRows         []inboxRow
+	cursor           int
+	scrollOffset     int
+	showMenu         bool
+	menu             actionMenuModel
+	menuWorktreePath string // set when menu is a worktree action menu
+
+	// notice is a transient success message cleared on the next action.
+	notice string
 
 	// Archive accordion state — tracks which date groups have their archive expanded.
 	archiveExpanded map[string]bool // keyed by date group label
@@ -338,7 +343,11 @@ func (m *InboxModel) discoverForProvidersCmd(providers []importProvider) tea.Cmd
 	}
 }
 
-// loadDataCmd fetches sessions from the daemon.
+// loadDataCmd fetches sessions from the daemon, plus the active
+// remote's worktree-ownership map so the sidebar can render the ☁
+// glyph for sprite-owned entries. Failures on the worktree fetch are
+// swallowed — they aren't essential for showing sessions, and a
+// local-only daemon legitimately has no remote to query.
 func (m *InboxModel) loadDataCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -348,14 +357,38 @@ func (m *InboxModel) loadDataCmd() tea.Cmd {
 		if err != nil {
 			return inboxDataMsg{err: err}
 		}
-		return inboxDataMsg{sessions: sessions}
+		owners := loadWorktreeOwners(ctx)
+		return inboxDataMsg{sessions: sessions, worktreeOwners: owners}
 	}
+}
+
+// loadWorktreeOwners queries the active remote (if any) for the
+// caller's worktrees and returns id→owner_kind. Returns an empty map
+// when no remote is configured, when the remote is unreachable, or
+// when the local daemon (Sync=nil) is the only thing addressable.
+// The sidebar glyphs are a hint, not a critical signal — silent
+// failure is the right behavior.
+func loadWorktreeOwners(ctx context.Context) map[string]string {
+	cli, err := daemonclient.NewRemoteClient()
+	if err != nil {
+		return nil
+	}
+	wts, err := cli.ListWorktrees(ctx)
+	if err != nil || len(wts) == 0 {
+		return nil
+	}
+	owners := make(map[string]string, len(wts))
+	for _, wt := range wts {
+		owners[wt.ID] = wt.OwnerKind
+	}
+	return owners
 }
 
 // inboxDataMsg carries fetched session data.
 type inboxDataMsg struct {
-	sessions []agent.SessionInfo
-	err      error
+	sessions       []agent.SessionInfo
+	worktreeOwners map[string]string // worktree_id → "local"|"remote"; nil when remote unavailable
+	err            error
 }
 
 // inboxSearchResultMsg carries search results from the daemon.
@@ -561,6 +594,24 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case newWorktreeSessionRequestMsg:
 		return m, m.openNewWorktreeSession(msg.worktreeDir)
 
+	case worktreeOptionsRequestedMsg:
+		m.menuWorktreePath = msg.localPath
+		m.notice = "" // clear any prior notice when opening a new action menu
+		m.menu = newActionMenu("Worktree: "+filepath.Base(msg.localPath), []actionMenuItem{
+			{label: "Push checkpoint", key: "p", action: "push:" + msg.localPath},
+			{label: "Pull  (coming soon)", action: "pull:" + msg.localPath},
+		})
+		m.showMenu = true
+		return m, nil
+
+	case worktreePushResultMsg:
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.notice = fmt.Sprintf("pushed checkpoint %s (HEAD %s)", msg.checkpointID, msg.headSHA)
+		}
+		return m, nil
+
 	case inboxDataMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -568,6 +619,9 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = nil
 			m.cachedSessions = msg.sessions
 			m.sidebar.SetSessions(m.cachedSessions)
+			if msg.worktreeOwners != nil {
+				m.sidebar.SetWorktreeOwners(msg.worktreeOwners)
+			}
 			m.buildGroups(m.filteredSessions())
 		}
 		return m, nil
@@ -1279,6 +1333,11 @@ func (m *InboxModel) handleMenuAction(action string) tea.Cmd {
 		return m.openSession(id)
 	case "delete":
 		return m.deleteSession(id)
+	case "push":
+		return m.worktreePushCmd(id)
+	case "pull":
+		m.notice = "Pull is coming soon"
+		return nil
 	}
 	return nil
 }
@@ -1619,6 +1678,12 @@ func (m *InboxModel) renderSessionPane() string {
 	// Error.
 	if m.err != nil {
 		sb.WriteString(renderError(m.err, m.width))
+		sb.WriteString("\n\n")
+	}
+
+	// Notice (transient success message).
+	if m.notice != "" {
+		sb.WriteString(lipgloss.NewStyle().Foreground(successColor).Render("✓ " + m.notice))
 		sb.WriteString("\n\n")
 	}
 
@@ -2423,4 +2488,67 @@ func (m *InboxModel) overlayHelp(base string) string {
 		Render(sb.String())
 
 	return overlayCenter(base, popup, m.width, m.height)
+}
+
+// worktreePushResultMsg is returned by worktreePushCmd.
+type worktreePushResultMsg struct {
+	checkpointID string
+	headSHA      string
+	err          error
+}
+
+// worktreePushCmd pushes a checkpoint of localPath to the configured gateway.
+func (m *InboxModel) worktreePushCmd(localPath string) tea.Cmd {
+	return func() tea.Msg {
+		prefs, err := config.LoadPreferences()
+		if err != nil {
+			return worktreePushResultMsg{err: fmt.Errorf("load preferences: %w", err)}
+		}
+		profile := prefs.ActiveRemote()
+		if profile == nil || profile.GatewayURL == "" {
+			return worktreePushResultMsg{err: fmt.Errorf("no active cloud profile with gateway_url configured")}
+		}
+
+		cli, err := syncclient.New(syncclient.Config{
+			BaseURL:   profile.GatewayURL,
+			AuthToken: profile.AccessToken,
+		})
+		if err != nil {
+			return worktreePushResultMsg{err: err}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+
+		worktreeID, err := agent.ReadLocalWorktreeID(localPath)
+		if err != nil {
+			return worktreePushResultMsg{err: fmt.Errorf("load cached worktree id: %w", err)}
+		}
+		if worktreeID == "" {
+			worktreeID, err = cli.RegisterWorktree(ctx, filepath.Base(localPath))
+			if err != nil {
+				return worktreePushResultMsg{err: fmt.Errorf("register worktree: %w", err)}
+			}
+			if err := agent.WriteLocalWorktreeID(localPath, worktreeID); err != nil {
+				return worktreePushResultMsg{err: fmt.Errorf("cache worktree id: %w", err)}
+			}
+		}
+
+		res, err := cli.PushCheckpoint(ctx, worktreeID, localPath)
+		if err != nil {
+			return worktreePushResultMsg{err: fmt.Errorf("push checkpoint: %w", err)}
+		}
+		return worktreePushResultMsg{
+			checkpointID: res.CheckpointID,
+			headSHA:      shortSHA(res.Manifest.HeadCommit),
+		}
+	}
+}
+
+// shortSHA returns the first 8 characters of a SHA, or the full string if shorter.
+func shortSHA(s string) string {
+	if len(s) > 8 {
+		return s[:8]
+	}
+	return s
 }

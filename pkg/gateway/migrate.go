@@ -4,23 +4,24 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
+
+	"github.com/acksell/clank/pkg/auth"
+	"github.com/acksell/clank/pkg/provisioner"
+	clanksync "github.com/acksell/clank/pkg/sync"
 )
 
-// HeaderDeviceID matches pkg/sync.HeaderDeviceID. Forwarded from the
-// laptop's request to clank-sync so ownership checks fire correctly.
-// Pinned here to avoid a package cycle (gateway should not import sync).
-const HeaderDeviceID = "X-Clank-Device-Id"
-
-// migrateRequest is the body of POST /v1/migrate/worktrees/{id}.
+// migrateRequest is the body of POST /v1/migrate/worktrees/{id}. Only
+// to_remote uses this single-call shape — to_local goes through the
+// two-phase materialize + commit endpoints because it must move data
+// before flipping ownership.
 type migrateRequest struct {
-	Direction string `json:"direction"` // "to_remote" only in P3
+	Direction string `json:"direction"` // "to_remote" only
 	Confirm   bool   `json:"confirm"`
 }
 
@@ -35,15 +36,15 @@ type migrateResponse struct {
 // handleMigrateWorktree orchestrates a worktree's migration from the
 // laptop to a sandbox sprite. The flow (per the architecture plan):
 //
-//  1. Read the worktree from clank-sync; reject if not laptop-owned by
+//  1. Read the worktree from sync; reject if not laptop-owned by
 //     the calling device.
 //  2. Pre-check that there's an uploaded checkpoint to migrate.
 //  3. Wake the sprite via Provisioner.EnsureHost.
 //  4. Download the latest checkpoint's bundles from object storage via
-//     presigned GET URLs minted by clank-sync.
+//     presigned GET URLs minted by the sync server.
 //  5. Push the checkpoint to the sprite as a multipart /sync/apply
 //     request — manifest + headCommit + incremental.
-//  6. Atomic ownership transfer via clank-sync. Loser of any race
+//  6. Atomic ownership transfer via the sync server. Loser of any race
 //     gets 409 and surfaces it to the caller.
 //
 // Bundle bytes pass through the gateway's memory but are never
@@ -51,28 +52,13 @@ type migrateResponse struct {
 // only and cannot tamper because the sprite verifies the manifest
 // signature.
 func (g *Gateway) handleMigrateWorktree(w http.ResponseWriter, r *http.Request) {
-	if _, err := g.cfg.Auth.Verify(r); err != nil {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="clank"`)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-
 	// Auth gates the deployment-state signal so an unauthenticated
 	// caller can't probe whether migration is wired up.
-	if g.cfg.SyncBaseURL == "" {
-		http.Error(w, "migration not configured (SyncBaseURL unset)", http.StatusServiceUnavailable)
+	if g.cfg.Sync == nil {
+		http.Error(w, "migration not configured (Sync unset)", http.StatusServiceUnavailable)
 		return
 	}
-	userID := g.cfg.ResolveUserID(r)
-	if userID == "" {
-		http.Error(w, "no user identity", http.StatusUnauthorized)
-		return
-	}
-	deviceID := r.Header.Get(HeaderDeviceID)
-	if deviceID == "" {
-		http.Error(w, "missing "+HeaderDeviceID, http.StatusBadRequest)
-		return
-	}
+	userID := auth.MustPrincipal(r.Context()).UserID
 	worktreeID := r.PathValue("id")
 	if worktreeID == "" {
 		http.Error(w, "worktree id missing", http.StatusBadRequest)
@@ -84,8 +70,8 @@ func (g *Gateway) handleMigrateWorktree(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.Direction != "to_remote" && req.Direction != "to_local" {
-		http.Error(w, "direction must be to_remote or to_local", http.StatusBadRequest)
+	if req.Direction != "to_remote" {
+		http.Error(w, "direction must be to_remote; use /v1/migrate/worktrees/{id}/materialize and /commit for to_local", http.StatusBadRequest)
 		return
 	}
 	if !req.Confirm {
@@ -93,19 +79,12 @@ func (g *Gateway) handleMigrateWorktree(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	mc := g.migrationClient(deviceID)
-	wt, err := mc.getWorktree(r.Context(), worktreeID)
+	wt, err := g.cfg.Sync.GetWorktree(r.Context(), userID, worktreeID)
 	if err != nil {
-		mc.respond(w, "read worktree", err)
+		syncErrToHTTP(w, "read worktree", err)
 		return
 	}
-
-	switch req.Direction {
-	case "to_remote":
-		g.migrateToRemote(w, r, mc, wt, userID, deviceID)
-	case "to_local":
-		g.migrateToLocal(w, r, mc, wt, deviceID)
-	}
+	g.migrateToRemote(w, r, wt, userID)
 }
 
 // migrateToRemote is the §D happy path: pre-checked → wake → push →
@@ -113,19 +92,19 @@ func (g *Gateway) handleMigrateWorktree(w http.ResponseWriter, r *http.Request) 
 // if the worktree is already owned by some sprite for this user, we
 // no-op rather than 403, which means a user who calls migrate twice
 // gets the same answer the second time.
-func (g *Gateway) migrateToRemote(w http.ResponseWriter, r *http.Request, mc *migrationClient, wt worktreeView, userID, deviceID string) {
-	if wt.OwnerKind == "remote" {
+func (g *Gateway) migrateToRemote(w http.ResponseWriter, r *http.Request, wt clanksync.Worktree, userID string) {
+	if wt.OwnerKind == clanksync.OwnerKindRemote {
 		// Already sprite-owned. Treat as no-op success.
 		writeJSON(w, http.StatusOK, migrateResponse{
 			WorktreeID:   wt.ID,
-			NewOwnerKind: wt.OwnerKind,
+			NewOwnerKind: string(wt.OwnerKind),
 			NewOwnerID:   wt.OwnerID,
 			CheckpointID: wt.LatestSyncedCheckpoint,
 		})
 		return
 	}
-	if wt.OwnerKind != "local" || wt.OwnerID != deviceID {
-		http.Error(w, "caller is not the current laptop owner of this worktree", http.StatusForbidden)
+	if wt.OwnerKind != clanksync.OwnerKindLocal {
+		http.Error(w, "worktree is not local-owned", http.StatusForbidden)
 		return
 	}
 	if wt.LatestSyncedCheckpoint == "" {
@@ -140,311 +119,130 @@ func (g *Gateway) migrateToRemote(w http.ResponseWriter, r *http.Request, mc *mi
 		return
 	}
 
-	ck, err := mc.downloadCheckpointURLs(r.Context(), wt.LatestSyncedCheckpoint)
-	if err != nil {
-		mc.respond(w, "download checkpoint URLs", err)
-		return
-	}
-	manifestBytes, err := mc.fetchBlob(r.Context(), ck.ManifestGetURL)
-	if err != nil {
-		mc.respond(w, "fetch manifest", err)
-		return
-	}
-	headBytes, err := mc.fetchBlob(r.Context(), ck.HeadCommitGetURL)
-	if err != nil {
-		mc.respond(w, "fetch headCommit bundle", err)
-		return
-	}
-	incrBytes, err := mc.fetchBlob(r.Context(), ck.IncrementalURL)
-	if err != nil {
-		mc.respond(w, "fetch incremental bundle", err)
-		return
-	}
+	cli := &http.Client{Timeout: 5 * time.Minute}
 
-	// Use the worktree ID as the sprite-side directory name so
-	// session-create's WorktreeID lookup hits ~/work/<id>/.
-	if err := mc.applyToSprite(r.Context(), hostRef.URL, hostRef.Transport, hostRef.AuthToken, wt.ID, manifestBytes, headBytes, incrBytes); err != nil {
+	// Pull-based: hand the sprite presigned GET URLs and let it fetch
+	// the bundles directly from object storage. Bundle bytes never
+	// traverse this process. On a 403/expired-URL response we re-mint
+	// fresh URLs once and retry — anything else surfaces immediately.
+	if err := g.pushCheckpointToSprite(r.Context(), cli, hostRef, wt, userID); err != nil {
 		g.log.Printf("gateway migrate: apply to sprite: %v", err)
 		http.Error(w, "apply to sprite: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 
-	updated, err := mc.transferOwnership(r.Context(), wt.ID, "remote", hostRef.HostID, deviceID)
+	// Empty expectedOwnerID — for local→remote we don't disambiguate
+	// laptops anymore; ownership is per-user. TransferOwnership still
+	// uses optimistic concurrency keyed on the (kind, id) tuple.
+	updated, err := g.cfg.Sync.TransferOwnership(r.Context(), userID, wt.ID, clanksync.OwnerKindRemote, hostRef.HostID, "")
 	if err != nil {
-		mc.respond(w, "transfer ownership", err)
+		syncErrToHTTP(w, "transfer ownership", err)
 		return
 	}
 
 	writeJSON(w, http.StatusOK, migrateResponse{
 		WorktreeID:   updated.ID,
-		NewOwnerKind: updated.OwnerKind,
+		NewOwnerKind: string(updated.OwnerKind),
 		NewOwnerID:   updated.OwnerID,
 		CheckpointID: wt.LatestSyncedCheckpoint,
 	})
 }
 
-// migrateToLocal reclaims ownership from a sprite. Implements the
-// "Keep local" semantic: ownership transfers, sprite-side changes are
-// abandoned. The "Pull from sandbox" variant — download the sprite's
-// latest checkpoint, apply it locally, then transfer — needs sprite-
-// side push (P4) and isn't here yet.
+// pushCheckpointToSprite mints presigned GET URLs for the worktree's
+// latest synced checkpoint and POSTs them to the sprite's
+// /sync/apply-from-urls. The sprite downloads the bundles itself and
+// applies them; bundle bytes never traverse this process.
 //
-// Idempotent: if already laptop-owned by this device, no-op success.
-func (g *Gateway) migrateToLocal(w http.ResponseWriter, r *http.Request, mc *migrationClient, wt worktreeView, deviceID string) {
-	if wt.OwnerKind == "local" && wt.OwnerID == deviceID {
-		writeJSON(w, http.StatusOK, migrateResponse{
-			WorktreeID:   wt.ID,
-			NewOwnerKind: wt.OwnerKind,
-			NewOwnerID:   wt.OwnerID,
-			CheckpointID: wt.LatestSyncedCheckpoint,
-		})
-		return
+// On a url_expired response (S3 returned 403, typically because the
+// 5-minute TTL elapsed during a slow sprite cold-start), the gateway
+// mints fresh URLs and retries exactly once. Other error codes
+// propagate without retry.
+func (g *Gateway) pushCheckpointToSprite(ctx context.Context, cli *http.Client, hostRef provisioner.HostRef, wt clanksync.Worktree, userID string) error {
+	for attempt := 0; attempt < 2; attempt++ {
+		ck, err := g.cfg.Sync.DownloadCheckpointURLs(ctx, userID, wt.LatestSyncedCheckpoint)
+		if err != nil {
+			return fmt.Errorf("download checkpoint URLs: %w", err)
+		}
+		code, err := applyFromURLsToSprite(ctx, cli, hostRef.URL, hostRef.Transport, hostRef.AuthToken, wt.ID, ck.ManifestGetURL, ck.HeadCommitGetURL, ck.IncrementalURL)
+		if err == nil {
+			return nil
+		}
+		if code == "url_expired" && attempt == 0 {
+			g.log.Printf("gateway migrate: sprite reported url_expired, retrying with fresh URLs")
+			continue
+		}
+		return err
 	}
-	if wt.OwnerKind != "remote" {
-		http.Error(w, "worktree is not currently sprite-owned", http.StatusForbidden)
-		return
-	}
-
-	updated, err := mc.transferOwnership(r.Context(), wt.ID, "local", deviceID, wt.OwnerID)
-	if err != nil {
-		mc.respond(w, "transfer ownership", err)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, migrateResponse{
-		WorktreeID:   updated.ID,
-		NewOwnerKind: updated.OwnerKind,
-		NewOwnerID:   updated.OwnerID,
-		CheckpointID: wt.LatestSyncedCheckpoint,
-	})
+	return fmt.Errorf("apply to sprite: exhausted retries")
 }
 
-// migrationClient bundles the per-request HTTP client used to talk to
-// clank-sync and the sprite. DeviceID is forwarded as
-// X-Clank-Device-Id so clank-sync's ownership checks pass.
-type migrationClient struct {
-	syncURL  string
-	deviceID string
-	client   *http.Client
-}
-
-func (g *Gateway) migrationClient(deviceID string) *migrationClient {
-	cli := g.cfg.SyncHTTPClient
-	if cli == nil {
-		cli = &http.Client{Timeout: 5 * time.Minute}
-	}
-	return &migrationClient{
-		syncURL:  strings.TrimRight(g.cfg.SyncBaseURL, "/"),
-		deviceID: deviceID,
-		client:   cli,
-	}
-}
-
-// worktreeView mirrors the JSON shape clank-sync emits for worktrees.
-// Kept here (rather than imported from pkg/sync) to avoid the gateway
-// taking a build dependency on sync types.
-type worktreeView struct {
-	ID                     string `json:"id"`
-	UserID                 string `json:"user_id"`
-	DisplayName            string `json:"display_name"`
-	OwnerKind              string `json:"owner_kind"`
-	OwnerID                string `json:"owner_id"`
-	LatestSyncedCheckpoint string `json:"latest_synced_checkpoint"`
-}
-
-func (m *migrationClient) getWorktree(ctx context.Context, id string) (worktreeView, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.syncURL+"/v1/worktrees/"+url.PathEscape(id), nil)
-	if err != nil {
-		return worktreeView{}, err
-	}
-	m.attachHeaders(req)
-	resp, err := m.client.Do(req)
-	if err != nil {
-		return worktreeView{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return worktreeView{}, &syncErr{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
-	}
-	var out worktreeView
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return worktreeView{}, fmt.Errorf("decode worktree: %w", err)
-	}
-	return out, nil
-}
-
-type checkpointDownloadView struct {
-	CheckpointID     string `json:"checkpoint_id"`
-	HeadCommitGetURL string `json:"head_commit_get_url"`
-	IncrementalURL   string `json:"incremental_get_url"`
-	ManifestGetURL   string `json:"manifest_get_url"`
-}
-
-func (m *migrationClient) downloadCheckpointURLs(ctx context.Context, checkpointID string) (checkpointDownloadView, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.syncURL+"/v1/checkpoints/"+url.PathEscape(checkpointID)+"/download", nil)
-	if err != nil {
-		return checkpointDownloadView{}, err
-	}
-	m.attachHeaders(req)
-	resp, err := m.client.Do(req)
-	if err != nil {
-		return checkpointDownloadView{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return checkpointDownloadView{}, &syncErr{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
-	}
-	var out checkpointDownloadView
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return checkpointDownloadView{}, fmt.Errorf("decode download urls: %w", err)
-	}
-	return out, nil
-}
-
-func (m *migrationClient) fetchBlob(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := m.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return nil, fmt.Errorf("blob GET %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	// TODO(coderabbit): cap response body via io.LimitReader; surface typed err at limit
-	// https://github.com/Acksell/clank/pull/16#discussion_r3213461997
-	return io.ReadAll(resp.Body)
-}
-
-// applyToSprite POSTs a multipart checkpoint to the sprite's
-// /sync/apply endpoint using the HostRef's transport (which injects
-// the sprite-side bearer). worktreeID becomes the sprite-side
-// directory name (~/work/<worktreeID>/), agreeing with
-// host.Service.workDirFor's lookup convention.
-//
-// TODO(coderabbit): stream multipart via io.Pipe so bundle bytes don't all sit in RAM
-// https://github.com/Acksell/clank/pull/16#discussion_r3213461995
-func (m *migrationClient) applyToSprite(ctx context.Context, spriteURL string, transport http.RoundTripper, authToken, worktreeID string, manifestBytes, headBytes, incrBytes []byte) error {
+// applyFromURLsToSprite POSTs JSON `{repo, manifest_url, head_commit_url,
+// incremental_url}` to the sprite's /sync/apply-from-urls endpoint. The
+// HostRef's transport injects the sprite-side bearer. Returns a typed
+// error code (from internal/host/mux/sync.go) so callers can branch on
+// "url_expired" for a one-shot retry.
+func applyFromURLsToSprite(ctx context.Context, baseClient *http.Client, spriteURL string, transport http.RoundTripper, authToken, worktreeID, manifestURL, headURL, incrURL string) (errCode string, err error) {
 	if worktreeID == "" {
-		return fmt.Errorf("worktree id is required")
+		return "", fmt.Errorf("worktree id is required")
 	}
-
-	var body bytes.Buffer
-	mw := multipart.NewWriter(&body)
-	if err := writePart(mw, "manifest", "manifest.json", "application/json", manifestBytes); err != nil {
-		return err
-	}
-	if err := writePart(mw, "head_commit", "headCommit.bundle", "application/octet-stream", headBytes); err != nil {
-		return err
-	}
-	if err := writePart(mw, "incremental", "incremental.bundle", "application/octet-stream", incrBytes); err != nil {
-		return err
-	}
-	if err := mw.Close(); err != nil {
-		return fmt.Errorf("close multipart: %w", err)
-	}
-
-	target := strings.TrimRight(spriteURL, "/") + "/sync/apply?repo=" + url.QueryEscape(worktreeID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, &body)
+	body, err := json.Marshal(map[string]string{
+		"repo":             worktreeID,
+		"manifest_url":     manifestURL,
+		"head_commit_url":  headURL,
+		"incremental_url":  incrURL,
+	})
 	if err != nil {
-		return err
+		return "", fmt.Errorf("marshal body: %w", err)
 	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
+
+	target := strings.TrimRight(spriteURL, "/") + "/sync/apply-from-urls"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
 	if authToken != "" {
 		req.Header.Set("Authorization", "Bearer "+authToken)
 	}
 
-	cli := m.client
+	cli := baseClient
 	if transport != nil {
-		cli = &http.Client{Transport: transport, Timeout: cli.Timeout}
+		cli = &http.Client{Transport: transport, Timeout: baseClient.Timeout}
 	}
 	resp, err := cli.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return fmt.Errorf("sprite apply %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	if resp.StatusCode == http.StatusNoContent {
+		return "", nil
 	}
-	return nil
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	var parsed struct {
+		Code  string `json:"code"`
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(respBody, &parsed)
+	if parsed.Code != "" {
+		return parsed.Code, fmt.Errorf("sprite apply-from-urls (%d, code=%s): %s", resp.StatusCode, parsed.Code, parsed.Error)
+	}
+	return "", fmt.Errorf("sprite apply-from-urls %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 }
 
-func (m *migrationClient) transferOwnership(ctx context.Context, worktreeID, newKind, newID, expectedOwnerID string) (worktreeView, error) {
-	body, err := json.Marshal(map[string]string{
-		"to_kind":           newKind,
-		"to_id":             newID,
-		"expected_owner_id": expectedOwnerID,
-	})
-	if err != nil {
-		return worktreeView{}, err
+// syncErrToHTTP maps errors from the sync.Server direct-call API to
+// HTTP responses. ErrWorktreeNotFound → 404, ErrOwnerMismatch → 409,
+// ErrForbidden → 403; everything else → 502.
+func syncErrToHTTP(w http.ResponseWriter, op string, err error) {
+	switch {
+	case errors.Is(err, clanksync.ErrWorktreeNotFound):
+		http.Error(w, op+": "+err.Error(), http.StatusNotFound)
+	case errors.Is(err, clanksync.ErrOwnerMismatch):
+		http.Error(w, op+": "+err.Error(), http.StatusConflict)
+	case errors.Is(err, clanksync.ErrForbidden):
+		http.Error(w, op+": "+err.Error(), http.StatusForbidden)
+	default:
+		http.Error(w, op+": "+err.Error(), http.StatusBadGateway)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		m.syncURL+"/v1/worktrees/"+url.PathEscape(worktreeID)+"/owner",
-		bytes.NewReader(body))
-	if err != nil {
-		return worktreeView{}, err
-	}
-	m.attachHeaders(req)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := m.client.Do(req)
-	if err != nil {
-		return worktreeView{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		bodyOut, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return worktreeView{}, &syncErr{Status: resp.StatusCode, Body: strings.TrimSpace(string(bodyOut))}
-	}
-	var out worktreeView
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return worktreeView{}, fmt.Errorf("decode transfer response: %w", err)
-	}
-	return out, nil
-}
-
-func (m *migrationClient) attachHeaders(req *http.Request) {
-	req.Header.Set(HeaderDeviceID, m.deviceID)
-	// TODO(coderabbit): forward Authorization to clank-sync once it stops accepting PermissiveAuth
-	// https://github.com/Acksell/clank/pull/16#discussion_r3213461996
-}
-
-// respond maps a sync-server error to an HTTP status surfaced to the
-// caller. 409 (concurrent migration) is preserved so the laptop UI
-// can suggest a retry.
-func (m *migrationClient) respond(w http.ResponseWriter, op string, err error) {
-	if se, ok := err.(*syncErr); ok {
-		http.Error(w, op+": "+se.Body, se.Status)
-		return
-	}
-	http.Error(w, op+": "+err.Error(), http.StatusBadGateway)
-}
-
-type syncErr struct {
-	Status int
-	Body   string
-}
-
-func (e *syncErr) Error() string { return fmt.Sprintf("sync %d: %s", e.Status, e.Body) }
-
-func writePart(mw *multipart.Writer, name, filename, contentType string, data []byte) error {
-	h := make(map[string][]string)
-	h["Content-Disposition"] = []string{fmt.Sprintf(`form-data; name=%q; filename=%q`, name, filename)}
-	h["Content-Type"] = []string{contentType}
-	pw, err := mw.CreatePart(h)
-	if err != nil {
-		return fmt.Errorf("create part %s: %w", name, err)
-	}
-	if _, err := pw.Write(data); err != nil {
-		return fmt.Errorf("write part %s: %w", name, err)
-	}
-	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
