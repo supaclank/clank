@@ -202,8 +202,9 @@ func TestIntegration_FlyIO_PingRouteIsReachable(t *testing.T) {
 // Skips if the row is missing in the store rather than cold-creating
 // a sprite — that name (`clank-host-local`) collides with what the
 // laptop daemon uses in production, and an integration test must
-// never plant a sprite there. To run this test you need to have
-// already provisioned via `make cloud-hub` (or equivalent).
+// never plant a sprite there. To run this test you need a populated
+// $CLANK_DIR/clank.db with a (local, flyio) host row — provision a
+// fly.io sprite first via clankd + clank CLI.
 //
 //	CLANK_DIR=$HOME/.clank-cloud go test -count=1 -run TestIntegration_FlyIO_RealSpriteEventsRoute -v ./internal/provisioner/flyio/...
 func TestIntegration_FlyIO_RealSpriteEventsRoute(t *testing.T) {
@@ -215,7 +216,7 @@ func TestIntegration_FlyIO_RealSpriteEventsRoute(t *testing.T) {
 	}
 	dbPath := filepath.Join(clankDir, "clank.db")
 	if _, err := os.Stat(dbPath); err != nil {
-		t.Skipf("real-sprite test: %s missing — run `make cloud-hub` once first to provision", dbPath)
+		t.Skipf("real-sprite test: %s missing — provision a fly.io sprite first (CLANK_DIR=$HOME/.clank-cloud clankd start --foreground, then `clank` to provision)", dbPath)
 	}
 	st, err := store.Open(dbPath)
 	if err != nil {
@@ -224,13 +225,13 @@ func TestIntegration_FlyIO_RealSpriteEventsRoute(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 
 	// Refuse to cold-create. If the row's missing, the sprite either
-	// doesn't exist yet (run cloud-hub first) or it exists upstream
+	// doesn't exist yet (provision one first) or it exists upstream
 	// without a row pointing at it (corrupt state — fix manually rather
 	// than letting a test claim it).
 	skipCtx, skipCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer skipCancel()
 	if _, err := st.GetHostByUser(skipCtx, "local", "flyio"); errors.Is(err, store.ErrHostNotFound) {
-		t.Skipf("real-sprite test: no (local, flyio) row in %s — run cloud-hub first; refusing to cold-create a sprite named clank-host-local (collides with laptop-mode production)", dbPath)
+		t.Skipf("real-sprite test: no (local, flyio) row in %s — provision a fly.io sprite first; refusing to cold-create a sprite named clank-host-local (collides with laptop-mode production)", dbPath)
 	} else if err != nil {
 		t.Fatalf("look up real sprite row: %v", err)
 	}
@@ -324,7 +325,7 @@ func TestIntegration_FlyIO_GatewayProxyToRealSpriteEvents(t *testing.T) {
 	}
 	dbPath := filepath.Join(clankDir, "clank.db")
 	if _, err := os.Stat(dbPath); err != nil {
-		t.Skipf("gateway-proxy test: %s missing — run `make cloud-hub` once first", dbPath)
+		t.Skipf("gateway-proxy test: %s missing — provision a fly.io sprite first (CLANK_DIR=$HOME/.clank-cloud clankd start --foreground, then `clank` to provision)", dbPath)
 	}
 	st, err := store.Open(dbPath)
 	if err != nil {
@@ -337,7 +338,7 @@ func TestIntegration_FlyIO_GatewayProxyToRealSpriteEvents(t *testing.T) {
 	skipCtx, skipCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer skipCancel()
 	if _, err := st.GetHostByUser(skipCtx, "local", "flyio"); errors.Is(err, store.ErrHostNotFound) {
-		t.Skipf("gateway-proxy test: no (local, flyio) row in %s — run cloud-hub first; refusing to cold-create clank-host-local", dbPath)
+		t.Skipf("gateway-proxy test: no (local, flyio) row in %s — provision a fly.io sprite first; refusing to cold-create clank-host-local", dbPath)
 	} else if err != nil {
 		t.Fatalf("look up real sprite row: %v", err)
 	}
