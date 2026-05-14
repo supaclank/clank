@@ -40,9 +40,10 @@ const (
 // validBlobs is the closed set of acceptable blob names. Any value
 // outside this set returns ErrInvalidPathComponent from KeyFor.
 var validBlobs = map[Blob]bool{
-	BlobHeadCommit:  true,
-	BlobIncremental: true,
-	BlobManifest:    true,
+	BlobHeadCommit:      true,
+	BlobIncremental:     true,
+	BlobManifest:        true,
+	BlobSessionManifest: true,
 }
 
 // ErrInvalidPathComponent is returned by KeyFor when one of the

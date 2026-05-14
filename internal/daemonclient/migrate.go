@@ -11,6 +11,34 @@ import (
 	"strings"
 )
 
+// migrateRespMax bounds gateway migration responses we accept on the
+// laptop side. 1 MiB is generous: a typical materializeResponse is a
+// few KB, but each session adds a presigned S3 URL (~600 bytes signed)
+// to SessionBlobURLs, so a worktree with hundreds of sessions can
+// realistically produce a 6 KB+ payload. Old code capped at 4 KB and
+// io.ReadAll would silently truncate mid-URL — JSON decode then failed
+// with "unexpected end of JSON input" and the user got no useful clue.
+//
+// readAllCapped errors when the response actually exceeds the cap so a
+// future regression surfaces loudly instead of producing the same
+// silent-truncation symptom.
+const migrateRespMax = 1 << 20
+
+// readAllCapped reads up to max+1 bytes and errors if the response was
+// at least max+1 bytes long. Use instead of `io.ReadAll(io.LimitReader)`
+// for HTTP responses where silent truncation would corrupt downstream
+// parsing.
+func readAllCapped(r io.Reader, max int64) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > max {
+		return nil, fmt.Errorf("response exceeds %d-byte cap (would truncate)", max)
+	}
+	return body, nil
+}
+
 // MigrateDirection enumerates the supported MigrateWorktree directions.
 type MigrateDirection string
 
@@ -29,14 +57,21 @@ type MigrateResponse struct {
 
 // MaterializeResponse mirrors the gateway's reply to POST
 // /v1/migrate/worktrees/{id}/materialize.
+//
+// SessionManifestURL + SessionBlobURLs are populated when the sprite
+// had opencode sessions in the worktree at materialize time; empty
+// otherwise. The laptop forwards them to its local clank-host's
+// /sync/sessions/apply-from-urls after applying the code bundles.
 type MaterializeResponse struct {
-	CheckpointID    string `json:"checkpoint_id"`
-	HeadCommit      string `json:"head_commit"`
-	ManifestURL     string `json:"manifest_url"`
-	HeadCommitURL   string `json:"head_commit_url"`
-	IncrementalURL  string `json:"incremental_url"`
-	MigrationToken  string `json:"migration_token"`
-	MigrationExpiry int64  `json:"migration_expiry"`
+	CheckpointID       string            `json:"checkpoint_id"`
+	HeadCommit         string            `json:"head_commit"`
+	ManifestURL        string            `json:"manifest_url"`
+	HeadCommitURL      string            `json:"head_commit_url"`
+	IncrementalURL     string            `json:"incremental_url"`
+	SessionManifestURL string            `json:"session_manifest_url,omitempty"`
+	SessionBlobURLs    map[string]string `json:"session_blob_urls,omitempty"`
+	MigrationToken     string            `json:"migration_token"`
+	MigrationExpiry    int64             `json:"migration_expiry"`
 }
 
 // MaterializeMigration is phase 1 of the migrate-back flow: the gateway
@@ -65,7 +100,7 @@ func (c *Client) MaterializeMigration(ctx context.Context, worktreeID string) (*
 		return nil, fmt.Errorf("materialize: %w", err)
 	}
 	defer resp.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	respBody, err := readAllCapped(resp.Body, migrateRespMax)
 	if err != nil {
 		return nil, fmt.Errorf("read materialize response: %w", err)
 	}
@@ -108,7 +143,7 @@ func (c *Client) CommitMigration(ctx context.Context, worktreeID, checkpointID, 
 		return nil, fmt.Errorf("commit: %w", err)
 	}
 	defer resp.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	respBody, err := readAllCapped(resp.Body, migrateRespMax)
 	if err != nil {
 		return nil, fmt.Errorf("read commit response: %w", err)
 	}
@@ -155,7 +190,7 @@ func (c *Client) MigrateWorktree(ctx context.Context, worktreeID string, directi
 		return nil, fmt.Errorf("migrate request: %w", err)
 	}
 	defer resp.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	respBody, err := readAllCapped(resp.Body, migrateRespMax)
 	if err != nil {
 		return nil, fmt.Errorf("read migrate response: %w", err)
 	}

@@ -26,6 +26,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	sprites "github.com/superfly/sprites-go"
 
+	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/pkg/provisioner"
 	"github.com/acksell/clank/pkg/provisioner/hoststore"
 	transportpkg "github.com/acksell/clank/pkg/provisioner/transport"
@@ -500,9 +501,18 @@ func readSidecar(stat fs.FS, sidecarPath string) (string, bool) {
 	return got, true
 }
 
-// ensureOpenCodeInstalled probes for opencode at /usr/local/bin and
-// installs it (via bun, npm fallback) when missing. The probe is the
-// fast-path on every cold cache miss; first-time install is 30-90s.
+// ensureOpenCodeInstalled ensures the sprite has opencode at the
+// EXACT version clank pins (agent.PinnedOpencodeVersion). Probe-and-
+// upgrade semantics: if the binary is present at the right version,
+// fast-path return; otherwise install/replace via bun (or npm
+// fallback) at the pinned version and verify.
+//
+// Why pin instead of "any opencode": opencode's export/import schema
+// is forward-incompatible across minor versions, so a sprite running
+// a different opencode than the laptop silently corrupts session
+// migrations. Pinning makes the version a deliberate, reviewable
+// constant in clank instead of "whatever was latest the day the
+// sprite was provisioned." See agent.PinnedOpencodeVersion's docstring.
 //
 // We symlink the bun-shipped JS wrapper rather than the platform
 // binary directly — the platform binary's dynamic linker may be
@@ -511,19 +521,55 @@ func readSidecar(stat fs.FS, sidecarPath string) (string, bool) {
 func (p *Provisioner) ensureOpenCodeInstalled(ctx context.Context, sprite *sprites.Sprite) error {
 	probeCtx, probeCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer probeCancel()
+	var versionOut []byte
 	probeErr := retryClosedConn(probeCtx, p.log, func() error {
-		return sprite.CommandContext(probeCtx, "/usr/local/bin/opencode", "--version").Run()
+		cmd := sprite.CommandContext(probeCtx, "/usr/local/bin/opencode", "--version")
+		var runErr error
+		versionOut, runErr = cmd.Output()
+		return runErr
 	})
 	if probeErr == nil {
-		return nil
+		installed := strings.TrimSpace(string(versionOut))
+		if installed == agent.PinnedOpencodeVersion {
+			return nil // happy path: present and pinned-version-matched
+		}
+		p.log.Printf("flyio provisioner: opencode on %s is %q, want %q — reinstalling at pinned version", sprite.Name(), installed, agent.PinnedOpencodeVersion)
 	}
 
 	installCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
-	const script = `set -e
+	script := strings.ReplaceAll(opencodeInstallScript, "__PINNED_VERSION__", agent.PinnedOpencodeVersion)
 
-echo "::: opencode install"
+	var out []byte
+	err := retryClosedConn(installCtx, p.log, func() error {
+		cmd := sprite.CommandContext(installCtx, "sh", "-c", script)
+		var runErr error
+		out, runErr = cmd.CombinedOutput()
+		return runErr
+	})
+	if err != nil {
+		trimmed := strings.TrimSpace(string(out))
+		if len(trimmed) > 8192 {
+			trimmed = "..." + trimmed[len(trimmed)-8192:]
+		}
+		return fmt.Errorf("install opencode (sprite=%s): %w\n--- install output ---\n%s\n--- end output ---", sprite.Name(), err, trimmed)
+	}
+	p.log.Printf("flyio provisioner: installed opencode %s on sprite %s", agent.PinnedOpencodeVersion, sprite.Name())
+	return nil
+}
+
+// opencodeInstallScript installs opencode at the pinned version
+// (substituted in for __PINNED_VERSION__ at call time), then
+// verifies the running `opencode --version` matches. Failing the
+// version check after install is a hard error: the caller would
+// otherwise believe ensureOpenCodeInstalled succeeded while a
+// different opencode is actually present.
+const opencodeInstallScript = `set -e
+
+PINNED="__PINNED_VERSION__"
+
+echo "::: opencode install (target version: $PINNED)"
 
 # Pick a package manager. Sprites have bun for the pre-installed
 # AI CLIs, so it should always be present.
@@ -531,11 +577,11 @@ PM=""
 if command -v bun >/dev/null 2>&1; then
   PM="bun"
   echo "::: using bun ($(bun --version))"
-  bun install -g opencode-ai 2>&1
+  bun install -g "opencode-ai@$PINNED" 2>&1
 elif command -v npm >/dev/null 2>&1; then
   PM="npm"
   echo "::: using npm ($(npm --version))"
-  npm install -g opencode-ai 2>&1
+  npm install -g "opencode-ai@$PINNED" 2>&1
 else
   echo "::: ERROR: neither bun nor npm available" >&2
   exit 1
@@ -615,28 +661,19 @@ if [ "$ACTUAL" != "/usr/local/bin/opencode" ]; then
   ln -sf "$ACTUAL" /usr/local/bin/opencode
 fi
 
-# Verify the canonical path one more time end-to-end.
+# Verify the canonical path one more time end-to-end AND that the
+# running version matches the pin. The latter is the
+# belt-and-suspenders check: bun should have installed exactly
+# what we asked for, but if registry routing or a cache hit served
+# something else we'd otherwise silently lie to the caller.
 echo "::: verifying /usr/local/bin/opencode"
-/usr/local/bin/opencode --version
-echo "::: done"
+ACTUAL_VERSION=$(/usr/local/bin/opencode --version | tr -d '[:space:]')
+if [ "$ACTUAL_VERSION" != "$PINNED" ]; then
+  echo "::: ERROR: installed version is $ACTUAL_VERSION, expected $PINNED" >&2
+  exit 1
+fi
+echo "::: done (version $ACTUAL_VERSION)"
 `
-	var out []byte
-	err := retryClosedConn(installCtx, p.log, func() error {
-		cmd := sprite.CommandContext(installCtx, "sh", "-c", script)
-		var runErr error
-		out, runErr = cmd.CombinedOutput()
-		return runErr
-	})
-	if err != nil {
-		trimmed := strings.TrimSpace(string(out))
-		if len(trimmed) > 8192 {
-			trimmed = "..." + trimmed[len(trimmed)-8192:]
-		}
-		return fmt.Errorf("install opencode (sprite=%s): %w\n--- install output ---\n%s\n--- end output ---", sprite.Name(), err, trimmed)
-	}
-	p.log.Printf("flyio provisioner: installed opencode on sprite %s", sprite.Name())
-	return nil
-}
 
 // ensureServiceRunning registers the clank-host Service, recreating it
 // if the persisted Cmd/Args drifted from what this daemon expects OR

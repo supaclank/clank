@@ -374,3 +374,264 @@ func TestOpen_MigrationV1ToV2_RenamesGitRemoteToWorktreeID(t *testing.T) {
 		t.Errorf("expected legacy git URL cleared, got %q", got.GitRef.WorktreeID)
 	}
 }
+
+// TestUpsertSession_TimeNowRoundTripsLosslessly is the regression
+// test for the modernc.org/sqlite monotonic-clock bug: a time.Now()
+// inserted via UpsertSession used to be stored as Go's String()
+// output (including the m=+... suffix), and ListSessions then
+// failed with "Scan error … unsupported Scan, storing driver.Value
+// type string into type *time.Time". After the v3 INTEGER-millis
+// migration the bug is structurally impossible — this test pins
+// that property so a future schema change can't silently
+// re-introduce it.
+func TestUpsertSession_TimeNowRoundTripsLosslessly(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t)
+	ctx := context.Background()
+
+	now := time.Now()
+	if err := s.UpsertSession(ctx, agent.SessionInfo{
+		ID:        "roundtrip",
+		Backend:   agent.BackendOpenCode,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+
+	got, err := s.GetSession(ctx, "roundtrip")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.CreatedAt.UnixMilli() != now.UnixMilli() {
+		t.Errorf("CreatedAt drift: got %d, want %d (delta %d ms)",
+			got.CreatedAt.UnixMilli(), now.UnixMilli(),
+			got.CreatedAt.UnixMilli()-now.UnixMilli())
+	}
+	// And the part that used to be impossible: ListSessions must
+	// scan every row without driver-level errors.
+	all, err := s.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v (this is the modernc bug we fixed)", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("ListSessions returned %d rows, want 1", len(all))
+	}
+}
+
+// TestOpen_MigrationV2ToV3_BackfillsTimeFormats hand-crafts a v2
+// database carrying every stringified-time format we observed on
+// production sprites, runs the v3 migration, and asserts every row
+// survived with a sensible millis value. The rows used to be
+// unreadable post-migration if the parser missed one of the formats.
+func TestOpen_MigrationV2ToV3_BackfillsTimeFormats(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "host.db")
+
+	rawDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rawDB.Exec(`
+		CREATE TABLE sessions (
+			id TEXT PRIMARY KEY,
+			external_id TEXT NOT NULL DEFAULT '',
+			backend TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'idle',
+			visibility TEXT NOT NULL DEFAULT '',
+			follow_up INTEGER NOT NULL DEFAULT 0,
+			project_dir TEXT NOT NULL DEFAULT '',
+			worktree_id TEXT NOT NULL DEFAULT '',
+			worktree_branch TEXT NOT NULL DEFAULT '',
+			prompt TEXT NOT NULL DEFAULT '',
+			title TEXT NOT NULL DEFAULT '',
+			ticket_id TEXT NOT NULL DEFAULT '',
+			agent TEXT NOT NULL DEFAULT '',
+			draft TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			last_read_at DATETIME
+		);
+		CREATE TABLE primary_agents (
+			backend TEXT NOT NULL,
+			project_dir TEXT NOT NULL DEFAULT '',
+			worktree_id TEXT NOT NULL DEFAULT '',
+			primary_agents_json TEXT NOT NULL DEFAULT '[]',
+			updated_at DATETIME NOT NULL,
+			PRIMARY KEY (backend, project_dir, worktree_id)
+		);
+		PRAGMA user_version = 2;
+	`); err != nil {
+		rawDB.Close()
+		t.Fatalf("seed v2 DB: %v", err)
+	}
+
+	// Seed one row per legacy format. The expected post-migration
+	// millis is the same time encoded six different ways (we use
+	// minute precision so the fixed-offset row's TZ math works out
+	// to the same instant as the UTC rows).
+	for _, c := range []struct{ id, raw string }{
+		{"monotonic-plus", "2026-05-12 14:55:00 +0000 UTC m=+1046.173573732"},
+		{"monotonic-minus", "2026-05-12 14:55:00 +0000 UTC m=-12.345"},
+		{"utc-named", "2026-05-12 14:55:00 +0000 UTC"},
+		{"fixed-offset", "2026-05-12 16:55:00 +0200 +0200"},
+		{"rfc3339nano", "2026-05-12T14:55:00.000000000Z"},
+		{"rfc3339", "2026-05-12T14:55:00Z"},
+	} {
+		if _, err := rawDB.Exec(
+			`INSERT INTO sessions(id, backend, created_at, updated_at) VALUES (?, 'opencode', ?, ?)`,
+			c.id, c.raw, c.raw,
+		); err != nil {
+			rawDB.Close()
+			t.Fatalf("seed %s: %v", c.id, err)
+		}
+	}
+	rawDB.Close()
+
+	// Re-open: v3 migration must run, every row must survive.
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("re-open after v3: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	wantMs := time.Date(2026, 5, 12, 14, 55, 0, 0, time.UTC).UnixMilli()
+	all, err := s.ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions after migration: %v", err)
+	}
+	if len(all) != 6 {
+		t.Fatalf("expected 6 sessions after v3, got %d", len(all))
+	}
+	for _, row := range all {
+		if row.CreatedAt.UnixMilli() != wantMs {
+			t.Errorf("row %s: CreatedAt = %d ms (%s), want %d ms",
+				row.ID, row.CreatedAt.UnixMilli(), row.CreatedAt.Format(time.RFC3339Nano), wantMs)
+		}
+	}
+}
+
+// TestOpen_MigrationV3_IdempotentOnReentry simulates the partial-failure
+// case CodeRabbit flagged: migrateSessionsToMillis commits, but the
+// outer migrate() exits before bumping user_version to 3 (e.g. helper #2
+// panics, process crashes, etc.). On next Open the v3 block re-runs;
+// sessions is now INTEGER, so CAST(created_at AS TEXT) produces digit
+// strings like "1716000000000". Pre-fix, parseLegacyTimeMs didn't
+// recognise that shape and fell back to ULID/now(), silently rewriting
+// the timestamps. After the fix it passes the integer through unchanged.
+func TestOpen_MigrationV3_IdempotentOnReentry(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "host.db")
+
+	// Open once → full v3 migration runs from a fresh DB.
+	s1, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	now := time.Now()
+	if err := s1.UpsertSession(context.Background(), agent.SessionInfo{
+		ID:        "01KREAZB05YBB9P6QVH0SRZC1F",
+		Backend:   agent.BackendOpenCode,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	wantCreatedMs := now.UnixMilli()
+	s1.Close()
+
+	// Hand-rewind user_version to 2 so the next Open re-runs v3 on a
+	// table whose schema is already INTEGER. This is the
+	// half-committed shape the CR comment is about.
+	rawDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	if _, err := rawDB.Exec(`PRAGMA user_version = 2`); err != nil {
+		rawDB.Close()
+		t.Fatalf("rewind user_version: %v", err)
+	}
+	rawDB.Close()
+
+	// Re-open. v3 reruns; parseLegacyTimeMs must recognise the digit
+	// strings produced by CAST(INTEGER AS TEXT) and pass them through.
+	s2, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("re-open after rewind: %v", err)
+	}
+	t.Cleanup(func() { s2.Close() })
+
+	got, err := s2.GetSession(context.Background(), "01KREAZB05YBB9P6QVH0SRZC1F")
+	if err != nil {
+		t.Fatalf("GetSession after re-entry: %v", err)
+	}
+	if got.CreatedAt.UnixMilli() != wantCreatedMs {
+		t.Errorf("timestamp rewritten by re-entry: got %d ms, want %d ms (delta %d)",
+			got.CreatedAt.UnixMilli(), wantCreatedMs,
+			got.CreatedAt.UnixMilli()-wantCreatedMs)
+	}
+}
+
+// TestOpen_MigrationV2ToV3_UnparseableTimeFallsBackToULID covers the
+// last-ditch path of the v3 migration: if a row's stored time is
+// completely unparseable (corruption, missing format, etc.) the
+// migration uses the row's ULID-encoded timestamp instead of
+// failing. Crucial property — one bad row must not block startup.
+func TestOpen_MigrationV2ToV3_UnparseableTimeFallsBackToULID(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "host.db")
+
+	rawDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seed a minimal v2 schema with one row whose timestamps are
+	// nonsense.
+	if _, err := rawDB.Exec(`
+		CREATE TABLE sessions (
+			id TEXT PRIMARY KEY, external_id TEXT NOT NULL DEFAULT '',
+			backend TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'idle',
+			visibility TEXT NOT NULL DEFAULT '', follow_up INTEGER NOT NULL DEFAULT 0,
+			project_dir TEXT NOT NULL DEFAULT '', worktree_id TEXT NOT NULL DEFAULT '',
+			worktree_branch TEXT NOT NULL DEFAULT '', prompt TEXT NOT NULL DEFAULT '',
+			title TEXT NOT NULL DEFAULT '', ticket_id TEXT NOT NULL DEFAULT '',
+			agent TEXT NOT NULL DEFAULT '', draft TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,
+			last_read_at DATETIME
+		);
+		CREATE TABLE primary_agents (
+			backend TEXT NOT NULL, project_dir TEXT NOT NULL DEFAULT '',
+			worktree_id TEXT NOT NULL DEFAULT '', primary_agents_json TEXT NOT NULL DEFAULT '[]',
+			updated_at DATETIME NOT NULL,
+			PRIMARY KEY (backend, project_dir, worktree_id)
+		);
+		INSERT INTO sessions(id, backend, created_at, updated_at)
+		    VALUES ('01KREAZB05YBB9P6QVH0SRZC1F', 'opencode', 'utter garbage', 'utter garbage');
+		PRAGMA user_version = 2;
+	`); err != nil {
+		rawDB.Close()
+		t.Fatalf("seed v2: %v", err)
+	}
+	rawDB.Close()
+
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("re-open: v3 migration must not fail on a single bad row: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	got, err := s.GetSession(context.Background(), "01KREAZB05YBB9P6QVH0SRZC1F")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	// ULID-derived fallback should produce a non-zero, sensible time.
+	if got.CreatedAt.IsZero() {
+		t.Errorf("CreatedAt was zero — fallback path didn't fire")
+	}
+	if got.CreatedAt.Year() < 2024 {
+		t.Errorf("CreatedAt %v looks pre-2024; ULID-decode probably failed", got.CreatedAt)
+	}
+}

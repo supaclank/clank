@@ -6,7 +6,6 @@ package hostsqlitedb
 
 import (
 	"database/sql"
-	"time"
 )
 
 type PrimaryAgent struct {
@@ -14,7 +13,7 @@ type PrimaryAgent struct {
 	ProjectDir        string
 	WorktreeID        string
 	PrimaryAgentsJson string
-	UpdatedAt         time.Time
+	UpdatedAt         int64
 }
 
 type Session struct {
@@ -32,7 +31,7 @@ type Session struct {
 	TicketID       string
 	Agent          string
 	Draft          string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastReadAt     sql.NullTime
+	CreatedAt      int64
+	UpdatedAt      int64
+	LastReadAt     sql.NullInt64
 }

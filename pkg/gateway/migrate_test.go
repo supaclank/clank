@@ -471,6 +471,25 @@ func TestMigrate_TwoPhaseRoundTrip(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+
+	// Session-leg sprite endpoints. This test seeds no sessions, so
+	// /sync/sessions/build returns an empty manifest and the gateway
+	// short-circuits the rest of the session leg. The /upload and
+	// /delete handlers are present for shape but should not fire.
+	spriteHandler.HandleFunc("POST /sync/sessions/build", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"build_id": newTestULID(),
+			"entries":  []any{},
+			"skipped":  []any{},
+		})
+	})
+	spriteHandler.HandleFunc("POST /sync/sessions/builds/{id}/upload", func(w http.ResponseWriter, _ *http.Request) {
+		// Should not be reached in this test (no sessions to upload).
+		w.WriteHeader(http.StatusNoContent)
+	})
+	spriteHandler.HandleFunc("DELETE /sync/sessions/builds/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
 	spriteHTTP := httptest.NewServer(spriteHandler)
 	defer spriteHTTP.Close()
 
@@ -806,6 +825,298 @@ func TestMigrate_RejectsWhenNoCheckpoint(t *testing.T) {
 	if resp.StatusCode != http.StatusConflict {
 		respBody, _ := io.ReadAll(resp.Body)
 		t.Fatalf("want 409 unsynced, got %d: %s", resp.StatusCode, respBody)
+	}
+}
+
+// TestMaterialize_SessionUploadFailure_DoesNotAdvancePointer pins the
+// ordering invariant flagged by CodeRabbit on PR #18: latest_synced_checkpoint
+// must not advance unless ALL of a checkpoint's artifacts (code + session
+// blobs) are durable in storage. Pre-fix, handleMigrateMaterialize ran
+// CommitCheckpoint (which advances the pointer) BEFORE the session leg,
+// so a session-upload failure would leave the pointer dangling at a
+// checkpoint whose session blobs were never uploaded.
+//
+// Test shape: push an initial laptop-owned checkpoint, migrate to sprite,
+// then drive /materialize against a sprite mock that REPORTS sessions but
+// FAILS on session-upload. Assert: materialize returns 502 and the
+// worktree's latest_synced_checkpoint still points at the original code-
+// only checkpoint, not at the newly-created sprite checkpoint.
+func TestMaterialize_SessionUploadFailure_DoesNotAdvancePointer(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	const (
+		userID = "user-A"
+		hostID = "sprite-host-X"
+	)
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	mem := storage.NewMemory()
+	defer mem.Close()
+
+	syncSrv, err := clanksync.NewServer(clanksync.Config{
+		Store:      st,
+		Storage:    mem,
+		HostStore:  st,
+		PresignTTL: 5 * time.Minute,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertHost(ctx, hoststore.Host{
+		ID: hostID, UserID: userID, Provider: "test",
+		Status: hoststore.HostStatusRunning, AuthToken: "host-bearer",
+		UpdatedAt: time.Now(), CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sprite mock with full code-leg + failing session-leg.
+	spriteRoot := t.TempDir()
+	type spriteBuild struct {
+		result *checkpoint.Result
+		repo   string
+	}
+	var (
+		spriteBuildsMu     sync.Mutex
+		spriteBuilds       = map[string]*spriteBuild{}
+		sessionUploadCalls int
+		sessionUploadMu    sync.Mutex
+	)
+	spriteHandler := http.NewServeMux()
+
+	// /sync/apply-from-urls: invoked by the to_remote leg to plant the
+	// initial sprite-side worktree from laptop's checkpoint.
+	spriteHandler.HandleFunc("POST /sync/apply-from-urls", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Repo           string `json:"repo"`
+			ManifestURL    string `json:"manifest_url"`
+			HeadCommitURL  string `json:"head_commit_url"`
+			IncrementalURL string `json:"incremental_url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		manifestBytes, err := fetchSpriteURL(r.Context(), body.ManifestURL)
+		if err != nil {
+			http.Error(w, "manifest: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		var manifest checkpoint.Manifest
+		if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		headBytes, err := fetchSpriteURL(r.Context(), body.HeadCommitURL)
+		if err != nil {
+			http.Error(w, "head: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		incrBytes, err := fetchSpriteURL(r.Context(), body.IncrementalURL)
+		if err != nil {
+			http.Error(w, "incr: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		target := filepath.Join(spriteRoot, body.Repo)
+		if err := checkpoint.Apply(r.Context(), target, &manifest, bytes.NewReader(headBytes), bytes.NewReader(incrBytes)); err != nil {
+			http.Error(w, "apply: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// /sync/build: code build (succeeds normally).
+	spriteHandler.HandleFunc("POST /sync/build", func(w http.ResponseWriter, r *http.Request) {
+		repo := r.URL.Query().Get("repo")
+		repoPath := filepath.Join(spriteRoot, repo)
+		builder := checkpoint.NewBuilder(repoPath, "sprite")
+		buildID := newTestULID()
+		res, err := builder.Build(r.Context(), buildID)
+		if err != nil {
+			http.Error(w, "build: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		spriteBuildsMu.Lock()
+		spriteBuilds[buildID] = &spriteBuild{result: res, repo: repo}
+		spriteBuildsMu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"build_id":           buildID,
+			"head_commit":        res.Manifest.HeadCommit,
+			"head_ref":           res.Manifest.HeadRef,
+			"index_tree":         res.Manifest.IndexTree,
+			"worktree_tree":      res.Manifest.WorktreeTree,
+			"incremental_commit": res.Manifest.IncrementalCommit,
+		})
+	})
+	spriteHandler.HandleFunc("POST /sync/builds/{id}/upload", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		var body struct {
+			CheckpointID      string `json:"checkpoint_id"`
+			ManifestPutURL    string `json:"manifest_put_url"`
+			HeadCommitPutURL  string `json:"head_commit_put_url"`
+			IncrementalPutURL string `json:"incremental_put_url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		spriteBuildsMu.Lock()
+		b := spriteBuilds[id]
+		spriteBuildsMu.Unlock()
+		if b == nil {
+			http.Error(w, "build not found", http.StatusNotFound)
+			return
+		}
+		b.result.Manifest.CheckpointID = body.CheckpointID
+		manifestBytes, err := b.result.Manifest.Marshal()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := putFile(r.Context(), body.HeadCommitPutURL, b.result.HeadCommitBundle); err != nil {
+			http.Error(w, "head: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		if err := putFile(r.Context(), body.IncrementalPutURL, b.result.IncrementalBundle); err != nil {
+			http.Error(w, "incr: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		if err := putBytes(r.Context(), body.ManifestPutURL, manifestBytes); err != nil {
+			http.Error(w, "manifest: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	spriteHandler.HandleFunc("DELETE /sync/builds/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// Session leg: build claims one synthetic session entry so the
+	// gateway enters the upload branch; upload returns 500. This is
+	// the failure injection.
+	spriteHandler.HandleFunc("POST /sync/sessions/build", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"build_id": newTestULID(),
+			"entries": []map[string]any{
+				{
+					"session_id":         "ses_test00000000000000000000000",
+					"external_id":        "ses_test00000000000000000000000",
+					"backend":            "opencode",
+					"blob_path":          "ses_test00000000000000000000000.json",
+					"blob_size_bytes":    1,
+					"blob_sha256_base64": "AA==",
+				},
+			},
+			"skipped": []any{},
+		})
+	})
+	spriteHandler.HandleFunc("POST /sync/sessions/builds/{id}/upload", func(w http.ResponseWriter, _ *http.Request) {
+		sessionUploadMu.Lock()
+		sessionUploadCalls++
+		sessionUploadMu.Unlock()
+		http.Error(w, "simulated session upload failure", http.StatusInternalServerError)
+	})
+	spriteHandler.HandleFunc("DELETE /sync/sessions/builds/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	spriteHTTP := httptest.NewServer(spriteHandler)
+	defer spriteHTTP.Close()
+
+	prov := &captureProvisioner{ref: provisioner.HostRef{HostID: hostID, URL: spriteHTTP.URL}}
+	gw, err := gateway.NewGateway(gateway.Config{
+		Provisioner: prov,
+		Sync:        syncSrv,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gwHTTP := httptest.NewServer(auth.Middleware(gw.Handler(), &auth.AllowAll{UserID: userID}))
+	defer gwHTTP.Close()
+
+	cli, err := syncclient.New(syncclient.Config{BaseURL: gwHTTP.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := setupRepo(t, ctx)
+	writeFile(t, repo, "f.txt", "v1\n")
+	gitMustRun(t, ctx, repo, "add", ".")
+	gitMustRun(t, ctx, repo, "commit", "-m", "v1")
+	worktreeID, err := cli.RegisterWorktree(ctx, "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cli.PushCheckpoint(ctx, worktreeID, repo); err != nil {
+		t.Fatal(err)
+	}
+
+	// to_remote migrate so sprite owns the worktree (precondition for
+	// materialize).
+	migrateBody, _ := json.Marshal(map[string]any{"direction": "to_remote", "confirm": true})
+	migReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		gwHTTP.URL+"/v1/migrate/worktrees/"+worktreeID, bytes.NewReader(migrateBody))
+	migResp, err := http.DefaultClient.Do(migReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	migResp.Body.Close()
+	if migResp.StatusCode != http.StatusOK {
+		t.Fatalf("to_remote migrate: %d", migResp.StatusCode)
+	}
+
+	// Snapshot the worktree pointer BEFORE materialize. This is the
+	// "original" checkpoint we expect to stay at after the failure.
+	wtBefore, err := st.GetWorktreeByID(ctx, worktreeID)
+	if err != nil {
+		t.Fatalf("read worktree before materialize: %v", err)
+	}
+	cpBefore := wtBefore.LatestSyncedCheckpoint
+	if cpBefore == "" {
+		t.Fatalf("precondition: worktree should have a synced checkpoint after to_remote")
+	}
+
+	// Trigger materialize. With the bug, CommitCheckpoint runs before
+	// the session leg; the session-upload 500 then leaves the worktree
+	// pointing at a checkpoint whose session blobs aren't in storage.
+	// With the fix, CommitCheckpoint never runs, so the pointer is
+	// unchanged.
+	matReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		gwHTTP.URL+"/v1/migrate/worktrees/"+worktreeID+"/materialize",
+		bytes.NewReader([]byte(`{"confirm":true}`)))
+	matResp, err := http.DefaultClient.Do(matReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer matResp.Body.Close()
+	if matResp.StatusCode != http.StatusBadGateway {
+		body, _ := io.ReadAll(matResp.Body)
+		t.Fatalf("materialize: want 502 (session upload failed), got %d: %s", matResp.StatusCode, body)
+	}
+
+	// Verify the sprite was asked to upload sessions at least once
+	// (otherwise the test is silently passing because the bug never
+	// triggered).
+	sessionUploadMu.Lock()
+	calls := sessionUploadCalls
+	sessionUploadMu.Unlock()
+	if calls < 1 {
+		t.Fatalf("session upload was not attempted; test setup wrong (got %d calls)", calls)
+	}
+
+	wtAfter, err := st.GetWorktreeByID(ctx, worktreeID)
+	if err != nil {
+		t.Fatalf("read worktree after materialize: %v", err)
+	}
+	if wtAfter.LatestSyncedCheckpoint != cpBefore {
+		t.Fatalf("worktree pointer advanced despite session-upload failure: before=%s after=%s",
+			cpBefore, wtAfter.LatestSyncedCheckpoint)
 	}
 }
 

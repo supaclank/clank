@@ -2,6 +2,13 @@
 -- NOT a migration — production migrations live in store.go's migrate()
 -- function. Mirror the post-migration shape of every host-side table
 -- here so sqlc can type-check queries against it.
+--
+-- Time columns are INTEGER (unix milliseconds since epoch) rather
+-- than DATETIME-as-TEXT. modernc.org/sqlite serialises time.Time
+-- parameters via t.String() — including the monotonic clock suffix
+-- (m=+...) for time.Now() values — which it then can't parse back.
+-- Storing as INTEGER avoids the round-trip bug entirely. See
+-- migrate() v3 for the backfill story.
 
 CREATE TABLE sessions (
     id              TEXT PRIMARY KEY,                  -- daemon-assigned ULID
@@ -18,9 +25,9 @@ CREATE TABLE sessions (
     ticket_id       TEXT NOT NULL DEFAULT '',
     agent           TEXT NOT NULL DEFAULT '',          -- primary agent slug
     draft           TEXT NOT NULL DEFAULT '',
-    created_at      DATETIME NOT NULL,
-    updated_at      DATETIME NOT NULL,
-    last_read_at    DATETIME
+    created_at      INTEGER NOT NULL,                  -- unix millis
+    updated_at      INTEGER NOT NULL,                  -- unix millis
+    last_read_at    INTEGER                            -- unix millis, null = unread
 );
 
 CREATE INDEX idx_sessions_external_id ON sessions(external_id);
@@ -36,6 +43,6 @@ CREATE TABLE primary_agents (
     project_dir         TEXT NOT NULL DEFAULT '',
     worktree_id         TEXT NOT NULL DEFAULT '',
     primary_agents_json TEXT NOT NULL DEFAULT '[]',
-    updated_at          DATETIME NOT NULL,
+    updated_at          INTEGER NOT NULL,              -- unix millis
     PRIMARY KEY (backend, project_dir, worktree_id)
 );

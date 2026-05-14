@@ -1,9 +1,16 @@
 // Integration tests for the OpenCode backend against a real opencode server.
 //
-// These tests require `opencode` to be installed and will start a real server.
-// They talk to a real LLM, so they are slow and non-deterministic.
+// These tests require `opencode` to be installed and they hit a real LLM
+// (so they need API credentials in the test environment), they are slow
+// (minutes), and they are non-deterministic. They are gated behind the
+// `integration` build tag so the default `go test ./...` skips them.
 //
 // Run with: go test -v -tags integration -run TestIntegration ./internal/agent/
+//
+// Per CLAUDE.md "NEVER mock dependencies": these complement the
+// fake-HTTP unit tests in opencode_test.go — those verify our wire
+// handling, these verify the wire handling against the real opencode
+// binary so we catch protocol drift across opencode releases.
 //
 //go:build integration
 
@@ -41,7 +48,6 @@ func startRealOpenCodeServer(t *testing.T, projectDir string) (url string, clean
 		t.Fatalf("start opencode serve: %v", err)
 	}
 
-	// Wait for the URL to appear on stdout.
 	urlCh := make(chan string, 1)
 	go func() {
 		scanner := bufio.NewScanner(stdout)
@@ -50,7 +56,6 @@ func startRealOpenCodeServer(t *testing.T, projectDir string) (url string, clean
 			t.Logf("[opencode stdout] %s", line)
 			if idx := strings.Index(line, "http://"); idx >= 0 {
 				urlCh <- strings.TrimSpace(line[idx:])
-				// Keep draining stdout so the process doesn't block.
 				for scanner.Scan() {
 					t.Logf("[opencode stdout] %s", scanner.Text())
 				}
@@ -84,10 +89,11 @@ func startRealOpenCodeServer(t *testing.T, projectDir string) (url string, clean
 	return url, cleanup
 }
 
-// TestIntegrationOpenCodeBackend_SendPrompt starts a real opencode server,
-// creates a backend, sends a trivial prompt, and collects all events until
-// the session goes idle. This is the most basic end-to-end test.
-func TestIntegrationOpenCodeBackend_SendPrompt(t *testing.T) {
+// TestIntegrationOpenCodeBackend_OpenAndSend starts a real opencode
+// server, opens a new session via OpenAndSend, and confirms events
+// stream until the session goes idle. Smallest end-to-end test —
+// proves the SDK and SSE wiring work against a real opencode.
+func TestIntegrationOpenCodeBackend_OpenAndSend(t *testing.T) {
 	projectDir := findProjectRoot(t)
 	serverURL, cleanup := startRealOpenCodeServer(t, projectDir)
 	defer cleanup()
@@ -97,20 +103,13 @@ func TestIntegrationOpenCodeBackend_SendPrompt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	req := StartRequest{
-		Backend:    BackendOpenCode,
-		ProjectDir: projectDir,
-		Prompt:     "Say exactly: hello world. Nothing else.",
-	}
-
-	if err := backend.Start(ctx, req); err != nil {
-		t.Fatalf("Start: %v", err)
+	if err := backend.OpenAndSend(ctx, SendMessageOpts{Text: "Say exactly: hello world. Nothing else."}); err != nil {
+		t.Fatalf("OpenAndSend: %v", err)
 	}
 	defer backend.Stop()
 
 	t.Logf("session started, sessionID=%s, status=%s", backend.SessionID(), backend.Status())
 
-	// Collect events until idle or timeout.
 	events := backend.Events()
 	var collected []Event
 	deadline := time.After(90 * time.Second)
@@ -125,7 +124,6 @@ func TestIntegrationOpenCodeBackend_SendPrompt(t *testing.T) {
 			collected = append(collected, evt)
 			logEvent(t, evt)
 
-			// Stop once we see idle.
 			if evt.Type == EventStatusChange {
 				if data, ok := evt.Data.(StatusChangeData); ok && data.NewStatus == StatusIdle {
 					t.Logf("session went idle after %d events", len(collected))
@@ -139,7 +137,6 @@ func TestIntegrationOpenCodeBackend_SendPrompt(t *testing.T) {
 	}
 
 done:
-	// Summarize what we got.
 	t.Logf("\n=== Event Summary (%d events) ===", len(collected))
 	counts := map[EventType]int{}
 	for _, e := range collected {
@@ -149,7 +146,6 @@ done:
 		t.Logf("  %s: %d", typ, n)
 	}
 
-	// Basic assertions.
 	if len(collected) == 0 {
 		t.Errorf("received 0 events, expected at least status changes + text")
 	}
@@ -158,8 +154,10 @@ done:
 	}
 }
 
-// TestIntegrationOpenCodeBackend_EventTypes sends a prompt and checks that
-// we receive the expected event types with properly typed Data payloads.
+// TestIntegrationOpenCodeBackend_EventTypes verifies that events
+// from a real opencode arrive with the expected typed Data payloads.
+// Catches wire-protocol drift between opencode releases that the
+// fake-server unit tests (TestOpenCodeBackendSSEEventTypes) cannot.
 func TestIntegrationOpenCodeBackend_EventTypes(t *testing.T) {
 	projectDir := findProjectRoot(t)
 	serverURL, cleanup := startRealOpenCodeServer(t, projectDir)
@@ -170,14 +168,8 @@ func TestIntegrationOpenCodeBackend_EventTypes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	req := StartRequest{
-		Backend:    BackendOpenCode,
-		ProjectDir: projectDir,
-		Prompt:     "Say exactly: test123. Nothing else.",
-	}
-
-	if err := backend.Start(ctx, req); err != nil {
-		t.Fatalf("Start: %v", err)
+	if err := backend.OpenAndSend(ctx, SendMessageOpts{Text: "Say exactly: test123. Nothing else."}); err != nil {
+		t.Fatalf("OpenAndSend: %v", err)
 	}
 	defer backend.Stop()
 
@@ -203,7 +195,6 @@ func TestIntegrationOpenCodeBackend_EventTypes(t *testing.T) {
 	}
 
 done:
-	// Check that all Data payloads are properly typed (not map[string]interface{}).
 	for i, evt := range collected {
 		switch evt.Type {
 		case EventStatusChange:
@@ -229,7 +220,6 @@ done:
 		}
 	}
 
-	// Check we got at least some text content.
 	var totalText string
 	for _, evt := range collected {
 		if evt.Type == EventPartUpdate {
@@ -244,8 +234,10 @@ done:
 	}
 }
 
-// TestIntegrationOpenCodeBackend_FollowUp sends a prompt, waits for idle,
-// then sends a follow-up message. This tests the SendMessage path.
+// TestIntegrationOpenCodeBackend_FollowUp sends a prompt, waits for
+// idle, then sends a follow-up via Send. Verifies the in-session
+// continuation path against real opencode (unit tests cover the
+// same wire shape via fakes).
 func TestIntegrationOpenCodeBackend_FollowUp(t *testing.T) {
 	projectDir := findProjectRoot(t)
 	serverURL, cleanup := startRealOpenCodeServer(t, projectDir)
@@ -256,29 +248,20 @@ func TestIntegrationOpenCodeBackend_FollowUp(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
-	req := StartRequest{
-		Backend:    BackendOpenCode,
-		ProjectDir: projectDir,
-		Prompt:     "Say exactly: first. Nothing else.",
-	}
-
-	if err := backend.Start(ctx, req); err != nil {
-		t.Fatalf("Start: %v", err)
+	if err := backend.OpenAndSend(ctx, SendMessageOpts{Text: "Say exactly: first. Nothing else."}); err != nil {
+		t.Fatalf("OpenAndSend: %v", err)
 	}
 	defer backend.Stop()
 
 	events := backend.Events()
 
-	// Wait for first idle.
 	waitForIdle(t, events, 90*time.Second)
 	t.Logf("first prompt completed, sending follow-up")
 
-	// Send follow-up.
-	if err := backend.SendMessage(ctx, SendMessageOpts{Text: "Now say exactly: second. Nothing else."}); err != nil {
-		t.Fatalf("SendMessage: %v", err)
+	if err := backend.Send(ctx, SendMessageOpts{Text: "Now say exactly: second. Nothing else."}); err != nil {
+		t.Fatalf("Send: %v", err)
 	}
 
-	// Wait for second idle.
 	var followUpEvents []Event
 	deadline := time.After(90 * time.Second)
 	for {
@@ -310,13 +293,10 @@ done:
 
 func findProjectRoot(t *testing.T) string {
 	t.Helper()
-	// We're in internal/agent, project root is two levels up.
-	// But to be safe, check for go.mod.
 	dir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-	// Walk up until we find go.mod.
 	for {
 		if _, err := os.Stat(dir + "/go.mod"); err == nil {
 			return dir

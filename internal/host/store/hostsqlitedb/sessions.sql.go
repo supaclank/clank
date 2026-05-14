@@ -8,7 +8,6 @@ package hostsqlitedb
 import (
 	"context"
 	"database/sql"
-	"time"
 )
 
 const deleteSession = `-- name: DeleteSession :exec
@@ -141,6 +140,53 @@ func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
 	return items, nil
 }
 
+const listSessionsByWorktree = `-- name: ListSessionsByWorktree :many
+SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions WHERE worktree_id = ? ORDER BY updated_at DESC
+`
+
+// Used by session-sync to enumerate sessions in a worktree for export.
+// worktree_id is the clank-sync ULID; cross-machine stable identity.
+func (q *Queries) ListSessionsByWorktree(ctx context.Context, worktreeID string) ([]Session, error) {
+	rows, err := q.db.QueryContext(ctx, listSessionsByWorktree, worktreeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Session
+	for rows.Next() {
+		var i Session
+		if err := rows.Scan(
+			&i.ID,
+			&i.ExternalID,
+			&i.Backend,
+			&i.Status,
+			&i.Visibility,
+			&i.FollowUp,
+			&i.ProjectDir,
+			&i.WorktreeID,
+			&i.WorktreeBranch,
+			&i.Prompt,
+			&i.Title,
+			&i.TicketID,
+			&i.Agent,
+			&i.Draft,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.LastReadAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const searchSessions = `-- name: SearchSessions :many
 SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions
 WHERE
@@ -224,7 +270,7 @@ type UpsertPrimaryAgentsParams struct {
 	ProjectDir        string
 	WorktreeID        string
 	PrimaryAgentsJson string
-	UpdatedAt         time.Time
+	UpdatedAt         int64
 }
 
 func (q *Queries) UpsertPrimaryAgents(ctx context.Context, arg UpsertPrimaryAgentsParams) error {
@@ -277,9 +323,9 @@ type UpsertSessionParams struct {
 	TicketID       string
 	Agent          string
 	Draft          string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastReadAt     sql.NullTime
+	CreatedAt      int64
+	UpdatedAt      int64
+	LastReadAt     sql.NullInt64
 }
 
 func (q *Queries) UpsertSession(ctx context.Context, arg UpsertSessionParams) error {

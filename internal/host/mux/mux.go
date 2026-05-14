@@ -29,6 +29,11 @@ type Mux struct {
 	// build_id. See internal/host/mux/sync.go for the three-step flow
 	// (build → upload → delete) that uses this.
 	builds *spriteBuildStore
+
+	// sessionBuilds tracks in-progress session-export builds keyed by
+	// build_id. Separate from `builds` so build_id namespaces don't
+	// collide between code and session legs. See sessions_sync.go.
+	sessionBuilds *spriteSessionBuildStore
 }
 
 // New constructs a Mux. log may be nil.
@@ -39,7 +44,7 @@ func New(svc *host.Service, lg *log.Logger) *Mux {
 	if lg == nil {
 		lg = log.Default()
 	}
-	return &Mux{svc: svc, log: lg, builds: newSpriteBuildStore()}
+	return &Mux{svc: svc, log: lg, builds: newSpriteBuildStore(), sessionBuilds: newSpriteSessionBuildStore()}
 }
 
 // SetAuthToken configures the bearer-token middleware. When non-empty,
@@ -72,6 +77,13 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// /sessions/{id}/events stays for host-client back-compat.
 	mx.HandleFunc("GET /events", m.handleEvents)
 	mx.HandleFunc("GET /backends", m.handleListBackends)
+	// GET /software-manifest: returns versions of every relevant
+	// CLI tool installed on this host (opencode today, claude /
+	// clank-host reserved for future). Used by the laptop CLI to
+	// compare versions across hosts before a migration so we can
+	// refuse mismatched majors/minors early — see
+	// agent.AssertOpencodeVersionsCompatible.
+	mx.HandleFunc("GET /software-manifest", m.handleSoftwareManifest)
 	mx.HandleFunc("GET /agents", m.handleListAgents)
 	mx.HandleFunc("GET /models", m.handleListModels)
 	// /discover is the legacy host-client path; /sessions/discover
@@ -128,6 +140,23 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("POST /sync/build", m.handleSyncBuild)
 	mx.HandleFunc("POST /sync/builds/{id}/upload", m.handleSyncBuildsUpload)
 	mx.HandleFunc("DELETE /sync/builds/{id}", m.handleSyncBuildsDelete)
+
+	// Session-sync leg, mirrors the code-sync trio. See sessions_sync.go.
+	//
+	//   - POST /sync/sessions/build              — quiesce + export sessions for a
+	//                                              worktree; returns manifest entries
+	//                                              + a build_id.
+	//   - POST /sync/sessions/builds/{id}/upload — PUT per-session blobs + the
+	//                                              session-manifest.json to the
+	//                                              presigned URLs in the body.
+	//   - DELETE /sync/sessions/builds/{id}      — idempotent cleanup.
+	//   - POST /sync/sessions/apply-from-urls    — destination side: fetch session
+	//                                              blobs by URL and install them via
+	//                                              Service.RegisterImportedSession.
+	mx.HandleFunc("POST /sync/sessions/build", m.handleSyncSessionsBuild)
+	mx.HandleFunc("POST /sync/sessions/builds/{id}/upload", m.handleSyncSessionsBuildsUpload)
+	mx.HandleFunc("DELETE /sync/sessions/builds/{id}", m.handleSyncSessionsBuildsDelete)
+	mx.HandleFunc("POST /sync/sessions/apply-from-urls", m.handleSyncSessionsApplyFromURLs)
 }
 
 // --- helpers ---

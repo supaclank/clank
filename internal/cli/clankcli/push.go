@@ -33,6 +33,7 @@ func pushCmd() *cobra.Command {
 		display  string
 		repoPath string
 		alsoMig  bool
+		timing   bool
 	)
 	cmd := &cobra.Command{
 		Use:   "push [repo-path]",
@@ -95,6 +96,9 @@ is no longer the owner — to resume work locally, run
 			}
 			ctx := context.Background()
 
+			timer := newPhaseTimer(timing || envTrue("CLANK_TIMING"))
+			defer timer.Summary(cmd.ErrOrStderr())
+
 			worktreeID, err := agent.ReadLocalWorktreeID(absRepo)
 			if err != nil {
 				return fmt.Errorf("load cached worktree id: %w", err)
@@ -104,7 +108,9 @@ is no longer the owner — to resume work locally, run
 				if name == "" {
 					name = filepath.Base(absRepo)
 				}
+				done := timer.Start("register worktree")
 				worktreeID, err = cli.RegisterWorktree(ctx, name)
+				done()
 				if err != nil {
 					return fmt.Errorf("register worktree: %w", err)
 				}
@@ -114,7 +120,33 @@ is no longer the owner — to resume work locally, run
 				fmt.Fprintf(cmd.OutOrStdout(), "registered worktree %s as %q\n", worktreeID, name)
 			}
 
+			// When --migrate is set, run the pre-flight check (version
+			// compatibility + reachability of remote clank-host) BEFORE
+			// PushCheckpoint. Otherwise a sprite that's unreachable or
+			// has the wrong opencode version makes us waste a full
+			// checkpoint upload first. Constructed clients are reused
+			// downstream for the session leg + migrate call.
+			var dc, localCli *daemonclient.Client
+			if alsoMig {
+				dc, err = daemonclient.NewRemoteClient()
+				if err != nil {
+					return fmt.Errorf("remote client: %w", err)
+				}
+				localCli, err = daemonclient.NewLocalClient()
+				if err != nil {
+					return fmt.Errorf("local daemon client: %w", err)
+				}
+				done := timer.Start("version compatibility check")
+				err = assertOpencodeCompatible(cmd.Context(), cmd.ErrOrStderr(), localCli, dc)
+				done()
+				if err != nil {
+					return err
+				}
+			}
+
+			done := timer.Start("push checkpoint")
 			res, err := cli.PushCheckpoint(ctx, worktreeID, absRepo)
+			done()
 			if err != nil {
 				return fmt.Errorf("push checkpoint: %w", err)
 			}
@@ -122,18 +154,21 @@ is no longer the owner — to resume work locally, run
 				res.CheckpointID, shortSHA(res.Manifest.HeadCommit))
 
 			if alsoMig {
-				// Migration goes directly to the active remote's gateway,
-				// not the local daemon: the laptop daemon has Sync=nil
-				// by design and would return 503. NewRemoteClient reads
-				// the active remote's gateway_url + access_token — same
-				// fields the checkpoint upload above already targets.
-				dc, err := daemonclient.NewRemoteClient()
-				if err != nil {
-					return fmt.Errorf("remote client: %w", err)
+				// Session leg — ride the session blobs into the same
+				// checkpoint so code + sessions transfer atomically. If
+				// pushSessionLeg fails the migration aborts before
+				// ownership flips (TransferOwnership runs on the
+				// gateway side after the sprite-apply succeeds for
+				// BOTH legs).
+				if err := pushSessionLeg(cmd, timer, worktreeID, res.CheckpointID, cli); err != nil {
+					return fmt.Errorf("push session leg: %w", err)
 				}
+
 				mctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 				defer cancel()
+				done = timer.Start("migrate worktree (gateway)")
 				mres, err := dc.MigrateWorktree(mctx, worktreeID, daemonclient.MigrateToRemote)
+				done()
 				if err != nil {
 					return fmt.Errorf("migrate to remote: %w", err)
 				}
@@ -147,6 +182,7 @@ is no longer the owner — to resume work locally, run
 	cmd.Flags().StringVar(&token, "token", envOrDefault("CLANK_SYNC_TOKEN", ""), "bearer token for the gateway (default: active remote's access_token)")
 	cmd.Flags().StringVar(&display, "display-name", "", "display name for newly-registered worktrees (default: basename of repo-path)")
 	cmd.Flags().BoolVar(&alsoMig, "migrate", false, "after pushing, also transfer worktree ownership to the remote host")
+	cmd.Flags().BoolVar(&timing, "timing", false, "print a per-phase timing breakdown to stderr (also enabled by CLANK_TIMING=1)")
 	return cmd
 }
 

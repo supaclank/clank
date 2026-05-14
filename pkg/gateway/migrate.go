@@ -131,6 +131,18 @@ func (g *Gateway) migrateToRemote(w http.ResponseWriter, r *http.Request, wt cla
 		return
 	}
 
+	// Session leg — pushes opencode session blobs to the sprite so the
+	// user can continue conversations after the worktree migrates. If
+	// the checkpoint has no session manifest (pre-feature checkpoints
+	// or empty worktrees), this is a no-op. Failures here block the
+	// ownership transfer so the user can retry without ending up with
+	// a half-migrated worktree (code applied, sessions missing).
+	if err := g.pushSessionsToSprite(r.Context(), cli, hostRef, wt, userID); err != nil {
+		g.log.Printf("gateway migrate: apply sessions to sprite: %v", err)
+		http.Error(w, "apply sessions to sprite: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
 	// Empty expectedOwnerID — for local→remote we don't disambiguate
 	// laptops anymore; ownership is per-user. TransferOwnership still
 	// uses optimistic concurrency keyed on the (kind, id) tuple.

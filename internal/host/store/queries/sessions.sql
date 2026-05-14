@@ -7,6 +7,11 @@ SELECT * FROM sessions WHERE external_id = ? LIMIT 1;
 -- name: ListSessions :many
 SELECT * FROM sessions ORDER BY updated_at DESC;
 
+-- name: ListSessionsByWorktree :many
+-- Used by session-sync to enumerate sessions in a worktree for export.
+-- worktree_id is the clank-sync ULID; cross-machine stable identity.
+SELECT * FROM sessions WHERE worktree_id = ? ORDER BY updated_at DESC;
+
 -- name: SearchSessions :many
 -- Filtered list. Empty filter values are treated as "no filter" by
 -- the query (NULL/empty matches anything for that column). Visibility

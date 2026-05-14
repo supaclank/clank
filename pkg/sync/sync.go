@@ -84,6 +84,7 @@ func NewServer(cfg Config, lg *log.Logger) (*Server, error) {
 //	POST /v1/checkpoints                  — create checkpoint metadata, returns presigned PUT URLs
 //	POST /v1/checkpoints/{id}/commit      — confirm upload, advance latest_synced_checkpoint
 //	GET  /v1/checkpoints/{id}/download    — return presigned GET URLs (gateway uses on migration)
+//	POST /v1/checkpoints/{id}/sessions    — mint presigned PUT URLs for per-session export blobs + session-manifest.json
 func (s *Server) Handler() http.Handler {
 	mx := http.NewServeMux()
 	mx.HandleFunc("GET /v1/health", s.handleHealth)
@@ -94,6 +95,7 @@ func (s *Server) Handler() http.Handler {
 	mx.HandleFunc("POST /v1/checkpoints", s.handleCreateCheckpoint)
 	mx.HandleFunc("POST /v1/checkpoints/{id}/commit", s.handleCommitCheckpoint)
 	mx.HandleFunc("GET /v1/checkpoints/{id}/download", s.handleDownloadCheckpoint)
+	mx.HandleFunc("POST /v1/checkpoints/{id}/sessions", s.handleSessionPresign)
 	return mx
 }
 

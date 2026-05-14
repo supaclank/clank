@@ -186,7 +186,11 @@ func TestPersistence_StaleBusyStatusNormalizedOnInit(t *testing.T) {
 		if got.Status != agent.StatusIdle {
 			t.Errorf("session %s: status = %q, want idle (sweep should have normalized)", r.id, got.Status)
 		}
-		if !got.UpdatedAt.Equal(r.updatedAt) {
+		// host.db v3+ stores times as unix millis (modernc-bug
+		// workaround), so we compare at ms precision rather than
+		// nanos. The test's intent — "the sweep didn't bump
+		// UpdatedAt" — survives this loosening.
+		if got.UpdatedAt.UnixMilli() != r.updatedAt.UnixMilli() {
 			t.Errorf("session %s: UpdatedAt bumped during sweep (would hoist all recovered sessions to top of inbox): before=%v after=%v", r.id, r.updatedAt, got.UpdatedAt)
 		}
 	}

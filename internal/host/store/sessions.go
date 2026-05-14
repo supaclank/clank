@@ -56,6 +56,25 @@ func (s *Store) ListSessions(ctx context.Context) ([]agent.SessionInfo, error) {
 	return out, nil
 }
 
+// ListSessionsByWorktree returns every persisted session for the given
+// worktree ID, newest-updated first. Empty worktreeID returns an empty
+// slice (rather than every session in the DB) — callers operating
+// without a worktree context should use ListSessions instead.
+func (s *Store) ListSessionsByWorktree(ctx context.Context, worktreeID string) ([]agent.SessionInfo, error) {
+	if worktreeID == "" {
+		return []agent.SessionInfo{}, nil
+	}
+	rows, err := s.q.ListSessionsByWorktree(ctx, worktreeID)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions by worktree %s: %w", worktreeID, err)
+	}
+	out := make([]agent.SessionInfo, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, sessionFromRow(r))
+	}
+	return out, nil
+}
+
 // SearchParams mirrors the hub-side SearchParams (kept on agent.).
 // Empty Q / Visibility means no filter for that field. Zero Since
 // or Until means unbounded. Limit ≤ 0 means a default cap.
@@ -78,11 +97,15 @@ func (s *Store) SearchSessions(ctx context.Context, p SearchParams) ([]agent.Ses
 		Visibility: string(p.Visibility),
 		Lim:        limit,
 	}
+	// Since/Until columns are unix millis post-v3 migration; sqlc
+	// types them as interface{} (because the SQL is "@since IS NULL
+	// OR …" which sqlc can't infer). Pass int64 when present, nil
+	// otherwise so the NULL-check short-circuits inside SQLite.
 	if !p.Since.IsZero() {
-		args.Since = p.Since
+		args.Since = p.Since.UnixMilli()
 	}
 	if !p.Until.IsZero() {
-		args.Until = p.Until
+		args.Until = p.Until.UnixMilli()
 	}
 	rows, err := s.q.SearchSessions(ctx, args)
 	if err != nil {
@@ -112,9 +135,9 @@ func (s *Store) UpsertSession(ctx context.Context, info agent.SessionInfo) error
 	if info.FollowUp {
 		followUp = 1
 	}
-	var lastReadAt sql.NullTime
+	var lastReadAt sql.NullInt64
 	if !info.LastReadAt.IsZero() {
-		lastReadAt = sql.NullTime{Time: info.LastReadAt, Valid: true}
+		lastReadAt = sql.NullInt64{Int64: timeToMs(info.LastReadAt), Valid: true}
 	}
 	return s.q.UpsertSession(ctx, hostsqlitedb.UpsertSessionParams{
 		ID:             info.ID,
@@ -131,8 +154,8 @@ func (s *Store) UpsertSession(ctx context.Context, info agent.SessionInfo) error
 		TicketID:       info.TicketID,
 		Agent:          info.Agent,
 		Draft:          info.Draft,
-		CreatedAt:      createdAt,
-		UpdatedAt:      now,
+		CreatedAt:      timeToMs(createdAt),
+		UpdatedAt:      timeToMs(now),
 		LastReadAt:     lastReadAt,
 	})
 }
@@ -181,9 +204,9 @@ func (s *Store) UpsertPrimaryAgents(ctx context.Context, backend agent.BackendTy
 	return s.q.UpsertPrimaryAgents(ctx, hostsqlitedb.UpsertPrimaryAgentsParams{
 		Backend:           string(backend),
 		ProjectDir:        ref.LocalPath,
-		WorktreeID:     ref.WorktreeID,
+		WorktreeID:        ref.WorktreeID,
 		PrimaryAgentsJson: string(data),
-		UpdatedAt:         time.Now(),
+		UpdatedAt:         time.Now().UnixMilli(),
 	})
 }
 
@@ -205,11 +228,11 @@ func sessionFromRow(r hostsqlitedb.Session) agent.SessionInfo {
 		TicketID:  r.TicketID,
 		Agent:     r.Agent,
 		Draft:     r.Draft,
-		CreatedAt: r.CreatedAt,
-		UpdatedAt: r.UpdatedAt,
+		CreatedAt: msToTime(r.CreatedAt),
+		UpdatedAt: msToTime(r.UpdatedAt),
 	}
 	if r.LastReadAt.Valid {
-		info.LastReadAt = r.LastReadAt.Time
+		info.LastReadAt = msToTime(r.LastReadAt.Int64)
 	}
 	return info
 }

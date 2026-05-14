@@ -14,6 +14,9 @@ type Querier interface {
 	GetSession(ctx context.Context, id string) (Session, error)
 	ListPrimaryAgents(ctx context.Context, arg ListPrimaryAgentsParams) (string, error)
 	ListSessions(ctx context.Context) ([]Session, error)
+	// Used by session-sync to enumerate sessions in a worktree for export.
+	// worktree_id is the clank-sync ULID; cross-machine stable identity.
+	ListSessionsByWorktree(ctx context.Context, worktreeID string) ([]Session, error)
 	// Filtered list. Empty filter values are treated as "no filter" by
 	// the query (NULL/empty matches anything for that column). Visibility
 	// filter is exact match.

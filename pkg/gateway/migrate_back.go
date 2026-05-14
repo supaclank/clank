@@ -29,14 +29,21 @@ const migrationTokenTTL = 10 * time.Minute
 // POST /v1/migrate/worktrees/{id}/materialize. The CLI feeds these
 // fields back into the commit call after downloading + applying the
 // checkpoint locally.
+//
+// SessionManifestURL + SessionBlobURLs ride alongside the code URLs
+// when the sprite had opencode sessions in the worktree. The laptop
+// fetches them after the code apply and hands them to its local
+// clank-host's /sync/sessions/apply-from-urls.
 type materializeResponse struct {
-	CheckpointID    string `json:"checkpoint_id"`
-	HeadCommit      string `json:"head_commit"`
-	ManifestURL     string `json:"manifest_url"`
-	HeadCommitURL   string `json:"head_commit_url"`
-	IncrementalURL  string `json:"incremental_url"`
-	MigrationToken  string `json:"migration_token"`
-	MigrationExpiry int64  `json:"migration_expiry"` // unix seconds
+	CheckpointID         string            `json:"checkpoint_id"`
+	HeadCommit           string            `json:"head_commit"`
+	ManifestURL          string            `json:"manifest_url"`
+	HeadCommitURL        string            `json:"head_commit_url"`
+	IncrementalURL       string            `json:"incremental_url"`
+	SessionManifestURL   string            `json:"session_manifest_url,omitempty"`
+	SessionBlobURLs      map[string]string `json:"session_blob_urls,omitempty"`
+	MigrationToken       string            `json:"migration_token"`
+	MigrationExpiry      int64             `json:"migration_expiry"` // unix seconds
 }
 
 // commitRequest is the body for /commit. The migration token gates
@@ -130,14 +137,72 @@ func (g *Gateway) handleMigrateMaterialize(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Step 4: gateway commits the checkpoint (advances
-	// latest_synced_checkpoint after verifying all blobs in storage).
+	// Step 4: session leg. Mirrors the code-leg three-step: sprite
+	// builds session blobs → gateway mints presigned PUT URLs →
+	// sprite uploads. Skipped silently when the sprite has no
+	// opencode sessions in this worktree (sessionBuild.Entries is
+	// empty). Critically, this runs BEFORE CommitCheckpoint so a
+	// session-leg failure can't leave latest_synced_checkpoint
+	// pointing at a checkpoint whose session blobs are missing from
+	// storage.
+	var sessionIDs []string
+	sessionBuild, err := triggerSpriteSessionBuild(r.Context(), cli, hostRef, wt.ID, ck.CheckpointID)
+	if err != nil {
+		g.log.Printf("gateway materialize: sprite session build: %v", err)
+		http.Error(w, "sprite session build: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer func() {
+		_ = deleteSpriteSessionBuild(context.Background(), cli, hostRef, sessionBuild.BuildID)
+	}()
+	if len(sessionBuild.Entries) > 0 {
+		sessionIDs = make([]string, len(sessionBuild.Entries))
+		for i, e := range sessionBuild.Entries {
+			sessionIDs[i] = e.SessionID
+		}
+		presign, err := g.cfg.Sync.PresignSessionPuts(r.Context(), userID, clanksync.SessionPresignRequest{
+			CheckpointID: ck.CheckpointID,
+			SessionIDs:   sessionIDs,
+		})
+		if err != nil {
+			syncErrToHTTP(w, "presign session puts", err)
+			return
+		}
+		if err := triggerSpriteSessionUpload(r.Context(), cli, hostRef, sessionBuild.BuildID, spriteSessionUploadParams{
+			CheckpointID:          ck.CheckpointID,
+			SessionURLs:           presign.SessionPutURLs,
+			SessionManifestPutURL: presign.SessionManifestPutURL,
+		}); err != nil {
+			g.log.Printf("gateway materialize: sprite session upload: %v", err)
+			http.Error(w, "sprite session upload: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+	}
+
+	// Step 5: gateway commits the checkpoint (advances
+	// latest_synced_checkpoint after verifying the code blobs are in
+	// storage). Runs only after both code AND session uploads
+	// succeeded so a partial-upload failure can't leak a pointer
+	// advance.
 	if _, err := g.cfg.Sync.CommitCheckpoint(r.Context(), userID, ck.CheckpointID); err != nil {
 		syncErrToHTTP(w, "commit checkpoint", err)
 		return
 	}
 
-	// Step 5: mint presigned GET URLs for the laptop to pull from.
+	// Step 6: mint presigned GET URLs (both code and session) for
+	// the laptop. DownloadSessionURLs requires the checkpoint to be
+	// committed (UploadedAt set), so it has to run after step 5.
+	var sessionManifestGetURL string
+	var sessionBlobGetURLs map[string]string
+	if len(sessionIDs) > 0 {
+		sessionGets, err := g.cfg.Sync.DownloadSessionURLs(r.Context(), userID, ck.CheckpointID, sessionIDs)
+		if err != nil {
+			syncErrToHTTP(w, "download session URLs", err)
+			return
+		}
+		sessionManifestGetURL = sessionGets.SessionManifestGetURL
+		sessionBlobGetURLs = sessionGets.SessionGetURLs
+	}
 	gets, err := g.cfg.Sync.DownloadCheckpointURLs(r.Context(), userID, ck.CheckpointID)
 	if err != nil {
 		syncErrToHTTP(w, "download checkpoint URLs", err)
@@ -148,13 +213,15 @@ func (g *Gateway) handleMigrateMaterialize(w http.ResponseWriter, r *http.Reques
 	token := g.signMigrationToken(wt.ID, ck.CheckpointID, userID, expiry)
 
 	writeJSON(w, http.StatusOK, materializeResponse{
-		CheckpointID:    ck.CheckpointID,
-		HeadCommit:      build.HeadCommit,
-		ManifestURL:     gets.ManifestGetURL,
-		HeadCommitURL:   gets.HeadCommitGetURL,
-		IncrementalURL:  gets.IncrementalURL,
-		MigrationToken:  token,
-		MigrationExpiry: expiry,
+		CheckpointID:       ck.CheckpointID,
+		HeadCommit:         build.HeadCommit,
+		ManifestURL:        gets.ManifestGetURL,
+		HeadCommitURL:      gets.HeadCommitGetURL,
+		IncrementalURL:     gets.IncrementalURL,
+		SessionManifestURL: sessionManifestGetURL,
+		SessionBlobURLs:    sessionBlobGetURLs,
+		MigrationToken:     token,
+		MigrationExpiry:    expiry,
 	})
 }
 
@@ -230,6 +297,12 @@ type spriteBuildResult struct {
 	IncrementalCommit string `json:"incremental_commit"`
 }
 
+// TODO(coderabbit): collapse the six sprite-request helpers below
+// (triggerSpriteBuild/Upload/delete + their session-leg twins) into a
+// single doSpriteRequest(ctx, hostRef, method, path, body) helper.
+// Six near-identical NewRequestWithContext+Authorization+Transport
+// blocks ought to share one. https://github.com/Acksell/clank/pull/18
+//
 // triggerSpriteBuild POSTs to /sync/build?repo=<id> on the sprite.
 func triggerSpriteBuild(ctx context.Context, baseClient *http.Client, hostRef provisioner.HostRef, worktreeID string) (*spriteBuildResult, error) {
 	if worktreeID == "" {
@@ -310,6 +383,152 @@ func triggerSpriteUpload(ctx context.Context, baseClient *http.Client, hostRef p
 // cleanup; the sprite's reaper picks up orphans we miss.
 func deleteSpriteBuild(ctx context.Context, baseClient *http.Client, hostRef provisioner.HostRef, buildID string) error {
 	target := strings.TrimRight(hostRef.URL, "/") + "/sync/builds/" + buildID
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, target, nil)
+	if err != nil {
+		return err
+	}
+	if hostRef.AuthToken != "" {
+		req.Header.Set("Authorization", "Bearer "+hostRef.AuthToken)
+	}
+	cli := baseClient
+	if hostRef.Transport != nil {
+		cli = &http.Client{Transport: hostRef.Transport, Timeout: baseClient.Timeout}
+	}
+	resp, err := cli.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// --- session-leg sprite RPC helpers --------------------------------
+//
+// Mirror the code-leg helpers above for the session export blobs. The
+// sprite's handlers live in internal/host/mux/sessions_sync.go; the
+// gateway here orchestrates them the same way it orchestrates the
+// code build/upload pair.
+
+// spriteSessionBuildResult mirrors the JSON body of POST
+// /sync/sessions/build's response (sessionBuildResponse in
+// internal/host/mux/sessions_sync.go).
+type spriteSessionBuildResult struct {
+	BuildID string                                   `json:"build_id"`
+	Entries []spriteSessionEntry                     `json:"entries"`
+	Skipped []spriteSkippedSession                   `json:"skipped"`
+}
+
+// spriteSessionEntry is the on-the-wire shape of
+// checkpoint.SessionEntry. We mirror it locally (rather than
+// importing the checkpoint package) to keep the gateway's wire-
+// format dependencies minimal — only SessionID is needed by the
+// gateway, the rest passes through opaquely.
+type spriteSessionEntry struct {
+	SessionID string `json:"session_id"`
+	// other fields exist on the wire but the gateway doesn't read them
+}
+
+// spriteSkippedSession mirrors host.SkippedSession; surfaced so the
+// CLI can warn the user about non-opencode sessions that were
+// excluded.
+type spriteSkippedSession struct {
+	SessionID string `json:"session_id"`
+	Backend   string `json:"backend"`
+	Reason    string `json:"reason"`
+}
+
+// triggerSpriteSessionBuild POSTs to /sync/sessions/build on the sprite.
+// The sprite quiesces + exports every session in the worktree to local
+// temp files and returns the manifest entries + a build_id.
+func triggerSpriteSessionBuild(ctx context.Context, baseClient *http.Client, hostRef provisioner.HostRef, worktreeID, checkpointID string) (*spriteSessionBuildResult, error) {
+	if worktreeID == "" || checkpointID == "" {
+		return nil, fmt.Errorf("worktree_id and checkpoint_id are required")
+	}
+	body, err := json.Marshal(map[string]string{
+		"worktree_id":   worktreeID,
+		"checkpoint_id": checkpointID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+	target := strings.TrimRight(hostRef.URL, "/") + "/sync/sessions/build"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if hostRef.AuthToken != "" {
+		req.Header.Set("Authorization", "Bearer "+hostRef.AuthToken)
+	}
+	cli := baseClient
+	if hostRef.Transport != nil {
+		cli = &http.Client{Transport: hostRef.Transport, Timeout: baseClient.Timeout}
+	}
+	resp, err := cli.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("sprite sessions/build %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	var out spriteSessionBuildResult
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+	if out.BuildID == "" {
+		return nil, fmt.Errorf("sprite returned empty build_id for session build")
+	}
+	return &out, nil
+}
+
+// spriteSessionUploadParams is the JSON body of POST
+// /sync/sessions/builds/{id}/upload.
+type spriteSessionUploadParams struct {
+	CheckpointID          string            `json:"checkpoint_id"`
+	SessionURLs           map[string]string `json:"session_urls"`
+	SessionManifestPutURL string            `json:"session_manifest_put_url"`
+}
+
+// triggerSpriteSessionUpload POSTs to /sync/sessions/builds/{id}/upload
+// on the sprite. The sprite PUTs each session blob to S3 via the
+// presigned URLs in the body. Returns nil on the sprite's 204; any
+// other status is wrapped with the response body for diagnostics.
+func triggerSpriteSessionUpload(ctx context.Context, baseClient *http.Client, hostRef provisioner.HostRef, buildID string, params spriteSessionUploadParams) error {
+	body, err := json.Marshal(params)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	target := strings.TrimRight(hostRef.URL, "/") + "/sync/sessions/builds/" + buildID + "/upload"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if hostRef.AuthToken != "" {
+		req.Header.Set("Authorization", "Bearer "+hostRef.AuthToken)
+	}
+	cli := baseClient
+	if hostRef.Transport != nil {
+		cli = &http.Client{Transport: hostRef.Transport, Timeout: baseClient.Timeout}
+	}
+	resp, err := cli.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	preview, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	return fmt.Errorf("sprite sessions/upload %d: %s", resp.StatusCode, strings.TrimSpace(string(preview)))
+}
+
+// deleteSpriteSessionBuild DELETEs a session build on the sprite.
+// Best-effort cleanup; sprite's reaper handles orphans.
+func deleteSpriteSessionBuild(ctx context.Context, baseClient *http.Client, hostRef provisioner.HostRef, buildID string) error {
+	target := strings.TrimRight(hostRef.URL, "/") + "/sync/sessions/builds/" + buildID
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, target, nil)
 	if err != nil {
 		return err
