@@ -168,8 +168,9 @@ func runPullMigrate(cmd *cobra.Command, timer *phaseTimer, dc *daemonclient.Clie
 	}
 
 	// Phase 1: materialize. Independent budget — sandbox cold-start
-	// + checkpoint can run minutes on its own.
-	materializeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	// + checkpoint can run minutes on its own. Derived from cmd.Context
+	// so Ctrl+C / CLI cancellation propagates through every phase.
+	materializeCtx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
 	defer cancel()
 	fmt.Fprintf(cmd.OutOrStdout(), "asking sandbox to checkpoint...\n")
 	done = timer.Start("materialize (gateway)")
@@ -180,7 +181,7 @@ func runPullMigrate(cmd *cobra.Command, timer *phaseTimer, dc *daemonclient.Clie
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "checkpoint %s (HEAD %s); downloading...\n", mres.CheckpointID, shortSHA(mres.HeadCommit))
 
-	applyCtx, applyCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	applyCtx, applyCancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
 	defer applyCancel()
 
 	// Phase 2: download + apply locally
@@ -196,7 +197,7 @@ func runPullMigrate(cmd *cobra.Command, timer *phaseTimer, dc *daemonclient.Clie
 	// the sprite had no opencode sessions in the worktree (empty
 	// session_manifest_url). Failures here abort before commit.
 	if mres.SessionManifestURL != "" {
-		sessCtx, sessCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		sessCtx, sessCancel := context.WithTimeout(cmd.Context(), 5*time.Minute)
 		done = timer.Start("apply sessions locally")
 		err := localCli.ApplySessionCheckpoint(sessCtx, worktreeID, mres.SessionManifestURL, mres.SessionBlobURLs)
 		done()

@@ -246,7 +246,7 @@ func runPushMigrate(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, 
 		return fmt.Errorf("push session leg: %w", err)
 	}
 
-	mctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	mctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Minute)
 	defer cancel()
 	done = timer.Start("migrate worktree (gateway)")
 	mres, err := dc.MigrateWorktree(mctx, worktreeID, daemonclient.MigrateToRemote)
