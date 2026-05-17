@@ -311,35 +311,25 @@ func TestLogin_BrowserOpenFailureKeepsServerAlive(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
+	// OpenBrowser still receives the URL before it errors — capture
+	// it there to drive the manual-paste path without racing on
+	// Prompt while Login is writing.
 	var prompt strings.Builder
+	openedCh := make(chan string, 1)
 	cli := &OAuthClient{
 		AuthorizeEndpoint: srv.URL + "/authorize",
 		TokenEndpoint:     srv.URL + "/token",
 		ClientID:          "test",
-		OpenBrowser:       func(string) error { return fmt.Errorf("no DISPLAY") },
-		Prompt:            &prompt,
+		OpenBrowser: func(target string) error {
+			openedCh <- target
+			return fmt.Errorf("no DISPLAY")
+		},
+		Prompt: &prompt,
 	}
-	// Simulate the human pasting the URL: drive the redirect chain
-	// once the prompt shows up.
-	driveOnce := make(chan struct{})
 	go func() {
-		// Poll Prompt until the URL appears, then drive it through.
-		for {
-			s := prompt.String()
-			if idx := strings.Index(s, "http://"); idx >= 0 {
-				// The URL spans from "http://" to the first whitespace.
-				rest := s[idx:]
-				end := strings.IndexAny(rest, " \t\n")
-				if end > 0 {
-					target := rest[:end]
-					c := &http.Client{Timeout: 5 * time.Second}
-					getAndDiscard(c, target)
-					close(driveOnce)
-					return
-				}
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
+		target := <-openedCh
+		c := &http.Client{Timeout: 5 * time.Second}
+		getAndDiscard(c, target)
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -348,10 +338,11 @@ func TestLogin_BrowserOpenFailureKeepsServerAlive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Login: %v", err)
 	}
-	<-driveOnce
 	if sess == nil || sess.AccessToken != "tok" {
 		t.Fatalf("session: got %+v, want AccessToken=tok", sess)
 	}
+	// Login has returned → writes to prompt are happens-before the
+	// channel send that woke up the select, so reading now is safe.
 	if !strings.Contains(prompt.String(), "Could not open browser") {
 		t.Errorf("Prompt missing fallback notice: %q", prompt.String())
 	}
@@ -477,7 +468,7 @@ func TestLogin_IgnoresNonRootCallbackRequests(t *testing.T) {
 			favStatusCh <- -1
 		} else {
 			favStatusCh <- resp.StatusCode
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		// Now the real callback.
 		q := url.Values{"code": {"abc"}, "state": {state}}
@@ -507,7 +498,9 @@ func TestLogin_FixedCallbackPort(t *testing.T) {
 		t.Fatalf("probe listen: %v", err)
 	}
 	wantPort := probe.Addr().(*net.TCPAddr).Port
-	probe.Close()
+	if err := probe.Close(); err != nil {
+		t.Fatalf("probe close: %v", err)
+	}
 
 	var gotRedirectURI string
 	mux := http.NewServeMux()

@@ -38,7 +38,7 @@ func TestAuthorize_RedirectsWithCode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("authorize: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeBody(t, resp.Body)
 	if resp.StatusCode != http.StatusFound {
 		t.Fatalf("status: got %d, want 302", resp.StatusCode)
 	}
@@ -81,7 +81,7 @@ func TestTokenExchange_AuthorizationCode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("token: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeBody(t, resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("token status %d: %s", resp.StatusCode, body)
@@ -113,7 +113,7 @@ func TestTokenExchange_AuthorizationCode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("me: %v", err)
 	}
-	defer mr.Body.Close()
+	defer closeBody(t, mr.Body)
 	if mr.StatusCode != http.StatusOK {
 		t.Fatalf("me status %d", mr.StatusCode)
 	}
@@ -137,7 +137,7 @@ func TestTokenExchange_PKCEMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("token: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeBody(t, resp.Body)
 	if resp.StatusCode == http.StatusOK {
 		t.Fatal("token exchange with wrong verifier should fail")
 	}
@@ -163,7 +163,7 @@ func TestTokenExchange_CodeIsSingleUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("token #1: %v", err)
 	}
-	resp1.Body.Close()
+	closeBody(t, resp1.Body)
 	if resp1.StatusCode != http.StatusOK {
 		t.Fatalf("first redemption failed: status %d", resp1.StatusCode)
 	}
@@ -172,7 +172,7 @@ func TestTokenExchange_CodeIsSingleUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("token #2: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer closeBody(t, resp2.Body)
 	if resp2.StatusCode == http.StatusOK {
 		t.Fatal("second redemption with same code should fail")
 	}
@@ -199,7 +199,7 @@ func TestRefreshToken_AutoApproves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeBody(t, resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("refresh status %d: %s", resp.StatusCode, body)
@@ -210,13 +210,23 @@ func TestRefreshToken_AutoApproves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("refresh #2: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer closeBody(t, resp2.Body)
 	if resp2.StatusCode == http.StatusOK {
 		t.Fatal("replay of refresh_token should fail")
 	}
 }
 
 // --- helpers --------------------------------------------------------
+
+// closeBody is the canonical body-close in tests: surface the error
+// via t.Errorf so errcheck stays happy and any actual close failure
+// gets noticed instead of swallowed.
+func closeBody(t *testing.T, c io.Closer) {
+	t.Helper()
+	if err := c.Close(); err != nil {
+		t.Errorf("close body: %v", err)
+	}
+}
 
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -259,7 +269,7 @@ func runAuthorize(t *testing.T, srv *httptest.Server, challenge, redirect string
 	if err != nil {
 		t.Fatalf("authorize: %v", err)
 	}
-	resp.Body.Close()
+	closeBody(t, resp.Body)
 	if resp.StatusCode != http.StatusFound {
 		t.Fatalf("authorize status %d", resp.StatusCode)
 	}
@@ -287,7 +297,7 @@ func runTokenExchange(t *testing.T, srv *httptest.Server, code, verifier, redire
 	if err != nil {
 		t.Fatalf("token: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeBody(t, resp.Body)
 	var tok struct {
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`

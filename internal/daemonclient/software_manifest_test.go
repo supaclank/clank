@@ -15,7 +15,7 @@ import (
 // and the next attempt succeeds. The error message we surface today
 // even told the user "retry in a moment" — make sure we actually do.
 func TestSoftwareManifest_RetriesOn502(t *testing.T) {
-	t.Parallel()
+	// serial: mutates package-global softwareManifestBackoffBaseForTest
 	var calls int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		n := atomic.AddInt64(&calls, 1)
@@ -50,7 +50,7 @@ func TestSoftwareManifest_RetriesOn502(t *testing.T) {
 // retry forever — the user gets a clear error after the configured
 // attempts elapse.
 func TestSoftwareManifest_GivesUpAfterMaxAttempts(t *testing.T) {
-	t.Parallel()
+	// serial: mutates package-global softwareManifestBackoffBaseForTest
 	var calls int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt64(&calls, 1)
