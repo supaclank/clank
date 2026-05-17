@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/acksell/clank/pkg/sync/storage"
@@ -246,121 +245,27 @@ func (s *Server) handleRegisterWorktree(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Use the (slugged) display_name as the worktree ID so the user
-	// sees a memorable name — `clank` instead of an opaque ULID — in
-	// `clank status`, in S3 paths, and in the `~/work/<id>/` directory
-	// on sprites. On global-PK collisions (two users with same folder
-	// name, or two repos one user pushes that share a basename) the
-	// server appends `-2`, `-3`, … until INSERT succeeds. The user
-	// only sees a suffix when they hit an actual collision.
+	// ID is an opaque ULID; the human-readable display_name is kept
+	// separate so `clank status`, S3 paths, and sprite directories can
+	// still surface a memorable label without the ID needing to be one.
 	now := time.Now().UTC()
-	base := capWorktreeIDBase(slugifyWorktreeID(req.DisplayName))
-	template := Worktree{
+	wt := Worktree{
+		ID:          newULID(),
 		UserID:      caller.UserID,
 		DisplayName: req.DisplayName,
 		OwnerKind:   OwnerKindLocal,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
-	id, err := s.mintUniqueWorktreeID(r.Context(), base, template)
-	if err != nil {
+	if err := s.cfg.Store.InsertWorktree(r.Context(), wt); err != nil {
 		s.log.Printf("sync: insert worktree: %v", err)
 		http.Error(w, "insert worktree", http.StatusInternalServerError)
 		return
 	}
-
 	// Return the row we just inserted. A defensive re-read here would
 	// turn any transient Get failure into a 500 *after* the row was
-	// successfully created — clients retry, mintUniqueWorktreeID
-	// allocates name-2/-3 for the same logical worktree, and the user
-	// sees suffixes they didn't earn.
-	template.ID = id
-	writeJSON(w, http.StatusCreated, worktreeToResponse(template))
-}
-
-// mintUniqueWorktreeID tries to insert a worktree row with the given
-// base ID, retrying with `-2`, `-3`, … suffixes on UNIQUE constraint
-// violations. Returns the successfully-inserted ID. Bounded to 200
-// attempts so a poisoned table doesn't loop forever.
-func (s *Server) mintUniqueWorktreeID(ctx context.Context, base string, template Worktree) (string, error) {
-	const maxAttempts = 200
-	for n := 1; n <= maxAttempts; n++ {
-		candidate := base
-		if n > 1 {
-			candidate = fmt.Sprintf("%s-%d", base, n)
-		}
-		wt := template
-		wt.ID = candidate
-		err := s.cfg.Store.InsertWorktree(ctx, wt)
-		if err == nil {
-			return candidate, nil
-		}
-		if !isUniqueConstraintErr(err) {
-			return "", err
-		}
-		// collision — try the next suffix
-	}
-	return "", fmt.Errorf("could not find an unused worktree id after %d attempts (base=%q)", maxAttempts, base)
-}
-
-// maxWorktreeIDBase caps the slug used as the base for worktree IDs.
-// Filesystem path components are bounded at 255 bytes on macOS/Linux;
-// mintUniqueWorktreeID appends up to a 4-char `-N` suffix (N≤200),
-// so a 64-byte base leaves plenty of headroom inside that limit and
-// keeps S3 keys readable.
-const maxWorktreeIDBase = 64
-
-// capWorktreeIDBase truncates a slug to maxWorktreeIDBase bytes,
-// preserving the "worktree" empty-input sentinel from slugifyWorktreeID.
-// Trims any trailing separators left by the truncation so the result
-// remains a clean slug.
-func capWorktreeIDBase(s string) string {
-	if len(s) <= maxWorktreeIDBase {
-		return s
-	}
-	return strings.TrimRight(s[:maxWorktreeIDBase], "-_.")
-}
-
-// slugifyWorktreeID turns a free-form display name into a filesystem-
-// and URL-safe identifier. Lowercases, replaces any non-alphanumeric
-// run with a single dash, trims leading/trailing dashes. Falls back
-// to "worktree" when the input slugs to empty (e.g. all punctuation).
-func slugifyWorktreeID(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	prevDash := false
-	for _, r := range strings.ToLower(s) {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-			b.WriteRune(r)
-			prevDash = false
-		case r == '-' || r == '_' || r == '.':
-			b.WriteRune(r)
-			prevDash = r == '-'
-		default:
-			if !prevDash {
-				b.WriteByte('-')
-				prevDash = true
-			}
-		}
-	}
-	out := strings.Trim(b.String(), "-_.")
-	if out == "" {
-		return "worktree"
-	}
-	return out
-}
-
-// isUniqueConstraintErr matches both common Go sqlite drivers'
-// surface error strings. String-matched because both drivers wrap
-// the underlying SQLITE_CONSTRAINT_UNIQUE in stable text but don't
-// expose a stable typed sentinel.
-func isUniqueConstraintErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "UNIQUE constraint failed") || strings.Contains(s, "constraint failed: UNIQUE")
+	// successfully created.
+	writeJSON(w, http.StatusCreated, worktreeToResponse(wt))
 }
 
 // createCheckpointRequest is the body of POST /v1/checkpoints. Field
@@ -719,9 +624,7 @@ func newULID() string {
 }
 
 // worktreeNotFoundMsg formats the user-facing 404 body for a missing
-// worktree row. Includes the recovery hint for the realistic cause:
-// a stale .clank/worktree-id on the laptop pointing at a server row
-// that no longer exists (e.g. after a clank-sync DB reset in dev).
+// worktree row.
 func worktreeNotFoundMsg(id string) string {
-	return fmt.Sprintf("worktree %s not registered with this clank-sync — if the cached id at <repo>/.clank/worktree-id is stale (e.g. server DB reset), delete it and retry to re-register", id)
+	return fmt.Sprintf("worktree %s not registered with this clank-sync", id)
 }
