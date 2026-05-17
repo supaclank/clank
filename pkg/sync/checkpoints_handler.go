@@ -255,28 +255,27 @@ func (s *Server) handleRegisterWorktree(w http.ResponseWriter, r *http.Request) 
 	// only sees a suffix when they hit an actual collision.
 	now := time.Now().UTC()
 	base := capWorktreeIDBase(slugifyWorktreeID(req.DisplayName))
-	id, err := s.mintUniqueWorktreeID(r.Context(), base, Worktree{
+	template := Worktree{
 		UserID:      caller.UserID,
 		DisplayName: req.DisplayName,
 		OwnerKind:   OwnerKindLocal,
 		CreatedAt:   now,
 		UpdatedAt:   now,
-	})
+	}
+	id, err := s.mintUniqueWorktreeID(r.Context(), base, template)
 	if err != nil {
 		s.log.Printf("sync: insert worktree: %v", err)
 		http.Error(w, "insert worktree", http.StatusInternalServerError)
 		return
 	}
 
-	// Re-read so the response carries the same row that's now in the
-	// store (esp. when callers add columns we don't echo back here).
-	wt, err := s.cfg.Store.GetWorktreeByID(r.Context(), id)
-	if err != nil {
-		s.log.Printf("sync: re-read worktree after insert: %v", err)
-		http.Error(w, "insert worktree", http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, http.StatusCreated, worktreeToResponse(wt))
+	// Return the row we just inserted. A defensive re-read here would
+	// turn any transient Get failure into a 500 *after* the row was
+	// successfully created — clients retry, mintUniqueWorktreeID
+	// allocates name-2/-3 for the same logical worktree, and the user
+	// sees suffixes they didn't earn.
+	template.ID = id
+	writeJSON(w, http.StatusCreated, worktreeToResponse(template))
 }
 
 // mintUniqueWorktreeID tries to insert a worktree row with the given

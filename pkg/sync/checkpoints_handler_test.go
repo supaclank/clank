@@ -307,6 +307,59 @@ func TestMultipleLaptopsSameUserShare(t *testing.T) {
 	}
 }
 
+// TestRegisterWorktree_SurvivesPostInsertGetFailure pins the
+// idempotency contract: once InsertWorktree succeeds the response
+// must return 201 with the inserted row, even if a re-read fails.
+// Regression for a 500 path that drove clients to retry and accumulate
+// `-2`, `-3` suffixes for the same logical worktree.
+func TestRegisterWorktree_SurvivesPostInsertGetFailure(t *testing.T) {
+	t.Parallel()
+	store := &getFailingStore{memSyncStore: newMemSyncStore()}
+	mem := storage.NewMemory()
+	t.Cleanup(mem.Close)
+
+	srv, err := clanksync.NewServer(clanksync.Config{
+		Store:      store,
+		Storage:    mem,
+		PresignTTL: time.Minute,
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	httpSrv := httptest.NewServer(fixedPrincipalMiddleware("user-A", srv.Handler()))
+	t.Cleanup(httpSrv.Close)
+
+	wt := postJSON[map[string]any](t, httpSrv.URL+"/v1/worktrees", map[string]string{
+		"display_name": "myrepo",
+	})
+	if id, _ := wt["id"].(string); id != "myrepo" {
+		t.Fatalf("id = %v, want %q (no `-2` suffix on first insert)", wt["id"], "myrepo")
+	}
+	if wt["display_name"] != "myrepo" {
+		t.Fatalf("display_name = %v, want %q", wt["display_name"], "myrepo")
+	}
+	if wt["owner_kind"] != "local" {
+		t.Fatalf("owner_kind = %v, want %q", wt["owner_kind"], "local")
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.worktrees) != 1 {
+		t.Fatalf("store has %d worktrees, want 1 (no suffix retries)", len(store.worktrees))
+	}
+}
+
+// getFailingStore wraps memSyncStore and returns ErrWorktreeNotFound
+// from GetWorktreeByID — simulates a transient lookup blip on a row
+// that does exist after a successful InsertWorktree.
+type getFailingStore struct {
+	*memSyncStore
+}
+
+func (g *getFailingStore) GetWorktreeByID(context.Context, string) (clanksync.Worktree, error) {
+	return clanksync.Worktree{}, clanksync.ErrWorktreeNotFound
+}
+
 func postJSON[T any](t *testing.T, url string, body any) T {
 	t.Helper()
 	buf, err := json.Marshal(body)
