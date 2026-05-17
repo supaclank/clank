@@ -210,8 +210,15 @@ func (m cloudView) Update(msg tea.Msg) (cloudView, tea.Cmd) {
 			m.err = "sign-in failed: " + msg.err.Error()
 			return m, nil
 		}
+		if err := persistSession(msg.session); err != nil {
+			// In-memory session is useless if disk doesn't match —
+			// next restart loses it. Tell the user instead of
+			// rendering a false signed-in card.
+			m.phase = cloudPhaseError
+			m.err = "save session: " + err.Error()
+			return m, nil
+		}
 		m.session = msg.session
-		_ = persistSession(msg.session)
 		m.phase = cloudPhaseSignedIn
 		m.err = ""
 		// The token-exchange round-trip just succeeded, so we know
@@ -225,6 +232,14 @@ func (m cloudView) Update(msg tea.Msg) (cloudView, tea.Cmd) {
 	case cloudReachabilityMsg:
 		m.hasCalled = true
 		m.lastCallErr = msg.err
+		if errors.Is(msg.err, cloud.ErrUnauthorized) {
+			// Token was revoked or no longer matches the gateway's
+			// auth config. Wipe disk so the next Init() doesn't
+			// reload a dead token and render a stale signed-in card.
+			_ = clearSession()
+			m.session = nil
+			m.phase = cloudPhaseSignedOut
+		}
 		return m, nil
 
 	case tea.KeyPressMsg:
