@@ -20,7 +20,8 @@ import (
 //     host opens it directly.
 //   - WorktreeID: the server-assigned worktree ULID minted by
 //     clank-sync's `POST /v1/worktrees`. Cached at
-//     `<repo>/.clank/worktree-id` after `clank sync push`. When the
+//     `$(git rev-parse --absolute-git-dir)/clank/worktree-id` after
+//     `clank push`. When the
 //     target host is *not* co-located (docker stack, cloud sandbox),
 //     it ignores LocalPath and resolves the worktree from
 //     `~/work/<WorktreeID>/`, which the gateway populates during

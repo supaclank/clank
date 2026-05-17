@@ -1,35 +1,48 @@
 package agent
 
-// LocalWorktreeID is the file under a project root that caches the
-// server-assigned worktree ULID. Written by `clank sync push` on first
-// registration and read by any caller that needs to identify a project
-// to a remote host (TUI session-create, future watcher, etc.).
-//
-// Path: <repo>/.clank/worktree-id
-//
-// Kept in this small file rather than internal/clanksync so callers
-// in internal/agent and internal/tui don't pull in the broader sync
-// substrate just to look up an id.
+// Cached worktree ULID lives at $(git rev-parse --absolute-git-dir)/clank/worktree-id.
+// Inside .git/ so it doesn't pollute the working tree and so each
+// `git worktree add` sibling gets its own ID automatically (their
+// $gitDir resolves to .git/worktrees/<name>/).
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
 
-// WorktreeIDFile is the path component appended to a project root to
-// locate the cached worktree ID.
-const WorktreeIDFile = ".clank/worktree-id"
+// EnvWorktreeID overrides the cached ID resolution. Intended for CI
+// and tests that want to pin an ID without touching the repo's .git.
+const EnvWorktreeID = "CLANK_WORKTREE_ID"
 
-// ReadLocalWorktreeID returns the cached worktree ULID at
-// <projectDir>/.clank/worktree-id, or "" if the file is absent or
-// empty. Errors other than ErrNotExist propagate so misconfiguration
-// (bad permissions, etc.) doesn't silently degrade to "no id".
+// worktreeIDRelPath is the path of the cache file relative to gitDir.
+const worktreeIDRelPath = "clank/worktree-id"
+
+// ReadLocalWorktreeID returns the worktree ULID cached for projectDir:
+//
+//  1. $CLANK_WORKTREE_ID if non-empty.
+//  2. <gitDir>/clank/worktree-id (where gitDir = git rev-parse --absolute-git-dir).
+//  3. "" if the file is missing or projectDir is not inside a git repo.
+//
+// Errors other than "not a git repo" / "file missing" propagate so a
+// misconfiguration (bad permissions, etc.) doesn't silently degrade
+// to "no id cached".
 func ReadLocalWorktreeID(projectDir string) (string, error) {
+	if v := strings.TrimSpace(os.Getenv(EnvWorktreeID)); v != "" {
+		return v, nil
+	}
 	if projectDir == "" {
 		return "", nil
 	}
-	data, err := os.ReadFile(filepath.Join(projectDir, WorktreeIDFile))
+	gd, err := gitDir(projectDir)
+	if err != nil {
+		// Not a git repo (or git missing) → no cached id. The
+		// caller decides whether to surface this as an error.
+		return "", nil
+	}
+	data, err := os.ReadFile(filepath.Join(gd, worktreeIDRelPath))
 	if os.IsNotExist(err) {
 		return "", nil
 	}
@@ -39,13 +52,35 @@ func ReadLocalWorktreeID(projectDir string) (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-// WriteLocalWorktreeID persists the server-assigned worktree ULID at
-// <projectDir>/.clank/worktree-id. Idempotent — overwrites any
-// existing value. The .clank/ directory is created with 0o755.
+// WriteLocalWorktreeID persists the worktree ULID for projectDir at
+// <gitDir>/clank/worktree-id. Idempotent. Errors if projectDir is not
+// inside a git repo (the only caller is `clank push`, which is always
+// invoked from a real git working tree).
 func WriteLocalWorktreeID(projectDir, id string) error {
-	dir := filepath.Join(projectDir, ".clank")
+	if id == "" {
+		return fmt.Errorf("write worktree id: id is empty")
+	}
+	gd, err := gitDir(projectDir)
+	if err != nil {
+		return fmt.Errorf("write worktree id: %w", err)
+	}
+	dir := filepath.Join(gd, "clank")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, "worktree-id"), []byte(id+"\n"), 0o644)
+}
+
+// gitDir resolves the per-worktree git directory for projectDir.
+// For the main worktree this is <repo>/.git; for a linked worktree
+// created by `git worktree add` it's <repo>/.git/worktrees/<name>/.
+// Returns an error if projectDir isn't inside a git repo (or git is
+// missing from PATH).
+func gitDir(projectDir string) (string, error) {
+	cmd := exec.Command("git", "-C", projectDir, "rev-parse", "--absolute-git-dir")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse --absolute-git-dir in %s: %w", projectDir, err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }

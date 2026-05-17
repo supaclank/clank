@@ -84,7 +84,7 @@ Without --migrate: bare data-only pull is post-MVP.`,
 					return fmt.Errorf("load cached worktree id: %w", err)
 				}
 				if worktreeID == "" {
-					return fmt.Errorf("no worktree id cached at %s/.clank/worktree-id — pass --worktree-id explicitly", absRepo)
+					return fmt.Errorf("no worktree id cached for %s — run `clank push` first, or pass --worktree-id explicitly", absRepo)
 				}
 			}
 
@@ -143,7 +143,7 @@ Without --migrate: bare data-only pull is post-MVP.`,
 	}
 	cmd.Flags().BoolVarP(&alsoMig, "migrate", "m", false, "download the sandbox's checkpoint and reclaim ownership")
 	cmd.Flags().BoolVar(&force, "force", false, "with --migrate, discard local changes when pulling onto a local-owned worktree")
-	cmd.Flags().StringVar(&worktreeID, "worktree-id", "", "Worktree ID (default: read from <repo>/.clank/worktree-id)")
+	cmd.Flags().StringVar(&worktreeID, "worktree-id", "", "Worktree ID (default: read from $(git rev-parse --absolute-git-dir)/clank/worktree-id)")
 	cmd.Flags().BoolVar(&timing, "timing", false, "print a per-phase timing breakdown to stderr (also enabled by CLANK_TIMING=1)")
 	return cmd
 }
