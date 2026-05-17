@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -379,6 +380,10 @@ func (m *cloudView) loginCmd(ctx context.Context) tea.Cmd {
 			Scopes:            cfg.Scopes,
 			Provider:          cfg.DefaultProvider,
 			CallbackPort:      cfg.CallbackPort,
+			// Discard manual-paste prompts: stderr writes from
+			// within a Bubble Tea program corrupt the display.
+			// TODO: surface as a cloudPhaseError card instead.
+			Prompt: io.Discard,
 		}
 		sess, err := oauth.Login(ctx)
 		return cloudLoginResultMsg{session: sess, err: err}

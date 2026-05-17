@@ -26,6 +26,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -82,6 +83,13 @@ type OAuthClient struct {
 	// HTTPClient is used for the token exchange. Optional;
 	// defaults to a 30s-timeout client.
 	HTTPClient *http.Client
+
+	// Prompt receives the manual-paste URL when OpenBrowser fails so
+	// the user can still complete the flow by opening the link in any
+	// browser. nil → os.Stderr (visible by default for CLI callers).
+	// Set to io.Discard from TUI contexts where stderr writes would
+	// corrupt the display.
+	Prompt io.Writer
 }
 
 // ErrLoginCancelled is returned when the user aborts the flow
@@ -186,6 +194,14 @@ func (c *OAuthClient) Login(ctx context.Context) (*Session, error) {
 			send(callbackResult{err: fmt.Errorf("oauth: callback missing code")})
 			return
 		}
+		if gotState != state {
+			// Validate before rendering success so a mismatched
+			// callback never tells the user "Signed in" while
+			// Login is about to return an error.
+			renderCallbackPage(w, false, "Login failed: state mismatch (possible CSRF).")
+			send(callbackResult{err: fmt.Errorf("oauth: state mismatch (possible CSRF) — got %q, want %q", gotState, state)})
+			return
+		}
 		renderCallbackPage(w, true, "")
 		send(callbackResult{code: code, state: gotState})
 	})
@@ -194,10 +210,15 @@ func (c *OAuthClient) Login(ctx context.Context) (*Session, error) {
 	go srv.Serve(listener) //nolint:errcheck — Close triggers a benign net.ErrClosed.
 	defer srv.Close()
 
-	// Best-effort: open the browser. If it fails, return the URL
-	// in the error so the user can copy it manually.
+	// Best-effort: open the browser. If it fails, surface the URL
+	// via Prompt and keep the loopback server alive — the user can
+	// open the link manually on the same machine.
 	if err := openBrowser(authorizeURL); err != nil {
-		return nil, fmt.Errorf("oauth: open browser failed (visit %s): %w", authorizeURL, err)
+		prompt := c.Prompt
+		if prompt == nil {
+			prompt = os.Stderr
+		}
+		fmt.Fprintf(prompt, "\nCould not open browser automatically (%v).\nOpen this URL to sign in:\n\n  %s\n\n", err, authorizeURL)
 	}
 
 	select {
@@ -209,9 +230,6 @@ func (c *OAuthClient) Login(ctx context.Context) (*Session, error) {
 	case res := <-resultCh:
 		if res.err != nil {
 			return nil, res.err
-		}
-		if res.state != state {
-			return nil, fmt.Errorf("oauth: state mismatch (possible CSRF) — got %q, want %q", res.state, state)
 		}
 		return c.exchangeCode(ctx, httpClient, res.code, verifier, redirectURL)
 	}

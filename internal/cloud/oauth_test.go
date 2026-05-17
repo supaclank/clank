@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -196,6 +197,166 @@ func TestLogin_StateMismatchIsRejected(t *testing.T) {
 	defer cancel()
 	if _, err := cli.Login(ctx); err == nil || !strings.Contains(err.Error(), "state mismatch") {
 		t.Fatalf("expected state mismatch error, got %v", err)
+	}
+}
+
+// TestLogin_StateMismatchRendersFailurePage pins the UX contract: a
+// mismatched-state callback must show the user a failure page, not
+// "Signed in to clank" followed by an error in the terminal.
+// Validation must happen in the handler, before renderCallbackPage.
+func TestLogin_StateMismatchRendersFailurePage(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /authorize", func(w http.ResponseWriter, r *http.Request) {
+		redirect := r.URL.Query().Get("redirect_uri")
+		u, _ := url.Parse(redirect)
+		q := u.Query()
+		q.Set("code", "x")
+		q.Set("state", "ATTACKER")
+		u.RawQuery = q.Encode()
+		http.Redirect(w, r, u.String(), http.StatusFound)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	type pageCapture struct {
+		status int
+		body   string
+	}
+	pageCh := make(chan pageCapture, 1)
+	openedCh := make(chan string, 1)
+	cli := &OAuthClient{
+		AuthorizeEndpoint: srv.URL + "/authorize",
+		TokenEndpoint:     srv.URL + "/token",
+		ClientID:          "test",
+		OpenBrowser:       func(t string) error { openedCh <- t; return nil },
+	}
+	go func() {
+		target := <-openedCh
+		c := &http.Client{
+			Timeout: 5 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				// Stop on the localhost redirect so we can inspect
+				// the page the browser would render to the user.
+				if strings.HasPrefix(req.URL.String(), "http://127.0.0.1") ||
+					strings.HasPrefix(req.URL.String(), "http://localhost") {
+					return http.ErrUseLastResponse
+				}
+				return nil
+			},
+		}
+		// First follow the IdP redirect to get the localhost URL.
+		resp, err := c.Get(target)
+		if err != nil {
+			pageCh <- pageCapture{status: -1, body: err.Error()}
+			return
+		}
+		loc, _ := resp.Location()
+		_ = resp.Body.Close()
+		// Now hit the localhost callback and capture the page body.
+		resp2, err := c.Get(loc.String())
+		if err != nil {
+			pageCh <- pageCapture{status: -1, body: err.Error()}
+			return
+		}
+		body, _ := io.ReadAll(resp2.Body)
+		_ = resp2.Body.Close()
+		pageCh <- pageCapture{status: resp2.StatusCode, body: string(body)}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := cli.Login(ctx)
+	if err == nil || !strings.Contains(err.Error(), "state mismatch") {
+		t.Fatalf("expected state mismatch error, got %v", err)
+	}
+	page := <-pageCh
+	if page.status != http.StatusOK {
+		t.Fatalf("page status = %d, want 200 (failure page is still rendered as 200 OK)", page.status)
+	}
+	if strings.Contains(page.body, "Signed in to clank") {
+		t.Errorf("failure page leaked success copy: %s", page.body)
+	}
+	if !strings.Contains(page.body, "Sign-in failed") {
+		t.Errorf("failure page missing failure copy: %s", page.body)
+	}
+}
+
+// TestLogin_BrowserOpenFailureKeepsServerAlive pins the contract:
+// when openBrowser fails, Login must NOT return — the loopback
+// server stays up so the user can paste the URL into another
+// browser and complete the flow. The fallback URL is surfaced via
+// the Prompt writer.
+func TestLogin_BrowserOpenFailureKeepsServerAlive(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /authorize", func(w http.ResponseWriter, r *http.Request) {
+		redirect := r.URL.Query().Get("redirect_uri")
+		state := r.URL.Query().Get("state")
+		u, _ := url.Parse(redirect)
+		q := u.Query()
+		q.Set("code", "manual-paste-ok")
+		q.Set("state", state)
+		u.RawQuery = q.Encode()
+		http.Redirect(w, r, u.String(), http.StatusFound)
+	})
+	mux.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"access_token":  "tok",
+			"refresh_token": "rt",
+			"token_type":    "Bearer",
+			"expires_in":    60,
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	var prompt strings.Builder
+	cli := &OAuthClient{
+		AuthorizeEndpoint: srv.URL + "/authorize",
+		TokenEndpoint:     srv.URL + "/token",
+		ClientID:          "test",
+		OpenBrowser:       func(string) error { return fmt.Errorf("no DISPLAY") },
+		Prompt:            &prompt,
+	}
+	// Simulate the human pasting the URL: drive the redirect chain
+	// once the prompt shows up.
+	driveOnce := make(chan struct{})
+	go func() {
+		// Poll Prompt until the URL appears, then drive it through.
+		for {
+			s := prompt.String()
+			if idx := strings.Index(s, "http://"); idx >= 0 {
+				// The URL spans from "http://" to the first whitespace.
+				rest := s[idx:]
+				end := strings.IndexAny(rest, " \t\n")
+				if end > 0 {
+					target := rest[:end]
+					c := &http.Client{Timeout: 5 * time.Second}
+					getAndDiscard(c, target)
+					close(driveOnce)
+					return
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess, err := cli.Login(ctx)
+	if err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	<-driveOnce
+	if sess == nil || sess.AccessToken != "tok" {
+		t.Fatalf("session: got %+v, want AccessToken=tok", sess)
+	}
+	if !strings.Contains(prompt.String(), "Could not open browser") {
+		t.Errorf("Prompt missing fallback notice: %q", prompt.String())
+	}
+	if !strings.Contains(prompt.String(), "http://") {
+		t.Errorf("Prompt missing authorize URL: %q", prompt.String())
 	}
 }
 
