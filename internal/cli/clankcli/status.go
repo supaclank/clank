@@ -58,14 +58,14 @@ ownership currently lives. Without arguments, uses the current directory.`,
 // statusReport is the data view rendered by `clank status`. Kept as a
 // flat struct so tests can build it directly without I/O.
 type statusReport struct {
-	WorktreeID         string                       // empty when no .clank/worktree-id is cached
+	WorktreeID         string                       // empty when no worktree-id is cached for this clone
 	ActiveRemote       string                       // remote profile name; "" when none configured
 	ActiveRemoteURL    string                       // for display
 	RemoteError        error                        // populated when ListWorktrees failed
 	WorktreeFromRemote *daemonclient.WorktreeInfo   // nil when not found / no remote
 }
 
-// runStatus assembles the report by reading .clank/worktree-id and
+// runStatus assembles the report by reading the cached worktree id and
 // querying the active remote (if configured). Rendering lives in
 // renderStatusReport so tests can hit it without a running remote.
 func runStatus(ctx context.Context, repoPath string) (string, error) {
