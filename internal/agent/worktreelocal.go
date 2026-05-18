@@ -6,6 +6,7 @@ package agent
 // $gitDir resolves to .git/worktrees/<name>/).
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,6 +20,11 @@ const EnvWorktreeID = "CLANK_WORKTREE_ID"
 
 // worktreeIDRelPath is the path of the cache file relative to gitDir.
 const worktreeIDRelPath = "clank/worktree-id"
+
+// errNotGitRepo lets ReadLocalWorktreeID treat "outside a git repo" as
+// "no id cached" while still surfacing PATH / permission / IO failures
+// from `git rev-parse`.
+var errNotGitRepo = errors.New("not a git repository")
 
 // ReadLocalWorktreeID returns the worktree ULID cached for projectDir:
 //
@@ -38,9 +44,10 @@ func ReadLocalWorktreeID(projectDir string) (string, error) {
 	}
 	gd, err := gitDir(projectDir)
 	if err != nil {
-		// Not a git repo (or git missing) → no cached id. The
-		// caller decides whether to surface this as an error.
-		return "", nil
+		if errors.Is(err, errNotGitRepo) {
+			return "", nil
+		}
+		return "", err
 	}
 	data, err := os.ReadFile(filepath.Join(gd, worktreeIDRelPath))
 	if os.IsNotExist(err) {
@@ -80,6 +87,10 @@ func gitDir(projectDir string) (string, error) {
 	cmd := exec.Command("git", "-C", projectDir, "rev-parse", "--absolute-git-dir")
 	out, err := cmd.Output()
 	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && strings.Contains(strings.ToLower(string(exitErr.Stderr)), "not a git repository") {
+			return "", errNotGitRepo
+		}
 		return "", fmt.Errorf("git rev-parse --absolute-git-dir in %s: %w", projectDir, err)
 	}
 	return strings.TrimSpace(string(out)), nil

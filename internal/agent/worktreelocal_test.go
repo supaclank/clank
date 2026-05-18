@@ -88,6 +88,25 @@ func TestReadLocalWorktreeID_NotAGitRepo(t *testing.T) {
 	}
 }
 
+// TestReadLocalWorktreeID_PropagatesGitErrors: gitDir failures that
+// aren't "not a git repository" (here: a nonexistent projectDir) must
+// surface as errors rather than silently degrading to "no id cached".
+// Documents the contract in worktreelocal.go that misconfigurations
+// don't masquerade as a missing cache.
+func TestReadLocalWorktreeID_PropagatesGitErrors(t *testing.T) {
+	// serial: uses t.Setenv (CLANK_WORKTREE_ID is a process global).
+	t.Setenv(EnvWorktreeID, "")
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	got, err := ReadLocalWorktreeID(missing)
+	if err == nil {
+		t.Fatalf("ReadLocalWorktreeID(%q) returned (%q, nil), want error", missing, got)
+	}
+	if got != "" {
+		t.Errorf("got id %q, want empty on error", got)
+	}
+}
+
 // TestLinkedWorktreeGetsItsOwnID is the headline property: a
 // `git worktree add` sibling resolves to a different $gitDir, so it
 // gets its own cached id rather than inheriting the main worktree's.
