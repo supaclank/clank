@@ -2,7 +2,9 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,6 +14,10 @@ import (
 	"github.com/acksell/clank/pkg/auth"
 	"github.com/acksell/clank/pkg/provisioner"
 )
+
+func jsonDecode(r io.Reader, v any) error {
+	return json.NewDecoder(r).Decode(v)
+}
 
 // localAuth wraps next so each request gets a fixed test Principal.
 // Mirrors what auth.Middleware + auth.AllowAll do in production but
@@ -56,6 +62,142 @@ func TestNewGateway_RequiresProvisioner(t *testing.T) {
 	t.Parallel()
 	if _, err := NewGateway(Config{}, nil); err == nil {
 		t.Error("NewGateway with nil Provisioner returned nil error")
+	}
+}
+
+func TestAuthConfigHandler_NilWhenUnset(t *testing.T) {
+	t.Parallel()
+	g, err := NewGateway(Config{Provisioner: &stubProvisioner{}}, nil)
+	if err != nil {
+		t.Fatalf("NewGateway: %v", err)
+	}
+	if h := g.AuthConfigHandler(); h != nil {
+		t.Errorf("AuthConfigHandler with nil AuthConfig: got %T, want nil", h)
+	}
+}
+
+func TestAuthConfigHandler_ServesJSON(t *testing.T) {
+	t.Parallel()
+	cfg := &AuthConfig{
+		AuthorizeEndpoint: "https://idp/authorize",
+		TokenEndpoint:     "https://idp/token",
+		ClientID:          "test-cli",
+		Scopes:            []string{"openid", "email"},
+		DefaultProvider:   "github",
+	}
+	g, err := NewGateway(Config{Provisioner: &stubProvisioner{}, AuthConfig: cfg}, nil)
+	if err != nil {
+		t.Fatalf("NewGateway: %v", err)
+	}
+	h := g.AuthConfigHandler()
+	if h == nil {
+		t.Fatal("AuthConfigHandler returned nil despite AuthConfig set")
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type: got %q, want application/json", ct)
+	}
+	var got AuthConfig
+	if err := jsonDecode(resp.Body, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.AuthorizeEndpoint != cfg.AuthorizeEndpoint {
+		t.Errorf("AuthorizeEndpoint: got %q, want %q", got.AuthorizeEndpoint, cfg.AuthorizeEndpoint)
+	}
+	if got.ClientID != cfg.ClientID {
+		t.Errorf("ClientID: got %q, want %q", got.ClientID, cfg.ClientID)
+	}
+}
+
+// TestAuthConfigHandler_PreAuthWiring demonstrates the daemon's
+// wiring pattern: a top-level mux that serves /auth-config pre-auth
+// and delegates everything else to auth.Middleware → gw.Handler().
+// Pins the bootstrap contract: clank can discover the IdP without a
+// token, but all other gateway routes still go through auth.
+func TestAuthConfigHandler_PreAuthWiring(t *testing.T) {
+	t.Parallel()
+	cfg := &AuthConfig{
+		AuthorizeEndpoint: "https://idp/authorize",
+		TokenEndpoint:     "https://idp/token",
+		ClientID:          "test-cli",
+	}
+	g, err := NewGateway(Config{Provisioner: &stubProvisioner{}, AuthConfig: cfg}, nil)
+	if err != nil {
+		t.Fatalf("NewGateway: %v", err)
+	}
+
+	// Authenticator that rejects everything — proves bypass works.
+	denyAll := &captureAuth{allowed: false}
+
+	mux := http.NewServeMux()
+	mux.Handle("GET /auth-config", g.AuthConfigHandler())
+	mux.Handle("/", auth.Middleware(g.Handler(), denyAll))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	// /auth-config: public, returns JSON discovery.
+	resp, err := http.Get(srv.URL + "/auth-config")
+	if err != nil {
+		t.Fatalf("GET /auth-config: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/auth-config status: got %d, want 200 (bypass must work)", resp.StatusCode)
+	}
+	if denyAll.calls != 0 {
+		t.Errorf("/auth-config triggered auth.Verify (%d calls); must be bypassed", denyAll.calls)
+	}
+
+	// /sessions: gated by auth, 401 from denyAll.
+	resp2, err := http.Get(srv.URL + "/sessions")
+	if err != nil {
+		t.Fatalf("GET /sessions: %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusUnauthorized {
+		t.Errorf("/sessions status: got %d, want 401 (auth must still gate non-public paths)", resp2.StatusCode)
+	}
+	if denyAll.calls != 1 {
+		t.Errorf("/sessions auth.Verify call count: got %d, want 1", denyAll.calls)
+	}
+}
+
+func TestAuthConfigHandler_NotMountedInMainHandler(t *testing.T) {
+	t.Parallel()
+	// The gateway's main Handler() must NOT serve /auth-config — that
+	// route is the daemon's responsibility to wire pre-auth, so it
+	// can't accidentally end up behind auth.Middleware here.
+	cfg := &AuthConfig{
+		AuthorizeEndpoint: "https://idp/authorize",
+		TokenEndpoint:     "https://idp/token",
+		ClientID:          "test-cli",
+	}
+	g, err := NewGateway(Config{Provisioner: &stubProvisioner{}, AuthConfig: cfg}, nil)
+	if err != nil {
+		t.Fatalf("NewGateway: %v", err)
+	}
+	srv := httptest.NewServer(localAuth(g.Handler(), "test"))
+	t.Cleanup(srv.Close)
+	resp, err := http.Get(srv.URL + "/auth-config")
+	if err != nil {
+		t.Fatalf("GET /auth-config: %v", err)
+	}
+	defer resp.Body.Close()
+	// Without the AuthConfigHandler being wired, /auth-config is just
+	// another path that gets proxied — which fails with 502 in this
+	// test because we didn't configure a useful HostRef. The point is
+	// it's NOT served as JSON discovery here.
+	if ct := resp.Header.Get("Content-Type"); ct == "application/json" && resp.StatusCode == 200 {
+		t.Errorf("gateway.Handler served /auth-config inline; daemon should wire it pre-auth instead")
 	}
 }
 

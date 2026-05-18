@@ -201,6 +201,50 @@ func TestManifest_RoundTripJSON(t *testing.T) {
 	}
 }
 
+// TestSnapshotMatchesBuildManifest pins the invariant that
+// Snapshot() and Build().Manifest agree on all 4 content SHAs for
+// the same working tree. Both share an internal helper, so this
+// guards against future drift if either path is edited.
+func TestSnapshotMatchesBuildManifest(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	repo := setupRepo(t, ctx)
+
+	writeFile(t, repo, "main.go", "package main\n\nfunc main(){}\n")
+	gitMustRun(t, ctx, repo, "add", "main.go")
+	gitMustRun(t, ctx, repo, "commit", "-m", "initial")
+	writeFile(t, repo, "staged.txt", "this is staged\n")
+	gitMustRun(t, ctx, repo, "add", "staged.txt")
+	writeFile(t, repo, "main.go", "package main\n\n// edited\nfunc main(){}\n")
+	writeFile(t, repo, "untracked.md", "# Notes\n")
+
+	b := checkpoint.NewBuilder(repo, "test:laptop")
+	snap, err := b.Snapshot(ctx)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	res, err := b.Build(ctx, "ck-parity")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer res.Cleanup()
+
+	if snap.HeadCommit != res.Manifest.HeadCommit {
+		t.Errorf("HeadCommit drift: snap=%q build=%q", snap.HeadCommit, res.Manifest.HeadCommit)
+	}
+	if snap.HeadRef != res.Manifest.HeadRef {
+		t.Errorf("HeadRef drift: snap=%q build=%q", snap.HeadRef, res.Manifest.HeadRef)
+	}
+	if snap.IndexTree != res.Manifest.IndexTree {
+		t.Errorf("IndexTree drift: snap=%q build=%q", snap.IndexTree, res.Manifest.IndexTree)
+	}
+	if snap.WorktreeTree != res.Manifest.WorktreeTree {
+		t.Errorf("WorktreeTree drift: snap=%q build=%q", snap.WorktreeTree, res.Manifest.WorktreeTree)
+	}
+}
+
 // roundTripAndAssert builds a checkpoint of repo, snapshots its state,
 // blows away the working tree, restores, and asserts equivalence.
 func roundTripAndAssert(t *testing.T, ctx context.Context, repo, checkpointID string) {

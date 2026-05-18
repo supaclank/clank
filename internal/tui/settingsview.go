@@ -32,7 +32,6 @@ type settingsEntryKind int
 const (
 	settingsEntryColorScheme settingsEntryKind = iota
 	settingsEntryDefaultBackend
-	settingsEntryActiveHub
 	settingsEntryProviders
 )
 
@@ -74,10 +73,7 @@ type settingsView struct {
 
 // newSettingsView builds the settings page with current preference
 // values baked in.
-func newSettingsView(currentColorScheme, currentDefaultBackend, currentActiveHub, cloudGatewayURL string) settingsView {
-	hubLabel := "Active hub"
-	hubDesc := "Which clankd this TUI/CLI talks to. Press enter to toggle. Restart the TUI for changes to take effect."
-	hubValue := resolveActiveHubName(currentActiveHub, cloudGatewayURL)
+func newSettingsView(currentColorScheme, currentDefaultBackend string) settingsView {
 	return settingsView{
 		entries: []settingsEntry{
 			{
@@ -91,12 +87,6 @@ func newSettingsView(currentColorScheme, currentDefaultBackend, currentActiveHub
 				label:       "Default agent backend",
 				description: "Backend used for new sessions when no override is given. Press enter to cycle.",
 				value:       resolveDefaultBackendName(currentDefaultBackend),
-			},
-			{
-				kind:        settingsEntryActiveHub,
-				label:       hubLabel,
-				description: hubDesc,
-				value:       hubValue,
 			},
 			{
 				kind:        settingsEntryProviders,
@@ -156,18 +146,6 @@ func (s *settingsView) DefaultBackendValue() string {
 	return ""
 }
 
-// SetActiveHubValue updates the "current value" text for the active-
-// hub entry, mirroring the default-backend pattern.
-func (s *settingsView) SetActiveHubValue(activeHub, cloudGatewayURL string) {
-	display := resolveActiveHubName(activeHub, cloudGatewayURL)
-	for i := range s.entries {
-		if s.entries[i].kind == settingsEntryActiveHub {
-			s.entries[i].value = display
-			return
-		}
-	}
-}
-
 // resolveColorSchemeName returns the scheme name to display, falling back
 // to the first built-in (the default) when no preference is set.
 func resolveColorSchemeName(name string) string {
@@ -182,20 +160,6 @@ func resolveColorSchemeName(name string) string {
 func resolveDefaultBackendName(name string) string {
 	bt, _ := agent.ResolveBackendPreference(name)
 	return string(bt)
-}
-
-// resolveActiveHubName renders the active-hub field. "remote" with no
-// URL configured renders as "remote (not configured)".
-func resolveActiveHubName(activeHub, cloudGatewayURL string) string {
-	switch activeHub {
-	case "remote":
-		if strings.TrimSpace(cloudGatewayURL) == "" {
-			return "remote (not configured)"
-		}
-		return "remote (" + cloudGatewayURL + ")"
-	default:
-		return "local"
-	}
 }
 
 func (s settingsView) Update(msg tea.Msg) (settingsView, tea.Cmd) {

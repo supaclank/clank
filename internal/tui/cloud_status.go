@@ -45,11 +45,11 @@ func loadCloudAuthStatus() cloudAuthStatus {
 		return cloudStatusNotConfigured
 	}
 	p := prefs.ActiveRemote()
-	if p == nil || p.AuthURL == "" {
+	if p == nil || p.GatewayURL == "" {
 		return cloudStatusNotConfigured
 	}
 	if p.AccessToken == "" || cloudTokenExpired(p) {
 		return cloudStatusOffline
 	}
-	return cloudStatusChecking
+	return cloudStatusOnline
 }

@@ -7,6 +7,7 @@ require (
 	charm.land/bubbletea/v2 v2.0.2
 	charm.land/lipgloss/v2 v2.0.2
 	github.com/MicahParks/keyfunc/v3 v3.8.0
+	github.com/acksell/opencode-go-sdk/sdk v0.1.1
 	github.com/atotto/clipboard v0.1.4
 	github.com/aws/aws-sdk-go-v2 v1.41.7
 	github.com/aws/aws-sdk-go-v2/config v1.32.17
@@ -21,8 +22,8 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/spf13/cobra v1.10.2
-	github.com/sst/opencode-sdk-go v0.19.2
 	github.com/superfly/sprites-go v0.0.0-20260421132718-b8bf80ad51d3
+	golang.org/x/sync v0.20.0
 	modernc.org/sqlite v1.47.0
 )
 
@@ -59,7 +60,6 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/time v0.9.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260401024825-9d38bb4040a9 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260401024825-9d38bb4040a9 // indirect
@@ -72,7 +72,7 @@ require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.2 // indirect
-	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834 // indirect
+	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/charmbracelet/ultraviolet v0.0.0-20260205113103-524a6607adb8 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
 	github.com/charmbracelet/x/exp/slice v0.0.0-20250327172914-2fdc97757edf // indirect
@@ -98,10 +98,6 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/severity1/claude-agent-sdk-go v0.6.12
 	github.com/spf13/pflag v1.0.9 // indirect
-	github.com/tidwall/gjson v1.17.1 // indirect
-	github.com/tidwall/match v1.1.1 // indirect
-	github.com/tidwall/pretty v1.2.1 // indirect
-	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yuin/goldmark v1.7.13 // indirect
 	github.com/yuin/goldmark-emoji v1.0.6 // indirect

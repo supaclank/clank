@@ -27,6 +27,7 @@ func Command() *cobra.Command {
 		Short: "AI-powered coding session manager",
 		Long:  "Clank manages your coding agent sessions and helps you track what's in flight.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			return runInbox()
 		},
 	}
@@ -36,6 +37,7 @@ func Command() *cobra.Command {
 		inboxCmd(),
 		pushCmd(),
 		pullCmd(),
+		statusCmd(),
 		remoteCmd(),
 		loginCmd(),
 	)
@@ -61,6 +63,7 @@ session detail TUI. Without a prompt, opens the inbox TUI.
 
 The daemon is auto-started if not already running.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			// Determine prompt.
 			prompt := strings.Join(args, " ")
 			if prompt == "" {
@@ -176,6 +179,7 @@ func inboxCmd() *cobra.Command {
 		Short: "Open the agent session inbox",
 		Long:  "View and manage daemon-managed coding agent sessions in an interactive TUI.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			return runInbox()
 		},
 	}
@@ -246,31 +250,15 @@ func redirectLogToFile() func() {
 	}
 }
 
-// ensureDaemon makes sure the active hub is reachable, starting the
-// local daemon if needed. Returns a connected client.
+// ensureDaemon makes sure the local clankd is running, starting it
+// if needed. Returns a connected Unix-socket client.
 //
-// In remote mode (preferences.active_hub == "remote"), we don't try
-// to spawn anything — the remote clankd is the user's responsibility.
-// We just build a TCP client and ping; if it fails the user gets a
-// clear "remote hub <url> not reachable" error so they know to start
-// it themselves rather than wondering why their local clankd isn't up.
-//
-// In local mode (the default), we keep the historical "auto-start the
-// local daemon" UX so `clank tui` just works after install.
+// `clank` only ever talks to the local daemon: per-session ops to
+// remote-owned worktrees are proxied transparently through the local
+// gateway. The old ActiveHub toggle (laptop client → remote daemon)
+// is gone; remote daemons are the responsibility of `clank push`/
+// `clank pull` flows that explicitly use NewRemoteClient.
 func ensureDaemon() (*daemonclient.Client, error) {
-	if daemonclient.IsRemoteActive() {
-		client, err := daemonclient.NewDefaultClient()
-		if err != nil {
-			return nil, err
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := client.Ping(ctx); err != nil {
-			return nil, fmt.Errorf("remote hub %s not reachable: %w", daemonclient.ActiveHubLabel(), err)
-		}
-		return client, nil
-	}
-
 	running, _, err := daemonclient.IsRunning()
 	if err != nil {
 		return nil, err

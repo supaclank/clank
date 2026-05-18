@@ -2,7 +2,6 @@ package clankcli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -12,25 +11,43 @@ import (
 	"github.com/acksell/clank/internal/config"
 )
 
-// loginCmd registers `clank login` — drive an RFC 8628 device flow
-// against the active remote's auth server, then persist the resulting
-// access/refresh tokens on that remote's entry. Same code path the
-// TUI's cloud panel uses; this is the terminal-only entry point.
+// loginCmd registers `clank login` — drive the OAuth 2.0 authorization
+// code + PKCE dance against the active remote's gateway, then persist
+// the resulting access/refresh tokens on that remote's entry. Same
+// code path the TUI's cloud panel uses; this is the terminal-only
+// entry point.
+//
+// Discovery: the gateway exposes /auth-config returning standard
+// OAuth 2.0 endpoints (authorize, token, client_id, scopes). clank
+// runs PKCE against them; the browser handles the actual sign-in
+// (GitHub / Google / SSO / etc. as configured in the IdP dashboard).
 //
 // Targets the active remote by default; --remote selects a different
 // one without flipping which is active.
 func loginCmd() *cobra.Command {
-	var remoteName string
+	var (
+		remoteName string
+		provider   string
+	)
 	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "Sign in to a remote via OAuth device flow",
-		Long: `Authenticate against the auth_url of a configured remote and store
-the access token on that remote's entry in preferences.json.
+		Short: "Sign in to a remote via OAuth (PKCE in your browser)",
+		Long: `Authenticate against the gateway_url of a configured remote and
+store the access token on that remote's entry in preferences.json.
+
+clank opens your browser to the IdP (discovered via
+<gateway_url>/auth-config), and you sign in there. The browser
+redirects to a localhost listener clank spawns; the token round-trips
+back into the prefs file.
 
 Defaults to the active remote; pass --remote to log in to a different
 remote (without changing which is active). The remote must have
-auth_url set; configure it via ` + "`clank remote add <name> --auth-url=...`" + `.`,
+gateway_url set; configure it via ` + "`clank remote add <name> --gateway-url=...`" + `.
+
+Doesn't work over SSH or in containers (localhost callback can't reach
+the user's browser). Workaround: ssh -L <port>:localhost:<port>.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			prefs, err := config.LoadPreferences()
 			if err != nil {
 				return fmt.Errorf("load preferences: %w", err)
@@ -38,39 +55,60 @@ auth_url set; configure it via ` + "`clank remote add <name> --auth-url=...`" + 
 			target, name := resolveLoginTarget(prefs, remoteName)
 			if target == nil {
 				if remoteName == "" {
-					return fmt.Errorf("no active remote configured; run `clank remote add <name> --gateway-url=... --auth-url=...` first")
+					return fmt.Errorf("no active remote configured; run `clank remote add <name> --gateway-url=...` first")
 				}
 				return fmt.Errorf("no remote named %q", remoteName)
 			}
-			if target.AuthURL == "" {
-				return fmt.Errorf("remote %q has no auth_url; add one with `clank remote add %s --auth-url=...`", name, name)
+			if target.GatewayURL == "" {
+				return fmt.Errorf("remote %q has no gateway_url; add one with `clank remote add %s --gateway-url=...`", name, name)
 			}
 
-			c := cloud.New(target.AuthURL, nil)
-			ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
+			ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Minute)
 			defer cancel()
 
-			start, err := c.StartDeviceFlow(ctx)
+			// Discover IdP via /auth-config.
+			gw := cloud.New(target.GatewayURL, nil)
+			fmt.Fprintf(cmd.OutOrStdout(), "Discovering auth config at %s … ", target.GatewayURL)
+			cfg, err := gw.FetchAuthConfig(ctx)
 			if err != nil {
-				return fmt.Errorf("start device flow: %w", err)
+				return fmt.Errorf("\nfetch auth-config: %w", err)
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "ok")
+
+			provName := provider
+			if provName == "" {
+				provName = cfg.DefaultProvider
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "\nTo sign in, visit:\n\n    %s\n\nand enter the code: %s\n\nWaiting for confirmation",
-				preferVerificationURI(start), start.UserCode)
-
-			session, err := pollDeviceFlow(ctx, cmd, c, start)
-			if err != nil {
-				return err
+			if provName != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Opening browser for sign-in via %s … ", provName)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "Opening browser for sign-in … ")
 			}
+			oauth := &cloud.OAuthClient{
+				AuthorizeEndpoint: cfg.AuthorizeEndpoint,
+				TokenEndpoint:     cfg.TokenEndpoint,
+				ClientID:          cfg.ClientID,
+				Scopes:            cfg.Scopes,
+				Provider:          provName,
+				CallbackPort:      cfg.CallbackPort,
+				Prompt:            cmd.ErrOrStderr(),
+			}
+			session, err := oauth.Login(ctx)
+			if err != nil {
+				return fmt.Errorf("\nsign-in: %w", err)
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "ok")
 
 			if err := persistRemoteSession(name, session); err != nil {
 				return fmt.Errorf("save session: %w", err)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), " ok\n\nSigned in to remote %q as %s\n", name, session.UserEmail)
+			fmt.Fprintf(cmd.OutOrStdout(), "\nSigned in to remote %q as %s\n", name, session.UserEmail)
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&remoteName, "remote", "", "Remote name to log in to (default: active remote)")
+	cmd.Flags().StringVar(&provider, "provider", "", "OAuth provider override (default: server's default_provider, if any)")
 	return cmd
 }
 
@@ -86,61 +124,11 @@ func resolveLoginTarget(prefs config.Preferences, name string) (*config.Remote, 
 	return prefs.ActiveRemote(), prefs.Remote.Active
 }
 
-// preferVerificationURI uses the *Complete variant when available
-// (clickable link with code prefilled) and falls back to the bare URI.
-func preferVerificationURI(s *cloud.DeviceStartResponse) string {
-	if s.VerificationURIComplete != "" {
-		return s.VerificationURIComplete
-	}
-	return s.VerificationURI
-}
-
-// pollDeviceFlow runs the standard RFC 8628 poll loop with a slow-down
-// nudge on the matching error. Returns the session on success or
-// surfaces any non-pending error to the caller.
-func pollDeviceFlow(ctx context.Context, cmd *cobra.Command, c *cloud.Client, start *cloud.DeviceStartResponse) (*cloud.Session, error) {
-	interval := time.Duration(start.Interval) * time.Second
-	if interval <= 0 {
-		interval = 5 * time.Second
-	}
-	deadline := time.Now().Add(time.Duration(start.ExpiresIn) * time.Second)
-	if start.ExpiresIn <= 0 {
-		deadline = time.Now().Add(15 * time.Minute)
-	}
-	for {
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("\ndevice flow timed out before approval — re-run `clank login`")
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(interval):
-		}
-		session, err := c.PollDeviceFlow(ctx, start.DeviceCode)
-		switch {
-		case err == nil:
-			return session, nil
-		case errors.Is(err, cloud.ErrAuthorizationPending):
-			fmt.Fprint(cmd.OutOrStdout(), ".")
-			continue
-		case errors.Is(err, cloud.ErrSlowDown):
-			interval += 5 * time.Second
-			continue
-		case errors.Is(err, cloud.ErrAccessDenied):
-			return nil, fmt.Errorf("\nsign-in was denied")
-		case errors.Is(err, cloud.ErrExpiredToken):
-			return nil, fmt.Errorf("\ndevice code expired before approval — re-run `clank login`")
-		default:
-			return nil, fmt.Errorf("\npoll: %w", err)
-		}
-	}
-}
-
-// persistRemoteSession writes the device-flow grant onto the named
-// remote in preferences.json. Creates the remote entry if missing —
-// possible when --remote names an unknown one (caller already
-// validated, but UpdatePreferences runs against the latest disk
-// version which a concurrent edit could have changed).
+// persistRemoteSession writes the OAuth grant onto the named remote in
+// preferences.json. Creates the remote entry if missing — possible when
+// --remote names an unknown one (caller already validated, but
+// UpdatePreferences runs against the latest disk version which a
+// concurrent edit could have changed).
 func persistRemoteSession(name string, s *cloud.Session) error {
 	return config.UpdatePreferences(func(p *config.Preferences) {
 		if p.Remote == nil {
@@ -161,3 +149,4 @@ func persistRemoteSession(name string, s *cloud.Session) error {
 		r.ExpiresAt = s.ExpiresAt
 	})
 }
+

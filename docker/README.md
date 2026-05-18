@@ -6,8 +6,8 @@ Brings up a complete clank backend on your laptop (primarily for development & t
 - **clankd** — gateway with the embedded sync server (presigned URLs +
   sqlite metadata) and the local provisioner (spawns clank-host as a
   subprocess inside the container so migrations land somewhere)
-- **clank-auth-stub** — dev OAuth 2.0 device-flow server that
-  auto-approves every login and mints an HS256-signed JWT, so
+- **clank-auth-stub** — dev OAuth 2.0 + PKCE server that
+  auto-approves every authorization and mints an HS256-signed JWT, so
   `clank login` works end-to-end against the local stack
 
 Everything is self-contained — no fly.io, daytona, or AWS account
@@ -105,14 +105,14 @@ From the laptop, with the stack running:
 ```sh
 cd ~/some-real-repo
 
-# Register the docker stack as a remote (one-time).
-# --auth-url points at the dev auth-stub so `clank login` works.
-clank remote add dev \
-  --gateway-url=http://localhost:7878 \
-  --auth-url=http://localhost:7879
+# Register the docker stack as a remote (one-time). `clank login`
+# discovers the auth-stub via the gateway's /auth-config endpoint —
+# no separate auth URL flag needed.
+clank remote add dev --gateway-url=http://localhost:7878
 
-# Sign in via device flow against the stub (auto-approves and mints
-# an HS256 JWT the gateway will verify):
+# Sign in via OAuth 2.0 + PKCE against the stub. The browser auto-
+# approves (no user interaction in dev) and the laptop receives an
+# HS256 JWT that clankd verifies with its shared secret:
 clank login
 
 # Verify:

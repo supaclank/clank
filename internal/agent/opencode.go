@@ -2,9 +2,7 @@ package agent
 
 import (
 	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -15,8 +13,9 @@ import (
 	"sync"
 	"time"
 
-	opencode "github.com/sst/opencode-sdk-go"
-	"github.com/sst/opencode-sdk-go/option"
+	opencode "github.com/acksell/opencode-go-sdk/sdk"
+	"github.com/acksell/opencode-go-sdk/sdk/client"
+	"github.com/acksell/opencode-go-sdk/sdk/option"
 )
 
 // ServerResolver returns the current server URL for a project directory.
@@ -47,10 +46,12 @@ type OpenCodeBackend struct {
 	watchOnce    sync.Once // ensures streamEvents is started at most once
 	ctx          context.Context
 	cancel       context.CancelFunc
-	client       *opencode.Client
+	client       *client.Client
 
-	// messageRoles tracks message ID -> role so we can skip user part updates.
-	messageRoles sync.Map // map[string]opencode.MessageRole
+	// messageRoles tracks message ID -> role ("user" or "assistant") so we can
+	// skip user part updates. Reverts to plain string once the SDK regen exposes
+	// MessageUnion's role as a typed enum on both variants.
+	messageRoles sync.Map // map[string]string
 }
 
 // NewOpenCodeBackend creates a new OpenCode backend that communicates with
@@ -65,7 +66,6 @@ type OpenCodeBackend struct {
 func NewOpenCodeBackend(serverURL string, sessionID string, resolver ServerResolver) *OpenCodeBackend {
 	ctx, cancel := context.WithCancel(context.Background())
 	serverURL = strings.TrimRight(serverURL, "/")
-	client := opencode.NewClient(option.WithBaseURL(serverURL))
 	return &OpenCodeBackend{
 		status:    StatusIdle,
 		serverURL: serverURL,
@@ -74,7 +74,7 @@ func NewOpenCodeBackend(serverURL string, sessionID string, resolver ServerResol
 		events:    make(chan Event, 128),
 		ctx:       ctx,
 		cancel:    cancel,
-		client:    client,
+		client:    client.NewClient(option.WithBaseURL(serverURL)),
 	}
 }
 
@@ -91,10 +91,10 @@ func (b *OpenCodeBackend) Open(ctx context.Context) error {
 
 	if b.SessionID() == "" {
 		// Create new session via SDK.
-		session, err := b.client.Session.New(ctx, opencode.SessionNewParams{})
+		session, err := b.client.Session.Create(ctx, &opencode.SessionCreateRequest{})
 		if err != nil && isConnectionError(err) && b.resolver != nil {
 			if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
-				session, err = b.client.Session.New(ctx, opencode.SessionNewParams{})
+				session, err = b.client.Session.Create(ctx, &opencode.SessionCreateRequest{})
 			}
 		}
 		if err != nil {
@@ -120,11 +120,12 @@ func (b *OpenCodeBackend) OpenAndSend(ctx context.Context, opts SendMessageOpts)
 	return b.Send(ctx, opts)
 }
 
-// Send dispatches a prompt to an already-Open session. Fire-and-forget:
-// Session.Prompt is dispatched on b.ctx (not the caller's ctx) in a
-// background goroutine so the prompt survives the HTTP request lifetime
-// (it is cancelled by Stop()). Errors surface as EventError +
-// StatusError, mirroring the Claude backend's structurally async Query.
+// Send dispatches a prompt to an already-Open session. Uses the server's
+// async endpoint (POST /session/{id}/prompt_async, HTTP 204): the HTTP call
+// returns as soon as the server has queued the prompt, even if the upstream
+// LLM stream stalls. Conversation progress is observed via SSE events
+// (StatusBusy → text/tool parts → StatusIdle). Errors surface as EventError
+// + StatusError, mirroring the Claude backend's structurally async Query.
 func (b *OpenCodeBackend) Send(ctx context.Context, opts SendMessageOpts) error {
 	if b.SessionID() == "" {
 		return fmt.Errorf("session not open")
@@ -137,35 +138,38 @@ func (b *OpenCodeBackend) Send(ctx context.Context, opts SendMessageOpts) error 
 	return nil
 }
 
-func (b *OpenCodeBackend) buildPromptParams(opts SendMessageOpts) opencode.SessionPromptParams {
-	params := opencode.SessionPromptParams{
-		Parts: opencode.F([]opencode.SessionPromptParamsPartUnion{
-			opencode.TextPartInputParam{
-				Text: opencode.F(opts.Text),
-				Type: opencode.F(opencode.TextPartInputTypeText),
-			},
-		}),
+func (b *OpenCodeBackend) buildPromptParams(opts SendMessageOpts) *opencode.SessionPromptAsyncRequest {
+	req := &opencode.SessionPromptAsyncRequest{
+		SessionID: b.SessionID(),
+		// Fern discriminates this union by which variant pointer is non-nil
+		// and injects the "type": "text" tag at marshal time. No explicit
+		// Type field to set here.
+		Parts: []*opencode.SessionPromptAsyncRequestPartsItem{
+			{Text: &opencode.TextPartInput{Text: opts.Text}},
+		},
 	}
 	if opts.Agent != "" {
-		params.Agent = opencode.F(opts.Agent)
+		req.Agent = opencode.String(opts.Agent)
 	}
 	if opts.Model != nil {
-		params.Model = opencode.F(opencode.SessionPromptParamsModel{
-			ModelID:    opencode.F(opts.Model.ModelID),
-			ProviderID: opencode.F(opts.Model.ProviderID),
-		})
+		req.Model = &opencode.SessionPromptAsyncRequestModel{
+			ProviderID: opts.Model.ProviderID,
+			ModelID:    opts.Model.ModelID,
+		}
 	}
-	return params
+	return req
 }
 
-// runPrompt dispatches Session.Prompt and translates errors into a status
-// transition + EventError. Used by Send to keep the prompt fire-and-forget
-// without losing failure visibility.
-func (b *OpenCodeBackend) runPrompt(sid string, params opencode.SessionPromptParams) {
-	_, err := b.client.Session.Prompt(b.ctx, sid, params)
+// runPrompt dispatches Session.PromptAsync and translates errors into a
+// status transition + EventError. PromptAsync hits /session/{id}/prompt_async,
+// which returns 204 immediately once the server queues the prompt — no
+// HTTP-level hang if the upstream LLM stream stalls. Streaming progress
+// arrives via SSE on /global/event.
+func (b *OpenCodeBackend) runPrompt(sid string, req *opencode.SessionPromptAsyncRequest) {
+	err := b.client.Session.PromptAsync(b.ctx, req)
 	if err != nil && isConnectionError(err) && b.resolver != nil {
 		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
-			_, err = b.client.Session.Prompt(b.ctx, sid, params)
+			err = b.client.Session.PromptAsync(b.ctx, req)
 		}
 	}
 	if err != nil {
@@ -189,10 +193,10 @@ func (b *OpenCodeBackend) Abort(ctx context.Context) error {
 	if b.sessionID == "" {
 		return fmt.Errorf("session not started")
 	}
-	_, err := b.client.Session.Abort(ctx, b.sessionID, opencode.SessionAbortParams{})
+	_, err := b.client.Session.Abort(ctx, &opencode.SessionAbortRequest{SessionID: b.sessionID})
 	if err != nil && isConnectionError(err) && b.resolver != nil {
 		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
-			_, err = b.client.Session.Abort(ctx, b.sessionID, opencode.SessionAbortParams{})
+			_, err = b.client.Session.Abort(ctx, &opencode.SessionAbortRequest{SessionID: b.sessionID})
 		}
 	}
 	if err != nil {
@@ -205,14 +209,14 @@ func (b *OpenCodeBackend) Revert(ctx context.Context, messageID string) error {
 	if b.sessionID == "" {
 		return fmt.Errorf("session not started")
 	}
-	_, err := b.client.Session.Revert(ctx, b.sessionID, opencode.SessionRevertParams{
-		MessageID: opencode.F(messageID),
-	})
+	req := &opencode.SessionRevertRequest{
+		SessionID: b.sessionID,
+		MessageID: messageID,
+	}
+	_, err := b.client.Session.Revert(ctx, req)
 	if err != nil && isConnectionError(err) && b.resolver != nil {
 		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
-			_, err = b.client.Session.Revert(ctx, b.sessionID, opencode.SessionRevertParams{
-				MessageID: opencode.F(messageID),
-			})
+			_, err = b.client.Session.Revert(ctx, req)
 		}
 	}
 	if err != nil {
@@ -225,56 +229,21 @@ func (b *OpenCodeBackend) Fork(ctx context.Context, messageID string) (ForkResul
 	if b.sessionID == "" {
 		return ForkResult{}, fmt.Errorf("session not started")
 	}
-
-	doFork := func() (ForkResult, error) {
-		url := b.serverURL + "/session/" + b.sessionID + "/fork"
-		var bodyMap map[string]string
-		if messageID != "" {
-			bodyMap = map[string]string{"messageID": messageID}
-		} else {
-			bodyMap = map[string]string{}
-		}
-		body, err := json.Marshal(bodyMap)
-		if err != nil {
-			return ForkResult{}, fmt.Errorf("fork: marshal body: %w", err)
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-		if err != nil {
-			return ForkResult{}, fmt.Errorf("fork: create request: %w", err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return ForkResult{}, err
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			respBody, _ := io.ReadAll(resp.Body)
-			return ForkResult{}, fmt.Errorf("fork: server returned %d: %s", resp.StatusCode, string(respBody))
-		}
-
-		var result struct {
-			ID    string `json:"id"`
-			Title string `json:"title"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			return ForkResult{}, fmt.Errorf("fork: decode response: %w", err)
-		}
-		return ForkResult{ID: result.ID, Title: result.Title}, nil
+	req := &opencode.SessionForkRequest{SessionID: b.sessionID}
+	if messageID != "" {
+		req.MessageID = opencode.String(messageID)
 	}
 
-	res, err := doFork()
+	session, err := b.client.Session.Fork(ctx, req)
 	if err != nil && isConnectionError(err) && b.resolver != nil {
 		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
-			res, err = doFork()
+			session, err = b.client.Session.Fork(ctx, req)
 		}
 	}
 	if err != nil {
 		return ForkResult{}, fmt.Errorf("fork: %w", err)
 	}
-	return res, nil
+	return ForkResult{ID: session.ID, Title: session.Title}, nil
 }
 
 func (b *OpenCodeBackend) Stop() error {
@@ -303,18 +272,19 @@ func (b *OpenCodeBackend) RespondPermission(ctx context.Context, permissionID st
 	if b.sessionID == "" {
 		return fmt.Errorf("session not started")
 	}
-	response := opencode.SessionPermissionRespondParamsResponseOnce
+	response := opencode.PermissionRespondRequestResponseOnce
 	if !allow {
-		response = opencode.SessionPermissionRespondParamsResponseReject
+		response = opencode.PermissionRespondRequestResponseReject
 	}
-	_, err := b.client.Session.Permissions.Respond(ctx, b.sessionID, permissionID, opencode.SessionPermissionRespondParams{
-		Response: opencode.F(response),
-	})
+	req := &opencode.PermissionRespondRequest{
+		SessionID:    b.sessionID,
+		PermissionID: permissionID,
+		Response:     response,
+	}
+	_, err := b.client.Session.PermissionRespond(ctx, req)
 	if err != nil && isConnectionError(err) && b.resolver != nil {
 		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
-			_, err = b.client.Session.Permissions.Respond(ctx, b.sessionID, permissionID, opencode.SessionPermissionRespondParams{
-				Response: opencode.F(response),
-			})
+			_, err = b.client.Session.PermissionRespond(ctx, req)
 		}
 	}
 	if err != nil {
@@ -379,8 +349,9 @@ func (b *OpenCodeBackend) emit(evt Event) {
 // it re-resolves the server URL via the ServerResolver, which handles
 // server restarts (potentially on a new port).
 //
-// Uses the raw /event endpoint instead of the SDK — see connectAndStreamSSE
-// for the rationale.
+// Uses client.Global.Event(ctx), which is the SDK's typed wrapper over the
+// /global/event SSE endpoint. The SDK handles SSE framing, payload-envelope
+// unwrapping, and union typing; we just iterate.
 func (b *OpenCodeBackend) streamEvents() {
 	defer b.closeEvents()
 
@@ -465,38 +436,23 @@ func (b *OpenCodeBackend) streamEvents() {
 	}
 }
 
-// connectAndStreamSSE performs a single SSE connection to the OpenCode
-// server's /event endpoint and processes events until the stream ends or
-// errors. Returns (true, nil) if it received at least one SSE event before
-// disconnecting, (false, err) if the connection failed or closed before any
-// data arrived. The bool indicates whether the connection was productive
-// (used by the caller to reset backoff — a 200+immediate-EOF is not
-// considered productive).
+// connectAndStreamSSE opens a single SSE connection via client.Global.Event
+// and processes events until the stream ends or errors. Returns (true, nil)
+// if it received at least one event before disconnecting, (false, err) if
+// the connection failed or closed before any data arrived. The bool tells
+// the caller whether to reset its backoff counter (a 200+immediate-EOF is
+// not considered productive).
 //
-// A bug was the reason for not using SDK's Event.ListStreaming():
-// New event "message.part.delta" is not supported by SDK.
-// Similar issue in vibe-kanban upon further research:
-// https://github.com/BloopAI/vibe-kanban/issues/3123.
-//
-// Last update to the Go SDK was 3 months ago, probably causing this
-// discrepancy between what the server sends and what the SDK handles.
-//
-// The server's /event endpoint uses Bus.subscribeAll(), which publishes message.part.delta
-// events containing token-level streaming deltas — exactly what we need for
-// real-time text display. The SDK's Stream[EventListResponse] either silently
-// drops these (unknown union variant) or may break the stream entirely.
+// The SDK's typed stream gives us back *opencode.GlobalEvent — the
+// envelope ({directory, project, payload}) is already unwrapped into the
+// struct, and Payload is a tagged-union with one pointer field per variant.
+// Domain events have a non-nil Event* variant; sync-replay duplicates have a
+// SyncEvent* variant (we drop those).
 func (b *OpenCodeBackend) connectAndStreamSSE(attempt int) (connected bool, err error) {
-	b.mu.Lock()
-	serverURL := b.serverURL
-	b.mu.Unlock()
-
-	req, err := http.NewRequestWithContext(b.ctx, http.MethodGet, serverURL+"/event", nil)
-	if err != nil {
-		return false, fmt.Errorf("build SSE request: %w", err)
-	}
-	req.Header.Set("Accept", "text/event-stream")
-
-	resp, err := http.DefaultClient.Do(req)
+	// Fern's default SSE buffer cap is 1MB. opencode session-snapshot events
+	// (especially after long conversations or large tool outputs) routinely
+	// exceed that. Bump to 16MB — well above any realistic single-event size.
+	stream, err := b.client.Global.Event(b.ctx, option.WithMaxStreamBufSize(16*1024*1024))
 	if err != nil {
 		select {
 		case <-b.ctx.Done():
@@ -505,72 +461,16 @@ func (b *OpenCodeBackend) connectAndStreamSSE(attempt int) (connected bool, err 
 			return false, fmt.Errorf("SSE connect: %w", err)
 		}
 	}
-	defer resp.Body.Close()
+	defer stream.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("SSE endpoint returned %d", resp.StatusCode)
-	}
-
-	// Successfully connected.
-	if attempt > 0 {
-		b.emit(Event{
-			Type:      EventReconnected,
-			Timestamp: time.Now(),
-			Data: ReconnectedData{
-				Attempts: attempt,
-			},
-		})
-	}
-
-	// Use bufio.Reader instead of bufio.Scanner to avoid a hard upper
-	// limit on line length. Scanner fails permanently with "token too
-	// long" when a single SSE data line exceeds its buffer cap (common
-	// with large session snapshots for long conversations). ReadBytes
-	// allocates dynamically, eliminating this class of failure.
-	reader := bufio.NewReader(resp.Body)
-
-	// Track whether we received any meaningful data. Only reset the caller's
-	// backoff counter if we actually streamed events (not just 200 + EOF).
+	// We've connected to a 200-OK stream at this point (SDK would have
+	// returned an error otherwise). Only emit Reconnected once we've
+	// actually received an event — see receivedData below.
 	receivedData := false
 
-	var dataBuf bytes.Buffer
 	for {
-		line, err := reader.ReadBytes('\n')
-		line = bytes.TrimRight(line, "\r\n")
-
-		if len(line) == 0 && err == nil {
-			// Empty line = dispatch the accumulated event.
-			if dataBuf.Len() > 0 {
-				b.handleRawSSEEvent(dataBuf.Bytes())
-				dataBuf.Reset()
-				receivedData = true
-			}
-			continue
-		}
-
-		if len(line) > 0 {
-			// Parse SSE field.
-			name, value, _ := bytes.Cut(line, []byte(":"))
-			if len(value) > 0 && value[0] == ' ' {
-				value = value[1:]
-			}
-
-			switch string(name) {
-			case "data":
-				dataBuf.Write(value)
-				dataBuf.WriteByte('\n')
-			case "":
-				// Comment line (": something"), ignore.
-			}
-		}
-
+		ev, err := stream.Recv()
 		if err != nil {
-			// Dispatch any buffered event before returning.
-			if dataBuf.Len() > 0 {
-				b.handleRawSSEEvent(dataBuf.Bytes())
-				dataBuf.Reset()
-				receivedData = true
-			}
 			if err == io.EOF {
 				return receivedData, nil // clean close
 			}
@@ -581,132 +481,86 @@ func (b *OpenCodeBackend) connectAndStreamSSE(attempt int) (connected bool, err 
 				return receivedData, fmt.Errorf("SSE stream: %w", err)
 			}
 		}
+		if !receivedData && attempt > 0 {
+			b.emit(Event{
+				Type:      EventReconnected,
+				Timestamp: time.Now(),
+				Data:      ReconnectedData{Attempts: attempt},
+			})
+		}
+		receivedData = true
+		b.handleGlobalEvent(&ev)
 	}
 }
 
-// partDeltaEvent is the JSON shape of a "message.part.delta" BusEvent as
-// sent by the OpenCode server. This event carries token-level streaming
-// deltas and is NOT modeled by the Go SDK.
-type partDeltaEvent struct {
-	Type       string `json:"type"`
-	Properties struct {
-		SessionID string `json:"sessionID"`
-		MessageID string `json:"messageID"`
-		PartID    string `json:"partID"`
-		Field     string `json:"field"`
-		Delta     string `json:"delta"`
-	} `json:"properties"`
-}
-
-// permissionAskedEvent is the JSON shape of a "permission.asked" BusEvent
-// as sent by the OpenCode server. This event is emitted when the server
-// needs user approval for a tool call and is NOT modeled by the Go SDK
-// (which only has "permission.updated" / "permission.replied").
-type permissionAskedEvent struct {
-	Type       string `json:"type"`
-	Properties struct {
-		ID         string                 `json:"id"`
-		Permission string                 `json:"permission"` // e.g. "bash", "write"
-		Patterns   []string               `json:"patterns"`   // e.g. ["npx cowsay hello"]
-		Always     []string               `json:"always"`     // broader pattern for "always allow"
-		SessionID  string                 `json:"sessionID"`
-		Metadata   map[string]interface{} `json:"metadata"`
-		Tool       struct {
-			MessageID string `json:"messageID"`
-			CallID    string `json:"callID"`
-		} `json:"tool"`
-	} `json:"properties"`
-}
-
-// handleRawSSEEvent processes a single SSE data payload (raw JSON bytes).
-// It handles event types not modeled by the SDK ("message.part.delta",
-// "permission.asked") with custom parsing, then falls back to the SDK's
-// EventListResponse unmarshalling for all other types.
-func (b *OpenCodeBackend) handleRawSSEEvent(data []byte) {
-	// Quick peek at the "type" field to decide how to route.
-	var peek struct {
-		Type string `json:"type"`
+// handleGlobalEvent dispatches a single decoded /global/event payload to the
+// clank Event channel. The SDK's GlobalEventPayload is a discriminated
+// union — `Type` carries the wire `type` value, and exactly one
+// variant pointer is non-nil. All other variants (TUI, MCP, server.*,
+// installation, PTY, …) are intentionally ignored.
+func (b *OpenCodeBackend) handleGlobalEvent(ev *opencode.GlobalEvent) {
+	if ev == nil || ev.Payload == nil {
+		return
 	}
-	if err := json.Unmarshal(data, &peek); err != nil {
-		return // Malformed JSON, skip.
-	}
+	p := ev.Payload
 
-	switch peek.Type {
-	case "message.part.delta":
-		var delta partDeltaEvent
-		if err := json.Unmarshal(data, &delta); err != nil {
+	switch {
+	case p.MessagePartDelta != nil:
+		b.handlePartDelta(p.MessagePartDelta.Properties)
+
+	case p.PermissionAsked != nil:
+		// EventPermissionAsked.Properties is a *PermissionRequest directly.
+		b.handlePermissionAsked(p.PermissionAsked.Properties)
+
+	case p.SessionIdle != nil:
+		if p.SessionIdle.Properties.SessionID != b.sessionID {
 			return
 		}
-		b.handlePartDelta(delta)
-		return
+		b.setStatus(StatusIdle)
 
-	case "permission.asked":
-		// "permission.asked" is emitted when OpenCode needs user approval
-		// for a tool call. Not modeled by the SDK — handle directly.
-		var asked permissionAskedEvent
-		if err := json.Unmarshal(data, &asked); err != nil {
+	case p.SessionError != nil:
+		props := p.SessionError.Properties
+		if props == nil {
 			return
 		}
-		b.handlePermissionAsked(asked)
-		return
-	}
+		sid := ""
+		if props.SessionID != nil {
+			sid = *props.SessionID
+		}
+		if sid != "" && sid != b.sessionID {
+			return
+		}
+		b.setStatus(StatusError)
+		if props.Error != nil {
+			b.emitError(props.Error.Name)
+		}
 
-	// For all other event types, delegate to the SDK's typed unmarshaller.
-	var event opencode.EventListResponse
-	if err := json.Unmarshal(data, &event); err != nil {
-		// Unknown event type the SDK can't parse — silently skip.
-		return
-	}
-	b.handleSDKEvent(event)
-}
+	case p.MessageUpdated != nil:
+		b.handleMessageUpdated(p.MessageUpdated.Properties)
 
-// handlePermissionAsked processes a "permission.asked" event from the
-// OpenCode server. This event type is not modeled by the SDK.
-func (b *OpenCodeBackend) handlePermissionAsked(asked permissionAskedEvent) {
-	props := asked.Properties
-	if props.SessionID != b.SessionID() {
-		return
-	}
+	case p.MessagePartUpdated != nil:
+		b.handleMessagePartUpdated(p.MessagePartUpdated.Properties)
 
-	// Build a human-readable description from the permission fields.
-	// e.g. "bash: npx cowsay hello"
-	description := props.Permission
-	if len(props.Patterns) > 0 {
-		description += ": " + strings.Join(props.Patterns, ", ")
+	case p.SessionUpdated != nil:
+		b.handleSessionUpdated(p.SessionUpdated.Properties)
 	}
-
-	b.emit(Event{
-		Type:      EventPermission,
-		Timestamp: time.Now(),
-		Data: PermissionData{
-			RequestID:   props.ID,
-			Tool:        props.Permission,
-			Description: description,
-		},
-	})
 }
 
 // handlePartDelta processes a message.part.delta event (token-level streaming).
-func (b *OpenCodeBackend) handlePartDelta(delta partDeltaEvent) {
-	props := delta.Properties
-
-	// Filter to our session.
-	if props.SessionID != b.SessionID() {
+func (b *OpenCodeBackend) handlePartDelta(props *opencode.EventMessagePartDeltaProperties) {
+	if props == nil || props.SessionID != b.SessionID() {
 		return
 	}
-
 	// Skip parts belonging to user messages.
 	if role, ok := b.messageRoles.Load(props.MessageID); ok {
-		if role == opencode.MessageRoleUser {
+		if role == "user" {
 			return
 		}
 	}
-
 	// Only handle text content deltas (field="text" for text parts).
 	if props.Delta == "" {
 		return
 	}
-
 	b.emit(Event{
 		Type:      EventPartUpdate,
 		Timestamp: time.Now(),
@@ -721,201 +575,147 @@ func (b *OpenCodeBackend) handlePartDelta(delta partDeltaEvent) {
 	})
 }
 
-// handleSDKEvent translates an OpenCode SDK event into our unified Event type.
-func (b *OpenCodeBackend) handleSDKEvent(event opencode.EventListResponse) {
-	switch e := event.AsUnion().(type) {
-	case opencode.EventListResponseEventSessionIdle:
-		if e.Properties.SessionID != b.sessionID {
-			return
-		}
-		b.setStatus(StatusIdle)
+// handlePermissionAsked processes a permission.asked event from /global/event.
+func (b *OpenCodeBackend) handlePermissionAsked(req *opencode.PermissionRequest) {
+	if req == nil || req.SessionID != b.SessionID() {
+		return
+	}
+	// Build a human-readable description, e.g. "bash: npx cowsay hello".
+	description := req.Permission
+	if len(req.Patterns) > 0 {
+		description += ": " + strings.Join(req.Patterns, ", ")
+	}
+	b.emit(Event{
+		Type:      EventPermission,
+		Timestamp: time.Now(),
+		Data: PermissionData{
+			RequestID:   req.ID,
+			Tool:        req.Permission,
+			Description: description,
+		},
+	})
+}
 
-	case opencode.EventListResponseEventSessionError:
-		if e.Properties.SessionID != "" && e.Properties.SessionID != b.sessionID {
-			return
-		}
-		b.setStatus(StatusError)
-		b.emitError(string(e.Properties.Error.Name))
+// handleMessageUpdated emits user / assistant Message events from a
+// message.updated event. The Message union has Role + User / Assistant
+// variants; only one is non-nil.
+func (b *OpenCodeBackend) handleMessageUpdated(props *opencode.EventMessageUpdatedProperties) {
+	if props == nil || props.Info == nil || props.SessionID != b.sessionID {
+		return
+	}
+	msg := props.Info
 
-	case opencode.EventListResponseEventMessageUpdated:
-		msg := e.Properties.Info
-		if msg.SessionID != b.sessionID {
-			return
-		}
+	switch {
+	case msg.User != nil:
 		// Track message ID -> role so we can filter user parts.
-		b.messageRoles.Store(msg.ID, msg.Role)
-
+		b.messageRoles.Store(msg.User.ID, "user")
 		// Emit user messages so the TUI can backfill the messageID on
-		// inline user entries (which are created before the server assigns
-		// an ID). The TUI skips rendering but uses the ID for revert.
+		// inline user entries (created before the server assigns an ID).
 		// TODO(ae): don't do this async, TUI should get ID from SendMessage instead.
-		if msg.Role == opencode.MessageRoleUser {
-			b.emit(Event{
-				Type:      EventMessage,
-				Timestamp: time.Now(),
-				Data: MessageData{
-					ID:   msg.ID,
-					Role: string(msg.Role),
-				},
-			})
-			return
-		}
-
 		b.emit(Event{
 			Type:      EventMessage,
 			Timestamp: time.Now(),
 			Data: MessageData{
-				Role:       string(msg.Role),
-				ModelID:    msg.ModelID,
-				ProviderID: msg.ProviderID,
+				ID:   msg.User.ID,
+				Role: "user",
 			},
 		})
 
-	case opencode.EventListResponseEventMessagePartUpdated:
-		part := e.Properties.Part
-		delta := e.Properties.Delta
-
-		// Filter to our session.
-		if part.SessionID != b.sessionID {
-			return
-		}
-
-		// Skip parts belonging to user messages.
-		if role, ok := b.messageRoles.Load(part.MessageID); ok {
-			if role == opencode.MessageRoleUser {
-				return
-			}
-		}
-
-		// If the SDK ever populates delta (future SDK version), use it.
-		// Currently, token-level deltas arrive via message.part.delta events
-		// handled in handlePartDelta, so this is a fallback only.
-		if delta != "" {
-			b.emit(Event{
-				Type:      EventPartUpdate,
-				Timestamp: time.Now(),
-				Data: PartUpdateData{
-					Part: Part{
-						ID:   part.ID,
-						Type: PartText,
-						Text: delta,
-					},
-					IsDelta: true,
-				},
-			})
-			return
-		}
-
-		// Handle full part update based on part type.
-		b.handlePartUpdate(part)
-
-	// TODO(opencode-sdk-go#57): This case is likely dead code. The OpenCode server
-	// sends "permission.asked" (handled in handleRawSSEEvent), not
-	// "permission.updated". Remove once the SDK models permission.asked and
-	// this path is confirmed unreachable.
-	// https://github.com/anomalyco/opencode-sdk-go/issues/57
-	case opencode.EventListResponseEventPermissionUpdated:
-		perm := e.Properties
-		if perm.SessionID != b.sessionID {
-			return
-		}
+	case msg.Assistant != nil:
+		a := msg.Assistant
+		b.messageRoles.Store(a.ID, "assistant")
 		b.emit(Event{
-			Type:      EventPermission,
+			Type:      EventMessage,
 			Timestamp: time.Now(),
-			Data: PermissionData{
-				RequestID:   perm.ID,
-				Tool:        perm.Type,
-				Description: perm.Title,
-			},
-		})
-
-	case opencode.EventListResponseEventSessionUpdated:
-		sess := e.Properties.Info
-		if sess.ID != b.sessionID {
-			return
-		}
-		// Emit a title change event when the session title is updated
-		// (e.g. by OpenCode's hidden "title" agent after the first response).
-		if sess.Title != "" {
-			b.emit(Event{
-				Type:      EventTitleChange,
-				Timestamp: time.Now(),
-				Data: TitleChangeData{
-					Title: sess.Title,
-				},
-			})
-		}
-		// Emit a revert change event so the TUI can filter messages accordingly.
-		b.emit(Event{
-			Type:      EventRevertChange,
-			Timestamp: time.Now(),
-			Data: RevertChangeData{
-				MessageID: sess.Revert.MessageID,
+			Data: MessageData{
+				Role:       "assistant",
+				ModelID:    a.ModelID,
+				ProviderID: a.ProviderID,
 			},
 		})
 	}
 }
 
-// handlePartUpdate processes a full Part update from the SDK.
-func (b *OpenCodeBackend) handlePartUpdate(p opencode.Part) {
-	switch concrete := p.AsUnion().(type) {
-	case opencode.TextPart:
-		b.emit(Event{
-			Type:      EventPartUpdate,
-			Timestamp: time.Now(),
-			Data: PartUpdateData{
-				Part: Part{
-					ID:   concrete.ID,
-					Type: PartText,
-					Text: concrete.Text,
-				},
-			},
-		})
-
-	case opencode.ToolPart:
-		var partStatus PartStatus
-		switch concrete.State.Status {
-		case opencode.ToolPartStateStatusPending:
-			partStatus = PartPending
-		case opencode.ToolPartStateStatusRunning:
-			partStatus = PartRunning
-		case opencode.ToolPartStateStatusCompleted:
-			partStatus = PartCompleted
-		case opencode.ToolPartStateStatusError:
-			partStatus = PartFailed
-		}
-		inputMap, _ := concrete.State.Input.(map[string]interface{})
-		b.emit(Event{
-			Type:      EventPartUpdate,
-			Timestamp: time.Now(),
-			Data: PartUpdateData{
-				Part: Part{
-					ID:     concrete.ID,
-					Type:   PartToolCall,
-					Tool:   concrete.Tool,
-					Status: partStatus,
-					Input:  inputMap,
-					Output: concrete.State.Output,
-				},
-			},
-		})
-
-	case opencode.ReasoningPart:
-		b.emit(Event{
-			Type:      EventPartUpdate,
-			Timestamp: time.Now(),
-			Data: PartUpdateData{
-				Part: Part{
-					ID:   concrete.ID,
-					Type: PartThinking,
-					Text: concrete.Text,
-				},
-			},
-		})
-
-	default:
-		// Skip types we don't care about (StepStartPart, StepFinishPart, etc.).
+// handleMessagePartUpdated processes a message.part.updated event by
+// translating the Part union into a clank PartUpdate event.
+func (b *OpenCodeBackend) handleMessagePartUpdated(props *opencode.EventMessagePartUpdatedProperties) {
+	if props == nil || props.Part == nil || props.SessionID != b.sessionID {
+		return
 	}
+	part := props.Part
+	// Skip parts belonging to user messages.
+	messageID := partMessageID(part)
+	if role, ok := b.messageRoles.Load(messageID); ok {
+		if role == "user" {
+			return
+		}
+	}
+	// Token-level deltas arrive via message.part.delta (see handlePartDelta).
+	if converted := b.convertSDKPart(part); converted != nil {
+		b.emit(Event{
+			Type:      EventPartUpdate,
+			Timestamp: time.Now(),
+			Data:      PartUpdateData{Part: *converted},
+		})
+	}
+}
+
+// handleSessionUpdated emits title + revert change events from session.updated.
+func (b *OpenCodeBackend) handleSessionUpdated(props *opencode.EventSessionUpdatedProperties) {
+	if props == nil || props.Info == nil || props.Info.ID != b.sessionID {
+		return
+	}
+	sess := props.Info
+	// Title can change when OpenCode's hidden "title" agent finishes (after
+	// the first prompt response).
+	if sess.Title != "" {
+		b.emit(Event{
+			Type:      EventTitleChange,
+			Timestamp: time.Now(),
+			Data:      TitleChangeData{Title: sess.Title},
+		})
+	}
+	revertID := ""
+	if sess.Revert != nil {
+		revertID = sess.Revert.MessageID
+	}
+	b.emit(Event{
+		Type:      EventRevertChange,
+		Timestamp: time.Now(),
+		Data:      RevertChangeData{MessageID: revertID},
+	})
+}
+
+// partMessageID extracts the messageID off whichever Part variant is set.
+// All response-side Part variants carry it on their concrete type.
+func partMessageID(p *opencode.Part) string {
+	switch {
+	case p.Text != nil:
+		return p.Text.MessageID
+	case p.Tool != nil:
+		return p.Tool.MessageID
+	case p.Reasoning != nil:
+		return p.Reasoning.MessageID
+	case p.File != nil:
+		return p.File.MessageID
+	case p.Subtask != nil:
+		return p.Subtask.MessageID
+	case p.Agent != nil:
+		return p.Agent.MessageID
+	case p.StepStart != nil:
+		return p.StepStart.MessageID
+	case p.StepFinish != nil:
+		return p.StepFinish.MessageID
+	case p.Snapshot != nil:
+		return p.Snapshot.MessageID
+	case p.Patch != nil:
+		return p.Patch.MessageID
+	case p.Retry != nil:
+		return p.Retry.MessageID
+	case p.Compaction != nil:
+		return p.Compaction.MessageID
+	}
+	return ""
 }
 
 // Messages returns the full message history for this session by calling
@@ -927,81 +727,110 @@ func (b *OpenCodeBackend) Messages(ctx context.Context) ([]MessageData, error) {
 		return nil, fmt.Errorf("session not started")
 	}
 
-	resp, err := b.client.Session.Messages(ctx, b.sessionID, opencode.SessionMessagesParams{})
+	req := &opencode.SessionMessagesRequest{SessionID: b.sessionID}
+	resp, err := b.client.Session.Messages(ctx, req)
 	if err != nil && isConnectionError(err) && b.resolver != nil {
 		// Server may have restarted on a new port. Re-resolve and retry once.
 		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
-			resp, err = b.client.Session.Messages(ctx, b.sessionID, opencode.SessionMessagesParams{})
+			resp, err = b.client.Session.Messages(ctx, req)
 		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("fetch messages: %w", err)
 	}
-	if resp == nil {
-		return nil, nil
-	}
 
 	var messages []MessageData
-	for _, msg := range *resp {
-		md := MessageData{
-			ID:         msg.Info.ID,
-			Role:       string(msg.Info.Role),
-			ModelID:    msg.Info.ModelID,
-			ProviderID: msg.Info.ProviderID,
-		}
-
+	for _, msg := range resp {
+		md := messageDataFromInfo(msg.Info)
 		for _, p := range msg.Parts {
-			converted := b.convertSDKPart(p)
-			if converted != nil {
+			if converted := b.convertSDKPart(p); converted != nil {
 				md.Parts = append(md.Parts, *converted)
 			}
 		}
-
 		messages = append(messages, md)
 	}
 	return messages, nil
 }
 
-// convertSDKPart translates an OpenCode SDK Part into our Part type.
-// Returns nil for part types we don't display (StepStart, StepFinish, etc.).
-func (b *OpenCodeBackend) convertSDKPart(p opencode.Part) *Part {
-	switch concrete := p.AsUnion().(type) {
-	case opencode.TextPart:
-		return &Part{
-			ID:   concrete.ID,
-			Type: PartText,
-			Text: concrete.Text,
+// messageDataFromInfo translates the Message union into a clank MessageData,
+// pulling per-variant fields (role, modelID, providerID, id) off whichever
+// variant is set.
+func messageDataFromInfo(info *opencode.Message) MessageData {
+	if info == nil {
+		return MessageData{}
+	}
+	switch {
+	case info.Assistant != nil:
+		a := info.Assistant
+		return MessageData{
+			ID:         a.ID,
+			Role:       "assistant",
+			ModelID:    a.ModelID,
+			ProviderID: a.ProviderID,
 		}
-	case opencode.ToolPart:
-		var partStatus PartStatus
-		switch concrete.State.Status {
-		case opencode.ToolPartStateStatusPending:
-			partStatus = PartPending
-		case opencode.ToolPartStateStatusRunning:
-			partStatus = PartRunning
-		case opencode.ToolPartStateStatusCompleted:
-			partStatus = PartCompleted
-		case opencode.ToolPartStateStatusError:
-			partStatus = PartFailed
+	case info.User != nil:
+		return MessageData{
+			ID:   info.User.ID,
+			Role: "user",
 		}
-		inputMap, _ := concrete.State.Input.(map[string]interface{})
-		return &Part{
-			ID:     concrete.ID,
-			Type:   PartToolCall,
-			Tool:   concrete.Tool,
-			Status: partStatus,
-			Input:  inputMap,
-			Output: concrete.State.Output,
-		}
-	case opencode.ReasoningPart:
-		return &Part{
-			ID:   concrete.ID,
-			Type: PartThinking,
-			Text: concrete.Text,
-		}
-	default:
+	}
+	return MessageData{}
+}
+
+// convertSDKPart translates an SDK Part into clank's Part type, or returns
+// nil for variants clank doesn't render (step-start, step-finish, file,
+// agent, subtask, snapshot, patch, retry, compaction).
+func (b *OpenCodeBackend) convertSDKPart(p *opencode.Part) *Part {
+	if p == nil {
 		return nil
 	}
+	switch {
+	case p.Text != nil:
+		return &Part{
+			ID:   p.Text.ID,
+			Type: PartText,
+			Text: p.Text.Text,
+		}
+	case p.Tool != nil:
+		return convertToolPart(p.Tool)
+	case p.Reasoning != nil:
+		return &Part{
+			ID:   p.Reasoning.ID,
+			Type: PartThinking,
+			Text: p.Reasoning.Text,
+		}
+	}
+	return nil
+}
+
+// convertToolPart maps the ToolState union into clank's flat
+// PartStatus + input/output fields.
+func convertToolPart(t *opencode.ToolPart) *Part {
+	out := &Part{
+		ID:   t.ID,
+		Type: PartToolCall,
+		Tool: t.Tool,
+	}
+	if t.State == nil {
+		return out
+	}
+	switch {
+	case t.State.Pending != nil:
+		out.Status = PartPending
+		out.Input = t.State.Pending.Input
+	case t.State.Running != nil:
+		out.Status = PartRunning
+		out.Input = t.State.Running.Input
+	case t.State.Completed != nil:
+		out.Status = PartCompleted
+		out.Input = t.State.Completed.Input
+		out.Output = t.State.Completed.Output
+	case t.State.Error != nil:
+		out.Status = PartFailed
+		out.Input = t.State.Error.Input
+		out.Output = t.State.Error.Error
+	}
+	return out
 }
 
 func (b *OpenCodeBackend) emitError(msg string) {
@@ -1032,7 +861,7 @@ func (b *OpenCodeBackend) refreshServerURL() (changed bool, err error) {
 		return false, nil
 	}
 	b.serverURL = newURL
-	b.client = opencode.NewClient(option.WithBaseURL(newURL))
+	b.client = client.NewClient(option.WithBaseURL(newURL))
 	return true, nil
 }
 
@@ -1600,37 +1429,30 @@ func (m *OpenCodeServerManager) ListAgents(ctx context.Context, projectDir strin
 	return agents, nil
 }
 
-// fetchAgents calls GET /agent on the OpenCode server and returns primary,
-// non-hidden agents. We make a direct HTTP call instead of using the SDK
-// because the SDK's Agent struct doesn't include the "hidden" field.
+// fetchAgents calls /agent on the OpenCode server via the SDK and returns
+// only primary, non-hidden agents (those the user would actually pick).
 func fetchAgents(ctx context.Context, serverURL string) ([]AgentInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", serverURL+"/agent", nil)
-	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
-	}
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
+	sdk := client.NewClient(option.WithBaseURL(strings.TrimRight(serverURL, "/")))
+	agents, err := sdk.Instance.AppAgents(ctx, &opencode.AppAgentsRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("fetch agents: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch agents: status %d", resp.StatusCode)
-	}
-
-	var raw []AgentInfo
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return nil, fmt.Errorf("decode agents: %w", err)
-	}
-
-	// Filter to primary, non-hidden agents only.
 	var result []AgentInfo
-	for _, a := range raw {
-		if a.Mode == "primary" && !a.Hidden {
-			result = append(result, a)
+	for _, a := range agents {
+		hidden := a.Hidden != nil && *a.Hidden
+		if string(a.Mode) != "primary" || hidden {
+			continue
 		}
+		desc := ""
+		if a.Description != nil {
+			desc = *a.Description
+		}
+		result = append(result, AgentInfo{
+			Name:        a.Name,
+			Description: desc,
+			Mode:        string(a.Mode),
+			Hidden:      hidden,
+		})
 	}
 	return result, nil
 }
@@ -1663,18 +1485,17 @@ func (m *OpenCodeServerManager) ListModels(ctx context.Context, projectDir strin
 	return models, nil
 }
 
-// fetchModels calls GET /config/providers on the OpenCode server via the SDK
-// and flattens all models from connected providers into a flat list.
+// fetchModels calls /config/providers via the SDK and flattens all models
+// from connected providers into a flat list.
 func fetchModels(ctx context.Context, serverURL string) ([]ModelInfo, error) {
-	client := opencode.NewClient(option.WithBaseURL(strings.TrimRight(serverURL, "/")))
-	resp, err := client.App.Providers(ctx, opencode.AppProvidersParams{})
+	sdk := client.NewClient(option.WithBaseURL(strings.TrimRight(serverURL, "/")))
+	resp, err := sdk.Config.Providers(ctx, &opencode.ConfigProvidersRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("fetch providers: %w", err)
 	}
 	if resp == nil {
 		return nil, nil
 	}
-
 	var result []ModelInfo
 	for _, provider := range resp.Providers {
 		// Skip providers with no models (not connected).
@@ -1700,16 +1521,13 @@ func (m *OpenCodeServerManager) ListProjects(ctx context.Context, seedDir string
 	if err != nil {
 		return nil, err
 	}
-	client := opencode.NewClient(option.WithBaseURL(strings.TrimRight(serverURL, "/")))
-	projects, err := client.Project.List(ctx, opencode.ProjectListParams{})
+	sdk := client.NewClient(option.WithBaseURL(strings.TrimRight(serverURL, "/")))
+	projects, err := sdk.Project.List(ctx, &opencode.ProjectListRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
-	if projects == nil {
-		return nil, nil
-	}
 	var result []ProjectInfo
-	for _, p := range *projects {
+	for _, p := range projects {
 		result = append(result, ProjectInfo{ID: p.ID, Worktree: p.Worktree})
 	}
 	return result, nil
@@ -1728,12 +1546,11 @@ func (m *OpenCodeServerManager) ListSessions(ctx context.Context, projectDir str
 
 // sessionListLimit is the page size used when querying the opencode
 // /session endpoint. opencode defaults to 100, which silently truncates for
-// users with hundreds of sessions per project. The SDK's SessionListParams
-// does not expose Limit/Offset, so we override the query param directly via
-// option.WithQuery (verified end-to-end by TestDiscoverSessions_PaginatesPastDefaultLimit).
-// We pick a value comfortably above any realistic single-project session
-// count; if a user ever exceeds this we should switch to proper pagination.
-const sessionListLimit = "100000"
+// users with hundreds of sessions per project. We pick a value comfortably
+// above any realistic single-project session count; if a user ever exceeds
+// this we should switch to proper pagination. Verified end-to-end by
+// TestDiscoverSessions_PaginatesPastDefaultLimit.
+const sessionListLimit = 100000.0
 
 // ListSessionsFromServer queries an already-known server URL for sessions.
 // Used by DiscoverSessions to avoid starting new servers per worktree.
@@ -1743,27 +1560,32 @@ const sessionListLimit = "100000"
 // list sessions across all projects, callers must hit one server per
 // project worktree (see DiscoverSessions).
 func (m *OpenCodeServerManager) ListSessionsFromServer(ctx context.Context, serverURL string) ([]SessionSnapshot, error) {
-	client := opencode.NewClient(option.WithBaseURL(strings.TrimRight(serverURL, "/")))
-	sessions, err := client.Session.List(ctx, opencode.SessionListParams{}, option.WithQuery("limit", sessionListLimit))
+	sdk := client.NewClient(option.WithBaseURL(strings.TrimRight(serverURL, "/")))
+	limit := sessionListLimit
+	sessions, err := sdk.Session.List(ctx, &opencode.SessionListRequest{Limit: &limit})
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
-	if sessions == nil {
-		return nil, nil
-	}
 	var result []SessionSnapshot
-	for _, s := range *sessions {
-		if s.ParentID != "" {
+	for _, s := range sessions {
+		if s.ParentID != nil && *s.ParentID != "" {
 			continue // Skip subtask sessions
 		}
-		result = append(result, SessionSnapshot{
+		revertMessageID := ""
+		if s.Revert != nil {
+			revertMessageID = s.Revert.MessageID
+		}
+		snap := SessionSnapshot{
 			ID:              s.ID,
 			Title:           s.Title,
 			Directory:       s.Directory,
-			RevertMessageID: s.Revert.MessageID,
-			CreatedAt:       time.UnixMilli(int64(s.Time.Created)),
-			UpdatedAt:       time.UnixMilli(int64(s.Time.Updated)),
-		})
+			RevertMessageID: revertMessageID,
+		}
+		if s.Time != nil {
+			snap.CreatedAt = time.UnixMilli(int64(s.Time.Created))
+			snap.UpdatedAt = time.UnixMilli(int64(s.Time.Updated))
+		}
+		result = append(result, snap)
 	}
 	return result, nil
 }

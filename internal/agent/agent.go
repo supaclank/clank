@@ -394,6 +394,7 @@ type SessionInfo struct {
 	Draft           string            `json:"draft,omitempty"`             // Unsent follow-up text the user was composing
 	RevertMessageID string            `json:"revert_message_id,omitempty"` // When set, messages from this ID onward are reverted (hidden)
 	ServerURL       string            `json:"server_url,omitempty"`        // Runtime-only: backend server URL (e.g. OpenCode serve endpoint). Not persisted.
+	IsRemote        bool              `json:"is_remote,omitempty"`         // Runtime-only: decoration stamped by the laptop daemon's session router when this session's worktree is owned by the active remote. Always false on direct host responses; populated by gateway routing.
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`
 	LastReadAt      time.Time         `json:"last_read_at,omitempty"`

@@ -172,6 +172,30 @@ func (m *SidebarModel) SetWorktreeOwners(byWorktreeID map[string]string) {
 	}
 }
 
+// UpdateWorktreeOwnersFromSessions derives per-worktree ownership from
+// each session's IsRemote flag (set by the local daemon's gateway
+// from its OwnerCache). Replaces the older direct-to-remote
+// loadWorktreeOwners path: every TUI surface now flows through the
+// local daemon, no NewRemoteClient calls.
+func (m *SidebarModel) UpdateWorktreeOwnersFromSessions(sessions []agent.SessionInfo) {
+	owners := make(map[string]string, len(sessions))
+	for _, s := range sessions {
+		id := s.GitRef.WorktreeID
+		if id == "" {
+			continue
+		}
+		// Once a worktree is seen as remote-owned, treat it as remote
+		// even if a later (stale) session row says otherwise. The
+		// OwnerCache is authoritative; this just summarises.
+		if s.IsRemote {
+			owners[id] = "remote"
+		} else if _, ok := owners[id]; !ok {
+			owners[id] = "local"
+		}
+	}
+	m.SetWorktreeOwners(owners)
+}
+
 // NewSidebarModel creates a sidebar for the given repo identity.
 // projectDir is retained for display purposes only; branch/worktree ops
 // are addressed by (hostname, gitRef).

@@ -1,20 +1,20 @@
-// clank-auth-stub is a minimal RFC 8628 (OAuth 2.0 Device Authorization
-// Grant) server for clank dev/testing.
+// clank-auth-stub is a minimal OAuth 2.0 Authorization Code + PKCE
+// server (RFC 6749 + RFC 7636) for clank dev/testing.
 //
-// It auto-approves every device flow and mints an HS256-signed JWT
-// against a configurable secret. Stand it up next to a clankd dev
-// stack so `clank login` works end-to-end without an external auth
-// provider — useful for local smoke tests of the whole CLI flow.
+// It auto-approves every authorization request and mints HS256-signed
+// JWTs against a configurable secret. Stand it up next to a clankd dev
+// stack so `clank login` works end-to-end without an external IdP.
 //
-// Not for production use: there is no real user authentication; every
-// device code is approved unconditionally.
+// Drop-in replacement for any spec-compliant OAuth 2.0 IdP for local
+// dev. Not for production use: there is no real user authentication;
+// every authorize request is approved unconditionally.
 //
 // Env (all optional with sensible defaults):
 //
 //	CLANK_AUTH_STUB_LISTEN     — bind address. Default ":7879".
 //	CLANK_AUTH_STUB_PUBLIC_URL — externally-reachable base URL embedded
-//	                              into verification_uri responses.
-//	                              Default "http://localhost:<port>".
+//	                              into the JWT issuer claim. Default
+//	                              "http://localhost:<port>".
 //	CLANK_AUTH_STUB_SECRET     — HMAC-SHA256 secret. Default "dev-secret".
 //	CLANK_AUTH_STUB_USER_ID    — sub claim. Default "dev-user".
 //	CLANK_AUTH_STUB_EMAIL      — email claim. Default "dev@clank.local".
@@ -24,6 +24,8 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -31,6 +33,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -88,32 +91,38 @@ func envOrDefault(key, def string) string {
 	return def
 }
 
-// deviceCode tracks one active device-flow grant. Since the stub
-// auto-approves, the in-memory map is short-lived; a 15-minute reaper
-// trims abandoned codes.
-type deviceCode struct {
-	createdAt time.Time
-	expiresAt time.Time
+// pendingCode tracks one issued-but-not-yet-redeemed authorization
+// code. Codes are single-use; a 15-minute reaper trims abandoned ones
+// (the stub's auto-approval typically redeems within seconds).
+type pendingCode struct {
+	codeChallenge string
+	clientID      string
+	redirectURI   string
+	expiresAt     time.Time
 }
 
 type server struct {
 	cfg config
 
-	mu      sync.Mutex
-	devices map[string]deviceCode // keyed by device_code
+	mu       sync.Mutex
+	pending  map[string]pendingCode // keyed by authorization code
+	refresh  map[string]bool        // valid refresh tokens (single-use)
 }
 
 func newServer(cfg config) *server {
-	return &server{cfg: cfg, devices: map[string]deviceCode{}}
+	return &server{
+		cfg:     cfg,
+		pending: map[string]pendingCode{},
+		refresh: map[string]bool{},
+	}
 }
 
 func (s *server) Handler() http.Handler {
 	mx := http.NewServeMux()
-	mx.HandleFunc("POST /auth/device/start", s.handleDeviceStart)
-	mx.HandleFunc("POST /auth/device/poll", s.handleDevicePoll)
+	mx.HandleFunc("GET /authorize", s.handleAuthorize)
+	mx.HandleFunc("POST /token", s.handleToken)
 	mx.HandleFunc("POST /auth/signout", s.handleSignOut)
 	mx.HandleFunc("GET /me", s.handleMe)
-	mx.HandleFunc("GET /verify", s.handleVerify)
 	mx.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -121,58 +130,126 @@ func (s *server) Handler() http.Handler {
 	return mx
 }
 
-// handleDeviceStart mints a fresh (device_code, user_code) pair. The
-// stub doesn't bother making user_code human-typable in groups — dev
-// users either follow the verification_uri_complete link or paste the
-// code into the auto-approval page.
-func (s *server) handleDeviceStart(w http.ResponseWriter, r *http.Request) {
-	deviceCodeStr := randHex(16)
-	userCode := strings.ToUpper(randHex(4))
-	now := time.Now()
+// handleAuthorize is the OAuth 2.0 /authorize endpoint. Auto-approves:
+// generates a fresh code keyed against the PKCE challenge and 302s
+// back to the supplied redirect_uri. A real IdP would render a login
+// + consent page here; the stub skips that to keep dev tight.
+func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	clientID := q.Get("client_id")
+	redirectURI := q.Get("redirect_uri")
+	state := q.Get("state")
+	codeChallenge := q.Get("code_challenge")
+	codeChallengeMethod := q.Get("code_challenge_method")
+
+	if clientID == "" || redirectURI == "" || codeChallenge == "" {
+		http.Error(w, "missing client_id, redirect_uri, or code_challenge", http.StatusBadRequest)
+		return
+	}
+	if codeChallengeMethod != "" && codeChallengeMethod != "S256" {
+		http.Error(w, "unsupported code_challenge_method (S256 only)", http.StatusBadRequest)
+		return
+	}
+	if _, err := url.Parse(redirectURI); err != nil {
+		http.Error(w, "invalid redirect_uri", http.StatusBadRequest)
+		return
+	}
+
+	code := randHex(16)
 	s.mu.Lock()
-	s.devices[deviceCodeStr] = deviceCode{
-		createdAt: now,
-		expiresAt: now.Add(15 * time.Minute),
+	s.pending[code] = pendingCode{
+		codeChallenge: codeChallenge,
+		clientID:      clientID,
+		redirectURI:   redirectURI,
+		expiresAt:     time.Now().Add(15 * time.Minute),
 	}
 	s.mu.Unlock()
 
-	verify := s.cfg.publicURL + "/verify?user_code=" + userCode
-	writeJSON(w, http.StatusOK, map[string]any{
-		"device_code":               deviceCodeStr,
-		"user_code":                 userCode,
-		"verification_uri":          s.cfg.publicURL + "/verify",
-		"verification_uri_complete": verify,
-		"expires_in":                900,
-		"interval":                  2,
-	})
+	dest, _ := url.Parse(redirectURI)
+	vals := dest.Query()
+	vals.Set("code", code)
+	if state != "" {
+		vals.Set("state", state)
+	}
+	dest.RawQuery = vals.Encode()
+	http.Redirect(w, r, dest.String(), http.StatusFound)
 }
 
-// handleDevicePoll auto-approves: the first poll returns a signed JWT.
-// A real RFC 8628 server would return "authorization_pending" until
-// the user clicked through; we skip that to keep the dev loop tight.
-func (s *server) handleDevicePoll(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		DeviceCode string `json:"device_code"`
+// handleToken is the OAuth 2.0 /token endpoint. Accepts form-encoded
+// bodies per RFC 6749 §4.1.3. Supports grant_type=authorization_code
+// (with PKCE) and grant_type=refresh_token.
+func (s *server) handleToken(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "could not parse form body")
+		return
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+	switch r.PostForm.Get("grant_type") {
+	case "authorization_code":
+		s.tokenAuthorizationCode(w, r)
+	case "refresh_token":
+		s.tokenRefresh(w, r)
+	default:
+		writeOAuthError(w, http.StatusBadRequest, "unsupported_grant_type", "grant_type must be authorization_code or refresh_token")
+	}
+}
+
+func (s *server) tokenAuthorizationCode(w http.ResponseWriter, r *http.Request) {
+	code := r.PostForm.Get("code")
+	verifier := r.PostForm.Get("code_verifier")
+	clientID := r.PostForm.Get("client_id")
+	redirectURI := r.PostForm.Get("redirect_uri")
+	if code == "" || verifier == "" || clientID == "" || redirectURI == "" {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "missing code, code_verifier, client_id, or redirect_uri")
 		return
 	}
 	s.mu.Lock()
-	rec, ok := s.devices[body.DeviceCode]
-	if ok && time.Now().After(rec.expiresAt) {
-		delete(s.devices, body.DeviceCode)
-		ok = false
-	}
+	rec, ok := s.pending[code]
 	if ok {
-		delete(s.devices, body.DeviceCode) // single-use
+		delete(s.pending, code) // single-use, regardless of validation outcome
+		if time.Now().After(rec.expiresAt) {
+			ok = false
+		}
 	}
 	s.mu.Unlock()
 	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "expired_token"})
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "code unknown or expired")
 		return
 	}
+	if rec.clientID != clientID || rec.redirectURI != redirectURI {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "client_id or redirect_uri mismatch")
+		return
+	}
+	sum := sha256.Sum256([]byte(verifier))
+	gotChallenge := base64.RawURLEncoding.EncodeToString(sum[:])
+	if gotChallenge != rec.codeChallenge {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "code_verifier does not match code_challenge")
+		return
+	}
+	s.issueTokens(w)
+}
 
+func (s *server) tokenRefresh(w http.ResponseWriter, r *http.Request) {
+	refresh := r.PostForm.Get("refresh_token")
+	if refresh == "" {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "missing refresh_token")
+		return
+	}
+	s.mu.Lock()
+	ok := s.refresh[refresh]
+	delete(s.refresh, refresh) // single-use
+	s.mu.Unlock()
+	if !ok {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "refresh_token unknown")
+		return
+	}
+	s.issueTokens(w)
+}
+
+// issueTokens mints a fresh access+refresh pair and writes the
+// standard OAuth 2.0 token response. The access token is an HS256 JWT
+// carrying sub, email, iat, exp, iss, aud — claims the gateway can
+// verify via its JWTHS256 authenticator using the same secret.
+func (s *server) issueTokens(w http.ResponseWriter) {
 	now := time.Now()
 	exp := now.Add(s.cfg.tokenTTL)
 	jwtTok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
@@ -186,23 +263,26 @@ func (s *server) handleDevicePoll(w http.ResponseWriter, r *http.Request) {
 	tok, err := jwtTok.SignedString(s.cfg.secret)
 	if err != nil {
 		log.Printf("sign JWT: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "sign_failed"})
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "failed to sign token")
 		return
 	}
+	refresh := randHex(24)
+	s.mu.Lock()
+	s.refresh[refresh] = true
+	s.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token":  tok,
-		"refresh_token": randHex(16),
+		"refresh_token": refresh,
 		"token_type":    "Bearer",
 		"expires_in":    int(s.cfg.tokenTTL.Seconds()),
-		"user_id":       s.cfg.userID,
-		"email":         s.cfg.email,
 	})
 }
 
 // handleMe verifies the bearer and returns the static user profile.
 // Cloud /me responses also include organisations/hubs/hosts; we return
-// empty arrays so the TUI's MeResponse decoder is happy.
+// empty arrays so the TUI's MeResponse decoder is happy. Same as the
+// previous device-flow stub — unrelated to OAuth, useful for dev.
 func (s *server) handleMe(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.verifyBearer(r); err != nil {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="clank-auth-stub"`)
@@ -220,18 +300,6 @@ func (s *server) handleMe(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleSignOut(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
-}
-
-// handleVerify is the user-facing browser landing for the
-// verification_uri. The stub auto-approves so there's nothing for the
-// user to click; we just acknowledge the code is approved.
-func (s *server) handleVerify(w http.ResponseWriter, r *http.Request) {
-	userCode := r.URL.Query().Get("user_code")
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = fmt.Fprintf(w, `<!doctype html><html><body style="font-family:system-ui;padding:2em;max-width:36em;margin:auto;">
-<h2>clank auth-stub</h2>
-<p>Code <code>%s</code> is auto-approved. Return to your terminal — <code>clank login</code> should complete on the next poll.</p>
-</body></html>`, htmlEscape(userCode))
 }
 
 func (s *server) verifyBearer(r *http.Request) (jwt.MapClaims, error) {
@@ -268,9 +336,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func htmlEscape(s string) string {
-	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;")
-	return r.Replace(s)
+func writeOAuthError(w http.ResponseWriter, status int, code, desc string) {
+	writeJSON(w, status, map[string]string{
+		"error":             code,
+		"error_description": desc,
+	})
 }
 
 func main() {

@@ -133,18 +133,6 @@ type Preferences struct {
 	// default" (defaultSidebarWidthRatio).
 	SidebarWidthRatio int `json:"sidebar_width_ratio,omitempty"`
 
-	// ActiveHub picks which clankd the local TUI/CLI talks to:
-	//
-	//   ""        — implicit "local"; the local Unix-socket daemon.
-	//   "local"   — explicit "local"; same behavior as "".
-	//   "remote"  — talk to cloud.gateway_url with cloud.access_token
-	//               over TCP. Requires the Cloud preference to be set.
-	//
-	// Used by daemonclient.NewDefaultClient to pick the transport. Only
-	// affects clients (TUI, clankcli); the local clankd daemon always
-	// listens on its own socket regardless of this value.
-	ActiveHub string `json:"active_hub,omitempty"`
-
 	// Daytona configures the cloud-hub-side Daytona launcher. Only
 	// effective on a TCP-listening hub. Empty = launcher disabled
 	// (sessions requesting launch_host.provider="daytona" will 4xx).
@@ -199,30 +187,23 @@ type RemoteConfig struct {
 	Profiles map[string]*Remote `json:"profiles,omitempty"`
 }
 
-// Remote holds one clank deployment's endpoints + device-flow session.
+// Remote holds one clank deployment's gateway URL + OAuth session.
 // Mirrors a single entry in a git-remote-style config.
 //
-// Provider-agnostic on purpose: clank speaks RFC 8628 device flow to
-// the gateway's auth plane, and the deployment (hosted or self-hosted)
-// owns the user-auth mechanism — Supabase, GitHub OIDC, magic links,
-// whatever. clank only needs two URLs: one for auth and one for the
-// gateway.
+// Provider-agnostic on purpose: the gateway exposes /auth-config and
+// clank runs standards OAuth 2.0 + PKCE against the IdP it advertises.
+// The deployment (hosted or self-hosted) owns the user-auth mechanism
+// — Supabase OAuth Server, Auth0, Keycloak, whatever. clank only
+// needs one URL: the gateway.
 //
-// AuthURL and GatewayURL are intentionally separate so they can live
-// on different hosts today (auth plane vs. gateway/sync plane) and be
-// unified later without a config-schema change.
-//
-// Session fields are populated after a successful device-flow grant
-// and used for subsequent /me and sync calls. AccessToken expires;
-// the user is prompted to sign in again on 401.
+// Session fields are populated after a successful OAuth grant and
+// used for subsequent /me and sync calls. AccessToken expires; the
+// user is prompted to sign in again on 401.
 type Remote struct {
-	// AuthURL is the base URL of the cloud auth plane, e.g.
-	// "https://auth.example.com". Required for sign-in (/me, device flow).
-	AuthURL string `json:"auth_url,omitempty"`
-
 	// GatewayURL is the base URL of the cloud gateway (sessions + sync),
 	// e.g. "https://gateway.example.com". Required for push/pull and
-	// session proxying. May be the same host as AuthURL once consolidated.
+	// session proxying; also the discovery endpoint for OAuth via
+	// GET /auth-config.
 	GatewayURL string `json:"gateway_url,omitempty"`
 
 	AccessToken  string `json:"access_token,omitempty"`
