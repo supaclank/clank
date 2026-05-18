@@ -152,6 +152,13 @@ The "sandbox" in the default setup is a clank-host subprocess inside
 the clankd container (the `local` provisioner) — useful for
 end-to-end smoke testing but not what you'd run in production.
 
+### Editing preferences
+
+`docker/preferences.json` is created by `make docker-up` from
+`docker/preferences.example.json` on first run and gitignored after
+that — edit your local copy freely without polluting diffs. To pick
+up changes, restart the stack (`make docker-down && make docker-up`).
+
 ### Switching to fly.io provisioner
 
 Edit `docker/preferences.json`:
