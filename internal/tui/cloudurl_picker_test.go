@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/acksell/clank/internal/cloud"
 )
 
 // TestCloudURLPicker_ListNavigation verifies cursor movement within the
@@ -203,22 +205,29 @@ func TestCloudURLPicker_EnterNotConfiguredEmitsOpenMsg(t *testing.T) {
 	}
 }
 
-// TestCloudURLPicker_EnterSignedOutStartsDeviceFlow verifies that Enter in
-// the signed-out phase still starts the device flow (not the URL picker).
-func TestCloudURLPicker_EnterSignedOutStartsDeviceFlow(t *testing.T) {
+// TestCloudURLPicker_EnterSignedOutStartsLogin verifies that Enter in
+// the signed-out phase starts the PKCE login (not the URL picker).
+func TestCloudURLPicker_EnterSignedOutStartsLogin(t *testing.T) {
 	t.Parallel()
 
 	m := newCloudView()
 	m.phase = cloudPhaseSignedOut
-	m.cloudURL = "https://example.com"
+	m.gatewayURL = "https://example.com"
+	m.client = cloud.New(m.gatewayURL, nil)
 
-	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("expected cmd on Enter in signed-out phase")
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	// PKCE login transitions to cloudPhaseLoggingIn immediately; we
+	// don't run the actual flow in a unit test (it would block on a
+	// browser callback). The phase shift is the observable contract.
+	if updated.phase != cloudPhaseLoggingIn {
+		t.Errorf("expected cloudPhaseLoggingIn after Enter in signed-out, got %v", updated.phase)
 	}
-	msg := cmd()
-	// Device flow start returns cloudDeviceStartedMsg (async), not cloudOpenURLPickerMsg.
-	if _, ok := msg.(cloudOpenURLPickerMsg); ok {
-		t.Error("Enter in signed-out should start device flow, not open URL picker")
+	if updated.loginCancel == nil {
+		t.Error("expected loginCancel to be set so c/esc can abort")
+	}
+	// Cancel the in-flight context immediately so the goroutine
+	// doesn't leak past the test.
+	if updated.loginCancel != nil {
+		updated.loginCancel()
 	}
 }

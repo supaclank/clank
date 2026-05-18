@@ -44,12 +44,15 @@ func newMockOpenCodeServer() *mockOpenCodeServer {
 	mux := http.NewServeMux()
 	// SDK sends POST /session for new sessions.
 	mux.HandleFunc("POST /session", m.handleCreateSession)
-	// SDK sends POST /session/{id}/message for prompts.
+	// Since the SDK migration, prompts go to /prompt_async (fire-and-forget,
+	// returns 204). /message is still kept for tests that fetch the response.
+	mux.HandleFunc("POST /session/{id}/prompt_async", m.handlePromptAsync)
 	mux.HandleFunc("POST /session/{id}/message", m.handlePrompt)
 	// SDK sends POST /session/{id}/abort for abort.
 	mux.HandleFunc("POST /session/{id}/abort", m.handleAbort)
-	// SDK sends GET /event for SSE streaming.
-	mux.HandleFunc("GET /event", m.handleSSE)
+	// Since opencode 1.4.x, the full event stream lives at /global/event
+	// (events wrapped as {"payload":…}). /event only emits a status subset.
+	mux.HandleFunc("GET /global/event", m.handleSSE)
 	// Health check.
 	mux.HandleFunc("GET /global/health", m.handleHealth)
 
@@ -119,16 +122,60 @@ func (m *mockOpenCodeServer) handlePrompt(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	// SDK expects a SessionPromptResponse with info and parts.
+	// SDK expects a SessionMessageSendResponse with info and parts.
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"info": map[string]interface{}{
-			"id":        "msg-1",
-			"role":      "assistant",
-			"sessionID": id,
-			"time":      map[string]interface{}{"created": float64(time.Now().Unix())},
+			"id":         "msg-1",
+			"role":       "assistant",
+			"sessionID":  id,
+			"agent":      "build",
+			"mode":       "build",
+			"modelID":    "test-model",
+			"providerID": "test-provider",
+			"parentID":   "msg-0",
+			"cost":       0,
+			"tokens":     map[string]interface{}{"input": 0, "output": 0, "reasoning": 0, "cache": map[string]interface{}{"read": 0, "write": 0}},
+			"path":       map[string]interface{}{"cwd": "/", "root": "/"},
+			"time":       map[string]interface{}{"created": time.Now().UnixMilli()},
 		},
 		"parts": []interface{}{},
 	})
+}
+
+// handlePromptAsync mirrors POST /session/{id}/prompt_async — the
+// fire-and-forget endpoint that returns 204 once the server queues the
+// prompt. After SDK migration, OpenCodeBackend.Send routes here.
+func (m *mockOpenCodeServer) handlePromptAsync(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	m.mu.Lock()
+	if !m.sessions[id] {
+		m.mu.Unlock()
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	var body struct {
+		Parts []map[string]interface{} `json:"parts"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		m.mu.Unlock()
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	m.prompts = append(m.prompts, mockPrompt{SessionID: id, Parts: body.Parts})
+	block := m.promptBlock
+	m.mu.Unlock()
+
+	if block != nil {
+		select {
+		case <-block:
+		case <-r.Context().Done():
+			return
+		}
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (m *mockOpenCodeServer) handleAbort(w http.ResponseWriter, r *http.Request) {
@@ -200,16 +247,25 @@ func (m *mockOpenCodeServer) getAborts() []string {
 	return result
 }
 
-// --- Helper: write SSE events in SDK format ---
-// The SDK expects SSE data to contain the full EventListResponse JSON object
-// with "type" and "properties" fields.
+// --- Helper: write SSE events in /global/event format ---
+// Real opencode wraps each event as
+//
+//   {"directory":"…","project":"…","payload":{"id":"…","type":"…","properties":{…}}}
+//
+// which is exactly what the Fern SDK's *opencode.GlobalEvent expects. The
+// mock mirrors that shape so tests exercise the same parse path as production.
 
 func writeSSEEvent(w http.ResponseWriter, flusher http.Flusher, eventType string, properties interface{}) {
-	payload := map[string]interface{}{
-		"type":       eventType,
-		"properties": properties,
+	envelope := map[string]interface{}{
+		"directory": "/private/tmp/test",
+		"project":   "global",
+		"payload": map[string]interface{}{
+			"id":         "evt_test",
+			"type":       eventType,
+			"properties": properties,
+		},
 	}
-	jsonData, _ := json.Marshal(payload)
+	jsonData, _ := json.Marshal(envelope)
 	fmt.Fprintf(w, "data: %s\n\n", jsonData)
 	flusher.Flush()
 }
@@ -573,13 +629,19 @@ func TestOpenCodeBackendSSEMessagePartUpdated(t *testing.T) {
 		}
 
 		// Text part, running tool, completed tool, reasoning part.
+		// Real opencode emits sessionID at both the properties level and on
+		// the part itself; the test mirrors that.
 		writeSSEEvent(w, flusher, "message.part.updated", map[string]interface{}{
+			"sessionID": sessionID,
+			"time":      1234567890,
 			"part": map[string]interface{}{
 				"id": "part-1", "type": "text", "text": "Here is my analysis...",
 				"sessionID": sessionID, "messageID": "msg-1",
 			},
 		})
 		writeSSEEvent(w, flusher, "message.part.updated", map[string]interface{}{
+			"sessionID": sessionID,
+			"time":      1234567890,
 			"part": map[string]interface{}{
 				"id": "part-2", "type": "tool", "tool": "read_file", "callID": "call-1",
 				"sessionID": sessionID, "messageID": "msg-1",
@@ -590,6 +652,8 @@ func TestOpenCodeBackendSSEMessagePartUpdated(t *testing.T) {
 			},
 		})
 		writeSSEEvent(w, flusher, "message.part.updated", map[string]interface{}{
+			"sessionID": sessionID,
+			"time":      1234567891,
 			"part": map[string]interface{}{
 				"id": "part-2", "type": "tool", "tool": "read_file", "callID": "call-1",
 				"sessionID": sessionID, "messageID": "msg-1",
@@ -600,6 +664,8 @@ func TestOpenCodeBackendSSEMessagePartUpdated(t *testing.T) {
 			},
 		})
 		writeSSEEvent(w, flusher, "message.part.updated", map[string]interface{}{
+			"sessionID": sessionID,
+			"time":      1234567890,
 			"part": map[string]interface{}{
 				"id": "part-3", "type": "reasoning", "text": "thinking about this...",
 				"sessionID": sessionID, "messageID": "msg-1",
@@ -708,6 +774,89 @@ func TestOpenCodeBackendSSEFiltersOtherSessions(t *testing.T) {
 	}
 }
 
+// TestOpenCodeBackendSSEGlobalEventEnvelope is the regression test for the
+// opencode 1.4.x+ breaking change: /global/event wraps each event as
+// {"directory":…,"project":…,"payload":{<event>}} and emits a follow-up
+// {"type":"sync",…} duplicate for the sync/replay layer. /event no longer
+// emits message.* / session.updated at all.
+//
+// Symptom this guards against: assistant message text and tool parts never
+// reach the TUI because the backend was reading bare events from /event.
+func TestOpenCodeBackendSSEGlobalEventEnvelope(t *testing.T) {
+	t.Parallel()
+	mock := newMockOpenCodeServer()
+	defer mock.Close()
+
+	sseReady := make(chan string, 1)
+	mock.setSSEHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		flusher.Flush()
+
+		var sessionID string
+		select {
+		case sessionID = <-sseReady:
+		case <-r.Context().Done():
+			return
+		}
+
+		// message.part.updated wrapped in the /global/event envelope —
+		// produced by writeSSEEvent now that it always wraps.
+		writeSSEEvent(w, flusher, "message.part.updated", map[string]interface{}{
+			"sessionID": sessionID,
+			"part": map[string]interface{}{
+				"id":        "prt_text",
+				"type":      "text",
+				"text":      "hello from assistant",
+				"sessionID": sessionID,
+				"messageID": "msg_1",
+			},
+			"time": 1778887258327,
+		})
+
+		// Sync duplicate — the SDK should ignore the SyncEvent* union variant.
+		fmt.Fprintf(w, "data: %s\n\n", `{"directory":"/private/tmp/x","project":"global","payload":{"type":"sync","syncEvent":{"type":"message.part.updated.1","id":"evt_1","seq":0,"aggregateID":"`+sessionID+`","data":{}}}}`)
+		flusher.Flush()
+
+		// session.idle — should produce a busy->idle status change.
+		writeSSEEvent(w, flusher, "session.idle", map[string]interface{}{
+			"sessionID": sessionID,
+		})
+
+		<-r.Context().Done()
+	})
+
+	b := agent.NewOpenCodeBackend(mock.URL(), "", nil)
+	defer b.Stop()
+
+	if err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{Text: "test"}); err != nil {
+		t.Fatalf("OpenAndSend: %v", err)
+	}
+	sseReady <- b.SessionID()
+
+	// idle->busy from Send, the text part from the wrapped event, busy->idle from session.idle.
+	// The sync duplicate must NOT produce an extra part event.
+	events := collectEvents(b.Events(), 4, 3*time.Second)
+
+	var partEvents []agent.Event
+	for _, evt := range events {
+		if evt.Type == agent.EventPartUpdate {
+			partEvents = append(partEvents, evt)
+		}
+	}
+	if len(partEvents) != 1 {
+		t.Fatalf("expected exactly 1 part update from wrapped event (sync duplicate must be skipped), got %d (%+v)", len(partEvents), partEvents)
+	}
+	p := partEvents[0].Data.(agent.PartUpdateData)
+	if p.Part.Type != agent.PartText || p.Part.Text != "hello from assistant" {
+		t.Errorf("part: type=%s text=%q", p.Part.Type, p.Part.Text)
+	}
+
+	if b.Status() != agent.StatusIdle {
+		t.Errorf("expected final status=idle (from wrapped session.idle), got %s", b.Status())
+	}
+}
+
 // TestOpenCodeBackendSSEEventTypes verifies that various SSE event types
 // from the OpenCode server are correctly translated into agent events.
 func TestOpenCodeBackendSSEEventTypes(t *testing.T) {
@@ -753,23 +902,32 @@ func TestOpenCodeBackendSSEEventTypes(t *testing.T) {
 			},
 		},
 		{
+			// Token-level streaming arrives as message.part.delta events; the
+			// new opencode separates these from message.part.updated which
+			// no longer carries an inline delta field.
 			name: "MessagePartDelta",
 			sseEvents: []sseEvent{
 				{
-					eventType: "message.part.updated",
+					eventType: "message.part.delta",
 					properties: func(sid string) interface{} {
 						return map[string]interface{}{
-							"part":  map[string]interface{}{"id": "part-1", "type": "text", "text": "", "sessionID": sid, "messageID": "msg-1"},
-							"delta": "Hello ",
+							"sessionID": sid,
+							"messageID": "msg-1",
+							"partID":    "part-1",
+							"field":     "text",
+							"delta":     "Hello ",
 						}
 					},
 				},
 				{
-					eventType: "message.part.updated",
+					eventType: "message.part.delta",
 					properties: func(sid string) interface{} {
 						return map[string]interface{}{
-							"part":  map[string]interface{}{"id": "part-1", "type": "text", "text": "Hello ", "sessionID": sid, "messageID": "msg-1"},
-							"delta": "World!",
+							"sessionID": sid,
+							"messageID": "msg-1",
+							"partID":    "part-1",
+							"field":     "text",
+							"delta":     "World!",
 						}
 					},
 				},
@@ -832,49 +990,27 @@ func TestOpenCodeBackendSSEEventTypes(t *testing.T) {
 			},
 		},
 		{
-			// TODO(opencode-sdk-go#57): This tests the SDK's "permission.updated"
-			// event path which is likely dead code — the server sends
-			// "permission.asked" instead (see PermissionAsked test above).
-			// Remove once the SDK models permission.asked.
-			// https://github.com/anomalyco/opencode-sdk-go/issues/57
-			name: "PermissionUpdated",
-			sseEvents: []sseEvent{
-				{
-					eventType: "permission.updated",
-					properties: func(sid string) interface{} {
-						return map[string]interface{}{
-							"id": "perm-1", "sessionID": sid, "messageID": "msg-1",
-							"title": "Write to /tmp/output.txt", "type": "write_file",
-							"metadata": map[string]interface{}{},
-							"time":     map[string]interface{}{"created": 1234567890},
-						}
-					},
-				},
-			},
-			totalEvents: 2,
-			check: func(t *testing.T, events []agent.Event) {
-				for _, evt := range events {
-					if evt.Type == agent.EventPermission {
-						data := evt.Data.(agent.PermissionData)
-						if data.RequestID != "perm-1" || data.Tool != "write_file" || data.Description != "Write to /tmp/output.txt" {
-							t.Errorf("permission data = %+v", data)
-						}
-						return
-					}
-				}
-				t.Error("no permission event found")
-			},
-		},
-		{
 			name: "MessageUpdated",
 			sseEvents: []sseEvent{
 				{
 					eventType: "message.updated",
 					properties: func(sid string) interface{} {
 						return map[string]interface{}{
+							"sessionID": sid,
 							"info": map[string]interface{}{
 								"id": "msg-1", "role": "assistant", "sessionID": sid,
-								"time": map[string]interface{}{"created": 1234567890},
+								"time":       map[string]interface{}{"created": 1234567890},
+								"parentID":   "msg-0",
+								"agent":      "build",
+								"mode":       "build",
+								"modelID":    "test-model",
+								"providerID": "test-provider",
+								"path":       map[string]interface{}{"cwd": "/", "root": "/"},
+								"cost":       0,
+								"tokens": map[string]interface{}{
+									"input": 0, "output": 0, "reasoning": 0,
+									"cache": map[string]interface{}{"read": 0, "write": 0},
+								},
 							},
 						}
 					},
@@ -901,8 +1037,10 @@ func TestOpenCodeBackendSSEEventTypes(t *testing.T) {
 					eventType: "session.updated",
 					properties: func(sid string) interface{} {
 						return map[string]interface{}{
+							"sessionID": sid,
 							"info": map[string]interface{}{
 								"id":        sid,
+								"slug":      "test-slug",
 								"directory": "/tmp/test",
 								"projectID": "proj-1",
 								"title":     "Fix authentication bug in login flow",
@@ -943,8 +1081,10 @@ func TestOpenCodeBackendSSEEventTypes(t *testing.T) {
 					eventType: "session.updated",
 					properties: func(sid string) interface{} {
 						return map[string]interface{}{
+							"sessionID": "other-session-id",
 							"info": map[string]interface{}{
 								"id":        "other-session-id",
+								"slug":      "other-slug",
 								"directory": "/tmp/test",
 								"projectID": "proj-1",
 								"title":     "Should be filtered out",
@@ -1003,6 +1143,8 @@ func TestOpenCodeBackendSSEEventTypes(t *testing.T) {
 					eventType: "message.part.updated",
 					properties: func(sid string) interface{} {
 						return map[string]interface{}{
+							"sessionID": sid,
+							"time":      1234567891,
 							"part": map[string]interface{}{
 								"id": "part-err", "type": "tool", "tool": "bash", "callID": "call-err",
 								"sessionID": sid, "messageID": "msg-1",
@@ -1198,6 +1340,8 @@ func TestOpenCodeBackendSSELargePayload(t *testing.T) {
 		}
 
 		writeSSEEvent(w, flusher, "message.part.updated", map[string]interface{}{
+			"sessionID": sessionID,
+			"time":      1234567890,
 			"part": map[string]interface{}{
 				"id": "part-large", "type": "text", "text": largeText,
 				"sessionID": sessionID, "messageID": "msg-1",

@@ -122,6 +122,8 @@ docker-up: docker-setup
 	docker compose --env-file docker/.env -f docker/docker-compose.yml up -d --build 2>/dev/null \
 	  || docker compose -f docker/docker-compose.yml up -d --build
 docker-down:
+	docker compose -f docker/docker-compose.yml down
+docker-reset:
 	docker compose -f docker/docker-compose.yml down -v
 docker-logs:
 	docker compose -f docker/docker-compose.yml logs -f --tail=100

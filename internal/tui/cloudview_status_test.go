@@ -26,7 +26,7 @@ func TestCloudView_Status_DiskBaseline(t *testing.T) {
 	if err := config.UpdatePreferences(func(p *config.Preferences) {
 		p.Remote = &config.RemoteConfig{
 			Active:   "default",
-			Profiles: map[string]*config.Remote{"default": {AuthURL: "https://example.test"}},
+			Profiles: map[string]*config.Remote{"default": {GatewayURL: "https://example.test"}},
 		}
 	}); err != nil {
 		t.Fatalf("UpdatePreferences: %v", err)
@@ -43,11 +43,12 @@ func TestCloudView_Status_DiskBaseline(t *testing.T) {
 }
 
 // TestCloudView_Status_ReachabilityAxis pins the rule that once disk
-// identity is satisfied (token present, unexpired), Status flips
-// between Checking → Online | Unavailable based on the most recent
-// server call. ErrUnauthorized is identity, not reachability, and
-// should fall through to the Offline branch (clearSession would have
-// already wiped the token in production).
+// identity is satisfied (token present, unexpired), Status is
+// optimistically Online and only downgrades to Unavailable on a
+// transport error from the most recent server call. ErrUnauthorized
+// is identity, not reachability, and should fall through to the
+// Offline branch (clearSession would have already wiped the token in
+// production).
 func TestCloudView_Status_ReachabilityAxis(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
@@ -55,7 +56,7 @@ func TestCloudView_Status_ReachabilityAxis(t *testing.T) {
 		p.Remote = &config.RemoteConfig{
 			Active: "default",
 			Profiles: map[string]*config.Remote{"default": {
-				AuthURL:     "https://example.test",
+				GatewayURL:  "https://example.test",
 				AccessToken: "tok-abc",
 				// ExpiresAt: 0 means "no expiry tracked" → cloudTokenExpired returns false.
 			}},
@@ -65,8 +66,8 @@ func TestCloudView_Status_ReachabilityAxis(t *testing.T) {
 	}
 
 	m := cloudView{}
-	if got := m.Status(); got != cloudStatusChecking {
-		t.Errorf("token, no call yet: got %v, want Checking", got)
+	if got := m.Status(); got != cloudStatusOnline {
+		t.Errorf("token, no call yet: got %v, want Online", got)
 	}
 
 	m.hasCalled = true

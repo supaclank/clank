@@ -107,14 +107,32 @@ func NewBuilder(repoPath, createdBy string) *Builder {
 	return &Builder{repoPath: repoPath, createdBy: createdBy}
 }
 
-// Build constructs a checkpoint with the given checkpointID. The
-// caller is responsible for generating the ID (typically a ULID) and
-// for cleaning up the returned Result.
-func (b *Builder) Build(ctx context.Context, checkpointID string) (*Result, error) {
-	if checkpointID == "" {
-		return nil, errors.New("checkpoint: checkpointID is required")
-	}
+// Snapshot is the content-addressed view of the working tree without
+// any bundling work. Cheaper than Build: 4 git plumbing calls, no
+// commit-tree synthesis, no `git bundle create`. Used by divergence
+// detection in push/pull (`clank status`, `clank push` idempotency)
+// to decide "is local already in sync with remote" before committing
+// to a full bundle upload.
+type Snapshot struct {
+	HeadCommit   string
+	HeadRef      string
+	IndexTree    string
+	WorktreeTree string
+}
 
+// Snapshot computes the 4 content SHAs that uniquely identify the
+// working tree's state. No filesystem writes (other than git's own
+// object hashing).
+func (b *Builder) Snapshot(ctx context.Context) (*Snapshot, error) {
+	return b.snapshot(ctx)
+}
+
+// snapshot is the shared SHA-capture routine. Both Snapshot (parity
+// fast-path) and Build (full checkpoint) start from these 4 fields;
+// keeping a single implementation rules out silent divergence — if
+// the two paths emit different SHAs for the same working tree, the
+// parity check breaks idempotency without anyone noticing.
+func (b *Builder) snapshot(ctx context.Context) (*Snapshot, error) {
 	headCommit, err := b.gitOutput(ctx, nil, "rev-parse", "HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("rev-parse HEAD: %w", err)
@@ -136,6 +154,31 @@ func (b *Builder) Build(ctx context.Context, checkpointID string) (*Result, erro
 	if err != nil {
 		return nil, fmt.Errorf("capture worktreeTree: %w", err)
 	}
+
+	return &Snapshot{
+		HeadCommit:   headCommit,
+		HeadRef:      headRef,
+		IndexTree:    indexTree,
+		WorktreeTree: worktreeTree,
+	}, nil
+}
+
+// Build constructs a checkpoint with the given checkpointID. The
+// caller is responsible for generating the ID (typically a ULID) and
+// for cleaning up the returned Result.
+func (b *Builder) Build(ctx context.Context, checkpointID string) (*Result, error) {
+	if checkpointID == "" {
+		return nil, errors.New("checkpoint: checkpointID is required")
+	}
+
+	snap, err := b.snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	headCommit := snap.HeadCommit
+	headRef := snap.HeadRef
+	indexTree := snap.IndexTree
+	worktreeTree := snap.WorktreeTree
 
 	commitMsg := "clank checkpoint " + checkpointID
 

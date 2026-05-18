@@ -36,6 +36,7 @@ migration, and the TUI auth panel all target it.
 With no subcommand, prints the configured remotes — active marked with
 ` + "`*`" + `. Pass -v for URLs and signed-in identity.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			return runRemoteList(cmd, verbose)
 		},
 	}
@@ -91,10 +92,15 @@ func runRemoteList(cmd *cobra.Command, verbose bool) error {
 		switch {
 		case r.UserEmail != "":
 			identity = r.UserEmail
-		case r.AccessToken != "" && r.AuthURL == "":
-			// Static-bearer profile (dev / self-hosted with no auth server).
-			// No identity to show; signal it's a token-based remote.
+		case r.AccessToken != "" && r.RefreshToken == "" && r.ExpiresAt == 0 && r.UserID == "":
+			// Static-bearer profile (dev / self-hosted that uses a fixed
+			// CLANK_AUTH_TOKEN). No identity to show; signal it's a
+			// token-based remote rather than an OAuth one. The extra
+			// guards prevent mislabeling OAuth sessions whose IdP
+			// returns opaque tokens or JWTs without an email claim.
 			identity = "(static bearer)"
+		case r.AccessToken != "":
+			identity = "(signed in)"
 		}
 		fmt.Fprintf(out, "%s%s\t%s\t%s\n", marker, name, gw, identity)
 	}
@@ -107,6 +113,7 @@ func remoteSwitchCmd() *cobra.Command {
 		Short: "Set the active remote",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			name := strings.TrimSpace(args[0])
 			if name == "" {
 				return fmt.Errorf("remote name is required")
@@ -137,7 +144,6 @@ func remoteSwitchCmd() *cobra.Command {
 func remoteAddCmd() *cobra.Command {
 	var (
 		gatewayURL string
-		authURL    string
 		token      string
 	)
 	cmd := &cobra.Command{
@@ -148,11 +154,13 @@ push/pull calls target it. Repeating with the same name overwrites the
 remote.
 
 Token is the bearer the gateway requires. Normal flow is to leave
---token empty and run ` + "`clank login`" + ` to populate it via the device
-flow against --auth-url. Set --token directly only for self-hosted
+--token empty and run ` + "`clank login`" + ` to populate it — clank
+fetches the OAuth endpoints from <gateway-url>/auth-config and runs
+PKCE against them. Set --token directly only for self-hosted
 static-bearer deployments (server-side CLANK_AUTH_TOKEN + CLANK_AUTH_ALLOW_STATIC=true).`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			name := strings.TrimSpace(args[0])
 			if name == "" {
 				return fmt.Errorf("remote name is required")
@@ -169,7 +177,6 @@ static-bearer deployments (server-side CLANK_AUTH_TOKEN + CLANK_AUTH_ALLOW_STATI
 				}
 				p.Remote.Profiles[name] = &config.Remote{
 					GatewayURL:  gatewayURL,
-					AuthURL:     authURL,
 					AccessToken: token,
 				}
 				p.Remote.Active = name
@@ -182,7 +189,6 @@ static-bearer deployments (server-side CLANK_AUTH_TOKEN + CLANK_AUTH_ALLOW_STATI
 		},
 	}
 	cmd.Flags().StringVar(&gatewayURL, "gateway-url", "", "Gateway URL (required)")
-	cmd.Flags().StringVar(&authURL, "auth-url", "", "Auth-server URL for device flow (optional)")
 	// No backticks in the description — pflag treats backtick-quoted
 	// substrings as the placeholder type name, which renders
 	// "--token clank login" in --help and looks like the flag takes two
@@ -198,6 +204,7 @@ func remoteRemoveCmd() *cobra.Command {
 		Short:   "Delete a remote",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			name := strings.TrimSpace(args[0])
 			var removed bool
 			err := config.UpdatePreferences(func(p *config.Preferences) {

@@ -49,9 +49,10 @@ services:
       mc anonymous set download local/${CLANK_BUCKET:-clank} || true
       "
 
-  # ── dev auth stub (RFC 8628 device flow, auto-approves) ─────────
-  # Stand-in for a real auth provider so `clank login` works against
-  # the local stack. Issues HS256-signed JWTs; not for production.
+  # ── dev auth stub (OAuth 2.0 + PKCE, auto-approves) ─────────────
+  # Stand-in for a real OAuth 2.0 IdP so `clank login` works against
+  # the local stack. Implements /authorize + /token per RFC 6749 +
+  # RFC 7636; issues HS256-signed JWTs. Not for production.
   clank-auth-stub:
     build:
       context: ..
@@ -96,6 +97,16 @@ services:
       #   CLANK_AUTH_OIDC_ISSUER + _AUDIENCE (production / SSO)
       #   CLANK_AUTH_TOKEN + CLANK_AUTH_ALLOW_STATIC=true (opt-in static)
       CLANK_AUTH_JWT_SECRET: "${CLANK_AUTH_STUB_SECRET:-dev-secret-change-me}"
+
+      # OAuth 2.0 discovery — clankd serves these at GET /auth-config
+      # pre-auth so `clank login` can bootstrap. Values point at the
+      # auth-stub via the host port mapping (clankd doesn't call these;
+      # it just echoes them to the laptop, which opens its browser
+      # against them). The laptop reaches the stub at localhost:7879.
+      CLANK_AUTH_AUTHORIZE_ENDPOINT: "${CLANK_AUTH_AUTHORIZE_ENDPOINT:-http://localhost:7879/authorize}"
+      CLANK_AUTH_TOKEN_ENDPOINT: "${CLANK_AUTH_TOKEN_ENDPOINT:-http://localhost:7879/token}"
+      CLANK_AUTH_CLIENT_ID: "${CLANK_AUTH_CLIENT_ID:-clank-cli}"
+      CLANK_AUTH_SCOPES: "${CLANK_AUTH_SCOPES:-openid email}"
 
       # Embedded sync substrate. clankd's runGatewayServer reads these
       # in TCP mode via loadSyncFromEnv and mounts a sync server when

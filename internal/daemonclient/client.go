@@ -34,7 +34,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -97,32 +96,19 @@ func NewTCPClient(baseURL, authToken string) *Client {
 	}
 }
 
-// NewDefaultClient creates a client using, in priority order:
-//  1. preferences.ActiveHub == "remote" with the active remote's
-//     gateway_url set.
-//  2. The local Unix socket.
-//
-// Use NewLocalClient for daemon-control commands instead.
+// NewDefaultClient returns the laptop's local Unix-socket client.
+// The laptop is the single source of transport — `clank` talks only
+// to the local daemon, which proxies per-session ops to the active
+// remote when worktree ownership demands it. Use NewLocalClient for
+// daemon-control commands (it's the same thing today, kept distinct
+// for callers that want to be explicit about "no remote routing").
 func NewDefaultClient() (*Client, error) {
-	prefs, err := config.LoadPreferences()
-	if err != nil {
-		// A corrupt prefs file must surface, not silently fall back to local.
-		return nil, fmt.Errorf("load preferences: %w", err)
-	}
-	if prefs.ActiveHub == "remote" {
-		if p := prefs.ActiveRemote(); p != nil && strings.TrimSpace(p.GatewayURL) != "" {
-			return NewTCPClient(p.GatewayURL, p.AccessToken), nil
-		}
-	}
-	sockPath, err := SocketPath()
-	if err != nil {
-		return nil, err
-	}
-	return NewClient(sockPath), nil
+	return NewLocalClient()
 }
 
-// NewLocalClient returns a Unix-socket client for the local clankd,
-// ignoring ActiveHub. Use for daemon-control (start/stop/status).
+// NewLocalClient returns a Unix-socket client for the local clankd.
+// Use for daemon-control (start/stop/status) and any direct local
+// access.
 func NewLocalClient() (*Client, error) {
 	sockPath, err := SocketPath()
 	if err != nil {
@@ -132,10 +118,10 @@ func NewLocalClient() (*Client, error) {
 }
 
 // NewRemoteClient returns a TCP client targeting the active remote's
-// gateway_url with its access_token as the bearer. Use for sync/
-// migration calls that must hit the remote gateway regardless of
-// ActiveHub (the laptop daemon's gateway has Sync=nil and doesn't
-// orchestrate migration).
+// gateway_url with its access_token as the bearer. Used by the
+// `clank push`/`clank pull` flows that talk directly to the remote
+// sync server (the laptop's local daemon doesn't orchestrate
+// migration).
 //
 // Returns an error when no active remote is configured — surfaces a
 // clear setup message rather than silently falling back to a
@@ -150,38 +136,6 @@ func NewRemoteClient() (*Client, error) {
 		return nil, fmt.Errorf("no active remote configured; run `clank remote add <name> --gateway-url=...`")
 	}
 	return NewTCPClient(p.GatewayURL, p.AccessToken), nil
-}
-
-// IsRemoteActive reports whether NewDefaultClient would target a
-// remote clankd. Logs and degrades to false on prefs load failure.
-func IsRemoteActive() bool {
-	prefs, err := config.LoadPreferences()
-	if err != nil {
-		log.Printf("daemonclient.IsRemoteActive: prefs load failed (%v) — assuming local; fix the file to switch", err)
-		return false
-	}
-	if prefs.ActiveHub != "remote" {
-		return false
-	}
-	p := prefs.ActiveRemote()
-	return p != nil && strings.TrimSpace(p.GatewayURL) != ""
-}
-
-// ActiveHubLabel returns a short human-readable description of the
-// clankd NewDefaultClient would target. Logs and labels as broken on
-// prefs load failure.
-func ActiveHubLabel() string {
-	prefs, err := config.LoadPreferences()
-	if err != nil {
-		log.Printf("daemonclient.ActiveHubLabel: prefs load failed: %v", err)
-		return "unknown (prefs unreadable)"
-	}
-	if prefs.ActiveHub == "remote" {
-		if p := prefs.ActiveRemote(); p != nil && strings.TrimSpace(p.GatewayURL) != "" {
-			return "remote (" + p.GatewayURL + ")"
-		}
-	}
-	return "local"
 }
 
 // SocketPath returns the Unix socket path for clankd's Hub API.

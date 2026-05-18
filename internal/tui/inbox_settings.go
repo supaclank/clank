@@ -16,11 +16,7 @@ import (
 // cursor lands on the ⚙ row.
 func (m *InboxModel) showSettings() {
 	prefs, _ := config.LoadPreferences()
-	remoteURL := ""
-	if p := prefs.ActiveRemote(); p != nil {
-		remoteURL = p.GatewayURL
-	}
-	m.settings = newSettingsView(prefs.ColorScheme, prefs.DefaultBackend, prefs.ActiveHub, remoteURL)
+	m.settings = newSettingsView(prefs.ColorScheme, prefs.DefaultBackend)
 	m.settings.SetSize(m.sessionPaneWidth(), m.height)
 	m.screen = screenSettings
 }
@@ -90,18 +86,6 @@ func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 			next := nextDefaultBackend(m.settings.DefaultBackendValue())
 			m.settings.SetDefaultBackendValue(string(next))
 			persistDefaultBackend(next)
-			return m, nil
-		case settingsEntryActiveHub:
-			// Toggle local <-> remote. Persist only; user restarts the
-			// TUI for it to take effect (hot-swap would orphan the SSE).
-			prefs, _ := config.LoadPreferences()
-			remoteURL := ""
-			if p := prefs.ActiveRemote(); p != nil {
-				remoteURL = p.GatewayURL
-			}
-			next := nextActiveHub(prefs.ActiveHub)
-			m.settings.SetActiveHubValue(next, remoteURL)
-			persistActiveHub(next)
 			return m, nil
 		case settingsEntryProviders:
 			m.providerAuth = newProviderAuthModel(m.client, m.hostname)
@@ -212,20 +196,3 @@ func persistDefaultBackend(bt agent.BackendType) {
 	})
 }
 
-// nextActiveHub flips between "local" and "remote". Empty string is
-// treated as "local" (the implicit default) so the first toggle moves
-// to "remote".
-func nextActiveHub(current string) string {
-	if current == "remote" {
-		return "local"
-	}
-	return "remote"
-}
-
-// persistActiveHub writes the user's chosen active hub to
-// preferences.json. See persistColorScheme for error handling.
-func persistActiveHub(name string) {
-	_ = config.UpdatePreferences(func(p *config.Preferences) {
-		p.ActiveHub = name
-	})
-}

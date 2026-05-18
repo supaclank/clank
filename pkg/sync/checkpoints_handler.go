@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/acksell/clank/pkg/sync/storage"
@@ -25,8 +26,29 @@ type worktreeResponse struct {
 	OwnerKind              OwnerKind `json:"owner_kind"`
 	OwnerID                string    `json:"owner_id"`
 	LatestSyncedCheckpoint string    `json:"latest_synced_checkpoint,omitempty"`
-	CreatedAt              time.Time `json:"created_at"`
-	UpdatedAt              time.Time `json:"updated_at"`
+	// LatestCheckpointMetadata carries the 4 content SHAs of the
+	// latest synced checkpoint. Populated on single-worktree responses
+	// (handleGetWorktree, handleTransferOwnership) where the laptop
+	// needs to compute drift cheaply. Omitted from list responses
+	// (would require a JOIN per row) and when no checkpoint has been
+	// pushed yet.
+	LatestCheckpointMetadata *checkpointSnapshot `json:"latest_checkpoint_metadata,omitempty"`
+	CreatedAt                time.Time           `json:"created_at"`
+	UpdatedAt                time.Time           `json:"updated_at"`
+}
+
+// checkpointSnapshot is the subset of Checkpoint fields the laptop
+// needs for divergence detection: the same content SHAs the local
+// checkpoint.Manifest carries. Letting the laptop compare locally
+// avoids fetching the full manifest blob from S3 just to check
+// "is my local state already synced?".
+type checkpointSnapshot struct {
+	CheckpointID      string `json:"checkpoint_id"`
+	HeadCommit        string `json:"head_commit"`
+	HeadRef           string `json:"head_ref,omitempty"`
+	IndexTree         string `json:"index_tree"`
+	WorktreeTree      string `json:"worktree_tree"`
+	IncrementalCommit string `json:"incremental_commit"`
 }
 
 // handleListWorktrees returns all worktrees belonging to the caller.
@@ -76,7 +98,33 @@ func (s *Server) handleGetWorktree(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	writeJSON(w, http.StatusOK, worktreeToResponse(wt))
+	resp := worktreeToResponse(wt)
+	s.attachCheckpointSnapshot(r.Context(), &resp, wt.LatestSyncedCheckpoint)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// attachCheckpointSnapshot enriches a worktree response with the
+// 4 content SHAs of the named checkpoint. Best-effort: a lookup
+// failure is logged and the response goes out without the field
+// (clients treat missing-snapshot as "treat as diverged", which is
+// the safe default).
+func (s *Server) attachCheckpointSnapshot(ctx context.Context, resp *worktreeResponse, checkpointID string) {
+	if checkpointID == "" {
+		return
+	}
+	ck, err := s.cfg.Store.GetCheckpointByID(ctx, checkpointID)
+	if err != nil {
+		s.log.Printf("sync: snapshot checkpoint %s: %v", checkpointID, err)
+		return
+	}
+	resp.LatestCheckpointMetadata = &checkpointSnapshot{
+		CheckpointID:      ck.ID,
+		HeadCommit:        ck.HeadCommit,
+		HeadRef:           ck.HeadRef,
+		IndexTree:         ck.IndexTree,
+		WorktreeTree:      ck.WorktreeTree,
+		IncrementalCommit: ck.IncrementalCommit,
+	}
 }
 
 // transferOwnershipRequest is the body of POST /v1/worktrees/{id}/owner.
@@ -173,7 +221,9 @@ func (s *Server) handleTransferOwnership(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "transfer", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, worktreeToResponse(updated))
+	resp := worktreeToResponse(updated)
+	s.attachCheckpointSnapshot(r.Context(), &resp, updated.LatestSyncedCheckpoint)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleRegisterWorktree(w http.ResponseWriter, r *http.Request) {
@@ -196,23 +246,121 @@ func (s *Server) handleRegisterWorktree(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Use the (slugged) display_name as the worktree ID so the user
+	// sees a memorable name — `clank` instead of an opaque ULID — in
+	// `clank status`, in S3 paths, and in the `~/work/<id>/` directory
+	// on sprites. On global-PK collisions (two users with same folder
+	// name, or two repos one user pushes that share a basename) the
+	// server appends `-2`, `-3`, … until INSERT succeeds. The user
+	// only sees a suffix when they hit an actual collision.
 	now := time.Now().UTC()
-	wt := Worktree{
-		ID:          newULID(),
+	base := capWorktreeIDBase(slugifyWorktreeID(req.DisplayName))
+	template := Worktree{
 		UserID:      caller.UserID,
 		DisplayName: req.DisplayName,
 		OwnerKind:   OwnerKindLocal,
-		// OwnerID stays empty for local kind — ownership is per-user.
-		CreatedAt: now,
-		UpdatedAt: now,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
-	if err := s.cfg.Store.InsertWorktree(r.Context(), wt); err != nil {
+	id, err := s.mintUniqueWorktreeID(r.Context(), base, template)
+	if err != nil {
 		s.log.Printf("sync: insert worktree: %v", err)
 		http.Error(w, "insert worktree", http.StatusInternalServerError)
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, worktreeToResponse(wt))
+	// Return the row we just inserted. A defensive re-read here would
+	// turn any transient Get failure into a 500 *after* the row was
+	// successfully created — clients retry, mintUniqueWorktreeID
+	// allocates name-2/-3 for the same logical worktree, and the user
+	// sees suffixes they didn't earn.
+	template.ID = id
+	writeJSON(w, http.StatusCreated, worktreeToResponse(template))
+}
+
+// mintUniqueWorktreeID tries to insert a worktree row with the given
+// base ID, retrying with `-2`, `-3`, … suffixes on UNIQUE constraint
+// violations. Returns the successfully-inserted ID. Bounded to 200
+// attempts so a poisoned table doesn't loop forever.
+func (s *Server) mintUniqueWorktreeID(ctx context.Context, base string, template Worktree) (string, error) {
+	const maxAttempts = 200
+	for n := 1; n <= maxAttempts; n++ {
+		candidate := base
+		if n > 1 {
+			candidate = fmt.Sprintf("%s-%d", base, n)
+		}
+		wt := template
+		wt.ID = candidate
+		err := s.cfg.Store.InsertWorktree(ctx, wt)
+		if err == nil {
+			return candidate, nil
+		}
+		if !isUniqueConstraintErr(err) {
+			return "", err
+		}
+		// collision — try the next suffix
+	}
+	return "", fmt.Errorf("could not find an unused worktree id after %d attempts (base=%q)", maxAttempts, base)
+}
+
+// maxWorktreeIDBase caps the slug used as the base for worktree IDs.
+// Filesystem path components are bounded at 255 bytes on macOS/Linux;
+// mintUniqueWorktreeID appends up to a 4-char `-N` suffix (N≤200),
+// so a 64-byte base leaves plenty of headroom inside that limit and
+// keeps S3 keys readable.
+const maxWorktreeIDBase = 64
+
+// capWorktreeIDBase truncates a slug to maxWorktreeIDBase bytes,
+// preserving the "worktree" empty-input sentinel from slugifyWorktreeID.
+// Trims any trailing separators left by the truncation so the result
+// remains a clean slug.
+func capWorktreeIDBase(s string) string {
+	if len(s) <= maxWorktreeIDBase {
+		return s
+	}
+	return strings.TrimRight(s[:maxWorktreeIDBase], "-_.")
+}
+
+// slugifyWorktreeID turns a free-form display name into a filesystem-
+// and URL-safe identifier. Lowercases, replaces any non-alphanumeric
+// run with a single dash, trims leading/trailing dashes. Falls back
+// to "worktree" when the input slugs to empty (e.g. all punctuation).
+func slugifyWorktreeID(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	prevDash := false
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			prevDash = false
+		case r == '-' || r == '_' || r == '.':
+			b.WriteRune(r)
+			prevDash = r == '-'
+		default:
+			if !prevDash {
+				b.WriteByte('-')
+				prevDash = true
+			}
+		}
+	}
+	out := strings.Trim(b.String(), "-_.")
+	if out == "" {
+		return "worktree"
+	}
+	return out
+}
+
+// isUniqueConstraintErr matches both common Go sqlite drivers'
+// surface error strings. String-matched because both drivers wrap
+// the underlying SQLITE_CONSTRAINT_UNIQUE in stable text but don't
+// expose a stable typed sentinel.
+func isUniqueConstraintErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "UNIQUE constraint failed") || strings.Contains(s, "constraint failed: UNIQUE")
 }
 
 // createCheckpointRequest is the body of POST /v1/checkpoints. Field

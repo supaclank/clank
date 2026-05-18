@@ -120,10 +120,22 @@ func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
 		}
 	}
 
-	gw, err := gateway.NewGateway(gateway.Config{
+	gwCfg := gateway.Config{
 		Provisioner: prov,
 		Sync:        syncSrv,
-	}, log.Default())
+		AuthConfig:  loadAuthConfigFromEnv(),
+	}
+	// Laptop mode (Sync == nil): wire the per-session router so
+	// /sessions/* routes between local clank-host and the active
+	// remote based on worktree ownership. Cloud mode (Sync != nil)
+	// stays pure-proxy — it IS the destination of the laptop's
+	// proxy, so it has no "active remote" upstream of itself.
+	if syncSrv == nil {
+		resolver := newPrefsRemoteResolver(log.Default())
+		gwCfg.RemoteResolver = resolver
+		gwCfg.OwnerCache = gateway.NewOwnerCache(resolver, nil)
+	}
+	gw, err := gateway.NewGateway(gwCfg, log.Default())
 	if err != nil {
 		return fmt.Errorf("build gateway: %w", err)
 	}
@@ -138,7 +150,18 @@ func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
 		}
 	}
 	logAuthMode(authDesc)
-	handler := auth.Middleware(gw.Handler(), authenticator)
+
+	// Wire the auth-config discovery route PRE-auth (clank has no
+	// token when it fetches it). Falls back to a single auth-wrapped
+	// handler when no AuthConfig is configured.
+	var handler http.Handler = auth.Middleware(gw.Handler(), authenticator)
+	if ach := gw.AuthConfigHandler(); ach != nil {
+		mux := http.NewServeMux()
+		mux.Handle("GET /auth-config", ach)
+		mux.Handle("/", handler)
+		handler = mux
+		log.Printf("gateway: /auth-config discovery enabled")
+	}
 
 	listener, cleanup, err := openHubListener(opts)
 	if err != nil {
@@ -184,3 +207,43 @@ func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
 	return nil
 }
 
+// loadAuthConfigFromEnv builds a gateway.AuthConfig from CLANK_AUTH_*
+// env vars for the dev / docker-stack path. Returns nil when the core
+// endpoints aren't set — embedders (self-hoster, etc.) populate
+// gateway.Config.AuthConfig directly and don't need these env vars.
+//
+// CLANK_AUTH_AUTHORIZE_ENDPOINT — full URL, e.g. http://stub/authorize
+// CLANK_AUTH_TOKEN_ENDPOINT     — full URL, e.g. http://stub/token
+// CLANK_AUTH_CLIENT_ID          — OAuth client identifier
+// CLANK_AUTH_SCOPES             — space-separated, e.g. "openid email"
+// CLANK_AUTH_DEFAULT_PROVIDER   — optional IdP hint (e.g. "github")
+// CLANK_AUTH_CALLBACK_PORT      — pin laptop's PKCE listener to a
+//                                  fixed port (required when the IdP
+//                                  matches redirect_uris strictly,
+//                                  e.g. Supabase OAuth Server).
+func loadAuthConfigFromEnv() *gateway.AuthConfig {
+	authorize := os.Getenv("CLANK_AUTH_AUTHORIZE_ENDPOINT")
+	token := os.Getenv("CLANK_AUTH_TOKEN_ENDPOINT")
+	clientID := os.Getenv("CLANK_AUTH_CLIENT_ID")
+	if authorize == "" || token == "" || clientID == "" {
+		return nil
+	}
+	cfg := &gateway.AuthConfig{
+		AuthorizeEndpoint: authorize,
+		TokenEndpoint:     token,
+		ClientID:          clientID,
+		DefaultProvider:   os.Getenv("CLANK_AUTH_DEFAULT_PROVIDER"),
+	}
+	if s := os.Getenv("CLANK_AUTH_SCOPES"); s != "" {
+		cfg.Scopes = strings.Fields(s)
+	}
+	if s := os.Getenv("CLANK_AUTH_CALLBACK_PORT"); s != "" {
+		p, err := strconv.Atoi(s)
+		if err != nil || p < 1 || p > 65535 {
+			log.Printf("gateway: CLANK_AUTH_CALLBACK_PORT=%q invalid, ignoring", s)
+		} else {
+			cfg.CallbackPort = p
+		}
+	}
+	return cfg
+}

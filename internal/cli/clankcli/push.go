@@ -2,6 +2,7 @@ package clankcli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,9 +24,14 @@ func envOrDefault(key, def string) string {
 }
 
 // pushCmd registers `clank push` — upload a checkpoint of the local
-// worktree to clank-sync. With `--migrate`, also hand off ownership
-// to the remote host so a session-create against this worktree
-// resolves to the synced state on the remote (no clone, no SSH).
+// worktree to clank-sync. With `--migrate` (or `-m`), also hand off
+// ownership to the remote host.
+//
+// Idempotency: when the local SHAs match the remote's latest
+// checkpoint, plain push exits early with "Already up to date". For
+// `--migrate`, the no-op case is "remote-owned + in-sync" (already
+// migrated). Divergence against a remote-owned worktree on `--migrate`
+// is refused unless `--force` is also passed.
 func pushCmd() *cobra.Command {
 	var (
 		baseURL  string
@@ -33,6 +39,7 @@ func pushCmd() *cobra.Command {
 		display  string
 		repoPath string
 		alsoMig  bool
+		force    bool
 		timing   bool
 	)
 	cmd := &cobra.Command{
@@ -48,12 +55,19 @@ First push registers the worktree and caches the ID. Worktree
 ownership is per-user (any laptop signed in with the same identity
 can push); no per-device disambiguation.
 
-With --migrate, after the upload completes, hand off worktree
+With --migrate (or -m), after the upload completes, hand off worktree
 ownership to the remote host. After this returns, the local laptop
 is no longer the owner — to resume work locally, run
-` + "`clank pull --migrate`" + `.`,
+` + "`clank pull --migrate`" + `.
+
+--force is only accepted alongside --migrate: it discards remote-side
+changes when migrating onto a worktree the remote currently owns.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
+			if force && !alsoMig {
+				return errors.New("--force only applies with --migrate (-m)")
+			}
 			if len(args) == 1 {
 				repoPath = args[0]
 			}
@@ -120,70 +134,140 @@ is no longer the owner — to resume work locally, run
 				fmt.Fprintf(cmd.OutOrStdout(), "registered worktree %s as %q\n", worktreeID, name)
 			}
 
-			// When --migrate is set, run the pre-flight check (version
-			// compatibility + reachability of remote clank-host) BEFORE
-			// PushCheckpoint. Otherwise a sprite that's unreachable or
-			// has the wrong opencode version makes us waste a full
-			// checkpoint upload first. Constructed clients are reused
-			// downstream for the session leg + migrate call.
-			var dc, localCli *daemonclient.Client
-			if alsoMig {
-				dc, err = daemonclient.NewRemoteClient()
-				if err != nil {
-					return fmt.Errorf("remote client: %w", err)
-				}
-				localCli, err = daemonclient.NewLocalClient()
-				if err != nil {
-					return fmt.Errorf("local daemon client: %w", err)
-				}
-				done := timer.Start("version compatibility check")
-				err = assertOpencodeCompatible(cmd.Context(), cmd.ErrOrStderr(), localCli, dc)
-				done()
-				if err != nil {
-					return err
-				}
-			}
-
-			done := timer.Start("push checkpoint")
-			res, err := cli.PushCheckpoint(ctx, worktreeID, absRepo)
+			// Build a Snapshot of local state and query the remote for
+			// the latest synced checkpoint. The pair drives the
+			// idempotency / divergence branches below; built before any
+			// expensive work so we can fast-path no-op runs.
+			done := timer.Start("snapshot local")
+			snap, err := snapshotRepo(ctx, absRepo)
 			done()
 			if err != nil {
-				return fmt.Errorf("push checkpoint: %w", err)
+				return fmt.Errorf("snapshot repo: %w", err)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "pushed checkpoint %s (HEAD %s)\n",
-				res.CheckpointID, shortSHA(res.Manifest.HeadCommit))
 
-			if alsoMig {
-				// Session leg — ride the session blobs into the same
-				// checkpoint so code + sessions transfer atomically. If
-				// pushSessionLeg fails the migration aborts before
-				// ownership flips (TransferOwnership runs on the
-				// gateway side after the sprite-apply succeeds for
-				// BOTH legs).
-				if err := pushSessionLeg(cmd, timer, worktreeID, res.CheckpointID, cli); err != nil {
-					return fmt.Errorf("push session leg: %w", err)
-				}
-
-				mctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-				defer cancel()
-				done = timer.Start("migrate worktree (gateway)")
-				mres, err := dc.MigrateWorktree(mctx, worktreeID, daemonclient.MigrateToRemote)
-				done()
-				if err != nil {
-					return fmt.Errorf("migrate to remote: %w", err)
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "migrated worktree %s → %s/%s\n",
-					mres.WorktreeID, mres.NewOwnerKind, mres.NewOwnerID)
+			dc, err := daemonclient.NewRemoteClient()
+			if err != nil {
+				return fmt.Errorf("remote client: %w", err)
 			}
-			return nil
+
+			done = timer.Start("parity check")
+			parity, err := checkParity(ctx, dc, worktreeID, snap)
+			done()
+			if err != nil {
+				return fmt.Errorf("check remote state: %w", err)
+			}
+
+			// Branch on the matrix from the plan. The "early exit"
+			// branches print a styled confirmation and return; the
+			// fall-through cases proceed to the full push.
+			if !alsoMig {
+				return runPushNoMigrate(cmd, ctx, timer, cli, absRepo, worktreeID, parity)
+			}
+			return runPushMigrate(cmd, ctx, timer, cli, dc, absRepo, worktreeID, parity, force)
 		},
 	}
 	cmd.Flags().StringVar(&baseURL, "base-url", envOrDefault("CLANK_GATEWAY_URL", ""), "gateway base URL (default: active remote's gateway_url)")
 	cmd.Flags().StringVar(&token, "token", envOrDefault("CLANK_SYNC_TOKEN", ""), "bearer token for the gateway (default: active remote's access_token)")
 	cmd.Flags().StringVar(&display, "display-name", "", "display name for newly-registered worktrees (default: basename of repo-path)")
-	cmd.Flags().BoolVar(&alsoMig, "migrate", false, "after pushing, also transfer worktree ownership to the remote host")
+	cmd.Flags().BoolVarP(&alsoMig, "migrate", "m", false, "after pushing, also transfer worktree ownership to the remote host")
+	cmd.Flags().BoolVar(&force, "force", false, "with --migrate, discard remote changes when migrating onto a remote-owned worktree")
 	cmd.Flags().BoolVar(&timing, "timing", false, "print a per-phase timing breakdown to stderr (also enabled by CLANK_TIMING=1)")
 	return cmd
+}
+
+// runPushNoMigrate handles `clank push` without --migrate. Plain push
+// is permissive (mirrors git push to a non-owned branch): always
+// uploads when local differs from remote, but logs an extra warning
+// when the remote owner has unsynced changes that will need to be
+// resolved on next --migrate.
+func runPushNoMigrate(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *syncclient.Client, absRepo, worktreeID string, parity parityResult) error {
+	if parity.InSync {
+		fmt.Fprintln(cmd.OutOrStdout(), styleOK.Render("✓ Already up to date")+styleDim.Render(" (local state matches remote's latest checkpoint)"))
+		return nil
+	}
+
+	done := timer.Start("push checkpoint")
+	res, err := cli.PushCheckpoint(ctx, worktreeID, absRepo)
+	done()
+	if err != nil {
+		return fmt.Errorf("push checkpoint: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "pushed checkpoint %s (HEAD %s)\n",
+		res.CheckpointID, shortSHA(res.Manifest.HeadCommit))
+
+	if parity.OwnerKind == "remote" && parity.HasCheckpoint {
+		fmt.Fprintln(cmd.OutOrStdout(), styleWarn.Render("⚠ Remote owner has changes you don't have locally."))
+		fmt.Fprintln(cmd.OutOrStdout(), "  "+styleDim.Render("Resolve this on the next `clank push -m` or `clank pull -m`."))
+	}
+	return nil
+}
+
+// runPushMigrate handles `clank push --migrate`. Refuses on
+// remote-owned + diverged unless --force. Skips entirely on the
+// already-migrated no-op case.
+func runPushMigrate(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *syncclient.Client, dc *daemonclient.Client, absRepo, worktreeID string, parity parityResult, force bool) error {
+	// Already-migrated no-op: remote-owned + in-sync. The user is
+	// running --migrate again on a worktree that's already where it
+	// needs to be.
+	if parity.OwnerKind == "remote" && parity.InSync {
+		fmt.Fprintln(cmd.OutOrStdout(), styleOK.Render("✓ Already migrated")+styleDim.Render(" — worktree already remote-owned and in sync"))
+		return nil
+	}
+
+	// Refuse the dangerous case (remote owns + diverged) unless
+	// explicitly forced. The user's safer option is `pull -m` first.
+	if parity.OwnerKind == "remote" && !parity.InSync && !force {
+		printPushMigrateConflict(cmd)
+		return errors.New("push --migrate refused: remote-owned worktree has unsynced changes (see options above)")
+	}
+
+	// Pre-flight version compatibility check. Same as today.
+	localCli, err := daemonclient.NewLocalClient()
+	if err != nil {
+		return fmt.Errorf("local daemon client: %w", err)
+	}
+	done := timer.Start("version compatibility check")
+	err = assertOpencodeCompatible(cmd.Context(), cmd.ErrOrStderr(), localCli, dc)
+	done()
+	if err != nil {
+		return err
+	}
+
+	done = timer.Start("push checkpoint")
+	res, err := cli.PushCheckpoint(ctx, worktreeID, absRepo)
+	done()
+	if err != nil {
+		return fmt.Errorf("push checkpoint: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "pushed checkpoint %s (HEAD %s)\n",
+		res.CheckpointID, shortSHA(res.Manifest.HeadCommit))
+
+	if err := pushSessionLeg(cmd, timer, worktreeID, res.CheckpointID, cli); err != nil {
+		return fmt.Errorf("push session leg: %w", err)
+	}
+
+	mctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Minute)
+	defer cancel()
+	done = timer.Start("migrate worktree (gateway)")
+	mres, err := dc.MigrateWorktree(mctx, worktreeID, daemonclient.MigrateToRemote)
+	done()
+	if err != nil {
+		return fmt.Errorf("migrate to remote: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "migrated worktree %s → %s/%s\n",
+		mres.WorktreeID, mres.NewOwnerKind, mres.NewOwnerID)
+	return nil
+}
+
+func printPushMigrateConflict(cmd *cobra.Command) {
+	w := cmd.OutOrStdout()
+	fmt.Fprintln(w, styleErr.Render("✗ Cannot migrate: the remote has changes you don't have locally."))
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Options:")
+	fmt.Fprintln(w, "    "+styleCmdHint.Render("clank pull -m")+"                 pull remote changes (default; mirrors `git pull`)")
+	fmt.Fprintln(w, "    "+styleCmdHint.Render("clank push -m --force")+"         discard remote changes; push your state up")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  "+styleDim.Render("(Merge / rebase strategies coming in a future release.)"))
 }
 
 func shortSHA(s string) string {

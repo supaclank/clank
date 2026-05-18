@@ -77,7 +77,7 @@ func (m *InboxModel) updateCloud(msg tea.Msg) (tea.Model, tea.Cmd) {
 		prefs, _ := config.LoadPreferences()
 		currentURL := ""
 		if p := prefs.ActiveRemote(); p != nil {
-			currentURL = p.AuthURL
+			currentURL = p.GatewayURL
 		}
 		m.cloudURLPicker = newCloudURLPicker(currentURL)
 		m.showCloudURLPicker = true
@@ -102,12 +102,12 @@ func (m *InboxModel) updateCloud(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case key.Matches(keyMsg, key.NewBinding(key.WithKeys("esc"))):
 			// Esc closes the cloud panel back to the inbox unless
-			// the cloud view wants to consume it (e.g. cancel an
-			// in-flight device flow during cloudPhaseAwaiting). The
+			// the cloud view wants to consume it (cancel an
+			// in-flight PKCE login during cloudPhaseLoggingIn). The
 			// cloud view's internal esc handling fires first; if it
 			// transitions phase, the next key event will land on the
 			// usual paths.
-			if m.cloud.phase != cloudPhaseAwaiting {
+			if m.cloud.phase != cloudPhaseLoggingIn {
 				m.closeCloud()
 				return m, nil
 			}
@@ -158,12 +158,15 @@ func (m *InboxModel) updateCloudURLPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// persistCloudURL writes the chosen cloud URL to the active profile
+// persistCloudURL writes the chosen gateway URL to the active profile
 // (creating one named "default" if none exists). Empty url clears the
 // field, disabling cloud features for that profile.
+//
+// The gateway is the only URL the laptop needs — it exposes
+// /auth-config so clank can discover the OAuth IdP at login time.
 func persistCloudURL(url string) {
 	_ = config.UpdatePreferences(func(p *config.Preferences) {
 		profile := ensureActiveProfile(p)
-		profile.AuthURL = url
+		profile.GatewayURL = url
 	})
 }
