@@ -108,7 +108,7 @@ dev-rebuild:
 	docker compose -f docker/docker-compose.yml build --no-cache
 	@bash scripts/dev.sh
 
-.PHONY: docker-setup docker-up docker-down docker-build docker-logs tunnel
+.PHONY: docker-setup docker-prefs docker-up docker-down docker-build docker-logs tunnel
 docker-setup:
 	@if ! grep -q '^[^#]*[[:space:]]clank-minio\b' /etc/hosts; then \
 	    echo "Adding 'clank-minio' → 127.0.0.1 to /etc/hosts (sudo prompt)..."; \
@@ -116,9 +116,15 @@ docker-setup:
 	else \
 	    echo "/etc/hosts already maps clank-minio — no change."; \
 	fi
+docker-prefs:
+	@if [ ! -f docker/preferences.json ]; then \
+	    echo "docker/preferences.json missing — copying from preferences.example.json."; \
+	    echo "Edit it to set your provider + credentials; changes stay local (gitignored)."; \
+	    cp docker/preferences.example.json docker/preferences.json; \
+	fi
 docker-build:
 	docker compose -f docker/docker-compose.yml build
-docker-up: docker-setup
+docker-up: docker-setup docker-prefs
 	docker compose --env-file docker/.env -f docker/docker-compose.yml up -d --build 2>/dev/null \
 	  || docker compose -f docker/docker-compose.yml up -d --build
 docker-down:
