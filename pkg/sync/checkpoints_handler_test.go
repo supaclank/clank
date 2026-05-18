@@ -310,8 +310,9 @@ func TestMultipleLaptopsSameUserShare(t *testing.T) {
 // TestRegisterWorktree_SurvivesPostInsertGetFailure pins the
 // idempotency contract: once InsertWorktree succeeds the response
 // must return 201 with the inserted row, even if a re-read fails.
-// Regression for a 500 path that drove clients to retry and accumulate
-// `-2`, `-3` suffixes for the same logical worktree.
+// Regression for a 500 path that historically drove clients to retry
+// and accumulate `-2`, `-3` suffixes for the same logical worktree
+// (the suffix logic itself is gone — IDs are now ULIDs).
 func TestRegisterWorktree_SurvivesPostInsertGetFailure(t *testing.T) {
 	t.Parallel()
 	store := &getFailingStore{memSyncStore: newMemSyncStore()}
@@ -332,8 +333,9 @@ func TestRegisterWorktree_SurvivesPostInsertGetFailure(t *testing.T) {
 	wt := postJSON[map[string]any](t, httpSrv.URL+"/v1/worktrees", map[string]string{
 		"display_name": "myrepo",
 	})
-	if id, _ := wt["id"].(string); id != "myrepo" {
-		t.Fatalf("id = %v, want %q (no `-2` suffix on first insert)", wt["id"], "myrepo")
+	id, _ := wt["id"].(string)
+	if !isULID(id) {
+		t.Fatalf("id = %q, want a 26-char ULID", id)
 	}
 	if wt["display_name"] != "myrepo" {
 		t.Fatalf("display_name = %v, want %q", wt["display_name"], "myrepo")
@@ -345,8 +347,49 @@ func TestRegisterWorktree_SurvivesPostInsertGetFailure(t *testing.T) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if len(store.worktrees) != 1 {
-		t.Fatalf("store has %d worktrees, want 1 (no suffix retries)", len(store.worktrees))
+		t.Fatalf("store has %d worktrees, want 1", len(store.worktrees))
 	}
+}
+
+// TestRegisterWorktree_SameDisplayNameMintsDistinctIDs confirms the
+// post-slug behaviour: two registers with the same display_name
+// succeed and yield two distinct opaque IDs (no `-2` suffix dance).
+func TestRegisterWorktree_SameDisplayNameMintsDistinctIDs(t *testing.T) {
+	t.Parallel()
+	httpSrv, _, _ := newTestServer(t)
+
+	one := postJSON[map[string]any](t, httpSrv.URL+"/v1/worktrees", map[string]string{"display_name": "myrepo"})
+	two := postJSON[map[string]any](t, httpSrv.URL+"/v1/worktrees", map[string]string{"display_name": "myrepo"})
+
+	id1, _ := one["id"].(string)
+	id2, _ := two["id"].(string)
+	if !isULID(id1) || !isULID(id2) {
+		t.Fatalf("ids not ULID-shaped: %q, %q", id1, id2)
+	}
+	if id1 == id2 {
+		t.Fatalf("same id minted twice: %q", id1)
+	}
+	if one["display_name"] != "myrepo" || two["display_name"] != "myrepo" {
+		t.Fatalf("display_name not preserved: %v / %v", one, two)
+	}
+}
+
+// isULID returns true for a 26-character Crockford-base32 string,
+// which is the shape of an oklog ulid.MustNew(...).String() output.
+func isULID(s string) bool {
+	if len(s) != 26 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9',
+			r >= 'A' && r <= 'Z' && r != 'I' && r != 'L' && r != 'O' && r != 'U':
+			// ok
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // getFailingStore wraps memSyncStore and returns ErrWorktreeNotFound

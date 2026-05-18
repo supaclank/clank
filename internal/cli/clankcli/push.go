@@ -50,10 +50,12 @@ of the repo at <repo-path> and upload it to clank-sync. The bundle
 streams from the laptop directly to object storage via a presigned
 URL — no bytes pass through clank-sync's process memory.
 
-Worktree IDs are cached per-repo at <repo>/.clank/worktree-id.
-First push registers the worktree and caches the ID. Worktree
-ownership is per-user (any laptop signed in with the same identity
-can push); no per-device disambiguation.
+Worktree IDs are cached per-clone inside the repo's git dir at
+$(git rev-parse --absolute-git-dir)/clank/worktree-id. First push
+registers the worktree and caches the ID; linked worktrees from
+` + "`git worktree add`" + ` get their own. Worktree ownership is
+per-user (any laptop signed in with the same identity can push);
+no per-device disambiguation.
 
 With --migrate (or -m), after the upload completes, hand off worktree
 ownership to the remote host. After this returns, the local laptop

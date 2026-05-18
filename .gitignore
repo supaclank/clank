@@ -17,7 +17,3 @@ internal/provisioner/flyio/clank-host-linux-amd64
 # Screenshot files the user shares from the TUI; not for VCS.
 screenshot.txt
 screenshots/
-
-# Per-repo clank state (worktree id cached on first `clank sync push`).
-# Identifies the worktree to clank-sync; per-developer, not VCS.
-.clank/
