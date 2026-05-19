@@ -39,7 +39,13 @@ func EnsureFreshActiveRemote(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load preferences: %w", err)
 	}
-	p := prefs.ActiveRemote()
+	// Resolve profile and name together so a successful refresh
+	// persists under the same key the profile actually lives under.
+	// Going through Remote.Active raw would write to "" when Active
+	// is empty/stale and the fallback to the alphabetically-first
+	// profile fires — creating a phantom profile and leaving the real
+	// one stuck on stale tokens.
+	p, name := prefs.ActiveRemoteAndName()
 	if p == nil || p.IsStaticBearer() {
 		return nil
 	}
@@ -66,7 +72,6 @@ func EnsureFreshActiveRemote(ctx context.Context) error {
 		return fmt.Errorf("refresh access token: %w", err)
 	}
 
-	name := prefs.Remote.Active
 	return WriteRemoteSession(name, session)
 }
 

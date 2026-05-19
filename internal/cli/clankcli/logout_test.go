@@ -127,6 +127,56 @@ func TestLogout_NoActiveRemote(t *testing.T) {
 	}
 }
 
+// TestLogout_EmptyActiveFallsBackToProfile: legacy/hand-edited prefs
+// can have Active == "" while still holding a profile. Bare `clank
+// logout` must clear THAT profile, not write under a "" key. The fix
+// lives in resolveRemoteTarget via ActiveRemoteAndName.
+func TestLogout_EmptyActiveFallsBackToProfile(t *testing.T) {
+	// Seed manually since seedPrefs always sets Active to a real name.
+	t.Setenv("CLANK_DIR", t.TempDir())
+	if err := config.SavePreferences(config.Preferences{
+		Remote: &config.RemoteConfig{
+			Active: "", // legacy / hand-edited
+			Profiles: map[string]*config.Remote{
+				"dev": {
+					GatewayURL:   "https://gw.example.com",
+					AccessToken:  "at",
+					RefreshToken: "rt",
+					ExpiresAt:    1700000000,
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed prefs: %v", err)
+	}
+
+	cmd := logoutCmd()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("logout: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `Signed out of remote "dev"`) {
+		t.Errorf("expected resolved name 'dev' in output; got %q", stdout.String())
+	}
+
+	prefs, _ := config.LoadPreferences()
+	if _, ok := prefs.Remote.Profiles[""]; ok {
+		t.Error("phantom \"\" profile was created — fallback name mis-aligned")
+	}
+	dev := prefs.Remote.Profiles["dev"]
+	if dev == nil {
+		t.Fatal("dev profile vanished")
+	}
+	if dev.AccessToken != "" || dev.RefreshToken != "" {
+		t.Errorf("dev session not cleared: %+v", dev)
+	}
+	if dev.GatewayURL != "https://gw.example.com" {
+		t.Errorf("dev gateway not preserved: %q", dev.GatewayURL)
+	}
+}
+
 func TestLogout_AlreadySignedOut_Idempotent(t *testing.T) {
 	seedPrefs(t, "dev", map[string]*config.Remote{
 		"dev": {GatewayURL: "https://gw.example.com"}, // no session fields

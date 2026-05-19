@@ -91,11 +91,19 @@ changes when migrating onto a worktree the remote currently owns.`,
 			// Refresh BEFORE the first authenticated call so the sync
 			// client below sees a fresh bearer. Without this, expired
 			// access tokens silently produce 401 from RegisterWorktree.
-			if err := daemonclient.EnsureFreshActiveRemote(ctx); err != nil {
-				if errors.Is(err, cloud.ErrUnauthorized) {
-					return fmt.Errorf("session expired — run `clank login` to sign in again")
+			//
+			// Skip when the caller supplied --token / CLANK_SYNC_TOKEN
+			// explicitly — that bearer is independent of the active
+			// remote profile (e.g. self-hosted static bearer, CI cron),
+			// so refreshing the profile's expired refresh_token would
+			// abort the push despite the caller having valid creds.
+			if token == "" {
+				if err := daemonclient.EnsureFreshActiveRemote(ctx); err != nil {
+					if errors.Is(err, cloud.ErrUnauthorized) {
+						return fmt.Errorf("session expired — run `clank login` to sign in again")
+					}
+					return fmt.Errorf("refresh remote session: %w", err)
 				}
-				return fmt.Errorf("refresh remote session: %w", err)
 			}
 
 			if baseURL == "" || token == "" {

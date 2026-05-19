@@ -226,3 +226,53 @@ func TestEnsureFreshActiveRemote_RefreshTransientError(t *testing.T) {
 		t.Errorf("error %q should mention 'refresh access token' for diagnostics", err)
 	}
 }
+
+// TestEnsureFreshActiveRemote_FallbackActivePersistsToCorrectKey: when
+// Remote.Active is empty (legacy prefs, hand-edited file), the resolved
+// profile comes from the alphabetically-first-key fallback. A refresh
+// must persist back to THAT key, not to "" — otherwise the refreshed
+// tokens land in a phantom "" profile and the real one keeps its stale
+// state forever.
+func TestEnsureFreshActiveRemote_FallbackActivePersistsToCorrectKey(t *testing.T) {
+	const newAccessToken = "fresh-access-token"
+	srv := startFakeIdP(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"access_token":%q,"token_type":"Bearer","expires_in":3600}`, newAccessToken)))
+	})
+	// Active is empty — exercises the fallback path in ActiveProfileAndName.
+	t.Setenv("CLANK_DIR", t.TempDir())
+	if err := config.SavePreferences(config.Preferences{
+		Remote: &config.RemoteConfig{
+			Active: "",
+			Profiles: map[string]*config.Remote{
+				"dev": {
+					GatewayURL:   srv.URL,
+					AccessToken:  "stale-access",
+					RefreshToken: "stale-rt",
+					ExpiresAt:    1, // expired
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed prefs: %v", err)
+	}
+
+	if err := EnsureFreshActiveRemote(context.Background()); err != nil {
+		t.Fatalf("EnsureFreshActiveRemote: %v", err)
+	}
+
+	prefs, err := config.LoadPreferences()
+	if err != nil {
+		t.Fatalf("reload prefs: %v", err)
+	}
+	if got, ok := prefs.Remote.Profiles[""]; ok {
+		t.Errorf("phantom \"\" profile was created: %+v", got)
+	}
+	dev := prefs.Remote.Profiles["dev"]
+	if dev == nil {
+		t.Fatal("dev profile vanished")
+	}
+	if dev.AccessToken != newAccessToken {
+		t.Errorf("dev.AccessToken got %q, want %q", dev.AccessToken, newAccessToken)
+	}
+}

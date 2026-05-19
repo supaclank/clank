@@ -261,13 +261,25 @@ func (c *RemoteConfig) UnmarshalJSON(data []byte) error {
 
 // ActiveProfile returns the active Remote or nil if none.
 func (c *RemoteConfig) ActiveProfile() *Remote {
+	p, _ := c.ActiveProfileAndName()
+	return p
+}
+
+// ActiveProfileAndName returns the active Remote along with the key
+// it lives under. Same fallback as ActiveProfile (when Active is
+// empty or points at a missing profile, the alphabetically-first
+// profile is selected). Callers that persist edits must use the
+// returned name, not c.Active — the latter is the raw, possibly
+// stale, on-disk value.
+func (c *RemoteConfig) ActiveProfileAndName() (*Remote, string) {
 	if c == nil || len(c.Profiles) == 0 {
-		return nil
+		return nil, ""
 	}
 	if p, ok := c.Profiles[c.Active]; ok {
-		return p
+		return p, c.Active
 	}
-	return c.Profiles[firstRemoteName(c.Profiles)]
+	name := firstRemoteName(c.Profiles)
+	return c.Profiles[name], name
 }
 
 // ActiveRemote is a Preferences-level convenience for the very common
@@ -278,6 +290,17 @@ func (p *Preferences) ActiveRemote() *Remote {
 		return nil
 	}
 	return p.Remote.ActiveProfile()
+}
+
+// ActiveRemoteAndName mirrors ActiveRemote but additionally returns
+// the key the resolved profile lives under. Persistence-side callers
+// (login, logout, refresh) must use this to avoid the (profile, "")
+// mismatch when Active is empty/stale.
+func (p *Preferences) ActiveRemoteAndName() (*Remote, string) {
+	if p == nil || p.Remote == nil {
+		return nil, ""
+	}
+	return p.Remote.ActiveProfileAndName()
 }
 
 func firstRemoteName(m map[string]*Remote) string {
