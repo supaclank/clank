@@ -9,6 +9,7 @@ import (
 
 	"github.com/acksell/clank/internal/cloud"
 	"github.com/acksell/clank/internal/config"
+	"github.com/acksell/clank/internal/daemonclient"
 )
 
 // loginCmd registers `clank login` — drive the OAuth 2.0 authorization
@@ -100,7 +101,7 @@ the user's browser). Workaround: ssh -L <port>:localhost:<port>.`,
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "ok")
 
-			if err := persistRemoteSession(name, session); err != nil {
+			if err := daemonclient.WriteRemoteSession(name, session); err != nil {
 				return fmt.Errorf("save session: %w", err)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "\nSigned in to remote %q as %s\n", name, session.UserEmail)
@@ -123,30 +124,3 @@ func resolveLoginTarget(prefs config.Preferences, name string) (*config.Remote, 
 	}
 	return prefs.ActiveRemote(), prefs.Remote.Active
 }
-
-// persistRemoteSession writes the OAuth grant onto the named remote in
-// preferences.json. Creates the remote entry if missing — possible when
-// --remote names an unknown one (caller already validated, but
-// UpdatePreferences runs against the latest disk version which a
-// concurrent edit could have changed).
-func persistRemoteSession(name string, s *cloud.Session) error {
-	return config.UpdatePreferences(func(p *config.Preferences) {
-		if p.Remote == nil {
-			p.Remote = &config.RemoteConfig{Profiles: map[string]*config.Remote{}}
-		}
-		if p.Remote.Profiles == nil {
-			p.Remote.Profiles = map[string]*config.Remote{}
-		}
-		r, ok := p.Remote.Profiles[name]
-		if !ok {
-			r = &config.Remote{}
-			p.Remote.Profiles[name] = r
-		}
-		r.AccessToken = s.AccessToken
-		r.RefreshToken = s.RefreshToken
-		r.UserEmail = s.UserEmail
-		r.UserID = s.UserID
-		r.ExpiresAt = s.ExpiresAt
-	})
-}
-

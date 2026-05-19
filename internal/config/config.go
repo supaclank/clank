@@ -214,6 +214,14 @@ type Remote struct {
 	ExpiresAt int64 `json:"expires_at,omitempty"`
 }
 
+// IsStaticBearer returns true for self-hosted profiles that authenticate
+// with a fixed CLANK_AUTH_TOKEN rather than an OAuth session. Recognised
+// by the presence of an access_token alongside the absence of every
+// OAuth session field — no refresh token, no expiry, no JWT sub.
+func (r *Remote) IsStaticBearer() bool {
+	return r != nil && r.AccessToken != "" && r.RefreshToken == "" && r.ExpiresAt == 0 && r.UserID == ""
+}
+
 // UnmarshalJSON accepts both the multi-profile shape and the legacy
 // single-profile flat shape. Legacy gets normalized to a single
 // "default" entry selected as Active.
