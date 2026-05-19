@@ -63,7 +63,10 @@ func TestLogout_TargetsActiveByDefault(t *testing.T) {
 		t.Fatalf("logout: %v", err)
 	}
 
-	prefs, _ := config.LoadPreferences()
+	prefs, err := config.LoadPreferences()
+	if err != nil {
+		t.Fatalf("reload prefs: %v", err)
+	}
 	if prefs.Remote.Profiles["prod"].AccessToken != "" {
 		t.Error("active remote 'prod' not cleared")
 	}
@@ -86,7 +89,10 @@ func TestLogout_NamedRemote(t *testing.T) {
 		t.Fatalf("logout --remote dev: %v", err)
 	}
 
-	prefs, _ := config.LoadPreferences()
+	prefs, err := config.LoadPreferences()
+	if err != nil {
+		t.Fatalf("reload prefs: %v", err)
+	}
 	if prefs.Remote.Profiles["dev"].AccessToken != "" {
 		t.Error("named remote 'dev' not cleared")
 	}
@@ -161,7 +167,10 @@ func TestLogout_EmptyActiveFallsBackToProfile(t *testing.T) {
 		t.Errorf("expected resolved name 'dev' in output; got %q", stdout.String())
 	}
 
-	prefs, _ := config.LoadPreferences()
+	prefs, err := config.LoadPreferences()
+	if err != nil {
+		t.Fatalf("reload prefs: %v", err)
+	}
 	if _, ok := prefs.Remote.Profiles[""]; ok {
 		t.Error("phantom \"\" profile was created — fallback name mis-aligned")
 	}
