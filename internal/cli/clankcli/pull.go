@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/cloud"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/pkg/sync/checkpoint"
 )
@@ -88,6 +89,12 @@ Without --migrate: bare data-only pull is post-MVP.`,
 				}
 			}
 
+			if err := daemonclient.EnsureFreshActiveRemote(cmd.Context()); err != nil {
+				if errors.Is(err, cloud.ErrUnauthorized) {
+					return fmt.Errorf("session expired — run `clank login` to sign in again")
+				}
+				return fmt.Errorf("refresh remote session: %w", err)
+			}
 			dc, err := daemonclient.NewRemoteClient()
 			if err != nil {
 				return fmt.Errorf("remote client: %w", err)

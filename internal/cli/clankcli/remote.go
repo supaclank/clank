@@ -92,12 +92,9 @@ func runRemoteList(cmd *cobra.Command, verbose bool) error {
 		switch {
 		case r.UserEmail != "":
 			identity = r.UserEmail
-		case r.AccessToken != "" && r.RefreshToken == "" && r.ExpiresAt == 0 && r.UserID == "":
-			// Static-bearer profile (dev / self-hosted that uses a fixed
-			// CLANK_AUTH_TOKEN). No identity to show; signal it's a
-			// token-based remote rather than an OAuth one. The extra
-			// guards prevent mislabeling OAuth sessions whose IdP
-			// returns opaque tokens or JWTs without an email claim.
+		case r.IsStaticBearer():
+			// Self-hosted token-based remote rather than an OAuth one.
+			// No identity to show.
 			identity = "(static bearer)"
 		case r.AccessToken != "":
 			identity = "(signed in)"
