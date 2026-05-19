@@ -24,7 +24,7 @@ import (
 //   3. Sprites probe-and-reinstall on next EnsureHost (~30-90s one-shot cost).
 //   4. Laptops `opencode upgrade` — runtime check refuses migrations
 //      until they do.
-const PinnedOpencodeVersion = "1.14.49"
+const PinnedOpencodeVersion = "1.15.1"
 
 // OpencodeIncompatibleError is returned by AssertOpencodeVersionsCompatible
 // when local and remote opencode versions can't safely round-trip session
@@ -114,6 +114,96 @@ type OpencodeWarning struct {
 
 func (w *OpencodeWarning) String() string {
 	return fmt.Sprintf("opencode version drift (local=%s, remote=%s): %s", w.Local, w.Remote, w.Message)
+}
+
+// OpencodeMismatch enumerates how a local/remote opencode version
+// pair has drifted from clank's pin. Recovery advice depends on
+// which side is the drifted one — telling the user to "upgrade your
+// laptop" is wrong if the laptop is the side that's already ahead.
+type OpencodeMismatch int
+
+const (
+	// OpencodeMismatchUnknown — couldn't classify (unparseable
+	// version on at least one side). Callers should fall back to a
+	// generic "bring both sides to the pin" hint.
+	OpencodeMismatchUnknown OpencodeMismatch = iota
+
+	// OpencodeMismatchLaptopBehindPin — sprite matches the pin,
+	// laptop is on an older opencode. Fix: opencode upgrade on the
+	// laptop.
+	OpencodeMismatchLaptopBehindPin
+
+	// OpencodeMismatchLaptopAheadOfPin — sprite matches the pin,
+	// laptop is on a newer opencode. The usual reading is "clank's
+	// pin is stale": the user upgraded opencode past it. Fix: bump
+	// PinnedOpencodeVersion and reinstall clank, or downgrade the
+	// laptop to match.
+	OpencodeMismatchLaptopAheadOfPin
+
+	// OpencodeMismatchSpriteDrifted — laptop matches the pin, sprite
+	// doesn't. Fix: restart the sprite so EnsureHost reinstalls the
+	// pinned opencode.
+	OpencodeMismatchSpriteDrifted
+
+	// OpencodeMismatchBothDrifted — neither side matches the pin.
+	// Unusual; surface all three versions so the user can decide.
+	OpencodeMismatchBothDrifted
+)
+
+// DiagnoseOpencodeMismatch classifies how the local/remote opencode
+// pair has drifted relative to clank's pin. It does not validate
+// compatibility (AssertOpencodeVersionsCompatible's job), only
+// direction — so callers can phrase recovery advice correctly when
+// the laptop is the side that's already ahead of the pin.
+func DiagnoseOpencodeMismatch(local, remote, pin string) OpencodeMismatch {
+	localCmp, okLocal := compareOpencodeVersions(local, pin)
+	remoteCmp, okRemote := compareOpencodeVersions(remote, pin)
+	if !okLocal || !okRemote {
+		return OpencodeMismatchUnknown
+	}
+	switch {
+	case remoteCmp == 0 && localCmp < 0:
+		return OpencodeMismatchLaptopBehindPin
+	case remoteCmp == 0 && localCmp > 0:
+		return OpencodeMismatchLaptopAheadOfPin
+	case localCmp == 0 && remoteCmp != 0:
+		return OpencodeMismatchSpriteDrifted
+	default:
+		return OpencodeMismatchBothDrifted
+	}
+}
+
+// compareOpencodeVersions returns -1/0/1 for a<b / a==b / a>b after
+// parsing both as major.minor[.patch]. The bool is false when either
+// side is unparseable.
+func compareOpencodeVersions(a, b string) (int, bool) {
+	aMaj, aMin, aPat, errA := parseOpencodeVersion(a)
+	if errA != nil {
+		return 0, false
+	}
+	bMaj, bMin, bPat, errB := parseOpencodeVersion(b)
+	if errB != nil {
+		return 0, false
+	}
+	switch {
+	case aMaj != bMaj:
+		return signum(aMaj - bMaj), true
+	case aMin != bMin:
+		return signum(aMin - bMin), true
+	case aPat != bPat:
+		return signum(aPat - bPat), true
+	}
+	return 0, true
+}
+
+func signum(x int) int {
+	if x > 0 {
+		return 1
+	}
+	if x < 0 {
+		return -1
+	}
+	return 0
 }
 
 // parseOpencodeVersion accepts "1.14.48" and returns (1, 14, 48).
