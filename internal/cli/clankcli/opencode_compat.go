@@ -96,17 +96,17 @@ func formatOpencodeIncompatibleHint(e *agent.OpencodeIncompatibleError, pin stri
 		)
 	case agent.OpencodeMismatchSpriteDrifted:
 		return fmt.Errorf(
-			"%s\n\nclank pins opencode at version %s and your laptop matches, but the remote sprite is on %s. Restart the sprite via your remote provisioner so EnsureHost reinstalls the pin, then retry.",
+			"%s\n\nclank pins opencode at version %s and your laptop matches, but the remote sprite is on %s. Restart the sprite via your remote provisioner so EnsureHost reinstalls the pin, then retry",
 			e.Error(), pin, e.Remote,
 		)
 	case agent.OpencodeMismatchBothDrifted:
 		return fmt.Errorf(
-			"%s\n\nclank pins opencode at version %s, but neither side matches (laptop=%s, sprite=%s). Bring at least one side to the pin (opencode upgrade v%s on the laptop, or restart the sprite) before retrying.",
+			"%s\n\nclank pins opencode at version %s, but neither side matches (laptop=%s, sprite=%s). Bring at least one side to the pin (opencode upgrade v%s on the laptop, or restart the sprite) before retrying",
 			e.Error(), pin, e.Local, e.Remote, pin,
 		)
 	default:
 		return fmt.Errorf(
-			"%s\n\nclank pins opencode at version %s. Bring both sides to the pin, then retry.",
+			"%s\n\nclank pins opencode at version %s. Bring both sides to the pin, then retry",
 			e.Error(), pin,
 		)
 	}
