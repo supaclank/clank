@@ -701,6 +701,9 @@ func buildServiceRequest(authToken string) *sprites.ServiceRequest {
 		Args: []string{
 			"--listen", fmt.Sprintf("tcp://[::]:%d", HostPort),
 			"--listen-auth-token", authToken,
+			// Defeat the sprite's last-consumer hibernation timer while
+			// agents are emitting events. See internal/keepalive.
+			"--keepalive-provider", "sprites",
 		},
 		HTTPPort: &port,
 	}
@@ -802,14 +805,19 @@ func (p *Provisioner) persistRow(ctx context.Context, userID, externalID, hostna
 	return hostID, nil
 }
 
-// SuspendHost is a near-no-op: Sprites auto-hibernate on idle, so
-// explicit suspend isn't needed for cost control.
+// SuspendHost is a no-op for Sprites. Hibernation is gated sprite-side
+// on session-event activity (see internal/keepalive) — clank-host
+// renews a Sprites Task lease while events flow and stops renewing
+// when they stop, letting the platform's last-consumer timer take
+// over. No daemon-side action is needed; we keep the method on the
+// Provisioner interface so other backends that lack an in-VM signal
+// can hook explicit suspend later.
 func (p *Provisioner) SuspendHost(ctx context.Context, hostID string) error {
 	row, err := p.store.GetHostByID(ctx, hostID)
 	if err != nil {
 		return fmt.Errorf("look up host %s: %w", hostID, err)
 	}
-	p.log.Printf("flyio provisioner: SuspendHost is a no-op for sprite %s (auto-hibernate)", row.ExternalID)
+	p.log.Printf("flyio provisioner: SuspendHost is a no-op for sprite %s (keepalive-gated hibernate)", row.ExternalID)
 	return nil
 }
 

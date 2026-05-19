@@ -37,7 +37,16 @@ import (
 	"github.com/acksell/clank/internal/host"
 	hostmux "github.com/acksell/clank/internal/host/mux"
 	hoststore "github.com/acksell/clank/internal/host/store"
+	"github.com/acksell/clank/internal/keepalive"
+	"github.com/acksell/clank/internal/keepalive/noop"
+	"github.com/acksell/clank/internal/keepalive/sprites"
 	"github.com/acksell/clank/internal/socketutil"
+)
+
+const (
+	keepaliveProviderNone    = "none"
+	keepaliveProviderNoop    = "noop"
+	keepaliveProviderSprites = "sprites"
 )
 
 func main() {
@@ -45,6 +54,7 @@ func main() {
 	listen := flag.String("listen", "", "Listener address: tcp://host:port (use :0 for auto-pick) or unix:///path. Mutually exclusive with --socket.")
 	listenAuthToken := flag.String("listen-auth-token", os.Getenv("CLANK_HOST_AUTH_TOKEN"), "Bearer token required on every HTTP request. Empty disables the check (laptop-local mode). Defaults to $CLANK_HOST_AUTH_TOKEN.")
 	dataDir := flag.String("data-dir", os.Getenv("CLANK_HOST_DATA_DIR"), "Directory for host-side persistent state (host.db). Defaults to $CLANK_HOST_DATA_DIR; if neither is set, falls back to $HOME/.clank-host. PR 3+ stores session metadata here.")
+	keepaliveProvider := flag.String("keepalive-provider", keepaliveProviderNone, "Provider that receives keepalive Ticks while sessions emit events: 'sprites' (Fly Sprites Tasks API), 'noop' (debug), or 'none' (disabled — laptop default).")
 	flag.Parse()
 
 	if *socket == "" && *listen == "" {
@@ -71,8 +81,24 @@ func main() {
 	if addr == "" {
 		addr = "unix://" + *socket
 	}
-	if err := run(addr, *listenAuthToken, *dataDir); err != nil {
+	if err := run(addr, *listenAuthToken, *dataDir, *keepaliveProvider); err != nil {
 		log.Fatalf("clank-host: %v", err)
+	}
+}
+
+// buildKeepaliveListener constructs the provider-specific Listener from
+// the --keepalive-provider value. Returns nil for "none" so the host
+// service skips wiring entirely.
+func buildKeepaliveListener(provider string, lg *log.Logger) (keepalive.Listener, error) {
+	switch provider {
+	case keepaliveProviderNone:
+		return nil, nil
+	case keepaliveProviderNoop:
+		return noop.Listener{}, nil
+	case keepaliveProviderSprites:
+		return sprites.New(lg), nil
+	default:
+		return nil, fmt.Errorf("unknown --keepalive-provider %q (want %s|%s|%s)", provider, keepaliveProviderSprites, keepaliveProviderNoop, keepaliveProviderNone)
 	}
 }
 
@@ -145,8 +171,13 @@ func resolveDataDir(dataDir string) (string, error) {
 
 // run binds the listener for addr (a "tcp://host:port" or "unix:///path"
 // URL) and serves the host API on it until SIGINT/SIGTERM.
-func run(addr, listenAuthToken, dataDirOpt string) error {
+func run(addr, listenAuthToken, dataDirOpt, keepaliveProvider string) error {
 	lg := log.New(os.Stderr, "[clank-host] ", log.LstdFlags)
+
+	keepaliveListener, err := buildKeepaliveListener(keepaliveProvider, lg)
+	if err != nil {
+		return err
+	}
 
 	ln, kind, sockPath, err := openListener(addr)
 	if err != nil {
@@ -179,9 +210,13 @@ func run(addr, listenAuthToken, dataDirOpt string) error {
 			agent.BackendOpenCode:   host.NewOpenCodeBackendManager(),
 			agent.BackendClaudeCode: host.NewClaudeBackendManager(),
 		},
-		Log:           lg,
-		SessionsStore: hostStore,
+		Log:               lg,
+		SessionsStore:     hostStore,
+		KeepaliveListener: keepaliveListener,
 	})
+	if keepaliveListener != nil {
+		lg.Printf("keepalive provider: %s", keepaliveProvider)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
