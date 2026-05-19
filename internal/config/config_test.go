@@ -147,6 +147,82 @@ func TestPreferences_MultiProfileLoads(t *testing.T) {
 	}
 }
 
+// TestActiveProfileAndName_Match pins the happy path: Active matches a
+// profile key, both halves of the return identify the same entry.
+func TestActiveProfileAndName_Match(t *testing.T) {
+	t.Parallel()
+	c := &RemoteConfig{
+		Active: "prod",
+		Profiles: map[string]*Remote{
+			"prod": {GatewayURL: "https://p"},
+			"dev":  {GatewayURL: "https://d"},
+		},
+	}
+	p, name := c.ActiveProfileAndName()
+	if name != "prod" {
+		t.Errorf("name got %q, want %q", name, "prod")
+	}
+	if p == nil || p.GatewayURL != "https://p" {
+		t.Errorf("profile got %+v, want prod", p)
+	}
+}
+
+// TestActiveProfileAndName_FallbackAlignsName is the regression: when
+// Active is empty (legacy prefs, hand-edits) but profiles exist, the
+// returned name must point at the resolved profile — not at the stale
+// empty Active. Persistence-side callers (login/logout/refresh) write
+// under this name; mis-aligning it routes writes to "" and orphans the
+// real profile.
+func TestActiveProfileAndName_FallbackAlignsName(t *testing.T) {
+	t.Parallel()
+	c := &RemoteConfig{
+		Active: "", // legacy / hand-edited
+		Profiles: map[string]*Remote{
+			"dev":   {GatewayURL: "https://d"},
+			"alpha": {GatewayURL: "https://a"},
+		},
+	}
+	p, name := c.ActiveProfileAndName()
+	if name != "alpha" {
+		t.Errorf("name got %q, want alphabetically-first %q", name, "alpha")
+	}
+	if p == nil || p.GatewayURL != "https://a" {
+		t.Errorf("profile got %+v, want alpha", p)
+	}
+}
+
+// TestActiveProfileAndName_StaleActiveFallsBack: Active points at a
+// missing key — fallback fires and the name must match the resolved
+// profile, not the dead Active value.
+func TestActiveProfileAndName_StaleActiveFallsBack(t *testing.T) {
+	t.Parallel()
+	c := &RemoteConfig{
+		Active: "deleted",
+		Profiles: map[string]*Remote{
+			"dev": {GatewayURL: "https://d"},
+		},
+	}
+	p, name := c.ActiveProfileAndName()
+	if name != "dev" {
+		t.Errorf("name got %q, want %q", name, "dev")
+	}
+	if p == nil {
+		t.Fatal("profile is nil")
+	}
+}
+
+func TestActiveProfileAndName_Empty(t *testing.T) {
+	t.Parallel()
+	p, name := (&RemoteConfig{}).ActiveProfileAndName()
+	if p != nil || name != "" {
+		t.Errorf("empty config got (%v, %q), want (nil, \"\")", p, name)
+	}
+	p, name = (*RemoteConfig)(nil).ActiveProfileAndName()
+	if p != nil || name != "" {
+		t.Errorf("nil receiver got (%v, %q), want (nil, \"\")", p, name)
+	}
+}
+
 // TestPreferences_MissingFileIsZero verifies the "no file yet" path returns
 // a zero-value Preferences without error. Important so a first-run TUI
 // doesn't error out at startup.

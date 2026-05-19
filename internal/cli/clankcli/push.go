@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/cloud"
 	"github.com/acksell/clank/internal/config"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	syncclient "github.com/acksell/clank/pkg/sync/client"
@@ -85,6 +86,26 @@ changes when migrating onto a worktree the remote currently owns.`,
 				return fmt.Errorf("resolve repo path: %w", err)
 			}
 
+			ctx := context.Background()
+
+			// Refresh BEFORE the first authenticated call so the sync
+			// client below sees a fresh bearer. Without this, expired
+			// access tokens silently produce 401 from RegisterWorktree.
+			//
+			// Skip when the caller supplied --token / CLANK_SYNC_TOKEN
+			// explicitly — that bearer is independent of the active
+			// remote profile (e.g. self-hosted static bearer, CI cron),
+			// so refreshing the profile's expired refresh_token would
+			// abort the push despite the caller having valid creds.
+			if token == "" {
+				if err := daemonclient.EnsureFreshActiveRemote(ctx); err != nil {
+					if errors.Is(err, cloud.ErrUnauthorized) {
+						return fmt.Errorf("session expired — run `clank login` to sign in again")
+					}
+					return fmt.Errorf("refresh remote session: %w", err)
+				}
+			}
+
 			if baseURL == "" || token == "" {
 				prefs, err := config.LoadPreferences()
 				if err != nil {
@@ -102,6 +123,9 @@ changes when migrating onto a worktree the remote currently owns.`,
 			if baseURL == "" {
 				return fmt.Errorf("--base-url is required (or set CLANK_GATEWAY_URL, or configure an active remote via `clank remote add`)")
 			}
+			if token == "" {
+				return fmt.Errorf("not signed in — run `clank login` to sign in to the active remote")
+			}
 
 			cli, err := syncclient.New(syncclient.Config{
 				BaseURL:   baseURL,
@@ -110,7 +134,6 @@ changes when migrating onto a worktree the remote currently owns.`,
 			if err != nil {
 				return err
 			}
-			ctx := context.Background()
 
 			timer := newPhaseTimer(timing || envTrue("CLANK_TIMING"))
 			defer timer.Summary(cmd.ErrOrStderr())

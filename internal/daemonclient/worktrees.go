@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/acksell/clank/internal/cloud"
 )
 
 // WorktreeInfo mirrors the JSON shape of pkg/sync's worktreeResponse,
@@ -60,6 +62,9 @@ func (c *Client) GetWorktree(ctx context.Context, id string) (*WorktreeInfo, err
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, ErrWorktreeNotFound
 	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("get worktree: %w", cloud.ErrUnauthorized)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("get worktree: %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
@@ -101,6 +106,9 @@ func (c *Client) ListWorktrees(ctx context.Context) ([]WorktreeInfo, error) {
 		// as "no worktree metadata available" rather than an error so
 		// the sidebar can gracefully omit ownership glyphs.
 		return nil, nil
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("list worktrees: %w", cloud.ErrUnauthorized)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("list worktrees: %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
