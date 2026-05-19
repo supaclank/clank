@@ -53,7 +53,7 @@ the user's browser). Workaround: ssh -L <port>:localhost:<port>.`,
 			if err != nil {
 				return fmt.Errorf("load preferences: %w", err)
 			}
-			target, name := resolveLoginTarget(prefs, remoteName)
+			target, name := resolveRemoteTarget(prefs, remoteName)
 			if target == nil {
 				if remoteName == "" {
 					return fmt.Errorf("no active remote configured; run `clank remote add <name> --gateway-url=...` first")
@@ -111,16 +111,4 @@ the user's browser). Workaround: ssh -L <port>:localhost:<port>.`,
 	cmd.Flags().StringVar(&remoteName, "remote", "", "Remote name to log in to (default: active remote)")
 	cmd.Flags().StringVar(&provider, "provider", "", "OAuth provider override (default: server's default_provider, if any)")
 	return cmd
-}
-
-// resolveLoginTarget picks the remote to log in to and returns it plus
-// the name. Honors --remote when given; falls back to active.
-func resolveLoginTarget(prefs config.Preferences, name string) (*config.Remote, string) {
-	if prefs.Remote == nil {
-		return nil, ""
-	}
-	if name != "" {
-		return prefs.Remote.Profiles[name], name
-	}
-	return prefs.ActiveRemote(), prefs.Remote.Active
 }

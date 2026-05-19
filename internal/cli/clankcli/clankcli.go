@@ -40,6 +40,7 @@ func Command() *cobra.Command {
 		statusCmd(),
 		remoteCmd(),
 		loginCmd(),
+		logoutCmd(),
 	)
 
 	return root
