@@ -381,13 +381,20 @@ func (p *Provisioner) installAndStart(ctx context.Context, sprite *sprites.Sprit
 		return err
 	}
 	// Sprites' base image ships Claude/Gemini/Codex but not opencode.
-	if err := p.ensureOpenCodeInstalled(ctx, sprite); err != nil {
+	opencodeReinstalled, err := p.ensureOpenCodeInstalled(ctx, sprite)
+	if err != nil {
 		return err
 	}
-	// When the binary was swapped, the old process keeps the prior
-	// inode in memory (POSIX unlink semantics). Force a service
-	// recreate so the new endpoints actually start serving.
-	if err := p.ensureServiceRunning(ctx, sprite, authToken, binReplaced); err != nil {
+	// Force a service recreate when either the clank-host binary OR
+	// opencode was just swapped. Binary swap: Linux keeps the old
+	// inode in memory (POSIX unlink), so without a restart the old
+	// process keeps serving even though the path resolves to the new
+	// file. Opencode swap: clank-host's /software-manifest endpoint
+	// uses a sync.Once-cached probe (agent.GetSoftwareManifest), so a
+	// fresh opencode at /usr/local/bin/opencode is invisible until
+	// the process restarts and re-probes. Either way, recreate the
+	// service to publish the new state.
+	if err := p.ensureServiceRunning(ctx, sprite, authToken, binReplaced || opencodeReinstalled); err != nil {
 		return err
 	}
 	// Re-apply on every run so a manually-disabled URL re-opens.
@@ -504,8 +511,8 @@ func readSidecar(stat fs.FS, sidecarPath string) (string, bool) {
 // ensureOpenCodeInstalled ensures the sprite has opencode at the
 // EXACT version clank pins (agent.PinnedOpencodeVersion). Probe-and-
 // upgrade semantics: if the binary is present at the right version,
-// fast-path return; otherwise install/replace via bun (or npm
-// fallback) at the pinned version and verify.
+// fast-path return; otherwise install/replace via bun at the pinned
+// version and verify.
 //
 // Why pin instead of "any opencode": opencode's export/import schema
 // is forward-incompatible across minor versions, so a sprite running
@@ -514,11 +521,15 @@ func readSidecar(stat fs.FS, sidecarPath string) (string, bool) {
 // constant in clank instead of "whatever was latest the day the
 // sprite was provisioned." See agent.PinnedOpencodeVersion's docstring.
 //
-// We symlink the bun-shipped JS wrapper rather than the platform
-// binary directly — the platform binary's dynamic linker may be
-// missing (e.g. musl loader on a glibc sprite). Each candidate path
-// is verified with --version before we accept it.
-func (p *Provisioner) ensureOpenCodeInstalled(ctx context.Context, sprite *sprites.Sprite) error {
+// Returns reinstalled=true when /usr/local/bin/opencode was actually
+// swapped (i.e. the install script ran). Callers MUST use this to
+// force a clank-host service recreate downstream, otherwise the
+// running clank-host's sync.Once-cached /software-manifest probe
+// will keep reporting the OLD opencode version forever and the
+// laptop's version-match check will reject every push. The cache is
+// a process-local optimization in agent/software_manifest.go that
+// only invalidates on clank-host restart.
+func (p *Provisioner) ensureOpenCodeInstalled(ctx context.Context, sprite *sprites.Sprite) (reinstalled bool, err error) {
 	probeCtx, probeCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer probeCancel()
 	var versionOut []byte
@@ -531,7 +542,7 @@ func (p *Provisioner) ensureOpenCodeInstalled(ctx context.Context, sprite *sprit
 	if probeErr == nil {
 		installed := strings.TrimSpace(string(versionOut))
 		if installed == agent.PinnedOpencodeVersion {
-			return nil // happy path: present and pinned-version-matched
+			return false, nil // happy path: present and pinned-version-matched
 		}
 		p.log.Printf("flyio provisioner: opencode on %s is %q, want %q — reinstalling at pinned version", sprite.Name(), installed, agent.PinnedOpencodeVersion)
 	}
@@ -542,21 +553,21 @@ func (p *Provisioner) ensureOpenCodeInstalled(ctx context.Context, sprite *sprit
 	script := strings.ReplaceAll(opencodeInstallScript, "__PINNED_VERSION__", agent.PinnedOpencodeVersion)
 
 	var out []byte
-	err := retryClosedConn(installCtx, p.log, func() error {
+	runErr := retryClosedConn(installCtx, p.log, func() error {
 		cmd := sprite.CommandContext(installCtx, "sh", "-c", script)
-		var runErr error
-		out, runErr = cmd.CombinedOutput()
-		return runErr
+		var rerr error
+		out, rerr = cmd.CombinedOutput()
+		return rerr
 	})
-	if err != nil {
+	if runErr != nil {
 		trimmed := strings.TrimSpace(string(out))
 		if len(trimmed) > 8192 {
 			trimmed = "..." + trimmed[len(trimmed)-8192:]
 		}
-		return fmt.Errorf("install opencode (sprite=%s): %w\n--- install output ---\n%s\n--- end output ---", sprite.Name(), err, trimmed)
+		return false, fmt.Errorf("install opencode (sprite=%s): %w\n--- install output ---\n%s\n--- end output ---", sprite.Name(), runErr, trimmed)
 	}
 	p.log.Printf("flyio provisioner: installed opencode %s on sprite %s", agent.PinnedOpencodeVersion, sprite.Name())
-	return nil
+	return true, nil
 }
 
 // opencodeInstallScript installs opencode at the pinned version and
