@@ -66,16 +66,7 @@ func assertOpencodeCompatible(ctx context.Context, stderr io.Writer, local, remo
 	if err != nil {
 		var typed *agent.OpencodeIncompatibleError
 		if errors.As(err, &typed) {
-			// Surface the clank-pinned version explicitly so the
-			// user knows exactly which version to land on, not just
-			// "match the other side." If the laptop is the drifted
-			// side (the common case — sprites get the pin
-			// automatically on EnsureHost), suggesting the pin
-			// directly avoids a guessing game.
-			return fmt.Errorf(
-				"%s\n\nclank pins opencode at version %s. Upgrade your laptop to match:\n  opencode upgrade v%s\n\n(The sprite re-installs the pinned opencode automatically on its next EnsureHost; if it's the side that's drifted, restart the sprite via your remote provisioner and retry.)",
-				typed.Error(), agent.PinnedOpencodeVersion, agent.PinnedOpencodeVersion,
-			)
+			return formatOpencodeIncompatibleHint(typed, agent.PinnedOpencodeVersion)
 		}
 		return err
 	}
@@ -83,4 +74,40 @@ func assertOpencodeCompatible(ctx context.Context, stderr io.Writer, local, remo
 		fmt.Fprintf(stderr, "  warning: %s\n", warn.String())
 	}
 	return nil
+}
+
+// formatOpencodeIncompatibleHint composes the user-facing recovery
+// hint for a hard version mismatch. The wording is conditioned on
+// which side has drifted from the pin: telling the user to "upgrade
+// your laptop" is misleading when the laptop is already ahead of
+// the pin (in that case clank itself is the lagging side and the
+// pin needs to be bumped).
+func formatOpencodeIncompatibleHint(e *agent.OpencodeIncompatibleError, pin string) error {
+	switch agent.DiagnoseOpencodeMismatch(e.Local, e.Remote, pin) {
+	case agent.OpencodeMismatchLaptopBehindPin:
+		return fmt.Errorf(
+			"%s\n\nclank pins opencode at version %s, but your laptop is on %s. Upgrade your laptop to match:\n  opencode upgrade v%s",
+			e.Error(), pin, e.Local, pin,
+		)
+	case agent.OpencodeMismatchLaptopAheadOfPin:
+		return fmt.Errorf(
+			"%s\n\nclank pins opencode at version %s, but your laptop is on %s (newer). This usually means clank itself is behind — update clank so its pin matches the opencode you're running, or downgrade your laptop:\n  opencode upgrade v%s",
+			e.Error(), pin, e.Local, pin,
+		)
+	case agent.OpencodeMismatchSpriteDrifted:
+		return fmt.Errorf(
+			"%s\n\nclank pins opencode at version %s and your laptop matches, but the remote sprite is on %s. Restart the sprite via your remote provisioner so EnsureHost reinstalls the pin, then retry.",
+			e.Error(), pin, e.Remote,
+		)
+	case agent.OpencodeMismatchBothDrifted:
+		return fmt.Errorf(
+			"%s\n\nclank pins opencode at version %s, but neither side matches (laptop=%s, sprite=%s). Bring at least one side to the pin (opencode upgrade v%s on the laptop, or restart the sprite) before retrying.",
+			e.Error(), pin, e.Local, e.Remote, pin,
+		)
+	default:
+		return fmt.Errorf(
+			"%s\n\nclank pins opencode at version %s. Bring both sides to the pin, then retry.",
+			e.Error(), pin,
+		)
+	}
 }
