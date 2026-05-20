@@ -38,8 +38,11 @@ import (
 	hostmux "github.com/acksell/clank/internal/host/mux"
 	hoststore "github.com/acksell/clank/internal/host/store"
 	"github.com/acksell/clank/internal/keepalive"
-	"github.com/acksell/clank/internal/keepalive/noop"
+	keepalivenoop "github.com/acksell/clank/internal/keepalive/noop"
 	"github.com/acksell/clank/internal/keepalive/sprites"
+	"github.com/acksell/clank/internal/notifier"
+	notifiernoop "github.com/acksell/clank/internal/notifier/noop"
+	"github.com/acksell/clank/internal/notifier/webhook"
 	"github.com/acksell/clank/internal/socketutil"
 )
 
@@ -47,6 +50,10 @@ const (
 	keepaliveProviderNone    = "none"
 	keepaliveProviderNoop    = "noop"
 	keepaliveProviderSprites = "sprites"
+
+	notifierProviderNone    = "none"
+	notifierProviderNoop    = "noop"
+	notifierProviderWebhook = "webhook"
 )
 
 func main() {
@@ -55,6 +62,9 @@ func main() {
 	listenAuthToken := flag.String("listen-auth-token", os.Getenv("CLANK_HOST_AUTH_TOKEN"), "Bearer token required on every HTTP request. Empty disables the check (laptop-local mode). Defaults to $CLANK_HOST_AUTH_TOKEN.")
 	dataDir := flag.String("data-dir", os.Getenv("CLANK_HOST_DATA_DIR"), "Directory for host-side persistent state (host.db). Defaults to $CLANK_HOST_DATA_DIR; if neither is set, falls back to $HOME/.clank-host. PR 3+ stores session metadata here.")
 	keepaliveProvider := flag.String("keepalive-provider", keepaliveProviderNone, "Provider that receives keepalive Ticks while sessions emit events: 'sprites' (Fly Sprites Tasks API), 'noop' (debug), or 'none' (disabled — laptop default).")
+	notifierProvider := flag.String("notifier-provider", notifierProviderNone, "Provider that receives notification-worthy events (idle, permission, error): 'webhook' (POST to --notifier-webhook-url), 'noop' (debug), or 'none' (disabled — laptop default).")
+	notifierWebhookURL := flag.String("notifier-webhook-url", "", "POST target when --notifier-provider=webhook.")
+	notifierWebhookToken := flag.String("notifier-webhook-token", os.Getenv("CLANK_NOTIFIER_TOKEN"), "Per-host bearer token sent as 'Authorization: Bearer <token>' to the webhook target. Defaults to $CLANK_NOTIFIER_TOKEN.")
 	flag.Parse()
 
 	if *socket == "" && *listen == "" {
@@ -81,9 +91,33 @@ func main() {
 	if addr == "" {
 		addr = "unix://" + *socket
 	}
-	if err := run(addr, *listenAuthToken, *dataDir, *keepaliveProvider); err != nil {
+	cfg := runConfig{
+		addr:                 addr,
+		listenAuthToken:      *listenAuthToken,
+		dataDir:              *dataDir,
+		keepaliveProvider:    *keepaliveProvider,
+		notifierProvider:     *notifierProvider,
+		notifierWebhookURL:   *notifierWebhookURL,
+		notifierWebhookToken: *notifierWebhookToken,
+	}
+	if err := run(cfg); err != nil {
 		log.Fatalf("clank-host: %v", err)
 	}
+}
+
+// runConfig bundles the flag-derived settings passed into run. Each
+// new subsystem (keepalive, notifier, …) adds another knob, and a
+// positional-argument function would have grown into an
+// argument-order trap; this is the seam for "future-me adds a flag
+// without touching every test".
+type runConfig struct {
+	addr                 string
+	listenAuthToken      string
+	dataDir              string
+	keepaliveProvider    string
+	notifierProvider     string
+	notifierWebhookURL   string
+	notifierWebhookToken string
 }
 
 // buildKeepaliveListener constructs the provider-specific Listener from
@@ -94,11 +128,30 @@ func buildKeepaliveListener(provider string, lg *log.Logger) (keepalive.Listener
 	case keepaliveProviderNone:
 		return nil, nil
 	case keepaliveProviderNoop:
-		return noop.Listener{}, nil
+		return keepalivenoop.Listener{}, nil
 	case keepaliveProviderSprites:
 		return sprites.New(lg), nil
 	default:
 		return nil, fmt.Errorf("unknown --keepalive-provider %q (want %s|%s|%s)", provider, keepaliveProviderSprites, keepaliveProviderNoop, keepaliveProviderNone)
+	}
+}
+
+// buildNotifierProvider constructs the provider-specific notifier
+// Provider from the --notifier-provider value. Returns nil for "none"
+// so the host service skips wiring entirely.
+func buildNotifierProvider(provider, webhookURL, webhookToken string, lg *log.Logger) (notifier.Provider, error) {
+	switch provider {
+	case notifierProviderNone:
+		return nil, nil
+	case notifierProviderNoop:
+		return notifiernoop.New(lg), nil
+	case notifierProviderWebhook:
+		if webhookURL == "" {
+			return nil, fmt.Errorf("--notifier-provider=webhook requires --notifier-webhook-url")
+		}
+		return webhook.New(webhookURL, webhookToken, lg), nil
+	default:
+		return nil, fmt.Errorf("unknown --notifier-provider %q (want %s|%s|%s)", provider, notifierProviderWebhook, notifierProviderNoop, notifierProviderNone)
 	}
 }
 
@@ -169,17 +222,26 @@ func resolveDataDir(dataDir string) (string, error) {
 	return dataDir, nil
 }
 
-// run binds the listener for addr (a "tcp://host:port" or "unix:///path"
-// URL) and serves the host API on it until SIGINT/SIGTERM.
-func run(addr, listenAuthToken, dataDirOpt, keepaliveProvider string) error {
+// run binds the listener for cfg.addr (a "tcp://host:port" or
+// "unix:///path" URL) and serves the host API on it until
+// SIGINT/SIGTERM.
+func run(cfg runConfig) error {
 	lg := log.New(os.Stderr, "[clank-host] ", log.LstdFlags)
 
-	keepaliveListener, err := buildKeepaliveListener(keepaliveProvider, lg)
+	keepaliveListener, err := buildKeepaliveListener(cfg.keepaliveProvider, lg)
 	if err != nil {
 		return err
 	}
+	notifierProvider, err := buildNotifierProvider(cfg.notifierProvider, cfg.notifierWebhookURL, cfg.notifierWebhookToken, lg)
+	if err != nil {
+		return err
+	}
+	var notifierLoop *notifier.Loop
+	if notifierProvider != nil {
+		notifierLoop = notifier.New(notifier.Config{Provider: notifierProvider, Log: lg})
+	}
 
-	ln, kind, sockPath, err := openListener(addr)
+	ln, kind, sockPath, err := openListener(cfg.addr)
 	if err != nil {
 		return err
 	}
@@ -193,7 +255,7 @@ func run(addr, listenAuthToken, dataDirOpt, keepaliveProvider string) error {
 	// silently lose session state. The host store lives separately
 	// from the daemon's clank.db (which is the provisioner's host
 	// registry).
-	resolvedDataDir, err := resolveDataDir(dataDirOpt)
+	resolvedDataDir, err := resolveDataDir(cfg.dataDir)
 	if err != nil {
 		return fmt.Errorf("resolve data dir: %w", err)
 	}
@@ -213,9 +275,13 @@ func run(addr, listenAuthToken, dataDirOpt, keepaliveProvider string) error {
 		Log:               lg,
 		SessionsStore:     hostStore,
 		KeepaliveListener: keepaliveListener,
+		NotifierLoop:      notifierLoop,
 	})
 	if keepaliveListener != nil {
-		lg.Printf("keepalive provider: %s", keepaliveProvider)
+		lg.Printf("keepalive provider: %s", cfg.keepaliveProvider)
+	}
+	if notifierLoop != nil {
+		lg.Printf("notifier provider: %s", cfg.notifierProvider)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -226,7 +292,7 @@ func run(addr, listenAuthToken, dataDirOpt, keepaliveProvider string) error {
 	}
 
 	mux := hostmux.New(svc, lg)
-	mux.SetAuthToken(listenAuthToken)
+	mux.SetAuthToken(cfg.listenAuthToken)
 	srv := &http.Server{Handler: mux.Handler()}
 
 	sigCh := make(chan os.Signal, 1)
