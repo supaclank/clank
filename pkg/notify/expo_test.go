@@ -14,9 +14,10 @@ import (
 // and returns caller-controlled tickets. Mirrors the recordingServer
 // pattern used in the notifier/webhook tests.
 type recordingExpo struct {
-	mu       sync.Mutex
-	requests [][]Message
-	srv      *httptest.Server
+	mu             sync.Mutex
+	requests       [][]Message
+	authorizations []string
+	srv            *httptest.Server
 }
 
 func newRecordingExpo(t *testing.T, ticketFor func(m Message) Ticket) *recordingExpo {
@@ -31,6 +32,7 @@ func newRecordingExpo(t *testing.T, ticketFor func(m Message) Ticket) *recording
 		}
 		rx.mu.Lock()
 		rx.requests = append(rx.requests, msgs)
+		rx.authorizations = append(rx.authorizations, r.Header.Get("Authorization"))
 		rx.mu.Unlock()
 		tickets := make([]Ticket, len(msgs))
 		for i, m := range msgs {
@@ -44,6 +46,14 @@ func newRecordingExpo(t *testing.T, ticketFor func(m Message) Ticket) *recording
 	}))
 	t.Cleanup(rx.srv.Close)
 	return rx
+}
+
+func (rx *recordingExpo) authsSnapshot() []string {
+	rx.mu.Lock()
+	defer rx.mu.Unlock()
+	out := make([]string, len(rx.authorizations))
+	copy(out, rx.authorizations)
+	return out
 }
 
 func (rx *recordingExpo) snapshot() [][]Message {
@@ -163,6 +173,38 @@ func TestClient_Push_SurfacesTopLevelExpoError(t *testing.T) {
 	_, err := c.Push(context.Background(), []Message{{To: "tok"}})
 	if err == nil {
 		t.Fatal("expected error from top-level Expo error")
+	}
+}
+
+func TestClient_Push_OmitsAuthHeaderWithoutAccessToken(t *testing.T) {
+	t.Parallel()
+	rx := newRecordingExpo(t, nil)
+	c := NewWithEndpoint(rx.srv.URL, nil)
+	if _, err := c.Push(context.Background(), []Message{{To: "tok"}}); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	auths := rx.authsSnapshot()
+	if len(auths) != 1 {
+		t.Fatalf("got %d requests, want 1", len(auths))
+	}
+	if auths[0] != "" {
+		t.Errorf("Authorization = %q, want empty (no token set)", auths[0])
+	}
+}
+
+func TestClient_Push_SendsAccessTokenWhenSet(t *testing.T) {
+	t.Parallel()
+	rx := newRecordingExpo(t, nil)
+	c := NewWithEndpoint(rx.srv.URL, nil).WithAccessToken("expo_secret_xyz")
+	if _, err := c.Push(context.Background(), []Message{{To: "tok"}}); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	auths := rx.authsSnapshot()
+	if len(auths) != 1 {
+		t.Fatalf("got %d requests, want 1", len(auths))
+	}
+	if want := "Bearer expo_secret_xyz"; auths[0] != want {
+		t.Errorf("Authorization = %q, want %q", auths[0], want)
 	}
 }
 
