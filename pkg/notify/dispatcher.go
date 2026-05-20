@@ -177,7 +177,7 @@ func (d *Dispatcher) purgeDeadTokens(ctx context.Context, msgs []Message, ticket
 			continue
 		}
 		if err := d.devices.DeleteDeviceByPushToken(ctx, msgs[i].To); err != nil {
-			d.log.Printf("purge stale device %s: %v", msgs[i].To, err)
+			d.log.Printf("purge stale device token=%s: %v", redactToken(msgs[i].To), err)
 		}
 	}
 }
@@ -227,9 +227,21 @@ func (d *Dispatcher) HandleDeregister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := d.devices.DeleteDevice(r.Context(), principal.UserID, token); err != nil {
-		d.log.Printf("delete device (user %s token %s): %v", principal.UserID, token, err)
+		d.log.Printf("delete device (user %s token=%s): %v", principal.UserID, redactToken(token), err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// redactToken returns a short, log-safe fingerprint of an Expo push
+// token. Push tokens identify a device-install pair across all of
+// APNs/FCM — treat them like API keys in logs. Four chars at each end
+// is enough to correlate two log lines belonging to the same token
+// without revealing enough to replay one.
+func redactToken(s string) string {
+	if len(s) <= 8 {
+		return "***"
+	}
+	return s[:4] + "..." + s[len(s)-4:]
 }

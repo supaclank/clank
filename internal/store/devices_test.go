@@ -53,12 +53,18 @@ func TestDevices_UpsertAndList(t *testing.T) {
 		}
 	}
 
-	bobs, _ := s.ListDevicesByUser(ctx, "bob")
+	bobs, err := s.ListDevicesByUser(ctx, "bob")
+	if err != nil {
+		t.Fatalf("ListDevicesByUser(bob): %v", err)
+	}
 	if len(bobs) != 1 {
 		t.Errorf("got %d bob devices, want 1", len(bobs))
 	}
 
-	none, _ := s.ListDevicesByUser(ctx, "ghost")
+	none, err := s.ListDevicesByUser(ctx, "ghost")
+	if err != nil {
+		t.Fatalf("ListDevicesByUser(ghost): %v", err)
+	}
 	if len(none) != 0 {
 		t.Errorf("got %d ghost devices, want 0", len(none))
 	}
@@ -73,7 +79,10 @@ func TestDevices_UpsertRefreshesLastSeen(t *testing.T) {
 	if err := s.UpsertDevice(ctx, first); err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
-	rowsBefore, _ := s.ListDevicesByUser(ctx, "alice")
+	rowsBefore, err := s.ListDevicesByUser(ctx, "alice")
+	if err != nil {
+		t.Fatalf("ListDevicesByUser (before): %v", err)
+	}
 	if len(rowsBefore) != 1 {
 		t.Fatalf("got %d rows after first upsert, want 1", len(rowsBefore))
 	}
@@ -87,7 +96,10 @@ func TestDevices_UpsertRefreshesLastSeen(t *testing.T) {
 	if err := s.UpsertDevice(ctx, second); err != nil {
 		t.Fatalf("second upsert: %v", err)
 	}
-	rowsAfter, _ := s.ListDevicesByUser(ctx, "alice")
+	rowsAfter, err := s.ListDevicesByUser(ctx, "alice")
+	if err != nil {
+		t.Fatalf("ListDevicesByUser (after): %v", err)
+	}
 	if len(rowsAfter) != 1 {
 		t.Fatalf("got %d rows after second upsert, want 1 (PK should collapse)", len(rowsAfter))
 	}
@@ -111,7 +123,10 @@ func TestDevices_Delete(t *testing.T) {
 	if err := s.DeleteDevice(ctx, "alice", "tok"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	rows, _ := s.ListDevicesByUser(ctx, "alice")
+	rows, err := s.ListDevicesByUser(ctx, "alice")
+	if err != nil {
+		t.Fatalf("ListDevicesByUser: %v", err)
+	}
 	if len(rows) != 0 {
 		t.Errorf("got %d rows after delete, want 0", len(rows))
 	}
@@ -139,7 +154,10 @@ func TestDevices_DeleteByPushTokenPurgesAllUsers(t *testing.T) {
 		t.Fatalf("DeleteDeviceByPushToken: %v", err)
 	}
 	for _, user := range []string{"alice", "bob"} {
-		rows, _ := s.ListDevicesByUser(ctx, user)
+		rows, err := s.ListDevicesByUser(ctx, user)
+		if err != nil {
+			t.Fatalf("ListDevicesByUser(%s): %v", user, err)
+		}
 		if len(rows) != 0 {
 			t.Errorf("user %s: got %d rows after purge, want 0", user, len(rows))
 		}
