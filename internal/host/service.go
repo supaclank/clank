@@ -24,6 +24,7 @@ import (
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host/store"
 	"github.com/acksell/clank/internal/keepalive"
+	"github.com/acksell/clank/internal/notifier"
 )
 
 // Service is the Host plane's domain object. Construct with New; call
@@ -64,6 +65,14 @@ type Service struct {
 	// is nil — laptop mode skips the goroutine and ticker entirely.
 	keepaliveLoop *keepalive.Loop
 	keepaliveStop context.CancelFunc
+
+	// notifierLoop fans notification-worthy events (idle, permission,
+	// error) out to a provider-specific Provider (webhook, expo, …).
+	// Nil when Options.NotifierLoop is nil — no goroutine, no
+	// subscriber slot. Sibling of keepaliveLoop, NOT a replacement —
+	// the two consume the same fan-out at different granularity.
+	notifierLoop *notifier.Loop
+	notifierStop context.CancelFunc
 }
 
 // Options configures a Service at construction time.
@@ -94,6 +103,12 @@ type Options struct {
 	// disables the subsystem entirely — laptop mode default. Set by
 	// cmd/clank-host/main.go from the --keepalive-provider flag.
 	KeepaliveListener keepalive.Listener
+
+	// NotifierLoop, when set, fans notification-worthy events to an
+	// outbound Provider (webhook/expo/noop). Nil disables the subsystem
+	// — laptop mode default. Construct via notifier.New in
+	// cmd/clank-host/main.go.
+	NotifierLoop *notifier.Loop
 }
 
 // New creates a Service. Panics on missing BackendManagers — fast
@@ -125,6 +140,9 @@ func New(opts Options) *Service {
 			Listener: opts.KeepaliveListener,
 			Log:      lg,
 		})
+	}
+	if opts.NotifierLoop != nil {
+		s.notifierLoop = opts.NotifierLoop
 	}
 
 	// Auth manager is opencode-only: it tells the OpenCode backend to
@@ -165,6 +183,7 @@ func (s *Service) Init(ctx context.Context, knownDirs func(agent.BackendType) ([
 	s.normalizeStaleSessionStatus(ctx)
 
 	s.startKeepalive()
+	s.startNotifier()
 
 	for bt, mgr := range s.backendManagers {
 		bt := bt
@@ -244,6 +263,7 @@ func (s *Service) Shutdown() {
 		s.subscribers.CloseAll()
 	}
 	s.stopKeepalive()
+	s.stopNotifier()
 	for bt, mgr := range s.backendManagers {
 		s.log.Printf("shutting down %s backend manager", bt)
 		mgr.Shutdown()

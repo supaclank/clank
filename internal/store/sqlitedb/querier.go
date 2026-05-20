@@ -9,16 +9,22 @@ import (
 )
 
 type Querier interface {
+	DeleteDevice(ctx context.Context, arg DeleteDeviceParams) error
+	// Used by the dispatcher when Expo returns DeviceNotRegistered for a
+	// token; the user_id is irrelevant, the token itself is dead.
+	DeleteDeviceByPushToken(ctx context.Context, pushToken string) error
 	DeleteHostByID(ctx context.Context, id string) error
 	DeleteHostByUser(ctx context.Context, arg DeleteHostByUserParams) error
 	DeleteWorktree(ctx context.Context, id string) error
 	GetCheckpointByID(ctx context.Context, id string) (Checkpoint, error)
 	GetHostByID(ctx context.Context, id string) (Host, error)
+	GetHostByNotifierToken(ctx context.Context, notifierToken string) (Host, error)
 	GetHostByUser(ctx context.Context, arg GetHostByUserParams) (Host, error)
 	GetWorktreeByID(ctx context.Context, id string) (Worktree, error)
 	InsertCheckpoint(ctx context.Context, arg InsertCheckpointParams) error
 	InsertWorktree(ctx context.Context, arg InsertWorktreeParams) error
 	ListCheckpointsByWorktree(ctx context.Context, arg ListCheckpointsByWorktreeParams) ([]Checkpoint, error)
+	ListDevicesByUser(ctx context.Context, userID string) ([]Device, error)
 	ListWorktreesByOwner(ctx context.Context, arg ListWorktreesByOwnerParams) ([]Worktree, error)
 	ListWorktreesByUser(ctx context.Context, userID string) ([]Worktree, error)
 	MarkCheckpointUploaded(ctx context.Context, arg MarkCheckpointUploadedParams) error
@@ -28,6 +34,7 @@ type Querier interface {
 	// two kinds reuse the same id namespace by accident.
 	UpdateWorktreeOwner(ctx context.Context, arg UpdateWorktreeOwnerParams) (int64, error)
 	UpdateWorktreePointer(ctx context.Context, arg UpdateWorktreePointerParams) error
+	UpsertDevice(ctx context.Context, arg UpsertDeviceParams) error
 	UpsertHost(ctx context.Context, arg UpsertHostParams) error
 }
 

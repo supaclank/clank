@@ -14,7 +14,7 @@ func intPtr(i int) *int { return &i }
 // always trust an existing service no matter how stale its args.
 func TestServiceMatches_HappyPath(t *testing.T) {
 	t.Parallel()
-	want := buildServiceRequest("tok-abc")
+	want := buildServiceRequest(hostTokens{auth: "tok-abc"}, "")
 	have := &sprites.Service{
 		Name:     serviceName,
 		Cmd:      want.Cmd,
@@ -35,7 +35,7 @@ func TestServiceMatches_HappyPath(t *testing.T) {
 // drift and force a recreate.
 func TestServiceMatches_DriftedArgsForceRecreate(t *testing.T) {
 	t.Parallel()
-	want := buildServiceRequest("tok")
+	want := buildServiceRequest(hostTokens{auth: "tok"}, "")
 	have := &sprites.Service{
 		Cmd: installPath,
 		Args: []string{
@@ -58,7 +58,7 @@ func TestServiceMatches_DriftedArgsForceRecreate(t *testing.T) {
 // briefly orphans every session.
 func TestServiceMatches_AuthTokenIsWildcarded(t *testing.T) {
 	t.Parallel()
-	want := buildServiceRequest("new-token")
+	want := buildServiceRequest(hostTokens{auth: "new-token"}, "")
 	// Mirror want.Args exactly, swapping only the auth-token value.
 	// Building from want (rather than hard-coding) keeps the test
 	// resilient to args additions.
@@ -83,7 +83,7 @@ func TestServiceMatches_AuthTokenIsWildcarded(t *testing.T) {
 // recreate. The sprite would otherwise keep exec'ing the old path.
 func TestServiceMatches_CmdMismatchForceRecreate(t *testing.T) {
 	t.Parallel()
-	want := buildServiceRequest("tok")
+	want := buildServiceRequest(hostTokens{auth: "tok"}, "")
 	have := &sprites.Service{
 		Cmd:      "/usr/bin/clank-host", // moved
 		Args:     append([]string(nil), want.Args...),
@@ -99,7 +99,7 @@ func TestServiceMatches_CmdMismatchForceRecreate(t *testing.T) {
 // must trigger recreate so the sprite's edge routes correctly.
 func TestServiceMatches_PortMismatchForceRecreate(t *testing.T) {
 	t.Parallel()
-	want := buildServiceRequest("tok")
+	want := buildServiceRequest(hostTokens{auth: "tok"}, "")
 	other := *want.HTTPPort + 1
 	have := &sprites.Service{
 		Cmd:      want.Cmd,
@@ -118,7 +118,7 @@ func TestServiceMatches_PortMismatchForceRecreate(t *testing.T) {
 // internal/keepalive.
 func TestBuildServiceRequest_PassesSpritesKeepalive(t *testing.T) {
 	t.Parallel()
-	req := buildServiceRequest("tok")
+	req := buildServiceRequest(hostTokens{auth: "tok"}, "")
 	var hasFlag, hasValue bool
 	for i := 0; i < len(req.Args)-1; i++ {
 		if req.Args[i] == "--keepalive-provider" {
@@ -143,7 +143,7 @@ func TestBuildServiceRequest_PassesSpritesKeepalive(t *testing.T) {
 // sprites until a manual recreate.
 func TestServiceMatches_LegacyServiceWithoutKeepaliveForcesRecreate(t *testing.T) {
 	t.Parallel()
-	want := buildServiceRequest("tok")
+	want := buildServiceRequest(hostTokens{auth: "tok"}, "")
 	have := &sprites.Service{
 		Cmd: want.Cmd,
 		Args: []string{
@@ -157,9 +157,95 @@ func TestServiceMatches_LegacyServiceWithoutKeepaliveForcesRecreate(t *testing.T
 	}
 }
 
+// TestBuildServiceRequest_OmitsNotifierFlagsWhenURLEmpty pins the
+// laptop-dev / no-dispatcher path: without a webhook URL configured,
+// clank-host shouldn't get the notifier flags at all (the default
+// --notifier-provider=none stays in effect).
+func TestBuildServiceRequest_OmitsNotifierFlagsWhenURLEmpty(t *testing.T) {
+	t.Parallel()
+	req := buildServiceRequest(hostTokens{auth: "tok", notifier: "clnk_x"}, "")
+	for _, a := range req.Args {
+		if a == "--notifier-provider" || a == "--notifier-webhook-url" || a == "--notifier-webhook-token" {
+			t.Errorf("notifier flag %q present when webhook URL is empty; args=%v", a, req.Args)
+		}
+	}
+}
+
+// TestBuildServiceRequest_EmitsNotifierFlagsWhenConfigured pins the
+// production path: a configured webhook URL + minted notifier token
+// produces the three --notifier-* flags clank-host expects.
+func TestBuildServiceRequest_EmitsNotifierFlagsWhenConfigured(t *testing.T) {
+	t.Parallel()
+	req := buildServiceRequest(hostTokens{auth: "tok", notifier: "clnk_abc"}, "https://disp.example/webhooks/notifications")
+	wantPairs := map[string]string{
+		"--notifier-provider":      "webhook",
+		"--notifier-webhook-url":   "https://disp.example/webhooks/notifications",
+		"--notifier-webhook-token": "clnk_abc",
+	}
+	for flag, want := range wantPairs {
+		got := ""
+		for i := 0; i < len(req.Args)-1; i++ {
+			if req.Args[i] == flag {
+				got = req.Args[i+1]
+			}
+		}
+		if got != want {
+			t.Errorf("%s = %q, want %q (args=%v)", flag, got, want, req.Args)
+		}
+	}
+}
+
+// TestServiceMatches_NotifierTokenIsWildcarded pins that a notifier
+// token rotation alone doesn't force a service recreate, mirroring
+// the auth-token wildcard. Recreate is expensive — we only do it on
+// genuine flag drift.
+func TestServiceMatches_NotifierTokenIsWildcarded(t *testing.T) {
+	t.Parallel()
+	want := buildServiceRequest(hostTokens{auth: "tok", notifier: "clnk_new"}, "https://disp/x")
+	haveArgs := append([]string(nil), want.Args...)
+	for i := 0; i < len(haveArgs)-1; i++ {
+		if haveArgs[i] == "--notifier-webhook-token" {
+			haveArgs[i+1] = "clnk_old"
+		}
+	}
+	have := &sprites.Service{
+		Cmd:      want.Cmd,
+		Args:     haveArgs,
+		HTTPPort: intPtr(*want.HTTPPort),
+	}
+	if !serviceMatches(have, want) {
+		t.Errorf("notifier-token-only delta should be tolerated; have=%v want=%v", have.Args, want.Args)
+	}
+}
+
+// TestServiceMatches_WebhookURLChangeForcesRecreate pins the dispatch
+// destination as a structural arg — if the operator points clank-host
+// at a different clankd URL (gateway rename, dev→prod cutover), the
+// new arg must trigger a recreate so the host actually picks it up.
+func TestServiceMatches_WebhookURLChangeForcesRecreate(t *testing.T) {
+	t.Parallel()
+	want := buildServiceRequest(hostTokens{auth: "tok", notifier: "clnk_x"}, "https://new-disp/x")
+	have := &sprites.Service{
+		Cmd:      want.Cmd,
+		HTTPPort: intPtr(*want.HTTPPort),
+		Args:     []string{},
+	}
+	// Mirror want.Args except for the webhook URL.
+	for i := 0; i < len(want.Args); i++ {
+		v := want.Args[i]
+		if i > 0 && want.Args[i-1] == "--notifier-webhook-url" {
+			v = "https://old-disp/x"
+		}
+		have.Args = append(have.Args, v)
+	}
+	if serviceMatches(have, want) {
+		t.Error("webhook-URL change should trigger recreate")
+	}
+}
+
 func TestBuildServiceRequest_OmitsRemovedGitSyncFlags(t *testing.T) {
 	t.Parallel()
-	req := buildServiceRequest("tok")
+	req := buildServiceRequest(hostTokens{auth: "tok"}, "")
 	for _, a := range req.Args {
 		if a == "--git-sync-source" || a == "--git-sync-token" {
 			t.Errorf("buildServiceRequest emits removed flag %q (PR 3 deleted it from clank-host; kept here would crash-loop the sprite)", a)

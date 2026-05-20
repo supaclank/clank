@@ -58,6 +58,25 @@ func (s *Store) GetHostByID(ctx context.Context, id string) (Host, error) {
 	return hostFromRow(row), nil
 }
 
+// GetHostByNotifierToken returns the host whose notifier_token matches
+// the given plaintext bearer. Returns ErrHostNotFound on miss or when
+// notifierToken is empty (empty matches every legacy row, which is
+// exactly the wrong thing). Fast-fails before hitting the DB to avoid
+// that footgun.
+func (s *Store) GetHostByNotifierToken(ctx context.Context, notifierToken string) (Host, error) {
+	if notifierToken == "" {
+		return Host{}, ErrHostNotFound
+	}
+	row, err := s.q.GetHostByNotifierToken(ctx, notifierToken)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Host{}, ErrHostNotFound
+	}
+	if err != nil {
+		return Host{}, fmt.Errorf("get host by notifier_token: %w", err)
+	}
+	return hostFromRow(row), nil
+}
+
 // UpsertHost inserts or replaces by (user_id, provider). CreatedAt is
 // preserved on update (UPSERT only updates the columns listed in the
 // generated query). UpdatedAt is set to time.Now() if the caller
@@ -77,18 +96,19 @@ func (s *Store) UpsertHost(ctx context.Context, h Host) error {
 		autoWake = 1
 	}
 	return s.q.UpsertHost(ctx, sqlitedb.UpsertHostParams{
-		ID:         h.ID,
-		UserID:     h.UserID,
-		Provider:   h.Provider,
-		ExternalID: h.ExternalID,
-		Hostname:   h.Hostname,
-		Status:     string(h.Status),
-		LastUrl:    h.LastURL,
-		LastToken:  h.LastToken,
-		AuthToken:   h.AuthToken,
-		AutoWake:   autoWake,
-		CreatedAt:  h.CreatedAt,
-		UpdatedAt:  h.UpdatedAt,
+		ID:            h.ID,
+		UserID:        h.UserID,
+		Provider:      h.Provider,
+		ExternalID:    h.ExternalID,
+		Hostname:      h.Hostname,
+		Status:        string(h.Status),
+		LastUrl:       h.LastURL,
+		LastToken:     h.LastToken,
+		AuthToken:     h.AuthToken,
+		NotifierToken: h.NotifierToken,
+		AutoWake:      autoWake,
+		CreatedAt:     h.CreatedAt,
+		UpdatedAt:     h.UpdatedAt,
 	})
 }
 
@@ -110,17 +130,18 @@ func (s *Store) DeleteHostByUser(ctx context.Context, userID, provider string) e
 
 func hostFromRow(r sqlitedb.Host) Host {
 	return Host{
-		ID:         r.ID,
-		UserID:     r.UserID,
-		Provider:   r.Provider,
-		ExternalID: r.ExternalID,
-		Hostname:   r.Hostname,
-		Status:     HostStatus(r.Status),
-		LastURL:    r.LastUrl,
-		LastToken:  r.LastToken,
-		AuthToken:   r.AuthToken,
-		AutoWake:   r.AutoWake != 0,
-		CreatedAt:  r.CreatedAt,
-		UpdatedAt:  r.UpdatedAt,
+		ID:            r.ID,
+		UserID:        r.UserID,
+		Provider:      r.Provider,
+		ExternalID:    r.ExternalID,
+		Hostname:      r.Hostname,
+		Status:        HostStatus(r.Status),
+		LastURL:       r.LastUrl,
+		LastToken:     r.LastToken,
+		AuthToken:     r.AuthToken,
+		NotifierToken: r.NotifierToken,
+		AutoWake:      r.AutoWake != 0,
+		CreatedAt:     r.CreatedAt,
+		UpdatedAt:     r.UpdatedAt,
 	}
 }

@@ -22,19 +22,28 @@ type Checkpoint struct {
 	UploadedAt        sql.NullTime
 }
 
-type Host struct {
-	ID         string
+type Device struct {
 	UserID     string
-	Provider   string
-	ExternalID string
-	Hostname   string
-	Status     string
-	LastUrl    string
-	LastToken  string
-	AuthToken  string
-	AutoWake   int64
+	PushToken  string
+	Platform   string
 	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	LastSeenAt time.Time
+}
+
+type Host struct {
+	ID            string
+	UserID        string
+	Provider      string
+	ExternalID    string
+	Hostname      string
+	Status        string
+	LastUrl       string
+	LastToken     string
+	AuthToken     string
+	NotifierToken string
+	AutoWake      int64
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 type Worktree struct {
