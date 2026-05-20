@@ -23,6 +23,7 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host/store"
+	"github.com/acksell/clank/internal/keepalive"
 )
 
 // Service is the Host plane's domain object. Construct with New; call
@@ -57,6 +58,12 @@ type Service struct {
 	// wg tracks per-session event-relay goroutines so Shutdown can
 	// wait for them before closing the subscriber registry.
 	wg sync.WaitGroup
+
+	// keepaliveLoop signals "agent is active" to a provider-specific
+	// Listener while events are flowing. Nil when Options.KeepaliveListener
+	// is nil — laptop mode skips the goroutine and ticker entirely.
+	keepaliveLoop *keepalive.Loop
+	keepaliveStop context.CancelFunc
 }
 
 // Options configures a Service at construction time.
@@ -81,6 +88,12 @@ type Options struct {
 	// optional in tests. When nil, session-metadata methods return
 	// SessionStoreNotConfigured.
 	SessionsStore *store.Store
+
+	// KeepaliveListener forwards backend-event activity to a provider-
+	// specific keep-alive mechanism (e.g. the Sprites Tasks API). Nil
+	// disables the subsystem entirely — laptop mode default. Set by
+	// cmd/clank-host/main.go from the --keepalive-provider flag.
+	KeepaliveListener keepalive.Listener
 }
 
 // New creates a Service. Panics on missing BackendManagers — fast
@@ -106,6 +119,12 @@ func New(opts Options) *Service {
 		branches:        newBranchCache(opts.BranchCacheTTL, opts.Now),
 		sessionsStore:   opts.SessionsStore,
 		subscribers:     newSubscriberRegistry(),
+	}
+	if opts.KeepaliveListener != nil {
+		s.keepaliveLoop = keepalive.New(keepalive.Config{
+			Listener: opts.KeepaliveListener,
+			Log:      lg,
+		})
 	}
 
 	// Auth manager is opencode-only: it tells the OpenCode backend to
@@ -144,6 +163,8 @@ func (s *Service) Init(ctx context.Context, knownDirs func(agent.BackendType) ([
 	// busy/starting sessions have no live backend now, and without
 	// this sweep the inbox would show them as forever-spinners.
 	s.normalizeStaleSessionStatus(ctx)
+
+	s.startKeepalive()
 
 	for bt, mgr := range s.backendManagers {
 		bt := bt
@@ -222,6 +243,7 @@ func (s *Service) Shutdown() {
 	if s.subscribers != nil {
 		s.subscribers.CloseAll()
 	}
+	s.stopKeepalive()
 	for bt, mgr := range s.backendManagers {
 		s.log.Printf("shutting down %s backend manager", bt)
 		mgr.Shutdown()

@@ -17,8 +17,15 @@ import (
 // as they arrive, with no proxy-side buffering. The inbound and
 // outbound connections share their lifetime — when the laptop CLI
 // disconnects, the daemon's outbound SSE drops and the sprite's
-// last-consumer timer starts. That's the auto-sleep property we care
-// about preserving.
+// last-consumer timer starts.
+//
+// That last-consumer timer no longer kills running agents: clank-host
+// inside the sprite runs a keepalive loop (see internal/keepalive)
+// that PUTs a self-expiring Sprites Task while backend events are
+// flowing. When events stop for ~3 min, the lease isn't renewed and
+// the sprite is free to hibernate. So this proxy keeps its 1:1 SSE
+// lifetime coupling (cheap, simple) and the keepalive loop overrides
+// hibernation only while there's actual work.
 //
 // The inbound Authorization header is stripped before forwarding so
 // the laptop daemon's local auth.AllowAll bearer doesn't leak to the
