@@ -381,13 +381,20 @@ func (p *Provisioner) installAndStart(ctx context.Context, sprite *sprites.Sprit
 		return err
 	}
 	// Sprites' base image ships Claude/Gemini/Codex but not opencode.
-	if err := p.ensureOpenCodeInstalled(ctx, sprite); err != nil {
+	opencodeReinstalled, err := p.ensureOpenCodeInstalled(ctx, sprite)
+	if err != nil {
 		return err
 	}
-	// When the binary was swapped, the old process keeps the prior
-	// inode in memory (POSIX unlink semantics). Force a service
-	// recreate so the new endpoints actually start serving.
-	if err := p.ensureServiceRunning(ctx, sprite, authToken, binReplaced); err != nil {
+	// Force a service recreate when either the clank-host binary OR
+	// opencode was just swapped. Binary swap: Linux keeps the old
+	// inode in memory (POSIX unlink), so without a restart the old
+	// process keeps serving even though the path resolves to the new
+	// file. Opencode swap: clank-host's /software-manifest endpoint
+	// uses a sync.Once-cached probe (agent.GetSoftwareManifest), so a
+	// fresh opencode at /usr/local/bin/opencode is invisible until
+	// the process restarts and re-probes. Either way, recreate the
+	// service to publish the new state.
+	if err := p.ensureServiceRunning(ctx, sprite, authToken, binReplaced || opencodeReinstalled); err != nil {
 		return err
 	}
 	// Re-apply on every run so a manually-disabled URL re-opens.
@@ -504,8 +511,8 @@ func readSidecar(stat fs.FS, sidecarPath string) (string, bool) {
 // ensureOpenCodeInstalled ensures the sprite has opencode at the
 // EXACT version clank pins (agent.PinnedOpencodeVersion). Probe-and-
 // upgrade semantics: if the binary is present at the right version,
-// fast-path return; otherwise install/replace via bun (or npm
-// fallback) at the pinned version and verify.
+// fast-path return; otherwise install/replace via bun at the pinned
+// version and verify.
 //
 // Why pin instead of "any opencode": opencode's export/import schema
 // is forward-incompatible across minor versions, so a sprite running
@@ -514,11 +521,15 @@ func readSidecar(stat fs.FS, sidecarPath string) (string, bool) {
 // constant in clank instead of "whatever was latest the day the
 // sprite was provisioned." See agent.PinnedOpencodeVersion's docstring.
 //
-// We symlink the bun-shipped JS wrapper rather than the platform
-// binary directly — the platform binary's dynamic linker may be
-// missing (e.g. musl loader on a glibc sprite). Each candidate path
-// is verified with --version before we accept it.
-func (p *Provisioner) ensureOpenCodeInstalled(ctx context.Context, sprite *sprites.Sprite) error {
+// Returns reinstalled=true when /usr/local/bin/opencode was actually
+// swapped (i.e. the install script ran). Callers MUST use this to
+// force a clank-host service recreate downstream, otherwise the
+// running clank-host's sync.Once-cached /software-manifest probe
+// will keep reporting the OLD opencode version forever and the
+// laptop's version-match check will reject every push. The cache is
+// a process-local optimization in agent/software_manifest.go that
+// only invalidates on clank-host restart.
+func (p *Provisioner) ensureOpenCodeInstalled(ctx context.Context, sprite *sprites.Sprite) (reinstalled bool, err error) {
 	probeCtx, probeCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer probeCancel()
 	var versionOut []byte
@@ -531,7 +542,7 @@ func (p *Provisioner) ensureOpenCodeInstalled(ctx context.Context, sprite *sprit
 	if probeErr == nil {
 		installed := strings.TrimSpace(string(versionOut))
 		if installed == agent.PinnedOpencodeVersion {
-			return nil // happy path: present and pinned-version-matched
+			return false, nil // happy path: present and pinned-version-matched
 		}
 		p.log.Printf("flyio provisioner: opencode on %s is %q, want %q — reinstalling at pinned version", sprite.Name(), installed, agent.PinnedOpencodeVersion)
 	}
@@ -542,137 +553,91 @@ func (p *Provisioner) ensureOpenCodeInstalled(ctx context.Context, sprite *sprit
 	script := strings.ReplaceAll(opencodeInstallScript, "__PINNED_VERSION__", agent.PinnedOpencodeVersion)
 
 	var out []byte
-	err := retryClosedConn(installCtx, p.log, func() error {
+	runErr := retryClosedConn(installCtx, p.log, func() error {
 		cmd := sprite.CommandContext(installCtx, "sh", "-c", script)
-		var runErr error
-		out, runErr = cmd.CombinedOutput()
-		return runErr
+		var rerr error
+		out, rerr = cmd.CombinedOutput()
+		return rerr
 	})
-	if err != nil {
+	if runErr != nil {
 		trimmed := strings.TrimSpace(string(out))
 		if len(trimmed) > 8192 {
 			trimmed = "..." + trimmed[len(trimmed)-8192:]
 		}
-		return fmt.Errorf("install opencode (sprite=%s): %w\n--- install output ---\n%s\n--- end output ---", sprite.Name(), err, trimmed)
+		return false, fmt.Errorf("install opencode (sprite=%s): %w\n--- install output ---\n%s\n--- end output ---", sprite.Name(), runErr, trimmed)
 	}
 	p.log.Printf("flyio provisioner: installed opencode %s on sprite %s", agent.PinnedOpencodeVersion, sprite.Name())
-	return nil
+	return true, nil
 }
 
-// opencodeInstallScript installs opencode at the pinned version
-// (substituted in for __PINNED_VERSION__ at call time), then
-// verifies the running `opencode --version` matches. Failing the
-// version check after install is a hard error: the caller would
-// otherwise believe ensureOpenCodeInstalled succeeded while a
-// different opencode is actually present.
+// opencodeInstallScript installs opencode at the pinned version and
+// atomically points /usr/local/bin/opencode at the newly installed
+// binary. Design choices:
+//
+//   - bun is the SOLE writer. We don't try to coordinate with any
+//     opencode the sprite image may have pre-baked at
+//     /usr/local/bin/opencode — that path is always treated as a
+//     symlink we own and re-point on every run.
+//
+//   - We trust bun's success report and verify the version of the
+//     binary bun produced before swapping the symlink. A stale
+//     /usr/local/bin/opencode (e.g. from a previous pin baked into
+//     the image) is never read — discovery via candidate paths is
+//     gone entirely.
+//
+//   - Hard fail on any of: bun install error, missing bun-produced
+//     binary, version mismatch. The caller would otherwise believe
+//     ensureOpenCodeInstalled succeeded while a different opencode
+//     is present.
 const opencodeInstallScript = `set -e
 
 PINNED="__PINNED_VERSION__"
 
 echo "::: opencode install (target version: $PINNED)"
 
-# Pick a package manager. Sprites have bun for the pre-installed
-# AI CLIs, so it should always be present.
-PM=""
-if command -v bun >/dev/null 2>&1; then
-  PM="bun"
-  echo "::: using bun ($(bun --version))"
-  bun install -g "opencode-ai@$PINNED" 2>&1
-elif command -v npm >/dev/null 2>&1; then
-  PM="npm"
-  echo "::: using npm ($(npm --version))"
-  npm install -g "opencode-ai@$PINNED" 2>&1
+if ! command -v bun >/dev/null 2>&1; then
+  echo "::: ERROR: bun is not on PATH — sprite image is missing the bun runtime" >&2
+  exit 1
+fi
+echo "::: using bun ($(bun --version))"
+bun install -g "opencode-ai@$PINNED" 2>&1
+
+# Resolve bun's global bin dir. Order: explicit BUN_INSTALL_BIN env,
+# then BUN_INSTALL/bin, then ask bun directly. We never fall back to
+# /usr/local/bin/ — that's the SYMLINK target, not a writer.
+BUN_BIN_DIR=""
+if [ -n "$BUN_INSTALL_BIN" ] && [ -d "$BUN_INSTALL_BIN" ]; then
+  BUN_BIN_DIR="$BUN_INSTALL_BIN"
+elif [ -n "$BUN_INSTALL" ] && [ -d "$BUN_INSTALL/bin" ]; then
+  BUN_BIN_DIR="$BUN_INSTALL/bin"
 else
-  echo "::: ERROR: neither bun nor npm available" >&2
-  exit 1
+  BUN_BIN_DIR=$(bun pm bin -g 2>/dev/null || true)
 fi
+BUN_OPENCODE="$BUN_BIN_DIR/opencode"
 
-# Try candidate paths in priority order. Wrappers FIRST, package
-# binaries LAST — and only accept a candidate that actually executes.
-echo "::: locating opencode"
-
-# Bun's global bin dir. Resolved at runtime since the install path
-# is sprites-specific (we saw /.sprite/languages/bun/install/global/...).
-BUN_BIN=""
-if [ "$PM" = "bun" ]; then
-  if [ -n "$BUN_INSTALL_BIN" ] && [ -d "$BUN_INSTALL_BIN" ]; then
-    BUN_BIN="$BUN_INSTALL_BIN"
-  elif [ -n "$BUN_INSTALL" ] && [ -d "$BUN_INSTALL/bin" ]; then
-    BUN_BIN="$BUN_INSTALL/bin"
-  else
-    # Walk up from the bun executable to find its prefix.
-    BUN_BIN=$(dirname "$(command -v bun)")
-  fi
-fi
-
-CANDIDATES="
-/usr/local/bin/opencode
-$BUN_BIN/opencode
-$HOME/.bun/bin/opencode
-/root/.bun/bin/opencode
-/.bun/bin/opencode
-/usr/local/bin/opencode
-"
-
-ACTUAL=""
-for cand in $CANDIDATES; do
-  [ -z "$cand" ] && continue
-  if [ -x "$cand" ] && "$cand" --version >/dev/null 2>&1; then
-    ACTUAL="$cand"
-    echo "::: found working binary at $cand"
-    break
-  elif [ -x "$cand" ]; then
-    echo "::: $cand exists but failed --version"
-  fi
-done
-
-# Last-resort: filesystem scan, but exclude node_modules so we never
-# pick up a platform-specific package binary that needs a missing
-# dynamic linker.
-if [ -z "$ACTUAL" ]; then
-  echo "::: scanning filesystem (excluding node_modules)"
-  for cand in $(find / -name 'opencode' -type f -executable -not -path '*/node_modules/*' 2>/dev/null); do
-    if "$cand" --version >/dev/null 2>&1; then
-      ACTUAL="$cand"
-      echo "::: scan found working binary at $cand"
-      break
-    fi
-  done
-fi
-
-if [ -z "$ACTUAL" ]; then
-  echo "::: ERROR: no working opencode binary found after install" >&2
-  echo "::: PATH=$PATH" >&2
+if [ ! -x "$BUN_OPENCODE" ]; then
+  echo "::: ERROR: bun install succeeded but $BUN_OPENCODE is missing or not executable" >&2
   echo "::: BUN_INSTALL=$BUN_INSTALL BUN_INSTALL_BIN=$BUN_INSTALL_BIN" >&2
-  echo "::: candidates tried:" >&2
-  for cand in $CANDIDATES; do
-    [ -z "$cand" ] && continue
-    if [ -e "$cand" ]; then
-      echo ":::   $cand exists; --version output:" >&2
-      "$cand" --version 2>&1 | sed 's/^/:::     /' >&2 || true
-    fi
-  done >&2
+  echo "::: BUN_BIN_DIR=$BUN_BIN_DIR" >&2
   exit 1
 fi
 
-# Symlink to /usr/local/bin so the service's PATH can resolve it.
-if [ "$ACTUAL" != "/usr/local/bin/opencode" ]; then
-  echo "::: symlinking $ACTUAL -> /usr/local/bin/opencode"
-  ln -sf "$ACTUAL" /usr/local/bin/opencode
-fi
-
-# Verify the canonical path one more time end-to-end AND that the
-# running version matches the pin. The latter is the
-# belt-and-suspenders check: bun should have installed exactly
-# what we asked for, but if registry routing or a cache hit served
-# something else we'd otherwise silently lie to the caller.
-echo "::: verifying /usr/local/bin/opencode"
-ACTUAL_VERSION=$(/usr/local/bin/opencode --version | tr -d '[:space:]')
-if [ "$ACTUAL_VERSION" != "$PINNED" ]; then
-  echo "::: ERROR: installed version is $ACTUAL_VERSION, expected $PINNED" >&2
+# Strict version check on the bun-produced binary BEFORE touching the
+# canonical path. If a registry mirror or cache served us the wrong
+# version, fail loud here — never expose a mismatched opencode.
+got=$("$BUN_OPENCODE" --version 2>/dev/null | tr -d '[:space:]')
+if [ "$got" != "$PINNED" ]; then
+  echo "::: ERROR: bun installed $got at $BUN_OPENCODE, expected $PINNED" >&2
   exit 1
 fi
-echo "::: done (version $ACTUAL_VERSION)"
+
+# Atomic-ish swap. ln -sf overwrites any existing file or symlink at
+# /usr/local/bin/opencode in one step. Idempotent across reruns: the
+# symlink ends up pointing at the just-verified bun binary regardless
+# of whether the image pre-baked anything there.
+ln -sf "$BUN_OPENCODE" /usr/local/bin/opencode
+
+echo "::: done — /usr/local/bin/opencode -> $BUN_OPENCODE (version $PINNED)"
 `
 
 // ensureServiceRunning registers the clank-host Service, recreating it
@@ -736,6 +701,9 @@ func buildServiceRequest(authToken string) *sprites.ServiceRequest {
 		Args: []string{
 			"--listen", fmt.Sprintf("tcp://[::]:%d", HostPort),
 			"--listen-auth-token", authToken,
+			// Defeat the sprite's last-consumer hibernation timer while
+			// agents are emitting events. See internal/keepalive.
+			"--keepalive-provider", "sprites",
 		},
 		HTTPPort: &port,
 	}
@@ -837,14 +805,19 @@ func (p *Provisioner) persistRow(ctx context.Context, userID, externalID, hostna
 	return hostID, nil
 }
 
-// SuspendHost is a near-no-op: Sprites auto-hibernate on idle, so
-// explicit suspend isn't needed for cost control.
+// SuspendHost is a no-op for Sprites. Hibernation is gated sprite-side
+// on session-event activity (see internal/keepalive) — clank-host
+// renews a Sprites Task lease while events flow and stops renewing
+// when they stop, letting the platform's last-consumer timer take
+// over. No daemon-side action is needed; we keep the method on the
+// Provisioner interface so other backends that lack an in-VM signal
+// can hook explicit suspend later.
 func (p *Provisioner) SuspendHost(ctx context.Context, hostID string) error {
 	row, err := p.store.GetHostByID(ctx, hostID)
 	if err != nil {
 		return fmt.Errorf("look up host %s: %w", hostID, err)
 	}
-	p.log.Printf("flyio provisioner: SuspendHost is a no-op for sprite %s (auto-hibernate)", row.ExternalID)
+	p.log.Printf("flyio provisioner: SuspendHost is a no-op for sprite %s (keepalive-gated hibernate)", row.ExternalID)
 	return nil
 }
 
