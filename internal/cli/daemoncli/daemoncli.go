@@ -140,7 +140,7 @@ func RunStart(foreground bool, opts ServerOptions) error {
 			defer cleanup()
 		}
 
-		return runGatewayServer(prov, opts)
+		return runGatewayServer(prov, st, opts)
 	}
 
 	// Fork a background process. The forked process runs with

@@ -15,8 +15,10 @@ import (
 
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/socketutil"
+	"github.com/acksell/clank/internal/store"
 	"github.com/acksell/clank/pkg/auth"
 	"github.com/acksell/clank/pkg/gateway"
+	"github.com/acksell/clank/pkg/notify"
 	"github.com/acksell/clank/pkg/provisioner"
 	clanksync "github.com/acksell/clank/pkg/sync"
 )
@@ -100,7 +102,7 @@ func parseTCPListen(s string) (string, error) {
 //     CLANK_SYNC_S3_* env and mounted under /v1/.
 //
 // Both modes write the PID file at daemonclient.PIDPath().
-func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
+func runGatewayServer(prov provisioner.Provisioner, st *store.Store, opts ServerOptions) error {
 	pidPath, err := daemonclient.PIDPath()
 	if err != nil {
 		return fmt.Errorf("pid path: %w", err)
@@ -120,10 +122,17 @@ func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
 		}
 	}
 
+	// Build the notification dispatcher. The gateway mounts the
+	// user-scoped /devices routes inside its Handler() (they inherit
+	// the outer auth wrap); the host-→-clankd webhook is exposed
+	// pre-auth via gw.NotifyWebhookHandler() below.
+	dispatcher := notify.NewDispatcher(st, notifyDeviceAdapter{s: st}, notify.New(log.Default()), log.Default())
+
 	gwCfg := gateway.Config{
 		Provisioner: prov,
 		Sync:        syncSrv,
 		AuthConfig:  loadAuthConfigFromEnv(),
+		Notify:      dispatcher,
 	}
 	// Laptop mode (Sync == nil): wire the per-session router so
 	// /sessions/* routes between local clank-host and the active
@@ -151,17 +160,18 @@ func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
 	}
 	logAuthMode(authDesc)
 
-	// Wire the auth-config discovery route PRE-auth (clank has no
-	// token when it fetches it). Falls back to a single auth-wrapped
-	// handler when no AuthConfig is configured.
-	var handler http.Handler = auth.Middleware(gw.Handler(), authenticator)
+	// Wire pre-auth routes (no user bearer required) on a parent mux,
+	// then mount the auth-wrapped gateway as the catch-all.
+	mux := http.NewServeMux()
+	if h := gw.NotifyWebhookHandler(); h != nil {
+		mux.Handle("POST /webhooks/notifications", h)
+	}
 	if ach := gw.AuthConfigHandler(); ach != nil {
-		mux := http.NewServeMux()
 		mux.Handle("GET /auth-config", ach)
-		mux.Handle("/", handler)
-		handler = mux
 		log.Printf("gateway: /auth-config discovery enabled")
 	}
+	mux.Handle("/", auth.Middleware(gw.Handler(), authenticator))
+	var handler http.Handler = mux
 
 	listener, cleanup, err := openHubListener(opts)
 	if err != nil {

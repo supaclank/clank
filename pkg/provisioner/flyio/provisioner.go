@@ -81,6 +81,13 @@ type Options struct {
 	// to become reachable. Default: 5 minutes.
 	ProvisionTimeout time.Duration
 
+	// NotifierWebhookURL, when non-empty, configures clank-host to
+	// POST agent-lifecycle notifications (idle, permission, error)
+	// back to this URL. The dispatcher at that URL resolves the
+	// host's bearer token to its owning user. Empty disables the
+	// subsystem — laptop dev without a dispatcher.
+	NotifierWebhookURL string
+
 	// SDKClient overrides the sprites.Client constructor for tests.
 	SDKClient *sprites.Client
 }
@@ -100,12 +107,23 @@ type Provisioner struct {
 }
 
 type cachedHost struct {
-	sprite    *sprites.Sprite
-	transport http.RoundTripper
-	hostID    string
-	hostname  string
-	url       string
-	authToken string
+	sprite        *sprites.Sprite
+	transport     http.RoundTripper
+	hostID        string
+	hostname      string
+	url           string
+	authToken     string
+	notifierToken string
+}
+
+// hostTokens bundles the two per-sprite credentials passed around
+// during provisioning. authToken gates INCOMING traffic to clank-host
+// (its --listen-auth-token); notifierToken authenticates OUTGOING
+// notification webhooks back to clankd. Both are stable across
+// hibernation — re-read from the store row on warm resume.
+type hostTokens struct {
+	auth     string
+	notifier string
 }
 
 // New constructs a Provisioner. The HostStore is the persistence
@@ -171,14 +189,14 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 	}
 
 	spriteName := p.spriteNameFor(userID)
-	sprite, isNew, authToken, err := p.resolveOrCreate(ctx, userID, spriteName)
+	sprite, isNew, tokens, err := p.resolveOrCreate(ctx, userID, spriteName)
 	if err != nil {
 		return provisioner.HostRef{}, err
 	}
 
 	// installAndStart is idempotent — every step probes for its own
 	// completion. Always run it so half-provisioned sprites self-heal.
-	if err := p.installAndStart(ctx, sprite, authToken); err != nil {
+	if err := p.installAndStart(ctx, sprite, tokens); err != nil {
 		return provisioner.HostRef{}, err
 	}
 	_ = isNew
@@ -204,7 +222,7 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 	if err != nil {
 		return provisioner.HostRef{}, fmt.Errorf("parse sprite URL %q: %w", fresh.URL, err)
 	}
-	transport := &transportpkg.BearerInjector{Token: authToken, Host: parsedURL.Host}
+	transport := &transportpkg.BearerInjector{Token: tokens.auth, Host: parsedURL.Host}
 	hostname := "flyio-" + safeHostnameSuffix(actualName)
 
 	// The Service "started" event only means the process is running;
@@ -216,18 +234,19 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 	// Persist the actual sprite name, not the requested spriteName.
 	// Otherwise a stale row from a previous prefix would keep
 	// resolving to the old sprite forever (the bug this commit fixes).
-	hostID, err := p.persistRow(ctx, userID, actualName, string(hostname), fresh.URL, authToken, isNew)
+	hostID, err := p.persistRow(ctx, userID, actualName, string(hostname), fresh.URL, tokens, isNew)
 	if err != nil {
 		return provisioner.HostRef{}, fmt.Errorf("persist host row: %w", err)
 	}
 
 	cached := &cachedHost{
-		sprite:    fresh,
-		transport: transport,
-		hostID:    hostID,
-		hostname:  hostname,
-		url:       fresh.URL,
-		authToken: authToken,
+		sprite:        fresh,
+		transport:     transport,
+		hostID:        hostID,
+		hostname:      hostname,
+		url:           fresh.URL,
+		authToken:     tokens.auth,
+		notifierToken: tokens.notifier,
 	}
 	p.cacheSet(userID, cached)
 	return p.refToHost(cached), nil
@@ -303,15 +322,32 @@ func (p *Provisioner) refToHost(c *cachedHost) provisioner.HostRef {
 
 // resolveOrCreate returns the user's sprite, creating it if absent.
 // On reuse the auth-token is read from the store row; on cold create
-// a fresh token is minted and threaded back for installAndStart.
-func (p *Provisioner) resolveOrCreate(ctx context.Context, userID, spriteName string) (*sprites.Sprite, bool, string, error) {
+// a fresh token is minted and threaded back for installAndStart. The
+// notifier-token follows the same pattern, with one twist: existing
+// rows from before the notifier_token column existed return empty,
+// and we lazy-backfill at that point so the next service-recreate
+// picks up the new flag.
+func (p *Provisioner) resolveOrCreate(ctx context.Context, userID, spriteName string) (*sprites.Sprite, bool, hostTokens, error) {
 	row, err := p.store.GetHostByUser(ctx, userID, "flyio")
 	if err == nil {
 		// If the sprite was deleted out-of-band, clear the row and
 		// fall through to recreate.
 		sprite, fetchErr := p.client.GetSprite(ctx, row.ExternalID)
 		if fetchErr == nil {
-			return sprite, false, row.AuthToken, nil
+			tokens := hostTokens{auth: row.AuthToken, notifier: row.NotifierToken}
+			if tokens.notifier == "" {
+				// Lazy backfill — existing rows from before the
+				// column existed get a token on next EnsureHost,
+				// which triggers an args-diff in ensureServiceRunning
+				// and forces a service-recreate to push the new flag.
+				minted, mintErr := generateNotifierToken()
+				if mintErr != nil {
+					return nil, false, hostTokens{}, fmt.Errorf("generate notifier-token: %w", mintErr)
+				}
+				tokens.notifier = minted
+				p.log.Printf("flyio provisioner: backfilled notifier_token for existing host %s", row.ID)
+			}
+			return sprite, false, tokens, nil
 		}
 		if isNotFound(fetchErr) {
 			p.log.Printf("flyio provisioner: sprite %s for user %s not found upstream; recreating", row.ExternalID, userID)
@@ -320,17 +356,21 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID, spriteName st
 			}
 			// fall through
 		} else {
-			return nil, false, "", fmt.Errorf("get sprite %s: %w", row.ExternalID, fetchErr)
+			return nil, false, hostTokens{}, fmt.Errorf("get sprite %s: %w", row.ExternalID, fetchErr)
 		}
 	} else if !errors.Is(err, hoststore.ErrHostNotFound) {
-		return nil, false, "", fmt.Errorf("look up host: %w", err)
+		return nil, false, hostTokens{}, fmt.Errorf("look up host: %w", err)
 	}
 
-	// Cold create: mint the auth-token now so we can bake it into the
-	// Service Args.
+	// Cold create: mint both tokens now so we can bake them into the
+	// Service Args from the first service-create call.
 	authToken, err := generateAuthToken()
 	if err != nil {
-		return nil, false, "", fmt.Errorf("generate auth-token: %w", err)
+		return nil, false, hostTokens{}, fmt.Errorf("generate auth-token: %w", err)
+	}
+	notifierToken, err := generateNotifierToken()
+	if err != nil {
+		return nil, false, hostTokens{}, fmt.Errorf("generate notifier-token: %w", err)
 	}
 
 	cfg := &sprites.SpriteConfig{
@@ -342,9 +382,9 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID, spriteName st
 
 	sprite, err := p.createSprite(ctx, spriteName, cfg)
 	if err != nil {
-		return nil, false, "", err
+		return nil, false, hostTokens{}, err
 	}
-	return sprite, true, authToken, nil
+	return sprite, true, hostTokens{auth: authToken, notifier: notifierToken}, nil
 }
 
 // createSprite chooses the org-scoped or default-org variant.
@@ -371,7 +411,7 @@ func (p *Provisioner) createSprite(ctx context.Context, name string, cfg *sprite
 // installAndStart pushes the binary, installs the opencode runtime,
 // registers the service, and opens the URL. Idempotent end-to-end so
 // half-provisioned sprites self-heal on the next daemon start.
-func (p *Provisioner) installAndStart(ctx context.Context, sprite *sprites.Sprite, authToken string) error {
+func (p *Provisioner) installAndStart(ctx context.Context, sprite *sprites.Sprite, tokens hostTokens) error {
 	// Wake via HTTP first: the SDK's control-WebSocket pool has a stale-
 	// conn race on a freshly-hibernated VM, and an HTTP hit avoids it.
 	p.wakeViaHTTP(ctx, sprite)
@@ -394,7 +434,7 @@ func (p *Provisioner) installAndStart(ctx context.Context, sprite *sprites.Sprit
 	// fresh opencode at /usr/local/bin/opencode is invisible until
 	// the process restarts and re-probes. Either way, recreate the
 	// service to publish the new state.
-	if err := p.ensureServiceRunning(ctx, sprite, authToken, binReplaced || opencodeReinstalled); err != nil {
+	if err := p.ensureServiceRunning(ctx, sprite, tokens, binReplaced || opencodeReinstalled); err != nil {
 		return err
 	}
 	// Re-apply on every run so a manually-disabled URL re-opens.
@@ -649,8 +689,8 @@ echo "::: done — /usr/local/bin/opencode -> $BUN_OPENCODE (version $PINNED)"
 // Drift detection without forceRecreate also catches the historical
 // case where a flag rename would crash-loop the service across the
 // hibernate/wake cycle and the edge would serve 404s.
-func (p *Provisioner) ensureServiceRunning(ctx context.Context, sprite *sprites.Sprite, authToken string, forceRecreate bool) error {
-	wantReq := buildServiceRequest(authToken)
+func (p *Provisioner) ensureServiceRunning(ctx context.Context, sprite *sprites.Sprite, tokens hostTokens, forceRecreate bool) error {
+	wantReq := buildServiceRequest(tokens, p.opts.NotifierWebhookURL)
 
 	var existing *sprites.ServiceWithState
 	var existingErr error
@@ -694,24 +734,35 @@ func (p *Provisioner) ensureServiceRunning(ctx context.Context, sprite *sprites.
 
 // buildServiceRequest is the canonical Service shape this daemon
 // expects, used both to create and to compare against a persisted one.
-func buildServiceRequest(authToken string) *sprites.ServiceRequest {
+// When webhookURL is empty the notifier flags are omitted entirely
+// (laptop-dev / no-dispatcher path); when set, the host POSTs idle /
+// permission / error events back to the dispatcher.
+func buildServiceRequest(tokens hostTokens, webhookURL string) *sprites.ServiceRequest {
 	port := HostPort
+	args := []string{
+		"--listen", fmt.Sprintf("tcp://[::]:%d", HostPort),
+		"--listen-auth-token", tokens.auth,
+		// Defeat the sprite's last-consumer hibernation timer while
+		// agents are emitting events. See internal/keepalive.
+		"--keepalive-provider", "sprites",
+	}
+	if webhookURL != "" && tokens.notifier != "" {
+		args = append(args,
+			"--notifier-provider", "webhook",
+			"--notifier-webhook-url", webhookURL,
+			"--notifier-webhook-token", tokens.notifier,
+		)
+	}
 	return &sprites.ServiceRequest{
-		Cmd: installPath,
-		Args: []string{
-			"--listen", fmt.Sprintf("tcp://[::]:%d", HostPort),
-			"--listen-auth-token", authToken,
-			// Defeat the sprite's last-consumer hibernation timer while
-			// agents are emitting events. See internal/keepalive.
-			"--keepalive-provider", "sprites",
-		},
+		Cmd:      installPath,
+		Args:     args,
 		HTTPPort: &port,
 	}
 }
 
 // serviceMatches compares a persisted Service to a fresh request.
-// The auth-token value is wildcarded — a token rotation alone should
-// not force a recreate.
+// Token values (auth-token, notifier-token) are wildcarded — a token
+// rotation alone should not force a recreate.
 func serviceMatches(have *sprites.Service, want *sprites.ServiceRequest) bool {
 	if have.Cmd != want.Cmd {
 		return false
@@ -725,14 +776,23 @@ func serviceMatches(have *sprites.Service, want *sprites.ServiceRequest) bool {
 	return argsEquivalent(have.Args, want.Args)
 }
 
+// wildcardedArgs lists the flag names whose value should be ignored
+// in argsEquivalent. Keep this synced with buildServiceRequest — adding
+// a new bearer-style flag without listing it here would force a service
+// recreate on every token rotation.
+var wildcardedArgs = map[string]bool{
+	"--listen-auth-token":     true,
+	"--notifier-webhook-token": true,
+}
+
 // argsEquivalent compares two arg slices in order, wildcarding the
-// value after --listen-auth-token.
+// value position immediately after any flag in wildcardedArgs.
 func argsEquivalent(have, want []string) bool {
 	if len(have) != len(want) {
 		return false
 	}
 	for i := 0; i < len(have); i++ {
-		if i > 0 && want[i-1] == "--listen-auth-token" {
+		if i > 0 && wildcardedArgs[want[i-1]] {
 			continue
 		}
 		if have[i] != want[i] {
@@ -770,7 +830,7 @@ func waitForServiceStarted(stream *sprites.ServiceStream) error {
 }
 
 // persistRow upserts the host row.
-func (p *Provisioner) persistRow(ctx context.Context, userID, externalID, hostname, url, authToken string, isNew bool) (string, error) {
+func (p *Provisioner) persistRow(ctx context.Context, userID, externalID, hostname, url string, tokens hostTokens, isNew bool) (string, error) {
 	now := time.Now()
 
 	hostID := ""
@@ -784,17 +844,18 @@ func (p *Provisioner) persistRow(ctx context.Context, userID, externalID, hostna
 	}
 
 	rec := hoststore.Host{
-		ID:         hostID,
-		UserID:     userID,
-		Provider:   "flyio",
-		ExternalID: externalID,
-		Hostname:   hostname,
-		Status:     hoststore.HostStatusRunning,
-		LastURL:    url,
-		LastToken:  "", // Sprites have no provider-edge token; leave empty
-		AuthToken:  authToken,
-		AutoWake:   true,
-		UpdatedAt:  now,
+		ID:            hostID,
+		UserID:        userID,
+		Provider:      "flyio",
+		ExternalID:    externalID,
+		Hostname:      hostname,
+		Status:        hoststore.HostStatusRunning,
+		LastURL:       url,
+		LastToken:     "", // Sprites have no provider-edge token; leave empty
+		AuthToken:     tokens.auth,
+		NotifierToken: tokens.notifier,
+		AutoWake:      true,
+		UpdatedAt:     now,
 	}
 	if isNew {
 		rec.CreatedAt = now
@@ -897,6 +958,17 @@ func generateAuthToken() (string, error) {
 		return "", fmt.Errorf("read random: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// generateNotifierToken returns a per-host bearer prefixed "clnk_" so
+// it's distinguishable from auth-tokens in logs and DB rows. ~192 bits
+// of entropy is plenty for an API-key-style credential.
+func generateNotifierToken() (string, error) {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("read random: %w", err)
+	}
+	return "clnk_" + base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 // newHostID mints a ULID for the store row.

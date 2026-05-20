@@ -14,6 +14,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/acksell/clank/pkg/notify"
 	"github.com/acksell/clank/pkg/provisioner"
 	clanksync "github.com/acksell/clank/pkg/sync"
 )
@@ -81,6 +82,19 @@ type Config struct {
 	// handler pre-auth on GET /auth-config so the laptop can
 	// discover the IdP before it has a token.
 	AuthConfig *AuthConfig
+
+	// Notify, when non-nil, exposes mobile push notifications:
+	//   - /devices (POST, DELETE) mount inside Handler() and inherit
+	//     whatever user-auth middleware wraps it (same model as Sync).
+	//   - /webhooks/notifications mounts pre-auth via the daemon's
+	//     parent mux — see NotifyWebhookHandler. The dispatcher does
+	//     its own host-bearer verification, so wrapping it with user
+	//     auth would reject the host call outright.
+	//
+	// Construct the dispatcher with notify.NewDispatcher; clank/clankd
+	// passes its in-process store, supaclank passes its pgx-backed
+	// implementations. Either way, the gateway just mounts.
+	Notify *notify.Dispatcher
 }
 
 // Gateway is the public ingress.
@@ -141,6 +155,14 @@ func (g *Gateway) Handler() http.Handler {
 		// over the /v1/ prefix registered here.
 		mx.Handle("/v1/", g.cfg.Sync.Handler())
 	}
+	if g.cfg.Notify != nil {
+		// /devices: user-scoped, inherits outer auth wrap.
+		// /webhooks/notifications lives on the daemon's parent mux
+		// (pre-auth) because the dispatcher does host-bearer
+		// verification itself; see NotifyWebhookHandler.
+		mx.HandleFunc("POST /devices", g.cfg.Notify.HandleRegister)
+		mx.HandleFunc("DELETE /devices/{token}", g.cfg.Notify.HandleDeregister)
+	}
 	if g.ownerCache != nil {
 		// Laptop mode: per-session routing decides local-vs-remote
 		// based on worktree ownership. /sessions/search is mounted
@@ -163,6 +185,23 @@ func (g *Gateway) handlePing(w http.ResponseWriter, _ *http.Request) {
 func (g *Gateway) handleGatewayHealth(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// NotifyWebhookHandler returns the dispatcher's host-side webhook
+// handler when Config.Notify is set, otherwise nil. Daemons mount it
+// PRE-auth on POST /webhooks/notifications — the dispatcher verifies
+// the host bearer token itself, and the outer user-auth middleware
+// would 401 the host call before it ever reached the dispatcher.
+//
+// Returning nil when Notify is unset mirrors AuthConfigHandler so
+// callers can wire the route conditionally — `if h :=
+// gw.NotifyWebhookHandler(); h != nil { mux.Handle("POST
+// /webhooks/notifications", h) }`.
+func (g *Gateway) NotifyWebhookHandler() http.Handler {
+	if g.cfg.Notify == nil {
+		return nil
+	}
+	return http.HandlerFunc(g.cfg.Notify.Handle)
 }
 
 // AuthConfigHandler returns an http.Handler that serves the
