@@ -75,6 +75,15 @@ type Loop struct {
 	stop  chan struct{}
 	done  chan struct{}
 
+	// stopOnce guards close(l.stop); closeOnce guards Listener.Close.
+	// Both protect against duplicate or concurrent Stop calls — a
+	// second close(l.stop) would panic, and a second Listener.Close
+	// would double-fire provider teardown (e.g. two DELETEs to the
+	// Sprites Tasks API).
+	stopOnce  sync.Once
+	closeOnce sync.Once
+	closeErr  error
+
 	mu           sync.Mutex
 	lastActivity time.Time
 	lastTick     time.Time
@@ -139,21 +148,22 @@ func (l *Loop) Run(ctx context.Context) {
 	}
 }
 
-// Stop halts Run and calls Listener.Close. Idempotent if called once;
-// a second call after Run has exited returns nil immediately.
+// Stop halts Run and calls Listener.Close. Safe to call multiple times
+// concurrently: close(l.stop) and Listener.Close each fire exactly once;
+// subsequent calls return the cached error from the first Close. If
+// ctx fires before Run exits, Stop returns ctx.Err() without invoking
+// Listener.Close — a subsequent Stop with a live ctx will still close.
 func (l *Loop) Stop(ctx context.Context) error {
-	select {
-	case <-l.done:
-		return l.listener.Close(ctx)
-	default:
-	}
-	close(l.stop)
+	l.stopOnce.Do(func() { close(l.stop) })
 	select {
 	case <-l.done:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	return l.listener.Close(ctx)
+	l.closeOnce.Do(func() {
+		l.closeErr = l.listener.Close(ctx)
+	})
+	return l.closeErr
 }
 
 func (l *Loop) recordActivity(t time.Time) {

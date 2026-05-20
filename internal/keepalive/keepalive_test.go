@@ -13,9 +13,9 @@ import (
 // keepalive.Listener impl — not a mock — used as a test fixture so the
 // Loop's behavior can be observed without a real provider socket.
 type recordingListener struct {
-	mu     sync.Mutex
-	ticks  []time.Time
-	closed bool
+	mu         sync.Mutex
+	ticks      []time.Time
+	closeCount int
 }
 
 func (l *recordingListener) Tick(_ context.Context, lastActivity time.Time) {
@@ -27,8 +27,14 @@ func (l *recordingListener) Tick(_ context.Context, lastActivity time.Time) {
 func (l *recordingListener) Close(_ context.Context) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.closed = true
+	l.closeCount++
 	return nil
+}
+
+func (l *recordingListener) closes() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.closeCount
 }
 
 func (l *recordingListener) tickCount() int {
@@ -49,7 +55,7 @@ func (l *recordingListener) latestTick() time.Time {
 func (l *recordingListener) wasClosed() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.closed
+	return l.closeCount > 0
 }
 
 // startLoop spins a Loop with sub-second tunables and a Listener,
@@ -204,6 +210,64 @@ func TestLoop_StopCallsListenerClose(t *testing.T) {
 	}
 	if !rec.wasClosed() {
 		t.Error("Listener.Close was not called by Stop")
+	}
+}
+
+// TestLoop_StopIsIdempotent pins that a second Stop call doesn't
+// double-fire Listener.Close. Without the guard, a provider's teardown
+// (e.g. DELETE /v1/tasks/agents on Sprites) would run twice on any
+// shutdown race.
+func TestLoop_StopIsIdempotent(t *testing.T) {
+	t.Parallel()
+	rec := &recordingListener{}
+	loop := keepalive.New(keepalive.Config{
+		Listener:        rec,
+		Interval:        1 * time.Hour,
+		MinTickInterval: 1 * time.Millisecond,
+	})
+	go loop.Run(context.Background())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for i := 0; i < 3; i++ {
+		if err := loop.Stop(ctx); err != nil {
+			t.Fatalf("Stop call %d: %v", i, err)
+		}
+	}
+	if got := rec.closes(); got != 1 {
+		t.Errorf("Listener.Close called %d times across 3 Stops, want 1", got)
+	}
+}
+
+// TestLoop_StopIsConcurrencySafe pins that concurrent Stop calls
+// don't panic on close-of-closed-channel and don't double-fire
+// Listener.Close. Verified under `go test -race`.
+func TestLoop_StopIsConcurrencySafe(t *testing.T) {
+	t.Parallel()
+	rec := &recordingListener{}
+	loop := keepalive.New(keepalive.Config{
+		Listener:        rec,
+		Interval:        1 * time.Hour,
+		MinTickInterval: 1 * time.Millisecond,
+	})
+	go loop.Run(context.Background())
+
+	const stoppers = 16
+	var wg sync.WaitGroup
+	wg.Add(stoppers)
+	for i := 0; i < stoppers; i++ {
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := loop.Stop(ctx); err != nil {
+				t.Errorf("Stop: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := rec.closes(); got != 1 {
+		t.Errorf("Listener.Close called %d times across %d concurrent Stops, want 1", got, stoppers)
 	}
 }
 
