@@ -3,15 +3,25 @@ package daemoncli
 import (
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 
 	"github.com/acksell/clank/internal/config"
+	"github.com/acksell/clank/internal/store"
 	"github.com/acksell/clank/pkg/provisioner"
 	daytonaprov "github.com/acksell/clank/pkg/provisioner/daytona"
 	flyioprov "github.com/acksell/clank/pkg/provisioner/flyio"
 	localprov "github.com/acksell/clank/pkg/provisioner/local"
-	"github.com/acksell/clank/internal/store"
 )
+
+// notifierWebhookURL returns the URL clank-host should POST notification
+// webhooks to. Sourced from CLANK_NOTIFIER_WEBHOOK_URL; empty when
+// unset, which disables the notifier subsystem inside the provisioned
+// host. Operators set this to their clankd / gateway's public URL,
+// suffixed with /webhooks/notifications.
+func notifierWebhookURL() string {
+	return os.Getenv("CLANK_NOTIFIER_WEBHOOK_URL")
+}
 
 // buildProvisioner picks the active provisioner for the gateway based
 // on preferences.default_launch_host_provider. Defaults to local
@@ -54,7 +64,8 @@ func buildLocalProvisioner() (provisioner.Provisioner, func(), error) {
 		// Each laptop daemon has its own host data dir alongside
 		// the daemon's own clank.db. clank-host's --data-dir flag
 		// receives this; it opens host.db inside.
-		DataDir: filepath.Join(dir, "host"),
+		DataDir:            filepath.Join(dir, "host"),
+		NotifierWebhookURL: notifierWebhookURL(),
 	}, log.Default())
 	return prov, prov.Stop, nil
 }
@@ -81,13 +92,14 @@ func buildFlyIOProvisioner(opts ServerOptions, st *store.Store, prefs config.Pre
 		return nil, nil, fmt.Errorf("flyio provisioner: preferences.flyio.api_token required")
 	}
 	prov, err := flyioprov.New(flyioprov.Options{
-		APIToken:         prefs.FlyIO.APIToken,
-		OrganizationSlug: prefs.FlyIO.OrganizationSlug,
-		Region:           prefs.FlyIO.Region,
-		SpriteNamePrefix: prefs.FlyIO.SpriteNamePrefix,
-		RamMB:            prefs.FlyIO.RamMB,
-		CPUs:             prefs.FlyIO.CPUs,
-		StorageGB:        prefs.FlyIO.StorageGB,
+		APIToken:           prefs.FlyIO.APIToken,
+		OrganizationSlug:   prefs.FlyIO.OrganizationSlug,
+		Region:             prefs.FlyIO.Region,
+		SpriteNamePrefix:   prefs.FlyIO.SpriteNamePrefix,
+		RamMB:              prefs.FlyIO.RamMB,
+		CPUs:               prefs.FlyIO.CPUs,
+		StorageGB:          prefs.FlyIO.StorageGB,
+		NotifierWebhookURL: notifierWebhookURL(),
 	}, st, log.Default())
 	if err != nil {
 		return nil, nil, fmt.Errorf("build flyio provisioner: %w", err)

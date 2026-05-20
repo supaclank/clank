@@ -122,10 +122,17 @@ func runGatewayServer(prov provisioner.Provisioner, st *store.Store, opts Server
 		}
 	}
 
+	// Build the notification dispatcher. The gateway mounts the
+	// user-scoped /devices routes inside its Handler() (they inherit
+	// the outer auth wrap); the host-→-clankd webhook is exposed
+	// pre-auth via gw.NotifyWebhookHandler() below.
+	dispatcher := notify.NewDispatcher(st, notifyDeviceAdapter{s: st}, notify.New(log.Default()), log.Default())
+
 	gwCfg := gateway.Config{
 		Provisioner: prov,
 		Sync:        syncSrv,
 		AuthConfig:  loadAuthConfigFromEnv(),
+		Notify:      dispatcher,
 	}
 	// Laptop mode (Sync == nil): wire the per-session router so
 	// /sessions/* routes between local clank-host and the active
@@ -153,23 +160,12 @@ func runGatewayServer(prov provisioner.Provisioner, st *store.Store, opts Server
 	}
 	logAuthMode(authDesc)
 
-	// Build the notification dispatcher. It piggybacks on the same
-	// store the provisioner uses (hosts table for bearer-→-user lookup,
-	// devices table for fan-out targets) and ships Expo Push by
-	// default. Self-hosters who want a different push transport plug
-	// their own notify.Pusher in here.
-	dispatcher := notify.NewDispatcher(st, notifyDeviceAdapter{s: st}, notify.New(log.Default()), log.Default())
-
-	// Wire the auth-config discovery route PRE-auth (clank has no
-	// token when it fetches it). The notification routes split: the
-	// host-→-clankd webhook is authenticated by its own host bearer
-	// token (handled inside dispatcher.Handle), so it sits OUTSIDE the
-	// user-auth middleware; the user-facing /devices routes sit behind
-	// the normal Authenticator.
+	// Wire pre-auth routes (no user bearer required) on a parent mux,
+	// then mount the auth-wrapped gateway as the catch-all.
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /webhooks/notifications", dispatcher.Handle)
-	mux.Handle("POST /devices", auth.Middleware(http.HandlerFunc(dispatcher.HandleRegister), authenticator))
-	mux.Handle("DELETE /devices/{token}", auth.Middleware(http.HandlerFunc(dispatcher.HandleDeregister), authenticator))
+	if h := gw.NotifyWebhookHandler(); h != nil {
+		mux.Handle("POST /webhooks/notifications", h)
+	}
 	if ach := gw.AuthConfigHandler(); ach != nil {
 		mux.Handle("GET /auth-config", ach)
 		log.Printf("gateway: /auth-config discovery enabled")

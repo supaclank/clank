@@ -46,6 +46,12 @@ type Options struct {
 	// ProvisionTimeout caps how long EnsureHost waits for the child
 	// to print its bound listen address. Default: 10 seconds.
 	ProvisionTimeout time.Duration
+
+	// NotifierWebhookURL, when non-empty, configures the subprocess
+	// clank-host to POST agent-lifecycle notifications back to this
+	// URL — typically the same clankd that spawned it. Empty disables
+	// the notifier (laptop dev without push delivery).
+	NotifierWebhookURL string
 }
 
 // Provisioner manages a single persistent clank-host subprocess.
@@ -58,12 +64,13 @@ type Provisioner struct {
 }
 
 type child struct {
-	cmd       *exec.Cmd
-	hostID    string
-	hostname  string
-	url       string
-	authToken string
-	transport http.RoundTripper
+	cmd           *exec.Cmd
+	hostID        string
+	hostname      string
+	url           string
+	authToken     string
+	notifierToken string
+	transport     http.RoundTripper
 	// exited closes when the child process is reaped by the watcher
 	// goroutine. EnsureHost selects on this to detect crashed children
 	// (cmd.ProcessState only populates after Wait returns, so without
@@ -122,6 +129,16 @@ func (p *Provisioner) EnsureHost(_ context.Context, _ string) (provisioner.HostR
 	if err != nil {
 		return provisioner.HostRef{}, fmt.Errorf("generate auth-token: %w", err)
 	}
+	// Notifier token only matters when a webhook URL is configured.
+	// Skip the mint on laptop-dev / no-dispatcher runs — saves a few
+	// bytes of randomness and keeps the args clean.
+	var notifierToken string
+	if p.opts.NotifierWebhookURL != "" {
+		notifierToken, err = generateNotifierToken()
+		if err != nil {
+			return provisioner.HostRef{}, fmt.Errorf("generate notifier-token: %w", err)
+		}
+	}
 
 	args := []string{
 		"--listen", "tcp://127.0.0.1:0",
@@ -132,6 +149,13 @@ func (p *Provisioner) EnsureHost(_ context.Context, _ string) (provisioner.HostR
 			return provisioner.HostRef{}, fmt.Errorf("create data dir %s: %w", p.opts.DataDir, err)
 		}
 		args = append(args, "--data-dir", p.opts.DataDir)
+	}
+	if p.opts.NotifierWebhookURL != "" {
+		args = append(args,
+			"--notifier-provider", "webhook",
+			"--notifier-webhook-url", p.opts.NotifierWebhookURL,
+			"--notifier-webhook-token", notifierToken,
+		)
 	}
 
 	cmd := exec.Command(bin, args...)
@@ -164,13 +188,14 @@ func (p *Provisioner) EnsureHost(_ context.Context, _ string) (provisioner.HostR
 	}
 	transport := &transportpkg.BearerInjector{Token: authToken, Host: parsedURL.Host}
 	c := &child{
-		cmd:       cmd,
-		hostID:    hostID,
-		hostname:  hostname,
-		url:       httpURL,
-		authToken: authToken,
-		transport: transport,
-		exited:    make(chan struct{}),
+		cmd:           cmd,
+		hostID:        hostID,
+		hostname:      hostname,
+		url:           httpURL,
+		authToken:     authToken,
+		notifierToken: notifierToken,
+		transport:     transport,
+		exited:        make(chan struct{}),
 	}
 	// Reap the child in the background so c.exited closes when the
 	// process dies (whether from a graceful Stop or an unexpected
@@ -238,6 +263,17 @@ func generateAuthToken() (string, error) {
 		return "", fmt.Errorf("read random: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// generateNotifierToken returns a "clnk_"-prefixed bearer token; the
+// prefix matches the flyio provisioner's convention so DB rows and
+// log lines are uniform across providers.
+func generateNotifierToken() (string, error) {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("read random: %w", err)
+	}
+	return "clnk_" + base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 func waitForListenLine(r io.Reader, timeout time.Duration) (string, error) {
