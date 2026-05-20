@@ -35,3 +35,12 @@ CREATE TABLE hosts (
     updated_at  DATETIME NOT NULL,
     UNIQUE (user_id, provider)
 );
+
+-- The dispatcher uses notifier_token as a bearer-lookup key, so two
+-- non-empty rows sharing one would route a host's notifications to
+-- whichever user the lookup happens to return. UNIQUE rules that out;
+-- the WHERE clause exempts the empty-string default so legacy rows
+-- coexist.
+CREATE UNIQUE INDEX hosts_notifier_token_idx
+ON hosts(notifier_token)
+WHERE notifier_token != '';

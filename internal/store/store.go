@@ -385,7 +385,7 @@ func (s *Store) migrate() error {
 		// cold-create mints one.
 		_, err := s.db.Exec(`
 			ALTER TABLE hosts ADD COLUMN notifier_token TEXT NOT NULL DEFAULT '';
-			CREATE INDEX hosts_notifier_token_idx ON hosts(notifier_token) WHERE notifier_token != '';
+			CREATE UNIQUE INDEX hosts_notifier_token_idx ON hosts(notifier_token) WHERE notifier_token != '';
 			PRAGMA user_version = 23;
 		`)
 		if err != nil {
@@ -412,6 +412,12 @@ func (s *Store) migrate() error {
 				PRIMARY KEY (user_id, push_token)
 			);
 			CREATE INDEX devices_user_id_idx ON devices(user_id);
+			-- DeleteDeviceByPushToken filters on push_token alone (the
+			-- DeviceNotRegistered purge path), where the PK on
+			-- (user_id, push_token) can't be used. Index keeps that
+			-- delete from degrading into a table scan once the row
+			-- count grows.
+			CREATE INDEX devices_push_token_idx ON devices(push_token);
 			PRAGMA user_version = 24;
 		`)
 		if err != nil {
