@@ -377,6 +377,48 @@ func (s *Store) migrate() error {
 		}
 		version = 22
 	}
+	if version < 23 {
+		// notifier_token: per-host bearer the dispatcher uses to map an
+		// inbound notification webhook back to its (host_id, user_id).
+		// NULL-able via empty-string default — legacy rows take the
+		// laptop default (no notifications) until the next provisioner
+		// cold-create mints one.
+		_, err := s.db.Exec(`
+			ALTER TABLE hosts ADD COLUMN notifier_token TEXT NOT NULL DEFAULT '';
+			CREATE INDEX hosts_notifier_token_idx ON hosts(notifier_token) WHERE notifier_token != '';
+			PRAGMA user_version = 23;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v23: %w", err)
+		}
+		version = 23
+	}
+	if version < 24 {
+		// devices: per-user push delivery addresses. The mobile client
+		// registers an Expo push token here on login and deregisters on
+		// logout; the dispatcher fans notifications out to every row
+		// matching the resolved user. Platform column is gated to ios
+		// or android — the Expo Push API treats both the same on the
+		// wire (it's an Expo Push Token), but the column lets us emit
+		// platform-targeted variants later (Live Activities on iOS,
+		// Channels on Android) without a schema change.
+		_, err := s.db.Exec(`
+			CREATE TABLE devices (
+				user_id      TEXT NOT NULL,
+				push_token   TEXT NOT NULL,
+				platform     TEXT NOT NULL CHECK (platform IN ('ios', 'android')),
+				created_at   DATETIME NOT NULL,
+				last_seen_at DATETIME NOT NULL,
+				PRIMARY KEY (user_id, push_token)
+			);
+			CREATE INDEX devices_user_id_idx ON devices(user_id);
+			PRAGMA user_version = 24;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v24: %w", err)
+		}
+		version = 24
+	}
 	_ = version // suppress unused warning after last migration
 
 	return nil

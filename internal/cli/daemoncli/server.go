@@ -15,8 +15,10 @@ import (
 
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/socketutil"
+	"github.com/acksell/clank/internal/store"
 	"github.com/acksell/clank/pkg/auth"
 	"github.com/acksell/clank/pkg/gateway"
+	"github.com/acksell/clank/pkg/notify"
 	"github.com/acksell/clank/pkg/provisioner"
 	clanksync "github.com/acksell/clank/pkg/sync"
 )
@@ -100,7 +102,7 @@ func parseTCPListen(s string) (string, error) {
 //     CLANK_SYNC_S3_* env and mounted under /v1/.
 //
 // Both modes write the PID file at daemonclient.PIDPath().
-func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
+func runGatewayServer(prov provisioner.Provisioner, st *store.Store, opts ServerOptions) error {
 	pidPath, err := daemonclient.PIDPath()
 	if err != nil {
 		return fmt.Errorf("pid path: %w", err)
@@ -151,17 +153,29 @@ func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
 	}
 	logAuthMode(authDesc)
 
+	// Build the notification dispatcher. It piggybacks on the same
+	// store the provisioner uses (hosts table for bearer-→-user lookup,
+	// devices table for fan-out targets) and ships Expo Push by
+	// default. Self-hosters who want a different push transport plug
+	// their own notify.Pusher in here.
+	dispatcher := notify.NewDispatcher(st, notifyDeviceAdapter{s: st}, notify.New(log.Default()), log.Default())
+
 	// Wire the auth-config discovery route PRE-auth (clank has no
-	// token when it fetches it). Falls back to a single auth-wrapped
-	// handler when no AuthConfig is configured.
-	var handler http.Handler = auth.Middleware(gw.Handler(), authenticator)
+	// token when it fetches it). The notification routes split: the
+	// host-→-clankd webhook is authenticated by its own host bearer
+	// token (handled inside dispatcher.Handle), so it sits OUTSIDE the
+	// user-auth middleware; the user-facing /devices routes sit behind
+	// the normal Authenticator.
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /webhooks/notifications", dispatcher.Handle)
+	mux.Handle("POST /devices", auth.Middleware(http.HandlerFunc(dispatcher.HandleRegister), authenticator))
+	mux.Handle("DELETE /devices/{token}", auth.Middleware(http.HandlerFunc(dispatcher.HandleDeregister), authenticator))
 	if ach := gw.AuthConfigHandler(); ach != nil {
-		mux := http.NewServeMux()
 		mux.Handle("GET /auth-config", ach)
-		mux.Handle("/", handler)
-		handler = mux
 		log.Printf("gateway: /auth-config discovery enabled")
 	}
+	mux.Handle("/", auth.Middleware(gw.Handler(), authenticator))
+	var handler http.Handler = mux
 
 	listener, cleanup, err := openHubListener(opts)
 	if err != nil {

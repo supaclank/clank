@@ -36,19 +36,27 @@ const (
 // AuthToken is the clank-host bearer token, baked into the
 // sandbox/sprite at create time. Stable across stop/resume — re-read
 // on every EnsureHost so the local-side transport stays in sync.
+//
+// NotifierToken is the per-host bearer token clank-host sends OUTBOUND
+// to clankd's /webhooks/notifications endpoint. The dispatcher reverse-
+// looks-up by this column to resolve (host_id, user_id). Empty on
+// legacy rows; populated lazily on the next cold-create. Counterpart
+// to AuthToken — auth_token guards INCOMING traffic into the host,
+// notifier_token authenticates OUTGOING traffic from the host.
 type Host struct {
-	ID         string
-	UserID     string
-	Provider   string
-	ExternalID string
-	Hostname   string
-	Status     HostStatus
-	LastURL    string
-	LastToken  string
-	AuthToken  string
-	AutoWake   bool
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	ID            string
+	UserID        string
+	Provider      string
+	ExternalID    string
+	Hostname      string
+	Status        HostStatus
+	LastURL       string
+	LastToken     string
+	AuthToken     string
+	NotifierToken string
+	AutoWake      bool
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // ErrHostNotFound is returned by GetHostByUser/GetHostByID when no host
@@ -58,6 +66,11 @@ var ErrHostNotFound = errors.New("host not found")
 // HostStore is the persistence contract a provisioner depends on. The
 // laptop daemon backs this with SQLite (clank/internal/store); external
 // integrators back it with their own database (e.g. Postgres).
+//
+// GetHostByNotifierToken intentionally lives on the *consumer* side
+// (pkg/notify.HostLookup), not here — provisioners don't need to know
+// notifier tokens exist, and putting it here would break every existing
+// HostStore implementer for no reason.
 type HostStore interface {
 	GetHostByUser(ctx context.Context, userID, provider string) (Host, error)
 	GetHostByID(ctx context.Context, id string) (Host, error)

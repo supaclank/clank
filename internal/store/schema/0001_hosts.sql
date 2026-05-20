@@ -22,6 +22,14 @@ CREATE TABLE hosts (
     -- Sprites use it as the only auth layer). Stable across
     -- stop/resume — baked into the sandbox/sprite at create time.
     auth_token  TEXT NOT NULL DEFAULT '',
+    -- notifier_token: the per-host bearer credential clank-host sends
+    -- *outbound* on notifier webhook calls back to clankd. The
+    -- dispatcher looks up by this column to resolve "which user does
+    -- this notification belong to". Empty = host can't deliver
+    -- notifications (e.g. legacy rows; populated lazily on next
+    -- provisioner-mediated start). Counterpart to auth_token (which
+    -- guards INCOMING traffic) — pure mirror, no shared semantics.
+    notifier_token TEXT NOT NULL DEFAULT '',
     auto_wake   INTEGER NOT NULL DEFAULT 0,
     created_at  DATETIME NOT NULL,
     updated_at  DATETIME NOT NULL,
