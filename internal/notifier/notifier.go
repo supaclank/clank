@@ -138,6 +138,11 @@ func (l *Loop) OnEvent(evt agent.Event) {
 // Drains events from the input queue and hands notification-worthy
 // ones to Provider.Send. Logs (and continues) on Send error — retries
 // and DLQs are the Provider's responsibility.
+//
+// On Stop the worker drains whatever's already queued before exiting
+// so the last permission/idle/error notifications aren't lost during
+// graceful shutdown. On ctx cancellation we exit immediately — that
+// path is for hard teardown (the parent gave up waiting).
 func (l *Loop) Run(ctx context.Context) {
 	defer close(l.done)
 	for {
@@ -145,9 +150,24 @@ func (l *Loop) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-l.stop:
+			l.drainAndExit(ctx)
 			return
 		case evt := <-l.events:
 			l.handle(ctx, evt)
+		}
+	}
+}
+
+// drainAndExit empties l.events under the ambient ctx. handle()
+// applies its own SendTimeout, so an unresponsive provider doesn't
+// extend shutdown indefinitely — it bounds each remaining event.
+func (l *Loop) drainAndExit(ctx context.Context) {
+	for {
+		select {
+		case evt := <-l.events:
+			l.handle(ctx, evt)
+		default:
+			return
 		}
 	}
 }

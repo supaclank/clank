@@ -149,6 +149,9 @@ func buildNotifierProvider(provider, webhookURL, webhookToken string, lg *log.Lo
 		if webhookURL == "" {
 			return nil, fmt.Errorf("--notifier-provider=webhook requires --notifier-webhook-url")
 		}
+		if webhookToken == "" {
+			return nil, fmt.Errorf("--notifier-provider=webhook requires --notifier-webhook-token (or $CLANK_NOTIFIER_TOKEN)")
+		}
 		return webhook.New(webhookURL, webhookToken, lg), nil
 	default:
 		return nil, fmt.Errorf("unknown --notifier-provider %q (want %s|%s|%s)", provider, notifierProviderWebhook, notifierProviderNoop, notifierProviderNone)

@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestRequireLoopbackTCP pins the startup safety guard: a non-loopback
 // TCP bind without a token must fail fast. CR (#3181612371) flagged
@@ -34,6 +37,50 @@ func TestRequireLoopbackTCP(t *testing.T) {
 			}
 			if !c.wantErr && err != nil {
 				t.Errorf("requireLoopbackTCP(%q) returned %v; want nil", c.listen, err)
+			}
+		})
+	}
+}
+
+// TestBuildNotifierProvider pins the misconfig fast-fails so an
+// operator who set --notifier-provider=webhook without the URL or
+// token (or with both) gets a startup error instead of a silently
+// broken delivery path. Empty token used to slip through, producing
+// unauth'd POSTs that every dispatcher rejects with 401.
+func TestBuildNotifierProvider(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		provider    string
+		url         string
+		token       string
+		wantErr     bool
+		wantErrSubs string
+	}{
+		{name: "none-skips", provider: "none"},
+		{name: "noop-builds", provider: "noop"},
+		{name: "webhook-happy", provider: "webhook", url: "https://x", token: "clnk_a"},
+		{name: "webhook-missing-url", provider: "webhook", token: "clnk_a", wantErr: true, wantErrSubs: "--notifier-webhook-url"},
+		{name: "webhook-missing-token", provider: "webhook", url: "https://x", wantErr: true, wantErrSubs: "--notifier-webhook-token"},
+		{name: "webhook-missing-both-reports-url-first", provider: "webhook", wantErr: true, wantErrSubs: "--notifier-webhook-url"},
+		{name: "unknown-provider", provider: "carrier-pigeon", wantErr: true, wantErrSubs: "unknown --notifier-provider"},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := buildNotifierProvider(c.provider, c.url, c.token, nil)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if c.wantErrSubs != "" && !strings.Contains(err.Error(), c.wantErrSubs) {
+					t.Errorf("error = %q, want substring %q", err.Error(), c.wantErrSubs)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
 			}
 		})
 	}

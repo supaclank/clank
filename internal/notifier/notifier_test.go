@@ -280,6 +280,94 @@ func TestLoop_DeliversNotificationWorthyEvents(t *testing.T) {
 	}
 }
 
+// blockingProvider pauses Send until release is called, then records
+// the notification. Used to deterministically queue events in the
+// Loop's input channel before signalling Stop, which is what
+// exercises the drain path.
+type blockingProvider struct {
+	released chan struct{}
+	mu       sync.Mutex
+	sent     []Notification
+	closes   int
+}
+
+func newBlockingProvider() *blockingProvider {
+	return &blockingProvider{released: make(chan struct{})}
+}
+
+func (p *blockingProvider) release() { close(p.released) }
+
+func (p *blockingProvider) Send(ctx context.Context, n Notification) error {
+	select {
+	case <-p.released:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	p.mu.Lock()
+	p.sent = append(p.sent, n)
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *blockingProvider) Close(_ context.Context) error {
+	p.mu.Lock()
+	p.closes++
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *blockingProvider) sentCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.sent)
+}
+
+// TestLoop_StopDrainsQueuedEvents pins the regression: before the
+// drain fix, Run returned immediately on l.stop and dropped any
+// events still sitting in l.events. With the drain in place the
+// shutdown path delivers every notification-worthy event that was
+// already classified-and-enqueued.
+func TestLoop_StopDrainsQueuedEvents(t *testing.T) {
+	t.Parallel()
+	rec := newBlockingProvider()
+	loop := New(Config{Provider: rec, Buffer: 4})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go loop.Run(ctx)
+
+	// Three notification-worthy events buffered while the provider
+	// is still blocked. None are delivered yet.
+	for i := 0; i < 3; i++ {
+		loop.OnEvent(agent.Event{
+			Type:      agent.EventStatusChange,
+			SessionID: "s1",
+			Data:      agent.StatusChangeData{OldStatus: agent.StatusBusy, NewStatus: agent.StatusIdle},
+		})
+	}
+	// Give the worker time to consume the first event into handle()
+	// — that one's blocked on Send. The remaining 2 sit in l.events.
+	time.Sleep(20 * time.Millisecond)
+
+	// Release the provider AFTER Stop has been signalled so the
+	// blocked Send completes, then the drain runs through the
+	// remaining queued events. Stop blocks until done is closed.
+	done := make(chan error, 1)
+	go func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer stopCancel()
+		done <- loop.Stop(stopCtx)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	rec.release()
+
+	if err := <-done; err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := rec.sentCount(); got != 3 {
+		t.Errorf("Provider.Send call count = %d, want 3 (drain should deliver every queued event)", got)
+	}
+}
+
 func TestLoop_StopCallsProviderClose(t *testing.T) {
 	t.Parallel()
 	rec := &recordingProvider{}
