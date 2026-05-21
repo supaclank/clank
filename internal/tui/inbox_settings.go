@@ -88,9 +88,11 @@ func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 			persistDefaultBackend(next)
 			return m, nil
 		case settingsEntryProviders:
-			// Settings-page entry: no backend filter, show the full
-			// catalog. The session-flow entry passes a backend.
-			m.providerAuth = newProviderAuthModel(m.client, m.hostname, "")
+			// Settings-page entry: empty backend so the modal renders the
+			// full catalog grouped by backend (section headers in the
+			// list view). The session-compose entry passes a backend and
+			// gets a single-backend, header-less list.
+			m.providerAuth = newProviderAuthModel(m.client.Host(m.hostname), "", "")
 			m.showProviderAuth = true
 			return m, m.providerAuth.Init()
 		}

@@ -91,10 +91,23 @@ func TestAuthManager_WriteAndReadAuthJSON(t *testing.T) {
 		t.Errorf("expected refresh=tok, got %+v", got["github-copilot"])
 	}
 
-	// ListProviders should now report connected.
+	// ListProviders should now report github-copilot as connected.
+	// Look it up by ID rather than indexing — catalog ordering is a
+	// presentation choice (Claude Code is listed before OpenCode) and
+	// shouldn't be assumed by tests.
 	infos, _ := a.ListProviders(context.Background(), "")
-	if !infos[0].Connected {
-		t.Errorf("expected connected after write")
+	var copilot *agent.ProviderAuthInfo
+	for i := range infos {
+		if infos[i].ProviderID == "github-copilot" {
+			copilot = &infos[i]
+			break
+		}
+	}
+	if copilot == nil {
+		t.Fatalf("github-copilot not found in catalog")
+	}
+	if !copilot.Connected {
+		t.Errorf("expected github-copilot connected after write")
 	}
 
 	// File mode should be 0o600 (perm-restricted credentials).

@@ -61,6 +61,14 @@ const ProviderAnthropicAPI = "anthropic-api"
 // Default Credentials (a multi-line JSON service-account file) that
 // doesn't fit the paste-a-string shape — both are deferrable.
 var providerCatalog = []agent.ProviderAuthInfo{
+	// Claude-Code-consumed providers — credential lives in clank's
+	// anthropic.json and is injected into the next claude spawn as
+	// CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY. No server restart.
+	// Listed first so the much shorter Claude Code section doesn't get
+	// pushed off-screen by the 11-entry OpenCode list below.
+	{ProviderID: ProviderAnthropicClaudeCode, DisplayName: "Anthropic (Claude subscription)", AuthType: agent.AuthTypeOAuthCode, Backend: agent.BackendClaudeCode},
+	{ProviderID: ProviderAnthropicAPI, DisplayName: "Anthropic (Console API key)", AuthType: agent.AuthTypeAPI, Backend: agent.BackendClaudeCode},
+
 	// OpenCode-consumed providers — credential lives in opencode's
 	// own auth.json and an OpenCode server restart picks it up.
 	{ProviderID: ProviderGitHubCopilot, DisplayName: "GitHub Copilot", AuthType: agent.AuthTypeDevice, Backend: agent.BackendOpenCode},
@@ -90,12 +98,6 @@ var providerCatalog = []agent.ProviderAuthInfo{
 			{Key: "gatewayId", Message: "AI Gateway ID", Placeholder: "e.g. my-gateway"},
 		},
 	},
-
-	// Claude-Code-consumed providers — credential lives in clank's
-	// anthropic.json and is injected into the next claude spawn as
-	// CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY. No server restart.
-	{ProviderID: ProviderAnthropicClaudeCode, DisplayName: "Anthropic (Claude subscription)", AuthType: agent.AuthTypeOAuthCode, Backend: agent.BackendClaudeCode},
-	{ProviderID: ProviderAnthropicAPI, DisplayName: "Anthropic (Console API key)", AuthType: agent.AuthTypeAPI, Backend: agent.BackendClaudeCode},
 }
 
 // isAnthropicProvider reports whether providerID's credential lives
