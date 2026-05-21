@@ -138,7 +138,7 @@ func TestLocalE2E_TUICreatesSession_AndFetches(t *testing.T) {
 	// opencode backend exists, since Anthropic providers need it too),
 	// so a successful call with a populated catalog is the routing-
 	// works signal. A 404 here would mean the prefix wasn't stripped.
-	providers, authErr := cli.Host("local").ListAuthProviders(ctx)
+	providers, authErr := cli.Host("local").ListAuthProviders(ctx, "")
 	if authErr != nil {
 		if strings.Contains(authErr.Error(), "404 page not found") {
 			t.Errorf("gateway did not strip /hosts/{name} prefix; got 404: %v", authErr)

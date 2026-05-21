@@ -10,9 +10,17 @@ import (
 
 // ListAuthProviders returns the providers this host can authenticate
 // plus their current connection state. Wraps GET /auth/providers.
-func (c *HTTP) ListAuthProviders(ctx context.Context) ([]agent.ProviderAuthInfo, error) {
+// backend, if non-empty, filters the result to providers consumed by
+// that agent CLI (opencode | claude-code) — clients use this so the
+// compose flow only surfaces providers relevant to the chosen
+// backend.
+func (c *HTTP) ListAuthProviders(ctx context.Context, backend agent.BackendType) ([]agent.ProviderAuthInfo, error) {
 	var out []agent.ProviderAuthInfo
-	err := c.do(ctx, http.MethodGet, "/auth/providers", nil, &out)
+	path := "/auth/providers"
+	if backend != "" {
+		path += "?backend=" + url.QueryEscape(string(backend))
+	}
+	err := c.do(ctx, http.MethodGet, path, nil, &out)
 	return out, err
 }
 

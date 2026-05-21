@@ -680,6 +680,7 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// land the user on the settings page with the provider-auth
 		// modal open. The modal lives on InboxModel and overlays the
 		// inbox-level view; the session view doesn't render it.
+		typed := msg.(openProviderAuthFromSessionMsg)
 		if m.activeConnID != "" && m.sessionView != nil {
 			draft := strings.TrimSpace(m.sessionView.DraftText())
 			go m.client.Session(m.activeConnID).SetDraft(context.Background(), draft)
@@ -690,7 +691,7 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionView = nil
 		m.activeConnID = ""
 		m.openSettings()
-		m.providerAuth = newProviderAuthModel(m.client, m.hostname)
+		m.providerAuth = newProviderAuthModel(m.client, m.hostname, typed.backend)
 		m.showProviderAuth = true
 		return m, m.providerAuth.Init()
 
