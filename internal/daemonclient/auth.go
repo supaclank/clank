@@ -13,10 +13,15 @@ import (
 )
 
 // ListAuthProviders returns the auth-capable providers on this host
-// plus their current connection state.
-func (h *HostClient) ListAuthProviders(ctx context.Context) ([]agent.ProviderAuthInfo, error) {
+// plus their current connection state. backend, if non-empty, filters
+// to providers consumed by that agent CLI (opencode | claude-code).
+func (h *HostClient) ListAuthProviders(ctx context.Context, backend agent.BackendType) ([]agent.ProviderAuthInfo, error) {
 	var out []agent.ProviderAuthInfo
-	if err := h.c.get(ctx, h.base()+"/auth/providers", &out); err != nil {
+	path := h.base() + "/auth/providers"
+	if backend != "" {
+		path += "?backend=" + url.QueryEscape(string(backend))
+	}
+	if err := h.c.get(ctx, path, &out); err != nil {
 		return nil, err
 	}
 	return out, nil

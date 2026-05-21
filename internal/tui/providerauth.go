@@ -97,6 +97,14 @@ type providerAuthModel struct {
 	hub      *daemonclient.Client
 	hostname string
 
+	// backend, when non-empty, scopes the provider list to those
+	// consumed by that agent CLI (opencode | claude-code). The model
+	// picker passes its current backend through so a claude-code
+	// session's "+ Connect provider…" shows only Anthropic entries
+	// and an opencode session shows only the opencode-managed ones.
+	// Empty = no filter (settings-page entry into the modal).
+	backend agent.BackendType
+
 	phase providerAuthPhase
 
 	providers []agent.ProviderAuthInfo
@@ -132,7 +140,7 @@ type providerAuthModel struct {
 	spinner spinner.Model
 }
 
-func newProviderAuthModel(c *daemonclient.Client, hostname string) providerAuthModel {
+func newProviderAuthModel(c *daemonclient.Client, hostname string, backend agent.BackendType) providerAuthModel {
 	if hostname == "" {
 		hostname = host.HostLocal
 	}
@@ -156,6 +164,7 @@ func newProviderAuthModel(c *daemonclient.Client, hostname string) providerAuthM
 	return providerAuthModel{
 		hub:      c,
 		hostname: hostname,
+		backend:  backend,
 		phase:    providerPhaseLoading,
 		spinner:  sp,
 		apiKey:   ti,
@@ -384,10 +393,11 @@ func (m providerAuthModel) handleKey(msg tea.KeyPressMsg) (providerAuthModel, te
 func (m providerAuthModel) loadProvidersCmd() tea.Cmd {
 	hub := m.hub
 	hostname := m.hostname
+	backend := m.backend
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		providers, err := hub.Host(hostname).ListAuthProviders(ctx)
+		providers, err := hub.Host(hostname).ListAuthProviders(ctx, backend)
 		return providerListLoadedMsg{providers: providers, err: err}
 	}
 }

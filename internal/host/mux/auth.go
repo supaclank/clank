@@ -52,7 +52,9 @@ func (m *Mux) handleListAuthProviders(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	infos, err := a.ListProviders(r.Context())
+	// Optional ?backend=opencode|claude-code filter. Empty = both.
+	backend := agent.BackendType(r.URL.Query().Get("backend"))
+	infos, err := a.ListProviders(r.Context(), backend)
 	if err != nil {
 		writeError(w, err)
 		return
