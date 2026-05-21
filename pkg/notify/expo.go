@@ -81,9 +81,10 @@ func (t Ticket) IsDeviceNotRegistered() bool {
 
 // Client is the Expo Push API client. Construct with New.
 type Client struct {
-	endpoint string
-	http     *http.Client
-	log      *log.Logger
+	endpoint    string
+	accessToken string
+	http        *http.Client
+	log         *log.Logger
 }
 
 // New constructs a Client with Expo's hosted endpoint. A nil logger
@@ -103,6 +104,21 @@ func NewWithEndpoint(endpoint string, lg *log.Logger) *Client {
 		http:     &http.Client{Timeout: httpTimeout},
 		log:      lg,
 	}
+}
+
+// WithAccessToken sets the Expo Access Token sent as
+// "Authorization: Bearer <token>" on every Push call. Production
+// deployments mint one at expo.dev → access tokens and supply it via
+// env (e.g. EXPO_ACCESS_TOKEN); without it the Push API still accepts
+// requests but any caller who steals a push token can abuse it because
+// the token is the only routing key. Empty disables the header — fine
+// for dev.
+//
+// Chainable so the wiring stays a one-liner:
+//   notify.New(lg).WithAccessToken(os.Getenv("EXPO_ACCESS_TOKEN"))
+func (c *Client) WithAccessToken(token string) *Client {
+	c.accessToken = token
+	return c
 }
 
 // Push delivers msgs to Expo, chunking at maxBatchSize. Returns one
@@ -156,6 +172,9 @@ func (c *Client) pushBatch(ctx context.Context, batch []Message) ([]Ticket, erro
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	if c.accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.accessToken)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("post expo: %w", err)
