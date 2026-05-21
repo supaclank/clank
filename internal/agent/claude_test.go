@@ -1740,3 +1740,69 @@ func TestClaudeCodeBackendToolCallSpinnerCompletion(t *testing.T) {
 		}
 	}
 }
+
+// ExtraEnv plumbing: anything the host layer hands the backend struct
+// must end up on the claudecode subprocess's environment so the CLI
+// reads CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY there instead of
+// falling back to its own keychain/OAuth login.
+func TestClaudeCodeBackend_ExtraEnv_PropagatesToSpawnOptions(t *testing.T) {
+	t.Parallel()
+	transport := newMockTransport(nil)
+	b := agent.NewClaudeCodeBackend(t.TempDir())
+	b.ExtraEnv = map[string]string{
+		"CLAUDE_CODE_OAUTH_TOKEN": "sub-token-xyz",
+	}
+
+	var captured []claudecode.Option
+	b.ClientFactory = func(opts ...claudecode.Option) claudecode.Client {
+		captured = opts
+		return claudecode.NewClientWithTransport(transport, opts...)
+	}
+
+	if err := b.Open(context.Background()); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer b.Stop()
+
+	// Apply the captured options to a fresh Options struct and inspect
+	// ExtraEnv — that's what the SDK's NewClient does internally.
+	var resolved claudecode.Options
+	for _, opt := range captured {
+		opt(&resolved)
+	}
+	if got := resolved.ExtraEnv["CLAUDE_CODE_OAUTH_TOKEN"]; got != "sub-token-xyz" {
+		t.Errorf("ExtraEnv[CLAUDE_CODE_OAUTH_TOKEN]=%q, want sub-token-xyz", got)
+	}
+	if _, ok := resolved.ExtraEnv["ANTHROPIC_API_KEY"]; ok {
+		t.Errorf("ANTHROPIC_API_KEY should not be present when only subscription token is set")
+	}
+}
+
+// Absent ExtraEnv must mean no env-var injection — claude then resolves
+// auth via its own keychain/OAuth login. Pins the "no credential = bare
+// CLI behavior" contract.
+func TestClaudeCodeBackend_NoExtraEnv_NoEnvOption(t *testing.T) {
+	t.Parallel()
+	transport := newMockTransport(nil)
+	b := agent.NewClaudeCodeBackend(t.TempDir())
+	// b.ExtraEnv left nil.
+
+	var captured []claudecode.Option
+	b.ClientFactory = func(opts ...claudecode.Option) claudecode.Client {
+		captured = opts
+		return claudecode.NewClientWithTransport(transport, opts...)
+	}
+
+	if err := b.Open(context.Background()); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer b.Stop()
+
+	var resolved claudecode.Options
+	for _, opt := range captured {
+		opt(&resolved)
+	}
+	if len(resolved.ExtraEnv) != 0 {
+		t.Errorf("ExtraEnv=%v, want empty/nil", resolved.ExtraEnv)
+	}
+}

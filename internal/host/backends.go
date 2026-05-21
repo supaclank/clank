@@ -166,11 +166,28 @@ func (m *OpenCodeBackendManager) DiscoverSessions(ctx context.Context, seedDir s
 }
 
 // ClaudeBackendManager implements agent.BackendManager for Claude Code sessions.
-type ClaudeBackendManager struct{}
+type ClaudeBackendManager struct {
+	// envResolver, when non-nil, is called once per CreateBackend to
+	// build the env-var map injected into the spawned claude subprocess.
+	// Service.New sets this to a closure that reads from AuthManager
+	// (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY). Resolved per-
+	// session so reconnecting a provider mid-day takes effect on the
+	// next new session without restarting the daemon.
+	envResolver func() map[string]string
+}
 
-// NewClaudeBackendManager creates a new Claude backend manager.
+// NewClaudeBackendManager creates a new Claude backend manager. The
+// env resolver is wired separately via SetEnvResolver after the
+// AuthManager exists (chicken-and-egg: Service.New constructs the
+// backend managers before the AuthManager).
 func NewClaudeBackendManager() *ClaudeBackendManager {
 	return &ClaudeBackendManager{}
+}
+
+// SetEnvResolver installs the closure used to populate ClaudeCodeBackend.ExtraEnv
+// at session creation time. Pass nil to disable injection.
+func (m *ClaudeBackendManager) SetEnvResolver(fn func() map[string]string) {
+	m.envResolver = fn
 }
 
 // CreateBackend creates a Claude Code SessionBackend. When inv.ResumeExternalID
@@ -179,7 +196,11 @@ func NewClaudeBackendManager() *ClaudeBackendManager {
 // without needing Start to fire (activateBackend in the hub only calls Watch,
 // which is a no-op for Claude — there is no long-lived process to attach to).
 func (m *ClaudeBackendManager) CreateBackend(ctx context.Context, inv agent.BackendInvocation) (agent.SessionBackend, error) {
-	return agent.NewClaudeCodeBackendForSession(inv.WorkDir, inv.ResumeExternalID), nil
+	b := agent.NewClaudeCodeBackendForSession(inv.WorkDir, inv.ResumeExternalID)
+	if m.envResolver != nil {
+		b.ExtraEnv = m.envResolver()
+	}
+	return b, nil
 }
 
 // Init is a no-op for Claude — there are no long-lived servers to manage.

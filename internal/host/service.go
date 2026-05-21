@@ -145,20 +145,31 @@ func New(opts Options) *Service {
 		s.notifierLoop = opts.NotifierLoop
 	}
 
-	// Auth manager is opencode-only: it tells the OpenCode backend to
-	// restart its servers when auth.json changes. Skip silently when
-	// the backend isn't registered.
+	// AuthManager handles credentials for every backend that has
+	// connectable providers (OpenCode + Anthropic today). The restart
+	// callback fires only on OpenCode credential writes — OpenCode
+	// needs its servers re-cycled to pick up the new auth.json, but
+	// Anthropic credentials just sit in env vars consumed by the next
+	// claude spawn, no in-place reload needed.
+	var restart func(ctx context.Context) error
 	if oc, ok := s.backendManagers[agent.BackendOpenCode].(*OpenCodeBackendManager); ok {
-		am, err := NewAuthManager(func(ctx context.Context) error {
+		restart = func(ctx context.Context) error {
 			return oc.ServerManager().RestartAllServers(ctx)
-		})
-		if err != nil {
-			s.log.Printf("auth manager unavailable: %v", err)
-		} else {
-			s.auth = am
 		}
+	}
+	am, err := NewAuthManager(restart)
+	if err != nil {
+		s.log.Printf("auth manager unavailable: %v", err)
 	} else {
-		s.log.Printf("auth manager unavailable: opencode backend not registered")
+		s.auth = am
+		// Wire claude-code to read its env vars from this AuthManager.
+		// Resolved per-session so a mid-day credential change applies
+		// to the next new session without a daemon restart.
+		if cbm, ok := s.backendManagers[agent.BackendClaudeCode].(*ClaudeBackendManager); ok {
+			cbm.SetEnvResolver(func() map[string]string {
+				return am.AnthropicEnv()
+			})
+		}
 	}
 
 	return s

@@ -69,14 +69,21 @@ const (
 	providerPhaseList
 	providerPhaseConfirm
 	// providerPhaseAPIKey collects a pasted API key for "api"
-	// providers. Skipped for "device" providers.
+	// providers. Skipped for "device" and "oauth-code" providers.
 	providerPhaseAPIKey
+	// providerPhaseOAuthCode is the "paste authorization code" step
+	// for oauth-code providers (Anthropic Claude subscription). The
+	// view shows the authorize URL printed by the host's PTY-relayed
+	// `claude setup-token` + a textinput for the code the user
+	// copied from the IdP's hosted callback page. On submit, we
+	// transition straight to awaiting while the host writes the
+	// code into the CLI's stdin and captures the token.
+	providerPhaseOAuthCode
 	// providerPhaseAwaiting covers both "waiting for the user to
 	// authorize in their browser" (device) and "waiting for the
-	// OpenCode server to come back up" (both flow types). For device
-	// flows the view shows URL + user_code throughout; for api-key
-	// flows it shows just the spinner. Polling starts the moment we
-	// transition into this phase — no enter press required.
+	// OpenCode server to come back up" (api-key) and "exchanging the
+	// auth code for a token" (oauth-code). Polling starts the moment
+	// we transition into this phase — no enter press required.
 	providerPhaseAwaiting
 	providerPhaseSuccess
 	providerPhaseError
@@ -185,10 +192,15 @@ func (m providerAuthModel) Update(msg tea.Msg) (providerAuthModel, tea.Cmd) {
 		}
 		m.flow = msg.start
 		m.flowState = agent.DeviceFlowPending
+		// oauth-code flows pause here for the user to paste the code
+		// shown on the IdP's redirect page; device + api-key flows go
+		// straight to awaiting + polling.
+		if m.activeProvider.AuthType == agent.AuthTypeOAuthCode {
+			m.phase = providerPhaseOAuthCode
+			m.configureInputForOAuthCode()
+			return m, m.apiKey.Focus()
+		}
 		m.phase = providerPhaseAwaiting
-		// Kick off polling immediately so the UI auto-advances when the
-		// flow's background goroutine finishes (whether that's the user
-		// authorizing in the browser, or the OpenCode restart completing).
 		return m, m.statusCmd()
 
 	case providerPollTickMsg:
@@ -231,9 +243,8 @@ func (m providerAuthModel) Update(msg tea.Msg) (providerAuthModel, tea.Cmd) {
 		return m.handleKey(msg)
 	}
 
-	// Anything else: forward to the textinput (only relevant during
-	// providerPhaseAPIKey but cheap to no-op elsewhere).
-	if m.phase == providerPhaseAPIKey {
+	// Anything else: forward to the textinput when a phase is using it.
+	if m.phase == providerPhaseAPIKey || m.phase == providerPhaseOAuthCode {
 		var cmd tea.Cmd
 		m.apiKey, cmd = m.apiKey.Update(msg)
 		return m, cmd
@@ -277,12 +288,16 @@ func (m providerAuthModel) handleKey(msg tea.KeyPressMsg) (providerAuthModel, te
 		}
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("y", "Y", "enter"))):
-			// Branch by auth type. Device providers go straight to
-			// /device/start; API-key providers collect input first.
+			// Branch by auth type. Device + oauth-code providers go
+			// straight to a /start call (we need the IdP-issued URL
+			// before showing anything to the user); API-key providers
+			// collect input first.
 			switch m.activeProvider.AuthType {
-			case "device":
+			case agent.AuthTypeDevice:
 				return m, m.startFlowCmd(m.activeProvider.ProviderID)
-			case "api":
+			case agent.AuthTypeOAuthCode:
+				return m, m.startOAuthCodeFlowCmd(m.activeProvider.ProviderID)
+			case agent.AuthTypeAPI:
 				m.phase = providerPhaseAPIKey
 				m.promptIndex = 0
 				m.metadata = make(map[string]string, len(m.activeProvider.Prompts))
@@ -322,6 +337,27 @@ func (m providerAuthModel) handleKey(msg tea.KeyPressMsg) (providerAuthModel, te
 			return m, m.submitAPIKeyCmd(m.activeProvider.ProviderID, val, m.metadata)
 		}
 		// Forward any other key to the textinput.
+		var cmd tea.Cmd
+		m.apiKey, cmd = m.apiKey.Update(msg)
+		return m, cmd
+
+	case providerPhaseOAuthCode:
+		if cancel {
+			return m, m.cancelFlowCmd()
+		}
+		if key.Matches(msg, key.NewBinding(key.WithKeys("enter"))) {
+			val := strings.TrimSpace(m.apiKey.Value())
+			if val == "" {
+				m.errMsg = "code cannot be empty"
+				return m, nil
+			}
+			m.errMsg = ""
+			// Move to awaiting and fire the synchronous submit; its
+			// result message flips us to success or error.
+			m.phase = providerPhaseAwaiting
+			m.flowState = agent.DeviceFlowPending
+			return m, m.submitAuthCodeCmd(m.activeProvider.ProviderID, m.flow.FlowID, val)
+		}
 		var cmd tea.Cmd
 		m.apiKey, cmd = m.apiKey.Update(msg)
 		return m, cmd
@@ -376,6 +412,56 @@ func (m providerAuthModel) submitAPIKeyCmd(providerID, key string, metadata map[
 		start, err := hub.Host(hostname).SubmitAuthAPIKey(ctx, providerID, key, metadata)
 		return providerStartedMsg{start: start, err: err}
 	}
+}
+
+// startOAuthCodeFlowCmd asks the host to spawn `claude setup-token`
+// and return the authorize URL it prints. Reuses providerStartedMsg
+// — the start payload carries FlowID + VerificationURL (UserCode is
+// empty, since this flow has no shown user_code).
+func (m providerAuthModel) startOAuthCodeFlowCmd(providerID string) tea.Cmd {
+	hub := m.hub
+	hostname := m.hostname
+	return func() tea.Msg {
+		// Generous timeout — the host's PTY-spawn + URL extraction
+		// can take a few seconds on a cold sprite while the CLI's
+		// startup banner animates.
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		start, err := hub.Host(hostname).StartAuthOAuthCodeFlow(ctx, providerID)
+		return providerStartedMsg{start: start, err: err}
+	}
+}
+
+// submitAuthCodeCmd delivers the user-pasted code to the host. The
+// host writes it into setup-token's stdin and waits for the token,
+// so this call can take a few seconds. On return, we synthesize a
+// providerStatusMsg so the existing terminal-state handler in Update
+// flips the phase to success/error without needing a new message
+// type.
+func (m providerAuthModel) submitAuthCodeCmd(providerID, flowID, code string) tea.Cmd {
+	hub := m.hub
+	hostname := m.hostname
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		if err := hub.Host(hostname).SubmitAuthCode(ctx, providerID, flowID, code); err != nil {
+			return providerStatusMsg{status: agent.DeviceFlowStatus{
+				State: agent.DeviceFlowError,
+				Error: err.Error(),
+			}}
+		}
+		return providerStatusMsg{status: agent.DeviceFlowStatus{State: agent.DeviceFlowSuccess}}
+	}
+}
+
+// configureInputForOAuthCode swaps the textinput to its "paste a
+// code" configuration. Echo on — codes shown on Anthropic's redirect
+// page are short alphanumeric strings, not secrets in the same way
+// an API key is, and seeing what you typed reduces paste errors.
+func (m *providerAuthModel) configureInputForOAuthCode() {
+	m.apiKey.SetValue("")
+	m.apiKey.Placeholder = "paste code from your browser"
+	m.apiKey.EchoMode = textinput.EchoNormal
 }
 
 // configureInputForCurrentField re-skins the textinput to match
@@ -479,11 +565,22 @@ func (m providerAuthModel) View() string {
 			Render("↑↓ navigate · enter select · esc cancel"))
 
 	case providerPhaseConfirm:
-		warn := fmt.Sprintf(
-			"Connecting %s will restart the OpenCode server in this sandbox.\n"+
-				"Any sessions currently running will need to be restarted manually.",
-			m.activeProvider.DisplayName,
-		)
+		var warn string
+		if isAnthropicProviderID(m.activeProvider.ProviderID) {
+			// Anthropic creds are env vars consumed by the NEXT claude
+			// spawn — no in-place restart, no impact on running sessions.
+			warn = fmt.Sprintf(
+				"Connecting %s stores credentials for future claude-code sessions.\n"+
+					"Sessions already running continue with their current credentials.",
+				m.activeProvider.DisplayName,
+			)
+		} else {
+			warn = fmt.Sprintf(
+				"Connecting %s will restart the OpenCode server in this sandbox.\n"+
+					"Any sessions currently running will need to be restarted manually.",
+				m.activeProvider.DisplayName,
+			)
+		}
 		sb.WriteString(lipgloss.NewStyle().Foreground(warningColor).Render(warn))
 		sb.WriteString("\n\n")
 		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
@@ -533,10 +630,29 @@ func (m providerAuthModel) View() string {
 		}
 		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).Render(hint))
 
+	case providerPhaseOAuthCode:
+		// User opens VerificationURL in a browser, logs in, and the
+		// IdP's hosted callback page shows them a code to copy back
+		// here.
+		sb.WriteString("Open this URL in your browser:\n")
+		sb.WriteString(lipgloss.NewStyle().Foreground(primaryColor).
+			Render("  " + m.flow.VerificationURL))
+		sb.WriteString("\n\n")
+		sb.WriteString("After signing in, paste the code shown on the redirect page:\n\n")
+		sb.WriteString("  " + m.apiKey.View())
+		sb.WriteString("\n")
+		if m.errMsg != "" {
+			sb.WriteString("\n")
+			sb.WriteString(lipgloss.NewStyle().Foreground(dangerColor).Render(m.errMsg))
+		}
+		sb.WriteString("\n\n")
+		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
+			Render("enter to submit · esc to cancel"))
+
 	case providerPhaseAwaiting:
-		// Device flows show the URL + user_code; API-key flows skip
-		// straight to the spinner because there's nothing for the user
-		// to do externally.
+		// Device flows show the URL + user_code; api-key + oauth-code
+		// flows skip straight to the spinner — there's nothing for
+		// the user to do externally at this point.
 		if m.flow.UserCode != "" {
 			sb.WriteString("In your browser, open:\n")
 			sb.WriteString(lipgloss.NewStyle().Foreground(primaryColor).Render("  " + m.flow.VerificationURL))
@@ -545,7 +661,7 @@ func (m providerAuthModel) View() string {
 				Render("  " + m.flow.UserCode))
 			sb.WriteString("\n\n")
 		}
-		label := awaitingLabel(m.flowState, m.flow.UserCode != "")
+		label := awaitingLabel(m.flowState, m.activeProvider.AuthType, isAnthropicProviderID(m.activeProvider.ProviderID))
 		sb.WriteString(m.spinner.View() + " " + label)
 		sb.WriteString("\n\n")
 		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
@@ -573,15 +689,33 @@ func (m providerAuthModel) View() string {
 		Render(sb.String())
 }
 
-// awaitingLabel chooses the spinner label based on flow state +
-// whether this is a device flow (showing URL) or an API-key flow
-// (already submitted, just waiting on restart).
-func awaitingLabel(state agent.DeviceFlowState, isDevice bool) string {
+// awaitingLabel chooses the spinner label based on flow state, the
+// provider's AuthType, and whether the provider is Anthropic (no
+// opencode-server restart involved; credential is just persisted for
+// the next claude spawn).
+func awaitingLabel(state agent.DeviceFlowState, authType string, isAnthropic bool) string {
 	if state == agent.DeviceFlowAuthorized {
+		if isAnthropic {
+			return "Saved — finalizing…"
+		}
 		return "Authorized — restarting OpenCode server (this can take 10–15s)…"
 	}
-	if isDevice {
+	switch authType {
+	case agent.AuthTypeDevice:
 		return "Waiting for authorization…"
+	case agent.AuthTypeOAuthCode:
+		return "Exchanging code for token…"
+	default:
+		return "Saving credential…"
 	}
-	return "Saving credential…"
+}
+
+// isAnthropicProviderID reports whether providerID is one of the
+// Anthropic catalog entries (whose credentials live in clank's
+// anthropic sink, not opencode's auth.json). Mirrors the host-side
+// isAnthropicProvider, kept inline here to avoid leaking that helper
+// across package boundaries.
+func isAnthropicProviderID(providerID string) bool {
+	return providerID == host.ProviderAnthropicClaudeCode ||
+		providerID == host.ProviderAnthropicAPI
 }

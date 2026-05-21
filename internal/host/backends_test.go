@@ -41,6 +41,67 @@ func TestClaudeBackendManagerCreateBackend(t *testing.T) {
 	// sufficient as a smoke test.
 }
 
+// The env-resolver closure (wired by Service.New to AuthManager) must
+// be called once per CreateBackend so the latest Anthropic credential
+// state is honored. Resolving stale values would let a logout silently
+// linger into the next session.
+func TestClaudeBackendManager_EnvResolver_ThreadsIntoExtraEnv(t *testing.T) {
+	t.Parallel()
+	mgr := host.NewClaudeBackendManager()
+	defer mgr.Shutdown()
+
+	calls := 0
+	mgr.SetEnvResolver(func() map[string]string {
+		calls++
+		return map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "tok-from-resolver"}
+	})
+
+	backend, err := mgr.CreateBackend(context.Background(), agent.BackendInvocation{WorkDir: "/tmp/x"})
+	if err != nil {
+		t.Fatalf("CreateBackend: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("resolver call count=%d, want 1", calls)
+	}
+	claudeBE, ok := backend.(*agent.ClaudeCodeBackend)
+	if !ok {
+		t.Fatalf("backend is %T, want *agent.ClaudeCodeBackend", backend)
+	}
+	if got := claudeBE.ExtraEnv["CLAUDE_CODE_OAUTH_TOKEN"]; got != "tok-from-resolver" {
+		t.Errorf("ExtraEnv[CLAUDE_CODE_OAUTH_TOKEN]=%q, want tok-from-resolver", got)
+	}
+}
+
+// Without a resolver (or with a resolver that returns nil), ExtraEnv
+// must remain nil — claude then falls back to its own keychain/OAuth
+// login. Pins the "no credential connected = vanilla CLI behavior"
+// contract.
+func TestClaudeBackendManager_NoResolver_LeavesExtraEnvNil(t *testing.T) {
+	t.Parallel()
+	mgr := host.NewClaudeBackendManager()
+	defer mgr.Shutdown()
+
+	backend, err := mgr.CreateBackend(context.Background(), agent.BackendInvocation{WorkDir: "/tmp/x"})
+	if err != nil {
+		t.Fatalf("CreateBackend: %v", err)
+	}
+	claudeBE := backend.(*agent.ClaudeCodeBackend)
+	if claudeBE.ExtraEnv != nil {
+		t.Errorf("ExtraEnv=%v, want nil", claudeBE.ExtraEnv)
+	}
+
+	// Nil-returning resolver behaves the same as no resolver.
+	mgr.SetEnvResolver(func() map[string]string { return nil })
+	backend2, err := mgr.CreateBackend(context.Background(), agent.BackendInvocation{WorkDir: "/tmp/y"})
+	if err != nil {
+		t.Fatalf("CreateBackend (nil-resolver): %v", err)
+	}
+	claudeBE2 := backend2.(*agent.ClaudeCodeBackend)
+	if len(claudeBE2.ExtraEnv) != 0 {
+		t.Errorf("ExtraEnv=%v, want nil/empty when resolver returns nil", claudeBE2.ExtraEnv)
+	}
+}
+
 // TestClaudeBackendManagerDiscoverSessions verifies DiscoverSessions reads
 // session metadata from Claude Code's on-disk JSONL transcripts under a
 // CLAUDE_CONFIG_DIR-pointed temp directory and maps SDKSessionInfo into
