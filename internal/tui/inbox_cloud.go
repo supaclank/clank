@@ -10,6 +10,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/acksell/clank/internal/cloud"
 	"github.com/acksell/clank/internal/config"
 )
 
@@ -71,6 +72,13 @@ func (m *InboxModel) updateCloud(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateCloudURLPicker(msg)
 	}
 
+	// Provider auth modal takes precedence when open. Reuses the same
+	// dispatcher as the settings path — the modal's lifecycle (done /
+	// cancel) is host-agnostic.
+	if m.showProviderAuth {
+		return m.updateProviderAuth(msg)
+	}
+
 	// cloudOpenURLPickerMsg is emitted by cloudView when the user presses
 	// 'u'. The inbox owns the picker state, so it's handled here.
 	if _, ok := msg.(cloudOpenURLPickerMsg); ok {
@@ -82,6 +90,29 @@ func (m *InboxModel) updateCloud(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cloudURLPicker = newCloudURLPicker(currentURL)
 		m.showCloudURLPicker = true
 		return m, m.cloudURLPicker.Init()
+	}
+
+	// cloudOpenProviderAuthMsg is emitted by cloudView when the user
+	// presses 'p' in the signed-in state. Builds a cloud.AuthCaller
+	// from the active remote's gateway URL + access token and opens the
+	// provider auth modal. Mirrors what `clank push` does — direct
+	// gateway call, no daemon proxy.
+	if _, ok := msg.(cloudOpenProviderAuthMsg); ok {
+		prefs, _ := config.LoadPreferences()
+		remote := prefs.ActiveRemote()
+		if remote == nil || remote.GatewayURL == "" || remote.AccessToken == "" {
+			// Should be unreachable — the panel only emits this message
+			// in cloudPhaseSignedIn, which implies a configured remote
+			// with a live token. Swallow rather than crash.
+			return m, nil
+		}
+		caller := cloud.NewAuthCaller(remote.GatewayURL, remote.AccessToken, nil)
+		m.providerAuth = newProviderAuthModel(
+			caller, "",
+			"Cold-starting the sandbox… first request can take 10–20 seconds.",
+		)
+		m.showProviderAuth = true
+		return m, m.providerAuth.Init()
 	}
 
 	// Global key handling that the cloud view itself doesn't own.

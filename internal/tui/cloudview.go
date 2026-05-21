@@ -55,6 +55,12 @@ type cloudLoginResultMsg struct {
 // the cloud URL. The inbox intercepts it and opens the URL picker modal.
 type cloudOpenURLPickerMsg struct{}
 
+// cloudOpenProviderAuthMsg is emitted when the user requests to connect
+// an AI provider on the cloud sandbox (signed-in only). The inbox
+// intercepts it, builds a cloud.AuthCaller from the active remote's
+// gateway URL + access token, and opens the provider auth modal.
+type cloudOpenProviderAuthMsg struct{}
+
 // cloudReachabilityMsg carries the result of an authenticated probe
 // against the gateway. Fed into the model by Init (cold start) so the
 // sidebar can leave the "checking" state without waiting for the user
@@ -309,6 +315,8 @@ func (m cloudView) handleKey(msg tea.KeyPressMsg) (cloudView, tea.Cmd) {
 			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("u"))):
 			return m, func() tea.Msg { return cloudOpenURLPickerMsg{} }
+		case key.Matches(msg, key.NewBinding(key.WithKeys("p"))):
+			return m, func() tea.Msg { return cloudOpenProviderAuthMsg{} }
 		}
 		return m, nil
 
@@ -493,7 +501,7 @@ func (m cloudView) viewSignedIn() string {
 		rows = append(rows, muted.Render(m.err), "")
 	}
 
-	rows = append(rows, muted.Render("u: change URL   o: sign out"))
+	rows = append(rows, muted.Render("p: connect provider (in sandbox)   u: change URL   o: sign out"))
 	return strings.Join(rows, "\n")
 }
 

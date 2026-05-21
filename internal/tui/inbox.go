@@ -691,7 +691,7 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionView = nil
 		m.activeConnID = ""
 		m.openSettings()
-		m.providerAuth = newProviderAuthModel(m.client, m.hostname, typed.backend)
+		m.providerAuth = newProviderAuthModel(m.client.Host(m.hostname), typed.backend, "")
 		m.showProviderAuth = true
 		return m, m.providerAuth.Init()
 

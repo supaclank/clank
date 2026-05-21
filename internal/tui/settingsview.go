@@ -90,8 +90,8 @@ func newSettingsView(currentColorScheme, currentDefaultBackend string) settingsV
 			},
 			{
 				kind:        settingsEntryProviders,
-				label:       "Connect provider",
-				description: "Authenticate an AI provider (e.g. GitHub Copilot) for the active host.",
+				label:       "Connect provider (local)",
+				description: "Authenticate an AI provider on this machine's clank-host. For the cloud sandbox, use the Cloud panel.",
 			},
 		},
 	}
