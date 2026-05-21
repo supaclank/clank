@@ -77,11 +77,18 @@ const (
 
 // ProviderAuthInfo is the snapshot a client gets from
 // GET /auth/providers. AuthType selects which begin-flow the client
-// dispatches to.
+// dispatches to; Backend identifies which agent CLI actually consumes
+// the credential (opencode reads its own auth.json; claude reads env
+// vars set by clank's anthropic sink). The /auth/providers endpoint
+// filters by Backend when the client sends `?backend=…` — otherwise
+// surfacing both sets in one list confuses the user (e.g. "Anthropic
+// (Claude subscription)" is meaningless if you're starting an
+// opencode session, and "GitHub Copilot" is meaningless for claude).
 type ProviderAuthInfo struct {
 	ProviderID  string           `json:"provider_id"`
 	DisplayName string           `json:"display_name"`
 	AuthType    string           `json:"auth_type"`
+	Backend     BackendType      `json:"backend"`
 	Connected   bool             `json:"connected"`
 	Prompts     []ProviderPrompt `json:"prompts,omitempty"`
 }

@@ -61,35 +61,41 @@ const ProviderAnthropicAPI = "anthropic-api"
 // Default Credentials (a multi-line JSON service-account file) that
 // doesn't fit the paste-a-string shape — both are deferrable.
 var providerCatalog = []agent.ProviderAuthInfo{
-	{ProviderID: ProviderGitHubCopilot, DisplayName: "GitHub Copilot", AuthType: agent.AuthTypeDevice},
-	{ProviderID: ProviderAnthropicClaudeCode, DisplayName: "Anthropic (Claude subscription)", AuthType: agent.AuthTypeOAuthCode},
-	{ProviderID: ProviderAnthropicAPI, DisplayName: "Anthropic (Console API key)", AuthType: agent.AuthTypeAPI},
-	{ProviderID: "openai", DisplayName: "OpenAI", AuthType: "api"},
-	{ProviderID: "google", DisplayName: "Google Gemini", AuthType: "api"},
-	{ProviderID: "xai", DisplayName: "xAI (Grok)", AuthType: "api"},
-	{ProviderID: "groq", DisplayName: "Groq", AuthType: "api"},
-	{ProviderID: "deepseek", DisplayName: "DeepSeek", AuthType: "api"},
-	{ProviderID: "mistral", DisplayName: "Mistral", AuthType: "api"},
-	{ProviderID: "openrouter", DisplayName: "OpenRouter", AuthType: "api"},
+	// OpenCode-consumed providers — credential lives in opencode's
+	// own auth.json and an OpenCode server restart picks it up.
+	{ProviderID: ProviderGitHubCopilot, DisplayName: "GitHub Copilot", AuthType: agent.AuthTypeDevice, Backend: agent.BackendOpenCode},
+	{ProviderID: "openai", DisplayName: "OpenAI", AuthType: agent.AuthTypeAPI, Backend: agent.BackendOpenCode},
+	{ProviderID: "google", DisplayName: "Google Gemini", AuthType: agent.AuthTypeAPI, Backend: agent.BackendOpenCode},
+	{ProviderID: "xai", DisplayName: "xAI (Grok)", AuthType: agent.AuthTypeAPI, Backend: agent.BackendOpenCode},
+	{ProviderID: "groq", DisplayName: "Groq", AuthType: agent.AuthTypeAPI, Backend: agent.BackendOpenCode},
+	{ProviderID: "deepseek", DisplayName: "DeepSeek", AuthType: agent.AuthTypeAPI, Backend: agent.BackendOpenCode},
+	{ProviderID: "mistral", DisplayName: "Mistral", AuthType: agent.AuthTypeAPI, Backend: agent.BackendOpenCode},
+	{ProviderID: "openrouter", DisplayName: "OpenRouter", AuthType: agent.AuthTypeAPI, Backend: agent.BackendOpenCode},
 	{
-		ProviderID: "azure", DisplayName: "Azure OpenAI", AuthType: "api",
+		ProviderID: "azure", DisplayName: "Azure OpenAI", AuthType: agent.AuthTypeAPI, Backend: agent.BackendOpenCode,
 		Prompts: []agent.ProviderPrompt{
 			{Key: "resourceName", Message: "Azure resource name", Placeholder: "e.g. my-models"},
 		},
 	},
 	{
-		ProviderID: "cloudflare-workers-ai", DisplayName: "Cloudflare Workers AI", AuthType: "api",
+		ProviderID: "cloudflare-workers-ai", DisplayName: "Cloudflare Workers AI", AuthType: agent.AuthTypeAPI, Backend: agent.BackendOpenCode,
 		Prompts: []agent.ProviderPrompt{
 			{Key: "accountId", Message: "Cloudflare Account ID", Placeholder: "e.g. 1234567890abcdef1234567890abcdef"},
 		},
 	},
 	{
-		ProviderID: "cloudflare-ai-gateway", DisplayName: "Cloudflare AI Gateway", AuthType: "api",
+		ProviderID: "cloudflare-ai-gateway", DisplayName: "Cloudflare AI Gateway", AuthType: agent.AuthTypeAPI, Backend: agent.BackendOpenCode,
 		Prompts: []agent.ProviderPrompt{
 			{Key: "accountId", Message: "Cloudflare Account ID", Placeholder: "e.g. 1234567890abcdef1234567890abcdef"},
 			{Key: "gatewayId", Message: "AI Gateway ID", Placeholder: "e.g. my-gateway"},
 		},
 	},
+
+	// Claude-Code-consumed providers — credential lives in clank's
+	// anthropic.json and is injected into the next claude spawn as
+	// CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY. No server restart.
+	{ProviderID: ProviderAnthropicClaudeCode, DisplayName: "Anthropic (Claude subscription)", AuthType: agent.AuthTypeOAuthCode, Backend: agent.BackendClaudeCode},
+	{ProviderID: ProviderAnthropicAPI, DisplayName: "Anthropic (Console API key)", AuthType: agent.AuthTypeAPI, Backend: agent.BackendClaudeCode},
 }
 
 // isAnthropicProvider reports whether providerID's credential lives
@@ -254,10 +260,13 @@ func (a *AuthManager) AnthropicEnv() map[string]string {
 // ListProviders returns the providers this host knows how to
 // authenticate, with their current connection state read from the
 // appropriate sink — opencode's auth.json for OpenCode providers,
-// our anthropic.json for Anthropic providers. Catalog is hardcoded
-// (see providerCatalog); a future phase will let OpenCode's plugin
-// list drive the OpenCode subset.
-func (a *AuthManager) ListProviders(_ context.Context) ([]agent.ProviderAuthInfo, error) {
+// our anthropic.json for Anthropic providers. When backend is
+// non-empty, the result is filtered to providers that target that
+// agent CLI (so an opencode-session compose flow doesn't surface
+// "Anthropic (Claude subscription)", and a claude-code-session
+// flow doesn't surface "GitHub Copilot"). Empty backend returns
+// the full catalog.
+func (a *AuthManager) ListProviders(_ context.Context, backend agent.BackendType) ([]agent.ProviderAuthInfo, error) {
 	store, err := a.readAuthJSON()
 	if err != nil {
 		return nil, err
@@ -268,6 +277,9 @@ func (a *AuthManager) ListProviders(_ context.Context) ([]agent.ProviderAuthInfo
 	}
 	infos := make([]agent.ProviderAuthInfo, 0, len(providerCatalog))
 	for _, p := range providerCatalog {
+		if backend != "" && p.Backend != backend {
+			continue
+		}
 		switch p.ProviderID {
 		case ProviderAnthropicClaudeCode:
 			p.Connected = sink.OAuthToken != ""

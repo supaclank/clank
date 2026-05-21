@@ -88,7 +88,9 @@ func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 			persistDefaultBackend(next)
 			return m, nil
 		case settingsEntryProviders:
-			m.providerAuth = newProviderAuthModel(m.client, m.hostname)
+			// Settings-page entry: no backend filter, show the full
+			// catalog. The session-flow entry passes a backend.
+			m.providerAuth = newProviderAuthModel(m.client, m.hostname, "")
 			m.showProviderAuth = true
 			return m, m.providerAuth.Init()
 		}

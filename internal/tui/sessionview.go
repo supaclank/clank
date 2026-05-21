@@ -98,8 +98,13 @@ type backToInboxMsg struct{}
 // openProviderAuthFromSessionMsg bubbles up from the model picker's
 // "+ Connect provider…" entry. The inbox closes the session view, opens
 // settings, and surfaces the provider-auth modal (which it owns —
-// SessionViewModel doesn't render that overlay).
-type openProviderAuthFromSessionMsg struct{}
+// SessionViewModel doesn't render that overlay). Backend carries the
+// session's current backend so the provider list is filtered
+// (otherwise a Claude-Code session would see OpenAI / Copilot entries
+// it can't consume, and vice versa).
+type openProviderAuthFromSessionMsg struct {
+	backend agent.BackendType
+}
 
 // wordBackwardBinding matches the textarea's WordBackward keys (alt+left, alt+b).
 // Used to intercept the key before it reaches the textarea in cases where the
@@ -604,7 +609,8 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Close the picker and bubble up — the inbox owns the
 			// settings + provider-auth modal lifecycle.
 			m.showModelPicker = false
-			return m, func() tea.Msg { return openProviderAuthFromSessionMsg{} }
+			backend := m.backend
+			return m, func() tea.Msg { return openProviderAuthFromSessionMsg{backend: backend} }
 		default:
 			var cmd tea.Cmd
 			m.modelPicker, cmd = m.modelPicker.Update(msg)

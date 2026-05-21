@@ -35,7 +35,7 @@ func TestAuthManager_ListProviders_EmptyFile(t *testing.T) {
 	t.Parallel()
 	a, _ := newTestAuthManager(t)
 
-	infos, err := a.ListProviders(context.Background())
+	infos, err := a.ListProviders(context.Background(), "")
 	if err != nil {
 		t.Fatalf("ListProviders: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestAuthManager_WriteAndReadAuthJSON(t *testing.T) {
 	}
 
 	// ListProviders should now report connected.
-	infos, _ := a.ListProviders(context.Background())
+	infos, _ := a.ListProviders(context.Background(), "")
 	if !infos[0].Connected {
 		t.Errorf("expected connected after write")
 	}
@@ -173,7 +173,7 @@ func TestAuthManager_DeleteCredentialRoundTrip(t *testing.T) {
 		t.Errorf("expected 1 restart call, got %d", got)
 	}
 
-	infos, _ := a.ListProviders(context.Background())
+	infos, _ := a.ListProviders(context.Background(), "")
 	if infos[0].Connected {
 		t.Errorf("expected disconnected after delete")
 	}
@@ -398,7 +398,7 @@ func TestAuthManager_ListProviders_IncludesEntireCatalog(t *testing.T) {
 		t.Fatalf("seed write: %v", err)
 	}
 
-	infos, err := a.ListProviders(context.Background())
+	infos, err := a.ListProviders(context.Background(), "")
 	if err != nil {
 		t.Fatalf("ListProviders: %v", err)
 	}
@@ -590,10 +590,54 @@ func (rt *rewriteRT) RoundTrip(req *http.Request) (*http.Response, error) {
 // env), and opencode rewrites auth.json so any unknown key would be
 // clobbered. These tests pin that routing.
 
+// Backend-scoped ListProviders must drop providers consumed by the
+// other backend. Surfacing all entries to both backends confuses
+// users (a claude-code session would see GitHub Copilot, an opencode
+// session would see "Anthropic (Claude subscription)") and lets them
+// connect a credential they can't actually use.
+func TestAuthManager_ListProviders_FiltersByBackend(t *testing.T) {
+	t.Parallel()
+	a, _ := newTestAuthManager(t)
+
+	openCodeOnly, err := a.ListProviders(context.Background(), agent.BackendOpenCode)
+	if err != nil {
+		t.Fatalf("ListProviders(opencode): %v", err)
+	}
+	for _, p := range openCodeOnly {
+		if p.Backend != agent.BackendOpenCode {
+			t.Errorf("opencode filter leaked: %s has Backend=%q", p.ProviderID, p.Backend)
+		}
+		if p.ProviderID == ProviderAnthropicClaudeCode || p.ProviderID == ProviderAnthropicAPI {
+			t.Errorf("anthropic provider %s in opencode list", p.ProviderID)
+		}
+	}
+
+	claudeOnly, err := a.ListProviders(context.Background(), agent.BackendClaudeCode)
+	if err != nil {
+		t.Fatalf("ListProviders(claude-code): %v", err)
+	}
+	if len(claudeOnly) == 0 {
+		t.Fatal("claude-code list should contain anthropic providers")
+	}
+	for _, p := range claudeOnly {
+		if p.Backend != agent.BackendClaudeCode {
+			t.Errorf("claude filter leaked: %s has Backend=%q", p.ProviderID, p.Backend)
+		}
+	}
+
+	all, err := a.ListProviders(context.Background(), "")
+	if err != nil {
+		t.Fatalf("ListProviders(all): %v", err)
+	}
+	if len(all) != len(openCodeOnly)+len(claudeOnly) {
+		t.Errorf("all (%d) != opencode (%d) + claude (%d)", len(all), len(openCodeOnly), len(claudeOnly))
+	}
+}
+
 func TestAuthManager_AnthropicProvidersInCatalog(t *testing.T) {
 	t.Parallel()
 	a, _ := newTestAuthManager(t)
-	infos, err := a.ListProviders(context.Background())
+	infos, err := a.ListProviders(context.Background(), "")
 	if err != nil {
 		t.Fatalf("ListProviders: %v", err)
 	}
@@ -711,7 +755,7 @@ func TestAuthManager_ListProviders_AnthropicConnectedState(t *testing.T) {
 	if err := a.writeAnthropicCredential(ProviderAnthropicClaudeCode, "tok"); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	infos, _ := a.ListProviders(context.Background())
+	infos, _ := a.ListProviders(context.Background(), "")
 	var sub, api agent.ProviderAuthInfo
 	for _, p := range infos {
 		if p.ProviderID == ProviderAnthropicClaudeCode {
