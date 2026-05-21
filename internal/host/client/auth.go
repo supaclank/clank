@@ -42,6 +42,30 @@ func (c *HTTP) SubmitAPIKey(ctx context.Context, providerID, key string, metadat
 	return out, err
 }
 
+// StartOAuthCodeFlow kicks off an oauth-code flow for providerID
+// (Anthropic Claude subscription today). The host spawns
+// `claude setup-token` in a PTY and returns the verification URL the
+// CLI prints, plus a flow_id for the subsequent SubmitAuthCode call.
+func (c *HTTP) StartOAuthCodeFlow(ctx context.Context, providerID string) (agent.DeviceFlowStart, error) {
+	var out agent.DeviceFlowStart
+	path := "/auth/" + url.PathEscape(providerID) + "/oauth/start"
+	err := c.do(ctx, http.MethodPost, path, nil, &out)
+	return out, err
+}
+
+// SubmitAuthCode delivers the user-pasted authorization code to the
+// host. The host writes it to the setup-token CLI's stdin, waits for
+// the long-lived token to appear on stdout, and persists it.
+// Synchronous: returns once the exchange completes (or fails).
+func (c *HTTP) SubmitAuthCode(ctx context.Context, providerID, flowID, code string) error {
+	path := "/auth/" + url.PathEscape(providerID) + "/oauth/submit"
+	body := struct {
+		FlowID string `json:"flow_id"`
+		Code   string `json:"code"`
+	}{FlowID: flowID, Code: code}
+	return c.do(ctx, http.MethodPost, path, body, nil)
+}
+
 // FlowStatus reads the current state of an in-progress flow (device
 // or api-key — the endpoint is flow-type-agnostic). Pure read —
 // safe to call as fast as the caller wants.

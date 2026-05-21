@@ -52,6 +52,30 @@ func (h *HostClient) SubmitAuthAPIKey(ctx context.Context, providerID, key strin
 	return out, nil
 }
 
+// StartAuthOAuthCodeFlow kicks off an oauth-code flow (PTY-relayed
+// `claude setup-token`) for providerID. Returns the verification URL
+// the CLI prints + a flow_id for the subsequent SubmitAuthCode call.
+func (h *HostClient) StartAuthOAuthCodeFlow(ctx context.Context, providerID string) (agent.DeviceFlowStart, error) {
+	var out agent.DeviceFlowStart
+	path := h.base() + "/auth/" + url.PathEscape(providerID) + "/oauth/start"
+	if err := h.c.post(ctx, path, nil, &out); err != nil {
+		return agent.DeviceFlowStart{}, err
+	}
+	return out, nil
+}
+
+// SubmitAuthCode hands the host the code the user copied from the
+// IdP's redirect page. The host writes it into setup-token's stdin
+// and persists the resulting long-lived token. Synchronous.
+func (h *HostClient) SubmitAuthCode(ctx context.Context, providerID, flowID, code string) error {
+	path := h.base() + "/auth/" + url.PathEscape(providerID) + "/oauth/submit"
+	body := struct {
+		FlowID string `json:"flow_id"`
+		Code   string `json:"code"`
+	}{FlowID: flowID, Code: code}
+	return h.c.post(ctx, path, body, nil)
+}
+
 // AuthFlowStatus returns the current state of an in-progress flow
 // (device or api-key — the endpoint is flow-type-agnostic). Pure read.
 func (h *HostClient) AuthFlowStatus(ctx context.Context, providerID, flowID string) (agent.DeviceFlowStatus, error) {

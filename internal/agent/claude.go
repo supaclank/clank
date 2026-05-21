@@ -68,6 +68,13 @@ type ClaudeCodeBackend struct {
 	// Tests inject a factory that returns a client backed by a mock transport.
 	// If nil, the default claudecode.NewClient is used.
 	ClientFactory func(opts ...claudecode.Option) claudecode.Client
+
+	// ExtraEnv is appended to the spawned claude subprocess's environment.
+	// Host plumbing populates this with CLAUDE_CODE_OAUTH_TOKEN (subscription)
+	// or ANTHROPIC_API_KEY (Console) when the user has connected an Anthropic
+	// provider via AuthManager. Empty when no Anthropic credential is set —
+	// claude falls back to its own keychain/OAuth login in that case.
+	ExtraEnv map[string]string
 }
 
 // NewClaudeCodeBackend creates a new Claude Code backend. workDir is
@@ -114,6 +121,7 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	workDir := b.projectDir
 	resumeID := b.sessionID
 	factory := b.ClientFactory
+	extraEnv := b.ExtraEnv
 	b.mu.Unlock()
 
 	// Defensive guard: an empty workDir would silently inherit the
@@ -132,6 +140,9 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	}
 	if resumeID != "" {
 		opts = append(opts, claudecode.WithResume(resumeID))
+	}
+	if len(extraEnv) > 0 {
+		opts = append(opts, claudecode.WithEnv(extraEnv))
 	}
 
 	// Build the client — use the test factory if provided.

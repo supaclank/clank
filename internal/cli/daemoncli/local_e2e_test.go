@@ -134,15 +134,20 @@ func TestLocalE2E_TUICreatesSession_AndFetches(t *testing.T) {
 	// HostClient. The gateway must strip that prefix before forwarding,
 	// otherwise the host returns 404 "page not found" — that was the
 	// symptom for the "connect provider" modal failing in the wild.
-	// The stub backend doesn't wire up an opencode auth manager so the
-	// handler itself errors with "auth manager is not configured" — but
-	// reaching that error proves routing through /hosts/{name}/auth
-	// succeeded (the alternative is a generic 404 from the mux).
-	_, authErr := cli.Host("local").ListAuthProviders(ctx)
-	if authErr == nil {
-		t.Error("expected an error from stub host (no auth manager wired)")
-	} else if strings.Contains(authErr.Error(), "404 page not found") {
-		t.Errorf("gateway did not strip /hosts/{name} prefix; got 404: %v", authErr)
+	// AuthManager is now created unconditionally (not only when the
+	// opencode backend exists, since Anthropic providers need it too),
+	// so a successful call with a populated catalog is the routing-
+	// works signal. A 404 here would mean the prefix wasn't stripped.
+	providers, authErr := cli.Host("local").ListAuthProviders(ctx)
+	if authErr != nil {
+		if strings.Contains(authErr.Error(), "404 page not found") {
+			t.Errorf("gateway did not strip /hosts/{name} prefix; got 404: %v", authErr)
+		} else {
+			t.Errorf("ListAuthProviders: %v", authErr)
+		}
+	}
+	if len(providers) == 0 {
+		t.Error("expected non-empty provider catalog (routing reached the host)")
 	}
 }
 

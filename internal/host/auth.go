@@ -1,17 +1,17 @@
 package host
 
-// AuthManager mediates AI provider authentication for the OpenCode
-// instance running in this host's sandbox. It writes credentials
-// directly into OpenCode's `~/.local/share/opencode/auth.json` and
-// triggers a server restart so OpenCode picks up the new auth state.
+// AuthManager mediates AI provider authentication for agent CLIs
+// running in this host's sandbox. Credentials live in two sinks:
+//   - OpenCode providers → ~/.local/share/opencode/auth.json
+//     (opencode's own schema; a server restart picks up changes)
+//   - Anthropic providers → ~/.local/share/clank/anthropic.json
+//     (our schema; the next claude-code spawn picks up changes via
+//     CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY env vars)
 //
 // Credentials never travel through clank's infrastructure for OAuth
 // providers — the device-flow polling happens between this process
 // and the provider (e.g. github.com), with clank only mediating the
 // UX (showing the user_code + verification URL to the TUI/mobile UI).
-//
-// Phase 1 supports only github-copilot. Phase 2 adds generic API-key
-// providers; Phase 3+ adds other OAuth providers.
 
 import (
 	"context"
@@ -37,22 +37,33 @@ import (
 // at packages/opencode/src/plugin/github-copilot/copilot.ts.
 const ProviderGitHubCopilot = "github-copilot"
 
+// ProviderAnthropicClaudeCode is the clank provider ID for the
+// Claude.ai subscription path (Pro/Max/Team/Enterprise). The
+// credential is the long-lived token printed by `claude setup-token`,
+// passed to the claude subprocess as CLAUDE_CODE_OAUTH_TOKEN.
+const ProviderAnthropicClaudeCode = "anthropic-claude-code"
+
+// ProviderAnthropicAPI is the clank provider ID for pay-per-use
+// console.anthropic.com API keys. Passed as ANTHROPIC_API_KEY.
+const ProviderAnthropicAPI = "anthropic-api"
+
 // providerCatalog enumerates the providers this AuthManager knows
-// how to authenticate. Phase 1 hardcoded only github-copilot; Phase 2
-// added single-key API providers; Phase 3 adds providers that need
-// extra prompts (Azure, Cloudflare). Keys match OpenCode's auth.json
-// keys (provider IDs from the AI SDK package names or the upstream
-// plugin's `auth.provider` field).
+// how to authenticate. Three classes today:
+//   - device-flow OAuth (Phase 1): github-copilot
+//   - single-key API providers (Phase 2): openai, google, etc.
+//   - providers needing extra prompts (Phase 3): azure, cloudflare
+//   - anthropic (Phase 4): subscription token + API key, both
+//     surfaced as api-style paste-a-string flows but routed to a
+//     separate credential sink (see writeAnthropicSink).
 //
-// The ordering controls how providers appear in the TUI list.
-// Anthropic is intentionally omitted (per the v1 strategic-pivot
-// non-goal). Bedrock and Vertex are also omitted for now: Bedrock
-// uses bearer tokens that most users haven't pre-provisioned, and
-// Vertex needs Application Default Credentials (a multi-line JSON
-// service-account file) that doesn't fit the auth.json shape — both
-// are deferrable to a later phase that adds richer credential types.
+// Bedrock and Vertex are still omitted: Bedrock uses bearer tokens
+// most users haven't pre-provisioned, and Vertex needs Application
+// Default Credentials (a multi-line JSON service-account file) that
+// doesn't fit the paste-a-string shape — both are deferrable.
 var providerCatalog = []agent.ProviderAuthInfo{
-	{ProviderID: ProviderGitHubCopilot, DisplayName: "GitHub Copilot", AuthType: "device"},
+	{ProviderID: ProviderGitHubCopilot, DisplayName: "GitHub Copilot", AuthType: agent.AuthTypeDevice},
+	{ProviderID: ProviderAnthropicClaudeCode, DisplayName: "Anthropic (Claude subscription)", AuthType: agent.AuthTypeOAuthCode},
+	{ProviderID: ProviderAnthropicAPI, DisplayName: "Anthropic (Console API key)", AuthType: agent.AuthTypeAPI},
 	{ProviderID: "openai", DisplayName: "OpenAI", AuthType: "api"},
 	{ProviderID: "google", DisplayName: "Google Gemini", AuthType: "api"},
 	{ProviderID: "xai", DisplayName: "xAI (Grok)", AuthType: "api"},
@@ -79,6 +90,12 @@ var providerCatalog = []agent.ProviderAuthInfo{
 			{Key: "gatewayId", Message: "AI Gateway ID", Placeholder: "e.g. my-gateway"},
 		},
 	},
+}
+
+// isAnthropicProvider reports whether providerID's credential lives
+// in the anthropic sink rather than opencode's auth.json.
+func isAnthropicProvider(providerID string) bool {
+	return providerID == ProviderAnthropicClaudeCode || providerID == ProviderAnthropicAPI
 }
 
 // providerByID looks up a catalog entry by provider ID. Returns
@@ -109,13 +126,20 @@ const copilotPollSafetyMargin = 3 * time.Second
 // flows clean up themselves.
 const flowTTL = 10 * time.Minute
 
-// flowState is the in-memory record for one in-progress device flow.
-// Mutated by the flow goroutine; read by status handlers under flowMu.
+// flowState is the in-memory record for one in-progress auth flow
+// (device-flow, api-key, or oauth-code). Mutated by the flow handler
+// goroutine (for device/api) or synchronously (for oauth-code's
+// post-submit step); read by status handlers under flowMu.
 type flowState struct {
 	state      agent.DeviceFlowState
 	errMsg     string
 	cancel     context.CancelFunc
 	finishedAt time.Time
+
+	// setupSession is non-nil only for oauth-code flows that have
+	// spawned `claude setup-token` and are waiting for the user to
+	// submit a code. CancelFlow tears it down via close().
+	setupSession *setupTokenSession
 }
 
 // AuthManager owns provider authentication for one host (one
@@ -169,20 +193,89 @@ func (a *AuthManager) AuthJSONPath() string {
 	return filepath.Join(a.homeDir, ".local", "share", "opencode", "auth.json")
 }
 
+// AnthropicSinkPath is where clank stores Anthropic credentials. A
+// separate file from OpenCode's auth.json because (a) opencode rewrites
+// auth.json itself and would clobber any unknown keys, and (b) the
+// consumer is different — claude-code reads env vars set on its
+// subprocess, not a JSON file from this directory.
+func (a *AuthManager) AnthropicSinkPath() string {
+	return filepath.Join(a.homeDir, ".local", "share", "clank", "anthropic.json")
+}
+
+// anthropicSink is the on-disk shape at AnthropicSinkPath. Only the
+// field for the most recently connected variant is populated; the
+// other is cleared on connect so the env-var precedence at spawn
+// time is unambiguous.
+type anthropicSink struct {
+	OAuthToken string `json:"oauth_token,omitempty"`
+	APIKey     string `json:"api_key,omitempty"`
+}
+
+// AnthropicOAuthToken returns the stored CLAUDE_CODE_OAUTH_TOKEN, or
+// "" if none. Callers (claude-code spawn) use this as the preferred
+// credential when present.
+func (a *AuthManager) AnthropicOAuthToken() string {
+	sink, err := a.readAnthropicSink()
+	if err != nil {
+		return ""
+	}
+	return sink.OAuthToken
+}
+
+// AnthropicAPIKey returns the stored ANTHROPIC_API_KEY, or "".
+func (a *AuthManager) AnthropicAPIKey() string {
+	sink, err := a.readAnthropicSink()
+	if err != nil {
+		return ""
+	}
+	return sink.APIKey
+}
+
+// AnthropicEnv returns the env vars to inject into a spawned claude
+// subprocess. Subscription token wins over API key when both are set,
+// which is the opposite of claude's default precedence — but in our
+// model the user explicitly connected one or the other; writes clear
+// the other variant. We only ever set one var, so claude's own
+// precedence resolution never kicks in.
+//
+// Returns nil when no Anthropic provider is connected, so claude
+// falls back to its own keychain/OAuth login flow.
+func (a *AuthManager) AnthropicEnv() map[string]string {
+	sink, err := a.readAnthropicSink()
+	if err != nil || (sink.OAuthToken == "" && sink.APIKey == "") {
+		return nil
+	}
+	if sink.OAuthToken != "" {
+		return map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": sink.OAuthToken}
+	}
+	return map[string]string{"ANTHROPIC_API_KEY": sink.APIKey}
+}
+
 // ListProviders returns the providers this host knows how to
-// authenticate, with their current connection state read from
-// auth.json. The catalog is currently hardcoded (see providerCatalog);
-// Phase 4 will replace this with a query against OpenCode's plugin
-// auth methods so the list adapts as users install npm-based provider
-// plugins.
+// authenticate, with their current connection state read from the
+// appropriate sink — opencode's auth.json for OpenCode providers,
+// our anthropic.json for Anthropic providers. Catalog is hardcoded
+// (see providerCatalog); a future phase will let OpenCode's plugin
+// list drive the OpenCode subset.
 func (a *AuthManager) ListProviders(_ context.Context) ([]agent.ProviderAuthInfo, error) {
 	store, err := a.readAuthJSON()
 	if err != nil {
 		return nil, err
 	}
+	sink, err := a.readAnthropicSink()
+	if err != nil {
+		return nil, err
+	}
 	infos := make([]agent.ProviderAuthInfo, 0, len(providerCatalog))
 	for _, p := range providerCatalog {
-		p.Connected = store[p.ProviderID].Type != ""
+		switch p.ProviderID {
+		case ProviderAnthropicClaudeCode:
+			p.Connected = sink.OAuthToken != ""
+		case ProviderAnthropicAPI:
+			p.Connected = sink.APIKey != ""
+		default:
+			p.Connected = store[p.ProviderID].Type != ""
+		}
 		infos = append(infos, p)
 	}
 	return infos, nil
@@ -200,7 +293,7 @@ var ErrUnknownProvider = errors.New("unknown auth provider")
 // pending → authorized → success.
 func (a *AuthManager) StartDeviceFlow(ctx context.Context, providerID string) (agent.DeviceFlowStart, error) {
 	info, ok := providerByID(providerID)
-	if !ok || info.AuthType != "device" {
+	if !ok || info.AuthType != agent.AuthTypeDevice {
 		return agent.DeviceFlowStart{}, ErrUnknownProvider
 	}
 	device, err := a.startCopilotDeviceCode(ctx)
@@ -250,7 +343,7 @@ var ErrMissingPrompt = errors.New("required provider prompt missing")
 // returned before the goroutine spawns.
 func (a *AuthManager) SubmitAPIKey(_ context.Context, providerID, key string, metadata map[string]string) (string, error) {
 	info, ok := providerByID(providerID)
-	if !ok || info.AuthType != "api" {
+	if !ok || info.AuthType != agent.AuthTypeAPI {
 		return "", ErrUnknownProvider
 	}
 	if strings.TrimSpace(key) == "" {
@@ -279,13 +372,27 @@ func (a *AuthManager) SubmitAPIKey(_ context.Context, providerID, key string, me
 	return flowID, nil
 }
 
-// runAPIKeyFlow writes the credential, then restarts OpenCode. The
-// state transitions mirror the device flow tail: pending → authorized
-// (auth.json written, restart starting) → success (server healthy).
+// runAPIKeyFlow writes the credential to the appropriate sink and,
+// for OpenCode providers, restarts OpenCode so it picks up the new
+// auth state. Anthropic providers don't restart anything — the next
+// claude-code spawn inherits the new env var, existing sessions
+// continue with whatever credential they started with.
+//
+// State transitions mirror the device flow tail: pending → authorized
+// (credential persisted, restart starting if applicable) → success.
 // Cancellation between authorized and success is honored; a kill
 // signal at that point still leaves the credential in place but
 // surfaces a canceled flow state to the TUI.
 func (a *AuthManager) runAPIKeyFlow(ctx context.Context, flowID, providerID, key string, metadata map[string]string) {
+	if isAnthropicProvider(providerID) {
+		if err := a.writeAnthropicCredential(providerID, key); err != nil {
+			a.transition(flowID, agent.DeviceFlowError, "write anthropic credential: "+err.Error())
+			return
+		}
+		a.transition(flowID, agent.DeviceFlowAuthorized, "")
+		a.transition(flowID, agent.DeviceFlowSuccess, "")
+		return
+	}
 	cred := agent.AuthCredential{Type: "api", Key: key}
 	if len(metadata) > 0 {
 		cred.Metadata = metadata
@@ -306,6 +413,129 @@ func (a *AuthManager) runAPIKeyFlow(ctx context.Context, flowID, providerID, key
 		}
 	}
 	a.transition(flowID, agent.DeviceFlowSuccess, "")
+}
+
+// setupTokenURLTimeout caps how long we wait for `claude setup-token`
+// to print its authorize URL. Generous enough that the CLI's startup
+// banner + animations complete on a cold sprite; short enough that a
+// hung CLI doesn't leave a flow stuck.
+const setupTokenURLTimeout = 30 * time.Second
+
+// setupTokenExchangeTimeout caps how long we wait for the long-lived
+// token to appear after the user submits their code. The token
+// exchange is a single round-trip to platform.claude.com; well under
+// 30s in practice.
+const setupTokenExchangeTimeout = 30 * time.Second
+
+// ErrInvalidAuthCode is returned when SubmitAuthCode is called with
+// a blank code (after trimming).
+var ErrInvalidAuthCode = errors.New("auth code cannot be empty")
+
+// ErrFlowNotOAuthCode is returned when SubmitAuthCode targets a flow
+// that wasn't started via StartOAuthCodeFlow.
+var ErrFlowNotOAuthCode = errors.New("flow is not an oauth-code flow")
+
+// StartOAuthCodeFlow spawns `claude setup-token` in a PTY, waits for
+// it to print its authorize URL, and returns the URL + a flow_id
+// the caller uses to submit the code later. The PTY session sticks
+// around in flowState until either SubmitAuthCode completes it,
+// CancelFlow tears it down, or its watchdog (setupTokenExchangeTimeout
+// after URL extraction) fires.
+//
+// Phase 4 (v2) path for the Anthropic Claude subscription provider.
+func (a *AuthManager) StartOAuthCodeFlow(ctx context.Context, providerID string) (agent.DeviceFlowStart, error) {
+	info, ok := providerByID(providerID)
+	if !ok || info.AuthType != agent.AuthTypeOAuthCode {
+		return agent.DeviceFlowStart{}, ErrUnknownProvider
+	}
+
+	sess, err := startSetupToken(ctx)
+	if err != nil {
+		return agent.DeviceFlowStart{}, fmt.Errorf("start setup-token: %w", err)
+	}
+
+	urlCtx, cancel := context.WithTimeout(ctx, setupTokenURLTimeout)
+	defer cancel()
+	verificationURL, err := sess.awaitURL(urlCtx)
+	if err != nil {
+		sess.close()
+		return agent.DeviceFlowStart{}, fmt.Errorf("await authorize URL: %w", err)
+	}
+
+	flowID := ulid.Make().String()
+	a.flowMu.Lock()
+	a.flows[flowID] = &flowState{
+		state:        agent.DeviceFlowPending,
+		cancel:       sess.close,
+		setupSession: sess,
+	}
+	a.flowMu.Unlock()
+
+	return agent.DeviceFlowStart{
+		FlowID:          flowID,
+		VerificationURL: verificationURL,
+		ExpiresAt:       time.Now().Add(setupTokenExchangeTimeout),
+	}, nil
+}
+
+// SubmitAuthCode delivers the user-pasted code to the running
+// setup-token subprocess, waits for the long-lived token to appear,
+// persists it in the anthropic sink, and transitions the flow to
+// success. Synchronous from the caller's perspective.
+func (a *AuthManager) SubmitAuthCode(ctx context.Context, providerID, flowID, code string) error {
+	info, ok := providerByID(providerID)
+	if !ok || info.AuthType != agent.AuthTypeOAuthCode {
+		return ErrUnknownProvider
+	}
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return ErrInvalidAuthCode
+	}
+
+	a.flowMu.Lock()
+	f, ok := a.flows[flowID]
+	if !ok {
+		a.flowMu.Unlock()
+		return ErrUnknownFlow
+	}
+	sess := f.setupSession
+	a.flowMu.Unlock()
+	if sess == nil {
+		return ErrFlowNotOAuthCode
+	}
+
+	if err := sess.submitCode(code); err != nil {
+		a.transition(flowID, agent.DeviceFlowError, "submit code: "+err.Error())
+		sess.close()
+		return err
+	}
+
+	tokCtx, cancel := context.WithTimeout(ctx, setupTokenExchangeTimeout)
+	defer cancel()
+	token, err := sess.awaitToken(tokCtx)
+	if err != nil {
+		a.transition(flowID, agent.DeviceFlowError, err.Error())
+		sess.close()
+		return err
+	}
+
+	if err := a.writeAnthropicCredential(providerID, token); err != nil {
+		a.transition(flowID, agent.DeviceFlowError, "write anthropic credential: "+err.Error())
+		sess.close()
+		return err
+	}
+
+	a.transition(flowID, agent.DeviceFlowSuccess, "")
+	// Drop the session reference and reap the subprocess. We do
+	// this AFTER the success transition so any GetFlowStatus poll
+	// in flight observes the terminal state correctly.
+	a.flowMu.Lock()
+	if cur, ok := a.flows[flowID]; ok {
+		cur.setupSession = nil
+	}
+	a.flowMu.Unlock()
+	sess.close()
+	return nil
 }
 
 // GetFlowStatus returns the current state of flowID. Pure read.
@@ -344,11 +574,16 @@ func (a *AuthManager) CancelFlow(_ context.Context, flowID string) error {
 	return nil
 }
 
-// DeleteCredential removes providerID from auth.json and triggers an
-// OpenCode restart. Used for "log out" actions.
+// DeleteCredential removes providerID's credential from the appropriate
+// sink. For OpenCode providers, triggers a server restart so the new
+// auth state takes effect; for Anthropic providers, no restart — the
+// next claude-code spawn simply sees no env var.
 func (a *AuthManager) DeleteCredential(ctx context.Context, providerID string) error {
 	if _, ok := providerByID(providerID); !ok {
 		return ErrUnknownProvider
+	}
+	if isAnthropicProvider(providerID) {
+		return a.removeAnthropicCredential(providerID)
 	}
 	if err := a.removeFromAuthJSON(providerID); err != nil {
 		return err
@@ -643,6 +878,97 @@ func (a *AuthManager) persistAuthJSONLocked(store map[string]agent.AuthCredentia
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("rename auth.json: %w", err)
+	}
+	return nil
+}
+
+// --- internal: anthropic sink I/O ---
+
+func (a *AuthManager) readAnthropicSink() (anthropicSink, error) {
+	a.authMu.Lock()
+	defer a.authMu.Unlock()
+	return a.readAnthropicSinkLocked()
+}
+
+func (a *AuthManager) readAnthropicSinkLocked() (anthropicSink, error) {
+	path := a.AnthropicSinkPath()
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) || len(data) == 0 {
+		return anthropicSink{}, nil
+	}
+	if err != nil {
+		return anthropicSink{}, fmt.Errorf("read anthropic sink: %w", err)
+	}
+	var out anthropicSink
+	if err := json.Unmarshal(data, &out); err != nil {
+		return anthropicSink{}, fmt.Errorf("decode anthropic sink: %w", err)
+	}
+	return out, nil
+}
+
+// writeAnthropicCredential persists key under the field that matches
+// providerID. Writes only one variant at a time — connecting one
+// flavor clears the other so spawn-time precedence is unambiguous.
+func (a *AuthManager) writeAnthropicCredential(providerID, key string) error {
+	a.authMu.Lock()
+	defer a.authMu.Unlock()
+	var sink anthropicSink
+	switch providerID {
+	case ProviderAnthropicClaudeCode:
+		sink.OAuthToken = key
+	case ProviderAnthropicAPI:
+		sink.APIKey = key
+	default:
+		return fmt.Errorf("writeAnthropicCredential: not an anthropic provider: %s", providerID)
+	}
+	return a.persistAnthropicSinkLocked(sink)
+}
+
+// removeAnthropicCredential clears the field for providerID. Leaves
+// the other flavor intact so a user logged into both (unlikely but
+// possible across versions) doesn't lose the other one by accident.
+func (a *AuthManager) removeAnthropicCredential(providerID string) error {
+	a.authMu.Lock()
+	defer a.authMu.Unlock()
+	sink, err := a.readAnthropicSinkLocked()
+	if err != nil {
+		return err
+	}
+	switch providerID {
+	case ProviderAnthropicClaudeCode:
+		sink.OAuthToken = ""
+	case ProviderAnthropicAPI:
+		sink.APIKey = ""
+	default:
+		return fmt.Errorf("removeAnthropicCredential: not an anthropic provider: %s", providerID)
+	}
+	if sink.OAuthToken == "" && sink.APIKey == "" {
+		// Both cleared — delete the file instead of leaving an empty JSON.
+		path := a.AnthropicSinkPath()
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove anthropic sink: %w", err)
+		}
+		return nil
+	}
+	return a.persistAnthropicSinkLocked(sink)
+}
+
+func (a *AuthManager) persistAnthropicSinkLocked(sink anthropicSink) error {
+	path := a.AnthropicSinkPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create anthropic sink dir: %w", err)
+	}
+	data, err := json.MarshalIndent(sink, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode anthropic sink: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("write tmp anthropic sink: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename anthropic sink: %w", err)
 	}
 	return nil
 }

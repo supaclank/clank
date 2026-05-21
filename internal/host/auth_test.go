@@ -582,3 +582,247 @@ func (rt *rewriteRT) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	return http.DefaultTransport.RoundTrip(req)
 }
+
+// --- Anthropic provider tests ---
+
+// Anthropic credentials live in their own sink, not opencode's
+// auth.json — they have a separate consumer (the claude subprocess's
+// env), and opencode rewrites auth.json so any unknown key would be
+// clobbered. These tests pin that routing.
+
+func TestAuthManager_AnthropicProvidersInCatalog(t *testing.T) {
+	t.Parallel()
+	a, _ := newTestAuthManager(t)
+	infos, err := a.ListProviders(context.Background())
+	if err != nil {
+		t.Fatalf("ListProviders: %v", err)
+	}
+	// Subscription path uses oauth-code (PTY-relayed setup-token);
+	// console-API path stays api-type (paste a string).
+	wantTypes := map[string]string{
+		ProviderAnthropicClaudeCode: agent.AuthTypeOAuthCode,
+		ProviderAnthropicAPI:        agent.AuthTypeAPI,
+	}
+	got := map[string]string{}
+	for _, p := range infos {
+		if want, ok := wantTypes[p.ProviderID]; ok {
+			got[p.ProviderID] = p.AuthType
+			if p.AuthType != want {
+				t.Errorf("%s: AuthType=%q, want %q", p.ProviderID, p.AuthType, want)
+			}
+		}
+	}
+	if len(got) != len(wantTypes) {
+		t.Errorf("missing anthropic providers; got %v, want %v", got, wantTypes)
+	}
+}
+
+func TestAuthManager_AnthropicClaudeCode_RoutesToSinkNotAuthJSON(t *testing.T) {
+	t.Parallel()
+	a, home := newTestAuthManager(t)
+
+	if err := a.writeAnthropicCredential(ProviderAnthropicClaudeCode, "sk-ant-oat01-xxxxxxxxxxxxx"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// opencode auth.json must NOT have an entry for the anthropic provider.
+	authJSON := filepath.Join(home, ".local", "share", "opencode", "auth.json")
+	if _, err := os.Stat(authJSON); !os.IsNotExist(err) {
+		// File might exist if something else wrote it; check there's no anthropic key.
+		data, _ := os.ReadFile(authJSON)
+		if strings.Contains(string(data), ProviderAnthropicClaudeCode) {
+			t.Errorf("anthropic credential leaked into opencode auth.json: %s", string(data))
+		}
+	}
+
+	// The clank anthropic sink must contain the token under oauth_token.
+	sinkPath := filepath.Join(home, ".local", "share", "clank", "anthropic.json")
+	data, err := os.ReadFile(sinkPath)
+	if err != nil {
+		t.Fatalf("read anthropic sink: %v", err)
+	}
+	var sink anthropicSink
+	if err := json.Unmarshal(data, &sink); err != nil {
+		t.Fatalf("decode sink: %v", err)
+	}
+	if sink.OAuthToken != "sk-ant-oat01-xxxxxxxxxxxxx" {
+		t.Errorf("OAuthToken=%q, want token", sink.OAuthToken)
+	}
+	if sink.APIKey != "" {
+		t.Errorf("APIKey should be empty, got %q", sink.APIKey)
+	}
+
+	// File mode 0o600.
+	info, err := os.Stat(sinkPath)
+	if err != nil {
+		t.Fatalf("stat sink: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("sink perm=%o, want 0o600", perm)
+	}
+}
+
+func TestAuthManager_AnthropicAPI_RoutesToSink(t *testing.T) {
+	t.Parallel()
+	a, home := newTestAuthManager(t)
+
+	if err := a.writeAnthropicCredential(ProviderAnthropicAPI, "sk-ant-api03-abcdef"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	sinkPath := filepath.Join(home, ".local", "share", "clank", "anthropic.json")
+	data, _ := os.ReadFile(sinkPath)
+	var sink anthropicSink
+	_ = json.Unmarshal(data, &sink)
+	if sink.APIKey != "sk-ant-api03-abcdef" {
+		t.Errorf("APIKey=%q", sink.APIKey)
+	}
+	if sink.OAuthToken != "" {
+		t.Errorf("OAuthToken should be empty, got %q", sink.OAuthToken)
+	}
+}
+
+// Connecting one flavor must clear the other so spawn-time env
+// resolution can never set two competing vars at once.
+func TestAuthManager_AnthropicWrite_ClearsOtherFlavor(t *testing.T) {
+	t.Parallel()
+	a, _ := newTestAuthManager(t)
+	if err := a.writeAnthropicCredential(ProviderAnthropicClaudeCode, "subscription-token"); err != nil {
+		t.Fatalf("write subscription: %v", err)
+	}
+	if err := a.writeAnthropicCredential(ProviderAnthropicAPI, "sk-ant-api"); err != nil {
+		t.Fatalf("write api key: %v", err)
+	}
+	sink, err := a.readAnthropicSink()
+	if err != nil {
+		t.Fatalf("read sink: %v", err)
+	}
+	if sink.OAuthToken != "" {
+		t.Errorf("OAuthToken should have been cleared, got %q", sink.OAuthToken)
+	}
+	if sink.APIKey != "sk-ant-api" {
+		t.Errorf("APIKey=%q", sink.APIKey)
+	}
+}
+
+func TestAuthManager_ListProviders_AnthropicConnectedState(t *testing.T) {
+	t.Parallel()
+	a, _ := newTestAuthManager(t)
+
+	if err := a.writeAnthropicCredential(ProviderAnthropicClaudeCode, "tok"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	infos, _ := a.ListProviders(context.Background())
+	var sub, api agent.ProviderAuthInfo
+	for _, p := range infos {
+		if p.ProviderID == ProviderAnthropicClaudeCode {
+			sub = p
+		}
+		if p.ProviderID == ProviderAnthropicAPI {
+			api = p
+		}
+	}
+	if !sub.Connected {
+		t.Errorf("anthropic-claude-code should be Connected after write")
+	}
+	if api.Connected {
+		t.Errorf("anthropic-api should not be Connected when only subscription token is set")
+	}
+}
+
+// DeleteCredential for an anthropic provider must NOT trigger the
+// opencode restart hook — anthropic creds are consumed by env vars
+// on the next claude spawn, not by a running server that needs to
+// reload.
+func TestAuthManager_DeleteAnthropic_NoRestart(t *testing.T) {
+	t.Parallel()
+	a, _ := newTestAuthManager(t)
+
+	if err := a.writeAnthropicCredential(ProviderAnthropicClaudeCode, "tok"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	var restartCalls int32
+	a.restart = func(context.Context) error { atomic.AddInt32(&restartCalls, 1); return nil }
+	if err := a.DeleteCredential(context.Background(), ProviderAnthropicClaudeCode); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if got := atomic.LoadInt32(&restartCalls); got != 0 {
+		t.Errorf("restart should not have been called for anthropic delete; got %d calls", got)
+	}
+	if tok := a.AnthropicOAuthToken(); tok != "" {
+		t.Errorf("token should be cleared, got %q", tok)
+	}
+}
+
+func TestAuthManager_AnthropicEnv_PrecedenceAndAbsence(t *testing.T) {
+	t.Parallel()
+	a, _ := newTestAuthManager(t)
+
+	// No credential → nil map → claude falls back to its own keychain.
+	if env := a.AnthropicEnv(); env != nil {
+		t.Errorf("expected nil env when no anthropic credential, got %v", env)
+	}
+
+	// Subscription token → CLAUDE_CODE_OAUTH_TOKEN.
+	if err := a.writeAnthropicCredential(ProviderAnthropicClaudeCode, "sub-tok"); err != nil {
+		t.Fatalf("write subscription: %v", err)
+	}
+	env := a.AnthropicEnv()
+	if got := env["CLAUDE_CODE_OAUTH_TOKEN"]; got != "sub-tok" {
+		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN=%q, want sub-tok", got)
+	}
+	if _, ok := env["ANTHROPIC_API_KEY"]; ok {
+		t.Errorf("ANTHROPIC_API_KEY should not be set when subscription token is present")
+	}
+
+	// Switch to API key → ANTHROPIC_API_KEY, subscription cleared.
+	if err := a.writeAnthropicCredential(ProviderAnthropicAPI, "sk-api"); err != nil {
+		t.Fatalf("write api: %v", err)
+	}
+	env = a.AnthropicEnv()
+	if got := env["ANTHROPIC_API_KEY"]; got != "sk-api" {
+		t.Errorf("ANTHROPIC_API_KEY=%q, want sk-api", got)
+	}
+	if _, ok := env["CLAUDE_CODE_OAUTH_TOKEN"]; ok {
+		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN should not be set when only API key is present")
+	}
+}
+
+// SubmitAPIKey is the public entry point exercised by the mux. Verify
+// it routes anthropic API-key providers through the full happy path:
+// writes to the sink, flow reaches Success, no opencode restart is
+// invoked. (Subscription provider is oauth-code-typed and uses
+// StartOAuthCodeFlow + SubmitAuthCode instead — covered in
+// auth_anthropic_setup_token_test.go.)
+func TestAuthManager_SubmitAPIKey_AnthropicReachesSuccess(t *testing.T) {
+	t.Parallel()
+	a, _ := newTestAuthManager(t)
+	var restartCalls int32
+	a.restart = func(context.Context) error { atomic.AddInt32(&restartCalls, 1); return nil }
+
+	flowID, err := a.SubmitAPIKey(context.Background(), ProviderAnthropicAPI, "sk-ant-api-xxxx", nil)
+	if err != nil {
+		t.Fatalf("SubmitAPIKey: %v", err)
+	}
+	// Spin briefly waiting for the goroutine to reach a terminal state.
+	deadline := time.Now().Add(2 * time.Second)
+	var st agent.DeviceFlowStatus
+	for time.Now().Before(deadline) {
+		st, err = a.GetFlowStatus(context.Background(), flowID)
+		if err != nil {
+			t.Fatalf("GetFlowStatus: %v", err)
+		}
+		if st.State == agent.DeviceFlowSuccess || st.State == agent.DeviceFlowError {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if st.State != agent.DeviceFlowSuccess {
+		t.Fatalf("flow state=%v err=%q, want success", st.State, st.Error)
+	}
+	if got := atomic.LoadInt32(&restartCalls); got != 0 {
+		t.Errorf("restart should not be called for anthropic submit; got %d", got)
+	}
+	if a.AnthropicAPIKey() != "sk-ant-api-xxxx" {
+		t.Errorf("token not persisted")
+	}
+}
