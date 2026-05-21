@@ -75,6 +75,14 @@ type ClaudeCodeBackend struct {
 	// provider via AuthManager. Empty when no Anthropic credential is set —
 	// claude falls back to its own keychain/OAuth login in that case.
 	ExtraEnv map[string]string
+
+	// initialModel, if non-empty, is passed to the spawned CLI as
+	// --model (via claudecode.WithModel). Claude's CLI takes model
+	// at process start, not per-message, so this is the model the
+	// whole session runs on. Set from SendMessageOpts.Model on the
+	// first OpenAndSend; ignored on subsequent sends in the same
+	// session (the CLI's model is fixed for the process's lifetime).
+	initialModel string
 }
 
 // NewClaudeCodeBackend creates a new Claude Code backend. workDir is
@@ -122,6 +130,7 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	resumeID := b.sessionID
 	factory := b.ClientFactory
 	extraEnv := b.ExtraEnv
+	model := b.initialModel
 	b.mu.Unlock()
 
 	// Defensive guard: an empty workDir would silently inherit the
@@ -143,6 +152,9 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	}
 	if len(extraEnv) > 0 {
 		opts = append(opts, claudecode.WithEnv(extraEnv))
+	}
+	if model != "" {
+		opts = append(opts, claudecode.WithModel(model))
 	}
 
 	// Build the client — use the test factory if provided.
@@ -203,6 +215,17 @@ func (b *ClaudeCodeBackend) OpenAndSend(ctx context.Context, opts SendMessageOpt
 	// Mark Busy before Open so Open's "Starting → Idle" conditional
 	// is bypassed on the create path; we go directly Starting → Busy.
 	b.setStatus(StatusBusy)
+
+	// Capture the picked model before Open spawns the CLI — claude
+	// takes --model at process start. Subsequent Send calls within
+	// the same session can't change the model (the CLI's flag is
+	// fixed for the process's lifetime); we ignore opts.Model there
+	// rather than restart the subprocess silently.
+	if opts.Model != nil && opts.Model.ModelID != "" {
+		b.mu.Lock()
+		b.initialModel = opts.Model.ModelID
+		b.mu.Unlock()
+	}
 
 	if err := b.Open(ctx); err != nil {
 		return err
