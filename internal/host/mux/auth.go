@@ -8,6 +8,8 @@ package hostmux
 // Path conventions:
 //   /auth/{provider}/device/start  — device-flow only (Copilot-style OAuth)
 //   /auth/{provider}/apikey        — api-key flow (paste a key)
+//   /auth/{provider}/oauth/start   — oauth-code flow start (PTY-relayed setup-token)
+//   /auth/{provider}/oauth/submit  — oauth-code flow code submit
 //   /auth/{provider}/flow/status   — flow-type-agnostic status poll
 //   /auth/{provider}/flow          — flow-type-agnostic cancel (DELETE)
 //   /auth/{provider}               — log out (delete stored credential)
@@ -26,6 +28,8 @@ func (m *Mux) registerAuth(mx *http.ServeMux) {
 	mx.HandleFunc("GET /auth/providers", m.handleListAuthProviders)
 	mx.HandleFunc("POST /auth/{provider}/device/start", m.handleStartDeviceFlow)
 	mx.HandleFunc("POST /auth/{provider}/apikey", m.handleSubmitAPIKey)
+	mx.HandleFunc("POST /auth/{provider}/oauth/start", m.handleStartOAuthCodeFlow)
+	mx.HandleFunc("POST /auth/{provider}/oauth/submit", m.handleSubmitAuthCode)
 	mx.HandleFunc("GET /auth/{provider}/flow/status", m.handleFlowStatus)
 	mx.HandleFunc("DELETE /auth/{provider}/flow", m.handleCancelFlow)
 	mx.HandleFunc("DELETE /auth/{provider}", m.handleDeleteCredential)
@@ -103,6 +107,53 @@ func (m *Mux) handleSubmitAPIKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, agent.DeviceFlowStart{FlowID: flowID})
 }
 
+func (m *Mux) handleStartOAuthCodeFlow(w http.ResponseWriter, r *http.Request) {
+	a, ok := m.requireAuth(w)
+	if !ok {
+		return
+	}
+	provider := r.PathValue("provider")
+	if provider == "" {
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "provider is required"})
+		return
+	}
+	start, err := a.StartOAuthCodeFlow(r.Context(), provider)
+	if err != nil {
+		writeAuthErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, start)
+}
+
+func (m *Mux) handleSubmitAuthCode(w http.ResponseWriter, r *http.Request) {
+	a, ok := m.requireAuth(w)
+	if !ok {
+		return
+	}
+	provider := r.PathValue("provider")
+	if provider == "" {
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "provider is required"})
+		return
+	}
+	var body struct {
+		FlowID string `json:"flow_id"`
+		Code   string `json:"code"`
+	}
+	if err := decodeJSON(r.Body, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "invalid JSON: " + err.Error()})
+		return
+	}
+	if body.FlowID == "" {
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "flow_id is required"})
+		return
+	}
+	if err := a.SubmitAuthCode(r.Context(), provider, body.FlowID, body.Code); err != nil {
+		writeAuthErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (m *Mux) handleFlowStatus(w http.ResponseWriter, r *http.Request) {
 	a, ok := m.requireAuth(w)
 	if !ok {
@@ -167,6 +218,10 @@ func writeAuthErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_api_key", Error: err.Error()})
 	case errors.Is(err, host.ErrMissingPrompt):
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "missing_prompt", Error: err.Error()})
+	case errors.Is(err, host.ErrInvalidAuthCode):
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_auth_code", Error: err.Error()})
+	case errors.Is(err, host.ErrFlowNotOAuthCode):
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "flow_not_oauth_code", Error: err.Error()})
 	default:
 		writeError(w, err)
 	}

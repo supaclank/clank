@@ -42,13 +42,22 @@ func TestModelPicker_OpenCodeIncludesConnectProviderEntry(t *testing.T) {
 	}
 }
 
-func TestModelPicker_ClaudeCodeOmitsConnectProviderEntry(t *testing.T) {
+// Claude Code now has connectable providers too (Anthropic subscription
+// + Console API key), so the Connect-provider row must appear there as
+// well. Inverted from the original "ClaudeCodeOmits…" assertion that
+// pinned the v1 strategic-pivot non-goal.
+func TestModelPicker_ClaudeCodeIncludesConnectProviderEntry(t *testing.T) {
 	t.Parallel()
 	p := newModelPicker(sampleModels(3), -1, agent.BackendClaudeCode)
+	found := false
 	for _, item := range p.items {
 		if item.index == modelPickerIndexConnectProvider {
-			t.Errorf("Claude Code picker should not show Connect provider; entry has index %d", item.index)
+			found = true
+			break
 		}
+	}
+	if !found {
+		t.Error("Claude Code picker missing the Connect provider entry")
 	}
 }
 

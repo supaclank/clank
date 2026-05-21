@@ -54,10 +54,30 @@ type ProviderPrompt struct {
 	Placeholder string `json:"placeholder,omitempty"`
 }
 
+// AuthType discriminator values. Clients dispatch the begin-flow
+// based on which one a provider declares.
+const (
+	// AuthTypeDevice — RFC 8628 device-code OAuth. Backend polls the
+	// provider's token endpoint; user enters user_code in a browser.
+	// Used by github-copilot.
+	AuthTypeDevice = "device"
+	// AuthTypeAPI — paste-a-string. Optional Prompts collect extra
+	// metadata (Azure resource name, Cloudflare account ID, etc.).
+	AuthTypeAPI = "api"
+	// AuthTypeOAuthCode — two-step browser auth with user-pasted code.
+	// Backend spawns the IdP's CLI (claude setup-token) in a PTY,
+	// returns the authorize URL it prints, accepts the code the user
+	// copies from the IdP's hosted callback page, writes it to the
+	// CLI's stdin, and captures the long-lived token from stdout.
+	// Used by Anthropic (Claude subscription) — works on a remote
+	// sprite since the IdP renders the code on its own page rather
+	// than redirecting to a localhost callback.
+	AuthTypeOAuthCode = "oauth-code"
+)
+
 // ProviderAuthInfo is the snapshot a client gets from
 // GET /auth/providers. AuthType selects which begin-flow the client
-// dispatches to: "device" (kicks off device flow) or "api" (prompts
-// for a key plus any Prompts the provider needs).
+// dispatches to.
 type ProviderAuthInfo struct {
 	ProviderID  string           `json:"provider_id"`
 	DisplayName string           `json:"display_name"`

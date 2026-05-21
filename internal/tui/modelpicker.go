@@ -90,9 +90,11 @@ func newModelPicker(models []agent.ModelInfo, selected int, backend agent.Backen
 			display:    m.ID + "  " + m.ProviderID,
 		})
 	}
-	// Synthetic "Connect provider…" action — only meaningful for
-	// OpenCode (Claude Code uses Anthropic's own auth flow).
-	if backend == agent.BackendOpenCode {
+	// Synthetic "Connect provider…" action. Surfaced for both
+	// backends now that AuthManager handles Anthropic credentials
+	// (CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY) alongside the
+	// OpenCode provider catalog.
+	if backend == agent.BackendOpenCode || backend == agent.BackendClaudeCode {
 		items = append(items, modelPickerItem{
 			index:   modelPickerIndexConnectProvider,
 			display: "+ Connect provider…",
