@@ -72,6 +72,39 @@ func TestClaudeBackendManager_EnvResolver_ThreadsIntoExtraEnv(t *testing.T) {
 	}
 }
 
+// ListModels returns the three claude model families the CLI supports
+// via --model. Surfaced through /models?backend=claude-code so mobile's
+// compose flow can let users pick sonnet/opus/haiku. Hardcoded values
+// pinned here so an SDK bump that drops one family fails loudly.
+func TestClaudeBackendManager_ListModels(t *testing.T) {
+	t.Parallel()
+	mgr := host.NewClaudeBackendManager()
+	models, err := mgr.ListModels(context.Background(), "/any/workdir")
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	gotIDs := map[string]bool{}
+	for _, m := range models {
+		gotIDs[m.ID] = true
+		if m.ProviderName != "Anthropic" {
+			t.Errorf("model %s: ProviderName=%q, want Anthropic", m.ID, m.ProviderName)
+		}
+		if m.ProviderID != host.ProviderAnthropicClaudeCode {
+			t.Errorf("model %s: ProviderID=%q, want %s", m.ID, m.ProviderID, host.ProviderAnthropicClaudeCode)
+		}
+	}
+	for _, want := range []string{"sonnet", "opus", "haiku"} {
+		if !gotIDs[want] {
+			t.Errorf("missing %s in ListModels result", want)
+		}
+	}
+	// `inherit` is deliberately omitted — it's a passthrough, not a
+	// user-pickable model.
+	if gotIDs["inherit"] {
+		t.Errorf("'inherit' should not be in ListModels result")
+	}
+}
+
 // Without a resolver (or with a resolver that returns nil), ExtraEnv
 // must remain nil — claude then falls back to its own keychain/OAuth
 // login. Pins the "no credential connected = vanilla CLI behavior"

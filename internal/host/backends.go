@@ -211,6 +211,49 @@ func (m *ClaudeBackendManager) Init(ctx context.Context, knownDirs func() ([]str
 // Shutdown is a no-op for Claude — each session manages its own SDK client connection.
 func (m *ClaudeBackendManager) Shutdown() {}
 
+// claudeModelCatalog enumerates the model families the claude CLI
+// accepts via --model. These are the AgentModel string constants from
+// claude-agent-sdk-go (sonnet / opus / haiku) — family aliases the CLI
+// resolves to the latest version of each tier. We deliberately omit
+// `inherit` because it's a "use whatever the caller's default is"
+// passthrough, not a user-pickable model.
+//
+// Hardcoded rather than fetched from an Anthropic API because the
+// model-list endpoint isn't part of claude-code's public surface —
+// the SDK ships these as a closed enum. Bump the SDK to pick up new
+// tiers (e.g. when Sonnet 4.5 lands a new family).
+var claudeModelCatalog = []agent.ModelInfo{
+	{
+		ID:           string(claudecode.AgentModelSonnet),
+		Name:         "Claude Sonnet",
+		ProviderID:   ProviderAnthropicClaudeCode,
+		ProviderName: "Anthropic",
+	},
+	{
+		ID:           string(claudecode.AgentModelOpus),
+		Name:         "Claude Opus",
+		ProviderID:   ProviderAnthropicClaudeCode,
+		ProviderName: "Anthropic",
+	},
+	{
+		ID:           string(claudecode.AgentModelHaiku),
+		Name:         "Claude Haiku",
+		ProviderID:   ProviderAnthropicClaudeCode,
+		ProviderName: "Anthropic",
+	},
+}
+
+// ListModels returns the model families supported by claude-code.
+// Implements agent.ModelLister so the host service's ListModels
+// dispatcher picks it up for /models?backend=claude-code requests.
+// projectDir is ignored — claude's model list is global, not
+// per-project (no plugins / no env-driven catalog like opencode).
+func (m *ClaudeBackendManager) ListModels(_ context.Context, _ string) ([]agent.ModelInfo, error) {
+	out := make([]agent.ModelInfo, len(claudeModelCatalog))
+	copy(out, claudeModelCatalog)
+	return out, nil
+}
+
 // DiscoverSessions returns historical Claude Code sessions visible to seedDir
 // by reading the on-disk JSONL transcripts via the SDK's ListSessions. The
 // SDK expands seedDir to include any git worktrees by default, mirroring how

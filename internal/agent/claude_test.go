@@ -1778,6 +1778,42 @@ func TestClaudeCodeBackend_ExtraEnv_PropagatesToSpawnOptions(t *testing.T) {
 	}
 }
 
+// User-picked model must propagate through OpenAndSend → Open as
+// `claudecode.WithModel(model_id)` on the spawn options. The CLI
+// takes --model at process start, so the spawn options is the only
+// place to wire it.
+func TestClaudeCodeBackend_PickedModel_PropagatesToSpawnOptions(t *testing.T) {
+	t.Parallel()
+	transport := newMockTransport(nil)
+	b := agent.NewClaudeCodeBackend(t.TempDir())
+
+	var captured []claudecode.Option
+	b.ClientFactory = func(opts ...claudecode.Option) claudecode.Client {
+		captured = opts
+		return claudecode.NewClientWithTransport(transport, opts...)
+	}
+
+	if err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text:  "hi",
+		Model: &agent.ModelOverride{ModelID: "sonnet", ProviderID: "anthropic-claude-code"},
+	}); err != nil {
+		t.Fatalf("OpenAndSend: %v", err)
+	}
+	defer b.Stop()
+
+	var resolved claudecode.Options
+	for _, opt := range captured {
+		opt(&resolved)
+	}
+	if resolved.Model == nil || *resolved.Model != "sonnet" {
+		got := "<nil>"
+		if resolved.Model != nil {
+			got = *resolved.Model
+		}
+		t.Errorf("Options.Model=%q, want sonnet", got)
+	}
+}
+
 // Absent ExtraEnv must mean no env-var injection — claude then resolves
 // auth via its own keychain/OAuth login. Pins the "no credential = bare
 // CLI behavior" contract.
