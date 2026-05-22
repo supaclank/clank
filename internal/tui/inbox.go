@@ -244,6 +244,7 @@ func NewInboxModel(client *daemonclient.Client) *InboxModel {
 	// CreateSession that carries Dir (§7.5).
 	hostname, gitRef := resolveLocalRepo(cwd)
 	bp := NewSidebarModel(client, hostname, gitRef, cwd)
+	bp.SetExpanded(prefs.SidebarExpanded)
 	bp.SetCloudStatus(loadCloudAuthStatus())
 	return &InboxModel{
 		client:            client,
@@ -278,7 +279,29 @@ func (m *InboxModel) Init() tea.Cmd {
 	if m.screen == screenSession && m.sessionView != nil {
 		cmds = append(cmds, m.sessionView.Init())
 	}
+	// Restore the last opened session for this cwd. Skipped if no
+	// record exists or the session was deleted in the meantime — the
+	// later session list refresh will surface the missing-id problem
+	// gracefully (session-not-found error in the right pane) without
+	// blocking startup.
+	if id := lastSessionForCwd(m.projectDir); id != "" {
+		cmds = append(cmds, m.openSession(id))
+	}
 	return tea.Batch(cmds...)
+}
+
+// lastSessionForCwd looks up the session id that was open last time
+// the TUI exited from this cwd. Returns "" when no record is found,
+// or when preferences fail to load (cold install / corrupt file).
+func lastSessionForCwd(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	prefs, err := config.LoadPreferences()
+	if err != nil {
+		return ""
+	}
+	return prefs.LastSessionByCwd[cwd]
 }
 
 // discoverCmd asks the daemon to discover historical sessions from the
@@ -499,8 +522,44 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// non-voice handling (or be ignored if it was voice-only).
 	}
 
-	// If we're in session detail view (or composing), delegate.
+	// Sidebar-originated control messages have to be handled at the
+	// inbox level before the session-view delegation below — otherwise
+	// the chat view swallows them and the sidebar's request never lands
+	// (e.g. opening a different session while one is already showing).
+	switch msg := msg.(type) {
+	case sessionSelectedFromSidebarMsg:
+		return m, m.openSession(msg.sessionID)
+	case sidebarExpandToggledMsg:
+		go m.persistSidebarExpanded(m.sidebar.SnapshotExpanded())
+		return m, nil
+	case inboxDataMsg:
+		// Always feed the session list to the sidebar, even when the
+		// chat view is the active screen. Otherwise restoring straight
+		// into a chat on startup leaves the sidebar empty until the
+		// user backs out — buildSidebarTree never sees data, so the
+		// rail / worktree tree can't render.
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.err = nil
+			m.cachedSessions = msg.sessions
+			m.sidebar.SetSessions(m.cachedSessions)
+			m.sidebar.UpdateWorktreeOwnersFromSessions(m.cachedSessions)
+			if m.searchQuery == "" {
+				m.buildGroups(m.filteredSessions())
+			}
+		}
+		return m, nil
+	}
+
+	// If we're in session detail view (or composing), delegate — but
+	// hand key events to the sidebar instead when focus has shifted
+	// there (e.g. via left-arrow). Non-key messages (SSE events, ticks,
+	// resize) still flow to the session view so its state stays live.
 	if m.screen == screenSession && m.sessionView != nil {
+		if keyMsg, ok := msg.(tea.KeyPressMsg); ok && m.pane == paneSidebar {
+			return m.handleSidebarKey(keyMsg)
+		}
 		return m.updateSessionView(msg)
 	}
 
@@ -590,18 +649,6 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 		} else {
 			m.notice = fmt.Sprintf("pushed checkpoint %s (HEAD %s)", msg.checkpointID, msg.headSHA)
-		}
-		return m, nil
-
-	case inboxDataMsg:
-		if msg.err != nil {
-			m.err = msg.err
-		} else {
-			m.err = nil
-			m.cachedSessions = msg.sessions
-			m.sidebar.SetSessions(m.cachedSessions)
-			m.sidebar.UpdateWorktreeOwnersFromSessions(m.cachedSessions)
-			m.buildGroups(m.filteredSessions())
 		}
 		return m, nil
 
@@ -705,6 +752,7 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.screen = screenInbox
 		m.sessionView = nil
 		m.activeConnID = ""
+		m.sidebar.SetActiveSessionID("")
 		// One-shot refresh on return. Do NOT re-seed autoRefreshCmd or
 		// spinner.Tick: their chains keep ticking the whole time the user
 		// is in the session view (see Update handlers above), so re-seeding
@@ -747,6 +795,33 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = wMsg.Height
 		m.searchInput.SetWidth(m.sessionPaneWidth())
 		m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
+		model, cmd := m.sessionView.Update(msg)
+		m.sessionView = model.(*SessionViewModel)
+		return m, cmd
+
+	case tea.KeyPressMsg:
+		// Intercept pane-switching shortcuts before they reach the
+		// session view — only when its text input isn't capturing the
+		// key (i.e. m.inputActive==false), so typing 'w' or 'left' in
+		// the compose box still does the right thing.
+		if m.sessionView != nil && !m.sessionView.inputActive {
+			k := normalizeKeyCase(msg.(tea.KeyPressMsg))
+			switch {
+			case key.Matches(k, key.NewBinding(key.WithKeys("left", "shift+left"))):
+				if m.showTwoPanes() {
+					m.setPane(paneSidebar)
+					return m, nil
+				}
+			case key.Matches(k, key.NewBinding(key.WithKeys("w"))):
+				m.sidebarHidden = !m.sidebarHidden
+				if m.sidebarHidden {
+					m.setPane(paneSessions)
+				} else {
+					m.setPane(paneSidebar)
+				}
+				return m, nil
+			}
+		}
 		model, cmd := m.sessionView.Update(msg)
 		m.sessionView = model.(*SessionViewModel)
 		return m, cmd
@@ -966,23 +1041,6 @@ func (m *InboxModel) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.err = nil
 		m.buildSearchResults(msg.sessions)
-		return m, nil
-
-	case inboxDataMsg:
-		// Always cache the full session list so we can restore on exit
-		// or when the search query is cleared.
-		if msg.err != nil {
-			m.err = msg.err
-		} else {
-			m.err = nil
-			m.cachedSessions = msg.sessions
-			m.sidebar.SetSessions(m.cachedSessions)
-			m.sidebar.UpdateWorktreeOwnersFromSessions(m.cachedSessions)
-			// Only rebuild from this data if not actively filtering.
-			if m.searchQuery == "" {
-				m.buildGroups(m.filteredSessions())
-			}
-		}
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -1265,6 +1323,10 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m *InboxModel) openSession(sessionID string) tea.Cmd {
 	m.screen = screenSession
 	m.activeConnID = sessionID
+	m.sidebar.SetActiveSessionID(sessionID)
+	// Persist "this is the session we were on" so next launch from
+	// the same cwd picks up here.
+	go persistLastSessionForCwd(m.projectDir, sessionID)
 
 	// Mark session as read so the inbox reflects the change immediately.
 	go m.client.Session(sessionID).MarkRead(context.Background())
@@ -1283,6 +1345,16 @@ func (m *InboxModel) openSession(sessionID string) tea.Cmd {
 		// Fall back to subscribing in Init() if pre-subscribe fails.
 		sseCancel()
 	}
+
+	// Intentionally NOT calling setPane(paneSessions) here. Opening a
+	// session from the sidebar swaps the right pane's content but does
+	// NOT yank focus out of the sidebar — the user can keep arrow-
+	// keying through other sessions and Enter on each one to preview
+	// it in the right pane. Right-arrow is the explicit "go into this
+	// chat" gesture; that's where focus actually moves.
+	//
+	// The active-session rail in the sidebar marks which row is the
+	// one currently rendered in the right pane.
 
 	// Forward current dimensions so the session view doesn't stay at "Loading...".
 	m.sessionView.width = m.width
@@ -1554,33 +1626,63 @@ func renderPill(label string, fg color.Color) string {
 }
 
 func (m *InboxModel) View() tea.View {
-	if m.screen == screenSession && m.sessionView != nil {
-		return m.sessionView.View()
-	}
-
 	if m.width == 0 {
 		v := newVoiceEnabledView("Loading...")
 		return v
 	}
 
-	sessionContent := m.renderSessionPane()
-	// When the Settings or Cloud screen is active, swap the right pane.
-	// The sidebar remains on the left exactly as usual.
-	if m.screen == screenSettings {
+	// In narrow terminals the chat view still takes over the screen —
+	// there isn't room for two panes. Two-pane embedding only applies
+	// when showTwoPanes() reports true.
+	if m.screen == screenSession && m.sessionView != nil && !m.showTwoPanes() {
+		return m.sessionView.View()
+	}
+
+	// Compute right-pane content as a styled string. The screen enum
+	// picks which sub-model renders into the right pane; the sidebar
+	// stays on the left in every case.
+	var (
+		sessionContent string
+		sessionOnMouse func(tea.MouseMsg) tea.Cmd
+		sessionCursor  *tea.Cursor
+	)
+	switch m.screen {
+	case screenSession:
+		if m.sessionView != nil {
+			m.sizeSessionViewForRightPane()
+			v := m.sessionView.View()
+			sessionContent = v.Content
+			sessionOnMouse = v.OnMouse
+			sessionCursor = v.Cursor
+		} else {
+			sessionContent = m.renderSessionPane()
+		}
+	case screenSettings:
 		sessionContent = m.settings.View()
-	}
-	if m.screen == screenCloud {
+	case screenCloud:
 		sessionContent = m.cloud.View()
+	default:
+		sessionContent = m.renderSessionPane()
 	}
+
 	var content string
+	var sidebarVisibleWidth int
 
 	if m.showTwoPanes() {
 		sidebarView := m.sidebar.View()
-		// Wrap the right pane in a focus-aware border via the shared
-		// helper so View()'s no-wrap invariant is testable in isolation
-		// (see rightPaneBorder).
-		rightPane := m.rightPaneBorder().Render(sessionContent)
+		// The chat view skips the outer pane border — every message
+		// already paints its own rounded border when selected, so a
+		// wrapping border would double up. Other screens (inbox /
+		// settings / cloud) keep the focus-aware border so the user
+		// knows where keys land.
+		var rightPane string
+		if m.screen == screenSession {
+			rightPane = sessionContent
+		} else {
+			rightPane = m.rightPaneBorder().Render(sessionContent)
+		}
 		content = lipgloss.JoinHorizontal(lipgloss.Top, sidebarView, " ", rightPane)
+		sidebarVisibleWidth = lipgloss.Width(sidebarView) + 1 // +1 for the gap column
 	} else {
 		content = sessionContent
 	}
@@ -1632,7 +1734,77 @@ func (m *InboxModel) View() tea.View {
 	}
 
 	v := newVoiceEnabledView(content)
+
+	// When the chat view is rendered inside the right pane, propagate
+	// its mouse handler so selection / copy still work — but translate
+	// X coordinates so the chat view sees them relative to its own
+	// origin (the sidebar gap shifts the right pane by that amount).
+	if sessionOnMouse != nil {
+		offset := sidebarVisibleWidth
+		v.OnMouse = func(msg tea.MouseMsg) tea.Cmd {
+			translated := offsetMouseX(msg, -offset)
+			return sessionOnMouse(translated)
+		}
+	}
+	if sessionCursor != nil {
+		// Same offset for the cursor: chat view positions it relative
+		// to its own pane, the outer view places it in the composite.
+		shifted := *sessionCursor
+		shifted.X += sidebarVisibleWidth
+		v.Cursor = &shifted
+	}
 	return v
+}
+
+// sizeSessionViewForRightPane keeps the embedded chat view in sync
+// with the current right-pane allocation. Called once per View() so a
+// terminal resize, a sidebar width adjustment, or a sidebar toggle all
+// reach the chat view before its next render.
+//
+// Width matches the inbox's content target (sessionPaneWidth) so the
+// chat's input box — which renders its own border at m.width — fits
+// inside the right pane's bordered area without spilling over the
+// pane separator. Using sessionPaneWidth + paneWrapBuffer pushed the
+// input border one cell past the right pane's left edge.
+func (m *InboxModel) sizeSessionViewForRightPane() {
+	if m.sessionView == nil {
+		return
+	}
+	w := m.sessionPaneWidth()
+	h := m.height - paneBorderInset
+	if w < 10 {
+		w = 10
+	}
+	if h < 5 {
+		h = 5
+	}
+	m.sessionView.width = w
+	m.sessionView.height = h
+	if m.sessionView.input.Width() != w-promptInputBorderSize {
+		m.sessionView.input.SetWidth(w - promptInputBorderSize)
+	}
+}
+
+// offsetMouseX returns a copy of msg with the underlying Mouse.X shifted
+// by dx. Used to translate composite-view mouse coordinates into a
+// sub-view's local frame before forwarding the event.
+func offsetMouseX(msg tea.MouseMsg, dx int) tea.MouseMsg {
+	switch typed := msg.(type) {
+	case tea.MouseClickMsg:
+		typed.X += dx
+		return typed
+	case tea.MouseReleaseMsg:
+		typed.X += dx
+		return typed
+	case tea.MouseMotionMsg:
+		typed.X += dx
+		return typed
+	case tea.MouseWheelMsg:
+		typed.X += dx
+		return typed
+	default:
+		return msg
+	}
 }
 
 // renderSessionPane renders the right pane (session list) content as a string.
@@ -1747,12 +1919,17 @@ func (m *InboxModel) showTwoPanes() bool {
 }
 
 // setPane is the single point of truth for which top-level pane has
-// keyboard focus. It keeps SidebarModel.focused in sync with m.pane so
-// callers can't drift the two flags apart (which would silently break
-// the focus border on either pane).
+// keyboard focus. It keeps SidebarModel.focused and SessionViewModel
+// .paneFocused in sync with m.pane so callers can't drift them apart
+// (which would silently break the focus border on either pane, or
+// leave the chat's message cursor highlighted while the sidebar is
+// where the user is actually navigating).
 func (m *InboxModel) setPane(p inboxPane) {
 	m.pane = p
 	m.sidebar.SetFocused(p == paneSidebar)
+	if m.sessionView != nil {
+		m.sessionView.paneFocused = p == paneSessions
+	}
 }
 
 // sidebarWidthRatioFromPrefs returns the persisted sidebar width ratio, or the
@@ -1773,6 +1950,33 @@ func sidebarWidthRatioFromPrefs(prefs config.Preferences) int {
 func (m *InboxModel) persistSidebarWidthRatio(ratio int) {
 	prefs, _ := config.LoadPreferences()
 	prefs.SidebarWidthRatio = ratio
+	_ = config.SavePreferences(prefs)
+}
+
+// persistSidebarExpanded writes the sidebar's expand-state snapshot to
+// the preferences file. Called from a goroutine after every toggle so
+// the TUI doesn't block on disk I/O. The snapshot is captured by the
+// main loop so concurrent writes can't race with the save.
+func (m *InboxModel) persistSidebarExpanded(snapshot map[string]bool) {
+	prefs, _ := config.LoadPreferences()
+	prefs.SidebarExpanded = snapshot
+	_ = config.SavePreferences(prefs)
+}
+
+// persistLastSessionForCwd records the session id that was open most
+// recently from this cwd. Fire-and-forget; failures are silently
+// ignored — "restore the last session" is a convenience, not a
+// correctness guarantee. Empty cwd skips persistence (would conflate
+// every weird launch context under one key).
+func persistLastSessionForCwd(cwd, sessionID string) {
+	if cwd == "" {
+		return
+	}
+	prefs, _ := config.LoadPreferences()
+	if prefs.LastSessionByCwd == nil {
+		prefs.LastSessionByCwd = map[string]string{}
+	}
+	prefs.LastSessionByCwd[cwd] = sessionID
 	_ = config.SavePreferences(prefs)
 }
 
@@ -1899,26 +2103,22 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		}
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("right", "shift+right"))):
-		// Right arrow navigates to the session pane.
 		if m.sidebar.creating {
 			break
 		}
-		// On the "⚙ Settings" row, right arrow opens the settings page
-		// (mirrors Enter, and matches how the user said they expect
-		// left/right to navigate between sidebar and page).
+		// Settings / Cloud rows: right arrow opens their preview panel
+		// (mirrors Enter).
 		if m.sidebar.CursorOnSettings() {
 			m.openSettings()
 			return m, nil
 		}
-		// On the "☁ Cloud" row, right arrow opens the cloud panel.
 		if m.sidebar.CursorOnCloud() {
 			return m, m.openCloud()
 		}
-		prevBranch := m.sidebar.SelectedBranch()
+		// Default: shift focus to whatever is in the right pane (inbox
+		// or session view). Mirrors the pre-tree behavior where left/
+		// right just toggle which pane is focused.
 		m.setPane(paneSessions)
-		if m.sidebar.SelectedBranch() != prevBranch {
-			m.applyFiltersAndRebuild()
-		}
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 		// While creating a new branch, let the sidebar handle Enter.
@@ -1942,13 +2142,17 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			m.importSessions = newImportSessionsModel()
 			return m, nil
 		}
-		// Enter on a branch selects it and switches focus to session pane.
-		prevBranch := m.sidebar.SelectedBranch()
-		m.setPane(paneSessions)
-		if m.sidebar.SelectedBranch() != prevBranch {
-			m.applyFiltersAndRebuild()
+		// Enter on a session row in the sidebar tree opens the chat view.
+		// Forwarding to the sidebar lets its handleEnter emit the
+		// sessionSelectedFromSidebarMsg, which the inbox handles via the
+		// top-level Update switch above.
+		if id := m.sidebar.SelectedSessionID(); id != "" {
+			cmd := m.sidebar.Update(msg)
+			return m, cmd
 		}
-		return m, nil
+		// Enter on a worktree / Older bucket toggles its expand state;
+		// forward to the sidebar so it returns the toggle command.
+		return m, m.sidebar.Update(msg)
 	}
 
 	// Track branch selection before and after to detect changes.
@@ -2115,14 +2319,9 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	isDone := s.Visibility == agent.VisibilityDone
 	isArchived := s.Visibility == agent.VisibilityArchived
 	ago := timeAgo(s.UpdatedAt)
-	stateIcon := m.styledAgentStatus(s.Status)
+	stateIcon := styledAgentStatus(s.Status, m.spinner.View())
 
-	unreadMark := " "
-	if s.FollowUp {
-		unreadMark = lipgloss.NewStyle().Foreground(warningColor).Bold(true).Render("!")
-	} else if s.Unread() {
-		unreadMark = lipgloss.NewStyle().Foreground(dangerColor).Bold(true).Render("*")
-	}
+	unreadMark := sessionMarker(*s)
 
 	// Branch badge — shown only when viewing all branches (no branch filter active).
 	const branchBadgeWidth = 12
@@ -2177,26 +2376,19 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 		maxPromptWidth = 10
 	}
 
-	prompt := truncateStr(s.Prompt, maxPromptWidth)
-	if s.Title != "" {
-		prompt = truncateStr(s.Title, maxPromptWidth)
-	}
-	if prompt == "" {
-		prompt = lipgloss.NewStyle().Foreground(dimColor).Render(truncateStr(s.ID, 8))
-	} else if isArchived {
-		// Archived sessions: fully grayed-out title.
+	prompt := truncateStr(sessionTitle(*s), maxPromptWidth)
+	switch {
+	case sessionTitleIsFallback(*s):
+		prompt = lipgloss.NewStyle().Foreground(dimColor).Render(prompt)
+	case isArchived:
 		prompt = lipgloss.NewStyle().Foreground(mutedColor).Render(prompt)
-	} else if isDone {
-		// Done sessions: green title text.
+	case isDone:
 		prompt = lipgloss.NewStyle().Foreground(successColor).Render(prompt)
-	} else if s.FollowUp {
-		// Follow-up sessions: dark orange title to stand out.
+	case s.FollowUp:
 		prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("#D97706")).Bold(true).Render(prompt)
-	} else if s.Unread() {
-		// Unread sessions: bold title to stand out.
+	case s.Unread():
 		prompt = lipgloss.NewStyle().Bold(true).Render(prompt)
-	} else {
-		// Read sessions: dimmed title.
+	default:
 		prompt = lipgloss.NewStyle().Foreground(dimColor).Render(prompt)
 	}
 
@@ -2236,21 +2428,6 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 		return prefix + line[2:]
 	}
 	return line
-}
-
-func (m *InboxModel) styledAgentStatus(status agent.SessionStatus) string {
-	switch status {
-	case agent.StatusBusy, agent.StatusStarting:
-		return m.spinner.View()
-	case agent.StatusIdle:
-		return lipgloss.NewStyle().Foreground(warningColor).Render("○")
-	case agent.StatusError:
-		return lipgloss.NewStyle().Foreground(dangerColor).Render("✗")
-	case agent.StatusDead:
-		return lipgloss.NewStyle().Foreground(mutedColor).Render("·")
-	default:
-		return lipgloss.NewStyle().Foreground(dimColor).Render("·")
-	}
 }
 
 func (m *InboxModel) viewportHeight() int {

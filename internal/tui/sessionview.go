@@ -155,6 +155,12 @@ type SessionViewModel struct {
 	inputActive bool
 	input       textarea.Model
 
+	// paneFocused mirrors whether the session view is the currently
+	// focused pane in the parent inbox layout. The chat draws no outer
+	// border, so the per-message cursor border is the only visual cue
+	// for focus — when paneFocused is false, that border is suppressed.
+	paneFocused bool
+
 	// Permission state.
 	pendingPerms   []agent.PermissionData
 	replyingPermID string // non-empty while a reply is in flight (prevents double-tap)
@@ -313,6 +319,7 @@ type entryRenderKey struct {
 	ownerExpanded bool
 	streaming     bool
 	showCopied    bool // selected entry's [copy] vs ✓ copied state
+	paneFocused   bool // gates the cursor border on/off when focus moves
 	// contentLen and renderedMDLen are belt-and-suspenders: if a mutation
 	// site forgets to nil cachedLines but does update content or clear
 	// renderedMD (the more common invalidation signals), the key still
@@ -2217,7 +2224,13 @@ func (m *SessionViewModel) View() tea.View {
 
 	var sb strings.Builder
 
-	// Header.
+	// Header. Prepend a blank row so the chat's title lands at the
+	// same vertical position as the sidebar's "Worktrees" header
+	// (which sits one row below the sidebar's top border). The chat
+	// has no outer border of its own, so without this nudge the title
+	// would render flush against the top edge and look misaligned
+	// with the sidebar.
+	sb.WriteString("\n")
 	sb.WriteString(m.renderHeader())
 	sb.WriteString("\n\n")
 
@@ -2516,6 +2529,7 @@ func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool, ownerExpa
 		ownerExpanded: ownerExpanded,
 		streaming:     e.streaming,
 		showCopied:    selected && m.isShowingCopied(),
+		paneFocused:   m.paneFocused,
 		contentLen:    len(e.content),
 		renderedMDLen: len(e.renderedMD),
 	}
@@ -2682,8 +2696,10 @@ func (m *SessionViewModel) renderEntryUncached(e *displayEntry, selected bool, o
 		contentLines = []string{e.content}
 	}
 
-	if selected && navigable {
-		// Wrap content in a rounded border.
+	if selected && navigable && m.paneFocused {
+		// Wrap content in a rounded border. Only when the chat pane
+		// has focus — otherwise the selection would steal attention
+		// from the sidebar cursor where it actually belongs.
 		inner := strings.Join(contentLines, "\n")
 		bordered := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).

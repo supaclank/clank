@@ -104,10 +104,11 @@ const paneBorderInset = 2
 // original instance of this pattern.
 const paneWrapBuffer = 2
 
-// paneBorderStyle returns the focus-aware border for a top-level pane
-// (sidebar, session list, settings). Focused panes get a visible rounded
-// primary-color border; unfocused panes get a hidden border in the muted
-// color so the layout doesn't shift on focus changes.
+// paneBorderStyle returns the focus-aware border for the right pane in
+// non-chat screens (inbox list, settings preview, etc.). Focused panes
+// get a visible rounded primary-color border; unfocused panes get a
+// hidden border in the muted color so the layout doesn't shift on
+// focus changes.
 //
 // Callers provide width/height via .Width(...).Height(...) on the
 // returned style; both are inner content dimensions (lipgloss adds the
@@ -122,6 +123,21 @@ func paneBorderStyle(focused bool) lipgloss.Style {
 	return lipgloss.NewStyle().
 		Border(border).
 		BorderForeground(borderColor)
+}
+
+// sidebarBorderStyle is the always-visible variant used for the
+// sidebar. The border itself stays the same (rounded); only the
+// color shifts with focus. That avoids the layout reflow you'd get
+// from toggling HiddenBorder, and signals "this region is here, and
+// here's where attention is right now."
+func sidebarBorderStyle(focused bool) lipgloss.Style {
+	color := mutedColor
+	if focused {
+		color = primaryColor
+	}
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(color)
 }
 
 // promptInputBorder is the external border+padding applied around the textarea.
@@ -187,6 +203,23 @@ func timeAgo(t time.Time) string {
 	default:
 		days := int(d.Hours() / 24)
 		return fmt.Sprintf("%dd ago", days)
+	}
+}
+
+// shortTimeAgo returns a compact relative time without the " ago"
+// suffix — e.g. "5d", "2h", "30m", "now". Designed for tight columns
+// where the suffix is redundant given the context.
+func shortTimeAgo(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
 }
 

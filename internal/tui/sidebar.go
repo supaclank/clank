@@ -1,33 +1,28 @@
 package tui
 
-// SidebarModel is the navigation sidebar of the inbox layout.
+// SidebarModel is the IDE-style navigation sidebar of the inbox layout.
 //
-// It contains two sections, selectable with one cursor:
+// The visible body is a flat list of sidebarNode rows produced by
+// flattenSidebar(tree, expanded). The tree itself is rebuilt from the
+// session list on each SetSessions; expand state survives rebuilds
+// because it keys on stable node Keys (LocalPath, etc.).
 //
-//   - Worktrees (top): "All" plus one entry per unique GitRef.LocalPath
-//     derived from cached sessions, sorted by most-recent UpdatedAt.
-//   - Footer: "↓ Import Sessions" then "⚙ Settings", anchored to the
-//     bottom of the sidebar.
+// Layout (top-to-bottom):
 //
-// Cursor model: linear `cursor int` across all selectable rows. Layout:
+//	[0]             → AllSessions (virtual; selecting opens the inbox)
+//	[1 .. N]        → Recent worktrees, each expandable into sessions
+//	[…]             → Older worktrees bucket (collapsible)
+//	[footer]        → Import / Cloud / Settings rows pinned to bottom
 //
-//	[0]                 → "All" worktrees
-//	[1 .. M]            → entries (M rows)
-//	[M+1]               → "↓ Import Sessions" footer
-//	[M+2]               → "⚙ Settings" footer
-//
-// Section boundaries are computed at use-time (cursorSection /
-// settingsCursorIndex) so adding rows doesn't require renumbering.
+// Cursor model: linear `cursor int` indexing into the flattened node
+// list. Section breakpoints (used by shift+up/down) are derived from
+// node Kinds, so adding rows never requires renumbering.
 
 import (
 	"context"
-	"fmt"
-	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
-	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -41,63 +36,22 @@ import (
 // used when the screen width is not yet known.
 const sidebarWidth = 30
 
-// sidebarSection identifies which section the cursor is in. Used by
-// key dispatch and by selection accessors that should return zero-value
-// when the cursor isn't in their section.
-type sidebarSection int
-
-const (
-	sectionWorktrees sidebarSection = iota
-	sectionSettings
-)
-
-// worktreeEntry is one row in the worktrees section, derived from sessions.
-type worktreeEntry struct {
-	LocalPath       string
-	Label           string // filepath.Base(LocalPath)
-	Total           int
-	Active          int
-	Done            int
-	Archived        int
-	LatestUpdatedAt time.Time
-
-	// WorktreeID is the sync-server-side identifier for this LocalPath,
-	// captured from any session that has it set. Empty when none of
-	// the sessions have ever been registered with a remote.
-	WorktreeID string
-
-	// OwnerKind is "local", "remote", or "" (unknown / not synced).
-	// Populated by SetWorktreeOwners once the inbox fetches the remote's
-	// view of this user's worktrees.
-	OwnerKind string
-}
-
-// IsDone returns true when every session is done or archived.
-func (e worktreeEntry) IsDone() bool {
-	return e.Total > 0 && e.Active == 0
-}
-
-// IsArchived returns true when every session is archived.
-func (e worktreeEntry) IsArchived() bool {
-	return e.Total > 0 && e.Archived == e.Total
-}
-
-// branchWorktreeCreatedMsg is sent after a worktree is created for a new branch.
+// branchWorktreeCreatedMsg is sent after a worktree is created for a new
+// branch from the inline new-branch input.
 type branchWorktreeCreatedMsg struct {
 	branch      string
 	worktreeDir string
 	err         error
 }
 
-// newWorktreeSessionRequestMsg is emitted after a worktree is created so the
-// inbox can immediately open a composing session inside it.
+// newWorktreeSessionRequestMsg is emitted after a worktree is created so
+// the inbox can immediately open a composing session inside it.
 type newWorktreeSessionRequestMsg struct {
 	worktreeDir string
 }
 
 // SettingsRequestedMsg is emitted by the inbox when the user activates the
-// "⚙ Settings" footer entry in the sidebar. It's defined here (rather than
-// in inbox.go) so sidebar consumers can react without importing inbox types.
+// "⚙ Settings" footer entry in the sidebar.
 type SettingsRequestedMsg struct{}
 
 // ImportSessionsRequestedMsg is emitted when the user activates the
@@ -110,7 +64,18 @@ type worktreeOptionsRequestedMsg struct {
 	localPath string
 }
 
-// SidebarModel displays worktrees + a settings footer
+// sessionSelectedFromSidebarMsg is emitted when the user presses Enter
+// on a session node in the sidebar tree. The inbox handles it by opening
+// the session view for that ID.
+type sessionSelectedFromSidebarMsg struct {
+	sessionID string
+}
+
+// sidebarExpandToggledMsg is emitted after an expand/collapse so the
+// inbox can persist the new state to preferences.
+type sidebarExpandToggledMsg struct{}
+
+// SidebarModel renders the sidebar tree and tracks cursor/expand state.
 type SidebarModel struct {
 	client *daemonclient.Client
 	// projectDir is the cwd the inbox was launched from. Kept for display
@@ -120,16 +85,23 @@ type SidebarModel struct {
 	hostname   string
 	gitRef     agent.GitRef
 
-	entries []worktreeEntry
-	cursor  int
-	scroll  int
+	sessions        []agent.SessionInfo // cached so toggling expand can rebuild without re-fetch
+	tree            sidebarTree
+	flat            []sidebarNode
+	expanded        map[string]bool   // effective expand state: defaults + user overrides
+	userToggles     map[string]bool   // explicit user expand/collapse choices (persisted)
+	owners          map[string]string // worktree id → owner kind ("local"/"remote")
+	cycleIdx        map[string]int    // per-worktree index used by Shift+Enter session-rotate
+	activeSessionID string            // session currently rendered in the right pane (drives the left-rail indicator)
+	nowFn           func() time.Time  // injected for deterministic tests
+
+	cursor int
+	scroll int
 
 	// New branch input mode.
 	creating bool
 	input    textinput.Model
 
-	// "All branches" is the virtual first entry (index -1 means all).
-	// cursor==0 means "All branches", cursor>=1 means entries[cursor-1].
 	focused bool
 	width   int
 	height  int
@@ -138,67 +110,15 @@ type SidebarModel struct {
 	// cloudStatus is mirrored from the inbox so the "☁ Cloud" footer
 	// row can render a connection indicator. Defaults to
 	// cloudStatusNotConfigured (zero value) until SetCloudStatus is called.
-	cloudStatus cloudAuthStatus
-	// cloudSpinnerFrame is the latest spinner glyph pushed by the inbox
-	// each tick. Rendered in front of the "checking" label so the
-	// indicator animates while we're waiting on the first /me result.
+	cloudStatus       cloudAuthStatus
 	cloudSpinnerFrame string
-}
-
-// SetCloudStatus updates the cloud connection indicator shown next to
-// the "☁ Cloud" footer row. Callers (the inbox) are responsible for
-// pushing the latest status whenever it can change (startup, sign-in,
-// sign-out, /me result, server failure).
-func (m *SidebarModel) SetCloudStatus(s cloudAuthStatus) { m.cloudStatus = s }
-
-// SetCloudSpinnerFrame feeds the current spinner glyph from the inbox
-// into the sidebar. The frame is only rendered when cloudStatus ==
-// cloudStatusChecking; outside that state it's ignored.
-func (m *SidebarModel) SetCloudSpinnerFrame(frame string) { m.cloudSpinnerFrame = frame }
-
-// SetWorktreeOwners stamps the latest known owner_kind onto each entry
-// keyed by its WorktreeID. Entries whose WorktreeID isn't in the map
-// (worktree never pushed, or the remote is offline) keep OwnerKind="".
-// Callers (the inbox) refresh this whenever they re-fetch sessions.
-func (m *SidebarModel) SetWorktreeOwners(byWorktreeID map[string]string) {
-	for i := range m.entries {
-		id := m.entries[i].WorktreeID
-		if id == "" {
-			continue
-		}
-		if kind, ok := byWorktreeID[id]; ok {
-			m.entries[i].OwnerKind = kind
-		}
-	}
-}
-
-// UpdateWorktreeOwnersFromSessions derives per-worktree ownership from
-// each session's IsRemote flag (set by the local daemon's gateway
-// from its OwnerCache). Replaces the older direct-to-remote
-// loadWorktreeOwners path: every TUI surface now flows through the
-// local daemon, no NewRemoteClient calls.
-func (m *SidebarModel) UpdateWorktreeOwnersFromSessions(sessions []agent.SessionInfo) {
-	owners := make(map[string]string, len(sessions))
-	for _, s := range sessions {
-		id := s.GitRef.WorktreeID
-		if id == "" {
-			continue
-		}
-		// Once a worktree is seen as remote-owned, treat it as remote
-		// even if a later (stale) session row says otherwise. The
-		// OwnerCache is authoritative; this just summarises.
-		if s.IsRemote {
-			owners[id] = "remote"
-		} else if _, ok := owners[id]; !ok {
-			owners[id] = "local"
-		}
-	}
-	m.SetWorktreeOwners(owners)
 }
 
 // NewSidebarModel creates a sidebar for the given repo identity.
 // projectDir is retained for display purposes only; branch/worktree ops
-// are addressed by (hostname, gitRef).
+// are addressed by (hostname, gitRef). initialExpanded seeds the
+// expand-state map (e.g. from persisted preferences); pass nil for a
+// fresh sidebar with everything collapsed.
 func NewSidebarModel(client *daemonclient.Client, hostname string, gitRef agent.GitRef, projectDir string) SidebarModel {
 	ti := textinput.New()
 	ti.Placeholder = "branch-name"
@@ -211,189 +131,278 @@ func NewSidebarModel(client *daemonclient.Client, hostname string, gitRef agent.
 	ti.SetStyles(styles)
 
 	return SidebarModel{
-		client:     client,
-		hostname:   hostname,
-		gitRef:     gitRef,
-		projectDir: projectDir,
-		input:      ti,
-		cursor:     0, // "All" selected by default
+		client:      client,
+		hostname:    hostname,
+		gitRef:      gitRef,
+		projectDir:  projectDir,
+		input:       ti,
+		expanded:    map[string]bool{},
+		userToggles: map[string]bool{},
+		owners:      map[string]string{},
+		cycleIdx:    map[string]int{},
+		nowFn:       time.Now,
+		cursor:      0, // AllSessions selected by default
 	}
 }
 
 // Init is a no-op; the sidebar is populated via SetSessions.
-func (m *SidebarModel) Init() tea.Cmd {
-	return nil
+func (m *SidebarModel) Init() tea.Cmd { return nil }
+
+// SetExpanded seeds the persisted user-toggle map (e.g. from
+// Preferences.SidebarExpanded). Older buckets always start collapsed
+// regardless of what was persisted — see sanitizeExpanded for the
+// reset rules. Auto-defaults (visible worktrees auto-expand) are
+// applied during rebuildFlat, not stored here. Safe to call before
+// SetSessions.
+func (m *SidebarModel) SetExpanded(seed map[string]bool) {
+	if seed == nil {
+		m.userToggles = map[string]bool{}
+	} else {
+		m.userToggles = sanitizeExpanded(seed)
+	}
+	m.rebuildFlat()
 }
 
-// SetSessions rebuilds the worktree entries from the provided sessions.
-// Entries are derived by grouping on GitRef.LocalPath and sorted by most-recent UpdatedAt.
-func (m *SidebarModel) SetSessions(sessions []agent.SessionInfo) {
-	type entryAcc struct {
-		worktreeEntry
-	}
-	byPath := make(map[string]*entryAcc)
-	for _, s := range sessions {
-		path := s.GitRef.LocalPath
-		if path == "" {
+// SnapshotExpanded returns a shallow copy of the explicit user toggle
+// map. Auto-defaults (visible worktrees) are deliberately NOT included
+// — they're computed every launch, persisting them would make a future
+// default change invisible to existing users.
+func (m *SidebarModel) SnapshotExpanded() map[string]bool {
+	out := make(map[string]bool, len(m.userToggles))
+	for k, v := range m.userToggles {
+		if isOlderBucketKey(k) {
 			continue
 		}
-		acc := byPath[path]
-		if acc == nil {
-			acc = &entryAcc{worktreeEntry{
-				LocalPath: path,
-				Label:     filepath.Base(path),
-			}}
-			byPath[path] = acc
-		}
-		// Capture the worktree id off the first session that has one;
-		// `clank push` writes the same id back into every session on
-		// this LocalPath, so later sessions just confirm.
-		if acc.WorktreeID == "" && s.GitRef.WorktreeID != "" {
-			acc.WorktreeID = s.GitRef.WorktreeID
-		}
-		acc.Total++
-		switch s.Visibility {
-		case agent.VisibilityArchived:
-			acc.Archived++
-		case agent.VisibilityDone:
-			acc.Done++
-		default:
-			acc.Active++
-		}
-		if s.UpdatedAt.After(acc.LatestUpdatedAt) {
-			acc.LatestUpdatedAt = s.UpdatedAt
+		out[k] = v
+	}
+	return out
+}
+
+// computeEffectiveExpanded combines auto-defaults (only the cwd's
+// worktree expands on first sight) with the persisted user toggles.
+// User choices win over defaults so an explicit collapse stays
+// collapsed across rebuilds — and any other worktree the user
+// expanded once stays expanded.
+//
+// The narrow auto-expand rule (cwd only) keeps the sidebar quiet at
+// startup. The cwd is where the user is right now, so showing its
+// sessions inline is the only default that earns its vertical
+// space.
+func (m *SidebarModel) computeEffectiveExpanded() map[string]bool {
+	out := make(map[string]bool, 1+len(m.userToggles))
+	if m.gitRef.LocalPath != "" {
+		out["wt:"+m.gitRef.LocalPath] = true
+	}
+	for k, v := range m.userToggles {
+		out[k] = v
+	}
+	return out
+}
+
+// SetSessions rebuilds the tree from the provided sessions. Cached so
+// toggle operations can re-flatten without re-fetching.
+func (m *SidebarModel) SetSessions(sessions []agent.SessionInfo) {
+	m.sessions = sessions
+	m.rebuildTree()
+}
+
+// rebuildTree rebuilds tree + flat list from m.sessions. Called whenever
+// the source data, expand state, or owners change.
+func (m *SidebarModel) rebuildTree() {
+	m.tree = buildSidebarTree(m.sessions, m.gitRef.LocalPath, m.nowFn())
+	m.applyOwners(&m.tree)
+	m.rebuildFlat()
+	m.pruneStaleExpandedKeys()
+	m.clampCursor()
+}
+
+// rebuildFlat re-flattens the current tree with the current effective
+// expand state (auto-defaults + user toggles). Separated from
+// rebuildTree so SetExpanded can update visibility without re-bucketing
+// sessions.
+func (m *SidebarModel) rebuildFlat() {
+	m.expanded = m.computeEffectiveExpanded()
+	m.flat = flattenSidebar(m.tree, m.expanded, m.nowFn())
+	m.clampCursor()
+}
+
+// applyOwners stamps the cached owner_kind onto each worktreeNode in
+// place. Called after every rebuildTree so a worker reshuffling tree
+// nodes doesn't lose the cloud-glyph indicator on remote worktrees.
+func (m *SidebarModel) applyOwners(t *sidebarTree) {
+	for i := range t.RecentWorktrees {
+		if kind, ok := m.owners[t.RecentWorktrees[i].WorktreeID]; ok {
+			t.RecentWorktrees[i].OwnerKind = kind
 		}
 	}
-
-	entries := make([]worktreeEntry, 0, len(byPath))
-	for _, acc := range byPath {
-		entries = append(entries, acc.worktreeEntry)
+	for i := range t.OlderWorktrees.Hidden {
+		if kind, ok := m.owners[t.OlderWorktrees.Hidden[i].WorktreeID]; ok {
+			t.OlderWorktrees.Hidden[i].OwnerKind = kind
+		}
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].LatestUpdatedAt.After(entries[j].LatestUpdatedAt)
-	})
+}
 
-	m.entries = entries
-
-	// Clamp cursor so it stays valid after the list shrinks.
-	if max := m.settingsCursorIndex(); m.cursor > max {
-		m.cursor = max
+// pruneStaleExpandedKeys deletes any "wt:" or "older:s:" keys whose
+// worktrees no longer appear in the tree, so the persisted map can't
+// grow unbounded across years of use.
+func (m *SidebarModel) pruneStaleExpandedKeys() {
+	alive := make(map[string]bool, len(m.tree.RecentWorktrees)+len(m.tree.OlderWorktrees.Hidden))
+	for _, w := range m.tree.RecentWorktrees {
+		alive["wt:"+w.LocalPath] = true
+		alive["older:s:"+w.LocalPath] = true
 	}
-	// Clamp scroll: renderWorktreeEntries slices m.entries[m.scroll:end],
-	// which would panic if the list shrinks below the previous offset.
-	switch {
-	case len(m.entries) == 0:
+	for _, w := range m.tree.OlderWorktrees.Hidden {
+		alive["wt:"+w.LocalPath] = true
+		alive["older:s:"+w.LocalPath] = true
+	}
+	alive["older:wt"] = true
+	for k := range m.userToggles {
+		if strings.HasPrefix(k, "wt:") || strings.HasPrefix(k, "older:") {
+			if !alive[k] {
+				delete(m.userToggles, k)
+			}
+		}
+	}
+}
+
+// clampCursor keeps the cursor inside the flat list and resets scroll
+// when the list shrinks below the previous offset.
+func (m *SidebarModel) clampCursor() {
+	if last := len(m.flat) - 1; last < 0 {
+		m.cursor = 0
 		m.scroll = 0
-	case m.scroll > len(m.entries)-1:
-		m.scroll = len(m.entries) - 1
+		return
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+	if m.cursor > len(m.flat)-1 {
+		m.cursor = len(m.flat) - 1
+	}
+	if m.scroll < 0 {
+		m.scroll = 0
 	}
 }
 
-// --- Cursor / section helpers ---
-
-// totalRows is the number of selectable rows across all sections.
-// Layout: [1 "All"][len(entries) entries][1 import][1 cloud][1 settings].
-func (m *SidebarModel) totalRows() int {
-	return 1 + len(m.entries) + 3
+// toggleExpand flips the expand state for the node at the cursor when
+// it's expandable. The flip is written to userToggles (the persistable
+// map), then rebuildFlat recomputes the effective state. Returns true
+// when the state actually changed so the caller can emit a persistence
+// message.
+func (m *SidebarModel) toggleExpand() bool {
+	if m.cursor < 0 || m.cursor >= len(m.flat) {
+		return false
+	}
+	n := m.flat[m.cursor]
+	if !n.IsExpandable() {
+		return false
+	}
+	m.userToggles[n.Key()] = !m.expanded[n.Key()]
+	m.rebuildFlat()
+	return true
 }
 
-// importCursorIndex returns the cursor value of the "↓ Import Sessions"
-// footer row. Third-to-last.
-func (m *SidebarModel) importCursorIndex() int {
-	return m.totalRows() - 3
+// SetActiveSessionID stamps the session currently rendered in the
+// right pane. The sidebar uses it to paint a left-edge rail next to
+// that session's row, so the user can see "what's open" independent of
+// where their arrow-key cursor sits. Pass "" to clear.
+func (m *SidebarModel) SetActiveSessionID(id string) { m.activeSessionID = id }
+
+// SetCloudStatus updates the cloud connection indicator shown next to
+// the "☁ Cloud" footer row.
+func (m *SidebarModel) SetCloudStatus(s cloudAuthStatus) { m.cloudStatus = s }
+
+// SetCloudSpinnerFrame feeds the current spinner glyph from the inbox.
+func (m *SidebarModel) SetCloudSpinnerFrame(frame string) { m.cloudSpinnerFrame = frame }
+
+// SetWorktreeOwners stamps the latest known owner_kind onto each
+// worktreeNode keyed by its WorktreeID. The map is also cached so a
+// subsequent SetSessions reshuffle reapplies the same labels.
+func (m *SidebarModel) SetWorktreeOwners(byWorktreeID map[string]string) {
+	m.owners = byWorktreeID
+	if len(m.flat) == 0 {
+		return
+	}
+	m.applyOwners(&m.tree)
+	m.rebuildFlat()
 }
 
-// cloudCursorIndex returns the cursor value of the "☁ Cloud" footer
-// row. Second-to-last.
-func (m *SidebarModel) cloudCursorIndex() int {
-	return m.totalRows() - 2
-}
-
-// settingsCursorIndex returns the cursor value of the "⚙ Settings"
-// footer row. Always the last row in the sidebar.
-func (m *SidebarModel) settingsCursorIndex() int {
-	return m.totalRows() - 1
+// UpdateWorktreeOwnersFromSessions derives per-worktree ownership from
+// each session's IsRemote flag (set by the local daemon's gateway).
+func (m *SidebarModel) UpdateWorktreeOwnersFromSessions(sessions []agent.SessionInfo) {
+	owners := make(map[string]string, len(sessions))
+	for _, s := range sessions {
+		id := s.GitRef.WorktreeID
+		if id == "" {
+			continue
+		}
+		// Once seen as remote, treat as remote even if a later (stale)
+		// session row says otherwise — the OwnerCache is authoritative.
+		if s.IsRemote {
+			owners[id] = "remote"
+		} else if _, ok := owners[id]; !ok {
+			owners[id] = "local"
+		}
+	}
+	m.SetWorktreeOwners(owners)
 }
 
 // CursorOnImport reports whether the cursor is on the import row.
 func (m *SidebarModel) CursorOnImport() bool {
-	return m.cursor == m.importCursorIndex()
+	return m.cursorNodeKind() == nodeImport
 }
 
 // CursorOnCloud reports whether the cursor is on the cloud row.
 func (m *SidebarModel) CursorOnCloud() bool {
-	return m.cursor == m.cloudCursorIndex()
+	return m.cursorNodeKind() == nodeCloud
 }
 
 // CursorOnSettings reports whether the cursor is on the settings row.
 func (m *SidebarModel) CursorOnSettings() bool {
-	return m.cursor == m.settingsCursorIndex()
+	return m.cursorNodeKind() == nodeSettings
 }
 
-// cursorSection returns which section the cursor is in and the
-// section-local index. For sectionWorktrees, idx==0 means the "All"
-// row; idx>=1 means entries[idx-1]. For sectionSettings, idx is
-// always 0 (single row).
-func (m *SidebarModel) cursorSection() (sidebarSection, int) {
-	if m.cursor >= m.importCursorIndex() {
-		return sectionSettings, 0
+// cursorNodeKind returns the kind of the node under the cursor, or -1
+// when the flat list is empty.
+func (m *SidebarModel) cursorNodeKind() sidebarNodeKind {
+	if m.cursor < 0 || m.cursor >= len(m.flat) {
+		return -1
 	}
-	return sectionWorktrees, m.cursor
+	return m.flat[m.cursor].Kind()
 }
 
-// sectionBreakpoints returns the cursor positions that shift+up/shift+down
-// snap between. For the entries section both the first (1) and last entry are
-// included so shift+up stops at the top of the list before jumping to "All".
-func (m *SidebarModel) sectionBreakpoints() []int {
-	bp := []int{0}
-	if last := len(m.entries); last > 0 {
-		bp = append(bp, 1) // first entry — top of list
-		if last > 1 {
-			bp = append(bp, last) // last entry — bottom of list
-		}
-	}
-	bp = append(bp, m.importCursorIndex())
-	bp = append(bp, m.cloudCursorIndex())
-	bp = append(bp, m.settingsCursorIndex())
-	return bp
-}
+// SelectedBranch returns the LocalPath used by the inbox to filter its
+// session list. In the IDE-style sidebar the inbox is only ever active
+// on the AllSessions row, so this always returns "" — preserved for
+// call-site compatibility (the badges in inbox.renderRow read it).
+func (m *SidebarModel) SelectedBranch() string { return "" }
 
-// SelectedBranch returns the LocalPath for the currently selected entry.
-// Empty string means "All" or the settings row is selected.
-// This is kept for call-site compatibility; prefer SelectedWorktreeDir
-// for semantic clarity.
-func (m *SidebarModel) SelectedBranch() string {
-	return m.SelectedWorktreeDir()
-}
+// SelectedWorktreeDir mirrors SelectedBranch — always "" in the
+// tree-driven sidebar. Kept for call-site compatibility.
+func (m *SidebarModel) SelectedWorktreeDir() string { return "" }
 
-// SelectedWorktreeDir returns the worktree directory path for the currently
-// selected entry. Empty string means "all worktrees" (no filter).
-func (m *SidebarModel) SelectedWorktreeDir() string {
-	if m.cursor == 0 || len(m.entries) == 0 {
+// SelectedBranchInfo always returns nil; merge overlay disabled until
+// sessions carry git branch metadata.
+func (m *SidebarModel) SelectedBranchInfo() *host.BranchInfo { return nil }
+
+// SelectedSessionID returns the session id under the cursor, or "" when
+// the cursor isn't on a session row.
+func (m *SidebarModel) SelectedSessionID() string {
+	if m.cursor < 0 || m.cursor >= len(m.flat) {
 		return ""
 	}
-	idx := m.cursor - 1
-	if idx >= len(m.entries) {
+	n, ok := m.flat[m.cursor].(sessionNode)
+	if !ok {
 		return ""
 	}
-	return m.entries[idx].LocalPath
-}
-
-// SelectedBranchInfo always returns nil.
-// TODO: merge overlay disabled until sessions carry git branch metadata.
-func (m *SidebarModel) SelectedBranchInfo() *host.BranchInfo {
-	return nil
+	return n.Session.ID
 }
 
 // SetFocused sets whether the sidebar has keyboard focus.
-func (m *SidebarModel) SetFocused(focused bool) {
-	m.focused = focused
-}
+func (m *SidebarModel) SetFocused(focused bool) { m.focused = focused }
 
-// Focused returns whether the sidebar has keyboard focus.
-func (m *SidebarModel) Focused() bool {
-	return m.focused
-}
+// Focused reports whether the sidebar has keyboard focus.
+func (m *SidebarModel) Focused() bool { return m.focused }
 
 // SetSize sets the sidebar dimensions.
 func (m *SidebarModel) SetSize(width, height int) {
@@ -409,12 +418,9 @@ func (m *SidebarModel) Update(msg tea.Msg) tea.Cmd {
 			m.err = msg.err
 			return nil
 		}
-		// Clear any prior ResolveWorktree error so a successful retry
-		// doesn't render a stale message while opening the new session.
 		m.err = nil
 		m.creating = false
 		m.input.SetValue("")
-		// Emit a request to open a composing session in the new worktree.
 		return func() tea.Msg {
 			return newWorktreeSessionRequestMsg{worktreeDir: msg.worktreeDir}
 		}
@@ -427,64 +433,6 @@ func (m *SidebarModel) Update(msg tea.Msg) tea.Cmd {
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
 		return m.handleKey(keyMsg)
 	}
-
-	return nil
-}
-
-// handleKey handles keyboard input when focused and not creating.
-func (m *SidebarModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
-	msg = normalizeKeyCase(msg)
-
-	maxIdx := m.settingsCursorIndex() // last row (settings footer)
-
-	switch {
-	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k"))):
-		if m.cursor > 0 {
-			m.cursor--
-		} else {
-			m.cursor = maxIdx
-		}
-		m.ensureVisible()
-	case key.Matches(msg, key.NewBinding(key.WithKeys("down", "j"))):
-		if m.cursor < maxIdx {
-			m.cursor++
-		} else {
-			m.cursor = 0
-		}
-		m.ensureVisible()
-	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+up"))):
-		m.cursor = prevBreakpoint(m.sectionBreakpoints(), m.cursor)
-		m.ensureVisible()
-	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+down"))):
-		m.cursor = nextBreakpoint(m.sectionBreakpoints(), m.cursor)
-		m.ensureVisible()
-	case key.Matches(msg, key.NewBinding(key.WithKeys("home", "g"))):
-		m.cursor = 0
-		m.ensureVisible()
-	case key.Matches(msg, key.NewBinding(key.WithKeys("end", "G"))):
-		m.cursor = maxIdx
-		m.ensureVisible()
-	case key.Matches(msg, key.NewBinding(key.WithKeys("n"))):
-		// New worktree only makes sense in the worktrees section; pressing
-		// 'n' on the Settings row should be a no-op, not open the prompt.
-		if sec, _ := m.cursorSection(); sec == sectionWorktrees {
-			m.creating = true
-			m.input.SetValue("")
-			// Entering creating mode shrinks entryViewportH; rescroll so
-			// the cursor's entry stays inside the smaller window.
-			m.ensureVisible()
-			return m.input.Focus()
-		}
-	case key.Matches(msg, key.NewBinding(key.WithKeys(":"))):
-		// Open the worktree action menu (Push / Pull) for the selected entry.
-		if sec, idx := m.cursorSection(); sec == sectionWorktrees && idx > 0 {
-			localPath := m.entries[idx-1].LocalPath
-			return func() tea.Msg {
-				return worktreeOptionsRequestedMsg{localPath: localPath}
-			}
-		}
-	}
-
 	return nil
 }
 
@@ -492,14 +440,12 @@ func (m *SidebarModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 func (m *SidebarModel) updateCreating(msg tea.Msg) tea.Cmd {
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
 		keyMsg = normalizeKeyCase(keyMsg)
-
-		switch {
-		case key.Matches(keyMsg, key.NewBinding(key.WithKeys("esc"))):
+		switch keyMsg.String() {
+		case "esc":
 			m.creating = false
 			m.input.SetValue("")
 			return nil
-
-		case key.Matches(keyMsg, key.NewBinding(key.WithKeys("enter"))):
+		case "enter":
 			name := strings.TrimSpace(m.input.Value())
 			if name == "" {
 				m.creating = false
@@ -508,305 +454,9 @@ func (m *SidebarModel) updateCreating(msg tea.Msg) tea.Cmd {
 			return m.createWorktree(name)
 		}
 	}
-
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return cmd
-}
-
-// View renders the sidebar.
-func (m *SidebarModel) View() string {
-	w := m.width
-	if w <= 0 {
-		w = sidebarWidth
-	}
-
-	// Inner content width available after the border. lipgloss v2 treats
-	// the style's Width as the total rendered width (border included), so
-	// we subtract 2 here and pass the full `w` as the outer Width below.
-	// A further -2 buffer is kept so lines never render exactly up to the
-	// right edge — that margin is what prevents wrap from tiny rounding or
-	// emoji-width mismatches (the ⚙ in the footer can be double-width in
-	// some fonts).
-	contentWidth := w - 4
-	if contentWidth < 10 {
-		contentWidth = 10
-	}
-
-	var lines []string
-
-	// Header.
-	header := lipgloss.NewStyle().
-		Foreground(primaryColor).
-		Bold(true).
-		Render("Worktrees")
-	lines = append(lines, header)
-	lines = append(lines, "")
-
-	// "All" entry (no filter). When creating with cursor on All, the
-	// selection marker moves down to the input row so the highlight
-	// follows where the user is typing.
-	allSelected := m.cursor == 0 && m.focused && !m.creating
-	allLabel := "  All"
-	if allSelected {
-		allLabel = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ") +
-			lipgloss.NewStyle().Foreground(textColor).Bold(true).Render("All")
-	} else if m.cursor == 0 {
-		allLabel = lipgloss.NewStyle().Foreground(textColor).Render("  All")
-	} else {
-		allLabel = lipgloss.NewStyle().Foreground(dimColor).Render("  All")
-	}
-	lines = append(lines, allLabel)
-	lines = append(lines, "")
-
-	// When creating a new worktree with cursor on "All", show input here.
-	if m.creating && m.cursor == 0 {
-		m.input.SetWidth(contentWidth - 2)
-		lines = append(lines, m.renderInputRow())
-		lines = append(lines, "")
-	}
-
-	// Worktree entries derived from sessions (scrolled; input inserted at cursor).
-	lines = append(lines, m.renderWorktreeEntries(contentWidth)...)
-
-	// Error.
-	if m.err != nil {
-		lines = append(lines, "")
-		errLine := lipgloss.NewStyle().Foreground(dangerColor).
-			Render(truncateStr(m.err.Error(), contentWidth))
-		lines = append(lines, errLine)
-	}
-
-	// Footer: pad with blank lines to push the footer rows to the bottom
-	// of the sidebar, separated from the entry list by a dim rule.
-	listH := m.listHeight()
-	footer := m.renderFooter(contentWidth)
-	footerLines := strings.Count(footer, "\n") + 1
-	if pad := listH - len(lines) - footerLines; pad > 0 {
-		for i := 0; i < pad; i++ {
-			lines = append(lines, "")
-		}
-	}
-	lines = append(lines, footer)
-
-	content := strings.Join(lines, "\n")
-
-	// Wrap in a focus-aware pane border (shared with the right pane so
-	// both panes use one source of truth for focus-vs-unfocused styling).
-	style := paneBorderStyle(m.focused).
-		Width(w - paneBorderInset).
-		Height(m.listHeight())
-
-	return style.Render(content)
-}
-
-// renderWorktreeEntries renders the visible slice of worktree entries, applying
-// the scroll offset. When in creating mode, the branch-name input is inserted
-// inline after the cursor's entry (or after "All" if cursor==0, handled by View).
-func (m *SidebarModel) renderWorktreeEntries(contentWidth int) []string {
-	if len(m.entries) == 0 {
-		return nil
-	}
-	vh := m.entryViewportH()
-	end := m.scroll + vh
-	if end > len(m.entries) {
-		end = len(m.entries)
-	}
-	visible := m.entries[m.scroll:end]
-
-	lines := make([]string, 0, len(visible)+2)
-	for i, e := range visible {
-		idx := m.scroll + i + 1 // cursor index (0 = All)
-		lines = append(lines, m.renderWorktreeEntry(e, idx, contentWidth))
-		if m.creating && m.cursor == idx {
-			m.input.SetWidth(contentWidth - 2)
-			lines = append(lines, m.renderInputRow())
-		}
-	}
-	return lines
-}
-
-// renderInputRow renders the inline new-branch input. The "> " marker is
-// placed here (not on the parent entry) so the selection follows where the
-// user is actually typing.
-func (m *SidebarModel) renderInputRow() string {
-	prefix := "  "
-	if m.focused {
-		prefix = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ")
-	}
-	return prefix + m.input.View()
-}
-
-// renderWorktreeEntry renders a single worktree entry with session count badge.
-func (m *SidebarModel) renderWorktreeEntry(e worktreeEntry, idx, maxWidth int) string {
-	// While creating, the selection marker moves to the input row below
-	// this entry, so the parent renders un-selected.
-	selected := m.cursor == idx && m.focused && !m.creating
-
-	countBadge := ""
-	badgeColor := dimColor
-	if e.Total > 0 {
-		if e.IsArchived() {
-			countBadge = fmt.Sprintf(" (%d)", e.Total)
-			badgeColor = mutedColor
-		} else if e.IsDone() {
-			countBadge = fmt.Sprintf(" (%d)", e.Total)
-			badgeColor = successColor
-		} else {
-			countBadge = fmt.Sprintf(" (%d)", e.Active)
-		}
-	}
-
-	// Truncate label to fit.
-	label := e.Label
-	maxLabel := maxWidth - 2 - len(countBadge) // 2 for prefix
-	if maxLabel < 6 {
-		maxLabel = 6
-	}
-	if len(label) > maxLabel {
-		label = label[:maxLabel-1] + "…"
-	}
-
-	nameStyle := lipgloss.NewStyle()
-	if selected {
-		nameStyle = nameStyle.Foreground(textColor).Bold(true)
-	} else if e.IsArchived() {
-		nameStyle = nameStyle.Foreground(mutedColor)
-	} else if e.IsDone() {
-		nameStyle = nameStyle.Foreground(dimColor)
-	} else {
-		nameStyle = nameStyle.Foreground(textColor)
-	}
-
-	prefix := "  "
-	if selected {
-		prefix = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ")
-	}
-
-	// Owner glyph: rendered after the label when the worktree currently
-	// lives on a remote sandbox. Local-owned (or unknown) gets nothing
-	// so the common case stays visually quiet.
-	ownerGlyph := ""
-	if e.OwnerKind == "remote" {
-		ownerGlyph = " " + lipgloss.NewStyle().Foreground(primaryColor).Render("☁")
-	}
-
-	line := prefix + nameStyle.Render(label)
-	line += lipgloss.NewStyle().Foreground(badgeColor).Render(countBadge)
-	line += ownerGlyph
-	return line
-}
-
-// renderFooter renders the bottom-anchored block of the sidebar
-// containing "↓ Import Sessions", "☁ Cloud", and "⚙ Settings".
-func (m *SidebarModel) renderFooter(maxWidth int) string {
-	sep := lipgloss.NewStyle().
-		Foreground(mutedColor).
-		Render(strings.Repeat("─", maxWidth))
-
-	importRow := m.renderFooterRow("↓ Import Sessions", m.CursorOnImport())
-	cloudRow := m.renderCloudFooterRow()
-	settingsRow := m.renderFooterRow("⚙ Settings", m.CursorOnSettings())
-
-	return sep + "\n" + importRow + "\n" + cloudRow + "\n" + settingsRow
-}
-
-// renderCloudFooterRow renders the "☁ Cloud" row with the connection
-// indicator placed inline, immediately after the label.
-func (m *SidebarModel) renderCloudFooterRow() string {
-	indicator := m.renderCloudStatusIndicator()
-	if indicator == "" {
-		return m.renderFooterRow("☁ Cloud", m.CursorOnCloud())
-	}
-	return m.renderFooterRow("☁ Cloud "+indicator, m.CursorOnCloud())
-}
-
-// renderCloudStatusIndicator renders the small dot+label shown on the
-// right side of the cloud footer row. Returns "" when no cloud_url is
-// configured (no point hinting at a status the user hasn't opted in to).
-// Only the glyph carries color; the label is always dim so it doesn't
-// compete with the row text.
-func (m *SidebarModel) renderCloudStatusIndicator() string {
-	switch m.cloudStatus {
-	case cloudStatusOnline:
-		return lipgloss.NewStyle().Foreground(successColor).Render("●")
-	case cloudStatusChecking:
-		glyph := m.cloudSpinnerFrame
-		if glyph == "" {
-			glyph = "◌"
-		}
-		return lipgloss.NewStyle().Foreground(secondaryColor).Render(glyph)
-	case cloudStatusUnavailable:
-		return lipgloss.NewStyle().Foreground(dangerColor).Render("●")
-	case cloudStatusOffline:
-		return lipgloss.NewStyle().Foreground(dimColor).Render("○")
-	default:
-		return ""
-	}
-}
-
-// renderFooterRow renders one footer row with the right styling for
-// its hover/selected state. Extracted from renderFooter to avoid the
-// repeated five-line if/else block as the footer grows.
-func (m *SidebarModel) renderFooterRow(label string, cursorOn bool) string {
-	if cursorOn && m.focused {
-		prefix := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ")
-		return prefix + lipgloss.NewStyle().Foreground(textColor).Bold(true).Render(label)
-	}
-	if cursorOn {
-		return lipgloss.NewStyle().Foreground(textColor).Render("  " + label)
-	}
-	return lipgloss.NewStyle().Foreground(dimColor).Render("  " + label)
-}
-
-// listHeight returns the height available for the body (excluding border).
-func (m *SidebarModel) listHeight() int {
-	h := m.height - 4 // border top/bottom + some padding
-	if h < 5 {
-		h = 5
-	}
-	return h
-}
-
-// entryViewportH returns the number of entry rows that fit in the scrollable
-// middle section. Fixed lines consumed: header(1)+blank(1)+All(1)+blank(1)+
-// footer_sep(1)+import(1)+cloud(1)+settings(1) = 8. When creating, the
-// inline input takes additional lines: 2 in the All section (input + blank)
-// or 1 inside the entries list (input only).
-func (m *SidebarModel) entryViewportH() int {
-	extra := 0
-	if m.creating {
-		if m.cursor == 0 {
-			extra = 2
-		} else {
-			extra = 1
-		}
-	}
-	vh := m.listHeight() - 8 - extra
-	if vh < 1 {
-		vh = 1
-	}
-	return vh
-}
-
-// ensureVisible scrolls the entries section to keep the cursor visible.
-// "All" and footer rows are always visible; only the entries section scrolls.
-func (m *SidebarModel) ensureVisible() {
-	if m.cursor == 0 || m.cursor >= m.importCursorIndex() {
-		// "All" and footer rows are always visible; no scroll adjustment needed.
-		return
-	}
-	entryIdx := m.cursor - 1
-	vh := m.entryViewportH()
-	if entryIdx < m.scroll {
-		m.scroll = entryIdx
-	}
-	if entryIdx >= m.scroll+vh {
-		m.scroll = entryIdx - vh + 1
-	}
-	if m.scroll < 0 {
-		m.scroll = 0
-	}
 }
 
 // createWorktree asks the daemon to create a worktree for the given branch.
@@ -823,4 +473,53 @@ func (m *SidebarModel) createWorktree(branch string) tea.Cmd {
 		}
 		return branchWorktreeCreatedMsg{branch: branch, worktreeDir: wt.WorktreeDir}
 	}
+}
+
+// sectionBreakpoints returns the cursor positions that shift+up/down
+// snap between: AllSessions, first/last worktree, older bucket, footer
+// items. Computed from kinds in the flat list so the breakpoints stay
+// correct as expand state changes the row count.
+func (m *SidebarModel) sectionBreakpoints() []int {
+	bp := []int{0}
+	firstWT := -1
+	lastWT := -1
+	for i, n := range m.flat {
+		switch n.Kind() {
+		case nodeWorktree:
+			if firstWT == -1 {
+				firstWT = i
+			}
+			lastWT = i
+		case nodeOlderWorktrees:
+			bp = append(bp, i)
+		case nodeImport, nodeCloud, nodeSettings:
+			bp = append(bp, i)
+		}
+	}
+	if firstWT != -1 {
+		bp = append(bp, firstWT)
+		if lastWT != firstWT {
+			bp = append(bp, lastWT)
+		}
+	}
+	return bp
+}
+
+// isOlderBucketKey reports whether the supplied expand-state key
+// addresses one of the auto-collapsed Older buckets.
+func isOlderBucketKey(k string) bool {
+	return k == "older:wt" || strings.HasPrefix(k, "older:s:")
+}
+
+// sanitizeExpanded returns a fresh map matching seed but with any
+// older-bucket keys removed — those reset to collapsed at every launch.
+func sanitizeExpanded(seed map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(seed))
+	for k, v := range seed {
+		if isOlderBucketKey(k) {
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
