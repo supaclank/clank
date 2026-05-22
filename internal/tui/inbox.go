@@ -309,8 +309,15 @@ func (m *InboxModel) Init() tea.Cmd {
 	// later session list refresh will surface the missing-id problem
 	// gracefully (session-not-found error in the right pane) without
 	// blocking startup.
+	//
+	// Restore explicitly focuses the chat pane: this isn't a sidebar
+	// Enter (which keeps focus in the sidebar by design), it's "drop
+	// the user where they left off." Otherwise the cursor lands
+	// nowhere visible on first paint — arrow keys would move the
+	// chat's hidden cursor but nothing would highlight.
 	if id := lastSessionForCwd(m.projectDir); id != "" {
 		cmds = append(cmds, m.openSession(id))
+		m.setPane(paneSessions)
 	}
 	return tea.Batch(cmds...)
 }
