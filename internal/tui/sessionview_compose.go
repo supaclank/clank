@@ -334,7 +334,12 @@ func (m *SessionViewModel) viewCompose() tea.View {
 
 	var sb strings.Builder
 
-	// Header.
+	// Header. Match the regular chat view: prepend a blank row so
+	// the title lines up with the sidebar's "Worktrees" header (one
+	// row below the sidebar's top border). The compose view has no
+	// outer border of its own, so without this nudge the title would
+	// render flush against the top edge.
+	sb.WriteString("\n")
 	sb.WriteString(m.renderComposeHeader())
 	sb.WriteString("\n\n")
 

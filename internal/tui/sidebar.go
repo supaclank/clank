@@ -475,34 +475,50 @@ func (m *SidebarModel) createWorktree(branch string) tea.Cmd {
 	}
 }
 
-// sectionBreakpoints returns the cursor positions that shift+up/down
-// snap between: AllSessions, first/last worktree, older bucket, footer
-// items. Computed from kinds in the flat list so the breakpoints stay
-// correct as expand state changes the row count.
-func (m *SidebarModel) sectionBreakpoints() []int {
-	bp := []int{0}
-	firstWT := -1
-	lastWT := -1
-	for i, n := range m.flat {
-		switch n.Kind() {
-		case nodeWorktree:
-			if firstWT == -1 {
-				firstWT = i
+// shiftJump moves the cursor one worktree in the chosen direction,
+// skipping over any session rows in between so the gesture stays
+// coarse and symmetric (shift+down then shift+up returns to where you
+// started). When there's no worktree left in that direction it falls
+// back to the next section anchor — AllSessions / Older bucket /
+// footer — so the user can still navigate to the edges of the list.
+func (m *SidebarModel) shiftJump(forward bool) {
+	if len(m.flat) == 0 {
+		return
+	}
+	delta, end := 1, len(m.flat)
+	if !forward {
+		delta, end = -1, -1
+	}
+
+	matchers := []func(int) bool{
+		m.isWorktreeAt,
+		m.isSectionAnchorAt,
+	}
+	for _, match := range matchers {
+		for i := m.cursor + delta; i != end; i += delta {
+			if match(i) {
+				m.cursor = i
+				return
 			}
-			lastWT = i
-		case nodeOlderWorktrees:
-			bp = append(bp, i)
-		case nodeImport, nodeCloud, nodeSettings:
-			bp = append(bp, i)
 		}
 	}
-	if firstWT != -1 {
-		bp = append(bp, firstWT)
-		if lastWT != firstWT {
-			bp = append(bp, lastWT)
-		}
+}
+
+// isWorktreeAt reports whether the row at i is any worktree row
+// (expanded or collapsed).
+func (m *SidebarModel) isWorktreeAt(i int) bool {
+	return m.flat[i].Kind() == nodeWorktree
+}
+
+// isSectionAnchorAt returns true for the rows shift+up/down can fall
+// back to when there's no worktree to jump to: AllSessions, the Older
+// bucket, and the footer entries.
+func (m *SidebarModel) isSectionAnchorAt(i int) bool {
+	switch m.flat[i].Kind() {
+	case nodeAllSessions, nodeOlderWorktrees, nodeImport, nodeCloud, nodeSettings:
+		return true
 	}
-	return bp
+	return false
 }
 
 // isOlderBucketKey reports whether the supplied expand-state key

@@ -59,8 +59,8 @@ func (m *SidebarModel) View() string {
 // rows the body produced.
 func (m *SidebarModel) renderBody(contentWidth int) (lines []string, footerLineCount int) {
 	footerLineCount = 4 // separator + 3 footer rows
-	body, footerStart := m.bodyNodes()
-	visible := m.visibleBodyNodes(body, footerStart)
+	body, _ := m.bodyNodes()
+	visible := m.visibleBodyNodes(body)
 
 	hasContent := false
 	for _, idx := range visible {
@@ -116,13 +116,22 @@ func (m *SidebarModel) bodyNodes() (body []int, footerStart int) {
 }
 
 // visibleBodyNodes returns the subset of body indices that fit in the
-// scroll viewport, anchored so the cursor stays visible.
-func (m *SidebarModel) visibleBodyNodes(body []int, footerStart int) []int {
+// scroll viewport in terms of *rendered terminal lines*, not raw node
+// count. Session rows render two lines, worktree/older rows add one
+// separator line each (except when first in the visible window), and
+// the inline new-branch input adds one line when active. Counting
+// in lines is the only way to keep the body inside its allotted
+// vertical space — naive node counting overflowed and pushed the
+// footer outside the bordered Height (silently truncating it).
+//
+// The cursor-visibility check uses the same line accounting so a
+// session row near the bottom gets two visible rows of room, not one.
+func (m *SidebarModel) visibleBodyNodes(body []int) []int {
 	vh := m.bodyViewportH()
 	if vh <= 0 || len(body) == 0 {
 		return nil
 	}
-	// Find the cursor's position in the body slice (or -1 if not in body).
+
 	cursorBodyIdx := -1
 	for i, idx := range body {
 		if idx == m.cursor {
@@ -130,37 +139,82 @@ func (m *SidebarModel) visibleBodyNodes(body []int, footerStart int) []int {
 			break
 		}
 	}
+
 	if m.scroll < 0 {
 		m.scroll = 0
 	}
 	if m.scroll > len(body)-1 {
 		m.scroll = len(body) - 1
 	}
-	// If the cursor moved out of view, snap scroll.
+
 	if cursorBodyIdx >= 0 {
+		// Snap up if the cursor scrolled off the top.
 		if cursorBodyIdx < m.scroll {
 			m.scroll = cursorBodyIdx
 		}
-		if cursorBodyIdx >= m.scroll+vh {
-			m.scroll = cursorBodyIdx - vh + 1
+		// Advance scroll forward until the cursor's row fits inside vh.
+		// Each iteration shifts the window by one body node.
+		for m.scroll < cursorBodyIdx && m.linesFromTo(body, m.scroll, cursorBodyIdx) > vh {
+			m.scroll++
 		}
 	}
-	end := m.scroll + vh
-	if end > len(body) {
-		end = len(body)
+
+	// Collect nodes from m.scroll forward, stopping when the next
+	// node would push us past vh.
+	visible := make([]int, 0, len(body)-m.scroll)
+	used := 0
+	for i := m.scroll; i < len(body); i++ {
+		cost := m.nodeLineCost(body[i], i == m.scroll)
+		if used+cost > vh {
+			break
+		}
+		visible = append(visible, body[i])
+		used += cost
 	}
-	return body[m.scroll:end]
+	return visible
 }
 
-// bodyViewportH returns the number of body rows that fit. The body
-// shares the listHeight with the fixed-overhead rows: header(1)+blank(1)
-// at the top, footer separator+3 footer rows at the bottom. When
-// creating a branch, the input row claims one more line.
-func (m *SidebarModel) bodyViewportH() int {
-	overhead := 2 + 4 // header block + footer block
-	if m.creating {
-		overhead++
+// linesFromTo sums the rendered line cost of body[from..to] inclusive,
+// treating body[from] as the first visible row (so its separator
+// doesn't count). Used by the scroll math to decide whether the cursor
+// can fit inside the viewport with the current scroll offset.
+func (m *SidebarModel) linesFromTo(body []int, from, to int) int {
+	total := 0
+	for i := from; i <= to; i++ {
+		total += m.nodeLineCost(body[i], i == from)
 	}
+	return total
+}
+
+// nodeLineCost returns how many terminal lines the body node at flat
+// index `idx` takes when rendered, including the inter-worktree
+// separator that precedes it (when applicable) and the inline
+// new-branch input (when creating mode parks on a worktree row).
+// isFirstVisible suppresses the separator for the top of the viewport,
+// matching renderBody's hasContent-gated separator emission.
+func (m *SidebarModel) nodeLineCost(idx int, isFirstVisible bool) int {
+	n := m.flat[idx]
+	cost := 1
+	if n.Kind() == nodeSession {
+		cost = 2
+	}
+	if !isFirstVisible && (n.Kind() == nodeWorktree || n.Kind() == nodeOlderWorktrees) {
+		cost++ // separator line emitted before this row
+	}
+	if n.Kind() == nodeWorktree && m.creating && idx == m.cursor {
+		cost++ // inline branch-name input row
+	}
+	return cost
+}
+
+// bodyViewportH returns the number of rendered terminal lines the
+// body section can fill. The body shares listHeight with the
+// fixed-overhead rows: header(1) + blank(1) at the top, footer
+// separator + 3 footer rows at the bottom = 6. When creating mode is
+// active the input also lives in the body (accounted for in
+// nodeLineCost), so no extra deduction is needed here.
+func (m *SidebarModel) bodyViewportH() int {
+	const overhead = 2 + 4 // header block + footer block
 	vh := m.listHeight() - overhead
 	if vh < 1 {
 		vh = 1
@@ -211,13 +265,14 @@ const rightCursorWidth = 2
 
 // renderWorktreeRow renders one worktree as a single line. Layout:
 //
-//	>label<  ☁           <repoLabel>  ◀     (collapsed)
-//	<label>  ☁           <repoLabel>  ◀     (expanded)
+//	 >label<  ☁           <repoLabel>  ◀     (collapsed)
+//	< label >  ☁          <repoLabel>  ◀     (expanded)
 //
-// The brackets wrap the worktree name as the expand affordance — the
-// arrows "point at" the label when collapsed (closed) and away from it
-// when expanded (open). Cheaper visually than a triangle glyph and the
-// affordance reads from either direction.
+// Collapsed reads as "closed and compact": the brackets clamp the
+// name with no inner space, and an outer space pads them. Expanded
+// reads as "open and breathing": brackets push outward with inner
+// padding, no outer space. Both variants line the label up at the
+// same column so adjacent rows still align.
 func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool, maxWidth int) string {
 	if m.creating && m.cursor == idx {
 		// While editing the branch input, suppress this row's selection
@@ -225,9 +280,11 @@ func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool,
 		selected = false
 	}
 
-	leftBracket, rightBracket := ">", "<"
+	// Collapsed: ` >name< ` (outer pad, inner tight).
+	// Expanded:  `< name >` (outer tight, inner pad).
+	leftPrefix, rightSuffix := " >", "< "
 	if m.expanded[n.Key()] {
-		leftBracket, rightBracket = "<", ">"
+		leftPrefix, rightSuffix = "< ", " >"
 	}
 
 	ownerGlyph := ""
@@ -244,8 +301,8 @@ func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool,
 		repoTagWidth = len(n.RepoLabel) + 1 // one space gutter
 	}
 
-	// Reserve room for: two brackets (2) + owner glyph + repo tag + cursor.
-	maxLabel := maxWidth - 2 - repoTagWidth - cursorReserve - lipgloss.Width(ownerGlyph)
+	// Reserve room for: prefix (2) + suffix (2) + owner glyph + repo tag + cursor.
+	maxLabel := maxWidth - 4 - repoTagWidth - cursorReserve - lipgloss.Width(ownerGlyph)
 	if maxLabel < 6 {
 		maxLabel = 6
 	}
@@ -254,16 +311,26 @@ func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool,
 		label = label[:maxLabel-1] + "…"
 	}
 
+	// Pick the base color from the row's state (archived / done /
+	// expanded / default), then add bold on top when the cursor is
+	// on the row. Selection only adds bold — it never re-colors —
+	// so an expanded row stays teal whether or not the cursor is
+	// parked on it. The right-edge cursor marker carries the
+	// "you are here" signal on its own.
 	nameStyle := lipgloss.NewStyle().Foreground(textColor)
+	switch {
+	case n.Archived == n.Total && n.Total > 0:
+		nameStyle = nameStyle.Foreground(mutedColor)
+	case n.Active == 0 && n.Total > 0:
+		nameStyle = nameStyle.Foreground(dimColor)
+	case m.expanded[n.Key()]:
+		nameStyle = nameStyle.Foreground(secondaryColor)
+	}
 	if selected {
 		nameStyle = nameStyle.Bold(true)
-	} else if n.Archived == n.Total && n.Total > 0 {
-		nameStyle = nameStyle.Foreground(mutedColor)
-	} else if n.Active == 0 && n.Total > 0 {
-		nameStyle = nameStyle.Foreground(dimColor)
 	}
 
-	line := nameStyle.Render(leftBracket+label+rightBracket) + ownerGlyph
+	line := nameStyle.Render(leftPrefix+label+rightSuffix) + ownerGlyph
 
 	if n.RepoLabel != "" {
 		repoStyle := lipgloss.NewStyle().Foreground(mutedColor)
@@ -345,9 +412,9 @@ func (m *SidebarModel) renderSessionRow(n sessionNode, selected bool, maxWidth i
 
 // leftRailOrIndent returns the same-width left margin used by nested
 // rows, swapping the leading space for the active-session rail when
-// active is true. The rail is rendered in primaryColor and stays
-// rendered regardless of pane focus — it marks "what's open," not
-// "where the cursor is."
+// active is true. The rail uses primaryColor and stays rendered
+// regardless of pane focus — it marks "what's open," not "where the
+// cursor is."
 func (m *SidebarModel) leftRailOrIndent(active bool, indent string) string {
 	if !active || len(indent) == 0 {
 		return indent

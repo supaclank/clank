@@ -598,8 +598,22 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// there (e.g. via left-arrow). Non-key messages (SSE events, ticks,
 	// resize) still flow to the session view so its state stays live.
 	if m.screen == screenSession && m.sessionView != nil {
-		if keyMsg, ok := msg.(tea.KeyPressMsg); ok && m.pane == paneSidebar {
-			return m.handleSidebarKey(keyMsg)
+		if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
+			// Tab swaps panes everywhere — including from inside the
+			// chat. Skip when the chat's text input is active so Tab
+			// continues to cycle agents in compose mode.
+			if m.showTwoPanes() && key.Matches(normalizeKeyCase(keyMsg), key.NewBinding(key.WithKeys("tab"))) &&
+				!(m.pane == paneSessions && m.sessionView.inputActive) {
+				if m.pane == paneSidebar {
+					m.setPane(paneSessions)
+				} else {
+					m.setPane(paneSidebar)
+				}
+				return m, nil
+			}
+			if m.pane == paneSidebar {
+				return m.handleSidebarKey(keyMsg)
+			}
 		}
 		return m.updateSessionView(msg)
 	}

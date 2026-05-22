@@ -33,17 +33,18 @@ func (m *SidebarModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 			m.cursor = 0
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+up"))):
-		m.cursor = prevBreakpoint(m.sectionBreakpoints(), m.cursor)
+		m.shiftJump(false)
 	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+down"))):
-		m.cursor = nextBreakpoint(m.sectionBreakpoints(), m.cursor)
+		m.shiftJump(true)
 	case key.Matches(msg, key.NewBinding(key.WithKeys("home", "g"))):
 		m.cursor = 0
 	case key.Matches(msg, key.NewBinding(key.WithKeys("end", "G"))):
 		m.cursor = maxIdx
-	case key.Matches(msg, key.NewBinding(key.WithKeys(" ", "tab"))):
-		// Space/Tab toggles expand without moving the cursor — useful
+	case key.Matches(msg, key.NewBinding(key.WithKeys("space", " "))):
+		// Space toggles expand without moving the cursor — useful
 		// when the user wants to peek into an Older bucket without
-		// losing their place.
+		// losing their place. (Tab is reserved for pane switching at
+		// the inbox level.)
 		if m.toggleExpand() {
 			return m.notifyExpandToggled()
 		}

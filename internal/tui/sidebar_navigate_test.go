@@ -145,22 +145,24 @@ func TestSidebar_ShiftEnter_OnNonWorktreeIsNoOp(t *testing.T) {
 	}
 }
 
-func TestSidebar_TabTogglesExpand(t *testing.T) {
+func TestSidebar_SpaceTogglesExpand(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)
 	m := newTestSidebar(now,
 		agent.SessionInfo{ID: "a", UpdatedAt: now, GitRef: agent.GitRef{LocalPath: "/r/x"}},
 	)
-	// Non-cwd worktrees default collapsed. Tab expands; Tab again
-	// collapses.
+	// Non-cwd worktrees default collapsed. Space expands without
+	// moving the cursor; Space again collapses. (Tab is reserved for
+	// pane switching at the inbox level and intentionally does NOT
+	// reach sidebar.handleKey.)
 	m.cursor = 1
-	m.handleKey(tea.KeyPressMsg{Code: tea.KeyTab})
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeySpace})
 	if !m.expanded["wt:/r/x"] {
-		t.Errorf("expected Tab to expand the worktree")
+		t.Errorf("expected Space to expand the worktree")
 	}
-	m.handleKey(tea.KeyPressMsg{Code: tea.KeyTab})
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeySpace})
 	if m.expanded["wt:/r/x"] {
-		t.Errorf("expected Tab again to collapse the worktree")
+		t.Errorf("expected Space again to collapse the worktree")
 	}
 }
 
@@ -272,6 +274,84 @@ func TestSidebar_UserCollapseBeatsAutoExpand(t *testing.T) {
 	snap := m.SnapshotExpanded()
 	if v, ok := snap["wt:/r/x"]; !ok || v {
 		t.Errorf("snapshot should persist explicit collapse, got %v", snap)
+	}
+}
+
+func TestSidebar_ShiftJump_WalksWorktreesRegardlessOfExpandState(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)
+	m := newTestSidebar(now,
+		agent.SessionInfo{ID: "a", UpdatedAt: now, GitRef: agent.GitRef{LocalPath: "/r/wt1"}},
+		agent.SessionInfo{ID: "b", UpdatedAt: now.Add(-1 * time.Hour), GitRef: agent.GitRef{LocalPath: "/r/wt2"}},
+		agent.SessionInfo{ID: "c", UpdatedAt: now.Add(-2 * time.Hour), GitRef: agent.GitRef{LocalPath: "/r/wt3"}},
+	)
+	// Open the middle worktree so its session appears between wt1 and
+	// wt3 in the flat list. shift+down from wt1 should skip over the
+	// session and land on wt2; another shift+down should land on wt3.
+	m.userToggles["wt:/r/wt2"] = true
+	m.rebuildFlat()
+
+	for i, n := range m.flat {
+		if n.Key() == "wt:/r/wt1" {
+			m.cursor = i
+			break
+		}
+	}
+	m.shiftJump(true)
+	if got := m.flat[m.cursor].Key(); got != "wt:/r/wt2" {
+		t.Fatalf("shift+down from wt1 should land on wt2, got %q", got)
+	}
+	m.shiftJump(true)
+	if got := m.flat[m.cursor].Key(); got != "wt:/r/wt3" {
+		t.Errorf("shift+down from open wt2 should skip its session and land on wt3, got %q", got)
+	}
+}
+
+func TestSidebar_ShiftJump_SymmetricAndCommutative(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)
+	m := newTestSidebar(now,
+		agent.SessionInfo{ID: "a", UpdatedAt: now, GitRef: agent.GitRef{LocalPath: "/r/wt1"}},
+		agent.SessionInfo{ID: "b", UpdatedAt: now.Add(-1 * time.Hour), GitRef: agent.GitRef{LocalPath: "/r/wt2"}},
+		agent.SessionInfo{ID: "c", UpdatedAt: now.Add(-2 * time.Hour), GitRef: agent.GitRef{LocalPath: "/r/wt3"}},
+	)
+	m.userToggles["wt:/r/wt2"] = true
+	m.rebuildFlat()
+
+	// Park on wt2. shift+down → wt3, shift+up should return to wt2.
+	for i, n := range m.flat {
+		if n.Key() == "wt:/r/wt2" {
+			m.cursor = i
+			break
+		}
+	}
+	start := m.cursor
+	m.shiftJump(true)
+	m.shiftJump(false)
+	if m.cursor != start {
+		t.Errorf("shift+down then shift+up should be a no-op, started at %d ended at %d (key %q)",
+			start, m.cursor, m.flat[m.cursor].Key())
+	}
+}
+
+func TestSidebar_ShiftJump_FallsBackToSectionAnchorsAtEdges(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)
+	m := newTestSidebar(now,
+		agent.SessionInfo{ID: "a", UpdatedAt: now, GitRef: agent.GitRef{LocalPath: "/r/only"}},
+	)
+	// Park on the only worktree.
+	m.cursor = 1
+	m.shiftJump(false)
+	if k := m.flat[m.cursor].Kind(); k != nodeAllSessions {
+		t.Errorf("shift+up from first worktree should land on AllSessions, got kind %d", k)
+	}
+	// Reset cursor on the worktree and try shift+down: no more
+	// worktrees below → falls through to the first footer row.
+	m.cursor = 1
+	m.shiftJump(true)
+	if k := m.flat[m.cursor].Kind(); k != nodeImport {
+		t.Errorf("shift+down past last worktree should land on Import (first footer), got kind %d", k)
 	}
 }
 
