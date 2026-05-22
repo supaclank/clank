@@ -86,8 +86,9 @@ func TestSidebar_EnterOnSessionEmitsSelection(t *testing.T) {
 func TestSidebar_ShiftEnter_StartsAtFirstUnread(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)
-	// Three sessions, the middle one is unread.
-	read := time.Now()
+	// Three sessions, the middle one is unread. read is anchored to
+	// `now` (not the wall clock) so the test stays deterministic.
+	read := now.Add(time.Minute)
 	sessions := []agent.SessionInfo{
 		{ID: "s0", UpdatedAt: now, LastReadAt: read, GitRef: agent.GitRef{LocalPath: "/r/x"}},
 		{ID: "s1", UpdatedAt: now.Add(-1 * time.Hour), GitRef: agent.GitRef{LocalPath: "/r/x"}}, // unread

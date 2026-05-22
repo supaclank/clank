@@ -289,7 +289,7 @@ func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool,
 	}
 	repoTagWidth := 0
 	if n.RepoLabel != "" {
-		repoTagWidth = len(n.RepoLabel) + 1 // one space gutter
+		repoTagWidth = lipgloss.Width(n.RepoLabel) + 1 // one space gutter
 	}
 
 	// Reserve room for: prefix (1) + suffix (1) + owner/pending glyph + repo tag + cursor.
@@ -297,10 +297,7 @@ func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool,
 	if maxLabel < 6 {
 		maxLabel = 6
 	}
-	label := n.Label
-	if len(label) > maxLabel {
-		label = label[:maxLabel-1] + "…"
-	}
+	label := truncateStr(n.Label, maxLabel)
 
 	// Pick the base color from the row's state (archived / done /
 	// expanded / default), then add bold on top when the cursor is

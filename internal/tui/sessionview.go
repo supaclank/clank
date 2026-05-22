@@ -2815,10 +2815,7 @@ func (m *SessionViewModel) buildHelpText() string {
 	if len(m.pendingPerms) > 0 {
 		return "y: allow | n: deny"
 	}
-	qLabel := "q: back"
-	if m.standalone {
-		qLabel = "q: quit"
-	}
+	qLabel := "q: quit"
 	parts := []string{"m: message", ":: actions", "c: copy", "?: help", qLabel}
 	if m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting) {
 		parts = append([]string{"ctrl+c: cancel"}, parts...)
