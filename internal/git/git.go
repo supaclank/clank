@@ -33,6 +33,30 @@ func RepoRoot(dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// MainWorktreeRoot returns the top-level directory of the *main*
+// worktree for the repo containing dir. Inside a `git worktree add`-ed
+// worktree, RepoRoot returns the worktree's own path; this helper
+// follows the shared `.git` to find the parent repo. Used when we need
+// to derive a stable "project root" for naming purposes (e.g. the
+// `~/.clank/worktrees/<project>/<branch>/` convention).
+func MainWorktreeRoot(dir string) (string, error) {
+	out, err := gitCmd(dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return "", fmt.Errorf("git common dir: %w", err)
+	}
+	commonDir := strings.TrimSpace(out)
+	if commonDir == "" {
+		return "", fmt.Errorf("git common-dir returned empty path for %q", dir)
+	}
+	// commonDir points at the shared `.git`; the main worktree is its parent.
+	// Normalise a trailing `/.git` to its repo root.
+	parent := filepath.Dir(commonDir)
+	if parent == "" || parent == "." {
+		return "", fmt.Errorf("could not derive main worktree root from %q", commonDir)
+	}
+	return parent, nil
+}
+
 // RemoteURL returns the URL of the named remote (typically "origin") for
 // the repository containing dir. Returns an error when the remote is not
 // configured — callers must decide whether to treat that as fatal or

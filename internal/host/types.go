@@ -55,6 +55,20 @@ type WorktreeInfo struct {
 	WorktreeDir string `json:"worktree_dir"`
 }
 
+// CreateWorktreeResult is the full info returned by Service.CreateWorktree.
+// The gateway uses these fields to write the corresponding `worktrees` row
+// in its database after the local git worktree is in place.
+type CreateWorktreeResult struct {
+	WorktreeID  string `json:"worktree_id"`
+	Branch      string `json:"branch"`
+	WorktreeDir string `json:"worktree_dir"`
+	DisplayName string `json:"display_name"`
+	// OriginRepo identifies the repo this worktree was created from
+	// (e.g. "acme/api" or a local-dir basename fallback). Persisted on
+	// the worktree row so clients (mobile picker, TUI) can group by repo.
+	OriginRepo string `json:"origin_repo"`
+}
+
 // HostStatus is the response body of `GET /status` on the Host API. Hub
 // surfaces a derived view (online/offline + last seen) to clients.
 type HostStatus struct {

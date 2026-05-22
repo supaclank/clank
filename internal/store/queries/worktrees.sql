@@ -14,9 +14,9 @@ ORDER BY updated_at DESC;
 
 -- name: InsertWorktree :exec
 INSERT INTO worktrees (
-    id, user_id, display_name, owner_kind, owner_id,
+    id, user_id, display_name, origin_repo, owner_kind, owner_id,
     latest_synced_checkpoint, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: UpdateWorktreePointer :exec
 UPDATE worktrees

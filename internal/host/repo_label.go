@@ -1,8 +1,28 @@
 package host
 
 import (
+	"path/filepath"
 	"strings"
+
+	"github.com/acksell/clank/internal/git"
 )
+
+// ComputeRepoLabel returns the owner-independent display label for the
+// repo rooted at repoPath. Prefers `git remote get-url origin` so forks
+// of the same directory name stay distinguishable; falls back to the
+// basename of repoPath when no remote is configured.
+//
+// The returned value is persisted as `origin_repo` on the worktree row
+// (see sync.Worktree.OriginRepo) and consumed by clients (mobile picker,
+// TUI sidebar) as the group key when rendering worktrees by repo.
+func ComputeRepoLabel(repoPath string) string {
+	fallback := filepath.Base(repoPath)
+	remoteURL, err := git.RemoteURL(repoPath, "origin")
+	if err != nil || remoteURL == "" {
+		return fallback
+	}
+	return RepoLabelFromURL(remoteURL, fallback)
+}
 
 // RepoLabelFromURL derives a display label from a git remote URL.
 // When the URL contains an owner segment, the label is "owner/repo" so

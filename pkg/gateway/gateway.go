@@ -150,6 +150,11 @@ func (g *Gateway) Handler() http.Handler {
 	mx.HandleFunc("POST /v1/migrate/worktrees/{id}", g.handleMigrateWorktree)
 	mx.HandleFunc("POST /v1/migrate/worktrees/{id}/materialize", g.handleMigrateMaterialize)
 	mx.HandleFunc("POST /v1/migrate/worktrees/{id}/commit", g.handleMigrateCommit)
+	// /v1/worktrees/create and /v1/worktrees/list-branches must be
+	// mounted BEFORE the `/v1/` catch-all so they reach the host (via
+	// these gateway-orchestrated handlers) instead of the sync server.
+	mx.HandleFunc("POST /v1/worktrees/create", g.handleCreateWorktree)
+	mx.HandleFunc("POST /v1/worktrees/list-branches", g.handleListBranches)
 	if g.cfg.Sync != nil {
 		// POST /v1/migrate/worktrees/{id} is more specific and wins
 		// over the /v1/ prefix registered here.

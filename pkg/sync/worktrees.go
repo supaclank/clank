@@ -59,9 +59,17 @@ const (
 // per logical working tree. Multiple worktrees can exist for the same
 // user (and even the same repo, on different branches or worktrees).
 type Worktree struct {
-	ID                     string
-	UserID                 string
-	DisplayName            string
+	ID          string
+	UserID      string
+	DisplayName string
+	// OriginRepo identifies the repo this worktree was created from
+	// (e.g. "acme/api" derived from the git remote, or the local dir
+	// basename when no remote origin is configured). Used by clients
+	// (mobile picker, TUI sidebar) to group worktrees by repo so users
+	// don't see a flat list of unrelated ULIDs. Set once at registration;
+	// never updated. May be "" for rows registered before this field
+	// existed — clients group these under an "Unknown repo" bucket.
+	OriginRepo             string
 	OwnerKind              OwnerKind
 	OwnerID                string // device_id or host_id; "" if no owner has claimed yet
 	LatestSyncedCheckpoint string // checkpoint ID; "" if no checkpoint pushed yet
@@ -127,6 +135,26 @@ func (s *Server) GetWorktree(ctx context.Context, userID, worktreeID string) (Wo
 // at the store level (ListWorktreesByUser).
 func (s *Server) ListWorktrees(ctx context.Context, userID string) ([]Worktree, error) {
 	return s.cfg.Store.ListWorktreesByUser(ctx, userID)
+}
+
+// RegisterPrebuiltWorktree inserts a worktree row whose ID was assigned
+// by the caller (rather than by the sync server). Used by the gateway
+// after a mobile-initiated worktree create: the host generated the
+// ULID inline (so the on-disk worktree-id file matches), and the
+// gateway records the corresponding row here.
+//
+// Tenancy is enforced by the caller — by construction the gateway sets
+// UserID from the authenticated principal before invoking this. Use
+// the HTTP path POST /v1/worktrees (with handleRegisterWorktree) when
+// the server should mint the ULID itself.
+func (s *Server) RegisterPrebuiltWorktree(ctx context.Context, w Worktree) error {
+	if w.ID == "" {
+		return fmt.Errorf("%w: id is required", ErrInvalidRequest)
+	}
+	if w.UserID == "" {
+		return fmt.Errorf("%w: user_id is required", ErrInvalidRequest)
+	}
+	return s.cfg.Store.InsertWorktree(ctx, w)
 }
 
 // TransferOwnership atomically transfers a worktree's owner. userID

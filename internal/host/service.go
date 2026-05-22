@@ -9,6 +9,7 @@ package host
 
 import (
 	"context"
+	cryptoRandImpl "crypto/rand"
 	"errors"
 	"fmt"
 	"log"
@@ -22,10 +23,16 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/git"
+	"github.com/acksell/clank/internal/host/petname"
 	"github.com/acksell/clank/internal/host/store"
 	"github.com/acksell/clank/internal/keepalive"
 	"github.com/acksell/clank/internal/notifier"
 )
+
+// cryptoRand is the entropy source for ulid generation in CreateWorktree.
+// Aliased so future callers in this file don't need to remember the
+// rename-on-import.
+var cryptoRand = cryptoRandImpl.Reader
 
 // Service is the Host plane's domain object. Construct with New; call
 // Init to start background goroutines and Shutdown to release them.
@@ -994,6 +1001,106 @@ func (s *Service) ResolveWorktree(ctx context.Context, ref agent.GitRef, branch 
 		s.branches.invalidate(root)
 	}
 	return wt, err
+}
+
+// CreateWorktree creates a new worktree on this host, branched off
+// baseBranch, with an auto-generated petname for both the git branch
+// and the display name. The base repo is identified by baseWorktreeRef
+// — any existing worktree in the target repo (most commonly the one
+// the user picked in the mobile UI). The resulting worktree directory
+// is stamped with a fresh ULID so subsequent `clank push` flows
+// recognise it as already-registered.
+//
+// origin_repo is derived once here (RepoLabelFromURL on origin, with a
+// filepath.Base(repoRoot) fallback) and returned to the gateway, which
+// persists it on the worktree row so clients can group worktrees by
+// repo in their pickers/sidebars.
+func (s *Service) CreateWorktree(ctx context.Context, baseWorktreeRef agent.GitRef, baseBranch string) (CreateWorktreeResult, error) {
+	if strings.TrimSpace(baseBranch) == "" {
+		return CreateWorktreeResult{}, ErrInvalidBranchName
+	}
+
+	baseRef := baseWorktreeRef
+	baseRef.WorktreeBranch = ""
+	baseDir, err := s.workDirFor(ctx, baseRef)
+	if err != nil {
+		return CreateWorktreeResult{}, fmt.Errorf("resolve base worktree: %w", err)
+	}
+
+	// The new worktree must be created off the *main* worktree of the
+	// repo (git worktree add is happy from any worktree, but our naming
+	// convention `~/.clank/worktrees/<project>/<branch>/` keys on the
+	// main worktree's basename).
+	repoRoot, err := git.MainWorktreeRoot(baseDir)
+	if err != nil {
+		return CreateWorktreeResult{}, fmt.Errorf("find main worktree root: %w", err)
+	}
+
+	exists, err := git.BranchExists(repoRoot, baseBranch)
+	if err != nil {
+		return CreateWorktreeResult{}, fmt.Errorf("check base branch: %w", err)
+	}
+	if !exists {
+		return CreateWorktreeResult{}, fmt.Errorf("%w: base branch %q does not exist in %s", ErrNotFound, baseBranch, filepath.Base(repoRoot))
+	}
+
+	// Retry the petname loop up to a few times in case AddWorktreeNewBranch
+	// fails because the branch (somehow) already exists. The hex suffix
+	// makes collisions astronomically unlikely, but a failed retry is
+	// cheap insurance.
+	var (
+		newBranch string
+		wtDir     string
+	)
+	projectName := filepath.Base(repoRoot)
+	const maxAttempts = 5
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		candidate := petname.Generate()
+		branchExists, err := git.BranchExists(repoRoot, candidate)
+		if err != nil {
+			return CreateWorktreeResult{}, fmt.Errorf("check candidate branch: %w", err)
+		}
+		if branchExists {
+			continue
+		}
+		dir, err := git.WorktreeDir(projectName, candidate)
+		if err != nil {
+			return CreateWorktreeResult{}, err
+		}
+		if _, statErr := os.Stat(dir); statErr == nil {
+			continue
+		}
+		newBranch = candidate
+		wtDir = dir
+		break
+	}
+	if newBranch == "" {
+		return CreateWorktreeResult{}, fmt.Errorf("could not generate a unique petname after %d attempts", maxAttempts)
+	}
+
+	if err := git.AddWorktreeNewBranch(repoRoot, wtDir, newBranch, baseBranch); err != nil {
+		return CreateWorktreeResult{}, err
+	}
+	s.branches.invalidate(repoRoot)
+
+	worktreeID := ulid.MustNew(ulid.Now(), cryptoRand).String()
+	if err := agent.WriteLocalWorktreeID(wtDir, worktreeID); err != nil {
+		// The worktree exists on disk but we couldn't stamp it. A future
+		// `clank push` from this dir would treat it as a fresh worktree
+		// and double-register — surface the error so the gateway can
+		// roll back.
+		return CreateWorktreeResult{}, fmt.Errorf("stamp worktree-id: %w", err)
+	}
+
+	originRepo := ComputeRepoLabel(repoRoot)
+	s.log.Printf("created worktree %s (branch %q off %q) at %s", worktreeID, newBranch, baseBranch, wtDir)
+	return CreateWorktreeResult{
+		WorktreeID:  worktreeID,
+		Branch:      newBranch,
+		WorktreeDir: wtDir,
+		DisplayName: newBranch,
+		OriginRepo:  originRepo,
+	}, nil
 }
 
 // RemoveWorktree removes the worktree for (ref's repo, branch).

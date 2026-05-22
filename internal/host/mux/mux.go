@@ -93,8 +93,15 @@ func (m *Mux) register(mx *http.ServeMux) {
 
 	// Worktree/branch ops. The repo is identified by GitRef in the
 	// request body — the host repo registry was removed in §7.8.
+	// /worktrees/create is intentionally narrow: it accepts a
+	// base_worktree_id (an existing worktree in the target repo) rather
+	// than a path or repo handle, so the host stays out of the
+	// repo-enumeration business. Creating a worktree in a brand-new
+	// repo is still a CLI-only operation (future GitHub-clone flow
+	// will close that gap).
 	mx.HandleFunc("POST /worktrees/list-branches", m.handleListBranches)
 	mx.HandleFunc("POST /worktrees/resolve", m.handleResolveWorktree)
+	mx.HandleFunc("POST /worktrees/create", m.handleCreateWorktree)
 	mx.HandleFunc("POST /worktrees/remove", m.handleRemoveWorktree)
 	mx.HandleFunc("POST /worktrees/merge", m.handleMergeBranch)
 
