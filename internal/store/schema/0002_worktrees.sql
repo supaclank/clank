@@ -9,6 +9,12 @@ CREATE TABLE worktrees (
     id                          TEXT PRIMARY KEY,
     user_id                     TEXT NOT NULL,
     display_name                TEXT NOT NULL,
+    -- origin_repo identifies the repo this worktree was created from
+    -- (e.g. "acme/api" derived from the git remote, or the local dir
+    -- basename when no remote is configured). Used by clients to group
+    -- worktrees by repo in their pickers/sidebars. Set at registration;
+    -- never updated. Empty for rows registered before this column existed.
+    origin_repo                 TEXT NOT NULL DEFAULT '',
     owner_kind                  TEXT NOT NULL DEFAULT 'laptop',
     owner_id                    TEXT NOT NULL DEFAULT '',
     latest_synced_checkpoint    TEXT NOT NULL DEFAULT '',

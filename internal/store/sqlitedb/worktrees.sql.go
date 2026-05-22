@@ -44,7 +44,7 @@ func (q *Queries) GetCheckpointByID(ctx context.Context, id string) (Checkpoint,
 }
 
 const getWorktreeByID = `-- name: GetWorktreeByID :one
-SELECT id, user_id, display_name, owner_kind, owner_id, latest_synced_checkpoint, created_at, updated_at FROM worktrees
+SELECT id, user_id, display_name, origin_repo, owner_kind, owner_id, latest_synced_checkpoint, created_at, updated_at FROM worktrees
 WHERE id = ?
 `
 
@@ -55,6 +55,7 @@ func (q *Queries) GetWorktreeByID(ctx context.Context, id string) (Worktree, err
 		&i.ID,
 		&i.UserID,
 		&i.DisplayName,
+		&i.OriginRepo,
 		&i.OwnerKind,
 		&i.OwnerID,
 		&i.LatestSyncedCheckpoint,
@@ -101,15 +102,16 @@ func (q *Queries) InsertCheckpoint(ctx context.Context, arg InsertCheckpointPara
 
 const insertWorktree = `-- name: InsertWorktree :exec
 INSERT INTO worktrees (
-    id, user_id, display_name, owner_kind, owner_id,
+    id, user_id, display_name, origin_repo, owner_kind, owner_id,
     latest_synced_checkpoint, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type InsertWorktreeParams struct {
 	ID                     string
 	UserID                 string
 	DisplayName            string
+	OriginRepo             string
 	OwnerKind              string
 	OwnerID                string
 	LatestSyncedCheckpoint string
@@ -122,6 +124,7 @@ func (q *Queries) InsertWorktree(ctx context.Context, arg InsertWorktreeParams) 
 		arg.ID,
 		arg.UserID,
 		arg.DisplayName,
+		arg.OriginRepo,
 		arg.OwnerKind,
 		arg.OwnerID,
 		arg.LatestSyncedCheckpoint,
@@ -178,7 +181,7 @@ func (q *Queries) ListCheckpointsByWorktree(ctx context.Context, arg ListCheckpo
 }
 
 const listWorktreesByOwner = `-- name: ListWorktreesByOwner :many
-SELECT id, user_id, display_name, owner_kind, owner_id, latest_synced_checkpoint, created_at, updated_at FROM worktrees
+SELECT id, user_id, display_name, origin_repo, owner_kind, owner_id, latest_synced_checkpoint, created_at, updated_at FROM worktrees
 WHERE owner_kind = ? AND owner_id = ?
 ORDER BY updated_at DESC
 `
@@ -201,6 +204,7 @@ func (q *Queries) ListWorktreesByOwner(ctx context.Context, arg ListWorktreesByO
 			&i.ID,
 			&i.UserID,
 			&i.DisplayName,
+			&i.OriginRepo,
 			&i.OwnerKind,
 			&i.OwnerID,
 			&i.LatestSyncedCheckpoint,
@@ -221,7 +225,7 @@ func (q *Queries) ListWorktreesByOwner(ctx context.Context, arg ListWorktreesByO
 }
 
 const listWorktreesByUser = `-- name: ListWorktreesByUser :many
-SELECT id, user_id, display_name, owner_kind, owner_id, latest_synced_checkpoint, created_at, updated_at FROM worktrees
+SELECT id, user_id, display_name, origin_repo, owner_kind, owner_id, latest_synced_checkpoint, created_at, updated_at FROM worktrees
 WHERE user_id = ?
 ORDER BY updated_at DESC
 `
@@ -239,6 +243,7 @@ func (q *Queries) ListWorktreesByUser(ctx context.Context, userID string) ([]Wor
 			&i.ID,
 			&i.UserID,
 			&i.DisplayName,
+			&i.OriginRepo,
 			&i.OwnerKind,
 			&i.OwnerID,
 			&i.LatestSyncedCheckpoint,
@@ -324,3 +329,4 @@ func (q *Queries) UpdateWorktreePointer(ctx context.Context, arg UpdateWorktreeP
 	_, err := q.db.ExecContext(ctx, updateWorktreePointer, arg.LatestSyncedCheckpoint, arg.UpdatedAt, arg.ID)
 	return err
 }
+
