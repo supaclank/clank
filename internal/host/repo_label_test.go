@@ -64,9 +64,9 @@ func TestRepoLabelFromURL(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := repoLabelFromURL(tc.input, tc.fallback)
+			got := RepoLabelFromURL(tc.input, tc.fallback)
 			if got != tc.want {
-				t.Errorf("repoLabelFromURL(%q, %q) = %q, want %q", tc.input, tc.fallback, got, tc.want)
+				t.Errorf("RepoLabelFromURL(%q, %q) = %q, want %q", tc.input, tc.fallback, got, tc.want)
 			}
 		})
 	}
@@ -76,8 +76,8 @@ func TestRepoLabelFromURL(t *testing.T) {
 func TestRepoLabelFromURL_ForksAreDistinct(t *testing.T) {
 	t.Parallel()
 
-	a := repoLabelFromURL("https://github.com/acme/api.git", "")
-	b := repoLabelFromURL("https://github.com/bob/api.git", "")
+	a := RepoLabelFromURL("https://github.com/acme/api.git", "")
+	b := RepoLabelFromURL("https://github.com/bob/api.git", "")
 	if a == b {
 		t.Fatalf("expected distinct labels for forks, got %q == %q", a, b)
 	}

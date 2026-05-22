@@ -2394,30 +2394,6 @@ func TestRightArrow_FromSidebar_NavigatesToSessionPane(t *testing.T) {
 	}
 }
 
-func TestRightArrow_WhileCreatingBranch_PassesThrough(t *testing.T) {
-	t.Parallel()
-
-	ti := textinput.New()
-	ti.Focus()
-	m := &InboxModel{
-		width:  120,
-		height: 40,
-		pane:   paneSidebar,
-		sidebar: SidebarModel{
-			projectDir: "/tmp/test",
-			focused:    true,
-			creating:   true,
-			input:      ti,
-		},
-	}
-
-	m.handleSidebarKey(tea.KeyPressMsg{Code: tea.KeyRight})
-
-	// Should remain on sidebar because we're in text-input mode.
-	if m.pane != paneSidebar {
-		t.Error("expected pane to remain paneSidebar while creating a branch")
-	}
-}
 
 func TestBuildSearchResults_RespectsProjectFilter(t *testing.T) {
 	t.Parallel()

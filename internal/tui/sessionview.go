@@ -92,8 +92,26 @@ type pendingPermissionMsg struct {
 	perms []agent.PermissionData
 }
 
-// backToInboxMsg signals navigation back to the inbox.
+// backToInboxMsg signals navigation back to the inbox. Emitted after
+// flows that explicitly want to land the user on the inbox screen
+// (e.g. marking a session done / archived).
 type backToInboxMsg struct{}
+
+// closeComposeMsg signals that compose mode was dismissed without
+// submitting (typically via Esc). The inbox restores whatever screen
+// + session were active before compose was opened — compose behaves
+// like a transient overlay, not a navigation hop to the inbox.
+type closeComposeMsg struct{}
+
+// composeSubmittedMsg fires when a compose prompt was successfully
+// posted and the SessionViewModel transitioned in-place to a live
+// session. The inbox uses it to update its tracking (activeConnID,
+// sidebar's active-session rail, persisted "last session" for the
+// cwd) and to drop the pre-compose snapshot — the new chat is the
+// desired state now.
+type composeSubmittedMsg struct {
+	sessionID string
+}
 
 // openProviderAuthFromSessionMsg bubbles up from the model picker's
 // "+ Connect provider…" entry. The inbox closes the session view, opens
@@ -154,6 +172,12 @@ type SessionViewModel struct {
 	// Input state.
 	inputActive bool
 	input       textarea.Model
+
+	// paneFocused mirrors whether the session view is the currently
+	// focused pane in the parent inbox layout. The chat draws no outer
+	// border, so the per-message cursor border is the only visual cue
+	// for focus — when paneFocused is false, that border is suppressed.
+	paneFocused bool
 
 	// Permission state.
 	pendingPerms   []agent.PermissionData
@@ -313,6 +337,7 @@ type entryRenderKey struct {
 	ownerExpanded bool
 	streaming     bool
 	showCopied    bool // selected entry's [copy] vs ✓ copied state
+	paneFocused   bool // gates the cursor border on/off when focus moves
 	// contentLen and renderedMDLen are belt-and-suspenders: if a mutation
 	// site forgets to nil cachedLines but does update content or clear
 	// renderedMD (the more common invalidation signals), the key still
@@ -1077,14 +1102,27 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.startAbort()
 		}
 		return m.handleCtrlCQuit()
-	case key.Matches(msg, key.NewBinding(key.WithKeys("q", "esc"))):
+	case key.Matches(msg, key.NewBinding(key.WithKeys("q"))):
+		// 'q' quits the TUI, matching the inbox screen's binding.
+		// In the embedded chat layout the sidebar is always visible,
+		// so there's no need for a separate "back to inbox" key —
+		// navigating away is just a left-arrow + arrow keys.
 		if m.cancelEvents != nil {
 			m.cancelEvents()
 		}
+		return m, tea.Quit
+	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		// Esc is intentionally a no-op in the embedded chat — the
+		// chat is a first-class pane, not an overlay. Standalone mode
+		// (no inbox to fall back to) still treats esc as quit so the
+		// user has a way out.
 		if m.standalone {
+			if m.cancelEvents != nil {
+				m.cancelEvents()
+			}
 			return m, tea.Quit
 		}
-		return m, func() tea.Msg { return backToInboxMsg{} }
+		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("m"))):
 		m.inputActive = true
 		if !m.follow {
@@ -2217,7 +2255,13 @@ func (m *SessionViewModel) View() tea.View {
 
 	var sb strings.Builder
 
-	// Header.
+	// Header. Prepend a blank row so the chat's title lands at the
+	// same vertical position as the sidebar's "Worktrees" header
+	// (which sits one row below the sidebar's top border). The chat
+	// has no outer border of its own, so without this nudge the title
+	// would render flush against the top edge and look misaligned
+	// with the sidebar.
+	sb.WriteString("\n")
 	sb.WriteString(m.renderHeader())
 	sb.WriteString("\n\n")
 
@@ -2240,7 +2284,7 @@ func (m *SessionViewModel) View() tea.View {
 	ch := m.contentHeight()
 
 	// Cache for mouse selection: count how many screen rows precede the content area.
-	m.cachedHeaderRows = 2 // header line + blank line
+	m.cachedHeaderRows = 3 // leading spacer + header line + blank line
 	if m.err != nil {
 		// Account for the actual rendered height — long errors wrap to
 		// multiple lines, otherwise mouse-selection coordinates would
@@ -2516,6 +2560,7 @@ func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool, ownerExpa
 		ownerExpanded: ownerExpanded,
 		streaming:     e.streaming,
 		showCopied:    selected && m.isShowingCopied(),
+		paneFocused:   m.paneFocused,
 		contentLen:    len(e.content),
 		renderedMDLen: len(e.renderedMD),
 	}
@@ -2682,8 +2727,10 @@ func (m *SessionViewModel) renderEntryUncached(e *displayEntry, selected bool, o
 		contentLines = []string{e.content}
 	}
 
-	if selected && navigable {
-		// Wrap content in a rounded border.
+	if selected && navigable && m.paneFocused {
+		// Wrap content in a rounded border. Only when the chat pane
+		// has focus — otherwise the selection would steal attention
+		// from the sidebar cursor where it actually belongs.
 		inner := strings.Join(contentLines, "\n")
 		bordered := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -2768,10 +2815,7 @@ func (m *SessionViewModel) buildHelpText() string {
 	if len(m.pendingPerms) > 0 {
 		return "y: allow | n: deny"
 	}
-	qLabel := "q: back"
-	if m.standalone {
-		qLabel = "q: quit"
-	}
+	qLabel := "q: quit"
 	parts := []string{"m: message", ":: actions", "c: copy", "?: help", qLabel}
 	if m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting) {
 		parts = append([]string{"ctrl+c: cancel"}, parts...)

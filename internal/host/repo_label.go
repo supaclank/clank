@@ -4,7 +4,7 @@ import (
 	"strings"
 )
 
-// repoLabelFromURL derives a display label from a git remote URL.
+// RepoLabelFromURL derives a display label from a git remote URL.
 // When the URL contains an owner segment, the label is "owner/repo" so
 // forks of the same repo name remain distinguishable in the UI. When
 // only a single path segment is present, the bare repo name is returned.
@@ -16,7 +16,7 @@ import (
 //	"git@github.com:acme/api.git"     → "acme/api"
 //	"https://github.com/acme/api"     → "acme/api"
 //	"https://example.com/api"         → "api"
-func repoLabelFromURL(remoteURL, fallback string) string {
+func RepoLabelFromURL(remoteURL, fallback string) string {
 	u := strings.TrimSuffix(remoteURL, ".git")
 
 	// Extract the path component of the URL (everything after the host).

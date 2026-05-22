@@ -124,7 +124,7 @@ func TestCompose_EscStandaloneQuits(t *testing.T) {
 	}
 }
 
-func TestCompose_EscNonStandaloneGoesBack(t *testing.T) {
+func TestCompose_EscNonStandaloneClosesOverlay(t *testing.T) {
 	t.Parallel()
 	m := NewSessionViewComposing(nil, "/tmp/project")
 	m.width = 80
@@ -137,9 +137,13 @@ func TestCompose_EscNonStandaloneGoesBack(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a command from esc")
 	}
+	// Compose is an overlay over the prior right-pane state; Esc emits
+	// closeComposeMsg so the inbox can restore that state. (The older
+	// backToInboxMsg semantics — always land on the inbox — is reserved
+	// for explicit flows like mark-done.)
 	msg := cmd()
-	if _, ok := msg.(backToInboxMsg); !ok {
-		t.Fatalf("expected backToInboxMsg, got %T", msg)
+	if _, ok := msg.(closeComposeMsg); !ok {
+		t.Fatalf("expected closeComposeMsg, got %T", msg)
 	}
 }
 
