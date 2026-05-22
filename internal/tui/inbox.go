@@ -681,6 +681,12 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
+			// In single-pane mode the sidebar is hidden, so its
+			// "focus" is invisible — repair m.pane before routing or
+			// keys would vanish into a sidebar nobody can see.
+			if !m.showTwoPanes() && m.pane == paneSidebar {
+				m.setPane(paneSessions)
+			}
 			if m.pane == paneSidebar {
 				return m.handleSidebarKey(keyMsg)
 			}
@@ -1798,13 +1804,6 @@ func (m *InboxModel) View() tea.View {
 	if m.width == 0 {
 		v := newVoiceEnabledView("Loading...")
 		return v
-	}
-
-	// In narrow terminals the chat view still takes over the screen —
-	// there isn't room for two panes. Two-pane embedding only applies
-	// when showTwoPanes() reports true.
-	if m.screen == screenSession && m.sessionView != nil && !m.showTwoPanes() {
-		return m.sessionView.View()
 	}
 
 	// Compute right-pane content as a styled string. The screen enum

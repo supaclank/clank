@@ -2284,7 +2284,7 @@ func (m *SessionViewModel) View() tea.View {
 	ch := m.contentHeight()
 
 	// Cache for mouse selection: count how many screen rows precede the content area.
-	m.cachedHeaderRows = 2 // header line + blank line
+	m.cachedHeaderRows = 3 // leading spacer + header line + blank line
 	if m.err != nil {
 		// Account for the actual rendered height — long errors wrap to
 		// multiple lines, otherwise mouse-selection coordinates would
