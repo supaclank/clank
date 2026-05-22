@@ -33,7 +33,7 @@ var animals = []string{
 // suffix makes collisions vanishingly unlikely without making the name
 // hard to read aloud.
 func Generate() string {
-	var buf [3]byte
+	var buf [4]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		// rand.Read returning an error is essentially impossible on the
 		// platforms we run on; if it does, fall back to a static suffix
@@ -42,6 +42,8 @@ func Generate() string {
 	}
 	adj := adjectives[int(buf[0])%len(adjectives)]
 	animal := animals[int(buf[1])%len(animals)]
-	suffix := hex.EncodeToString(buf[1:])
+	// Distinct bytes for the suffix so collision space is the full
+	// adjective × animal × 65536, not narrowed by the shared byte.
+	suffix := hex.EncodeToString(buf[2:])
 	return fmt.Sprintf("%s-%s-%s", adj, animal, suffix)
 }

@@ -1069,6 +1069,11 @@ func (s *Service) CreateWorktree(ctx context.Context, baseWorktreeRef agent.GitR
 		}
 		if _, statErr := os.Stat(dir); statErr == nil {
 			continue
+		} else if !os.IsNotExist(statErr) {
+			// Permission or I/O errors mean we can't tell whether the path
+			// is reusable; treating them as "available" would surface as a
+			// confusing `git worktree add` failure downstream.
+			return CreateWorktreeResult{}, fmt.Errorf("check candidate worktree dir %q: %w", dir, statErr)
 		}
 		newBranch = candidate
 		wtDir = dir
@@ -1081,14 +1086,29 @@ func (s *Service) CreateWorktree(ctx context.Context, baseWorktreeRef agent.GitR
 	if err := git.AddWorktreeNewBranch(repoRoot, wtDir, newBranch, baseBranch); err != nil {
 		return CreateWorktreeResult{}, err
 	}
-	s.branches.invalidate(repoRoot)
+	// Invalidate by both baseDir and repoRoot because listBranches keys
+	// its cache on whatever projectDir workDirFor resolved to — which can
+	// be the base worktree path rather than the main worktree root.
+	s.branches.invalidate(baseDir)
+	if baseDir != repoRoot {
+		s.branches.invalidate(repoRoot)
+	}
 
-	worktreeID := ulid.MustNew(ulid.Now(), cryptoRand).String()
+	worktreeULID, err := ulid.New(ulid.Now(), cryptoRand)
+	if err != nil {
+		return CreateWorktreeResult{}, fmt.Errorf("generate worktree id: %w", err)
+	}
+	worktreeID := worktreeULID.String()
 	if err := agent.WriteLocalWorktreeID(wtDir, worktreeID); err != nil {
-		// The worktree exists on disk but we couldn't stamp it. A future
-		// `clank push` from this dir would treat it as a fresh worktree
-		// and double-register — surface the error so the gateway can
-		// roll back.
+		// Best-effort rollback so a retry doesn't accumulate orphaned
+		// worktrees + branches. Logged-and-continue: the stamp error is
+		// what the caller needs to see.
+		if rmErr := git.RemoveWorktree(repoRoot, wtDir, true); rmErr != nil {
+			s.log.Printf("warning: rollback remove worktree %s: %v", wtDir, rmErr)
+		}
+		if delErr := git.DeleteBranch(repoRoot, newBranch, true); delErr != nil {
+			s.log.Printf("warning: rollback delete branch %q: %v", newBranch, delErr)
+		}
 		return CreateWorktreeResult{}, fmt.Errorf("stamp worktree-id: %w", err)
 	}
 
