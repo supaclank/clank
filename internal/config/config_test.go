@@ -43,6 +43,40 @@ func TestPreferences_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestPreferences_SidebarExpandedRoundTrip verifies the per-row sidebar
+// expand state survives a save/load cycle. The keys mirror the runtime
+// scheme (worktree path, older buckets); the value semantics aren't
+// asserted here — just that the JSON shape round-trips.
+func TestPreferences_SidebarExpandedRoundTrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	want := Preferences{
+		SidebarExpanded: map[string]bool{
+			"wt:/home/u/repos/clank":         true,
+			"wt:/home/u/repos/mindmouth":     false,
+			"older:wt":                       true,
+			"older:s:/home/u/repos/fuselage": true,
+		},
+	}
+	if err := SavePreferences(want); err != nil {
+		t.Fatalf("SavePreferences: %v", err)
+	}
+
+	got, err := LoadPreferences()
+	if err != nil {
+		t.Fatalf("LoadPreferences: %v", err)
+	}
+
+	if len(got.SidebarExpanded) != len(want.SidebarExpanded) {
+		t.Fatalf("SidebarExpanded length: got %d, want %d", len(got.SidebarExpanded), len(want.SidebarExpanded))
+	}
+	for k, v := range want.SidebarExpanded {
+		if got.SidebarExpanded[k] != v {
+			t.Errorf("SidebarExpanded[%q]: got %v, want %v", k, got.SidebarExpanded[k], v)
+		}
+	}
+}
+
 // TestPreferences_LoadBackwardCompat ensures an old preferences.json that
 // doesn't know about ColorScheme still loads cleanly (empty string).
 func TestPreferences_LoadBackwardCompat(t *testing.T) {

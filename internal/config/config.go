@@ -133,6 +133,22 @@ type Preferences struct {
 	// default" (defaultSidebarWidthRatio).
 	SidebarWidthRatio int `json:"sidebar_width_ratio,omitempty"`
 
+	// SidebarExpanded is the persisted per-row expand/collapse state for the
+	// IDE-style sidebar tree. Keys follow the scheme used by sidebarNode.Key
+	// (e.g. "wt:<LocalPath>", "older:wt", "older:s:<LocalPath>"). Absent or
+	// false entries are collapsed. Older buckets reset to collapsed at every
+	// launch regardless of what's stored here; the TUI is responsible for
+	// that override.
+	SidebarExpanded map[string]bool `json:"sidebar_expanded,omitempty"`
+
+	// LastSessionByCwd records the session that was most recently open
+	// when the TUI exited, keyed by the absolute cwd it was launched
+	// from. On startup the TUI looks up the entry for the current cwd
+	// and reopens that session — so "where I left off" survives across
+	// runs without dropping users into a session from an unrelated
+	// repo when they launch from elsewhere.
+	LastSessionByCwd map[string]string `json:"last_session_by_cwd,omitempty"`
+
 	// Daytona configures the cloud-hub-side Daytona launcher. Only
 	// effective on a TCP-listening hub. Empty = launcher disabled
 	// (sessions requesting launch_host.provider="daytona" will 4xx).

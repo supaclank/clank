@@ -1050,7 +1050,7 @@ func (s *Service) listBranches(_ context.Context, projectDir string) ([]BranchIn
 		// Strip common git URL noise to produce a short, readable label.
 		// e.g. "https://github.com/acme/api.git" → "api"
 		//      "git@github.com:acme/api.git"     → "api"
-		repoLabel = repoLabelFromURL(remoteURL, repoLabel)
+		repoLabel = RepoLabelFromURL(remoteURL, repoLabel)
 	}
 
 	result := make([]BranchInfo, 0, len(worktrees))
