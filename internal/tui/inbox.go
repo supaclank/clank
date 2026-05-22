@@ -140,6 +140,19 @@ type InboxModel struct {
 	sessionView  *SessionViewModel
 	activeConnID string // session ID of the detail view
 
+	// Compose-overlay snapshot: captured when "n" opens the compose
+	// view so Esc can restore the right pane to what was showing
+	// before, rather than dumping the user on the inbox screen.
+	// Cleared on a successful submit (the new chat takes over) or on
+	// close. activeCompose is the discriminator — when false, no
+	// snapshot is being held.
+	activeCompose       bool
+	preComposeScreen    inboxScreen
+	preComposeSession   *SessionViewModel
+	preComposeConnID    string
+	preComposePane      inboxPane
+	preComposeActiveRow string // sidebar's activeSessionID at snapshot time
+
 	// Settings page state (shown when screen == screenSettings).
 	settings settingsView
 
@@ -570,6 +583,17 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// cursor's context; an empty string is interpreted as "use
 		// the cwd" by openComposingSession.
 		return m, m.openComposingSession(msg.worktreePath)
+	case closeComposeMsg:
+		m.closeCompose()
+		return m, nil
+	case composeSubmittedMsg:
+		// The chat view already swapped itself from composing to a
+		// live session in-place; this catches the inbox-side state up.
+		m.activeConnID = msg.sessionID
+		m.sidebar.SetActiveSessionID(msg.sessionID)
+		go persistLastSessionForCwd(m.projectDir, msg.sessionID)
+		m.clearComposeSnapshot()
+		return m, m.loadDataCmd()
 	case inboxDataMsg:
 		// Always feed the session list to the sidebar, even when the
 		// chat view is the active screen. Otherwise restoring straight
@@ -975,7 +999,21 @@ func (m *InboxModel) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 // (cursor's worktree, active session's worktree, or cwd) so the user
 // almost never has to override it. Empty worktreeDir falls back to
 // the cwd, treating it the same as "this project."
+//
+// Compose behaves as an overlay over the previous right-pane state:
+// the screen / session / pane / sidebar active row are snapshotted so
+// closeComposeMsg can restore them on cancel. Re-entering compose
+// while already in compose preserves the original snapshot.
 func (m *InboxModel) openComposingSession(worktreeDir string) tea.Cmd {
+	if !m.activeCompose {
+		m.activeCompose = true
+		m.preComposeScreen = m.screen
+		m.preComposeSession = m.sessionView
+		m.preComposeConnID = m.activeConnID
+		m.preComposePane = m.pane
+		m.preComposeActiveRow = m.activeConnID
+	}
+
 	m.screen = screenSession
 	m.activeConnID = ""
 	m.sidebar.SetActiveSessionID("")
@@ -993,6 +1031,36 @@ func (m *InboxModel) openComposingSession(worktreeDir string) tea.Cmd {
 		m.sessionView.input.SetWidth(m.width - promptInputBorderSize)
 	}
 	return m.sessionView.Init()
+}
+
+// closeCompose restores the right pane to whatever it was showing
+// before openComposingSession was called. Called when the user
+// dismisses compose with Esc (closeComposeMsg) — submitting a prompt
+// clears the snapshot via clearComposeSnapshot instead, since the
+// new live session takes over.
+func (m *InboxModel) closeCompose() {
+	if !m.activeCompose {
+		return
+	}
+	m.screen = m.preComposeScreen
+	m.sessionView = m.preComposeSession
+	m.activeConnID = m.preComposeConnID
+	m.sidebar.SetActiveSessionID(m.preComposeActiveRow)
+	m.setPane(m.preComposePane)
+	m.clearComposeSnapshot()
+}
+
+// clearComposeSnapshot drops the saved pre-compose state and exits
+// "in compose" mode. Called both on Esc (after restoring) and on
+// successful submit (when the new live session is the desired state
+// going forward, not the pre-compose one).
+func (m *InboxModel) clearComposeSnapshot() {
+	m.activeCompose = false
+	m.preComposeScreen = 0
+	m.preComposeSession = nil
+	m.preComposeConnID = ""
+	m.preComposePane = paneSessions
+	m.preComposeActiveRow = ""
 }
 
 // --- Search mode ---

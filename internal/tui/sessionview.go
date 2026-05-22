@@ -92,8 +92,26 @@ type pendingPermissionMsg struct {
 	perms []agent.PermissionData
 }
 
-// backToInboxMsg signals navigation back to the inbox.
+// backToInboxMsg signals navigation back to the inbox. Emitted after
+// flows that explicitly want to land the user on the inbox screen
+// (e.g. marking a session done / archived).
 type backToInboxMsg struct{}
+
+// closeComposeMsg signals that compose mode was dismissed without
+// submitting (typically via Esc). The inbox restores whatever screen
+// + session were active before compose was opened — compose behaves
+// like a transient overlay, not a navigation hop to the inbox.
+type closeComposeMsg struct{}
+
+// composeSubmittedMsg fires when a compose prompt was successfully
+// posted and the SessionViewModel transitioned in-place to a live
+// session. The inbox uses it to update its tracking (activeConnID,
+// sidebar's active-session rail, persisted "last session" for the
+// cwd) and to drop the pre-compose snapshot — the new chat is the
+// desired state now.
+type composeSubmittedMsg struct {
+	sessionID string
+}
 
 // openProviderAuthFromSessionMsg bubbles up from the model picker's
 // "+ Connect provider…" entry. The inbox closes the session view, opens

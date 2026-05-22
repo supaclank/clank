@@ -157,7 +157,10 @@ func (m *SessionViewModel) handleComposeKey(msg tea.KeyPressMsg) (tea.Model, tea
 		if m.standalone {
 			return m, tea.Quit
 		}
-		return m, func() tea.Msg { return backToInboxMsg{} }
+		// Compose is an overlay over whatever the right pane was
+		// previously showing — Esc restores that state, it doesn't
+		// route to the inbox screen.
+		return m, func() tea.Msg { return closeComposeMsg{} }
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+b"))):
 		// Toggle backend.
@@ -317,11 +320,16 @@ func (m *SessionViewModel) handleCreateResult(msg sessionCreateResultMsg) (tea.M
 		m.input.SetWidth(m.width - promptInputBorderSize)
 	}
 
-	// Start reading events + fetch session info + start spinner.
+	// Start reading events + fetch session info + start spinner +
+	// notify the inbox that the compose transitioned to a live
+	// session so its tracking (activeConnID, sidebar rail, last-
+	// session-by-cwd) stays in sync.
+	newID := m.sessionID
 	return m, tea.Batch(
 		m.fetchSessionInfo(),
 		waitForEvent(m.eventsCh, m.sessionID),
 		m.spinner.Tick,
+		func() tea.Msg { return composeSubmittedMsg{sessionID: newID} },
 	)
 }
 
@@ -334,11 +342,11 @@ func (m *SessionViewModel) viewCompose() tea.View {
 
 	var sb strings.Builder
 
-	// Header. Match the regular chat view: prepend a blank row so
-	// the title lines up with the sidebar's "Worktrees" header (one
-	// row below the sidebar's top border). The compose view has no
-	// outer border of its own, so without this nudge the title would
-	// render flush against the top edge.
+	// Header. Prepend a blank row so the title lines up with the
+	// sidebar's "Worktrees" header (one row below the sidebar's top
+	// border). The compose view has no outer border of its own, so
+	// without this nudge the title would render flush against the
+	// top edge.
 	sb.WriteString("\n")
 	sb.WriteString(m.renderComposeHeader())
 	sb.WriteString("\n\n")
