@@ -112,6 +112,13 @@ type InboxModel struct {
 	searchQuery    string              // last query sent to the daemon
 	cachedSessions []agent.SessionInfo // last full session list from the daemon
 
+	// lastSessionsCacheSig fingerprints the most recently disk-cached
+	// session list so the autoRefresh poll doesn't rewrite the cache
+	// when the data hasn't materially changed. Seeded from the cache
+	// loaded at startup so the first daemon poll that returns identical
+	// data is a no-op write.
+	lastSessionsCacheSig sessionsCacheSignature
+
 	// Filter state — structured filters applied as pills in the search bar.
 	projectDir    string // absolute path of the cwd when the inbox was launched
 	projectName   string // basename of projectDir, used for the filter pill label
@@ -246,18 +253,36 @@ func NewInboxModel(client *daemonclient.Client) *InboxModel {
 	bp := NewSidebarModel(client, hostname, gitRef, cwd)
 	bp.SetExpanded(prefs.SidebarExpanded)
 	bp.SetCloudStatus(loadCloudAuthStatus())
-	return &InboxModel{
-		client:            client,
-		pane:              paneSessions,
-		sidebar:           bp,
-		spinner:           sp,
-		searchInput:       ti,
-		projectDir:        cwd,
-		projectName:       filepath.Base(cwd),
-		hostname:          hostname,
-		gitRef:            gitRef,
-		sidebarWidthRatio: sidebarWidthRatioFromPrefs(prefs),
+
+	// Seed the sidebar (and inbox row groups) from the on-disk session
+	// cache so the very first frame after launch shows real content
+	// instead of waiting on the ~0.5–1s daemon round trip. The live
+	// load fires from Init() and replaces this cached snapshot as
+	// soon as it arrives.
+	cachedSessions, _ := loadSessionsCache()
+	if len(cachedSessions) > 0 {
+		bp.SetSessions(cachedSessions)
+		bp.UpdateWorktreeOwnersFromSessions(cachedSessions)
 	}
+
+	m := &InboxModel{
+		client:               client,
+		pane:                 paneSessions,
+		sidebar:              bp,
+		spinner:              sp,
+		searchInput:          ti,
+		projectDir:           cwd,
+		projectName:          filepath.Base(cwd),
+		hostname:             hostname,
+		gitRef:               gitRef,
+		sidebarWidthRatio:    sidebarWidthRatioFromPrefs(prefs),
+		cachedSessions:       cachedSessions,
+		lastSessionsCacheSig: sessionsCacheSig(cachedSessions),
+	}
+	if len(cachedSessions) > 0 {
+		m.buildGroups(m.filteredSessions())
+	}
+	return m
 }
 
 func (m *InboxModel) Init() tea.Cmd {
@@ -547,6 +572,15 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sidebar.UpdateWorktreeOwnersFromSessions(m.cachedSessions)
 			if m.searchQuery == "" {
 				m.buildGroups(m.filteredSessions())
+			}
+			// Persist the snapshot on disk so the next launch can
+			// paint instantly. Skip when the signature matches what
+			// we last wrote — autoRefresh polls every 3s and an idle
+			// inbox shouldn't churn disk.
+			if sig := sessionsCacheSig(msg.sessions); sig != m.lastSessionsCacheSig {
+				m.lastSessionsCacheSig = sig
+				snap := append([]agent.SessionInfo(nil), msg.sessions...)
+				go func() { _ = saveSessionsCache(snap) }()
 			}
 		}
 		return m, nil
