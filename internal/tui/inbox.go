@@ -621,6 +621,33 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case worktreeOptionsRequestedMsg:
+		// ':' on a worktree row → action menu. Handled early so the
+		// menu opens even when the right pane is showing a chat;
+		// otherwise the screenSession delegation below routes the
+		// message to the session view, which swallows it.
+		m.menuWorktreePath = msg.localPath
+		m.notice = ""
+		m.menu = newActionMenu("Worktree: "+filepath.Base(msg.localPath), []actionMenuItem{
+			{label: "Push checkpoint", key: "p", action: "push:" + msg.localPath},
+			{label: "Pull  (coming soon)", action: "pull:" + msg.localPath},
+		})
+		m.showMenu = true
+		return m, nil
+	case worktreePushResultMsg:
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.notice = fmt.Sprintf("pushed checkpoint %s (HEAD %s)", msg.checkpointID, msg.headSHA)
+		}
+		return m, nil
+	}
+
+	// Menu overlay owns the keyboard while it's open — routed before
+	// any screen-specific delegation so the chat / inbox key handlers
+	// don't intercept what should be menu navigation.
+	if m.showMenu {
+		return m.updateMenu(msg)
 	}
 
 	// If we're in session detail view (or composing), delegate — but
@@ -691,11 +718,6 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateMerge(msg)
 	}
 
-	// If menu is open, delegate to menu.
-	if m.showMenu {
-		return m.updateMenu(msg)
-	}
-
 	// If searching, delegate keyboard input to search handler.
 	if m.searching {
 		return m.updateSearch(msg)
@@ -709,24 +731,6 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
 		if m.showMerge {
 			m.mergeOverlay.SetSize(m.width, m.height)
-		}
-		return m, nil
-
-	case worktreeOptionsRequestedMsg:
-		m.menuWorktreePath = msg.localPath
-		m.notice = "" // clear any prior notice when opening a new action menu
-		m.menu = newActionMenu("Worktree: "+filepath.Base(msg.localPath), []actionMenuItem{
-			{label: "Push checkpoint", key: "p", action: "push:" + msg.localPath},
-			{label: "Pull  (coming soon)", action: "pull:" + msg.localPath},
-		})
-		m.showMenu = true
-		return m, nil
-
-	case worktreePushResultMsg:
-		if msg.err != nil {
-			m.err = msg.err
-		} else {
-			m.notice = fmt.Sprintf("pushed checkpoint %s (HEAD %s)", msg.checkpointID, msg.headSHA)
 		}
 		return m, nil
 

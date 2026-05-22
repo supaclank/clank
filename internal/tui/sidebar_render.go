@@ -258,20 +258,16 @@ const rightCursorWidth = 2
 
 // renderWorktreeRow renders one worktree as a single line. Layout:
 //
-//	 >label<  ☁           <repoLabel>  ◀     (collapsed)
-//	< label >  ☁          <repoLabel>  ◀     (expanded)
+//	>label<  ☁           <repoLabel>  ◀     (collapsed)
+//	<label>  ☁           <repoLabel>  ◀     (expanded)
 //
-// Collapsed reads as "closed and compact": the brackets clamp the
-// name with no inner space, and an outer space pads them. Expanded
-// reads as "open and breathing": brackets push outward with inner
-// padding, no outer space. Both variants line the label up at the
-// same column so adjacent rows still align.
+// Brackets wrap the worktree name tightly — the arrow direction is
+// the affordance ("pointing inward" closed, "pointing outward" open).
+// Both variants are the same width so adjacent rows align.
 func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool, maxWidth int) string {
-	// Collapsed: ` >name< ` (outer pad, inner tight).
-	// Expanded:  `< name >` (outer tight, inner pad).
-	leftPrefix, rightSuffix := " >", "< "
+	leftPrefix, rightSuffix := ">", "<"
 	if m.expanded[n.Key()] {
-		leftPrefix, rightSuffix = "< ", " >"
+		leftPrefix, rightSuffix = "<", ">"
 	}
 
 	ownerGlyph := ""
@@ -288,8 +284,8 @@ func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool,
 		repoTagWidth = len(n.RepoLabel) + 1 // one space gutter
 	}
 
-	// Reserve room for: prefix (2) + suffix (2) + owner glyph + repo tag + cursor.
-	maxLabel := maxWidth - 4 - repoTagWidth - cursorReserve - lipgloss.Width(ownerGlyph)
+	// Reserve room for: prefix (1) + suffix (1) + owner glyph + repo tag + cursor.
+	maxLabel := maxWidth - 2 - repoTagWidth - cursorReserve - lipgloss.Width(ownerGlyph)
 	if maxLabel < 6 {
 		maxLabel = 6
 	}
