@@ -425,6 +425,23 @@ func (s *Store) migrate() error {
 		}
 		version = 24
 	}
+	if version < 25 {
+		// origin_repo on worktrees: identifies the repo this worktree was
+		// created from (e.g. "acme/api" derived from the git remote, or
+		// the local dir basename when no remote is configured). Clients
+		// (mobile picker, TUI sidebar) group worktrees by this so users
+		// don't see a flat list of unrelated ULIDs. Empty default preserves
+		// existing rows — those land under "Unknown repo" on grouping
+		// clients until a future PR adds a one-shot backfill.
+		_, err := s.db.Exec(`
+			ALTER TABLE worktrees ADD COLUMN origin_repo TEXT NOT NULL DEFAULT '';
+			PRAGMA user_version = 25;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v25: %w", err)
+		}
+		version = 25
+	}
 	_ = version // suppress unused warning after last migration
 
 	return nil

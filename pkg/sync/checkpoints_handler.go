@@ -16,13 +16,22 @@ import (
 // registerWorktreeRequest is the body of POST /v1/worktrees.
 type registerWorktreeRequest struct {
 	DisplayName string `json:"display_name"`
+	// OriginRepo identifies the repo this worktree was created from
+	// (e.g. "acme/api"). See sync.Worktree.OriginRepo for the field's
+	// purpose; optional here for callers that don't have it (older
+	// laptops, scripted registrations). Empty value lands the row
+	// under "Unknown repo" on grouping clients.
+	OriginRepo string `json:"origin_repo,omitempty"`
 }
 
 type worktreeResponse struct {
-	ID                     string    `json:"id"`
-	UserID                 string    `json:"user_id"`
-	DisplayName            string    `json:"display_name"`
-	OwnerKind              OwnerKind `json:"owner_kind"`
+	ID          string `json:"id"`
+	UserID      string `json:"user_id"`
+	DisplayName string `json:"display_name"`
+	// OriginRepo mirrors sync.Worktree.OriginRepo — see that struct's
+	// doc. Clients use it as the group key in pickers/sidebars.
+	OriginRepo string    `json:"origin_repo,omitempty"`
+	OwnerKind  OwnerKind `json:"owner_kind"`
 	OwnerID                string    `json:"owner_id"`
 	LatestSyncedCheckpoint string    `json:"latest_synced_checkpoint,omitempty"`
 	// LatestCheckpointMetadata carries the 4 content SHAs of the
@@ -253,6 +262,7 @@ func (s *Server) handleRegisterWorktree(w http.ResponseWriter, r *http.Request) 
 		ID:          newULID(),
 		UserID:      caller.UserID,
 		DisplayName: req.DisplayName,
+		OriginRepo:  req.OriginRepo,
 		OwnerKind:   OwnerKindLocal,
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -605,6 +615,7 @@ func worktreeToResponse(w Worktree) worktreeResponse {
 		ID:                     w.ID,
 		UserID:                 w.UserID,
 		DisplayName:            w.DisplayName,
+		OriginRepo:             w.OriginRepo,
 		OwnerKind:              w.OwnerKind,
 		OwnerID:                w.OwnerID,
 		LatestSyncedCheckpoint: w.LatestSyncedCheckpoint,

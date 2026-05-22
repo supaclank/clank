@@ -50,6 +50,7 @@ type Worktree struct {
 	ID                     string
 	UserID                 string
 	DisplayName            string
+	OriginRepo             string
 	OwnerKind              string
 	OwnerID                string
 	LatestSyncedCheckpoint string
