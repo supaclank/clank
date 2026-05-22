@@ -19,13 +19,10 @@ package tui
 // node Kinds, so adding rows never requires renumbering.
 
 import (
-	"context"
 	"strings"
 	"time"
 
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/agent"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
@@ -36,18 +33,13 @@ import (
 // used when the screen width is not yet known.
 const sidebarWidth = 30
 
-// branchWorktreeCreatedMsg is sent after a worktree is created for a new
-// branch from the inline new-branch input.
-type branchWorktreeCreatedMsg struct {
-	branch      string
-	worktreeDir string
-	err         error
-}
-
-// newWorktreeSessionRequestMsg is emitted after a worktree is created so
-// the inbox can immediately open a composing session inside it.
-type newWorktreeSessionRequestMsg struct {
-	worktreeDir string
+// composeRequestedMsg is emitted when the user presses "n" in the
+// sidebar. The inbox handles it by opening the compose view, prefilled
+// with WorktreePath (or the cwd when empty). This replaces the older
+// inline branch-input flow — new-worktree creation now lives inside
+// the compose view's worktree picker.
+type composeRequestedMsg struct {
+	worktreePath string
 }
 
 // SettingsRequestedMsg is emitted by the inbox when the user activates the
@@ -77,10 +69,7 @@ type sidebarExpandToggledMsg struct{}
 
 // SidebarModel renders the sidebar tree and tracks cursor/expand state.
 type SidebarModel struct {
-	client *daemonclient.Client
-	// projectDir is the cwd the inbox was launched from. Kept for display
-	// and for non-branch concerns (project filter); branch operations now
-	// route through hostname/gitRef instead.
+	client     *daemonclient.Client
 	projectDir string
 	hostname   string
 	gitRef     agent.GitRef
@@ -98,10 +87,6 @@ type SidebarModel struct {
 	cursor int
 	scroll int
 
-	// New branch input mode.
-	creating bool
-	input    textinput.Model
-
 	focused bool
 	width   int
 	height  int
@@ -115,27 +100,13 @@ type SidebarModel struct {
 }
 
 // NewSidebarModel creates a sidebar for the given repo identity.
-// projectDir is retained for display purposes only; branch/worktree ops
-// are addressed by (hostname, gitRef). initialExpanded seeds the
-// expand-state map (e.g. from persisted preferences); pass nil for a
-// fresh sidebar with everything collapsed.
+// projectDir is retained for display purposes only.
 func NewSidebarModel(client *daemonclient.Client, hostname string, gitRef agent.GitRef, projectDir string) SidebarModel {
-	ti := textinput.New()
-	ti.Placeholder = "branch-name"
-	ti.CharLimit = 128
-	ti.Prompt = "+ "
-	styles := ti.Styles()
-	styles.Focused.Prompt = lipgloss.NewStyle().Foreground(successColor).Bold(true)
-	styles.Focused.Text = lipgloss.NewStyle().Foreground(textColor)
-	styles.Focused.Placeholder = lipgloss.NewStyle().Foreground(mutedColor)
-	ti.SetStyles(styles)
-
 	return SidebarModel{
 		client:      client,
 		hostname:    hostname,
 		gitRef:      gitRef,
 		projectDir:  projectDir,
-		input:       ti,
 		expanded:    map[string]bool{},
 		userToggles: map[string]bool{},
 		owners:      map[string]string{},
@@ -398,6 +369,27 @@ func (m *SidebarModel) SelectedSessionID() string {
 	return n.Session.ID
 }
 
+// CursorWorktreePath returns the LocalPath of the worktree the cursor
+// is currently on (or whose session the cursor is on). Empty means
+// the cursor isn't anywhere worktree-shaped (AllSessions, Older
+// buckets, footer rows). Callers fall back to the cwd's worktree in
+// that case.
+//
+// Used by the unified "n" gesture to prefill the compose view's
+// target worktree from context.
+func (m *SidebarModel) CursorWorktreePath() string {
+	if m.cursor < 0 || m.cursor >= len(m.flat) {
+		return ""
+	}
+	switch n := m.flat[m.cursor].(type) {
+	case worktreeNode:
+		return n.LocalPath
+	case sessionNode:
+		return n.ParentPath
+	}
+	return ""
+}
+
 // SetFocused sets whether the sidebar has keyboard focus.
 func (m *SidebarModel) SetFocused(focused bool) { m.focused = focused }
 
@@ -412,67 +404,10 @@ func (m *SidebarModel) SetSize(width, height int) {
 
 // Update handles messages for the sidebar.
 func (m *SidebarModel) Update(msg tea.Msg) tea.Cmd {
-	switch msg := msg.(type) {
-	case branchWorktreeCreatedMsg:
-		if msg.err != nil {
-			m.err = msg.err
-			return nil
-		}
-		m.err = nil
-		m.creating = false
-		m.input.SetValue("")
-		return func() tea.Msg {
-			return newWorktreeSessionRequestMsg{worktreeDir: msg.worktreeDir}
-		}
-	}
-
-	if m.creating {
-		return m.updateCreating(msg)
-	}
-
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
 		return m.handleKey(keyMsg)
 	}
 	return nil
-}
-
-// updateCreating handles input while creating a new branch.
-func (m *SidebarModel) updateCreating(msg tea.Msg) tea.Cmd {
-	if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
-		keyMsg = normalizeKeyCase(keyMsg)
-		switch keyMsg.String() {
-		case "esc":
-			m.creating = false
-			m.input.SetValue("")
-			return nil
-		case "enter":
-			name := strings.TrimSpace(m.input.Value())
-			if name == "" {
-				m.creating = false
-				return nil
-			}
-			return m.createWorktree(name)
-		}
-	}
-	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
-	return cmd
-}
-
-// createWorktree asks the daemon to create a worktree for the given branch.
-func (m *SidebarModel) createWorktree(branch string) tea.Cmd {
-	client := m.client
-	hostname := m.hostname
-	gitRef := m.gitRef
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		wt, err := client.Host(hostname).ResolveWorktree(ctx, gitRef, branch)
-		if err != nil {
-			return branchWorktreeCreatedMsg{branch: branch, err: err}
-		}
-		return branchWorktreeCreatedMsg{branch: branch, worktreeDir: wt.WorktreeDir}
-	}
 }
 
 // shiftJump moves the cursor one worktree in the chosen direction,

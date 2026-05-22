@@ -65,7 +65,7 @@ func (m *SidebarModel) renderBody(contentWidth int) (lines []string, footerLineC
 	hasContent := false
 	for _, idx := range visible {
 		n := m.flat[idx]
-		selected := idx == m.cursor && m.focused && !m.creating
+		selected := idx == m.cursor && m.focused
 		// Insert a dim rule before every top-level row (worktree or
 		// top-level overflow bucket) whenever any body row already
 		// rendered. That covers both the divider between consecutive
@@ -76,13 +76,9 @@ func (m *SidebarModel) renderBody(contentWidth int) (lines []string, footerLineC
 		}
 		switch typed := n.(type) {
 		case allSessionsNode:
-			lines = append(lines, m.renderAllRow(selected))
+			lines = append(lines, m.renderAllRow(selected, contentWidth))
 		case worktreeNode:
 			lines = append(lines, m.renderWorktreeRow(typed, idx, selected, contentWidth))
-			if m.creating && idx == m.cursor {
-				m.input.SetWidth(contentWidth - 2)
-				lines = append(lines, m.renderInputRow())
-			}
 		case sessionNode:
 			lines = append(lines, m.renderSessionRow(typed, selected, contentWidth)...)
 		case olderWorktreesNode:
@@ -201,9 +197,6 @@ func (m *SidebarModel) nodeLineCost(idx int, isFirstVisible bool) int {
 	if !isFirstVisible && (n.Kind() == nodeWorktree || n.Kind() == nodeOlderWorktrees) {
 		cost++ // separator line emitted before this row
 	}
-	if n.Kind() == nodeWorktree && m.creating && idx == m.cursor {
-		cost++ // inline branch-name input row
-	}
 	return cost
 }
 
@@ -232,28 +225,28 @@ func (m *SidebarModel) listHeight() int {
 }
 
 // renderAllRow renders the virtual "All sessions" entry pinned at the
-// top of the body.
-func (m *SidebarModel) renderAllRow(selected bool) string {
-	label := "All sessions"
-	if selected {
-		return lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ") +
-			lipgloss.NewStyle().Foreground(textColor).Bold(true).Render(label)
-	}
+// top of the body. Uses the same right-edge cursor marker as worktree
+// rows so the "you are here" signal stays consistent across the
+// whole tree — the label sits at the left margin, selection only
+// adds a bold weight and the right-edge ◀.
+func (m *SidebarModel) renderAllRow(selected bool, maxWidth int) string {
+	label := "  All sessions"
+	style := lipgloss.NewStyle().Foreground(dimColor)
 	if m.cursor == 0 {
-		return lipgloss.NewStyle().Foreground(textColor).Render("  " + label)
+		style = lipgloss.NewStyle().Foreground(textColor)
 	}
-	return lipgloss.NewStyle().Foreground(dimColor).Render("  " + label)
+	if selected {
+		style = style.Bold(true)
+	}
+	line := style.Render(label)
+	if selected {
+		line = padRight(line, maxWidth-rightCursorWidth) + " " +
+			lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render(rightCursorGlyph)
+	}
+	return line
 }
 
 // renderInputRow renders the inline new-branch input.
-func (m *SidebarModel) renderInputRow() string {
-	prefix := "  "
-	if m.focused {
-		prefix = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ")
-	}
-	return prefix + m.input.View()
-}
-
 // rightCursorGlyph is the selection marker appended to the right edge
 // of chevron-bearing rows (worktree + Older buckets). Keeps the chevron
 // fixed at column 0 so the expand/collapse indicator stops shifting
@@ -274,12 +267,6 @@ const rightCursorWidth = 2
 // padding, no outer space. Both variants line the label up at the
 // same column so adjacent rows still align.
 func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool, maxWidth int) string {
-	if m.creating && m.cursor == idx {
-		// While editing the branch input, suppress this row's selection
-		// marker — the highlight follows where the user types.
-		selected = false
-	}
-
 	// Collapsed: ` >name< ` (outer pad, inner tight).
 	// Expanded:  `< name >` (outer tight, inner pad).
 	leftPrefix, rightSuffix := " >", "< "

@@ -533,7 +533,7 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// handling so voice works on both inbox and session screens.
 	// Skip when the sidebar is in text-input mode (creating a new branch)
 	// so that space goes to the text input instead.
-	voiceInterceptOK := !(m.pane == paneSidebar && m.sidebar.creating) && !m.showMerge
+	voiceInterceptOK := !m.showMerge
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		if voiceInterceptOK {
@@ -564,6 +564,12 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sidebarExpandToggledMsg:
 		go m.persistSidebarExpanded(m.sidebar.SnapshotExpanded())
 		return m, nil
+	case composeRequestedMsg:
+		// Sidebar's "n" gesture (or, via the early handler, any
+		// future caller). The prefilled worktreePath comes from the
+		// cursor's context; an empty string is interpreted as "use
+		// the cwd" by openComposingSession.
+		return m, m.openComposingSession(msg.worktreePath)
 	case inboxDataMsg:
 		// Always feed the session list to the sidebar, even when the
 		// chat view is the active screen. Otherwise restoring straight
@@ -681,13 +687,6 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.mergeOverlay.SetSize(m.width, m.height)
 		}
 		return m, nil
-
-	case branchWorktreeCreatedMsg:
-		cmd := m.sidebar.Update(msg)
-		return m, cmd
-
-	case newWorktreeSessionRequestMsg:
-		return m, m.openNewWorktreeSession(msg.worktreeDir)
 
 	case worktreeOptionsRequestedMsg:
 		m.menuWorktreePath = msg.localPath
@@ -875,6 +874,16 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.setPane(paneSidebar)
 				}
 				return m, nil
+			case key.Matches(k, key.NewBinding(key.WithKeys("n"))):
+				// Compose a new session prefilled with the current
+				// chat's worktree — same gesture as "n" in the
+				// sidebar, but the context is the chat instead of
+				// whatever the cursor is parked on.
+				worktreeDir := ""
+				if m.sessionView.info != nil {
+					worktreeDir = m.sessionView.info.GitRef.LocalPath
+				}
+				return m, m.openComposingSession(worktreeDir)
 			}
 		}
 		model, cmd := m.sessionView.Update(msg)
@@ -960,41 +969,23 @@ func (m *InboxModel) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// openComposingSession opens a composing SessionViewModel where the user
-// types their first prompt. The session is created on send.
-// If a worktree is selected in the sidebar, the session is opened in that directory.
-func (m *InboxModel) openComposingSession() tea.Cmd {
+// openComposingSession opens a composing SessionViewModel where the
+// user types their first prompt. The session is created on send. The
+// caller supplies the target worktree directory — pulled from context
+// (cursor's worktree, active session's worktree, or cwd) so the user
+// almost never has to override it. Empty worktreeDir falls back to
+// the cwd, treating it the same as "this project."
+func (m *InboxModel) openComposingSession(worktreeDir string) tea.Cmd {
 	m.screen = screenSession
 	m.activeConnID = ""
+	m.sidebar.SetActiveSessionID("")
+	m.setPane(paneSessions)
 
-	projectDir, _ := os.Getwd()
-	if dir := m.sidebar.SelectedWorktreeDir(); dir != "" {
-		projectDir = dir
+	if worktreeDir == "" {
+		worktreeDir = m.projectDir
 	}
-	m.sessionView = NewSessionViewComposing(m.client, projectDir)
-	m.sessionView.voice = &m.voice
-	m.sessionView.width = m.width
-	m.sessionView.height = m.height
-	if m.width > 0 {
-		m.sessionView.input.SetWidth(m.width - promptInputBorderSize)
-	}
-	return m.sessionView.Init()
-}
-
-// openNewWorktreeSession opens a composing session inside a newly created
-// worktree and marks the compose view with the new-worktree indicator.
-func (m *InboxModel) openNewWorktreeSession(worktreeDir string) tea.Cmd {
-	m.screen = screenSession
-	m.activeConnID = ""
 
 	m.sessionView = NewSessionViewComposing(m.client, worktreeDir)
-	m.sessionView.isNewWorktree = true
-	// Best-effort: resolve the default branch for the indicator label.
-	// Errors (non-git dir, etc.) leave baseBranch empty and the indicator
-	// omits the base name gracefully.
-	if base, err := git.DefaultBranch(worktreeDir); err == nil {
-		m.sessionView.baseBranch = base
-	}
 	m.sessionView.voice = &m.voice
 	m.sessionView.width = m.width
 	m.sessionView.height = m.height
@@ -1291,7 +1282,10 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("n"))):
-		return m, m.openComposingSession()
+		// From the inbox right pane, "n" composes a new session in
+		// the cwd's worktree — there's no per-row worktree context
+		// to prefill from here.
+		return m, m.openComposingSession("")
 	case key.Matches(msg, key.NewBinding(key.WithKeys("/", "ctrl+f", "ctrl+k"))):
 		return m, m.enterSearch()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("."))):
@@ -2087,17 +2081,9 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		m.cleanupVoice()
 		return m, tea.Quit
 	case key.Matches(msg, key.NewBinding(key.WithKeys("q"))):
-		// Don't quit while typing a branch name.
-		if m.sidebar.creating {
-			break
-		}
 		m.cleanupVoice()
 		return m, tea.Quit
 	case key.Matches(msg, key.NewBinding(key.WithKeys("w"))):
-		// Don't toggle sidebar while typing a branch name.
-		if m.sidebar.creating {
-			break
-		}
 		m.sidebarHidden = !m.sidebarHidden
 		if m.sidebarHidden {
 			m.setPane(paneSessions)
@@ -2109,10 +2095,6 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		m.showHelp = true
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("m"))):
-		// Don't open merge overlay while typing a branch name.
-		if m.sidebar.creating {
-			break
-		}
 		bi := m.sidebar.SelectedBranchInfo()
 		if bi != nil && !bi.IsDefault {
 			m.mergeOverlay = newMergeOverlay(m.client, m.hostname, m.gitRef, *bi)
@@ -2121,10 +2103,6 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		}
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("+", "="))):
-		// Don't resize while typing a branch name.
-		if m.sidebar.creating {
-			break
-		}
 		// Increase sidebar width by one character.
 		if m.width > 0 {
 			target := m.sidebarRenderWidth() + 1
@@ -2138,10 +2116,6 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		}
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("-"))):
-		// Don't resize while typing a branch name.
-		if m.sidebar.creating {
-			break
-		}
 		// Decrease sidebar width by one character.
 		if m.width > 0 {
 			target := m.sidebarRenderWidth() - 1
@@ -2158,9 +2132,6 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		}
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("right", "shift+right"))):
-		if m.sidebar.creating {
-			break
-		}
 		// Settings / Cloud rows: right arrow opens their preview panel
 		// (mirrors Enter).
 		if m.sidebar.CursorOnSettings() {
@@ -2176,10 +2147,6 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		m.setPane(paneSessions)
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
-		// While creating a new branch, let the sidebar handle Enter.
-		if m.sidebar.creating {
-			break
-		}
 		// Enter on the "⚙ Settings" footer row opens the settings page
 		// in the right pane. The sidebar stays visible and focused so
 		// the user can still navigate back into it.

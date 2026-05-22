@@ -53,13 +53,14 @@ func (m *SidebarModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 		return m.handleEnter()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("n"))):
-		// New worktree only makes sense when the cursor is somewhere
-		// in the worktree region (worktree row, session row, or older
-		// bucket). Pressing 'n' on AllSessions or footer is a no-op.
-		if m.CursorInWorktreeRegion() {
-			m.creating = true
-			m.input.SetValue("")
-			return m.input.Focus()
+		// "n" emits a compose request prefilled with the cursor's
+		// worktree (or empty when the cursor isn't on a worktree-
+		// shaped row — the inbox falls back to the cwd). New-worktree
+		// creation lives inside the compose view's worktree picker
+		// now, not as a separate inline gesture here.
+		worktreePath := m.CursorWorktreePath()
+		return func() tea.Msg {
+			return composeRequestedMsg{worktreePath: worktreePath}
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys(":"))):
 		// Worktree options menu (Push/Pull) only valid on a worktree row.
@@ -150,17 +151,4 @@ func (m *SidebarModel) cursorNode() sidebarNode {
 	return m.flat[m.cursor]
 }
 
-// CursorInWorktreeRegion reports whether the cursor is on a row that
-// belongs to the worktrees region (recent worktree, session under a
-// worktree, or one of the Older buckets). Exposed so the inbox can
-// gate right-arrow tree navigation vs the older "focus the inbox pane"
-// fallback.
-func (m *SidebarModel) CursorInWorktreeRegion() bool {
-	switch m.cursorNodeKind() {
-	case nodeWorktree, nodeSession, nodeOlderWorktrees, nodeOlderSessions:
-		return true
-	default:
-		return false
-	}
-}
 
