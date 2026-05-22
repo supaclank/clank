@@ -97,6 +97,13 @@ type SidebarModel struct {
 	// cloudStatusNotConfigured (zero value) until SetCloudStatus is called.
 	cloudStatus       cloudAuthStatus
 	cloudSpinnerFrame string
+
+	// pendingPushes is mirrored from the inbox so worktree rows can
+	// paint an animated spinner next to whichever LocalPath has a
+	// push request in flight. spinnerFrame holds the current spinner
+	// glyph (kept in sync via SetSpinnerFrame on every tick).
+	pendingPushes map[string]bool
+	spinnerFrame  string
 }
 
 // NewSidebarModel creates a sidebar for the given repo identity.
@@ -284,7 +291,19 @@ func (m *SidebarModel) SetActiveSessionID(id string) { m.activeSessionID = id }
 func (m *SidebarModel) SetCloudStatus(s cloudAuthStatus) { m.cloudStatus = s }
 
 // SetCloudSpinnerFrame feeds the current spinner glyph from the inbox.
-func (m *SidebarModel) SetCloudSpinnerFrame(frame string) { m.cloudSpinnerFrame = frame }
+func (m *SidebarModel) SetCloudSpinnerFrame(frame string) {
+	m.cloudSpinnerFrame = frame
+	m.spinnerFrame = frame // any animated indicator can share the same frame
+}
+
+// SetPendingPushes mirrors the inbox's map of worktree-LocalPath →
+// in-flight push. Worktree rows whose path is present render an
+// animated spinner alongside the label until the result clears the
+// entry. The map is read-only from the sidebar's perspective; the
+// inbox owns the lifecycle.
+func (m *SidebarModel) SetPendingPushes(pushes map[string]bool) {
+	m.pendingPushes = pushes
+}
 
 // SetWorktreeOwners stamps the latest known owner_kind onto each
 // worktreeNode keyed by its WorktreeID. The map is also cached so a

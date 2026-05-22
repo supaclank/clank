@@ -28,3 +28,29 @@ func overlayCenter(base, popup string, width, height int) string {
 
 	return lipgloss.NewCompositor(bg, fg).Render()
 }
+
+// overlayBottom places popup on the last row of base, horizontally
+// centered. Used for transient single-line status messages that need
+// to be visible from any screen without claiming permanent layout
+// real estate — they cover whatever was on that row (typically empty
+// or help text) for as long as the status is active.
+func overlayBottom(base, popup string, width, height int) string {
+	popupW := lipgloss.Width(popup)
+	popupH := lipgloss.Height(popup)
+
+	x := (width - popupW) / 2
+	if x < 0 {
+		x = 0
+	}
+	y := height - popupH
+	if y < 0 {
+		y = 0
+	}
+
+	bg := lipgloss.NewLayer(
+		lipgloss.NewStyle().MaxWidth(width).Height(height).Render(base),
+	).Z(0)
+	fg := lipgloss.NewLayer(popup).X(x).Y(y).Z(1)
+
+	return lipgloss.NewCompositor(bg, fg).Render()
+}

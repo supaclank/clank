@@ -274,6 +274,14 @@ func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool,
 	if n.OwnerKind == "remote" {
 		ownerGlyph = " " + lipgloss.NewStyle().Foreground(primaryColor).Render("☁")
 	}
+	// Inline spinner when a push for this worktree is in flight.
+	// Same column as the owner glyph (right after the brackets) — the
+	// two never co-render in practice since "remote" worktrees aren't
+	// pushed again.
+	pendingGlyph := ""
+	if m.pendingPushes[n.LocalPath] && m.spinnerFrame != "" {
+		pendingGlyph = " " + lipgloss.NewStyle().Foreground(primaryColor).Render(m.spinnerFrame)
+	}
 
 	cursorReserve := 0
 	if selected {
@@ -284,8 +292,8 @@ func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool,
 		repoTagWidth = len(n.RepoLabel) + 1 // one space gutter
 	}
 
-	// Reserve room for: prefix (1) + suffix (1) + owner glyph + repo tag + cursor.
-	maxLabel := maxWidth - 2 - repoTagWidth - cursorReserve - lipgloss.Width(ownerGlyph)
+	// Reserve room for: prefix (1) + suffix (1) + owner/pending glyph + repo tag + cursor.
+	maxLabel := maxWidth - 2 - repoTagWidth - cursorReserve - lipgloss.Width(ownerGlyph) - lipgloss.Width(pendingGlyph)
 	if maxLabel < 6 {
 		maxLabel = 6
 	}
@@ -313,7 +321,7 @@ func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool,
 		nameStyle = nameStyle.Bold(true)
 	}
 
-	line := nameStyle.Render(leftPrefix+label+rightSuffix) + ownerGlyph
+	line := nameStyle.Render(leftPrefix+label+rightSuffix) + ownerGlyph + pendingGlyph
 
 	if n.RepoLabel != "" {
 		repoStyle := lipgloss.NewStyle().Foreground(mutedColor)
