@@ -1084,14 +1084,27 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.startAbort()
 		}
 		return m.handleCtrlCQuit()
-	case key.Matches(msg, key.NewBinding(key.WithKeys("q", "esc"))):
+	case key.Matches(msg, key.NewBinding(key.WithKeys("q"))):
+		// 'q' quits the TUI, matching the inbox screen's binding.
+		// In the embedded chat layout the sidebar is always visible,
+		// so there's no need for a separate "back to inbox" key —
+		// navigating away is just a left-arrow + arrow keys.
 		if m.cancelEvents != nil {
 			m.cancelEvents()
 		}
+		return m, tea.Quit
+	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		// Esc is intentionally a no-op in the embedded chat — the
+		// chat is a first-class pane, not an overlay. Standalone mode
+		// (no inbox to fall back to) still treats esc as quit so the
+		// user has a way out.
 		if m.standalone {
+			if m.cancelEvents != nil {
+				m.cancelEvents()
+			}
 			return m, tea.Quit
 		}
-		return m, func() tea.Msg { return backToInboxMsg{} }
+		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("m"))):
 		m.inputActive = true
 		if !m.follow {
