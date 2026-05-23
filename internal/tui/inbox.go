@@ -935,6 +935,18 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionView = model.(*SessionViewModel)
 		return m, cmd
 
+	case tea.MouseClickMsg, tea.MouseReleaseMsg, tea.MouseMotionMsg, tea.MouseWheelMsg:
+		// Mouse coordinates arrive in the outer terminal frame. The
+		// chat lives in the right pane, shifted by the sidebar width;
+		// translate X into the chat's local frame so click hit-tests
+		// (copy button, message rows) target the right cell. Y is
+		// shared between frames so no Y translation needed.
+		mouse := msg.(tea.MouseMsg)
+		translated := offsetMouseX(mouse, -m.chatPaneXOffset())
+		model, cmd := m.sessionView.Update(translated)
+		m.sessionView = model.(*SessionViewModel)
+		return m, cmd
+
 	default:
 		model, cmd := m.sessionView.Update(msg)
 		m.sessionView = model.(*SessionViewModel)
@@ -1920,7 +1932,19 @@ func (m *InboxModel) View() tea.View {
 		content = overlayBottom(content, status, m.width, m.height)
 	}
 
-	v := newVoiceEnabledView(content)
+	// Mouse reporting is a single terminal-level toggle: it must be
+	// declared on the outer (rendered) view, otherwise wheel/click
+	// events never reach us and the terminal falls back to translating
+	// wheel into arrow keys (which the chat then mis-interprets as
+	// cursor navigation). We only enable it on the chat screen so other
+	// screens (inbox list, settings, cloud) keep native terminal text
+	// select working without the user holding Option.
+	var v tea.View
+	if m.screen == screenSession && m.sessionView != nil {
+		v = newVoiceEnabledViewWithMouse(content)
+	} else {
+		v = newVoiceEnabledView(content)
+	}
 
 	// When the chat view is rendered inside the right pane, propagate
 	// its mouse handler so selection / copy still work — but translate
@@ -2213,6 +2237,17 @@ func (m *InboxModel) sessionPaneWidth() int {
 		return m.width - m.sidebarRenderWidth() - sidebarGap - paneBorderInset - paneWrapBuffer
 	}
 	return m.width
+}
+
+// chatPaneXOffset returns the X coordinate (in the outer terminal frame)
+// of the chat's leftmost cell. Used to translate mouse X into the chat's
+// local frame so click hit-tests target the right column. Matches the
+// sidebarVisibleWidth computed in View() so the two paths stay in sync.
+func (m *InboxModel) chatPaneXOffset() int {
+	if !m.showTwoPanes() {
+		return 0
+	}
+	return m.sidebarRenderWidth() + sidebarGap
 }
 
 // rightPaneBorder returns the bordered Style used by View() to wrap the
