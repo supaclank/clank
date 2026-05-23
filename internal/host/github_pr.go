@@ -120,16 +120,32 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 		return CreatePRResult{}, fmt.Errorf("parse origin url: %w", err)
 	}
 
+	authHeader := buildAuthHeader(creds.AccessToken)
+
+	// Refresh origin/<base> before checking the local diff against
+	// it. Sprites whose worktrees were migrated piecemeal often have
+	// no origin/<base> at all — the fetch is what brings it into
+	// existence. Best-effort: on failure, the commits-ahead check
+	// falls back to bare <base>, and if that also fails we skip the
+	// check (GitHub will reject empty PRs anyway, with a clearer
+	// error than we'd produce locally).
+	if err := git.Fetch(workdir, "origin", req.Base, git.PushOptions{
+		ExtraHeader: authHeader,
+	}); err != nil {
+		s.log.Printf("CreatePR: fetch origin/%s (best-effort): %v", req.Base, err)
+	}
+
 	// Verify there's actually something to push. Try origin/<base>
-	// first (the normal case — the worktree was created off a
-	// fetched branch), fall back to bare <base> (covers the case
-	// where the user has a local-only base, common in tests).
+	// first (the normal case after the fetch above), fall back to
+	// bare <base> (covers local-only bases, common in tests), and
+	// if both fail we trust GitHub to reject empty PRs cleanly.
 	ahead, err := commitsAhead(workdir, "origin/"+req.Base, branch)
 	if err != nil {
-		ahead, err = commitsAhead(workdir, req.Base, branch)
-		if err != nil {
-			return CreatePRResult{}, fmt.Errorf("count commits ahead: %w", err)
-		}
+		ahead, _ = commitsAhead(workdir, req.Base, branch)
+		// On a fresh sprite where neither ref resolves yet, ahead==0
+		// here. We can't distinguish "actually empty" from "couldn't
+		// determine" — skip the check and let GitHub be the judge.
+		ahead = max(ahead, 1)
 	}
 	if ahead == 0 {
 		return CreatePRResult{}, ErrNothingToPush
@@ -138,7 +154,6 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 	// Push the branch with the OAuth token injected via process-local
 	// git config. The header lives in args for the subprocess only —
 	// never written to .git/config or the remote URL.
-	authHeader := buildAuthHeader(creds.AccessToken)
 	if err := git.Push(workdir, "origin", branch+":refs/heads/"+branch, git.PushOptions{
 		ExtraHeader: authHeader,
 	}); err != nil {

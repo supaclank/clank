@@ -40,6 +40,33 @@ type PushOptions struct {
 	ExtraHeader string
 }
 
+// Fetch refreshes one ref from the named remote, using the same
+// process-local auth pattern as Push. Used by callers that need
+// origin/<base> to exist before running a local diff against it
+// (e.g. host.Service.CreatePR's commits-ahead check on a sprite
+// whose worktree was migrated piecemeal without main ever being
+// fetched).
+//
+// Errors are returned verbatim; callers decide whether a fetch
+// failure is fatal. A common pattern is to log + continue, since
+// the downstream check has its own fallback.
+func Fetch(dir, remote, ref string, opts PushOptions) error {
+	args := []string{}
+	if opts.ExtraHeader != "" {
+		args = append(args, "-c", "http.extraheader="+opts.ExtraHeader)
+	}
+	args = append(args, "fetch", "--quiet", remote, ref)
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git fetch %s %s: %s: %w", remote, ref, strings.TrimSpace(stderr.String()), err)
+	}
+	return nil
+}
+
 // Push runs `git push` against the configured remote with the given
 // refspec. Returns one of the typed errors above when the failure
 // is classifiable, otherwise wraps git's stderr.
