@@ -132,6 +132,11 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// Provider authentication. See internal/host/mux/auth.go.
 	m.registerAuth(mx)
 
+	// GitHub Connect (credential storage + status + disconnect).
+	// Device-flow start/status/cancel land in PR 2; create-PR lands
+	// in PR 3. See internal/host/mux/github_credentials.go.
+	m.registerGitHub(mx)
+
 	// Cloud-sync ingress. The gateway orchestrates pushes and pulls
 	// through these endpoints; the sandbox is a pure responder.
 	//

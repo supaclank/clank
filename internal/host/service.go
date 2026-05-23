@@ -23,6 +23,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/git"
+	githubpkg "github.com/acksell/clank/internal/host/github"
 	"github.com/acksell/clank/internal/host/petname"
 	"github.com/acksell/clank/internal/host/store"
 	"github.com/acksell/clank/internal/keepalive"
@@ -42,6 +43,7 @@ type Service struct {
 	startedAt       time.Time
 	backendManagers map[agent.BackendType]agent.BackendManager
 	auth            *AuthManager
+	github          *githubpkg.Manager
 	log             *log.Logger
 
 	mu       sync.RWMutex
@@ -179,12 +181,26 @@ func New(opts Options) *Service {
 		}
 	}
 
+	// GitHub Connect: one manager per host. ClientID comes from env so
+	// sprite provisioners set it without code changes; empty ClientID
+	// is a valid state — the manager reports available:false and the
+	// UI hides the connect entry.
+	if home, herr := os.UserHomeDir(); herr != nil {
+		s.log.Printf("github manager unavailable: %v", herr)
+	} else {
+		s.github = githubpkg.NewManager(home, os.Getenv(githubpkg.ClientIDEnv))
+	}
+
 	return s
 }
 
 // Auth returns the AuthManager, or nil when the OpenCode backend
 // isn't registered. Callers must nil-check.
 func (s *Service) Auth() *AuthManager { return s.auth }
+
+// GitHub returns the GitHub Connect manager, or nil when home-dir
+// resolution failed at construction. Callers must nil-check.
+func (s *Service) GitHub() *githubpkg.Manager { return s.github }
 
 // ID returns the host's ID.
 func (s *Service) ID() string { return s.id }
