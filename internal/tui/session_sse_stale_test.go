@@ -74,7 +74,7 @@ func TestWaitForEvent_ClosedChannelCarriesIdentity(t *testing.T) {
 	ch := make(chan agent.Event)
 	close(ch)
 
-	cmd := waitForEvent(ch, "session-X")
+	cmd := waitForEvent(ch)
 	msg := cmd()
 
 	closed, ok := msg.(sseClosedMsg)
@@ -83,5 +83,30 @@ func TestWaitForEvent_ClosedChannelCarriesIdentity(t *testing.T) {
 	}
 	if closed.events != ch {
 		t.Fatal("sseClosedMsg does not carry the closed channel; Update cannot tell stale closures from current ones")
+	}
+}
+
+// TestWaitForEvent_DoesNotSwallowEventsForOtherSessions guards the
+// stale-waiter-eats-live-event hole: waitForEvent must not filter events
+// by sessionID before Update sees them. A waiter scheduled before a view
+// swap closes over a since-stale sessionID; if it consumes a live event
+// for the new view and emits a "skip" signal, the event is gone — the
+// new view's own waiter never sees it. The only place with the current
+// m.sessionID is Update, so filtering belongs there.
+func TestWaitForEvent_DoesNotSwallowEventsForOtherSessions(t *testing.T) {
+	t.Parallel()
+
+	ch := make(chan agent.Event, 1)
+	ch <- agent.Event{Type: agent.EventPartUpdate, SessionID: "session-B"}
+
+	cmd := waitForEvent(ch)
+	msg := cmd()
+
+	evtMsg, ok := msg.(sessionEventMsg)
+	if !ok {
+		t.Fatalf("waitForEvent dropped a live event into %T; the event is lost to the live view", msg)
+	}
+	if evtMsg.event.SessionID != "session-B" {
+		t.Fatalf("event SessionID = %q, want %q", evtMsg.event.SessionID, "session-B")
 	}
 }

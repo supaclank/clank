@@ -342,7 +342,7 @@ func (m *SessionViewModel) handleCreateResult(msg sessionCreateResultMsg) (tea.M
 	newID := m.sessionID
 	return m, tea.Batch(
 		m.fetchSessionInfo(),
-		waitForEvent(m.eventsCh, m.sessionID),
+		waitForEvent(m.eventsCh),
 		m.spinner.Tick,
 		func() tea.Msg { return composeSubmittedMsg{sessionID: newID} },
 	)

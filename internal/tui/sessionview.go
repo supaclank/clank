@@ -464,7 +464,7 @@ func (m *SessionViewModel) Init() tea.Cmd {
 	cmds := []tea.Cmd{m.fetchSessionInfo(), m.fetchSessionMessages(), m.fetchPendingPermission(), m.spinner.Tick}
 	if m.eventsCh != nil {
 		// Already connected — start reading immediately.
-		cmds = append(cmds, waitForEvent(m.eventsCh, m.sessionID))
+		cmds = append(cmds, waitForEvent(m.eventsCh))
 	} else {
 		cmds = append(cmds, m.subscribeEvents())
 	}
@@ -587,27 +587,19 @@ type sseClosedMsg struct {
 }
 
 // waitForEvent returns a command that waits for the next event from the channel.
-func waitForEvent(events <-chan agent.Event, sessionID string) tea.Cmd {
+// Filtering by sessionID happens in Update against the live m.sessionID — a
+// closure here would capture a sessionID that goes stale across view swaps,
+// and a stale waiter could intercept a live event and silently discard it
+// before any view saw it. See TestWaitForEvent_DoesNotSwallowEventsForOtherSessions.
+func waitForEvent(events <-chan agent.Event) tea.Cmd {
 	return func() tea.Msg {
 		evt, ok := <-events
 		if !ok {
 			// Channel closed — intentional shutdown, not an error.
 			return sseClosedMsg{events: events}
 		}
-		// Filter to our session (or session lifecycle events).
-		if evt.SessionID == sessionID || evt.Type == agent.EventSessionCreate || evt.Type == agent.EventSessionDelete {
-			return sessionEventMsg{event: evt}
-		}
-		// Not for us — skip and wait for the next one.
-		// Return a "skip" that re-subscribes.
-		return sseSkipMsg{events: events, sessionID: sessionID}
+		return sessionEventMsg{event: evt}
 	}
-}
-
-// sseSkipMsg tells Update to re-wait for the next event.
-type sseSkipMsg struct {
-	events    <-chan agent.Event
-	sessionID string
 }
 
 func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -785,10 +777,7 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sseSetupMsg:
 		m.cancelEvents = msg.cancel
 		m.eventsCh = msg.events
-		return m, waitForEvent(m.eventsCh, m.sessionID)
-
-	case sseSkipMsg:
-		return m, waitForEvent(msg.events, msg.sessionID)
+		return m, waitForEvent(m.eventsCh)
 
 	case sseClosedMsg:
 		// Only nil the channel when the closure belongs to *our* current
@@ -802,24 +791,25 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case sessionEventMsg:
-		// Defense in depth: drop events that don't belong to this session.
-		// waitForEvent's closure captures sessionID at Cmd-creation time, so
-		// any Cmd scheduled before a view-swap can deliver an event whose
-		// captured sessionID is stale relative to the now-active view. Without
-		// this guard, content from one session could render into another.
-		// See TestSessionView_DropsStaleSessionEvent.
+		// Filter events to this view. Two reasons this lives here, not in
+		// waitForEvent: (1) m.sessionID is the live current ID — a closure
+		// in waitForEvent would capture a sessionID that goes stale across
+		// view swaps, and (2) a stale waiter must not silently swallow a
+		// live event meant for the now-active view. See
+		// TestSessionView_DropsStaleSessionEvent and
+		// TestWaitForEvent_DoesNotSwallowEventsForOtherSessions.
 		if msg.event.SessionID != m.sessionID &&
 			msg.event.Type != agent.EventSessionCreate &&
 			msg.event.Type != agent.EventSessionDelete {
 			if m.eventsCh != nil {
-				return m, waitForEvent(m.eventsCh, m.sessionID)
+				return m, waitForEvent(m.eventsCh)
 			}
 			return m, nil
 		}
 		m.handleEvent(msg.event)
 		// Re-schedule to wait for the next event.
 		if m.eventsCh != nil {
-			return m, waitForEvent(m.eventsCh, m.sessionID)
+			return m, waitForEvent(m.eventsCh)
 		}
 		return m, nil
 
