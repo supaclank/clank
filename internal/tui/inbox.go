@@ -841,7 +841,7 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.activeConnID != "" {
 			go m.client.Session(m.activeConnID).MarkRead(context.Background())
 		}
-		m.sessionView = nil
+		m.replaceSessionView(nil)
 		m.activeConnID = ""
 		m.openSettings()
 		m.providerAuth = newProviderAuthModel(m.client.Host(m.hostname), typed.backend, "")
@@ -856,7 +856,7 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		closingID := m.activeConnID
 		m.screen = screenInbox
-		m.sessionView = nil
+		m.replaceSessionView(nil)
 		m.activeConnID = ""
 		m.sidebar.SetActiveSessionID("")
 		// One-shot refresh on return. Do NOT re-seed autoRefreshCmd or
@@ -884,10 +884,8 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case openForkedSessionMsg:
 		forkMsg := msg.(openForkedSessionMsg)
-		// Clean up the current session view before switching.
-		if m.sessionView != nil && m.sessionView.cancelEvents != nil {
-			m.sessionView.cancelEvents()
-		}
+		// openSession routes through replaceSessionView, which tears down
+		// the previous view's SSE subscription. No explicit cancel needed.
 		if m.activeConnID != "" {
 			go m.client.Session(m.activeConnID).MarkRead(context.Background())
 		}
@@ -1046,6 +1044,9 @@ func (m *InboxModel) openComposingSession(worktreeDir string) tea.Cmd {
 		worktreeDir = m.projectDir
 	}
 
+	// NOTE: deliberately not routing through replaceSessionView here.
+	// preComposeSession snapshotted m.sessionView above; closeCompose
+	// restores it and expects its SSE subscription to still be live.
 	m.sessionView = NewSessionViewComposing(m.client, worktreeDir)
 	m.sessionView.voice = &m.voice
 	m.sessionView.width = m.width
@@ -1472,14 +1473,15 @@ func (m *InboxModel) openSession(sessionID string) tea.Cmd {
 	sseCtx, sseCancel := context.WithCancel(context.Background())
 	events, err := m.client.Sessions().Subscribe(sseCtx)
 
-	m.sessionView = NewSessionViewModel(m.client, sessionID)
-	m.sessionView.voice = &m.voice
+	next := NewSessionViewModel(m.client, sessionID)
+	next.voice = &m.voice
 	if err == nil {
-		m.sessionView.SetEventChannel(events, sseCancel)
+		next.SetEventChannel(events, sseCancel)
 	} else {
 		// Fall back to subscribing in Init() if pre-subscribe fails.
 		sseCancel()
 	}
+	m.replaceSessionView(next)
 
 	// Intentionally NOT calling setPane(paneSessions) here. Opening a
 	// session from the sidebar swaps the right pane's content but does
@@ -1507,6 +1509,20 @@ func (m *InboxModel) openSession(sessionID string) tea.Cmd {
 	}
 
 	return m.sessionView.Init()
+}
+
+// replaceSessionView swaps m.sessionView for next, cancelling the previous
+// view's SSE subscription first. Every site that reassigns m.sessionView to
+// a freshly-constructed view must go through here — otherwise the prior
+// view's waitForEvent goroutine leaks and keeps delivering sessionEventMsg
+// values into the Bubble Tea queue, which then land in the wrong (newly
+// active) view. See TestReplaceSessionView_CancelsPreviousSubscription.
+func (m *InboxModel) replaceSessionView(next *SessionViewModel) {
+	if m.sessionView != nil && m.sessionView.cancelEvents != nil {
+		m.sessionView.cancelEvents()
+		m.sessionView.cancelEvents = nil
+	}
+	m.sessionView = next
 }
 
 func (m *InboxModel) handleMenuAction(action string) tea.Cmd {

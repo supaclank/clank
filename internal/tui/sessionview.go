@@ -186,10 +186,12 @@ type SessionViewModel struct {
 	// SSE event channel (stored so we can re-schedule waitForEvent).
 	eventsCh <-chan agent.Event
 
-	// History deduplication. seenParts tracks part IDs loaded from history
-	// so that overlapping SSE events can be skipped. historyLoaded is set
-	// after the history response is processed.
-	seenParts     map[string]bool
+	// historyLoaded is set after the history response is processed. It
+	// suppresses redundant EventMessage shells that arrive over SSE for
+	// messages already materialized from history. Part-level updates do
+	// not need a separate dedup map: upsertPartEntry is idempotent by
+	// partID and self-heals when re-applied (delta append vs snapshot
+	// replace; tool Input/Output merge).
 	historyLoaded bool
 
 	// Spinner for busy/running state animation.
@@ -757,6 +759,20 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case sessionEventMsg:
+		// Defense in depth: drop events that don't belong to this session.
+		// waitForEvent's closure captures sessionID at Cmd-creation time, so
+		// any Cmd scheduled before a view-swap can deliver an event whose
+		// captured sessionID is stale relative to the now-active view. Without
+		// this guard, content from one session could render into another.
+		// See TestSessionView_DropsStaleSessionEvent.
+		if msg.event.SessionID != m.sessionID &&
+			msg.event.Type != agent.EventSessionCreate &&
+			msg.event.Type != agent.EventSessionDelete {
+			if m.eventsCh != nil {
+				return m, waitForEvent(m.eventsCh, m.sessionID)
+			}
+			return m, nil
+		}
 		m.handleEvent(msg.event)
 		// Re-schedule to wait for the next event.
 		if m.eventsCh != nil {
@@ -1438,11 +1454,15 @@ func (m *SessionViewModel) handleMessage(data agent.MessageData) {
 
 // handleSessionMessages processes the full message history response.
 // It replaces any existing entries with the complete history and builds
-// the seenParts set for deduplication with subsequent SSE events.
+// the nextMessageID mapping used for fork targeting. Subsequent SSE
+// events (EventPartUpdate) for parts already in history are routed
+// through upsertPartEntry, which is idempotent by partID — re-applying
+// the same snapshot is a no-op, while live deltas continue to accumulate
+// onto the existing entry. The redundant EventMessage shell that SSE
+// re-delivers is suppressed by m.historyLoaded in handleMessage.
 // When a revert is active (m.info.RevertMessageID is set), messages from
 // the revert target onward are excluded from the display.
 func (m *SessionViewModel) handleSessionMessages(messages []agent.MessageData) {
-	m.seenParts = make(map[string]bool)
 	m.entries = nil
 
 	revertID := ""
@@ -1500,9 +1520,6 @@ func (m *SessionViewModel) handleSessionMessages(messages []agent.MessageData) {
 			})
 		}
 		for _, p := range msg.Parts {
-			if p.ID != "" {
-				m.seenParts[p.ID] = true
-			}
 			m.addPartEntry(p, msg.ID)
 		}
 	}
@@ -1547,10 +1564,6 @@ func (m *SessionViewModel) markRunningToolsFailed() {
 }
 
 func (m *SessionViewModel) handlePartUpdate(data agent.PartUpdateData) {
-	// Skip parts already loaded from history to avoid duplicates.
-	if m.seenParts[data.Part.ID] {
-		return
-	}
 	m.upsertPartEntry(data.Part, data.IsDelta)
 	if m.follow {
 		m.scrollToBottom()
@@ -1560,7 +1573,12 @@ func (m *SessionViewModel) handlePartUpdate(data agent.PartUpdateData) {
 // upsertPartEntry updates an existing entry with the same Part ID, or appends a new one.
 // For text/thinking parts: isDelta=true appends the text chunk; isDelta=false replaces
 // the entry with the authoritative full snapshot (self-healing if deltas were dropped).
-// For tool parts, the entry is always replaced with the new status.
+// For tool parts, the entry is always replaced with the new status, preserving Input
+// and Output from the previous state when the new update doesn't carry them.
+//
+// Idempotency by partID is load-bearing: handlePartUpdate calls this unconditionally
+// for every EventPartUpdate, including parts already present in just-loaded history.
+// Re-applying the same snapshot is a no-op; mid-stream parts continue receiving deltas.
 func (m *SessionViewModel) upsertPartEntry(p agent.Part, isDelta bool) {
 	if p.ID != "" {
 		for i := len(m.entries) - 1; i >= 0; i-- {
