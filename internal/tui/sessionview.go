@@ -547,8 +547,15 @@ type sseSetupMsg struct {
 	cancel context.CancelFunc
 }
 
-// sseClosedMsg signals the SSE stream was closed intentionally.
-type sseClosedMsg struct{}
+// sseClosedMsg signals the SSE stream closed. Carries the closed channel so
+// Update can distinguish a closure of the *current* subscription from a
+// stale closure left behind by a session switch. Without this identity the
+// handler would nil m.eventsCh on any closure, including the one belonging
+// to a since-replaced view — silently freezing the live stream of the new
+// view. See TestSessionView_StaleSseClosedDoesNotNilCurrentChannel.
+type sseClosedMsg struct {
+	events <-chan agent.Event
+}
 
 // waitForEvent returns a command that waits for the next event from the channel.
 func waitForEvent(events <-chan agent.Event, sessionID string) tea.Cmd {
@@ -556,7 +563,7 @@ func waitForEvent(events <-chan agent.Event, sessionID string) tea.Cmd {
 		evt, ok := <-events
 		if !ok {
 			// Channel closed — intentional shutdown, not an error.
-			return sseClosedMsg{}
+			return sseClosedMsg{events: events}
 		}
 		// Filter to our session (or session lifecycle events).
 		if evt.SessionID == sessionID || evt.Type == agent.EventSessionCreate || evt.Type == agent.EventSessionDelete {
@@ -755,8 +762,14 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForEvent(msg.events, msg.sessionID)
 
 	case sseClosedMsg:
-		// SSE stream closed intentionally (e.g. user quit). No-op.
-		m.eventsCh = nil
+		// Only nil the channel when the closure belongs to *our* current
+		// subscription. A stale closure from a previously-replaced view
+		// (its waitForEvent goroutine was still parked on the old channel
+		// when replaceSessionView cancelled it) would otherwise blank out
+		// the live channel and freeze the new view's stream after one event.
+		if msg.events == m.eventsCh {
+			m.eventsCh = nil
+		}
 		return m, nil
 
 	case sessionEventMsg:
