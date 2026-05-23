@@ -198,5 +198,6 @@ func (m *InboxModel) persistCacheIfChanged() {
 	}
 	m.lastSessionsCacheSig = sig
 	snap := append([]agent.SessionInfo(nil), m.cachedSessions...)
+	// TODO(coderabbit): serialize cache writes so bursty SSE can't land an older snapshot last https://github.com/Acksell/clank/pull/33#discussion_r3293211742
 	go func() { _ = saveSessionsCache(snap) }()
 }

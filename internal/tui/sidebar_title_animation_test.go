@@ -116,6 +116,43 @@ func TestSidebar_TitleAnimation_FirstLoadNoAnimation(t *testing.T) {
 	}
 }
 
+// TestSidebar_TitleAnimation_TitleClearedDropsAnimation verifies that
+// when a title transitions from non-empty back to "" (rare, but happens
+// on retitle-pending or a forced clear), any in-flight animation is
+// dropped. Otherwise renderedTitleFor keeps returning the stale prefix
+// of the old animation forever, leaving the row showing text that no
+// longer matches the session.
+func TestSidebar_TitleAnimation_TitleClearedDropsAnimation(t *testing.T) {
+	t.Parallel()
+	m := NewSidebarModel(nil, "host", agent.GitRef{}, "/r")
+	now := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)
+	m.nowFn = func() time.Time { return now }
+
+	// Seed with empty, then introduce a title to start an animation.
+	m.SetSessions([]agent.SessionInfo{
+		{ID: "s1", Prompt: "p", Status: agent.StatusIdle, UpdatedAt: now},
+	})
+	m.SetSessions([]agent.SessionInfo{
+		{ID: "s1", Prompt: "p", Title: "First title", Status: agent.StatusIdle, UpdatedAt: now},
+	})
+	if !m.hasActiveTitleAnimation("s1") {
+		t.Fatalf("precondition: animation should be active after title set")
+	}
+
+	// Title cleared back to "". Animation entry must be dropped so the row
+	// doesn't keep rendering the stale prefix.
+	m.SetSessions([]agent.SessionInfo{
+		{ID: "s1", Prompt: "p", Title: "", Status: agent.StatusIdle, UpdatedAt: now},
+	})
+	if m.hasActiveTitleAnimation("s1") {
+		t.Fatalf("animation should be dropped when title is cleared to empty")
+	}
+	// renderedTitleFor with empty `full` must not resurrect the stale prefix.
+	if got := m.renderedTitleFor("s1", ""); got != "" {
+		t.Fatalf("renderedTitleFor after clear: got %q, want empty", got)
+	}
+}
+
 // TestSidebar_TitleAnimation_EmptyToTitleAnimates verifies the most
 // common path: session is created with no Title, then the daemon
 // generates one and emits EventTitleChange. The empty→non-empty

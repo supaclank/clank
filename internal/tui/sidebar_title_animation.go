@@ -132,7 +132,13 @@ func (m *SidebarModel) diffTitlesForAnimation(sessions []agent.SessionInfo) {
 		if firstLoad || !known {
 			continue
 		}
-		if s.Title == "" || s.Title == prev {
+		// Title cleared back to "" — drop any in-flight animation so the
+		// row doesn't keep rendering the stale prefix.
+		if s.Title == "" {
+			delete(m.titleAnimations, s.ID)
+			continue
+		}
+		if s.Title == prev {
 			continue
 		}
 		m.startTitleAnimation(s.ID, s.Title)
