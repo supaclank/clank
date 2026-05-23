@@ -15,8 +15,8 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
-	"github.com/acksell/clank/internal/host"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
+	"github.com/acksell/clank/internal/host"
 	"github.com/acksell/clank/internal/tui"
 )
 
@@ -41,6 +41,7 @@ func Command() *cobra.Command {
 		remoteCmd(),
 		loginCmd(),
 		logoutCmd(),
+		githubCmd(),
 	)
 
 	return root
