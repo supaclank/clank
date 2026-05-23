@@ -65,6 +65,7 @@ func main() {
 	notifierProvider := flag.String("notifier-provider", notifierProviderNone, "Provider that receives notification-worthy events (idle, permission, error): 'webhook' (POST to --notifier-webhook-url), 'noop' (debug), or 'none' (disabled — laptop default).")
 	notifierWebhookURL := flag.String("notifier-webhook-url", "", "POST target when --notifier-provider=webhook.")
 	notifierWebhookToken := flag.String("notifier-webhook-token", os.Getenv("CLANK_NOTIFIER_TOKEN"), "Per-host bearer token sent as 'Authorization: Bearer <token>' to the webhook target. Defaults to $CLANK_NOTIFIER_TOKEN.")
+	githubOAuthClientID := flag.String("github-oauth-client-id", os.Getenv("CLANK_GITHUB_OAUTH_CLIENT_ID"), "Clank GitHub OAuth App client_id, used for the GitHub Connect device flow. Empty disables GitHub Connect on this host. Defaults to $CLANK_GITHUB_OAUTH_CLIENT_ID.")
 	flag.Parse()
 
 	if *socket == "" && *listen == "" {
@@ -99,6 +100,7 @@ func main() {
 		notifierProvider:     *notifierProvider,
 		notifierWebhookURL:   *notifierWebhookURL,
 		notifierWebhookToken: *notifierWebhookToken,
+		githubOAuthClientID:  *githubOAuthClientID,
 	}
 	if err := run(cfg); err != nil {
 		log.Fatalf("clank-host: %v", err)
@@ -118,6 +120,7 @@ type runConfig struct {
 	notifierProvider     string
 	notifierWebhookURL   string
 	notifierWebhookToken string
+	githubOAuthClientID  string
 }
 
 // buildKeepaliveListener constructs the provider-specific Listener from
@@ -275,10 +278,11 @@ func run(cfg runConfig) error {
 			agent.BackendOpenCode:   host.NewOpenCodeBackendManager(),
 			agent.BackendClaudeCode: host.NewClaudeBackendManager(),
 		},
-		Log:               lg,
-		SessionsStore:     hostStore,
-		KeepaliveListener: keepaliveListener,
-		NotifierLoop:      notifierLoop,
+		Log:                 lg,
+		SessionsStore:       hostStore,
+		KeepaliveListener:   keepaliveListener,
+		NotifierLoop:        notifierLoop,
+		GitHubOAuthClientID: cfg.githubOAuthClientID,
 	})
 	if keepaliveListener != nil {
 		lg.Printf("keepalive provider: %s", cfg.keepaliveProvider)

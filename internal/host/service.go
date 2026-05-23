@@ -118,6 +118,13 @@ type Options struct {
 	// — laptop mode default. Construct via notifier.New in
 	// cmd/clank-host/main.go.
 	NotifierLoop *notifier.Loop
+
+	// GitHubOAuthClientID is the Clank GitHub OAuth App's client_id,
+	// used by the host's GitHub Connect device flow. Empty disables
+	// the connect surface (status reports available:false). When
+	// non-empty, takes precedence over the CLANK_GITHUB_OAUTH_CLIENT_ID
+	// env var the laptop's clank-host inherits from clankd.
+	GitHubOAuthClientID string
 }
 
 // New creates a Service. Panics on missing BackendManagers — fast
@@ -181,14 +188,20 @@ func New(opts Options) *Service {
 		}
 	}
 
-	// GitHub Connect: one manager per host. ClientID comes from env so
-	// sprite provisioners set it without code changes; empty ClientID
-	// is a valid state — the manager reports available:false and the
-	// UI hides the connect entry.
+	// GitHub Connect: one manager per host. ClientID prefers the
+	// Options field (set by clank-host's --github-oauth-client-id
+	// flag); empty Options value falls back to the env var so laptop
+	// dev runs that didn't pass the flag still work. Empty in both
+	// places is a valid state — the manager reports available:false
+	// and the UI hides the connect entry.
+	clientID := opts.GitHubOAuthClientID
+	if clientID == "" {
+		clientID = os.Getenv(githubpkg.ClientIDEnv)
+	}
 	if home, herr := os.UserHomeDir(); herr != nil {
 		s.log.Printf("github manager unavailable: %v", herr)
 	} else {
-		s.github = githubpkg.NewManager(home, os.Getenv(githubpkg.ClientIDEnv))
+		s.github = githubpkg.NewManager(home, clientID)
 	}
 
 	return s

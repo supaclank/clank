@@ -88,6 +88,13 @@ type Options struct {
 	// subsystem — laptop dev without a dispatcher.
 	NotifierWebhookURL string
 
+	// GitHubOAuthClientID is the Clank GitHub OAuth App client_id
+	// forwarded to clank-host as --github-oauth-client-id. Empty
+	// disables GitHub Connect on the provisioned sprite (its status
+	// endpoint returns available:false). Supaclank reads it from its
+	// own env at startup and passes it here.
+	GitHubOAuthClientID string
+
 	// SDKClient overrides the sprites.Client constructor for tests.
 	SDKClient *sprites.Client
 }
@@ -690,7 +697,7 @@ echo "::: done — /usr/local/bin/opencode -> $BUN_OPENCODE (version $PINNED)"
 // case where a flag rename would crash-loop the service across the
 // hibernate/wake cycle and the edge would serve 404s.
 func (p *Provisioner) ensureServiceRunning(ctx context.Context, sprite *sprites.Sprite, tokens hostTokens, forceRecreate bool) error {
-	wantReq := buildServiceRequest(tokens, p.opts.NotifierWebhookURL)
+	wantReq := buildServiceRequest(tokens, p.opts.NotifierWebhookURL, p.opts.GitHubOAuthClientID)
 
 	var existing *sprites.ServiceWithState
 	var existingErr error
@@ -736,8 +743,10 @@ func (p *Provisioner) ensureServiceRunning(ctx context.Context, sprite *sprites.
 // expects, used both to create and to compare against a persisted one.
 // When webhookURL is empty the notifier flags are omitted entirely
 // (laptop-dev / no-dispatcher path); when set, the host POSTs idle /
-// permission / error events back to the dispatcher.
-func buildServiceRequest(tokens hostTokens, webhookURL string) *sprites.ServiceRequest {
+// permission / error events back to the dispatcher. githubOAuthClientID
+// likewise conditionally adds the --github-oauth-client-id flag; empty
+// leaves GitHub Connect disabled on the sprite.
+func buildServiceRequest(tokens hostTokens, webhookURL, githubOAuthClientID string) *sprites.ServiceRequest {
 	port := HostPort
 	args := []string{
 		"--listen", fmt.Sprintf("tcp://[::]:%d", HostPort),
@@ -752,6 +761,9 @@ func buildServiceRequest(tokens hostTokens, webhookURL string) *sprites.ServiceR
 			"--notifier-webhook-url", webhookURL,
 			"--notifier-webhook-token", tokens.notifier,
 		)
+	}
+	if githubOAuthClientID != "" {
+		args = append(args, "--github-oauth-client-id", githubOAuthClientID)
 	}
 	return &sprites.ServiceRequest{
 		Cmd:      installPath,
@@ -781,7 +793,7 @@ func serviceMatches(have *sprites.Service, want *sprites.ServiceRequest) bool {
 // a new bearer-style flag without listing it here would force a service
 // recreate on every token rotation.
 var wildcardedArgs = map[string]bool{
-	"--listen-auth-token":     true,
+	"--listen-auth-token":      true,
 	"--notifier-webhook-token": true,
 }
 
