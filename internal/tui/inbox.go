@@ -2191,6 +2191,19 @@ func (m *InboxModel) setPane(p inboxPane) {
 	}
 }
 
+// focusActiveChatMessageMode moves focus to the chat pane and engages
+// message mode on the active session view. Returns nil when no session
+// is currently shown so callers can chain it without guard duplication.
+// This is the second-step gesture: Enter previews a session (no focus
+// change), "m" commits and starts typing.
+func (m *InboxModel) focusActiveChatMessageMode() tea.Cmd {
+	if m.screen != screenSession || m.sessionView == nil {
+		return nil
+	}
+	m.setPane(paneSessions)
+	return m.sessionView.enterMessageMode()
+}
+
 // toggleSidebar flips sidebar visibility without stealing focus.
 // Inverse property: two consecutive toggles must return to the original
 // pane focus. Focus only moves when the currently-focused pane is being
@@ -2330,6 +2343,15 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		m.showHelp = true
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("m"))):
+		// Prefer the "focus active chat + enter message mode" gesture
+		// when an active session is shown in the right pane: the user
+		// just pressed Enter on a session in the sidebar (which only
+		// previews) and now wants to commit and start typing. The
+		// branch-merge gesture stays the fallback for when no session
+		// is active (e.g. on a branch row before opening anything).
+		if m.screen == screenSession && m.activeConnID != "" && m.sessionView != nil {
+			return m, m.focusActiveChatMessageMode()
+		}
 		bi := m.sidebar.SelectedBranchInfo()
 		if bi != nil && !bi.IsDefault {
 			m.mergeOverlay = newMergeOverlay(m.client, m.hostname, m.gitRef, *bi)
@@ -2880,7 +2902,7 @@ func (m *InboxModel) overlayHelp(base string) string {
 	helpLine("w", "toggle worktree sidebar")
 	helpLine("tab / ← →", "switch panes")
 	helpLine("n", "new branch (in sidebar)")
-	helpLine("m", "merge branch (in sidebar)")
+	helpLine("m", "merge branch (sidebar, no active chat) / focus chat + message mode (sidebar, chat shown)")
 	helpLine("r", "refresh branches")
 	sb.WriteString(sep + "\n")
 

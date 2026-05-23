@@ -412,11 +412,29 @@ func (m *SessionViewModel) DraftText() string {
 // activates the input so the user can continue typing immediately.
 func (m *SessionViewModel) RestoreDraft(text string) {
 	m.input.SetValue(text)
+	_ = m.enterMessageMode()
+}
+
+// enterMessageMode focuses the chat's text input ("message mode"). The
+// returned tea.Cmd is the textarea's focus command; callers in a tea.Update
+// should return it so cursor-blink ticks start. Discarding the cmd is
+// acceptable when the call site already drives its own updates (e.g.
+// RestoreDraft is invoked outside Update).
+//
+// Single-write helper for the inputActive flag so every entry-point keeps
+// the scroll-offset compensation in sync. See setPane in inbox.go for the
+// equivalent pattern on pane focus.
+func (m *SessionViewModel) enterMessageMode() tea.Cmd {
+	if m.inputActive {
+		return nil
+	}
 	m.inputActive = true
 	if !m.follow {
+		// Shift content up so the bottom of the visible window stays
+		// anchored when the input prompt appears and shrinks the viewport.
 		m.scrollOffset += inputReservedLines
 	}
-	m.input.Focus()
+	return m.input.Focus()
 }
 
 // SetEventChannel provides a pre-connected SSE event channel and cancel func.
@@ -1154,13 +1172,7 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("m"))):
-		m.inputActive = true
-		if !m.follow {
-			// Shift content up so the bottom of the visible window stays
-			// anchored when the input prompt appears and shrinks the viewport.
-			m.scrollOffset += inputReservedLines
-		}
-		return m, m.input.Focus()
+		return m, m.enterMessageMode()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k"))):
 		m.follow = false
 		if idx := m.prevNavigableEntry(m.cursor); idx >= 0 {
