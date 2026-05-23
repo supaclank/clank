@@ -1219,31 +1219,14 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("pgup", "ctrl+u"))):
 		m.follow = false
-		// Jump cursor by ~half viewport worth of navigable entries.
-		jumps := m.contentHeight() / 4 // approximate: entries are ~2-4 lines each
-		if jumps < 1 {
-			jumps = 1
-		}
-		for i := 0; i < jumps; i++ {
-			if idx := m.prevNavigableEntry(m.cursor); idx >= 0 {
-				m.cursor = idx
-				m.cursorMoved = true
-			} else {
-				break
-			}
+		if idx := m.pageUpNavigableEntry(m.cursor); idx >= 0 {
+			m.cursor = idx
+			m.cursorMoved = true
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("pgdown", "ctrl+d"))):
-		jumps := m.contentHeight() / 4
-		if jumps < 1 {
-			jumps = 1
-		}
-		for i := 0; i < jumps; i++ {
-			if idx := m.nextNavigableEntry(m.cursor); idx >= 0 {
-				m.cursor = idx
-				m.cursorMoved = true
-			} else {
-				break
-			}
+		if idx := m.pageDownNavigableEntry(m.cursor); idx >= 0 {
+			m.cursor = idx
+			m.cursorMoved = true
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("G", "end"))):
 		m.follow = true
