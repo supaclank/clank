@@ -714,11 +714,12 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.models = msg.models
 		m.selectedModel = -1 // default: no override
 
-		// Try to restore the user's preferred model from preferences.
+		// Per-backend pref lookup; see updateCompose for the rationale.
 		prefs, _ := config.LoadPreferences()
-		if prefs.Model != nil {
+		pref := prefs.ModelFor(string(m.backend))
+		if !pref.IsZero() {
 			for i, model := range m.models {
-				if model.ID == prefs.Model.ModelID && model.ProviderID == prefs.Model.ProviderID {
+				if model.ID == pref.ModelID && model.ProviderID == pref.ProviderID {
 					m.selectedModel = i
 					break
 				}
@@ -3166,18 +3167,22 @@ func truncateStr(s string, n int) string {
 	return s[:n-3] + "..."
 }
 
-// persistModelPreference saves the currently selected model to preferences.
-// Safe to call from a goroutine.
+// persistModelPreference saves the currently selected model for the
+// active backend. Safe to call from a goroutine: UpdatePreferences
+// serializes the load-modify-save against concurrent writers (color
+// scheme, sidebar layout, last-session) so picker writes can't clobber
+// them.
 func (m *SessionViewModel) persistModelPreference() {
-	prefs, _ := config.LoadPreferences()
+	backend := string(m.backend)
+	var pref config.ModelPreference
 	if m.selectedModel >= 0 && m.selectedModel < len(m.models) {
 		model := m.models[m.selectedModel]
-		prefs.Model = &config.ModelPreference{
+		pref = config.ModelPreference{
 			ModelID:    model.ID,
 			ProviderID: model.ProviderID,
 		}
-	} else {
-		prefs.Model = nil
 	}
-	_ = config.SavePreferences(prefs)
+	_ = config.UpdatePreferences(func(p *config.Preferences) {
+		p.SetModelFor(backend, pref)
+	})
 }

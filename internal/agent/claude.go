@@ -194,6 +194,29 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	return nil
 }
 
+// validClaudeModels is the closed set the claude CLI accepts via
+// --model. `inherit` is omitted on purpose — see ClaudeBackendManager
+// in internal/host/backends.go for the same rationale: it's a "use
+// whatever the caller's default is" passthrough, not a user pick.
+//
+// Duplicated rather than imported from internal/host to keep the
+// dependency direction host → agent. Bump claude-agent-sdk-go to add
+// new tiers; this set must stay in sync with claudeModelCatalog.
+var validClaudeModels = map[string]struct{}{
+	string(claudecode.AgentModelSonnet): {},
+	string(claudecode.AgentModelOpus):   {},
+	string(claudecode.AgentModelHaiku):  {},
+}
+
+// IsValidClaudeModel reports whether id is one of the family aliases
+// the claude CLI's --model flag accepts. Returns false for the empty
+// string so callers can use it as a "should I pass --model at all"
+// check without a separate empty guard.
+func IsValidClaudeModel(id string) bool {
+	_, ok := validClaudeModels[id]
+	return ok
+}
+
 // OpenAndSend opens the session and dispatches the initial prompt. The
 // CLI subprocess is connected before the prompt is queued so the
 // receiveLoop is in place to observe SystemMessage{init} (which carries
@@ -212,6 +235,18 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 // surface "cancel mid-enqueue" as a spurious StatusError without
 // stopping the work that has already started.
 func (b *ClaudeCodeBackend) OpenAndSend(ctx context.Context, opts SendMessageOpts) error {
+	// Validate the requested model up front. Without this check, a
+	// stale opencode-flavored ModelID (e.g. "claude-opus-4.7" from
+	// the github-copilot provider) would be forwarded blindly as
+	// `claude --model claude-opus-4.7` and the CLI would crash with
+	// a cryptic upstream error. Fail fast with a clear message
+	// instead. Per AGENTS.md §2: no fallbacks for missing/invalid
+	// parameters — clear API contracts over silent corrections.
+	if opts.Model != nil && opts.Model.ModelID != "" && !IsValidClaudeModel(opts.Model.ModelID) {
+		b.setStatus(StatusError)
+		return fmt.Errorf("claude backend: model %q is not a valid claude CLI model (valid: sonnet, opus, haiku)", opts.Model.ModelID)
+	}
+
 	// Mark Busy before Open so Open's "Starting → Idle" conditional
 	// is bypassed on the create path; we go directly Starting → Busy.
 	b.setStatus(StatusBusy)

@@ -16,9 +16,15 @@ func TestPreferences_RoundTrip(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	want := Preferences{
-		Model: &ModelPreference{
-			ModelID:    "claude-opus-4",
-			ProviderID: "anthropic",
+		Models: map[string]ModelPreference{
+			"claude-code": {
+				ModelID:    "opus",
+				ProviderID: "anthropic-claude-code",
+			},
+			"opencode": {
+				ModelID:    "claude-opus-4",
+				ProviderID: "anthropic",
+			},
 		},
 		ColorScheme:    "tokyo-night",
 		DefaultBackend: "claude-code",
@@ -38,12 +44,14 @@ func TestPreferences_RoundTrip(t *testing.T) {
 	if got.DefaultBackend != want.DefaultBackend {
 		t.Errorf("DefaultBackend: got %q, want %q", got.DefaultBackend, want.DefaultBackend)
 	}
-	if got.Model == nil || got.Model.ModelID != want.Model.ModelID {
-		t.Errorf("Model: got %+v, want %+v", got.Model, want.Model)
+	if got.ModelFor("claude-code") != want.Models["claude-code"] {
+		t.Errorf("Models[claude-code]: got %+v, want %+v", got.ModelFor("claude-code"), want.Models["claude-code"])
+	}
+	if got.ModelFor("opencode") != want.Models["opencode"] {
+		t.Errorf("Models[opencode]: got %+v, want %+v", got.ModelFor("opencode"), want.Models["opencode"])
 	}
 }
 
-// TestPreferences_SidebarExpandedRoundTrip verifies the per-row sidebar
 // expand state survives a save/load cycle. The keys mirror the runtime
 // scheme (worktree path, older buckets); the value semantics aren't
 // asserted here — just that the JSON shape round-trips.
@@ -77,19 +85,20 @@ func TestPreferences_SidebarExpandedRoundTrip(t *testing.T) {
 	}
 }
 
-// TestPreferences_LoadBackwardCompat ensures an old preferences.json that
-// doesn't know about ColorScheme still loads cleanly (empty string).
-func TestPreferences_LoadBackwardCompat(t *testing.T) {
+// TestPreferences_LoadIgnoresUnknownFields guards against a strict
+// unmarshal regression: preferences.json may carry fields written by a
+// newer clank (or fields removed in a refactor); load must tolerate
+// them so a downgrade or a stale file doesn't brick the TUI.
+func TestPreferences_LoadIgnoresUnknownFields(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	// Simulate a preferences file written by an older version.
 	dir := filepath.Join(home, ".clank")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	legacy := `{"model":{"model_id":"x","provider_id":"y"}}`
-	if err := os.WriteFile(filepath.Join(dir, "preferences.json"), []byte(legacy), 0o644); err != nil {
+	withExtras := `{"color_scheme":"gruvbox-dark","unknown_future_field":42}`
+	if err := os.WriteFile(filepath.Join(dir, "preferences.json"), []byte(withExtras), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -97,11 +106,8 @@ func TestPreferences_LoadBackwardCompat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadPreferences: %v", err)
 	}
-	if prefs.ColorScheme != "" {
-		t.Errorf("expected empty ColorScheme for legacy file, got %q", prefs.ColorScheme)
-	}
-	if prefs.Model == nil || prefs.Model.ModelID != "x" {
-		t.Errorf("Model: got %+v", prefs.Model)
+	if prefs.ColorScheme != "gruvbox-dark" {
+		t.Errorf("ColorScheme: got %q, want gruvbox-dark", prefs.ColorScheme)
 	}
 }
 
@@ -267,7 +273,7 @@ func TestPreferences_MissingFileIsZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadPreferences: %v", err)
 	}
-	if prefs.ColorScheme != "" || prefs.Model != nil {
+	if prefs.ColorScheme != "" || len(prefs.Models) != 0 {
 		t.Errorf("expected zero Preferences, got %+v", prefs)
 	}
 }
