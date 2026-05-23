@@ -585,8 +585,9 @@ func TestWire_BackendStartingEventDoesNotBumpOrBroadcast(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get post-event: %v", err)
 	}
-	if postEvent.Status == agent.StatusStarting {
-		t.Errorf("Starting was persisted as Status; want preserved %v", preBump.Status)
+	if postEvent.Status != preBump.Status {
+		t.Errorf("Status changed by Starting event (pre=%v post=%v); want unchanged",
+			preBump.Status, postEvent.Status)
 	}
 	if !postEvent.UpdatedAt.Equal(preBump.UpdatedAt) {
 		t.Errorf("UpdatedAt bumped by Starting event (pre=%v post=%v); want unchanged",

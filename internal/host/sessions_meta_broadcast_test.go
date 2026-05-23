@@ -28,8 +28,8 @@ func TestSessionsMetaBroadcasts_MarkRead(t *testing.T) {
 		UpdatedAt: time.Now(),
 	}))
 
-	_, ch := svc.Subscribe()
-	defer svc.Unsubscribe("")
+	subID, ch := svc.Subscribe()
+	defer svc.Unsubscribe(subID)
 
 	if err := svc.MarkSessionRead(context.Background(), id); err != nil {
 		t.Fatalf("MarkSessionRead: %v", err)
@@ -68,8 +68,8 @@ func TestSessionsMetaBroadcasts_DeleteSession(t *testing.T) {
 		UpdatedAt: time.Now(),
 	}))
 
-	_, ch := svc.Subscribe()
-	defer svc.Unsubscribe("")
+	subID, ch := svc.Subscribe()
+	defer svc.Unsubscribe(subID)
 
 	if err := svc.DeleteSessionMetadata(context.Background(), id); err != nil {
 		t.Fatalf("DeleteSessionMetadata: %v", err)
@@ -96,8 +96,8 @@ func TestSessionsMetaBroadcasts_ToggleFollowUp(t *testing.T) {
 		UpdatedAt: time.Now(),
 	}))
 
-	_, ch := svc.Subscribe()
-	defer svc.Unsubscribe("")
+	subID, ch := svc.Subscribe()
+	defer svc.Unsubscribe(subID)
 
 	if _, err := svc.ToggleSessionFollowUp(context.Background(), id); err != nil {
 		t.Fatalf("ToggleSessionFollowUp: %v", err)
