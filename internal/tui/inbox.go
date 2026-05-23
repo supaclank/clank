@@ -161,6 +161,11 @@ type InboxModel struct {
 	preComposePane      inboxPane
 	preComposeActiveRow string // sidebar's activeSessionID at snapshot time
 
+	// sidebarWasFocused remembers whether the sidebar held focus at the
+	// moment 'w' hid it, so toggling back restores the original focus
+	// (preserves the inverse property of the toggle).
+	sidebarWasFocused bool
+
 	// Settings page state (shown when screen == screenSettings).
 	settings settingsView
 
@@ -914,12 +919,7 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			case key.Matches(k, key.NewBinding(key.WithKeys("w"))):
-				m.sidebarHidden = !m.sidebarHidden
-				if m.sidebarHidden {
-					m.setPane(paneSessions)
-				} else {
-					m.setPane(paneSidebar)
-				}
+				m.toggleSidebar()
 				return m, nil
 			case key.Matches(k, key.NewBinding(key.WithKeys("n"))):
 				// Compose a new session prefilled with the current
@@ -1447,12 +1447,7 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("w"))):
-		m.sidebarHidden = !m.sidebarHidden
-		if m.sidebarHidden {
-			m.setPane(paneSessions)
-		} else {
-			m.setPane(paneSidebar)
-		}
+		m.toggleSidebar()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
 		m.showHelp = true
 		return m, nil
@@ -2108,6 +2103,25 @@ func (m *InboxModel) setPane(p inboxPane) {
 	}
 }
 
+// toggleSidebar flips sidebar visibility without stealing focus.
+// Inverse property: two consecutive toggles must return to the original
+// pane focus. Focus only moves when the currently-focused pane is being
+// hidden (no focus on invisible pane), and is restored on un-hide.
+func (m *InboxModel) toggleSidebar() {
+	m.sidebarHidden = !m.sidebarHidden
+	if m.sidebarHidden {
+		m.sidebarWasFocused = m.pane == paneSidebar
+		if m.sidebarWasFocused {
+			m.setPane(paneSessions)
+		}
+		return
+	}
+	if m.sidebarWasFocused {
+		m.setPane(paneSidebar)
+		m.sidebarWasFocused = false
+	}
+}
+
 // sidebarWidthRatioFromPrefs returns the persisted sidebar width ratio, or the
 // default if none has been saved yet.
 func sidebarWidthRatioFromPrefs(prefs config.Preferences) int {
@@ -2211,12 +2225,7 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		m.cleanupVoice()
 		return m, tea.Quit
 	case key.Matches(msg, key.NewBinding(key.WithKeys("w"))):
-		m.sidebarHidden = !m.sidebarHidden
-		if m.sidebarHidden {
-			m.setPane(paneSessions)
-		} else {
-			m.setPane(paneSidebar)
-		}
+		m.toggleSidebar()
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
 		m.showHelp = true
