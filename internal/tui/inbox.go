@@ -501,6 +501,7 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the cloud "checking" indicator animates without the sidebar
 		// owning its own ticker.
 		m.sidebar.SetCloudSpinnerFrame(m.spinner.View())
+		m.sidebar.AdvanceTitleAnimations()
 
 		// Forward to provider auth modal too — its spinner has its own
 		// ID, so the modal's Update will only advance for its own ticks.

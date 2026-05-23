@@ -353,7 +353,7 @@ const activeSessionRail = "▎"
 func (m *SidebarModel) renderSessionRow(n sessionNode, selected bool, maxWidth int) []string {
 	const indent = sidebarChildIndent
 	const indicatorWidth = 2 // glyph + trailing space
-	title := sessionTitle(n.Session)
+	title := m.renderedTitleFor(n.Session.ID, sessionTitle(n.Session))
 	active := n.Session.ID != "" && n.Session.ID == m.activeSessionID
 
 	// One combined indicator column. Precedence: busy/starting spinner

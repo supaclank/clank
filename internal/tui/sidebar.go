@@ -104,6 +104,11 @@ type SidebarModel struct {
 	// glyph (kept in sync via SetSpinnerFrame on every tick).
 	pendingPushes map[string]bool
 	spinnerFrame  string
+
+	// titleAnimations holds in-flight typewriter state keyed by
+	// session ID; see sidebar_title_animation.go.
+	titleAnimations    map[string]*titleAnimation
+	lastTitleBySession map[string]string
 }
 
 // NewSidebarModel creates a sidebar for the given repo identity.
@@ -180,6 +185,7 @@ func (m *SidebarModel) computeEffectiveExpanded() map[string]bool {
 // SetSessions rebuilds the tree from the provided sessions. Cached so
 // toggle operations can re-flatten without re-fetching.
 func (m *SidebarModel) SetSessions(sessions []agent.SessionInfo) {
+	m.diffTitlesForAnimation(sessions)
 	m.sessions = sessions
 	m.rebuildTree()
 }
