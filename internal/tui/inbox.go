@@ -2326,8 +2326,9 @@ func (m *InboxModel) mouseInSidebar(msg tea.MouseMsg) bool {
 // press (mouseDragOwner pins the drag), so a drag that crosses the
 // boundary doesn't half-execute in the destination pane and leak
 // selection state. Clicks/wheels outside a drag route by hover (web-
-// like): wheel-over-sidebar moves the sidebar cursor; click-in-sidebar
-// focuses the sidebar; everything else goes to chat.
+// like): any mouse interaction with a pane focuses it, so wheel-over-
+// sidebar moves the sidebar cursor (and shows it) while wheel-over-
+// chat scrolls chat.
 func (m *InboxModel) routeMouseInSession(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.mouseDragOwner != nil {
 		owner := *m.mouseDragOwner
@@ -2366,9 +2367,11 @@ func (m *InboxModel) routeMouseInSession(msg tea.MouseMsg) (tea.Model, tea.Cmd) 
 
 	case tea.MouseWheelMsg:
 		if inSidebar {
+			m.setPane(paneSidebar)
 			m.sidebar.HandleWheel(typed.Button)
 			return m, nil
 		}
+		m.setPane(paneSessions)
 		return m.forwardMouseToChat(msg)
 
 	default:

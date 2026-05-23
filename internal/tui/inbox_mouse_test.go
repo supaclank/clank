@@ -316,6 +316,7 @@ func TestInboxMouse_WheelInChatScrollsChat_NotSidebar(t *testing.T) {
 	}
 	m.sessionView.scrollOffset = 0
 	m.sessionView.follow = false
+	m.setPane(paneSidebar) // start with sidebar focused to verify wheel-over-chat steals focus
 	_ = m.View()
 	sidebarCursorBefore := m.sidebar.cursor
 	offset := m.chatPaneXOffset()
@@ -328,6 +329,46 @@ func TestInboxMouse_WheelInChatScrollsChat_NotSidebar(t *testing.T) {
 	if m.sidebar.cursor != sidebarCursorBefore {
 		t.Errorf("sidebar cursor moved on wheel-over-chat: %d -> %d", sidebarCursorBefore, m.sidebar.cursor)
 	}
+	if m.pane != paneSessions {
+		t.Errorf("pane = %v after wheel-over-chat, want paneSessions (wheel focuses the pane under cursor for symmetry with click)", m.pane)
+	}
+}
+
+func TestInboxMouse_WheelFocusesPaneUnderCursor(t *testing.T) {
+	t.Parallel()
+
+	// Symmetric focus follow-the-cursor rule: any mouse interaction
+	// with a pane focuses it. Without this, wheel-over-unfocused-
+	// sidebar moves m.cursor invisibly because sidebar_render.go
+	// only highlights the cursor row when m.focused.
+
+	t.Run("wheel over sidebar focuses sidebar", func(t *testing.T) {
+		t.Parallel()
+		m := newInboxWithSidebar(t)
+		m.setPane(paneSessions)
+
+		m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown, X: 0, Y: 5})
+
+		if m.pane != paneSidebar {
+			t.Errorf("pane = %v after wheel-over-sidebar, want paneSidebar", m.pane)
+		}
+		if !m.sidebar.focused {
+			t.Error("sidebar.focused = false; cursor row won't render, defeating the wheel's effect")
+		}
+	})
+
+	t.Run("wheel over chat focuses chat", func(t *testing.T) {
+		t.Parallel()
+		m := newInboxWithSidebar(t)
+		m.setPane(paneSidebar)
+		offset := m.chatPaneXOffset()
+
+		m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown, X: offset + 5, Y: 5})
+
+		if m.pane != paneSessions {
+			t.Errorf("pane = %v after wheel-over-chat, want paneSessions", m.pane)
+		}
+	})
 }
 
 func TestInboxMouse_DragFromChatStaysInChatOnRelease(t *testing.T) {
