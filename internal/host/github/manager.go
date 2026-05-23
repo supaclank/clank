@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -17,12 +18,27 @@ const ClientIDEnv = "CLANK_GITHUB_OAUTH_CLIENT_ID"
 // the in-progress device flow (if any), and the HTTP client used for
 // outbound calls to github.com. Single Manager per host.Service.
 //
-// Device-flow plumbing lands in PR 2; PR creation plumbing lands in
-// PR 3. PR 1 wires up the Store + status surface only.
+// Device-flow plumbing lives in device_flow.go; PR creation lives in
+// pr.go (PR 3). Base URLs are overridable via SetAuthBaseURL /
+// SetAPIBaseURL so tests can swap an httptest.Server.
 type Manager struct {
-	store    *Store
-	httpc    *http.Client
-	clientID string
+	store       *Store
+	httpc       *http.Client
+	clientID    string
+	authBaseURL string
+	apiBaseURL  string
+
+	// pollSafetyMargin is added to the interval GitHub returns,
+	// defending against clock skew. Tests set this to 0 so the flow
+	// runs at the GitHub-returned interval — the fake server returns
+	// 1s, total polling cadence becomes 1s instead of 4s.
+	pollSafetyMargin time.Duration
+
+	// flowMu guards currentFlow. Single-slot registry: only one
+	// device flow may be in-flight per host at a time. A second
+	// StartConnect cancels the previous flow before starting.
+	flowMu      sync.Mutex
+	currentFlow *flowState
 }
 
 // NewManager constructs a Manager rooted at homeDir with the given
@@ -33,9 +49,21 @@ type Manager struct {
 // env var, or laptop dev runs without one).
 func NewManager(homeDir, clientID string) *Manager {
 	return &Manager{
-		store:    NewStore(homeDir),
-		httpc:    &http.Client{Timeout: 30 * time.Second},
-		clientID: clientID,
+		store:            NewStore(homeDir),
+		httpc:            &http.Client{Timeout: 30 * time.Second},
+		clientID:         clientID,
+		authBaseURL:      defaultAuthBaseURL,
+		apiBaseURL:       defaultAPIBaseURL,
+		pollSafetyMargin: defaultPollSafetyMargin,
+	}
+}
+
+// SetPollSafetyMargin overrides the slack added to each device-flow
+// poll interval. Defaults to 3s (matches RFC 8628 §3.4 guidance);
+// tests set 0 so the flow polls at GitHub's returned cadence.
+func (m *Manager) SetPollSafetyMargin(d time.Duration) {
+	if d >= 0 {
+		m.pollSafetyMargin = d
 	}
 }
 
