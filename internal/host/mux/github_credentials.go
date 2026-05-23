@@ -12,12 +12,14 @@ import (
 	githubpkg "github.com/acksell/clank/internal/host/github"
 )
 
-// registerGitHub wires the /credentials/github/* routes onto mx.
-// Called from register() in mux.go.
+// registerGitHub wires the /credentials/github/* and
+// /worktrees/{id}/pr routes onto mx. Called from register() in
+// mux.go.
 func (m *Mux) registerGitHub(mx *http.ServeMux) {
 	mx.HandleFunc("GET /credentials/github/status", m.handleGitHubStatus)
 	mx.HandleFunc("DELETE /credentials/github", m.handleGitHubDisconnect)
 	m.registerGitHubConnect(mx)
+	m.registerGitHubPR(mx)
 }
 
 // requireGitHub fetches the Service-bound GitHub manager and returns

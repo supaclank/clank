@@ -116,6 +116,15 @@ func CurrentBranch(dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// HeadCommit returns the full SHA of HEAD in dir.
+func HeadCommit(dir string) (string, error) {
+	out, err := gitCmd(dir, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("get head commit: %w", err)
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // DefaultBranch returns the default branch name for the repository containing dir.
 // It checks for refs/heads/main first, then refs/heads/master, then falls back
 // to whatever HEAD points to on origin, and finally returns "main" as a last resort.
