@@ -655,7 +655,8 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case modelPickerResultMsg:
 			m.showModelPicker = false
 			m.selectedModel = msg.selectedModel
-			go m.persistModelPreference()
+			backend, pref := m.snapshotModelPreference()
+			go persistModelPreference(backend, pref)
 			return m, m.input.Focus()
 		case modelPickerCancelMsg:
 			m.showModelPicker = false
@@ -3177,14 +3178,14 @@ func truncateStr(s string, n int) string {
 	return s[:n-3] + "..."
 }
 
-// persistModelPreference saves the currently selected model for the
-// active backend. Safe to call from a goroutine: UpdatePreferences
-// serializes the load-modify-save against concurrent writers (color
-// scheme, sidebar layout, last-session) so picker writes can't clobber
-// them.
-func (m *SessionViewModel) persistModelPreference() {
-	backend := string(m.backend)
-	var pref config.ModelPreference
+// snapshotModelPreference reads the current picker selection into immutable
+// values on the caller's (UI) goroutine. The returned pair is safe to hand
+// to persistModelPreference from a background goroutine — reading m.backend
+// / m.selectedModel / m.models from the goroutine would race with later
+// picker activity and could persist a wrong selection if the user reopens
+// the picker before the write lands.
+func (m *SessionViewModel) snapshotModelPreference() (backend string, pref config.ModelPreference) {
+	backend = string(m.backend)
 	if m.selectedModel >= 0 && m.selectedModel < len(m.models) {
 		model := m.models[m.selectedModel]
 		pref = config.ModelPreference{
@@ -3192,6 +3193,14 @@ func (m *SessionViewModel) persistModelPreference() {
 			ProviderID: model.ProviderID,
 		}
 	}
+	return backend, pref
+}
+
+// persistModelPreference writes the snapshot to preferences.json.
+// UpdatePreferences serializes the load-modify-save against concurrent
+// writers (color scheme, sidebar layout, last-session) so picker writes
+// can't clobber them.
+func persistModelPreference(backend string, pref config.ModelPreference) {
 	_ = config.UpdatePreferences(func(p *config.Preferences) {
 		p.SetModelFor(backend, pref)
 	})

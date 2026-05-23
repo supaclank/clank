@@ -79,7 +79,8 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case modelPickerResultMsg:
 			m.showModelPicker = false
 			m.selectedModel = msg.selectedModel
-			go m.persistModelPreference()
+			backend, pref := m.snapshotModelPreference()
+			go persistModelPreference(backend, pref)
 			return m, m.input.Focus()
 		case modelPickerCancelMsg:
 			m.showModelPicker = false

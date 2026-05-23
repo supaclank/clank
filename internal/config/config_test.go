@@ -153,6 +153,103 @@ func TestPreferences_LegacyCloudFlatShapeMigrates(t *testing.T) {
 	}
 }
 
+// TestPreferences_LegacyModelMigratesToPerBackend ensures a preferences.json
+// written before the per-backend split (single inline ModelPreference under
+// "model") loads into Models keyed by the legacy migration target so the
+// user's selection isn't silently dropped on the next SavePreferences.
+// Regression: without this, every upgrading user's model selection would
+// quietly disappear on the first picker write that triggered a re-save.
+func TestPreferences_LegacyModelMigratesToPerBackend(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".clank")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Pin the migration target by setting DefaultBackend so the test is
+	// independent of the package-level fallback.
+	legacy := `{
+		"default_backend": "claude-code",
+		"model": {
+			"model_id": "opus",
+			"provider_id": "anthropic-claude-code"
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "preferences.json"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prefs, err := LoadPreferences()
+	if err != nil {
+		t.Fatalf("LoadPreferences: %v", err)
+	}
+	got := prefs.ModelFor("claude-code")
+	want := ModelPreference{ModelID: "opus", ProviderID: "anthropic-claude-code"}
+	if got != want {
+		t.Errorf("ModelFor(claude-code): got %+v, want %+v", got, want)
+	}
+}
+
+// TestPreferences_LegacyModelMigratesToFallbackWhenDefaultBackendEmpty
+// pins the no-DefaultBackend behaviour: the legacy single pref still
+// migrates, falling back to the package default backend key so the user's
+// data isn't dropped just because they hadn't explicitly chosen a default.
+func TestPreferences_LegacyModelMigratesToFallbackWhenDefaultBackendEmpty(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".clank")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{
+		"model": {
+			"model_id": "claude-opus-4",
+			"provider_id": "anthropic"
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "preferences.json"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prefs, err := LoadPreferences()
+	if err != nil {
+		t.Fatalf("LoadPreferences: %v", err)
+	}
+	got := prefs.ModelFor(legacyModelMigrationBackend)
+	want := ModelPreference{ModelID: "claude-opus-4", ProviderID: "anthropic"}
+	if got != want {
+		t.Errorf("ModelFor(%s): got %+v, want %+v", legacyModelMigrationBackend, got, want)
+	}
+}
+
+// TestPreferences_NewModelsTakesPrecedenceOverLegacy ensures the migration
+// is non-destructive when a user's preferences.json contains both shapes
+// (e.g. a partial hand-edit, or a downgrade-then-upgrade cycle): the new
+// Models map wins and the legacy "model" is ignored.
+func TestPreferences_NewModelsTakesPrecedenceOverLegacy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".clank")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mixed := `{
+		"default_backend": "claude-code",
+		"model":  { "model_id": "old-id",   "provider_id": "old-prov" },
+		"models": { "claude-code": { "model_id": "new-id", "provider_id": "new-prov" } }
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "preferences.json"), []byte(mixed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prefs, err := LoadPreferences()
+	if err != nil {
+		t.Fatalf("LoadPreferences: %v", err)
+	}
+	got := prefs.ModelFor("claude-code")
+	want := ModelPreference{ModelID: "new-id", ProviderID: "new-prov"}
+	if got != want {
+		t.Errorf("ModelFor(claude-code): got %+v, want %+v (new shape must win)", got, want)
+	}
+}
+
 // TestPreferences_MultiProfileLoads verifies the new shape round-trips
 // and ActiveCloud honors the Active selector.
 func TestPreferences_MultiProfileLoads(t *testing.T) {

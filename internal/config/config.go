@@ -348,20 +348,39 @@ func isZeroRemote(p Remote) bool {
 	return p == Remote{}
 }
 
-// UnmarshalJSON on Preferences migrates the legacy top-level "cloud"
-// key to "remote" when the new key is absent. The next SavePreferences
-// emits only "remote", quietly upgrading the file.
+// legacyModelMigrationBackend is the backend key the pre-split single
+// "model" preference gets migrated into when DefaultBackend is empty.
+// Mirrors agent.DefaultBackend's string form; this package can't import
+// internal/agent (see the comment on Preferences.DefaultBackend).
+const legacyModelMigrationBackend = "opencode"
+
+// UnmarshalJSON on Preferences migrates two legacy shapes when the new
+// keys are absent:
+//   - top-level "cloud" → "remote"
+//   - top-level "model" (single ModelPreference) → "models"[<backend>]
+//
+// The next SavePreferences emits only the new keys, quietly upgrading
+// the file. Migration is non-destructive: a populated new key wins over
+// the legacy value.
 func (p *Preferences) UnmarshalJSON(data []byte) error {
 	type alias Preferences
 	aux := struct {
 		*alias
-		LegacyCloud *RemoteConfig `json:"cloud,omitempty"`
+		LegacyCloud *RemoteConfig    `json:"cloud,omitempty"`
+		LegacyModel *ModelPreference `json:"model,omitempty"`
 	}{alias: (*alias)(p)}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 	if p.Remote == nil && aux.LegacyCloud != nil {
 		p.Remote = aux.LegacyCloud
+	}
+	if len(p.Models) == 0 && aux.LegacyModel != nil && !aux.LegacyModel.IsZero() {
+		key := p.DefaultBackend
+		if key == "" {
+			key = legacyModelMigrationBackend
+		}
+		p.Models = map[string]ModelPreference{key: *aux.LegacyModel}
 	}
 	return nil
 }
