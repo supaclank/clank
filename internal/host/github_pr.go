@@ -64,6 +64,13 @@ var (
 	// behind the base — no commits to PR. 400; client UI shows
 	// "nothing to push yet" hint.
 	ErrNothingToPush = errors.New("nothing to push: branch is up to date with base")
+
+	// ErrNoOriginRemote fires when the worktree has no `origin`
+	// remote configured. Common on sprite-migrated worktrees whose
+	// `.git/config` didn't carry over with the bundle. 400; client
+	// UI suggests "git remote add origin <github-url>" or
+	// re-pushing from laptop with the remote intact.
+	ErrNoOriginRemote = errors.New("worktree has no 'origin' remote — clank sync may have stripped .git/config; add it manually or re-push from laptop")
 )
 
 // CreatePR pushes the worktree's current branch and opens a pull
@@ -113,11 +120,14 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 
 	remoteURL, err := git.RemoteURL(workdir, "origin")
 	if err != nil {
-		return CreatePRResult{}, fmt.Errorf("get origin url: %w", err)
+		// git config errors out when the key isn't set — treat any
+		// failure here as "no origin." Avoid leaking the raw stderr
+		// (which contains the literal config key) into the response.
+		return CreatePRResult{}, ErrNoOriginRemote
 	}
 	owner, repo, err := githubpkg.ParseGitHubRemote(remoteURL)
 	if err != nil {
-		return CreatePRResult{}, fmt.Errorf("parse origin url: %w", err)
+		return CreatePRResult{}, fmt.Errorf("parse origin url %q: %w", remoteURL, err)
 	}
 
 	authHeader := buildAuthHeader(creds.AccessToken)
