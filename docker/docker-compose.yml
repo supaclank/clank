@@ -108,6 +108,15 @@ services:
       CLANK_AUTH_CLIENT_ID: "${CLANK_AUTH_CLIENT_ID:-clank-cli}"
       CLANK_AUTH_SCOPES: "${CLANK_AUTH_SCOPES:-openid email}"
 
+      # GitHub Connect: clank-host (spawned by clankd via the local
+      # provisioner) inherits this env var and reports available:true
+      # on /credentials/github/status. Empty disables the feature
+      # (status returns available:false; mobile hides the entry).
+      # Defaults to the production OAuth App so the dev stack works
+      # out of the box; override per-developer if you've registered
+      # your own App for testing.
+      CLANK_GITHUB_OAUTH_CLIENT_ID: "${CLANK_GITHUB_OAUTH_CLIENT_ID:-Ov23li78UDBwea5WvI5v}"
+
       # Embedded sync substrate. clankd's runGatewayServer reads these
       # in TCP mode via loadSyncFromEnv and mounts a sync server when
       # CLANK_SYNC_S3_BUCKET is set. Unix-socket mode (laptop) ignores
