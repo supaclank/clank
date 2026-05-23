@@ -112,6 +112,11 @@ type InboxModel struct {
 	searchQuery    string              // last query sent to the daemon
 	cachedSessions []agent.SessionInfo // last full session list from the daemon
 
+	// inboxEventsCancel tears down the SSE subscription opened by
+	// subscribeInboxEvents. Replaced on every reconnect.
+	inboxEventsCancel context.CancelFunc
+	inboxEventsCh     <-chan agent.Event
+
 	// lastSessionsCacheSig fingerprints the most recently disk-cached
 	// session list so the autoRefresh poll doesn't rewrite the cache
 	// when the data hasn't materially changed. Seeded from the cache
@@ -318,7 +323,7 @@ func (m *InboxModel) Init() tea.Cmd {
 	// calls in other TUIs/agents and produced duplicate inbox rows. Discover
 	// at daemon startup (hub/discover_startup.go) covers the cold-boot case;
 	// future explicit rediscover will be a keybind.
-	cmds := []tea.Cmd{func() tea.Msg { return tea.RequestWindowSize }, m.loadDataCmd(), m.autoRefreshCmd(), m.spinner.Tick, m.sidebar.Init()}
+	cmds := []tea.Cmd{func() tea.Msg { return tea.RequestWindowSize }, m.loadDataCmd(), m.subscribeInboxEvents(), m.spinner.Tick, m.sidebar.Init()}
 	// Eagerly initialize the cloud view so a saved token gets verified
 	// against the server in the background, even if the user never opens
 	// the cloud panel. This drives the sidebar indicator from "checking"
@@ -462,12 +467,11 @@ type inboxSearchResultMsg struct {
 	err      error
 }
 
-// autoRefreshCmd schedules periodic data refresh.
-func (m *InboxModel) autoRefreshCmd() tea.Cmd {
-	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-		return inboxRefreshMsg{}
-	})
-}
+// autoRefreshCmd was a 3s polling tick that paged the daemon for the
+// full session list. Replaced by SSE-driven push updates in
+// inbox_sse.go; kept removed intentionally — re-adding polling on top
+// of push updates would re-introduce the visible flicker the SSE
+// migration was designed to eliminate.
 
 // searchCmd performs a case-insensitive substring search against the daemon.
 // Supports pipe-separated OR groups with space-separated AND terms.
@@ -523,16 +527,64 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(inboxCmd, providerAuthCmd, cloudCmd)
 	}
 
-	// Always keep the refresh timer ticking, regardless of screen state.
-	// Same rationale as the spinner tick chain above: the timer is
-	// self-sustaining (each handler schedules the next tick). Letting it
-	// fall through to the session view delegation would swallow it and
-	// permanently kill the refresh loop.
-	if _, ok := msg.(inboxRefreshMsg); ok {
-		if m.screen == screenInbox {
-			return m, tea.Batch(m.loadDataCmd(), m.autoRefreshCmd())
+	// Always keep the spinner ticking, regardless of screen state.
+	// The spinner's tick chain is self-sustaining: each handler
+	// schedules the next tick. Letting it fall through to the
+	// session view delegation would swallow it and permanently kill
+	// the spinner.
+	//
+	// Sidebar session state is push-based via SSE (handlers below), so
+	// the legacy 3s polling loop is gone. inboxRefreshMsg now triggers
+	// a single one-shot fetch — used by explicit user actions and
+	// post-discover resync.
+	switch msg := msg.(type) {
+	case inboxSSESetupMsg:
+		if m.inboxEventsCancel != nil {
+			m.inboxEventsCancel()
 		}
-		return m, m.autoRefreshCmd()
+		m.inboxEventsCancel = msg.cancel
+		m.inboxEventsCh = msg.events
+		return m, waitForInboxEvent(msg.events)
+	case inboxSSEEventMsg:
+		changed, cmd := m.applyInboxEvent(msg.event)
+		if changed {
+			m.refreshSidebarFromCache()
+			// Persist after in-place SSE mutations so cached state
+			// (e.g. LastReadAt bumped by a MarkRead broadcast) survives
+			// TUI exit. Without this, the disk cache only captured
+			// snapshots from successful loadDataCmd() returns, so any
+			// SSE-driven change between full loads was lost when the
+			// process exited — leaving stale unread/status indicators
+			// on next launch even though the daemon DB was correct.
+			m.persistCacheIfChanged()
+		}
+		var next tea.Cmd
+		if m.inboxEventsCh != nil {
+			next = waitForInboxEvent(m.inboxEventsCh)
+		}
+		if cmd != nil && next != nil {
+			return m, tea.Batch(cmd, next)
+		}
+		if cmd != nil {
+			return m, cmd
+		}
+		return m, next
+	case inboxSSEClosedMsg:
+		m.inboxEventsCancel = nil
+		m.inboxEventsCh = nil
+		return m, tea.Batch(m.loadDataCmd(), m.reconnectInboxEvents(msg.delay))
+	case inboxSSEErrorMsg:
+		if m.inboxEventsCancel != nil {
+			m.inboxEventsCancel()
+			m.inboxEventsCancel = nil
+		}
+		m.inboxEventsCh = nil
+		return m, m.reconnectInboxEvents(msg.delay)
+	case inboxRefreshSubscribeMsg:
+		return m, m.subscribeInboxEvents()
+	case inboxRefreshMsg:
+		_ = msg
+		return m, m.loadDataCmd()
 	}
 
 	// Detect Kitty keyboard protocol support. Bubble Tea sends this once
@@ -626,13 +678,8 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Persist the snapshot on disk so the next launch can
 			// paint instantly. Skip when the signature matches what
-			// we last wrote — autoRefresh polls every 3s and an idle
-			// inbox shouldn't churn disk.
-			if sig := sessionsCacheSig(msg.sessions); sig != m.lastSessionsCacheSig {
-				m.lastSessionsCacheSig = sig
-				snap := append([]agent.SessionInfo(nil), msg.sessions...)
-				go func() { _ = saveSessionsCache(snap) }()
-			}
+			// we last wrote — SSE event bursts shouldn't churn disk.
+			m.persistCacheIfChanged()
 		}
 		return m, nil
 	case worktreeOptionsRequestedMsg:
@@ -859,11 +906,11 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.replaceSessionView(nil)
 		m.activeConnID = ""
 		m.sidebar.SetActiveSessionID("")
-		// One-shot refresh on return. Do NOT re-seed autoRefreshCmd or
-		// spinner.Tick: their chains keep ticking the whole time the user
-		// is in the session view (see Update handlers above), so re-seeding
-		// would spawn a duplicate chain on every nav round-trip — leading
-		// to K parallel pollers after K nav round-trips, which fan out to
+		// One-shot refresh on return. Do NOT re-seed spinner.Tick: its
+		// chain keeps ticking the whole time the user is in the session
+		// view (see Update handlers above), so re-seeding would spawn a
+		// duplicate chain on every nav round-trip — leading to K
+		// parallel pollers after K nav round-trips, which fan out to
 		// expensive git subprocesses in clank-host's ListBranches.
 		//
 		// Mark-read happens *before* the list refresh inside a single
