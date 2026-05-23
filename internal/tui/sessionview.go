@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -375,6 +376,16 @@ const (
 // and the scroll-offset adjustments that keep the viewport anchored when
 // the input is toggled.
 const inputReservedLines = 6
+
+// wheelScrollLines is how many content lines a single mouse-wheel tick
+// shifts the viewport by. Independent of cursor position — the wheel
+// moves the viewport, not the selection.
+const wheelScrollLines = 3
+
+// cursorTopMargin is how many lines of context to keep above the cursor
+// entry when scrollToCursor anchors the viewport. Gives the reader a
+// little breathing room above the selected message.
+const cursorTopMargin = 2
 
 // NewSessionViewModel creates a session detail TUI for an existing session.
 func NewSessionViewModel(client *daemonclient.Client, sessionID string) *SessionViewModel {
@@ -923,13 +934,13 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.MouseWheelUp:
 			m.follow = false
 			if m.scrollOffset > 0 {
-				m.scrollOffset -= 3
+				m.scrollOffset -= wheelScrollLines
 				if m.scrollOffset < 0 {
 					m.scrollOffset = 0
 				}
 			}
 		case tea.MouseWheelDown:
-			m.scrollOffset += 3
+			m.scrollOffset += wheelScrollLines
 			if m.clampScroll() {
 				m.follow = true
 			}
@@ -2888,8 +2899,12 @@ func (m *SessionViewModel) contentHeight() int {
 }
 
 func (m *SessionViewModel) scrollToBottom() {
-	// Will be clamped during rendering.
-	m.scrollOffset = 999999
+	// Set scrollOffset past the end; clampScroll snaps it to the real
+	// maxOffset based on lastContentLineCount (building it lazily if
+	// this is the first frame). The next View re-clamps with a fresh
+	// count, so any staleness self-corrects within one frame.
+	m.scrollOffset = math.MaxInt
+	m.clampScroll()
 }
 
 // clampScroll uses lastContentLineCount from the most recent buildContentLines
@@ -3137,13 +3152,10 @@ func (m *SessionViewModel) scrollToCursor() {
 	if m.cursor < 0 || m.cursor >= len(m.entryStartLine) {
 		return
 	}
-	const topMargin = 2
-	m.scrollOffset = m.entryStartLine[m.cursor] - topMargin
+	m.scrollOffset = m.entryStartLine[m.cursor] - cursorTopMargin
 	if m.scrollOffset < 0 {
 		m.scrollOffset = 0
 	}
-	// Clamp so we don't scroll past the end of content.
-	// (clampScrollWithLines will handle this in View, but be safe here.)
 }
 
 // --- Helpers ---
