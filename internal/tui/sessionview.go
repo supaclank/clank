@@ -24,9 +24,14 @@ import (
 	"github.com/acksell/clank/internal/host"
 )
 
-// sessionEventMsg wraps a daemon event delivered to the TUI.
+// sessionEventMsg wraps a daemon event delivered to the TUI. sourceCh
+// identifies the subscription channel the event came from so Update can
+// detect stale-subscription deliveries and avoid re-arming a duplicate
+// waiter on the live m.eventsCh. See
+// TestSessionView_StaleSourceEventDoesNotReArmLiveChannel.
 type sessionEventMsg struct {
-	event agent.Event
+	sourceCh <-chan agent.Event
+	event    agent.Event
 }
 
 // sessionEventsErrMsg is sent when the SSE subscription fails.
@@ -598,7 +603,7 @@ func waitForEvent(events <-chan agent.Event) tea.Cmd {
 			// Channel closed — intentional shutdown, not an error.
 			return sseClosedMsg{events: events}
 		}
-		return sessionEventMsg{event: evt}
+		return sessionEventMsg{sourceCh: events, event: evt}
 	}
 }
 
@@ -799,17 +804,17 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// live event meant for the now-active view. See
 		// TestSessionView_DropsStaleSessionEvent and
 		// TestWaitForEvent_DoesNotSwallowEventsForOtherSessions.
-		if msg.event.SessionID != m.sessionID &&
-			msg.event.Type != agent.EventSessionCreate &&
-			msg.event.Type != agent.EventSessionDelete {
-			if m.eventsCh != nil {
-				return m, waitForEvent(m.eventsCh)
-			}
-			return m, nil
+		matches := msg.event.SessionID == m.sessionID ||
+			msg.event.Type == agent.EventSessionCreate ||
+			msg.event.Type == agent.EventSessionDelete
+		if matches {
+			m.handleEvent(msg.event)
 		}
-		m.handleEvent(msg.event)
-		// Re-schedule to wait for the next event.
-		if m.eventsCh != nil {
+		// Re-arm only when the event came from the live subscription. A
+		// stale source's own waiter has already exited and re-arming on
+		// m.eventsCh would spawn a duplicate waiter that races the
+		// legitimate one. See TestSessionView_StaleSourceEventDoesNotReArmLiveChannel.
+		if m.eventsCh != nil && msg.sourceCh == m.eventsCh {
 			return m, waitForEvent(m.eventsCh)
 		}
 		return m, nil

@@ -86,6 +86,56 @@ func TestWaitForEvent_ClosedChannelCarriesIdentity(t *testing.T) {
 	}
 }
 
+// TestSessionView_StaleSourceEventDoesNotReArmLiveChannel guards the
+// duplicate-goroutine leak: when a sessionEventMsg arrives from a *stale*
+// subscription (e.g. a since-cancelled chA delivered a buffered event
+// before closing), Update must not re-arm waitForEvent on m.eventsCh
+// (the live chB). Doing so would spawn an extra waiter every time a
+// stale event landed, leaking goroutines and racing the legitimate
+// waiter for chB events.
+//
+// The original sessionEventMsg carried only the event payload, so Update
+// had no way to tell which channel produced it. Tagging the message with
+// its source channel lets Update gate the re-arm on identity.
+func TestSessionView_StaleSourceEventDoesNotReArmLiveChannel(t *testing.T) {
+	t.Parallel()
+	m := NewSessionViewModel(nil, "session-B")
+	liveCh := make(chan agent.Event, 1)
+	m.eventsCh = liveCh
+	staleCh := make(chan agent.Event, 1)
+
+	stale := sessionEventMsg{
+		sourceCh: staleCh,
+		event:    agent.Event{Type: agent.EventPartUpdate, SessionID: "session-A"},
+	}
+	_, cmd := m.Update(stale)
+	if cmd != nil {
+		t.Fatal("stale-source event re-armed waitForEvent on the live channel; that would spawn a duplicate goroutine and leak each time a stale event landed")
+	}
+}
+
+// TestSessionView_LiveSourceEventReArmsLiveChannel is the positive
+// counterpart: when sessionEventMsg DOES come from m.eventsCh, Update
+// must re-arm so the wait loop keeps consuming events.
+func TestSessionView_LiveSourceEventReArmsLiveChannel(t *testing.T) {
+	t.Parallel()
+	m := NewSessionViewModel(nil, "session-B")
+	liveCh := make(chan agent.Event, 1)
+	m.eventsCh = liveCh
+
+	// Even a filtered-out event (different session) from the live channel
+	// must re-arm — the live waiter has already returned, so without a
+	// new arm the wait loop dies.
+	filteredButLive := sessionEventMsg{
+		sourceCh: liveCh,
+		event:    agent.Event{Type: agent.EventPartUpdate, SessionID: "session-A"},
+	}
+	_, cmd := m.Update(filteredButLive)
+	if cmd == nil {
+		t.Fatal("live-source event must re-arm waitForEvent or the wait loop dies after the first filtered event")
+	}
+}
+
 // TestWaitForEvent_DoesNotSwallowEventsForOtherSessions guards the
 // stale-waiter-eats-live-event hole: waitForEvent must not filter events
 // by sessionID before Update sees them. A waiter scheduled before a view
