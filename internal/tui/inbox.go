@@ -73,6 +73,14 @@ type InboxModel struct {
 	sidebarHidden     bool         // true when user toggled sidebar off with 'w'
 	sidebarWidthRatio int          // sidebar width as % of screen width; adjusted with +/-
 
+	// mouseDragOwner pins an active mouse drag to the pane that
+	// received its MouseClickMsg, so motion/release events that the
+	// user drags across the pane boundary still reach the originating
+	// pane. nil between drags. Distinguishes "no drag" from the
+	// zero-valued inboxPane (paneSessions == iota 0) without a parallel
+	// bool flag.
+	mouseDragOwner *inboxPane
+
 	// Inbox list state (right pane).
 	groups           []inboxGroup
 	flatRows         []inboxRow
@@ -984,16 +992,7 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case tea.MouseClickMsg, tea.MouseReleaseMsg, tea.MouseMotionMsg, tea.MouseWheelMsg:
-		// Mouse coordinates arrive in the outer terminal frame. The
-		// chat lives in the right pane, shifted by the sidebar width;
-		// translate X into the chat's local frame so click hit-tests
-		// (copy button, message rows) target the right cell. Y is
-		// shared between frames so no Y translation needed.
-		mouse := msg.(tea.MouseMsg)
-		translated := offsetMouseX(mouse, -m.chatPaneXOffset())
-		model, cmd := m.sessionView.Update(translated)
-		m.sessionView = model.(*SessionViewModel)
-		return m, cmd
+		return m.routeMouseInSession(msg.(tea.MouseMsg))
 
 	default:
 		model, cmd := m.sessionView.Update(msg)
@@ -2309,6 +2308,89 @@ func (m *InboxModel) chatPaneXOffset() int {
 		return 0
 	}
 	return m.sidebarRenderWidth() + sidebarGap
+}
+
+// mouseInSidebar reports whether the mouse event hit the sidebar pane
+// (X is left of the chat's leftmost cell). In single-pane mode the
+// sidebar isn't visible, so this is always false and every event
+// reaches the chat.
+func (m *InboxModel) mouseInSidebar(msg tea.MouseMsg) bool {
+	if !m.showTwoPanes() {
+		return false
+	}
+	return msg.Mouse().X < m.chatPaneXOffset()
+}
+
+// routeMouseInSession dispatches a mouse event to the pane it belongs
+// to. Press → motion* → release stays with the pane that received the
+// press (mouseDragOwner pins the drag), so a drag that crosses the
+// boundary doesn't half-execute in the destination pane and leak
+// selection state. Clicks/wheels outside a drag route by hover (web-
+// like): wheel-over-sidebar moves the sidebar cursor; click-in-sidebar
+// focuses the sidebar; everything else goes to chat.
+func (m *InboxModel) routeMouseInSession(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.mouseDragOwner != nil {
+		owner := *m.mouseDragOwner
+		if _, isRelease := msg.(tea.MouseReleaseMsg); isRelease {
+			m.mouseDragOwner = nil
+		}
+		switch owner {
+		case paneSessions:
+			return m.forwardMouseToChat(msg)
+		case paneSidebar:
+			// Sidebar has no drag semantics; swallow motion/release
+			// until the press's release arrives so the chat doesn't
+			// see an orphan release at the dragged-to X.
+			return m, nil
+		}
+	}
+
+	inSidebar := m.mouseInSidebar(msg)
+
+	switch typed := msg.(type) {
+	case tea.MouseClickMsg:
+		if inSidebar {
+			if typed.Button == tea.MouseLeft {
+				m.setPane(paneSidebar)
+				owner := paneSidebar
+				m.mouseDragOwner = &owner
+			}
+			return m, nil
+		}
+		if typed.Button == tea.MouseLeft {
+			owner := paneSessions
+			m.mouseDragOwner = &owner
+			m.setPane(paneSessions)
+		}
+		return m.forwardMouseToChat(msg)
+
+	case tea.MouseWheelMsg:
+		if inSidebar {
+			m.sidebar.HandleWheel(typed.Button)
+			return m, nil
+		}
+		return m.forwardMouseToChat(msg)
+
+	default:
+		// Motion or release without a tracked press. Drop sidebar-side
+		// events (no hover behavior); forward chat-side so any stray
+		// chat handler (e.g. message-row highlight in future) still
+		// sees consistent coordinates.
+		if inSidebar {
+			return m, nil
+		}
+		return m.forwardMouseToChat(msg)
+	}
+}
+
+// forwardMouseToChat translates the outer-frame X into the chat pane's
+// local frame and forwards the event to SessionViewModel. The Y axis
+// is shared between the outer view and the chat pane, so no Y shift.
+func (m *InboxModel) forwardMouseToChat(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	translated := offsetMouseX(msg, -m.chatPaneXOffset())
+	model, cmd := m.sessionView.Update(translated)
+	m.sessionView = model.(*SessionViewModel)
+	return m, cmd
 }
 
 // rightPaneBorder returns the bordered Style used by View() to wrap the

@@ -2,8 +2,11 @@ package tui
 
 import (
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/acksell/clank/internal/agent"
 )
 
 // Mouse reporting is a single terminal-level toggle: it must be set
@@ -192,5 +195,211 @@ func TestInboxWheel_XTranslatedIntoChatFrame(t *testing.T) {
 
 	if got := m.sessionView.selection.startX; got != 0 {
 		t.Errorf("chat saw click at X=%d, want X=0 (mouse X was not translated from outer frame to chat frame; offset was %d)", got, offset)
+	}
+}
+
+// Mouse routing by hover (web-like): events go to the pane under the
+// cursor, not the focused pane. A click in the sidebar focuses it but
+// does not start a chat selection; a wheel over the sidebar moves the
+// sidebar cursor by 1 without touching chat scrollOffset; a drag that
+// crosses the boundary stays with the pane that received the press.
+
+func newInboxWithSidebar(t *testing.T) *InboxModel {
+	t.Helper()
+	m := newInboxWithChat(t)
+	now := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)
+	// Cwd-pinned worktree auto-expands so the session row is visible
+	// in the flat list without manual expansion. Gives us >=3 rows
+	// (all-sessions, worktree, session) for cursor-move assertions.
+	m.sidebar = newTestSidebarCwd(now, "/r/x",
+		agent.SessionInfo{ID: "abc", UpdatedAt: now, GitRef: agent.GitRef{LocalPath: "/r/x"}},
+		agent.SessionInfo{ID: "def", UpdatedAt: now.Add(-time.Hour), GitRef: agent.GitRef{LocalPath: "/r/x"}},
+	)
+	m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
+	m.sidebar.cursor = 1
+	_ = m.View() // compute layout so chatPaneXOffset is valid
+	return m
+}
+
+func TestInboxMouse_ClickInSidebarFocusesSidebar_NoChatSelection(t *testing.T) {
+	t.Parallel()
+
+	m := newInboxWithSidebar(t)
+	m.pane = paneSessions
+	m.sessionView.selection.startX = -1 // sentinel: no selection started
+
+	m.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: 0, Y: 5})
+
+	if m.pane != paneSidebar {
+		t.Errorf("pane = %v after sidebar click, want paneSidebar (click should focus the clicked pane)", m.pane)
+	}
+	if m.sessionView.selection.startX != -1 {
+		t.Errorf("chat selection started on sidebar click (startX=%d); click must not bubble to chat", m.sessionView.selection.startX)
+	}
+}
+
+func TestInboxMouse_ClickInChatFocusesChat(t *testing.T) {
+	t.Parallel()
+
+	m := newInboxWithSidebar(t)
+	m.pane = paneSidebar
+	offset := m.chatPaneXOffset()
+
+	m.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: offset + 5, Y: 5})
+
+	if m.pane != paneSessions {
+		t.Errorf("pane = %v after chat click, want paneSessions", m.pane)
+	}
+}
+
+func TestInboxMouse_WheelDownInSidebarMovesCursorByOne(t *testing.T) {
+	t.Parallel()
+
+	m := newInboxWithSidebar(t)
+	m.sidebar.cursor = 0
+	chatOffsetBefore := m.sessionView.scrollOffset
+
+	m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown, X: 0, Y: 5})
+
+	if m.sidebar.cursor != 1 {
+		t.Errorf("sidebar cursor = %d after wheel down, want 1 (wheel moves cursor by exactly 1, not wheelScrollLines)", m.sidebar.cursor)
+	}
+	if m.sessionView.scrollOffset != chatOffsetBefore {
+		t.Errorf("chat scrollOffset changed on sidebar wheel: %d -> %d; wheel-over-sidebar must not bubble to chat", chatOffsetBefore, m.sessionView.scrollOffset)
+	}
+}
+
+func TestInboxMouse_WheelUpInSidebarMovesCursorByOne(t *testing.T) {
+	t.Parallel()
+
+	m := newInboxWithSidebar(t)
+	m.sidebar.cursor = 2
+
+	m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp, X: 0, Y: 5})
+
+	if m.sidebar.cursor != 1 {
+		t.Errorf("sidebar cursor = %d after wheel up, want 1", m.sidebar.cursor)
+	}
+}
+
+func TestInboxMouse_WheelInSidebarClampsNoWrap(t *testing.T) {
+	t.Parallel()
+
+	t.Run("wheel up at top stays at 0", func(t *testing.T) {
+		t.Parallel()
+		m := newInboxWithSidebar(t)
+		m.sidebar.cursor = 0
+		m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp, X: 0, Y: 5})
+		if m.sidebar.cursor != 0 {
+			t.Errorf("sidebar cursor wrapped on wheel up at top: got %d, want 0 (wheel must not wrap, even though keyboard nav does)", m.sidebar.cursor)
+		}
+	})
+
+	t.Run("wheel down at bottom stays at last", func(t *testing.T) {
+		t.Parallel()
+		m := newInboxWithSidebar(t)
+		last := len(m.sidebar.flat) - 1
+		m.sidebar.cursor = last
+		m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown, X: 0, Y: 5})
+		if m.sidebar.cursor != last {
+			t.Errorf("sidebar cursor wrapped on wheel down at bottom: got %d, want %d", m.sidebar.cursor, last)
+		}
+	})
+}
+
+func TestInboxMouse_WheelInChatScrollsChat_NotSidebar(t *testing.T) {
+	t.Parallel()
+
+	m := newInboxWithSidebar(t)
+	for i := 0; i < 30; i++ {
+		m.sessionView.entries = append(m.sessionView.entries, displayEntry{kind: entryText, content: "padding"})
+	}
+	m.sessionView.scrollOffset = 0
+	m.sessionView.follow = false
+	_ = m.View()
+	sidebarCursorBefore := m.sidebar.cursor
+	offset := m.chatPaneXOffset()
+
+	m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown, X: offset + 5, Y: 10})
+
+	if m.sessionView.scrollOffset == 0 {
+		t.Error("chat did not scroll on wheel-over-chat")
+	}
+	if m.sidebar.cursor != sidebarCursorBefore {
+		t.Errorf("sidebar cursor moved on wheel-over-chat: %d -> %d", sidebarCursorBefore, m.sidebar.cursor)
+	}
+}
+
+func TestInboxMouse_DragFromChatStaysInChatOnRelease(t *testing.T) {
+	t.Parallel()
+
+	// Press in chat, motion/release drift into the sidebar's X range.
+	// The release must still reach the chat (selection ends there);
+	// the sidebar must not see the click.
+	m := newInboxWithSidebar(t)
+	offset := m.chatPaneXOffset()
+	paneBefore := m.pane
+
+	m.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: offset + 5, Y: 10})
+	if m.mouseDragOwner == nil || *m.mouseDragOwner != paneSessions {
+		t.Fatalf("mouseDragOwner = %v after chat press, want &paneSessions", m.mouseDragOwner)
+	}
+
+	// Drag into sidebar X range, then release there.
+	m.Update(tea.MouseMotionMsg{Button: tea.MouseLeft, X: 0, Y: 11})
+	m.Update(tea.MouseReleaseMsg{Button: tea.MouseLeft, X: 0, Y: 11})
+
+	if m.mouseDragOwner != nil {
+		t.Errorf("mouseDragOwner = %v after release, want nil", m.mouseDragOwner)
+	}
+	if m.pane != paneBefore {
+		t.Errorf("pane changed mid-drag: %v -> %v; drag release in sidebar must not focus sidebar when press was in chat", paneBefore, m.pane)
+	}
+}
+
+func TestInboxMouse_DragFromSidebarStaysInSidebarOnRelease(t *testing.T) {
+	t.Parallel()
+
+	// Press in sidebar pins the drag; release drifting into chat
+	// must not start a chat selection.
+	m := newInboxWithSidebar(t)
+	offset := m.chatPaneXOffset()
+
+	m.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: 0, Y: 5})
+	if m.mouseDragOwner == nil || *m.mouseDragOwner != paneSidebar {
+		t.Fatalf("mouseDragOwner = %v after sidebar press, want &paneSidebar", m.mouseDragOwner)
+	}
+	chatStartXBefore := m.sessionView.selection.startX
+
+	m.Update(tea.MouseMotionMsg{Button: tea.MouseLeft, X: offset + 5, Y: 6})
+	m.Update(tea.MouseReleaseMsg{Button: tea.MouseLeft, X: offset + 5, Y: 6})
+
+	if m.mouseDragOwner != nil {
+		t.Errorf("mouseDragOwner = %v after release, want nil", m.mouseDragOwner)
+	}
+	if m.sessionView.selection.startX != chatStartXBefore {
+		t.Errorf("chat selection started during sidebar drag (startX %d -> %d)", chatStartXBefore, m.sessionView.selection.startX)
+	}
+}
+
+func TestInboxMouse_SinglePaneRoutesEverythingToChat(t *testing.T) {
+	t.Parallel()
+
+	// Below minTwoPaneWidth or with sidebar hidden, chatPaneXOffset
+	// is 0 and there is no sidebar to route to. Every event must
+	// reach chat unchanged.
+	m := newInboxWithSidebar(t)
+	m.sidebarHidden = true
+	for i := 0; i < 30; i++ {
+		m.sessionView.entries = append(m.sessionView.entries, displayEntry{kind: entryText, content: "padding"})
+	}
+	m.sessionView.scrollOffset = 0
+	m.sessionView.follow = false
+	_ = m.View()
+
+	m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown, X: 0, Y: 10})
+
+	if m.sessionView.scrollOffset == 0 {
+		t.Error("wheel at X=0 with sidebar hidden did not reach chat (single-pane mode must route everything to chat)")
 	}
 }
