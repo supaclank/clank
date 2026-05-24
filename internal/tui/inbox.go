@@ -73,6 +73,14 @@ type InboxModel struct {
 	sidebarHidden     bool         // true when user toggled sidebar off with 'w'
 	sidebarWidthRatio int          // sidebar width as % of screen width; adjusted with +/-
 
+	// mouseDragOwner pins an active mouse drag to the pane that
+	// received its MouseClickMsg, so motion/release events that the
+	// user drags across the pane boundary still reach the originating
+	// pane. nil between drags. Distinguishes "no drag" from the
+	// zero-valued inboxPane (paneSessions == iota 0) without a parallel
+	// bool flag.
+	mouseDragOwner *inboxPane
+
 	// Inbox list state (right pane).
 	groups           []inboxGroup
 	flatRows         []inboxRow
@@ -111,6 +119,11 @@ type InboxModel struct {
 	searchInput    textinput.Model     // text input for search queries
 	searchQuery    string              // last query sent to the daemon
 	cachedSessions []agent.SessionInfo // last full session list from the daemon
+
+	// inboxEventsCancel tears down the SSE subscription opened by
+	// subscribeInboxEvents. Replaced on every reconnect.
+	inboxEventsCancel context.CancelFunc
+	inboxEventsCh     <-chan agent.Event
 
 	// lastSessionsCacheSig fingerprints the most recently disk-cached
 	// session list so the autoRefresh poll doesn't rewrite the cache
@@ -160,6 +173,11 @@ type InboxModel struct {
 	preComposeConnID    string
 	preComposePane      inboxPane
 	preComposeActiveRow string // sidebar's activeSessionID at snapshot time
+
+	// sidebarWasFocused remembers whether the sidebar held focus at the
+	// moment 'w' hid it, so toggling back restores the original focus
+	// (preserves the inverse property of the toggle).
+	sidebarWasFocused bool
 
 	// Settings page state (shown when screen == screenSettings).
 	settings settingsView
@@ -313,7 +331,7 @@ func (m *InboxModel) Init() tea.Cmd {
 	// calls in other TUIs/agents and produced duplicate inbox rows. Discover
 	// at daemon startup (hub/discover_startup.go) covers the cold-boot case;
 	// future explicit rediscover will be a keybind.
-	cmds := []tea.Cmd{func() tea.Msg { return tea.RequestWindowSize }, m.loadDataCmd(), m.autoRefreshCmd(), m.spinner.Tick, m.sidebar.Init()}
+	cmds := []tea.Cmd{func() tea.Msg { return tea.RequestWindowSize }, m.loadDataCmd(), m.subscribeInboxEvents(), m.spinner.Tick, m.sidebar.Init()}
 	// Eagerly initialize the cloud view so a saved token gets verified
 	// against the server in the background, even if the user never opens
 	// the cloud panel. This drives the sidebar indicator from "checking"
@@ -457,12 +475,11 @@ type inboxSearchResultMsg struct {
 	err      error
 }
 
-// autoRefreshCmd schedules periodic data refresh.
-func (m *InboxModel) autoRefreshCmd() tea.Cmd {
-	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-		return inboxRefreshMsg{}
-	})
-}
+// autoRefreshCmd was a 3s polling tick that paged the daemon for the
+// full session list. Replaced by SSE-driven push updates in
+// inbox_sse.go; kept removed intentionally — re-adding polling on top
+// of push updates would re-introduce the visible flicker the SSE
+// migration was designed to eliminate.
 
 // searchCmd performs a case-insensitive substring search against the daemon.
 // Supports pipe-separated OR groups with space-separated AND terms.
@@ -492,6 +509,7 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the cloud "checking" indicator animates without the sidebar
 		// owning its own ticker.
 		m.sidebar.SetCloudSpinnerFrame(m.spinner.View())
+		m.sidebar.AdvanceTitleAnimations()
 
 		// Forward to provider auth modal too — its spinner has its own
 		// ID, so the modal's Update will only advance for its own ticks.
@@ -518,16 +536,64 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(inboxCmd, providerAuthCmd, cloudCmd)
 	}
 
-	// Always keep the refresh timer ticking, regardless of screen state.
-	// Same rationale as the spinner tick chain above: the timer is
-	// self-sustaining (each handler schedules the next tick). Letting it
-	// fall through to the session view delegation would swallow it and
-	// permanently kill the refresh loop.
-	if _, ok := msg.(inboxRefreshMsg); ok {
-		if m.screen == screenInbox {
-			return m, tea.Batch(m.loadDataCmd(), m.autoRefreshCmd())
+	// Always keep the spinner ticking, regardless of screen state.
+	// The spinner's tick chain is self-sustaining: each handler
+	// schedules the next tick. Letting it fall through to the
+	// session view delegation would swallow it and permanently kill
+	// the spinner.
+	//
+	// Sidebar session state is push-based via SSE (handlers below), so
+	// the legacy 3s polling loop is gone. inboxRefreshMsg now triggers
+	// a single one-shot fetch — used by explicit user actions and
+	// post-discover resync.
+	switch msg := msg.(type) {
+	case inboxSSESetupMsg:
+		if m.inboxEventsCancel != nil {
+			m.inboxEventsCancel()
 		}
-		return m, m.autoRefreshCmd()
+		m.inboxEventsCancel = msg.cancel
+		m.inboxEventsCh = msg.events
+		return m, waitForInboxEvent(msg.events)
+	case inboxSSEEventMsg:
+		changed, cmd := m.applyInboxEvent(msg.event)
+		if changed {
+			m.refreshSidebarFromCache()
+			// Persist after in-place SSE mutations so cached state
+			// (e.g. LastReadAt bumped by a MarkRead broadcast) survives
+			// TUI exit. Without this, the disk cache only captured
+			// snapshots from successful loadDataCmd() returns, so any
+			// SSE-driven change between full loads was lost when the
+			// process exited — leaving stale unread/status indicators
+			// on next launch even though the daemon DB was correct.
+			m.persistCacheIfChanged()
+		}
+		var next tea.Cmd
+		if m.inboxEventsCh != nil {
+			next = waitForInboxEvent(m.inboxEventsCh)
+		}
+		if cmd != nil && next != nil {
+			return m, tea.Batch(cmd, next)
+		}
+		if cmd != nil {
+			return m, cmd
+		}
+		return m, next
+	case inboxSSEClosedMsg:
+		m.inboxEventsCancel = nil
+		m.inboxEventsCh = nil
+		return m, tea.Batch(m.loadDataCmd(), m.reconnectInboxEvents(msg.delay))
+	case inboxSSEErrorMsg:
+		if m.inboxEventsCancel != nil {
+			m.inboxEventsCancel()
+			m.inboxEventsCancel = nil
+		}
+		m.inboxEventsCh = nil
+		return m, m.reconnectInboxEvents(msg.delay)
+	case inboxRefreshSubscribeMsg:
+		return m, m.subscribeInboxEvents()
+	case inboxRefreshMsg:
+		_ = msg
+		return m, m.loadDataCmd()
 	}
 
 	// Detect Kitty keyboard protocol support. Bubble Tea sends this once
@@ -621,13 +687,8 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Persist the snapshot on disk so the next launch can
 			// paint instantly. Skip when the signature matches what
-			// we last wrote — autoRefresh polls every 3s and an idle
-			// inbox shouldn't churn disk.
-			if sig := sessionsCacheSig(msg.sessions); sig != m.lastSessionsCacheSig {
-				m.lastSessionsCacheSig = sig
-				snap := append([]agent.SessionInfo(nil), msg.sessions...)
-				go func() { _ = saveSessionsCache(snap) }()
-			}
+			// we last wrote — SSE event bursts shouldn't churn disk.
+			m.persistCacheIfChanged()
 		}
 		return m, nil
 	case worktreeOptionsRequestedMsg:
@@ -836,7 +897,7 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.activeConnID != "" {
 			go m.client.Session(m.activeConnID).MarkRead(context.Background())
 		}
-		m.sessionView = nil
+		m.replaceSessionView(nil)
 		m.activeConnID = ""
 		m.openSettings()
 		m.providerAuth = newProviderAuthModel(m.client.Host(m.hostname), typed.backend, "")
@@ -851,14 +912,14 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		closingID := m.activeConnID
 		m.screen = screenInbox
-		m.sessionView = nil
+		m.replaceSessionView(nil)
 		m.activeConnID = ""
 		m.sidebar.SetActiveSessionID("")
-		// One-shot refresh on return. Do NOT re-seed autoRefreshCmd or
-		// spinner.Tick: their chains keep ticking the whole time the user
-		// is in the session view (see Update handlers above), so re-seeding
-		// would spawn a duplicate chain on every nav round-trip — leading
-		// to K parallel pollers after K nav round-trips, which fan out to
+		// One-shot refresh on return. Do NOT re-seed spinner.Tick: its
+		// chain keeps ticking the whole time the user is in the session
+		// view (see Update handlers above), so re-seeding would spawn a
+		// duplicate chain on every nav round-trip — leading to K
+		// parallel pollers after K nav round-trips, which fan out to
 		// expensive git subprocesses in clank-host's ListBranches.
 		//
 		// Mark-read happens *before* the list refresh inside a single
@@ -879,10 +940,8 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case openForkedSessionMsg:
 		forkMsg := msg.(openForkedSessionMsg)
-		// Clean up the current session view before switching.
-		if m.sessionView != nil && m.sessionView.cancelEvents != nil {
-			m.sessionView.cancelEvents()
-		}
+		// openSession routes through replaceSessionView, which tears down
+		// the previous view's SSE subscription. No explicit cancel needed.
 		if m.activeConnID != "" {
 			go m.client.Session(m.activeConnID).MarkRead(context.Background())
 		}
@@ -914,12 +973,7 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			case key.Matches(k, key.NewBinding(key.WithKeys("w"))):
-				m.sidebarHidden = !m.sidebarHidden
-				if m.sidebarHidden {
-					m.setPane(paneSessions)
-				} else {
-					m.setPane(paneSidebar)
-				}
+				m.toggleSidebar()
 				return m, nil
 			case key.Matches(k, key.NewBinding(key.WithKeys("n"))):
 				// Compose a new session prefilled with the current
@@ -936,6 +990,9 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		model, cmd := m.sessionView.Update(msg)
 		m.sessionView = model.(*SessionViewModel)
 		return m, cmd
+
+	case tea.MouseClickMsg, tea.MouseReleaseMsg, tea.MouseMotionMsg, tea.MouseWheelMsg:
+		return m.routeMouseInSession(msg.(tea.MouseMsg))
 
 	default:
 		model, cmd := m.sessionView.Update(msg)
@@ -1046,6 +1103,9 @@ func (m *InboxModel) openComposingSession(worktreeDir string) tea.Cmd {
 		worktreeDir = m.projectDir
 	}
 
+	// NOTE: deliberately not routing through replaceSessionView here.
+	// preComposeSession snapshotted m.sessionView above; closeCompose
+	// restores it and expects its SSE subscription to still be live.
 	m.sessionView = NewSessionViewComposing(m.client, worktreeDir)
 	m.sessionView.voice = &m.voice
 	m.sessionView.width = m.width
@@ -1447,12 +1507,7 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("w"))):
-		m.sidebarHidden = !m.sidebarHidden
-		if m.sidebarHidden {
-			m.setPane(paneSessions)
-		} else {
-			m.setPane(paneSidebar)
-		}
+		m.toggleSidebar()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
 		m.showHelp = true
 		return m, nil
@@ -1477,14 +1532,15 @@ func (m *InboxModel) openSession(sessionID string) tea.Cmd {
 	sseCtx, sseCancel := context.WithCancel(context.Background())
 	events, err := m.client.Sessions().Subscribe(sseCtx)
 
-	m.sessionView = NewSessionViewModel(m.client, sessionID)
-	m.sessionView.voice = &m.voice
+	next := NewSessionViewModel(m.client, sessionID)
+	next.voice = &m.voice
 	if err == nil {
-		m.sessionView.SetEventChannel(events, sseCancel)
+		next.SetEventChannel(events, sseCancel)
 	} else {
 		// Fall back to subscribing in Init() if pre-subscribe fails.
 		sseCancel()
 	}
+	m.replaceSessionView(next)
 
 	// Intentionally NOT calling setPane(paneSessions) here. Opening a
 	// session from the sidebar swaps the right pane's content but does
@@ -1512,6 +1568,20 @@ func (m *InboxModel) openSession(sessionID string) tea.Cmd {
 	}
 
 	return m.sessionView.Init()
+}
+
+// replaceSessionView swaps m.sessionView for next, cancelling the previous
+// view's SSE subscription first. Every site that reassigns m.sessionView to
+// a freshly-constructed view must go through here — otherwise the prior
+// view's waitForEvent goroutine leaks and keeps delivering sessionEventMsg
+// values into the Bubble Tea queue, which then land in the wrong (newly
+// active) view. See TestReplaceSessionView_CancelsPreviousSubscription.
+func (m *InboxModel) replaceSessionView(next *SessionViewModel) {
+	if m.sessionView != nil && m.sessionView.cancelEvents != nil {
+		m.sessionView.cancelEvents()
+		m.sessionView.cancelEvents = nil
+	}
+	m.sessionView = next
 }
 
 func (m *InboxModel) handleMenuAction(action string) tea.Cmd {
@@ -1909,7 +1979,19 @@ func (m *InboxModel) View() tea.View {
 		content = overlayBottom(content, status, m.width, m.height)
 	}
 
-	v := newVoiceEnabledView(content)
+	// Mouse reporting is a single terminal-level toggle: it must be
+	// declared on the outer (rendered) view, otherwise wheel/click
+	// events never reach us and the terminal falls back to translating
+	// wheel into arrow keys (which the chat then mis-interprets as
+	// cursor navigation). We only enable it on the chat screen so other
+	// screens (inbox list, settings, cloud) keep native terminal text
+	// select working without the user holding Option.
+	var v tea.View
+	if m.screen == screenSession && m.sessionView != nil {
+		v = newVoiceEnabledViewWithMouse(content)
+	} else {
+		v = newVoiceEnabledView(content)
+	}
 
 	// When the chat view is rendered inside the right pane, propagate
 	// its mouse handler so selection / copy still work — but translate
@@ -2108,6 +2190,38 @@ func (m *InboxModel) setPane(p inboxPane) {
 	}
 }
 
+// focusActiveChatMessageMode moves focus to the chat pane and engages
+// message mode on the active session view. Returns nil when no session
+// is currently shown so callers can chain it without guard duplication.
+// This is the second-step gesture: Enter previews a session (no focus
+// change), "m" commits and starts typing.
+func (m *InboxModel) focusActiveChatMessageMode() tea.Cmd {
+	if m.screen != screenSession || m.sessionView == nil {
+		return nil
+	}
+	m.setPane(paneSessions)
+	return m.sessionView.enterMessageMode()
+}
+
+// toggleSidebar flips sidebar visibility without stealing focus.
+// Inverse property: two consecutive toggles must return to the original
+// pane focus. Focus only moves when the currently-focused pane is being
+// hidden (no focus on invisible pane), and is restored on un-hide.
+func (m *InboxModel) toggleSidebar() {
+	m.sidebarHidden = !m.sidebarHidden
+	if m.sidebarHidden {
+		m.sidebarWasFocused = m.pane == paneSidebar
+		if m.sidebarWasFocused {
+			m.setPane(paneSessions)
+		}
+		return
+	}
+	if m.sidebarWasFocused {
+		m.setPane(paneSidebar)
+		m.sidebarWasFocused = false
+	}
+}
+
 // sidebarWidthRatioFromPrefs returns the persisted sidebar width ratio, or the
 // default if none has been saved yet.
 func sidebarWidthRatioFromPrefs(prefs config.Preferences) int {
@@ -2185,6 +2299,103 @@ func (m *InboxModel) sessionPaneWidth() int {
 	return m.width
 }
 
+// chatPaneXOffset returns the X coordinate (in the outer terminal frame)
+// of the chat's leftmost cell. Used to translate mouse X into the chat's
+// local frame so click hit-tests target the right column. Matches the
+// sidebarVisibleWidth computed in View() so the two paths stay in sync.
+func (m *InboxModel) chatPaneXOffset() int {
+	if !m.showTwoPanes() {
+		return 0
+	}
+	return m.sidebarRenderWidth() + sidebarGap
+}
+
+// mouseInSidebar reports whether the mouse event hit the sidebar pane
+// (X is left of the chat's leftmost cell). In single-pane mode the
+// sidebar isn't visible, so this is always false and every event
+// reaches the chat.
+func (m *InboxModel) mouseInSidebar(msg tea.MouseMsg) bool {
+	if !m.showTwoPanes() {
+		return false
+	}
+	return msg.Mouse().X < m.chatPaneXOffset()
+}
+
+// routeMouseInSession dispatches a mouse event to the pane it belongs
+// to. Press → motion* → release stays with the pane that received the
+// press (mouseDragOwner pins the drag), so a drag that crosses the
+// boundary doesn't half-execute in the destination pane and leak
+// selection state. Clicks/wheels outside a drag route by hover (web-
+// like): any mouse interaction with a pane focuses it, so wheel-over-
+// sidebar moves the sidebar cursor (and shows it) while wheel-over-
+// chat scrolls chat.
+func (m *InboxModel) routeMouseInSession(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.mouseDragOwner != nil {
+		owner := *m.mouseDragOwner
+		if _, isRelease := msg.(tea.MouseReleaseMsg); isRelease {
+			m.mouseDragOwner = nil
+		}
+		switch owner {
+		case paneSessions:
+			return m.forwardMouseToChat(msg)
+		case paneSidebar:
+			// Sidebar has no drag semantics; swallow motion/release
+			// until the press's release arrives so the chat doesn't
+			// see an orphan release at the dragged-to X.
+			return m, nil
+		}
+	}
+
+	inSidebar := m.mouseInSidebar(msg)
+
+	switch typed := msg.(type) {
+	case tea.MouseClickMsg:
+		if inSidebar {
+			if typed.Button == tea.MouseLeft {
+				m.setPane(paneSidebar)
+				owner := paneSidebar
+				m.mouseDragOwner = &owner
+			}
+			return m, nil
+		}
+		if typed.Button == tea.MouseLeft {
+			owner := paneSessions
+			m.mouseDragOwner = &owner
+			m.setPane(paneSessions)
+		}
+		return m.forwardMouseToChat(msg)
+
+	case tea.MouseWheelMsg:
+		if inSidebar {
+			m.setPane(paneSidebar)
+			m.sidebar.HandleWheel(typed.Button)
+			return m, nil
+		}
+		m.setPane(paneSessions)
+		return m.forwardMouseToChat(msg)
+
+	default:
+		// Motion or release without a tracked press. Drop sidebar-side
+		// events (no hover behavior); forward chat-side so any stray
+		// chat handler (e.g. message-row highlight in future) still
+		// sees consistent coordinates.
+		if inSidebar {
+			return m, nil
+		}
+		return m.forwardMouseToChat(msg)
+	}
+}
+
+// forwardMouseToChat translates the outer-frame X into the chat pane's
+// local frame and forwards the event to SessionViewModel. The Y axis
+// is shared between the outer view and the chat pane, so no Y shift.
+func (m *InboxModel) forwardMouseToChat(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	translated := offsetMouseX(msg, -m.chatPaneXOffset())
+	model, cmd := m.sessionView.Update(translated)
+	m.sessionView = model.(*SessionViewModel)
+	return m, cmd
+}
+
 // rightPaneBorder returns the bordered Style used by View() to wrap the
 // right pane in two-pane mode. The Style's Width is sessionPaneWidth() +
 // paneWrapBuffer — strictly greater than what renderRow produces, so
@@ -2211,17 +2422,21 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		m.cleanupVoice()
 		return m, tea.Quit
 	case key.Matches(msg, key.NewBinding(key.WithKeys("w"))):
-		m.sidebarHidden = !m.sidebarHidden
-		if m.sidebarHidden {
-			m.setPane(paneSessions)
-		} else {
-			m.setPane(paneSidebar)
-		}
+		m.toggleSidebar()
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
 		m.showHelp = true
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("m"))):
+		// Prefer the "focus active chat + enter message mode" gesture
+		// when an active session is shown in the right pane: the user
+		// just pressed Enter on a session in the sidebar (which only
+		// previews) and now wants to commit and start typing. The
+		// branch-merge gesture stays the fallback for when no session
+		// is active (e.g. on a branch row before opening anything).
+		if m.screen == screenSession && m.activeConnID != "" && m.sessionView != nil {
+			return m, m.focusActiveChatMessageMode()
+		}
 		bi := m.sidebar.SelectedBranchInfo()
 		if bi != nil && !bi.IsDefault {
 			m.mergeOverlay = newMergeOverlay(m.client, m.hostname, m.gitRef, *bi)
@@ -2772,7 +2987,7 @@ func (m *InboxModel) overlayHelp(base string) string {
 	helpLine("w", "toggle worktree sidebar")
 	helpLine("tab / ← →", "switch panes")
 	helpLine("n", "new branch (in sidebar)")
-	helpLine("m", "merge branch (in sidebar)")
+	helpLine("m", "merge branch (sidebar, no active chat) / focus chat + message mode (sidebar, chat shown)")
 	helpLine("r", "refresh branches")
 	sb.WriteString(sep + "\n")
 

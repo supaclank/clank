@@ -1991,19 +1991,51 @@ func TestAutoRefreshSurvivesSessionView(t *testing.T) {
 	m.screen = screenSession
 	m.sessionView = NewSessionViewModel(nil, "test-session")
 
-	// Simulate the timer firing while in session view.
+	// inboxRefreshMsg is no longer driven by a self-rescheduling tick (push
+	// updates via SSE replaced the 3s poll), but explicit fires (post-discover,
+	// user actions) must still trigger a one-shot data reload even while the
+	// session screen is active. Otherwise the sidebar would never resync
+	// after a discover until the user navigated back to inbox.
 	_, cmd := m.Update(inboxRefreshMsg{})
-
-	// The handler must re-schedule the timer (non-nil cmd) even though we're
-	// not on the inbox screen; otherwise the refresh loop dies permanently.
 	if cmd == nil {
-		t.Fatal("inboxRefreshMsg was swallowed while in session view; auto-refresh timer chain is broken")
+		t.Fatal("inboxRefreshMsg was swallowed while in session view; explicit refresh path is broken")
+	}
+}
+
+// TestSidebarSessionStatusRefreshesInSessionScreen is a regression test for
+// the bug where the sidebar's per-row spinner kept animating after a session
+// transitioned Busy -> Idle while the user was viewing that session.
+//
+// Root cause: the inboxRefreshMsg handler used to skip loadDataCmd() when
+// screen != screenInbox, so the sidebar's cached SessionInfo.Status went stale
+// for as long as the user stayed on screenSession. The sidebar reads Status
+// to decide whether to draw the spinner glyph (sidebar_render.go), so a stale
+// Busy status kept the spinner spinning indefinitely.
+//
+// The fix runs loadDataCmd() on every tick regardless of screen. We verify the
+// propagation path independently by feeding an inboxDataMsg while in
+// screenSession and checking the sidebar reflects the new status.
+func TestSidebarSessionStatusRefreshesInSessionScreen(t *testing.T) {
+	t.Parallel()
+
+	m := NewInboxModel(nil)
+	m.screen = screenSession
+	m.sessionView = NewSessionViewModel(nil, "s1")
+
+	// Seed: session is busy.
+	busy := []agent.SessionInfo{{ID: "s1", Title: "t", Status: agent.StatusBusy}}
+	m.Update(inboxDataMsg{sessions: busy})
+	if got := m.sidebar.sessions[0].Status; got != agent.StatusBusy {
+		t.Fatalf("setup: sidebar status = %v, want Busy", got)
 	}
 
-	// The returned command should eventually produce another inboxRefreshMsg
-	// (it's a tea.Tick wrapping inboxRefreshMsg). We can't easily test the
-	// tick delay, but we can verify a cmd was returned — which is the key
-	// invariant that keeps the chain alive.
+	// Simulate the next poll: backend now reports Idle.
+	idle := []agent.SessionInfo{{ID: "s1", Title: "t", Status: agent.StatusIdle}}
+	m.Update(inboxDataMsg{sessions: idle})
+
+	if got := m.sidebar.sessions[0].Status; got != agent.StatusIdle {
+		t.Fatalf("sidebar did not pick up Idle status in screenSession: got %v", got)
+	}
 }
 
 // TestBackToInboxDoesNotReseedTimers is a regression test for a CPU spike in
@@ -2115,6 +2147,26 @@ func TestSpinnerTickForwardedToSessionView(t *testing.T) {
 	_, cmd2 := m.Update(secondTick)
 	if cmd2 == nil {
 		t.Fatal("session spinner second tick returned nil cmd; tick chain is broken")
+	}
+}
+
+// TestSpinnerTickForwardedWhenSidebarFocused is a regression test for the bug
+// where moving keyboard focus from the chat pane to the sidebar (Tab / left
+// arrow) while a session was open caused the session view's spinner to freeze.
+// The tick chain must keep ticking regardless of which pane has focus — only
+// m.screen gates forwarding, not m.pane.
+func TestSpinnerTickForwardedWhenSidebarFocused(t *testing.T) {
+	t.Parallel()
+
+	m := NewInboxModel(nil)
+	m.screen = screenSession
+	m.sessionView = NewSessionViewModel(nil, "test-session")
+	m.setPane(paneSidebar)
+
+	sessionTickMsg := m.sessionView.spinner.Tick()
+	_, cmd := m.Update(sessionTickMsg)
+	if cmd == nil {
+		t.Fatal("session spinner tick was swallowed when sidebar is focused; tick chain is broken")
 	}
 }
 
@@ -2394,6 +2446,59 @@ func TestRightArrow_FromSidebar_NavigatesToSessionPane(t *testing.T) {
 	}
 }
 
+// 'w' must be a pure visibility toggle: pressing it twice returns to the
+// original focused pane regardless of where focus started.
+func TestToggleSidebar_PreservesFocus_FromSessions(t *testing.T) {
+	t.Parallel()
+
+	m := &InboxModel{width: 120, height: 40, pane: paneSessions}
+
+	m.toggleSidebar()
+	if !m.sidebarHidden {
+		t.Fatal("expected sidebar hidden after first toggle")
+	}
+	if m.pane != paneSessions {
+		t.Errorf("expected pane to stay paneSessions when hiding from sessions, got %v", m.pane)
+	}
+
+	m.toggleSidebar()
+	if m.sidebarHidden {
+		t.Fatal("expected sidebar visible after second toggle")
+	}
+	if m.pane != paneSessions {
+		t.Errorf("expected pane to stay paneSessions after un-hide, got %v", m.pane)
+	}
+}
+
+func TestToggleSidebar_PreservesFocus_FromSidebar(t *testing.T) {
+	t.Parallel()
+
+	m := &InboxModel{
+		width:   120,
+		height:  40,
+		pane:    paneSidebar,
+		sidebar: SidebarModel{focused: true},
+	}
+
+	m.toggleSidebar()
+	if !m.sidebarHidden {
+		t.Fatal("expected sidebar hidden after first toggle")
+	}
+	if m.pane != paneSessions {
+		t.Errorf("expected focus to move to sessions when hiding focused sidebar, got %v", m.pane)
+	}
+
+	m.toggleSidebar()
+	if m.sidebarHidden {
+		t.Fatal("expected sidebar visible after second toggle")
+	}
+	if m.pane != paneSidebar {
+		t.Errorf("inverse property violated: expected focus restored to sidebar, got %v", m.pane)
+	}
+	if !m.sidebar.Focused() {
+		t.Error("expected sidebar.Focused() to be true after focus restore")
+	}
+}
 
 func TestBuildSearchResults_RespectsProjectFilter(t *testing.T) {
 	t.Parallel()
