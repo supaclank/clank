@@ -10,6 +10,7 @@ package gateway
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -22,6 +23,12 @@ import (
 // GitHub-proxy call. Generous enough for cold-sprite wake; tight
 // enough that a hung host doesn't block mobile UI indefinitely.
 const hostGitHubTimeout = 30 * time.Second
+
+// maxGitHubProxyBody is the cap on inbound body size for any GitHub
+// proxy call. PR titles + bodies are tiny in practice; 1 MiB is
+// generous. Truncating would silently mis-forward to the host so we
+// hard-reject with 413 instead.
+const maxGitHubProxyBody = 1 << 20
 
 // proxyHostGitHub forwards r to <hostURL><hostPath><?rawQuery>.
 // Preserves the request method, copies the body, the response
@@ -37,8 +44,14 @@ func (g *Gateway) proxyHostGitHub(w http.ResponseWriter, r *http.Request, hostPa
 		return false
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	r.Body = http.MaxBytesReader(w, r.Body, maxGitHubProxyBody)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return false
+		}
 		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
 		return false
 	}

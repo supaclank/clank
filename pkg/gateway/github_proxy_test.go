@@ -202,6 +202,28 @@ func TestGitHubProxy_CreatePR_ForwardsIDAndBody(t *testing.T) {
 	}
 }
 
+func TestGitHubProxy_RejectsOversizedBody(t *testing.T) {
+	t.Parallel()
+	host := &captureHost{respStatus: http.StatusOK}
+	gw := newGatewayForGitHubProxyTest(t, host)
+
+	// Build a body just over the 1 MiB cap. The proxy should refuse
+	// with 413 rather than silently truncating and forwarding a
+	// partial body to the host.
+	huge := strings.Repeat("a", (1<<20)+1)
+	req := httptest.NewRequest(http.MethodPost, "/v1/worktrees/01WT/pr", strings.NewReader(huge))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	gw.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", rr.Code)
+	}
+	if host.mu.Load() {
+		t.Errorf("host received a (truncated) request despite oversized body")
+	}
+}
+
 func TestGitHubProxy_RequiresAuth(t *testing.T) {
 	t.Parallel()
 	host := &captureHost{respStatus: http.StatusOK}
