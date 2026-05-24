@@ -340,6 +340,148 @@ func TestCreatePR_RefusesPushToUnrelatedRepo(t *testing.T) {
 	}
 }
 
+// TestPreviewPR_GitHubOrigin pins the happy-path preview: origin
+// parses to a github.com URL, sheet would render the Open PR form
+// with the destination callout populated.
+func TestPreviewPR_GitHubOrigin(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv(githubpkg.ClientIDEnv, "Ov23li78UDBwea5WvI5v")
+
+	const worktreeID = "01TESTWORKTREE0000000200"
+	workdir := filepath.Join(homeDir, "work", worktreeID)
+	mustGit(t, "", "init", workdir)
+	mustGit(t, workdir, "config", "user.email", "test@example.com")
+	mustGit(t, workdir, "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(workdir, "README"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, workdir, "add", "README")
+	mustGit(t, workdir, "commit", "-m", "init")
+	mustGit(t, workdir, "branch", "-M", "main")
+	mustGit(t, workdir, "checkout", "-b", "feat-x")
+	mustGit(t, workdir, "remote", "add", "origin", "https://github.com/acme/api.git")
+
+	prev := host.SetWorkRootForTest(filepath.Join(homeDir, "work"))
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+	})
+	t.Cleanup(svc.Shutdown)
+
+	result, err := svc.PreviewPR(context.Background(), worktreeID)
+	if err != nil {
+		t.Fatalf("PreviewPR: %v", err)
+	}
+	if result.OriginState != host.PreviewOriginGitHub {
+		t.Errorf("OriginState = %q, want github", result.OriginState)
+	}
+	if result.Owner != "acme" || result.Repo != "api" {
+		t.Errorf("Owner/Repo = %q/%q, want acme/api", result.Owner, result.Repo)
+	}
+	if result.HeadBranch != "feat-x" {
+		t.Errorf("HeadBranch = %q, want feat-x", result.HeadBranch)
+	}
+	if len(result.HeadSHA) != 40 {
+		t.Errorf("HeadSHA = %q, want 40 chars", result.HeadSHA)
+	}
+}
+
+// TestPreviewPR_NoOrigin pins the no-origin classification — the
+// sheet should render the no-origin banner and hide the form.
+func TestPreviewPR_NoOrigin(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv(githubpkg.ClientIDEnv, "Ov23li78UDBwea5WvI5v")
+
+	const worktreeID = "01TESTWORKTREE0000000201"
+	workdir := filepath.Join(homeDir, "work", worktreeID)
+	mustGit(t, "", "init", workdir)
+	mustGit(t, workdir, "config", "user.email", "test@example.com")
+	mustGit(t, workdir, "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(workdir, "README"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, workdir, "add", "README")
+	mustGit(t, workdir, "commit", "-m", "init")
+	mustGit(t, workdir, "branch", "-M", "main")
+	mustGit(t, workdir, "checkout", "-b", "feat-x")
+	// Deliberately no `git remote add origin`.
+
+	prev := host.SetWorkRootForTest(filepath.Join(homeDir, "work"))
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+	})
+	t.Cleanup(svc.Shutdown)
+
+	result, err := svc.PreviewPR(context.Background(), worktreeID)
+	if err != nil {
+		t.Fatalf("PreviewPR: %v", err)
+	}
+	if result.OriginState != host.PreviewOriginNone {
+		t.Errorf("OriginState = %q, want no_origin", result.OriginState)
+	}
+	if result.Owner != "" || result.Repo != "" {
+		t.Errorf("Owner/Repo should be empty, got %q/%q", result.Owner, result.Repo)
+	}
+	// Head metadata is still useful even without origin.
+	if result.HeadBranch != "feat-x" {
+		t.Errorf("HeadBranch = %q, want feat-x", result.HeadBranch)
+	}
+}
+
+// TestPreviewPR_NonGitHubOrigin pins the non-github classification —
+// the sheet should render the non-github banner with the actual
+// host name (gitlab.com) so the user knows what their origin
+// points to.
+func TestPreviewPR_NonGitHubOrigin(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv(githubpkg.ClientIDEnv, "Ov23li78UDBwea5WvI5v")
+
+	const worktreeID = "01TESTWORKTREE0000000202"
+	workdir := filepath.Join(homeDir, "work", worktreeID)
+	mustGit(t, "", "init", workdir)
+	mustGit(t, workdir, "config", "user.email", "test@example.com")
+	mustGit(t, workdir, "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(workdir, "README"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, workdir, "add", "README")
+	mustGit(t, workdir, "commit", "-m", "init")
+	mustGit(t, workdir, "branch", "-M", "main")
+	mustGit(t, workdir, "checkout", "-b", "feat-x")
+	mustGit(t, workdir, "remote", "add", "origin", "https://gitlab.com/acme/api.git")
+
+	prev := host.SetWorkRootForTest(filepath.Join(homeDir, "work"))
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+	})
+	t.Cleanup(svc.Shutdown)
+
+	result, err := svc.PreviewPR(context.Background(), worktreeID)
+	if err != nil {
+		t.Fatalf("PreviewPR: %v", err)
+	}
+	if result.OriginState != host.PreviewOriginNonGitHub {
+		t.Errorf("OriginState = %q, want non_github", result.OriginState)
+	}
+	if result.NonGitHubHost != "gitlab.com" {
+		t.Errorf("NonGitHubHost = %q, want gitlab.com", result.NonGitHubHost)
+	}
+	if result.Owner != "" || result.Repo != "" {
+		t.Errorf("Owner/Repo should be empty, got %q/%q", result.Owner, result.Repo)
+	}
+}
+
 func mustGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)

@@ -69,3 +69,32 @@ func splitURLAuthority(s string) (host, path string) {
 	host, path, _ = strings.Cut(s, "/")
 	return host, path
 }
+
+// RemoteHost returns just the host portion of a git remote URL,
+// regardless of whether the host is github.com. Used by the PR
+// preview endpoint to surface the actual host in "non_github"
+// error messages (e.g. "Origin points to gitlab.com").
+//
+// Returns the empty string when the URL is unparseable. Accepts the
+// same three URL shapes as ParseGitHubRemote.
+func RemoteHost(remoteURL string) string {
+	u := strings.TrimSuffix(strings.TrimSpace(remoteURL), ".git")
+	if u == "" {
+		return ""
+	}
+	var host string
+	if rest, ok := strings.CutPrefix(u, "https://"); ok {
+		host, _ = splitURLAuthority(rest)
+	} else if rest, ok := strings.CutPrefix(u, "http://"); ok {
+		host, _ = splitURLAuthority(rest)
+	} else if rest, ok := strings.CutPrefix(u, "ssh://"); ok {
+		host, _ = splitURLAuthority(rest)
+	} else if prefix, _, ok := strings.Cut(u, ":"); ok && !strings.Contains(prefix, "/") {
+		if _, h, ok := strings.Cut(prefix, "@"); ok {
+			host = h
+		} else {
+			host = prefix
+		}
+	}
+	return host
+}

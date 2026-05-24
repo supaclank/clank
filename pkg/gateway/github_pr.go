@@ -15,3 +15,15 @@ func (g *Gateway) handleGitHubCreatePR(w http.ResponseWriter, r *http.Request) {
 	}
 	g.proxyHostGitHub(w, r, "/worktrees/"+id+"/pr")
 }
+
+// handleGitHubPreviewPR proxies POST /v1/worktrees/{id}/pr/preview —
+// the mobile sheet's "what destination will this go to" query.
+// Mounted before the /v1/ catch-all so it doesn't fall into sync.
+func (g *Gateway) handleGitHubPreviewPR(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "worktree id is required", http.StatusBadRequest)
+		return
+	}
+	g.proxyHostGitHub(w, r, "/worktrees/"+id+"/pr/preview")
+}

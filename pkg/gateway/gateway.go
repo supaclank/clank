@@ -165,6 +165,7 @@ func (g *Gateway) Handler() http.Handler {
 	mx.HandleFunc("GET /v1/github/connect/status", g.handleGitHubConnectStatus)
 	mx.HandleFunc("POST /v1/github/connect/cancel", g.handleGitHubConnectCancel)
 	mx.HandleFunc("POST /v1/worktrees/{id}/pr", g.handleGitHubCreatePR)
+	mx.HandleFunc("POST /v1/worktrees/{id}/pr/preview", g.handleGitHubPreviewPR)
 	if g.cfg.Sync != nil {
 		// POST /v1/migrate/worktrees/{id} is more specific and wins
 		// over the /v1/ prefix registered here.

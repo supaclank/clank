@@ -44,6 +44,36 @@ type CreatePRResult struct {
 	HeadSHA    string `json:"head_sha"`
 }
 
+// PreviewOriginState classifies what we know about the worktree's
+// origin before any network calls. Drives the mobile-side
+// "Open PR to <owner>/<repo>" callout vs. the no-origin/non-github
+// CTAs.
+type PreviewOriginState string
+
+const (
+	// PreviewOriginGitHub: origin is set and parses to a github.com URL.
+	// Safe to enable the Open PR form.
+	PreviewOriginGitHub PreviewOriginState = "github"
+	// PreviewOriginNone: no `origin` remote on the worktree.
+	PreviewOriginNone PreviewOriginState = "no_origin"
+	// PreviewOriginNonGitHub: origin is set but points elsewhere
+	// (GitLab, Gitea, GHE, ...). NonGitHubHost carries the host for
+	// the error message.
+	PreviewOriginNonGitHub PreviewOriginState = "non_github"
+)
+
+// PreviewPRResult is the wire shape for the preview endpoint. The
+// mobile CreatePRSheet uses Owner/Repo to render the destination
+// callout, and OriginState to gate which form variant to show.
+type PreviewPRResult struct {
+	Owner         string             `json:"owner,omitempty"`
+	Repo          string             `json:"repo,omitempty"`
+	HeadBranch    string             `json:"head_branch,omitempty"`
+	HeadSHA       string             `json:"head_sha,omitempty"`
+	OriginState   PreviewOriginState `json:"origin_state"`
+	NonGitHubHost string             `json:"non_github_host,omitempty"`
+}
+
 // Errors specific to CreatePR. Each one maps to a distinct HTTP
 // status + machine-readable code in the mux handler.
 var (
@@ -227,6 +257,53 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 		BaseBranch: req.Base,
 		HeadSHA:    headSHA,
 	}, nil
+}
+
+// PreviewPR returns what a CreatePR call WOULD push without actually
+// pushing. The mobile CreatePRSheet calls this to show the user the
+// parsed destination repo before they tap Open PR — primary UX
+// defense against wrong-repo-because-origin-is-misconfigured.
+//
+// Cheap: no fetch, no network calls, no GitHub API requests. Just
+// resolves the worktree, reads HEAD, classifies origin.
+func (s *Service) PreviewPR(ctx context.Context, worktreeID string) (PreviewPRResult, error) {
+	workdir, err := s.workDirFor(ctx, agent.GitRef{WorktreeID: worktreeID})
+	if err != nil {
+		return PreviewPRResult{}, fmt.Errorf("resolve worktree: %w", err)
+	}
+
+	branch, err := git.CurrentBranch(workdir)
+	if err != nil {
+		return PreviewPRResult{}, fmt.Errorf("current branch: %w", err)
+	}
+	headSHA, err := git.HeadCommit(workdir)
+	if err != nil {
+		return PreviewPRResult{}, fmt.Errorf("head commit: %w", err)
+	}
+
+	result := PreviewPRResult{
+		HeadBranch: branch,
+		HeadSHA:    headSHA,
+	}
+
+	remoteURL, err := git.RemoteURL(workdir, "origin")
+	if err != nil {
+		result.OriginState = PreviewOriginNone
+		return result, nil
+	}
+	owner, repo, err := githubpkg.ParseGitHubRemote(remoteURL)
+	if err != nil {
+		// Non-github origin (gitlab, gitea, GHE, ...). Surface the
+		// host so the UI can render a clear "only GitHub is
+		// supported" message naming the actual destination.
+		result.OriginState = PreviewOriginNonGitHub
+		result.NonGitHubHost = githubpkg.RemoteHost(remoteURL)
+		return result, nil
+	}
+	result.OriginState = PreviewOriginGitHub
+	result.Owner = owner
+	result.Repo = repo
+	return result, nil
 }
 
 // buildAuthHeader assembles the http.extraheader value git uses to

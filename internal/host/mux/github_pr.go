@@ -16,6 +16,26 @@ import (
 
 func (m *Mux) registerGitHubPR(mx *http.ServeMux) {
 	mx.HandleFunc("POST /worktrees/{id}/pr", m.handleGitHubCreatePR)
+	mx.HandleFunc("POST /worktrees/{id}/pr/preview", m.handleGitHubPreviewPR)
+}
+
+// handleGitHubPreviewPR services POST /worktrees/{id}/pr/preview —
+// the safety-net query the mobile CreatePRSheet runs when it opens.
+// Returns the parsed destination repo + an origin_state enum so the
+// UI can render either the form (github), a no-origin banner, or a
+// non-github banner. No network calls; cheap.
+func (m *Mux) handleGitHubPreviewPR(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "worktree id is required"})
+		return
+	}
+	result, err := m.svc.PreviewPR(r.Context(), id)
+	if err != nil {
+		writePRError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (m *Mux) handleGitHubCreatePR(w http.ResponseWriter, r *http.Request) {

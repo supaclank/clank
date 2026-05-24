@@ -152,6 +152,30 @@ func TestGitHubProxy_ConnectStatus_ForwardsQuery(t *testing.T) {
 	}
 }
 
+func TestGitHubProxy_PreviewPR_ForwardsID(t *testing.T) {
+	t.Parallel()
+	host := &captureHost{
+		respStatus: http.StatusOK,
+		respCT:     "application/json",
+		respBody:   `{"origin_state":"github","owner":"acme","repo":"api","head_branch":"feat","head_sha":"abc1234"}`,
+	}
+	gw := newGatewayForGitHubProxyTest(t, host)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/worktrees/01WT/pr/preview", nil)
+	rr := httptest.NewRecorder()
+	gw.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if host.path.Load() != "/worktrees/01WT/pr/preview" {
+		t.Errorf("host path = %v, want /worktrees/01WT/pr/preview", host.path.Load())
+	}
+	if !strings.Contains(rr.Body.String(), `"owner":"acme"`) {
+		t.Errorf("body not forwarded verbatim: %s", rr.Body.String())
+	}
+}
+
 func TestGitHubProxy_CreatePR_ForwardsIDAndBody(t *testing.T) {
 	t.Parallel()
 	host := &captureHost{
