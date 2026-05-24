@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -96,8 +97,7 @@ func TestCreatePR_EndToEnd(t *testing.T) {
 			postReqs.Add(1)
 			gotPath.Store(r.URL.Path)
 			gotAuth.Store(r.Header.Get("Authorization"))
-			body := make([]byte, r.ContentLength)
-			_, _ = r.Body.Read(body)
+			body, _ := io.ReadAll(r.Body)
 			gotBody.Store(body)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)

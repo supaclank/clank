@@ -17,17 +17,20 @@ type fakeAPI struct {
 	postReqs atomic.Int64
 	getReqs  atomic.Int64
 
-	postStatus   int
-	postBody     string
-	getStatus    int
-	getBody      string
-	gotAuthorize string
+	postStatus int
+	postBody   string
+	getStatus  int
+	getBody    string
+	// gotAuthorize is written by the handler goroutine and read by
+	// the test goroutine — atomic.Value avoids the race detector
+	// firing on plain-string field access.
+	gotAuthorize atomic.Value // string
 }
 
 func newFakeAPI(t *testing.T, fa *fakeAPI) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fa.gotAuthorize = r.Header.Get("Authorization")
+		fa.gotAuthorize.Store(r.Header.Get("Authorization"))
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/pulls"):
 			fa.postReqs.Add(1)
@@ -85,8 +88,9 @@ func TestCreatePullRequest_Success(t *testing.T) {
 	if pr.Head.SHA != "abc123" {
 		t.Errorf("Head.SHA = %q", pr.Head.SHA)
 	}
-	if fa.gotAuthorize != "Bearer gho_test" {
-		t.Errorf("Authorization header = %q", fa.gotAuthorize)
+	got, _ := fa.gotAuthorize.Load().(string)
+	if got != "Bearer gho_test" {
+		t.Errorf("Authorization header = %q", got)
 	}
 }
 
