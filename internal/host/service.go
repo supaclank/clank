@@ -499,6 +499,13 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 		if err := s.sessionsStore.UpsertSession(ctx, info); err != nil {
 			s.log.Printf("warning: persist session %s metadata: %v", sessionID, err)
 		}
+		s.subscribers.Broadcast(agent.Event{
+			Type:       agent.EventSessionCreate,
+			SessionID:  sessionID,
+			ExternalID: req.SessionID,
+			Timestamp:  now,
+			Data:       agent.MetaChangeData{Session: info},
+		})
 	}
 
 	// Sole drain on b.Events(); subscribers fan out to SSE handlers.
@@ -535,7 +542,12 @@ func (s *Service) relayBackendEvents(sessionID string, b agent.SessionBackend) {
 // applyEventToMetadata persists status/title changes and the first-
 // time ExternalID stamp (Claude only learns its remote session ID
 // mid-stream during Open; if the daemon dies before Open returns the
-// binding would be lost).
+// binding would be lost). On a successful write it also broadcasts
+// EventMetaChange so subscribers (notably the TUI sidebar) receive
+// the full post-mutation SessionInfo — including the bumped
+// UpdatedAt that drives sidebar re-sort and unread state. This is
+// the row-level counterpart to the field-level EventStatusChange /
+// EventTitleChange that ran first in relayBackendEvents.
 //
 // UpdatedAt only bumps on a user-visible change so MarkRead stays
 // sticky against the steady stream of backend events.
@@ -565,7 +577,16 @@ func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
 	}
 
 	ctx := context.Background()
+	// TODO(perf-debug): remove once daemon-latency investigation lands.
+	// Each backend event triggers a GET + UPSERT against the single-
+	// connection sqlite pool — these are top suspects for the 0.2-5s
+	// stalls seen on /sessions. Logs each phase separately so we can
+	// tell read vs write contention apart.
+	getStart := time.Now()
 	info, err := s.sessionsStore.GetSession(ctx, sessionID)
+	if elapsed := time.Since(getStart); elapsed > sessionMetaSlowQueryThreshold {
+		s.log.Printf("perf: GetSession(%s) for %s event took %s", sessionID, evt.Type, elapsed)
+	}
 	if errors.Is(err, store.ErrSessionNotFound) {
 		// Out-of-band session (e.g. tests that didn't pre-persist).
 		return
@@ -583,7 +604,17 @@ func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
 		info.ExternalID = evt.ExternalID
 		dirty = true
 	}
-	if hasStatus && info.Status != statusValue {
+	// StatusStarting is the transient state during backend Open() — it
+	// flips back to Idle (or Error) within ~1-2s of the SDK connection
+	// completing. Persisting it would bump UpdatedAt and broadcast
+	// EventMetaChange, causing the sidebar to spuriously hoist + spinner
+	// the session every time it lazy-resumes a backend (e.g. on
+	// session-view open after a daemon restart). The session view still
+	// receives the raw EventStatusChange via the SSE stream for its
+	// "Connecting..." affordance; only the row's last-known stable
+	// status is preserved here. normalizeStaleSessionStatus already
+	// cleans up any Starting-at-rest that survives a daemon crash.
+	if hasStatus && statusValue != agent.StatusStarting && info.Status != statusValue {
 		info.Status = statusValue
 		dirty = true
 	}
@@ -595,9 +626,18 @@ func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
 		return
 	}
 	info.UpdatedAt = time.Now()
+	upsertStart := time.Now()
 	if err := s.sessionsStore.UpsertSession(ctx, info); err != nil {
 		s.log.Printf("warning: update session %s metadata for %s event: %v", sessionID, evt.Type, err)
+		// Skip the broadcast on a failed write — subscribers would
+		// otherwise diverge from a subsequent Get() that returns the
+		// pre-mutation row.
+		return
 	}
+	if elapsed := time.Since(upsertStart); elapsed > sessionMetaSlowQueryThreshold {
+		s.log.Printf("perf: UpsertSession(%s) for %s event took %s", sessionID, evt.Type, elapsed)
+	}
+	s.broadcastMetaChange(info)
 }
 
 // workDirFor resolves a GitRef to an absolute working directory.

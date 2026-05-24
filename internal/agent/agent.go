@@ -58,6 +58,7 @@ const (
 	EventReconnected   EventType = "reconnected"  // Backend successfully reconnected
 	EventSessionCreate EventType = "session.create"
 	EventSessionDelete EventType = "session.delete"
+	EventMetaChange    EventType = "meta" // Session metadata changed (read state, visibility, draft, follow-up)
 
 	// Voice events — emitted by the voice agent running on the daemon.
 	EventVoiceTranscript EventType = "voice.transcript" // Model's spoken response as text
@@ -176,6 +177,12 @@ func (e *Event) UnmarshalJSON(b []byte) error {
 			return fmt.Errorf("unmarshal VoiceToolCallData: %w", err)
 		}
 		e.Data = d
+	case EventMetaChange:
+		var d MetaChangeData
+		if err := json.Unmarshal(raw.Data, &d); err != nil {
+			return fmt.Errorf("unmarshal MetaChangeData: %w", err)
+		}
+		e.Data = d
 	default:
 		// For unknown event types (session.create, session.delete, future types),
 		// fall back to generic interface{}.
@@ -193,6 +200,14 @@ func (e *Event) UnmarshalJSON(b []byte) error {
 type StatusChangeData struct {
 	OldStatus SessionStatus `json:"old_status"`
 	NewStatus SessionStatus `json:"new_status"`
+}
+
+// MetaChangeData is the payload for EventMetaChange. It carries the full
+// post-mutation SessionInfo so subscribers can apply a single replacement
+// instead of diffing per-field changes (read state, visibility, draft,
+// follow-up, title, etc.).
+type MetaChangeData struct {
+	Session SessionInfo `json:"session"`
 }
 
 // MessageData is the payload for EventMessage.

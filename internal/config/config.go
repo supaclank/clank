@@ -64,6 +64,11 @@ type ModelPreference struct {
 	ProviderID string `json:"provider_id"`
 }
 
+// IsZero reports whether the preference is unset.
+func (m ModelPreference) IsZero() bool {
+	return m.ModelID == "" && m.ProviderID == ""
+}
+
 // DaytonaPreference configures the Daytona host launcher on a cloud
 // hub. APIKey enables the launcher; everything else is optional and
 // has sensible defaults. Forwarded into spawned sandboxes via env so
@@ -114,7 +119,13 @@ type FlyIOPreference struct {
 // All fields should be optional (omitempty) so the file can grow over
 // time without breaking older installs.
 type Preferences struct {
-	Model *ModelPreference `json:"model,omitempty"`
+	// Models holds per-backend model overrides, keyed by backend
+	// string (e.g. "opencode", "claude-code"). Per-backend rather
+	// than a single global pick because each backend has its own
+	// model catalog: a model valid for opencode (e.g. a github-copilot
+	// route) will not exist in claude-code's enum and would crash the
+	// CLI at spawn time. Use ModelFor/SetModelFor.
+	Models map[string]ModelPreference `json:"models,omitempty"`
 	// ColorScheme is the TUI color scheme name (e.g. "tokyo-night").
 	// Empty string means "use the default scheme".
 	ColorScheme string `json:"color_scheme,omitempty"`
@@ -337,14 +348,26 @@ func isZeroRemote(p Remote) bool {
 	return p == Remote{}
 }
 
-// UnmarshalJSON on Preferences migrates the legacy top-level "cloud"
-// key to "remote" when the new key is absent. The next SavePreferences
-// emits only "remote", quietly upgrading the file.
+// legacyModelMigrationBackend is the backend key the pre-split single
+// "model" preference gets migrated into when DefaultBackend is empty.
+// Mirrors agent.DefaultBackend's string form; this package can't import
+// internal/agent (see the comment on Preferences.DefaultBackend).
+const legacyModelMigrationBackend = "opencode"
+
+// UnmarshalJSON on Preferences migrates two legacy shapes when the new
+// keys are absent:
+//   - top-level "cloud" → "remote"
+//   - top-level "model" (single ModelPreference) → "models"[<backend>]
+//
+// The next SavePreferences emits only the new keys, quietly upgrading
+// the file. Migration is non-destructive: a populated new key wins over
+// the legacy value.
 func (p *Preferences) UnmarshalJSON(data []byte) error {
 	type alias Preferences
 	aux := struct {
 		*alias
-		LegacyCloud *RemoteConfig `json:"cloud,omitempty"`
+		LegacyCloud *RemoteConfig    `json:"cloud,omitempty"`
+		LegacyModel *ModelPreference `json:"model,omitempty"`
 	}{alias: (*alias)(p)}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
@@ -352,7 +375,39 @@ func (p *Preferences) UnmarshalJSON(data []byte) error {
 	if p.Remote == nil && aux.LegacyCloud != nil {
 		p.Remote = aux.LegacyCloud
 	}
+	if len(p.Models) == 0 && aux.LegacyModel != nil && !aux.LegacyModel.IsZero() {
+		key := p.DefaultBackend
+		if key == "" {
+			key = legacyModelMigrationBackend
+		}
+		p.Models = map[string]ModelPreference{key: *aux.LegacyModel}
+	}
 	return nil
+}
+
+// ModelFor returns the persisted model preference for the given
+// backend, or the zero value when none is set.
+func (p *Preferences) ModelFor(backend string) ModelPreference {
+	if p == nil || p.Models == nil {
+		return ModelPreference{}
+	}
+	return p.Models[backend]
+}
+
+// SetModelFor records the model preference for the given backend.
+// A zero pref clears the entry instead of persisting empty strings.
+func (p *Preferences) SetModelFor(backend string, pref ModelPreference) {
+	if p == nil {
+		return
+	}
+	if pref.IsZero() {
+		delete(p.Models, backend)
+		return
+	}
+	if p.Models == nil {
+		p.Models = make(map[string]ModelPreference, 1)
+	}
+	p.Models[backend] = pref
 }
 
 // preferencesPath returns the path to the preferences file.

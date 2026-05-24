@@ -79,7 +79,8 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case modelPickerResultMsg:
 			m.showModelPicker = false
 			m.selectedModel = msg.selectedModel
-			go m.persistModelPreference()
+			backend, pref := m.snapshotModelPreference()
+			go persistModelPreference(backend, pref)
 			return m, m.input.Focus()
 		case modelPickerCancelMsg:
 			m.showModelPicker = false
@@ -117,11 +118,16 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.models = msg.models
 		m.selectedModel = -1 // default: no override
 
-		// Try to restore the user's preferred model from preferences.
+		// Restore the user's preferred model for this backend.
+		// Per-backend so a github-copilot model picked under opencode
+		// doesn't leak into a claude-code session and crash the CLI
+		// with `--model claude-opus-4.7` (or any other id not in the
+		// claude-code closed enum).
 		prefs, _ := config.LoadPreferences()
-		if prefs.Model != nil {
+		pref := prefs.ModelFor(string(m.backend))
+		if !pref.IsZero() {
 			for i, model := range m.models {
-				if model.ID == prefs.Model.ModelID && model.ProviderID == prefs.Model.ProviderID {
+				if model.ID == pref.ModelID && model.ProviderID == pref.ProviderID {
 					m.selectedModel = i
 					break
 				}
@@ -169,7 +175,17 @@ func (m *SessionViewModel) handleComposeKey(msg tea.KeyPressMsg) (tea.Model, tea
 		} else {
 			m.backend = agent.BackendOpenCode
 		}
-		return m, nil
+		// Each backend has its own model catalog (claude-code is a
+		// closed sonnet/opus/haiku enum; opencode aggregates whatever
+		// providers the user has configured). Drop the stale list and
+		// refetch — leaving it would let the user submit the previous
+		// backend's selectedModel index, which we'd then forward as
+		// `--model <opencode-id>` to the claude CLI and crash on
+		// spawn. Reset selectedModel too so the new fetch's
+		// preference-restore can re-resolve it from disk per backend.
+		m.models = nil
+		m.selectedModel = -1
+		return m, m.fetchModels()
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
 		// Cycle through agents (only when agents are loaded).
@@ -327,7 +343,7 @@ func (m *SessionViewModel) handleCreateResult(msg sessionCreateResultMsg) (tea.M
 	newID := m.sessionID
 	return m, tea.Batch(
 		m.fetchSessionInfo(),
-		waitForEvent(m.eventsCh, m.sessionID),
+		waitForEvent(m.eventsCh),
 		m.spinner.Tick,
 		func() tea.Msg { return composeSubmittedMsg{sessionID: newID} },
 	)

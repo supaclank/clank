@@ -28,8 +28,21 @@ func (s *Service) ListSessionMetadata(ctx context.Context) ([]agent.SessionInfo,
 	if s.sessionsStore == nil {
 		return nil, SessionStoreNotConfigured
 	}
-	return s.sessionsStore.ListSessions(ctx)
+	// TODO(perf-debug): remove once daemon-latency investigation lands.
+	// Logs slow ListSessions calls to localize the source of the
+	// 0.2-5s stalls observed in the TUI sidebar load path.
+	start := time.Now()
+	out, err := s.sessionsStore.ListSessions(ctx)
+	if elapsed := time.Since(start); elapsed > sessionMetaSlowQueryThreshold {
+		s.log.Printf("perf: ListSessions took %s (n=%d, err=%v)", elapsed, len(out), err)
+	}
+	return out, err
 }
+
+// sessionMetaSlowQueryThreshold is the minimum duration above which a
+// session-metadata store call is logged. Tuned to surface the stalls
+// reported by TUI clients without spamming on warm-pool hits.
+const sessionMetaSlowQueryThreshold = 50 * time.Millisecond
 
 // SearchSessionMetadata applies the filters in p and returns matching
 // sessions, newest-updated first.
@@ -72,7 +85,15 @@ func (s *Service) DeleteSessionMetadata(ctx context.Context, id string) error {
 	if s.sessionsStore == nil {
 		return SessionStoreNotConfigured
 	}
-	return s.sessionsStore.DeleteSession(ctx, id)
+	if err := s.sessionsStore.DeleteSession(ctx, id); err != nil {
+		return err
+	}
+	s.subscribers.Broadcast(agent.Event{
+		Type:      agent.EventSessionDelete,
+		SessionID: id,
+		Timestamp: time.Now(),
+	})
+	return nil
 }
 
 // MarkSessionRead bumps last_read_at on the session record. Returns
@@ -114,6 +135,7 @@ func (s *Service) ToggleSessionFollowUp(ctx context.Context, id string) (agent.S
 	if err := s.sessionsStore.UpsertSession(ctx, info); err != nil {
 		return agent.SessionInfo{}, err
 	}
+	s.broadcastMetaChange(info)
 	return info, nil
 }
 
@@ -133,7 +155,31 @@ func (s *Service) mutateSessionMeta(ctx context.Context, id string, mutate func(
 		return err
 	}
 	mutate(&info)
-	return s.sessionsStore.UpsertSession(ctx, info)
+	if err := s.sessionsStore.UpsertSession(ctx, info); err != nil {
+		return err
+	}
+	s.broadcastMetaChange(info)
+	return nil
+}
+
+// broadcastMetaChange fans out an EventMetaChange to all subscribers
+// with the post-mutation SessionInfo. Subscribers replace their cached
+// row wholesale instead of diffing per-field changes.
+//
+// Every code path that persists a SessionInfo mutation should funnel
+// through this helper so the sidebar — which sorts/redraws off the
+// post-mutation row — never lags the DB. The two call sites are
+// mutateSessionMeta (user-driven: mark-read, draft, follow-up,
+// visibility) and applyEventToMetadata (backend-driven: status flip,
+// title change, ExternalID stamp).
+func (s *Service) broadcastMetaChange(info agent.SessionInfo) {
+	s.subscribers.Broadcast(agent.Event{
+		Type:       agent.EventMetaChange,
+		SessionID:  info.ID,
+		ExternalID: info.ExternalID,
+		Timestamp:  time.Now(),
+		Data:       agent.MetaChangeData{Session: info},
+	})
 }
 
 // Subscribe registers an event subscriber and returns an opaque ID

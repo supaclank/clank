@@ -232,6 +232,12 @@ func TestMarkRead_BumpsOnRealStatusChange(t *testing.T) {
 		t.Fatalf("precondition: should be read")
 	}
 
+	// Ensure the event's UpdatedAt stamp lands strictly after MarkRead's
+	// LastReadAt stamp. Unread() uses UpdatedAt.After(LastReadAt), and
+	// without this gap both time.Now() calls can fall in the same
+	// nanosecond on fast hardware, making the assertion flaky.
+	time.Sleep(2 * time.Millisecond)
+
 	// Real status change (idle → busy). Should bump UpdatedAt → unread.
 	go b.PushEvent(agent.Event{
 		Type:      agent.EventStatusChange,

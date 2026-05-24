@@ -17,21 +17,29 @@ import (
 const sessionsCacheFilename = "sessions-cache.json"
 
 // sessionsCacheSignature is a cheap "did the data materially change?"
-// fingerprint, used to skip redundant disk writes when the autoRefresh
-// loop polls every 3s while nothing meaningful has happened.
+// fingerprint, used to skip redundant disk writes when SSE event
+// bursts (status churn from a busy backend) would otherwise hammer
+// the cache file.
 type sessionsCacheSignature struct {
-	count  int
-	latest int64 // unix ms of the newest UpdatedAt
+	count        int
+	latestUpdate int64 // unix ms of newest UpdatedAt
+	latestRead   int64 // unix ms of newest LastReadAt
 }
 
 // sessionsCacheSig computes the signature for a session list. Equality
 // implies "no row changed and no row was added/removed" — good enough
-// for cache-write debouncing.
+// for cache-write debouncing. LastReadAt is tracked separately so a
+// MarkRead (which doesn't bump UpdatedAt) still invalidates the sig
+// and triggers a write — otherwise the disk cache misses read-state
+// updates that arrive purely via SSE.
 func sessionsCacheSig(sessions []agent.SessionInfo) sessionsCacheSignature {
 	sig := sessionsCacheSignature{count: len(sessions)}
 	for _, s := range sessions {
-		if ms := s.UpdatedAt.UnixMilli(); ms > sig.latest {
-			sig.latest = ms
+		if ms := s.UpdatedAt.UnixMilli(); ms > sig.latestUpdate {
+			sig.latestUpdate = ms
+		}
+		if ms := s.LastReadAt.UnixMilli(); ms > sig.latestRead {
+			sig.latestRead = ms
 		}
 	}
 	return sig

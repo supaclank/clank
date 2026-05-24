@@ -352,25 +352,33 @@ const activeSessionRail = "▎"
 // lines.
 func (m *SidebarModel) renderSessionRow(n sessionNode, selected bool, maxWidth int) []string {
 	const indent = sidebarChildIndent
-	const markerWidth = 2 // marker glyph + trailing space
-	title := sessionTitle(n.Session)
-	marker := sessionMarker(n.Session)
+	const indicatorWidth = 2 // glyph + trailing space
+	title := m.renderedTitleFor(n.Session.ID, sessionTitle(n.Session))
 	active := n.Session.ID != "" && n.Session.ID == m.activeSessionID
+
+	// One combined indicator column. Precedence: busy/starting spinner
+	// outranks the unread/follow-up marker so an actively-working
+	// session shows the spinner; the title still bolds on unread to
+	// keep the unread signal. Idle sessions fall through to the marker
+	// (! follow-up, * unread, blank otherwise).
+	indicator := sessionMarker(n.Session)
+	if n.Session.Status == agent.StatusBusy || n.Session.Status == agent.StatusStarting {
+		indicator = styledAgentStatus(n.Session.Status, m.spinnerFrame)
+	}
 
 	cursorReserve := 0
 	if selected {
 		cursorReserve = rightCursorWidth
 	}
 
-	maxTitle := maxWidth - len(indent) - markerWidth - cursorReserve
+	maxTitle := maxWidth - len(indent) - indicatorWidth - cursorReserve
 	if maxTitle < 10 {
 		maxTitle = 10
 	}
 	title = truncateStr(title, maxTitle)
 
-	// All read sessions keep textColor; unread sessions are bold so the
-	// row stands out against the dim age line below it. Done/archived
-	// stay muted to signal the row is no longer "live".
+	// Title color tracks visibility / fallback state; bold layers on
+	// for hover or unread so both signals compose cleanly.
 	titleStyle := lipgloss.NewStyle().Foreground(textColor)
 	switch {
 	case n.Session.Visibility == agent.VisibilityArchived:
@@ -379,22 +387,24 @@ func (m *SidebarModel) renderSessionRow(n sessionNode, selected bool, maxWidth i
 		titleStyle = titleStyle.Foreground(dimColor)
 	case sessionTitleIsFallback(n.Session):
 		titleStyle = titleStyle.Foreground(dimColor)
-	case selected, n.Session.Unread():
+	}
+	if selected || n.Session.Unread() {
 		titleStyle = titleStyle.Bold(true)
 	}
 
 	titleLeft := m.leftRailOrIndent(active, indent)
-	line1 := titleLeft + marker + " " + titleStyle.Render(title)
+	line1 := titleLeft + indicator + " " + titleStyle.Render(title)
 	if selected {
 		line1 = padRight(line1, maxWidth-rightCursorWidth) + " " +
 			lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render(rightCursorGlyph)
 	}
 
-	// Age line shares the title's column so it visually stacks under
-	// the title text. The rail (when active) lives in the same column
-	// on both lines for an unbroken visual mark.
-	ageLeft := m.leftRailOrIndent(active, indent) + strings.Repeat(" ", markerWidth)
-	timeLine := lipgloss.NewStyle().Foreground(dimColor).Render(ageLeft + shortTimeAgo(n.Session.UpdatedAt))
+	// Age line stacks under the title. Rail concatenation stays OUTSIDE
+	// the styled wrap — its SGR reset would otherwise kill the dim
+	// foreground on the time text (see TestRenderSessionRow_AgeLineColor).
+	ageBody := lipgloss.NewStyle().Foreground(dimColor).
+		Render(strings.Repeat(" ", indicatorWidth) + shortTimeAgo(n.Session.UpdatedAt))
+	timeLine := m.leftRailOrIndent(active, indent) + ageBody
 	return []string{line1, timeLine}
 }
 

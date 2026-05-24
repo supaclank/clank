@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -23,9 +24,14 @@ import (
 	"github.com/acksell/clank/internal/host"
 )
 
-// sessionEventMsg wraps a daemon event delivered to the TUI.
+// sessionEventMsg wraps a daemon event delivered to the TUI. sourceCh
+// identifies the subscription channel the event came from so Update can
+// detect stale-subscription deliveries and avoid re-arming a duplicate
+// waiter on the live m.eventsCh. See
+// TestSessionView_StaleSourceEventDoesNotReArmLiveChannel.
 type sessionEventMsg struct {
-	event agent.Event
+	sourceCh <-chan agent.Event
+	event    agent.Event
 }
 
 // sessionEventsErrMsg is sent when the SSE subscription fails.
@@ -186,10 +192,12 @@ type SessionViewModel struct {
 	// SSE event channel (stored so we can re-schedule waitForEvent).
 	eventsCh <-chan agent.Event
 
-	// History deduplication. seenParts tracks part IDs loaded from history
-	// so that overlapping SSE events can be skipped. historyLoaded is set
-	// after the history response is processed.
-	seenParts     map[string]bool
+	// historyLoaded is set after the history response is processed. It
+	// suppresses redundant EventMessage shells that arrive over SSE for
+	// messages already materialized from history. Part-level updates do
+	// not need a separate dedup map: upsertPartEntry is idempotent by
+	// partID and self-heals when re-applied (delta append vs snapshot
+	// replace; tool Input/Output merge).
 	historyLoaded bool
 
 	// Spinner for busy/running state animation.
@@ -374,6 +382,16 @@ const (
 // the input is toggled.
 const inputReservedLines = 6
 
+// wheelScrollLines is how many content lines a single mouse-wheel tick
+// shifts the viewport by. Independent of cursor position — the wheel
+// moves the viewport, not the selection.
+const wheelScrollLines = 3
+
+// cursorTopMargin is how many lines of context to keep above the cursor
+// entry when scrollToCursor anchors the viewport. Gives the reader a
+// little breathing room above the selected message.
+const cursorTopMargin = 2
+
 // NewSessionViewModel creates a session detail TUI for an existing session.
 func NewSessionViewModel(client *daemonclient.Client, sessionID string) *SessionViewModel {
 	ta := newPromptTextarea("Type a follow-up message...", 3)
@@ -410,11 +428,29 @@ func (m *SessionViewModel) DraftText() string {
 // activates the input so the user can continue typing immediately.
 func (m *SessionViewModel) RestoreDraft(text string) {
 	m.input.SetValue(text)
+	_ = m.enterMessageMode()
+}
+
+// enterMessageMode focuses the chat's text input ("message mode"). The
+// returned tea.Cmd is the textarea's focus command; callers in a tea.Update
+// should return it so cursor-blink ticks start. Discarding the cmd is
+// acceptable when the call site already drives its own updates (e.g.
+// RestoreDraft is invoked outside Update).
+//
+// Single-write helper for the inputActive flag so every entry-point keeps
+// the scroll-offset compensation in sync. See setPane in inbox.go for the
+// equivalent pattern on pane focus.
+func (m *SessionViewModel) enterMessageMode() tea.Cmd {
+	if m.inputActive {
+		return nil
+	}
 	m.inputActive = true
 	if !m.follow {
+		// Shift content up so the bottom of the visible window stays
+		// anchored when the input prompt appears and shrinks the viewport.
 		m.scrollOffset += inputReservedLines
 	}
-	m.input.Focus()
+	return m.input.Focus()
 }
 
 // SetEventChannel provides a pre-connected SSE event channel and cancel func.
@@ -433,7 +469,7 @@ func (m *SessionViewModel) Init() tea.Cmd {
 	cmds := []tea.Cmd{m.fetchSessionInfo(), m.fetchSessionMessages(), m.fetchPendingPermission(), m.spinner.Tick}
 	if m.eventsCh != nil {
 		// Already connected — start reading immediately.
-		cmds = append(cmds, waitForEvent(m.eventsCh, m.sessionID))
+		cmds = append(cmds, waitForEvent(m.eventsCh))
 	} else {
 		cmds = append(cmds, m.subscribeEvents())
 	}
@@ -545,31 +581,30 @@ type sseSetupMsg struct {
 	cancel context.CancelFunc
 }
 
-// sseClosedMsg signals the SSE stream was closed intentionally.
-type sseClosedMsg struct{}
+// sseClosedMsg signals the SSE stream closed. Carries the closed channel so
+// Update can distinguish a closure of the *current* subscription from a
+// stale closure left behind by a session switch. Without this identity the
+// handler would nil m.eventsCh on any closure, including the one belonging
+// to a since-replaced view — silently freezing the live stream of the new
+// view. See TestSessionView_StaleSseClosedDoesNotNilCurrentChannel.
+type sseClosedMsg struct {
+	events <-chan agent.Event
+}
 
 // waitForEvent returns a command that waits for the next event from the channel.
-func waitForEvent(events <-chan agent.Event, sessionID string) tea.Cmd {
+// Filtering by sessionID happens in Update against the live m.sessionID — a
+// closure here would capture a sessionID that goes stale across view swaps,
+// and a stale waiter could intercept a live event and silently discard it
+// before any view saw it. See TestWaitForEvent_DoesNotSwallowEventsForOtherSessions.
+func waitForEvent(events <-chan agent.Event) tea.Cmd {
 	return func() tea.Msg {
 		evt, ok := <-events
 		if !ok {
 			// Channel closed — intentional shutdown, not an error.
-			return sseClosedMsg{}
+			return sseClosedMsg{events: events}
 		}
-		// Filter to our session (or session lifecycle events).
-		if evt.SessionID == sessionID || evt.Type == agent.EventSessionCreate || evt.Type == agent.EventSessionDelete {
-			return sessionEventMsg{event: evt}
-		}
-		// Not for us — skip and wait for the next one.
-		// Return a "skip" that re-subscribes.
-		return sseSkipMsg{events: events, sessionID: sessionID}
+		return sessionEventMsg{sourceCh: events, event: evt}
 	}
-}
-
-// sseSkipMsg tells Update to re-wait for the next event.
-type sseSkipMsg struct {
-	events    <-chan agent.Event
-	sessionID string
 }
 
 func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -625,7 +660,8 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case modelPickerResultMsg:
 			m.showModelPicker = false
 			m.selectedModel = msg.selectedModel
-			go m.persistModelPreference()
+			backend, pref := m.snapshotModelPreference()
+			go persistModelPreference(backend, pref)
 			return m, m.input.Focus()
 		case modelPickerCancelMsg:
 			m.showModelPicker = false
@@ -712,11 +748,12 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.models = msg.models
 		m.selectedModel = -1 // default: no override
 
-		// Try to restore the user's preferred model from preferences.
+		// Per-backend pref lookup; see updateCompose for the rationale.
 		prefs, _ := config.LoadPreferences()
-		if prefs.Model != nil {
+		pref := prefs.ModelFor(string(m.backend))
+		if !pref.IsZero() {
 			for i, model := range m.models {
-				if model.ID == prefs.Model.ModelID && model.ProviderID == prefs.Model.ProviderID {
+				if model.ID == pref.ModelID && model.ProviderID == pref.ProviderID {
 					m.selectedModel = i
 					break
 				}
@@ -746,21 +783,39 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sseSetupMsg:
 		m.cancelEvents = msg.cancel
 		m.eventsCh = msg.events
-		return m, waitForEvent(m.eventsCh, m.sessionID)
-
-	case sseSkipMsg:
-		return m, waitForEvent(msg.events, msg.sessionID)
+		return m, waitForEvent(m.eventsCh)
 
 	case sseClosedMsg:
-		// SSE stream closed intentionally (e.g. user quit). No-op.
-		m.eventsCh = nil
+		// Only nil the channel when the closure belongs to *our* current
+		// subscription. A stale closure from a previously-replaced view
+		// (its waitForEvent goroutine was still parked on the old channel
+		// when replaceSessionView cancelled it) would otherwise blank out
+		// the live channel and freeze the new view's stream after one event.
+		if msg.events == m.eventsCh {
+			m.eventsCh = nil
+		}
 		return m, nil
 
 	case sessionEventMsg:
-		m.handleEvent(msg.event)
-		// Re-schedule to wait for the next event.
-		if m.eventsCh != nil {
-			return m, waitForEvent(m.eventsCh, m.sessionID)
+		// Filter events to this view. Two reasons this lives here, not in
+		// waitForEvent: (1) m.sessionID is the live current ID — a closure
+		// in waitForEvent would capture a sessionID that goes stale across
+		// view swaps, and (2) a stale waiter must not silently swallow a
+		// live event meant for the now-active view. See
+		// TestSessionView_DropsStaleSessionEvent and
+		// TestWaitForEvent_DoesNotSwallowEventsForOtherSessions.
+		matches := msg.event.SessionID == m.sessionID ||
+			msg.event.Type == agent.EventSessionCreate ||
+			msg.event.Type == agent.EventSessionDelete
+		if matches {
+			m.handleEvent(msg.event)
+		}
+		// Re-arm only when the event came from the live subscription. A
+		// stale source's own waiter has already exited and re-arming on
+		// m.eventsCh would spawn a duplicate waiter that races the
+		// legitimate one. See TestSessionView_StaleSourceEventDoesNotReArmLiveChannel.
+		if m.eventsCh != nil && msg.sourceCh == m.eventsCh {
+			return m, waitForEvent(m.eventsCh)
 		}
 		return m, nil
 
@@ -875,13 +930,13 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.MouseWheelUp:
 			m.follow = false
 			if m.scrollOffset > 0 {
-				m.scrollOffset -= 3
+				m.scrollOffset -= wheelScrollLines
 				if m.scrollOffset < 0 {
 					m.scrollOffset = 0
 				}
 			}
 		case tea.MouseWheelDown:
-			m.scrollOffset += 3
+			m.scrollOffset += wheelScrollLines
 			if m.clampScroll() {
 				m.follow = true
 			}
@@ -1124,13 +1179,7 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("m"))):
-		m.inputActive = true
-		if !m.follow {
-			// Shift content up so the bottom of the visible window stays
-			// anchored when the input prompt appears and shrinks the viewport.
-			m.scrollOffset += inputReservedLines
-		}
-		return m, m.input.Focus()
+		return m, m.enterMessageMode()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k"))):
 		m.follow = false
 		if idx := m.prevNavigableEntry(m.cursor); idx >= 0 {
@@ -1166,31 +1215,14 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("pgup", "ctrl+u"))):
 		m.follow = false
-		// Jump cursor by ~half viewport worth of navigable entries.
-		jumps := m.contentHeight() / 4 // approximate: entries are ~2-4 lines each
-		if jumps < 1 {
-			jumps = 1
-		}
-		for i := 0; i < jumps; i++ {
-			if idx := m.prevNavigableEntry(m.cursor); idx >= 0 {
-				m.cursor = idx
-				m.cursorMoved = true
-			} else {
-				break
-			}
+		if idx := m.pageUpNavigableEntry(m.cursor); idx >= 0 {
+			m.cursor = idx
+			m.cursorMoved = true
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("pgdown", "ctrl+d"))):
-		jumps := m.contentHeight() / 4
-		if jumps < 1 {
-			jumps = 1
-		}
-		for i := 0; i < jumps; i++ {
-			if idx := m.nextNavigableEntry(m.cursor); idx >= 0 {
-				m.cursor = idx
-				m.cursorMoved = true
-			} else {
-				break
-			}
+		if idx := m.pageDownNavigableEntry(m.cursor); idx >= 0 {
+			m.cursor = idx
+			m.cursorMoved = true
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("G", "end"))):
 		m.follow = true
@@ -1438,11 +1470,15 @@ func (m *SessionViewModel) handleMessage(data agent.MessageData) {
 
 // handleSessionMessages processes the full message history response.
 // It replaces any existing entries with the complete history and builds
-// the seenParts set for deduplication with subsequent SSE events.
+// the nextMessageID mapping used for fork targeting. Subsequent SSE
+// events (EventPartUpdate) for parts already in history are routed
+// through upsertPartEntry, which is idempotent by partID — re-applying
+// the same snapshot is a no-op, while live deltas continue to accumulate
+// onto the existing entry. The redundant EventMessage shell that SSE
+// re-delivers is suppressed by m.historyLoaded in handleMessage.
 // When a revert is active (m.info.RevertMessageID is set), messages from
 // the revert target onward are excluded from the display.
 func (m *SessionViewModel) handleSessionMessages(messages []agent.MessageData) {
-	m.seenParts = make(map[string]bool)
 	m.entries = nil
 
 	revertID := ""
@@ -1500,9 +1536,6 @@ func (m *SessionViewModel) handleSessionMessages(messages []agent.MessageData) {
 			})
 		}
 		for _, p := range msg.Parts {
-			if p.ID != "" {
-				m.seenParts[p.ID] = true
-			}
 			m.addPartEntry(p, msg.ID)
 		}
 	}
@@ -1547,10 +1580,6 @@ func (m *SessionViewModel) markRunningToolsFailed() {
 }
 
 func (m *SessionViewModel) handlePartUpdate(data agent.PartUpdateData) {
-	// Skip parts already loaded from history to avoid duplicates.
-	if m.seenParts[data.Part.ID] {
-		return
-	}
 	m.upsertPartEntry(data.Part, data.IsDelta)
 	if m.follow {
 		m.scrollToBottom()
@@ -1560,7 +1589,12 @@ func (m *SessionViewModel) handlePartUpdate(data agent.PartUpdateData) {
 // upsertPartEntry updates an existing entry with the same Part ID, or appends a new one.
 // For text/thinking parts: isDelta=true appends the text chunk; isDelta=false replaces
 // the entry with the authoritative full snapshot (self-healing if deltas were dropped).
-// For tool parts, the entry is always replaced with the new status.
+// For tool parts, the entry is always replaced with the new status, preserving Input
+// and Output from the previous state when the new update doesn't carry them.
+//
+// Idempotency by partID is load-bearing: handlePartUpdate calls this unconditionally
+// for every EventPartUpdate, including parts already present in just-loaded history.
+// Re-applying the same snapshot is a no-op; mid-stream parts continue receiving deltas.
 func (m *SessionViewModel) upsertPartEntry(p agent.Part, isDelta bool) {
 	if p.ID != "" {
 		for i := len(m.entries) - 1; i >= 0; i-- {
@@ -2844,8 +2878,12 @@ func (m *SessionViewModel) contentHeight() int {
 }
 
 func (m *SessionViewModel) scrollToBottom() {
-	// Will be clamped during rendering.
-	m.scrollOffset = 999999
+	// Set scrollOffset past the end; clampScroll snaps it to the real
+	// maxOffset based on lastContentLineCount (building it lazily if
+	// this is the first frame). The next View re-clamps with a fresh
+	// count, so any staleness self-corrects within one frame.
+	m.scrollOffset = math.MaxInt
+	m.clampScroll()
 }
 
 // clampScroll uses lastContentLineCount from the most recent buildContentLines
@@ -3093,13 +3131,10 @@ func (m *SessionViewModel) scrollToCursor() {
 	if m.cursor < 0 || m.cursor >= len(m.entryStartLine) {
 		return
 	}
-	const topMargin = 2
-	m.scrollOffset = m.entryStartLine[m.cursor] - topMargin
+	m.scrollOffset = m.entryStartLine[m.cursor] - cursorTopMargin
 	if m.scrollOffset < 0 {
 		m.scrollOffset = 0
 	}
-	// Clamp so we don't scroll past the end of content.
-	// (clampScrollWithLines will handle this in View, but be safe here.)
 }
 
 // --- Helpers ---
@@ -3148,18 +3183,30 @@ func truncateStr(s string, n int) string {
 	return s[:n-3] + "..."
 }
 
-// persistModelPreference saves the currently selected model to preferences.
-// Safe to call from a goroutine.
-func (m *SessionViewModel) persistModelPreference() {
-	prefs, _ := config.LoadPreferences()
+// snapshotModelPreference reads the current picker selection into immutable
+// values on the caller's (UI) goroutine. The returned pair is safe to hand
+// to persistModelPreference from a background goroutine — reading m.backend
+// / m.selectedModel / m.models from the goroutine would race with later
+// picker activity and could persist a wrong selection if the user reopens
+// the picker before the write lands.
+func (m *SessionViewModel) snapshotModelPreference() (backend string, pref config.ModelPreference) {
+	backend = string(m.backend)
 	if m.selectedModel >= 0 && m.selectedModel < len(m.models) {
 		model := m.models[m.selectedModel]
-		prefs.Model = &config.ModelPreference{
+		pref = config.ModelPreference{
 			ModelID:    model.ID,
 			ProviderID: model.ProviderID,
 		}
-	} else {
-		prefs.Model = nil
 	}
-	_ = config.SavePreferences(prefs)
+	return backend, pref
+}
+
+// persistModelPreference writes the snapshot to preferences.json.
+// UpdatePreferences serializes the load-modify-save against concurrent
+// writers (color scheme, sidebar layout, last-session) so picker writes
+// can't clobber them.
+func persistModelPreference(backend string, pref config.ModelPreference) {
+	_ = config.UpdatePreferences(func(p *config.Preferences) {
+		p.SetModelFor(backend, pref)
+	})
 }

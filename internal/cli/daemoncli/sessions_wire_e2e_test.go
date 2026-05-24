@@ -404,6 +404,197 @@ func TestWire_PermissionReply_RejectsEmptyID(t *testing.T) {
 	}
 }
 
+// TestWire_BackendStatusEventBroadcastsMetaChange pins the row-level
+// counterpart of applyEventToMetadata's persist path: when a status
+// event lands, subscribers should receive BOTH the original
+// EventStatusChange (used by session view for streaming finalization)
+// and a paired EventMetaChange carrying the full post-mutation row —
+// including a freshly bumped UpdatedAt that the TUI sidebar uses to
+// hoist the session to the top.
+//
+// Regression: before this contract was unified, the sidebar only saw
+// the StatusChange and patched the Status field in place, leaving its
+// cached UpdatedAt stale. The session row would not reorder until the
+// next full List() refetch (which only happened on the user's next
+// keystroke into the session).
+func TestWire_BackendStatusEventBroadcastsMetaChange(t *testing.T) {
+	t.Parallel()
+	td := newTestDaemon(t)
+	info, b := td.CreateOpenCodeSession(t, "tmp")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Subscribe AFTER CreateSession so we don't have to wade through
+	// the create's own MetaChange/StatusChange burst.
+	events, err := td.Client.Sessions().Subscribe(ctx)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	preBump, err := td.Client.Session(info.ID).Get(ctx)
+	if err != nil {
+		t.Fatalf("Get pre-bump: %v", err)
+	}
+	// time.Now() resolution on macOS is sub-microsecond but the daemon
+	// reads its own clock to stamp UpdatedAt; sleep one tick so the
+	// post-bump timestamp can be strictly newer.
+	time.Sleep(2 * time.Millisecond)
+
+	// Push: Starting → Busy (the canonical "user sent a message"
+	// transition). applyEventToMetadata only writes on a status delta,
+	// so we must use a value that differs from the session's current
+	// Status (Starting after create).
+	go b.PushEvent(agent.Event{
+		Type:      agent.EventStatusChange,
+		Timestamp: time.Now(),
+		Data:      agent.StatusChangeData{OldStatus: agent.StatusStarting, NewStatus: agent.StatusBusy},
+	})
+
+	gotStatus, drained := receiveEventsByType(t, events, agent.EventStatusChange, 2*time.Second)
+	if gotStatus == nil {
+		t.Fatalf("no EventStatusChange received; drained: %d events", len(drained))
+	}
+	gotMeta, drained := receiveEventsByType(t, events, agent.EventMetaChange, 2*time.Second)
+	if gotMeta == nil {
+		t.Fatalf("no EventMetaChange received after status flip; this is the bug. Drained: %d events", len(drained))
+	}
+
+	data, ok := gotMeta.Data.(agent.MetaChangeData)
+	if !ok {
+		t.Fatalf("EventMetaChange.Data type = %T, want MetaChangeData", gotMeta.Data)
+	}
+	if data.Session.ID != info.ID {
+		t.Errorf("MetaChange Session.ID = %q, want %q", data.Session.ID, info.ID)
+	}
+	if data.Session.Status != agent.StatusBusy {
+		t.Errorf("MetaChange Session.Status = %v, want Busy (the post-mutation value)", data.Session.Status)
+	}
+	if !data.Session.UpdatedAt.After(preBump.UpdatedAt) {
+		t.Errorf("MetaChange Session.UpdatedAt = %v, want strictly after pre-bump %v (sidebar needs this for hoist)",
+			data.Session.UpdatedAt, preBump.UpdatedAt)
+	}
+}
+
+// TestWire_BackendTitleEventBroadcastsMetaChange is the title-flavored
+// counterpart of TestWire_BackendStatusEventBroadcastsMetaChange.
+// Title changes are rarer than status flips but follow the same
+// contract: persist the row, then broadcast EventMetaChange.
+func TestWire_BackendTitleEventBroadcastsMetaChange(t *testing.T) {
+	t.Parallel()
+	td := newTestDaemon(t)
+	info, b := td.CreateOpenCodeSession(t, "tmp")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	events, err := td.Client.Sessions().Subscribe(ctx)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	preBump, err := td.Client.Session(info.ID).Get(ctx)
+	if err != nil {
+		t.Fatalf("Get pre-bump: %v", err)
+	}
+	time.Sleep(2 * time.Millisecond)
+
+	go b.PushEvent(agent.Event{
+		Type:      agent.EventTitleChange,
+		Timestamp: time.Now(),
+		Data:      agent.TitleChangeData{Title: "Refactor auth flow"},
+	})
+
+	gotTitle, drained := receiveEventsByType(t, events, agent.EventTitleChange, 2*time.Second)
+	if gotTitle == nil {
+		t.Fatalf("no EventTitleChange received; drained: %d events", len(drained))
+	}
+	gotMeta, drained := receiveEventsByType(t, events, agent.EventMetaChange, 2*time.Second)
+	if gotMeta == nil {
+		t.Fatalf("no EventMetaChange received after title change. Drained: %d events", len(drained))
+	}
+
+	data, ok := gotMeta.Data.(agent.MetaChangeData)
+	if !ok {
+		t.Fatalf("EventMetaChange.Data type = %T, want MetaChangeData", gotMeta.Data)
+	}
+	if data.Session.Title != "Refactor auth flow" {
+		t.Errorf("MetaChange Session.Title = %q, want %q", data.Session.Title, "Refactor auth flow")
+	}
+	if !data.Session.UpdatedAt.After(preBump.UpdatedAt) {
+		t.Errorf("MetaChange Session.UpdatedAt = %v, want strictly after pre-bump %v",
+			data.Session.UpdatedAt, preBump.UpdatedAt)
+	}
+}
+
+// TestWire_BackendStartingEventDoesNotBumpOrBroadcast pins that
+// StatusStarting is treated as transient: applyEventToMetadata neither
+// persists it as the row's Status, bumps UpdatedAt, nor broadcasts
+// EventMetaChange. The raw EventStatusChange still flows through to
+// SSE subscribers (session view needs it for its "Connecting..." UI).
+//
+// Regression: without this, every backend lazy-resume (e.g. on
+// session-view open after a daemon restart) would broadcast an
+// EventMetaChange that hoists + spinners the session in the sidebar
+// even though the user did nothing. The 1-2s SDK connection window
+// would briefly show a "busy" spinner that wasn't tied to any agent
+// work.
+func TestWire_BackendStartingEventDoesNotBumpOrBroadcast(t *testing.T) {
+	t.Parallel()
+	td := newTestDaemon(t)
+	info, b := td.CreateOpenCodeSession(t, "tmp")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	events, err := td.Client.Sessions().Subscribe(ctx)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	preBump, err := td.Client.Session(info.ID).Get(ctx)
+	if err != nil {
+		t.Fatalf("Get pre-event: %v", err)
+	}
+
+	// Push a Starting event — the kind that fires when ensureBackend
+	// lazy-creates a wrapper and Open() runs.
+	go b.PushEvent(agent.Event{
+		Type:      agent.EventStatusChange,
+		Timestamp: time.Now(),
+		Data:      agent.StatusChangeData{OldStatus: agent.StatusIdle, NewStatus: agent.StatusStarting},
+	})
+
+	// The StatusChange event itself MUST still arrive on the wire —
+	// session view consumers depend on it.
+	gotStatus, drained := receiveEventsByType(t, events, agent.EventStatusChange, 2*time.Second)
+	if gotStatus == nil {
+		t.Fatalf("EventStatusChange(Starting) didn't propagate; drained=%d", len(drained))
+	}
+
+	// But NO EventMetaChange should follow. Wait long enough for one to
+	// have arrived if it were going to (the host's upsert + broadcast
+	// path completes in well under 500ms in tests).
+	gotMeta, drainedMeta := receiveEventsByType(t, events, agent.EventMetaChange, 500*time.Millisecond)
+	if gotMeta != nil {
+		t.Errorf("Starting status spuriously broadcast EventMetaChange (sidebar would hoist + spin); drained=%d", len(drainedMeta))
+	}
+
+	// Persisted row should be unchanged — same Status, same UpdatedAt.
+	postEvent, err := td.Client.Session(info.ID).Get(ctx)
+	if err != nil {
+		t.Fatalf("Get post-event: %v", err)
+	}
+	if postEvent.Status != preBump.Status {
+		t.Errorf("Status changed by Starting event (pre=%v post=%v); want unchanged",
+			preBump.Status, postEvent.Status)
+	}
+	if !postEvent.UpdatedAt.Equal(preBump.UpdatedAt) {
+		t.Errorf("UpdatedAt bumped by Starting event (pre=%v post=%v); want unchanged",
+			preBump.UpdatedAt, postEvent.UpdatedAt)
+	}
+}
+
 // TestWire_StatusEventNormalizesPersistedStatus verifies that an
 // idle status event from the backend (the canonical "task complete"
 // signal) is reflected in the persisted SessionInfo. Without this,
