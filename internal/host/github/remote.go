@@ -49,7 +49,11 @@ func ParseGitHubRemote(remoteURL string) (owner, repo string, err error) {
 	}
 	path = strings.Trim(path, "/")
 	parts := strings.Split(path, "/")
-	if len(parts) < 2 {
+	// Strictly require `owner/repo` — refuse anything with extra
+	// segments (e.g. github.com/owner/repo/tree/branch). The truncate-
+	// to-first-two behavior would silently resolve to the wrong repo
+	// when a user pasted a tree URL instead of a clone URL.
+	if len(parts) != 2 {
 		return "", "", ErrNotGitHubRemote
 	}
 	owner = parts[0]

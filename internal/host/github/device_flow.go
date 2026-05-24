@@ -159,6 +159,11 @@ func (m *Manager) StartConnect(ctx context.Context) (DeviceFlowStart, error) {
 func (m *Manager) ConnectStatus(_ context.Context, flowID string) (DeviceFlowStatus, error) {
 	m.flowMu.Lock()
 	defer m.flowMu.Unlock()
+	// Evict stale terminal flows so a status poll after flowTTL
+	// returns ErrUnknownFlow rather than the cached final state.
+	// transition() also calls gc, but a terminal state can sit
+	// untouched until the next read.
+	m.gcFlowsLocked()
 	if m.currentFlow == nil || m.currentFlow.id != flowID {
 		return DeviceFlowStatus{}, ErrUnknownFlow
 	}

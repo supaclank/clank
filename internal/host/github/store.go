@@ -65,11 +65,18 @@ func (s *Store) Read() (Credentials, error) {
 
 func (s *Store) readLocked() (Credentials, error) {
 	data, err := os.ReadFile(s.Path())
-	if errors.Is(err, os.ErrNotExist) || len(data) == 0 {
-		return Credentials{}, nil
-	}
 	if err != nil {
+		// Treat a missing file as "not connected", but propagate
+		// real errors (EACCES, EIO, ...) so the UI doesn't render
+		// "Connect GitHub" when the actual problem is a permission
+		// fault on an existing credential file.
+		if errors.Is(err, os.ErrNotExist) {
+			return Credentials{}, nil
+		}
 		return Credentials{}, fmt.Errorf("read github credentials: %w", err)
+	}
+	if len(data) == 0 {
+		return Credentials{}, nil
 	}
 	var c Credentials
 	if err := json.Unmarshal(data, &c); err != nil {

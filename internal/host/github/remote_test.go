@@ -29,6 +29,10 @@ func TestParseGitHubRemote(t *testing.T) {
 		{name: "scp-style non-github", url: "git@gitlab.com:acme/api.git", wantErr: ErrNotGitHubRemote},
 		{name: "GHE (deferred)", url: "https://github.acme.com/acme/api.git", wantErr: ErrNotGitHubRemote},
 
+		// rejected — extra path segments (e.g. tree-URL paste)
+		{name: "tree url", url: "https://github.com/acme/api/tree/main", wantErr: ErrNotGitHubRemote},
+		{name: "blob url", url: "https://github.com/acme/api/blob/main/README.md", wantErr: ErrNotGitHubRemote},
+
 		// rejected — malformed
 		{name: "no path", url: "https://github.com", wantErr: ErrNotGitHubRemote},
 		{name: "no repo", url: "https://github.com/acme", wantErr: ErrNotGitHubRemote},

@@ -54,7 +54,12 @@ func (m *Manager) doJSON(req *http.Request, out any) error {
 		return fmt.Errorf("request: %w", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		// Surface transport truncation as a clear read error rather
+		// than letting json.Unmarshal complain about a partial body.
+		return fmt.Errorf("read response body: %w", err)
+	}
 	if resp.StatusCode/100 != 2 {
 		return &HTTPError{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
 	}
