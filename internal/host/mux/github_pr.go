@@ -56,6 +56,10 @@ func writePRError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "nothing_to_push", Error: err.Error()})
 	case errors.Is(err, host.ErrNoOriginRemote):
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "no_origin_remote", Error: err.Error()})
+	case errors.Is(err, host.ErrNoCommonAncestor):
+		writeJSON(w, http.StatusConflict, errResp{Code: "no_common_ancestor", Error: err.Error()})
+	case errors.Is(err, host.ErrBaseRefUnreachable):
+		writeJSON(w, http.StatusBadGateway, errResp{Code: "base_ref_unreachable", Error: err.Error()})
 	case errors.Is(err, githubpkg.ErrNotGitHubRemote):
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "not_github_remote", Error: err.Error()})
 	case errors.Is(err, git.ErrPushNotFastForward):

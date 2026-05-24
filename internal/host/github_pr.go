@@ -71,6 +71,19 @@ var (
 	// UI suggests "git remote add origin <github-url>" or
 	// re-pushing from laptop with the remote intact.
 	ErrNoOriginRemote = errors.New("worktree has no 'origin' remote — clank sync may have stripped .git/config; add it manually or re-push from laptop")
+
+	// ErrNoCommonAncestor fires when the head branch and the
+	// remote's base have no shared history. Overwhelmingly indicates
+	// the remote points at the wrong repo (two unrelated repos
+	// virtually never share a commit SHA). Hard refusal — no bypass.
+	// 409.
+	ErrNoCommonAncestor = errors.New("no common ancestor with remote base — origin probably points to the wrong repo")
+
+	// ErrBaseRefUnreachable fires when we couldn't fetch the base
+	// branch from the remote. Without a fresh origin/<base>, the
+	// common-ancestor check can't run safely, so we refuse rather
+	// than push blindly. 502.
+	ErrBaseRefUnreachable = errors.New("could not fetch base branch from remote — cannot safely verify common history")
 )
 
 // CreatePR pushes the worktree's current branch and opens a pull
@@ -132,30 +145,56 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 
 	authHeader := buildAuthHeader(creds.AccessToken)
 
-	// Refresh origin/<base> before checking the local diff against
-	// it. Sprites whose worktrees were migrated piecemeal often have
-	// no origin/<base> at all — the fetch is what brings it into
-	// existence. Best-effort: on failure, the commits-ahead check
-	// falls back to bare <base>, and if that also fails we skip the
-	// check (GitHub will reject empty PRs anyway, with a clearer
-	// error than we'd produce locally).
-	if err := git.Fetch(workdir, "origin", req.Base, git.PushOptions{
+	// Push and fetch use an explicit HTTPS URL built from the parsed
+	// (owner, repo), not the literal "origin". This decouples the
+	// PR-time transport from whatever URL form was configured on the
+	// worktree (SSH, HTTPS with embedded creds, missing): we always
+	// speak HTTPS to github.com with the OAuth token injected via
+	// http.extraheader.
+	pushURL := fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+
+	// Fetch origin/<base> to ensure we have an up-to-date reference
+	// before the common-ancestor check. Promoted from best-effort to
+	// hard requirement: a failed fetch means we can't safely verify
+	// history overlap, so we refuse rather than push blindly.
+	if err := git.Fetch(workdir, pushURL, req.Base, git.PushOptions{
 		ExtraHeader: authHeader,
 	}); err != nil {
-		s.log.Printf("CreatePR: fetch origin/%s (best-effort): %v", req.Base, err)
+		s.log.Printf("CreatePR: fetch base %s from %s: %v", req.Base, pushURL, err)
+		return CreatePRResult{}, ErrBaseRefUnreachable
 	}
 
-	// Verify there's actually something to push. Try origin/<base>
-	// first (the normal case after the fetch above), fall back to
-	// bare <base> (covers local-only bases, common in tests), and
-	// if both fail we trust GitHub to reject empty PRs cleanly.
-	ahead, err := commitsAhead(workdir, "origin/"+req.Base, branch)
+	// Safety net: refuse if our branch shares no history with the
+	// remote's base. This catches "origin points at the wrong repo"
+	// regardless of how origin got mis-set — manual edit, agent
+	// confusion, stale .git/config from a migrated worktree, etc.
+	// Two repos with unrelated histories share no commits (Git
+	// content-addresses everything), so an empty merge-base is a
+	// near-certain wrong-destination signal.
+	//
+	// git.Fetch above writes to FETCH_HEAD (and to refs/remotes/origin/<base>
+	// if origin happens to be configured to map there). We check
+	// against FETCH_HEAD specifically — it's always populated by
+	// the most recent fetch, regardless of how origin is configured.
+	mb, err := git.MergeBase(workdir, "FETCH_HEAD", "HEAD")
 	if err != nil {
-		ahead, _ = commitsAhead(workdir, req.Base, branch)
-		// On a fresh sprite where neither ref resolves yet, ahead==0
-		// here. We can't distinguish "actually empty" from "couldn't
-		// determine" — skip the check and let GitHub be the judge.
-		ahead = max(ahead, 1)
+		s.log.Printf("CreatePR: merge-base FETCH_HEAD HEAD: %v", err)
+		return CreatePRResult{}, fmt.Errorf("verify common history: %w", err)
+	}
+	if mb == "" {
+		return CreatePRResult{}, ErrNoCommonAncestor
+	}
+
+	// Verify there's actually something to push. After the fetch
+	// above, FETCH_HEAD is the freshly-fetched remote base. If our
+	// branch is at or behind it, there's nothing new to PR.
+	ahead, err := commitsAhead(workdir, "FETCH_HEAD", branch)
+	if err != nil {
+		// commits-ahead failing here is unexpected — we just
+		// successfully merge-base'd against FETCH_HEAD. Log + trust
+		// the GitHub API to reject empty diffs.
+		s.log.Printf("CreatePR: commits-ahead FETCH_HEAD %s: %v", branch, err)
+		ahead = 1
 	}
 	if ahead == 0 {
 		return CreatePRResult{}, ErrNothingToPush
@@ -164,7 +203,7 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 	// Push the branch with the OAuth token injected via process-local
 	// git config. The header lives in args for the subprocess only —
 	// never written to .git/config or the remote URL.
-	if err := git.Push(workdir, "origin", branch+":refs/heads/"+branch, git.PushOptions{
+	if err := git.Push(workdir, pushURL, branch+":refs/heads/"+branch, git.PushOptions{
 		ExtraHeader: authHeader,
 	}); err != nil {
 		return CreatePRResult{}, err

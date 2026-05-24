@@ -40,6 +40,32 @@ type PushOptions struct {
 	ExtraHeader string
 }
 
+// MergeBase returns the best common ancestor of ref1 and ref2, or an
+// empty string when none exists (git exits 1). A real error is only
+// returned for unexpected failures. Used as a safety check before
+// pushing to a remote: an empty result means our branch has no
+// shared history with the remote's base, which almost always means
+// the remote points at the wrong repo.
+func MergeBase(dir, ref1, ref2 string) (string, error) {
+	cmd := exec.Command("git", "merge-base", ref1, ref2)
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		// git merge-base exits 1 when no merge base exists. That's
+		// not a tool error — it's the "no common ancestor" signal we
+		// want to surface as an empty-string result. Anything else
+		// (exit 128 for bad ref, network errors, etc.) is a real
+		// error.
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
+			return "", nil
+		}
+		return "", fmt.Errorf("git merge-base %s %s: %s: %w", ref1, ref2, strings.TrimSpace(stderr.String()), err)
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
 // Fetch refreshes one ref from the named remote, using the same
 // process-local auth pattern as Push. Used by callers that need
 // origin/<base> to exist before running a local diff against it

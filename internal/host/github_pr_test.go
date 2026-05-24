@@ -61,12 +61,14 @@ func TestCreatePR_EndToEnd(t *testing.T) {
 	mustGit(t, workdir, "commit", "-m", "feature work")
 
 	// 2) Stand up a bare repo as the "remote", and configure
-	// origin with a github.com-looking fetch URL (so the parser
-	// finds owner/repo) + a file:// push URL so the actual push
-	// works without network.
+	// origin with a github.com-looking URL (so ParseGitHubRemote
+	// finds owner/repo). Use url.<bare>.insteadOf to redirect any
+	// git operation against that github.com URL to the local bare
+	// repo, which lets fetch/push exercise the production code path
+	// without needing real network.
 	mustGit(t, "", "init", "--bare", bareDir)
 	mustGit(t, workdir, "remote", "add", "origin", "https://github.com/acme/api.git")
-	mustGit(t, workdir, "remote", "set-url", "--push", "origin", bareDir)
+	mustGit(t, workdir, "config", "url."+bareDir+".insteadOf", "https://github.com/acme/api.git")
 	// Push main first so the bare has the base branch.
 	mustGit(t, workdir, "push", "origin", "main:refs/heads/main")
 
@@ -240,6 +242,101 @@ func TestCreatePR_MissingFields(t *testing.T) {
 	_, err = svc.CreatePR(context.Background(), "any-id", host.CreatePRRequest{Title: "x", Base: ""})
 	if !errors.Is(err, host.ErrPRMissingField) {
 		t.Errorf("missing base: err = %v, want ErrPRMissingField", err)
+	}
+}
+
+// TestCreatePR_RefusesPushToUnrelatedRepo is the wrong-repo safety
+// regression. Two bare repos with completely separate histories
+// (independent `git init` lineages so they share no commit SHAs)
+// stand in for "correct destination" and "wrong destination." We
+// point origin at the wrong one and confirm CreatePR refuses with
+// ErrNoCommonAncestor without leaking any refs.
+func TestCreatePR_RefusesPushToUnrelatedRepo(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv(githubpkg.ClientIDEnv, "Ov23li78UDBwea5WvI5v")
+
+	const worktreeID = "01TESTWORKTREE0000000099"
+	workdir := filepath.Join(homeDir, "work", worktreeID)
+	wrongBareDir := filepath.Join(homeDir, "wrong.git")
+
+	// Seed the user's worktree on its own history.
+	mustGit(t, "", "init", workdir)
+	mustGit(t, workdir, "config", "user.email", "test@example.com")
+	mustGit(t, workdir, "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(workdir, "README"), []byte("our v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, workdir, "add", "README")
+	mustGit(t, workdir, "commit", "-m", "our base")
+	mustGit(t, workdir, "branch", "-M", "main")
+	mustGit(t, workdir, "checkout", "-b", "feat-x")
+	if err := os.WriteFile(filepath.Join(workdir, "README"), []byte("our v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, workdir, "add", "README")
+	mustGit(t, workdir, "commit", "-m", "our work")
+
+	// Seed the WRONG bare repo on a completely independent history
+	// — separate `git init`, separate commits, different SHAs.
+	wrongStaging := filepath.Join(homeDir, "wrong-staging")
+	mustGit(t, "", "init", wrongStaging)
+	mustGit(t, wrongStaging, "config", "user.email", "other@example.com")
+	mustGit(t, wrongStaging, "config", "user.name", "other")
+	if err := os.WriteFile(filepath.Join(wrongStaging, "DIFFERENT"), []byte("completely different content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, wrongStaging, "add", "DIFFERENT")
+	mustGit(t, wrongStaging, "commit", "-m", "their unrelated base")
+	mustGit(t, wrongStaging, "branch", "-M", "main")
+	mustGit(t, "", "init", "--bare", wrongBareDir)
+	mustGit(t, wrongStaging, "remote", "add", "wrongorigin", wrongBareDir)
+	mustGit(t, wrongStaging, "push", "wrongorigin", "main")
+
+	// Configure the user's worktree to point origin at the WRONG repo.
+	mustGit(t, workdir, "remote", "add", "origin", "https://github.com/wrong/repo.git")
+	mustGit(t, workdir, "config", "url."+wrongBareDir+".insteadOf", "https://github.com/wrong/repo.git")
+
+	// Seed credentials.
+	store := githubpkg.NewStore(homeDir)
+	if err := store.Write(githubpkg.Credentials{
+		AccessToken: "gho_test",
+		GitHubLogin: "axelengstrom",
+	}); err != nil {
+		t.Fatalf("seed credential: %v", err)
+	}
+
+	// Snapshot the wrong bare repo's refs BEFORE so we can assert
+	// nothing changed.
+	refsBefore := mustGit(t, wrongBareDir, "show-ref")
+
+	prev := host.SetWorkRootForTest(filepath.Join(homeDir, "work"))
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+	})
+	t.Cleanup(svc.Shutdown)
+
+	_, err := svc.CreatePR(context.Background(), worktreeID, host.CreatePRRequest{
+		Title: "feat: leak attempt",
+		Body:  "this should not land",
+		Base:  "main",
+	})
+	if !errors.Is(err, host.ErrNoCommonAncestor) {
+		t.Fatalf("err = %v, want ErrNoCommonAncestor", err)
+	}
+
+	// The critical safety assertion: the wrong bare repo's refs are
+	// completely unchanged. No leak.
+	refsAfter := mustGit(t, wrongBareDir, "show-ref")
+	if refsBefore != refsAfter {
+		t.Errorf("wrong bare repo's refs changed after refused push!\nbefore:\n%s\nafter:\n%s",
+			refsBefore, refsAfter)
+	}
+	if strings.Contains(refsAfter, "feat-x") {
+		t.Errorf("wrong bare repo leaked the feat-x ref:\n%s", refsAfter)
 	}
 }
 
