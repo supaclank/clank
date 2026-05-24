@@ -311,6 +311,104 @@ func roundTripAndAssert(t *testing.T, ctx context.Context, repo, checkpointID st
 	}
 }
 
+// TestRoundTrip_PreservesOriginRemote pins the layer-3 safety fix:
+// when the source worktree has an `origin` remote, Apply restores
+// it on the destination so a subsequent CreatePR doesn't fall into
+// the no-origin / wrong-repo failure modes.
+func TestRoundTrip_PreservesOriginRemote(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	repo := setupRepo(t, ctx)
+	writeFile(t, repo, "README", "hi\n")
+	gitMustRun(t, ctx, repo, "add", "README")
+	gitMustRun(t, ctx, repo, "commit", "-m", "init")
+
+	const wantOrigin = "https://github.com/acme/api.git"
+	gitMustRun(t, ctx, repo, "remote", "add", "origin", wantOrigin)
+
+	b := checkpoint.NewBuilder(repo, "test:laptop")
+	res, err := b.Build(ctx, "ck-origin-preserve")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer res.Cleanup()
+
+	if res.Manifest.OriginRemoteURL != wantOrigin {
+		t.Fatalf("manifest.OriginRemoteURL = %q, want %q", res.Manifest.OriginRemoteURL, wantOrigin)
+	}
+
+	headBundle, err := os.Open(res.HeadCommitBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer headBundle.Close()
+	incrBundle, err := os.Open(res.IncrementalBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer incrBundle.Close()
+
+	dest := t.TempDir()
+	if err := checkpoint.Apply(ctx, dest, res.Manifest, headBundle, incrBundle); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	gotOrigin := strings.TrimSpace(gitMustOutput(t, ctx, dest, "config", "--get", "remote.origin.url"))
+	if gotOrigin != wantOrigin {
+		t.Errorf("restored origin = %q, want %q", gotOrigin, wantOrigin)
+	}
+}
+
+// TestRoundTrip_NoOriginIsHandledGracefully pins that the omitempty
+// path works: a worktree without an origin remote round-trips
+// without errors, and the destination simply has no origin (same
+// behavior as before the fix).
+func TestRoundTrip_NoOriginIsHandledGracefully(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	repo := setupRepo(t, ctx)
+	writeFile(t, repo, "README", "hi\n")
+	gitMustRun(t, ctx, repo, "add", "README")
+	gitMustRun(t, ctx, repo, "commit", "-m", "init")
+	// Intentionally no `git remote add origin`.
+
+	b := checkpoint.NewBuilder(repo, "test:laptop")
+	res, err := b.Build(ctx, "ck-no-origin")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer res.Cleanup()
+
+	if res.Manifest.OriginRemoteURL != "" {
+		t.Fatalf("manifest.OriginRemoteURL = %q, want empty", res.Manifest.OriginRemoteURL)
+	}
+
+	headBundle, err := os.Open(res.HeadCommitBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer headBundle.Close()
+	incrBundle, err := os.Open(res.IncrementalBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer incrBundle.Close()
+
+	dest := t.TempDir()
+	if err := checkpoint.Apply(ctx, dest, res.Manifest, headBundle, incrBundle); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	// destination should NOT have an origin remote — config exits 1.
+	cmd := exec.CommandContext(ctx, "git", "-C", dest, "config", "--get", "remote.origin.url")
+	if err := cmd.Run(); err == nil {
+		t.Errorf("destination unexpectedly has an origin remote configured")
+	}
+}
+
 // setupRepo creates a fresh git repo with deterministic identity.
 func setupRepo(t *testing.T, ctx context.Context) string {
 	t.Helper()

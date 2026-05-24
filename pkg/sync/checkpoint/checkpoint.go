@@ -38,6 +38,13 @@ const ManifestVersion = 1
 
 // Manifest is the per-checkpoint metadata blob, stored alongside the
 // two bundles in object storage.
+//
+// OriginRemoteURL is a v1-backwards-compatible extension: pre-fix
+// manifests have an empty value (omitempty), which Apply treats as
+// "do nothing with origin." New manifests carry the laptop's
+// `git remote get-url origin` so sprite-side worktrees aren't
+// origin-less after Apply (was the root cause of the PR-creation
+// "no origin" / wrong-repo classes of failures).
 type Manifest struct {
 	Version           int       `json:"version"`
 	CheckpointID      string    `json:"checkpoint_id"`
@@ -48,6 +55,7 @@ type Manifest struct {
 	IncrementalCommit string    `json:"incremental_commit"`
 	CreatedAt         time.Time `json:"created_at"`
 	CreatedBy         string    `json:"created_by"`
+	OriginRemoteURL   string    `json:"origin_remote_url,omitempty"`
 }
 
 // Marshal serializes a Manifest to canonical JSON. Stable enough to
@@ -180,6 +188,19 @@ func (b *Builder) Build(ctx context.Context, checkpointID string) (*Result, erro
 	indexTree := snap.IndexTree
 	worktreeTree := snap.WorktreeTree
 
+	// Capture origin's URL so Apply can re-create the remote on the
+	// destination. Error-tolerant: pre-clank-push laptop repos and
+	// fresh worktrees may have no origin, which is fine — empty
+	// string flows through omitempty and Apply skips the restore.
+	originURL, originErr := b.gitOutput(ctx, nil, "config", "--get", "remote.origin.url")
+	if originErr != nil {
+		// `git config --get` exits 1 when the key isn't set. We swallow
+		// any error here (including "not a git repo") because origin
+		// is genuinely optional metadata, not a correctness boundary.
+		originURL = ""
+	}
+	originURL = strings.TrimSpace(originURL)
+
 	commitMsg := "clank checkpoint " + checkpointID
 
 	// Synthesize an "index" commit so the indexTree object is reachable
@@ -233,6 +254,7 @@ func (b *Builder) Build(ctx context.Context, checkpointID string) (*Result, erro
 			IncrementalCommit: incrCommit,
 			CreatedAt:         time.Now().UTC(),
 			CreatedBy:         b.createdBy,
+			OriginRemoteURL:   originURL,
 		},
 		HeadCommitBundle:  headBundle,
 		IncrementalBundle: incrBundle,
@@ -351,6 +373,25 @@ func Apply(ctx context.Context, repoPath string, manifest *Manifest, headCommitB
 	// Best-effort cleanup of the temp refs the bundle introduced.
 	_ = gitRunIn(ctx, repoPath, nil, "update-ref", "-d", tempRefHead(manifest.CheckpointID))
 	_ = gitRunIn(ctx, repoPath, nil, "update-ref", "-d", tempRefIncremental(manifest.CheckpointID))
+
+	// Restore origin's URL when the manifest carries one. Pre-fix
+	// manifests have OriginRemoteURL == "" and skip this step
+	// cleanly. We use `remote set-url` after `remote add` because
+	// `git init` may have left an origin entry from an earlier
+	// failed apply, and `remote add origin` fails when origin
+	// already exists.
+	if manifest.OriginRemoteURL != "" {
+		if err := gitRunIn(ctx, repoPath, nil, "remote", "add", "origin", manifest.OriginRemoteURL); err != nil {
+			// `remote add` exits 128 when origin already exists;
+			// fall through to set-url which is idempotent.
+			if err := gitRunIn(ctx, repoPath, nil, "remote", "set-url", "origin", manifest.OriginRemoteURL); err != nil {
+				// Don't fail Apply over a remote restore — the
+				// checkpoint is fully applied; origin is a nice-to-
+				// have. Log and continue.
+				_ = err
+			}
+		}
+	}
 
 	return nil
 }
