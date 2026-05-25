@@ -39,6 +39,11 @@ type fakeGitHub struct {
 	// in arrival order. Lets one test assert the manager's UA is sent
 	// across both the auth and api endpoints.
 	userAgents []string
+
+	// userFetchBlock, when non-nil, makes /user wait for the channel
+	// to close (or for r.Context() to cancel) before responding. Lets
+	// a test race CancelConnect against an in-flight user fetch.
+	userFetchBlock chan struct{}
 }
 
 // tokenStep is what fakeGitHub returns for one call to /login/oauth/access_token.
@@ -143,7 +148,17 @@ func (fg *fakeGitHub) handleAPI(w http.ResponseWriter, r *http.Request) {
 		fg.mu.Lock()
 		login := fg.userLogin
 		id := fg.userID
+		block := fg.userFetchBlock
 		fg.mu.Unlock()
+		if block != nil {
+			select {
+			case <-r.Context().Done():
+				// client canceled — let the connection drop; go-github
+				// will surface context.Canceled to the caller.
+				return
+			case <-block:
+			}
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"login": login, "id": id})
 	default:
 		http.NotFound(w, r)
@@ -368,6 +383,84 @@ func TestDeviceFlow_SecondStartCancelsFirst(t *testing.T) {
 	}
 	// Second flow should reach success.
 	waitForState(t, m, second.FlowID, FlowSuccess, 10*time.Second)
+}
+
+// TestDeviceFlow_CancelDuringUserFetch_PreservesCanceled drives the
+// race between CancelConnect and the post-token-exchange user fetch:
+// once the goroutine clears the oauth2 polling step and enters
+// getAuthenticatedUser, CancelConnect should settle the flow as
+// FlowCanceled and the goroutine's late "user fetch failed"
+// transition must NOT overwrite that with FlowError.
+func TestDeviceFlow_CancelDuringUserFetch_PreservesCanceled(t *testing.T) {
+	t.Parallel()
+	fg := newFakeGitHub(t)
+	// Hold /user until the test closes the channel (it doesn't). The
+	// handler will release when r.Context() cancels.
+	fg.mu.Lock()
+	fg.userFetchBlock = make(chan struct{})
+	fg.mu.Unlock()
+
+	m := newTestManager(t, fg)
+	fg.scriptTokenSteps(tokenStep{kind: "success", body: map[string]any{
+		"access_token": "gho_will_be_dropped",
+		"scope":        "repo,read:user",
+		"token_type":   "bearer",
+	}})
+
+	start, err := m.StartConnect(context.Background())
+	if err != nil {
+		t.Fatalf("StartConnect: %v", err)
+	}
+
+	// Wait until the goroutine has cleared token exchange and is
+	// blocked inside /user. Without this, CancelConnect could race
+	// the goroutine into the token-exchange path instead.
+	deadline := time.Now().Add(5 * time.Second)
+	for fg.userReqs.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for /user to be hit")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if err := m.CancelConnect(context.Background(), start.FlowID); err != nil {
+		t.Fatalf("CancelConnect: %v", err)
+	}
+
+	// CancelConnect synchronously sets FlowCanceled. Without the fix
+	// in transition(), the goroutine wakes a moment later (when its
+	// HTTP request cancels), reads err != nil, and overwrites
+	// FlowCanceled with FlowError. The state we observe after a brief
+	// settle is what discriminates the two implementations.
+	//
+	// Poll until userReqs stops climbing AND state has stabilized for
+	// 200ms — that's a robust signal that runDeviceFlow has returned.
+	stableSince := time.Now()
+	lastState := FlowPending
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatalf("state didn't stabilize within 5s (last=%q)", lastState)
+		}
+		s, err := m.ConnectStatus(context.Background(), start.FlowID)
+		if err != nil {
+			t.Fatalf("ConnectStatus: %v", err)
+		}
+		if s.State != lastState {
+			lastState = s.State
+			stableSince = time.Now()
+		} else if time.Since(stableSince) > 200*time.Millisecond && lastState != FlowPending {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if lastState != FlowCanceled {
+		t.Errorf("State = %q, want %q — transition() overwrote a settled FlowCanceled", lastState, FlowCanceled)
+	}
+	if m.Store().IsConnected() {
+		t.Error("Store should not be connected after cancel-during-fetch")
+	}
 }
 
 func TestConnectStatus_UnknownFlow(t *testing.T) {

@@ -212,11 +212,20 @@ func (m *Manager) cancelExistingFlow() {
 // transition mutates the current flow's state under flowMu. Records
 // finishedAt on terminal states so a future StartConnect can observe
 // "the previous flow is dead" and replace the slot cleanly.
+//
+// First-writer-wins for non-pending states: once a flow has settled
+// (e.g. CancelConnect set FlowCanceled while runDeviceFlow was mid-
+// user-fetch), a late transition() from the goroutine won't clobber
+// it. Symmetric with CancelConnect's "only transition from FlowPending"
+// guard.
 func (m *Manager) transition(flowID string, state DeviceFlowState, errMsg, login string) {
 	m.flowMu.Lock()
 	defer m.flowMu.Unlock()
 	if m.currentFlow == nil || m.currentFlow.id != flowID {
 		return // a newer flow has taken the slot — ignore.
+	}
+	if m.currentFlow.state != FlowPending {
+		return // already settled — preserve the first terminal state.
 	}
 	m.currentFlow.state = state
 	if errMsg != "" {
