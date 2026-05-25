@@ -96,11 +96,18 @@ func TestCreatePullRequest_Success(t *testing.T) {
 
 func TestCreatePullRequest_AlreadyExists(t *testing.T) {
 	t.Parallel()
+	// Mirrors GitHub's real 422 response for "PR already exists" —
+	// Resource + Code are the discriminators isAlreadyExists checks,
+	// Message carries the sentinel English phrase.
 	fa := &fakeAPI{
 		postStatus: http.StatusUnprocessableEntity,
 		postBody: `{
 			"message": "Validation Failed",
-			"errors": [{"message": "A pull request already exists for acme:my-branch."}]
+			"errors": [{
+				"resource": "PullRequest",
+				"code": "custom",
+				"message": "A pull request already exists for acme:my-branch."
+			}]
 		}`,
 		getStatus: http.StatusOK,
 		getBody:   `[{"number": 7, "html_url": "https://github.com/acme/api/pull/7", "head": {"sha": "old"}}]`,
@@ -125,11 +132,17 @@ func TestCreatePullRequest_AlreadyExists(t *testing.T) {
 
 func TestCreatePullRequest_BaseNotFound(t *testing.T) {
 	t.Parallel()
+	// Mirrors GitHub's real 422 response for an invalid base branch —
+	// fully structured: Resource + Field + Code, no Message needed.
 	fa := &fakeAPI{
 		postStatus: http.StatusUnprocessableEntity,
 		postBody: `{
 			"message": "Validation Failed",
-			"errors": [{"message": "Field \"base\" is invalid"}]
+			"errors": [{
+				"resource": "PullRequest",
+				"field": "base",
+				"code": "invalid"
+			}]
 		}`,
 	}
 	srv := newFakeAPI(t, fa)
@@ -140,6 +153,43 @@ func TestCreatePullRequest_BaseNotFound(t *testing.T) {
 	})
 	if !errors.Is(err, ErrPRBaseNotFound) {
 		t.Fatalf("err = %v, want ErrPRBaseNotFound", err)
+	}
+}
+
+// TestCreatePullRequest_UnrelatedCustomError_NotAlreadyExists proves
+// isAlreadyExists doesn't fire on every Code="custom" error. The
+// 422 here uses Resource="PullRequest" + Code="custom" but a
+// different Message — must NOT be classified as ErrPRAlreadyExists.
+// Regression guard for the Resource+Code+Message narrowing.
+func TestCreatePullRequest_UnrelatedCustomError_NotAlreadyExists(t *testing.T) {
+	t.Parallel()
+	fa := &fakeAPI{
+		postStatus: http.StatusUnprocessableEntity,
+		postBody: `{
+			"message": "Validation Failed",
+			"errors": [{
+				"resource": "PullRequest",
+				"code": "custom",
+				"message": "Head ref must be a branch"
+			}]
+		}`,
+	}
+	srv := newFakeAPI(t, fa)
+	m := newPRTestManager(t, srv.URL)
+
+	_, err := m.CreatePullRequest(context.Background(), "gho_test", "acme", "api", CreatePRInput{
+		Title: "x", Body: "y", Head: "b", Base: "main",
+	})
+	if errors.Is(err, ErrPRAlreadyExists) {
+		t.Fatalf("err = %v, must not be ErrPRAlreadyExists for unrelated custom error", err)
+	}
+	if errors.Is(err, ErrPRBaseNotFound) {
+		t.Fatalf("err = %v, must not be ErrPRBaseNotFound for unrelated custom error", err)
+	}
+	// The follow-up GET to /pulls must not have fired — that's only
+	// for the confirmed already-exists branch.
+	if fa.getReqs.Load() != 0 {
+		t.Errorf("getReqs = %d, want 0 (no follow-up lookup for unrelated custom)", fa.getReqs.Load())
 	}
 }
 
