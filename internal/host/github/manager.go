@@ -72,10 +72,14 @@ type userAgentTransport struct {
 }
 
 func (t *userAgentTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.Header.Get("User-Agent") == "" {
-		req.Header.Set("User-Agent", userAgent)
+	if req.Header.Get("User-Agent") != "" {
+		return t.base.RoundTrip(req)
 	}
-	return t.base.RoundTrip(req)
+	// net/http.RoundTripper forbids mutating the caller's request —
+	// clone before injecting our header.
+	cloned := req.Clone(req.Context())
+	cloned.Header.Set("User-Agent", userAgent)
+	return t.base.RoundTrip(cloned)
 }
 
 // SetPollSafetyMargin overrides the slack added to each device-flow
