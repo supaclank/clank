@@ -111,6 +111,11 @@ func (m *Manager) CreatePullRequest(ctx context.Context, accessToken, owner, rep
 // classifyPRError maps a *github.ErrorResponse from CreatePullRequest
 // to one of the exported sentinel errors. For 422 "already exists",
 // does the follow-up GET to capture the existing PR's URL.
+//
+// The 422 sub-cases are matched off go-github's structured Error
+// fields (Resource / Field / Code) rather than the top-level Message
+// string — see isAlreadyExists / isBaseInvalid for the GitHub-side
+// shapes we discriminate on.
 func (m *Manager) classifyPRError(ctx context.Context, err error, client *gogithub.Client, owner, repo, head string) error {
 	var er *gogithub.ErrorResponse
 	if !errors.As(err, &er) {
@@ -124,9 +129,6 @@ func (m *Manager) classifyPRError(ctx context.Context, err error, client *gogith
 	case http.StatusNotFound:
 		return ErrPRForbidden // GitHub returns 404 for "no access" — same UX as 403
 	case http.StatusUnprocessableEntity:
-		// Two cases live under 422: already-exists and base-not-found.
-		// go-github surfaces the raw body's errors[] in er.Errors so
-		// we match on the message text the same way as before.
 		if isAlreadyExists(er) {
 			existingURL, _ := m.lookupExistingPR(ctx, client, owner, repo, head)
 			return &existingPRError{URL: existingURL}
@@ -138,35 +140,39 @@ func (m *Manager) classifyPRError(ctx context.Context, err error, client *gogith
 	return fmt.Errorf("create pr: %w", err)
 }
 
-// isAlreadyExists looks for GitHub's "A pull request already exists
-// for X:Y" sentinel across either the top-level message or the
-// per-field errors array.
+// isAlreadyExists matches the 422 GitHub sends when a PR already
+// exists for head:base:
+//
+//	{"resource": "PullRequest", "code": "custom",
+//	 "message": "A pull request already exists for owner:branch."}
+//
+// GitHub has no dedicated structured code for this case — Code is
+// the generic "custom" — so we still string-match the message, but
+// gate it on Resource + Code so an unrelated "custom" error can't
+// fire a false positive.
 func isAlreadyExists(er *gogithub.ErrorResponse) bool {
-	if strings.Contains(strings.ToLower(er.Message), "pull request already exists") {
-		return true
-	}
 	for _, e := range er.Errors {
-		if strings.Contains(strings.ToLower(e.Message), "pull request already exists") {
+		if e.Resource == "PullRequest" && e.Code == "custom" &&
+			strings.Contains(strings.ToLower(e.Message), "pull request already exists") {
 			return true
 		}
 	}
 	return false
 }
 
-// isBaseInvalid matches GitHub's two phrasings for "base branch isn't
-// valid" — either "Field \"base\" is invalid" or "base does not exist".
+// isBaseInvalid matches the 422 GitHub sends when the base branch
+// doesn't exist:
+//
+//	{"resource": "PullRequest", "field": "base", "code": "invalid"}
+//
+// Fully structured — no message inspection required.
 func isBaseInvalid(er *gogithub.ErrorResponse) bool {
 	for _, e := range er.Errors {
-		low := strings.ToLower(e.Message)
-		if strings.Contains(low, "base") && (strings.Contains(low, "invalid") || strings.Contains(low, "not exist")) {
-			return true
-		}
-		if e.Field == "base" && (e.Code == "invalid" || e.Code == "missing_field") {
+		if e.Resource == "PullRequest" && e.Field == "base" && e.Code == "invalid" {
 			return true
 		}
 	}
-	low := strings.ToLower(er.Message)
-	return strings.Contains(low, "base") && (strings.Contains(low, "invalid") || strings.Contains(low, "not exist"))
+	return false
 }
 
 // lookupExistingPR finds the open PR for owner:head and returns its
