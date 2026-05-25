@@ -2,34 +2,29 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"net/http"
+
+	gogithub "github.com/google/go-github/v66/github"
 )
 
-// userResp is the subset of GET /user we care about. GitHub returns
-// many more fields; we ignore them. Login is the @handle the UI
-// shows; ID is the stable numeric identifier we persist so we can
-// distinguish "user renamed" from "different user" in future flows.
-type userResp struct {
-	Login string `json:"login"`
-	ID    int64  `json:"id"`
-}
-
-// getAuthenticatedUser fetches the calling token's user info. Called
-// from the device-flow goroutine immediately after a successful token
-// exchange so the credential file is written with the login already
-// populated — that lets the status endpoint render "@login" without
-// a follow-up API call on every refresh.
+// getAuthenticatedUser fetches the calling token's login + numeric ID
+// via GET /user. Called from the device-flow goroutine immediately
+// after a successful token exchange so the credential file is written
+// with the login already populated — that lets the status endpoint
+// render "@login" without a follow-up API call on every refresh.
 func (m *Manager) getAuthenticatedUser(ctx context.Context, accessToken string) (login string, userID int64, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.apiBaseURL+"/user", nil)
+	c, err := m.apiClient(accessToken)
 	if err != nil {
-		return "", 0, err
+		return "", 0, fmt.Errorf("build api client: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-
-	var out userResp
-	if err := m.doJSON(req, &out); err != nil {
+	u, _, err := c.Users.Get(ctx, "")
+	if err != nil {
+		var er *gogithub.ErrorResponse
+		if errors.As(err, &er) {
+			return "", 0, fmt.Errorf("get user: github http %d: %s", er.Response.StatusCode, er.Message)
+		}
 		return "", 0, fmt.Errorf("get user: %w", err)
 	}
-	return out.Login, out.ID, nil
+	return u.GetLogin(), u.GetID(), nil
 }

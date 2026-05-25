@@ -1,36 +1,26 @@
 package github
 
 // GitHub OAuth device flow: the user-facing connect path that lets a
-// host obtain its own long-lived access token without ever seeing
-// the OAuth App's client_secret. Same flow on mobile and TUI — only
-// the client doing the polling differs.
+// host obtain its own long-lived access token without ever seeing the
+// OAuth App's client_secret.
 //
-// RFC 8628 reference, with GitHub's specifics layered on top:
-//   1. POST https://github.com/login/device/code  → {device_code, user_code,
-//      verification_uri, verification_uri_complete, expires_in, interval}
-//   2. Display user_code + verification_uri_complete to the user.
-//   3. POST https://github.com/login/oauth/access_token at `interval`
-//      until success/error/expiry. Body: client_id + device_code +
-//      grant_type=urn:ietf:params:oauth:grant-type:device_code.
-//   4. On success: GET https://api.github.com/user to capture login,
-//      persist the credential to the Store, transition to "success".
-//
-// Single-slot registry: a host has at most one in-flight flow at a
-// time. A second StartConnect cancels the predecessor. This protects
-// the sprite from accumulating goroutines when an impatient user
-// re-taps the connect button.
+// The wire-level RFC 8628 plumbing — POST /login/device/code, the
+// polling loop against /login/oauth/access_token, slow_down/expired
+// handling — lives in golang.org/x/oauth2. This file adds the
+// per-host lifecycle on top: the single-slot flow registry, the
+// FlowID-keyed status surface, credential persistence, and the
+// terminal-state enum we expose to clients.
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"golang.org/x/oauth2"
 )
 
 // DeviceFlowState is the state a flow is in. Mirrors the agent.DeviceFlow
@@ -47,16 +37,15 @@ const (
 	FlowCanceled DeviceFlowState = "canceled"
 )
 
-// scopeRepoAndUser is the static scope set we request. `repo` covers
-// private push and PR write; `read:user` lets us fetch the login so
-// the UI can render "@username". Single tier — no progressive
-// consent in v1.
-const scopeRepoAndUser = "repo read:user"
+// requestedScopes is the static set we ask for. `repo` covers private
+// push + PR write; `read:user` lets us fetch the login for the UI.
+// Single tier — no progressive consent in v1.
+func requestedScopes() []string { return []string{"repo", "read:user"} }
 
 // defaultPollSafetyMargin is added to the polling interval GitHub
 // returns, matching the upstream Copilot plugin (3s). Defends against
-// clock skew that would otherwise have us hit the token endpoint a
-// hair too early and get slow_down. Per-Manager override via
+// clock skew that would otherwise hit the token endpoint a hair too
+// early and trigger slow_down. Per-Manager override via
 // SetPollSafetyMargin (tests use 0 for speed).
 const defaultPollSafetyMargin = 3 * time.Second
 
@@ -80,8 +69,7 @@ var (
 // DeviceFlowStart is the response from StartConnect. UserCode and
 // VerificationURIComplete are what the client (mobile/TUI) shows to
 // the user — opening VerificationURIComplete in a browser brings up
-// the GitHub page with UserCode pre-filled, so the user only has to
-// click Continue and Authorize.
+// the GitHub page with UserCode pre-filled.
 type DeviceFlowStart struct {
 	FlowID                  string    `json:"flow_id"`
 	UserCode                string    `json:"user_code"`
@@ -122,13 +110,28 @@ func (m *Manager) StartConnect(ctx context.Context) (DeviceFlowStart, error) {
 	}
 
 	// Cancel any predecessor before opening the network call to
-	// GitHub. The cancel is best-effort: the goroutine sees ctx.Done
-	// at its next interval tick.
+	// GitHub. The cancel is best-effort: the polling goroutine sees
+	// ctx.Done at its next interval tick.
 	m.cancelExistingFlow()
 
-	code, err := m.requestDeviceCode(ctx)
+	cfg := m.oauth2Config()
+	da, err := cfg.DeviceAuth(m.oauth2Context(ctx))
 	if err != nil {
-		return DeviceFlowStart{}, err
+		return DeviceFlowStart{}, fmt.Errorf("device code: %w", err)
+	}
+	if da.DeviceCode == "" || da.UserCode == "" || da.VerificationURI == "" {
+		return DeviceFlowStart{}, fmt.Errorf("device code: response missing required fields: %+v", da)
+	}
+	// GitHub returns verification_uri_complete; older clones might
+	// not, in which case we synthesize one so the mobile UX still
+	// pre-fills the code.
+	if da.VerificationURIComplete == "" {
+		da.VerificationURIComplete = da.VerificationURI + "?user_code=" + url.QueryEscape(da.UserCode)
+	}
+	// Add our clock-skew safety margin onto the polling cadence.
+	// oauth2 honors da.Interval inside DeviceAccessToken.
+	if m.pollSafetyMargin > 0 {
+		da.Interval += int64(m.pollSafetyMargin / time.Second)
 	}
 
 	flowID := ulid.Make().String()
@@ -141,15 +144,15 @@ func (m *Manager) StartConnect(ctx context.Context) (DeviceFlowStart, error) {
 	}
 	m.flowMu.Unlock()
 
-	go m.runDeviceFlow(flowCtx, flowID, code)
+	go m.runDeviceFlow(flowCtx, flowID, cfg, da)
 
 	return DeviceFlowStart{
 		FlowID:                  flowID,
-		UserCode:                code.UserCode,
-		VerificationURI:         code.VerificationURI,
-		VerificationURIComplete: code.VerificationURIComplete,
-		ExpiresAt:               time.Now().Add(time.Duration(code.ExpiresIn) * time.Second),
-		Interval:                code.Interval,
+		UserCode:                da.UserCode,
+		VerificationURI:         da.VerificationURI,
+		VerificationURIComplete: da.VerificationURIComplete,
+		ExpiresAt:               da.Expiry,
+		Interval:                int(da.Interval),
 	}, nil
 }
 
@@ -161,8 +164,6 @@ func (m *Manager) ConnectStatus(_ context.Context, flowID string) (DeviceFlowSta
 	defer m.flowMu.Unlock()
 	// Evict stale terminal flows so a status poll after flowTTL
 	// returns ErrUnknownFlow rather than the cached final state.
-	// transition() also calls gc, but a terminal state can sit
-	// untouched until the next read.
 	m.gcFlowsLocked()
 	if m.currentFlow == nil || m.currentFlow.id != flowID {
 		return DeviceFlowStatus{}, ErrUnknownFlow
@@ -243,191 +244,96 @@ func (m *Manager) gcFlowsLocked() {
 	}
 }
 
-// --- internal: GitHub network calls ---
-
-type deviceCodeResp struct {
-	DeviceCode              string `json:"device_code"`
-	UserCode                string `json:"user_code"`
-	VerificationURI         string `json:"verification_uri"`
-	VerificationURIComplete string `json:"verification_uri_complete"`
-	ExpiresIn               int    `json:"expires_in"`
-	Interval                int    `json:"interval"`
-}
-
-// requestDeviceCode hits POST /login/device/code on the auth base URL.
-// Form-encoded body per GitHub's docs (the JSON path is undocumented
-// for this endpoint and has surfaced quirks historically). Returns
-// the parsed response — DeviceCode + Interval are required; we
-// surface a clear error if either is missing.
-func (m *Manager) requestDeviceCode(ctx context.Context) (deviceCodeResp, error) {
-	form := url.Values{}
-	form.Set("client_id", m.clientID)
-	form.Set("scope", scopeRepoAndUser)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.authBaseURL+"/login/device/code", strings.NewReader(form.Encode()))
+// runDeviceFlow blocks in oauth2.DeviceAccessToken until the user
+// completes (or denies) the flow on github.com, then captures the
+// login + persists the credential. Errors are classified onto our
+// DeviceFlowState enum.
+func (m *Manager) runDeviceFlow(ctx context.Context, flowID string, cfg *oauth2.Config, da *oauth2.DeviceAuthResponse) {
+	tok, err := cfg.DeviceAccessToken(m.oauth2Context(ctx), da)
 	if err != nil {
-		return deviceCodeResp{}, err
+		state, msg := classifyDeviceFlowErr(err)
+		m.transition(flowID, state, msg, "")
+		return
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	var out deviceCodeResp
-	if err := m.doJSON(req, &out); err != nil {
-		return deviceCodeResp{}, fmt.Errorf("device code: %w", err)
-	}
-	if out.DeviceCode == "" || out.UserCode == "" || out.VerificationURI == "" {
-		return deviceCodeResp{}, fmt.Errorf("device code: response missing required fields: %+v", out)
-	}
-	if out.Interval <= 0 {
-		out.Interval = 5
-	}
-	// GitHub returns verification_uri_complete; older clones might
-	// not, in which case we synthesize one so the mobile UX still
-	// pre-fills the code.
-	if out.VerificationURIComplete == "" {
-		out.VerificationURIComplete = out.VerificationURI + "?user_code=" + url.QueryEscape(out.UserCode)
-	}
-	return out, nil
-}
-
-type tokenResp struct {
-	AccessToken      string `json:"access_token,omitempty"`
-	RefreshToken     string `json:"refresh_token,omitempty"`
-	ExpiresIn        int    `json:"expires_in,omitempty"`
-	Scope            string `json:"scope,omitempty"`
-	TokenType        string `json:"token_type,omitempty"`
-	Error            string `json:"error,omitempty"`
-	ErrorDescription string `json:"error_description,omitempty"`
-}
-
-// pollToken hits POST /login/oauth/access_token once. Returns
-// (token, status, err) where status is a stable string we drive the
-// loop off of: "success", "pending", "slow_down", "denied", "expired",
-// "error".
-func (m *Manager) pollToken(ctx context.Context, deviceCode string) (tokenResp, string, error) {
-	form := url.Values{}
-	form.Set("client_id", m.clientID)
-	form.Set("device_code", deviceCode)
-	form.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.authBaseURL+"/login/oauth/access_token", strings.NewReader(form.Encode()))
+	// Capture login + persist before transitioning so a status poll
+	// observing "success" can trust the credential is on disk.
+	login, userID, err := m.getAuthenticatedUser(ctx, tok.AccessToken)
 	if err != nil {
-		return tokenResp{}, "error", err
+		m.transition(flowID, FlowError, "fetch user: "+err.Error(), "")
+		return
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	// GitHub's access_token endpoint returns 200 with an `error` body
-	// for the polling-phase states (authorization_pending, slow_down,
-	// access_denied, expired_token). Treat them as success-status from
-	// the HTTP layer and dispatch on the JSON payload.
-	req.Header.Set("Accept", "application/json")
-	resp, err := m.httpc.Do(req)
-	if err != nil {
-		return tokenResp{}, "error", fmt.Errorf("token poll: %w", err)
+	c := Credentials{
+		AccessToken:  tok.AccessToken,
+		RefreshToken: tok.RefreshToken,
+		Scopes:       parseScopes(tokenScopeString(tok)),
+		GitHubLogin:  login,
+		GitHubUserID: userID,
+		InstalledAt:  time.Now().UTC(),
 	}
-	defer resp.Body.Close()
-	var out tokenResp
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return tokenResp{}, "error", fmt.Errorf("decode token response: %w", err)
+	if !tok.Expiry.IsZero() {
+		c.ExpiresAt = tok.Expiry.UTC()
 	}
-	if out.AccessToken != "" {
-		return out, "success", nil
+	if err := m.store.Write(c); err != nil {
+		m.transition(flowID, FlowError, "persist credential: "+err.Error(), "")
+		return
 	}
-	switch out.Error {
-	case "authorization_pending":
-		return out, "pending", nil
-	case "slow_down":
-		return out, "slow_down", nil
-	case "access_denied":
-		return out, "denied", nil
-	case "expired_token":
-		return out, "expired", nil
-	default:
-		return out, "error", nil
-	}
+	m.transition(flowID, FlowSuccess, "", login)
 }
 
-// runDeviceFlow polls the token endpoint until success/error/expiry.
-// On success, fetches the user's login, persists the credential, and
-// transitions to "success" with the login in the status payload.
-//
-// Sleep cadence follows RFC 8628: respect the response's interval,
-// add 5s on slow_down.
-func (m *Manager) runDeviceFlow(ctx context.Context, flowID string, code deviceCodeResp) {
-	interval := time.Duration(code.Interval)*time.Second + m.pollSafetyMargin
-	expiresAt := time.Now().Add(time.Duration(code.ExpiresIn) * time.Second)
-
-	for {
-		if time.Now().After(expiresAt) {
-			m.transition(flowID, FlowExpired, "device code expired before authorization", "")
-			return
-		}
-		select {
-		case <-ctx.Done():
-			m.transition(flowID, FlowCanceled, "", "")
-			return
-		case <-time.After(interval):
-		}
-
-		tok, status, err := m.pollToken(ctx, code.DeviceCode)
-		if err != nil {
-			m.transition(flowID, FlowError, err.Error(), "")
-			return
-		}
-		switch status {
-		case "pending":
-			continue
-		case "slow_down":
-			interval = interval + 5*time.Second
-			continue
-		case "denied":
-			m.transition(flowID, FlowDenied, "user denied authorization", "")
-			return
-		case "expired":
-			m.transition(flowID, FlowExpired, "device code expired", "")
-			return
-		case "error":
-			msg := tok.ErrorDescription
-			if msg == "" {
-				msg = tok.Error
-			}
-			if msg == "" {
-				msg = "authorization failed"
-			}
-			m.transition(flowID, FlowError, msg, "")
-			return
-		case "success":
-			// Capture login + persist before transitioning so a
-			// status poll observing "success" can trust the
-			// credential is on disk.
-			login, userID, err := m.getAuthenticatedUser(ctx, tok.AccessToken)
-			if err != nil {
-				m.transition(flowID, FlowError, "fetch user: "+err.Error(), "")
-				return
-			}
-			c := Credentials{
-				AccessToken:  tok.AccessToken,
-				RefreshToken: tok.RefreshToken,
-				Scopes:       parseScopes(tok.Scope),
-				GitHubLogin:  login,
-				GitHubUserID: userID,
-				InstalledAt:  time.Now().UTC(),
-			}
-			if tok.ExpiresIn > 0 {
-				c.ExpiresAt = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second).UTC()
-			}
-			if err := m.store.Write(c); err != nil {
-				m.transition(flowID, FlowError, "persist credential: "+err.Error(), "")
-				return
-			}
-			m.transition(flowID, FlowSuccess, "", login)
-			return
-		}
+// classifyDeviceFlowErr maps oauth2's typed errors onto our flow
+// states. ctx.Canceled → canceled; deadline exceeded means we passed
+// the device-code expiry; *RetrieveError carries the OAuth2 error
+// code (access_denied, expired_token) GitHub returned.
+func classifyDeviceFlowErr(err error) (DeviceFlowState, string) {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return FlowCanceled, ""
+	case errors.Is(err, context.DeadlineExceeded):
+		return FlowExpired, "device code expired before authorization"
 	}
+	var re *oauth2.RetrieveError
+	if errors.As(err, &re) {
+		switch re.ErrorCode {
+		case "access_denied":
+			return FlowDenied, errMessage(re, "user denied authorization")
+		case "expired_token":
+			return FlowExpired, errMessage(re, "device code expired")
+		}
+		return FlowError, errMessage(re, "authorization failed")
+	}
+	return FlowError, err.Error()
 }
 
-// parseScopes splits a comma-separated scope string (the GitHub
-// access_token response format) into a slice. Empty input yields nil
-// so the JSON encodes as "scopes":[] rather than the zero slice.
+// errMessage prefers the upstream ErrorDescription, falls back to the
+// error code, then to the fallback string.
+func errMessage(re *oauth2.RetrieveError, fallback string) string {
+	if re.ErrorDescription != "" {
+		return re.ErrorDescription
+	}
+	if re.ErrorCode != "" {
+		return re.ErrorCode
+	}
+	return fallback
+}
+
+// tokenScopeString pulls the `scope` field out of the token response.
+// oauth2.Token doesn't promote it to a struct field; it lives in the
+// Raw map. GitHub returns a comma-separated string.
+func tokenScopeString(tok *oauth2.Token) string {
+	if tok == nil {
+		return ""
+	}
+	if v, ok := tok.Extra("scope").(string); ok {
+		return v
+	}
+	return ""
+}
+
+// parseScopes splits GitHub's comma-separated scope string into a
+// slice. Empty input yields nil so the JSON encodes as "scopes":[]
+// rather than the zero slice.
 func parseScopes(s string) []string {
 	if s = strings.TrimSpace(s); s == "" {
 		return nil

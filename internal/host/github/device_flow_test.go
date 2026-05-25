@@ -35,6 +35,10 @@ type fakeGitHub struct {
 	userLogin      string
 	userID         int64
 	gotAccessToken string
+	// userAgents holds the UA header seen on every inbound request,
+	// in arrival order. Lets one test assert the manager's UA is sent
+	// across both the auth and api endpoints.
+	userAgents []string
 }
 
 // tokenStep is what fakeGitHub returns for one call to /login/oauth/access_token.
@@ -66,6 +70,9 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 }
 
 func (fg *fakeGitHub) handleAuth(w http.ResponseWriter, r *http.Request) {
+	fg.mu.Lock()
+	fg.userAgents = append(fg.userAgents, r.Header.Get("User-Agent"))
+	fg.mu.Unlock()
 	switch r.URL.Path {
 	case "/login/device/code":
 		fg.deviceCodeReqs.Add(1)
@@ -127,6 +134,9 @@ func (fg *fakeGitHub) handleAuth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (fg *fakeGitHub) handleAPI(w http.ResponseWriter, r *http.Request) {
+	fg.mu.Lock()
+	fg.userAgents = append(fg.userAgents, r.Header.Get("User-Agent"))
+	fg.mu.Unlock()
 	switch r.URL.Path {
 	case "/user":
 		fg.userReqs.Add(1)
@@ -233,10 +243,24 @@ func TestDeviceFlow_PendingThenSuccess(t *testing.T) {
 	if fg.clientID != wantClient {
 		t.Errorf("clientID sent to GitHub = %q, want %q", fg.clientID, wantClient)
 	}
-	if fg.scope != scopeRepoAndUser {
-		t.Errorf("scope sent to GitHub = %q, want %q", fg.scope, scopeRepoAndUser)
+	wantScope := strings.Join(requestedScopes(), " ")
+	if fg.scope != wantScope {
+		t.Errorf("scope sent to GitHub = %q, want %q", fg.scope, wantScope)
 	}
+	uas := append([]string(nil), fg.userAgents...)
 	fg.mu.Unlock()
+
+	// Every outbound request must carry our User-Agent — GitHub
+	// requires it on most endpoints, and the migration to oauth2 +
+	// go-github means we rely on a shared RoundTripper to inject it.
+	if len(uas) == 0 {
+		t.Fatal("expected at least one inbound request, got 0")
+	}
+	for i, ua := range uas {
+		if ua != userAgent {
+			t.Errorf("request[%d] User-Agent = %q, want %q", i, ua, userAgent)
+		}
+	}
 }
 
 func TestDeviceFlow_Denied(t *testing.T) {

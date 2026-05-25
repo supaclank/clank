@@ -49,13 +49,33 @@ type Manager struct {
 // env var, or laptop dev runs without one).
 func NewManager(homeDir, clientID string) *Manager {
 	return &Manager{
-		store:            NewStore(homeDir),
-		httpc:            &http.Client{Timeout: 30 * time.Second},
+		store: NewStore(homeDir),
+		httpc: &http.Client{
+			Timeout: 30 * time.Second,
+			// Inject our User-Agent on every outbound request — GitHub
+			// requires it on most endpoints, and both oauth2 and
+			// go-github reach through this client.
+			Transport: &userAgentTransport{base: http.DefaultTransport},
+		},
 		clientID:         clientID,
 		authBaseURL:      defaultAuthBaseURL,
 		apiBaseURL:       defaultAPIBaseURL,
 		pollSafetyMargin: defaultPollSafetyMargin,
 	}
+}
+
+// userAgentTransport sets a fixed User-Agent on every outbound
+// request. Required because oauth2 and go-github both use whatever
+// http.Client we hand them; neither sets a UA themselves.
+type userAgentTransport struct {
+	base http.RoundTripper
+}
+
+func (t *userAgentTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", userAgent)
+	}
+	return t.base.RoundTrip(req)
 }
 
 // SetPollSafetyMargin overrides the slack added to each device-flow

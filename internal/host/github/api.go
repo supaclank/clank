@@ -1,21 +1,23 @@
 package github
 
-// HTTP plumbing for outbound calls to github.com (OAuth endpoints)
-// and api.github.com (user info, PR creation). Base URLs are
-// overridable so tests can point at an httptest.Server. The Manager
-// owns one *http.Client and two base URLs; helpers in this file and
-// in user.go / pr.go construct requests against them.
+// Builders for the two SDK clients we use outbound:
+//   - golang.org/x/oauth2 for the device flow (against github.com)
+//   - github.com/google/go-github for the REST API (api.github.com)
+//
+// Both honor base URLs overridable via SetAuthBaseURL / SetAPIBaseURL
+// so tests can swap in an httptest.Server. The Manager owns one
+// *http.Client and feeds it into both SDKs.
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
-	"net/http"
+	"net/url"
 	"strings"
+
+	gogithub "github.com/google/go-github/v66/github"
+	"golang.org/x/oauth2"
 )
 
-// Default base URLs. Overridable per-Manager via SetAuthBaseURL /
-// SetAPIBaseURL so tests can swap in an httptest.Server.
 const (
 	defaultAuthBaseURL = "https://github.com"
 	defaultAPIBaseURL  = "https://api.github.com"
@@ -35,51 +37,57 @@ func (m *Manager) SetAuthBaseURL(u string) {
 }
 
 // SetAPIBaseURL overrides the api.github.com base URL for user info
-// and (PR 3) pull-request creation.
+// and PR creation.
 func (m *Manager) SetAPIBaseURL(u string) {
 	if u != "" {
 		m.apiBaseURL = u
 	}
 }
 
-// doJSON sends req, decodes a 200 JSON body into out, and surfaces
-// non-2xx responses as errors carrying the server-side message.
-// Caller sets headers and body — this is just the round-trip and
-// decode.
-func (m *Manager) doJSON(req *http.Request, out any) error {
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Accept", "application/json")
-	resp, err := m.httpc.Do(req)
-	if err != nil {
-		return fmt.Errorf("request: %w", err)
+// oauth2Config builds the per-Manager oauth2.Config. Endpoint URLs
+// derive from m.authBaseURL so tests pointing at httptest.Server keep
+// working unchanged.
+func (m *Manager) oauth2Config() *oauth2.Config {
+	return &oauth2.Config{
+		ClientID: m.clientID,
+		Scopes:   requestedScopes(),
+		Endpoint: oauth2.Endpoint{
+			DeviceAuthURL: m.authBaseURL + "/login/device/code",
+			TokenURL:      m.authBaseURL + "/login/oauth/access_token",
+			// GitHub's device flow has no client_secret; we want
+			// client_id in the body, not a probe-retry against Basic
+			// auth that swallows a polling response on every error.
+			AuthStyle: oauth2.AuthStyleInParams,
+		},
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		// Surface transport truncation as a clear read error rather
-		// than letting json.Unmarshal complain about a partial body.
-		return fmt.Errorf("read response body: %w", err)
-	}
-	if resp.StatusCode/100 != 2 {
-		return &HTTPError{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
-	}
-	if out == nil {
-		return nil
-	}
-	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("decode: %w", err)
-	}
-	return nil
 }
 
-// HTTPError carries a non-2xx response from GitHub up to callers so
-// they can map specific status codes to typed errors (e.g. 401 → token
-// invalid, 422 → already exists).
-type HTTPError struct {
-	Status int
-	Body   string
+// oauth2Context wraps ctx so the oauth2 package uses m.httpc for the
+// device-flow calls. oauth2 reads the client out of context via the
+// oauth2.HTTPClient key — see internal.ContextClient.
+func (m *Manager) oauth2Context(parent context.Context) context.Context {
+	return context.WithValue(parent, oauth2.HTTPClient, m.httpc)
 }
 
-func (e *HTTPError) Error() string {
-	return fmt.Sprintf("github http %d: %s", e.Status, e.Body)
+// apiClient builds an authenticated go-github client pointed at
+// m.apiBaseURL. Returns an error only when m.apiBaseURL is set to
+// something url.Parse rejects (test misconfiguration).
+func (m *Manager) apiClient(token string) (*gogithub.Client, error) {
+	c := gogithub.NewClient(m.httpc).WithAuthToken(token)
+	c.UserAgent = userAgent
+	if m.apiBaseURL == defaultAPIBaseURL {
+		return c, nil
+	}
+	// go-github concatenates path segments onto BaseURL, so a trailing
+	// slash is required. httptest.Server URLs don't carry one.
+	base := m.apiBaseURL
+	if !strings.HasSuffix(base, "/") {
+		base += "/"
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return nil, fmt.Errorf("parse api base url: %w", err)
+	}
+	c.BaseURL = u
+	return c, nil
 }
