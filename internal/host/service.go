@@ -23,6 +23,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/git"
+	githubpkg "github.com/acksell/clank/internal/host/github"
 	"github.com/acksell/clank/internal/host/petname"
 	"github.com/acksell/clank/internal/host/store"
 	"github.com/acksell/clank/internal/keepalive"
@@ -42,6 +43,7 @@ type Service struct {
 	startedAt       time.Time
 	backendManagers map[agent.BackendType]agent.BackendManager
 	auth            *AuthManager
+	github          *githubpkg.Manager
 	log             *log.Logger
 
 	mu       sync.RWMutex
@@ -116,6 +118,13 @@ type Options struct {
 	// — laptop mode default. Construct via notifier.New in
 	// cmd/clank-host/main.go.
 	NotifierLoop *notifier.Loop
+
+	// GitHubOAuthClientID is the Clank GitHub OAuth App's client_id,
+	// used by the host's GitHub Connect device flow. Empty disables
+	// the connect surface (status reports available:false). When
+	// non-empty, takes precedence over the CLANK_GITHUB_OAUTH_CLIENT_ID
+	// env var the laptop's clank-host inherits from clankd.
+	GitHubOAuthClientID string
 }
 
 // New creates a Service. Panics on missing BackendManagers — fast
@@ -179,12 +188,32 @@ func New(opts Options) *Service {
 		}
 	}
 
+	// GitHub Connect: one manager per host. ClientID prefers the
+	// Options field (set by clank-host's --github-oauth-client-id
+	// flag); empty Options value falls back to the env var so laptop
+	// dev runs that didn't pass the flag still work. Empty in both
+	// places is a valid state — the manager reports available:false
+	// and the UI hides the connect entry.
+	clientID := opts.GitHubOAuthClientID
+	if clientID == "" {
+		clientID = os.Getenv(githubpkg.ClientIDEnv)
+	}
+	if home, herr := os.UserHomeDir(); herr != nil {
+		s.log.Printf("github manager unavailable: %v", herr)
+	} else {
+		s.github = githubpkg.NewManager(home, clientID)
+	}
+
 	return s
 }
 
 // Auth returns the AuthManager, or nil when the OpenCode backend
 // isn't registered. Callers must nil-check.
 func (s *Service) Auth() *AuthManager { return s.auth }
+
+// GitHub returns the GitHub Connect manager, or nil when home-dir
+// resolution failed at construction. Callers must nil-check.
+func (s *Service) GitHub() *githubpkg.Manager { return s.github }
 
 // ID returns the host's ID.
 func (s *Service) ID() string { return s.id }

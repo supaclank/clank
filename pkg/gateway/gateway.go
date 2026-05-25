@@ -155,6 +155,17 @@ func (g *Gateway) Handler() http.Handler {
 	// these gateway-orchestrated handlers) instead of the sync server.
 	mx.HandleFunc("POST /v1/worktrees/create", g.handleCreateWorktree)
 	mx.HandleFunc("POST /v1/worktrees/list-branches", g.handleListBranches)
+
+	// GitHub Connect: status/disconnect/connect-flow/create-PR are
+	// all pure proxies to the user's host. Mounted before the /v1/
+	// catch-all for the same reason as the worktree routes above.
+	mx.HandleFunc("GET /v1/github/status", g.handleGitHubStatus)
+	mx.HandleFunc("DELETE /v1/github", g.handleGitHubDisconnect)
+	mx.HandleFunc("POST /v1/github/connect/start", g.handleGitHubConnectStart)
+	mx.HandleFunc("GET /v1/github/connect/status", g.handleGitHubConnectStatus)
+	mx.HandleFunc("POST /v1/github/connect/cancel", g.handleGitHubConnectCancel)
+	mx.HandleFunc("POST /v1/worktrees/{id}/pr", g.handleGitHubCreatePR)
+	mx.HandleFunc("POST /v1/worktrees/{id}/pr/preview", g.handleGitHubPreviewPR)
 	if g.cfg.Sync != nil {
 		// POST /v1/migrate/worktrees/{id} is more specific and wins
 		// over the /v1/ prefix registered here.
