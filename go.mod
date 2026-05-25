@@ -21,10 +21,12 @@ require (
 	github.com/daytonaio/daytona/libs/api-client-go v0.170.0
 	github.com/daytonaio/daytona/libs/sdk-go v0.170.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
+	github.com/google/go-github/v66 v66.0.0
 	github.com/hinshun/vt10x v0.0.0-20220301184237-5011da428d02
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/spf13/cobra v1.10.2
 	github.com/superfly/sprites-go v0.0.0-20260421132718-b8bf80ad51d3
+	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.20.0
 	modernc.org/sqlite v1.47.0
 )
@@ -50,6 +52,7 @@ require (
 	github.com/daytonaio/daytona/libs/toolbox-api-client-go v0.170.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect

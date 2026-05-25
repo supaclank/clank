@@ -92,14 +92,15 @@ func buildFlyIOProvisioner(opts ServerOptions, st *store.Store, prefs config.Pre
 		return nil, nil, fmt.Errorf("flyio provisioner: preferences.flyio.api_token required")
 	}
 	prov, err := flyioprov.New(flyioprov.Options{
-		APIToken:           prefs.FlyIO.APIToken,
-		OrganizationSlug:   prefs.FlyIO.OrganizationSlug,
-		Region:             prefs.FlyIO.Region,
-		SpriteNamePrefix:   prefs.FlyIO.SpriteNamePrefix,
-		RamMB:              prefs.FlyIO.RamMB,
-		CPUs:               prefs.FlyIO.CPUs,
-		StorageGB:          prefs.FlyIO.StorageGB,
-		NotifierWebhookURL: notifierWebhookURL(),
+		APIToken:            prefs.FlyIO.APIToken,
+		OrganizationSlug:    prefs.FlyIO.OrganizationSlug,
+		Region:              prefs.FlyIO.Region,
+		SpriteNamePrefix:    prefs.FlyIO.SpriteNamePrefix,
+		RamMB:               prefs.FlyIO.RamMB,
+		CPUs:                prefs.FlyIO.CPUs,
+		StorageGB:           prefs.FlyIO.StorageGB,
+		NotifierWebhookURL:  notifierWebhookURL(),
+		GitHubOAuthClientID: os.Getenv("CLANK_GITHUB_OAUTH_CLIENT_ID"),
 	}, st, log.Default())
 	if err != nil {
 		return nil, nil, fmt.Errorf("build flyio provisioner: %w", err)
