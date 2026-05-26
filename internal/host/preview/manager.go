@@ -144,8 +144,16 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, previe
 	}
 	if existing, ok := m.servers[worktreeID]; ok {
 		snap := existing.snapshot()
-		m.mu.Unlock()
-		return snap, nil
+		// Only honor live records. A Failed or Stopped entry comes from
+		// the wait goroutine seeing the child die — without eviction
+		// here, the user would be stuck with the stale snapshot forever
+		// (no path to respawn except an explicit /stop first).
+		if snap.State == StateReady || snap.State == StateStarting {
+			m.mu.Unlock()
+			return snap, nil
+		}
+		delete(m.servers, worktreeID)
+		delete(m.proxies, worktreeID)
 	}
 	m.mu.Unlock()
 

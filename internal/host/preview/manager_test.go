@@ -74,6 +74,62 @@ func TestManagerStartIdempotent(t *testing.T) {
 	}
 }
 
+// TestManagerStartRespawnsAfterFailure pins the stale-entry eviction
+// in Start. Without it, a crashed Metro leaves a Failed snapshot in
+// the map and every subsequent Start returns that snapshot — the user
+// is stuck until they explicitly /stop. Regression for cubic#2.
+func TestManagerStartRespawnsAfterFailure(t *testing.T) {
+	t.Parallel()
+	m := New(Options{StopGrace: 1 * time.Second})
+	defer m.Shutdown()
+
+	dir := fixtureExpoWorkDir(t)
+	wid := "wt-respawn"
+
+	// First start: script never serves /status, probe times out fast,
+	// state ends as Failed.
+	deadSpec := testSpec([]string{"sh", "-c", "sleep 30"})
+	first, err := m.startWithSpec(context.Background(), wid, dir, "http://localhost:8080/preview/wt-respawn", deadSpec, 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+	if first.State != StateStarting {
+		t.Fatalf("first start: want StateStarting (probe still running), got %s", first.State)
+	}
+	waitForStateVia(t, m, wid, dir, StateFailed, 2*time.Second)
+
+	// Second start with a healthy stub: must spawn fresh, not return
+	// the cached Failed snapshot.
+	liveSpec := testSpec(fakeMetroScript(""))
+	second, err := m.startWithSpec(context.Background(), wid, dir, "http://localhost:8080/preview/wt-respawn", liveSpec, 0)
+	if err != nil {
+		t.Fatalf("second start: %v", err)
+	}
+	if second.State == StateFailed {
+		t.Fatalf("second start returned stale Failed snapshot — eviction is broken")
+	}
+	if second.Port == first.Port {
+		t.Fatalf("second start reused the same port (%d) — likely no fresh spawn", first.Port)
+	}
+	waitForStateVia(t, m, wid, dir, StateReady, 5*time.Second)
+}
+
+// waitForStateVia polls Manager.Status (not running.snapshot directly)
+// so tests stay on the public surface.
+func waitForStateVia(t *testing.T, m *Manager, wid, workDir string, want State, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		s, _ := m.Status(context.Background(), wid, workDir)
+		if s.State == want {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	s, _ := m.Status(context.Background(), wid, workDir)
+	t.Fatalf("state never reached %s within %s (last=%s)", want, timeout, s.State)
+}
+
 // TestManagerStartNotPreviewable confirms Start fast-fails on a
 // non-Expo worktree without leaving anything behind.
 func TestManagerStartNotPreviewable(t *testing.T) {
@@ -180,15 +236,19 @@ func TestManagerProxyEndToEnd(t *testing.T) {
 		t.Fatalf("start returned zero port")
 	}
 
-	// Wait for state to flip to Ready (script prints the sentinel
-	// right after the listener binds).
+	// Wait for state to flip to Ready (probe hits /status on the stub).
 	deadline := time.Now().Add(5 * time.Second)
+	var lastState State
 	for time.Now().Before(deadline) {
 		s, _ := m.Status(context.Background(), wid, dir)
-		if s.State == StateReady {
+		lastState = s.State
+		if lastState == StateReady {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	if lastState != StateReady {
+		t.Fatalf("state never reached ready within 5s (last=%s); proxy request below would just surface as 502/refused", lastState)
 	}
 
 	// Drive a request through ProxyHandler.

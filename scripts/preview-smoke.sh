@@ -81,6 +81,12 @@ for i in {1..30}; do
   sleep 0.1
 done
 
+if ! grep -q "listening on tcp://" /tmp/clank-host-smoke.log 2>/dev/null; then
+  echo "clank-host did not emit 'listening' within 3s but is still alive — aborting before STEP 1 produces confusing curl errors. log:" >&2
+  cat /tmp/clank-host-smoke.log >&2
+  exit 1
+fi
+
 echo
 echo "==> STEP 1: GET /preview/status (expect Available=true, State=stopped)"
 status_json="$(curl -sS "http://127.0.0.1:${HOST_PORT}/worktrees/${WID}/preview/status")"
