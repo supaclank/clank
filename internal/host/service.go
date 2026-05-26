@@ -25,6 +25,7 @@ import (
 	"github.com/acksell/clank/internal/git"
 	githubpkg "github.com/acksell/clank/internal/host/github"
 	"github.com/acksell/clank/internal/host/petname"
+	"github.com/acksell/clank/internal/host/preview"
 	"github.com/acksell/clank/internal/host/store"
 	"github.com/acksell/clank/internal/keepalive"
 	"github.com/acksell/clank/internal/notifier"
@@ -82,6 +83,13 @@ type Service struct {
 	// the two consume the same fan-out at different granularity.
 	notifierLoop *notifier.Loop
 	notifierStop context.CancelFunc
+
+	// preview owns per-worktree dev-server lifecycle (Metro for Expo
+	// in v1). Constructed unconditionally in New — preview is a pure
+	// in-memory feature with no external dependencies, so there's
+	// nothing to gate on. Bump callback wired to keepaliveLoop when
+	// it exists so proxy traffic counts as activity.
+	preview *preview.Manager
 }
 
 // Options configures a Service at construction time.
@@ -160,6 +168,23 @@ func New(opts Options) *Service {
 	if opts.NotifierLoop != nil {
 		s.notifierLoop = opts.NotifierLoop
 	}
+
+	// Preview manager. Bump is wired as belt-and-suspenders — Fly's
+	// per-machine hibernation tracks active connections, so an open
+	// HMR WebSocket should already keep the sprite hot; and the prompt
+	// box's SSE through clank-host is the steady-state activity signal
+	// regardless. Cost of the bump is a coalesced non-blocking channel
+	// send per request, so we keep it until we've verified the
+	// assumption end-to-end. nil on laptop dev (no keepalive listener)
+	// is a no-op inside the manager.
+	var previewBump func()
+	if s.keepaliveLoop != nil {
+		previewBump = s.keepaliveLoop.Bump
+	}
+	s.preview = preview.New(preview.Options{
+		Bump: previewBump,
+		Log:  lg,
+	})
 
 	// AuthManager handles credentials for every backend that has
 	// connectable providers (OpenCode + Anthropic today). The restart
@@ -308,6 +333,12 @@ func (s *Service) Shutdown() {
 	}
 	if s.subscribers != nil {
 		s.subscribers.CloseAll()
+	}
+	// Stop preview servers before keepalive: a running preview keeps
+	// bumping the loop on every proxy request, and we want those
+	// stopped before the keepalive listener tears down.
+	if s.preview != nil {
+		s.preview.Shutdown()
 	}
 	s.stopKeepalive()
 	s.stopNotifier()
@@ -708,7 +739,10 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 		fi, err := os.Stat(base)
 		switch {
 		case os.IsNotExist(err):
-			return "", fmt.Errorf("worktree %s not present at %s — run MigrateWorktree first (or `clank push` to sync, then migrate)", ref.WorktreeID, base)
+			// Wrap ErrNotFound so writeError can map to 404. Other
+			// workDirFor returns are caller-bug (relative paths, etc.)
+			// and stay as 500.
+			return "", fmt.Errorf("%w: worktree %s not present at %s — run MigrateWorktree first (or `clank push` to sync, then migrate)", ErrNotFound, ref.WorktreeID, base)
 		case err != nil:
 			return "", fmt.Errorf("stat worktree dir %q: %w", base, err)
 		case !fi.IsDir():
