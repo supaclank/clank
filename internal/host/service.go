@@ -87,8 +87,7 @@ type Service struct {
 	// preview owns per-worktree dev-server lifecycle (Metro for Expo
 	// in v1). Constructed unconditionally in New — preview is a pure
 	// in-memory feature with no external dependencies, so there's
-	// nothing to gate on. Bump callback wired to keepaliveLoop when
-	// it exists so proxy traffic counts as activity.
+	// nothing to gate on.
 	preview *preview.Manager
 }
 
@@ -169,22 +168,12 @@ func New(opts Options) *Service {
 		s.notifierLoop = opts.NotifierLoop
 	}
 
-	// Preview manager. Bump is wired as belt-and-suspenders — Fly's
-	// per-machine hibernation tracks active connections, so an open
-	// HMR WebSocket should already keep the sprite hot; and the prompt
-	// box's SSE through clank-host is the steady-state activity signal
-	// regardless. Cost of the bump is a coalesced non-blocking channel
-	// send per request, so we keep it until we've verified the
-	// assumption end-to-end. nil on laptop dev (no keepalive listener)
-	// is a no-op inside the manager.
-	var previewBump func()
-	if s.keepaliveLoop != nil {
-		previewBump = s.keepaliveLoop.Bump
-	}
-	s.preview = preview.New(preview.Options{
-		Bump: previewBump,
-		Log:  lg,
-	})
+	// Preview manager. No keepalive wiring — Fly's per-machine
+	// hibernation tracks active connections (open HMR WebSocket counts),
+	// and the prompt-box SSE through clank-host is the steady-state
+	// activity signal anyway. If hibernation ever bites mid-HMR,
+	// reintroduce a Bump callback on preview.Options.
+	s.preview = preview.New(preview.Options{Log: lg})
 
 	// AuthManager handles credentials for every backend that has
 	// connectable providers (OpenCode + Anthropic today). The restart
@@ -334,9 +323,6 @@ func (s *Service) Shutdown() {
 	if s.subscribers != nil {
 		s.subscribers.CloseAll()
 	}
-	// Stop preview servers before keepalive: a running preview keeps
-	// bumping the loop on every proxy request, and we want those
-	// stopped before the keepalive listener tears down.
 	if s.preview != nil {
 		s.preview.Shutdown()
 	}

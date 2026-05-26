@@ -38,12 +38,6 @@ type Options struct {
 	// StopGrace is the SIGTERM→SIGKILL window. Zero uses DefaultStopGrace.
 	StopGrace time.Duration
 
-	// Bump is invoked on every proxy request before the request is
-	// forwarded. Wire to internal/keepalive Loop.Bump so previewing
-	// counts as "user is active" and the sprite doesn't hibernate
-	// mid-HMR. Nil disables the bump entirely (laptop dev mode).
-	Bump func()
-
 	// Log is the logger; nil falls back to the default logger.
 	Log *log.Logger
 }
@@ -54,7 +48,6 @@ type Options struct {
 type Manager struct {
 	idleTimeout time.Duration
 	stopGrace   time.Duration
-	bump        func()
 	log         *log.Logger
 
 	mu       sync.Mutex
@@ -88,7 +81,6 @@ func New(opts Options) *Manager {
 	m := &Manager{
 		idleTimeout: opts.IdleTimeout,
 		stopGrace:   opts.StopGrace,
-		bump:        opts.Bump,
 		log:         opts.Log,
 		servers:     make(map[string]*running),
 		proxies:     make(map[string]*httputil.ReverseProxy),
@@ -252,9 +244,12 @@ func (m *Manager) Status(_ context.Context, worktreeID, workDir string) (Status,
 // from the request path and forwards to the running dev server for
 // worktreeID. 404s when no server is running.
 //
-// Every successful dispatch bumps lastTouch (for the idle reaper) and
-// calls the keepalive Bump callback (so an active preview holds the
-// sprite awake).
+// Every successful dispatch bumps lastTouch (for the idle reaper).
+// Sprite-hibernation interaction is intentionally NOT plumbed here —
+// Fly tracks open connections to the host service, and the
+// prompt-box SSE stream through clank-host is the steady-state
+// activity signal regardless. If hibernation ever bites mid-HMR,
+// reintroduce a keepalive.Bump callback here.
 //
 // prefixToStrip is what comes before the dev server's path — e.g.
 // "/worktrees/<wid>/preview/proxy". The handler trims this so Metro
@@ -273,9 +268,6 @@ func (m *Manager) ProxyHandler(worktreeID, prefixToStrip string) http.Handler {
 		r.mu.Lock()
 		r.lastTouch = time.Now()
 		r.mu.Unlock()
-		if m.bump != nil {
-			m.bump()
-		}
 
 		// Strip the route prefix in place. Mirrors gateway/proxy.go's
 		// singleJoiningSlash dance: leave a single leading slash so
