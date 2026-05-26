@@ -2,12 +2,18 @@ package host
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"net/http"
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host/preview"
 )
+
+// ErrPreviewUnavailable is returned by every PreviewXxx method when
+// host.Service has no preview.Manager wired (today: only in tests that
+// construct Service via host.New with a custom path). Exported as a
+// sentinel so callers can errors.Is rather than string-match.
+var ErrPreviewUnavailable = errors.New("preview: manager not configured on this host")
 
 // PreviewStart resolves worktreeID to a workdir and asks the preview
 // manager to spawn the dev server. Idempotent — a second call for the
@@ -19,7 +25,7 @@ import (
 // laptop curl tests pick localhost. clank-host cannot guess.
 func (s *Service) PreviewStart(ctx context.Context, worktreeID, previewURLBase string) (preview.Status, error) {
 	if s.preview == nil {
-		return preview.Status{}, fmt.Errorf("preview: manager not configured on this host")
+		return preview.Status{}, ErrPreviewUnavailable
 	}
 	workDir, err := s.workDirFor(ctx, agent.GitRef{WorktreeID: worktreeID})
 	if err != nil {
@@ -32,7 +38,7 @@ func (s *Service) PreviewStart(ctx context.Context, worktreeID, previewURLBase s
 // when nothing's running — the mux maps it to 404.
 func (s *Service) PreviewStop(_ context.Context, worktreeID string) error {
 	if s.preview == nil {
-		return fmt.Errorf("preview: manager not configured on this host")
+		return ErrPreviewUnavailable
 	}
 	return s.preview.Stop(worktreeID)
 }
@@ -41,7 +47,7 @@ func (s *Service) PreviewStop(_ context.Context, worktreeID string) error {
 // Runs Detect every call so the Available bit reflects on-disk truth.
 func (s *Service) PreviewStatus(ctx context.Context, worktreeID string) (preview.Status, error) {
 	if s.preview == nil {
-		return preview.Status{}, fmt.Errorf("preview: manager not configured on this host")
+		return preview.Status{}, ErrPreviewUnavailable
 	}
 	workDir, err := s.workDirFor(ctx, agent.GitRef{WorktreeID: worktreeID})
 	if err != nil {
@@ -70,7 +76,7 @@ func (s *Service) PreviewLogs(worktreeID string) []byte {
 func (s *Service) PreviewProxyHandler(worktreeID, prefixToStrip string) http.Handler {
 	if s.preview == nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			http.Error(w, "preview: manager not configured on this host", http.StatusServiceUnavailable)
+			http.Error(w, ErrPreviewUnavailable.Error(), http.StatusServiceUnavailable)
 		})
 	}
 	return s.preview.ProxyHandler(worktreeID, prefixToStrip)

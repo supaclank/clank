@@ -114,7 +114,14 @@ func TestSpawnReadinessTimeoutFails(t *testing.T) {
 	t.Cleanup(func() { r.stopWithGrace(1 * time.Second) })
 
 	waitForState(t, r, StateFailed, 2*time.Second)
-	if r.lastErr == "" {
+	// lastErr is written under r.mu by probeReady; happens-before via
+	// waitForState's lock makes the unlocked read incidentally safe
+	// today, but pin the contract explicitly so a future waitForState
+	// refactor can't turn it into a race.
+	r.mu.Lock()
+	gotErr := r.lastErr
+	r.mu.Unlock()
+	if gotErr == "" {
 		t.Errorf("expected lastErr to be set on readiness timeout")
 	}
 }
