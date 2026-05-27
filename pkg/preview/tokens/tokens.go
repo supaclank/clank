@@ -121,10 +121,22 @@ func ParseHost(host, rootDomain string) (string, bool) {
 	return token, true
 }
 
-// URLFor returns the canonical https:// URL a client uses to reach
-// the preview. The path the caller wants is appended to "/" so the
-// returned URL is a valid base.
-func URLFor(token, rootDomain string) string {
-	u := url.URL{Scheme: "https", Host: HostFor(token, rootDomain), Path: "/"}
+// URLFor returns the canonical URL a client uses to reach the
+// preview. scheme + port mirror the API request that minted the
+// route — so cloud deploys get https + no port, and local docker
+// dev gets http + the gateway's listen port. The path the caller
+// wants is appended to "/" so the returned URL is a valid base.
+//
+// scheme defaults to "https" when empty (callers without request
+// context can still use the default cloud shape).
+func URLFor(token, rootDomain, scheme, port string) string {
+	if scheme == "" {
+		scheme = "https"
+	}
+	host := HostFor(token, rootDomain)
+	if port != "" {
+		host = host + ":" + port
+	}
+	u := url.URL{Scheme: scheme, Host: host, Path: "/"}
 	return u.String()
 }

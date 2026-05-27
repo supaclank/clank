@@ -23,10 +23,15 @@ func TestSpawnReachesReady(t *testing.T) {
 		CmdTemplate: fakeMetroScript(""),
 		ReadyProbe:  expoReadyProbe,
 	}
+	port, err := allocatePort()
+	if err != nil {
+		t.Fatalf("allocatePort: %v", err)
+	}
 	r, err := spawn(ctx, spawnRequest{
-		WorkDir:        t.TempDir(),
-		Spec:           spec,
+		WorkDir:     t.TempDir(),
+		Spec:        spec,
 		ServiceName: "default",
+		Port:        port,
 	})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
@@ -58,10 +63,15 @@ func TestSpawnAndOrphanCleanup(t *testing.T) {
 		CmdTemplate: fakeMetroScript("(sleep 30 &)"),
 		ReadyProbe:  expoReadyProbe,
 	}
+	port, err := allocatePort()
+	if err != nil {
+		t.Fatalf("allocatePort: %v", err)
+	}
 	r, err := spawn(ctx, spawnRequest{
-		WorkDir:        t.TempDir(),
-		Spec:           spec,
+		WorkDir:     t.TempDir(),
+		Spec:        spec,
 		ServiceName: "default",
+		Port:        port,
 	})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
@@ -102,11 +112,16 @@ func TestSpawnReadinessTimeoutFails(t *testing.T) {
 		CmdTemplate: []string{"sh", "-c", "sleep 30"}, // never serves /status
 		ReadyProbe:  expoReadyProbe,
 	}
+	port, err := allocatePort()
+	if err != nil {
+		t.Fatalf("allocatePort: %v", err)
+	}
 	r, err := spawn(ctx, spawnRequest{
-		WorkDir:        t.TempDir(),
-		Spec:           spec,
-		ServiceName: "default",
-		ReadyTimeout:   500 * time.Millisecond,
+		WorkDir:      t.TempDir(),
+		Spec:         spec,
+		ServiceName:  "default",
+		Port:         port,
+		ReadyTimeout: 500 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
@@ -179,27 +194,21 @@ func waitForGroupEmpty(t *testing.T, pgid int, timeout time.Duration) int {
 	return psCountForGroup(t, pgid)
 }
 
-// TestBuildEnv_OmitsDeprecatedExpoHostnameVars pins the regression
-// motivating the WSS-tunnel architecture: V1 set
-// REACT_NATIVE_PACKAGER_HOSTNAME and EXPO_PACKAGER_PROXY_URL to bake
-// the public hostname into Metro's manifest URLs, which forced the
-// JSON-body URL rewriter in clank-host's proxy. The current design
-// has the gateway preserve Host on the proxied request so Metro
-// builds manifest URLs from r.Host directly — and these env vars
-// must NOT be set, or Metro would override the per-request hostname
-// with a stale baked-in one.
-//
-// Both env vars are also marked @deprecated in the Expo source —
-// re-adding them would make us liable to a silent future SDK break.
-func TestBuildEnv_OmitsDeprecatedExpoHostnameVars(t *testing.T) {
+// TestBuildEnv_EmptyPublicURL_OmitsProxyVar pins the laptop-dev
+// path: with no gateway wired, no PublicURL is threaded into spawn
+// and buildEnv must NOT set EXPO_PACKAGER_PROXY_URL — Metro then
+// advertises its localhost URL directly and the user opens it as-is.
+// REACT_NATIVE_PACKAGER_HOSTNAME is never set (it can't override the
+// port half — see Expo's UrlCreator.ts).
+func TestBuildEnv_EmptyPublicURL_OmitsProxyVar(t *testing.T) {
 	t.Parallel()
-	env := buildEnv()
+	env := buildEnv("")
 	for _, e := range env {
 		if strings.HasPrefix(e, "REACT_NATIVE_PACKAGER_HOSTNAME=") {
-			t.Errorf("buildEnv set REACT_NATIVE_PACKAGER_HOSTNAME — would override per-request Host: %q", e)
+			t.Errorf("buildEnv set REACT_NATIVE_PACKAGER_HOSTNAME — overrides only the hostname half: %q", e)
 		}
 		if strings.HasPrefix(e, "EXPO_PACKAGER_PROXY_URL=") {
-			t.Errorf("buildEnv set EXPO_PACKAGER_PROXY_URL — would override per-request Host: %q", e)
+			t.Errorf("buildEnv with empty publicURL set EXPO_PACKAGER_PROXY_URL: %q", e)
 		}
 	}
 	// Sanity: EXPO_NO_DOTENV is still set (Metro shouldn't load the
@@ -213,6 +222,106 @@ func TestBuildEnv_OmitsDeprecatedExpoHostnameVars(t *testing.T) {
 	}
 	if !sawNoDotenv {
 		t.Error("buildEnv missing EXPO_NO_DOTENV=1")
+	}
+}
+
+// TestBuildEnv_OmitsCI pins the lesson from a debugging session: setting
+// CI=true (or =1) in Metro's env makes Metro disable file watching +
+// HMR ("Metro is running in CI mode, reloads are disabled"). The
+// codebase MUST suppress interactive prompts via narrower flags
+// (--non-interactive on the argv, npm_config_yes for npm) instead.
+// If we ever add CI here again, HMR silently breaks for every
+// preview launch.
+func TestBuildEnv_OmitsCI(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ name, url string }{
+		{"empty", ""},
+		{"with-public-url", "http://preview-abc.localhost:7878"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			for _, e := range buildEnv(c.url) {
+				if strings.HasPrefix(e, "CI=") {
+					t.Errorf("buildEnv leaked CI to child process — disables Metro HMR: %q", e)
+				}
+			}
+		})
+	}
+}
+
+// TestBuildEnv_PublicURL_SetsProxyVar pins the gateway-wired path:
+// the public URL minted by the gateway's register webhook gets
+// threaded into EXPO_PACKAGER_PROXY_URL so Metro advertises the
+// public host:port (gateway port, NOT Metro's internal listen port)
+// in its manifest's hostUri + launchAsset.url. Without this the
+// dev-launcher fetches the bundle from an unreachable port — the
+// original symptom that motivated this regression test.
+func TestBuildEnv_PublicURL_SetsProxyVar(t *testing.T) {
+	t.Parallel()
+	publicURL := "http://preview-abc.localhost:7878"
+	env := buildEnv(publicURL)
+	want := "EXPO_PACKAGER_PROXY_URL=" + publicURL
+	var saw bool
+	for _, e := range env {
+		if e == want {
+			saw = true
+			break
+		}
+	}
+	if !saw {
+		t.Errorf("buildEnv(%q) did not set %q in env", publicURL, want)
+	}
+}
+
+// TestSpawnThreadsPublicURLToChild proves the spawn → child env var
+// path end-to-end: passing PublicURL on the spawnRequest results in
+// the child process actually seeing EXPO_PACKAGER_PROXY_URL set on
+// its own environment. This is the integration the dev-launcher
+// depends on; without it the manifest URLs use Metro's internal port.
+func TestSpawnThreadsPublicURLToChild(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	publicURL := "http://preview-thread.localhost:7878"
+	envSentinel := t.TempDir() + "/child.env"
+
+	// Fake-metro that records its EXPO_PACKAGER_PROXY_URL value to
+	// disk then serves /status. The probe reads the file after Ready
+	// to confirm the var was inherited.
+	spec := Spec{
+		Kind: KindExpo,
+		CmdTemplate: []string{
+			"sh", "-c",
+			"printf '%s' \"${EXPO_PACKAGER_PROXY_URL}\" > " + envSentinel + " && " + fakeMetroBody(),
+		},
+		ReadyProbe: expoReadyProbe,
+	}
+	port, err := allocatePort()
+	if err != nil {
+		t.Fatalf("allocatePort: %v", err)
+	}
+	r, err := spawn(ctx, spawnRequest{
+		WorkDir:     t.TempDir(),
+		Spec:        spec,
+		ServiceName: "default",
+		Port:        port,
+		PublicURL:   publicURL,
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	t.Cleanup(func() { r.stopWithGrace(2 * time.Second) })
+
+	waitForState(t, r, StateReady, 5*time.Second)
+
+	got, err := readSentinel(envSentinel)
+	if err != nil {
+		t.Fatalf("read env sentinel: %v", err)
+	}
+	if got != publicURL {
+		t.Errorf("child saw EXPO_PACKAGER_PROXY_URL=%q, want %q", got, publicURL)
 	}
 }
 

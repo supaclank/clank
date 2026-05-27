@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -178,16 +179,29 @@ func parseUnix(s string) (time.Time, error) {
 	return time.Unix(n, 0), nil
 }
 
-// SignedURL returns a fully-formed https URL for token with sig +
-// exp query parameters set. Convenience for the sign endpoint.
-func SignedURL(secret []byte, token, rootDomain string, exp time.Time) (string, error) {
+// SignedURL returns a fully-formed URL for token with sig + exp
+// query parameters set.
+//
+// scheme + port come from the inbound API request (typically
+// derived via SchemeFromRequest + PortFromHost), so the URL the
+// client follows matches the same origin it's already talking to.
+// Pass scheme="https" + port="" for the standard cloud deploy;
+// scheme="http" + port="7878" for local docker dev.
+func SignedURL(secret []byte, token, rootDomain, scheme, port string, exp time.Time) (string, error) {
 	sig, err := Sign(secret, token, exp)
 	if err != nil {
 		return "", err
 	}
+	if scheme == "" {
+		scheme = "https"
+	}
+	host := HostFor(token, rootDomain)
+	if port != "" {
+		host = host + ":" + port
+	}
 	u := url.URL{
-		Scheme: "https",
-		Host:   HostFor(token, rootDomain),
+		Scheme: scheme,
+		Host:   host,
 		Path:   "/",
 	}
 	q := u.Query()
@@ -195,6 +209,42 @@ func SignedURL(secret []byte, token, rootDomain string, exp time.Time) (string, 
 	q.Set(ExpParam, strconv.FormatInt(exp.Unix(), 10))
 	u.RawQuery = q.Encode()
 	return u.String(), nil
+}
+
+// SchemeFromRequest returns "https" when the request reached us over
+// TLS (directly via r.TLS or via an upstream TLS terminator advertised
+// in X-Forwarded-Proto), otherwise "http". Used by handlers that need
+// to mint an absolute URL the client will be able to follow back.
+func SchemeFromRequest(r *http.Request) string {
+	if RequestIsHTTPS(r) {
+		return "https"
+	}
+	return "http"
+}
+
+// PortFromHost extracts the :port from an HTTP Host header, or "" if
+// the host has no explicit port (i.e. it's served on the protocol
+// default — 80 for http, 443 for https). Used to thread the API
+// listen port back into the preview host so http://localhost:7878
+// stays reachable.
+func PortFromHost(host string) string {
+	// Strip any IPv6 brackets first.
+	if i := strings.LastIndexByte(host, ':'); i >= 0 {
+		// IPv6 with port looks like "[::1]:7878" — only treat the
+		// final colon as the port separator when the segment that
+		// follows is numeric.
+		port := host[i+1:]
+		if port == "" {
+			return ""
+		}
+		for _, c := range port {
+			if c < '0' || c > '9' {
+				return ""
+			}
+		}
+		return port
+	}
+	return ""
 }
 
 // SetSignedCookies writes Set-Cookie headers carrying sig + exp on

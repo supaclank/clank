@@ -78,10 +78,25 @@ func TestHostFor_RoundTrip(t *testing.T) {
 
 func TestURLFor(t *testing.T) {
 	t.Parallel()
-	got := URLFor("abc123", "clankexample.dev")
-	want := "https://preview-abc123.clankexample.dev/"
-	if got != want {
-		t.Errorf("URLFor = %q, want %q", got, want)
+	cases := []struct {
+		name   string
+		token  string
+		root   string
+		scheme string
+		port   string
+		want   string
+	}{
+		{"cloud default", "abc123", "clankexample.dev", "https", "", "https://preview-abc123.clankexample.dev/"},
+		{"empty-scheme defaults to https", "abc123", "clankexample.dev", "", "", "https://preview-abc123.clankexample.dev/"},
+		{"local docker", "abc123", "localhost", "http", "7878", "http://preview-abc123.localhost:7878/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := URLFor(tc.token, tc.root, tc.scheme, tc.port); got != tc.want {
+				t.Errorf("URLFor = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

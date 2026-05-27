@@ -146,7 +146,7 @@ func TestSignedURL_RoundTrip(t *testing.T) {
 	t.Parallel()
 	key, _ := GenerateSigningKey()
 	exp := time.Now().Add(1 * time.Hour)
-	u, err := SignedURL(key, "tok", "clankexample.dev", exp)
+	u, err := SignedURL(key, "tok", "clankexample.dev", "https", "", exp)
 	if err != nil {
 		t.Fatalf("SignedURL: %v", err)
 	}
@@ -155,6 +155,45 @@ func TestSignedURL_RoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(u, SigParam+"=") || !strings.Contains(u, ExpParam+"=") {
 		t.Errorf("missing sig/exp in URL: %s", u)
+	}
+
+	// Local-docker shape: http + explicit port.
+	u, err = SignedURL(key, "tok", "localhost", "http", "7878", exp)
+	if err != nil {
+		t.Fatalf("SignedURL local: %v", err)
+	}
+	if !strings.HasPrefix(u, "http://preview-tok.localhost:7878/") {
+		t.Errorf("local URL = %q, want http://preview-tok.localhost:7878/...", u)
+	}
+}
+
+func TestPortFromHost(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"localhost:7878":            "7878",
+		"localhost":                 "",
+		"api.example.dev":           "",
+		"api.example.dev:443":       "443",
+		"[::1]:7878":                "7878",
+		"localhost:notanumber":      "",
+	}
+	for in, want := range cases {
+		if got := PortFromHost(in); got != want {
+			t.Errorf("PortFromHost(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestSchemeFromRequest(t *testing.T) {
+	t.Parallel()
+	plain := httptest.NewRequest("GET", "/", nil)
+	if got := SchemeFromRequest(plain); got != "http" {
+		t.Errorf("plain request: %q, want http", got)
+	}
+	fwd := httptest.NewRequest("GET", "/", nil)
+	fwd.Header.Set("X-Forwarded-Proto", "https")
+	if got := SchemeFromRequest(fwd); got != "https" {
+		t.Errorf("X-Forwarded-Proto=https: %q, want https", got)
 	}
 }
 

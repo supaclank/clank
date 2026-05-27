@@ -9,10 +9,43 @@ import (
 )
 
 // expoCmdTemplate is the argv used to spawn Metro for a detected Expo
-// project. "%d" is the allocated port. EXPO_NO_DOTENV is set in
-// spawn.buildEnv to stop Metro from reading the repo's .env into its
-// orchestration env.
-var expoCmdTemplate = []string{"npx", "expo", "start", "--port", "%d"}
+// project. "%d" is the allocated port.
+//
+// We wrap the actual expo invocation in `sh -c` so we can run an
+// idempotent `npm install` first. A migrated worktree only carries
+// what's tracked in git — node_modules is gitignored, so the first
+// /preview/start on a fresh worktree would otherwise crash with
+// "expo CLI not found" or hang waiting on npx's auto-install prompt.
+// `npm install` is a no-op on the second + subsequent runs (it just
+// re-verifies the lockfile), so the overhead is bounded.
+//
+// `--silent --no-audit --no-fund` keeps stdout clean so the ringbuf
+// logs don't drown in npm chatter; `exec` after the install replaces
+// the shell process so signals + Setpgid still target Metro directly.
+//
+// `npx --yes` skips the "Ok to proceed?" prompt that npx shows when
+// it needs to install something globally — defensive, since we just
+// ran npm install locally, but cheap insurance against version skew.
+//
+// `--non-interactive` tells Expo CLI to skip every prompt — package-
+// update offers, "do you want to install <peer dep>?" boxes,
+// telemetry consent, etc. We deliberately do NOT set CI=true in the
+// process env: Metro reads CI and disables watch mode + HMR ("Metro
+// is running in CI mode, reloads are disabled"). Targeted CLI flag
+// beats a sledgehammer env var.
+//
+// EXPO_NO_DOTENV (set in spawn.buildEnv) stops Metro from reading
+// the repo's .env into its orchestration env; npm_config_yes (also
+// there) covers npm's prompts.
+//
+// This is V1 of the bootstrap story. The right long-term shape is a
+// per-repo clank.yaml with a declared bootstrap step + an
+// agent-driven fallback when no config exists — see the future-
+// direction note in doc.go.
+var expoCmdTemplate = []string{
+	"sh", "-c",
+	"npm install --silent --no-audit --no-fund && exec npx --yes expo start --port %d --non-interactive",
+}
 
 // expoReadyProbe asks Metro's /status endpoint, which has returned
 // "packager-status:running" stably since at least Expo SDK 49. The

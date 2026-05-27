@@ -40,10 +40,12 @@ type previewTokenView struct {
 	ExpiresAt   time.Time         `json:"expires_at"`
 }
 
-func (g *Gateway) viewFor(r routestore.Route) previewTokenView {
+// viewFor renders a route into the wire shape. scheme + port come
+// from the inbound request so URL matches the API origin.
+func (g *Gateway) viewFor(r routestore.Route, scheme, port string) previewTokenView {
 	return previewTokenView{
 		Token:       r.Token,
-		URL:         tokens.URLFor(r.Token, g.cfg.PreviewRootDomain),
+		URL:         tokens.URLFor(r.Token, g.cfg.PreviewRootDomain, scheme, port),
 		HostID:      r.HostID,
 		WorktreeID:  r.WorktreeID,
 		ServiceName: r.ServiceName,
@@ -65,9 +67,11 @@ func (g *Gateway) handleListPreviewTokens(w http.ResponseWriter, r *http.Request
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	scheme := tokens.SchemeFromRequest(r)
+	port := tokens.PortFromHost(r.Host)
 	out := make([]previewTokenView, len(rows))
 	for i, row := range rows {
-		out[i] = g.viewFor(row)
+		out[i] = g.viewFor(row, scheme, port)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -154,7 +158,7 @@ func (g *Gateway) handleSharePreviewToken(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, shareResponse{
-		URL:        tokens.URLFor(updated.Token, g.cfg.PreviewRootDomain),
+		URL:        tokens.URLFor(updated.Token, g.cfg.PreviewRootDomain, tokens.SchemeFromRequest(r), tokens.PortFromHost(r.Host)),
 		Visibility: updated.Visibility,
 		ExpiresAt:  updated.ExpiresAt,
 	})
@@ -236,7 +240,13 @@ func (g *Gateway) handleSignPreviewToken(w http.ResponseWriter, r *http.Request)
 	}
 
 	exp := time.Now().Add(ttl)
-	signedURL, err := tokens.SignedURL(g.cfg.PreviewSigningKey, token, g.cfg.PreviewRootDomain, exp)
+	// Scheme + port come from the request so the URL the client
+	// follows mirrors its current origin: https on cloud (no port),
+	// http://<host>:<port> on local docker dev.
+	signedURL, err := tokens.SignedURL(
+		g.cfg.PreviewSigningKey, token, g.cfg.PreviewRootDomain,
+		tokens.SchemeFromRequest(r), tokens.PortFromHost(r.Host), exp,
+	)
 	if err != nil {
 		g.log.Printf("preview sign: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

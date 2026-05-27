@@ -98,7 +98,7 @@ func (g *Gateway) handlePreviewWebhookRegister(w http.ResponseWriter, r *http.Re
 
 	resp := previewRegisterResponse{
 		Token:      route.Token,
-		URL:        tokens.URLFor(route.Token, g.cfg.PreviewRootDomain),
+		URL:        tokens.URLFor(route.Token, g.cfg.PreviewRootDomain, tokens.SchemeFromRequest(r), tokens.PortFromHost(r.Host)),
 		Visibility: route.Visibility,
 		ExpiresAt:  route.ExpiresAt,
 	}

@@ -32,6 +32,19 @@ type spawnRequest struct {
 	Spec        Spec
 	ServiceName string
 
+	// Port is the OS-allocated port the child should listen on. Manager
+	// allocates upfront (before the gateway register webhook) so the
+	// public URL can be threaded into PublicURL below.
+	Port int
+
+	// PublicURL is the externally-reachable URL the gateway will route
+	// to this dev server, e.g. "http://preview-<token>.<root>:7878".
+	// When non-empty, spawn sets EXPO_PACKAGER_PROXY_URL so Metro
+	// advertises this URL in its manifest (hostUri + launchAsset.url)
+	// instead of its internal listen port. Empty disables the
+	// override — useful for tests + laptop dev without a gateway.
+	PublicURL string
+
 	// ReadyTimeout overrides readyTimeout for this spawn. Zero means
 	// "use the package default." Test seam — production callers leave
 	// this zero.
@@ -48,10 +61,10 @@ type spawnRequest struct {
 // itself are responsible for SIGKILL'ing the partial child before
 // returning the error.
 func spawn(ctx context.Context, req spawnRequest) (*running, error) {
-	port, err := allocatePort()
-	if err != nil {
-		return nil, fmt.Errorf("allocate port: %w", err)
+	if req.Port == 0 {
+		return nil, fmt.Errorf("spawn: port is required")
 	}
+	port := req.Port
 
 	args, err := renderArgs(req.Spec.CmdTemplate, port)
 	if err != nil {
@@ -64,7 +77,7 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 
 	cmd := exec.CommandContext(childCtx, args[0], args[1:]...)
 	cmd.Dir = req.WorkDir
-	cmd.Env = buildEnv()
+	cmd.Env = buildEnv(req.PublicURL)
 	configureProcessGroup(cmd)
 
 	logs := newRingBuf(ringCapacity)
@@ -165,16 +178,31 @@ func renderArgs(tmpl []string, port int) ([]string, error) {
 // Metro reading the repo's .env into its own process; the .env is
 // still loaded by the app the bundle runs as.
 //
-// We deliberately do NOT set REACT_NATIVE_PACKAGER_HOSTNAME or
-// EXPO_PACKAGER_PROXY_URL: with the WSS-tunnel architecture, the
-// gateway preserves Host on the proxied request, so Metro builds
-// manifest URLs from r.Host — which is whatever public preview-
-// <token>.<root> hostname the client used. Setting these env vars
-// would override that, which is exactly what we want NOT to happen.
-// (Both vars are also marked @deprecated in the Expo source.)
-func buildEnv() []string {
+// npm_config_yes=true tells npm to skip its own prompts. Expo CLI's
+// prompts are skipped via `--non-interactive` on the argv (see
+// expoCmdTemplate). We deliberately do NOT set CI=true here: Metro
+// reads the CI env var and disables file-watching + HMR ("Metro is
+// running in CI mode, reloads are disabled"). Skipping prompts via
+// argv keeps HMR alive.
+//
+// EXPO_PACKAGER_PROXY_URL (when publicURL is non-empty) makes Expo
+// CLI advertise the gateway-facing URL in the manifest's hostUri and
+// launchAsset.url instead of Metro's internal listen port. Without
+// this Metro reads the Host header for the hostname but uses its own
+// :PORT in the manifest body — leaving the dev-launcher trying to
+// fetch the bundle from a port that isn't externally reachable.
+// REACT_NATIVE_PACKAGER_HOSTNAME would only fix the hostname half;
+// Metro still appends its internal port. See
+// packages/@expo/cli/src/start/server/UrlCreator.ts in expo/expo.
+func buildEnv(publicURL string) []string {
 	env := append([]string(nil), os.Environ()...)
-	env = append(env, "EXPO_NO_DOTENV=1")
+	env = append(env,
+		"EXPO_NO_DOTENV=1",
+		"npm_config_yes=true",
+	)
+	if publicURL != "" {
+		env = append(env, "EXPO_PACKAGER_PROXY_URL="+publicURL)
+	}
 	return env
 }
 

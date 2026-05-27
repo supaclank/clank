@@ -167,6 +167,29 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 	}
 	m.mu.Unlock()
 
+	// Allocate the listen port BEFORE registering so the gateway can
+	// reserve a route to it AND we can thread the resulting public URL
+	// into Metro's EXPO_PACKAGER_PROXY_URL. Order matters: Metro reads
+	// the env var at startup, so we have to know the URL before spawn.
+	port, err := allocatePort()
+	if err != nil {
+		return Status{}, fmt.Errorf("allocate port: %w", err)
+	}
+
+	// Best-effort gateway register. Failures are logged but don't
+	// fail Start — Status surfaces empty Token/URL and Metro spawns
+	// without the PROXY_URL override (laptop dev path: no gateway).
+	regCtx, cancel := context.WithTimeout(ctx, gwClientTimeout)
+	regResp, regErr := m.gw.Register(regCtx, RegisterRequest{
+		WorktreeID:   worktreeID,
+		ServiceName:  serviceName,
+		InternalPort: port,
+	})
+	cancel()
+	if regErr != nil {
+		m.log.Printf("preview: gateway register for %s/%s failed (non-fatal): %v", worktreeID, serviceName, regErr)
+	}
+
 	// Use the manager's background context, NOT the caller's. spawn
 	// wires this to exec.CommandContext, and the caller's ctx (the
 	// HTTP request context in production) gets canceled the moment
@@ -176,38 +199,33 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 		WorkDir:      workDir,
 		Spec:         spec,
 		ServiceName:  serviceName,
+		Port:         port,
+		PublicURL:    regResp.URL,
 		ReadyTimeout: readyTimeoutOverride,
 	})
 	if err != nil {
+		// Spawn failed — tear down the orphan route the gateway just
+		// registered (if any) so we don't leave dangling tokens.
+		if regErr == nil {
+			m.revokeBestEffort(worktreeID, serviceName)
+		}
 		return Status{}, fmt.Errorf("spawn: %w", err)
 	}
-
-	// Wait for readiness before registering: there's no point
-	// minting a public URL for a process that hasn't bound its port.
-	if err := waitForReady(ctx, r); err != nil {
-		// Tear down the orphan — caller has no handle to stop it.
-		r.stopWithGrace(m.stopGrace)
-		return Status{}, fmt.Errorf("wait ready: %w", err)
-	}
-
-	// Best-effort gateway register. Failures are logged but don't
-	// fail Start — Status will surface empty Token/URL and the
-	// caller can decide whether to retry.
-	regCtx, cancel := context.WithTimeout(ctx, gwClientTimeout)
-	regResp, regErr := m.gw.Register(regCtx, RegisterRequest{
-		WorktreeID:   worktreeID,
-		ServiceName:  serviceName,
-		InternalPort: r.port,
-	})
-	cancel()
-	if regErr != nil {
-		m.log.Printf("preview: gateway register for %s/%s failed (non-fatal): %v", worktreeID, serviceName, regErr)
-	} else {
+	if regErr == nil {
 		r.mu.Lock()
 		r.token = regResp.Token
 		r.url = regResp.URL
 		r.expiresAt = regResp.ExpiresAt
 		r.mu.Unlock()
+	}
+
+	if err := waitForReady(ctx, r); err != nil {
+		// Tear down the orphan — caller has no handle to stop it.
+		r.stopWithGrace(m.stopGrace)
+		if regErr == nil {
+			m.revokeBestEffort(worktreeID, serviceName)
+		}
+		return Status{}, fmt.Errorf("wait ready: %w", err)
 	}
 
 	m.mu.Lock()

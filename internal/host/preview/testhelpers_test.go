@@ -2,7 +2,12 @@
 
 package preview
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"strings"
+	"testing"
+)
 
 // fakeMetroScript returns an argv that spawns a Python HTTP server
 // mimicking Metro just enough for the readiness probe and the proxy
@@ -26,7 +31,15 @@ func fakeMetroScript(extras string) []string {
 	if extras == "" {
 		extras = "true"
 	}
-	const py = `python3 -u -c "
+	return []string{"sh", "-c", fmt.Sprintf("%s ; %s", extras, fakeMetroBody())}
+}
+
+// fakeMetroBody returns just the python-server snippet (with the %d
+// port placeholder) so tests can compose it with other shell — e.g.
+// "<env-record-cmd> && <fakeMetroBody>" — without unpacking the
+// argv wrapper.
+func fakeMetroBody() string {
+	return `python3 -u -c "
 import http.server, sys, threading, time
 port = int(sys.argv[1])
 class H(http.server.BaseHTTPRequestHandler):
@@ -45,5 +58,20 @@ srv = http.server.HTTPServer(('127.0.0.1', port), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 while True: time.sleep(60)
 " %d`
-	return []string{"sh", "-c", fmt.Sprintf("%s ; %s", extras, py)}
 }
+
+// readSentinel reads and trims a file written by a child process. The
+// trim covers shell-injected trailing newlines from `echo` even though
+// we use `printf` to avoid them — defense in depth for cross-shell
+// portability (sh vs bash vs dash).
+func readSentinel(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(string(b), "\n"), nil
+}
+
+// Compile-time guard that testing is imported — keeps Goimports honest
+// when readSentinel above is the only user.
+var _ = (*testing.T)(nil)
