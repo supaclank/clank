@@ -3,10 +3,10 @@ package host
 import (
 	"context"
 	"errors"
-	"net/http"
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host/preview"
+	"github.com/acksell/clank/pkg/preview/tokens"
 )
 
 // ErrPreviewUnavailable is returned by every PreviewXxx method when
@@ -16,14 +16,14 @@ import (
 var ErrPreviewUnavailable = errors.New("preview: manager not configured on this host")
 
 // PreviewStart resolves worktreeID to a workdir and asks the preview
-// manager to spawn the dev server. Idempotent — a second call for the
-// same worktree returns the existing snapshot.
+// manager to spawn the dev server for the "default" service. The
+// returned Status carries the gateway-minted public URL + token when
+// the host is wired to a gateway; on laptop dev with no gateway, those
+// fields stay empty.
 //
-// previewURLBase is the full public URL Metro will bake into manifest
-// URLs (e.g. "https://gateway/v1/worktrees/<wid>/preview/proxy"). The
-// caller is the right authority for this: mobile knows its gateway,
-// laptop curl tests pick localhost. clank-host cannot guess.
-func (s *Service) PreviewStart(ctx context.Context, worktreeID, previewURLBase string) (preview.Status, error) {
+// Idempotent — a second call for the same worktree returns the
+// existing snapshot.
+func (s *Service) PreviewStart(ctx context.Context, worktreeID string) (preview.Status, error) {
 	if s.preview == nil {
 		return preview.Status{}, ErrPreviewUnavailable
 	}
@@ -31,10 +31,11 @@ func (s *Service) PreviewStart(ctx context.Context, worktreeID, previewURLBase s
 	if err != nil {
 		return preview.Status{}, err
 	}
-	return s.preview.Start(ctx, worktreeID, workDir, previewURLBase)
+	return s.preview.Start(ctx, worktreeID, workDir, tokens.DefaultServiceName)
 }
 
-// PreviewStop terminates the dev server for worktreeID. ErrNotRunning
+// PreviewStop terminates every dev server registered under worktreeID.
+// In v1 that's the single "default" service. Returns ErrNotRunning
 // when nothing's running — the mux maps it to 404.
 func (s *Service) PreviewStop(_ context.Context, worktreeID string) error {
 	if s.preview == nil {
@@ -43,8 +44,9 @@ func (s *Service) PreviewStop(_ context.Context, worktreeID string) error {
 	return s.preview.Stop(worktreeID)
 }
 
-// PreviewStatus returns availability + running state for worktreeID.
-// Runs Detect every call so the Available bit reflects on-disk truth.
+// PreviewStatus returns availability + running state for the
+// "default" service on worktreeID. Runs Detect every call so the
+// Available bit reflects on-disk truth.
 func (s *Service) PreviewStatus(ctx context.Context, worktreeID string) (preview.Status, error) {
 	if s.preview == nil {
 		return preview.Status{}, ErrPreviewUnavailable
@@ -57,27 +59,12 @@ func (s *Service) PreviewStatus(ctx context.Context, worktreeID string) (preview
 }
 
 // PreviewLogs returns the most recent stdout/stderr captured from the
-// dev server (ANSI-stripped). Returns nil when no server is running.
-// Bounded to ringCapacity in the preview package; safe to expose via
-// HTTP without pagination.
+// "default" service's dev server (ANSI-stripped). Returns nil when no
+// server is running. Bounded to ringCapacity in the preview package;
+// safe to expose via HTTP without pagination.
 func (s *Service) PreviewLogs(worktreeID string) []byte {
 	if s.preview == nil {
 		return nil
 	}
 	return s.preview.LogTail(worktreeID)
-}
-
-// PreviewProxyHandler returns the catch-all reverse proxy for
-// worktreeID. prefixToStrip is the route prefix the dev server should
-// not see — typically "/worktrees/<id>/preview/proxy".
-//
-// The returned handler 404s when no server is running for the
-// worktree; callers do not need to pre-check via PreviewStatus.
-func (s *Service) PreviewProxyHandler(worktreeID, prefixToStrip string) http.Handler {
-	if s.preview == nil {
-		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			http.Error(w, ErrPreviewUnavailable.Error(), http.StatusServiceUnavailable)
-		})
-	}
-	return s.preview.ProxyHandler(worktreeID, prefixToStrip)
 }

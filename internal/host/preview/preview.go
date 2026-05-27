@@ -68,13 +68,31 @@ type ReadyProbe struct {
 // StartedAt is a pointer so its absence (server not running) renders
 // as JSON null instead of the time.Time zero value, which JSON-encodes
 // as the misleading "0001-01-01T00:00:00Z".
+//
+// Token/URL/ExpiresAt are populated after the gateway registers the
+// route — when the sprite runs without a gateway integration (laptop
+// dev), they stay empty and clients fall back to status-only display.
 type Status struct {
-	Available bool       `json:"available"`
-	Kind      Kind       `json:"kind,omitempty"`
-	State     State      `json:"state"`
-	Port      int        `json:"port,omitempty"`
-	StartedAt *time.Time `json:"started_at,omitempty"`
-	LastErr   string     `json:"last_err,omitempty"`
+	Available   bool       `json:"available"`
+	Kind        Kind       `json:"kind,omitempty"`
+	ServiceName string     `json:"service_name,omitempty"`
+	State       State      `json:"state"`
+	Port        int        `json:"port,omitempty"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	LastErr     string     `json:"last_err,omitempty"`
+
+	// Token is the gateway-minted token for this preview's public URL.
+	// Empty when the manager's GWClient is disabled (laptop dev).
+	Token string `json:"token,omitempty"`
+
+	// URL is the public preview URL — preview-<Token>.<root>. Empty
+	// when Token is empty. Clients pass this verbatim to whatever
+	// renders the bundle.
+	URL string `json:"url,omitempty"`
+
+	// ExpiresAt is when the gateway will stop honoring the token.
+	// Re-register (re-call /preview/start) before this to refresh.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 // running is Manager's in-memory record of a live server. The mutex
@@ -83,12 +101,20 @@ type Status struct {
 type running struct {
 	mu sync.Mutex
 
-	spec      Spec
-	port      int
-	state     State
-	lastErr   string
-	startedAt time.Time
-	lastTouch time.Time
+	spec        Spec
+	serviceName string
+	port        int
+	state       State
+	lastErr     string
+	startedAt   time.Time
+	lastTouch   time.Time
+
+	// Gateway-registered route fields. Populated after a successful
+	// GWClient.Register; empty when the gateway isn't wired (laptop
+	// dev) or registration failed (logged + tolerated).
+	token     string
+	url       string
+	expiresAt time.Time
 
 	logs *ringBuf
 
@@ -114,15 +140,22 @@ func (r *running) snapshot() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := Status{
-		Available: true,
-		Kind:      r.spec.Kind,
-		State:     r.state,
-		Port:      r.port,
-		LastErr:   r.lastErr,
+		Available:   true,
+		Kind:        r.spec.Kind,
+		ServiceName: r.serviceName,
+		State:       r.state,
+		Port:        r.port,
+		LastErr:     r.lastErr,
+		Token:       r.token,
+		URL:         r.url,
 	}
 	if !r.startedAt.IsZero() {
 		started := r.startedAt
 		out.StartedAt = &started
+	}
+	if !r.expiresAt.IsZero() {
+		exp := r.expiresAt
+		out.ExpiresAt = &exp
 	}
 	return out
 }

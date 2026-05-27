@@ -131,33 +131,13 @@ func TestPreviewStatus_NotAvailable(t *testing.T) {
 	}
 }
 
-func TestPreviewStart_MissingPreviewURLBase(t *testing.T) {
-	env := newPreviewTestEnv(t, expoFixture())
-
-	resp, err := http.Post(env.srv.URL+"/worktrees/"+env.worktreeID+"/preview/start",
-		"application/json", strings.NewReader(`{}`))
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 for missing preview_url_base", resp.StatusCode)
-	}
-	var body errResp
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if body.Code != "invalid_request" {
-		t.Errorf("code = %q; want invalid_request", body.Code)
-	}
-}
-
 func TestPreviewStart_NotPreviewableYields404(t *testing.T) {
 	env := newPreviewTestEnv(t, nil) // no package.json
 
-	reqBody := strings.NewReader(`{"preview_url_base":"http://example.com/preview"}`)
+	// No body — preview/start no longer takes one (the gateway mints
+	// the public URL; the sprite just spawns).
 	resp, err := http.Post(env.srv.URL+"/worktrees/"+env.worktreeID+"/preview/start",
-		"application/json", reqBody)
+		"application/json", bytes.NewReader(nil))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -195,26 +175,12 @@ func TestPreviewStop_NotRunningYields404(t *testing.T) {
 	}
 }
 
-func TestPreviewProxy_NotRunningYields404(t *testing.T) {
-	env := newPreviewTestEnv(t, expoFixture())
-
-	resp, err := http.Get(env.srv.URL + "/worktrees/" + env.worktreeID + "/preview/proxy/manifest.json")
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", resp.StatusCode)
-	}
-}
-
 func TestPreviewStart_UnknownWorktreeIDYields4xx(t *testing.T) {
 	env := newPreviewTestEnv(t, expoFixture())
 
 	// Use a worktree ID that has no on-disk directory under workRoot.
-	reqBody := strings.NewReader(`{"preview_url_base":"http://example.com/preview"}`)
 	resp, err := http.Post(env.srv.URL+"/worktrees/01UNKNOWN/preview/start",
-		"application/json", reqBody)
+		"application/json", bytes.NewReader(nil))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}

@@ -17,8 +17,19 @@ package provisioner
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/http"
 )
+
+// ErrUnsupported is returned by provisioners for capability methods
+// they don't implement. The preview-app feature uses this from
+// OpenInternalConn — daytona has no TCP-tunneling primitive
+// equivalent to Sprites' WSS proxy, so it surfaces ErrUnsupported and
+// the gateway returns 503 to mobile rather than a confusing 500.
+//
+// Wrap with %w so callers can `errors.Is(err, provisioner.ErrUnsupported)`.
+var ErrUnsupported = errors.New("provisioner: capability unsupported by this provider")
 
 // HostRef carries everything the gateway needs to reach a user's host.
 // It is the return value of EnsureHost and is safe to cache for the
@@ -93,6 +104,28 @@ type Provisioner interface {
 	// inside EnsureHost (NotFound from Get) and handled there; callers
 	// don't need to invoke DestroyHost for that case.
 	DestroyHost(ctx context.Context, hostID string) error
+
+	// GetHostByID is the non-mutating counterpart to EnsureHost:
+	// resolve a host_id (from a stored row, e.g. preview_routes.host_id)
+	// to its current HostRef without provisioning, waking, or creating
+	// anything. Used by the preview-route proxy to resolve a token's
+	// target host before tunneling — the proxy mustn't wake hosts as
+	// a side effect of someone hitting a stale URL.
+	//
+	// Returns hoststore.ErrHostNotFound (wrapped) when no row matches.
+	GetHostByID(ctx context.Context, hostID string) (HostRef, error)
+
+	// OpenInternalConn returns a net.Conn to (hostID, port) inside
+	// the provider's private network. For Sprites this is the WSS
+	// proxy at api.sprites.dev/v1/sprites/{name}/proxy; for the local
+	// provisioner it's a direct dial to 127.0.0.1:port; for providers
+	// without such a primitive it's ErrUnsupported.
+	//
+	// Used by pkg/gateway/previewtunnel to fan out preview-app
+	// traffic to per-worktree dev servers running on private ports.
+	// The returned conn is single-shot — Close releases the tunnel —
+	// but the caller (stdlib http.Transport) handles pooling.
+	OpenInternalConn(ctx context.Context, hostID string, port int) (net.Conn, error)
 }
 
 // Closer is implemented by provisioners that own background work or

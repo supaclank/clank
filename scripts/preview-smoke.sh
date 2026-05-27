@@ -1,34 +1,37 @@
 #!/usr/bin/env bash
-# preview-smoke.sh — end-to-end smoke test for the preview-app feature.
+# preview-smoke.sh — local smoke test for the post-rewriter preview path.
 #
-# Spins up clank-host locally, points it at a real Expo project via a
-# symlinked worktree under $HOME/work/<wid>, and walks the full HTTP
-# contract:
+# Drives the sprite-side preview lifecycle without involving a real
+# gateway. clank-host runs locally, spawns Metro for a symlinked
+# Expo worktree, and we walk the trimmed HTTP contract:
 #
 #   1. GET  /preview/status  → available=true, state=stopped
-#   2. POST /preview/start    → spawns Metro, polls until state=ready
-#   3. GET  /preview/proxy/   → fetches the Expo manifest through the
-#                                proxy and asserts launchAsset.url has
-#                                been rewritten to the proxy hostname
-#                                (Change 4 — REACT_NATIVE_PACKAGER_HOSTNAME
-#                                + EXPO_PACKAGER_PROXY_URL — verification)
-#   4. POST /preview/stop     → shutdown
+#   2. POST /preview/start   → spawns Metro, polls until state=ready
+#   3. POST /preview/stop    → shutdown, state=stopped
 #
-# Pre-reqs: node + npm/npx in PATH, the clank-mobile checkout next to
-# clank, jq, curl.
+# What this script no longer asserts (vs V1):
 #
-# Run from the clank repo root:
-#   ./scripts/preview-smoke.sh
+#   - "manifest URL rewriting" — clank-host doesn't proxy preview
+#     traffic anymore. The gateway tunnels straight to Metro via
+#     Sprites' WSS proxy and Metro emits manifest URLs from r.Host
+#     directly. End-to-end fidelity of that path is exercised by
+#     the gateway preview_proxy_test.go (WS upgrade through tunnel)
+#     and ultimately verified by a separate cloud-side smoke once
+#     the gateway is provisioned with a wildcard cert.
 #
-# Override the Expo project location with CLANK_PREVIEW_SMOKE_DIR if
-# clank-mobile lives elsewhere.
+# Pre-reqs: node + npm/npx in PATH, a real Expo project at
+# CLANK_PREVIEW_SMOKE_DIR (env var, required), jq, curl.
 
 set -euo pipefail
 
 HOST_PORT="${HOST_PORT:-8082}"
 WID="${WID:-preview-smoke-$$}"
-EXPO_DIR="${CLANK_PREVIEW_SMOKE_DIR:-${HOME}/github.com/acksell/clank-mobile}"
-PREVIEW_BASE="http://127.0.0.1:${HOST_PORT}/worktrees/${WID}/preview/proxy"
+EXPO_DIR="${CLANK_PREVIEW_SMOKE_DIR:-}"
+
+if [[ -z "${EXPO_DIR}" ]]; then
+  echo "CLANK_PREVIEW_SMOKE_DIR is required — point it at an Expo project root" >&2
+  exit 1
+fi
 
 if [[ ! -f "${EXPO_DIR}/package.json" || ! -f "${EXPO_DIR}/app.json" ]]; then
   echo "expo project not found at ${EXPO_DIR}" >&2
@@ -65,6 +68,10 @@ echo "==> building clank-host"
 go build -o /tmp/clank-host-smoke ./cmd/clank-host
 
 echo "==> starting clank-host on 127.0.0.1:${HOST_PORT}"
+# No --preview-webhook-url: gwclient stays disabled, Status.token/url
+# will be empty. That's deliberate for the local smoke — verifying the
+# gateway integration belongs in the cloud-side smoke once Phase 0's
+# infra (wildcard cert + DNS) is in place.
 /tmp/clank-host-smoke --listen "tcp://127.0.0.1:${HOST_PORT}" >/tmp/clank-host-smoke.log 2>&1 &
 HOST_PID=$!
 
@@ -82,7 +89,7 @@ for i in {1..30}; do
 done
 
 if ! grep -q "listening on tcp://" /tmp/clank-host-smoke.log 2>/dev/null; then
-  echo "clank-host did not emit 'listening' within 3s but is still alive — aborting before STEP 1 produces confusing curl errors. log:" >&2
+  echo "clank-host did not emit 'listening' within 3s but is still alive — aborting." >&2
   cat /tmp/clank-host-smoke.log >&2
   exit 1
 fi
@@ -96,88 +103,34 @@ echo "${status_json}" | jq .
 [[ "$(echo "${status_json}" | jq -r .state)" == "stopped" ]]  || { echo "FAIL: state should be stopped"; exit 1; }
 
 echo
-echo "==> STEP 2: POST /preview/start (preview_url_base=${PREVIEW_BASE})"
-start_body="$(jq -n --arg url "${PREVIEW_BASE}" '{preview_url_base: $url}')"
+echo "==> STEP 2: POST /preview/start (no body — gateway mints URL)"
 start_resp="$(curl -sS -X POST -H 'Content-Type: application/json' \
-  -d "${start_body}" \
+  -d '' \
   "http://127.0.0.1:${HOST_PORT}/worktrees/${WID}/preview/start")"
 echo "${start_resp}" | jq .
+state="$(echo "${start_resp}" | jq -r .state)"
 metro_port="$(echo "${start_resp}" | jq -r .port)"
-echo "Metro should bind to port ${metro_port}"
-
-echo "==> polling /preview/status until ready (≤90s); reporting every 5s"
-last_print=0
-for i in {1..180}; do
-  state="$(curl -sS "http://127.0.0.1:${HOST_PORT}/worktrees/${WID}/preview/status" | jq -r .state)"
-  if (( i - last_print >= 10 )); then
-    last_print=${i}
-    elapsed=$(( i / 2 ))
-    logs_len=$(curl -sS "http://127.0.0.1:${HOST_PORT}/worktrees/${WID}/preview/logs" | wc -c | tr -d ' ')
-    echo "    [${elapsed}s] state=${state} logs=${logs_len}B"
-  fi
-  if [[ "${state}" == "ready" ]]; then
-    echo "    → ready"
-    break
-  fi
-  if [[ "${state}" == "failed" ]]; then
-    echo "FAIL: state went to failed."
-    echo "==> clank-host log tail:"
-    tail -20 /tmp/clank-host-smoke.log
-    echo
-    echo "==> Metro stdout/stderr tail (last 4 KiB from /preview/logs):"
-    curl -sS "http://127.0.0.1:${HOST_PORT}/worktrees/${WID}/preview/logs" | tail -c 4096
-    echo
-    echo "==> /preview/status after failure:"
-    curl -sS "http://127.0.0.1:${HOST_PORT}/worktrees/${WID}/preview/status" | jq .
-    exit 1
-  fi
-  sleep 0.5
-done
-[[ "${state}" == "ready" ]] || { echo "FAIL: state never reached ready (last=${state})"; exit 1; }
-
-echo
-echo "==> STEP 3: GET / through the proxy — fetch the Expo manifest"
-# The Expo manifest lives at the bundle URL with the right Expo-Platform header.
-# We request the root path with the same headers a mobile client would.
-manifest="$(curl -sS \
-  -H 'Accept: application/expo+json,application/json' \
-  -H 'Expo-Platform: ios' \
-  -H 'Expo-API-Version: 1' \
-  "http://127.0.0.1:${HOST_PORT}/worktrees/${WID}/preview/proxy/")"
-echo "${manifest}" | head -c 1000
-echo
-echo
-
-launch_url="$(echo "${manifest}" | jq -r '.launchAsset.url // empty')"
-if [[ -z "${launch_url}" ]]; then
-  echo "WARN: no launchAsset.url in manifest — may be a different Expo shape"
-  echo "(skipping Change 4 hostname-rewrite assertion)"
+token="$(echo "${start_resp}" | jq -r '.token // ""')"
+url="$(echo "${start_resp}" | jq -r '.url // ""')"
+echo "Metro bound to port ${metro_port}; state=${state}"
+if [[ -n "${token}" ]]; then
+  echo "Token minted: ${token} → ${url}"
 else
-  echo "launchAsset.url = ${launch_url}"
-  if [[ "${launch_url}" == *"127.0.0.1:${HOST_PORT}"* ]]; then
-    echo "PASS: Change 4 hostname rewrite working — manifest points at the proxy"
-  elif [[ "${launch_url}" == *"127.0.0.1:${metro_port}"* ]]; then
-    echo "FAIL: Change 4 broken — manifest still points at Metro's localhost:${metro_port}"
-    echo "       (REACT_NATIVE_PACKAGER_HOSTNAME / EXPO_PACKAGER_PROXY_URL not honored)"
-    exit 1
-  else
-    echo "INCONCLUSIVE: launchAsset.url unexpected — inspect manually"
-  fi
+  echo "(no gateway wired — token/url empty, as expected for local smoke)"
 fi
 
-if [[ -n "${launch_url}" ]]; then
-  echo
-  echo "==> STEP 3b: fetching the bundle URL through the proxy"
-  bundle_status="$(curl -sS -o /tmp/preview-bundle.js -w '%{http_code} %{size_download}B %{content_type}' "${launch_url}")"
-  echo "  → HTTP ${bundle_status}"
-  head_bytes="$(head -c 200 /tmp/preview-bundle.js)"
-  echo "  → first 200 bytes: ${head_bytes}"
-  if [[ "${bundle_status}" == 200* ]] && [[ "${head_bytes}" == *"function"* || "${head_bytes}" == *"var "* || "${head_bytes}" == *"//"* ]]; then
-    echo "PASS: bundle downloaded through the proxy (looks like JavaScript)"
-  else
-    echo "FAIL: bundle download did not produce a JS-looking response"
-    exit 1
-  fi
+[[ "${state}" == "ready" ]] || { echo "FAIL: start should return state=ready (it now blocks on readiness); got ${state}"; exit 1; }
+
+echo
+echo "==> STEP 3: confirm Metro is actually serving on the internal port"
+# Direct probe — the gateway would do this via WSS tunnel in
+# production. We hit it locally to make sure Metro is up.
+probe_status="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${metro_port}/status" || echo "000")"
+if [[ "${probe_status}" == "200" ]]; then
+  echo "PASS: Metro is serving /status on 127.0.0.1:${metro_port}"
+else
+  echo "FAIL: /status probe to Metro returned ${probe_status}"
+  exit 1
 fi
 
 echo

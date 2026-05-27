@@ -7,37 +7,22 @@ import (
 	"github.com/acksell/clank/internal/host/preview"
 )
 
-// previewStartRequest is the body of POST /worktrees/{id}/preview/start.
-//
-// PreviewURLBase is the full public URL Metro will bake into its
-// manifest output (launchAsset.url and friends). The client owns this:
-// mobile knows its gateway URL, laptop curl tests know localhost. The
-// sprite cannot guess because it doesn't know the user's gateway/user
-// prefix.
-type previewStartRequest struct {
-	PreviewURLBase string `json:"preview_url_base"`
-}
-
 // handlePreviewStart spawns or returns the dev server for the URL's
 // worktree ID. Idempotent — the same call from a slow-network mobile
 // retry returns the existing snapshot, not a second spawn.
+//
+// No request body: the public URL is now allocated by the gateway
+// (which knows the wildcard root) and surfaced in the response's
+// `url` field. Callers used to supply preview_url_base; with the
+// WSS-tunnel architecture the sprite mints the URL via the
+// /webhooks/preview/register webhook to the gateway.
 func (m *Mux) handlePreviewStart(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_request", Error: "worktree id missing"})
 		return
 	}
-	var req previewStartRequest
-	if err := decodeJSON(r.Body, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_request", Error: err.Error()})
-		return
-	}
-	if req.PreviewURLBase == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_request", Error: "preview_url_base is required"})
-		return
-	}
-
-	status, err := m.svc.PreviewStart(r.Context(), id, req.PreviewURLBase)
+	status, err := m.svc.PreviewStart(r.Context(), id)
 	if err != nil {
 		writePreviewError(w, err)
 		return

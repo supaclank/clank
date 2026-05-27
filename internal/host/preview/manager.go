@@ -5,9 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/http"
-	"net/http/httputil"
-	"strings"
 	"sync"
 	"time"
 )
@@ -17,6 +14,11 @@ const (
 	DefaultIdleTimeout = 15 * time.Minute
 	DefaultStopGrace   = 3 * time.Second
 	reaperInterval     = 1 * time.Minute
+
+	// gwRevokeTimeout caps best-effort Revoke calls during teardown.
+	// Short on purpose — a sluggish gateway shouldn't stall Stop or
+	// Shutdown beyond the user-visible response window.
+	gwRevokeTimeout = 5 * time.Second
 )
 
 // ErrNotPreviewable is returned by Start when Detect found nothing to
@@ -40,19 +42,32 @@ type Options struct {
 
 	// Log is the logger; nil falls back to the default logger.
 	Log *log.Logger
+
+	// GWClient mints + revokes public tokens with the gateway. Nil
+	// (or a disabled client) leaves Status.Token/URL empty — useful
+	// for laptop dev where there's no gateway to register with.
+	GWClient *GWClient
 }
 
-// Manager owns the per-worktree dev-server registry and exposes the
-// lifecycle (Start/Stop/Status) plus a reverse-proxy handler. One
-// Manager lives on each host.Service.
+// serviceKey is the registry key. Two services on the same worktree
+// (e.g. expo + a backend dev server in the future) live as distinct
+// entries; today's caller always passes ServiceName = "default".
+type serviceKey struct {
+	WorktreeID  string
+	ServiceName string
+}
+
+// Manager owns the per-(worktree, service) dev-server registry and
+// exposes the lifecycle (Start/Stop/Status). One Manager lives on
+// each host.Service.
 type Manager struct {
 	idleTimeout time.Duration
 	stopGrace   time.Duration
 	log         *log.Logger
+	gw          *GWClient
 
 	mu       sync.Mutex
-	servers  map[string]*running // keyed by worktree ID
-	proxies  map[string]*httputil.ReverseProxy
+	servers  map[serviceKey]*running
 	closed   bool
 	reaperWG sync.WaitGroup
 	stopCh   chan struct{}
@@ -82,8 +97,8 @@ func New(opts Options) *Manager {
 		idleTimeout: opts.IdleTimeout,
 		stopGrace:   opts.StopGrace,
 		log:         opts.Log,
-		servers:     make(map[string]*running),
-		proxies:     make(map[string]*httputil.ReverseProxy),
+		gw:          opts.GWClient,
+		servers:     make(map[serviceKey]*running),
 		stopCh:      make(chan struct{}),
 		bgCtx:       bgCtx,
 		bgCancel:    cancel,
@@ -93,15 +108,18 @@ func New(opts Options) *Manager {
 	return m
 }
 
-// Start spawns the dev server for (worktreeID, workDir) and returns
-// its Status. Idempotent — a second Start for the same worktree
-// returns the existing server's snapshot without re-spawning.
+// Start spawns the dev server for (worktreeID, serviceName) and
+// returns its Status. Idempotent — a second Start for the same
+// (wid, service) returns the existing server's snapshot without
+// re-spawning.
 //
-// previewURLBase is the public URL Metro will bake into manifest URLs;
-// see spawnRequest for the contract. Required.
+// After the spawn passes readiness, Start calls GWClient.Register to
+// mint the public token + URL and stores those on the running record
+// so subsequent Status calls surface them. When GWClient is nil or
+// disabled, Status.Token/URL stay empty (laptop dev path).
 //
 // Returns ErrNotPreviewable when Detect found no recognizable framework.
-func (m *Manager) Start(ctx context.Context, worktreeID, workDir, previewURLBase string) (Status, error) {
+func (m *Manager) Start(ctx context.Context, worktreeID, workDir, serviceName string) (Status, error) {
 	spec, err := Detect(workDir)
 	if err != nil {
 		return Status{}, fmt.Errorf("detect: %w", err)
@@ -109,32 +127,33 @@ func (m *Manager) Start(ctx context.Context, worktreeID, workDir, previewURLBase
 	if spec == nil {
 		return Status{}, ErrNotPreviewable
 	}
-	return m.startWithSpec(ctx, worktreeID, workDir, previewURLBase, *spec, 0)
+	return m.startWithSpec(ctx, worktreeID, workDir, serviceName, *spec, 0)
 }
 
 // startWithSpec is the lock+spawn+register core that Start wraps.
 // Split out so tests can drive it with a custom Spec (and per-test
-// ReadyTimeout) without mutating package-level vars in parallel — the
-// earlier global-mutation approach raced under -race.
+// ReadyTimeout) without mutating package-level vars in parallel.
 //
 // readyTimeout==0 falls through to the package default inside spawn.
-func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, previewURLBase string, spec Spec, readyTimeoutOverride time.Duration) (Status, error) {
+func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, serviceName string, spec Spec, readyTimeoutOverride time.Duration) (Status, error) {
 	if worktreeID == "" {
 		return Status{}, fmt.Errorf("preview: worktree id is required")
 	}
 	if workDir == "" {
 		return Status{}, fmt.Errorf("preview: work dir is required")
 	}
-	if previewURLBase == "" {
-		return Status{}, fmt.Errorf("preview: preview_url_base is required")
+	if serviceName == "" {
+		return Status{}, fmt.Errorf("preview: service name is required")
 	}
+
+	key := serviceKey{WorktreeID: worktreeID, ServiceName: serviceName}
 
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
 		return Status{}, fmt.Errorf("preview: manager is shut down")
 	}
-	if existing, ok := m.servers[worktreeID]; ok {
+	if existing, ok := m.servers[key]; ok {
 		snap := existing.snapshot()
 		// Only honor live records. A Failed or Stopped entry comes from
 		// the wait goroutine seeing the child die — without eviction
@@ -144,8 +163,7 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, previe
 			m.mu.Unlock()
 			return snap, nil
 		}
-		delete(m.servers, worktreeID)
-		delete(m.proxies, worktreeID)
+		delete(m.servers, key)
 	}
 	m.mu.Unlock()
 
@@ -155,74 +173,109 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, previe
 	// Start writes its response — that would SIGKILL Metro before it
 	// printed a single line.
 	r, err := spawn(m.bgCtx, spawnRequest{
-		WorkDir:        workDir,
-		Spec:           spec,
-		PreviewURLBase: previewURLBase,
-		ReadyTimeout:   readyTimeoutOverride,
+		WorkDir:      workDir,
+		Spec:         spec,
+		ServiceName:  serviceName,
+		ReadyTimeout: readyTimeoutOverride,
 	})
 	if err != nil {
 		return Status{}, fmt.Errorf("spawn: %w", err)
 	}
 
-	proxy, err := newReverseProxy(r.port, previewURLBase)
-	if err != nil {
-		// Tear down the orphaned child — we own it now and the caller
-		// has no handle to stop it via the registry.
+	// Wait for readiness before registering: there's no point
+	// minting a public URL for a process that hasn't bound its port.
+	if err := waitForReady(ctx, r); err != nil {
+		// Tear down the orphan — caller has no handle to stop it.
 		r.stopWithGrace(m.stopGrace)
-		return Status{}, fmt.Errorf("build proxy: %w", err)
+		return Status{}, fmt.Errorf("wait ready: %w", err)
+	}
+
+	// Best-effort gateway register. Failures are logged but don't
+	// fail Start — Status will surface empty Token/URL and the
+	// caller can decide whether to retry.
+	regCtx, cancel := context.WithTimeout(ctx, gwClientTimeout)
+	regResp, regErr := m.gw.Register(regCtx, RegisterRequest{
+		WorktreeID:   worktreeID,
+		ServiceName:  serviceName,
+		InternalPort: r.port,
+	})
+	cancel()
+	if regErr != nil {
+		m.log.Printf("preview: gateway register for %s/%s failed (non-fatal): %v", worktreeID, serviceName, regErr)
+	} else {
+		r.mu.Lock()
+		r.token = regResp.Token
+		r.url = regResp.URL
+		r.expiresAt = regResp.ExpiresAt
+		r.mu.Unlock()
 	}
 
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
 		r.stopWithGrace(m.stopGrace)
+		m.revokeBestEffort(worktreeID, serviceName)
 		return Status{}, fmt.Errorf("preview: manager is shut down")
 	}
-	if existing, ok := m.servers[worktreeID]; ok {
+	if existing, ok := m.servers[key]; ok {
 		// Lost the race against a concurrent Start. Keep theirs, drop
 		// ours — port leak only for the stop-grace window, never persistent.
 		snap := existing.snapshot()
 		m.mu.Unlock()
 		r.stopWithGrace(m.stopGrace)
-		m.log.Printf("preview: discarded duplicate spawn for worktree %s", worktreeID)
+		m.revokeBestEffort(worktreeID, serviceName)
+		m.log.Printf("preview: discarded duplicate spawn for %s/%s", worktreeID, serviceName)
 		return snap, nil
 	}
-	m.servers[worktreeID] = r
-	m.proxies[worktreeID] = proxy
+	m.servers[key] = r
 	m.mu.Unlock()
-	m.log.Printf("preview: started %s on port %d for worktree %s", r.spec.Kind, r.port, worktreeID)
+	m.log.Printf("preview: started %s on port %d for %s/%s", r.spec.Kind, r.port, worktreeID, serviceName)
 	return r.snapshot(), nil
 }
 
-// Stop terminates the dev server for worktreeID. Blocks until the
-// process tree is reaped. Idempotent — returns ErrNotRunning when
-// there's nothing to stop.
+// Stop terminates every dev server registered under worktreeID. In v1
+// that's the single "default" service; future multi-service callers
+// can call once and have all services for the worktree torn down.
+// Blocks until each process tree is reaped. Returns ErrNotRunning
+// when no services exist for the worktree.
 func (m *Manager) Stop(worktreeID string) error {
-	m.mu.Lock()
-	r, ok := m.servers[worktreeID]
-	if !ok {
-		m.mu.Unlock()
-		return ErrNotRunning
+	if worktreeID == "" {
+		return fmt.Errorf("preview: worktree id is required")
 	}
-	delete(m.servers, worktreeID)
-	delete(m.proxies, worktreeID)
+	m.mu.Lock()
+	victims := make([]*running, 0)
+	victimKeys := make([]serviceKey, 0)
+	for k, r := range m.servers {
+		if k.WorktreeID == worktreeID {
+			victims = append(victims, r)
+			victimKeys = append(victimKeys, k)
+		}
+	}
+	for _, k := range victimKeys {
+		delete(m.servers, k)
+	}
 	m.mu.Unlock()
 
-	// Don't hold m.mu across the wait — it can block up to stopGrace.
-	r.stopWithGrace(m.stopGrace)
-	m.log.Printf("preview: stopped worktree %s", worktreeID)
+	if len(victims) == 0 {
+		return ErrNotRunning
+	}
+
+	for i, r := range victims {
+		r.stopWithGrace(m.stopGrace)
+		m.revokeBestEffort(victimKeys[i].WorktreeID, victimKeys[i].ServiceName)
+		m.log.Printf("preview: stopped %s/%s", victimKeys[i].WorktreeID, victimKeys[i].ServiceName)
+	}
 	return nil
 }
 
-// Status returns the current state for worktreeID, freshly running
-// Detect every call so the Available field reflects the on-disk truth
-// (the user may have just deleted package.json).
-//
-// When no server is running, returns a {Available, State: Stopped}
-// snapshot. When one is running, returns its real snapshot.
+// Status returns the snapshot for (worktreeID, "default") in v1.
+// Future multi-service callers will get a Status-per-service API.
+// Runs Detect every call when there's no running server so the
+// Available bit reflects on-disk truth.
 func (m *Manager) Status(_ context.Context, worktreeID, workDir string) (Status, error) {
+	key := serviceKey{WorktreeID: worktreeID, ServiceName: defaultServiceName()}
 	m.mu.Lock()
-	r, ok := m.servers[worktreeID]
+	r, ok := m.servers[key]
 	m.mu.Unlock()
 	if ok {
 		return r.snapshot(), nil
@@ -240,63 +293,13 @@ func (m *Manager) Status(_ context.Context, worktreeID, workDir string) (Status,
 	return out, nil
 }
 
-// ProxyHandler returns an http.Handler that strips the given prefix
-// from the request path and forwards to the running dev server for
-// worktreeID. 404s when no server is running.
-//
-// Every successful dispatch bumps lastTouch (for the idle reaper).
-// Sprite-hibernation interaction is intentionally NOT plumbed here —
-// Fly tracks open connections to the host service, and the
-// prompt-box SSE stream through clank-host is the steady-state
-// activity signal regardless. If hibernation ever bites mid-HMR,
-// reintroduce a keepalive.Bump callback here.
-//
-// prefixToStrip is what comes before the dev server's path — e.g.
-// "/worktrees/<wid>/preview/proxy". The handler trims this so Metro
-// sees its own URL space starting at /.
-func (m *Manager) ProxyHandler(worktreeID, prefixToStrip string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		m.mu.Lock()
-		r, ok := m.servers[worktreeID]
-		proxy := m.proxies[worktreeID]
-		m.mu.Unlock()
-		if !ok || proxy == nil {
-			http.Error(w, "no preview server running for this worktree; call POST .../preview/start first", http.StatusNotFound)
-			return
-		}
-
-		r.mu.Lock()
-		r.lastTouch = time.Now()
-		r.mu.Unlock()
-
-		// Strip the route prefix in place. Mirrors gateway/proxy.go's
-		// singleJoiningSlash dance: leave a single leading slash so
-		// the dev server sees "/" instead of "".
-		if prefixToStrip != "" && strings.HasPrefix(req.URL.Path, prefixToStrip) {
-			req2 := req.Clone(req.Context())
-			req2.URL.Path = strings.TrimPrefix(req.URL.Path, prefixToStrip)
-			if req2.URL.Path == "" || req2.URL.Path[0] != '/' {
-				req2.URL.Path = "/" + req2.URL.Path
-			}
-			if req.URL.RawPath != "" {
-				req2.URL.RawPath = strings.TrimPrefix(req.URL.RawPath, prefixToStrip)
-				if req2.URL.RawPath == "" || req2.URL.RawPath[0] != '/' {
-					req2.URL.RawPath = "/" + req2.URL.RawPath
-				}
-			}
-			proxy.ServeHTTP(w, req2)
-			return
-		}
-		proxy.ServeHTTP(w, req)
-	})
-}
-
 // LogTail returns the last N bytes of stdout/stderr captured from the
-// dev server, or nil if no server is running. Used by status endpoints
-// and the mobile loading screen.
+// "default" service for worktreeID. Returns nil when no server is
+// running.
 func (m *Manager) LogTail(worktreeID string) []byte {
+	key := serviceKey{WorktreeID: worktreeID, ServiceName: defaultServiceName()}
 	m.mu.Lock()
-	r, ok := m.servers[worktreeID]
+	r, ok := m.servers[key]
 	m.mu.Unlock()
 	if !ok || r.logs == nil {
 		return nil
@@ -304,8 +307,8 @@ func (m *Manager) LogTail(worktreeID string) []byte {
 	return r.logs.Snapshot()
 }
 
-// Shutdown stops every running server and the reaper goroutine.
-// Idempotent.
+// Shutdown stops every running server (and revokes its token) plus
+// the reaper goroutine. Idempotent.
 func (m *Manager) Shutdown() {
 	m.mu.Lock()
 	if m.closed {
@@ -315,13 +318,13 @@ func (m *Manager) Shutdown() {
 	m.closed = true
 	close(m.stopCh)
 	live := m.servers
-	m.servers = make(map[string]*running)
-	m.proxies = make(map[string]*httputil.ReverseProxy)
+	m.servers = make(map[serviceKey]*running)
 	m.mu.Unlock()
 
-	for wid, r := range live {
+	for k, r := range live {
 		r.stopWithGrace(m.stopGrace)
-		m.log.Printf("preview: shutdown stopped worktree %s", wid)
+		m.revokeBestEffort(k.WorktreeID, k.ServiceName)
+		m.log.Printf("preview: shutdown stopped %s/%s", k.WorktreeID, k.ServiceName)
 	}
 	m.reaperWG.Wait()
 	// Cancel the manager-scoped context last so any straggler spawns
@@ -349,30 +352,89 @@ func (m *Manager) reaperLoop() {
 // idleTimeout. Snapshots the candidates under m.mu, then runs the
 // kill outside the lock so a long stopProcessGroup wait doesn't stall
 // other Start/Stop calls.
+//
+// NB: lastTouch is currently bumped only on Start (no per-request
+// touch since the gateway proxy lives one hop earlier). For v1 the
+// idle reaper effectively expires anything that's been up longer
+// than idleTimeout; we'll wire a per-request touch via a webhook
+// from the gateway once the multi-service shape lands.
 func (m *Manager) reapIdle() {
 	cutoff := time.Now().Add(-m.idleTimeout)
 	type victim struct {
-		id   string
-		rec  *running
+		key serviceKey
+		rec *running
 	}
 	var victims []victim
 	m.mu.Lock()
-	for wid, r := range m.servers {
+	for k, r := range m.servers {
 		r.mu.Lock()
 		stale := r.lastTouch.Before(cutoff)
 		r.mu.Unlock()
 		if stale {
-			victims = append(victims, victim{id: wid, rec: r})
+			victims = append(victims, victim{key: k, rec: r})
 		}
 	}
 	for _, v := range victims {
-		delete(m.servers, v.id)
-		delete(m.proxies, v.id)
+		delete(m.servers, v.key)
 	}
 	m.mu.Unlock()
 
 	for _, v := range victims {
 		v.rec.stopWithGrace(m.stopGrace)
-		m.log.Printf("preview: reaped idle worktree %s (idle > %s)", v.id, m.idleTimeout)
+		m.revokeBestEffort(v.key.WorktreeID, v.key.ServiceName)
+		m.log.Printf("preview: reaped idle %s/%s (idle > %s)", v.key.WorktreeID, v.key.ServiceName, m.idleTimeout)
 	}
+}
+
+// revokeBestEffort calls the gateway's revoke webhook with a bounded
+// timeout. Logs failures and moves on — the gateway's row will
+// eventually expire if the call never lands.
+func (m *Manager) revokeBestEffort(worktreeID, serviceName string) {
+	ctx, cancel := context.WithTimeout(context.Background(), gwRevokeTimeout)
+	defer cancel()
+	if err := m.gw.Revoke(ctx, RevokeRequest{WorktreeID: worktreeID, ServiceName: serviceName}); err != nil {
+		m.log.Printf("preview: gateway revoke for %s/%s failed (non-fatal): %v", worktreeID, serviceName, err)
+	}
+}
+
+// waitForReady blocks until r's state moves out of StateStarting.
+// Used by Start to synchronize the gateway register with actual
+// readiness. Honors ctx cancellation for callers that don't want to
+// wait forever; spawn's own readiness probe has its own timeout that
+// bounds the worst case.
+func waitForReady(ctx context.Context, r *running) error {
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		r.mu.Lock()
+		state := r.state
+		lastErr := r.lastErr
+		r.mu.Unlock()
+		switch state {
+		case StateReady:
+			return nil
+		case StateFailed:
+			if lastErr == "" {
+				return fmt.Errorf("dev server failed to start")
+			}
+			return errors.New(lastErr)
+		case StateStopped:
+			return fmt.Errorf("dev server stopped during startup")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-r.done:
+			// process exited without flipping to Ready — fall through
+			// to read final state on next iteration
+		case <-tick.C:
+		}
+	}
+}
+
+// defaultServiceName returns the "default" service name for v1.
+// Kept in a tiny helper so the multi-service migration is a
+// search-and-replace away.
+func defaultServiceName() string {
+	return "default"
 }

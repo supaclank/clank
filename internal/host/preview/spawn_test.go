@@ -26,7 +26,7 @@ func TestSpawnReachesReady(t *testing.T) {
 	r, err := spawn(ctx, spawnRequest{
 		WorkDir:        t.TempDir(),
 		Spec:           spec,
-		PreviewURLBase: "http://localhost:8080/preview/test",
+		ServiceName: "default",
 	})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
@@ -61,7 +61,7 @@ func TestSpawnAndOrphanCleanup(t *testing.T) {
 	r, err := spawn(ctx, spawnRequest{
 		WorkDir:        t.TempDir(),
 		Spec:           spec,
-		PreviewURLBase: "http://localhost:8080/preview/test",
+		ServiceName: "default",
 	})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
@@ -105,7 +105,7 @@ func TestSpawnReadinessTimeoutFails(t *testing.T) {
 	r, err := spawn(ctx, spawnRequest{
 		WorkDir:        t.TempDir(),
 		Spec:           spec,
-		PreviewURLBase: "http://localhost:8080/preview/test",
+		ServiceName: "default",
 		ReadyTimeout:   500 * time.Millisecond,
 	})
 	if err != nil {
@@ -177,6 +177,43 @@ func waitForGroupEmpty(t *testing.T, pgid int, timeout time.Duration) int {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return psCountForGroup(t, pgid)
+}
+
+// TestBuildEnv_OmitsDeprecatedExpoHostnameVars pins the regression
+// motivating the WSS-tunnel architecture: V1 set
+// REACT_NATIVE_PACKAGER_HOSTNAME and EXPO_PACKAGER_PROXY_URL to bake
+// the public hostname into Metro's manifest URLs, which forced the
+// JSON-body URL rewriter in clank-host's proxy. The current design
+// has the gateway preserve Host on the proxied request so Metro
+// builds manifest URLs from r.Host directly — and these env vars
+// must NOT be set, or Metro would override the per-request hostname
+// with a stale baked-in one.
+//
+// Both env vars are also marked @deprecated in the Expo source —
+// re-adding them would make us liable to a silent future SDK break.
+func TestBuildEnv_OmitsDeprecatedExpoHostnameVars(t *testing.T) {
+	t.Parallel()
+	env := buildEnv()
+	for _, e := range env {
+		if strings.HasPrefix(e, "REACT_NATIVE_PACKAGER_HOSTNAME=") {
+			t.Errorf("buildEnv set REACT_NATIVE_PACKAGER_HOSTNAME — would override per-request Host: %q", e)
+		}
+		if strings.HasPrefix(e, "EXPO_PACKAGER_PROXY_URL=") {
+			t.Errorf("buildEnv set EXPO_PACKAGER_PROXY_URL — would override per-request Host: %q", e)
+		}
+	}
+	// Sanity: EXPO_NO_DOTENV is still set (Metro shouldn't load the
+	// repo's .env into its own process).
+	var sawNoDotenv bool
+	for _, e := range env {
+		if e == "EXPO_NO_DOTENV=1" {
+			sawNoDotenv = true
+			break
+		}
+	}
+	if !sawNoDotenv {
+		t.Error("buildEnv missing EXPO_NO_DOTENV=1")
+	}
 }
 
 // psCountForGroup uses `pgrep -g <pgid>` (or `ps -A` filtering on

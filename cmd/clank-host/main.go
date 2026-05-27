@@ -35,6 +35,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
+	"github.com/acksell/clank/internal/host/preview"
 	hostmux "github.com/acksell/clank/internal/host/mux"
 	hoststore "github.com/acksell/clank/internal/host/store"
 	"github.com/acksell/clank/internal/keepalive"
@@ -65,6 +66,7 @@ func main() {
 	notifierProvider := flag.String("notifier-provider", notifierProviderNone, "Provider that receives notification-worthy events (idle, permission, error): 'webhook' (POST to --notifier-webhook-url), 'noop' (debug), or 'none' (disabled — laptop default).")
 	notifierWebhookURL := flag.String("notifier-webhook-url", "", "POST target when --notifier-provider=webhook.")
 	notifierWebhookToken := flag.String("notifier-webhook-token", os.Getenv("CLANK_NOTIFIER_TOKEN"), "Per-host bearer token sent as 'Authorization: Bearer <token>' to the webhook target. Defaults to $CLANK_NOTIFIER_TOKEN.")
+	previewWebhookURL := flag.String("preview-webhook-url", os.Getenv("CLANK_PREVIEW_WEBHOOK_URL"), "Gateway base for the preview register/revoke webhooks (e.g. https://api.example.dev/webhooks/preview). Empty disables gateway integration — preview servers still spawn but no public token is minted (laptop dev). Defaults to $CLANK_PREVIEW_WEBHOOK_URL.")
 	githubOAuthClientID := flag.String("github-oauth-client-id", os.Getenv("CLANK_GITHUB_OAUTH_CLIENT_ID"), "Clank GitHub OAuth App client_id, used for the GitHub Connect device flow. Empty disables GitHub Connect on this host. Defaults to $CLANK_GITHUB_OAUTH_CLIENT_ID.")
 	flag.Parse()
 
@@ -100,6 +102,7 @@ func main() {
 		notifierProvider:     *notifierProvider,
 		notifierWebhookURL:   *notifierWebhookURL,
 		notifierWebhookToken: *notifierWebhookToken,
+		previewWebhookURL:    *previewWebhookURL,
 		githubOAuthClientID:  *githubOAuthClientID,
 	}
 	if err := run(cfg); err != nil {
@@ -120,6 +123,7 @@ type runConfig struct {
 	notifierProvider     string
 	notifierWebhookURL   string
 	notifierWebhookToken string
+	previewWebhookURL    string
 	githubOAuthClientID  string
 }
 
@@ -273,6 +277,13 @@ func run(cfg runConfig) error {
 	defer hostStore.Close()
 	lg.Printf("host store opened at %s", dbPath)
 
+	// Build the gateway webhook client. Empty preview-webhook-url
+	// disables the integration; the gwclient methods become no-ops
+	// and Manager keeps spawning local Metro without minting a
+	// public URL — useful for laptop dev or any sprite that hasn't
+	// been told about the gateway yet.
+	gwClient := preview.NewGWClient(cfg.previewWebhookURL, cfg.notifierWebhookToken)
+
 	svc := host.New(host.Options{
 		BackendManagers: map[agent.BackendType]agent.BackendManager{
 			agent.BackendOpenCode:   host.NewOpenCodeBackendManager(),
@@ -282,6 +293,7 @@ func run(cfg runConfig) error {
 		SessionsStore:       hostStore,
 		KeepaliveListener:   keepaliveListener,
 		NotifierLoop:        notifierLoop,
+		PreviewGWClient:     gwClient,
 		GitHubOAuthClientID: cfg.githubOAuthClientID,
 	})
 	if keepaliveListener != nil {

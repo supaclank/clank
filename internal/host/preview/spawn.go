@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -29,15 +28,9 @@ const readyTimeout = 45 * time.Second
 // spawnRequest carries everything spawn needs that isn't on the Spec.
 // The struct is internal — Manager.Start unpacks its method args here.
 type spawnRequest struct {
-	WorkDir string
-	Spec    Spec
-	// PreviewURLBase is the public URL Metro should bake into
-	// launchAsset.url. Comes from the start-request body so that
-	// mobile (via gateway) and laptop-curl tests can both supply the
-	// right value without the host having to guess.
-	//
-	// e.g. "https://gateway.example/v1/worktrees/<wid>/preview/proxy"
-	PreviewURLBase string
+	WorkDir     string
+	Spec        Spec
+	ServiceName string
 
 	// ReadyTimeout overrides readyTimeout for this spawn. Zero means
 	// "use the package default." Test seam — production callers leave
@@ -65,18 +58,13 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 		return nil, err
 	}
 
-	previewHost, err := hostFromURL(req.PreviewURLBase)
-	if err != nil {
-		return nil, err
-	}
-
 	// Tie the child to a per-spawn context so Stop's cancel() can kick
 	// in if the process is still in startup when the user bails out.
 	childCtx, cancel := context.WithCancel(ctx)
 
 	cmd := exec.CommandContext(childCtx, args[0], args[1:]...)
 	cmd.Dir = req.WorkDir
-	cmd.Env = buildEnv(req.PreviewURLBase, previewHost)
+	cmd.Env = buildEnv()
 	configureProcessGroup(cmd)
 
 	logs := newRingBuf(ringCapacity)
@@ -89,16 +77,17 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 	}
 
 	r := &running{
-		spec:      req.Spec,
-		port:      port,
-		state:     StateStarting,
-		startedAt: time.Now(),
-		lastTouch: time.Now(),
-		logs:      logs,
-		pid:       cmd.Process.Pid,
-		pgid:      cmd.Process.Pid, // Setpgid: true → pgid == pid
-		done:      make(chan struct{}),
-		cancel:    cancel,
+		spec:        req.Spec,
+		serviceName: req.ServiceName,
+		port:        port,
+		state:       StateStarting,
+		startedAt:   time.Now(),
+		lastTouch:   time.Now(),
+		logs:        logs,
+		pid:         cmd.Process.Pid,
+		pgid:        cmd.Process.Pid, // Setpgid: true → pgid == pid
+		done:        make(chan struct{}),
+		cancel:      cancel,
 	}
 
 	// Reap in the background so r.done closes when the child dies for
@@ -171,38 +160,21 @@ func renderArgs(tmpl []string, port int) ([]string, error) {
 	return out, nil
 }
 
-// hostFromURL extracts the host:port from base. Used to populate
-// REACT_NATIVE_PACKAGER_HOSTNAME, which Metro reads as the hostname-
-// only portion to bake into manifest URLs.
-func hostFromURL(base string) (string, error) {
-	u, err := url.Parse(base)
-	if err != nil {
-		return "", fmt.Errorf("parse preview_url_base %q: %w", base, err)
-	}
-	if u.Host == "" {
-		return "", fmt.Errorf("preview_url_base %q is missing host", base)
-	}
-	// REACT_NATIVE_PACKAGER_HOSTNAME wants hostname without the port —
-	// the port baked into the manifest is the listener port, which
-	// EXPO_PACKAGER_PROXY_URL covers separately.
-	if h, _, err := net.SplitHostPort(u.Host); err == nil {
-		return h, nil
-	}
-	return u.Host, nil
-}
-
 // buildEnv returns the env slice for the spawned child. Inherits the
-// parent process env (so PATH, HOME, … work) and layers Expo's
-// hostname/proxy hints on top. EXPO_NO_DOTENV stops Metro reading the
-// repo's .env into its own process; the .env is still loaded by the
-// app the bundle runs as.
-func buildEnv(previewURLBase, previewHost string) []string {
+// parent process env (so PATH, HOME, … work). EXPO_NO_DOTENV stops
+// Metro reading the repo's .env into its own process; the .env is
+// still loaded by the app the bundle runs as.
+//
+// We deliberately do NOT set REACT_NATIVE_PACKAGER_HOSTNAME or
+// EXPO_PACKAGER_PROXY_URL: with the WSS-tunnel architecture, the
+// gateway preserves Host on the proxied request, so Metro builds
+// manifest URLs from r.Host — which is whatever public preview-
+// <token>.<root> hostname the client used. Setting these env vars
+// would override that, which is exactly what we want NOT to happen.
+// (Both vars are also marked @deprecated in the Expo source.)
+func buildEnv() []string {
 	env := append([]string(nil), os.Environ()...)
-	env = append(env,
-		"REACT_NATIVE_PACKAGER_HOSTNAME="+previewHost,
-		"EXPO_PACKAGER_PROXY_URL="+previewURLBase,
-		"EXPO_NO_DOTENV=1",
-	)
+	env = append(env, "EXPO_NO_DOTENV=1")
 	return env
 }
 

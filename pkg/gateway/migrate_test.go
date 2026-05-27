@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1206,6 +1207,12 @@ func (p *captureProvisioner) EnsureHost(context.Context, string) (provisioner.Ho
 }
 func (*captureProvisioner) SuspendHost(context.Context, string) error { return nil }
 func (*captureProvisioner) DestroyHost(context.Context, string) error { return nil }
+func (*captureProvisioner) GetHostByID(context.Context, string) (provisioner.HostRef, error) {
+	return provisioner.HostRef{}, errors.New("capture provisioner: GetHostByID not implemented")
+}
+func (*captureProvisioner) OpenInternalConn(context.Context, string, int) (net.Conn, error) {
+	return nil, errors.New("capture provisioner: OpenInternalConn not implemented")
+}
 
 type fixedUserAuth struct{ userID string }
 

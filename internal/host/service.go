@@ -126,6 +126,12 @@ type Options struct {
 	// cmd/clank-host/main.go.
 	NotifierLoop *notifier.Loop
 
+	// PreviewGWClient calls the gateway's preview register/revoke
+	// webhooks to mint and tear down public tokens. Nil (or a client
+	// constructed with empty URL) keeps preview spawns local-only —
+	// the dev server runs but Status.Token/URL stay empty.
+	PreviewGWClient *preview.GWClient
+
 	// GitHubOAuthClientID is the Clank GitHub OAuth App's client_id,
 	// used by the host's GitHub Connect device flow. Empty disables
 	// the connect surface (status reports available:false). When
@@ -173,7 +179,11 @@ func New(opts Options) *Service {
 	// and the prompt-box SSE through clank-host is the steady-state
 	// activity signal anyway. If hibernation ever bites mid-HMR,
 	// reintroduce a Bump callback on preview.Options.
-	s.preview = preview.New(preview.Options{Log: lg})
+	//
+	// GWClient is what registers each spawned dev server with the
+	// gateway so a public tokenized URL gets minted; nil / disabled
+	// keeps spawning local-only.
+	s.preview = preview.New(preview.Options{Log: lg, GWClient: opts.PreviewGWClient})
 
 	// AuthManager handles credentials for every backend that has
 	// connectable providers (OpenCode + Anthropic today). The restart
