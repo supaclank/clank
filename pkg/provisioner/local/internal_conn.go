@@ -70,6 +70,34 @@ func (p *Provisioner) OpenInternalConn(ctx context.Context, hostID string, port 
 	return d.DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", port))
 }
 
+// GetHostByNotifierToken implements gateway.PreviewHostLookup (and
+// notify.HostLookup): given a notifier_token bearer presented by a
+// webhook caller, return the matching host row.
+//
+// In local mode the row isn't in Postgres — it's in p.current. The
+// preview webhook flow (clank-host → POST /webhooks/preview/register)
+// uses this lookup to authenticate the inbound bearer.
+func (p *Provisioner) GetHostByNotifierToken(_ context.Context, notifierToken string) (hoststore.Host, error) {
+	if notifierToken == "" {
+		return hoststore.Host{}, hoststore.ErrHostNotFound
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.current == nil || p.current.notifierToken != notifierToken {
+		return hoststore.Host{}, hoststore.ErrHostNotFound
+	}
+	c := p.current
+	return hoststore.Host{
+		ID:            c.hostID,
+		UserID:        "local",
+		Provider:      "local",
+		Hostname:      c.hostname,
+		AuthToken:     c.authToken,
+		NotifierToken: c.notifierToken,
+		Status:        hoststore.HostStatusRunning,
+	}, nil
+}
+
 // refFromChildLocked rebuilds a HostRef from a *child. Caller holds
 // p.mu. Symmetric with the EnsureHost path's construction so two
 // callers comparing HostRefs see consistent shapes (only Transport

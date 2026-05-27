@@ -166,7 +166,7 @@ func TestSetSignedCookies_ParseableByVerify(t *testing.T) {
 
 	// Set cookies via a recorder, then replay them on a fresh request.
 	w := httptest.NewRecorder()
-	SetSignedCookies(w, sig, exp)
+	SetSignedCookies(w, sig, exp, true)
 	cookieHeader := w.Header().Get("Set-Cookie")
 	if !strings.Contains(cookieHeader, SigParam+"=") {
 		t.Fatalf("expected Set-Cookie to contain %s, got %q", SigParam, w.Header().Values("Set-Cookie"))

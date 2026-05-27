@@ -52,6 +52,14 @@ type Options struct {
 	// URL — typically the same clankd that spawned it. Empty disables
 	// the notifier (laptop dev without push delivery).
 	NotifierWebhookURL string
+
+	// PreviewWebhookURL, when non-empty, configures the subprocess
+	// clank-host to POST preview register/revoke webhooks back to
+	// this URL on the gateway. Same auth as NotifierWebhookURL (the
+	// per-host bearer below). When set without NotifierWebhookURL,
+	// the bearer is still generated and passed so the preview
+	// webhook can authenticate.
+	PreviewWebhookURL string
 }
 
 // Provisioner manages a single persistent clank-host subprocess.
@@ -132,8 +140,11 @@ func (p *Provisioner) EnsureHost(_ context.Context, _ string) (provisioner.HostR
 	// Notifier token only matters when a webhook URL is configured.
 	// Skip the mint on laptop-dev / no-dispatcher runs — saves a few
 	// bytes of randomness and keeps the args clean.
+	// Generate the host bearer when either webhook needs auth. Both
+	// the notifier and preview webhooks share this single token —
+	// the gateway resolves notifier_token → host on either path.
 	var notifierToken string
-	if p.opts.NotifierWebhookURL != "" {
+	if p.opts.NotifierWebhookURL != "" || p.opts.PreviewWebhookURL != "" {
 		notifierToken, err = generateNotifierToken()
 		if err != nil {
 			return provisioner.HostRef{}, fmt.Errorf("generate notifier-token: %w", err)
@@ -150,12 +161,17 @@ func (p *Provisioner) EnsureHost(_ context.Context, _ string) (provisioner.HostR
 		}
 		args = append(args, "--data-dir", p.opts.DataDir)
 	}
+	if notifierToken != "" {
+		args = append(args, "--notifier-webhook-token", notifierToken)
+	}
 	if p.opts.NotifierWebhookURL != "" {
 		args = append(args,
 			"--notifier-provider", "webhook",
 			"--notifier-webhook-url", p.opts.NotifierWebhookURL,
-			"--notifier-webhook-token", notifierToken,
 		)
+	}
+	if p.opts.PreviewWebhookURL != "" {
+		args = append(args, "--preview-webhook-url", p.opts.PreviewWebhookURL)
 	}
 
 	cmd := exec.Command(bin, args...)

@@ -206,11 +206,17 @@ func SignedURL(secret []byte, token, rootDomain string, exp time.Time) (string, 
 //
 // The cookies expire at exp; clients drop them automatically.
 //
-// Browsers honor Secure + HttpOnly + SameSite=Strict on this; React
-// Native's NSURLSession / OkHttp cookie jars do too (with the
-// caveat that Expo dev-launcher's HTTP layer is the empirical
-// question we'd need to verify per platform).
-func SetSignedCookies(w http.ResponseWriter, sig string, exp time.Time) {
+// `secure` controls the Secure flag. Pass true when the request
+// reached us over TLS (typical production); pass false for plain
+// HTTP local dev (browsers drop Secure cookies on http://). The
+// caller computes this from r.TLS != nil OR X-Forwarded-Proto
+// (set by an upstream TLS terminator).
+//
+// Browsers honor HttpOnly + SameSite=Strict; React Native's
+// NSURLSession / OkHttp cookie jars do too (with the caveat that
+// Expo dev-launcher's HTTP layer is the empirical question we'd
+// need to verify per platform).
+func SetSignedCookies(w http.ResponseWriter, sig string, exp time.Time, secure bool) {
 	maxAge := int(time.Until(exp).Seconds())
 	if maxAge < 0 {
 		maxAge = 0
@@ -221,7 +227,7 @@ func SetSignedCookies(w http.ResponseWriter, sig string, exp time.Time) {
 		Path:     "/",
 		MaxAge:   maxAge,
 		Expires:  exp,
-		Secure:   true,
+		Secure:   secure,
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
 	})
@@ -231,8 +237,19 @@ func SetSignedCookies(w http.ResponseWriter, sig string, exp time.Time) {
 		Path:     "/",
 		MaxAge:   maxAge,
 		Expires:  exp,
-		Secure:   true,
+		Secure:   secure,
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
 	})
+}
+
+// RequestIsHTTPS reports whether the incoming request reached the
+// gateway over TLS, either directly (r.TLS != nil) or via an upstream
+// terminator that set X-Forwarded-Proto. Used by handlers that need
+// to decide the Secure flag on outgoing cookies.
+func RequestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return r.Header.Get("X-Forwarded-Proto") == "https"
 }

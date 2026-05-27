@@ -2,6 +2,7 @@ package daemoncli
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
@@ -19,6 +20,7 @@ import (
 	"github.com/acksell/clank/pkg/auth"
 	"github.com/acksell/clank/pkg/gateway"
 	"github.com/acksell/clank/pkg/notify"
+	"github.com/acksell/clank/pkg/preview/routestore/memstore"
 	"github.com/acksell/clank/pkg/provisioner"
 	clanksync "github.com/acksell/clank/pkg/sync"
 )
@@ -134,6 +136,51 @@ func runGatewayServer(prov provisioner.Provisioner, st *store.Store, opts Server
 		AuthConfig:  loadAuthConfigFromEnv(),
 		Notify:      dispatcher,
 	}
+
+	// Wire the preview surface when CLANK_PREVIEW_ROOT_DOMAIN is set.
+	// For laptop/docker dev we use an in-process memstore for routes
+	// (the cloud path uses Postgres via supaclank's pgx adapter). The
+	// local provisioner also satisfies gateway.PreviewHostLookup —
+	// when clank-host calls the register webhook with its per-host
+	// notifier_token bearer, the provisioner resolves it to a
+	// synthetic Host{}. Both halves are nil-safe: empty domain
+	// disables the entire surface and the gateway falls back to
+	// today's path-routed behavior.
+	if rootDomain := os.Getenv("CLANK_PREVIEW_ROOT_DOMAIN"); rootDomain != "" {
+		var lookup gateway.PreviewHostLookup
+		if local, ok := prov.(gateway.PreviewHostLookup); ok {
+			lookup = local
+		}
+		if lookup == nil {
+			log.Printf("gateway: CLANK_PREVIEW_ROOT_DOMAIN set but the active provisioner doesn't implement GetHostByNotifierToken — preview surface disabled")
+		} else {
+			gwCfg.PreviewRoutes = memstore.New(nil)
+			gwCfg.PreviewHostLookup = lookup
+			gwCfg.PreviewRootDomain = rootDomain
+			// Owner-only token authentication reuses whatever
+			// Authenticator the rest of the daemon uses. Resolved
+			// below (`authenticator`) — but we need it now, so
+			// re-resolve in-place. Cheap (no I/O on the JWT path).
+			authForPreview := opts.Auth
+			if authForPreview == nil {
+				ctxAuth := context.Background()
+				resolved, _, err := resolveDefaultAuth(ctxAuth, opts)
+				if err != nil {
+					return fmt.Errorf("preview authenticator: %w", err)
+				}
+				authForPreview = resolved
+			}
+			gwCfg.PreviewAuthenticator = authForPreview
+			if hexKey := os.Getenv("CLANK_PREVIEW_SIGNING_KEY"); hexKey != "" {
+				key, err := hex.DecodeString(hexKey)
+				if err != nil {
+					return fmt.Errorf("CLANK_PREVIEW_SIGNING_KEY: %w", err)
+				}
+				gwCfg.PreviewSigningKey = key
+			}
+			log.Printf("gateway: preview surface enabled on *.%s", rootDomain)
+		}
+	}
 	// Laptop mode (Sync == nil): wire the per-session router so
 	// /sessions/* routes between local clank-host and the active
 	// remote based on worktree ownership. Cloud mode (Sync != nil)
@@ -166,12 +213,19 @@ func runGatewayServer(prov provisioner.Provisioner, st *store.Store, opts Server
 	if h := gw.NotifyWebhookHandler(); h != nil {
 		mux.Handle("POST /webhooks/notifications", h)
 	}
+	if h := gw.PreviewWebhookHandler(); h != nil {
+		mux.Handle("/webhooks/preview/", h)
+	}
 	if ach := gw.AuthConfigHandler(); ach != nil {
 		mux.Handle("GET /auth-config", ach)
 		log.Printf("gateway: /auth-config discovery enabled")
 	}
 	mux.Handle("/", auth.Middleware(gw.Handler(), authenticator))
-	var handler http.Handler = mux
+	// Wrap with the preview-subdomain dispatcher so requests to
+	// preview-<token>.<root> reach the tokenized proxy before the
+	// auth middleware fires. No-op when CLANK_PREVIEW_ROOT_DOMAIN
+	// is unset.
+	var handler http.Handler = gw.WrapPreviewSubdomain(mux)
 
 	listener, cleanup, err := openHubListener(opts)
 	if err != nil {

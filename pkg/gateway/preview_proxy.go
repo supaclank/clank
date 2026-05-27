@@ -147,7 +147,12 @@ func (s *previewState) authorizeOwnerOnly(w http.ResponseWriter, r *http.Request
 			// caller having to thread it through every URL.
 			if r.URL.Query().Get(tokens.SigParam) != "" {
 				if sig, exp, ok := signedQueryFromRequest(r); ok {
-					tokens.SetSignedCookies(w, sig, exp)
+					// Inspect the incoming request to decide whether
+					// Secure should be set on the outgoing cookies.
+					// Plain-HTTP local dev wouldn't store Secure
+					// cookies; production-TLS does. Either way the
+					// cookies are HttpOnly + SameSite=Strict.
+					tokens.SetSignedCookies(w, sig, exp, tokens.RequestIsHTTPS(r))
 				}
 			}
 			return true
