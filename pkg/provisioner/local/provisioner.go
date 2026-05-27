@@ -60,6 +60,13 @@ type Options struct {
 	// the bearer is still generated and passed so the preview
 	// webhook can authenticate.
 	PreviewWebhookURL string
+
+	// UserID is the identity the local provisioner reports for its
+	// single in-memory host record. Must match the `sub` claim the
+	// gateway's authenticator extracts from inbound JWTs, otherwise
+	// the preview surface's owner-ship check rejects owner_only
+	// tokens as cross-tenant. Empty falls back to "local".
+	UserID string
 }
 
 // Provisioner manages a single persistent clank-host subprocess.

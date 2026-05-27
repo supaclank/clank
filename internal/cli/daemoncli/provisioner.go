@@ -76,6 +76,11 @@ func buildLocalProvisioner() (provisioner.Provisioner, func(), error) {
 		DataDir:            filepath.Join(dir, "host"),
 		NotifierWebhookURL: notifierWebhookURL(),
 		PreviewWebhookURL:  previewWebhookURL(),
+		// CLANK_LOCAL_USER_ID must match the sub claim of JWTs the
+		// gateway's authenticator accepts — otherwise the preview
+		// surface's owner-only check 404s legitimate requests as
+		// cross-tenant.
+		UserID: os.Getenv("CLANK_LOCAL_USER_ID"),
 	}, log.Default())
 	return prov, prov.Stop, nil
 }

@@ -135,7 +135,8 @@ docker compose -f docker/docker-compose.yml exec clankd ls /root/work/
 
 # 2. Open a session against the synced worktree. clank-host inside
 # the clankd container resolves the WorktreeID to /root/work/<id>/
-# and spawns opencode there — no clone, no GitHub auth needed.
+# and spawns the configured agent backend there (both `opencode` and
+# `claude` are baked into the image) — no clone, no GitHub auth needed.
 clank code "summarize this codebase"
 
 # 3. When you want to keep working on the laptop, reclaim ownership.
@@ -221,13 +222,20 @@ gateway: preview surface enabled on *.localhost
   gateway detects HTTP and drops `Secure` on the auth cookies, so
   the signed-URL → cookie flow works on plain `http://*.localhost`.
 - **Mobile dev on a real device** needs the preview hostname to
-  resolve to your laptop. Two options:
-  - Run the mobile app in an Android emulator (use `10.0.2.2` to
-    reach the host) and set `CLANK_PREVIEW_ROOT_DOMAIN=10.0.2.2.nip.io`
-    or similar wildcard service.
-  - Tunnel via `cloudflared tunnel --url http://localhost:7878` (or
-    ngrok), set `CLANK_PREVIEW_ROOT_DOMAIN` to the tunnel hostname
-    AND `CLANK_PREVIEW_WEBHOOK_URL` to the same tunnel URL.
+  resolve to your laptop. `*.localhost` only resolves to 127.0.0.1
+  on the device running the browser — phones see "Unable to resolve
+  host" because no public DNS knows about it. Three working options:
+  - **nip.io / sslip.io** (recommended for Tailscale or LAN dev):
+    `CLANK_PREVIEW_ROOT_DOMAIN=100-123-16-31.nip.io` resolves
+    `*.100-123-16-31.nip.io` to `100.123.16.31`. Substitute YOUR
+    laptop's reachable IP. The phone hits the laptop on port 7878
+    directly, no tunnel daemon needed.
+  - **Android emulator**: use `10.0.2.2` to reach the host;
+    `CLANK_PREVIEW_ROOT_DOMAIN=10.0.2.2.nip.io`.
+  - **Cloudflared / ngrok tunnel** (works from any network,
+    including cellular): `cloudflared tunnel --url http://localhost:7878`,
+    then set `CLANK_PREVIEW_ROOT_DOMAIN` to the tunnel hostname AND
+    `CLANK_PREVIEW_WEBHOOK_URL` to the tunnel URL.
 - **Sprite-side WSS tunnel** is bypassed: the local provisioner's
   `OpenInternalConn` direct-dials 127.0.0.1 inside the clankd
   container (clank-host runs as a subprocess there). The full

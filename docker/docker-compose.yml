@@ -117,6 +117,13 @@ services:
       # your own App for testing.
       CLANK_GITHUB_OAUTH_CLIENT_ID: "${CLANK_GITHUB_OAUTH_CLIENT_ID:-Ov23li78UDBwea5WvI5v}"
 
+      # The local provisioner's single in-memory host record reports
+      # this as its UserID. Must match the sub claim the auth-stub
+      # mints (CLANK_AUTH_STUB_USER_ID) so the preview surface's
+      # owner-only check passes — without this, every /v1/preview/
+      # tokens/<token>/sign request 404s as cross-tenant.
+      CLANK_LOCAL_USER_ID: "${CLANK_AUTH_STUB_USER_ID:-dev-user}"
+
       # Embedded sync substrate. clankd's runGatewayServer reads these
       # in TCP mode via loadSyncFromEnv and mounts a sync server when
       # CLANK_SYNC_S3_BUCKET is set. Unix-socket mode (laptop) ignores

@@ -87,9 +87,13 @@ func (p *Provisioner) GetHostByNotifierToken(_ context.Context, notifierToken st
 		return hoststore.Host{}, hoststore.ErrHostNotFound
 	}
 	c := p.current
+	userID := p.opts.UserID
+	if userID == "" {
+		userID = "local"
+	}
 	return hoststore.Host{
 		ID:            c.hostID,
-		UserID:        "local",
+		UserID:        userID,
 		Provider:      "local",
 		Hostname:      c.hostname,
 		AuthToken:     c.authToken,
