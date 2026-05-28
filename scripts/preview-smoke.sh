@@ -134,7 +134,62 @@ else
 fi
 
 echo
-echo "==> STEP 4: POST /preview/stop"
+echo "==> STEP 4: confirm Metro stays in watch mode (NOT 'CI mode')"
+# Direct regression test for the spawn.buildEnv bug we hit during
+# initial HMR bring-up: setting CI=true in the child env makes Metro
+# disable file-watching + HMR with the line below. Targeted argv
+# flag (--non-interactive) is the supported way to silence prompts.
+#
+# Metro's stdout lives in clank-host's in-memory ring buffer, not the
+# host process stdout — so we fetch via /preview/logs.
+metro_logs="$(
+  curl -sS "http://127.0.0.1:${HOST_PORT}/worktrees/${WID}/preview/logs"
+)"
+if echo "${metro_logs}" | grep -q "Metro is running in CI mode"; then
+  echo "FAIL: Metro reports 'CI mode' — HMR is silently broken."
+  echo "      Check spawn.buildEnv: nothing should set CI in the child env."
+  echo "${metro_logs}" | grep -n "Metro is running in CI mode" | head -3 >&2
+  exit 1
+fi
+echo "PASS: Metro's logs don't contain 'Metro is running in CI mode'"
+
+echo
+echo "==> STEP 5: manifest's launchAsset.url has the expected host:port"
+# Metro generates the bundle URL from EXPO_PACKAGER_PROXY_URL if set,
+# otherwise its own listen host:port. The local smoke runs without a
+# gateway → no proxy URL → manifest should advertise Metro's internal
+# port. The flip side (with proxy URL → manifest reflects it) is
+# pinned in internal/host/preview/spawn_test.go.
+#
+# This step exists to catch a *Metro* regression: if a future SDK
+# changes how launchAsset.url is composed, this catches it before
+# users do. The contract we assert: launchAsset.url's port equals
+# Metro's bound port (the spawn returned ${metro_port}).
+manifest_json="$(
+  curl -sS \
+    -H 'Accept: application/expo+json,application/json' \
+    -H 'expo-platform: android' \
+    "http://127.0.0.1:${metro_port}/" \
+)"
+launch_asset_url="$(echo "${manifest_json}" | jq -r '.launchAsset.url // empty')"
+if [[ -z "${launch_asset_url}" ]]; then
+  echo "FAIL: manifest has no .launchAsset.url"
+  echo "${manifest_json}" | jq . >&2 || echo "${manifest_json}" >&2
+  exit 1
+fi
+echo "launchAsset.url: ${launch_asset_url}"
+# Extract host:port — works for the http://host:port/path form.
+manifest_hostport="$(echo "${launch_asset_url}" | sed -E 's|^https?://([^/]+)/.*|\1|')"
+expected_hostport="127.0.0.1:${metro_port}"
+if [[ "${manifest_hostport}" != "${expected_hostport}" ]]; then
+  echo "FAIL: launchAsset.url host:port = '${manifest_hostport}', want '${expected_hostport}'"
+  echo "      Metro is composing manifest URLs from an unexpected source."
+  exit 1
+fi
+echo "PASS: launchAsset.url advertises ${expected_hostport}"
+
+echo
+echo "==> STEP 6: POST /preview/stop"
 curl -sS -X POST "http://127.0.0.1:${HOST_PORT}/worktrees/${WID}/preview/stop" -o /dev/null -w '%{http_code}\n'
 
 echo

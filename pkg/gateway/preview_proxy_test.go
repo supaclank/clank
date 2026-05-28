@@ -404,6 +404,127 @@ func TestPreviewProxy_WebSocketUpgradeProxiesCleanly(t *testing.T) {
 	}
 }
 
+// TestPreviewProxy_WebSocketUpgradeOwnerOnlyNoAuthRejected pins the
+// "owner_only routes reject anonymous WS upgrades" contract. An
+// attacker who learned the preview hostname (but not the JWT or a
+// valid signed bearer) must not be able to open the HMR socket and
+// receive module-update messages containing live source code.
+//
+// Regression target: a refactor that accidentally moves the auth
+// gate AFTER the proxy hijacks the inbound connection would still
+// 401 here, but if the gate is skipped entirely the upstream would
+// see the request and the test would observe a 101 (which it asserts
+// must NOT happen).
+func TestPreviewProxy_WebSocketUpgradeOwnerOnlyNoAuthRejected(t *testing.T) {
+	t.Parallel()
+	upstream := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Errorf("upstream should not be reached on unauth WS upgrade")
+	})
+	f := newPreviewProxyFixture(t, upstream)
+	r := f.seed(t, "alice", tokens.VisibilityOwnerOnly)
+	host := tokens.HostFor(r.Token, f.root)
+
+	target := strings.TrimPrefix(f.srv.URL, "http://")
+	httpc := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "tcp", target)
+			},
+		},
+	}
+
+	u := &url.URL{Scheme: "ws", Host: host, Path: "/hot"}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, resp, err := websocket.Dial(ctx, u.String(), &websocket.DialOptions{HTTPClient: httpc})
+	if err == nil {
+		t.Fatalf("ws dial unexpectedly succeeded against owner_only route without auth")
+	}
+	if resp == nil {
+		t.Fatalf("ws dial err=%v but no HTTP response captured", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status=%d, want 401", resp.StatusCode)
+	}
+}
+
+// TestPreviewProxy_WebSocketUpgradeOwnerOnlyWithSignedCookies is the
+// regression test for today's HMR break: the Android dev-launcher's
+// HMR WebSocket client doesn't carry the signed bearer in the URL
+// (Metro's HMRClient hardcodes the WS path with no auth params), so
+// the only way for owner_only WS upgrades to succeed is via the
+// signed-bearer cookies that the gateway sets on the initial bundle
+// fetch. Cookies → 101.
+//
+// If this test starts failing, HMR is broken for every Android
+// dev-launcher consumer regardless of whether the cookie-bridge in
+// clank-mobile/NetworkBundleLoader is still doing its job.
+func TestPreviewProxy_WebSocketUpgradeOwnerOnlyWithSignedCookies(t *testing.T) {
+	t.Parallel()
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("ws accept: %v", err)
+			return
+		}
+		defer c.Close(websocket.StatusInternalError, "")
+		typ, data, err := c.Read(r.Context())
+		if err != nil {
+			return
+		}
+		_ = c.Write(r.Context(), typ, data)
+	})
+	f := newPreviewProxyFixture(t, upstream)
+	r := f.seed(t, "alice", tokens.VisibilityOwnerOnly)
+	host := tokens.HostFor(r.Token, f.root)
+	exp := time.Now().Add(10 * time.Minute)
+	sig, err := tokens.Sign(f.signingKey, r.Token, exp)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	target := strings.TrimPrefix(f.srv.URL, "http://")
+	httpc := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "tcp", target)
+			},
+		},
+	}
+
+	u := &url.URL{Scheme: "ws", Host: host, Path: "/hot"}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsConn, _, err := websocket.Dial(ctx, u.String(), &websocket.DialOptions{
+		HTTPClient: httpc,
+		HTTPHeader: http.Header{
+			// Match exactly what NetworkBundleLoader.kt's cookie-bridge
+			// inserts into Android's WebView CookieManager after the
+			// signed-URL bundle fetch lands.
+			"Cookie": []string{fmt.Sprintf(
+				"%s=%s; %s=%d",
+				tokens.SigParam, sig,
+				tokens.ExpParam, exp.Unix(),
+			)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ws dial with signed cookies: %v", err)
+	}
+	defer wsConn.Close(websocket.StatusNormalClosure, "")
+
+	if err := wsConn.Write(ctx, websocket.MessageText, []byte("hmr")); err != nil {
+		t.Fatalf("ws write: %v", err)
+	}
+	_, data, err := wsConn.Read(ctx)
+	if err != nil {
+		t.Fatalf("ws read: %v", err)
+	}
+	if string(data) != "hmr" {
+		t.Errorf("ws echo = %q, want %q", data, "hmr")
+	}
+}
+
 // --- signed-URL bearer tests ---
 
 // signedURLFor mints a valid signed URL for token using the
