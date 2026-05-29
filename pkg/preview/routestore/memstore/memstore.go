@@ -101,7 +101,9 @@ func (s *Store) SetVisibility(_ context.Context, token string, v tokens.Visibili
 		return routestore.Route{}, routestore.ErrNotFound
 	}
 	r.Visibility = v
-	r.ExpiresAt = expiresAt
+	if !expiresAt.IsZero() {
+		r.ExpiresAt = expiresAt
+	}
 	return *r, nil
 }
 

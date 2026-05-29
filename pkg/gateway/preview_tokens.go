@@ -198,8 +198,10 @@ func (g *Gateway) handleSignPreviewToken(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req signRequest
-	// Empty body is fine — use defaults.
-	if r.ContentLength != 0 {
+	// Empty body is fine — use defaults. ContentLength==-1 means
+	// unknown (e.g. chunked encoding); treat that the same as 0 to
+	// avoid a spurious 400 on clients that don't set Content-Length.
+	if r.ContentLength > 0 {
 		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
 			http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
 			return

@@ -46,6 +46,11 @@ func (p *Provisioner) GetHostByID(_ context.Context, hostID string) (provisioner
 	if p.current == nil || p.current.hostID != hostID {
 		return provisioner.HostRef{}, hoststore.ErrHostNotFound
 	}
+	select {
+	case <-p.current.exited:
+		return provisioner.HostRef{}, hoststore.ErrHostNotFound
+	default:
+	}
 	return p.refFromChildLocked(p.current), nil
 }
 

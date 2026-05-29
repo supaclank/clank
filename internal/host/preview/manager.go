@@ -219,8 +219,40 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 		r.mu.Unlock()
 	}
 
+	// Publish in StateStarting before blocking on readiness so a
+	// concurrent retried Start sees the in-flight record and returns
+	// early instead of spawning a duplicate Metro instance.
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		r.stopWithGrace(m.stopGrace)
+		if regErr == nil {
+			m.revokeBestEffort(worktreeID, serviceName)
+		}
+		return Status{}, fmt.Errorf("preview: manager is shut down")
+	}
+	if existing, ok := m.servers[key]; ok {
+		// Lost the race — another concurrent Start already published.
+		// Keep theirs, discard ours.
+		snap := existing.snapshot()
+		m.mu.Unlock()
+		r.stopWithGrace(m.stopGrace)
+		if regErr == nil {
+			m.revokeBestEffort(worktreeID, serviceName)
+		}
+		m.log.Printf("preview: discarded duplicate spawn for %s/%s", worktreeID, serviceName)
+		return snap, nil
+	}
+	m.servers[key] = r
+	m.mu.Unlock()
+
 	if err := waitForReady(ctx, r); err != nil {
-		// Tear down the orphan — caller has no handle to stop it.
+		// Tear down the orphan and remove from the registry.
+		m.mu.Lock()
+		if cur, ok := m.servers[key]; ok && cur == r {
+			delete(m.servers, key)
+		}
+		m.mu.Unlock()
 		r.stopWithGrace(m.stopGrace)
 		if regErr == nil {
 			m.revokeBestEffort(worktreeID, serviceName)
@@ -228,25 +260,6 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 		return Status{}, fmt.Errorf("wait ready: %w", err)
 	}
 
-	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		r.stopWithGrace(m.stopGrace)
-		m.revokeBestEffort(worktreeID, serviceName)
-		return Status{}, fmt.Errorf("preview: manager is shut down")
-	}
-	if existing, ok := m.servers[key]; ok {
-		// Lost the race against a concurrent Start. Keep theirs, drop
-		// ours — port leak only for the stop-grace window, never persistent.
-		snap := existing.snapshot()
-		m.mu.Unlock()
-		r.stopWithGrace(m.stopGrace)
-		m.revokeBestEffort(worktreeID, serviceName)
-		m.log.Printf("preview: discarded duplicate spawn for %s/%s", worktreeID, serviceName)
-		return snap, nil
-	}
-	m.servers[key] = r
-	m.mu.Unlock()
 	m.log.Printf("preview: started %s on port %d for %s/%s", r.spec.Kind, r.port, worktreeID, serviceName)
 	return r.snapshot(), nil
 }
