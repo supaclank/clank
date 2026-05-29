@@ -27,7 +27,6 @@ import (
 
 	"github.com/acksell/clank/pkg/provisioner"
 	"github.com/acksell/clank/pkg/provisioner/hoststore"
-	transportpkg "github.com/acksell/clank/pkg/provisioner/transport"
 )
 
 const internalDialTimeout = 5 * time.Second
@@ -111,7 +110,7 @@ func (p *Provisioner) refFromChildLocked(c *child) provisioner.HostRef {
 	return provisioner.HostRef{
 		HostID:    c.hostID,
 		URL:       c.url,
-		Transport: &transportpkg.BearerInjector{Token: c.authToken},
+		Transport: c.transport,
 		AuthToken: c.authToken,
 		AutoWake:  false, // no edge wake for a local subprocess
 		Hostname:  c.hostname,

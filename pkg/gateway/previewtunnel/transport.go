@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/acksell/clank/pkg/provisioner"
@@ -63,7 +64,7 @@ type Tunnel struct {
 	prov   provisioner.Provisioner
 	hostID string
 	port   int
-	rt     *http.Transport
+	rt     atomic.Pointer[http.Transport]
 }
 
 // New constructs a Tunnel ready to receive requests. Returns an
@@ -91,7 +92,7 @@ func New(prov provisioner.Provisioner, hostID string, port int, cfg Config) (*Tu
 	}
 
 	t := &Tunnel{prov: prov, hostID: hostID, port: port}
-	t.rt = &http.Transport{
+	t.rt.Store(&http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			// Override the inbound addr (which the stdlib derives from
 			// the request URL's host) — we always dial the configured
@@ -108,7 +109,7 @@ func New(prov provisioner.Provisioner, hostID string, port int, cfg Config) (*Tu
 		// TLSClientConfig stays nil: Metro inside the sprite speaks
 		// plain HTTP, and the public-edge TLS is terminated at the
 		// gateway one hop earlier.
-	}
+	})
 	return t, nil
 }
 
@@ -116,28 +117,27 @@ func New(prov provisioner.Provisioner, hostID string, port int, cfg Config) (*Tu
 // stdlib transport whose DialContext opens tunnels through the
 // Provisioner.
 func (t *Tunnel) RoundTrip(req *http.Request) (*http.Response, error) {
-	if t.rt == nil {
+	rt := t.rt.Load()
+	if rt == nil {
 		return nil, ErrUninitialized
 	}
-	return t.rt.RoundTrip(req)
+	return rt.RoundTrip(req)
 }
 
 // Close releases the underlying connection pool. Safe to call
 // multiple times; further RoundTrip calls return ErrUninitialized.
 func (t *Tunnel) Close() {
-	if t.rt == nil {
-		return
+	rt := t.rt.Swap(nil)
+	if rt != nil {
+		rt.CloseIdleConnections()
 	}
-	t.rt.CloseIdleConnections()
-	t.rt = nil
 }
 
 // CloseIdleConnections lets gateway code drop idle tunnels without
 // taking the Tunnel out of service (e.g. after a host suspend).
 // Live in-flight requests are NOT disrupted.
 func (t *Tunnel) CloseIdleConnections() {
-	if t.rt == nil {
-		return
+	if rt := t.rt.Load(); rt != nil {
+		rt.CloseIdleConnections()
 	}
-	t.rt.CloseIdleConnections()
 }

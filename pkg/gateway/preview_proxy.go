@@ -266,6 +266,14 @@ func (s *previewState) serveProxy(w http.ResponseWriter, r *http.Request, tun *p
 			pr.Out.Header.Del("X-Forwarded-Host")
 			pr.Out.Header.Del("X-Forwarded-For")
 			pr.Out.Header.Del("X-Forwarded-Proto")
+
+			// Strip signed-URL bearer params so Metro never sees the
+			// clank_sig/clank_exp credentials. SetURL above preserves
+			// the inbound query string verbatim.
+			q := pr.Out.URL.Query()
+			q.Del(tokens.SigParam)
+			q.Del(tokens.ExpParam)
+			pr.Out.URL.RawQuery = q.Encode()
 		},
 		Transport: tun,
 		// HMR + SSE both need byte-by-byte forwarding. -1 disables
