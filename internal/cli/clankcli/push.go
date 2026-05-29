@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/clanksync/pushlock"
 	"github.com/acksell/clank/internal/cloud"
 	"github.com/acksell/clank/internal/config"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
@@ -143,6 +144,15 @@ changes when migrating onto a worktree the remote currently owns.`,
 				return fmt.Errorf("load cached worktree id: %w", err)
 			}
 			if worktreeID == "" {
+				// Untracked. Require explicit opt-in unless the user turned
+				// on global auto-push, in which case register on the fly.
+				prefs, err := config.LoadPreferences()
+				if err != nil {
+					return fmt.Errorf("load preferences: %w", err)
+				}
+				if !prefs.AutoPushAllRepos {
+					return fmt.Errorf("this worktree isn't tracked — run `clank init` (or `clank init --global` to auto-track every repo)")
+				}
 				name := display
 				if name == "" {
 					name = filepath.Base(absRepo)
@@ -158,6 +168,24 @@ changes when migrating onto a worktree the remote currently owns.`,
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "registered worktree %s as %q\n", worktreeID, name)
 			}
+
+			// Serialize concurrent pushes for this worktree (e.g. a Claude
+			// Stop hook and an opencode idle plugin firing at once) so they
+			// don't race the checkpoint. Non-blocking: a contended push
+			// exits quietly.
+			gitDir, err := agent.GitDir(absRepo)
+			if err != nil {
+				return fmt.Errorf("resolve git dir: %w", err)
+			}
+			locked, release, err := pushlock.Acquire(gitDir)
+			if err != nil {
+				return fmt.Errorf("acquire push lock: %w", err)
+			}
+			if !locked {
+				fmt.Fprintln(cmd.OutOrStdout(), "another push is already in progress for this worktree; skipping")
+				return nil
+			}
+			defer release()
 
 			// Build a Snapshot of local state and query the remote for
 			// the latest synced checkpoint. The pair drives the

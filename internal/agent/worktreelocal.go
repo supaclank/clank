@@ -42,7 +42,7 @@ func ReadLocalWorktreeID(projectDir string) (string, error) {
 	if projectDir == "" {
 		return "", nil
 	}
-	gd, err := gitDir(projectDir)
+	gd, err := GitDir(projectDir)
 	if err != nil {
 		if errors.Is(err, errNotGitRepo) {
 			return "", nil
@@ -67,7 +67,7 @@ func WriteLocalWorktreeID(projectDir, id string) error {
 	if id == "" {
 		return fmt.Errorf("write worktree id: id is empty")
 	}
-	gd, err := gitDir(projectDir)
+	gd, err := GitDir(projectDir)
 	if err != nil {
 		return fmt.Errorf("write worktree id: %w", err)
 	}
@@ -78,12 +78,32 @@ func WriteLocalWorktreeID(projectDir, id string) error {
 	return os.WriteFile(filepath.Join(dir, "worktree-id"), []byte(id+"\n"), 0o644)
 }
 
-// gitDir resolves the per-worktree git directory for projectDir.
+// RemoveLocalWorktreeID deletes the cached worktree ULID for projectDir,
+// untracking it from `clank push`. Returns true if an id was present.
+func RemoveLocalWorktreeID(projectDir string) (bool, error) {
+	gd, err := GitDir(projectDir)
+	if err != nil {
+		if errors.Is(err, errNotGitRepo) {
+			return false, nil
+		}
+		return false, err
+	}
+	err = os.Remove(filepath.Join(gd, worktreeIDRelPath))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// GitDir resolves the per-worktree git directory for projectDir.
 // For the main worktree this is <repo>/.git; for a linked worktree
 // created by `git worktree add` it's <repo>/.git/worktrees/<name>/.
 // Returns an error if projectDir isn't inside a git repo (or git is
 // missing from PATH).
-func gitDir(projectDir string) (string, error) {
+func GitDir(projectDir string) (string, error) {
 	cmd := exec.Command("git", "-C", projectDir, "rev-parse", "--absolute-git-dir")
 	out, err := cmd.Output()
 	if err != nil {

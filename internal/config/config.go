@@ -192,6 +192,11 @@ type Preferences struct {
 	// clank push/pull, the TUI auth panel, and `clank remote` all read
 	// the active remote via Preferences.ActiveRemote().
 	Remote *RemoteConfig `json:"remote,omitempty"`
+
+	// AutoPushAllRepos, when true, lets `clank push` auto-track any repo
+	// — lazy-registering its worktree-id on first push — instead of
+	// requiring `clank init` per repo. Set by `clank init --global`.
+	AutoPushAllRepos bool `json:"auto_push_all_repos,omitempty"`
 }
 
 // RemoteConfig holds one or more named clank deployments plus the

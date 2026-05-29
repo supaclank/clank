@@ -35,8 +35,10 @@ func Command() *cobra.Command {
 	root.AddCommand(
 		codeCmd(),
 		inboxCmd(),
+		initCmd(),
 		pushCmd(),
 		pullCmd(),
+		disableCmd(),
 		statusCmd(),
 		remoteCmd(),
 		loginCmd(),
