@@ -37,7 +37,6 @@ func Command() *cobra.Command {
 		inboxCmd(),
 		initCmd(),
 		pushCmd(),
-		pullCmd(),
 		disableCmd(),
 		statusCmd(),
 		remoteCmd(),
