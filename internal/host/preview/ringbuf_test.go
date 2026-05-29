@@ -48,10 +48,9 @@ func TestStripANSI_NoEscape_PassThrough(t *testing.T) {
 
 func TestStripANSI_UnterminatedSequenceDropped(t *testing.T) {
 	t.Parallel()
-	// "\x1b[2m" at the end with no terminator should drop everything
-	// from ESC onward — better than leaking a partial sequence into
-	// the ring.
-	got := string(stripANSI([]byte("hello\x1b[2m")))
+	// "\x1b[2" lacks the final byte (e.g. 'm') — genuinely unterminated.
+	// stripANSI should drop everything from ESC onward.
+	got := string(stripANSI([]byte("hello\x1b[2")))
 	want := "hello"
 	if got != want {
 		t.Fatalf("stripANSI unterminated = %q, want %q", got, want)

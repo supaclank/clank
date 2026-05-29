@@ -76,6 +76,7 @@ func TestSpawnAndOrphanCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
+	t.Cleanup(func() { r.stopWithGrace(3 * time.Second) })
 	waitForState(t, r, StateReady, 5*time.Second)
 
 	pgid := r.pgid
