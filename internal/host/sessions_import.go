@@ -2,13 +2,13 @@ package host
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/pkg/sessionsync"
 	"github.com/acksell/clank/pkg/sync/checkpoint"
 )
 
@@ -111,57 +111,13 @@ func nonZeroOr(t, fallback time.Time) time.Time {
 	return t
 }
 
-// rewriteImportBlob reads an opencode export blob, rebases
-// info.directory to the destination's local worktree path, and
-// writes the result to a sibling temp file. Returns the new path.
-// Caller owns cleanup (os.Remove).
-//
-// This is the ONLY blob mutation we perform. The rebase exists
-// because info.directory in the source's blob is a filesystem path
-// that doesn't resolve on the destination — opencode would file the
-// imported session under a synthetic "global" project without it.
-// We deliberately do not coerce or fabricate any other field; any
-// validation errors from `opencode import` are opencode-side bugs
-// that should be surfaced, not papered over.
-//
-// Every field not explicitly touched is preserved verbatim. JSON
-// parsing uses map[string]any so we don't have to track opencode's
-// full schema.
+// rewriteImportBlob rebases the export blob's info.directory to this
+// host's worktree path before import; see sessionsync.RewriteImportBlob
+// for the rationale. Caller owns cleanup (os.Remove) of the returned path.
 func (s *Service) rewriteImportBlob(srcPath, worktreeID string) (string, error) {
 	destDir, err := workRootDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve work root: %w", err)
 	}
-	destDir = filepath.Join(destDir, worktreeID)
-
-	raw, err := os.ReadFile(srcPath)
-	if err != nil {
-		return "", fmt.Errorf("read blob: %w", err)
-	}
-	var doc map[string]any
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return "", fmt.Errorf("parse blob: %w", err)
-	}
-	info, ok := doc["info"].(map[string]any)
-	if !ok {
-		return "", fmt.Errorf("blob missing top-level info object")
-	}
-	info["directory"] = destDir
-	// Force opencode to rederive projectID from the new directory.
-	// Leaving the source's value would peg the imported session to a
-	// project hash that doesn't exist on this host, defeating the
-	// rewrite. Empty string is honored as "rederive" — verified via
-	// TestRegisterImportedSession_RewritesDirectoryToDestination.
-	info["projectID"] = ""
-	doc["info"] = info
-
-	out, err := json.Marshal(doc)
-	if err != nil {
-		return "", fmt.Errorf("marshal rewritten blob: %w", err)
-	}
-	dstPath := srcPath + ".rewritten.json"
-	if err := os.WriteFile(dstPath, out, 0o600); err != nil {
-		return "", fmt.Errorf("write rewritten blob: %w", err)
-	}
-	return dstPath, nil
+	return sessionsync.RewriteImportBlob(srcPath, filepath.Join(destDir, worktreeID))
 }
