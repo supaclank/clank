@@ -190,7 +190,9 @@ echo "PASS: launchAsset.url advertises ${expected_hostport}"
 
 echo
 echo "==> STEP 6: POST /preview/stop"
-curl -sS -X POST "http://127.0.0.1:${HOST_PORT}/worktrees/${WID}/preview/stop" -o /dev/null -w '%{http_code}\n'
+stop_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${HOST_PORT}/worktrees/${WID}/preview/stop")
+echo "${stop_status}"
+[[ "${stop_status}" -eq 200 ]] || { echo "FAIL: stop returned HTTP ${stop_status}"; exit 1; }
 
 echo
 echo "==> verifying state went back to stopped"

@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"sync"
 	"time"
 
@@ -208,8 +209,7 @@ func signedQueryFromRequest(r *http.Request) (sig string, exp time.Time, ok bool
 // unexported there). Kept tiny so the duplication is cheaper than
 // exporting another internal-ish helper.
 func parseUnixSeconds(s string) (time.Time, error) {
-	var n int64
-	_, err := fmt.Sscanf(s, "%d", &n)
+	n, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
 		return time.Time{}, err
 	}

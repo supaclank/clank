@@ -122,7 +122,7 @@ type Config struct {
 	//   - PreviewWebhookHandler() — sprite-facing register/revoke,
 	//     analogous to NotifyWebhookHandler. Mounted pre-auth by the
 	//     daemon.
-	// All three must be set together or none — leaving any nil
+	// All four must be set together or none — leaving any nil
 	// disables the entire preview surface.
 	PreviewRoutes routestore.Store
 

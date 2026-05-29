@@ -238,6 +238,7 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 		m.mu.Unlock()
 		r.stopWithGrace(m.stopGrace)
 		if regErr == nil {
+			// TODO(ai-review): revoke here uses (worktreeID, serviceName) which may evict the winner's live route if the gateway resolves by service pair rather than token. https://github.com/Acksell/clank/pull/36#discussion_r3324139755
 			m.revokeBestEffort(worktreeID, serviceName)
 		}
 		m.log.Printf("preview: discarded duplicate spawn for %s/%s", worktreeID, serviceName)
@@ -246,6 +247,7 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 	m.servers[key] = r
 	m.mu.Unlock()
 
+	// TODO(ai-review): waitForReady uses the caller's ctx; a canceled request tears down a shared in-flight start that other concurrent callers may be waiting on. Fix: use a background/non-cancelable context for readiness wait. https://github.com/Acksell/clank/pull/36#discussion_r3324206593
 	if err := waitForReady(ctx, r); err != nil {
 		// Tear down the orphan and remove from the registry.
 		m.mu.Lock()
