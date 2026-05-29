@@ -186,20 +186,15 @@ func TestPreviewWebhook_Register_BadInternalPort(t *testing.T) {
 	}
 }
 
-func TestPreviewWebhook_Register_DefaultsServiceName(t *testing.T) {
+func TestPreviewWebhook_Register_RequiresServiceName(t *testing.T) {
 	t.Parallel()
 	f := newPreviewWebhookFixture(t)
-	// Empty service_name should be treated as "default" so v1 callers
-	// don't have to special-case it.
-	r := decodeRegister(t, f.postJSON(t, "/webhooks/preview/register", "notifier-good", previewRegisterRequest{
+	resp := f.postJSON(t, "/webhooks/preview/register", "notifier-good", previewRegisterRequest{
 		WorktreeID: "wt", InternalPort: 1234,
-	}))
-	got, err := f.store.GetByToken(context.Background(), r.Token)
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if got.ServiceName != tokens.DefaultServiceName {
-		t.Errorf("service_name = %q, want %q", got.ServiceName, tokens.DefaultServiceName)
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("empty service_name: status = %d, want 400", resp.StatusCode)
 	}
 }
 

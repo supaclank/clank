@@ -47,6 +47,7 @@ func (p *Provisioner) GetHostByID(ctx context.Context, hostID string) (provision
 	if row.LastURL == "" {
 		return provisioner.HostRef{}, fmt.Errorf("daytona provisioner: host %s has no last_url (corrupt row)", hostID)
 	}
+	// TODO(ai-review): validate row.AuthToken != "" before calling chainTransport https://github.com/Acksell/clank/pull/36#discussion_r3320714649
 	transport, err := chainTransport(row.AuthToken, row.LastToken, row.LastURL)
 	if err != nil {
 		return provisioner.HostRef{}, fmt.Errorf("daytona provisioner: build transport: %w", err)

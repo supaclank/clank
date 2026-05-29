@@ -195,7 +195,17 @@ func renderArgs(tmpl []string, port int) ([]string, error) {
 // Metro still appends its internal port. See
 // packages/@expo/cli/src/start/server/UrlCreator.ts in expo/expo.
 func buildEnv(publicURL string) []string {
-	env := append([]string(nil), os.Environ()...)
+	parent := os.Environ()
+	env := make([]string, 0, len(parent)+3)
+	for _, e := range parent {
+		// Strip CI so Metro doesn't disable file-watching and HMR.
+		// Metro treats CI=true as a signal to run in non-interactive
+		// mode, which disables the hot-reload machinery we depend on.
+		if strings.HasPrefix(e, "CI=") {
+			continue
+		}
+		env = append(env, e)
+	}
 	env = append(env,
 		"EXPO_NO_DOTENV=1",
 		"npm_config_yes=true",

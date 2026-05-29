@@ -202,9 +202,11 @@ func NewGateway(cfg Config, lg *log.Logger) (*Gateway, error) {
 				return nil, fmt.Errorf("gateway: generate preview signing key: %w", err)
 			}
 			cfg.PreviewSigningKey = generated
-			if lg != nil {
-				lg.Printf("gateway: PreviewSigningKey not configured — generated a random one. Signed URLs will not survive gateway restarts.")
+			warn := lg
+			if warn == nil {
+				warn = log.Default()
 			}
+			warn.Printf("gateway: PreviewSigningKey not configured — generated a random one. Signed URLs will not survive gateway restarts.")
 		} else if len(cfg.PreviewSigningKey) < tokens.MinSigningKeyBytes {
 			return nil, fmt.Errorf("gateway: PreviewSigningKey must be at least %d bytes (got %d)", tokens.MinSigningKeyBytes, len(cfg.PreviewSigningKey))
 		}

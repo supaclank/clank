@@ -64,9 +64,8 @@ func (g *Gateway) handlePreviewWebhookRegister(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if req.ServiceName == "" {
-		// Empty defaults to "default" for v1's single-service-per-worktree
-		// path; future multi-service callers always pass an explicit name.
-		req.ServiceName = tokens.DefaultServiceName
+		http.Error(w, "service_name is required", http.StatusBadRequest)
+		return
 	}
 	if req.InternalPort < 1 || req.InternalPort > 65535 {
 		http.Error(w, "internal_port must be 1..65535", http.StatusBadRequest)
@@ -126,7 +125,8 @@ func (g *Gateway) handlePreviewWebhookRevoke(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if req.ServiceName == "" {
-		req.ServiceName = tokens.DefaultServiceName
+		http.Error(w, "service_name is required", http.StatusBadRequest)
+		return
 	}
 	if err := g.cfg.PreviewRoutes.RevokeByService(r.Context(), host.ID, req.WorktreeID, req.ServiceName); err != nil {
 		g.log.Printf("preview revoke: %v", err)
