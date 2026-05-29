@@ -2,6 +2,8 @@ package daemoncli
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
@@ -163,6 +165,12 @@ func (f *fixedHostProvisioner) EnsureHost(context.Context, string) (provisioner.
 }
 func (*fixedHostProvisioner) SuspendHost(context.Context, string) error { return nil }
 func (*fixedHostProvisioner) DestroyHost(context.Context, string) error { return nil }
+func (*fixedHostProvisioner) GetHostByID(context.Context, string) (provisioner.HostRef, error) {
+	return provisioner.HostRef{}, errors.New("fixedHostProvisioner: GetHostByID not implemented")
+}
+func (*fixedHostProvisioner) OpenInternalConn(context.Context, string, int) (net.Conn, error) {
+	return nil, errors.New("fixedHostProvisioner: OpenInternalConn not implemented")
+}
 
 // stubBackendManager spawns a stubBackend on every CreateBackend. The
 // shared `last` field lets tests inspect what the most recently created

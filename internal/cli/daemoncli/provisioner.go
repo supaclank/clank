@@ -23,6 +23,15 @@ func notifierWebhookURL() string {
 	return os.Getenv("CLANK_NOTIFIER_WEBHOOK_URL")
 }
 
+// previewWebhookURL returns the URL clank-host should POST preview
+// register/revoke webhooks to. Sourced from CLANK_PREVIEW_WEBHOOK_URL.
+// Empty disables the preview-route registration — the dev server
+// still spawns but no public token is minted (the local/docker-dev
+// path can leave this empty if not testing the gateway integration).
+func previewWebhookURL() string {
+	return os.Getenv("CLANK_PREVIEW_WEBHOOK_URL")
+}
+
 // buildProvisioner picks the active provisioner for the gateway based
 // on preferences.default_launch_host_provider. Defaults to local
 // (subprocess) when unset — the laptop-mode default.
@@ -66,6 +75,12 @@ func buildLocalProvisioner() (provisioner.Provisioner, func(), error) {
 		// receives this; it opens host.db inside.
 		DataDir:            filepath.Join(dir, "host"),
 		NotifierWebhookURL: notifierWebhookURL(),
+		PreviewWebhookURL:  previewWebhookURL(),
+		// CLANK_LOCAL_USER_ID must match the sub claim of JWTs the
+		// gateway's authenticator accepts — otherwise the preview
+		// surface's owner-only check 404s legitimate requests as
+		// cross-tenant.
+		UserID: os.Getenv("CLANK_LOCAL_USER_ID"),
 	}, log.Default())
 	return prov, prov.Stop, nil
 }

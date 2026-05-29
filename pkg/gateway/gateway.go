@@ -8,16 +8,33 @@
 package gateway
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 
+	"github.com/acksell/clank/pkg/auth"
 	"github.com/acksell/clank/pkg/notify"
+	"github.com/acksell/clank/pkg/preview/routestore"
+	"github.com/acksell/clank/pkg/preview/tokens"
 	"github.com/acksell/clank/pkg/provisioner"
+	"github.com/acksell/clank/pkg/provisioner/hoststore"
 	clanksync "github.com/acksell/clank/pkg/sync"
 )
+
+// PreviewHostLookup is the narrow surface preview handlers need from
+// the hoststore: resolve a sprite's per-host notifier bearer to the
+// owning host row (and through it the user_id). Same shape as
+// notify.HostLookup; defined here to keep gateway from importing the
+// notify package just for an interface alias.
+//
+// hoststore.HostStore satisfies this; cloud embedders wire their
+// pgx-backed implementation into both notify and preview.
+type PreviewHostLookup interface {
+	GetHostByNotifierToken(ctx context.Context, notifierToken string) (hoststore.Host, error)
+}
 
 // AuthConfig is the public OAuth 2.0 discovery payload returned by
 // GET /auth-config. Embedders populate Config.AuthConfig with their
@@ -91,10 +108,57 @@ type Config struct {
 	//     its own host-bearer verification, so wrapping it with user
 	//     auth would reject the host call outright.
 	//
-	// Construct the dispatcher with notify.NewDispatcher; clank/clankd
-	// passes its in-process store, supaclank passes its pgx-backed
-	// implementations. Either way, the gateway just mounts.
+	// Construct the dispatcher with notify.NewDispatcher; the laptop
+	// daemon passes its in-process store, cloud embedders pass their
+	// pgx-backed implementations. Either way, the gateway just mounts.
 	Notify *notify.Dispatcher
+
+	// PreviewRoutes is the persistence for tokenized preview URLs. When
+	// set together with PreviewHostLookup and PreviewRootDomain, the
+	// gateway mounts:
+	//   - /v1/preview/tokens/{token}/share, DELETE /v1/preview/tokens/{token},
+	//     GET /v1/preview/tokens — owner-facing token management. Inherits
+	//     the outer auth wrap.
+	//   - PreviewWebhookHandler() — sprite-facing register/revoke,
+	//     analogous to NotifyWebhookHandler. Mounted pre-auth by the
+	//     daemon.
+	// All four must be set together or none — leaving any nil
+	// disables the entire preview surface.
+	PreviewRoutes routestore.Store
+
+	// PreviewHostLookup resolves a sprite's notifier_token bearer to
+	// the host row, used to authenticate /webhooks/preview/*. Same
+	// pattern as notify.Dispatcher's HostLookup.
+	PreviewHostLookup PreviewHostLookup
+
+	// PreviewRootDomain is the wildcard zone preview URLs live under,
+	// e.g. "clankexample.dev". Combined with the per-token leftmost label
+	// (preview-<token>) by pkg/preview/tokens.HostFor. Required to
+	// render the URL that the register webhook returns to the sprite.
+	PreviewRootDomain string
+
+	// PreviewAuthenticator verifies JWTs on owner-only preview-URL
+	// requests. Same Authenticator the daemon's main auth.Middleware
+	// uses (clank passes its OIDC verifier here). The subdomain
+	// proxy lives OUTSIDE auth.Middleware because public-visibility
+	// tokens must accept anonymous requests — so we run Verify inline
+	// for owner-only tokens only.
+	//
+	// Required when PreviewRoutes is set.
+	PreviewAuthenticator auth.Authenticator
+
+	// PreviewSigningKey is the HMAC secret used to sign short-lived
+	// owner-only preview URLs. Clients that can't carry an
+	// Authorization header (Expo's dev-launcher, the RN bundle
+	// runtime) authenticate via a `?clank_sig=…&clank_exp=…` bearer
+	// minted by POST /v1/preview/tokens/{token}/sign.
+	//
+	// Required when PreviewRoutes is set. Must be at least
+	// tokens.MinSigningKeyBytes (32). When empty in a wired-up
+	// gateway, NewGateway generates a random key and logs a warning —
+	// fine for dev, but a restart invalidates outstanding signed
+	// URLs, so production should persist a configured value.
+	PreviewSigningKey []byte
 }
 
 // Gateway is the public ingress.
@@ -123,6 +187,29 @@ func NewGateway(cfg Config, lg *log.Logger) (*Gateway, error) {
 	}
 	if cfg.OwnerCache != nil && cfg.Sync != nil {
 		return nil, fmt.Errorf("gateway: OwnerCache is only valid in laptop mode (Sync must be nil)")
+	}
+	previewSet := cfg.PreviewRoutes != nil
+	hostsSet := cfg.PreviewHostLookup != nil
+	rootSet := cfg.PreviewRootDomain != ""
+	authSet := cfg.PreviewAuthenticator != nil
+	if previewSet != hostsSet || previewSet != rootSet || previewSet != authSet {
+		return nil, fmt.Errorf("gateway: PreviewRoutes, PreviewHostLookup, PreviewRootDomain, and PreviewAuthenticator must all be set together (got routes=%t hosts=%t root=%t auth=%t)", previewSet, hostsSet, rootSet, authSet)
+	}
+	if previewSet {
+		if len(cfg.PreviewSigningKey) == 0 {
+			generated, err := tokens.GenerateSigningKey()
+			if err != nil {
+				return nil, fmt.Errorf("gateway: generate preview signing key: %w", err)
+			}
+			cfg.PreviewSigningKey = generated
+			warn := lg
+			if warn == nil {
+				warn = log.Default()
+			}
+			warn.Printf("gateway: PreviewSigningKey not configured — generated a random one. Signed URLs will not survive gateway restarts.")
+		} else if len(cfg.PreviewSigningKey) < tokens.MinSigningKeyBytes {
+			return nil, fmt.Errorf("gateway: PreviewSigningKey must be at least %d bytes (got %d)", tokens.MinSigningKeyBytes, len(cfg.PreviewSigningKey))
+		}
 	}
 	if lg == nil {
 		lg = log.Default()
@@ -179,6 +266,16 @@ func (g *Gateway) Handler() http.Handler {
 		mx.HandleFunc("POST /devices", g.cfg.Notify.HandleRegister)
 		mx.HandleFunc("DELETE /devices/{token}", g.cfg.Notify.HandleDeregister)
 	}
+	if g.cfg.PreviewRoutes != nil {
+		// Owner-facing token management. Inherits the outer auth wrap;
+		// handlers pull Principal from r.Context() and assert ownership
+		// against the route's owner_user_id.
+		mx.HandleFunc("GET /v1/preview/tokens", g.handleListPreviewTokens)
+		mx.HandleFunc("POST /v1/preview/tokens/{token}/share", g.handleSharePreviewToken)
+		mx.HandleFunc("POST /v1/preview/tokens/{token}/sign", g.handleSignPreviewToken)
+		mx.HandleFunc("DELETE /v1/preview/tokens/{token}", g.handleDeletePreviewToken)
+		// /webhooks/preview/* mounts pre-auth via PreviewWebhookHandler.
+	}
 	if g.ownerCache != nil {
 		// Laptop mode: per-session routing decides local-vs-remote
 		// based on worktree ownership. /sessions/search is mounted
@@ -218,6 +315,47 @@ func (g *Gateway) NotifyWebhookHandler() http.Handler {
 		return nil
 	}
 	return http.HandlerFunc(g.cfg.Notify.Handle)
+}
+
+// WrapPreviewSubdomain returns an http.Handler that dispatches by
+// Host header: requests to preview-<token>.<PreviewRootDomain> hit
+// the tokenized-URL proxy (which does its own per-token auth
+// depending on visibility), and every other request falls through
+// to fallback (typically the auth-wrapped main mux).
+//
+// When PreviewRoutes is unset the wrapper is a no-op: it returns
+// fallback unchanged so daemons can call this unconditionally
+// without branching on preview-config presence.
+//
+// This is the OUTERMOST layer at the daemon's parent mux because
+// public-visibility tokens must accept anonymous requests; if we
+// went through the outer JWT middleware first, those public URLs
+// would 401 before reaching our visibility check.
+func (g *Gateway) WrapPreviewSubdomain(fallback http.Handler) http.Handler {
+	if g.cfg.PreviewRoutes == nil {
+		return fallback
+	}
+	return g.previewSubdomainHandler(fallback)
+}
+
+// PreviewWebhookHandler returns the sprite-facing register/revoke
+// router for /webhooks/preview/*, or nil when PreviewRoutes is unset.
+// Daemons mount this PRE-auth so the per-host notifier_token bearer
+// (which the handler verifies itself) reaches the resolver — the
+// outer user-JWT middleware would 401 the host call outright.
+//
+// Routes mounted on the returned handler:
+//
+//	POST /webhooks/preview/register  →  upsert (host_id, wid, svc) → {token, url, expires_at}
+//	POST /webhooks/preview/revoke    →  RevokeByService (idempotent)
+func (g *Gateway) PreviewWebhookHandler() http.Handler {
+	if g.cfg.PreviewRoutes == nil {
+		return nil
+	}
+	mx := http.NewServeMux()
+	mx.HandleFunc("POST /webhooks/preview/register", g.handlePreviewWebhookRegister)
+	mx.HandleFunc("POST /webhooks/preview/revoke", g.handlePreviewWebhookRevoke)
+	return mx
 }
 
 // AuthConfigHandler returns an http.Handler that serves the
