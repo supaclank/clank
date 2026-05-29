@@ -25,6 +25,7 @@ import (
 	"github.com/acksell/clank/internal/git"
 	githubpkg "github.com/acksell/clank/internal/host/github"
 	"github.com/acksell/clank/internal/host/petname"
+	"github.com/acksell/clank/internal/host/preview"
 	"github.com/acksell/clank/internal/host/store"
 	"github.com/acksell/clank/internal/keepalive"
 	"github.com/acksell/clank/internal/notifier"
@@ -82,6 +83,12 @@ type Service struct {
 	// the two consume the same fan-out at different granularity.
 	notifierLoop *notifier.Loop
 	notifierStop context.CancelFunc
+
+	// preview owns per-worktree dev-server lifecycle (Metro for Expo
+	// in v1). Constructed unconditionally in New — preview is a pure
+	// in-memory feature with no external dependencies, so there's
+	// nothing to gate on.
+	preview *preview.Manager
 }
 
 // Options configures a Service at construction time.
@@ -118,6 +125,12 @@ type Options struct {
 	// — laptop mode default. Construct via notifier.New in
 	// cmd/clank-host/main.go.
 	NotifierLoop *notifier.Loop
+
+	// PreviewGWClient calls the gateway's preview register/revoke
+	// webhooks to mint and tear down public tokens. Nil (or a client
+	// constructed with empty URL) keeps preview spawns local-only —
+	// the dev server runs but Status.Token/URL stay empty.
+	PreviewGWClient *preview.GWClient
 
 	// GitHubOAuthClientID is the Clank GitHub OAuth App's client_id,
 	// used by the host's GitHub Connect device flow. Empty disables
@@ -160,6 +173,17 @@ func New(opts Options) *Service {
 	if opts.NotifierLoop != nil {
 		s.notifierLoop = opts.NotifierLoop
 	}
+
+	// Preview manager. No keepalive wiring — Fly's per-machine
+	// hibernation tracks active connections (open HMR WebSocket counts),
+	// and the prompt-box SSE through clank-host is the steady-state
+	// activity signal anyway. If hibernation ever bites mid-HMR,
+	// reintroduce a Bump callback on preview.Options.
+	//
+	// GWClient is what registers each spawned dev server with the
+	// gateway so a public tokenized URL gets minted; nil / disabled
+	// keeps spawning local-only.
+	s.preview = preview.New(preview.Options{Log: lg, GWClient: opts.PreviewGWClient})
 
 	// AuthManager handles credentials for every backend that has
 	// connectable providers (OpenCode + Anthropic today). The restart
@@ -308,6 +332,9 @@ func (s *Service) Shutdown() {
 	}
 	if s.subscribers != nil {
 		s.subscribers.CloseAll()
+	}
+	if s.preview != nil {
+		s.preview.Shutdown()
 	}
 	s.stopKeepalive()
 	s.stopNotifier()
@@ -708,7 +735,10 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 		fi, err := os.Stat(base)
 		switch {
 		case os.IsNotExist(err):
-			return "", fmt.Errorf("worktree %s not present at %s — run MigrateWorktree first (or `clank push` to sync, then migrate)", ref.WorktreeID, base)
+			// Wrap ErrNotFound so writeError can map to 404. Other
+			// workDirFor returns are caller-bug (relative paths, etc.)
+			// and stay as 500.
+			return "", fmt.Errorf("%w: worktree %s not present at %s — run MigrateWorktree first (or `clank push` to sync, then migrate)", ErrNotFound, ref.WorktreeID, base)
 		case err != nil:
 			return "", fmt.Errorf("stat worktree dir %q: %w", base, err)
 		case !fi.IsDir():

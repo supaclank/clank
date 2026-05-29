@@ -105,6 +105,15 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("POST /worktrees/remove", m.handleRemoveWorktree)
 	mx.HandleFunc("POST /worktrees/merge", m.handleMergeBranch)
 
+	// Preview-app control plane. The reverse proxy lives at the
+	// gateway (subdomain-routed via preview-<token>.<root>) — clank-
+	// host no longer fronts preview traffic; it just spawns the dev
+	// server and registers its internal port with the gateway.
+	mx.HandleFunc("POST /worktrees/{id}/preview/start", m.handlePreviewStart)
+	mx.HandleFunc("POST /worktrees/{id}/preview/stop", m.handlePreviewStop)
+	mx.HandleFunc("GET /worktrees/{id}/preview/status", m.handlePreviewStatus)
+	mx.HandleFunc("GET /worktrees/{id}/preview/logs", m.handlePreviewLogs)
+
 	mx.HandleFunc("POST /sessions", m.handleCreateSession)
 	mx.HandleFunc("GET /sessions", m.handleListSessions)
 	mx.HandleFunc("GET /sessions/search", m.handleSearchSessions)

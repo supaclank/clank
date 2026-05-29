@@ -135,7 +135,8 @@ docker compose -f docker/docker-compose.yml exec clankd ls /root/work/
 
 # 2. Open a session against the synced worktree. clank-host inside
 # the clankd container resolves the WorktreeID to /root/work/<id>/
-# and spawns opencode there — no clone, no GitHub auth needed.
+# and spawns the configured agent backend there (both `opencode` and
+# `claude` are baked into the image) — no clone, no GitHub auth needed.
 clank code "summarize this codebase"
 
 # 3. When you want to keep working on the laptop, reclaim ownership.
@@ -181,6 +182,68 @@ of clankd — easiest is a cloudflared tunnel:
 cloudflared tunnel --url http://localhost:7878
 # then: CLANK_PUBLIC_BASE_URL=https://your-tunnel.trycloudflare.com
 ```
+
+## Testing the preview-app feature locally
+
+The tokenized preview surface (`preview-<token>.<root>/...`) is
+disabled by default. To enable it locally:
+
+```sh
+# docker/.env (or your shell)
+export CLANK_PREVIEW_ROOT_DOMAIN=localhost
+export CLANK_PREVIEW_SIGNING_KEY=$(openssl rand -hex 32)   # optional; gateway generates one if empty
+# CLANK_PREVIEW_WEBHOOK_URL has a sensible default in docker-compose.yml
+```
+
+Then `make dev-rebuild`. Verify the gateway log emits:
+
+```
+gateway: preview surface enabled on *.localhost
+```
+
+### How to use it
+
+1. From a browser pointed at `http://localhost:7878/`, log in via the
+   auth-stub and pick a worktree with an Expo project.
+2. Trigger `POST /v1/worktrees/<wid>/preview/start` (via the mobile
+   client or curl with your bearer). The response includes
+   `{token, url, expires_at}` — `url` is `https://preview-<token>.localhost/`.
+3. **Strip the `https://` and add the port:** open
+   `http://preview-<token>.localhost:7878/` in your browser. `*.localhost`
+   resolves to 127.0.0.1 in every modern browser without an
+   `/etc/hosts` edit.
+4. For signed-URL access without a JWT header (Expo dev-launcher path),
+   call `POST /v1/preview/tokens/<token>/sign` to mint a `?clank_sig=…&
+   clank_exp=…` URL; that's the URL the dev-launcher receives.
+
+### Known local-dev caveats
+
+- **Cookies need TLS in production but not on localhost.** The
+  gateway detects HTTP and drops `Secure` on the auth cookies, so
+  the signed-URL → cookie flow works on plain `http://*.localhost`.
+- **Mobile dev on a real device** needs the preview hostname to
+  resolve to your laptop. `*.localhost` only resolves to 127.0.0.1
+  on the device running the browser — phones see "Unable to resolve
+  host" because no public DNS knows about it. Three working options:
+  - **nip.io / sslip.io** (recommended for Tailscale or LAN dev):
+    `CLANK_PREVIEW_ROOT_DOMAIN=100-123-16-31.nip.io` resolves
+    `*.100-123-16-31.nip.io` to `100.123.16.31`. Substitute YOUR
+    laptop's reachable IP. The phone hits the laptop on port 7878
+    directly, no tunnel daemon needed.
+  - **Android emulator**: use `10.0.2.2` to reach the host;
+    `CLANK_PREVIEW_ROOT_DOMAIN=10.0.2.2.nip.io`.
+  - **Cloudflared / ngrok tunnel** (works from any network,
+    including cellular): `cloudflared tunnel --url http://localhost:7878`,
+    then set `CLANK_PREVIEW_ROOT_DOMAIN` to the tunnel hostname AND
+    `CLANK_PREVIEW_WEBHOOK_URL` to the tunnel URL.
+- **Sprite-side WSS tunnel** is bypassed: the local provisioner's
+  `OpenInternalConn` direct-dials 127.0.0.1 inside the clankd
+  container (clank-host runs as a subprocess there). The full
+  WSS-tunnel-to-sprite path is only exercised by the cloud
+  deployment.
+- **Signing key persistence.** Without `CLANK_PREVIEW_SIGNING_KEY`
+  set, a container restart invalidates every outstanding signed
+  URL. Pin it for repeatable dev sessions.
 
 ## Tearing down
 

@@ -117,6 +117,13 @@ services:
       # your own App for testing.
       CLANK_GITHUB_OAUTH_CLIENT_ID: "${CLANK_GITHUB_OAUTH_CLIENT_ID:-Ov23li78UDBwea5WvI5v}"
 
+      # The local provisioner's single in-memory host record reports
+      # this as its UserID. Must match the sub claim the auth-stub
+      # mints (CLANK_AUTH_STUB_USER_ID) so the preview surface's
+      # owner-only check passes — without this, every /v1/preview/
+      # tokens/<token>/sign request 404s as cross-tenant.
+      CLANK_LOCAL_USER_ID: "${CLANK_AUTH_STUB_USER_ID:-dev-user}"
+
       # Embedded sync substrate. clankd's runGatewayServer reads these
       # in TCP mode via loadSyncFromEnv and mounts a sync server when
       # CLANK_SYNC_S3_BUCKET is set. Unix-socket mode (laptop) ignores
@@ -140,6 +147,38 @@ services:
       CLANK_SYNC_S3_PATH_STYLE: "true"
       CLANK_SYNC_PRESIGN_TTL: "${CLANK_SYNC_PRESIGN_TTL:-5m}"
       CLANK_SYNC_DB_PATH: "/var/lib/clank/clank-sync.db"
+
+      # ── preview-app surface ────────────────────────────────────
+      # Optional. When set, clankd enables the tokenized-preview
+      # routes — clank-host (spawned via the local provisioner)
+      # registers its dev servers with the gateway, and requests to
+      # preview-<token>.<root>/... get tunneled to the running
+      # Metro process inside the container.
+      #
+      # For local browser testing, use "localhost" — `*.localhost`
+      # resolves to 127.0.0.1 in every modern browser without
+      # /etc/hosts edits. Example: `preview-abc.localhost:7878`
+      # routes to clankd which tunnels to Metro on the same network.
+      #
+      # For mobile dev (real device or non-emulator): expose this
+      # host via a tunnel (e.g. cloudflared) and set both the
+      # tunnel hostname here AND CLANK_PREVIEW_WEBHOOK_URL below to
+      # the tunnel URL.
+      CLANK_PREVIEW_ROOT_DOMAIN: "${CLANK_PREVIEW_ROOT_DOMAIN:-}"
+
+      # Optional. Hex-encoded 32+ byte HMAC secret for short-lived
+      # signed preview URLs. Empty → gateway generates a random key
+      # at startup; a restart invalidates outstanding signed URLs.
+      # For shareable links that survive restarts, set this.
+      CLANK_PREVIEW_SIGNING_KEY: "${CLANK_PREVIEW_SIGNING_KEY:-}"
+
+      # Optional. URL the spawned clank-host POSTs its preview
+      # register/revoke webhooks to. In the docker stack clank-host
+      # runs as a subprocess of clankd in this same container, so
+      # localhost is fine. When unset, the dev server still spawns
+      # but no public token is minted (laptop dev without going
+      # through the gateway integration).
+      CLANK_PREVIEW_WEBHOOK_URL: "${CLANK_PREVIEW_WEBHOOK_URL:-http://localhost:7878/webhooks/preview}"
     ports:
       - "${CLANKD_PORT:-7878}:7878"
     volumes:

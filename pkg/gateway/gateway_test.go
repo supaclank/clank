@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -42,6 +43,12 @@ func (s *stubProvisioner) EnsureHost(context.Context, string) (provisioner.HostR
 }
 func (*stubProvisioner) SuspendHost(context.Context, string) error { return nil }
 func (*stubProvisioner) DestroyHost(context.Context, string) error { return nil }
+func (*stubProvisioner) GetHostByID(context.Context, string) (provisioner.HostRef, error) {
+	return provisioner.HostRef{}, errors.New("stub provisioner: GetHostByID not implemented")
+}
+func (*stubProvisioner) OpenInternalConn(context.Context, string, int) (net.Conn, error) {
+	return nil, errors.New("stub provisioner: OpenInternalConn not implemented")
+}
 
 // captureAuth records every Verify call so tests can assert the
 // auth.Middleware invokes the configured Authenticator.
