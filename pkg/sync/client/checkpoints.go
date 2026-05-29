@@ -12,8 +12,17 @@ import (
 	"os"
 	"strings"
 
+	clanksync "github.com/acksell/clank/pkg/sync"
 	"github.com/acksell/clank/pkg/sync/checkpoint"
 )
+
+// ErrOwnerMismatch is returned (wrapped) when the sync server rejects
+// a call because the caller does not currently own the worktree.
+// Detected by substring-matching the server's clanksync.OwnerMismatchSentinel
+// in 403 bodies. Callers (notably the CLI's runPushNoMigrate branch)
+// use errors.Is to route to a friendlier "you don't own this; here are
+// your reclaim options" rendering instead of dumping the raw HTTP error.
+var ErrOwnerMismatch = errors.New("syncclient: caller is not the current owner of this worktree")
 
 // CheckpointResult is the outcome of Client.PushCheckpoint.
 type CheckpointResult struct {
@@ -137,7 +146,11 @@ func (c *Client) postJSON(ctx context.Context, path string, body any, into any) 
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("post %s: %d: %s", path, resp.StatusCode, strings.TrimSpace(string(respBody)))
+		trimmed := strings.TrimSpace(string(respBody))
+		if resp.StatusCode == http.StatusForbidden && strings.Contains(trimmed, clanksync.OwnerMismatchSentinel) {
+			return fmt.Errorf("post %s: %w: %s", path, ErrOwnerMismatch, trimmed)
+		}
+		return fmt.Errorf("post %s: %d: %s", path, resp.StatusCode, trimmed)
 	}
 	if into != nil {
 		if err := json.Unmarshal(respBody, into); err != nil {

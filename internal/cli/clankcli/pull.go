@@ -28,14 +28,16 @@ import (
 // Idempotency: when the local SHAs already match the remote's latest
 // checkpoint and we already own the worktree, the command exits early
 // with "Already up to date". When local-owned but local differs from
-// remote, the pull is refused unless `--force` is also passed —
-// `--force` discards local changes and resets to the remote.
+// remote, the pull is refused unless `--discard-local` (alias
+// `--force`) is also passed — `--discard-local` discards local
+// changes and resets to the remote.
 func pullCmd() *cobra.Command {
 	var (
-		worktreeID string
-		alsoMig    bool
-		force      bool
-		timing     bool
+		worktreeID   string
+		alsoMig      bool
+		discardLocal bool
+		force        bool // alias for --discard-local; preserved for backward compat
+		timing       bool
 	)
 	cmd := &cobra.Command{
 		Use:   "pull [repo-path]",
@@ -48,16 +50,22 @@ for the bundles. The laptop downloads + applies the checkpoint
 locally; on success, ownership atomically flips back to the laptop.
 If apply fails, the sandbox keeps ownership so the user can retry.
 
---force is only accepted alongside --migrate: it discards local
-changes when pulling onto a worktree the laptop already owns (i.e.
-overwriting unsynced local work with the remote's last sync).
+--discard-local (alias: --force) is only accepted alongside --migrate.
+It overwrites the laptop's unsynced local work with the remote's last
+sync. Symmetric to --discard-remote on push.
 
 Without --migrate: bare data-only pull is post-MVP.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
-			if force && !alsoMig {
-				return errors.New("--force only applies with --migrate (-m)")
+			// --force is a legacy alias for --discard-local; fold both
+			// into one bool so the rest of the command only branches on
+			// discardLocal.
+			if force {
+				discardLocal = true
+			}
+			if discardLocal && !alsoMig {
+				return errors.New("--discard-local only applies with --migrate (-m)")
 			}
 			repoPath := ""
 			if len(args) == 1 {
@@ -132,14 +140,14 @@ Without --migrate: bare data-only pull is post-MVP.`,
 				}
 
 				// Already-reclaimed no-op: local-owned + in-sync.
-				if parity.OwnerKind == "local" && parity.InSync {
+				if parity.OwnerKind == string(daemonclient.OwnerKindLocal) && parity.InSync {
 					fmt.Fprintln(cmd.OutOrStdout(), styleOK.Render("✓ Already up to date")+styleDim.Render(" — you already own this worktree and local matches remote"))
 					return nil
 				}
 
 				// Refuse the dangerous case (local owns + diverged) unless
 				// explicitly forced. The user's safer option is push -m.
-				if parity.OwnerKind == "local" && !parity.InSync && !force {
+				if parity.OwnerKind == string(daemonclient.OwnerKindLocal) && !parity.InSync && !discardLocal {
 					printPullMigrateConflict(cmd)
 					return errors.New("pull --migrate refused: local-owned worktree has unsynced changes (see options above)")
 				}
@@ -149,7 +157,8 @@ Without --migrate: bare data-only pull is post-MVP.`,
 		},
 	}
 	cmd.Flags().BoolVarP(&alsoMig, "migrate", "m", false, "download the sandbox's checkpoint and reclaim ownership")
-	cmd.Flags().BoolVar(&force, "force", false, "with --migrate, discard local changes when pulling onto a local-owned worktree")
+	cmd.Flags().BoolVar(&discardLocal, "discard-local", false, "with --migrate, overwrite the laptop's unsynced local work with the remote's last sync")
+	cmd.Flags().BoolVar(&force, "force", false, "alias for --discard-local (legacy)")
 	cmd.Flags().StringVar(&worktreeID, "worktree-id", "", "Worktree ID (default: read from $(git rev-parse --absolute-git-dir)/clank/worktree-id)")
 	cmd.Flags().BoolVar(&timing, "timing", false, "print a per-phase timing breakdown to stderr (also enabled by CLANK_TIMING=1)")
 	return cmd
@@ -237,10 +246,10 @@ func printPullMigrateConflict(cmd *cobra.Command) {
 	fmt.Fprintln(w, styleErr.Render("✗ Cannot migrate: your local state differs from the remote's last sync."))
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  Options:")
-	fmt.Fprintln(w, "    "+styleCmdHint.Render("clank push -m")+"                 keep local changes; push them up")
-	fmt.Fprintln(w, "    "+styleCmdHint.Render("clank pull -m --force")+"         discard local changes; reset to remote's state")
+	fmt.Fprintln(w, "    "+styleCmdHint.Render("clank push -m")+"                   keep local changes; push them up")
+	fmt.Fprintln(w, "    "+styleCmdHint.Render("clank pull -m --discard-local")+"   discard local changes; reset to remote's state")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  "+styleDim.Render("(Merge / rebase strategies coming in a future release.)"))
+	fmt.Fprintln(w, "  "+styleDim.Render("(--force is a legacy alias for --discard-local. Merge / rebase strategies coming in a future release.)"))
 }
 
 // applyRemoteCheckpoint downloads the manifest + 2 bundles from the

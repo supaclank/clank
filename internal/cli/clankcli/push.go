@@ -32,16 +32,17 @@ func envOrDefault(key, def string) string {
 // checkpoint, plain push exits early with "Already up to date". For
 // `--migrate`, the no-op case is "remote-owned + in-sync" (already
 // migrated). Divergence against a remote-owned worktree on `--migrate`
-// is refused unless `--force` is also passed.
+// is refused unless `--discard-remote` (alias `--force`) is also passed.
 func pushCmd() *cobra.Command {
 	var (
-		baseURL  string
-		token    string
-		display  string
-		repoPath string
-		alsoMig  bool
-		force    bool
-		timing   bool
+		baseURL       string
+		token         string
+		display       string
+		repoPath      string
+		alsoMig       bool
+		discardRemote bool
+		force         bool // alias for --discard-remote; preserved for backward compat
+		timing        bool
 	)
 	cmd := &cobra.Command{
 		Use:   "push [repo-path]",
@@ -63,13 +64,20 @@ ownership to the remote host. After this returns, the local laptop
 is no longer the owner — to resume work locally, run
 ` + "`clank pull --migrate`" + `.
 
---force is only accepted alongside --migrate: it discards remote-side
-changes when migrating onto a worktree the remote currently owns.`,
+--discard-remote (alias: --force) is only accepted alongside --migrate.
+It reclaims ownership and pushes the laptop's state, orphaning any
+remote-side changes the sprite had not yet checkpointed.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
-			if force && !alsoMig {
-				return errors.New("--force only applies with --migrate (-m)")
+			// --force is a legacy alias for --discard-remote; fold both
+			// into one bool so the rest of the command only branches on
+			// discardRemote.
+			if force {
+				discardRemote = true
+			}
+			if discardRemote && !alsoMig {
+				return errors.New("--discard-remote only applies with --migrate (-m)")
 			}
 			if len(args) == 1 {
 				repoPath = args[0]
@@ -188,14 +196,15 @@ changes when migrating onto a worktree the remote currently owns.`,
 			if !alsoMig {
 				return runPushNoMigrate(cmd, ctx, timer, cli, absRepo, worktreeID, parity)
 			}
-			return runPushMigrate(cmd, ctx, timer, cli, dc, absRepo, worktreeID, parity, force)
+			return runPushMigrate(cmd, ctx, timer, cli, dc, absRepo, worktreeID, parity, discardRemote)
 		},
 	}
 	cmd.Flags().StringVar(&baseURL, "base-url", envOrDefault("CLANK_GATEWAY_URL", ""), "gateway base URL (default: active remote's gateway_url)")
 	cmd.Flags().StringVar(&token, "token", envOrDefault("CLANK_SYNC_TOKEN", ""), "bearer token for the gateway (default: active remote's access_token)")
 	cmd.Flags().StringVar(&display, "display-name", "", "display name for newly-registered worktrees (default: basename of repo-path)")
 	cmd.Flags().BoolVarP(&alsoMig, "migrate", "m", false, "after pushing, also transfer worktree ownership to the remote host")
-	cmd.Flags().BoolVar(&force, "force", false, "with --migrate, discard remote changes when migrating onto a remote-owned worktree")
+	cmd.Flags().BoolVar(&discardRemote, "discard-remote", false, "with --migrate, reclaim ownership and push your state, orphaning any unchecked sprite-side changes")
+	cmd.Flags().BoolVar(&force, "force", false, "alias for --discard-remote (legacy)")
 	cmd.Flags().BoolVar(&timing, "timing", false, "print a per-phase timing breakdown to stderr (also enabled by CLANK_TIMING=1)")
 	return cmd
 }
@@ -205,6 +214,12 @@ changes when migrating onto a worktree the remote currently owns.`,
 // uploads when local differs from remote, but logs an extra warning
 // when the remote owner has unsynced changes that will need to be
 // resolved on next --migrate.
+//
+// Exception: if the worktree is sprite-owned the server returns 403
+// with ErrOwnerMismatch and there's no graceful "warn and continue"
+// — surface the same styled options block that --migrate's refusal
+// shows so the user sees both reclaim paths (pull -m / push -m
+// --discard-remote) immediately instead of the raw HTTP error.
 func runPushNoMigrate(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *syncclient.Client, absRepo, worktreeID string, parity parityResult) error {
 	if parity.InSync {
 		fmt.Fprintln(cmd.OutOrStdout(), styleOK.Render("✓ Already up to date")+styleDim.Render(" (local state matches remote's latest checkpoint)"))
@@ -215,12 +230,16 @@ func runPushNoMigrate(cmd *cobra.Command, ctx context.Context, timer *phaseTimer
 	res, err := cli.PushCheckpoint(ctx, worktreeID, absRepo)
 	done()
 	if err != nil {
+		if errors.Is(err, syncclient.ErrOwnerMismatch) {
+			printPushMigrateConflict(cmd)
+			return errors.New("push refused: remote-owned worktree (see options above)")
+		}
 		return fmt.Errorf("push checkpoint: %w", err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "pushed checkpoint %s (HEAD %s)\n",
 		res.CheckpointID, shortSHA(res.Manifest.HeadCommit))
 
-	if parity.OwnerKind == "remote" && parity.HasCheckpoint {
+	if parity.OwnerKind == string(daemonclient.OwnerKindRemote) && parity.HasCheckpoint {
 		fmt.Fprintln(cmd.OutOrStdout(), styleWarn.Render("⚠ Remote owner has changes you don't have locally."))
 		fmt.Fprintln(cmd.OutOrStdout(), "  "+styleDim.Render("Resolve this on the next `clank push -m` or `clank pull -m`."))
 	}
@@ -228,22 +247,49 @@ func runPushNoMigrate(cmd *cobra.Command, ctx context.Context, timer *phaseTimer
 }
 
 // runPushMigrate handles `clank push --migrate`. Refuses on
-// remote-owned + diverged unless --force. Skips entirely on the
-// already-migrated no-op case.
-func runPushMigrate(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *syncclient.Client, dc *daemonclient.Client, absRepo, worktreeID string, parity parityResult, force bool) error {
+// remote-owned + diverged unless --discard-remote. On --discard-remote,
+// reclaims ownership server-side, then pushes the laptop's state, then
+// hands ownership back to the remote — see the reclaim branch below.
+// Skips entirely on the already-migrated no-op case.
+func runPushMigrate(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *syncclient.Client, dc *daemonclient.Client, absRepo, worktreeID string, parity parityResult, discardRemote bool) error {
 	// Already-migrated no-op: remote-owned + in-sync. The user is
 	// running --migrate again on a worktree that's already where it
 	// needs to be.
-	if parity.OwnerKind == "remote" && parity.InSync {
+	if parity.OwnerKind == string(daemonclient.OwnerKindRemote) && parity.InSync {
 		fmt.Fprintln(cmd.OutOrStdout(), styleOK.Render("✓ Already migrated")+styleDim.Render(" — worktree already remote-owned and in sync"))
 		return nil
 	}
 
 	// Refuse the dangerous case (remote owns + diverged) unless
 	// explicitly forced. The user's safer option is `pull -m` first.
-	if parity.OwnerKind == "remote" && !parity.InSync && !force {
+	if parity.OwnerKind == string(daemonclient.OwnerKindRemote) && !parity.InSync && !discardRemote {
 		printPushMigrateConflict(cmd)
 		return errors.New("push --migrate refused: remote-owned worktree has unsynced changes (see options above)")
+	}
+
+	// Reclaim path: sprite owns the worktree and the user opted in to
+	// --discard-remote. Take the lock back BEFORE pushing — without
+	// this the very next PushCheckpoint trips the server-side
+	// ownership check and 403s. The reclaim is metadata-only (a single
+	// SQL UPDATE); sprite's pending in-flight changes are orphaned,
+	// which is exactly what "discard remote" means at the data level.
+	if parity.OwnerKind == string(daemonclient.OwnerKindRemote) && discardRemote {
+		// Fresh GET so expected_owner_id is authoritative — the row
+		// could have changed between checkParity and now.
+		freshWt, err := dc.GetWorktree(ctx, worktreeID)
+		if err != nil {
+			return fmt.Errorf("re-read worktree before reclaim: %w", err)
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), styleWarn.Render("⚠ Reclaiming ownership (--discard-remote; sprite's pending changes will be orphaned)"))
+		done := timer.Start("reclaim ownership")
+		_, err = dc.ReclaimWorktree(ctx, worktreeID, freshWt.OwnerID)
+		done()
+		if err != nil {
+			if errors.Is(err, daemonclient.ErrOwnerConflict) {
+				return errors.New("reclaim failed: the worktree changed under us — re-run `clank push -m --discard-remote`")
+			}
+			return fmt.Errorf("reclaim ownership: %w", err)
+		}
 	}
 
 	// Pre-flight version compatibility check. Same as today.
@@ -289,10 +335,10 @@ func printPushMigrateConflict(cmd *cobra.Command) {
 	fmt.Fprintln(w, styleErr.Render("✗ Cannot migrate: the remote has changes you don't have locally."))
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  Options:")
-	fmt.Fprintln(w, "    "+styleCmdHint.Render("clank pull -m")+"                 pull remote changes (default; mirrors `git pull`)")
-	fmt.Fprintln(w, "    "+styleCmdHint.Render("clank push -m --force")+"         discard remote changes; push your state up")
+	fmt.Fprintln(w, "    "+styleCmdHint.Render("clank pull -m")+"                    pull remote changes (default; mirrors `git pull`)")
+	fmt.Fprintln(w, "    "+styleCmdHint.Render("clank push -m --discard-remote")+"   discard remote changes; push your state up")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  "+styleDim.Render("(Merge / rebase strategies coming in a future release.)"))
+	fmt.Fprintln(w, "  "+styleDim.Render("(--force is a legacy alias for --discard-remote. Merge / rebase strategies coming in a future release.)"))
 }
 
 func shortSHA(s string) string {

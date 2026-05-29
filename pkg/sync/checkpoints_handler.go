@@ -173,8 +173,13 @@ func (s *Server) handleTransferOwnership(w http.ResponseWriter, r *http.Request)
 		http.Error(w, `to_kind must be "local" or "remote"`, http.StatusBadRequest)
 		return
 	}
-	if req.ToID == "" {
-		http.Error(w, "to_id is required", http.StatusBadRequest)
+	// Per-user laptop ownership has no device ID, so to_id is required
+	// only for the per-device remote kind. Matches callerMatches and
+	// the in-process Server.TransferOwnership; without this exception
+	// the HTTP path silently 400'd on the reclaim flow that pull
+	// --migrate's commit phase exercises in-process every day.
+	if req.ToKind == OwnerKindRemote && req.ToID == "" {
+		http.Error(w, "to_id is required when to_kind=remote", http.StatusBadRequest)
 		return
 	}
 
@@ -509,17 +514,23 @@ func callerOwnsWorktree(c Caller, wt Worktree) bool {
 	}
 }
 
+// OwnerMismatchSentinel is the prefix shared by every 403 body that
+// ownerMismatchMessage emits. Clients (notably pkg/sync/client) match
+// on this substring to wrap the raw HTTP error as a typed
+// ErrOwnerMismatch without HTTP-status sniffing.
+const OwnerMismatchSentinel = "not the current owner"
+
 // ownerMismatchMessage renders a 403 body that names the actual owner
 // and tells the caller what to do — most useful when a laptop tries to
 // push to a worktree the remote currently owns.
 func ownerMismatchMessage(c Caller, wt Worktree) string {
 	switch {
 	case c.Kind == CallerKindLocal && wt.OwnerKind == OwnerKindRemote:
-		return "not the current owner: worktree is owned by remote (run `clank pull --migrate` to reclaim ownership before pushing again)"
+		return OwnerMismatchSentinel + ": worktree is owned by remote. Run `clank pull -m` to keep remote changes, or `clank push -m --discard-remote` to discard them and push your local state."
 	case c.Kind == CallerKindRemote && wt.OwnerKind == OwnerKindLocal:
-		return "not the current owner: worktree is owned by laptop (sprite can only checkpoint while it owns the worktree)"
+		return OwnerMismatchSentinel + ": worktree is owned by laptop (sprite can only checkpoint while it owns the worktree)"
 	}
-	return "not the current owner"
+	return OwnerMismatchSentinel
 }
 
 // callerMatches returns true when the caller's kind equals the

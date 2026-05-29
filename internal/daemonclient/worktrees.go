@@ -1,8 +1,10 @@
 package daemonclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +12,25 @@ import (
 
 	"github.com/acksell/clank/internal/cloud"
 )
+
+// OwnerKind enumerates which actor type owns a worktree's write
+// authority. Mirrors pkg/sync.OwnerKind so daemonclient callers don't
+// have to import pkg/sync just to spell a string. Per the project's
+// "no magic strings" rule, never compare WorktreeInfo.OwnerKind
+// against raw "local"/"remote" literals at call sites — use these.
+type OwnerKind string
+
+const (
+	OwnerKindLocal  OwnerKind = "local"
+	OwnerKindRemote OwnerKind = "remote"
+)
+
+// ErrOwnerConflict is returned by ReclaimWorktree when the server's
+// optimistic-concurrency guard rejects the claim because the row's
+// current OwnerID no longer matches the caller's expected_owner_id —
+// someone else reclaimed first, or the caller's view is stale. Callers
+// should re-read the worktree and decide whether to retry.
+var ErrOwnerConflict = errors.New("daemonclient: worktree owner changed under us — re-read and retry")
 
 // WorktreeInfo mirrors the JSON shape of pkg/sync's worktreeResponse,
 // duplicated here so daemonclient stays decoupled from the gateway
@@ -120,4 +141,66 @@ func (c *Client) ListWorktrees(ctx context.Context) ([]WorktreeInfo, error) {
 		return nil, fmt.Errorf("decode list worktrees: %w", err)
 	}
 	return parsed.Worktrees, nil
+}
+
+// ReclaimWorktree atomically claims local ownership of a worktree the
+// caller does NOT currently own — the "new owner claims" path of
+// POST /v1/worktrees/{id}/owner.
+//
+// Used by `clank push -m --discard-remote` to take a remote-owned
+// worktree back before pushing the laptop's state. The transfer is
+// metadata-only on the server (a single SQL UPDATE); no bundles are
+// downloaded — sprite's pending checkpoint is orphaned, which is
+// exactly what "discard remote" means at the data level.
+//
+// expectedOwnerID is the caller's read of the row's current OwnerID
+// (from a recent GetWorktree). The server's optimistic-concurrency
+// guard returns ErrOwnerConflict if it has changed under us.
+func (c *Client) ReclaimWorktree(ctx context.Context, worktreeID, expectedOwnerID string) (*WorktreeInfo, error) {
+	if worktreeID == "" {
+		return nil, fmt.Errorf("ReclaimWorktree: worktreeID is required")
+	}
+
+	body, err := json.Marshal(map[string]string{
+		"to_kind":           string(OwnerKindLocal),
+		"to_id":             "",
+		"expected_owner_id": expectedOwnerID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.baseURL+"/v1/worktrees/"+worktreeID+"/owner", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("reclaim worktree: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read reclaim response: %w", err)
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+		var wt WorktreeInfo
+		if err := json.Unmarshal(respBody, &wt); err != nil {
+			return nil, fmt.Errorf("decode reclaim response: %w", err)
+		}
+		return &wt, nil
+	case http.StatusUnauthorized:
+		return nil, fmt.Errorf("reclaim worktree: %w", cloud.ErrUnauthorized)
+	case http.StatusNotFound:
+		return nil, ErrWorktreeNotFound
+	case http.StatusConflict:
+		return nil, fmt.Errorf("%w: %s", ErrOwnerConflict, strings.TrimSpace(string(respBody)))
+	default:
+		return nil, fmt.Errorf("reclaim worktree: %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
 }
