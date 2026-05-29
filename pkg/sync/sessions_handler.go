@@ -50,7 +50,7 @@ func (s *Server) handleSessionPresign(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "lookup checkpoint: "+err.Error(), httpStatusForLookupErr(err))
 		return
 	}
-	if !callerOwnsWorktree(caller, wt) {
+	if !callerMayWriteCheckpoint(caller, wt) {
 		http.Error(w, ownerMismatchMessage(caller, wt), http.StatusForbidden)
 		return
 	}

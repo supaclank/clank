@@ -220,6 +220,10 @@ func runPushNoMigrate(cmd *cobra.Command, ctx context.Context, timer *phaseTimer
 	fmt.Fprintf(cmd.OutOrStdout(), "pushed checkpoint %s (HEAD %s)\n",
 		res.CheckpointID, shortSHA(res.Manifest.HeadCommit))
 
+	if err := pushSessionLeg(cmd, timer, absRepo, res.CheckpointID, cli); err != nil {
+		return fmt.Errorf("push session leg: %w", err)
+	}
+
 	if parity.OwnerKind == "remote" && parity.HasCheckpoint {
 		fmt.Fprintln(cmd.OutOrStdout(), styleWarn.Render("⚠ Remote owner has changes you don't have locally."))
 		fmt.Fprintln(cmd.OutOrStdout(), "  "+styleDim.Render("Resolve this on the next `clank push -m` or `clank pull -m`."))
@@ -267,7 +271,7 @@ func runPushMigrate(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, 
 	fmt.Fprintf(cmd.OutOrStdout(), "pushed checkpoint %s (HEAD %s)\n",
 		res.CheckpointID, shortSHA(res.Manifest.HeadCommit))
 
-	if err := pushSessionLeg(cmd, timer, worktreeID, res.CheckpointID, cli); err != nil {
+	if err := pushSessionLeg(cmd, timer, absRepo, res.CheckpointID, cli); err != nil {
 		return fmt.Errorf("push session leg: %w", err)
 	}
 

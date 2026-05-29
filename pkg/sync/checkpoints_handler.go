@@ -329,7 +329,7 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if !callerOwnsWorktree(caller, wt) {
+	if !callerMayWriteCheckpoint(caller, wt) {
 		http.Error(w, ownerMismatchMessage(caller, wt), http.StatusForbidden)
 		return
 	}
@@ -393,7 +393,7 @@ func (s *Server) handleCommitCheckpoint(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), httpStatusForLookupErr(err))
 		return
 	}
-	if !callerOwnsWorktree(caller, wt) {
+	if !callerMayWriteCheckpoint(caller, wt) {
 		http.Error(w, ownerMismatchMessage(caller, wt), http.StatusForbidden)
 		return
 	}
@@ -492,6 +492,20 @@ func (s *Server) callerOrUnauthorized(w http.ResponseWriter, r *http.Request) (C
 		}
 	}
 	return c, true
+}
+
+// callerMayWriteCheckpoint authorizes a checkpoint/session create or
+// commit. Local (laptop) callers may always push to their own
+// worktrees regardless of the current owner: the push-only sync model
+// stages to object storage without an ownership flip, and only the
+// laptop writes the checkpoint slot, so there is no contention. Remote
+// (sprite) callers must own the worktree. Tenancy (UserID) is enforced
+// separately by the caller.
+func callerMayWriteCheckpoint(c Caller, wt Worktree) bool {
+	if c.Kind == CallerKindLocal {
+		return true
+	}
+	return callerOwnsWorktree(c, wt)
 }
 
 // callerOwnsWorktree returns true when the caller's kind matches the
