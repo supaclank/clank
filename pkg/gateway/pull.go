@@ -3,14 +3,10 @@ package gateway
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -19,45 +15,36 @@ import (
 	clanksync "github.com/acksell/clank/pkg/sync"
 )
 
-// migrationTokenTTL bounds how long a materialize → commit pair can
-// straddle. 10 minutes is generous enough for a slow apply on a big
-// worktree and short enough that a stale token doesn't grant
-// indefinite commit authority.
-const migrationTokenTTL = 10 * time.Minute
-
-// materializeResponse is the body returned by
-// POST /v1/migrate/worktrees/{id}/materialize. The CLI feeds these
-// fields back into the commit call after downloading + applying the
-// checkpoint locally.
+// pullResponse is the body returned by POST /v1/worktrees/{id}/pull.
+// The CLI downloads these presigned GET URLs and applies the checkpoint
+// locally (see the clank CLI's applyRemotePull).
 //
 // SessionManifestURL + SessionBlobURLs ride alongside the code URLs
 // when the sprite had opencode sessions in the worktree. The laptop
-// fetches them after the code apply and hands them to its local
-// clank-host's /sync/sessions/apply-from-urls.
-type materializeResponse struct {
-	CheckpointID         string            `json:"checkpoint_id"`
-	HeadCommit           string            `json:"head_commit"`
-	ManifestURL          string            `json:"manifest_url"`
-	HeadCommitURL        string            `json:"head_commit_url"`
-	IncrementalURL       string            `json:"incremental_url"`
-	SessionManifestURL   string            `json:"session_manifest_url,omitempty"`
-	SessionBlobURLs      map[string]string `json:"session_blob_urls,omitempty"`
-	MigrationToken       string            `json:"migration_token"`
-	MigrationExpiry      int64             `json:"migration_expiry"` // unix seconds
+// fetches them after the code apply and imports them with sessionsync.
+type pullResponse struct {
+	CheckpointID       string            `json:"checkpoint_id"`
+	ManifestURL        string            `json:"manifest_url"`
+	HeadCommitURL      string            `json:"head_commit_url"`
+	IncrementalURL     string            `json:"incremental_url"`
+	SessionManifestURL string            `json:"session_manifest_url,omitempty"`
+	SessionBlobURLs    map[string]string `json:"session_blob_urls,omitempty"`
 }
 
-// handleMigrateMaterialize orchestrates a sprite-to-laptop checkpoint
-// pull. Sprite-as-pure-responder model: gateway tells the sprite to
-// build bundles, gateway mints presigned PUT URLs from its in-process
-// sync server, gateway tells the sprite to upload to S3 via those URLs,
-// gateway commits the checkpoint. Sprite holds no credentials and makes
-// no outbound HTTP calls except to S3 via short-lived presigned URLs.
+// handlePullWorktree orchestrates a sprite-to-laptop checkpoint pull.
+// Sprite-as-pure-responder model: gateway tells the sprite to build
+// bundles, gateway mints presigned PUT URLs from its in-process sync
+// server, gateway tells the sprite to upload to S3 via those URLs,
+// gateway commits the checkpoint, then returns presigned GET URLs. The
+// sprite holds no credentials and makes no outbound HTTP calls except to
+// S3 via short-lived presigned URLs.
 //
-// No ownership change yet — the matching /commit call flips ownership
-// after the laptop has successfully downloaded + applied the bundles.
-func (g *Gateway) handleMigrateMaterialize(w http.ResponseWriter, r *http.Request) {
+// No ownership concept: the laptop is responsible for applying the
+// result safely (clean working tree + fast-forward check), which the
+// CLI's applyRemotePull enforces before the destructive restore.
+func (g *Gateway) handlePullWorktree(w http.ResponseWriter, r *http.Request) {
 	if g.cfg.Sync == nil {
-		http.Error(w, "migration not configured (Sync unset)", http.StatusServiceUnavailable)
+		http.Error(w, "pull not configured (Sync unset)", http.StatusServiceUnavailable)
 		return
 	}
 	userID := auth.MustPrincipal(r.Context()).UserID
@@ -197,19 +184,13 @@ func (g *Gateway) handleMigrateMaterialize(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	expiry := time.Now().Add(migrationTokenTTL).Unix()
-	token := g.signMigrationToken(wt.ID, ck.CheckpointID, userID, expiry)
-
-	writeJSON(w, http.StatusOK, materializeResponse{
+	writeJSON(w, http.StatusOK, pullResponse{
 		CheckpointID:       ck.CheckpointID,
-		HeadCommit:         build.HeadCommit,
 		ManifestURL:        gets.ManifestGetURL,
 		HeadCommitURL:      gets.HeadCommitGetURL,
 		IncrementalURL:     gets.IncrementalURL,
 		SessionManifestURL: sessionManifestGetURL,
 		SessionBlobURLs:    sessionBlobGetURLs,
-		MigrationToken:     token,
-		MigrationExpiry:    expiry,
 	})
 }
 
@@ -475,19 +456,4 @@ func deleteSpriteSessionBuild(ctx context.Context, baseClient *http.Client, host
 	}
 	resp.Body.Close()
 	return nil
-}
-
-// --- migration token -----------------------------------------------
-
-// signMigrationToken issues an HMAC-SHA256 over
-// "<worktreeID>:<checkpointID>:<userID>:<expiryUnix>" using the
-// gateway's migrationKey. The expiry is encoded in the token itself
-// so verification doesn't need extra state. Binding to userID
-// prevents one user's token from being replayed by another.
-func (g *Gateway) signMigrationToken(worktreeID, checkpointID, userID string, expiry int64) string {
-	payload := fmt.Sprintf("%s:%s:%s:%d", worktreeID, checkpointID, userID, expiry)
-	mac := hmac.New(sha256.New, g.migrationKey)
-	mac.Write([]byte(payload))
-	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	return strconv.FormatInt(expiry, 10) + "." + sig
 }

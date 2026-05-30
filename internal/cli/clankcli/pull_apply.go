@@ -11,20 +11,8 @@ import (
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/pkg/sessionsync"
 	"github.com/acksell/clank/pkg/sync/checkpoint"
+	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
-
-// pullMaterializeResult is the sandbox state the gateway materialized
-// for a pull: presigned GET URLs for the code manifest + the two
-// bundles, plus the opencode session manifest + per-session blob URLs.
-// Mirrors the (removed) migrate-back response, minus ownership/token.
-type pullMaterializeResult struct {
-	CheckpointID       string            `json:"checkpoint_id"`
-	ManifestURL        string            `json:"manifest_url"`
-	HeadCommitURL      string            `json:"head_commit_url"`
-	IncrementalURL     string            `json:"incremental_url"`
-	SessionManifestURL string            `json:"session_manifest_url,omitempty"`
-	SessionBlobURLs    map[string]string `json:"session_blob_urls,omitempty"`
-}
 
 // applyRemotePull downloads a materialized sandbox checkpoint and applies
 // it into repoPath: it loads the remote history, refuses (without
@@ -33,7 +21,7 @@ type pullMaterializeResult struct {
 //
 // The caller MUST have verified a clean working tree first — the
 // fast-forward check + clean tree are what make the hard restore safe.
-func applyRemotePull(ctx context.Context, httpClient *http.Client, repoPath string, mres *pullMaterializeResult) error {
+func applyRemotePull(ctx context.Context, httpClient *http.Client, repoPath string, mres *syncclient.PullResult) error {
 	manifestBytes, err := fetchURL(ctx, httpClient, mres.ManifestURL)
 	if err != nil {
 		return fmt.Errorf("fetch manifest: %w", err)

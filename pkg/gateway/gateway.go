@@ -9,7 +9,6 @@ package gateway
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -61,8 +60,8 @@ type AuthConfig struct {
 }
 
 // Config wires the gateway's dependencies. Provisioner is required;
-// Sync is optional (when nil, the migration route returns 503 and
-// the /v1/ prefix isn't mounted).
+// Sync is optional (when nil, the pull route returns 503 and the /v1/
+// prefix isn't mounted).
 //
 // Authentication is the responsibility of an outer middleware (see
 // pkg/auth.Middleware) — by the time a request reaches the gateway,
@@ -73,9 +72,9 @@ type Config struct {
 	Provisioner provisioner.Provisioner
 
 	// Sync is the embedded sync server. When non-nil, the gateway mounts
-	// the sync API routes under /v1/ and the migration route calls sync
-	// methods directly rather than via HTTP. When nil, the migration
-	// route returns 503.
+	// the sync API routes under /v1/ and the pull route calls sync
+	// methods directly rather than via HTTP. When nil, the pull route
+	// returns 503.
 	Sync *clanksync.Server
 
 	// AuthConfig, when non-nil, makes AuthConfigHandler() return a
@@ -149,10 +148,6 @@ type Config struct {
 type Gateway struct {
 	cfg Config
 	log *log.Logger
-
-	// migrationKey signs the pull materialize token. Random-on-startup
-	// so a daemon restart invalidates any pending materialize in flight.
-	migrationKey []byte
 }
 
 // NewGateway constructs a Gateway.
@@ -186,27 +181,23 @@ func NewGateway(cfg Config, lg *log.Logger) (*Gateway, error) {
 	if lg == nil {
 		lg = log.Default()
 	}
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		return nil, fmt.Errorf("gateway: generate migration signing key: %w", err)
-	}
-	return &Gateway{cfg: cfg, log: lg, migrationKey: key}, nil
+	return &Gateway{cfg: cfg, log: lg}, nil
 }
 
 // Handler returns the public-listener http.Handler.
 //
 // /ping and /gateway/health answer locally without waking a host;
-// /v1/migrate/worktrees/{id} runs the gateway-orchestrated migration
-// flow when Sync is configured; /v1/ (other paths) forwards to the
-// embedded sync server when Sync is configured; every other path
-// proxies to the user's host. Authentication is handled by an outer
-// middleware (pkg/auth.Middleware); handlers read the Principal from
-// r.Context() via auth.MustPrincipal.
+// /v1/worktrees/{id}/pull runs the gateway-orchestrated pull flow when
+// Sync is configured; /v1/ (other paths) forwards to the embedded sync
+// server when Sync is configured; every other path proxies to the
+// user's host. Authentication is handled by an outer middleware
+// (pkg/auth.Middleware); handlers read the Principal from r.Context()
+// via auth.MustPrincipal.
 func (g *Gateway) Handler() http.Handler {
 	mx := http.NewServeMux()
 	mx.HandleFunc("GET /ping", g.handlePing)
 	mx.HandleFunc("GET /gateway/health", g.handleGatewayHealth)
-	mx.HandleFunc("POST /v1/migrate/worktrees/{id}/materialize", g.handleMigrateMaterialize)
+	mx.HandleFunc("POST /v1/worktrees/{id}/pull", g.handlePullWorktree)
 	// /v1/worktrees/create and /v1/worktrees/list-branches must be
 	// mounted BEFORE the `/v1/` catch-all so they reach the host (via
 	// these gateway-orchestrated handlers) instead of the sync server.
@@ -224,8 +215,8 @@ func (g *Gateway) Handler() http.Handler {
 	mx.HandleFunc("POST /v1/worktrees/{id}/pr", g.handleGitHubCreatePR)
 	mx.HandleFunc("POST /v1/worktrees/{id}/pr/preview", g.handleGitHubPreviewPR)
 	if g.cfg.Sync != nil {
-		// POST /v1/migrate/worktrees/{id} is more specific and wins
-		// over the /v1/ prefix registered here.
+		// The specific /v1/worktrees/... routes above are more specific
+		// and win over this /v1/ prefix registered here.
 		mx.Handle("/v1/", g.cfg.Sync.Handler())
 	}
 	if g.cfg.Notify != nil {

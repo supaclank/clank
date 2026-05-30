@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/acksell/clank/pkg/sync/checkpoint"
+	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
 
 // TestApplyRemotePull exercises pull's laptop side against a real
@@ -62,7 +63,7 @@ func TestApplyRemotePull(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	mres := &pullMaterializeResult{
+	mres := &syncclient.PullResult{
 		CheckpointID:   "ckpt1",
 		ManifestURL:    srv.URL + "/manifest",
 		HeadCommitURL:  srv.URL + "/head",
