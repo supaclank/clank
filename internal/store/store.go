@@ -442,6 +442,24 @@ func (s *Store) migrate() error {
 		}
 		version = 25
 	}
+	if version < 26 {
+		// Drop worktree ownership. owner_kind/owner_id backed the
+		// gateway's per-worktree local-vs-remote session router — a role
+		// we cut. Sync is now asymmetric (laptop→remote autopush,
+		// explicit `clank pull`) with drift guarded by git preconditions,
+		// not a distributed ownership lock. The owner index must go first:
+		// SQLite refuses DROP COLUMN on an indexed column.
+		_, err := s.db.Exec(`
+			DROP INDEX IF EXISTS worktrees_owner_idx;
+			ALTER TABLE worktrees DROP COLUMN owner_kind;
+			ALTER TABLE worktrees DROP COLUMN owner_id;
+			PRAGMA user_version = 26;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v26: %w", err)
+		}
+		version = 26
+	}
 	_ = version // suppress unused warning after last migration
 
 	return nil

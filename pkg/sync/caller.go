@@ -7,8 +7,9 @@ import (
 	"github.com/acksell/clank/pkg/auth"
 )
 
-// CallerKind enumerates the actor types that can call the sync API.
-// Mirrors OwnerKind — see its godoc on local/remote naming.
+// CallerKind enumerates the actor types that can call the sync API:
+// "local" (the laptop) and "remote" (a sandbox sprite). It stamps
+// Checkpoint.CreatedBy and gates checkpoint writes by tenancy.
 type CallerKind string
 
 const (

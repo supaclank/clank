@@ -88,7 +88,6 @@ func (g *Gateway) handleCreateWorktree(w http.ResponseWriter, r *http.Request) {
 		UserID:      principal.UserID,
 		DisplayName: resp.DisplayName,
 		OriginRepo:  resp.OriginRepo,
-		OwnerKind:   clanksync.OwnerKindLocal,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}

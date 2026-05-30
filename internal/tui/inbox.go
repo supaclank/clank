@@ -301,7 +301,6 @@ func NewInboxModel(client *daemonclient.Client) *InboxModel {
 	cachedSessions, _ := loadSessionsCache()
 	if len(cachedSessions) > 0 {
 		bp.SetSessions(cachedSessions)
-		bp.UpdateWorktreeOwnersFromSessions(cachedSessions)
 	}
 
 	m := &InboxModel{
@@ -452,12 +451,6 @@ func (m *InboxModel) loadDataCmd() tea.Cmd {
 		if err != nil {
 			return inboxDataMsg{err: err}
 		}
-		// Per-worktree owner glyphs in the sidebar are now driven off
-		// each session's IsRemote flag (set by the local daemon's
-		// gateway from its OwnerCache). The old direct-to-remote
-		// loadWorktreeOwners helper was the only NewRemoteClient call
-		// from the laptop UI; with it gone, every TUI surface goes
-		// through the local daemon.
 		return inboxDataMsg{sessions: sessions}
 	}
 }
@@ -681,7 +674,6 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = nil
 			m.cachedSessions = msg.sessions
 			m.sidebar.SetSessions(m.cachedSessions)
-			m.sidebar.UpdateWorktreeOwnersFromSessions(m.cachedSessions)
 			if m.searchQuery == "" {
 				m.buildGroups(m.filteredSessions())
 			}

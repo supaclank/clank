@@ -1,9 +1,7 @@
 -- Schema for sqlc type-checking. NOT a migration — production migrations
--- live in store.go's migrate() function (currently up to user_version=21
--- with these worktrees + checkpoints tables).
---
--- Mirror the post-migration shape exactly. Updates to v21 in store.go
--- must be reflected here.
+-- live in store.go's migrate() function. Mirror the post-migration shape
+-- exactly; every store.go migration that touches these tables must be
+-- reflected here.
 
 CREATE TABLE worktrees (
     id                          TEXT PRIMARY KEY,
@@ -15,14 +13,11 @@ CREATE TABLE worktrees (
     -- worktrees by repo in their pickers/sidebars. Set at registration;
     -- never updated. Empty for rows registered before this column existed.
     origin_repo                 TEXT NOT NULL DEFAULT '',
-    owner_kind                  TEXT NOT NULL DEFAULT 'laptop',
-    owner_id                    TEXT NOT NULL DEFAULT '',
     latest_synced_checkpoint    TEXT NOT NULL DEFAULT '',
     created_at                  DATETIME NOT NULL,
     updated_at                  DATETIME NOT NULL
 );
 CREATE INDEX worktrees_user_id_idx ON worktrees(user_id);
-CREATE INDEX worktrees_owner_idx   ON worktrees(owner_kind, owner_id);
 
 CREATE TABLE checkpoints (
     id                  TEXT PRIMARY KEY,

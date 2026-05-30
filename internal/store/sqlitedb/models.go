@@ -51,8 +51,6 @@ type Worktree struct {
 	UserID                 string
 	DisplayName            string
 	OriginRepo             string
-	OwnerKind              string
-	OwnerID                string
 	LatestSyncedCheckpoint string
 	CreatedAt              time.Time
 	UpdatedAt              time.Time

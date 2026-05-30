@@ -42,7 +42,7 @@ func newRemoteClient(t *testing.T, baseURL string) *daemonclient.Client {
 	return daemonclient.NewTCPClient(baseURL, "test-token")
 }
 
-func worktreeJSON(id, ownerKind string, snap *checkpoint.Snapshot) string {
+func worktreeJSON(id string, snap *checkpoint.Snapshot) string {
 	type ckMeta struct {
 		HeadCommit   string `json:"head_commit"`
 		HeadRef      string `json:"head_ref,omitempty"`
@@ -50,11 +50,10 @@ func worktreeJSON(id, ownerKind string, snap *checkpoint.Snapshot) string {
 		WorktreeTree string `json:"worktree_tree"`
 	}
 	body := struct {
-		ID            string  `json:"id"`
-		OwnerKind     string  `json:"owner_kind"`
-		LatestSynced  string  `json:"latest_synced_checkpoint,omitempty"`
-		LatestMeta    *ckMeta `json:"latest_checkpoint_metadata,omitempty"`
-	}{ID: id, OwnerKind: ownerKind}
+		ID           string  `json:"id"`
+		LatestSynced string  `json:"latest_synced_checkpoint,omitempty"`
+		LatestMeta   *ckMeta `json:"latest_checkpoint_metadata,omitempty"`
+	}{ID: id}
 	if snap != nil {
 		body.LatestSynced = "ck-test"
 		body.LatestMeta = &ckMeta{
@@ -68,7 +67,7 @@ func worktreeJSON(id, ownerKind string, snap *checkpoint.Snapshot) string {
 	return string(b)
 }
 
-func TestCheckParity_InSyncLocalOwned(t *testing.T) {
+func TestCheckParity_InSync(t *testing.T) {
 	t.Parallel()
 	snap := &checkpoint.Snapshot{
 		HeadCommit:   "abc",
@@ -77,15 +76,12 @@ func TestCheckParity_InSyncLocalOwned(t *testing.T) {
 		WorktreeTree: "wt",
 	}
 	f := newFakeRemote(t)
-	f.resp = worktreeJSON("wt-id", "local", snap)
+	f.resp = worktreeJSON("wt-id", snap)
 	dc := newRemoteClient(t, f.srv.URL)
 
 	res, err := checkParity(context.Background(), dc, "wt-id", snap)
 	if err != nil {
 		t.Fatalf("checkParity: %v", err)
-	}
-	if res.OwnerKind != "local" {
-		t.Errorf("OwnerKind = %q, want local", res.OwnerKind)
 	}
 	if !res.InSync {
 		t.Errorf("InSync should be true when SHAs match")
@@ -95,20 +91,20 @@ func TestCheckParity_InSyncLocalOwned(t *testing.T) {
 	}
 }
 
-func TestCheckParity_DivergedRemoteOwned(t *testing.T) {
+func TestCheckParity_Diverged(t *testing.T) {
 	t.Parallel()
 	localSnap := &checkpoint.Snapshot{HeadCommit: "abc", IndexTree: "idx", WorktreeTree: "wt"}
 	remoteSnap := &checkpoint.Snapshot{HeadCommit: "def", IndexTree: "idx2", WorktreeTree: "wt2"}
 	f := newFakeRemote(t)
-	f.resp = worktreeJSON("wt-id", "remote", remoteSnap)
+	f.resp = worktreeJSON("wt-id", remoteSnap)
 	dc := newRemoteClient(t, f.srv.URL)
 
 	res, err := checkParity(context.Background(), dc, "wt-id", localSnap)
 	if err != nil {
 		t.Fatalf("checkParity: %v", err)
 	}
-	if res.OwnerKind != "remote" || res.InSync {
-		t.Errorf("expected remote/!InSync, got %+v", res)
+	if res.InSync {
+		t.Errorf("expected !InSync on diverged SHAs, got %+v", res)
 	}
 	if res.RemoteHead != "def" || res.LocalHead != "abc" {
 		t.Errorf("head SHAs mismatched: %+v", res)
@@ -121,7 +117,7 @@ func TestCheckParity_NoCheckpointYet(t *testing.T) {
 	f := newFakeRemote(t)
 	// remote knows the worktree but no checkpoint pushed yet —
 	// latest_checkpoint_metadata is omitted from the JSON.
-	f.resp = worktreeJSON("wt-id", "local", nil)
+	f.resp = worktreeJSON("wt-id", nil)
 	dc := newRemoteClient(t, f.srv.URL)
 
 	res, err := checkParity(context.Background(), dc, "wt-id", snap)

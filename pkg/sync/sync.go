@@ -1,9 +1,9 @@
 // Package sync is the persistent checkpoint substrate behind the
-// gateway-orchestrated MigrateWorktree flow. It mints presigned URLs
-// for an S3-compatible object store, tracks worktree + checkpoint
-// metadata in a SyncStore, and exposes ownership transitions over
-// HTTP. Bundle bytes never traverse the sync server in either
-// direction — laptop and gateway upload/download via presigned URLs.
+// laptop→remote autopush and remote→laptop pull flows. It mints
+// presigned URLs for an S3-compatible object store and tracks worktree
+// + checkpoint metadata in a SyncStore. Bundle bytes never traverse the
+// sync server in either direction — laptop and gateway upload/download
+// via presigned URLs.
 //
 // Authentication is the caller's responsibility — mount the handler
 // behind pkg/auth.Middleware (or any other middleware that puts an
@@ -77,10 +77,9 @@ func NewServer(cfg Config, lg *log.Logger) (*Server, error) {
 // Handler returns the public HTTP handler. Routes:
 //
 //	GET  /v1/health                       — liveness (no auth)
-//	GET  /v1/worktrees                    — list the caller's worktrees with owner info
+//	GET  /v1/worktrees                    — list the caller's worktrees
 //	POST /v1/worktrees                    — register a worktree, returns ID
-//	GET  /v1/worktrees/{id}               — read worktree state (gateway uses on migration)
-//	POST /v1/worktrees/{id}/owner         — atomic ownership transfer
+//	GET  /v1/worktrees/{id}               — read worktree state (gateway uses on pull)
 //	POST /v1/checkpoints                  — create checkpoint metadata, returns presigned PUT URLs
 //	POST /v1/checkpoints/{id}/commit      — confirm upload, advance latest_synced_checkpoint
 //	GET  /v1/checkpoints/{id}/download    — return presigned GET URLs (gateway uses on migration)
@@ -91,7 +90,6 @@ func (s *Server) Handler() http.Handler {
 	mx.HandleFunc("GET /v1/worktrees", s.handleListWorktrees)
 	mx.HandleFunc("POST /v1/worktrees", s.handleRegisterWorktree)
 	mx.HandleFunc("GET /v1/worktrees/{id}", s.handleGetWorktree)
-	mx.HandleFunc("POST /v1/worktrees/{id}/owner", s.handleTransferOwnership)
 	mx.HandleFunc("POST /v1/checkpoints", s.handleCreateCheckpoint)
 	mx.HandleFunc("POST /v1/checkpoints/{id}/commit", s.handleCommitCheckpoint)
 	mx.HandleFunc("GET /v1/checkpoints/{id}/download", s.handleDownloadCheckpoint)

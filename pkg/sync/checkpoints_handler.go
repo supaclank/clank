@@ -30,14 +30,12 @@ type worktreeResponse struct {
 	DisplayName string `json:"display_name"`
 	// OriginRepo mirrors sync.Worktree.OriginRepo — see that struct's
 	// doc. Clients use it as the group key in pickers/sidebars.
-	OriginRepo string    `json:"origin_repo,omitempty"`
-	OwnerKind  OwnerKind `json:"owner_kind"`
-	OwnerID                string    `json:"owner_id"`
-	LatestSyncedCheckpoint string    `json:"latest_synced_checkpoint,omitempty"`
+	OriginRepo             string `json:"origin_repo,omitempty"`
+	LatestSyncedCheckpoint string `json:"latest_synced_checkpoint,omitempty"`
 	// LatestCheckpointMetadata carries the 4 content SHAs of the
 	// latest synced checkpoint. Populated on single-worktree responses
-	// (handleGetWorktree, handleTransferOwnership) where the laptop
-	// needs to compute drift cheaply. Omitted from list responses
+	// (handleGetWorktree) where the laptop needs to compute drift
+	// cheaply. Omitted from list responses
 	// (would require a JOIN per row) and when no checkpoint has been
 	// pushed yet.
 	LatestCheckpointMetadata *checkpointSnapshot `json:"latest_checkpoint_metadata,omitempty"`
@@ -135,105 +133,6 @@ func (s *Server) attachCheckpointSnapshot(ctx context.Context, resp *worktreeRes
 	}
 }
 
-// transferOwnershipRequest is the body of POST /v1/worktrees/{id}/owner.
-type transferOwnershipRequest struct {
-	ToKind  OwnerKind `json:"to_kind"`
-	ToID    string    `json:"to_id"`
-	// ExpectedOwnerID guards the optimistic-concurrency check. The
-	// caller MUST provide its current view of the row's owner_id; the
-	// UPDATE only succeeds if reality still matches. Mismatch returns
-	// 409 so the caller can re-read and retry. Empty when caller is
-	// local (per-user ownership, no per-device ID); HostID for sprites.
-	ExpectedOwnerID string `json:"expected_owner_id"`
-}
-
-// handleTransferOwnership performs the atomic ownership transfer for
-// MigrateWorktree. Authorization: the caller's Kind must match the
-// worktree's current OwnerKind (local↔laptop, remote↔sprite). For
-// remote owners the caller's HostID must additionally equal
-// worktree.OwnerID. The DB-level UPDATE WHERE owner_id = expected
-// catches lost-update races even if the auth check passes.
-func (s *Server) handleTransferOwnership(w http.ResponseWriter, r *http.Request) {
-	caller, ok := s.callerOrUnauthorized(w, r)
-	if !ok {
-		return
-	}
-	id := r.PathValue("id")
-	if id == "" {
-		http.Error(w, "worktree id missing", http.StatusBadRequest)
-		return
-	}
-
-	var req transferOwnershipRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if req.ToKind != OwnerKindLocal && req.ToKind != OwnerKindRemote {
-		http.Error(w, `to_kind must be "local" or "remote"`, http.StatusBadRequest)
-		return
-	}
-	if req.ToID == "" {
-		http.Error(w, "to_id is required", http.StatusBadRequest)
-		return
-	}
-
-	wt, err := s.cfg.Store.GetWorktreeByID(r.Context(), id)
-	if errors.Is(err, ErrWorktreeNotFound) {
-		http.Error(w, worktreeNotFoundMsg(id), http.StatusNotFound)
-		return
-	}
-	if err != nil {
-		s.log.Printf("sync: get worktree: %v", err)
-		http.Error(w, "lookup worktree", http.StatusInternalServerError)
-		return
-	}
-	if wt.UserID != caller.UserID {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-	// Two flavors of legitimate caller for a transfer:
-	//   1. the current owner releasing → routine handoff
-	//      (laptop migrating to_sprite).
-	//   2. the new owner claiming → reclaim path
-	//      (laptop migrating to_laptop after a previous to_sprite,
-	//      or another of the user's devices taking over).
-	// Both cases represent deliberate user intent within their own
-	// tenant. The optimistic-concurrency guard (expected_owner_id)
-	// blocks lost-update races regardless of which path applies.
-	callerIsCurrentOwner := callerOwnsWorktree(caller, wt)
-	callerIsNewOwner := callerMatches(caller, req.ToKind, req.ToID)
-	if !callerIsCurrentOwner && !callerIsNewOwner {
-		http.Error(w, "caller must be either the current owner or the new owner", http.StatusForbidden)
-		return
-	}
-
-	expected := req.ExpectedOwnerID
-	if expected == "" {
-		expected = wt.OwnerID
-	}
-
-	if err := s.cfg.Store.UpdateWorktreeOwner(r.Context(), id, wt.OwnerKind, expected, req.ToKind, req.ToID); err != nil {
-		if errors.Is(err, ErrOwnerMismatch) {
-			http.Error(w, "owner mismatch (concurrent migration?)", http.StatusConflict)
-			return
-		}
-		s.log.Printf("sync: update worktree owner: %v", err)
-		http.Error(w, "transfer", http.StatusInternalServerError)
-		return
-	}
-
-	updated, err := s.cfg.Store.GetWorktreeByID(r.Context(), id)
-	if err != nil {
-		s.log.Printf("sync: re-read worktree after transfer: %v", err)
-		http.Error(w, "transfer", http.StatusInternalServerError)
-		return
-	}
-	resp := worktreeToResponse(updated)
-	s.attachCheckpointSnapshot(r.Context(), &resp, updated.LatestSyncedCheckpoint)
-	writeJSON(w, http.StatusOK, resp)
-}
-
 func (s *Server) handleRegisterWorktree(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.callerOrUnauthorized(w, r)
 	if !ok {
@@ -263,7 +162,6 @@ func (s *Server) handleRegisterWorktree(w http.ResponseWriter, r *http.Request) 
 		UserID:      caller.UserID,
 		DisplayName: req.DisplayName,
 		OriginRepo:  req.OriginRepo,
-		OwnerKind:   OwnerKindLocal,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -329,10 +227,6 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if !callerMayWriteCheckpoint(caller, wt) {
-		http.Error(w, ownerMismatchMessage(caller, wt), http.StatusForbidden)
-		return
-	}
 
 	result, err := s.CreateCheckpoint(r.Context(), caller.UserID, CreateCheckpointRequest{
 		WorktreeID:        req.WorktreeID,
@@ -386,15 +280,10 @@ func (s *Server) handleCommitCheckpoint(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Caller-identity authorization (must own the worktree). Tenancy
-	// is rechecked inside Server.CommitCheckpoint.
-	_, wt, err := s.lookupCheckpointForUser(r.Context(), checkpointID, caller.UserID)
+	// Tenancy is rechecked inside Server.CommitCheckpoint.
+	_, _, err := s.lookupCheckpointForUser(r.Context(), checkpointID, caller.UserID)
 	if err != nil {
 		http.Error(w, err.Error(), httpStatusForLookupErr(err))
-		return
-	}
-	if !callerMayWriteCheckpoint(caller, wt) {
-		http.Error(w, ownerMismatchMessage(caller, wt), http.StatusForbidden)
 		return
 	}
 
@@ -494,64 +383,6 @@ func (s *Server) callerOrUnauthorized(w http.ResponseWriter, r *http.Request) (C
 	return c, true
 }
 
-// callerMayWriteCheckpoint authorizes a checkpoint/session create or
-// commit. Local (laptop) callers may always push to their own
-// worktrees regardless of the current owner: the push-only sync model
-// stages to object storage without an ownership flip, and only the
-// laptop writes the checkpoint slot, so there is no contention. Remote
-// (sprite) callers must own the worktree. Tenancy (UserID) is enforced
-// separately by the caller.
-func callerMayWriteCheckpoint(c Caller, wt Worktree) bool {
-	if c.Kind == CallerKindLocal {
-		return true
-	}
-	return callerOwnsWorktree(c, wt)
-}
-
-// callerOwnsWorktree returns true when the caller's kind matches the
-// worktree's owner kind. Local ownership is per-user (any laptop of
-// this user counts as "the owner"); remote ownership additionally
-// disambiguates by HostID.
-func callerOwnsWorktree(c Caller, wt Worktree) bool {
-	switch c.Kind {
-	case CallerKindLocal:
-		return wt.OwnerKind == OwnerKindLocal
-	case CallerKindRemote:
-		return wt.OwnerKind == OwnerKindRemote && wt.OwnerID == c.HostID
-	default:
-		return false
-	}
-}
-
-// ownerMismatchMessage renders a 403 body that names the actual owner
-// and tells the caller what to do — most useful when a laptop tries to
-// push to a worktree the remote currently owns.
-func ownerMismatchMessage(c Caller, wt Worktree) string {
-	switch {
-	case c.Kind == CallerKindLocal && wt.OwnerKind == OwnerKindRemote:
-		return "not the current owner: worktree is owned by remote (run `clank pull --migrate` to reclaim ownership before pushing again)"
-	case c.Kind == CallerKindRemote && wt.OwnerKind == OwnerKindLocal:
-		return "not the current owner: worktree is owned by laptop (sprite can only checkpoint while it owns the worktree)"
-	}
-	return "not the current owner"
-}
-
-// callerMatches returns true when the caller's kind equals the
-// requested OwnerKind. For OwnerKindLocal, no ID is checked
-// (ownership is per-user). For OwnerKindRemote, HostID must match.
-// Used by transferOwnership to recognize a legitimate "I'm claiming
-// this worktree" reclaim — see handleTransferOwnership.
-func callerMatches(c Caller, kind OwnerKind, id string) bool {
-	switch kind {
-	case OwnerKindLocal:
-		return c.Kind == CallerKindLocal
-	case OwnerKindRemote:
-		return c.Kind == CallerKindRemote && c.HostID == id
-	default:
-		return false
-	}
-}
-
 // createdByFor returns the canonical CreatedBy stamp for a caller.
 func createdByFor(c Caller) string {
 	switch c.Kind {
@@ -630,8 +461,6 @@ func worktreeToResponse(w Worktree) worktreeResponse {
 		UserID:                 w.UserID,
 		DisplayName:            w.DisplayName,
 		OriginRepo:             w.OriginRepo,
-		OwnerKind:              w.OwnerKind,
-		OwnerID:                w.OwnerID,
 		LatestSyncedCheckpoint: w.LatestSyncedCheckpoint,
 		CreatedAt:              w.CreatedAt,
 		UpdatedAt:              w.UpdatedAt,

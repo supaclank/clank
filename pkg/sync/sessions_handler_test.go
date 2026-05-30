@@ -134,7 +134,6 @@ func TestSessionPresignHandler_WrongTenantForbidden(t *testing.T) {
 	now := time.Now().UTC()
 	if err := store.InsertWorktree(context.Background(), clanksync.Worktree{
 		ID: "wt-A", UserID: "user-A",
-		OwnerKind: clanksync.OwnerKindLocal, OwnerID: "",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)

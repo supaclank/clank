@@ -25,14 +25,8 @@ type Querier interface {
 	InsertWorktree(ctx context.Context, arg InsertWorktreeParams) error
 	ListCheckpointsByWorktree(ctx context.Context, arg ListCheckpointsByWorktreeParams) ([]Checkpoint, error)
 	ListDevicesByUser(ctx context.Context, userID string) ([]Device, error)
-	ListWorktreesByOwner(ctx context.Context, arg ListWorktreesByOwnerParams) ([]Worktree, error)
 	ListWorktreesByUser(ctx context.Context, userID string) ([]Worktree, error)
 	MarkCheckpointUploaded(ctx context.Context, arg MarkCheckpointUploadedParams) error
-	// Atomic ownership transfer: only succeeds when the requester knows
-	// the full current (owner_kind, owner_id) tuple. Both are matched so
-	// a stale or cross-kind transfer cannot mutate the row even if the
-	// two kinds reuse the same id namespace by accident.
-	UpdateWorktreeOwner(ctx context.Context, arg UpdateWorktreeOwnerParams) (int64, error)
 	UpdateWorktreePointer(ctx context.Context, arg UpdateWorktreePointerParams) error
 	UpsertDevice(ctx context.Context, arg UpsertDeviceParams) error
 	UpsertHost(ctx context.Context, arg UpsertHostParams) error

@@ -34,7 +34,7 @@ func stripANSI(s string) string {
 	return sb.String()
 }
 
-func TestRenderStatusReport_RemoteOwned_InSync(t *testing.T) {
+func TestRenderStatusReport_InSync(t *testing.T) {
 	t.Parallel()
 	got := stripANSI(renderStatusReport(statusReport{
 		WorktreeID:      "quizzical-keller-80cdc4",
@@ -43,17 +43,14 @@ func TestRenderStatusReport_RemoteOwned_InSync(t *testing.T) {
 		ActiveRemoteURL: "http://localhost:7878",
 		SignedIn:        true,
 		WorktreeFromRemote: &daemonclient.WorktreeInfo{
-			ID:        "quizzical-keller-80cdc4",
-			OwnerKind: "remote",
+			ID: "quizzical-keller-80cdc4",
 		},
 		HasCheckpoint: true,
 		InSync:        true,
 	}))
 	wantAll := []string{
 		"On worktree mindmouth",
-		"Owned by dev remote",
-		"localhost:7878",
-		"Local matches the remote",
+		"In sync with dev remote",
 	}
 	for _, s := range wantAll {
 		if !strings.Contains(got, s) {
@@ -62,7 +59,7 @@ func TestRenderStatusReport_RemoteOwned_InSync(t *testing.T) {
 	}
 }
 
-func TestRenderStatusReport_RemoteOwned_OutOfSync(t *testing.T) {
+func TestRenderStatusReport_OutOfSync(t *testing.T) {
 	t.Parallel()
 	got := stripANSI(renderStatusReport(statusReport{
 		WorktreeID:      "quizzical-keller-80cdc4",
@@ -71,70 +68,21 @@ func TestRenderStatusReport_RemoteOwned_OutOfSync(t *testing.T) {
 		ActiveRemoteURL: "http://localhost:7878",
 		SignedIn:        true,
 		WorktreeFromRemote: &daemonclient.WorktreeInfo{
-			ID:        "quizzical-keller-80cdc4",
-			OwnerKind: "remote",
+			ID: "quizzical-keller-80cdc4",
 		},
 		HasCheckpoint: true,
 		InSync:        false,
 	}))
-	if !strings.Contains(got, "Remote has newer state") {
-		t.Errorf("expected 'Remote has newer state'; got:\n%s", got)
+	if !strings.Contains(got, "Out of sync with dev remote") {
+		t.Errorf("expected 'Out of sync with dev remote'; got:\n%s", got)
 	}
-	if !strings.Contains(got, "`clank pull`") {
-		t.Errorf("expected hint to run `clank pull`; got:\n%s", got)
-	}
-}
-
-func TestRenderStatusReport_LocalOwned_InSync(t *testing.T) {
-	t.Parallel()
-	got := stripANSI(renderStatusReport(statusReport{
-		WorktreeID:      "quizzical-keller-80cdc4",
-		WorktreeDir:     "mindmouth",
-		ActiveRemote:    "dev",
-		ActiveRemoteURL: "http://localhost:7878",
-		SignedIn:        true,
-		WorktreeFromRemote: &daemonclient.WorktreeInfo{
-			ID:        "quizzical-keller-80cdc4",
-			OwnerKind: "local",
-		},
-		HasCheckpoint: true,
-		InSync:        true,
-	}))
-	if !strings.Contains(got, "Owned by this laptop") {
-		t.Errorf("expected 'Owned by this laptop'; got:\n%s", got)
-	}
-	if !strings.Contains(got, "In sync with dev remote") {
-		t.Errorf("expected 'In sync with dev remote'; got:\n%s", got)
-	}
-	if strings.Contains(got, "Owned by dev remote") {
-		t.Errorf("should not say remote-owned:\n%s", got)
+	// Direction is the user's call now (no ownership), so both verbs surface.
+	if !strings.Contains(got, "`clank push`") || !strings.Contains(got, "`clank pull`") {
+		t.Errorf("expected both push and pull hints; got:\n%s", got)
 	}
 }
 
-func TestRenderStatusReport_LocalOwned_OutOfSync(t *testing.T) {
-	t.Parallel()
-	got := stripANSI(renderStatusReport(statusReport{
-		WorktreeID:      "quizzical-keller-80cdc4",
-		WorktreeDir:     "mindmouth",
-		ActiveRemote:    "dev",
-		ActiveRemoteURL: "http://localhost:7878",
-		SignedIn:        true,
-		WorktreeFromRemote: &daemonclient.WorktreeInfo{
-			ID:        "quizzical-keller-80cdc4",
-			OwnerKind: "local",
-		},
-		HasCheckpoint: true,
-		InSync:        false,
-	}))
-	if !strings.Contains(got, "Local changes not synced") {
-		t.Errorf("expected 'Local changes not synced'; got:\n%s", got)
-	}
-	if !strings.Contains(got, "`clank push`") {
-		t.Errorf("expected hint to run `clank push`; got:\n%s", got)
-	}
-}
-
-func TestRenderStatusReport_LocalOwned_NoCheckpoint(t *testing.T) {
+func TestRenderStatusReport_NoCheckpoint(t *testing.T) {
 	t.Parallel()
 	got := stripANSI(renderStatusReport(statusReport{
 		WorktreeID:      "happy-curie-7f0a11",
@@ -143,8 +91,7 @@ func TestRenderStatusReport_LocalOwned_NoCheckpoint(t *testing.T) {
 		ActiveRemoteURL: "http://localhost:7878",
 		SignedIn:        true,
 		WorktreeFromRemote: &daemonclient.WorktreeInfo{
-			ID:        "happy-curie-7f0a11",
-			OwnerKind: "local",
+			ID: "happy-curie-7f0a11",
 		},
 		HasCheckpoint: false,
 	}))

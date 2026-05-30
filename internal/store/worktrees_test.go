@@ -18,8 +18,6 @@ func TestWorktrees_InsertGetList(t *testing.T) {
 		ID:          "wt-1",
 		UserID:      "user-A",
 		DisplayName: "myrepo (main)",
-		OwnerKind:   store.OwnerKindLocal,
-		OwnerID:     "dev-1",
 	}
 	if err := s.InsertWorktree(ctx, w); err != nil {
 		t.Fatalf("InsertWorktree: %v", err)
@@ -29,7 +27,7 @@ func TestWorktrees_InsertGetList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWorktreeByID: %v", err)
 	}
-	if got.UserID != "user-A" || got.OwnerID != "dev-1" || got.OwnerKind != store.OwnerKindLocal {
+	if got.UserID != "user-A" || got.DisplayName != "myrepo (main)" {
 		t.Fatalf("worktree round-trip mismatch: %+v", got)
 	}
 	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
@@ -46,69 +44,6 @@ func TestWorktrees_InsertGetList(t *testing.T) {
 
 	if _, err := s.GetWorktreeByID(ctx, "missing"); !errors.Is(err, store.ErrWorktreeNotFound) {
 		t.Fatalf("expected ErrWorktreeNotFound, got %v", err)
-	}
-}
-
-func TestWorktrees_OwnerTransferAtomic(t *testing.T) {
-	t.Parallel()
-	s := mustOpen(t, tempDBPath(t))
-	ctx := context.Background()
-
-	if err := s.InsertWorktree(ctx, store.Worktree{
-		ID: "wt", UserID: "u", DisplayName: "r", OwnerKind: store.OwnerKindLocal, OwnerID: "dev-1",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	// Successful transfer: caller knows the current owner.
-	if err := s.UpdateWorktreeOwner(ctx, "wt", store.OwnerKindLocal, "dev-1", store.OwnerKindRemote, "sprite-X"); err != nil {
-		t.Fatalf("UpdateWorktreeOwner (happy): %v", err)
-	}
-	got, err := s.GetWorktreeByID(ctx, "wt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.OwnerKind != store.OwnerKindRemote || got.OwnerID != "sprite-X" {
-		t.Fatalf("post-transfer owner mismatch: %+v", got)
-	}
-
-	// Stale transfer: caller's expected owner is the old laptop ID.
-	// Should return ErrOwnerMismatch and leave the row unchanged.
-	err = s.UpdateWorktreeOwner(ctx, "wt", store.OwnerKindLocal, "dev-1", store.OwnerKindLocal, "dev-1")
-	if !errors.Is(err, store.ErrOwnerMismatch) {
-		t.Fatalf("expected ErrOwnerMismatch on stale transfer, got %v", err)
-	}
-	got, _ = s.GetWorktreeByID(ctx, "wt")
-	if got.OwnerKind != store.OwnerKindRemote || got.OwnerID != "sprite-X" {
-		t.Fatalf("row mutated by failed transfer: %+v", got)
-	}
-}
-
-// TestWorktrees_OwnerTransferRejectsKindMismatch pins the full-tuple
-// CAS: even when (id, owner_id) match, the wrong owner_kind must
-// still surface ErrOwnerMismatch.
-func TestWorktrees_OwnerTransferRejectsKindMismatch(t *testing.T) {
-	t.Parallel()
-	s := mustOpen(t, tempDBPath(t))
-	ctx := context.Background()
-
-	// Construct a row owned by remote/"shared-id".
-	if err := s.InsertWorktree(ctx, store.Worktree{
-		ID: "wt", UserID: "u", DisplayName: "r", OwnerKind: store.OwnerKindRemote, OwnerID: "shared-id",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	// Caller passes the right id and matching owner_id but the wrong
-	// kind. Without the kind in the CAS, this would have hijacked the
-	// row.
-	err := s.UpdateWorktreeOwner(ctx, "wt", store.OwnerKindLocal, "shared-id", store.OwnerKindLocal, "imposter")
-	if !errors.Is(err, store.ErrOwnerMismatch) {
-		t.Fatalf("expected ErrOwnerMismatch on kind mismatch, got %v", err)
-	}
-	got, _ := s.GetWorktreeByID(ctx, "wt")
-	if got.OwnerKind != store.OwnerKindRemote || got.OwnerID != "shared-id" {
-		t.Fatalf("row mutated by cross-kind transfer attempt: %+v", got)
 	}
 }
 

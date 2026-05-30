@@ -52,17 +52,6 @@ func (m *memSyncStore) ListWorktreesByUser(_ context.Context, userID string) ([]
 	}
 	return out, nil
 }
-func (m *memSyncStore) ListWorktreesByOwner(_ context.Context, kind clanksync.OwnerKind, ownerID string) ([]clanksync.Worktree, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var out []clanksync.Worktree
-	for _, w := range m.worktrees {
-		if w.OwnerKind == kind && w.OwnerID == ownerID {
-			out = append(out, w)
-		}
-	}
-	return out, nil
-}
 func (m *memSyncStore) InsertWorktree(_ context.Context, w clanksync.Worktree) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -77,22 +66,6 @@ func (m *memSyncStore) UpdateWorktreePointer(_ context.Context, id, checkpointID
 		return clanksync.ErrWorktreeNotFound
 	}
 	w.LatestSyncedCheckpoint = checkpointID
-	w.UpdatedAt = time.Now().UTC()
-	m.worktrees[id] = w
-	return nil
-}
-func (m *memSyncStore) UpdateWorktreeOwner(_ context.Context, id string, expectedKind clanksync.OwnerKind, expectedOwnerID string, newKind clanksync.OwnerKind, newOwnerID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	w, ok := m.worktrees[id]
-	if !ok {
-		return clanksync.ErrWorktreeNotFound
-	}
-	if w.OwnerKind != expectedKind || w.OwnerID != expectedOwnerID {
-		return clanksync.ErrOwnerMismatch
-	}
-	w.OwnerKind = newKind
-	w.OwnerID = newOwnerID
 	w.UpdatedAt = time.Now().UTC()
 	m.worktrees[id] = w
 	return nil
@@ -180,9 +153,6 @@ func TestCheckpointFlow_HappyPath(t *testing.T) {
 	worktreeID := wt["id"].(string)
 	if worktreeID == "" {
 		t.Fatalf("missing id in worktree response: %v", wt)
-	}
-	if wt["owner_kind"] != "local" {
-		t.Fatalf("owner_kind = %v, want laptop", wt["owner_kind"])
 	}
 
 	// 2. Create checkpoint.
@@ -339,9 +309,6 @@ func TestRegisterWorktree_SurvivesPostInsertGetFailure(t *testing.T) {
 	}
 	if wt["display_name"] != "myrepo" {
 		t.Fatalf("display_name = %v, want %q", wt["display_name"], "myrepo")
-	}
-	if wt["owner_kind"] != "local" {
-		t.Fatalf("owner_kind = %v, want %q", wt["owner_kind"], "local")
 	}
 
 	store.mu.Lock()

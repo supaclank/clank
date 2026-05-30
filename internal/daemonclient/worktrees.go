@@ -14,21 +14,19 @@ import (
 // WorktreeInfo mirrors the JSON shape of pkg/sync's worktreeResponse,
 // duplicated here so daemonclient stays decoupled from the gateway
 // types. Fields are a strict subset — daemonclient consumers (the TUI
-// sidebar today) only need identity + ownership.
+// sidebar today) only need identity + sync state.
 type WorktreeInfo struct {
 	ID                       string              `json:"id"`
 	UserID                   string              `json:"user_id"`
 	DisplayName              string              `json:"display_name"`
-	OwnerKind                string              `json:"owner_kind"`
-	OwnerID                  string              `json:"owner_id"`
 	LatestSyncedCheckpoint   string              `json:"latest_synced_checkpoint,omitempty"`
 	LatestCheckpointMetadata *CheckpointMetadata `json:"latest_checkpoint_metadata,omitempty"`
 }
 
 // CheckpointMetadata is the 4-SHA snapshot the laptop uses for cheap
 // divergence detection. Returned only on single-worktree responses
-// (GET /v1/worktrees/{id}, POST /v1/worktrees/{id}/owner); empty on
-// list endpoints to avoid a JOIN per row.
+// (GET /v1/worktrees/{id}); empty on list endpoints to avoid a JOIN
+// per row.
 type CheckpointMetadata struct {
 	CheckpointID      string `json:"checkpoint_id"`
 	HeadCommit        string `json:"head_commit"`

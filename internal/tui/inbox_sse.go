@@ -179,7 +179,6 @@ func (m *InboxModel) replaceCachedSession(info agent.SessionInfo) bool {
 // sidebar and inbox views without a daemon round-trip.
 func (m *InboxModel) refreshSidebarFromCache() {
 	m.sidebar.SetSessions(m.cachedSessions)
-	m.sidebar.UpdateWorktreeOwnersFromSessions(m.cachedSessions)
 	if m.searchQuery == "" {
 		m.buildGroups(m.filteredSessions())
 	}

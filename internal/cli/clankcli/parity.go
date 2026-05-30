@@ -15,7 +15,6 @@ import (
 // Filled by checkParity from a local Snapshot + the remote's
 // latest-checkpoint metadata.
 type parityResult struct {
-	OwnerKind      string // "local" | "remote"; "" if the remote has no row for this worktree
 	InSync         bool   // true when all 4 content SHAs match the remote's latest checkpoint
 	HasCheckpoint  bool   // false when the remote knows the worktree but no checkpoint has been pushed yet
 	RemoteHead     string // remote's head_commit (or "" when HasCheckpoint == false); for messaging
@@ -48,7 +47,6 @@ func checkParity(ctx context.Context, dc *daemonclient.Client, worktreeID string
 	}
 
 	res := parityResult{
-		OwnerKind: wt.OwnerKind,
 		LocalHead: snap.HeadCommit,
 	}
 	if wt.LatestCheckpointMetadata == nil {

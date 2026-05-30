@@ -208,29 +208,13 @@ func renderStatusReport(rep statusReport) string {
 
 	switch {
 	case rep.RemoteError != nil:
-		sb.WriteString("  Owner " + styleErr.Render("unknown") + " — " + styleRemoteOwner.Render(rep.ActiveRemote) + " remote unreachable: " + styleDim.Render(rep.RemoteError.Error()) + "\n")
-
-	case rep.WorktreeFromRemote.OwnerKind == "remote":
-		sb.WriteString("  Owned by " + styleRemoteOwner.Render(rep.ActiveRemote) + " remote " + styleDim.Render("("+rep.ActiveRemoteURL+")") + "\n")
-		switch {
-		case !rep.HasCheckpoint:
-			sb.WriteString("  " + styleDim.Render("No checkpoint pushed yet") + "\n")
-		case rep.InSync:
-			sb.WriteString("  " + styleDim.Render("Local matches the remote") + "\n")
-		default:
-			sb.WriteString("  " + styleWarn.Render("Remote has newer state") + " — run " + styleCmdHint.Render("`clank pull`") + "\n")
-		}
-
-	default: // local-owned, remote knows about it
-		sb.WriteString("  " + styleLocalOwner.Render("Owned by this laptop") + "\n")
-		switch {
-		case !rep.HasCheckpoint:
-			sb.WriteString("  " + styleDim.Render("Not yet pushed to "+rep.ActiveRemote+" remote") + "\n")
-		case rep.InSync:
-			sb.WriteString("  " + styleDim.Render("In sync with "+rep.ActiveRemote+" remote") + "\n")
-		default:
-			sb.WriteString("  " + styleWarn.Render("Local changes not synced") + " — run " + styleCmdHint.Render("`clank push`") + "\n")
-		}
+		sb.WriteString("  Sync state " + styleErr.Render("unknown") + " — " + styleRemoteOwner.Render(rep.ActiveRemote) + " remote unreachable: " + styleDim.Render(rep.RemoteError.Error()) + "\n")
+	case !rep.HasCheckpoint:
+		sb.WriteString("  " + styleDim.Render("Not yet pushed to "+rep.ActiveRemote+" remote") + "\n")
+	case rep.InSync:
+		sb.WriteString("  " + styleDim.Render("In sync with "+rep.ActiveRemote+" remote") + "\n")
+	default:
+		sb.WriteString("  " + styleWarn.Render("Out of sync with "+rep.ActiveRemote+" remote") + " — run " + styleCmdHint.Render("`clank push`") + " or " + styleCmdHint.Render("`clank pull`") + "\n")
 	}
 
 	return sb.String()

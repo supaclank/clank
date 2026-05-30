@@ -17,18 +17,11 @@ import (
 type (
 	Worktree   = clanksync.Worktree
 	Checkpoint = clanksync.Checkpoint
-	OwnerKind  = clanksync.OwnerKind
-)
-
-const (
-	OwnerKindLocal = clanksync.OwnerKindLocal
-	OwnerKindRemote = clanksync.OwnerKindRemote
 )
 
 var (
 	ErrWorktreeNotFound   = clanksync.ErrWorktreeNotFound
 	ErrCheckpointNotFound = clanksync.ErrCheckpointNotFound
-	ErrOwnerMismatch      = clanksync.ErrOwnerMismatch
 )
 
 // GetWorktreeByID returns the worktree row or ErrWorktreeNotFound.
@@ -57,27 +50,8 @@ func (s *Store) ListWorktreesByUser(ctx context.Context, userID string) ([]Workt
 	return out, nil
 }
 
-// ListWorktreesByOwner returns all worktrees currently owned by the
-// given (kind, ownerID). Used by the sprite at wake to discover what
-// to apply (post-MVP P3+).
-func (s *Store) ListWorktreesByOwner(ctx context.Context, kind OwnerKind, ownerID string) ([]Worktree, error) {
-	rows, err := s.q.ListWorktreesByOwner(ctx, sqlitedb.ListWorktreesByOwnerParams{
-		OwnerKind: string(kind),
-		OwnerID:   ownerID,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("list worktrees (owner=%s/%s): %w", kind, ownerID, err)
-	}
-	out := make([]Worktree, len(rows))
-	for i, r := range rows {
-		out[i] = worktreeFromRow(r)
-	}
-	return out, nil
-}
-
 // InsertWorktree creates a new worktree row. ID, UserID, and
-// DisplayName are required; CreatedAt / UpdatedAt default to now if
-// zero. OwnerKind defaults to laptop.
+// DisplayName are required; CreatedAt / UpdatedAt default to now if zero.
 func (s *Store) InsertWorktree(ctx context.Context, w Worktree) error {
 	if w.ID == "" || w.UserID == "" || w.DisplayName == "" {
 		return fmt.Errorf("insert worktree: id, user_id, display_name are required")
@@ -88,16 +62,11 @@ func (s *Store) InsertWorktree(ctx context.Context, w Worktree) error {
 	if w.CreatedAt.IsZero() {
 		w.CreatedAt = w.UpdatedAt
 	}
-	if w.OwnerKind == "" {
-		w.OwnerKind = OwnerKindLocal
-	}
 	return s.q.InsertWorktree(ctx, sqlitedb.InsertWorktreeParams{
 		ID:                     w.ID,
 		UserID:                 w.UserID,
 		DisplayName:            w.DisplayName,
 		OriginRepo:             w.OriginRepo,
-		OwnerKind:              string(w.OwnerKind),
-		OwnerID:                w.OwnerID,
 		LatestSyncedCheckpoint: w.LatestSyncedCheckpoint,
 		CreatedAt:              w.CreatedAt,
 		UpdatedAt:              w.UpdatedAt,
@@ -112,28 +81,6 @@ func (s *Store) UpdateWorktreePointer(ctx context.Context, id, checkpointID stri
 		UpdatedAt:              time.Now(),
 		ID:                     id,
 	})
-}
-
-// UpdateWorktreeOwner atomically transfers ownership iff the current
-// (owner_kind, owner_id) tuple matches expectedKind/expectedOwnerID.
-// Returns ErrOwnerMismatch on a failed guard (stale read or
-// concurrent migration).
-func (s *Store) UpdateWorktreeOwner(ctx context.Context, id string, expectedKind OwnerKind, expectedOwnerID string, newKind OwnerKind, newOwnerID string) error {
-	rows, err := s.q.UpdateWorktreeOwner(ctx, sqlitedb.UpdateWorktreeOwnerParams{
-		OwnerKind:   string(newKind),
-		OwnerID:     newOwnerID,
-		UpdatedAt:   time.Now(),
-		ID:          id,
-		OwnerKind_2: string(expectedKind),
-		OwnerID_2:   expectedOwnerID,
-	})
-	if err != nil {
-		return fmt.Errorf("update worktree owner (id=%s): %w", id, err)
-	}
-	if rows == 0 {
-		return ErrOwnerMismatch
-	}
-	return nil
 }
 
 // GetCheckpointByID returns a checkpoint row or ErrCheckpointNotFound.
@@ -206,8 +153,6 @@ func worktreeFromRow(r sqlitedb.Worktree) Worktree {
 		UserID:                 r.UserID,
 		DisplayName:            r.DisplayName,
 		OriginRepo:             r.OriginRepo,
-		OwnerKind:              OwnerKind(r.OwnerKind),
-		OwnerID:                r.OwnerID,
 		LatestSyncedCheckpoint: r.LatestSyncedCheckpoint,
 		CreatedAt:              r.CreatedAt,
 		UpdatedAt:              r.UpdatedAt,

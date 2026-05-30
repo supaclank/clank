@@ -31,7 +31,6 @@ func newSessionsTestServer(t *testing.T) (*clanksync.Server, *memSyncStore, *sto
 	now := time.Now().UTC()
 	if err := st.InsertWorktree(context.Background(), clanksync.Worktree{
 		ID: worktreeID, UserID: userID,
-		OwnerKind: clanksync.OwnerKindLocal, OwnerID: "",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
