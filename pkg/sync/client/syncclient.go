@@ -10,10 +10,11 @@ import (
 )
 
 // defaultResponseHeaderTimeout caps how long we'll wait for response
-// headers on presign / upload / download calls. Bundle bodies can
-// legitimately stream for much longer, so we don't cap Client.Timeout
-// (which would also kill the body). Callers thread a context.Context
-// for end-to-end deadlines.
+// headers on the small control-plane JSON calls (register / presign /
+// commit), so a stuck gateway doesn't hang the CLI/TUI. It must NOT be
+// applied to blob transfers: an S3 PUT only returns its response headers
+// after the whole body has been received, so this cap would bound total
+// upload time — see blobHTTPClient.
 const defaultResponseHeaderTimeout = 30 * time.Second
 
 // defaultHTTPClient builds an http.Client whose Transport is cloned
@@ -42,7 +43,12 @@ type Config struct {
 // Client uploads bundles to a clank-sync server.
 type Client struct {
 	cfg    Config
-	client *http.Client
+	client *http.Client // control-plane JSON calls (ResponseHeaderTimeout-capped)
+	// blobClient transfers checkpoint bundles + session blobs and wakes
+	// the sandbox for pulls. It drops ResponseHeaderTimeout (a PUT's
+	// headers arrive only after the full body is sent; a slow build holds
+	// headers for minutes) and relies on the caller's ctx for deadlines.
+	blobClient *http.Client
 }
 
 // New constructs a Client.
@@ -53,5 +59,22 @@ func New(cfg Config) (*Client, error) {
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = defaultHTTPClient()
 	}
-	return &Client{cfg: cfg, client: cfg.HTTPClient}, nil
+	return &Client{cfg: cfg, client: cfg.HTTPClient, blobClient: blobHTTPClient(cfg.HTTPClient)}, nil
+}
+
+// blobHTTPClient derives a client from base with ResponseHeaderTimeout
+// removed — for blob uploads/downloads and the slow pull materialize,
+// where time-to-first-response-byte is legitimately long and the ctx
+// carries the real deadline. A custom transport is honored (cloned) so
+// tests can inject one.
+func blobHTTPClient(base *http.Client) *http.Client {
+	if base != nil {
+		if t, ok := base.Transport.(*http.Transport); ok {
+			clone := t.Clone()
+			clone.ResponseHeaderTimeout = 0
+			return &http.Client{Transport: clone}
+		}
+		return &http.Client{Transport: base.Transport}
+	}
+	return &http.Client{}
 }

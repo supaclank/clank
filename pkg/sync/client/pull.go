@@ -46,7 +46,7 @@ func (c *Client) PullWorktree(ctx context.Context, worktreeID string) (*PullResu
 		req.Header.Set("Authorization", "Bearer "+c.cfg.AuthToken)
 	}
 
-	resp, err := c.pullHTTPClient().Do(req)
+	resp, err := c.blobClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("pull worktree: %w", err)
 	}
@@ -63,17 +63,4 @@ func (c *Client) PullWorktree(ctx context.Context, worktreeID string) (*PullResu
 		return nil, fmt.Errorf("pull worktree: incomplete response (missing bundle URLs)")
 	}
 	return &out, nil
-}
-
-// pullHTTPClient derives a client from the configured one with
-// ResponseHeaderTimeout removed — the materialize is slow before the
-// first byte, and ctx carries the real deadline. A custom transport is
-// honored (cloned) so tests can inject one.
-func (c *Client) pullHTTPClient() *http.Client {
-	if t, ok := c.client.Transport.(*http.Transport); ok {
-		clone := t.Clone()
-		clone.ResponseHeaderTimeout = 0
-		return &http.Client{Transport: clone}
-	}
-	return &http.Client{Transport: c.client.Transport}
 }

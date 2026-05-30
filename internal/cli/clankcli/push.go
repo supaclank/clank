@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -68,7 +69,13 @@ from ` + "`git worktree add`" + ` are tracked individually.`,
 				return fmt.Errorf("resolve repo path: %w", err)
 			}
 
-			ctx := context.Background()
+			// Bound the whole push. Blob uploads no longer carry a
+			// ResponseHeaderTimeout (an S3 PUT's headers arrive only after
+			// the body lands), so a truly-stuck transfer must be capped
+			// here rather than hanging forever. Generous enough for a large
+			// bundle over a slow link.
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
 
 			// Refresh BEFORE the first authenticated call so the sync
 			// client below sees a fresh bearer. Without this, expired

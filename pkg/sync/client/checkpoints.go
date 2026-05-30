@@ -92,17 +92,22 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath string
 
 	// TODO(coderabbit): clean up server-side rows on partial-upload failure (abort endpoint or reaper)
 	// https://github.com/Acksell/clank/pull/16
-	if err := uploadFile(ctx, c.client, createResp.HeadCommitPutURL, res.HeadCommitBundle); err != nil {
+	//
+	// Blob PUTs use blobClient (no ResponseHeaderTimeout): S3 returns the
+	// PUT response only after the full body lands, so the control-plane
+	// cap would abort any upload slower than 30s (e.g. a large bundle
+	// over a tunnel).
+	if err := uploadFile(ctx, c.blobClient, createResp.HeadCommitPutURL, res.HeadCommitBundle); err != nil {
 		return nil, fmt.Errorf("upload headCommit: %w", err)
 	}
-	if err := uploadFile(ctx, c.client, createResp.IncrementalURL, res.IncrementalBundle); err != nil {
+	if err := uploadFile(ctx, c.blobClient, createResp.IncrementalURL, res.IncrementalBundle); err != nil {
 		return nil, fmt.Errorf("upload incremental: %w", err)
 	}
 	manifestBytes, err := res.Manifest.Marshal()
 	if err != nil {
 		return nil, fmt.Errorf("marshal manifest: %w", err)
 	}
-	if err := uploadBytes(ctx, c.client, createResp.ManifestPutURL, manifestBytes, "application/json"); err != nil {
+	if err := uploadBytes(ctx, c.blobClient, createResp.ManifestPutURL, manifestBytes, "application/json"); err != nil {
 		return nil, fmt.Errorf("upload manifest: %w", err)
 	}
 
