@@ -206,9 +206,7 @@ func (g *Gateway) Handler() http.Handler {
 	mx := http.NewServeMux()
 	mx.HandleFunc("GET /ping", g.handlePing)
 	mx.HandleFunc("GET /gateway/health", g.handleGatewayHealth)
-	mx.HandleFunc("POST /v1/migrate/worktrees/{id}", g.handleMigrateWorktree)
 	mx.HandleFunc("POST /v1/migrate/worktrees/{id}/materialize", g.handleMigrateMaterialize)
-	mx.HandleFunc("POST /v1/migrate/worktrees/{id}/commit", g.handleMigrateCommit)
 	// /v1/worktrees/create and /v1/worktrees/list-branches must be
 	// mounted BEFORE the `/v1/` catch-all so they reach the host (via
 	// these gateway-orchestrated handlers) instead of the sync server.

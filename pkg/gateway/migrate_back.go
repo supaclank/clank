@@ -46,14 +46,6 @@ type materializeResponse struct {
 	MigrationExpiry      int64             `json:"migration_expiry"` // unix seconds
 }
 
-// commitRequest is the body for /commit. The migration token gates
-// this call: it proves the laptop just materialized the named
-// checkpoint and is calling commit on the same migration attempt.
-type commitRequest struct {
-	CheckpointID   string `json:"checkpoint_id"`
-	MigrationToken string `json:"migration_token"`
-}
-
 // handleMigrateMaterialize orchestrates a sprite-to-laptop checkpoint
 // pull. Sprite-as-pure-responder model: gateway tells the sprite to
 // build bundles, gateway mints presigned PUT URLs from its in-process
@@ -78,10 +70,6 @@ func (g *Gateway) handleMigrateMaterialize(w http.ResponseWriter, r *http.Reques
 	wt, err := g.cfg.Sync.GetWorktree(r.Context(), userID, worktreeID)
 	if err != nil {
 		syncErrToHTTP(w, "read worktree", err)
-		return
-	}
-	if wt.OwnerKind != clanksync.OwnerKindRemote {
-		http.Error(w, "worktree is not currently sprite-owned (nothing to materialize)", http.StatusConflict)
 		return
 	}
 
@@ -222,65 +210,6 @@ func (g *Gateway) handleMigrateMaterialize(w http.ResponseWriter, r *http.Reques
 		SessionBlobURLs:    sessionBlobGetURLs,
 		MigrationToken:     token,
 		MigrationExpiry:    expiry,
-	})
-}
-
-// handleMigrateCommit verifies the migration token, double-checks that
-// the sync server's latest_synced_checkpoint still points at the one
-// the laptop just applied, and atomically transfers ownership.
-func (g *Gateway) handleMigrateCommit(w http.ResponseWriter, r *http.Request) {
-	if g.cfg.Sync == nil {
-		http.Error(w, "migration not configured (Sync unset)", http.StatusServiceUnavailable)
-		return
-	}
-	userID := auth.MustPrincipal(r.Context()).UserID
-	worktreeID := r.PathValue("id")
-	if worktreeID == "" {
-		http.Error(w, "worktree id missing", http.StatusBadRequest)
-		return
-	}
-
-	var req commitRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if req.CheckpointID == "" || req.MigrationToken == "" {
-		http.Error(w, "checkpoint_id and migration_token are required", http.StatusBadRequest)
-		return
-	}
-	if !g.verifyMigrationToken(req.MigrationToken, worktreeID, req.CheckpointID, userID) {
-		http.Error(w, "invalid or expired migration_token", http.StatusForbidden)
-		return
-	}
-
-	wt, err := g.cfg.Sync.GetWorktree(r.Context(), userID, worktreeID)
-	if err != nil {
-		syncErrToHTTP(w, "read worktree", err)
-		return
-	}
-	if wt.LatestSyncedCheckpoint != req.CheckpointID {
-		http.Error(w, "newer checkpoint exists; re-run materialize", http.StatusConflict)
-		return
-	}
-	if wt.OwnerKind != clanksync.OwnerKindRemote {
-		http.Error(w, "worktree is no longer sprite-owned", http.StatusConflict)
-		return
-	}
-
-	// New local owner ID is empty — ownership is per-user, not
-	// per-device; OwnerID is only meaningful for remote (sprite) owners.
-	updated, err := g.cfg.Sync.TransferOwnership(r.Context(), userID, wt.ID, clanksync.OwnerKindLocal, "", wt.OwnerID)
-	if err != nil {
-		syncErrToHTTP(w, "transfer ownership", err)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, migrateResponse{
-		WorktreeID:   updated.ID,
-		NewOwnerKind: string(updated.OwnerKind),
-		NewOwnerID:   updated.OwnerID,
-		CheckpointID: req.CheckpointID,
 	})
 }
 
@@ -561,25 +490,4 @@ func (g *Gateway) signMigrationToken(worktreeID, checkpointID, userID string, ex
 	mac.Write([]byte(payload))
 	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	return strconv.FormatInt(expiry, 10) + "." + sig
-}
-
-// verifyMigrationToken returns true iff sig matches the recomputed HMAC
-// for the given fields and the embedded expiry is in the future.
-func (g *Gateway) verifyMigrationToken(token, worktreeID, checkpointID, userID string) bool {
-	parts := strings.SplitN(token, ".", 2)
-	if len(parts) != 2 {
-		return false
-	}
-	expiry, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil {
-		return false
-	}
-	if time.Now().Unix() > expiry {
-		return false
-	}
-	payload := fmt.Sprintf("%s:%s:%s:%d", worktreeID, checkpointID, userID, expiry)
-	mac := hmac.New(sha256.New, g.migrationKey)
-	mac.Write([]byte(payload))
-	want := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	return hmac.Equal([]byte(want), []byte(parts[1]))
 }
