@@ -235,16 +235,29 @@ func commits(n int) string {
 	return fmt.Sprintf("%d commits", n)
 }
 
-// syncCTA renders the bottom call-to-action line for an out-of-sync
-// worktree, naming the remote and the command(s) that reconcile it.
+// okLine / warnLine render a status bullet as a coloured glyph + neutral
+// text. Only the glyph carries colour (green ✓ / yellow •), so the block
+// reads calmly instead of as competing fully-coloured phrases.
+func okLine(text string) string {
+	return "  " + styleOK.Render("✓") + " " + text + "\n"
+}
+
+func warnLine(text string) string {
+	return "  " + styleWarn.Render("•") + " " + text + "\n"
+}
+
+// syncCTA renders the bottom call-to-action for an out-of-sync worktree.
+// The framing is dimmed so the command — the one neutral-bright token —
+// is what the eye lands on, without spending another accent colour.
 func syncCTA(remote string, push, pull bool) string {
+	dim := styleDim.Render
 	switch {
 	case push && pull:
-		return "Run " + styleCmdHint.Render("`clank push`") + " or " + styleCmdHint.Render("`clank pull`") + " to reconcile with " + remote + " remote."
+		return dim("Run ") + "`clank push`" + dim(" or ") + "`clank pull`" + dim(" to reconcile with "+remote+" remote.")
 	case pull:
-		return "Run " + styleCmdHint.Render("`clank pull`") + " to sync with " + remote + " remote."
+		return dim("Run ") + "`clank pull`" + dim(" to sync with "+remote+" remote.")
 	default:
-		return "Run " + styleCmdHint.Render("`clank push`") + " to sync with " + remote + " remote."
+		return dim("Run ") + "`clank push`" + dim(" to sync with "+remote+" remote.")
 	}
 }
 
@@ -294,6 +307,12 @@ func renderStatusReport(rep statusReport) string {
 	sb.WriteString(styleWorktree.Render(rep.WorktreeDir))
 	sb.WriteString("\n")
 
+	// ctaBlock prints a blank separator line then the action, so the state
+	// bullets and the "what to run" guidance don't read as one dense block.
+	ctaBlock := func(push, pull bool) {
+		sb.WriteString("\n  " + syncCTA(rep.ActiveRemote, push, pull) + "\n")
+	}
+
 	switch {
 	case rep.RemoteError != nil:
 		sb.WriteString("  Sync state " + styleErr.Render("unknown") + " — " + styleRemoteOwner.Render(rep.ActiveRemote) + " remote unreachable: " + styleDim.Render(rep.RemoteError.Error()) + "\n")
@@ -302,26 +321,26 @@ func renderStatusReport(rep statusReport) string {
 	case rep.InSync && rep.WorkingTreeDirty:
 		// Committed history AND the uncommitted (dirty) state both match the
 		// remote's last checkpoint — surface that the dirty state is synced.
-		sb.WriteString("  " + styleOK.Render("✓ Commits in sync") + "\n")
-		sb.WriteString("  " + styleOK.Render("✓ Dirty state in sync") + "\n")
+		sb.WriteString(okLine("Commits in sync"))
+		sb.WriteString(okLine("Dirty state in sync"))
 	case rep.InSync:
-		sb.WriteString("  " + styleOK.Render("✓ In sync with "+rep.ActiveRemote+" remote") + "\n")
+		sb.WriteString(okLine("In sync with " + rep.ActiveRemote + " remote"))
 	case rep.Drift == driftUncommitted:
-		sb.WriteString("  " + styleOK.Render("✓ Commits in sync") + "\n")
-		sb.WriteString("  " + styleWarn.Render("• Dirty state not synced") + "\n")
-		sb.WriteString("  " + syncCTA(rep.ActiveRemote, true, false) + "\n")
+		sb.WriteString(okLine("Commits in sync"))
+		sb.WriteString(warnLine("Dirty state not synced"))
+		ctaBlock(true, false)
 	case rep.Drift == driftAhead:
-		sb.WriteString("  " + styleWarn.Render("• Ahead by "+commits(rep.DriftAhead)) + "\n")
-		sb.WriteString("  " + syncCTA(rep.ActiveRemote, true, false) + "\n")
+		sb.WriteString(warnLine("Ahead by " + commits(rep.DriftAhead)))
+		ctaBlock(true, false)
 	case rep.Drift == driftBehind:
-		sb.WriteString("  " + styleWarn.Render("• Behind by "+commits(rep.DriftBehind)) + "\n")
-		sb.WriteString("  " + syncCTA(rep.ActiveRemote, false, true) + "\n")
+		sb.WriteString(warnLine("Behind by " + commits(rep.DriftBehind)))
+		ctaBlock(false, true)
 	case rep.Drift == driftDiverged:
-		sb.WriteString("  " + styleWarn.Render(fmt.Sprintf("• Diverged — %d ahead, %d behind", rep.DriftAhead, rep.DriftBehind)) + "\n")
-		sb.WriteString("  " + syncCTA(rep.ActiveRemote, true, true) + "\n")
+		sb.WriteString(warnLine(fmt.Sprintf("Diverged — %d ahead, %d behind", rep.DriftAhead, rep.DriftBehind)))
+		ctaBlock(true, true)
 	default:
-		sb.WriteString("  " + styleWarn.Render("• Out of sync") + "\n")
-		sb.WriteString("  " + syncCTA(rep.ActiveRemote, true, true) + "\n")
+		sb.WriteString(warnLine("Out of sync"))
+		ctaBlock(true, true)
 	}
 
 	return sb.String()
