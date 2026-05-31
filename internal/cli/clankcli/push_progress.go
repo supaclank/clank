@@ -50,9 +50,16 @@ type pushProgressModel struct {
 func newPushProgressModel(remote string) pushProgressModel {
 	return pushProgressModel{
 		spinner: spinner.New(spinner.WithSpinner(spinner.MiniDot)),
-		bar:     progress.New(progress.WithWidth(30), progress.WithoutPercentage()),
-		remote:  remote,
-		phase:   "Preparing",
+		// Full block instead of the default half-block (▌): the half-block
+		// mode relies on per-cell color blending to look contiguous, which
+		// renders as separated bars on terminals that don't blend it.
+		bar: progress.New(
+			progress.WithWidth(30),
+			progress.WithoutPercentage(),
+			progress.WithFillCharacters(progress.DefaultFullCharFullBlock, progress.DefaultEmptyCharBlock),
+		),
+		remote: remote,
+		phase:  "Preparing",
 	}
 }
 
