@@ -14,21 +14,21 @@ import (
 // compile-time check: pushUI satisfies the progress observer contract.
 var _ syncclient.PushObserver = (*pushUI)(nil)
 
-// pushUI renders a single rewriting status line on a TTY — a spinner + the
-// current phase + remote, plus a shaded byte bar while uploading. A steady
-// ticker drives the redraw, so the line keeps animating even when no
-// progress event has arrived for a while (e.g. while the server commits or
-// sessions export) — that's what was missing before.
+// pushUI renders push progress as a growing log: each phase shows a live
+// spinner line while active, and is "committed" to a persistent "✓ …" line
+// when the next phase starts — so completed steps stay on screen instead of
+// being overwritten. A steady ticker animates the active line, so it never
+// looks frozen even while the server commits or sessions export.
 //
-// It implements syncclient.PushObserver so PushCheckpoint feeds it
-// directly, and Phase lets later legs (session sync) drive it too. A nil
-// *pushUI is a safe no-op on every method, so non-interactive callers
-// (autopush hooks) can pass it around without branching.
+// It implements syncclient.PushObserver (Phase/UploadSized/UploadProgress)
+// so PushCheckpoint drives it directly. A nil *pushUI is a safe no-op on
+// every method, so non-interactive callers (autopush hooks) pass nil and
+// nothing is drawn.
 type pushUI struct {
 	out    io.Writer
 	remote string
 
-	mu       sync.Mutex
+	mu       sync.Mutex // guards the fields below AND serializes writes to out
 	phase    string
 	uploaded int64
 	total    int64
@@ -41,14 +41,20 @@ func newPushUI(out io.Writer, remote string) *pushUI {
 	return &pushUI{out: out, remote: remote, phase: "Preparing"}
 }
 
-// Phase / UploadSized / UploadProgress implement syncclient.PushObserver;
-// all are nil-safe and safe for concurrent use with the render loop.
+// Phase commits the line for the phase that just finished (persisting it as
+// "✓ …") and starts the next. Synchronous, so even an instant phase (e.g. a
+// fast server commit) still leaves its completed line on screen.
 func (u *pushUI) Phase(name string) {
 	if u == nil {
 		return
 	}
 	u.mu.Lock()
+	u.commitLocked()
 	u.phase = name
+	u.total, u.uploaded = 0, 0
+	// Draw the new phase's line right away so there's no blank gap until the
+	// next tick.
+	fmt.Fprint(u.out, "\r\x1b[K"+liveLine(spinFrames[0], u.phase, u.remote, u.uploaded, u.total))
 	u.mu.Unlock()
 }
 
@@ -70,22 +76,12 @@ func (u *pushUI) UploadProgress(uploaded int64) {
 	u.mu.Unlock()
 }
 
-// clearBar drops the byte bar, for phases that aren't byte-tracked (e.g.
-// session sync) so a stale checkpoint bar doesn't linger under them.
-func (u *pushUI) clearBar() {
-	if u == nil {
-		return
-	}
-	u.mu.Lock()
-	u.total, u.uploaded = 0, 0
-	u.mu.Unlock()
-}
-
 // spinFrames is a braille dot-cycle — a calm "series of dots" that clearly
 // rotates (unlike a single static glyph).
 var spinFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// start launches the render loop. Pairs 1:1 with finish.
+// start launches the render loop that animates the active line. Pairs 1:1
+// with finish.
 func (u *pushUI) start() {
 	if u == nil {
 		return
@@ -99,40 +95,62 @@ func (u *pushUI) start() {
 		for i := 0; ; i++ {
 			select {
 			case <-u.stop:
-				fmt.Fprint(u.out, "\r\x1b[K") // clear the line for the caller's summary
 				return
 			case <-ticker.C:
-				u.draw(spinFrames[i%len(spinFrames)])
+				u.mu.Lock()
+				fmt.Fprint(u.out, "\r\x1b[K"+liveLine(spinFrames[i%len(spinFrames)], u.phase, u.remote, u.uploaded, u.total))
+				u.mu.Unlock()
 			}
 		}
 	}()
 }
 
-// finish stops the render loop and clears the line, blocking until the
-// loop has cleared so the caller's next print starts on a clean line.
+// finish stops the ticker and clears the active (uncommitted) line — its
+// result is printed by the caller. Earlier phases were committed on their
+// transitions, so they remain on screen.
 func (u *pushUI) finish() {
 	if u == nil || u.stop == nil {
 		return
 	}
 	close(u.stop)
 	<-u.done
+	u.mu.Lock()
+	fmt.Fprint(u.out, "\r\x1b[K")
+	u.mu.Unlock()
 	u.stop = nil
 }
 
-func (u *pushUI) draw(frame string) {
-	u.mu.Lock()
-	phase, up, total := u.phase, u.uploaded, u.total
-	u.mu.Unlock()
-	fmt.Fprint(u.out, "\r\x1b[K"+pushLine(frame, phase, u.remote, up, total))
+// commitLocked persists the current phase as a "✓ …" line (with a trailing
+// newline) when it has a committed form; phases without one (Preparing,
+// the trailing session phase) are simply cleared/replaced. Caller holds mu.
+func (u *pushUI) commitLocked() {
+	if done := committedForm(u.phase, u.total); done != "" {
+		fmt.Fprint(u.out, "\r\x1b[K"+done+"\n")
+	}
 }
 
-// pushLine builds the status line (pure, for tests): "<spinner> <phase> →
+// committedForm maps an in-progress phase to its persistent done line, or
+// "" for phases the UI doesn't persist itself (the caller prints those).
+func committedForm(phase string, total int64) string {
+	check := styleOK.Render("✓") + " "
+	switch phase {
+	case syncclient.PhaseBuilding:
+		return check + "Built bundle"
+	case syncclient.PhaseUploading:
+		return check + "Uploaded " + humanBytes(total)
+	case syncclient.PhaseFinalizing:
+		return check + "Saved checkpoint"
+	default:
+		return ""
+	}
+}
+
+// liveLine renders the in-progress line for a phase: "<spinner> <phase> →
 // <remote>  [bar]  up / total". The bar appears only once a size is known.
-func pushLine(frame, phase, remote string, uploaded, total int64) string {
+func liveLine(frame, phase, remote string, uploaded, total int64) string {
 	line := styleOK.Render(frame) + " " + phase + styleDim.Render(" → "+remote)
 	if total > 0 {
-		pct := float64(uploaded) / float64(total)
-		line += "  " + renderBar(pct, 24) + "  " + styleDim.Render(humanBytes(uploaded)+" / "+humanBytes(total))
+		line += "  " + renderBar(float64(uploaded)/float64(total), 24) + "  " + styleDim.Render(humanBytes(uploaded)+" / "+humanBytes(total))
 	}
 	return line
 }

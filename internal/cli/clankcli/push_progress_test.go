@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
 
 func TestHumanBytes(t *testing.T) {
@@ -56,12 +58,12 @@ func TestRenderBar(t *testing.T) {
 	}
 }
 
-// TestPushLine pins the status-line content: spinner + phase + remote
+// TestLiveLine pins the in-progress line content: spinner + phase + remote
 // always present; the bar + bytes appear only once a size is known.
-func TestPushLine(t *testing.T) {
+func TestLiveLine(t *testing.T) {
 	t.Parallel()
 
-	noSize := stripANSI(pushLine("⠋", "Saving checkpoint", "localhost:7878", 0, 0))
+	noSize := stripANSI(liveLine("⠋", "Saving checkpoint", "localhost:7878", 0, 0))
 	for _, want := range []string{"⠋", "Saving checkpoint", "localhost:7878"} {
 		if !strings.Contains(noSize, want) {
 			t.Errorf("size-unknown line %q missing %q", noSize, want)
@@ -71,10 +73,33 @@ func TestPushLine(t *testing.T) {
 		t.Errorf("size-unknown line should have no bar: %q", noSize)
 	}
 
-	withSize := stripANSI(pushLine("⠋", "Uploading", "localhost:7878", 50, 100))
+	withSize := stripANSI(liveLine("⠋", "Uploading", "localhost:7878", 50, 100))
 	for _, want := range []string{"Uploading", "█", "░", "50 B / 100 B"} {
 		if !strings.Contains(withSize, want) {
 			t.Errorf("uploading line %q missing %q", withSize, want)
+		}
+	}
+}
+
+// TestCommittedForm pins the persistent "✓ …" line each phase leaves
+// behind — the build/upload/save steps are committed; others aren't.
+func TestCommittedForm(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		syncclient.PhaseBuilding:   "Built bundle",
+		syncclient.PhaseUploading:  "Uploaded 100 B",
+		syncclient.PhaseFinalizing: "Saved checkpoint",
+	}
+	for phase, want := range cases {
+		got := stripANSI(committedForm(phase, 100))
+		if !strings.Contains(got, want) || !strings.Contains(got, "✓") {
+			t.Errorf("committedForm(%q) = %q, want ✓ + %q", phase, got, want)
+		}
+	}
+	// Phases the UI doesn't persist itself.
+	for _, phase := range []string{"Preparing", phaseSyncingSessions} {
+		if got := committedForm(phase, 0); got != "" {
+			t.Errorf("committedForm(%q) should be empty, got %q", phase, got)
 		}
 	}
 }

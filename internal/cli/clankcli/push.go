@@ -194,25 +194,23 @@ func runPush(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *sy
 		return fmt.Errorf("push checkpoint: %w", err)
 	}
 
-	// Session leg shares the same status line (no byte bar — drop the
-	// checkpoint's).
-	ui.clearBar()
+	// Session leg shares the same status line (Phase resets the byte bar).
 	ui.Phase(phaseSyncingSessions)
 	exported, skipped, serr := pushSessions(ctx, timer, absRepo, res.CheckpointID, cli)
 
-	ui.finish() // tear the status line down before printing the summary
+	ui.finish() // tear the active line down; committed steps stay on screen
 	if serr != nil {
 		return fmt.Errorf("push session leg: %w", serr)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "%s pushed checkpoint %s (HEAD %s) to %s\n",
-		styleOK.Render("✓"), res.CheckpointID, shortSHA(res.Manifest.HeadCommit), remoteLabel(cli.BaseURL()))
 	for _, sk := range skipped {
 		fmt.Fprintf(cmd.OutOrStdout(), "  %s skipped session %s: %s\n", styleDim.Render("•"), sk.ExternalID, sk.Reason)
 	}
 	if exported > 0 {
-		fmt.Fprintf(cmd.OutOrStdout(), "%s synced %d session(s)\n", styleOK.Render("✓"), exported)
+		fmt.Fprintf(cmd.OutOrStdout(), "%s Synced %d session(s)\n", styleOK.Render("✓"), exported)
 	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s Pushed checkpoint %s (HEAD %s) to %s\n",
+		styleOK.Render("✓"), res.CheckpointID, shortSHA(res.Manifest.HeadCommit), remoteLabel(cli.BaseURL()))
 	return nil
 }
 
