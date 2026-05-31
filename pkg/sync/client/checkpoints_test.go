@@ -89,15 +89,21 @@ func TestCheckpointFlow_EndToEnd(t *testing.T) {
 		t.Fatalf("bad push result: %+v", pushRes)
 	}
 
-	// Verify storage layout: 3 blobs under the right key.
+	// Verify storage layout: 3 blobs — the head bundle is content-
+	// addressed under <user>/heads/, the uncommitted bundle + manifest
+	// live under the per-checkpoint prefix.
 	keys := mem.Keys()
 	if len(keys) != 3 {
 		t.Fatalf("want 3 storage objects, got %d: %v", len(keys), keys)
 	}
+	headKey, err := storage.KeyForHead("user-A", pushRes.Manifest.HeadCommit)
+	if err != nil {
+		t.Fatal(err)
+	}
 	prefix := "user-A/checkpoints/" + wtID + "/" + pushRes.CheckpointID + "/"
 	for _, k := range keys {
-		if !strings.HasPrefix(k, prefix) {
-			t.Fatalf("key %q missing prefix %q", k, prefix)
+		if k != headKey && !strings.HasPrefix(k, prefix) {
+			t.Fatalf("key %q is neither the head bundle %q nor under %q", k, headKey, prefix)
 		}
 	}
 
@@ -119,7 +125,7 @@ func TestCheckpointFlow_EndToEnd(t *testing.T) {
 
 	// Pull the bundles back from storage and apply to a fresh repo.
 	dest := t.TempDir()
-	headBundle, _ := mem.Get(prefix + "headCommit.bundle")
+	headBundle, _ := mem.Get(headKey)
 	incrBundle, _ := mem.Get(prefix + "uncommitted.bundle")
 	if len(headBundle) == 0 || len(incrBundle) == 0 {
 		t.Fatalf("missing bundles in storage; keys: %v", keys)
@@ -191,4 +197,69 @@ func gitMustOutput(t *testing.T, ctx context.Context, dir string, args ...string
 		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
 	}
 	return string(out)
+}
+
+// TestPushCheckpoint_SecondPushSameHEADReusesHeadBundle pins the laptop
+// side of L1: a second push after an UNCOMMITTED-only change (HEAD
+// unchanged) reuses the stored head bundle — the laptop uploads only the
+// new uncommitted + manifest, never re-sending history. This is the
+// idle-autopush latency win.
+func TestPushCheckpoint_SecondPushSameHEADReusesHeadBundle(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	mem := storage.NewMemory()
+	defer mem.Close()
+	srv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpSrv := httptest.NewServer(fixedPrincipalMiddleware("user-A", srv.Handler()))
+	defer httpSrv.Close()
+	cli, err := syncclient.New(syncclient.Config{BaseURL: httpSrv.URL, AuthToken: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repo := setupRepo(t, ctx)
+	writeFile(t, repo, "main.go", "package main\n")
+	gitMustRun(t, ctx, repo, "add", ".")
+	gitMustRun(t, ctx, repo, "commit", "-m", "initial")
+
+	wtID, err := cli.RegisterWorktree(ctx, "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r1, err := cli.PushCheckpoint(ctx, wtID, repo)
+	if err != nil {
+		t.Fatalf("first push: %v", err)
+	}
+	headKey, _ := storage.KeyForHead("user-A", r1.Manifest.HeadCommit)
+	if b, ok := mem.Get(headKey); !ok || len(b) == 0 {
+		t.Fatalf("head bundle missing after first push; keys: %v", mem.Keys())
+	}
+	afterFirst := len(mem.Keys())
+
+	// Uncommitted change only — HEAD does not move.
+	writeFile(t, repo, "scratch.txt", "wip\n")
+
+	r2, err := cli.PushCheckpoint(ctx, wtID, repo)
+	if err != nil {
+		t.Fatalf("second push: %v", err)
+	}
+	if r2.Manifest.HeadCommit != r1.Manifest.HeadCommit {
+		t.Fatalf("HEAD moved unexpectedly: %s vs %s", r2.Manifest.HeadCommit, r1.Manifest.HeadCommit)
+	}
+	// Exactly 2 new objects (the second checkpoint's uncommitted +
+	// manifest) — the head bundle was reused, not re-uploaded.
+	if added := len(mem.Keys()) - afterFirst; added != 2 {
+		t.Fatalf("second push added %d objects, want 2 (no head re-upload); keys: %v", added, mem.Keys())
+	}
 }

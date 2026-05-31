@@ -33,15 +33,15 @@ import (
 type Blob string
 
 const (
-	BlobHeadCommit  Blob = "headCommit.bundle"
 	BlobUncommitted Blob = "uncommitted.bundle"
 	BlobManifest    Blob = "manifest.json"
 )
 
-// validBlobs is the closed set of acceptable blob names. Any value
-// outside this set returns ErrInvalidPathComponent from KeyFor.
+// validBlobs is the closed set of acceptable per-checkpoint blob names.
+// The head bundle is NOT here — it's content-addressed via KeyForHead,
+// shared across checkpoints. Any value outside this set returns
+// ErrInvalidPathComponent from KeyFor.
 var validBlobs = map[Blob]bool{
-	BlobHeadCommit:      true,
 	BlobUncommitted:     true,
 	BlobManifest:        true,
 	BlobSessionManifest: true,
@@ -101,6 +101,27 @@ func KeyFor(userID, worktreeID, checkpointID string, blob Blob) (string, error) 
 		}
 	}
 	return path.Join(userID, "checkpoints", worktreeID, checkpointID, string(blob)), nil
+}
+
+// KeyForHead builds the storage key for a head bundle, content-addressed
+// by the HEAD commit SHA and shared across a user's checkpoints/worktrees
+// (a commit is a commit — the same SHA reaches the same objects). Lives
+// under the same per-tenant prefix as KeyFor. userID MUST come from
+// authenticated token claims.
+//
+//	<userID>/heads/<headSHA>.bundle
+func KeyForHead(userID, headSHA string) (string, error) {
+	for _, c := range []struct {
+		name, value string
+	}{
+		{"userID", userID},
+		{"headSHA", headSHA},
+	} {
+		if err := validateComponent(c.name, c.value); err != nil {
+			return "", err
+		}
+	}
+	return path.Join(userID, "heads", headSHA+".bundle"), nil
 }
 
 // validateComponent rejects empty strings, anything containing path

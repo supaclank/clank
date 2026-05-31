@@ -163,10 +163,10 @@ func TestCheckpointFlow_HappyPath(t *testing.T) {
 		"index_tree":         "1111",
 		"worktree_tree":      "2222",
 		"uncommitted_commit": "3333",
-			}
+	}
 	create := postJSON[map[string]any](t, httpSrv.URL+"/v1/checkpoints", createReq)
 	checkpointID := create["checkpoint_id"].(string)
-	headPutURL := create["head_commit_put_url"].(string)
+	headPutURL := create["head_bundle_put_url"].(string)
 	incrPutURL := create["uncommitted_put_url"].(string)
 	manifestPutURL := create["manifest_put_url"].(string)
 	if checkpointID == "" || headPutURL == "" || incrPutURL == "" || manifestPutURL == "" {
@@ -201,6 +201,68 @@ func TestCheckpointFlow_HappyPath(t *testing.T) {
 	}
 }
 
+// TestCreateCheckpoint_DedupsHeadBundle pins the L1 win: a second
+// checkpoint at the SAME HEAD (only uncommitted state changed — the
+// dominant idle-autopush case) is told the head bundle is already_stored,
+// so the laptop uploads nothing for it. The 58 MB history is sent once.
+func TestCreateCheckpoint_DedupsHeadBundle(t *testing.T) {
+	t.Parallel()
+	httpSrv, _, mem := newTestServer(t)
+
+	wt := postJSON[map[string]any](t, httpSrv.URL+"/v1/worktrees", map[string]string{"display_name": "r"})
+	worktreeID := wt["id"].(string)
+
+	// Both checkpoints share head_commit "deadbeef"; only the worktree/
+	// uncommitted state differs (as when you edit without committing).
+	mkReq := func(worktreeTree string) map[string]string {
+		return map[string]string{
+			"worktree_id":        worktreeID,
+			"head_commit":        "deadbeef",
+			"head_ref":           "main",
+			"index_tree":         "1111",
+			"worktree_tree":      worktreeTree,
+			"uncommitted_commit": worktreeTree,
+		}
+	}
+
+	// First push: server has no head bundle → upload_full + a PUT URL.
+	c1 := postJSON[map[string]any](t, httpSrv.URL+"/v1/checkpoints", mkReq("2222"))
+	if c1["head_bundle_action"] != "upload_full" {
+		t.Fatalf("first push action = %v, want upload_full", c1["head_bundle_action"])
+	}
+	headURL, _ := c1["head_bundle_put_url"].(string)
+	if headURL == "" {
+		t.Fatal("first push must provide a head PUT URL")
+	}
+	uploadTo(t, headURL, []byte("HEAD-bundle"))
+	uploadTo(t, c1["uncommitted_put_url"].(string), []byte("incr1"))
+	uploadTo(t, c1["manifest_put_url"].(string), []byte(`{"version":1}`))
+	postJSON[map[string]any](t, httpSrv.URL+"/v1/checkpoints/"+c1["checkpoint_id"].(string)+"/commit", map[string]string{})
+
+	// Second push at the SAME HEAD → already_stored, no head PUT URL.
+	c2 := postJSON[map[string]any](t, httpSrv.URL+"/v1/checkpoints", mkReq("3333"))
+	if c2["head_bundle_action"] != "already_stored" {
+		t.Fatalf("second push action = %v, want already_stored", c2["head_bundle_action"])
+	}
+	if u, _ := c2["head_bundle_put_url"].(string); u != "" {
+		t.Fatalf("second push must NOT provide a head PUT URL, got %q", u)
+	}
+
+	// Commit still succeeds reusing the shared head bundle; the laptop
+	// only uploaded the second checkpoint's uncommitted + manifest.
+	uploadTo(t, c2["uncommitted_put_url"].(string), []byte("incr2"))
+	uploadTo(t, c2["manifest_put_url"].(string), []byte(`{"version":1}`))
+	commit := postJSON[map[string]any](t, httpSrv.URL+"/v1/checkpoints/"+c2["checkpoint_id"].(string)+"/commit", map[string]string{})
+	if commit["checkpoint_id"] != c2["checkpoint_id"] {
+		t.Fatalf("second commit failed: %v", commit)
+	}
+
+	// One shared head bundle + 2×{uncommitted, manifest} = 5 objects.
+	if n := len(mem.Keys()); n != 5 {
+		t.Fatalf("want 5 storage objects (1 shared head + 2 checkpoints), got %d: %v", n, mem.Keys())
+	}
+}
+
 // TestCommitCheckpoint_RejectsIfBlobMissing guards against premature
 // commit calls where the laptop forgot to upload one or more blobs.
 func TestCommitCheckpoint_RejectsIfBlobMissing(t *testing.T) {
@@ -218,15 +280,15 @@ func TestCommitCheckpoint_RejectsIfBlobMissing(t *testing.T) {
 		"index_tree":         "x",
 		"worktree_tree":      "x",
 		"uncommitted_commit": "x",
-			})
+	})
 	checkpointID := create["checkpoint_id"].(string)
 
 	// Upload only the manifest, omit the two bundles.
 	uploadTo(t, create["manifest_put_url"].(string), []byte("{}"))
 
 	resp := mustPostExpectStatus(t, httpSrv.URL+"/v1/checkpoints/"+checkpointID+"/commit", nil, http.StatusConflict)
-	if !strings.Contains(string(resp), "headCommit.bundle") {
-		t.Fatalf("expected error mentioning headCommit, got %q", resp)
+	if !strings.Contains(string(resp), "head bundle") {
+		t.Fatalf("expected error mentioning the head bundle, got %q", resp)
 	}
 }
 

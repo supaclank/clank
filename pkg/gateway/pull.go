@@ -102,9 +102,11 @@ func (g *Gateway) handlePullWorktree(w http.ResponseWriter, r *http.Request) {
 
 	// Step 3: sprite PUTs the bundles to S3 via the presigned URLs.
 	if err := triggerSpriteUpload(r.Context(), cli, hostRef, build.BuildID, spriteUploadParams{
-		CheckpointID:      ck.CheckpointID,
-		ManifestPutURL:    ck.ManifestPutURL,
-		HeadCommitPutURL:  ck.HeadCommitPutURL,
+		CheckpointID:   ck.CheckpointID,
+		ManifestPutURL: ck.ManifestPutURL,
+		// Empty when the server already has this HEAD bundle (dedup) —
+		// the sprite skips the head upload in that case.
+		HeadCommitPutURL:  ck.HeadBundlePutURL,
 		UncommittedPutURL: ck.UncommittedURL,
 	}); err != nil {
 		g.log.Printf("gateway materialize: sprite upload: %v", err)

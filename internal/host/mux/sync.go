@@ -245,9 +245,9 @@ func (m *Mux) handleSyncBuild(w http.ResponseWriter, r *http.Request) {
 // The gateway has minted these URLs after calling sync.CreateCheckpoint
 // with the metadata returned by /sync/build.
 type uploadBuildRequest struct {
-	CheckpointID     string `json:"checkpoint_id"`
-	ManifestPutURL   string `json:"manifest_put_url"`
-	HeadCommitPutURL string `json:"head_commit_put_url"`
+	CheckpointID      string `json:"checkpoint_id"`
+	ManifestPutURL    string `json:"manifest_put_url"`
+	HeadCommitPutURL  string `json:"head_commit_put_url"`
 	UncommittedPutURL string `json:"uncommitted_put_url"`
 }
 
@@ -266,8 +266,11 @@ func (m *Mux) handleSyncBuildsUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: syncErrBadRequest, Error: "decode body: " + err.Error()})
 		return
 	}
-	if req.CheckpointID == "" || req.ManifestPutURL == "" || req.HeadCommitPutURL == "" || req.UncommittedPutURL == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Code: syncErrBadRequest, Error: "checkpoint_id, manifest_put_url, head_commit_put_url, uncommitted_put_url are all required"})
+	// HeadCommitPutURL may be empty: the gateway omits it when the sync
+	// server already holds this HEAD's bundle (content-addressed dedup),
+	// in which case we skip the head upload below.
+	if req.CheckpointID == "" || req.ManifestPutURL == "" || req.UncommittedPutURL == "" {
+		writeJSON(w, http.StatusBadRequest, errResp{Code: syncErrBadRequest, Error: "checkpoint_id, manifest_put_url, uncommitted_put_url are all required"})
 		return
 	}
 
@@ -289,9 +292,13 @@ func (m *Mux) handleSyncBuildsUpload(w http.ResponseWriter, r *http.Request) {
 
 	cli := &http.Client{Timeout: syncURLBundleFetchTimeout}
 
-	if status, code, err := uploadFile(r.Context(), cli, req.HeadCommitPutURL, b.headCommitBundle); err != nil {
-		writeJSON(w, status, errResp{Code: code, Error: "upload head bundle: " + err.Error()})
-		return
+	// Skip the head upload when the server already has this HEAD bundle
+	// (dedup) — signalled by an empty HeadCommitPutURL.
+	if req.HeadCommitPutURL != "" {
+		if status, code, err := uploadFile(r.Context(), cli, req.HeadCommitPutURL, b.headCommitBundle); err != nil {
+			writeJSON(w, status, errResp{Code: code, Error: "upload head bundle: " + err.Error()})
+			return
+		}
 	}
 	if status, code, err := uploadFile(r.Context(), cli, req.UncommittedPutURL, b.uncommittedBundle); err != nil {
 		writeJSON(w, status, errResp{Code: code, Error: "upload uncommitted bundle: " + err.Error()})

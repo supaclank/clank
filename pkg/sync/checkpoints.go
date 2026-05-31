@@ -23,10 +23,32 @@ type CreateCheckpointRequest struct {
 	CreatedBy         string
 }
 
+// HeadBundleAction tells the client how to handle the head bundle for a
+// checkpoint. The head bundle is content-addressed by HEAD SHA and shared
+// across checkpoints, so the server can skip it entirely when it already
+// holds that HEAD.
+type HeadBundleAction string
+
+const (
+	// HeadBundleAlreadyStored: the server already has <user>/heads/<HEAD>.bundle.
+	// The client uploads nothing for the head bundle.
+	HeadBundleAlreadyStored HeadBundleAction = "already_stored"
+	// HeadBundleUploadFull: upload a full head bundle (git bundle create f HEAD).
+	HeadBundleUploadFull HeadBundleAction = "upload_full"
+	// HeadBundleUploadIncremental: upload an incremental head bundle built
+	// from HeadBundleBase (git bundle create f HEAD ^base). (Slice 2.)
+	HeadBundleUploadIncremental HeadBundleAction = "upload_incremental"
+)
+
 // CreateCheckpointResult is the typed output of Server.CreateCheckpoint.
 type CreateCheckpointResult struct {
-	CheckpointID     string
-	HeadCommitPutURL string
+	CheckpointID string
+	// HeadBundleAction tells the client whether/how to upload the head
+	// bundle; HeadBundlePutURL is set unless the action is already_stored;
+	// HeadBundleBase is set only for upload_incremental.
+	HeadBundleAction HeadBundleAction
+	HeadBundlePutURL string
+	HeadBundleBase   string
 	UncommittedURL   string
 	ManifestPutURL   string
 	PresignTTL       time.Duration
@@ -87,6 +109,27 @@ func (s *Server) CreateCheckpoint(ctx context.Context, userID string, req Create
 		return CreateCheckpointResult{}, fmt.Errorf("sync: insert checkpoint: %w", err)
 	}
 
+	// Head bundle: content-addressed by HEAD SHA. If we already hold it,
+	// tell the client to skip the upload entirely (the common idle case).
+	headKey, err := storage.KeyForHead(wt.UserID, req.HeadCommit)
+	if err != nil {
+		return CreateCheckpointResult{}, fmt.Errorf("sync: head key: %w", err)
+	}
+	headExists, err := s.cfg.Storage.Exists(ctx, headKey)
+	if err != nil {
+		return CreateCheckpointResult{}, fmt.Errorf("sync: head exists check: %w", err)
+	}
+	headAction := HeadBundleAlreadyStored
+	var headPutURL string
+	if !headExists {
+		headAction = HeadBundleUploadFull
+		headPutURL, err = s.cfg.Storage.PresignPut(ctx, headKey, s.cfg.PresignTTL)
+		if err != nil {
+			return CreateCheckpointResult{}, fmt.Errorf("sync: presign head: %w", err)
+		}
+	}
+
+	// Per-checkpoint blobs (uncommitted + manifest) always upload.
 	urls, err := s.presignCheckpointPuts(ctx, wt.UserID, wt.ID, checkpointID)
 	if err != nil {
 		return CreateCheckpointResult{}, fmt.Errorf("sync: presign puts: %w", err)
@@ -94,7 +137,8 @@ func (s *Server) CreateCheckpoint(ctx context.Context, userID string, req Create
 
 	return CreateCheckpointResult{
 		CheckpointID:     checkpointID,
-		HeadCommitPutURL: urls[storage.BlobHeadCommit],
+		HeadBundleAction: headAction,
+		HeadBundlePutURL: headPutURL,
 		UncommittedURL:   urls[storage.BlobUncommitted],
 		ManifestPutURL:   urls[storage.BlobManifest],
 		PresignTTL:       s.cfg.PresignTTL,
@@ -115,17 +159,32 @@ func (s *Server) CommitCheckpoint(ctx context.Context, userID, checkpointID stri
 		return CommitCheckpointResult{}, err
 	}
 
-	for _, blob := range []storage.Blob{storage.BlobHeadCommit, storage.BlobUncommitted, storage.BlobManifest} {
-		key, err := storage.KeyFor(wt.UserID, wt.ID, ck.ID, blob)
+	// Head bundle is content-addressed by HEAD SHA (shared, separate key);
+	// the per-checkpoint blobs live under the checkpoint prefix. Checked
+	// in a fixed order so a missing-blob error is deterministic.
+	headKey, err := storage.KeyForHead(wt.UserID, ck.HeadCommit)
+	if err != nil {
+		return CommitCheckpointResult{}, fmt.Errorf("sync: head key: %w", err)
+	}
+	uncommittedKey, err := storage.KeyFor(wt.UserID, wt.ID, ck.ID, storage.BlobUncommitted)
+	if err != nil {
+		return CommitCheckpointResult{}, fmt.Errorf("sync: build key: %w", err)
+	}
+	manifestKey, err := storage.KeyFor(wt.UserID, wt.ID, ck.ID, storage.BlobManifest)
+	if err != nil {
+		return CommitCheckpointResult{}, fmt.Errorf("sync: build key: %w", err)
+	}
+	for _, c := range []struct{ name, key string }{
+		{"head bundle", headKey},
+		{string(storage.BlobUncommitted), uncommittedKey},
+		{string(storage.BlobManifest), manifestKey},
+	} {
+		exists, err := s.cfg.Storage.Exists(ctx, c.key)
 		if err != nil {
-			return CommitCheckpointResult{}, fmt.Errorf("sync: build key: %w", err)
-		}
-		exists, err := s.cfg.Storage.Exists(ctx, key)
-		if err != nil {
-			return CommitCheckpointResult{}, fmt.Errorf("sync: storage check %s: %w", blob, err)
+			return CommitCheckpointResult{}, fmt.Errorf("sync: storage check %s: %w", c.name, err)
 		}
 		if !exists {
-			return CommitCheckpointResult{}, fmt.Errorf("%w: %s", ErrBlobNotUploaded, blob)
+			return CommitCheckpointResult{}, fmt.Errorf("%w: %s", ErrBlobNotUploaded, c.name)
 		}
 	}
 
@@ -156,8 +215,17 @@ func (s *Server) DownloadCheckpointURLs(ctx context.Context, userID, checkpointI
 		return CheckpointDownloadURLs{}, fmt.Errorf("sync: checkpoint %s not yet uploaded", checkpointID)
 	}
 
-	urls := make(map[storage.Blob]string, 3)
-	for _, blob := range []storage.Blob{storage.BlobHeadCommit, storage.BlobUncommitted, storage.BlobManifest} {
+	headKey, err := storage.KeyForHead(wt.UserID, ck.HeadCommit)
+	if err != nil {
+		return CheckpointDownloadURLs{}, fmt.Errorf("sync: head key: %w", err)
+	}
+	headGetURL, err := s.cfg.Storage.PresignGet(ctx, headKey, s.cfg.PresignTTL)
+	if err != nil {
+		return CheckpointDownloadURLs{}, fmt.Errorf("sync: presign head get: %w", err)
+	}
+
+	urls := make(map[storage.Blob]string, 2)
+	for _, blob := range []storage.Blob{storage.BlobUncommitted, storage.BlobManifest} {
 		key, err := storage.KeyFor(wt.UserID, wt.ID, ck.ID, blob)
 		if err != nil {
 			return CheckpointDownloadURLs{}, fmt.Errorf("sync: build key: %w", err)
@@ -171,7 +239,7 @@ func (s *Server) DownloadCheckpointURLs(ctx context.Context, userID, checkpointI
 
 	return CheckpointDownloadURLs{
 		CheckpointID:     ck.ID,
-		HeadCommitGetURL: urls[storage.BlobHeadCommit],
+		HeadCommitGetURL: headGetURL,
 		UncommittedURL:   urls[storage.BlobUncommitted],
 		ManifestGetURL:   urls[storage.BlobManifest],
 	}, nil

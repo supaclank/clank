@@ -190,8 +190,13 @@ type createCheckpointRequest struct {
 }
 
 type createCheckpointResponse struct {
-	CheckpointID     string    `json:"checkpoint_id"`
-	HeadCommitPutURL string    `json:"head_commit_put_url"`
+	CheckpointID string `json:"checkpoint_id"`
+	// HeadBundleAction is already_stored | upload_full | upload_incremental.
+	// HeadBundlePutURL is set unless already_stored; HeadBundleBase is set
+	// only for upload_incremental.
+	HeadBundleAction string    `json:"head_bundle_action"`
+	HeadBundlePutURL string    `json:"head_bundle_put_url,omitempty"`
+	HeadBundleBase   string    `json:"head_bundle_base,omitempty"`
 	UncommittedURL   string    `json:"uncommitted_put_url"`
 	ManifestPutURL   string    `json:"manifest_put_url"`
 	TTLSeconds       int       `json:"ttl_seconds"`
@@ -256,7 +261,9 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 
 	writeJSON(w, http.StatusCreated, createCheckpointResponse{
 		CheckpointID:     result.CheckpointID,
-		HeadCommitPutURL: result.HeadCommitPutURL,
+		HeadBundleAction: string(result.HeadBundleAction),
+		HeadBundlePutURL: result.HeadBundlePutURL,
+		HeadBundleBase:   result.HeadBundleBase,
 		UncommittedURL:   result.UncommittedURL,
 		ManifestPutURL:   result.ManifestPutURL,
 		TTLSeconds:       int(result.PresignTTL.Seconds()),
@@ -439,9 +446,12 @@ func httpStatusForLookupErr(err error) int {
 	}
 }
 
+// presignCheckpointPuts mints PUT URLs for the per-checkpoint blobs
+// (uncommitted bundle + manifest). The head bundle is content-addressed
+// and handled separately by CreateCheckpoint via storage.KeyForHead.
 func (s *Server) presignCheckpointPuts(ctx context.Context, userID, worktreeID, checkpointID string) (map[storage.Blob]string, error) {
-	out := make(map[storage.Blob]string, 3)
-	for _, blob := range []storage.Blob{storage.BlobHeadCommit, storage.BlobUncommitted, storage.BlobManifest} {
+	out := make(map[storage.Blob]string, 2)
+	for _, blob := range []storage.Blob{storage.BlobUncommitted, storage.BlobManifest} {
 		key, err := storage.KeyFor(userID, worktreeID, checkpointID, blob)
 		if err != nil {
 			return nil, fmt.Errorf("key for %s: %w", blob, err)

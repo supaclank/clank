@@ -60,8 +60,11 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath string
 	tempID := "pending-" + randString(12)
 	// CreatedBy is informational on the manifest — sync's CallerVerifier
 	// derives the authoritative caller identity from the bearer.
+	// Build only the cheap uncommitted bundle + manifest up front. The
+	// head bundle (all history — slow to build AND upload) is built only
+	// if the server doesn't already hold this HEAD, decided below.
 	builder := checkpoint.NewBuilder(repoPath, "laptop")
-	res, err := builder.Build(ctx, tempID)
+	res, err := builder.BuildUncommitted(ctx, tempID)
 	if err != nil {
 		return nil, fmt.Errorf("build checkpoint: %w", err)
 	}
@@ -77,7 +80,8 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath string
 	}
 	var createResp struct {
 		CheckpointID     string `json:"checkpoint_id"`
-		HeadCommitPutURL string `json:"head_commit_put_url"`
+		HeadBundlePutURL string `json:"head_bundle_put_url"`
+		HeadBundleBase   string `json:"head_bundle_base"`
 		UncommittedURL   string `json:"uncommitted_put_url"`
 		ManifestPutURL   string `json:"manifest_put_url"`
 	}
@@ -93,12 +97,25 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath string
 	// TODO(coderabbit): clean up server-side rows on partial-upload failure (abort endpoint or reaper)
 	// https://github.com/Acksell/clank/pull/16
 	//
+	// Head bundle: build + upload ONLY when the server gave us a PUT URL.
+	// An empty URL means the server already holds this HEAD's bundle
+	// (content-addressed dedup) — the common idle-autopush case, where we
+	// skip the slow build AND the slow upload entirely. HeadBundleBase is
+	// "" for a full bundle; non-empty drives an incremental (Slice 2).
+	//
 	// Blob PUTs use blobClient (no ResponseHeaderTimeout): S3 returns the
 	// PUT response only after the full body lands, so the control-plane
 	// cap would abort any upload slower than 30s (e.g. a large bundle
 	// over a tunnel).
-	if err := uploadFile(ctx, c.blobClient, createResp.HeadCommitPutURL, res.HeadCommitBundle); err != nil {
-		return nil, fmt.Errorf("upload headCommit: %w", err)
+	if createResp.HeadBundlePutURL != "" {
+		headBundle, err := builder.BuildHeadBundle(ctx, tempID, res.Manifest.HeadCommit, createResp.HeadBundleBase)
+		if err != nil {
+			return nil, fmt.Errorf("build head bundle: %w", err)
+		}
+		defer os.Remove(headBundle)
+		if err := uploadFile(ctx, c.blobClient, createResp.HeadBundlePutURL, headBundle); err != nil {
+			return nil, fmt.Errorf("upload headCommit: %w", err)
+		}
 	}
 	if err := uploadFile(ctx, c.blobClient, createResp.UncommittedURL, res.UncommittedBundle); err != nil {
 		return nil, fmt.Errorf("upload uncommitted: %w", err)
