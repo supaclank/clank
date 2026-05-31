@@ -177,13 +177,13 @@ func runStatus(ctx context.Context, repoPath string) (string, error) {
 					m.HeadRef == snap.HeadRef &&
 					m.IndexTree == snap.IndexTree &&
 					m.WorktreeTree == snap.WorktreeTree
-				if rep.InSync {
-					// Synced, but is the tree clean or dirty-but-synced?
-					// Drives the "✓ Dirty state in sync" line.
-					if clean, cErr := git.IsClean(repoPath); cErr == nil {
-						rep.WorkingTreeDirty = !clean
-					}
-				} else {
+				// Local dirtiness is its own axis (uncommitted changes vs
+				// local HEAD), independent of the commit drift — surfaced as
+				// the "Dirty state" line in either direction.
+				if clean, cErr := git.IsClean(repoPath); cErr == nil {
+					rep.WorkingTreeDirty = !clean
+				}
+				if !rep.InSync {
 					d := classifyDrift(repoPath, snap.HeadCommit, m.HeadCommit)
 					rep.Drift, rep.DriftAhead, rep.DriftBehind = d.state, d.ahead, d.behind
 				}
@@ -313,6 +313,15 @@ func renderStatusReport(rep statusReport) string {
 		sb.WriteString("\n  " + syncCTA(rep.ActiveRemote, push, pull) + "\n")
 	}
 
+	// dirtyBullet adds the uncommitted-changes line when the local tree is
+	// dirty — the dirty-state axis is independent of commit drift, so a
+	// worktree can be e.g. ahead AND have unsynced uncommitted changes.
+	dirtyBullet := func() {
+		if rep.WorkingTreeDirty {
+			sb.WriteString(warnLine("Dirty state not synced"))
+		}
+	}
+
 	switch {
 	case rep.RemoteError != nil:
 		sb.WriteString("  Sync state " + styleErr.Render("unknown") + " — " + styleRemoteOwner.Render(rep.ActiveRemote) + " remote unreachable: " + styleDim.Render(rep.RemoteError.Error()) + "\n")
@@ -331,15 +340,19 @@ func renderStatusReport(rep statusReport) string {
 		ctaBlock(true, false)
 	case rep.Drift == driftAhead:
 		sb.WriteString(warnLine("Ahead by " + commits(rep.DriftAhead)))
+		dirtyBullet()
 		ctaBlock(true, false)
 	case rep.Drift == driftBehind:
 		sb.WriteString(warnLine("Behind by " + commits(rep.DriftBehind)))
+		dirtyBullet()
 		ctaBlock(false, true)
 	case rep.Drift == driftDiverged:
 		sb.WriteString(warnLine(fmt.Sprintf("Diverged — %d ahead, %d behind", rep.DriftAhead, rep.DriftBehind)))
+		dirtyBullet()
 		ctaBlock(true, true)
 	default:
 		sb.WriteString(warnLine("Out of sync"))
+		dirtyBullet()
 		ctaBlock(true, true)
 	}
 

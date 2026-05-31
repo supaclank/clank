@@ -118,6 +118,31 @@ func TestRenderStatusReport_DirtyButSynced(t *testing.T) {
 	}
 }
 
+// TestRenderStatusReport_DirtyAlongsideDrift pins that the dirty-state
+// bullet rides alongside a commit drift when the local tree is dirty, and
+// is omitted when it's clean.
+func TestRenderStatusReport_DirtyAlongsideDrift(t *testing.T) {
+	t.Parallel()
+	base := statusReport{
+		WorktreeID: "wt", WorktreeDir: "repo", ActiveRemote: "dev", SignedIn: true,
+		WorktreeFromRemote: &daemonclient.WorktreeInfo{ID: "wt"}, HasCheckpoint: true,
+		Drift: driftAhead, DriftAhead: 1,
+	}
+
+	dirty := base
+	dirty.WorkingTreeDirty = true
+	got := stripANSI(renderStatusReport(dirty))
+	if !strings.Contains(got, "Ahead by 1 commit") || !strings.Contains(got, "Dirty state not synced") {
+		t.Errorf("ahead+dirty should show both bullets:\n%s", got)
+	}
+
+	clean := base // WorkingTreeDirty false
+	got = stripANSI(renderStatusReport(clean))
+	if strings.Contains(got, "Dirty state not synced") {
+		t.Errorf("ahead+clean must not show the dirty bullet:\n%s", got)
+	}
+}
+
 // TestRenderStatusReport_DriftCounts pins the commit-count wording,
 // including pluralization and the diverged two-number form.
 func TestRenderStatusReport_DriftCounts(t *testing.T) {
