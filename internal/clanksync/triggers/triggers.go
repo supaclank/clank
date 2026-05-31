@@ -11,9 +11,27 @@ import (
 	"path/filepath"
 )
 
+// Harness identifies a coding-agent harness clank can install autopush
+// triggers for. HarnessClaudeCode is the Claude Code CLI / Agent SDK
+// (the Stop hook) — it covers ANY app built on the Claude CLI/SDK, but
+// explicitly NOT Claude Desktop, whose sessions aren't trackable.
+const (
+	HarnessClaudeCode = "claude-code"
+	HarnessOpenCode   = "opencode"
+)
+
 // Install writes both triggers, pointed at the currently-running clank
 // binary. Idempotent.
 func Install() error {
+	if err := InstallClaude(); err != nil {
+		return err
+	}
+	return InstallOpenCode()
+}
+
+// InstallClaude installs only the Claude Code Stop hook, pointed at the
+// currently-running clank binary. Idempotent.
+func InstallClaude() error {
 	clankBin, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve clank binary: %w", err)
@@ -24,6 +42,16 @@ func Install() error {
 	}
 	if err := InstallClaudeHook(clankBin, cdir); err != nil {
 		return fmt.Errorf("install claude hook: %w", err)
+	}
+	return nil
+}
+
+// InstallOpenCode installs only the opencode session.idle plugin, pointed
+// at the currently-running clank binary. Idempotent.
+func InstallOpenCode() error {
+	clankBin, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve clank binary: %w", err)
 	}
 	ocdir, err := opencodeConfigDir()
 	if err != nil {

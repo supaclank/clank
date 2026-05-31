@@ -1,12 +1,9 @@
 package clankcli
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -96,7 +93,7 @@ func runPull(ctx context.Context, cmd *cobra.Command, cli *syncclient.Client, ab
 	// Waking the sandbox cancels its in-flight sessions; gate the
 	// destructive pull behind explicit confirmation.
 	if !assumeYes {
-		ok, err := confirmYesNo(cmd, "Pull wakes the sandbox and cancels any sessions running there. Continue? [y/N] ")
+		ok, err := confirmYesNo(cmd, "Pull wakes the sandbox and cancels any sessions running there. Continue? [y/N] ", false)
 		if err != nil {
 			return err
 		}
@@ -129,19 +126,18 @@ func runPull(ctx context.Context, cmd *cobra.Command, cli *syncclient.Client, ab
 }
 
 // confirmYesNo prints prompt and reads one line from the command's
-// input, returning true only for an explicit y/yes. EOF (piped input
-// without a trailing newline) is parsed for whatever was read.
-func confirmYesNo(cmd *cobra.Command, prompt string) (bool, error) {
+// input. A bare Enter (empty line) returns defaultYes; explicit y/yes →
+// true, anything else → false. EOF (piped input without a trailing
+// newline) is parsed for whatever was read.
+func confirmYesNo(cmd *cobra.Command, prompt string, defaultYes bool) (bool, error) {
 	fmt.Fprint(cmd.OutOrStdout(), prompt)
-	in := cmd.InOrStdin()
-	if in == nil {
-		in = os.Stdin
-	}
-	line, err := bufio.NewReader(in).ReadString('\n')
-	if err != nil && err != io.EOF {
+	line, err := readLine(cmd)
+	if err != nil {
 		return false, fmt.Errorf("read confirmation: %w", err)
 	}
 	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "":
+		return defaultYes, nil
 	case "y", "yes":
 		return true, nil
 	default:

@@ -57,7 +57,7 @@ func runInitGlobal(cmd *cobra.Command) error {
 	}); err != nil {
 		return fmt.Errorf("save preference: %w", err)
 	}
-	if err := installAutoPushTriggers(cmd); err != nil {
+	if err := ensureHarnessTriggers(cmd, isInteractive(cmd)); err != nil {
 		return err
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "Auto-push enabled for all repositories — any repo you work in pushes to your active remote on idle.")
@@ -105,7 +105,7 @@ func runInitRepo(cmd *cobra.Command, repoPath string) error {
 		registered++
 	}
 
-	if err := installAutoPushTriggers(cmd); err != nil {
+	if err := ensureHarnessTriggers(cmd, isInteractive(cmd)); err != nil {
 		return err
 	}
 
