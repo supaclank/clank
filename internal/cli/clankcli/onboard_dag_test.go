@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -161,5 +162,79 @@ func TestEnsureLoggedIn_NonInteractiveSignedOutErrors(t *testing.T) {
 	cmd, _ := newPromptCmd("")
 	if _, err := ensureLoggedIn(context.Background(), cmd, "", ""); err == nil {
 		t.Fatal("signed-out + non-interactive must error")
+	}
+}
+
+// TestHintRepoTracking pins the returning-user nudge: an untracked git
+// repo gets a one-line hint; tracked / auto-push / non-repo stay silent
+// (so `clank login` doesn't re-run onboarding it already did).
+func TestHintRepoTracking(t *testing.T) {
+	t.Parallel()
+
+	t.Run("untracked repo nudges", func(t *testing.T) {
+		t.Parallel()
+		repo := newGitRepo(t)
+		cmd, out := newPromptCmd("")
+		if err := hintRepoTracking(cmd, config.Preferences{}, repo); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "isn't tracked yet") {
+			t.Errorf("want untracked nudge, got %q", out.String())
+		}
+	})
+
+	t.Run("tracked repo stays silent", func(t *testing.T) {
+		t.Parallel()
+		repo := newGitRepo(t)
+		if err := agent.WriteLocalWorktreeID(repo, "wt-already"); err != nil {
+			t.Fatal(err)
+		}
+		cmd, out := newPromptCmd("")
+		if err := hintRepoTracking(cmd, config.Preferences{}, repo); err != nil {
+			t.Fatal(err)
+		}
+		if out.String() != "" {
+			t.Errorf("tracked repo must not nudge, got %q", out.String())
+		}
+	})
+
+	t.Run("auto-push stays silent", func(t *testing.T) {
+		t.Parallel()
+		repo := newGitRepo(t)
+		cmd, out := newPromptCmd("")
+		if err := hintRepoTracking(cmd, config.Preferences{AutoPushAllRepos: true}, repo); err != nil {
+			t.Fatal(err)
+		}
+		if out.String() != "" {
+			t.Errorf("auto-push must not nudge, got %q", out.String())
+		}
+	})
+
+	t.Run("non-repo stays silent", func(t *testing.T) {
+		t.Parallel()
+		cmd, out := newPromptCmd("")
+		if err := hintRepoTracking(cmd, config.Preferences{}, t.TempDir()); err != nil {
+			t.Fatal(err)
+		}
+		if out.String() != "" {
+			t.Errorf("non-repo must not nudge, got %q", out.String())
+		}
+	})
+}
+
+// TestLoginOnboarding_NonInteractiveNoOp pins that a scripted login does
+// no onboarding and reads no stdin.
+func TestLoginOnboarding_NonInteractiveNoOp(t *testing.T) {
+	t.Parallel()
+	cmd, out := newPromptCmd("y\n")
+	if err := loginOnboarding(cmd); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "" {
+		t.Errorf("non-interactive login must not prompt, got %q", out.String())
+	}
+	rest, _ := io.ReadAll(cmd.InOrStdin())
+	if string(rest) != "y\n" {
+		t.Errorf("stdin consumed (%q left)", rest)
 	}
 }

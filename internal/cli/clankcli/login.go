@@ -124,13 +124,26 @@ func runLogin(ctx context.Context, cmd *cobra.Command, remoteName, provider stri
 	return nil
 }
 
-// loginOnboarding runs the post-sign-in setup: pick which harness(es) to
-// auto-sync and install their triggers, then offer to auto-track every
-// repo. TTY-only — a non-interactive login (e.g. scripted) just signs in.
+// loginOnboarding runs first-time setup after sign-in: pick which
+// harness(es) to auto-sync and install their triggers, then offer to
+// auto-track every repo. It runs ONLY when setup hasn't been done before
+// (no harness chosen and no global auto-push) — a returning user who
+// re-runs `clank login` isn't re-prompted; they get a lightweight nudge
+// if the current repo isn't tracked. TTY-only: a scripted login just
+// signs in.
 func loginOnboarding(cmd *cobra.Command) error {
 	if !isInteractive(cmd) {
 		return nil
 	}
+	prefs, err := config.LoadPreferences()
+	if err != nil {
+		return fmt.Errorf("load preferences: %w", err)
+	}
+	if len(prefs.SyncHarnesses) > 0 || prefs.AutoPushAllRepos {
+		// Already set up — don't repeat onboarding; just nudge the cwd.
+		return hintRepoTracking(cmd, prefs, currentDirForHint())
+	}
+
 	if err := ensureHarnessTriggers(cmd, true); err != nil {
 		return err
 	}
@@ -145,8 +158,8 @@ func loginOnboarding(cmd *cobra.Command) error {
 			return fmt.Errorf("save preference: %w", err)
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "Auto-push enabled for all repositories — sessions push to your active remote on idle.")
-	} else {
-		fmt.Fprintln(cmd.OutOrStdout(), "Per-repo tracking: run `clank push` in a repo (or `clank init`) to track it.")
+		return nil
 	}
+	fmt.Fprintln(cmd.OutOrStdout(), "Per-repo tracking: run `clank push` in a repo (or `clank init`) to track it.")
 	return nil
 }

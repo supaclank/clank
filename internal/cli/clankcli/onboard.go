@@ -17,6 +17,7 @@ import (
 	"github.com/acksell/clank/internal/cloud"
 	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/daemonclient"
+	"github.com/acksell/clank/internal/git"
 	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
 
@@ -190,6 +191,36 @@ func ensureLoggedIn(ctx context.Context, cmd *cobra.Command, baseURL, token stri
 		}
 	}
 	return syncclient.New(syncclient.Config{BaseURL: baseURL, AuthToken: token})
+}
+
+// currentDirForHint returns the cwd for a best-effort tracking nudge, or
+// "" if it can't be resolved (the nudge is then skipped).
+func currentDirForHint() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return cwd
+}
+
+// hintRepoTracking prints a one-line nudge when dir is a git repo that
+// isn't tracked yet — so a returning user knows how to start syncing it
+// without re-running onboarding. Best-effort and silent when there's
+// nothing useful to say (not a repo, already tracked, or auto-push on).
+func hintRepoTracking(cmd *cobra.Command, prefs config.Preferences, dir string) error {
+	if prefs.AutoPushAllRepos || dir == "" {
+		return nil // every repo auto-tracks on push; no nudge needed.
+	}
+	root, err := git.RepoRoot(dir)
+	if err != nil {
+		return nil // not a git repo (or no git) → nothing to say.
+	}
+	id, err := agent.ReadLocalWorktreeID(root)
+	if err != nil || id != "" {
+		return nil // already tracked, or can't tell → no nudge.
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "\nThis repo (%s) isn't tracked yet — run `clank push` here to start syncing it.\n", filepath.Base(root))
+	return nil
 }
 
 // ensureTracked resolves the worktree-id for absRepo, registering it if
