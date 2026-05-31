@@ -32,6 +32,10 @@ func Command() *cobra.Command {
 		},
 	}
 
+	// Hide cobra's auto-generated `completion` command from help; shell
+	// completion still works for users who invoke it explicitly.
+	root.CompletionOptions.HiddenDefaultCmd = true
+
 	root.AddCommand(
 		codeCmd(),
 		inboxCmd(),
