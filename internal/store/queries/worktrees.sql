@@ -18,6 +18,17 @@ UPDATE worktrees
 SET latest_synced_checkpoint = ?, updated_at = ?
 WHERE id = ?;
 
+-- name: GetHeadBundle :one
+SELECT * FROM head_bundles
+WHERE user_id = ? AND tip_sha = ?;
+
+-- name: InsertHeadBundle :exec
+-- Idempotent: a tip's first stored bundle wins, so re-pushing a HEAD the
+-- server already has (already_stored) keeps the original base_sha link.
+INSERT OR IGNORE INTO head_bundles (
+    user_id, tip_sha, base_sha, blob_key, created_at
+) VALUES (?, ?, ?, ?, ?);
+
 -- name: DeleteWorktree :exec
 DELETE FROM worktrees WHERE id = ?;
 

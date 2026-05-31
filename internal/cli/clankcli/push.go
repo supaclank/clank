@@ -217,8 +217,10 @@ func runPush(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *sy
 		return nil
 	}
 
+	// parity.RemoteHead is the server's last-synced HEAD — the base for an
+	// incremental head bundle when our HEAD has advanced.
 	done := timer.Start("push checkpoint")
-	res, err := cli.PushCheckpoint(ctx, worktreeID, absRepo)
+	res, err := cli.PushCheckpoint(ctx, worktreeID, absRepo, parity.RemoteHead)
 	done()
 	if err != nil {
 		return fmt.Errorf("push checkpoint: %w", err)

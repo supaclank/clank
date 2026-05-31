@@ -3049,7 +3049,10 @@ func (m *InboxModel) worktreePushCmd(localPath string) tea.Cmd {
 			}
 		}
 
-		res, err := cli.PushCheckpoint(ctx, worktreeID, localPath)
+		// baseCommit "" — the TUI push doesn't run a parity check, so it
+		// gets a full bundle (or dedup when HEAD is unchanged), not an
+		// incremental. The CLI `clank push` path passes the parity base.
+		res, err := cli.PushCheckpoint(ctx, worktreeID, localPath, "")
 		if err != nil {
 			return worktreePushResultMsg{localPath: localPath, err: fmt.Errorf("push checkpoint: %w", err)}
 		}

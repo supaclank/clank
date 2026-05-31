@@ -30,6 +30,14 @@ type Device struct {
 	LastSeenAt time.Time
 }
 
+type HeadBundle struct {
+	UserID    string
+	TipSha    string
+	BaseSha   string
+	BlobKey   string
+	CreatedAt time.Time
+}
+
 type Host struct {
 	ID            string
 	UserID        string

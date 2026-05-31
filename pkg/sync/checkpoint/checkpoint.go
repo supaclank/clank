@@ -349,20 +349,30 @@ func (b *Builder) deleteRef(ctx context.Context, ref string) {
 //
 // Apply does not delete refs that exist in the repo but not in the
 // bundle — those are user state and out of scope.
-func Apply(ctx context.Context, repoPath string, manifest *Manifest, headCommitBundle, uncommittedBundle io.Reader) error {
+// Apply restores a checkpoint into repoPath. headBundles is the ordered
+// head chain (oldest→newest) — for a full checkpoint that's one full
+// bundle; for an incremental pull it's [full baseline, …, increments].
+// They're fetched in order so each bundle's prerequisite is already
+// present. uncommittedBundle carries the worktree/index/untracked delta.
+func Apply(ctx context.Context, repoPath string, manifest *Manifest, headBundles []io.Reader, uncommittedBundle io.Reader) error {
 	if manifest == nil {
 		return errors.New("checkpoint: manifest is nil")
 	}
 	if manifest.Version != ManifestVersion {
 		return fmt.Errorf("checkpoint: unsupported manifest version %d", manifest.Version)
 	}
+	if len(headBundles) == 0 {
+		return errors.New("checkpoint: no head bundles to apply")
+	}
 
 	if err := ensureRepo(ctx, repoPath); err != nil {
 		return err
 	}
 
-	if err := fetchBundle(ctx, repoPath, headCommitBundle, "headCommit"); err != nil {
-		return err
+	for i, hb := range headBundles {
+		if err := fetchBundle(ctx, repoPath, hb, fmt.Sprintf("head-%d", i)); err != nil {
+			return err
+		}
 	}
 	if err := fetchBundle(ctx, repoPath, uncommittedBundle, "uncommitted"); err != nil {
 		return err

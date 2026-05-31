@@ -47,6 +47,42 @@ func TestWorktrees_InsertGetList(t *testing.T) {
 	}
 }
 
+func TestHeadBundles_InsertGetIdempotent(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t, tempDBPath(t))
+	ctx := context.Background()
+
+	if _, err := s.GetHeadBundle(ctx, "u", "missing"); !errors.Is(err, store.ErrHeadBundleNotFound) {
+		t.Fatalf("expected ErrHeadBundleNotFound, got %v", err)
+	}
+
+	if err := s.InsertHeadBundle(ctx, store.HeadBundle{UserID: "u", TipSHA: "abc", BaseSHA: "", BlobKey: "u/heads/abc.bundle"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetHeadBundle(ctx, "u", "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BaseSHA != "" || got.BlobKey != "u/heads/abc.bundle" {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+
+	// INSERT OR IGNORE: a second insert for the same (user, tip) is a
+	// no-op — the first stored bundle (and its base) wins.
+	if err := s.InsertHeadBundle(ctx, store.HeadBundle{UserID: "u", TipSHA: "abc", BaseSHA: "DIFFERENT", BlobKey: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	got2, _ := s.GetHeadBundle(ctx, "u", "abc")
+	if got2.BaseSHA != "" || got2.BlobKey != "u/heads/abc.bundle" {
+		t.Fatalf("second insert should be ignored, got %+v", got2)
+	}
+
+	// Same tip SHA under a different user is a distinct row.
+	if _, err := s.GetHeadBundle(ctx, "other", "abc"); !errors.Is(err, store.ErrHeadBundleNotFound) {
+		t.Fatalf("tip must be scoped per user, got %v", err)
+	}
+}
+
 func TestCheckpoints_InsertAndPointerAdvance(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -187,6 +188,7 @@ type createCheckpointRequest struct {
 	IndexTree         string `json:"index_tree"`
 	WorktreeTree      string `json:"worktree_tree"`
 	UncommittedCommit string `json:"uncommitted_commit"`
+	BaseCommit        string `json:"base_commit"`
 }
 
 type createCheckpointResponse struct {
@@ -240,6 +242,7 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 		IndexTree:         req.IndexTree,
 		WorktreeTree:      req.WorktreeTree,
 		UncommittedCommit: req.UncommittedCommit,
+		BaseCommit:        req.BaseCommit,
 		CreatedBy:         createdByFor(caller),
 	})
 	if err != nil {
@@ -271,6 +274,14 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+// commitCheckpointRequest is the (optional) body of POST
+// /v1/checkpoints/{id}/commit. head_base is the base the head bundle was
+// built from (HeadBundleBase from the create response; "" for a full
+// bundle) — recorded as this HEAD's link in the chain.
+type commitCheckpointRequest struct {
+	HeadBase string `json:"head_base"`
+}
+
 type commitCheckpointResponse struct {
 	CheckpointID string    `json:"checkpoint_id"`
 	UploadedAt   time.Time `json:"uploaded_at"`
@@ -287,6 +298,12 @@ func (s *Server) handleCommitCheckpoint(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	var req commitCheckpointRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	// Tenancy is rechecked inside Server.CommitCheckpoint.
 	_, _, err := s.lookupCheckpointForUser(r.Context(), checkpointID, caller.UserID)
 	if err != nil {
@@ -294,7 +311,7 @@ func (s *Server) handleCommitCheckpoint(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	result, err := s.CommitCheckpoint(r.Context(), caller.UserID, checkpointID)
+	result, err := s.CommitCheckpoint(r.Context(), caller.UserID, checkpointID, req.HeadBase)
 	if err != nil {
 		s.log.Printf("sync: commit checkpoint: %v", err)
 		switch {
@@ -316,17 +333,25 @@ func (s *Server) handleCommitCheckpoint(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-type downloadCheckpointResponse struct {
-	CheckpointID     string `json:"checkpoint_id"`
-	HeadCommitGetURL string `json:"head_commit_get_url"`
-	UncommittedURL   string `json:"uncommitted_get_url"`
-	ManifestGetURL   string `json:"manifest_get_url"`
-	TTLSeconds       int    `json:"ttl_seconds"`
+type headBundleURLResponse struct {
+	TipSHA  string `json:"tip_sha"`
+	BaseSHA string `json:"base_sha,omitempty"`
+	GetURL  string `json:"get_url"`
 }
 
-// handleDownloadCheckpoint returns presigned GET URLs for the gateway
-// to fetch bundle bytes during MigrateWorktree (P3+). Authorized to
-// the checkpoint's owning user.
+type downloadCheckpointResponse struct {
+	CheckpointID string `json:"checkpoint_id"`
+	// HeadBundles is the ordered (oldest→newest) head chain to fetch+apply.
+	HeadBundles    []headBundleURLResponse `json:"head_bundles"`
+	UncommittedURL string                  `json:"uncommitted_get_url"`
+	ManifestGetURL string                  `json:"manifest_get_url"`
+	TTLSeconds     int                     `json:"ttl_seconds"`
+}
+
+// handleDownloadCheckpoint returns presigned GET URLs for an applier to
+// fetch a checkpoint's bytes. The ?have_head query carries the applier's
+// current HEAD so the server returns only the missing head-chain slice.
+// Authorized to the checkpoint's owning user.
 func (s *Server) handleDownloadCheckpoint(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.callerOrUnauthorized(w, r)
 	if !ok {
@@ -338,18 +363,22 @@ func (s *Server) handleDownloadCheckpoint(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	urls, err := s.DownloadCheckpointURLs(r.Context(), caller.UserID, checkpointID)
+	urls, err := s.DownloadCheckpointURLs(r.Context(), caller.UserID, checkpointID, r.URL.Query().Get("have_head"))
 	if err != nil {
 		s.log.Printf("sync: download urls: %v", err)
 		http.Error(w, err.Error(), httpStatusForLookupErr(err))
 		return
 	}
+	heads := make([]headBundleURLResponse, len(urls.HeadBundles))
+	for i, hb := range urls.HeadBundles {
+		heads[i] = headBundleURLResponse{TipSHA: hb.TipSHA, BaseSHA: hb.BaseSHA, GetURL: hb.GetURL}
+	}
 	writeJSON(w, http.StatusOK, downloadCheckpointResponse{
-		CheckpointID:     urls.CheckpointID,
-		HeadCommitGetURL: urls.HeadCommitGetURL,
-		UncommittedURL:   urls.UncommittedURL,
-		ManifestGetURL:   urls.ManifestGetURL,
-		TTLSeconds:       int(s.cfg.PresignTTL.Seconds()),
+		CheckpointID:   urls.CheckpointID,
+		HeadBundles:    heads,
+		UncommittedURL: urls.UncommittedURL,
+		ManifestGetURL: urls.ManifestGetURL,
+		TTLSeconds:     int(s.cfg.PresignTTL.Seconds()),
 	})
 }
 

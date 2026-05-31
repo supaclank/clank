@@ -3,6 +3,7 @@ package syncclient_test
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -81,7 +82,7 @@ func TestCheckpointFlow_EndToEnd(t *testing.T) {
 		t.Fatalf("RegisterWorktree: %v", err)
 	}
 
-	pushRes, err := cli.PushCheckpoint(ctx, wtID, repo)
+	pushRes, err := cli.PushCheckpoint(ctx, wtID, repo, "")
 	if err != nil {
 		t.Fatalf("PushCheckpoint: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestCheckpointFlow_EndToEnd(t *testing.T) {
 
 	if err := checkpoint.Apply(ctx, dest,
 		pushRes.Manifest,
-		bytes.NewReader(headBundle),
+		[]io.Reader{bytes.NewReader(headBundle)},
 		bytes.NewReader(incrBundle),
 	); err != nil {
 		t.Fatalf("Apply: %v", err)
@@ -199,6 +200,115 @@ func gitMustOutput(t *testing.T, ctx context.Context, dir string, args ...string
 	return string(out)
 }
 
+// TestPushPull_IncrementalChain pins L2 end-to-end: push commit A (full
+// head bundle), then commit B and push with base=A (an incremental head
+// bundle), then download + apply the chain into a fresh repo and confirm
+// it reconstructs B. Also checks the chain links and that haveHead trims
+// the download to just the missing slice.
+func TestPushPull_IncrementalChain(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	mem := storage.NewMemory()
+	defer mem.Close()
+	srv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpSrv := httptest.NewServer(fixedPrincipalMiddleware("user-A", srv.Handler()))
+	defer httpSrv.Close()
+	cli, err := syncclient.New(syncclient.Config{BaseURL: httpSrv.URL, AuthToken: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repo := setupRepo(t, ctx)
+	writeFile(t, repo, "main.go", "package main // v1\n")
+	gitMustRun(t, ctx, repo, "add", ".")
+	gitMustRun(t, ctx, repo, "commit", "-m", "c1")
+	commitA := strings.TrimSpace(gitMustOutput(t, ctx, repo, "rev-parse", "HEAD"))
+
+	wtID, err := cli.RegisterWorktree(ctx, "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cli.PushCheckpoint(ctx, wtID, repo, ""); err != nil { // full
+		t.Fatalf("push A: %v", err)
+	}
+
+	writeFile(t, repo, "main.go", "package main // v2\n")
+	gitMustRun(t, ctx, repo, "add", ".")
+	gitMustRun(t, ctx, repo, "commit", "-m", "c2")
+	commitB := strings.TrimSpace(gitMustOutput(t, ctx, repo, "rev-parse", "HEAD"))
+	rB, err := cli.PushCheckpoint(ctx, wtID, repo, commitA) // incremental from A
+	if err != nil {
+		t.Fatalf("push B: %v", err)
+	}
+
+	// Chain links: A is a full baseline, B is built from A.
+	hbA, err := st.GetHeadBundle(ctx, "user-A", commitA)
+	if err != nil || hbA.BaseSHA != "" {
+		t.Fatalf("A should be a full baseline, got %+v err=%v", hbA, err)
+	}
+	hbB, err := st.GetHeadBundle(ctx, "user-A", commitB)
+	if err != nil || hbB.BaseSHA != commitA {
+		t.Fatalf("B should be incremental from A, got %+v err=%v", hbB, err)
+	}
+
+	// Download walk: fresh applier (have_head="") gets [A, B] in order.
+	dl, err := srv.DownloadCheckpointURLs(ctx, "user-A", rB.CheckpointID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dl.HeadBundles) != 2 || dl.HeadBundles[0].TipSHA != commitA || dl.HeadBundles[1].TipSHA != commitB {
+		t.Fatalf("want chain [A,B], got %+v", dl.HeadBundles)
+	}
+	// An applier already at A gets only [B].
+	dlAtA, err := srv.DownloadCheckpointURLs(ctx, "user-A", rB.CheckpointID, commitA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dlAtA.HeadBundles) != 1 || dlAtA.HeadBundles[0].TipSHA != commitB {
+		t.Fatalf("want chain [B] for have_head=A, got %+v", dlAtA.HeadBundles)
+	}
+
+	// Apply the full chain into a fresh repo → reconstructs B.
+	get := func(url string) []byte {
+		t.Helper()
+		resp, err := http.Get(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return b
+	}
+	manifest, err := checkpoint.UnmarshalManifest(get(dl.ManifestGetURL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var heads []io.Reader
+	for _, hb := range dl.HeadBundles {
+		heads = append(heads, bytes.NewReader(get(hb.GetURL)))
+	}
+	dest := t.TempDir()
+	if err := checkpoint.Apply(ctx, dest, manifest, heads, bytes.NewReader(get(dl.UncommittedURL))); err != nil {
+		t.Fatalf("apply chain: %v", err)
+	}
+	if got := strings.TrimSpace(gitMustOutput(t, ctx, dest, "rev-parse", "HEAD")); got != commitB {
+		t.Errorf("dest HEAD = %s, want B %s", got, commitB)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dest, "main.go")); strings.TrimSpace(string(got)) != "package main // v2" {
+		t.Errorf("dest content = %q, want v2", got)
+	}
+}
+
 // TestPushCheckpoint_SecondPushSameHEADReusesHeadBundle pins the laptop
 // side of L1: a second push after an UNCOMMITTED-only change (HEAD
 // unchanged) reuses the stored head bundle — the laptop uploads only the
@@ -237,7 +347,7 @@ func TestPushCheckpoint_SecondPushSameHEADReusesHeadBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r1, err := cli.PushCheckpoint(ctx, wtID, repo)
+	r1, err := cli.PushCheckpoint(ctx, wtID, repo, "")
 	if err != nil {
 		t.Fatalf("first push: %v", err)
 	}
@@ -250,7 +360,7 @@ func TestPushCheckpoint_SecondPushSameHEADReusesHeadBundle(t *testing.T) {
 	// Uncommitted change only — HEAD does not move.
 	writeFile(t, repo, "scratch.txt", "wip\n")
 
-	r2, err := cli.PushCheckpoint(ctx, wtID, repo)
+	r2, err := cli.PushCheckpoint(ctx, wtID, repo, "")
 	if err != nil {
 		t.Fatalf("second push: %v", err)
 	}

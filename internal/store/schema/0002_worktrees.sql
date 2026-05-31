@@ -32,3 +32,18 @@ CREATE TABLE checkpoints (
     uploaded_at         DATETIME
 );
 CREATE INDEX checkpoints_worktree_idx ON checkpoints(worktree_id, created_at DESC);
+
+-- head_bundles indexes the content-addressed head bundles (committed
+-- history), shared across a user's checkpoints/worktrees. tip_sha is the
+-- HEAD commit the bundle ends at; base_sha is the commit it was built
+-- from ("" = a full bundle with no prerequisite). The (base_sha → tip)
+-- links form the chain the server walks from a checkpoint's HEAD back to
+-- a full baseline.
+CREATE TABLE head_bundles (
+    user_id    TEXT NOT NULL,
+    tip_sha    TEXT NOT NULL,
+    base_sha   TEXT NOT NULL DEFAULT '',
+    blob_key   TEXT NOT NULL,
+    created_at DATETIME NOT NULL,
+    PRIMARY KEY (user_id, tip_sha)
+);

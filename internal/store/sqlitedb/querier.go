@@ -17,11 +17,15 @@ type Querier interface {
 	DeleteHostByUser(ctx context.Context, arg DeleteHostByUserParams) error
 	DeleteWorktree(ctx context.Context, id string) error
 	GetCheckpointByID(ctx context.Context, id string) (Checkpoint, error)
+	GetHeadBundle(ctx context.Context, arg GetHeadBundleParams) (HeadBundle, error)
 	GetHostByID(ctx context.Context, id string) (Host, error)
 	GetHostByNotifierToken(ctx context.Context, notifierToken string) (Host, error)
 	GetHostByUser(ctx context.Context, arg GetHostByUserParams) (Host, error)
 	GetWorktreeByID(ctx context.Context, id string) (Worktree, error)
 	InsertCheckpoint(ctx context.Context, arg InsertCheckpointParams) error
+	// Idempotent: a tip's first stored bundle wins, so re-pushing a HEAD the
+	// server already has (already_stored) keeps the original base_sha link.
+	InsertHeadBundle(ctx context.Context, arg InsertHeadBundleParams) error
 	InsertWorktree(ctx context.Context, arg InsertWorktreeParams) error
 	ListCheckpointsByWorktree(ctx context.Context, arg ListCheckpointsByWorktreeParams) ([]Checkpoint, error)
 	ListDevicesByUser(ctx context.Context, userID string) ([]Device, error)

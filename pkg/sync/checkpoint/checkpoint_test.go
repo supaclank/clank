@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	mathrand "math/rand/v2"
 	"os"
@@ -100,7 +101,7 @@ func TestApply_RejectsUnknownVersion(t *testing.T) {
 	ctx := context.Background()
 	tmp := t.TempDir()
 	bad := &checkpoint.Manifest{Version: 9999}
-	err := checkpoint.Apply(ctx, tmp, bad, strings.NewReader(""), strings.NewReader(""))
+	err := checkpoint.Apply(ctx, tmp, bad, []io.Reader{strings.NewReader("")}, strings.NewReader(""))
 	if err == nil || !strings.Contains(err.Error(), "unsupported manifest version") {
 		t.Fatalf("expected version-mismatch error, got %v", err)
 	}
@@ -142,7 +143,7 @@ func TestApply_RemovesStaleUntracked(t *testing.T) {
 	}
 
 	head1, incr1 := openBundles()
-	if err := checkpoint.Apply(ctx, dest, res.Manifest, head1, incr1); err != nil {
+	if err := checkpoint.Apply(ctx, dest, res.Manifest, []io.Reader{head1}, incr1); err != nil {
 		t.Fatalf("first Apply: %v", err)
 	}
 	head1.Close()
@@ -156,7 +157,7 @@ func TestApply_RemovesStaleUntracked(t *testing.T) {
 	}
 
 	head2, incr2 := openBundles()
-	if err := checkpoint.Apply(ctx, dest, res.Manifest, head2, incr2); err != nil {
+	if err := checkpoint.Apply(ctx, dest, res.Manifest, []io.Reader{head2}, incr2); err != nil {
 		t.Fatalf("second Apply: %v", err)
 	}
 	head2.Close()
@@ -285,7 +286,7 @@ func roundTripAndAssert(t *testing.T, ctx context.Context, repo, checkpointID st
 	defer incrBundle.Close()
 
 	dest := t.TempDir()
-	if err := checkpoint.Apply(ctx, dest, res.Manifest, headBundle, incrBundle); err != nil {
+	if err := checkpoint.Apply(ctx, dest, res.Manifest, []io.Reader{headBundle}, incrBundle); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -351,7 +352,7 @@ func TestRoundTrip_PreservesOriginRemote(t *testing.T) {
 	defer incrBundle.Close()
 
 	dest := t.TempDir()
-	if err := checkpoint.Apply(ctx, dest, res.Manifest, headBundle, incrBundle); err != nil {
+	if err := checkpoint.Apply(ctx, dest, res.Manifest, []io.Reader{headBundle}, incrBundle); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -399,7 +400,7 @@ func TestRoundTrip_NoOriginIsHandledGracefully(t *testing.T) {
 	defer incrBundle.Close()
 
 	dest := t.TempDir()
-	if err := checkpoint.Apply(ctx, dest, res.Manifest, headBundle, incrBundle); err != nil {
+	if err := checkpoint.Apply(ctx, dest, res.Manifest, []io.Reader{headBundle}, incrBundle); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	// destination should NOT have an origin remote — config exits 1.

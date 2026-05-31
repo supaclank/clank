@@ -106,8 +106,15 @@ func runPull(ctx context.Context, cmd *cobra.Command, cli *syncclient.Client, ab
 		}
 	}
 
+	// Our current HEAD lets the gateway return only the head-chain slice
+	// we lack. "" (e.g. an empty repo) ⇒ the full chain.
+	localHEAD, err := git.HeadCommit(absRepo)
+	if err != nil {
+		localHEAD = ""
+	}
+
 	fmt.Fprintln(cmd.ErrOrStderr(), "Waking sandbox and checkpointing its current state…")
-	res, err := cli.PullWorktree(ctx, worktreeID)
+	res, err := cli.PullWorktree(ctx, worktreeID, localHEAD)
 	if err != nil {
 		return fmt.Errorf("materialize sandbox state: %w", err)
 	}

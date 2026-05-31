@@ -43,6 +43,29 @@ func (q *Queries) GetCheckpointByID(ctx context.Context, id string) (Checkpoint,
 	return i, err
 }
 
+const getHeadBundle = `-- name: GetHeadBundle :one
+SELECT user_id, tip_sha, base_sha, blob_key, created_at FROM head_bundles
+WHERE user_id = ? AND tip_sha = ?
+`
+
+type GetHeadBundleParams struct {
+	UserID string
+	TipSha string
+}
+
+func (q *Queries) GetHeadBundle(ctx context.Context, arg GetHeadBundleParams) (HeadBundle, error) {
+	row := q.db.QueryRowContext(ctx, getHeadBundle, arg.UserID, arg.TipSha)
+	var i HeadBundle
+	err := row.Scan(
+		&i.UserID,
+		&i.TipSha,
+		&i.BaseSha,
+		&i.BlobKey,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getWorktreeByID = `-- name: GetWorktreeByID :one
 SELECT id, user_id, display_name, origin_repo, latest_synced_checkpoint, created_at, updated_at FROM worktrees
 WHERE id = ?
@@ -94,6 +117,33 @@ func (q *Queries) InsertCheckpoint(ctx context.Context, arg InsertCheckpointPara
 		arg.IncrementalCommit,
 		arg.CreatedAt,
 		arg.CreatedBy,
+	)
+	return err
+}
+
+const insertHeadBundle = `-- name: InsertHeadBundle :exec
+INSERT OR IGNORE INTO head_bundles (
+    user_id, tip_sha, base_sha, blob_key, created_at
+) VALUES (?, ?, ?, ?, ?)
+`
+
+type InsertHeadBundleParams struct {
+	UserID    string
+	TipSha    string
+	BaseSha   string
+	BlobKey   string
+	CreatedAt time.Time
+}
+
+// Idempotent: a tip's first stored bundle wins, so re-pushing a HEAD the
+// server already has (already_stored) keeps the original base_sha link.
+func (q *Queries) InsertHeadBundle(ctx context.Context, arg InsertHeadBundleParams) error {
+	_, err := q.db.ExecContext(ctx, insertHeadBundle,
+		arg.UserID,
+		arg.TipSha,
+		arg.BaseSha,
+		arg.BlobKey,
+		arg.CreatedAt,
 	)
 	return err
 }

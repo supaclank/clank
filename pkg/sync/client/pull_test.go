@@ -22,7 +22,7 @@ func TestPullWorktree_DecodesResponse(t *testing.T) {
 		_, _ = w.Write([]byte(`{
 			"checkpoint_id": "ck-9",
 			"manifest_url": "https://s3/manifest",
-			"head_commit_url": "https://s3/head",
+			"head_bundles": [{"tip_sha": "h0", "get_url": "https://s3/head0"}, {"tip_sha": "h1", "base_sha": "h0", "get_url": "https://s3/head1"}],
 			"uncommitted_url": "https://s3/incr",
 			"session_manifest_url": "https://s3/sessions.json",
 			"session_blob_urls": {"sess-1": "https://s3/sess-1"}
@@ -34,7 +34,7 @@ func TestPullWorktree_DecodesResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	res, err := cli.PullWorktree(context.Background(), "wt-abc")
+	res, err := cli.PullWorktree(context.Background(), "wt-abc", "")
 	if err != nil {
 		t.Fatalf("PullWorktree: %v", err)
 	}
@@ -54,6 +54,9 @@ func TestPullWorktree_DecodesResponse(t *testing.T) {
 	if res.SessionManifestURL != "https://s3/sessions.json" || res.SessionBlobURLs["sess-1"] != "https://s3/sess-1" {
 		t.Errorf("session URLs not decoded: %+v", res)
 	}
+	if len(res.HeadBundles) != 2 || res.HeadBundles[0].GetURL != "https://s3/head0" || res.HeadBundles[1].BaseSHA != "h0" {
+		t.Errorf("head chain not decoded: %+v", res.HeadBundles)
+	}
 }
 
 func TestPullWorktree_RequiresWorktreeID(t *testing.T) {
@@ -62,7 +65,7 @@ func TestPullWorktree_RequiresWorktreeID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := cli.PullWorktree(context.Background(), ""); err == nil {
+	if _, err := cli.PullWorktree(context.Background(), "", ""); err == nil {
 		t.Fatal("empty worktreeID should error")
 	}
 }
@@ -78,7 +81,7 @@ func TestPullWorktree_ErrorStatusSurfaces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	_, err = cli.PullWorktree(context.Background(), "wt-abc")
+	_, err = cli.PullWorktree(context.Background(), "wt-abc", "")
 	if err == nil || !strings.Contains(err.Error(), "502") {
 		t.Fatalf("expected a 502 error to surface, got %v", err)
 	}
@@ -98,7 +101,7 @@ func TestPullWorktree_IncompleteResponseRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	_, err = cli.PullWorktree(context.Background(), "wt-abc")
+	_, err = cli.PullWorktree(context.Background(), "wt-abc", "")
 	if err == nil || !strings.Contains(err.Error(), "incomplete") {
 		t.Fatalf("expected an incomplete-response error, got %v", err)
 	}

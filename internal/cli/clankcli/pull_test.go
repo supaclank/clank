@@ -71,7 +71,7 @@ func newPullFixture(t *testing.T) *pullFixture {
 			_, _ = w.Write([]byte(`{
 				"checkpoint_id": "ckpt1",
 				"manifest_url": "` + base + `/manifest",
-				"head_commit_url": "` + base + `/head",
+				"head_bundles": [{"tip_sha": "ckpt1", "get_url": "` + base + `/head"}],
 				"uncommitted_url": "` + base + `/incr"
 			}`))
 		case r.URL.Path == "/manifest":

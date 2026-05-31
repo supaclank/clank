@@ -31,19 +31,25 @@ func applyRemotePull(ctx context.Context, httpClient *http.Client, repoPath stri
 		return fmt.Errorf("parse manifest: %w", err)
 	}
 
-	// Download the head-history bundle and load its objects so ancestry
-	// is testable BEFORE the destructive apply.
-	headBytes, err := fetchURL(ctx, httpClient, mres.HeadCommitURL)
-	if err != nil {
-		return fmt.Errorf("fetch head bundle: %w", err)
-	}
-	headTmp, err := writeTempFile("clank-pull-head-*.bundle", headBytes)
-	if err != nil {
-		return err
-	}
-	defer os.Remove(headTmp)
-	if err := git.FetchBundleObjects(repoPath, headTmp); err != nil {
-		return fmt.Errorf("load remote objects: %w", err)
+	// Download the head chain (oldest→newest) and load each bundle's
+	// objects in order, so manifest.HeadCommit is present for the ancestry
+	// check BEFORE the destructive apply. Loading in order satisfies each
+	// incremental's base from the bundle before it.
+	headReaders := make([]io.Reader, len(mres.HeadBundles))
+	for i, hb := range mres.HeadBundles {
+		b, err := fetchURL(ctx, httpClient, hb.GetURL)
+		if err != nil {
+			return fmt.Errorf("fetch head bundle %d: %w", i, err)
+		}
+		tmp, err := writeTempFile("clank-pull-head-*.bundle", b)
+		if err != nil {
+			return err
+		}
+		defer os.Remove(tmp)
+		if err := git.FetchBundleObjects(repoPath, tmp); err != nil {
+			return fmt.Errorf("load remote objects (bundle %d): %w", i, err)
+		}
+		headReaders[i] = bytes.NewReader(b)
 	}
 
 	localHEAD, err := git.HeadCommit(repoPath)
@@ -64,7 +70,7 @@ func applyRemotePull(ctx context.Context, httpClient *http.Client, repoPath stri
 	if err != nil {
 		return fmt.Errorf("fetch uncommitted bundle: %w", err)
 	}
-	if err := checkpoint.Apply(ctx, repoPath, manifest, bytes.NewReader(headBytes), bytes.NewReader(incrBytes)); err != nil {
+	if err := checkpoint.Apply(ctx, repoPath, manifest, headReaders, bytes.NewReader(incrBytes)); err != nil {
 		return fmt.Errorf("apply checkpoint: %w", err)
 	}
 

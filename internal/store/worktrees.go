@@ -17,11 +17,13 @@ import (
 type (
 	Worktree   = clanksync.Worktree
 	Checkpoint = clanksync.Checkpoint
+	HeadBundle = clanksync.HeadBundle
 )
 
 var (
 	ErrWorktreeNotFound   = clanksync.ErrWorktreeNotFound
 	ErrCheckpointNotFound = clanksync.ErrCheckpointNotFound
+	ErrHeadBundleNotFound = clanksync.ErrHeadBundleNotFound
 )
 
 // GetWorktreeByID returns the worktree row or ErrWorktreeNotFound.
@@ -126,12 +128,12 @@ func (s *Store) InsertCheckpoint(ctx context.Context, c Checkpoint) error {
 		c.CreatedAt = time.Now()
 	}
 	return s.q.InsertCheckpoint(ctx, sqlitedb.InsertCheckpointParams{
-		ID:                c.ID,
-		WorktreeID:        c.WorktreeID,
-		HeadCommit:        c.HeadCommit,
-		HeadRef:           c.HeadRef,
-		IndexTree:         c.IndexTree,
-		WorktreeTree:      c.WorktreeTree,
+		ID:           c.ID,
+		WorktreeID:   c.WorktreeID,
+		HeadCommit:   c.HeadCommit,
+		HeadRef:      c.HeadRef,
+		IndexTree:    c.IndexTree,
+		WorktreeTree: c.WorktreeTree,
 		// sqlc column keeps its legacy name `incremental_commit`; the
 		// domain field is UncommittedCommit (renamed for clarity).
 		IncrementalCommit: c.UncommittedCommit,
@@ -146,6 +148,44 @@ func (s *Store) MarkCheckpointUploaded(ctx context.Context, id string, when time
 	return s.q.MarkCheckpointUploaded(ctx, sqlitedb.MarkCheckpointUploadedParams{
 		UploadedAt: sql.NullTime{Time: when, Valid: !when.IsZero()},
 		ID:         id,
+	})
+}
+
+// GetHeadBundle returns the head-bundle row for (userID, tipSHA) or
+// ErrHeadBundleNotFound.
+func (s *Store) GetHeadBundle(ctx context.Context, userID, tipSHA string) (HeadBundle, error) {
+	row, err := s.q.GetHeadBundle(ctx, sqlitedb.GetHeadBundleParams{UserID: userID, TipSha: tipSHA})
+	if errors.Is(err, sql.ErrNoRows) {
+		return HeadBundle{}, ErrHeadBundleNotFound
+	}
+	if err != nil {
+		return HeadBundle{}, fmt.Errorf("get head bundle (user=%s tip=%s): %w", userID, tipSHA, err)
+	}
+	return HeadBundle{
+		UserID:    row.UserID,
+		TipSHA:    row.TipSha,
+		BaseSHA:   row.BaseSha,
+		BlobKey:   row.BlobKey,
+		CreatedAt: row.CreatedAt,
+	}, nil
+}
+
+// InsertHeadBundle records a head-bundle row. Idempotent on
+// (user_id, tip_sha) — INSERT OR IGNORE keeps the first stored bundle for
+// a tip, so re-pushing an already-stored HEAD doesn't change its base.
+func (s *Store) InsertHeadBundle(ctx context.Context, hb HeadBundle) error {
+	if hb.UserID == "" || hb.TipSHA == "" || hb.BlobKey == "" {
+		return fmt.Errorf("insert head bundle: user_id, tip_sha, blob_key are required")
+	}
+	if hb.CreatedAt.IsZero() {
+		hb.CreatedAt = time.Now()
+	}
+	return s.q.InsertHeadBundle(ctx, sqlitedb.InsertHeadBundleParams{
+		UserID:    hb.UserID,
+		TipSha:    hb.TipSHA,
+		BaseSha:   hb.BaseSHA,
+		BlobKey:   hb.BlobKey,
+		CreatedAt: hb.CreatedAt,
 	})
 }
 

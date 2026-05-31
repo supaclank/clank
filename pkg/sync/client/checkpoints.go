@@ -49,7 +49,11 @@ func (c *Client) RegisterWorktree(ctx context.Context, displayName string) (stri
 // PushCheckpoint runs the full checkpoint upload flow: build local
 // bundles, request presigned URLs, upload each blob, commit. Cleans up
 // the temp bundle files on return.
-func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath string) (*CheckpointResult, error) {
+// baseCommit is the laptop's last-synced HEAD for this worktree (e.g.
+// from a parity check); when the server lacks this checkpoint's HEAD but
+// holds baseCommit's, only an incremental head bundle (HEAD ^base) is
+// built and uploaded. "" ⇒ full bundle (or skipped if already stored).
+func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath, baseCommit string) (*CheckpointResult, error) {
 	if worktreeID == "" {
 		return nil, errors.New("syncclient: worktreeID is required")
 	}
@@ -77,6 +81,7 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath string
 		"index_tree":         res.Manifest.IndexTree,
 		"worktree_tree":      res.Manifest.WorktreeTree,
 		"uncommitted_commit": res.Manifest.UncommittedCommit,
+		"base_commit":        baseCommit,
 	}
 	var createResp struct {
 		CheckpointID     string `json:"checkpoint_id"`
@@ -128,7 +133,9 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath string
 		return nil, fmt.Errorf("upload manifest: %w", err)
 	}
 
-	if err := c.postJSON(ctx, "/v1/checkpoints/"+createResp.CheckpointID+"/commit", map[string]string{}, nil); err != nil {
+	// head_base records this HEAD's link in the server's chain (the base
+	// the server told us to build from; "" for full / already_stored).
+	if err := c.postJSON(ctx, "/v1/checkpoints/"+createResp.CheckpointID+"/commit", map[string]string{"head_base": createResp.HeadBundleBase}, nil); err != nil {
 		return nil, fmt.Errorf("commit checkpoint: %w", err)
 	}
 

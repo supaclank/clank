@@ -66,7 +66,7 @@ func TestApplyRemotePull(t *testing.T) {
 	mres := &syncclient.PullResult{
 		CheckpointID:   "ckpt1",
 		ManifestURL:    srv.URL + "/manifest",
-		HeadCommitURL:  srv.URL + "/head",
+		HeadBundles:    []syncclient.PullHeadBundle{{TipSHA: res.Manifest.HeadCommit, GetURL: srv.URL + "/head"}},
 		UncommittedURL: srv.URL + "/incr",
 	}
 

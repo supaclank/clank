@@ -68,11 +68,13 @@ func workRoot() (string, error) {
 }
 
 // applyFromURLsRequest is the JSON body of POST /sync/apply-from-urls.
+// HeadBundleURLs is the ordered (oldest→newest) head chain to fetch and
+// apply in sequence — one full bundle, or a baseline plus increments.
 type applyFromURLsRequest struct {
-	Repo           string `json:"repo"`
-	ManifestURL    string `json:"manifest_url"`
-	HeadCommitURL  string `json:"head_commit_url"`
-	UncommittedURL string `json:"uncommitted_url"`
+	Repo           string   `json:"repo"`
+	ManifestURL    string   `json:"manifest_url"`
+	HeadBundleURLs []string `json:"head_bundle_urls"`
+	UncommittedURL string   `json:"uncommitted_url"`
 }
 
 // handleSyncApplyFromURLs is the pull-based counterpart to
@@ -97,8 +99,8 @@ func (m *Mux) handleSyncApplyFromURLs(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_repo", Error: "repo must be a single non-empty path segment without '..' or '/'"})
 		return
 	}
-	if req.ManifestURL == "" || req.HeadCommitURL == "" || req.UncommittedURL == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Code: syncErrBadRequest, Error: "manifest_url, head_commit_url, and uncommitted_url are all required"})
+	if req.ManifestURL == "" || len(req.HeadBundleURLs) == 0 || req.UncommittedURL == "" {
+		writeJSON(w, http.StatusBadRequest, errResp{Code: syncErrBadRequest, Error: "manifest_url, head_bundle_urls, and uncommitted_url are all required"})
 		return
 	}
 
@@ -129,10 +131,14 @@ func (m *Mux) handleSyncApplyFromURLs(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: syncErrBadManifest, Error: "parse manifest: " + err.Error()})
 		return
 	}
-	headBytes, status, code, err := fetchURL(r.Context(), cli, req.HeadCommitURL)
-	if err != nil {
-		writeJSON(w, status, errResp{Code: code, Error: "fetch head bundle: " + err.Error()})
-		return
+	headReaders := make([]io.Reader, len(req.HeadBundleURLs))
+	for i, u := range req.HeadBundleURLs {
+		hb, status, code, err := fetchURL(r.Context(), cli, u)
+		if err != nil {
+			writeJSON(w, status, errResp{Code: code, Error: fmt.Sprintf("fetch head bundle %d: %s", i, err.Error())})
+			return
+		}
+		headReaders[i] = bytes.NewReader(hb)
 	}
 	incrBytes, status, code, err := fetchURL(r.Context(), cli, req.UncommittedURL)
 	if err != nil {
@@ -140,7 +146,7 @@ func (m *Mux) handleSyncApplyFromURLs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := checkpoint.Apply(r.Context(), target, &manifest, bytes.NewReader(headBytes), bytes.NewReader(incrBytes)); err != nil {
+	if err := checkpoint.Apply(r.Context(), target, &manifest, headReaders, bytes.NewReader(incrBytes)); err != nil {
 		writeJSON(w, http.StatusInternalServerError, errResp{Code: syncErrApplyFailed, Error: err.Error()})
 		return
 	}

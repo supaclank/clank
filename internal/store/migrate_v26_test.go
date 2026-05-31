@@ -48,6 +48,35 @@ func seedV25Worktrees(t *testing.T, path string) {
 	}
 }
 
+// TestMigrateV27_CreatesHeadBundles pins that opening a store runs the
+// migration chain through v27 and creates the head_bundles table.
+func TestMigrateV27_CreatesHeadBundles(t *testing.T) {
+	t.Parallel()
+	path := tempDBPath(t)
+	_ = mustOpen(t, path) // runs migrations to the latest version
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("reopen raw db: %v", err)
+	}
+	defer db.Close()
+
+	var version int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatalf("read user_version: %v", err)
+	}
+	if version < 27 {
+		t.Errorf("user_version = %d, want >= 27", version)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='head_bundles'`).Scan(&n); err != nil {
+		t.Fatalf("probe head_bundles: %v", err)
+	}
+	if n != 1 {
+		t.Error("head_bundles table missing after migrate")
+	}
+}
+
 // TestMigrateV26_DropsOwnershipPreservesRows pins the v26 migration:
 // dropping the indexed owner_kind/owner_id columns must remove them
 // (and their index) while leaving every other column of existing rows

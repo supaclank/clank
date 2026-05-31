@@ -23,12 +23,14 @@ type memSyncStore struct {
 	mu          sync.Mutex
 	worktrees   map[string]clanksync.Worktree
 	checkpoints map[string]clanksync.Checkpoint
+	headBundles map[string]clanksync.HeadBundle // key: userID + "\x00" + tipSHA
 }
 
 func newMemSyncStore() *memSyncStore {
 	return &memSyncStore{
 		worktrees:   make(map[string]clanksync.Worktree),
 		checkpoints: make(map[string]clanksync.Checkpoint),
+		headBundles: make(map[string]clanksync.HeadBundle),
 	}
 }
 
@@ -105,6 +107,25 @@ func (m *memSyncStore) MarkCheckpointUploaded(_ context.Context, id string, when
 	}
 	c.UploadedAt = when
 	m.checkpoints[id] = c
+	return nil
+}
+func (m *memSyncStore) GetHeadBundle(_ context.Context, userID, tipSHA string) (clanksync.HeadBundle, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	hb, ok := m.headBundles[userID+"\x00"+tipSHA]
+	if !ok {
+		return clanksync.HeadBundle{}, clanksync.ErrHeadBundleNotFound
+	}
+	return hb, nil
+}
+func (m *memSyncStore) InsertHeadBundle(_ context.Context, hb clanksync.HeadBundle) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := hb.UserID + "\x00" + hb.TipSHA
+	if _, ok := m.headBundles[k]; ok {
+		return nil // INSERT OR IGNORE: first stored bundle for a tip wins
+	}
+	m.headBundles[k] = hb
 	return nil
 }
 
@@ -260,6 +281,34 @@ func TestCreateCheckpoint_DedupsHeadBundle(t *testing.T) {
 	// One shared head bundle + 2×{uncommitted, manifest} = 5 objects.
 	if n := len(mem.Keys()); n != 5 {
 		t.Fatalf("want 5 storage objects (1 shared head + 2 checkpoints), got %d: %v", n, mem.Keys())
+	}
+}
+
+// TestCreateCheckpoint_UnknownBaseFallsBackToFull pins the completeness
+// guard: when base_commit references a HEAD the server has never stored,
+// the client is told to upload a FULL bundle (not an incremental whose
+// base would be missing), keeping every chain complete to a baseline.
+func TestCreateCheckpoint_UnknownBaseFallsBackToFull(t *testing.T) {
+	t.Parallel()
+	httpSrv, _, _ := newTestServer(t)
+
+	wt := postJSON[map[string]any](t, httpSrv.URL+"/v1/worktrees", map[string]string{"display_name": "r"})
+	c := postJSON[map[string]any](t, httpSrv.URL+"/v1/checkpoints", map[string]string{
+		"worktree_id":        wt["id"].(string),
+		"head_commit":        "newhead",
+		"index_tree":         "1111",
+		"worktree_tree":      "2222",
+		"uncommitted_commit": "3333",
+		"base_commit":        "neverstored", // server has no such head bundle
+	})
+	if c["head_bundle_action"] != "upload_full" {
+		t.Fatalf("unknown base should fall back to upload_full, got %v", c["head_bundle_action"])
+	}
+	if u, _ := c["head_bundle_put_url"].(string); u == "" {
+		t.Fatal("upload_full must provide a head PUT URL")
+	}
+	if b, _ := c["head_bundle_base"].(string); b != "" {
+		t.Fatalf("full bundle should have no base, got %q", b)
 	}
 }
 

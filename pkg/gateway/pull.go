@@ -22,10 +22,17 @@ import (
 // SessionManifestURL + SessionBlobURLs ride alongside the code URLs
 // when the sprite had opencode sessions in the worktree. The laptop
 // fetches them after the code apply and imports them with sessionsync.
+type pullHeadBundle struct {
+	TipSHA  string `json:"tip_sha"`
+	BaseSHA string `json:"base_sha,omitempty"`
+	GetURL  string `json:"get_url"`
+}
+
 type pullResponse struct {
-	CheckpointID       string            `json:"checkpoint_id"`
-	ManifestURL        string            `json:"manifest_url"`
-	HeadCommitURL      string            `json:"head_commit_url"`
+	CheckpointID string `json:"checkpoint_id"`
+	ManifestURL  string `json:"manifest_url"`
+	// HeadBundles is the ordered (oldest→newest) head chain to fetch+apply.
+	HeadBundles        []pullHeadBundle  `json:"head_bundles"`
 	UncommittedURL     string            `json:"uncommitted_url"`
 	SessionManifestURL string            `json:"session_manifest_url,omitempty"`
 	SessionBlobURLs    map[string]string `json:"session_blob_urls,omitempty"`
@@ -53,6 +60,9 @@ func (g *Gateway) handlePullWorktree(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "worktree id missing", http.StatusBadRequest)
 		return
 	}
+	// The laptop's current HEAD, so we return only the head-chain slice it
+	// lacks (empty ⇒ fresh applier gets the full chain).
+	haveHead := r.URL.Query().Get("have_head")
 
 	wt, err := g.cfg.Sync.GetWorktree(r.Context(), userID, worktreeID)
 	if err != nil {
@@ -161,7 +171,7 @@ func (g *Gateway) handlePullWorktree(w http.ResponseWriter, r *http.Request) {
 	// storage). Runs only after both code AND session uploads
 	// succeeded so a partial-upload failure can't leak a pointer
 	// advance.
-	if _, err := g.cfg.Sync.CommitCheckpoint(r.Context(), userID, ck.CheckpointID); err != nil {
+	if _, err := g.cfg.Sync.CommitCheckpoint(r.Context(), userID, ck.CheckpointID, ck.HeadBundleBase); err != nil {
 		syncErrToHTTP(w, "commit checkpoint", err)
 		return
 	}
@@ -180,16 +190,20 @@ func (g *Gateway) handlePullWorktree(w http.ResponseWriter, r *http.Request) {
 		sessionManifestGetURL = sessionGets.SessionManifestGetURL
 		sessionBlobGetURLs = sessionGets.SessionGetURLs
 	}
-	gets, err := g.cfg.Sync.DownloadCheckpointURLs(r.Context(), userID, ck.CheckpointID)
+	gets, err := g.cfg.Sync.DownloadCheckpointURLs(r.Context(), userID, ck.CheckpointID, haveHead)
 	if err != nil {
 		syncErrToHTTP(w, "download checkpoint URLs", err)
 		return
+	}
+	heads := make([]pullHeadBundle, len(gets.HeadBundles))
+	for i, hb := range gets.HeadBundles {
+		heads[i] = pullHeadBundle{TipSHA: hb.TipSHA, BaseSHA: hb.BaseSHA, GetURL: hb.GetURL}
 	}
 
 	writeJSON(w, http.StatusOK, pullResponse{
 		CheckpointID:       ck.CheckpointID,
 		ManifestURL:        gets.ManifestGetURL,
-		HeadCommitURL:      gets.HeadCommitGetURL,
+		HeadBundles:        heads,
 		UncommittedURL:     gets.UncommittedURL,
 		SessionManifestURL: sessionManifestGetURL,
 		SessionBlobURLs:    sessionBlobGetURLs,

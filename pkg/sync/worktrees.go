@@ -15,6 +15,11 @@ var ErrWorktreeNotFound = errors.New("sync: worktree not found")
 // requested checkpoint row doesn't exist.
 var ErrCheckpointNotFound = errors.New("sync: checkpoint not found")
 
+// ErrHeadBundleNotFound is returned by SyncStore.GetHeadBundle when no
+// head-bundle row exists for the (userID, tipSHA). Drives the
+// full-vs-incremental decision on push and the chain walk on download.
+var ErrHeadBundleNotFound = errors.New("sync: head bundle not found")
+
 // ErrForbidden is returned by service-layer methods when the supplied
 // userID doesn't own the requested resource (tenancy check failed).
 // Caller-identity authorization (laptop vs sprite, etc.) is the HTTP
@@ -69,8 +74,20 @@ type Checkpoint struct {
 	UploadedAt        time.Time // zero until uploaded
 }
 
-// SyncStore is the persistence contract for worktrees + checkpoints.
-// Implementations MUST be safe for concurrent use.
+// HeadBundle is the metadata for one content-addressed head bundle: the
+// committed-history bundle ending at TipSHA, built from BaseSHA ("" = a
+// full baseline with no prerequisite). Shared across a user's
+// checkpoints/worktrees; the (BaseSHA → TipSHA) links form the chain.
+type HeadBundle struct {
+	UserID    string
+	TipSHA    string
+	BaseSHA   string // "" = full bundle (no prerequisite)
+	BlobKey   string
+	CreatedAt time.Time
+}
+
+// SyncStore is the persistence contract for worktrees + checkpoints +
+// head bundles. Implementations MUST be safe for concurrent use.
 type SyncStore interface {
 	GetWorktreeByID(ctx context.Context, id string) (Worktree, error)
 	ListWorktreesByUser(ctx context.Context, userID string) ([]Worktree, error)
@@ -81,6 +98,12 @@ type SyncStore interface {
 	ListCheckpointsByWorktree(ctx context.Context, worktreeID string, limit int) ([]Checkpoint, error)
 	InsertCheckpoint(ctx context.Context, c Checkpoint) error
 	MarkCheckpointUploaded(ctx context.Context, id string, when time.Time) error
+
+	// GetHeadBundle returns the head-bundle row for (userID, tipSHA), or
+	// ErrHeadBundleNotFound. InsertHeadBundle is idempotent on
+	// (userID, tipSHA) — the first stored bundle for a tip wins.
+	GetHeadBundle(ctx context.Context, userID, tipSHA string) (HeadBundle, error)
+	InsertHeadBundle(ctx context.Context, hb HeadBundle) error
 }
 
 // GetWorktree looks up a worktree by ID and verifies it belongs to
@@ -124,4 +147,3 @@ func (s *Server) RegisterPrebuiltWorktree(ctx context.Context, w Worktree) error
 	}
 	return s.cfg.Store.InsertWorktree(ctx, w)
 }
-
