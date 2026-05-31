@@ -222,6 +222,18 @@ func runPush(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *sy
 	done := timer.Start("push checkpoint")
 	res, err := cli.PushCheckpoint(ctx, worktreeID, absRepo, parity.RemoteHead)
 	done()
+	if errors.Is(err, syncclient.ErrWorktreeNotRegistered) {
+		// Stale local id: the worktree was deleted on the remote. Re-register
+		// and retry once with a full push — the fresh worktree has no synced
+		// HEAD, so the incremental base is "".
+		worktreeID, err = reregisterStaleWorktree(cmd, ctx, timer, cli, absRepo)
+		if err != nil {
+			return err
+		}
+		done = timer.Start("push checkpoint")
+		res, err = cli.PushCheckpoint(ctx, worktreeID, absRepo, "")
+		done()
+	}
 	if err != nil {
 		return fmt.Errorf("push checkpoint: %w", err)
 	}
@@ -232,6 +244,25 @@ func runPush(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *sy
 		return fmt.Errorf("push session leg: %w", err)
 	}
 	return nil
+}
+
+// reregisterStaleWorktree re-registers absRepo after the remote reported
+// the cached worktree-id is unknown (the worktree was deleted upstream),
+// rewrites the on-disk id cache, and returns the fresh id. Removes the
+// manual `rm -r .git/clank && clank init` recovery dance.
+func reregisterStaleWorktree(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *syncclient.Client, absRepo string) (string, error) {
+	name := filepath.Base(absRepo)
+	fmt.Fprintf(cmd.ErrOrStderr(), "worktree no longer exists on the remote; re-registering %q…\n", name)
+	done := timer.Start("re-register worktree")
+	id, err := cli.RegisterWorktree(ctx, name)
+	done()
+	if err != nil {
+		return "", fmt.Errorf("re-register worktree: %w", err)
+	}
+	if err := agent.WriteLocalWorktreeID(absRepo, id); err != nil {
+		return "", fmt.Errorf("cache worktree id: %w", err)
+	}
+	return id, nil
 }
 
 func shortSHA(s string) string {

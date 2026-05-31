@@ -91,6 +91,13 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath, baseC
 		ManifestPutURL   string `json:"manifest_put_url"`
 	}
 	if err := c.postJSON(ctx, "/v1/checkpoints", createReq, &createResp); err != nil {
+		// The create handler's only 404 is "worktree not registered" — a
+		// stale local id for a worktree deleted on the remote. Surface it
+		// typed so clank push can re-register and retry.
+		var he *httpError
+		if errors.As(err, &he) && he.Status == http.StatusNotFound {
+			return nil, fmt.Errorf("%w (id=%s)", ErrWorktreeNotRegistered, worktreeID)
+		}
 		return nil, err
 	}
 
@@ -166,7 +173,7 @@ func (c *Client) postJSON(ctx context.Context, path string, body any, into any) 
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("post %s: %d: %s", path, resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return &httpError{Path: path, Status: resp.StatusCode, Body: strings.TrimSpace(string(respBody))}
 	}
 	if into != nil {
 		if err := json.Unmarshal(respBody, into); err != nil {

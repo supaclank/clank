@@ -3,6 +3,7 @@ package syncclient_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -157,6 +158,45 @@ func TestCheckpointFlow_EndToEnd(t *testing.T) {
 		if string(gotContent) != wantContent {
 			t.Fatalf("%s mismatch: got %q want %q", rel, gotContent, wantContent)
 		}
+	}
+}
+
+// TestPushCheckpoint_UnregisteredWorktreeReturnsTypedError pins that a
+// 404 from the checkpoint-create path surfaces as the typed
+// ErrWorktreeNotRegistered (not an opaque string), which is the signal
+// clank push keys on to self-heal a stale local worktree-id.
+func TestPushCheckpoint_UnregisteredWorktreeReturnsTypedError(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	mem := storage.NewMemory()
+	defer mem.Close()
+	srv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpSrv := httptest.NewServer(fixedPrincipalMiddleware("user-A", srv.Handler()))
+	defer httpSrv.Close()
+	cli, err := syncclient.New(syncclient.Config{BaseURL: httpSrv.URL, AuthToken: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repo := setupRepo(t, ctx)
+	writeFile(t, repo, "main.go", "package main\n")
+	gitMustRun(t, ctx, repo, "add", ".")
+	gitMustRun(t, ctx, repo, "commit", "-m", "initial")
+
+	// Never registered → the server 404s the checkpoint-create.
+	_, err = cli.PushCheckpoint(ctx, "wt-does-not-exist", repo, "")
+	if !errors.Is(err, syncclient.ErrWorktreeNotRegistered) {
+		t.Fatalf("want ErrWorktreeNotRegistered, got %v", err)
 	}
 }
 
