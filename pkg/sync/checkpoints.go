@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/acksell/clank/pkg/sync/storage"
@@ -78,9 +79,25 @@ type CommitCheckpointResult struct {
 // the only layer that has a verified Caller. Gateway callers are
 // trusted in-process and skip the identity step.
 func (s *Server) CreateCheckpoint(ctx context.Context, userID string, req CreateCheckpointRequest) (CreateCheckpointResult, error) {
-	if req.WorktreeID == "" || req.HeadCommit == "" || req.IndexTree == "" ||
-		req.WorktreeTree == "" || req.UncommittedCommit == "" {
-		return CreateCheckpointResult{}, fmt.Errorf("%w: worktree_id, head_commit, index_tree, worktree_tree, uncommitted_commit are required", ErrInvalidRequest)
+	// Name the SPECIFIC missing field(s) — listing all of them masks the
+	// real cause (e.g. a laptop/clankd version skew where the client sent
+	// a renamed field, so the server sees one specific value empty).
+	var missing []string
+	for _, f := range []struct {
+		name, value string
+	}{
+		{"worktree_id", req.WorktreeID},
+		{"head_commit", req.HeadCommit},
+		{"index_tree", req.IndexTree},
+		{"worktree_tree", req.WorktreeTree},
+		{"uncommitted_commit", req.UncommittedCommit},
+	} {
+		if f.value == "" {
+			missing = append(missing, f.name)
+		}
+	}
+	if len(missing) > 0 {
+		return CreateCheckpointResult{}, fmt.Errorf("%w: missing required field(s): %s", ErrInvalidRequest, strings.Join(missing, ", "))
 	}
 	if req.CreatedBy == "" {
 		return CreateCheckpointResult{}, fmt.Errorf("%w: created_by is required", ErrInvalidRequest)
