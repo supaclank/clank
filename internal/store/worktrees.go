@@ -119,8 +119,8 @@ func (s *Store) ListCheckpointsByWorktree(ctx context.Context, worktreeID string
 // NULL until MarkCheckpointUploaded is called after both bundles
 // confirm.
 func (s *Store) InsertCheckpoint(ctx context.Context, c Checkpoint) error {
-	if c.ID == "" || c.WorktreeID == "" || c.HeadCommit == "" || c.IndexTree == "" || c.WorktreeTree == "" || c.IncrementalCommit == "" {
-		return fmt.Errorf("insert checkpoint: id, worktree_id, head_commit, index_tree, worktree_tree, incremental_commit are required")
+	if c.ID == "" || c.WorktreeID == "" || c.HeadCommit == "" || c.IndexTree == "" || c.WorktreeTree == "" || c.UncommittedCommit == "" {
+		return fmt.Errorf("insert checkpoint: id, worktree_id, head_commit, index_tree, worktree_tree, uncommitted_commit are required")
 	}
 	if c.CreatedAt.IsZero() {
 		c.CreatedAt = time.Now()
@@ -132,7 +132,9 @@ func (s *Store) InsertCheckpoint(ctx context.Context, c Checkpoint) error {
 		HeadRef:           c.HeadRef,
 		IndexTree:         c.IndexTree,
 		WorktreeTree:      c.WorktreeTree,
-		IncrementalCommit: c.IncrementalCommit,
+		// sqlc column keeps its legacy name `incremental_commit`; the
+		// domain field is UncommittedCommit (renamed for clarity).
+		IncrementalCommit: c.UncommittedCommit,
 		CreatedAt:         c.CreatedAt,
 		CreatedBy:         c.CreatedBy,
 	})
@@ -167,7 +169,7 @@ func checkpointFromRow(r sqlitedb.Checkpoint) Checkpoint {
 		HeadRef:           r.HeadRef,
 		IndexTree:         r.IndexTree,
 		WorktreeTree:      r.WorktreeTree,
-		IncrementalCommit: r.IncrementalCommit,
+		UncommittedCommit: r.IncrementalCommit, // legacy column name; see InsertCheckpoint
 		CreatedAt:         r.CreatedAt,
 		CreatedBy:         r.CreatedBy,
 	}

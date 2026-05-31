@@ -33,7 +33,7 @@ type CheckpointMetadata struct {
 	HeadRef           string `json:"head_ref,omitempty"`
 	IndexTree         string `json:"index_tree"`
 	WorktreeTree      string `json:"worktree_tree"`
-	IncrementalCommit string `json:"incremental_commit"`
+	UncommittedCommit string `json:"uncommitted_commit"`
 }
 
 // GetWorktree fetches a single worktree row, including the latest

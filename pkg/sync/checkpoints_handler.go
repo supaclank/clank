@@ -54,7 +54,7 @@ type checkpointSnapshot struct {
 	HeadRef           string `json:"head_ref,omitempty"`
 	IndexTree         string `json:"index_tree"`
 	WorktreeTree      string `json:"worktree_tree"`
-	IncrementalCommit string `json:"incremental_commit"`
+	UncommittedCommit string `json:"uncommitted_commit"`
 }
 
 // handleListWorktrees returns all worktrees belonging to the caller.
@@ -129,7 +129,7 @@ func (s *Server) attachCheckpointSnapshot(ctx context.Context, resp *worktreeRes
 		HeadRef:           ck.HeadRef,
 		IndexTree:         ck.IndexTree,
 		WorktreeTree:      ck.WorktreeTree,
-		IncrementalCommit: ck.IncrementalCommit,
+		UncommittedCommit: ck.UncommittedCommit,
 	}
 }
 
@@ -186,13 +186,13 @@ type createCheckpointRequest struct {
 	HeadRef           string `json:"head_ref"`
 	IndexTree         string `json:"index_tree"`
 	WorktreeTree      string `json:"worktree_tree"`
-	IncrementalCommit string `json:"incremental_commit"`
+	UncommittedCommit string `json:"uncommitted_commit"`
 }
 
 type createCheckpointResponse struct {
 	CheckpointID     string    `json:"checkpoint_id"`
 	HeadCommitPutURL string    `json:"head_commit_put_url"`
-	IncrementalURL   string    `json:"incremental_put_url"`
+	UncommittedURL   string    `json:"uncommitted_put_url"`
 	ManifestPutURL   string    `json:"manifest_put_url"`
 	TTLSeconds       int       `json:"ttl_seconds"`
 	CreatedAt        time.Time `json:"created_at"`
@@ -234,7 +234,7 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 		HeadRef:           req.HeadRef,
 		IndexTree:         req.IndexTree,
 		WorktreeTree:      req.WorktreeTree,
-		IncrementalCommit: req.IncrementalCommit,
+		UncommittedCommit: req.UncommittedCommit,
 		CreatedBy:         createdByFor(caller),
 	})
 	if err != nil {
@@ -257,7 +257,7 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusCreated, createCheckpointResponse{
 		CheckpointID:     result.CheckpointID,
 		HeadCommitPutURL: result.HeadCommitPutURL,
-		IncrementalURL:   result.IncrementalURL,
+		UncommittedURL:   result.UncommittedURL,
 		ManifestPutURL:   result.ManifestPutURL,
 		TTLSeconds:       int(result.PresignTTL.Seconds()),
 		CreatedAt:        result.CreatedAt,
@@ -312,7 +312,7 @@ func (s *Server) handleCommitCheckpoint(w http.ResponseWriter, r *http.Request) 
 type downloadCheckpointResponse struct {
 	CheckpointID     string `json:"checkpoint_id"`
 	HeadCommitGetURL string `json:"head_commit_get_url"`
-	IncrementalURL   string `json:"incremental_get_url"`
+	UncommittedURL   string `json:"uncommitted_get_url"`
 	ManifestGetURL   string `json:"manifest_get_url"`
 	TTLSeconds       int    `json:"ttl_seconds"`
 }
@@ -340,7 +340,7 @@ func (s *Server) handleDownloadCheckpoint(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, downloadCheckpointResponse{
 		CheckpointID:     urls.CheckpointID,
 		HeadCommitGetURL: urls.HeadCommitGetURL,
-		IncrementalURL:   urls.IncrementalURL,
+		UncommittedURL:   urls.UncommittedURL,
 		ManifestGetURL:   urls.ManifestGetURL,
 		TTLSeconds:       int(s.cfg.PresignTTL.Seconds()),
 	})
@@ -441,7 +441,7 @@ func httpStatusForLookupErr(err error) int {
 
 func (s *Server) presignCheckpointPuts(ctx context.Context, userID, worktreeID, checkpointID string) (map[storage.Blob]string, error) {
 	out := make(map[storage.Blob]string, 3)
-	for _, blob := range []storage.Blob{storage.BlobHeadCommit, storage.BlobIncremental, storage.BlobManifest} {
+	for _, blob := range []storage.Blob{storage.BlobHeadCommit, storage.BlobUncommitted, storage.BlobManifest} {
 		key, err := storage.KeyFor(userID, worktreeID, checkpointID, blob)
 		if err != nil {
 			return nil, fmt.Errorf("key for %s: %w", blob, err)

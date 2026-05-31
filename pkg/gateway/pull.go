@@ -26,7 +26,7 @@ type pullResponse struct {
 	CheckpointID       string            `json:"checkpoint_id"`
 	ManifestURL        string            `json:"manifest_url"`
 	HeadCommitURL      string            `json:"head_commit_url"`
-	IncrementalURL     string            `json:"incremental_url"`
+	UncommittedURL     string            `json:"uncommitted_url"`
 	SessionManifestURL string            `json:"session_manifest_url,omitempty"`
 	SessionBlobURLs    map[string]string `json:"session_blob_urls,omitempty"`
 }
@@ -92,7 +92,7 @@ func (g *Gateway) handlePullWorktree(w http.ResponseWriter, r *http.Request) {
 		HeadRef:           build.HeadRef,
 		IndexTree:         build.IndexTree,
 		WorktreeTree:      build.WorktreeTree,
-		IncrementalCommit: build.IncrementalCommit,
+		UncommittedCommit: build.UncommittedCommit,
 		CreatedBy:         "sprite:" + hostRef.HostID,
 	})
 	if err != nil {
@@ -105,7 +105,7 @@ func (g *Gateway) handlePullWorktree(w http.ResponseWriter, r *http.Request) {
 		CheckpointID:      ck.CheckpointID,
 		ManifestPutURL:    ck.ManifestPutURL,
 		HeadCommitPutURL:  ck.HeadCommitPutURL,
-		IncrementalPutURL: ck.IncrementalURL,
+		UncommittedPutURL: ck.UncommittedURL,
 	}); err != nil {
 		g.log.Printf("gateway materialize: sprite upload: %v", err)
 		http.Error(w, "sprite upload: "+err.Error(), http.StatusBadGateway)
@@ -188,7 +188,7 @@ func (g *Gateway) handlePullWorktree(w http.ResponseWriter, r *http.Request) {
 		CheckpointID:       ck.CheckpointID,
 		ManifestURL:        gets.ManifestGetURL,
 		HeadCommitURL:      gets.HeadCommitGetURL,
-		IncrementalURL:     gets.IncrementalURL,
+		UncommittedURL:     gets.UncommittedURL,
 		SessionManifestURL: sessionManifestGetURL,
 		SessionBlobURLs:    sessionBlobGetURLs,
 	})
@@ -204,7 +204,7 @@ type spriteBuildResult struct {
 	HeadRef           string `json:"head_ref"`
 	IndexTree         string `json:"index_tree"`
 	WorktreeTree      string `json:"worktree_tree"`
-	IncrementalCommit string `json:"incremental_commit"`
+	UncommittedCommit string `json:"uncommitted_commit"`
 }
 
 // TODO(coderabbit): collapse the six sprite-request helpers below
@@ -254,7 +254,7 @@ type spriteUploadParams struct {
 	CheckpointID      string `json:"checkpoint_id"`
 	ManifestPutURL    string `json:"manifest_put_url"`
 	HeadCommitPutURL  string `json:"head_commit_put_url"`
-	IncrementalPutURL string `json:"incremental_put_url"`
+	UncommittedPutURL string `json:"uncommitted_put_url"`
 }
 
 // triggerSpriteUpload POSTs to /sync/builds/{id}/upload on the sprite.
@@ -323,9 +323,9 @@ func deleteSpriteBuild(ctx context.Context, baseClient *http.Client, hostRef pro
 // /sync/sessions/build's response (sessionBuildResponse in
 // internal/host/mux/sessions_sync.go).
 type spriteSessionBuildResult struct {
-	BuildID string                                   `json:"build_id"`
-	Entries []spriteSessionEntry                     `json:"entries"`
-	Skipped []spriteSkippedSession                   `json:"skipped"`
+	BuildID string                 `json:"build_id"`
+	Entries []spriteSessionEntry   `json:"entries"`
+	Skipped []spriteSkippedSession `json:"skipped"`
 }
 
 // spriteSessionEntry is the on-the-wire shape of

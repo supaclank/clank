@@ -65,7 +65,7 @@ func TestCheckpoints_InsertAndPointerAdvance(t *testing.T) {
 		HeadRef:           "main",
 		IndexTree:         "1111",
 		WorktreeTree:      "2222",
-		IncrementalCommit: "3333",
+		UncommittedCommit: "3333",
 		CreatedBy:         "laptop:dev-1",
 	}
 	if err := s.InsertCheckpoint(ctx, c); err != nil {
@@ -76,7 +76,7 @@ func TestCheckpoints_InsertAndPointerAdvance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.HeadCommit != "deadbeef" || got.IncrementalCommit != "3333" {
+	if got.HeadCommit != "deadbeef" || got.UncommittedCommit != "3333" {
 		t.Fatalf("checkpoint round-trip mismatch: %+v", got)
 	}
 	if !got.UploadedAt.IsZero() {

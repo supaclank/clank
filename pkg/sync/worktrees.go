@@ -63,7 +63,7 @@ type Checkpoint struct {
 	HeadRef           string
 	IndexTree         string
 	WorktreeTree      string
-	IncrementalCommit string
+	UncommittedCommit string
 	CreatedAt         time.Time
 	CreatedBy         string
 	UploadedAt        time.Time // zero until uploaded

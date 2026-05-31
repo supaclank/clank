@@ -17,7 +17,7 @@ const keySessionDir = "sessions"
 // blob, addressed as a sibling of the code bundles inside a
 // checkpoint. Layout:
 //
-//	checkpoints/<userID>/<worktreeID>/<checkpointID>/sessions/<sessionULID>.json
+//	<userID>/checkpoints/<worktreeID>/<checkpointID>/sessions/<sessionULID>.json
 //
 // sessionULID is the host-side ULID (SessionInfo.ID) — cross-machine
 // stable. Every component is validated for path safety; userID MUST
@@ -35,6 +35,6 @@ func KeyForSession(userID, worktreeID, checkpointID, sessionULID string) (string
 			return "", err
 		}
 	}
-	return path.Join("checkpoints", userID, worktreeID, checkpointID, keySessionDir, sessionULID+".json"), nil
+	return path.Join(userID, "checkpoints", worktreeID, checkpointID, keySessionDir, sessionULID+".json"), nil
 }
 

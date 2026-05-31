@@ -41,7 +41,7 @@ func newSessionsTestServer(t *testing.T) (*clanksync.Server, *memSyncStore, *sto
 		HeadCommit:        "deadbeef",
 		IndexTree:         "1111",
 		WorktreeTree:      "2222",
-		IncrementalCommit: "3333",
+		UncommittedCommit: "3333",
 		CreatedAt:         now,
 		CreatedBy:         "test",
 	}); err != nil {
@@ -88,7 +88,7 @@ func TestPresignSessionPuts_HappyPath(t *testing.T) {
 	// Upload to the per-session URL and verify it lands in storage.
 	uploadTo(t, res.SessionPutURLs["01H0"], []byte(`{"info":{"id":"ses_a"}}`))
 	keys := mem.Keys()
-	want := "checkpoints/" + userID + "/wt-sessions/" + checkpointID + "/sessions/01H0.json"
+	want := userID + "/checkpoints/wt-sessions/" + checkpointID + "/sessions/01H0.json"
 	var found bool
 	for _, k := range keys {
 		if k == want {

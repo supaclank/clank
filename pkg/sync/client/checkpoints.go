@@ -73,12 +73,12 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath string
 		"head_ref":           res.Manifest.HeadRef,
 		"index_tree":         res.Manifest.IndexTree,
 		"worktree_tree":      res.Manifest.WorktreeTree,
-		"incremental_commit": res.Manifest.IncrementalCommit,
+		"uncommitted_commit": res.Manifest.UncommittedCommit,
 	}
 	var createResp struct {
 		CheckpointID     string `json:"checkpoint_id"`
 		HeadCommitPutURL string `json:"head_commit_put_url"`
-		IncrementalURL   string `json:"incremental_put_url"`
+		UncommittedURL   string `json:"uncommitted_put_url"`
 		ManifestPutURL   string `json:"manifest_put_url"`
 	}
 	if err := c.postJSON(ctx, "/v1/checkpoints", createReq, &createResp); err != nil {
@@ -100,8 +100,8 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath string
 	if err := uploadFile(ctx, c.blobClient, createResp.HeadCommitPutURL, res.HeadCommitBundle); err != nil {
 		return nil, fmt.Errorf("upload headCommit: %w", err)
 	}
-	if err := uploadFile(ctx, c.blobClient, createResp.IncrementalURL, res.IncrementalBundle); err != nil {
-		return nil, fmt.Errorf("upload incremental: %w", err)
+	if err := uploadFile(ctx, c.blobClient, createResp.UncommittedURL, res.UncommittedBundle); err != nil {
+		return nil, fmt.Errorf("upload uncommitted: %w", err)
 	}
 	manifestBytes, err := res.Manifest.Marshal()
 	if err != nil {

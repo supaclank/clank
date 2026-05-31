@@ -31,6 +31,6 @@ func TestCreateCheckpoint_CrossTenantForbidden(t *testing.T) {
 		"head_commit":        "deadbeef",
 		"index_tree":         "1111",
 		"worktree_tree":      "2222",
-		"incremental_commit": "3333",
+		"uncommitted_commit": "3333",
 	}, http.StatusForbidden)
 }

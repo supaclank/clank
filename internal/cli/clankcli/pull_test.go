@@ -72,14 +72,14 @@ func newPullFixture(t *testing.T) *pullFixture {
 				"checkpoint_id": "ckpt1",
 				"manifest_url": "` + base + `/manifest",
 				"head_commit_url": "` + base + `/head",
-				"incremental_url": "` + base + `/incr"
+				"uncommitted_url": "` + base + `/incr"
 			}`))
 		case r.URL.Path == "/manifest":
 			_, _ = w.Write(manifestBytes)
 		case r.URL.Path == "/head":
 			http.ServeFile(w, r, res.HeadCommitBundle)
 		case r.URL.Path == "/incr":
-			http.ServeFile(w, r, res.IncrementalBundle)
+			http.ServeFile(w, r, res.UncommittedBundle)
 		default:
 			http.NotFound(w, r)
 		}

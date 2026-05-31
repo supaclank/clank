@@ -94,7 +94,7 @@ func TestCheckpointFlow_EndToEnd(t *testing.T) {
 	if len(keys) != 3 {
 		t.Fatalf("want 3 storage objects, got %d: %v", len(keys), keys)
 	}
-	prefix := "checkpoints/user-A/" + wtID + "/" + pushRes.CheckpointID + "/"
+	prefix := "user-A/checkpoints/" + wtID + "/" + pushRes.CheckpointID + "/"
 	for _, k := range keys {
 		if !strings.HasPrefix(k, prefix) {
 			t.Fatalf("key %q missing prefix %q", k, prefix)
@@ -120,7 +120,7 @@ func TestCheckpointFlow_EndToEnd(t *testing.T) {
 	// Pull the bundles back from storage and apply to a fresh repo.
 	dest := t.TempDir()
 	headBundle, _ := mem.Get(prefix + "headCommit.bundle")
-	incrBundle, _ := mem.Get(prefix + "incremental.bundle")
+	incrBundle, _ := mem.Get(prefix + "uncommitted.bundle")
 	if len(headBundle) == 0 || len(incrBundle) == 0 {
 		t.Fatalf("missing bundles in storage; keys: %v", keys)
 	}

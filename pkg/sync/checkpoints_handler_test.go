@@ -162,12 +162,12 @@ func TestCheckpointFlow_HappyPath(t *testing.T) {
 		"head_ref":           "main",
 		"index_tree":         "1111",
 		"worktree_tree":      "2222",
-		"incremental_commit": "3333",
+		"uncommitted_commit": "3333",
 			}
 	create := postJSON[map[string]any](t, httpSrv.URL+"/v1/checkpoints", createReq)
 	checkpointID := create["checkpoint_id"].(string)
 	headPutURL := create["head_commit_put_url"].(string)
-	incrPutURL := create["incremental_put_url"].(string)
+	incrPutURL := create["uncommitted_put_url"].(string)
 	manifestPutURL := create["manifest_put_url"].(string)
 	if checkpointID == "" || headPutURL == "" || incrPutURL == "" || manifestPutURL == "" {
 		t.Fatalf("bad create response: %v", create)
@@ -217,7 +217,7 @@ func TestCommitCheckpoint_RejectsIfBlobMissing(t *testing.T) {
 		"head_commit":        "x",
 		"index_tree":         "x",
 		"worktree_tree":      "x",
-		"incremental_commit": "x",
+		"uncommitted_commit": "x",
 			})
 	checkpointID := create["checkpoint_id"].(string)
 
@@ -246,7 +246,7 @@ func TestCreateCheckpoint_MissingFieldsReturns400(t *testing.T) {
 		"worktree_id":        worktreeID,
 		"index_tree":         "x",
 		"worktree_tree":      "x",
-		"incremental_commit": "x",
+		"uncommitted_commit": "x",
 	}, http.StatusBadRequest)
 	if !strings.Contains(string(resp), "head_commit") {
 		t.Fatalf("400 body should name the missing field, got %q", resp)
@@ -270,7 +270,7 @@ func TestMultipleLaptopsSameUserShare(t *testing.T) {
 		"head_commit":        "x",
 		"index_tree":         "x",
 		"worktree_tree":      "x",
-		"incremental_commit": "x",
+		"uncommitted_commit": "x",
 	})
 	if id, _ := create["checkpoint_id"].(string); id == "" {
 		t.Fatalf("expected checkpoint_id, got %v", create)

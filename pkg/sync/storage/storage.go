@@ -7,9 +7,10 @@
 // works against AWS S3, Cloudflare R2, Tigris, MinIO, and any other
 // S3-compatible API. The Memory implementation is for tests.
 //
-// Path convention (see KeyFor): every blob lives at
+// Path convention (see KeyFor): every blob lives under a per-tenant
+// prefix at
 //
-//	checkpoints/<userID>/<worktreeID>/<checkpointID>/<blob>
+//	<userID>/checkpoints/<worktreeID>/<checkpointID>/<blob>
 //
 // where userID always comes from validated token claims, never from
 // untrusted request input. KeyFor refuses any component containing
@@ -33,7 +34,7 @@ type Blob string
 
 const (
 	BlobHeadCommit  Blob = "headCommit.bundle"
-	BlobIncremental Blob = "incremental.bundle"
+	BlobUncommitted Blob = "uncommitted.bundle"
 	BlobManifest    Blob = "manifest.json"
 )
 
@@ -41,7 +42,7 @@ const (
 // outside this set returns ErrInvalidPathComponent from KeyFor.
 var validBlobs = map[Blob]bool{
 	BlobHeadCommit:      true,
-	BlobIncremental:     true,
+	BlobUncommitted:     true,
 	BlobManifest:        true,
 	BlobSessionManifest: true,
 }
@@ -80,10 +81,10 @@ type Storage interface {
 // in particular MUST come from authenticated token claims, never from
 // query parameters or request body.
 //
-// For the headCommit blob specifically, the checkpointID should encode
-// the head SHA so that re-pushes of the same HEAD reuse the existing
-// object (content-addressed dedup). For incremental and manifest
-// blobs, the checkpointID is the per-push ULID.
+// The per-checkpoint blobs (uncommitted bundle, manifest, session
+// blobs) use the per-push checkpoint ULID. The head bundle is NOT a
+// per-checkpoint blob — it's content-addressed by HEAD SHA via
+// KeyForHead and shared across checkpoints.
 func KeyFor(userID, worktreeID, checkpointID string, blob Blob) (string, error) {
 	if !validBlobs[blob] {
 		return "", fmt.Errorf("%w: blob %q not in validBlobs", ErrInvalidPathComponent, blob)
@@ -99,7 +100,7 @@ func KeyFor(userID, worktreeID, checkpointID string, blob Blob) (string, error) 
 			return "", err
 		}
 	}
-	return path.Join("checkpoints", userID, worktreeID, checkpointID, string(blob)), nil
+	return path.Join(userID, "checkpoints", worktreeID, checkpointID, string(blob)), nil
 }
 
 // validateComponent rejects empty strings, anything containing path

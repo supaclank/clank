@@ -19,7 +19,7 @@ type CreateCheckpointRequest struct {
 	HeadRef           string
 	IndexTree         string
 	WorktreeTree      string
-	IncrementalCommit string
+	UncommittedCommit string
 	CreatedBy         string
 }
 
@@ -27,7 +27,7 @@ type CreateCheckpointRequest struct {
 type CreateCheckpointResult struct {
 	CheckpointID     string
 	HeadCommitPutURL string
-	IncrementalURL   string
+	UncommittedURL   string
 	ManifestPutURL   string
 	PresignTTL       time.Duration
 	CreatedAt        time.Time
@@ -52,8 +52,8 @@ type CommitCheckpointResult struct {
 // trusted in-process and skip the identity step.
 func (s *Server) CreateCheckpoint(ctx context.Context, userID string, req CreateCheckpointRequest) (CreateCheckpointResult, error) {
 	if req.WorktreeID == "" || req.HeadCommit == "" || req.IndexTree == "" ||
-		req.WorktreeTree == "" || req.IncrementalCommit == "" {
-		return CreateCheckpointResult{}, fmt.Errorf("%w: worktree_id, head_commit, index_tree, worktree_tree, incremental_commit are required", ErrInvalidRequest)
+		req.WorktreeTree == "" || req.UncommittedCommit == "" {
+		return CreateCheckpointResult{}, fmt.Errorf("%w: worktree_id, head_commit, index_tree, worktree_tree, uncommitted_commit are required", ErrInvalidRequest)
 	}
 	if req.CreatedBy == "" {
 		return CreateCheckpointResult{}, fmt.Errorf("%w: created_by is required", ErrInvalidRequest)
@@ -79,7 +79,7 @@ func (s *Server) CreateCheckpoint(ctx context.Context, userID string, req Create
 		HeadRef:           req.HeadRef,
 		IndexTree:         req.IndexTree,
 		WorktreeTree:      req.WorktreeTree,
-		IncrementalCommit: req.IncrementalCommit,
+		UncommittedCommit: req.UncommittedCommit,
 		CreatedAt:         now,
 		CreatedBy:         req.CreatedBy,
 	}
@@ -95,7 +95,7 @@ func (s *Server) CreateCheckpoint(ctx context.Context, userID string, req Create
 	return CreateCheckpointResult{
 		CheckpointID:     checkpointID,
 		HeadCommitPutURL: urls[storage.BlobHeadCommit],
-		IncrementalURL:   urls[storage.BlobIncremental],
+		UncommittedURL:   urls[storage.BlobUncommitted],
 		ManifestPutURL:   urls[storage.BlobManifest],
 		PresignTTL:       s.cfg.PresignTTL,
 		CreatedAt:        now,
@@ -115,7 +115,7 @@ func (s *Server) CommitCheckpoint(ctx context.Context, userID, checkpointID stri
 		return CommitCheckpointResult{}, err
 	}
 
-	for _, blob := range []storage.Blob{storage.BlobHeadCommit, storage.BlobIncremental, storage.BlobManifest} {
+	for _, blob := range []storage.Blob{storage.BlobHeadCommit, storage.BlobUncommitted, storage.BlobManifest} {
 		key, err := storage.KeyFor(wt.UserID, wt.ID, ck.ID, blob)
 		if err != nil {
 			return CommitCheckpointResult{}, fmt.Errorf("sync: build key: %w", err)
@@ -157,7 +157,7 @@ func (s *Server) DownloadCheckpointURLs(ctx context.Context, userID, checkpointI
 	}
 
 	urls := make(map[storage.Blob]string, 3)
-	for _, blob := range []storage.Blob{storage.BlobHeadCommit, storage.BlobIncremental, storage.BlobManifest} {
+	for _, blob := range []storage.Blob{storage.BlobHeadCommit, storage.BlobUncommitted, storage.BlobManifest} {
 		key, err := storage.KeyFor(wt.UserID, wt.ID, ck.ID, blob)
 		if err != nil {
 			return CheckpointDownloadURLs{}, fmt.Errorf("sync: build key: %w", err)
@@ -172,7 +172,7 @@ func (s *Server) DownloadCheckpointURLs(ctx context.Context, userID, checkpointI
 	return CheckpointDownloadURLs{
 		CheckpointID:     ck.ID,
 		HeadCommitGetURL: urls[storage.BlobHeadCommit],
-		IncrementalURL:   urls[storage.BlobIncremental],
+		UncommittedURL:   urls[storage.BlobUncommitted],
 		ManifestGetURL:   urls[storage.BlobManifest],
 	}, nil
 }
@@ -181,6 +181,6 @@ func (s *Server) DownloadCheckpointURLs(ctx context.Context, userID, checkpointI
 type CheckpointDownloadURLs struct {
 	CheckpointID     string
 	HeadCommitGetURL string
-	IncrementalURL   string
+	UncommittedURL   string
 	ManifestGetURL   string
 }

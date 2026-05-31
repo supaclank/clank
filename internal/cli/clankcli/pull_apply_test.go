@@ -57,7 +57,7 @@ func TestApplyRemotePull(t *testing.T) {
 		case "/head":
 			http.ServeFile(w, r, res.HeadCommitBundle)
 		case "/incr":
-			http.ServeFile(w, r, res.IncrementalBundle)
+			http.ServeFile(w, r, res.UncommittedBundle)
 		default:
 			http.NotFound(w, r)
 		}
@@ -67,7 +67,7 @@ func TestApplyRemotePull(t *testing.T) {
 		CheckpointID:   "ckpt1",
 		ManifestURL:    srv.URL + "/manifest",
 		HeadCommitURL:  srv.URL + "/head",
-		IncrementalURL: srv.URL + "/incr",
+		UncommittedURL: srv.URL + "/incr",
 	}
 
 	// Fast-forwardable dest (clone reset to commit1) → applies the sandbox state.

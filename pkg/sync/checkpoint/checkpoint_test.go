@@ -133,7 +133,7 @@ func TestApply_RemovesStaleUntracked(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		incr, err := os.Open(res.IncrementalBundle)
+		incr, err := os.Open(res.UncommittedBundle)
 		if err != nil {
 			head.Close()
 			t.Fatal(err)
@@ -178,7 +178,7 @@ func TestManifest_RoundTripJSON(t *testing.T) {
 		HeadRef:           "main",
 		IndexTree:         "1111",
 		WorktreeTree:      "2222",
-		IncrementalCommit: "3333",
+		UncommittedCommit: "3333",
 		CreatedAt:         time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
 		CreatedBy:         "laptop:dev",
 	}
@@ -194,7 +194,7 @@ func TestManifest_RoundTripJSON(t *testing.T) {
 		got.HeadRef != want.HeadRef ||
 		got.IndexTree != want.IndexTree ||
 		got.WorktreeTree != want.WorktreeTree ||
-		got.IncrementalCommit != want.IncrementalCommit ||
+		got.UncommittedCommit != want.UncommittedCommit ||
 		!got.CreatedAt.Equal(want.CreatedAt) ||
 		got.CreatedBy != want.CreatedBy {
 		t.Fatalf("manifest round-trip mismatch:\n want %+v\n got  %+v", want, got)
@@ -278,7 +278,7 @@ func roundTripAndAssert(t *testing.T, ctx context.Context, repo, checkpointID st
 		t.Fatal(err)
 	}
 	defer headBundle.Close()
-	incrBundle, err := os.Open(res.IncrementalBundle)
+	incrBundle, err := os.Open(res.UncommittedBundle)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,7 @@ func TestRoundTrip_PreservesOriginRemote(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer headBundle.Close()
-	incrBundle, err := os.Open(res.IncrementalBundle)
+	incrBundle, err := os.Open(res.UncommittedBundle)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +392,7 @@ func TestRoundTrip_NoOriginIsHandledGracefully(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer headBundle.Close()
-	incrBundle, err := os.Open(res.IncrementalBundle)
+	incrBundle, err := os.Open(res.UncommittedBundle)
 	if err != nil {
 		t.Fatal(err)
 	}

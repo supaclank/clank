@@ -19,7 +19,7 @@ type PullResult struct {
 	CheckpointID       string            `json:"checkpoint_id"`
 	ManifestURL        string            `json:"manifest_url"`
 	HeadCommitURL      string            `json:"head_commit_url"`
-	IncrementalURL     string            `json:"incremental_url"`
+	UncommittedURL     string            `json:"uncommitted_url"`
 	SessionManifestURL string            `json:"session_manifest_url,omitempty"`
 	SessionBlobURLs    map[string]string `json:"session_blob_urls,omitempty"`
 }
@@ -59,7 +59,7 @@ func (c *Client) PullWorktree(ctx context.Context, worktreeID string) (*PullResu
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, fmt.Errorf("decode pull response: %w", err)
 	}
-	if out.ManifestURL == "" || out.HeadCommitURL == "" || out.IncrementalURL == "" {
+	if out.ManifestURL == "" || out.HeadCommitURL == "" || out.UncommittedURL == "" {
 		return nil, fmt.Errorf("pull worktree: incomplete response (missing bundle URLs)")
 	}
 	return &out, nil

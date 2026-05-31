@@ -60,9 +60,9 @@ func applyRemotePull(ctx context.Context, httpClient *http.Client, repoPath stri
 			shortSHA(localHEAD), shortSHA(manifest.HeadCommit))
 	}
 
-	incrBytes, err := fetchURL(ctx, httpClient, mres.IncrementalURL)
+	incrBytes, err := fetchURL(ctx, httpClient, mres.UncommittedURL)
 	if err != nil {
-		return fmt.Errorf("fetch incremental bundle: %w", err)
+		return fmt.Errorf("fetch uncommitted bundle: %w", err)
 	}
 	if err := checkpoint.Apply(ctx, repoPath, manifest, bytes.NewReader(headBytes), bytes.NewReader(incrBytes)); err != nil {
 		return fmt.Errorf("apply checkpoint: %w", err)

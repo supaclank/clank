@@ -18,7 +18,7 @@ func TestKeyFor_Valid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "checkpoints/user-A/wt-123/ck-456/manifest.json"
+	want := "user-A/checkpoints/wt-123/ck-456/manifest.json"
 	if got != want {
 		t.Fatalf("KeyFor mismatch: got %q want %q", got, want)
 	}
@@ -175,7 +175,7 @@ func TestMemory_ExpiredURLRefused(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	key, err := storage.KeyFor("u", "wt", "ck", storage.BlobIncremental)
+	key, err := storage.KeyFor("u", "wt", "ck", storage.BlobUncommitted)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestMemory_ExistsFalseForMissing(t *testing.T) {
 	mem := storage.NewMemory()
 	defer mem.Close()
 	ctx := context.Background()
-	exists, err := mem.Exists(ctx, "checkpoints/u/wt/ck/manifest.json")
+	exists, err := mem.Exists(ctx, "u/checkpoints/wt/ck/manifest.json")
 	if err != nil {
 		t.Fatal(err)
 	}

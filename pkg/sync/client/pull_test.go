@@ -23,7 +23,7 @@ func TestPullWorktree_DecodesResponse(t *testing.T) {
 			"checkpoint_id": "ck-9",
 			"manifest_url": "https://s3/manifest",
 			"head_commit_url": "https://s3/head",
-			"incremental_url": "https://s3/incr",
+			"uncommitted_url": "https://s3/incr",
 			"session_manifest_url": "https://s3/sessions.json",
 			"session_blob_urls": {"sess-1": "https://s3/sess-1"}
 		}`))

@@ -72,7 +72,7 @@ type applyFromURLsRequest struct {
 	Repo           string `json:"repo"`
 	ManifestURL    string `json:"manifest_url"`
 	HeadCommitURL  string `json:"head_commit_url"`
-	IncrementalURL string `json:"incremental_url"`
+	UncommittedURL string `json:"uncommitted_url"`
 }
 
 // handleSyncApplyFromURLs is the pull-based counterpart to
@@ -85,7 +85,7 @@ type applyFromURLsRequest struct {
 // bad_request so the gateway can decide whether to retry.
 //
 // TODO(coderabbit): bound manifest via io.LimitReader before ReadAll;
-// stream head/incremental bundles into checkpoint.Apply rather than
+// stream head/uncommitted bundles into checkpoint.Apply rather than
 // buffering. https://github.com/Acksell/clank/pull/17#discussion_r3227672622
 func (m *Mux) handleSyncApplyFromURLs(w http.ResponseWriter, r *http.Request) {
 	var req applyFromURLsRequest
@@ -97,8 +97,8 @@ func (m *Mux) handleSyncApplyFromURLs(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_repo", Error: "repo must be a single non-empty path segment without '..' or '/'"})
 		return
 	}
-	if req.ManifestURL == "" || req.HeadCommitURL == "" || req.IncrementalURL == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Code: syncErrBadRequest, Error: "manifest_url, head_commit_url, and incremental_url are all required"})
+	if req.ManifestURL == "" || req.HeadCommitURL == "" || req.UncommittedURL == "" {
+		writeJSON(w, http.StatusBadRequest, errResp{Code: syncErrBadRequest, Error: "manifest_url, head_commit_url, and uncommitted_url are all required"})
 		return
 	}
 
@@ -134,9 +134,9 @@ func (m *Mux) handleSyncApplyFromURLs(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, errResp{Code: code, Error: "fetch head bundle: " + err.Error()})
 		return
 	}
-	incrBytes, status, code, err := fetchURL(r.Context(), cli, req.IncrementalURL)
+	incrBytes, status, code, err := fetchURL(r.Context(), cli, req.UncommittedURL)
 	if err != nil {
-		writeJSON(w, status, errResp{Code: code, Error: "fetch incremental bundle: " + err.Error()})
+		writeJSON(w, status, errResp{Code: code, Error: "fetch uncommitted bundle: " + err.Error()})
 		return
 	}
 
@@ -174,7 +174,7 @@ func (m *Mux) handleSyncApplyFromURLs(w http.ResponseWriter, r *http.Request) {
 // after stamping the gateway-assigned checkpoint_id.
 type spriteBuild struct {
 	headCommitBundle  string // path under /tmp; deleted on upload/delete/expiry
-	incrementalBundle string // ditto
+	uncommittedBundle string // ditto
 	manifest          *checkpoint.Manifest
 	createdAt         time.Time
 }
@@ -188,7 +188,7 @@ type buildResponse struct {
 	HeadRef           string `json:"head_ref"`
 	IndexTree         string `json:"index_tree"`
 	WorktreeTree      string `json:"worktree_tree"`
-	IncrementalCommit string `json:"incremental_commit"`
+	UncommittedCommit string `json:"uncommitted_commit"`
 }
 
 // handleSyncBuild builds a two-bundle checkpoint of ~/work/<repo> to
@@ -226,7 +226,7 @@ func (m *Mux) handleSyncBuild(w http.ResponseWriter, r *http.Request) {
 
 	m.builds.add(buildID, &spriteBuild{
 		headCommitBundle:  res.HeadCommitBundle,
-		incrementalBundle: res.IncrementalBundle,
+		uncommittedBundle: res.UncommittedBundle,
 		manifest:          res.Manifest,
 		createdAt:         time.Now(),
 	})
@@ -237,7 +237,7 @@ func (m *Mux) handleSyncBuild(w http.ResponseWriter, r *http.Request) {
 		HeadRef:           res.Manifest.HeadRef,
 		IndexTree:         res.Manifest.IndexTree,
 		WorktreeTree:      res.Manifest.WorktreeTree,
-		IncrementalCommit: res.Manifest.IncrementalCommit,
+		UncommittedCommit: res.Manifest.UncommittedCommit,
 	})
 }
 
@@ -248,7 +248,7 @@ type uploadBuildRequest struct {
 	CheckpointID     string `json:"checkpoint_id"`
 	ManifestPutURL   string `json:"manifest_put_url"`
 	HeadCommitPutURL string `json:"head_commit_put_url"`
-	IncrementalPutURL string `json:"incremental_put_url"`
+	UncommittedPutURL string `json:"uncommitted_put_url"`
 }
 
 // handleSyncBuildsUpload finalizes a build by uploading its three blobs
@@ -266,8 +266,8 @@ func (m *Mux) handleSyncBuildsUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: syncErrBadRequest, Error: "decode body: " + err.Error()})
 		return
 	}
-	if req.CheckpointID == "" || req.ManifestPutURL == "" || req.HeadCommitPutURL == "" || req.IncrementalPutURL == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Code: syncErrBadRequest, Error: "checkpoint_id, manifest_put_url, head_commit_put_url, incremental_put_url are all required"})
+	if req.CheckpointID == "" || req.ManifestPutURL == "" || req.HeadCommitPutURL == "" || req.UncommittedPutURL == "" {
+		writeJSON(w, http.StatusBadRequest, errResp{Code: syncErrBadRequest, Error: "checkpoint_id, manifest_put_url, head_commit_put_url, uncommitted_put_url are all required"})
 		return
 	}
 
@@ -293,8 +293,8 @@ func (m *Mux) handleSyncBuildsUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, errResp{Code: code, Error: "upload head bundle: " + err.Error()})
 		return
 	}
-	if status, code, err := uploadFile(r.Context(), cli, req.IncrementalPutURL, b.incrementalBundle); err != nil {
-		writeJSON(w, status, errResp{Code: code, Error: "upload incremental bundle: " + err.Error()})
+	if status, code, err := uploadFile(r.Context(), cli, req.UncommittedPutURL, b.uncommittedBundle); err != nil {
+		writeJSON(w, status, errResp{Code: code, Error: "upload uncommitted bundle: " + err.Error()})
 		return
 	}
 	if status, code, err := uploadBytes(r.Context(), cli, req.ManifestPutURL, manifestBytes, "application/json"); err != nil {
@@ -384,8 +384,8 @@ func removeBuildFiles(b *spriteBuild) {
 	if b.headCommitBundle != "" {
 		_ = os.Remove(b.headCommitBundle)
 	}
-	if b.incrementalBundle != "" {
-		_ = os.Remove(b.incrementalBundle)
+	if b.uncommittedBundle != "" {
+		_ = os.Remove(b.uncommittedBundle)
 	}
 }
 
