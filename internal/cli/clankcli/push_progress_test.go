@@ -1,6 +1,7 @@
 package clankcli
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -32,6 +33,25 @@ func TestRemoteLabel(t *testing.T) {
 	for raw, want := range cases {
 		if got := remoteLabel(raw); got != want {
 			t.Errorf("remoteLabel(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+func TestRenderBar(t *testing.T) {
+	t.Parallel()
+	empty := stripANSI(renderBar(0, 24))
+	if strings.ContainsAny(empty, "█▓") || !strings.Contains(empty, "░") {
+		t.Errorf("0%% bar should be all empty: %q", empty)
+	}
+	full := stripANSI(renderBar(1, 24))
+	if strings.ContainsAny(full, "░▓") || !strings.Contains(full, "█") {
+		t.Errorf("100%% bar should be all full: %q", full)
+	}
+	// A partial fill shows full blocks, a single ▓ transition, and empties.
+	partial := stripANSI(renderBar(0.5, 23)) // 11.5 cells → 11 full + ▓
+	for _, want := range []string{"█", "▓", "░"} {
+		if !strings.Contains(partial, want) {
+			t.Errorf("partial bar %q missing %q", partial, want)
 		}
 	}
 }

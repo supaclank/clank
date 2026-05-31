@@ -162,6 +162,10 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath, baseC
 		return nil, fmt.Errorf("upload manifest: %w", err)
 	}
 
+	// Uploads done; the server now verifies the blobs and advances the
+	// pointer. Surface this so a full bar doesn't look hung at 100%.
+	reportPhase(obs, PhaseFinalizing)
+
 	// head_base records this HEAD's link in the server's chain (the base
 	// the server told us to build from; "" for full / already_stored).
 	if err := c.postJSON(ctx, "/v1/checkpoints/"+createResp.CheckpointID+"/commit", map[string]string{"head_base": createResp.HeadBundleBase}, nil); err != nil {

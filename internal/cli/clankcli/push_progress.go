@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 
-	"charm.land/bubbles/v2/progress"
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
@@ -33,11 +33,10 @@ func (o teaPushObserver) Phase(name string)         { o.send(pushPhaseMsg(name))
 func (o teaPushObserver) UploadSized(total int64)   { o.send(pushSizedMsg(total)) }
 func (o teaPushObserver) UploadProgress(done int64) { o.send(pushBytesMsg(done)) }
 
-// pushProgressModel renders a spinner + phase + a byte progress bar and
-// names the remote the push is uploading to.
+// pushProgressModel renders the current phase (with an animated ellipsis),
+// the remote, and a shaded byte bar.
 type pushProgressModel struct {
 	spinner  spinner.Model
-	bar      progress.Model
 	remote   string
 	phase    string
 	total    int64
@@ -49,17 +48,11 @@ type pushProgressModel struct {
 
 func newPushProgressModel(remote string) pushProgressModel {
 	return pushProgressModel{
-		spinner: spinner.New(spinner.WithSpinner(spinner.MiniDot)),
-		// Full block instead of the default half-block (▌): the half-block
-		// mode relies on per-cell color blending to look contiguous, which
-		// renders as separated bars on terminals that don't blend it.
-		bar: progress.New(
-			progress.WithWidth(30),
-			progress.WithoutPercentage(),
-			progress.WithFillCharacters(progress.DefaultFullCharFullBlock, progress.DefaultEmptyCharBlock),
-		),
-		remote: remote,
-		phase:  "Preparing",
+		// Ellipsis = "", ".", "..", "..." — a calm "working…" tick rather
+		// than a spinning glyph.
+		spinner: spinner.New(spinner.WithSpinner(spinner.Ellipsis)),
+		remote:  remote,
+		phase:   "Preparing",
 	}
 }
 
@@ -92,16 +85,41 @@ func (m pushProgressModel) View() tea.View {
 	if dest == "" {
 		dest = "remote"
 	}
-	header := fmt.Sprintf("%s %s → %s", m.spinner.View(), m.phase, dest)
+	// Trailing animated ellipsis signals ongoing work even when the bar is
+	// full (e.g. while the server commits during "Finalizing").
+	header := m.phase + " → " + dest + m.spinner.View()
 	if m.total == 0 {
 		return tea.NewView(header + "\n")
 	}
 	pct := float64(m.uploaded) / float64(m.total)
+	line := renderBar(pct, 24) + "  " + humanBytes(m.uploaded) + " / " + humanBytes(m.total)
+	return tea.NewView(header + "\n" + line + "\n")
+}
+
+// renderBar draws a shaded bar like "[ ███▓░░░░ ]": full cells █, a single
+// ▓ transition cell at the leading edge for the partial cell, and ░ for the
+// remainder. The brackets and empty run are dimmed so the filled portion
+// reads clearly without spending an accent colour.
+func renderBar(pct float64, width int) string {
+	if pct < 0 {
+		pct = 0
+	}
 	if pct > 1 {
 		pct = 1
 	}
-	line := fmt.Sprintf("%s  %s / %s", m.bar.ViewAs(pct), humanBytes(m.uploaded), humanBytes(m.total))
-	return tea.NewView(header + "\n" + line + "\n")
+	exact := pct * float64(width)
+	full := int(exact)
+	if full > width {
+		full = width
+	}
+	filled := strings.Repeat("█", full)
+	written := full
+	if written < width && exact-float64(full) > 0 {
+		filled += "▓"
+		written++
+	}
+	empty := strings.Repeat("░", width-written)
+	return styleDim.Render("[ ") + filled + styleDim.Render(empty+" ]")
 }
 
 // pushWithProgress runs PushCheckpoint, rendering a live progress UI on a

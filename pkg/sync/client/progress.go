@@ -7,8 +7,9 @@ import (
 
 // Push phase labels emitted via PushObserver.Phase.
 const (
-	PhaseBuilding  = "Building bundle"
-	PhaseUploading = "Uploading"
+	PhaseBuilding   = "Building bundle"
+	PhaseUploading  = "Uploading"
+	PhaseFinalizing = "Finalizing"
 )
 
 // PushObserver receives progress events during PushCheckpoint so callers
