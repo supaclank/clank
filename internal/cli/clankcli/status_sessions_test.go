@@ -92,10 +92,10 @@ func TestRenderStatusReport_Sessions(t *testing.T) {
 	})
 }
 
-// TestCountUnsyncedAgainst pins the diff: a session counts as unsynced when
-// absent from the record or when its UpdatedAt has advanced; unchanged
-// compares equal (strict After).
-func TestCountUnsyncedAgainst(t *testing.T) {
+// TestUnsyncedAgainst pins the diff: a session is unsynced when absent from
+// the record or when its UpdatedAt has advanced; unchanged compares equal
+// (strict After).
+func TestUnsyncedAgainst(t *testing.T) {
 	t.Parallel()
 	t0, t1 := time.UnixMilli(1000), time.UnixMilli(2000)
 	rec := agent.SyncedSessionRecord{Sessions: map[string]agent.SyncedSession{
@@ -107,10 +107,53 @@ func TestCountUnsyncedAgainst(t *testing.T) {
 		{ExternalID: "b", UpdatedAt: t1.Add(time.Second)}, // newer → unsynced
 		{ExternalID: "c", UpdatedAt: t0},                  // new → unsynced
 	}
-	if got := countUnsyncedAgainst(cur, rec); got != 2 {
-		t.Errorf("countUnsyncedAgainst = %d, want 2", got)
+	if got := unsyncedAgainst(cur, rec); len(got) != 2 {
+		t.Errorf("unsyncedAgainst = %d sessions, want 2", len(got))
 	}
-	if got := countUnsyncedAgainst([]sessionsync.DiscoveredSession{{ExternalID: "a", UpdatedAt: t0}}, rec); got != 0 {
-		t.Errorf("unchanged session should be 0, got %d", got)
+	if got := unsyncedAgainst([]sessionsync.DiscoveredSession{{ExternalID: "a", UpdatedAt: t0}}, rec); len(got) != 0 {
+		t.Errorf("unchanged session should be 0, got %d", len(got))
+	}
+}
+
+// TestSessionLabels pins the -v detail labels: quoted title, or "session
+// <id>" when untitled.
+func TestSessionLabels(t *testing.T) {
+	t.Parallel()
+	got := sessionLabels([]sessionsync.DiscoveredSession{
+		{ExternalID: "ses_1", Title: "Refactor the auth flow"},
+		{ExternalID: "ses_2"},
+	})
+	want := []string{`"Refactor the auth flow"`, "session ses_2"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("sessionLabels = %v, want %v", got, want)
+	}
+}
+
+// TestRenderStatusReport_Verbose pins that -v lists the changed session
+// titles under the sessions bullet, and that without -v they're hidden.
+func TestRenderStatusReport_Verbose(t *testing.T) {
+	t.Parallel()
+	rep := statusReport{
+		WorktreeID: "wt", WorktreeDir: "repo", ActiveRemote: "dev", SignedIn: true,
+		WorktreeFromRemote: &daemonclient.WorktreeInfo{ID: "wt"}, HasCheckpoint: true, InSync: true,
+		SessionsKnown: true, UnsyncedSessions: 2,
+		Verbose:               true,
+		UnsyncedSessionLabels: []string{`"Refactor the auth flow"`, `"Debug the flaky test"`},
+	}
+	got := stripANSI(renderStatusReport(rep))
+	for _, want := range []string{`"Refactor the auth flow"`, `"Debug the flaky test"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("verbose session detail missing %q:\n%s", want, got)
+		}
+	}
+
+	// Same report without -v hides the titles (just the count bullet).
+	rep.Verbose = false
+	got = stripANSI(renderStatusReport(rep))
+	if strings.Contains(got, "Refactor the auth flow") {
+		t.Errorf("non-verbose output leaked session titles:\n%s", got)
+	}
+	if !strings.Contains(got, "2 sessions not synced") {
+		t.Errorf("count bullet should still show:\n%s", got)
 	}
 }

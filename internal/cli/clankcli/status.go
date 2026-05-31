@@ -26,11 +26,15 @@ import (
 // `clank push --migrate`), so it works even when the local clankd
 // isn't running.
 func statusCmd() *cobra.Command {
+	var verbose bool
 	cmd := &cobra.Command{
 		Use:   "status [repo-path]",
 		Short: "Show the current worktree's local/remote status",
 		Long: `Print a concise summary of this repo's worktree and where its
-ownership currently lives. Without arguments, uses the current directory.`,
+ownership currently lives. Without arguments, uses the current directory.
+
+With -v, list what's out of sync: the unpushed commits, the uncommitted
+files, and the changed opencode session titles.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
@@ -49,7 +53,7 @@ ownership currently lives. Without arguments, uses the current directory.`,
 			if err != nil {
 				return fmt.Errorf("resolve repo path: %w", err)
 			}
-			out, err := runStatus(cmd.Context(), abs)
+			out, err := runStatus(cmd.Context(), abs, verbose)
 			if err != nil {
 				return err
 			}
@@ -57,6 +61,7 @@ ownership currently lives. Without arguments, uses the current directory.`,
 			return nil
 		},
 	}
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "list the unpushed commits, uncommitted files, and changed session titles")
 	return cmd
 }
 
@@ -90,6 +95,12 @@ type statusReport struct {
 	DriftBehind        int                        // commits local is behind by (0 when unknown)
 	SessionsKnown      bool                       // true when the opencode session axis is determinable (opencode present, ≥1 session)
 	UnsyncedSessions   int                        // opencode sessions changed since this machine last pushed (when SessionsKnown)
+
+	// Verbose (-v) lists the changed opencode session titles under the
+	// sessions bullet — the detail unique to clank. Commits and files are
+	// already inspectable with git itself, so -v doesn't duplicate them.
+	Verbose               bool     // -v: list changed session titles
+	UnsyncedSessionLabels []string // changed-session labels (quoted title, or id when untitled)
 }
 
 // driftInfo is classifyDrift's result: a direction plus, when the heads
@@ -103,13 +114,13 @@ type driftInfo struct {
 // runStatus assembles the report by reading the cached worktree id and
 // querying the active remote (if configured). Rendering lives in
 // renderStatusReport so tests can hit it without a running remote.
-func runStatus(ctx context.Context, repoPath string) (string, error) {
+func runStatus(ctx context.Context, repoPath string, verbose bool) (string, error) {
 	wtID, err := agent.ReadLocalWorktreeID(repoPath)
 	if err != nil {
 		return "", fmt.Errorf("read cached worktree id: %w", err)
 	}
 
-	rep := statusReport{WorktreeID: wtID}
+	rep := statusReport{WorktreeID: wtID, Verbose: verbose}
 
 	// Worktree directory basename — what the user actually recognises.
 	// Surface RepoRoot errors directly rather than falling back to the
@@ -141,7 +152,12 @@ func runStatus(ctx context.Context, repoPath string) (string, error) {
 	// signed-in tracked worktree, the only case that reaches the detailed
 	// status view that renders it.
 	if wtID != "" && rep.SignedIn {
-		rep.UnsyncedSessions, rep.SessionsKnown = countUnsyncedSessions(ctx, root)
+		unsynced, known := unsyncedSessions(ctx, root)
+		rep.SessionsKnown = known
+		rep.UnsyncedSessions = len(unsynced)
+		if verbose {
+			rep.UnsyncedSessionLabels = sessionLabels(unsynced)
+		}
 	}
 
 	if rep.ActiveRemote != "" && wtID != "" {
@@ -264,35 +280,49 @@ func sessions(n int) string {
 // failure; status then omits the sessions line). Local-only and bounded:
 // one ListSessions subprocess vs the on-disk last-pushed record. Claude is
 // excluded — its sessions are never pushed (export unimplemented).
-func countUnsyncedSessions(ctx context.Context, projectDir string) (unsynced int, known bool) {
+func unsyncedSessions(ctx context.Context, projectDir string) (unsynced []sessionsync.DiscoveredSession, known bool) {
 	if _, err := exec.LookPath("opencode"); err != nil {
-		return 0, false
+		return nil, false
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	current, err := sessionsync.OpenCodeBackend{}.ListSessions(ctx, projectDir)
 	if err != nil || len(current) == 0 {
-		return 0, false
+		return nil, false
 	}
 	// A missing/corrupt record degrades to an empty one → everything counts
 	// as unsynced (truthful; self-heals on the next push).
 	rec, _ := agent.ReadSyncedSessions(projectDir)
-	return countUnsyncedAgainst(current, rec), true
+	return unsyncedAgainst(current, rec), true
 }
 
-// countUnsyncedAgainst counts current sessions that are absent from the
+// unsyncedAgainst returns the current sessions that are absent from the
 // last-pushed record or whose UpdatedAt has advanced past it. Both sides
 // read UpdatedAt from the same backend source (opencode's `Updated`), so an
 // unchanged session compares equal — use strict After, never time.Now().
-func countUnsyncedAgainst(current []sessionsync.DiscoveredSession, rec agent.SyncedSessionRecord) int {
-	n := 0
+func unsyncedAgainst(current []sessionsync.DiscoveredSession, rec agent.SyncedSessionRecord) []sessionsync.DiscoveredSession {
+	var out []sessionsync.DiscoveredSession
 	for _, s := range current {
 		prev, ok := rec.Sessions[s.ExternalID]
 		if !ok || s.UpdatedAt.After(prev.UpdatedAt) {
-			n++
+			out = append(out, s)
 		}
 	}
-	return n
+	return out
+}
+
+// sessionLabels renders changed-session detail lines for `status -v`: the
+// quoted title, or the external id when a session has no title.
+func sessionLabels(ss []sessionsync.DiscoveredSession) []string {
+	out := make([]string, 0, len(ss))
+	for _, s := range ss {
+		if s.Title != "" {
+			out = append(out, fmt.Sprintf("%q", s.Title))
+		} else {
+			out = append(out, "session "+s.ExternalID)
+		}
+	}
+	return out
 }
 
 // okLine / warnLine render a status bullet as a coloured glyph + neutral
@@ -373,6 +403,17 @@ func renderStatusReport(rep statusReport) string {
 		sb.WriteString("\n  " + syncCTA(rep.ActiveRemote, push, pull) + "\n")
 	}
 
+	// detail lists the -v diff under a bullet (indented + dimmed); a no-op
+	// without -v or when there's nothing to list.
+	detail := func(lines []string) {
+		if !rep.Verbose {
+			return
+		}
+		for _, ln := range lines {
+			sb.WriteString("      " + styleDim.Render(ln) + "\n")
+		}
+	}
+
 	// dirtyBullet adds the uncommitted-changes line when the local tree is
 	// dirty — the dirty-state axis is independent of commit drift, so a
 	// worktree can be e.g. ahead AND have unsynced uncommitted changes.
@@ -392,6 +433,7 @@ func renderStatusReport(rep statusReport) string {
 			sb.WriteString(okLine("Sessions in sync"))
 		} else {
 			sb.WriteString(warnLine(sessions(rep.UnsyncedSessions) + " not synced"))
+			detail(rep.UnsyncedSessionLabels)
 		}
 	}
 
