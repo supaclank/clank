@@ -116,6 +116,28 @@ func TestPushUI_ObserverNilSafe(t *testing.T) {
 	u.finish() // must not panic
 }
 
+// TestPushUI_UploadSizeSurvivesPhase guards the ordering contract:
+// PushCheckpoint announces Phase(Uploading) BEFORE UploadSized, and the
+// reset inside Phase must not wipe a size set afterward (regression: the
+// bar showed nothing and committed "Uploaded 0 B").
+func TestPushUI_UploadSizeSurvivesPhase(t *testing.T) {
+	t.Parallel()
+	u := newPushUI(io.Discard, "localhost:7878")
+	u.Phase(syncclient.PhaseUploading)
+	u.UploadSized(6_900_000)
+	u.UploadProgress(3_000_000)
+
+	u.mu.Lock()
+	total, committed := u.total, stripANSI(committedForm(u.phase, u.total))
+	u.mu.Unlock()
+	if total != 6_900_000 {
+		t.Fatalf("upload total wiped: got %d", total)
+	}
+	if !strings.Contains(committed, "6.6 MB") {
+		t.Fatalf("committed line lost the size: %q", committed)
+	}
+}
+
 // TestPushUI_ConcurrentRenderNoRace exercises the render-loop goroutine
 // reading the fields the push goroutine writes — guards against a data
 // race in the live status line (run with -race).

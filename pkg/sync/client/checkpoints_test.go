@@ -204,14 +204,25 @@ func TestPushCheckpoint_UnregisteredWorktreeReturnsTypedError(t *testing.T) {
 
 // recordingObserver captures PushObserver events for assertions.
 type recordingObserver struct {
-	mu       sync.Mutex
-	phases   []string
-	sized    int64
-	uploaded int64
+	mu           sync.Mutex
+	phases       []string
+	sized        int64
+	uploaded     int64
+	lastPhase    string // phase active when UploadSized fired
+	sizedAtPhase string
 }
 
-func (o *recordingObserver) Phase(n string)         { o.mu.Lock(); o.phases = append(o.phases, n); o.mu.Unlock() }
-func (o *recordingObserver) UploadSized(t int64)    { o.mu.Lock(); o.sized = t; o.mu.Unlock() }
+func (o *recordingObserver) Phase(n string) {
+	o.mu.Lock()
+	o.phases = append(o.phases, n)
+	o.lastPhase = n
+	o.mu.Unlock()
+}
+func (o *recordingObserver) UploadSized(t int64) {
+	o.mu.Lock()
+	o.sized, o.sizedAtPhase = t, o.lastPhase
+	o.mu.Unlock()
+}
 func (o *recordingObserver) UploadProgress(u int64) { o.mu.Lock(); o.uploaded = u; o.mu.Unlock() }
 
 // TestPushCheckpoint_ReportsProgress pins the progress wiring: the
@@ -262,6 +273,11 @@ func TestPushCheckpoint_ReportsProgress(t *testing.T) {
 	}
 	if !slices.Contains(obs.phases, syncclient.PhaseUploading) {
 		t.Errorf("Uploading phase not reported; phases=%v", obs.phases)
+	}
+	// The size must be reported while the Uploading phase is active — a UI
+	// that resets per-phase counters on Phase() would otherwise show "0 B".
+	if obs.sizedAtPhase != syncclient.PhaseUploading {
+		t.Errorf("UploadSized fired during phase %q, want %q (Phase must precede UploadSized)", obs.sizedAtPhase, syncclient.PhaseUploading)
 	}
 }
 

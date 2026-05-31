@@ -139,12 +139,12 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath, baseC
 		return nil, fmt.Errorf("marshal manifest: %w", err)
 	}
 
-	// Report the total upload size up front so callers can render a
-	// proportional progress bar (and so the user sees how much will be
-	// sent to the remote before the slow transfer starts).
+	// Enter the upload phase, THEN report the total size — observers may
+	// reset per-phase counters when the phase changes, so the size must be
+	// set after the phase is announced or the bar shows 0.
 	if obs != nil {
-		obs.UploadSized(fileSize(headBundlePath) + fileSize(res.UncommittedBundle) + int64(len(manifestBytes)))
 		obs.Phase(PhaseUploading)
+		obs.UploadSized(fileSize(headBundlePath) + fileSize(res.UncommittedBundle) + int64(len(manifestBytes)))
 	}
 	var uploaded int64
 	advance := func(n int64) {
