@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/pkg/sessionsync"
 	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
@@ -38,5 +39,25 @@ func pushSessions(ctx context.Context, timer *phaseTimer, projectDir, checkpoint
 	if err != nil {
 		return 0, nil, fmt.Errorf("upload sessions: %w", err)
 	}
+
+	// Record what we just pushed so `clank status` can detect later local
+	// session changes. Best-effort: the push already succeeded, so a sidecar
+	// write failure must not fail it — status just won't reflect this push.
+	_ = agent.WriteSyncedSessions(projectDir, syncedSessionsRecord(export.Exported))
+
 	return len(export.Exported), export.Skipped, nil
+}
+
+// syncedSessionsRecord converts exported sessions into the local
+// last-pushed record, keyed by backend-native ExternalID and stamped with
+// the same UpdatedAt that went into the uploaded SessionManifest.
+func syncedSessionsRecord(exported []sessionsync.ExportedSession) agent.SyncedSessionRecord {
+	rec := agent.SyncedSessionRecord{Sessions: make(map[string]agent.SyncedSession, len(exported))}
+	for _, e := range exported {
+		rec.Sessions[e.Entry.ExternalID] = agent.SyncedSession{
+			Backend:   e.Entry.Backend,
+			UpdatedAt: e.Entry.UpdatedAt,
+		}
+	}
+	return rec
 }

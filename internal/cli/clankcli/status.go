@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/acksell/clank/internal/config"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/git"
+	"github.com/acksell/clank/pkg/sessionsync"
 )
 
 // statusCmd registers `clank status` — a git-style summary of the
@@ -86,6 +88,8 @@ type statusReport struct {
 	Drift              driftState                 // direction of drift when !InSync; driftUnknown if undeterminable
 	DriftAhead         int                        // commits local is ahead by (0 when unknown or uncommitted-only)
 	DriftBehind        int                        // commits local is behind by (0 when unknown)
+	SessionsKnown      bool                       // true when the opencode session axis is determinable (opencode present, ≥1 session)
+	UnsyncedSessions   int                        // opencode sessions changed since this machine last pushed (when SessionsKnown)
 }
 
 // driftInfo is classifyDrift's result: a direction plus, when the heads
@@ -111,11 +115,13 @@ func runStatus(ctx context.Context, repoPath string) (string, error) {
 	// Surface RepoRoot errors directly rather than falling back to the
 	// raw repoPath; a status command silently mislabelling a non-repo
 	// invocation would mask a real bug.
+	var root string
 	if wtID != "" {
-		root, err := git.RepoRoot(repoPath)
+		r, err := git.RepoRoot(repoPath)
 		if err != nil {
 			return "", fmt.Errorf("resolve worktree root: %w", err)
 		}
+		root = r
 		rep.WorktreeDir = filepath.Base(root)
 	}
 
@@ -127,6 +133,15 @@ func runStatus(ctx context.Context, repoPath string) (string, error) {
 		rep.ActiveRemote = prefs.Remote.Active
 		rep.ActiveRemoteURL = p.GatewayURL
 		rep.SignedIn = p.AccessToken != ""
+	}
+
+	// Session sync is a purely local axis (a session is only edited on the
+	// machine it runs on), independent of the remote — compute it before the
+	// remote block so it survives a remote-unreachable error. Gated on a
+	// signed-in tracked worktree, the only case that reaches the detailed
+	// status view that renders it.
+	if wtID != "" && rep.SignedIn {
+		rep.UnsyncedSessions, rep.SessionsKnown = countUnsyncedSessions(ctx, root)
 	}
 
 	if rep.ActiveRemote != "" && wtID != "" {
@@ -235,6 +250,51 @@ func commits(n int) string {
 	return fmt.Sprintf("%d commits", n)
 }
 
+// sessions renders a session count with correct pluralization.
+func sessions(n int) string {
+	if n == 1 {
+		return "1 session"
+	}
+	return fmt.Sprintf("%d sessions", n)
+}
+
+// countUnsyncedSessions reports how many of the worktree's current opencode
+// sessions have changed since this machine last pushed them, and whether
+// the axis is determinable at all (false → no opencode, no sessions, or any
+// failure; status then omits the sessions line). Local-only and bounded:
+// one ListSessions subprocess vs the on-disk last-pushed record. Claude is
+// excluded — its sessions are never pushed (export unimplemented).
+func countUnsyncedSessions(ctx context.Context, projectDir string) (unsynced int, known bool) {
+	if _, err := exec.LookPath("opencode"); err != nil {
+		return 0, false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	current, err := sessionsync.OpenCodeBackend{}.ListSessions(ctx, projectDir)
+	if err != nil || len(current) == 0 {
+		return 0, false
+	}
+	// A missing/corrupt record degrades to an empty one → everything counts
+	// as unsynced (truthful; self-heals on the next push).
+	rec, _ := agent.ReadSyncedSessions(projectDir)
+	return countUnsyncedAgainst(current, rec), true
+}
+
+// countUnsyncedAgainst counts current sessions that are absent from the
+// last-pushed record or whose UpdatedAt has advanced past it. Both sides
+// read UpdatedAt from the same backend source (opencode's `Updated`), so an
+// unchanged session compares equal — use strict After, never time.Now().
+func countUnsyncedAgainst(current []sessionsync.DiscoveredSession, rec agent.SyncedSessionRecord) int {
+	n := 0
+	for _, s := range current {
+		prev, ok := rec.Sessions[s.ExternalID]
+		if !ok || s.UpdatedAt.After(prev.UpdatedAt) {
+			n++
+		}
+	}
+	return n
+}
+
 // okLine / warnLine render a status bullet as a coloured glyph + neutral
 // text. Only the glyph carries colour (green ✓ / yellow •), so the block
 // reads calmly instead of as competing fully-coloured phrases.
@@ -322,37 +382,68 @@ func renderStatusReport(rep statusReport) string {
 		}
 	}
 
+	// sessionBullet adds the opencode session line when that axis is known —
+	// also independent of code drift (sessions can lag while code is synced).
+	sessionBullet := func() {
+		if !rep.SessionsKnown {
+			return
+		}
+		if rep.UnsyncedSessions == 0 {
+			sb.WriteString(okLine("Sessions in sync"))
+		} else {
+			sb.WriteString(warnLine(sessions(rep.UnsyncedSessions) + " not synced"))
+		}
+	}
+
 	switch {
 	case rep.RemoteError != nil:
 		sb.WriteString("  Sync state " + styleErr.Render("unknown") + " — " + styleRemoteOwner.Render(rep.ActiveRemote) + " remote unreachable: " + styleDim.Render(rep.RemoteError.Error()) + "\n")
 	case !rep.HasCheckpoint:
 		sb.WriteString("  " + styleDim.Render("Not yet pushed to "+rep.ActiveRemote+" remote") + "\n")
-	case rep.InSync && rep.WorkingTreeDirty:
-		// Committed history AND the uncommitted (dirty) state both match the
-		// remote's last checkpoint — surface that the dirty state is synced.
-		sb.WriteString(okLine("Commits in sync"))
-		sb.WriteString(okLine("Dirty state in sync"))
 	case rep.InSync:
-		sb.WriteString(okLine("In sync with " + rep.ActiveRemote + " remote"))
+		// Code is in sync. When there's a session axis to show, decompose into
+		// Commits/Dirty/Sessions bullets so an unsynced session isn't masked
+		// by a single "In sync" summary; otherwise keep the compact summary.
+		switch {
+		case rep.SessionsKnown:
+			sb.WriteString(okLine("Commits in sync"))
+			if rep.WorkingTreeDirty {
+				sb.WriteString(okLine("Dirty state in sync"))
+			}
+			sessionBullet()
+			if rep.UnsyncedSessions > 0 {
+				ctaBlock(true, false)
+			}
+		case rep.WorkingTreeDirty:
+			sb.WriteString(okLine("Commits in sync"))
+			sb.WriteString(okLine("Dirty state in sync"))
+		default:
+			sb.WriteString(okLine("In sync with " + rep.ActiveRemote + " remote"))
+		}
 	case rep.Drift == driftUncommitted:
 		sb.WriteString(okLine("Commits in sync"))
 		sb.WriteString(warnLine("Dirty state not synced"))
+		sessionBullet()
 		ctaBlock(true, false)
 	case rep.Drift == driftAhead:
 		sb.WriteString(warnLine("Ahead by " + commits(rep.DriftAhead)))
 		dirtyBullet()
+		sessionBullet()
 		ctaBlock(true, false)
 	case rep.Drift == driftBehind:
 		sb.WriteString(warnLine("Behind by " + commits(rep.DriftBehind)))
 		dirtyBullet()
+		sessionBullet()
 		ctaBlock(false, true)
 	case rep.Drift == driftDiverged:
 		sb.WriteString(warnLine(fmt.Sprintf("Diverged — %d ahead, %d behind", rep.DriftAhead, rep.DriftBehind)))
 		dirtyBullet()
+		sessionBullet()
 		ctaBlock(true, true)
 	default:
 		sb.WriteString(warnLine("Out of sync"))
 		dirtyBullet()
+		sessionBullet()
 		ctaBlock(true, true)
 	}
 
