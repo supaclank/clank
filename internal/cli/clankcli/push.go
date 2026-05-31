@@ -175,8 +175,8 @@ func runPush(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *sy
 	if err != nil {
 		return fmt.Errorf("push checkpoint: %w", err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "pushed checkpoint %s (HEAD %s)\n",
-		res.CheckpointID, shortSHA(res.Manifest.HeadCommit))
+	fmt.Fprintf(cmd.OutOrStdout(), "%s pushed checkpoint %s (HEAD %s) to %s\n",
+		styleOK.Render("✓"), res.CheckpointID, shortSHA(res.Manifest.HeadCommit), remoteLabel(cli.BaseURL()))
 
 	if err := pushSessionLeg(cmd, timer, absRepo, res.CheckpointID, cli); err != nil {
 		return fmt.Errorf("push session leg: %w", err)
