@@ -82,6 +82,7 @@ type statusReport struct {
 	WorktreeFromRemote *daemonclient.WorktreeInfo // nil when the remote has no row for this worktree
 	HasCheckpoint      bool                       // true when WorktreeFromRemote carries checkpoint metadata
 	InSync             bool                       // true when local content SHAs match the remote's latest checkpoint
+	WorkingTreeDirty   bool                       // true when the local tree has uncommitted changes (meaningful when InSync: dirty-but-synced)
 	Drift              driftState                 // direction of drift when !InSync; driftUnknown if undeterminable
 	DriftAhead         int                        // commits local is ahead by (0 when unknown or uncommitted-only)
 	DriftBehind        int                        // commits local is behind by (0 when unknown)
@@ -176,7 +177,13 @@ func runStatus(ctx context.Context, repoPath string) (string, error) {
 					m.HeadRef == snap.HeadRef &&
 					m.IndexTree == snap.IndexTree &&
 					m.WorktreeTree == snap.WorktreeTree
-				if !rep.InSync {
+				if rep.InSync {
+					// Synced, but is the tree clean or dirty-but-synced?
+					// Drives the "✓ Dirty state in sync" line.
+					if clean, cErr := git.IsClean(repoPath); cErr == nil {
+						rep.WorkingTreeDirty = !clean
+					}
+				} else {
 					d := classifyDrift(repoPath, snap.HeadCommit, m.HeadCommit)
 					rep.Drift, rep.DriftAhead, rep.DriftBehind = d.state, d.ahead, d.behind
 				}
@@ -292,11 +299,16 @@ func renderStatusReport(rep statusReport) string {
 		sb.WriteString("  Sync state " + styleErr.Render("unknown") + " — " + styleRemoteOwner.Render(rep.ActiveRemote) + " remote unreachable: " + styleDim.Render(rep.RemoteError.Error()) + "\n")
 	case !rep.HasCheckpoint:
 		sb.WriteString("  " + styleDim.Render("Not yet pushed to "+rep.ActiveRemote+" remote") + "\n")
+	case rep.InSync && rep.WorkingTreeDirty:
+		// Committed history AND the uncommitted (dirty) state both match the
+		// remote's last checkpoint — surface that the dirty state is synced.
+		sb.WriteString("  " + styleOK.Render("✓ Commits in sync") + "\n")
+		sb.WriteString("  " + styleOK.Render("✓ Dirty state in sync") + "\n")
 	case rep.InSync:
 		sb.WriteString("  " + styleOK.Render("✓ In sync with "+rep.ActiveRemote+" remote") + "\n")
 	case rep.Drift == driftUncommitted:
 		sb.WriteString("  " + styleOK.Render("✓ Commits in sync") + "\n")
-		sb.WriteString("  " + styleWarn.Render("• Uncommitted changes not synced") + "\n")
+		sb.WriteString("  " + styleWarn.Render("• Dirty state not synced") + "\n")
 		sb.WriteString("  " + syncCTA(rep.ActiveRemote, true, false) + "\n")
 	case rep.Drift == driftAhead:
 		sb.WriteString("  " + styleWarn.Render("• Ahead by "+commits(rep.DriftAhead)) + "\n")

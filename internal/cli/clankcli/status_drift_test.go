@@ -77,7 +77,7 @@ func TestRenderStatusReport_DriftDirection(t *testing.T) {
 		{driftAhead, "Ahead by", true, false},
 		{driftBehind, "Behind by", false, true},
 		{driftDiverged, "Diverged —", true, true},
-		{driftUncommitted, "Uncommitted changes not synced", true, false},
+		{driftUncommitted, "Dirty state not synced", true, false},
 		{driftUnknown, "Out of sync", true, true},
 	}
 	for _, tc := range cases {
@@ -92,6 +92,28 @@ func TestRenderStatusReport_DriftDirection(t *testing.T) {
 		}
 		if strings.Contains(got, "`clank pull`") != tc.wantPull {
 			t.Errorf("drift %d: pull hint = %v, want %v", tc.drift, !tc.wantPull, tc.wantPull)
+		}
+	}
+}
+
+// TestRenderStatusReport_DirtyButSynced pins the symmetric in-sync form:
+// when committed history AND the dirty working tree both match the remote,
+// status says the dirty state is in sync (not the plain "In sync" line).
+func TestRenderStatusReport_DirtyButSynced(t *testing.T) {
+	t.Parallel()
+	got := stripANSI(renderStatusReport(statusReport{
+		WorktreeID:         "wt",
+		WorktreeDir:        "repo",
+		ActiveRemote:       "dev",
+		SignedIn:           true,
+		WorktreeFromRemote: &daemonclient.WorktreeInfo{ID: "wt"},
+		HasCheckpoint:      true,
+		InSync:             true,
+		WorkingTreeDirty:   true,
+	}))
+	for _, want := range []string{"✓ Commits in sync", "✓ Dirty state in sync"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
 		}
 	}
 }
