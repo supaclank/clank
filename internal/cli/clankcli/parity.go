@@ -68,9 +68,14 @@ func checkParity(ctx context.Context, dc *daemonclient.Client, worktreeID string
 
 // snapshotRepo is a small helper that resolves a repo path to a
 // Snapshot. Wraps the underlying Builder so callers don't have to
-// reach into pkg/sync/checkpoint directly.
-func snapshotRepo(ctx context.Context, repoPath string) (*checkpoint.Snapshot, error) {
-	return checkpoint.NewBuilder(repoPath, "laptop").Snapshot(ctx)
+// reach into pkg/sync/checkpoint directly. committedOnly (for `clank
+// push --clean`) snapshots HEAD's tree, ignoring uncommitted changes.
+func snapshotRepo(ctx context.Context, repoPath string, committedOnly bool) (*checkpoint.Snapshot, error) {
+	b := checkpoint.NewBuilder(repoPath, "laptop")
+	if committedOnly {
+		b = b.CommittedOnly()
+	}
+	return b.Snapshot(ctx)
 }
 
 // isGitRepo reports whether repoPath is an initialized git working

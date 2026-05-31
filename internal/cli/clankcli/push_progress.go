@@ -127,9 +127,9 @@ func renderBar(pct float64, width int) string {
 // back to a silent push otherwise (autopush hooks). The push runs in a
 // goroutine that forwards progress into the program; its result returns
 // via pushDoneMsg, so there's no shared mutable state across goroutines.
-func pushWithProgress(cmd *cobra.Command, ctx context.Context, cli *syncclient.Client, absRepo, worktreeID, base string, interactive bool) (*syncclient.CheckpointResult, error) {
+func pushWithProgress(cmd *cobra.Command, ctx context.Context, cli *syncclient.Client, absRepo, worktreeID, base string, committedOnly, interactive bool) (*syncclient.CheckpointResult, error) {
 	if !interactive {
-		return cli.PushCheckpoint(ctx, worktreeID, absRepo, base, nil)
+		return cli.PushCheckpoint(ctx, worktreeID, absRepo, base, committedOnly, nil)
 	}
 	p := tea.NewProgram(
 		newPushProgressModel(remoteLabel(cli.BaseURL())),
@@ -137,7 +137,7 @@ func pushWithProgress(cmd *cobra.Command, ctx context.Context, cli *syncclient.C
 		tea.WithOutput(cmd.OutOrStdout()),
 	)
 	go func() {
-		res, err := cli.PushCheckpoint(ctx, worktreeID, absRepo, base, teaPushObserver{send: p.Send})
+		res, err := cli.PushCheckpoint(ctx, worktreeID, absRepo, base, committedOnly, teaPushObserver{send: p.Send})
 		p.Send(pushDoneMsg{res: res, err: err})
 	}()
 	final, err := p.Run()

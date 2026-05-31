@@ -48,7 +48,7 @@ func TestRunPush_SelfHealsStaleWorktreeID(t *testing.T) {
 	// InSync=false drives the push; the create 404s on the stale id and
 	// runPush must recover rather than surface the error.
 	parity := parityResult{InSync: false, RemoteNotFound: true}
-	if err := runPush(cmd, ctx, newPhaseTimer(false), cli, repo, staleID, parity); err != nil {
+	if err := runPush(cmd, ctx, newPhaseTimer(false), cli, repo, staleID, parity, false); err != nil {
 		t.Fatalf("runPush should self-heal the stale id, got: %v", err)
 	}
 

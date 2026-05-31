@@ -53,7 +53,9 @@ func (c *Client) RegisterWorktree(ctx context.Context, displayName string) (stri
 // from a parity check); when the server lacks this checkpoint's HEAD but
 // holds baseCommit's, only an incremental head bundle (HEAD ^base) is
 // built and uploaded. "" ⇒ full bundle (or skipped if already stored).
-func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath, baseCommit string, obs PushObserver) (*CheckpointResult, error) {
+// committedOnly (from `clank push --clean`) checkpoints HEAD's committed
+// state only, ignoring uncommitted/staged/untracked changes.
+func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath, baseCommit string, committedOnly bool, obs PushObserver) (*CheckpointResult, error) {
 	if worktreeID == "" {
 		return nil, errors.New("syncclient: worktreeID is required")
 	}
@@ -68,6 +70,9 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath, baseC
 	// head bundle (all history — slow to build AND upload) is built only
 	// if the server doesn't already hold this HEAD, decided below.
 	builder := checkpoint.NewBuilder(repoPath, "laptop")
+	if committedOnly {
+		builder = builder.CommittedOnly()
+	}
 	res, err := builder.BuildUncommitted(ctx, tempID)
 	if err != nil {
 		return nil, fmt.Errorf("build checkpoint: %w", err)

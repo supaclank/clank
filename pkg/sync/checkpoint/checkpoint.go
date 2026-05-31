@@ -106,6 +106,10 @@ func (r *Result) Cleanup() {
 type Builder struct {
 	repoPath  string
 	createdBy string
+	// committedOnly snapshots the committed state only: the index and
+	// worktree trees are taken as HEAD's tree, ignoring uncommitted/
+	// staged/untracked changes. Drives `clank push --clean`.
+	committedOnly bool
 }
 
 // NewBuilder constructs a Builder rooted at repoPath. createdBy is
@@ -113,6 +117,14 @@ type Builder struct {
 // "sprite:<host_id>").
 func NewBuilder(repoPath, createdBy string) *Builder {
 	return &Builder{repoPath: repoPath, createdBy: createdBy}
+}
+
+// CommittedOnly returns the builder configured to ignore uncommitted
+// changes — snapshots and checkpoints capture HEAD's tree as both the
+// index and worktree tree, so a restore reproduces a clean HEAD.
+func (b *Builder) CommittedOnly() *Builder {
+	b.committedOnly = true
+	return b
 }
 
 // Snapshot is the content-addressed view of the working tree without
@@ -150,6 +162,22 @@ func (b *Builder) snapshot(ctx context.Context) (*Snapshot, error) {
 	headRef := ""
 	if out, err := b.gitOutput(ctx, nil, "symbolic-ref", "--short", "HEAD"); err == nil {
 		headRef = strings.TrimSpace(out)
+	}
+
+	// --clean: take HEAD's tree for both index and worktree so the
+	// checkpoint reflects committed state only, ignoring local changes.
+	if b.committedOnly {
+		tree, err := b.gitOutput(ctx, nil, "rev-parse", headCommit+"^{tree}")
+		if err != nil {
+			return nil, fmt.Errorf("rev-parse HEAD tree: %w", err)
+		}
+		tree = strings.TrimSpace(tree)
+		return &Snapshot{
+			HeadCommit:   headCommit,
+			HeadRef:      headRef,
+			IndexTree:    tree,
+			WorktreeTree: tree,
+		}, nil
 	}
 
 	indexTreeOut, err := b.gitOutput(ctx, nil, "write-tree")

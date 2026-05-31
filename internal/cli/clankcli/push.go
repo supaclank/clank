@@ -35,6 +35,7 @@ func pushCmd() *cobra.Command {
 		display  string
 		repoPath string
 		timing   bool
+		clean    bool
 	)
 	cmd := &cobra.Command{
 		Use:   "push [repo-path]",
@@ -115,7 +116,7 @@ from ` + "`git worktree add`" + ` are tracked individually.`,
 			// idempotency / divergence branches below; built before any
 			// expensive work so we can fast-path no-op runs.
 			done := timer.Start("snapshot local")
-			snap, err := snapshotRepo(ctx, absRepo)
+			snap, err := snapshotRepo(ctx, absRepo, clean)
 			done()
 			if err != nil {
 				return fmt.Errorf("snapshot repo: %w", err)
@@ -133,22 +134,27 @@ from ` + "`git worktree add`" + ` are tracked individually.`,
 				return fmt.Errorf("check remote state: %w", err)
 			}
 
-			return runPush(cmd, ctx, timer, cli, absRepo, worktreeID, parity)
+			return runPush(cmd, ctx, timer, cli, absRepo, worktreeID, parity, clean)
 		},
 	}
 	cmd.Flags().StringVar(&baseURL, "base-url", envOrDefault("CLANK_GATEWAY_URL", ""), "gateway base URL (default: active remote's gateway_url)")
 	cmd.Flags().StringVar(&token, "token", envOrDefault("CLANK_SYNC_TOKEN", ""), "bearer token for the gateway (default: active remote's access_token)")
 	cmd.Flags().StringVar(&display, "display-name", "", "display name for newly-registered worktrees (default: basename of repo-path)")
 	cmd.Flags().BoolVar(&timing, "timing", false, "print a per-phase timing breakdown to stderr (also enabled by CLANK_TIMING=1)")
+	cmd.Flags().BoolVar(&clean, "clean", false, "push committed history only — ignore uncommitted/staged/untracked changes")
 	return cmd
 }
 
 // runPush uploads the worktree's code checkpoint + opencode sessions.
 // Fast-paths a no-op when local already matches the remote's latest
 // checkpoint.
-func runPush(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *syncclient.Client, absRepo, worktreeID string, parity parityResult) error {
+func runPush(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *syncclient.Client, absRepo, worktreeID string, parity parityResult, committedOnly bool) error {
 	if parity.InSync {
-		fmt.Fprintln(cmd.OutOrStdout(), styleOK.Render("✓ Already up to date")+styleDim.Render(" (local state matches remote's latest checkpoint)"))
+		detail := " (local state matches remote's latest checkpoint)"
+		if committedOnly {
+			detail = " (committed state matches remote; uncommitted changes ignored)"
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), styleOK.Render("✓ Already up to date")+styleDim.Render(detail))
 		return nil
 	}
 
@@ -158,7 +164,7 @@ func runPush(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *sy
 	// silently so autopush hooks don't spew control codes into logs.
 	interactive := isInteractive(cmd)
 	done := timer.Start("push checkpoint")
-	res, err := pushWithProgress(cmd, ctx, cli, absRepo, worktreeID, parity.RemoteHead, interactive)
+	res, err := pushWithProgress(cmd, ctx, cli, absRepo, worktreeID, parity.RemoteHead, committedOnly, interactive)
 	done()
 	if errors.Is(err, syncclient.ErrWorktreeNotRegistered) {
 		// Stale local id: the worktree was deleted on the remote. Re-register
@@ -169,7 +175,7 @@ func runPush(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *sy
 			return err
 		}
 		done = timer.Start("push checkpoint")
-		res, err = pushWithProgress(cmd, ctx, cli, absRepo, worktreeID, "", interactive)
+		res, err = pushWithProgress(cmd, ctx, cli, absRepo, worktreeID, "", committedOnly, interactive)
 		done()
 	}
 	if err != nil {

@@ -171,7 +171,7 @@ func runStatus(ctx context.Context, repoPath string) (string, error) {
 		// renderer treats that as "not yet pushed".
 		if wt.LatestCheckpointMetadata != nil {
 			rep.HasCheckpoint = true
-			if snap, snapErr := snapshotRepo(ctx, repoPath); snapErr == nil {
+			if snap, snapErr := snapshotRepo(ctx, repoPath, false); snapErr == nil {
 				m := wt.LatestCheckpointMetadata
 				rep.InSync = m.HeadCommit == snap.HeadCommit &&
 					m.HeadRef == snap.HeadRef &&

@@ -85,7 +85,7 @@ func TestCheckpointFlow_EndToEnd(t *testing.T) {
 		t.Fatalf("RegisterWorktree: %v", err)
 	}
 
-	pushRes, err := cli.PushCheckpoint(ctx, wtID, repo, "", nil)
+	pushRes, err := cli.PushCheckpoint(ctx, wtID, repo, "", false, nil)
 	if err != nil {
 		t.Fatalf("PushCheckpoint: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestPushCheckpoint_UnregisteredWorktreeReturnsTypedError(t *testing.T) {
 	gitMustRun(t, ctx, repo, "commit", "-m", "initial")
 
 	// Never registered → the server 404s the checkpoint-create.
-	_, err = cli.PushCheckpoint(ctx, "wt-does-not-exist", repo, "", nil)
+	_, err = cli.PushCheckpoint(ctx, "wt-does-not-exist", repo, "", false, nil)
 	if !errors.Is(err, syncclient.ErrWorktreeNotRegistered) {
 		t.Fatalf("want ErrWorktreeNotRegistered, got %v", err)
 	}
@@ -250,7 +250,7 @@ func TestPushCheckpoint_ReportsProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	obs := &recordingObserver{}
-	if _, err := cli.PushCheckpoint(ctx, wtID, repo, "", obs); err != nil {
+	if _, err := cli.PushCheckpoint(ctx, wtID, repo, "", false, obs); err != nil {
 		t.Fatalf("PushCheckpoint: %v", err)
 	}
 
@@ -262,6 +262,75 @@ func TestPushCheckpoint_ReportsProgress(t *testing.T) {
 	}
 	if !slices.Contains(obs.phases, syncclient.PhaseUploading) {
 		t.Errorf("Uploading phase not reported; phases=%v", obs.phases)
+	}
+}
+
+// TestPushCheckpoint_CleanIgnoresUncommitted pins `clank push --clean`:
+// the checkpoint captures HEAD's committed tree (not the dirty working
+// tree), and a restore reproduces the committed state without the
+// uncommitted edit or the untracked file.
+func TestPushCheckpoint_CleanIgnoresUncommitted(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	mem := storage.NewMemory()
+	defer mem.Close()
+	srv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpSrv := httptest.NewServer(fixedPrincipalMiddleware("user-A", srv.Handler()))
+	defer httpSrv.Close()
+	cli, err := syncclient.New(syncclient.Config{BaseURL: httpSrv.URL, AuthToken: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repo := setupRepo(t, ctx)
+	writeFile(t, repo, "main.go", "committed\n")
+	gitMustRun(t, ctx, repo, "add", ".")
+	gitMustRun(t, ctx, repo, "commit", "-m", "c1")
+	headTree := strings.TrimSpace(gitMustOutput(t, ctx, repo, "rev-parse", "HEAD^{tree}"))
+
+	// Dirty the tree: a tracked edit + an untracked file. --clean must
+	// ignore both.
+	writeFile(t, repo, "main.go", "DIRTY uncommitted\n")
+	writeFile(t, repo, "scratch.txt", "untracked\n")
+
+	wtID, err := cli.RegisterWorktree(ctx, "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := cli.PushCheckpoint(ctx, wtID, repo, "", true /* committedOnly */, nil)
+	if err != nil {
+		t.Fatalf("clean push: %v", err)
+	}
+	if res.Manifest.IndexTree != headTree || res.Manifest.WorktreeTree != headTree {
+		t.Fatalf("clean push should capture HEAD's tree %s, got index=%s worktree=%s",
+			headTree, res.Manifest.IndexTree, res.Manifest.WorktreeTree)
+	}
+
+	// Apply → committed content restored, dirty edit + untracked file absent.
+	headKey, _ := storage.KeyForHead("user-A", res.Manifest.HeadCommit)
+	prefix := "user-A/checkpoints/" + wtID + "/" + res.CheckpointID + "/"
+	headBundle, _ := mem.Get(headKey)
+	uncommitted, _ := mem.Get(prefix + "uncommitted.bundle")
+	dest := t.TempDir()
+	if err := checkpoint.Apply(ctx, dest, res.Manifest,
+		[]io.Reader{bytes.NewReader(headBundle)}, bytes.NewReader(uncommitted)); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dest, "main.go")); strings.TrimSpace(string(got)) != "committed" {
+		t.Errorf("restored content = %q, want the committed version", got)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "scratch.txt")); !os.IsNotExist(err) {
+		t.Error("untracked file should not be in a --clean checkpoint")
 	}
 }
 
@@ -343,7 +412,7 @@ func TestPushPull_IncrementalChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cli.PushCheckpoint(ctx, wtID, repo, "", nil); err != nil { // full
+	if _, err := cli.PushCheckpoint(ctx, wtID, repo, "", false, nil); err != nil { // full
 		t.Fatalf("push A: %v", err)
 	}
 
@@ -351,7 +420,7 @@ func TestPushPull_IncrementalChain(t *testing.T) {
 	gitMustRun(t, ctx, repo, "add", ".")
 	gitMustRun(t, ctx, repo, "commit", "-m", "c2")
 	commitB := strings.TrimSpace(gitMustOutput(t, ctx, repo, "rev-parse", "HEAD"))
-	rB, err := cli.PushCheckpoint(ctx, wtID, repo, commitA, nil) // incremental from A
+	rB, err := cli.PushCheckpoint(ctx, wtID, repo, commitA, false, nil) // incremental from A
 	if err != nil {
 		t.Fatalf("push B: %v", err)
 	}
@@ -452,7 +521,7 @@ func TestPushCheckpoint_SecondPushSameHEADReusesHeadBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r1, err := cli.PushCheckpoint(ctx, wtID, repo, "", nil)
+	r1, err := cli.PushCheckpoint(ctx, wtID, repo, "", false, nil)
 	if err != nil {
 		t.Fatalf("first push: %v", err)
 	}
@@ -465,7 +534,7 @@ func TestPushCheckpoint_SecondPushSameHEADReusesHeadBundle(t *testing.T) {
 	// Uncommitted change only — HEAD does not move.
 	writeFile(t, repo, "scratch.txt", "wip\n")
 
-	r2, err := cli.PushCheckpoint(ctx, wtID, repo, "", nil)
+	r2, err := cli.PushCheckpoint(ctx, wtID, repo, "", false, nil)
 	if err != nil {
 		t.Fatalf("second push: %v", err)
 	}
