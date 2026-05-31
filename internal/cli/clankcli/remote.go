@@ -68,40 +68,67 @@ func runRemoteList(cmd *cobra.Command, verbose bool) error {
 	sort.Strings(names)
 	active := prefs.Remote.Active
 	out := cmd.OutOrStdout()
+
+	if !verbose {
+		for _, name := range names {
+			fmt.Fprintln(out, remoteNameCell(name, name == active))
+		}
+		return nil
+	}
+
+	// Verbose: align the name + gateway columns, then style each cell.
+	// Names/URLs are ASCII so byte length == display width; padding is
+	// added after the styled cell so ANSI codes don't skew alignment.
+	type row struct {
+		name, gw, identity string
+		active             bool
+	}
+	rows := make([]row, 0, len(names))
+	nameW, gwW := 0, 0
 	for _, name := range names {
-		marker := "  "
-		if name == active {
-			marker = "* "
-		}
-		if !verbose {
-			fmt.Fprintf(out, "%s%s\n", marker, name)
-			continue
-		}
 		r := prefs.Remote.Profiles[name]
-		if r == nil {
-			// nil entry only reachable via hand-edited preferences.json;
-			// keep listing usable instead of panicking on the deref below.
-			fmt.Fprintf(out, "%s%s\t(invalid profile)\t(not signed in)\n", marker, name)
-			continue
+		// nil entry is only reachable via a hand-edited preferences.json;
+		// keep the listing usable instead of dereferencing it.
+		gw, identity := "(invalid profile)", "(not signed in)"
+		if r != nil {
+			gw = r.GatewayURL
+			if gw == "" {
+				gw = "(no gateway_url)"
+			}
+			switch {
+			case r.UserEmail != "":
+				identity = r.UserEmail
+			case r.IsStaticBearer():
+				identity = "(static bearer)"
+			case r.AccessToken != "":
+				identity = "(signed in)"
+			}
 		}
-		gw := r.GatewayURL
-		if gw == "" {
-			gw = "(no gateway_url)"
+		rows = append(rows, row{name: name, gw: gw, identity: identity, active: name == active})
+		nameW = max(nameW, len(name))
+		gwW = max(gwW, len(gw))
+	}
+	for _, r := range rows {
+		identity := styleDim.Render(r.identity)
+		if r.identity == "(not signed in)" {
+			identity = styleWarn.Render(r.identity)
 		}
-		identity := "(not signed in)"
-		switch {
-		case r.UserEmail != "":
-			identity = r.UserEmail
-		case r.IsStaticBearer():
-			// Self-hosted token-based remote rather than an OAuth one.
-			// No identity to show.
-			identity = "(static bearer)"
-		case r.AccessToken != "":
-			identity = "(signed in)"
-		}
-		fmt.Fprintf(out, "%s%s\t%s\t%s\n", marker, name, gw, identity)
+		fmt.Fprintf(out, "%s   %s   %s\n",
+			remoteNameCell(r.name, r.active)+strings.Repeat(" ", nameW-len(r.name)),
+			styleDim.Render(r.gw)+strings.Repeat(" ", gwW-len(r.gw)),
+			identity,
+		)
 	}
 	return nil
+}
+
+// remoteNameCell renders the active marker + remote name: a green "*" and
+// a bold name for the active remote, a two-space indent otherwise.
+func remoteNameCell(name string, active bool) string {
+	if active {
+		return styleOK.Render("*") + " " + styleWorktree.Render(name)
+	}
+	return "  " + name
 }
 
 func remoteSwitchCmd() *cobra.Command {

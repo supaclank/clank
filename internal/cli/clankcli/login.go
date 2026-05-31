@@ -120,7 +120,7 @@ func runLogin(ctx context.Context, cmd *cobra.Command, remoteName, provider stri
 	if err := daemonclient.WriteRemoteSession(name, session); err != nil {
 		return fmt.Errorf("save session: %w", err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "\nSigned in to remote %q as %s\n", name, session.UserEmail)
+	fmt.Fprintf(cmd.OutOrStdout(), "\n%s Signed in to remote %q as %s\n", styleOK.Render("✓"), name, session.UserEmail)
 	return nil
 }
 
