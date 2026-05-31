@@ -82,6 +82,16 @@ type statusReport struct {
 	HasCheckpoint      bool                       // true when WorktreeFromRemote carries checkpoint metadata
 	InSync             bool                       // true when local content SHAs match the remote's latest checkpoint
 	Drift              driftState                 // direction of drift when !InSync; driftUnknown if undeterminable
+	DriftAhead         int                        // commits local is ahead by (0 when unknown or uncommitted-only)
+	DriftBehind        int                        // commits local is behind by (0 when unknown)
+}
+
+// driftInfo is classifyDrift's result: a direction plus, when the heads
+// differ and both are local objects, the commit counts each way.
+type driftInfo struct {
+	state  driftState
+	ahead  int
+	behind int
 }
 
 // runStatus assembles the report by reading the cached worktree id and
@@ -166,7 +176,8 @@ func runStatus(ctx context.Context, repoPath string) (string, error) {
 					m.IndexTree == snap.IndexTree &&
 					m.WorktreeTree == snap.WorktreeTree
 				if !rep.InSync {
-					rep.Drift = classifyDrift(repoPath, snap.HeadCommit, m.HeadCommit)
+					d := classifyDrift(repoPath, snap.HeadCommit, m.HeadCommit)
+					rep.Drift, rep.DriftAhead, rep.DriftBehind = d.state, d.ahead, d.behind
 				}
 			}
 		}
@@ -175,33 +186,44 @@ func runStatus(ctx context.Context, repoPath string) (string, error) {
 	return renderStatusReport(rep), nil
 }
 
-// classifyDrift determines the direction of an out-of-sync worktree using
-// only local git data (no backend round-trip). When the heads match, the
-// difference is uncommitted/index/worktree state — on a laptop that's
-// almost always local edits to push, and push is idempotent, so we call
-// it ahead. When the heads differ, commit ancestry decides; a remote head
-// that isn't even a local object means the remote advanced past us (pull).
-func classifyDrift(repoPath, localHead, remoteHead string) driftState {
+// classifyDrift determines the direction (and, where possible, the commit
+// counts) of an out-of-sync worktree using only local git data (no backend
+// round-trip). When the heads match, the difference is uncommitted/index/
+// worktree state — on a laptop that's almost always local edits to push,
+// and push is idempotent, so we call it ahead (with no commit count). When
+// the heads differ, the ahead/behind commit counts decide the direction; a
+// remote head that isn't even a local object means the remote advanced
+// past us (pull).
+func classifyDrift(repoPath, localHead, remoteHead string) driftInfo {
 	if localHead == "" || remoteHead == "" {
-		return driftUnknown
+		return driftInfo{state: driftUnknown}
 	}
 	if localHead == remoteHead {
-		return driftAhead
+		return driftInfo{state: driftAhead}
 	}
-	// remoteHead not a local object → the remote moved to a commit we don't
-	// have. Pull (which is fast-forward-guarded, so a true divergence is
-	// refused safely) rather than guess.
-	remoteIsAncestor, err := git.IsAncestor(repoPath, remoteHead, localHead)
+	ahead, behind, err := git.AheadBehind(repoPath, localHead, remoteHead)
 	if err != nil {
-		return driftBehind
+		// remoteHead isn't a local object → the remote moved to a commit we
+		// don't have. Pull (fast-forward-guarded, so a true divergence is
+		// refused safely) rather than guess a count.
+		return driftInfo{state: driftBehind}
 	}
-	if remoteIsAncestor {
-		return driftAhead // local descends from the remote head
+	switch {
+	case ahead > 0 && behind > 0:
+		return driftInfo{state: driftDiverged, ahead: ahead, behind: behind}
+	case behind > 0:
+		return driftInfo{state: driftBehind, behind: behind}
+	default:
+		return driftInfo{state: driftAhead, ahead: ahead}
 	}
-	if localIsAncestor, err := git.IsAncestor(repoPath, localHead, remoteHead); err == nil && localIsAncestor {
-		return driftBehind // remote descends from our head
+}
+
+// commits renders a commit count with correct pluralization.
+func commits(n int) string {
+	if n == 1 {
+		return "1 commit"
 	}
-	return driftDiverged
+	return fmt.Sprintf("%d commits", n)
 }
 
 // (Styles moved to style.go so push/pull/status share the same palette.)
@@ -258,11 +280,23 @@ func renderStatusReport(rep statusReport) string {
 	case rep.InSync:
 		sb.WriteString("  " + styleOK.Render("✓ In sync with "+rep.ActiveRemote+" remote") + "\n")
 	case rep.Drift == driftAhead:
-		sb.WriteString("  " + styleWarn.Render("Ahead of "+rep.ActiveRemote+" remote") + " — run " + styleCmdHint.Render("`clank push`") + "\n")
+		headline := "Ahead of " + rep.ActiveRemote + " remote"
+		if rep.DriftAhead > 0 {
+			headline += " by " + commits(rep.DriftAhead)
+		}
+		sb.WriteString("  " + styleWarn.Render(headline) + " — run " + styleCmdHint.Render("`clank push`") + "\n")
 	case rep.Drift == driftBehind:
-		sb.WriteString("  " + styleWarn.Render("Behind "+rep.ActiveRemote+" remote") + " — run " + styleCmdHint.Render("`clank pull`") + "\n")
+		headline := "Behind " + rep.ActiveRemote + " remote"
+		if rep.DriftBehind > 0 {
+			headline += " by " + commits(rep.DriftBehind)
+		}
+		sb.WriteString("  " + styleWarn.Render(headline) + " — run " + styleCmdHint.Render("`clank pull`") + "\n")
 	case rep.Drift == driftDiverged:
-		sb.WriteString("  " + styleWarn.Render("Diverged from "+rep.ActiveRemote+" remote") + " — run " + styleCmdHint.Render("`clank push`") + " or " + styleCmdHint.Render("`clank pull`") + "\n")
+		headline := "Diverged from " + rep.ActiveRemote + " remote"
+		if rep.DriftAhead > 0 || rep.DriftBehind > 0 {
+			headline += fmt.Sprintf(" (%d ahead, %d behind)", rep.DriftAhead, rep.DriftBehind)
+		}
+		sb.WriteString("  " + styleWarn.Render(headline) + " — run " + styleCmdHint.Render("`clank push`") + " or " + styleCmdHint.Render("`clank pull`") + "\n")
 	default:
 		sb.WriteString("  " + styleWarn.Render("Out of sync with "+rep.ActiveRemote+" remote") + " — run " + styleCmdHint.Render("`clank push`") + " or " + styleCmdHint.Render("`clank pull`") + "\n")
 	}

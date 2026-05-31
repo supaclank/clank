@@ -377,6 +377,29 @@ func CommitsAhead(dir, base, branch string) (int, error) {
 	return n, nil
 }
 
+// AheadBehind returns how many commits local has that remote lacks
+// (ahead) and how many remote has that local lacks (behind), via
+// `git rev-list --left-right --count local...remote`. Both revisions must
+// resolve in dir's object store; an unknown revision returns an error
+// (callers treat that as "remote advanced past a commit we don't have").
+func AheadBehind(dir, local, remote string) (ahead, behind int, err error) {
+	out, err := gitCmd(dir, "rev-list", "--left-right", "--count", local+"..."+remote)
+	if err != nil {
+		return 0, 0, fmt.Errorf("count ahead/behind: %w", err)
+	}
+	fields := strings.Fields(strings.TrimSpace(out))
+	if len(fields) != 2 {
+		return 0, 0, fmt.Errorf("unexpected rev-list output %q", out)
+	}
+	if ahead, err = strconv.Atoi(fields[0]); err != nil {
+		return 0, 0, fmt.Errorf("parse ahead count %q: %w", fields[0], err)
+	}
+	if behind, err = strconv.Atoi(fields[1]); err != nil {
+		return 0, 0, fmt.Errorf("parse behind count %q: %w", fields[1], err)
+	}
+	return ahead, behind, nil
+}
+
 // CommitLog returns a one-line-per-commit log of commits on branch that are
 // not on base. Format: "<short-hash> <subject>". Newest first.
 func CommitLog(dir, base, branch string) (string, error) {
