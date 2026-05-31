@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/clanksync/triggers"
 	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/store"
 	clanksync "github.com/acksell/clank/pkg/sync"
@@ -78,15 +79,22 @@ func TestEnsureTracked_NonInteractiveUntrackedErrors(t *testing.T) {
 }
 
 // TestEnsureTracked_InteractivePromptRegisters drives the TTY path: a
-// "yes" to the track prompt registers the worktree, caches the id, and
-// runs harness onboarding ("3" = both).
+// "yes" to the track prompt registers the worktree and caches the id.
+// SyncHarnesses is pre-set so the harness multiselect (a TUI widget that
+// needs a real terminal) is skipped — its logic is covered by the
+// harnessSelectModel tests.
 func TestEnsureTracked_InteractivePromptRegisters(t *testing.T) {
 	t.Setenv("CLANK_DIR", t.TempDir())
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(t.TempDir(), "claude"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg"))
+	if err := config.UpdatePreferences(func(p *config.Preferences) {
+		p.SyncHarnesses = []string{triggers.HarnessClaudeCode, triggers.HarnessOpenCode}
+	}); err != nil {
+		t.Fatal(err)
+	}
 	cli, st := newSyncServer(t)
 	repo := newGitRepo(t)
-	cmd, _ := newPromptCmd("y\n3\n") // track? yes; harness? both
+	cmd, _ := newPromptCmd("y\n") // track? yes
 
 	ctx := context.Background()
 	id, err := ensureTracked(ctx, cmd, cli, repo, "", true)
@@ -102,10 +110,6 @@ func TestEnsureTracked_InteractivePromptRegisters(t *testing.T) {
 	}
 	if _, err := st.GetWorktreeByID(ctx, id); err != nil {
 		t.Fatalf("worktree not registered on remote: %v", err)
-	}
-	prefs, _ := config.LoadPreferences()
-	if len(prefs.SyncHarnesses) != 2 {
-		t.Errorf("harness selection not persisted: %v", prefs.SyncHarnesses)
 	}
 }
 

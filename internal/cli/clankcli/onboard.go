@@ -75,31 +75,6 @@ func allHarnesses() []string {
 	return []string{triggers.HarnessClaudeCode, triggers.HarnessOpenCode}
 }
 
-// pickHarnesses asks which coding-agent harnesses to auto-sync sessions
-// for. A bare Enter (or an unrecognized answer) selects both. The Claude
-// option is the Claude Code CLI / Agent SDK Stop hook — it covers any app
-// built on the Claude CLI/SDK, but NOT Claude Desktop (untrackable).
-func pickHarnesses(cmd *cobra.Command) ([]string, error) {
-	out := cmd.OutOrStdout()
-	fmt.Fprintln(out, "Which coding agents should clank auto-sync sessions for?")
-	fmt.Fprintln(out, "  1) Claude Code (CLI / Agent SDK)")
-	fmt.Fprintln(out, "  2) opencode")
-	fmt.Fprintln(out, "  3) Both")
-	fmt.Fprint(out, "Select [3]: ")
-	line, err := readLine(cmd)
-	if err != nil {
-		return nil, err
-	}
-	switch strings.TrimSpace(line) {
-	case "1":
-		return []string{triggers.HarnessClaudeCode}, nil
-	case "2":
-		return []string{triggers.HarnessOpenCode}, nil
-	default:
-		return allHarnesses(), nil
-	}
-}
-
 // ensureHarnessTriggers resolves which harnesses to install autopush
 // triggers for and installs them. Resolution order:
 //   - already chosen (prefs.SyncHarnesses) → install those (idempotent).
@@ -117,6 +92,10 @@ func ensureHarnessTriggers(cmd *cobra.Command, interactive bool) error {
 		return installTriggersFor(cmd, allHarnesses())
 	}
 	chosen, err := pickHarnesses(cmd)
+	if errors.Is(err, errHarnessSelectionCanceled) {
+		fmt.Fprintln(cmd.OutOrStdout(), "Skipped — no autopush triggers installed. Run `clank init` to set them up later.")
+		return nil
+	}
 	if err != nil {
 		return err
 	}

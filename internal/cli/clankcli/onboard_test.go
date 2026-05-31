@@ -48,47 +48,22 @@ func TestConfirmYesNo_Default(t *testing.T) {
 	}
 }
 
-func TestPickHarnesses(t *testing.T) {
-	t.Parallel()
-	both := []string{triggers.HarnessClaudeCode, triggers.HarnessOpenCode}
-	cases := []struct {
-		in   string
-		want []string
-	}{
-		{"1\n", []string{triggers.HarnessClaudeCode}},
-		{"2\n", []string{triggers.HarnessOpenCode}},
-		{"3\n", both},
-		{"\n", both},       // bare Enter → both
-		{"banana\n", both}, // unrecognized → both
-	}
-	for _, tc := range cases {
-		cmd, _ := newPromptCmd(tc.in)
-		got, err := pickHarnesses(cmd)
-		if err != nil {
-			t.Fatalf("pickHarnesses(%q): %v", tc.in, err)
-		}
-		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
-			t.Errorf("pickHarnesses(%q) = %v, want %v", tc.in, got, tc.want)
-		}
-	}
-}
-
 // TestReadLine_NoOverReadAcrossPrompts pins that two sequential prompts
 // sharing one reader each get their own line — readLine must not buffer
 // past the newline (a bufio.Reader would swallow the second answer).
 func TestReadLine_NoOverReadAcrossPrompts(t *testing.T) {
 	t.Parallel()
-	cmd, _ := newPromptCmd("y\n2\n")
-	ok, err := confirmYesNo(cmd, "track? ", false)
-	if err != nil || !ok {
-		t.Fatalf("first prompt: ok=%v err=%v", ok, err)
+	cmd, _ := newPromptCmd("y\nn\n")
+	first, err := confirmYesNo(cmd, "first? ", false)
+	if err != nil || !first {
+		t.Fatalf("first prompt: got=%v err=%v, want true", first, err)
 	}
-	got, err := pickHarnesses(cmd)
+	second, err := confirmYesNo(cmd, "second? ", true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0] != triggers.HarnessOpenCode {
-		t.Fatalf("second prompt lost input: got %v, want [opencode]", got)
+	if second {
+		t.Fatal("second prompt lost input: got default(true), want false from the 'n' line")
 	}
 }
 
