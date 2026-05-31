@@ -12,8 +12,6 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/clanksync/pushlock"
-	"github.com/acksell/clank/internal/cloud"
-	"github.com/acksell/clank/internal/config"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
@@ -77,49 +75,9 @@ from ` + "`git worktree add`" + ` are tracked individually.`,
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 			defer cancel()
 
-			// Refresh BEFORE the first authenticated call so the sync
-			// client below sees a fresh bearer. Without this, expired
-			// access tokens silently produce 401 from RegisterWorktree.
-			//
-			// Skip when the caller supplied --token / CLANK_SYNC_TOKEN
-			// explicitly — that bearer is independent of the active
-			// remote profile (e.g. self-hosted static bearer, CI cron),
-			// so refreshing the profile's expired refresh_token would
-			// abort the push despite the caller having valid creds.
-			if token == "" {
-				if err := daemonclient.EnsureFreshActiveRemote(ctx); err != nil {
-					if errors.Is(err, cloud.ErrUnauthorized) {
-						return fmt.Errorf("session expired — run `clank login` to sign in again")
-					}
-					return fmt.Errorf("refresh remote session: %w", err)
-				}
-			}
-
-			if baseURL == "" || token == "" {
-				prefs, err := config.LoadPreferences()
-				if err != nil {
-					return fmt.Errorf("load preferences: %w", err)
-				}
-				if p := prefs.ActiveRemote(); p != nil {
-					if baseURL == "" {
-						baseURL = p.GatewayURL
-					}
-					if token == "" {
-						token = p.AccessToken
-					}
-				}
-			}
-			if baseURL == "" {
-				return fmt.Errorf("--base-url is required (or set CLANK_GATEWAY_URL, or configure an active remote via `clank remote add`)")
-			}
-			if token == "" {
-				return fmt.Errorf("not signed in — run `clank login` to sign in to the active remote")
-			}
-
-			cli, err := syncclient.New(syncclient.Config{
-				BaseURL:   baseURL,
-				AuthToken: token,
-			})
+			// Sign in (active remote, or prompt on a TTY) and resolve a
+			// sync client; --token/--base-url override for self-hosted/CI.
+			cli, err := ensureLoggedIn(ctx, cmd, baseURL, token)
 			if err != nil {
 				return err
 			}
@@ -127,34 +85,11 @@ from ` + "`git worktree add`" + ` are tracked individually.`,
 			timer := newPhaseTimer(timing || envTrue("CLANK_TIMING"))
 			defer timer.Summary(cmd.ErrOrStderr())
 
-			worktreeID, err := agent.ReadLocalWorktreeID(absRepo)
+			// Resolve (and if needed register) the worktree id: auto-track
+			// under AutoPushAllRepos, offer to track on a TTY, else error.
+			worktreeID, err := ensureTracked(ctx, cmd, cli, absRepo, display, isInteractive(cmd))
 			if err != nil {
-				return fmt.Errorf("load cached worktree id: %w", err)
-			}
-			if worktreeID == "" {
-				// Untracked. Require explicit opt-in unless the user turned
-				// on global auto-push, in which case register on the fly.
-				prefs, err := config.LoadPreferences()
-				if err != nil {
-					return fmt.Errorf("load preferences: %w", err)
-				}
-				if !prefs.AutoPushAllRepos {
-					return fmt.Errorf("this worktree isn't tracked — run `clank init` (or `clank init --global` to auto-track every repo)")
-				}
-				name := display
-				if name == "" {
-					name = filepath.Base(absRepo)
-				}
-				done := timer.Start("register worktree")
-				worktreeID, err = cli.RegisterWorktree(ctx, name)
-				done()
-				if err != nil {
-					return fmt.Errorf("register worktree: %w", err)
-				}
-				if err := agent.WriteLocalWorktreeID(absRepo, worktreeID); err != nil {
-					return fmt.Errorf("cache worktree id: %w", err)
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "registered worktree %s as %q\n", worktreeID, name)
+				return err
 			}
 
 			// Serialize concurrent pushes for this worktree (e.g. a Claude

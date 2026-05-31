@@ -4,20 +4,13 @@ import (
 	"bytes"
 	"context"
 	"net/http"
-	"net/http/httptest"
-	"os/exec"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/store"
 	"github.com/acksell/clank/pkg/auth"
-	clanksync "github.com/acksell/clank/pkg/sync"
-	syncclient "github.com/acksell/clank/pkg/sync/client"
-	"github.com/acksell/clank/pkg/sync/storage"
 )
 
 // withFixedPrincipal injects a fixed Principal so every request resolves
@@ -35,37 +28,11 @@ func withFixedPrincipal(userID string, next http.Handler) http.Handler {
 // the push — replacing the old `rm -r .git/clank && clank init` recovery.
 func TestRunPush_SelfHealsStaleWorktreeID(t *testing.T) {
 	t.Parallel()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	mem := storage.NewMemory()
-	defer mem.Close()
-	srv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	httpSrv := httptest.NewServer(withFixedPrincipal("user-A", srv.Handler()))
-	defer httpSrv.Close()
-	cli, err := syncclient.New(syncclient.Config{BaseURL: httpSrv.URL, AuthToken: "t"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	repo := t.TempDir()
-	pgit(t, repo, "init", "-q")
-	pgit(t, repo, "config", "user.email", "t@e.com")
-	pgit(t, repo, "config", "user.name", "t")
-	pWrite(t, filepath.Join(repo, "f.txt"), "v1")
-	pgit(t, repo, "add", ".")
-	pgit(t, repo, "commit", "-qm", "c1")
+	cli, st := newSyncServer(t)
+	repo := newGitRepo(t)
 
 	// Stale cached id — points at a worktree the remote never had.
 	const staleID = "wt-stale-deleted-upstream"
