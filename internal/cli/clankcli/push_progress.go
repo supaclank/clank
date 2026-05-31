@@ -54,7 +54,7 @@ func (u *pushUI) Phase(name string) {
 	u.total, u.uploaded = 0, 0
 	// Draw the new phase's line right away so there's no blank gap until the
 	// next tick.
-	fmt.Fprint(u.out, "\r\x1b[K"+liveLine(spinFrames[0], u.phase, u.remote, u.uploaded, u.total))
+	fmt.Fprint(u.out, "\r\x1b[K"+liveLine(spinFrames[0], u.phase, u.remote, u.uploaded, u.total, false))
 	u.mu.Unlock()
 }
 
@@ -92,14 +92,28 @@ func (u *pushUI) start() {
 		defer close(u.done)
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
+		// stallTicks counts consecutive ticks with no byte progress; after
+		// ~600ms of plateau we treat the upload as "transferring" (bytes
+		// submitted, awaiting the wire + server) rather than show a frozen
+		// near-full bar.
+		var lastUploaded int64
+		stallTicks := 0
+		const stallAfter = 6
 		for i := 0; ; i++ {
 			select {
 			case <-u.stop:
 				return
 			case <-ticker.C:
 				u.mu.Lock()
-				fmt.Fprint(u.out, "\r\x1b[K"+liveLine(spinFrames[i%len(spinFrames)], u.phase, u.remote, u.uploaded, u.total))
+				phase, uploaded, total := u.phase, u.uploaded, u.total
 				u.mu.Unlock()
+				if total > 0 && uploaded == lastUploaded && uploaded > 0 {
+					stallTicks++
+				} else {
+					stallTicks = 0
+					lastUploaded = uploaded
+				}
+				fmt.Fprint(u.out, "\r\x1b[K"+liveLine(spinFrames[i%len(spinFrames)], phase, u.remote, uploaded, total, stallTicks >= stallAfter))
 			}
 		}
 	}()
@@ -147,12 +161,22 @@ func committedForm(phase string, total int64) string {
 
 // liveLine renders the in-progress line for a phase: "<spinner> <phase> →
 // <remote>  [bar]  up / total". The bar appears only once a size is known.
-func liveLine(frame, phase, remote string, uploaded, total int64) string {
-	line := styleOK.Render(frame) + " " + phase + styleDim.Render(" → "+remote)
-	if total > 0 {
-		line += "  " + renderBar(float64(uploaded)/float64(total), 24) + "  " + styleDim.Render(humanBytes(uploaded)+" / "+humanBytes(total))
+//
+// stalled means byte progress has plateaued — the bytes are submitted to
+// the OS but the wire transfer + server store/ack is still in flight (a
+// blocked client.Do). We drop the bar then: it would sit misleadingly at
+// ~100% while the slow part happens, so show an honest "transferring…"
+// instead.
+func liveLine(frame, phase, remote string, uploaded, total int64, stalled bool) string {
+	head := styleOK.Render(frame) + " " + phase + styleDim.Render(" → "+remote)
+	switch {
+	case total <= 0:
+		return head
+	case stalled:
+		return head + "  " + styleDim.Render(humanBytes(uploaded)+" sent · transferring…")
+	default:
+		return head + "  " + renderBar(float64(uploaded)/float64(total), 24) + "  " + styleDim.Render(humanBytes(uploaded)+" / "+humanBytes(total))
 	}
-	return line
 }
 
 // renderBar draws a shaded bar like "[ ███▓░░░░ ]": full cells █, a single

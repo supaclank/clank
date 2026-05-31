@@ -63,7 +63,7 @@ func TestRenderBar(t *testing.T) {
 func TestLiveLine(t *testing.T) {
 	t.Parallel()
 
-	noSize := stripANSI(liveLine("⠋", "Saving checkpoint", "localhost:7878", 0, 0))
+	noSize := stripANSI(liveLine("⠋", "Saving checkpoint", "localhost:7878", 0, 0, false))
 	for _, want := range []string{"⠋", "Saving checkpoint", "localhost:7878"} {
 		if !strings.Contains(noSize, want) {
 			t.Errorf("size-unknown line %q missing %q", noSize, want)
@@ -73,11 +73,21 @@ func TestLiveLine(t *testing.T) {
 		t.Errorf("size-unknown line should have no bar: %q", noSize)
 	}
 
-	withSize := stripANSI(liveLine("⠋", "Uploading", "localhost:7878", 50, 100))
+	withSize := stripANSI(liveLine("⠋", "Uploading", "localhost:7878", 50, 100, false))
 	for _, want := range []string{"Uploading", "█", "░", "50 B / 100 B"} {
 		if !strings.Contains(withSize, want) {
 			t.Errorf("uploading line %q missing %q", withSize, want)
 		}
+	}
+
+	// Stalled: bytes submitted, wire/server still in flight — drop the bar
+	// (it would sit misleadingly near-full) and say "transferring".
+	stalled := stripANSI(liveLine("⠋", "Uploading", "localhost:7878", 100, 100, true))
+	if strings.ContainsAny(stalled, "█░") {
+		t.Errorf("stalled line should drop the bar: %q", stalled)
+	}
+	if !strings.Contains(stalled, "transferring") || !strings.Contains(stalled, "100 B sent") {
+		t.Errorf("stalled line %q should show bytes sent + transferring", stalled)
 	}
 }
 
