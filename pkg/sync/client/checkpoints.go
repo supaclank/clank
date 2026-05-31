@@ -53,7 +53,7 @@ func (c *Client) RegisterWorktree(ctx context.Context, displayName string) (stri
 // from a parity check); when the server lacks this checkpoint's HEAD but
 // holds baseCommit's, only an incremental head bundle (HEAD ^base) is
 // built and uploaded. "" ⇒ full bundle (or skipped if already stored).
-func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath, baseCommit string) (*CheckpointResult, error) {
+func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath, baseCommit string, obs PushObserver) (*CheckpointResult, error) {
 	if worktreeID == "" {
 		return nil, errors.New("syncclient: worktreeID is required")
 	}
@@ -119,24 +119,46 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath, baseC
 	// PUT response only after the full body lands, so the control-plane
 	// cap would abort any upload slower than 30s (e.g. a large bundle
 	// over a tunnel).
+	var headBundlePath string
 	if createResp.HeadBundlePutURL != "" {
-		headBundle, err := builder.BuildHeadBundle(ctx, tempID, res.Manifest.HeadCommit, createResp.HeadBundleBase)
+		reportPhase(obs, PhaseBuilding)
+		headBundlePath, err = builder.BuildHeadBundle(ctx, tempID, res.Manifest.HeadCommit, createResp.HeadBundleBase)
 		if err != nil {
 			return nil, fmt.Errorf("build head bundle: %w", err)
 		}
-		defer os.Remove(headBundle)
-		if err := uploadFile(ctx, c.blobClient, createResp.HeadBundlePutURL, headBundle); err != nil {
-			return nil, fmt.Errorf("upload headCommit: %w", err)
-		}
+		defer os.Remove(headBundlePath)
 	}
-	if err := uploadFile(ctx, c.blobClient, createResp.UncommittedURL, res.UncommittedBundle); err != nil {
-		return nil, fmt.Errorf("upload uncommitted: %w", err)
-	}
+
 	manifestBytes, err := res.Manifest.Marshal()
 	if err != nil {
 		return nil, fmt.Errorf("marshal manifest: %w", err)
 	}
-	if err := uploadBytes(ctx, c.blobClient, createResp.ManifestPutURL, manifestBytes, "application/json"); err != nil {
+
+	// Report the total upload size up front so callers can render a
+	// proportional progress bar (and so the user sees how much will be
+	// sent to the remote before the slow transfer starts).
+	if obs != nil {
+		obs.UploadSized(fileSize(headBundlePath) + fileSize(res.UncommittedBundle) + int64(len(manifestBytes)))
+		obs.Phase(PhaseUploading)
+	}
+	var uploaded int64
+	advance := func(n int64) {
+		if obs == nil {
+			return
+		}
+		uploaded += n
+		obs.UploadProgress(uploaded)
+	}
+
+	if headBundlePath != "" {
+		if err := uploadFile(ctx, c.blobClient, createResp.HeadBundlePutURL, headBundlePath, advance); err != nil {
+			return nil, fmt.Errorf("upload headCommit: %w", err)
+		}
+	}
+	if err := uploadFile(ctx, c.blobClient, createResp.UncommittedURL, res.UncommittedBundle, advance); err != nil {
+		return nil, fmt.Errorf("upload uncommitted: %w", err)
+	}
+	if err := uploadBytes(ctx, c.blobClient, createResp.ManifestPutURL, manifestBytes, "application/json", advance); err != nil {
 		return nil, fmt.Errorf("upload manifest: %w", err)
 	}
 
@@ -183,7 +205,7 @@ func (c *Client) postJSON(ctx context.Context, path string, body any, into any) 
 	return nil
 }
 
-func uploadFile(ctx context.Context, client *http.Client, url, path string) error {
+func uploadFile(ctx context.Context, client *http.Client, url, path string, onAdvance func(int64)) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
@@ -193,7 +215,11 @@ func uploadFile(ctx context.Context, client *http.Client, url, path string) erro
 	if err != nil {
 		return fmt.Errorf("stat %s: %w", path, err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, f)
+	var body io.Reader = f
+	if onAdvance != nil {
+		body = &countingReader{r: f, onAdvance: onAdvance}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, body)
 	if err != nil {
 		return err
 	}
@@ -211,8 +237,12 @@ func uploadFile(ctx context.Context, client *http.Client, url, path string) erro
 	return nil
 }
 
-func uploadBytes(ctx context.Context, client *http.Client, url string, data []byte, contentType string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(data))
+func uploadBytes(ctx context.Context, client *http.Client, url string, data []byte, contentType string, onAdvance func(int64)) error {
+	var body io.Reader = bytes.NewReader(data)
+	if onAdvance != nil {
+		body = &countingReader{r: body, onAdvance: onAdvance}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, body)
 	if err != nil {
 		return err
 	}

@@ -45,7 +45,7 @@ func TestBlobClient_NoResponseHeaderTimeout(t *testing.T) {
 	// Reproduce the failure: a client whose ResponseHeaderTimeout is
 	// shorter than the server's header delay aborts the upload.
 	capped := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 20 * time.Millisecond}}
-	if err := uploadBytes(context.Background(), capped, srv.URL, []byte("payload"), "application/octet-stream"); err == nil {
+	if err := uploadBytes(context.Background(), capped, srv.URL, []byte("payload"), "application/octet-stream", nil); err == nil {
 		t.Fatal("expected the capped client to time out awaiting response headers")
 	}
 
@@ -57,7 +57,7 @@ func TestBlobClient_NoResponseHeaderTimeout(t *testing.T) {
 	if tr, ok := c.blobClient.Transport.(*http.Transport); !ok || tr.ResponseHeaderTimeout != 0 {
 		t.Fatalf("blobClient must have ResponseHeaderTimeout==0, got %+v", c.blobClient.Transport)
 	}
-	if err := uploadBytes(context.Background(), c.blobClient, srv.URL, []byte("payload"), "application/octet-stream"); err != nil {
+	if err := uploadBytes(context.Background(), c.blobClient, srv.URL, []byte("payload"), "application/octet-stream", nil); err != nil {
 		t.Fatalf("blob client should not cap upload on response-header timeout: %v", err)
 	}
 }

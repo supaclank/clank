@@ -7,10 +7,10 @@ import "context"
 // checkpoint bundle uploads. Exposed for callers that mint their own
 // URLs (e.g. session blob uploads via sessionsync).
 func (c *Client) PutFile(ctx context.Context, url, path string) error {
-	return uploadFile(ctx, c.blobClient, url, path)
+	return uploadFile(ctx, c.blobClient, url, path, nil)
 }
 
 // PutBytes uploads data to a presigned PUT URL with the given content type.
 func (c *Client) PutBytes(ctx context.Context, url string, data []byte, contentType string) error {
-	return uploadBytes(ctx, c.blobClient, url, data, contentType)
+	return uploadBytes(ctx, c.blobClient, url, data, contentType, nil)
 }

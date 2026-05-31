@@ -10,7 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -83,7 +85,7 @@ func TestCheckpointFlow_EndToEnd(t *testing.T) {
 		t.Fatalf("RegisterWorktree: %v", err)
 	}
 
-	pushRes, err := cli.PushCheckpoint(ctx, wtID, repo, "")
+	pushRes, err := cli.PushCheckpoint(ctx, wtID, repo, "", nil)
 	if err != nil {
 		t.Fatalf("PushCheckpoint: %v", err)
 	}
@@ -194,9 +196,72 @@ func TestPushCheckpoint_UnregisteredWorktreeReturnsTypedError(t *testing.T) {
 	gitMustRun(t, ctx, repo, "commit", "-m", "initial")
 
 	// Never registered → the server 404s the checkpoint-create.
-	_, err = cli.PushCheckpoint(ctx, "wt-does-not-exist", repo, "")
+	_, err = cli.PushCheckpoint(ctx, "wt-does-not-exist", repo, "", nil)
 	if !errors.Is(err, syncclient.ErrWorktreeNotRegistered) {
 		t.Fatalf("want ErrWorktreeNotRegistered, got %v", err)
+	}
+}
+
+// recordingObserver captures PushObserver events for assertions.
+type recordingObserver struct {
+	mu       sync.Mutex
+	phases   []string
+	sized    int64
+	uploaded int64
+}
+
+func (o *recordingObserver) Phase(n string)         { o.mu.Lock(); o.phases = append(o.phases, n); o.mu.Unlock() }
+func (o *recordingObserver) UploadSized(t int64)    { o.mu.Lock(); o.sized = t; o.mu.Unlock() }
+func (o *recordingObserver) UploadProgress(u int64) { o.mu.Lock(); o.uploaded = u; o.mu.Unlock() }
+
+// TestPushCheckpoint_ReportsProgress pins the progress wiring: the
+// observer is told the total upload size and the counting readers report
+// exactly that many bytes (no miscount), and the Uploading phase fires.
+func TestPushCheckpoint_ReportsProgress(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	mem := storage.NewMemory()
+	defer mem.Close()
+	srv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpSrv := httptest.NewServer(fixedPrincipalMiddleware("user-A", srv.Handler()))
+	defer httpSrv.Close()
+	cli, err := syncclient.New(syncclient.Config{BaseURL: httpSrv.URL, AuthToken: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repo := setupRepo(t, ctx)
+	writeFile(t, repo, "main.go", "package main\nfunc main(){}\n")
+	gitMustRun(t, ctx, repo, "add", ".")
+	gitMustRun(t, ctx, repo, "commit", "-m", "initial")
+
+	wtID, err := cli.RegisterWorktree(ctx, "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs := &recordingObserver{}
+	if _, err := cli.PushCheckpoint(ctx, wtID, repo, "", obs); err != nil {
+		t.Fatalf("PushCheckpoint: %v", err)
+	}
+
+	if obs.sized <= 0 {
+		t.Fatalf("UploadSized not reported (got %d)", obs.sized)
+	}
+	if obs.uploaded != obs.sized {
+		t.Fatalf("counting reader miscounted: uploaded %d, sized %d", obs.uploaded, obs.sized)
+	}
+	if !slices.Contains(obs.phases, syncclient.PhaseUploading) {
+		t.Errorf("Uploading phase not reported; phases=%v", obs.phases)
 	}
 }
 
@@ -278,7 +343,7 @@ func TestPushPull_IncrementalChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cli.PushCheckpoint(ctx, wtID, repo, ""); err != nil { // full
+	if _, err := cli.PushCheckpoint(ctx, wtID, repo, "", nil); err != nil { // full
 		t.Fatalf("push A: %v", err)
 	}
 
@@ -286,7 +351,7 @@ func TestPushPull_IncrementalChain(t *testing.T) {
 	gitMustRun(t, ctx, repo, "add", ".")
 	gitMustRun(t, ctx, repo, "commit", "-m", "c2")
 	commitB := strings.TrimSpace(gitMustOutput(t, ctx, repo, "rev-parse", "HEAD"))
-	rB, err := cli.PushCheckpoint(ctx, wtID, repo, commitA) // incremental from A
+	rB, err := cli.PushCheckpoint(ctx, wtID, repo, commitA, nil) // incremental from A
 	if err != nil {
 		t.Fatalf("push B: %v", err)
 	}
@@ -387,7 +452,7 @@ func TestPushCheckpoint_SecondPushSameHEADReusesHeadBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r1, err := cli.PushCheckpoint(ctx, wtID, repo, "")
+	r1, err := cli.PushCheckpoint(ctx, wtID, repo, "", nil)
 	if err != nil {
 		t.Fatalf("first push: %v", err)
 	}
@@ -400,7 +465,7 @@ func TestPushCheckpoint_SecondPushSameHEADReusesHeadBundle(t *testing.T) {
 	// Uncommitted change only — HEAD does not move.
 	writeFile(t, repo, "scratch.txt", "wip\n")
 
-	r2, err := cli.PushCheckpoint(ctx, wtID, repo, "")
+	r2, err := cli.PushCheckpoint(ctx, wtID, repo, "", nil)
 	if err != nil {
 		t.Fatalf("second push: %v", err)
 	}

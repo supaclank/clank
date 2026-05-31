@@ -51,6 +51,10 @@ type Client struct {
 	blobClient *http.Client
 }
 
+// BaseURL returns the gateway base URL this client targets. Used by the
+// CLI to tell the user where a push is uploading to.
+func (c *Client) BaseURL() string { return c.cfg.BaseURL }
+
 // New constructs a Client.
 func New(cfg Config) (*Client, error) {
 	if cfg.BaseURL == "" {

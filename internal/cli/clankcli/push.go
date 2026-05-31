@@ -153,9 +153,12 @@ func runPush(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *sy
 	}
 
 	// parity.RemoteHead is the server's last-synced HEAD — the base for an
-	// incremental head bundle when our HEAD has advanced.
+	// incremental head bundle when our HEAD has advanced. On a TTY the push
+	// renders a live progress UI (size + bytes + remote); otherwise it runs
+	// silently so autopush hooks don't spew control codes into logs.
+	interactive := isInteractive(cmd)
 	done := timer.Start("push checkpoint")
-	res, err := cli.PushCheckpoint(ctx, worktreeID, absRepo, parity.RemoteHead)
+	res, err := pushWithProgress(cmd, ctx, cli, absRepo, worktreeID, parity.RemoteHead, interactive)
 	done()
 	if errors.Is(err, syncclient.ErrWorktreeNotRegistered) {
 		// Stale local id: the worktree was deleted on the remote. Re-register
@@ -166,7 +169,7 @@ func runPush(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *sy
 			return err
 		}
 		done = timer.Start("push checkpoint")
-		res, err = cli.PushCheckpoint(ctx, worktreeID, absRepo, "")
+		res, err = pushWithProgress(cmd, ctx, cli, absRepo, worktreeID, "", interactive)
 		done()
 	}
 	if err != nil {
