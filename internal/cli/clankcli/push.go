@@ -172,9 +172,7 @@ func runPush(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *sy
 
 	// parity.RemoteHead is the server's last-synced HEAD — the base for an
 	// incremental head bundle when our HEAD has advanced.
-	done := timer.Start("push checkpoint")
 	res, err := cli.PushCheckpoint(ctx, worktreeID, absRepo, parity.RemoteHead, committedOnly, obs)
-	done()
 	if errors.Is(err, syncclient.ErrWorktreeNotRegistered) {
 		// Stale local id: the worktree was deleted on the remote. Pause the
 		// status line so the re-register notice prints cleanly, then retry
@@ -185,13 +183,16 @@ func runPush(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *sy
 			return err
 		}
 		ui.start()
-		done = timer.Start("push checkpoint")
 		res, err = cli.PushCheckpoint(ctx, worktreeID, absRepo, "", committedOnly, obs)
-		done()
 	}
 	if err != nil {
 		ui.finish()
 		return fmt.Errorf("push checkpoint: %w", err)
+	}
+	// Surface the push's sub-step timings (build / per-blob upload / commit)
+	// under --timing, so a slow push can be attributed precisely.
+	for _, st := range res.Timings {
+		timer.Record(st.Name, st.Duration)
 	}
 
 	// Session leg shares the same status line (Phase resets the byte bar).

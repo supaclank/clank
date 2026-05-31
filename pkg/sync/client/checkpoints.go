@@ -11,14 +11,24 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/acksell/clank/pkg/sync/checkpoint"
 )
+
+// StepTiming is the wall-clock cost of one PushCheckpoint sub-step, for
+// the CLI's --timing breakdown (so a slow push can be attributed to build
+// vs upload vs the server-side commit).
+type StepTiming struct {
+	Name     string
+	Duration time.Duration
+}
 
 // CheckpointResult is the outcome of Client.PushCheckpoint.
 type CheckpointResult struct {
 	CheckpointID string
 	Manifest     *checkpoint.Manifest
+	Timings      []StepTiming
 }
 
 // RegisterWorktree registers a new worktree with clank-sync and returns
@@ -73,8 +83,17 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath, baseC
 	if committedOnly {
 		builder = builder.CommittedOnly()
 	}
-	res, err := builder.BuildUncommitted(ctx, tempID)
-	if err != nil {
+
+	var timings []StepTiming
+	timed := func(name string, fn func() error) error {
+		t0 := time.Now()
+		err := fn()
+		timings = append(timings, StepTiming{Name: name, Duration: time.Since(t0)})
+		return err
+	}
+
+	var res *checkpoint.Result
+	if err := timed("build bundle", func() (e error) { res, e = builder.BuildUncommitted(ctx, tempID); return }); err != nil {
 		return nil, fmt.Errorf("build checkpoint: %w", err)
 	}
 	defer res.Cleanup()
@@ -95,7 +114,9 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath, baseC
 		UncommittedURL   string `json:"uncommitted_put_url"`
 		ManifestPutURL   string `json:"manifest_put_url"`
 	}
-	if err := c.postJSON(ctx, "/v1/checkpoints", createReq, &createResp); err != nil {
+	if err := timed("create checkpoint", func() error {
+		return c.postJSON(ctx, "/v1/checkpoints", createReq, &createResp)
+	}); err != nil {
 		// The create handler's only 404 is "worktree not registered" — a
 		// stale local id for a worktree deleted on the remote. Surface it
 		// typed so clank push can re-register and retry.
@@ -127,8 +148,10 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath, baseC
 	var headBundlePath string
 	if createResp.HeadBundlePutURL != "" {
 		reportPhase(obs, PhaseBuilding)
-		headBundlePath, err = builder.BuildHeadBundle(ctx, tempID, res.Manifest.HeadCommit, createResp.HeadBundleBase)
-		if err != nil {
+		if err := timed("build head bundle", func() (e error) {
+			headBundlePath, e = builder.BuildHeadBundle(ctx, tempID, res.Manifest.HeadCommit, createResp.HeadBundleBase)
+			return
+		}); err != nil {
 			return nil, fmt.Errorf("build head bundle: %w", err)
 		}
 		defer os.Remove(headBundlePath)
@@ -156,14 +179,20 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath, baseC
 	}
 
 	if headBundlePath != "" {
-		if err := uploadFile(ctx, c.blobClient, createResp.HeadBundlePutURL, headBundlePath, advance); err != nil {
+		if err := timed("upload head bundle", func() error {
+			return uploadFile(ctx, c.blobClient, createResp.HeadBundlePutURL, headBundlePath, advance)
+		}); err != nil {
 			return nil, fmt.Errorf("upload headCommit: %w", err)
 		}
 	}
-	if err := uploadFile(ctx, c.blobClient, createResp.UncommittedURL, res.UncommittedBundle, advance); err != nil {
+	if err := timed("upload uncommitted", func() error {
+		return uploadFile(ctx, c.blobClient, createResp.UncommittedURL, res.UncommittedBundle, advance)
+	}); err != nil {
 		return nil, fmt.Errorf("upload uncommitted: %w", err)
 	}
-	if err := uploadBytes(ctx, c.blobClient, createResp.ManifestPutURL, manifestBytes, "application/json", advance); err != nil {
+	if err := timed("upload manifest", func() error {
+		return uploadBytes(ctx, c.blobClient, createResp.ManifestPutURL, manifestBytes, "application/json", advance)
+	}); err != nil {
 		return nil, fmt.Errorf("upload manifest: %w", err)
 	}
 
@@ -173,13 +202,16 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath, baseC
 
 	// head_base records this HEAD's link in the server's chain (the base
 	// the server told us to build from; "" for full / already_stored).
-	if err := c.postJSON(ctx, "/v1/checkpoints/"+createResp.CheckpointID+"/commit", map[string]string{"head_base": createResp.HeadBundleBase}, nil); err != nil {
+	if err := timed("commit checkpoint", func() error {
+		return c.postJSON(ctx, "/v1/checkpoints/"+createResp.CheckpointID+"/commit", map[string]string{"head_base": createResp.HeadBundleBase}, nil)
+	}); err != nil {
 		return nil, fmt.Errorf("commit checkpoint: %w", err)
 	}
 
 	return &CheckpointResult{
 		CheckpointID: createResp.CheckpointID,
 		Manifest:     res.Manifest,
+		Timings:      timings,
 	}, nil
 }
 

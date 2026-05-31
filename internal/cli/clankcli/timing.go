@@ -72,6 +72,15 @@ func (t *phaseTimer) Start(name string) func() {
 	}
 }
 
+// Record adds a pre-measured phase (e.g. a sub-step timed inside a
+// library call and returned to the CLI). No-op when disabled.
+func (t *phaseTimer) Record(name string, d time.Duration) {
+	if !t.enabled {
+		return
+	}
+	t.phases = append(t.phases, phaseEntry{name: name, duration: d})
+}
+
 // Summary writes a human-readable timing breakdown to w. No-op when
 // disabled or when no phases were recorded. Sorts largest-first so
 // the bottleneck reads at the top; includes percent-of-total so
