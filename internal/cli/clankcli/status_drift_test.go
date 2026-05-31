@@ -74,11 +74,11 @@ func TestRenderStatusReport_DriftDirection(t *testing.T) {
 		want               string
 		wantPush, wantPull bool
 	}{
-		{driftAhead, "Ahead of dev remote", true, false},
-		{driftBehind, "Behind dev remote", false, true},
-		{driftDiverged, "Diverged from dev remote", true, true},
-		{driftUncommitted, "Uncommitted changes not synced to dev remote", true, false},
-		{driftUnknown, "Out of sync with dev remote", true, true},
+		{driftAhead, "Ahead by", true, false},
+		{driftBehind, "Behind by", false, true},
+		{driftDiverged, "Diverged —", true, true},
+		{driftUncommitted, "Uncommitted changes not synced", true, false},
+		{driftUnknown, "Out of sync", true, true},
 	}
 	for _, tc := range cases {
 		rep := base
@@ -115,10 +115,10 @@ func TestRenderStatusReport_DriftCounts(t *testing.T) {
 		mutate func(*statusReport)
 		want   string
 	}{
-		{"ahead plural", func(r *statusReport) { r.Drift = driftAhead; r.DriftAhead = 3 }, "Ahead of dev remote by 3 commits"},
-		{"behind singular", func(r *statusReport) { r.Drift = driftBehind; r.DriftBehind = 1 }, "Behind dev remote by 1 commit"},
-		{"uncommitted notes commits in sync", func(r *statusReport) { r.Drift = driftUncommitted }, "(commits in sync)"},
-		{"diverged counts", func(r *statusReport) { r.Drift = driftDiverged; r.DriftAhead = 2; r.DriftBehind = 1 }, "Diverged from dev remote (2 ahead, 1 behind)"},
+		{"ahead plural", func(r *statusReport) { r.Drift = driftAhead; r.DriftAhead = 3 }, "Ahead by 3 commits"},
+		{"behind singular", func(r *statusReport) { r.Drift = driftBehind; r.DriftBehind = 1 }, "Behind by 1 commit"},
+		{"uncommitted shows commits in sync", func(r *statusReport) { r.Drift = driftUncommitted }, "✓ Commits in sync"},
+		{"diverged counts", func(r *statusReport) { r.Drift = driftDiverged; r.DriftAhead = 2; r.DriftBehind = 1 }, "Diverged — 2 ahead, 1 behind"},
 	}
 	for _, tc := range cases {
 		rep := base

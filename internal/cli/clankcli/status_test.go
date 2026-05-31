@@ -73,10 +73,10 @@ func TestRenderStatusReport_OutOfSync(t *testing.T) {
 		HasCheckpoint: true,
 		InSync:        false,
 	}))
-	if !strings.Contains(got, "Out of sync with dev remote") {
-		t.Errorf("expected 'Out of sync with dev remote'; got:\n%s", got)
+	if !strings.Contains(got, "Out of sync") {
+		t.Errorf("expected 'Out of sync'; got:\n%s", got)
 	}
-	// Direction is the user's call now (no ownership), so both verbs surface.
+	// Direction is undeterminable here (no Drift set), so both verbs surface.
 	if !strings.Contains(got, "`clank push`") || !strings.Contains(got, "`clank pull`") {
 		t.Errorf("expected both push and pull hints; got:\n%s", got)
 	}

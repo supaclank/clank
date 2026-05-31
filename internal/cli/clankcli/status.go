@@ -228,6 +228,19 @@ func commits(n int) string {
 	return fmt.Sprintf("%d commits", n)
 }
 
+// syncCTA renders the bottom call-to-action line for an out-of-sync
+// worktree, naming the remote and the command(s) that reconcile it.
+func syncCTA(remote string, push, pull bool) string {
+	switch {
+	case push && pull:
+		return "Run " + styleCmdHint.Render("`clank push`") + " or " + styleCmdHint.Render("`clank pull`") + " to reconcile with " + remote + " remote."
+	case pull:
+		return "Run " + styleCmdHint.Render("`clank pull`") + " to sync with " + remote + " remote."
+	default:
+		return "Run " + styleCmdHint.Render("`clank push`") + " to sync with " + remote + " remote."
+	}
+}
+
 // (Styles moved to style.go so push/pull/status share the same palette.)
 
 // renderStatusReport produces a git-status-flavoured paragraph:
@@ -282,28 +295,21 @@ func renderStatusReport(rep statusReport) string {
 	case rep.InSync:
 		sb.WriteString("  " + styleOK.Render("✓ In sync with "+rep.ActiveRemote+" remote") + "\n")
 	case rep.Drift == driftUncommitted:
-		sb.WriteString("  " + styleWarn.Render("Uncommitted changes not synced to "+rep.ActiveRemote+" remote") +
-			styleDim.Render(" (commits in sync)") + " — run " + styleCmdHint.Render("`clank push`") + "\n")
+		sb.WriteString("  " + styleOK.Render("✓ Commits in sync") + "\n")
+		sb.WriteString("  " + styleWarn.Render("• Uncommitted changes not synced") + "\n")
+		sb.WriteString("  " + syncCTA(rep.ActiveRemote, true, false) + "\n")
 	case rep.Drift == driftAhead:
-		headline := "Ahead of " + rep.ActiveRemote + " remote"
-		if rep.DriftAhead > 0 {
-			headline += " by " + commits(rep.DriftAhead)
-		}
-		sb.WriteString("  " + styleWarn.Render(headline) + " — run " + styleCmdHint.Render("`clank push`") + "\n")
+		sb.WriteString("  " + styleWarn.Render("• Ahead by "+commits(rep.DriftAhead)) + "\n")
+		sb.WriteString("  " + syncCTA(rep.ActiveRemote, true, false) + "\n")
 	case rep.Drift == driftBehind:
-		headline := "Behind " + rep.ActiveRemote + " remote"
-		if rep.DriftBehind > 0 {
-			headline += " by " + commits(rep.DriftBehind)
-		}
-		sb.WriteString("  " + styleWarn.Render(headline) + " — run " + styleCmdHint.Render("`clank pull`") + "\n")
+		sb.WriteString("  " + styleWarn.Render("• Behind by "+commits(rep.DriftBehind)) + "\n")
+		sb.WriteString("  " + syncCTA(rep.ActiveRemote, false, true) + "\n")
 	case rep.Drift == driftDiverged:
-		headline := "Diverged from " + rep.ActiveRemote + " remote"
-		if rep.DriftAhead > 0 || rep.DriftBehind > 0 {
-			headline += fmt.Sprintf(" (%d ahead, %d behind)", rep.DriftAhead, rep.DriftBehind)
-		}
-		sb.WriteString("  " + styleWarn.Render(headline) + " — run " + styleCmdHint.Render("`clank push`") + " or " + styleCmdHint.Render("`clank pull`") + "\n")
+		sb.WriteString("  " + styleWarn.Render(fmt.Sprintf("• Diverged — %d ahead, %d behind", rep.DriftAhead, rep.DriftBehind)) + "\n")
+		sb.WriteString("  " + syncCTA(rep.ActiveRemote, true, true) + "\n")
 	default:
-		sb.WriteString("  " + styleWarn.Render("Out of sync with "+rep.ActiveRemote+" remote") + " — run " + styleCmdHint.Render("`clank push`") + " or " + styleCmdHint.Render("`clank pull`") + "\n")
+		sb.WriteString("  " + styleWarn.Render("• Out of sync") + "\n")
+		sb.WriteString("  " + syncCTA(rep.ActiveRemote, true, true) + "\n")
 	}
 
 	return sb.String()
