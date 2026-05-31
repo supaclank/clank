@@ -89,6 +89,14 @@ type applyFromURLsRequest struct {
 // TODO(coderabbit): bound manifest via io.LimitReader before ReadAll;
 // stream head/uncommitted bundles into checkpoint.Apply rather than
 // buffering. https://github.com/Acksell/clank/pull/17#discussion_r3227672622
+//
+// TODO(materialize): this is the S3→sandbox apply primitive — it
+// materializes a laptop-pushed checkpoint onto the sandbox at
+// ~/work/<repo>. It works and is reachable via the gateway proxy, but
+// nothing orchestrates it on session start yet: Service.workDirFor errors
+// when the worktree dir is absent instead of triggering an apply. Wiring
+// this is the missing half of end-to-end sync (laptop→S3 push and
+// sandbox→S3→laptop pull both work today; S3→sandbox does not).
 func (m *Mux) handleSyncApplyFromURLs(w http.ResponseWriter, r *http.Request) {
 	var req applyFromURLsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

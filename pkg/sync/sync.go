@@ -82,7 +82,7 @@ func NewServer(cfg Config, lg *log.Logger) (*Server, error) {
 //	GET  /v1/worktrees/{id}               — read worktree state (gateway uses on pull)
 //	POST /v1/checkpoints                  — create checkpoint metadata, returns presigned PUT URLs
 //	POST /v1/checkpoints/{id}/commit      — confirm upload, advance latest_synced_checkpoint
-//	GET  /v1/checkpoints/{id}/download    — return presigned GET URLs (gateway uses on migration)
+//	GET  /v1/checkpoints/{id}/download    — return presigned GET URLs (gateway uses on pull)
 //	POST /v1/checkpoints/{id}/sessions    — mint presigned PUT URLs for per-session export blobs + session-manifest.json
 func (s *Server) Handler() http.Handler {
 	mx := http.NewServeMux()

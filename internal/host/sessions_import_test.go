@@ -234,7 +234,7 @@ func TestRegisterImportedSession_RewritesDirectoryToDestination(t *testing.T) {
 }
 
 // TestRegisterImportedSession_IgnoresSourceProjectDir is a regression
-// test for the chdir-into-nonexistent-source-path bug: on push --migrate,
+// test for the chdir-into-nonexistent-source-path bug: on a session push,
 // the laptop stamps SessionEntry.ProjectDir with its own local path,
 // which is meaningless on the destination (sprite). The destination
 // MUST NOT pass that path as cmd.Dir to opencode, or exec.Command

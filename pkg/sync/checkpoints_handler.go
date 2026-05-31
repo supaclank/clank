@@ -79,8 +79,8 @@ func (s *Server) handleListWorktrees(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetWorktree returns the worktree row to its owning user.
-// Used by the gateway during MigrateWorktree to read
-// latest_synced_checkpoint and validate ownership.
+// Used by the gateway during pull to read latest_synced_checkpoint and
+// the worktree's checkpoint metadata.
 func (s *Server) handleGetWorktree(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.callerOrUnauthorized(w, r)
 	if !ok {

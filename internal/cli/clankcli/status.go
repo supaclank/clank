@@ -21,9 +21,9 @@ import (
 )
 
 // statusCmd registers `clank status` — a git-style summary of the
-// current repo's worktree and its ownership on the active remote.
+// current repo's worktree and its sync state on the active remote.
 // Hits the active remote directly via NewRemoteClient (same path as
-// `clank push --migrate`), so it works even when the local clankd
+// `clank push`), so it works even when the local clankd
 // isn't running.
 func statusCmd() *cobra.Command {
 	var verbose bool

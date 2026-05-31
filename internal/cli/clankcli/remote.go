@@ -31,7 +31,7 @@ func remoteCmd() *cobra.Command {
 
 A remote bundles a gateway URL, an auth-server URL, and the device-flow
 session for one deployment. One remote is active at a time; push, pull,
-migration, and the TUI auth panel all target it.
+and the TUI auth panel all target it.
 
 With no subcommand, prints the configured remotes — active marked with
 ` + "`*`" + `. Pass -v for URLs and signed-in identity.`,

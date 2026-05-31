@@ -121,7 +121,7 @@ func (s *Service) ExportSessions(ctx context.Context, worktreeID, checkpointID s
 		// invalid path (e.g. the laptop's filesystem path baked
 		// into a previously-imported session). chdir into a
 		// non-existent path fails before opencode even runs —
-		// reproduced on pull --migrate when the sprite tries to
+		// reproduced on a pull-back when the sprite tries to
 		// export sessions it had imported from a laptop. Pinned by
 		// TestExportSessions_IgnoresStaleLocalPath.
 		if err := agent.OpenCodeExportSession(ctx, "", info.ExternalID, f); err != nil {
@@ -132,7 +132,7 @@ func (s *Service) ExportSessions(ctx context.Context, worktreeID, checkpointID s
 			// because the user (or some upstream cleanup) ran
 			// `opencode session delete`. Skip the orphan with a
 			// loud log line; one bad row must not fail the whole
-			// migration. Future work could optionally self-heal
+			// export. Future work could optionally self-heal
 			// by deleting the host.db row, but for now we leave
 			// it alone so the user can see what was lost. Pinned
 			// by TestExportSessions_SkipsMissingOpencodeSession.

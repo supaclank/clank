@@ -12,7 +12,7 @@ import (
 // project. "%d" is the allocated port.
 //
 // We wrap the actual expo invocation in `sh -c` so we can run an
-// idempotent `npm install` first. A migrated worktree only carries
+// idempotent `npm install` first. A materialized worktree only carries
 // what's tracked in git — node_modules is gitignored, so the first
 // /preview/start on a fresh worktree would otherwise crash with
 // "expo CLI not found" or hang waiting on npx's auto-install prompt.

@@ -372,10 +372,9 @@ func TestPullWorktree_503WhenSyncNil(t *testing.T) {
 // TestProxy_AllowsSessionSyncOnLaptopGateway pins the carve-out:
 // /sync/sessions/* IS allowed through on a laptop gateway, because
 // those handlers don't touch ~/work/ — they drive opencode session
-// export/import via the host Service. Without this, `clank push
-// --migrate` can't reach the laptop's local clank-host for its
-// session leg and the migration fails with a 404 from the proxy
-// itself before any code runs.
+// export/import via the host Service. Without this, `clank push`
+// can't reach the laptop's local clank-host for its session leg and
+// the push fails with a 404 from the proxy itself before any code runs.
 func TestProxy_AllowsSessionSyncOnLaptopGateway(t *testing.T) {
 	t.Parallel()
 	var reached []string

@@ -54,7 +54,7 @@ func (s *Service) RegisterImportedSession(ctx context.Context, worktreeID string
 	// to satisfy the validator misrepresents data we don't own.
 	// If a session fails to import, the error surfaces verbatim;
 	// future work in handleSyncSessionsApplyFromURLs can choose to
-	// skip-and-warn rather than abort the whole migration.
+	// skip-and-warn rather than abort the whole import.
 	rewrittenPath, err := s.rewriteImportBlob(blobPath, worktreeID)
 	if err != nil {
 		return agent.SessionInfo{}, fmt.Errorf("register imported session %s: rewrite blob: %w", entry.SessionID, err)

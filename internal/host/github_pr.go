@@ -96,7 +96,7 @@ var (
 	ErrNothingToPush = errors.New("nothing to push: branch is up to date with base")
 
 	// ErrNoOriginRemote fires when the worktree has no `origin`
-	// remote configured. Common on sprite-migrated worktrees whose
+	// remote configured. Common on worktrees materialized onto a sprite whose
 	// `.git/config` didn't carry over with the bundle. 400; client
 	// UI suggests "git remote add origin <github-url>" or
 	// re-pushing from laptop with the remote intact.
@@ -197,7 +197,7 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 	// Safety net: refuse if our branch shares no history with the
 	// remote's base. This catches "origin points at the wrong repo"
 	// regardless of how origin got mis-set — manual edit, agent
-	// confusion, stale .git/config from a migrated worktree, etc.
+	// confusion, stale .git/config from a materialized worktree, etc.
 	// Two repos with unrelated histories share no commits (Git
 	// content-addresses everything), so an empty merge-base is a
 	// near-certain wrong-destination signal.

@@ -141,9 +141,9 @@ func TestCreateSession_WorktreeRef_Success(t *testing.T) {
 }
 
 // TestCreateSession_WorktreeRef_MissingErrors guards the explicit
-// "no fall back to clone" contract: WorktreeID for which no
-// ~/work/<id>/ has been materialized yields a clear error pointing
-// at MigrateWorktree.
+// "no fall back to clone" contract: a WorktreeID for which no
+// ~/work/<id>/ has been materialized yields a clear error saying the
+// synced checkpoint hasn't been materialized onto this host yet.
 func TestCreateSession_WorktreeRef_MissingErrors(t *testing.T) {
 	tmpHome := t.TempDir()
 	prev := host.SetWorkRootForTest(filepath.Join(tmpHome, "work"))
@@ -157,9 +157,9 @@ func TestCreateSession_WorktreeRef_MissingErrors(t *testing.T) {
 	}
 	_, _, err := svc.CreateSession(context.Background(), "sid-missing", req)
 	if err == nil {
-		t.Fatal("expected error for unmigrated worktree, got nil")
+		t.Fatal("expected error for unmaterialized worktree, got nil")
 	}
-	if !strings.Contains(err.Error(), "MigrateWorktree") {
-		t.Fatalf("expected error to point at MigrateWorktree, got: %v", err)
+	if !strings.Contains(err.Error(), "materialized") {
+		t.Fatalf("expected error to mention the worktree isn't materialized, got: %v", err)
 	}
 }
