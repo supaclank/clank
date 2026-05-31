@@ -256,7 +256,7 @@ func renderStatusReport(rep statusReport) string {
 	case !rep.HasCheckpoint:
 		sb.WriteString("  " + styleDim.Render("Not yet pushed to "+rep.ActiveRemote+" remote") + "\n")
 	case rep.InSync:
-		sb.WriteString("  " + styleDim.Render("In sync with "+rep.ActiveRemote+" remote") + "\n")
+		sb.WriteString("  " + styleOK.Render("✓ In sync with "+rep.ActiveRemote+" remote") + "\n")
 	case rep.Drift == driftAhead:
 		sb.WriteString("  " + styleWarn.Render("Ahead of "+rep.ActiveRemote+" remote") + " — run " + styleCmdHint.Render("`clank push`") + "\n")
 	case rep.Drift == driftBehind:
