@@ -63,10 +63,11 @@ ownership currently lives. Without arguments, uses the current directory.`,
 type driftState int
 
 const (
-	driftUnknown  driftState = iota // can't tell direction locally (zero value)
-	driftAhead                      // local has changes the remote lacks → push
-	driftBehind                     // remote has changes the local lacks → pull
-	driftDiverged                   // both moved independently → push or pull
+	driftUnknown     driftState = iota // can't tell direction locally (zero value)
+	driftAhead                         // local has commits the remote lacks → push
+	driftBehind                        // remote has commits the local lacks → pull
+	driftDiverged                      // both moved independently → push or pull
+	driftUncommitted                   // commits match; only uncommitted changes differ → push
 )
 
 // statusReport is the data view rendered by `clank status`. Kept as a
@@ -188,10 +189,9 @@ func runStatus(ctx context.Context, repoPath string) (string, error) {
 
 // classifyDrift determines the direction (and, where possible, the commit
 // counts) of an out-of-sync worktree using only local git data (no backend
-// round-trip). When the heads match, the difference is uncommitted/index/
-// worktree state — on a laptop that's almost always local edits to push,
-// and push is idempotent, so we call it ahead (with no commit count). When
-// the heads differ, the ahead/behind commit counts decide the direction; a
+// round-trip). When the heads match, the commits are in sync and only
+// uncommitted/index/worktree state differs (driftUncommitted). When the
+// heads differ, the ahead/behind commit counts decide the direction; a
 // remote head that isn't even a local object means the remote advanced
 // past us (pull).
 func classifyDrift(repoPath, localHead, remoteHead string) driftInfo {
@@ -199,7 +199,9 @@ func classifyDrift(repoPath, localHead, remoteHead string) driftInfo {
 		return driftInfo{state: driftUnknown}
 	}
 	if localHead == remoteHead {
-		return driftInfo{state: driftAhead}
+		// Same commit — committed history is in sync; the delta is purely
+		// local working-tree / index changes.
+		return driftInfo{state: driftUncommitted}
 	}
 	ahead, behind, err := git.AheadBehind(repoPath, localHead, remoteHead)
 	if err != nil {
@@ -279,6 +281,9 @@ func renderStatusReport(rep statusReport) string {
 		sb.WriteString("  " + styleDim.Render("Not yet pushed to "+rep.ActiveRemote+" remote") + "\n")
 	case rep.InSync:
 		sb.WriteString("  " + styleOK.Render("✓ In sync with "+rep.ActiveRemote+" remote") + "\n")
+	case rep.Drift == driftUncommitted:
+		sb.WriteString("  " + styleWarn.Render("Uncommitted changes not synced to "+rep.ActiveRemote+" remote") +
+			styleDim.Render(" (commits in sync)") + " — run " + styleCmdHint.Render("`clank push`") + "\n")
 	case rep.Drift == driftAhead:
 		headline := "Ahead of " + rep.ActiveRemote + " remote"
 		if rep.DriftAhead > 0 {

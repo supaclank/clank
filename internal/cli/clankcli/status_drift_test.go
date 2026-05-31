@@ -32,7 +32,7 @@ func TestClassifyDrift(t *testing.T) {
 	}{
 		{"local ahead of remote", c2, c1, driftAhead, 1, 0},
 		{"local behind remote", c1, c2, driftBehind, 0, 1},
-		{"same head (uncommitted drift)", c2, c2, driftAhead, 0, 0},
+		{"same head (commits in sync, uncommitted only)", c2, c2, driftUncommitted, 0, 0},
 		{"remote head unknown locally", c2, "1234567890123456789012345678901234567890", driftBehind, 0, 0},
 	}
 	for _, tc := range cases {
@@ -77,6 +77,7 @@ func TestRenderStatusReport_DriftDirection(t *testing.T) {
 		{driftAhead, "Ahead of dev remote", true, false},
 		{driftBehind, "Behind dev remote", false, true},
 		{driftDiverged, "Diverged from dev remote", true, true},
+		{driftUncommitted, "Uncommitted changes not synced to dev remote", true, false},
 		{driftUnknown, "Out of sync with dev remote", true, true},
 	}
 	for _, tc := range cases {
@@ -116,7 +117,7 @@ func TestRenderStatusReport_DriftCounts(t *testing.T) {
 	}{
 		{"ahead plural", func(r *statusReport) { r.Drift = driftAhead; r.DriftAhead = 3 }, "Ahead of dev remote by 3 commits"},
 		{"behind singular", func(r *statusReport) { r.Drift = driftBehind; r.DriftBehind = 1 }, "Behind dev remote by 1 commit"},
-		{"ahead uncommitted (no count)", func(r *statusReport) { r.Drift = driftAhead }, "Ahead of dev remote — "},
+		{"uncommitted notes commits in sync", func(r *statusReport) { r.Drift = driftUncommitted }, "(commits in sync)"},
 		{"diverged counts", func(r *statusReport) { r.Drift = driftDiverged; r.DriftAhead = 2; r.DriftBehind = 1 }, "Diverged from dev remote (2 ahead, 1 behind)"},
 	}
 	for _, tc := range cases {
