@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -178,22 +179,32 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath, baseC
 		obs.UploadProgress(uploaded)
 	}
 
+	// Upload blobs largest-last. The biggest blob's "transferring" wait is
+	// then the final upload state, so a trailing tiny upload can't briefly
+	// flash the progress bar back after it (object order is irrelevant to
+	// the server — commit verifies all three landed).
+	type blobUpload struct {
+		name string
+		size int64
+		put  func() error
+	}
+	uploads := make([]blobUpload, 0, 3)
 	if headBundlePath != "" {
-		if err := timed("upload head bundle", func() error {
+		uploads = append(uploads, blobUpload{"upload head bundle", fileSize(headBundlePath), func() error {
 			return uploadFile(ctx, c.blobClient, createResp.HeadBundlePutURL, headBundlePath, advance)
-		}); err != nil {
-			return nil, fmt.Errorf("upload headCommit: %w", err)
-		}
+		}})
 	}
-	if err := timed("upload uncommitted", func() error {
+	uploads = append(uploads, blobUpload{"upload uncommitted", fileSize(res.UncommittedBundle), func() error {
 		return uploadFile(ctx, c.blobClient, createResp.UncommittedURL, res.UncommittedBundle, advance)
-	}); err != nil {
-		return nil, fmt.Errorf("upload uncommitted: %w", err)
-	}
-	if err := timed("upload manifest", func() error {
+	}})
+	uploads = append(uploads, blobUpload{"upload manifest", int64(len(manifestBytes)), func() error {
 		return uploadBytes(ctx, c.blobClient, createResp.ManifestPutURL, manifestBytes, "application/json", advance)
-	}); err != nil {
-		return nil, fmt.Errorf("upload manifest: %w", err)
+	}})
+	sort.SliceStable(uploads, func(i, j int) bool { return uploads[i].size < uploads[j].size })
+	for _, up := range uploads {
+		if err := timed(up.name, up.put); err != nil {
+			return nil, fmt.Errorf("%s: %w", up.name, err)
+		}
 	}
 
 	// Uploads done; the server now verifies the blobs and advances the
