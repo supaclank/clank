@@ -9,7 +9,7 @@ import (
 const (
 	PhaseBuilding   = "Building bundle"
 	PhaseUploading  = "Uploading"
-	PhaseFinalizing = "Finalizing"
+	PhaseFinalizing = "Saving checkpoint" // server verifies blobs + records the checkpoint
 )
 
 // PushObserver receives progress events during PushCheckpoint so callers

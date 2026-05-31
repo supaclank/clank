@@ -1,99 +1,140 @@
 package clankcli
 
 import (
-	"context"
-	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"strings"
-
-	"charm.land/bubbles/v2/spinner"
-	tea "charm.land/bubbletea/v2"
-	"github.com/spf13/cobra"
+	"sync"
+	"time"
 
 	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
 
-// Push progress messages forwarded from the upload goroutine into the
-// bubbletea program (tea.Program.Send is goroutine-safe).
-type (
-	pushPhaseMsg string
-	pushSizedMsg int64
-	pushBytesMsg int64
-	pushDoneMsg  struct {
-		res *syncclient.CheckpointResult
-		err error
-	}
-)
+// compile-time check: pushUI satisfies the progress observer contract.
+var _ syncclient.PushObserver = (*pushUI)(nil)
 
-// teaPushObserver adapts syncclient.PushObserver onto a bubbletea program.
-type teaPushObserver struct{ send func(tea.Msg) }
+// pushUI renders a single rewriting status line on a TTY — a spinner + the
+// current phase + remote, plus a shaded byte bar while uploading. A steady
+// ticker drives the redraw, so the line keeps animating even when no
+// progress event has arrived for a while (e.g. while the server commits or
+// sessions export) — that's what was missing before.
+//
+// It implements syncclient.PushObserver so PushCheckpoint feeds it
+// directly, and Phase lets later legs (session sync) drive it too. A nil
+// *pushUI is a safe no-op on every method, so non-interactive callers
+// (autopush hooks) can pass it around without branching.
+type pushUI struct {
+	out    io.Writer
+	remote string
 
-func (o teaPushObserver) Phase(name string)         { o.send(pushPhaseMsg(name)) }
-func (o teaPushObserver) UploadSized(total int64)   { o.send(pushSizedMsg(total)) }
-func (o teaPushObserver) UploadProgress(done int64) { o.send(pushBytesMsg(done)) }
-
-// pushProgressModel renders the current phase (with an animated ellipsis),
-// the remote, and a shaded byte bar.
-type pushProgressModel struct {
-	spinner  spinner.Model
-	remote   string
+	mu       sync.Mutex
 	phase    string
-	total    int64
 	uploaded int64
-	res      *syncclient.CheckpointResult
-	err      error
-	finished bool
+	total    int64
+
+	stop chan struct{}
+	done chan struct{}
 }
 
-func newPushProgressModel(remote string) pushProgressModel {
-	return pushProgressModel{
-		// Ellipsis = "", ".", "..", "..." — a calm "working…" tick rather
-		// than a spinning glyph.
-		spinner: spinner.New(spinner.WithSpinner(spinner.Ellipsis)),
-		remote:  remote,
-		phase:   "Preparing",
-	}
+func newPushUI(out io.Writer, remote string) *pushUI {
+	return &pushUI{out: out, remote: remote, phase: "Preparing"}
 }
 
-func (m pushProgressModel) Init() tea.Cmd { return m.spinner.Tick }
-
-func (m pushProgressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case pushPhaseMsg:
-		m.phase = string(msg)
-	case pushSizedMsg:
-		m.total = int64(msg)
-	case pushBytesMsg:
-		m.uploaded = int64(msg)
-	case pushDoneMsg:
-		m.res, m.err, m.finished = msg.res, msg.err, true
-		return m, tea.Quit
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
+// Phase / UploadSized / UploadProgress implement syncclient.PushObserver;
+// all are nil-safe and safe for concurrent use with the render loop.
+func (u *pushUI) Phase(name string) {
+	if u == nil {
+		return
 	}
-	return m, nil
+	u.mu.Lock()
+	u.phase = name
+	u.mu.Unlock()
 }
 
-func (m pushProgressModel) View() tea.View {
-	if m.finished {
-		return tea.NewView("") // clear once we're done; the caller prints the result.
+func (u *pushUI) UploadSized(total int64) {
+	if u == nil {
+		return
 	}
-	dest := m.remote
-	if dest == "" {
-		dest = "remote"
+	u.mu.Lock()
+	u.total = total
+	u.mu.Unlock()
+}
+
+func (u *pushUI) UploadProgress(uploaded int64) {
+	if u == nil {
+		return
 	}
-	// Trailing animated ellipsis signals ongoing work even when the bar is
-	// full (e.g. while the server commits during "Finalizing").
-	header := m.phase + " → " + dest + m.spinner.View()
-	if m.total == 0 {
-		return tea.NewView(header + "\n")
+	u.mu.Lock()
+	u.uploaded = uploaded
+	u.mu.Unlock()
+}
+
+// clearBar drops the byte bar, for phases that aren't byte-tracked (e.g.
+// session sync) so a stale checkpoint bar doesn't linger under them.
+func (u *pushUI) clearBar() {
+	if u == nil {
+		return
 	}
-	pct := float64(m.uploaded) / float64(m.total)
-	line := renderBar(pct, 24) + "  " + humanBytes(m.uploaded) + " / " + humanBytes(m.total)
-	return tea.NewView(header + "\n" + line + "\n")
+	u.mu.Lock()
+	u.total, u.uploaded = 0, 0
+	u.mu.Unlock()
+}
+
+// spinFrames is a braille dot-cycle — a calm "series of dots" that clearly
+// rotates (unlike a single static glyph).
+var spinFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// start launches the render loop. Pairs 1:1 with finish.
+func (u *pushUI) start() {
+	if u == nil {
+		return
+	}
+	u.stop = make(chan struct{})
+	u.done = make(chan struct{})
+	go func() {
+		defer close(u.done)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for i := 0; ; i++ {
+			select {
+			case <-u.stop:
+				fmt.Fprint(u.out, "\r\x1b[K") // clear the line for the caller's summary
+				return
+			case <-ticker.C:
+				u.draw(spinFrames[i%len(spinFrames)])
+			}
+		}
+	}()
+}
+
+// finish stops the render loop and clears the line, blocking until the
+// loop has cleared so the caller's next print starts on a clean line.
+func (u *pushUI) finish() {
+	if u == nil || u.stop == nil {
+		return
+	}
+	close(u.stop)
+	<-u.done
+	u.stop = nil
+}
+
+func (u *pushUI) draw(frame string) {
+	u.mu.Lock()
+	phase, up, total := u.phase, u.uploaded, u.total
+	u.mu.Unlock()
+	fmt.Fprint(u.out, "\r\x1b[K"+pushLine(frame, phase, u.remote, up, total))
+}
+
+// pushLine builds the status line (pure, for tests): "<spinner> <phase> →
+// <remote>  [bar]  up / total". The bar appears only once a size is known.
+func pushLine(frame, phase, remote string, uploaded, total int64) string {
+	line := styleOK.Render(frame) + " " + phase + styleDim.Render(" → "+remote)
+	if total > 0 {
+		pct := float64(uploaded) / float64(total)
+		line += "  " + renderBar(pct, 24) + "  " + styleDim.Render(humanBytes(uploaded)+" / "+humanBytes(total))
+	}
+	return line
 }
 
 // renderBar draws a shaded bar like "[ ███▓░░░░ ]": full cells █, a single
@@ -120,38 +161,6 @@ func renderBar(pct float64, width int) string {
 	}
 	empty := strings.Repeat("░", width-written)
 	return styleDim.Render("[ ") + filled + styleDim.Render(empty+" ]")
-}
-
-// pushWithProgress runs PushCheckpoint, rendering a live progress UI on a
-// TTY (spinner + phase + bytes uploaded / total + remote host) and falling
-// back to a silent push otherwise (autopush hooks). The push runs in a
-// goroutine that forwards progress into the program; its result returns
-// via pushDoneMsg, so there's no shared mutable state across goroutines.
-func pushWithProgress(cmd *cobra.Command, ctx context.Context, cli *syncclient.Client, absRepo, worktreeID, base string, committedOnly, interactive bool) (*syncclient.CheckpointResult, error) {
-	if !interactive {
-		return cli.PushCheckpoint(ctx, worktreeID, absRepo, base, committedOnly, nil)
-	}
-	p := tea.NewProgram(
-		newPushProgressModel(remoteLabel(cli.BaseURL())),
-		tea.WithInput(cmd.InOrStdin()),
-		tea.WithOutput(cmd.OutOrStdout()),
-	)
-	go func() {
-		res, err := cli.PushCheckpoint(ctx, worktreeID, absRepo, base, committedOnly, teaPushObserver{send: p.Send})
-		p.Send(pushDoneMsg{res: res, err: err})
-	}()
-	final, err := p.Run()
-	if errors.Is(err, tea.ErrInterrupted) {
-		return nil, fmt.Errorf("push canceled")
-	}
-	if err != nil {
-		return nil, fmt.Errorf("progress UI: %w", err)
-	}
-	fm, ok := final.(pushProgressModel)
-	if !ok || !fm.finished {
-		return nil, fmt.Errorf("push canceled")
-	}
-	return fm.res, fm.err
 }
 
 // remoteLabel renders a friendly host label for a gateway URL.

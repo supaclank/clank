@@ -158,34 +158,60 @@ func runPush(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *sy
 		return nil
 	}
 
+	// On a TTY, one live status line spans the WHOLE push — build → upload
+	// → save → sessions — driven by a ticker so it keeps animating even
+	// while the server commits or sessions export. Non-interactive callers
+	// (autopush hooks) get a nil observer, so nothing is drawn into logs.
+	var ui *pushUI
+	var obs syncclient.PushObserver
+	if isInteractive(cmd) {
+		ui = newPushUI(cmd.OutOrStdout(), remoteLabel(cli.BaseURL()))
+		ui.start()
+		obs = ui
+	}
+
 	// parity.RemoteHead is the server's last-synced HEAD — the base for an
-	// incremental head bundle when our HEAD has advanced. On a TTY the push
-	// renders a live progress UI (size + bytes + remote); otherwise it runs
-	// silently so autopush hooks don't spew control codes into logs.
-	interactive := isInteractive(cmd)
+	// incremental head bundle when our HEAD has advanced.
 	done := timer.Start("push checkpoint")
-	res, err := pushWithProgress(cmd, ctx, cli, absRepo, worktreeID, parity.RemoteHead, committedOnly, interactive)
+	res, err := cli.PushCheckpoint(ctx, worktreeID, absRepo, parity.RemoteHead, committedOnly, obs)
 	done()
 	if errors.Is(err, syncclient.ErrWorktreeNotRegistered) {
-		// Stale local id: the worktree was deleted on the remote. Re-register
-		// and retry once with a full push — the fresh worktree has no synced
-		// HEAD, so the incremental base is "".
+		// Stale local id: the worktree was deleted on the remote. Pause the
+		// status line so the re-register notice prints cleanly, then retry
+		// once with a full push (the fresh worktree has no synced HEAD).
+		ui.finish()
 		worktreeID, err = reregisterStaleWorktree(cmd, ctx, timer, cli, absRepo)
 		if err != nil {
 			return err
 		}
+		ui.start()
 		done = timer.Start("push checkpoint")
-		res, err = pushWithProgress(cmd, ctx, cli, absRepo, worktreeID, "", committedOnly, interactive)
+		res, err = cli.PushCheckpoint(ctx, worktreeID, absRepo, "", committedOnly, obs)
 		done()
 	}
 	if err != nil {
+		ui.finish()
 		return fmt.Errorf("push checkpoint: %w", err)
 	}
+
+	// Session leg shares the same status line (no byte bar — drop the
+	// checkpoint's).
+	ui.clearBar()
+	ui.Phase(phaseSyncingSessions)
+	exported, skipped, serr := pushSessions(ctx, timer, absRepo, res.CheckpointID, cli)
+
+	ui.finish() // tear the status line down before printing the summary
+	if serr != nil {
+		return fmt.Errorf("push session leg: %w", serr)
+	}
+
 	fmt.Fprintf(cmd.OutOrStdout(), "%s pushed checkpoint %s (HEAD %s) to %s\n",
 		styleOK.Render("✓"), res.CheckpointID, shortSHA(res.Manifest.HeadCommit), remoteLabel(cli.BaseURL()))
-
-	if err := pushSessionLeg(cmd, timer, absRepo, res.CheckpointID, cli); err != nil {
-		return fmt.Errorf("push session leg: %w", err)
+	for _, sk := range skipped {
+		fmt.Fprintf(cmd.OutOrStdout(), "  %s skipped session %s: %s\n", styleDim.Render("•"), sk.ExternalID, sk.Reason)
+	}
+	if exported > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s synced %d session(s)\n", styleOK.Render("✓"), exported)
 	}
 	return nil
 }

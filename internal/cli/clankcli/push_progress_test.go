@@ -1,10 +1,10 @@
 package clankcli
 
 import (
+	"io"
 	"strings"
 	"testing"
-
-	tea "charm.land/bubbletea/v2"
+	"time"
 )
 
 func TestHumanBytes(t *testing.T) {
@@ -56,45 +56,53 @@ func TestRenderBar(t *testing.T) {
 	}
 }
 
-// TestPushProgressModel_Transitions pins the model's reaction to the
-// forwarded push events: phase/size/bytes update state, and pushDoneMsg
-// finishes (quits) and surfaces the result.
-func TestPushProgressModel_Transitions(t *testing.T) {
+// TestPushLine pins the status-line content: spinner + phase + remote
+// always present; the bar + bytes appear only once a size is known.
+func TestPushLine(t *testing.T) {
 	t.Parallel()
-	var m tea.Model = newPushProgressModel("gw.example.com")
 
-	step := func(msg tea.Msg) (pushProgressModel, tea.Cmd) {
-		next, cmd := m.Update(msg)
-		m = next
-		return next.(pushProgressModel), cmd
+	noSize := stripANSI(pushLine("⠋", "Saving checkpoint", "localhost:7878", 0, 0))
+	for _, want := range []string{"⠋", "Saving checkpoint", "localhost:7878"} {
+		if !strings.Contains(noSize, want) {
+			t.Errorf("size-unknown line %q missing %q", noSize, want)
+		}
 	}
-
-	if pm, _ := step(pushPhaseMsg("Uploading")); pm.phase != "Uploading" {
-		t.Fatalf("phase = %q, want Uploading", pm.phase)
-	}
-	if pm, _ := step(pushSizedMsg(100)); pm.total != 100 {
-		t.Fatalf("total = %d, want 100", pm.total)
-	}
-	if pm, _ := step(pushBytesMsg(40)); pm.uploaded != 40 {
-		t.Fatalf("uploaded = %d, want 40", pm.uploaded)
-	}
-	// Mid-flight view shows the remote and a progress line.
-	if pm := m.(pushProgressModel); pm.View().Content == "" {
-		t.Fatal("mid-flight view should not be empty")
+	if strings.ContainsAny(noSize, "█░") {
+		t.Errorf("size-unknown line should have no bar: %q", noSize)
 	}
 
-	pm, cmd := step(pushDoneMsg{res: nil, err: nil})
-	if !pm.finished {
-		t.Fatal("pushDoneMsg should finish the model")
+	withSize := stripANSI(pushLine("⠋", "Uploading", "localhost:7878", 50, 100))
+	for _, want := range []string{"Uploading", "█", "░", "50 B / 100 B"} {
+		if !strings.Contains(withSize, want) {
+			t.Errorf("uploading line %q missing %q", withSize, want)
+		}
 	}
-	if cmd == nil {
-		t.Fatal("pushDoneMsg should return a quit command")
+}
+
+// TestPushUI_ObserverNilSafe pins that a nil *pushUI (the non-interactive
+// path) is a safe no-op — PushCheckpoint always gets a usable observer.
+func TestPushUI_ObserverNilSafe(t *testing.T) {
+	t.Parallel()
+	var u *pushUI
+	u.start()
+	u.Phase("x")
+	u.UploadSized(10)
+	u.UploadProgress(5)
+	u.finish() // must not panic
+}
+
+// TestPushUI_ConcurrentRenderNoRace exercises the render-loop goroutine
+// reading the fields the push goroutine writes — guards against a data
+// race in the live status line (run with -race).
+func TestPushUI_ConcurrentRenderNoRace(t *testing.T) {
+	t.Parallel()
+	ui := newPushUI(io.Discard, "localhost:7878")
+	ui.start()
+	for i := 0; i <= 40; i++ {
+		ui.UploadSized(40)
+		ui.UploadProgress(int64(i))
+		ui.Phase("Uploading")
+		time.Sleep(5 * time.Millisecond) // let the 100ms ticker fire a few draws
 	}
-	if _, ok := cmd().(tea.QuitMsg); !ok {
-		t.Fatalf("done command should be tea.Quit, got %T", cmd())
-	}
-	// Finished view clears so the caller's result line stands alone.
-	if pm.View().Content != "" {
-		t.Errorf("finished view should be empty, got %q", pm.View().Content)
-	}
+	ui.finish()
 }
