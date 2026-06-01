@@ -17,6 +17,7 @@ import (
 type parityResult struct {
 	InSync         bool   // true when all 4 content SHAs match the remote's latest checkpoint
 	HasCheckpoint  bool   // false when the remote knows the worktree but no checkpoint has been pushed yet
+	CheckpointID   string // remote's latest checkpoint id (when HasCheckpoint); sessions attach here on a code-in-sync push
 	RemoteHead     string // remote's head_commit (or "" when HasCheckpoint == false); for messaging
 	LocalHead      string // local's head_commit; for messaging
 	RemoteNotFound bool   // true when the worktree row doesn't exist on the remote (e.g. fresh repo)
@@ -57,6 +58,7 @@ func checkParity(ctx context.Context, dc *daemonclient.Client, worktreeID string
 		return res, nil
 	}
 	res.HasCheckpoint = true
+	res.CheckpointID = wt.LatestCheckpointMetadata.CheckpointID
 	res.RemoteHead = wt.LatestCheckpointMetadata.HeadCommit
 
 	res.InSync = wt.LatestCheckpointMetadata.HeadCommit == snap.HeadCommit &&

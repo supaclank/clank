@@ -12,15 +12,18 @@ package sessionsync
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
 )
 
-// ErrExportNotImplemented is returned by a Backend whose export/import
-// transfer isn't built yet (currently Claude Code — discovery only).
-var ErrExportNotImplemented = errors.New("sessionsync: export/import not implemented for this backend")
+// ErrSessionNotFound is returned by ExportSession when the backend's
+// storage no longer has the session (e.g. deleted out of band). Callers
+// skip the orphan rather than failing the whole export, mirroring
+// opencode's "Session not found" handling.
+var ErrSessionNotFound = errors.New("sessionsync: session not found")
 
 // DiscoveredSession is the daemon-free view of a backend session —
 // thinner than agent.SessionInfo (no host.db ULID, no status machine).
@@ -34,6 +37,12 @@ type DiscoveredSession struct {
 	ProjectDir string // opencode "directory" / Claude Cwd
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+
+	// Fingerprint is a content version used for drift detection, immune to
+	// the mtime bump a read-only `claude --resume` causes. Set for Claude
+	// (the last-message uuid); empty for opencode, whose UpdatedAt is
+	// already content-based. See claudeSessionFingerprint.
+	Fingerprint string
 }
 
 // Backend is a daemon-free session source for one agent backend.
@@ -65,4 +74,18 @@ func millisToTime(ms int64) time.Time {
 		return time.Time{}
 	}
 	return time.UnixMilli(ms)
+}
+
+// BackendFor returns the Backend implementation for t. Used by the
+// orchestrators and by internal/host.Service so there is one backend
+// implementation per agent, shared across the daemon-free and host paths.
+func BackendFor(t agent.BackendType) (Backend, error) {
+	switch t {
+	case agent.BackendOpenCode:
+		return OpenCodeBackend{}, nil
+	case agent.BackendClaudeCode:
+		return ClaudeBackend{}, nil
+	default:
+		return nil, fmt.Errorf("sessionsync: no backend for %q", t)
+	}
 }

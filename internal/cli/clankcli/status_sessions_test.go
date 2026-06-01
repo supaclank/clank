@@ -115,6 +115,35 @@ func TestUnsyncedAgainst(t *testing.T) {
 	}
 }
 
+// TestUnsyncedAgainst_FingerprintBeatsMtime is the regression test for the
+// read-only-`--resume` drift bug: when both sides carry a content
+// fingerprint (Claude), an advanced mtime with an UNCHANGED fingerprint must
+// NOT count as unsynced, and a changed fingerprint must count even if the
+// mtime didn't move.
+func TestUnsyncedAgainst_FingerprintBeatsMtime(t *testing.T) {
+	t.Parallel()
+	t0, later := time.UnixMilli(1000), time.UnixMilli(9999)
+	rec := agent.SyncedSessionRecord{Sessions: map[string]agent.SyncedSession{
+		"claude-a": {Backend: agent.BackendClaudeCode, UpdatedAt: t0, Fingerprint: "uuid-1"},
+	}}
+
+	// mtime bumped by a read-only resume, fingerprint identical → in sync.
+	noiseBump := []sessionsync.DiscoveredSession{
+		{ExternalID: "claude-a", Backend: agent.BackendClaudeCode, UpdatedAt: later, Fingerprint: "uuid-1"},
+	}
+	if got := unsyncedAgainst(noiseBump, rec); len(got) != 0 {
+		t.Errorf("fingerprint unchanged but flagged unsynced (mtime bump leaked through): %d", len(got))
+	}
+
+	// Genuine new turn: fingerprint changed even with the same mtime.
+	realChange := []sessionsync.DiscoveredSession{
+		{ExternalID: "claude-a", Backend: agent.BackendClaudeCode, UpdatedAt: t0, Fingerprint: "uuid-2"},
+	}
+	if got := unsyncedAgainst(realChange, rec); len(got) != 1 {
+		t.Errorf("fingerprint changed but not flagged unsynced: %d", len(got))
+	}
+}
+
 // TestSessionLabels pins the -v detail labels: quoted title, or "session
 // <id>" when untitled.
 func TestSessionLabels(t *testing.T) {

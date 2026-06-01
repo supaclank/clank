@@ -2,12 +2,14 @@ package host
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/pkg/sessionsync"
 	"github.com/acksell/clank/pkg/sync/checkpoint"
 )
 
@@ -26,8 +28,8 @@ type SessionExportResult struct {
 }
 
 // SkippedSession describes a session that was enumerated by
-// ExportSessions but not included in the manifest. Currently used
-// for claude-code sessions in v1.
+// ExportSessions but not included in the manifest — currently only
+// orphans whose backend storage has gone missing (host.db row stale).
 type SkippedSession struct {
 	SessionID string
 	Backend   agent.BackendType
@@ -47,12 +49,12 @@ func (r *SessionExportResult) Cleanup() {
 
 // ExportSessions enumerates the worktree's sessions, quiesces any
 // that are busy (immediate abort — no idle wait), and exports each
-// opencode session via `opencode export`. Returns a
+// session via its backend (sessionsync.ExportSessionBlob). Returns a
 // SessionExportResult that pairs each manifest entry with a temp
 // file holding the opaque export blob.
 //
-// Claude-code sessions are skipped with a warning in v1 (see plan
-// §G); they appear in result.Skipped so the CLI can surface them.
+// Orphans whose backend storage has gone missing appear in
+// result.Skipped so the CLI can surface them.
 //
 // checkpointID is stamped into each SessionEntry.BlobKey for clarity
 // — the actual S3 key is constructed by the sync server via
@@ -85,17 +87,12 @@ func (s *Service) ExportSessions(ctx context.Context, worktreeID, checkpointID s
 		return nil, fmt.Errorf("export sessions: tempdir: %w", err)
 	}
 
-	for _, info := range sessions {
-		if info.Backend != agent.BackendOpenCode {
-			s.log.Printf("export sessions: skipping %s (backend %q not supported in v1)", info.ID, info.Backend)
-			result.Skipped = append(result.Skipped, SkippedSession{
-				SessionID: info.ID,
-				Backend:   info.Backend,
-				Reason:    "claude-code session sync not yet implemented",
-			})
-			continue
-		}
+	workRoot, err := workRootDir()
+	if err != nil {
+		return nil, fmt.Errorf("export sessions: resolve work root: %w", err)
+	}
 
+	for _, info := range sessions {
 		wasBusy := info.Status == agent.StatusBusy
 		if wasBusy {
 			s.log.Printf("export sessions: aborting busy session %s for migration", info.ID)
@@ -114,34 +111,28 @@ func (s *Service) ExportSessions(ctx context.Context, worktreeID, checkpointID s
 			result.Cleanup()
 			return nil, fmt.Errorf("export sessions: create blob file %s: %w", blobPath, err)
 		}
-		// projectDir is intentionally empty for the same reason
-		// RegisterImportedSession doesn't pass it: `opencode export`
-		// reads its own storage HOME-relative and ignores cwd, and
-		// info.GitRef.LocalPath can hold a stale or destination-
-		// invalid path (e.g. the laptop's filesystem path baked
-		// into a previously-imported session). chdir into a
-		// non-existent path fails before opencode even runs —
-		// reproduced on a pull-back when the sprite tries to
-		// export sessions it had imported from a laptop. Pinned by
+		// cwd matters only for Claude (it files transcripts by encoded
+		// directory); opencode ignores it and exports HOME-relative. We
+		// pass the worktree path computed fresh from workRoot — NOT
+		// info.GitRef.LocalPath, which can be a stale source-host path
+		// baked into a previously-imported session (chdir into a
+		// non-existent path fails before the backend runs). Pinned by
 		// TestExportSessions_IgnoresStaleLocalPath.
-		if err := agent.OpenCodeExportSession(ctx, "", info.ExternalID, f); err != nil {
+		cwd := filepath.Join(workRoot, worktreeID)
+		if err := sessionsync.ExportSessionBlob(ctx, info.Backend, cwd, info.ExternalID, f); err != nil {
 			_ = f.Close()
 			_ = os.Remove(blobPath)
-			// "Session not found" means the host.db row has gone
-			// stale relative to opencode's storage — typically
-			// because the user (or some upstream cleanup) ran
-			// `opencode session delete`. Skip the orphan with a
-			// loud log line; one bad row must not fail the whole
-			// export. Future work could optionally self-heal
-			// by deleting the host.db row, but for now we leave
-			// it alone so the user can see what was lost. Pinned
-			// by TestExportSessions_SkipsMissingOpencodeSession.
-			if isSessionNotFound(err) {
-				s.log.Printf("export sessions: skipping %s (external_id=%q): opencode reports session not found — host.db row is orphaned", info.ID, info.ExternalID)
+			// A missing session means the host.db row has gone stale
+			// relative to the backend's storage — typically because the
+			// session was deleted via the backend CLI. Skip the orphan
+			// with a loud log line; one bad row must not fail the whole
+			// export. Pinned by TestExportSessions_SkipsMissingOpencodeSession.
+			if errors.Is(err, sessionsync.ErrSessionNotFound) || isSessionNotFound(err) {
+				s.log.Printf("export sessions: skipping %s (external_id=%q, backend=%s): backend reports session not found — host.db row is orphaned", info.ID, info.ExternalID, info.Backend)
 				result.Skipped = append(result.Skipped, SkippedSession{
 					SessionID: info.ID,
 					Backend:   info.Backend,
-					Reason:    "opencode storage missing this session (host.db orphan; was it deleted via opencode CLI?)",
+					Reason:    "backend storage missing this session (host.db orphan; deleted via backend CLI?)",
 				})
 				continue
 			}
