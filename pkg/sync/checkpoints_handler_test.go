@@ -72,6 +72,21 @@ func (m *memSyncStore) UpdateWorktreePointer(_ context.Context, id, checkpointID
 	m.worktrees[id] = w
 	return nil
 }
+func (m *memSyncStore) UpdateWorktreeMaterialization(_ context.Context, id string, u clanksync.MaterializationUpdate) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	w, ok := m.worktrees[id]
+	if !ok {
+		return clanksync.ErrWorktreeNotFound
+	}
+	w.MaterializedCheckpointID = u.MaterializedCheckpointID
+	w.SyncState = u.SyncState
+	w.SyncConflictLocalHead = u.ConflictLocalHead
+	w.SyncConflictRemoteHead = u.ConflictRemoteHead
+	w.UpdatedAt = time.Now().UTC()
+	m.worktrees[id] = w
+	return nil
+}
 func (m *memSyncStore) GetCheckpointByID(_ context.Context, id string) (clanksync.Checkpoint, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

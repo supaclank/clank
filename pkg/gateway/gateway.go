@@ -203,6 +203,11 @@ func (g *Gateway) Handler() http.Handler {
 	// these gateway-orchestrated handlers) instead of the sync server.
 	mx.HandleFunc("POST /v1/worktrees/create", g.handleCreateWorktree)
 	mx.HandleFunc("POST /v1/worktrees/list-branches", g.handleListBranches)
+	// Autosync (S3→sprite): sync-all (mobile homescreen) + per-worktree
+	// (manual sync button / conflict resolution). Mounted before the /v1/
+	// catch-all so they reach these gateway-orchestrated handlers.
+	mx.HandleFunc("POST /v1/worktrees/sync", g.handleSyncAllWorktrees)
+	mx.HandleFunc("POST /v1/worktrees/{id}/sync", g.handleSyncWorktree)
 
 	// GitHub Connect: status/disconnect/connect-flow/create-PR are
 	// all pure proxies to the user's host. Mounted before the /v1/

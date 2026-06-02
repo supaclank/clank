@@ -14,6 +14,7 @@ import (
 	"github.com/acksell/clank/internal/cloud"
 	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/daemonclient"
+	"github.com/acksell/clank/internal/repolabel"
 	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
 
@@ -94,7 +95,7 @@ func runInitRepo(cmd *cobra.Command, repoPath string) error {
 		if !s.IsRecentlyActive {
 			continue
 		}
-		id, err := cli.RegisterWorktree(ctx, filepath.Base(s.Path))
+		id, err := cli.RegisterWorktree(ctx, filepath.Base(s.Path), repolabel.ComputeRepoLabel(s.Path))
 		if err != nil {
 			return fmt.Errorf("register worktree %s: %w", s.Path, err)
 		}

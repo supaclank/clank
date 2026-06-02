@@ -13,6 +13,7 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/clanksync/pushlock"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
+	"github.com/acksell/clank/internal/repolabel"
 	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
 
@@ -223,7 +224,7 @@ func reregisterStaleWorktree(cmd *cobra.Command, ctx context.Context, timer *pha
 	name := filepath.Base(absRepo)
 	fmt.Fprintf(cmd.ErrOrStderr(), "worktree no longer exists on the remote; re-registering %q…\n", name)
 	done := timer.Start("re-register worktree")
-	id, err := cli.RegisterWorktree(ctx, name)
+	id, err := cli.RegisterWorktree(ctx, name, repolabel.ComputeRepoLabel(absRepo))
 	done()
 	if err != nil {
 		return "", fmt.Errorf("re-register worktree: %w", err)

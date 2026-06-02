@@ -18,6 +18,7 @@ import (
 	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/git"
+	"github.com/acksell/clank/internal/repolabel"
 	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
 
@@ -233,7 +234,7 @@ func ensureTracked(ctx context.Context, cmd *cobra.Command, cli *syncclient.Clie
 	if name == "" {
 		name = filepath.Base(absRepo)
 	}
-	id, err = cli.RegisterWorktree(ctx, name)
+	id, err = cli.RegisterWorktree(ctx, name, repolabel.ComputeRepoLabel(absRepo))
 	if err != nil {
 		return "", fmt.Errorf("register worktree: %w", err)
 	}

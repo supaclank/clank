@@ -484,6 +484,27 @@ func (s *Store) migrate() error {
 		}
 		version = 27
 	}
+	if version < 28 {
+		// Autosync materialization tracking. latest_synced_checkpoint
+		// records what the laptop PUSHED; these columns record what the
+		// sprite has MATERIALIZED (a display cache the gateway refreshes
+		// from each apply outcome — see pkg/gateway/sync.go). sync_state is
+		// the last outcome: "" (unknown) | up_to_date | behind | conflict |
+		// busy. The two conflict-head columns name the diverged commits for
+		// the mobile resolution UI; set only when sync_state = conflict.
+		// Schema mirrored in internal/store/schema/0002_worktrees.sql.
+		_, err := s.db.Exec(`
+			ALTER TABLE worktrees ADD COLUMN materialized_checkpoint_id TEXT NOT NULL DEFAULT '';
+			ALTER TABLE worktrees ADD COLUMN sync_state TEXT NOT NULL DEFAULT '';
+			ALTER TABLE worktrees ADD COLUMN sync_conflict_local_head TEXT NOT NULL DEFAULT '';
+			ALTER TABLE worktrees ADD COLUMN sync_conflict_remote_head TEXT NOT NULL DEFAULT '';
+			PRAGMA user_version = 28;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v28: %w", err)
+		}
+		version = 28
+	}
 	_ = version // suppress unused warning after last migration
 
 	return nil
