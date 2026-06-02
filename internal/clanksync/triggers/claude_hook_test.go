@@ -76,6 +76,21 @@ func TestInstallClaudeHook_CreatesFileWhenAbsent(t *testing.T) {
 	}
 }
 
+func TestShellQuote(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ in, want string }{
+		{"/usr/bin/clank", "'/usr/bin/clank'"},
+		{"/path/$HOME/clank", "'/path/$HOME/clank'"},
+		{"/path/$(rm -rf)/clank", "'/path/$(rm -rf)/clank'"},
+		{"/path/with 'quote'/clank", `'/path/with '\''quote'\''/clank'`},
+	} {
+		got := shellQuote(tt.in)
+		if got != tt.want {
+			t.Errorf("shellQuote(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func readSettings(t *testing.T, dir string) map[string]any {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))

@@ -97,7 +97,12 @@ func UninstallClaudeHook(claudeDir string) error {
 // clank so the agent isn't blocked, redirects output to a log, and
 // carries the marker as a trailing comment for idempotency.
 func claudeHookCommand(clankBin string) string {
-	return fmt.Sprintf(`nohup %q push "$CLAUDE_PROJECT_DIR" >>"${TMPDIR:-/tmp}/clank-autopush.log" 2>&1 & # %s`, clankBin, claudeHookMarker)
+	return fmt.Sprintf(`nohup %s push "$CLAUDE_PROJECT_DIR" >>"${TMPDIR:-/tmp}/clank-autopush.log" 2>&1 & # %s`, shellQuote(clankBin), claudeHookMarker)
+}
+
+// shellQuote wraps s in POSIX single quotes, escaping embedded single quotes.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func groupHasMarker(g any) bool {
