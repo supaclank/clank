@@ -158,9 +158,14 @@ func copyFileContents(src, dst string) error {
 	}
 	if _, err := io.Copy(out, in); err != nil {
 		_ = out.Close()
+		_ = os.Remove(dst)
 		return err
 	}
-	return out.Close()
+	if err := out.Close(); err != nil {
+		_ = os.Remove(dst)
+		return err
+	}
+	return nil
 }
 
 func claudeDiscovered(info claudecode.SDKSessionInfo) DiscoveredSession {
