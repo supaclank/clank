@@ -175,6 +175,48 @@ func TestEnsureTracked_RepoAutoTrackRegistersWithoutPrompt(t *testing.T) {
 	}
 }
 
+// TestEnsureTracked_InteractiveYesOptsInWholeRepo pins that confirming the
+// `clank push` track prompt opts the ENTIRE repo in (writes the repo
+// marker), not just the current worktree — so a `git worktree add` sibling
+// added later auto-registers on its first push without another prompt.
+// SyncHarnesses is pre-set so the harness multiselect TUI is skipped.
+func TestEnsureTracked_InteractiveYesOptsInWholeRepo(t *testing.T) {
+	t.Setenv("CLANK_DIR", t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(t.TempDir(), "claude"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg"))
+	if err := config.UpdatePreferences(func(p *config.Preferences) {
+		p.SyncHarnesses = []string{triggers.HarnessClaudeCode, triggers.HarnessOpenCode}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cli, st := newSyncServer(t)
+	repo := newGitRepo(t)
+	cmd, _ := newPromptCmd("y\n") // track? yes
+
+	ctx := context.Background()
+	if _, err := ensureTracked(ctx, cmd, cli, repo, "", true); err != nil {
+		t.Fatalf("ensureTracked: %v", err)
+	}
+
+	// "yes" opted the whole repo in, not just this worktree.
+	tracked, err := agent.IsRepoAutoTracked(repo)
+	if err != nil || !tracked {
+		t.Fatalf("repo not auto-tracked after interactive yes (tracked=%v err=%v)", tracked, err)
+	}
+
+	// A worktree added later auto-registers non-interactively via the marker.
+	pgit(t, repo, "branch", "feature")
+	linkedDir := filepath.Join(t.TempDir(), "linked")
+	pgit(t, repo, "worktree", "add", linkedDir, "feature")
+	id, err := ensureTracked(ctx, cmd, cli, linkedDir, "", false)
+	if err != nil {
+		t.Fatalf("ensureTracked(new worktree): %v", err)
+	}
+	if _, err := st.GetWorktreeByID(ctx, id); err != nil {
+		t.Fatalf("new worktree not registered on remote: %v", err)
+	}
+}
+
 // TestEnsureLoggedIn_ExplicitCredsSkipLogin pins that explicit
 // --base-url + --token (self-hosted static bearer / CI) yield a client
 // without any login flow or network call.

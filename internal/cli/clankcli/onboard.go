@@ -217,9 +217,9 @@ func shouldAutoTrack(prefs config.Preferences, absRepo string) (bool, error) {
 // ensureTracked resolves the worktree-id for absRepo, registering it if
 // needed. A cached id is returned as-is. Untracked: when the repo (or all
 // repos) auto-tracks it auto-registers; on a TTY (interactive) it offers
-// to track and runs first-time harness onboarding; otherwise it returns
-// today's "run clank init" error. displayName "" defaults to the repo's
-// basename.
+// to track — and a "yes" opts the whole repo in (like `clank init`) and
+// runs first-time harness onboarding; otherwise it returns today's "run
+// clank init" error. displayName "" defaults to the repo's basename.
 func ensureTracked(ctx context.Context, cmd *cobra.Command, cli *syncclient.Client, absRepo, displayName string, canPrompt bool) (string, error) {
 	id, err := agent.ReadLocalWorktreeID(absRepo)
 	if err != nil {
@@ -241,13 +241,19 @@ func ensureTracked(ctx context.Context, cmd *cobra.Command, cli *syncclient.Clie
 		if !canPrompt {
 			return "", fmt.Errorf("this worktree isn't tracked — run `clank init` to auto-track this repo (or `clank init --global` for every repo)")
 		}
-		shouldTrack, err := confirmYesNo(cmd, fmt.Sprintf("Track %s for clank push? [Y/n] ", filepath.Base(absRepo)), true)
+		shouldTrack, err := confirmYesNo(cmd, fmt.Sprintf("Track this repo (%s) for clank push? [Y/n] ", filepath.Base(absRepo)), true)
 		if err != nil {
 			return "", err
 		}
 		if !shouldTrack {
 			return "", fmt.Errorf("not tracked — run `clank init` when you want to start syncing this repo")
 		}
+		// Confirming opts the whole repo in, same as `clank init`: mark it so
+		// worktrees added later auto-register on their first push.
+		if err := agent.EnableRepoAutoTrack(absRepo); err != nil {
+			return "", fmt.Errorf("enable repo auto-track: %w", err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Auto-tracking %s — worktrees added later sync on their first push.\n", filepath.Base(absRepo))
 	}
 
 	name := displayName
