@@ -1,13 +1,14 @@
 ---
 name: review-bot
-description: Use this skill when handling AI review-bot comments on a GitHub PR (CodeRabbit/CR, Cubic, and similar). Triggers include "address the CR/cubic review", "look at coderabbit/cubic comments", "did the review bot comment", "triage PR bot feedback", or any mention of bot review feedback that needs action. Also used by an automated routine that fires once on PR open and runs this triage unattended.
+description: Use this skill when handling AI review-bot comments on a GitHub PR (CodeRabbit/CR, Cubic, Greptile, and similar). Triggers include "address the CR/cubic/greptile review", "look at coderabbit/cubic/greptile comments", "did the review bot comment", "triage PR bot feedback", or any mention of bot review feedback that needs action. Also used by an automated routine that fires once on PR open and runs this triage unattended.
 ---
 
 # Review-bot triage
 
 Goal: turn the noisy stream of AI review-bot comments (CodeRabbit, Cubic,
-future bots) into a small set of high-value commits + PR replies. Bias
-toward shipping; treat severity labels as suggestions, not gospel.
+Greptile, future bots) into a small set of high-value commits + PR
+replies. Bias toward shipping; treat severity labels as suggestions, not
+gospel.
 
 Two modes share the same rubric:
 
@@ -21,13 +22,23 @@ Two modes share the same rubric:
 
 ## Supported bots
 
-Recognized two ways: GitHub login (for fetching comments) and check-run
-app slug (for watching progress on a commit's CI status).
+Recognized three ways: GitHub login (for fetching comments), check-run
+app slug (for watching progress on a commit's CI status), and @-mention
+handle (for nudging a bot that hasn't picked the PR up — see "Nudge the
+bots when none respond").
 
-| Bot | Login pattern | Check-run app slug |
-|---|---|---|
-| CodeRabbit | `coderabbit` | `coderabbitai` |
-| Cubic | `cubic-dev`, `cubic[bot]` | `cubic-dev-ai` |
+| Bot | Login pattern | Check-run app slug | Mention handle |
+|---|---|---|---|
+| CodeRabbit | `coderabbit` | `coderabbitai` | `@coderabbitai` |
+| Cubic | `cubic-dev`, `cubic[bot]` | `cubic-dev-ai` | `@cubic-dev-ai` |
+| Greptile | `greptile` | `greptile-apps` | `@greptileai` |
+
+**Greptile merge gate.** Greptile writes a `<h3>Confidence Score: N/5</h3>`
+into the **PR description body** (not a comment) — read it from `pulls/<n>`
+(`.body`). **Never merge — or mark the PR mergeable — while that score is
+below 5/5.** Surface it in the triage table and the activity log; below
+5/5 the verdict on the PR as a whole is "not mergeable yet", regardless
+of how the individual findings triage.
 
 If unsure of a bot's exact app slug, inspect a recent PR's checks:
 
@@ -38,8 +49,9 @@ gh api "repos/<owner>/<repo>/commits/<sha>/check-runs" \
 
 Adding a new bot:
 
-1. Append its login substring to `BOT_LOGIN_PATTERNS` (fetch script
-   below) and its app slug to `BOT_CHECK_SLUGS` (watch loop below).
+1. Add its login substring to `BOT_LOGIN_PATTERNS` (fetch script below),
+   its app slug to `BOT_CHECK_SLUGS` (watch loop below), and its
+   @-mention handle to `BOT_MENTIONS` (nudge step below).
 2. Add the summary text of any collapsible `<details>` noise blocks the
    bot emits to `NOISE_SUMMARIES`.
 3. Nothing else changes — the rubric, verdicts, replies, and TODO marker
@@ -79,16 +91,69 @@ The loop terminator is the "Should I run?" gate: once the bots have
 nothing new to say since our last triage, the skill exits silently and
 the conversation converges.
 
-Per fire:
+Per fire, post a fresh **activity log** comment at the start and
+live-update it (see "Activity log") as you move through these steps, so a
+human watching the PR sees the unattended routine progress in real time:
 
 1. **Watch for bot completion** on the current HEAD — let any
-   in-progress review pass finish (grace window + hard cap).
+   in-progress review pass finish (grace window + hard cap). If no bot
+   check ever appears, **nudge the bots** by @-mention (see "Nudge the
+   bots when none respond").
 2. **Should I run?** — exit silently when the bots produced nothing
-   new since the prior triage comment.
+   new since the prior triage comment (the activity log still records
+   the no-op).
 3. **Triage** the new findings per the rubric, **fix**, **push**.
 4. The push fires another `synchronize`, restarting the loop. The
    bots eventually stop producing new findings, step 2 exits, and the
    loop converges.
+
+### Activity log
+
+So a human watching the PR can follow the unattended routine **in real
+time**, each run posts its own activity comment at the start and
+**live-updates it in place** as the run moves through the phases below.
+One comment per fire — a new trigger is a new comment, so distinct runs
+stay legible in the timeline. Don't search for or reuse a prior run's
+comment.
+
+Post once at the start, hold the returned id, and PATCH that same comment
+as each phase *begins* — before doing the phase's work — so the trailing
+line always reflects what's happening **now** (present tense,
+in-progress), never a recap written after the fact:
+
+```bash
+# Start of run: create the comment, capture its id.
+act_id=$(gh api -X POST "repos/$PR_OWNER/$PR_REPO/issues/$PR_NUM/comments" \
+  -f body="$(cat activity.md)" --jq .id)
+
+# Each phase boundary: rewrite activity.md with the new line, then PATCH.
+gh api -X PATCH "repos/$PR_OWNER/$PR_REPO/issues/comments/$act_id" \
+  -f body="$(cat activity.md)"
+```
+
+A mid-run snapshot — completed phases marked ✅, the current one ⏳:
+
+```markdown
+### Automated review-bot activity
+
+_HEAD `a1b2c3d` · started 13:58 · updated 14:02 UTC_
+
+- 13:58 ✅ Watched bots: greptile done (confidence 4/5); coderabbit, cubic no check — nudged.
+- 14:01 ✅ Triaged 6 findings (4 do, 1 defer, 1 won't-do).
+- 14:02 ⏳ Implementing correctness batch (3 fixes) + 1 defer; pushing…
+```
+
+Write the ⏳ line *before* the phase runs, then flip it to ✅ (or ⚠️) and
+append the next ⏳ line when it finishes. Phases worth a line: watch start
+("⏳ Waiting on bot reviews…"), bot completion or absence (note Greptile's
+confidence score), any nudge sent, the triage decision — including a
+no-op ("nothing new since last triage"), implement + push, replies
+posted, and a terminal ✅ done / ⚠️ timed-out line. One sentence each; the
+triage table and the diff carry the detail.
+
+Comment edits don't notify subscribers, so after the first comment a run
+goes quiet — refresh the PR to watch it move. Every fire gets exactly one
+such comment, including a no-op that exits at "Should I run?".
 
 ### Should I run?
 
@@ -124,20 +189,22 @@ No hard lock. No `--force` push.
 
 ### Watch for bot completion
 
-**Primary signal: the PR's check-runs on the current HEAD.** CodeRabbit
-and Cubic both publish their progress as check runs, the same place CI
-status lives. Status transitions `queued` → `in_progress` → `completed`
-are unambiguous and earlier than any comment, so we don't have to
-guess from quiescence.
+**Primary signal: the PR's check-runs on the current HEAD.** CodeRabbit,
+Cubic, and Greptile publish their progress as check runs, the same place
+CI status lives. Status transitions `queued` → `in_progress` →
+`completed` are unambiguous and earlier than any comment, so we don't
+have to guess from quiescence.
 
 Polling logic:
 
 - **What we poll**: `gh api repos/<o>/<r>/commits/<head_sha>/check-runs`,
   filtered to runs whose `app.slug` is in `BOT_CHECK_SLUGS`.
 - **Interval**: 30s.
-- **Grace period**: 3 minutes for any bot check to appear. A bot whose
-  check never shows up is assumed not running on this PR (repo doesn't
-  have it enabled, draft PR, etc.) and is dropped from the wait set.
+- **Grace period**: 3 minutes for any bot check to appear. A *single*
+  bot whose check never shows up is assumed not running on this PR (repo
+  doesn't have it enabled, draft PR, etc.) and is dropped from the wait
+  set. If *no* bot check appears at all, nudge them once by @-mention and
+  extend the window (see "Nudge the bots when none respond").
 - **Done condition**: every bot check in the wait set has
   `status == "completed"`.
 - **Hard cap**: 25 minutes total. If reached, proceed with whatever has
@@ -148,7 +215,7 @@ Sketch:
 ```bash
 PR_OWNER=…; PR_REPO=…; PR_NUM=…
 HEAD_SHA=$(gh api "repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUM" --jq .head.sha)
-BOT_CHECK_SLUGS=(coderabbitai cubic-dev-ai)
+BOT_CHECK_SLUGS=(coderabbitai cubic-dev-ai greptile-apps)
 
 start=$(date +%s); grace=$((start + 180)); cap=$((start + 25*60))
 
@@ -164,9 +231,14 @@ while :; do
   ')
 
   if [ -z "$bot_rows" ]; then
-    # No bot check has appeared yet. Wait through grace.
+    # No bot check present. Wait through grace, then nudge once.
     if [ "$now" -lt "$grace" ]; then sleep 30; continue; fi
-    break  # bots aren't running on this PR; "Should I run?" handles it
+    if review_warranted && ! nudged_this_head; then
+      nudge_bots             # @-mention all bots; see "Nudge the bots…"
+      grace=$((now + 180))   # fresh window for them to publish checks
+      sleep 30; continue
+    fi
+    break  # nudged already / no review needed; "Should I run?" handles it
   fi
 
   pending=$(echo "$bot_rows" | awk -F'\t' '$2 != "completed"' | wc -l)
@@ -183,6 +255,44 @@ heuristic: watch `pulls/<n>/reviews` for a submitted review from that
 bot's login, plus a 60s quiescence tail. Add the bot to
 `BOT_LOGIN_PATTERNS` so its comments still get triaged.
 
+### Nudge the bots when none respond
+
+Bots don't always pick a PR up on their own — a draft was marked ready
+late, a webhook was missed, or they're mid-rate-limit. The signal is the
+grace window expiring with **zero** bot checks present (not one bot
+missing — *none*).
+
+When that happens, decide whether a review is actually warranted: is
+there substantive, unreviewed code on the current HEAD? If yes, post a
+single comment that @-mentions every bot so they pick it up. Each bot
+answers in its own comment — starting the review, declining, or
+reporting a rate limit:
+
+```bash
+BOT_MENTIONS=(@coderabbitai @greptileai @cubic-dev-ai)
+gh api -X POST "repos/$PR_OWNER/$PR_REPO/issues/$PR_NUM/comments" -f body="$(cat <<EOF
+<!-- review-bot:nudge $HEAD_SHA -->
+${BOT_MENTIONS[*]} — no automated review detected on \`$HEAD_SHA\`. Please review when you can.
+EOF
+)"
+```
+
+Then **reset the grace window and re-enter the watch loop** so their
+freshly-published checks get awaited; read their replies on the next
+pass and let the normal flow triage whatever review lands.
+
+Constraints:
+
+- **Only when *no* bot check is present.** If even one bot is in
+  progress, wait for it and let the absent ones drop per the grace rule
+  — a partial set means the PR was picked up.
+- **At most once per HEAD.** The `<!-- review-bot:nudge <sha> -->` marker
+  makes a prior nudge greppable in `issues/<n>/comments`; if it's already
+  there for this SHA, just keep waiting (and past the hard cap, fall
+  through to "Should I run?", which no-ops when nothing landed).
+- **Log it** in the activity comment ("coderabbit, cubic no check —
+  nudged").
+
 ### Post the triage
 
 Fetch comments (see "Fetching comments"), triage per the rubric, then
@@ -195,8 +305,10 @@ post a single top-level PR comment with the table:
 |---|---|---|---|---|---|---|---|
 | 1 | coderabbit | 12345 | foo.go:42 | … | 3 | … | Do |
 | 2 | cubic | 678 | bar.go:88 | … | 12 | … | Defer |
+| 3 | greptile | 901 | baz.go:5 | … | 2 | … | Do |
 …
 
+**Greptile confidence:** 4/5 — **not mergeable until 5/5.**
 **Plan:** correctness batch (3 fixes), 1 defer with TODO, 1 won't-do.
 ```
 
@@ -235,11 +347,12 @@ fallbacks (see AGENTS.md).
 
 ## Fetching comments
 
-Three endpoints carry bot output; usually you only need the first for
-triage, with the second covering review-summary bodies:
+A few sources carry bot output; usually you only need the first for
+triage, with the others covering review summaries, walkthroughs, and
+Greptile's confidence score:
 
 ```bash
-# Line-anchored review comments (the bulk of CR/Cubic findings).
+# Line-anchored review comments (the bulk of CR/Cubic/Greptile findings).
 gh api repos/<owner>/<repo>/pulls/<n>/comments --paginate
 
 # Review-level submissions (summary bodies, "request changes" etc.).
@@ -247,6 +360,10 @@ gh api repos/<owner>/<repo>/pulls/<n>/reviews --paginate
 
 # PR-level issue comments (walkthroughs, our triage comment, etc.).
 gh api repos/<owner>/<repo>/issues/<n>/comments --paginate
+
+# PR description body — Greptile writes `<h3>Confidence Score: N/5</h3>` here.
+# Parse it for the merge gate (see "Greptile merge gate").
+gh api repos/<owner>/<repo>/pulls/<n> --jq .body
 ```
 
 Filter and clean with Python — bot comments are dense with `<details>`
@@ -255,7 +372,7 @@ blocks (analysis chains, AI prompts, learnings) that aren't actionable:
 ```python
 import json, sys, re
 
-BOT_LOGIN_PATTERNS = ('coderabbit', 'cubic-dev', 'cubic[bot]')
+BOT_LOGIN_PATTERNS = ('coderabbit', 'cubic-dev', 'cubic[bot]', 'greptile')
 
 # Extend per bot when adding a new vendor.
 NOISE_SUMMARIES = (
@@ -317,8 +434,8 @@ Rank with the table format used in both modes:
 | Rank | Source | ID | File:line | Issue | LoC | Real-world impact | Verdict |
 ```
 
-`Source` is the bot login (`coderabbit`, `cubic`, …) so multi-bot
-threads stay legible.
+`Source` is the bot login (`coderabbit`, `cubic`, `greptile`, …) so
+multi-bot threads stay legible.
 
 ## Verdict categories
 
@@ -460,9 +577,17 @@ Concretely:
 - **(Autonomous)** Don't triage before the watch loop says the bots are
   done — half-finished bot output produces wrong triage.
 - **(Autonomous)** Don't proceed past "Should I run?" if it says no.
-  Exit silently — no triage comment, no commits, no replies. That gate
-  *is* the loop terminator.
-- **(Autonomous)** Don't post an empty triage table just because the
-  routine fired. If the bots produced nothing new, post nothing.
+  Exit silently — no triage table, no commits, no replies. (The run's
+  own activity comment still records the no-op; that's the sole
+  exception.) That gate *is* the loop terminator.
+- **(Autonomous)** Don't post an empty triage *table* just because the
+  routine fired. If the bots produced nothing new, the run's activity
+  comment ending at its no-op line is the only thing posted.
+- **Never merge — or enable auto-merge / mark the PR mergeable — while
+  Greptile's confidence score is below 5/5.** It's a hard gate,
+  independent of how the individual findings triage.
+- **(Autonomous)** Don't nudge bots that are already working. The
+  @-mention fallback fires only when *no* bot check is present, and at
+  most once per HEAD (the `review-bot:nudge <sha>` marker enforces it).
 - **(Autonomous)** Don't `--force` push. If the branch has moved under
   you, fetch, rebase, and re-run the verify step before pushing again.
