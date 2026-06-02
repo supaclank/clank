@@ -25,9 +25,14 @@ const syncedSessionsRelPath = "clank/sessions-synced.json"
 const SyncedSessionsVersion = 1
 
 // SyncedSession is the last-pushed version marker for one session.
+// Fingerprint is a content version (Claude: last-message uuid) preferred
+// over UpdatedAt when present, so a read-only `claude --resume` (which bumps
+// the file mtime but appends no real turn) doesn't read as a change. Empty
+// for opencode, whose UpdatedAt is already content-based.
 type SyncedSession struct {
-	Backend   BackendType `json:"backend"`
-	UpdatedAt time.Time   `json:"updated_at"`
+	Backend     BackendType `json:"backend"`
+	UpdatedAt   time.Time   `json:"updated_at"`
+	Fingerprint string      `json:"fingerprint,omitempty"`
 }
 
 // SyncedSessionRecord is the per-worktree set of last-pushed sessions,

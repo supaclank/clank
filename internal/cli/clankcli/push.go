@@ -14,6 +14,7 @@ import (
 	"github.com/acksell/clank/internal/clanksync/pushlock"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/repolabel"
+	"github.com/acksell/clank/pkg/sessionsync"
 	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
 
@@ -151,12 +152,12 @@ from ` + "`git worktree add`" + ` are tracked individually.`,
 // checkpoint.
 func runPush(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *syncclient.Client, absRepo, worktreeID string, parity parityResult, committedOnly bool) error {
 	if parity.InSync {
-		detail := " (local state matches remote's latest checkpoint)"
-		if committedOnly {
-			detail = " (committed state matches remote; uncommitted changes ignored)"
-		}
-		fmt.Fprintln(cmd.OutOrStdout(), styleOK.Render("✓ Already up to date")+styleDim.Render(detail))
-		return nil
+		// Code matches the remote, but sessions sync on an INDEPENDENT axis:
+		// a session can change (or its Claude transcript mtime bump on a bare
+		// `--resume`) with no code change. A code-only early return would
+		// leave such a session stuck — `clank status` flags it, yet push
+		// would forever report "up to date" and never carry it.
+		return pushSessionsWhenCodeInSync(cmd, ctx, timer, cli, absRepo, parity, committedOnly)
 	}
 
 	// On a TTY, one live status line spans the WHOLE push — build → upload
@@ -205,15 +206,53 @@ func runPush(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *sy
 		return fmt.Errorf("push session leg: %w", serr)
 	}
 
-	for _, sk := range skipped {
-		fmt.Fprintf(cmd.OutOrStdout(), "  %s skipped session %s: %s\n", styleDim.Render("•"), sk.ExternalID, sk.Reason)
-	}
+	reportSkippedSessions(cmd, skipped)
 	if exported > 0 {
 		fmt.Fprintf(cmd.OutOrStdout(), "%s Synced %d session(s)\n", styleOK.Render("✓"), exported)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "%s Pushed checkpoint %s (HEAD %s) to %s\n",
 		styleOK.Render("✓"), res.CheckpointID, shortSHA(res.Manifest.HeadCommit), remoteLabel(cli.BaseURL()))
 	return nil
+}
+
+// pushSessionsWhenCodeInSync syncs unsynced sessions against the EXISTING
+// latest checkpoint when the code is already in sync. Sessions sync on an
+// axis independent of code, so an unsynced session must still be carried
+// here rather than left stuck behind a "✓ Already up to date" no-op. When
+// no session is unsynced (or the axis is undeterminable), it reports up to
+// date — matching `clank status`, which uses the same unsynced check.
+func pushSessionsWhenCodeInSync(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *syncclient.Client, absRepo string, parity parityResult, committedOnly bool) error {
+	unsynced, known := unsyncedSessions(ctx, absRepo)
+	if !known || len(unsynced) == 0 || parity.CheckpointID == "" {
+		printAlreadyUpToDate(cmd, committedOnly)
+		return nil
+	}
+
+	exported, skipped, err := pushSessions(ctx, timer, absRepo, parity.CheckpointID, cli)
+	if err != nil {
+		return fmt.Errorf("push session leg: %w", err)
+	}
+	reportSkippedSessions(cmd, skipped)
+	if exported == 0 {
+		printAlreadyUpToDate(cmd, committedOnly)
+		return nil
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s Synced %d session(s) (code already up to date)\n", styleOK.Render("✓"), exported)
+	return nil
+}
+
+func printAlreadyUpToDate(cmd *cobra.Command, committedOnly bool) {
+	detail := " (local state matches remote's latest checkpoint)"
+	if committedOnly {
+		detail = " (committed state matches remote; uncommitted changes ignored)"
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), styleOK.Render("✓ Already up to date")+styleDim.Render(detail))
+}
+
+func reportSkippedSessions(cmd *cobra.Command, skipped []sessionsync.SkippedSession) {
+	for _, sk := range skipped {
+		fmt.Fprintf(cmd.OutOrStdout(), "  %s skipped session %s: %s\n", styleDim.Render("•"), sk.ExternalID, sk.Reason)
+	}
 }
 
 // reregisterStaleWorktree re-registers absRepo after the remote reported

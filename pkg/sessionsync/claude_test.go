@@ -1,8 +1,10 @@
 package sessionsync
 
 import (
+	"bytes"
 	"context"
-	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/acksell/clank/internal/agent"
@@ -55,13 +57,99 @@ func TestClaudeDiscovered_NilCwdAndCreatedAt(t *testing.T) {
 	}
 }
 
-func TestClaudeBackend_ExportImportNotImplemented(t *testing.T) {
-	t.Parallel()
+// TestClaudeBackend_RoundTrip exercises export → rewrite → import into a
+// fresh worktree dir: the transcript is copied verbatim on export, rebased
+// to the destination on import, lands at the destination's encoded path
+// (discoverable by the SDK), keeps its session id, and re-imports
+// idempotently. No claude binary needed — pure file I/O + the read-only SDK.
+//
+// Not parallel: isolates CLAUDE_CONFIG_DIR via t.Setenv.
+func TestClaudeBackend_RoundTrip(t *testing.T) {
+	t.Setenv(envClaudeConfigDir, t.TempDir())
+	ctx := context.Background()
 	var be ClaudeBackend
-	if err := be.ExportSession(context.Background(), "", "id", nil); !errors.Is(err, ErrExportNotImplemented) {
-		t.Errorf("ExportSession err = %v, want ErrExportNotImplemented", err)
+
+	srcDir := t.TempDir()
+	const sessionID = "roundtrip-1234-5678"
+	writeClaudeTranscript(t, srcDir, sessionID)
+
+	// Export is a verbatim copy of the on-disk transcript.
+	var buf bytes.Buffer
+	if err := be.ExportSession(ctx, srcDir, sessionID, &buf); err != nil {
+		t.Fatalf("ExportSession: %v", err)
 	}
-	if _, err := be.ImportSession(context.Background(), "", "blob"); !errors.Is(err, ErrExportNotImplemented) {
-		t.Errorf("ImportSession err = %v, want ErrExportNotImplemented", err)
+	want, err := os.ReadFile(mustTranscriptPath(t, srcDir, sessionID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatal("ExportSession is not a verbatim copy of the transcript")
+	}
+
+	// Rebase for the destination, then import.
+	destDir := t.TempDir()
+	blobPath := filepath.Join(t.TempDir(), "blob.jsonl")
+	if err := os.WriteFile(blobPath, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rewritten, err := RewriteClaudeImportBlob(blobPath, destDir)
+	if err != nil {
+		t.Fatalf("RewriteClaudeImportBlob: %v", err)
+	}
+	gotID, err := be.ImportSession(ctx, destDir, rewritten)
+	if err != nil {
+		t.Fatalf("ImportSession: %v", err)
+	}
+	if gotID != sessionID {
+		t.Errorf("imported id = %q, want %q (Claude preserves session identity)", gotID, sessionID)
+	}
+
+	// The transcript lands under destDir's encoded path; the SDK finds it.
+	infos, err := claudecode.ListSessions(claudecode.WithSessionDirectory(destDir))
+	if err != nil {
+		t.Fatalf("ListSessions(destDir): %v", err)
+	}
+	if !containsSessionID(infos, sessionID) {
+		t.Fatalf("imported session %s not discoverable under destDir", sessionID)
+	}
+	assertTranscriptCwd(t, destDir, sessionID, destDir)
+
+	// Idempotent re-import: same id, still discoverable.
+	reID, err := be.ImportSession(ctx, destDir, rewritten)
+	if err != nil {
+		t.Fatalf("re-ImportSession: %v", err)
+	}
+	if reID != sessionID {
+		t.Errorf("re-import id = %q, want %q", reID, sessionID)
+	}
+}
+
+// TestClaudeBackend_ImportPlacementOnly documents that DISCOVERY depends on
+// file placement at the destination's encoded path, NOT on the in-file cwd
+// rewrite: it imports an un-rewritten blob (cwd still the source path) and
+// asserts the SDK still finds it. This pins "rewrite is not required for
+// discovery" so the rewrite can be dropped later if it proves unnecessary
+// (the rewrite is about cwd fidelity / permission prompts, verified in the
+// manual round trip).
+func TestClaudeBackend_ImportPlacementOnly(t *testing.T) {
+	t.Setenv(envClaudeConfigDir, t.TempDir())
+	ctx := context.Background()
+	const sessionID = "placement-9999"
+	srcDir := t.TempDir()
+	destDir := t.TempDir()
+
+	blobPath := filepath.Join(t.TempDir(), "raw.jsonl")
+	if err := os.WriteFile(blobPath, claudeTranscriptBytes(sessionID, srcDir), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (ClaudeBackend{}).ImportSession(ctx, destDir, blobPath); err != nil {
+		t.Fatalf("ImportSession: %v", err)
+	}
+	infos, err := claudecode.ListSessions(claudecode.WithSessionDirectory(destDir))
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if !containsSessionID(infos, sessionID) {
+		t.Fatal("placement-only import not discoverable; the encoded PATH (not in-file cwd) is what discovery needs")
 	}
 }

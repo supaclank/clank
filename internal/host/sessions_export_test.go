@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,13 +14,20 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
 	"github.com/acksell/clank/internal/host/store"
+	"github.com/acksell/clank/pkg/sync/checkpoint"
 )
 
-// TestExportSessions_SkipsClaude: a claude-code session is enumerated
-// but never exported (no opencode binary call). It shows up in the
-// result.Skipped slice with a clear reason.
-func TestExportSessions_SkipsClaude(t *testing.T) {
-	t.Parallel()
+// TestExportSessions_ExportsClaude is the flip of the old "skips claude"
+// behavior: a claude-code session in host.db is now exported, not skipped.
+// We seed it via RegisterImportedSession (which writes the transcript under
+// the worktree's encoded path) and assert ExportSessions reads it back —
+// the sprite leg of the round trip. No claude binary needed; isolated
+// CLAUDE_CONFIG_DIR + workRoot (not parallel — t.Setenv + workRoot singleton).
+func TestExportSessions_ExportsClaude(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	workRoot := filepath.Join(t.TempDir(), "work")
+	prev := host.SetWorkRootForTest(workRoot)
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
 
 	dbPath := filepath.Join(t.TempDir(), "host.db")
 	st, err := store.Open(dbPath)
@@ -30,47 +36,60 @@ func TestExportSessions_SkipsClaude(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	now := time.Now()
-	const worktreeID = "wt-skip-claude"
-	claudeSession := agent.SessionInfo{
-		ID:        "01HCLAUDE0000000000000000000",
-		Backend:   agent.BackendClaudeCode,
-		Status:    agent.StatusIdle,
-		GitRef:    agent.GitRef{WorktreeID: worktreeID},
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := st.UpsertSession(context.Background(), claudeSession); err != nil {
-		t.Fatalf("upsert: %v", err)
-	}
-
-	var logBuf bytes.Buffer
 	svc := host.New(host.Options{
 		BackendManagers: map[agent.BackendType]agent.BackendManager{
 			agent.BackendOpenCode: &noopBackendManager{},
 		},
 		SessionsStore: st,
-		Log:           log.New(&logBuf, "", 0),
 	})
 	t.Cleanup(svc.Shutdown)
 
-	res, err := svc.ExportSessions(context.Background(), worktreeID, "ck-1")
+	const externalID = "claude-host-export-0000-1111"
+	const sessULID = "01HCLAUDEHOSTEXPORT0000000000"
+	const worktreeID = "wt-claude-export"
+
+	// Seed the on-disk transcript + host.db row by importing (the same path
+	// a laptop→sprite push apply takes). cwd inside the blob is a source
+	// path; import rebases it under workRoot/worktreeID.
+	blob := buildSyntheticClaudeBlob(externalID, "/laptop/source/path")
+	blobPath := filepath.Join(t.TempDir(), "seed.jsonl")
+	if err := os.WriteFile(blobPath, blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RegisterImportedSession(context.Background(), worktreeID, checkpoint.SessionEntry{
+		SessionID:  sessULID,
+		ExternalID: externalID,
+		Backend:    agent.BackendClaudeCode,
+		Status:     agent.StatusIdle,
+		Title:      "claude export",
+	}, blobPath); err != nil {
+		t.Fatalf("seed RegisterImportedSession: %v", err)
+	}
+
+	res, err := svc.ExportSessions(context.Background(), worktreeID, "ck-claude")
 	if err != nil {
 		t.Fatalf("ExportSessions: %v", err)
 	}
 	t.Cleanup(res.Cleanup)
 
-	if len(res.Entries) != 0 {
-		t.Errorf("expected 0 manifest entries (claude skipped), got %d", len(res.Entries))
+	if len(res.Skipped) != 0 {
+		t.Errorf("expected 0 skipped (claude now exported), got %d: %+v", len(res.Skipped), res.Skipped)
 	}
-	if len(res.Skipped) != 1 {
-		t.Fatalf("expected 1 skipped, got %d", len(res.Skipped))
+	if len(res.Entries) != 1 {
+		t.Fatalf("expected 1 manifest entry, got %d", len(res.Entries))
 	}
-	if res.Skipped[0].SessionID != claudeSession.ID {
-		t.Errorf("skipped.SessionID = %q, want %q", res.Skipped[0].SessionID, claudeSession.ID)
+	e := res.Entries[0]
+	if e.SessionID != sessULID {
+		t.Errorf("entry.SessionID = %q, want %q", e.SessionID, sessULID)
 	}
-	if res.Skipped[0].Backend != agent.BackendClaudeCode {
-		t.Errorf("skipped.Backend = %q, want claude-code", res.Skipped[0].Backend)
+	if e.ExternalID != externalID {
+		t.Errorf("entry.ExternalID = %q, want %q (Claude preserves the session id)", e.ExternalID, externalID)
+	}
+	if e.Backend != agent.BackendClaudeCode {
+		t.Errorf("entry.Backend = %q, want claude-code", e.Backend)
+	}
+	if e.Bytes <= 0 {
+		t.Errorf("entry.Bytes = %d, want positive", e.Bytes)
 	}
 }
 
@@ -451,6 +470,24 @@ func TestExportSessions_IgnoresStaleLocalPath(t *testing.T) {
 	if res.Entries[0].SessionID != sessULID {
 		t.Errorf("entry.SessionID = %q, want %q", res.Entries[0].SessionID, sessULID)
 	}
+}
+
+// buildSyntheticClaudeBlob returns a minimal valid Claude JSONL transcript
+// (a metadata line plus one message line carrying cwd) for sessionID.
+// Mirrors the on-disk shape the Agent SDK reads.
+func buildSyntheticClaudeBlob(sessionID, cwd string) []byte {
+	lines := []map[string]any{
+		{"type": "ai-title", "aiTitle": "host test", "sessionId": sessionID},
+		{"type": "user", "sessionId": sessionID, "cwd": cwd, "gitBranch": "main", "uuid": "u-1", "message": map[string]any{"role": "user", "content": "hello"}},
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	for _, l := range lines {
+		if err := enc.Encode(l); err != nil {
+			panic(err)
+		}
+	}
+	return buf.Bytes()
 }
 
 // buildSyntheticOCBlob returns a minimal valid opencode session

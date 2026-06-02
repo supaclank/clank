@@ -10,6 +10,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/pkg/sync/checkpoint"
+	claudecode "github.com/severity1/claude-agent-sdk-go"
 )
 
 // TestImportWorktreeSessions_RoundTrip serves a session manifest + blob
@@ -76,4 +77,63 @@ func TestImportWorktreeSessions_RoundTrip(t *testing.T) {
 	if _, ok := dirForExternalID(scoped, sessID); !ok {
 		t.Fatalf("imported session %s not listed under destDir %s", sessID, destDir)
 	}
+}
+
+// TestImportWorktreeSessions_Claude serves a Claude session manifest + JSONL
+// blob over httptest and imports it into a fresh worktree dir, asserting the
+// transcript lands under that dir (discoverable by the SDK, cwd rebased)
+// with its session id preserved. No claude binary needed.
+//
+// Not parallel: isolates CLAUDE_CONFIG_DIR via t.Setenv.
+func TestImportWorktreeSessions_Claude(t *testing.T) {
+	t.Setenv(envClaudeConfigDir, t.TempDir())
+	ctx := context.Background()
+	const sessionID = "import-wt-claude-0001"
+	// The blob's cwd is a source-host path; import rebases it to destDir.
+	blob := claudeTranscriptBytes(sessionID, "/laptop/source/path")
+
+	manifest := checkpoint.SessionManifest{
+		Version:      checkpoint.SessionManifestVersion,
+		CheckpointID: "ckpt-claude",
+		Sessions: []checkpoint.SessionEntry{{
+			SessionID:  sessionID,
+			ExternalID: sessionID,
+			Backend:    agent.BackendClaudeCode,
+			BlobKey:    "sessions/" + sessionID + ".jsonl",
+		}},
+	}
+	manifestBytes, err := manifest.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/manifest":
+			_, _ = w.Write(manifestBytes)
+		case "/blob":
+			_, _ = w.Write(blob)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	destDir := t.TempDir()
+	imported, err := ImportWorktreeSessions(ctx, srv.Client(), srv.URL+"/manifest", map[string]string{sessionID: srv.URL + "/blob"}, destDir)
+	if err != nil {
+		t.Fatalf("ImportWorktreeSessions: %v", err)
+	}
+	if len(imported) != 1 || imported[0] != sessionID {
+		t.Fatalf("imported = %v, want [%s] (Claude preserves the session id)", imported, sessionID)
+	}
+
+	infos, err := claudecode.ListSessions(claudecode.WithSessionDirectory(destDir))
+	if err != nil {
+		t.Fatalf("ListSessions(destDir): %v", err)
+	}
+	if !containsSessionID(infos, sessionID) {
+		t.Fatalf("imported claude session %s not discoverable under destDir %s", sessionID, destDir)
+	}
+	assertTranscriptCwd(t, destDir, sessionID, destDir)
 }
