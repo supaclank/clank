@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -274,19 +273,16 @@ func sessions(n int) string {
 	return fmt.Sprintf("%d sessions", n)
 }
 
-// countUnsyncedSessions reports how many of the worktree's current opencode
-// sessions have changed since this machine last pushed them, and whether
-// the axis is determinable at all (false → no opencode, no sessions, or any
-// failure; status then omits the sessions line). Local-only and bounded:
-// one ListSessions subprocess vs the on-disk last-pushed record. Claude is
-// excluded — its sessions are never pushed (export unimplemented).
+// unsyncedSessions reports which of the worktree's current sessions (opencode
+// + Claude) have changed since this machine last pushed them, and whether the
+// axis is determinable at all (false → no sessions or any failure; status
+// then omits the sessions line). Local-only and bounded by a short timeout:
+// backend discovery vs the on-disk last-pushed record. Discovery is the same
+// DiscoverWorktreeSessions `clank push` uses, so status and push agree.
 func unsyncedSessions(ctx context.Context, projectDir string) (unsynced []sessionsync.DiscoveredSession, known bool) {
-	if _, err := exec.LookPath("opencode"); err != nil {
-		return nil, false
-	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	current, err := sessionsync.OpenCodeBackend{}.ListSessions(ctx, projectDir)
+	current, err := sessionsync.DiscoverWorktreeSessions(ctx, projectDir)
 	if err != nil || len(current) == 0 {
 		return nil, false
 	}
@@ -297,18 +293,31 @@ func unsyncedSessions(ctx context.Context, projectDir string) (unsynced []sessio
 }
 
 // unsyncedAgainst returns the current sessions that are absent from the
-// last-pushed record or whose UpdatedAt has advanced past it. Both sides
-// read UpdatedAt from the same backend source (opencode's `Updated`), so an
-// unchanged session compares equal — use strict After, never time.Now().
+// last-pushed record or that have changed since it (see sessionChanged).
 func unsyncedAgainst(current []sessionsync.DiscoveredSession, rec agent.SyncedSessionRecord) []sessionsync.DiscoveredSession {
 	var out []sessionsync.DiscoveredSession
 	for _, s := range current {
 		prev, ok := rec.Sessions[s.ExternalID]
-		if !ok || s.UpdatedAt.After(prev.UpdatedAt) {
+		if !ok || sessionChanged(s, prev) {
 			out = append(out, s)
 		}
 	}
 	return out
+}
+
+// sessionChanged reports whether a discovered session differs from its
+// last-pushed record. When both sides carry a content fingerprint (Claude's
+// last-message uuid) it compares those — immune to the mtime bump a
+// read-only `claude --resume` causes, which would otherwise flag a session
+// nobody actually advanced. Otherwise (opencode, whose `Updated` is already
+// content-based, or a pre-fingerprint record) it falls back to UpdatedAt;
+// both sides read it from the same source, so an unchanged session compares
+// equal — strict After, never time.Now().
+func sessionChanged(cur sessionsync.DiscoveredSession, prev agent.SyncedSession) bool {
+	if cur.Fingerprint != "" && prev.Fingerprint != "" {
+		return cur.Fingerprint != prev.Fingerprint
+	}
+	return cur.UpdatedAt.After(prev.UpdatedAt)
 }
 
 // sessionLabels renders changed-session detail lines for `status -v`: the

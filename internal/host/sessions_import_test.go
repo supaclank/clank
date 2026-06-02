@@ -301,9 +301,16 @@ func TestRegisterImportedSession_IgnoresSourceProjectDir(t *testing.T) {
 	}
 }
 
-// TestRegisterImportedSession_RejectsClaudeBackend pins v1 scope.
-func TestRegisterImportedSession_RejectsClaudeBackend(t *testing.T) {
-	t.Parallel()
+// TestRegisterImportedSession_Claude is the flip of the old "rejects
+// claude" guard: a claude-code session now imports — the transcript lands
+// under the destination worktree's encoded path and a host.db row is
+// upserted (idempotently). No claude binary needed; isolated
+// CLAUDE_CONFIG_DIR + workRoot (not parallel — t.Setenv + workRoot singleton).
+func TestRegisterImportedSession_Claude(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	workRoot := filepath.Join(t.TempDir(), "work")
+	prev := host.SetWorkRootForTest(workRoot)
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
 
 	dbPath := filepath.Join(t.TempDir(), "host.db")
 	st, err := store.Open(dbPath)
@@ -320,12 +327,64 @@ func TestRegisterImportedSession_RejectsClaudeBackend(t *testing.T) {
 	})
 	t.Cleanup(svc.Shutdown)
 
-	_, err = svc.RegisterImportedSession(context.Background(), "wt", checkpoint.SessionEntry{
-		SessionID: "01H",
-		Backend:   agent.BackendClaudeCode,
-	}, "/nonexistent")
-	if err == nil {
-		t.Fatal("expected error for claude-code backend")
+	const externalID = "claude-host-import-2222-3333"
+	const sessULID = "01HCLAUDEHOSTIMPORT000000000"
+	const worktreeID = "wt-claude-import"
+
+	blob := buildSyntheticClaudeBlob(externalID, "/laptop/source/path")
+	blobPath := filepath.Join(t.TempDir(), "blob.jsonl")
+	if err := os.WriteFile(blobPath, blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	entry := checkpoint.SessionEntry{
+		SessionID:      sessULID,
+		ExternalID:     externalID,
+		Backend:        agent.BackendClaudeCode,
+		Status:         agent.StatusIdle,
+		Title:          "claude import",
+		WorktreeBranch: "feature/y",
+		CreatedAt:      now.Add(-time.Hour),
+	}
+	got, err := svc.RegisterImportedSession(context.Background(), worktreeID, entry, blobPath)
+	if err != nil {
+		t.Fatalf("RegisterImportedSession: %v", err)
+	}
+	if got.ID != sessULID {
+		t.Errorf("got.ID = %q, want %q", got.ID, sessULID)
+	}
+	if got.ExternalID != externalID {
+		t.Errorf("got.ExternalID = %q, want %q (Claude preserves the session id)", got.ExternalID, externalID)
+	}
+	if got.Backend != agent.BackendClaudeCode {
+		t.Errorf("got.Backend = %q, want claude-code", got.Backend)
+	}
+	if got.Status != agent.StatusIdle {
+		t.Errorf("got.Status = %q, want idle", got.Status)
+	}
+	if got.GitRef.WorktreeID != worktreeID {
+		t.Errorf("got.GitRef.WorktreeID = %q, want %q", got.GitRef.WorktreeID, worktreeID)
+	}
+
+	persisted, err := st.GetSession(context.Background(), sessULID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if persisted.ExternalID != externalID || persisted.Backend != agent.BackendClaudeCode {
+		t.Errorf("persisted row mismatch: %+v", persisted)
+	}
+
+	// Idempotent re-run: no error, still one row.
+	if _, err := svc.RegisterImportedSession(context.Background(), worktreeID, entry, blobPath); err != nil {
+		t.Fatalf("RegisterImportedSession (re-run): %v", err)
+	}
+	all, err := st.ListSessionsByWorktree(context.Background(), worktreeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Errorf("after idempotent re-run, want 1 session, got %d", len(all))
 	}
 }
 

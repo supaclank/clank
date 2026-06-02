@@ -55,8 +55,9 @@ func syncedSessionsRecord(exported []sessionsync.ExportedSession) agent.SyncedSe
 	rec := agent.SyncedSessionRecord{Sessions: make(map[string]agent.SyncedSession, len(exported))}
 	for _, e := range exported {
 		rec.Sessions[e.Entry.ExternalID] = agent.SyncedSession{
-			Backend:   e.Entry.Backend,
-			UpdatedAt: e.Entry.UpdatedAt,
+			Backend:     e.Entry.Backend,
+			UpdatedAt:   e.Entry.UpdatedAt,
+			Fingerprint: e.Fingerprint,
 		}
 	}
 	return rec

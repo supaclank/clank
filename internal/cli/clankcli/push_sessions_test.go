@@ -16,7 +16,7 @@ func TestSyncedSessionsRecord(t *testing.T) {
 	t.Parallel()
 	exported := []sessionsync.ExportedSession{
 		{Entry: checkpoint.SessionEntry{ExternalID: "x", Backend: agent.BackendOpenCode, UpdatedAt: time.UnixMilli(5000)}},
-		{Entry: checkpoint.SessionEntry{ExternalID: "y", Backend: agent.BackendOpenCode, UpdatedAt: time.UnixMilli(6000)}},
+		{Entry: checkpoint.SessionEntry{ExternalID: "y", Backend: agent.BackendClaudeCode, UpdatedAt: time.UnixMilli(6000)}, Fingerprint: "uuid-y"},
 	}
 	rec := syncedSessionsRecord(exported)
 	if len(rec.Sessions) != 2 {
@@ -25,5 +25,9 @@ func TestSyncedSessionsRecord(t *testing.T) {
 	x := rec.Sessions["x"]
 	if x.Backend != agent.BackendOpenCode || !x.UpdatedAt.Equal(time.UnixMilli(5000)) {
 		t.Errorf("x not converted faithfully: %+v", x)
+	}
+	// The content fingerprint must carry into the record (Claude drift key).
+	if y := rec.Sessions["y"]; y.Fingerprint != "uuid-y" {
+		t.Errorf("y.Fingerprint = %q, want uuid-y", y.Fingerprint)
 	}
 }
