@@ -160,6 +160,7 @@ func DiscoverWorktreeSessions(ctx context.Context, projectDir string) ([]Discove
 		// Compute the content fingerprint only for the sessions we keep —
 		// the SDK expands to every sibling worktree, so fingerprinting
 		// before the filter would tail-read transcripts we discard.
+		// TODO(ai-review): claudeSessionFingerprint ignores context; the caller's 3s status timeout is not enforced for fingerprint I/O. https://github.com/Acksell/clank/pull/41#discussion_r3343017403
 		ds.Fingerprint = claudeSessionFingerprint(ds.ProjectDir, ds.ExternalID)
 		sessions = append(sessions, ds)
 	}

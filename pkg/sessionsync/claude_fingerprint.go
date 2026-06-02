@@ -53,6 +53,7 @@ func claudeSessionFingerprint(cwd, sessionID string) string {
 
 	lines := bytes.Split(buf, []byte{'\n'})
 	// Drop the first (possibly partial) line when we started mid-file.
+	// TODO(ai-review): a UUID entry straddling the window boundary is silently missed (falls back to mtime). https://github.com/Acksell/clank/pull/41#discussion_r3343017381
 	if start > 0 && len(lines) > 0 {
 		lines = lines[1:]
 	}
