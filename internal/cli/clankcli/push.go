@@ -101,11 +101,11 @@ from ` + "`git worktree add`" + ` are tracked individually.`,
 			if err != nil {
 				return fmt.Errorf("resolve git dir: %w", err)
 			}
-			locked, release, err := pushlock.Acquire(gitDir)
+			isLocked, release, err := pushlock.Acquire(gitDir)
 			if err != nil {
 				return fmt.Errorf("acquire push lock: %w", err)
 			}
-			if !locked {
+			if !isLocked {
 				fmt.Fprintln(cmd.OutOrStdout(), "another push is already in progress for this worktree; skipping")
 				return nil
 			}

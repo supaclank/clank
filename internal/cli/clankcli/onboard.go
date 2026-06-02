@@ -80,7 +80,7 @@ func allHarnesses() []string {
 //   - already chosen (prefs.SyncHarnesses) → install those (idempotent).
 //   - interactive + unchosen → prompt, persist the choice, install.
 //   - non-interactive + unchosen → install both (safe default), no persist.
-func ensureHarnessTriggers(cmd *cobra.Command, interactive bool) error {
+func ensureHarnessTriggers(cmd *cobra.Command, canPrompt bool) error {
 	prefs, err := config.LoadPreferences()
 	if err != nil {
 		return fmt.Errorf("load preferences: %w", err)
@@ -88,7 +88,7 @@ func ensureHarnessTriggers(cmd *cobra.Command, interactive bool) error {
 	if len(prefs.SyncHarnesses) > 0 {
 		return installTriggersFor(cmd, prefs.SyncHarnesses)
 	}
-	if !interactive {
+	if !canPrompt {
 		return installTriggersFor(cmd, allHarnesses())
 	}
 	chosen, err := pickHarnesses(cmd)
@@ -207,7 +207,7 @@ func hintRepoTracking(cmd *cobra.Command, prefs config.Preferences, dir string) 
 // it auto-registers; on a TTY (interactive) it offers to track and runs
 // first-time harness onboarding; otherwise it returns today's "run clank
 // init" error. displayName "" defaults to the repo's basename.
-func ensureTracked(ctx context.Context, cmd *cobra.Command, cli *syncclient.Client, absRepo, displayName string, interactive bool) (string, error) {
+func ensureTracked(ctx context.Context, cmd *cobra.Command, cli *syncclient.Client, absRepo, displayName string, canPrompt bool) (string, error) {
 	id, err := agent.ReadLocalWorktreeID(absRepo)
 	if err != nil {
 		return "", fmt.Errorf("load cached worktree id: %w", err)
@@ -221,14 +221,14 @@ func ensureTracked(ctx context.Context, cmd *cobra.Command, cli *syncclient.Clie
 		return "", fmt.Errorf("load preferences: %w", err)
 	}
 	if !prefs.AutoPushAllRepos {
-		if !interactive {
+		if !canPrompt {
 			return "", fmt.Errorf("this worktree isn't tracked — run `clank init` (or `clank init --global` to auto-track every repo)")
 		}
-		track, err := confirmYesNo(cmd, fmt.Sprintf("Track %s for clank push? [Y/n] ", filepath.Base(absRepo)), true)
+		shouldTrack, err := confirmYesNo(cmd, fmt.Sprintf("Track %s for clank push? [Y/n] ", filepath.Base(absRepo)), true)
 		if err != nil {
 			return "", err
 		}
-		if !track {
+		if !shouldTrack {
 			return "", fmt.Errorf("not tracked — run `clank init` when you want to start syncing this repo")
 		}
 	}
@@ -249,7 +249,7 @@ func ensureTracked(ctx context.Context, cmd *cobra.Command, cli *syncclient.Clie
 	// First interactive track also runs harness onboarding — idempotent,
 	// a no-op once a harness is chosen. Skipped non-interactively (a hook
 	// must not install triggers from within a triggered push).
-	if interactive {
+	if canPrompt {
 		if err := ensureHarnessTriggers(cmd, true); err != nil {
 			return "", err
 		}

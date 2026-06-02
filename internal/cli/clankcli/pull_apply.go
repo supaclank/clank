@@ -14,13 +14,8 @@ import (
 	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
 
-// applyRemotePull downloads a materialized sandbox checkpoint and applies
-// it into repoPath: it loads the remote history, refuses (without
-// touching the worktree) if local has diverged, then restores the
-// committed + uncommitted state and imports opencode sessions.
-//
-// The caller MUST have verified a clean working tree first — the
-// fast-forward check + clean tree are what make the hard restore safe.
+// applyRemotePull downloads a remote sandbox checkpoint and applies it
+// into repoPath: fast-forward check, then committed and uncommitted restore.
 func applyRemotePull(ctx context.Context, httpClient *http.Client, repoPath string, mres *syncclient.PullResult) error {
 	manifestBytes, err := fetchURL(ctx, httpClient, mres.ManifestURL)
 	if err != nil {
@@ -54,16 +49,18 @@ func applyRemotePull(ctx context.Context, httpClient *http.Client, repoPath stri
 
 	localHEAD, err := git.HeadCommit(repoPath)
 	if err != nil {
-		return fmt.Errorf("resolve local HEAD: %w", err)
+		localHEAD = "" // empty repo; any remote commit is fast-forwardable
 	}
-	ff, err := git.IsAncestor(repoPath, localHEAD, manifest.HeadCommit)
-	if err != nil {
-		return fmt.Errorf("fast-forward check: %w", err)
-	}
-	if !ff {
-		return fmt.Errorf(
-			"local has diverged from the sandbox (local %s, sandbox %s) — reconcile with git first (e.g. commit/rebase or reset to a fast-forwardable state), then `clank pull`",
-			shortSHA(localHEAD), shortSHA(manifest.HeadCommit))
+	if localHEAD != "" {
+		ff, err := git.IsAncestor(repoPath, localHEAD, manifest.HeadCommit)
+		if err != nil {
+			return fmt.Errorf("fast-forward check: %w", err)
+		}
+		if !ff {
+			return fmt.Errorf(
+				"local has diverged from the sandbox (local %s, sandbox %s) — reconcile with git first (e.g. commit/rebase or reset to a fast-forwardable state), then `clank pull`",
+				shortSHA(localHEAD), shortSHA(manifest.HeadCommit))
+		}
 	}
 
 	incrBytes, err := fetchURL(ctx, httpClient, mres.UncommittedURL)

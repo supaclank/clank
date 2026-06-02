@@ -41,15 +41,15 @@ func InstallClaudeHook(clankBin, claudeDir string) error {
 		},
 	}
 
-	replaced := false
+	wasReplaced := false
 	for i, g := range stop {
 		if groupHasMarker(g) {
 			stop[i] = entry
-			replaced = true
+			wasReplaced = true
 			break
 		}
 	}
-	if !replaced {
+	if !wasReplaced {
 		stop = append(stop, entry)
 	}
 	hooks["Stop"] = stop

@@ -29,6 +29,7 @@ func TestApplyRemotePull(t *testing.T) {
 	pgit(t, src, "init", "-q")
 	pgit(t, src, "config", "user.email", "t@e.com")
 	pgit(t, src, "config", "user.name", "t")
+	pgit(t, src, "config", "commit.gpgsign", "false")
 	pWrite(t, filepath.Join(src, "f.txt"), "v1")
 	pgit(t, src, "add", ".")
 	pgit(t, src, "commit", "-qm", "c1")
@@ -84,9 +85,25 @@ func TestApplyRemotePull(t *testing.T) {
 		t.Errorf("worktree content = %q, want the sandbox's uncommitted state", got)
 	}
 
+	// Empty dest (no commits) → applies the sandbox state from scratch.
+	dst3 := t.TempDir()
+	pgit(t, dst3, "init", "-q")
+	pgit(t, dst3, "config", "user.email", "t@e.com")
+	pgit(t, dst3, "config", "user.name", "t")
+	if err := applyRemotePull(ctx, srv.Client(), dst3, mres); err != nil {
+		t.Fatalf("applyRemotePull (empty repo): %v", err)
+	}
+	if got := pRev(t, dst3, "HEAD"); got != commit2 {
+		t.Errorf("empty dest HEAD = %s, want %s after pull", got, commit2)
+	}
+	if got := pRead(t, filepath.Join(dst3, "f.txt")); got != "v2-uncommitted" {
+		t.Errorf("empty dest content = %q, want sandbox uncommitted state", got)
+	}
+
 	// Diverged dest → refused, untouched.
 	dst2 := t.TempDir()
 	pgit(t, "", "clone", "-q", src, dst2)
+	pgit(t, dst2, "config", "commit.gpgsign", "false")
 	pgit(t, dst2, "reset", "--hard", commit1)
 	pWrite(t, filepath.Join(dst2, "f.txt"), "local-divergent")
 	pgit(t, dst2, "add", ".")
