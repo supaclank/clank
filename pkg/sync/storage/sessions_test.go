@@ -14,7 +14,7 @@ func TestKeyForSession_Valid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "checkpoints/user-A/wt-123/ck-456/sessions/01HX0001.json"
+	want := "user-A/checkpoints/wt-123/ck-456/sessions/01HX0001.json"
 	if got != want {
 		t.Fatalf("KeyForSession mismatch: got %q want %q", got, want)
 	}
@@ -88,7 +88,7 @@ func TestKeyFor_SessionManifestBlobAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BlobSessionManifest should be valid: %v", err)
 	}
-	want := "checkpoints/u/wt/ck/session-manifest.json"
+	want := "u/checkpoints/wt/ck/session-manifest.json"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}

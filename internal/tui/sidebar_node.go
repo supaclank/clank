@@ -56,7 +56,6 @@ type worktreeNode struct {
 	Label           string
 	RepoLabel       string
 	LatestUpdatedAt time.Time
-	OwnerKind       string
 	WorktreeID      string
 	Sessions        []agent.SessionInfo
 	// Total/Active/Done/Archived mirror worktreeEntry so the new tree

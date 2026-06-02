@@ -1,9 +1,7 @@
 -- Schema for sqlc type-checking. NOT a migration — production migrations
--- live in store.go's migrate() function (currently up to user_version=21
--- with these worktrees + checkpoints tables).
---
--- Mirror the post-migration shape exactly. Updates to v21 in store.go
--- must be reflected here.
+-- live in store.go's migrate() function. Mirror the post-migration shape
+-- exactly; every store.go migration that touches these tables must be
+-- reflected here.
 
 CREATE TABLE worktrees (
     id                          TEXT PRIMARY KEY,
@@ -15,14 +13,11 @@ CREATE TABLE worktrees (
     -- worktrees by repo in their pickers/sidebars. Set at registration;
     -- never updated. Empty for rows registered before this column existed.
     origin_repo                 TEXT NOT NULL DEFAULT '',
-    owner_kind                  TEXT NOT NULL DEFAULT 'laptop',
-    owner_id                    TEXT NOT NULL DEFAULT '',
     latest_synced_checkpoint    TEXT NOT NULL DEFAULT '',
     created_at                  DATETIME NOT NULL,
     updated_at                  DATETIME NOT NULL
 );
 CREATE INDEX worktrees_user_id_idx ON worktrees(user_id);
-CREATE INDEX worktrees_owner_idx   ON worktrees(owner_kind, owner_id);
 
 CREATE TABLE checkpoints (
     id                  TEXT PRIMARY KEY,
@@ -37,3 +32,18 @@ CREATE TABLE checkpoints (
     uploaded_at         DATETIME
 );
 CREATE INDEX checkpoints_worktree_idx ON checkpoints(worktree_id, created_at DESC);
+
+-- head_bundles indexes the content-addressed head bundles (committed
+-- history), shared across a user's checkpoints/worktrees. tip_sha is the
+-- HEAD commit the bundle ends at; base_sha is the commit it was built
+-- from ("" = a full bundle with no prerequisite). The (base_sha → tip)
+-- links form the chain the server walks from a checkpoint's HEAD back to
+-- a full baseline.
+CREATE TABLE head_bundles (
+    user_id    TEXT NOT NULL,
+    tip_sha    TEXT NOT NULL,
+    base_sha   TEXT NOT NULL DEFAULT '',
+    blob_key   TEXT NOT NULL,
+    created_at DATETIME NOT NULL,
+    PRIMARY KEY (user_id, tip_sha)
+);

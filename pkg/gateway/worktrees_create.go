@@ -49,7 +49,7 @@ type createWorktreeResponse struct {
 //     and the DB row agree.
 //
 // Refuses to serve when Sync is unconfigured (cloud sync-only mode has
-// no host to talk to) — matches the 503 the migration routes return.
+// no host to talk to) — matches the 503 the pull route returns.
 func (g *Gateway) handleCreateWorktree(w http.ResponseWriter, r *http.Request) {
 	if g.cfg.Sync == nil {
 		http.Error(w, "create-worktree not available on this gateway (no Sync configured)", http.StatusServiceUnavailable)
@@ -88,7 +88,6 @@ func (g *Gateway) handleCreateWorktree(w http.ResponseWriter, r *http.Request) {
 		UserID:      principal.UserID,
 		DisplayName: resp.DisplayName,
 		OriginRepo:  resp.OriginRepo,
-		OwnerKind:   clanksync.OwnerKindLocal,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}

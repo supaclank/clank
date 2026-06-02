@@ -49,66 +49,117 @@ Doesn't work over SSH or in containers (localhost callback can't reach
 the user's browser). Workaround: ssh -L <port>:localhost:<port>.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
-			prefs, err := config.LoadPreferences()
-			if err != nil {
-				return fmt.Errorf("load preferences: %w", err)
+			if err := runLogin(cmd.Context(), cmd, remoteName, provider); err != nil {
+				return err
 			}
-			target, name := resolveRemoteTarget(prefs, remoteName)
-			if target == nil {
-				if remoteName == "" {
-					return fmt.Errorf("no active remote configured; run `clank remote add <name> --gateway-url=...` first")
-				}
-				return fmt.Errorf("no remote named %q", remoteName)
-			}
-			if target.GatewayURL == "" {
-				return fmt.Errorf("remote %q has no gateway_url; add one with `clank remote add %s --gateway-url=...`", name, name)
-			}
-
-			ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Minute)
-			defer cancel()
-
-			// Discover IdP via /auth-config.
-			gw := cloud.New(target.GatewayURL, nil)
-			fmt.Fprintf(cmd.OutOrStdout(), "Discovering auth config at %s … ", target.GatewayURL)
-			cfg, err := gw.FetchAuthConfig(ctx)
-			if err != nil {
-				return fmt.Errorf("\nfetch auth-config: %w", err)
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), "ok")
-
-			provName := provider
-			if provName == "" {
-				provName = cfg.DefaultProvider
-			}
-
-			if provName != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "Opening browser for sign-in via %s … ", provName)
-			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "Opening browser for sign-in … ")
-			}
-			oauth := &cloud.OAuthClient{
-				AuthorizeEndpoint: cfg.AuthorizeEndpoint,
-				TokenEndpoint:     cfg.TokenEndpoint,
-				ClientID:          cfg.ClientID,
-				Scopes:            cfg.Scopes,
-				Provider:          provName,
-				CallbackPort:      cfg.CallbackPort,
-				Prompt:            cmd.ErrOrStderr(),
-			}
-			session, err := oauth.Login(ctx)
-			if err != nil {
-				return fmt.Errorf("\nsign-in: %w", err)
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), "ok")
-
-			if err := daemonclient.WriteRemoteSession(name, session); err != nil {
-				return fmt.Errorf("save session: %w", err)
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "\nSigned in to remote %q as %s\n", name, session.UserEmail)
-			return nil
+			return loginOnboarding(cmd)
 		},
 	}
 	cmd.Flags().StringVar(&remoteName, "remote", "", "Remote name to log in to (default: active remote)")
 	cmd.Flags().StringVar(&provider, "provider", "", "OAuth provider override (default: server's default_provider, if any)")
 	return cmd
+}
+
+// runLogin drives the OAuth PKCE sign-in against a remote's gateway and
+// persists the session. Shared by `clank login` and the login-on-demand
+// path in ensureLoggedIn, so push/pull can sign a user in without
+// duplicating the flow. remoteName "" targets the active remote.
+func runLogin(ctx context.Context, cmd *cobra.Command, remoteName, provider string) error {
+	prefs, err := config.LoadPreferences()
+	if err != nil {
+		return fmt.Errorf("load preferences: %w", err)
+	}
+	target, name := resolveRemoteTarget(prefs, remoteName)
+	if target == nil {
+		if remoteName == "" {
+			return fmt.Errorf("no active remote configured; run `clank remote add <name> --gateway-url=...` first")
+		}
+		return fmt.Errorf("no remote named %q", remoteName)
+	}
+	if target.GatewayURL == "" {
+		return fmt.Errorf("remote %q has no gateway_url; add one with `clank remote add %s --gateway-url=...`", name, name)
+	}
+
+	loginCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	// Discover IdP via /auth-config.
+	gw := cloud.New(target.GatewayURL, nil)
+	fmt.Fprintf(cmd.OutOrStdout(), "Discovering auth config at %s … ", target.GatewayURL)
+	cfg, err := gw.FetchAuthConfig(loginCtx)
+	if err != nil {
+		return fmt.Errorf("\nfetch auth-config: %w", err)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "ok")
+
+	provName := provider
+	if provName == "" {
+		provName = cfg.DefaultProvider
+	}
+
+	if provName != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "Opening browser for sign-in via %s … ", provName)
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "Opening browser for sign-in … ")
+	}
+	oauth := &cloud.OAuthClient{
+		AuthorizeEndpoint: cfg.AuthorizeEndpoint,
+		TokenEndpoint:     cfg.TokenEndpoint,
+		ClientID:          cfg.ClientID,
+		Scopes:            cfg.Scopes,
+		Provider:          provName,
+		CallbackPort:      cfg.CallbackPort,
+		Prompt:            cmd.ErrOrStderr(),
+	}
+	session, err := oauth.Login(loginCtx)
+	if err != nil {
+		return fmt.Errorf("\nsign-in: %w", err)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "ok")
+
+	if err := daemonclient.WriteRemoteSession(name, session); err != nil {
+		return fmt.Errorf("save session: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "\n%s Signed in to remote %q as %s\n", styleOK.Render("✓"), name, session.UserEmail)
+	return nil
+}
+
+// loginOnboarding runs first-time setup after sign-in: pick which
+// harness(es) to auto-sync and install their triggers, then offer to
+// auto-track every repo. It runs ONLY when setup hasn't been done before
+// (no harness chosen and no global auto-push) — a returning user who
+// re-runs `clank login` isn't re-prompted; they get a lightweight nudge
+// if the current repo isn't tracked. TTY-only: a scripted login just
+// signs in.
+func loginOnboarding(cmd *cobra.Command) error {
+	if !isInteractive(cmd) {
+		return nil
+	}
+	prefs, err := config.LoadPreferences()
+	if err != nil {
+		return fmt.Errorf("load preferences: %w", err)
+	}
+	if len(prefs.SyncHarnesses) > 0 || prefs.AutoPushAllRepos {
+		// Already set up — don't repeat onboarding; just nudge the cwd.
+		return hintRepoTracking(cmd, prefs, currentDirForHint())
+	}
+
+	if err := ensureHarnessTriggers(cmd, true); err != nil {
+		return err
+	}
+	autoTrack, err := confirmYesNo(cmd, "Auto-track every repo you start a Claude Code / opencode session in? [Y/n] ", true)
+	if err != nil {
+		return err
+	}
+	if autoTrack {
+		if err := config.UpdatePreferences(func(p *config.Preferences) {
+			p.AutoPushAllRepos = true
+		}); err != nil {
+			return fmt.Errorf("save preference: %w", err)
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "Auto-push enabled for all repositories — sessions push to your active remote on idle.")
+		return nil
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "Per-repo tracking: run `clank push` in a repo (or `clank init`) to track it.")
+	return nil
 }

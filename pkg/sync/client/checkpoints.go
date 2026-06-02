@@ -10,15 +10,26 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/acksell/clank/pkg/sync/checkpoint"
 )
+
+// StepTiming is the wall-clock cost of one PushCheckpoint sub-step, for
+// the CLI's --timing breakdown (so a slow push can be attributed to build
+// vs upload vs the server-side commit).
+type StepTiming struct {
+	Name     string
+	Duration time.Duration
+}
 
 // CheckpointResult is the outcome of Client.PushCheckpoint.
 type CheckpointResult struct {
 	CheckpointID string
 	Manifest     *checkpoint.Manifest
+	Timings      []StepTiming
 }
 
 // RegisterWorktree registers a new worktree with clank-sync and returns
@@ -49,7 +60,13 @@ func (c *Client) RegisterWorktree(ctx context.Context, displayName string) (stri
 // PushCheckpoint runs the full checkpoint upload flow: build local
 // bundles, request presigned URLs, upload each blob, commit. Cleans up
 // the temp bundle files on return.
-func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath string) (*CheckpointResult, error) {
+// baseCommit is the laptop's last-synced HEAD for this worktree (e.g.
+// from a parity check); when the server lacks this checkpoint's HEAD but
+// holds baseCommit's, only an incremental head bundle (HEAD ^base) is
+// built and uploaded. "" ⇒ full bundle (or skipped if already stored).
+// committedOnly (from `clank push --clean`) checkpoints HEAD's committed
+// state only, ignoring uncommitted/staged/untracked changes.
+func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath, baseCommit string, committedOnly bool, obs PushObserver) (*CheckpointResult, error) {
 	if worktreeID == "" {
 		return nil, errors.New("syncclient: worktreeID is required")
 	}
@@ -60,9 +77,24 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath string
 	tempID := "pending-" + randString(12)
 	// CreatedBy is informational on the manifest — sync's CallerVerifier
 	// derives the authoritative caller identity from the bearer.
+	// Build only the cheap uncommitted bundle + manifest up front. The
+	// head bundle (all history — slow to build AND upload) is built only
+	// if the server doesn't already hold this HEAD, decided below.
 	builder := checkpoint.NewBuilder(repoPath, "laptop")
-	res, err := builder.Build(ctx, tempID)
-	if err != nil {
+	if committedOnly {
+		builder = builder.CommittedOnly()
+	}
+
+	var timings []StepTiming
+	timed := func(name string, fn func() error) error {
+		t0 := time.Now()
+		err := fn()
+		timings = append(timings, StepTiming{Name: name, Duration: time.Since(t0)})
+		return err
+	}
+
+	var res *checkpoint.Result
+	if err := timed("build bundle", func() (e error) { res, e = builder.BuildUncommitted(ctx, tempID); return }); err != nil {
 		return nil, fmt.Errorf("build checkpoint: %w", err)
 	}
 	defer res.Cleanup()
@@ -73,15 +105,26 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath string
 		"head_ref":           res.Manifest.HeadRef,
 		"index_tree":         res.Manifest.IndexTree,
 		"worktree_tree":      res.Manifest.WorktreeTree,
-		"incremental_commit": res.Manifest.IncrementalCommit,
+		"uncommitted_commit": res.Manifest.UncommittedCommit,
+		"base_commit":        baseCommit,
 	}
 	var createResp struct {
 		CheckpointID     string `json:"checkpoint_id"`
-		HeadCommitPutURL string `json:"head_commit_put_url"`
-		IncrementalURL   string `json:"incremental_put_url"`
+		HeadBundlePutURL string `json:"head_bundle_put_url"`
+		HeadBundleBase   string `json:"head_bundle_base"`
+		UncommittedURL   string `json:"uncommitted_put_url"`
 		ManifestPutURL   string `json:"manifest_put_url"`
 	}
-	if err := c.postJSON(ctx, "/v1/checkpoints", createReq, &createResp); err != nil {
+	if err := timed("create checkpoint", func() error {
+		return c.postJSON(ctx, "/v1/checkpoints", createReq, &createResp)
+	}); err != nil {
+		// The create handler's only 404 is "worktree not registered" — a
+		// stale local id for a worktree deleted on the remote. Surface it
+		// typed so clank push can re-register and retry.
+		var he *httpError
+		if errors.As(err, &he) && he.Status == http.StatusNotFound {
+			return nil, fmt.Errorf("%w (id=%s)", ErrWorktreeNotRegistered, worktreeID)
+		}
 		return nil, err
 	}
 
@@ -92,27 +135,94 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath string
 
 	// TODO(coderabbit): clean up server-side rows on partial-upload failure (abort endpoint or reaper)
 	// https://github.com/Acksell/clank/pull/16
-	if err := uploadFile(ctx, c.client, createResp.HeadCommitPutURL, res.HeadCommitBundle); err != nil {
-		return nil, fmt.Errorf("upload headCommit: %w", err)
+	//
+	// Head bundle: build + upload ONLY when the server gave us a PUT URL.
+	// An empty URL means the server already holds this HEAD's bundle
+	// (content-addressed dedup) — the common idle-autopush case, where we
+	// skip the slow build AND the slow upload entirely. HeadBundleBase is
+	// "" for a full bundle; non-empty drives an incremental (Slice 2).
+	//
+	// Blob PUTs use blobClient (no ResponseHeaderTimeout): S3 returns the
+	// PUT response only after the full body lands, so the control-plane
+	// cap would abort any upload slower than 30s (e.g. a large bundle
+	// over a tunnel).
+	var headBundlePath string
+	if createResp.HeadBundlePutURL != "" {
+		reportPhase(obs, PhaseBuilding)
+		if err := timed("build head bundle", func() (e error) {
+			headBundlePath, e = builder.BuildHeadBundle(ctx, tempID, res.Manifest.HeadCommit, createResp.HeadBundleBase)
+			return
+		}); err != nil {
+			return nil, fmt.Errorf("build head bundle: %w", err)
+		}
+		defer os.Remove(headBundlePath)
 	}
-	if err := uploadFile(ctx, c.client, createResp.IncrementalURL, res.IncrementalBundle); err != nil {
-		return nil, fmt.Errorf("upload incremental: %w", err)
-	}
+
 	manifestBytes, err := res.Manifest.Marshal()
 	if err != nil {
 		return nil, fmt.Errorf("marshal manifest: %w", err)
 	}
-	if err := uploadBytes(ctx, c.client, createResp.ManifestPutURL, manifestBytes, "application/json"); err != nil {
-		return nil, fmt.Errorf("upload manifest: %w", err)
+
+	// Enter the upload phase, THEN report the total size — observers may
+	// reset per-phase counters when the phase changes, so the size must be
+	// set after the phase is announced or the bar shows 0.
+	if obs != nil {
+		obs.Phase(PhaseUploading)
+		obs.UploadSized(fileSize(headBundlePath) + fileSize(res.UncommittedBundle) + int64(len(manifestBytes)))
+	}
+	var uploaded int64
+	advance := func(n int64) {
+		if obs == nil {
+			return
+		}
+		uploaded += n
+		obs.UploadProgress(uploaded)
 	}
 
-	if err := c.postJSON(ctx, "/v1/checkpoints/"+createResp.CheckpointID+"/commit", map[string]string{}, nil); err != nil {
+	// Upload blobs largest-last. The biggest blob's "transferring" wait is
+	// then the final upload state, so a trailing tiny upload can't briefly
+	// flash the progress bar back after it (object order is irrelevant to
+	// the server — commit verifies all three landed).
+	type blobUpload struct {
+		name string
+		size int64
+		put  func() error
+	}
+	uploads := make([]blobUpload, 0, 3)
+	if headBundlePath != "" {
+		uploads = append(uploads, blobUpload{"upload head bundle", fileSize(headBundlePath), func() error {
+			return uploadFile(ctx, c.blobClient, createResp.HeadBundlePutURL, headBundlePath, advance)
+		}})
+	}
+	uploads = append(uploads, blobUpload{"upload uncommitted", fileSize(res.UncommittedBundle), func() error {
+		return uploadFile(ctx, c.blobClient, createResp.UncommittedURL, res.UncommittedBundle, advance)
+	}})
+	uploads = append(uploads, blobUpload{"upload manifest", int64(len(manifestBytes)), func() error {
+		return uploadBytes(ctx, c.blobClient, createResp.ManifestPutURL, manifestBytes, "application/json", advance)
+	}})
+	sort.SliceStable(uploads, func(i, j int) bool { return uploads[i].size < uploads[j].size })
+	for _, up := range uploads {
+		if err := timed(up.name, up.put); err != nil {
+			return nil, fmt.Errorf("%s: %w", up.name, err)
+		}
+	}
+
+	// Uploads done; the server now verifies the blobs and advances the
+	// pointer. Surface this so a full bar doesn't look hung at 100%.
+	reportPhase(obs, PhaseFinalizing)
+
+	// head_base records this HEAD's link in the server's chain (the base
+	// the server told us to build from; "" for full / already_stored).
+	if err := timed("commit checkpoint", func() error {
+		return c.postJSON(ctx, "/v1/checkpoints/"+createResp.CheckpointID+"/commit", map[string]string{"head_base": createResp.HeadBundleBase}, nil)
+	}); err != nil {
 		return nil, fmt.Errorf("commit checkpoint: %w", err)
 	}
 
 	return &CheckpointResult{
 		CheckpointID: createResp.CheckpointID,
 		Manifest:     res.Manifest,
+		Timings:      timings,
 	}, nil
 }
 
@@ -137,7 +247,7 @@ func (c *Client) postJSON(ctx context.Context, path string, body any, into any) 
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("post %s: %d: %s", path, resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return &httpError{Path: path, Status: resp.StatusCode, Body: strings.TrimSpace(string(respBody))}
 	}
 	if into != nil {
 		if err := json.Unmarshal(respBody, into); err != nil {
@@ -147,7 +257,7 @@ func (c *Client) postJSON(ctx context.Context, path string, body any, into any) 
 	return nil
 }
 
-func uploadFile(ctx context.Context, client *http.Client, url, path string) error {
+func uploadFile(ctx context.Context, client *http.Client, url, path string, onAdvance func(int64)) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
@@ -157,7 +267,11 @@ func uploadFile(ctx context.Context, client *http.Client, url, path string) erro
 	if err != nil {
 		return fmt.Errorf("stat %s: %w", path, err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, f)
+	var body io.Reader = f
+	if onAdvance != nil {
+		body = &countingReader{r: f, onAdvance: onAdvance}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, body)
 	if err != nil {
 		return err
 	}
@@ -175,8 +289,12 @@ func uploadFile(ctx context.Context, client *http.Client, url, path string) erro
 	return nil
 }
 
-func uploadBytes(ctx context.Context, client *http.Client, url string, data []byte, contentType string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(data))
+func uploadBytes(ctx context.Context, client *http.Client, url string, data []byte, contentType string, onAdvance func(int64)) error {
+	var body io.Reader = bytes.NewReader(data)
+	if onAdvance != nil {
+		body = &countingReader{r: body, onAdvance: onAdvance}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, body)
 	if err != nil {
 		return err
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	mathrand "math/rand/v2"
 	"os"
@@ -100,7 +101,7 @@ func TestApply_RejectsUnknownVersion(t *testing.T) {
 	ctx := context.Background()
 	tmp := t.TempDir()
 	bad := &checkpoint.Manifest{Version: 9999}
-	err := checkpoint.Apply(ctx, tmp, bad, strings.NewReader(""), strings.NewReader(""))
+	err := checkpoint.Apply(ctx, tmp, bad, []io.Reader{strings.NewReader("")}, strings.NewReader(""))
 	if err == nil || !strings.Contains(err.Error(), "unsupported manifest version") {
 		t.Fatalf("expected version-mismatch error, got %v", err)
 	}
@@ -133,7 +134,7 @@ func TestApply_RemovesStaleUntracked(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		incr, err := os.Open(res.IncrementalBundle)
+		incr, err := os.Open(res.UncommittedBundle)
 		if err != nil {
 			head.Close()
 			t.Fatal(err)
@@ -142,7 +143,7 @@ func TestApply_RemovesStaleUntracked(t *testing.T) {
 	}
 
 	head1, incr1 := openBundles()
-	if err := checkpoint.Apply(ctx, dest, res.Manifest, head1, incr1); err != nil {
+	if err := checkpoint.Apply(ctx, dest, res.Manifest, []io.Reader{head1}, incr1); err != nil {
 		t.Fatalf("first Apply: %v", err)
 	}
 	head1.Close()
@@ -156,7 +157,7 @@ func TestApply_RemovesStaleUntracked(t *testing.T) {
 	}
 
 	head2, incr2 := openBundles()
-	if err := checkpoint.Apply(ctx, dest, res.Manifest, head2, incr2); err != nil {
+	if err := checkpoint.Apply(ctx, dest, res.Manifest, []io.Reader{head2}, incr2); err != nil {
 		t.Fatalf("second Apply: %v", err)
 	}
 	head2.Close()
@@ -178,7 +179,7 @@ func TestManifest_RoundTripJSON(t *testing.T) {
 		HeadRef:           "main",
 		IndexTree:         "1111",
 		WorktreeTree:      "2222",
-		IncrementalCommit: "3333",
+		UncommittedCommit: "3333",
 		CreatedAt:         time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
 		CreatedBy:         "laptop:dev",
 	}
@@ -194,7 +195,7 @@ func TestManifest_RoundTripJSON(t *testing.T) {
 		got.HeadRef != want.HeadRef ||
 		got.IndexTree != want.IndexTree ||
 		got.WorktreeTree != want.WorktreeTree ||
-		got.IncrementalCommit != want.IncrementalCommit ||
+		got.UncommittedCommit != want.UncommittedCommit ||
 		!got.CreatedAt.Equal(want.CreatedAt) ||
 		got.CreatedBy != want.CreatedBy {
 		t.Fatalf("manifest round-trip mismatch:\n want %+v\n got  %+v", want, got)
@@ -278,14 +279,14 @@ func roundTripAndAssert(t *testing.T, ctx context.Context, repo, checkpointID st
 		t.Fatal(err)
 	}
 	defer headBundle.Close()
-	incrBundle, err := os.Open(res.IncrementalBundle)
+	incrBundle, err := os.Open(res.UncommittedBundle)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer incrBundle.Close()
 
 	dest := t.TempDir()
-	if err := checkpoint.Apply(ctx, dest, res.Manifest, headBundle, incrBundle); err != nil {
+	if err := checkpoint.Apply(ctx, dest, res.Manifest, []io.Reader{headBundle}, incrBundle); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -344,14 +345,14 @@ func TestRoundTrip_PreservesOriginRemote(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer headBundle.Close()
-	incrBundle, err := os.Open(res.IncrementalBundle)
+	incrBundle, err := os.Open(res.UncommittedBundle)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer incrBundle.Close()
 
 	dest := t.TempDir()
-	if err := checkpoint.Apply(ctx, dest, res.Manifest, headBundle, incrBundle); err != nil {
+	if err := checkpoint.Apply(ctx, dest, res.Manifest, []io.Reader{headBundle}, incrBundle); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -392,14 +393,14 @@ func TestRoundTrip_NoOriginIsHandledGracefully(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer headBundle.Close()
-	incrBundle, err := os.Open(res.IncrementalBundle)
+	incrBundle, err := os.Open(res.UncommittedBundle)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer incrBundle.Close()
 
 	dest := t.TempDir()
-	if err := checkpoint.Apply(ctx, dest, res.Manifest, headBundle, incrBundle); err != nil {
+	if err := checkpoint.Apply(ctx, dest, res.Manifest, []io.Reader{headBundle}, incrBundle); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	// destination should NOT have an origin remote — config exits 1.

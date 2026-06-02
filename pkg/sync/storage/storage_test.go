@@ -18,18 +18,35 @@ func TestKeyFor_Valid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "checkpoints/user-A/wt-123/ck-456/manifest.json"
+	want := "user-A/checkpoints/wt-123/ck-456/manifest.json"
 	if got != want {
 		t.Fatalf("KeyFor mismatch: got %q want %q", got, want)
+	}
+}
+
+func TestKeyForHead(t *testing.T) {
+	t.Parallel()
+	got, err := storage.KeyForHead("user-A", "deadbeefcafe")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "user-A/heads/deadbeefcafe.bundle"; got != want {
+		t.Fatalf("KeyForHead mismatch: got %q want %q", got, want)
+	}
+	if _, err := storage.KeyForHead("", "sha"); err == nil {
+		t.Error("empty userID should error")
+	}
+	if _, err := storage.KeyForHead("u", "../escape"); err == nil {
+		t.Error("path-escape headSHA should error")
 	}
 }
 
 func TestKeyFor_RejectsPathEscape(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name                                string
-		userID, worktreeID, checkpointID    string
-		blob                                storage.Blob
+		name                             string
+		userID, worktreeID, checkpointID string
+		blob                             storage.Blob
 	}{
 		{"userID with ..", "..", "wt", "ck", storage.BlobManifest},
 		{"userID with /", "u/v", "wt", "ck", storage.BlobManifest},
@@ -81,7 +98,7 @@ func TestMemory_RoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	key, err := storage.KeyFor("u", "wt", "ck", storage.BlobHeadCommit)
+	key, err := storage.KeyFor("u", "wt", "ck", storage.BlobUncommitted)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +192,7 @@ func TestMemory_ExpiredURLRefused(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	key, err := storage.KeyFor("u", "wt", "ck", storage.BlobIncremental)
+	key, err := storage.KeyFor("u", "wt", "ck", storage.BlobUncommitted)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +217,7 @@ func TestMemory_ExistsFalseForMissing(t *testing.T) {
 	mem := storage.NewMemory()
 	defer mem.Close()
 	ctx := context.Background()
-	exists, err := mem.Exists(ctx, "checkpoints/u/wt/ck/manifest.json")
+	exists, err := mem.Exists(ctx, "u/checkpoints/wt/ck/manifest.json")
 	if err != nil {
 		t.Fatal(err)
 	}

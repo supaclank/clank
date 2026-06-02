@@ -17,18 +17,13 @@ import (
 type (
 	Worktree   = clanksync.Worktree
 	Checkpoint = clanksync.Checkpoint
-	OwnerKind  = clanksync.OwnerKind
-)
-
-const (
-	OwnerKindLocal = clanksync.OwnerKindLocal
-	OwnerKindRemote = clanksync.OwnerKindRemote
+	HeadBundle = clanksync.HeadBundle
 )
 
 var (
 	ErrWorktreeNotFound   = clanksync.ErrWorktreeNotFound
 	ErrCheckpointNotFound = clanksync.ErrCheckpointNotFound
-	ErrOwnerMismatch      = clanksync.ErrOwnerMismatch
+	ErrHeadBundleNotFound = clanksync.ErrHeadBundleNotFound
 )
 
 // GetWorktreeByID returns the worktree row or ErrWorktreeNotFound.
@@ -57,27 +52,8 @@ func (s *Store) ListWorktreesByUser(ctx context.Context, userID string) ([]Workt
 	return out, nil
 }
 
-// ListWorktreesByOwner returns all worktrees currently owned by the
-// given (kind, ownerID). Used by the sprite at wake to discover what
-// to apply (post-MVP P3+).
-func (s *Store) ListWorktreesByOwner(ctx context.Context, kind OwnerKind, ownerID string) ([]Worktree, error) {
-	rows, err := s.q.ListWorktreesByOwner(ctx, sqlitedb.ListWorktreesByOwnerParams{
-		OwnerKind: string(kind),
-		OwnerID:   ownerID,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("list worktrees (owner=%s/%s): %w", kind, ownerID, err)
-	}
-	out := make([]Worktree, len(rows))
-	for i, r := range rows {
-		out[i] = worktreeFromRow(r)
-	}
-	return out, nil
-}
-
 // InsertWorktree creates a new worktree row. ID, UserID, and
-// DisplayName are required; CreatedAt / UpdatedAt default to now if
-// zero. OwnerKind defaults to laptop.
+// DisplayName are required; CreatedAt / UpdatedAt default to now if zero.
 func (s *Store) InsertWorktree(ctx context.Context, w Worktree) error {
 	if w.ID == "" || w.UserID == "" || w.DisplayName == "" {
 		return fmt.Errorf("insert worktree: id, user_id, display_name are required")
@@ -88,16 +64,11 @@ func (s *Store) InsertWorktree(ctx context.Context, w Worktree) error {
 	if w.CreatedAt.IsZero() {
 		w.CreatedAt = w.UpdatedAt
 	}
-	if w.OwnerKind == "" {
-		w.OwnerKind = OwnerKindLocal
-	}
 	return s.q.InsertWorktree(ctx, sqlitedb.InsertWorktreeParams{
 		ID:                     w.ID,
 		UserID:                 w.UserID,
 		DisplayName:            w.DisplayName,
 		OriginRepo:             w.OriginRepo,
-		OwnerKind:              string(w.OwnerKind),
-		OwnerID:                w.OwnerID,
 		LatestSyncedCheckpoint: w.LatestSyncedCheckpoint,
 		CreatedAt:              w.CreatedAt,
 		UpdatedAt:              w.UpdatedAt,
@@ -112,28 +83,6 @@ func (s *Store) UpdateWorktreePointer(ctx context.Context, id, checkpointID stri
 		UpdatedAt:              time.Now(),
 		ID:                     id,
 	})
-}
-
-// UpdateWorktreeOwner atomically transfers ownership iff the current
-// (owner_kind, owner_id) tuple matches expectedKind/expectedOwnerID.
-// Returns ErrOwnerMismatch on a failed guard (stale read or
-// concurrent migration).
-func (s *Store) UpdateWorktreeOwner(ctx context.Context, id string, expectedKind OwnerKind, expectedOwnerID string, newKind OwnerKind, newOwnerID string) error {
-	rows, err := s.q.UpdateWorktreeOwner(ctx, sqlitedb.UpdateWorktreeOwnerParams{
-		OwnerKind:   string(newKind),
-		OwnerID:     newOwnerID,
-		UpdatedAt:   time.Now(),
-		ID:          id,
-		OwnerKind_2: string(expectedKind),
-		OwnerID_2:   expectedOwnerID,
-	})
-	if err != nil {
-		return fmt.Errorf("update worktree owner (id=%s): %w", id, err)
-	}
-	if rows == 0 {
-		return ErrOwnerMismatch
-	}
-	return nil
 }
 
 // GetCheckpointByID returns a checkpoint row or ErrCheckpointNotFound.
@@ -172,20 +121,22 @@ func (s *Store) ListCheckpointsByWorktree(ctx context.Context, worktreeID string
 // NULL until MarkCheckpointUploaded is called after both bundles
 // confirm.
 func (s *Store) InsertCheckpoint(ctx context.Context, c Checkpoint) error {
-	if c.ID == "" || c.WorktreeID == "" || c.HeadCommit == "" || c.IndexTree == "" || c.WorktreeTree == "" || c.IncrementalCommit == "" {
-		return fmt.Errorf("insert checkpoint: id, worktree_id, head_commit, index_tree, worktree_tree, incremental_commit are required")
+	if c.ID == "" || c.WorktreeID == "" || c.HeadCommit == "" || c.IndexTree == "" || c.WorktreeTree == "" || c.UncommittedCommit == "" {
+		return fmt.Errorf("insert checkpoint: id, worktree_id, head_commit, index_tree, worktree_tree, uncommitted_commit are required")
 	}
 	if c.CreatedAt.IsZero() {
 		c.CreatedAt = time.Now()
 	}
 	return s.q.InsertCheckpoint(ctx, sqlitedb.InsertCheckpointParams{
-		ID:                c.ID,
-		WorktreeID:        c.WorktreeID,
-		HeadCommit:        c.HeadCommit,
-		HeadRef:           c.HeadRef,
-		IndexTree:         c.IndexTree,
-		WorktreeTree:      c.WorktreeTree,
-		IncrementalCommit: c.IncrementalCommit,
+		ID:           c.ID,
+		WorktreeID:   c.WorktreeID,
+		HeadCommit:   c.HeadCommit,
+		HeadRef:      c.HeadRef,
+		IndexTree:    c.IndexTree,
+		WorktreeTree: c.WorktreeTree,
+		// sqlc column keeps its legacy name `incremental_commit`; the
+		// domain field is UncommittedCommit (renamed for clarity).
+		IncrementalCommit: c.UncommittedCommit,
 		CreatedAt:         c.CreatedAt,
 		CreatedBy:         c.CreatedBy,
 	})
@@ -200,14 +151,50 @@ func (s *Store) MarkCheckpointUploaded(ctx context.Context, id string, when time
 	})
 }
 
+// GetHeadBundle returns the head-bundle row for (userID, tipSHA) or
+// ErrHeadBundleNotFound.
+func (s *Store) GetHeadBundle(ctx context.Context, userID, tipSHA string) (HeadBundle, error) {
+	row, err := s.q.GetHeadBundle(ctx, sqlitedb.GetHeadBundleParams{UserID: userID, TipSha: tipSHA})
+	if errors.Is(err, sql.ErrNoRows) {
+		return HeadBundle{}, ErrHeadBundleNotFound
+	}
+	if err != nil {
+		return HeadBundle{}, fmt.Errorf("get head bundle (user=%s tip=%s): %w", userID, tipSHA, err)
+	}
+	return HeadBundle{
+		UserID:    row.UserID,
+		TipSHA:    row.TipSha,
+		BaseSHA:   row.BaseSha,
+		BlobKey:   row.BlobKey,
+		CreatedAt: row.CreatedAt,
+	}, nil
+}
+
+// InsertHeadBundle records a head-bundle row. Idempotent on
+// (user_id, tip_sha) — INSERT OR IGNORE keeps the first stored bundle for
+// a tip, so re-pushing an already-stored HEAD doesn't change its base.
+func (s *Store) InsertHeadBundle(ctx context.Context, hb HeadBundle) error {
+	if hb.UserID == "" || hb.TipSHA == "" || hb.BlobKey == "" {
+		return fmt.Errorf("insert head bundle: user_id, tip_sha, blob_key are required")
+	}
+	if hb.CreatedAt.IsZero() {
+		hb.CreatedAt = time.Now()
+	}
+	return s.q.InsertHeadBundle(ctx, sqlitedb.InsertHeadBundleParams{
+		UserID:    hb.UserID,
+		TipSha:    hb.TipSHA,
+		BaseSha:   hb.BaseSHA,
+		BlobKey:   hb.BlobKey,
+		CreatedAt: hb.CreatedAt,
+	})
+}
+
 func worktreeFromRow(r sqlitedb.Worktree) Worktree {
 	return Worktree{
 		ID:                     r.ID,
 		UserID:                 r.UserID,
 		DisplayName:            r.DisplayName,
 		OriginRepo:             r.OriginRepo,
-		OwnerKind:              OwnerKind(r.OwnerKind),
-		OwnerID:                r.OwnerID,
 		LatestSyncedCheckpoint: r.LatestSyncedCheckpoint,
 		CreatedAt:              r.CreatedAt,
 		UpdatedAt:              r.UpdatedAt,
@@ -222,7 +209,7 @@ func checkpointFromRow(r sqlitedb.Checkpoint) Checkpoint {
 		HeadRef:           r.HeadRef,
 		IndexTree:         r.IndexTree,
 		WorktreeTree:      r.WorktreeTree,
-		IncrementalCommit: r.IncrementalCommit,
+		UncommittedCommit: r.IncrementalCommit, // legacy column name; see InsertCheckpoint
 		CreatedAt:         r.CreatedAt,
 		CreatedBy:         r.CreatedBy,
 	}

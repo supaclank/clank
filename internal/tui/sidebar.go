@@ -79,7 +79,6 @@ type SidebarModel struct {
 	flat            []sidebarNode
 	expanded        map[string]bool   // effective expand state: defaults + user overrides
 	userToggles     map[string]bool   // explicit user expand/collapse choices (persisted)
-	owners          map[string]string // worktree id → owner kind ("local"/"remote")
 	cycleIdx        map[string]int    // per-worktree index used by Shift+Enter session-rotate
 	activeSessionID string            // session currently rendered in the right pane (drives the left-rail indicator)
 	nowFn           func() time.Time  // injected for deterministic tests
@@ -121,7 +120,6 @@ func NewSidebarModel(client *daemonclient.Client, hostname string, gitRef agent.
 		projectDir:  projectDir,
 		expanded:    map[string]bool{},
 		userToggles: map[string]bool{},
-		owners:      map[string]string{},
 		cycleIdx:    map[string]int{},
 		nowFn:       time.Now,
 		cursor:      0, // AllSessions selected by default
@@ -191,10 +189,9 @@ func (m *SidebarModel) SetSessions(sessions []agent.SessionInfo) {
 }
 
 // rebuildTree rebuilds tree + flat list from m.sessions. Called whenever
-// the source data, expand state, or owners change.
+// the source data or expand state changes.
 func (m *SidebarModel) rebuildTree() {
 	m.tree = buildSidebarTree(m.sessions, m.gitRef.LocalPath, m.nowFn())
-	m.applyOwners(&m.tree)
 	m.rebuildFlat()
 	m.pruneStaleExpandedKeys()
 	m.clampCursor()
@@ -208,22 +205,6 @@ func (m *SidebarModel) rebuildFlat() {
 	m.expanded = m.computeEffectiveExpanded()
 	m.flat = flattenSidebar(m.tree, m.expanded, m.nowFn())
 	m.clampCursor()
-}
-
-// applyOwners stamps the cached owner_kind onto each worktreeNode in
-// place. Called after every rebuildTree so a worker reshuffling tree
-// nodes doesn't lose the cloud-glyph indicator on remote worktrees.
-func (m *SidebarModel) applyOwners(t *sidebarTree) {
-	for i := range t.RecentWorktrees {
-		if kind, ok := m.owners[t.RecentWorktrees[i].WorktreeID]; ok {
-			t.RecentWorktrees[i].OwnerKind = kind
-		}
-	}
-	for i := range t.OlderWorktrees.Hidden {
-		if kind, ok := m.owners[t.OlderWorktrees.Hidden[i].WorktreeID]; ok {
-			t.OlderWorktrees.Hidden[i].OwnerKind = kind
-		}
-	}
 }
 
 // pruneStaleExpandedKeys deletes any "wt:" or "older:s:" keys whose
@@ -309,38 +290,6 @@ func (m *SidebarModel) SetCloudSpinnerFrame(frame string) {
 // inbox owns the lifecycle.
 func (m *SidebarModel) SetPendingPushes(pushes map[string]bool) {
 	m.pendingPushes = pushes
-}
-
-// SetWorktreeOwners stamps the latest known owner_kind onto each
-// worktreeNode keyed by its WorktreeID. The map is also cached so a
-// subsequent SetSessions reshuffle reapplies the same labels.
-func (m *SidebarModel) SetWorktreeOwners(byWorktreeID map[string]string) {
-	m.owners = byWorktreeID
-	if len(m.flat) == 0 {
-		return
-	}
-	m.applyOwners(&m.tree)
-	m.rebuildFlat()
-}
-
-// UpdateWorktreeOwnersFromSessions derives per-worktree ownership from
-// each session's IsRemote flag (set by the local daemon's gateway).
-func (m *SidebarModel) UpdateWorktreeOwnersFromSessions(sessions []agent.SessionInfo) {
-	owners := make(map[string]string, len(sessions))
-	for _, s := range sessions {
-		id := s.GitRef.WorktreeID
-		if id == "" {
-			continue
-		}
-		// Once seen as remote, treat as remote even if a later (stale)
-		// session row says otherwise — the OwnerCache is authoritative.
-		if s.IsRemote {
-			owners[id] = "remote"
-		} else if _, ok := owners[id]; !ok {
-			owners[id] = "local"
-		}
-	}
-	m.SetWorktreeOwners(owners)
 }
 
 // CursorOnImport reports whether the cursor is on the import row.

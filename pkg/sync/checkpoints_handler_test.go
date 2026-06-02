@@ -23,12 +23,14 @@ type memSyncStore struct {
 	mu          sync.Mutex
 	worktrees   map[string]clanksync.Worktree
 	checkpoints map[string]clanksync.Checkpoint
+	headBundles map[string]clanksync.HeadBundle // key: userID + "\x00" + tipSHA
 }
 
 func newMemSyncStore() *memSyncStore {
 	return &memSyncStore{
 		worktrees:   make(map[string]clanksync.Worktree),
 		checkpoints: make(map[string]clanksync.Checkpoint),
+		headBundles: make(map[string]clanksync.HeadBundle),
 	}
 }
 
@@ -52,17 +54,6 @@ func (m *memSyncStore) ListWorktreesByUser(_ context.Context, userID string) ([]
 	}
 	return out, nil
 }
-func (m *memSyncStore) ListWorktreesByOwner(_ context.Context, kind clanksync.OwnerKind, ownerID string) ([]clanksync.Worktree, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var out []clanksync.Worktree
-	for _, w := range m.worktrees {
-		if w.OwnerKind == kind && w.OwnerID == ownerID {
-			out = append(out, w)
-		}
-	}
-	return out, nil
-}
 func (m *memSyncStore) InsertWorktree(_ context.Context, w clanksync.Worktree) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -77,22 +68,6 @@ func (m *memSyncStore) UpdateWorktreePointer(_ context.Context, id, checkpointID
 		return clanksync.ErrWorktreeNotFound
 	}
 	w.LatestSyncedCheckpoint = checkpointID
-	w.UpdatedAt = time.Now().UTC()
-	m.worktrees[id] = w
-	return nil
-}
-func (m *memSyncStore) UpdateWorktreeOwner(_ context.Context, id string, expectedKind clanksync.OwnerKind, expectedOwnerID string, newKind clanksync.OwnerKind, newOwnerID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	w, ok := m.worktrees[id]
-	if !ok {
-		return clanksync.ErrWorktreeNotFound
-	}
-	if w.OwnerKind != expectedKind || w.OwnerID != expectedOwnerID {
-		return clanksync.ErrOwnerMismatch
-	}
-	w.OwnerKind = newKind
-	w.OwnerID = newOwnerID
 	w.UpdatedAt = time.Now().UTC()
 	m.worktrees[id] = w
 	return nil
@@ -132,6 +107,25 @@ func (m *memSyncStore) MarkCheckpointUploaded(_ context.Context, id string, when
 	}
 	c.UploadedAt = when
 	m.checkpoints[id] = c
+	return nil
+}
+func (m *memSyncStore) GetHeadBundle(_ context.Context, userID, tipSHA string) (clanksync.HeadBundle, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	hb, ok := m.headBundles[userID+"\x00"+tipSHA]
+	if !ok {
+		return clanksync.HeadBundle{}, clanksync.ErrHeadBundleNotFound
+	}
+	return hb, nil
+}
+func (m *memSyncStore) InsertHeadBundle(_ context.Context, hb clanksync.HeadBundle) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := hb.UserID + "\x00" + hb.TipSHA
+	if _, ok := m.headBundles[k]; ok {
+		return nil // INSERT OR IGNORE: first stored bundle for a tip wins
+	}
+	m.headBundles[k] = hb
 	return nil
 }
 
@@ -181,9 +175,6 @@ func TestCheckpointFlow_HappyPath(t *testing.T) {
 	if worktreeID == "" {
 		t.Fatalf("missing id in worktree response: %v", wt)
 	}
-	if wt["owner_kind"] != "local" {
-		t.Fatalf("owner_kind = %v, want laptop", wt["owner_kind"])
-	}
 
 	// 2. Create checkpoint.
 	createReq := map[string]string{
@@ -192,12 +183,12 @@ func TestCheckpointFlow_HappyPath(t *testing.T) {
 		"head_ref":           "main",
 		"index_tree":         "1111",
 		"worktree_tree":      "2222",
-		"incremental_commit": "3333",
-			}
+		"uncommitted_commit": "3333",
+	}
 	create := postJSON[map[string]any](t, httpSrv.URL+"/v1/checkpoints", createReq)
 	checkpointID := create["checkpoint_id"].(string)
-	headPutURL := create["head_commit_put_url"].(string)
-	incrPutURL := create["incremental_put_url"].(string)
+	headPutURL := create["head_bundle_put_url"].(string)
+	incrPutURL := create["uncommitted_put_url"].(string)
 	manifestPutURL := create["manifest_put_url"].(string)
 	if checkpointID == "" || headPutURL == "" || incrPutURL == "" || manifestPutURL == "" {
 		t.Fatalf("bad create response: %v", create)
@@ -231,6 +222,96 @@ func TestCheckpointFlow_HappyPath(t *testing.T) {
 	}
 }
 
+// TestCreateCheckpoint_DedupsHeadBundle pins the L1 win: a second
+// checkpoint at the SAME HEAD (only uncommitted state changed — the
+// dominant idle-autopush case) is told the head bundle is already_stored,
+// so the laptop uploads nothing for it. The 58 MB history is sent once.
+func TestCreateCheckpoint_DedupsHeadBundle(t *testing.T) {
+	t.Parallel()
+	httpSrv, _, mem := newTestServer(t)
+
+	wt := postJSON[map[string]any](t, httpSrv.URL+"/v1/worktrees", map[string]string{"display_name": "r"})
+	worktreeID := wt["id"].(string)
+
+	// Both checkpoints share head_commit "deadbeef"; only the worktree/
+	// uncommitted state differs (as when you edit without committing).
+	mkReq := func(worktreeTree string) map[string]string {
+		return map[string]string{
+			"worktree_id":        worktreeID,
+			"head_commit":        "deadbeef",
+			"head_ref":           "main",
+			"index_tree":         "1111",
+			"worktree_tree":      worktreeTree,
+			"uncommitted_commit": worktreeTree,
+		}
+	}
+
+	// First push: server has no head bundle → upload_full + a PUT URL.
+	c1 := postJSON[map[string]any](t, httpSrv.URL+"/v1/checkpoints", mkReq("2222"))
+	if c1["head_bundle_action"] != "upload_full" {
+		t.Fatalf("first push action = %v, want upload_full", c1["head_bundle_action"])
+	}
+	headURL, _ := c1["head_bundle_put_url"].(string)
+	if headURL == "" {
+		t.Fatal("first push must provide a head PUT URL")
+	}
+	uploadTo(t, headURL, []byte("HEAD-bundle"))
+	uploadTo(t, c1["uncommitted_put_url"].(string), []byte("incr1"))
+	uploadTo(t, c1["manifest_put_url"].(string), []byte(`{"version":1}`))
+	postJSON[map[string]any](t, httpSrv.URL+"/v1/checkpoints/"+c1["checkpoint_id"].(string)+"/commit", map[string]string{})
+
+	// Second push at the SAME HEAD → already_stored, no head PUT URL.
+	c2 := postJSON[map[string]any](t, httpSrv.URL+"/v1/checkpoints", mkReq("3333"))
+	if c2["head_bundle_action"] != "already_stored" {
+		t.Fatalf("second push action = %v, want already_stored", c2["head_bundle_action"])
+	}
+	if u, _ := c2["head_bundle_put_url"].(string); u != "" {
+		t.Fatalf("second push must NOT provide a head PUT URL, got %q", u)
+	}
+
+	// Commit still succeeds reusing the shared head bundle; the laptop
+	// only uploaded the second checkpoint's uncommitted + manifest.
+	uploadTo(t, c2["uncommitted_put_url"].(string), []byte("incr2"))
+	uploadTo(t, c2["manifest_put_url"].(string), []byte(`{"version":1}`))
+	commit := postJSON[map[string]any](t, httpSrv.URL+"/v1/checkpoints/"+c2["checkpoint_id"].(string)+"/commit", map[string]string{})
+	if commit["checkpoint_id"] != c2["checkpoint_id"] {
+		t.Fatalf("second commit failed: %v", commit)
+	}
+
+	// One shared head bundle + 2×{uncommitted, manifest} = 5 objects.
+	if n := len(mem.Keys()); n != 5 {
+		t.Fatalf("want 5 storage objects (1 shared head + 2 checkpoints), got %d: %v", n, mem.Keys())
+	}
+}
+
+// TestCreateCheckpoint_UnknownBaseFallsBackToFull pins the completeness
+// guard: when base_commit references a HEAD the server has never stored,
+// the client is told to upload a FULL bundle (not an incremental whose
+// base would be missing), keeping every chain complete to a baseline.
+func TestCreateCheckpoint_UnknownBaseFallsBackToFull(t *testing.T) {
+	t.Parallel()
+	httpSrv, _, _ := newTestServer(t)
+
+	wt := postJSON[map[string]any](t, httpSrv.URL+"/v1/worktrees", map[string]string{"display_name": "r"})
+	c := postJSON[map[string]any](t, httpSrv.URL+"/v1/checkpoints", map[string]string{
+		"worktree_id":        wt["id"].(string),
+		"head_commit":        "newhead",
+		"index_tree":         "1111",
+		"worktree_tree":      "2222",
+		"uncommitted_commit": "3333",
+		"base_commit":        "neverstored", // server has no such head bundle
+	})
+	if c["head_bundle_action"] != "upload_full" {
+		t.Fatalf("unknown base should fall back to upload_full, got %v", c["head_bundle_action"])
+	}
+	if u, _ := c["head_bundle_put_url"].(string); u == "" {
+		t.Fatal("upload_full must provide a head PUT URL")
+	}
+	if b, _ := c["head_bundle_base"].(string); b != "" {
+		t.Fatalf("full bundle should have no base, got %q", b)
+	}
+}
+
 // TestCommitCheckpoint_RejectsIfBlobMissing guards against premature
 // commit calls where the laptop forgot to upload one or more blobs.
 func TestCommitCheckpoint_RejectsIfBlobMissing(t *testing.T) {
@@ -247,16 +328,16 @@ func TestCommitCheckpoint_RejectsIfBlobMissing(t *testing.T) {
 		"head_commit":        "x",
 		"index_tree":         "x",
 		"worktree_tree":      "x",
-		"incremental_commit": "x",
-			})
+		"uncommitted_commit": "x",
+	})
 	checkpointID := create["checkpoint_id"].(string)
 
 	// Upload only the manifest, omit the two bundles.
 	uploadTo(t, create["manifest_put_url"].(string), []byte("{}"))
 
 	resp := mustPostExpectStatus(t, httpSrv.URL+"/v1/checkpoints/"+checkpointID+"/commit", nil, http.StatusConflict)
-	if !strings.Contains(string(resp), "headCommit.bundle") {
-		t.Fatalf("expected error mentioning headCommit, got %q", resp)
+	if !strings.Contains(string(resp), "head bundle") {
+		t.Fatalf("expected error mentioning the head bundle, got %q", resp)
 	}
 }
 
@@ -276,7 +357,7 @@ func TestCreateCheckpoint_MissingFieldsReturns400(t *testing.T) {
 		"worktree_id":        worktreeID,
 		"index_tree":         "x",
 		"worktree_tree":      "x",
-		"incremental_commit": "x",
+		"uncommitted_commit": "x",
 	}, http.StatusBadRequest)
 	if !strings.Contains(string(resp), "head_commit") {
 		t.Fatalf("400 body should name the missing field, got %q", resp)
@@ -300,7 +381,7 @@ func TestMultipleLaptopsSameUserShare(t *testing.T) {
 		"head_commit":        "x",
 		"index_tree":         "x",
 		"worktree_tree":      "x",
-		"incremental_commit": "x",
+		"uncommitted_commit": "x",
 	})
 	if id, _ := create["checkpoint_id"].(string); id == "" {
 		t.Fatalf("expected checkpoint_id, got %v", create)
@@ -339,9 +420,6 @@ func TestRegisterWorktree_SurvivesPostInsertGetFailure(t *testing.T) {
 	}
 	if wt["display_name"] != "myrepo" {
 		t.Fatalf("display_name = %v, want %q", wt["display_name"], "myrepo")
-	}
-	if wt["owner_kind"] != "local" {
-		t.Fatalf("owner_kind = %v, want %q", wt["owner_kind"], "local")
 	}
 
 	store.mu.Lock()

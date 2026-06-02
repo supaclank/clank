@@ -45,13 +45,9 @@ func (s *Server) handleSessionPresign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, wt, err := s.lookupCheckpointForUser(r.Context(), checkpointID, caller.UserID)
+	_, _, err := s.lookupCheckpointForUser(r.Context(), checkpointID, caller.UserID)
 	if err != nil {
 		http.Error(w, "lookup checkpoint: "+err.Error(), httpStatusForLookupErr(err))
-		return
-	}
-	if !callerOwnsWorktree(caller, wt) {
-		http.Error(w, ownerMismatchMessage(caller, wt), http.StatusForbidden)
 		return
 	}
 

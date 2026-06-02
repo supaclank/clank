@@ -30,6 +30,14 @@ type Device struct {
 	LastSeenAt time.Time
 }
 
+type HeadBundle struct {
+	UserID    string
+	TipSha    string
+	BaseSha   string
+	BlobKey   string
+	CreatedAt time.Time
+}
+
 type Host struct {
 	ID            string
 	UserID        string
@@ -51,8 +59,6 @@ type Worktree struct {
 	UserID                 string
 	DisplayName            string
 	OriginRepo             string
-	OwnerKind              string
-	OwnerID                string
 	LatestSyncedCheckpoint string
 	CreatedAt              time.Time
 	UpdatedAt              time.Time

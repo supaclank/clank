@@ -339,13 +339,42 @@ func TestProxy_BlocksSyncPathsWhenSyncNil(t *testing.T) {
 	}
 }
 
+// TestPullWorktree_503WhenSyncNil pins that the pull route is mounted
+// unconditionally but refuses with 503 when no sync server is wired —
+// rather than 404 (route missing) or proxying the pull to the host.
+func TestPullWorktree_503WhenSyncNil(t *testing.T) {
+	t.Parallel()
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	prov := &stubProvisioner{ref: provisioner.HostRef{URL: upstream.URL, Transport: http.DefaultTransport, Hostname: "test-host"}}
+	g, _ := NewGateway(Config{Provisioner: prov /* Sync intentionally nil */}, nil)
+	srv := httptest.NewServer(localAuth(g.Handler(), "test"))
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/v1/worktrees/wt-1/pull", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST pull: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", resp.StatusCode)
+	}
+	if upstreamCalled {
+		t.Error("pull must not proxy to the host when Sync is unset")
+	}
+}
+
 // TestProxy_AllowsSessionSyncOnLaptopGateway pins the carve-out:
 // /sync/sessions/* IS allowed through on a laptop gateway, because
 // those handlers don't touch ~/work/ — they drive opencode session
-// export/import via the host Service. Without this, `clank push
-// --migrate` can't reach the laptop's local clank-host for its
-// session leg and the migration fails with a 404 from the proxy
-// itself before any code runs.
+// export/import via the host Service. Without this, `clank push`
+// can't reach the laptop's local clank-host for its session leg and
+// the push fails with a 404 from the proxy itself before any code runs.
 func TestProxy_AllowsSessionSyncOnLaptopGateway(t *testing.T) {
 	t.Parallel()
 	var reached []string

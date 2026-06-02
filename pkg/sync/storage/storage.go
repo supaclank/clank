@@ -7,9 +7,10 @@
 // works against AWS S3, Cloudflare R2, Tigris, MinIO, and any other
 // S3-compatible API. The Memory implementation is for tests.
 //
-// Path convention (see KeyFor): every blob lives at
+// Path convention (see KeyFor): every blob lives under a per-tenant
+// prefix at
 //
-//	checkpoints/<userID>/<worktreeID>/<checkpointID>/<blob>
+//	<userID>/checkpoints/<worktreeID>/<checkpointID>/<blob>
 //
 // where userID always comes from validated token claims, never from
 // untrusted request input. KeyFor refuses any component containing
@@ -32,16 +33,16 @@ import (
 type Blob string
 
 const (
-	BlobHeadCommit  Blob = "headCommit.bundle"
-	BlobIncremental Blob = "incremental.bundle"
+	BlobUncommitted Blob = "uncommitted.bundle"
 	BlobManifest    Blob = "manifest.json"
 )
 
-// validBlobs is the closed set of acceptable blob names. Any value
-// outside this set returns ErrInvalidPathComponent from KeyFor.
+// validBlobs is the closed set of acceptable per-checkpoint blob names.
+// The head bundle is NOT here — it's content-addressed via KeyForHead,
+// shared across checkpoints. Any value outside this set returns
+// ErrInvalidPathComponent from KeyFor.
 var validBlobs = map[Blob]bool{
-	BlobHeadCommit:      true,
-	BlobIncremental:     true,
+	BlobUncommitted:     true,
 	BlobManifest:        true,
 	BlobSessionManifest: true,
 }
@@ -80,10 +81,10 @@ type Storage interface {
 // in particular MUST come from authenticated token claims, never from
 // query parameters or request body.
 //
-// For the headCommit blob specifically, the checkpointID should encode
-// the head SHA so that re-pushes of the same HEAD reuse the existing
-// object (content-addressed dedup). For incremental and manifest
-// blobs, the checkpointID is the per-push ULID.
+// The per-checkpoint blobs (uncommitted bundle, manifest, session
+// blobs) use the per-push checkpoint ULID. The head bundle is NOT a
+// per-checkpoint blob — it's content-addressed by HEAD SHA via
+// KeyForHead and shared across checkpoints.
 func KeyFor(userID, worktreeID, checkpointID string, blob Blob) (string, error) {
 	if !validBlobs[blob] {
 		return "", fmt.Errorf("%w: blob %q not in validBlobs", ErrInvalidPathComponent, blob)
@@ -99,7 +100,28 @@ func KeyFor(userID, worktreeID, checkpointID string, blob Blob) (string, error) 
 			return "", err
 		}
 	}
-	return path.Join("checkpoints", userID, worktreeID, checkpointID, string(blob)), nil
+	return path.Join(userID, "checkpoints", worktreeID, checkpointID, string(blob)), nil
+}
+
+// KeyForHead builds the storage key for a head bundle, content-addressed
+// by the HEAD commit SHA and shared across a user's checkpoints/worktrees
+// (a commit is a commit — the same SHA reaches the same objects). Lives
+// under the same per-tenant prefix as KeyFor. userID MUST come from
+// authenticated token claims.
+//
+//	<userID>/heads/<headSHA>.bundle
+func KeyForHead(userID, headSHA string) (string, error) {
+	for _, c := range []struct {
+		name, value string
+	}{
+		{"userID", userID},
+		{"headSHA", headSHA},
+	} {
+		if err := validateComponent(c.name, c.value); err != nil {
+			return "", err
+		}
+	}
+	return path.Join(userID, "heads", headSHA+".bundle"), nil
 }
 
 // validateComponent rejects empty strings, anything containing path

@@ -18,8 +18,6 @@ func TestWorktrees_InsertGetList(t *testing.T) {
 		ID:          "wt-1",
 		UserID:      "user-A",
 		DisplayName: "myrepo (main)",
-		OwnerKind:   store.OwnerKindLocal,
-		OwnerID:     "dev-1",
 	}
 	if err := s.InsertWorktree(ctx, w); err != nil {
 		t.Fatalf("InsertWorktree: %v", err)
@@ -29,7 +27,7 @@ func TestWorktrees_InsertGetList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWorktreeByID: %v", err)
 	}
-	if got.UserID != "user-A" || got.OwnerID != "dev-1" || got.OwnerKind != store.OwnerKindLocal {
+	if got.UserID != "user-A" || got.DisplayName != "myrepo (main)" {
 		t.Fatalf("worktree round-trip mismatch: %+v", got)
 	}
 	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
@@ -49,66 +47,39 @@ func TestWorktrees_InsertGetList(t *testing.T) {
 	}
 }
 
-func TestWorktrees_OwnerTransferAtomic(t *testing.T) {
+func TestHeadBundles_InsertGetIdempotent(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))
 	ctx := context.Background()
 
-	if err := s.InsertWorktree(ctx, store.Worktree{
-		ID: "wt", UserID: "u", DisplayName: "r", OwnerKind: store.OwnerKindLocal, OwnerID: "dev-1",
-	}); err != nil {
-		t.Fatal(err)
+	if _, err := s.GetHeadBundle(ctx, "u", "missing"); !errors.Is(err, store.ErrHeadBundleNotFound) {
+		t.Fatalf("expected ErrHeadBundleNotFound, got %v", err)
 	}
 
-	// Successful transfer: caller knows the current owner.
-	if err := s.UpdateWorktreeOwner(ctx, "wt", store.OwnerKindLocal, "dev-1", store.OwnerKindRemote, "sprite-X"); err != nil {
-		t.Fatalf("UpdateWorktreeOwner (happy): %v", err)
+	if err := s.InsertHeadBundle(ctx, store.HeadBundle{UserID: "u", TipSHA: "abc", BaseSHA: "", BlobKey: "u/heads/abc.bundle"}); err != nil {
+		t.Fatal(err)
 	}
-	got, err := s.GetWorktreeByID(ctx, "wt")
+	got, err := s.GetHeadBundle(ctx, "u", "abc")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.OwnerKind != store.OwnerKindRemote || got.OwnerID != "sprite-X" {
-		t.Fatalf("post-transfer owner mismatch: %+v", got)
+	if got.BaseSHA != "" || got.BlobKey != "u/heads/abc.bundle" {
+		t.Fatalf("round-trip mismatch: %+v", got)
 	}
 
-	// Stale transfer: caller's expected owner is the old laptop ID.
-	// Should return ErrOwnerMismatch and leave the row unchanged.
-	err = s.UpdateWorktreeOwner(ctx, "wt", store.OwnerKindLocal, "dev-1", store.OwnerKindLocal, "dev-1")
-	if !errors.Is(err, store.ErrOwnerMismatch) {
-		t.Fatalf("expected ErrOwnerMismatch on stale transfer, got %v", err)
-	}
-	got, _ = s.GetWorktreeByID(ctx, "wt")
-	if got.OwnerKind != store.OwnerKindRemote || got.OwnerID != "sprite-X" {
-		t.Fatalf("row mutated by failed transfer: %+v", got)
-	}
-}
-
-// TestWorktrees_OwnerTransferRejectsKindMismatch pins the full-tuple
-// CAS: even when (id, owner_id) match, the wrong owner_kind must
-// still surface ErrOwnerMismatch.
-func TestWorktrees_OwnerTransferRejectsKindMismatch(t *testing.T) {
-	t.Parallel()
-	s := mustOpen(t, tempDBPath(t))
-	ctx := context.Background()
-
-	// Construct a row owned by remote/"shared-id".
-	if err := s.InsertWorktree(ctx, store.Worktree{
-		ID: "wt", UserID: "u", DisplayName: "r", OwnerKind: store.OwnerKindRemote, OwnerID: "shared-id",
-	}); err != nil {
+	// INSERT OR IGNORE: a second insert for the same (user, tip) is a
+	// no-op — the first stored bundle (and its base) wins.
+	if err := s.InsertHeadBundle(ctx, store.HeadBundle{UserID: "u", TipSHA: "abc", BaseSHA: "DIFFERENT", BlobKey: "x"}); err != nil {
 		t.Fatal(err)
 	}
-
-	// Caller passes the right id and matching owner_id but the wrong
-	// kind. Without the kind in the CAS, this would have hijacked the
-	// row.
-	err := s.UpdateWorktreeOwner(ctx, "wt", store.OwnerKindLocal, "shared-id", store.OwnerKindLocal, "imposter")
-	if !errors.Is(err, store.ErrOwnerMismatch) {
-		t.Fatalf("expected ErrOwnerMismatch on kind mismatch, got %v", err)
+	got2, _ := s.GetHeadBundle(ctx, "u", "abc")
+	if got2.BaseSHA != "" || got2.BlobKey != "u/heads/abc.bundle" {
+		t.Fatalf("second insert should be ignored, got %+v", got2)
 	}
-	got, _ := s.GetWorktreeByID(ctx, "wt")
-	if got.OwnerKind != store.OwnerKindRemote || got.OwnerID != "shared-id" {
-		t.Fatalf("row mutated by cross-kind transfer attempt: %+v", got)
+
+	// Same tip SHA under a different user is a distinct row.
+	if _, err := s.GetHeadBundle(ctx, "other", "abc"); !errors.Is(err, store.ErrHeadBundleNotFound) {
+		t.Fatalf("tip must be scoped per user, got %v", err)
 	}
 }
 
@@ -130,7 +101,7 @@ func TestCheckpoints_InsertAndPointerAdvance(t *testing.T) {
 		HeadRef:           "main",
 		IndexTree:         "1111",
 		WorktreeTree:      "2222",
-		IncrementalCommit: "3333",
+		UncommittedCommit: "3333",
 		CreatedBy:         "laptop:dev-1",
 	}
 	if err := s.InsertCheckpoint(ctx, c); err != nil {
@@ -141,7 +112,7 @@ func TestCheckpoints_InsertAndPointerAdvance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.HeadCommit != "deadbeef" || got.IncrementalCommit != "3333" {
+	if got.HeadCommit != "deadbeef" || got.UncommittedCommit != "3333" {
 		t.Fatalf("checkpoint round-trip mismatch: %+v", got)
 	}
 	if !got.UploadedAt.IsZero() {
