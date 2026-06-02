@@ -18,19 +18,21 @@ import (
 	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
 
-// initCmd registers `clank init` — opt this repo into `clank push` by
-// registering its recently-active worktrees with the active remote and
-// installing the autopush triggers. With --global, instead enable
-// auto-push for every repo.
+// initCmd registers `clank init` — opt the whole repo into `clank push`:
+// mark it so every worktree (current and future) auto-tracks, register its
+// recently-active worktrees with the active remote now, and install the
+// autopush triggers. With --global, instead enable auto-push for every repo.
 func initCmd() *cobra.Command {
 	var global bool
 	cmd := &cobra.Command{
 		Use:   "init [path]",
 		Short: "Track this repo for clank push (auto-push on idle)",
-		Long: `Register the repo's recently-active worktrees with the active remote
-so ` + "`clank push`" + ` can sync them, and install the autopush triggers
-(a Claude Code hook + an opencode plugin) that push on idle. Run once
-per repo, after ` + "`clank login`" + `.
+		Long: `Opt the whole repo into ` + "`clank push`" + `: register its recently-active
+worktrees with the active remote now, mark the repo so every other
+worktree — including ones added with ` + "`git worktree add`" + ` later — tracks
+itself on its first push, and install the autopush triggers (a Claude
+Code hook + an opencode plugin) that push on idle. Run once per repo,
+after ` + "`clank login`" + `.
 
 With --global, enable auto-push for every repo instead — any repo you
 open a session in will push to your active remote (worktree-ids are
@@ -77,6 +79,21 @@ func runInitRepo(cmd *cobra.Command, repoPath string) error {
 	if err != nil {
 		return err
 	}
+	return initRepoWithClient(ctx, cmd, cli, absRepo)
+}
+
+// initRepoWithClient performs the repo-level onboarding against an already
+// resolved sync client: mark the repo for auto-tracking (so future
+// worktrees register on their first push), eagerly register the
+// recently-active untracked worktrees for an immediate `clank status`,
+// and install the autopush triggers.
+func initRepoWithClient(ctx context.Context, cmd *cobra.Command, cli *syncclient.Client, absRepo string) error {
+	// Mark the whole repo first: even if the eager pass below registers
+	// nothing, every worktree (current, stale, or added later) now
+	// auto-registers on its first push.
+	if err := agent.EnableRepoAutoTrack(absRepo); err != nil {
+		return fmt.Errorf("enable repo auto-track: %w", err)
+	}
 
 	scopes, err := worktreescope.WorktreesForRepo(absRepo, worktreescope.DefaultRecencyWindow)
 	if err != nil {
@@ -89,9 +106,10 @@ func runInitRepo(cmd *cobra.Command, repoPath string) error {
 			already++
 			continue
 		}
-		// Only auto-track recently-active worktrees; stale, never-tracked
-		// ones are skipped so `clank init` doesn't register a pile of
-		// abandoned branches.
+		// Eagerly register only recently-active worktrees so init doesn't
+		// pre-create a pile of abandoned-branch rows. Stale ones still
+		// auto-register if they're ever worked in again — the repo marker
+		// above covers them.
 		if !s.IsRecentlyActive {
 			continue
 		}
@@ -110,7 +128,7 @@ func runInitRepo(cmd *cobra.Command, repoPath string) error {
 		return err
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Initialized clank push: %d newly tracked, %d already tracked. Sessions auto-push on idle.\n", registered, already)
+	fmt.Fprintf(cmd.OutOrStdout(), "Initialized clank push for %s: %d worktree(s) registered now, %d already tracked. New worktrees auto-track on first push; sessions push on idle.\n", filepath.Base(absRepo), registered, already)
 	return nil
 }
 

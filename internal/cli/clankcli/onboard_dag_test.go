@@ -144,6 +144,37 @@ func TestEnsureTracked_AutoPushRegistersWithoutPrompt(t *testing.T) {
 	}
 }
 
+// TestEnsureTracked_RepoAutoTrackRegistersWithoutPrompt pins the core of
+// repo-wide onboarding: a repo opted in with `clank init` (the repo
+// marker) auto-registers a fresh worktree non-interactively — without
+// AutoPushAllRepos and without touching stdin. This is what lets a new
+// `git worktree add` sibling sync on its first Stop-hook push.
+func TestEnsureTracked_RepoAutoTrackRegistersWithoutPrompt(t *testing.T) {
+	t.Setenv("CLANK_DIR", t.TempDir()) // no AutoPushAllRepos
+	cli, st := newSyncServer(t)
+	repo := newGitRepo(t)
+	if err := agent.EnableRepoAutoTrack(repo); err != nil {
+		t.Fatal(err)
+	}
+	cmd, _ := newPromptCmd("y\n") // must NOT be consumed
+
+	ctx := context.Background()
+	id, err := ensureTracked(ctx, cmd, cli, repo, "", false)
+	if err != nil {
+		t.Fatalf("ensureTracked: %v", err)
+	}
+	if id == "" {
+		t.Fatal("empty worktree id")
+	}
+	if _, err := st.GetWorktreeByID(ctx, id); err != nil {
+		t.Fatalf("worktree not registered: %v", err)
+	}
+	rest, _ := io.ReadAll(cmd.InOrStdin())
+	if string(rest) != "y\n" {
+		t.Errorf("stdin consumed (%q left); repo auto-track path must not prompt", rest)
+	}
+}
+
 // TestEnsureLoggedIn_ExplicitCredsSkipLogin pins that explicit
 // --base-url + --token (self-hosted static bearer / CI) yield a client
 // without any login flow or network call.
@@ -211,6 +242,21 @@ func TestHintRepoTracking(t *testing.T) {
 		}
 		if out.String() != "" {
 			t.Errorf("auto-push must not nudge, got %q", out.String())
+		}
+	})
+
+	t.Run("repo-marked auto-track stays silent", func(t *testing.T) {
+		t.Parallel()
+		repo := newGitRepo(t)
+		if err := agent.EnableRepoAutoTrack(repo); err != nil {
+			t.Fatal(err)
+		}
+		cmd, out := newPromptCmd("")
+		if err := hintRepoTracking(cmd, config.Preferences{}, repo); err != nil {
+			t.Fatal(err)
+		}
+		if out.String() != "" {
+			t.Errorf("repo opted into auto-track must not nudge, got %q", out.String())
 		}
 	})
 
