@@ -18,10 +18,14 @@ const (
 // opaque to the transport; the extension is cosmetic but kept faithful to
 // each backend's native format.
 func blobExt(b agent.BackendType) string {
-	if b == agent.BackendClaudeCode {
+	switch b {
+	case agent.BackendClaudeCode:
 		return claudeTranscriptExt
+	case agent.BackendOpenCode:
+		return opencodeBlobExt
+	default:
+		panic("sessionsync: no blob extension for backend " + string(b))
 	}
-	return opencodeBlobExt
 }
 
 // blobKeyFor returns the manifest BlobKey for a session's export blob.

@@ -42,16 +42,18 @@ func RewriteClaudeImportBlob(srcPath, destDir string) (string, error) {
 	defer src.Close()
 
 	dstPath := srcPath + ".rewritten" + claudeTranscriptExt
-	dst, err := os.Create(dstPath)
+	dst, err := os.OpenFile(dstPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return "", fmt.Errorf("rewrite claude blob: create: %w", err)
 	}
 
 	if err := rewriteClaudeStream(src, dst, destDir); err != nil {
 		_ = dst.Close()
+		_ = os.Remove(dstPath)
 		return "", err
 	}
 	if err := dst.Close(); err != nil {
+		_ = os.Remove(dstPath)
 		return "", fmt.Errorf("rewrite claude blob: close: %w", err)
 	}
 	return dstPath, nil

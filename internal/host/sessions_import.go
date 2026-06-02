@@ -40,14 +40,6 @@ func (s *Service) RegisterImportedSession(ctx context.Context, worktreeID string
 		return agent.SessionInfo{}, fmt.Errorf("register imported session %s: resolve work root: %w", entry.SessionID, err)
 	}
 
-	// The source's filesystem path doesn't exist on this host, so the
-	// blob is rebased to this host's worktree (workRoot/<worktreeID>)
-	// before install: opencode would otherwise file the session under a
-	// synthetic "global" project, and Claude needs the transcript under
-	// the destination's encoded path. ImportSessionBlob routes by backend
-	// and performs that rebase (see sessionsync.RewriteImportBlob /
-	// RewriteClaudeImportBlob). Backend import errors surface verbatim —
-	// we don't paper over their validators.
 	importedExternalID, err := sessionsync.ImportSessionBlob(ctx, entry.Backend, blobPath, filepath.Join(destDir, worktreeID))
 	if err != nil {
 		return agent.SessionInfo{}, fmt.Errorf("register imported session %s: %w", entry.SessionID, err)

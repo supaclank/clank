@@ -91,6 +91,9 @@ func (ClaudeBackend) ImportSession(_ context.Context, destDir, blobPath string) 
 	if err != nil {
 		return "", fmt.Errorf("claude import: %w", err)
 	}
+	if filepath.Base(sessionID) != sessionID || strings.Contains(sessionID, "..") {
+		return "", fmt.Errorf("claude import: invalid sessionID %q", sessionID)
+	}
 	dstPath, err := claudeTranscriptPath(destDir, sessionID)
 	if err != nil {
 		return "", err
