@@ -18,6 +18,13 @@ UPDATE worktrees
 SET latest_synced_checkpoint = ?, updated_at = ?
 WHERE id = ?;
 
+-- name: UpdateWorktreeMaterialization :exec
+UPDATE worktrees
+SET materialized_checkpoint_id = ?, sync_state = ?,
+    sync_conflict_local_head = ?, sync_conflict_remote_head = ?,
+    updated_at = ?
+WHERE id = ?;
+
 -- name: GetHeadBundle :one
 SELECT * FROM head_bundles
 WHERE user_id = ? AND tip_sha = ?;

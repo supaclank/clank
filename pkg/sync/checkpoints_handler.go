@@ -33,6 +33,14 @@ type worktreeResponse struct {
 	// doc. Clients use it as the group key in pickers/sidebars.
 	OriginRepo             string `json:"origin_repo,omitempty"`
 	LatestSyncedCheckpoint string `json:"latest_synced_checkpoint,omitempty"`
+	// Autosync materialization state (see sync.Worktree). Surfaced on both
+	// list and single responses so clients can render per-worktree sync
+	// status and drive the manual-sync / conflict-resolution UI. The
+	// conflict heads are non-empty only when SyncState == conflict.
+	MaterializedCheckpointID string `json:"materialized_checkpoint_id,omitempty"`
+	SyncState                string `json:"sync_state,omitempty"`
+	SyncConflictLocalHead    string `json:"sync_conflict_local_head,omitempty"`
+	SyncConflictRemoteHead   string `json:"sync_conflict_remote_head,omitempty"`
 	// LatestCheckpointMetadata carries the 4 content SHAs of the
 	// latest synced checkpoint. Populated on single-worktree responses
 	// (handleGetWorktree) where the laptop needs to compute drift
@@ -496,13 +504,17 @@ func (s *Server) presignCheckpointPuts(ctx context.Context, userID, worktreeID, 
 
 func worktreeToResponse(w Worktree) worktreeResponse {
 	return worktreeResponse{
-		ID:                     w.ID,
-		UserID:                 w.UserID,
-		DisplayName:            w.DisplayName,
-		OriginRepo:             w.OriginRepo,
-		LatestSyncedCheckpoint: w.LatestSyncedCheckpoint,
-		CreatedAt:              w.CreatedAt,
-		UpdatedAt:              w.UpdatedAt,
+		ID:                       w.ID,
+		UserID:                   w.UserID,
+		DisplayName:              w.DisplayName,
+		OriginRepo:               w.OriginRepo,
+		LatestSyncedCheckpoint:   w.LatestSyncedCheckpoint,
+		MaterializedCheckpointID: w.MaterializedCheckpointID,
+		SyncState:                w.SyncState,
+		SyncConflictLocalHead:    w.SyncConflictLocalHead,
+		SyncConflictRemoteHead:   w.SyncConflictRemoteHead,
+		CreatedAt:                w.CreatedAt,
+		UpdatedAt:                w.UpdatedAt,
 	}
 }
 

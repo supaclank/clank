@@ -1,4 +1,9 @@
-package host
+// Package repolabel derives the owner-independent display label for a
+// git repository, used as the `origin_repo` group key on worktree rows.
+// It lives in its own leaf package so both the host (sprite-side
+// CreateWorktree) and the laptop CLI (clank push registration) can
+// compute the same label without importing each other.
+package repolabel
 
 import (
 	"path/filepath"

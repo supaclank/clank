@@ -67,7 +67,7 @@ func (q *Queries) GetHeadBundle(ctx context.Context, arg GetHeadBundleParams) (H
 }
 
 const getWorktreeByID = `-- name: GetWorktreeByID :one
-SELECT id, user_id, display_name, origin_repo, latest_synced_checkpoint, created_at, updated_at FROM worktrees
+SELECT id, user_id, display_name, origin_repo, latest_synced_checkpoint, materialized_checkpoint_id, sync_state, sync_conflict_local_head, sync_conflict_remote_head, created_at, updated_at FROM worktrees
 WHERE id = ?
 `
 
@@ -80,6 +80,10 @@ func (q *Queries) GetWorktreeByID(ctx context.Context, id string) (Worktree, err
 		&i.DisplayName,
 		&i.OriginRepo,
 		&i.LatestSyncedCheckpoint,
+		&i.MaterializedCheckpointID,
+		&i.SyncState,
+		&i.SyncConflictLocalHead,
+		&i.SyncConflictRemoteHead,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -225,7 +229,7 @@ func (q *Queries) ListCheckpointsByWorktree(ctx context.Context, arg ListCheckpo
 }
 
 const listWorktreesByUser = `-- name: ListWorktreesByUser :many
-SELECT id, user_id, display_name, origin_repo, latest_synced_checkpoint, created_at, updated_at FROM worktrees
+SELECT id, user_id, display_name, origin_repo, latest_synced_checkpoint, materialized_checkpoint_id, sync_state, sync_conflict_local_head, sync_conflict_remote_head, created_at, updated_at FROM worktrees
 WHERE user_id = ?
 ORDER BY updated_at DESC
 `
@@ -245,6 +249,10 @@ func (q *Queries) ListWorktreesByUser(ctx context.Context, userID string) ([]Wor
 			&i.DisplayName,
 			&i.OriginRepo,
 			&i.LatestSyncedCheckpoint,
+			&i.MaterializedCheckpointID,
+			&i.SyncState,
+			&i.SyncConflictLocalHead,
+			&i.SyncConflictRemoteHead,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -274,6 +282,35 @@ type MarkCheckpointUploadedParams struct {
 
 func (q *Queries) MarkCheckpointUploaded(ctx context.Context, arg MarkCheckpointUploadedParams) error {
 	_, err := q.db.ExecContext(ctx, markCheckpointUploaded, arg.UploadedAt, arg.ID)
+	return err
+}
+
+const updateWorktreeMaterialization = `-- name: UpdateWorktreeMaterialization :exec
+UPDATE worktrees
+SET materialized_checkpoint_id = ?, sync_state = ?,
+    sync_conflict_local_head = ?, sync_conflict_remote_head = ?,
+    updated_at = ?
+WHERE id = ?
+`
+
+type UpdateWorktreeMaterializationParams struct {
+	MaterializedCheckpointID string
+	SyncState                string
+	SyncConflictLocalHead    string
+	SyncConflictRemoteHead   string
+	UpdatedAt                time.Time
+	ID                       string
+}
+
+func (q *Queries) UpdateWorktreeMaterialization(ctx context.Context, arg UpdateWorktreeMaterializationParams) error {
+	_, err := q.db.ExecContext(ctx, updateWorktreeMaterialization,
+		arg.MaterializedCheckpointID,
+		arg.SyncState,
+		arg.SyncConflictLocalHead,
+		arg.SyncConflictRemoteHead,
+		arg.UpdatedAt,
+		arg.ID,
+	)
 	return err
 }
 

@@ -21,6 +21,7 @@ import (
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host"
+	"github.com/acksell/clank/internal/repolabel"
 	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
 
@@ -3040,7 +3041,7 @@ func (m *InboxModel) worktreePushCmd(localPath string) tea.Cmd {
 			return worktreePushResultMsg{localPath: localPath, err: fmt.Errorf("load cached worktree id: %w", err)}
 		}
 		if worktreeID == "" {
-			worktreeID, err = cli.RegisterWorktree(ctx, filepath.Base(localPath))
+			worktreeID, err = cli.RegisterWorktree(ctx, filepath.Base(localPath), repolabel.ComputeRepoLabel(localPath))
 			if err != nil {
 				return worktreePushResultMsg{localPath: localPath, err: fmt.Errorf("register worktree: %w", err)}
 			}

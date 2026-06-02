@@ -17,6 +17,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
+	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/pkg/sync/checkpoint"
 )
 
@@ -70,33 +71,61 @@ func workRoot() (string, error) {
 // applyFromURLsRequest is the JSON body of POST /sync/apply-from-urls.
 // HeadBundleURLs is the ordered (oldest→newest) head chain to fetch and
 // apply in sequence — one full bundle, or a baseline plus increments.
+// Force, when set, is the mobile "discard sprite changes & pull laptop
+// version" conflict resolution: the fast-forward/clean guard is skipped
+// and the laptop checkpoint is restored unconditionally. A running
+// session blocks the apply even with Force.
 type applyFromURLsRequest struct {
 	Repo           string   `json:"repo"`
 	ManifestURL    string   `json:"manifest_url"`
 	HeadBundleURLs []string `json:"head_bundle_urls"`
 	UncommittedURL string   `json:"uncommitted_url"`
+	Force          bool     `json:"force"`
 }
 
-// handleSyncApplyFromURLs is the pull-based counterpart to
-// handleSyncApply: the gateway hands the sandbox presigned GET URLs
-// for the checkpoint blobs and the sandbox fetches them itself from
-// object storage. Bundle bytes never traverse the gateway's memory.
+// applyState enumerates the non-error outcomes of an apply. They ride in
+// a 200 body (applyResult) so the gateway can map each to a worktree
+// sync_state; genuine failures stay 4xx/5xx errResp.
+const (
+	applyStateApplied        = "applied"
+	applyStateUpToDate       = "up_to_date"
+	applyStateConflict       = "conflict"
+	applyStateSessionRunning = "session_running"
+)
+
+// applyResult is the 200-OK body of /sync/apply-from-urls. LocalHead and
+// IncomingHead are populated on conflict so the client can show which two
+// commits diverged.
+type applyResult struct {
+	State        string `json:"state"`
+	LocalHead    string `json:"local_head,omitempty"`
+	IncomingHead string `json:"incoming_head,omitempty"`
+}
+
+// handleSyncApplyFromURLs materializes a laptop-pushed checkpoint onto
+// the sandbox at ~/work/<repo> from presigned GET URLs the gateway
+// minted. This is the S3→sandbox apply leg of autosync; the gateway
+// orchestrates it (pkg/gateway/sync.go). Bundle bytes never traverse the
+// gateway's memory.
 //
-// Returns 204 on success. Errors are JSON {code, error}; code is one
-// of url_expired / s3_unreachable / apply_failed / bad_manifest /
-// bad_request so the gateway can decide whether to retry.
+// Safety is enforced here because only the sandbox has the git state +
+// the live-session registry (mirrors the laptop's applyRemotePull guard):
+//   - a running/starting session on the worktree blocks the apply
+//     (state=session_running) — even under Force;
+//   - an absent worktree dir is materialized fresh (state=applied);
+//   - an existing dir already matching the manifest is left untouched
+//     (state=up_to_date);
+//   - otherwise the apply proceeds only when local HEAD is an ancestor of
+//     the incoming HEAD AND the tree is clean (fast-forward); a divergence
+//     or dirty tree yields state=conflict unless Force discards it.
+//
+// Non-error outcomes return 200 with an applyResult body; only genuine
+// failures (bad manifest, S3 unreachable, apply error) return 4xx/5xx
+// errResp so the gateway can tell "needs resolution" from "retry".
 //
 // TODO(coderabbit): bound manifest via io.LimitReader before ReadAll;
 // stream head/uncommitted bundles into checkpoint.Apply rather than
 // buffering. https://github.com/Acksell/clank/pull/17#discussion_r3227672622
-//
-// TODO(materialize): this is the S3→sandbox apply primitive — it
-// materializes a laptop-pushed checkpoint onto the sandbox at
-// ~/work/<repo>. It works and is reachable via the gateway proxy, but
-// nothing orchestrates it on session start yet: Service.workDirFor errors
-// when the worktree dir is absent instead of triggering an apply. Wiring
-// this is the missing half of end-to-end sync (laptop→S3 push and
-// sandbox→S3→laptop pull both work today; S3→sandbox does not).
 func (m *Mux) handleSyncApplyFromURLs(w http.ResponseWriter, r *http.Request) {
 	var req applyFromURLsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -125,6 +154,8 @@ func (m *Mux) handleSyncApplyFromURLs(w http.ResponseWriter, r *http.Request) {
 
 	cli := &http.Client{Timeout: syncURLBundleFetchTimeout}
 
+	// Fetch the manifest first (small) — needed for the up-to-date
+	// snapshot compare before committing to the (large) head bundles.
 	manifestBytes, status, code, err := fetchURL(r.Context(), cli, req.ManifestURL)
 	if err != nil {
 		writeJSON(w, status, errResp{Code: code, Error: "fetch manifest: " + err.Error()})
@@ -139,26 +170,125 @@ func (m *Mux) handleSyncApplyFromURLs(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: syncErrBadManifest, Error: "parse manifest: " + err.Error()})
 		return
 	}
-	headReaders := make([]io.Reader, len(req.HeadBundleURLs))
-	for i, u := range req.HeadBundleURLs {
-		hb, status, code, err := fetchURL(r.Context(), cli, u)
-		if err != nil {
-			writeJSON(w, status, errResp{Code: code, Error: fmt.Sprintf("fetch head bundle %d: %s", i, err.Error())})
-			return
-		}
-		headReaders[i] = bytes.NewReader(hb)
-	}
-	incrBytes, status, code, err := fetchURL(r.Context(), cli, req.UncommittedURL)
+
+	// Serialize against session creation on this worktree and re-check
+	// for a live session under the lock (closes the check→apply TOCTOU).
+	defer m.svc.LockWorktreeSync(req.Repo)()
+
+	active, err := m.svc.WorktreeHasActiveSession(r.Context(), req.Repo)
 	if err != nil {
-		writeJSON(w, status, errResp{Code: code, Error: "fetch uncommitted bundle: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, errResp{Code: "session_check", Error: err.Error()})
+		return
+	}
+	if active {
+		writeJSON(w, http.StatusOK, applyResult{State: applyStateSessionRunning})
 		return
 	}
 
+	_, statErr := os.Stat(target)
+	dirExists := statErr == nil
+
+	// Cheap idempotency: an existing dir whose working state already
+	// matches the manifest needs no fetch and no restore.
+	if dirExists {
+		if snap, snapErr := checkpoint.NewBuilder(target, "sprite").Snapshot(r.Context()); snapErr == nil {
+			if snap.HeadCommit == manifest.HeadCommit &&
+				snap.HeadRef == manifest.HeadRef &&
+				snap.IndexTree == manifest.IndexTree &&
+				snap.WorktreeTree == manifest.WorktreeTree {
+				writeJSON(w, http.StatusOK, applyResult{State: applyStateUpToDate})
+				return
+			}
+		}
+	}
+
+	// Fetch the head chain + uncommitted bundle.
+	headBytes := make([][]byte, len(req.HeadBundleURLs))
+	for i, u := range req.HeadBundleURLs {
+		hb, fstatus, fcode, ferr := fetchURL(r.Context(), cli, u)
+		if ferr != nil {
+			writeJSON(w, fstatus, errResp{Code: fcode, Error: fmt.Sprintf("fetch head bundle %d: %s", i, ferr.Error())})
+			return
+		}
+		headBytes[i] = hb
+	}
+	incrBytes, istatus, icode, err := fetchURL(r.Context(), cli, req.UncommittedURL)
+	if err != nil {
+		writeJSON(w, istatus, errResp{Code: icode, Error: "fetch uncommitted bundle: " + err.Error()})
+		return
+	}
+
+	// Fast-forward + clean guard for an existing worktree (skipped for a
+	// fresh materialization, bypassed by Force). Load the head objects so
+	// manifest.HeadCommit resolves for the ancestry check.
+	if dirExists && !req.Force {
+		for i, hb := range headBytes {
+			tmp, terr := writeTempBundle(hb)
+			if terr != nil {
+				writeJSON(w, http.StatusInternalServerError, errResp{Code: syncErrApplyFailed, Error: "write temp bundle: " + terr.Error()})
+				return
+			}
+			lerr := git.FetchBundleObjects(target, tmp)
+			_ = os.Remove(tmp)
+			if lerr != nil {
+				writeJSON(w, http.StatusInternalServerError, errResp{Code: syncErrApplyFailed, Error: fmt.Sprintf("load head bundle %d: %s", i, lerr.Error())})
+				return
+			}
+		}
+		localHEAD, herr := git.HeadCommit(target)
+		if herr != nil {
+			writeJSON(w, http.StatusInternalServerError, errResp{Code: syncErrApplyFailed, Error: "resolve local HEAD: " + herr.Error()})
+			return
+		}
+		ff, aerr := git.IsAncestor(target, localHEAD, manifest.HeadCommit)
+		if aerr != nil {
+			writeJSON(w, http.StatusInternalServerError, errResp{Code: syncErrApplyFailed, Error: "fast-forward check: " + aerr.Error()})
+			return
+		}
+		clean, cerr := git.IsClean(target)
+		if cerr != nil {
+			writeJSON(w, http.StatusInternalServerError, errResp{Code: syncErrApplyFailed, Error: "clean check: " + cerr.Error()})
+			return
+		}
+		if !ff || !clean {
+			writeJSON(w, http.StatusOK, applyResult{
+				State:        applyStateConflict,
+				LocalHead:    localHEAD,
+				IncomingHead: manifest.HeadCommit,
+			})
+			return
+		}
+	}
+
+	headReaders := make([]io.Reader, len(headBytes))
+	for i, hb := range headBytes {
+		headReaders[i] = bytes.NewReader(hb)
+	}
 	if err := checkpoint.Apply(r.Context(), target, &manifest, headReaders, bytes.NewReader(incrBytes)); err != nil {
 		writeJSON(w, http.StatusInternalServerError, errResp{Code: syncErrApplyFailed, Error: err.Error()})
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, applyResult{State: applyStateApplied})
+}
+
+// writeTempBundle writes a git bundle's bytes to a temp file so
+// git.FetchBundleObjects (which takes a path) can load its objects into
+// the target repo for the pre-apply ancestry check. Caller removes it.
+func writeTempBundle(data []byte) (string, error) {
+	f, err := os.CreateTemp("", "clank-apply-head-*.bundle")
+	if err != nil {
+		return "", err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
 }
 
 // --- pull-back build/upload/delete ---------------------------------

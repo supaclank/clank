@@ -30,6 +30,7 @@ import (
 	"github.com/acksell/clank/internal/host/store"
 	"github.com/acksell/clank/internal/keepalive"
 	"github.com/acksell/clank/internal/notifier"
+	"github.com/acksell/clank/internal/repolabel"
 )
 
 // cryptoRand is the entropy source for ulid generation in CreateWorktree.
@@ -90,6 +91,14 @@ type Service struct {
 	// in-memory feature with no external dependencies, so there's
 	// nothing to gate on.
 	preview *preview.Manager
+
+	// syncLocks serialize checkpoint materialization (autosync's
+	// /sync/apply-from-urls) against session creation per worktree: an
+	// apply does a destructive git restore of ~/work/<id> that would
+	// corrupt a session being started in that same dir. Keyed by
+	// worktree ID.
+	syncLocksMu sync.Mutex
+	syncLocks   map[string]*sync.Mutex
 }
 
 // Options configures a Service at construction time.
@@ -164,6 +173,7 @@ func New(opts Options) *Service {
 		branches:        newBranchCache(opts.BranchCacheTTL, opts.Now),
 		sessionsStore:   opts.SessionsStore,
 		subscribers:     newSubscriberRegistry(),
+		syncLocks:       make(map[string]*sync.Mutex),
 	}
 	if opts.KeepaliveListener != nil {
 		s.keepaliveLoop = keepalive.New(keepalive.Config{
@@ -502,6 +512,14 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 
 	if err := req.GitRef.Validate(); err != nil {
 		return nil, "", fmt.Errorf("git_ref: %w", err)
+	}
+	// Serialize against autosync materialization of the same worktree:
+	// a checkpoint apply restoring ~/work/<id> while this session is
+	// resolving its workdir / starting its backend would corrupt it.
+	// Held for the rest of CreateSession so the apply waits until the
+	// session is registered (then it sees it via WorktreeHasActiveSession).
+	if wtID := req.GitRef.WorktreeID; wtID != "" {
+		defer s.LockWorktreeSync(wtID)()
 	}
 	workDir, err := s.workDirFor(ctx, req.GitRef)
 	if err != nil {
@@ -845,6 +863,51 @@ func (s *Service) Session(id string) (agent.SessionBackend, bool) {
 	b, ok := s.sessions[id]
 	s.mu.RUnlock()
 	return b, ok
+}
+
+// LockWorktreeSync acquires the per-worktree materialization lock and
+// returns its release func. Autosync (handleSyncApplyFromURLs) and
+// CreateSession both take it so a checkpoint apply and a session start
+// on the same worktree never interleave. Usage: defer LockWorktreeSync(id)().
+func (s *Service) LockWorktreeSync(worktreeID string) func() {
+	s.syncLocksMu.Lock()
+	mu := s.syncLocks[worktreeID]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		s.syncLocks[worktreeID] = mu
+	}
+	s.syncLocksMu.Unlock()
+	mu.Lock()
+	return mu.Unlock
+}
+
+// WorktreeHasActiveSession reports whether any session for worktreeID is
+// currently running (busy or starting) on this host. Autosync uses it to
+// skip materializing over a worktree with live work. A Service without a
+// sessions store (test wiring) reports false.
+func (s *Service) WorktreeHasActiveSession(ctx context.Context, worktreeID string) (bool, error) {
+	if s.sessionsStore == nil {
+		return false, nil
+	}
+	sessions, err := s.sessionsStore.ListSessionsByWorktree(ctx, worktreeID)
+	if err != nil {
+		return false, fmt.Errorf("list sessions for worktree %s: %w", worktreeID, err)
+	}
+	for _, info := range sessions {
+		if isActiveSessionStatus(info.Status) {
+			return true, nil
+		}
+		// Persisted status can lag a backend that just went busy; confirm
+		// against the live registry as a backstop.
+		if b, ok := s.Session(info.ID); ok && isActiveSessionStatus(b.Status()) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func isActiveSessionStatus(st agent.SessionStatus) bool {
+	return st == agent.StatusBusy || st == agent.StatusStarting
 }
 
 // ensureBackend returns the live backend for id, lazily rebuilding
@@ -1213,7 +1276,7 @@ func (s *Service) CreateWorktree(ctx context.Context, baseWorktreeRef agent.GitR
 		return CreateWorktreeResult{}, fmt.Errorf("stamp worktree-id: %w", err)
 	}
 
-	originRepo := ComputeRepoLabel(repoRoot)
+	originRepo := repolabel.ComputeRepoLabel(repoRoot)
 	s.log.Printf("created worktree %s (branch %q off %q) at %s", worktreeID, newBranch, baseBranch, wtDir)
 	return CreateWorktreeResult{
 		WorktreeID:  worktreeID,
@@ -1278,7 +1341,7 @@ func (s *Service) listBranches(_ context.Context, projectDir string) ([]BranchIn
 		// Strip common git URL noise to produce a short, readable label.
 		// e.g. "https://github.com/acme/api.git" → "api"
 		//      "git@github.com:acme/api.git"     → "api"
-		repoLabel = RepoLabelFromURL(remoteURL, repoLabel)
+		repoLabel = repolabel.RepoLabelFromURL(remoteURL, repoLabel)
 	}
 
 	result := make([]BranchInfo, 0, len(worktrees))
