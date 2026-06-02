@@ -85,6 +85,19 @@ func (s *Store) UpdateWorktreePointer(ctx context.Context, id, checkpointID stri
 	})
 }
 
+// UpdateWorktreeMaterialization records the sprite's latest autosync
+// outcome (the display cache; see clanksync.MaterializationUpdate).
+func (s *Store) UpdateWorktreeMaterialization(ctx context.Context, id string, m clanksync.MaterializationUpdate) error {
+	return s.q.UpdateWorktreeMaterialization(ctx, sqlitedb.UpdateWorktreeMaterializationParams{
+		MaterializedCheckpointID: m.MaterializedCheckpointID,
+		SyncState:                m.SyncState,
+		SyncConflictLocalHead:    m.ConflictLocalHead,
+		SyncConflictRemoteHead:   m.ConflictRemoteHead,
+		UpdatedAt:                time.Now(),
+		ID:                       id,
+	})
+}
+
 // GetCheckpointByID returns a checkpoint row or ErrCheckpointNotFound.
 func (s *Store) GetCheckpointByID(ctx context.Context, id string) (Checkpoint, error) {
 	row, err := s.q.GetCheckpointByID(ctx, id)
@@ -191,13 +204,17 @@ func (s *Store) InsertHeadBundle(ctx context.Context, hb HeadBundle) error {
 
 func worktreeFromRow(r sqlitedb.Worktree) Worktree {
 	return Worktree{
-		ID:                     r.ID,
-		UserID:                 r.UserID,
-		DisplayName:            r.DisplayName,
-		OriginRepo:             r.OriginRepo,
-		LatestSyncedCheckpoint: r.LatestSyncedCheckpoint,
-		CreatedAt:              r.CreatedAt,
-		UpdatedAt:              r.UpdatedAt,
+		ID:                       r.ID,
+		UserID:                   r.UserID,
+		DisplayName:              r.DisplayName,
+		OriginRepo:               r.OriginRepo,
+		LatestSyncedCheckpoint:   r.LatestSyncedCheckpoint,
+		MaterializedCheckpointID: r.MaterializedCheckpointID,
+		SyncState:                r.SyncState,
+		SyncConflictLocalHead:    r.SyncConflictLocalHead,
+		SyncConflictRemoteHead:   r.SyncConflictRemoteHead,
+		CreatedAt:                r.CreatedAt,
+		UpdatedAt:                r.UpdatedAt,
 	}
 }
 

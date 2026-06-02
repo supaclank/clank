@@ -15,7 +15,8 @@
 5. Use `t.Parallel()` where safe.
 
 ## Naming
-1. Boolean variables should be phrased as an affirmative statement that evaluates to either true or false. Prefixes: Is, Has, Can, Should, Must, etc.
+1. Boolean fields should normally be phrased as an affirmative statement that evaluates to either true or false. Prefixes: Is, Has, Can, Should, Must, etc. Evaluate on a case by case basis though.
+2. Usually if there's a verb involved you want to describe *what* the verb is acting on in the call signature. Note: Avoid stuttering, especially in receivers and their methods.
 
 ## Comments And Documentation
 

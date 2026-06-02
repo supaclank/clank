@@ -37,13 +37,18 @@ type CheckpointResult struct {
 // pass it to subsequent PushCheckpoint invocations for the same
 // working directory. The sync server only accepts laptop-kind callers
 // here; sprite-kind callers (X-Clank-Host-Id) get 403.
-func (c *Client) RegisterWorktree(ctx context.Context, displayName string) (string, error) {
+//
+// originRepo is the owner-independent repo label (see
+// internal/repolabel.ComputeRepoLabel) persisted on the worktree row so
+// clients can group worktrees by repo. May be "" for local-only repos.
+func (c *Client) RegisterWorktree(ctx context.Context, displayName, originRepo string) (string, error) {
 	if displayName == "" {
 		return "", errors.New("syncclient: displayName is required")
 	}
 
 	body := map[string]string{
 		"display_name": displayName,
+		"origin_repo":  originRepo,
 	}
 	var resp struct {
 		ID string `json:"id"`

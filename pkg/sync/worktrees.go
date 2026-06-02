@@ -54,8 +54,40 @@ type Worktree struct {
 	// existed — clients group these under an "Unknown repo" bucket.
 	OriginRepo             string
 	LatestSyncedCheckpoint string // checkpoint ID; "" if no checkpoint pushed yet
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
+
+	// Autosync materialization tracking — the gateway's display cache,
+	// refreshed from each apply outcome (pkg/gateway/sync.go).
+	// MaterializedCheckpointID is the checkpoint last successfully applied
+	// onto the user's sprite for this worktree ("" if never materialized).
+	// SyncState is the last outcome (see the SyncState* constants). The two
+	// conflict-head fields name the diverged commits for the mobile
+	// resolution UI; set only when SyncState == SyncStateConflict.
+	MaterializedCheckpointID string
+	SyncState                string
+	SyncConflictLocalHead    string
+	SyncConflictRemoteHead   string
+
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// Autosync sync_state values stored on Worktree.SyncState and surfaced to
+// clients via GET /v1/worktrees. "" means unknown / never materialized.
+const (
+	SyncStateUpToDate = "up_to_date" // sprite matches the latest pushed checkpoint
+	SyncStateBehind   = "behind"     // a newer checkpoint exists but isn't applied yet
+	SyncStateConflict = "conflict"   // sprite diverged; needs manual resolution
+	SyncStateBusy     = "busy"       // a session is running; sync was skipped
+)
+
+// MaterializationUpdate is the autosync outcome recorded on a worktree row
+// by SetWorktreeMaterialization. ConflictLocalHead/ConflictRemoteHead are
+// set only for SyncStateConflict.
+type MaterializationUpdate struct {
+	MaterializedCheckpointID string
+	SyncState                string
+	ConflictLocalHead        string
+	ConflictRemoteHead       string
 }
 
 // Checkpoint is the per-push manifest pointer. Bundle bytes live in
@@ -93,6 +125,7 @@ type SyncStore interface {
 	ListWorktreesByUser(ctx context.Context, userID string) ([]Worktree, error)
 	InsertWorktree(ctx context.Context, w Worktree) error
 	UpdateWorktreePointer(ctx context.Context, id, checkpointID string) error
+	UpdateWorktreeMaterialization(ctx context.Context, id string, m MaterializationUpdate) error
 
 	GetCheckpointByID(ctx context.Context, id string) (Checkpoint, error)
 	ListCheckpointsByWorktree(ctx context.Context, worktreeID string, limit int) ([]Checkpoint, error)
@@ -126,6 +159,17 @@ func (s *Server) GetWorktree(ctx context.Context, userID, worktreeID string) (Wo
 // at the store level (ListWorktreesByUser).
 func (s *Server) ListWorktrees(ctx context.Context, userID string) ([]Worktree, error) {
 	return s.cfg.Store.ListWorktreesByUser(ctx, userID)
+}
+
+// SetWorktreeMaterialization records an autosync apply outcome on the
+// worktree row (tenancy-checked against userID). The gateway calls it
+// after each /sync/apply-from-urls so GET /v1/worktrees can surface the
+// sprite's materialization state (sync_state + conflict heads) to clients.
+func (s *Server) SetWorktreeMaterialization(ctx context.Context, userID, worktreeID string, m MaterializationUpdate) error {
+	if _, err := s.GetWorktree(ctx, userID, worktreeID); err != nil {
+		return err
+	}
+	return s.cfg.Store.UpdateWorktreeMaterialization(ctx, worktreeID, m)
 }
 
 // RegisterPrebuiltWorktree inserts a worktree row whose ID was assigned

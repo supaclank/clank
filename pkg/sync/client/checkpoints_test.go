@@ -80,7 +80,7 @@ func TestCheckpointFlow_EndToEnd(t *testing.T) {
 	gitMustRun(t, ctx, repo, "add", "staged.txt")
 	writeFile(t, repo, "untracked.md", "# untracked\n")
 
-	wtID, err := cli.RegisterWorktree(ctx, "myrepo (main)")
+	wtID, err := cli.RegisterWorktree(ctx, "myrepo (main)", "")
 	if err != nil {
 		t.Fatalf("RegisterWorktree: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestPushCheckpoint_ReportsProgress(t *testing.T) {
 	gitMustRun(t, ctx, repo, "add", ".")
 	gitMustRun(t, ctx, repo, "commit", "-m", "initial")
 
-	wtID, err := cli.RegisterWorktree(ctx, "r")
+	wtID, err := cli.RegisterWorktree(ctx, "r", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +319,7 @@ func TestPushCheckpoint_CleanIgnoresUncommitted(t *testing.T) {
 	writeFile(t, repo, "main.go", "DIRTY uncommitted\n")
 	writeFile(t, repo, "scratch.txt", "untracked\n")
 
-	wtID, err := cli.RegisterWorktree(ctx, "r")
+	wtID, err := cli.RegisterWorktree(ctx, "r", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,7 +424,7 @@ func TestPushPull_IncrementalChain(t *testing.T) {
 	gitMustRun(t, ctx, repo, "commit", "-m", "c1")
 	commitA := strings.TrimSpace(gitMustOutput(t, ctx, repo, "rev-parse", "HEAD"))
 
-	wtID, err := cli.RegisterWorktree(ctx, "r")
+	wtID, err := cli.RegisterWorktree(ctx, "r", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -532,7 +532,7 @@ func TestPushCheckpoint_SecondPushSameHEADReusesHeadBundle(t *testing.T) {
 	gitMustRun(t, ctx, repo, "add", ".")
 	gitMustRun(t, ctx, repo, "commit", "-m", "initial")
 
-	wtID, err := cli.RegisterWorktree(ctx, "r")
+	wtID, err := cli.RegisterWorktree(ctx, "r", "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -55,11 +55,15 @@ type Host struct {
 }
 
 type Worktree struct {
-	ID                     string
-	UserID                 string
-	DisplayName            string
-	OriginRepo             string
-	LatestSyncedCheckpoint string
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
+	ID                       string
+	UserID                   string
+	DisplayName              string
+	OriginRepo               string
+	LatestSyncedCheckpoint   string
+	MaterializedCheckpointID string
+	SyncState                string
+	SyncConflictLocalHead    string
+	SyncConflictRemoteHead   string
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
 }

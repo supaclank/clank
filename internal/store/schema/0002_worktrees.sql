@@ -14,6 +14,15 @@ CREATE TABLE worktrees (
     -- never updated. Empty for rows registered before this column existed.
     origin_repo                 TEXT NOT NULL DEFAULT '',
     latest_synced_checkpoint    TEXT NOT NULL DEFAULT '',
+    -- Autosync materialization tracking (migration v28). Records what the
+    -- sprite has materialized vs. what the laptop pushed
+    -- (latest_synced_checkpoint). sync_state: "" | up_to_date | behind |
+    -- conflict | busy. The conflict-head columns name the diverged commits
+    -- for the mobile resolution UI; set only when sync_state = conflict.
+    materialized_checkpoint_id  TEXT NOT NULL DEFAULT '',
+    sync_state                  TEXT NOT NULL DEFAULT '',
+    sync_conflict_local_head    TEXT NOT NULL DEFAULT '',
+    sync_conflict_remote_head   TEXT NOT NULL DEFAULT '',
     created_at                  DATETIME NOT NULL,
     updated_at                  DATETIME NOT NULL
 );
