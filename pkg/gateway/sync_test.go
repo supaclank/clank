@@ -46,6 +46,7 @@ func newSyncGateway(t *testing.T) (*httptest.Server, *clanksync.Server, *stubPro
 // ever dialing the (bogus) sprite URL, since the routine short-circuits
 // before any apply.
 func TestSyncAll_NoCheckpoint(t *testing.T) {
+	t.Parallel()
 	srv, syncSrv, prov := newSyncGateway(t)
 	if err := syncSrv.RegisterPrebuiltWorktree(context.Background(), clanksync.Worktree{
 		ID: "wt1", UserID: "tester", DisplayName: "demo",
@@ -79,6 +80,7 @@ func TestSyncAll_NoCheckpoint(t *testing.T) {
 // TestSyncWorktree_NoCheckpoint covers the per-worktree route (manual
 // sync button) returning the single outcome for an unpushed worktree.
 func TestSyncWorktree_NoCheckpoint(t *testing.T) {
+	t.Parallel()
 	srv, syncSrv, _ := newSyncGateway(t)
 	if err := syncSrv.RegisterPrebuiltWorktree(context.Background(), clanksync.Worktree{
 		ID: "wtX", UserID: "tester", DisplayName: "demo",
@@ -128,6 +130,7 @@ func TestSyncWorktree_MalformedBody(t *testing.T) {
 // worktree id that doesn't exist returns a 4xx (GetWorktree fails before
 // any sprite work).
 func TestSyncWorktree_UnknownWorktree(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := newSyncGateway(t)
 	resp, err := http.Post(srv.URL+"/v1/worktrees/nope/sync", "application/json", nil)
 	if err != nil {

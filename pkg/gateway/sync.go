@@ -38,6 +38,7 @@ type syncResult struct {
 	IncomingHead string `json:"incoming_head,omitempty"`
 }
 
+// TODO(ai-review): extract applied/up_to_date/conflict/session_running into a shared package so the gateway can't silently drift from the sprite's wire values https://github.com/Acksell/clank/pull/40#discussion_r3342270613
 const (
 	syncStateApplied        = "applied"
 	syncStateUpToDate       = "up_to_date"
