@@ -258,8 +258,8 @@ const rightCursorWidth = 2
 
 // renderWorktreeRow renders one worktree as a single line. Layout:
 //
-//	>label<  ☁           <repoLabel>  ◀     (collapsed)
-//	<label>  ☁           <repoLabel>  ◀     (expanded)
+//	>label<              <repoLabel>  ◀     (collapsed)
+//	<label>              <repoLabel>  ◀     (expanded)
 //
 // Brackets wrap the worktree name tightly — the arrow direction is
 // the affordance ("pointing inward" closed, "pointing outward" open).
@@ -270,14 +270,8 @@ func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool,
 		leftPrefix, rightSuffix = "<", ">"
 	}
 
-	ownerGlyph := ""
-	if n.OwnerKind == "remote" {
-		ownerGlyph = " " + lipgloss.NewStyle().Foreground(primaryColor).Render("☁")
-	}
-	// Inline spinner when a push for this worktree is in flight.
-	// Same column as the owner glyph (right after the brackets) — the
-	// two never co-render in practice since "remote" worktrees aren't
-	// pushed again.
+	// Inline spinner when a push for this worktree is in flight, rendered
+	// right after the brackets.
 	pendingGlyph := ""
 	if m.pendingPushes[n.LocalPath] && m.spinnerFrame != "" {
 		pendingGlyph = " " + lipgloss.NewStyle().Foreground(primaryColor).Render(m.spinnerFrame)
@@ -292,8 +286,8 @@ func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool,
 		repoTagWidth = lipgloss.Width(n.RepoLabel) + 1 // one space gutter
 	}
 
-	// Reserve room for: prefix (1) + suffix (1) + owner/pending glyph + repo tag + cursor.
-	maxLabel := maxWidth - 2 - repoTagWidth - cursorReserve - lipgloss.Width(ownerGlyph) - lipgloss.Width(pendingGlyph)
+	// Reserve room for: prefix (1) + suffix (1) + pending glyph + repo tag + cursor.
+	maxLabel := maxWidth - 2 - repoTagWidth - cursorReserve - lipgloss.Width(pendingGlyph)
 	if maxLabel < 6 {
 		maxLabel = 6
 	}
@@ -318,7 +312,7 @@ func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool,
 		nameStyle = nameStyle.Bold(true)
 	}
 
-	line := nameStyle.Render(leftPrefix+label+rightSuffix) + ownerGlyph + pendingGlyph
+	line := nameStyle.Render(leftPrefix+label+rightSuffix) + pendingGlyph
 
 	if n.RepoLabel != "" {
 		repoStyle := lipgloss.NewStyle().Foreground(mutedColor)

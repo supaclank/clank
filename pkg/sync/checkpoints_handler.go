@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -30,14 +31,12 @@ type worktreeResponse struct {
 	DisplayName string `json:"display_name"`
 	// OriginRepo mirrors sync.Worktree.OriginRepo — see that struct's
 	// doc. Clients use it as the group key in pickers/sidebars.
-	OriginRepo string    `json:"origin_repo,omitempty"`
-	OwnerKind  OwnerKind `json:"owner_kind"`
-	OwnerID                string    `json:"owner_id"`
-	LatestSyncedCheckpoint string    `json:"latest_synced_checkpoint,omitempty"`
+	OriginRepo             string `json:"origin_repo,omitempty"`
+	LatestSyncedCheckpoint string `json:"latest_synced_checkpoint,omitempty"`
 	// LatestCheckpointMetadata carries the 4 content SHAs of the
 	// latest synced checkpoint. Populated on single-worktree responses
-	// (handleGetWorktree, handleTransferOwnership) where the laptop
-	// needs to compute drift cheaply. Omitted from list responses
+	// (handleGetWorktree) where the laptop needs to compute drift
+	// cheaply. Omitted from list responses
 	// (would require a JOIN per row) and when no checkpoint has been
 	// pushed yet.
 	LatestCheckpointMetadata *checkpointSnapshot `json:"latest_checkpoint_metadata,omitempty"`
@@ -56,7 +55,7 @@ type checkpointSnapshot struct {
 	HeadRef           string `json:"head_ref,omitempty"`
 	IndexTree         string `json:"index_tree"`
 	WorktreeTree      string `json:"worktree_tree"`
-	IncrementalCommit string `json:"incremental_commit"`
+	UncommittedCommit string `json:"uncommitted_commit"`
 }
 
 // handleListWorktrees returns all worktrees belonging to the caller.
@@ -80,8 +79,8 @@ func (s *Server) handleListWorktrees(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetWorktree returns the worktree row to its owning user.
-// Used by the gateway during MigrateWorktree to read
-// latest_synced_checkpoint and validate ownership.
+// Used by the gateway during pull to read latest_synced_checkpoint and
+// the worktree's checkpoint metadata.
 func (s *Server) handleGetWorktree(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.callerOrUnauthorized(w, r)
 	if !ok {
@@ -131,107 +130,8 @@ func (s *Server) attachCheckpointSnapshot(ctx context.Context, resp *worktreeRes
 		HeadRef:           ck.HeadRef,
 		IndexTree:         ck.IndexTree,
 		WorktreeTree:      ck.WorktreeTree,
-		IncrementalCommit: ck.IncrementalCommit,
+		UncommittedCommit: ck.UncommittedCommit,
 	}
-}
-
-// transferOwnershipRequest is the body of POST /v1/worktrees/{id}/owner.
-type transferOwnershipRequest struct {
-	ToKind  OwnerKind `json:"to_kind"`
-	ToID    string    `json:"to_id"`
-	// ExpectedOwnerID guards the optimistic-concurrency check. The
-	// caller MUST provide its current view of the row's owner_id; the
-	// UPDATE only succeeds if reality still matches. Mismatch returns
-	// 409 so the caller can re-read and retry. Empty when caller is
-	// local (per-user ownership, no per-device ID); HostID for sprites.
-	ExpectedOwnerID string `json:"expected_owner_id"`
-}
-
-// handleTransferOwnership performs the atomic ownership transfer for
-// MigrateWorktree. Authorization: the caller's Kind must match the
-// worktree's current OwnerKind (local↔laptop, remote↔sprite). For
-// remote owners the caller's HostID must additionally equal
-// worktree.OwnerID. The DB-level UPDATE WHERE owner_id = expected
-// catches lost-update races even if the auth check passes.
-func (s *Server) handleTransferOwnership(w http.ResponseWriter, r *http.Request) {
-	caller, ok := s.callerOrUnauthorized(w, r)
-	if !ok {
-		return
-	}
-	id := r.PathValue("id")
-	if id == "" {
-		http.Error(w, "worktree id missing", http.StatusBadRequest)
-		return
-	}
-
-	var req transferOwnershipRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if req.ToKind != OwnerKindLocal && req.ToKind != OwnerKindRemote {
-		http.Error(w, `to_kind must be "local" or "remote"`, http.StatusBadRequest)
-		return
-	}
-	if req.ToID == "" {
-		http.Error(w, "to_id is required", http.StatusBadRequest)
-		return
-	}
-
-	wt, err := s.cfg.Store.GetWorktreeByID(r.Context(), id)
-	if errors.Is(err, ErrWorktreeNotFound) {
-		http.Error(w, worktreeNotFoundMsg(id), http.StatusNotFound)
-		return
-	}
-	if err != nil {
-		s.log.Printf("sync: get worktree: %v", err)
-		http.Error(w, "lookup worktree", http.StatusInternalServerError)
-		return
-	}
-	if wt.UserID != caller.UserID {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-	// Two flavors of legitimate caller for a transfer:
-	//   1. the current owner releasing → routine handoff
-	//      (laptop migrating to_sprite).
-	//   2. the new owner claiming → reclaim path
-	//      (laptop migrating to_laptop after a previous to_sprite,
-	//      or another of the user's devices taking over).
-	// Both cases represent deliberate user intent within their own
-	// tenant. The optimistic-concurrency guard (expected_owner_id)
-	// blocks lost-update races regardless of which path applies.
-	callerIsCurrentOwner := callerOwnsWorktree(caller, wt)
-	callerIsNewOwner := callerMatches(caller, req.ToKind, req.ToID)
-	if !callerIsCurrentOwner && !callerIsNewOwner {
-		http.Error(w, "caller must be either the current owner or the new owner", http.StatusForbidden)
-		return
-	}
-
-	expected := req.ExpectedOwnerID
-	if expected == "" {
-		expected = wt.OwnerID
-	}
-
-	if err := s.cfg.Store.UpdateWorktreeOwner(r.Context(), id, wt.OwnerKind, expected, req.ToKind, req.ToID); err != nil {
-		if errors.Is(err, ErrOwnerMismatch) {
-			http.Error(w, "owner mismatch (concurrent migration?)", http.StatusConflict)
-			return
-		}
-		s.log.Printf("sync: update worktree owner: %v", err)
-		http.Error(w, "transfer", http.StatusInternalServerError)
-		return
-	}
-
-	updated, err := s.cfg.Store.GetWorktreeByID(r.Context(), id)
-	if err != nil {
-		s.log.Printf("sync: re-read worktree after transfer: %v", err)
-		http.Error(w, "transfer", http.StatusInternalServerError)
-		return
-	}
-	resp := worktreeToResponse(updated)
-	s.attachCheckpointSnapshot(r.Context(), &resp, updated.LatestSyncedCheckpoint)
-	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleRegisterWorktree(w http.ResponseWriter, r *http.Request) {
@@ -263,7 +163,6 @@ func (s *Server) handleRegisterWorktree(w http.ResponseWriter, r *http.Request) 
 		UserID:      caller.UserID,
 		DisplayName: req.DisplayName,
 		OriginRepo:  req.OriginRepo,
-		OwnerKind:   OwnerKindLocal,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -288,13 +187,19 @@ type createCheckpointRequest struct {
 	HeadRef           string `json:"head_ref"`
 	IndexTree         string `json:"index_tree"`
 	WorktreeTree      string `json:"worktree_tree"`
-	IncrementalCommit string `json:"incremental_commit"`
+	UncommittedCommit string `json:"uncommitted_commit"`
+	BaseCommit        string `json:"base_commit"`
 }
 
 type createCheckpointResponse struct {
-	CheckpointID     string    `json:"checkpoint_id"`
-	HeadCommitPutURL string    `json:"head_commit_put_url"`
-	IncrementalURL   string    `json:"incremental_put_url"`
+	CheckpointID string `json:"checkpoint_id"`
+	// HeadBundleAction is already_stored | upload_full | upload_incremental.
+	// HeadBundlePutURL is set unless already_stored; HeadBundleBase is set
+	// only for upload_incremental.
+	HeadBundleAction string    `json:"head_bundle_action"`
+	HeadBundlePutURL string    `json:"head_bundle_put_url,omitempty"`
+	HeadBundleBase   string    `json:"head_bundle_base,omitempty"`
+	UncommittedURL   string    `json:"uncommitted_put_url"`
 	ManifestPutURL   string    `json:"manifest_put_url"`
 	TTLSeconds       int       `json:"ttl_seconds"`
 	CreatedAt        time.Time `json:"created_at"`
@@ -329,10 +234,6 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if !callerOwnsWorktree(caller, wt) {
-		http.Error(w, ownerMismatchMessage(caller, wt), http.StatusForbidden)
-		return
-	}
 
 	result, err := s.CreateCheckpoint(r.Context(), caller.UserID, CreateCheckpointRequest{
 		WorktreeID:        req.WorktreeID,
@@ -340,7 +241,8 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 		HeadRef:           req.HeadRef,
 		IndexTree:         req.IndexTree,
 		WorktreeTree:      req.WorktreeTree,
-		IncrementalCommit: req.IncrementalCommit,
+		UncommittedCommit: req.UncommittedCommit,
+		BaseCommit:        req.BaseCommit,
 		CreatedBy:         createdByFor(caller),
 	})
 	if err != nil {
@@ -362,12 +264,22 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 
 	writeJSON(w, http.StatusCreated, createCheckpointResponse{
 		CheckpointID:     result.CheckpointID,
-		HeadCommitPutURL: result.HeadCommitPutURL,
-		IncrementalURL:   result.IncrementalURL,
+		HeadBundleAction: string(result.HeadBundleAction),
+		HeadBundlePutURL: result.HeadBundlePutURL,
+		HeadBundleBase:   result.HeadBundleBase,
+		UncommittedURL:   result.UncommittedURL,
 		ManifestPutURL:   result.ManifestPutURL,
 		TTLSeconds:       int(result.PresignTTL.Seconds()),
 		CreatedAt:        result.CreatedAt,
 	})
+}
+
+// commitCheckpointRequest is the (optional) body of POST
+// /v1/checkpoints/{id}/commit. head_base is the base the head bundle was
+// built from (HeadBundleBase from the create response; "" for a full
+// bundle) — recorded as this HEAD's link in the chain.
+type commitCheckpointRequest struct {
+	HeadBase string `json:"head_base"`
 }
 
 type commitCheckpointResponse struct {
@@ -386,19 +298,20 @@ func (s *Server) handleCommitCheckpoint(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Caller-identity authorization (must own the worktree). Tenancy
-	// is rechecked inside Server.CommitCheckpoint.
-	_, wt, err := s.lookupCheckpointForUser(r.Context(), checkpointID, caller.UserID)
+	var req commitCheckpointRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Tenancy is rechecked inside Server.CommitCheckpoint.
+	_, _, err := s.lookupCheckpointForUser(r.Context(), checkpointID, caller.UserID)
 	if err != nil {
 		http.Error(w, err.Error(), httpStatusForLookupErr(err))
 		return
 	}
-	if !callerOwnsWorktree(caller, wt) {
-		http.Error(w, ownerMismatchMessage(caller, wt), http.StatusForbidden)
-		return
-	}
 
-	result, err := s.CommitCheckpoint(r.Context(), caller.UserID, checkpointID)
+	result, err := s.CommitCheckpoint(r.Context(), caller.UserID, checkpointID, req.HeadBase)
 	if err != nil {
 		s.log.Printf("sync: commit checkpoint: %v", err)
 		switch {
@@ -420,17 +333,25 @@ func (s *Server) handleCommitCheckpoint(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-type downloadCheckpointResponse struct {
-	CheckpointID     string `json:"checkpoint_id"`
-	HeadCommitGetURL string `json:"head_commit_get_url"`
-	IncrementalURL   string `json:"incremental_get_url"`
-	ManifestGetURL   string `json:"manifest_get_url"`
-	TTLSeconds       int    `json:"ttl_seconds"`
+type headBundleURLResponse struct {
+	TipSHA  string `json:"tip_sha"`
+	BaseSHA string `json:"base_sha,omitempty"`
+	GetURL  string `json:"get_url"`
 }
 
-// handleDownloadCheckpoint returns presigned GET URLs for the gateway
-// to fetch bundle bytes during MigrateWorktree (P3+). Authorized to
-// the checkpoint's owning user.
+type downloadCheckpointResponse struct {
+	CheckpointID string `json:"checkpoint_id"`
+	// HeadBundles is the ordered (oldest→newest) head chain to fetch+apply.
+	HeadBundles    []headBundleURLResponse `json:"head_bundles"`
+	UncommittedURL string                  `json:"uncommitted_get_url"`
+	ManifestGetURL string                  `json:"manifest_get_url"`
+	TTLSeconds     int                     `json:"ttl_seconds"`
+}
+
+// handleDownloadCheckpoint returns presigned GET URLs for an applier to
+// fetch a checkpoint's bytes. The ?have_head query carries the applier's
+// current HEAD so the server returns only the missing head-chain slice.
+// Authorized to the checkpoint's owning user.
 func (s *Server) handleDownloadCheckpoint(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.callerOrUnauthorized(w, r)
 	if !ok {
@@ -442,18 +363,22 @@ func (s *Server) handleDownloadCheckpoint(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	urls, err := s.DownloadCheckpointURLs(r.Context(), caller.UserID, checkpointID)
+	urls, err := s.DownloadCheckpointURLs(r.Context(), caller.UserID, checkpointID, r.URL.Query().Get("have_head"))
 	if err != nil {
 		s.log.Printf("sync: download urls: %v", err)
 		http.Error(w, err.Error(), httpStatusForLookupErr(err))
 		return
 	}
+	heads := make([]headBundleURLResponse, len(urls.HeadBundles))
+	for i, hb := range urls.HeadBundles {
+		heads[i] = headBundleURLResponse{TipSHA: hb.TipSHA, BaseSHA: hb.BaseSHA, GetURL: hb.GetURL}
+	}
 	writeJSON(w, http.StatusOK, downloadCheckpointResponse{
-		CheckpointID:     urls.CheckpointID,
-		HeadCommitGetURL: urls.HeadCommitGetURL,
-		IncrementalURL:   urls.IncrementalURL,
-		ManifestGetURL:   urls.ManifestGetURL,
-		TTLSeconds:       int(s.cfg.PresignTTL.Seconds()),
+		CheckpointID:   urls.CheckpointID,
+		HeadBundles:    heads,
+		UncommittedURL: urls.UncommittedURL,
+		ManifestGetURL: urls.ManifestGetURL,
+		TTLSeconds:     int(s.cfg.PresignTTL.Seconds()),
 	})
 }
 
@@ -492,50 +417,6 @@ func (s *Server) callerOrUnauthorized(w http.ResponseWriter, r *http.Request) (C
 		}
 	}
 	return c, true
-}
-
-// callerOwnsWorktree returns true when the caller's kind matches the
-// worktree's owner kind. Local ownership is per-user (any laptop of
-// this user counts as "the owner"); remote ownership additionally
-// disambiguates by HostID.
-func callerOwnsWorktree(c Caller, wt Worktree) bool {
-	switch c.Kind {
-	case CallerKindLocal:
-		return wt.OwnerKind == OwnerKindLocal
-	case CallerKindRemote:
-		return wt.OwnerKind == OwnerKindRemote && wt.OwnerID == c.HostID
-	default:
-		return false
-	}
-}
-
-// ownerMismatchMessage renders a 403 body that names the actual owner
-// and tells the caller what to do — most useful when a laptop tries to
-// push to a worktree the remote currently owns.
-func ownerMismatchMessage(c Caller, wt Worktree) string {
-	switch {
-	case c.Kind == CallerKindLocal && wt.OwnerKind == OwnerKindRemote:
-		return "not the current owner: worktree is owned by remote (run `clank pull --migrate` to reclaim ownership before pushing again)"
-	case c.Kind == CallerKindRemote && wt.OwnerKind == OwnerKindLocal:
-		return "not the current owner: worktree is owned by laptop (sprite can only checkpoint while it owns the worktree)"
-	}
-	return "not the current owner"
-}
-
-// callerMatches returns true when the caller's kind equals the
-// requested OwnerKind. For OwnerKindLocal, no ID is checked
-// (ownership is per-user). For OwnerKindRemote, HostID must match.
-// Used by transferOwnership to recognize a legitimate "I'm claiming
-// this worktree" reclaim — see handleTransferOwnership.
-func callerMatches(c Caller, kind OwnerKind, id string) bool {
-	switch kind {
-	case OwnerKindLocal:
-		return c.Kind == CallerKindLocal
-	case OwnerKindRemote:
-		return c.Kind == CallerKindRemote && c.HostID == id
-	default:
-		return false
-	}
 }
 
 // createdByFor returns the canonical CreatedBy stamp for a caller.
@@ -594,9 +475,12 @@ func httpStatusForLookupErr(err error) int {
 	}
 }
 
+// presignCheckpointPuts mints PUT URLs for the per-checkpoint blobs
+// (uncommitted bundle + manifest). The head bundle is content-addressed
+// and handled separately by CreateCheckpoint via storage.KeyForHead.
 func (s *Server) presignCheckpointPuts(ctx context.Context, userID, worktreeID, checkpointID string) (map[storage.Blob]string, error) {
-	out := make(map[storage.Blob]string, 3)
-	for _, blob := range []storage.Blob{storage.BlobHeadCommit, storage.BlobIncremental, storage.BlobManifest} {
+	out := make(map[storage.Blob]string, 2)
+	for _, blob := range []storage.Blob{storage.BlobUncommitted, storage.BlobManifest} {
 		key, err := storage.KeyFor(userID, worktreeID, checkpointID, blob)
 		if err != nil {
 			return nil, fmt.Errorf("key for %s: %w", blob, err)
@@ -616,8 +500,6 @@ func worktreeToResponse(w Worktree) worktreeResponse {
 		UserID:                 w.UserID,
 		DisplayName:            w.DisplayName,
 		OriginRepo:             w.OriginRepo,
-		OwnerKind:              w.OwnerKind,
-		OwnerID:                w.OwnerID,
 		LatestSyncedCheckpoint: w.LatestSyncedCheckpoint,
 		CreatedAt:              w.CreatedAt,
 		UpdatedAt:              w.UpdatedAt,

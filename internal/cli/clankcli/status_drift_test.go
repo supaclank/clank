@@ -1,0 +1,178 @@
+package clankcli
+
+import (
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
+)
+
+// TestClassifyDrift pins the local-only ahead/behind/diverged
+// classification across a small commit graph.
+func TestClassifyDrift(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	repo := newGitRepo(t) // commit c1
+	c1 := pRev(t, repo, "HEAD")
+	pWrite(t, filepath.Join(repo, "f.txt"), "v2")
+	pgit(t, repo, "add", ".")
+	pgit(t, repo, "commit", "-qm", "c2")
+	c2 := pRev(t, repo, "HEAD")
+
+	cases := []struct {
+		name          string
+		local, remote string
+		want          driftState
+		wantAhead     int
+		wantBehind    int
+	}{
+		{"local ahead of remote", c2, c1, driftAhead, 1, 0},
+		{"local behind remote", c1, c2, driftBehind, 0, 1},
+		{"same head (commits in sync, uncommitted only)", c2, c2, driftUncommitted, 0, 0},
+		{"remote head unknown locally", c2, "1234567890123456789012345678901234567890", driftBehind, 0, 0},
+	}
+	for _, tc := range cases {
+		got := classifyDrift(repo, tc.local, tc.remote)
+		if got.state != tc.want || got.ahead != tc.wantAhead || got.behind != tc.wantBehind {
+			t.Errorf("%s: classifyDrift = %+v, want {state:%d ahead:%d behind:%d}",
+				tc.name, got, tc.want, tc.wantAhead, tc.wantBehind)
+		}
+	}
+
+	// Diverged: a second child of c1 on another branch — each side has one
+	// commit the other lacks.
+	pgit(t, repo, "checkout", "-qb", "other", c1)
+	pWrite(t, filepath.Join(repo, "g.txt"), "branchB")
+	pgit(t, repo, "add", ".")
+	pgit(t, repo, "commit", "-qm", "c2b")
+	c2b := pRev(t, repo, "HEAD")
+	if got := classifyDrift(repo, c2, c2b); got.state != driftDiverged || got.ahead != 1 || got.behind != 1 {
+		t.Errorf("diverged: classifyDrift = %+v, want {state:%d ahead:1 behind:1}", got, driftDiverged)
+	}
+}
+
+// TestRenderStatusReport_DriftDirection pins that each drift direction
+// renders the right wording + the right verb(s).
+func TestRenderStatusReport_DriftDirection(t *testing.T) {
+	t.Parallel()
+	base := statusReport{
+		WorktreeID:         "wt",
+		WorktreeDir:        "repo",
+		ActiveRemote:       "dev",
+		ActiveRemoteURL:    "http://localhost:7878",
+		SignedIn:           true,
+		WorktreeFromRemote: &daemonclient.WorktreeInfo{ID: "wt"},
+		HasCheckpoint:      true,
+		InSync:             false,
+	}
+	cases := []struct {
+		drift              driftState
+		want               string
+		wantPush, wantPull bool
+	}{
+		{driftAhead, "Ahead by", true, false},
+		{driftBehind, "Behind by", false, true},
+		{driftDiverged, "Diverged —", true, true},
+		{driftUncommitted, "Dirty state not synced", true, false},
+		{driftUnknown, "Out of sync", true, true},
+	}
+	for _, tc := range cases {
+		rep := base
+		rep.Drift = tc.drift
+		got := stripANSI(renderStatusReport(rep))
+		if !strings.Contains(got, tc.want) {
+			t.Errorf("drift %d: missing %q in:\n%s", tc.drift, tc.want, got)
+		}
+		if strings.Contains(got, "`clank push`") != tc.wantPush {
+			t.Errorf("drift %d: push hint = %v, want %v", tc.drift, !tc.wantPush, tc.wantPush)
+		}
+		if strings.Contains(got, "`clank pull`") != tc.wantPull {
+			t.Errorf("drift %d: pull hint = %v, want %v", tc.drift, !tc.wantPull, tc.wantPull)
+		}
+	}
+}
+
+// TestRenderStatusReport_DirtyButSynced pins the symmetric in-sync form:
+// when committed history AND the dirty working tree both match the remote,
+// status says the dirty state is in sync (not the plain "In sync" line).
+func TestRenderStatusReport_DirtyButSynced(t *testing.T) {
+	t.Parallel()
+	got := stripANSI(renderStatusReport(statusReport{
+		WorktreeID:         "wt",
+		WorktreeDir:        "repo",
+		ActiveRemote:       "dev",
+		SignedIn:           true,
+		WorktreeFromRemote: &daemonclient.WorktreeInfo{ID: "wt"},
+		HasCheckpoint:      true,
+		InSync:             true,
+		WorkingTreeDirty:   true,
+	}))
+	for _, want := range []string{"✓ Commits in sync", "✓ Dirty state in sync"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+// TestRenderStatusReport_DirtyAlongsideDrift pins that the dirty-state
+// bullet rides alongside a commit drift when the local tree is dirty, and
+// is omitted when it's clean.
+func TestRenderStatusReport_DirtyAlongsideDrift(t *testing.T) {
+	t.Parallel()
+	base := statusReport{
+		WorktreeID: "wt", WorktreeDir: "repo", ActiveRemote: "dev", SignedIn: true,
+		WorktreeFromRemote: &daemonclient.WorktreeInfo{ID: "wt"}, HasCheckpoint: true,
+		Drift: driftAhead, DriftAhead: 1,
+	}
+
+	dirty := base
+	dirty.WorkingTreeDirty = true
+	got := stripANSI(renderStatusReport(dirty))
+	if !strings.Contains(got, "Ahead by 1 commit") || !strings.Contains(got, "Dirty state not synced") {
+		t.Errorf("ahead+dirty should show both bullets:\n%s", got)
+	}
+
+	clean := base // WorkingTreeDirty false
+	got = stripANSI(renderStatusReport(clean))
+	if strings.Contains(got, "Dirty state not synced") {
+		t.Errorf("ahead+clean must not show the dirty bullet:\n%s", got)
+	}
+}
+
+// TestRenderStatusReport_DriftCounts pins the commit-count wording,
+// including pluralization and the diverged two-number form.
+func TestRenderStatusReport_DriftCounts(t *testing.T) {
+	t.Parallel()
+	base := statusReport{
+		WorktreeID:         "wt",
+		WorktreeDir:        "repo",
+		ActiveRemote:       "dev",
+		ActiveRemoteURL:    "http://localhost:7878",
+		SignedIn:           true,
+		WorktreeFromRemote: &daemonclient.WorktreeInfo{ID: "wt"},
+		HasCheckpoint:      true,
+		InSync:             false,
+	}
+	cases := []struct {
+		name   string
+		mutate func(*statusReport)
+		want   string
+	}{
+		{"ahead plural", func(r *statusReport) { r.Drift = driftAhead; r.DriftAhead = 3 }, "Ahead by 3 commits"},
+		{"behind singular", func(r *statusReport) { r.Drift = driftBehind; r.DriftBehind = 1 }, "Behind by 1 commit"},
+		{"uncommitted shows commits in sync", func(r *statusReport) { r.Drift = driftUncommitted }, "✓ Commits in sync"},
+		{"diverged counts", func(r *statusReport) { r.Drift = driftDiverged; r.DriftAhead = 2; r.DriftBehind = 1 }, "Diverged — 2 ahead, 1 behind"},
+	}
+	for _, tc := range cases {
+		rep := base
+		tc.mutate(&rep)
+		got := stripANSI(renderStatusReport(rep))
+		if !strings.Contains(got, tc.want) {
+			t.Errorf("%s: missing %q in:\n%s", tc.name, tc.want, got)
+		}
+	}
+}

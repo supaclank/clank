@@ -26,7 +26,7 @@ import (
 // /sync/sessions/* is allowed through on laptop gateways: those
 // handlers operate on opencode storage + host.db, never on ~/work/.
 // They're how the laptop's CLI drives session export/import during
-// `clank push --migrate`.
+// `clank push`/`clank pull`.
 func (g *Gateway) proxyToHost(w http.ResponseWriter, r *http.Request) {
 	// Check the effective (post-strip) path: a request to
 	// /hosts/<host>/sync/* would otherwise bypass the guard and reach

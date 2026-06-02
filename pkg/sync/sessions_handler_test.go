@@ -29,7 +29,7 @@ func TestSessionPresignHandler_HappyPath(t *testing.T) {
 		"head_ref":           "main",
 		"index_tree":         "1111",
 		"worktree_tree":      "2222",
-		"incremental_commit": "3333",
+		"uncommitted_commit": "3333",
 	})
 	checkpointID := create["checkpoint_id"].(string)
 
@@ -55,7 +55,7 @@ func TestSessionPresignHandler_HappyPath(t *testing.T) {
 
 	// Upload to one of the URLs and verify it lands at the expected key.
 	uploadTo(t, urls["01HSESSA"].(string), []byte(`{"info":{"id":"ses_a"}}`))
-	wantKey := "checkpoints/user-A/" + worktreeID + "/" + checkpointID + "/sessions/01HSESSA.json"
+	wantKey := "user-A/checkpoints/" + worktreeID + "/" + checkpointID + "/sessions/01HSESSA.json"
 	var found bool
 	for _, k := range mem.Keys() {
 		if k == wantKey {
@@ -83,7 +83,7 @@ func TestSessionPresignHandler_EmptySessions(t *testing.T) {
 		"head_ref":           "main",
 		"index_tree":         "1111",
 		"worktree_tree":      "2222",
-		"incremental_commit": "3333",
+		"uncommitted_commit": "3333",
 	})
 	checkpointID := create["checkpoint_id"].(string)
 
@@ -134,7 +134,6 @@ func TestSessionPresignHandler_WrongTenantForbidden(t *testing.T) {
 	now := time.Now().UTC()
 	if err := store.InsertWorktree(context.Background(), clanksync.Worktree{
 		ID: "wt-A", UserID: "user-A",
-		OwnerKind: clanksync.OwnerKindLocal, OwnerID: "",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
@@ -142,7 +141,7 @@ func TestSessionPresignHandler_WrongTenantForbidden(t *testing.T) {
 	if err := store.InsertCheckpoint(context.Background(), clanksync.Checkpoint{
 		ID: "ck-A", WorktreeID: "wt-A",
 		HeadCommit: "deadbeef", IndexTree: "1111",
-		WorktreeTree: "2222", IncrementalCommit: "3333",
+		WorktreeTree: "2222", UncommittedCommit: "3333",
 		CreatedAt: now, CreatedBy: "test",
 	}); err != nil {
 		t.Fatal(err)

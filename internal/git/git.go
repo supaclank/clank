@@ -8,6 +8,7 @@ package git
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -376,6 +377,29 @@ func CommitsAhead(dir, base, branch string) (int, error) {
 	return n, nil
 }
 
+// AheadBehind returns how many commits local has that remote lacks
+// (ahead) and how many remote has that local lacks (behind), via
+// `git rev-list --left-right --count local...remote`. Both revisions must
+// resolve in dir's object store; an unknown revision returns an error
+// (callers treat that as "remote advanced past a commit we don't have").
+func AheadBehind(dir, local, remote string) (ahead, behind int, err error) {
+	out, err := gitCmd(dir, "rev-list", "--left-right", "--count", local+"..."+remote)
+	if err != nil {
+		return 0, 0, fmt.Errorf("count ahead/behind: %w", err)
+	}
+	fields := strings.Fields(strings.TrimSpace(out))
+	if len(fields) != 2 {
+		return 0, 0, fmt.Errorf("unexpected rev-list output %q", out)
+	}
+	if ahead, err = strconv.Atoi(fields[0]); err != nil {
+		return 0, 0, fmt.Errorf("parse ahead count %q: %w", fields[0], err)
+	}
+	if behind, err = strconv.Atoi(fields[1]); err != nil {
+		return 0, 0, fmt.Errorf("parse behind count %q: %w", fields[1], err)
+	}
+	return ahead, behind, nil
+}
+
 // CommitLog returns a one-line-per-commit log of commits on branch that are
 // not on base. Format: "<short-hash> <subject>". Newest first.
 func CommitLog(dir, base, branch string) (string, error) {
@@ -506,4 +530,38 @@ func gitCmd(dir string, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %s (%w)", strings.Join(args, " "), strings.TrimSpace(stderr.String()), err)
 	}
 	return stdout.String(), nil
+}
+
+// IsAncestor reports whether commit `ancestor` is an ancestor of
+// `descendant` (i.e. descendant is reachable from ancestor) in the repo
+// at dir. Both commits must already be present in the local object
+// store. Used to gate a fast-forward pull.
+func IsAncestor(dir, ancestor, descendant string) (bool, error) {
+	cmd := exec.Command("git", "merge-base", "--is-ancestor", ancestor, descendant)
+	cmd.Dir = dir
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("git merge-base --is-ancestor %s %s: %w", ancestor, descendant, err)
+}
+
+// FetchBundleObjects loads the git objects from the bundle file at
+// bundlePath into the repo at dir's object store, without moving any
+// branch or touching the working tree. Afterwards, commits contained in
+// the bundle (e.g. a remote HEAD) are available for ancestry checks
+// before any destructive apply.
+func FetchBundleObjects(dir, bundlePath string) error {
+	// Load the bundle's refs/* into a private temp namespace (force) so
+	// the objects land in the store without touching real branches or the
+	// worktree. Repeated pulls force-overwrite the temp refs (no
+	// accumulation). Mirrors checkpoint.fetchBundle's refspec.
+	if _, err := gitCmd(dir, "fetch", "--no-tags", bundlePath, "+refs/*:refs/clank-pull-tmp/*"); err != nil {
+		return fmt.Errorf("fetch bundle objects from %s: %w", bundlePath, err)
+	}
+	return nil
 }

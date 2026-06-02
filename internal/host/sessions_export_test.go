@@ -369,7 +369,7 @@ func TestExportSessions_SkipsMissingOpencodeSession(t *testing.T) {
 }
 
 // TestExportSessions_IgnoresStaleLocalPath is the regression test
-// for the chdir-on-export bug observed during pull --migrate: a
+// for the chdir-on-export bug observed during a pull-back: a
 // session row whose host.db.project_dir is the SOURCE host's local
 // path (because the row was imported earlier from that source) must
 // still export cleanly on the DESTINATION. Without the fix, the

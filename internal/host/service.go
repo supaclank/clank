@@ -3,9 +3,10 @@ package host
 // Service is the Host plane's domain object: it owns BackendManagers
 // for agent sessions and resolves GitRefs to working directories.
 // LocalPath refs use the path on this host directly; WorktreeID refs
-// resolve to ~/work/<WorktreeID>/, which the gateway populates during
-// MigrateWorktree. There is no clone-from-origin path — the model is
-// "synced worktree, single happy path".
+// resolve to ~/work/<WorktreeID>/, materialized from a synced checkpoint
+// in object storage. NOTE: that S3→host materialization isn't orchestrated
+// yet (see TODO(materialize) in internal/host/mux/sync.go). There is no
+// clone-from-origin path — the model is "synced worktree, single happy path".
 
 import (
 	"context"
@@ -701,9 +702,10 @@ func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
 // Precedence (per the GitRef contract):
 //  1. LocalPath set + usable as a repo on this host → use it.
 //  2. WorktreeID set → use ~/work/<WorktreeID>/. Errors with a clear
-//     message if that directory is missing — the gateway must
-//     MigrateWorktree this worktree to this host first. We do NOT
-//     fall back to cloning.
+//     message if that directory is missing — the worktree's synced
+//     checkpoint must be materialized onto this host first
+//     (TODO(materialize): the S3→host apply isn't orchestrated yet). We
+//     do NOT fall back to cloning.
 //  3. Neither set / not usable → error.
 //
 // WorktreeBranch (when set) resolves to an additional git worktree
@@ -738,7 +740,7 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 			// Wrap ErrNotFound so writeError can map to 404. Other
 			// workDirFor returns are caller-bug (relative paths, etc.)
 			// and stay as 500.
-			return "", fmt.Errorf("%w: worktree %s not present at %s — run MigrateWorktree first (or `clank push` to sync, then migrate)", ErrNotFound, ref.WorktreeID, base)
+			return "", fmt.Errorf("%w: worktree %s not present at %s — its synced checkpoint hasn't been materialized onto this host yet", ErrNotFound, ref.WorktreeID, base)
 		case err != nil:
 			return "", fmt.Errorf("stat worktree dir %q: %w", base, err)
 		case !fi.IsDir():
@@ -757,7 +759,7 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 }
 
 // workRootForTest, when non-empty, overrides the $HOME/work parent
-// for migrated worktrees. Test-only hook — production callers leave
+// for materialized worktrees. Test-only hook — production callers leave
 // this empty and rely on $HOME via os.UserHomeDir(). Avoids t.Setenv
 // in parallel-heavy test packages.
 //
@@ -765,7 +767,7 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 // https://github.com/Acksell/clank/pull/16#discussion_r3213461979
 var workRootForTest string
 
-// workRootDir returns $HOME/work — the parent under which migrated
+// workRootDir returns $HOME/work — the parent under which materialized
 // worktrees land at /<WorktreeID>/. Mirrors internal/host/mux's
 // workRoot; consolidating to one helper would require pkg-cycle
 // refactoring (the mux import-path-traverses through hostmux).

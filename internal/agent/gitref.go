@@ -24,19 +24,19 @@ import (
 //     `clank push`. When the
 //     target host is *not* co-located (docker stack, cloud sandbox),
 //     it ignores LocalPath and resolves the worktree from
-//     `~/work/<WorktreeID>/`, which the gateway populates during
-//     MigrateWorktree.
+//     `~/work/<WorktreeID>/`, materialized from a synced checkpoint in
+//     object storage.
 //
 // At least one MUST be set. Both is the common laptop pattern (TUI
-// also sends WorktreeID so a future migration to a remote host
-// doesn't require re-creating the session).
+// also sends WorktreeID so moving the session to a remote host later
+// doesn't require re-creating it).
 //
 // Resolution precedence on the host (see host.Service.workDirFor):
 //  1. If LocalPath is set and points at a valid repo on this host →
 //     use it directly.
 //  2. Else if WorktreeID is set → use ~/work/<WorktreeID>/. Error if
-//     that directory doesn't exist (the gateway must run a migration
-//     for this worktree first; we deliberately do not silently clone
+//     that directory doesn't exist (the worktree must be materialized
+//     from object storage first; we deliberately do not silently clone
 //     from origin or pull from the mirror — the model is "synced
 //     worktree, single happy path", not "fall back to clone").
 //  3. Else → error.

@@ -3,12 +3,12 @@
 //
 //   - headCommit bundle  — `git bundle` covering the current HEAD's
 //     reachable history. Heavy but rarely changes.
-//   - incremental bundle — a synthetic commit produced via
+//   - uncommitted bundle — a synthetic commit produced via
 //     `git commit-tree` against a tree that includes uncommitted /
 //     staged / untracked work. Light, often changes.
 //
 // A Manifest captures HEAD SHA, HEAD ref, indexTree SHA, worktreeTree
-// SHA, and the synthetic incremental commit SHA. Restoring (Apply)
+// SHA, and the synthetic uncommitted commit SHA. Restoring (Apply)
 // reproduces the exact pre-checkpoint working state, including
 // untracked files and staged-but-uncommitted changes.
 //
@@ -52,7 +52,7 @@ type Manifest struct {
 	HeadRef           string    `json:"head_ref"`
 	IndexTree         string    `json:"index_tree"`
 	WorktreeTree      string    `json:"worktree_tree"`
-	IncrementalCommit string    `json:"incremental_commit"`
+	UncommittedCommit string    `json:"uncommitted_commit"`
 	CreatedAt         time.Time `json:"created_at"`
 	CreatedBy         string    `json:"created_by"`
 	OriginRemoteURL   string    `json:"origin_remote_url,omitempty"`
@@ -84,7 +84,7 @@ func UnmarshalManifest(data []byte) (*Manifest, error) {
 type Result struct {
 	Manifest          *Manifest
 	HeadCommitBundle  string
-	IncrementalBundle string
+	UncommittedBundle string
 }
 
 // Cleanup removes the temp bundle files. Safe to call multiple times.
@@ -96,9 +96,9 @@ func (r *Result) Cleanup() {
 		_ = os.Remove(r.HeadCommitBundle)
 		r.HeadCommitBundle = ""
 	}
-	if r.IncrementalBundle != "" {
-		_ = os.Remove(r.IncrementalBundle)
-		r.IncrementalBundle = ""
+	if r.UncommittedBundle != "" {
+		_ = os.Remove(r.UncommittedBundle)
+		r.UncommittedBundle = ""
 	}
 }
 
@@ -106,6 +106,10 @@ func (r *Result) Cleanup() {
 type Builder struct {
 	repoPath  string
 	createdBy string
+	// committedOnly snapshots the committed state only: the index and
+	// worktree trees are taken as HEAD's tree, ignoring uncommitted/
+	// staged/untracked changes. Drives `clank push --clean`.
+	committedOnly bool
 }
 
 // NewBuilder constructs a Builder rooted at repoPath. createdBy is
@@ -113,6 +117,14 @@ type Builder struct {
 // "sprite:<host_id>").
 func NewBuilder(repoPath, createdBy string) *Builder {
 	return &Builder{repoPath: repoPath, createdBy: createdBy}
+}
+
+// CommittedOnly returns the builder configured to ignore uncommitted
+// changes — snapshots and checkpoints capture HEAD's tree as both the
+// index and worktree tree, so a restore reproduces a clean HEAD.
+func (b *Builder) CommittedOnly() *Builder {
+	b.committedOnly = true
+	return b
 }
 
 // Snapshot is the content-addressed view of the working tree without
@@ -152,6 +164,22 @@ func (b *Builder) snapshot(ctx context.Context) (*Snapshot, error) {
 		headRef = strings.TrimSpace(out)
 	}
 
+	// --clean: take HEAD's tree for both index and worktree so the
+	// checkpoint reflects committed state only, ignoring local changes.
+	if b.committedOnly {
+		tree, err := b.gitOutput(ctx, nil, "rev-parse", headCommit+"^{tree}")
+		if err != nil {
+			return nil, fmt.Errorf("rev-parse HEAD tree: %w", err)
+		}
+		tree = strings.TrimSpace(tree)
+		return &Snapshot{
+			HeadCommit:   headCommit,
+			HeadRef:      headRef,
+			IndexTree:    tree,
+			WorktreeTree: tree,
+		}, nil
+	}
+
 	indexTreeOut, err := b.gitOutput(ctx, nil, "write-tree")
 	if err != nil {
 		return nil, fmt.Errorf("write-tree (index): %w", err)
@@ -171,10 +199,33 @@ func (b *Builder) snapshot(ctx context.Context) (*Snapshot, error) {
 	}, nil
 }
 
-// Build constructs a checkpoint with the given checkpointID. The
-// caller is responsible for generating the ID (typically a ULID) and
-// for cleaning up the returned Result.
+// Build constructs a full checkpoint: the uncommitted bundle + manifest
+// plus a FULL head bundle (all HEAD history). Equivalent to
+// BuildUncommitted followed by a full BuildHeadBundle. Callers that
+// always want both bundles use this; the laptop's content-addressed
+// push path uses the two methods separately so it can skip the head
+// bundle when the server already has that HEAD.
 func (b *Builder) Build(ctx context.Context, checkpointID string) (*Result, error) {
+	res, err := b.BuildUncommitted(ctx, checkpointID)
+	if err != nil {
+		return nil, err
+	}
+	headBundle, err := b.BuildHeadBundle(ctx, checkpointID, res.Manifest.HeadCommit, "")
+	if err != nil {
+		res.Cleanup()
+		return nil, err
+	}
+	res.HeadCommitBundle = headBundle
+	return res, nil
+}
+
+// BuildUncommitted builds the uncommitted bundle (worktree/index/
+// untracked delta on top of HEAD) and the manifest, leaving the head
+// bundle to a separate BuildHeadBundle call. Result.HeadCommitBundle is
+// "" — the caller fills it after deciding whether the head bundle is
+// needed (content-addressed dedup). The uncommitted bundle is bounded by
+// the head COMMIT (`^headCommit`), so it needs no head bundle/ref.
+func (b *Builder) BuildUncommitted(ctx context.Context, checkpointID string) (*Result, error) {
 	if checkpointID == "" {
 		return nil, errors.New("checkpoint: checkpointID is required")
 	}
@@ -184,9 +235,6 @@ func (b *Builder) Build(ctx context.Context, checkpointID string) (*Result, erro
 		return nil, err
 	}
 	headCommit := snap.HeadCommit
-	headRef := snap.HeadRef
-	indexTree := snap.IndexTree
-	worktreeTree := snap.WorktreeTree
 
 	// Capture origin's URL so Apply can re-create the remote on the
 	// destination. Error-tolerant: pre-clank-push laptop repos and
@@ -209,37 +257,26 @@ func (b *Builder) Build(ctx context.Context, checkpointID string) (*Result, erro
 	// the destination's .git/objects/. Then make the worktree commit's
 	// second parent point at the index commit so a single bundle covers
 	// both trees and their blobs.
-	indexCommit, err := b.gitOutput(ctx, nil, "commit-tree", indexTree, "-p", headCommit, "-m", commitMsg+" (index)")
+	indexCommit, err := b.gitOutput(ctx, nil, "commit-tree", snap.IndexTree, "-p", headCommit, "-m", commitMsg+" (index)")
 	if err != nil {
 		return nil, fmt.Errorf("commit-tree (index): %w", err)
 	}
 	indexCommit = strings.TrimSpace(indexCommit)
 
-	incrCommit, err := b.gitOutput(ctx, nil, "commit-tree", worktreeTree, "-p", headCommit, "-p", indexCommit, "-m", commitMsg+" (worktree)")
+	incrCommit, err := b.gitOutput(ctx, nil, "commit-tree", snap.WorktreeTree, "-p", headCommit, "-p", indexCommit, "-m", commitMsg+" (worktree)")
 	if err != nil {
 		return nil, fmt.Errorf("commit-tree (worktree): %w", err)
 	}
 	incrCommit = strings.TrimSpace(incrCommit)
 
-	headRefName := tempRefHead(checkpointID)
-	incrRefName := tempRefIncremental(checkpointID)
-
-	if err := b.gitRun(ctx, nil, "update-ref", headRefName, headCommit); err != nil {
-		return nil, fmt.Errorf("update-ref %s: %w", headRefName, err)
-	}
-	defer b.deleteRef(ctx, headRefName)
+	incrRefName := tempRefUncommitted(checkpointID)
 	if err := b.gitRun(ctx, nil, "update-ref", incrRefName, incrCommit); err != nil {
 		return nil, fmt.Errorf("update-ref %s: %w", incrRefName, err)
 	}
 	defer b.deleteRef(ctx, incrRefName)
 
-	headBundle, err := tempBundleFile("clank-headcommit-")
+	incrBundle, err := tempBundleFile("clank-uncommitted-")
 	if err != nil {
-		return nil, err
-	}
-	incrBundle, err := tempBundleFile("clank-incremental-")
-	if err != nil {
-		_ = os.Remove(headBundle)
 		return nil, err
 	}
 
@@ -248,28 +285,50 @@ func (b *Builder) Build(ctx context.Context, checkpointID string) (*Result, erro
 			Version:           ManifestVersion,
 			CheckpointID:      checkpointID,
 			HeadCommit:        headCommit,
-			HeadRef:           headRef,
-			IndexTree:         indexTree,
-			WorktreeTree:      worktreeTree,
-			IncrementalCommit: incrCommit,
+			HeadRef:           snap.HeadRef,
+			IndexTree:         snap.IndexTree,
+			WorktreeTree:      snap.WorktreeTree,
+			UncommittedCommit: incrCommit,
 			CreatedAt:         time.Now().UTC(),
 			CreatedBy:         b.createdBy,
 			OriginRemoteURL:   originURL,
 		},
-		HeadCommitBundle:  headBundle,
-		IncrementalBundle: incrBundle,
+		UncommittedBundle: incrBundle,
 	}
 
-	if err := b.gitRun(ctx, nil, "bundle", "create", headBundle, headRefName); err != nil {
-		res.Cleanup()
-		return nil, fmt.Errorf("bundle headCommit: %w", err)
-	}
 	if err := b.gitRun(ctx, nil, "bundle", "create", incrBundle, incrRefName, "^"+headCommit); err != nil {
 		res.Cleanup()
-		return nil, fmt.Errorf("bundle incremental: %w", err)
+		return nil, fmt.Errorf("bundle uncommitted: %w", err)
 	}
-
 	return res, nil
+}
+
+// BuildHeadBundle bundles HEAD's committed history to a temp file and
+// returns its path (the caller removes it). base == "" produces a FULL
+// bundle (`git bundle create f HEAD` — all history); a non-empty base
+// produces an INCREMENTAL bundle (`… HEAD ^base` — only commits after
+// base), whose applier must already have base. The temp ref is created
+// and deleted here; the bundle file is self-contained.
+func (b *Builder) BuildHeadBundle(ctx context.Context, checkpointID, headCommit, base string) (string, error) {
+	headRefName := tempRefHead(checkpointID)
+	if err := b.gitRun(ctx, nil, "update-ref", headRefName, headCommit); err != nil {
+		return "", fmt.Errorf("update-ref %s: %w", headRefName, err)
+	}
+	defer b.deleteRef(ctx, headRefName)
+
+	headBundle, err := tempBundleFile("clank-headcommit-")
+	if err != nil {
+		return "", err
+	}
+	args := []string{"bundle", "create", headBundle, headRefName}
+	if base != "" {
+		args = append(args, "^"+base)
+	}
+	if err := b.gitRun(ctx, nil, args...); err != nil {
+		_ = os.Remove(headBundle)
+		return "", fmt.Errorf("bundle headCommit: %w", err)
+	}
+	return headBundle, nil
 }
 
 // captureWorktreeTree builds a tree object representing the working
@@ -318,22 +377,32 @@ func (b *Builder) deleteRef(ctx context.Context, ref string) {
 //
 // Apply does not delete refs that exist in the repo but not in the
 // bundle — those are user state and out of scope.
-func Apply(ctx context.Context, repoPath string, manifest *Manifest, headCommitBundle, incrementalBundle io.Reader) error {
+// Apply restores a checkpoint into repoPath. headBundles is the ordered
+// head chain (oldest→newest) — for a full checkpoint that's one full
+// bundle; for an incremental pull it's [full baseline, …, increments].
+// They're fetched in order so each bundle's prerequisite is already
+// present. uncommittedBundle carries the worktree/index/untracked delta.
+func Apply(ctx context.Context, repoPath string, manifest *Manifest, headBundles []io.Reader, uncommittedBundle io.Reader) error {
 	if manifest == nil {
 		return errors.New("checkpoint: manifest is nil")
 	}
 	if manifest.Version != ManifestVersion {
 		return fmt.Errorf("checkpoint: unsupported manifest version %d", manifest.Version)
 	}
+	if len(headBundles) == 0 {
+		return errors.New("checkpoint: no head bundles to apply")
+	}
 
 	if err := ensureRepo(ctx, repoPath); err != nil {
 		return err
 	}
 
-	if err := fetchBundle(ctx, repoPath, headCommitBundle, "headCommit"); err != nil {
-		return err
+	for i, hb := range headBundles {
+		if err := fetchBundle(ctx, repoPath, hb, fmt.Sprintf("head-%d", i)); err != nil {
+			return err
+		}
 	}
-	if err := fetchBundle(ctx, repoPath, incrementalBundle, "incremental"); err != nil {
+	if err := fetchBundle(ctx, repoPath, uncommittedBundle, "uncommitted"); err != nil {
 		return err
 	}
 
@@ -372,7 +441,7 @@ func Apply(ctx context.Context, repoPath string, manifest *Manifest, headCommitB
 
 	// Best-effort cleanup of the temp refs the bundle introduced.
 	_ = gitRunIn(ctx, repoPath, nil, "update-ref", "-d", tempRefHead(manifest.CheckpointID))
-	_ = gitRunIn(ctx, repoPath, nil, "update-ref", "-d", tempRefIncremental(manifest.CheckpointID))
+	_ = gitRunIn(ctx, repoPath, nil, "update-ref", "-d", tempRefUncommitted(manifest.CheckpointID))
 
 	// Restore origin's URL when the manifest carries one. Pre-fix
 	// manifests have OriginRemoteURL == "" and skip this step
@@ -448,8 +517,8 @@ func tempRefHead(checkpointID string) string {
 	return "refs/clank-checkpoints/" + checkpointID + "/head"
 }
 
-func tempRefIncremental(checkpointID string) string {
-	return "refs/clank-checkpoints/" + checkpointID + "/incremental"
+func tempRefUncommitted(checkpointID string) string {
+	return "refs/clank-checkpoints/" + checkpointID + "/uncommitted"
 }
 
 func tempBundleFile(prefix string) (string, error) {

@@ -43,8 +43,31 @@ func (q *Queries) GetCheckpointByID(ctx context.Context, id string) (Checkpoint,
 	return i, err
 }
 
+const getHeadBundle = `-- name: GetHeadBundle :one
+SELECT user_id, tip_sha, base_sha, blob_key, created_at FROM head_bundles
+WHERE user_id = ? AND tip_sha = ?
+`
+
+type GetHeadBundleParams struct {
+	UserID string
+	TipSha string
+}
+
+func (q *Queries) GetHeadBundle(ctx context.Context, arg GetHeadBundleParams) (HeadBundle, error) {
+	row := q.db.QueryRowContext(ctx, getHeadBundle, arg.UserID, arg.TipSha)
+	var i HeadBundle
+	err := row.Scan(
+		&i.UserID,
+		&i.TipSha,
+		&i.BaseSha,
+		&i.BlobKey,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getWorktreeByID = `-- name: GetWorktreeByID :one
-SELECT id, user_id, display_name, origin_repo, owner_kind, owner_id, latest_synced_checkpoint, created_at, updated_at FROM worktrees
+SELECT id, user_id, display_name, origin_repo, latest_synced_checkpoint, created_at, updated_at FROM worktrees
 WHERE id = ?
 `
 
@@ -56,8 +79,6 @@ func (q *Queries) GetWorktreeByID(ctx context.Context, id string) (Worktree, err
 		&i.UserID,
 		&i.DisplayName,
 		&i.OriginRepo,
-		&i.OwnerKind,
-		&i.OwnerID,
 		&i.LatestSyncedCheckpoint,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -100,11 +121,38 @@ func (q *Queries) InsertCheckpoint(ctx context.Context, arg InsertCheckpointPara
 	return err
 }
 
+const insertHeadBundle = `-- name: InsertHeadBundle :exec
+INSERT OR IGNORE INTO head_bundles (
+    user_id, tip_sha, base_sha, blob_key, created_at
+) VALUES (?, ?, ?, ?, ?)
+`
+
+type InsertHeadBundleParams struct {
+	UserID    string
+	TipSha    string
+	BaseSha   string
+	BlobKey   string
+	CreatedAt time.Time
+}
+
+// Idempotent: a tip's first stored bundle wins, so re-pushing a HEAD the
+// server already has (already_stored) keeps the original base_sha link.
+func (q *Queries) InsertHeadBundle(ctx context.Context, arg InsertHeadBundleParams) error {
+	_, err := q.db.ExecContext(ctx, insertHeadBundle,
+		arg.UserID,
+		arg.TipSha,
+		arg.BaseSha,
+		arg.BlobKey,
+		arg.CreatedAt,
+	)
+	return err
+}
+
 const insertWorktree = `-- name: InsertWorktree :exec
 INSERT INTO worktrees (
-    id, user_id, display_name, origin_repo, owner_kind, owner_id,
+    id, user_id, display_name, origin_repo,
     latest_synced_checkpoint, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?)
 `
 
 type InsertWorktreeParams struct {
@@ -112,8 +160,6 @@ type InsertWorktreeParams struct {
 	UserID                 string
 	DisplayName            string
 	OriginRepo             string
-	OwnerKind              string
-	OwnerID                string
 	LatestSyncedCheckpoint string
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
@@ -125,8 +171,6 @@ func (q *Queries) InsertWorktree(ctx context.Context, arg InsertWorktreeParams) 
 		arg.UserID,
 		arg.DisplayName,
 		arg.OriginRepo,
-		arg.OwnerKind,
-		arg.OwnerID,
 		arg.LatestSyncedCheckpoint,
 		arg.CreatedAt,
 		arg.UpdatedAt,
@@ -180,52 +224,8 @@ func (q *Queries) ListCheckpointsByWorktree(ctx context.Context, arg ListCheckpo
 	return items, nil
 }
 
-const listWorktreesByOwner = `-- name: ListWorktreesByOwner :many
-SELECT id, user_id, display_name, origin_repo, owner_kind, owner_id, latest_synced_checkpoint, created_at, updated_at FROM worktrees
-WHERE owner_kind = ? AND owner_id = ?
-ORDER BY updated_at DESC
-`
-
-type ListWorktreesByOwnerParams struct {
-	OwnerKind string
-	OwnerID   string
-}
-
-func (q *Queries) ListWorktreesByOwner(ctx context.Context, arg ListWorktreesByOwnerParams) ([]Worktree, error) {
-	rows, err := q.db.QueryContext(ctx, listWorktreesByOwner, arg.OwnerKind, arg.OwnerID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []Worktree
-	for rows.Next() {
-		var i Worktree
-		if err := rows.Scan(
-			&i.ID,
-			&i.UserID,
-			&i.DisplayName,
-			&i.OriginRepo,
-			&i.OwnerKind,
-			&i.OwnerID,
-			&i.LatestSyncedCheckpoint,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listWorktreesByUser = `-- name: ListWorktreesByUser :many
-SELECT id, user_id, display_name, origin_repo, owner_kind, owner_id, latest_synced_checkpoint, created_at, updated_at FROM worktrees
+SELECT id, user_id, display_name, origin_repo, latest_synced_checkpoint, created_at, updated_at FROM worktrees
 WHERE user_id = ?
 ORDER BY updated_at DESC
 `
@@ -244,8 +244,6 @@ func (q *Queries) ListWorktreesByUser(ctx context.Context, userID string) ([]Wor
 			&i.UserID,
 			&i.DisplayName,
 			&i.OriginRepo,
-			&i.OwnerKind,
-			&i.OwnerID,
 			&i.LatestSyncedCheckpoint,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -279,40 +277,6 @@ func (q *Queries) MarkCheckpointUploaded(ctx context.Context, arg MarkCheckpoint
 	return err
 }
 
-const updateWorktreeOwner = `-- name: UpdateWorktreeOwner :execrows
-UPDATE worktrees
-SET owner_kind = ?, owner_id = ?, updated_at = ?
-WHERE id = ? AND owner_kind = ? AND owner_id = ?
-`
-
-type UpdateWorktreeOwnerParams struct {
-	OwnerKind   string
-	OwnerID     string
-	UpdatedAt   time.Time
-	ID          string
-	OwnerKind_2 string
-	OwnerID_2   string
-}
-
-// Atomic ownership transfer: only succeeds when the requester knows
-// the full current (owner_kind, owner_id) tuple. Both are matched so
-// a stale or cross-kind transfer cannot mutate the row even if the
-// two kinds reuse the same id namespace by accident.
-func (q *Queries) UpdateWorktreeOwner(ctx context.Context, arg UpdateWorktreeOwnerParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, updateWorktreeOwner,
-		arg.OwnerKind,
-		arg.OwnerID,
-		arg.UpdatedAt,
-		arg.ID,
-		arg.OwnerKind_2,
-		arg.OwnerID_2,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
 const updateWorktreePointer = `-- name: UpdateWorktreePointer :exec
 UPDATE worktrees
 SET latest_synced_checkpoint = ?, updated_at = ?
@@ -329,4 +293,3 @@ func (q *Queries) UpdateWorktreePointer(ctx context.Context, arg UpdateWorktreeP
 	_, err := q.db.ExecContext(ctx, updateWorktreePointer, arg.LatestSyncedCheckpoint, arg.UpdatedAt, arg.ID)
 	return err
 }
-

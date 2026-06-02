@@ -162,4 +162,4 @@ func (g *Gateway) authPreviewWebhook(w http.ResponseWriter, r *http.Request) (ho
 	return host, true
 }
 
-// writeJSON is declared in pkg/gateway/migrate.go.
+// writeJSON is declared in pkg/gateway/responses.go.

@@ -9,7 +9,6 @@ package gateway
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -61,8 +60,8 @@ type AuthConfig struct {
 }
 
 // Config wires the gateway's dependencies. Provisioner is required;
-// Sync is optional (when nil, the migration route returns 503 and
-// the /v1/ prefix isn't mounted).
+// Sync is optional (when nil, the pull route returns 503 and the /v1/
+// prefix isn't mounted).
 //
 // Authentication is the responsibility of an outer middleware (see
 // pkg/auth.Middleware) — by the time a request reaches the gateway,
@@ -73,26 +72,10 @@ type Config struct {
 	Provisioner provisioner.Provisioner
 
 	// Sync is the embedded sync server. When non-nil, the gateway mounts
-	// the sync API routes under /v1/ and the migration route calls sync
-	// methods directly rather than via HTTP. When nil, the migration
-	// route returns 503.
+	// the sync API routes under /v1/ and the pull route calls sync
+	// methods directly rather than via HTTP. When nil, the pull route
+	// returns 503.
 	Sync *clanksync.Server
-
-	// OwnerCache holds the laptop daemon's cached view of which
-	// worktrees the active remote owns. When non-nil AND Sync == nil
-	// (laptop mode), the gateway mounts the /sessions* router that
-	// proxies per-session ops to the active remote for remote-owned
-	// worktrees. When nil, /sessions/* falls through to today's
-	// proxyToHost (the catch-all). The cloud gateway (Sync != nil)
-	// never has an OwnerCache — it is the destination of the proxy,
-	// not the source.
-	OwnerCache *OwnerCache
-
-	// RemoteResolver provides the active remote's URL+JWT for the
-	// /sessions* router's outbound calls. Required iff OwnerCache is
-	// set; same supplier as the OwnerCache itself, but threaded
-	// separately so the router can call out without sharing state.
-	RemoteResolver RemoteResolver
 
 	// AuthConfig, when non-nil, makes AuthConfigHandler() return a
 	// handler that serves this payload as JSON. Daemons wire that
@@ -165,28 +148,12 @@ type Config struct {
 type Gateway struct {
 	cfg Config
 	log *log.Logger
-
-	// migrationKey signs two-phase migration tokens. Random-on-startup
-	// so a daemon restart invalidates any pending materialize → commit
-	// in flight; the laptop re-runs `clank pull --migrate`.
-	migrationKey []byte
-
-	// ownerCache is a convenience handle on cfg.OwnerCache so the
-	// per-session routing helpers don't have to spell out cfg.OwnerCache
-	// at every call site.
-	ownerCache *OwnerCache
 }
 
 // NewGateway constructs a Gateway.
 func NewGateway(cfg Config, lg *log.Logger) (*Gateway, error) {
 	if cfg.Provisioner == nil {
 		return nil, fmt.Errorf("gateway: Provisioner is required")
-	}
-	if cfg.OwnerCache != nil && cfg.RemoteResolver == nil {
-		return nil, fmt.Errorf("gateway: OwnerCache requires RemoteResolver")
-	}
-	if cfg.OwnerCache != nil && cfg.Sync != nil {
-		return nil, fmt.Errorf("gateway: OwnerCache is only valid in laptop mode (Sync must be nil)")
 	}
 	previewSet := cfg.PreviewRoutes != nil
 	hostsSet := cfg.PreviewHostLookup != nil
@@ -214,29 +181,23 @@ func NewGateway(cfg Config, lg *log.Logger) (*Gateway, error) {
 	if lg == nil {
 		lg = log.Default()
 	}
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		return nil, fmt.Errorf("gateway: generate migration signing key: %w", err)
-	}
-	return &Gateway{cfg: cfg, log: lg, migrationKey: key, ownerCache: cfg.OwnerCache}, nil
+	return &Gateway{cfg: cfg, log: lg}, nil
 }
 
 // Handler returns the public-listener http.Handler.
 //
 // /ping and /gateway/health answer locally without waking a host;
-// /v1/migrate/worktrees/{id} runs the gateway-orchestrated migration
-// flow when Sync is configured; /v1/ (other paths) forwards to the
-// embedded sync server when Sync is configured; every other path
-// proxies to the user's host. Authentication is handled by an outer
-// middleware (pkg/auth.Middleware); handlers read the Principal from
-// r.Context() via auth.MustPrincipal.
+// /v1/worktrees/{id}/pull runs the gateway-orchestrated pull flow when
+// Sync is configured; /v1/ (other paths) forwards to the embedded sync
+// server when Sync is configured; every other path proxies to the
+// user's host. Authentication is handled by an outer middleware
+// (pkg/auth.Middleware); handlers read the Principal from r.Context()
+// via auth.MustPrincipal.
 func (g *Gateway) Handler() http.Handler {
 	mx := http.NewServeMux()
 	mx.HandleFunc("GET /ping", g.handlePing)
 	mx.HandleFunc("GET /gateway/health", g.handleGatewayHealth)
-	mx.HandleFunc("POST /v1/migrate/worktrees/{id}", g.handleMigrateWorktree)
-	mx.HandleFunc("POST /v1/migrate/worktrees/{id}/materialize", g.handleMigrateMaterialize)
-	mx.HandleFunc("POST /v1/migrate/worktrees/{id}/commit", g.handleMigrateCommit)
+	mx.HandleFunc("POST /v1/worktrees/{id}/pull", g.handlePullWorktree)
 	// /v1/worktrees/create and /v1/worktrees/list-branches must be
 	// mounted BEFORE the `/v1/` catch-all so they reach the host (via
 	// these gateway-orchestrated handlers) instead of the sync server.
@@ -254,8 +215,8 @@ func (g *Gateway) Handler() http.Handler {
 	mx.HandleFunc("POST /v1/worktrees/{id}/pr", g.handleGitHubCreatePR)
 	mx.HandleFunc("POST /v1/worktrees/{id}/pr/preview", g.handleGitHubPreviewPR)
 	if g.cfg.Sync != nil {
-		// POST /v1/migrate/worktrees/{id} is more specific and wins
-		// over the /v1/ prefix registered here.
+		// The specific /v1/worktrees/... routes above are more specific
+		// and win over this /v1/ prefix registered here.
 		mx.Handle("/v1/", g.cfg.Sync.Handler())
 	}
 	if g.cfg.Notify != nil {
@@ -276,17 +237,10 @@ func (g *Gateway) Handler() http.Handler {
 		mx.HandleFunc("DELETE /v1/preview/tokens/{token}", g.handleDeletePreviewToken)
 		// /webhooks/preview/* mounts pre-auth via PreviewWebhookHandler.
 	}
-	if g.ownerCache != nil {
-		// Laptop mode: per-session routing decides local-vs-remote
-		// based on worktree ownership. /sessions/search is mounted
-		// explicitly so /sessions/{id} below doesn't match "search"
-		// as a session id.
-		mx.HandleFunc("GET /sessions", g.handleListSessions)
-		mx.HandleFunc("GET /sessions/search", g.handleSearchSessions)
-		mx.HandleFunc("POST /sessions", g.handleCreateSession)
-		mx.HandleFunc("/sessions/{id}", g.handlePerSession)
-		mx.HandleFunc("/sessions/{id}/", g.handlePerSession)
-	}
+	// All /sessions* ops proxy to the user's host (the laptop's local
+	// clank-host, or the sandbox for a cloud gateway). The gateway no
+	// longer routes per-worktree local-vs-remote — that ownership-based
+	// routing is gone.
 	mx.HandleFunc("/", g.proxyToHost)
 	return mx
 }

@@ -442,8 +442,49 @@ func (s *Store) migrate() error {
 		}
 		version = 25
 	}
+	if version < 26 {
+		// Drop worktree ownership. owner_kind/owner_id backed the
+		// gateway's per-worktree local-vs-remote session router — a role
+		// we cut. Sync is now asymmetric (laptop→remote autopush,
+		// explicit `clank pull`) with drift guarded by git preconditions,
+		// not a distributed ownership lock. The owner index must go first:
+		// SQLite refuses DROP COLUMN on an indexed column.
+		_, err := s.db.Exec(`
+			DROP INDEX IF EXISTS worktrees_owner_idx;
+			ALTER TABLE worktrees DROP COLUMN owner_kind;
+			ALTER TABLE worktrees DROP COLUMN owner_id;
+			PRAGMA user_version = 26;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v26: %w", err)
+		}
+		version = 26
+	}
+	if version < 27 {
+		// head_bundles: content-addressed head-bundle index for the
+		// incremental sync chain. tip_sha = the HEAD commit a bundle ends
+		// at; base_sha = the commit it's built from ("" = full baseline).
+		// Lets the server skip re-uploads (already-stored tips), send only
+		// new commits since a known base, and walk tip→base back to a full
+		// baseline on download. Schema mirrored in
+		// internal/store/schema/0002_worktrees.sql for sqlc.
+		_, err := s.db.Exec(`
+			CREATE TABLE head_bundles (
+				user_id    TEXT NOT NULL,
+				tip_sha    TEXT NOT NULL,
+				base_sha   TEXT NOT NULL DEFAULT '',
+				blob_key   TEXT NOT NULL,
+				created_at DATETIME NOT NULL,
+				PRIMARY KEY (user_id, tip_sha)
+			);
+			PRAGMA user_version = 27;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v27: %w", err)
+		}
+		version = 27
+	}
 	_ = version // suppress unused warning after last migration
 
 	return nil
 }
-

@@ -21,7 +21,7 @@ func envTrue(name string) bool {
 }
 
 // phaseTimer is the laptop-side instrumentation hook for diagnosing
-// where push/pull --migrate spend their time. Disabled-by-default
+// where push/pull spend their time. Disabled-by-default
 // (zero-cost when the user hasn't asked for timing); enabled via the
 // --timing flag or CLANK_TIMING=1.
 //
@@ -33,7 +33,7 @@ func envTrue(name string) bool {
 // phase, run the work, call the returned closure to record. Callers
 // must invoke Start sequentially: the recorder appends to a shared
 // slice without synchronization, since every caller today
-// (push/pull/push_sessions) drives migration phases serially.
+// (push/pull/push_sessions) records its phases serially.
 type phaseTimer struct {
 	enabled bool
 	phases  []phaseEntry
@@ -70,6 +70,15 @@ func (t *phaseTimer) Start(name string) func() {
 	return func() {
 		t.phases = append(t.phases, phaseEntry{name: name, duration: time.Since(start)})
 	}
+}
+
+// Record adds a pre-measured phase (e.g. a sub-step timed inside a
+// library call and returned to the CLI). No-op when disabled.
+func (t *phaseTimer) Record(name string, d time.Duration) {
+	if !t.enabled {
+		return
+	}
+	t.phases = append(t.phases, phaseEntry{name: name, duration: d})
 }
 
 // Summary writes a human-readable timing breakdown to w. No-op when

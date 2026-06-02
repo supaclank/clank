@@ -15,11 +15,10 @@ var ErrWorktreeNotFound = errors.New("sync: worktree not found")
 // requested checkpoint row doesn't exist.
 var ErrCheckpointNotFound = errors.New("sync: checkpoint not found")
 
-// ErrOwnerMismatch is returned by SyncStore.UpdateWorktreeOwner when
-// the optimistic concurrency check fails — the expected current owner
-// did not match what's in the row, indicating a concurrent migration
-// or a stale read. Callers should retry from a fresh read.
-var ErrOwnerMismatch = errors.New("sync: worktree owner mismatch (concurrent migration?)")
+// ErrHeadBundleNotFound is returned by SyncStore.GetHeadBundle when no
+// head-bundle row exists for the (userID, tipSHA). Drives the
+// full-vs-incremental decision on push and the chain walk on download.
+var ErrHeadBundleNotFound = errors.New("sync: head bundle not found")
 
 // ErrForbidden is returned by service-layer methods when the supplied
 // userID doesn't own the requested resource (tenancy check failed).
@@ -39,25 +38,9 @@ var ErrBlobNotUploaded = errors.New("sync: blob not yet uploaded")
 // validation errors flatten to 500.
 var ErrInvalidRequest = errors.New("sync: invalid request")
 
-// OwnerKind enumerates which actor type owns a worktree's write
-// authority. New values require schema-level coordination — never use
-// raw string literals at call sites.
-//
-// "local" and "remote" are deliberately abstract: "local" covers the
-// user's laptop today and any other on-user-device client (mobile,
-// future) tomorrow; "remote" covers fly.io sprites today and any
-// other off-user-device runtime (daytona, k8s, etc.) tomorrow. The
-// concrete provisioner choice lives in the host store, not here.
-type OwnerKind string
-
-const (
-	OwnerKindLocal  OwnerKind = "local"
-	OwnerKindRemote OwnerKind = "remote"
-)
-
-// Worktree is a per-user persistent unit of sync ownership. One row
-// per logical working tree. Multiple worktrees can exist for the same
-// user (and even the same repo, on different branches or worktrees).
+// Worktree is a per-user persistent unit of sync state. One row per
+// logical working tree. Multiple worktrees can exist for the same user
+// (and even the same repo, on different branches or worktrees).
 type Worktree struct {
 	ID          string
 	UserID      string
@@ -70,8 +53,6 @@ type Worktree struct {
 	// never updated. May be "" for rows registered before this field
 	// existed — clients group these under an "Unknown repo" bucket.
 	OriginRepo             string
-	OwnerKind              OwnerKind
-	OwnerID                string // device_id or host_id; "" if no owner has claimed yet
 	LatestSyncedCheckpoint string // checkpoint ID; "" if no checkpoint pushed yet
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
@@ -87,32 +68,42 @@ type Checkpoint struct {
 	HeadRef           string
 	IndexTree         string
 	WorktreeTree      string
-	IncrementalCommit string
+	UncommittedCommit string
 	CreatedAt         time.Time
 	CreatedBy         string
 	UploadedAt        time.Time // zero until uploaded
 }
 
-// SyncStore is the persistence contract for worktrees + checkpoints.
-// Implementations MUST be safe for concurrent use.
+// HeadBundle is the metadata for one content-addressed head bundle: the
+// committed-history bundle ending at TipSHA, built from BaseSHA ("" = a
+// full baseline with no prerequisite). Shared across a user's
+// checkpoints/worktrees; the (BaseSHA → TipSHA) links form the chain.
+type HeadBundle struct {
+	UserID    string
+	TipSHA    string
+	BaseSHA   string // "" = full bundle (no prerequisite)
+	BlobKey   string
+	CreatedAt time.Time
+}
+
+// SyncStore is the persistence contract for worktrees + checkpoints +
+// head bundles. Implementations MUST be safe for concurrent use.
 type SyncStore interface {
 	GetWorktreeByID(ctx context.Context, id string) (Worktree, error)
 	ListWorktreesByUser(ctx context.Context, userID string) ([]Worktree, error)
-	ListWorktreesByOwner(ctx context.Context, kind OwnerKind, ownerID string) ([]Worktree, error)
 	InsertWorktree(ctx context.Context, w Worktree) error
 	UpdateWorktreePointer(ctx context.Context, id, checkpointID string) error
-
-	// UpdateWorktreeOwner performs an atomic optimistic-concurrency
-	// transfer: the row's owner is updated only if the full current
-	// (owner_kind, owner_id) tuple matches the expected pair. Returns
-	// ErrOwnerMismatch when the guard fails (stale read or
-	// concurrent migration).
-	UpdateWorktreeOwner(ctx context.Context, id string, expectedKind OwnerKind, expectedOwnerID string, newKind OwnerKind, newOwnerID string) error
 
 	GetCheckpointByID(ctx context.Context, id string) (Checkpoint, error)
 	ListCheckpointsByWorktree(ctx context.Context, worktreeID string, limit int) ([]Checkpoint, error)
 	InsertCheckpoint(ctx context.Context, c Checkpoint) error
 	MarkCheckpointUploaded(ctx context.Context, id string, when time.Time) error
+
+	// GetHeadBundle returns the head-bundle row for (userID, tipSHA), or
+	// ErrHeadBundleNotFound. InsertHeadBundle is idempotent on
+	// (userID, tipSHA) — the first stored bundle for a tip wins.
+	GetHeadBundle(ctx context.Context, userID, tipSHA string) (HeadBundle, error)
+	InsertHeadBundle(ctx context.Context, hb HeadBundle) error
 }
 
 // GetWorktree looks up a worktree by ID and verifies it belongs to
@@ -155,36 +146,4 @@ func (s *Server) RegisterPrebuiltWorktree(ctx context.Context, w Worktree) error
 		return fmt.Errorf("%w: user_id is required", ErrInvalidRequest)
 	}
 	return s.cfg.Store.InsertWorktree(ctx, w)
-}
-
-// TransferOwnership atomically transfers a worktree's owner. userID
-// is the tenancy gate; toKind/toID/expectedOwnerID are forwarded to
-// the store's optimistic-concurrency guard. Returns ErrOwnerMismatch
-// on a lost-update race; callers retry from a fresh read.
-func (s *Server) TransferOwnership(ctx context.Context, userID, worktreeID string, toKind OwnerKind, toID, expectedOwnerID string) (Worktree, error) {
-	wt, err := s.cfg.Store.GetWorktreeByID(ctx, worktreeID)
-	if errors.Is(err, ErrWorktreeNotFound) {
-		return Worktree{}, err
-	}
-	if err != nil {
-		return Worktree{}, fmt.Errorf("sync: get worktree: %w", err)
-	}
-	if wt.UserID != userID {
-		return Worktree{}, fmt.Errorf("%w: worktree %s", ErrForbidden, worktreeID)
-	}
-
-	expected := expectedOwnerID
-	if expected == "" {
-		expected = wt.OwnerID
-	}
-
-	if err := s.cfg.Store.UpdateWorktreeOwner(ctx, worktreeID, wt.OwnerKind, expected, toKind, toID); err != nil {
-		return Worktree{}, err
-	}
-
-	updated, err := s.cfg.Store.GetWorktreeByID(ctx, worktreeID)
-	if err != nil {
-		return Worktree{}, fmt.Errorf("sync: re-read after transfer: %w", err)
-	}
-	return updated, nil
 }
