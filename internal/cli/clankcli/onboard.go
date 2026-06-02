@@ -21,13 +21,9 @@ import (
 	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
 
-// isInteractive reports whether clank may prompt the user: both stdin and
-// stdout must be terminals. Autopush triggers (the Claude Code Stop hook,
-// the opencode plugin) run non-interactively, so this gates EVERY prompt
-// — a prompt that blocked on stdin there would hang the agent's turn.
-//
-// When in/out are not *os.File (e.g. a test buffer, or a pipe), this is
-// false, which keeps the safe non-interactive error path.
+// isInteractive reports whether clank may prompt the user: stdin and stdout
+// must both be terminals. Autopush triggers (Claude Code Stop hook, opencode
+// plugin) run non-interactively; a blocking prompt there would hang the agent.
 func isInteractive(cmd *cobra.Command) bool {
 	in, ok := cmd.InOrStdin().(*os.File)
 	if !ok {

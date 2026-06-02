@@ -38,17 +38,10 @@ type pullResponse struct {
 	SessionBlobURLs    map[string]string `json:"session_blob_urls,omitempty"`
 }
 
-// handlePullWorktree orchestrates a sprite-to-laptop checkpoint pull.
-// Sprite-as-pure-responder model: gateway tells the sprite to build
-// bundles, gateway mints presigned PUT URLs from its in-process sync
-// server, gateway tells the sprite to upload to S3 via those URLs,
-// gateway commits the checkpoint, then returns presigned GET URLs. The
-// sprite holds no credentials and makes no outbound HTTP calls except to
-// S3 via short-lived presigned URLs.
-//
-// No ownership concept: the laptop is responsible for applying the
-// result safely (clean working tree + fast-forward check), which the
-// CLI's applyRemotePull enforces before the destructive restore.
+// handlePullWorktree orchestrates a sprite-to-laptop checkpoint pull: gateway
+// tells sprite to build bundles, mints presigned S3 PUT URLs, triggers upload,
+// commits the checkpoint, then returns GET URLs. The sprite holds no creds and
+// makes no outbound calls except to S3 via presigned URLs (pure-responder model).
 func (g *Gateway) handlePullWorktree(w http.ResponseWriter, r *http.Request) {
 	if g.cfg.Sync == nil {
 		http.Error(w, "pull not configured (Sync unset)", http.StatusServiceUnavailable)
