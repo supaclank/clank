@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,6 +100,27 @@ func TestSyncWorktree_NoCheckpoint(t *testing.T) {
 	}
 	if out.WorktreeID != "wtX" || out.State != syncStateNoCheckpoint {
 		t.Fatalf("result=%+v, want wtX/no_checkpoint", out)
+	}
+}
+
+// TestSyncWorktree_MalformedBody verifies that a malformed JSON body returns 400
+// rather than silently defaulting force to false.
+func TestSyncWorktree_MalformedBody(t *testing.T) {
+	t.Parallel()
+	srv, syncSrv, _ := newSyncGateway(t)
+	if err := syncSrv.RegisterPrebuiltWorktree(context.Background(), clanksync.Worktree{
+		ID: "wtMalformed", UserID: "tester", DisplayName: "demo",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(srv.URL+"/v1/worktrees/wtMalformed/sync", "application/json",
+		strings.NewReader(`{bad json`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400 for malformed body", resp.StatusCode)
 	}
 }
 

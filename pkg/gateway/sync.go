@@ -111,7 +111,10 @@ func (g *Gateway) handleSyncWorktree(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Force bool `json:"force"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	wt, err := g.cfg.Sync.GetWorktree(r.Context(), userID, worktreeID)
 	if err != nil {
@@ -223,7 +226,7 @@ func (g *Gateway) applySpriteSessions(ctx context.Context, cli *http.Client, hos
 	manifestBytes, status, err := gatewayHTTPGet(ctx, cli, first.SessionManifestGetURL)
 	if err != nil {
 		// No session manifest blob ⇒ this checkpoint pushed no sessions.
-		if status == http.StatusNotFound || status == http.StatusForbidden {
+		if status == http.StatusNotFound {
 			return nil
 		}
 		return fmt.Errorf("fetch session manifest: %w", err)
