@@ -1,8 +1,11 @@
 package checkpoint
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
@@ -84,6 +87,31 @@ func (e SessionEntry) BlobRef() SessionBlobRef {
 // preserves declaration order and SessionEntry contains no maps.
 func (m *SessionManifest) Marshal() ([]byte, error) {
 	return json.MarshalIndent(m, "", "  ")
+}
+
+// ContentDigest is a stable, order-independent sha256 over the
+// content-addressed identity of the manifest's sessions — the set of
+// (ExternalID, ContentHash) pairs. Two manifests describing the same
+// session set (in any order) hash identically; adding, removing, or
+// changing a session (which mints a new ContentHash) changes the digest.
+//
+// Autosync uses it to detect a session-only push: session blobs upload
+// straight to object storage with no checkpoint bump or commit callback,
+// so the gateway can't be notified — it compares this digest against what
+// the sprite last imported (Worktree.SessionsSyncedHash) and re-imports
+// only on a change. An empty session set hashes to a fixed constant.
+func (m *SessionManifest) ContentDigest() string {
+	refs := make([]string, len(m.Sessions))
+	for i, s := range m.Sessions {
+		refs[i] = s.ExternalID + "\x00" + s.ContentHash
+	}
+	sort.Strings(refs)
+	h := sha256.New()
+	for _, r := range refs {
+		h.Write([]byte(r))
+		h.Write([]byte{'\n'})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // UnmarshalSessionManifest parses a SessionManifest blob and rejects

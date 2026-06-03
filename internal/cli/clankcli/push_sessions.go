@@ -34,7 +34,7 @@ const (
 // Returns the uploaded (changed) count and any skipped sessions so the
 // caller can print a summary AFTER tearing down the progress line. timer is
 // non-nil.
-func pushSessions(ctx context.Context, timer *phaseTimer, projectDir, checkpointID string, gateway *syncclient.Client, obs syncclient.PushObserver) (exported int, skipped []sessionsync.SkippedSession, err error) {
+func pushSessions(ctx context.Context, timer *phaseTimer, projectDir, checkpointID string, gateway *syncclient.Client, obs syncclient.PushObserver) (exported, excluded int, skipped []sessionsync.SkippedSession, err error) {
 	rec, _ := agent.ReadSyncedSessions(projectDir)
 
 	if obs != nil {
@@ -44,7 +44,7 @@ func pushSessions(ctx context.Context, timer *phaseTimer, projectDir, checkpoint
 	plan, err := sessionsync.PreparePush(ctx, projectDir, rec, obs)
 	done()
 	if err != nil {
-		return 0, nil, fmt.Errorf("export sessions: %w", err)
+		return 0, 0, nil, fmt.Errorf("export sessions: %w", err)
 	}
 	defer plan.Cleanup()
 
@@ -55,7 +55,7 @@ func pushSessions(ctx context.Context, timer *phaseTimer, projectDir, checkpoint
 	err = sessionsync.UploadSessions(ctx, gateway, checkpointID, plan, obs)
 	done()
 	if err != nil {
-		return 0, nil, fmt.Errorf("upload sessions: %w", err)
+		return 0, 0, nil, fmt.Errorf("upload sessions: %w", err)
 	}
 
 	// Record what's now synced (+ when) so `clank status` can detect later
@@ -64,5 +64,5 @@ func pushSessions(ctx context.Context, timer *phaseTimer, projectDir, checkpoint
 	plan.Record.LastPushedAt = time.Now()
 	_ = agent.WriteSyncedSessions(projectDir, plan.Record)
 
-	return len(plan.Upload), plan.Skipped, nil
+	return len(plan.Upload), plan.ExcludedByWindow, plan.Skipped, nil
 }

@@ -72,14 +72,20 @@ func runInitRepo(cmd *cobra.Command, repoPath string) error {
 	if err != nil {
 		return fmt.Errorf("resolve repo path: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(cmd.Context(), 2*time.Minute)
+	// Generous ceiling: init now pushes every recently-active worktree, and a
+	// worktree's first push uploads its whole session history.
+	ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Minute)
 	defer cancel()
 
 	cli, err := activeRemoteSyncClient(ctx)
 	if err != nil {
 		return err
 	}
-	return initRepoWithClient(ctx, cmd, cli, absRepo)
+	dc, err := daemonclient.NewRemoteClient()
+	if err != nil {
+		return fmt.Errorf("remote client: %w", err)
+	}
+	return initRepoWithClient(ctx, cmd, cli, dc, absRepo)
 }
 
 // initRepoWithClient performs the repo-level onboarding against an already
@@ -87,7 +93,7 @@ func runInitRepo(cmd *cobra.Command, repoPath string) error {
 // worktrees register on their first push), eagerly register the
 // recently-active untracked worktrees for an immediate `clank status`,
 // and install the autopush triggers.
-func initRepoWithClient(ctx context.Context, cmd *cobra.Command, cli *syncclient.Client, absRepo string) error {
+func initRepoWithClient(ctx context.Context, cmd *cobra.Command, cli *syncclient.Client, dc *daemonclient.Client, absRepo string) error {
 	// Mark the whole repo first: even if the eager pass below registers
 	// nothing, every worktree (current, stale, or added later) now
 	// auto-registers on its first push.
@@ -100,10 +106,19 @@ func initRepoWithClient(ctx context.Context, cmd *cobra.Command, cli *syncclient
 		return fmt.Errorf("enumerate worktrees: %w", err)
 	}
 
+	// Push every recently-active worktree — whether registered just now or
+	// already tracked. Registration alone uploads nothing, so an
+	// already-tracked-but-never-pushed worktree (no checkpoint, invisible to
+	// clients) needs the same initial push as a fresh one.
+	type pushTarget struct{ path, worktreeID string }
+	var toPush []pushTarget
 	var registered, already int
 	for _, s := range scopes {
 		if s.WorktreeID != "" {
 			already++
+			if s.IsRecentlyActive {
+				toPush = append(toPush, pushTarget{s.Path, s.WorktreeID})
+			}
 			continue
 		}
 		// Eagerly register only recently-active worktrees so init doesn't
@@ -122,13 +137,29 @@ func initRepoWithClient(ctx context.Context, cmd *cobra.Command, cli *syncclient
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "tracking %s (%s) → %s\n", s.Path, s.Branch, id)
 		registered++
+		toPush = append(toPush, pushTarget{s.Path, id})
 	}
 
 	if err := ensureHarnessTriggers(cmd, isInteractive(cmd)); err != nil {
 		return err
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Initialized clank push for %s: %d worktree(s) registered now, %d already tracked. New worktrees auto-track on first push; sessions push on idle.\n", filepath.Base(absRepo), registered, already)
+	// Initial push so recently-active worktrees (and their sessions) appear in
+	// clients now, not only after the next idle push. One worktree's failure
+	// is logged and skipped — it never aborts the rest of onboarding.
+	if len(toPush) > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "Pushing %d recently-active worktree(s) — code + sessions…\n", len(toPush))
+		timer := newPhaseTimer(false)
+		for _, t := range toPush {
+			fmt.Fprintf(cmd.OutOrStdout(), "→ %s\n", filepath.Base(t.path))
+			// committedOnly=false: init honors the recency window like any push.
+			if err := pushWorktreeAt(ctx, cmd, timer, cli, dc, t.path, t.worktreeID, false); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "  push failed (skipped): %v\n", err)
+			}
+		}
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Initialized clank push for %s: %d worktree(s) registered now, %d already tracked. New worktrees auto-track on first push.\n", filepath.Base(absRepo), registered, already)
 	return nil
 }
 

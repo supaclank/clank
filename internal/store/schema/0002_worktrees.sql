@@ -23,6 +23,11 @@ CREATE TABLE worktrees (
     sync_state                  TEXT NOT NULL DEFAULT '',
     sync_conflict_local_head    TEXT NOT NULL DEFAULT '',
     sync_conflict_remote_head   TEXT NOT NULL DEFAULT '',
+    -- sessions_synced_hash (migration v29): content-digest of the session
+    -- set the sprite last imported (checkpoint.SessionManifest.ContentDigest).
+    -- Lets autosync detect a session-only push — which bumps no checkpoint —
+    -- and re-import only when the digest changes. See pkg/gateway/sync.go.
+    sessions_synced_hash        TEXT NOT NULL DEFAULT '',
     created_at                  DATETIME NOT NULL,
     updated_at                  DATETIME NOT NULL
 );

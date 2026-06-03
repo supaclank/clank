@@ -44,7 +44,11 @@ type PushPlan struct {
 	Entries []checkpoint.SessionEntry
 	Record  agent.SyncedSessionRecord
 	Skipped []SkippedSession
-	tmpDir  string
+	// ExcludedByWindow counts never-synced sessions dropped for being older
+	// than SessionPushWindow. Surfaced so the push can report it rather than
+	// silently omitting old work.
+	ExcludedByWindow int
+	tmpDir           string
 }
 
 // Cleanup removes the temp blob directory. Safe to call multiple times.
@@ -63,10 +67,14 @@ func PreparePush(ctx context.Context, projectDir string, rec agent.SyncedSession
 	if projectDir == "" {
 		return nil, fmt.Errorf("prepare push: projectDir is required")
 	}
-	all, err := DiscoverWorktreeSessions(ctx, projectDir)
+	discovered, err := DiscoverWorktreeSessions(ctx, projectDir)
 	if err != nil {
 		return nil, err
 	}
+	// Drop never-synced sessions older than the push window; already-synced
+	// ones always ride along, so an established worktree keeps its full history.
+	all := WithinPushWindow(discovered, rec, PushCutoff())
+	excluded := len(discovered) - len(all)
 	unsynced := Unsynced(all, rec)
 
 	tmpDir, err := os.MkdirTemp("", "clank-session-export-*")
@@ -74,8 +82,9 @@ func PreparePush(ctx context.Context, projectDir string, rec agent.SyncedSession
 		return nil, fmt.Errorf("prepare push: tempdir: %w", err)
 	}
 	plan := &PushPlan{
-		Record: agent.SyncedSessionRecord{Sessions: make(map[string]agent.SyncedSession, len(all))},
-		tmpDir: tmpDir,
+		Record:           agent.SyncedSessionRecord{Sessions: make(map[string]agent.SyncedSession, len(all))},
+		ExcludedByWindow: excluded,
+		tmpDir:           tmpDir,
 	}
 
 	// Export the changed sessions, hashing as we copy. This is the slow

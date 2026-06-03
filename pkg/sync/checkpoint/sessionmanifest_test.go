@@ -90,6 +90,43 @@ func TestSessionManifest_RejectsMalformedJSON(t *testing.T) {
 	}
 }
 
+// TestSessionManifest_ContentDigest pins the invariants autosync relies on:
+// the digest is order-independent over the (externalID, contentHash) set,
+// changes when any session is added/removed or its content changes, and is a
+// stable non-empty constant for the empty set.
+func TestSessionManifest_ContentDigest(t *testing.T) {
+	t.Parallel()
+	const (
+		hashA = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+		hashB = "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+	)
+	manifest := func(entries ...checkpoint.SessionEntry) *checkpoint.SessionManifest {
+		return &checkpoint.SessionManifest{Version: checkpoint.SessionManifestVersion, Sessions: entries}
+	}
+	a := checkpoint.SessionEntry{ExternalID: "ses_a", ContentHash: hashA}
+	b := checkpoint.SessionEntry{ExternalID: "ses_b", ContentHash: hashB}
+
+	// Order-independence: the same set in either order hashes identically.
+	if manifest(a, b).ContentDigest() != manifest(b, a).ContentDigest() {
+		t.Error("digest depends on session order; want order-independent")
+	}
+	// A changed ContentHash (session content advanced) changes the digest —
+	// this is the signal a session-only push must produce.
+	aChanged := checkpoint.SessionEntry{ExternalID: "ses_a", ContentHash: hashB}
+	if manifest(a).ContentDigest() == manifest(aChanged).ContentDigest() {
+		t.Error("digest unchanged after a session's content hash changed")
+	}
+	// Adding a session changes the digest.
+	if manifest(a).ContentDigest() == manifest(a, b).ContentDigest() {
+		t.Error("digest unchanged after adding a session")
+	}
+	// The empty set hashes to a non-empty constant, distinct from any
+	// non-empty set.
+	if d := manifest().ContentDigest(); d == "" || d == manifest(a).ContentDigest() {
+		t.Errorf("empty-set digest %q is empty or collides with a non-empty set", d)
+	}
+}
+
 func TestSessionManifest_EmptySessions(t *testing.T) {
 	t.Parallel()
 	m := &checkpoint.SessionManifest{

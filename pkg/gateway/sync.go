@@ -174,9 +174,12 @@ func (g *Gateway) syncWorktreeToSprite(ctx context.Context, cli *http.Client, us
 	res.IncomingHead = apply.IncomingHead
 
 	// Map the sprite outcome onto the worktree row. Preserve the existing
-	// materialized pointer on conflict/busy (the sprite still holds
-	// whatever it had); advance it only on a real apply.
-	upd := clanksync.MaterializationUpdate{MaterializedCheckpointID: wt.MaterializedCheckpointID}
+	// materialized pointer and session digest on conflict/busy (the sprite
+	// still holds whatever it had); advance them only on a real apply.
+	upd := clanksync.MaterializationUpdate{
+		MaterializedCheckpointID: wt.MaterializedCheckpointID,
+		SessionsSyncedHash:       wt.SessionsSyncedHash,
+	}
 	switch apply.State {
 	case syncStateApplied, syncStateUpToDate:
 		upd.MaterializedCheckpointID = ckID
@@ -191,20 +194,25 @@ func (g *Gateway) syncWorktreeToSprite(ctx context.Context, cli *http.Client, us
 		upd.SyncState = clanksync.SyncStateBehind
 	}
 
-	// Session leg: import the laptop's pushed sessions after a successful
-	// code apply (they need the materialized dir). Run on a real apply, or
-	// when a prior partial failure left sessions pending (sync_state=behind)
-	// even though the code is already current — otherwise skip to avoid
-	// re-importing every refresh.
-	runSessions := apply.State == syncStateApplied ||
-		(apply.State == syncStateUpToDate && wt.SyncState == clanksync.SyncStateBehind)
-	if runSessions {
-		if serr := g.applySpriteSessions(ctx, cli, hostRef, userID, wt.ID, ckID); serr != nil {
-			// Code applied; sessions didn't. Leave the row "behind" so the
-			// next sync retries (RegisterImportedSession is idempotent), and
-			// surface it in the result detail without failing the code sync.
+	// Session leg: import the laptop's pushed sessions onto the (now
+	// materialized) worktree. Session blobs upload straight to object storage
+	// with no checkpoint bump or commit callback, so a session-only push
+	// leaves apply.State up_to_date — the gateway can't be told sessions
+	// changed. applySpriteSessions instead compares the manifest's content-
+	// digest against what the sprite last imported (wt.SessionsSyncedHash) and
+	// imports only on a change, so an unchanged refresh stays cheap. A fresh
+	// code materialize (applied) forces a re-import: the sprite's $HOME volume
+	// (host.db and ~/work alike) may have been reset.
+	if apply.State == syncStateApplied || apply.State == syncStateUpToDate {
+		force := apply.State == syncStateApplied
+		hash, serr := g.applySpriteSessions(ctx, cli, hostRef, userID, wt.ID, ckID, wt.SessionsSyncedHash, force)
+		if serr != nil {
+			// Leave the row "behind" so the next sync retries (the digest
+			// still won't match), and surface it without failing the code sync.
 			upd.SyncState = clanksync.SyncStateBehind
-			res.Detail = "code applied; session import failed: " + serr.Error()
+			res.Detail = "session import failed: " + serr.Error()
+		} else {
+			upd.SessionsSyncedHash = hash
 		}
 	}
 
@@ -215,29 +223,46 @@ func (g *Gateway) syncWorktreeToSprite(ctx context.Context, cli *http.Client, us
 }
 
 // applySpriteSessions enumerates the checkpoint's sessions (by fetching +
-// parsing the session manifest from S3 — the gateway has no sessions
-// table) and tells the sprite to import them. A missing session manifest
-// (code-only checkpoint) is a no-op, not an error.
-func (g *Gateway) applySpriteSessions(ctx context.Context, cli *http.Client, hostRef provisioner.HostRef, userID, worktreeID, checkpointID string) error {
+// parsing the session manifest from object storage — the gateway has no
+// sessions table) and tells the sprite to import them. It returns the
+// manifest's content-digest so the caller can record what the sprite now
+// holds (Worktree.SessionsSyncedHash).
+//
+// When the digest already matches prevHash the sprite holds this exact
+// session set, so the import is skipped and prevHash is returned unchanged —
+// unless force is set (a fresh code materialize, where the sprite may have
+// been reset). A missing manifest (code-only checkpoint) is a no-op that
+// returns the empty digest, not an error.
+func (g *Gateway) applySpriteSessions(ctx context.Context, cli *http.Client, hostRef provisioner.HostRef, userID, worktreeID, checkpointID, prevHash string, force bool) (string, error) {
 	// First hop: mint just the session-manifest URL (empty id slice).
 	first, err := g.cfg.Sync.DownloadSessionURLs(ctx, userID, checkpointID, nil)
 	if err != nil {
-		return fmt.Errorf("mint session manifest url: %w", err)
+		return "", fmt.Errorf("mint session manifest url: %w", err)
 	}
 	manifestBytes, status, err := gatewayHTTPGet(ctx, cli, first.SessionManifestGetURL)
 	if err != nil {
 		// No session manifest blob ⇒ this checkpoint pushed no sessions.
 		if status == http.StatusNotFound {
-			return nil
+			return "", nil
 		}
-		return fmt.Errorf("fetch session manifest: %w", err)
+		return "", fmt.Errorf("fetch session manifest: %w", err)
 	}
 	manifest, err := checkpoint.UnmarshalSessionManifest(manifestBytes)
 	if err != nil {
-		return fmt.Errorf("parse session manifest: %w", err)
+		// A malformed or pre-v2 manifest (left over from before the schema
+		// bump) can never import — don't wedge the worktree as "behind"
+		// forever. Log and skip; the next push regenerates a current manifest.
+		g.log.Printf("session import: skipping worktree %s checkpoint %s: unreadable manifest: %v", worktreeID, checkpointID, err)
+		return "", nil
+	}
+	digest := manifest.ContentDigest()
+	// Sprite already holds this exact set — skip the round-trip unless a
+	// fresh materialize forces a re-import.
+	if !force && digest == prevHash {
+		return digest, nil
 	}
 	if len(manifest.Sessions) == 0 {
-		return nil
+		return digest, nil
 	}
 	refs := make([]checkpoint.SessionBlobRef, len(manifest.Sessions))
 	for i, s := range manifest.Sessions {
@@ -245,9 +270,12 @@ func (g *Gateway) applySpriteSessions(ctx context.Context, cli *http.Client, hos
 	}
 	full, err := g.cfg.Sync.DownloadSessionURLs(ctx, userID, checkpointID, refs)
 	if err != nil {
-		return fmt.Errorf("mint session blob urls: %w", err)
+		return "", fmt.Errorf("mint session blob urls: %w", err)
 	}
-	return triggerSpriteSessionApply(ctx, cli, hostRef, worktreeID, full.SessionManifestGetURL, full.SessionGetURLs)
+	if err := triggerSpriteSessionApply(ctx, cli, hostRef, worktreeID, full.SessionManifestGetURL, full.SessionGetURLs); err != nil {
+		return "", err
+	}
+	return digest, nil
 }
 
 // --- sprite RPC helpers --------------------------------------------

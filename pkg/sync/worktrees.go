@@ -67,6 +67,13 @@ type Worktree struct {
 	SyncConflictLocalHead    string
 	SyncConflictRemoteHead   string
 
+	// SessionsSyncedHash is the content-digest of the session set the sprite
+	// last imported (checkpoint.SessionManifest.ContentDigest). Session blobs
+	// upload straight to object storage with no checkpoint bump, so autosync
+	// compares this against the live manifest digest to detect a session-only
+	// push and re-import only on a change (pkg/gateway/sync.go).
+	SessionsSyncedHash string
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -88,6 +95,10 @@ type MaterializationUpdate struct {
 	SyncState                string
 	ConflictLocalHead        string
 	ConflictRemoteHead       string
+	// SessionsSyncedHash records the session content-digest imported in this
+	// outcome. Callers preserve the worktree's existing value unless the
+	// session leg advanced it (see pkg/gateway/sync.go).
+	SessionsSyncedHash string
 }
 
 // Checkpoint is the per-push manifest pointer. Bundle bytes live in
