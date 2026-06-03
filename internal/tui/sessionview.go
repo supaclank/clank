@@ -763,7 +763,7 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(m.fetchAgents(), m.fetchModels())
 			case agent.BackendClaudeCode:
 				m.modes, m.selectedMode = claudePermissionModes()
-				return m, nil
+				return m, m.fetchModels()
 			}
 		}
 		return m, nil

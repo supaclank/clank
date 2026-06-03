@@ -392,6 +392,9 @@ func (r StartRequest) Validate() error {
 	if r.Prompt == "" {
 		return fmt.Errorf("prompt is required")
 	}
+	if r.PermissionMode != "" && !r.PermissionMode.IsValid() {
+		return fmt.Errorf("unknown permission_mode: %s", r.PermissionMode)
+	}
 	return nil
 }
 

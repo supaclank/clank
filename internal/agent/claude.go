@@ -344,7 +344,7 @@ func (b *ClaudeCodeBackend) Send(ctx context.Context, opts SendMessageOpts) erro
 		changed := opts.PermissionMode != b.currentPermMode
 		b.mu.Unlock()
 		if changed {
-			if err := client.SetPermissionMode(ctx, claudecode.PermissionMode(opts.PermissionMode)); err != nil {
+			if err := client.SetPermissionMode(b.ctx, claudecode.PermissionMode(opts.PermissionMode)); err != nil {
 				b.setStatus(StatusError)
 				return fmt.Errorf("set permission mode: %w", err)
 			}

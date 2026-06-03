@@ -36,6 +36,9 @@ type mockTransport struct {
 
 	// permissionModes records every mode passed to SetPermissionMode, in order.
 	permissionModes []string
+
+	// onSetPermMode, if non-nil, is called instead of the default recording behaviour.
+	onSetPermMode func(ctx context.Context, mode string) error
 }
 
 func newMockTransport(messages []claudecode.Message) *mockTransport {
@@ -113,7 +116,13 @@ func (t *mockTransport) Interrupt(_ context.Context) error {
 }
 
 func (t *mockTransport) SetModel(_ context.Context, _ *string) error { return nil }
-func (t *mockTransport) SetPermissionMode(_ context.Context, mode string) error {
+func (t *mockTransport) SetPermissionMode(ctx context.Context, mode string) error {
+	t.mu.Lock()
+	fn := t.onSetPermMode
+	t.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, mode)
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.permissionModes = append(t.permissionModes, mode)

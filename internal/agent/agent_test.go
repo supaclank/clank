@@ -130,3 +130,39 @@ func TestStartRequest_Validate_GitRef(t *testing.T) {
 		})
 	}
 }
+
+// Invalid permission_mode values must be caught by StartRequest.Validate so
+// the HTTP layer returns a 400 instead of a 500 from a deeper validation point.
+func TestStartRequest_Validate_PermissionMode(t *testing.T) {
+	t.Parallel()
+	base := agent.StartRequest{
+		Backend: agent.BackendClaudeCode,
+		GitRef:  agent.GitRef{LocalPath: "/tmp/repo"},
+		Prompt:  "hi",
+	}
+
+	t.Run("empty_ok", func(t *testing.T) {
+		t.Parallel()
+		if err := base.Validate(); err != nil {
+			t.Fatalf("empty permission_mode: unexpected error %v", err)
+		}
+	})
+
+	t.Run("valid_ok", func(t *testing.T) {
+		t.Parallel()
+		req := base
+		req.PermissionMode = agent.ClaudePermPlan
+		if err := req.Validate(); err != nil {
+			t.Fatalf("valid permission_mode: unexpected error %v", err)
+		}
+	})
+
+	t.Run("invalid_rejected", func(t *testing.T) {
+		t.Parallel()
+		req := base
+		req.PermissionMode = "not-a-real-mode"
+		if err := req.Validate(); err == nil {
+			t.Fatal("expected error for invalid permission_mode, got nil")
+		}
+	})
+}

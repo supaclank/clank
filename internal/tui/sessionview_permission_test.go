@@ -104,6 +104,29 @@ func TestCompose_ToggleBackToOpenCodeClearsModes(t *testing.T) {
 	}
 }
 
+// When an existing Claude session is opened from the inbox (sessionInfoMsg with
+// BackendClaudeCode), the model must also dispatch fetchModels so model overrides
+// remain available — matching the compose path behaviour.
+func TestSessionView_InboxClaudeBackend_FetchesModels(t *testing.T) {
+	t.Parallel()
+	m := NewSessionViewModel(nil, "sess-1")
+	m.width, m.height = 80, 40
+
+	info := &agent.SessionInfo{
+		Backend: agent.BackendClaudeCode,
+		GitRef:  agent.GitRef{LocalPath: "/tmp/project"},
+	}
+	model, cmd := m.Update(sessionInfoMsg{info: info})
+	m = model.(*SessionViewModel)
+
+	if len(m.modes) == 0 {
+		t.Fatal("Claude permission modes not seeded from inbox sessionInfoMsg")
+	}
+	if cmd == nil {
+		t.Fatal("expected fetchModels command from inbox Claude session, got nil")
+	}
+}
+
 // In an active (non-compose) session, Tab cycles the seeded modes while input
 // is active.
 func TestSessionView_ActiveTabCyclesModes(t *testing.T) {

@@ -315,6 +315,53 @@ func TestClaudeCodeBackend_Permission_AbortUnblocks(t *testing.T) {
 	}
 }
 
+// Send must use the backend context (b.ctx) — not the caller context — when
+// calling SetPermissionMode, so a cancelled request cannot corrupt backend state
+// by aborting the mode-change mid-flight.
+func TestClaudeCodeBackend_PermissionMode_RuntimeChange_UsesBackendCtx(t *testing.T) {
+	t.Parallel()
+	sessionID := "claude-perm-ctx"
+	result := "done"
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.SystemMessage{
+			MessageType: "system",
+			Subtype:     "init",
+			Data:        map[string]any{"session_id": sessionID},
+		},
+		&claudecode.ResultMessage{MessageType: "result", SessionID: sessionID, Result: &result},
+	})
+
+	b := newTestBackend(t, transport)
+	defer b.Stop()
+
+	if err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text:           "first",
+		PermissionMode: agent.ClaudePermBypass,
+	}); err != nil {
+		t.Fatalf("OpenAndSend: %v", err)
+	}
+	waitForStatus(t, b.Events(), agent.StatusIdle, 5*time.Second)
+
+	// Cancel the caller ctx before requesting a mode change.
+	callerCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// SetPermissionMode must succeed because it uses b.ctx (not the cancelled callerCtx).
+	transport.onSetPermMode = func(ctx context.Context, _ string) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return nil
+	}
+
+	if err := b.Send(callerCtx, agent.SendMessageOpts{
+		Text:           "second",
+		PermissionMode: agent.ClaudePermPlan,
+	}); err != nil {
+		t.Fatalf("Send with cancelled caller ctx: %v (b.ctx must be used, not caller ctx)", err)
+	}
+}
+
 // RespondPermission for an unknown ID must fail fast rather than silently
 // succeed or panic.
 func TestClaudeCodeBackend_RespondPermission_UnknownID(t *testing.T) {
