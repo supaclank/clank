@@ -372,6 +372,9 @@ type StartRequest struct {
 	TicketID   string          `json:"ticket_id,omitempty"`  // Optional backlog ticket link
 	Agent      string          `json:"agent,omitempty"`      // OpenCode agent name (e.g. "build", "plan")
 	Model      *ModelOverride  `json:"model,omitempty"`      // Per-message model override; nil = use default
+	// PermissionMode is the initial Claude permission posture for a new session.
+	// Ignored by the OpenCode backend.
+	PermissionMode ClaudePermissionMode `json:"permission_mode,omitempty"`
 }
 
 // Validate checks that required fields are set per §7.3 of
@@ -507,11 +510,58 @@ type ModelOverride struct {
 	ProviderID string `json:"provider_id"`
 }
 
+// ClaudePermissionMode is the permission posture the Claude Code CLI runs
+// under. Values are the wire strings claude-agent-sdk-go accepts via
+// --permission-mode; they must stay in sync with claudecode.PermissionMode*.
+type ClaudePermissionMode string
+
+const (
+	ClaudePermDefault     ClaudePermissionMode = "default"           // Prompt for each tool that needs permission.
+	ClaudePermAcceptEdits ClaudePermissionMode = "acceptEdits"       // Auto-accept file edits; prompt for the rest.
+	ClaudePermPlan        ClaudePermissionMode = "plan"              // Plan only; no edits.
+	ClaudePermBypass      ClaudePermissionMode = "bypassPermissions" // Skip all permission checks.
+)
+
+// ClaudePermissionModes is the ordered set the TUI cycles through (Tab).
+var ClaudePermissionModes = []ClaudePermissionMode{
+	ClaudePermDefault,
+	ClaudePermAcceptEdits,
+	ClaudePermPlan,
+	ClaudePermBypass,
+}
+
+// IsValid reports whether m is one of the four known modes. The empty
+// string is not valid — callers use "" to mean "no mode specified".
+func (m ClaudePermissionMode) IsValid() bool {
+	switch m {
+	case ClaudePermDefault, ClaudePermAcceptEdits, ClaudePermPlan, ClaudePermBypass:
+		return true
+	default:
+		return false
+	}
+}
+
+// Label is the short human-readable form shown in the TUI mode indicator.
+func (m ClaudePermissionMode) Label() string {
+	switch m {
+	case ClaudePermAcceptEdits:
+		return "accept-edits"
+	case ClaudePermBypass:
+		return "bypass"
+	default:
+		return string(m)
+	}
+}
+
 // SendMessageOpts contains options for sending a follow-up message.
 type SendMessageOpts struct {
 	Text  string         `json:"text"`
 	Agent string         `json:"agent,omitempty"` // OpenCode agent name; empty = use session default
 	Model *ModelOverride `json:"model,omitempty"` // Per-message model override; nil = use default
+	// PermissionMode, when set, applies a Claude permission posture: at session
+	// start it picks the initial mode; on a follow-up it changes the mode at
+	// runtime. Empty means "no change". Ignored by the OpenCode backend.
+	PermissionMode ClaudePermissionMode `json:"permission_mode,omitempty"`
 }
 
 // Lifecycle: NewBackend → Open (or OpenAndSend) → Send* → Abort? → Stop

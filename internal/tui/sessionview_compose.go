@@ -57,7 +57,7 @@ func NewSessionViewComposing(client *daemonclient.Client, projectDir string) *Se
 	// toggle from there.
 	prefs, _ := config.LoadPreferences()
 	defaultBackend, _ := agent.ResolveBackendPreference(prefs.DefaultBackend)
-	return &SessionViewModel{
+	m := &SessionViewModel{
 		client:      client,
 		composing:   true,
 		inputActive: true,
@@ -69,6 +69,12 @@ func NewSessionViewComposing(client *daemonclient.Client, projectDir string) *Se
 		input:       ta,
 		spinner:     sp,
 	}
+	// Claude's modes are a static set seeded up front; OpenCode's agents arrive
+	// asynchronously via fetchAgents (Init).
+	if defaultBackend == agent.BackendClaudeCode {
+		m.modes, m.selectedMode = claudePermissionModes()
+	}
+	return m
 }
 
 // updateCompose handles all messages while in composing mode.
@@ -104,14 +110,8 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case agentsResultMsg:
-		m.agents = msg.agents
-		// Default to "build" if present.
-		for i, a := range m.agents {
-			if a.Name == "build" {
-				m.selectedAgent = i
-				break
-			}
-		}
+		// OpenCode only — Claude seeds its static modes synchronously.
+		m.modes, m.selectedMode = agentSelectableModes(msg.agents, "")
 		return m, nil
 
 	case modelsResultMsg:
@@ -185,12 +185,19 @@ func (m *SessionViewModel) handleComposeKey(msg tea.KeyPressMsg) (tea.Model, tea
 		// preference-restore can re-resolve it from disk per backend.
 		m.models = nil
 		m.selectedModel = -1
-		return m, m.fetchModels()
+		// Rebuild the mode list for the new backend: Claude's modes are static;
+		// OpenCode's agents are fetched.
+		if m.backend == agent.BackendClaudeCode {
+			m.modes, m.selectedMode = claudePermissionModes()
+			return m, m.fetchModels()
+		}
+		m.modes, m.selectedMode = nil, 0
+		return m, tea.Batch(m.fetchAgents(), m.fetchModels())
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
-		// Cycle through agents (only when agents are loaded).
-		if len(m.agents) > 1 {
-			m.selectedAgent = (m.selectedAgent + 1) % len(m.agents)
+		// Cycle through modes (OpenCode agents or Claude permission modes).
+		if len(m.modes) > 1 {
+			m.selectedMode = (m.selectedMode + 1) % len(m.modes)
 		}
 		return m, nil
 
@@ -258,8 +265,10 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 		GitRef:   gitRef,
 		Prompt:   prompt,
 	}
-	if len(m.agents) > 0 {
-		req.Agent = m.agents[m.selectedAgent].Name
+	if len(m.modes) > 0 {
+		sel := m.modes[m.selectedMode]
+		req.Agent = sel.agent
+		req.PermissionMode = sel.perm
 	}
 	if m.selectedModel >= 0 && m.selectedModel < len(m.models) {
 		model := m.models[m.selectedModel]
@@ -320,14 +329,14 @@ func (m *SessionViewModel) handleCreateResult(msg sessionCreateResultMsg) (tea.M
 	m.input.Reset()
 
 	// Show the user's prompt as the first entry.
-	agentName := ""
-	if len(m.agents) > 0 {
-		agentName = m.agents[m.selectedAgent].Name
+	modeLabel := ""
+	if len(m.modes) > 0 {
+		modeLabel = m.modes[m.selectedMode].label
 	}
 	m.entries = append(m.entries, displayEntry{
 		kind:    entryUser,
 		content: prompt,
-		agent:   agentName,
+		agent:   modeLabel,
 	})
 
 	// Reset the textarea for follow-up messages.
@@ -401,7 +410,7 @@ func (m *SessionViewModel) viewCompose() tea.View {
 		qLabel = "esc: quit"
 	}
 	helpParts := []string{"enter: launch", "shift+enter: newline", "ctrl+b: toggle backend"}
-	if m.backend == agent.BackendOpenCode && len(m.agents) > 1 {
+	if len(m.modes) > 1 {
 		helpParts = append(helpParts, "tab: cycle mode")
 	}
 	if m.backend == agent.BackendOpenCode && len(m.models) > 0 {
@@ -470,18 +479,18 @@ func (m *SessionViewModel) renderPromptBox() string {
 	modeBadge := ""
 	bc := mutedColor
 
-	var agentName string
-	if len(m.agents) > 0 {
-		agentName = m.agents[m.selectedAgent].Name
+	if len(m.modes) > 0 {
+		sel := m.modes[m.selectedMode]
+		mc := modeColor(sel)
+		modeBadge = lipgloss.NewStyle().Foreground(mc).Bold(true).Render(sel.label)
+		if m.input.Focused() {
+			bc = mc
+		}
 	} else if m.info != nil && m.info.Agent != "" {
-		// Agents list not loaded yet (or not available for this backend).
-		// Fall back to session info's agent name for the correct color,
-		// mirroring the fallback in renderHeader().
-		agentName = m.info.Agent
-	}
-	if agentName != "" {
-		mc := agentColor(agentName)
-		modeBadge = lipgloss.NewStyle().Foreground(mc).Bold(true).Render(agentName)
+		// Modes not loaded yet — fall back to session info's agent name for the
+		// correct color, mirroring the fallback in renderHeader().
+		mc := agentColor(m.info.Agent)
+		modeBadge = lipgloss.NewStyle().Foreground(mc).Bold(true).Render(m.info.Agent)
 		if m.input.Focused() {
 			bc = mc
 		}

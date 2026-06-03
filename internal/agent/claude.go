@@ -83,6 +83,25 @@ type ClaudeCodeBackend struct {
 	// first OpenAndSend; ignored on subsequent sends in the same
 	// session (the CLI's model is fixed for the process's lifetime).
 	initialModel string
+
+	// initialPermMode is the permission posture the session launches with
+	// (via claudecode.WithPermissionMode). Defaults to ClaudePermBypass — the
+	// product default for new sessions — and is overwritten from
+	// SendMessageOpts.PermissionMode on the first OpenAndSend.
+	initialPermMode ClaudePermissionMode
+
+	// currentPermMode tracks the mode currently in effect so Send only issues a
+	// SetPermissionMode control call when the user actually changed it.
+	// Guarded by b.mu.
+	currentPermMode ClaudePermissionMode
+
+	// pendingPerms maps a synthesized permission request ID to the channel that
+	// delivers the user's allow/deny decision. handleCanUseTool registers an
+	// entry and blocks on it; RespondPermission resolves it. Guarded by b.mu.
+	pendingPerms map[string]chan bool
+
+	// permSeq generates unique permission request IDs. Guarded by b.mu.
+	permSeq uint64
 }
 
 // NewClaudeCodeBackend creates a new Claude Code backend. workDir is
@@ -105,6 +124,8 @@ func NewClaudeCodeBackendForSession(workDir, resumeSessionID string) *ClaudeCode
 		sessionID:        resumeSessionID,
 		events:           make(chan Event, 128),
 		activeToolBlocks: make(map[int]*activeToolBlock),
+		pendingPerms:     make(map[string]chan bool),
+		initialPermMode:  ClaudePermBypass,
 		ctx:              ctx,
 		cancel:           cancel,
 	}
@@ -131,6 +152,7 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	factory := b.ClientFactory
 	extraEnv := b.ExtraEnv
 	model := b.initialModel
+	permMode := b.initialPermMode
 	b.mu.Unlock()
 
 	// Defensive guard: an empty workDir would silently inherit the
@@ -145,7 +167,11 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	opts := []claudecode.Option{
 		claudecode.WithCwd(workDir),
 		claudecode.WithPartialStreaming(),
-		claudecode.WithPermissionMode(claudecode.PermissionModeAcceptEdits),
+		claudecode.WithPermissionMode(claudecode.PermissionMode(permMode)),
+		// Route tool-permission requests through clank's prompt UI. Without a
+		// callback the SDK auto-denies every request, so this is required for
+		// the default/acceptEdits/plan modes to work at all.
+		claudecode.WithCanUseTool(b.handleCanUseTool),
 	}
 	if resumeID != "" {
 		opts = append(opts, claudecode.WithResume(resumeID))
@@ -174,6 +200,7 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 
 	b.mu.Lock()
 	b.client = client
+	b.currentPermMode = permMode
 	b.mu.Unlock()
 
 	// Connection established. Transition out of StatusStarting so the
@@ -262,6 +289,19 @@ func (b *ClaudeCodeBackend) OpenAndSend(ctx context.Context, opts SendMessageOpt
 		b.mu.Unlock()
 	}
 
+	// Capture the initial permission mode before Open spawns the CLI. Unlike
+	// model, the mode can change later (Send issues SetPermissionMode), but the
+	// launch value still comes from this first OpenAndSend.
+	if opts.PermissionMode != "" {
+		if !opts.PermissionMode.IsValid() {
+			b.setStatus(StatusError)
+			return fmt.Errorf("claude backend: %q is not a valid permission mode", opts.PermissionMode)
+		}
+		b.mu.Lock()
+		b.initialPermMode = opts.PermissionMode
+		b.mu.Unlock()
+	}
+
 	if err := b.Open(ctx); err != nil {
 		return err
 	}
@@ -289,6 +329,29 @@ func (b *ClaudeCodeBackend) Send(ctx context.Context, opts SendMessageOpts) erro
 
 	if client == nil {
 		return fmt.Errorf("session not open: client not connected")
+	}
+
+	// Apply a mode change before dispatching the prompt. Never call
+	// SetPermissionMode while a permission prompt is pending: it is a control
+	// round-trip answered by the same SDK read goroutine that a parked
+	// handleCanUseTool blocks, so the two would deadlock. The TUI enforces this
+	// by locking out sends while a prompt is open.
+	if opts.PermissionMode != "" {
+		if !opts.PermissionMode.IsValid() {
+			return fmt.Errorf("claude backend: %q is not a valid permission mode", opts.PermissionMode)
+		}
+		b.mu.Lock()
+		changed := opts.PermissionMode != b.currentPermMode
+		b.mu.Unlock()
+		if changed {
+			if err := client.SetPermissionMode(ctx, claudecode.PermissionMode(opts.PermissionMode)); err != nil {
+				b.setStatus(StatusError)
+				return fmt.Errorf("set permission mode: %w", err)
+			}
+			b.mu.Lock()
+			b.currentPermMode = opts.PermissionMode
+			b.mu.Unlock()
+		}
 	}
 
 	// Emit user message event so the TUI sees it.
@@ -319,6 +382,10 @@ func (b *ClaudeCodeBackend) Abort(ctx context.Context) error {
 	if client == nil {
 		return fmt.Errorf("session not started")
 	}
+
+	// Free any parked permission prompt so the SDK read goroutine unblocks
+	// immediately instead of waiting for the interrupt to propagate.
+	b.failPendingPermissions()
 
 	return client.Interrupt(ctx)
 }
@@ -405,9 +472,8 @@ func (b *ClaudeCodeBackend) Fork(ctx context.Context, messageID string) (ForkRes
 	return ForkResult{}, fmt.Errorf("fork is not supported by Claude Code backend")
 }
 
-func (b *ClaudeCodeBackend) RespondPermission(ctx context.Context, permissionID string, allow bool) error {
-	return fmt.Errorf("permissions are not supported by Claude Code backend")
-}
+// RespondPermission lives in claude_permissions.go alongside the CanUseTool
+// bridge it resolves.
 
 // --- Internal helpers ---
 

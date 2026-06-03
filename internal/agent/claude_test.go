@@ -33,6 +33,9 @@ type mockTransport struct {
 	// additional messages, they are delivered on the message channel.
 	// This enables simulating follow-up responses.
 	onSend func(prompt string) []claudecode.Message
+
+	// permissionModes records every mode passed to SetPermissionMode, in order.
+	permissionModes []string
 }
 
 func newMockTransport(messages []claudecode.Message) *mockTransport {
@@ -110,8 +113,21 @@ func (t *mockTransport) Interrupt(_ context.Context) error {
 }
 
 func (t *mockTransport) SetModel(_ context.Context, _ *string) error { return nil }
-func (t *mockTransport) SetPermissionMode(_ context.Context, _ string) error {
+func (t *mockTransport) SetPermissionMode(_ context.Context, mode string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.permissionModes = append(t.permissionModes, mode)
 	return nil
+}
+
+// recordedPermissionModes returns a copy of the modes passed to
+// SetPermissionMode so far.
+func (t *mockTransport) recordedPermissionModes() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]string, len(t.permissionModes))
+	copy(out, t.permissionModes)
+	return out
 }
 func (t *mockTransport) RewindFiles(_ context.Context, _ string) error { return nil }
 
