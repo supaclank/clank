@@ -107,7 +107,7 @@ func TestCommittedForm(t *testing.T) {
 		}
 	}
 	// Phases the UI doesn't persist itself.
-	for _, phase := range []string{"Preparing", phaseSyncingSessions} {
+	for _, phase := range []string{"Preparing", phaseExportingSessions, phaseUploadingSessions} {
 		if got := committedForm(phase, 0); got != "" {
 			t.Errorf("committedForm(%q) should be empty, got %q", phase, got)
 		}
@@ -127,19 +127,19 @@ func TestPushUI_ObserverNilSafe(t *testing.T) {
 	u.finish() // must not panic
 }
 
-// TestPushUI_SessionProgress pins the "(i/N)" suffix on the session phase:
-// it shows the live count, and Phase resets it so a later phase (or a
-// re-entered session phase) doesn't carry a stale count.
+// TestPushUI_SessionProgress pins the "(i/N)" suffix on a session phase:
+// it shows the live count, and Phase resets it so a later phase doesn't carry
+// a stale count.
 func TestPushUI_SessionProgress(t *testing.T) {
 	t.Parallel()
 	u := newPushUI(io.Discard, "localhost:7878")
-	u.Phase(phaseSyncingSessions)
+	u.Phase(phaseExportingSessions)
 
 	// No count yet → bare phase, no suffix.
 	u.mu.Lock()
 	bare := u.displayPhaseLocked()
 	u.mu.Unlock()
-	if bare != phaseSyncingSessions {
+	if bare != phaseExportingSessions {
 		t.Fatalf("expected bare phase before any count, got %q", bare)
 	}
 
@@ -147,18 +147,17 @@ func TestPushUI_SessionProgress(t *testing.T) {
 	u.mu.Lock()
 	withCount := u.displayPhaseLocked()
 	u.mu.Unlock()
-	if withCount != phaseSyncingSessions+" (2/5)" {
-		t.Fatalf("expected %q, got %q", phaseSyncingSessions+" (2/5)", withCount)
+	if withCount != phaseExportingSessions+" (2/5)" {
+		t.Fatalf("expected %q, got %q", phaseExportingSessions+" (2/5)", withCount)
 	}
 
-	// A new phase resets the session count — the suffix logic is gated on the
-	// session phase anyway, but the counters must not leak if we return to it.
+	// A new phase resets the session count so it doesn't leak (e.g. the
+	// byte-oriented Uploading phase must not show a stale "(2/5)").
 	u.Phase(syncclient.PhaseUploading)
-	u.Phase(phaseSyncingSessions)
 	u.mu.Lock()
 	reset := u.displayPhaseLocked()
 	u.mu.Unlock()
-	if reset != phaseSyncingSessions {
+	if reset != syncclient.PhaseUploading {
 		t.Fatalf("expected count reset after Phase, got %q", reset)
 	}
 }

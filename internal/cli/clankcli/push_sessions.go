@@ -9,9 +9,14 @@ import (
 	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
 
-// phaseSyncingSessions labels the post-checkpoint session-sync phase on the
-// push status line.
-const phaseSyncingSessions = "Syncing sessions"
+// Session-sync phase labels on the push status line. The leg is split into
+// export (copy transcripts locally) and upload (ship the blobs) so the live
+// (i/N) covers the whole span — on a fast/local gateway the upload is near
+// instant, so without the export label the counter would only flash.
+const (
+	phaseExportingSessions = "Exporting sessions"
+	phaseUploadingSessions = "Uploading sessions"
+)
 
 // pushSessions pushes the worktree's opencode sessions, daemon-free. Runs
 // AFTER PushCheckpoint (code blobs in S3), attached to its checkpointID:
@@ -25,14 +30,20 @@ const phaseSyncingSessions = "Syncing sessions"
 // print a summary AFTER tearing down the progress line — printing inline
 // would corrupt the rewriting status line. timer is non-nil.
 func pushSessions(ctx context.Context, timer *phaseTimer, projectDir, checkpointID string, gateway *syncclient.Client, obs syncclient.PushObserver) (exported int, skipped []sessionsync.SkippedSession, err error) {
+	if obs != nil {
+		obs.Phase(phaseExportingSessions)
+	}
 	done := timer.Start("export sessions")
-	export, err := sessionsync.ExportWorktreeSessions(ctx, projectDir)
+	export, err := sessionsync.ExportWorktreeSessions(ctx, projectDir, obs)
 	done()
 	if err != nil {
 		return 0, nil, fmt.Errorf("export sessions: %w", err)
 	}
 	defer export.Cleanup()
 
+	if obs != nil {
+		obs.Phase(phaseUploadingSessions)
+	}
 	done = timer.Start("upload sessions")
 	err = sessionsync.UploadSessions(ctx, gateway, checkpointID, export.Exported, obs)
 	done()

@@ -11,6 +11,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/pkg/sync/checkpoint"
+	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
 
 // ExportedSession pairs a manifest entry with the temp file holding its
@@ -57,7 +58,7 @@ func (r *ExportResult) Cleanup() {
 // SessionEntry.SessionID is the backend-native external id: with no local
 // metadata store there is no separate clank ULID, so the backend's own id is
 // the cross-machine identity.
-func ExportWorktreeSessions(ctx context.Context, projectDir string) (*ExportResult, error) {
+func ExportWorktreeSessions(ctx context.Context, projectDir string, obs syncclient.PushObserver) (*ExportResult, error) {
 	if projectDir == "" {
 		return nil, fmt.Errorf("export worktree sessions: projectDir is required")
 	}
@@ -73,7 +74,13 @@ func ExportWorktreeSessions(ctx context.Context, projectDir string) (*ExportResu
 	}
 	result := &ExportResult{tmpDir: tmpDir}
 
-	for _, ds := range sessions {
+	// Copying each session's transcript is the slow local leg, so report it
+	// as (i/N) — N is known the moment discovery returns.
+	total := len(sessions)
+	if obs != nil {
+		obs.SessionProgress(0, total)
+	}
+	for i, ds := range sessions {
 		blobPath := filepath.Join(tmpDir, ds.ExternalID+blobExt(ds.Backend))
 		f, err := os.Create(blobPath)
 		if err != nil {
@@ -92,6 +99,9 @@ func ExportWorktreeSessions(ctx context.Context, projectDir string) (*ExportResu
 					Backend:    ds.Backend,
 					Reason:     "backend storage missing this session (deleted out of band?)",
 				})
+				if obs != nil {
+					obs.SessionProgress(i+1, total)
+				}
 				continue
 			}
 			result.Cleanup()
@@ -123,6 +133,9 @@ func ExportWorktreeSessions(ctx context.Context, projectDir string) (*ExportResu
 			BlobPath:    blobPath,
 			Fingerprint: ds.Fingerprint,
 		})
+		if obs != nil {
+			obs.SessionProgress(i+1, total)
+		}
 	}
 
 	return result, nil

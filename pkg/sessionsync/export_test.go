@@ -2,10 +2,20 @@ package sessionsync
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/acksell/clank/internal/agent"
 )
+
+// exportProgressRecorder captures the SessionProgress (done,total) sequence
+// emitted during export. The other PushObserver methods are unused here.
+type exportProgressRecorder struct{ calls [][2]int }
+
+func (r *exportProgressRecorder) Phase(string)             {}
+func (r *exportProgressRecorder) UploadSized(int64)        {}
+func (r *exportProgressRecorder) UploadProgress(int64)     {}
+func (r *exportProgressRecorder) SessionProgress(d, t int) { r.calls = append(r.calls, [2]int{d, t}) }
 
 // TestExportWorktreeSessions_DiscoversClaude proves Claude sessions are
 // exported even when the opencode binary is absent (PATH stripped) — the
@@ -23,11 +33,18 @@ func TestExportWorktreeSessions_DiscoversClaude(t *testing.T) {
 	const sessionID = "export-wt-claude-7777"
 	writeClaudeTranscript(t, wtDir, sessionID)
 
-	res, err := ExportWorktreeSessions(ctx, wtDir)
+	obs := &exportProgressRecorder{}
+	res, err := ExportWorktreeSessions(ctx, wtDir, obs)
 	if err != nil {
 		t.Fatalf("ExportWorktreeSessions: %v", err)
 	}
 	t.Cleanup(res.Cleanup)
+
+	// Export must report (i/N): a 0/1 kickoff then 1/1 once the blob lands,
+	// so the push UI can show live progress through the slow local copy.
+	if want := [][2]int{{0, 1}, {1, 1}}; !reflect.DeepEqual(obs.calls, want) {
+		t.Errorf("session progress calls = %v, want %v", obs.calls, want)
+	}
 
 	if len(res.Exported) != 1 {
 		t.Fatalf("want 1 exported claude session, got %d (opencode-absent must not hide Claude)", len(res.Exported))

@@ -73,11 +73,13 @@ func (u *pushUI) SessionProgress(done, total int) {
 	u.mu.Unlock()
 }
 
-// displayPhaseLocked is the phase text as shown: the session phase carries a
-// "(done/total)" suffix once a count is known. Caller holds mu. The stored
-// u.phase stays the bare constant so committedForm still matches it.
+// displayPhaseLocked is the phase text as shown: a session phase carries a
+// "(done/total)" suffix once a count is known. Caller holds mu. sessTotal is
+// only set during the session legs (reset to 0 by Phase), so the byte phases
+// never pick up a suffix. The stored u.phase stays the bare label so
+// committedForm still matches it.
 func (u *pushUI) displayPhaseLocked() string {
-	if u.phase == phaseSyncingSessions && u.sessTotal > 0 {
+	if u.sessTotal > 0 {
 		return fmt.Sprintf("%s (%d/%d)", u.phase, u.sessDone, u.sessTotal)
 	}
 	return u.phase
