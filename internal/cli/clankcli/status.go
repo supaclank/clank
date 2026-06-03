@@ -154,6 +154,7 @@ func runStatus(ctx context.Context, repoPath string, verbose bool) (string, erro
 	// case (wtID==""), where the empty last-pushed record makes every session
 	// count as unsynced.
 	if root != "" && rep.SignedIn {
+		// Status mirrors a default push (recency window applied).
 		unsynced, known := unsyncedSessions(ctx, root)
 		rep.SessionsKnown = known
 		rep.UnsyncedSessions = len(unsynced)
@@ -297,6 +298,9 @@ func unsyncedSessions(ctx context.Context, projectDir string) (unsynced []sessio
 	// A missing/corrupt record degrades to an empty one → everything counts
 	// as unsynced (truthful; self-heals on the next push).
 	rec, _ := agent.ReadSyncedSessions(projectDir)
+	// Apply the same recency window push uses, so status doesn't flag
+	// beyond-window sessions a default push will never carry.
+	current = sessionsync.WithinPushWindow(current, rec, sessionsync.PushCutoff())
 	return sessionsync.Unsynced(current, rec), true
 }
 
