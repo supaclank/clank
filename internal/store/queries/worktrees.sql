@@ -22,6 +22,7 @@ WHERE id = ?;
 UPDATE worktrees
 SET materialized_checkpoint_id = ?, sync_state = ?,
     sync_conflict_local_head = ?, sync_conflict_remote_head = ?,
+    sessions_synced_hash = ?,
     updated_at = ?
 WHERE id = ?;
 

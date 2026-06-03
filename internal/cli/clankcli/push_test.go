@@ -131,6 +131,8 @@ func TestRunPush_SyncsUnsyncedSessionWhenCodeInSync(t *testing.T) {
 	cmd.SetContext(ctx)
 	cmd.SetOut(out)
 	cmd.SetErr(&bytes.Buffer{})
+	// The seeded transcript's mtime is "now", so it's inside the recency
+	// window and a default push carries it.
 	if err := runPush(cmd, ctx, newPhaseTimer(false), cli, repo, id, parityResult{InSync: true, HasCheckpoint: true, CheckpointID: ckID}, false); err != nil {
 		t.Fatalf("second push: %v", err)
 	}

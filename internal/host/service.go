@@ -282,9 +282,12 @@ func (s *Service) Init(ctx context.Context, knownDirs func(agent.BackendType) ([
 	return nil
 }
 
-// normalizeStaleSessionStatus rewrites busy/starting/dead sessions
-// (states that require a live backend to advance) back to idle.
-// idle/error are stable enough to leave alone.
+// normalizeStaleSessionStatus rewrites busy/starting/dead/error sessions
+// back to idle on startup — none can advance without the live backend that
+// set them, and that backend died with the previous process. error is reset
+// too so a transient failure (e.g. a session opened before its worktree
+// finished materializing) doesn't strand the session permanently red; the
+// next open retries it. idle is already stable and left alone.
 func (s *Service) normalizeStaleSessionStatus(ctx context.Context) {
 	if s.sessionsStore == nil {
 		return
@@ -297,7 +300,7 @@ func (s *Service) normalizeStaleSessionStatus(ctx context.Context) {
 	var fixed int
 	for _, info := range sessions {
 		switch info.Status {
-		case agent.StatusBusy, agent.StatusStarting, agent.StatusDead:
+		case agent.StatusBusy, agent.StatusStarting, agent.StatusDead, agent.StatusError:
 			info.Status = agent.StatusIdle
 			// Don't bump UpdatedAt — a cleanup shouldn't hoist every
 			// recovered session to the top of the inbox.

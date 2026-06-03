@@ -12,9 +12,11 @@ import (
 	"github.com/acksell/clank/internal/git"
 )
 
-// DefaultRecencyWindow is how recently a worktree must have been touched
-// to count as "active" for autopush enrollment.
-const DefaultRecencyWindow = 48 * time.Hour
+// DefaultRecencyWindow is how recently a worktree must have been touched to
+// count as "active" for autopush enrollment — `clank init` onboards (and
+// pushes) worktrees within this window. Matches the session push window
+// (sessionsync.SessionPushWindow): a hard 14-day cut-off for new work.
+const DefaultRecencyWindow = 14 * 24 * time.Hour
 
 // Scope is one git worktree plus the clank metadata for autopush.
 type Scope struct {

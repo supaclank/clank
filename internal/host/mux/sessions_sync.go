@@ -2,7 +2,6 @@ package hostmux
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -223,26 +222,40 @@ func (m *Mux) handleSyncSessionsApplyFromURLs(w http.ResponseWriter, r *http.Req
 	}
 	defer os.RemoveAll(tmpDir)
 
+	// Import each session independently: a single malformed blob (e.g. a
+	// truncated export — "unexpected end of JSON input") must never wedge the
+	// whole worktree's sessions. Skip-and-continue, logging each casualty;
+	// RegisterImportedSession is idempotent so a later good push re-imports a
+	// skipped session once its content (and thus the manifest) changes.
+	var imported, skipped int
 	for _, entry := range manifest.Sessions {
 		getURL, ok := req.SessionBlobURLs[entry.ExternalID]
 		if !ok {
-			writeJSON(w, http.StatusBadRequest, errResp{Code: syncErrBadRequest, Error: "missing presigned GET URL for session " + entry.ExternalID})
-			return
+			m.log.Printf("session import: skip %s (external_id=%s): no presigned URL", entry.SessionID, entry.ExternalID)
+			skipped++
+			continue
 		}
-		blobBytes, status, code, err := fetchURL(r.Context(), cli, getURL)
+		blobBytes, _, _, err := fetchURL(r.Context(), cli, getURL)
 		if err != nil {
-			writeJSON(w, status, errResp{Code: code, Error: fmt.Sprintf("fetch session %s blob: %v", entry.SessionID, err)})
-			return
+			m.log.Printf("session import: skip %s (external_id=%s): fetch blob: %v", entry.SessionID, entry.ExternalID, err)
+			skipped++
+			continue
 		}
 		blobPath := filepath.Join(tmpDir, entry.SessionID+".json")
 		if err := os.WriteFile(blobPath, blobBytes, 0o600); err != nil {
-			writeJSON(w, http.StatusInternalServerError, errResp{Code: syncErrSessionImport, Error: "write blob: " + err.Error()})
-			return
+			m.log.Printf("session import: skip %s: write blob: %v", entry.SessionID, err)
+			skipped++
+			continue
 		}
 		if _, err := m.svc.RegisterImportedSession(r.Context(), req.WorktreeID, entry, blobPath); err != nil {
-			writeJSON(w, http.StatusInternalServerError, errResp{Code: syncErrSessionImport, Error: fmt.Sprintf("register session %s: %v", entry.SessionID, err)})
-			return
+			m.log.Printf("session import: skip %s (external_id=%s): %v", entry.SessionID, entry.ExternalID, err)
+			skipped++
+			continue
 		}
+		imported++
+	}
+	if skipped > 0 {
+		m.log.Printf("session import for worktree %s: imported %d, skipped %d malformed", req.WorktreeID, imported, skipped)
 	}
 
 	w.WriteHeader(http.StatusNoContent)

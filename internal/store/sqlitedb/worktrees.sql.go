@@ -67,7 +67,7 @@ func (q *Queries) GetHeadBundle(ctx context.Context, arg GetHeadBundleParams) (H
 }
 
 const getWorktreeByID = `-- name: GetWorktreeByID :one
-SELECT id, user_id, display_name, origin_repo, latest_synced_checkpoint, materialized_checkpoint_id, sync_state, sync_conflict_local_head, sync_conflict_remote_head, created_at, updated_at FROM worktrees
+SELECT id, user_id, display_name, origin_repo, latest_synced_checkpoint, materialized_checkpoint_id, sync_state, sync_conflict_local_head, sync_conflict_remote_head, sessions_synced_hash, created_at, updated_at FROM worktrees
 WHERE id = ?
 `
 
@@ -84,6 +84,7 @@ func (q *Queries) GetWorktreeByID(ctx context.Context, id string) (Worktree, err
 		&i.SyncState,
 		&i.SyncConflictLocalHead,
 		&i.SyncConflictRemoteHead,
+		&i.SessionsSyncedHash,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -229,7 +230,7 @@ func (q *Queries) ListCheckpointsByWorktree(ctx context.Context, arg ListCheckpo
 }
 
 const listWorktreesByUser = `-- name: ListWorktreesByUser :many
-SELECT id, user_id, display_name, origin_repo, latest_synced_checkpoint, materialized_checkpoint_id, sync_state, sync_conflict_local_head, sync_conflict_remote_head, created_at, updated_at FROM worktrees
+SELECT id, user_id, display_name, origin_repo, latest_synced_checkpoint, materialized_checkpoint_id, sync_state, sync_conflict_local_head, sync_conflict_remote_head, sessions_synced_hash, created_at, updated_at FROM worktrees
 WHERE user_id = ?
 ORDER BY updated_at DESC
 `
@@ -253,6 +254,7 @@ func (q *Queries) ListWorktreesByUser(ctx context.Context, userID string) ([]Wor
 			&i.SyncState,
 			&i.SyncConflictLocalHead,
 			&i.SyncConflictRemoteHead,
+			&i.SessionsSyncedHash,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -289,6 +291,7 @@ const updateWorktreeMaterialization = `-- name: UpdateWorktreeMaterialization :e
 UPDATE worktrees
 SET materialized_checkpoint_id = ?, sync_state = ?,
     sync_conflict_local_head = ?, sync_conflict_remote_head = ?,
+    sessions_synced_hash = ?,
     updated_at = ?
 WHERE id = ?
 `
@@ -298,6 +301,7 @@ type UpdateWorktreeMaterializationParams struct {
 	SyncState                string
 	SyncConflictLocalHead    string
 	SyncConflictRemoteHead   string
+	SessionsSyncedHash       string
 	UpdatedAt                time.Time
 	ID                       string
 }
@@ -308,6 +312,7 @@ func (q *Queries) UpdateWorktreeMaterialization(ctx context.Context, arg UpdateW
 		arg.SyncState,
 		arg.SyncConflictLocalHead,
 		arg.SyncConflictRemoteHead,
+		arg.SessionsSyncedHash,
 		arg.UpdatedAt,
 		arg.ID,
 	)

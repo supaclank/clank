@@ -95,48 +95,11 @@ from ` + "`git worktree add`" + ` are tracked individually.`,
 				return err
 			}
 
-			// Serialize concurrent pushes for this worktree (e.g. a Claude
-			// Stop hook and an opencode idle plugin firing at once) so they
-			// don't race the checkpoint. Non-blocking: a contended push
-			// exits quietly.
-			gitDir, err := agent.GitDir(absRepo)
-			if err != nil {
-				return fmt.Errorf("resolve git dir: %w", err)
-			}
-			isLocked, release, err := pushlock.Acquire(gitDir)
-			if err != nil {
-				return fmt.Errorf("acquire push lock: %w", err)
-			}
-			if !isLocked {
-				fmt.Fprintln(cmd.OutOrStdout(), "another push is already in progress for this worktree; skipping")
-				return nil
-			}
-			defer release()
-
-			// Build a Snapshot of local state and query the remote for
-			// the latest synced checkpoint. The pair drives the
-			// idempotency / divergence branches below; built before any
-			// expensive work so we can fast-path no-op runs.
-			done := timer.Start("snapshot local")
-			snap, err := snapshotRepo(ctx, absRepo, clean)
-			done()
-			if err != nil {
-				return fmt.Errorf("snapshot repo: %w", err)
-			}
-
 			dc, err := daemonclient.NewRemoteClient()
 			if err != nil {
 				return fmt.Errorf("remote client: %w", err)
 			}
-
-			done = timer.Start("parity check")
-			parity, err := checkParity(ctx, dc, worktreeID, snap)
-			done()
-			if err != nil {
-				return fmt.Errorf("check remote state: %w", err)
-			}
-
-			return runPush(cmd, ctx, timer, cli, absRepo, worktreeID, parity, clean)
+			return pushWorktreeAt(ctx, cmd, timer, cli, dc, absRepo, worktreeID, clean)
 		},
 	}
 	cmd.Flags().StringVar(&baseURL, "base-url", envOrDefault("CLANK_GATEWAY_URL", ""), "gateway base URL (default: active remote's gateway_url)")
@@ -145,6 +108,45 @@ from ` + "`git worktree add`" + ` are tracked individually.`,
 	cmd.Flags().BoolVar(&timing, "timing", false, "print a per-phase timing breakdown to stderr (also enabled by CLANK_TIMING=1)")
 	cmd.Flags().BoolVar(&clean, "clean", false, "push committed history only — ignore uncommitted/staged/untracked changes")
 	return cmd
+}
+
+// pushWorktreeAt runs one worktree's full push: snapshot → parity → push
+// (code + sessions). Shared by `clank push` (one worktree) and `clank init`
+// (each recently-active worktree). Serializes against concurrent pushes of
+// the same worktree via pushlock; a contended push exits quietly.
+func pushWorktreeAt(ctx context.Context, cmd *cobra.Command, timer *phaseTimer, cli *syncclient.Client, dc *daemonclient.Client, absRepo, worktreeID string, committedOnly bool) error {
+	gitDir, err := agent.GitDir(absRepo)
+	if err != nil {
+		return fmt.Errorf("resolve git dir: %w", err)
+	}
+	isLocked, release, err := pushlock.Acquire(gitDir)
+	if err != nil {
+		return fmt.Errorf("acquire push lock: %w", err)
+	}
+	if !isLocked {
+		fmt.Fprintln(cmd.OutOrStdout(), "another push is already in progress for this worktree; skipping")
+		return nil
+	}
+	defer release()
+
+	// Snapshot local state + query the remote's latest checkpoint; the pair
+	// drives the idempotency / divergence branches in runPush, built before
+	// any expensive work so a no-op run fast-paths.
+	done := timer.Start("snapshot local")
+	snap, err := snapshotRepo(ctx, absRepo, committedOnly)
+	done()
+	if err != nil {
+		return fmt.Errorf("snapshot repo: %w", err)
+	}
+
+	done = timer.Start("parity check")
+	parity, err := checkParity(ctx, dc, worktreeID, snap)
+	done()
+	if err != nil {
+		return fmt.Errorf("check remote state: %w", err)
+	}
+
+	return runPush(cmd, ctx, timer, cli, absRepo, worktreeID, parity, committedOnly)
 }
 
 // runPush uploads the worktree's code checkpoint + opencode sessions.
@@ -199,7 +201,7 @@ func runPush(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *sy
 
 	// Session leg shares the same status line; pushSessions drives its own
 	// export/upload phases via obs, each with a live (i/N) counter.
-	exported, skipped, serr := pushSessions(ctx, timer, absRepo, res.CheckpointID, cli, obs)
+	exported, excluded, skipped, serr := pushSessions(ctx, timer, absRepo, res.CheckpointID, cli, obs)
 
 	ui.finish() // tear the active line down; committed steps stay on screen
 	if serr != nil {
@@ -207,6 +209,7 @@ func runPush(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *sy
 	}
 
 	reportSkippedSessions(cmd, skipped)
+	reportExcludedSessions(cmd, excluded)
 	if exported > 0 {
 		fmt.Fprintf(cmd.OutOrStdout(), "%s Synced %d session(s)\n", styleOK.Render("✓"), exported)
 	}
@@ -239,12 +242,13 @@ func pushSessionsWhenCodeInSync(cmd *cobra.Command, ctx context.Context, timer *
 		obs = ui
 	}
 
-	exported, skipped, err := pushSessions(ctx, timer, absRepo, parity.CheckpointID, cli, obs)
+	exported, excluded, skipped, err := pushSessions(ctx, timer, absRepo, parity.CheckpointID, cli, obs)
 	ui.finish()
 	if err != nil {
 		return fmt.Errorf("push session leg: %w", err)
 	}
 	reportSkippedSessions(cmd, skipped)
+	reportExcludedSessions(cmd, excluded)
 	if exported == 0 {
 		printAlreadyUpToDate(cmd, committedOnly)
 		return nil
@@ -265,6 +269,17 @@ func reportSkippedSessions(cmd *cobra.Command, skipped []sessionsync.SkippedSess
 	for _, sk := range skipped {
 		fmt.Fprintf(cmd.OutOrStdout(), "  %s skipped session %s: %s\n", styleDim.Render("•"), sk.ExternalID, sk.Reason)
 	}
+}
+
+// reportExcludedSessions notes how many never-synced sessions the recency
+// window dropped. Silent when none were excluded.
+func reportExcludedSessions(cmd *cobra.Command, excluded int) {
+	if excluded <= 0 {
+		return
+	}
+	days := int(sessionsync.SessionPushWindow.Hours() / 24)
+	fmt.Fprintf(cmd.OutOrStdout(), "  %s Skipped %d session(s) older than %d days\n",
+		styleDim.Render("•"), excluded, days)
 }
 
 // reregisterStaleWorktree re-registers absRepo after the remote reported

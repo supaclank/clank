@@ -64,6 +64,7 @@ type Worktree struct {
 	SyncState                string
 	SyncConflictLocalHead    string
 	SyncConflictRemoteHead   string
+	SessionsSyncedHash       string
 	CreatedAt                time.Time
 	UpdatedAt                time.Time
 }
