@@ -188,6 +188,77 @@ func TestSyncSessionsApply_BadManifest(t *testing.T) {
 	}
 }
 
+// TestSyncSessionsApply_SkipsMalformedBlob is the regression for a single
+// corrupt session blob wedging an entire worktree's sessions. A truncated
+// export fails RewriteImportBlob with "unexpected end of JSON input"; the
+// import must skip that session and carry on (returning 204), not abort the
+// whole batch with a 500 — which previously left the worktree stuck "behind"
+// and hid every other session in it.
+func TestSyncSessionsApply_SkipsMalformedBlob(t *testing.T) {
+	t.Parallel()
+
+	// One server serves the manifest and both (corrupt) session blobs.
+	manifest := &checkpoint.SessionManifest{
+		Version:      checkpoint.SessionManifestVersion,
+		CheckpointID: "ck-1",
+		Sessions: []checkpoint.SessionEntry{
+			{SessionID: "01HSESSIONAAA0000000000000", ExternalID: "ses_a", Backend: agent.BackendOpenCode},
+			{SessionID: "01HSESSIONBBB0000000000000", ExternalID: "ses_b", Backend: agent.BackendOpenCode},
+		},
+	}
+	manifestBytes, err := manifest.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/manifest" {
+			w.Write(manifestBytes)
+			return
+		}
+		w.Write([]byte("{")) // truncated → "unexpected end of JSON input"
+	}))
+	t.Cleanup(blobSrv.Close)
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "host.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{agent.BackendOpenCode: &noopBackendManager{}},
+		SessionsStore:   st,
+	})
+	t.Cleanup(svc.Shutdown)
+	mux := hostmux.New(svc, nil)
+	srv := httptest.NewServer(mux.Handler())
+	t.Cleanup(srv.Close)
+
+	body, _ := json.Marshal(map[string]any{
+		"worktree_id":          "wt-poison",
+		"session_manifest_url": blobSrv.URL + "/manifest",
+		"session_blob_urls":    map[string]string{"ses_a": blobSrv.URL + "/blob/a", "ses_b": blobSrv.URL + "/blob/b"},
+	})
+	resp, err := http.Post(srv.URL+"/sync/sessions/apply-from-urls", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	// The crux: a malformed blob is skipped, not fatal — the batch succeeds.
+	if resp.StatusCode != http.StatusNoContent {
+		buf, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d, want 204 (malformed blob must skip, not wedge the worktree): %s", resp.StatusCode, buf)
+	}
+	// Both were malformed, so nothing imported — and critically the loop
+	// reached the second session rather than aborting at the first.
+	infos, err := svc.ListSessionMetadata(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != 0 {
+		t.Errorf("registered %d sessions, want 0 (both blobs malformed)", len(infos))
+	}
+}
+
 // noopBackendManager mirrors the host_test fixture. Duplicated here
 // because the mux test package is hostmux_test, not host_test —
 // they don't share private symbols. Kept minimal.
