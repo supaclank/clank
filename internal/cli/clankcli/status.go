@@ -121,18 +121,18 @@ func runStatus(ctx context.Context, repoPath string, verbose bool) (string, erro
 
 	rep := statusReport{WorktreeID: wtID, Verbose: verbose}
 
-	// Worktree directory basename — what the user actually recognises.
-	// Surface RepoRoot errors directly rather than falling back to the
-	// raw repoPath; a status command silently mislabelling a non-repo
-	// invocation would mask a real bug.
+	// Worktree directory basename — what the user actually recognises. Resolved
+	// regardless of whether the worktree is tracked yet, so the never-pushed
+	// view can still read sessions and the diff summary from disk. A RepoRoot
+	// error on a TRACKED worktree is a real bug (surface it); on an untracked
+	// path it just means "not a git repo here" — leave root empty and let the
+	// no-remote/never-pushed branches render without a directory headline.
 	var root string
-	if wtID != "" {
-		r, err := git.RepoRoot(repoPath)
-		if err != nil {
-			return "", fmt.Errorf("resolve worktree root: %w", err)
-		}
+	if r, err := git.RepoRoot(repoPath); err == nil {
 		root = r
 		rep.WorktreeDir = filepath.Base(root)
+	} else if wtID != "" {
+		return "", fmt.Errorf("resolve worktree root: %w", err)
 	}
 
 	prefs, err := config.LoadPreferences()
@@ -148,9 +148,10 @@ func runStatus(ctx context.Context, repoPath string, verbose bool) (string, erro
 	// Session sync is a purely local axis (a session is only edited on the
 	// machine it runs on), independent of the remote — compute it before the
 	// remote block so it survives a remote-unreachable error. Gated on a
-	// signed-in tracked worktree, the only case that reaches the detailed
-	// status view that renders it.
-	if wtID != "" && rep.SignedIn {
+	// signed-in repo with a resolvable root; that includes the never-pushed
+	// case (wtID==""), where the empty last-pushed record makes every session
+	// count as unsynced.
+	if root != "" && rep.SignedIn {
 		unsynced, known := unsyncedSessions(ctx, root)
 		rep.SessionsKnown = known
 		rep.UnsyncedSessions = len(unsynced)
@@ -395,8 +396,22 @@ func renderStatusReport(rep statusReport) string {
 	// successfully responded but doesn't know this worktree). User just
 	// needs to push; surface as "Not synced" with no headline noise.
 	if rep.WorktreeID == "" || (rep.RemoteError == nil && rep.WorktreeFromRemote == nil) {
-		sb.WriteString(styleWarn.Render("Not synced") + "\n")
-		sb.WriteString("  " + styleDim.Render(fmt.Sprintf("Run `clank push` to sync to the %s remote.", rep.ActiveRemote)) + "\n")
+		sb.WriteString(styleWarn.Render("Untracked worktree") + "\n")
+		// Nothing on the remote yet, so the whole worktree is unsynced — no
+		// point counting commits or files. The one number worth surfacing is
+		// the session count, on its own bullet like the synced view.
+		sb.WriteString(warnLine("No files synced"))
+		if rep.SessionsKnown && rep.UnsyncedSessions > 0 {
+			sb.WriteString(warnLine(sessions(rep.UnsyncedSessions) + " not synced"))
+			if rep.Verbose {
+				for _, ln := range rep.UnsyncedSessionLabels {
+					sb.WriteString("      " + styleDim.Render(ln) + "\n")
+				}
+			}
+		}
+		// Match the synced view's CTA: dim the framing, leave `clank push` at
+		// neutral-bright so the command is the token the eye lands on.
+		sb.WriteString("\n  " + styleDim.Render("Run ") + "`clank push`" + styleDim.Render(fmt.Sprintf(" to sync to the %s remote.", rep.ActiveRemote)) + "\n")
 		return sb.String()
 	}
 

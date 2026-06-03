@@ -24,7 +24,7 @@ const phaseSyncingSessions = "Syncing sessions"
 // It returns the exported count and any skipped sessions so the caller can
 // print a summary AFTER tearing down the progress line — printing inline
 // would corrupt the rewriting status line. timer is non-nil.
-func pushSessions(ctx context.Context, timer *phaseTimer, projectDir, checkpointID string, gateway *syncclient.Client) (exported int, skipped []sessionsync.SkippedSession, err error) {
+func pushSessions(ctx context.Context, timer *phaseTimer, projectDir, checkpointID string, gateway *syncclient.Client, obs syncclient.PushObserver) (exported int, skipped []sessionsync.SkippedSession, err error) {
 	done := timer.Start("export sessions")
 	export, err := sessionsync.ExportWorktreeSessions(ctx, projectDir)
 	done()
@@ -34,7 +34,7 @@ func pushSessions(ctx context.Context, timer *phaseTimer, projectDir, checkpoint
 	defer export.Cleanup()
 
 	done = timer.Start("upload sessions")
-	err = sessionsync.UploadSessions(ctx, gateway, checkpointID, export.Exported)
+	err = sessionsync.UploadSessions(ctx, gateway, checkpointID, export.Exported, obs)
 	done()
 	if err != nil {
 		return 0, nil, fmt.Errorf("upload sessions: %w", err)

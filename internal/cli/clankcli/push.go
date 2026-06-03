@@ -197,9 +197,10 @@ func runPush(cmd *cobra.Command, ctx context.Context, timer *phaseTimer, cli *sy
 		timer.Record(st.Name, st.Duration)
 	}
 
-	// Session leg shares the same status line (Phase resets the byte bar).
+	// Session leg shares the same status line (Phase resets the byte bar);
+	// obs drives the live (i/N) counter as each session uploads.
 	ui.Phase(phaseSyncingSessions)
-	exported, skipped, serr := pushSessions(ctx, timer, absRepo, res.CheckpointID, cli)
+	exported, skipped, serr := pushSessions(ctx, timer, absRepo, res.CheckpointID, cli, obs)
 
 	ui.finish() // tear the active line down; committed steps stay on screen
 	if serr != nil {
@@ -228,7 +229,20 @@ func pushSessionsWhenCodeInSync(cmd *cobra.Command, ctx context.Context, timer *
 		return nil
 	}
 
-	exported, skipped, err := pushSessions(ctx, timer, absRepo, parity.CheckpointID, cli)
+	// Sessions are the only thing being pushed here, so drive the same live
+	// "Syncing sessions (i/N)" line as the full push. Non-interactive callers
+	// get a nil observer (no UI), matching runPush.
+	var ui *pushUI
+	var obs syncclient.PushObserver
+	if isInteractive(cmd) {
+		ui = newPushUI(cmd.OutOrStdout(), remoteLabel(cli.BaseURL()))
+		ui.start()
+		ui.Phase(phaseSyncingSessions)
+		obs = ui
+	}
+
+	exported, skipped, err := pushSessions(ctx, timer, absRepo, parity.CheckpointID, cli, obs)
+	ui.finish()
 	if err != nil {
 		return fmt.Errorf("push session leg: %w", err)
 	}

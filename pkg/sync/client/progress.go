@@ -25,6 +25,10 @@ type PushObserver interface {
 	UploadSized(totalBytes int64)
 	// UploadProgress reports cumulative bytes uploaded so far.
 	UploadProgress(uploadedBytes int64)
+	// SessionProgress reports session-upload progress as done-of-total during
+	// the session-sync phase. total is known before the first upload, so the
+	// renderer can show "(i/N)".
+	SessionProgress(done, total int)
 }
 
 // countingReader reports bytes read via onAdvance (a per-Read delta), used

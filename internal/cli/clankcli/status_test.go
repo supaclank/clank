@@ -180,14 +180,58 @@ func TestRenderStatusReport_WorktreeRemovedFromRemote(t *testing.T) {
 		// WorktreeFromRemote intentionally nil — ListWorktrees succeeded
 		// but didn't include this worktree.
 	}))
-	if !strings.Contains(got, "Not synced") {
-		t.Errorf("expected 'Not synced'; got:\n%s", got)
+	if !strings.Contains(got, "Untracked worktree") {
+		t.Errorf("expected 'Untracked worktree'; got:\n%s", got)
 	}
 	if !strings.Contains(got, "to the dev remote") {
 		t.Errorf("expected the push hint to target the dev remote; got:\n%s", got)
 	}
 	if strings.Contains(got, "On worktree") {
 		t.Errorf("must not show 'On worktree' headline when push is needed; got:\n%s", got)
+	}
+}
+
+// TestRenderStatusReport_NeverPushed_Bullets: the untracked-worktree view
+// states the whole worktree is unsynced and surfaces the session count on its
+// own bullet, between the "Untracked worktree" headline and the push CTA.
+func TestRenderStatusReport_NeverPushed_Bullets(t *testing.T) {
+	t.Parallel()
+	got := stripANSI(renderStatusReport(statusReport{
+		WorktreeID:       "",
+		WorktreeDir:      "mindmouth",
+		ActiveRemote:     "dev",
+		ActiveRemoteURL:  "http://localhost:7878",
+		SignedIn:         true,
+		SessionsKnown:    true,
+		UnsyncedSessions: 2,
+	}))
+	for _, want := range []string{
+		"Untracked worktree",
+		"No files synced",
+		"2 sessions not synced",
+		"to the dev remote",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q; got:\n%s", want, got)
+		}
+	}
+}
+
+// TestRenderStatusReport_NeverPushed_NoSessions: with no unsynced sessions the
+// view still states no files are synced but omits the session bullet.
+func TestRenderStatusReport_NeverPushed_NoSessions(t *testing.T) {
+	t.Parallel()
+	got := stripANSI(renderStatusReport(statusReport{
+		WorktreeID:      "",
+		ActiveRemote:    "dev",
+		ActiveRemoteURL: "http://localhost:7878",
+		SignedIn:        true,
+	}))
+	if !strings.Contains(got, "No files synced") || !strings.Contains(got, "Run `clank push`") {
+		t.Errorf("expected 'No files synced' + CTA; got:\n%s", got)
+	}
+	if strings.Contains(got, "sessions not synced") || strings.Contains(got, "session not synced") {
+		t.Errorf("must not render a session bullet when none are unsynced; got:\n%s", got)
 	}
 }
 

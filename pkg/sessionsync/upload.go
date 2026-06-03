@@ -17,7 +17,10 @@ import (
 //
 // Daemon-free: the bytes go laptop → object storage directly via the
 // gateway-minted URLs; nothing passes through a local clank-host.
-func UploadSessions(ctx context.Context, gateway *syncclient.Client, checkpointID string, exported []ExportedSession) error {
+//
+// obs (nil-safe) receives per-session progress so the caller can render
+// "(i/N)" while the blobs upload.
+func UploadSessions(ctx context.Context, gateway *syncclient.Client, checkpointID string, exported []ExportedSession, obs syncclient.PushObserver) error {
 	if checkpointID == "" {
 		return fmt.Errorf("upload sessions: checkpointID is required")
 	}
@@ -31,13 +34,20 @@ func UploadSessions(ctx context.Context, gateway *syncclient.Client, checkpointI
 		return fmt.Errorf("request session upload URLs: %w", err)
 	}
 
-	for _, e := range exported {
+	total := len(exported)
+	if obs != nil {
+		obs.SessionProgress(0, total)
+	}
+	for i, e := range exported {
 		putURL, ok := urls.SessionPutURLs[e.Entry.SessionID]
 		if !ok {
 			return fmt.Errorf("no upload URL for session %s", e.Entry.SessionID)
 		}
 		if err := gateway.PutFile(ctx, putURL, e.BlobPath); err != nil {
 			return fmt.Errorf("upload session %s: %w", e.Entry.SessionID, err)
+		}
+		if obs != nil {
+			obs.SessionProgress(i+1, total)
 		}
 	}
 

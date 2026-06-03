@@ -28,10 +28,12 @@ type pushUI struct {
 	out    io.Writer
 	remote string
 
-	mu       sync.Mutex // guards the fields below AND serializes writes to out
-	phase    string
-	uploaded int64
-	total    int64
+	mu        sync.Mutex // guards the fields below AND serializes writes to out
+	phase     string
+	uploaded  int64
+	total     int64
+	sessDone  int // sessions uploaded so far (session phase only)
+	sessTotal int // sessions to upload (session phase only)
 
 	stop chan struct{}
 	done chan struct{}
@@ -52,10 +54,33 @@ func (u *pushUI) Phase(name string) {
 	u.commitLocked()
 	u.phase = name
 	u.total, u.uploaded = 0, 0
+	u.sessDone, u.sessTotal = 0, 0
 	// Draw the new phase's line right away so there's no blank gap until the
 	// next tick.
-	fmt.Fprint(u.out, "\r\x1b[K"+liveLine(spinFrames[0], u.phase, u.remote, u.uploaded, u.total, false))
+	fmt.Fprint(u.out, "\r\x1b[K"+liveLine(spinFrames[0], u.displayPhaseLocked(), u.remote, u.uploaded, u.total, false))
 	u.mu.Unlock()
+}
+
+// SessionProgress updates the session counter and redraws the active line so
+// "(i/N)" advances immediately rather than waiting for the next tick.
+func (u *pushUI) SessionProgress(done, total int) {
+	if u == nil {
+		return
+	}
+	u.mu.Lock()
+	u.sessDone, u.sessTotal = done, total
+	fmt.Fprint(u.out, "\r\x1b[K"+liveLine(spinFrames[0], u.displayPhaseLocked(), u.remote, u.uploaded, u.total, false))
+	u.mu.Unlock()
+}
+
+// displayPhaseLocked is the phase text as shown: the session phase carries a
+// "(done/total)" suffix once a count is known. Caller holds mu. The stored
+// u.phase stays the bare constant so committedForm still matches it.
+func (u *pushUI) displayPhaseLocked() string {
+	if u.phase == phaseSyncingSessions && u.sessTotal > 0 {
+		return fmt.Sprintf("%s (%d/%d)", u.phase, u.sessDone, u.sessTotal)
+	}
+	return u.phase
 }
 
 func (u *pushUI) UploadSized(total int64) {
@@ -105,7 +130,7 @@ func (u *pushUI) start() {
 				return
 			case <-ticker.C:
 				u.mu.Lock()
-				phase, uploaded, total := u.phase, u.uploaded, u.total
+				phase, uploaded, total := u.displayPhaseLocked(), u.uploaded, u.total
 				u.mu.Unlock()
 				if total > 0 && uploaded == lastUploaded && uploaded > 0 {
 					stallTicks++
