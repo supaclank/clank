@@ -2,8 +2,11 @@ package host
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,9 +59,9 @@ func (r *SessionExportResult) Cleanup() {
 // Orphans whose backend storage has gone missing appear in
 // result.Skipped so the CLI can surface them.
 //
-// checkpointID is stamped into each SessionEntry.BlobKey for clarity
-// — the actual S3 key is constructed by the sync server via
-// storage.KeyForSession at presign time.
+// checkpointID gates the build; the session blob's S3 key is
+// content-addressed (storage.KeyForSessionBlob) from the entry's
+// ExternalID + ContentHash at presign time.
 //
 // createdBy is recorded on the SessionManifest by the caller; this
 // function only fills the per-session entries.
@@ -119,7 +122,8 @@ func (s *Service) ExportSessions(ctx context.Context, worktreeID, checkpointID s
 		// non-existent path fails before the backend runs). Pinned by
 		// TestExportSessions_IgnoresStaleLocalPath.
 		cwd := filepath.Join(workRoot, worktreeID)
-		if err := sessionsync.ExportSessionBlob(ctx, info.Backend, cwd, info.ExternalID, f); err != nil {
+		h := sha256.New()
+		if err := sessionsync.ExportSessionBlob(ctx, info.Backend, cwd, info.ExternalID, io.MultiWriter(f, h)); err != nil {
 			_ = f.Close()
 			_ = os.Remove(blobPath)
 			// A missing session means the host.db row has gone stale
@@ -154,7 +158,7 @@ func (s *Service) ExportSessions(ctx context.Context, worktreeID, checkpointID s
 			SessionID:      info.ID,
 			ExternalID:     info.ExternalID,
 			Backend:        info.Backend,
-			BlobKey:        "sessions/" + info.ID + ".json",
+			ContentHash:    hex.EncodeToString(h.Sum(nil)),
 			Status:         info.Status,
 			Title:          info.Title,
 			Prompt:         info.Prompt,
@@ -168,7 +172,7 @@ func (s *Service) ExportSessions(ctx context.Context, worktreeID, checkpointID s
 			WasBusy:        wasBusy,
 		}
 		result.Entries = append(result.Entries, entry)
-		result.BlobPaths[info.ID] = blobPath
+		result.BlobPaths[info.ExternalID] = blobPath
 	}
 
 	return result, nil

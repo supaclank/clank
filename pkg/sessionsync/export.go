@@ -2,8 +2,11 @@ package sessionsync
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,131 +17,182 @@ import (
 	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
 
-// ExportedSession pairs a manifest entry with the temp file holding its
-// opaque export blob. Fingerprint is the discovered content version (local
-// only — NOT serialized into the manifest); the caller records it so later
-// drift detection is immune to mtime-only changes.
+// ExportedSession pairs a complete manifest entry with the temp file
+// holding its export blob, for the upload leg. Only CHANGED sessions are
+// exported; unchanged sessions ride in the manifest by reference (their
+// blob is already in object storage from an earlier push).
 type ExportedSession struct {
-	Entry       checkpoint.SessionEntry
-	BlobPath    string
-	Fingerprint string
+	Entry    checkpoint.SessionEntry
+	BlobPath string
 }
 
 // SkippedSession describes a discovered session that was not exported
-// (currently: opencode sessions whose storage has gone missing).
+// (currently: a session whose backend storage has gone missing).
 type SkippedSession struct {
 	ExternalID string
 	Backend    agent.BackendType
 	Reason     string
 }
 
-// ExportResult is the output of ExportWorktreeSessions. Callers MUST
-// invoke Cleanup() to remove the temp blob files.
-type ExportResult struct {
-	Exported []ExportedSession
-	Skipped  []SkippedSession
-	tmpDir   string
+// PushPlan is the result of PreparePush: the blobs to upload (changed
+// sessions only), the COMPLETE per-checkpoint manifest entries (changed +
+// unchanged-by-reference), the new last-pushed record to persist after a
+// successful upload, and any skipped orphans. Callers MUST invoke
+// Cleanup() to remove the temp blob files.
+type PushPlan struct {
+	Upload  []ExportedSession
+	Entries []checkpoint.SessionEntry
+	Record  agent.SyncedSessionRecord
+	Skipped []SkippedSession
+	tmpDir  string
 }
 
 // Cleanup removes the temp blob directory. Safe to call multiple times.
-func (r *ExportResult) Cleanup() {
-	if r == nil || r.tmpDir == "" {
+func (p *PushPlan) Cleanup() {
+	if p == nil || p.tmpDir == "" {
 		return
 	}
-	_ = os.RemoveAll(r.tmpDir)
-	r.tmpDir = ""
+	_ = os.RemoveAll(p.tmpDir)
+	p.tmpDir = ""
 }
 
-// ExportWorktreeSessions discovers the opencode + Claude sessions filed
-// under projectDir and exports each to a temp blob, building the manifest
-// entries `clank push` uploads. Daemon-free: discovery reads each backend's
-// own storage (`opencode session list`, the Claude Agent SDK), export reads
-// it directly — no host.db, no server.
+// PreparePush discovers the worktree's sessions and builds a delta push
+// against the last-pushed record rec: it exports + content-hashes ONLY the
+// sessions that changed (Unsynced), while assembling a COMPLETE manifest
+// (changed sessions plus unchanged ones referenced by their recorded
+// content hash) so every checkpoint stays a self-contained snapshot. The
+// returned Record is the new last-pushed record to persist after a
+// successful upload — rebuilt from the current discovered set, so deleted
+// sessions are pruned and unchanged ones keep their address.
 //
-// SessionEntry.SessionID is the backend-native external id: with no local
-// metadata store there is no separate clank ULID, so the backend's own id is
-// the cross-machine identity.
-func ExportWorktreeSessions(ctx context.Context, projectDir string, obs syncclient.PushObserver) (*ExportResult, error) {
+// Daemon-free: discovery + export read each backend's own storage; no host.
+func PreparePush(ctx context.Context, projectDir string, rec agent.SyncedSessionRecord, obs syncclient.PushObserver) (*PushPlan, error) {
 	if projectDir == "" {
-		return nil, fmt.Errorf("export worktree sessions: projectDir is required")
+		return nil, fmt.Errorf("prepare push: projectDir is required")
 	}
-
-	sessions, err := DiscoverWorktreeSessions(ctx, projectDir)
+	all, err := DiscoverWorktreeSessions(ctx, projectDir)
 	if err != nil {
 		return nil, err
 	}
+	unsynced := Unsynced(all, rec)
 
 	tmpDir, err := os.MkdirTemp("", "clank-session-export-*")
 	if err != nil {
-		return nil, fmt.Errorf("export sessions: tempdir: %w", err)
+		return nil, fmt.Errorf("prepare push: tempdir: %w", err)
 	}
-	result := &ExportResult{tmpDir: tmpDir}
+	plan := &PushPlan{
+		Record: agent.SyncedSessionRecord{Sessions: make(map[string]agent.SyncedSession, len(all))},
+		tmpDir: tmpDir,
+	}
 
-	// Copying each session's transcript is the slow local leg, so report it
-	// as (i/N) — N is known the moment discovery returns.
-	total := len(sessions)
+	// Export the changed sessions, hashing as we copy. This is the slow
+	// local leg, so report it as (i/N) over the CHANGED set.
+	type blob struct {
+		hash     string
+		bytes    int64
+		blobPath string
+	}
+	done := make(map[string]blob, len(unsynced))
+	skipped := make(map[string]bool)
+	total := len(unsynced)
 	if obs != nil {
 		obs.SessionProgress(0, total)
 	}
-	for i, ds := range sessions {
+	for i, ds := range unsynced {
 		blobPath := filepath.Join(tmpDir, ds.ExternalID+blobExt(ds.Backend))
-		f, err := os.Create(blobPath)
+		hash, size, err := exportSessionBlobHashed(ctx, ds, blobPath)
 		if err != nil {
-			result.Cleanup()
-			return nil, fmt.Errorf("export sessions: create blob %s: %w", blobPath, err)
-		}
-		if err := ExportSessionBlob(ctx, ds.Backend, ds.ProjectDir, ds.ExternalID, f); err != nil {
-			_ = f.Close()
-			_ = os.Remove(blobPath)
 			// A missing session means the backend's storage no longer has it
 			// (e.g. deleted out of band). Skip the orphan loudly rather than
-			// fail the whole push. Mirrors host.ExportSessions.
+			// fail the whole push — it's left out of the manifest and record,
+			// so a later push retries it.
 			if errors.Is(err, ErrSessionNotFound) || isSessionNotFound(err) {
-				result.Skipped = append(result.Skipped, SkippedSession{
+				plan.Skipped = append(plan.Skipped, SkippedSession{
 					ExternalID: ds.ExternalID,
 					Backend:    ds.Backend,
 					Reason:     "backend storage missing this session (deleted out of band?)",
 				})
+				skipped[ds.ExternalID] = true
 				if obs != nil {
 					obs.SessionProgress(i+1, total)
 				}
 				continue
 			}
-			result.Cleanup()
+			plan.Cleanup()
 			return nil, fmt.Errorf("export session %s: %w", ds.ExternalID, err)
 		}
-		if err := f.Close(); err != nil {
-			result.Cleanup()
-			return nil, fmt.Errorf("export sessions: close blob %s: %w", blobPath, err)
-		}
-		st, err := os.Stat(blobPath)
-		if err != nil {
-			result.Cleanup()
-			return nil, fmt.Errorf("export sessions: stat blob %s: %w", blobPath, err)
-		}
-
-		result.Exported = append(result.Exported, ExportedSession{
-			Entry: checkpoint.SessionEntry{
-				SessionID:  ds.ExternalID,
-				ExternalID: ds.ExternalID,
-				Backend:    ds.Backend,
-				BlobKey:    blobKeyFor(ds.Backend, ds.ExternalID),
-				Status:     agent.StatusIdle,
-				Title:      ds.Title,
-				ProjectDir: ds.ProjectDir,
-				CreatedAt:  ds.CreatedAt,
-				UpdatedAt:  ds.UpdatedAt,
-				Bytes:      st.Size(),
-			},
-			BlobPath:    blobPath,
-			Fingerprint: ds.Fingerprint,
-		})
+		done[ds.ExternalID] = blob{hash: hash, bytes: size, blobPath: blobPath}
 		if obs != nil {
 			obs.SessionProgress(i+1, total)
 		}
 	}
 
-	return result, nil
+	// Assemble the COMPLETE manifest + the new record from the current set,
+	// skipping orphans we couldn't export. Unchanged sessions reuse their
+	// recorded content address; changed ones use the fresh hash.
+	for _, ds := range all {
+		if skipped[ds.ExternalID] {
+			continue
+		}
+		var hash string
+		var size int64
+		if b, ok := done[ds.ExternalID]; ok {
+			hash, size = b.hash, b.bytes
+		} else {
+			prev := rec.Sessions[ds.ExternalID]
+			hash, size = prev.ContentHash, prev.Bytes
+		}
+		entry := checkpoint.SessionEntry{
+			SessionID:   ds.ExternalID, // daemon-free: no separate clank ULID
+			ExternalID:  ds.ExternalID,
+			Backend:     ds.Backend,
+			ContentHash: hash,
+			Status:      agent.StatusIdle,
+			Title:       ds.Title,
+			ProjectDir:  ds.ProjectDir,
+			CreatedAt:   ds.CreatedAt,
+			UpdatedAt:   ds.UpdatedAt,
+			Bytes:       size,
+		}
+		plan.Entries = append(plan.Entries, entry)
+		plan.Record.Sessions[ds.ExternalID] = agent.SyncedSession{
+			Backend:     ds.Backend,
+			UpdatedAt:   ds.UpdatedAt,
+			Fingerprint: ds.Fingerprint,
+			ContentHash: hash,
+			Bytes:       size,
+		}
+		if b, ok := done[ds.ExternalID]; ok {
+			plan.Upload = append(plan.Upload, ExportedSession{Entry: entry, BlobPath: b.blobPath})
+		}
+	}
+
+	return plan, nil
+}
+
+// exportSessionBlobHashed exports one session to blobPath while computing
+// the sha256 of its bytes in a single pass, returning the hex digest and
+// byte size.
+func exportSessionBlobHashed(ctx context.Context, ds DiscoveredSession, blobPath string) (hash string, size int64, err error) {
+	f, err := os.Create(blobPath)
+	if err != nil {
+		return "", 0, fmt.Errorf("create blob %s: %w", blobPath, err)
+	}
+	h := sha256.New()
+	if err := ExportSessionBlob(ctx, ds.Backend, ds.ProjectDir, ds.ExternalID, io.MultiWriter(f, h)); err != nil {
+		_ = f.Close()
+		_ = os.Remove(blobPath)
+		return "", 0, err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(blobPath)
+		return "", 0, fmt.Errorf("close blob %s: %w", blobPath, err)
+	}
+	st, err := os.Stat(blobPath)
+	if err != nil {
+		return "", 0, fmt.Errorf("stat blob %s: %w", blobPath, err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), st.Size(), nil
 }
 
 // DiscoverWorktreeSessions enumerates the opencode + Claude sessions filed
@@ -149,8 +203,8 @@ func ExportWorktreeSessions(ctx context.Context, projectDir string, obs syncclie
 // SDK expands to sibling git worktrees, but a per-worktree push wants only
 // this one, so we filter by samePath.
 //
-// Shared by ExportWorktreeSessions and `clank status` so both see the same
-// set of sessions.
+// Shared by PreparePush and `clank status` so both see the same set of
+// sessions.
 func DiscoverWorktreeSessions(ctx context.Context, projectDir string) ([]DiscoveredSession, error) {
 	var sessions []DiscoveredSession
 

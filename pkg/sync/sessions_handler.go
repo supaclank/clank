@@ -4,13 +4,15 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+
+	"github.com/acksell/clank/pkg/sync/checkpoint"
 )
 
 // sessionPresignRequest is the body of POST /v1/checkpoints/{id}/sessions.
-// SessionIDs are the host-side ULIDs (SessionEntry.SessionID from the
-// SessionManifest the caller is about to upload).
+// Sessions are the content-addressed blob refs (externalID + contentHash)
+// from the SessionManifest the caller is about to upload.
 type sessionPresignRequest struct {
-	SessionIDs []string `json:"session_ids"`
+	Sessions []checkpoint.SessionBlobRef `json:"sessions"`
 }
 
 type sessionPresignResponse struct {
@@ -53,7 +55,7 @@ func (s *Server) handleSessionPresign(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.PresignSessionPuts(r.Context(), caller.UserID, SessionPresignRequest{
 		CheckpointID: checkpointID,
-		SessionIDs:   req.SessionIDs,
+		Sessions:     req.Sessions,
 	})
 	if err != nil {
 		s.log.Printf("sync: presign session puts: %v", err)

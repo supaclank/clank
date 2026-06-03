@@ -148,6 +148,9 @@ func TestRunPush_SyncsUnsyncedSessionWhenCodeInSync(t *testing.T) {
 	if _, ok := rec.Sessions[sessionID]; !ok {
 		t.Fatalf("session %s not in synced record after push; record=%+v", sessionID, rec.Sessions)
 	}
+	if rec.LastPushedAt.IsZero() {
+		t.Error("push did not stamp LastPushedAt on the record")
+	}
 }
 
 func quietCmd(ctx context.Context) *cobra.Command {

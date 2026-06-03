@@ -67,7 +67,6 @@ func TestRegisterImportedSession_RoundTrip(t *testing.T) {
 		SessionID:      sessULID,
 		ExternalID:     externalID,
 		Backend:        agent.BackendOpenCode,
-		BlobKey:        "sessions/" + sessULID + ".json",
 		Status:         agent.StatusIdle,
 		Title:          "register import roundtrip",
 		Prompt:         "the original prompt",

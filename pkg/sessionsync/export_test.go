@@ -17,14 +17,15 @@ func (r *exportProgressRecorder) UploadSized(int64)        {}
 func (r *exportProgressRecorder) UploadProgress(int64)     {}
 func (r *exportProgressRecorder) SessionProgress(d, t int) { r.calls = append(r.calls, [2]int{d, t}) }
 
-// TestExportWorktreeSessions_DiscoversClaude proves Claude sessions are
-// exported even when the opencode binary is absent (PATH stripped) — the
-// missing-binary case no longer short-circuits the whole export, and the
-// SessionEntry carries the Claude backend + the session id as both
-// SessionID and ExternalID (daemon-free has no separate clank ULID).
+// TestPreparePush_DiscoversClaude proves Claude sessions are exported even
+// when the opencode binary is absent (PATH stripped) — the missing-binary
+// case no longer short-circuits the whole export, and the SessionEntry
+// carries the Claude backend + the session id as both SessionID and
+// ExternalID (daemon-free has no separate clank ULID). Against an empty
+// record every session is unsynced, so the changed-set is the full set.
 //
 // Not parallel: isolates CLAUDE_CONFIG_DIR and PATH via t.Setenv.
-func TestExportWorktreeSessions_DiscoversClaude(t *testing.T) {
+func TestPreparePush_DiscoversClaude(t *testing.T) {
 	t.Setenv(envClaudeConfigDir, t.TempDir())
 	t.Setenv("PATH", t.TempDir()) // no opencode (and no git) on PATH
 	ctx := context.Background()
@@ -34,11 +35,11 @@ func TestExportWorktreeSessions_DiscoversClaude(t *testing.T) {
 	writeClaudeTranscript(t, wtDir, sessionID)
 
 	obs := &exportProgressRecorder{}
-	res, err := ExportWorktreeSessions(ctx, wtDir, obs)
+	plan, err := PreparePush(ctx, wtDir, agent.SyncedSessionRecord{Sessions: map[string]agent.SyncedSession{}}, obs)
 	if err != nil {
-		t.Fatalf("ExportWorktreeSessions: %v", err)
+		t.Fatalf("PreparePush: %v", err)
 	}
-	t.Cleanup(res.Cleanup)
+	t.Cleanup(plan.Cleanup)
 
 	// Export must report (i/N): a 0/1 kickoff then 1/1 once the blob lands,
 	// so the push UI can show live progress through the slow local copy.
@@ -46,10 +47,10 @@ func TestExportWorktreeSessions_DiscoversClaude(t *testing.T) {
 		t.Errorf("session progress calls = %v, want %v", obs.calls, want)
 	}
 
-	if len(res.Exported) != 1 {
-		t.Fatalf("want 1 exported claude session, got %d (opencode-absent must not hide Claude)", len(res.Exported))
+	if len(plan.Upload) != 1 {
+		t.Fatalf("want 1 exported claude session, got %d (opencode-absent must not hide Claude)", len(plan.Upload))
 	}
-	e := res.Exported[0].Entry
+	e := plan.Upload[0].Entry
 	if e.Backend != agent.BackendClaudeCode {
 		t.Errorf("Backend = %q, want claude-code", e.Backend)
 	}
@@ -62,9 +63,16 @@ func TestExportWorktreeSessions_DiscoversClaude(t *testing.T) {
 	if e.Bytes <= 0 {
 		t.Errorf("Bytes = %d, want positive", e.Bytes)
 	}
-	// The content fingerprint (last-message uuid) is carried for the
-	// last-pushed record so later drift detection ignores mtime-only bumps.
-	if got := res.Exported[0].Fingerprint; got != "a-1" {
-		t.Errorf("Fingerprint = %q, want a-1 (last uuid in the fixture)", got)
+	if e.ContentHash == "" {
+		t.Error("ContentHash must be set on an exported entry")
+	}
+	// The content fingerprint (last-message uuid) is carried in the record so
+	// later drift detection ignores mtime-only bumps; the complete manifest
+	// references the session too.
+	if got := plan.Record.Sessions[sessionID].Fingerprint; got != "a-1" {
+		t.Errorf("Record fingerprint = %q, want a-1 (last uuid in the fixture)", got)
+	}
+	if len(plan.Entries) != 1 {
+		t.Errorf("complete manifest should list the session, got %d entries", len(plan.Entries))
 	}
 }

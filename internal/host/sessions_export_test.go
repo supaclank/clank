@@ -247,8 +247,8 @@ func TestExportSessions_OpenCodeHappyPath(t *testing.T) {
 	if e.Backend != agent.BackendOpenCode {
 		t.Errorf("entry.Backend = %q, want opencode", e.Backend)
 	}
-	if e.BlobKey != "sessions/"+sessULID+".json" {
-		t.Errorf("entry.BlobKey = %q, want sessions/%s.json", e.BlobKey, sessULID)
+	if len(e.ContentHash) != 64 {
+		t.Errorf("entry.ContentHash = %q, want a 64-hex sha256", e.ContentHash)
 	}
 	if e.Bytes <= 0 {
 		t.Errorf("entry.Bytes = %d, want positive", e.Bytes)
@@ -257,9 +257,9 @@ func TestExportSessions_OpenCodeHappyPath(t *testing.T) {
 		t.Errorf("entry.WasBusy = true for an idle session")
 	}
 
-	blobPath, ok := res.BlobPaths[sessULID]
+	blobPath, ok := res.BlobPaths[externalID]
 	if !ok {
-		t.Fatalf("BlobPaths missing %s", sessULID)
+		t.Fatalf("BlobPaths missing %s", externalID)
 	}
 	blobData, err := os.ReadFile(blobPath)
 	if err != nil {

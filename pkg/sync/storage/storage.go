@@ -142,3 +142,18 @@ func validateComponent(name, v string) error {
 	}
 	return nil
 }
+
+// validateContentHash requires exactly 64 lowercase-hex chars (a sha256
+// digest) so a client can't smuggle an arbitrary path component through
+// the content-hash slot of a session blob key.
+func validateContentHash(h string) error {
+	if len(h) != 64 {
+		return fmt.Errorf("%w: contentHash must be 64 hex chars, got %d", ErrInvalidPathComponent, len(h))
+	}
+	for _, c := range h {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return fmt.Errorf("%w: contentHash has non-hex char %q", ErrInvalidPathComponent, string(c))
+		}
+	}
+	return nil
+}

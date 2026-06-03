@@ -16,6 +16,7 @@ import (
 	"github.com/acksell/clank/internal/config"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/git"
+	"github.com/acksell/clank/internal/tui"
 	"github.com/acksell/clank/pkg/sessionsync"
 )
 
@@ -94,6 +95,7 @@ type statusReport struct {
 	DriftBehind        int                        // commits local is behind by (0 when unknown)
 	SessionsKnown      bool                       // true when the opencode session axis is determinable (opencode present, ≥1 session)
 	UnsyncedSessions   int                        // opencode sessions changed since this machine last pushed (when SessionsKnown)
+	LastPushedAt       time.Time                  // local time of this machine's last successful push; zero = never pushed (renderer omits it)
 
 	// Verbose (-v) lists the changed opencode session titles under the
 	// sessions bullet — the detail unique to clank. Commits and files are
@@ -157,6 +159,11 @@ func runStatus(ctx context.Context, repoPath string, verbose bool) (string, erro
 		rep.UnsyncedSessions = len(unsynced)
 		if verbose {
 			rep.UnsyncedSessionLabels = sessionLabels(unsynced)
+		}
+		// Local recency hint — the last-pushed record is rewritten on every
+		// successful push (any leg), so it's a truthful "how stale am I".
+		if rec, err := agent.ReadSyncedSessions(root); err == nil {
+			rep.LastPushedAt = rec.LastPushedAt
 		}
 	}
 
@@ -290,35 +297,7 @@ func unsyncedSessions(ctx context.Context, projectDir string) (unsynced []sessio
 	// A missing/corrupt record degrades to an empty one → everything counts
 	// as unsynced (truthful; self-heals on the next push).
 	rec, _ := agent.ReadSyncedSessions(projectDir)
-	return unsyncedAgainst(current, rec), true
-}
-
-// unsyncedAgainst returns the current sessions that are absent from the
-// last-pushed record or that have changed since it (see sessionChanged).
-func unsyncedAgainst(current []sessionsync.DiscoveredSession, rec agent.SyncedSessionRecord) []sessionsync.DiscoveredSession {
-	var out []sessionsync.DiscoveredSession
-	for _, s := range current {
-		prev, ok := rec.Sessions[s.ExternalID]
-		if !ok || sessionChanged(s, prev) {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-// sessionChanged reports whether a discovered session differs from its
-// last-pushed record. When both sides carry a content fingerprint (Claude's
-// last-message uuid) it compares those — immune to the mtime bump a
-// read-only `claude --resume` causes, which would otherwise flag a session
-// nobody actually advanced. Otherwise (opencode, whose `Updated` is already
-// content-based, or a pre-fingerprint record) it falls back to UpdatedAt;
-// both sides read it from the same source, so an unchanged session compares
-// equal — strict After, never time.Now().
-func sessionChanged(cur sessionsync.DiscoveredSession, prev agent.SyncedSession) bool {
-	if cur.Fingerprint != "" && prev.Fingerprint != "" {
-		return cur.Fingerprint != prev.Fingerprint
-	}
-	return cur.UpdatedAt.After(prev.UpdatedAt)
+	return sessionsync.Unsynced(current, rec), true
 }
 
 // sessionLabels renders changed-session detail lines for `status -v`: the
@@ -419,6 +398,9 @@ func renderStatusReport(rep statusReport) string {
 	// ULID is implementation detail the user doesn't care to track.
 	sb.WriteString("On worktree ")
 	sb.WriteString(styleWorktree.Render(rep.WorktreeDir))
+	if !rep.LastPushedAt.IsZero() {
+		sb.WriteString(styleDim.Render("  ·  last pushed " + tui.TimeAgo(rep.LastPushedAt)))
+	}
 	sb.WriteString("\n")
 
 	// ctaBlock prints a blank separator line then the action, so the state
