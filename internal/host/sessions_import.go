@@ -68,11 +68,8 @@ func (s *Service) RegisterImportedSession(ctx context.Context, worktreeID string
 		TicketID:  entry.TicketID,
 		Agent:     entry.Agent,
 		CreatedAt: nonZeroOr(entry.CreatedAt, now),
-		// Preserve the source host's UpdatedAt (carried in the manifest) so
-		// recency survives import. Previously this was hard-set to now(),
-		// which collapsed every imported session to "just synced" and broke
-		// recency sorting in clients (mobile Inbox, TUI sidebar). Falls back
-		// to now only for legacy manifests that predate the field.
+		// Preserve UpdatedAt from the manifest so recency survives sync;
+		// falls back to now for legacy manifests that predate the field.
 		UpdatedAt: nonZeroOr(entry.UpdatedAt, now),
 	}
 

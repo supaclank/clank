@@ -26,7 +26,7 @@ import (
 // surfaced so the CLI can warn the user.
 type SessionExportResult struct {
 	Entries   []checkpoint.SessionEntry
-	BlobPaths map[string]string // sessionID -> temp file path
+	BlobPaths map[string]string // externalID -> temp file path
 	Skipped   []SkippedSession
 }
 

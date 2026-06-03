@@ -56,16 +56,9 @@ func (p *PushPlan) Cleanup() {
 	p.tmpDir = ""
 }
 
-// PreparePush discovers the worktree's sessions and builds a delta push
-// against the last-pushed record rec: it exports + content-hashes ONLY the
-// sessions that changed (Unsynced), while assembling a COMPLETE manifest
-// (changed sessions plus unchanged ones referenced by their recorded
-// content hash) so every checkpoint stays a self-contained snapshot. The
-// returned Record is the new last-pushed record to persist after a
-// successful upload — rebuilt from the current discovered set, so deleted
-// sessions are pruned and unchanged ones keep their address.
-//
-// Daemon-free: discovery + export read each backend's own storage; no host.
+// PreparePush builds a delta push plan: exports only changed sessions, assembles
+// a complete manifest for self-contained snapshots, and returns the new record.
+// Daemon-free: reads each backend's own storage directly; no host required.
 func PreparePush(ctx context.Context, projectDir string, rec agent.SyncedSessionRecord, obs syncclient.PushObserver) (*PushPlan, error) {
 	if projectDir == "" {
 		return nil, fmt.Errorf("prepare push: projectDir is required")
