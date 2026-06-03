@@ -2675,7 +2675,7 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	s := row.session
 	isDone := s.Visibility == agent.VisibilityDone
 	isArchived := s.Visibility == agent.VisibilityArchived
-	ago := timeAgo(s.UpdatedAt)
+	ago := TimeAgo(s.UpdatedAt)
 	stateIcon := styledAgentStatus(s.Status, m.spinner.View())
 
 	unreadMark := sessionMarker(*s)

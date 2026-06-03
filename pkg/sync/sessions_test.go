@@ -10,7 +10,14 @@ import (
 	"time"
 
 	clanksync "github.com/acksell/clank/pkg/sync"
+	"github.com/acksell/clank/pkg/sync/checkpoint"
 	"github.com/acksell/clank/pkg/sync/storage"
+)
+
+// Two distinct 64-hex content hashes for the session-blob refs.
+const (
+	hashA = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+	hashB = "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
 )
 
 // newSessionsTestServer wires up an in-process sync.Server with a
@@ -60,14 +67,18 @@ func newSessionsTestServer(t *testing.T) (*clanksync.Server, *memSyncStore, *sto
 }
 
 // TestPresignSessionPuts_HappyPath: minting URLs returns one per
-// session plus the manifest URL, all addressable in the storage.
+// session (keyed by externalID) plus the manifest URL, all addressable
+// in the storage at the content-addressed key.
 func TestPresignSessionPuts_HappyPath(t *testing.T) {
 	t.Parallel()
 	srv, _, mem, userID, _, checkpointID := newSessionsTestServer(t)
 
 	res, err := srv.PresignSessionPuts(context.Background(), userID, clanksync.SessionPresignRequest{
 		CheckpointID: checkpointID,
-		SessionIDs:   []string{"01H0", "01H1"},
+		Sessions: []checkpoint.SessionBlobRef{
+			{ExternalID: "ext-0", ContentHash: hashA},
+			{ExternalID: "ext-1", ContentHash: hashB},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -78,17 +89,18 @@ func TestPresignSessionPuts_HappyPath(t *testing.T) {
 	if len(res.SessionPutURLs) != 2 {
 		t.Fatalf("want 2 session URLs, got %d", len(res.SessionPutURLs))
 	}
-	if res.SessionPutURLs["01H0"] == "" || res.SessionPutURLs["01H1"] == "" {
+	if res.SessionPutURLs["ext-0"] == "" || res.SessionPutURLs["ext-1"] == "" {
 		t.Errorf("missing per-session PUT URLs: %+v", res.SessionPutURLs)
 	}
 	if res.SessionManifestPutURL == "" {
 		t.Errorf("missing manifest PUT URL")
 	}
 
-	// Upload to the per-session URL and verify it lands in storage.
-	uploadTo(t, res.SessionPutURLs["01H0"], []byte(`{"info":{"id":"ses_a"}}`))
+	// Upload to the per-session URL and verify it lands at the
+	// worktree-level content-addressed key, NOT under the checkpoint.
+	uploadTo(t, res.SessionPutURLs["ext-0"], []byte(`{"info":{"id":"ses_a"}}`))
 	keys := mem.Keys()
-	want := userID + "/checkpoints/wt-sessions/" + checkpointID + "/sessions/01H0.json"
+	want := userID + "/worktrees/wt-sessions/sessions/ext-0/" + hashA
 	var found bool
 	for _, k := range keys {
 		if k == want {
@@ -109,7 +121,7 @@ func TestPresignSessionPuts_WrongTenantForbidden(t *testing.T) {
 
 	_, err := srv.PresignSessionPuts(context.Background(), "user-B", clanksync.SessionPresignRequest{
 		CheckpointID: checkpointID,
-		SessionIDs:   []string{"01H0"},
+		Sessions:     []checkpoint.SessionBlobRef{{ExternalID: "ext-0", ContentHash: hashA}},
 	})
 	if err == nil {
 		t.Fatal("expected forbidden error")
@@ -122,7 +134,7 @@ func TestPresignSessionPuts_EmptyCheckpointID(t *testing.T) {
 	srv, _, _, userID, _, _ := newSessionsTestServer(t)
 
 	_, err := srv.PresignSessionPuts(context.Background(), userID, clanksync.SessionPresignRequest{
-		SessionIDs: []string{"01H0"},
+		Sessions: []checkpoint.SessionBlobRef{{ExternalID: "ext-0", ContentHash: hashA}},
 	})
 	if !errors.Is(err, clanksync.ErrInvalidRequest) {
 		t.Errorf("expected ErrInvalidRequest, got %v", err)
@@ -135,17 +147,19 @@ func TestDownloadSessionURLs_RoundTrip(t *testing.T) {
 	t.Parallel()
 	srv, st, _, userID, _, checkpointID := newSessionsTestServer(t)
 
+	refs := []checkpoint.SessionBlobRef{{ExternalID: "ext-0", ContentHash: hashA}}
+
 	// Presign + upload session blob and manifest.
 	presign, err := srv.PresignSessionPuts(context.Background(), userID, clanksync.SessionPresignRequest{
 		CheckpointID: checkpointID,
-		SessionIDs:   []string{"01H0"},
+		Sessions:     refs,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	sessionBlob := []byte(`{"info":{"id":"ses_a"}}`)
-	manifestBlob := []byte(`{"version":1}`)
-	uploadTo(t, presign.SessionPutURLs["01H0"], sessionBlob)
+	manifestBlob := []byte(`{"version":2}`)
+	uploadTo(t, presign.SessionPutURLs["ext-0"], sessionBlob)
 	uploadTo(t, presign.SessionManifestPutURL, manifestBlob)
 
 	// Mark checkpoint as uploaded — required for download.
@@ -153,7 +167,7 @@ func TestDownloadSessionURLs_RoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dl, err := srv.DownloadSessionURLs(context.Background(), userID, checkpointID, []string{"01H0"})
+	dl, err := srv.DownloadSessionURLs(context.Background(), userID, checkpointID, refs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,12 +177,12 @@ func TestDownloadSessionURLs_RoundTrip(t *testing.T) {
 	if dl.SessionManifestGetURL == "" {
 		t.Errorf("missing manifest GET URL")
 	}
-	if dl.SessionGetURLs["01H0"] == "" {
+	if dl.SessionGetURLs["ext-0"] == "" {
 		t.Fatalf("missing session GET URL")
 	}
 
 	// GET each URL and verify the bytes round-trip.
-	body := getFrom(t, dl.SessionGetURLs["01H0"])
+	body := getFrom(t, dl.SessionGetURLs["ext-0"])
 	if string(body) != string(sessionBlob) {
 		t.Errorf("session blob mismatch:\n got %s\n want %s", body, sessionBlob)
 	}
@@ -184,12 +198,65 @@ func TestDownloadSessionURLs_NotUploadedRejected(t *testing.T) {
 	t.Parallel()
 	srv, _, _, userID, _, checkpointID := newSessionsTestServer(t)
 
-	_, err := srv.DownloadSessionURLs(context.Background(), userID, checkpointID, []string{"01H0"})
+	_, err := srv.DownloadSessionURLs(context.Background(), userID, checkpointID, []checkpoint.SessionBlobRef{{ExternalID: "ext-0", ContentHash: hashA}})
 	if err == nil {
 		t.Fatal("expected error for un-uploaded checkpoint")
 	}
 	if !strings.Contains(err.Error(), "not yet uploaded") {
 		t.Errorf("expected 'not yet uploaded' error, got %v", err)
+	}
+}
+
+// TestSessionBlob_SharedAcrossCheckpoints proves the content-addressed
+// payoff: a session blob uploaded once (under the worktree, not a
+// checkpoint) is downloadable from a LATER checkpoint that only references
+// it. So a delta push that re-uploads nothing still yields a pullable,
+// self-contained checkpoint.
+func TestSessionBlob_SharedAcrossCheckpoints(t *testing.T) {
+	t.Parallel()
+	srv, st, _, userID, worktreeID, ck1 := newSessionsTestServer(t)
+
+	// A second checkpoint on the same worktree that will reference the SAME
+	// session blob without ever uploading it.
+	const ck2 = "ck-sessions-2"
+	now := time.Now().UTC()
+	if err := st.InsertCheckpoint(context.Background(), clanksync.Checkpoint{
+		ID: ck2, WorktreeID: worktreeID,
+		HeadCommit: "feedbeef", IndexTree: "1111", WorktreeTree: "2222", UncommittedCommit: "3333",
+		CreatedAt: now, CreatedBy: "test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ref := checkpoint.SessionBlobRef{ExternalID: "ext-0", ContentHash: hashA}
+	blob := []byte(`{"info":{"id":"ses_shared"}}`)
+
+	// Upload the blob ONCE, via ck1's presign (content-addressed under the worktree).
+	p1, err := srv.PresignSessionPuts(context.Background(), userID, clanksync.SessionPresignRequest{
+		CheckpointID: ck1,
+		Sessions:     []checkpoint.SessionBlobRef{ref},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploadTo(t, p1.SessionPutURLs["ext-0"], blob)
+
+	// Both checkpoints are committed; ck2 uploaded NO session blob of its own.
+	if err := st.MarkCheckpointUploaded(context.Background(), ck1, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkCheckpointUploaded(context.Background(), ck2, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pull ck2: it references the same ref, and the blob resolves to the
+	// shared worktree-level object uploaded under ck1.
+	dl, err := srv.DownloadSessionURLs(context.Background(), userID, ck2, []checkpoint.SessionBlobRef{ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := getFrom(t, dl.SessionGetURLs["ext-0"]); string(got) != string(blob) {
+		t.Errorf("ck2 session blob mismatch:\n got %s\n want %s", got, blob)
 	}
 }
 

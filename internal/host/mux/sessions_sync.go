@@ -38,9 +38,9 @@ type spriteSessionBuild struct {
 // blob + one for session-manifest.json) and Skipped to surface
 // non-opencode sessions to the user.
 type sessionBuildResponse struct {
-	BuildID string                      `json:"build_id"`
-	Entries []checkpoint.SessionEntry   `json:"entries"`
-	Skipped []host.SkippedSession       `json:"skipped"`
+	BuildID string                    `json:"build_id"`
+	Entries []checkpoint.SessionEntry `json:"entries"`
+	Skipped []host.SkippedSession     `json:"skipped"`
 }
 
 type sessionBuildRequest struct {
@@ -81,11 +81,11 @@ func (m *Mux) handleSyncSessionsBuild(w http.ResponseWriter, r *http.Request) {
 
 // sessionsUploadRequest carries the per-blob presigned PUT URLs the
 // gateway minted after calling sync.PresignSessionPuts. SessionURLs
-// keys are SessionEntry.SessionID values.
+// keys are SessionEntry.ExternalID values.
 type sessionsUploadRequest struct {
-	CheckpointID    string            `json:"checkpoint_id"`
-	SessionURLs     map[string]string `json:"session_urls"`
-	ManifestPutURL  string            `json:"session_manifest_put_url"`
+	CheckpointID   string            `json:"checkpoint_id"`
+	SessionURLs    map[string]string `json:"session_urls"`
+	ManifestPutURL string            `json:"session_manifest_put_url"`
 }
 
 // handleSyncSessionsBuildsUpload finalizes a session-build by
@@ -116,20 +116,21 @@ func (m *Mux) handleSyncSessionsBuildsUpload(w http.ResponseWriter, r *http.Requ
 
 	cli := &http.Client{Timeout: syncURLBundleFetchTimeout}
 
-	// Upload per-session blobs.
+	// Upload per-session blobs. URL + blob-path maps key by externalID
+	// (the sync-wire identity), matching the gateway's presign result.
 	for _, entry := range b.result.Entries {
-		putURL, ok := req.SessionURLs[entry.SessionID]
+		putURL, ok := req.SessionURLs[entry.ExternalID]
 		if !ok {
-			writeJSON(w, http.StatusBadRequest, errResp{Code: syncErrBadRequest, Error: "missing presigned URL for session " + entry.SessionID})
+			writeJSON(w, http.StatusBadRequest, errResp{Code: syncErrBadRequest, Error: "missing presigned URL for session " + entry.ExternalID})
 			return
 		}
-		blobPath, ok := b.result.BlobPaths[entry.SessionID]
+		blobPath, ok := b.result.BlobPaths[entry.ExternalID]
 		if !ok {
-			writeJSON(w, http.StatusInternalServerError, errResp{Code: syncErrSessionExport, Error: "build missing blob path for session " + entry.SessionID})
+			writeJSON(w, http.StatusInternalServerError, errResp{Code: syncErrSessionExport, Error: "build missing blob path for session " + entry.ExternalID})
 			return
 		}
 		if status, code, err := uploadFile(r.Context(), cli, putURL, blobPath); err != nil {
-			writeJSON(w, status, errResp{Code: code, Error: "upload session " + entry.SessionID + ": " + err.Error()})
+			writeJSON(w, status, errResp{Code: code, Error: "upload session " + entry.ExternalID + ": " + err.Error()})
 			return
 		}
 	}
@@ -171,7 +172,7 @@ func (m *Mux) handleSyncSessionsBuildsDelete(w http.ResponseWriter, r *http.Requ
 
 // applySessionsRequest is the JSON body of POST
 // /sync/sessions/apply-from-urls. SessionBlobURLs keys are
-// SessionEntry.SessionID values.
+// SessionEntry.ExternalID values.
 type applySessionsRequest struct {
 	WorktreeID      string            `json:"worktree_id"`
 	ManifestURL     string            `json:"session_manifest_url"`
@@ -223,9 +224,9 @@ func (m *Mux) handleSyncSessionsApplyFromURLs(w http.ResponseWriter, r *http.Req
 	defer os.RemoveAll(tmpDir)
 
 	for _, entry := range manifest.Sessions {
-		getURL, ok := req.SessionBlobURLs[entry.SessionID]
+		getURL, ok := req.SessionBlobURLs[entry.ExternalID]
 		if !ok {
-			writeJSON(w, http.StatusBadRequest, errResp{Code: syncErrBadRequest, Error: "missing presigned GET URL for session " + entry.SessionID})
+			writeJSON(w, http.StatusBadRequest, errResp{Code: syncErrBadRequest, Error: "missing presigned GET URL for session " + entry.ExternalID})
 			return
 		}
 		blobBytes, status, code, err := fetchURL(r.Context(), cli, getURL)
@@ -302,4 +303,3 @@ func (s *spriteSessionBuildStore) reapLoop(maxAge time.Duration) {
 		}
 	}
 }
-

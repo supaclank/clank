@@ -647,7 +647,13 @@ func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
 			titleValue = d.Title
 		}
 	}
-	if !hasExternalID && !hasStatus && !hasTitle {
+	// A new message is real activity even when the status doesn't move (e.g.
+	// the backend appends a message without an idle/busy flip), so it bumps
+	// UpdatedAt to keep recency sorting honest. Only the completed-message
+	// event counts — EventPart (per-token deltas) would churn UpdatedAt on
+	// every token, defeating the "user-visible change only" guarantee above.
+	hasMessage := evt.Type == agent.EventMessage
+	if !hasExternalID && !hasStatus && !hasTitle && !hasMessage {
 		return
 	}
 
@@ -695,6 +701,11 @@ func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
 	}
 	if hasTitle && info.Title != titleValue {
 		info.Title = titleValue
+		dirty = true
+	}
+	// A message carries no metadata field to diff against — its arrival is
+	// itself the change, so it always marks the row dirty to bump UpdatedAt.
+	if hasMessage {
 		dirty = true
 	}
 	if !dirty {

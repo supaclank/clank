@@ -41,7 +41,6 @@ func TestImportWorktreeSessions_RoundTrip(t *testing.T) {
 			SessionID:  sessID,
 			ExternalID: sessID,
 			Backend:    agent.BackendOpenCode,
-			BlobKey:    "sessions/" + sessID + ".json",
 		}},
 	}
 	manifestBytes, err := manifest.Marshal()
@@ -99,7 +98,6 @@ func TestImportWorktreeSessions_Claude(t *testing.T) {
 			SessionID:  sessionID,
 			ExternalID: sessionID,
 			Backend:    agent.BackendClaudeCode,
-			BlobKey:    "sessions/" + sessionID + ".jsonl",
 		}},
 	}
 	manifestBytes, err := manifest.Marshal()

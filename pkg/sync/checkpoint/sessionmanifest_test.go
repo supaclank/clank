@@ -21,7 +21,7 @@ func TestSessionManifest_RoundTripJSON(t *testing.T) {
 				SessionID:      "01HX0001",
 				ExternalID:     "ses_abc",
 				Backend:        agent.BackendOpenCode,
-				BlobKey:        "sessions/01HX0001.json",
+				ContentHash:    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 				Status:         agent.StatusIdle,
 				Title:          "Refactor auth",
 				Prompt:         "Refactor the auth middleware",
@@ -54,7 +54,7 @@ func TestSessionManifest_RoundTripJSON(t *testing.T) {
 	if gs.SessionID != ws.SessionID ||
 		gs.ExternalID != ws.ExternalID ||
 		gs.Backend != ws.Backend ||
-		gs.BlobKey != ws.BlobKey ||
+		gs.ContentHash != ws.ContentHash ||
 		gs.Status != ws.Status ||
 		gs.Title != ws.Title ||
 		gs.Prompt != ws.Prompt ||

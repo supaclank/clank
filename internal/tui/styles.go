@@ -188,8 +188,9 @@ func newPromptTextarea(placeholder string, height int) textarea.Model {
 	return ta
 }
 
-// timeAgo returns a human-readable relative time string.
-func timeAgo(t time.Time) string {
+// TimeAgo returns a human-readable relative time string (e.g. "just now",
+// "5m ago", "2h ago", "3d ago").
+func TimeAgo(t time.Time) string {
 	d := time.Since(t)
 	switch {
 	case d < time.Minute:

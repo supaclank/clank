@@ -5,10 +5,38 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/pkg/sessionsync"
 )
+
+// TestRenderStatusReport_LastPushed pins the recency hint: the "last pushed
+// <ago>" headline suffix appears once a push has been recorded, and is
+// omitted when this machine has never pushed.
+func TestRenderStatusReport_LastPushed(t *testing.T) {
+	t.Parallel()
+	base := statusReport{
+		WorktreeID: "wt", WorktreeDir: "repo", ActiveRemote: "dev", SignedIn: true,
+		WorktreeFromRemote: &daemonclient.WorktreeInfo{ID: "wt"}, HasCheckpoint: true, InSync: true,
+	}
+
+	t.Run("shows last pushed when recorded", func(t *testing.T) {
+		t.Parallel()
+		r := base
+		r.LastPushedAt = time.Now().Add(-5 * time.Minute)
+		got := stripANSI(renderStatusReport(r))
+		if !strings.Contains(got, "last pushed") {
+			t.Errorf("want last-pushed headline suffix:\n%s", got)
+		}
+	})
+
+	t.Run("omitted when never pushed", func(t *testing.T) {
+		t.Parallel()
+		got := stripANSI(renderStatusReport(base)) // LastPushedAt zero
+		if strings.Contains(got, "last pushed") {
+			t.Errorf("never-pushed status leaked a last-pushed line:\n%s", got)
+		}
+	})
+}
 
 func pushCTACount(s string) int { return strings.Count(s, "`clank push`") }
 
@@ -90,58 +118,6 @@ func TestRenderStatusReport_Sessions(t *testing.T) {
 			t.Errorf("want exactly one push CTA, got %d:\n%s", n, got)
 		}
 	})
-}
-
-// TestUnsyncedAgainst pins the diff: a session is unsynced when absent from
-// the record or when its UpdatedAt has advanced; unchanged compares equal
-// (strict After).
-func TestUnsyncedAgainst(t *testing.T) {
-	t.Parallel()
-	t0, t1 := time.UnixMilli(1000), time.UnixMilli(2000)
-	rec := agent.SyncedSessionRecord{Sessions: map[string]agent.SyncedSession{
-		"a": {Backend: agent.BackendOpenCode, UpdatedAt: t0},
-		"b": {Backend: agent.BackendOpenCode, UpdatedAt: t1},
-	}}
-	cur := []sessionsync.DiscoveredSession{
-		{ExternalID: "a", UpdatedAt: t0},                  // unchanged
-		{ExternalID: "b", UpdatedAt: t1.Add(time.Second)}, // newer → unsynced
-		{ExternalID: "c", UpdatedAt: t0},                  // new → unsynced
-	}
-	if got := unsyncedAgainst(cur, rec); len(got) != 2 {
-		t.Errorf("unsyncedAgainst = %d sessions, want 2", len(got))
-	}
-	if got := unsyncedAgainst([]sessionsync.DiscoveredSession{{ExternalID: "a", UpdatedAt: t0}}, rec); len(got) != 0 {
-		t.Errorf("unchanged session should be 0, got %d", len(got))
-	}
-}
-
-// TestUnsyncedAgainst_FingerprintBeatsMtime is the regression test for the
-// read-only-`--resume` drift bug: when both sides carry a content
-// fingerprint (Claude), an advanced mtime with an UNCHANGED fingerprint must
-// NOT count as unsynced, and a changed fingerprint must count even if the
-// mtime didn't move.
-func TestUnsyncedAgainst_FingerprintBeatsMtime(t *testing.T) {
-	t.Parallel()
-	t0, later := time.UnixMilli(1000), time.UnixMilli(9999)
-	rec := agent.SyncedSessionRecord{Sessions: map[string]agent.SyncedSession{
-		"claude-a": {Backend: agent.BackendClaudeCode, UpdatedAt: t0, Fingerprint: "uuid-1"},
-	}}
-
-	// mtime bumped by a read-only resume, fingerprint identical → in sync.
-	noiseBump := []sessionsync.DiscoveredSession{
-		{ExternalID: "claude-a", Backend: agent.BackendClaudeCode, UpdatedAt: later, Fingerprint: "uuid-1"},
-	}
-	if got := unsyncedAgainst(noiseBump, rec); len(got) != 0 {
-		t.Errorf("fingerprint unchanged but flagged unsynced (mtime bump leaked through): %d", len(got))
-	}
-
-	// Genuine new turn: fingerprint changed even with the same mtime.
-	realChange := []sessionsync.DiscoveredSession{
-		{ExternalID: "claude-a", Backend: agent.BackendClaudeCode, UpdatedAt: t0, Fingerprint: "uuid-2"},
-	}
-	if got := unsyncedAgainst(realChange, rec); len(got) != 1 {
-		t.Errorf("fingerprint changed but not flagged unsynced: %d", len(got))
-	}
 }
 
 // TestSessionLabels pins the -v detail labels: quoted title, or "session
