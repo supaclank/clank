@@ -505,6 +505,25 @@ func (s *Store) migrate() error {
 		}
 		version = 28
 	}
+	if version < 29 {
+		// sessions_synced_hash: the content-digest of the session set the
+		// sprite last imported for this worktree
+		// (checkpoint.SessionManifest.ContentDigest). Session blobs upload
+		// straight to object storage with no checkpoint bump or commit
+		// callback, so the gateway can't be notified of a session-only push —
+		// it compares this against the live manifest digest on each autosync
+		// and re-imports only on a change (pkg/gateway/sync.go). Empty default
+		// ⇒ the next autosync re-imports. Schema mirrored in
+		// internal/store/schema/0002_worktrees.sql.
+		_, err := s.db.Exec(`
+			ALTER TABLE worktrees ADD COLUMN sessions_synced_hash TEXT NOT NULL DEFAULT '';
+			PRAGMA user_version = 29;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v29: %w", err)
+		}
+		version = 29
+	}
 	_ = version // suppress unused warning after last migration
 
 	return nil

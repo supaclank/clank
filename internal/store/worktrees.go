@@ -93,6 +93,7 @@ func (s *Store) UpdateWorktreeMaterialization(ctx context.Context, id string, m 
 		SyncState:                m.SyncState,
 		SyncConflictLocalHead:    m.ConflictLocalHead,
 		SyncConflictRemoteHead:   m.ConflictRemoteHead,
+		SessionsSyncedHash:       m.SessionsSyncedHash,
 		UpdatedAt:                time.Now(),
 		ID:                       id,
 	})
@@ -213,6 +214,7 @@ func worktreeFromRow(r sqlitedb.Worktree) Worktree {
 		SyncState:                r.SyncState,
 		SyncConflictLocalHead:    r.SyncConflictLocalHead,
 		SyncConflictRemoteHead:   r.SyncConflictRemoteHead,
+		SessionsSyncedHash:       r.SessionsSyncedHash,
 		CreatedAt:                r.CreatedAt,
 		UpdatedAt:                r.UpdatedAt,
 	}
