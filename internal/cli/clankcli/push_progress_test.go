@@ -107,7 +107,7 @@ func TestCommittedForm(t *testing.T) {
 		}
 	}
 	// Phases the UI doesn't persist itself.
-	for _, phase := range []string{"Preparing", phaseSyncingSessions} {
+	for _, phase := range []string{"Preparing", phaseExportingSessions, phaseUploadingSessions} {
 		if got := committedForm(phase, 0); got != "" {
 			t.Errorf("committedForm(%q) should be empty, got %q", phase, got)
 		}
@@ -123,7 +123,43 @@ func TestPushUI_ObserverNilSafe(t *testing.T) {
 	u.Phase("x")
 	u.UploadSized(10)
 	u.UploadProgress(5)
+	u.SessionProgress(1, 3)
 	u.finish() // must not panic
+}
+
+// TestPushUI_SessionProgress pins the "(i/N)" suffix on a session phase:
+// it shows the live count, and Phase resets it so a later phase doesn't carry
+// a stale count.
+func TestPushUI_SessionProgress(t *testing.T) {
+	t.Parallel()
+	u := newPushUI(io.Discard, "localhost:7878")
+	u.Phase(phaseExportingSessions)
+
+	// No count yet → bare phase, no suffix.
+	u.mu.Lock()
+	bare := u.displayPhaseLocked()
+	u.mu.Unlock()
+	if bare != phaseExportingSessions {
+		t.Fatalf("expected bare phase before any count, got %q", bare)
+	}
+
+	u.SessionProgress(2, 5)
+	u.mu.Lock()
+	withCount := u.displayPhaseLocked()
+	u.mu.Unlock()
+	if withCount != phaseExportingSessions+" (2/5)" {
+		t.Fatalf("expected %q, got %q", phaseExportingSessions+" (2/5)", withCount)
+	}
+
+	// A new phase resets the session count so it doesn't leak (e.g. the
+	// byte-oriented Uploading phase must not show a stale "(2/5)").
+	u.Phase(syncclient.PhaseUploading)
+	u.mu.Lock()
+	reset := u.displayPhaseLocked()
+	u.mu.Unlock()
+	if reset != syncclient.PhaseUploading {
+		t.Fatalf("expected count reset after Phase, got %q", reset)
+	}
 }
 
 // TestPushUI_UploadSizeSurvivesPhase guards the ordering contract:

@@ -210,6 +210,8 @@ type recordingObserver struct {
 	uploaded     int64
 	lastPhase    string // phase active when UploadSized fired
 	sizedAtPhase string
+	sessDone     int
+	sessTotal    int
 }
 
 func (o *recordingObserver) Phase(n string) {
@@ -224,6 +226,11 @@ func (o *recordingObserver) UploadSized(t int64) {
 	o.mu.Unlock()
 }
 func (o *recordingObserver) UploadProgress(u int64) { o.mu.Lock(); o.uploaded = u; o.mu.Unlock() }
+func (o *recordingObserver) SessionProgress(done, total int) {
+	o.mu.Lock()
+	o.sessDone, o.sessTotal = done, total
+	o.mu.Unlock()
+}
 
 // TestPushCheckpoint_ReportsProgress pins the progress wiring: the
 // observer is told the total upload size and the counting readers report

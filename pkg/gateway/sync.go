@@ -239,11 +239,11 @@ func (g *Gateway) applySpriteSessions(ctx context.Context, cli *http.Client, hos
 	if len(manifest.Sessions) == 0 {
 		return nil
 	}
-	ids := make([]string, len(manifest.Sessions))
+	refs := make([]checkpoint.SessionBlobRef, len(manifest.Sessions))
 	for i, s := range manifest.Sessions {
-		ids[i] = s.SessionID
+		refs[i] = s.BlobRef()
 	}
-	full, err := g.cfg.Sync.DownloadSessionURLs(ctx, userID, checkpointID, ids)
+	full, err := g.cfg.Sync.DownloadSessionURLs(ctx, userID, checkpointID, refs)
 	if err != nil {
 		return fmt.Errorf("mint session blob urls: %w", err)
 	}

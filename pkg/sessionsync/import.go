@@ -18,7 +18,7 @@ import (
 // own storage directly, no clank-host. Returns the imported backend-native
 // session ids.
 //
-// The symmetric counterpart to ExportWorktreeSessions + UploadSessions.
+// The symmetric counterpart to PreparePush + UploadSessions.
 func ImportWorktreeSessions(ctx context.Context, client *http.Client, manifestURL string, sessionBlobURLs map[string]string, destDir string) ([]string, error) {
 	if manifestURL == "" {
 		return nil, fmt.Errorf("import worktree sessions: manifestURL is required")
@@ -44,9 +44,9 @@ func ImportWorktreeSessions(ctx context.Context, client *http.Client, manifestUR
 
 	imported := make([]string, 0, len(manifest.Sessions))
 	for _, entry := range manifest.Sessions {
-		url, ok := sessionBlobURLs[entry.SessionID]
+		url, ok := sessionBlobURLs[entry.ExternalID]
 		if !ok {
-			return nil, fmt.Errorf("missing blob URL for session %s", entry.SessionID)
+			return nil, fmt.Errorf("missing blob URL for session %s", entry.ExternalID)
 		}
 		blobBytes, err := getURL(ctx, client, url)
 		if err != nil {

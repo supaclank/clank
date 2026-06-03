@@ -11,7 +11,7 @@ import (
 // SessionManifestVersion is bumped when the on-disk SessionManifest
 // schema changes in a non-backwards-compatible way. UnmarshalSessionManifest
 // rejects unknown versions.
-const SessionManifestVersion = 1
+const SessionManifestVersion = 2
 
 // SessionManifest is the per-checkpoint sidecar describing the opaque
 // session export blobs that ride alongside the code bundles in object
@@ -33,16 +33,18 @@ type SessionManifest struct {
 }
 
 // SessionEntry describes one opencode/claude session captured in a
-// checkpoint. SessionID is the cross-machine stable identity (the
-// host-side ULID); ExternalID is the backend's native identifier and
-// survives `opencode import` (verified by TestOpenCodeImportSemantics).
-// BlobKey is the path component appended to the checkpoint's S3 prefix
-// to address this session's exported blob.
+// checkpoint. ExternalID is the backend-native identity that survives
+// import (verified by TestOpenCodeImportSemantics) and is the SOLE id on
+// the sync wire. ContentHash is the sha256 of the export blob; the server
+// derives the blob's storage key from (ExternalID, ContentHash) via
+// storage.KeyForSessionBlob. SessionID is a host-local handle (the host.db
+// ULID) carried only so the sprite's import can preserve it — never used
+// to address a blob.
 type SessionEntry struct {
 	SessionID      string              `json:"session_id"`
 	ExternalID     string              `json:"external_id"`
 	Backend        agent.BackendType   `json:"backend"`
-	BlobKey        string              `json:"blob_key"`
+	ContentHash    string              `json:"content_hash"`
 	Status         agent.SessionStatus `json:"status"`
 	Title          string              `json:"title,omitempty"`
 	Prompt         string              `json:"prompt,omitempty"`
@@ -60,6 +62,21 @@ type SessionEntry struct {
 	// trigger point. Schema-stable so adding auto-resume later doesn't
 	// require a SessionManifestVersion bump.
 	WasBusy bool `json:"was_busy,omitempty"`
+}
+
+// SessionBlobRef is the minimal address of a content-addressed session
+// blob — the backend-native externalID + the sha256 contentHash. The sync
+// server derives the storage key from these (storage.KeyForSessionBlob)
+// when minting presigned PUT/GET URLs, so the clank SessionID never
+// travels the sync wire. Build one from a SessionEntry via BlobRef.
+type SessionBlobRef struct {
+	ExternalID  string `json:"external_id"`
+	ContentHash string `json:"content_hash"`
+}
+
+// BlobRef returns the content-addressed blob reference for this entry.
+func (e SessionEntry) BlobRef() SessionBlobRef {
+	return SessionBlobRef{ExternalID: e.ExternalID, ContentHash: e.ContentHash}
 }
 
 // Marshal serializes a SessionManifest to canonical JSON. Mirrors

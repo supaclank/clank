@@ -13,6 +13,7 @@ import (
 	"github.com/acksell/clank/pkg/auth"
 	"github.com/acksell/clank/pkg/provisioner"
 	clanksync "github.com/acksell/clank/pkg/sync"
+	"github.com/acksell/clank/pkg/sync/checkpoint"
 )
 
 // pullResponse is the body returned by POST /v1/worktrees/{id}/pull.
@@ -125,7 +126,7 @@ func (g *Gateway) handlePullWorktree(w http.ResponseWriter, r *http.Request) {
 	// session-leg failure can't leave latest_synced_checkpoint
 	// pointing at a checkpoint whose session blobs are missing from
 	// storage.
-	var sessionIDs []string
+	var sessionRefs []checkpoint.SessionBlobRef
 	sessionBuild, err := triggerSpriteSessionBuild(r.Context(), cli, hostRef, wt.ID, ck.CheckpointID)
 	if err != nil {
 		g.log.Printf("gateway materialize: sprite session build: %v", err)
@@ -136,13 +137,13 @@ func (g *Gateway) handlePullWorktree(w http.ResponseWriter, r *http.Request) {
 		_ = deleteSpriteSessionBuild(context.Background(), cli, hostRef, sessionBuild.BuildID)
 	}()
 	if len(sessionBuild.Entries) > 0 {
-		sessionIDs = make([]string, len(sessionBuild.Entries))
+		sessionRefs = make([]checkpoint.SessionBlobRef, len(sessionBuild.Entries))
 		for i, e := range sessionBuild.Entries {
-			sessionIDs[i] = e.SessionID
+			sessionRefs[i] = checkpoint.SessionBlobRef{ExternalID: e.ExternalID, ContentHash: e.ContentHash}
 		}
 		presign, err := g.cfg.Sync.PresignSessionPuts(r.Context(), userID, clanksync.SessionPresignRequest{
 			CheckpointID: ck.CheckpointID,
-			SessionIDs:   sessionIDs,
+			Sessions:     sessionRefs,
 		})
 		if err != nil {
 			syncErrToHTTP(w, "presign session puts", err)
@@ -174,8 +175,8 @@ func (g *Gateway) handlePullWorktree(w http.ResponseWriter, r *http.Request) {
 	// committed (UploadedAt set), so it has to run after step 5.
 	var sessionManifestGetURL string
 	var sessionBlobGetURLs map[string]string
-	if len(sessionIDs) > 0 {
-		sessionGets, err := g.cfg.Sync.DownloadSessionURLs(r.Context(), userID, ck.CheckpointID, sessionIDs)
+	if len(sessionRefs) > 0 {
+		sessionGets, err := g.cfg.Sync.DownloadSessionURLs(r.Context(), userID, ck.CheckpointID, sessionRefs)
 		if err != nil {
 			syncErrToHTTP(w, "download session URLs", err)
 			return
@@ -338,12 +339,13 @@ type spriteSessionBuildResult struct {
 }
 
 // spriteSessionEntry is the on-the-wire shape of
-// checkpoint.SessionEntry. We mirror it locally (rather than
-// importing the checkpoint package) to keep the gateway's wire-
-// format dependencies minimal — only SessionID is needed by the
-// gateway, the rest passes through opaquely.
+// checkpoint.SessionEntry. We mirror it locally to keep the gateway's
+// wire-format dependencies minimal — only the content-address fields
+// (externalID + contentHash) are needed to mint presigned URLs; the
+// rest passes through opaquely.
 type spriteSessionEntry struct {
-	SessionID string `json:"session_id"`
+	ExternalID  string `json:"external_id"`
+	ContentHash string `json:"content_hash"`
 	// other fields exist on the wire but the gateway doesn't read them
 }
 

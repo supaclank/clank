@@ -22,7 +22,7 @@ const syncedSessionsRelPath = "clank/sessions-synced.json"
 // SyncedSessionsVersion is bumped on a non-backwards-compatible schema
 // change; an unknown version reads as "no record" (re-recorded on the next
 // push) rather than erroring.
-const SyncedSessionsVersion = 1
+const SyncedSessionsVersion = 2
 
 // SyncedSession is the last-pushed version marker for one session.
 // Fingerprint is a content version (Claude: last-message uuid) preferred
@@ -33,13 +33,22 @@ type SyncedSession struct {
 	Backend     BackendType `json:"backend"`
 	UpdatedAt   time.Time   `json:"updated_at"`
 	Fingerprint string      `json:"fingerprint,omitempty"`
+	// ContentHash + Bytes are the last-pushed blob's content address and
+	// size, so an unchanged session's manifest entry can be rebuilt without
+	// re-exporting it (see sessionsync.PreparePush).
+	ContentHash string `json:"content_hash,omitempty"`
+	Bytes       int64  `json:"bytes,omitempty"`
 }
 
 // SyncedSessionRecord is the per-worktree set of last-pushed sessions,
 // keyed by backend-native ExternalID.
 type SyncedSessionRecord struct {
-	Version  int                      `json:"version"`
-	Sessions map[string]SyncedSession `json:"sessions"`
+	Version int `json:"version"`
+	// LastPushedAt is when this machine last successfully pushed this
+	// worktree (any leg). Surfaced by `clank status` as a recency hint;
+	// zero (omitted by status) until the first push records it.
+	LastPushedAt time.Time                `json:"last_pushed_at"`
+	Sessions     map[string]SyncedSession `json:"sessions"`
 }
 
 // ReadSyncedSessions returns the record for projectDir, or a zero record

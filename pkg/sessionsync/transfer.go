@@ -9,10 +9,7 @@ import (
 	"github.com/acksell/clank/internal/agent"
 )
 
-const (
-	blobKeyPrefix   = "sessions/"
-	opencodeBlobExt = ".json"
-)
+const opencodeBlobExt = ".json"
 
 // blobExt is the file extension for a backend's export blob. Blobs are
 // opaque to the transport; the extension is cosmetic but kept faithful to
@@ -26,11 +23,6 @@ func blobExt(b agent.BackendType) string {
 	default:
 		panic("sessionsync: no blob extension for backend " + string(b))
 	}
-}
-
-// blobKeyFor returns the manifest BlobKey for a session's export blob.
-func blobKeyFor(b agent.BackendType, externalID string) string {
-	return blobKeyPrefix + externalID + blobExt(b)
 }
 
 // ExportSessionBlob exports one session to dst, routed to its backend. cwd

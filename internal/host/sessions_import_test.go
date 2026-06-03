@@ -67,7 +67,6 @@ func TestRegisterImportedSession_RoundTrip(t *testing.T) {
 		SessionID:      sessULID,
 		ExternalID:     externalID,
 		Backend:        agent.BackendOpenCode,
-		BlobKey:        "sessions/" + sessULID + ".json",
 		Status:         agent.StatusIdle,
 		Title:          "register import roundtrip",
 		Prompt:         "the original prompt",
@@ -385,6 +384,102 @@ func TestRegisterImportedSession_Claude(t *testing.T) {
 	}
 	if len(all) != 1 {
 		t.Errorf("after idempotent re-run, want 1 session, got %d", len(all))
+	}
+}
+
+// TestRegisterImportedSession_PreservesUpdatedAt is the regression test for
+// the recency-sorting bug: import used to hard-set UpdatedAt to now(), which
+// collapsed every imported session to "just synced" and made the mobile
+// Inbox / TUI sidebar recency sort meaningless. Import must instead preserve
+// the manifest's UpdatedAt (the source host's real value), falling back to
+// now() only for legacy manifests that predate the field. Uses the synthetic
+// Claude blob path so it runs without any external backend binary.
+func TestRegisterImportedSession_PreservesUpdatedAt(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	workRoot := filepath.Join(t.TempDir(), "work")
+	prev := host.SetWorkRootForTest(workRoot)
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
+
+	dbPath := filepath.Join(t.TempDir(), "host.db")
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+		SessionsStore: st,
+	})
+	t.Cleanup(svc.Shutdown)
+
+	// Case 1: a manifest carrying real timestamps — both must survive.
+	const externalID = "claude-preserve-updated-9999"
+	const sessULID = "01HPRESERVEUPDATEDAT00000000"
+	const worktreeID = "wt-preserve-updated"
+
+	blob := buildSyntheticClaudeBlob(externalID, "/laptop/source/path")
+	blobPath := filepath.Join(t.TempDir(), "blob.jsonl")
+	if err := os.WriteFile(blobPath, blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	wantCreated := time.Now().Add(-3 * time.Hour)
+	wantUpdated := time.Now().Add(-25 * time.Minute)
+	entry := checkpoint.SessionEntry{
+		SessionID:  sessULID,
+		ExternalID: externalID,
+		Backend:    agent.BackendClaudeCode,
+		Status:     agent.StatusIdle,
+		Title:      "preserve updated_at",
+		CreatedAt:  wantCreated,
+		UpdatedAt:  wantUpdated,
+	}
+
+	got, err := svc.RegisterImportedSession(context.Background(), worktreeID, entry, blobPath)
+	if err != nil {
+		t.Fatalf("RegisterImportedSession: %v", err)
+	}
+	if !got.UpdatedAt.Equal(wantUpdated) {
+		t.Errorf("got.UpdatedAt = %v, want %v (import must preserve the manifest's value, not stamp now)", got.UpdatedAt, wantUpdated)
+	}
+	if !got.CreatedAt.Equal(wantCreated) {
+		t.Errorf("got.CreatedAt = %v, want %v", got.CreatedAt, wantCreated)
+	}
+
+	// Survives the sqlite (unix-millis) round-trip too.
+	persisted, err := st.GetSession(context.Background(), sessULID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if persisted.UpdatedAt.UnixMilli() != wantUpdated.UnixMilli() {
+		t.Errorf("persisted UpdatedAt = %v, want %v", persisted.UpdatedAt, wantUpdated)
+	}
+
+	// Case 2: a legacy manifest with no UpdatedAt falls back to ~now so the
+	// row is never written with a zero timestamp.
+	const legacyExternalID = "claude-legacy-noupdated-8888"
+	const legacyULID = "01HLEGACYNOUPDATED0000000000"
+	legacyBlob := buildSyntheticClaudeBlob(legacyExternalID, "/laptop/source/path")
+	legacyBlobPath := filepath.Join(t.TempDir(), "legacy.jsonl")
+	if err := os.WriteFile(legacyBlobPath, legacyBlob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now()
+	legacyGot, err := svc.RegisterImportedSession(context.Background(), worktreeID, checkpoint.SessionEntry{
+		SessionID:  legacyULID,
+		ExternalID: legacyExternalID,
+		Backend:    agent.BackendClaudeCode,
+		Status:     agent.StatusIdle,
+		// CreatedAt + UpdatedAt intentionally zero (legacy manifest).
+	}, legacyBlobPath)
+	if err != nil {
+		t.Fatalf("RegisterImportedSession (legacy): %v", err)
+	}
+	if legacyGot.UpdatedAt.Before(before) || legacyGot.UpdatedAt.After(time.Now().Add(time.Minute)) {
+		t.Errorf("legacy UpdatedAt = %v, want ~now (zero-value fallback)", legacyGot.UpdatedAt)
 	}
 }
 

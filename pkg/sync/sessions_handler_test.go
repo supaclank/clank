@@ -8,6 +8,7 @@ import (
 	"time"
 
 	clanksync "github.com/acksell/clank/pkg/sync"
+	"github.com/acksell/clank/pkg/sync/checkpoint"
 	"github.com/acksell/clank/pkg/sync/storage"
 )
 
@@ -34,7 +35,10 @@ func TestSessionPresignHandler_HappyPath(t *testing.T) {
 	checkpointID := create["checkpoint_id"].(string)
 
 	resp := postJSON[map[string]any](t, httpSrv.URL+"/v1/checkpoints/"+checkpointID+"/sessions", map[string]any{
-		"session_ids": []string{"01HSESSA", "01HSESSB"},
+		"sessions": []map[string]any{
+			{"external_id": "ext-a", "content_hash": hashA},
+			{"external_id": "ext-b", "content_hash": hashB},
+		},
 	})
 	if resp["checkpoint_id"] != checkpointID {
 		t.Errorf("checkpoint_id = %v, want %v", resp["checkpoint_id"], checkpointID)
@@ -49,13 +53,13 @@ func TestSessionPresignHandler_HappyPath(t *testing.T) {
 	if len(urls) != 2 {
 		t.Errorf("want 2 session URLs, got %d", len(urls))
 	}
-	if urls["01HSESSA"].(string) == "" || urls["01HSESSB"].(string) == "" {
+	if urls["ext-a"].(string) == "" || urls["ext-b"].(string) == "" {
 		t.Errorf("empty per-session URLs: %v", urls)
 	}
 
-	// Upload to one of the URLs and verify it lands at the expected key.
-	uploadTo(t, urls["01HSESSA"].(string), []byte(`{"info":{"id":"ses_a"}}`))
-	wantKey := "user-A/checkpoints/" + worktreeID + "/" + checkpointID + "/sessions/01HSESSA.json"
+	// Upload to one of the URLs and verify it lands at the content-addressed key.
+	uploadTo(t, urls["ext-a"].(string), []byte(`{"info":{"id":"ses_a"}}`))
+	wantKey := "user-A/worktrees/" + worktreeID + "/sessions/ext-a/" + hashA
 	var found bool
 	for _, k := range mem.Keys() {
 		if k == wantKey {
@@ -88,10 +92,10 @@ func TestSessionPresignHandler_EmptySessions(t *testing.T) {
 	checkpointID := create["checkpoint_id"].(string)
 
 	resp := postJSON[map[string]any](t, httpSrv.URL+"/v1/checkpoints/"+checkpointID+"/sessions", map[string]any{
-		"session_ids": []string{},
+		"sessions": []map[string]any{},
 	})
 	if resp["session_manifest_put_url"].(string) == "" {
-		t.Errorf("manifest URL should be set even for empty session_ids")
+		t.Errorf("manifest URL should be set even for empty sessions")
 	}
 }
 
@@ -101,7 +105,7 @@ func TestSessionPresignHandler_UnknownCheckpointReturns404(t *testing.T) {
 	httpSrv, _, _ := newTestServer(t)
 
 	resp := mustPostExpectStatus(t, httpSrv.URL+"/v1/checkpoints/ck-does-not-exist/sessions", map[string]any{
-		"session_ids": []string{"01H"},
+		"sessions": []map[string]any{{"external_id": "ext", "content_hash": hashA}},
 	}, http.StatusNotFound)
 	if !strings.Contains(string(resp), "checkpoint not found") {
 		t.Errorf("expected 'checkpoint not found' in body, got %q", resp)
@@ -150,7 +154,7 @@ func TestSessionPresignHandler_WrongTenantForbidden(t *testing.T) {
 	// user-B asks for presigned URLs against user-A's checkpoint.
 	_, err = srv.PresignSessionPuts(context.Background(), "user-B", clanksync.SessionPresignRequest{
 		CheckpointID: "ck-A",
-		SessionIDs:   []string{"01H"},
+		Sessions:     []checkpoint.SessionBlobRef{{ExternalID: "ext", ContentHash: hashA}},
 	})
 	if err == nil {
 		t.Fatal("expected forbidden error")
