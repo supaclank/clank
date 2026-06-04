@@ -11,6 +11,17 @@ import (
 	"time"
 )
 
+const deleteCheckpointsByWorktree = `-- name: DeleteCheckpointsByWorktree :exec
+DELETE FROM checkpoints WHERE worktree_id = ?
+`
+
+// checkpoints has no FK back to worktrees(id), so a worktree delete must
+// clear its checkpoint rows explicitly to avoid orphans (see DeleteWorktree).
+func (q *Queries) DeleteCheckpointsByWorktree(ctx context.Context, worktreeID string) error {
+	_, err := q.db.ExecContext(ctx, deleteCheckpointsByWorktree, worktreeID)
+	return err
+}
+
 const deleteWorktree = `-- name: DeleteWorktree :exec
 DELETE FROM worktrees WHERE id = ?
 `

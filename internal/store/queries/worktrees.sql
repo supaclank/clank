@@ -61,3 +61,8 @@ INSERT INTO checkpoints (
 UPDATE checkpoints
 SET uploaded_at = ?
 WHERE id = ?;
+
+-- name: DeleteCheckpointsByWorktree :exec
+-- checkpoints has no FK back to worktrees(id), so a worktree delete must
+-- clear its checkpoint rows explicitly to avoid orphans (see DeleteWorktree).
+DELETE FROM checkpoints WHERE worktree_id = ?;

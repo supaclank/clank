@@ -10,6 +10,9 @@ import (
 
 type Querier interface {
 	DeleteSession(ctx context.Context, id string) error
+	// Removes every session belonging to a worktree. Used when a worktree is
+	// deleted (full cleanup), alongside removing its materialized ~/work/<id>.
+	DeleteSessionsByWorktree(ctx context.Context, worktreeID string) error
 	FindSessionByExternalID(ctx context.Context, externalID string) (Session, error)
 	GetSession(ctx context.Context, id string) (Session, error)
 	ListPrimaryAgents(ctx context.Context, arg ListPrimaryAgentsParams) (string, error)
