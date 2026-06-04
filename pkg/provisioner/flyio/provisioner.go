@@ -95,6 +95,16 @@ type Options struct {
 	// own env at startup and passes it here.
 	GitHubOAuthClientID string
 
+	// PreviewWebhookURL, when non-empty, is the gateway base for the
+	// preview register/revoke webhooks (e.g.
+	// "https://api.example.dev/webhooks/preview"), forwarded to clank-host
+	// as --preview-webhook-url. The host calls it when it spawns a
+	// per-worktree preview dev server so the gateway mints a public token.
+	// Empty disables cloud preview registration — servers still spawn but
+	// no public URL is minted. clank-host reuses the notifier token to
+	// authenticate these calls, so NotifierWebhookURL must also be set.
+	PreviewWebhookURL string
+
 	// SDKClient overrides the sprites.Client constructor for tests.
 	SDKClient *sprites.Client
 }
@@ -697,7 +707,7 @@ echo "::: done — /usr/local/bin/opencode -> $BUN_OPENCODE (version $PINNED)"
 // case where a flag rename would crash-loop the service across the
 // hibernate/wake cycle and the edge would serve 404s.
 func (p *Provisioner) ensureServiceRunning(ctx context.Context, sprite *sprites.Sprite, tokens hostTokens, forceRecreate bool) error {
-	wantReq := buildServiceRequest(tokens, p.opts.NotifierWebhookURL, p.opts.GitHubOAuthClientID)
+	wantReq := buildServiceRequest(tokens, p.opts.NotifierWebhookURL, p.opts.PreviewWebhookURL, p.opts.GitHubOAuthClientID)
 
 	var existing *sprites.ServiceWithState
 	var existingErr error
@@ -743,10 +753,13 @@ func (p *Provisioner) ensureServiceRunning(ctx context.Context, sprite *sprites.
 // expects, used both to create and to compare against a persisted one.
 // When webhookURL is empty the notifier flags are omitted entirely
 // (laptop-dev / no-dispatcher path); when set, the host POSTs idle /
-// permission / error events back to the dispatcher. githubOAuthClientID
-// likewise conditionally adds the --github-oauth-client-id flag; empty
-// leaves GitHub Connect disabled on the sprite.
-func buildServiceRequest(tokens hostTokens, webhookURL, githubOAuthClientID string) *sprites.ServiceRequest {
+// permission / error events back to the dispatcher. previewWebhookURL
+// conditionally adds --preview-webhook-url so the host registers its
+// per-worktree preview servers with the gateway (it reuses the notifier
+// token, so it only takes effect alongside the notifier flags).
+// githubOAuthClientID likewise conditionally adds --github-oauth-client-id;
+// empty leaves GitHub Connect disabled on the sprite.
+func buildServiceRequest(tokens hostTokens, webhookURL, previewWebhookURL, githubOAuthClientID string) *sprites.ServiceRequest {
 	port := HostPort
 	args := []string{
 		"--listen", fmt.Sprintf("tcp://[::]:%d", HostPort),
@@ -761,6 +774,11 @@ func buildServiceRequest(tokens hostTokens, webhookURL, githubOAuthClientID stri
 			"--notifier-webhook-url", webhookURL,
 			"--notifier-webhook-token", tokens.notifier,
 		)
+	}
+	if previewWebhookURL != "" && tokens.notifier != "" {
+		// clank-host reuses the notifier token (passed above) to auth the
+		// preview register/revoke calls, so only the URL is needed here.
+		args = append(args, "--preview-webhook-url", previewWebhookURL)
 	}
 	if githubOAuthClientID != "" {
 		args = append(args, "--github-oauth-client-id", githubOAuthClientID)
