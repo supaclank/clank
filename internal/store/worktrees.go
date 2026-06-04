@@ -99,6 +99,17 @@ func (s *Store) UpdateWorktreeMaterialization(ctx context.Context, id string, m 
 	})
 }
 
+// DeleteWorktree removes a worktree row by ID. No-op if the row is already
+// gone (idempotent — supports retrying a partially-failed delete). Callers
+// must clear the worktree's checkpoint rows first via
+// DeleteCheckpointsByWorktree (there is no FK cascade).
+func (s *Store) DeleteWorktree(ctx context.Context, id string) error {
+	if err := s.q.DeleteWorktree(ctx, id); err != nil {
+		return fmt.Errorf("delete worktree (id=%s): %w", id, err)
+	}
+	return nil
+}
+
 // GetCheckpointByID returns a checkpoint row or ErrCheckpointNotFound.
 func (s *Store) GetCheckpointByID(ctx context.Context, id string) (Checkpoint, error) {
 	row, err := s.q.GetCheckpointByID(ctx, id)
@@ -163,6 +174,16 @@ func (s *Store) MarkCheckpointUploaded(ctx context.Context, id string, when time
 		UploadedAt: sql.NullTime{Time: when, Valid: !when.IsZero()},
 		ID:         id,
 	})
+}
+
+// DeleteCheckpointsByWorktree removes all checkpoint rows for a worktree.
+// checkpoints has no FK back to worktrees(id), so a worktree delete must
+// clear these explicitly to avoid orphan rows. Idempotent.
+func (s *Store) DeleteCheckpointsByWorktree(ctx context.Context, worktreeID string) error {
+	if err := s.q.DeleteCheckpointsByWorktree(ctx, worktreeID); err != nil {
+		return fmt.Errorf("delete checkpoints (worktree=%s): %w", worktreeID, err)
+	}
+	return nil
 }
 
 // GetHeadBundle returns the head-bundle row for (userID, tipSHA) or

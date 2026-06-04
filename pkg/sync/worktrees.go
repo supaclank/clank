@@ -135,12 +135,14 @@ type SyncStore interface {
 	GetWorktreeByID(ctx context.Context, id string) (Worktree, error)
 	ListWorktreesByUser(ctx context.Context, userID string) ([]Worktree, error)
 	InsertWorktree(ctx context.Context, w Worktree) error
+	DeleteWorktree(ctx context.Context, id string) error
 	UpdateWorktreePointer(ctx context.Context, id, checkpointID string) error
 	UpdateWorktreeMaterialization(ctx context.Context, id string, m MaterializationUpdate) error
 
 	GetCheckpointByID(ctx context.Context, id string) (Checkpoint, error)
 	ListCheckpointsByWorktree(ctx context.Context, worktreeID string, limit int) ([]Checkpoint, error)
 	InsertCheckpoint(ctx context.Context, c Checkpoint) error
+	DeleteCheckpointsByWorktree(ctx context.Context, worktreeID string) error
 	MarkCheckpointUploaded(ctx context.Context, id string, when time.Time) error
 
 	// GetHeadBundle returns the head-bundle row for (userID, tipSHA), or
@@ -181,6 +183,22 @@ func (s *Server) SetWorktreeMaterialization(ctx context.Context, userID, worktre
 		return err
 	}
 	return s.cfg.Store.UpdateWorktreeMaterialization(ctx, worktreeID, m)
+}
+
+// DeleteWorktree removes a worktree and all its checkpoint rows after a
+// tenancy check (userID must own it). Returns ErrWorktreeNotFound if the
+// row is missing, ErrForbidden if it belongs to another user. Checkpoints
+// are deleted before the row so retrying a mid-delete failure never leaves
+// the row gone with orphan checkpoints. Shared, content-addressed
+// head-bundle blobs are reference-GC'd, not deleted here.
+func (s *Server) DeleteWorktree(ctx context.Context, userID, worktreeID string) error {
+	if _, err := s.GetWorktree(ctx, userID, worktreeID); err != nil {
+		return err
+	}
+	if err := s.cfg.Store.DeleteCheckpointsByWorktree(ctx, worktreeID); err != nil {
+		return err
+	}
+	return s.cfg.Store.DeleteWorktree(ctx, worktreeID)
 }
 
 // RegisterPrebuiltWorktree inserts a worktree row whose ID was assigned

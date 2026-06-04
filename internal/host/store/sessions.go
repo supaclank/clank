@@ -168,13 +168,23 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	return nil
 }
 
+// DeleteSessionsByWorktree removes every session belonging to a worktree.
+// No-op when the worktree has none. Used by full-cleanup worktree delete
+// (alongside removing the materialized ~/work/<id> directory).
+func (s *Store) DeleteSessionsByWorktree(ctx context.Context, worktreeID string) error {
+	if err := s.q.DeleteSessionsByWorktree(ctx, worktreeID); err != nil {
+		return fmt.Errorf("delete sessions for worktree %s: %w", worktreeID, err)
+	}
+	return nil
+}
+
 // LoadPrimaryAgents returns the cached agent list for (backend, ref),
 // or nil + nil if no entry exists.
 func (s *Store) LoadPrimaryAgents(ctx context.Context, backend agent.BackendType, ref agent.GitRef) ([]agent.AgentInfo, error) {
 	jsonBytes, err := s.q.ListPrimaryAgents(ctx, hostsqlitedb.ListPrimaryAgentsParams{
 		Backend:    string(backend),
 		ProjectDir: ref.LocalPath,
-		WorktreeID:     ref.WorktreeID,
+		WorktreeID: ref.WorktreeID,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

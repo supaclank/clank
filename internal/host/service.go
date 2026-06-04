@@ -1316,6 +1316,40 @@ func (s *Service) RemoveWorktree(ctx context.Context, ref agent.GitRef, branch s
 	return nil
 }
 
+// DeleteMaterializedWorktree removes a worktree's persisted sessions and ~/work/<id>
+// directory. Refuses with ErrWorktreeBusy when a session is active; idempotent otherwise.
+func (s *Service) DeleteMaterializedWorktree(ctx context.Context, worktreeID string) error {
+	if _, err := ulid.ParseStrict(worktreeID); err != nil {
+		return fmt.Errorf("delete materialized worktree: invalid worktreeID %q", worktreeID)
+	}
+	// Serialize against session creation / checkpoint apply on this
+	// worktree and re-check for a live session under the lock.
+	defer s.LockWorktreeSync(worktreeID)()
+
+	active, err := s.WorktreeHasActiveSession(ctx, worktreeID)
+	if err != nil {
+		return err
+	}
+	if active {
+		return ErrWorktreeBusy
+	}
+
+	if s.sessionsStore != nil {
+		if err := s.sessionsStore.DeleteSessionsByWorktree(ctx, worktreeID); err != nil {
+			return err
+		}
+	}
+
+	root, err := workRootDir()
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(filepath.Join(root, worktreeID)); err != nil {
+		return fmt.Errorf("remove materialized worktree %s: %w", worktreeID, err)
+	}
+	return nil
+}
+
 // MergeBranch merges branch into ref's repo's default branch.
 func (s *Service) MergeBranch(ctx context.Context, ref agent.GitRef, branch, commitMessage string) (MergeResult, error) {
 	repoRef := ref

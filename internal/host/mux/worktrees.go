@@ -97,6 +97,24 @@ func (m *Mux) handleRemoveWorktree(w http.ResponseWriter, r *http.Request) {
 }
 
 // HOST
+// handleDeleteMaterializedWorktree services DELETE /worktrees/{id}: the
+// full-cleanup leg of a worktree delete. Removes the materialized
+// ~/work/{id} directory and every session belonging to the worktree.
+// Returns 409 (worktree_busy) when a session is actively running.
+func (m *Mux) handleDeleteMaterializedWorktree(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, errResp{Error: "worktree id is required"})
+		return
+	}
+	if err := m.svc.DeleteMaterializedWorktree(r.Context(), id); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// HOST
 func (m *Mux) handleCreateWorktree(w http.ResponseWriter, r *http.Request) {
 	var req createWorktreeRequest
 	if err := decodeJSON(r.Body, &req); err != nil {
