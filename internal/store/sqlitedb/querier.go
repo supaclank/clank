@@ -9,6 +9,9 @@ import (
 )
 
 type Querier interface {
+	// checkpoints has no FK back to worktrees(id), so a worktree delete must
+	// clear its checkpoint rows explicitly to avoid orphans (see DeleteWorktree).
+	DeleteCheckpointsByWorktree(ctx context.Context, worktreeID string) error
 	DeleteDevice(ctx context.Context, arg DeleteDeviceParams) error
 	// Used by the dispatcher when Expo returns DeviceNotRegistered for a
 	// token; the user_id is irrelevant, the token itself is dead.

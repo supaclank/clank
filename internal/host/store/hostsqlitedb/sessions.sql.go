@@ -19,6 +19,17 @@ func (q *Queries) DeleteSession(ctx context.Context, id string) error {
 	return err
 }
 
+const deleteSessionsByWorktree = `-- name: DeleteSessionsByWorktree :exec
+DELETE FROM sessions WHERE worktree_id = ?
+`
+
+// Removes every session belonging to a worktree. Used when a worktree is
+// deleted (full cleanup), alongside removing its materialized ~/work/<id>.
+func (q *Queries) DeleteSessionsByWorktree(ctx context.Context, worktreeID string) error {
+	_, err := q.db.ExecContext(ctx, deleteSessionsByWorktree, worktreeID)
+	return err
+}
+
 const findSessionByExternalID = `-- name: FindSessionByExternalID :one
 SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions WHERE external_id = ? LIMIT 1
 `

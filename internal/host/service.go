@@ -1316,6 +1316,47 @@ func (s *Service) RemoveWorktree(ctx context.Context, ref agent.GitRef, branch s
 	return nil
 }
 
+// DeleteMaterializedWorktree removes a worktree's materialized state from
+// this host — every session belonging to it and the ~/work/<id> directory
+// — as the full-cleanup leg of a worktree delete (gateway:
+// DELETE /v1/worktrees/{id}). It refuses with ErrWorktreeBusy when a
+// session is actively running, taking the per-worktree sync lock so the
+// check can't race a session start or a checkpoint apply (same guard as
+// handleSyncApplyFromURLs). Idempotent: a never-materialized worktree (no
+// dir, no sessions) is a clean no-op, so the gateway can safely retry
+// after a transient failure.
+func (s *Service) DeleteMaterializedWorktree(ctx context.Context, worktreeID string) error {
+	if worktreeID == "" {
+		return fmt.Errorf("delete materialized worktree: worktreeID is required")
+	}
+	// Serialize against session creation / checkpoint apply on this
+	// worktree and re-check for a live session under the lock.
+	defer s.LockWorktreeSync(worktreeID)()
+
+	active, err := s.WorktreeHasActiveSession(ctx, worktreeID)
+	if err != nil {
+		return err
+	}
+	if active {
+		return ErrWorktreeBusy
+	}
+
+	if s.sessionsStore != nil {
+		if err := s.sessionsStore.DeleteSessionsByWorktree(ctx, worktreeID); err != nil {
+			return err
+		}
+	}
+
+	root, err := workRootDir()
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(filepath.Join(root, worktreeID)); err != nil {
+		return fmt.Errorf("remove materialized worktree %s: %w", worktreeID, err)
+	}
+	return nil
+}
+
 // MergeBranch merges branch into ref's repo's default branch.
 func (s *Service) MergeBranch(ctx context.Context, ref agent.GitRef, branch, commitMessage string) (MergeResult, error) {
 	repoRef := ref

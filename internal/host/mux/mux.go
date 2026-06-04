@@ -104,6 +104,10 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("POST /worktrees/create", m.handleCreateWorktree)
 	mx.HandleFunc("POST /worktrees/remove", m.handleRemoveWorktree)
 	mx.HandleFunc("POST /worktrees/merge", m.handleMergeBranch)
+	// Full-cleanup leg of a worktree delete: remove the materialized
+	// ~/work/{id} directory and the worktree's sessions. The gateway calls
+	// this during DELETE /v1/worktrees/{id}, before deleting the sync row.
+	mx.HandleFunc("DELETE /worktrees/{id}", m.handleDeleteMaterializedWorktree)
 
 	// Preview-app control plane. The reverse proxy lives at the
 	// gateway (subdomain-routed via preview-<token>.<root>) — clank-
@@ -192,6 +196,8 @@ func writeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, host.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, errResp{Code: "not_found", Error: err.Error()})
+	case errors.Is(err, host.ErrWorktreeBusy):
+		writeJSON(w, http.StatusConflict, errResp{Code: "worktree_busy", Error: err.Error()})
 	case errors.Is(err, host.ErrCannotMergeDefault):
 		writeJSON(w, http.StatusConflict, errResp{Code: "cannot_merge_default", Error: err.Error()})
 	case errors.Is(err, host.ErrNothingToMerge):

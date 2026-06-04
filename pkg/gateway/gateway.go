@@ -208,6 +208,10 @@ func (g *Gateway) Handler() http.Handler {
 	// catch-all so they reach these gateway-orchestrated handlers.
 	mx.HandleFunc("POST /v1/worktrees/sync", g.handleSyncAllWorktrees)
 	mx.HandleFunc("POST /v1/worktrees/{id}/sync", g.handleSyncWorktree)
+	// Full-cleanup delete: strip the sprite's materialized copy + sessions,
+	// then delete the sync row + checkpoints. Mounted before the `/v1/`
+	// catch-all so DELETE reaches this gateway handler, not the sync server.
+	mx.HandleFunc("DELETE /v1/worktrees/{id}", g.handleDeleteWorktree)
 
 	// GitHub Connect: status/disconnect/connect-flow/create-PR are
 	// all pure proxies to the user's host. Mounted before the /v1/

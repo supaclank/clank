@@ -51,6 +51,11 @@ ON CONFLICT (id) DO UPDATE SET
 -- name: DeleteSession :exec
 DELETE FROM sessions WHERE id = ?;
 
+-- name: DeleteSessionsByWorktree :exec
+-- Removes every session belonging to a worktree. Used when a worktree is
+-- deleted (full cleanup), alongside removing its materialized ~/work/<id>.
+DELETE FROM sessions WHERE worktree_id = ?;
+
 -- name: ListPrimaryAgents :one
 SELECT primary_agents_json FROM primary_agents
 WHERE backend = ? AND project_dir = ? AND worktree_id = ?;

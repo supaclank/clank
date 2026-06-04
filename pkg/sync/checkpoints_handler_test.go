@@ -60,6 +60,12 @@ func (m *memSyncStore) InsertWorktree(_ context.Context, w clanksync.Worktree) e
 	m.worktrees[w.ID] = w
 	return nil
 }
+func (m *memSyncStore) DeleteWorktree(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.worktrees, id)
+	return nil
+}
 func (m *memSyncStore) UpdateWorktreePointer(_ context.Context, id, checkpointID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -122,6 +128,16 @@ func (m *memSyncStore) MarkCheckpointUploaded(_ context.Context, id string, when
 	}
 	c.UploadedAt = when
 	m.checkpoints[id] = c
+	return nil
+}
+func (m *memSyncStore) DeleteCheckpointsByWorktree(_ context.Context, worktreeID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, c := range m.checkpoints {
+		if c.WorktreeID == worktreeID {
+			delete(m.checkpoints, id)
+		}
+	}
 	return nil
 }
 func (m *memSyncStore) GetHeadBundle(_ context.Context, userID, tipSHA string) (clanksync.HeadBundle, error) {
