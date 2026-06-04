@@ -11,6 +11,7 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
 	"github.com/acksell/clank/internal/host/store"
+	"github.com/oklog/ulid/v2"
 )
 
 func newDeleteHostService(t *testing.T) (*host.Service, *store.Store, string) {
@@ -53,30 +54,35 @@ func TestDeleteMaterializedWorktree_RemovesDirAndSessions(t *testing.T) {
 	svc, st, workRoot := newDeleteHostService(t)
 	ctx := context.Background()
 
-	dir := filepath.Join(workRoot, "wt-del")
+	wtDel := ulid.Make().String()
+	wtOther := ulid.Make().String()
+	sDel := ulid.Make().String()
+	sKeep := ulid.Make().String()
+
+	dir := filepath.Join(workRoot, wtDel)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	seedHostSession(t, st, "s-del", "wt-del", agent.StatusIdle)
-	seedHostSession(t, st, "s-keep", "wt-other", agent.StatusIdle)
+	seedHostSession(t, st, sDel, wtDel, agent.StatusIdle)
+	seedHostSession(t, st, sKeep, wtOther, agent.StatusIdle)
 
-	if err := svc.DeleteMaterializedWorktree(ctx, "wt-del"); err != nil {
+	if err := svc.DeleteMaterializedWorktree(ctx, wtDel); err != nil {
 		t.Fatalf("DeleteMaterializedWorktree: %v", err)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
-		t.Fatalf("~/work/wt-del still present: err=%v", err)
+		t.Fatalf("~/work/%s still present: err=%v", wtDel, err)
 	}
-	gone, err := st.ListSessionsByWorktree(ctx, "wt-del")
+	gone, err := st.ListSessionsByWorktree(ctx, wtDel)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(gone) != 0 {
 		t.Fatalf("sessions for deleted worktree=%d, want 0", len(gone))
 	}
-	kept, err := st.ListSessionsByWorktree(ctx, "wt-other")
+	kept, err := st.ListSessionsByWorktree(ctx, wtOther)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,19 +97,22 @@ func TestDeleteMaterializedWorktree_RefusesWhenBusy(t *testing.T) {
 	svc, st, workRoot := newDeleteHostService(t)
 	ctx := context.Background()
 
-	dir := filepath.Join(workRoot, "wt-busy")
+	wtBusy := ulid.Make().String()
+	sBusy := ulid.Make().String()
+
+	dir := filepath.Join(workRoot, wtBusy)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	seedHostSession(t, st, "s-busy", "wt-busy", agent.StatusBusy)
+	seedHostSession(t, st, sBusy, wtBusy, agent.StatusBusy)
 
-	if err := svc.DeleteMaterializedWorktree(ctx, "wt-busy"); !errors.Is(err, host.ErrWorktreeBusy) {
+	if err := svc.DeleteMaterializedWorktree(ctx, wtBusy); !errors.Is(err, host.ErrWorktreeBusy) {
 		t.Fatalf("DeleteMaterializedWorktree on busy worktree: err=%v, want ErrWorktreeBusy", err)
 	}
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatalf("dir removed despite busy session: %v", err)
 	}
-	left, err := st.ListSessionsByWorktree(ctx, "wt-busy")
+	left, err := st.ListSessionsByWorktree(ctx, wtBusy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +125,7 @@ func TestDeleteMaterializedWorktree_RefusesWhenBusy(t *testing.T) {
 // no sessions is a clean no-op (idempotent — supports gateway retry).
 func TestDeleteMaterializedWorktree_NeverMaterialized(t *testing.T) {
 	svc, _, _ := newDeleteHostService(t)
-	if err := svc.DeleteMaterializedWorktree(context.Background(), "wt-ghost"); err != nil {
+	if err := svc.DeleteMaterializedWorktree(context.Background(), ulid.Make().String()); err != nil {
 		t.Fatalf("DeleteMaterializedWorktree on a never-materialized worktree: %v", err)
 	}
 }

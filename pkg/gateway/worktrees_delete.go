@@ -14,21 +14,11 @@ import (
 	"github.com/acksell/clank/pkg/provisioner"
 )
 
-// errSpriteWorktreeBusy marks a sprite-side delete refused because a session
-// is actively running on the worktree (the host returned 409). The handler
-// maps it back to 409 so the client sees "busy" — distinct from a
-// transport/5xx failure that warrants a plain retry.
+// errSpriteWorktreeBusy is returned when the host refuses deletion because a session is running (409).
 var errSpriteWorktreeBusy = errors.New("gateway: worktree has an active session on the sprite")
 
-// handleDeleteWorktree services DELETE /v1/worktrees/{id} — full-cleanup
-// worktree delete. Strict and ordered: the sprite's materialized state (its
-// ~/work/<id> directory and the worktree's sessions) is removed FIRST; only
-// if that succeeds is the sync row (and its checkpoint rows) deleted. A
-// sprite failure aborts with 502 and leaves the record intact, so the client
-// can retry once the sprite is reachable — host cleanup is idempotent. A
-// never-materialized worktree has nothing to clean and succeeds trivially.
-// Shared, content-addressed checkpoint blob bytes are reference-GC'd, not
-// deleted here.
+// handleDeleteWorktree services DELETE /v1/worktrees/{id}. Removes sprite-side state
+// first; on sprite failure the sync row is left intact so the client can retry.
 func (g *Gateway) handleDeleteWorktree(w http.ResponseWriter, r *http.Request) {
 	if g.cfg.Sync == nil {
 		http.Error(w, "sync not configured (Sync unset)", http.StatusServiceUnavailable)

@@ -1316,18 +1316,11 @@ func (s *Service) RemoveWorktree(ctx context.Context, ref agent.GitRef, branch s
 	return nil
 }
 
-// DeleteMaterializedWorktree removes a worktree's materialized state from
-// this host — every session belonging to it and the ~/work/<id> directory
-// — as the full-cleanup leg of a worktree delete (gateway:
-// DELETE /v1/worktrees/{id}). It refuses with ErrWorktreeBusy when a
-// session is actively running, taking the per-worktree sync lock so the
-// check can't race a session start or a checkpoint apply (same guard as
-// handleSyncApplyFromURLs). Idempotent: a never-materialized worktree (no
-// dir, no sessions) is a clean no-op, so the gateway can safely retry
-// after a transient failure.
+// DeleteMaterializedWorktree removes a worktree's persisted sessions and ~/work/<id>
+// directory. Refuses with ErrWorktreeBusy when a session is active; idempotent otherwise.
 func (s *Service) DeleteMaterializedWorktree(ctx context.Context, worktreeID string) error {
-	if worktreeID == "" {
-		return fmt.Errorf("delete materialized worktree: worktreeID is required")
+	if _, err := ulid.ParseStrict(worktreeID); err != nil {
+		return fmt.Errorf("delete materialized worktree: invalid worktreeID %q", worktreeID)
 	}
 	// Serialize against session creation / checkpoint apply on this
 	// worktree and re-check for a live session under the lock.
