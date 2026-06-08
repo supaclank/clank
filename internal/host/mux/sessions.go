@@ -44,9 +44,10 @@ func (m *Mux) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// Send is fire-and-forget on the backend's long-lived context.
 	// Failure tears down the host-side registration so retry works.
 	status, extID, err := m.svc.OpenAndSend(r.Context(), sessionID, agent.SendMessageOpts{
-		Text:  req.Prompt,
-		Agent: req.Agent,
-		Model: req.Model,
+		Text:           req.Prompt,
+		Agent:          req.Agent,
+		Model:          req.Model,
+		PermissionMode: req.PermissionMode,
 	})
 	if err != nil {
 		_ = m.svc.StopSession(sessionID)

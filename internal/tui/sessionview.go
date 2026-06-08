@@ -83,6 +83,46 @@ type agentsResultMsg struct {
 	agents []agent.AgentInfo
 }
 
+// selectableMode is one entry in the Tab-cycle list shown above the compose
+// box. For OpenCode it names an agent; for Claude it names a permission mode.
+// Exactly one of agent/perm is set.
+type selectableMode struct {
+	label string                     // clean display label
+	agent string                     // OpenCode agent name (empty for Claude)
+	perm  agent.ClaudePermissionMode // Claude permission mode (empty for OpenCode)
+}
+
+// claudePermissionModes builds the static Tab-cycle list for the Claude
+// backend, defaulting the selection to bypassPermissions.
+func claudePermissionModes() ([]selectableMode, int) {
+	modes := make([]selectableMode, len(agent.ClaudePermissionModes))
+	selected := 0
+	for i, pm := range agent.ClaudePermissionModes {
+		modes[i] = selectableMode{label: pm.Label(), perm: pm}
+		if pm == agent.ClaudePermBypass {
+			selected = i
+		}
+	}
+	return modes, selected
+}
+
+// agentSelectableModes converts fetched OpenCode agents into the cycle list,
+// selecting current (or "build" when current is empty/absent).
+func agentSelectableModes(agents []agent.AgentInfo, current string) ([]selectableMode, int) {
+	if current == "" {
+		current = "build"
+	}
+	modes := make([]selectableMode, len(agents))
+	selected := 0
+	for i, a := range agents {
+		modes[i] = selectableMode{label: a.Name, agent: a.Name}
+		if a.Name == current {
+			selected = i
+		}
+	}
+	return modes, selected
+}
+
 // modelsResultMsg carries the result of fetching available models.
 type modelsResultMsg struct {
 	models []agent.ModelInfo
@@ -267,10 +307,12 @@ type SessionViewModel struct {
 	isNewWorktree  bool   // true when this compose session is for a newly created worktree
 	baseBranch     string // base branch for new worktree indicator (e.g. "main")
 
-	// Agent selection — populated eagerly when compose view loads.
-	// For existing sessions opened from inbox, agents are fetched on Init.
-	agents        []agent.AgentInfo
-	selectedAgent int // index into agents slice
+	// Mode selection — the Tab-cycle list above the compose box. For OpenCode
+	// these are agents (fetched on Init); for Claude they are the static
+	// permission modes. Populated eagerly when the compose view loads and for
+	// existing sessions opened from the inbox.
+	modes        []selectableMode
+	selectedMode int // index into modes slice
 
 	// Model selection — populated eagerly when compose view loads.
 	// The user cycles models with Shift+Tab.
@@ -702,8 +744,10 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// history (sessionMessagesMsg) to avoid a flash of the bare prompt
 		// before the complete conversation renders.
 
-		// Fetch agents if we don't have them yet (existing sessions opened from inbox).
-		if len(m.agents) == 0 && m.info.Backend == agent.BackendOpenCode && (m.info.GitRef.LocalPath != "" || m.info.GitRef.WorktreeID != "") {
+		// Seed the mode list if we don't have it yet (existing sessions opened
+		// from inbox). OpenCode fetches agents async; Claude seeds the static
+		// permission modes synchronously.
+		if len(m.modes) == 0 && (m.info.GitRef.LocalPath != "" || m.info.GitRef.WorktreeID != "") {
 			m.backend = m.info.Backend
 			// projectDir is not on SessionInfo (path-free wire per §7);
 			// relPath becomes a no-op for sessions opened from the inbox.
@@ -713,11 +757,14 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.hostname = host.HostLocal
 			}
 			m.gitRef = m.info.GitRef
-			// Restore the selected agent from session info.
-			if m.info.Agent != "" {
-				// Will be matched against the fetched list in agentsResultMsg.
+			switch m.info.Backend {
+			case agent.BackendOpenCode:
+				// Selected agent is matched against the fetched list in agentsResultMsg.
+				return m, tea.Batch(m.fetchAgents(), m.fetchModels())
+			case agent.BackendClaudeCode:
+				m.modes, m.selectedMode = claudePermissionModes()
+				return m, m.fetchModels()
 			}
-			return m, tea.Batch(m.fetchAgents(), m.fetchModels())
 		}
 		return m, nil
 
@@ -730,18 +777,11 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.fetchSessionInfo(), m.fetchSessionMessages())
 
 	case agentsResultMsg:
-		m.agents = msg.agents
-		// Try to match the session's current agent.
-		selectedName := "build"
-		if m.info != nil && m.info.Agent != "" {
-			selectedName = m.info.Agent
+		current := ""
+		if m.info != nil {
+			current = m.info.Agent
 		}
-		for i, a := range m.agents {
-			if a.Name == selectedName {
-				m.selectedAgent = i
-				break
-			}
-		}
+		m.modes, m.selectedMode = agentSelectableModes(msg.agents, current)
 		return m, nil
 
 	case modelsResultMsg:
@@ -1094,9 +1134,9 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.deactivateInput()
 			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
-			// Cycle through agents.
-			if len(m.agents) > 1 {
-				m.selectedAgent = (m.selectedAgent + 1) % len(m.agents)
+			// Cycle through modes (OpenCode agents or Claude permission modes).
+			if len(m.modes) > 1 {
+				m.selectedMode = (m.selectedMode + 1) % len(m.modes)
 			}
 			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab"))):
@@ -1113,9 +1153,9 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			text := strings.TrimSpace(m.input.Value())
 			if text != "" {
-				agentName := ""
-				if len(m.agents) > 0 {
-					agentName = m.agents[m.selectedAgent].Name
+				modeLabel := ""
+				if len(m.modes) > 0 {
+					modeLabel = m.modes[m.selectedMode].label
 				}
 				// Clear revert state — the user is sending a new message,
 				// so any previously reverted messages should reappear.
@@ -1125,7 +1165,7 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.entries = append(m.entries, displayEntry{
 					kind:    entryUser,
 					content: text,
-					agent:   agentName,
+					agent:   modeLabel,
 				})
 				m.input.Reset()
 				m.inputActive = false
@@ -2104,9 +2144,9 @@ func (m *SessionViewModel) isBusy() bool {
 }
 
 func (m *SessionViewModel) sendMessage(text string) tea.Cmd {
-	selectedAgent := ""
-	if len(m.agents) > 0 {
-		selectedAgent = m.agents[m.selectedAgent].Name
+	var sel selectableMode
+	if len(m.modes) > 0 {
+		sel = m.modes[m.selectedMode]
 	}
 	var modelOverride *agent.ModelOverride
 	if m.selectedModel >= 0 && m.selectedModel < len(m.models) {
@@ -2119,7 +2159,7 @@ func (m *SessionViewModel) sendMessage(text string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		opts := agent.SendMessageOpts{Text: text, Agent: selectedAgent, Model: modelOverride}
+		opts := agent.SendMessageOpts{Text: text, Agent: sel.agent, Model: modelOverride, PermissionMode: sel.perm}
 		err := m.client.Session(m.sessionID).Send(ctx, opts)
 		return sessionSendResultMsg{err: err}
 	}
@@ -2398,7 +2438,7 @@ func (m *SessionViewModel) View() tea.View {
 		sb.WriteString(m.renderPromptBox())
 		sb.WriteString("\n")
 		inputHelp := "enter: send | shift+enter: newline | esc: cancel"
-		if len(m.agents) > 1 {
+		if len(m.modes) > 1 {
 			inputHelp = "enter: send | shift+enter: newline | tab: cycle mode | esc: cancel"
 		}
 		if len(m.models) > 0 {
@@ -2445,11 +2485,11 @@ func (m *SessionViewModel) renderHeader() string {
 		followUpStr = lipgloss.NewStyle().Foreground(warningColor).Bold(true).Render("[follow-up]")
 	}
 
-	// Show agent indicator if set.
+	// Show mode indicator if set (OpenCode agent or Claude permission mode).
 	agentStr := ""
-	if len(m.agents) > 0 {
-		agentName := m.agents[m.selectedAgent].Name
-		agentStr = lipgloss.NewStyle().Foreground(agentColor(agentName)).Bold(true).Render(agentName)
+	if len(m.modes) > 0 {
+		sel := m.modes[m.selectedMode]
+		agentStr = lipgloss.NewStyle().Foreground(modeColor(sel)).Bold(true).Render(sel.label)
 	} else if m.info != nil && m.info.Agent != "" {
 		agentStr = lipgloss.NewStyle().Foreground(agentColor(m.info.Agent)).Bold(true).Render(m.info.Agent)
 	}

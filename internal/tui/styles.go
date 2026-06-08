@@ -9,6 +9,8 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/acksell/clank/internal/agent"
 )
 
 // renderError renders a top-of-view error banner. The message is wrapped at
@@ -89,6 +91,30 @@ func agentColor(name string) color.Color {
 	default:
 		return dimColor
 	}
+}
+
+// permModeColor returns a color conveying the risk of a Claude permission mode:
+// red for bypass (no guardrails) down to green for the prompt-everything default.
+func permModeColor(mode agent.ClaudePermissionMode) color.Color {
+	switch mode {
+	case agent.ClaudePermBypass:
+		return warningColor // skips all checks
+	case agent.ClaudePermAcceptEdits:
+		return primaryColor // theme's pink/accent – auto-applies edits
+	case agent.ClaudePermPlan:
+		return secondaryColor // cyan – read-only planning
+	default:
+		return successColor // green – prompts for everything
+	}
+}
+
+// modeColor returns the badge color for a selectable mode, dispatching to the
+// agent or permission-mode palette depending on which kind it is.
+func modeColor(sm selectableMode) color.Color {
+	if sm.perm != "" {
+		return permModeColor(sm.perm)
+	}
+	return agentColor(sm.agent)
 }
 
 // paneBorderInset is the total horizontal/vertical space consumed by a

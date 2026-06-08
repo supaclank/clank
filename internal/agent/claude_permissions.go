@@ -1,0 +1,127 @@
+package agent
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	claudecode "github.com/severity1/claude-agent-sdk-go"
+)
+
+// handleCanUseTool is the SDK CanUseTool callback. The SDK invokes it
+// synchronously on its control-protocol read goroutine whenever the CLI wants
+// to use a tool the current permission mode doesn't auto-approve. It bridges
+// that synchronous call to clank's asynchronous permission UI: it emits an
+// EventPermission (which reaches the TUI through the same path OpenCode uses)
+// and blocks until RespondPermission delivers the user's decision.
+//
+// Blocking the read goroutine here is safe: the CLI is itself paused awaiting
+// the decision, so no other messages are due until we answer.
+func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, input map[string]any, _ claudecode.ToolPermissionContext) (claudecode.PermissionResult, error) {
+	decision := make(chan bool, 1)
+
+	b.mu.Lock()
+	if b.stopped {
+		b.mu.Unlock()
+		return claudecode.NewPermissionResultDeny("session stopped"), nil
+	}
+	b.permSeq++
+	id := fmt.Sprintf("perm-%d", b.permSeq)
+	b.pendingPerms[id] = decision
+	b.mu.Unlock()
+
+	defer func() {
+		b.mu.Lock()
+		delete(b.pendingPerms, id)
+		b.mu.Unlock()
+	}()
+
+	b.emit(Event{
+		Type:      EventPermission,
+		Timestamp: time.Now(),
+		Data: PermissionData{
+			RequestID:   id,
+			Tool:        tool,
+			Description: describeToolCall(tool, input),
+		},
+	})
+
+	select {
+	case allow := <-decision:
+		if allow {
+			return claudecode.NewPermissionResultAllow(), nil
+		}
+		return claudecode.NewPermissionResultDeny("denied by user"), nil
+	case <-ctx.Done():
+		return claudecode.NewPermissionResultDeny("cancelled"), nil
+	case <-b.ctx.Done():
+		return claudecode.NewPermissionResultDeny("session stopped"), nil
+	}
+}
+
+// RespondPermission delivers the user's decision to a parked handleCanUseTool
+// call. allow=true permits the tool once; allow=false denies it. It is
+// idempotent and never blocks (the decision channel is buffered), and returns
+// an error for an unknown ID so callers fail fast on a stale prompt.
+func (b *ClaudeCodeBackend) RespondPermission(_ context.Context, permissionID string, allow bool) error {
+	b.mu.Lock()
+	decision, ok := b.pendingPerms[permissionID]
+	b.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("no pending permission %q", permissionID)
+	}
+	select {
+	case decision <- allow:
+	default:
+	}
+	return nil
+}
+
+// failPendingPermissions denies every parked permission request. Called on
+// Abort so the SDK read goroutine is freed immediately rather than waiting for
+// the interrupt to propagate through the CLI. Stop relies on b.ctx cancellation
+// instead, which handleCanUseTool also selects on.
+func (b *ClaudeCodeBackend) failPendingPermissions() {
+	b.mu.Lock()
+	waiters := make([]chan bool, 0, len(b.pendingPerms))
+	for _, ch := range b.pendingPerms {
+		waiters = append(waiters, ch)
+	}
+	b.mu.Unlock()
+
+	for _, ch := range waiters {
+		select {
+		case ch <- false:
+		default:
+		}
+	}
+}
+
+// describeToolCall renders a short, human-readable summary of a tool request
+// for the permission prompt, mirroring the OpenCode backend's style. It picks
+// the single most salient input field and caps length so a large input doesn't
+// bloat the prompt.
+func describeToolCall(tool string, input map[string]any) string {
+	var detail string
+	switch {
+	case input["command"] != nil:
+		detail = fmt.Sprint(input["command"])
+	case input["file_path"] != nil:
+		detail = fmt.Sprint(input["file_path"])
+	case input["path"] != nil:
+		detail = fmt.Sprint(input["path"])
+	case input["url"] != nil:
+		detail = fmt.Sprint(input["url"])
+	}
+
+	detail = strings.TrimSpace(strings.ReplaceAll(detail, "\n", " "))
+	const maxDetail = 120
+	if len(detail) > maxDetail {
+		detail = detail[:maxDetail] + "…"
+	}
+	if detail == "" {
+		return tool
+	}
+	return tool + ": " + detail
+}
