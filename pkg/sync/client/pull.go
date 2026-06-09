@@ -73,7 +73,10 @@ func (c *Client) PullWorktree(ctx context.Context, worktreeID, haveHead string) 
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, fmt.Errorf("decode pull response: %w", err)
 	}
-	if out.ManifestURL == "" || len(out.HeadBundles) == 0 || out.UncommittedURL == "" {
+	// An empty HeadBundles is legitimate: an incremental pull where the
+	// laptop already has the sandbox's HEAD commit and only uncommitted
+	// work changed. The manifest + uncommitted bundle are always present.
+	if out.ManifestURL == "" || out.UncommittedURL == "" {
 		return nil, fmt.Errorf("pull worktree: incomplete response (missing bundle URLs)")
 	}
 	return &out, nil
