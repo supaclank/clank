@@ -16,6 +16,14 @@ import (
 type SessionPresignRequest struct {
 	CheckpointID string
 	Sessions     []checkpoint.SessionBlobRef
+	// SessionsContentDigest is the manifest's content-digest
+	// (checkpoint.SessionManifest.ContentDigest) for the session set being
+	// uploaded — computed by the client, which already holds the same
+	// (ExternalID, ContentHash) pairs the digest hashes. Persisted on the
+	// checkpoint row so autosync can skip the S3 manifest fetch when it
+	// matches what the sprite imported. Empty ⇒ not persisted (old clients
+	// or a code-only push).
+	SessionsContentDigest string
 }
 
 // SessionPresignResult carries the per-session PUT URLs + the
@@ -46,6 +54,15 @@ func (s *Server) PresignSessionPuts(ctx context.Context, userID string, req Sess
 	_, wt, err := s.lookupCheckpointForUser(ctx, req.CheckpointID, userID)
 	if err != nil {
 		return SessionPresignResult{}, err
+	}
+
+	// Record the manifest digest on the checkpoint row so autosync can skip
+	// the S3 manifest fetch when it already matches what the sprite imported.
+	// Empty ⇒ skip (old clients / code-only pushes); no fallback default.
+	if req.SessionsContentDigest != "" {
+		if err := s.cfg.Store.UpdateCheckpointSessionsDigest(ctx, req.CheckpointID, req.SessionsContentDigest); err != nil {
+			return SessionPresignResult{}, fmt.Errorf("sync: record session digest for %s: %w", req.CheckpointID, err)
+		}
 	}
 
 	sessionURLs := make(map[string]string, len(req.Sessions))

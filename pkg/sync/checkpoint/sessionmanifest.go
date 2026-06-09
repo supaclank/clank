@@ -101,14 +101,27 @@ func (m *SessionManifest) Marshal() ([]byte, error) {
 // the sprite last imported (Worktree.SessionsSyncedHash) and re-imports
 // only on a change. An empty session set hashes to a fixed constant.
 func (m *SessionManifest) ContentDigest() string {
-	refs := make([]string, len(m.Sessions))
+	refs := make([]SessionBlobRef, len(m.Sessions))
 	for i, s := range m.Sessions {
-		refs[i] = s.ExternalID + "\x00" + s.ContentHash
+		refs[i] = s.BlobRef()
 	}
-	sort.Strings(refs)
+	return ContentDigestForRefs(refs)
+}
+
+// ContentDigestForRefs computes the same value as SessionManifest.ContentDigest
+// over a bare set of content-addressed refs, without constructing a manifest.
+// Lets a caller that holds only the (ExternalID, ContentHash) set — e.g. the
+// gateway computing the digest for the sprite's pull-back — produce a digest
+// that matches the manifest the client uploads.
+func ContentDigestForRefs(refs []SessionBlobRef) string {
+	keys := make([]string, len(refs))
+	for i, r := range refs {
+		keys[i] = r.ExternalID + "\x00" + r.ContentHash
+	}
+	sort.Strings(keys)
 	h := sha256.New()
-	for _, r := range refs {
-		h.Write([]byte(r))
+	for _, k := range keys {
+		h.Write([]byte(k))
 		h.Write([]byte{'\n'})
 	}
 	return hex.EncodeToString(h.Sum(nil))

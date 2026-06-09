@@ -127,6 +127,42 @@ func TestSessionManifest_ContentDigest(t *testing.T) {
 	}
 }
 
+// TestContentDigestForRefs_MatchesManifest pins that the two producers of the
+// session digest agree: the gateway's sprite pull-back computes it from bare
+// blob refs (ContentDigestForRefs), while the laptop computes it from the
+// manifest (SessionManifest.ContentDigest). For the same session set they MUST
+// match — otherwise a sprite pull-back and a laptop push of identical sessions
+// would persist different digests and defeat the autosync skip.
+func TestContentDigestForRefs_MatchesManifest(t *testing.T) {
+	t.Parallel()
+	const (
+		hashA = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+		hashB = "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+	)
+	entries := []checkpoint.SessionEntry{
+		{ExternalID: "ses_b", ContentHash: hashB},
+		{ExternalID: "ses_a", ContentHash: hashA},
+	}
+	man := &checkpoint.SessionManifest{Version: checkpoint.SessionManifestVersion, Sessions: entries}
+	refs := make([]checkpoint.SessionBlobRef, len(entries))
+	for i, e := range entries {
+		refs[i] = e.BlobRef()
+	}
+
+	if checkpoint.ContentDigestForRefs(refs) != man.ContentDigest() {
+		t.Fatal("ContentDigestForRefs disagrees with SessionManifest.ContentDigest for the same set")
+	}
+	// Order-independence holds across the two producers too.
+	shuffled := []checkpoint.SessionBlobRef{refs[1], refs[0]}
+	if checkpoint.ContentDigestForRefs(shuffled) != man.ContentDigest() {
+		t.Fatal("ContentDigestForRefs not order-independent vs the manifest digest")
+	}
+	// Empty set agreement.
+	if checkpoint.ContentDigestForRefs(nil) != (&checkpoint.SessionManifest{}).ContentDigest() {
+		t.Fatal("empty-set digest disagreement between the two producers")
+	}
+}
+
 func TestSessionManifest_EmptySessions(t *testing.T) {
 	t.Parallel()
 	m := &checkpoint.SessionManifest{

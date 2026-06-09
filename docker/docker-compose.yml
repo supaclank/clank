@@ -132,15 +132,15 @@ services:
       CLANK_SYNC_S3_REGION: "us-east-1"
       # CLANK_SYNC_S3_ENDPOINT is what the gateway dials for its own
       # direct SDK calls (HeadObject etc.). Always the docker-internal
-      # hostname here — short-circuits the public tunnel so SigV4
-      # host signing matches.
+      # hostname here, and the fallback for presigned URLs when no public
+      # endpoint is set.
       CLANK_SYNC_S3_ENDPOINT: "http://clank-minio:9000"
-      # CLANK_SYNC_S3_PUBLIC_ENDPOINT is the hostname baked into the
-      # presigned URLs handed to the laptop and any remote sprite. For
-      # laptop-only dev, leave empty and use the /etc/hosts trick
-      # (`make docker-setup`). For real sprites, set this to a public
-      # tunnel URL via `make dev` — both laptop and sprite then dial
-      # the same hostname so SigV4 signatures verify.
+      # CLANK_SYNC_S3_PUBLIC_ENDPOINT is the hostname baked into the presigned
+      # URLs handed to the laptop and the sprite. Leave empty for local dev:
+      # clankd falls back to the internal endpoint above, which the in-container
+      # sprite resolves via docker DNS and the laptop via the `127.0.0.1
+      # clank-minio` /etc/hosts entry (`make docker-setup`). Only a real REMOTE
+      # sprite needs a publicly-reachable bucket endpoint set here.
       CLANK_SYNC_S3_PUBLIC_ENDPOINT: "${CLANK_SYNC_S3_PUBLIC_ENDPOINT:-}"
       CLANK_SYNC_S3_ACCESS_KEY: "${MINIO_ROOT_USER:-clankadmin}"
       CLANK_SYNC_S3_SECRET_KEY: "${MINIO_ROOT_PASSWORD:-clankadmin}"

@@ -28,6 +28,12 @@ CREATE TABLE worktrees (
     -- Lets autosync detect a session-only push — which bumps no checkpoint —
     -- and re-import only when the digest changes. See pkg/gateway/sync.go.
     sessions_synced_hash        TEXT NOT NULL DEFAULT '',
+    -- materialized_host_id (migration v31): the HostRef.HostID this worktree
+    -- was last materialized onto. autosync's early-exit trusts the recorded
+    -- materialization only when this still matches the current host generation
+    -- — a cold reprovision wipes ~/work and mints a new id, forcing a re-
+    -- materialize. See pkg/gateway/sync.go.
+    materialized_host_id        TEXT NOT NULL DEFAULT '',
     created_at                  DATETIME NOT NULL,
     updated_at                  DATETIME NOT NULL
 );
@@ -43,7 +49,14 @@ CREATE TABLE checkpoints (
     incremental_commit  TEXT NOT NULL,
     created_at          DATETIME NOT NULL,
     created_by          TEXT NOT NULL DEFAULT '',
-    uploaded_at         DATETIME
+    uploaded_at         DATETIME,
+    -- sessions_content_digest (migration v30): content-digest of the session
+    -- set this checkpoint's manifest describes (SessionManifest.ContentDigest),
+    -- persisted at presign time so autosync can skip the S3 manifest fetch when
+    -- the sprite already holds this exact set. Empty ⇒ authoritative fetch
+    -- (old rows, code-only checkpoints, or a client that didn't send it). See
+    -- pkg/gateway/sync.go.
+    sessions_content_digest TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX checkpoints_worktree_idx ON checkpoints(worktree_id, created_at DESC);
 

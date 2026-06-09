@@ -207,18 +207,11 @@ func IsRunning() (bool, int, error) {
 		return false, pid, nil
 	}
 	if err := proc.Signal(syscall.Signal(0)); err != nil {
-		// EPERM means the process exists but we lack permission to
-		// signal it (different uid). The daemon is alive — return
-		// running=true so the caller doesn't try to start a second
-		// one. Only ESRCH (and the nil-error path that already
-		// returned above) prove the PID is gone.
+		// EPERM: process exists but we lack permission to signal it — daemon is alive.
 		if errors.Is(err, syscall.EPERM) {
 			return true, pid, nil
 		}
-		// Recorded PID is gone (ESRCH or anything else). Probe the
-		// socket: a recycled-PID scenario where a fresh daemon
-		// rebinds under a new PID would otherwise lose its socket
-		// here.
+		// PID gone. Probe the socket: a fresh daemon may have rebound under a new PID.
 		os.Remove(pidPath)
 		if !socketAlive() {
 			if sockPath, _ := SocketPath(); sockPath != "" {
@@ -227,7 +220,27 @@ func IsRunning() (bool, int, error) {
 		}
 		return false, pid, nil
 	}
+	// PID is alive but may be our own (container PID reuse) or an unrelated process.
+	if pid == os.Getpid() || !pidLooksLikeClankd(pid) {
+		os.Remove(pidPath)
+		if !socketAlive() {
+			if sockPath, _ := SocketPath(); sockPath != "" {
+				os.Remove(sockPath)
+			}
+		}
+		return false, 0, nil
+	}
 	return true, pid, nil
+}
+
+// pidLooksLikeClankd reads /proc/<pid>/comm on Linux to confirm the binary name.
+// Returns true on non-Linux (no /proc) to preserve the prior "live PID = daemon" behavior.
+func pidLooksLikeClankd(pid int) bool {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+	if err != nil {
+		return true // no /proc (macOS) or unreadable → assume it is the daemon
+	}
+	return strings.TrimSpace(string(data)) == "clankd"
 }
 
 // Ping checks if clankd is reachable.

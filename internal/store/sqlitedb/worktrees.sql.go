@@ -32,7 +32,7 @@ func (q *Queries) DeleteWorktree(ctx context.Context, id string) error {
 }
 
 const getCheckpointByID = `-- name: GetCheckpointByID :one
-SELECT id, worktree_id, head_commit, head_ref, index_tree, worktree_tree, incremental_commit, created_at, created_by, uploaded_at FROM checkpoints
+SELECT id, worktree_id, head_commit, head_ref, index_tree, worktree_tree, incremental_commit, created_at, created_by, uploaded_at, sessions_content_digest FROM checkpoints
 WHERE id = ?
 `
 
@@ -50,6 +50,7 @@ func (q *Queries) GetCheckpointByID(ctx context.Context, id string) (Checkpoint,
 		&i.CreatedAt,
 		&i.CreatedBy,
 		&i.UploadedAt,
+		&i.SessionsContentDigest,
 	)
 	return i, err
 }
@@ -78,7 +79,7 @@ func (q *Queries) GetHeadBundle(ctx context.Context, arg GetHeadBundleParams) (H
 }
 
 const getWorktreeByID = `-- name: GetWorktreeByID :one
-SELECT id, user_id, display_name, origin_repo, latest_synced_checkpoint, materialized_checkpoint_id, sync_state, sync_conflict_local_head, sync_conflict_remote_head, sessions_synced_hash, created_at, updated_at FROM worktrees
+SELECT id, user_id, display_name, origin_repo, latest_synced_checkpoint, materialized_checkpoint_id, sync_state, sync_conflict_local_head, sync_conflict_remote_head, sessions_synced_hash, materialized_host_id, created_at, updated_at FROM worktrees
 WHERE id = ?
 `
 
@@ -96,6 +97,7 @@ func (q *Queries) GetWorktreeByID(ctx context.Context, id string) (Worktree, err
 		&i.SyncConflictLocalHead,
 		&i.SyncConflictRemoteHead,
 		&i.SessionsSyncedHash,
+		&i.MaterializedHostID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -195,7 +197,7 @@ func (q *Queries) InsertWorktree(ctx context.Context, arg InsertWorktreeParams) 
 }
 
 const listCheckpointsByWorktree = `-- name: ListCheckpointsByWorktree :many
-SELECT id, worktree_id, head_commit, head_ref, index_tree, worktree_tree, incremental_commit, created_at, created_by, uploaded_at FROM checkpoints
+SELECT id, worktree_id, head_commit, head_ref, index_tree, worktree_tree, incremental_commit, created_at, created_by, uploaded_at, sessions_content_digest FROM checkpoints
 WHERE worktree_id = ?
 ORDER BY created_at DESC
 LIMIT ?
@@ -226,6 +228,7 @@ func (q *Queries) ListCheckpointsByWorktree(ctx context.Context, arg ListCheckpo
 			&i.CreatedAt,
 			&i.CreatedBy,
 			&i.UploadedAt,
+			&i.SessionsContentDigest,
 		); err != nil {
 			return nil, err
 		}
@@ -241,7 +244,7 @@ func (q *Queries) ListCheckpointsByWorktree(ctx context.Context, arg ListCheckpo
 }
 
 const listWorktreesByUser = `-- name: ListWorktreesByUser :many
-SELECT id, user_id, display_name, origin_repo, latest_synced_checkpoint, materialized_checkpoint_id, sync_state, sync_conflict_local_head, sync_conflict_remote_head, sessions_synced_hash, created_at, updated_at FROM worktrees
+SELECT id, user_id, display_name, origin_repo, latest_synced_checkpoint, materialized_checkpoint_id, sync_state, sync_conflict_local_head, sync_conflict_remote_head, sessions_synced_hash, materialized_host_id, created_at, updated_at FROM worktrees
 WHERE user_id = ?
 ORDER BY updated_at DESC
 `
@@ -266,6 +269,7 @@ func (q *Queries) ListWorktreesByUser(ctx context.Context, userID string) ([]Wor
 			&i.SyncConflictLocalHead,
 			&i.SyncConflictRemoteHead,
 			&i.SessionsSyncedHash,
+			&i.MaterializedHostID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -298,11 +302,27 @@ func (q *Queries) MarkCheckpointUploaded(ctx context.Context, arg MarkCheckpoint
 	return err
 }
 
+const updateCheckpointSessionsDigest = `-- name: UpdateCheckpointSessionsDigest :exec
+UPDATE checkpoints
+SET sessions_content_digest = ?
+WHERE id = ?
+`
+
+type UpdateCheckpointSessionsDigestParams struct {
+	SessionsContentDigest string
+	ID                    string
+}
+
+func (q *Queries) UpdateCheckpointSessionsDigest(ctx context.Context, arg UpdateCheckpointSessionsDigestParams) error {
+	_, err := q.db.ExecContext(ctx, updateCheckpointSessionsDigest, arg.SessionsContentDigest, arg.ID)
+	return err
+}
+
 const updateWorktreeMaterialization = `-- name: UpdateWorktreeMaterialization :exec
 UPDATE worktrees
 SET materialized_checkpoint_id = ?, sync_state = ?,
     sync_conflict_local_head = ?, sync_conflict_remote_head = ?,
-    sessions_synced_hash = ?,
+    sessions_synced_hash = ?, materialized_host_id = ?,
     updated_at = ?
 WHERE id = ?
 `
@@ -313,6 +333,7 @@ type UpdateWorktreeMaterializationParams struct {
 	SyncConflictLocalHead    string
 	SyncConflictRemoteHead   string
 	SessionsSyncedHash       string
+	MaterializedHostID       string
 	UpdatedAt                time.Time
 	ID                       string
 }
@@ -324,6 +345,7 @@ func (q *Queries) UpdateWorktreeMaterialization(ctx context.Context, arg UpdateW
 		arg.SyncConflictLocalHead,
 		arg.SyncConflictRemoteHead,
 		arg.SessionsSyncedHash,
+		arg.MaterializedHostID,
 		arg.UpdatedAt,
 		arg.ID,
 	)

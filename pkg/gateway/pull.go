@@ -144,6 +144,10 @@ func (g *Gateway) handlePullWorktree(w http.ResponseWriter, r *http.Request) {
 		presign, err := g.cfg.Sync.PresignSessionPuts(r.Context(), userID, clanksync.SessionPresignRequest{
 			CheckpointID: ck.CheckpointID,
 			Sessions:     sessionRefs,
+			// sessionRefs is the complete set the sprite will upload, so this
+			// matches the manifest's own ContentDigest — persisted so autosync
+			// can skip the manifest fetch when unchanged.
+			SessionsContentDigest: checkpoint.ContentDigestForRefs(sessionRefs),
 		})
 		if err != nil {
 			syncErrToHTTP(w, "presign session puts", err)

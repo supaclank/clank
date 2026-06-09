@@ -3,12 +3,40 @@ package daemonclient
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
 )
+
+// TestIsRunning_SelfReferentialPidfileIsStale is the regression for the dev
+// gateway silently exiting "Daemon already running (pid=2)": a hub.pid persisted
+// in the container volume named PID 2, and the fresh clankd is itself PID 2, so
+// the liveness probe detected itself. A pidfile naming our OWN pid must read as
+// stale (and be cleaned up), not as a second running daemon.
+func TestIsRunning_SelfReferentialPidfileIsStale(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLANK_DIR", dir)
+	pidPath := filepath.Join(dir, "hub.pid")
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	running, _, err := IsRunning()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if running {
+		t.Fatal("IsRunning=true for a pidfile naming our own PID; a self-referential pidfile must be treated as stale")
+	}
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Errorf("stale self-referential pidfile not removed (stat err=%v)", err)
+	}
+}
 
 // TestParseSSEStream_LargePayload verifies that SSE events with payloads
 // exceeding the old bufio.Scanner 1MB limit are parsed correctly.

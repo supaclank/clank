@@ -94,6 +94,7 @@ func (s *Store) UpdateWorktreeMaterialization(ctx context.Context, id string, m 
 		SyncConflictLocalHead:    m.ConflictLocalHead,
 		SyncConflictRemoteHead:   m.ConflictRemoteHead,
 		SessionsSyncedHash:       m.SessionsSyncedHash,
+		MaterializedHostID:       m.MaterializedHostID,
 		UpdatedAt:                time.Now(),
 		ID:                       id,
 	})
@@ -176,6 +177,17 @@ func (s *Store) MarkCheckpointUploaded(ctx context.Context, id string, when time
 	})
 }
 
+// UpdateCheckpointSessionsDigest records the session manifest's content-
+// digest on a checkpoint row. Persisted at presign time so autosync can
+// skip the manifest fetch when the digest already matches what the sprite
+// imported (the worktree's sessions_synced_hash).
+func (s *Store) UpdateCheckpointSessionsDigest(ctx context.Context, id, digest string) error {
+	return s.q.UpdateCheckpointSessionsDigest(ctx, sqlitedb.UpdateCheckpointSessionsDigestParams{
+		SessionsContentDigest: digest,
+		ID:                    id,
+	})
+}
+
 // DeleteCheckpointsByWorktree removes all checkpoint rows for a worktree.
 // checkpoints has no FK back to worktrees(id), so a worktree delete must
 // clear these explicitly to avoid orphan rows. Idempotent.
@@ -236,6 +248,7 @@ func worktreeFromRow(r sqlitedb.Worktree) Worktree {
 		SyncConflictLocalHead:    r.SyncConflictLocalHead,
 		SyncConflictRemoteHead:   r.SyncConflictRemoteHead,
 		SessionsSyncedHash:       r.SessionsSyncedHash,
+		MaterializedHostID:       r.MaterializedHostID,
 		CreatedAt:                r.CreatedAt,
 		UpdatedAt:                r.UpdatedAt,
 	}
@@ -249,9 +262,10 @@ func checkpointFromRow(r sqlitedb.Checkpoint) Checkpoint {
 		HeadRef:           r.HeadRef,
 		IndexTree:         r.IndexTree,
 		WorktreeTree:      r.WorktreeTree,
-		UncommittedCommit: r.IncrementalCommit, // legacy column name; see InsertCheckpoint
-		CreatedAt:         r.CreatedAt,
-		CreatedBy:         r.CreatedBy,
+		UncommittedCommit:     r.IncrementalCommit, // legacy column name; see InsertCheckpoint
+		CreatedAt:             r.CreatedAt,
+		CreatedBy:             r.CreatedBy,
+		SessionsContentDigest: r.SessionsContentDigest,
 	}
 	if r.UploadedAt.Valid {
 		c.UploadedAt = r.UploadedAt.Time
