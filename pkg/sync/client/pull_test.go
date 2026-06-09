@@ -59,6 +59,36 @@ func TestPullWorktree_DecodesResponse(t *testing.T) {
 	}
 }
 
+// TestPullWorktree_EmptyHeadChainAccepted pins that a 2xx with an empty head
+// chain is accepted; only manifest + uncommitted URLs are required.
+func TestPullWorktree_EmptyHeadChainAccepted(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"checkpoint_id": "ck-9",
+			"manifest_url": "https://s3/manifest",
+			"head_bundles": [],
+			"uncommitted_url": "https://s3/incr"
+		}`))
+	}))
+	defer srv.Close()
+
+	cli, err := syncclient.New(syncclient.Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	res, err := cli.PullWorktree(context.Background(), "wt-abc", "deadbeefcafe")
+	if err != nil {
+		t.Fatalf("empty head chain should be accepted, got %v", err)
+	}
+	if len(res.HeadBundles) != 0 {
+		t.Errorf("HeadBundles = %+v, want empty", res.HeadBundles)
+	}
+	if res.ManifestURL != "https://s3/manifest" || res.UncommittedURL != "https://s3/incr" {
+		t.Errorf("decoded result mismatch: %+v", res)
+	}
+}
+
 func TestPullWorktree_RequiresWorktreeID(t *testing.T) {
 	t.Parallel()
 	cli, err := syncclient.New(syncclient.Config{BaseURL: "https://example.com"})

@@ -100,6 +100,28 @@ func TestApplyRemotePull(t *testing.T) {
 		t.Errorf("empty dest content = %q, want sandbox uncommitted state", got)
 	}
 
+	// Empty head chain (dest already at the sandbox tip) → applies only the
+	// uncommitted delta. This is the "agent didn't commit" pull: sandbox HEAD
+	// == laptop HEAD, so the gateway returns no head bundles.
+	dst4 := t.TempDir()
+	pgit(t, "", "clone", "-q", src, dst4)
+	pgit(t, dst4, "reset", "--hard", commit2)
+	mresNoHead := &syncclient.PullResult{
+		CheckpointID:   "ckpt1",
+		ManifestURL:    srv.URL + "/manifest",
+		HeadBundles:    nil,
+		UncommittedURL: srv.URL + "/incr",
+	}
+	if err := applyRemotePull(ctx, srv.Client(), dst4, mresNoHead); err != nil {
+		t.Fatalf("applyRemotePull (empty head chain): %v", err)
+	}
+	if got := pRev(t, dst4, "HEAD"); got != commit2 {
+		t.Errorf("empty-head dest HEAD = %s, want %s (unchanged)", got, commit2)
+	}
+	if got := pRead(t, filepath.Join(dst4, "f.txt")); got != "v2-uncommitted" {
+		t.Errorf("empty-head dest content = %q, want sandbox uncommitted state", got)
+	}
+
 	// Diverged dest → refused, untouched.
 	dst2 := t.TempDir()
 	pgit(t, "", "clone", "-q", src, dst2)

@@ -73,7 +73,8 @@ func (c *Client) PullWorktree(ctx context.Context, worktreeID, haveHead string) 
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, fmt.Errorf("decode pull response: %w", err)
 	}
-	if out.ManifestURL == "" || len(out.HeadBundles) == 0 || out.UncommittedURL == "" {
+	// HeadBundles may be empty (no new commits); manifest + uncommitted URLs are required.
+	if out.ManifestURL == "" || out.UncommittedURL == "" {
 		return nil, fmt.Errorf("pull worktree: incomplete response (missing bundle URLs)")
 	}
 	return &out, nil

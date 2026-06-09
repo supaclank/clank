@@ -168,6 +168,100 @@ func TestApply_RemovesStaleUntracked(t *testing.T) {
 	}
 }
 
+// TestApply_EmptyHeadChain pins that Apply restores the uncommitted delta
+// when given no head bundles, as long as the applier already has
+// HeadCommit. This is the incremental pull where the sandbox made no new
+// commit (the agent left work uncommitted): the head chain is empty but
+// the uncommitted bundle — bounded by ^HeadCommit — still carries real work.
+func TestApply_EmptyHeadChain(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	repo := setupRepo(t, ctx)
+	writeFile(t, repo, "f.txt", "committed\n")
+	gitMustRun(t, ctx, repo, "add", "f.txt")
+	gitMustRun(t, ctx, repo, "commit", "-m", "c1")
+	// The only change is uncommitted — HEAD itself doesn't move.
+	writeFile(t, repo, "f.txt", "uncommitted work\n")
+
+	res, err := checkpoint.NewBuilder(repo, "sprite:test").Build(ctx, "ck-empty-head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Cleanup()
+
+	// Seed dest with HeadCommit via a full apply (head bundle + uncommitted).
+	dest := t.TempDir()
+	head, err := os.Open(res.HeadCommitBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	incr, err := os.Open(res.UncommittedBundle)
+	if err != nil {
+		head.Close()
+		t.Fatal(err)
+	}
+	if err := checkpoint.Apply(ctx, dest, res.Manifest, []io.Reader{head}, incr); err != nil {
+		t.Fatalf("seed Apply: %v", err)
+	}
+	head.Close()
+	incr.Close()
+
+	// Perturb the worktree so the empty-head re-apply must do real work.
+	writeFile(t, dest, "f.txt", "stale\n")
+
+	// Re-apply with no head bundles — dest already has HeadCommit.
+	incr2, err := os.Open(res.UncommittedBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer incr2.Close()
+	if err := checkpoint.Apply(ctx, dest, res.Manifest, nil, incr2); err != nil {
+		t.Fatalf("empty head chain Apply: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dest, "f.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "uncommitted work\n" {
+		t.Errorf("f.txt = %q, want the uncommitted work restored via the empty head chain", got)
+	}
+}
+
+// TestApply_MissingHeadCommit pins the fast-failure when the head chain is
+// empty AND the applier lacks HeadCommit: Apply must reject it clearly
+// rather than corrupt the worktree at a cryptic update-ref.
+func TestApply_MissingHeadCommit(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	repo := setupRepo(t, ctx)
+	writeFile(t, repo, "f.txt", "committed\n")
+	gitMustRun(t, ctx, repo, "add", "f.txt")
+	gitMustRun(t, ctx, repo, "commit", "-m", "c1")
+	writeFile(t, repo, "f.txt", "uncommitted work\n")
+
+	res, err := checkpoint.NewBuilder(repo, "sprite:test").Build(ctx, "ck-missing-head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Cleanup()
+
+	// Fresh dest that has never seen HeadCommit + an empty head chain.
+	dest := t.TempDir()
+	incr, err := os.Open(res.UncommittedBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer incr.Close()
+	err = checkpoint.Apply(ctx, dest, res.Manifest, nil, incr)
+	if err == nil || !strings.Contains(err.Error(), "head commit") {
+		t.Fatalf("expected a missing-head-commit error, got %v", err)
+	}
+}
+
 // TestManifest_RoundTripJSON verifies Marshal/UnmarshalManifest are
 // stable.
 func TestManifest_RoundTripJSON(t *testing.T) {

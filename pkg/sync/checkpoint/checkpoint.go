@@ -389,9 +389,6 @@ func Apply(ctx context.Context, repoPath string, manifest *Manifest, headBundles
 	if manifest.Version != ManifestVersion {
 		return fmt.Errorf("checkpoint: unsupported manifest version %d", manifest.Version)
 	}
-	if len(headBundles) == 0 {
-		return errors.New("checkpoint: no head bundles to apply")
-	}
 
 	if err := ensureRepo(ctx, repoPath); err != nil {
 		return err
@@ -401,6 +398,11 @@ func Apply(ctx context.Context, repoPath string, manifest *Manifest, headBundles
 		if err := fetchBundle(ctx, repoPath, hb, fmt.Sprintf("head-%d", i)); err != nil {
 			return err
 		}
+	}
+	// Empty head chain is valid; verify HeadCommit is reachable (from a
+	// just-loaded bundle or pre-existing history) before destructive steps.
+	if err := gitRunIn(ctx, repoPath, nil, "cat-file", "-e", manifest.HeadCommit+"^{commit}"); err != nil {
+		return fmt.Errorf("checkpoint: head commit %s not present after loading %d head bundle(s): %w", manifest.HeadCommit, len(headBundles), err)
 	}
 	if err := fetchBundle(ctx, repoPath, uncommittedBundle, "uncommitted"); err != nil {
 		return err
