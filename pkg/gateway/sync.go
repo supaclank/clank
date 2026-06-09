@@ -167,19 +167,11 @@ func (g *Gateway) syncWorktreeToSprite(ctx context.Context, cli *http.Client, us
 	}
 	ckID := wt.LatestSyncedCheckpoint
 
-	// One metadata read serves both the early-exit session check and the
-	// haveHead delta below. A missing checkpoint leaves ck zero/ckErr set; both
-	// the gate and haveHead then conservatively no-op.
+	// Single DB read — shared by the early-exit gate, haveHead delta, and session fast-path.
 	ck, ckErr := g.cfg.Sync.GetCheckpoint(ctx, userID, ckID)
 
-	// Early-exit: when the latest pushed checkpoint is already materialized on
-	// this same host generation AND the sprite holds the same session set, the
-	// sprite is provably current — return without dialing it or touching object
-	// storage. Gated on the host id because MaterializedCheckpointID is a
-	// display cache never cleared on reprovision, and a cold reprovision wipes
-	// ~/work while minting a new id. The session-digest clause keeps a session-
-	// only push (which bumps no checkpoint) from being wrongly skipped; an
-	// empty/absent digest falls through to the authoritative path.
+	// Early-exit: checkpoint already materialized on this host with matching session digest.
+	// Host-gated so a cold reprovision (new HostID, wiped ~/work) never looks current.
 	if !force &&
 		wt.MaterializedCheckpointID == ckID &&
 		wt.MaterializedHostID == hostRef.HostID &&
@@ -191,13 +183,8 @@ func (g *Gateway) syncWorktreeToSprite(ctx context.Context, cli *http.Client, us
 		return res
 	}
 
-	// haveHead lets DownloadCheckpointURLs ship only the head-bundle delta the
-	// sprite is missing. Engage it only when the materialized checkpoint's HEAD
-	// is a *different* commit than this checkpoint's HEAD — an equal HEAD yields
-	// an empty chain the sprite's apply rejects (the session-only-push case,
-	// where ckID == MaterializedCheckpointID). Gated on the host generation so
-	// the sprite provably still holds that HEAD's objects; any uncertainty
-	// falls back to "" (the full chain).
+	// haveHead: send only the head-bundle delta the sprite is missing.
+	// Skip when HEAD matches (session-only push) or host changed (sprite may lack objects).
 	haveHead := ""
 	if ckErr == nil &&
 		wt.MaterializedHostID == hostRef.HostID &&
@@ -259,18 +246,15 @@ func (g *Gateway) syncWorktreeToSprite(ctx context.Context, cli *http.Client, us
 		upd.SyncState = clanksync.SyncStateBehind
 	}
 
-	// Session leg: import the laptop's pushed sessions onto the (now
-	// materialized) worktree. Session blobs upload straight to object storage
-	// with no checkpoint bump or commit callback, so a session-only push
-	// leaves apply.State up_to_date — the gateway can't be told sessions
-	// changed. applySpriteSessions instead compares the manifest's content-
-	// digest against what the sprite last imported (wt.SessionsSyncedHash) and
-	// imports only on a change, so an unchanged refresh stays cheap. A fresh
-	// code materialize (applied) forces a re-import: the sprite's $HOME volume
-	// (host.db and ~/work alike) may have been reset.
+	// Session leg: import the checkpoint's sessions onto the sprite.
+	// Skips when digest already matches prevHash; a fresh apply forces re-import.
 	if apply.State == syncStateApplied || apply.State == syncStateUpToDate {
 		force := apply.State == syncStateApplied
-		hash, serr := g.applySpriteSessions(ctx, cli, hostRef, userID, wt.ID, ckID, wt.SessionsSyncedHash, force)
+		var ckDigest string
+		if ckErr == nil {
+			ckDigest = ck.SessionsContentDigest
+		}
+		hash, serr := g.applySpriteSessions(ctx, cli, hostRef, userID, wt.ID, ckID, ckDigest, wt.SessionsSyncedHash, force)
 		if serr != nil {
 			// Leave the row "behind" so the next sync retries (the digest
 			// still won't match), and surface it without failing the code sync.
@@ -287,29 +271,12 @@ func (g *Gateway) syncWorktreeToSprite(ctx context.Context, cli *http.Client, us
 	return res
 }
 
-// applySpriteSessions enumerates the checkpoint's sessions (by fetching +
-// parsing the session manifest from object storage — the gateway has no
-// sessions table) and tells the sprite to import them. It returns the
-// manifest's content-digest so the caller can record what the sprite now
-// holds (Worktree.SessionsSyncedHash).
-//
-// When the digest already matches prevHash the sprite holds this exact
-// session set, so the import is skipped and prevHash is returned unchanged —
-// unless force is set (a fresh code materialize, where the sprite may have
-// been reset). A missing manifest (code-only checkpoint) is a no-op that
-// returns the empty digest, not an error.
-func (g *Gateway) applySpriteSessions(ctx context.Context, cli *http.Client, hostRef provisioner.HostRef, userID, worktreeID, checkpointID, prevHash string, force bool) (string, error) {
-	// Fast path: the checkpoint row carries the manifest's content-digest
-	// (persisted at presign time). When it already matches what the sprite
-	// imported (prevHash), the sprite holds this exact session set — return
-	// without the S3 manifest fetch. A fresh code materialize (force) re-
-	// imports regardless; an empty digest (pre-v30 row, code-only push, or a
-	// client that didn't send it) falls through to the authoritative fetch.
-	if !force {
-		if ck, err := g.cfg.Sync.GetCheckpoint(ctx, userID, checkpointID); err == nil &&
-			ck.SessionsContentDigest != "" && ck.SessionsContentDigest == prevHash {
-			return prevHash, nil
-		}
+// applySpriteSessions imports the checkpoint's sessions onto the sprite if needed.
+// Returns the manifest content-digest; skips when ckDigest == prevHash (unless forced).
+func (g *Gateway) applySpriteSessions(ctx context.Context, cli *http.Client, hostRef provisioner.HostRef, userID, worktreeID, checkpointID, ckDigest, prevHash string, force bool) (string, error) {
+	// Fast path: caller already holds the checkpoint digest; skip S3 manifest fetch.
+	if !force && ckDigest != "" && ckDigest == prevHash {
+		return prevHash, nil
 	}
 
 	// First hop: mint just the session-manifest URL (empty id slice).
