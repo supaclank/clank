@@ -94,9 +94,10 @@ image-print:
 # checkpoint, trigger migration).
 
 .PHONY: dev dev-rebuild
-# One-command local dev: spawn a Cloudflare quick tunnel pointing at
-# minio, write the URL into docker/.env, bring the stack up. Foreground;
-# ctrl-c tears down both. See scripts/dev.sh for details.
+# One-command local dev: bring the docker stack (gateway + minio +
+# auth-stub) up in the foreground; ctrl-c tears it down. Presigned S3 URLs
+# resolve to the internal minio (clank-minio:9000) — no tunnel. See
+# scripts/dev.sh for details.
 dev:
 	@bash scripts/dev.sh
 
@@ -108,7 +109,7 @@ dev-rebuild:
 	docker compose -f docker/docker-compose.yml build --no-cache
 	@bash scripts/dev.sh
 
-.PHONY: docker-setup docker-prefs docker-up docker-down docker-build docker-logs tunnel
+.PHONY: docker-setup docker-prefs docker-up docker-down docker-build docker-logs
 docker-setup:
 	@if ! grep -q '^[^#]*[[:space:]]clank-minio\b' /etc/hosts; then \
 	    echo "Adding 'clank-minio' → 127.0.0.1 to /etc/hosts (sudo prompt)..."; \
@@ -133,19 +134,3 @@ docker-reset:
 	docker compose -f docker/docker-compose.yml down -v
 docker-logs:
 	docker compose -f docker/docker-compose.yml logs -f --tail=100
-
-# Opens a Cloudflare quick tunnel pointing at the local minio port
-# (9000 by default). Print the trycloudflare URL and exit — copy it
-# into docker/.env as CLANK_SYNC_S3_ENDPOINT, then `make docker-up`
-# to rebuild with public-reachable presigned URLs. Required when
-# pushing checkpoints to a sandbox that isn't on the same network as
-# minio (e.g. fly.io). Without this the sprite can't resolve
-# `clank-minio` and the pull-based migration step fails.
-#
-# Foreground; ctrl-c to stop. Quick tunnels are anonymous (no Cloudflare
-# account needed) and rotate per restart, so re-set CLANK_SYNC_S3_ENDPOINT
-# after each rerun.
-tunnel:
-	@echo "Tunnel will expose http://localhost:$${MINIO_API_PORT:-9000} publicly."
-	@echo "Set CLANK_SYNC_S3_ENDPOINT in docker/.env to the URL below, then run 'make docker-up'."
-	cloudflared tunnel --url http://localhost:$${MINIO_API_PORT:-9000} --no-autoupdate
