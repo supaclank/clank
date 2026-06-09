@@ -524,6 +524,41 @@ func (s *Store) migrate() error {
 		}
 		version = 29
 	}
+	if version < 30 {
+		// sessions_content_digest: the content-digest of the session set this
+		// checkpoint's manifest describes (checkpoint.SessionManifest.
+		// ContentDigest), persisted at presign time. Lets autosync skip the S3
+		// manifest fetch when the sprite already holds this exact set — the
+		// gateway compares it against the worktree's sessions_synced_hash
+		// instead of fetching+parsing the manifest. Empty ⇒ the authoritative
+		// fetch (old rows, code-only checkpoints, or a client that didn't send
+		// it). Schema mirrored in internal/store/schema/0002_worktrees.sql.
+		_, err := s.db.Exec(`
+			ALTER TABLE checkpoints ADD COLUMN sessions_content_digest TEXT NOT NULL DEFAULT '';
+			PRAGMA user_version = 30;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v30: %w", err)
+		}
+		version = 30
+	}
+	if version < 31 {
+		// materialized_host_id: the HostRef.HostID a worktree was last
+		// materialized onto. autosync's early-exit trusts its recorded
+		// materialization (materialized_checkpoint_id / sessions_synced_hash)
+		// only when this still matches the current host generation — a cold
+		// reprovision wipes ~/work and mints a new id, which forces a full re-
+		// materialize. Empty default ⇒ never trusted until the next apply
+		// records it. Schema mirrored in internal/store/schema/0002_worktrees.sql.
+		_, err := s.db.Exec(`
+			ALTER TABLE worktrees ADD COLUMN materialized_host_id TEXT NOT NULL DEFAULT '';
+			PRAGMA user_version = 31;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v31: %w", err)
+		}
+		version = 31
+	}
 	_ = version // suppress unused warning after last migration
 
 	return nil

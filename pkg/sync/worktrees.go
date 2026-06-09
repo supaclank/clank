@@ -66,6 +66,12 @@ type Worktree struct {
 	SyncState                string
 	SyncConflictLocalHead    string
 	SyncConflictRemoteHead   string
+	// MaterializedHostID is the HostRef.HostID this worktree was last
+	// materialized onto. The gateway's autosync early-exit trusts
+	// MaterializedCheckpointID / SessionsSyncedHash only when this still
+	// matches the live host generation — a cold reprovision wipes the sprite's
+	// ~/work and mints a new id, so a stale match must not short-circuit.
+	MaterializedHostID string
 
 	// SessionsSyncedHash is the content-digest of the session set the sprite
 	// last imported (checkpoint.SessionManifest.ContentDigest). Session blobs
@@ -99,6 +105,10 @@ type MaterializationUpdate struct {
 	// outcome. Callers preserve the worktree's existing value unless the
 	// session leg advanced it (see pkg/gateway/sync.go).
 	SessionsSyncedHash string
+	// MaterializedHostID is the host generation this outcome materialized onto.
+	// Advanced only when materialization advanced (applied/up_to_date); on
+	// conflict/busy the caller preserves the worktree's existing value.
+	MaterializedHostID string
 }
 
 // Checkpoint is the per-push manifest pointer. Bundle bytes live in
@@ -115,6 +125,13 @@ type Checkpoint struct {
 	CreatedAt         time.Time
 	CreatedBy         string
 	UploadedAt        time.Time // zero until uploaded
+
+	// SessionsContentDigest is the content-digest of the session set this
+	// checkpoint's manifest describes (SessionManifest.ContentDigest),
+	// persisted at presign time. Empty for code-only checkpoints or rows
+	// written before this column existed. Lets autosync skip the S3 manifest
+	// fetch when it already matches the worktree's SessionsSyncedHash.
+	SessionsContentDigest string
 }
 
 // HeadBundle is the metadata for one content-addressed head bundle: the
@@ -144,6 +161,10 @@ type SyncStore interface {
 	InsertCheckpoint(ctx context.Context, c Checkpoint) error
 	DeleteCheckpointsByWorktree(ctx context.Context, worktreeID string) error
 	MarkCheckpointUploaded(ctx context.Context, id string, when time.Time) error
+	// UpdateCheckpointSessionsDigest records the session manifest's
+	// content-digest on the checkpoint row (persisted at presign time so
+	// autosync can skip the S3 manifest fetch when unchanged).
+	UpdateCheckpointSessionsDigest(ctx context.Context, id, digest string) error
 
 	// GetHeadBundle returns the head-bundle row for (userID, tipSHA), or
 	// ErrHeadBundleNotFound. InsertHeadBundle is idempotent on
@@ -165,6 +186,16 @@ func (s *Server) GetWorktree(ctx context.Context, userID, worktreeID string) (Wo
 		return Worktree{}, fmt.Errorf("%w: worktree %s", ErrForbidden, worktreeID)
 	}
 	return wt, nil
+}
+
+// GetCheckpoint returns a checkpoint by ID, tenancy-checked against userID
+// (the owning worktree must belong to the user). Lets the gateway read
+// persisted checkpoint metadata — the session content-digest, the
+// materialized HEAD — without an object-storage round-trip. Returns
+// ErrCheckpointNotFound if missing, ErrForbidden if tenancy fails.
+func (s *Server) GetCheckpoint(ctx context.Context, userID, checkpointID string) (Checkpoint, error) {
+	ck, _, err := s.lookupCheckpointForUser(ctx, checkpointID, userID)
+	return ck, err
 }
 
 // ListWorktrees returns all worktrees belonging to userID. Used by the

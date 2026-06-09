@@ -25,12 +25,18 @@ type SessionUploadURLs struct {
 // caller is about to upload. An empty slice still mints a
 // session-manifest.json URL — useful when uploading an empty manifest
 // for a worktree with no sessions.
-func (c *Client) RequestSessionUploadURLs(ctx context.Context, checkpointID string, refs []checkpoint.SessionBlobRef) (*SessionUploadURLs, error) {
+//
+// sessionsContentDigest is the manifest's ContentDigest over the COMPLETE
+// session set (not just refs); the server persists it on the checkpoint row
+// so autosync can skip the manifest fetch when unchanged. Empty is allowed
+// (the server then leaves the digest unset).
+func (c *Client) RequestSessionUploadURLs(ctx context.Context, checkpointID string, refs []checkpoint.SessionBlobRef, sessionsContentDigest string) (*SessionUploadURLs, error) {
 	if checkpointID == "" {
 		return nil, errors.New("syncclient: checkpointID is required")
 	}
 	body := map[string]any{
-		"sessions": refs,
+		"sessions":                refs,
+		"sessions_content_digest": sessionsContentDigest,
 	}
 	var resp struct {
 		CheckpointID          string            `json:"checkpoint_id"`

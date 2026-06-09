@@ -22,7 +22,7 @@ WHERE id = ?;
 UPDATE worktrees
 SET materialized_checkpoint_id = ?, sync_state = ?,
     sync_conflict_local_head = ?, sync_conflict_remote_head = ?,
-    sessions_synced_hash = ?,
+    sessions_synced_hash = ?, materialized_host_id = ?,
     updated_at = ?
 WHERE id = ?;
 
@@ -60,6 +60,11 @@ INSERT INTO checkpoints (
 -- name: MarkCheckpointUploaded :exec
 UPDATE checkpoints
 SET uploaded_at = ?
+WHERE id = ?;
+
+-- name: UpdateCheckpointSessionsDigest :exec
+UPDATE checkpoints
+SET sessions_content_digest = ?
 WHERE id = ?;
 
 -- name: DeleteCheckpointsByWorktree :exec

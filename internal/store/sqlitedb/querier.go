@@ -34,6 +34,7 @@ type Querier interface {
 	ListDevicesByUser(ctx context.Context, userID string) ([]Device, error)
 	ListWorktreesByUser(ctx context.Context, userID string) ([]Worktree, error)
 	MarkCheckpointUploaded(ctx context.Context, arg MarkCheckpointUploadedParams) error
+	UpdateCheckpointSessionsDigest(ctx context.Context, arg UpdateCheckpointSessionsDigestParams) error
 	UpdateWorktreeMaterialization(ctx context.Context, arg UpdateWorktreeMaterializationParams) error
 	UpdateWorktreePointer(ctx context.Context, arg UpdateWorktreePointerParams) error
 	UpsertDevice(ctx context.Context, arg UpsertDeviceParams) error

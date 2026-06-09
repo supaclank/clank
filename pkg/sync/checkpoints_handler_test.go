@@ -130,6 +130,17 @@ func (m *memSyncStore) MarkCheckpointUploaded(_ context.Context, id string, when
 	m.checkpoints[id] = c
 	return nil
 }
+func (m *memSyncStore) UpdateCheckpointSessionsDigest(_ context.Context, id, digest string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.checkpoints[id]
+	if !ok {
+		return clanksync.ErrCheckpointNotFound
+	}
+	c.SessionsContentDigest = digest
+	m.checkpoints[id] = c
+	return nil
+}
 func (m *memSyncStore) DeleteCheckpointsByWorktree(_ context.Context, worktreeID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

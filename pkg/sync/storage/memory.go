@@ -26,6 +26,7 @@ type Memory struct {
 
 	mu      sync.Mutex
 	objects map[string][]byte
+	gets    map[string]int // per-key GET attempts via presigned URLs (test instrumentation)
 }
 
 // NewMemory constructs a Memory backend with an embedded test server.
@@ -33,6 +34,7 @@ type Memory struct {
 func NewMemory() *Memory {
 	m := &Memory{
 		objects: make(map[string][]byte),
+		gets:    make(map[string]int),
 	}
 	m.srv = httptest.NewServer(http.HandlerFunc(m.handle))
 	return m
@@ -68,6 +70,15 @@ func (m *Memory) Get(key string) ([]byte, bool) {
 	cp := make([]byte, len(d))
 	copy(cp, d)
 	return cp, true
+}
+
+// GetCount returns how many times key has been fetched via a presigned GET
+// URL (counting attempts, hit or miss). Test-only instrumentation for
+// asserting an object was — or was not — read from storage.
+func (m *Memory) GetCount(key string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.gets[key]
 }
 
 // Keys returns all keys currently stored. Useful for assertions.
@@ -143,6 +154,7 @@ func (m *Memory) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		m.mu.Lock()
+		m.gets[key]++
 		data, ok := m.objects[key]
 		m.mu.Unlock()
 		if !ok {
