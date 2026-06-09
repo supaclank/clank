@@ -1,0 +1,16 @@
+---
+name: auto-merge
+description: One unattended pass over open clank-mobile PRs — squash-merge any that have fully cleared AI review (Greptile 5/5 on current HEAD, all checks green, 15m idle); tag @acksell instead of merging when judgment is needed. Meant to be repeated by an external loop (e.g. `/loop 15m /auto-merge`); never prompts, never self-schedules.
+---
+
+# Auto-merge — single pass
+
+This skill performs ONE unattended pass over the open PRs and then exits. It does NOT loop, schedule, or re-arm itself — cadence is handled externally (e.g. `/loop 15m /auto-merge`). It runs non-interactively: there is NO user to respond, so NEVER use the AskUserQuestion tool or any interactive prompt — it will stall the run. Make every decision autonomously. When a human decision is genuinely needed, do NOT ask: tag @acksell in a PR comment (subject to the idempotency guard below) and hold/skip that PR rather than merging. When uncertain, default to NOT merging.
+
+Task: Scan open PR's and check if the review process is complete and the PR can be merged to main. https://github.com/Acksell/clank-mobile/pulls. Don't attempt to resolve merge conflicts (skip any PR that has them). Skip draft PR's entirely. The review process is complete when all the AI-review bots' comments are addressed by the user, and there are no on-going status checks. The PR should have been inactive for at least 15 minutes before auto-merging is allowed, and all status checks must be green.
+
+HARD STOP — a green status check is NOT proof that a review happened. Bots can report a SUCCESS/green check while skipping the actual review (e.g. rate-limited: "review limit reached", "couldn't start this review"). So "all checks green" is necessary but NOT sufficient. Before merging, require positive evidence that at least one AI reviewer — preferably Greptile — actually COMPLETED a substantive review of the CURRENT HEAD commit. Treat any reviewer whose comment says it was rate-limited / couldn't start as "did not review" (it does not count toward this requirement), regardless of its check status.
+
+Greptile is the anchor for both the completed-review proof and the rating. Greptile's confidence score lives in the PR description/body (NOT in comments or reviews) — inside the `<!-- greptile_comment -->` block as a header "Confidence Score: X/5", with a footer "Last reviewed commit: …". Read it with `gh pr view <n> --json body`. To merge, ALL of these must hold: (a) that block is PRESENT (proves Greptile ran at all), (b) its "Last reviewed commit" equals the PR's current HEAD (proves it reviewed the latest code, not a stale push), and (c) the score reads exactly "Confidence Score: 5/5" (anything lower or absent fails). If the Greptile block is missing, stale (last-reviewed-commit != HEAD), or below 5/5, do NOT merge — tag @acksell instead (subject to idempotency).
+
+Exercise your own risk-judgement. If a human is needed, tag @acksell in a PR comment. Idempotency: before tagging, fetch existing PR comments and skip posting if an earlier pass already left its tag (HTML marker `<!-- automerge:... -->`) and there has been no new activity (commit/comment) since it was posted; otherwise just report status. When merging, squash-merge to match the repo's "(#NN)" convention.

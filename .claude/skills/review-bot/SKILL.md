@@ -91,35 +91,44 @@ The loop terminator is the "Should I run?" gate: once the bots have
 nothing new to say since our last triage, the skill exits silently and
 the conversation converges.
 
-Per fire, post a fresh **activity log** comment at the start and
-live-update it (see "Activity log") as you move through these steps, so a
-human watching the PR sees the unattended routine progress in real time:
+Per fire, the **very first action — before the watch loop, before the
+"Should I run?" gate, before anything else — is to post a fresh activity
+log comment** acknowledging that the routine is running. Then
+live-update that same comment in place (see "Activity log") as you move
+through the steps, so a human watching the PR sees the unattended
+routine progress in real time:
 
-1. **Watch for bot completion** on the current HEAD — let any
+1. **Post the acknowledgment** — immediately and unconditionally, a
+   single activity log comment saying the routine has started and is
+   waiting on the bots. Hold its id for the live updates that follow.
+   This goes up even on a run that turns out to be a no-op.
+2. **Watch for bot completion** on the current HEAD — let any
    in-progress review pass finish (grace window + hard cap). If no bot
    check ever appears, **nudge the bots** by @-mention (see "Nudge the
    bots when none respond").
-2. **Should I run?** — exit silently when the bots produced nothing
+3. **Should I run?** — exit silently when the bots produced nothing
    new since the prior triage comment (the activity log still records
    the no-op).
-3. **Triage** the new findings per the rubric, **fix**, **push**.
-4. The push fires another `synchronize`, restarting the loop. The
-   bots eventually stop producing new findings, step 2 exits, and the
+4. **Triage** the new findings per the rubric, **fix**, **push**.
+5. The push fires another `synchronize`, restarting the loop. The
+   bots eventually stop producing new findings, step 3 exits, and the
    loop converges.
 
 ### Activity log
 
 So a human watching the PR can follow the unattended routine **in real
-time**, each run posts its own activity comment at the start and
-**live-updates it in place** as the run moves through the phases below.
+time**, each run's **first action is to post its own activity comment**
+— before the watch loop and the "Should I run?" gate — then
+**live-update it in place** as the run moves through the phases below.
 One comment per fire — a new trigger is a new comment, so distinct runs
 stay legible in the timeline. Don't search for or reuse a prior run's
 comment.
 
-Post once at the start, hold the returned id, and PATCH that same comment
-as each phase *begins* — before doing the phase's work — so the trailing
-line always reflects what's happening **now** (present tense,
-in-progress), never a recap written after the fact:
+**Post this comment as the routine's very first action**, hold the
+returned id, and PATCH that same comment as each phase *begins* — before
+doing the phase's work — so the trailing line always reflects what's
+happening **now** (present tense, in-progress), never a recap written
+after the fact:
 
 ```bash
 # Start of run: create the comment, capture its id.
@@ -129,6 +138,17 @@ act_id=$(gh api -X POST "repos/$PR_OWNER/$PR_REPO/issues/$PR_NUM/comments" \
 # Each phase boundary: rewrite activity.md with the new line, then PATCH.
 gh api -X PATCH "repos/$PR_OWNER/$PR_REPO/issues/comments/$act_id" \
   -f body="$(cat activity.md)"
+```
+
+The **first** post — the acknowledgment that goes up before any work, so
+the PR immediately shows the routine is alive and watching:
+
+```markdown
+### Automated review-bot activity
+
+_HEAD `a1b2c3d` · started 13:58 UTC_
+
+- 13:58 ⏳ Waiting on bot reviews…
 ```
 
 A mid-run snapshot — completed phases marked ✅, the current one ⏳:
@@ -574,6 +594,10 @@ Concretely:
 - **Don't over-explain in new code.** No multi-line docstrings or
   paragraphs that restate what the code already does. Short `why`
   notes only when genuinely helpful. Follow AGENTS.md.
+- **(Autonomous)** Don't start the watch loop — or any other work —
+  before the acknowledgment comment is posted. The "process is running"
+  activity comment is always the first action of a run, even one that
+  no-ops at "Should I run?".
 - **(Autonomous)** Don't triage before the watch loop says the bots are
   done — half-finished bot output produces wrong triage.
 - **(Autonomous)** Don't proceed past "Should I run?" if it says no.
