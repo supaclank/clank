@@ -29,23 +29,16 @@ laptop, matching how the docker network resolves it from inside.
 
 ### Mode B — real cloud sandbox (`flyio` / `daytona` provisioner)
 
-A fly.io sprite can't resolve `clank-minio` — it lives on its own
-network with no host-file injection. Expose minio publicly via a
-Cloudflare quick tunnel and point clankd at the public URL.
+A remote sprite can't resolve `clank-minio` — it lives on its own
+network with no host-file injection. It needs a **publicly-reachable,
+real bucket**: provision an S3-compatible bucket (S3, R2, …), set
+`CLANK_SYNC_S3_ENDPOINT` + `CLANK_SYNC_S3_PUBLIC_ENDPOINT` in
+`docker/.env` to its endpoint, then `make dev-rebuild`.
 
-```sh
-make dev
-```
-
-That spawns cloudflared, captures the trycloudflare URL, writes it to
-`docker/.env` as `CLANK_SYNC_S3_ENDPOINT`, and brings the stack up.
-Foreground; ctrl-c tears down the tunnel + the docker stack together.
-Quick tunnels rotate per restart so re-run `make dev` if you stop and
-start again.
-
-If you want to manage the tunnel yourself (e.g. a stable Cloudflare
-named tunnel), `make tunnel` runs just cloudflared and prints the URL
-for you to paste into `docker/.env` manually.
+> Earlier dev builds wrapped the local minio in a Cloudflare quick-tunnel so a
+> remote sprite could reach it. That was removed: quick-tunnels are too
+> low-throughput and flaky for blob transfer — the rotating URLs went stale and
+> failed mid-sync with `s3_unreachable`. Use a real bucket for remote testing.
 
 ### Why presigned URLs need one hostname
 
@@ -55,13 +48,13 @@ hostname and every consumer (laptop, sprite) must dial that exact
 name. Rewriting the host on a consumer would invalidate the
 signature.
 
-The gateway itself short-circuits this: it dials minio at the
-docker-internal hostname (`http://clank-minio:9000`) for its own
-direct SDK calls (HeadObject at commit time, etc.) while minting
-presigned URLs with `CLANK_SYNC_S3_PUBLIC_ENDPOINT` — usually the
-cloudflared tunnel URL. Avoids round-tripping its own traffic
-through cloudflared, which would rewrite the Host header and trip
-the SigV4 check.
+The gateway itself dials minio at the docker-internal hostname
+(`http://clank-minio:9000`, `CLANK_SYNC_S3_ENDPOINT`) for its own direct
+SDK calls (HeadObject at commit time, etc.) and mints presigned URLs with
+`CLANK_SYNC_S3_PUBLIC_ENDPOINT`. For local dev leave that empty — it falls
+back to the same internal hostname, which both the laptop (`127.0.0.1
+clank-minio` in /etc/hosts) and the in-container sprite resolve, so one
+hostname satisfies every consumer with no tunnel.
 
 ## Bringing the stack up
 

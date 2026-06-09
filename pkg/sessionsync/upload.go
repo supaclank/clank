@@ -29,7 +29,19 @@ func UploadSessions(ctx context.Context, gateway *syncclient.Client, checkpointI
 	for i, e := range plan.Upload {
 		refs[i] = e.Entry.BlobRef()
 	}
-	urls, err := gateway.RequestSessionUploadURLs(ctx, checkpointID, refs)
+
+	// Build the manifest up front so its content-digest (over the COMPLETE
+	// entry set, not just the changed Upload blobs) can travel with the
+	// presign request — the server persists it on the checkpoint row so
+	// autosync can skip the manifest fetch when unchanged.
+	manifest := checkpoint.SessionManifest{
+		Version:      checkpoint.SessionManifestVersion,
+		CheckpointID: checkpointID,
+		Sessions:     plan.Entries,
+		CreatedAt:    time.Now().UTC(),
+		CreatedBy:    "laptop",
+	}
+	urls, err := gateway.RequestSessionUploadURLs(ctx, checkpointID, refs, manifest.ContentDigest())
 	if err != nil {
 		return fmt.Errorf("request session upload URLs: %w", err)
 	}
@@ -51,13 +63,6 @@ func UploadSessions(ctx context.Context, gateway *syncclient.Client, checkpointI
 		}
 	}
 
-	manifest := checkpoint.SessionManifest{
-		Version:      checkpoint.SessionManifestVersion,
-		CheckpointID: checkpointID,
-		Sessions:     plan.Entries,
-		CreatedAt:    time.Now().UTC(),
-		CreatedBy:    "laptop",
-	}
 	manifestBytes, err := manifest.Marshal()
 	if err != nil {
 		return fmt.Errorf("marshal session manifest: %w", err)

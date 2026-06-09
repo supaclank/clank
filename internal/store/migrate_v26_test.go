@@ -11,7 +11,9 @@ import (
 // seedV25Worktrees creates the pre-v26 worktrees table (owner_kind/
 // owner_id present, worktrees_owner_idx indexing them) at user_version
 // 25 and inserts one fully-populated row. Reopening the path with
-// store.Open then runs only the v26 drop-ownership migration.
+// store.Open then runs the v26 drop-ownership migration onward. The
+// checkpoints table (created at v21 in a real DB) is seeded too so later
+// migrations that ALTER it — e.g. v30 — have the table a v25 DB would have.
 func seedV25Worktrees(t *testing.T, path string) {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)
@@ -41,6 +43,20 @@ func seedV25Worktrees(t *testing.T, path string) {
 		VALUES
 			('wt-keep', 'user-A', 'myrepo (main)', 'remote', 'sprite-9',
 			 'ck-7', '` + now + `', '` + now + `', 'acme/api');
+
+		CREATE TABLE checkpoints (
+			id                  TEXT PRIMARY KEY,
+			worktree_id         TEXT NOT NULL,
+			head_commit         TEXT NOT NULL,
+			head_ref            TEXT NOT NULL DEFAULT '',
+			index_tree          TEXT NOT NULL,
+			worktree_tree       TEXT NOT NULL,
+			incremental_commit  TEXT NOT NULL,
+			created_at          DATETIME NOT NULL,
+			created_by          TEXT NOT NULL DEFAULT '',
+			uploaded_at         DATETIME
+		);
+		CREATE INDEX checkpoints_worktree_idx ON checkpoints(worktree_id, created_at DESC);
 		PRAGMA user_version = 25;
 	`)
 	if err != nil {

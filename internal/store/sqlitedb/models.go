@@ -10,16 +10,17 @@ import (
 )
 
 type Checkpoint struct {
-	ID                string
-	WorktreeID        string
-	HeadCommit        string
-	HeadRef           string
-	IndexTree         string
-	WorktreeTree      string
-	IncrementalCommit string
-	CreatedAt         time.Time
-	CreatedBy         string
-	UploadedAt        sql.NullTime
+	ID                    string
+	WorktreeID            string
+	HeadCommit            string
+	HeadRef               string
+	IndexTree             string
+	WorktreeTree          string
+	IncrementalCommit     string
+	CreatedAt             time.Time
+	CreatedBy             string
+	UploadedAt            sql.NullTime
+	SessionsContentDigest string
 }
 
 type Device struct {
@@ -65,6 +66,7 @@ type Worktree struct {
 	SyncConflictLocalHead    string
 	SyncConflictRemoteHead   string
 	SessionsSyncedHash       string
+	MaterializedHostID       string
 	CreatedAt                time.Time
 	UpdatedAt                time.Time
 }

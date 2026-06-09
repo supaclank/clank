@@ -13,6 +13,10 @@ import (
 // from the SessionManifest the caller is about to upload.
 type sessionPresignRequest struct {
 	Sessions []checkpoint.SessionBlobRef `json:"sessions"`
+	// SessionsContentDigest is the manifest's ContentDigest over the complete
+	// session set; persisted on the checkpoint row. Omitted by old clients ⇒
+	// the digest stays unset and autosync fetches the manifest as before.
+	SessionsContentDigest string `json:"sessions_content_digest"`
 }
 
 type sessionPresignResponse struct {
@@ -54,8 +58,9 @@ func (s *Server) handleSessionPresign(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := s.PresignSessionPuts(r.Context(), caller.UserID, SessionPresignRequest{
-		CheckpointID: checkpointID,
-		Sessions:     req.Sessions,
+		CheckpointID:          checkpointID,
+		Sessions:              req.Sessions,
+		SessionsContentDigest: req.SessionsContentDigest,
 	})
 	if err != nil {
 		s.log.Printf("sync: presign session puts: %v", err)

@@ -14,6 +14,7 @@ import (
 	"github.com/acksell/clank/pkg/provisioner"
 	clanksync "github.com/acksell/clank/pkg/sync"
 	"github.com/acksell/clank/pkg/sync/checkpoint"
+	"golang.org/x/sync/errgroup"
 )
 
 // Autosync (S3→sprite) is the reverse of handlePullWorktree and simpler:
@@ -48,6 +49,12 @@ const (
 	syncStateError          = "error"
 )
 
+// defaultSyncFanoutLimit bounds how many worktrees sync-all materializes
+// concurrently. Each worktree's sprite apply is independent and the sprite
+// serializes per-repo, so a small pool collapses the per-worktree latency
+// without flooding the sprite with simultaneous applies.
+const defaultSyncFanoutLimit = 8
+
 // syncAllResponse is the body of POST /v1/worktrees/sync.
 type syncAllResponse struct {
 	Results   []syncResult `json:"results"`
@@ -79,11 +86,25 @@ func (g *Gateway) handleSyncAllWorktrees(w http.ResponseWriter, r *http.Request)
 	}
 
 	cli := &http.Client{Timeout: 5 * time.Minute}
-	results := make([]syncResult, 0, len(wts))
+
+	// Fan out across worktrees: each syncs independently and the sprite
+	// serializes per-repo, so a bounded pool turns O(N × apply latency) into
+	// roughly one apply latency. Results are written by index (no shared-slice
+	// race); syncWorktreeToSprite encodes failures in State and never returns an
+	// error, so the group never does either — every worktree is attempted.
+	results := make([]syncResult, len(wts))
+	eg := errgroup.Group{}
+	eg.SetLimit(defaultSyncFanoutLimit)
+	for i, wt := range wts {
+		eg.Go(func() error {
+			results[i] = g.syncWorktreeToSprite(r.Context(), cli, userID, hostRef, wt, false)
+			return nil
+		})
+	}
+	_ = eg.Wait()
+
 	var synced, conflicts int
-	for _, wt := range wts {
-		res := g.syncWorktreeToSprite(r.Context(), cli, userID, hostRef, wt, false)
-		results = append(results, res)
+	for _, res := range results {
 		switch res.State {
 		case syncStateApplied, syncStateUpToDate:
 			synced++
@@ -146,7 +167,35 @@ func (g *Gateway) syncWorktreeToSprite(ctx context.Context, cli *http.Client, us
 	}
 	ckID := wt.LatestSyncedCheckpoint
 
-	gets, err := g.cfg.Sync.DownloadCheckpointURLs(ctx, userID, ckID, "")
+	// Single DB read — shared by the early-exit gate, haveHead delta, and session fast-path.
+	ck, ckErr := g.cfg.Sync.GetCheckpoint(ctx, userID, ckID)
+
+	// Early-exit: checkpoint already materialized on this host with matching session digest.
+	// Host-gated so a cold reprovision (new HostID, wiped ~/work) never looks current.
+	if !force &&
+		wt.MaterializedCheckpointID == ckID &&
+		wt.MaterializedHostID == hostRef.HostID &&
+		wt.SyncState == clanksync.SyncStateUpToDate &&
+		ckErr == nil &&
+		ck.SessionsContentDigest != "" &&
+		ck.SessionsContentDigest == wt.SessionsSyncedHash {
+		res.State = syncStateUpToDate
+		return res
+	}
+
+	// haveHead: send only the head-bundle delta the sprite is missing.
+	// Skip when HEAD matches (session-only push) or host changed (sprite may lack objects).
+	haveHead := ""
+	if ckErr == nil &&
+		wt.MaterializedHostID == hostRef.HostID &&
+		wt.MaterializedCheckpointID != "" &&
+		wt.MaterializedCheckpointID != ckID {
+		if mck, merr := g.cfg.Sync.GetCheckpoint(ctx, userID, wt.MaterializedCheckpointID); merr == nil && mck.HeadCommit != ck.HeadCommit {
+			haveHead = mck.HeadCommit
+		}
+	}
+
+	gets, err := g.cfg.Sync.DownloadCheckpointURLs(ctx, userID, ckID, haveHead)
 	if err != nil {
 		res.State = syncStateError
 		res.Detail = "download checkpoint urls: " + err.Error()
@@ -174,15 +223,18 @@ func (g *Gateway) syncWorktreeToSprite(ctx context.Context, cli *http.Client, us
 	res.IncomingHead = apply.IncomingHead
 
 	// Map the sprite outcome onto the worktree row. Preserve the existing
-	// materialized pointer and session digest on conflict/busy (the sprite
-	// still holds whatever it had); advance them only on a real apply.
+	// materialized pointer, session digest, and host generation on
+	// conflict/busy (the sprite still holds whatever it had); advance them only
+	// on a real apply.
 	upd := clanksync.MaterializationUpdate{
 		MaterializedCheckpointID: wt.MaterializedCheckpointID,
 		SessionsSyncedHash:       wt.SessionsSyncedHash,
+		MaterializedHostID:       wt.MaterializedHostID,
 	}
 	switch apply.State {
 	case syncStateApplied, syncStateUpToDate:
 		upd.MaterializedCheckpointID = ckID
+		upd.MaterializedHostID = hostRef.HostID
 		upd.SyncState = clanksync.SyncStateUpToDate
 	case syncStateConflict:
 		upd.SyncState = clanksync.SyncStateConflict
@@ -194,18 +246,15 @@ func (g *Gateway) syncWorktreeToSprite(ctx context.Context, cli *http.Client, us
 		upd.SyncState = clanksync.SyncStateBehind
 	}
 
-	// Session leg: import the laptop's pushed sessions onto the (now
-	// materialized) worktree. Session blobs upload straight to object storage
-	// with no checkpoint bump or commit callback, so a session-only push
-	// leaves apply.State up_to_date — the gateway can't be told sessions
-	// changed. applySpriteSessions instead compares the manifest's content-
-	// digest against what the sprite last imported (wt.SessionsSyncedHash) and
-	// imports only on a change, so an unchanged refresh stays cheap. A fresh
-	// code materialize (applied) forces a re-import: the sprite's $HOME volume
-	// (host.db and ~/work alike) may have been reset.
+	// Session leg: import the checkpoint's sessions onto the sprite.
+	// Skips when digest already matches prevHash; a fresh apply forces re-import.
 	if apply.State == syncStateApplied || apply.State == syncStateUpToDate {
 		force := apply.State == syncStateApplied
-		hash, serr := g.applySpriteSessions(ctx, cli, hostRef, userID, wt.ID, ckID, wt.SessionsSyncedHash, force)
+		var ckDigest string
+		if ckErr == nil {
+			ckDigest = ck.SessionsContentDigest
+		}
+		hash, serr := g.applySpriteSessions(ctx, cli, hostRef, userID, wt.ID, ckID, ckDigest, wt.SessionsSyncedHash, force)
 		if serr != nil {
 			// Leave the row "behind" so the next sync retries (the digest
 			// still won't match), and surface it without failing the code sync.
@@ -222,18 +271,14 @@ func (g *Gateway) syncWorktreeToSprite(ctx context.Context, cli *http.Client, us
 	return res
 }
 
-// applySpriteSessions enumerates the checkpoint's sessions (by fetching +
-// parsing the session manifest from object storage — the gateway has no
-// sessions table) and tells the sprite to import them. It returns the
-// manifest's content-digest so the caller can record what the sprite now
-// holds (Worktree.SessionsSyncedHash).
-//
-// When the digest already matches prevHash the sprite holds this exact
-// session set, so the import is skipped and prevHash is returned unchanged —
-// unless force is set (a fresh code materialize, where the sprite may have
-// been reset). A missing manifest (code-only checkpoint) is a no-op that
-// returns the empty digest, not an error.
-func (g *Gateway) applySpriteSessions(ctx context.Context, cli *http.Client, hostRef provisioner.HostRef, userID, worktreeID, checkpointID, prevHash string, force bool) (string, error) {
+// applySpriteSessions imports the checkpoint's sessions onto the sprite if needed.
+// Returns the manifest content-digest; skips when ckDigest == prevHash (unless forced).
+func (g *Gateway) applySpriteSessions(ctx context.Context, cli *http.Client, hostRef provisioner.HostRef, userID, worktreeID, checkpointID, ckDigest, prevHash string, force bool) (string, error) {
+	// Fast path: caller already holds the checkpoint digest; skip S3 manifest fetch.
+	if !force && ckDigest != "" && ckDigest == prevHash {
+		return prevHash, nil
+	}
+
 	// First hop: mint just the session-manifest URL (empty id slice).
 	first, err := g.cfg.Sync.DownloadSessionURLs(ctx, userID, checkpointID, nil)
 	if err != nil {
