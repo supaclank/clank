@@ -59,12 +59,8 @@ func TestPullWorktree_DecodesResponse(t *testing.T) {
 	}
 }
 
-// TestPullWorktree_EmptyHeadChainAccepted pins that a 2xx carrying the
-// manifest + uncommitted URLs but an empty head chain is accepted, not
-// rejected as incomplete. This is the common "agent worked but didn't
-// commit" pull: the sandbox HEAD equals the laptop HEAD, so the gateway
-// returns no head bundles — yet the uncommitted bundle still carries the
-// real work. Rejecting it wedges `clank pull` whenever no new commit landed.
+// TestPullWorktree_EmptyHeadChainAccepted pins that a 2xx with an empty head
+// chain is accepted; only manifest + uncommitted URLs are required.
 func TestPullWorktree_EmptyHeadChainAccepted(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

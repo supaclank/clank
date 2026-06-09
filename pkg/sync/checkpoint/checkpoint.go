@@ -399,12 +399,8 @@ func Apply(ctx context.Context, repoPath string, manifest *Manifest, headBundles
 			return err
 		}
 	}
-	// An empty head chain is valid when the applier already has HeadCommit:
-	// an incremental pull whose only change is uncommitted (the sandbox made
-	// no new commit). Verify the commit is present — from a bundle just
-	// loaded or from pre-existing history — before the destructive restore,
-	// so a genuinely missing commit fails clearly instead of at a cryptic
-	// update-ref.
+	// Empty head chain is valid; verify HeadCommit is reachable (from a
+	// just-loaded bundle or pre-existing history) before destructive steps.
 	if err := gitRunIn(ctx, repoPath, nil, "cat-file", "-e", manifest.HeadCommit+"^{commit}"); err != nil {
 		return fmt.Errorf("checkpoint: head commit %s not present after loading %d head bundle(s): %w", manifest.HeadCommit, len(headBundles), err)
 	}
