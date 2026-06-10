@@ -21,7 +21,7 @@
 # ---- builder ---------------------------------------------------------
 # Stays on alpine: clank-host is pure-Go (CGO=0), no glibc problems
 # here because we ship the binary, not the build environment.
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /src
 RUN apk add --no-cache git ca-certificates

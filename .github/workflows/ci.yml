@@ -19,8 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # go-version-file pins the exact Go from go.mod's `go` directive, so
-      # the rebuild is byte-reproducible against whatever built the commit.
+      # go-version-file installs exactly the Go version in go.mod's `go` directive;
+      # CGO_ENABLED=0 + -trimpath + fixed GOOS/GOARCH make the output
+      # byte-reproducible on linux/amd64 — CI flags any drift from the commit.
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
