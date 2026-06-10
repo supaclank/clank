@@ -775,7 +775,7 @@ func buildServiceRequest(tokens hostTokens, webhookURL, previewWebhookURL, githu
 			"--notifier-webhook-token", tokens.notifier,
 		)
 	}
-	if previewWebhookURL != "" && tokens.notifier != "" {
+	if previewWebhookURL != "" && webhookURL != "" && tokens.notifier != "" {
 		// clank-host reuses the notifier token (passed above) to auth the
 		// preview register/revoke calls, so only the URL is needed here.
 		args = append(args, "--preview-webhook-url", previewWebhookURL)

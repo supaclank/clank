@@ -209,6 +209,20 @@ func TestBuildServiceRequest_OmitsPreviewFlagWhenURLEmpty(t *testing.T) {
 	}
 }
 
+// TestBuildServiceRequest_OmitsPreviewFlagWhenNotifierURLEmpty pins that
+// preview webhook is not emitted when the notifier webhook URL is absent —
+// clank-host would receive --preview-webhook-url without --notifier-webhook-token
+// and couldn't auth the register/revoke calls.
+func TestBuildServiceRequest_OmitsPreviewFlagWhenNotifierURLEmpty(t *testing.T) {
+	t.Parallel()
+	req := buildServiceRequest(hostTokens{auth: "tok", notifier: "clnk_x"}, "", "https://gw.example/webhooks/preview", "")
+	for _, a := range req.Args {
+		if a == "--preview-webhook-url" {
+			t.Errorf("--preview-webhook-url present when notifier webhook URL is empty; args=%v", req.Args)
+		}
+	}
+}
+
 // TestBuildServiceRequest_EmitsPreviewFlagWhenConfigured pins the cloud
 // path: a configured preview webhook URL adds --preview-webhook-url so the
 // host registers its per-worktree preview servers with the gateway (it
