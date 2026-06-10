@@ -1,12 +1,13 @@
 ---
 name: review-bot
-description: Use this skill when handling AI review-bot comments on a GitHub PR (CodeRabbit/CR, Cubic, Greptile, and similar). Triggers include "address the CR/cubic/greptile review", "look at coderabbit/cubic/greptile comments", "did the review bot comment", "triage PR bot feedback", or any mention of bot review feedback that needs action. Also used by an automated routine that fires once on PR open and runs this triage unattended.
+description: Use this skill when handling AI review-bot comments on a GitHub PR (CodeRabbit/CR, Cubic, Greptile, Gemini Code Assist, GitHub Copilot, and similar). Triggers include "address the CR/cubic/greptile/gemini/copilot review", "look at coderabbit/cubic/greptile/gemini/copilot comments", "did the review bot comment", "triage PR bot feedback", or any mention of bot review feedback that needs action. Also used by an automated routine that fires once on PR open and runs this triage unattended.
 ---
 
 # Review-bot triage
 
 Goal: turn the noisy stream of AI review-bot comments (CodeRabbit, Cubic,
-Greptile, future bots) into a small set of high-value commits + PR
+Greptile, Gemini Code Assist, GitHub Copilot, future bots) into a small
+set of high-value commits + PR
 replies. Bias toward shipping; treat severity labels as suggestions, not
 gospel.
 
@@ -32,13 +33,24 @@ bots when none respond").
 | CodeRabbit | `coderabbit` | `coderabbitai` | `@coderabbitai` |
 | Cubic | `cubic-dev`, `cubic[bot]` | `cubic-dev-ai` | `@cubic-dev-ai` |
 | Greptile | `greptile` | `greptile-apps` | `@greptileai` |
+| Gemini Code Assist | `gemini-code-assist` | _(none — posts a PR review, not a check-run)_ | `@gemini-code-assist` |
+| GitHub Copilot | `copilot-pull-request-reviewer` | _(none — posts a PR review, not a check-run)_ | _(none — re-request as a reviewer)_ |
 
-**Greptile merge gate.** Greptile writes a `<h3>Confidence Score: N/5</h3>`
-into the **PR description body** (not a comment) — read it from `pulls/<n>`
-(`.body`). **Never merge — or mark the PR mergeable — while that score is
-below 5/5.** Surface it in the triage table and the activity log; below
-5/5 the verdict on the PR as a whole is "not mergeable yet", regardless
-of how the individual findings triage.
+**Gemini and Copilot are review-based, not check-based.** On this repo they
+publish a submitted PR **review** (in `pulls/<n>/reviews`), not a CI check-run
+— Gemini's body opens with `## Code Review`, Copilot's with `## Pull request
+overview`. Watch and triage them via the review/login path (see "Fallback for
+bots without check runs"), not `BOT_CHECK_SLUGS`. **Copilot is lower-signal**
+(often shallow or duplicative): triage it conservatively, and it never counts
+toward mergeability on its own.
+
+**Merge gate — surface only; the decision lives in the `auto-merge` skill.**
+Greptile writes a `<h3>Confidence Score: N/5</h3>` into the **PR description
+body** (not a comment) — read it from `pulls/<n>` (`.body`); surface that score
+when present. review-bot only triages and surfaces signals; it does NOT decide
+mergeability. Report what each trusted reviewer did (Greptile score, whether
+Gemini or Copilot reviewed) and leave the verdict to `auto-merge` — don't
+declare a PR "not mergeable" from this skill.
 
 If unsure of a bot's exact app slug, inspect a recent PR's checks:
 
@@ -269,11 +281,19 @@ while :; do
 done
 ```
 
-**Fallback for bots without check runs.** If a new bot only posts
-comments and never publishes a check run, fall back to the older
+**Fallback for bots without check runs.** If a bot only posts
+comments/reviews and never publishes a check run, fall back to the older
 heuristic: watch `pulls/<n>/reviews` for a submitted review from that
 bot's login, plus a 60s quiescence tail. Add the bot to
-`BOT_LOGIN_PATTERNS` so its comments still get triaged.
+`BOT_LOGIN_PATTERNS` so its comments still get triaged. **Gemini Code
+Assist (`gemini-code-assist`) and GitHub Copilot
+(`copilot-pull-request-reviewer`) are exactly this case** — they submit
+reviews, not check-runs, so wait on their reviews here rather than in the
+`BOT_CHECK_SLUGS` loop. To avoid unnecessary 3–6 minute grace-period
+delays when no check-run bots are active, poll `pulls/<n>/reviews` for
+completed reviews from these logins inside the grace-period wait and
+break early as soon as all expected review-based bots have a submitted
+review, rather than waiting out the full window.
 
 ### Nudge the bots when none respond
 
@@ -289,7 +309,7 @@ answers in its own comment — starting the review, declining, or
 reporting a rate limit:
 
 ```bash
-BOT_MENTIONS=(@coderabbitai @greptileai @cubic-dev-ai)
+BOT_MENTIONS=(@coderabbitai @greptileai @cubic-dev-ai @gemini-code-assist)  # Copilot isn't @-nudgeable — re-request it as a reviewer instead
 gh api -X POST "repos/$PR_OWNER/$PR_REPO/issues/$PR_NUM/comments" -f body="$(cat <<EOF
 <!-- review-bot:nudge $HEAD_SHA -->
 ${BOT_MENTIONS[*]} — no automated review detected on \`$HEAD_SHA\`. Please review when you can.
@@ -328,7 +348,7 @@ post a single top-level PR comment with the table:
 | 3 | greptile | 901 | baz.go:5 | … | 2 | … | Do |
 …
 
-**Greptile confidence:** 4/5 — **not mergeable until 5/5.**
+**Trusted review (current HEAD):** Gemini ✓; Greptile absent (capped). Mergeability is the `auto-merge` skill's call, not review-bot's.
 **Plan:** correctness batch (3 fixes), 1 defer with TODO, 1 won't-do.
 ```
 
@@ -392,7 +412,7 @@ blocks (analysis chains, AI prompts, learnings) that aren't actionable:
 ```python
 import json, sys, re
 
-BOT_LOGIN_PATTERNS = ('coderabbit', 'cubic-dev', 'cubic[bot]', 'greptile')
+BOT_LOGIN_PATTERNS = ('coderabbit', 'cubic-dev', 'cubic[bot]', 'greptile', 'gemini-code-assist', 'copilot-pull-request-reviewer')
 
 # Extend per bot when adding a new vendor.
 NOISE_SUMMARIES = (
@@ -454,7 +474,7 @@ Rank with the table format used in both modes:
 | Rank | Source | ID | File:line | Issue | LoC | Real-world impact | Verdict |
 ```
 
-`Source` is the bot login (`coderabbit`, `cubic`, `greptile`, …) so
+`Source` is the bot login (`coderabbit`, `cubic`, `greptile`, `gemini-code-assist`, `copilot-pull-request-reviewer`, …) so
 multi-bot threads stay legible.
 
 ## Verdict categories
@@ -607,9 +627,10 @@ Concretely:
 - **(Autonomous)** Don't post an empty triage *table* just because the
   routine fired. If the bots produced nothing new, the run's activity
   comment ending at its no-op line is the only thing posted.
-- **Never merge — or enable auto-merge / mark the PR mergeable — while
-  Greptile's confidence score is below 5/5.** It's a hard gate,
-  independent of how the individual findings triage.
+- **Don't merge, enable auto-merge, or declare a PR mergeable from this
+  skill** — that verdict belongs to the `auto-merge` skill. Surface
+  Greptile's score and which trusted reviewers ran; never call a PR
+  un-mergeable from here.
 - **(Autonomous)** Don't nudge bots that are already working. The
   @-mention fallback fires only when *no* bot check is present, and at
   most once per HEAD (the `review-bot:nudge <sha>` marker enforces it).
