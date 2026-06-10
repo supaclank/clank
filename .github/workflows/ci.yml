@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Headline guardrail: the clank-host binary is committed and pushed to
+  # sprites verbatim by the flyio provisioner. If the committed copy drifts
+  # from the source, the gateway ships an old clank-host that 400s every
+  # sprite apply (the apply-protocol mismatch this prevents) — invisible at
+  # the gateway, fatal on the sprite. Rebuild it and fail on any drift.
+  embed-host-current:
+    name: embedded clank-host matches source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # go-version-file installs exactly the Go version in go.mod's `go` directive;
+      # CGO_ENABLED=0 + -trimpath + -buildvcs=false make the output
+      # byte-reproducible on linux/amd64 — CI flags any drift from the commit.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Rebuild + diff embedded clank-host
+        run: |
+          make embed-host
+          if ! git diff --exit-code -- pkg/provisioner/flyio/clank-host-linux-amd64; then
+            echo "::error::Embedded clank-host is stale. Run 'make embed-host' with the go.mod Go version and commit pkg/provisioner/flyio/clank-host-linux-amd64."
+            exit 1
+          fi
+
+  build-vet:
+    name: build · vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      # TODO: add `go test -short ./...` once the pre-existing flaky tests on
+      # main are fixed/quarantined (internal/tui, internal/cli/daemoncli,
+      # internal/keepalive). Kept out for now so CI starts green.

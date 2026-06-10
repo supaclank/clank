@@ -4,7 +4,7 @@
 # clank-auth-stub} in a small runtime image. clankd embeds the sync
 # server in TCP mode when CLANK_SYNC_S3_* env vars are present.
 
-ARG GO_VERSION=1.25.8
+ARG GO_VERSION=1.26.0
 
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS builder
 
