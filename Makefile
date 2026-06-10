@@ -44,7 +44,7 @@ generate:
 .PHONY: embed-host
 embed-host:
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
-	    -trimpath -o $(EMBED_HOST_BIN) \
+	    -trimpath -buildvcs=false -o $(EMBED_HOST_BIN) \
 	    ./cmd/clank-host
 
 # ---- clank-host sandbox image ----------------------------------------
