@@ -177,20 +177,7 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	if resumeID != "" {
 		opts = append(opts, claudecode.WithResume(resumeID))
 	}
-	// claude refuses `--dangerously-skip-permissions` (what permission-mode
-	// "bypassPermissions" maps to) under root/sudo and exits *before* it can
-	// answer the SDK's initialize control request — which then hangs until the
-	// 60s timeout ("control request timeout"), surfacing as a StatusError.
-	// Sprite/container hosts run as root, so signal sandbox mode to re-enable
-	// it. No-op on non-root (laptop) hosts and when already set explicitly.
-	if os.Geteuid() == 0 && extraEnv["IS_SANDBOX"] == "" {
-		merged := make(map[string]string, len(extraEnv)+1)
-		for k, v := range extraEnv {
-			merged[k] = v
-		}
-		merged["IS_SANDBOX"] = "1"
-		extraEnv = merged
-	}
+	extraEnv = buildExtraEnv(os.Geteuid(), extraEnv)
 	if len(extraEnv) > 0 {
 		opts = append(opts, claudecode.WithEnv(extraEnv))
 	}
@@ -947,4 +934,18 @@ func intFromAny(v any) int {
 	default:
 		return 0
 	}
+}
+
+// buildExtraEnv injects IS_SANDBOX=1 when running as root so claude accepts
+// --dangerously-skip-permissions (bypassPermissions mode) in container hosts.
+func buildExtraEnv(euid int, env map[string]string) map[string]string {
+	if euid != 0 || env["IS_SANDBOX"] != "" {
+		return env
+	}
+	merged := make(map[string]string, len(env)+1)
+	for k, v := range env {
+		merged[k] = v
+	}
+	merged["IS_SANDBOX"] = "1"
+	return merged
 }
