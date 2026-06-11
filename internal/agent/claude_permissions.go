@@ -50,7 +50,15 @@ func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, i
 	select {
 	case allow := <-decision:
 		if allow {
-			return claudecode.NewPermissionResultAllow(), nil
+			// The CLI validates the permission response against a discriminated
+			// union whose allow branch requires updatedInput to be a record; a
+			// bare {behavior:"allow"} matches neither allow nor deny and the CLI
+			// fails the tool with a ZodError. Echo the unmodified input back as
+			// updatedInput (the SDK guarantees it is non-nil) so the schema is
+			// satisfied without changing what the tool runs with.
+			result := claudecode.NewPermissionResultAllow()
+			result.UpdatedInput = input
+			return result, nil
 		}
 		return claudecode.NewPermissionResultDeny("denied by user"), nil
 	case <-ctx.Done():

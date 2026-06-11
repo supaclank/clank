@@ -183,9 +183,10 @@ func TestClaudeCodeBackend_Permission_Allow(t *testing.T) {
 		res any
 		err error
 	}
+	input := map[string]any{"command": "ls -la"}
 	done := make(chan cbResult, 1)
 	go func() {
-		res, err := resolved.CanUseTool(context.Background(), "Bash", map[string]any{"command": "ls -la"}, nil)
+		res, err := resolved.CanUseTool(context.Background(), "Bash", input, nil)
 		done <- cbResult{res, err}
 	}()
 
@@ -213,8 +214,18 @@ func TestClaudeCodeBackend_Permission_Allow(t *testing.T) {
 		if r.err != nil {
 			t.Fatalf("callback error: %v", r.err)
 		}
-		if _, ok := r.res.(claudecode.PermissionResultAllow); !ok {
-			t.Errorf("callback result=%T, want PermissionResultAllow", r.res)
+		allow, ok := r.res.(claudecode.PermissionResultAllow)
+		if !ok {
+			t.Fatalf("callback result=%T, want PermissionResultAllow", r.res)
+		}
+		// The CLI's permission schema requires updatedInput on the allow branch;
+		// a bare allow fails every tool with a ZodError. The backend must echo
+		// the tool input back as updatedInput.
+		if allow.UpdatedInput == nil {
+			t.Fatal("PermissionResultAllow.UpdatedInput is nil; CLI rejects bare allow with a ZodError")
+		}
+		if got := allow.UpdatedInput["command"]; got != "ls -la" {
+			t.Errorf("UpdatedInput[command]=%v, want %q (input must be echoed unchanged)", got, "ls -la")
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("callback did not return after RespondPermission(allow)")
@@ -359,6 +370,52 @@ func TestClaudeCodeBackend_PermissionMode_RuntimeChange_UsesBackendCtx(t *testin
 		PermissionMode: agent.ClaudePermPlan,
 	}); err != nil {
 		t.Fatalf("Send with cancelled caller ctx: %v (b.ctx must be used, not caller ctx)", err)
+	}
+}
+
+// A Send issued while a permission prompt is still pending must fast-fail
+// instead of deadlocking. The parked handleCanUseTool blocks the SDK read
+// goroutine, so a mode-changing Send (what the mobile plan-Approve does) would
+// otherwise wait the full SetPermissionMode control timeout and then flip the
+// session to StatusError, bricking it.
+func TestClaudeCodeBackend_Send_BlockedWhilePermissionPending(t *testing.T) {
+	t.Parallel()
+	transport := newMockTransport(nil)
+	b := agent.NewClaudeCodeBackend(t.TempDir())
+	defer b.Stop()
+
+	resolved := captureOpenOptions(t, b, transport)
+
+	// Park a permission, mirroring a pending ExitPlanMode prompt.
+	go func() {
+		_, _ = resolved.CanUseTool(context.Background(), "ExitPlanMode", map[string]any{}, nil)
+	}()
+	waitForEventType(t, b.Events(), agent.EventPermission, 2*time.Second)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- b.Send(context.Background(), agent.SendMessageOpts{
+			Text:           "approved",
+			PermissionMode: agent.ClaudePermBypass,
+		})
+	}()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("Send while a permission was pending returned nil; want a fast-fail error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Send blocked while a permission was pending (deadlock); want an immediate error")
+	}
+
+	// The guard must run before the mode change, so nothing leaks to the CLI.
+	if got := transport.recordedPermissionModes(); len(got) != 0 {
+		t.Errorf("SetPermissionMode called while a permission was pending: %v", got)
+	}
+	// The session must stay usable, not be flipped to error.
+	if b.Status() == agent.StatusError {
+		t.Error("Send guard flipped the session to StatusError; want it to remain usable")
 	}
 }
 

@@ -333,11 +333,21 @@ func (b *ClaudeCodeBackend) Send(ctx context.Context, opts SendMessageOpts) erro
 		return fmt.Errorf("session not open: client not connected")
 	}
 
-	// Apply a mode change before dispatching the prompt. Never call
-	// SetPermissionMode while a permission prompt is pending: it is a control
-	// round-trip answered by the same SDK read goroutine that a parked
-	// handleCanUseTool blocks, so the two would deadlock. The TUI enforces this
-	// by locking out sends while a prompt is open.
+	// A pending permission prompt has parked handleCanUseTool on the SDK's
+	// single read goroutine, so no control round-trip (SetPermissionMode) or
+	// follow-up Query can be serviced until it is answered — issuing one would
+	// block for the control timeout and then flip the session to StatusError.
+	// Fast-fail instead: while a prompt is open the only valid actions are
+	// RespondPermission or Abort. The TUI already locks out sends here; this
+	// guards clients that don't (e.g. the mobile app).
+	b.mu.Lock()
+	pending := len(b.pendingPerms)
+	b.mu.Unlock()
+	if pending > 0 {
+		return fmt.Errorf("cannot send while %d permission prompt(s) pending: answer or abort first", pending)
+	}
+
+	// Apply a mode change before dispatching the prompt.
 	if opts.PermissionMode != "" {
 		if !opts.PermissionMode.IsValid() {
 			return fmt.Errorf("claude backend: %q is not a valid permission mode", opts.PermissionMode)
