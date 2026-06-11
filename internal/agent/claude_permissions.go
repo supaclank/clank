@@ -66,6 +66,9 @@ func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, i
 			// fails the tool with a ZodError. Echo the unmodified input back as
 			// updatedInput (the SDK guarantees it is non-nil) so the schema is
 			// satisfied without changing what the tool runs with.
+			//
+			// TODO: drop the explicit UpdatedInput line once the SDK fills it at
+			// the boundary — https://github.com/severity1/claude-agent-sdk-go/pull/100
 			result := claudecode.NewPermissionResultAllow()
 			result.UpdatedInput = input
 			return result, nil
