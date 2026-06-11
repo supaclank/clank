@@ -34,8 +34,19 @@ func runOpenCodeSessionList(ctx context.Context) ([]DiscoveredSession, error) {
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("opencode session list: %w: %s", err, stderr.String())
 	}
+	return parseOpenCodeSessionList(stdout.Bytes())
+}
+
+// parseOpenCodeSessionList decodes `opencode session list --format json`
+// output. opencode prints nothing (not "[]") when there are no sessions, so
+// empty/whitespace output is a valid zero-session result; only non-empty,
+// malformed output is an error.
+func parseOpenCodeSessionList(stdout []byte) ([]DiscoveredSession, error) {
+	if len(bytes.TrimSpace(stdout)) == 0 {
+		return nil, nil
+	}
 	var entries []opencodeListEntry
-	if err := json.Unmarshal(stdout.Bytes(), &entries); err != nil {
+	if err := json.Unmarshal(stdout, &entries); err != nil {
 		return nil, fmt.Errorf("opencode session list: decode json: %w", err)
 	}
 	out := make([]DiscoveredSession, 0, len(entries))
