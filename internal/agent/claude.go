@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -176,6 +177,7 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	if resumeID != "" {
 		opts = append(opts, claudecode.WithResume(resumeID))
 	}
+	extraEnv = buildExtraEnv(os.Geteuid(), extraEnv)
 	if len(extraEnv) > 0 {
 		opts = append(opts, claudecode.WithEnv(extraEnv))
 	}
@@ -932,4 +934,18 @@ func intFromAny(v any) int {
 	default:
 		return 0
 	}
+}
+
+// buildExtraEnv injects IS_SANDBOX=1 when running as root so claude accepts
+// --dangerously-skip-permissions (bypassPermissions mode) in container hosts.
+func buildExtraEnv(euid int, env map[string]string) map[string]string {
+	if euid != 0 || env["IS_SANDBOX"] != "" {
+		return env
+	}
+	merged := make(map[string]string, len(env)+1)
+	for k, v := range env {
+		merged[k] = v
+	}
+	merged["IS_SANDBOX"] = "1"
+	return merged
 }

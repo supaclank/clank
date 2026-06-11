@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -1839,9 +1840,9 @@ func TestClaudeCodeBackend_PickedModel_PropagatesToSpawnOptions(t *testing.T) {
 	}
 }
 
-// Absent ExtraEnv must mean no env-var injection — claude then resolves
-// auth via its own keychain/OAuth login. Pins the "no credential = bare
-// CLI behavior" contract.
+// Absent ExtraEnv means no env injection on non-root hosts; IS_SANDBOX=1 on
+// root hosts. Pins the "no credential = bare CLI behavior" contract and the
+// root sandbox injection contract simultaneously.
 func TestClaudeCodeBackend_NoExtraEnv_NoEnvOption(t *testing.T) {
 	t.Parallel()
 	transport := newMockTransport(nil)
@@ -1863,7 +1864,68 @@ func TestClaudeCodeBackend_NoExtraEnv_NoEnvOption(t *testing.T) {
 	for _, opt := range captured {
 		opt(&resolved)
 	}
-	if len(resolved.ExtraEnv) != 0 {
-		t.Errorf("ExtraEnv=%v, want empty/nil", resolved.ExtraEnv)
+	if os.Geteuid() == 0 {
+		if resolved.ExtraEnv["IS_SANDBOX"] != "1" {
+			t.Errorf("ExtraEnv=%v, want IS_SANDBOX=1 (root host)", resolved.ExtraEnv)
+		}
+	} else {
+		if len(resolved.ExtraEnv) != 0 {
+			t.Errorf("ExtraEnv=%v, want empty/nil (non-root host)", resolved.ExtraEnv)
+		}
+	}
+}
+
+func TestBuildExtraEnv(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		euid    int
+		env     map[string]string
+		wantKey string
+		wantVal string
+		wantLen int
+	}{
+		{
+			name:    "root_no_env_injects_sandbox",
+			euid:    0,
+			env:     nil,
+			wantKey: "IS_SANDBOX", wantVal: "1", wantLen: 1,
+		},
+		{
+			name:    "root_already_set_no_overwrite",
+			euid:    0,
+			env:     map[string]string{"IS_SANDBOX": "0"},
+			wantKey: "IS_SANDBOX", wantVal: "0", wantLen: 1,
+		},
+		{
+			name:    "root_preserves_existing_env",
+			euid:    0,
+			env:     map[string]string{"FOO": "bar"},
+			wantKey: "IS_SANDBOX", wantVal: "1", wantLen: 2,
+		},
+		{
+			name:    "non_root_no_injection",
+			euid:    1000,
+			env:     nil,
+			wantLen: 0,
+		},
+		{
+			name:    "non_root_passthrough",
+			euid:    1000,
+			env:     map[string]string{"FOO": "bar"},
+			wantKey: "FOO", wantVal: "bar", wantLen: 1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := agent.BuildExtraEnv(tc.euid, tc.env)
+			if len(got) != tc.wantLen {
+				t.Fatalf("len=%d, want %d; got %v", len(got), tc.wantLen, got)
+			}
+			if tc.wantKey != "" && got[tc.wantKey] != tc.wantVal {
+				t.Errorf("[%q]=%q, want %q", tc.wantKey, got[tc.wantKey], tc.wantVal)
+			}
+		})
 	}
 }
