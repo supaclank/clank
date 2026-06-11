@@ -340,7 +340,7 @@ func (b *stubBackend) Fork(_ context.Context, msgID string) (agent.ForkResult, e
 	b.mu.Unlock()
 	return agent.ForkResult{ID: "ext-forked-" + msgID}, nil
 }
-func (b *stubBackend) RespondPermission(_ context.Context, permissionID string, allow bool) error {
+func (b *stubBackend) RespondPermission(_ context.Context, permissionID string, allow bool, _ string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.permissionID = permissionID

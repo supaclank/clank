@@ -97,12 +97,19 @@ type ClaudeCodeBackend struct {
 	currentPermMode ClaudePermissionMode
 
 	// pendingPerms maps a synthesized permission request ID to the channel that
-	// delivers the user's allow/deny decision. handleCanUseTool registers an
-	// entry and blocks on it; RespondPermission resolves it. Guarded by b.mu.
-	pendingPerms map[string]chan bool
+	// delivers the user's decision. handleCanUseTool registers an entry and
+	// blocks on it; RespondPermission resolves it. Guarded by b.mu.
+	pendingPerms map[string]chan permissionDecision
 
 	// permSeq generates unique permission request IDs. Guarded by b.mu.
 	permSeq uint64
+
+	// lastToolUseID maps a tool name to the id of the most recent tool_use block
+	// the assistant emitted for it (from the stream). handleCanUseTool reads it
+	// to stamp the permission with the tool_use id its UI card is keyed by.
+	// The permission request for a tool always follows its tool_use block, so
+	// the latest id per name is the one being gated. Guarded by b.mu.
+	lastToolUseID map[string]string
 }
 
 // NewClaudeCodeBackend creates a new Claude Code backend. workDir is
@@ -125,7 +132,8 @@ func NewClaudeCodeBackendForSession(workDir, resumeSessionID string) *ClaudeCode
 		sessionID:        resumeSessionID,
 		events:           make(chan Event, 128),
 		activeToolBlocks: make(map[int]*activeToolBlock),
-		pendingPerms:     make(map[string]chan bool),
+		pendingPerms:     make(map[string]chan permissionDecision),
+		lastToolUseID:    make(map[string]string),
 		initialPermMode:  ClaudePermBypass,
 		ctx:              ctx,
 		cancel:           cancel,
@@ -333,11 +341,21 @@ func (b *ClaudeCodeBackend) Send(ctx context.Context, opts SendMessageOpts) erro
 		return fmt.Errorf("session not open: client not connected")
 	}
 
-	// Apply a mode change before dispatching the prompt. Never call
-	// SetPermissionMode while a permission prompt is pending: it is a control
-	// round-trip answered by the same SDK read goroutine that a parked
-	// handleCanUseTool blocks, so the two would deadlock. The TUI enforces this
-	// by locking out sends while a prompt is open.
+	// A pending permission prompt has parked handleCanUseTool on the SDK's
+	// single read goroutine, so no control round-trip (SetPermissionMode) or
+	// follow-up Query can be serviced until it is answered — issuing one would
+	// block for the control timeout and then flip the session to StatusError.
+	// Fast-fail instead: while a prompt is open the only valid actions are
+	// RespondPermission or Abort. The TUI already locks out sends here; this
+	// guards clients that don't (e.g. the mobile app).
+	b.mu.Lock()
+	pending := len(b.pendingPerms)
+	b.mu.Unlock()
+	if pending > 0 {
+		return fmt.Errorf("cannot send while %d permission prompt(s) pending: answer or abort first", pending)
+	}
+
+	// Apply a mode change before dispatching the prompt.
 	if opts.PermissionMode != "" {
 		if !opts.PermissionMode.IsValid() {
 			return fmt.Errorf("claude backend: %q is not a valid permission mode", opts.PermissionMode)
@@ -675,6 +693,14 @@ func (b *ClaudeCodeBackend) handleContentBlockStart(event map[string]any) {
 		// Track this tool_use block so handleContentBlockStop can emit PartCompleted
 		// with the correct tool name.
 		b.activeToolBlocks[index] = &activeToolBlock{partID: id, tool: name}
+		// Remember the id so a permission prompt for this tool (which arrives on
+		// the SDK read goroutine, later) can be attributed to it. Guarded
+		// because handleCanUseTool reads it from a different goroutine.
+		if id != "" && name != "" {
+			b.mu.Lock()
+			b.lastToolUseID[name] = id
+			b.mu.Unlock()
+		}
 		b.emit(Event{
 			Type:      EventPartUpdate,
 			Timestamp: time.Now(),
