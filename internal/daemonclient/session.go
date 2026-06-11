@@ -169,8 +169,9 @@ func (s *SessionClient) Delete(ctx context.Context) error {
 	return s.c.do(ctx, "DELETE", p, nil, nil)
 }
 
-// ReplyPermission replies to a permission request.
-func (s *SessionClient) ReplyPermission(ctx context.Context, permissionID string, allow bool) error {
+// ReplyPermission replies to a permission request. denyMessage is the reason
+// forwarded to the model when allow is false (empty for a default).
+func (s *SessionClient) ReplyPermission(ctx context.Context, permissionID string, allow bool, denyMessage string) error {
 	if permissionID == "" {
 		return errors.New("hubclient: empty permission id")
 	}
@@ -178,7 +179,10 @@ func (s *SessionClient) ReplyPermission(ctx context.Context, permissionID string
 	if err != nil {
 		return err
 	}
-	body := map[string]bool{"allow": allow}
+	body := struct {
+		Allow   bool   `json:"allow"`
+		Message string `json:"message,omitempty"`
+	}{allow, denyMessage}
 	return s.c.post(ctx, p, body, nil)
 }
 

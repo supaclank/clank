@@ -43,7 +43,7 @@ func (b *failingOpenBackend) Revert(_ context.Context, _ string) error { return 
 func (b *failingOpenBackend) Fork(_ context.Context, _ string) (agent.ForkResult, error) {
 	return agent.ForkResult{}, nil
 }
-func (b *failingOpenBackend) RespondPermission(_ context.Context, _ string, _ bool) error {
+func (b *failingOpenBackend) RespondPermission(_ context.Context, _ string, _ bool, _ string) error {
 	return nil
 }
 

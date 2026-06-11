@@ -1139,13 +1139,14 @@ func (s *Service) OpenAndSend(ctx context.Context, id string, opts agent.SendMes
 	return b.Status(), b.SessionID(), nil
 }
 
-// RespondPermission replies to a pending tool-use permission prompt.
-func (s *Service) RespondPermission(ctx context.Context, id, permissionID string, allow bool) error {
+// RespondPermission replies to a pending tool-use permission prompt. denyMessage
+// is the reason forwarded to the model when allow is false (empty for a default).
+func (s *Service) RespondPermission(ctx context.Context, id, permissionID string, allow bool, denyMessage string) error {
 	b, err := s.ensureBackend(ctx, id)
 	if err != nil {
 		return err
 	}
-	return b.RespondPermission(ctx, permissionID, allow)
+	return b.RespondPermission(ctx, permissionID, allow, denyMessage)
 }
 
 // --- Worktree / branch ops ----------------------------------------------

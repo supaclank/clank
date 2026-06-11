@@ -97,12 +97,19 @@ type ClaudeCodeBackend struct {
 	currentPermMode ClaudePermissionMode
 
 	// pendingPerms maps a synthesized permission request ID to the channel that
-	// delivers the user's allow/deny decision. handleCanUseTool registers an
-	// entry and blocks on it; RespondPermission resolves it. Guarded by b.mu.
-	pendingPerms map[string]chan bool
+	// delivers the user's decision. handleCanUseTool registers an entry and
+	// blocks on it; RespondPermission resolves it. Guarded by b.mu.
+	pendingPerms map[string]chan permissionDecision
 
 	// permSeq generates unique permission request IDs. Guarded by b.mu.
 	permSeq uint64
+
+	// lastToolUseID maps a tool name to the id of the most recent tool_use block
+	// the assistant emitted for it (from the stream). handleCanUseTool reads it
+	// to stamp the permission with the tool_use id its UI card is keyed by.
+	// The permission request for a tool always follows its tool_use block, so
+	// the latest id per name is the one being gated. Guarded by b.mu.
+	lastToolUseID map[string]string
 }
 
 // NewClaudeCodeBackend creates a new Claude Code backend. workDir is
@@ -125,7 +132,8 @@ func NewClaudeCodeBackendForSession(workDir, resumeSessionID string) *ClaudeCode
 		sessionID:        resumeSessionID,
 		events:           make(chan Event, 128),
 		activeToolBlocks: make(map[int]*activeToolBlock),
-		pendingPerms:     make(map[string]chan bool),
+		pendingPerms:     make(map[string]chan permissionDecision),
+		lastToolUseID:    make(map[string]string),
 		initialPermMode:  ClaudePermBypass,
 		ctx:              ctx,
 		cancel:           cancel,
@@ -685,6 +693,14 @@ func (b *ClaudeCodeBackend) handleContentBlockStart(event map[string]any) {
 		// Track this tool_use block so handleContentBlockStop can emit PartCompleted
 		// with the correct tool name.
 		b.activeToolBlocks[index] = &activeToolBlock{partID: id, tool: name}
+		// Remember the id so a permission prompt for this tool (which arrives on
+		// the SDK read goroutine, later) can be attributed to it. Guarded
+		// because handleCanUseTool reads it from a different goroutine.
+		if id != "" && name != "" {
+			b.mu.Lock()
+			b.lastToolUseID[name] = id
+			b.mu.Unlock()
+		}
 		b.emit(Event{
 			Type:      EventPartUpdate,
 			Timestamp: time.Now(),

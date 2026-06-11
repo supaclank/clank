@@ -289,4 +289,4 @@ func (b *noopBackend) Revert(_ context.Context, _ string) error               { 
 func (b *noopBackend) Fork(_ context.Context, _ string) (agent.ForkResult, error) {
 	return agent.ForkResult{}, nil
 }
-func (b *noopBackend) RespondPermission(_ context.Context, _ string, _ bool) error { return nil }
+func (b *noopBackend) RespondPermission(_ context.Context, _ string, _ bool, _ string) error { return nil }

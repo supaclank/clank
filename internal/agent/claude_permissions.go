@@ -9,6 +9,14 @@ import (
 	claudecode "github.com/severity1/claude-agent-sdk-go"
 )
 
+// permissionDecision is the user's answer to a parked permission prompt.
+// denyMessage is the reason forwarded to the model when allow is false; it is
+// ignored when allow is true.
+type permissionDecision struct {
+	allow      bool
+	denyMessage string
+}
+
 // handleCanUseTool is the SDK CanUseTool callback. The SDK invokes it
 // synchronously on its control-protocol read goroutine whenever the CLI wants
 // to use a tool the current permission mode doesn't auto-approve. It bridges
@@ -19,7 +27,7 @@ import (
 // Blocking the read goroutine here is safe: the CLI is itself paused awaiting
 // the decision, so no other messages are due until we answer.
 func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, input map[string]any, _ claudecode.ToolPermissionContext) (claudecode.PermissionResult, error) {
-	decision := make(chan bool, 1)
+	decision := make(chan permissionDecision, 1)
 
 	b.mu.Lock()
 	if b.stopped {
@@ -29,6 +37,7 @@ func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, i
 	b.permSeq++
 	id := fmt.Sprintf("perm-%d", b.permSeq)
 	b.pendingPerms[id] = decision
+	toolUseID := b.lastToolUseID[tool]
 	b.mu.Unlock()
 
 	defer func() {
@@ -44,12 +53,13 @@ func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, i
 			RequestID:   id,
 			Tool:        tool,
 			Description: describeToolCall(tool, input),
+			ToolUseID:   toolUseID,
 		},
 	})
 
 	select {
-	case allow := <-decision:
-		if allow {
+	case d := <-decision:
+		if d.allow {
 			// The CLI validates the permission response against a discriminated
 			// union whose allow branch requires updatedInput to be a record; a
 			// bare {behavior:"allow"} matches neither allow nor deny and the CLI
@@ -60,7 +70,13 @@ func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, i
 			result.UpdatedInput = input
 			return result, nil
 		}
-		return claudecode.NewPermissionResultDeny("denied by user"), nil
+		// The deny branch of the same union requires a string message, so never
+		// send an empty one.
+		msg := d.denyMessage
+		if msg == "" {
+			msg = "denied by user"
+		}
+		return claudecode.NewPermissionResultDeny(msg), nil
 	case <-ctx.Done():
 		return claudecode.NewPermissionResultDeny("cancelled"), nil
 	case <-b.ctx.Done():
@@ -69,10 +85,11 @@ func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, i
 }
 
 // RespondPermission delivers the user's decision to a parked handleCanUseTool
-// call. allow=true permits the tool once; allow=false denies it. It is
+// call. allow=true permits the tool once; allow=false denies it with denyMessage
+// as the reason shown to the model (empty falls back to a default). It is
 // idempotent and never blocks (the decision channel is buffered), and returns
 // an error for an unknown ID so callers fail fast on a stale prompt.
-func (b *ClaudeCodeBackend) RespondPermission(_ context.Context, permissionID string, allow bool) error {
+func (b *ClaudeCodeBackend) RespondPermission(_ context.Context, permissionID string, allow bool, denyMessage string) error {
 	b.mu.Lock()
 	decision, ok := b.pendingPerms[permissionID]
 	b.mu.Unlock()
@@ -80,7 +97,7 @@ func (b *ClaudeCodeBackend) RespondPermission(_ context.Context, permissionID st
 		return fmt.Errorf("no pending permission %q", permissionID)
 	}
 	select {
-	case decision <- allow:
+	case decision <- permissionDecision{allow: allow, denyMessage: denyMessage}:
 	default:
 	}
 	return nil
@@ -92,7 +109,7 @@ func (b *ClaudeCodeBackend) RespondPermission(_ context.Context, permissionID st
 // instead, which handleCanUseTool also selects on.
 func (b *ClaudeCodeBackend) failPendingPermissions() {
 	b.mu.Lock()
-	waiters := make([]chan bool, 0, len(b.pendingPerms))
+	waiters := make([]chan permissionDecision, 0, len(b.pendingPerms))
 	for _, ch := range b.pendingPerms {
 		waiters = append(waiters, ch)
 	}
@@ -100,7 +117,7 @@ func (b *ClaudeCodeBackend) failPendingPermissions() {
 
 	for _, ch := range waiters {
 		select {
-		case ch <- false:
+		case ch <- permissionDecision{allow: false, denyMessage: "aborted"}:
 		default:
 		}
 	}
