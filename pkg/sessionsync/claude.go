@@ -78,18 +78,31 @@ func (ClaudeBackend) ExportSession(_ context.Context, projectDir, externalID str
 }
 
 // ImportSession writes the transcript blob to destDir's encoded project
-// path and returns the Claude session id (read from the blob — the filename
-// is identity, preserved across the round trip). destDir is REQUIRED; the
-// orchestrator has already rebased the in-file cwd to destDir. The write
-// overwrites any existing transcript: under clank's single-owner migration
-// the incoming transcript is the authoritative superset.
-func (ClaudeBackend) ImportSession(_ context.Context, destDir, blobPath string) (string, error) {
+// path and returns the Claude session id used as the filename. destDir is
+// REQUIRED; the orchestrator has already rebased the in-file cwd to destDir.
+// The write overwrites any existing transcript: under clank's single-owner
+// migration the incoming transcript is the authoritative superset.
+//
+// Filename selection: when manifestID is set (and passes the path-safety
+// check) it is used as the transcript filename and returned. This is the
+// authoritative/current session id stamped by export, and it is REQUIRED for
+// resumed/compacted sessions: their transcript replays PARENT history whose
+// first JSONL line carries the PARENT sessionId, so the blob-derived id would
+// file under (and return) the wrong id — breaking import idempotency and
+// `claude --resume`. Claude tolerates filename != first-line sessionId
+// (resume keys purely on the file at the cwd-encoded path). An empty/unsafe
+// manifestID falls back to the blob's first-line sessionId (legacy manifests).
+func (ClaudeBackend) ImportSession(_ context.Context, destDir, blobPath, manifestID string) (string, error) {
 	if destDir == "" {
 		return "", fmt.Errorf("claude import: destDir is required")
 	}
-	sessionID, err := claudeSessionIDFromBlob(blobPath)
-	if err != nil {
-		return "", fmt.Errorf("claude import: %w", err)
+	sessionID := manifestID
+	if sessionID == "" || filepath.Base(sessionID) != sessionID || strings.Contains(sessionID, "..") {
+		var err error
+		sessionID, err = claudeSessionIDFromBlob(blobPath)
+		if err != nil {
+			return "", fmt.Errorf("claude import: %w", err)
+		}
 	}
 	if filepath.Base(sessionID) != sessionID || strings.Contains(sessionID, "..") {
 		return "", fmt.Errorf("claude import: invalid sessionID %q", sessionID)

@@ -49,7 +49,13 @@ func ExportSessionBlob(ctx context.Context, backend agent.BackendType, cwd, exte
 // inside the blob's info.directory); Claude writes the transcript under
 // destDir's encoded path. The rewrite is the only mutation — see
 // RewriteImportBlob / RewriteClaudeImportBlob.
-func ImportSessionBlob(ctx context.Context, backend agent.BackendType, blobPath, destDir string) (string, error) {
+//
+// manifestID is the SessionEntry.ExternalID (the authoritative/current id
+// stamped at export). Claude files the transcript under it so a
+// resumed/compacted session — whose blob's first line carries the PARENT
+// sessionId — still lands under (and returns) the manifest id; opencode
+// ignores it. Pass "" only when no manifest id is available.
+func ImportSessionBlob(ctx context.Context, backend agent.BackendType, blobPath, destDir, manifestID string) (string, error) {
 	switch backend {
 	case agent.BackendOpenCode:
 		rewritten, err := RewriteImportBlob(blobPath, destDir)
@@ -57,14 +63,14 @@ func ImportSessionBlob(ctx context.Context, backend agent.BackendType, blobPath,
 			return "", err
 		}
 		defer os.Remove(rewritten)
-		return OpenCodeBackend{}.ImportSession(ctx, "", rewritten)
+		return OpenCodeBackend{}.ImportSession(ctx, "", rewritten, manifestID)
 	case agent.BackendClaudeCode:
 		rewritten, err := RewriteClaudeImportBlob(blobPath, destDir)
 		if err != nil {
 			return "", err
 		}
 		defer os.Remove(rewritten)
-		return ClaudeBackend{}.ImportSession(ctx, destDir, rewritten)
+		return ClaudeBackend{}.ImportSession(ctx, destDir, rewritten, manifestID)
 	default:
 		return "", fmt.Errorf("sessionsync: no import for backend %q", backend)
 	}

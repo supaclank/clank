@@ -40,7 +40,7 @@ func (s *Service) RegisterImportedSession(ctx context.Context, worktreeID string
 		return agent.SessionInfo{}, fmt.Errorf("register imported session %s: resolve work root: %w", entry.SessionID, err)
 	}
 
-	importedExternalID, err := sessionsync.ImportSessionBlob(ctx, entry.Backend, blobPath, filepath.Join(destDir, worktreeID))
+	importedExternalID, err := sessionsync.ImportSessionBlob(ctx, entry.Backend, blobPath, filepath.Join(destDir, worktreeID), entry.ExternalID)
 	if err != nil {
 		return agent.SessionInfo{}, fmt.Errorf("register imported session %s: %w", entry.SessionID, err)
 	}

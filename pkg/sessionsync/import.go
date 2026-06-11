@@ -56,7 +56,7 @@ func ImportWorktreeSessions(ctx context.Context, client *http.Client, manifestUR
 		if err := os.WriteFile(blobPath, blobBytes, 0o600); err != nil {
 			return nil, fmt.Errorf("write blob %s: %w", entry.SessionID, err)
 		}
-		extID, err := ImportSessionBlob(ctx, entry.Backend, blobPath, destDir)
+		extID, err := ImportSessionBlob(ctx, entry.Backend, blobPath, destDir, entry.ExternalID)
 		if err != nil {
 			return nil, fmt.Errorf("import session %s: %w", entry.SessionID, err)
 		}

@@ -38,7 +38,7 @@ func TestOpenCodeBackend_RoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	gotID, err := be.ImportSession(ctx, "", blobPath)
+	gotID, err := be.ImportSession(ctx, "", blobPath, "")
 	if err != nil {
 		t.Fatalf("ImportSession: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestOpenCodeBackend_RoundTrip(t *testing.T) {
 	if err := os.WriteFile(exportPath, buf.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	reID, err := be.ImportSession(ctx, "", exportPath)
+	reID, err := be.ImportSession(ctx, "", exportPath, "")
 	if err != nil {
 		t.Fatalf("re-ImportSession: %v", err)
 	}

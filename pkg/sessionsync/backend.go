@@ -63,8 +63,14 @@ type Backend interface {
 	ExportSession(ctx context.Context, projectDir, externalID string, dst io.Writer) error
 
 	// ImportSession installs an export blob and returns the backend-native
-	// session id it was filed under.
-	ImportSession(ctx context.Context, projectDir, blobPath string) (externalID string, err error)
+	// session id it was filed under. manifestID is the SessionEntry.ExternalID
+	// from the export manifest — the authoritative/current session id stamped
+	// at export time. Backends that file by id (Claude) MUST use it as the
+	// destination filename when set+safe, so a resumed/compacted transcript
+	// (whose first JSONL line carries the PARENT sessionId) still lands under
+	// the manifest id; an empty manifestID falls back to the blob-derived id.
+	// Backends that merge by message id (opencode) ignore it.
+	ImportSession(ctx context.Context, projectDir, blobPath, manifestID string) (externalID string, err error)
 }
 
 // millisToTime converts opencode/Claude epoch-millisecond timestamps to

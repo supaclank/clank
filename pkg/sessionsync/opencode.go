@@ -38,6 +38,9 @@ func (OpenCodeBackend) ExportSession(ctx context.Context, projectDir, externalID
 	return agent.OpenCodeExportSession(ctx, projectDir, externalID, dst)
 }
 
-func (OpenCodeBackend) ImportSession(ctx context.Context, projectDir, blobPath string) (string, error) {
+// ImportSession ignores manifestID: opencode import additive-merges by
+// message id and `opencode import` chooses its own session filename, so the
+// manifest id is not the on-disk identity (unlike Claude, which files by id).
+func (OpenCodeBackend) ImportSession(ctx context.Context, projectDir, blobPath, _ string) (string, error) {
 	return agent.OpenCodeImportSession(ctx, projectDir, blobPath)
 }

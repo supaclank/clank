@@ -96,7 +96,7 @@ func TestClaudeBackend_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RewriteClaudeImportBlob: %v", err)
 	}
-	gotID, err := be.ImportSession(ctx, destDir, rewritten)
+	gotID, err := be.ImportSession(ctx, destDir, rewritten, sessionID)
 	if err != nil {
 		t.Fatalf("ImportSession: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestClaudeBackend_RoundTrip(t *testing.T) {
 	assertTranscriptCwd(t, destDir, sessionID, destDir)
 
 	// Idempotent re-import: same id, still discoverable.
-	reID, err := be.ImportSession(ctx, destDir, rewritten)
+	reID, err := be.ImportSession(ctx, destDir, rewritten, sessionID)
 	if err != nil {
 		t.Fatalf("re-ImportSession: %v", err)
 	}
@@ -142,7 +142,8 @@ func TestClaudeBackend_ImportPlacementOnly(t *testing.T) {
 	if err := os.WriteFile(blobPath, claudeTranscriptBytes(sessionID, srcDir), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (ClaudeBackend{}).ImportSession(ctx, destDir, blobPath); err != nil {
+	// manifestID="" exercises the blob-derived fallback (legacy manifests).
+	if _, err := (ClaudeBackend{}).ImportSession(ctx, destDir, blobPath, ""); err != nil {
 		t.Fatalf("ImportSession: %v", err)
 	}
 	infos, err := claudecode.ListSessions(claudecode.WithSessionDirectory(destDir))
@@ -151,5 +152,55 @@ func TestClaudeBackend_ImportPlacementOnly(t *testing.T) {
 	}
 	if !containsSessionID(infos, sessionID) {
 		t.Fatal("placement-only import not discoverable; the encoded PATH (not in-file cwd) is what discovery needs")
+	}
+}
+
+// TestClaudeBackend_ImportFilesUnderManifestID is the regression for the
+// resumed/compacted-session bug: the transcript file is named with the
+// CURRENT session id, but its first replayed JSONL lines carry the PARENT's
+// sessionId. Import MUST file under (and return) the manifest's id — the
+// authoritative/current id stamped by export — NOT the blob's first-line
+// PARENT id, or import idempotency breaks (re-import loop) and a later
+// `claude --resume <manifestID>` finds no file.
+func TestClaudeBackend_ImportFilesUnderManifestID(t *testing.T) {
+	t.Setenv(envClaudeConfigDir, t.TempDir())
+	ctx := context.Background()
+	const (
+		parentID  = "781be8a1-1111-2222-3333-444455556666" // first-line sessionId
+		currentID = "0fefe70b-aaaa-bbbb-cccc-ddddeeeeffff" // manifest / on-disk filename
+	)
+	srcDir := t.TempDir()
+	destDir := t.TempDir()
+
+	// Blob carries the PARENT id on every line (replayed parent history).
+	blobPath := filepath.Join(t.TempDir(), "resumed.jsonl")
+	if err := os.WriteFile(blobPath, claudeTranscriptBytes(parentID, srcDir), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	gotID, err := (ClaudeBackend{}).ImportSession(ctx, destDir, blobPath, currentID)
+	if err != nil {
+		t.Fatalf("ImportSession: %v", err)
+	}
+	if gotID != currentID {
+		t.Fatalf("imported id = %q, want manifest id %q (must not return blob's parent id %q)", gotID, currentID, parentID)
+	}
+
+	// The transcript lands under the MANIFEST id's filename — that is the file
+	// `claude --resume <currentID>` opens. The parent-id file must NOT exist.
+	if _, err := os.Stat(mustTranscriptPath(t, destDir, currentID)); err != nil {
+		t.Fatalf("transcript not filed under manifest id %q: %v", currentID, err)
+	}
+	if _, err := os.Stat(mustTranscriptPath(t, destDir, parentID)); !os.IsNotExist(err) {
+		t.Fatalf("transcript was (also) filed under blob's parent id %q (stat err=%v); resume would wedge", parentID, err)
+	}
+
+	// Idempotent re-import: same manifest id, no reallocation.
+	reID, err := (ClaudeBackend{}).ImportSession(ctx, destDir, blobPath, currentID)
+	if err != nil {
+		t.Fatalf("re-ImportSession: %v", err)
+	}
+	if reID != currentID {
+		t.Errorf("re-import id = %q, want %q (idempotent under manifest id)", reID, currentID)
 	}
 }

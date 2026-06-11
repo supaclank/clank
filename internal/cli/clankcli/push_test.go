@@ -120,7 +120,7 @@ func TestRunPush_SyncsUnsyncedSessionWhenCodeInSync(t *testing.T) {
 	if err := os.WriteFile(blobPath, blob, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sessionsync.ImportSessionBlob(ctx, agent.BackendClaudeCode, blobPath, repo); err != nil {
+	if _, err := sessionsync.ImportSessionBlob(ctx, agent.BackendClaudeCode, blobPath, repo, sessionID); err != nil {
 		t.Fatalf("seed claude session: %v", err)
 	}
 
