@@ -184,10 +184,11 @@ func (b *httpSessionBackend) Fork(ctx context.Context, messageID string) (agent.
 	return out, b.c.do(ctx, http.MethodPost, p, body, &out)
 }
 
-func (b *httpSessionBackend) RespondPermission(ctx context.Context, permissionID string, allow bool) error {
+func (b *httpSessionBackend) RespondPermission(ctx context.Context, permissionID string, allow bool, denyMessage string) error {
 	body := struct {
-		Allow bool `json:"allow"`
-	}{allow}
+		Allow   bool   `json:"allow"`
+		Message string `json:"message,omitempty"`
+	}{allow, denyMessage}
 	p, err := b.path("/permissions/" + url.PathEscape(permissionID) + "/reply")
 	if err != nil {
 		return err

@@ -2170,7 +2170,8 @@ func (m *SessionViewModel) replyPermission(perm agent.PermissionData, allow bool
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		err := m.client.Session(sessionID).ReplyPermission(ctx, perm.RequestID, allow)
+		// The TUI has no deny-reason input yet; pass an empty message.
+		err := m.client.Session(sessionID).ReplyPermission(ctx, perm.RequestID, allow, "")
 		return permissionReplyResultMsg{perm: perm, allow: allow, err: err}
 	}
 }

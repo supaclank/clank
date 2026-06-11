@@ -268,7 +268,10 @@ func (b *OpenCodeBackend) SessionID() string {
 	return b.sessionID
 }
 
-func (b *OpenCodeBackend) RespondPermission(ctx context.Context, permissionID string, allow bool) error {
+// RespondPermission replies to a parked OpenCode permission. denyMessage is
+// accepted for interface parity but unused: OpenCode's PermissionRespond carries
+// only an enum (once/reject) with no free-text deny reason.
+func (b *OpenCodeBackend) RespondPermission(ctx context.Context, permissionID string, allow bool, _ string) error {
 	if b.sessionID == "" {
 		return fmt.Errorf("session not started")
 	}

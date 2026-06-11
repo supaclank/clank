@@ -373,7 +373,7 @@ func TestWire_PermissionReply(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	if err := td.Client.Session(info.ID).ReplyPermission(ctx, "perm-1", true); err != nil {
+	if err := td.Client.Session(info.ID).ReplyPermission(ctx, "perm-1", true, ""); err != nil {
 		t.Fatalf("ReplyPermission: %v", err)
 	}
 	b.mu.Lock()
@@ -398,7 +398,7 @@ func TestWire_PermissionReply_RejectsEmptyID(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	err := td.Client.Session(info.ID).ReplyPermission(ctx, "", true)
+	err := td.Client.Session(info.ID).ReplyPermission(ctx, "", true, "")
 	if err == nil {
 		t.Error("expected error for empty permission id")
 	}

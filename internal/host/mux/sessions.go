@@ -228,6 +228,9 @@ func (m *Mux) handleGetMessages(w http.ResponseWriter, r *http.Request) {
 // /sessions/{id}/permissions/{permID}/reply.
 type PermissionReplyRequest struct {
 	Allow bool `json:"allow"`
+	// Message is the reason forwarded to the model when Allow is false (e.g.
+	// plan-review comments). Ignored when Allow is true.
+	Message string `json:"message,omitempty"`
 }
 
 // GET /sessions/{id}/pending-permission returns blocked permission
@@ -254,7 +257,7 @@ func (m *Mux) handlePermissionReply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	if err := m.svc.RespondPermission(r.Context(), id, permID, req.Allow); err != nil {
+	if err := m.svc.RespondPermission(r.Context(), id, permID, req.Allow, req.Message); err != nil {
 		writeError(w, err)
 		return
 	}

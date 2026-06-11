@@ -183,9 +183,10 @@ func TestClaudeCodeBackend_Permission_Allow(t *testing.T) {
 		res any
 		err error
 	}
+	input := map[string]any{"command": "ls -la"}
 	done := make(chan cbResult, 1)
 	go func() {
-		res, err := resolved.CanUseTool(context.Background(), "Bash", map[string]any{"command": "ls -la"}, nil)
+		res, err := resolved.CanUseTool(context.Background(), "Bash", input, nil)
 		done <- cbResult{res, err}
 	}()
 
@@ -204,7 +205,7 @@ func TestClaudeCodeBackend_Permission_Allow(t *testing.T) {
 		t.Errorf("PermissionData.Description=%q, want %q", data.Description, "Bash: ls -la")
 	}
 
-	if err := b.RespondPermission(context.Background(), data.RequestID, true); err != nil {
+	if err := b.RespondPermission(context.Background(), data.RequestID, true, ""); err != nil {
 		t.Fatalf("RespondPermission: %v", err)
 	}
 
@@ -213,15 +214,26 @@ func TestClaudeCodeBackend_Permission_Allow(t *testing.T) {
 		if r.err != nil {
 			t.Fatalf("callback error: %v", r.err)
 		}
-		if _, ok := r.res.(claudecode.PermissionResultAllow); !ok {
-			t.Errorf("callback result=%T, want PermissionResultAllow", r.res)
+		allow, ok := r.res.(claudecode.PermissionResultAllow)
+		if !ok {
+			t.Fatalf("callback result=%T, want PermissionResultAllow", r.res)
+		}
+		// The CLI's permission schema requires updatedInput on the allow branch;
+		// a bare allow fails every tool with a ZodError. The backend must echo
+		// the tool input back as updatedInput.
+		if allow.UpdatedInput == nil {
+			t.Fatal("PermissionResultAllow.UpdatedInput is nil; CLI rejects bare allow with a ZodError")
+		}
+		if got := allow.UpdatedInput["command"]; got != "ls -la" {
+			t.Errorf("UpdatedInput[command]=%v, want %q (input must be echoed unchanged)", got, "ls -la")
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("callback did not return after RespondPermission(allow)")
 	}
 }
 
-// allow=false → Deny.
+// allow=false → Deny, and the deny message is forwarded to the model verbatim
+// (this is how plan-review comments reach Claude so it can revise).
 func TestClaudeCodeBackend_Permission_Deny(t *testing.T) {
 	t.Parallel()
 	transport := newMockTransport(nil)
@@ -236,16 +248,21 @@ func TestClaudeCodeBackend_Permission_Deny(t *testing.T) {
 		done <- res
 	}()
 
+	const denyMsg = "Please revise: tighten the Overview section."
 	evt := waitForEventType(t, b.Events(), agent.EventPermission, 2*time.Second)
 	data := evt.Data.(agent.PermissionData)
-	if err := b.RespondPermission(context.Background(), data.RequestID, false); err != nil {
+	if err := b.RespondPermission(context.Background(), data.RequestID, false, denyMsg); err != nil {
 		t.Fatalf("RespondPermission: %v", err)
 	}
 
 	select {
 	case res := <-done:
-		if _, ok := res.(claudecode.PermissionResultDeny); !ok {
-			t.Errorf("callback result=%T, want PermissionResultDeny", res)
+		deny, ok := res.(claudecode.PermissionResultDeny)
+		if !ok {
+			t.Fatalf("callback result=%T, want PermissionResultDeny", res)
+		}
+		if deny.Message != denyMsg {
+			t.Errorf("deny message=%q, want %q (review comments must reach the model)", deny.Message, denyMsg)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("callback did not return after RespondPermission(deny)")
@@ -362,6 +379,124 @@ func TestClaudeCodeBackend_PermissionMode_RuntimeChange_UsesBackendCtx(t *testin
 	}
 }
 
+// A Send issued while a permission prompt is still pending must fast-fail
+// instead of deadlocking. The parked handleCanUseTool blocks the SDK read
+// goroutine, so a mode-changing Send (what the mobile plan-Approve does) would
+// otherwise wait the full SetPermissionMode control timeout and then flip the
+// session to StatusError, bricking it.
+func TestClaudeCodeBackend_Send_BlockedWhilePermissionPending(t *testing.T) {
+	t.Parallel()
+	transport := newMockTransport(nil)
+	b := agent.NewClaudeCodeBackend(t.TempDir())
+	defer b.Stop()
+
+	resolved := captureOpenOptions(t, b, transport)
+
+	// Park a permission, mirroring a pending ExitPlanMode prompt.
+	go func() {
+		_, _ = resolved.CanUseTool(context.Background(), "ExitPlanMode", map[string]any{}, nil)
+	}()
+	waitForEventType(t, b.Events(), agent.EventPermission, 2*time.Second)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- b.Send(context.Background(), agent.SendMessageOpts{
+			Text:           "approved",
+			PermissionMode: agent.ClaudePermBypass,
+		})
+	}()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("Send while a permission was pending returned nil; want a fast-fail error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Send blocked while a permission was pending (deadlock); want an immediate error")
+	}
+
+	// The guard must run before the mode change, so nothing leaks to the CLI.
+	if got := transport.recordedPermissionModes(); len(got) != 0 {
+		t.Errorf("SetPermissionMode called while a permission was pending: %v", got)
+	}
+	// The session must stay usable, not be flipped to error.
+	if b.Status() == agent.StatusError {
+		t.Error("Send guard flipped the session to StatusError; want it to remain usable")
+	}
+}
+
+// A permission prompt must carry the tool_use id of the block it gates (derived
+// from the stream) so a client can correlate the prompt with the tool-call card
+// it already rendered instead of guessing by tool name.
+func TestClaudeCodeBackend_Permission_CarriesToolUseID(t *testing.T) {
+	t.Parallel()
+	const sessionID = "claude-tooluse"
+	const toolUseID = "toolu_plan_abc"
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.SystemMessage{
+			MessageType: "system",
+			Subtype:     "init",
+			Data:        map[string]any{"session_id": sessionID},
+		},
+		&claudecode.StreamEvent{
+			SessionID: sessionID,
+			Event: map[string]any{
+				"type":    "message_start",
+				"message": map[string]any{"id": "msg_1"},
+			},
+		},
+		&claudecode.StreamEvent{
+			SessionID: sessionID,
+			Event: map[string]any{
+				"type":  "content_block_start",
+				"index": float64(0),
+				"content_block": map[string]any{
+					"type": "tool_use",
+					"id":   toolUseID,
+					"name": "ExitPlanMode",
+				},
+			},
+		},
+	})
+	b := agent.NewClaudeCodeBackend(t.TempDir())
+	defer b.Stop()
+	resolved := captureOpenOptions(t, b, transport)
+
+	// Wait for the tool_use part so handleContentBlockStart has recorded the id
+	// before the permission (which reads it) is raised.
+	waitForToolPart(t, b.Events(), "ExitPlanMode", 2*time.Second)
+
+	go func() {
+		_, _ = resolved.CanUseTool(context.Background(), "ExitPlanMode", map[string]any{}, nil)
+	}()
+	evt := waitForEventType(t, b.Events(), agent.EventPermission, 2*time.Second)
+	data := evt.Data.(agent.PermissionData)
+	if data.ToolUseID != toolUseID {
+		t.Errorf("PermissionData.ToolUseID=%q, want %q", data.ToolUseID, toolUseID)
+	}
+}
+
+// waitForToolPart drains events until a tool-call part for the given tool is seen.
+func waitForToolPart(t *testing.T, ch <-chan agent.Event, tool string, timeout time.Duration) {
+	t.Helper()
+	timer := time.After(timeout)
+	for {
+		select {
+		case evt, ok := <-ch:
+			if !ok {
+				t.Fatalf("events channel closed before tool part %s", tool)
+			}
+			if evt.Type == agent.EventPartUpdate {
+				if d, ok := evt.Data.(agent.PartUpdateData); ok && d.Part.Tool == tool {
+					return
+				}
+			}
+		case <-timer:
+			t.Fatalf("timed out waiting for tool part %s", tool)
+		}
+	}
+}
+
 // RespondPermission for an unknown ID must fail fast rather than silently
 // succeed or panic.
 func TestClaudeCodeBackend_RespondPermission_UnknownID(t *testing.T) {
@@ -369,7 +504,7 @@ func TestClaudeCodeBackend_RespondPermission_UnknownID(t *testing.T) {
 	b := agent.NewClaudeCodeBackend(t.TempDir())
 	defer b.Stop()
 
-	if err := b.RespondPermission(context.Background(), "does-not-exist", true); err == nil {
+	if err := b.RespondPermission(context.Background(), "does-not-exist", true, ""); err == nil {
 		t.Error("RespondPermission(unknown) = nil, want error")
 	}
 }

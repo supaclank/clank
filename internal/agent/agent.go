@@ -266,6 +266,11 @@ type PermissionData struct {
 	RequestID   string `json:"request_id"`
 	Tool        string `json:"tool"`
 	Description string `json:"description"`
+	// ToolUseID is the id of the tool_use block this prompt is gating, when the
+	// backend can determine it. It lets a client correlate the prompt with the
+	// tool-call card it already rendered (whose id is the tool_use id) instead
+	// of guessing by tool name. Empty when the backend can't attribute it.
+	ToolUseID string `json:"tool_use_id,omitempty"`
 }
 
 // ErrorData is the payload for EventError.
@@ -640,9 +645,11 @@ type SessionBackend interface {
 	Fork(ctx context.Context, messageID string) (ForkResult, error)
 
 	// RespondPermission replies to a pending permission prompt.
-	// allow=true sends "once", allow=false sends "reject".
-	// Returns an error if the backend does not support permissions.
-	RespondPermission(ctx context.Context, permissionID string, allow bool) error
+	// allow=true sends "once", allow=false sends "reject". denyMessage is the
+	// reason shown to the model when allow=false (empty for a default reason);
+	// it is ignored when allow=true and by backends whose protocol has no
+	// deny-reason field.
+	RespondPermission(ctx context.Context, permissionID string, allow bool, denyMessage string) error
 }
 
 // BackendInvocation is the host-resolved, backend-only view of a session
