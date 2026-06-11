@@ -177,6 +177,11 @@ func (s *setupTokenSession) awaitToken(ctx context.Context) (string, error) {
 
 const setupTokenPollInterval = 100 * time.Millisecond
 
+// setupTokenSubmitDelay separates the pasted code from the Enter
+// keystroke in submitCode (see the comment there). ~300ms+ is enough on
+// Claude Code 2.1.x; 400ms leaves headroom.
+const setupTokenSubmitDelay = 400 * time.Millisecond
+
 func (s *setupTokenSession) awaitPattern(ctx context.Context, re *regexp.Regexp, label string) (string, error) {
 	ticker := time.NewTicker(setupTokenPollInterval)
 	defer ticker.Stop()
@@ -203,13 +208,23 @@ func (s *setupTokenSession) awaitPattern(ctx context.Context, re *regexp.Regexp,
 	}
 }
 
-// submitCode writes the user's pasted authorization code to the
-// CLI's stdin, followed by a carriage return so the CLI's line-
-// buffered read returns. The CLI normally echoes the input and then
-// transitions to its token-printing branch.
+// submitCode delivers the user's pasted authorization code to the
+// running setup-token subprocess and presses Enter so the CLI exchanges
+// it. The code and the Enter go in TWO writes separated by
+// setupTokenSubmitDelay: Claude Code's Ink TUI debounces a code+CR sent
+// in a single write as one paste event and swallows the trailing CR, so
+// the code lands in the "Paste code here" field but is never submitted
+// and the whole flow times out waiting for a token. A separate Enter
+// keystroke after the gap registers as a real "submit".
 func (s *setupTokenSession) submitCode(code string) error {
-	_, err := s.ptmx.Write([]byte(code + "\r"))
-	return err
+	if _, err := s.ptmx.Write([]byte(code)); err != nil {
+		return err
+	}
+	time.Sleep(setupTokenSubmitDelay)
+	if _, err := s.ptmx.Write([]byte("\r")); err != nil {
+		return err
+	}
+	return nil
 }
 
 // close tears the session down: cancels the run context (which the
