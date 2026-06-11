@@ -180,7 +180,7 @@ const setupTokenPollInterval = 100 * time.Millisecond
 // setupTokenSubmitDelay separates the pasted code from the Enter
 // keystroke in submitCode (see the comment there). ~300ms+ is enough on
 // Claude Code 2.1.x; 400ms leaves headroom.
-const setupTokenSubmitDelay = 400 * time.Millisecond
+var setupTokenSubmitDelay = 400 * time.Millisecond
 
 func (s *setupTokenSession) awaitPattern(ctx context.Context, re *regexp.Regexp, label string) (string, error) {
 	ticker := time.NewTicker(setupTokenPollInterval)
@@ -220,7 +220,13 @@ func (s *setupTokenSession) submitCode(code string) error {
 	if _, err := s.ptmx.Write([]byte(code)); err != nil {
 		return err
 	}
-	time.Sleep(setupTokenSubmitDelay)
+	timer := time.NewTimer(setupTokenSubmitDelay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-s.doneCh:
+		return fmt.Errorf("setup-token exited during submit")
+	}
 	if _, err := s.ptmx.Write([]byte("\r")); err != nil {
 		return err
 	}

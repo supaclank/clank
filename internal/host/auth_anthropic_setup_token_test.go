@@ -34,6 +34,12 @@ func TestMain(m *testing.M) {
 	prev := setupTokenBinary
 	setupTokenBinary = bin
 	defer func() { setupTokenBinary = prev }()
+
+	// Fake binary has no TUI debounce; zero delay is fine in tests.
+	prevDelay := setupTokenSubmitDelay
+	setupTokenSubmitDelay = 0
+	defer func() { setupTokenSubmitDelay = prevDelay }()
+
 	os.Exit(m.Run())
 }
 
