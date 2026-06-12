@@ -1495,6 +1495,24 @@ func TestClaudeCodeBackendMultiCyclePartIDs(t *testing.T) {
 			t.Errorf("part %q: MessageID = %q, want %q", id, data.MessageID, want)
 		}
 	}
+	// partIDs holds only the first emission per ID; check every event
+	// (start, delta, stop) so a regression in any emit site is caught.
+	for _, evt := range events {
+		if evt.Type != agent.EventPartUpdate {
+			continue
+		}
+		data, ok := evt.Data.(agent.PartUpdateData)
+		if !ok {
+			continue
+		}
+		want, known := wantMsgID[data.Part.ID]
+		if !known {
+			continue
+		}
+		if data.MessageID != want {
+			t.Errorf("part %q (isDelta=%v): MessageID = %q, want %q", data.Part.ID, data.IsDelta, data.MessageID, want)
+		}
+	}
 
 	// Verify total unique part IDs: thinking, text(cycle1), tool_use, text(cycle2) = 4.
 	// (Plus deltas that reuse the same IDs.)
