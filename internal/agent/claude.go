@@ -664,6 +664,26 @@ func (b *ClaudeCodeBackend) blockID(index int) string {
 	return fmt.Sprintf("%s-%d", b.currentMsgID, index)
 }
 
+// emitPart emits an EventPartUpdate stamped with the current Anthropic message
+// id. Stamping MessageID lets clients route a part to its owning message
+// directly, instead of reverse-engineering it from the part id (text/thinking
+// ids embed {apiMsgID}-{blockIdx}, but tool parts use the raw tool_use id with
+// no such prefix). currentMsgID == the assistant message's transcript id, so
+// streamed parts and the reloaded transcript reconcile by the same key. This
+// mirrors what the OpenCode backend already does. Called only from receiveLoop
+// (single goroutine), so reading currentMsgID is lock-free.
+func (b *ClaudeCodeBackend) emitPart(part Part, isDelta bool) {
+	b.emit(Event{
+		Type:      EventPartUpdate,
+		Timestamp: time.Now(),
+		Data: PartUpdateData{
+			MessageID: b.currentMsgID,
+			Part:      part,
+			IsDelta:   isDelta,
+		},
+	})
+}
+
 func (b *ClaudeCodeBackend) handleContentBlockStart(event map[string]any) {
 	block, ok := event["content_block"].(map[string]any)
 	if !ok {
@@ -676,17 +696,11 @@ func (b *ClaudeCodeBackend) handleContentBlockStart(event map[string]any) {
 	switch blockType {
 	case "text":
 		text, _ := block["text"].(string)
-		b.emit(Event{
-			Type:      EventPartUpdate,
-			Timestamp: time.Now(),
-			Data: PartUpdateData{
-				Part: Part{
-					ID:   b.blockID(index),
-					Type: PartText,
-					Text: text,
-				},
-			},
-		})
+		b.emitPart(Part{
+			ID:   b.blockID(index),
+			Type: PartText,
+			Text: text,
+		}, false)
 	case "tool_use":
 		id, _ := block["id"].(string)
 		name, _ := block["name"].(string)
@@ -701,31 +715,19 @@ func (b *ClaudeCodeBackend) handleContentBlockStart(event map[string]any) {
 			b.lastToolUseID[name] = id
 			b.mu.Unlock()
 		}
-		b.emit(Event{
-			Type:      EventPartUpdate,
-			Timestamp: time.Now(),
-			Data: PartUpdateData{
-				Part: Part{
-					ID:     id,
-					Type:   PartToolCall,
-					Tool:   name,
-					Status: PartRunning,
-				},
-			},
-		})
+		b.emitPart(Part{
+			ID:     id,
+			Type:   PartToolCall,
+			Tool:   name,
+			Status: PartRunning,
+		}, false)
 	case "thinking":
 		text, _ := block["thinking"].(string)
-		b.emit(Event{
-			Type:      EventPartUpdate,
-			Timestamp: time.Now(),
-			Data: PartUpdateData{
-				Part: Part{
-					ID:   b.blockID(index),
-					Type: PartThinking,
-					Text: text,
-				},
-			},
-		})
+		b.emitPart(Part{
+			ID:   b.blockID(index),
+			Type: PartThinking,
+			Text: text,
+		}, false)
 	}
 }
 
@@ -742,34 +744,20 @@ func (b *ClaudeCodeBackend) handleContentBlockDelta(event map[string]any) {
 	case "text_delta":
 		text, _ := delta["text"].(string)
 		if text != "" {
-			b.emit(Event{
-				Type:      EventPartUpdate,
-				Timestamp: time.Now(),
-				Data: PartUpdateData{
-					Part: Part{
-						ID:   b.blockID(index),
-						Type: PartText,
-						Text: text,
-					},
-					IsDelta: true,
-				},
-			})
+			b.emitPart(Part{
+				ID:   b.blockID(index),
+				Type: PartText,
+				Text: text,
+			}, true)
 		}
 	case "thinking_delta":
 		text, _ := delta["thinking"].(string)
 		if text != "" {
-			b.emit(Event{
-				Type:      EventPartUpdate,
-				Timestamp: time.Now(),
-				Data: PartUpdateData{
-					Part: Part{
-						ID:   b.blockID(index),
-						Type: PartThinking,
-						Text: text,
-					},
-					IsDelta: true,
-				},
-			})
+			b.emitPart(Part{
+				ID:   b.blockID(index),
+				Type: PartThinking,
+				Text: text,
+			}, true)
 		}
 	case "input_json_delta":
 		// Accumulate tool input JSON incrementally so it's available at
@@ -803,19 +791,13 @@ func (b *ClaudeCodeBackend) handleContentBlockStop(event map[string]any) {
 		_ = json.Unmarshal([]byte(raw), &inputMap)
 	}
 
-	b.emit(Event{
-		Type:      EventPartUpdate,
-		Timestamp: time.Now(),
-		Data: PartUpdateData{
-			Part: Part{
-				ID:     tb.partID,
-				Type:   PartToolCall,
-				Tool:   tb.tool,
-				Status: PartCompleted,
-				Input:  inputMap,
-			},
-		},
-	})
+	b.emitPart(Part{
+		ID:     tb.partID,
+		Type:   PartToolCall,
+		Tool:   tb.tool,
+		Status: PartCompleted,
+		Input:  inputMap,
+	}, false)
 }
 
 // --- Type mapping helpers ---

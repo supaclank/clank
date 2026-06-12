@@ -1475,6 +1475,22 @@ func TestClaudeCodeBackendMultiCyclePartIDs(t *testing.T) {
 		t.Errorf("expected tool_use part with ID 'toolu_001', got IDs: %v", keys(partIDs))
 	}
 
+	// Every part update is stamped with the owning Anthropic message id so
+	// clients can route by message_id instead of parsing the part id. This
+	// matters most for tool parts, whose id (toolu_001) carries no message
+	// scope — without the stamp a client can't tell which message owns it.
+	wantMsgID := map[string]string{
+		"msg_cycle1-0": "msg_cycle1", // thinking
+		"msg_cycle1-1": "msg_cycle1", // text
+		"toolu_001":    "msg_cycle1", // tool_use (no scope in its own id)
+		"msg_cycle2-0": "msg_cycle2", // text after tool result
+	}
+	for id, want := range wantMsgID {
+		if data, ok := partIDs[id]; ok && data.MessageID != want {
+			t.Errorf("part %q: MessageID = %q, want %q", id, data.MessageID, want)
+		}
+	}
+
 	// Verify total unique part IDs: thinking, text(cycle1), tool_use, text(cycle2) = 4.
 	// (Plus deltas that reuse the same IDs.)
 	expectedIDs := map[string]bool{
