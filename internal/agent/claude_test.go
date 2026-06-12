@@ -1486,7 +1486,12 @@ func TestClaudeCodeBackendMultiCyclePartIDs(t *testing.T) {
 		"msg_cycle2-0": "msg_cycle2", // text after tool result
 	}
 	for id, want := range wantMsgID {
-		if data, ok := partIDs[id]; ok && data.MessageID != want {
+		data, ok := partIDs[id]
+		if !ok {
+			t.Errorf("expected part ID %q to be present", id)
+			continue
+		}
+		if data.MessageID != want {
 			t.Errorf("part %q: MessageID = %q, want %q", id, data.MessageID, want)
 		}
 	}
