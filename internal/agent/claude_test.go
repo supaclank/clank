@@ -1475,6 +1475,45 @@ func TestClaudeCodeBackendMultiCyclePartIDs(t *testing.T) {
 		t.Errorf("expected tool_use part with ID 'toolu_001', got IDs: %v", keys(partIDs))
 	}
 
+	// Every part update is stamped with the owning Anthropic message id so
+	// clients can route by message_id instead of parsing the part id. This
+	// matters most for tool parts, whose id (toolu_001) carries no message
+	// scope — without the stamp a client can't tell which message owns it.
+	wantMsgID := map[string]string{
+		"msg_cycle1-0": "msg_cycle1", // thinking
+		"msg_cycle1-1": "msg_cycle1", // text
+		"toolu_001":    "msg_cycle1", // tool_use (no scope in its own id)
+		"msg_cycle2-0": "msg_cycle2", // text after tool result
+	}
+	for id, want := range wantMsgID {
+		data, ok := partIDs[id]
+		if !ok {
+			t.Errorf("expected part ID %q to be present", id)
+			continue
+		}
+		if data.MessageID != want {
+			t.Errorf("part %q: MessageID = %q, want %q", id, data.MessageID, want)
+		}
+	}
+	// partIDs holds only the first emission per ID; check every event
+	// (start, delta, stop) so a regression in any emit site is caught.
+	for _, evt := range events {
+		if evt.Type != agent.EventPartUpdate {
+			continue
+		}
+		data, ok := evt.Data.(agent.PartUpdateData)
+		if !ok {
+			continue
+		}
+		want, known := wantMsgID[data.Part.ID]
+		if !known {
+			continue
+		}
+		if data.MessageID != want {
+			t.Errorf("part %q (isDelta=%v): MessageID = %q, want %q", data.Part.ID, data.IsDelta, data.MessageID, want)
+		}
+	}
+
 	// Verify total unique part IDs: thinking, text(cycle1), tool_use, text(cycle2) = 4.
 	// (Plus deltas that reuse the same IDs.)
 	expectedIDs := map[string]bool{
