@@ -221,10 +221,6 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 		return fmt.Errorf("connect to claude CLI: %w", err)
 	}
 
-	b.mu.Lock()
-	b.client = client
-	b.mu.Unlock()
-
 	// The launch flag forces the active mode to bypassPermissions. Restrict to
 	// the user's actual mode now — before OpenAndSend issues the first Query —
 	// so a plan/default/acceptEdits session never runs a prompt with bypass
@@ -232,14 +228,22 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	// window is safe. A failed restrict is fatal: better to fail than to run a
 	// plan-requested session with full permissions. bypass needs no restrict —
 	// it is already the launch mode.
+	//
+	// Commit b.client only after the restrict succeeds. A non-nil b.client makes
+	// the next Open early-return nil (session looks ready) while the CLI keeps
+	// running, so committing before the restrict would both leak the subprocess
+	// and wedge the backend half-open on failure. Disconnect on failure so the
+	// retry starts from a clean slate.
 	if permMode != ClaudePermBypass {
 		if err := client.SetPermissionMode(b.ctx, claudecode.PermissionMode(permMode)); err != nil {
 			b.setStatus(StatusError)
+			client.Disconnect()
 			return fmt.Errorf("restrict to %q permission mode: %w", permMode, err)
 		}
 	}
 
 	b.mu.Lock()
+	b.client = client
 	b.currentPermMode = permMode
 	b.mu.Unlock()
 

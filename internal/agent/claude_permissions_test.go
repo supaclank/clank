@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -147,6 +148,69 @@ func TestClaudeCodeBackend_PermissionMode_PlanThenBypass(t *testing.T) {
 	}
 	if got := transport.recordedPermissionModes(); len(got) != 2 || got[1] != "bypassPermissions" {
 		t.Fatalf("recordedPermissionModes=%v, want [plan bypassPermissions]", got)
+	}
+}
+
+// Regression: a failed startup restrict must disconnect the CLI subprocess and
+// leave b.client nil so Open is retryable. Committing b.client before the
+// restrict leaked the subprocess (no Disconnect on the failure path) and wedged
+// the backend half-open — the non-nil client made the next Open early-return nil
+// while pointing at a dead session.
+func TestClaudeCodeBackend_StartupRestrictFailure_DisconnectsAndStaysRetryable(t *testing.T) {
+	t.Parallel()
+	sessionID := "claude-perm-restrict-fail"
+	result := "done"
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.SystemMessage{
+			MessageType: "system",
+			Subtype:     "init",
+			Data:        map[string]any{"session_id": sessionID},
+		},
+		&claudecode.ResultMessage{MessageType: "result", SessionID: sessionID, Result: &result},
+	})
+
+	failNext := true
+	transport.onSetPermMode = func(_ context.Context, mode string) error {
+		transport.mu.Lock()
+		defer transport.mu.Unlock()
+		if failNext {
+			failNext = false
+			return fmt.Errorf("simulated control error")
+		}
+		transport.permissionModes = append(transport.permissionModes, mode)
+		return nil
+	}
+
+	b := newTestBackend(t, transport)
+	defer b.Stop()
+
+	// First open: the startup restrict fails, so Open must error.
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text:           "plan it",
+		PermissionMode: agent.ClaudePermPlan,
+	})
+	if err == nil {
+		t.Fatal("OpenAndSend: want error from failed startup restrict, got nil")
+	}
+
+	// Subprocess must be torn down — no leak.
+	transport.mu.Lock()
+	connected := transport.connected
+	transport.mu.Unlock()
+	if connected {
+		t.Error("failed startup restrict leaked the subprocess: Disconnect was not called")
+	}
+
+	// Retry must actually re-run Connect + restrict, not early-return on a stale
+	// half-open client.
+	if err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text:           "plan it",
+		PermissionMode: agent.ClaudePermPlan,
+	}); err != nil {
+		t.Fatalf("retry OpenAndSend after failed restrict: %v", err)
+	}
+	if got := transport.recordedPermissionModes(); len(got) != 1 || got[0] != "plan" {
+		t.Fatalf("retry should re-run the startup restrict; recordedPermissionModes=%v, want [plan]", got)
 	}
 }
 
