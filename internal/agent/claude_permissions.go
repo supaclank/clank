@@ -46,6 +46,31 @@ func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, i
 		b.mu.Unlock()
 	}()
 
+	// The CLI asks for permission just before the content_block_stop that would
+	// carry the tool's input, and this callback parks the single stdout reader —
+	// so that stop (and the input) never reaches clients until the prompt is
+	// answered. Stop-and-wait tools (ExitPlanMode, AskUserQuestion) render their
+	// answer UI *from* that input, so without it the client is stuck on a spinner
+	// it can't act on. Emit the input now, from the map the CLI just handed us, so
+	// the card can render while the prompt is pending. MessageID is left empty
+	// (currentMsgID is owned by receiveLoop; reading it here would race), and
+	// clients attach tool parts by part id.
+	if toolUseID != "" {
+		b.emit(Event{
+			Type:      EventPartUpdate,
+			Timestamp: time.Now(),
+			Data: PartUpdateData{
+				Part: Part{
+					ID:     toolUseID,
+					Type:   PartToolCall,
+					Tool:   tool,
+					Status: PartRunning,
+					Input:  input,
+				},
+			},
+		})
+	}
+
 	b.emit(Event{
 		Type:      EventPermission,
 		Timestamp: time.Now(),

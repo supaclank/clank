@@ -296,6 +296,71 @@ func TestClaudeCodeBackend_CanUseTool_Wired(t *testing.T) {
 	}
 }
 
+// handleCanUseTool must emit the gated tool's input as a part update so a
+// stop-and-wait tool (ExitPlanMode / AskUserQuestion) can render its answer card
+// while the prompt is parked. The CLI requests permission just before the
+// content_block_stop that would carry the input, and the callback parks the
+// stdout reader — so without this emit the client is stuck on an input-less
+// spinner it can't act on until the prompt is answered.
+func TestClaudeCodeBackend_CanUseTool_EmitsToolInput(t *testing.T) {
+	t.Parallel()
+	// A content_block_start for the ExitPlanMode tool_use, so lastToolUseID (the
+	// part id the emit is keyed by) is populated before the permission fires.
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.StreamEvent{Event: map[string]any{
+			"type":  "content_block_start",
+			"index": float64(0),
+			"content_block": map[string]any{
+				"type": "tool_use",
+				"id":   "toolu_plan",
+				"name": "ExitPlanMode",
+			},
+		}},
+	})
+
+	b := agent.NewClaudeCodeBackend(t.TempDir())
+	defer b.Stop()
+	var captured []claudecode.Option
+	b.ClientFactory = func(opts ...claudecode.Option) claudecode.Client {
+		captured = opts
+		return claudecode.NewClientWithTransport(transport, opts...)
+	}
+	if err := b.Open(context.Background()); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var resolved claudecode.Options
+	for _, opt := range captured {
+		opt(&resolved)
+	}
+
+	// Drain the input-less running part from content_block_start, so the next
+	// part update we wait for is the one handleCanUseTool emits.
+	startEvt := waitForEventType(t, b.Events(), agent.EventPartUpdate, 2*time.Second)
+	if startEvt.Data.(agent.PartUpdateData).Part.Input != nil {
+		t.Fatal("content_block_start part should carry no input yet")
+	}
+
+	input := map[string]any{"plan": "ship it", "planFilePath": "/tmp/plan.md"}
+	go func() {
+		_, _ = resolved.CanUseTool(context.Background(), "ExitPlanMode", input, nil)
+	}()
+
+	evt := waitForEventType(t, b.Events(), agent.EventPartUpdate, 2*time.Second)
+	data, ok := evt.Data.(agent.PartUpdateData)
+	if !ok {
+		t.Fatalf("EventPartUpdate data type=%T, want PartUpdateData", evt.Data)
+	}
+	if data.Part.ID != "toolu_plan" {
+		t.Errorf("Part.ID=%q, want toolu_plan (must match the tool_use id so clients correlate)", data.Part.ID)
+	}
+	if data.Part.Tool != "ExitPlanMode" {
+		t.Errorf("Part.Tool=%q, want ExitPlanMode", data.Part.Tool)
+	}
+	if data.Part.Input["plan"] != "ship it" {
+		t.Errorf("Part.Input[plan]=%v, want %q", data.Part.Input["plan"], "ship it")
+	}
+}
+
 // Changing the mode on a follow-up must issue exactly one SetPermissionMode
 // control call, and resending the same mode must not issue another.
 func TestClaudeCodeBackend_PermissionMode_RuntimeChange(t *testing.T) {
