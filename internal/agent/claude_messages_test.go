@@ -232,6 +232,110 @@ func TestClaudeBackendMessagesFromDisk(t *testing.T) {
 	}
 }
 
+// TestClaudeBackendMessagesCoalescesSplitRecords is the regression test for the
+// "thinking bundled away from its tool calls / thinking dropped, tools only"
+// bug. Claude Code does not write one JSONL record per message: it splits an
+// assistant turn into several records that each hold a single content block but
+// all share the turn's message.id (a thinking record, a text record, then one
+// record per tool_use). Mapping each record 1:1 emitted several MessageData
+// with the same id and colliding "{msgID}-0" part ids (block index restarts at
+// 0 per record), which clients that group parts by message id render as
+// segregated or dropped thinking. Messages() must coalesce the run into ONE
+// assistant message with its blocks in order and a running block index.
+func TestClaudeBackendMessagesCoalescesSplitRecords(t *testing.T) {
+	// Cannot use t.Parallel because t.Setenv mutates process env.
+	configDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+
+	workDir := t.TempDir()
+	projDir := mkClaudeProjectDir(t, configDir, workDir)
+
+	const sessionID = "sess-split-001"
+	const apiMsgID = "msg_api_split"
+	const toolUseID1 = "toolu_split_001"
+	const toolUseID2 = "toolu_split_002"
+
+	// One assistant turn, split across four records all sharing apiMsgID —
+	// exactly how Claude Code writes a thinking + text + two-tool turn to disk.
+	mkRecord := func(uuid string, block map[string]any) map[string]any {
+		return map[string]any{
+			"type":      "assistant",
+			"uuid":      uuid,
+			"timestamp": "2026-04-25T10:00:02Z",
+			"sessionId": sessionID,
+			"message": map[string]any{
+				"id":      apiMsgID,
+				"model":   "claude-sonnet-4",
+				"role":    "assistant",
+				"content": []any{block},
+			},
+		}
+	}
+	writeSessionJSONL(t, projDir, sessionID, []map[string]any{
+		{
+			"type":      "user",
+			"uuid":      "u-1",
+			"timestamp": "2026-04-25T10:00:01Z",
+			"sessionId": sessionID,
+			"cwd":       workDir,
+			"message":   map[string]any{"role": "user", "content": "Build the thing."},
+		},
+		mkRecord("a-think", map[string]any{"type": "thinking", "thinking": "Planning the build."}),
+		mkRecord("a-text", map[string]any{"type": "text", "text": "Working on it."}),
+		mkRecord("a-tool1", map[string]any{
+			"type": "tool_use", "id": toolUseID1, "name": "Write",
+			"input": map[string]any{"file_path": "a.ts"},
+		}),
+		mkRecord("a-tool2", map[string]any{
+			"type": "tool_use", "id": toolUseID2, "name": "Write",
+			"input": map[string]any{"file_path": "b.ts"},
+		}),
+	})
+
+	b := newBackendForDir(t, workDir, sessionID)
+	defer b.Stop()
+
+	msgs, err := b.Messages(context.Background())
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+
+	// The four split records must coalesce into a single assistant message,
+	// leaving exactly [user, assistant].
+	if got, want := len(msgs), 2; got != want {
+		for i, m := range msgs {
+			t.Logf("msg %d: role=%s id=%s parts=%d", i, m.Role, m.ID, len(m.Parts))
+		}
+		t.Fatalf("got %d messages, want %d (split records must coalesce)", got, want)
+	}
+
+	a := msgs[1]
+	if a.Role != "assistant" || a.ID != apiMsgID {
+		t.Fatalf("msgs[1] role=%q id=%q, want assistant %q", a.Role, a.ID, apiMsgID)
+	}
+	if len(a.Parts) != 4 {
+		t.Fatalf("msgs[1].Parts = %d, want 4 (thinking, text, 2 tools interleaved)", len(a.Parts))
+	}
+
+	// Blocks keep API order with a running index: thinking -0, text -1.
+	if a.Parts[0].Type != agent.PartThinking || a.Parts[0].ID != apiMsgID+"-0" {
+		t.Errorf("Parts[0] = {%q,%q}, want {thinking,%q-0}", a.Parts[0].Type, a.Parts[0].ID, apiMsgID)
+	}
+	if a.Parts[1].Type != agent.PartText || a.Parts[1].ID != apiMsgID+"-1" {
+		t.Errorf("Parts[1] = {%q,%q}, want {text,%q-1}", a.Parts[1].Type, a.Parts[1].ID, apiMsgID)
+	}
+	// Thinking and text must NOT collide on "{msgID}-0".
+	if a.Parts[0].ID == a.Parts[1].ID {
+		t.Errorf("thinking and text share part id %q (block index did not advance across records)", a.Parts[0].ID)
+	}
+	if a.Parts[2].Type != agent.PartToolCall || a.Parts[2].ID != toolUseID1 {
+		t.Errorf("Parts[2] = {%q,%q}, want {tool_call,%q}", a.Parts[2].Type, a.Parts[2].ID, toolUseID1)
+	}
+	if a.Parts[3].Type != agent.PartToolCall || a.Parts[3].ID != toolUseID2 {
+		t.Errorf("Parts[3] = {%q,%q}, want {tool_call,%q}", a.Parts[3].Type, a.Parts[3].ID, toolUseID2)
+	}
+}
+
 // TestClaudeBackendMessagesNoSessionID asserts that Messages() returns
 // (nil, nil) before a session ID has been observed, instead of erroring or
 // returning a stale buffer. This matches the contract documented on the
