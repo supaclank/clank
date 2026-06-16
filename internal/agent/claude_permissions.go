@@ -13,7 +13,7 @@ import (
 // denyMessage is the reason forwarded to the model when allow is false; it is
 // ignored when allow is true.
 type permissionDecision struct {
-	allow      bool
+	allow       bool
 	denyMessage string
 }
 
@@ -46,6 +46,31 @@ func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, i
 		b.mu.Unlock()
 	}()
 
+	// The CLI asks for permission just before the content_block_stop that would
+	// carry the tool's input, and this callback parks the single stdout reader —
+	// so that stop (and the input) never reaches clients until the prompt is
+	// answered. Stop-and-wait tools (ExitPlanMode, AskUserQuestion) render their
+	// answer UI *from* that input, so without it the client is stuck on a spinner
+	// it can't act on. Emit the input now, from the map the CLI just handed us, so
+	// the card can render while the prompt is pending. MessageID is left empty
+	// (currentMsgID is owned by receiveLoop; reading it here would race), and
+	// clients attach tool parts by part id.
+	if toolUseID != "" {
+		b.emit(Event{
+			Type:      EventPartUpdate,
+			Timestamp: time.Now(),
+			Data: PartUpdateData{
+				Part: Part{
+					ID:     toolUseID,
+					Type:   PartToolCall,
+					Tool:   tool,
+					Status: PartRunning,
+					Input:  input,
+				},
+			},
+		})
+	}
+
 	b.emit(Event{
 		Type:      EventPermission,
 		Timestamp: time.Now(),
@@ -60,6 +85,20 @@ func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, i
 	select {
 	case d := <-decision:
 		if d.allow {
+			// Approving ExitPlanMode makes the CLI auto-exit plan mode (it
+			// transitions the session to its post-plan mode on its own). clank
+			// can't see that new mode, so its currentPermMode would go stale at
+			// "plan" — and Send's "skip SetPermissionMode if unchanged" check
+			// would then wrongly skip re-asserting plan on the next message
+			// (running it in the CLI's default mode instead). Reset the tracked
+			// mode to unknown so the next Send always re-asserts the user's
+			// chosen mode. The re-assert always succeeds: the session was
+			// launched with --dangerously-skip-permissions (see Open).
+			if tool == "ExitPlanMode" {
+				b.mu.Lock()
+				b.currentPermMode = ""
+				b.mu.Unlock()
+			}
 			// The CLI validates the permission response against a discriminated
 			// union whose allow branch requires updatedInput to be a record; a
 			// bare {behavior:"allow"} matches neither allow nor deny and the CLI

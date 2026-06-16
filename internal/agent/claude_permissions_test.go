@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -49,8 +50,10 @@ func captureOpenOptions(t *testing.T, b *agent.ClaudeCodeBackend, transport *moc
 	return resolved
 }
 
-// A user-picked permission mode must propagate through OpenAndSend → Open as
-// claudecode.WithPermissionMode on the spawn options.
+// A user-picked non-bypass mode must be applied as a runtime restrict right
+// after Connect (not via WithPermissionMode): the CLI is always launched in
+// bypassPermissions so it carries the capability to switch back to bypass
+// later, then Open restricts to the requested mode before the first prompt.
 func TestClaudeCodeBackend_PermissionMode_PropagatesToSpawnOptions(t *testing.T) {
 	t.Parallel()
 	transport := newMockTransport(nil)
@@ -74,17 +77,19 @@ func TestClaudeCodeBackend_PermissionMode_PropagatesToSpawnOptions(t *testing.T)
 	for _, opt := range captured {
 		opt(&resolved)
 	}
-	if resolved.PermissionMode == nil || *resolved.PermissionMode != claudecode.PermissionModePlan {
-		got := "<nil>"
-		if resolved.PermissionMode != nil {
-			got = string(*resolved.PermissionMode)
-		}
-		t.Errorf("Options.PermissionMode=%q, want plan", got)
+	// Always launched with --dangerously-skip-permissions (the bypass capability).
+	if _, ok := resolved.ExtraArgs["dangerously-skip-permissions"]; !ok {
+		t.Errorf("spawn options missing --dangerously-skip-permissions; ExtraArgs=%v", resolved.ExtraArgs)
+	}
+	// The requested plan mode is applied via a single startup restrict.
+	if got := transport.recordedPermissionModes(); len(got) != 1 || got[0] != "plan" {
+		t.Errorf("startup restrict recordedPermissionModes=%v, want [plan]", got)
 	}
 }
 
-// A session with no explicit mode must launch in bypassPermissions — the
-// product default that makes edits work out of the box.
+// A session with no explicit mode must run in bypassPermissions — the product
+// default that makes edits work out of the box. Since that's also the launch
+// mode (via the flag), no runtime restrict is issued.
 func TestClaudeCodeBackend_PermissionMode_DefaultsToBypass(t *testing.T) {
 	t.Parallel()
 	transport := newMockTransport(nil)
@@ -92,12 +97,188 @@ func TestClaudeCodeBackend_PermissionMode_DefaultsToBypass(t *testing.T) {
 	defer b.Stop()
 
 	resolved := captureOpenOptions(t, b, transport)
-	if resolved.PermissionMode == nil || *resolved.PermissionMode != claudecode.PermissionModeBypassPermissions {
-		got := "<nil>"
-		if resolved.PermissionMode != nil {
-			got = string(*resolved.PermissionMode)
+	if _, ok := resolved.ExtraArgs["dangerously-skip-permissions"]; !ok {
+		t.Errorf("spawn options missing --dangerously-skip-permissions; ExtraArgs=%v", resolved.ExtraArgs)
+	}
+	if got := transport.recordedPermissionModes(); len(got) != 0 {
+		t.Errorf("a default (bypass) session must not restrict at startup; got SetPermissionMode%v", got)
+	}
+}
+
+// Regression for the plan→build escalation bug: a session launched in plan must
+// be able to switch to bypassPermissions at runtime. clank now launches with
+// --dangerously-skip-permissions so the CLI permits it (the live CLI rejects
+// the switch otherwise — see the fix commit). Here we assert clank issues the
+// startup restrict to plan and then the runtime switch to bypass in order.
+func TestClaudeCodeBackend_PermissionMode_PlanThenBypass(t *testing.T) {
+	t.Parallel()
+	sessionID := "claude-perm-plan-bypass"
+	result := "done"
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.SystemMessage{
+			MessageType: "system",
+			Subtype:     "init",
+			Data:        map[string]any{"session_id": sessionID},
+		},
+		&claudecode.ResultMessage{MessageType: "result", SessionID: sessionID, Result: &result},
+	})
+
+	b := newTestBackend(t, transport)
+	defer b.Stop()
+
+	if err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text:           "plan it",
+		PermissionMode: agent.ClaudePermPlan,
+	}); err != nil {
+		t.Fatalf("OpenAndSend: %v", err)
+	}
+	waitForStatus(t, b.Events(), agent.StatusIdle, 5*time.Second)
+
+	// Startup restrict to plan (launch mode is bypass via the flag).
+	if got := transport.recordedPermissionModes(); len(got) != 1 || got[0] != "plan" {
+		t.Fatalf("after launch recordedPermissionModes=%v, want [plan]", got)
+	}
+
+	// Switch plan → build (bypassPermissions) on a follow-up.
+	if err := b.Send(context.Background(), agent.SendMessageOpts{
+		Text:           "now build",
+		PermissionMode: agent.ClaudePermBypass,
+	}); err != nil {
+		t.Fatalf("Send (escalate to bypass): %v", err)
+	}
+	if got := transport.recordedPermissionModes(); len(got) != 2 || got[1] != "bypassPermissions" {
+		t.Fatalf("recordedPermissionModes=%v, want [plan bypassPermissions]", got)
+	}
+}
+
+// Regression: a failed startup restrict must disconnect the CLI subprocess and
+// leave b.client nil so Open is retryable. Committing b.client before the
+// restrict leaked the subprocess (no Disconnect on the failure path) and wedged
+// the backend half-open — the non-nil client made the next Open early-return nil
+// while pointing at a dead session.
+func TestClaudeCodeBackend_StartupRestrictFailure_DisconnectsAndStaysRetryable(t *testing.T) {
+	t.Parallel()
+	sessionID := "claude-perm-restrict-fail"
+	result := "done"
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.SystemMessage{
+			MessageType: "system",
+			Subtype:     "init",
+			Data:        map[string]any{"session_id": sessionID},
+		},
+		&claudecode.ResultMessage{MessageType: "result", SessionID: sessionID, Result: &result},
+	})
+
+	failNext := true
+	transport.onSetPermMode = func(_ context.Context, mode string) error {
+		transport.mu.Lock()
+		defer transport.mu.Unlock()
+		if failNext {
+			failNext = false
+			return fmt.Errorf("simulated control error")
 		}
-		t.Errorf("default Options.PermissionMode=%q, want bypassPermissions", got)
+		transport.permissionModes = append(transport.permissionModes, mode)
+		return nil
+	}
+
+	b := newTestBackend(t, transport)
+	defer b.Stop()
+
+	// First open: the startup restrict fails, so Open must error.
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text:           "plan it",
+		PermissionMode: agent.ClaudePermPlan,
+	})
+	if err == nil {
+		t.Fatal("OpenAndSend: want error from failed startup restrict, got nil")
+	}
+
+	// Subprocess must be torn down — no leak.
+	transport.mu.Lock()
+	connected := transport.connected
+	transport.mu.Unlock()
+	if connected {
+		t.Error("failed startup restrict leaked the subprocess: Disconnect was not called")
+	}
+
+	// Retry must actually re-run Connect + restrict, not early-return on a stale
+	// half-open client.
+	if err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text:           "plan it",
+		PermissionMode: agent.ClaudePermPlan,
+	}); err != nil {
+		t.Fatalf("retry OpenAndSend after failed restrict: %v", err)
+	}
+	if got := transport.recordedPermissionModes(); len(got) != 1 || got[0] != "plan" {
+		t.Fatalf("retry should re-run the startup restrict; recordedPermissionModes=%v, want [plan]", got)
+	}
+}
+
+// Approving ExitPlanMode must reset the tracked permission mode so the next
+// message re-asserts the user's chosen mode. The CLI auto-exits plan on
+// approval (to its own default) without telling clank; without the reset, Send
+// would think the mode is still "plan" and skip re-asserting it, silently
+// running the next turn in the CLI's default mode. Regression guard.
+func TestClaudeCodeBackend_ExitPlanMode_Approve_ResetsTrackedMode(t *testing.T) {
+	t.Parallel()
+	sessionID := "claude-exitplan-reset"
+	result := "done"
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.SystemMessage{
+			MessageType: "system",
+			Subtype:     "init",
+			Data:        map[string]any{"session_id": sessionID},
+		},
+		&claudecode.ResultMessage{MessageType: "result", SessionID: sessionID, Result: &result},
+	})
+
+	b := agent.NewClaudeCodeBackend(t.TempDir())
+	defer b.Stop()
+	var captured []claudecode.Option
+	b.ClientFactory = func(opts ...claudecode.Option) claudecode.Client {
+		captured = opts
+		return claudecode.NewClientWithTransport(transport, opts...)
+	}
+
+	if err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text:           "plan it",
+		PermissionMode: agent.ClaudePermPlan,
+	}); err != nil {
+		t.Fatalf("OpenAndSend: %v", err)
+	}
+	waitForStatus(t, b.Events(), agent.StatusIdle, 5*time.Second)
+
+	var resolved claudecode.Options
+	for _, opt := range captured {
+		opt(&resolved)
+	}
+	if got := transport.recordedPermissionModes(); len(got) != 1 || got[0] != "plan" {
+		t.Fatalf("after launch recordedPermissionModes=%v, want [plan]", got)
+	}
+
+	// Drive an ExitPlanMode approval through the permission callback.
+	done := make(chan struct{})
+	go func() {
+		_, _ = resolved.CanUseTool(context.Background(), "ExitPlanMode", map[string]any{"plan": "do it"}, nil)
+		close(done)
+	}()
+	evt := waitForEventType(t, b.Events(), agent.EventPermission, 2*time.Second)
+	data := evt.Data.(agent.PermissionData)
+	if err := b.RespondPermission(context.Background(), data.RequestID, true, ""); err != nil {
+		t.Fatalf("RespondPermission: %v", err)
+	}
+	<-done
+
+	// A follow-up in plan mode must RE-ASSERT plan (not skip as unchanged),
+	// proving the tracked mode was reset on approval.
+	if err := b.Send(context.Background(), agent.SendMessageOpts{
+		Text:           "still planning",
+		PermissionMode: agent.ClaudePermPlan,
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if got := transport.recordedPermissionModes(); len(got) != 2 || got[1] != "plan" {
+		t.Fatalf("recordedPermissionModes=%v, want [plan plan] (re-asserted after ExitPlanMode approval)", got)
 	}
 }
 
@@ -112,6 +293,71 @@ func TestClaudeCodeBackend_CanUseTool_Wired(t *testing.T) {
 	resolved := captureOpenOptions(t, b, transport)
 	if resolved.CanUseTool == nil {
 		t.Fatal("CanUseTool callback not wired; the SDK would auto-deny all tools")
+	}
+}
+
+// handleCanUseTool must emit the gated tool's input as a part update so a
+// stop-and-wait tool (ExitPlanMode / AskUserQuestion) can render its answer card
+// while the prompt is parked. The CLI requests permission just before the
+// content_block_stop that would carry the input, and the callback parks the
+// stdout reader — so without this emit the client is stuck on an input-less
+// spinner it can't act on until the prompt is answered.
+func TestClaudeCodeBackend_CanUseTool_EmitsToolInput(t *testing.T) {
+	t.Parallel()
+	// A content_block_start for the ExitPlanMode tool_use, so lastToolUseID (the
+	// part id the emit is keyed by) is populated before the permission fires.
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.StreamEvent{Event: map[string]any{
+			"type":  "content_block_start",
+			"index": float64(0),
+			"content_block": map[string]any{
+				"type": "tool_use",
+				"id":   "toolu_plan",
+				"name": "ExitPlanMode",
+			},
+		}},
+	})
+
+	b := agent.NewClaudeCodeBackend(t.TempDir())
+	defer b.Stop()
+	var captured []claudecode.Option
+	b.ClientFactory = func(opts ...claudecode.Option) claudecode.Client {
+		captured = opts
+		return claudecode.NewClientWithTransport(transport, opts...)
+	}
+	if err := b.Open(context.Background()); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var resolved claudecode.Options
+	for _, opt := range captured {
+		opt(&resolved)
+	}
+
+	// Drain the input-less running part from content_block_start, so the next
+	// part update we wait for is the one handleCanUseTool emits.
+	startEvt := waitForEventType(t, b.Events(), agent.EventPartUpdate, 2*time.Second)
+	if startEvt.Data.(agent.PartUpdateData).Part.Input != nil {
+		t.Fatal("content_block_start part should carry no input yet")
+	}
+
+	input := map[string]any{"plan": "ship it", "planFilePath": "/tmp/plan.md"}
+	go func() {
+		_, _ = resolved.CanUseTool(context.Background(), "ExitPlanMode", input, nil)
+	}()
+
+	evt := waitForEventType(t, b.Events(), agent.EventPartUpdate, 2*time.Second)
+	data, ok := evt.Data.(agent.PartUpdateData)
+	if !ok {
+		t.Fatalf("EventPartUpdate data type=%T, want PartUpdateData", evt.Data)
+	}
+	if data.Part.ID != "toolu_plan" {
+		t.Errorf("Part.ID=%q, want toolu_plan (must match the tool_use id so clients correlate)", data.Part.ID)
+	}
+	if data.Part.Tool != "ExitPlanMode" {
+		t.Errorf("Part.Tool=%q, want ExitPlanMode", data.Part.Tool)
+	}
+	if data.Part.Input["plan"] != "ship it" {
+		t.Errorf("Part.Input[plan]=%v, want %q", data.Part.Input["plan"], "ship it")
 	}
 }
 
@@ -141,7 +387,8 @@ func TestClaudeCodeBackend_PermissionMode_RuntimeChange(t *testing.T) {
 	}
 	waitForStatus(t, b.Events(), agent.StatusIdle, 5*time.Second)
 
-	// Launch value goes through WithPermissionMode, not SetPermissionMode.
+	// Launch mode is bypass (the flag's launch mode), so no runtime restrict is
+	// issued at startup.
 	if got := transport.recordedPermissionModes(); len(got) != 0 {
 		t.Fatalf("SetPermissionMode called during launch: %v", got)
 	}
