@@ -85,10 +85,12 @@ type ClaudeCodeBackend struct {
 	// session (the CLI's model is fixed for the process's lifetime).
 	initialModel string
 
-	// initialPermMode is the permission posture the session launches with
-	// (via claudecode.WithPermissionMode). Defaults to ClaudePermBypass — the
-	// product default for new sessions — and is overwritten from
-	// SendMessageOpts.PermissionMode on the first OpenAndSend.
+	// initialPermMode is the permission posture the session should run in once
+	// open. Defaults to ClaudePermBypass — the product default for new sessions
+	// — and is overwritten from SendMessageOpts.PermissionMode on the first
+	// OpenAndSend. NB: the CLI is always *launched* in bypassPermissions (so it
+	// carries the "bypass is available" capability — see Open); Open then
+	// restricts to this mode at runtime before the first prompt.
 	initialPermMode ClaudePermissionMode
 
 	// currentPermMode tracks the mode currently in effect so Send only issues a
@@ -176,7 +178,18 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	opts := []claudecode.Option{
 		claudecode.WithCwd(workDir),
 		claudecode.WithPartialStreaming(),
-		claudecode.WithPermissionMode(claudecode.PermissionMode(permMode)),
+		// Always launch with --dangerously-skip-permissions so the session
+		// carries the "bypass is available" capability. The CLI refuses a
+		// runtime switch to bypassPermissions unless the process was launched
+		// with this flag ("Cannot set permission mode to bypassPermissions
+		// because the session was not launched with --dangerously-skip-
+		// permissions"). Without it a session started in plan mode could never
+		// switch to build: the switch fast-errored and flipped the session to
+		// StatusError. The flag only grants the capability and sets the *launch*
+		// mode to bypass — we restrict to the user's actual mode just below,
+		// before any prompt runs, so plan/default/acceptEdits sessions never
+		// execute a turn with bypass active.
+		claudecode.WithExtraArgs(map[string]*string{"dangerously-skip-permissions": nil}),
 		// Route tool-permission requests through clank's prompt UI. Without a
 		// callback the SDK auto-denies every request, so this is required for
 		// the default/acceptEdits/plan modes to work at all.
@@ -210,6 +223,23 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 
 	b.mu.Lock()
 	b.client = client
+	b.mu.Unlock()
+
+	// The launch flag forces the active mode to bypassPermissions. Restrict to
+	// the user's actual mode now — before OpenAndSend issues the first Query —
+	// so a plan/default/acceptEdits session never runs a prompt with bypass
+	// active. No tool runs between Connect and here, so the momentary bypass
+	// window is safe. A failed restrict is fatal: better to fail than to run a
+	// plan-requested session with full permissions. bypass needs no restrict —
+	// it is already the launch mode.
+	if permMode != ClaudePermBypass {
+		if err := client.SetPermissionMode(b.ctx, claudecode.PermissionMode(permMode)); err != nil {
+			b.setStatus(StatusError)
+			return fmt.Errorf("restrict to %q permission mode: %w", permMode, err)
+		}
+	}
+
+	b.mu.Lock()
 	b.currentPermMode = permMode
 	b.mu.Unlock()
 
@@ -365,7 +395,13 @@ func (b *ClaudeCodeBackend) Send(ctx context.Context, opts SendMessageOpts) erro
 		b.mu.Unlock()
 		if changed {
 			if err := client.SetPermissionMode(b.ctx, claudecode.PermissionMode(opts.PermissionMode)); err != nil {
-				b.setStatus(StatusError)
+				// A failed runtime mode switch must NOT kill the session. The
+				// read goroutine isn't parked (the pending-prompt guard above
+				// already returned), so the conversation can still continue in
+				// the current mode. Surface the error so the client can bounce
+				// the send, but leave status intact so the session stays usable.
+				// With the launch-time --dangerously-skip-permissions flag, all
+				// four modes are now switchable, so this path is not expected.
 				return fmt.Errorf("set permission mode: %w", err)
 			}
 			b.mu.Lock()

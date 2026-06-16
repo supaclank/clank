@@ -13,7 +13,7 @@ import (
 // denyMessage is the reason forwarded to the model when allow is false; it is
 // ignored when allow is true.
 type permissionDecision struct {
-	allow      bool
+	allow       bool
 	denyMessage string
 }
 
@@ -60,6 +60,20 @@ func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, i
 	select {
 	case d := <-decision:
 		if d.allow {
+			// Approving ExitPlanMode makes the CLI auto-exit plan mode (it
+			// transitions the session to its post-plan mode on its own). clank
+			// can't see that new mode, so its currentPermMode would go stale at
+			// "plan" — and Send's "skip SetPermissionMode if unchanged" check
+			// would then wrongly skip re-asserting plan on the next message
+			// (running it in the CLI's default mode instead). Reset the tracked
+			// mode to unknown so the next Send always re-asserts the user's
+			// chosen mode. The re-assert always succeeds: the session was
+			// launched with --dangerously-skip-permissions (see Open).
+			if tool == "ExitPlanMode" {
+				b.mu.Lock()
+				b.currentPermMode = ""
+				b.mu.Unlock()
+			}
 			// The CLI validates the permission response against a discriminated
 			// union whose allow branch requires updatedInput to be a record; a
 			// bare {behavior:"allow"} matches neither allow nor deny and the CLI
