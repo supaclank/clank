@@ -473,15 +473,7 @@ func (b *ClaudeCodeBackend) Messages(ctx context.Context) ([]MessageData, error)
 		return nil, fmt.Errorf("read claude session %s: %w", sessionID, err)
 	}
 
-	out := make([]MessageData, 0, len(sdkMsgs))
-	for _, m := range sdkMsgs {
-		md, ok := sessionMessageToData(m)
-		if !ok {
-			continue
-		}
-		out = append(out, md)
-	}
-	return out, nil
+	return coalesceSessionMessages(sdkMsgs), nil
 }
 
 func (b *ClaudeCodeBackend) Revert(ctx context.Context, messageID string) error {
@@ -802,65 +794,97 @@ func (b *ClaudeCodeBackend) handleContentBlockStop(event map[string]any) {
 
 // --- Type mapping helpers ---
 
-// sessionMessageToData converts an SDK SessionMessage (parsed from the on-disk
-// JSONL transcript) into a clank MessageData. Returns ok=false for messages
-// that should be skipped (meta/system/unknown types, no content).
+// coalesceSessionMessages converts the SDK's on-disk JSONL records into clank
+// MessageData — one per Anthropic message, with its content blocks grouped and
+// ordered. This is the same shape the OpenCode backend produces and the shape
+// the gateway and clients rely on (unique message ids, parts in order).
 //
-// Part IDs are scoped to mirror what the streaming handlers emit so that a
-// future TUI dedup pass between live deltas and reloaded history can match
-// them up:
-//   - For tool_use / tool_result blocks the ID is the tool_use_id (same as
-//     handleContentBlockStart and handleContentBlockStop).
-//   - For text / thinking blocks the ID is "{apiMsgID}-{blockIdx}", where
-//     apiMsgID is the Anthropic API message ID stored under msg.message.id
-//     (matches blockID()). Falls back to the JSONL-level UUID when absent.
-func sessionMessageToData(m claudecode.SessionMessage) (MessageData, bool) {
-	if m.IsMeta {
-		return MessageData{}, false
-	}
+// Claude Code does NOT write one record per message: it splits an assistant
+// turn into several JSONL records that each carry a single content block but
+// all share the turn's message.id (a thinking record, a text record, then one
+// record per tool_use). Mapping each record 1:1 — as this used to — emits
+// several MessageData with the SAME id, and because each record's block index
+// restarts at 0, the thinking and text parts both get id "{msgID}-0". Clients
+// that group parts under a message keyed by id (the mobile app) then collapse
+// those same-id messages last-wins and dedupe the colliding part ids, which
+// surfaces as thinking bundled away from its tool calls, or dropped entirely.
+//
+// The cure: append consecutive records that share an assistant message id into
+// one MessageData, concatenating their blocks under a running block index so
+// text/thinking ids become "{msgID}-0", "{msgID}-1", … — matching what the
+// streaming path emits via blockID(), so a streamed turn and its reloaded
+// transcript reconcile by the same keys. A user record (its own UUID; tool
+// results live here) always breaks the run, so only one assistant turn ever
+// coalesces at a time.
+//
+// Part IDs are scoped to mirror the streaming handlers so live deltas and
+// reloaded history match up:
+//   - tool_use / tool_result blocks use the tool_use_id (same as
+//     handleContentBlockStart / handleContentBlockStop).
+//   - text / thinking blocks use "{apiMsgID}-{blockIdx}", apiMsgID being the
+//     Anthropic message id under msg.message.id (matches blockID()), falling
+//     back to the JSONL-level UUID when absent.
+func coalesceSessionMessages(sdkMsgs []claudecode.SessionMessage) []MessageData {
+	out := make([]MessageData, 0, len(sdkMsgs))
+	// blockBase is the API block-index offset for the group currently at the
+	// tail of out — i.e. how many blocks its earlier records already consumed.
+	// It counts every block (even ones sessionBlockToPart skips) so indices stay
+	// aligned with the API's own block numbering, like the streaming path.
+	blockBase := 0
+	for _, m := range sdkMsgs {
+		if m.IsMeta {
+			continue
+		}
 
-	var role string
-	switch m.Type {
-	case "user":
-		role = "user"
-	case "assistant":
-		role = "assistant"
-	default:
-		return MessageData{}, false
-	}
+		var role string
+		switch m.Type {
+		case "user":
+			role = "user"
+		case "assistant":
+			role = "assistant"
+		default:
+			continue
+		}
 
-	// Anthropic API message ID lives inside the nested "message" object;
-	// fall back to the transcript-level UUID when missing (e.g. for user
-	// messages which have no API id).
-	msgID, _ := m.RawMessage["id"].(string)
-	if msgID == "" {
-		msgID = m.UUID
-	}
+		// Anthropic API message id lives inside the nested "message" object;
+		// fall back to the transcript-level UUID when missing (user messages
+		// have no API id, so each stays its own MessageData).
+		msgID, _ := m.RawMessage["id"].(string)
+		if msgID == "" {
+			msgID = m.UUID
+		}
 
-	md := MessageData{
-		ID:   msgID,
-		Role: role,
-	}
-
-	if model, ok := m.RawMessage["model"].(string); ok {
-		md.ModelID = model
-	}
-
-	if m.Content == nil {
-		return md, true
-	}
-
-	switch m.Content.Kind {
-	case claudecode.SessionContentTypeString:
-		md.Content = m.Content.String
-	case claudecode.SessionContentTypeBlocks:
-		for i, block := range m.Content.Blocks {
-			if p, ok := sessionBlockToPart(block, msgID, i); ok {
-				md.Parts = append(md.Parts, p)
+		// Continue the previous group when this record extends the same
+		// assistant API message; otherwise open a new MessageData.
+		n := len(out)
+		merge := n > 0 && role == "assistant" && msgID != "" &&
+			out[n-1].Role == "assistant" && out[n-1].ID == msgID
+		if !merge {
+			md := MessageData{ID: msgID, Role: role}
+			if model, ok := m.RawMessage["model"].(string); ok {
+				md.ModelID = model
 			}
+			out = append(out, md)
+			blockBase = 0
+		}
+		cur := &out[len(out)-1]
+
+		if m.Content == nil {
+			continue
+		}
+		switch m.Content.Kind {
+		case claudecode.SessionContentTypeString:
+			cur.Content = m.Content.String
+		case claudecode.SessionContentTypeBlocks:
+			for i, block := range m.Content.Blocks {
+				if p, ok := sessionBlockToPart(block, msgID, blockBase+i); ok {
+					cur.Parts = append(cur.Parts, p)
+				}
+			}
+			blockBase += len(m.Content.Blocks)
 		}
 	}
-	return md, true
+	return out
 }
 
 // sessionBlockToPart converts an SDK session ContentBlock to a clank Part.
