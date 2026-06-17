@@ -460,7 +460,13 @@ func (b *ClaudeCodeBackend) Abort(ctx context.Context) error {
 	// immediately instead of waiting for the interrupt to propagate.
 	b.failPendingPermissions()
 
-	return client.Interrupt(ctx)
+	if err := client.Interrupt(ctx); err != nil {
+		b.mu.Lock()
+		b.aborting = false
+		b.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (b *ClaudeCodeBackend) Stop() error {

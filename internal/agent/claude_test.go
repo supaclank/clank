@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"sync"
 	"testing"
@@ -45,6 +46,9 @@ type mockTransport struct {
 	// channel when Interrupt is called — modeling the CLI ending an interrupted
 	// turn with a (usually error) result.
 	onInterrupt func() []claudecode.Message
+
+	// interruptErr, if non-nil, is returned by Interrupt to simulate a failed interrupt.
+	interruptErr error
 }
 
 func newMockTransport(messages []claudecode.Message) *mockTransport {
@@ -118,9 +122,10 @@ func (t *mockTransport) Interrupt(_ context.Context) error {
 	t.mu.Lock()
 	t.interrupted = true
 	fn := t.onInterrupt
+	interruptErr := t.interruptErr
 	t.mu.Unlock()
 	if fn == nil {
-		return nil
+		return interruptErr
 	}
 	// Model the CLI ending the interrupted turn by delivering its result on the
 	// receive channel, the same path real interrupt fallout takes.
@@ -133,7 +138,7 @@ func (t *mockTransport) Interrupt(_ context.Context) error {
 		}
 		t.msgChan <- m
 	}
-	return nil
+	return interruptErr
 }
 
 func (t *mockTransport) SetModel(_ context.Context, _ *string) error { return nil }
@@ -1144,6 +1149,56 @@ func TestClaudeCodeBackend_AbortDuringPermission_ReturnsIdleNotError(t *testing.
 	}
 	if b.Status() != agent.StatusIdle {
 		t.Errorf("post-abort status=%q, want %q", b.Status(), agent.StatusIdle)
+	}
+}
+
+// When client.Interrupt fails, Abort must reset b.aborting so the still-running
+// turn's genuine result is handled correctly instead of being swallowed as Idle.
+// Regression for the "failed interrupt leaks aborting flag" bug.
+func TestClaudeCodeBackend_AbortInterruptFailure_SurfacesGenuineError(t *testing.T) {
+	t.Parallel()
+
+	const sessionID = "claude-abort-interrupt-fail"
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.SystemMessage{
+			MessageType: "system",
+			Subtype:     "init",
+			Data:        map[string]any{"session_id": sessionID},
+		},
+	})
+	transport.interruptErr = errors.New("transport: interrupt failed")
+
+	b := agent.NewClaudeCodeBackend(t.TempDir())
+	defer b.Stop()
+	b.ClientFactory = func(opts ...claudecode.Option) claudecode.Client {
+		return claudecode.NewClientWithTransport(transport, opts...)
+	}
+
+	if err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{Text: "do it"}); err != nil {
+		t.Fatalf("OpenAndSend: %v", err)
+	}
+
+	if err := b.Abort(context.Background()); err == nil {
+		t.Fatal("expected Abort to return error when Interrupt fails")
+	}
+
+	// Deliver a genuine error result — modeling the turn continuing naturally
+	// after the interrupt attempt failed. With the fix, aborting was reset to
+	// false before Abort returned, so this result surfaces as StatusError.
+	// Without the fix, aborting stays true and the result is masked as StatusIdle.
+	transport.msgChan <- &claudecode.ResultMessage{
+		MessageType: "result",
+		SessionID:   sessionID,
+		IsError:     true,
+	}
+
+	events := waitForStatus(t, b.Events(), agent.StatusError, 3*time.Second)
+	for _, evt := range events {
+		if evt.Type == agent.EventStatusChange {
+			if d, ok := evt.Data.(agent.StatusChangeData); ok && d.NewStatus == agent.StatusIdle {
+				t.Error("failed interrupt left aborting=true; genuine error was masked as StatusIdle")
+			}
+		}
 	}
 }
 
