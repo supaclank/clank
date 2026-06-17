@@ -104,6 +104,48 @@ func TestCreateProjectFromTemplate(t *testing.T) {
 	if stamped != res.WorktreeID {
 		t.Errorf("stamped id = %q, want %q", stamped, res.WorktreeID)
 	}
+
+	// Default committer identity is vendor-neutral (not the template's).
+	if got := seedCommitter(t, wantDir); got != "clank <noreply@example.com>" {
+		t.Errorf("seed committer = %q, want default neutral identity", got)
+	}
+}
+
+func seedCommitter(t *testing.T, dir string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", dir, "log", "-1", "--format=%an <%ae>").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git log: %v\n%s", err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// TestCreateProjectFromTemplate_ConfiguredCommitter verifies the operator-
+// injected committer identity (Options.ProjectCommitter*) is stamped on
+// the seed commit instead of the neutral default.
+func TestCreateProjectFromTemplate_ConfiguredCommitter(t *testing.T) {
+	cloneURL, _ := makeTemplateRepo(t)
+	workRoot := filepath.Join(t.TempDir(), "work")
+	prev := host.SetWorkRootForTest(workRoot)
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
+
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+		ProjectCommitterName:  "Acme Bot",
+		ProjectCommitterEmail: "noreply@acme.test",
+	})
+	t.Cleanup(svc.Shutdown)
+
+	res, err := svc.CreateProjectFromTemplate(context.Background(), cloneURL, "app")
+	if err != nil {
+		t.Fatalf("CreateProjectFromTemplate: %v", err)
+	}
+	dir := filepath.Join(workRoot, res.WorktreeID)
+	if got := seedCommitter(t, dir); got != "Acme Bot <noreply@acme.test>" {
+		t.Errorf("seed committer = %q, want configured identity", got)
+	}
 }
 
 func TestCreateProjectFromTemplate_Validation(t *testing.T) {

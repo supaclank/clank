@@ -68,6 +68,8 @@ func main() {
 	notifierWebhookToken := flag.String("notifier-webhook-token", os.Getenv("CLANK_NOTIFIER_TOKEN"), "Per-host bearer token sent as 'Authorization: Bearer <token>' to the webhook target. Defaults to $CLANK_NOTIFIER_TOKEN.")
 	previewWebhookURL := flag.String("preview-webhook-url", os.Getenv("CLANK_PREVIEW_WEBHOOK_URL"), "Gateway base for the preview register/revoke webhooks (e.g. https://api.example.dev/webhooks/preview). Empty disables gateway integration — preview servers still spawn but no public token is minted (laptop dev). Defaults to $CLANK_PREVIEW_WEBHOOK_URL.")
 	githubOAuthClientID := flag.String("github-oauth-client-id", os.Getenv("CLANK_GITHUB_OAUTH_CLIENT_ID"), "Clank GitHub OAuth App client_id, used for the GitHub Connect device flow. Empty disables GitHub Connect on this host. Defaults to $CLANK_GITHUB_OAUTH_CLIENT_ID.")
+	projectCommitterName := flag.String("project-committer-name", os.Getenv("CLANK_PROJECT_COMMITTER_NAME"), "Git committer name stamped on a scaffolded project's seed commit. Empty uses a neutral default. Defaults to $CLANK_PROJECT_COMMITTER_NAME.")
+	projectCommitterEmail := flag.String("project-committer-email", os.Getenv("CLANK_PROJECT_COMMITTER_EMAIL"), "Git committer email stamped on a scaffolded project's seed commit. Empty uses a neutral default. Defaults to $CLANK_PROJECT_COMMITTER_EMAIL.")
 	flag.Parse()
 
 	if *socket == "" && *listen == "" {
@@ -102,8 +104,10 @@ func main() {
 		notifierProvider:     *notifierProvider,
 		notifierWebhookURL:   *notifierWebhookURL,
 		notifierWebhookToken: *notifierWebhookToken,
-		previewWebhookURL:    *previewWebhookURL,
-		githubOAuthClientID:  *githubOAuthClientID,
+		previewWebhookURL:     *previewWebhookURL,
+		githubOAuthClientID:   *githubOAuthClientID,
+		projectCommitterName:  *projectCommitterName,
+		projectCommitterEmail: *projectCommitterEmail,
 	}
 	if err := run(cfg); err != nil {
 		log.Fatalf("clank-host: %v", err)
@@ -123,8 +127,10 @@ type runConfig struct {
 	notifierProvider     string
 	notifierWebhookURL   string
 	notifierWebhookToken string
-	previewWebhookURL    string
-	githubOAuthClientID  string
+	previewWebhookURL     string
+	githubOAuthClientID   string
+	projectCommitterName  string
+	projectCommitterEmail string
 }
 
 // buildKeepaliveListener constructs the provider-specific Listener from
@@ -293,8 +299,10 @@ func run(cfg runConfig) error {
 		SessionsStore:       hostStore,
 		KeepaliveListener:   keepaliveListener,
 		NotifierLoop:        notifierLoop,
-		PreviewGWClient:     gwClient,
-		GitHubOAuthClientID: cfg.githubOAuthClientID,
+		PreviewGWClient:       gwClient,
+		GitHubOAuthClientID:   cfg.githubOAuthClientID,
+		ProjectCommitterName:  cfg.projectCommitterName,
+		ProjectCommitterEmail: cfg.projectCommitterEmail,
 	})
 	if keepaliveListener != nil {
 		lg.Printf("keepalive provider: %s", cfg.keepaliveProvider)

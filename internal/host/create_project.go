@@ -20,11 +20,13 @@ const (
 	// that seeds a new project's history.
 	projectInitialCommitMessage = "Initial commit"
 
-	// projectCommitterName / projectCommitterEmail give the seed commit a
-	// committer identity so it doesn't depend on global git config being
-	// present on the host.
-	projectCommitterName  = "clank"
-	projectCommitterEmail = "clank@localhost"
+	// defaultProjectCommitter{Name,Email} are the neutral fallback git
+	// committer identity for a scaffolded project's seed commit when the
+	// operator hasn't injected one (Options.ProjectCommitter*). Kept
+	// vendor-neutral (example.com per RFC 2606) — real attribution is a
+	// deploy-time concern, not an OSS constant.
+	defaultProjectCommitterName  = "clank"
+	defaultProjectCommitterEmail = "noreply@example.com"
 )
 
 // CreateProjectFromTemplate scaffolds a brand-new local project on this
@@ -96,10 +98,10 @@ func (s *Service) scaffoldProject(ctx context.Context, projectDir, cloneURL, wor
 	if err := git.Init(ctx, projectDir, projectInitialBranch); err != nil {
 		return fmt.Errorf("init repo: %w", err)
 	}
-	if err := git.SetLocalConfig(projectDir, "user.name", projectCommitterName); err != nil {
+	if err := git.SetLocalConfig(projectDir, "user.name", s.projectCommitterName); err != nil {
 		return fmt.Errorf("set config user.name: %w", err)
 	}
-	if err := git.SetLocalConfig(projectDir, "user.email", projectCommitterEmail); err != nil {
+	if err := git.SetLocalConfig(projectDir, "user.email", s.projectCommitterEmail); err != nil {
 		return fmt.Errorf("set config user.email: %w", err)
 	}
 	if err := git.AddAll(projectDir); err != nil {
