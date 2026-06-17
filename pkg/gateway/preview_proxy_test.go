@@ -327,7 +327,7 @@ func TestPreviewProxy_RevokedRoute404(t *testing.T) {
 	}
 }
 
-func TestPreviewProxy_TunnelPoolReusesAcrossRequests(t *testing.T) {
+func TestPreviewProxy_FreshDialPerRequest_NoIdleReuse(t *testing.T) {
 	t.Parallel()
 	f := newPreviewProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -338,11 +338,12 @@ func TestPreviewProxy_TunnelPoolReusesAcrossRequests(t *testing.T) {
 		resp := f.do(t, host, "", "/")
 		resp.Body.Close()
 	}
-	// Keepalive reuse: 4 sequential requests through the same Tunnel
-	// open at most 1 underlying dial (the pool warm-starts on the
-	// first request, all subsequent requests reuse).
-	if dials := f.prov.dials.Load(); dials != 1 {
-		t.Errorf("dials = %d, want 1 (keepalive reuse across requests)", dials)
+	// Idle keep-alive reuse is disabled (see previewtunnel.New): each
+	// request through the shared Tunnel dials a FRESH underlying conn
+	// rather than reusing a pooled one that may have gone half-open
+	// (Sprites edge idle-drop / sprite pause). So 4 requests == 4 dials.
+	if dials := f.prov.dials.Load(); dials != 4 {
+		t.Errorf("dials = %d, want 4 (fresh dial per request, no idle reuse)", dials)
 	}
 }
 

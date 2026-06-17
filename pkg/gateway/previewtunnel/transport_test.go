@@ -118,7 +118,7 @@ func TestTunnel_RoundTripDelegatesToProvisioner(t *testing.T) {
 	}
 }
 
-func TestTunnel_KeepalivePoolReusesConnection(t *testing.T) {
+func TestTunnel_NoIdleReuse_FreshDialPerRequest(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("k"))
@@ -142,12 +142,13 @@ func TestTunnel_KeepalivePoolReusesConnection(t *testing.T) {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
-	// 5 sequential GETs over keepalive should reuse the first dial.
-	// The Phase 0 spike confirmed this behavior end-to-end through
-	// the Sprites WSS proxy; we re-assert it locally so a regression
-	// in our wrapping doesn't silently re-dial per request.
-	if dials := prov.dials.Load(); dials != 1 {
-		t.Errorf("dials = %d, want 1 (keepalive reuse), serializing would have been %d", dials, 5)
+	// Idle keep-alive reuse is disabled (DisableKeepAlives): each
+	// sequential request dials a FRESH tunnel rather than reusing a
+	// pooled one. This is intentional — a pooled WSS tunnel can go
+	// half-open (Sprites edge idle-drop / sprite pause) and reusing it
+	// hangs the next request. So 5 GETs == 5 dials.
+	if dials := prov.dials.Load(); dials != 5 {
+		t.Errorf("dials = %d, want 5 (fresh dial per request, no idle reuse)", dials)
 	}
 }
 
