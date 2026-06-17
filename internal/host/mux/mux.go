@@ -96,12 +96,15 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// /worktrees/create is intentionally narrow: it accepts a
 	// base_worktree_id (an existing worktree in the target repo) rather
 	// than a path or repo handle, so the host stays out of the
-	// repo-enumeration business. Creating a worktree in a brand-new
-	// repo is still a CLI-only operation (future GitHub-clone flow
-	// will close that gap).
+	// repo-enumeration business. Scaffolding a brand-new repo from a
+	// template lives at POST /projects/create instead.
 	mx.HandleFunc("POST /worktrees/list-branches", m.handleListBranches)
 	mx.HandleFunc("POST /worktrees/resolve", m.handleResolveWorktree)
 	mx.HandleFunc("POST /worktrees/create", m.handleCreateWorktree)
+	// /projects/create scaffolds a brand-new local project by cloning a
+	// template (clone_url supplied by the gateway) into a fresh ~/work
+	// worktree with no remote. See projects.go.
+	mx.HandleFunc("POST /projects/create", m.handleCreateProject)
 	mx.HandleFunc("POST /worktrees/remove", m.handleRemoveWorktree)
 	mx.HandleFunc("POST /worktrees/merge", m.handleMergeBranch)
 	// Full-cleanup leg of a worktree delete: remove the materialized
@@ -212,6 +215,8 @@ func writeError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusConflict, errResp{Code: "reserved_branch", Error: err.Error()})
 	case errors.Is(err, host.ErrInvalidBranchName):
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_branch_name", Error: err.Error()})
+	case errors.Is(err, host.ErrInvalidArgument):
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_argument", Error: err.Error()})
 	default:
 		writeJSON(w, http.StatusInternalServerError, errResp{Code: "internal", Error: err.Error()})
 	}

@@ -49,6 +49,11 @@ type Service struct {
 	github          *githubpkg.Manager
 	log             *log.Logger
 
+	// Git committer identity stamped on a scaffolded project's seed
+	// commit (CreateProjectFromTemplate). Defaulted in New.
+	projectCommitterName  string
+	projectCommitterEmail string
+
 	mu       sync.RWMutex
 	sessions map[string]agent.SessionBackend
 	// closed gates new registrations. CreateSession re-checks after
@@ -148,6 +153,16 @@ type Options struct {
 	// non-empty, takes precedence over the CLANK_GITHUB_OAUTH_CLIENT_ID
 	// env var the laptop's clank-host inherits from clankd.
 	GitHubOAuthClientID string
+
+	// ProjectCommitterName / ProjectCommitterEmail set the git committer
+	// identity stamped on the seed commit of a project scaffolded via
+	// CreateProjectFromTemplate (also persisted as the new repo's local
+	// git identity). Attribution is operator branding, so the deploy-time
+	// caller (e.g. clank-host's --project-committer-* flags) injects the
+	// real values; empty falls back to a neutral default in New, keeping
+	// any vendor identity out of this OSS package.
+	ProjectCommitterName  string
+	ProjectCommitterEmail string
 }
 
 // New creates a Service. Panics on missing BackendManagers — fast
@@ -164,16 +179,26 @@ func New(opts Options) *Service {
 	if lg == nil {
 		lg = log.New(os.Stderr, "[clank-host] ", log.LstdFlags|log.Lmsgprefix)
 	}
+	committerName := opts.ProjectCommitterName
+	if committerName == "" {
+		committerName = defaultProjectCommitterName
+	}
+	committerEmail := opts.ProjectCommitterEmail
+	if committerEmail == "" {
+		committerEmail = defaultProjectCommitterEmail
+	}
 	s := &Service{
-		id:              id,
-		startedAt:       time.Now(),
-		backendManagers: opts.BackendManagers,
-		log:             lg,
-		sessions:        make(map[string]agent.SessionBackend),
-		branches:        newBranchCache(opts.BranchCacheTTL, opts.Now),
-		sessionsStore:   opts.SessionsStore,
-		subscribers:     newSubscriberRegistry(),
-		syncLocks:       make(map[string]*sync.Mutex),
+		id:                    id,
+		startedAt:             time.Now(),
+		backendManagers:       opts.BackendManagers,
+		log:                   lg,
+		projectCommitterName:  committerName,
+		projectCommitterEmail: committerEmail,
+		sessions:              make(map[string]agent.SessionBackend),
+		branches:              newBranchCache(opts.BranchCacheTTL, opts.Now),
+		sessionsStore:         opts.SessionsStore,
+		subscribers:           newSubscriberRegistry(),
+		syncLocks:             make(map[string]*sync.Mutex),
 	}
 	if opts.KeepaliveListener != nil {
 		s.keepaliveLoop = keepalive.New(keepalive.Config{

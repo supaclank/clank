@@ -77,6 +77,13 @@ type Config struct {
 	// returns 503.
 	Sync *clanksync.Server
 
+	// Templates is the catalog of built-in project templates a user can
+	// scaffold a brand-new project from (POST /v1/projects/create). Each
+	// entry maps a stable id to a clone URL; the operator injects these
+	// at deploy time so neither the id nor the URL is hardcoded in OSS.
+	// Empty means project creation is unavailable (404 on unknown id).
+	Templates []Template
+
 	// AuthConfig, when non-nil, makes AuthConfigHandler() return a
 	// handler that serves this payload as JSON. Daemons wire that
 	// handler pre-auth on GET /auth-config so the laptop can
@@ -203,6 +210,12 @@ func (g *Gateway) Handler() http.Handler {
 	// these gateway-orchestrated handlers) instead of the sync server.
 	mx.HandleFunc("POST /v1/worktrees/create", g.handleCreateWorktree)
 	mx.HandleFunc("POST /v1/worktrees/list-branches", g.handleListBranches)
+	// Brand-new project scaffolding. GET lists the template catalog;
+	// POST resolves a template id to its clone URL and asks the host to
+	// scaffold it. Mounted before the /v1/ catch-all for the same reason
+	// as the worktree routes above.
+	mx.HandleFunc("GET /v1/templates", g.handleListTemplates)
+	mx.HandleFunc("POST /v1/projects/create", g.handleCreateProject)
 	// Autosync (S3→sprite): sync-all (mobile homescreen) + per-worktree
 	// (manual sync button / conflict resolution). Mounted before the /v1/
 	// catch-all so they reach these gateway-orchestrated handlers.
