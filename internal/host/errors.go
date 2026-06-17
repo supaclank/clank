@@ -52,4 +52,8 @@ var (
 	// ErrInvalidBranchName is returned when ResolveWorktree is given an
 	// empty or whitespace-only branch name.
 	ErrInvalidBranchName = errors.New("host: branch name must be non-empty")
+
+	// ErrInvalidArgument is returned when a Service method is called with
+	// a missing or malformed required argument.
+	ErrInvalidArgument = errors.New("host: invalid argument")
 )
