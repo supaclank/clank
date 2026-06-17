@@ -62,7 +62,7 @@ func (s *Service) CreateProjectFromTemplate(ctx context.Context, cloneURL, name 
 		return CreateWorktreeResult{}, fmt.Errorf("check project dir %q: %w", projectDir, statErr)
 	}
 
-	if err := s.scaffoldProject(projectDir, cloneURL, worktreeID); err != nil {
+	if err := s.scaffoldProject(ctx, projectDir, cloneURL, worktreeID); err != nil {
 		// Roll back so a retry doesn't trip the already-exists guard above
 		// or leave a half-cloned tree behind.
 		if rmErr := os.RemoveAll(projectDir); rmErr != nil {
@@ -84,8 +84,8 @@ func (s *Service) CreateProjectFromTemplate(ctx context.Context, cloneURL, name 
 // scaffoldProject clones cloneURL into projectDir, replaces the cloned
 // history with a single fresh commit (no remote), and stamps the
 // worktree id. Any error leaves cleanup to the caller.
-func (s *Service) scaffoldProject(projectDir, cloneURL, worktreeID string) error {
-	if err := git.Clone(cloneURL, projectDir); err != nil {
+func (s *Service) scaffoldProject(ctx context.Context, projectDir, cloneURL, worktreeID string) error {
+	if err := git.Clone(ctx, cloneURL, projectDir); err != nil {
 		return fmt.Errorf("clone template: %w", err)
 	}
 	// Drop the template's history + origin so the new project is a clean,
@@ -93,17 +93,17 @@ func (s *Service) scaffoldProject(projectDir, cloneURL, worktreeID string) error
 	if err := os.RemoveAll(filepath.Join(projectDir, ".git")); err != nil {
 		return fmt.Errorf("strip template git dir: %w", err)
 	}
-	if err := git.Init(projectDir, projectInitialBranch); err != nil {
-		return err
+	if err := git.Init(ctx, projectDir, projectInitialBranch); err != nil {
+		return fmt.Errorf("init repo: %w", err)
 	}
 	if err := git.SetLocalConfig(projectDir, "user.name", projectCommitterName); err != nil {
-		return err
+		return fmt.Errorf("set config user.name: %w", err)
 	}
 	if err := git.SetLocalConfig(projectDir, "user.email", projectCommitterEmail); err != nil {
-		return err
+		return fmt.Errorf("set config user.email: %w", err)
 	}
 	if err := git.AddAll(projectDir); err != nil {
-		return err
+		return fmt.Errorf("add files: %w", err)
 	}
 	if err := git.Commit(projectDir, projectInitialCommitMessage); err != nil {
 		return fmt.Errorf("seed initial commit: %w", err)

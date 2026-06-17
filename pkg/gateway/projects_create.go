@@ -100,6 +100,8 @@ func (g *Gateway) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
+	// TODO(ai-review): if RegisterPrebuiltWorktree fails the host project dir is orphaned;
+	// add a best-effort DELETE /worktrees/{id} rollback call. https://github.com/Acksell/clank/pull/61#discussion_r3428655410
 	if err := g.cfg.Sync.RegisterPrebuiltWorktree(r.Context(), row); err != nil {
 		// The project exists on the host but the row didn't persist.
 		// Surface the error so the user can retry (same caveat as

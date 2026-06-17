@@ -2,6 +2,7 @@ package git
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -11,8 +12,8 @@ import (
 // already exist — git creates it. Only the tip commit is fetched
 // (--depth 1); callers that want a template's files but not its history
 // pair this with removing dir/.git and a fresh Init.
-func Clone(url, dir string) error {
-	cmd := exec.Command("git", "clone", "--depth", "1", url, dir)
+func Clone(ctx context.Context, url, dir string) error {
+	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--", url, dir)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -23,8 +24,8 @@ func Clone(url, dir string) error {
 
 // Init initializes a new git repository at dir with defaultBranch as the
 // initial branch (git init -b <branch>). dir is created if needed.
-func Init(dir, defaultBranch string) error {
-	cmd := exec.Command("git", "init", "-b", defaultBranch, dir)
+func Init(ctx context.Context, dir, defaultBranch string) error {
+	cmd := exec.CommandContext(ctx, "git", "init", "-b", defaultBranch, dir)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
