@@ -48,8 +48,9 @@ type createWorktreeResponse struct {
 //     generated the ULID; we insert that exact ID so the on-disk stamp
 //     and the DB row agree.
 //
-// Refuses to serve when Sync is unconfigured (cloud sync-only mode has
-// no host to talk to) — matches the 503 the pull route returns.
+// Refuses when Sync is unconfigured: Sync is the worktree registry, so
+// without it there's nowhere to record the new worktree and it'd be
+// invisible to GET /v1/worktrees. Matches the 503 the pull route returns.
 func (g *Gateway) handleCreateWorktree(w http.ResponseWriter, r *http.Request) {
 	if g.cfg.Sync == nil {
 		http.Error(w, "create-worktree not available on this gateway (no Sync configured)", http.StatusServiceUnavailable)

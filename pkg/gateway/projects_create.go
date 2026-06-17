@@ -48,8 +48,9 @@ type hostCreateProjectRequest struct {
 //     subsequent GET /v1/worktrees calls see it — same as worktree
 //     creation; we insert the exact ULID the host minted.
 //
-// Refuses when Sync is unconfigured (no host to talk to / nowhere to
-// persist the row) — matches the create-worktree route.
+// Refuses when Sync is unconfigured: Sync is the worktree registry, so
+// without it there's nowhere to record the new project and it'd be
+// invisible to GET /v1/worktrees. Matches the create-worktree route.
 func (g *Gateway) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	if g.cfg.Sync == nil {
 		http.Error(w, "create-project not available on this gateway (no Sync configured)", http.StatusServiceUnavailable)
