@@ -17,7 +17,7 @@ func Clone(ctx context.Context, url, dir string) error {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git clone %s: %s (%w)", url, strings.TrimSpace(stderr.String()), err)
+		return fmt.Errorf("git clone: %s (%w)", strings.TrimSpace(stderr.String()), err)
 	}
 	return nil
 }

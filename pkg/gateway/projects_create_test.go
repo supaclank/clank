@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -233,5 +234,53 @@ func TestListTemplates(t *testing.T) {
 	// Clone URLs must never leak to clients.
 	if _, leaked := out[0]["clone_url"]; leaked {
 		t.Fatalf("clone_url leaked in catalog: %+v", out[0])
+	}
+}
+
+func TestListTemplates_Unauthenticated(t *testing.T) {
+	t.Parallel()
+	g, err := NewGateway(Config{
+		Provisioner: &stubProvisioner{ref: provisioner.HostRef{URL: "http://unused"}},
+		Templates:   []Template{{ID: "expo", DisplayName: "Expo", CloneURL: "https://secret.test/expo.git"}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewGateway: %v", err)
+	}
+	gw := httptest.NewServer(g.Handler())
+	t.Cleanup(gw.Close)
+
+	resp, err := http.Get(gw.URL + "/v1/templates")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 without a principal", resp.StatusCode)
+	}
+}
+
+func TestCreateProject_HostErrorDoesNotLeakDetails(t *testing.T) {
+	t.Parallel()
+	const sensitiveURL = "https://token@internal.test/template.git"
+	// Sprite that simulates a clone failure — error body includes clone URL detail.
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /projects/create", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "clone template: git clone: "+sensitiveURL+": exit status 128", http.StatusInternalServerError)
+	})
+	sprite := httptest.NewServer(mux)
+	t.Cleanup(sprite.Close)
+
+	gw, _ := newProjectsGateway(t, sprite, []Template{
+		{ID: "expo", DisplayName: "Expo", CloneURL: sensitiveURL},
+	})
+
+	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"template":"expo","name":"app"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(body), sensitiveURL) {
+		t.Fatalf("host error details leaked in gateway 502 body: %q", body)
 	}
 }

@@ -3,6 +3,8 @@ package gateway
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/acksell/clank/pkg/auth"
 )
 
 // Template is one entry in the project-creation catalog. ID is the
@@ -39,6 +41,11 @@ func (g *Gateway) cloneURLForTemplate(id string) (string, bool) {
 // create-project picker reads. Returns an empty array (never null) when
 // no templates are configured.
 func (g *Gateway) handleListTemplates(w http.ResponseWriter, r *http.Request) {
+	principal, ok := auth.PrincipalFrom(r.Context())
+	if !ok || principal.UserID == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	out := make([]templateSummary, 0, len(g.cfg.Templates))
 	for _, t := range g.cfg.Templates {
 		out = append(out, templateSummary{ID: t.ID, DisplayName: t.DisplayName})

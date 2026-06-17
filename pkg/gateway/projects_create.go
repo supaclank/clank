@@ -87,7 +87,7 @@ func (g *Gateway) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		g.log.Printf("gateway create-project: host call: %v", err)
-		http.Error(w, "host: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, "project creation failed", http.StatusBadGateway)
 		return
 	}
 
