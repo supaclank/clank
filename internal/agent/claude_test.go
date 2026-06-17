@@ -40,6 +40,11 @@ type mockTransport struct {
 
 	// onSetPermMode, if non-nil, is called instead of the default recording behaviour.
 	onSetPermMode func(ctx context.Context, mode string) error
+
+	// onInterrupt, if non-nil, supplies messages delivered on the receive
+	// channel when Interrupt is called — modeling the CLI ending an interrupted
+	// turn with a (usually error) result.
+	onInterrupt func() []claudecode.Message
 }
 
 func newMockTransport(messages []claudecode.Message) *mockTransport {
@@ -111,8 +116,23 @@ func (t *mockTransport) ReceiveMessages(_ context.Context) (<-chan claudecode.Me
 
 func (t *mockTransport) Interrupt(_ context.Context) error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.interrupted = true
+	fn := t.onInterrupt
+	t.mu.Unlock()
+	if fn == nil {
+		return nil
+	}
+	// Model the CLI ending the interrupted turn by delivering its result on the
+	// receive channel, the same path real interrupt fallout takes.
+	for _, m := range fn() {
+		t.mu.Lock()
+		closed := t.closed
+		t.mu.Unlock()
+		if closed {
+			break
+		}
+		t.msgChan <- m
+	}
 	return nil
 }
 
@@ -1057,6 +1077,73 @@ func TestClaudeCodeBackendAbortCallsInterrupt(t *testing.T) {
 
 	if !interrupted {
 		t.Error("expected transport.Interrupt to be called")
+	}
+}
+
+// Pressing stop while an AskUserQuestion (or any) permission prompt is parked
+// must leave the session usable. Abort interrupts the turn; the CLI then ends it
+// with an error result (often a nil Result, i.e. the generic "unknown error").
+// That interrupt fallout must map to StatusIdle, not StatusError — otherwise the
+// session wedges as dead with an "unknown error" the user never caused.
+// Regression for the "stop during a pending question bricks the session" bug.
+func TestClaudeCodeBackend_AbortDuringPermission_ReturnsIdleNotError(t *testing.T) {
+	t.Parallel()
+
+	const sessionID = "claude-abort-perm"
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.SystemMessage{
+			MessageType: "system",
+			Subtype:     "init",
+			Data:        map[string]any{"session_id": sessionID},
+		},
+	})
+	// The interrupted turn ends with an error result whose Result is nil —
+	// exactly the "unknown error" fallout handleResult would otherwise surface.
+	transport.onInterrupt = func() []claudecode.Message {
+		return []claudecode.Message{
+			&claudecode.ResultMessage{MessageType: "result", SessionID: sessionID, IsError: true},
+		}
+	}
+
+	b := agent.NewClaudeCodeBackend(t.TempDir())
+	defer b.Stop()
+	var captured []claudecode.Option
+	b.ClientFactory = func(opts ...claudecode.Option) claudecode.Client {
+		captured = opts
+		return claudecode.NewClientWithTransport(transport, opts...)
+	}
+	if err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{Text: "do it"}); err != nil {
+		t.Fatalf("OpenAndSend: %v", err)
+	}
+	var resolved claudecode.Options
+	for _, opt := range captured {
+		opt(&resolved)
+	}
+
+	// Park an AskUserQuestion permission on the SDK read goroutine.
+	go func() {
+		_, _ = resolved.CanUseTool(context.Background(), "AskUserQuestion", map[string]any{}, nil)
+	}()
+	waitForEventType(t, b.Events(), agent.EventPermission, 2*time.Second)
+
+	// Press stop.
+	if err := b.Abort(context.Background()); err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+
+	events := waitForStatus(t, b.Events(), agent.StatusIdle, 5*time.Second)
+	for _, evt := range events {
+		if evt.Type == agent.EventStatusChange {
+			if d, ok := evt.Data.(agent.StatusChangeData); ok && d.NewStatus == agent.StatusError {
+				t.Fatalf("abort flipped the session to StatusError; want it to return to Idle")
+			}
+		}
+		if evt.Type == agent.EventError {
+			t.Errorf("abort emitted a spurious error event: %+v", evt.Data)
+		}
+	}
+	if b.Status() != agent.StatusIdle {
+		t.Errorf("post-abort status=%q, want %q", b.Status(), agent.StatusIdle)
 	}
 }
 
