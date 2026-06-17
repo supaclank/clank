@@ -7,23 +7,12 @@
 // Metro/dev-server target (host_id, port), build one *Tunnel and
 // hand its RoundTripper to httputil.ReverseProxy.
 //
-// Idle keep-alive REUSE is deliberately disabled (DisableKeepAlives).
-// Each request dials a fresh tunnel through OpenInternalConn. Why:
-// the inner net.Conn is a WSS tunnel to api.sprites.dev proxying to a
-// loopback port inside the sprite. That far end can vanish WITHOUT a
-// clean close — the Sprites edge idle-drops a quiet proxy tunnel, or
-// the sprite pauses (per the Sprites docs, "open TCP connections drop
-// on the pause"). A pooled conn then goes HALF-OPEN: the next request
-// writes fine but no response byte ever comes back, so it hangs until
-// the caller's timeout (observed: ~40% of /status probes stalled to a
-// 6s cap on a live server, while fresh dials returned in ~0.3s). The
-// Phase 0 spike only ever validated PARALLEL concurrency (10 /ping at
-// once didn't serialize) and sequential FRESH dials — it never tested
-// holding a conn idle and reusing it, which is exactly the failure
-// mode. DisableKeepAlives keeps the validated parallel-concurrency
-// property (stdlib still opens distinct conns for in-flight requests)
-// while removing the unvalidated idle reuse. A fresh dial also cleanly
-// wakes a paused sprite, which is the intended Sprites usage pattern.
+// Idle keep-alive reuse is disabled (DisableKeepAlives). The inner
+// net.Conn is a WSS tunnel to api.sprites.dev; the Sprites edge
+// idle-drops quiet tunnels and drops connections on sprite pause (per
+// the Sprites docs, "open TCP connections drop on the pause"), leaving
+// a pooled conn half-open — the next request hangs with no response.
+// A fresh dial avoids the stale conn and cleanly wakes a paused sprite.
 //
 // NOTE: this is a network-transport concern only. The HMR WebSocket is
 // a hijacked, long-lived connection that is never returned to the
@@ -129,13 +118,7 @@ func New(prov provisioner.Provisioner, hostID string, port int, cfg Config) (*Tu
 		},
 		MaxIdleConns:    cfg.MaxIdleConns,
 		IdleConnTimeout: cfg.IdleConnTimeout,
-		// Disable idle keep-alive REUSE: a pooled WSS tunnel can go
-		// half-open when the Sprites edge idle-drops it or the sprite
-		// pauses, and reusing it hangs the next request with no response
-		// byte. Fresh-dial-per-request avoids the stale conn (and wakes a
-		// paused sprite). Parallel concurrency is unaffected — the stdlib
-		// still opens distinct conns for simultaneous in-flight requests.
-		DisableKeepAlives: true,
+		DisableKeepAlives: true, // prevent stale half-open tunnels; see package doc
 		// TLSClientConfig stays nil: Metro inside the sprite speaks
 		// plain HTTP, and the public-edge TLS is terminated at the
 		// gateway one hop earlier.
