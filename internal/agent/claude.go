@@ -41,6 +41,7 @@ type ClaudeCodeBackend struct {
 	projectDir string
 	events     chan Event
 	stopped    bool // guards against double-close of events channel
+	aborting   bool // set by Abort so the interrupt's error result maps to Idle, not Error
 	ctx        context.Context
 	cancel     context.CancelFunc
 
@@ -424,6 +425,12 @@ func (b *ClaudeCodeBackend) Send(ctx context.Context, opts SendMessageOpts) erro
 		},
 	})
 
+	// A new turn clears any pending abort so an earlier interrupt that produced
+	// no result can't reinterpret this turn's genuine error as a clean Idle.
+	b.mu.Lock()
+	b.aborting = false
+	b.mu.Unlock()
+
 	b.setStatus(StatusBusy)
 
 	if err := client.Query(b.ctx, opts.Text); err != nil {
@@ -443,11 +450,23 @@ func (b *ClaudeCodeBackend) Abort(ctx context.Context) error {
 		return fmt.Errorf("session not started")
 	}
 
+	// Mark the turn user-aborted so handleResult reads the interrupt's error
+	// result as a normal turn end (Idle) rather than a session failure.
+	b.mu.Lock()
+	b.aborting = true
+	b.mu.Unlock()
+
 	// Free any parked permission prompt so the SDK read goroutine unblocks
 	// immediately instead of waiting for the interrupt to propagate.
 	b.failPendingPermissions()
 
-	return client.Interrupt(ctx)
+	if err := client.Interrupt(ctx); err != nil {
+		b.mu.Lock()
+		b.aborting = false
+		b.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (b *ClaudeCodeBackend) Stop() error {
@@ -644,6 +663,21 @@ func (b *ClaudeCodeBackend) handleResult(m *claudecode.ResultMessage) {
 		b.mu.Lock()
 		b.sessionID = m.SessionID
 		b.mu.Unlock()
+	}
+
+	// A user-initiated Abort interrupts the current turn; the CLI then ends it
+	// with an error result (often a nil Result, i.e. the generic "unknown
+	// error"). That is the expected fallout of the interrupt, not a session
+	// failure — return to Idle so the session stays usable instead of wedging in
+	// StatusError. Consume the flag so only the interrupt's own result is
+	// reinterpreted; a genuine error on a later turn still surfaces.
+	b.mu.Lock()
+	aborted := b.aborting
+	b.aborting = false
+	b.mu.Unlock()
+	if aborted {
+		b.setStatus(StatusIdle)
+		return
 	}
 
 	if m.IsError {
