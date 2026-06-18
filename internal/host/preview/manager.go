@@ -190,6 +190,18 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 		m.log.Printf("preview: gateway register for %s/%s failed (non-fatal): %v", worktreeID, serviceName, regErr)
 	}
 
+	// Inject the guest-side preview runtime (Layer A) BEFORE spawning Metro:
+	// `expo start` reads metro.config.js at startup, so the premodule that
+	// silences React Native's dev error UI for non-technical previewers must
+	// be wired into the project first. Best-effort — a failure just means the
+	// preview runs without the guest-side suppression (the clank-mobile host
+	// still hides the native redbox). Expo-only; Detect today emits only KindExpo.
+	if spec.Kind == KindExpo {
+		if err := ensurePreviewRuntime(workDir); err != nil {
+			m.log.Printf("preview: inject runtime for %s/%s failed (non-fatal): %v", worktreeID, serviceName, err)
+		}
+	}
+
 	// Use the manager's background context, NOT the caller's. spawn
 	// wires this to exec.CommandContext, and the caller's ctx (the
 	// HTTP request context in production) gets canceled the moment
