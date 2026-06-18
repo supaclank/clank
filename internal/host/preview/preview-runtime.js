@@ -28,8 +28,8 @@
  * survives HMR — so re-evaluating this module never double-wraps the handler.
  */
 (function installClankPreviewRuntime() {
-  if (typeof globalThis === 'undefined') return;
-  var g = globalThis;
+  var g = typeof globalThis !== 'undefined' ? globalThis : (typeof global !== 'undefined' ? global : null);
+  if (!g) return;
 
   g.__clankPreview = g.__clankPreview || { version: 1, installed: false };
   if (g.__clankPreview.installed) return; // HMR-safe: install exactly once.
@@ -95,7 +95,10 @@
   if (EU && typeof EU.setGlobalHandler === 'function') {
     EU.setGlobalHandler(function clankGlobalErrorHandler(error, isFatal) {
       var msg = (error && (error.message || String(error))) || 'unknown error';
+      // TODO(ai-review): sanitize/truncate msg before sending to native (raw messages can include module paths).
+      // https://github.com/Acksell/clank/pull/65#discussion_r3439529642
       reportError(msg, isFatal);
+      if (error) console.log('[clank preview]', error.stack || error.message || error);
       // Deliberately do NOT call the previous handler: it re-enters LogBox
       // (the very overlay we're suppressing) and can crash the app. We keep
       // the runtime alive so the next Fast Refresh update can replace the bad

@@ -10,6 +10,7 @@ import (
 // When the guest has no metro.config.js, ensurePreviewRuntime writes both our
 // runtime file and a standalone config that registers it as a premodule.
 func TestEnsurePreviewRuntime_NoExistingConfig(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	if err := ensurePreviewRuntime(dir); err != nil {
@@ -39,6 +40,7 @@ func TestEnsurePreviewRuntime_NoExistingConfig(t *testing.T) {
 // its wrapper without disturbing the user's config, and is idempotent across
 // repeated /preview/start calls.
 func TestEnsurePreviewRuntime_ExistingConfigAppendsAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	original := "const { getDefaultConfig } = require('expo/metro-config');\n" +
 		"const { withNativeWind } = require('nativewind/metro');\n" +
@@ -87,6 +89,7 @@ func TestEnsurePreviewRuntime_ExistingConfigAppendsAndIsIdempotent(t *testing.T)
 // A config that already carries our marker (e.g. shipped in a template) is left
 // untouched.
 func TestEnsurePreviewRuntime_AlreadyMarkedUnchanged(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, metroConfigFile)
 	preWired := "// " + injectMarker + "\nmodule.exports = {};\n"
@@ -104,5 +107,36 @@ func TestEnsurePreviewRuntime_AlreadyMarkedUnchanged(t *testing.T) {
 	}
 	if string(got) != preWired {
 		t.Errorf("already-marked config was modified:\nwant:\n%s\ngot:\n%s", preWired, got)
+	}
+}
+
+// An ESM project using metro.config.cjs is patched in place; no conflicting
+// metro.config.js is created.
+func TestEnsurePreviewRuntime_ExistingCjsConfigAppended(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	original := "module.exports = require('expo/metro-config').getDefaultConfig(__dirname);\n"
+	cjsPath := filepath.Join(dir, metroConfigCjsFile)
+	if err := os.WriteFile(cjsPath, []byte(original), 0o644); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	if err := ensurePreviewRuntime(dir); err != nil {
+		t.Fatalf("ensurePreviewRuntime: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, metroConfigFile)); !os.IsNotExist(err) {
+		t.Errorf("metro.config.js should not have been created alongside metro.config.cjs")
+	}
+
+	got, err := os.ReadFile(cjsPath)
+	if err != nil {
+		t.Fatalf("read cjs config: %v", err)
+	}
+	if !strings.HasPrefix(string(got), original) {
+		t.Errorf("original content not preserved; got:\n%s", got)
+	}
+	if !strings.Contains(string(got), injectMarker) {
+		t.Errorf("metro.config.cjs missing inject marker; got:\n%s", got)
 	}
 }
