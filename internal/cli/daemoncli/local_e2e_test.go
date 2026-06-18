@@ -349,7 +349,7 @@ func (b *stubBackend) RespondPermission(_ context.Context, permissionID string, 
 	b.permissionCalled = true
 	return nil
 }
-func (b *stubBackend) Events() <-chan agent.Event                          { return b.events }
+func (b *stubBackend) Events() <-chan agent.Event { return b.events }
 
 // initTestGitRepo creates a git repo with an "origin" remote so
 // host.workDirFor accepts the LocalPath as a usable repo root.

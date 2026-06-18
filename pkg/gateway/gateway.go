@@ -15,6 +15,7 @@ import (
 	"net/http"
 
 	"github.com/acksell/clank/pkg/auth"
+	"github.com/acksell/clank/pkg/images"
 	"github.com/acksell/clank/pkg/notify"
 	"github.com/acksell/clank/pkg/preview/routestore"
 	"github.com/acksell/clank/pkg/preview/tokens"
@@ -87,6 +88,12 @@ type Config struct {
 	// methods directly rather than via HTTP. When nil, the pull route
 	// returns 503.
 	Sync *clanksync.Server
+
+	// Images is the embedded image-upload presign server. When non-nil,
+	// the gateway mounts POST /v1/images (more specific than Sync's /v1/
+	// catch-all, so it wins). Independent of Sync — its own bucket. When
+	// nil, /v1/images falls through to the sync server (404).
+	Images *images.Server
 
 	// Templates is the catalog of built-in project templates a user can
 	// scaffold a brand-new project from (POST /v1/projects/create). Each
@@ -257,6 +264,11 @@ func (g *Gateway) Handler() http.Handler {
 	mx.HandleFunc("POST /v1/github/connect/cancel", g.handleGitHubConnectCancel)
 	mx.HandleFunc("POST /v1/worktrees/{id}/pr", g.handleGitHubCreatePR)
 	mx.HandleFunc("POST /v1/worktrees/{id}/pr/preview", g.handleGitHubPreviewPR)
+	if g.cfg.Images != nil {
+		// POST /v1/images: image-upload presign. More specific than the
+		// sync /v1/ catch-all below, so it wins regardless of order.
+		mx.Handle("/v1/images", g.cfg.Images.Handler())
+	}
 	if g.cfg.Sync != nil {
 		// The specific /v1/worktrees/... routes above are more specific
 		// and win over this /v1/ prefix registered here.

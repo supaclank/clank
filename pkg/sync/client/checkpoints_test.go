@@ -18,6 +18,7 @@ import (
 
 	"github.com/acksell/clank/internal/store"
 	"github.com/acksell/clank/pkg/auth"
+	"github.com/acksell/clank/pkg/blobstore"
 	clanksync "github.com/acksell/clank/pkg/sync"
 	"github.com/acksell/clank/pkg/sync/checkpoint"
 	syncclient "github.com/acksell/clank/pkg/sync/client"
@@ -49,7 +50,7 @@ func TestCheckpointFlow_EndToEnd(t *testing.T) {
 	}
 	defer st.Close()
 
-	mem := storage.NewMemory()
+	mem := blobstore.NewMemory()
 	defer mem.Close()
 
 	srv, err := clanksync.NewServer(clanksync.Config{
@@ -177,7 +178,7 @@ func TestPushCheckpoint_UnregisteredWorktreeReturnsTypedError(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	mem := storage.NewMemory()
+	mem := blobstore.NewMemory()
 	defer mem.Close()
 	srv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
 	if err != nil {
@@ -245,7 +246,7 @@ func TestPushCheckpoint_ReportsProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	mem := storage.NewMemory()
+	mem := blobstore.NewMemory()
 	defer mem.Close()
 	srv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
 	if err != nil {
@@ -302,7 +303,7 @@ func TestPushCheckpoint_CleanIgnoresUncommitted(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	mem := storage.NewMemory()
+	mem := blobstore.NewMemory()
 	defer mem.Close()
 	srv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
 	if err != nil {
@@ -412,7 +413,7 @@ func TestPushPull_IncrementalChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	mem := storage.NewMemory()
+	mem := blobstore.NewMemory()
 	defer mem.Close()
 	srv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
 	if err != nil {
@@ -521,7 +522,7 @@ func TestPushCheckpoint_SecondPushSameHEADReusesHeadBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	mem := storage.NewMemory()
+	mem := blobstore.NewMemory()
 	defer mem.Close()
 	srv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
 	if err != nil {

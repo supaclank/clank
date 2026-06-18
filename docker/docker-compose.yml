@@ -44,9 +44,10 @@ services:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-      mc alias set local http://clank-minio:9000 ${MINIO_ROOT_USER:-clankadmin} ${MINIO_ROOT_PASSWORD:-clankadmin} &&
-      (mc mb local/${CLANK_BUCKET:-clank} || true) &&
-      mc anonymous set download local/${CLANK_BUCKET:-clank} || true
+      mc alias set local http://clank-minio:9000 ${MINIO_ROOT_USER:-clankadmin} ${MINIO_ROOT_PASSWORD:-clankadmin};
+      mc mb local/${CLANK_BUCKET:-clank} || true;
+      mc anonymous set download local/${CLANK_BUCKET:-clank} || true;
+      mc mb local/${CLANK_IMAGES_BUCKET:-clank-images} || true
       "
 
   # ── dev auth stub (OAuth 2.0 + PKCE, auto-approves) ─────────────
@@ -156,6 +157,21 @@ services:
       CLANK_SYNC_S3_PATH_STYLE: "true"
       CLANK_SYNC_PRESIGN_TTL: "${CLANK_SYNC_PRESIGN_TTL:-5m}"
       CLANK_SYNC_DB_PATH: "/var/lib/clank/clank-sync.db"
+
+      # Image-upload substrate, independent of sync (separate bucket).
+      # clankd's runGatewayServer reads these in TCP mode via
+      # loadImagesFromEnv and mounts POST /v1/images when
+      # CLANK_IMAGES_S3_BUCKET is set. The sprite downloads uploaded
+      # images via the presigned GET URL — same clank-minio reachability
+      # as sync (docker DNS in-container, /etc/hosts on the laptop).
+      CLANK_IMAGES_S3_BUCKET: "${CLANK_IMAGES_BUCKET:-clank-images}"
+      CLANK_IMAGES_S3_REGION: "us-east-1"
+      CLANK_IMAGES_S3_ENDPOINT: "http://clank-minio:9000"
+      CLANK_IMAGES_S3_PUBLIC_ENDPOINT: "${CLANK_IMAGES_S3_PUBLIC_ENDPOINT:-}"
+      CLANK_IMAGES_S3_ACCESS_KEY: "${MINIO_ROOT_USER:-clankadmin}"
+      CLANK_IMAGES_S3_SECRET_KEY: "${MINIO_ROOT_PASSWORD:-clankadmin}"
+      CLANK_IMAGES_S3_PATH_STYLE: "true"
+      CLANK_IMAGES_PRESIGN_TTL: "${CLANK_IMAGES_PRESIGN_TTL:-30m}"
 
       # ── preview-app surface ────────────────────────────────────
       # Optional. When set, clankd enables the tokenized-preview

@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/store"
+	"github.com/acksell/clank/pkg/blobstore"
 	clanksync "github.com/acksell/clank/pkg/sync"
-	"github.com/acksell/clank/pkg/sync/storage"
 )
 
 // loadSyncFromEnv builds a *clanksync.Server from CLANK_SYNC_S3_* env
@@ -45,15 +45,15 @@ func loadSyncFromEnv(ctx context.Context, lg *log.Logger) (*clanksync.Server, er
 		return nil, nil
 	}
 
-	region, err := requireEnv("CLANK_SYNC_S3_REGION")
+	region, err := requireEnv("CLANK_SYNC_S3_REGION", "CLANK_SYNC_S3_BUCKET")
 	if err != nil {
 		return nil, err
 	}
-	access, err := requireEnv("CLANK_SYNC_S3_ACCESS_KEY")
+	access, err := requireEnv("CLANK_SYNC_S3_ACCESS_KEY", "CLANK_SYNC_S3_BUCKET")
 	if err != nil {
 		return nil, err
 	}
-	secret, err := requireEnv("CLANK_SYNC_S3_SECRET_KEY")
+	secret, err := requireEnv("CLANK_SYNC_S3_SECRET_KEY", "CLANK_SYNC_S3_BUCKET")
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +78,7 @@ func loadSyncFromEnv(ctx context.Context, lg *log.Logger) (*clanksync.Server, er
 		return nil, fmt.Errorf("open sync store %s: %w", dbPath, err)
 	}
 
-	s3Cfg := storage.S3Config{
+	s3Cfg := blobstore.S3Config{
 		Bucket:         bucket,
 		Region:         region,
 		Endpoint:       os.Getenv("CLANK_SYNC_S3_ENDPOINT"),
@@ -89,7 +89,7 @@ func loadSyncFromEnv(ctx context.Context, lg *log.Logger) (*clanksync.Server, er
 	}
 	initCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	bkt, err := storage.NewS3(initCtx, s3Cfg)
+	bkt, err := blobstore.NewS3(initCtx, s3Cfg)
 	if err != nil {
 		st.Close()
 		return nil, fmt.Errorf("init S3 storage: %w", err)
@@ -138,10 +138,13 @@ func defaultSyncDBPath() (string, error) {
 	return filepath.Join(dir, "clank.db"), nil
 }
 
-func requireEnv(key string) (string, error) {
+// requireEnv reads key, erroring if empty. becauseKey names the env var
+// whose presence made key required, so the message points at the real
+// trigger (e.g. "... must be set when CLANK_SYNC_S3_BUCKET is set").
+func requireEnv(key, becauseKey string) (string, error) {
 	v := os.Getenv(key)
 	if v == "" {
-		return "", fmt.Errorf("%s must be set when CLANK_SYNC_S3_BUCKET is set", key)
+		return "", fmt.Errorf("%s must be set when %s is set", key, becauseKey)
 	}
 	return v, nil
 }

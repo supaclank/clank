@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acksell/clank/pkg/blobstore"
 	clanksync "github.com/acksell/clank/pkg/sync"
 	"github.com/acksell/clank/pkg/sync/checkpoint"
-	"github.com/acksell/clank/pkg/sync/storage"
 )
 
 // TestSessionPresignHandler_HappyPath: laptop creates a checkpoint
@@ -122,7 +122,7 @@ func TestSessionPresignHandler_WrongTenantForbidden(t *testing.T) {
 	// directly via NewServer so we can sidestep the fixed-principal
 	// middleware that all the existing tests pin to "user-A".
 	store := newMemSyncStore()
-	mem := storage.NewMemory()
+	mem := blobstore.NewMemory()
 	t.Cleanup(mem.Close)
 
 	srv, err := clanksync.NewServer(clanksync.Config{

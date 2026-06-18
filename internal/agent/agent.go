@@ -570,6 +570,22 @@ type SendMessageOpts struct {
 	// start it picks the initial mode; on a follow-up it changes the mode at
 	// runtime. Empty means "no change". Ignored by the OpenCode backend.
 	PermissionMode ClaudePermissionMode `json:"permission_mode,omitempty"`
+	// Attachments are images the client uploaded out-of-band; the backend
+	// downloads each via its presigned GetURL and inlines it into the agent
+	// (Claude base64 content block / OpenCode file part). Empty for text-only
+	// messages.
+	Attachments []Attachment `json:"attachments,omitempty"`
+}
+
+// Attachment is one image attached to a user message. The client uploads
+// the bytes to the object store via a presigned PUT URL, then sends the
+// message carrying the presigned GetURL the sprite uses to download. The
+// gateway never sees the bytes.
+type Attachment struct {
+	ImageID  string `json:"image_id"`
+	Mime     string `json:"mime"`
+	Filename string `json:"filename,omitempty"`
+	GetURL   string `json:"get_url"` // presigned GET; required when an attachment is present
 }
 
 // Lifecycle: NewBackend → Open (or OpenAndSend) → Send* → Abort? → Stop

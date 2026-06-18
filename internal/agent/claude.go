@@ -377,7 +377,13 @@ func (b *ClaudeCodeBackend) OpenAndSend(ctx context.Context, opts SendMessageOpt
 		return fmt.Errorf("session not open after Open")
 	}
 
-	if err := client.Query(b.ctx, opts.Text); err != nil {
+	imgs, err := resolveAttachments(b.ctx, opts.Attachments)
+	if err != nil {
+		b.setStatus(StatusError)
+		return fmt.Errorf("resolve attachments: %w", err)
+	}
+
+	if err := b.dispatchClaudeQuery(client, opts.Text, imgs); err != nil {
 		b.setStatus(StatusError)
 		return fmt.Errorf("send initial prompt: %w", err)
 	}
@@ -434,6 +440,14 @@ func (b *ClaudeCodeBackend) Send(ctx context.Context, opts SendMessageOpts) erro
 		}
 	}
 
+	// Download attachments before emitting the user event / flipping to busy,
+	// so a bad image fails the send cleanly (status intact, session usable)
+	// rather than surfacing a phantom user message followed by an error.
+	imgs, err := resolveAttachments(b.ctx, opts.Attachments)
+	if err != nil {
+		return fmt.Errorf("resolve attachments: %w", err)
+	}
+
 	// A new prompt supersedes any active revert: drop the reverted boundary and
 	// announce the unrevert so non-TUI clients un-hide the messages (the TUI
 	// already clears its own copy locally on send). Only emit when state changed.
@@ -467,7 +481,7 @@ func (b *ClaudeCodeBackend) Send(ctx context.Context, opts SendMessageOpts) erro
 
 	b.setStatus(StatusBusy)
 
-	if err := client.Query(b.ctx, opts.Text); err != nil {
+	if err := b.dispatchClaudeQuery(client, opts.Text, imgs); err != nil {
 		b.setStatus(StatusError)
 		return fmt.Errorf("send prompt: %w", err)
 	}

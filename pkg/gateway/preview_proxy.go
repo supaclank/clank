@@ -287,4 +287,3 @@ func (s *previewState) serveProxy(w http.ResponseWriter, r *http.Request, tun *p
 	}
 	proxy.ServeHTTP(w, r)
 }
-
