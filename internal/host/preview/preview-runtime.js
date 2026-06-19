@@ -174,10 +174,18 @@
             m = String(m).slice(0, 4000);
             if (m !== lastReport) {
               lastReport = m;
+              // Diagnostic: confirms the LogBox subscription fired and what it
+              // extracted (logcat ReactNativeJS). Remove once trusted.
+              try {
+                console.log('[clank-preview] report ' + latest.level + ': ' + m.slice(0, 140));
+              } catch (e) {}
               reportError(m, latest.level !== 'error');
             }
           } else if (lastReport !== null) {
             lastReport = null;
+            try {
+              console.log('[clank-preview] clear');
+            } catch (e) {}
             clearError();
           }
         } catch (e) {
