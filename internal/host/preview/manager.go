@@ -199,6 +199,8 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 	if spec.Kind == KindExpo {
 		if err := ensurePreviewRuntime(workDir); err != nil {
 			m.log.Printf("preview: inject runtime for %s/%s failed (non-fatal): %v", worktreeID, serviceName, err)
+		} else {
+			m.log.Printf("preview: injected clank-preview-runtime into %s", workDir)
 		}
 	}
 
