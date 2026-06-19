@@ -190,17 +190,19 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 		m.log.Printf("preview: gateway register for %s/%s failed (non-fatal): %v", worktreeID, serviceName, regErr)
 	}
 
-	// Inject the guest-side preview runtime (Layer A) BEFORE spawning Metro:
-	// `expo start` reads metro.config.js at startup, so the premodule that
-	// silences React Native's dev error UI for non-technical previewers must
-	// be wired into the project first. Best-effort — a failure just means the
-	// preview runs without the guest-side suppression (the clank-mobile host
-	// still hides the native redbox). Expo-only; Detect today emits only KindExpo.
+	// Prepare the guest-side preview runtime (Layer A): write the Metro shim +
+	// runtime to a temp dir (NOT the user's repo) and hand the paths to spawn,
+	// which preloads the shim via NODE_OPTIONS=--require so it injects the
+	// runtime into every guest bundle in-memory. Best-effort — on failure the
+	// preview still runs (no guest-side suppression; the clank-mobile host still
+	// hides the native redbox). Expo-only; Detect today emits only KindExpo.
+	var shimRequirePath, runtimePath string
 	if spec.Kind == KindExpo {
-		if err := ensurePreviewRuntime(workDir); err != nil {
-			m.log.Printf("preview: inject runtime for %s/%s failed (non-fatal): %v", worktreeID, serviceName, err)
+		if sp, rp, ierr := ensurePreviewShim(); ierr != nil {
+			m.log.Printf("preview: prepare runtime shim for %s/%s failed (non-fatal): %v", worktreeID, serviceName, ierr)
 		} else {
-			m.log.Printf("preview: injected clank-preview-runtime into %s", workDir)
+			shimRequirePath, runtimePath = sp, rp
+			m.log.Printf("preview: runtime shim ready (NODE_OPTIONS=--require %s)", sp)
 		}
 	}
 
@@ -210,12 +212,14 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 	// Start writes its response — that would SIGKILL Metro before it
 	// printed a single line.
 	r, err := spawn(m.bgCtx, spawnRequest{
-		WorkDir:      workDir,
-		Spec:         spec,
-		ServiceName:  serviceName,
-		Port:         port,
-		PublicURL:    regResp.URL,
-		ReadyTimeout: readyTimeoutOverride,
+		WorkDir:         workDir,
+		Spec:            spec,
+		ServiceName:     serviceName,
+		Port:            port,
+		PublicURL:       regResp.URL,
+		ReadyTimeout:    readyTimeoutOverride,
+		ShimRequirePath: shimRequirePath,
+		RuntimePath:     runtimePath,
 	})
 	if err != nil {
 		// Spawn failed — tear down the orphan route the gateway just

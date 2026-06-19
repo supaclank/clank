@@ -35,6 +35,19 @@
   if (g.__clankPreview.installed) return; // HMR-safe: install exactly once.
   g.__clankPreview.installed = true;
 
+  // Smoke-test beacon: proves the shim actually injected + ran this module in
+  // the guest bundle (independent of the RN/native checks below). If this line
+  // shows in logcat (ReactNativeJS), the whole NODE_OPTIONS→Metro injection
+  // works. Cheap to keep; remove once the mechanism is trusted.
+  try {
+    console.log(
+      '[clank-preview] runtime evaluated; require=' +
+        (typeof require === 'function') +
+        ' navigator=' +
+        (typeof navigator !== 'undefined' && navigator.product),
+    );
+  } catch (e) {}
+
   var isReactNative =
     typeof navigator !== 'undefined' && navigator.product === 'ReactNative';
   if (!isReactNative) return; // web: namespace only, no-op.
