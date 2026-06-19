@@ -43,7 +43,10 @@
   var RUNTIME = process.env.CLANK_PREVIEW_RUNTIME;
   if (!RUNTIME) return;
   var RUNTIME_DIR = path.dirname(RUNTIME);
-  var LOG_FILE = path.join(RUNTIME_DIR, 'clank-shim.log');
+  // Log OUTSIDE the watched runtime dir: a growing file inside a watchFolder
+  // makes Metro's watcher churn (likely the source of the 500/ConnectException
+  // instability). One level up is not watched.
+  var LOG_FILE = path.join(path.dirname(RUNTIME_DIR), 'clank-shim.log');
 
   // Diagnostics → both the expo process stderr AND a file you can just `cat`
   // (<temp>/clank-shim.log). Each line tells us how far the in-memory injection
@@ -114,14 +117,36 @@
     ) {
       var origTransform = exported.transform;
       exported.transform = function (args) {
+        var self = this;
+        var origArgs = args;
+        var modified = args;
+        var inject = false;
         try {
           if (args && typeof args === 'object' && isInitializeCore(args.filename)) {
+            inject = true;
             var plugins = Array.isArray(args.plugins) ? args.plugins.slice() : [];
             plugins.push(appendRequirePlugin);
-            args = Object.assign({}, args, { plugins: plugins });
+            modified = Object.assign({}, args, { plugins: plugins });
           }
-        } catch (e) {}
-        return origTransform.call(this, args);
+        } catch (e) {
+          inject = false;
+        }
+        if (!inject) return origTransform.call(self, origArgs);
+        // NEVER let our injection break the build (transform is async). On any
+        // sync throw OR async reject, fall back to the original un-injected
+        // transform so the preview still works — and log why, so we can fix the
+        // injection without leaving the user with a 500'd bundle.
+        return Promise.resolve()
+          .then(function () {
+            return origTransform.call(self, modified);
+          })
+          .catch(function (e) {
+            log(
+              'InitializeCore transform FAILED — falling back: ' +
+                String((e && (e.stack || e.message)) || e),
+            );
+            return origTransform.call(self, origArgs);
+          });
       };
       exported.__clankTxWrapped = true;
       log('wrapped babel transformer');
