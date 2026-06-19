@@ -79,6 +79,17 @@
     }
   }
 
+  function clearError() {
+    var pl = previewLauncher();
+    if (pl && pl.clearPreviewError) {
+      try {
+        pl.clearPreviewError();
+      } catch (e) {
+        /* no-op */
+      }
+    }
+  }
+
   // 1) Kill LogBox warning/error toasts. (Notifications only — the fullscreen
   //    inspector is handled by the global handler below; see RN LogBox.js.)
   try {
@@ -106,18 +117,55 @@
     });
   }
 
-  // 3) Bridge-ready hooks for a future "visual edits" tool.
+  // 3) Catch EVERY error LogBox sees — fullscreen, syntax, AND the soft
+  //    toast/Fast-Refresh errors the native error surface can't see (those
+  //    keep the app alive and never present a surface). LogBoxData.observe
+  //    hands us the full log set on each change, so we get both the error (with
+  //    its message, for the pill's "Fix it" button) and a clean CLEAR when the
+  //    logs empty (a successful Fast Refresh). This is what makes the pill fire
+  //    for agent-introduced HMR errors. Dedup so we only report on change.
+  try {
+    var LogBoxData = require('react-native/Libraries/LogBox/Data/LogBoxData');
+    if (LogBoxData && typeof LogBoxData.observe === 'function') {
+      var lastReport = null; // null = healthy; string = last reported message
+      LogBoxData.observe(function (state) {
+        try {
+          var logs = state && state.logs;
+          var latest = null;
+          if (logs && typeof logs.forEach === 'function') {
+            logs.forEach(function (log) {
+              var lvl = log && log.level;
+              if (lvl === 'error' || lvl === 'fatal' || lvl === 'syntax') {
+                latest = log; // keep the most recent error-level log
+              }
+            });
+          }
+          if (latest) {
+            var m =
+              latest.message && latest.message.content != null
+                ? latest.message.content
+                : String((latest.message && latest.message) || 'error');
+            m = String(m).slice(0, 4000);
+            if (m !== lastReport) {
+              lastReport = m;
+              reportError(m, latest.level !== 'error');
+            }
+          } else if (lastReport !== null) {
+            lastReport = null;
+            clearError();
+          }
+        } catch (e) {
+          /* never let the observer throw */
+        }
+      });
+    }
+  } catch (e) {
+    /* LogBoxData unavailable — fall back to the native surface + ErrorUtils */
+  }
+
+  // 4) Bridge-ready hooks for a future "visual edits" tool.
   g.__clankPreview.reportError = function (m) {
     reportError(m, false);
   };
-  g.__clankPreview.clearError = function () {
-    var pl = previewLauncher();
-    if (pl && pl.clearPreviewError) {
-      try {
-        pl.clearPreviewError();
-      } catch (e) {
-        /* no-op */
-      }
-    }
-  };
+  g.__clankPreview.clearError = clearError;
 })();
