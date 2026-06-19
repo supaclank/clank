@@ -90,6 +90,16 @@
     }
   }
 
+  // Gate ALL suppression on running INSIDE the clank-mobile host. If the
+  // PreviewLauncher native module isn't present — a normal Expo Go client, or
+  // someone running plain `expo start` without our wrapper — do NOTHING: leave
+  // LogBox and every error fully intact so non-clank clients behave exactly as
+  // stock Expo. (Native modules are registered before the bundle runs, so this
+  // resolves correctly here at premodule time.)
+  var clankHost = previewLauncher();
+  console.log('[clank-preview] host=' + (clankHost ? 'clank-mobile' : 'other (errors intact)'));
+  if (!clankHost) return;
+
   // 1) Kill LogBox warning/error toasts. (Notifications only — the fullscreen
   //    inspector is handled by the global handler below; see RN LogBox.js.)
   try {
