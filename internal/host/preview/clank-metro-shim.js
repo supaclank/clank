@@ -31,10 +31,11 @@
  * backend). No-op if it's unset.
  */
 (function installClankMetroShim() {
-  var Module, path;
+  var Module, path, fs;
   try {
     Module = require('module');
     path = require('path');
+    fs = require('fs');
   } catch (e) {
     return;
   }
@@ -42,13 +43,18 @@
   var RUNTIME = process.env.CLANK_PREVIEW_RUNTIME;
   if (!RUNTIME) return;
   var RUNTIME_DIR = path.dirname(RUNTIME);
+  var LOG_FILE = path.join(RUNTIME_DIR, 'clank-shim.log');
 
-  // Diagnostics → the expo process stderr (captured by the backend log buffer).
-  // Each line tells us how far the injection got, independent of the on-device
-  // beacon. Cheap; fires only when we actually patch something.
+  // Diagnostics → both the expo process stderr AND a file you can just `cat`
+  // (<temp>/clank-shim.log). Each line tells us how far the in-memory injection
+  // got, independent of the on-device beacon. Cheap; fires only when we patch.
   function log(msg) {
+    var line = '[clank-shim] ' + msg + '\n';
     try {
-      process.stderr.write('[clank-shim] ' + msg + '\n');
+      process.stderr.write(line);
+    } catch (e) {}
+    try {
+      fs.appendFileSync(LOG_FILE, new Date().toISOString() + ' pid' + process.pid + ' ' + line);
     } catch (e) {}
   }
   log('loaded (pid ' + process.pid + ', runtime ' + RUNTIME + ')');
