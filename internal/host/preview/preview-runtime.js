@@ -90,41 +90,44 @@
     }
   }
 
-  // Gate ALL suppression on running INSIDE the clank-mobile host. If the
-  // PreviewLauncher native module isn't present — a normal Expo Go client, or
-  // someone running plain `expo start` without our wrapper — do NOTHING: leave
-  // LogBox and every error fully intact so non-clank clients behave exactly as
-  // stock Expo. (Native modules are registered before the bundle runs, so this
-  // resolves correctly here at premodule time.)
+  // Detect whether we're running INSIDE the clank-mobile host (the
+  // PreviewLauncher native module is present). A normal Expo Go client — or
+  // someone running plain `expo start` without our wrapper — won't have it.
   var clankHost = previewLauncher();
-  console.log('[clank-preview] host=' + (clankHost ? 'clank-mobile' : 'other (errors intact)'));
-  if (!clankHost) return;
+  console.log('[clank-preview] host=' + (clankHost ? 'clank-mobile' : 'other'));
 
-  // 1) Kill LogBox warning/error toasts. (Notifications only — the fullscreen
-  //    inspector is handled by the global handler below; see RN LogBox.js.)
-  try {
-    var LogBox =
-      require('react-native/Libraries/LogBox/LogBox').default ||
-      require('react-native').LogBox;
-    if (LogBox && LogBox.ignoreAllLogs) LogBox.ignoreAllLogs(true);
-  } catch (e) {
-    /* LogBox absent (e.g. production) — nothing to silence */
-  }
+  // SUPPRESS the dev error UI ONLY inside the clank-mobile host, so a normal
+  // Expo Go client (or plain `expo start`) keeps stock error behavior. The
+  // DETECTION/reporting below (LogBoxData.observe) runs regardless — it drives
+  // the pill and no-ops without the native module, so the pill never depends on
+  // whether the module was resolvable this early.
+  if (clankHost) {
+    // Kill LogBox warning/error toasts. (Notifications only — the fullscreen
+    // inspector is handled by the global handler below; see RN LogBox.js.)
+    try {
+      var LogBox =
+        require('react-native/Libraries/LogBox/LogBox').default ||
+        require('react-native').LogBox;
+      if (LogBox && LogBox.ignoreAllLogs) LogBox.ignoreAllLogs(true);
+    } catch (e) {
+      /* LogBox absent (e.g. production) — nothing to silence */
+    }
 
-  // 2) Swallow uncaught fatals before they open the fullscreen LogBox.
-  var EU = g.ErrorUtils;
-  if (EU && typeof EU.setGlobalHandler === 'function') {
-    EU.setGlobalHandler(function clankGlobalErrorHandler(error, isFatal) {
-      var msg = (error && (error.message || String(error))) || 'unknown error';
-      // TODO(ai-review): sanitize/truncate msg before sending to native (raw messages can include module paths).
-      // https://github.com/Acksell/clank/pull/65#discussion_r3439529642
-      reportError(msg, isFatal);
-      if (error) console.log('[clank preview]', error.stack || error.message || error);
-      // Deliberately do NOT call the previous handler: it re-enters LogBox
-      // (the very overlay we're suppressing) and can crash the app. We keep
-      // the runtime alive so the next Fast Refresh update can replace the bad
-      // module; the native overlay shows the calm "Fixing a glitch…" pill.
-    });
+    // Swallow uncaught fatals before they open the fullscreen LogBox.
+    var EU = g.ErrorUtils;
+    if (EU && typeof EU.setGlobalHandler === 'function') {
+      EU.setGlobalHandler(function clankGlobalErrorHandler(error, isFatal) {
+        var msg = (error && (error.message || String(error))) || 'unknown error';
+        // TODO(ai-review): sanitize/truncate msg before sending to native (raw messages can include module paths).
+        // https://github.com/Acksell/clank/pull/65#discussion_r3439529642
+        reportError(msg, isFatal);
+        if (error) console.log('[clank preview]', error.stack || error.message || error);
+        // Deliberately do NOT call the previous handler: it re-enters LogBox
+        // (the very overlay we're suppressing) and can crash the app. We keep
+        // the runtime alive so the next Fast Refresh update can replace the bad
+        // module; the native overlay shows the calm "Fixing a glitch…" pill.
+      });
+    }
   }
 
   // 3) Catch EVERY error LogBox sees — fullscreen, syntax, AND the soft
