@@ -43,6 +43,16 @@
   if (!RUNTIME) return;
   var RUNTIME_DIR = path.dirname(RUNTIME);
 
+  // Diagnostics → the expo process stderr (captured by the backend log buffer).
+  // Each line tells us how far the injection got, independent of the on-device
+  // beacon. Cheap; fires only when we actually patch something.
+  function log(msg) {
+    try {
+      process.stderr.write('[clank-shim] ' + msg + '\n');
+    } catch (e) {}
+  }
+  log('loaded (pid ' + process.pid + ', runtime ' + RUNTIME + ')');
+
   var origLoad = Module._load;
   Module._load = function (request) {
     var exported = origLoad.apply(this, arguments);
@@ -85,6 +95,7 @@
         return p;
       };
       exported.__clankCfgWrapped = true;
+      log('wrapped loadUserConfig');
     }
 
     // (2) The Babel transformer — wrap transform() to add our plugin for
@@ -107,6 +118,7 @@
         return origTransform.call(this, args);
       };
       exported.__clankTxWrapped = true;
+      log('wrapped babel transformer');
     }
   }
 
@@ -133,6 +145,13 @@
     // and a previously-cached InitializeCore (without our require) would be
     // served. cacheVersion is a separate key input.
     config.cacheVersion = (config.cacheVersion || '') + '~clankPreview1';
+    log(
+      'mutated config (projectRoot=' +
+        config.projectRoot +
+        ', watchFolders+=' +
+        RUNTIME_DIR +
+        ')',
+    );
   }
 
   function isInitializeCore(filename) {
@@ -159,7 +178,10 @@
                   t.callExpression(t.identifier('require'), [t.stringLiteral(RUNTIME)]),
                 ),
               );
-            } catch (e) {}
+              log('appended require(runtime) to InitializeCore');
+            } catch (e) {
+              log('FAILED to append to InitializeCore: ' + (e && e.message));
+            }
           },
         },
       },
