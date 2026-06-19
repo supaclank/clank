@@ -103,6 +103,96 @@
     }
   }
 
+  // --- Rich error formatting for the agent ---------------------------------
+  // A LogBoxLog carries far more than the message: the code frame (syntax
+  // errors), the React component stack (file:line of each component), and the
+  // JS stack. We assemble those into one report so "Fix it" gives the agent the
+  // same context a developer sees in the Expo error screen. Locations are the
+  // un-symbolicated bundle positions (symbolication is async), but the file +
+  // message + approximate line are enough to pinpoint it. Capped to 4000 chars.
+  // Babel highlights code frames with ANSI color codes (ESC[..m). They render
+  // as garbage anywhere but a terminal, so strip them.
+  function clankStripAnsi(s) {
+    return String(s == null ? '' : s)
+      .replace(/\u001b\[[0-9;]*[A-Za-z]/g, '')
+      .replace(/\u001b/g, '');
+  }
+
+  function clankCleanFile(fileName) {
+    if (!fileName) return '';
+    return String(fileName)
+      .replace(/^https?:\/\/[^/]+\//, '') // strip protocol + host
+      .replace(/[?#].*$/, '') // strip query/hash
+      .replace(/\.bundle.*$/, '') // strip .bundle + trailing //…
+      .replace(/\/+$/, '');
+  }
+
+  // Render one component-stack frame, or null if it's pure noise (no name AND
+  // no file — some RN/React builds emit a stack of nameless, file-less frames
+  // that add nothing over the code frame).
+  function clankFrame(f) {
+    if (!f) return null;
+    var name = f.content || '';
+    var file = clankCleanFile(f.fileName);
+    if ((!name || name === '<anonymous>') && !file) return null;
+    var line = '  ' + (name || '<anonymous>');
+    if (file) {
+      line += ' (' + file;
+      if (f.location && f.location.row != null) {
+        line += ':' + f.location.row;
+        if (f.location.column != null) line += ':' + f.location.column;
+      }
+      line += ')';
+    }
+    return line;
+  }
+
+  function formatLogBoxError(log) {
+    var parts = [];
+    parts.push(
+      clankStripAnsi(log.message && log.message.content != null ? log.message.content : 'error'),
+    );
+    if (log.codeFrame && log.codeFrame.content) {
+      var head = clankCleanFile(log.codeFrame.fileName);
+      if (head && log.codeFrame.location && log.codeFrame.location.row != null) {
+        head += ':' + log.codeFrame.location.row;
+      }
+      parts.push('\n' + (head ? head + '\n' : '') + clankStripAnsi(log.codeFrame.content));
+    }
+    // Component stack (React errors), keeping only frames with a name or file.
+    var cframes = [];
+    var cs = log.componentStack;
+    if (cs && cs.length) {
+      for (var i = 0; i < cs.length && cframes.length < 16; i++) {
+        var fr = clankFrame(cs[i]);
+        if (fr) cframes.push(fr);
+      }
+    }
+    if (cframes.length) {
+      parts.push('\nComponent stack:\n' + cframes.join('\n'));
+    } else {
+      // No useful component stack — fall back to the JS stack.
+      var st = log.stack;
+      if (st && st.length) {
+        var slines = [];
+        for (var j = 0; j < st.length && slines.length < 16; j++) {
+          var sf = st[j];
+          var sfile = clankCleanFile(sf.file);
+          slines.push(
+            '  ' +
+              (sf.methodName || '<fn>') +
+              (sfile ? ' (' + sfile + (sf.lineNumber != null ? ':' + sf.lineNumber : '') + ')' : ''),
+          );
+        }
+        if (slines.length) parts.push('\nStack:\n' + slines.join('\n'));
+      }
+    }
+    // Generous safety bound only — guards against a pathological multi-MB
+    // minified stack flooding the agent; real errors are a few KB after the
+    // noise filtering above.
+    return parts.join('\n').slice(0, 16000);
+  }
+
   // Detect whether we're running INSIDE the clank-mobile host (the
   // PreviewLauncher native module is present). A normal Expo Go client — or
   // someone running plain `expo start` without our wrapper — won't have it.
@@ -167,11 +257,10 @@
             });
           }
           if (latest) {
-            var m =
-              latest.message && latest.message.content != null
-                ? latest.message.content
-                : String((latest.message && latest.message) || 'error');
-            m = String(m).slice(0, 4000);
+            // Rich report: message + code frame + component stack + JS stack,
+            // so "Fix it" hands the agent the same context the Expo error
+            // screen shows — not just the one-line title.
+            var m = formatLogBoxError(latest);
             if (m !== lastReport) {
               lastReport = m;
               // Diagnostic: confirms the LogBox subscription fired and what it
