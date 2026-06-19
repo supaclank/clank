@@ -42,6 +42,11 @@
 
   var RUNTIME = process.env.CLANK_PREVIEW_RUNTIME;
   if (!RUNTIME) return;
+
+  // Install exactly once per process (the hook re-ran + nested otherwise).
+  if (global.__clankMetroShimInstalled) return;
+  global.__clankMetroShimInstalled = true;
+
   var RUNTIME_DIR = path.dirname(RUNTIME);
   // Log OUTSIDE the watched runtime dir: a growing file inside a watchFolder
   // makes Metro's watcher churn (likely the source of the 500/ConnectException
@@ -79,9 +84,10 @@
 
     // (1) The Metro config loader — wrap the UNDERLYING module, not the
     //     @expo/metro-config barrel (its re-export is a non-configurable
-    //     getter, so reassigning there silently no-ops).
+    //     getter, so reassigning there silently no-ops). The barrel requires it
+    //     via a RELATIVE path (`./config/loadUserConfig`), so we must NOT also
+    //     require '@expo/metro-config' in the string — match the path segment.
     if (
-      norm.indexOf('@expo/metro-config') !== -1 &&
       norm.indexOf('config/loadUserConfig') !== -1 &&
       typeof exported.loadUserConfig === 'function' &&
       !exported.__clankCfgWrapped
