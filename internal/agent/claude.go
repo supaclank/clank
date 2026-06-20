@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -665,12 +666,28 @@ func (b *ClaudeCodeBackend) Revert(ctx context.Context, messageID string) error 
 		return fmt.Errorf("rewind files to %s: %w", messageID, err)
 	}
 
-	// Locate the assistant turn to resume at and relaunch the CLI truncated
-	// there. Best-effort: a transcript that can't be read (or a first-turn revert
-	// with no prior assistant) leaves resumeAt empty and we skip the relaunch.
-	if resumeAt := resumeTargetUUID(readSessionMessages(sessionID, workDir), messageID); resumeAt != "" {
-		if err := b.reopenWithResumeAt(ctx, resumeAt); err != nil {
-			return fmt.Errorf("reopen resumed at %s: %w", resumeAt, err)
+	// Find the assistant turn to keep, physically truncate the transcript there
+	// (dropping the reverted turns), then relaunch with a plain --resume. We do
+	// NOT use --resume-session-at: in streaming mode it branches the transcript
+	// but does not set the active leaf, so a later plain --resume resumes the
+	// wrong branch. A physically-linear transcript resumes unambiguously and is
+	// durable across restarts. Best-effort: a first-turn revert (no prior
+	// assistant) leaves keepUUID empty and we skip truncation.
+	if keepUUID := resumeTargetUUID(readSessionMessages(sessionID, workDir), messageID); keepUUID != "" {
+		// Disconnect the live client before rewriting its transcript file, then
+		// reopen on the truncated transcript with a plain --resume.
+		b.mu.Lock()
+		old := b.client
+		b.client = nil
+		b.mu.Unlock()
+		if old != nil {
+			old.Disconnect()
+		}
+		if err := truncateTranscriptAt(sessionID, keepUUID); err != nil {
+			return fmt.Errorf("truncate transcript at %s: %w", keepUUID, err)
+		}
+		if err := b.Open(ctx); err != nil {
+			return fmt.Errorf("reopen after truncation: %w", err)
 		}
 	}
 
@@ -687,21 +704,61 @@ func (b *ClaudeCodeBackend) Revert(ctx context.Context, messageID string) error 
 	return nil
 }
 
-// reopenWithResumeAt tears down the live CLI subprocess and relaunches it resumed
-// at resumeAtUUID (the next Open appends --resume-session-at), truncating the
-// conversation to that message. The session id is unchanged; the next Query
-// branches there.
-func (b *ClaudeCodeBackend) reopenWithResumeAt(ctx context.Context, resumeAtUUID string) error {
-	b.mu.Lock()
-	old := b.client
-	b.client = nil
-	b.pendingResumeAt = resumeAtUUID
-	b.mu.Unlock()
-
-	if old != nil {
-		old.Disconnect()
+// truncateTranscriptAt physically rewrites the session's on-disk JSONL
+// transcript to keep only the records up to and including the keepUUID record,
+// dropping everything after it. This is how a revert drops the reverted turns
+// durably: streaming --resume-session-at branches the transcript but does not
+// set the active leaf, so a plain --resume would resume the wrong branch.
+// Physically truncating leaves a linear transcript that plain --resume resumes
+// unambiguously.
+func truncateTranscriptAt(sessionID, keepUUID string) error {
+	path, err := sessionTranscriptPath(sessionID)
+	if err != nil {
+		return err
 	}
-	return b.Open(ctx)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read transcript: %w", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	keepIdx := -1
+	for i, line := range lines {
+		var rec struct {
+			UUID string `json:"uuid"`
+		}
+		if json.Unmarshal([]byte(line), &rec) == nil && rec.UUID == keepUUID {
+			keepIdx = i
+		}
+	}
+	if keepIdx < 0 {
+		return fmt.Errorf("keep uuid %s not found in transcript %s", keepUUID, path)
+	}
+	kept := strings.Join(lines[:keepIdx+1], "\n") + "\n"
+	return os.WriteFile(path, []byte(kept), 0o644)
+}
+
+// sessionTranscriptPath locates a session's JSONL transcript by globbing the
+// projects dir, which avoids depending on how the CLI encodes the cwd into the
+// project-dir name (it can normalize cwd differently than a naive encoding).
+func sessionTranscriptPath(sessionID string) (string, error) {
+	matches, err := filepath.Glob(filepath.Join(claudeConfigHome(), "projects", "*", sessionID+".jsonl"))
+	if err != nil {
+		return "", err
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("transcript not found for session %s", sessionID)
+	}
+	return matches[0], nil
+}
+
+// claudeConfigHome returns the base dir for the CLI's projects/ store
+// (~/.claude, or $CLAUDE_CONFIG_DIR when set).
+func claudeConfigHome() string {
+	if cfg := os.Getenv("CLAUDE_CONFIG_DIR"); cfg != "" {
+		return cfg
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".claude")
 }
 
 // readSessionMessages reads the on-disk transcript for a session, returning nil
