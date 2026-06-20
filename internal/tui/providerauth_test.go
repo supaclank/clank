@@ -50,6 +50,57 @@ func TestAwaitingLabel_OAuthCodePendingMentionsExchange(t *testing.T) {
 	}
 }
 
+// The oauth-code phase must begin polling the moment it's entered and
+// keep polling on each tick, so a native-local flow that self-completes
+// via setup-token's own browser callback is detected without the user
+// ever pasting a code. Regression for the deadlock where the code phase
+// blocked on a paste and never polled. Caller is nil on purpose: we feed
+// the messages directly and assert the returned cmds, never running them.
+func TestProviderAuth_OAuthCodePhasePolls(t *testing.T) {
+	t.Parallel()
+	m := newProviderAuthModel(nil, agent.BackendClaudeCode, "")
+	m.activeProvider = agent.ProviderAuthInfo{
+		ProviderID: host.ProviderAnthropicClaudeCode,
+		AuthType:   agent.AuthTypeOAuthCode,
+	}
+
+	// Flow started: the host returned the authorize URL. We must land in
+	// the code phase AND kick off polling (non-nil cmd batch).
+	m, cmd := m.Update(providerStartedMsg{start: agent.DeviceFlowStart{
+		FlowID:          "flow-1",
+		VerificationURL: "https://claude.com/cai/oauth/authorize?x=1",
+	}})
+	if m.phase != providerPhaseOAuthCode {
+		t.Fatalf("phase=%v, want OAuthCode", m.phase)
+	}
+	if cmd == nil {
+		t.Fatal("entering the code phase must start polling (got nil cmd)")
+	}
+
+	// A tick during the code phase must keep polling.
+	if _, tickCmd := m.Update(providerPollTickMsg{}); tickCmd == nil {
+		t.Fatal("poll tick during OAuthCode phase must continue polling (got nil cmd)")
+	}
+}
+
+// A success status arriving while still in the code phase — i.e. the
+// local flow self-completed with no pasted code — must transition
+// straight to success.
+func TestProviderAuth_OAuthCodeSelfCompletesToSuccess(t *testing.T) {
+	t.Parallel()
+	m := newProviderAuthModel(nil, agent.BackendClaudeCode, "")
+	m.activeProvider = agent.ProviderAuthInfo{
+		ProviderID: host.ProviderAnthropicClaudeCode,
+		AuthType:   agent.AuthTypeOAuthCode,
+	}
+	m.phase = providerPhaseOAuthCode
+
+	m, _ = m.Update(providerStatusMsg{status: agent.DeviceFlowStatus{State: agent.DeviceFlowSuccess}})
+	if m.phase != providerPhaseSuccess {
+		t.Fatalf("phase=%v, want Success (self-complete must not require a paste)", m.phase)
+	}
+}
+
 func TestIsAnthropicProviderID(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
