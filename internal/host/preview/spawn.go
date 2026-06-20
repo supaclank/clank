@@ -49,6 +49,13 @@ type spawnRequest struct {
 	// "use the package default." Test seam — production callers leave
 	// this zero.
 	ReadyTimeout time.Duration
+
+	// ShimRequirePath / RuntimePath wire the guest-side preview runtime (Layer A)
+	// into `expo start` via NODE_OPTIONS=--require <shim>, with the runtime path
+	// passed as CLANK_PREVIEW_RUNTIME. Both empty disables injection (non-Expo,
+	// or when ensurePreviewShim failed). See inject.go + clank-metro-shim.js.
+	ShimRequirePath string
+	RuntimePath     string
 }
 
 // spawn launches the dev server described by req and returns a
@@ -77,7 +84,7 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 
 	cmd := exec.CommandContext(childCtx, args[0], args[1:]...)
 	cmd.Dir = req.WorkDir
-	cmd.Env = buildEnv(req.PublicURL)
+	cmd.Env = buildEnv(req.PublicURL, req.ShimRequirePath, req.RuntimePath)
 	configureProcessGroup(cmd)
 
 	logs := newRingBuf(ringCapacity)
@@ -194,14 +201,31 @@ func renderArgs(tmpl []string, port int) ([]string, error) {
 // REACT_NATIVE_PACKAGER_HOSTNAME would only fix the hostname half;
 // Metro still appends its internal port. See
 // packages/@expo/cli/src/start/server/UrlCreator.ts in expo/expo.
-func buildEnv(publicURL string) []string {
+// shimRequirePath / runtimePath (when set) preload the Metro shim via
+// NODE_OPTIONS=--require and pass the runtime path as CLANK_PREVIEW_RUNTIME, so
+// the guest-side preview runtime is injected into every bundle in-memory (no
+// files in the user's repo). The --require flag is MERGED into any inherited
+// NODE_OPTIONS rather than clobbering it.
+func buildEnv(publicURL, shimRequirePath, runtimePath string) []string {
 	parent := os.Environ()
-	env := make([]string, 0, len(parent)+3)
+	env := make([]string, 0, len(parent)+4)
+
+	requireFlag := ""
+	if shimRequirePath != "" {
+		requireFlag = "--require " + shimRequirePath
+	}
+
+	nodeOptionsMerged := false
 	for _, e := range parent {
 		// Strip CI so Metro doesn't disable file-watching and HMR.
 		// Metro treats CI=true as a signal to run in non-interactive
 		// mode, which disables the hot-reload machinery we depend on.
 		if strings.HasPrefix(e, "CI=") {
+			continue
+		}
+		if requireFlag != "" && strings.HasPrefix(e, "NODE_OPTIONS=") {
+			env = append(env, e+" "+requireFlag)
+			nodeOptionsMerged = true
 			continue
 		}
 		env = append(env, e)
@@ -210,6 +234,12 @@ func buildEnv(publicURL string) []string {
 		"EXPO_NO_DOTENV=1",
 		"npm_config_yes=true",
 	)
+	if requireFlag != "" && !nodeOptionsMerged {
+		env = append(env, "NODE_OPTIONS="+requireFlag)
+	}
+	if runtimePath != "" {
+		env = append(env, "CLANK_PREVIEW_RUNTIME="+runtimePath)
+	}
 	if publicURL != "" {
 		env = append(env, "EXPO_PACKAGER_PROXY_URL="+publicURL)
 	}
@@ -296,4 +326,3 @@ func probeOnce(client *http.Client, url string, expect []byte) bool {
 	}
 	return bytes.Contains(body, expect)
 }
-
