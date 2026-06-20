@@ -1649,11 +1649,13 @@ func TestOpenCodeBackendStopRaceWithConcurrentEmits(t *testing.T) {
 
 		var emitters sync.WaitGroup
 		for range 3 {
-			emitters.Go(func() {
+			emitters.Add(1)
+			go func() {
+				defer emitters.Done()
 				for range 200 {
 					b.EmitForTest(agent.Event{Type: agent.EventStatusChange})
 				}
-			})
+			}()
 		}
 
 		b.Stop()

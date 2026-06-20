@@ -84,9 +84,11 @@ func (t *mockTransport) Connect(_ context.Context) error {
 	msgs := make([]claudecode.Message, len(t.messages))
 	copy(msgs, t.messages)
 
-	// Registered under t.mu (senders.Go calls Add here) while open, so Close —
-	// which sets closed under the same lock before Wait — can never miss it.
-	t.senders.Go(func() {
+	// Add under t.mu while open, so Close — which sets closed under the same
+	// lock before Wait — can never miss this sender.
+	t.senders.Add(1)
+	go func() {
+		defer t.senders.Done()
 		for _, m := range msgs {
 			select {
 			case t.msgChan <- m:
@@ -94,7 +96,7 @@ func (t *mockTransport) Connect(_ context.Context) error {
 				return
 			}
 		}
-	})
+	}()
 
 	return nil
 }
@@ -1540,11 +1542,13 @@ func TestClaudeCodeBackendStopRaceWithConcurrentEmits(t *testing.T) {
 		// events channel underneath them.
 		var emitters sync.WaitGroup
 		for range 3 {
-			emitters.Go(func() {
+			emitters.Add(1)
+			go func() {
+				defer emitters.Done()
 				for range 200 {
 					_ = b.Send(context.Background(), agent.SendMessageOpts{Text: "x"})
 				}
-			})
+			}()
 		}
 
 		b.Stop()
