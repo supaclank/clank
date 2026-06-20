@@ -203,7 +203,7 @@ func waitForGroupEmpty(t *testing.T, pgid int, timeout time.Duration) int {
 // port half — see Expo's UrlCreator.ts).
 func TestBuildEnv_EmptyPublicURL_OmitsProxyVar(t *testing.T) {
 	t.Parallel()
-	env := buildEnv("")
+	env := buildEnv("", "", "")
 	for _, e := range env {
 		if strings.HasPrefix(e, "REACT_NATIVE_PACKAGER_HOSTNAME=") {
 			t.Errorf("buildEnv set REACT_NATIVE_PACKAGER_HOSTNAME — overrides only the hostname half: %q", e)
@@ -242,7 +242,7 @@ func TestBuildEnv_OmitsCI(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			for _, e := range buildEnv(c.url) {
+			for _, e := range buildEnv(c.url, "", "") {
 				if strings.HasPrefix(e, "CI=") {
 					t.Errorf("buildEnv leaked CI to child process — disables Metro HMR: %q", e)
 				}
@@ -261,7 +261,7 @@ func TestBuildEnv_OmitsCI(t *testing.T) {
 func TestBuildEnv_PublicURL_SetsProxyVar(t *testing.T) {
 	t.Parallel()
 	publicURL := "http://preview-abc.localhost:7878"
-	env := buildEnv(publicURL)
+	env := buildEnv(publicURL, "", "")
 	want := "EXPO_PACKAGER_PROXY_URL=" + publicURL
 	var saw bool
 	for _, e := range env {
@@ -272,6 +272,35 @@ func TestBuildEnv_PublicURL_SetsProxyVar(t *testing.T) {
 	}
 	if !saw {
 		t.Errorf("buildEnv(%q) did not set %q in env", publicURL, want)
+	}
+}
+
+// The shim's --require must MERGE into an inherited NODE_OPTIONS (not clobber
+// it), and there must be exactly one NODE_OPTIONS entry. CLANK_PREVIEW_RUNTIME
+// carries the runtime path. Not parallel: mutates the process env.
+func TestBuildEnv_ShimRequireMergesNodeOptions(t *testing.T) {
+	t.Setenv("NODE_OPTIONS", "--max-old-space-size=4096")
+	env := buildEnv("", "/tmp/clank-preview/shim.js", "/tmp/clank-preview/runtime.js")
+
+	var nodeOpts, runtime string
+	nodeOptsCount := 0
+	for _, e := range env {
+		if strings.HasPrefix(e, "NODE_OPTIONS=") {
+			nodeOpts = e
+			nodeOptsCount++
+		}
+		if strings.HasPrefix(e, "CLANK_PREVIEW_RUNTIME=") {
+			runtime = e
+		}
+	}
+	if want := "NODE_OPTIONS=--max-old-space-size=4096 --require /tmp/clank-preview/shim.js"; nodeOpts != want {
+		t.Errorf("NODE_OPTIONS not merged:\n got %q\nwant %q", nodeOpts, want)
+	}
+	if nodeOptsCount != 1 {
+		t.Errorf("want exactly 1 NODE_OPTIONS entry, got %d", nodeOptsCount)
+	}
+	if want := "CLANK_PREVIEW_RUNTIME=/tmp/clank-preview/runtime.js"; runtime != want {
+		t.Errorf("CLANK_PREVIEW_RUNTIME = %q, want %q", runtime, want)
 	}
 }
 
