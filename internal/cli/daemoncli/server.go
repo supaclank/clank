@@ -289,10 +289,15 @@ func loadTemplatesFromEnv() ([]gateway.Template, error) {
 	if err := json.Unmarshal([]byte(raw), &templates); err != nil {
 		return nil, fmt.Errorf("CLANK_TEMPLATES: invalid JSON: %w", err)
 	}
+	seen := make(map[string]bool)
 	for i, t := range templates {
 		if t.ID == "" || t.CloneURL == "" {
 			return nil, fmt.Errorf("CLANK_TEMPLATES[%d]: id and clone_url are required", i)
 		}
+		if seen[t.ID] {
+			return nil, fmt.Errorf("CLANK_TEMPLATES[%d]: duplicate template id %q", i, t.ID)
+		}
+		seen[t.ID] = true
 	}
 	return templates, nil
 }

@@ -51,4 +51,11 @@ func TestLoadTemplatesFromEnv(t *testing.T) {
 			t.Fatal("want error for missing id, got nil")
 		}
 	})
+
+	t.Run("duplicate id fails fast", func(t *testing.T) {
+		t.Setenv("CLANK_TEMPLATES", `[{"id":"expo","display_name":"Expo 1","clone_url":"https://example.com/expo1.git"},{"id":"expo","display_name":"Expo 2","clone_url":"https://example.com/expo2.git"}]`)
+		if _, err := loadTemplatesFromEnv(); err == nil {
+			t.Fatal("want error for duplicate template id, got nil")
+		}
+	})
 }
