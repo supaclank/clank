@@ -99,6 +99,13 @@ type ClaudeCodeBackend struct {
 	// Guarded by b.mu.
 	currentPermMode ClaudePermissionMode
 
+	// revertMessageID is the user-message UUID the session is currently
+	// reverted to — i.e. tracked files were rolled back to that checkpoint via
+	// RewindFiles. Empty when not reverted. Set by Revert, cleared by the next
+	// Send (mirroring the TUI, which clears RevertMessageID on a new prompt).
+	// In-memory only; not persisted. Guarded by b.mu.
+	revertMessageID string
+
 	// pendingPerms maps a synthesized permission request ID to the channel that
 	// delivers the user's decision. handleCanUseTool registers an entry and
 	// blocks on it; RespondPermission resolves it. Guarded by b.mu.
@@ -179,6 +186,12 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	opts := []claudecode.Option{
 		claudecode.WithCwd(workDir),
 		claudecode.WithPartialStreaming(),
+		// Track file changes per user message so Revert can roll them back via
+		// the SDK's RewindFiles. Sets CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=1
+		// on the CLI. Enabled unconditionally: checkpoints must exist from
+		// session start for any later turn to be revertible, and the flag is
+		// inert until RewindFiles is called.
+		claudecode.WithFileCheckpointing(),
 		// Always launch with --dangerously-skip-permissions so the session
 		// carries the "bypass is available" capability. The CLI refuses a
 		// runtime switch to bypassPermissions unless the process was launched
@@ -415,6 +428,21 @@ func (b *ClaudeCodeBackend) Send(ctx context.Context, opts SendMessageOpts) erro
 		}
 	}
 
+	// A new prompt supersedes any active revert: drop the reverted boundary and
+	// announce the unrevert so non-TUI clients un-hide the messages (the TUI
+	// already clears its own copy locally on send). Only emit when state changed.
+	b.mu.Lock()
+	wasReverted := b.revertMessageID != ""
+	b.revertMessageID = ""
+	b.mu.Unlock()
+	if wasReverted {
+		b.emit(Event{
+			Type:      EventRevertChange,
+			Timestamp: time.Now(),
+			Data:      RevertChangeData{MessageID: ""},
+		})
+	}
+
 	// Emit user message event so the TUI sees it.
 	b.emit(Event{
 		Type:      EventMessage,
@@ -535,8 +563,45 @@ func (b *ClaudeCodeBackend) Messages(ctx context.Context) ([]MessageData, error)
 	return coalesceSessionMessages(sdkMsgs), nil
 }
 
+// Revert rolls tracked files back to their state at the given user message,
+// using the SDK's RewindFiles (control subtype "rewind_files"). messageID is
+// the user message's transcript UUID, which equals MessageData.ID for user
+// rows (see coalesceSessionMessages) — exactly what RewindFiles targets.
+//
+// Files only: the JSONL transcript and the model's in-context history are NOT
+// truncated, so on the next Send the model still has the reverted turns in
+// context. The TUI hides those messages from the display, but the conversation
+// itself is unchanged. This differs from OpenCode, which truncates for real.
+//
+// Requires the session to be Open (RewindFiles needs the live streaming client;
+// it errors in one-shot mode). Service.RevertSession opens the backend first.
 func (b *ClaudeCodeBackend) Revert(ctx context.Context, messageID string) error {
-	return fmt.Errorf("revert is not supported by Claude Code backend")
+	if messageID == "" {
+		return fmt.Errorf("claude backend: revert requires a message id")
+	}
+
+	b.mu.Lock()
+	client := b.client
+	b.mu.Unlock()
+	if client == nil {
+		return fmt.Errorf("session not open: cannot revert")
+	}
+
+	if err := client.RewindFiles(ctx, messageID); err != nil {
+		return fmt.Errorf("rewind files to %s: %w", messageID, err)
+	}
+
+	// Commit the revert state and announce it only after the rewind succeeds.
+	b.mu.Lock()
+	b.revertMessageID = messageID
+	b.mu.Unlock()
+
+	b.emit(Event{
+		Type:      EventRevertChange,
+		Timestamp: time.Now(),
+		Data:      RevertChangeData{MessageID: messageID},
+	})
+	return nil
 }
 
 func (b *ClaudeCodeBackend) Fork(ctx context.Context, messageID string) (ForkResult, error) {
