@@ -3,6 +3,7 @@ package daemoncli
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -130,11 +131,17 @@ func runGatewayServer(prov provisioner.Provisioner, st *store.Store, opts Server
 	// pre-auth via gw.NotifyWebhookHandler() below.
 	dispatcher := notify.NewDispatcher(st, notifyDeviceAdapter{s: st}, notify.New(log.Default()), log.Default())
 
+	templates, err := loadTemplatesFromEnv()
+	if err != nil {
+		return fmt.Errorf("load templates: %w", err)
+	}
+
 	gwCfg := gateway.Config{
 		Provisioner: prov,
 		Sync:        syncSrv,
 		AuthConfig:  loadAuthConfigFromEnv(),
 		Notify:      dispatcher,
+		Templates:   templates,
 	}
 
 	// Wire the preview surface when CLANK_PREVIEW_ROOT_DOMAIN is set.
@@ -259,6 +266,35 @@ func runGatewayServer(prov provisioner.Provisioner, st *store.Store, opts Server
 		log.Printf("gateway shutdown: %v", err)
 	}
 	return nil
+}
+
+// loadTemplatesFromEnv parses the project-creation catalog from
+// CLANK_TEMPLATES for the dev / docker-stack path. The value is a JSON
+// array of {id, display_name, clone_url} objects — gateway.Template's
+// JSON shape. Unset returns nil (project creation stays unavailable);
+// embedders populate gateway.Config.Templates directly instead.
+//
+// Fails fast on malformed JSON or an entry missing id/clone_url so a
+// typo surfaces at startup rather than as a confusing 404 at create time.
+//
+// Example:
+//
+//	CLANK_TEMPLATES='[{"id":"expo","display_name":"Expo app","clone_url":"https://example.com/you/expo-template.git"}]'
+func loadTemplatesFromEnv() ([]gateway.Template, error) {
+	raw := os.Getenv("CLANK_TEMPLATES")
+	if raw == "" {
+		return nil, nil
+	}
+	var templates []gateway.Template
+	if err := json.Unmarshal([]byte(raw), &templates); err != nil {
+		return nil, fmt.Errorf("CLANK_TEMPLATES: invalid JSON: %w", err)
+	}
+	for i, t := range templates {
+		if t.ID == "" || t.CloneURL == "" {
+			return nil, fmt.Errorf("CLANK_TEMPLATES[%d]: id and clone_url are required", i)
+		}
+	}
+	return templates, nil
 }
 
 // loadAuthConfigFromEnv builds a gateway.AuthConfig from CLANK_AUTH_*

@@ -108,6 +108,15 @@ services:
       CLANK_AUTH_CLIENT_ID: "${CLANK_AUTH_CLIENT_ID:-clank-cli}"
       CLANK_AUTH_SCOPES: "${CLANK_AUTH_SCOPES:-openid email}"
 
+      # ── project-creation catalog ───────────────────────────────
+      # Optional. JSON array of {id, display_name, clone_url} entries
+      # the create-project picker offers (GET /v1/templates → POST
+      # /v1/projects/create). Clients send the id; the gateway resolves
+      # it to the clone URL server-side. Empty → project creation
+      # unavailable. Set this in docker/.env (gitignored) so personal
+      # template repos stay out of version control — see docker/.env.example.
+      CLANK_TEMPLATES: "${CLANK_TEMPLATES:-}"
+
       # GitHub Connect: clank-host (spawned by clankd via the local
       # provisioner) inherits this env var and reports available:true
       # on /credentials/github/status. Empty disables the feature
