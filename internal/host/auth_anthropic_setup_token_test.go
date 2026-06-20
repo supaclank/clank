@@ -51,6 +51,9 @@ func TestMain(m *testing.M) {
 //
 // FAKE_MODE env var lets each test pick a behavior variant:
 //   - "happy" (default): URL, then token after code read
+//   - "self-complete": URL, then token WITHOUT reading stdin — mimics
+//     the native-local case where setup-token's own localhost callback
+//     completes the flow (no pasted code)
 //   - "bad-code": exits 1 after reading the code (no token)
 //   - "slow-url": sleeps 5s before the URL — tests timeout
 //   - "no-url-no-token": exits immediately without output
@@ -108,6 +111,15 @@ func main() {
 	// is anchored to https://claude.com/cai/oauth/authorize?...
 	fmt.Println("https://claude.com/cai/oauth/authorize?code=true&client_id=test-cid&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&code_challenge=test-challenge&code_challenge_method=S256&state=test-state")
 	fmt.Println()
+	if mode == "self-complete" {
+		// Native-local path: setup-token's own localhost callback caught
+		// the code from the browser. The token appears on stdout with no
+		// pasted code, then the process exits.
+		time.Sleep(150 * time.Millisecond)
+		fmt.Println("\x1b[4G✓ Long-lived authentication token created successfully!")
+		fmt.Println("\x1b[2Gsk-ant-oat01-SELFcompleteABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-trailing")
+		return
+	}
 	fmt.Print("\x1b[2GPaste\x1b[8Gcode\x1b[13Ghere\x1b[18Gif\x1b[21Gprompted\x1b[30G> ")
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -298,6 +310,8 @@ func TestAuthManager_OAuthCodeFlow_EndToEnd(t *testing.T) {
 	if err := a.SubmitAuthCode(context.Background(), ProviderAnthropicClaudeCode, start.FlowID, "VALIDCODE"); err != nil {
 		t.Fatalf("SubmitAuthCode: %v", err)
 	}
+	// SubmitAuthCode blocks until the background awaiter records the
+	// terminal state, so the success is observable immediately.
 	st, err := a.GetFlowStatus(context.Background(), start.FlowID)
 	if err != nil {
 		t.Fatalf("GetFlowStatus: %v", err)
@@ -335,6 +349,9 @@ func TestAuthManager_OAuthCodeFlow_BadCodeReachesError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	// The code is written, the CLI exits without a token, and the
+	// awaiter records the failure — which SubmitAuthCode surfaces
+	// synchronously by waiting on the flow's terminal state.
 	if err := a.SubmitAuthCode(context.Background(), ProviderAnthropicClaudeCode, start.FlowID, "BADCODE"); err == nil {
 		t.Fatal("expected error from bad-code submit")
 	}
@@ -368,4 +385,46 @@ func TestAuthManager_OAuthCodeFlow_Cancel(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("flow never reached canceled")
+}
+
+// Native-local case: `claude setup-token` opens the user's browser and
+// completes via its OWN localhost callback, printing the token with no
+// pasted code. The flow must reach success on the strength of the
+// background token awaiter alone — SubmitAuthCode is never called.
+//
+// Regression for the deadlock where the TUI parked on a paste prompt
+// that the local flow never produces a code for, so the captured token
+// was never read.
+func TestAuthManager_OAuthCodeFlow_SelfCompletesWithoutSubmit(t *testing.T) {
+	t.Setenv("FAKE_MODE", "self-complete")
+	a, _ := newTestAuthManager(t)
+
+	start, err := a.StartOAuthCodeFlow(context.Background(), ProviderAnthropicClaudeCode)
+	if err != nil {
+		t.Fatalf("StartOAuthCodeFlow: %v", err)
+	}
+
+	// Deliberately no SubmitAuthCode: the local flow self-completes.
+	if !waitForFlowState(t, a, start.FlowID, agent.DeviceFlowSuccess, 5*time.Second) {
+		st, _ := a.GetFlowStatus(context.Background(), start.FlowID)
+		t.Fatalf("flow never reached success without a paste; last state=%v err=%q", st.State, st.Error)
+	}
+	if tok := a.AnthropicOAuthToken(); !strings.HasPrefix(tok, "sk-ant-oat01-") {
+		t.Errorf("persisted token prefix: %q", tok)
+	}
+}
+
+// waitForFlowState polls GetFlowStatus until the flow reaches want or
+// the timeout elapses. Returns true on match.
+func waitForFlowState(t *testing.T, a *AuthManager, flowID string, want agent.DeviceFlowState, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		st, err := a.GetFlowStatus(context.Background(), flowID)
+		if err == nil && st.State == want {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }

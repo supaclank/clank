@@ -145,9 +145,17 @@ type flowState struct {
 	finishedAt time.Time
 
 	// setupSession is non-nil only for oauth-code flows that have
-	// spawned `claude setup-token` and are waiting for the user to
-	// submit a code. CancelFlow tears it down via close().
+	// spawned `claude setup-token` and are waiting for the token.
+	// CancelFlow tears it down via close().
 	setupSession *setupTokenSession
+
+	// done is closed by the background token awaiter when an oauth-code
+	// flow reaches a terminal state. SubmitAuthCode waits on it so it can
+	// return the real outcome synchronously — preserving the wire
+	// contract remote clients rely on (a 2xx submit means the token was
+	// captured, not merely that the code was written). Nil for non-
+	// oauth-code flows.
+	done chan struct{}
 }
 
 // AuthManager owns provider authentication for one host (one
@@ -435,11 +443,13 @@ func (a *AuthManager) runAPIKeyFlow(ctx context.Context, flowID, providerID, key
 // hung CLI doesn't leave a flow stuck.
 const setupTokenURLTimeout = 30 * time.Second
 
-// setupTokenExchangeTimeout caps how long we wait for the long-lived
-// token to appear after the user submits their code. The token
-// exchange is a single round-trip to platform.claude.com; well under
-// 30s in practice.
-const setupTokenExchangeTimeout = 30 * time.Second
+// setupTokenAwaitTokenTimeout caps how long the background awaiter waits
+// for the long-lived token to appear. It spans the human step of
+// authenticating in the browser, so it's minutes, not seconds. Covers
+// both completion paths: the native-local case where setup-token's own
+// localhost callback finishes the flow with no paste, and the remote
+// case where the token only appears after the user pastes a code.
+const setupTokenAwaitTokenTimeout = 5 * time.Minute
 
 // ErrInvalidAuthCode is returned when SubmitAuthCode is called with
 // a blank code (after trimming).
@@ -449,14 +459,20 @@ var ErrInvalidAuthCode = errors.New("auth code cannot be empty")
 // that wasn't started via StartOAuthCodeFlow.
 var ErrFlowNotOAuthCode = errors.New("flow is not an oauth-code flow")
 
-// StartOAuthCodeFlow spawns `claude setup-token` in a PTY, waits for
-// it to print its authorize URL, and returns the URL + a flow_id
-// the caller uses to submit the code later. The PTY session sticks
-// around in flowState until either SubmitAuthCode completes it,
-// CancelFlow tears it down, or its watchdog (setupTokenExchangeTimeout
-// after URL extraction) fires.
+// StartOAuthCodeFlow spawns `claude setup-token` in a PTY, waits for it
+// to print its authorize URL, and returns the URL + a flow_id. A
+// background awaiter then captures the long-lived token from whichever
+// source produces it:
 //
-// Phase 4 (v2) path for the Anthropic Claude subscription provider.
+//   - native-local: setup-token opens the user's browser and completes
+//     via its OWN localhost callback — the token appears with no pasted
+//     code, so the flow reaches success without SubmitAuthCode.
+//   - remote: the IdP shows a code on its hosted page; the user pastes
+//     it via SubmitAuthCode, and the same awaiter catches the resulting
+//     token.
+//
+// The session lives until the awaiter finishes (success/error/timeout)
+// or CancelFlow cancels it.
 func (a *AuthManager) StartOAuthCodeFlow(ctx context.Context, providerID string) (agent.DeviceFlowStart, error) {
 	info, ok := providerByID(providerID)
 	if !ok || info.AuthType != agent.AuthTypeOAuthCode {
@@ -476,26 +492,84 @@ func (a *AuthManager) StartOAuthCodeFlow(ctx context.Context, providerID string)
 		return agent.DeviceFlowStart{}, fmt.Errorf("await authorize URL: %w", err)
 	}
 
+	// Independent lifetime: the token can arrive minutes later (after the
+	// user signs in), well past the request ctx's deadline.
+	awaitCtx, cancelAwait := context.WithCancel(context.Background())
+	done := make(chan struct{})
 	flowID := ulid.Make().String()
 	a.flowMu.Lock()
 	a.flows[flowID] = &flowState{
 		state:        agent.DeviceFlowPending,
-		cancel:       sess.close,
+		cancel:       cancelAwait,
 		setupSession: sess,
+		done:         done,
 	}
 	a.flowMu.Unlock()
+
+	go a.awaitOAuthCodeToken(awaitCtx, flowID, providerID, sess, done)
 
 	return agent.DeviceFlowStart{
 		FlowID:          flowID,
 		VerificationURL: verificationURL,
-		ExpiresAt:       time.Now().Add(setupTokenExchangeTimeout),
+		ExpiresAt:       time.Now().Add(setupTokenAwaitTokenTimeout),
 	}, nil
 }
 
-// SubmitAuthCode delivers the user-pasted code to the running
-// setup-token subprocess, waits for the long-lived token to appear,
-// persists it in the anthropic sink, and transitions the flow to
-// success. Synchronous from the caller's perspective.
+// awaitOAuthCodeToken blocks until setup-token prints the long-lived
+// token (from either completion path), persists it, and transitions the
+// flow to success. Owns session teardown on every exit path and closes
+// done so a waiting SubmitAuthCode observes the terminal state. A failure
+// or timeout transitions the flow to error — unless CancelFlow already
+// moved it to a terminal state, which failFlowIfActive leaves intact.
+func (a *AuthManager) awaitOAuthCodeToken(ctx context.Context, flowID, providerID string, sess *setupTokenSession, done chan struct{}) {
+	defer close(done)
+	defer sess.close()
+
+	tokCtx, cancel := context.WithTimeout(ctx, setupTokenAwaitTokenTimeout)
+	defer cancel()
+	token, err := sess.awaitToken(tokCtx)
+	if err != nil {
+		a.failFlowIfActive(flowID, "await token: "+err.Error())
+		return
+	}
+	if err := a.writeAnthropicCredential(providerID, token); err != nil {
+		a.failFlowIfActive(flowID, "write anthropic credential: "+err.Error())
+		return
+	}
+	// Drop the session reference before the success transition so a
+	// racing SubmitAuthCode sees the flow is done rather than writing to
+	// a closing PTY.
+	a.flowMu.Lock()
+	if cur, ok := a.flows[flowID]; ok {
+		cur.setupSession = nil
+	}
+	a.flowMu.Unlock()
+	a.transition(flowID, agent.DeviceFlowSuccess, "")
+}
+
+// failFlowIfActive transitions the flow to error only while it's still
+// non-terminal. Guards against a late awaiter error (e.g. ctx canceled
+// by CancelFlow) clobbering a Canceled/Success state already recorded.
+func (a *AuthManager) failFlowIfActive(flowID, errMsg string) {
+	a.flowMu.Lock()
+	defer a.flowMu.Unlock()
+	f, ok := a.flows[flowID]
+	if !ok || (f.state != agent.DeviceFlowPending && f.state != agent.DeviceFlowAuthorized) {
+		return
+	}
+	f.state = agent.DeviceFlowError
+	f.errMsg = errMsg
+	f.finishedAt = time.Now()
+	a.gcFlowsLocked()
+}
+
+// SubmitAuthCode writes a user-pasted code into the running setup-token
+// subprocess, then blocks until the background token awaiter (started in
+// StartOAuthCodeFlow) captures the token and reaches a terminal state.
+// It returns nil on success and the flow's error otherwise, preserving
+// the synchronous contract remote clients rely on. Only the remote path
+// calls this; the native-local path self-completes via the browser
+// callback and never needs a pasted code.
 func (a *AuthManager) SubmitAuthCode(ctx context.Context, providerID, flowID, code string) error {
 	info, ok := providerByID(providerID)
 	if !ok || info.AuthType != agent.AuthTypeOAuthCode {
@@ -513,42 +587,38 @@ func (a *AuthManager) SubmitAuthCode(ctx context.Context, providerID, flowID, co
 		return ErrUnknownFlow
 	}
 	sess := f.setupSession
+	done := f.done
 	a.flowMu.Unlock()
 	if sess == nil {
+		// No live session: the flow already reached a terminal state
+		// (commonly a local self-complete that beat the paste). The
+		// caller's status poll already reflects the real outcome.
 		return ErrFlowNotOAuthCode
 	}
 
+	// On a write failure the subprocess has almost certainly exited; the
+	// awaiter catches that via doneCh and drives the flow to error.
 	if err := sess.submitCode(code); err != nil {
-		a.transition(flowID, agent.DeviceFlowError, "submit code: "+err.Error())
-		sess.close()
-		return err
+		return fmt.Errorf("submit code: %w", err)
 	}
 
-	tokCtx, cancel := context.WithTimeout(ctx, setupTokenExchangeTimeout)
-	defer cancel()
-	token, err := sess.awaitToken(tokCtx)
+	// Block until the awaiter records the terminal outcome, so the
+	// response reflects whether the token was actually captured.
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	st, err := a.GetFlowStatus(context.Background(), flowID)
 	if err != nil {
-		a.transition(flowID, agent.DeviceFlowError, err.Error())
-		sess.close()
 		return err
 	}
-
-	if err := a.writeAnthropicCredential(providerID, token); err != nil {
-		a.transition(flowID, agent.DeviceFlowError, "write anthropic credential: "+err.Error())
-		sess.close()
-		return err
+	if st.State != agent.DeviceFlowSuccess {
+		if st.Error != "" {
+			return errors.New(st.Error)
+		}
+		return fmt.Errorf("oauth-code flow ended in state %q", st.State)
 	}
-
-	a.transition(flowID, agent.DeviceFlowSuccess, "")
-	// Drop the session reference and reap the subprocess. We do
-	// this AFTER the success transition so any GetFlowStatus poll
-	// in flight observes the terminal state correctly.
-	a.flowMu.Lock()
-	if cur, ok := a.flows[flowID]; ok {
-		cur.setupSession = nil
-	}
-	a.flowMu.Unlock()
-	sess.close()
 	return nil
 }
 
