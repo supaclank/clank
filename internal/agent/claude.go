@@ -631,6 +631,7 @@ func (b *ClaudeCodeBackend) setStatus(s SessionStatus) {
 	}
 }
 
+// TODO(ai-review): emit/Stop TOCTOU — stopped is read under lock but the channel send happens after unlock; Stop can close b.events in that window causing "send on closed channel". Fix with sync.Once close + recover guard. https://github.com/Acksell/clank/pull/68#discussion_r3446660408
 func (b *ClaudeCodeBackend) emit(evt Event) {
 	b.mu.Lock()
 	stopped := b.stopped
