@@ -110,13 +110,10 @@
   // same context a developer sees in the Expo error screen. Locations are the
   // un-symbolicated bundle positions (symbolication is async), but the file +
   // message + approximate line are enough to pinpoint it. Capped to 4000 chars.
-  // Babel highlights code frames with ANSI color codes (ESC[..m). They render
-  // as garbage anywhere but a terminal, so strip them.
-  function clankStripAnsi(s) {
-    return String(s == null ? '' : s)
-      .replace(/\u001b\[[0-9;]*[A-Za-z]/g, '')
-      .replace(/\u001b/g, '');
-  }
+  // NOTE on ANSI: Babel highlights the code frame with ANSI color codes
+  // (ESC[..m). We deliberately KEEP them in the reported text — the
+  // clank-mobile host parses them to render a syntax-highlighted code frame
+  // (and strips them for the agent message). So do NOT strip here.
 
   function clankCleanFile(fileName) {
     if (!fileName) return '';
@@ -150,14 +147,14 @@
   function formatLogBoxError(log) {
     var parts = [];
     parts.push(
-      clankStripAnsi(log.message && log.message.content != null ? log.message.content : 'error'),
+      String(log.message && log.message.content != null ? log.message.content : 'error'),
     );
     if (log.codeFrame && log.codeFrame.content) {
       var head = clankCleanFile(log.codeFrame.fileName);
       if (head && log.codeFrame.location && log.codeFrame.location.row != null) {
         head += ':' + log.codeFrame.location.row;
       }
-      parts.push('\n' + (head ? head + '\n' : '') + clankStripAnsi(log.codeFrame.content));
+      parts.push('\n' + (head ? head + '\n' : '') + String(log.codeFrame.content));
     }
     // Component stack (React errors), keeping only frames with a name or file.
     var cframes = [];
@@ -281,6 +278,31 @@
           /* never let the observer throw */
         }
       });
+
+      // RN clears ALL LogBox logs on every Fast Refresh update (HMRClient →
+      // LogBox.clearAllLogs → LogBoxData.clear). But clear() does NOT notify
+      // logs-observers (unlike clearWarnings/handleUpdate), so the observe above
+      // never sees the empty set on recovery — the pill would stay forever even
+      // though HMR fixed the error. Wrap clear() so a hot refresh clears our
+      // error too; if the guest is still broken, the next render re-adds the log
+      // and observe re-reports. This mirrors RN's own clear-then-re-add.
+      try {
+        if (typeof LogBoxData.clear === 'function' && !LogBoxData.__clankClearWrapped) {
+          var origClear = LogBoxData.clear;
+          LogBoxData.clear = function () {
+            var r = origClear.apply(this, arguments);
+            try {
+              if (lastReport !== null) {
+                lastReport = null;
+                console.log('[clank-preview] clear (hot refresh)');
+                clearError();
+              }
+            } catch (e) {}
+            return r;
+          };
+          LogBoxData.__clankClearWrapped = true;
+        }
+      } catch (e) {}
     }
   } catch (e) {
     /* LogBoxData unavailable — fall back to the native surface + ErrorUtils */
