@@ -494,20 +494,23 @@ func (m providerAuthModel) startOAuthCodeFlowCmd(providerID string) tea.Cmd {
 	}
 }
 
-// submitAuthCodeCmd delivers the user-pasted code to the host and
-// returns without waiting for the token: the host's background awaiter
-// captures it and drives the flow to success/error, which the status
-// poll already running (started when we entered the code phase) surfaces.
-// A submit error is benign here — commonly "flow already done" when a
-// local self-complete beat the paste — so we don't force an error; the
-// running poll reports the real outcome.
+// submitAuthCodeCmd delivers the user-pasted code to the host and blocks
+// until the background awaiter reaches a terminal state. SubmitAuthCode
+// handles the self-complete case (sess already nil) by waiting on done
+// and returning nil, so this correctly drives the UI to success/error
+// without needing a separate poll tick.
 func (m providerAuthModel) submitAuthCodeCmd(providerID, flowID, code string) tea.Cmd {
 	caller := m.caller
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
-		_ = caller.SubmitAuthCode(ctx, providerID, flowID, code)
-		return nil
+		if err := caller.SubmitAuthCode(ctx, providerID, flowID, code); err != nil {
+			return providerStatusMsg{status: agent.DeviceFlowStatus{
+				State: agent.DeviceFlowError,
+				Error: err.Error(),
+			}}
+		}
+		return providerStatusMsg{status: agent.DeviceFlowStatus{State: agent.DeviceFlowSuccess}}
 	}
 }
 

@@ -146,7 +146,7 @@ type flowState struct {
 
 	// setupSession is non-nil only for oauth-code flows that have
 	// spawned `claude setup-token` and are waiting for the token.
-	// CancelFlow tears it down via close().
+	// The background awaiter owns teardown via defer sess.close().
 	setupSession *setupTokenSession
 
 	// done is closed by the background token awaiter when an oauth-code
@@ -506,7 +506,10 @@ func (a *AuthManager) StartOAuthCodeFlow(ctx context.Context, providerID string)
 	}
 	a.flowMu.Unlock()
 
-	go a.awaitOAuthCodeToken(awaitCtx, flowID, providerID, sess, done)
+	go func() {
+		defer cancelAwait() // prevent context leak on non-CancelFlow exits
+		a.awaitOAuthCodeToken(awaitCtx, flowID, providerID, sess, done)
+	}()
 
 	return agent.DeviceFlowStart{
 		FlowID:          flowID,
@@ -589,18 +592,20 @@ func (a *AuthManager) SubmitAuthCode(ctx context.Context, providerID, flowID, co
 	sess := f.setupSession
 	done := f.done
 	a.flowMu.Unlock()
-	if sess == nil {
-		// No live session: the flow already reached a terminal state
-		// (commonly a local self-complete that beat the paste). The
-		// caller's status poll already reflects the real outcome.
+	if done == nil {
+		// done is nil only for non-oauth-code flows.
 		return ErrFlowNotOAuthCode
 	}
 
-	// On a write failure the subprocess has almost certainly exited; the
-	// awaiter catches that via doneCh and drives the flow to error.
-	if err := sess.submitCode(code); err != nil {
-		return fmt.Errorf("submit code: %w", err)
+	if sess != nil {
+		// On a write failure the subprocess has almost certainly exited;
+		// the awaiter catches that via done and drives the flow to error.
+		if err := sess.submitCode(code); err != nil {
+			return fmt.Errorf("submit code: %w", err)
+		}
 	}
+	// sess == nil: the awaiter already cleared the session (self-complete
+	// beat the paste or is finishing). Fall through to wait on done.
 
 	// Block until the awaiter records the terminal outcome, so the
 	// response reflects whether the token was actually captured.

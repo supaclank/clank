@@ -414,6 +414,29 @@ func TestAuthManager_OAuthCodeFlow_SelfCompletesWithoutSubmit(t *testing.T) {
 	}
 }
 
+// SubmitAuthCode called after a self-complete must return nil, not
+// ErrFlowNotOAuthCode. Previously it checked setupSession != nil and
+// returned ErrFlowNotOAuthCode when the awaiter had already cleared it,
+// even though the flow was an oauth-code flow and had succeeded.
+func TestAuthManager_OAuthCodeFlow_SubmitAfterSelfComplete(t *testing.T) {
+	t.Setenv("FAKE_MODE", "self-complete")
+	a, _ := newTestAuthManager(t)
+
+	start, err := a.StartOAuthCodeFlow(context.Background(), ProviderAnthropicClaudeCode)
+	if err != nil {
+		t.Fatalf("StartOAuthCodeFlow: %v", err)
+	}
+	// Wait for the self-complete to finish so setupSession is cleared.
+	if !waitForFlowState(t, a, start.FlowID, agent.DeviceFlowSuccess, 5*time.Second) {
+		t.Fatal("flow never self-completed")
+	}
+	// SubmitAuthCode after self-complete must return nil (flow already succeeded),
+	// not ErrFlowNotOAuthCode.
+	if err := a.SubmitAuthCode(context.Background(), ProviderAnthropicClaudeCode, start.FlowID, "anycode"); err != nil {
+		t.Errorf("SubmitAuthCode after self-complete: got %v, want nil", err)
+	}
+}
+
 // waitForFlowState polls GetFlowStatus until the flow reaches want or
 // the timeout elapses. Returns true on match.
 func waitForFlowState(t *testing.T, a *AuthManager, flowID string, want agent.DeviceFlowState, timeout time.Duration) bool {
