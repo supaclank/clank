@@ -1449,6 +1449,70 @@ func TestClaudeCodeBackendStopClosesEvents(t *testing.T) {
 	}
 }
 
+// TestClaudeCodeBackendStopRaceWithConcurrentEmits drives Stop() concurrently
+// with goroutines that exercise emit() — the same non-blocking channel-send
+// path receiveLoop uses for every status change and streamed part. Before the
+// fix, emit() read b.stopped under b.mu, released the lock, then did its send
+// OUTSIDE the lock; Stop() could set b.stopped and close(b.events) in that gap,
+// so the send landed on a closed channel (a data race the -race detector flags,
+// and a potential send-on-closed-channel panic). The fix performs the send
+// while still holding b.mu, mutually exclusive with Stop()'s close. This must
+// stay green under: go test ./internal/agent/ -run StopRace -race -count=20.
+func TestClaudeCodeBackendStopRaceWithConcurrentEmits(t *testing.T) {
+	t.Parallel()
+
+	for range 50 {
+		transport := newMockTransport([]claudecode.Message{
+			&claudecode.SystemMessage{
+				MessageType: "system",
+				Subtype:     "init",
+				Data:        map[string]any{"session_id": "session-race"},
+			},
+			&claudecode.ResultMessage{
+				MessageType: "result",
+				SessionID:   "session-race",
+			},
+		})
+		b := newTestBackend(t, transport)
+
+		if err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{Text: "go"}); err != nil {
+			t.Fatalf("OpenAndSend: %v", err)
+		}
+
+		// Wait for the turn to finish before racing Stop(). This drains the
+		// scripted init+result, so the transport's delivery goroutine has
+		// returned and Stop()'s msgChan close can't race it — isolating the
+		// production race (emit()'s send vs Stop()'s close) from an unrelated
+		// hazard in the test transport.
+		waitForStatus(t, b.Events(), agent.StatusIdle, 5*time.Second)
+
+		// Keep draining so emit()'s send reaches the channel for real instead of
+		// dropping at select-default once the 128-deep buffer fills — widening
+		// the window where a send overlaps Stop()'s close.
+		drained := make(chan struct{})
+		go func() {
+			for range b.Events() {
+			}
+			close(drained)
+		}()
+
+		// Several goroutines hammer emit() (via Send) while Stop() closes the
+		// events channel underneath them.
+		var emitters sync.WaitGroup
+		for range 3 {
+			emitters.Go(func() {
+				for range 200 {
+					_ = b.Send(context.Background(), agent.SendMessageOpts{Text: "x"})
+				}
+			})
+		}
+
+		b.Stop()
+		emitters.Wait()
+		<-drained
+	}
+}
+
 func TestClaudeCodeBackendNoDuplicateResultMessage(t *testing.T) {
 	t.Parallel()
 
