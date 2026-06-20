@@ -90,13 +90,13 @@ const (
 	// providerPhaseAPIKey collects a pasted API key for "api"
 	// providers. Skipped for "device" and "oauth-code" providers.
 	providerPhaseAPIKey
-	// providerPhaseOAuthCode is the "paste authorization code" step
-	// for oauth-code providers (Anthropic Claude subscription). The
-	// view shows the authorize URL printed by the host's PTY-relayed
-	// `claude setup-token` + a textinput for the code the user
-	// copied from the IdP's hosted callback page. On submit, we
-	// transition straight to awaiting while the host writes the
-	// code into the CLI's stdin and captures the token.
+	// providerPhaseOAuthCode handles oauth-code providers (Anthropic
+	// Claude subscription). It shows the authorize URL printed by the
+	// host's PTY-relayed `claude setup-token` plus an optional textinput
+	// for a pasted code, and polls flow status the whole time. A
+	// native-local flow self-completes via setup-token's own browser
+	// callback (no paste) and transitions straight to success; a remote
+	// flow needs the user to paste the code the IdP shows.
 	providerPhaseOAuthCode
 	// providerPhaseAwaiting covers both "waiting for the user to
 	// authorize in their browser" (device) and "waiting for the
@@ -241,19 +241,23 @@ func (m providerAuthModel) Update(msg tea.Msg) (providerAuthModel, tea.Cmd) {
 		}
 		m.flow = msg.start
 		m.flowState = agent.DeviceFlowPending
-		// oauth-code flows pause here for the user to paste the code
-		// shown on the IdP's redirect page; device + api-key flows go
-		// straight to awaiting + polling.
+		// oauth-code flows show the URL + an optional paste field, but
+		// poll from the start: a native-local flow self-completes via
+		// setup-token's own browser callback, so success can arrive
+		// without any pasted code. device + api-key flows go straight to
+		// awaiting + polling.
 		if m.activeProvider.AuthType == agent.AuthTypeOAuthCode {
 			m.phase = providerPhaseOAuthCode
 			m.configureInputForOAuthCode()
-			return m, m.apiKey.Focus()
+			return m, tea.Batch(m.apiKey.Focus(), m.statusCmd())
 		}
 		m.phase = providerPhaseAwaiting
 		return m, m.statusCmd()
 
 	case providerPollTickMsg:
-		if m.phase != providerPhaseAwaiting {
+		// oauth-code polls during its own phase too, so a self-completing
+		// local flow is detected before the user touches the paste field.
+		if m.phase != providerPhaseAwaiting && m.phase != providerPhaseOAuthCode {
 			return m, nil
 		}
 		return m, m.statusCmd()
@@ -490,12 +494,11 @@ func (m providerAuthModel) startOAuthCodeFlowCmd(providerID string) tea.Cmd {
 	}
 }
 
-// submitAuthCodeCmd delivers the user-pasted code to the host. The
-// host writes it into setup-token's stdin and waits for the token,
-// so this call can take a few seconds. On return, we synthesize a
-// providerStatusMsg so the existing terminal-state handler in Update
-// flips the phase to success/error without needing a new message
-// type.
+// submitAuthCodeCmd delivers the user-pasted code to the host and blocks
+// until the background awaiter reaches a terminal state. SubmitAuthCode
+// handles the self-complete case (sess already nil) by waiting on done
+// and returning nil, so this correctly drives the UI to success/error
+// without needing a separate poll tick.
 func (m providerAuthModel) submitAuthCodeCmd(providerID, flowID, code string) tea.Cmd {
 	caller := m.caller
 	return func() tea.Msg {
@@ -706,14 +709,18 @@ func (m providerAuthModel) View() string {
 		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).Render(hint))
 
 	case providerPhaseOAuthCode:
-		// User opens VerificationURL in a browser, logs in, and the
-		// IdP's hosted callback page shows them a code to copy back
-		// here.
-		sb.WriteString("Open this URL in your browser:\n")
+		// Two completion paths run concurrently and we poll for both:
+		// locally, setup-token opens the browser and finishes via its own
+		// callback (nothing to paste); remotely, the IdP shows a code to
+		// paste here. The spinner signals we're already waiting, so a
+		// self-completing local flow doesn't look stuck.
+		sb.WriteString(m.spinner.View() + " Waiting for you to sign in…")
+		sb.WriteString("\n\n")
+		sb.WriteString("Open this URL if a browser didn't open automatically:\n")
 		sb.WriteString(lipgloss.NewStyle().Foreground(primaryColor).
 			Render("  " + m.flow.VerificationURL))
 		sb.WriteString("\n\n")
-		sb.WriteString("After signing in, paste the code shown on the redirect page:\n\n")
+		sb.WriteString("Paste the code here if one is shown (otherwise just wait):\n\n")
 		sb.WriteString("  " + m.apiKey.View())
 		sb.WriteString("\n")
 		if m.errMsg != "" {
@@ -722,7 +729,7 @@ func (m providerAuthModel) View() string {
 		}
 		sb.WriteString("\n\n")
 		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
-			Render("enter to submit · esc to cancel"))
+			Render("enter to submit code · esc to cancel"))
 
 	case providerPhaseAwaiting:
 		// Device flows show the URL + user_code; api-key + oauth-code
