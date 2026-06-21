@@ -152,7 +152,7 @@ Source: `internal/agent/agent.go:565`.
 `ModelOverride`: `{ "model_id": "...", "provider_id": "..." }` (`agent.go:516`).
 
 `GitRef`: repo identity carrying `local_path` and/or `worktree_id`, optional
-`remote_url`, optional `worktree_branch`. A client treats it as an opaque object it
+`display_name`, optional `worktree_branch`. A client treats it as an opaque object it
 echoes from list/get responses, except at create time where it sets the target repo.
 Source: `internal/agent/gitref.go`.
 

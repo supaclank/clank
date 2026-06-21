@@ -412,7 +412,7 @@ type SessionInfo struct {
 	Visibility      SessionVisibility `json:"visibility,omitempty"` // User-set: "", "done", or "archived"
 	FollowUp        bool              `json:"follow_up,omitempty"`  // User-set flag to mark session for follow-up
 	Hostname        string            `json:"hostname,omitempty"`   // Canonical identity: host (Phase 3); "local" by default.
-	GitRef          GitRef            `json:"git_ref,omitempty"`    // Canonical identity: repo (LocalPath and/or RemoteURL + WorktreeBranch).
+	GitRef          GitRef            `json:"git_ref,omitempty"`    // Canonical identity: repo (LocalPath and/or WorktreeID; WorktreeBranch when set).
 	Prompt          string            `json:"prompt"`
 	Title           string            `json:"title,omitempty"` // AI-generated session title from OpenCode
 	TicketID        string            `json:"ticket_id,omitempty"`

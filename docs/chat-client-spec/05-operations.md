@@ -30,6 +30,13 @@ Source of truth for routes: `internal/host/mux/mux.go:72`. All require the beare
 `*` reply is idempotent at the host (an unknown/duplicate permID errors fast); clients
 still single-flight it in the UI ([INV-PERM-SINGLEFLIGHT-001](08-invariants.md)).
 
+**Intentionally omitted.** The host exposes session-lifecycle/host-management routes a chat
+client driving Create + `/message` + SSE does not need: `POST /sessions/{id}/open` and
+`POST /sessions/{id}/open-and-send` (backend rehydration/orchestration — `POST /sessions` already opens-and-sends
+internally, and the SSE/messages paths lazily rehydrate), and `POST /sessions/{id}/stop`
+(backend **process teardown** — distinct from `/abort`, which only interrupts the current
+turn). Worktree / project / sync / auth / GitHub routes are likewise out of chat scope.
+
 ## The operations that need care
 
 ### Create — `POST /sessions`

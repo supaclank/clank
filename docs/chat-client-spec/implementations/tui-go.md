@@ -8,7 +8,7 @@
 > necessarily bugs.
 
 **Platform:** Go / Bubble Tea TUI · **Client kind:** full chat client ·
-**Spec version:** 0.1.0 · **Last updated:** 2026-06-21
+**Spec version:** 0.2.0 · **Last updated:** 2026-06-21
 
 ## Where the pieces live
 
@@ -37,7 +37,7 @@
 | INV-OPTIMISTIC-001 | ✅ | echo `:1165`, backfill `:1470` |
 | INV-PERM-SINGLEFLIGHT-001 | ✅ | `:1099` (`replyingPermID` + `!inputActive`), `:1112` (lock other keys) |
 | INV-DENY-SETTLE-001 | ✅ | `:899` + `markRunningToolsFailed` `:1608` |
-| INV-ABORT-PERM-001 | ✅ | host `failPendingPermissions`; `:952` abort result; perms cleared by refetch |
+| INV-ABORT-PERM-001 | ✅ | host `failPendingPermissions` denies server-side; the TUI clears `pendingPerms`/`replyingPermID` on the abort-settle in `handleStatusChange`. Test: `TestAbortClearsPendingPermissions`. |
 | INV-PERMMODE-001 | ✅ | `sendMessage` `:2162` sends only the selected mode |
 | INV-PERMMODE-EXITPLAN-001 | ✅ | backend `claude_permissions.go:97`; TUI sends `""` on follow-ups |
 | INV-META-REPLACE-001 | ✅ | consumes `meta` as full `SessionInfo` (inbox view) |

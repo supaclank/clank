@@ -4,7 +4,7 @@
 > the mapping and the **known gaps** so they stop resurfacing as fresh bugs.
 
 **Platform:** React Native / Expo + react-query + Zustand · **Client kind:** full chat client ·
-**Spec version:** 0.1.0 · **Last updated:** 2026-06-21
+**Spec version:** 0.2.0 · **Last updated:** 2026-06-21
 
 ## Where the pieces live
 

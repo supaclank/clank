@@ -79,7 +79,8 @@ C: next send carries permission_mode:"" → backend re-asserts the user's chosen
   decision rendered from the tool-call part's `input` (the plan), not as a normal tool —
   **Approve** switches to build mode (the agent implements), **Revise** stays in plan mode
   (the agent re-plans). The answer goes back per [11 · Interactive Tools](11-interactive-tools.md)
-  (today a formatted `SendMessage`); ordinary follow-ups keep `permission_mode:""` ([DATA-040]).
+  via the **permission reply** (allow to approve, deny-with-notes to revise) — not a
+  `permission_mode` send; ordinary follow-ups keep `permission_mode:""` ([DATA-040]).
   The **TUI does not render this** — the RN client is the reference. **Why:** treating it as
   opaque hides the plan; re-sending a non-empty default would re-flip the mode. **Golden:**
   `clank-mobile/src/lib/planReview.ts`, `internal/agent/claude_permissions.go:97` (mode reset
