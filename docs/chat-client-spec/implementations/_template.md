@@ -6,7 +6,7 @@
 > client evolves — a green checklist with a failing fixture is a lie.
 
 **Platform:** … · **Client kind:** full chat client | partial consumer (describe) ·
-**Spec version targeted:** 0.1.0 · **Last updated:** YYYY-MM-DD
+**Spec version targeted:** 0.2.0 · **Last updated:** YYYY-MM-DD
 
 **Status legend:** ✅ done · 🟡 partial · ⛔ not started · N/A (justify)
 

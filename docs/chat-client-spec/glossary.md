@@ -43,6 +43,6 @@ Terms as used in this spec.
   boundary; rendered as nothing.
 - **Follow** — the auto-scroll intent that keeps the viewport pinned to the latest content.
 - **Abort** — interrupt the current turn; best-effort; observed via `status → idle`.
-- **GitRef** — repo identity (`local_path`/`worktree_id`/`remote_url`/`worktree_branch`).
+- **GitRef** — repo identity (`local_path`/`worktree_id`/`display_name`/`worktree_branch`).
 - **Reducer / projection** — the canonical state transition function and the pure view
   derived from state; the [core model](06-state-model.md).
