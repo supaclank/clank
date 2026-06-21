@@ -31,7 +31,7 @@ func (q *Queries) DeleteSessionsByWorktree(ctx context.Context, worktreeID strin
 }
 
 const findSessionByExternalID = `-- name: FindSessionByExternalID :one
-SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, revert_message_id, created_at, updated_at, last_read_at FROM sessions WHERE external_id = ? LIMIT 1
+SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions WHERE external_id = ? LIMIT 1
 `
 
 func (q *Queries) FindSessionByExternalID(ctx context.Context, externalID string) (Session, error) {
@@ -52,7 +52,6 @@ func (q *Queries) FindSessionByExternalID(ctx context.Context, externalID string
 		&i.TicketID,
 		&i.Agent,
 		&i.Draft,
-		&i.RevertMessageID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LastReadAt,
@@ -61,7 +60,7 @@ func (q *Queries) FindSessionByExternalID(ctx context.Context, externalID string
 }
 
 const getSession = `-- name: GetSession :one
-SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, revert_message_id, created_at, updated_at, last_read_at FROM sessions WHERE id = ?
+SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions WHERE id = ?
 `
 
 func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
@@ -82,7 +81,6 @@ func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
 		&i.TicketID,
 		&i.Agent,
 		&i.Draft,
-		&i.RevertMessageID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LastReadAt,
@@ -109,7 +107,7 @@ func (q *Queries) ListPrimaryAgents(ctx context.Context, arg ListPrimaryAgentsPa
 }
 
 const listSessions = `-- name: ListSessions :many
-SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, revert_message_id, created_at, updated_at, last_read_at FROM sessions ORDER BY updated_at DESC
+SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions ORDER BY updated_at DESC
 `
 
 func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
@@ -136,7 +134,6 @@ func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
 			&i.TicketID,
 			&i.Agent,
 			&i.Draft,
-			&i.RevertMessageID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.LastReadAt,
@@ -155,7 +152,7 @@ func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
 }
 
 const listSessionsByWorktree = `-- name: ListSessionsByWorktree :many
-SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, revert_message_id, created_at, updated_at, last_read_at FROM sessions WHERE worktree_id = ? ORDER BY updated_at DESC
+SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions WHERE worktree_id = ? ORDER BY updated_at DESC
 `
 
 // Used by session-sync to enumerate sessions in a worktree for export.
@@ -184,7 +181,6 @@ func (q *Queries) ListSessionsByWorktree(ctx context.Context, worktreeID string)
 			&i.TicketID,
 			&i.Agent,
 			&i.Draft,
-			&i.RevertMessageID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.LastReadAt,
@@ -203,7 +199,7 @@ func (q *Queries) ListSessionsByWorktree(ctx context.Context, worktreeID string)
 }
 
 const searchSessions = `-- name: SearchSessions :many
-SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, revert_message_id, created_at, updated_at, last_read_at FROM sessions
+SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions
 WHERE
     (CAST(?1 AS TEXT) = '' OR title LIKE '%' || ?1 || '%' OR prompt LIKE '%' || ?1 || '%' OR draft LIKE '%' || ?1 || '%' OR project_dir LIKE '%' || ?1 || '%')
     AND (CAST(?2 AS TEXT) = '' OR visibility = ?2)
@@ -254,7 +250,6 @@ func (q *Queries) SearchSessions(ctx context.Context, arg SearchSessionsParams) 
 			&i.TicketID,
 			&i.Agent,
 			&i.Draft,
-			&i.RevertMessageID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.LastReadAt,
@@ -304,8 +299,8 @@ const upsertSession = `-- name: UpsertSession :exec
 INSERT INTO sessions (
     id, external_id, backend, status, visibility, follow_up,
     project_dir, worktree_id, worktree_branch, prompt, title,
-    ticket_id, agent, draft, revert_message_id, created_at, updated_at, last_read_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ticket_id, agent, draft, created_at, updated_at, last_read_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
     external_id     = excluded.external_id,
     backend         = excluded.backend,
@@ -320,30 +315,28 @@ ON CONFLICT (id) DO UPDATE SET
     ticket_id       = excluded.ticket_id,
     agent           = excluded.agent,
     draft           = excluded.draft,
-    revert_message_id = excluded.revert_message_id,
     updated_at      = excluded.updated_at,
     last_read_at    = excluded.last_read_at
 `
 
 type UpsertSessionParams struct {
-	ID              string
-	ExternalID      string
-	Backend         string
-	Status          string
-	Visibility      string
-	FollowUp        int64
-	ProjectDir      string
-	WorktreeID      string
-	WorktreeBranch  string
-	Prompt          string
-	Title           string
-	TicketID        string
-	Agent           string
-	Draft           string
-	RevertMessageID string
-	CreatedAt       int64
-	UpdatedAt       int64
-	LastReadAt      sql.NullInt64
+	ID             string
+	ExternalID     string
+	Backend        string
+	Status         string
+	Visibility     string
+	FollowUp       int64
+	ProjectDir     string
+	WorktreeID     string
+	WorktreeBranch string
+	Prompt         string
+	Title          string
+	TicketID       string
+	Agent          string
+	Draft          string
+	CreatedAt      int64
+	UpdatedAt      int64
+	LastReadAt     sql.NullInt64
 }
 
 func (q *Queries) UpsertSession(ctx context.Context, arg UpsertSessionParams) error {
@@ -362,7 +355,6 @@ func (q *Queries) UpsertSession(ctx context.Context, arg UpsertSessionParams) er
 		arg.TicketID,
 		arg.Agent,
 		arg.Draft,
-		arg.RevertMessageID,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 		arg.LastReadAt,

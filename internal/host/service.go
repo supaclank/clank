@@ -681,15 +681,7 @@ func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
 	// event counts — EventPart (per-token deltas) would churn UpdatedAt on
 	// every token, defeating the "user-visible change only" guarantee above.
 	hasMessage := evt.Type == agent.EventMessage
-	hasRevert := false
-	var revertValue string
-	if evt.Type == agent.EventRevertChange {
-		if d, ok := evt.Data.(agent.RevertChangeData); ok {
-			hasRevert = true
-			revertValue = d.MessageID
-		}
-	}
-	if !hasExternalID && !hasStatus && !hasTitle && !hasMessage && !hasRevert {
+	if !hasExternalID && !hasStatus && !hasTitle && !hasMessage {
 		return
 	}
 
@@ -742,13 +734,6 @@ func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
 	// A message carries no metadata field to diff against — its arrival is
 	// itself the change, so it always marks the row dirty to bump UpdatedAt.
 	if hasMessage {
-		dirty = true
-	}
-	// Persist the pending-revert boundary so a reverted-but-not-yet-sent state
-	// survives a daemon restart (Open re-pins --resume-session-at from it). The
-	// branching send emits RevertChange{""}, which clears it here.
-	if hasRevert && info.RevertMessageID != revertValue {
-		info.RevertMessageID = revertValue
 		dirty = true
 	}
 	if !dirty {
@@ -1010,7 +995,6 @@ func (s *Service) ensureBackend(ctx context.Context, id string) (agent.SessionBa
 	b, err := mgr.CreateBackend(ctx, agent.BackendInvocation{
 		WorkDir:          workDir,
 		ResumeExternalID: info.ExternalID,
-		RevertMessageID:  info.RevertMessageID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("ensure backend %s: %w", id, err)

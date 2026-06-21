@@ -148,7 +148,7 @@ func TestIntegration_RevertSurvivesRestart(t *testing.T) {
 	b1.Stop()
 
 	// Simulate a daemon restart: a brand-new backend resumes the same session.
-	b2 := agent.NewClaudeCodeBackendForSession(dir, resumeID, "")
+	b2 := agent.NewClaudeCodeBackendForSession(dir, resumeID)
 	b2.ExtraEnv = map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": tok}
 	if err := b2.Open(ctx); err != nil {
 		t.Fatalf("reopen after restart bricked: %v", err)

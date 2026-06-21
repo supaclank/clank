@@ -179,26 +179,6 @@ func (s *Store) migrate() error {
 		}
 		version = 3
 	}
-	if version < 4 {
-		// Migration v4: add revert_message_id — the pending-revert boundary for a
-		// Claude session (the user message a not-yet-branched revert truncates
-		// to), cleared when the next prompt branches the transcript. Additive
-		// column; no table rebuild. Probe first so a re-run on a DB already
-		// carrying the column is a no-op rather than an error.
-		var has int
-		if err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'revert_message_id'`).Scan(&has); err != nil {
-			return fmt.Errorf("migration v4: probe revert_message_id: %w", err)
-		}
-		if has == 0 {
-			if _, err := s.db.Exec(`ALTER TABLE sessions ADD COLUMN revert_message_id TEXT NOT NULL DEFAULT ''`); err != nil {
-				return fmt.Errorf("migration v4: add revert_message_id: %w", err)
-			}
-		}
-		if _, err := s.db.Exec(`PRAGMA user_version = 4`); err != nil {
-			return fmt.Errorf("migration v4: bump version: %w", err)
-		}
-		version = 4
-	}
 	_ = version
 	return nil
 }

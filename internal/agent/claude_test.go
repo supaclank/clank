@@ -1006,7 +1006,7 @@ func TestClaudeCodeBackendResume(t *testing.T) {
 		},
 	})
 
-	b := agent.NewClaudeCodeBackendForSession(t.TempDir(), "existing-session-id", "")
+	b := agent.NewClaudeCodeBackendForSession(t.TempDir(), "existing-session-id")
 	b.ClientFactory = func(opts ...claudecode.Option) claudecode.Client {
 		return claudecode.NewClientWithTransport(transport, opts...)
 	}

@@ -127,23 +127,22 @@ type ClaudeCodeBackend struct {
 // the host-resolved working directory (worktree or repo root) the
 // claude CLI will be launched in.
 func NewClaudeCodeBackend(workDir string) *ClaudeCodeBackend {
-	return NewClaudeCodeBackendForSession(workDir, "", "")
+	return NewClaudeCodeBackendForSession(workDir, "")
 }
 
 // NewClaudeCodeBackendForSession is the resume variant. It pre-seeds the
 // SDK session ID so that Messages() can read the on-disk JSONL transcript
 // immediately, and so that Open() launches the CLI with --resume to
 // reattach the persistent subprocess for the existing conversation.
-// resumeSessionID may be empty for fresh sessions. revertMessageID, when
-// non-empty, restores the session's pending-revert boundary on reattach so
-// clients still see the reverted state until the next prompt.
-func NewClaudeCodeBackendForSession(workDir, resumeSessionID, revertMessageID string) *ClaudeCodeBackend {
+// resumeSessionID may be empty for fresh sessions. A pending revert is set
+// live by Revert (and conveyed to clients via EventRevertChange); it is not
+// seeded here, since truncation bakes the reverted state into the transcript.
+func NewClaudeCodeBackendForSession(workDir, resumeSessionID string) *ClaudeCodeBackend {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ClaudeCodeBackend{
 		status:           StatusStarting,
 		projectDir:       workDir,
 		sessionID:        resumeSessionID,
-		revertMessageID:  revertMessageID,
 		events:           make(chan Event, 128),
 		activeToolBlocks: make(map[int]*activeToolBlock),
 		pendingPerms:     make(map[string]chan permissionDecision),

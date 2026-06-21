@@ -398,7 +398,7 @@ func TestClaudeBackendMessagesResumeWithoutStart(t *testing.T) {
 	// Construct exactly like ClaudeBackendManager.CreateBackend does on the
 	// activateBackend path: pre-seeded session id, no Start, no Watch, no
 	// transport, no client. Messages() must still return history.
-	b := agent.NewClaudeCodeBackendForSession(workDir, sessionID, "")
+	b := agent.NewClaudeCodeBackendForSession(workDir, sessionID)
 	defer b.Stop()
 
 	if got := b.SessionID(); got != sessionID {

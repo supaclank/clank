@@ -17,22 +17,21 @@ type PrimaryAgent struct {
 }
 
 type Session struct {
-	ID              string
-	ExternalID      string
-	Backend         string
-	Status          string
-	Visibility      string
-	FollowUp        int64
-	ProjectDir      string
-	WorktreeID      string
-	WorktreeBranch  string
-	Prompt          string
-	Title           string
-	TicketID        string
-	Agent           string
-	Draft           string
-	RevertMessageID string
-	CreatedAt       int64
-	UpdatedAt       int64
-	LastReadAt      sql.NullInt64
+	ID             string
+	ExternalID     string
+	Backend        string
+	Status         string
+	Visibility     string
+	FollowUp       int64
+	ProjectDir     string
+	WorktreeID     string
+	WorktreeBranch string
+	Prompt         string
+	Title          string
+	TicketID       string
+	Agent          string
+	Draft          string
+	CreatedAt      int64
+	UpdatedAt      int64
+	LastReadAt     sql.NullInt64
 }
