@@ -2548,9 +2548,10 @@ func (m *SessionViewModel) renderHeader() string {
 	maxTitleWidth := m.width - lipgloss.Width(rightParts) - 2
 	title := "Session"
 	if m.info != nil {
-		title = truncateStr(singleLine(m.info.Prompt), maxTitleWidth)
 		if m.info.Title != "" {
 			title = truncateStr(singleLine(m.info.Title), maxTitleWidth)
+		} else {
+			title = truncateStr(singleLine(m.info.Prompt), maxTitleWidth)
 		}
 	}
 
