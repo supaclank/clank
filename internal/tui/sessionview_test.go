@@ -962,6 +962,45 @@ func TestAbortSuppressesEvents(t *testing.T) {
 	})
 }
 
+// TestAbortClearsPendingPermissions is a regression test for the abort-wedge
+// bug: when the user aborts while a permission prompt is pending, the host
+// denies the parked permission server-side but emits no event to clear it —
+// only an eventual status -> idle. If the client doesn't drop its local queue
+// on that settle, the composer stays locked forever (lock condition:
+// len(pendingPerms) > 0 || replyingPermID != ""). See INV-ABORT-PERM-001.
+func TestAbortClearsPendingPermissions(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel(nil)
+	m.info = &agent.SessionInfo{Status: agent.StatusBusy}
+	// A permission is pending (composer locked) and the user has aborted.
+	m.pendingPerms = []agent.PermissionData{{RequestID: "p1", Tool: "bash", Description: "rm -rf"}}
+	m.replyingPermID = "p1"
+	m.aborting = true
+	m.abortEntryIdx = len(m.entries)
+	m.entries = append(m.entries, displayEntry{kind: entryStatus, content: "Cancelling..."})
+
+	// The host's only post-abort signal: status settles to idle.
+	m.handleStatusChange(agent.StatusChangeData{
+		OldStatus: agent.StatusBusy,
+		NewStatus: agent.StatusIdle,
+	})
+
+	// The composer must unlock — pending permission state is cleared.
+	if len(m.pendingPerms) != 0 {
+		t.Errorf("pendingPerms = %d, want 0 (abort must clear the queue)", len(m.pendingPerms))
+	}
+	if m.replyingPermID != "" {
+		t.Errorf("replyingPermID = %q, want empty", m.replyingPermID)
+	}
+	if m.aborting {
+		t.Error("aborting = true, want false after settle")
+	}
+	if m.entries[m.abortEntryIdx].content != "Cancelled" {
+		t.Errorf("abort entry = %q, want %q", m.entries[m.abortEntryIdx].content, "Cancelled")
+	}
+}
+
 // TestBuildHelpText_ShowsCancelWhenBusy verifies the help bar includes
 // the cancel hint when the agent is busy.
 func TestBuildHelpText_ShowsCancelWhenBusy(t *testing.T) {
@@ -1897,6 +1936,30 @@ func TestEventRevertChange_UpdatesInfoRevertMessageID(t *testing.T) {
 
 		if m.info.RevertMessageID != "msg-42" {
 			t.Errorf("RevertMessageID = %q, want %q", m.info.RevertMessageID, "msg-42")
+		}
+	})
+
+	// Regression: a revert arriving over SSE (e.g. another client reverted)
+	// must trigger a transcript refetch so the reverted tail vanishes now, not
+	// on the next unrelated reconcile. Driven through Update to exercise the
+	// real event path. See STATE-REVERT-001.
+	t.Run("revert event triggers a transcript refetch", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(nil)
+		m.info = &agent.SessionInfo{}
+
+		_, cmd := m.Update(sessionEventMsg{event: agent.Event{
+			Type:      agent.EventRevertChange,
+			SessionID: m.sessionID,
+			Data:      agent.RevertChangeData{MessageID: "msg-7"},
+		}})
+
+		if m.info.RevertMessageID != "msg-7" {
+			t.Errorf("RevertMessageID = %q, want %q", m.info.RevertMessageID, "msg-7")
+		}
+		if cmd == nil {
+			t.Fatal("expected a transcript-refetch command after a revert event " +
+				"(otherwise a remote revert leaves the tail visible until the next reconcile)")
 		}
 	})
 
