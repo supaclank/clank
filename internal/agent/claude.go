@@ -510,15 +510,19 @@ func (b *ClaudeCodeBackend) Stop() error {
 	client := b.client
 	alreadyStopped := b.stopped
 	b.stopped = true
+	// Close under b.mu, mutually exclusive with emit()'s non-blocking send, so
+	// an in-flight emit can never send on the closed channel. Setting stopped
+	// before the close means any emit that grabs the lock after this returns
+	// early instead of sending.
+	if !alreadyStopped {
+		close(b.events)
+	}
 	b.mu.Unlock()
 
 	if client != nil {
 		client.Disconnect()
 	}
 
-	if !alreadyStopped {
-		close(b.events)
-	}
 	return nil
 }
 
@@ -794,7 +798,12 @@ func (b *ClaudeCodeBackend) setStatus(s SessionStatus) {
 // TODO(ai-review): emit/Stop TOCTOU — stopped is read under lock but the channel send happens after unlock; Stop can close b.events in that window causing "send on closed channel". Fix with sync.Once close + recover guard. https://github.com/Acksell/clank/pull/68#discussion_r3446660408
 func (b *ClaudeCodeBackend) emit(evt Event) {
 	b.mu.Lock()
-	stopped := b.stopped
+	defer b.mu.Unlock()
+
+	if b.stopped {
+		return
+	}
+
 	// Stamp the backend's native session ID on every event so the
 	// host→hub HTTP boundary can propagate it without bespoke signalling.
 	// Empty until the first SystemMessage{init} arrives; once set it
@@ -802,12 +811,11 @@ func (b *ClaudeCodeBackend) emit(evt Event) {
 	if evt.ExternalID == "" {
 		evt.ExternalID = b.sessionID
 	}
-	b.mu.Unlock()
 
-	if stopped {
-		return
-	}
-
+	// Send under b.mu so it can't interleave with Stop()'s close(b.events).
+	// The select's default keeps the send non-blocking, so holding the lock
+	// across it never stalls — and holding it makes send and close mutually
+	// exclusive, which is what prevents the send-on-closed-channel race.
 	select {
 	case b.events <- evt:
 	default:

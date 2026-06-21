@@ -317,29 +317,34 @@ func (b *OpenCodeBackend) setStatus(s SessionStatus) {
 func (b *OpenCodeBackend) closeEvents() {
 	b.eventOnce.Do(func() {
 		b.mu.Lock()
+		defer b.mu.Unlock()
 		b.eventsClosed = true
-		b.mu.Unlock()
+		// Close under b.mu, mutually exclusive with emit()'s non-blocking send,
+		// so an in-flight emit can never send on the closed channel.
 		close(b.events)
 	})
 }
 
 func (b *OpenCodeBackend) emit(evt Event) {
-	// Recover from send-on-closed-channel if the SSE stream goroutine
-	// closed the events channel between our check and the send.
-	defer func() { recover() }()
-
 	b.mu.Lock()
-	closed := b.eventsClosed
+	defer b.mu.Unlock()
+
+	if b.eventsClosed {
+		return
+	}
+
 	// Stamp the backend's native session ID on every event so the
 	// host→hub HTTP boundary can propagate it without bespoke signalling.
 	// See Event.ExternalID docstring.
 	if evt.ExternalID == "" {
 		evt.ExternalID = b.sessionID
 	}
-	b.mu.Unlock()
-	if closed {
-		return
-	}
+
+	// Send under b.mu so it can't interleave with closeEvents()'s
+	// close(b.events). The select's default keeps the send non-blocking, so
+	// holding the lock across it never stalls — and that mutual exclusion is
+	// what removes the send-on-closed-channel race (and the recover() that
+	// used to paper over it).
 	select {
 	case b.events <- evt:
 	default:
