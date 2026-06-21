@@ -139,16 +139,12 @@ Aborting denies all parked permissions server-side; the client MUST then clear i
 queue and re-enable the composer, and the session survives (the agent re-prompts on the next
 turn).
 **Why:** an abort that left the composer locked or the session wedged was a shipped bug.
-**Golden / known gap:** the host denies server-side —
-`internal/agent/claude_permissions.go:152` (`failPendingPermissions`) — but it emits **no**
-event telling the client to clear its queue (only an eventual `status → idle`). The
-**client-side clear is currently unmet by the golden TUI**: `internal/tui/sessionview.go`
-(`sessionAbortResultMsg`, and the abort-settle in `handleStatusChange`) does not clear
-`pendingPerms` or refetch pending-permission, so an abort *while a prompt is pending* leaves
-the composer wedged — a live instance of the very bug this rule names. Per
-[CONF-GATE-001](10-conformance.md) this is a spec-vs-code gap to **resolve by fixing the
-client** (clear the queue / refetch pending-permission on abort-settle), not by relaxing the
-rule. **Conformance:** `CONF-ABORT-PERM`.
+**Golden:** the host denies server-side — `internal/agent/claude_permissions.go:152`
+(`failPendingPermissions`) — and emits **no** event to clear the client queue (only an
+eventual `status → idle`), so the client clears it on that settle: the abort-settle in
+`internal/tui/sessionview.go` (`handleStatusChange`) drops `pendingPerms`/`replyingPermID`, so
+an abort while a prompt is pending no longer wedges the composer. **Conformance:**
+`CONF-ABORT-PERM` (`internal/tui/sessionview_test.go`, `TestAbortClearsPendingPermissions`).
 
 ---
 

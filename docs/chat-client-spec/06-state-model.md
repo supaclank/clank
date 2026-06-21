@@ -111,15 +111,13 @@ Each `Part` additionally carries a derived `streaming` flag (true while text is 
 ### `revert` → [STATE-REVERT-001]
 - **(MUST)** Set `session.revert_message_id = data.message_id` (empty clears it). The **revert
   filter** — drop the message whose id equals `revert_message_id` and everything after it —
-  MUST be applied on every transcript render/refetch so the reverted tail stays gone. A
-  locally-initiated revert refetches immediately ([STATE-REVERT-RESULT-001]); a `revert`
-  arriving over SSE (e.g. another client reverted) sets the marker and relies on the next
-  reconcile to re-filter. **Why:** the reverted tail must vanish and stay gone across
+  MUST be applied on every transcript render/refetch so the reverted tail stays gone. Both a
+  locally-initiated revert ([STATE-REVERT-RESULT-001]) and a `revert` arriving over SSE (e.g.
+  another client reverted) set the marker and refetch the transcript, so the tail vanishes
+  immediately in either case. **Why:** the reverted tail must vanish and stay gone across
   refetches. See [INV-REVERT-001]. **Golden:** `internal/tui/sessionview.go:1416` (SSE event
-  sets the marker only — **no** refetch here), `:1535` (the filter, applied on refetch), `:938`
-  (local revert refetches), `dispatch.ts:165`.
-  > **TUI gap:** the SSE `revert` handler does not itself refetch, so a *remote*-initiated
-  > revert isn't re-filtered in an open view until the next independent reconcile.
+  sets the marker **and** refetches via `handleEvent` → `fetchSessionMessages`), `:1535` (the
+  filter, applied on refetch), `:938` (local revert refetches), `dispatch.ts:165`.
 
 ### `session.create` / `session.delete` → [STATE-LIST-001]
 - **(MUST)** Refresh the session list — insert/remove the row, see [LIST-004](12-session-list.md).
@@ -145,9 +143,9 @@ Each `Part` additionally carries a derived `streaming` flag (true while text is 
   "Cancelling…" marker. The actual settle is driven by the subsequent `status` event
   ([STATE-STATUS-001]), not the abort response. On abort *error*, clear `aborting` and mark
   the cancel failed. On settle, a client MUST also clear any permissions the abort denied
-  server-side and unlock the composer ([INV-ABORT-PERM-001](08-invariants.md)) — a clear that the
-  golden TUI currently misses (known gap). **Golden:** `sessionview.go:2203` (`startAbort`),
-  `:952` (error path).
+  server-side and unlock the composer ([INV-ABORT-PERM-001](08-invariants.md)). **Golden:**
+  `sessionview.go:2203` (`startAbort`), `handleStatusChange` (abort-settle clears
+  `pendingPerms`), `:952` (error path).
 - **[STATE-REVERT-RESULT-001] (MUST)** On revert success, set `session.revert_message_id`,
   prefill the composer with the reverted user prompt, activate + focus it, and refetch the
   filtered transcript. **Golden:** `sessionview.go:924`–`:938`.
