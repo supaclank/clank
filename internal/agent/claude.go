@@ -107,12 +107,6 @@ type ClaudeCodeBackend struct {
 	// In-memory only; not persisted. Guarded by b.mu.
 	revertMessageID string
 
-	// pendingResumeAt, when non-empty, makes the next Open append
-	// --resume-session-at <uuid> (via the SDK's WithResumeSessionAt), truncating
-	// the resumed conversation at that assistant message. Set by reopenWithResumeAt
-	// during Revert; consumed and cleared by Open. Guarded by b.mu.
-	pendingResumeAt string
-
 	// pendingPerms maps a synthesized permission request ID to the channel that
 	// delivers the user's decision. handleCanUseTool registers an entry and
 	// blocks on it; RespondPermission resolves it. Guarded by b.mu.
@@ -141,9 +135,8 @@ func NewClaudeCodeBackend(workDir string) *ClaudeCodeBackend {
 // immediately, and so that Open() launches the CLI with --resume to
 // reattach the persistent subprocess for the existing conversation.
 // resumeSessionID may be empty for fresh sessions. revertMessageID, when
-// non-empty, restores a pending revert on reattach: Open derives the kept
-// assistant leaf from it and pins --resume-session-at, and Messages()
-// truncates the display there until the next prompt branches.
+// non-empty, restores the session's pending-revert boundary on reattach so
+// clients still see the reverted state until the next prompt.
 func NewClaudeCodeBackendForSession(workDir, resumeSessionID, revertMessageID string) *ClaudeCodeBackend {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ClaudeCodeBackend{
@@ -179,9 +172,6 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	}
 	workDir := b.projectDir
 	resumeID := b.sessionID
-	resumeAt := b.pendingResumeAt
-	b.pendingResumeAt = ""
-	revertN := b.revertMessageID
 	factory := b.ClientFactory
 	extraEnv := b.ExtraEnv
 	model := b.initialModel
@@ -224,19 +214,10 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 		claudecode.WithCanUseTool(b.handleCanUseTool),
 	}
 	if resumeID != "" {
+		// Plain --resume: Revert physically truncates the transcript, so the
+		// resumed conversation is already a single linear chain — no
+		// --resume-session-at pin needed to select a branch.
 		opts = append(opts, claudecode.WithResume(resumeID))
-		// State A only: a pending revert hasn't branched the transcript yet, so
-		// pin its kept point to restore the truncated context on reattach. We do
-		// NOT pin a branched session's active leaf: --resume-session-at can only
-		// truncate the chain --resume loads by default, not select a side branch,
-		// so a side-branch leaf fails init ("No message found with message.uuid")
-		// and would brick Open. The resilient connect below falls back to plain
-		// --resume even if this State-A pin can't be resolved. Durable selection
-		// of a reverted branch across restart is a separate concern (fork-on-
-		// revert), not expressible through this flag.
-		if resumeAt == "" && revertN != "" {
-			resumeAt = resumeTargetUUID(readSessionMessages(resumeID, workDir), revertN)
-		}
 	}
 	extraEnv = buildExtraEnv(os.Geteuid(), extraEnv)
 	if len(extraEnv) > 0 {
@@ -246,41 +227,19 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 		opts = append(opts, claudecode.WithModel(model))
 	}
 
-	// Build the client — use the test factory if provided. resumeSessionAt is a
-	// trailing option so a Connect failure caused by an unresolvable pin can be
-	// retried without it instead of bricking the session.
-	newClient := func(extra ...claudecode.Option) claudecode.Client {
-		all := append(append([]claudecode.Option{}, opts...), extra...)
-		if factory != nil {
-			return factory(all...)
-		}
-		return claudecode.NewClient(all...)
-	}
-
+	// Build the client — use the test factory if provided.
 	var client claudecode.Client
-	if resumeAt != "" {
-		client = newClient(claudecode.WithResumeSessionAt(resumeAt))
+	if factory != nil {
+		client = factory(opts...)
 	} else {
-		client = newClient()
+		client = claudecode.NewClient(opts...)
 	}
 
 	// Only commit b.client after a successful Connect, so a failed Open
 	// leaves the backend retryable instead of stuck in a half-open state.
 	if err := client.Connect(b.ctx); err != nil {
-		// An unresolvable --resume-session-at pin fails init here (e.g. a
-		// side-branch leaf the CLI's --resume doesn't load). Don't brick the
-		// session: drop the pin and resume plainly. The conversation may show
-		// the CLI's default branch rather than clank's, but it stays usable.
-		if resumeAt == "" {
-			b.setStatus(StatusError)
-			return fmt.Errorf("connect to claude CLI: %w", err)
-		}
-		client.Disconnect()
-		client = newClient()
-		if err2 := client.Connect(b.ctx); err2 != nil {
-			b.setStatus(StatusError)
-			return fmt.Errorf("connect to claude CLI: %w", err2)
-		}
+		b.setStatus(StatusError)
+		return fmt.Errorf("connect to claude CLI: %w", err)
 	}
 
 	// The launch flag forces the active mode to bypassPermissions. Restrict to
