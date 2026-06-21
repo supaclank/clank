@@ -1419,6 +1419,9 @@ func (m *SessionViewModel) handleEvent(evt agent.Event) tea.Cmd {
 			if m.info != nil {
 				m.info.RevertMessageID = data.MessageID
 			}
+			// TODO(ai-review): revert marker is silently dropped when m.info == nil (early SSE race);
+			// fetchSessionMessages fires but handleSessionMessages reads revertID from m.info,
+			// so the filter doesn't apply. https://github.com/Acksell/clank/pull/75#discussion_r3449145809
 			// A revert from another client must re-filter the open transcript
 			// now, not on the next unrelated reconcile. The refetch applies the
 			// revert filter in handleSessionMessages. See STATE-REVERT-001.
