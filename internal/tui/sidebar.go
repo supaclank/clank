@@ -33,13 +33,13 @@ import (
 // used when the screen width is not yet known.
 const sidebarWidth = 30
 
-// composeRequestedMsg is emitted when the user presses "n" in the
-// sidebar. The inbox handles it by opening the compose view, prefilled
-// with WorktreePath (or the cwd when empty). This replaces the older
-// inline branch-input flow — new-worktree creation now lives inside
-// the compose view's worktree picker.
+// composeRequestedMsg is emitted when the user presses "n" (or Shift+N) in
+// the sidebar. The inbox handles it by opening the compose view, prefilled
+// with WorktreePath (or the cwd when empty). Shift+N additionally opens
+// compose with the New-worktree toggle pre-enabled.
 type composeRequestedMsg struct {
 	worktreePath string
+	newWorktree  bool // true when opened via Shift+N (compose on a fresh worktree)
 }
 
 // SettingsRequestedMsg is emitted by the inbox when the user activates the
@@ -77,11 +77,11 @@ type SidebarModel struct {
 	sessions        []agent.SessionInfo // cached so toggling expand can rebuild without re-fetch
 	tree            sidebarTree
 	flat            []sidebarNode
-	expanded        map[string]bool   // effective expand state: defaults + user overrides
-	userToggles     map[string]bool   // explicit user expand/collapse choices (persisted)
-	cycleIdx        map[string]int    // per-worktree index used by Shift+Enter session-rotate
-	activeSessionID string            // session currently rendered in the right pane (drives the left-rail indicator)
-	nowFn           func() time.Time  // injected for deterministic tests
+	expanded        map[string]bool  // effective expand state: defaults + user overrides
+	userToggles     map[string]bool  // explicit user expand/collapse choices (persisted)
+	cycleIdx        map[string]int   // per-worktree index used by Shift+Enter session-rotate
+	activeSessionID string           // session currently rendered in the right pane (drives the left-rail indicator)
+	nowFn           func() time.Time // injected for deterministic tests
 
 	cursor int
 	scroll int

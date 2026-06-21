@@ -7,6 +7,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/acksell/clank/internal/config"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/host"
+	"github.com/acksell/clank/internal/host/petname"
 )
 
 // sessionCreateResultMsg carries the result of creating a session from composing mode.
@@ -102,6 +104,39 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Folder picker takes priority when open.
+	if m.showFolderPicker {
+		switch msg := msg.(type) {
+		case folderPickerResultMsg:
+			m.showFolderPicker = false
+			return m, m.applyProjectFolder(msg.dir, focusFolder)
+		case folderPickerCancelMsg:
+			// Stay on the Project row (textarea stays blurred).
+			m.showFolderPicker = false
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.folderPicker, cmd = m.folderPicker.Update(msg)
+			return m, cmd
+		}
+	}
+
+	// Worktree picker takes priority when open.
+	if m.showWorktreePicker {
+		switch msg := msg.(type) {
+		case worktreePickerResultMsg:
+			m.showWorktreePicker = false
+			return m, m.applyProjectFolder(msg.dir, focusWorktree)
+		case worktreePickerCancelMsg:
+			m.showWorktreePicker = false
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.worktreePicker, cmd = m.worktreePicker.Update(msg)
+			return m, cmd
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -160,6 +195,9 @@ func (m *SessionViewModel) handleComposeKey(msg tea.KeyPressMsg) (tea.Model, tea
 		return m.handleCtrlCQuit()
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		// Esc exits compose from any row. (An open picker handles its own
+		// Esc first via the picker blocks in updateCompose, so this only
+		// fires when no picker is open.)
 		if m.standalone {
 			return m, tea.Quit
 		}
@@ -169,30 +207,22 @@ func (m *SessionViewModel) handleComposeKey(msg tea.KeyPressMsg) (tea.Model, tea
 		return m, func() tea.Msg { return closeComposeMsg{} }
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+b"))):
-		// Toggle backend.
-		if m.backend == agent.BackendOpenCode {
-			m.backend = agent.BackendClaudeCode
-		} else {
-			m.backend = agent.BackendOpenCode
+		return m, m.toggleBackend()
+	}
+
+	// When a non-prompt row is focused, the arrow keys drive navigation
+	// and per-row actions rather than editing the prompt.
+	if m.composeFocus != focusPrompt {
+		return m.handleComposeNavKey(msg)
+	}
+
+	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("up"))):
+		// Escape upward to the row above only when the cursor is already
+		// on the first line; otherwise let the textarea move the cursor.
+		if m.input.Line() == 0 {
+			return m, m.moveComposeFocus(-1)
 		}
-		// Each backend has its own model catalog (claude-code is a
-		// closed sonnet/opus/haiku enum; opencode aggregates whatever
-		// providers the user has configured). Drop the stale list and
-		// refetch — leaving it would let the user submit the previous
-		// backend's selectedModel index, which we'd then forward as
-		// `--model <opencode-id>` to the claude CLI and crash on
-		// spawn. Reset selectedModel too so the new fetch's
-		// preference-restore can re-resolve it from disk per backend.
-		m.models = nil
-		m.selectedModel = -1
-		// Rebuild the mode list for the new backend: Claude's modes are static;
-		// OpenCode's agents are fetched.
-		if m.backend == agent.BackendClaudeCode {
-			m.modes, m.selectedMode = claudePermissionModes()
-			return m, m.fetchModels()
-		}
-		m.modes, m.selectedMode = nil, 0
-		return m, tea.Batch(m.fetchAgents(), m.fetchModels())
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
 		// Cycle through modes (OpenCode agents or Claude permission modes).
@@ -251,9 +281,10 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 
 	// LocalPath for the laptop-local host; WorktreeID for cross-host
 	// targeting once `clank sync push` has registered the worktree.
+	//
 	gitRef := agent.GitRef{
 		LocalPath:      m.projectDir,
-		WorktreeBranch: m.worktreeBranch,
+		WorktreeBranch: m.effectiveWorktreeBranch(),
 	}
 	if id, _ := agent.ReadLocalWorktreeID(m.projectDir); id != "" {
 		gitRef.WorktreeID = id
@@ -382,46 +413,53 @@ func (m *SessionViewModel) viewCompose() tea.View {
 		sb.WriteString("\n\n")
 	}
 
-	// Backend selector.
-	sb.WriteString(m.renderBackendSelector())
-	sb.WriteString("\n")
-
-	// Project directory.
-	labelSty := lipgloss.NewStyle().Foreground(dimColor).Width(12)
-	sb.WriteString("  " + labelSty.Render("Project:"))
-	sb.WriteString(lipgloss.NewStyle().Foreground(textColor).Render(m.projectDir))
-	sb.WriteString("\n")
-
-	// Worktree branch (if selected).
-	if m.worktreeBranch != "" {
-		sb.WriteString("  " + labelSty.Render("Branch:"))
-		sb.WriteString(lipgloss.NewStyle().Foreground(secondaryColor).Render(m.worktreeBranch))
-		sb.WriteString("\n")
+	// Compose fields as borderless "label: value" rows; the chevron cursor and
+	// recolored label mark the focused row without layout shift.
+	fields := []composeFieldSpec{
+		{label: "Backend", value: m.backendValue(m.composeFocus == focusBackend), focus: focusBackend},
+		{label: "Project", value: lipgloss.NewStyle().Foreground(textColor).Render(m.projectDir), focus: focusFolder},
+		{label: "Worktree", value: m.worktreeValue(), focus: focusWorktree},
+		{label: "New worktree", value: m.newWorktreeValue(), focus: focusNewWorktree},
 	}
-	sb.WriteString("\n")
+	sb.WriteString(m.renderComposeFields(fields))
+	sb.WriteString("\n\n")
 
 	// Prompt textarea with integrated mode badge.
 	sb.WriteString(m.renderPromptBox())
 	sb.WriteString("\n\n")
 
-	// Help bar.
+	// Help bar — context-sensitive to the focused row.
 	qLabel := "esc: back"
 	if m.standalone {
 		qLabel = "esc: quit"
 	}
-	helpParts := []string{"enter: launch", "shift+enter: newline", "ctrl+b: toggle backend"}
-	if len(m.modes) > 1 {
-		helpParts = append(helpParts, "tab: cycle mode")
+	var helpParts []string
+	switch m.composeFocus {
+	case focusBackend:
+		helpParts = []string{"←→: choose", "enter: switch", "↑↓: navigate", qLabel}
+	case focusFolder:
+		helpParts = []string{"enter: choose folder", "↑↓: navigate", qLabel}
+	case focusWorktree:
+		helpParts = []string{"enter: choose worktree", "↑↓: navigate", qLabel}
+	case focusNewWorktree:
+		helpParts = []string{"enter: toggle", "↑↓: navigate", qLabel}
+	default: // focusPrompt
+		helpParts = []string{"↑: fields", "enter: launch", "shift+enter: newline", "ctrl+b: toggle backend"}
+		if len(m.modes) > 1 {
+			helpParts = append(helpParts, "tab: cycle mode")
+		}
+		if m.backend == agent.BackendOpenCode && len(m.models) > 0 {
+			helpParts = append(helpParts, "shift+tab: select model")
+		}
+		helpParts = append(helpParts, qLabel)
 	}
-	if m.backend == agent.BackendOpenCode && len(m.models) > 0 {
-		helpParts = append(helpParts, "shift+tab: select model")
-	}
-	helpParts = append(helpParts, qLabel)
 	help := helpStyle.Render(strings.Join(helpParts, " | "))
 	sb.WriteString(help)
 
 	output := sb.String()
 	output = m.overlayModelPicker(output)
+	output = m.overlayFolderPicker(output)
+	output = m.overlayWorktreePicker(output)
 	v := newVoiceEnabledView(output)
 	return v
 }
@@ -439,34 +477,136 @@ func (m *SessionViewModel) renderComposeHeader() string {
 	}
 	header := title + strings.Repeat(" ", gap) + backendStr
 
-	if m.isNewWorktree {
-		indicator := "  New Worktree"
-		if m.baseBranch != "" {
-			indicator += " | base: " + m.baseBranch
-		}
-		header += "\n" + lipgloss.NewStyle().Foreground(secondaryColor).Render(indicator)
-	}
-
 	return header
 }
 
-func (m *SessionViewModel) renderBackendSelector() string {
-	labelSty := lipgloss.NewStyle().Foreground(dimColor).Width(12)
-	label := labelSty.Render("Backend:")
+// backendValue renders the two backend choices on two independent visual
+// channels: bracket SHAPE encodes selection (the active backend clamps tight
+// "[x]"; the others sit open "[ x ]"), while bracket COLOR encodes the
+// cursor (vibrant on the ←/→-hovered option). Enter commits the hovered
+// option, so the tight clamp and green text move to it.
+//
+// The brackets occupy a fixed 2-cell gutter on each side of the text: tight
+// brackets sit on the inner cell, open brackets on the outer cell. The text
+// stays in the same column either way — only the bracket glyph shifts.
+func (m *SessionViewModel) backendValue(focused bool) string {
+	option := func(name string, idx int, active bool) string {
+		textColor := dimColor
+		if active {
+			textColor = successColor
+		}
+		text := lipgloss.NewStyle().Foreground(textColor).Bold(active).Render(name)
 
-	ocStyle := lipgloss.NewStyle().Foreground(dimColor)
-	ccStyle := lipgloss.NewStyle().Foreground(dimColor)
-	if m.backend == agent.BackendOpenCode {
-		ocStyle = lipgloss.NewStyle().Foreground(successColor).Bold(true)
-	} else {
-		ccStyle = lipgloss.NewStyle().Foreground(successColor).Bold(true)
+		// Inner cell (tight) when selected; outer cell (open) otherwise.
+		lb, rb := "[ ", " ]" // open
+		if active {
+			lb, rb = " [", "] " // tight
+		}
+
+		bracketColor := dimColor
+		hovered := focused && m.backendCursor == idx
+		if hovered {
+			bracketColor = primaryColor
+		}
+		bracket := lipgloss.NewStyle().Foreground(bracketColor).Bold(hovered)
+		return bracket.Render(lb) + text + bracket.Render(rb)
 	}
+	oc := option("OpenCode", 0, m.backend == agent.BackendOpenCode)
+	cc := option("Claude Code", 1, m.backend == agent.BackendClaudeCode)
+	return oc + "  " + cc
+}
 
-	return fmt.Sprintf("  %s[%s]  [%s]",
-		label,
-		ocStyle.Render("OpenCode"),
-		ccStyle.Render("Claude Code"),
-	)
+// newWorktreeValue renders the New-worktree toggle's current state.
+func (m *SessionViewModel) newWorktreeValue() string {
+	if m.isNewWorktree {
+		return lipgloss.NewStyle().Foreground(successColor).Bold(true).Render("✓ yes — start on a fresh worktree")
+	}
+	return lipgloss.NewStyle().Foreground(dimColor).Render("no — use the current worktree")
+}
+
+// effectiveWorktreeBranch is the branch the session launches on. With the
+// New-worktree toggle enabled and no explicit branch chosen, a fresh
+// petname is minted so the host's WorktreeBranch resolve path creates an
+// isolated worktree in the current project (off its default branch).
+func (m *SessionViewModel) effectiveWorktreeBranch() string {
+	if m.isNewWorktree && m.worktreeBranch == "" {
+		return petname.Generate()
+	}
+	return m.worktreeBranch
+}
+
+// openFolderPicker opens the folder picker browsing the current project's
+// *parent*, so sibling projects are listed (switching project is the common
+// case), with the current project highlighted among them.
+func (m *SessionViewModel) openFolderPicker() tea.Cmd {
+	m.showFolderPicker = true
+	start := filepath.Dir(m.projectDir)
+	if start == m.projectDir { // already at the filesystem root: no parent
+		start = m.projectDir
+	}
+	m.folderPicker = newFolderPicker(start)
+	if start != m.projectDir {
+		// Land the cursor on the current project among its siblings.
+		m.folderPicker.memory[start] = filepath.Base(m.projectDir)
+		m.folderPicker.restoreCursor()
+	}
+	if m.height > 0 {
+		m.folderPicker.maxRows = pickerRows(m.height)
+	}
+	return m.folderPicker.Init()
+}
+
+// applyProjectFolder repoints the compose session at dir and refreshes the
+// per-repo agent/model catalog. Focus stays on returnTo (the row the picker
+// was opened from) rather than jumping to the prompt.
+func (m *SessionViewModel) applyProjectFolder(dir string, returnTo composeFocus) tea.Cmd {
+	m.projectDir = dir
+	m.gitRef = agent.GitRef{LocalPath: dir}
+	if id, _ := agent.ReadLocalWorktreeID(dir); id != "" {
+		m.gitRef.WorktreeID = id
+	}
+	m.composeFocus = returnTo
+
+	cmds := []tea.Cmd{m.fetchModels()}
+	if m.backend == agent.BackendOpenCode {
+		cmds = append(cmds, m.fetchAgents())
+	}
+	return tea.Batch(cmds...)
+}
+
+// overlayFolderPicker composites the folder picker over the compose view.
+func (m *SessionViewModel) overlayFolderPicker(base string) string {
+	if !m.showFolderPicker {
+		return base
+	}
+	return overlayCenter(base, m.folderPicker.View(), m.width, m.height)
+}
+
+// worktreeValue renders the current worktree (the project dir's basename).
+func (m *SessionViewModel) worktreeValue() string {
+	name := filepath.Base(m.projectDir)
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		name = m.projectDir
+	}
+	return lipgloss.NewStyle().Foreground(textColor).Render(name)
+}
+
+// openWorktreePicker lists the current repo's worktrees and opens the picker.
+// Worktrees are read locally (git worktree list); on a non-repo the picker
+// surfaces that rather than failing.
+func (m *SessionViewModel) openWorktreePicker() tea.Cmd {
+	wts, err := listWorktrees(m.projectDir)
+	m.worktreePicker = newWorktreePicker(wts, m.projectDir, pickerRows(m.height), err)
+	m.showWorktreePicker = true
+	return m.worktreePicker.Init()
+}
+
+// overlayWorktreePicker composites the worktree picker over the compose view.
+func (m *SessionViewModel) overlayWorktreePicker(base string) string {
+	if !m.showWorktreePicker {
+		return base
+	}
+	return overlayCenter(base, m.worktreePicker.View(), m.width, m.height)
 }
 
 // renderPromptBox renders the prompt textarea with an integrated mode badge
@@ -525,7 +665,10 @@ func (m *SessionViewModel) renderPromptBox() string {
 		}
 	}
 
-	if combinedBadge != "" || ctrlCHint != "" {
+	// In composing mode always reserve the badge line, even when empty:
+	// toggling backend changes whether a mode badge is present, and a
+	// conditional line would resize the prompt box and jump the layout.
+	if combinedBadge != "" || ctrlCHint != "" || m.composing {
 		badgeWidth := lipgloss.Width(combinedBadge)
 		hintWidth := lipgloss.Width(ctrlCHint)
 		gap := innerWidth - badgeWidth - hintWidth

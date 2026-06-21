@@ -28,3 +28,17 @@ func normalizeKeyCase(msg tea.KeyPressMsg) tea.KeyPressMsg {
 	}
 	return msg
 }
+
+// isShiftN reports whether msg is Shift+N. It tolerates terminals (e.g.
+// Warp in legacy mode) that deliver the chord as an uppercase "N" with no
+// shift modifier rather than ModShift+n. Caps-lock+n therefore also reads
+// as Shift+N — an accepted trade-off so the gesture works everywhere.
+//
+// Must be checked BEFORE normalizeKeyCase, which lowercases an unmodified
+// "N" to "n" and would make it indistinguishable from a plain "n".
+func isShiftN(msg tea.KeyPressMsg) bool {
+	if msg.Mod.Contains(tea.ModShift) && (msg.Code == 'n' || msg.Code == 'N') {
+		return true
+	}
+	return msg.Text == "N"
+}
