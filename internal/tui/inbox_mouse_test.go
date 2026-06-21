@@ -55,13 +55,13 @@ func TestInboxView_EnablesMouseOnSessionScreen(t *testing.T) {
 	})
 }
 
-func TestInboxView_NoMouseOnNonSessionScreens(t *testing.T) {
+func TestInboxView_MouseFollowsSidebarVisibility(t *testing.T) {
 	t.Parallel()
 
-	// The inbox list / settings / cloud screens don't handle mouse,
-	// so mouse reporting should stay OFF on those screens — that
-	// keeps native terminal text-select (cmd+drag) working without
-	// the user having to hold Option.
+	// Mouse reporting is enabled whenever the sidebar is visible, so its
+	// rows are clickable on every screen. When the sidebar is hidden on a
+	// non-chat screen there's nothing mouse-driven, so it stays OFF and
+	// native terminal text-select keeps working without holding Option.
 	cases := []struct {
 		name   string
 		screen inboxScreen
@@ -72,17 +72,29 @@ func TestInboxView_NoMouseOnNonSessionScreens(t *testing.T) {
 	}
 	for _, tc := range cases {
 		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(tc.name+" sidebar visible → mouse on", func(t *testing.T) {
+			t.Parallel()
+			m := NewInboxModel(nil)
+			m.width = 120 // wide → two-pane → sidebar visible
+			m.height = 40
+			m.screen = tc.screen
+			m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
+
+			if v := m.View(); v.MouseMode != tea.MouseModeCellMotion {
+				t.Fatalf("MouseMode = %v on %s with the sidebar visible; want MouseModeCellMotion so sidebar rows are clickable", v.MouseMode, tc.name)
+			}
+		})
+		t.Run(tc.name+" sidebar hidden → mouse off", func(t *testing.T) {
 			t.Parallel()
 			m := NewInboxModel(nil)
 			m.width = 120
 			m.height = 40
 			m.screen = tc.screen
+			m.sidebarHidden = true // no sidebar, non-chat screen → nothing mouse-driven
 			m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
 
-			v := m.View()
-			if v.MouseMode == tea.MouseModeCellMotion {
-				t.Fatalf("MouseMode = MouseModeCellMotion on %s screen; reserve it for screens that handle mouse so other screens keep native text-select", tc.name)
+			if v := m.View(); v.MouseMode == tea.MouseModeCellMotion {
+				t.Fatalf("MouseMode = MouseModeCellMotion on %s with the sidebar hidden; should be off so native text-select works", tc.name)
 			}
 		})
 	}
