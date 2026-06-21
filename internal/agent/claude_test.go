@@ -149,16 +149,19 @@ func (t *mockTransport) Interrupt(_ context.Context) error {
 }
 
 func (t *mockTransport) SetModel(_ context.Context, _ *string) error { return nil }
-func (t *mockTransport) SetPermissionMode(ctx context.Context, mode string) error {
+func (t *mockTransport) GetMcpStatus(_ context.Context) (*claudecode.McpStatusResponse, error) {
+	return nil, nil
+}
+func (t *mockTransport) SetPermissionMode(ctx context.Context, mode claudecode.PermissionMode) error {
 	t.mu.Lock()
 	fn := t.onSetPermMode
 	t.mu.Unlock()
 	if fn != nil {
-		return fn(ctx, mode)
+		return fn(ctx, string(mode))
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.permissionModes = append(t.permissionModes, mode)
+	t.permissionModes = append(t.permissionModes, string(mode))
 	return nil
 }
 
@@ -1003,7 +1006,7 @@ func TestClaudeCodeBackendResume(t *testing.T) {
 		},
 	})
 
-	b := agent.NewClaudeCodeBackendForSession(t.TempDir(), "existing-session-id")
+	b := agent.NewClaudeCodeBackendForSession(t.TempDir(), "existing-session-id", "")
 	b.ClientFactory = func(opts ...claudecode.Option) claudecode.Client {
 		return claudecode.NewClientWithTransport(transport, opts...)
 	}

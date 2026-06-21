@@ -25,6 +25,7 @@ CREATE TABLE sessions (
     ticket_id       TEXT NOT NULL DEFAULT '',
     agent           TEXT NOT NULL DEFAULT '',          -- primary agent slug
     draft           TEXT NOT NULL DEFAULT '',
+    revert_message_id TEXT NOT NULL DEFAULT '',         -- Claude pending-revert boundary; cleared when the next prompt branches
     created_at      INTEGER NOT NULL,                  -- unix millis
     updated_at      INTEGER NOT NULL,                  -- unix millis
     last_read_at    INTEGER                            -- unix millis, null = unread

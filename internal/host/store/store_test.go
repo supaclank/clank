@@ -102,6 +102,47 @@ func TestUpsertAndGetSession(t *testing.T) {
 	}
 }
 
+// TestUpsertSession_RevertMessageIDRoundTrip covers the pending-revert boundary
+// persisted for Claude State-A durability: it survives a write/read, and the
+// branching send clears it.
+func TestUpsertSession_RevertMessageIDRoundTrip(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t)
+	ctx := context.Background()
+
+	info := agent.SessionInfo{
+		ID:              "ses-revert",
+		Backend:         agent.BackendClaudeCode,
+		Status:          agent.StatusIdle,
+		RevertMessageID: "user-msg-uuid-123",
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
+	}
+	if err := s.UpsertSession(ctx, info); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	got, err := s.GetSession(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.RevertMessageID != "user-msg-uuid-123" {
+		t.Errorf("revert_message_id: got %q, want %q", got.RevertMessageID, "user-msg-uuid-123")
+	}
+
+	// The branching send clears the boundary.
+	info.RevertMessageID = ""
+	if err := s.UpsertSession(ctx, info); err != nil {
+		t.Fatalf("UpsertSession (clear): %v", err)
+	}
+	got, err = s.GetSession(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetSession (after clear): %v", err)
+	}
+	if got.RevertMessageID != "" {
+		t.Errorf("revert_message_id not cleared: got %q", got.RevertMessageID)
+	}
+}
+
 func TestUpsertSession_RequiresID(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t)

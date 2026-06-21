@@ -29,8 +29,8 @@ LIMIT @lim;
 INSERT INTO sessions (
     id, external_id, backend, status, visibility, follow_up,
     project_dir, worktree_id, worktree_branch, prompt, title,
-    ticket_id, agent, draft, created_at, updated_at, last_read_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ticket_id, agent, draft, revert_message_id, created_at, updated_at, last_read_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
     external_id     = excluded.external_id,
     backend         = excluded.backend,
@@ -45,6 +45,7 @@ ON CONFLICT (id) DO UPDATE SET
     ticket_id       = excluded.ticket_id,
     agent           = excluded.agent,
     draft           = excluded.draft,
+    revert_message_id = excluded.revert_message_id,
     updated_at      = excluded.updated_at,
     last_read_at    = excluded.last_read_at;
 

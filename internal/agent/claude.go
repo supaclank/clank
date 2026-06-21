@@ -106,6 +106,12 @@ type ClaudeCodeBackend struct {
 	// In-memory only; not persisted. Guarded by b.mu.
 	revertMessageID string
 
+	// pendingResumeAt, when non-empty, makes the next Open append
+	// --resume-session-at <uuid> (via the SDK's WithResumeSessionAt), truncating
+	// the resumed conversation at that assistant message. Set by reopenWithResumeAt
+	// during Revert; consumed and cleared by Open. Guarded by b.mu.
+	pendingResumeAt string
+
 	// pendingPerms maps a synthesized permission request ID to the channel that
 	// delivers the user's decision. handleCanUseTool registers an entry and
 	// blocks on it; RespondPermission resolves it. Guarded by b.mu.
@@ -126,20 +132,24 @@ type ClaudeCodeBackend struct {
 // the host-resolved working directory (worktree or repo root) the
 // claude CLI will be launched in.
 func NewClaudeCodeBackend(workDir string) *ClaudeCodeBackend {
-	return NewClaudeCodeBackendForSession(workDir, "")
+	return NewClaudeCodeBackendForSession(workDir, "", "")
 }
 
 // NewClaudeCodeBackendForSession is the resume variant. It pre-seeds the
 // SDK session ID so that Messages() can read the on-disk JSONL transcript
 // immediately, and so that Open() launches the CLI with --resume to
 // reattach the persistent subprocess for the existing conversation.
-// resumeSessionID may be empty for fresh sessions.
-func NewClaudeCodeBackendForSession(workDir, resumeSessionID string) *ClaudeCodeBackend {
+// resumeSessionID may be empty for fresh sessions. revertMessageID, when
+// non-empty, restores a pending revert on reattach: Open derives the kept
+// assistant leaf from it and pins --resume-session-at, and Messages()
+// truncates the display there until the next prompt branches.
+func NewClaudeCodeBackendForSession(workDir, resumeSessionID, revertMessageID string) *ClaudeCodeBackend {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ClaudeCodeBackend{
 		status:           StatusStarting,
 		projectDir:       workDir,
 		sessionID:        resumeSessionID,
+		revertMessageID:  revertMessageID,
 		events:           make(chan Event, 128),
 		activeToolBlocks: make(map[int]*activeToolBlock),
 		pendingPerms:     make(map[string]chan permissionDecision),
@@ -168,6 +178,9 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	}
 	workDir := b.projectDir
 	resumeID := b.sessionID
+	resumeAt := b.pendingResumeAt
+	b.pendingResumeAt = ""
+	revertN := b.revertMessageID
 	factory := b.ClientFactory
 	extraEnv := b.ExtraEnv
 	model := b.initialModel
@@ -211,6 +224,18 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	}
 	if resumeID != "" {
 		opts = append(opts, claudecode.WithResume(resumeID))
+		// State A only: a pending revert hasn't branched the transcript yet, so
+		// pin its kept point to restore the truncated context on reattach. We do
+		// NOT pin a branched session's active leaf: --resume-session-at can only
+		// truncate the chain --resume loads by default, not select a side branch,
+		// so a side-branch leaf fails init ("No message found with message.uuid")
+		// and would brick Open. The resilient connect below falls back to plain
+		// --resume even if this State-A pin can't be resolved. Durable selection
+		// of a reverted branch across restart is a separate concern (fork-on-
+		// revert), not expressible through this flag.
+		if resumeAt == "" && revertN != "" {
+			resumeAt = resumeTargetUUID(readSessionMessages(resumeID, workDir), revertN)
+		}
 	}
 	extraEnv = buildExtraEnv(os.Geteuid(), extraEnv)
 	if len(extraEnv) > 0 {
@@ -220,19 +245,41 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 		opts = append(opts, claudecode.WithModel(model))
 	}
 
-	// Build the client — use the test factory if provided.
+	// Build the client — use the test factory if provided. resumeSessionAt is a
+	// trailing option so a Connect failure caused by an unresolvable pin can be
+	// retried without it instead of bricking the session.
+	newClient := func(extra ...claudecode.Option) claudecode.Client {
+		all := append(append([]claudecode.Option{}, opts...), extra...)
+		if factory != nil {
+			return factory(all...)
+		}
+		return claudecode.NewClient(all...)
+	}
+
 	var client claudecode.Client
-	if factory != nil {
-		client = factory(opts...)
+	if resumeAt != "" {
+		client = newClient(claudecode.WithResumeSessionAt(resumeAt))
 	} else {
-		client = claudecode.NewClient(opts...)
+		client = newClient()
 	}
 
 	// Only commit b.client after a successful Connect, so a failed Open
 	// leaves the backend retryable instead of stuck in a half-open state.
 	if err := client.Connect(b.ctx); err != nil {
-		b.setStatus(StatusError)
-		return fmt.Errorf("connect to claude CLI: %w", err)
+		// An unresolvable --resume-session-at pin fails init here (e.g. a
+		// side-branch leaf the CLI's --resume doesn't load). Don't brick the
+		// session: drop the pin and resume plainly. The conversation may show
+		// the CLI's default branch rather than clank's, but it stays usable.
+		if resumeAt == "" {
+			b.setStatus(StatusError)
+			return fmt.Errorf("connect to claude CLI: %w", err)
+		}
+		client.Disconnect()
+		client = newClient()
+		if err2 := client.Connect(b.ctx); err2 != nil {
+			b.setStatus(StatusError)
+			return fmt.Errorf("connect to claude CLI: %w", err2)
+		}
 	}
 
 	// The launch flag forces the active mode to bypassPermissions. Restrict to
@@ -555,26 +602,50 @@ func (b *ClaudeCodeBackend) Messages(ctx context.Context) ([]MessageData, error)
 		opts = append(opts, claudecode.WithSessionDirectory(workDir))
 	}
 
+	b.mu.Lock()
+	revertID := b.revertMessageID
+	b.mu.Unlock()
+
 	sdkMsgs, err := claudecode.GetSessionMessages(sessionID, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("read claude session %s: %w", sessionID, err)
 	}
 
-	return coalesceSessionMessages(sdkMsgs), nil
+	msgs := coalesceSessionMessages(sdkMsgs)
+	// While a revert is active but the user hasn't re-prompted yet, the CLI hasn't
+	// branched the transcript, so the on-disk JSONL still holds the reverted tail.
+	// Truncate the reload at the revert target so the hidden messages don't
+	// reappear on a fresh fetch. Once the next Send branches the transcript,
+	// revertMessageID is cleared and GetSessionMessages returns the active branch.
+	if revertID != "" {
+		for i, m := range msgs {
+			if m.ID == revertID {
+				msgs = msgs[:i]
+				break
+			}
+		}
+	}
+	return msgs, nil
 }
 
-// Revert rolls tracked files back to their state at the given user message,
-// using the SDK's RewindFiles (control subtype "rewind_files"). messageID is
-// the user message's transcript UUID, which equals MessageData.ID for user
-// rows (see coalesceSessionMessages) — exactly what RewindFiles targets.
+// Revert undoes a turn: it rolls tracked files back to their state at the given
+// user message AND truncates the conversation there, so the model no longer has
+// the reverted turns in context.
 //
-// Files only: the JSONL transcript and the model's in-context history are NOT
-// truncated, so on the next Send the model still has the reverted turns in
-// context. The TUI hides those messages from the display, but the conversation
-// itself is unchanged. This differs from OpenCode, which truncates for real.
+// messageID is the user message's transcript UUID (== MessageData.ID for user
+// rows; see coalesceSessionMessages). Files are restored via RewindFiles
+// (control subtype "rewind_files"). The conversation is truncated by relaunching
+// the CLI resumed at the assistant message preceding messageID via
+// --resume-session-at, which keeps messages up to that turn and branches the
+// transcript; the reverted tail stays in the JSONL as an orphaned branch that
+// GetSessionMessages no longer follows, and the next prompt continues from the
+// kept point.
 //
-// Requires the session to be Open (RewindFiles needs the live streaming client;
-// it errors in one-shot mode). Service.RevertSession opens the backend first.
+// The conversation truncation is best-effort: if the transcript can't be read or
+// messageID is the first turn (no prior assistant message to resume at), the
+// file rollback and display truncation still stand. Requires the session to be
+// Open (RewindFiles needs the live streaming client). Service.RevertSession
+// opens the backend first.
 func (b *ClaudeCodeBackend) Revert(ctx context.Context, messageID string) error {
 	if messageID == "" {
 		return fmt.Errorf("claude backend: revert requires a message id")
@@ -582,13 +653,25 @@ func (b *ClaudeCodeBackend) Revert(ctx context.Context, messageID string) error 
 
 	b.mu.Lock()
 	client := b.client
+	sessionID := b.sessionID
+	workDir := b.projectDir
 	b.mu.Unlock()
 	if client == nil {
 		return fmt.Errorf("session not open: cannot revert")
 	}
 
+	// Roll the files back first, while the live (full-context) client is up.
 	if err := client.RewindFiles(ctx, messageID); err != nil {
 		return fmt.Errorf("rewind files to %s: %w", messageID, err)
+	}
+
+	// Locate the assistant turn to resume at and relaunch the CLI truncated
+	// there. Best-effort: a transcript that can't be read (or a first-turn revert
+	// with no prior assistant) leaves resumeAt empty and we skip the relaunch.
+	if resumeAt := resumeTargetUUID(readSessionMessages(sessionID, workDir), messageID); resumeAt != "" {
+		if err := b.reopenWithResumeAt(ctx, resumeAt); err != nil {
+			return fmt.Errorf("reopen resumed at %s: %w", resumeAt, err)
+		}
 	}
 
 	// Commit the revert state and announce it only after the rewind succeeds.
@@ -602,6 +685,68 @@ func (b *ClaudeCodeBackend) Revert(ctx context.Context, messageID string) error 
 		Data:      RevertChangeData{MessageID: messageID},
 	})
 	return nil
+}
+
+// reopenWithResumeAt tears down the live CLI subprocess and relaunches it resumed
+// at resumeAtUUID (the next Open appends --resume-session-at), truncating the
+// conversation to that message. The session id is unchanged; the next Query
+// branches there.
+func (b *ClaudeCodeBackend) reopenWithResumeAt(ctx context.Context, resumeAtUUID string) error {
+	b.mu.Lock()
+	old := b.client
+	b.client = nil
+	b.pendingResumeAt = resumeAtUUID
+	b.mu.Unlock()
+
+	if old != nil {
+		old.Disconnect()
+	}
+	return b.Open(ctx)
+}
+
+// readSessionMessages reads the on-disk transcript for a session, returning nil
+// on any error (callers treat the conversation-truncation step as best-effort).
+func readSessionMessages(sessionID, workDir string) []claudecode.SessionMessage {
+	if sessionID == "" {
+		return nil
+	}
+	opts := []claudecode.SessionOption{}
+	if workDir != "" {
+		opts = append(opts, claudecode.WithSessionDirectory(workDir))
+	}
+	msgs, err := claudecode.GetSessionMessages(sessionID, opts...)
+	if err != nil {
+		return nil
+	}
+	return msgs
+}
+
+// resumeTargetUUID returns the transcript UUID of the assistant message that
+// --resume-session-at should keep when reverting to the user message userUUID —
+// the last assistant message before it. Returns "" when userUUID is the first
+// turn or is absent from msgs. It reads the assistant UUID directly (not via
+// coalesceSessionMessages, which maps assistant ids to the Anthropic API message
+// id) because --resume-session-at matches on the transcript UUID.
+func resumeTargetUUID(msgs []claudecode.SessionMessage, userUUID string) string {
+	idx := -1
+	for i, m := range msgs {
+		if m.UUID == userUUID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return ""
+	}
+	for i := idx - 1; i >= 0; i-- {
+		if msgs[i].IsMeta {
+			continue
+		}
+		if msgs[i].Type == "assistant" {
+			return msgs[i].UUID
+		}
+	}
+	return ""
 }
 
 func (b *ClaudeCodeBackend) Fork(ctx context.Context, messageID string) (ForkResult, error) {

@@ -666,6 +666,12 @@ type BackendInvocation struct {
 	// StartRequest.SessionID (which doubles as the host-side session ID).
 	// A future split may decouple the two.
 	ResumeExternalID string
+
+	// RevertMessageID, when set, seeds a Claude backend's pending-revert
+	// boundary on reattach (the user message a not-yet-branched revert
+	// truncated to), so Open re-pins --resume-session-at and Messages()
+	// truncates the display. Empty for new sessions and other backends.
+	RevertMessageID string
 }
 
 // BackendManager creates and manages SessionBackend instances for a specific

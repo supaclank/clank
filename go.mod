@@ -115,4 +115,4 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace github.com/severity1/claude-agent-sdk-go => github.com/Acksell/claude-agent-sdk-go v0.0.0-20260424151828-708a654d0bbe
+replace github.com/severity1/claude-agent-sdk-go => /Users/axelengstrom/github.com/acksell/claude-agent-sdk-go
