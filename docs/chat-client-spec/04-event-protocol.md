@@ -22,13 +22,19 @@ this is the wire.
   `data: {"subscriber_id": "<id>"}`. It is a transport acknowledgement, **not** an agent
   event; a client MUST skip it (do not feed it to the reducer). **Golden:**
   `internal/host/mux/events.go:58` (emit), `internal/daemonclient/transport.go:169` (skip).
-- **[EVT-004] (MUST)** There is **no `end` frame and no heartbeat frame.** Stream
-  termination is signaled solely by the connection closing (the read returns EOF / null). A
-  client MUST detect end-of-stream from the closed connection and MUST NOT wait for an
-  application-level `end` event. **Why:** a client that waits for `end` never tears down on
-  a silent close; a Kotlin consumer ships a dead `"end"` branch that the host never emits.
-  See [INV-NO-END-001](08-invariants.md). **Golden:** `internal/host/mux/events.go:64`
-  (loop returns on channel close — no terminal frame).
+- **[EVT-004] (MUST)** **No heartbeat frame exists on either stream.** The **global**
+  `GET /events` stream also emits **no `end` frame** — its termination is signaled solely by
+  the connection closing (the read returns EOF / null). The **per-session**
+  `GET /sessions/{id}/events` stream *does* emit a terminal `event: end\ndata: {}\n\n`, but
+  **only on host shutdown** (an ordinary client disconnect does not produce one). A client
+  MUST therefore detect end-of-stream from the **closed connection** and MUST NOT *wait* for
+  an application-level `end` event — it never arrives on the global stream, and only at
+  shutdown on the per-session one. A client consuming the per-session stream MAY treat a
+  received `end` as an explicit "host going away" signal but MUST NOT depend on it. **Why:** a
+  client that waits for `end` never tears down on a silent close. See
+  [INV-NO-END-001](08-invariants.md). **Golden:** `internal/host/mux/events.go`
+  (`handleEvents`: global loop returns on channel close — no terminal frame),
+  `internal/host/mux/sessions.go` (`handleSessionEvents`: emits `event: end` on shutdown).
 - **[EVT-005] (MUST)** On the **global** stream a client MUST filter events to the session(s)
   it cares about by `session_id`, **except** `session.create` and `session.delete`, which are
   session-list events and MUST be accepted regardless of the currently-open session. **Why:**

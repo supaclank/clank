@@ -39,14 +39,20 @@ event **twice**.
 **Golden:** `clank-mobile/src/api/events.ts:71`–`:98` (double `if (closed)` guard).
 **Conformance:** `CONF-SINGLE-STREAM`.
 
-### [INV-NO-END-001] (MUST) There is no `end` frame
-Detect end-of-stream from the connection closing (read returns EOF/null), never from an
-application-level `end` event.
-**Why:** the host emits no terminal frame. A consumer that waits for `end` never tears down
-on a silent close. One Kotlin consumer ships a dead `"end"` branch the host never sends.
-**Golden:** `internal/host/mux/events.go:64` (loop returns on channel close, no terminal
-frame); contrast `…/session/SessionEventStream.kt:264` (phantom `"end"` handler).
-**Conformance:** `CONF-NO-END`.
+### [INV-NO-END-001] (MUST) Detect end-of-stream from the closed connection, not an `end` frame
+Detect end-of-stream from the connection closing (read returns EOF/null); never *depend* on
+an application-level `end` event. The **global** `/events` stream sends no terminal frame at
+all. The **per-session** `/sessions/{id}/events` stream emits `event: end` — but only on host
+shutdown — so a consumer of it MAY treat `end` as an explicit "host going away" signal yet
+MUST still tear down on the raw connection close.
+**Why:** a consumer that *waits* for `end` never tears down on a silent close (the common
+case). Note: the Kotlin preview consumer subscribes to the **per-session** stream, so its
+`"end"` branch is **live, correct code** (it fires on host shutdown) — *not* a phantom; an
+earlier draft wrongly called it dead by conflating the two endpoints.
+**Golden:** `internal/host/mux/events.go` (`handleEvents`: global loop returns on channel
+close, no terminal frame), `internal/host/mux/sessions.go` (`handleSessionEvents`: emits
+`event: end` on shutdown); `…/session/SessionEventStream.kt` (`"end"` branch — correct for the
+per-session stream). **Conformance:** `CONF-NO-END`.
 
 ---
 
@@ -129,11 +135,20 @@ leaving spinners running forever.
 **Conformance:** `CONF-DENY-SETTLE`.
 
 ### [INV-ABORT-PERM-001] (MUST) Abort clears pending permissions without breaking the session
-Aborting denies all parked permissions server-side; the client clears its pending queue,
-re-enables the composer, and the session survives (the agent re-prompts on the next turn).
+Aborting denies all parked permissions server-side; the client MUST then clear its pending
+queue and re-enable the composer, and the session survives (the agent re-prompts on the next
+turn).
 **Why:** an abort that left the composer locked or the session wedged was a shipped bug.
-**Golden:** `internal/agent/claude_permissions.go:152` (`failPendingPermissions`),
-`internal/tui/sessionview.go:952`. **Conformance:** `CONF-ABORT-PERM`.
+**Golden / known gap:** the host denies server-side —
+`internal/agent/claude_permissions.go:152` (`failPendingPermissions`) — but it emits **no**
+event telling the client to clear its queue (only an eventual `status → idle`). The
+**client-side clear is currently unmet by the golden TUI**: `internal/tui/sessionview.go`
+(`sessionAbortResultMsg`, and the abort-settle in `handleStatusChange`) does not clear
+`pendingPerms` or refetch pending-permission, so an abort *while a prompt is pending* leaves
+the composer wedged — a live instance of the very bug this rule names. Per
+[CONF-GATE-001](10-conformance.md) this is a spec-vs-code gap to **resolve by fixing the
+client** (clear the queue / refetch pending-permission on abort-settle), not by relaxing the
+rule. **Conformance:** `CONF-ABORT-PERM`.
 
 ---
 

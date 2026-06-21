@@ -1,20 +1,43 @@
 # 12 · Session List / Sidebar Sync
 
-The session list (inbox / sidebar) is a **live** surface: it MUST stay in sync with the host
-as sessions are created, deleted, change status, get a title, are marked read, archived,
-etc. — **without the user refreshing.** It is the same SSE stream as the chat view, consumed
-differently.
+The session list (inbox / sidebar) **SHOULD** be a **live** surface that stays in sync with
+the host as sessions are created, deleted, change status, get a title, are marked read,
+archived, etc. — **without the user refreshing.** It is the same SSE stream as the chat view,
+consumed differently. Liveness is not free against a remote host, though — see
+[Cost tradeoff](#cost-tradeoff-live-list-vs-sprite-uptime) — which is why this is a SHOULD,
+not a MUST.
 
 Golden reference: the TUI inbox (`internal/tui/inbox_sse.go`), which is explicit about the
 right and wrong events to drive a list from.
 
+## Cost tradeoff: live list vs. sprite uptime
+
+The session list stays live by holding an open `GET /events` stream. Against a **remote host**
+(a cloud sprite) an open stream keeps the sprite **awake — and billing — for as long as the
+client holds it**: a client parked on the inbox doing nothing still pins it up. The local TUI
+has no such cost — its host is the laptop, so holding `/events` open is free.
+
+That asymmetry is why [LIST-001] is a **SHOULD**, not a **MUST**: a client talking to a remote
+host MAY trade liveness for cost — suspend or close the stream while backgrounded or while
+idling on the list, and reconcile on next foreground ([LIST-006],
+[STATE-BACKGROUND-001](06-state-model.md)) — accepting that the list is only as fresh as its
+last refetch while the stream is down. This resolves the tension with
+[NFR-AVAIL-002](09-non-functional.md) ("a client SHOULD NOT perform routine background
+activity that wakes the sprite").
+
+The tradeoff would dissolve with a **gateway-side session mirror or push** that serves the
+list without holding a stream open to the sprite — a forward-looking direction, not built
+today.
+
 ## Subscribe once, globally
 
-- **[LIST-001] (MUST)** The list subscribes to the **global** `GET /events` stream and
-  mutates rows in place from events; it MUST NOT poll. A client that shows both the list and
-  an open session SHOULD share **one** global stream between them (filter per consumer),
-  per [EVT-001](04-event-protocol.md)/[EVT-005](04-event-protocol.md). **Golden:**
-  `internal/tui/inbox_sse.go:12`.
+- **[LIST-001] (SHOULD)** When the list is live it subscribes to the **global** `GET /events`
+  stream and mutates rows in place from events; it MUST NOT poll. A client that shows both the
+  list and an open session SHOULD share **one** global stream between them (filter per
+  consumer), per [EVT-001](04-event-protocol.md)/[EVT-005](04-event-protocol.md). Against a
+  **remote** host a client MAY keep the list non-live while idle or backgrounded to avoid
+  holding the sprite awake ([Cost tradeoff](#cost-tradeoff-live-list-vs-sprite-uptime)),
+  reconciling on next foreground via [LIST-006]. **Golden:** `internal/tui/inbox_sse.go:12`.
 
 ## `meta` is the row-sync signal
 

@@ -29,7 +29,7 @@
 | INV-CREATE-RACE-001 | N/A | overlay attaches to an existing session, never creates |
 | INV-STALE-STREAM-001 | ✅ | `activeCall` tracked; `stop()` cancels the socket (`:114`) |
 | INV-SSE-DOUBLE-001 | ✅ | `start()` cancels the prior job before relaunch (`:108`) |
-| INV-NO-END-001 | 🟡 | **divergence**: detects close correctly via `readLine() ?: break` (`:185`) **and** ships a dead `"end"` event branch (`:264`) the host never emits. Harmless today, but it's protocol-guessing — remove or document. |
+| INV-NO-END-001 | ✅ | detects close via `readLine() ?: break` (`:185`); also handles `event: end` (`:264`) — **correct**, because this client subscribes to the per-session `/sessions/{id}/events`, which emits `end` on host shutdown ([INV-NO-END-001](../08-invariants.md)). Not a phantom branch. |
 | INV-DELTA-001 | 🟡 | forwards `is_delta` to the listener (`:228`) but the FAB only shows a chip, so it doesn't accumulate text. A full client MUST append. |
 | INV-TOOL-MERGE-001 | N/A | no transcript; renders a one-line chip per part (`summarizePart` `:340`) |
 | INV-MONOTONIC-001 | N/A | holds no transcript to reconcile (chip + last-message only) |
@@ -49,7 +49,7 @@
 
 ## Conformance
 
-Applicable subset: CONF-NO-END (fix the phantom branch), CONF-STALE-STREAM, CONF-SINGLE-STREAM,
+Applicable subset: CONF-NO-END (the `end` branch is correct for the per-session stream), CONF-STALE-STREAM, CONF-SINGLE-STREAM,
 CONF-PLAN-EXIT / CONF-INTERACTIVE-ASK (AskUserQuestion parsing + terminal-status clear, `:230`). The rest
 are N/A until a full native chat client exists.
 
@@ -65,6 +65,8 @@ are N/A until a full native chat client exists.
 
 ## Open gaps / deviations
 
-1. Remove (or spec-justify) the phantom `"end"` event branch — [INV-NO-END-001].
+1. ~~Remove the phantom `"end"` event branch~~ — **resolved**: the `"end"` branch is correct;
+   the per-session `/sessions/{id}/events` stream emits `event: end` on host shutdown
+   ([INV-NO-END-001](../08-invariants.md)). The branch should stay.
 2. If this grows into a full chat client, implement the N/A rows (transcript, monotonic merge,
    reconcile-on-reconnect, optimistic send) rather than re-deriving them.

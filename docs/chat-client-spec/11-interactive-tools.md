@@ -51,9 +51,12 @@ the client-side mechanism for replying to specific parts of a message.
   - `AskUserQuestion` → `formatAnswers` builds `Answers to your questions:` with one
     `**header**: answer` line per question; a fully-unselected set collapses to a single
     "use your best judgment" line (delegation is first-class).
-  - `ExitPlanMode` → **Approve** sends `formatPlanApproval` **and switches to build mode** so
-    the agent implements; **Revise** sends `formatPlanReview` **in plan mode** so the agent
-    re-plans. Inline comments (below) fold into either.
+  - `ExitPlanMode` → the decision rides the **permission reply**, not a `SendMessage`:
+    **Approve** = reply `allow` (the backend then exits plan mode and implements; optional
+    review notes may ride a follow-up `SendMessage`); **Revise** = reply `deny` with
+    `formatPlanReview` as the deny-reason, so the agent re-plans in plan mode. Inline comments
+    (below) fold into either. (`AskUserQuestion`, by contrast, can't fit allow/deny, so its
+    answer is the formatted `SendMessage` above, with the gating permission resolved separately.)
   When a gating permission is also pending ([ITOOL-003]), it must be resolved as well.
   **Why:** clank's permission-reply bridge can only allow/deny + a deny-reason string; it
   cannot return a structured tool result, so the answer rides a follow-up message instead.
@@ -62,9 +65,14 @@ the client-side mechanism for replying to specific parts of a message.
   `clank-mobile/src/lib/planReview.ts:78` (`formatPlanApproval`), `:69` (`formatPlanReview`),
   `:30` (`APPROVAL_MESSAGE`). **Conformance:** `CONF-INTERACTIVE-ASK`, `CONF-INTERACTIVE-PLAN`.
 
-- **[ITOOL-005] (MUST)** Plan-mode posture follows [INV-PERMMODE-001](08-invariants.md):
-  Approve transitions to build mode by sending `permission_mode` accordingly on that message;
-  ordinary follow-ups keep `permission_mode:""`. **Golden:** `planReview.ts:78`/`:69`.
+- **[ITOOL-005] (MUST)** Plan-mode posture follows [INV-PERMMODE-EXITPLAN-001](08-invariants.md):
+  Approve = **reply `allow`** to the parked `ExitPlanMode` permission; the **backend** then
+  exits plan mode and resets its tracked mode (`internal/agent/claude_permissions.go:97`). The
+  client does **not** send a `permission_mode` to switch to build — it simply keeps sending
+  `permission_mode:""` on ordinary follow-ups ([INV-PERMMODE-001](08-invariants.md)) until the
+  user explicitly changes the mode. Revise = **reply `deny`** with the revision notes as the
+  deny-reason. **Golden:** `clank-mobile/src/lib/planReview.ts` (`formatPlanApproval`/`formatPlanReview`),
+  `internal/agent/claude_permissions.go:97` (backend mode reset on approval).
 
 ## Inline comments (client-side structured reply)
 
