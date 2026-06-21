@@ -4,7 +4,7 @@
 > ([CONF-GATE-003](../10-conformance.md)). Copy the structure from [_template.md](_template.md).
 
 **Platform:** Browser (TypeScript) · **Client kind:** full chat client (planned) ·
-**Spec version targeted:** 0.1.0 · **Status:** ⛔ not started
+**Spec version targeted:** 0.2.0 · **Status:** ⛔ not started
 
 ## Start here (platform-specific guidance for the agnostic rules)
 

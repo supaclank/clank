@@ -6,7 +6,7 @@
 > the [React Native client](react-native-ts.md).
 
 **Platform:** Swift / URLSession · **Client kind:** full chat client (planned) ·
-**Spec version targeted:** 0.1.0 · **Status:** ⛔ not started
+**Spec version targeted:** 0.2.0 · **Status:** ⛔ not started
 
 ## Start here (platform-specific guidance for the agnostic rules)
 
