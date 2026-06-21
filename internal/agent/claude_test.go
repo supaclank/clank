@@ -32,6 +32,14 @@ type mockTransport struct {
 	msgChan chan claudecode.Message
 	errChan chan error
 
+	// done is closed by Close to tell every sender (the Connect delivery
+	// goroutine, onSend, onInterrupt) to stop pushing onto msgChan. senders
+	// tracks those in-flight senders so Close can wait for them to exit before
+	// closing msgChan — making Close the channel's sole owner so a send can
+	// never race the close.
+	done    chan struct{}
+	senders sync.WaitGroup
+
 	// onSend is called each time SendMessage is invoked. If it returns
 	// additional messages, they are delivered on the message channel.
 	// This enables simulating follow-up responses.
@@ -70,24 +78,42 @@ func (t *mockTransport) Connect(_ context.Context) error {
 	t.closed = false
 	t.msgChan = make(chan claudecode.Message, 128)
 	t.errChan = make(chan error, 1)
+	t.done = make(chan struct{})
 
 	// Deliver initial messages in a goroutine to avoid blocking.
 	msgs := make([]claudecode.Message, len(t.messages))
 	copy(msgs, t.messages)
 
+	// Add under t.mu while open, so Close — which sets closed under the same
+	// lock before Wait — can never miss this sender.
+	t.senders.Add(1)
 	go func() {
+		defer t.senders.Done()
 		for _, m := range msgs {
-			t.mu.Lock()
-			closed := t.closed
-			t.mu.Unlock()
-			if closed {
+			select {
+			case t.msgChan <- m:
+			case <-t.done:
 				return
 			}
-			t.msgChan <- m
 		}
 	}()
 
 	return nil
+}
+
+// beginSend registers an ad-hoc sender (onSend / onInterrupt delivery) while
+// the transport is open, returning false once Close has run so the caller bails
+// instead of sending on a channel Close is about to close. Pairs with
+// t.senders.Done(). Registering under t.mu — where Close also flips closed —
+// guarantees Add never races Close's Wait.
+func (t *mockTransport) beginSend() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed || !t.connected {
+		return false
+	}
+	t.senders.Add(1)
+	return true
 }
 
 func (t *mockTransport) SendMessage(_ context.Context, msg claudecode.StreamMessage) error {
@@ -105,14 +131,16 @@ func (t *mockTransport) SendMessage(_ context.Context, msg claudecode.StreamMess
 			}
 		}
 		followUp := onSend(prompt)
+		if !t.beginSend() {
+			return nil
+		}
+		defer t.senders.Done()
 		for _, m := range followUp {
-			t.mu.Lock()
-			closed := t.closed
-			t.mu.Unlock()
-			if closed {
+			select {
+			case t.msgChan <- m:
+			case <-t.done:
 				return nil
 			}
-			t.msgChan <- m
 		}
 	}
 
@@ -136,14 +164,16 @@ func (t *mockTransport) Interrupt(_ context.Context) error {
 	}
 	// Model the CLI ending the interrupted turn by delivering its result on the
 	// receive channel, the same path real interrupt fallout takes.
+	if !t.beginSend() {
+		return interruptErr
+	}
+	defer t.senders.Done()
 	for _, m := range fn() {
-		t.mu.Lock()
-		closed := t.closed
-		t.mu.Unlock()
-		if closed {
-			break
+		select {
+		case t.msgChan <- m:
+		case <-t.done:
+			return interruptErr
 		}
-		t.msgChan <- m
 	}
 	return interruptErr
 }
@@ -192,12 +222,24 @@ func (t *mockTransport) recordedRewindUUIDs() []string {
 
 func (t *mockTransport) Close() error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.connected && !t.closed && t.msgChan != nil {
-		t.closed = true
-		close(t.msgChan)
+	if !t.connected || t.closed || t.msgChan == nil {
+		t.connected = false
+		t.mu.Unlock()
+		return nil
 	}
+	t.closed = true
+	close(t.done) // tell every sender to stop pushing onto msgChan
+	t.mu.Unlock()
+
+	// Wait for all senders to exit before closing msgChan, so the closer is its
+	// sole owner and no send is ever in flight at close time. New senders can't
+	// appear: beginSend bails once closed is set above (under t.mu).
+	t.senders.Wait()
+	close(t.msgChan)
+
+	t.mu.Lock()
 	t.connected = false
+	t.mu.Unlock()
 	return nil
 }
 
@@ -1447,6 +1489,117 @@ func TestClaudeCodeBackendStopClosesEvents(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Error("events channel did not close after Stop")
 	}
+}
+
+// TestClaudeCodeBackendStopRaceWithConcurrentEmits drives Stop() concurrently
+// with goroutines that exercise emit() — the same non-blocking channel-send
+// path receiveLoop uses for every status change and streamed part. Before the
+// fix, emit() read b.stopped under b.mu, released the lock, then did its send
+// OUTSIDE the lock; Stop() could set b.stopped and close(b.events) in that gap,
+// so the send landed on a closed channel (a data race the -race detector flags,
+// and a potential send-on-closed-channel panic). The fix performs the send
+// while still holding b.mu, mutually exclusive with Stop()'s close. This must
+// stay green under: go test ./internal/agent/ -run StopRace -race -count=20.
+func TestClaudeCodeBackendStopRaceWithConcurrentEmits(t *testing.T) {
+	t.Parallel()
+
+	for range 50 {
+		transport := newMockTransport([]claudecode.Message{
+			&claudecode.SystemMessage{
+				MessageType: "system",
+				Subtype:     "init",
+				Data:        map[string]any{"session_id": "session-race"},
+			},
+			&claudecode.ResultMessage{
+				MessageType: "result",
+				SessionID:   "session-race",
+			},
+		})
+		b := newTestBackend(t, transport)
+
+		if err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{Text: "go"}); err != nil {
+			t.Fatalf("OpenAndSend: %v", err)
+		}
+
+		// Wait for the turn to finish before racing Stop(). This drains the
+		// scripted init+result, so the transport's delivery goroutine has
+		// returned and Stop()'s msgChan close can't race it — isolating the
+		// production race (emit()'s send vs Stop()'s close) from an unrelated
+		// hazard in the test transport.
+		waitForStatus(t, b.Events(), agent.StatusIdle, 5*time.Second)
+
+		// Keep draining so emit()'s send reaches the channel for real instead of
+		// dropping at select-default once the 128-deep buffer fills — widening
+		// the window where a send overlaps Stop()'s close.
+		drained := make(chan struct{})
+		go func() {
+			for range b.Events() {
+			}
+			close(drained)
+		}()
+
+		// Several goroutines hammer emit() (via Send) while Stop() closes the
+		// events channel underneath them.
+		var emitters sync.WaitGroup
+		for range 3 {
+			emitters.Add(1)
+			go func() {
+				defer emitters.Done()
+				for range 200 {
+					_ = b.Send(context.Background(), agent.SendMessageOpts{Text: "x"})
+				}
+			}()
+		}
+
+		b.Stop()
+		emitters.Wait()
+		<-drained
+	}
+}
+
+// TestMockTransportCloseDuringActiveDelivery guards the test transport itself:
+// a large scripted stream keeps Connect's delivery goroutine pushing onto
+// msgChan while Stop() (→ Disconnect → Close) runs. Close must stop its sender
+// goroutines and wait for them before closing msgChan; otherwise the send races
+// the close (send-on-closed-channel). Run under -race to catch a regression.
+func TestMockTransportCloseDuringActiveDelivery(t *testing.T) {
+	t.Parallel()
+
+	msgs := make([]claudecode.Message, 0, 2001)
+	msgs = append(msgs, &claudecode.SystemMessage{
+		MessageType: "system",
+		Subtype:     "init",
+		Data:        map[string]any{"session_id": "session-bulk"},
+	})
+	for range 2000 {
+		msgs = append(msgs, &claudecode.StreamEvent{
+			SessionID: "session-bulk",
+			Event: map[string]any{
+				"type":  "content_block_delta",
+				"index": float64(0),
+				"delta": map[string]any{"type": "text_delta", "text": "x"},
+			},
+		})
+	}
+
+	transport := newMockTransport(msgs)
+	b := newTestBackend(t, transport)
+
+	// Drain so receiveLoop keeps consuming — and the delivery goroutine keeps
+	// producing — right up until Stop lands mid-stream.
+	drained := make(chan struct{})
+	go func() {
+		for range b.Events() {
+		}
+		close(drained)
+	}()
+
+	if err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{Text: "go"}); err != nil {
+		t.Fatalf("OpenAndSend: %v", err)
+	}
+
+	b.Stop()
+	<-drained
 }
 
 func TestClaudeCodeBackendNoDuplicateResultMessage(t *testing.T) {

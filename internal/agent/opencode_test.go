@@ -1614,6 +1614,56 @@ func TestOpenCodeBackendSSEReconnectWithURLChange(t *testing.T) {
 	}
 }
 
+// TestOpenCodeBackendStopRaceWithConcurrentEmits drives Stop() concurrently
+// with goroutines hammering emit() — the same non-blocking channel-send path
+// streamEvents, setStatus and runPrompt use in production. Before the fix,
+// emit() read b.eventsClosed under b.mu, released the lock, then did its send
+// OUTSIDE the lock; closeEvents() (called from Stop, or from the streamEvents
+// give-up defer) could set eventsClosed and close(b.events) in that gap,
+// racing the send. emit()'s recover() swallowed the resulting send-on-closed
+// panic but not the data race, which the -race detector still reports. The fix
+// performs the send under b.mu, mutually exclusive with closeEvents()'s close.
+//
+// Driving emit() directly (via EmitForTest) is what makes this deterministic:
+// Stop() cancels b.ctx before closing, which tears down the SSE-driven
+// emitters too quickly to reliably overlap the close, whereas these goroutines
+// are independent of b.ctx — exactly the shape of a runPrompt error-emit racing
+// the streamEvents give-up close. Must stay green under:
+// go test ./internal/agent/ -run StopRace -race -count=20.
+func TestOpenCodeBackendStopRaceWithConcurrentEmits(t *testing.T) {
+	t.Parallel()
+
+	for range 50 {
+		// No Open needed: emit() only touches b.events/b.mu/b.eventsClosed,
+		// all initialized by the constructor. The URL is never dialed.
+		b := agent.NewOpenCodeBackend("http://127.0.0.1:1", "oc-session-race", nil)
+
+		// Drain events so emit()'s send reaches the channel for real instead of
+		// dropping at select-default once the 128-deep buffer fills.
+		drained := make(chan struct{})
+		go func() {
+			for range b.Events() {
+			}
+			close(drained)
+		}()
+
+		var emitters sync.WaitGroup
+		for range 3 {
+			emitters.Add(1)
+			go func() {
+				defer emitters.Done()
+				for range 200 {
+					b.EmitForTest(agent.Event{Type: agent.EventStatusChange})
+				}
+			}()
+		}
+
+		b.Stop()
+		emitters.Wait()
+		<-drained
+	}
+}
+
 // TestOpenCodeBackendSSEGivesUpAfterMaxRetries verifies the backend emits
 // a final reconnecting event with GaveUp=true after exhausting retries.
 func TestOpenCodeBackendSSEGivesUpAfterMaxRetries(t *testing.T) {

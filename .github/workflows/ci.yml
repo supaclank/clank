@@ -48,3 +48,19 @@ jobs:
       # TODO: add `go test -short ./...` once the pre-existing flaky tests on
       # main are fixed/quarantined (internal/tui, internal/cli/daemoncli,
       # internal/keepalive). Kept out for now so CI starts green.
+
+  # internal/agent isn't among the flaky packages above, so it runs here on its
+  # own ahead of the repo-wide suite. -race is the point: the backend shutdown
+  # regression tests guard a close-vs-send data race that's invisible without
+  # the detector. opencode-dependent tests skip via exec.LookPath when the
+  # binary is absent; the integration suite is behind //go:build integration.
+  test-agent-race:
+    name: race · internal/agent
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Race tests (internal/agent)
+        run: go test -race ./internal/agent/...
