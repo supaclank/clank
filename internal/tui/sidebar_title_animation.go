@@ -57,10 +57,12 @@ func (m *SidebarModel) ensureTitleAnimMap() {
 
 // startTitleAnimation begins a typewriter for sessionID targeting
 // title. Called from SetSessions when a row's Title changes between
-// snapshots. A zero-rune title is a no-op (nothing to animate).
+// snapshots. The target is flattened to one line so a revealed prefix
+// can't carry a newline mid-animation (which would push the row past its
+// budgeted two lines). A zero-rune title is a no-op (nothing to animate).
 func (m *SidebarModel) startTitleAnimation(sessionID, title string) {
 	m.ensureTitleAnimMap()
-	runes := []rune(title)
+	runes := []rune(singleLine(title))
 	if len(runes) == 0 {
 		delete(m.titleAnimations, sessionID)
 		return
