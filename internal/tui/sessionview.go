@@ -865,17 +865,18 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		matches := msg.event.SessionID == m.sessionID ||
 			msg.event.Type == agent.EventSessionCreate ||
 			msg.event.Type == agent.EventSessionDelete
+		var eventCmd tea.Cmd
 		if matches {
-			m.handleEvent(msg.event)
+			eventCmd = m.handleEvent(msg.event)
 		}
 		// Re-arm only when the event came from the live subscription. A
 		// stale source's own waiter has already exited and re-arming on
 		// m.eventsCh would spawn a duplicate waiter that races the
 		// legitimate one. See TestSessionView_StaleSourceEventDoesNotReArmLiveChannel.
 		if m.eventsCh != nil && msg.sourceCh == m.eventsCh {
-			return m, waitForEvent(m.eventsCh)
+			return m, tea.Batch(eventCmd, waitForEvent(m.eventsCh))
 		}
-		return m, nil
+		return m, eventCmd
 
 	case sessionSendResultMsg:
 		m.submitting = false
@@ -1372,7 +1373,7 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *SessionViewModel) handleEvent(evt agent.Event) {
+func (m *SessionViewModel) handleEvent(evt agent.Event) tea.Cmd {
 	switch evt.Type {
 	case agent.EventStatusChange:
 		if data, ok := evt.Data.(agent.StatusChangeData); ok {
@@ -1436,8 +1437,16 @@ func (m *SessionViewModel) handleEvent(evt agent.Event) {
 			if m.info != nil {
 				m.info.RevertMessageID = data.MessageID
 			}
+			// TODO(ai-review): revert marker is silently dropped when m.info == nil (early SSE race);
+			// fetchSessionMessages fires but handleSessionMessages reads revertID from m.info,
+			// so the filter doesn't apply. https://github.com/Acksell/clank/pull/75#discussion_r3449145809
+			// A revert from another client must re-filter the open transcript
+			// now, not on the next unrelated reconcile. The refetch applies the
+			// revert filter in handleSessionMessages. See STATE-REVERT-001.
+			return m.fetchSessionMessages()
 		}
 	}
+	return nil
 }
 
 func (m *SessionViewModel) handleStatusChange(data agent.StatusChangeData) {
@@ -1460,6 +1469,12 @@ func (m *SessionViewModel) handleStatusChange(data agent.StatusChangeData) {
 				m.entries[m.abortEntryIdx].content = "Cancelled"
 			}
 			m.aborting = false
+			// Abort denies all parked permissions server-side, but the host
+			// emits no event to clear them — this status settle is the only
+			// signal. Drop the local queue so the composer unlocks instead of
+			// wedging on a now-dead prompt. See INV-ABORT-PERM-001.
+			m.pendingPerms = nil
+			m.replyingPermID = ""
 		}
 		if m.follow {
 			m.scrollToBottom()
