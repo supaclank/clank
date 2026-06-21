@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/config"
 )
 
 // initGitRepoForCompose creates a real git repo with an "origin" remote
@@ -38,11 +39,13 @@ func initGitRepoForCompose(t *testing.T) string {
 
 func TestCompose_BackendToggle(t *testing.T) {
 	t.Parallel()
-	m := NewSessionViewComposing(nil, "/tmp/project")
+	// Pin the backend so the toggle assertions don't depend on the
+	// developer's saved DefaultBackend preference.
+	m := newSessionViewComposingWithBackend(nil, "/tmp/project", agent.BackendOpenCode)
 	m.width = 80
 	m.height = 40
 
-	// Default backend is opencode.
+	// Backend starts as the pinned opencode.
 	if m.backend != agent.BackendOpenCode {
 		t.Fatalf("expected default backend opencode, got %s", m.backend)
 	}
@@ -59,6 +62,40 @@ func TestCompose_BackendToggle(t *testing.T) {
 	m = model.(*SessionViewModel)
 	if m.backend != agent.BackendOpenCode {
 		t.Fatalf("expected opencode after second toggle, got %s", m.backend)
+	}
+}
+
+// TestNewSessionViewComposing_ResolvesDefaultBackendFromPreferences pins the
+// production contract that the compose view's initial backend comes from the
+// saved DefaultBackend preference, falling back to agent.DefaultBackend when
+// unset. Uses a real on-disk preferences file via CLANK_DIR — no mocks — so
+// the injection seam (newSessionViewComposingWithBackend) can't silently drift
+// from what NewSessionViewComposing actually resolves.
+func TestNewSessionViewComposing_ResolvesDefaultBackendFromPreferences(t *testing.T) {
+	// Not t.Parallel: CLANK_DIR is process-global.
+	t.Setenv("CLANK_DIR", t.TempDir())
+
+	// No preferences file yet → built-in default (opencode), no seeded modes
+	// (OpenCode agents arrive asynchronously, not at construction).
+	m := NewSessionViewComposing(nil, "/tmp/project")
+	if m.backend != agent.BackendOpenCode {
+		t.Fatalf("empty prefs: backend=%s, want opencode", m.backend)
+	}
+	if len(m.modes) != 0 {
+		t.Fatalf("empty prefs: expected no seeded modes for opencode, got %d", len(m.modes))
+	}
+
+	// A saved claude-code preference resolves to the claude backend with its
+	// static permission modes seeded up front.
+	if err := config.SavePreferences(config.Preferences{DefaultBackend: string(agent.BackendClaudeCode)}); err != nil {
+		t.Fatalf("SavePreferences: %v", err)
+	}
+	m = NewSessionViewComposing(nil, "/tmp/project")
+	if m.backend != agent.BackendClaudeCode {
+		t.Fatalf("claude pref: backend=%s, want claude-code", m.backend)
+	}
+	if len(m.modes) != len(agent.ClaudePermissionModes) {
+		t.Fatalf("claude pref: modes len=%d, want %d", len(m.modes), len(agent.ClaudePermissionModes))
 	}
 }
 

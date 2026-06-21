@@ -50,7 +50,9 @@ func TestAgentSelectableModes_Selection(t *testing.T) {
 // bypass), and Tab cycles through them, wrapping around.
 func TestCompose_ClaudeBackendSeedsAndCyclesModes(t *testing.T) {
 	t.Parallel()
-	m := NewSessionViewComposing(nil, "/tmp/project")
+	// Pin opencode as the starting backend so the toggle-to-claude step
+	// doesn't depend on the developer's saved DefaultBackend preference.
+	m := newSessionViewComposingWithBackend(nil, "/tmp/project", agent.BackendOpenCode)
 	m.width, m.height = 80, 40
 
 	model, _ := m.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
@@ -85,7 +87,9 @@ func TestCompose_ClaudeBackendSeedsAndCyclesModes(t *testing.T) {
 // Toggling back to OpenCode clears the Claude modes so the agent list refetches.
 func TestCompose_ToggleBackToOpenCodeClearsModes(t *testing.T) {
 	t.Parallel()
-	m := NewSessionViewComposing(nil, "/tmp/project")
+	// Pin opencode as the starting backend so the toggle sequence doesn't
+	// depend on the developer's saved DefaultBackend preference.
+	m := newSessionViewComposingWithBackend(nil, "/tmp/project", agent.BackendOpenCode)
 	m.width, m.height = 80, 40
 
 	model, _ := m.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
