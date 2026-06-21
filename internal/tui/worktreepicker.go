@@ -178,6 +178,7 @@ func (m worktreePickerModel) View() string {
 
 	switch {
 	case m.err != nil:
+		// TODO(ai-review): render actual error (trimmed) instead of hard-coded message https://github.com/Acksell/clank/pull/73#discussion_r3449079132
 		sb.WriteString(lipgloss.NewStyle().Foreground(dangerColor).Width(innerWidth).Render("  not a git repo"))
 		sb.WriteString("\n")
 	case len(m.filtered) == 0:
@@ -238,7 +239,17 @@ func (m worktreePickerModel) renderItem(w git.Worktree, width int, selected bool
 	}
 	if lipgloss.Width(dirHint) > avail {
 		r := []rune(dirHint)
-		dirHint = "…" + string(r[len(r)-avail+1:])
+		w := 0
+		idx := len(r)
+		for idx > 0 {
+			rw := lipgloss.Width(string(r[idx-1]))
+			if w+rw > avail-1 {
+				break
+			}
+			w += rw
+			idx--
+		}
+		dirHint = "…" + string(r[idx:])
 	}
 
 	if selected {

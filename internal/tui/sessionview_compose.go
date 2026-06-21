@@ -528,6 +528,7 @@ func (m *SessionViewModel) newWorktreeValue() string {
 // New-worktree toggle enabled and no explicit branch chosen, a fresh
 // petname is minted so the host's WorktreeBranch resolve path creates an
 // isolated worktree in the current project (off its default branch).
+// TODO(ai-review): generate petname once on toggle-on and store in worktreeBranch to prevent orphaned worktrees on retry https://github.com/Acksell/clank/pull/73#discussion_r3449079137
 func (m *SessionViewModel) effectiveWorktreeBranch() string {
 	if m.isNewWorktree && m.worktreeBranch == "" {
 		return petname.Generate()

@@ -78,6 +78,16 @@ func TestWorktreePicker_SelectedRowIsPlain(t *testing.T) {
 	}
 }
 
+// Regression: renderItem must not panic when the worktree path contains wide
+// characters (emoji/CJK) where visual width > rune count.
+func TestWorktreePicker_RenderItemNoPanicOnWideCharPath(t *testing.T) {
+	t.Parallel()
+	// 8 emoji path = visual width 16; with avail=12, old slice index went negative.
+	wt := git.Worktree{Path: "🌟🌟🌟🌟🌟🌟🌟🌟", Branch: "main"}
+	wp := newWorktreePicker([]git.Worktree{wt}, wt.Path, 10, nil)
+	_ = wp.renderItem(wt, 20, false) // must not panic
+}
+
 func TestWorktreePicker_EscCancels(t *testing.T) {
 	t.Parallel()
 	wp := newWorktreePicker(sampleWorktrees(), "/repo/main", 10, nil)

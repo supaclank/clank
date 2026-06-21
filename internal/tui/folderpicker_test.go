@@ -530,6 +530,42 @@ func TestFolderPicker_FirstUpLandsOnOriginFolder(t *testing.T) {
 	}
 }
 
+// Regression: "~Downloads" must not expand to homeDownloads — tilde expansion
+// requires exactly "~" or "~/" prefix.
+func TestFolderPicker_TildeWithoutSlashNotExpanded(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	fp := newFolderPicker(root)
+	initial := fp.current
+	fp.applyQuery("~Downloads")
+	if fp.current != initial {
+		t.Fatalf("~Downloads must not navigate away from %q, got %q", initial, fp.current)
+	}
+}
+
+// Regression: "/" with an empty search must pass through to the text input so
+// the user can type absolute paths — descendIntoMatch must not intercept it.
+func TestFolderPicker_SlashPassesThroughWhenSearchEmpty(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	fp := newFolderPicker(root)
+	fp, _ = fp.Update(tea.KeyPressMsg{Code: '/', Text: "/"})
+	if !strings.HasPrefix(fp.search.Value(), "/") {
+		t.Fatalf("'/' with empty search must reach text input, got %q", fp.search.Value())
+	}
+}
+
+// Regression: truncateLeft must not panic when the path contains wide chars
+// (emoji/CJK) where visual width > rune count.
+func TestTruncateLeft_NoPanicOnWideChars(t *testing.T) {
+	t.Parallel()
+	// 3 emoji = visual width 6; budget 5 previously caused a negative slice index.
+	got := truncateLeft("🌟🌟🌟", 5)
+	if got == "" {
+		t.Fatal("expected non-empty truncation result")
+	}
+}
+
 // Navigating into a directory and back out lands the cursor on the folder
 // you came from, so a ←/→ round-trip is a clean no-op.
 func TestFolderPicker_RemembersCursorAcrossUpDown(t *testing.T) {

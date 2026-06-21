@@ -75,6 +75,7 @@ func newFolderPicker(startDir string) folderPickerModel {
 	ti.Focus()
 
 	m := folderPickerModel{
+		// TODO(ai-review): filepath.ToSlash for Windows https://github.com/Acksell/clank/pull/73#discussion_r3449077175
 		current: filepath.Clean(startDir),
 		maxRows: 10,
 		search:  ti,
@@ -137,11 +138,18 @@ func (m folderPickerModel) Update(msg tea.Msg) (folderPickerModel, tea.Cmd) {
 			}
 			return m, nil
 
-		case key.Matches(msg, key.NewBinding(key.WithKeys("tab", "/"))):
-			// Descend one level into the best match (Tab and "/" both commit
-			// the current segment and go deeper, like →).
+		case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
 			m.descendIntoMatch()
 			return m, nil
+
+		case key.Matches(msg, key.NewBinding(key.WithKeys("/"))):
+			// "/" descends like Tab only when the user is filtering a relative
+			// name — pass it through when they're typing an absolute or home path.
+			val := m.search.Value()
+			if val != "" && !strings.HasPrefix(val, "/") && !strings.HasPrefix(val, "~") {
+				m.descendIntoMatch()
+				return m, nil
+			}
 
 		case key.Matches(msg, key.NewBinding(key.WithKeys("backspace", "delete"))):
 			// With an empty typed segment, backspace crosses the "/" boundary:
@@ -201,9 +209,13 @@ func (m *folderPickerModel) applyQuery(raw string) {
 	}
 
 	expanded := raw
-	if rest, ok := strings.CutPrefix(raw, "~"); ok {
+	if raw == "~" {
 		if home, err := os.UserHomeDir(); err == nil {
-			expanded = home + rest
+			expanded = home
+		}
+	} else if rest, ok := strings.CutPrefix(raw, "~/"); ok {
+		if home, err := os.UserHomeDir(); err == nil {
+			expanded = home + "/" + rest
 		}
 	}
 	dirPart, tail := expanded, ""
@@ -213,6 +225,7 @@ func (m *folderPickerModel) applyQuery(raw string) {
 			dirPart = "/"
 		}
 	}
+	// TODO(ai-review): filepath.ToSlash(dirPart) for Windows https://github.com/Acksell/clank/pull/73#discussion_r3449077180
 	if isDir(dirPart) && filepath.Clean(dirPart) != m.current {
 		m.current = filepath.Clean(dirPart)
 		m.load()
@@ -338,6 +351,7 @@ func (m folderPickerModel) activate() (folderPickerModel, tea.Cmd) {
 // you came from (a ←/→ round-trip is a no-op).
 func (m *folderPickerModel) navigateTo(dir string) {
 	m.rememberCursor()
+	// TODO(ai-review): filepath.ToSlash(target) for Windows https://github.com/Acksell/clank/pull/73#discussion_r3449077184
 	target := filepath.Clean(dir)
 	// Going up: land on the folder we're leaving even if we never descended
 	// into it (e.g. the picker opened directly inside it).
@@ -491,6 +505,7 @@ func (m folderPickerModel) memorizedTrail() []string {
 	return trail
 }
 
+// TODO(ai-review): simplify to strings.Split(p,"/") once m.current is normalized via filepath.ToSlash https://github.com/Acksell/clank/pull/73#discussion_r3449077190
 func splitPath(p string) []string {
 	var out []string
 	for _, s := range strings.Split(filepath.Clean(p), string(filepath.Separator)) {
@@ -553,15 +568,28 @@ func (m folderPickerModel) renderBreadcrumb(width int) string {
 
 // truncateLeft trims s from the left to fit budget columns, prefixing "…".
 func truncateLeft(s string, budget int) string {
-	if budget < 0 {
-		budget = 0
+	if budget <= 0 {
+		return ""
 	}
 	if lipgloss.Width(s) <= budget {
 		return s
 	}
+	if budget <= 1 {
+		return ""
+	}
 	r := []rune(s)
-	if budget > 1 {
-		return "…" + string(r[len(r)-(budget-1):])
+	w := 0
+	idx := len(r)
+	for idx > 0 {
+		rw := lipgloss.Width(string(r[idx-1]))
+		if w+rw > budget-1 {
+			break
+		}
+		w += rw
+		idx--
+	}
+	if idx < len(r) {
+		return "…" + string(r[idx:])
 	}
 	return ""
 }
