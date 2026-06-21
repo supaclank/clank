@@ -45,6 +45,8 @@
 | INV-REVERT-001 (revert filter) | | | |
 | INV-RECONCILE-001 (reconcile on every reconnect) | | | |
 | INV-RECONNECT-SEMANTICS-001 (`reconnected` ≠ socket) | | | |
+| INV-INTERACTIVE-001 (render interactive tools) | | | |
+| INV-SIDEBAR-META-001 (drive list from meta) | | | |
 | INV-PENDING-PERM-GAP-001 (honest blocked-state) | | | |
 | INV-HEARTBEAT-GAP-001 (liveness detection) | | | |
 
@@ -74,6 +76,10 @@
 | CONF-RECONCILE | | | |
 | CONF-RECONNECT-SEMANTICS | | | |
 | CONF-PENDING-PERM-GAP | | | |
+| CONF-INTERACTIVE-ASK | | | |
+| CONF-INTERACTIVE-PLAN | | | |
+| CONF-INLINE-COMMENT | | | |
+| CONF-SIDEBAR-SYNC | | | |
 
 ## Supporting layers (quick check)
 

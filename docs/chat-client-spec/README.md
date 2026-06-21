@@ -86,17 +86,19 @@ checks it).
 ### Rule-ID prefixes
 
 `ARCH` architecture · `CONN` connection/auth · `DATA` data model · `EVT` event protocol ·
-`OP` operations · `STATE` reducer state · `VIEW` derived view-projection · `INV` invariant /
-known-bug · `NFR` non-functional · `CONF` conformance scenario.
+`OP` operations · `STATE` reducer state · `VIEW` derived view-projection · `FLOW` lifecycle flows ·
+`INV` invariant / known-bug · `NFR` non-functional · `CONF` conformance scenario ·
+`ITOOL` interactive tool · `ICOMMENT` inline comment · `LIST` session list.
 
 IDs are **append-only and never reused**. A retired rule is struck through and kept, so
 external references (commit messages, checklists) never dangle.
 
 ### Golden references
 
-`file:line` pointers are to the clank repo at the spec version above. Line numbers drift;
-the **symbol name** in each reference is the durable anchor. If a reference doesn't
-resolve, find the named symbol and update the line — and the rule, if behavior changed.
+`file:line` pointers default to the **clank** repo; cross-repo paths are prefixed with the
+repo name (e.g. `clank-mobile/src/…`). Line numbers drift; the **symbol name** in each
+reference is the durable anchor. If a reference doesn't resolve, find the named symbol and
+update the line — and the rule, if behavior changed.
 
 ## Maintenance
 

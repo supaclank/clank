@@ -86,7 +86,7 @@ text/thinking part id (`{assistantMsgID}-{idx}`); else the current (latest) assi
 message, creating one if needed. Tool parts attach to the current assistant message.
 **Why:** the Claude backend leaves `message_id` empty and streams parts before the message
 exists; without owner resolution, parts orphan or never render.
-**Golden:** `clank-mobile/src/hooks/dispatch.ts:104`, `src/lib/mergeMessages.ts:106`
+**Golden:** `clank-mobile/src/hooks/dispatch.ts:104`, `clank-mobile/src/lib/mergeMessages.ts:106`
 (`apiMsgIdFromPartId`). **Conformance:** `CONF-MSGID-OWNER`.
 
 ### [INV-SHELL-001] (MUST) Drop the empty assistant shell; dedup replayed messages

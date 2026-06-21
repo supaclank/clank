@@ -43,13 +43,14 @@
 | INV-REVERT-001 | N/A | ignores `revert` |
 | INV-RECONCILE-001 | 🟡 | reconnects (below) but does not refetch a transcript (it has none); a full client MUST reconcile |
 | INV-RECONNECT-SEMANTICS-001 | ✅ | reconnect is driven by its own transport loop, not the `reconnected` event (which it ignores) |
+| INV-SIDEBAR-META-001 | N/A | subset consumer; no session list or sidebar |
 | INV-PENDING-PERM-GAP-001 | ⛔ | on (re)attach to a blocked session it won't learn of the parked permission (host gap) |
 | INV-HEARTBEAT-GAP-001 | ✅ | OkHttp `readTimeout(0)` for the long-lived socket **plus** an explicit capped-backoff reconnect loop (`:121`, 1s→15s) — the [NFR-REL-001] reference behavior |
 
 ## Conformance
 
 Applicable subset: CONF-NO-END (fix the phantom branch), CONF-STALE-STREAM, CONF-SINGLE-STREAM,
-CONF-PLAN-EXIT / CONF-ASK (AskUserQuestion parsing + terminal-status clear, `:230`). The rest
+CONF-PLAN-EXIT / CONF-INTERACTIVE-ASK (AskUserQuestion parsing + terminal-status clear, `:230`). The rest
 are N/A until a full native chat client exists.
 
 ## Platform gotchas

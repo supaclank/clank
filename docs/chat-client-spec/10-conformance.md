@@ -78,8 +78,9 @@ Fixtures are not invented — they are captured or lifted:
   `clank-mobile/src/hooks/__tests__/dispatch.test.ts` and `…/lib/__tests__` (delta, monotonic
   merge, shell drop).
 
-Fixtures live in `docs/chat-client-spec/fixtures/<CONF-ID>.json` (added as scenarios are
-authored). Each client's harness loads the same files.
+Fixtures will live in `docs/chat-client-spec/fixtures/<CONF-ID>.json` (the directory is not
+yet checked in; it grows as scenarios are authored). Each client's harness loads the same
+files.
 
 ## Scenario matrix
 

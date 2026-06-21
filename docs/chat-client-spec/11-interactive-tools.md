@@ -31,7 +31,7 @@ the client-side mechanism for replying to specific parts of a message.
   `completed` when the turn finishes.
   **Why:** without this the card flickers back after answering or after a refetch.
   **Golden:** `clank-mobile/src/lib/activeToolCall.ts` (`findActiveToolCallPartId`),
-  `askQuestion.ts:52`, `planReview.ts:86`. **Conformance:** `CONF-INTERACTIVE-ASK`,
+  `clank-mobile/src/lib/askQuestion.ts:52`, `clank-mobile/src/lib/planReview.ts:86`. **Conformance:** `CONF-INTERACTIVE-ASK`,
   `CONF-INTERACTIVE-PLAN`.
 
 - **[ITOOL-003] (MUST — gating)** When the session is in a prompting mode (`default`/`plan`),
@@ -40,7 +40,7 @@ the client-side mechanism for replying to specific parts of a message.
   mode there is **no** permission — the tool auto-runs and the only channel is the answer
   itself. A client MUST handle both: present from the part, resolve the permission when one
   exists.
-  **Golden:** `askQuestion.ts:66` (`findQuestionPermission`), `planReview.ts:98`
+  **Golden:** `clank-mobile/src/lib/askQuestion.ts:66` (`findQuestionPermission`), `clank-mobile/src/lib/planReview.ts:98`
   (`findPlanPermission`).
 
 ## How the answer goes back (current mechanism — flagged)
@@ -80,8 +80,8 @@ comment.
   general per-section feedback alike. **Why:** structured, located feedback without a
   protocol; the same splitter backs both the plan reviewer and general message comments.
   **Golden:** `clank-mobile/src/lib/chatReview.ts` (`formatChatReply`),
-  `src/lib/markdownBlocks.ts` (`splitMarkdownIntoBlocks`, `buildQuotedComments`, `quoteLines`),
-  `src/lib/planReview.ts:48` (shared with plan reviewer). **Conformance:** `CONF-INLINE-COMMENT`.
+  `clank-mobile/src/lib/markdownBlocks.ts` (`splitMarkdownIntoBlocks`, `buildQuotedComments`, `quoteLines`),
+  `clank-mobile/src/lib/planReview.ts:48` (shared with plan reviewer). **Conformance:** `CONF-INLINE-COMMENT`.
 
 ## Cross-backend mapping
 
