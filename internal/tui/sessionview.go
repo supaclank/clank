@@ -263,6 +263,14 @@ type SessionViewModel struct {
 	showModelPicker bool
 	modelPicker     modelPickerModel
 
+	// Folder picker modal state (compose mode — choose the project folder).
+	showFolderPicker bool
+	folderPicker     folderPickerModel
+
+	// Worktree picker modal state (compose mode — choose an existing worktree).
+	showWorktreePicker bool
+	worktreePicker     worktreePickerModel
+
 	// Help overlay state.
 	showHelp bool
 
@@ -306,6 +314,16 @@ type SessionViewModel struct {
 	worktreeBranch string // optional worktree branch to create the session on
 	isNewWorktree  bool   // true when this compose session is for a newly created worktree
 	baseBranch     string // base branch for new worktree indicator (e.g. "main")
+
+	// composeFocus is which compose row currently holds keyboard focus.
+	// The vibrant marker moves with it; focusPrompt (the zero value)
+	// keeps the textarea active, preserving the pre-navigation behavior.
+	composeFocus composeFocus
+
+	// backendCursor is the horizontal cursor within the Backend row (the
+	// bracketed option ←/→ hovers). Enter commits it, shifting the active
+	// backend. 0 = OpenCode, 1 = Claude Code.
+	backendCursor int
 
 	// Mode selection — the Tab-cycle list above the compose box. For OpenCode
 	// these are agents (fetched on Init); for Claude they are the static

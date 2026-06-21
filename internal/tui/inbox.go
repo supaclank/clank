@@ -647,11 +647,11 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		go m.persistSidebarExpanded(m.sidebar.SnapshotExpanded())
 		return m, nil
 	case composeRequestedMsg:
-		// Sidebar's "n" gesture (or, via the early handler, any
-		// future caller). The prefilled worktreePath comes from the
-		// cursor's context; an empty string is interpreted as "use
-		// the cwd" by openComposingSession.
-		return m, m.openComposingSession(msg.worktreePath)
+		// Sidebar's "n" / "Shift+N" gesture. The prefilled worktreePath
+		// comes from the cursor's context; an empty string is interpreted
+		// as "use the cwd" by openComposingSession. newWorktree opens
+		// compose with the New-worktree toggle pre-enabled.
+		return m, m.openComposingSession(msg.worktreePath, msg.newWorktree)
 	case closeComposeMsg:
 		m.closeCompose()
 		return m, nil
@@ -958,7 +958,19 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// key (i.e. m.inputActive==false), so typing 'w' or 'left' in
 		// the compose box still does the right thing.
 		if m.sessionView != nil && !m.sessionView.inputActive {
-			k := normalizeKeyCase(msg.(tea.KeyPressMsg))
+			raw := msg.(tea.KeyPressMsg)
+			// Compose a new session prefilled with the current chat's
+			// worktree — same gesture as "n"/"Shift+N" in the sidebar, but
+			// the context is the chat. Shift+N (checked on the raw key,
+			// before case folding) pre-enables the New-worktree toggle.
+			if isShiftN(raw) {
+				worktreeDir := ""
+				if m.sessionView.info != nil {
+					worktreeDir = m.sessionView.info.GitRef.LocalPath
+				}
+				return m, m.openComposingSession(worktreeDir, true)
+			}
+			k := normalizeKeyCase(raw)
 			switch {
 			case key.Matches(k, key.NewBinding(key.WithKeys("left", "shift+left"))):
 				if m.showTwoPanes() {
@@ -969,15 +981,11 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.toggleSidebar()
 				return m, nil
 			case key.Matches(k, key.NewBinding(key.WithKeys("n"))):
-				// Compose a new session prefilled with the current
-				// chat's worktree — same gesture as "n" in the
-				// sidebar, but the context is the chat instead of
-				// whatever the cursor is parked on.
 				worktreeDir := ""
 				if m.sessionView.info != nil {
 					worktreeDir = m.sessionView.info.GitRef.LocalPath
 				}
-				return m, m.openComposingSession(worktreeDir)
+				return m, m.openComposingSession(worktreeDir, false)
 			}
 		}
 		model, cmd := m.sessionView.Update(msg)
@@ -1077,7 +1085,7 @@ func (m *InboxModel) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 // the screen / session / pane / sidebar active row are snapshotted so
 // closeComposeMsg can restore them on cancel. Re-entering compose
 // while already in compose preserves the original snapshot.
-func (m *InboxModel) openComposingSession(worktreeDir string) tea.Cmd {
+func (m *InboxModel) openComposingSession(worktreeDir string, newWorktree bool) tea.Cmd {
 	if !m.activeCompose {
 		m.activeCompose = true
 		m.preComposeScreen = m.screen
@@ -1100,6 +1108,7 @@ func (m *InboxModel) openComposingSession(worktreeDir string) tea.Cmd {
 	// preComposeSession snapshotted m.sessionView above; closeCompose
 	// restores it and expects its SSE subscription to still be live.
 	m.sessionView = NewSessionViewComposing(m.client, worktreeDir)
+	m.sessionView.isNewWorktree = newWorktree
 	m.sessionView.voice = &m.voice
 	m.sessionView.width = m.width
 	m.sessionView.height = m.height
@@ -1348,6 +1357,11 @@ func (m *InboxModel) buildSearchResults(sessions []agent.SessionInfo) {
 }
 
 func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// Shift+N composes a new session on a fresh worktree. Checked before
+	// normalizeKeyCase folds the uppercase "N" into a plain "n".
+	if isShiftN(msg) {
+		return m, m.openComposingSession("", true)
+	}
 	msg = normalizeKeyCase(msg)
 
 	switch {
@@ -1428,8 +1442,8 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("n"))):
 		// From the inbox right pane, "n" composes a new session in
 		// the cwd's worktree — there's no per-row worktree context
-		// to prefill from here.
-		return m, m.openComposingSession("")
+		// to prefill from here. (Shift+N is handled at the top.)
+		return m, m.openComposingSession("", false)
 	case key.Matches(msg, key.NewBinding(key.WithKeys("/", "ctrl+f", "ctrl+k"))):
 		return m, m.enterSearch()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("."))):

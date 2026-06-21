@@ -12,6 +12,14 @@ import (
 // adding new tree behavior (expand/collapse, session selection) doesn't
 // scatter across renderers.
 func (m *SidebarModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
+	// Shift+N composes on a fresh worktree. Checked before normalizeKeyCase,
+	// which would otherwise fold the uppercase "N" into a plain "n".
+	if isShiftN(msg) {
+		worktreePath := m.CursorWorktreePath()
+		return func() tea.Msg {
+			return composeRequestedMsg{worktreePath: worktreePath, newWorktree: true}
+		}
+	}
 	msg = normalizeKeyCase(msg)
 
 	maxIdx := len(m.flat) - 1
@@ -150,5 +158,3 @@ func (m *SidebarModel) cursorNode() sidebarNode {
 	}
 	return m.flat[m.cursor]
 }
-
-
