@@ -8,7 +8,7 @@
 > necessarily bugs.
 
 **Platform:** Go / Bubble Tea TUI · **Client kind:** full chat client ·
-**Spec version:** 0.1.0 · **Last updated:** 2026-06-21
+**Spec version:** 0.2.0 · **Last updated:** 2026-06-21
 
 ## Where the pieces live
 

@@ -10,7 +10,7 @@
 > would fill the N/A rows.
 
 **Platform:** Kotlin / OkHttp / Coroutines (Expo native module) ·
-**Client kind:** **partial consumer** (preview FAB) · **Spec version:** 0.1.0 ·
+**Client kind:** **partial consumer** (preview FAB) · **Spec version:** 0.2.0 ·
 **Last updated:** 2026-06-21
 
 ## Where the pieces live

@@ -55,7 +55,7 @@ the client-side mechanism for replying to specific parts of a message.
     **Approve** = reply `allow` (the backend then exits plan mode and implements; optional
     review notes may ride a follow-up `SendMessage`); **Revise** = reply `deny` with
     `formatPlanReview` as the deny-reason, so the agent re-plans in plan mode. Inline comments
-    (below) fold into either. (`AskUserQuestion`, by contrast, can't fit allow/deny, so its
+    (below) fold into either. (`AskUserQuestion`, by contrast, cannot accommodate allow/deny, so its
     answer is the formatted `SendMessage` above, with the gating permission resolved separately.)
   When a gating permission is also pending ([ITOOL-003]), it must be resolved as well.
   **Why:** clank's permission-reply bridge can only allow/deny + a deny-reason string; it

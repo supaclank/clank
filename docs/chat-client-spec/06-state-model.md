@@ -145,7 +145,7 @@ Each `Part` additionally carries a derived `streaming` flag (true while text is 
   "Cancelling…" marker. The actual settle is driven by the subsequent `status` event
   ([STATE-STATUS-001]), not the abort response. On abort *error*, clear `aborting` and mark
   the cancel failed. On settle, a client MUST also clear any permissions the abort denied
-  server-side and unlock the composer ([INV-ABORT-PERM-001](08-invariants.md)) — a clear the
+  server-side and unlock the composer ([INV-ABORT-PERM-001](08-invariants.md)) — a clear that the
   golden TUI currently misses (known gap). **Golden:** `sessionview.go:2203` (`startAbort`),
   `:952` (error path).
 - **[STATE-REVERT-RESULT-001] (MUST)** On revert success, set `session.revert_message_id`,

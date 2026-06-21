@@ -32,7 +32,7 @@ still single-flight it in the UI ([INV-PERM-SINGLEFLIGHT-001](08-invariants.md))
 
 **Intentionally omitted.** The host exposes session-lifecycle/host-management routes a chat
 client driving Create + `/message` + SSE does not need: `POST /sessions/{id}/open` and
-`/open-and-send` (backend rehydration/orchestration — `POST /sessions` already opens-and-sends
+`POST /sessions/{id}/open-and-send` (backend rehydration/orchestration — `POST /sessions` already opens-and-sends
 internally, and the SSE/messages paths lazily rehydrate), and `POST /sessions/{id}/stop`
 (backend **process teardown** — distinct from `/abort`, which only interrupts the current
 turn). Worktree / project / sync / auth / GitHub routes are likewise out of chat scope.
