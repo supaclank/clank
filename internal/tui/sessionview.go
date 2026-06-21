@@ -2354,8 +2354,9 @@ func (m *SessionViewModel) View() tea.View {
 	// has no outer border of its own, so without this nudge the title
 	// would render flush against the top edge and look misaligned
 	// with the sidebar.
+	header := m.renderHeader()
 	sb.WriteString("\n")
-	sb.WriteString(m.renderHeader())
+	sb.WriteString(header)
 	sb.WriteString("\n\n")
 
 	// Error banner.
@@ -2376,8 +2377,11 @@ func (m *SessionViewModel) View() tea.View {
 	contentLines := m.buildContentLines()
 	ch := m.contentHeight()
 
-	// Cache for mouse selection: count how many screen rows precede the content area.
-	m.cachedHeaderRows = 3 // leading spacer + header line + blank line
+	// Cache for mouse selection: count how many screen rows precede the
+	// content area. The header is one line once the title is flattened,
+	// but measure its rendered height so the coordinate math can't drift
+	// if it ever spans more rows (e.g. an unflattened title).
+	m.cachedHeaderRows = 1 + lipgloss.Height(header) + 1 // leading spacer + header + blank line
 	if m.err != nil {
 		// Account for the actual rendered height — long errors wrap to
 		// multiple lines, otherwise mouse-selection coordinates would
@@ -2544,9 +2548,9 @@ func (m *SessionViewModel) renderHeader() string {
 	maxTitleWidth := m.width - lipgloss.Width(rightParts) - 2
 	title := "Session"
 	if m.info != nil {
-		title = truncateStr(m.info.Prompt, maxTitleWidth)
+		title = truncateStr(singleLine(m.info.Prompt), maxTitleWidth)
 		if m.info.Title != "" {
-			title = truncateStr(m.info.Title, maxTitleWidth)
+			title = truncateStr(singleLine(m.info.Title), maxTitleWidth)
 		}
 	}
 
@@ -3240,6 +3244,14 @@ func truncateStr(s string, n int) string {
 		return s[:n]
 	}
 	return s[:n-3] + "..."
+}
+
+// singleLine collapses all internal whitespace runs (including newlines and
+// tabs) to single spaces and trims the ends. Titles derived from a user's
+// first prompt can carry newlines; rendered as-is they make a one-line
+// header span multiple rows, which throws off mouse-to-row coordinate math.
+func singleLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // snapshotModelPreference reads the current picker selection into immutable
