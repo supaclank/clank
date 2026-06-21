@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -49,6 +50,12 @@ type mockTransport struct {
 
 	// interruptErr, if non-nil, is returned by Interrupt to simulate a failed interrupt.
 	interruptErr error
+
+	// rewindUUIDs records every messageUUID passed to RewindFiles, in order.
+	rewindUUIDs []string
+	// rewindErr, if set, is returned by RewindFiles (simulates a missing or
+	// failed checkpoint).
+	rewindErr error
 }
 
 func newMockTransport(messages []claudecode.Message) *mockTransport {
@@ -142,16 +149,19 @@ func (t *mockTransport) Interrupt(_ context.Context) error {
 }
 
 func (t *mockTransport) SetModel(_ context.Context, _ *string) error { return nil }
-func (t *mockTransport) SetPermissionMode(ctx context.Context, mode string) error {
+func (t *mockTransport) GetMcpStatus(_ context.Context) (*claudecode.McpStatusResponse, error) {
+	return nil, nil
+}
+func (t *mockTransport) SetPermissionMode(ctx context.Context, mode claudecode.PermissionMode) error {
 	t.mu.Lock()
 	fn := t.onSetPermMode
 	t.mu.Unlock()
 	if fn != nil {
-		return fn(ctx, mode)
+		return fn(ctx, string(mode))
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.permissionModes = append(t.permissionModes, mode)
+	t.permissionModes = append(t.permissionModes, string(mode))
 	return nil
 }
 
@@ -164,7 +174,21 @@ func (t *mockTransport) recordedPermissionModes() []string {
 	copy(out, t.permissionModes)
 	return out
 }
-func (t *mockTransport) RewindFiles(_ context.Context, _ string) error { return nil }
+func (t *mockTransport) RewindFiles(_ context.Context, messageUUID string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.rewindUUIDs = append(t.rewindUUIDs, messageUUID)
+	return t.rewindErr
+}
+
+// recordedRewindUUIDs returns a copy of the UUIDs passed to RewindFiles so far.
+func (t *mockTransport) recordedRewindUUIDs() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]string, len(t.rewindUUIDs))
+	copy(out, t.rewindUUIDs)
+	return out
+}
 
 func (t *mockTransport) Close() error {
 	t.mu.Lock()
@@ -218,7 +242,188 @@ func waitForStatus(t *testing.T, ch <-chan agent.Event, target agent.SessionStat
 	}
 }
 
+// nextRevertChange drains ch until an EventRevertChange arrives and returns its
+// MessageID. Fails the test on timeout or a malformed payload.
+func nextRevertChange(t *testing.T, ch <-chan agent.Event, timeout time.Duration) string {
+	t.Helper()
+	timer := time.After(timeout)
+	for {
+		select {
+		case evt, ok := <-ch:
+			if !ok {
+				t.Fatalf("events channel closed before an EventRevertChange arrived")
+			}
+			if evt.Type == agent.EventRevertChange {
+				data, ok := evt.Data.(agent.RevertChangeData)
+				if !ok {
+					t.Fatalf("EventRevertChange carried %T, want RevertChangeData", evt.Data)
+				}
+				return data.MessageID
+			}
+		case <-timer:
+			t.Fatalf("timed out waiting for EventRevertChange")
+		}
+	}
+}
+
+// assertNoRevertChange fails if an EventRevertChange arrives within the window.
+func assertNoRevertChange(t *testing.T, ch <-chan agent.Event, window time.Duration) {
+	t.Helper()
+	timer := time.After(window)
+	for {
+		select {
+		case evt, ok := <-ch:
+			if !ok {
+				return // channel closed without a revert change — acceptable
+			}
+			if evt.Type == agent.EventRevertChange {
+				t.Fatalf("unexpected EventRevertChange: %+v", evt.Data)
+			}
+		case <-timer:
+			return
+		}
+	}
+}
+
 // --- Tests ---
+
+// Open must enable file checkpointing on the spawned CLI; without it the SDK's
+// RewindFiles (used by Revert) has no checkpoints to roll back to.
+func TestClaudeOpenEnablesCheckpointing(t *testing.T) {
+	t.Parallel()
+	transport := newMockTransport(nil)
+	b := agent.NewClaudeCodeBackend(t.TempDir())
+	defer b.Stop()
+
+	resolved := captureOpenOptions(t, b, transport)
+	if !resolved.EnableFileCheckpointing {
+		t.Error("Open must enable file checkpointing so Revert/RewindFiles can roll files back")
+	}
+}
+
+// Revert rewinds tracked files to the given user-message UUID and announces the
+// new revert boundary. The UUID must reach RewindFiles unmodified — it is the
+// MessageData.ID the UI sends for a user message.
+func TestClaudeRevertInvokesRewindAndEmitsEvent(t *testing.T) {
+	t.Parallel()
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.SystemMessage{
+			MessageType: "system",
+			Subtype:     "init",
+			Data:        map[string]any{"session_id": "claude-revert-1"},
+		},
+	})
+	b := newTestBackend(t, transport)
+	defer b.Stop()
+
+	if err := b.Open(context.Background()); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	const target = "user-uuid-123"
+	if err := b.Revert(context.Background(), target); err != nil {
+		t.Fatalf("Revert: %v", err)
+	}
+
+	if got := transport.recordedRewindUUIDs(); len(got) != 1 || got[0] != target {
+		t.Errorf("recordedRewindUUIDs=%v, want [%s]", got, target)
+	}
+	if got := nextRevertChange(t, b.Events(), 2*time.Second); got != target {
+		t.Errorf("EventRevertChange MessageID=%q, want %q", got, target)
+	}
+}
+
+// Revert requires a live (Open) session — RewindFiles needs the streaming client.
+func TestClaudeRevertNotOpen(t *testing.T) {
+	t.Parallel()
+	transport := newMockTransport(nil)
+	b := newTestBackend(t, transport)
+	defer b.Stop()
+
+	err := b.Revert(context.Background(), "user-uuid-1")
+	if err == nil || !strings.Contains(err.Error(), "session not open") {
+		t.Fatalf("Revert without Open: got %v, want a 'session not open' error", err)
+	}
+	if got := transport.recordedRewindUUIDs(); len(got) != 0 {
+		t.Errorf("RewindFiles must not be called when not open; got %v", got)
+	}
+}
+
+// An empty message id is an error, not an "unrevert": the HTTP layer already
+// rejects empty, and the SDK has no rewind-to-latest semantic.
+func TestClaudeRevertEmptyMessageID(t *testing.T) {
+	t.Parallel()
+	transport := newMockTransport(nil)
+	b := newTestBackend(t, transport)
+	defer b.Stop()
+
+	if err := b.Open(context.Background()); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	err := b.Revert(context.Background(), "")
+	if err == nil || !strings.Contains(err.Error(), "requires a message id") {
+		t.Fatalf("Revert(\"\"): got %v, want a 'requires a message id' error", err)
+	}
+	if got := transport.recordedRewindUUIDs(); len(got) != 0 {
+		t.Errorf("RewindFiles must not be called for an empty id; got %v", got)
+	}
+}
+
+// A failed rewind must not commit revert state nor announce a revert.
+func TestClaudeRevertRewindError(t *testing.T) {
+	t.Parallel()
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.SystemMessage{
+			MessageType: "system",
+			Subtype:     "init",
+			Data:        map[string]any{"session_id": "claude-revert-err"},
+		},
+	})
+	transport.rewindErr = errors.New("checkpoint missing")
+	b := newTestBackend(t, transport)
+	defer b.Stop()
+
+	if err := b.Open(context.Background()); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	err := b.Revert(context.Background(), "user-uuid-9")
+	if err == nil || !strings.Contains(err.Error(), "checkpoint missing") {
+		t.Fatalf("Revert with failing rewind: got %v, want the wrapped 'checkpoint missing'", err)
+	}
+	assertNoRevertChange(t, b.Events(), 200*time.Millisecond)
+}
+
+// A new prompt supersedes an active revert: Send clears the boundary and
+// announces the unrevert (empty MessageID) for non-TUI clients.
+func TestClaudeSendClearsRevert(t *testing.T) {
+	t.Parallel()
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.SystemMessage{
+			MessageType: "system",
+			Subtype:     "init",
+			Data:        map[string]any{"session_id": "claude-revert-clear"},
+		},
+	})
+	b := newTestBackend(t, transport)
+	defer b.Stop()
+
+	if err := b.Open(context.Background()); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := b.Revert(context.Background(), "uuid-1"); err != nil {
+		t.Fatalf("Revert: %v", err)
+	}
+	if got := nextRevertChange(t, b.Events(), 2*time.Second); got != "uuid-1" {
+		t.Fatalf("setup revert: MessageID=%q, want uuid-1", got)
+	}
+
+	if err := b.Send(context.Background(), agent.SendMessageOpts{Text: "try again"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if got := nextRevertChange(t, b.Events(), 2*time.Second); got != "" {
+		t.Errorf("after Send: EventRevertChange MessageID=%q, want \"\" (unrevert)", got)
+	}
+}
 
 func TestClaudeCodeBackendBasicSession(t *testing.T) {
 	t.Parallel()

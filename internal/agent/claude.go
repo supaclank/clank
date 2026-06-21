@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -99,6 +100,13 @@ type ClaudeCodeBackend struct {
 	// Guarded by b.mu.
 	currentPermMode ClaudePermissionMode
 
+	// revertMessageID is the user-message UUID the session is currently
+	// reverted to — i.e. tracked files were rolled back to that checkpoint via
+	// RewindFiles. Empty when not reverted. Set by Revert, cleared by the next
+	// Send (mirroring the TUI, which clears RevertMessageID on a new prompt).
+	// In-memory only; not persisted. Guarded by b.mu.
+	revertMessageID string
+
 	// pendingPerms maps a synthesized permission request ID to the channel that
 	// delivers the user's decision. handleCanUseTool registers an entry and
 	// blocks on it; RespondPermission resolves it. Guarded by b.mu.
@@ -126,7 +134,9 @@ func NewClaudeCodeBackend(workDir string) *ClaudeCodeBackend {
 // SDK session ID so that Messages() can read the on-disk JSONL transcript
 // immediately, and so that Open() launches the CLI with --resume to
 // reattach the persistent subprocess for the existing conversation.
-// resumeSessionID may be empty for fresh sessions.
+// resumeSessionID may be empty for fresh sessions. A pending revert is set
+// live by Revert (and conveyed to clients via EventRevertChange); it is not
+// seeded here, since truncation bakes the reverted state into the transcript.
 func NewClaudeCodeBackendForSession(workDir, resumeSessionID string) *ClaudeCodeBackend {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ClaudeCodeBackend{
@@ -179,6 +189,12 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	opts := []claudecode.Option{
 		claudecode.WithCwd(workDir),
 		claudecode.WithPartialStreaming(),
+		// Track file changes per user message so Revert can roll them back via
+		// the SDK's RewindFiles. Sets CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=1
+		// on the CLI. Enabled unconditionally: checkpoints must exist from
+		// session start for any later turn to be revertible, and the flag is
+		// inert until RewindFiles is called.
+		claudecode.WithFileCheckpointing(),
 		// Always launch with --dangerously-skip-permissions so the session
 		// carries the "bypass is available" capability. The CLI refuses a
 		// runtime switch to bypassPermissions unless the process was launched
@@ -197,6 +213,9 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 		claudecode.WithCanUseTool(b.handleCanUseTool),
 	}
 	if resumeID != "" {
+		// Plain --resume: Revert physically truncates the transcript, so the
+		// resumed conversation is already a single linear chain — no
+		// --resume-session-at pin needed to select a branch.
 		opts = append(opts, claudecode.WithResume(resumeID))
 	}
 	extraEnv = buildExtraEnv(os.Geteuid(), extraEnv)
@@ -415,6 +434,21 @@ func (b *ClaudeCodeBackend) Send(ctx context.Context, opts SendMessageOpts) erro
 		}
 	}
 
+	// A new prompt supersedes any active revert: drop the reverted boundary and
+	// announce the unrevert so non-TUI clients un-hide the messages (the TUI
+	// already clears its own copy locally on send). Only emit when state changed.
+	b.mu.Lock()
+	wasReverted := b.revertMessageID != ""
+	b.revertMessageID = ""
+	b.mu.Unlock()
+	if wasReverted {
+		b.emit(Event{
+			Type:      EventRevertChange,
+			Timestamp: time.Now(),
+			Data:      RevertChangeData{MessageID: ""},
+		})
+	}
+
 	// Emit user message event so the TUI sees it.
 	b.emit(Event{
 		Type:      EventMessage,
@@ -527,16 +561,207 @@ func (b *ClaudeCodeBackend) Messages(ctx context.Context) ([]MessageData, error)
 		opts = append(opts, claudecode.WithSessionDirectory(workDir))
 	}
 
+	b.mu.Lock()
+	revertID := b.revertMessageID
+	b.mu.Unlock()
+
 	sdkMsgs, err := claudecode.GetSessionMessages(sessionID, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("read claude session %s: %w", sessionID, err)
 	}
 
-	return coalesceSessionMessages(sdkMsgs), nil
+	msgs := coalesceSessionMessages(sdkMsgs)
+	// While a revert is active but the user hasn't re-prompted yet, the CLI hasn't
+	// branched the transcript, so the on-disk JSONL still holds the reverted tail.
+	// Truncate the reload at the revert target so the hidden messages don't
+	// reappear on a fresh fetch. Once the next Send branches the transcript,
+	// revertMessageID is cleared and GetSessionMessages returns the active branch.
+	if revertID != "" {
+		for i, m := range msgs {
+			if m.ID == revertID {
+				msgs = msgs[:i]
+				break
+			}
+		}
+	}
+	return msgs, nil
 }
 
+// Revert undoes a turn: it rolls tracked files back to their state at the given
+// user message AND truncates the conversation there, so the model no longer has
+// the reverted turns in context.
+//
+// messageID is the user message's transcript UUID (== MessageData.ID for user
+// rows; see coalesceSessionMessages). Files are restored via RewindFiles
+// (control subtype "rewind_files"). The conversation is truncated by relaunching
+// the CLI resumed at the assistant message preceding messageID via
+// --resume-session-at, which keeps messages up to that turn and branches the
+// transcript; the reverted tail stays in the JSONL as an orphaned branch that
+// GetSessionMessages no longer follows, and the next prompt continues from the
+// kept point.
+//
+// The conversation truncation is best-effort: if the transcript can't be read or
+// messageID is the first turn (no prior assistant message to resume at), the
+// file rollback and display truncation still stand. Requires the session to be
+// Open (RewindFiles needs the live streaming client). Service.RevertSession
+// opens the backend first.
 func (b *ClaudeCodeBackend) Revert(ctx context.Context, messageID string) error {
-	return fmt.Errorf("revert is not supported by Claude Code backend")
+	if messageID == "" {
+		return fmt.Errorf("claude backend: revert requires a message id")
+	}
+
+	b.mu.Lock()
+	client := b.client
+	sessionID := b.sessionID
+	workDir := b.projectDir
+	b.mu.Unlock()
+	if client == nil {
+		return fmt.Errorf("session not open: cannot revert")
+	}
+
+	// Roll the files back first, while the live (full-context) client is up.
+	if err := client.RewindFiles(ctx, messageID); err != nil {
+		return fmt.Errorf("rewind files to %s: %w", messageID, err)
+	}
+
+	// Find the assistant turn to keep, physically truncate the transcript there
+	// (dropping the reverted turns), then relaunch with a plain --resume. We do
+	// NOT use --resume-session-at: in streaming mode it branches the transcript
+	// but does not set the active leaf, so a later plain --resume resumes the
+	// wrong branch. A physically-linear transcript resumes unambiguously and is
+	// durable across restarts. Best-effort: a first-turn revert (no prior
+	// assistant) leaves keepUUID empty and we skip truncation.
+	if keepUUID := resumeTargetUUID(readSessionMessages(sessionID, workDir), messageID); keepUUID != "" {
+		// Disconnect the live client before rewriting its transcript file, then
+		// reopen on the truncated transcript with a plain --resume.
+		b.mu.Lock()
+		old := b.client
+		b.client = nil
+		b.mu.Unlock()
+		if old != nil {
+			old.Disconnect()
+		}
+		if err := truncateTranscriptAt(sessionID, keepUUID); err != nil {
+			return fmt.Errorf("truncate transcript at %s: %w", keepUUID, err)
+		}
+		if err := b.Open(ctx); err != nil {
+			return fmt.Errorf("reopen after truncation: %w", err)
+		}
+	}
+
+	// Commit the revert state and announce it only after the rewind succeeds.
+	b.mu.Lock()
+	b.revertMessageID = messageID
+	b.mu.Unlock()
+
+	b.emit(Event{
+		Type:      EventRevertChange,
+		Timestamp: time.Now(),
+		Data:      RevertChangeData{MessageID: messageID},
+	})
+	return nil
+}
+
+// truncateTranscriptAt physically rewrites the session's on-disk JSONL
+// transcript to keep only the records up to and including the keepUUID record,
+// dropping everything after it. This is how a revert drops the reverted turns
+// durably: streaming --resume-session-at branches the transcript but does not
+// set the active leaf, so a plain --resume would resume the wrong branch.
+// Physically truncating leaves a linear transcript that plain --resume resumes
+// unambiguously.
+func truncateTranscriptAt(sessionID, keepUUID string) error {
+	path, err := sessionTranscriptPath(sessionID)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read transcript: %w", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	keepIdx := -1
+	for i, line := range lines {
+		var rec struct {
+			UUID string `json:"uuid"`
+		}
+		if json.Unmarshal([]byte(line), &rec) == nil && rec.UUID == keepUUID {
+			keepIdx = i
+		}
+	}
+	if keepIdx < 0 {
+		return fmt.Errorf("keep uuid %s not found in transcript %s", keepUUID, path)
+	}
+	kept := strings.Join(lines[:keepIdx+1], "\n") + "\n"
+	return os.WriteFile(path, []byte(kept), 0o644)
+}
+
+// sessionTranscriptPath locates a session's JSONL transcript by globbing the
+// projects dir, which avoids depending on how the CLI encodes the cwd into the
+// project-dir name (it can normalize cwd differently than a naive encoding).
+func sessionTranscriptPath(sessionID string) (string, error) {
+	matches, err := filepath.Glob(filepath.Join(claudeConfigHome(), "projects", "*", sessionID+".jsonl"))
+	if err != nil {
+		return "", err
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("transcript not found for session %s", sessionID)
+	}
+	return matches[0], nil
+}
+
+// claudeConfigHome returns the base dir for the CLI's projects/ store
+// (~/.claude, or $CLAUDE_CONFIG_DIR when set).
+func claudeConfigHome() string {
+	if cfg := os.Getenv("CLAUDE_CONFIG_DIR"); cfg != "" {
+		return cfg
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".claude")
+}
+
+// readSessionMessages reads the on-disk transcript for a session, returning nil
+// on any error (callers treat the conversation-truncation step as best-effort).
+func readSessionMessages(sessionID, workDir string) []claudecode.SessionMessage {
+	if sessionID == "" {
+		return nil
+	}
+	opts := []claudecode.SessionOption{}
+	if workDir != "" {
+		opts = append(opts, claudecode.WithSessionDirectory(workDir))
+	}
+	msgs, err := claudecode.GetSessionMessages(sessionID, opts...)
+	if err != nil {
+		return nil
+	}
+	return msgs
+}
+
+// resumeTargetUUID returns the transcript UUID of the assistant message that
+// --resume-session-at should keep when reverting to the user message userUUID —
+// the last assistant message before it. Returns "" when userUUID is the first
+// turn or is absent from msgs. It reads the assistant UUID directly (not via
+// coalesceSessionMessages, which maps assistant ids to the Anthropic API message
+// id) because --resume-session-at matches on the transcript UUID.
+func resumeTargetUUID(msgs []claudecode.SessionMessage, userUUID string) string {
+	idx := -1
+	for i, m := range msgs {
+		if m.UUID == userUUID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return ""
+	}
+	for i := idx - 1; i >= 0; i-- {
+		if msgs[i].IsMeta {
+			continue
+		}
+		if msgs[i].Type == "assistant" {
+			return msgs[i].UUID
+		}
+	}
+	return ""
 }
 
 func (b *ClaudeCodeBackend) Fork(ctx context.Context, messageID string) (ForkResult, error) {
@@ -566,6 +791,7 @@ func (b *ClaudeCodeBackend) setStatus(s SessionStatus) {
 	}
 }
 
+// TODO(ai-review): emit/Stop TOCTOU — stopped is read under lock but the channel send happens after unlock; Stop can close b.events in that window causing "send on closed channel". Fix with sync.Once close + recover guard. https://github.com/Acksell/clank/pull/68#discussion_r3446660408
 func (b *ClaudeCodeBackend) emit(evt Event) {
 	b.mu.Lock()
 	stopped := b.stopped
