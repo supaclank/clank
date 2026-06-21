@@ -17,14 +17,21 @@ import (
 // sidebar ratio), keeping the suite deterministic. CLANK_DIR is the documented
 // override consulted by config.Dir (see config.preferencesPath).
 func TestMain(m *testing.M) {
+	os.Exit(runTests(m))
+}
+
+// TODO(ai-review): all tests share this dir; if a future test writes prefs,
+// use t.Setenv("CLANK_DIR", t.TempDir()) per-test instead.
+// https://github.com/Acksell/clank/pull/76#discussion_r3449143069
+func runTests(m *testing.M) int {
 	dir, err := os.MkdirTemp("", "clank-tui-test")
 	if err != nil {
 		panic(err)
 	}
+	defer os.RemoveAll(dir)
+
 	if err := os.Setenv("CLANK_DIR", dir); err != nil {
 		panic(err)
 	}
-	code := m.Run()
-	_ = os.RemoveAll(dir)
-	os.Exit(code)
+	return m.Run()
 }
