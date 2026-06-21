@@ -40,6 +40,21 @@ type sessionCreateResultMsg struct {
 // Until a push has populated the cache the ref is local-only and any
 // cross-host operations will fail at launch.
 func NewSessionViewComposing(client *daemonclient.Client, projectDir string) *SessionViewModel {
+	// Default backend: prefer the user's saved choice, falling back to
+	// agent.DefaultBackend. Errors (corrupt prefs) silently fall back —
+	// the picker UI will show the resolved choice and the user can
+	// toggle from there.
+	prefs, _ := config.LoadPreferences()
+	defaultBackend, _ := agent.ResolveBackendPreference(prefs.DefaultBackend)
+	return newSessionViewComposingWithBackend(client, projectDir, defaultBackend)
+}
+
+// newSessionViewComposingWithBackend builds the composing model with an
+// explicit default backend instead of resolving it from saved preferences.
+// NewSessionViewComposing wraps it with the preference lookup; tests call it
+// directly to pin the backend so the developer's on-disk DefaultBackend
+// preference can't leak into compose-behaviour assertions.
+func newSessionViewComposingWithBackend(client *daemonclient.Client, projectDir string, defaultBackend agent.BackendType) *SessionViewModel {
 	ta := newPromptTextarea("Describe the task for the agent...", 5)
 	ta.Focus()
 	sp := spinner.New(
@@ -53,12 +68,6 @@ func NewSessionViewComposing(client *daemonclient.Client, projectDir string) *Se
 	if id, _ := agent.ReadLocalWorktreeID(projectDir); id != "" {
 		ref.WorktreeID = id
 	}
-	// Default backend: prefer the user's saved choice, falling back to
-	// agent.DefaultBackend. Errors (corrupt prefs) silently fall back —
-	// the picker UI will show the resolved choice and the user can
-	// toggle from there.
-	prefs, _ := config.LoadPreferences()
-	defaultBackend, _ := agent.ResolveBackendPreference(prefs.DefaultBackend)
 	m := &SessionViewModel{
 		client:      client,
 		composing:   true,
