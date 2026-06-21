@@ -74,6 +74,12 @@ type InboxModel struct {
 	sidebarHidden     bool         // true when user toggled sidebar off with 'w'
 	sidebarWidthRatio int          // sidebar width as % of screen width; adjusted with +/-
 
+	// chatPaneX is the outer-frame column where the chat pane's leftmost
+	// cell renders, cached each View() from the actual sidebar render
+	// width. Mouse-X translation and the chat cursor shift both read it so
+	// clicks land where the caret is drawn. 0 in single-pane mode.
+	chatPaneX int
+
 	// mouseDragOwner pins an active mouse drag to the pane that
 	// received its MouseClickMsg, so motion/release events that the
 	// user drags across the pane boundary still reach the originating
@@ -1911,7 +1917,6 @@ func (m *InboxModel) View() tea.View {
 	}
 
 	var content string
-	var sidebarVisibleWidth int
 
 	if m.showTwoPanes() {
 		sidebarView := m.sidebar.View()
@@ -1927,9 +1932,15 @@ func (m *InboxModel) View() tea.View {
 			rightPane = m.rightPaneBorder().Render(sessionContent)
 		}
 		content = lipgloss.JoinHorizontal(lipgloss.Top, sidebarView, " ", rightPane)
-		sidebarVisibleWidth = lipgloss.Width(sidebarView) + 1 // +1 for the gap column
+		// Measure the sidebar's *rendered* width (lipgloss includes the
+		// border) rather than the requested width — the border inset
+		// makes them differ, and the chat is placed right after this
+		// block plus the gap column. chatPaneXOffset() returns the same
+		// value so click translation matches where the caret is drawn.
+		m.chatPaneX = lipgloss.Width(sidebarView) + sidebarGap
 	} else {
 		content = sessionContent
+		m.chatPaneX = 0
 	}
 
 	// Overlay menu if open.
@@ -2005,7 +2016,7 @@ func (m *InboxModel) View() tea.View {
 	// X coordinates so the chat view sees them relative to its own
 	// origin (the sidebar gap shifts the right pane by that amount).
 	if sessionOnMouse != nil {
-		offset := sidebarVisibleWidth
+		offset := m.chatPaneX
 		v.OnMouse = func(msg tea.MouseMsg) tea.Cmd {
 			translated := offsetMouseX(msg, -offset)
 			return sessionOnMouse(translated)
@@ -2015,7 +2026,7 @@ func (m *InboxModel) View() tea.View {
 		// Same offset for the cursor: chat view positions it relative
 		// to its own pane, the outer view places it in the composite.
 		shifted := *sessionCursor
-		shifted.X += sidebarVisibleWidth
+		shifted.X += m.chatPaneX
 		v.Cursor = &shifted
 	}
 	return v
@@ -2308,13 +2319,16 @@ func (m *InboxModel) sessionPaneWidth() int {
 
 // chatPaneXOffset returns the X coordinate (in the outer terminal frame)
 // of the chat's leftmost cell. Used to translate mouse X into the chat's
-// local frame so click hit-tests target the right column. Matches the
-// sidebarVisibleWidth computed in View() so the two paths stay in sync.
+// local frame so click hit-tests target the right column. Returns the
+// value cached by the last View(), measured from the sidebar's actual
+// rendered width — so click translation and where the caret is drawn use
+// one source of truth and can't drift (the sidebar's border inset makes
+// its rendered width smaller than sidebarRenderWidth()).
 func (m *InboxModel) chatPaneXOffset() int {
 	if !m.showTwoPanes() {
 		return 0
 	}
-	return m.sidebarRenderWidth() + sidebarGap
+	return m.chatPaneX
 }
 
 // mouseInSidebar reports whether the mouse event hit the sidebar pane
