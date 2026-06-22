@@ -12,8 +12,11 @@ package images
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"time"
+
+	cryptorand "crypto/rand"
 
 	"github.com/acksell/clank/pkg/blobstore"
 )
@@ -47,8 +50,9 @@ type Config struct {
 
 // Server mints presigned image upload/download URLs.
 type Server struct {
-	store      blobstore.Storage
-	presignTTL time.Duration
+	store         blobstore.Storage
+	presignTTL    time.Duration
+	entropySource io.Reader // cryptorand.Reader by default; injectable for tests
 }
 
 // NewServer constructs a Server. Storage is required — fail fast at
@@ -61,7 +65,7 @@ func NewServer(cfg Config) (*Server, error) {
 	if ttl == 0 {
 		ttl = DefaultPresignTTL
 	}
-	return &Server{store: cfg.Storage, presignTTL: ttl}, nil
+	return &Server{store: cfg.Storage, presignTTL: ttl, entropySource: cryptorand.Reader}, nil
 }
 
 // Handler returns the image routes. Mount under the gateway's

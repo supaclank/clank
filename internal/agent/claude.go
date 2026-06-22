@@ -377,9 +377,9 @@ func (b *ClaudeCodeBackend) OpenAndSend(ctx context.Context, opts SendMessageOpt
 		return fmt.Errorf("session not open after Open")
 	}
 
-	imgs, err := resolveAttachments(b.ctx, opts.Attachments)
+	imgs, err := resolveAttachments(ctx, opts.Attachments)
 	if err != nil {
-		b.setStatus(StatusError)
+		b.setStatus(StatusIdle)
 		return fmt.Errorf("resolve attachments: %w", err)
 	}
 
@@ -443,7 +443,7 @@ func (b *ClaudeCodeBackend) Send(ctx context.Context, opts SendMessageOpts) erro
 	// Download attachments before emitting the user event / flipping to busy,
 	// so a bad image fails the send cleanly (status intact, session usable)
 	// rather than surfacing a phantom user message followed by an error.
-	imgs, err := resolveAttachments(b.ctx, opts.Attachments)
+	imgs, err := resolveAttachments(ctx, opts.Attachments)
 	if err != nil {
 		return fmt.Errorf("resolve attachments: %w", err)
 	}

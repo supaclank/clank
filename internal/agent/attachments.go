@@ -37,6 +37,7 @@ type resolvedImage struct {
 // resolveAttachments resolves every attachment's bytes. Fails fast on the first
 // error — a missing/oversized/wrong-type image must surface, never be silently
 // dropped.
+// TODO(ai-review): download attachments concurrently (errgroup + order preservation) to reduce latency for multi-image messages https://github.com/Acksell/clank/pull/64#discussion_r3438430026
 func resolveAttachments(ctx context.Context, atts []Attachment) ([]resolvedImage, error) {
 	out := make([]resolvedImage, 0, len(atts))
 	for _, a := range atts {
@@ -53,6 +54,7 @@ func resolveAttachments(ctx context.Context, atts []Attachment) ([]resolvedImage
 // scheme: data: (inline base64), file:// (local read, gated), or http(s):// (a
 // fetchable URL such as a presigned object-store GET). The declared mime must be
 // allowed and the payload within maxImageBytes.
+// TODO(ai-review): validate Source origin against configured image-store hostname(s) before issuing the request to prevent SSRF from authenticated clients https://github.com/Acksell/clank/pull/64#discussion_r3438446244
 func resolveImage(ctx context.Context, a Attachment) ([]byte, error) {
 	if !images.AllowedMimes[a.Mime] {
 		return nil, fmt.Errorf("unsupported image mime %q", a.Mime)

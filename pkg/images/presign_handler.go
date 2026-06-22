@@ -1,7 +1,6 @@
 package images
 
 import (
-	cryptorand "crypto/rand"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -37,6 +36,7 @@ func (s *Server) handlePresignImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB — prevent uncontrolled resource consumption
 	var req presignImageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
@@ -47,7 +47,13 @@ func (s *Server) handlePresignImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	imageID := ulid.MustNew(ulid.Now(), cryptorand.Reader).String()
+	// TODO(ai-review): switch to presigned POST policies (content-length-range + signed Content-Type) if upload-time size/type enforcement is required https://github.com/Acksell/clank/pull/64#discussion_r3438446257
+	id, err := ulid.New(ulid.Now(), s.entropySource)
+	if err != nil {
+		http.Error(w, "generate image id", http.StatusInternalServerError)
+		return
+	}
+	imageID := id.String()
 	key, err := KeyForImage(p.UserID, imageID)
 	if err != nil {
 		http.Error(w, "build image key", http.StatusInternalServerError)

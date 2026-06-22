@@ -147,3 +147,24 @@ func TestNewServer_RequiresStorage(t *testing.T) {
 		t.Fatal("expected error when Storage is nil")
 	}
 }
+
+func TestPresignImage_EntropyFailure(t *testing.T) {
+	t.Parallel()
+	mem := blobstore.NewMemory()
+	defer mem.Close()
+	srv, err := images.NewServer(images.Config{Storage: mem})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetEntropyForTest(errorReader{})
+	h := srv.Handler()
+
+	rr, _ := presign(t, h, "user-A", `{"mime":"image/png"}`)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("entropy failure: want 500, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+type errorReader struct{}
+
+func (errorReader) Read(_ []byte) (int, error) { return 0, errors.New("entropy read failed") }
