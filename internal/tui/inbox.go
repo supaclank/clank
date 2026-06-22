@@ -2439,16 +2439,14 @@ func (m *InboxModel) forwardMouseToRightPane(msg tea.MouseMsg) (tea.Model, tea.C
 	return m, nil
 }
 
-// scrollRightPaneByWheel re-dispatches a wheel tick as an up/down key so
-// the active right-pane screen (inbox list, settings, cloud) scrolls
-// exactly as it did when the terminal translated wheel into arrows
-// before mouse reporting was forced on for the sidebar.
+// scrollRightPaneByWheel maps a wheel tick to an up/down key command so
+// inbox/settings/cloud list scrolling works while mouse reporting is on.
 func (m *InboxModel) scrollRightPaneByWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	switch msg.Button {
 	case tea.MouseWheelUp:
-		return m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+		return m, func() tea.Msg { return tea.KeyPressMsg{Code: tea.KeyUp} }
 	case tea.MouseWheelDown:
-		return m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+		return m, func() tea.Msg { return tea.KeyPressMsg{Code: tea.KeyDown} }
 	default:
 		return m, nil
 	}
@@ -2460,24 +2458,20 @@ func (m *InboxModel) scrollRightPaneByWheel(msg tea.MouseWheelMsg) (tea.Model, t
 // sidebar behind it.
 func (m *InboxModel) anyOverlayOpen() bool {
 	return m.showMenu || m.showConfirm || m.showMerge || m.showThemePicker ||
-		m.showProviderAuth || m.showCloudURLPicker || m.showImportSessions || m.showHelp
+		m.showProviderAuth || m.showCloudURLPicker || m.showImportSessions || m.showHelp ||
+		m.showKittyWarning
 }
 
 // handleSidebarClick resolves a left click in the sidebar to the row
 // under the pointer, moves the selection there, and activates it — the
 // same outcome as pressing Enter on that row. A click on a border,
-// blank, or padding gap resolves to no node and is ignored. The "All
-// sessions" row returns to the inbox list (Enter leaves it inert today,
-// but a deliberate click should surface the list).
+// blank, or padding gap resolves to no node and is ignored.
 func (m *InboxModel) handleSidebarClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	idx := m.sidebar.NodeAtRow(msg.Y)
 	if idx < 0 {
 		return m, nil
 	}
 	m.sidebar.SetCursor(idx)
-	if m.sidebar.CursorOnAllSessions() {
-		return m.showInboxList()
-	}
 	return m.activateSidebarCursor()
 }
 
@@ -2487,6 +2481,8 @@ func (m *InboxModel) handleSidebarClick(msg tea.MouseClickMsg) (tea.Model, tea.C
 // worktree or "show more" bucket toggles its expand state.
 func (m *InboxModel) activateSidebarCursor() (tea.Model, tea.Cmd) {
 	switch {
+	case m.sidebar.CursorOnAllSessions():
+		return m.showInboxList()
 	case m.sidebar.CursorOnSettings():
 		m.openSettings()
 		return m, nil
@@ -2498,8 +2494,7 @@ func (m *InboxModel) activateSidebarCursor() (tea.Model, tea.Cmd) {
 		return m, nil
 	default:
 		// Session → emit sessionSelectedFromSidebarMsg (opens the chat);
-		// worktree / Older bucket → toggle expand. AllSessions falls here
-		// too and is a no-op, matching the pre-existing Enter behavior.
+		// worktree / Older bucket → toggle expand.
 		return m, m.sidebar.handleEnter()
 	}
 }

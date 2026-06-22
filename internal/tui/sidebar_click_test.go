@@ -185,3 +185,20 @@ func TestSidebarClick_OnBorderIsNoOp(t *testing.T) {
 			screenBefore, m.screen, flatBefore, len(m.sidebar.flat))
 	}
 }
+
+// Enter on "All sessions" must return to the inbox list — same as a left click.
+func TestSidebarKey_EnterOnAllSessionsReturnsToInbox(t *testing.T) {
+	t.Parallel()
+	m := newInboxWithSidebar(t)
+	m.showSettings()
+	if m.screen != screenSettings {
+		t.Fatalf("setup: screen = %v, want screenSettings", m.screen)
+	}
+	m.setPane(paneSidebar)
+	m.sidebar.SetCursor(0) // "All sessions" is always flat index 0
+	nm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = nm.(*InboxModel)
+	if m.screen != screenInbox {
+		t.Errorf("Enter on All sessions → screen %v, want screenInbox", m.screen)
+	}
+}

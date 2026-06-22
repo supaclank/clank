@@ -456,3 +456,23 @@ func TestInboxMouse_SinglePaneRoutesEverythingToChat(t *testing.T) {
 		t.Error("wheel at X=0 with sidebar hidden did not reach chat (single-pane mode must route everything to chat)")
 	}
 }
+
+func TestInboxMouse_KittyWarningOverlaySwallowsMouseEvents(t *testing.T) {
+	t.Parallel()
+
+	// showKittyWarning is a blocking overlay; clicks must not fall through
+	// to the sidebar while it is visible.
+	m := newInboxWithSidebar(t)
+	m.showKittyWarning = true
+	_ = m.View()
+	screenBefore := m.screen
+	cursorBefore := m.sidebar.cursor
+
+	nm, _ := m.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: 2, Y: 5})
+	m = nm.(*InboxModel)
+
+	if m.screen != screenBefore || m.sidebar.cursor != cursorBefore {
+		t.Errorf("mouse click fell through Kitty warning overlay: screen %v->%v, cursor %d->%d",
+			screenBefore, m.screen, cursorBefore, m.sidebar.cursor)
+	}
+}
