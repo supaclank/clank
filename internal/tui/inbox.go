@@ -723,6 +723,20 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateMenu(msg)
 	}
 
+	// Mouse events route to the sidebar / right pane on every screen, so
+	// the sidebar stays clickable wherever it's visible (inbox, chat,
+	// settings, cloud) — unless a blocking overlay owns the screen, in
+	// which case the event is swallowed rather than reaching the sidebar
+	// behind it. Handled before the per-screen blocks below, which each
+	// consume every message for their screen.
+	switch msg.(type) {
+	case tea.MouseClickMsg, tea.MouseReleaseMsg, tea.MouseMotionMsg, tea.MouseWheelMsg:
+		if m.anyOverlayOpen() {
+			return m, nil
+		}
+		return m.routeMouse(msg.(tea.MouseMsg))
+	}
+
 	// If we're in session detail view (or composing), delegate — but
 	// hand key events to the sidebar instead when focus has shifted
 	// there (e.g. via left-arrow). Non-key messages (SSE events, ticks,
@@ -997,9 +1011,6 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		model, cmd := m.sessionView.Update(msg)
 		m.sessionView = model.(*SessionViewModel)
 		return m, cmd
-
-	case tea.MouseClickMsg, tea.MouseReleaseMsg, tea.MouseMotionMsg, tea.MouseWheelMsg:
-		return m.routeMouseInSession(msg.(tea.MouseMsg))
 
 	default:
 		model, cmd := m.sessionView.Update(msg)
@@ -2000,12 +2011,13 @@ func (m *InboxModel) View() tea.View {
 	// Mouse reporting is a single terminal-level toggle: it must be
 	// declared on the outer (rendered) view, otherwise wheel/click
 	// events never reach us and the terminal falls back to translating
-	// wheel into arrow keys (which the chat then mis-interprets as
-	// cursor navigation). We only enable it on the chat screen so other
-	// screens (inbox list, settings, cloud) keep native terminal text
-	// select working without the user holding Option.
+	// wheel into arrow keys. Enable it whenever the sidebar is visible
+	// (so its rows are clickable on every screen) or a chat is open (for
+	// click-to-select and wheel scroll). The cost is that native mouse
+	// text-selection then needs Option held on those screens — the same
+	// as it already worked in the chat.
 	var v tea.View
-	if m.screen == screenSession && m.sessionView != nil {
+	if m.showTwoPanes() || (m.screen == screenSession && m.sessionView != nil) {
 		v = newVoiceEnabledViewWithMouse(content)
 	} else {
 		v = newVoiceEnabledView(content)
@@ -2342,15 +2354,15 @@ func (m *InboxModel) mouseInSidebar(msg tea.MouseMsg) bool {
 	return msg.Mouse().X < m.chatPaneXOffset()
 }
 
-// routeMouseInSession dispatches a mouse event to the pane it belongs
-// to. Press → motion* → release stays with the pane that received the
-// press (mouseDragOwner pins the drag), so a drag that crosses the
-// boundary doesn't half-execute in the destination pane and leak
-// selection state. Clicks/wheels outside a drag route by hover (web-
-// like): any mouse interaction with a pane focuses it, so wheel-over-
-// sidebar moves the sidebar cursor (and shows it) while wheel-over-
-// chat scrolls chat.
-func (m *InboxModel) routeMouseInSession(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+// routeMouse dispatches a mouse event to the pane it belongs to, on any
+// screen. Press → motion* → release stays with the pane that received
+// the press (mouseDragOwner pins the drag) so a boundary-crossing drag
+// doesn't half-execute and leak selection state. Clicks/wheels outside a
+// drag route by hover (web-like): interacting with a pane focuses it.
+// Sidebar events drive the sidebar regardless of which screen owns the
+// right pane; right-pane events go to the chat (when one is open) or,
+// on other screens, scroll the list.
+func (m *InboxModel) routeMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.mouseDragOwner != nil {
 		owner := *m.mouseDragOwner
 		if _, isRelease := msg.(tea.MouseReleaseMsg); isRelease {
@@ -2358,7 +2370,7 @@ func (m *InboxModel) routeMouseInSession(msg tea.MouseMsg) (tea.Model, tea.Cmd) 
 		}
 		switch owner {
 		case paneSessions:
-			return m.forwardMouseToChat(msg)
+			return m.forwardMouseToRightPane(msg)
 		case paneSidebar:
 			// Sidebar has no drag semantics; swallow motion/release
 			// until the press's release arrives so the chat doesn't
@@ -2376,6 +2388,7 @@ func (m *InboxModel) routeMouseInSession(msg tea.MouseMsg) (tea.Model, tea.Cmd) 
 				m.setPane(paneSidebar)
 				owner := paneSidebar
 				m.mouseDragOwner = &owner
+				return m.handleSidebarClick(typed)
 			}
 			return m, nil
 		}
@@ -2384,7 +2397,7 @@ func (m *InboxModel) routeMouseInSession(msg tea.MouseMsg) (tea.Model, tea.Cmd) 
 			m.mouseDragOwner = &owner
 			m.setPane(paneSessions)
 		}
-		return m.forwardMouseToChat(msg)
+		return m.forwardMouseToRightPane(msg)
 
 	case tea.MouseWheelMsg:
 		if inSidebar {
@@ -2393,28 +2406,114 @@ func (m *InboxModel) routeMouseInSession(msg tea.MouseMsg) (tea.Model, tea.Cmd) 
 			return m, nil
 		}
 		m.setPane(paneSessions)
-		return m.forwardMouseToChat(msg)
+		return m.forwardMouseToRightPane(msg)
 
 	default:
 		// Motion or release without a tracked press. Drop sidebar-side
-		// events (no hover behavior); forward chat-side so any stray
-		// chat handler (e.g. message-row highlight in future) still
-		// sees consistent coordinates.
+		// events (no hover behavior); forward right-pane-side so any
+		// stray chat handler still sees consistent coordinates.
 		if inSidebar {
 			return m, nil
 		}
-		return m.forwardMouseToChat(msg)
+		return m.forwardMouseToRightPane(msg)
 	}
 }
 
-// forwardMouseToChat translates the outer-frame X into the chat pane's
-// local frame and forwards the event to SessionViewModel. The Y axis
-// is shared between the outer view and the chat pane, so no Y shift.
-func (m *InboxModel) forwardMouseToChat(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	translated := offsetMouseX(msg, -m.chatPaneXOffset())
-	model, cmd := m.sessionView.Update(translated)
-	m.sessionView = model.(*SessionViewModel)
-	return m, cmd
+// forwardMouseToRightPane delivers a right-pane mouse event to whatever
+// owns the right pane. On the chat screen the event goes to the session
+// view with X translated into its local frame (Y is shared, so no Y
+// shift). On other screens only wheel is honored — re-dispatched as
+// up/down so list scrolling survives now that mouse reporting is forced
+// on for the sidebar; right-pane clicks there are ignored (those panes
+// aren't click-driven yet).
+func (m *InboxModel) forwardMouseToRightPane(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.screen == screenSession && m.sessionView != nil {
+		translated := offsetMouseX(msg, -m.chatPaneXOffset())
+		model, cmd := m.sessionView.Update(translated)
+		m.sessionView = model.(*SessionViewModel)
+		return m, cmd
+	}
+	if wheel, ok := msg.(tea.MouseWheelMsg); ok {
+		return m.scrollRightPaneByWheel(wheel)
+	}
+	return m, nil
+}
+
+// scrollRightPaneByWheel maps a wheel tick to an up/down key command so
+// inbox/settings/cloud list scrolling works while mouse reporting is on.
+func (m *InboxModel) scrollRightPaneByWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	switch msg.Button {
+	case tea.MouseWheelUp:
+		return m, func() tea.Msg { return tea.KeyPressMsg{Code: tea.KeyUp} }
+	case tea.MouseWheelDown:
+		return m, func() tea.Msg { return tea.KeyPressMsg{Code: tea.KeyDown} }
+	default:
+		return m, nil
+	}
+}
+
+// anyOverlayOpen reports whether a blocking overlay (menu, dialog,
+// picker, help) currently owns the screen. Sidebar mouse routing is
+// suppressed while one is open so a click doesn't fall through to the
+// sidebar behind it.
+func (m *InboxModel) anyOverlayOpen() bool {
+	return m.showMenu || m.showConfirm || m.showMerge || m.showThemePicker ||
+		m.showProviderAuth || m.showCloudURLPicker || m.showImportSessions || m.showHelp ||
+		m.showKittyWarning
+}
+
+// handleSidebarClick resolves a left click in the sidebar to the row
+// under the pointer, moves the selection there, and activates it — the
+// same outcome as pressing Enter on that row. A click on a border,
+// blank, or padding gap resolves to no node and is ignored.
+func (m *InboxModel) handleSidebarClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
+	idx := m.sidebar.NodeAtRow(msg.Y)
+	if idx < 0 {
+		return m, nil
+	}
+	m.sidebar.SetCursor(idx)
+	return m.activateSidebarCursor()
+}
+
+// activateSidebarCursor performs the activation for the node under the
+// sidebar cursor — the shared behavior behind both Enter and a left
+// click. Footer rows open their panel; a session opens in the chat; a
+// worktree or "show more" bucket toggles its expand state.
+func (m *InboxModel) activateSidebarCursor() (tea.Model, tea.Cmd) {
+	switch {
+	case m.sidebar.CursorOnAllSessions():
+		return m.showInboxList()
+	case m.sidebar.CursorOnSettings():
+		m.openSettings()
+		return m, nil
+	case m.sidebar.CursorOnCloud():
+		return m, m.openCloud()
+	case m.sidebar.CursorOnImport():
+		m.showImportSessions = true
+		m.importSessions = newImportSessionsModel()
+		return m, nil
+	default:
+		// Session → emit sessionSelectedFromSidebarMsg (opens the chat);
+		// worktree / Older bucket → toggle expand.
+		return m, m.sidebar.handleEnter()
+	}
+}
+
+// showInboxList returns the right pane to the date-grouped inbox (the
+// "All sessions" view). An open session is torn down via backToInboxMsg
+// so its draft persists and its poller stops; a Cloud/Settings preview
+// just drops back to the list.
+func (m *InboxModel) showInboxList() (tea.Model, tea.Cmd) {
+	switch m.screen {
+	case screenSession:
+		return m, func() tea.Msg { return backToInboxMsg{} }
+	case screenCloud:
+		m.cloud.SetFocused(false)
+	case screenSettings:
+		m.settings.SetFocused(false)
+	}
+	m.screen = screenInbox
+	return m, nil
 }
 
 // rightPaneBorder returns the bordered Style used by View() to wrap the
@@ -2510,34 +2609,11 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		m.setPane(paneSessions)
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
-		// Enter on the "⚙ Settings" footer row opens the settings page
-		// in the right pane. The sidebar stays visible and focused so
-		// the user can still navigate back into it.
-		if m.sidebar.CursorOnSettings() {
-			m.openSettings()
-			return m, nil
-		}
-		// Enter on the "☁ Cloud" footer row opens the Cloud panel.
-		if m.sidebar.CursorOnCloud() {
-			return m, m.openCloud()
-		}
-		// Enter on the "↓ Import Sessions" row opens the provider selector.
-		if m.sidebar.CursorOnImport() {
-			m.showImportSessions = true
-			m.importSessions = newImportSessionsModel()
-			return m, nil
-		}
-		// Enter on a session row in the sidebar tree opens the chat view.
-		// Forwarding to the sidebar lets its handleEnter emit the
-		// sessionSelectedFromSidebarMsg, which the inbox handles via the
-		// top-level Update switch above.
-		if id := m.sidebar.SelectedSessionID(); id != "" {
-			cmd := m.sidebar.Update(msg)
-			return m, cmd
-		}
-		// Enter on a worktree / Older bucket toggles its expand state;
-		// forward to the sidebar so it returns the toggle command.
-		return m, m.sidebar.Update(msg)
+		// Enter activates the row under the sidebar cursor — the same
+		// behavior as a left click (see activateSidebarCursor): footer
+		// rows open their panel, a session opens in the chat, a worktree
+		// or "show more" bucket toggles its expand state.
+		return m.activateSidebarCursor()
 	}
 
 	// Track branch selection before and after to detect changes.
