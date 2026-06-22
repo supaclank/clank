@@ -27,40 +27,102 @@ func (m *SidebarModel) View() string {
 		contentWidth = 12
 	}
 
+	// flat is built in lockstep with lines: flat[i] is the node index
+	// drawn on line i, or noNodeRow for the header / blanks / padding.
+	// NodeAtRow consumes it to resolve clicks.
 	var lines []string
-	lines = append(lines,
+	var flat []int
+	add := func(node int, ls ...string) {
+		for _, l := range ls {
+			lines = append(lines, l)
+			for n := lipgloss.Height(l); n > 0; n-- {
+				flat = append(flat, node)
+			}
+		}
+	}
+
+	add(noNodeRow,
 		lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("Worktrees"),
 		"",
 	)
-	bodyLines, footerStart := m.renderBody(contentWidth)
+	bodyLines, bodyFlat, footerLineCount := m.renderBody(contentWidth)
 	lines = append(lines, bodyLines...)
+	flat = append(flat, bodyFlat...)
 
 	if m.err != nil {
-		lines = append(lines, "", lipgloss.NewStyle().Foreground(dangerColor).
+		add(noNodeRow, "", lipgloss.NewStyle().Foreground(dangerColor).
 			Render(truncateStr(m.err.Error(), contentWidth)))
 	}
 
 	listH := m.listHeight()
-	if pad := listH - len(lines) - footerStart; pad > 0 {
+	if pad := listH - len(lines) - footerLineCount; pad > 0 {
 		for i := 0; i < pad; i++ {
-			lines = append(lines, "")
+			add(noNodeRow, "")
 		}
 	}
-	lines = append(lines, m.renderFooterSection(contentWidth)...)
+	// The footer is always [separator, Import, Cloud, Settings] — the last
+	// three flat nodes (flattenSidebar appends them in that order).
+	footerLines := m.renderFooterSection(contentWidth)
+	footerBase := len(m.flat) - 3
+	add(noNodeRow, footerLines[0]) // separator
+	for i, l := range footerLines[1:] {
+		node := noNodeRow
+		if footerBase >= 0 {
+			node = footerBase + i
+		}
+		add(node, l)
+	}
+
+	m.rowFlat = flat
 
 	content := strings.Join(lines, "\n")
 	style := sidebarBorderStyle(m.focused).Width(w - paneBorderInset).Height(listH)
 	return style.Render(content)
 }
 
+// noNodeRow marks a rendered line that maps to no selectable node
+// (header, blank spacer, padding, footer separator).
+const noNodeRow = -1
+
+// sidebarTopBorderRows is the number of screen rows the sidebar's top
+// border occupies above its first content line. Mouse Y is offset by
+// this to index into rowFlat.
+const sidebarTopBorderRows = 1
+
+// NodeAtRow maps a sidebar-local screen row (mouse Y — the sidebar
+// occupies the left columns starting at row 0) to the flat node index
+// rendered there, or -1 when the row is a border / blank / separator or
+// out of range. Reads the map cached by the last View().
+func (m *SidebarModel) NodeAtRow(y int) int {
+	line := y - sidebarTopBorderRows
+	if line < 0 || line >= len(m.rowFlat) {
+		return -1
+	}
+	return m.rowFlat[line]
+}
+
 // renderBody emits the non-footer rows (AllSessions + worktrees + older
 // bucket), respecting the scroll offset. footerLineCount is returned so
 // View can pad to push the footer to the bottom regardless of how many
 // rows the body produced.
-func (m *SidebarModel) renderBody(contentWidth int) (lines []string, footerLineCount int) {
+func (m *SidebarModel) renderBody(contentWidth int) (lines []string, flatByLine []int, footerLineCount int) {
 	footerLineCount = 4 // separator + 3 footer rows
 	body, _ := m.bodyNodes()
 	visible := m.visibleBodyNodes(body)
+
+	// emit appends one rendered row and records the owning flat index for
+	// every screen line it occupies. A single row string can wrap to
+	// several lines — a session row is title + time, and the title can
+	// itself carry a newline — so the index is repeated per rendered line
+	// (lipgloss.Height) to keep clicks below it aligned.
+	emit := func(idx int, rows ...string) {
+		for _, r := range rows {
+			lines = append(lines, r)
+			for n := lipgloss.Height(r); n > 0; n-- {
+				flatByLine = append(flatByLine, idx)
+			}
+		}
+	}
 
 	hasContent := false
 	for _, idx := range visible {
@@ -70,25 +132,26 @@ func (m *SidebarModel) renderBody(contentWidth int) (lines []string, footerLineC
 		// top-level overflow bucket) whenever any body row already
 		// rendered. That covers both the divider between consecutive
 		// worktrees and the divider between the AllSessions header
-		// and the first worktree.
+		// and the first worktree. The rule is attributed to the row it
+		// precedes so clicking the thin divider still selects it.
 		if (n.Kind() == nodeWorktree || n.Kind() == nodeOlderWorktrees) && hasContent {
-			lines = append(lines, m.renderWorktreeSeparator(contentWidth))
+			emit(idx, m.renderWorktreeSeparator(contentWidth))
 		}
 		switch typed := n.(type) {
 		case allSessionsNode:
-			lines = append(lines, m.renderAllRow(selected, contentWidth))
+			emit(idx, m.renderAllRow(selected, contentWidth))
 		case worktreeNode:
-			lines = append(lines, m.renderWorktreeRow(typed, idx, selected, contentWidth))
+			emit(idx, m.renderWorktreeRow(typed, idx, selected, contentWidth))
 		case sessionNode:
-			lines = append(lines, m.renderSessionRow(typed, selected, contentWidth)...)
+			emit(idx, m.renderSessionRow(typed, selected, contentWidth)...)
 		case olderWorktreesNode:
-			lines = append(lines, m.renderOlderWorktreesRow(typed, selected, contentWidth))
+			emit(idx, m.renderOlderWorktreesRow(typed, selected, contentWidth))
 		case olderSessionsNode:
-			lines = append(lines, m.renderOlderSessionsRow(typed, selected, contentWidth))
+			emit(idx, m.renderOlderSessionsRow(typed, selected, contentWidth))
 		}
 		hasContent = true
 	}
-	return lines, footerLineCount
+	return lines, flatByLine, footerLineCount
 }
 
 // bodyNodes splits the flat list into the indices of body rows

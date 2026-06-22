@@ -86,6 +86,12 @@ type SidebarModel struct {
 	cursor int
 	scroll int
 
+	// rowFlat maps each rendered content line (sidebar-local, before the
+	// top border) to the flat node index drawn there, or -1 for the
+	// header / blanks / padding. Rebuilt every View() so a mouse click
+	// can resolve the row under the cursor. NodeAtRow reads it.
+	rowFlat []int
+
 	focused bool
 	width   int
 	height  int
@@ -305,6 +311,19 @@ func (m *SidebarModel) CursorOnCloud() bool {
 // CursorOnSettings reports whether the cursor is on the settings row.
 func (m *SidebarModel) CursorOnSettings() bool {
 	return m.cursorNodeKind() == nodeSettings
+}
+
+// CursorOnAllSessions reports whether the cursor is on the "All sessions"
+// row (which surfaces the date-grouped inbox in the right pane).
+func (m *SidebarModel) CursorOnAllSessions() bool {
+	return m.cursorNodeKind() == nodeAllSessions
+}
+
+// SetCursor moves the cursor to the given flat index, clamped to the
+// list. Used by mouse-click selection to jump straight to a row.
+func (m *SidebarModel) SetCursor(idx int) {
+	m.cursor = idx
+	m.clampCursor()
 }
 
 // cursorNodeKind returns the kind of the node under the cursor, or -1
