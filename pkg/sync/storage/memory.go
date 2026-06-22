@@ -108,6 +108,9 @@ func (m *Memory) Exists(_ context.Context, key string) (bool, error) {
 }
 
 func (m *Memory) DeletePrefix(_ context.Context, prefix string) error {
+	if prefix == "" {
+		return fmt.Errorf("DeletePrefix: empty prefix would sweep the entire store")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for k := range m.objects {

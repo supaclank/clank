@@ -176,6 +176,9 @@ func (s *S3) Exists(ctx context.Context, key string) (bool, error) {
 // already-gone; only a hard error aborts (the caller retries — the
 // operation is idempotent on the same prefix).
 func (s *S3) DeletePrefix(ctx context.Context, prefix string) error {
+	if prefix == "" {
+		return fmt.Errorf("DeletePrefix: empty prefix would sweep the entire bucket")
+	}
 	var token *string
 	for {
 		page, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{

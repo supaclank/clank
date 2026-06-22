@@ -161,6 +161,21 @@ func TestMemory_DeletePrefix_Idempotent(t *testing.T) {
 	}
 }
 
+// TestMemory_DeletePrefix_RejectsEmpty guards the catastrophic case: an empty
+// prefix matches every key in the store and would wipe all tenants' data.
+func TestMemory_DeletePrefix_RejectsEmpty(t *testing.T) {
+	t.Parallel()
+	mem := storage.NewMemory()
+	defer mem.Close()
+	mem.Put("user1/blob", []byte("data"))
+	if err := mem.DeletePrefix(context.Background(), ""); err == nil {
+		t.Fatal("DeletePrefix(\"\") should return an error, not wipe the entire store")
+	}
+	if keys := mem.Keys(); len(keys) != 1 {
+		t.Fatalf("store was mutated by rejected DeletePrefix: keys=%v", keys)
+	}
+}
+
 func TestMemory_RoundTrip(t *testing.T) {
 	t.Parallel()
 	mem := storage.NewMemory()
