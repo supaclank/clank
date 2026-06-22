@@ -35,7 +35,9 @@ func (m *SidebarModel) View() string {
 	add := func(node int, ls ...string) {
 		for _, l := range ls {
 			lines = append(lines, l)
-			flat = append(flat, node)
+			for n := lipgloss.Height(l); n > 0; n-- {
+				flat = append(flat, node)
+			}
 		}
 	}
 
@@ -108,13 +110,17 @@ func (m *SidebarModel) renderBody(contentWidth int) (lines []string, flatByLine 
 	body, _ := m.bodyNodes()
 	visible := m.visibleBodyNodes(body)
 
-	// emit appends one rendered row (which may itself span several lines,
-	// e.g. a two-line session row) and records the owning flat index for
-	// each line so a mouse click can be mapped back to the node.
+	// emit appends one rendered row and records the owning flat index for
+	// every screen line it occupies. A single row string can wrap to
+	// several lines — a session row is title + time, and the title can
+	// itself carry a newline — so the index is repeated per rendered line
+	// (lipgloss.Height) to keep clicks below it aligned.
 	emit := func(idx int, rows ...string) {
 		for _, r := range rows {
 			lines = append(lines, r)
-			flatByLine = append(flatByLine, idx)
+			for n := lipgloss.Height(r); n > 0; n-- {
+				flatByLine = append(flatByLine, idx)
+			}
 		}
 	}
 

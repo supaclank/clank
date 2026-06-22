@@ -59,6 +59,40 @@ func TestSidebarNodeAtRow_MapsRenderedRowsToNodes(t *testing.T) {
 	}
 }
 
+// A session title carrying a newline renders the row across an extra
+// visual line. The hit-map must count actual rendered rows, not list
+// elements, or every row below it (down to the footer) resolves to the
+// wrong node.
+func TestSidebarNodeAtRow_NewlineTitleKeepsRowsAligned(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)
+	m := newTestSidebarCwd(now, "/r/x",
+		agent.SessionInfo{ID: "s1", Title: "line one\nline two", GitRef: agent.GitRef{LocalPath: "/r/x"}, UpdatedAt: now},
+	)
+	m.SetSize(34, 40)
+	lines := strings.Split(m.View(), "\n")
+
+	rowOf := func(sub string) int {
+		t.Helper()
+		for i, l := range lines {
+			if strings.Contains(ansi.Strip(l), sub) {
+				return i
+			}
+		}
+		t.Fatalf("row containing %q not found", sub)
+		return -1
+	}
+
+	// The footer sits below the multi-line session row; it must still
+	// resolve correctly despite the extra rendered line above it.
+	if idx := m.NodeAtRow(rowOf("Settings")); idx < 0 || m.flat[idx].Kind() != nodeSettings {
+		t.Errorf("Settings row resolved to node %d (kind unknown), want a settings node — the newline title shifted the hit-map", idx)
+	}
+	if idx := m.NodeAtRow(rowOf("Cloud")); idx < 0 || m.flat[idx].Kind() != nodeCloud {
+		t.Errorf("Cloud row resolved to node %d, want a cloud node", idx)
+	}
+}
+
 // --- Click activation: a left click does what Enter on that row does ---
 
 // clickSidebarKind left-clicks the first sidebar row that resolves to a
