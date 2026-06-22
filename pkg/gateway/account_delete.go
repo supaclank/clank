@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/acksell/clank/pkg/auth"
 	"github.com/acksell/clank/pkg/preview/routestore"
@@ -26,12 +27,17 @@ func (g *Gateway) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	userID := auth.MustPrincipal(r.Context()).UserID
 
+	// Detach from the request context so a client disconnect doesn't abort a
+	// partial erasure mid-way; erasure must complete to satisfy GDPR obligations.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Minute)
+	defer cancel()
+
 	// 1. Destroy all compute first — the riskiest (external provider) call,
 	// and the one that wipes every sprite-side artifact (sessions, ~/work,
 	// Anthropic creds, GitHub tokens). Force-destroys regardless of busy
 	// sessions: a running agent must not block erasure. A failure here leaves
 	// every gateway-side index untouched for a clean retry.
-	if err := g.cfg.Provisioner.DestroyHostsByUser(r.Context(), userID); err != nil {
+	if err := g.cfg.Provisioner.DestroyHostsByUser(ctx, userID); err != nil {
 		g.log.Printf("account delete: DestroyHostsByUser(%s): %v", userID, err)
 		http.Error(w, "sprite teardown failed (account left intact — retry): "+err.Error(), http.StatusBadGateway)
 		return
@@ -39,7 +45,7 @@ func (g *Gateway) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 
 	// 2. Purge sync data (worktrees, checkpoints, head bundles) and all
 	// object-store blobs under "<userID>/".
-	if err := g.cfg.Sync.PurgeUser(r.Context(), userID); err != nil {
+	if err := g.cfg.Sync.PurgeUser(ctx, userID); err != nil {
 		g.log.Printf("account delete: PurgeUser(%s): %v", userID, err)
 		http.Error(w, "account data purge failed (retry): "+err.Error(), http.StatusInternalServerError)
 		return
@@ -47,7 +53,7 @@ func (g *Gateway) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Delete push-notification devices (optional surface).
 	if g.cfg.Notify != nil {
-		if err := g.cfg.Notify.DeleteDevicesByUser(r.Context(), userID); err != nil {
+		if err := g.cfg.Notify.DeleteDevicesByUser(ctx, userID); err != nil {
 			g.log.Printf("account delete: DeleteDevicesByUser(%s): %v", userID, err)
 			http.Error(w, "device cleanup failed (retry): "+err.Error(), http.StatusInternalServerError)
 			return
@@ -56,7 +62,7 @@ func (g *Gateway) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 
 	// 4. Revoke preview routes (optional surface).
 	if g.cfg.PreviewRoutes != nil {
-		if err := g.revokePreviewRoutesForUser(r.Context(), userID); err != nil {
+		if err := g.revokePreviewRoutesForUser(ctx, userID); err != nil {
 			g.log.Printf("account delete: revoke preview routes(%s): %v", userID, err)
 			http.Error(w, "preview route cleanup failed (retry): "+err.Error(), http.StatusInternalServerError)
 			return
@@ -68,7 +74,7 @@ func (g *Gateway) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	// revokes the token, a still-valid JWT could EnsureHost a fresh sprite,
 	// so operators who need a hard erasure wire this.
 	if g.cfg.IdPDeleter != nil {
-		if err := g.cfg.IdPDeleter.DeleteUser(r.Context(), userID); err != nil {
+		if err := g.cfg.IdPDeleter.DeleteUser(ctx, userID); err != nil {
 			g.log.Printf("account delete: IdP DeleteUser(%s): %v", userID, err)
 			http.Error(w, "identity-provider deletion failed (retry): "+err.Error(), http.StatusInternalServerError)
 			return
@@ -88,7 +94,7 @@ func (g *Gateway) revokePreviewRoutesForUser(ctx context.Context, userID string)
 	}
 	for _, rt := range routes {
 		if err := g.cfg.PreviewRoutes.Revoke(ctx, rt.Token); err != nil && !errors.Is(err, routestore.ErrNotFound) {
-			return fmt.Errorf("revoke %s: %w", rt.Token, err)
+			return fmt.Errorf("revoke route: %w", err)
 		}
 	}
 	return nil

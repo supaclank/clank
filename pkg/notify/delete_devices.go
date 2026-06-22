@@ -16,7 +16,7 @@ func (d *Dispatcher) DeleteDevicesByUser(ctx context.Context, userID string) err
 	}
 	for _, dev := range devs {
 		if err := d.devices.DeleteDevice(ctx, userID, dev.PushToken); err != nil {
-			return fmt.Errorf("delete device %s for user %s: %w", dev.PushToken, userID, err)
+			return fmt.Errorf("delete device for user %s: %w", userID, err)
 		}
 	}
 	return nil
