@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/acksell/clank/pkg/auth"
@@ -32,9 +33,14 @@ func localAuth(next http.Handler, userID string) http.Handler {
 // ensureCalls lets a test pin "this code path didn't touch the
 // provisioner" (e.g. /ping must answer locally).
 type stubProvisioner struct {
-	ref          provisioner.HostRef
-	err          error
-	ensureCalls  int
+	ref         provisioner.HostRef
+	err         error
+	ensureCalls int
+
+	// destroyByUserErr, when set, is returned by DestroyHostsByUser;
+	// destroyByUserCalls counts invocations (account-deletion tests).
+	destroyByUserErr   error
+	destroyByUserCalls int32
 }
 
 func (s *stubProvisioner) EnsureHost(context.Context, string) (provisioner.HostRef, error) {
@@ -43,6 +49,10 @@ func (s *stubProvisioner) EnsureHost(context.Context, string) (provisioner.HostR
 }
 func (*stubProvisioner) SuspendHost(context.Context, string) error { return nil }
 func (*stubProvisioner) DestroyHost(context.Context, string) error { return nil }
+func (s *stubProvisioner) DestroyHostsByUser(context.Context, string) error {
+	atomic.AddInt32(&s.destroyByUserCalls, 1)
+	return s.destroyByUserErr
+}
 func (*stubProvisioner) GetHostByID(context.Context, string) (provisioner.HostRef, error) {
 	return provisioner.HostRef{}, errors.New("stub provisioner: GetHostByID not implemented")
 }

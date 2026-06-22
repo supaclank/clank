@@ -73,6 +73,14 @@ type Storage interface {
 	// content-addressed dedup of headCommit bundles — if the SHA-keyed
 	// object is already there, we skip the PUT URL entirely.
 	Exists(ctx context.Context, key string) (bool, error)
+
+	// DeletePrefix removes every object whose key starts with prefix.
+	// Idempotent — deleting an empty/already-gone prefix is not an
+	// error. Used for tenant erasure (account deletion): one sweep of
+	// "<userID>/" purges all of a user's blobs. Callers MUST build the
+	// prefix via KeyForUserPrefix so an empty/escaped userID can't widen
+	// the sweep to the whole bucket.
+	DeletePrefix(ctx context.Context, prefix string) error
 }
 
 // KeyFor builds the storage key for a (userID, worktreeID, checkpointID, blob)
@@ -122,6 +130,21 @@ func KeyForHead(userID, headSHA string) (string, error) {
 		}
 	}
 	return path.Join(userID, "heads", headSHA+".bundle"), nil
+}
+
+// KeyForUserPrefix builds the storage key prefix covering every blob a
+// user owns (checkpoints, session blobs, head bundles all live under
+// "<userID>/"). The trailing slash is load-bearing: without it the
+// prefix "user1" would also match "user10/", deleting another tenant's
+// data. userID MUST come from authenticated token claims; it is run
+// through the same validateComponent guard as KeyFor, so an empty or
+// path-escaping userID returns ErrInvalidPathComponent rather than a
+// prefix that could sweep the whole bucket.
+func KeyForUserPrefix(userID string) (string, error) {
+	if err := validateComponent("userID", userID); err != nil {
+		return "", err
+	}
+	return userID + "/", nil
 }
 
 // validateComponent rejects empty strings, anything containing path

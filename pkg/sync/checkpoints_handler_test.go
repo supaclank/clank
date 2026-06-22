@@ -170,6 +170,16 @@ func (m *memSyncStore) InsertHeadBundle(_ context.Context, hb clanksync.HeadBund
 	m.headBundles[k] = hb
 	return nil
 }
+func (m *memSyncStore) DeleteHeadBundlesByUser(_ context.Context, userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k, hb := range m.headBundles {
+		if hb.UserID == userID {
+			delete(m.headBundles, k)
+		}
+	}
+	return nil
+}
 
 // fixedPrincipalMiddleware injects a fixed Principal so every request
 // resolves to the same UserID — replaces the older fixedUserAuth that

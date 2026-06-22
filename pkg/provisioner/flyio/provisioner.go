@@ -930,6 +930,20 @@ func (p *Provisioner) DestroyHost(ctx context.Context, hostID string) error {
 	return nil
 }
 
+// DestroyHostsByUser destroys the user's flyio sprite, if any. Idempotent:
+// returns nil when the user has no row. Force-destroys regardless of session
+// state (account erasure must not be blocked by a busy session).
+func (p *Provisioner) DestroyHostsByUser(ctx context.Context, userID string) error {
+	row, err := p.store.GetHostByUser(ctx, userID, "flyio")
+	if errors.Is(err, hoststore.ErrHostNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("look up host for user %s: %w", userID, err)
+	}
+	return p.DestroyHost(ctx, row.ID)
+}
+
 // userMutex returns the per-userID mutex, creating it on first use.
 func (p *Provisioner) userMutex(userID string) *sync.Mutex {
 	p.keyMuMap.Lock()

@@ -38,6 +38,9 @@ func (d *dialProvisioner) SuspendHost(context.Context, string) error {
 func (d *dialProvisioner) DestroyHost(context.Context, string) error {
 	panic("dialProvisioner: DestroyHost not used by Tunnel")
 }
+func (d *dialProvisioner) DestroyHostsByUser(context.Context, string) error {
+	panic("dialProvisioner: DestroyHostsByUser not used by Tunnel")
+}
 func (d *dialProvisioner) GetHostByID(context.Context, string) (provisioner.HostRef, error) {
 	panic("dialProvisioner: GetHostByID not used by Tunnel")
 }

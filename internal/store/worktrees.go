@@ -236,6 +236,16 @@ func (s *Store) InsertHeadBundle(ctx context.Context, hb HeadBundle) error {
 	})
 }
 
+// DeleteHeadBundlesByUser removes every head-bundle row owned by a user.
+// Idempotent. Used by account erasure; the bundle blobs they reference
+// are purged separately via the object store's "<userID>/" prefix sweep.
+func (s *Store) DeleteHeadBundlesByUser(ctx context.Context, userID string) error {
+	if err := s.q.DeleteHeadBundlesByUser(ctx, userID); err != nil {
+		return fmt.Errorf("delete head bundles (user=%s): %w", userID, err)
+	}
+	return nil
+}
+
 func worktreeFromRow(r sqlitedb.Worktree) Worktree {
 	return Worktree{
 		ID:                       r.ID,

@@ -35,6 +35,17 @@ type PreviewHostLookup interface {
 	GetHostByNotifierToken(ctx context.Context, notifierToken string) (hoststore.Host, error)
 }
 
+// IdPDeleter optionally deletes or disables a user in the operator's
+// external SSO/identity provider when their clank account is deleted.
+// clank itself only verifies tokens (pkg/auth.Authenticator) and has no
+// IdP write access, so this is an extension point: when Config.IdPDeleter
+// is nil the account-deletion endpoint skips the IdP step. Operators wire
+// a concrete implementation (Supabase admin API, Auth0 Management API, …);
+// they choose delete-vs-disable semantics inside DeleteUser.
+type IdPDeleter interface {
+	DeleteUser(ctx context.Context, userID string) error
+}
+
 // AuthConfig is the public OAuth 2.0 discovery payload returned by
 // GET /auth-config. Embedders populate Config.AuthConfig with their
 // IdP details; the gateway serves it via AuthConfigHandler. Daemons
@@ -149,6 +160,12 @@ type Config struct {
 	// fine for dev, but a restart invalidates outstanding signed
 	// URLs, so production should persist a configured value.
 	PreviewSigningKey []byte
+
+	// IdPDeleter, when non-nil, is invoked as the final step of
+	// DELETE /v1/account to delete/disable the user in the operator's
+	// external SSO. Optional — nil skips the IdP step (clank-data-only
+	// deletion). See the IdPDeleter interface.
+	IdPDeleter IdPDeleter
 }
 
 // Gateway is the public ingress.
@@ -225,6 +242,10 @@ func (g *Gateway) Handler() http.Handler {
 	// then delete the sync row + checkpoints. Mounted before the `/v1/`
 	// catch-all so DELETE reaches this gateway handler, not the sync server.
 	mx.HandleFunc("DELETE /v1/worktrees/{id}", g.handleDeleteWorktree)
+	// GDPR/app-store account erasure: destroy the caller's compute, purge
+	// their sync data + object-store blobs, devices, and preview routes.
+	// Mounted before the `/v1/` catch-all for the same reason.
+	mx.HandleFunc("DELETE /v1/account", g.handleDeleteAccount)
 
 	// GitHub Connect: status/disconnect/connect-flow/create-PR are
 	// all pure proxies to the user's host. Mounted before the /v1/

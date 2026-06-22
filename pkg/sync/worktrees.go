@@ -171,6 +171,10 @@ type SyncStore interface {
 	// (userID, tipSHA) — the first stored bundle for a tip wins.
 	GetHeadBundle(ctx context.Context, userID, tipSHA string) (HeadBundle, error)
 	InsertHeadBundle(ctx context.Context, hb HeadBundle) error
+
+	// DeleteHeadBundlesByUser removes every head-bundle row owned by
+	// userID. Idempotent; used by account erasure (Server.PurgeUser).
+	DeleteHeadBundlesByUser(ctx context.Context, userID string) error
 }
 
 // GetWorktree looks up a worktree by ID and verifies it belongs to

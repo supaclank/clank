@@ -105,6 +105,16 @@ type Provisioner interface {
 	// don't need to invoke DestroyHost for that case.
 	DestroyHost(ctx context.Context, hostID string) error
 
+	// DestroyHostsByUser destroys every host this provider holds for
+	// userID — the account-erasure counterpart to DestroyHost. It tears
+	// down compute and store rows unconditionally (a busy session must
+	// not block a GDPR deletion), and is idempotent: a user with no
+	// hosts returns nil. The hosts table is UNIQUE(user_id, provider),
+	// so a single provider has at most one host per user; a multi-
+	// provider control plane implements this over its own store and
+	// loops every provider row.
+	DestroyHostsByUser(ctx context.Context, userID string) error
+
 	// GetHostByID is the non-mutating counterpart to EnsureHost:
 	// resolve a host_id (from a stored row, e.g. preview_routes.host_id)
 	// to its current HostRef without provisioning, waking, or creating
