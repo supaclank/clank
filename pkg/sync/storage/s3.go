@@ -10,8 +10,12 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 )
+
+// deleteBatchSize is the S3 DeleteObjects per-request cap.
+const deleteBatchSize = 1000
 
 // S3Config configures an S3-compatible Storage backend. Works with
 // AWS S3, Cloudflare R2, Tigris, MinIO, and any other S3-compatible
@@ -163,6 +167,53 @@ func (s *S3) Exists(ctx context.Context, key string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("head %s: %w", key, err)
+}
+
+// DeletePrefix lists every object under prefix and deletes them in
+// batches of deleteBatchSize. Paginates on the continuation token until
+// the listing is exhausted. Uses the direct (internal-endpoint) client,
+// not the presigner. A NoSuchKey on an individual object is treated as
+// already-gone; only a hard error aborts (the caller retries — the
+// operation is idempotent on the same prefix).
+func (s *S3) DeletePrefix(ctx context.Context, prefix string) error {
+	if prefix == "" {
+		return fmt.Errorf("DeletePrefix: empty prefix would sweep the entire bucket")
+	}
+	var token *string
+	for {
+		page, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket:            aws.String(s.cfg.Bucket),
+			Prefix:            aws.String(prefix),
+			ContinuationToken: token,
+		})
+		if err != nil {
+			return fmt.Errorf("list %s: %w", prefix, err)
+		}
+		ids := make([]s3types.ObjectIdentifier, 0, len(page.Contents))
+		for _, obj := range page.Contents {
+			ids = append(ids, s3types.ObjectIdentifier{Key: obj.Key})
+		}
+		for start := 0; start < len(ids); start += deleteBatchSize {
+			end := min(start+deleteBatchSize, len(ids))
+			out, err := s.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+				Bucket: aws.String(s.cfg.Bucket),
+				Delete: &s3types.Delete{Objects: ids[start:end], Quiet: aws.Bool(true)},
+			})
+			if err != nil {
+				return fmt.Errorf("delete batch under %s: %w", prefix, err)
+			}
+			for _, e := range out.Errors {
+				if code := aws.ToString(e.Code); code != "NoSuchKey" {
+					return fmt.Errorf("delete %s under %s: %s %s", aws.ToString(e.Key), prefix, code, aws.ToString(e.Message))
+				}
+			}
+		}
+		if aws.ToBool(page.IsTruncated) {
+			token = page.NextContinuationToken
+			continue
+		}
+		return nil
+	}
 }
 
 // compile-time check

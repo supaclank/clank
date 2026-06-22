@@ -40,6 +40,9 @@ func (d *targetDialProvisioner) SuspendHost(context.Context, string) error {
 func (d *targetDialProvisioner) DestroyHost(context.Context, string) error {
 	panic("targetDialProvisioner: DestroyHost")
 }
+func (d *targetDialProvisioner) DestroyHostsByUser(context.Context, string) error {
+	panic("targetDialProvisioner: DestroyHostsByUser")
+}
 func (d *targetDialProvisioner) GetHostByID(context.Context, string) (provisioner.HostRef, error) {
 	panic("targetDialProvisioner: GetHostByID")
 }

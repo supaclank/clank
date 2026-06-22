@@ -28,6 +28,16 @@ func mustOpenStore(t *testing.T) *store.Store {
 	return s
 }
 
+// TestDestroyHostsByUser_NoHostIsNoOp: erasing a user with no daytona row is a
+// clean no-op (idempotent) — the not-found lookup never reaches the client.
+func TestDestroyHostsByUser_NoHostIsNoOp(t *testing.T) {
+	t.Parallel()
+	p := &Provisioner{store: mustOpenStore(t)}
+	if err := p.DestroyHostsByUser(context.Background(), "ghost"); err != nil {
+		t.Fatalf("DestroyHostsByUser with no host: %v", err)
+	}
+}
+
 // TestNew_FailsFastOnMissingOptions pins the construction guards.
 func TestNew_FailsFastOnMissingOptions(t *testing.T) {
 	t.Parallel()

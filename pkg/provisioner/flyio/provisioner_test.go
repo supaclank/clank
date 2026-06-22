@@ -1,12 +1,13 @@
 package flyio
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/pkg/provisioner"
 	"github.com/acksell/clank/internal/store"
+	"github.com/acksell/clank/pkg/provisioner"
 )
 
 func mustOpenStore(t *testing.T) *store.Store {
@@ -17,6 +18,16 @@ func mustOpenStore(t *testing.T) *store.Store {
 	}
 	t.Cleanup(func() { s.Close() })
 	return s
+}
+
+// TestDestroyHostsByUser_NoHostIsNoOp: erasing a user with no flyio row is a
+// clean no-op (idempotent) — the not-found lookup never reaches the client.
+func TestDestroyHostsByUser_NoHostIsNoOp(t *testing.T) {
+	t.Parallel()
+	p := &Provisioner{store: mustOpenStore(t)}
+	if err := p.DestroyHostsByUser(context.Background(), "ghost"); err != nil {
+		t.Fatalf("DestroyHostsByUser with no host: %v", err)
+	}
 }
 
 // TestNew_FailsFastOnMissingOptions pins the construction guards.

@@ -37,6 +37,11 @@ INSERT OR IGNORE INTO head_bundles (
     user_id, tip_sha, base_sha, blob_key, created_at
 ) VALUES (?, ?, ?, ?, ?);
 
+-- name: DeleteHeadBundlesByUser :exec
+-- Tenant erasure: drop every head-bundle row for a user. Rows are
+-- per-user (PK includes user_id), so this never touches another tenant.
+DELETE FROM head_bundles WHERE user_id = ?;
+
 -- name: DeleteWorktree :exec
 DELETE FROM worktrees WHERE id = ?;
 

@@ -107,6 +107,20 @@ func (m *Memory) Exists(_ context.Context, key string) (bool, error) {
 	return ok, nil
 }
 
+func (m *Memory) DeletePrefix(_ context.Context, prefix string) error {
+	if prefix == "" {
+		return fmt.Errorf("DeletePrefix: empty prefix would sweep the entire store")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k := range m.objects {
+		if strings.HasPrefix(k, prefix) {
+			delete(m.objects, k)
+		}
+	}
+	return nil
+}
+
 func (m *Memory) signedURL(key, op string, ttl time.Duration) string {
 	exp := time.Now().Add(ttl).Unix()
 	q := url.Values{}

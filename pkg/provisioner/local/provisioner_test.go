@@ -76,6 +76,16 @@ func main() {
 	return binPath
 }
 
+// TestDestroyHostsByUser_NoChildIsNoOp: account erasure on the local
+// provisioner with no running subprocess is a clean no-op (idempotent).
+func TestDestroyHostsByUser_NoChildIsNoOp(t *testing.T) {
+	t.Parallel()
+	p := local.New(local.Options{}, nil)
+	if err := p.DestroyHostsByUser(context.Background(), "anyone"); err != nil {
+		t.Fatalf("DestroyHostsByUser with no child: %v", err)
+	}
+}
+
 // TestEnsureHost_DetectsCrashedChild pins the regression CR caught:
 // pre-fix EnsureHost relied on cmd.ProcessState which is nil until
 // Wait() returns. Without a watcher goroutine, a crashed child would

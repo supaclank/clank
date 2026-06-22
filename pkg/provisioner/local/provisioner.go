@@ -257,6 +257,13 @@ func (p *Provisioner) DestroyHost(_ context.Context, _ string) error {
 	return nil
 }
 
+// DestroyHostsByUser kills the single subprocess this provider manages.
+// userID is ignored (the local provisioner serves one user), mirroring
+// EnsureHost. Idempotent: a no-op when no child is running.
+func (p *Provisioner) DestroyHostsByUser(ctx context.Context, _ string) error {
+	return p.DestroyHost(ctx, "")
+}
+
 // killCurrentLocked sends SIGINT, waits 5s, then SIGKILLs. Watches
 // c.exited (the watcher goroutine spawned by EnsureHost) instead of
 // calling cmd.Wait directly — concurrent Wait calls are undefined.

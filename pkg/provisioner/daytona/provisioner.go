@@ -549,6 +549,20 @@ func (p *Provisioner) DestroyHost(ctx context.Context, hostID string) error {
 	return nil
 }
 
+// DestroyHostsByUser destroys the user's daytona sandbox, if any. Idempotent:
+// returns nil when the user has no row. Force-destroys regardless of session
+// state (account erasure must not be blocked by a busy session).
+func (p *Provisioner) DestroyHostsByUser(ctx context.Context, userID string) error {
+	row, err := p.store.GetHostByUser(ctx, userID, "daytona")
+	if errors.Is(err, hoststore.ErrHostNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("look up host for user %s: %w", userID, err)
+	}
+	return p.DestroyHost(ctx, row.ID)
+}
+
 // userMutex returns (lazily creating) the per-userID mutex. Two
 // concurrent EnsureHost calls for the same user serialize on this
 // mutex so they converge on a single sandbox instead of racing two
