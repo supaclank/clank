@@ -22,6 +22,17 @@ func (q *Queries) DeleteCheckpointsByWorktree(ctx context.Context, worktreeID st
 	return err
 }
 
+const deleteHeadBundlesByUser = `-- name: DeleteHeadBundlesByUser :exec
+DELETE FROM head_bundles WHERE user_id = ?
+`
+
+// Tenant erasure: drop every head-bundle row for a user. Rows are
+// per-user (PK includes user_id), so this never touches another tenant.
+func (q *Queries) DeleteHeadBundlesByUser(ctx context.Context, userID string) error {
+	_, err := q.db.ExecContext(ctx, deleteHeadBundlesByUser, userID)
+	return err
+}
+
 const deleteWorktree = `-- name: DeleteWorktree :exec
 DELETE FROM worktrees WHERE id = ?
 `

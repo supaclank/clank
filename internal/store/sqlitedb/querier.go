@@ -16,6 +16,9 @@ type Querier interface {
 	// Used by the dispatcher when Expo returns DeviceNotRegistered for a
 	// token; the user_id is irrelevant, the token itself is dead.
 	DeleteDeviceByPushToken(ctx context.Context, pushToken string) error
+	// Tenant erasure: drop every head-bundle row for a user. Rows are
+	// per-user (PK includes user_id), so this never touches another tenant.
+	DeleteHeadBundlesByUser(ctx context.Context, userID string) error
 	DeleteHostByID(ctx context.Context, id string) error
 	DeleteHostByUser(ctx context.Context, arg DeleteHostByUserParams) error
 	DeleteWorktree(ctx context.Context, id string) error

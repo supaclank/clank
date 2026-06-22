@@ -90,6 +90,92 @@ func TestKeyFor_NoCrossTenantAncestry(t *testing.T) {
 	}
 }
 
+func TestKeyForUserPrefix_Valid(t *testing.T) {
+	t.Parallel()
+	got, err := storage.KeyForUserPrefix("user-A")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The trailing slash is mandatory — see the boundary regression below.
+	if want := "user-A/"; got != want {
+		t.Fatalf("KeyForUserPrefix mismatch: got %q want %q", got, want)
+	}
+}
+
+func TestKeyForUserPrefix_RejectsPathEscape(t *testing.T) {
+	t.Parallel()
+	for _, userID := range []string{"", "..", "u/v", "u\\v", ".hidden", strings.Repeat("x", 129)} {
+		t.Run(userID, func(t *testing.T) {
+			t.Parallel()
+			if _, err := storage.KeyForUserPrefix(userID); !errors.Is(err, storage.ErrInvalidPathComponent) {
+				t.Fatalf("userID %q: expected ErrInvalidPathComponent, got %v", userID, err)
+			}
+		})
+	}
+}
+
+// TestMemory_DeletePrefix is the headline tenant-erasure test: deleting
+// "user1/" purges only user1's blobs. The "user10/" survivor is the
+// boundary regression — without the trailing slash in the prefix,
+// "user1" would also match "user10/", deleting another tenant's data.
+func TestMemory_DeletePrefix(t *testing.T) {
+	t.Parallel()
+	mem := storage.NewMemory()
+	defer mem.Close()
+
+	mem.Put("user1/checkpoints/wt/ck/manifest.json", []byte("a"))
+	mem.Put("user1/heads/deadbeef.bundle", []byte("b"))
+	mem.Put("user10/checkpoints/wt/ck/manifest.json", []byte("c"))
+	mem.Put("user2/checkpoints/wt/ck/manifest.json", []byte("d"))
+
+	prefix, err := storage.KeyForUserPrefix("user1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mem.DeletePrefix(context.Background(), prefix); err != nil {
+		t.Fatalf("DeletePrefix: %v", err)
+	}
+
+	got := mem.Keys()
+	want := map[string]bool{
+		"user10/checkpoints/wt/ck/manifest.json": true,
+		"user2/checkpoints/wt/ck/manifest.json":  true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("after DeletePrefix keys=%v, want %v", got, want)
+	}
+	for _, k := range got {
+		if !want[k] {
+			t.Fatalf("unexpected surviving key %q (deleted too much?)", k)
+		}
+	}
+}
+
+func TestMemory_DeletePrefix_Idempotent(t *testing.T) {
+	t.Parallel()
+	mem := storage.NewMemory()
+	defer mem.Close()
+	// Deleting an absent prefix is a no-op, not an error.
+	if err := mem.DeletePrefix(context.Background(), "ghost/"); err != nil {
+		t.Fatalf("DeletePrefix on empty prefix: %v", err)
+	}
+}
+
+// TestMemory_DeletePrefix_RejectsEmpty guards the catastrophic case: an empty
+// prefix matches every key in the store and would wipe all tenants' data.
+func TestMemory_DeletePrefix_RejectsEmpty(t *testing.T) {
+	t.Parallel()
+	mem := storage.NewMemory()
+	defer mem.Close()
+	mem.Put("user1/blob", []byte("data"))
+	if err := mem.DeletePrefix(context.Background(), ""); err == nil {
+		t.Fatal("DeletePrefix(\"\") should return an error, not wipe the entire store")
+	}
+	if keys := mem.Keys(); len(keys) != 1 {
+		t.Fatalf("store was mutated by rejected DeletePrefix: keys=%v", keys)
+	}
+}
+
 func TestMemory_RoundTrip(t *testing.T) {
 	t.Parallel()
 	mem := storage.NewMemory()

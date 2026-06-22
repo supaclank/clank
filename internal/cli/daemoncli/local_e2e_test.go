@@ -163,8 +163,9 @@ type fixedHostProvisioner struct {
 func (f *fixedHostProvisioner) EnsureHost(context.Context, string) (provisioner.HostRef, error) {
 	return provisioner.HostRef{URL: f.url, Transport: f.transport, Hostname: "local"}, nil
 }
-func (*fixedHostProvisioner) SuspendHost(context.Context, string) error { return nil }
-func (*fixedHostProvisioner) DestroyHost(context.Context, string) error { return nil }
+func (*fixedHostProvisioner) SuspendHost(context.Context, string) error        { return nil }
+func (*fixedHostProvisioner) DestroyHost(context.Context, string) error        { return nil }
+func (*fixedHostProvisioner) DestroyHostsByUser(context.Context, string) error { return nil }
 func (*fixedHostProvisioner) GetHostByID(context.Context, string) (provisioner.HostRef, error) {
 	return provisioner.HostRef{}, errors.New("fixedHostProvisioner: GetHostByID not implemented")
 }
