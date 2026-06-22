@@ -35,7 +35,7 @@ type ServerResolver func(ctx context.Context) (string, error)
 //     re-resolving the server URL each time (handles port changes).
 type OpenCodeBackend struct {
 	mu           sync.Mutex
-	openMu       sync.Mutex     // serializes Open() so check-and-create is atomic
+	openMu       sync.Mutex // serializes Open() so check-and-create is atomic
 	status       SessionStatus
 	sessionID    string         // OpenCode's session ID (assigned by server)
 	serverURL    string         // e.g. "http://127.0.0.1:4123"
@@ -156,7 +156,7 @@ func (b *OpenCodeBackend) buildPromptParams(opts SendMessageOpts, imgs []resolve
 	for _, img := range imgs {
 		file := &opencode.FilePartInput{
 			Mime: img.Mime,
-			URL:  dataURL(img.Mime, img.Data),
+			URL:  DataURL(img.Mime, img.Data),
 		}
 		if img.Filename != "" {
 			file.Filename = opencode.String(img.Filename)

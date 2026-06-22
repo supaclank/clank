@@ -42,6 +42,7 @@ func main() {
 	listen := flag.String("listen", "tcp://127.0.0.1:0", "")
 	_ = flag.String("listen-auth-token", "", "")
 	_ = flag.String("data-dir", "", "")
+	_ = flag.Bool("local-file-attachments", false, "")
 	flag.Parse()
 	addr := strings.TrimPrefix(*listen, "tcp://")
 	ln, err := net.Listen("tcp", addr)

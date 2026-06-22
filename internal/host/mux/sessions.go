@@ -48,6 +48,7 @@ func (m *Mux) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Agent:          req.Agent,
 		Model:          req.Model,
 		PermissionMode: req.PermissionMode,
+		Attachments:    req.Attachments,
 	})
 	if err != nil {
 		_ = m.svc.StopSession(sessionID)
