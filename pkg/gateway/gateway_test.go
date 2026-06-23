@@ -615,13 +615,13 @@ func TestSingleJoiningSlash(t *testing.T) {
 func TestStripHostsPrefix_Unit(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
-		"":                              "",
-		"/sessions":                     "/sessions",
-		"/hosts/local":                  "/",
-		"/hosts/local/":                 "/",
-		"/hosts/local/auth/providers":   "/auth/providers",
+		"":                               "",
+		"/sessions":                      "/sessions",
+		"/hosts/local":                   "/",
+		"/hosts/local/":                  "/",
+		"/hosts/local/auth/providers":    "/auth/providers",
 		"/hosts/x-y-z/worktrees/resolve": "/worktrees/resolve",
-		"/hostsfoo":                     "/hostsfoo", // doesn't start with /hosts/
+		"/hostsfoo":                      "/hostsfoo", // doesn't start with /hosts/
 	}
 	for in, want := range cases {
 		if got := stripHostsPrefix(in); got != want {

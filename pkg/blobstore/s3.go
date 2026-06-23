@@ -1,4 +1,4 @@
-package storage
+package blobstore
 
 import (
 	"context"
@@ -68,13 +68,13 @@ type S3 struct {
 // fall back to anonymous access.
 func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
 	if cfg.Bucket == "" {
-		return nil, errors.New("storage: S3Config.Bucket is required")
+		return nil, errors.New("blobstore: S3Config.Bucket is required")
 	}
 	if cfg.Region == "" {
-		return nil, errors.New("storage: S3Config.Region is required")
+		return nil, errors.New("blobstore: S3Config.Region is required")
 	}
 	if cfg.AccessKey == "" || cfg.SecretKey == "" {
-		return nil, errors.New("storage: S3Config.AccessKey and SecretKey are required")
+		return nil, errors.New("blobstore: S3Config.AccessKey and SecretKey are required")
 	}
 
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,

@@ -186,6 +186,13 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastCtrlC = time.Time{}
 		return m, nil
 
+	case tea.PasteMsg:
+		// A dropped/pasted image-file path becomes a pill; anything else
+		// falls through to the textarea as normal text.
+		if m.composeFocus == focusPrompt && m.maybePasteImagePath(msg.Content) {
+			return m, nil
+		}
+
 	case tea.KeyPressMsg:
 		return m.handleComposeKey(msg)
 	}
@@ -226,6 +233,19 @@ func (m *SessionViewModel) handleComposeKey(msg tea.KeyPressMsg) (tea.Model, tea
 	}
 
 	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+v"))):
+		// Paste an image from the clipboard as an inline pill. No-op when the
+		// clipboard holds no image (plain text paste arrives as tea.PasteMsg).
+		m.pasteClipboardImage()
+		return m, nil
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("backspace"))):
+		// A pill deletes as one unit when the cursor is right after it;
+		// otherwise fall through to the textarea's normal backspace.
+		if m.deletePillBeforeCursor(msg) {
+			return m, nil
+		}
+
 	case key.Matches(msg, key.NewBinding(key.WithKeys("up"))):
 		// Escape upward to the row above only when the cursor is already
 		// on the first line; otherwise let the textarea move the cursor.
@@ -275,8 +295,8 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 		return m, nil // Already in flight — ignore duplicate Enter.
 	}
 
-	prompt := strings.TrimSpace(m.input.Value())
-	if prompt == "" {
+	prompt, atts := m.promptForSend()
+	if prompt == "" && len(atts) == 0 {
 		m.err = fmt.Errorf("prompt is required")
 		return m, nil
 	}
@@ -300,10 +320,11 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 	}
 
 	req := agent.StartRequest{
-		Backend:  m.backend,
-		Hostname: host.HostLocal,
-		GitRef:   gitRef,
-		Prompt:   prompt,
+		Backend:     m.backend,
+		Hostname:    host.HostLocal,
+		GitRef:      gitRef,
+		Prompt:      prompt,
+		Attachments: atts,
 	}
 	if len(m.modes) > 0 {
 		sel := m.modes[m.selectedMode]
@@ -321,8 +342,9 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 	return m, m.createSessionCmd(req)
 }
 
-// createSessionCmd subscribes to SSE first, then creates the session.
-// This avoids the race where events are emitted before the TUI subscribes.
+// createSessionCmd subscribes to SSE first, then creates the session. This
+// avoids the race where events are emitted before the TUI subscribes. Image
+// attachments ride in req as file:///data: sources clank-host resolves itself.
 func (m *SessionViewModel) createSessionCmd(req agent.StartRequest) tea.Cmd {
 	client := m.client
 	return func() tea.Msg {
@@ -453,7 +475,7 @@ func (m *SessionViewModel) viewCompose() tea.View {
 	case focusNewWorktree:
 		helpParts = []string{"enter: toggle", "↑↓: navigate", qLabel}
 	default: // focusPrompt
-		helpParts = []string{"↑: fields", "enter: launch", "shift+enter: newline", "ctrl+b: toggle backend"}
+		helpParts = []string{"↑: fields", "enter: launch", "shift+enter: newline", "ctrl+v: image", "ctrl+b: toggle backend"}
 		if len(m.modes) > 1 {
 			helpParts = append(helpParts, "tab: cycle mode")
 		}
@@ -688,7 +710,7 @@ func (m *SessionViewModel) renderPromptBox() string {
 		inner.WriteString(combinedBadge + strings.Repeat(" ", gap) + ctrlCHint)
 		inner.WriteString("\n")
 	}
-	inner.WriteString(m.input.View())
+	inner.WriteString(m.highlightPills(m.input.View()))
 
 	return promptInputStyleWithColor(bc).Render(inner.String())
 }

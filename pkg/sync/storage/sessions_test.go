@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/acksell/clank/pkg/blobstore"
 	"github.com/acksell/clank/pkg/sync/storage"
 )
 
@@ -50,7 +51,7 @@ func TestKeyForSessionBlob_RejectsBadHash(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := storage.KeyForSessionBlob("u", "wt", "ext", c.hash)
-			if !errors.Is(err, storage.ErrInvalidPathComponent) {
+			if !errors.Is(err, blobstore.ErrInvalidPathComponent) {
 				t.Fatalf("expected ErrInvalidPathComponent, got %v", err)
 			}
 		})
@@ -74,7 +75,7 @@ func TestKeyForSessionBlob_RejectsPathEscape(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := storage.KeyForSessionBlob(c.userID, c.worktreeID, c.external, validSessionHash)
-			if !errors.Is(err, storage.ErrInvalidPathComponent) {
+			if !errors.Is(err, blobstore.ErrInvalidPathComponent) {
 				t.Fatalf("expected ErrInvalidPathComponent, got %v", err)
 			}
 		})

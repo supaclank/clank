@@ -20,6 +20,7 @@ import (
 	"github.com/acksell/clank/internal/store"
 	"github.com/acksell/clank/pkg/auth"
 	"github.com/acksell/clank/pkg/gateway"
+	"github.com/acksell/clank/pkg/images"
 	"github.com/acksell/clank/pkg/notify"
 	"github.com/acksell/clank/pkg/preview/routestore/memstore"
 	"github.com/acksell/clank/pkg/provisioner"
@@ -112,6 +113,7 @@ func runGatewayServer(prov provisioner.Provisioner, st *store.Store, opts Server
 	}
 
 	var syncSrv *clanksync.Server
+	var imagesSrv *images.Server
 	if opts.Listen != "" {
 		// TCP mode: build the embedded sync server when CLANK_SYNC_S3_*
 		// env vars are present. Returns nil when unset (TCP without sync
@@ -122,6 +124,16 @@ func runGatewayServer(prov provisioner.Provisioner, st *store.Store, opts Server
 		}
 		if syncSrv != nil {
 			log.Printf("gateway: embedded sync server enabled (S3 bucket=%s)", os.Getenv("CLANK_SYNC_S3_BUCKET"))
+		}
+
+		// Image uploads use their own independent bucket (CLANK_IMAGES_S3_*).
+		// nil when unset — POST /v1/images simply 404s.
+		imagesSrv, err = loadImagesFromEnv(context.Background())
+		if err != nil {
+			return fmt.Errorf("build images server: %w", err)
+		}
+		if imagesSrv != nil {
+			log.Printf("gateway: image uploads enabled (S3 bucket=%s)", os.Getenv("CLANK_IMAGES_S3_BUCKET"))
 		}
 	}
 
@@ -139,6 +151,7 @@ func runGatewayServer(prov provisioner.Provisioner, st *store.Store, opts Server
 	gwCfg := gateway.Config{
 		Provisioner: prov,
 		Sync:        syncSrv,
+		Images:      imagesSrv,
 		AuthConfig:  loadAuthConfigFromEnv(),
 		Notify:      dispatcher,
 		Templates:   templates,
@@ -313,9 +326,10 @@ func loadTemplatesFromEnv() ([]gateway.Template, error) {
 // CLANK_AUTH_SCOPES             — space-separated, e.g. "openid email"
 // CLANK_AUTH_DEFAULT_PROVIDER   — optional IdP hint (e.g. "github")
 // CLANK_AUTH_CALLBACK_PORT      — pin laptop's PKCE listener to a
-//                                  fixed port (required when the IdP
-//                                  matches redirect_uris strictly,
-//                                  e.g. Supabase OAuth Server).
+//
+//	fixed port (required when the IdP
+//	matches redirect_uris strictly,
+//	e.g. Supabase OAuth Server).
 func loadAuthConfigFromEnv() *gateway.AuthConfig {
 	authorize := os.Getenv("CLANK_AUTH_AUTHORIZE_ENDPOINT")
 	token := os.Getenv("CLANK_AUTH_TOKEN_ENDPOINT")

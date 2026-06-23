@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acksell/clank/pkg/blobstore"
 	clanksync "github.com/acksell/clank/pkg/sync"
 	"github.com/acksell/clank/pkg/sync/checkpoint"
-	"github.com/acksell/clank/pkg/sync/storage"
 )
 
 // Two distinct 64-hex content hashes for the session-blob refs.
@@ -21,16 +21,16 @@ const (
 )
 
 // newSessionsTestServer wires up an in-process sync.Server with a
-// memSyncStore + storage.Memory. Returns the server plus the user/
+// memSyncStore + blobstore.Memory. Returns the server plus the user/
 // worktree/checkpoint identifiers it seeded.
-func newSessionsTestServer(t *testing.T) (*clanksync.Server, *memSyncStore, *storage.Memory, string, string, string) {
+func newSessionsTestServer(t *testing.T) (*clanksync.Server, *memSyncStore, *blobstore.Memory, string, string, string) {
 	t.Helper()
 	const userID = "user-A"
 	const worktreeID = "wt-sessions"
 	const checkpointID = "ck-sessions"
 
 	st := newMemSyncStore()
-	mem := storage.NewMemory()
+	mem := blobstore.NewMemory()
 	t.Cleanup(mem.Close)
 
 	// Seed worktree + checkpoint manually so we don't depend on the

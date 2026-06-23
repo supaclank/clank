@@ -17,8 +17,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/acksell/clank/pkg/blobstore"
 	"github.com/acksell/clank/pkg/provisioner/hoststore"
-	"github.com/acksell/clank/pkg/sync/storage"
 )
 
 // Config configures the sync Server. Store and Storage are required.
@@ -28,7 +28,7 @@ type Config struct {
 
 	// Storage is the object-storage backend (S3-compatible) where
 	// checkpoint bundles live.
-	Storage storage.Storage
+	Storage blobstore.Storage
 
 	// PresignTTL is how long presigned PUT/GET URLs stay valid.
 	// Default 5 minutes — long enough for slow uploads, short enough

@@ -6,16 +6,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acksell/clank/pkg/blobstore"
 	clanksync "github.com/acksell/clank/pkg/sync"
-	"github.com/acksell/clank/pkg/sync/storage"
 )
 
 // newPurgeServer is newDeleteServer but also returns the object store so a
 // test can seed and assert on blobs (which PurgeUser sweeps by prefix).
-func newPurgeServer(t *testing.T) (*clanksync.Server, *memSyncStore, *storage.Memory) {
+func newPurgeServer(t *testing.T) (*clanksync.Server, *memSyncStore, *blobstore.Memory) {
 	t.Helper()
 	store := newMemSyncStore()
-	mem := storage.NewMemory()
+	mem := blobstore.NewMemory()
 	t.Cleanup(mem.Close)
 	srv, err := clanksync.NewServer(clanksync.Config{Store: store, Storage: mem, PresignTTL: time.Minute}, nil)
 	if err != nil {
@@ -26,7 +26,7 @@ func newPurgeServer(t *testing.T) (*clanksync.Server, *memSyncStore, *storage.Me
 
 // seedUser populates a user with worktrees+checkpoints, a head-bundle row, and
 // the matching object-store blobs under "<userID>/".
-func seedUser(t *testing.T, store *memSyncStore, mem *storage.Memory, userID, worktreeID string) {
+func seedUser(t *testing.T, store *memSyncStore, mem *blobstore.Memory, userID, worktreeID string) {
 	t.Helper()
 	ctx := context.Background()
 	if err := store.InsertWorktree(ctx, clanksync.Worktree{ID: worktreeID, UserID: userID, DisplayName: "demo"}); err != nil {

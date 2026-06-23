@@ -219,6 +219,11 @@ type SessionViewModel struct {
 	inputActive bool
 	input       textarea.Model
 
+	// Image attachments staged in the prompt (compose + follow-up). Each is
+	// shown as an inline <imageN.ext> pill in m.input and uploaded on send.
+	attachments   []pendingAttachment
+	attachmentSeq int
+
 	// paneFocused mirrors whether the session view is the currently
 	// focused pane in the parent inbox layout. The chat draws no outer
 	// border, so the per-message cursor border is the only visual cue
@@ -1078,6 +1083,13 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case tea.PasteMsg:
+		// A dropped/pasted image-file path becomes a pill; anything else
+		// falls through to the textarea as normal text below.
+		if m.inputActive && m.maybePasteImagePath(msg.Content) {
+			return m, nil
+		}
+
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
@@ -1165,13 +1177,27 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.modelPicker = newModelPicker(m.models, m.selectedModel, m.backend)
 			}
 			return m, m.modelPicker.Init()
+		case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+v"))):
+			// Paste an image from the clipboard as an inline pill. No-op when
+			// the clipboard holds no image (text paste arrives as tea.PasteMsg).
+			m.pasteClipboardImage()
+			return m, nil
+
+		case key.Matches(msg, key.NewBinding(key.WithKeys("backspace"))):
+			// A pill deletes as one unit when the cursor is right after it;
+			// otherwise fall through to the textarea's normal backspace.
+			if m.deletePillBeforeCursor(msg) {
+				return m, nil
+			}
+
 		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 			// Send the message. Shift+enter inserts newline (handled by textarea).
 			if m.submitting {
 				return m, nil // Already in flight — ignore duplicate Enter.
 			}
-			text := strings.TrimSpace(m.input.Value())
-			if text != "" {
+			echo := strings.TrimSpace(m.input.Value())
+			text, atts := m.promptForSend()
+			if text != "" || len(atts) > 0 {
 				modeLabel := ""
 				if len(m.modes) > 0 {
 					modeLabel = m.modes[m.selectedMode].label
@@ -1183,15 +1209,16 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 				m.entries = append(m.entries, displayEntry{
 					kind:    entryUser,
-					content: text,
+					content: echo,
 					agent:   modeLabel,
 				})
 				m.input.Reset()
+				m.attachments = nil
 				m.inputActive = false
 				m.input.Blur()
 				m.follow = true
 				m.submitting = true
-				return m, m.sendMessage(text)
+				return m, m.sendMessage(text, atts)
 			}
 			return m, nil
 		case key.Matches(msg, wordBackwardBinding):
@@ -2176,7 +2203,7 @@ func (m *SessionViewModel) isBusy() bool {
 	return m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting)
 }
 
-func (m *SessionViewModel) sendMessage(text string) tea.Cmd {
+func (m *SessionViewModel) sendMessage(text string, atts []agent.Attachment) tea.Cmd {
 	var sel selectableMode
 	if len(m.modes) > 0 {
 		sel = m.modes[m.selectedMode]
@@ -2192,7 +2219,7 @@ func (m *SessionViewModel) sendMessage(text string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		opts := agent.SendMessageOpts{Text: text, Agent: sel.agent, Model: modelOverride, PermissionMode: sel.perm}
+		opts := agent.SendMessageOpts{Text: text, Agent: sel.agent, Model: modelOverride, PermissionMode: sel.perm, Attachments: atts}
 		err := m.client.Session(m.sessionID).Send(ctx, opts)
 		return sessionSendResultMsg{err: err}
 	}
@@ -2475,9 +2502,9 @@ func (m *SessionViewModel) View() tea.View {
 		sb.WriteString("\n")
 		sb.WriteString(m.renderPromptBox())
 		sb.WriteString("\n")
-		inputHelp := "enter: send | shift+enter: newline | esc: cancel"
+		inputHelp := "enter: send | shift+enter: newline | ctrl+v: image | esc: cancel"
 		if len(m.modes) > 1 {
-			inputHelp = "enter: send | shift+enter: newline | tab: cycle mode | esc: cancel"
+			inputHelp = "enter: send | shift+enter: newline | tab: cycle mode | ctrl+v: image | esc: cancel"
 		}
 		if len(m.models) > 0 {
 			inputHelp += " | shift+tab: select model"

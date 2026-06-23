@@ -116,8 +116,8 @@ func New(prov provisioner.Provisioner, hostID string, port int, cfg Config) (*Tu
 			defer cancel()
 			return t.prov.OpenInternalConn(dialCtx, t.hostID, t.port)
 		},
-		MaxIdleConns:    cfg.MaxIdleConns,
-		IdleConnTimeout: cfg.IdleConnTimeout,
+		MaxIdleConns:      cfg.MaxIdleConns,
+		IdleConnTimeout:   cfg.IdleConnTimeout,
 		DisableKeepAlives: true, // prevent stale half-open tunnels; see package doc
 		// TLSClientConfig stays nil: Metro inside the sprite speaks
 		// plain HTTP, and the public-edge TLS is terminated at the

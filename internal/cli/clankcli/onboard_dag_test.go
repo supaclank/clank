@@ -14,9 +14,9 @@ import (
 	"github.com/acksell/clank/internal/clanksync/triggers"
 	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/store"
+	"github.com/acksell/clank/pkg/blobstore"
 	clanksync "github.com/acksell/clank/pkg/sync"
 	syncclient "github.com/acksell/clank/pkg/sync/client"
-	"github.com/acksell/clank/pkg/sync/storage"
 )
 
 // newSyncServer spins up a real sync server (sqlite + in-memory storage)
@@ -29,7 +29,7 @@ func newSyncServer(t *testing.T) (*syncclient.Client, *store.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	mem := storage.NewMemory()
+	mem := blobstore.NewMemory()
 	t.Cleanup(func() { mem.Close() })
 	srv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
 	if err != nil {

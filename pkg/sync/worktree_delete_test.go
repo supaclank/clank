@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acksell/clank/pkg/blobstore"
 	clanksync "github.com/acksell/clank/pkg/sync"
-	"github.com/acksell/clank/pkg/sync/storage"
 )
 
 // newDeleteServer builds a sync Server over an in-memory store for
@@ -15,7 +15,7 @@ import (
 func newDeleteServer(t *testing.T) (*clanksync.Server, *memSyncStore) {
 	t.Helper()
 	store := newMemSyncStore()
-	mem := storage.NewMemory()
+	mem := blobstore.NewMemory()
 	t.Cleanup(mem.Close)
 	srv, err := clanksync.NewServer(clanksync.Config{Store: store, Storage: mem, PresignTTL: time.Minute}, nil)
 	if err != nil {
