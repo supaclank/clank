@@ -380,6 +380,9 @@ type StartRequest struct {
 	// PermissionMode is the initial Claude permission posture for a new session.
 	// Ignored by the OpenCode backend.
 	PermissionMode ClaudePermissionMode `json:"permission_mode,omitempty"`
+	// Attachments are images for the first message, forwarded to the backend's
+	// OpenAndSend. Same semantics as SendMessageOpts.Attachments.
+	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
 // Validate checks that required fields are set per §7.3 of
@@ -394,8 +397,8 @@ func (r StartRequest) Validate() error {
 	if err := r.GitRef.Validate(); err != nil {
 		return fmt.Errorf("git_ref: %w", err)
 	}
-	if r.Prompt == "" {
-		return fmt.Errorf("prompt is required")
+	if r.Prompt == "" && len(r.Attachments) == 0 {
+		return fmt.Errorf("prompt or attachment is required")
 	}
 	if r.PermissionMode != "" && !r.PermissionMode.IsValid() {
 		return fmt.Errorf("unknown permission_mode: %s", r.PermissionMode)
@@ -570,6 +573,27 @@ type SendMessageOpts struct {
 	// start it picks the initial mode; on a follow-up it changes the mode at
 	// runtime. Empty means "no change". Ignored by the OpenCode backend.
 	PermissionMode ClaudePermissionMode `json:"permission_mode,omitempty"`
+	// Attachments are images the client uploaded out-of-band; the backend
+	// downloads each via its presigned GetURL and inlines it into the agent
+	// (Claude base64 content block / OpenCode file part). Empty for text-only
+	// messages.
+	Attachments []Attachment `json:"attachments,omitempty"`
+}
+
+// Attachment is one image attached to a user message. The client uploads
+// the bytes to the object store via a presigned PUT URL, then sends the
+// message carrying the presigned GetURL the sprite uses to download. The
+// gateway never sees the bytes.
+type Attachment struct {
+	ImageID  string `json:"image_id,omitempty"`
+	Mime     string `json:"mime"`
+	Filename string `json:"filename,omitempty"`
+	// Source is where clank-host fetches the bytes from. Scheme-tagged so the
+	// client picks the cheapest transport for the target host:
+	//   - file://<abs>      local host, zero-copy (gated by AllowLocalFileAttachments)
+	//   - data:<mime>;base64 inline bytes (rides the message)
+	//   - http(s)://…       a fetchable URL, e.g. a presigned object-store GET
+	Source string `json:"source"`
 }
 
 // Lifecycle: NewBackend → Open (or OpenAndSend) → Send* → Abort? → Stop

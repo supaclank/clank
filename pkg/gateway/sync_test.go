@@ -14,6 +14,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/store"
+	"github.com/acksell/clank/pkg/blobstore"
 	"github.com/acksell/clank/pkg/provisioner"
 	clanksync "github.com/acksell/clank/pkg/sync"
 	"github.com/acksell/clank/pkg/sync/checkpoint"
@@ -30,7 +31,7 @@ func newSyncGateway(t *testing.T) (*httptest.Server, *clanksync.Server, *stubPro
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	mem := storage.NewMemory()
+	mem := blobstore.NewMemory()
 	t.Cleanup(mem.Close)
 	syncSrv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
 	if err != nil {
@@ -220,14 +221,14 @@ func (rs *recordingSprite) server(t *testing.T) *httptest.Server {
 // the gateway test server, the underlying store (for seeding/assertions), the
 // sync server (for minting presigned session-manifest URLs), and the Memory
 // backend (for asserting which objects were fetched).
-func newMaterializeGateway(t *testing.T, sprite *httptest.Server) (*httptest.Server, *store.Store, *clanksync.Server, *storage.Memory) {
+func newMaterializeGateway(t *testing.T, sprite *httptest.Server) (*httptest.Server, *store.Store, *clanksync.Server, *blobstore.Memory) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "sync.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	mem := storage.NewMemory()
+	mem := blobstore.NewMemory()
 	t.Cleanup(mem.Close)
 	syncSrv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
 	if err != nil {

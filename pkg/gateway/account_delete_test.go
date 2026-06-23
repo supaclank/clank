@@ -12,13 +12,13 @@ import (
 
 	"github.com/acksell/clank/internal/store"
 	"github.com/acksell/clank/pkg/auth"
+	"github.com/acksell/clank/pkg/blobstore"
 	"github.com/acksell/clank/pkg/notify"
 	"github.com/acksell/clank/pkg/preview/routestore"
 	"github.com/acksell/clank/pkg/preview/routestore/memstore"
 	"github.com/acksell/clank/pkg/preview/tokens"
 	"github.com/acksell/clank/pkg/provisioner/hoststore"
 	clanksync "github.com/acksell/clank/pkg/sync"
-	"github.com/acksell/clank/pkg/sync/storage"
 )
 
 // --- real (non-mock) test fixtures for the optional gateway surfaces ---
@@ -86,7 +86,7 @@ func (r *recordingIdP) calls() []string {
 type accountGateway struct {
 	srv    *httptest.Server
 	store  *store.Store
-	mem    *storage.Memory
+	mem    *blobstore.Memory
 	prov   *stubProvisioner
 	routes *memstore.Store
 	idp    *recordingIdP
@@ -99,7 +99,7 @@ func newAccountGateway(t *testing.T, prov *stubProvisioner) *accountGateway {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	mem := storage.NewMemory()
+	mem := blobstore.NewMemory()
 	t.Cleanup(mem.Close)
 	syncSrv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
 	if err != nil {
@@ -343,7 +343,7 @@ func TestDeleteAccount_Unauthenticated(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	mem := storage.NewMemory()
+	mem := blobstore.NewMemory()
 	t.Cleanup(mem.Close)
 	syncSrv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
 	if err != nil {

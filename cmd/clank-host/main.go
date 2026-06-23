@@ -35,8 +35,8 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
-	"github.com/acksell/clank/internal/host/preview"
 	hostmux "github.com/acksell/clank/internal/host/mux"
+	"github.com/acksell/clank/internal/host/preview"
 	hoststore "github.com/acksell/clank/internal/host/store"
 	"github.com/acksell/clank/internal/keepalive"
 	keepalivenoop "github.com/acksell/clank/internal/keepalive/noop"
@@ -70,6 +70,7 @@ func main() {
 	githubOAuthClientID := flag.String("github-oauth-client-id", os.Getenv("CLANK_GITHUB_OAUTH_CLIENT_ID"), "Clank GitHub OAuth App client_id, used for the GitHub Connect device flow. Empty disables GitHub Connect on this host. Defaults to $CLANK_GITHUB_OAUTH_CLIENT_ID.")
 	projectCommitterName := flag.String("project-committer-name", os.Getenv("CLANK_PROJECT_COMMITTER_NAME"), "Git committer name stamped on a scaffolded project's seed commit. Empty uses a neutral default. Defaults to $CLANK_PROJECT_COMMITTER_NAME.")
 	projectCommitterEmail := flag.String("project-committer-email", os.Getenv("CLANK_PROJECT_COMMITTER_EMAIL"), "Git committer email stamped on a scaffolded project's seed commit. Empty uses a neutral default. Defaults to $CLANK_PROJECT_COMMITTER_EMAIL.")
+	localFileAttachments := flag.Bool("local-file-attachments", false, "Honor file:// image attachment sources (the client shares this host's filesystem). Set by the local laptop provisioner; off for remote sprites so a message can't make the host read arbitrary local paths.")
 	flag.Parse()
 
 	if *socket == "" && *listen == "" {
@@ -80,6 +81,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "clank-host: --socket and --listen are mutually exclusive")
 		os.Exit(2)
 	}
+
+	// file:// image attachments are honored only when the client shares this
+	// host's filesystem (the laptop), as signaled by the local provisioner. A
+	// remote sprite leaves this off so a message can't make it read arbitrary
+	// local paths.
+	agent.AllowLocalFileAttachments = *localFileAttachments
 
 	// Refuse to start with a non-loopback TCP listener and no auth
 	// token — that combo would expose every clank-host endpoint to
@@ -97,13 +104,13 @@ func main() {
 		addr = "unix://" + *socket
 	}
 	cfg := runConfig{
-		addr:                 addr,
-		listenAuthToken:      *listenAuthToken,
-		dataDir:              *dataDir,
-		keepaliveProvider:    *keepaliveProvider,
-		notifierProvider:     *notifierProvider,
-		notifierWebhookURL:   *notifierWebhookURL,
-		notifierWebhookToken: *notifierWebhookToken,
+		addr:                  addr,
+		listenAuthToken:       *listenAuthToken,
+		dataDir:               *dataDir,
+		keepaliveProvider:     *keepaliveProvider,
+		notifierProvider:      *notifierProvider,
+		notifierWebhookURL:    *notifierWebhookURL,
+		notifierWebhookToken:  *notifierWebhookToken,
 		previewWebhookURL:     *previewWebhookURL,
 		githubOAuthClientID:   *githubOAuthClientID,
 		projectCommitterName:  *projectCommitterName,
@@ -120,13 +127,13 @@ func main() {
 // argument-order trap; this is the seam for "future-me adds a flag
 // without touching every test".
 type runConfig struct {
-	addr                 string
-	listenAuthToken      string
-	dataDir              string
-	keepaliveProvider    string
-	notifierProvider     string
-	notifierWebhookURL   string
-	notifierWebhookToken string
+	addr                  string
+	listenAuthToken       string
+	dataDir               string
+	keepaliveProvider     string
+	notifierProvider      string
+	notifierWebhookURL    string
+	notifierWebhookToken  string
 	previewWebhookURL     string
 	githubOAuthClientID   string
 	projectCommitterName  string
@@ -295,10 +302,10 @@ func run(cfg runConfig) error {
 			agent.BackendOpenCode:   host.NewOpenCodeBackendManager(),
 			agent.BackendClaudeCode: host.NewClaudeBackendManager(),
 		},
-		Log:                 lg,
-		SessionsStore:       hostStore,
-		KeepaliveListener:   keepaliveListener,
-		NotifierLoop:        notifierLoop,
+		Log:                   lg,
+		SessionsStore:         hostStore,
+		KeepaliveListener:     keepaliveListener,
+		NotifierLoop:          notifierLoop,
 		PreviewGWClient:       gwClient,
 		GitHubOAuthClientID:   cfg.githubOAuthClientID,
 		ProjectCommitterName:  cfg.projectCommitterName,

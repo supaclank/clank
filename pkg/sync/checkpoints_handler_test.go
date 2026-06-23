@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/acksell/clank/pkg/auth"
+	"github.com/acksell/clank/pkg/blobstore"
 	clanksync "github.com/acksell/clank/pkg/sync"
-	"github.com/acksell/clank/pkg/sync/storage"
 )
 
 // memSyncStore is an in-memory SyncStore for handler tests. Real
@@ -191,10 +191,10 @@ func fixedPrincipalMiddleware(userID string, next http.Handler) http.Handler {
 	})
 }
 
-func newTestServer(t *testing.T) (*httptest.Server, *memSyncStore, *storage.Memory) {
+func newTestServer(t *testing.T) (*httptest.Server, *memSyncStore, *blobstore.Memory) {
 	t.Helper()
 	store := newMemSyncStore()
-	mem := storage.NewMemory()
+	mem := blobstore.NewMemory()
 	t.Cleanup(mem.Close)
 
 	srv, err := clanksync.NewServer(clanksync.Config{
@@ -449,7 +449,7 @@ func TestMultipleLaptopsSameUserShare(t *testing.T) {
 func TestRegisterWorktree_SurvivesPostInsertGetFailure(t *testing.T) {
 	t.Parallel()
 	store := &getFailingStore{memSyncStore: newMemSyncStore()}
-	mem := storage.NewMemory()
+	mem := blobstore.NewMemory()
 	t.Cleanup(mem.Close)
 
 	srv, err := clanksync.NewServer(clanksync.Config{

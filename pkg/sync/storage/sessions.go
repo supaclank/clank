@@ -1,6 +1,10 @@
 package storage
 
-import "path"
+import (
+	"path"
+
+	"github.com/acksell/clank/pkg/blobstore"
+)
 
 // BlobSessionManifest is the per-checkpoint sidecar listing all session
 // blobs that ride alongside the code bundles. It sits at the same
@@ -31,11 +35,11 @@ func KeyForSessionBlob(userID, worktreeID, externalID, contentHash string) (stri
 		{"worktreeID", worktreeID},
 		{"externalID", externalID},
 	} {
-		if err := validateComponent(c.name, c.value); err != nil {
+		if err := blobstore.ValidateComponent(c.name, c.value); err != nil {
 			return "", err
 		}
 	}
-	if err := validateContentHash(contentHash); err != nil {
+	if err := blobstore.ValidateContentHash(contentHash); err != nil {
 		return "", err
 	}
 	return path.Join(userID, "worktrees", worktreeID, keySessionDir, externalID, contentHash), nil

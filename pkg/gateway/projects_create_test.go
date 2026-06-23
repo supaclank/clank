@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/store"
+	"github.com/acksell/clank/pkg/blobstore"
 	"github.com/acksell/clank/pkg/provisioner"
 	clanksync "github.com/acksell/clank/pkg/sync"
-	"github.com/acksell/clank/pkg/sync/storage"
 )
 
 const projUser = "tester"
@@ -65,7 +65,7 @@ func newProjectsGateway(t *testing.T, sprite *httptest.Server, templates []Templ
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	mem := storage.NewMemory()
+	mem := blobstore.NewMemory()
 	t.Cleanup(mem.Close)
 	syncSrv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
 	if err != nil {
@@ -201,7 +201,7 @@ func mustSyncServer(t *testing.T) *clanksync.Server {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	mem := storage.NewMemory()
+	mem := blobstore.NewMemory()
 	t.Cleanup(mem.Close)
 	syncSrv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
 	if err != nil {

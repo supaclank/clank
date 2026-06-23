@@ -13,8 +13,8 @@ import (
 
 	"github.com/acksell/clank/internal/store"
 	"github.com/acksell/clank/pkg/auth"
+	"github.com/acksell/clank/pkg/blobstore"
 	clanksync "github.com/acksell/clank/pkg/sync"
-	"github.com/acksell/clank/pkg/sync/storage"
 )
 
 // headerPrincipalMiddleware pulls UserID from X-Test-User-Id and
@@ -46,7 +46,7 @@ func TestRemoteCaller_RejectedWhenHostStoreUnset(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	mem := storage.NewMemory()
+	mem := blobstore.NewMemory()
 	t.Cleanup(mem.Close)
 
 	srv, err := clanksync.NewServer(clanksync.Config{

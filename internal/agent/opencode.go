@@ -35,7 +35,7 @@ type ServerResolver func(ctx context.Context) (string, error)
 //     re-resolving the server URL each time (handles port changes).
 type OpenCodeBackend struct {
 	mu           sync.Mutex
-	openMu       sync.Mutex     // serializes Open() so check-and-create is atomic
+	openMu       sync.Mutex // serializes Open() so check-and-create is atomic
 	status       SessionStatus
 	sessionID    string         // OpenCode's session ID (assigned by server)
 	serverURL    string         // e.g. "http://127.0.0.1:4123"
@@ -131,22 +131,41 @@ func (b *OpenCodeBackend) Send(ctx context.Context, opts SendMessageOpts) error 
 		return fmt.Errorf("session not open")
 	}
 
+	// Download attachments before flipping to busy — a bad image must fail
+	// the send synchronously, not surface as a stalled session.
+	imgs, err := resolveAttachments(ctx, opts.Attachments)
+	if err != nil {
+		return fmt.Errorf("resolve attachments: %w", err)
+	}
+
 	b.setStatus(StatusBusy)
-	params := b.buildPromptParams(opts)
+	params := b.buildPromptParams(opts, imgs)
 	sid := b.SessionID()
 	go b.runPrompt(sid, params)
 	return nil
 }
 
-func (b *OpenCodeBackend) buildPromptParams(opts SendMessageOpts) *opencode.SessionPromptAsyncRequest {
+func (b *OpenCodeBackend) buildPromptParams(opts SendMessageOpts, imgs []resolvedImage) *opencode.SessionPromptAsyncRequest {
+	// Fern discriminates this union by which variant pointer is non-nil and
+	// injects the "type" tag at marshal time. Text part first, then one file
+	// part per image carrying an inline data: URL (symmetric with Claude's
+	// base64 block).
+	parts := []*opencode.SessionPromptAsyncRequestPartsItem{
+		{Text: &opencode.TextPartInput{Text: opts.Text}},
+	}
+	for _, img := range imgs {
+		file := &opencode.FilePartInput{
+			Mime: img.Mime,
+			URL:  DataURL(img.Mime, img.Data),
+		}
+		if img.Filename != "" {
+			file.Filename = opencode.String(img.Filename)
+		}
+		parts = append(parts, &opencode.SessionPromptAsyncRequestPartsItem{File: file})
+	}
 	req := &opencode.SessionPromptAsyncRequest{
 		SessionID: b.SessionID(),
-		// Fern discriminates this union by which variant pointer is non-nil
-		// and injects the "type": "text" tag at marshal time. No explicit
-		// Type field to set here.
-		Parts: []*opencode.SessionPromptAsyncRequestPartsItem{
-			{Text: &opencode.TextPartInput{Text: opts.Text}},
-		},
+		Parts:     parts,
 	}
 	if opts.Agent != "" {
 		req.Agent = opencode.String(opts.Agent)

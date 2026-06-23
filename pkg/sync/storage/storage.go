@@ -1,11 +1,5 @@
-// Package storage is the object-storage layer for clank-sync's
-// checkpoint substrate. Bundles never traverse the sync server in
-// memory; the laptop and sprite upload/download via presigned URLs
-// minted here.
-//
-// The Storage interface is provider-agnostic — the S3 implementation
-// works against AWS S3, Cloudflare R2, Tigris, MinIO, and any other
-// S3-compatible API. The Memory implementation is for tests.
+// Package storage builds tenant-scoped storage keys for clank-sync's
+// checkpoint substrate on top of the provider-agnostic pkg/blobstore.
 //
 // Path convention (see KeyFor): every blob lives under a per-tenant
 // prefix at
@@ -13,23 +7,21 @@
 //	<userID>/checkpoints/<worktreeID>/<checkpointID>/<blob>
 //
 // where userID always comes from validated token claims, never from
-// untrusted request input. KeyFor refuses any component containing
-// path-escape sequences ("..", "/", "\\") so a bug at a higher layer
-// can't smuggle one tenant's path-prefix into another.
+// untrusted request input. Components are validated via
+// blobstore.ValidateComponent so a bug at a higher layer can't smuggle
+// one tenant's path-prefix into another.
 package storage
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"path"
-	"strings"
-	"time"
+
+	"github.com/acksell/clank/pkg/blobstore"
 )
 
 // Blob enumerates the well-known per-checkpoint blob names. Adding a
-// new kind requires a code change here so handlers can't smuggle a
-// new path component via untrusted request input.
+// new kind requires a code change here so handlers can't smuggle a new
+// path component via untrusted request input.
 type Blob string
 
 const (
@@ -40,54 +32,18 @@ const (
 // validBlobs is the closed set of acceptable per-checkpoint blob names.
 // The head bundle is NOT here — it's content-addressed via KeyForHead,
 // shared across checkpoints. Any value outside this set returns
-// ErrInvalidPathComponent from KeyFor.
+// blobstore.ErrInvalidPathComponent from KeyFor.
 var validBlobs = map[Blob]bool{
 	BlobUncommitted:     true,
 	BlobManifest:        true,
 	BlobSessionManifest: true,
 }
 
-// ErrInvalidPathComponent is returned by KeyFor when one of the
-// inputs would produce an unsafe storage key. Surfaced as a typed
-// error so handlers can return 400 instead of 500.
-var ErrInvalidPathComponent = errors.New("storage: invalid path component")
-
-// ErrNotFound is returned by Get/Exists when no object exists at the
-// requested key. Wrapped, not unwrapped — callers should errors.Is.
-var ErrNotFound = errors.New("storage: object not found")
-
-// Storage is the minimal contract clank-sync needs from object storage.
-// Implementations MUST be safe for concurrent use.
-type Storage interface {
-	// PresignPut returns a presigned PUT URL valid for ttl. The URL
-	// is itself the capability — anyone holding it can upload to that
-	// key until ttl expires. Callers MUST scope key construction via
-	// KeyFor, never accept raw paths from untrusted input.
-	PresignPut(ctx context.Context, key string, ttl time.Duration) (url string, err error)
-
-	// PresignGet returns a presigned GET URL valid for ttl. Same
-	// capability semantics as PresignPut.
-	PresignGet(ctx context.Context, key string, ttl time.Duration) (url string, err error)
-
-	// Exists reports whether an object exists at key. Used for
-	// content-addressed dedup of headCommit bundles — if the SHA-keyed
-	// object is already there, we skip the PUT URL entirely.
-	Exists(ctx context.Context, key string) (bool, error)
-
-	// DeletePrefix removes every object whose key starts with prefix.
-	// Idempotent — deleting an empty/already-gone prefix is not an
-	// error. Used for tenant erasure (account deletion): one sweep of
-	// "<userID>/" purges all of a user's blobs. Callers MUST build the
-	// prefix via KeyForUserPrefix so an empty/escaped userID can't widen
-	// the sweep to the whole bucket.
-	DeletePrefix(ctx context.Context, prefix string) error
-}
-
-// KeyFor builds the storage key for a (userID, worktreeID, checkpointID, blob)
-// quad. This is the SINGLE function that maps tenant-scoped identifiers
-// to a storage path. Every component is validated for path safety; userID
-// in particular MUST come from authenticated token claims, never from
-// query parameters or request body.
+// KeyFor builds the storage key for a (userID, worktreeID, checkpointID,
+// blob) quad. This is the SINGLE function that maps tenant-scoped
+// identifiers to a storage path. Every component is validated for path
+// safety; userID in particular MUST come from authenticated token
+// claims, never from query parameters or request body.
 //
 // The per-checkpoint blobs (uncommitted bundle, manifest, session
 // blobs) use the per-push checkpoint ULID. The head bundle is NOT a
@@ -95,7 +51,7 @@ type Storage interface {
 // KeyForHead and shared across checkpoints.
 func KeyFor(userID, worktreeID, checkpointID string, blob Blob) (string, error) {
 	if !validBlobs[blob] {
-		return "", fmt.Errorf("%w: blob %q not in validBlobs", ErrInvalidPathComponent, blob)
+		return "", fmt.Errorf("%w: blob %q not in validBlobs", blobstore.ErrInvalidPathComponent, blob)
 	}
 	for _, c := range []struct {
 		name, value string
@@ -104,7 +60,7 @@ func KeyFor(userID, worktreeID, checkpointID string, blob Blob) (string, error) 
 		{"worktreeID", worktreeID},
 		{"checkpointID", checkpointID},
 	} {
-		if err := validateComponent(c.name, c.value); err != nil {
+		if err := blobstore.ValidateComponent(c.name, c.value); err != nil {
 			return "", err
 		}
 	}
@@ -125,7 +81,7 @@ func KeyForHead(userID, headSHA string) (string, error) {
 		{"userID", userID},
 		{"headSHA", headSHA},
 	} {
-		if err := validateComponent(c.name, c.value); err != nil {
+		if err := blobstore.ValidateComponent(c.name, c.value); err != nil {
 			return "", err
 		}
 	}
@@ -137,46 +93,12 @@ func KeyForHead(userID, headSHA string) (string, error) {
 // "<userID>/"). The trailing slash is load-bearing: without it the
 // prefix "user1" would also match "user10/", deleting another tenant's
 // data. userID MUST come from authenticated token claims; it is run
-// through the same validateComponent guard as KeyFor, so an empty or
-// path-escaping userID returns ErrInvalidPathComponent rather than a
-// prefix that could sweep the whole bucket.
+// through blobstore.ValidateComponent, so an empty or path-escaping
+// userID returns ErrInvalidPathComponent rather than a prefix that could
+// sweep the whole bucket.
 func KeyForUserPrefix(userID string) (string, error) {
-	if err := validateComponent("userID", userID); err != nil {
+	if err := blobstore.ValidateComponent("userID", userID); err != nil {
 		return "", err
 	}
 	return userID + "/", nil
-}
-
-// validateComponent rejects empty strings, anything containing path
-// separators or escape sequences, and anything starting with a dot
-// (would shadow ".gitignore"-style hidden entries).
-func validateComponent(name, v string) error {
-	if v == "" {
-		return fmt.Errorf("%w: %s is empty", ErrInvalidPathComponent, name)
-	}
-	if strings.ContainsAny(v, "/\\") || strings.Contains(v, "..") {
-		return fmt.Errorf("%w: %s contains path separator or .. (%q)", ErrInvalidPathComponent, name, v)
-	}
-	if strings.HasPrefix(v, ".") {
-		return fmt.Errorf("%w: %s starts with dot (%q)", ErrInvalidPathComponent, name, v)
-	}
-	if len(v) > 128 {
-		return fmt.Errorf("%w: %s exceeds 128 chars", ErrInvalidPathComponent, name)
-	}
-	return nil
-}
-
-// validateContentHash requires exactly 64 lowercase-hex chars (a sha256
-// digest) so a client can't smuggle an arbitrary path component through
-// the content-hash slot of a session blob key.
-func validateContentHash(h string) error {
-	if len(h) != 64 {
-		return fmt.Errorf("%w: contentHash must be 64 hex chars, got %d", ErrInvalidPathComponent, len(h))
-	}
-	for _, c := range h {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-			return fmt.Errorf("%w: contentHash has non-hex char %q", ErrInvalidPathComponent, string(c))
-		}
-	}
-	return nil
 }

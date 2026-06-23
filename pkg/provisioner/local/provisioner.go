@@ -161,6 +161,9 @@ func (p *Provisioner) EnsureHost(_ context.Context, _ string) (provisioner.HostR
 	args := []string{
 		"--listen", "tcp://127.0.0.1:0",
 		"--listen-auth-token", authToken,
+		// The laptop host shares the user's filesystem, so honor file://
+		// image attachments (zero-copy). Remote sprites never get this flag.
+		"--local-file-attachments",
 	}
 	if p.opts.DataDir != "" {
 		if err := os.MkdirAll(p.opts.DataDir, 0o700); err != nil {
