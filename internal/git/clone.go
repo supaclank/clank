@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -14,6 +15,44 @@ import (
 // pair this with removing dir/.git and a fresh Init.
 func Clone(ctx context.Context, url, dir string) error {
 	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--", url, dir)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git clone: %s (%w)", strings.TrimSpace(stderr.String()), err)
+	}
+	return nil
+}
+
+// cloneTokenEnv carries the HTTPS auth token into the git subprocess for
+// CloneShallowKeepRemote. Passing it via the environment (not argv) keeps
+// it out of `ps` output; the inline credential helper reads it at runtime.
+const cloneTokenEnv = "CLANK_GH_TOKEN"
+
+// cloneCredentialHelper is an inline git credential helper that answers
+// HTTPS auth prompts with the token from cloneTokenEnv. GitHub accepts any
+// username when the password is a token, so "x-access-token" is a stable
+// placeholder. Passed via `git -c`, it never lands in the cloned repo's
+// .git/config — so the stored remote URL stays clean.
+const cloneCredentialHelper = `!f() { echo username=x-access-token; echo "password=$` + cloneTokenEnv + `"; }; f`
+
+// CloneShallowKeepRemote shallow-clones url into dir (--depth 1) keeping
+// the .git directory and the origin remote — for importing a user's
+// existing repo, where history depth doesn't matter but the link back to
+// the remote does. token authenticates HTTPS clones of private repos; pass
+// "" for public repos. dir must not already exist.
+//
+// The token reaches git through cloneTokenEnv + an inline credential
+// helper rather than the URL, so it appears neither in argv nor in the
+// resulting .git/config. The leading empty credential.helper resets any
+// system/global helper so it can't shadow ours.
+func CloneShallowKeepRemote(ctx context.Context, url, dir, token string) error {
+	cmd := exec.CommandContext(ctx, "git",
+		"-c", "credential.helper=",
+		"-c", "credential.helper="+cloneCredentialHelper,
+		"clone", "--depth", "1", "--", url, dir)
+	// GIT_TERMINAL_PROMPT=0 fails fast on bad/missing auth instead of
+	// blocking on an interactive username/password prompt.
+	cmd.Env = append(os.Environ(), cloneTokenEnv+"="+token, "GIT_TERMINAL_PROMPT=0")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
