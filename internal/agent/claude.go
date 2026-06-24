@@ -882,7 +882,7 @@ func (b *ClaudeCodeBackend) receiveLoop() {
 	// not idle. Marking it Dead lets the host rehydrate it on the next op instead
 	// of dispatching a follow-up into a dead transport and silently wedging the
 	// session in StatusError (the "needs attention" dead-end). Skip only an
-	// intentional Stop(), which has already set the terminal state.
+	// intentional Stop() — the backend is being torn down, no status update needed.
 	b.mu.Lock()
 	stopped := b.stopped
 	status := b.status
