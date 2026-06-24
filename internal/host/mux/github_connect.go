@@ -83,6 +83,11 @@ func writeGitHubFlowErr(w http.ResponseWriter, err error) {
 			Code:  "github_not_configured",
 			Error: err.Error(),
 		})
+	case errors.Is(err, githubpkg.ErrNotConnected):
+		writeJSON(w, http.StatusConflict, errResp{
+			Code:  "github_not_connected",
+			Error: err.Error(),
+		})
 	case errors.Is(err, githubpkg.ErrUnknownFlow):
 		writeJSON(w, http.StatusNotFound, errResp{
 			Code:  "unknown_flow",

@@ -105,6 +105,10 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// template (clone_url supplied by the gateway) into a fresh ~/work
 	// worktree with no remote. See projects.go.
 	mx.HandleFunc("POST /projects/create", m.handleCreateProject)
+	// /projects/import clones the caller's existing GitHub repo (owner/repo
+	// in the body) into a fresh ~/work worktree, keeping the origin remote.
+	// See import_project.go.
+	mx.HandleFunc("POST /projects/import", m.handleImportProject)
 	mx.HandleFunc("POST /worktrees/remove", m.handleRemoveWorktree)
 	mx.HandleFunc("POST /worktrees/merge", m.handleMergeBranch)
 	// Full-cleanup leg of a worktree delete: remove the materialized
