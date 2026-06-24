@@ -89,6 +89,9 @@ func (s *Service) ImportProjectFromGitHub(ctx context.Context, owner, repo strin
 
 	branch, err := git.CurrentBranch(projectDir)
 	if err != nil {
+		if rmErr := os.RemoveAll(projectDir); rmErr != nil {
+			s.log.Printf("warning: rollback remove project dir %s: %v", projectDir, rmErr)
+		}
 		return CreateWorktreeResult{}, fmt.Errorf("read checked-out branch: %w", err)
 	}
 

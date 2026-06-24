@@ -88,6 +88,30 @@ func TestListRepositories_Paginates(t *testing.T) {
 	}
 }
 
+func TestListRepositories_NullUpdatedAt(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// updated_at omitted — GitHub API may omit or null it for some repos.
+		_, _ = w.Write([]byte(`[{"name":"no-ts","full_name":"acme/no-ts","owner":{"login":"acme"}}]`))
+	}))
+	t.Cleanup(srv.Close)
+
+	m := NewManager(t.TempDir(), "Ov23li78UDBwea5WvI5v")
+	m.SetAPIBaseURL(srv.URL)
+
+	repos, err := m.ListRepositories(context.Background(), "gho_test")
+	if err != nil {
+		t.Fatalf("ListRepositories: %v", err)
+	}
+	if len(repos) != 1 {
+		t.Fatalf("len(repos) = %d, want 1", len(repos))
+	}
+	if !repos[0].UpdatedAt.IsZero() {
+		t.Errorf("UpdatedAt = %v, want zero for null timestamp", repos[0].UpdatedAt)
+	}
+}
+
 func TestAccessToken(t *testing.T) {
 	t.Parallel()
 	m := NewManager(t.TempDir(), "Ov23li78UDBwea5WvI5v")

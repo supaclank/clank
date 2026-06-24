@@ -46,6 +46,53 @@ func TestImportProjectFromGitHub_NotConnected(t *testing.T) {
 	}
 }
 
+func TestImportProjectFromGitHub_CleansUpWhenBranchReadFails(t *testing.T) {
+	// Not parallel: SetGitHubCloneBaseForTest + SetWorkRootForTest + t.Setenv mutate globals.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// An empty bare repo: git clone --depth 1 exits 0 with an "empty
+	// repository" warning, but the resulting clone has an unborn HEAD so
+	// git.CurrentBranch fails. The function must remove the cloned directory
+	// so no orphaned project dir is left behind.
+	reposRoot := t.TempDir()
+	bare := filepath.Join(reposRoot, "acme", "empty.git")
+	if err := os.MkdirAll(filepath.Dir(bare), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "init", "--bare", bare).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+	prevBase := host.SetGitHubCloneBaseForTest("file://" + reposRoot)
+	t.Cleanup(func() { host.SetGitHubCloneBaseForTest(prevBase) })
+
+	workRoot := filepath.Join(t.TempDir(), "work")
+	prevRoot := host.SetWorkRootForTest(workRoot)
+	t.Cleanup(func() { host.SetWorkRootForTest(prevRoot) })
+
+	svc := newTestService(t)
+	if err := svc.GitHub().Store().Write(githubpkg.Credentials{AccessToken: "gho_test"}); err != nil {
+		t.Fatalf("seed token: %v", err)
+	}
+
+	if _, err := svc.ImportProjectFromGitHub(context.Background(), "acme", "empty"); err == nil {
+		t.Fatal("expected error for empty-repo import, got nil")
+	}
+
+	// Work root must be empty — no orphaned project directory left behind.
+	entries, err := os.ReadDir(workRoot)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("ReadDir workRoot: %v", err)
+	}
+	if len(entries) != 0 {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("orphaned project dirs after failed import: %v", names)
+	}
+}
+
 func TestImportProjectFromGitHub_ClonesKeepingRemote(t *testing.T) {
 	// Not parallel: t.Setenv(HOME) + the package-global clone-base override.
 	home := t.TempDir()
