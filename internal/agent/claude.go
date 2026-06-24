@@ -384,6 +384,10 @@ func (b *ClaudeCodeBackend) OpenAndSend(ctx context.Context, opts SendMessageOpt
 	}
 
 	if err := b.dispatchClaudeQuery(client, opts.Text, imgs); err != nil {
+		// Surface a reason so the client can show a recoverable error banner
+		// ([VIEW-ERROR-001]); a bare setStatus(StatusError) leaves the session
+		// red with no explanation.
+		b.emitError(fmt.Sprintf("send initial prompt: %v", err))
 		b.setStatus(StatusError)
 		return fmt.Errorf("send initial prompt: %w", err)
 	}
@@ -482,6 +486,10 @@ func (b *ClaudeCodeBackend) Send(ctx context.Context, opts SendMessageOpts) erro
 	b.setStatus(StatusBusy)
 
 	if err := b.dispatchClaudeQuery(client, opts.Text, imgs); err != nil {
+		// Surface a reason so the client can show a recoverable error banner
+		// ([VIEW-ERROR-001]) instead of a silent red status with the user's text
+		// bounced back.
+		b.emitError(fmt.Sprintf("send prompt: %v", err))
 		b.setStatus(StatusError)
 		return fmt.Errorf("send prompt: %w", err)
 	}
@@ -868,8 +876,18 @@ func (b *ClaudeCodeBackend) receiveLoop() {
 		}
 	}
 
-	// Channel closed — connection ended.
-	if b.Status() == StatusBusy || b.Status() == StatusStarting {
+	// Channel closed — the connection ended. The backend is no longer usable
+	// regardless of the last turn's status: an Idle session whose transport
+	// dropped (e.g. the CLI exited as fallout from an instant interrupt) is dead,
+	// not idle. Marking it Dead lets the host rehydrate it on the next op instead
+	// of dispatching a follow-up into a dead transport and silently wedging the
+	// session in StatusError (the "needs attention" dead-end). Skip only an
+	// intentional Stop() — the backend is being torn down, no status update needed.
+	b.mu.Lock()
+	stopped := b.stopped
+	status := b.status
+	b.mu.Unlock()
+	if !stopped && status != StatusDead {
 		b.setStatus(StatusDead)
 	}
 }

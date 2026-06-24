@@ -2,7 +2,11 @@ package agent_test
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
+
+	claudecode "github.com/severity1/claude-agent-sdk-go"
 
 	"github.com/acksell/clank/internal/agent"
 )
@@ -29,5 +33,103 @@ func TestOpenAndSend_BadAttachmentLeavesStatusIdle(t *testing.T) {
 	}
 	if got := b.Status(); got != agent.StatusIdle {
 		t.Fatalf("status after bad attachment: got %s, want %s", got, agent.StatusIdle)
+	}
+}
+
+// TestConnectionClosedWhileIdle_MarksDead reproduces the root cause of the
+// "needs attention" wedge a user hit by cancelling a turn almost instantly.
+//
+// Sequence: a turn settles to Idle, then the CLI subprocess/transport drops
+// (the documented fallout of interrupting mid-enqueue — the subprocess exits).
+// receiveLoop only promoted a dropped connection to StatusDead when the prior
+// status was Busy/Starting, so an *Idle* session whose transport closed stayed
+// "Idle" — a lie: the connection is gone. The next Send then dispatches into the
+// dead transport, silently flips the session to StatusError, and (because the
+// backend lingers in the host registry) never recovers.
+//
+// A closed connection means the backend is unusable regardless of the last
+// turn's status; it MUST be marked Dead so the host can rehydrate it on the next
+// op. Companion to TestClaudeCodeBackendConnectionClosed, which covers the Busy
+// case that already worked.
+func TestConnectionClosedWhileIdle_MarksDead(t *testing.T) {
+	t.Parallel()
+
+	const sessionID = "claude-idle-then-die"
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.SystemMessage{
+			MessageType: "system",
+			Subtype:     "init",
+			Data:        map[string]any{"session_id": sessionID},
+		},
+		&claudecode.ResultMessage{MessageType: "result", SessionID: sessionID},
+	})
+	b := newTestBackend(t, transport)
+	defer b.Stop()
+
+	if err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{Text: "hi"}); err != nil {
+		t.Fatalf("OpenAndSend: %v", err)
+	}
+	// The turn completes and settles to Idle.
+	waitForStatus(t, b.Events(), agent.StatusIdle, 5*time.Second)
+
+	// The transport drops while the session is Idle — e.g. the CLI exited as
+	// fallout from an instant interrupt. This is NOT an intentional Stop().
+	transport.Close()
+
+	// The session must be marked Dead, not left looking like a usable Idle.
+	waitForStatus(t, b.Events(), agent.StatusDead, 5*time.Second)
+	if got := b.Status(); got != agent.StatusDead {
+		t.Fatalf("status after transport closed while idle: got %s, want %s", got, agent.StatusDead)
+	}
+}
+
+// TestSendDispatchFailure_EmitsErrorReason pins the recoverable-error contract:
+// when a follow-up Send fails to dispatch (the CLI transport is dead), the
+// backend must emit an error event carrying a reason — not flip to StatusError
+// silently. The user-visible bug was a red status with no explanation and the
+// typed text bouncing back, because the dispatch-failure path called
+// setStatus(StatusError) without emitting an error reason for the client to show.
+func TestSendDispatchFailure_EmitsErrorReason(t *testing.T) {
+	t.Parallel()
+
+	const sessionID = "claude-send-dispatch-fail"
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.SystemMessage{
+			MessageType: "system",
+			Subtype:     "init",
+			Data:        map[string]any{"session_id": sessionID},
+		},
+		&claudecode.ResultMessage{MessageType: "result", SessionID: sessionID},
+	})
+	b := newTestBackend(t, transport)
+	defer b.Stop()
+
+	if err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{Text: "hi"}); err != nil {
+		t.Fatalf("OpenAndSend: %v", err)
+	}
+	waitForStatus(t, b.Events(), agent.StatusIdle, 5*time.Second)
+
+	// The transport's write path is now dead (CLI subprocess gone).
+	transport.mu.Lock()
+	transport.sendErr = errors.New("write: broken pipe")
+	transport.mu.Unlock()
+
+	// The follow-up send fails to dispatch.
+	if err := b.Send(context.Background(), agent.SendMessageOpts{Text: "still there?"}); err == nil {
+		t.Fatal("expected Send to return an error when dispatch fails")
+	}
+
+	// The failure must surface as an error event with a non-empty reason so the
+	// client can show a recoverable banner instead of a silent red status.
+	evt := waitForEventType(t, b.Events(), agent.EventError, 2*time.Second)
+	data, ok := evt.Data.(agent.ErrorData)
+	if !ok {
+		t.Fatalf("EventError carried %T, want agent.ErrorData", evt.Data)
+	}
+	if data.Message == "" {
+		t.Error("EventError reason is empty; the client has nothing to show in the banner")
+	}
+	if got := b.Status(); got != agent.StatusError {
+		t.Errorf("status after failed dispatch: got %s, want %s", got, agent.StatusError)
 	}
 }

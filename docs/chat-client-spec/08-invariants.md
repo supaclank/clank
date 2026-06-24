@@ -207,6 +207,26 @@ stale transcript.
 but does not cover its own transport reconnect (`clank-mobile/src/hooks/dispatch.ts:196`).
 **Conformance:** `CONF-RECONNECT-SEMANTICS`.
 
+### [INV-DEAD-BACKEND-REHYDRATE-001] (MUST, host) A dropped backend connection is `dead`, not reused
+When a session backend loses its connection to the agent process (the agent message stream
+closes), the host MUST set status `dead` regardless of the turn's prior status, and the next
+operation that needs the backend (`/message`, `/abort`, …) MUST tear the dead backend down and
+lazily rehydrate a fresh one (resume via the stored external id) rather than dispatch into the
+dead one. A failed dispatch MUST surface a reason ([STATE-ERR-001](06-state-model.md)), never a
+silent status flip.
+**Why:** an interrupt issued the instant a turn starts can leave the agent process exited while
+the session still reads `idle`; reusing that backend fails every subsequent dispatch
+(`client not connected`), flips the session to `error` with no recovery path, and — since a chat
+client uses only `/message` + `/abort` and relies on lazy rehydration ([05](05-operations.md)) —
+leaves it wedged until a daemon restart. The fix mirrors the Open-failure teardown already in
+`ensureBackend`.
+**Golden:** `internal/agent/claude.go` (receiveLoop marks `dead` on stream close; Send/OpenAndSend
+emit an error reason on dispatch failure), `internal/host/service.go` (`ensureBackend` drops a
+`dead` backend and recreates).
+**Conformance:** host regression tests — `internal/agent/claude_status_regression_test.go`
+(`TestConnectionClosedWhileIdle_MarksDead`, `TestSendDispatchFailure_EmitsErrorReason`),
+`internal/host/ensure_backend_test.go` (`TestEnsureBackend_DeadBackendIsRehydrated`).
+
 ---
 
 ## Interactive tools & session list

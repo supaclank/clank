@@ -37,6 +37,11 @@ internally, and the SSE/messages paths lazily rehydrate), and `POST /sessions/{i
 (backend **process teardown** — distinct from `/abort`, which only interrupts the current
 turn). Worktree / project / sync / auth / GitHub routes are likewise out of chat scope.
 
+This lazy rehydration MUST also recover a backend whose connection dropped *mid-session*
+(status `dead`), not just a cold host after restart — otherwise a chat client, which has no
+`/stop`/`/open`, cannot recover a wedged session. See
+[INV-DEAD-BACKEND-REHYDRATE-001](08-invariants.md).
+
 ## The operations that need care
 
 ### Create — `POST /sessions`
