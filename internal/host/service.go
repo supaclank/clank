@@ -964,7 +964,19 @@ func isActiveSessionStatus(st agent.SessionStatus) bool {
 // not coerced into ErrNotFound — same pattern as GetSessionMetadata.
 func (s *Service) ensureBackend(ctx context.Context, id string) (agent.SessionBackend, error) {
 	if b, ok := s.Session(id); ok {
-		return b, nil
+		// A cached backend whose connection has died (StatusDead) would make
+		// every follow-up op fail forever — the "needs attention" wedge a user
+		// hits after cancelling a turn, since the dead CLI transport lingers in
+		// the registry. The chat-client spec relies on these paths to lazily
+		// rehydrate (it omits /stop and /open by design), so drop the dead
+		// backend and fall through to recreate it — mirroring the Open-failure
+		// teardown below. Any other status is a live, reusable backend.
+		if b.Status() != agent.StatusDead {
+			return b, nil
+		}
+		if err := s.StopSession(id); err != nil && !errors.Is(err, ErrNotFound) {
+			return nil, fmt.Errorf("ensure backend %s: drop dead backend: %w", id, err)
+		}
 	}
 	if s.sessionsStore == nil {
 		return nil, ErrNotFound

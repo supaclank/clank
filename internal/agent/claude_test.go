@@ -59,6 +59,11 @@ type mockTransport struct {
 	// interruptErr, if non-nil, is returned by Interrupt to simulate a failed interrupt.
 	interruptErr error
 
+	// sendErr, if non-nil, is returned by SendMessage to simulate a dead
+	// transport — e.g. a broken stdin pipe after the CLI subprocess exits, the
+	// failure mode that makes a follow-up Send's dispatch fail.
+	sendErr error
+
 	// rewindUUIDs records every messageUUID passed to RewindFiles, in order.
 	rewindUUIDs []string
 	// rewindErr, if set, is returned by RewindFiles (simulates a missing or
@@ -119,7 +124,13 @@ func (t *mockTransport) beginSend() bool {
 func (t *mockTransport) SendMessage(_ context.Context, msg claudecode.StreamMessage) error {
 	t.mu.Lock()
 	onSend := t.onSend
+	sendErr := t.sendErr
 	t.mu.Unlock()
+
+	// A dead transport rejects the write — the SDK's Query surfaces this error.
+	if sendErr != nil {
+		return sendErr
+	}
 
 	// If the test registered an onSend callback, deliver follow-up messages.
 	if onSend != nil {
