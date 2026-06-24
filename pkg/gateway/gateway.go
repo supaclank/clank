@@ -240,6 +240,10 @@ func (g *Gateway) Handler() http.Handler {
 	// as the worktree routes above.
 	mx.HandleFunc("GET /v1/templates", g.handleListTemplates)
 	mx.HandleFunc("POST /v1/projects/create", g.handleCreateProject)
+	// Import an existing GitHub repo: clone owner/repo (with the host's
+	// stored GitHub token) into a fresh worktree. Mounted before the /v1/
+	// catch-all for the same reason as the routes above.
+	mx.HandleFunc("POST /v1/projects/import", g.handleImportProject)
 	// Autosync (S3→sprite): sync-all (mobile homescreen) + per-worktree
 	// (manual sync button / conflict resolution). Mounted before the /v1/
 	// catch-all so they reach these gateway-orchestrated handlers.
@@ -258,6 +262,7 @@ func (g *Gateway) Handler() http.Handler {
 	// all pure proxies to the user's host. Mounted before the /v1/
 	// catch-all for the same reason as the worktree routes above.
 	mx.HandleFunc("GET /v1/github/status", g.handleGitHubStatus)
+	mx.HandleFunc("GET /v1/github/repos", g.handleGitHubListRepos)
 	mx.HandleFunc("DELETE /v1/github", g.handleGitHubDisconnect)
 	mx.HandleFunc("POST /v1/github/connect/start", g.handleGitHubConnectStart)
 	mx.HandleFunc("GET /v1/github/connect/status", g.handleGitHubConnectStatus)

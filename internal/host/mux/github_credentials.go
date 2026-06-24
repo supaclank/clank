@@ -17,6 +17,7 @@ import (
 // mux.go.
 func (m *Mux) registerGitHub(mx *http.ServeMux) {
 	mx.HandleFunc("GET /credentials/github/status", m.handleGitHubStatus)
+	mx.HandleFunc("GET /credentials/github/repos", m.handleGitHubListRepos)
 	mx.HandleFunc("DELETE /credentials/github", m.handleGitHubDisconnect)
 	m.registerGitHubConnect(mx)
 	m.registerGitHubPR(mx)
