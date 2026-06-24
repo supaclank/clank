@@ -885,8 +885,9 @@ func (b *ClaudeCodeBackend) receiveLoop() {
 	// intentional Stop(), which has already set the terminal state.
 	b.mu.Lock()
 	stopped := b.stopped
+	status := b.status
 	b.mu.Unlock()
-	if !stopped && b.Status() != StatusDead {
+	if !stopped && status != StatusDead {
 		b.setStatus(StatusDead)
 	}
 }
