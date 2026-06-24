@@ -6,6 +6,7 @@ package hostmux
 
 import (
 	"net/http"
+	"regexp"
 
 	githubpkg "github.com/acksell/clank/internal/host/github"
 )
@@ -40,6 +41,14 @@ type listBranchesResponse struct {
 	Branches []githubpkg.Branch `json:"branches"`
 }
 
+// gitHubNameRe accepts the subset of owner/repo names allowed by GitHub:
+// alphanumeric, dots, hyphens, and underscores.
+var gitHubNameRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+func isValidGitHubName(s string) bool {
+	return gitHubNameRe.MatchString(s)
+}
+
 // handleGitHubListBranches services GET
 // /credentials/github/repos/{owner}/{repo}/branches — the branch picker
 // for the import flow. Like list-repos, the token never leaves the host.
@@ -52,6 +61,10 @@ func (m *Mux) handleGitHubListBranches(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("repo")
 	if owner == "" || repo == "" {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "owner and repo are required"})
+		return
+	}
+	if !isValidGitHubName(owner) || !isValidGitHubName(repo) {
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "invalid owner or repo name"})
 		return
 	}
 	token, err := g.AccessToken()
