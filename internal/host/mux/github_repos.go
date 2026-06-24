@@ -33,3 +33,36 @@ func (m *Mux) handleGitHubListRepos(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, listReposResponse{Repos: repos})
 }
+
+// listBranchesResponse wraps the branch slice for the same growth reason
+// as listReposResponse.
+type listBranchesResponse struct {
+	Branches []githubpkg.Branch `json:"branches"`
+}
+
+// handleGitHubListBranches services GET
+// /credentials/github/repos/{owner}/{repo}/branches — the branch picker
+// for the import flow. Like list-repos, the token never leaves the host.
+func (m *Mux) handleGitHubListBranches(w http.ResponseWriter, r *http.Request) {
+	g, ok := m.requireGitHub(w)
+	if !ok {
+		return
+	}
+	owner := r.PathValue("owner")
+	repo := r.PathValue("repo")
+	if owner == "" || repo == "" {
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "owner and repo are required"})
+		return
+	}
+	token, err := g.AccessToken()
+	if err != nil {
+		writeGitHubFlowErr(w, err)
+		return
+	}
+	branches, err := g.ListBranches(r.Context(), token, owner, repo)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, listBranchesResponse{Branches: branches})
+}

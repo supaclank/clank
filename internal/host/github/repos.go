@@ -97,3 +97,52 @@ func wireRepo(r *gogithub.Repository) Repo {
 		UpdatedAt:     r.GetUpdatedAt().Time,
 	}
 }
+
+// Branch is the trimmed branch shape returned to clients for the import
+// branch picker. Protected mirrors GitHub's branch-protection flag so the
+// UI can badge protected branches; the picker marks the repo's default
+// using the default_branch already carried by the repos list.
+type Branch struct {
+	Name      string `json:"name"`
+	Protected bool   `json:"protected"`
+}
+
+// maxBranches caps how many branches ListBranches returns. As with repos,
+// picking is a human action — an unbounded fetch on repos with thousands
+// of branches would be slow and pointless for the UI.
+const maxBranches = 300
+
+// branchesPerPage is the page size for the branch listing pagination.
+const branchesPerPage = 100
+
+// ListBranches lists the branches of owner/repo as returned by GitHub,
+// capped at maxBranches. token authenticates the call (private repos need
+// it). Mirrors ListRepositories' paginate-and-trim approach.
+func (m *Manager) ListBranches(ctx context.Context, token, owner, repo string) ([]Branch, error) {
+	client, err := m.apiClient(token)
+	if err != nil {
+		return nil, fmt.Errorf("build api client: %w", err)
+	}
+
+	opts := &gogithub.BranchListOptions{
+		ListOptions: gogithub.ListOptions{PerPage: branchesPerPage},
+	}
+
+	var out []Branch
+	for {
+		branches, resp, err := client.Repositories.ListBranches(ctx, owner, repo, opts)
+		if err != nil {
+			return nil, fmt.Errorf("list branches: %w", err)
+		}
+		for _, b := range branches {
+			out = append(out, Branch{Name: b.GetName(), Protected: b.GetProtected()})
+			if len(out) >= maxBranches {
+				return out, nil
+			}
+		}
+		if resp.NextPage == 0 {
+			return out, nil
+		}
+		opts.Page = resp.NextPage
+	}
+}

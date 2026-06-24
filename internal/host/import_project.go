@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/oklog/ulid/v2"
 
@@ -43,12 +44,18 @@ func SetGitHubCloneBaseForTest(base string) (prev string) {
 //
 // The host builds the clone URL from owner/repo itself — it never accepts
 // a client-supplied URL — matching the template flow's gatekeeping.
-func (s *Service) ImportProjectFromGitHub(ctx context.Context, owner, repo string) (CreateWorktreeResult, error) {
+func (s *Service) ImportProjectFromGitHub(ctx context.Context, owner, repo, branch string) (CreateWorktreeResult, error) {
 	if !gitHubNamePattern.MatchString(owner) {
 		return CreateWorktreeResult{}, fmt.Errorf("%w: invalid owner %q", ErrInvalidArgument, owner)
 	}
 	if !gitHubNamePattern.MatchString(repo) {
 		return CreateWorktreeResult{}, fmt.Errorf("%w: invalid repo %q", ErrInvalidArgument, repo)
+	}
+	// Branch is optional (empty → the remote's default). Branch names allow
+	// "/", ".", "-" mid-name etc., so we don't pattern-match them, but a
+	// leading "-" could be misread as a git flag — reject it.
+	if strings.HasPrefix(branch, "-") {
+		return CreateWorktreeResult{}, fmt.Errorf("%w: invalid branch %q", ErrInvalidArgument, branch)
 	}
 
 	gh := s.GitHub()
@@ -78,7 +85,7 @@ func (s *Service) ImportProjectFromGitHub(ctx context.Context, owner, repo strin
 	}
 
 	cloneURL := fmt.Sprintf("%s/%s/%s.git", gitHubCloneBase, owner, repo)
-	if err := s.importRepo(ctx, projectDir, cloneURL, token, worktreeID); err != nil {
+	if err := s.importRepo(ctx, projectDir, cloneURL, token, branch, worktreeID); err != nil {
 		// Roll back so a retry doesn't trip the already-exists guard or
 		// leave a half-cloned tree behind.
 		if rmErr := os.RemoveAll(projectDir); rmErr != nil {
@@ -87,7 +94,10 @@ func (s *Service) ImportProjectFromGitHub(ctx context.Context, owner, repo strin
 		return CreateWorktreeResult{}, err
 	}
 
-	branch, err := git.CurrentBranch(projectDir)
+	// Reassign branch to the actual checked-out ref. When a branch was
+	// requested this confirms it; when it was empty this resolves the
+	// remote's default — which is what we report back as Branch.
+	branch, err = git.CurrentBranch(projectDir)
 	if err != nil {
 		if rmErr := os.RemoveAll(projectDir); rmErr != nil {
 			s.log.Printf("warning: rollback remove project dir %s: %v", projectDir, rmErr)
@@ -110,8 +120,8 @@ func (s *Service) ImportProjectFromGitHub(ctx context.Context, owner, repo strin
 // a local committer identity so later commits don't depend on global git
 // config, and stamps the worktree id. Any error leaves cleanup to the
 // caller.
-func (s *Service) importRepo(ctx context.Context, projectDir, cloneURL, token, worktreeID string) error {
-	if err := git.CloneShallowKeepRemote(ctx, cloneURL, projectDir, token); err != nil {
+func (s *Service) importRepo(ctx context.Context, projectDir, cloneURL, token, branch, worktreeID string) error {
+	if err := git.CloneShallowKeepRemote(ctx, cloneURL, projectDir, token, branch); err != nil {
 		return fmt.Errorf("clone repo: %w", err)
 	}
 	if err := git.SetLocalConfig(projectDir, "user.name", s.projectCommitterName); err != nil {

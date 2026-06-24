@@ -263,6 +263,7 @@ func (g *Gateway) Handler() http.Handler {
 	// catch-all for the same reason as the worktree routes above.
 	mx.HandleFunc("GET /v1/github/status", g.handleGitHubStatus)
 	mx.HandleFunc("GET /v1/github/repos", g.handleGitHubListRepos)
+	mx.HandleFunc("GET /v1/github/repos/{owner}/{repo}/branches", g.handleGitHubListBranches)
 	mx.HandleFunc("DELETE /v1/github", g.handleGitHubDisconnect)
 	mx.HandleFunc("POST /v1/github/connect/start", g.handleGitHubConnectStart)
 	mx.HandleFunc("GET /v1/github/connect/status", g.handleGitHubConnectStatus)

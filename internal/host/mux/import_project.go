@@ -7,8 +7,9 @@ import "net/http"
 // re-parse, and it builds the clone URL itself — it never accepts a
 // client-supplied URL.
 type importProjectRequest struct {
-	Owner string `json:"owner"`
-	Repo  string `json:"repo"`
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Branch string `json:"branch,omitempty"`
 }
 
 func (m *Mux) handleImportProject(w http.ResponseWriter, r *http.Request) {
@@ -22,7 +23,7 @@ func (m *Mux) handleImportProject(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: err.Error()})
 		return
 	}
-	out, err := m.svc.ImportProjectFromGitHub(r.Context(), req.Owner, req.Repo)
+	out, err := m.svc.ImportProjectFromGitHub(r.Context(), req.Owner, req.Repo, req.Branch)
 	if err != nil {
 		writeGitHubFlowErr(w, err)
 		return
