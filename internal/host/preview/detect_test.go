@@ -3,6 +3,7 @@ package preview
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -126,6 +127,31 @@ func TestDetect(t *testing.T) {
 				t.Errorf("CmdTemplate is empty; want non-empty argv with one %%d")
 			}
 		})
+	}
+}
+
+// TestExpoCmdTemplateBootstrapMarker pins the self-healing bootstrap logic:
+// the template must check for the marker before wiping node_modules, write
+// it after a successful install, and start Expo after. A regression here
+// would silently break the clean-reinstall path.
+func TestExpoCmdTemplateBootstrapMarker(t *testing.T) {
+	t.Parallel()
+	// The template is ["sh", "-c", "<shell>"], so the shell command is the
+	// third element.
+	if len(expoCmdTemplate) < 3 {
+		t.Fatalf("expoCmdTemplate too short: %v", expoCmdTemplate)
+	}
+	shell := expoCmdTemplate[2]
+	for _, want := range []string{
+		"node_modules/.clank-bootstrap-ok",
+		"rm -rf node_modules",
+		"npm install",
+		"touch node_modules/.clank-bootstrap-ok",
+		"expo start",
+	} {
+		if !strings.Contains(shell, want) {
+			t.Errorf("expoCmdTemplate shell command missing %q:\n%s", want, shell)
+		}
 	}
 }
 

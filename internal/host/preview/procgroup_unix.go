@@ -3,6 +3,7 @@
 package preview
 
 import (
+	"errors"
 	"os/exec"
 	"syscall"
 	"time"
@@ -27,9 +28,13 @@ func configureProcessGroup(cmd *exec.Cmd) {
 			return nil
 		}
 		// Negative pid targets the whole group (Setpgid above). ESRCH
-		// (group already gone) is fine. Pid guard prevents negating a
-		// zero or negative pid into a dangerous Kill target.
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		// (group already gone) is fine — swallow it so the no-op path
+		// matches the "nil return" contract described in the comment above.
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		return err
 	}
 	cmd.WaitDelay = gracefulCancelDelay
 }
