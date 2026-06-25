@@ -302,15 +302,20 @@ func (m *Manager) getAuthenticatedUserWithRetry(ctx context.Context, token strin
 	const attempts = 3
 	for i := 0; i < attempts; i++ {
 		if i > 0 {
+			timer := time.NewTimer(time.Duration(i) * 2 * time.Second)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return "", 0, ctx.Err()
-			case <-time.After(time.Duration(i) * 2 * time.Second):
+			case <-timer.C:
 			}
 		}
 		login, userID, err = m.getAuthenticatedUser(ctx, token)
 		if err == nil {
 			return login, userID, nil
+		}
+		if ctx.Err() != nil {
+			return "", 0, ctx.Err()
 		}
 	}
 	return "", 0, err

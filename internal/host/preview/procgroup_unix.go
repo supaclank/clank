@@ -23,7 +23,7 @@ func configureProcessGroup(cmd *exec.Cmd) {
 	// against. Go's WaitDelay then escalates to its default SIGKILL if the
 	// tree hasn't exited within the grace window.
 	cmd.Cancel = func() error {
-		if cmd.Process == nil {
+		if cmd.Process == nil || cmd.Process.Pid <= 0 {
 			return nil
 		}
 		// Negative pid targets the whole group (Setpgid above). ESRCH
