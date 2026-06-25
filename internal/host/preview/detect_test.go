@@ -131,8 +131,9 @@ func TestDetect(t *testing.T) {
 }
 
 // TestExpoCmdTemplateBootstrap pins the self-healing bootstrap logic in
-// expoCmdTemplate so a future edit can't silently drop the marker guard
-// or the clean-reinstall step.
+// expoCmdTemplate so a future edit can't silently drop the clean-reinstall
+// guard, the completion marker, or — critically — move the marker back
+// inside the user's repo.
 func TestExpoCmdTemplateBootstrap(t *testing.T) {
 	t.Parallel()
 	// The template is a sh -c invocation; the shell command is in index 2.
@@ -140,20 +141,21 @@ func TestExpoCmdTemplateBootstrap(t *testing.T) {
 		t.Fatalf("expoCmdTemplate len = %d, want ≥ 3 (sh -c <cmd>)", len(expoCmdTemplate))
 	}
 	cmd := expoCmdTemplate[2]
-	checks := []struct {
-		want string
-		desc string
-	}{
-		{".clank-bootstrap-ok", "marker sentinel present"},
+	for _, c := range []struct{ want, desc string }{
+		{"../.clank-preview-bootstrap/", "completion marker in the host work-root (not the repo)"},
 		{"rm -rf node_modules", "clean-reinstall on missing marker"},
-		{"touch node_modules/.clank-bootstrap-ok", "marker written after successful install"},
 		{"npm install", "install step present"},
 		{"expo start", "metro start present"},
-	}
-	for _, c := range checks {
+	} {
 		if !strings.Contains(cmd, c.want) {
 			t.Errorf("expoCmdTemplate missing %s: %q not found in shell command", c.desc, c.want)
 		}
+	}
+	// The marker must never live inside the user's repo (node_modules or any
+	// in-tree path) — keeping the repo clean is the whole point of the
+	// work-root location; guard against a regression.
+	if strings.Contains(cmd, "node_modules/.clank") {
+		t.Errorf("bootstrap marker must not live inside node_modules: %q", cmd)
 	}
 }
 

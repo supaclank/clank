@@ -42,19 +42,26 @@ import (
 // per-repo clank.yaml with a declared bootstrap step + an
 // agent-driven fallback when no config exists — see the future-
 // direction note in doc.go.
-// Self-healing bootstrap: `.clank-bootstrap-ok` (inside node_modules) is
-// written only AFTER a successful install, so an interrupted prior run
-// (marker absent) forces `rm -rf node_modules` + a clean reinstall — npm
-// won't otherwise repair a half-extracted tree (its hidden lockfile marks
-// partial packages "installed" and skips re-extracting them, which is how a
-// SIGKILL'd install leaves modules permanently unresolvable). With the
-// marker present, `npm install` is a fast incremental no-op. %d is the port.
+// Self-healing bootstrap. The completion marker lives in the host
+// work-root — a sibling of the worktree, NEVER inside the user's repo:
+// ../.clank-preview-bootstrap/<worktree-id> (the worktree is our cwd, so
+// `..` is the work-root and basename(pwd) is its id). It's written only
+// AFTER a successful install, so an interrupted prior run (marker absent)
+// forces a clean reinstall — npm won't repair a half-extracted tree on its
+// own (its hidden lockfile marks partial packages "installed" and skips
+// re-extracting them, which is how a SIGKILL'd install leaves modules
+// permanently unresolvable). With the marker present, `npm install` is a
+// fast incremental no-op. %d is the Metro port.
+//
+// Raw string (backticks) so the embedded shell double-quotes don't need
+// escaping; the single `%d` is substituted by renderArgs.
 var expoCmdTemplate = []string{
 	"sh", "-c",
-	"([ -f node_modules/.clank-bootstrap-ok ] || rm -rf node_modules) && " +
-		"npm install --silent --no-audit --no-fund && " +
-		"touch node_modules/.clank-bootstrap-ok && " +
-		"exec npx --yes expo start --port %d --non-interactive",
+	`m="../.clank-preview-bootstrap/$(basename "$(pwd)")"; ` +
+		`[ -f "$m" ] || rm -rf node_modules; ` +
+		`npm install --silent --no-audit --no-fund && ` +
+		`mkdir -p "$(dirname "$m")" && : > "$m" && ` +
+		`exec npx --yes expo start --port %d --non-interactive`,
 }
 
 // expoReadyProbe asks Metro's /status endpoint, which has returned
