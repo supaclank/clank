@@ -20,15 +20,17 @@ import (
 // the owner and name of an existing GitHub repo to clone. The clone URL
 // is built host-side from the connected token — clients never send URLs.
 type importProjectRequest struct {
-	Owner string `json:"owner"`
-	Repo  string `json:"repo"`
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Branch string `json:"branch,omitempty"`
 }
 
 // hostImportProjectRequest is the body forwarded to the host's POST
 // /projects/import.
 type hostImportProjectRequest struct {
-	Owner string `json:"owner"`
-	Repo  string `json:"repo"`
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Branch string `json:"branch,omitempty"`
 }
 
 // handleImportProject services POST /v1/projects/import — clone the
@@ -68,8 +70,9 @@ func (g *Gateway) handleImportProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp, status, body, err := g.callHostImportProject(r.Context(), principal.UserID, hostImportProjectRequest{
-		Owner: req.Owner,
-		Repo:  req.Repo,
+		Owner:  req.Owner,
+		Repo:   req.Repo,
+		Branch: req.Branch,
 	})
 	if err != nil {
 		g.log.Printf("gateway import-project: host call: %v", err)
