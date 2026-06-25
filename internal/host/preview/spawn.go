@@ -24,10 +24,9 @@ const ringCapacity = 64 * 1024
 // command runs `npm install` FIRST (node_modules is gitignored, so it's
 // fetched on the first preview) before Metro starts — a cold install of a
 // large app can take several minutes — so this budget is generous and wraps
-// install + start. A genuinely crashed dev server is still caught promptly
-// via the process-exit path (r.done closes); this big budget only applies
-// while install/Metro are actively making progress. Overridable per spawn
-// via spawnRequest.ReadyTimeout.
+// install + start. A genuinely crashed dev server is caught immediately via
+// the process-exit path (r.done closes); this limit only applies while the
+// child process is still alive. Overridable per spawn via spawnRequest.ReadyTimeout.
 const readyTimeout = 10 * time.Minute
 
 // gracefulCancelDelay is how long a context-canceled child (readiness
