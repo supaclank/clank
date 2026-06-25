@@ -19,11 +19,23 @@ import (
 // turning a runaway dev server into a memory leak.
 const ringCapacity = 64 * 1024
 
-// readyTimeout caps how long Manager.Start waits for the readiness
-// pattern to appear in stdout. Metro typically prints "Metro waiting
-// on" within 5-10s; we give it 45s to absorb cold-start cache misses,
-// node_modules resolution, etc.
-const readyTimeout = 45 * time.Second
+// readyTimeout caps how long Manager.Start waits for the dev server to
+// pass its readiness probe. On a freshly-materialized worktree the spawn
+// command runs `npm install` FIRST (node_modules is gitignored, so it's
+// fetched on the first preview) before Metro starts — a cold install of a
+// large app can take several minutes — so this budget is generous and wraps
+// install + start. A genuinely crashed dev server is still caught promptly
+// via the process-exit path (r.done closes); this big budget only applies
+// while install/Metro are actively making progress. Overridable per spawn
+// via spawnRequest.ReadyTimeout.
+const readyTimeout = 10 * time.Minute
+
+// gracefulCancelDelay is how long a context-canceled child (readiness
+// timeout, or the caller bailing out) gets to exit after SIGTERM before
+// Go's WaitDelay escalates to SIGKILL. A SIGKILL mid-`npm install` leaves a
+// half-extracted node_modules that npm won't self-repair, so give it a
+// clean shot to unwind first.
+const gracefulCancelDelay = 10 * time.Second
 
 // spawnRequest carries everything spawn needs that isn't on the Spec.
 // The struct is internal — Manager.Start unpacks its method args here.

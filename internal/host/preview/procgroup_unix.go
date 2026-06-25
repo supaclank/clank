@@ -16,6 +16,21 @@ import (
 // https://github.com/anthropics/claude-code/issues/16198.
 func configureProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Graceful context-cancel: when the spawn context is canceled (readiness
+	// timeout, or the caller bailing out), SIGTERM the whole group so
+	// npm/Metro unwind cleanly instead of being SIGKILL'd mid-write — a
+	// half-extracted node_modules is exactly the corruption we're guarding
+	// against. Go's WaitDelay then escalates to its default SIGKILL if the
+	// tree hasn't exited within the grace window.
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		// Negative pid targets the whole group (Setpgid above). ESRCH
+		// (group already gone) is fine.
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	}
+	cmd.WaitDelay = gracefulCancelDelay
 }
 
 // stopProcessGroup sends SIGTERM to the entire group, waits up to

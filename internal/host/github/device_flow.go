@@ -267,7 +267,7 @@ func (m *Manager) runDeviceFlow(ctx context.Context, flowID string, cfg *oauth2.
 
 	// Capture login + persist before transitioning so a status poll
 	// observing "success" can trust the credential is on disk.
-	login, userID, err := m.getAuthenticatedUser(ctx, tok.AccessToken)
+	login, userID, err := m.getAuthenticatedUserWithRetry(ctx, tok.AccessToken)
 	if err != nil {
 		m.transition(flowID, FlowError, "fetch user: "+err.Error(), "")
 		return
@@ -289,6 +289,31 @@ func (m *Manager) runDeviceFlow(ctx context.Context, flowID string, cfg *oauth2.
 		return
 	}
 	m.transition(flowID, FlowSuccess, "", login)
+}
+
+// getAuthenticatedUserWithRetry wraps getAuthenticatedUser with a few
+// retries on a transient failure. By this point the user has already paid
+// the full cost of authorizing on their phone and we hold a valid token, so
+// a single api.github.com hiccup (a timeout/EOF — e.g. a sprite resume
+// tearing an in-flight connection) shouldn't sink the whole connect and
+// force a fresh re-auth. A persistent failure still surfaces after the last
+// attempt. Backs off linearly; bails immediately if ctx is canceled.
+func (m *Manager) getAuthenticatedUserWithRetry(ctx context.Context, token string) (login string, userID int64, err error) {
+	const attempts = 3
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return "", 0, ctx.Err()
+			case <-time.After(time.Duration(i) * 2 * time.Second):
+			}
+		}
+		login, userID, err = m.getAuthenticatedUser(ctx, token)
+		if err == nil {
+			return login, userID, nil
+		}
+	}
+	return "", 0, err
 }
 
 // classifyDeviceFlowErr maps oauth2's typed errors onto our flow

@@ -42,9 +42,19 @@ import (
 // per-repo clank.yaml with a declared bootstrap step + an
 // agent-driven fallback when no config exists — see the future-
 // direction note in doc.go.
+// Self-healing bootstrap: `.clank-bootstrap-ok` (inside node_modules) is
+// written only AFTER a successful install, so an interrupted prior run
+// (marker absent) forces `rm -rf node_modules` + a clean reinstall — npm
+// won't otherwise repair a half-extracted tree (its hidden lockfile marks
+// partial packages "installed" and skips re-extracting them, which is how a
+// SIGKILL'd install leaves modules permanently unresolvable). With the
+// marker present, `npm install` is a fast incremental no-op. %d is the port.
 var expoCmdTemplate = []string{
 	"sh", "-c",
-	"npm install --silent --no-audit --no-fund && exec npx --yes expo start --port %d --non-interactive",
+	"([ -f node_modules/.clank-bootstrap-ok ] || rm -rf node_modules) && " +
+		"npm install --silent --no-audit --no-fund && " +
+		"touch node_modules/.clank-bootstrap-ok && " +
+		"exec npx --yes expo start --port %d --non-interactive",
 }
 
 // expoReadyProbe asks Metro's /status endpoint, which has returned
