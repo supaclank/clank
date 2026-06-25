@@ -130,27 +130,29 @@ func TestDetect(t *testing.T) {
 	}
 }
 
-// TestExpoCmdTemplateBootstrapMarker pins the self-healing bootstrap logic:
-// the template must check for the marker before wiping node_modules, write
-// it after a successful install, and start Expo after. A regression here
-// would silently break the clean-reinstall path.
-func TestExpoCmdTemplateBootstrapMarker(t *testing.T) {
+// TestExpoCmdTemplateBootstrap pins the self-healing bootstrap logic in
+// expoCmdTemplate so a future edit can't silently drop the marker guard
+// or the clean-reinstall step.
+func TestExpoCmdTemplateBootstrap(t *testing.T) {
 	t.Parallel()
-	// The template is ["sh", "-c", "<shell>"], so the shell command is the
-	// third element.
+	// The template is a sh -c invocation; the shell command is in index 2.
 	if len(expoCmdTemplate) < 3 {
-		t.Fatalf("expoCmdTemplate too short: %v", expoCmdTemplate)
+		t.Fatalf("expoCmdTemplate len = %d, want ≥ 3 (sh -c <cmd>)", len(expoCmdTemplate))
 	}
-	shell := expoCmdTemplate[2]
-	for _, want := range []string{
-		"node_modules/.clank-bootstrap-ok",
-		"rm -rf node_modules",
-		"npm install",
-		"touch node_modules/.clank-bootstrap-ok",
-		"expo start",
-	} {
-		if !strings.Contains(shell, want) {
-			t.Errorf("expoCmdTemplate shell command missing %q:\n%s", want, shell)
+	cmd := expoCmdTemplate[2]
+	checks := []struct {
+		want string
+		desc string
+	}{
+		{".clank-bootstrap-ok", "marker sentinel present"},
+		{"rm -rf node_modules", "clean-reinstall on missing marker"},
+		{"touch node_modules/.clank-bootstrap-ok", "marker written after successful install"},
+		{"npm install", "install step present"},
+		{"expo start", "metro start present"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(cmd, c.want) {
+			t.Errorf("expoCmdTemplate missing %s: %q not found in shell command", c.desc, c.want)
 		}
 	}
 }

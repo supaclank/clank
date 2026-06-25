@@ -498,6 +498,40 @@ func TestParseScopes(t *testing.T) {
 	}
 }
 
+// TestGetAuthenticatedUserWithRetry_TransientFailThenSuccess verifies that a
+// single transient /user failure is transparently retried and the second
+// attempt's result is returned to the caller.
+func TestGetAuthenticatedUserWithRetry_TransientFailThenSuccess(t *testing.T) {
+	t.Parallel()
+	var callCount atomic.Int64
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/user" {
+			http.NotFound(w, r)
+			return
+		}
+		if callCount.Add(1) == 1 {
+			http.Error(w, "transient error", http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"login": "testuser", "id": int64(42)})
+	}))
+	t.Cleanup(apiSrv.Close)
+
+	m := NewManager(t.TempDir(), "Ov23li78UDBwea5WvI5v")
+	m.SetAPIBaseURL(apiSrv.URL)
+
+	login, userID, err := m.getAuthenticatedUserWithRetry(context.Background(), "fake-token")
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if login != "testuser" || userID != 42 {
+		t.Errorf("login=%q id=%d, want testuser/42", login, userID)
+	}
+	if n := callCount.Load(); n != 2 {
+		t.Errorf("/user call count = %d, want 2", n)
+	}
+}
+
 // TestGetAuthenticatedUserWithRetry_CancelExitsFast verifies that canceling
 // the context while the retry loop is waiting for backoff returns immediately
 // with context.Canceled rather than blocking for the full timer duration.
