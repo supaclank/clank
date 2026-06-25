@@ -22,7 +22,7 @@ func TestCloneShallowKeepRemote(t *testing.T) {
 	srcURL := "file://" + initTestRepo(t)
 	dst := filepath.Join(t.TempDir(), "clone")
 
-	if err := CloneShallowKeepRemote(context.Background(), srcURL, dst, ""); err != nil {
+	if err := CloneShallowKeepRemote(context.Background(), srcURL, dst, "", ""); err != nil {
 		t.Fatalf("CloneShallowKeepRemote: %v", err)
 	}
 
@@ -86,7 +86,7 @@ func TestCloneShallowKeepRemoteWithToken(t *testing.T) {
 
 	t.Run("valid token", func(t *testing.T) {
 		dst := filepath.Join(t.TempDir(), "ok")
-		if err := CloneShallowKeepRemote(context.Background(), cloneURL, dst, wantToken); err != nil {
+		if err := CloneShallowKeepRemote(context.Background(), cloneURL, dst, wantToken, ""); err != nil {
 			t.Fatalf("clone with valid token: %v", err)
 		}
 		// Remote URL stays clean — token must not be persisted in config.
@@ -104,10 +104,22 @@ func TestCloneShallowKeepRemoteWithToken(t *testing.T) {
 
 	t.Run("wrong token fails", func(t *testing.T) {
 		dst := filepath.Join(t.TempDir(), "bad")
-		if err := CloneShallowKeepRemote(context.Background(), cloneURL, dst, "wrong-token"); err == nil {
+		if err := CloneShallowKeepRemote(context.Background(), cloneURL, dst, "wrong-token", ""); err == nil {
 			t.Fatal("clone with wrong token succeeded, want failure")
 		}
 	})
+}
+
+// TestCloneShallowKeepRemote_BranchSelectsRef verifies the branch arg is
+// wired through: cloning a non-existent branch must fail (proving --branch
+// reached git rather than silently falling back to the default).
+func TestCloneShallowKeepRemote_BranchSelectsRef(t *testing.T) {
+	t.Parallel()
+	srcURL := "file://" + initTestRepo(t)
+	dst := filepath.Join(t.TempDir(), "clone")
+	if err := CloneShallowKeepRemote(context.Background(), srcURL, dst, "", "no-such-branch"); err == nil {
+		t.Fatal("clone of non-existent branch succeeded, want failure")
+	}
 }
 
 // gitHTTPBackendPath locates git-http-backend in git's exec-path, skipping

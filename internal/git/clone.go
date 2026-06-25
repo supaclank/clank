@@ -39,17 +39,28 @@ const cloneCredentialHelper = `!f() { echo username=x-access-token; echo "passwo
 // the .git directory and the origin remote — for importing a user's
 // existing repo, where history depth doesn't matter but the link back to
 // the remote does. token authenticates HTTPS clones of private repos; pass
-// "" for public repos. dir must not already exist.
+// "" for public repos. branch checks out a specific branch (empty clones
+// the remote's default). dir must not already exist.
 //
 // The token reaches git through cloneTokenEnv + an inline credential
 // helper rather than the URL, so it appears neither in argv nor in the
 // resulting .git/config. The leading empty credential.helper resets any
 // system/global helper so it can't shadow ours.
-func CloneShallowKeepRemote(ctx context.Context, url, dir, token string) error {
-	cmd := exec.CommandContext(ctx, "git",
+func CloneShallowKeepRemote(ctx context.Context, url, dir, token, branch string) error {
+	args := []string{
 		"-c", "credential.helper=",
-		"-c", "credential.helper="+cloneCredentialHelper,
-		"clone", "--depth", "1", "--", url, dir)
+		"-c", "credential.helper=" + cloneCredentialHelper,
+		"clone", "--depth", "1",
+	}
+	// Clone a single branch when requested (import branch selection); an
+	// empty branch clones the remote's default. The caller validates that
+	// branch doesn't begin with "-" so it can't be misread as a flag; the
+	// "--" separator still guards the positional url/dir.
+	if branch != "" {
+		args = append(args, "--branch", branch, "--single-branch")
+	}
+	args = append(args, "--", url, dir)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	// GIT_TERMINAL_PROMPT=0 fails fast on bad/missing auth instead of
 	// blocking on an interactive username/password prompt.
 	cmd.Env = append(os.Environ(), cloneTokenEnv+"="+token, "GIT_TERMINAL_PROMPT=0")

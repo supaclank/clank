@@ -18,16 +18,17 @@ import (
 func TestImportProjectFromGitHub_Validation(t *testing.T) {
 	t.Parallel()
 	svc := newTestService(t)
-	cases := []struct{ name, owner, repo string }{
-		{"empty owner", "", "api"},
-		{"empty repo", "acme", ""},
-		{"owner traversal", "../etc", "api"},
-		{"repo with slash", "acme", "a/b"},
-		{"repo with space", "acme", "a b"},
+	cases := []struct{ name, owner, repo, branch string }{
+		{"empty owner", "", "api", ""},
+		{"empty repo", "acme", "", ""},
+		{"owner traversal", "../etc", "api", ""},
+		{"repo with slash", "acme", "a/b", ""},
+		{"repo with space", "acme", "a b", ""},
+		{"branch leading dash", "acme", "api", "-flag"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := svc.ImportProjectFromGitHub(context.Background(), tc.owner, tc.repo)
+			_, err := svc.ImportProjectFromGitHub(context.Background(), tc.owner, tc.repo, tc.branch)
 			if !errors.Is(err, host.ErrInvalidArgument) {
 				t.Fatalf("err = %v, want ErrInvalidArgument", err)
 			}
@@ -40,7 +41,7 @@ func TestImportProjectFromGitHub_NotConnected(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	svc := newTestService(t)
 
-	_, err := svc.ImportProjectFromGitHub(context.Background(), "acme", "api")
+	_, err := svc.ImportProjectFromGitHub(context.Background(), "acme", "api", "")
 	if !errors.Is(err, githubpkg.ErrNotConnected) {
 		t.Fatalf("err = %v, want ErrNotConnected", err)
 	}
@@ -75,7 +76,7 @@ func TestImportProjectFromGitHub_CleansUpWhenBranchReadFails(t *testing.T) {
 		t.Fatalf("seed token: %v", err)
 	}
 
-	if _, err := svc.ImportProjectFromGitHub(context.Background(), "acme", "empty"); err == nil {
+	if _, err := svc.ImportProjectFromGitHub(context.Background(), "acme", "empty", ""); err == nil {
 		t.Fatal("expected error for empty-repo import, got nil")
 	}
 
@@ -122,7 +123,7 @@ func TestImportProjectFromGitHub_ClonesKeepingRemote(t *testing.T) {
 		t.Fatalf("seed token: %v", err)
 	}
 
-	res, err := svc.ImportProjectFromGitHub(context.Background(), "acme", "api")
+	res, err := svc.ImportProjectFromGitHub(context.Background(), "acme", "api", "")
 	if err != nil {
 		t.Fatalf("ImportProjectFromGitHub: %v", err)
 	}
