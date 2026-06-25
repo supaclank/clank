@@ -75,11 +75,10 @@ func TestManagerStartIdempotent(t *testing.T) {
 // the map and every subsequent Start returns that snapshot — the user
 // is stuck until they explicitly /stop. Regression for cubic#2.
 //
-// With the WSS-tunnel architecture's sync wait-for-ready, the first
-// start now returns an error (rather than a StateStarting snapshot)
-// and the registry is left clean on failure. The respawn assertion
-// still pins what matters: a failed start must not leak state that
-// would block a retry.
+// Start is non-blocking: it returns a StateStarting snapshot immediately
+// and the background probe settles the record to Failed/Ready, so we poll
+// the state rather than reading it off the Start return. What this pins:
+// a failed start must not leak state that blocks a retry.
 func TestManagerStartRespawnsAfterFailure(t *testing.T) {
 	t.Parallel()
 	m := New(Options{StopGrace: 1 * time.Second})
@@ -87,25 +86,45 @@ func TestManagerStartRespawnsAfterFailure(t *testing.T) {
 
 	dir := fixtureExpoWorkDir(t)
 	wid := "wt-respawn"
-
-	// First start: script never serves /status, probe times out fast,
-	// startWithSpec waits for readiness and surfaces the timeout.
-	deadSpec := testSpec([]string{"sh", "-c", "sleep 30"})
-	_, err := m.startWithSpec(context.Background(), wid, dir, "default", deadSpec, 200*time.Millisecond)
-	if err == nil {
-		t.Fatalf("first start: expected timeout error, got nil")
+	key := serviceKey{WorktreeID: wid, ServiceName: "default"}
+	getRunning := func() *running {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.servers[key]
 	}
 
-	// Second start with a healthy stub: must spawn fresh (no stale
-	// registry entry) and reach Ready.
+	// First start: script never serves /status, so the probe times out and
+	// the background goroutine flips the record to Failed. The start call
+	// itself returns immediately with StateStarting (non-blocking).
+	deadSpec := testSpec([]string{"sh", "-c", "sleep 30"})
+	s1, err := m.startWithSpec(context.Background(), wid, dir, "default", deadSpec, 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("first start: unexpected error: %v", err)
+	}
+	if s1.State != StateStarting {
+		t.Fatalf("first start state = %s, want starting (non-blocking)", s1.State)
+	}
+	r1 := getRunning()
+	if r1 == nil {
+		t.Fatalf("first start: no record published")
+	}
+	waitForState(t, r1, StateFailed, 3*time.Second)
+
+	// Second start with a healthy stub: must evict the Failed entry, spawn
+	// fresh, and reach Ready in the background.
 	liveSpec := testSpec(fakeMetroScript(""))
-	second, err := m.startWithSpec(context.Background(), wid, dir, "default", liveSpec, 0)
+	s2, err := m.startWithSpec(context.Background(), wid, dir, "default", liveSpec, 0)
 	if err != nil {
 		t.Fatalf("second start: %v", err)
 	}
-	if second.State != StateReady {
-		t.Fatalf("second start state = %s, want Ready", second.State)
+	if s2.State != StateStarting {
+		t.Fatalf("second start state = %s, want starting", s2.State)
 	}
+	r2 := getRunning()
+	if r2 == nil {
+		t.Fatalf("second start: no record published")
+	}
+	waitForState(t, r2, StateReady, 5*time.Second)
 }
 
 // TestManagerStartNotPreviewable confirms Start fast-fails on a
