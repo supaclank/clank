@@ -265,22 +265,18 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 	m.servers[key] = r
 	m.mu.Unlock()
 
-	// TODO(ai-review): waitForReady uses the caller's ctx; a canceled request tears down a shared in-flight start that other concurrent callers may be waiting on. Fix: use a background/non-cancelable context for readiness wait. https://github.com/Acksell/clank/pull/36#discussion_r3324206593
-	if err := waitForReady(ctx, r); err != nil {
-		// Tear down the orphan and remove from the registry.
-		m.mu.Lock()
-		if cur, ok := m.servers[key]; ok && cur == r {
-			delete(m.servers, key)
-		}
-		m.mu.Unlock()
-		r.stopWithGrace(m.stopGrace)
-		if regErr == nil {
-			m.revokeBestEffort(worktreeID, serviceName)
-		}
-		return Status{}, fmt.Errorf("wait ready: %w", err)
-	}
-
-	m.log.Printf("preview: started %s on port %d for %s/%s", r.spec.Kind, r.port, worktreeID, serviceName)
+	// Non-blocking: the record is published as StateStarting, so return it
+	// immediately instead of blocking the caller's request on readiness.
+	// spawn's background probe (probeReady) flips the record to Ready or
+	// Failed on its own; clients poll /preview/status to observe the
+	// transition and /preview/logs for live setup progress. This decouples
+	// a long first-run `npm install` from the HTTP request lifetime — an
+	// intermediary (Fly edge, tunnel, mobile) that times out a minutes-long
+	// held request can no longer cancel readiness and tear the install down
+	// mid-write. A start that never comes up settles as StateFailed and is
+	// evicted lazily by the next Start's stale-entry check above (its
+	// gateway token expires on its own TTL).
+	m.log.Printf("preview: starting %s on port %d for %s/%s", r.spec.Kind, r.port, worktreeID, serviceName)
 	return r.snapshot(), nil
 }
 
@@ -445,41 +441,6 @@ func (m *Manager) revokeBestEffort(worktreeID, serviceName string) {
 	defer cancel()
 	if err := m.gw.Revoke(ctx, RevokeRequest{WorktreeID: worktreeID, ServiceName: serviceName}); err != nil {
 		m.log.Printf("preview: gateway revoke for %s/%s failed (non-fatal): %v", worktreeID, serviceName, err)
-	}
-}
-
-// waitForReady blocks until r's state moves out of StateStarting.
-// Used by Start to synchronize the gateway register with actual
-// readiness. Honors ctx cancellation for callers that don't want to
-// wait forever; spawn's own readiness probe has its own timeout that
-// bounds the worst case.
-func waitForReady(ctx context.Context, r *running) error {
-	tick := time.NewTicker(50 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		r.mu.Lock()
-		state := r.state
-		lastErr := r.lastErr
-		r.mu.Unlock()
-		switch state {
-		case StateReady:
-			return nil
-		case StateFailed:
-			if lastErr == "" {
-				return fmt.Errorf("dev server failed to start")
-			}
-			return errors.New(lastErr)
-		case StateStopped:
-			return fmt.Errorf("dev server stopped during startup")
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-r.done:
-			// process exited without flipping to Ready — fall through
-			// to read final state on next iteration
-		case <-tick.C:
-		}
 	}
 }
 
