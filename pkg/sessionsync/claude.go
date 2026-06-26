@@ -90,21 +90,22 @@ func (ClaudeBackend) ExportSession(_ context.Context, projectDir, externalID str
 // first JSONL line carries the PARENT sessionId, so the blob-derived id would
 // file under (and return) the wrong id — breaking import idempotency and
 // `claude --resume`. Claude tolerates filename != first-line sessionId
-// (resume keys purely on the file at the cwd-encoded path). An empty/unsafe
-// manifestID falls back to the blob's first-line sessionId (legacy manifests).
+// (resume keys purely on the file at the cwd-encoded path). An empty
+// manifestID falls back to the blob's first-line sessionId (legacy manifests);
+// a non-empty but unsafe manifestID fails immediately.
 func (ClaudeBackend) ImportSession(_ context.Context, destDir, blobPath, manifestID string) (string, error) {
 	if destDir == "" {
 		return "", fmt.Errorf("claude import: destDir is required")
 	}
 	sessionID := manifestID
-	if sessionID == "" || filepath.Base(sessionID) != sessionID || strings.Contains(sessionID, "..") {
+	if sessionID == "" {
 		var err error
 		sessionID, err = claudeSessionIDFromBlob(blobPath)
 		if err != nil {
 			return "", fmt.Errorf("claude import: %w", err)
 		}
 	}
-	if filepath.Base(sessionID) != sessionID || strings.Contains(sessionID, "..") {
+	if filepath.Base(sessionID) != sessionID || strings.Contains(sessionID, "..") || strings.ContainsAny(sessionID, "/\\") {
 		return "", fmt.Errorf("claude import: invalid sessionID %q", sessionID)
 	}
 	dstPath, err := claudeTranscriptPath(destDir, sessionID)
