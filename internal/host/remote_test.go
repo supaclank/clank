@@ -173,6 +173,51 @@ func TestRunResolve_TakeRemoteBacksUpThenResets(t *testing.T) {
 	}
 }
 
+func TestRunResolve_TakeRemoteCapturesUncommittedWork(t *testing.T) {
+	t.Parallel()
+	f := newRemoteFixture(t)
+	f.advanceRemote(t, "f.txt", "remote v2", "remote")
+	// Uncommitted untracked file — not staged, not committed.
+	writeFile(t, filepath.Join(f.rc.workdir, "agent-output.txt"), "local work")
+
+	res, err := runResolve(f.rc, ResolveTakeRemote)
+	if err != nil {
+		t.Fatalf("runResolve take_remote with uncommitted work: %v", err)
+	}
+	if res.BackupRef == "" {
+		t.Fatal("expected a BackupRef")
+	}
+	// The untracked file must be in the backup ref's tree (auto-committed).
+	got := gitRun(t, f.rc.workdir, "show", res.BackupRef+":agent-output.txt")
+	if got != "local work" {
+		t.Errorf("backup ref content = %q, want %q", got, "local work")
+	}
+	// Worktree is clean after take_remote.
+	if clean, _ := git.IsClean(f.rc.workdir); !clean {
+		t.Error("worktree should be clean after take_remote")
+	}
+}
+
+func TestRunPull_AllowsUntrackedFiles(t *testing.T) {
+	t.Parallel()
+	f := newRemoteFixture(t)
+	f.advanceRemote(t, "f.txt", "v2", "remote")
+	// Untracked file — fast-forward preserves it; should not block the pull.
+	writeFile(t, filepath.Join(f.rc.workdir, "scratch.txt"), "scratch")
+
+	res, err := runPull(f.rc)
+	if err != nil {
+		t.Fatalf("runPull with untracked files: %v", err)
+	}
+	if !res.FastForwarded {
+		t.Error("want fast-forwarded")
+	}
+	// Untracked file survives the fast-forward.
+	if _, err := os.Stat(filepath.Join(f.rc.workdir, "scratch.txt")); err != nil {
+		t.Errorf("untracked file gone after pull: %v", err)
+	}
+}
+
 func TestRunResolve_MergeCleanLeavesUnpushedMergeCommit(t *testing.T) {
 	t.Parallel()
 	f := newRemoteFixture(t)

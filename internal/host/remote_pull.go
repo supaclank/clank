@@ -34,11 +34,13 @@ func (s *Service) PullFromRemote(ctx context.Context, worktreeID string) (PullRe
 // runPull is the pure-git half: refuse-if-dirty, fetch, fast-forward when
 // cleanly behind. Testable against a local bare-repo remote.
 func runPull(rc remoteContext) (PullResult, error) {
-	dirty, err := git.WorkingTreeDirty(rc.workdir)
+	// Use IsClean (not WorkingTreeDirty) — fast-forward preserves untracked
+	// files, so only tracked modifications are a real blocker.
+	clean, err := git.IsClean(rc.workdir)
 	if err != nil {
-		return PullResult{}, fmt.Errorf("check dirty: %w", err)
+		return PullResult{}, fmt.Errorf("check clean: %w", err)
 	}
-	if dirty {
+	if !clean {
 		return PullResult{}, ErrWorktreeDirty
 	}
 	if err := rc.fetchBranch(); err != nil {

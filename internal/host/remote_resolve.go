@@ -68,23 +68,37 @@ func runResolve(rc remoteContext, strategy ResolveStrategy) (ResolveResult, erro
 		}
 		// Pre-merge local state; a status refresh refines it.
 		result.State = RemoteStateUnpushed
-		result.HeadSHA, _ = git.HeadCommit(rc.workdir)
+		var err error
+		result.HeadSHA, err = git.HeadCommit(rc.workdir)
+		if err != nil {
+			return ResolveResult{}, fmt.Errorf("head commit after abort: %w", err)
+		}
 		return result, nil
 
 	case ResolveTakeRemote:
 		if err := rc.fetchBranch(); err != nil {
 			return ResolveResult{}, err
 		}
-		// HEAD here is the pre-merge local tip (a merge isn't committed
-		// yet), which is exactly what we back up before discarding.
-		head, err := git.HeadCommit(rc.workdir)
-		if err != nil {
-			return ResolveResult{}, fmt.Errorf("head commit: %w", err)
-		}
+		// Abort any in-progress merge first so the working tree is stable
+		// before the auto-commit step below.
 		if git.IsMerging(rc.workdir) {
 			if err := git.AbortMerge(rc.workdir); err != nil {
 				return ResolveResult{}, fmt.Errorf("abort merge before reset: %w", err)
 			}
+		}
+		// Commit uncommitted work (incl. untracked) so it's captured in
+		// the backup ref — mirrors ResolveMerge's auto-commit.
+		if err := git.AddAll(rc.workdir); err != nil {
+			return ResolveResult{}, fmt.Errorf("git add -A: %w", err)
+		}
+		if staged, _ := git.HasStagedChanges(rc.workdir); staged {
+			if err := git.Commit(rc.workdir, pushCommitMessage(rc.branch)); err != nil {
+				return ResolveResult{}, fmt.Errorf("commit: %w", err)
+			}
+		}
+		head, err := git.HeadCommit(rc.workdir)
+		if err != nil {
+			return ResolveResult{}, fmt.Errorf("head commit: %w", err)
 		}
 		backup := backupRefName(rc.branch, head)
 		if err := git.BackupRef(rc.workdir, backup, head); err != nil {
@@ -94,7 +108,10 @@ func runResolve(rc remoteContext, strategy ResolveStrategy) (ResolveResult, erro
 			return ResolveResult{}, fmt.Errorf("reset to remote: %w", err)
 		}
 		result.BackupRef = backup
-		result.State = RemoteStateSynced
+		// Compute actual state: untracked files (e.g. gitignored) survive
+		// git reset --hard and would leave the tree dirty.
+		dirty, _ := git.WorkingTreeDirty(rc.workdir)
+		result.State = classifyRemoteState(0, 0, dirty)
 		result.HeadSHA, _ = git.HeadCommit(rc.workdir)
 		return result, nil
 
@@ -102,7 +119,10 @@ func runResolve(rc remoteContext, strategy ResolveStrategy) (ResolveResult, erro
 		if git.IsMerging(rc.workdir) {
 			// Already mid-merge — report the outstanding conflicts rather
 			// than starting a second merge.
-			files, _ := git.ConflictedFiles(rc.workdir)
+			files, err := git.ConflictedFiles(rc.workdir)
+			if err != nil {
+				return ResolveResult{}, fmt.Errorf("conflicted files: %w", err)
+			}
 			result.ConflictedFiles = files
 			result.State = RemoteStateConflict
 			return result, nil
@@ -130,7 +150,10 @@ func runResolve(rc remoteContext, strategy ResolveStrategy) (ResolveResult, erro
 		if !errors.Is(err, git.ErrMergeConflict) {
 			return ResolveResult{}, fmt.Errorf("merge: %w", err)
 		}
-		files, _ := git.ConflictedFiles(rc.workdir)
+		files, err := git.ConflictedFiles(rc.workdir)
+		if err != nil {
+			return ResolveResult{}, fmt.Errorf("conflicted files: %w", err)
+		}
 		result.ConflictedFiles = files
 		result.State = RemoteStateConflict
 		return result, nil

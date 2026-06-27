@@ -24,6 +24,7 @@ func (m *Manager) FindOpenPRForBranch(ctx context.Context, accessToken, owner, r
 // firstOpenPR returns the first open PR for owner:head, or nil when there
 // is none. Shared by FindOpenPRForBranch and the create-PR "already
 // exists" follow-up so both speak to GitHub the same way.
+// TODO(ai-review): fork workflows not supported — PRs live on the upstream parent, not the fork https://github.com/Acksell/clank/pull/84#discussion_r3486368616
 func firstOpenPR(ctx context.Context, client *gogithub.Client, owner, repo, head string) (*PullRequest, error) {
 	prs, _, err := client.PullRequests.List(ctx, owner, repo, &gogithub.PullRequestListOptions{
 		Head:        owner + ":" + head,

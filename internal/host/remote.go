@@ -121,6 +121,7 @@ func (s *Service) remoteContextFor(ctx context.Context, worktreeID string) (remo
 // fetchBranch refreshes origin/<branch> into FETCH_HEAD using the
 // context's auth. Returns ErrNoUpstream when the branch doesn't exist on
 // the remote (vs a transport/auth failure, which surfaces wrapped).
+// TODO(ai-review): no context.Context — git.Fetch can hang on bad network https://github.com/Acksell/clank/pull/84#discussion_r3486368618
 func (rc remoteContext) fetchBranch() error {
 	err := git.Fetch(rc.workdir, rc.pushURL, rc.branch, git.PushOptions{ExtraHeader: rc.authHeader})
 	if err == nil {

@@ -9,6 +9,7 @@ package host
 
 import (
 	"context"
+	"errors"
 	"os"
 )
 
@@ -47,9 +48,13 @@ func (s *Service) coldStartAutoPull(ctx context.Context) {
 		}
 		res, err := s.PullFromRemote(ctx, id)
 		if err != nil {
-			// Dirty / diverged / non-github / no-upstream worktrees are
-			// expected skips — log quietly, keep going.
-			s.log.Printf("cold-start auto-pull: skip %s: %v", id, err)
+			// Expected skips (dirty, diverged, no upstream, no origin,
+			// detached HEAD) are silent — only unexpected errors are logged.
+			if !errors.Is(err, ErrNoOriginRemote) && !errors.Is(err, ErrNoUpstream) &&
+				!errors.Is(err, ErrWorktreeDirty) && !errors.Is(err, ErrRemoteDiverged) &&
+				!errors.Is(err, ErrDetachedHead) {
+				s.log.Printf("cold-start auto-pull: skip %s: %v", id, err)
+			}
 			continue
 		}
 		if res.FastForwarded {

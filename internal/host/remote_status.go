@@ -76,7 +76,10 @@ func computeStatus(rc remoteContext) (RemoteStatusResult, error) {
 	}
 	result.Ahead = ahead
 	result.Behind = behind
-	result.RemoteHead, _ = git.RevParse(rc.workdir, "FETCH_HEAD")
+	result.RemoteHead, err = git.RevParse(rc.workdir, "FETCH_HEAD")
+	if err != nil {
+		return RemoteStatusResult{}, fmt.Errorf("rev-parse FETCH_HEAD: %w", err)
+	}
 	result.State = classifyRemoteState(ahead, behind, dirty)
 	return result, nil
 }
