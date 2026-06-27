@@ -292,6 +292,11 @@ func (s *Service) Init(ctx context.Context, knownDirs func(agent.BackendType) ([
 	s.startKeepalive()
 	s.startNotifier()
 
+	// One-shot fast-forward of clean GitHub-backed worktrees — catches a
+	// woken sprite up to whatever was pushed while it slept. See
+	// remote_autopull.go.
+	s.startColdStartAutoPull(ctx)
+
 	for bt, mgr := range s.backendManagers {
 		bt := bt
 		fn := func() ([]string, error) {

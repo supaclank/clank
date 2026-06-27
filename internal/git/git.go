@@ -126,6 +126,16 @@ func HeadCommit(dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// RevParse resolves ref (a branch, tag, or revision expression such as
+// FETCH_HEAD) to a full commit SHA in dir.
+func RevParse(dir, ref string) (string, error) {
+	out, err := gitCmd(dir, "rev-parse", ref)
+	if err != nil {
+		return "", fmt.Errorf("rev-parse %s: %w", ref, err)
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // DefaultBranch returns the default branch name for the repository containing dir.
 // It checks for refs/heads/main first, then refs/heads/master, then falls back
 // to whatever HEAD points to on origin, and finally returns "main" as a last resort.
@@ -360,6 +370,19 @@ func IsClean(dir string) (bool, error) {
 		return false, fmt.Errorf("git status: %w", err)
 	}
 	return strings.TrimSpace(out) == "", nil
+}
+
+// WorkingTreeDirty reports whether the working tree at dir has any
+// uncommitted changes, INCLUDING untracked (but not gitignored) files.
+// Use this for surfacing "you have local work" to the user; for "is it
+// safe to fast-forward" use IsClean, which ignores untracked files git
+// preserves across a merge.
+func WorkingTreeDirty(dir string) (bool, error) {
+	out, err := gitCmd(dir, "status", "--porcelain")
+	if err != nil {
+		return false, fmt.Errorf("git status: %w", err)
+	}
+	return strings.TrimSpace(out) != "", nil
 }
 
 // CommitsAhead returns the number of commits that branch has ahead of base.

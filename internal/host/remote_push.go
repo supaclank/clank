@@ -1,0 +1,71 @@
+package host
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/acksell/clank/internal/git"
+)
+
+// PushResult is the wire shape for POST /worktrees/{id}/remote/push.
+type PushResult struct {
+	Branch    string `json:"branch"`
+	HeadSHA   string `json:"head_sha"`
+	Committed bool   `json:"committed"` // auto-committed uncommitted work before pushing
+	Pushed    bool   `json:"pushed"`
+}
+
+// PushToRemote commits any uncommitted work in the worktree (hardcoded
+// message) and pushes the branch to its GitHub remote. ErrRemoteDiverged
+// when the remote has advanced and the push is rejected as non-fast-
+// forward — the client then routes to the conflict-resolution flow.
+func (s *Service) PushToRemote(ctx context.Context, worktreeID string) (PushResult, error) {
+	rc, err := s.remoteContextFor(ctx, worktreeID)
+	if err != nil {
+		return PushResult{}, err
+	}
+	res, err := runPush(rc)
+	if err == nil {
+		s.log.Printf("pushed %s to %s/%s (committed=%v)", rc.branch, rc.owner, rc.repo, res.Committed)
+	}
+	return res, err
+}
+
+// runPush is the pure-git half: commit-if-dirty, then push. Testable
+// against a local bare-repo remote.
+func runPush(rc remoteContext) (PushResult, error) {
+	result := PushResult{Branch: rc.branch}
+
+	// Stage everything (incl. untracked — agents create files) then commit
+	// only when something actually staged. Mirrors mergeBranch; IsClean
+	// can't gate this because it ignores untracked files.
+	if err := git.AddAll(rc.workdir); err != nil {
+		return PushResult{}, fmt.Errorf("git add -A: %w", err)
+	}
+	staged, err := git.HasStagedChanges(rc.workdir)
+	if err != nil {
+		return PushResult{}, fmt.Errorf("check staged: %w", err)
+	}
+	if staged {
+		if err := git.Commit(rc.workdir, pushCommitMessage(rc.branch)); err != nil {
+			return PushResult{}, fmt.Errorf("commit: %w", err)
+		}
+		result.Committed = true
+	}
+
+	headSHA, err := git.HeadCommit(rc.workdir)
+	if err != nil {
+		return PushResult{}, fmt.Errorf("head commit: %w", err)
+	}
+	result.HeadSHA = headSHA
+
+	if err := git.Push(rc.workdir, rc.pushURL, rc.branch+":refs/heads/"+rc.branch, git.PushOptions{ExtraHeader: rc.authHeader}); err != nil {
+		if errors.Is(err, git.ErrPushNotFastForward) {
+			return PushResult{}, ErrRemoteDiverged
+		}
+		return PushResult{}, err
+	}
+	result.Pushed = true
+	return result, nil
+}

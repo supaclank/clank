@@ -179,17 +179,14 @@ func isBaseInvalid(er *gogithub.ErrorResponse) bool {
 // HTML URL. Best-effort — failure here just means the UI shows the
 // "already exists" error without a deep-link.
 func (m *Manager) lookupExistingPR(ctx context.Context, client *gogithub.Client, owner, repo, head string) (string, error) {
-	prs, _, err := client.PullRequests.List(ctx, owner, repo, &gogithub.PullRequestListOptions{
-		Head:  owner + ":" + head,
-		State: "open",
-	})
+	pr, err := firstOpenPR(ctx, client, owner, repo, head)
 	if err != nil {
 		return "", err
 	}
-	if len(prs) == 0 {
+	if pr == nil {
 		return "", errors.New("no open PR found for head")
 	}
-	return prs[0].GetHTMLURL(), nil
+	return pr.HTMLURL, nil
 }
 
 // wirePR collapses go-github's PullRequest type to the trimmed

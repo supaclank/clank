@@ -270,6 +270,14 @@ func (g *Gateway) Handler() http.Handler {
 	mx.HandleFunc("POST /v1/github/connect/cancel", g.handleGitHubConnectCancel)
 	mx.HandleFunc("POST /v1/worktrees/{id}/pr", g.handleGitHubCreatePR)
 	mx.HandleFunc("POST /v1/worktrees/{id}/pr/preview", g.handleGitHubPreviewPR)
+
+	// Worktree↔GitHub-remote sync. The "remote/" segment keeps these
+	// distinct from the checkpoint routes above (/pull, /sync). See
+	// pkg/gateway/remote_sync.go + internal/host/mux/remote.go.
+	mx.HandleFunc("GET /v1/worktrees/{id}/remote/status", g.handleRemoteStatus)
+	mx.HandleFunc("POST /v1/worktrees/{id}/remote/push", g.handleRemotePush)
+	mx.HandleFunc("POST /v1/worktrees/{id}/remote/pull", g.handleRemotePull)
+	mx.HandleFunc("POST /v1/worktrees/{id}/remote/resolve", g.handleRemoteResolve)
 	if g.cfg.Images != nil {
 		// POST /v1/images: image-upload presign. More specific than the
 		// sync /v1/ catch-all below, so it wins regardless of order.

@@ -157,6 +157,10 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// in PR 3. See internal/host/mux/github_credentials.go.
 	m.registerGitHub(mx)
 
+	// Worktree↔GitHub-remote sync (status / push / pull / resolve).
+	// See internal/host/mux/remote.go.
+	m.registerRemote(mx)
+
 	// Cloud-sync ingress. The gateway orchestrates pushes and pulls
 	// through these endpoints; the sandbox is a pure responder.
 	//
