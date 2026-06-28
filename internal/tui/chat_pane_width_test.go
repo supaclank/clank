@@ -60,6 +60,30 @@ func TestChatFillsSameRightEdgeBothModes(t *testing.T) {
 	}
 }
 
+// A selected message's bordered box fills the whole chat width so both borders
+// sit snug — the right border isn't pushed in by glamour's document margin.
+// Guards chatMarkdownStyle (margin zeroed): with the default DarkStyle margin
+// the box would be 2 columns narrower than the view.
+func TestSelectedBoxFillsChatWidth(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("alpha bravo charlie delta echo foxtrot golf ", 4)
+	for _, w := range []int{50, 80, 120} {
+		m := NewSessionViewModel(nil, "s")
+		m.width = w
+		m.paneFocused = true
+		e := &displayEntry{kind: entryText, partID: "a", content: long}
+		boxW := 0
+		for _, l := range m.renderEntry(e, true, false) {
+			if lw := ansi.StringWidth(strings.TrimRight(ansi.Strip(l), " ")); lw > boxW {
+				boxW = lw
+			}
+		}
+		if boxW != w {
+			t.Errorf("w=%d: selected box width=%d, want %d (box should fill the chat width, snug on both sides)", w, boxW, w)
+		}
+	}
+}
+
 // Selecting a message must not re-wrap its text. A navigable entry is handed
 // the same content width to glamour whether or not it is the cursor, because
 // the border's footprint is reserved for every navigable entry rather than

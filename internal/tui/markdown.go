@@ -5,8 +5,23 @@ import (
 	"sync"
 
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/glamour/ansi"
 	styles "github.com/charmbracelet/glamour/styles"
 )
+
+// chatMarkdownStyle is DarkStyle with the document's left margin removed.
+// glamour's DarkStyle indents the whole document by 2 cells, which makes
+// rendered markdown 2 columns narrower than the wrap width we request and
+// pushes a selected message's right border 2 cells in from where plain text
+// reaches. Zeroing it lets markdown fill the wrap width, so the bordered box
+// sits snug on both sides and matches plain wrapText output (uniform border
+// reservation, no width jump when a streaming entry settles into markdown).
+func chatMarkdownStyle() ansi.StyleConfig {
+	s := styles.DarkStyleConfig
+	noMargin := uint(0)
+	s.Document.Margin = &noMargin
+	return s
+}
 
 // markdownRendererPools stores one sync.Pool per content width. A TermRenderer
 // is expensive to construct (parses style JSON, builds chroma state) but holds
@@ -22,11 +37,11 @@ func getMarkdownRendererPool(width int) *sync.Pool {
 	p := &sync.Pool{
 		New: func() any {
 			r, err := glamour.NewTermRenderer(
-				glamour.WithStandardStyle(styles.DarkStyle),
+				glamour.WithStyles(chatMarkdownStyle()),
 				glamour.WithWordWrap(width),
 			)
 			if err != nil {
-				// DarkStyle is a builtin; this branch should be unreachable.
+				// Built from a builtin style; this branch should be unreachable.
 				return (*glamour.TermRenderer)(nil)
 			}
 			return r
