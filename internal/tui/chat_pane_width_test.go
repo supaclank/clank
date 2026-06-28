@@ -40,7 +40,7 @@ func TestChatContentFillsWidthWithoutOverflow(t *testing.T) {
 		sv.cursor = 0
 		m := &InboxModel{
 			width: termW, height: 40, screen: screenSession, sessionView: sv,
-			sidebar:           NewSidebarModel(nil, "h", agent.GitRef{}, "/tmp"),
+			sidebar:           NewSidebarModel(nil, "h", agent.GitRef{}, t.TempDir()),
 			sidebarWidthRatio: defaultSidebarWidthRatio, pane: paneSessions,
 		}
 		m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
@@ -58,6 +58,37 @@ func TestChatContentFillsWidthWithoutOverflow(t *testing.T) {
 		// document margin; allow 1 extra column of slack.
 		if gap := termW - widest; gap > paneWrapBuffer+3 {
 			t.Fatalf("term=%d: chat leaves %d empty cols on the right (want <= %d)", termW, gap, paneWrapBuffer+3)
+		}
+	}
+}
+
+// Regression: unselected navigable entries must not overflow the terminal.
+// Each content line is wrapped at contentWidth, then "  " is prepended — the
+// two must together stay within m.width.
+func TestUnselectedNavigableEntriesNoOverflow(t *testing.T) {
+	t.Parallel()
+	body := strings.Repeat("the quick brown fox jumps over the lazy dog and keeps running ", 6)
+	for _, termW := range []int{90, 110, 130} {
+		sv := NewSessionViewModel(nil, "s")
+		sv.historyLoaded = true
+		sv.paneFocused = true
+		// Two entries: cursor on the second so the first (entryText) is unselected.
+		sv.entries = append(sv.entries,
+			displayEntry{kind: entryText, partID: "p1", messageID: "m1", content: body},
+			displayEntry{kind: entryUser, partID: "p2", messageID: "m2", content: "hi"},
+		)
+		sv.cursor = 1
+		m := &InboxModel{
+			width: termW, height: 40, screen: screenSession, sessionView: sv,
+			sidebar:           NewSidebarModel(nil, "h", agent.GitRef{}, t.TempDir()),
+			sidebarWidthRatio: defaultSidebarWidthRatio, pane: paneSessions,
+		}
+		m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
+
+		for _, l := range strings.Split(m.View().Content, "\n") {
+			if w := ansi.StringWidth(l); w > termW {
+				t.Fatalf("term=%d: unselected navigable entry overflows terminal (line width %d)", termW, w)
+			}
 		}
 	}
 }

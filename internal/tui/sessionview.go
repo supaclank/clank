@@ -2731,12 +2731,15 @@ func (m *SessionViewModel) renderEntryUncached(e *displayEntry, selected bool, o
 	const borderSize = 4
 	navigable := isNavigable(e.kind)
 
-	// When selected, content is narrower to fit inside the border.
+	// Navigable entries narrow content: 2-col indent when unselected, border when selected.
 	contentWidth := maxWidth
-	if selected && navigable {
-		contentWidth = maxWidth - borderSize
-		if contentWidth < 16 {
-			contentWidth = 16
+	if navigable {
+		contentWidth = maxWidth - 2
+		if selected {
+			contentWidth = maxWidth - borderSize
+			if contentWidth < 16 {
+				contentWidth = 16
+			}
 		}
 	}
 
