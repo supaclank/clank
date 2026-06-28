@@ -25,13 +25,13 @@ func (m *Mux) handlePreviewStart(w http.ResponseWriter, r *http.Request) {
 	}
 	// Optional body {local_path} starts an in-place preview on the
 	// caller's own folder (laptop `clank preview`), keyed by {id}. An
-	// empty body keeps the worktree-id path (mobile / synced worktrees).
+	// empty/absent body keeps the worktree-id path (mobile / synced
+	// worktrees). Decode unconditionally — a proxied request may arrive
+	// chunked (ContentLength -1); an empty body just yields io.EOF.
 	var body struct {
 		LocalPath string `json:"local_path"`
 	}
-	if r.Body != nil && r.ContentLength != 0 {
-		_ = json.NewDecoder(r.Body).Decode(&body) // absent/!json body is the common case
-	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
 	var (
 		status preview.Status
 		err    error
