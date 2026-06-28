@@ -397,9 +397,9 @@ func (r StartRequest) Validate() error {
 	if err := r.GitRef.Validate(); err != nil {
 		return fmt.Errorf("git_ref: %w", err)
 	}
-	if r.Prompt == "" && len(r.Attachments) == 0 {
-		return fmt.Errorf("prompt or attachment is required")
-	}
+	// Prompt/attachment are NOT required: a session may be created idle
+	// (backend opened, no initial turn) and driven by the first client
+	// message — e.g. `clank preview` so the phone can talk to the agent.
 	if r.PermissionMode != "" && !r.PermissionMode.IsValid() {
 		return fmt.Errorf("unknown permission_mode: %s", r.PermissionMode)
 	}

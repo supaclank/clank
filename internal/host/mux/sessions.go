@@ -43,13 +43,25 @@ func (m *Mux) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// Open creates the remote session (sync, stamps the external ID);
 	// Send is fire-and-forget on the backend's long-lived context.
 	// Failure tears down the host-side registration so retry works.
-	status, extID, err := m.svc.OpenAndSend(r.Context(), sessionID, agent.SendMessageOpts{
-		Text:           req.Prompt,
-		Agent:          req.Agent,
-		Model:          req.Model,
-		PermissionMode: req.PermissionMode,
-		Attachments:    req.Attachments,
-	})
+	//
+	// With no prompt/attachment the session is created idle: open the
+	// backend but send no initial turn. The first message arrives later
+	// from a client (e.g. the phone overlay in `clank preview`).
+	var (
+		status agent.SessionStatus
+		extID  string
+	)
+	if req.Prompt == "" && len(req.Attachments) == 0 {
+		status, extID, err = m.svc.OpenSession(r.Context(), sessionID)
+	} else {
+		status, extID, err = m.svc.OpenAndSend(r.Context(), sessionID, agent.SendMessageOpts{
+			Text:           req.Prompt,
+			Agent:          req.Agent,
+			Model:          req.Model,
+			PermissionMode: req.PermissionMode,
+			Attachments:    req.Attachments,
+		})
+	}
 	if err != nil {
 		_ = m.svc.StopSession(sessionID)
 		writeError(w, fmt.Errorf("open session: %w", err))

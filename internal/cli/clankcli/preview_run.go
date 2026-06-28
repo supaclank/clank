@@ -96,26 +96,28 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 		_ = client.Preview(previewKey).Stop(sctx)
 	}()
 
-	// A prompt is optional. When given, start an agent session on this
-	// same folder (in-place) so the user watches it work on their phone.
-	var sessionID string
-	if strings.TrimSpace(prompt) != "" {
-		bt, err := resolveBackend(backend)
-		if err != nil {
-			return err
-		}
-		fmt.Println("Starting the agent on this folder…")
-		info, cerr := client.Sessions().Create(ctx, agent.StartRequest{
-			Backend:  bt,
-			Hostname: host.HostLocal,
-			GitRef:   agent.GitRef{LocalPath: projectDir},
-			Prompt:   prompt,
-		})
-		if cerr != nil {
-			return fmt.Errorf("create session: %w", cerr)
-		}
-		sessionID = info.ID
+	// Always create a session so the phone's overlay can talk to an agent
+	// on this folder. With no prompt it's idle — the agent just waits for
+	// the first message you send from your phone.
+	bt, err := resolveBackend(backend)
+	if err != nil {
+		return err
 	}
+	if strings.TrimSpace(prompt) != "" {
+		fmt.Println("Starting the agent on this folder…")
+	} else {
+		fmt.Println("Creating an idle agent session (send the first message from your phone)…")
+	}
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
+		Backend:  bt,
+		Hostname: host.HostLocal,
+		GitRef:   agent.GitRef{LocalPath: projectDir},
+		Prompt:   prompt, // empty → idle session
+	})
+	if err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+	sessionID := info.ID
 
 	link := PreviewLink{
 		GatewayURL: fd.BaseURL,

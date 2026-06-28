@@ -166,3 +166,17 @@ func TestStartRequest_Validate_PermissionMode(t *testing.T) {
 		}
 	})
 }
+
+// A session with neither prompt nor attachment is valid: it's created idle
+// (backend opened, no initial turn) and driven by the first client message
+// — e.g. `clank preview` so the phone can talk to the agent.
+func TestStartRequest_Validate_IdleSessionAllowed(t *testing.T) {
+	t.Parallel()
+	req := agent.StartRequest{
+		Backend: agent.BackendClaudeCode,
+		GitRef:  agent.GitRef{LocalPath: "/tmp/repo"},
+	}
+	if err := req.Validate(); err != nil {
+		t.Fatalf("idle session (no prompt/attachment) should validate, got %v", err)
+	}
+}
