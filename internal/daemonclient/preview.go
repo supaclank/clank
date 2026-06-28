@@ -26,10 +26,16 @@ type PreviewStatus struct {
 }
 
 // Start spawns (or returns the existing) dev server for the worktree.
-// Idempotent on the host side.
-func (p *PreviewClient) Start(ctx context.Context) (*PreviewStatus, error) {
+// Idempotent on the host side. A non-empty localPath starts an in-place
+// preview on that folder (laptop `clank preview`) instead of resolving a
+// ~/work worktree by id.
+func (p *PreviewClient) Start(ctx context.Context, localPath string) (*PreviewStatus, error) {
+	var body any
+	if localPath != "" {
+		body = map[string]string{"local_path": localPath}
+	}
 	var s PreviewStatus
-	if err := p.c.post(ctx, "/worktrees/"+p.worktreeID+"/preview/start", nil, &s); err != nil {
+	if err := p.c.post(ctx, "/worktrees/"+p.worktreeID+"/preview/start", body, &s); err != nil {
 		return nil, err
 	}
 	return &s, nil

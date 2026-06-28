@@ -15,14 +15,17 @@ func previewCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "preview [prompt]",
-		Short: "Preview your app on your phone (Expo-style) with a local clank agent",
-		Long: `Boot a local, phone-reachable clank gateway and render a QR code.
+		Short: "Preview the current folder on your phone (Expo-style)",
+		Long: `Make the current folder previewable on your phone, Expo-style.
 
-Scan it with the clank app from a phone on the same Wi-Fi to open a live
-preview of your app. Runtime errors flow back to the local agent, which
-can fix them; the agent starts on the prompt you pass, so you watch it
-work on your phone. Everything — the gateway, the dev server, and the
-agent host — is torn down when you press Ctrl+C.`,
+Boots (or reuses) the local clank daemon, exposes it to your phone over the
+LAN behind a one-time pairing token, and serves this folder's Expo app.
+Scan the QR with the clank app on the same Wi-Fi to open it.
+
+A prompt is optional: pass one to also start an agent on this folder and
+watch it work on your phone. Pairing, the dev server, and the agent are
+independent. Everything is torn down on Ctrl+C — including the daemon, if
+clank preview was the one that started it.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			if tunnel {
