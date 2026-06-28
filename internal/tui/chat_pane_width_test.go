@@ -8,6 +8,55 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// inboxFrameWidth renders the session screen and returns the rendered frame
+// width (widest line, trailing padding included — what the terminal actually
+// paints).
+func inboxFrameWidth(t *testing.T, termW int, sidebarHidden, inputActive bool) int {
+	t.Helper()
+	sv := NewSessionViewModel(nil, "s")
+	sv.historyLoaded = true
+	sv.paneFocused = true
+	sv.inputActive = inputActive
+	sv.entries = append(sv.entries, displayEntry{kind: entryText, partID: "p", messageID: "m", content: strings.Repeat("the quick brown fox jumps ", 10)})
+	sv.cursor = 0
+	m := &InboxModel{
+		width: termW, height: 40, screen: screenSession, sessionView: sv,
+		sidebar:           NewSidebarModel(nil, "h", agent.GitRef{}, t.TempDir()),
+		sidebarWidthRatio: defaultSidebarWidthRatio, pane: paneSessions, sidebarHidden: sidebarHidden,
+	}
+	m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
+	frame := 0
+	for _, l := range strings.Split(m.View().Content, "\n") {
+		if w := ansi.StringWidth(l); w > frame {
+			frame = w
+		}
+	}
+	return frame
+}
+
+// Toggling the worktree sidebar must not change the rendered frame width, and
+// the frame must never exceed the terminal. Otherwise the wider frame's extra
+// columns are left stranded on screen when toggling (a ghost right border), and
+// the chat can bleed past the terminal edge. Regression for an over-long help
+// line that wasn't clamped to the pane width — visible mainly on narrower panes
+// where the hint bar is wider than the chat column.
+func TestSidebarToggleKeepsFrameWidth(t *testing.T) {
+	t.Parallel()
+	for termW := 80; termW <= 130; termW++ {
+		for _, inputActive := range []bool{false, true} {
+			two := inboxFrameWidth(t, termW, false, inputActive)
+			one := inboxFrameWidth(t, termW, true, inputActive)
+			if two > termW || one > termW {
+				t.Fatalf("term=%d inputActive=%v: frame overflows terminal (two-pane=%d single=%d)", termW, inputActive, two, one)
+			}
+			if two != one {
+				t.Fatalf("term=%d inputActive=%v: frame width differs by mode (two-pane=%d single=%d) → toggling strands %d cols",
+					termW, inputActive, two, one, two-one)
+			}
+		}
+	}
+}
+
 // renderChatRightmost renders the inbox showing one long, selected agent
 // message and reports the rightmost non-blank column plus the worst line that
 // overflows the terminal width. The chat region is always to the right of the

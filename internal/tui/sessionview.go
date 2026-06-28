@@ -2509,11 +2509,14 @@ func (m *SessionViewModel) View() tea.View {
 		if len(m.models) > 0 {
 			inputHelp += " | shift+tab: select model"
 		}
-		sb.WriteString(helpStyle.Render(inputHelp))
+		sb.WriteString(helpStyle.Render(ansi.Truncate(inputHelp, m.width, "…")))
 	} else {
-		// Help bar.
+		// Help bar. Truncate to the pane width: an over-long hint line would
+		// otherwise widen the whole frame past m.width, and because the chat
+		// sits at a different x in one- vs two-pane mode, that stray width
+		// strands cells on the right when the sidebar is toggled.
 		help := m.buildHelpText()
-		sb.WriteString(helpStyle.Render(help))
+		sb.WriteString(helpStyle.Render(ansi.Truncate(help, m.width, "…")))
 	}
 
 	output := m.overlaySessionConfirm(sb.String())
