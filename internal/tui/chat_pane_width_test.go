@@ -57,6 +57,39 @@ func TestSidebarToggleKeepsFrameWidth(t *testing.T) {
 	}
 }
 
+// The rendered session frame must be a full rectangle — every line padded to
+// the terminal width — in both pane modes. Two-pane content is uniform via
+// JoinHorizontal; single-pane chat content is ragged, and a ragged frame
+// leaves the previous (wider) frame's cells stranded when the sidebar is
+// toggled off (a ghost border down the right edge). padFrameWidth enforces
+// this. Two entries (one ragged user line) make the raggedness concrete.
+func TestSessionFrameIsRectangular(t *testing.T) {
+	t.Parallel()
+	for _, termW := range []int{84, 100, 140} {
+		for _, hidden := range []bool{false, true} {
+			sv := NewSessionViewModel(nil, "s")
+			sv.historyLoaded = true
+			sv.paneFocused = true
+			sv.entries = append(sv.entries,
+				displayEntry{kind: entryUser, partID: "u", messageID: "m1", content: "hi"},
+				displayEntry{kind: entryText, partID: "p", messageID: "m2", content: "a short reply"})
+			sv.cursor = 1
+			m := &InboxModel{
+				width: termW, height: 24, screen: screenSession, sessionView: sv,
+				sidebar:           NewSidebarModel(nil, "h", agent.GitRef{}, t.TempDir()),
+				sidebarWidthRatio: defaultSidebarWidthRatio, pane: paneSessions, sidebarHidden: hidden,
+			}
+			m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
+			for i, l := range strings.Split(m.View().Content, "\n") {
+				if w := ansi.StringWidth(l); w != termW {
+					t.Fatalf("term=%d hidden=%v: line %d width=%d, want %d (ragged frame strands cells on toggle)",
+						termW, hidden, i, w, termW)
+				}
+			}
+		}
+	}
+}
+
 // renderChatRightmost renders the inbox showing one long, selected agent
 // message and reports the rightmost non-blank column plus the worst line that
 // overflows the terminal width. The chat region is always to the right of the

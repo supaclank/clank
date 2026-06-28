@@ -2016,6 +2016,13 @@ func (m *InboxModel) View() tea.View {
 	// click-to-select and wheel scroll). The cost is that native mouse
 	// text-selection then needs Option held on those screens — the same
 	// as it already worked in the chat.
+	// Pad every line to the full terminal width so the frame is a clean
+	// rectangle. Two-pane mode already produces uniform lines (JoinHorizontal
+	// pads them); single-pane chat content is ragged. Without this, toggling
+	// the sidebar off shrinks many lines and the terminal keeps the wider
+	// previous frame's cells on the right — a ghost border down the edge.
+	content = padFrameWidth(content, m.width)
+
 	var v tea.View
 	if m.showTwoPanes() || (m.screen == screenSession && m.sessionView != nil) {
 		v = newVoiceEnabledViewWithMouse(content)
@@ -2042,6 +2049,20 @@ func (m *InboxModel) View() tea.View {
 		v.Cursor = &shifted
 	}
 	return v
+}
+
+// padFrameWidth right-pads every line of a rendered frame to width with
+// spaces so the frame is a full rectangle. Lines already at or beyond width
+// are left untouched (never truncated). This keeps consecutive frames the
+// same shape so the terminal can't strand cells from a wider previous frame.
+func padFrameWidth(content string, width int) string {
+	lines := strings.Split(content, "\n")
+	for i, l := range lines {
+		if pad := width - lipgloss.Width(l); pad > 0 {
+			lines[i] = l + strings.Repeat(" ", pad)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // sizeSessionViewForRightPane keeps the embedded chat view in sync
