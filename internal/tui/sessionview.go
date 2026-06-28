@@ -2731,15 +2731,18 @@ func (m *SessionViewModel) renderEntryUncached(e *displayEntry, selected bool, o
 	const borderSize = 4
 	navigable := isNavigable(e.kind)
 
-	// Navigable entries narrow content: 2-col indent when unselected, border when selected.
+	// Reserve the selection border's footprint for every navigable entry —
+	// whether or not it is the cursor right now — so moving the cursor onto a
+	// message never re-wraps its text. The unselected entry leaves that space
+	// blank (a 2-cell indent on the left); the selected entry fills it with the
+	// border. Content width stays constant, so selecting never squeezes text.
+	// Reserving borderSize (wider than the 2-cell indent) also keeps unselected
+	// lines within m.width, so the indent can't push them past the edge.
 	contentWidth := maxWidth
 	if navigable {
-		contentWidth = maxWidth - 2
-		if selected {
-			contentWidth = maxWidth - borderSize
-			if contentWidth < 16 {
-				contentWidth = 16
-			}
+		contentWidth = maxWidth - borderSize
+		if contentWidth < 16 {
+			contentWidth = 16
 		}
 	}
 

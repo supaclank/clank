@@ -2332,12 +2332,20 @@ func (m *InboxModel) sessionPaneWidth() int {
 // chatPaneContentWidth is the width available to the borderless chat/session
 // view. Unlike sessionPaneWidth — sized for the bordered inbox/settings/cloud
 // panes — the chat paints no outer pane border (every message draws its own),
-// so it reclaims paneBorderInset and keeps only paneWrapBuffer as a right-edge
-// gutter against the terminal/separator. This is what lets the chat fill the
-// horizontal space instead of leaving the border's worth of columns empty.
+// so it keeps only paneWrapBuffer as a right-edge gutter against the terminal.
+// This is what lets the chat fill the horizontal space instead of leaving the
+// border's worth of columns empty.
+//
+// In two-pane mode it subtracts the sidebar's *rendered* width, not its
+// allocation: sidebarRenderWidth is the allocation, but lipgloss draws the
+// sidebar paneBorderInset narrower (v2 folds the border into Width) and
+// chatPaneX places the chat at that actual edge. Mirroring that keeps the chat
+// flush to the same right edge as single-pane mode instead of stopping
+// paneBorderInset columns short.
 func (m *InboxModel) chatPaneContentWidth() int {
 	if m.showTwoPanes() {
-		return m.width - m.sidebarRenderWidth() - sidebarGap - paneWrapBuffer
+		sidebarRendered := m.sidebarRenderWidth() - paneBorderInset
+		return m.width - sidebarRendered - sidebarGap - paneWrapBuffer
 	}
 	return m.width - paneWrapBuffer
 }
