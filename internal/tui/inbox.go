@@ -2049,16 +2049,16 @@ func (m *InboxModel) View() tea.View {
 // terminal resize, a sidebar width adjustment, or a sidebar toggle all
 // reach the chat view before its next render.
 //
-// Width matches the inbox's content target (sessionPaneWidth) so the
-// chat's input box — which renders its own border at m.width — fits
-// inside the right pane's bordered area without spilling over the
-// pane separator. Using sessionPaneWidth + paneWrapBuffer pushed the
-// input border one cell past the right pane's left edge.
+// Width is chatPaneContentWidth — the borderless chat fills the space
+// between the sidebar and the terminal's right edge (minus a wrap-safety
+// gutter), rather than reserving columns for an outer pane border it never
+// draws. The chat's input box renders its own border at this width and still
+// clears the pane separator because the gutter keeps it inside the frame.
 func (m *InboxModel) sizeSessionViewForRightPane() {
 	if m.sessionView == nil {
 		return
 	}
-	w := m.sessionPaneWidth()
+	w := m.chatPaneContentWidth()
 	h := m.height - paneBorderInset
 	if w < 10 {
 		w = 10
@@ -2327,6 +2327,19 @@ func (m *InboxModel) sessionPaneWidth() int {
 		return m.width - m.sidebarRenderWidth() - sidebarGap - paneBorderInset - paneWrapBuffer
 	}
 	return m.width
+}
+
+// chatPaneContentWidth is the width available to the borderless chat/session
+// view. Unlike sessionPaneWidth — sized for the bordered inbox/settings/cloud
+// panes — the chat paints no outer pane border (every message draws its own),
+// so it reclaims paneBorderInset and keeps only paneWrapBuffer as a right-edge
+// gutter against the terminal/separator. This is what lets the chat fill the
+// horizontal space instead of leaving the border's worth of columns empty.
+func (m *InboxModel) chatPaneContentWidth() int {
+	if m.showTwoPanes() {
+		return m.width - m.sidebarRenderWidth() - sidebarGap - paneWrapBuffer
+	}
+	return m.width - paneWrapBuffer
 }
 
 // chatPaneXOffset returns the X coordinate (in the outer terminal frame)

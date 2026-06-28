@@ -2643,7 +2643,7 @@ func (m *SessionViewModel) buildContentLines() []string {
 		}
 
 		// Build inner content: header + description + hint.
-		maxWidth := m.width - 4
+		maxWidth := m.width
 		if maxWidth < 20 {
 			maxWidth = 20
 		}
@@ -2683,7 +2683,7 @@ func (m *SessionViewModel) buildContentLines() []string {
 }
 
 func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool, ownerExpanded bool) []string {
-	maxWidth := m.width - 4
+	maxWidth := m.width
 	if maxWidth < 20 {
 		maxWidth = 20
 	}
