@@ -3,6 +3,7 @@ package hostmux
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/acksell/clank/internal/host/preview"
@@ -31,7 +32,10 @@ func (m *Mux) handlePreviewStart(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		LocalPath string `json:"local_path"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_request", Error: "invalid request body"})
+		return
+	}
 	var (
 		status preview.Status
 		err    error

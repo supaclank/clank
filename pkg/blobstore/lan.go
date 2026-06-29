@@ -173,7 +173,7 @@ func (l *LAN) sign(key, op string, exp int64) string {
 // key that would escape the blob directory.
 func (l *LAN) pathFor(key string) (string, error) {
 	clean := filepath.Join(l.dir, filepath.FromSlash(key))
-	if clean != l.dir && !strings.HasPrefix(clean, l.dir+string(os.PathSeparator)) {
+	if !strings.HasPrefix(clean, l.dir+string(os.PathSeparator)) {
 		return "", fmt.Errorf("blobstore.LAN: key %q escapes store", key)
 	}
 	return clean, nil

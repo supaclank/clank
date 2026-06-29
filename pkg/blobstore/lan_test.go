@@ -123,3 +123,16 @@ func TestLANDeletePrefix(t *testing.T) {
 		t.Fatal("blob still exists after DeletePrefix")
 	}
 }
+
+func TestLANPathSafety(t *testing.T) {
+	t.Parallel()
+	l := newTestLAN(t)
+	ctx := context.Background()
+
+	// Keys that normalize to the store root or escape it must be rejected.
+	for _, key := range []string{"alice/..", "..", "a/../../b"} {
+		if _, err := l.Exists(ctx, key); err == nil {
+			t.Errorf("Exists(%q) = nil, want path-escape error", key)
+		}
+	}
+}

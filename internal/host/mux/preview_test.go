@@ -192,3 +192,24 @@ func TestPreviewStart_UnknownWorktreeIDYields4xx(t *testing.T) {
 		t.Fatalf("status = %d, want 4xx for unknown worktree", resp.StatusCode)
 	}
 }
+
+func TestPreviewStart_MalformedBodyYields400(t *testing.T) {
+	env := newPreviewTestEnv(t, expoFixture())
+
+	resp, err := http.Post(env.srv.URL+"/worktrees/"+env.worktreeID+"/preview/start",
+		"application/json", bytes.NewReader([]byte(`{not json`)))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for malformed body", resp.StatusCode)
+	}
+	var body errResp
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Code != "invalid_request" {
+		t.Errorf("code = %q; want invalid_request", body.Code)
+	}
+}
