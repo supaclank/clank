@@ -96,35 +96,36 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 		_ = client.Preview(previewKey).Stop(sctx)
 	}()
 
-	// Always create a session so the phone's overlay can talk to an agent
-	// on this folder. With no prompt it's idle — the agent just waits for
-	// the first message you send from your phone.
+	// A prompt is optional. If you pass one, kick the agent off now and
+	// watch it on your phone. If not, no session is created here — the
+	// phone creates one (this folder as the GitRef, the first message as
+	// the prompt) when you start talking in the preview overlay.
 	bt, err := resolveBackend(backend)
 	if err != nil {
 		return err
 	}
+	var sessionID string
 	if strings.TrimSpace(prompt) != "" {
 		fmt.Println("Starting the agent on this folder…")
-	} else {
-		fmt.Println("Creating an idle agent session (send the first message from your phone)…")
+		info, cerr := client.Sessions().Create(ctx, agent.StartRequest{
+			Backend:  bt,
+			Hostname: host.HostLocal,
+			GitRef:   agent.GitRef{LocalPath: projectDir},
+			Prompt:   prompt,
+		})
+		if cerr != nil {
+			return fmt.Errorf("create session: %w", cerr)
+		}
+		sessionID = info.ID
 	}
-	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:  bt,
-		Hostname: host.HostLocal,
-		GitRef:   agent.GitRef{LocalPath: projectDir},
-		Prompt:   prompt, // empty → idle session
-	})
-	if err != nil {
-		return fmt.Errorf("create session: %w", err)
-	}
-	sessionID := info.ID
 
 	link := PreviewLink{
 		GatewayURL: fd.BaseURL,
 		Token:      fd.Token,
-		SessionID:  sessionID,
-		WorktreeID: previewKey,
 		PreviewURL: previewURL,
+		SessionID:  sessionID, // empty unless a prompt was passed
+		LocalPath:  projectDir,
+		Backend:    string(bt),
 		Name:       filepath.Base(projectDir),
 	}
 	linkStr, err := link.Encode()

@@ -22,21 +22,29 @@ const (
 	previewLinkParamVersion    = "v"
 	previewLinkParamGateway    = "gw"   // gateway base URL, e.g. http://192.168.1.20:7878
 	previewLinkParamToken      = "tok"  // pairing bearer (auth.StaticBearer)
-	previewLinkParamSessionID  = "sid"  // preview session to open
-	previewLinkParamWorktreeID = "wid"  // worktree the session operates on
-	previewLinkParamPreviewURL = "url"  // Metro dev server, e.g. exp://192.168.1.20:8081
+	previewLinkParamPreviewURL = "url"  // Metro dev server, e.g. http://192.168.1.20:8081
+	previewLinkParamSessionID  = "sid"  // a prompt-started session to open (optional)
+	previewLinkParamLocalPath  = "lp"   // laptop folder the agent + Metro run against
+	previewLinkParamBackend    = "bk"   // agent backend the laptop can run (opencode|claude-code)
 	previewLinkParamName       = "name" // project display name (optional)
 )
 
-// PreviewLink is the payload carried by the QR. GatewayURL and Token are
-// the pairing capability; the rest let the phone jump straight into the
-// running preview without another round-trip.
+// PreviewLink is the payload carried by the QR.
+//
+//   - GatewayURL + Token: the pairing capability (required).
+//   - PreviewURL: the dev server to open.
+//   - SessionID: set only when `clank preview <prompt>` already started an
+//     agent — the phone attaches to it.
+//   - LocalPath + Backend: when there's no SessionID, the phone creates the
+//     session itself on the first message — same call it makes for cloud
+//     worktrees, with LocalPath instead of WorktreeID.
 type PreviewLink struct {
 	GatewayURL string
 	Token      string
-	SessionID  string
-	WorktreeID string
 	PreviewURL string
+	SessionID  string
+	LocalPath  string
+	Backend    string
 	Name       string
 }
 
@@ -54,18 +62,11 @@ func (l PreviewLink) Encode() (string, error) {
 	q.Set(previewLinkParamVersion, previewLinkVersion)
 	q.Set(previewLinkParamGateway, l.GatewayURL)
 	q.Set(previewLinkParamToken, l.Token)
-	if l.SessionID != "" {
-		q.Set(previewLinkParamSessionID, l.SessionID)
-	}
-	if l.WorktreeID != "" {
-		q.Set(previewLinkParamWorktreeID, l.WorktreeID)
-	}
-	if l.PreviewURL != "" {
-		q.Set(previewLinkParamPreviewURL, l.PreviewURL)
-	}
-	if l.Name != "" {
-		q.Set(previewLinkParamName, l.Name)
-	}
+	setIfPresent(q, previewLinkParamPreviewURL, l.PreviewURL)
+	setIfPresent(q, previewLinkParamSessionID, l.SessionID)
+	setIfPresent(q, previewLinkParamLocalPath, l.LocalPath)
+	setIfPresent(q, previewLinkParamBackend, l.Backend)
+	setIfPresent(q, previewLinkParamName, l.Name)
 	u := url.URL{Scheme: previewLinkScheme, Host: previewLinkHost, RawQuery: q.Encode()}
 	return u.String(), nil
 }
@@ -84,13 +85,20 @@ func ParsePreviewLink(s string) (PreviewLink, error) {
 	link := PreviewLink{
 		GatewayURL: q.Get(previewLinkParamGateway),
 		Token:      q.Get(previewLinkParamToken),
-		SessionID:  q.Get(previewLinkParamSessionID),
-		WorktreeID: q.Get(previewLinkParamWorktreeID),
 		PreviewURL: q.Get(previewLinkParamPreviewURL),
+		SessionID:  q.Get(previewLinkParamSessionID),
+		LocalPath:  q.Get(previewLinkParamLocalPath),
+		Backend:    q.Get(previewLinkParamBackend),
 		Name:       q.Get(previewLinkParamName),
 	}
 	if link.GatewayURL == "" || link.Token == "" {
 		return PreviewLink{}, fmt.Errorf("preview link: missing required %s/%s in %q", previewLinkParamGateway, previewLinkParamToken, s)
 	}
 	return link, nil
+}
+
+func setIfPresent(q url.Values, key, value string) {
+	if value != "" {
+		q.Set(key, value)
+	}
 }

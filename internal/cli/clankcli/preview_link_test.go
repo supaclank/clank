@@ -11,9 +11,10 @@ func TestPreviewLinkRoundTrip(t *testing.T) {
 	want := PreviewLink{
 		GatewayURL: "http://192.168.1.20:7878",
 		Token:      "pair_abc123",
+		PreviewURL: "http://192.168.1.20:8081",
 		SessionID:  "01HSESSION",
-		WorktreeID: "01HWORKTREE",
-		PreviewURL: "exp://192.168.1.20:8081",
+		LocalPath:  "/Users/me/my-expo-app",
+		Backend:    "claude-code",
 		Name:       "my expo app",
 	}
 	encoded, err := want.Encode()
