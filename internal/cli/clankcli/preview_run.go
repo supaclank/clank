@@ -30,6 +30,9 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 		return err
 	}
 
+	sigCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	ip, err := lanIP()
 	if err != nil {
 		return err
@@ -76,11 +79,12 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	previewKey := ulid.Make().String()
 
 	// Generous timeout: a cold preview start runs `npm install` first.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	// Derives from sigCtx so Ctrl+C during startup aborts the wait.
+	startCtx, cancel := context.WithTimeout(sigCtx, 10*time.Minute)
 	defer cancel()
 
 	fmt.Println("Starting the dev server on this folder (first run installs dependencies)…")
-	status, err := client.Preview(previewKey).Start(ctx, projectDir)
+	status, err := client.Preview(previewKey).Start(startCtx, projectDir)
 	if err != nil {
 		return fmt.Errorf("start preview (is this an Expo project?): %w", err)
 	}
@@ -107,7 +111,7 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	var sessionID string
 	if strings.TrimSpace(prompt) != "" {
 		fmt.Println("Starting the agent on this folder…")
-		info, cerr := client.Sessions().Create(ctx, agent.StartRequest{
+		info, cerr := client.Sessions().Create(startCtx, agent.StartRequest{
 			Backend:  bt,
 			Hostname: host.HostLocal,
 			GitRef:   agent.GitRef{LocalPath: projectDir},
@@ -134,7 +138,7 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	}
 
 	printPreviewBanner(linkStr, fd.BaseURL, previewURL)
-	waitForInterrupt()
+	<-sigCtx.Done()
 	fmt.Println("\nShutting down preview…")
 	return nil
 }
@@ -176,11 +180,4 @@ func stopLocalDaemon() {
 	if proc, perr := os.FindProcess(pid); perr == nil {
 		_ = proc.Signal(os.Interrupt)
 	}
-}
-
-func waitForInterrupt() {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(ch)
-	<-ch
 }

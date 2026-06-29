@@ -71,7 +71,12 @@ func NewLAN(bindAddr, advertiseHost string, signKey []byte) (*LAN, error) {
 		signKey: signKey,
 		ln:      ln,
 	}
-	l.srv = &http.Server{Handler: http.HandlerFunc(l.handle)}
+	l.srv = &http.Server{
+		Handler:      http.HandlerFunc(l.handle),
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
 	l.wg.Add(1)
 	go func() {
 		defer l.wg.Done()
@@ -123,15 +128,23 @@ func (l *LAN) DeletePrefix(_ context.Context, prefix string) error {
 		return fmt.Errorf("DeletePrefix: empty prefix would sweep the entire store")
 	}
 	return filepath.WalkDir(l.dir, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
 			return err
+		}
+		if d.IsDir() {
+			return nil
 		}
 		rel, relErr := filepath.Rel(l.dir, p)
 		if relErr != nil {
 			return relErr
 		}
 		if strings.HasPrefix(filepath.ToSlash(rel), prefix) {
-			return os.Remove(p)
+			if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
 		}
 		return nil
 	})
