@@ -998,8 +998,7 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			case key.Matches(k, key.NewBinding(key.WithKeys("w"))):
-				m.toggleSidebar()
-				return m, nil
+				return m, m.toggleSidebar()
 			case key.Matches(k, key.NewBinding(key.WithKeys("n"))):
 				worktreeDir := ""
 				if m.sessionView.info != nil {
@@ -1531,7 +1530,7 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("w"))):
-		m.toggleSidebar()
+		return m, m.toggleSidebar()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
 		m.showHelp = true
 		return m, nil
@@ -2049,16 +2048,16 @@ func (m *InboxModel) View() tea.View {
 // terminal resize, a sidebar width adjustment, or a sidebar toggle all
 // reach the chat view before its next render.
 //
-// Width matches the inbox's content target (sessionPaneWidth) so the
-// chat's input box — which renders its own border at m.width — fits
-// inside the right pane's bordered area without spilling over the
-// pane separator. Using sessionPaneWidth + paneWrapBuffer pushed the
-// input border one cell past the right pane's left edge.
+// Width is chatPaneContentWidth — the borderless chat fills the space
+// between the sidebar and the terminal's right edge (minus a wrap-safety
+// gutter), rather than reserving columns for an outer pane border it never
+// draws. The chat's input box renders its own border at this width and still
+// clears the pane separator because the gutter keeps it inside the frame.
 func (m *InboxModel) sizeSessionViewForRightPane() {
 	if m.sessionView == nil {
 		return
 	}
-	w := m.sessionPaneWidth()
+	w := m.chatPaneContentWidth()
 	h := m.height - paneBorderInset
 	if w < 10 {
 		w = 10
@@ -2237,19 +2236,23 @@ func (m *InboxModel) focusActiveChatMessageMode() tea.Cmd {
 // Inverse property: two consecutive toggles must return to the original
 // pane focus. Focus only moves when the currently-focused pane is being
 // hidden (no focus on invisible pane), and is restored on un-hide.
-func (m *InboxModel) toggleSidebar() {
+func (m *InboxModel) toggleSidebar() tea.Cmd {
 	m.sidebarHidden = !m.sidebarHidden
 	if m.sidebarHidden {
 		m.sidebarWasFocused = m.pane == paneSidebar
 		if m.sidebarWasFocused {
 			m.setPane(paneSessions)
 		}
-		return
-	}
-	if m.sidebarWasFocused {
+	} else if m.sidebarWasFocused {
 		m.setPane(paneSidebar)
 		m.sidebarWasFocused = false
 	}
+	// Force a full repaint. Toggling reshapes the layout (single block vs
+	// sidebar+chat) and reflows wrapped lines, shifting rows; without an
+	// explicit clear the terminal can keep stale cells from the previous frame
+	// — ghost borders and phantom text, most visible on narrow panes where the
+	// chat wraps heavily.
+	return tea.ClearScreen
 }
 
 // sidebarWidthRatioFromPrefs returns the persisted sidebar width ratio, or the
@@ -2327,6 +2330,27 @@ func (m *InboxModel) sessionPaneWidth() int {
 		return m.width - m.sidebarRenderWidth() - sidebarGap - paneBorderInset - paneWrapBuffer
 	}
 	return m.width
+}
+
+// chatPaneContentWidth is the width available to the borderless chat/session
+// view. Unlike sessionPaneWidth — sized for the bordered inbox/settings/cloud
+// panes — the chat paints no outer pane border (every message draws its own),
+// so it keeps only paneWrapBuffer as a right-edge gutter against the terminal.
+// This is what lets the chat fill the horizontal space instead of leaving the
+// border's worth of columns empty.
+//
+// In two-pane mode it subtracts the sidebar's *rendered* width, not its
+// allocation: sidebarRenderWidth is the allocation, but lipgloss draws the
+// sidebar paneBorderInset narrower (v2 folds the border into Width) and
+// chatPaneX places the chat at that actual edge. Mirroring that keeps the chat
+// flush to the same right edge as single-pane mode instead of stopping
+// paneBorderInset columns short.
+func (m *InboxModel) chatPaneContentWidth() int {
+	if m.showTwoPanes() {
+		sidebarRendered := m.sidebarRenderWidth() - paneBorderInset
+		return m.width - sidebarRendered - sidebarGap - paneWrapBuffer
+	}
+	return m.width - paneWrapBuffer
 }
 
 // chatPaneXOffset returns the X coordinate (in the outer terminal frame)
@@ -2542,8 +2566,7 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		m.cleanupVoice()
 		return m, tea.Quit
 	case key.Matches(msg, key.NewBinding(key.WithKeys("w"))):
-		m.toggleSidebar()
-		return m, nil
+		return m, m.toggleSidebar()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
 		m.showHelp = true
 		return m, nil
