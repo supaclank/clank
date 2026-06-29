@@ -96,14 +96,14 @@ func startPreviewFrontDoor(advertiseIP net.IP, port int, sockPath string, lg *lo
 		UserID:  userID,
 		blob:    blob,
 		srv: &http.Server{
-			Handler:     handler,
-			ReadTimeout: 30 * time.Second,
-			// WriteTimeout is 0: this server proxies SSE streams (/events)
-			// that are long-lived; a write deadline would close them early.
-			IdleTimeout: 120 * time.Second,
+			Handler:           handler,
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       120 * time.Second,
+			// WriteTimeout omitted: FlushInterval: -1 keeps SSE connections open indefinitely.
+			// ReadHeaderTimeout (not ReadTimeout) avoids cutting image upload body reads.
 		},
-		ln:      ln,
-		log:     lg,
+		ln:  ln,
+		log: lg,
 	}
 	go func() {
 		if err := fd.srv.Serve(ln); err != nil && err != http.ErrServerClosed {
