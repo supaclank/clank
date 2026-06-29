@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"os/user"
+	"time"
 
 	"github.com/acksell/clank/pkg/auth"
 	"github.com/acksell/clank/pkg/blobstore"
@@ -94,9 +95,14 @@ func startPreviewFrontDoor(advertiseIP net.IP, port int, sockPath string, lg *lo
 		Token:   token,
 		UserID:  userID,
 		blob:    blob,
-		srv:     &http.Server{Handler: handler},
-		ln:      ln,
-		log:     lg,
+		srv: &http.Server{
+			Handler:      handler,
+			ReadTimeout:  30 * time.Second,
+			WriteTimeout: 30 * time.Second,
+			IdleTimeout:  60 * time.Second,
+		},
+		ln:  ln,
+		log: lg,
 	}
 	go func() {
 		if err := fd.srv.Serve(ln); err != nil && err != http.ErrServerClosed {
