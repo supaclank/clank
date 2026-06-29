@@ -46,7 +46,10 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 
 	// Reuse the running daemon, or start one — and remember which, so we
 	// only stop it on exit if we started it.
-	wasRunning, _, _ := daemonclient.IsRunning()
+	wasRunning, _, isRunningErr := daemonclient.IsRunning()
+	if isRunningErr != nil {
+		wasRunning = true // safe side: avoid stopping an unrelated daemon if IsRunning fails
+	}
 	client, err := ensureDaemon()
 	if err != nil {
 		return fmt.Errorf("daemon: %w", err)

@@ -17,8 +17,7 @@ func printPreviewBanner(link, gatewayURL, previewURL string) {
 	}
 	fmt.Println()
 	fmt.Println("Scan with the clank app (same Wi-Fi) to open this preview on your phone.")
-	fmt.Println("If you're using your mobile hotspot, we recommend connecting your")
-	fmt.Println("devices via Tailscale, or --tunnel (uses ngrok).")
+	fmt.Println("If you're off the same Wi-Fi, connect your devices with Tailscale first.")
 	fmt.Printf("  Gateway: %s\n", gatewayURL)
 	fmt.Printf("  Metro:   %s\n", previewURL)
 	fmt.Println()
