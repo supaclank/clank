@@ -998,8 +998,7 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			case key.Matches(k, key.NewBinding(key.WithKeys("w"))):
-				m.toggleSidebar()
-				return m, nil
+				return m, m.toggleSidebar()
 			case key.Matches(k, key.NewBinding(key.WithKeys("n"))):
 				worktreeDir := ""
 				if m.sessionView.info != nil {
@@ -1531,7 +1530,7 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("w"))):
-		m.toggleSidebar()
+		return m, m.toggleSidebar()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
 		m.showHelp = true
 		return m, nil
@@ -2016,13 +2015,6 @@ func (m *InboxModel) View() tea.View {
 	// click-to-select and wheel scroll). The cost is that native mouse
 	// text-selection then needs Option held on those screens — the same
 	// as it already worked in the chat.
-	// Pad every line to the full terminal width so the frame is a clean
-	// rectangle. Two-pane mode already produces uniform lines (JoinHorizontal
-	// pads them); single-pane chat content is ragged. Without this, toggling
-	// the sidebar off shrinks many lines and the terminal keeps the wider
-	// previous frame's cells on the right — a ghost border down the edge.
-	content = padFrameWidth(content, m.width)
-
 	var v tea.View
 	if m.showTwoPanes() || (m.screen == screenSession && m.sessionView != nil) {
 		v = newVoiceEnabledViewWithMouse(content)
@@ -2049,20 +2041,6 @@ func (m *InboxModel) View() tea.View {
 		v.Cursor = &shifted
 	}
 	return v
-}
-
-// padFrameWidth right-pads every line of a rendered frame to width with
-// spaces so the frame is a full rectangle. Lines already at or beyond width
-// are left untouched (never truncated). This keeps consecutive frames the
-// same shape so the terminal can't strand cells from a wider previous frame.
-func padFrameWidth(content string, width int) string {
-	lines := strings.Split(content, "\n")
-	for i, l := range lines {
-		if pad := width - lipgloss.Width(l); pad > 0 {
-			lines[i] = l + strings.Repeat(" ", pad)
-		}
-	}
-	return strings.Join(lines, "\n")
 }
 
 // sizeSessionViewForRightPane keeps the embedded chat view in sync
@@ -2258,19 +2236,23 @@ func (m *InboxModel) focusActiveChatMessageMode() tea.Cmd {
 // Inverse property: two consecutive toggles must return to the original
 // pane focus. Focus only moves when the currently-focused pane is being
 // hidden (no focus on invisible pane), and is restored on un-hide.
-func (m *InboxModel) toggleSidebar() {
+func (m *InboxModel) toggleSidebar() tea.Cmd {
 	m.sidebarHidden = !m.sidebarHidden
 	if m.sidebarHidden {
 		m.sidebarWasFocused = m.pane == paneSidebar
 		if m.sidebarWasFocused {
 			m.setPane(paneSessions)
 		}
-		return
-	}
-	if m.sidebarWasFocused {
+	} else if m.sidebarWasFocused {
 		m.setPane(paneSidebar)
 		m.sidebarWasFocused = false
 	}
+	// Force a full repaint. Toggling reshapes the layout (single block vs
+	// sidebar+chat) and reflows wrapped lines, shifting rows; without an
+	// explicit clear the terminal can keep stale cells from the previous frame
+	// — ghost borders and phantom text, most visible on narrow panes where the
+	// chat wraps heavily.
+	return tea.ClearScreen
 }
 
 // sidebarWidthRatioFromPrefs returns the persisted sidebar width ratio, or the
@@ -2584,8 +2566,7 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		m.cleanupVoice()
 		return m, tea.Quit
 	case key.Matches(msg, key.NewBinding(key.WithKeys("w"))):
-		m.toggleSidebar()
-		return m, nil
+		return m, m.toggleSidebar()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
 		m.showHelp = true
 		return m, nil

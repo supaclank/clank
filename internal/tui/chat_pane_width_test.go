@@ -1,12 +1,54 @@
 package tui
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/acksell/clank/internal/agent"
 	"github.com/charmbracelet/x/ansi"
 )
+
+// A wrapped tool-summary line must stay within maxWidth and keep its dim
+// styling on every line. The old path styled the whole string then wrapped it,
+// which dropped the color on continuation lines (a stray bright "white" wrapped
+// line) and overshot the width by a cell — both of which corrupt rendering on
+// narrow panes. The status icon keeps its own color on the first line.
+func TestToolLineWrapStaysWithinWidthAndStyled(t *testing.T) {
+	t.Parallel()
+	m := NewSessionViewModel(nil, "s")
+	part := agent.Part{ID: "t", Type: "tool", Tool: "Bash", Status: agent.PartFailed,
+		Input: map[string]any{"command": strings.Repeat("git add some/file && ", 8)}}
+	e := &displayEntry{kind: entryTool, partID: "t", toolPart: &part}
+	for _, maxWidth := range []int{24, 40, 60} {
+		lines := m.renderEntryUncached(e, false, false, maxWidth)
+		if len(lines) < 2 {
+			t.Fatalf("maxWidth=%d: expected the long tool line to wrap, got %d line(s)", maxWidth, len(lines))
+		}
+		for i, l := range lines {
+			if w := ansi.StringWidth(l); w > maxWidth {
+				t.Errorf("maxWidth=%d line %d: width %d exceeds maxWidth", maxWidth, i, w)
+			}
+			if !strings.HasPrefix(l, "\x1b[") {
+				t.Errorf("maxWidth=%d line %d lost its style on wrap (renders in terminal default): %q", maxWidth, i, ansi.Strip(l))
+			}
+		}
+	}
+}
+
+// Toggling the sidebar reshapes the layout and reflows wrapped lines, which can
+// strand stale cells; the toggle must request a full repaint so the terminal
+// clears them. Asserts the command equals tea.ClearScreen.
+func TestToggleSidebarRequestsRepaint(t *testing.T) {
+	t.Parallel()
+	m := &InboxModel{width: 100, height: 40, sidebarWidthRatio: defaultSidebarWidthRatio}
+	m.sidebar = NewSidebarModel(nil, "h", agent.GitRef{}, t.TempDir())
+	cmd := m.toggleSidebar()
+	if cmd == nil || reflect.TypeOf(cmd()) != reflect.TypeOf(tea.ClearScreen()) {
+		t.Fatal("toggleSidebar must return tea.ClearScreen so the terminal repaints and drops stale cells")
+	}
+}
 
 // inboxFrameWidth renders the session screen and returns the rendered frame
 // width (widest line, trailing padding included — what the terminal actually
@@ -52,39 +94,6 @@ func TestSidebarToggleKeepsFrameWidth(t *testing.T) {
 			if two != one {
 				t.Fatalf("term=%d inputActive=%v: frame width differs by mode (two-pane=%d single=%d) → toggling strands %d cols",
 					termW, inputActive, two, one, two-one)
-			}
-		}
-	}
-}
-
-// The rendered session frame must be a full rectangle — every line padded to
-// the terminal width — in both pane modes. Two-pane content is uniform via
-// JoinHorizontal; single-pane chat content is ragged, and a ragged frame
-// leaves the previous (wider) frame's cells stranded when the sidebar is
-// toggled off (a ghost border down the right edge). padFrameWidth enforces
-// this. Two entries (one ragged user line) make the raggedness concrete.
-func TestSessionFrameIsRectangular(t *testing.T) {
-	t.Parallel()
-	for _, termW := range []int{84, 100, 140} {
-		for _, hidden := range []bool{false, true} {
-			sv := NewSessionViewModel(nil, "s")
-			sv.historyLoaded = true
-			sv.paneFocused = true
-			sv.entries = append(sv.entries,
-				displayEntry{kind: entryUser, partID: "u", messageID: "m1", content: "hi"},
-				displayEntry{kind: entryText, partID: "p", messageID: "m2", content: "a short reply"})
-			sv.cursor = 1
-			m := &InboxModel{
-				width: termW, height: 24, screen: screenSession, sessionView: sv,
-				sidebar:           NewSidebarModel(nil, "h", agent.GitRef{}, t.TempDir()),
-				sidebarWidthRatio: defaultSidebarWidthRatio, pane: paneSessions, sidebarHidden: hidden,
-			}
-			m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
-			for i, l := range strings.Split(m.View().Content, "\n") {
-				if w := ansi.StringWidth(l); w != termW {
-					t.Fatalf("term=%d hidden=%v: line %d width=%d, want %d (ragged frame strands cells on toggle)",
-						termW, hidden, i, w, termW)
-				}
 			}
 		}
 	}
