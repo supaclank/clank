@@ -1799,6 +1799,24 @@ func (m *SessionViewModel) renderToolLine(p agent.Part) string {
 	return fmt.Sprintf("[%s] %s", label, icon)
 }
 
+// recolorToolIcon renders a plain tool-summary line dim, but paints the status
+// icon — which sits just after the "[label] " prefix — in its own color, so a
+// completed ✓ / failed ✗ keeps its green / red while the rest stays dim. Used
+// for the first wrapped line; continuation lines have no icon and render dim.
+func recolorToolIcon(plain string, dim lipgloss.Style, coloredIcon string) string {
+	const sep = "] "
+	idx := strings.Index(plain, sep)
+	if idx < 0 {
+		return dim.Render(plain)
+	}
+	iconStart := idx + len(sep)
+	rest := []rune(plain[iconStart:])
+	if len(rest) == 0 {
+		return dim.Render(plain)
+	}
+	return dim.Render(plain[:iconStart]) + coloredIcon + dim.Render(string(rest[1:]))
+}
+
 // toolSummary returns a short description extracted from the tool's input
 // arguments. File tools show project-relative paths; Read includes a line
 // range; Bash shows the command; search tools show the pattern.
@@ -2509,11 +2527,14 @@ func (m *SessionViewModel) View() tea.View {
 		if len(m.models) > 0 {
 			inputHelp += " | shift+tab: select model"
 		}
-		sb.WriteString(helpStyle.Render(inputHelp))
+		sb.WriteString(helpStyle.Render(ansi.Truncate(inputHelp, m.width, "…")))
 	} else {
-		// Help bar.
+		// Help bar. Truncate to the pane width: an over-long hint line would
+		// otherwise widen the whole frame past m.width, and because the chat
+		// sits at a different x in one- vs two-pane mode, that stray width
+		// strands cells on the right when the sidebar is toggled.
 		help := m.buildHelpText()
-		sb.WriteString(helpStyle.Render(help))
+		sb.WriteString(helpStyle.Render(ansi.Truncate(help, m.width, "…")))
 	}
 
 	output := m.overlaySessionConfirm(sb.String())
@@ -2643,7 +2664,7 @@ func (m *SessionViewModel) buildContentLines() []string {
 		}
 
 		// Build inner content: header + description + hint.
-		maxWidth := m.width - 4
+		maxWidth := m.width
 		if maxWidth < 20 {
 			maxWidth = 20
 		}
@@ -2683,7 +2704,7 @@ func (m *SessionViewModel) buildContentLines() []string {
 }
 
 func (m *SessionViewModel) renderEntry(e *displayEntry, selected bool, ownerExpanded bool) []string {
-	maxWidth := m.width - 4
+	maxWidth := m.width
 	if maxWidth < 20 {
 		maxWidth = 20
 	}
@@ -2731,9 +2752,15 @@ func (m *SessionViewModel) renderEntryUncached(e *displayEntry, selected bool, o
 	const borderSize = 4
 	navigable := isNavigable(e.kind)
 
-	// When selected, content is narrower to fit inside the border.
+	// Reserve the selection border's footprint for every navigable entry —
+	// whether or not it is the cursor right now — so moving the cursor onto a
+	// message never re-wraps its text. The unselected entry leaves that space
+	// blank (a 2-cell indent on the left); the selected entry fills it with the
+	// border. Content width stays constant, so selecting never squeezes text.
+	// Reserving borderSize (wider than the 2-cell indent) also keeps unselected
+	// lines within m.width, so the indent can't push them past the edge.
 	contentWidth := maxWidth
-	if selected && navigable {
+	if navigable {
 		contentWidth = maxWidth - borderSize
 		if contentWidth < 16 {
 			contentWidth = 16
@@ -2796,17 +2823,29 @@ func (m *SessionViewModel) renderEntryUncached(e *displayEntry, selected bool, o
 		} else {
 			line = e.content
 		}
-		styled := lipgloss.NewStyle().Foreground(dimColor).Render("  " + line)
-		// The summary line is hard-truncated to 80 chars inside
-		// renderToolLine, but on narrow terminals (< 84 cols once the
-		// 2-char prefix + 4-char outer margin are counted) it can still
-		// exceed m.width. Wrap it so buildContentLines's logical line
-		// count matches what the terminal actually renders — otherwise
-		// scrollToBottom under-counts rows and the input box is pushed
-		// off-screen.
+		// Wrap the PLAIN summary, then style each wrapped line dim. Styling the
+		// whole string first and wrapping after (ansi.Wrap of a styled string)
+		// drops the SGR on every continuation line — they render in the
+		// terminal's default color (a stray bright wrapped line) and emit an
+		// unbalanced reset — and the status icon's own reset cut the dim short.
+		// Wrapping plain text also keeps each line within maxWidth (wrapping a
+		// styled string mis-measured and overshot by a cell). The summary is
+		// hard-truncated to 80 chars in renderToolLine, but a narrow pane can
+		// still need to wrap; matching the rendered row count keeps
+		// scrollToBottom's math correct so the input box isn't pushed off-screen.
+		dim := lipgloss.NewStyle().Foreground(dimColor)
+		var coloredIcon string
+		if e.toolPart != nil {
+			coloredIcon = m.statusIcon(e.toolPart.Status)
+		}
 		var lines []string
-		for _, wl := range strings.Split(ansi.Wrap(styled, maxWidth, " \t-"), "\n") {
-			lines = append(lines, wl)
+		for i, wl := range strings.Split(ansi.Wrap(ansi.Strip("  "+line), maxWidth, " \t-"), "\n") {
+			wl = strings.TrimRight(wl, " ") // ansi.Wrap can leave a trailing space that overshoots maxWidth by 1
+			if i == 0 && coloredIcon != "" {
+				lines = append(lines, recolorToolIcon(wl, dim, coloredIcon))
+			} else {
+				lines = append(lines, dim.Render(wl))
+			}
 		}
 
 		// Show detail when owning navigable entry is expanded, or always for TodoWrite/Edit.
