@@ -166,3 +166,17 @@ func TestStartRequest_Validate_PermissionMode(t *testing.T) {
 		}
 	})
 }
+
+// A session needs an initial turn: with neither prompt nor attachment,
+// Validate rejects it. (clank preview with no prompt creates no session —
+// the phone creates one, with its first message as the prompt.)
+func TestStartRequest_Validate_RequiresPromptOrAttachment(t *testing.T) {
+	t.Parallel()
+	req := agent.StartRequest{
+		Backend: agent.BackendClaudeCode,
+		GitRef:  agent.GitRef{LocalPath: "/tmp/repo"},
+	}
+	if err := req.Validate(); err == nil {
+		t.Fatal("expected error for a session with no prompt/attachment, got nil")
+	}
+}
