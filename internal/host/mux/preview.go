@@ -1,7 +1,9 @@
 package hostmux
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/acksell/clank/internal/host/preview"
@@ -22,7 +24,27 @@ func (m *Mux) handlePreviewStart(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_request", Error: "worktree id missing"})
 		return
 	}
-	status, err := m.svc.PreviewStart(r.Context(), id)
+	// Optional body {local_path} starts an in-place preview on the
+	// caller's own folder (laptop `clank preview`), keyed by {id}. An
+	// empty/absent body keeps the worktree-id path (mobile / synced
+	// worktrees). Decode unconditionally — a proxied request may arrive
+	// chunked (ContentLength -1); an empty body just yields io.EOF.
+	var body struct {
+		LocalPath string `json:"local_path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_request", Error: "invalid request body"})
+		return
+	}
+	var (
+		status preview.Status
+		err    error
+	)
+	if body.LocalPath != "" {
+		status, err = m.svc.PreviewStartLocal(r.Context(), body.LocalPath, id)
+	} else {
+		status, err = m.svc.PreviewStart(r.Context(), id)
+	}
 	if err != nil {
 		writePreviewError(w, err)
 		return

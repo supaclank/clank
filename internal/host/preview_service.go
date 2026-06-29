@@ -34,6 +34,22 @@ func (s *Service) PreviewStart(ctx context.Context, worktreeID string) (preview.
 	return s.preview.Start(ctx, worktreeID, workDir, tokens.DefaultServiceName)
 }
 
+// PreviewStartLocal spawns (or returns) the dev server for an in-place
+// local project: the workdir is localPath itself — no ~/work copy — keyed
+// by previewKey so Stop/Status can find it. This is the laptop
+// `clank preview` path, where the agent and Metro both run against the
+// user's current folder. workDirFor resolves a bare LocalPath in place.
+func (s *Service) PreviewStartLocal(ctx context.Context, localPath, previewKey string) (preview.Status, error) {
+	if s.preview == nil {
+		return preview.Status{}, ErrPreviewUnavailable
+	}
+	workDir, err := s.workDirFor(ctx, agent.GitRef{LocalPath: localPath})
+	if err != nil {
+		return preview.Status{}, err
+	}
+	return s.preview.Start(ctx, previewKey, workDir, tokens.DefaultServiceName)
+}
+
 // PreviewStop terminates every dev server registered under worktreeID.
 // In v1 that's the single "default" service. Returns ErrNotRunning
 // when nothing's running — the mux maps it to 404.
