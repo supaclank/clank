@@ -50,7 +50,7 @@ Terms as used in this spec.
 - **Follow** — the auto-scroll intent that keeps the viewport pinned to the latest content.
 - **Abort** — interrupt the current turn; best-effort; observed via `status → idle` (which may
   arrive **delayed**). On settle a client settles still-running tools terminally and suppresses
-  any "done" affordance until the next send. See [INV-ABORT-SETTLE-TOOLS-001],
+  any "done" affordance until the next send. See [INV-ABORT-SETTLE-TOOLS-001](08-invariants.md),
   [INV-ABORT-DONE-001](08-invariants.md).
 - **GitRef** — repo identity (`local_path`/`worktree_id`/`display_name`/`worktree_branch`).
 - **Reducer / projection** — the canonical state transition function and the pure view

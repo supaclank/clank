@@ -24,7 +24,7 @@ SessionState {
   compose:           { text, active, submitting } // the composer
   follow:            bool                         // auto-scroll intent
   aborting:          bool                         // suppresses noise during cancellation; clears on the first settle
-  stoppedSinceLastSend: bool                       // suppresses the "done" affordance for delayed post-abort idles; clears on the next send — [INV-ABORT-DONE-001]
+  stoppedSinceLastSend: bool                       // suppresses the "done" affordance for delayed post-abort idles; clears on the next send — [INV-ABORT-DONE-001](08-invariants.md)
   historyLoaded:     bool                         // a full transcript fetch has completed
 }
 ```
@@ -62,7 +62,7 @@ Each `Part` additionally carries a derived `streaming` flag (true while text is 
     space the client trims), drop it (it is the echo of the optimistic local message);
     otherwise it is a genuine message — keep it. Compare against **any** recent user entry, not
     only the tail: once the agent streams, assistant parts follow the user message. See
-    [INV-OPTIMISTIC-001]. **Golden:** `dispatch.ts:73`.
+    [INV-OPTIMISTIC-001](08-invariants.md). **Golden:** `dispatch.ts:73`.
   - **User message with `id`**: backfill that `id` onto the most recent local user entry that
     lacks one (enables revert/fork actions on it). **Golden:**
     `internal/tui/sessionview.go:1470`.

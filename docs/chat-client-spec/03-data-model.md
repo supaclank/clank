@@ -103,7 +103,7 @@ Source: `internal/agent/agent.go:224`.
   **separate messages**: the call in the assistant message, the result in a **following
   `role=user` message** whose only payload is that one `tool_result` part. So the merge is
   **cross-message**, and the empty user-role carrier MUST be folded away rather than rendered
-  as a user turn or a second, nameless "tool" card. See [INV-TOOL-MERGE-001] and
+  as a user turn or a second, nameless "tool" card. See [INV-TOOL-MERGE-001](08-invariants.md) and
   [INV-TOOL-RESULT-CARRIER-001](08-invariants.md). **Verified** against the live gateway:
   `assistant{tool_call toolu_X}` then `user{tool_result toolu_X}`. **Golden:**
   `internal/tui/sessionview.go:1649` (merge by part id);
