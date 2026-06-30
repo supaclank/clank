@@ -98,8 +98,8 @@ single biggest source of cross-client divergence.
 | `type` | Payload (`data`) | Meaning | Reducer rule |
 |---|---|---|---|
 | `status` | `{ old_status, new_status }` | Session work-state changed. | [STATE-STATUS-001](06-state-model.md) |
-| `message` | `MessageData` | A user or assistant message (often a streaming "shell"). | [STATE-MSG-001](06-state-model.md) |
-| `part` | `{ message_id?, part, is_delta? }` | A part appeared or advanced (text delta, tool progress). | [STATE-PART-001](06-state-model.md) |
+| `message` | `MessageData` | A user or assistant message (often a streaming "shell"; a `role=user` message may also be a **tool-result carrier** — empty content, one `tool_result` part, empty `tool` — see [DATA-022](03-data-model.md), [INV-TOOL-RESULT-CARRIER-001](08-invariants.md)). | [STATE-MSG-001](06-state-model.md) |
+| `part` | `{ message_id?, part, is_delta? }` | A part appeared or advanced (text delta, tool progress). A `tool_call` and its `tool_result` share one part id but arrive in **separate messages**. | [STATE-PART-001](06-state-model.md) |
 | `permission` | `{ request_id, tool, description, tool_use_id? }` | Agent is **blocked** awaiting a tool decision. | [STATE-PERM-001](06-state-model.md) |
 | `error` | `{ message }` | An error occurred on the session. | [STATE-ERR-001](06-state-model.md) |
 | `title` | `{ title }` | AI-generated title set/changed. | [STATE-META-001](06-state-model.md) |

@@ -23,7 +23,8 @@ SessionState {
   replyInFlight:     requestId | null            // single-flight guard for permission replies
   compose:           { text, active, submitting } // the composer
   follow:            bool                         // auto-scroll intent
-  aborting:          bool                         // suppresses noise during cancellation
+  aborting:          bool                         // suppresses noise during cancellation; clears on the first settle
+  stoppedSinceLastSend: bool                       // suppresses the "done" affordance for delayed post-abort idles; clears on the next send — [INV-ABORT-DONE-001](08-invariants.md)
   historyLoaded:     bool                         // a full transcript fetch has completed
 }
 ```
@@ -56,9 +57,12 @@ Each `Part` additionally carries a derived `streaming` flag (true while text is 
   - **Assistant "shell"** (role=assistant, no `id`, no `content`, no `parts`): a no-op. It is
     a turn-boundary marker; streamed content arrives via `part`. **Golden:**
     `clank-mobile/src/hooks/dispatch.ts:51`.
-  - **Id-less user echo** (role=user, no `id`): if the latest transcript entry is already the
-    same user text, drop it (it is the echo of the optimistic local message); otherwise it is
-    a genuine message — keep it. **Golden:** `dispatch.ts:73`.
+  - **Id-less user echo** (role=user, no `id`): if a recent user entry already holds the
+    **same normalized text** (trim leading/trailing whitespace — the gateway preserves a typed trailing
+    space the client trims), drop it (it is the echo of the optimistic local message);
+    otherwise it is a genuine message — keep it. Compare against **any** recent user entry, not
+    only the tail: once the agent streams, assistant parts follow the user message. See
+    [INV-OPTIMISTIC-001](08-invariants.md). **Golden:** `dispatch.ts:73`.
   - **User message with `id`**: backfill that `id` onto the most recent local user entry that
     lacks one (enables revert/fork actions on it). **Golden:**
     `internal/tui/sessionview.go:1470`.
@@ -82,6 +86,13 @@ Each `Part` additionally carries a derived `streaming` flag (true while text is 
   corrupts streaming text or loses tool I/O. See [INV-DELTA-001], [INV-TOOL-MERGE-001],
   [INV-MSGID-001]. **Golden:** `internal/tui/sessionview.go:1622`–`:1681`,
   `clank-mobile/src/hooks/dispatch.ts:93`–`:149`.
+
+  Owner resolution attaches a streamed id-less `tool_result` part to the assistant message that
+  already holds its `tool_call` (same id), so the **live** stream renders one merged card. The
+  **committed** transcript (`GET /messages`) instead splits them across messages (the result in
+  a following `role=user` carrier), so a client MUST also fold tool parts by id **across
+  messages** and drop the empty carrier when rendering the reconciled transcript — see
+  [INV-TOOL-RESULT-CARRIER-001](08-invariants.md).
 
 ### `permission` → [STATE-PERM-001]
 - **(MUST)** Enqueue the `PermissionData` at the back of `pendingPermissions` and **lock the
@@ -137,15 +148,20 @@ Each `Part` additionally carries a derived `streaming` flag (true while text is 
   replied request from `pendingPermissions`, and record the outcome (allowed/denied). On a
   **denial**, pessimistically settle any still-`running`/`pending` tool parts to `error` (the
   backend may cancel the batch without per-tool updates) and reconcile via a messages +
-  pending-permission refetch. **Golden:** `sessionview.go:869`–`:903`, `:1608`
-  (`markRunningToolsFailed`).
-- **[STATE-ABORT-RESULT-001] (MUST)** On abort dispatch, set `aborting=true` and show a
-  "Cancelling…" marker. The actual settle is driven by the subsequent `status` event
-  ([STATE-STATUS-001]), not the abort response. On abort *error*, clear `aborting` and mark
-  the cancel failed. On settle, a client MUST also clear any permissions the abort denied
-  server-side and unlock the composer ([INV-ABORT-PERM-001](08-invariants.md)). **Golden:**
-  `sessionview.go:2203` (`startAbort`), `handleStatusChange` (abort-settle clears
-  `pendingPerms`), `:952` (error path).
+  pending-permission refetch. **Golden:** `sessionview.go:893`–`:927` (`permissionReplyResultMsg`;
+  deny calls `markRunningToolsFailed` at `:924`), `:1668` (`markRunningToolsFailed`).
+- **[STATE-ABORT-RESULT-001] (MUST)** On abort dispatch, set `aborting=true` **and**
+  `stoppedSinceLastSend=true`, and show a "Cancelling…" marker. The actual settle is driven by
+  the subsequent `status` event ([STATE-STATUS-001]), not the abort response. On abort *error*,
+  clear `aborting` and mark the cancel failed. On settle, a client MUST also: (a) clear any
+  permissions the abort denied server-side and unlock the composer
+  ([INV-ABORT-PERM-001](08-invariants.md)); (b) settle every still-`running`/`pending` tool part
+  to a **terminal** status — the interrupted tool never returns
+  ([INV-ABORT-SETTLE-TOOLS-001](08-invariants.md)); and (c) **not** present a "done/complete"
+  affordance for this idle *or any later, delayed idle* — `stoppedSinceLastSend` stays set until
+  the next send ([INV-ABORT-DONE-001](08-invariants.md)). **Golden:** `sessionview.go:2203`
+  (`startAbort`), `handleStatusChange` (abort-settle clears `pendingPerms`), `:952` (error path);
+  `clank-mobile/…/PreviewOverlayContainer.kt` (settle-tools + `stoppedSinceLastSend` gating).
 - **[STATE-REVERT-RESULT-001] (MUST)** On revert success, set `session.revert_message_id`,
   prefill the composer with the reverted user prompt, activate + focus it, and refetch the
   filtered transcript. **Golden:** `sessionview.go:924`–`:938`.
@@ -163,9 +179,16 @@ Each `Part` additionally carries a derived `streaming` flag (true while text is 
   On answer, set `replyInFlight = frontRequestId` before dispatching the reply (single-flight).
   **Golden:** `internal/tui/sessionview.go:1099`–`:1110`.
 - **[STATE-FOLLOW-001] (SHOULD)** `follow` is auto-enabled when a turn starts (`status=busy`)
-  and when the user scrolls to the bottom; it is disabled when the user scrolls up. While
-  `follow`, the viewport stays pinned to the latest content. **Golden:**
-  `internal/tui/sessionview.go:1456`, mouse handlers.
+  and when the user scrolls to the bottom; it is disabled **only by a user scroll gesture**
+  (scrolling up) — *not* by the initial/settled scroll position, or a list that mounts at the
+  top reads "not at bottom" on first layout and disables follow before the first auto-scroll can
+  run (a shipped Kotlin bug: the chat opened scrolled to the top). While `follow`, the viewport
+  stays pinned to the latest content **as the last message grows** (streaming text/parts), not
+  only when a new message is appended — keying auto-scroll on message *count* alone fails to
+  tail a single growing turn. **Golden:** `internal/tui/sessionview.go:1517` (`handleStatusChange`
+  sets `follow` on busy; mouse handlers disable it on scroll-up);
+  `clank-mobile/…/fab/PromptBoxContent.kt` (follow toggled on a real scroll gesture; tail keyed
+  on a content-length signature).
 
 ## Transitions — lifecycle
 
@@ -200,7 +223,10 @@ These are pure functions of the canonical state. Conformance asserts on them.
   **Golden:** `internal/tui/sessionview.go:1432`, `:1668`.
 - **[VIEW-CANCELLING-001] (MUST)** While `aborting`, show a "Cancelling…" indicator that
   becomes "Cancelled" when the session settles; intermediate statuses and abort errors are not
-  shown. **Golden:** `internal/tui/sessionview.go:1442`, `:2206`.
+  shown. A "turn complete / done" affordance MUST stay suppressed while `stoppedSinceLastSend`
+  (i.e. until the next send), so a *delayed* post-abort `status → idle` does not flash "Done"
+  ([INV-ABORT-DONE-001](08-invariants.md)). **Golden:** `internal/tui/sessionview.go:1442`,
+  `:2206`.
 - **[VIEW-ERROR-001] (MUST)** A non-abort error shows as a **recoverable** banner/reason on the
   session, cleared on the next non-error status; it MUST NOT look like a terminal crash and
   MUST NOT appear during an abort. **Golden:** `dispatch.ts:180`, `:33`.

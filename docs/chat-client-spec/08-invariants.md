@@ -68,13 +68,37 @@ append duplicates it. The snapshot is also the only self-heal after a dropped de
 **Conformance:** `CONF-STREAM-DELTA`.
 
 ### [INV-TOOL-MERGE-001] (MUST) Merge tool `input` and `output`
-A tool's `input` (on the call) and `output` (on a later result) arrive in separate updates
-for the same part ID. Merge them — preserve existing `input`/`output`/`tool` when an update
-omits them. Never replace-and-lose.
-**Why:** the result update carries no `input`; a naive replace erases the arguments, so the
-tool card loses what it ran.
-**Golden:** `internal/tui/sessionview.go:1649`, `clank-mobile/src/lib/mergeMessages.ts:46`.
+A tool's `input` (on the `tool_call`) and `output` (on the later `tool_result`) arrive in
+separate updates for the **same part ID**. Merge them — preserve existing `input`/`output`/
+`tool` when an update omits them. Never replace-and-lose. The result also carries an **empty
+`tool`** name, so the merge MUST keep the call's name or the card renders as a nameless
+"tool". The two parts arrive in **separate messages** — see [INV-TOOL-RESULT-CARRIER-001].
+**Why:** the result update carries no `input` (and no `tool`); a naive replace erases the
+arguments and the name, so the tool card loses what it ran.
+**Golden:** `internal/tui/sessionview.go:1698` (`upsertPartEntry`),
+`clank-mobile/src/lib/mergeMessages.ts:46`.
 **Conformance:** `CONF-TOOL-MERGE`.
+
+### [INV-TOOL-RESULT-CARRIER-001] (MUST) Fold the tool-result carrier across messages
+The `tool_call` and its `tool_result` share one part id but, in the committed transcript and
+in `message` events, arrive in **separate messages**: the call in the assistant message, the
+result in a **following `role=user` message** whose only payload is that `tool_result` part
+(no text content, empty `tool`). A client MUST merge the two (by part id) into a **single
+rendered tool card** at the call's position, and MUST drop the now-empty user-role carrier —
+never render it as a user turn or as a second, nameless "tool" card.
+**Why:** a per-message part renderer — or a monotonic merge that keeps the server's grouping —
+shows the tool twice ("Edit" with the input, then a nameless "tool" with the output) plus a
+phantom user bubble. The **live** `part` stream hides this because the id-less `tool_result`
+part attaches to the current assistant message by [INV-MSGID-001]; but the **refetched**
+transcript ([INV-MONOTONIC-001]) re-introduces the split, so the fold MUST run on the merged
+transcript, not only on the live stream. Verified against the live gateway; the Kotlin
+preview client doubled tool cards in history until it folded across messages (two earlier
+"merge within one message" attempts were wrong — the split is cross-message).
+**Golden:** `clank-mobile/modules/preview-launcher/android/…/session/ChatTranscript.kt`
+(`foldToolResults`); the TUI folds by part id in its flat entry list
+(`internal/tui/sessionview.go:1698`, `upsertPartEntry`); the wire shape is built by
+`internal/agent/claude.go:1167` (`coalesceSessionMessages`) + `:1254` (`sessionBlockToPart`).
+**Conformance:** `CONF-TOOL-MERGE-CROSSMSG`.
 
 ### [INV-MONOTONIC-001] (MUST) Updates are monotonic; refetch never shrinks live state
 An update may add or grow; it may never remove a message/part, shorten text, or regress a
@@ -107,11 +131,20 @@ duplicates the transcript.
 ### [INV-OPTIMISTIC-001] (MUST) Optimistic user echo + id backfill + dedup
 Render the user's message immediately (no id). Backfill the server id when the matching
 `message` event arrives. When the id-less echo and the server copy would both be present,
-keep one (consume-once by content for id-less echoes).
+keep one (consume-once by content for id-less echoes). Dedup by **normalized text** (trim leading/trailing whitespace): the gateway preserves the trailing whitespace a user typed, while a
+client typically trims when extracting a message's text, so a raw `==` leaves the echo as a
+permanent duplicate. And the committed copy is **not necessarily the latest entry** — once the
+agent starts streaming, assistant parts follow the user message — so dedup against **any**
+recent user message, not just the transcript tail.
 **Why:** optimistic echo is the perceived-latency win; without backfill, per-message actions
-(revert/fork) never enable; without dedup, the message shows twice.
+(revert/fork) never enable; without **normalized + position-agnostic** dedup, the echo sticks
+to the bottom of the chat as a duplicate for the whole streaming turn (a shipped Kotlin bug,
+traced to a single trailing space the gateway preserved but the client trimmed).
 **Golden:** `internal/tui/sessionview.go:1165` (echo), `:1470` (backfill);
-`clank-mobile/src/hooks/dispatch.ts:73` (dedup). **Conformance:** `CONF-OPTIMISTIC-BACKFILL`.
+`clank-mobile/src/hooks/dispatch.ts:73` (dedup);
+`clank-mobile/modules/preview-launcher/android/…/fab/PromptBoxContent.kt` (trimmed,
+any-user-message dedup of the optimistic overlay). **Conformance:**
+`CONF-OPTIMISTIC-BACKFILL`, `CONF-OPTIMISTIC-DEDUP-NORMALIZE`.
 
 ---
 
@@ -131,7 +164,7 @@ When the user denies, pessimistically mark still-`pending`/`running` tool parts 
 and refetch messages + pending-permission.
 **Why:** the backend may cancel the whole tool batch without emitting per-tool error updates,
 leaving spinners running forever.
-**Golden:** `internal/tui/sessionview.go:899`, `:1608` (`markRunningToolsFailed`).
+**Golden:** `internal/tui/sessionview.go:924` (deny path), `:1668` (`markRunningToolsFailed`).
 **Conformance:** `CONF-DENY-SETTLE`.
 
 ### [INV-ABORT-PERM-001] (MUST) Abort clears pending permissions without breaking the session
@@ -145,6 +178,38 @@ eventual `status → idle`), so the client clears it on that settle: the abort-s
 `internal/tui/sessionview.go` (`handleStatusChange`) drops `pendingPerms`/`replyingPermID`, so
 an abort while a prompt is pending no longer wedges the composer. **Conformance:**
 `CONF-ABORT-PERM` (`internal/tui/sessionview_test.go`, `TestAbortClearsPendingPermissions`).
+
+### [INV-ABORT-SETTLE-TOOLS-001] (MUST) On abort, settle still-running tools
+When an abort settles (the post-abort `status ∉ {busy, starting}`), a client MUST mark every
+still-`pending`/`running` tool part **terminal** — the interrupted tool never returns a
+result, so its spinner otherwise runs forever. This is the abort analog of
+[INV-DENY-SETTLE-001]. The wire has no `canceled` status; a client MAY render a neutral
+"canceled" presentation but MUST treat it as **terminal in the monotonic rank** ([DATA-021])
+so the post-abort transcript refetch — which still carries the tool as `running` — cannot
+regress it.
+**Why:** a tool left `running` after Stop spins indefinitely; and a "canceled" marker that is
+not terminal-ranked is "advanced" back to `running` by the refetch's monotonic merge — a
+shipped Kotlin bug (the spinner resumed after a cancel).
+**Golden:** `clank-mobile/modules/preview-launcher/android/…/session/ChatTranscript.kt`
+(`cancelPendingParts`; `canceled` ranked terminal in `statusRank`/`preferStatus`). The TUI does
+the analogous settle on **deny** (`internal/tui/sessionview.go:1668` `markRunningToolsFailed`,
+called at `:924`) but not on abort — this native client leads the abort case.
+**Conformance:** `CONF-ABORT-SETTLE-TOOLS`.
+
+### [INV-ABORT-DONE-001] (MUST) Suppress "turn complete" for idles that follow an abort
+A client that surfaces a "turn complete / done" affordance on `status → idle` MUST suppress it
+for **every** idle that follows an abort, until the user's **next send** — not merely the first
+settle. A one-shot `aborting` flag (cleared on the first settle, [STATE-ABORT-RESULT-001]) is
+**insufficient**: in practice a **second** settle is observed after a stop — the interrupt's own
+result settles to idle (`internal/agent/claude.go:945`, `handleResult` abort branch) and
+on-device a further `status` still arrives as the turn unwinds — and that later idle flashes a
+misleading "Done". Track a `stoppedSinceLastSend` flag (set on abort, cleared on the next send)
+and gate the done affordance on it. (`[Request interrupted by user]` is written into the
+transcript by the Claude CLI, **not** emitted by clank — don't treat it as a signal.)
+**Why:** a "Done" banner moments after the user pressed Stop misrepresents a canceled turn as
+a completed one (a shipped Kotlin bug, seen in PR #78 device testing).
+**Golden:** `clank-mobile/modules/preview-launcher/android/…/fab/PreviewOverlayState.kt`
+(`stoppedSinceLastSend`). **Conformance:** `CONF-ABORT-DONE-SUPPRESS`.
 
 ---
 
