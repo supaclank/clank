@@ -30,13 +30,13 @@
 | INV-SSE-DOUBLE-001 | ✅ | one `eventsCh`; cancel on replace (`cancelEvents`) |
 | INV-NO-END-001 | ✅ | `parseSSEStream` returns on EOF; no `end` handling (`transport.go:189`) |
 | INV-DELTA-001 | ✅ | `upsertPartEntry` `:1665` (append on delta, replace on snapshot) |
-| INV-TOOL-MERGE-001 | ✅ | `upsertPartEntry` `:1649` (merge Input/Output/Tool) |
+| INV-TOOL-MERGE-001 | ✅ | `upsertPartEntry` `:1698` (merge Input/Output/Tool) |
 | INV-MONOTONIC-001 | ✅ | idempotent-by-partID upsert; history re-applied through same path `:1515` |
 | INV-MSGID-001 | ✅ | parts carry message id from history; SSE parts upsert by part id |
 | INV-SHELL-001 | ✅ | `handleMessage` `:1489` (`historyLoaded` skip), `:1492` (skip empty) |
 | INV-OPTIMISTIC-001 | ✅ | echo `:1165`, backfill `:1470` |
 | INV-PERM-SINGLEFLIGHT-001 | ✅ | `:1099` (`replyingPermID` + `!inputActive`), `:1112` (lock other keys) |
-| INV-DENY-SETTLE-001 | ✅ | `:899` + `markRunningToolsFailed` `:1608` |
+| INV-DENY-SETTLE-001 | ✅ | deny path `:924` + `markRunningToolsFailed` `:1668` |
 | INV-ABORT-PERM-001 | ✅ | host `failPendingPermissions` denies server-side; the TUI clears `pendingPerms`/`replyingPermID` on the abort-settle in `handleStatusChange`. Test: `TestAbortClearsPendingPermissions`. |
 | INV-PERMMODE-001 | ✅ | `sendMessage` `:2162` sends only the selected mode |
 | INV-PERMMODE-EXITPLAN-001 | ✅ | backend `claude_permissions.go:97`; TUI sends `""` on follow-ups |

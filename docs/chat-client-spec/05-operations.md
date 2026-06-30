@@ -15,7 +15,7 @@ Source of truth for routes: `internal/host/mux/mux.go:72`. All require the beare
 | DELETE | `/sessions/{id}` | — | `204` | Yes | Stops backend + removes metadata. |
 | POST | `/sessions/{id}/message` | `SendMessageOpts` | `204` | **No** | Follow-up; fire-and-forget. Alias: `/send`. |
 | POST | `/sessions/{id}/abort` | — | `204` | Yes | Interrupt the current turn. |
-| POST | `/sessions/{id}/revert` | `{ message_id }` | `204` | **No** | Claude only; OpenCode errors. |
+| POST | `/sessions/{id}/revert` | `{ message_id }` | `204` | **No** | **Both** backends; empty id clears the marker on OpenCode. See [OP-005]. |
 | POST | `/sessions/{id}/fork` | `{ message_id? }` | `200` `SessionInfo` | **No** | OpenCode only; Claude errors. |
 | GET | `/sessions/{id}/messages` | — | `200` `MessageData[]` | Yes | The reconciliation source. |
 | GET | `/sessions/{id}/pending-permission` | — | `200` `[]` | Yes | **Currently always empty** — see [OP-007]. |
@@ -76,21 +76,41 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
 - **[OP-004] (MUST)** Abort interrupts the current turn; it is best-effort and idempotent.
   The `204` means *the interrupt was delivered*, not that the agent stopped — the client
   observes the actual stop via `status` → `idle`/`error`. Aborting also **denies all parked
-  permission prompts** server-side. **Why:** the abort UX must be driven by the status event,
-  not the call return; pending permissions must be cleared after abort. **Golden:**
+  permission prompts** server-side. Because the stop is *observed, not returned*, three
+  client-side consequences follow on settle: (1) settle still-`running`/`pending` tool parts to
+  a **terminal** status — the interrupted tool never returns
+  ([INV-ABORT-SETTLE-TOOLS-001](08-invariants.md)); (2) the host may report `idle` **more than
+  once** around an abort (a trailing `status` can follow the interrupt's own settle — observed
+  on-device), so a "turn complete / done" affordance MUST stay suppressed until the user's
+  **next send**, not just the first settle ([INV-ABORT-DONE-001](08-invariants.md)); and (3)
+  clear parked permissions locally ([INV-ABORT-PERM-001](08-invariants.md)). **Why:** the abort
+  UX must be driven by the status event, not the call return; pending permissions must be
+  cleared, running tools must not spin forever, and a late idle must not masquerade as success. **Golden:**
   `internal/agent/claude_permissions.go:152` (`failPendingPermissions`),
-  `internal/tui/sessionview.go:2190`, `:2203` (`startAbort`).
+  `internal/tui/sessionview.go:2190`, `:2203` (`startAbort`);
+  `clank-mobile/…/PreviewOverlayContainer.kt` (settle-tools + `stoppedSinceLastSend`).
 
 ### Revert / fork — backend-specific
 
-- **[OP-005] (MUST)** `revert` is Claude-only (file rollback + transcript truncation);
-  `fork` is OpenCode-only. Calling the unsupported one returns an error. A client MUST handle
-  that error gracefully (e.g. hide the action for the wrong backend) rather than surfacing it
-  as a failure. Revert's effect is observed via the `revert` event + a messages refetch
-  filtered by `revert_message_id` ([STATE-REVERT-001](06-state-model.md)); the call itself
-  returns `204` with no body. **Why:** offering the wrong action per backend produces
-  confusing errors. **Golden:** `internal/agent/agent.go:637` (Revert errors on unsupported),
-  `internal/agent/claude.go:612` (revert internals), `internal/tui/sessionview.go:2276`.
+- **[OP-005] (MUST)** **Revert** is supported on **both** backends — Claude since clank #68
+  (2026-06-21: file rollback + transcript truncation), OpenCode via its session revert marker.
+  **Fork** is **OpenCode-only** (Claude's `Fork` returns *"fork is not supported by Claude Code
+  backend"*). Two semantics a client MUST respect: (1) Claude revert **requires** a non-empty
+  `message_id`; OpenCode additionally treats an **empty** `message_id` as *clear the revert
+  marker* (un-revert). (2) The host does **not** gate by backend — `RevertSession`/`ForkSession`
+  call straight through to the backend — so an unsupported combination (fork on Claude) returns
+  a backend error. A client MUST therefore offer **revert on both** backends, restrict **fork to
+  OpenCode**, and handle the unsupported-op error gracefully (hide the action for the wrong
+  backend) rather than surfacing it as a failure. Revert's effect is observed via the `revert`
+  event + a messages refetch filtered by `revert_message_id`
+  ([STATE-REVERT-001](06-state-model.md)); the call returns `204`. **Why:** an earlier draft of
+  this rule wrongly said revert was Claude-only — it has worked on both since #68, yet the RN
+  client still hides it on Claude (now stale); hiding revert where it works, or offering fork
+  where it errors, both produce missing/confusing affordances. **Golden:**
+  `internal/agent/claude.go:634` (Claude `Revert`), `:794` (Claude `Fork` errors),
+  `internal/agent/opencode.go:227` (OpenCode `Revert`), `:247` (OpenCode `Fork`),
+  `internal/host/service.go:1099` (`RevertSession` — no backend gate),
+  `internal/tui/sessionview.go:1334` (TUI offers revert on user messages, fork on any — ungated).
 
 ### Messages — `GET /sessions/{id}/messages`
 
