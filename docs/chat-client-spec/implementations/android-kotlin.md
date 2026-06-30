@@ -46,7 +46,7 @@
 | INV-PERMMODE-* | N/A | overlay doesn't choose modes |
 | INV-INTERACTIVE-001 | 🟡 | AskUserQuestion inline card; ExitPlanMode plan card + inline comments deferred (vs [11](../11-interactive-tools.md)) |
 | INV-META-REPLACE-001 | N/A | ignores `meta` (no session list on this surface) |
-| INV-REVERT-001 | 🟡 | `revertMessageId` filter on render; tap a user bubble → revert; cleared on next send. **Gap:** the box gates this to Claude, but revert works on **both** backends ([OP-005](../05-operations.md)) — OpenCode sessions should get it too |
+| INV-REVERT-001 | ✅ | `revertMessageId` filter on render; tap a user bubble → revert; cleared on next send. Works on **both** backends — `onRevert` is gated on session-presence, not backend (matches [OP-005](../05-operations.md)); only the doc-comments said "Claude-only" and are now fixed |
 | INV-RECONCILE-001 | ✅ | `onConnected()` → `refresh()` + monotonic merge |
 | INV-RECONNECT-SEMANTICS-001 | ✅ | reconnect driven by its own transport loop, not the `reconnected` event |
 | INV-ABORT-PERM-001 | ✅ | abort clears the parked question locally; settles on the next `status` |
