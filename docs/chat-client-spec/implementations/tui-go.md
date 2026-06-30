@@ -30,7 +30,7 @@
 | INV-SSE-DOUBLE-001 | ✅ | one `eventsCh`; cancel on replace (`cancelEvents`) |
 | INV-NO-END-001 | ✅ | `parseSSEStream` returns on EOF; no `end` handling (`transport.go:189`) |
 | INV-DELTA-001 | ✅ | `upsertPartEntry` `:1665` (append on delta, replace on snapshot) |
-| INV-TOOL-MERGE-001 | ✅ | `upsertPartEntry` `:1649` (merge Input/Output/Tool) |
+| INV-TOOL-MERGE-001 | ✅ | `upsertPartEntry` `:1698` (merge Input/Output/Tool) |
 | INV-MONOTONIC-001 | ✅ | idempotent-by-partID upsert; history re-applied through same path `:1515` |
 | INV-MSGID-001 | ✅ | parts carry message id from history; SSE parts upsert by part id |
 | INV-SHELL-001 | ✅ | `handleMessage` `:1489` (`historyLoaded` skip), `:1492` (skip empty) |

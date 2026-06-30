@@ -206,7 +206,7 @@ on-device a further `status` still arrives as the turn unwinds — and that late
 misleading "Done". Track a `stoppedSinceLastSend` flag (set on abort, cleared on the next send)
 and gate the done affordance on it. (`[Request interrupted by user]` is written into the
 transcript by the Claude CLI, **not** emitted by clank — don't treat it as a signal.)
-**Why:** a "Done" banner moments after the user pressed Stop misrepresents a cancelled turn as
+**Why:** a "Done" banner moments after the user pressed Stop misrepresents a canceled turn as
 a completed one (a shipped Kotlin bug, seen in PR #78 device testing).
 **Golden:** `clank-mobile/modules/preview-launcher/android/…/fab/PreviewOverlayState.kt`
 (`stoppedSinceLastSend`). **Conformance:** `CONF-ABORT-DONE-SUPPRESS`.
