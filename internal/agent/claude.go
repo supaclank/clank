@@ -79,6 +79,12 @@ type ClaudeCodeBackend struct {
 	// claude falls back to its own keychain/OAuth login in that case.
 	ExtraEnv map[string]string
 
+	// SystemPrompt, when non-empty, is appended to Claude's base system prompt
+	// (via --append-system-prompt) at CLI launch — carrying stack-detected
+	// guidance. Set by the host for fresh sessions only; empty on resume, where
+	// the guidance already shaped the conversation being continued.
+	SystemPrompt string
+
 	// initialModel, if non-empty, is passed to the spawned CLI as
 	// --model (via claudecode.WithModel). Claude's CLI takes model
 	// at process start, not per-message, so this is the model the
@@ -175,6 +181,7 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	extraEnv := b.ExtraEnv
 	model := b.initialModel
 	permMode := b.initialPermMode
+	systemPrompt := b.SystemPrompt
 	b.mu.Unlock()
 
 	// Defensive guard: an empty workDir would silently inherit the
@@ -224,6 +231,12 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	}
 	if model != "" {
 		opts = append(opts, claudecode.WithModel(model))
+	}
+	// Append (not replace) so Claude's base system prompt + tool behavior stay
+	// intact. Fresh sessions only — resumeID != "" means the guidance already
+	// shaped the conversation being resumed.
+	if resumeID == "" && systemPrompt != "" {
+		opts = append(opts, claudecode.WithAppendSystemPrompt(systemPrompt))
 	}
 
 	// Build the client — use the test factory if provided.
