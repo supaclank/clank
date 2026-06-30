@@ -186,6 +186,7 @@ func (b *OpenCodeBackend) buildPromptParams(opts SendMessageOpts, imgs []resolve
 	}
 	// Attach guidance once, on the first prompt of a fresh session; later turns
 	// rely on it being in conversation history.
+	// TODO(ai-review): concurrent Sends race on this CAS — the loser sends without guidance; serialize Send or flip only after PromptAsync succeeds. https://github.com/Acksell/clank/pull/88#discussion_r3499865275
 	if b.SystemPrompt != "" && b.systemSent.CompareAndSwap(false, true) {
 		req.System = opencode.String(b.SystemPrompt)
 	}

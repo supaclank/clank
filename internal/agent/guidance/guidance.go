@@ -82,9 +82,9 @@ func Assemble(workDir string) string {
 	}
 }
 
-// readPack concatenates embedded docs with blank-line separators. A read miss
-// is a build-time error (the files are compiled in via go:embed) — TestPackReadable
-// guards against a typo'd path, so skipping defensively here is safe.
+// readPack concatenates embedded docs with blank-line separators. Skipping on
+// read error is safe: a typo'd path in the pack fails TestAssembleExpo's marker
+// checks, not silently ships.
 func readPack(paths []string) string {
 	var b strings.Builder
 	for _, p := range paths {
