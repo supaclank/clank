@@ -36,7 +36,7 @@
 | INV-SHELL-001 | ✅ | `handleMessage` `:1489` (`historyLoaded` skip), `:1492` (skip empty) |
 | INV-OPTIMISTIC-001 | ✅ | echo `:1165`, backfill `:1470` |
 | INV-PERM-SINGLEFLIGHT-001 | ✅ | `:1099` (`replyingPermID` + `!inputActive`), `:1112` (lock other keys) |
-| INV-DENY-SETTLE-001 | ✅ | `:899` + `markRunningToolsFailed` `:1608` |
+| INV-DENY-SETTLE-001 | ✅ | deny path `:924` + `markRunningToolsFailed` `:1668` |
 | INV-ABORT-PERM-001 | ✅ | host `failPendingPermissions` denies server-side; the TUI clears `pendingPerms`/`replyingPermID` on the abort-settle in `handleStatusChange`. Test: `TestAbortClearsPendingPermissions`. |
 | INV-PERMMODE-001 | ✅ | `sendMessage` `:2162` sends only the selected mode |
 | INV-PERMMODE-EXITPLAN-001 | ✅ | backend `claude_permissions.go:97`; TUI sends `""` on follow-ups |

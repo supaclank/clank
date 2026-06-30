@@ -33,8 +33,10 @@ Terms as used in this spec.
 - **ExitPlanMode / AskUserQuestion** — **interactive ("stop-and-wait") tools**: a tool-call
   part carries their UI (`input`), gated by a paired permission; the answer is the permission
   reply.
-- **Revert** — Claude operation: roll files back + truncate the transcript at a message.
-  Surfaced via `revert_message_id`.
+- **Revert** — roll files back + truncate the transcript at a message; supported on **both**
+  backends (Claude: durable rollback, requires a message id, since #68; OpenCode: a toggleable
+  session marker whose empty id clears it). Surfaced via `revert_message_id`. See
+  [OP-005](05-operations.md).
 - **Fork** — OpenCode operation: branch a new session from a message.
 - **SSE** — Server-Sent Events; the realtime transport (`event: T\ndata: JSON\n\n`).
 - **Event** — one SSE frame's typed payload; see the [catalog](04-event-protocol.md).

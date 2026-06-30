@@ -148,8 +148,8 @@ Each `Part` additionally carries a derived `streaming` flag (true while text is 
   replied request from `pendingPermissions`, and record the outcome (allowed/denied). On a
   **denial**, pessimistically settle any still-`running`/`pending` tool parts to `error` (the
   backend may cancel the batch without per-tool updates) and reconcile via a messages +
-  pending-permission refetch. **Golden:** `sessionview.go:869`–`:903`, `:1608`
-  (`markRunningToolsFailed`).
+  pending-permission refetch. **Golden:** `sessionview.go:893`–`:927` (`permissionReplyResultMsg`;
+  deny calls `markRunningToolsFailed` at `:924`), `:1668` (`markRunningToolsFailed`).
 - **[STATE-ABORT-RESULT-001] (MUST)** On abort dispatch, set `aborting=true` **and**
   `stoppedSinceLastSend=true`, and show a "Cancelling…" marker. The actual settle is driven by
   the subsequent `status` event ([STATE-STATUS-001]), not the abort response. On abort *error*,
@@ -185,7 +185,8 @@ Each `Part` additionally carries a derived `streaming` flag (true while text is 
   run (a shipped Kotlin bug: the chat opened scrolled to the top). While `follow`, the viewport
   stays pinned to the latest content **as the last message grows** (streaming text/parts), not
   only when a new message is appended — keying auto-scroll on message *count* alone fails to
-  tail a single growing turn. **Golden:** `internal/tui/sessionview.go:1456`, mouse handlers;
+  tail a single growing turn. **Golden:** `internal/tui/sessionview.go:1517` (`handleStatusChange`
+  sets `follow` on busy; mouse handlers disable it on scroll-up);
   `clank-mobile/…/fab/PromptBoxContent.kt` (follow toggled on a real scroll gesture; tail keyed
   on a content-length signature).
 

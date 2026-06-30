@@ -75,7 +75,8 @@ separate updates for the **same part ID**. Merge them — preserve existing `inp
 "tool". The two parts arrive in **separate messages** — see [INV-TOOL-RESULT-CARRIER-001].
 **Why:** the result update carries no `input` (and no `tool`); a naive replace erases the
 arguments and the name, so the tool card loses what it ran.
-**Golden:** `internal/tui/sessionview.go:1649`, `clank-mobile/src/lib/mergeMessages.ts:46`.
+**Golden:** `internal/tui/sessionview.go:1698` (`upsertPartEntry`),
+`clank-mobile/src/lib/mergeMessages.ts:46`.
 **Conformance:** `CONF-TOOL-MERGE`.
 
 ### [INV-TOOL-RESULT-CARRIER-001] (MUST) Fold the tool-result carrier across messages
@@ -94,7 +95,9 @@ transcript, not only on the live stream. Verified against the live gateway; the 
 preview client doubled tool cards in history until it folded across messages (two earlier
 "merge within one message" attempts were wrong — the split is cross-message).
 **Golden:** `clank-mobile/modules/preview-launcher/android/…/session/ChatTranscript.kt`
-(`foldToolResults`); the TUI merges by part id (`internal/tui/sessionview.go:1649`).
+(`foldToolResults`); the TUI folds by part id in its flat entry list
+(`internal/tui/sessionview.go:1698`, `upsertPartEntry`); the wire shape is built by
+`internal/agent/claude.go:1167` (`coalesceSessionMessages`) + `:1254` (`sessionBlockToPart`).
 **Conformance:** `CONF-TOOL-MERGE-CROSSMSG`.
 
 ### [INV-MONOTONIC-001] (MUST) Updates are monotonic; refetch never shrinks live state
@@ -161,7 +164,7 @@ When the user denies, pessimistically mark still-`pending`/`running` tool parts 
 and refetch messages + pending-permission.
 **Why:** the backend may cancel the whole tool batch without emitting per-tool error updates,
 leaving spinners running forever.
-**Golden:** `internal/tui/sessionview.go:899`, `:1608` (`markRunningToolsFailed`).
+**Golden:** `internal/tui/sessionview.go:924` (deny path), `:1668` (`markRunningToolsFailed`).
 **Conformance:** `CONF-DENY-SETTLE`.
 
 ### [INV-ABORT-PERM-001] (MUST) Abort clears pending permissions without breaking the session
@@ -188,20 +191,23 @@ regress it.
 not terminal-ranked is "advanced" back to `running` by the refetch's monotonic merge — a
 shipped Kotlin bug (the spinner resumed after a cancel).
 **Golden:** `clank-mobile/modules/preview-launcher/android/…/session/ChatTranscript.kt`
-(`cancelPendingParts`; `canceled` ranked terminal in `preferStatus`); cf. the deny analog
-`internal/tui/sessionview.go:1608` (`markRunningToolsFailed`).
+(`cancelPendingParts`; `canceled` ranked terminal in `statusRank`/`preferStatus`). The TUI does
+the analogous settle on **deny** (`internal/tui/sessionview.go:1668` `markRunningToolsFailed`,
+called at `:924`) but not on abort — this native client leads the abort case.
 **Conformance:** `CONF-ABORT-SETTLE-TOOLS`.
 
 ### [INV-ABORT-DONE-001] (MUST) Suppress "turn complete" for idles that follow an abort
 A client that surfaces a "turn complete / done" affordance on `status → idle` MUST suppress it
 for **every** idle that follows an abort, until the user's **next send** — not merely the first
 settle. A one-shot `aborting` flag (cleared on the first settle, [STATE-ABORT-RESULT-001]) is
-**insufficient**: after Stop the backend commonly emits a **delayed** `status → idle` (and may
-cycle `busy→idle` during cleanup / `[Request interrupted by user]` bookkeeping), and that later
-idle flashes a misleading "Done". Track a `stoppedSinceLastSend` flag (set on abort, cleared on
-the next send) and gate the done affordance on it.
+**insufficient**: in practice a **second** settle is observed after a stop — the interrupt's own
+result settles to idle (`internal/agent/claude.go:945`, `handleResult` abort branch) and
+on-device a further `status` still arrives as the turn unwinds — and that later idle flashes a
+misleading "Done". Track a `stoppedSinceLastSend` flag (set on abort, cleared on the next send)
+and gate the done affordance on it. (`[Request interrupted by user]` is written into the
+transcript by the Claude CLI, **not** emitted by clank — don't treat it as a signal.)
 **Why:** a "Done" banner moments after the user pressed Stop misrepresents a cancelled turn as
-a completed one (a shipped Kotlin bug).
+a completed one (a shipped Kotlin bug, seen in PR #78 device testing).
 **Golden:** `clank-mobile/modules/preview-launcher/android/…/fab/PreviewOverlayState.kt`
 (`stoppedSinceLastSend`). **Conformance:** `CONF-ABORT-DONE-SUPPRESS`.
 

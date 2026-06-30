@@ -101,12 +101,16 @@ Source: `internal/agent/agent.go:224`.
   id — never replace — so neither the arguments nor the tool name is lost. **In the committed
   transcript** (`GET /sessions/{id}/messages`) and the `message` events, the two parts land in
   **separate messages**: the call in the assistant message, the result in a **following
-  `role=user` message** whose only payload is that one `tool_result` part. So the merge is
-  **cross-message**, and the empty user-role carrier MUST be folded away rather than rendered
-  as a user turn or a second, nameless "tool" card. See [INV-TOOL-MERGE-001](08-invariants.md) and
-  [INV-TOOL-RESULT-CARRIER-001](08-invariants.md). **Verified** against the live gateway:
-  `assistant{tool_call toolu_X}` then `user{tool_result toolu_X}`. **Golden:**
-  `internal/tui/sessionview.go:1649` (merge by part id);
+  `role=user` message** whose only payload is `tool_result` part(s) — one per parallel tool
+  call. So the merge is **cross-message**, and the empty user-role carrier MUST be folded away
+  rather than rendered as a user turn or a second, nameless "tool" card. See
+  [INV-TOOL-MERGE-001](08-invariants.md) and [INV-TOOL-RESULT-CARRIER-001](08-invariants.md).
+  **Verified in source** (`coalesceSessionMessages` coalesces an assistant turn, but a user
+  record — where tool results live — breaks the run) **and** against the live gateway
+  (`assistant{tool_call toolu_X}` then `user{tool_result toolu_X}`). **Golden:**
+  `internal/agent/claude.go:1167` (`coalesceSessionMessages`), `:1254` (`sessionBlockToPart`:
+  tool_result `ID=ToolUseID`, no `tool`); `internal/tui/sessionview.go:1698` (`upsertPartEntry`,
+  merges by part id);
   `clank-mobile/modules/preview-launcher/android/…/session/ChatTranscript.kt` (`foldToolResults`
   — cross-message fold + carrier drop); `clank-mobile/src/lib/mergeMessages.ts:46`.
 
