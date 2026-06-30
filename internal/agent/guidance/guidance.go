@@ -47,6 +47,9 @@ var expoPack = []string{
 // A missing, unreadable, or non-Expo package.json yields StackUnknown — the
 // absence of the signal is the answer, not an error.
 func DetectStack(workDir string) Stack {
+	if workDir == "" {
+		return StackUnknown
+	}
 	data, err := os.ReadFile(filepath.Join(workDir, "package.json"))
 	if err != nil {
 		return StackUnknown

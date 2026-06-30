@@ -205,6 +205,10 @@ func (b *OpenCodeBackend) runPrompt(sid string, req *opencode.SessionPromptAsync
 		}
 	}
 	if err != nil {
+		// Reset so the next Send retries with the guidance system prompt.
+		if req.System != nil {
+			b.systemSent.Store(false)
+		}
 		// Don't surface ctx-cancelled errors from Stop().
 		if b.ctx.Err() != nil {
 			return
