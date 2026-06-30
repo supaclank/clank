@@ -76,10 +76,19 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
 - **[OP-004] (MUST)** Abort interrupts the current turn; it is best-effort and idempotent.
   The `204` means *the interrupt was delivered*, not that the agent stopped — the client
   observes the actual stop via `status` → `idle`/`error`. Aborting also **denies all parked
-  permission prompts** server-side. **Why:** the abort UX must be driven by the status event,
-  not the call return; pending permissions must be cleared after abort. **Golden:**
+  permission prompts** server-side. Because the stop is *observed, not returned*, three
+  client-side consequences follow on settle: (1) settle still-`running`/`pending` tool parts to
+  a **terminal** status — the interrupted tool never returns
+  ([INV-ABORT-SETTLE-TOOLS-001](08-invariants.md)); (2) the backend may emit a **delayed**
+  `status → idle` (and a `busy→idle` cleanup cycle) *after* the first settle, so a "turn
+  complete / done" affordance MUST stay suppressed until the user's **next send**, not just the
+  first settle ([INV-ABORT-DONE-001](08-invariants.md)); and (3) clear parked permissions
+  locally ([INV-ABORT-PERM-001](08-invariants.md)). **Why:** the abort UX must be driven by the
+  status event, not the call return; pending permissions must be cleared, running tools must not
+  spin forever, and a delayed idle must not masquerade as success. **Golden:**
   `internal/agent/claude_permissions.go:152` (`failPendingPermissions`),
-  `internal/tui/sessionview.go:2190`, `:2203` (`startAbort`).
+  `internal/tui/sessionview.go:2190`, `:2203` (`startAbort`);
+  `clank-mobile/…/PreviewOverlayContainer.kt` (settle-tools + `stoppedSinceLastSend`).
 
 ### Revert / fork — backend-specific
 

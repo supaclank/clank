@@ -66,6 +66,45 @@ Input kinds:
   A `reconnect` that should recover state carries the `messages` the subsequent refetch
   returns, so the fixture can assert reconciliation without a live network.
 
+### Worked example — cross-message tool merge (the subtle one)
+
+The committed transcript splits a tool across **two messages** under **one part id** — the
+call in the assistant message, the result in a *following* `role=user` carrier (empty `tool`,
+no text). A conforming client folds them into one card and drops the carrier
+([INV-TOOL-RESULT-CARRIER-001](08-invariants.md)). Fixture:
+
+```json
+{
+  "id": "CONF-TOOL-MERGE-CROSSMSG",
+  "description": "tool_call (assistant) + tool_result (following user carrier) under one part id → one merged card; carrier dropped",
+  "rules": ["DATA-022", "INV-TOOL-RESULT-CARRIER-001", "INV-MONOTONIC-001"],
+  "setup": { "session": { "id": "s1", "backend": "claude-code", "status": "idle" } },
+  "inputs": [
+    { "kind": "lifecycle", "event": "connect", "args": { "messages": [
+      { "id": "a1", "role": "assistant", "content": "", "parts": [
+        { "id": "a1-0", "type": "text", "text": "Running it." },
+        { "id": "toolu_X", "type": "tool_call", "tool": "Bash", "status": "completed", "input": { "command": "ls" } }
+      ] },
+      { "id": "u-carrier", "role": "user", "content": "", "parts": [
+        { "id": "toolu_X", "type": "tool_result", "tool": "", "status": "completed", "output": "file1\nfile2" }
+      ] }
+    ] } }
+  ],
+  "expect": {
+    "transcript": [
+      { "role": "assistant", "parts": [
+        { "id": "a1-0", "type": "text", "text": "Running it." },
+        { "id": "toolu_X", "type": "tool_call", "tool": "Bash", "status": "completed", "input": { "command": "ls" }, "output": "file1\nfile2" }
+      ] }
+    ],
+    "view": { "composerLocked": false }
+  }
+}
+```
+
+The carrier message is **absent** from the expected transcript, and `toolu_X` carries both
+`input` (from the call) and `output` (from the result) with the call's `tool` name preserved.
+
 ## Fixture sources
 
 Fixtures are not invented — they are captured or lifted:
@@ -112,6 +151,10 @@ files.
 | `CONF-INTERACTIVE-PLAN` | ExitPlanMode plan renders; Approve→build, Revise→plan | ITOOL-004/005, FLOW-PLAN-001 |
 | `CONF-INLINE-COMMENT` | per-block comments format as a quoted-comment SendMessage | ICOMMENT-001 |
 | `CONF-SIDEBAR-SYNC` | list updates from `meta` + create/delete (not field-level); reconnect resyncs | INV-SIDEBAR-META-001, LIST-002/003/004/006 |
+| `CONF-TOOL-MERGE-CROSSMSG` | a `tool_call` (assistant msg) + `tool_result` (following `role=user` carrier) sharing one part id merge into ONE card at the call's position; the empty carrier is dropped | INV-TOOL-RESULT-CARRIER-001, DATA-022 |
+| `CONF-OPTIMISTIC-DEDUP-NORMALIZE` | an echo differing only by trailing whitespace from the committed copy dedups; the committed copy need not be the transcript tail | INV-OPTIMISTIC-001 |
+| `CONF-ABORT-SETTLE-TOOLS` | on abort-settle a still-running tool becomes terminal; a later refetch that still shows it `running` does not regress it | INV-ABORT-SETTLE-TOOLS-001, DATA-021 |
+| `CONF-ABORT-DONE-SUPPRESS` | a delayed post-abort `status→idle` shows no "done" affordance until the next send | INV-ABORT-DONE-001 |
 
 ## Acceptance gates
 

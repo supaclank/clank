@@ -120,11 +120,14 @@ C: apply revert filter → drop M and everything after  ── [INV-REVERT-001]
 ```
 agent is busy (status=busy), composer may be locked by a pending permission
 C: user cancels (ctrl+c / stop)
-C: aborting=true; show "Cancelling…"             ── [STATE-ABORT-RESULT-001], [VIEW-CANCELLING-001]
+C: aborting=true; stoppedSinceLastSend=true; show "Cancelling…" ── [STATE-ABORT-RESULT-001], [VIEW-CANCELLING-001]
 C: POST /sessions/{id}/abort                      ── [OP-004]
 H: denies all parked permissions ("aborted")      ── failPendingPermissions
 H→C: 204; (error events suppressed while aborting) ── [STATE-ERR-001]
 H→C: status busy→idle → finalize "Cancelled"; aborting=false; clear pending perms
+C: settle still-running tool parts → terminal     ── [INV-ABORT-SETTLE-TOOLS-001]
+H→C: (maybe) a DELAYED status→idle arrives later  ── still no "Done": stoppedSinceLastSend stays set [INV-ABORT-DONE-001]
+C: user's NEXT send clears stoppedSinceLastSend    ── [STATE-SUBMIT-001]
 ```
 
 ## 8. Reconnect / late-join (reconcile)

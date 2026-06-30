@@ -87,13 +87,28 @@ Source: `internal/agent/agent.go:224`.
 
 - **[DATA-021] (MUST)** The part `status` lifecycle is **monotonic**: `pending` → `running`
   → `completed`/`error`. A client MUST NOT let a late or re-delivered lower-ranked status
-  regress a part that already reached a terminal state. **Why:** out-of-order or
-  re-fetched snapshots otherwise flip a finished tool back to "running". **Golden:**
+  regress a part that already reached a terminal state. A client that introduces a
+  **client-only terminal status** — e.g. marking a tool the user *cancelled* via abort, since
+  the wire has no `cancelled` value — MUST rank that status **terminal** as well; otherwise a
+  post-abort transcript refetch (which still carries the interrupted tool as `running`)
+  monotonically "advances" it back to `running` and the spinner resumes. See
+  [INV-ABORT-SETTLE-TOOLS-001](08-invariants.md). **Why:** out-of-order or re-fetched snapshots
+  otherwise flip a finished tool back to "running". **Golden:**
   `clank-mobile/src/lib/mergeMessages.ts:25` (`STATUS_RANK`, `preferStatus`).
-- **[DATA-022] (MUST)** A tool's `input` and `output` arrive in **separate** updates for the
-  same part ID (the call carries `input`; a later result carries `output`). A client MUST
-  merge them, never replace, so neither is lost. See [INV-TOOL-MERGE-001](08-invariants.md).
-  **Golden:** `internal/tui/sessionview.go:1649`, `clank-mobile/src/lib/mergeMessages.ts:46`.
+- **[DATA-022] (MUST)** A tool is **two parts that share one part ID** (the `tool_use` id):
+  the **call** (`type=tool_call`, carrying `tool` + `input`) and the **result**
+  (`type=tool_result`, carrying `output`, with `tool` **empty**). A client MUST merge them by
+  id — never replace — so neither the arguments nor the tool name is lost. **In the committed
+  transcript** (`GET /sessions/{id}/messages`) and the `message` events, the two parts land in
+  **separate messages**: the call in the assistant message, the result in a **following
+  `role=user` message** whose only payload is that one `tool_result` part. So the merge is
+  **cross-message**, and the empty user-role carrier MUST be folded away rather than rendered
+  as a user turn or a second, nameless "tool" card. See [INV-TOOL-MERGE-001] and
+  [INV-TOOL-RESULT-CARRIER-001](08-invariants.md). **Verified** against the live gateway:
+  `assistant{tool_call toolu_X}` then `user{tool_result toolu_X}`. **Golden:**
+  `internal/tui/sessionview.go:1649` (merge by part id);
+  `clank-mobile/modules/preview-launcher/android/…/session/ChatTranscript.kt` (`foldToolResults`
+  — cross-message fold + carrier drop); `clank-mobile/src/lib/mergeMessages.ts:46`.
 
 ## Enums
 

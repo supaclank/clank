@@ -1,72 +1,105 @@
 # Implementation Checklist — Android (Kotlin)
 
-> **Important scope note.** Today's Kotlin client is **not** a full chat client. It is the
-> native **preview-overlay FAB** (`clank-mobile/modules/preview-launcher/android/.../session/`)
-> that consumes a *subset* of the stream to drive a floating "agent working / last action /
-> answer-this-question" widget. The full mobile chat experience is the
-> [React Native client](react-native-ts.md). This file tracks the Kotlin consumer's
-> conformance **for the slice it implements**, and flags where it diverged by guessing at the
-> protocol — exactly the drift this spec exists to stop. A future full native Kotlin client
-> would fill the N/A rows.
+> **Scope note.** The Kotlin client is the native **preview-overlay floating box**
+> (`clank-mobile/modules/preview-launcher/android/…/`) that floats over a running preview app.
+> As of PR #78 it grew from a *subset* "agent working / last action / answer-this-question"
+> chip into a **near-full chat consumer**: a structured streaming transcript (text / thinking /
+> tool cards), monotonic merge, reconnect-reconcile, stop/abort, and revert. It is still a
+> constrained surface (a ~280 dp panel, light-mode only, no session list), and the full-screen
+> mobile chat remains the [React Native client](react-native-ts.md). This file tracks the
+> Kotlin consumer's conformance and the **hard-won lessons** it paid for — several of which
+> hardened the spec itself ([INV-TOOL-RESULT-CARRIER-001], [INV-ABORT-SETTLE-TOOLS-001],
+> [INV-ABORT-DONE-001], and the [INV-OPTIMISTIC-001] normalization clause).
 
-**Platform:** Kotlin / OkHttp / Coroutines (Expo native module) ·
-**Client kind:** **partial consumer** (preview FAB) · **Spec version:** 0.2.0 ·
-**Last updated:** 2026-06-21
+**Platform:** Kotlin / Jetpack Compose / OkHttp / Coroutines (Expo native module) ·
+**Client kind:** **near-full consumer** (preview floating box) · **Spec version:** 0.3.0 ·
+**Last updated:** 2026-06-30 (PR #78)
 
 ## Where the pieces live
 
 | Concern | Component |
 |---|---|
 | SSE stream | `…/session/SessionEventStream.kt` (OkHttp, hand-rolled frame parser) |
-| HTTP (messages, etc.) | `…/session/SessionClient.kt` |
+| HTTP — messages / send / abort / revert / images | `…/session/SessionClient.kt` |
+| Transcript model + merge/reduce | `…/session/ChatTranscript.kt` — ports `clank-mobile/src/lib/mergeMessages.ts` + `src/hooks/dispatch.ts`: `mergePart`/`mergeMessageLists` (monotonic), delta/snapshot, `applyPart`/`applyMessage`, **`foldToolResults`**, **`cancelPendingParts`**, `preferStatus` (incl. `canceled`) |
+| Transcript rendering | `…/fab/PromptBoxContent.kt` (`InlineChatList`), `…/fab/TranscriptCards.kt` (thinking / tool cards) |
+| Abort / revert / "Done" state | `…/fab/PreviewOverlayState.kt` (`aborting`, `stoppedSinceLastSend`, `revertMessageId`), `…/PreviewOverlayContainer.kt` (wiring) |
 | Question parsing | `…/session/AskQuestion.kt`, `parseAskQuestions` |
 | Health probe | `…/session/PreviewServerHealth.kt` |
 
-## Invariants (for the implemented slice)
+## Invariants
 
 | Rule | Status | How / divergence |
 |---|---|---|
-| INV-CREATE-RACE-001 | N/A | overlay attaches to an existing session, never creates |
-| INV-STALE-STREAM-001 | ✅ | `activeCall` tracked; `stop()` cancels the socket (`:114`) |
-| INV-SSE-DOUBLE-001 | ✅ | `start()` cancels the prior job before relaunch (`:108`) |
-| INV-NO-END-001 | ✅ | detects close via `readLine() ?: break` (`:185`); also handles `event: end` (`:264`) — **correct**, because this client subscribes to the per-session `/sessions/{id}/events`, which emits `end` on host shutdown ([INV-NO-END-001](../08-invariants.md)). Not a phantom branch. |
-| INV-DELTA-001 | 🟡 | forwards `is_delta` to the listener (`:228`) but the FAB only shows a chip, so it doesn't accumulate text. A full client MUST append. |
-| INV-TOOL-MERGE-001 | N/A | no transcript; renders a one-line chip per part (`summarizePart` `:340`) |
-| INV-MONOTONIC-001 | N/A | holds no transcript to reconcile (chip + last-message only) |
-| INV-MSGID-001 | 🟡 | reads `message_id` but doesn't resolve the id-less-part owner (no transcript) |
-| INV-SHELL-001 | ✅ | `onMessage` only fires when text is non-blank (`:250`) |
-| INV-OPTIMISTIC-001 | N/A | overlay doesn't send user messages |
-| INV-PERM-SINGLEFLIGHT-001 | 🟡 | surfaces permission (`:254`); only *acts on* AskUserQuestion; other tools handed to the container. Verify single-flight in the answer path. |
+| INV-CREATE-RACE-001 | N/A | overlay attaches to an existing session; lazy-creates on first send but never races a subscribe |
+| INV-STALE-STREAM-001 | ✅ | `activeCall` tracked; `stop()` cancels the socket |
+| INV-SSE-DOUBLE-001 | ✅ | `start()` cancels the prior job before relaunch |
+| INV-NO-END-001 | ✅ | detects close via `readLine() ?: break`; also handles `event: end` — **correct**, this client subscribes to the per-session `/sessions/{id}/events`, which emits `end` on host shutdown |
+| INV-DELTA-001 | ✅ | `applyPart` appends on `is_delta=true`, replaces on snapshot (was chip-only) |
+| INV-TOOL-MERGE-001 | ✅ | `mergePart` keeps `input`/`output`/`tool` by part id |
+| INV-TOOL-RESULT-CARRIER-001 | ✅ | `foldToolResults` merges the call+result across messages and drops the user-role carrier — **this client found the bug** (doubled tool cards in history) |
+| INV-MONOTONIC-001 | ✅ | `mergeMessageLists` (ported); `InlineChatCache.refresh()` merges, never replaces |
+| INV-MSGID-001 | ✅ | `apiMsgIdFromPartId` + latest-assistant fallback |
+| INV-SHELL-001 | ✅ | empty assistant shell dropped in parse + `applyMessage` |
+| INV-OPTIMISTIC-001 | ✅ | optimistic echo + **trimmed, any-user-message** dedup — **found the trailing-space duplicate bug** |
+| INV-PERM-SINGLEFLIGHT-001 | 🟡 | AskUserQuestion answered via the parked permission (deny+message); generic tool permissions still deferred to the host |
 | INV-PERMMODE-* | N/A | overlay doesn't choose modes |
-| INV-INTERACTIVE-001 | 🟡 | renders AskUserQuestion inline (`:230`, `AskQuestion.kt`); no ExitPlanMode plan card, no inline comments — partial vs [11](../11-interactive-tools.md) |
-| INV-META-REPLACE-001 | N/A | ignores `meta` (`:267` — subset consumer) |
-| INV-REVERT-001 | N/A | ignores `revert` |
-| INV-RECONCILE-001 | 🟡 | reconnects (below) but does not refetch a transcript (it has none); a full client MUST reconcile |
-| INV-RECONNECT-SEMANTICS-001 | ✅ | reconnect is driven by its own transport loop, not the `reconnected` event (which it ignores) |
-| INV-SIDEBAR-META-001 | N/A | subset consumer; no session list or sidebar |
+| INV-INTERACTIVE-001 | 🟡 | AskUserQuestion inline card; ExitPlanMode plan card + inline comments deferred (vs [11](../11-interactive-tools.md)) |
+| INV-META-REPLACE-001 | N/A | ignores `meta` (no session list on this surface) |
+| INV-REVERT-001 | ✅ | `revertMessageId` filter on render; tap a user bubble → revert (Claude backend); cleared on next send |
+| INV-RECONCILE-001 | ✅ | `onConnected()` → `refresh()` + monotonic merge |
+| INV-RECONNECT-SEMANTICS-001 | ✅ | reconnect driven by its own transport loop, not the `reconnected` event |
+| INV-ABORT-PERM-001 | ✅ | abort clears the parked question locally; settles on the next `status` |
+| INV-ABORT-SETTLE-TOOLS-001 | ✅ | `cancelPendingParts` settles running tools to `canceled` (terminal in `preferStatus`) — **found the "spinner resumes after a refetch" bug** |
+| INV-ABORT-DONE-001 | ✅ | `stoppedSinceLastSend` gates the "Done" pill, not the one-shot `aborting` — **found the delayed-"Done" bug** |
+| INV-SIDEBAR-META-001 | N/A | no session list / sidebar on this surface |
 | INV-PENDING-PERM-GAP-001 | ⛔ | on (re)attach to a blocked session it won't learn of the parked permission (host gap) |
-| INV-HEARTBEAT-GAP-001 | ✅ | OkHttp `readTimeout(0)` for the long-lived socket **plus** an explicit capped-backoff reconnect loop (`:121`, 1s→15s) — the [NFR-REL-001] reference behavior |
+| INV-HEARTBEAT-GAP-001 | ✅ | OkHttp `readTimeout(0)` + an explicit capped-backoff reconnect loop (1 s → 15 s) |
 
 ## Conformance
 
-Applicable subset: CONF-NO-END (the `end` branch is correct for the per-session stream), CONF-STALE-STREAM, CONF-SINGLE-STREAM,
-CONF-PLAN-EXIT / CONF-INTERACTIVE-ASK (AskUserQuestion parsing + terminal-status clear, `:230`). The rest
-are N/A until a full native chat client exists.
+Now exercises the core transcript matrix: `CONF-STREAM-DELTA`, `CONF-TOOL-MERGE`,
+**`CONF-TOOL-MERGE-CROSSMSG`**, `CONF-MONOTONIC`, `CONF-MSGID-OWNER`, `CONF-SHELL-DROP`,
+`CONF-OPTIMISTIC-BACKFILL`, **`CONF-OPTIMISTIC-DEDUP-NORMALIZE`**, `CONF-RECONCILE`,
+`CONF-REVERT-FILTER`, `CONF-ABORT-PERM`, `CONF-ABORT-NOISE`, **`CONF-ABORT-SETTLE-TOOLS`**,
+**`CONF-ABORT-DONE-SUPPRESS`**, plus `CONF-NO-END` / `CONF-STALE-STREAM` / `CONF-SINGLE-STREAM`
+and `CONF-INTERACTIVE-ASK`. N/A on this surface: `CONF-META-REPLACE`, `CONF-SIDEBAR-SYNC`,
+`CONF-INTERACTIVE-PLAN`, `CONF-INLINE-COMMENT`, `CONF-PERMMODE-NOCHANGE`.
 
-## Platform gotchas
+## Platform gotchas (paid for, in order)
 
+- **Cross-message tool merge** — the `tool_call` (assistant message) and `tool_result`
+  (a *following* `role=user` carrier) share one part id but live in **different messages**;
+  fold them across messages at the merged-transcript layer, not per-message. Two earlier
+  "merge within one message" attempts were wrong; verified against the live gateway. See
+  [INV-TOOL-RESULT-CARRIER-001](../08-invariants.md).
+- **A client-only `canceled` status must be terminal-ranked** — otherwise the post-abort
+  refetch (which still shows the tool `running`) monotonically un-cancels it and the spinner
+  resumes. See [INV-ABORT-SETTLE-TOOLS-001](../08-invariants.md).
+- **Delayed post-abort idle** — the backend emits a *later* `status → idle` after a stop;
+  gate the "Done" affordance on `stoppedSinceLastSend` (cleared on the next send), not the
+  one-shot `aborting`. See [INV-ABORT-DONE-001](../08-invariants.md).
+- **Optimistic echo** — the gateway preserves trailing whitespace the client trims, so dedup
+  the echo by **trimmed** text and against **any** recent user message (the committed copy is
+  not the tail once the agent streams). See [INV-OPTIMISTIC-001](../08-invariants.md).
+- **Tailing** — `reverseLayout` did **not** pin a *growing* last item; tail explicitly,
+  keyed on a content-length signature (not message count), and toggle `follow` only on a real
+  user scroll gesture (not the initial settled position, which opened the chat at the top).
+  See [STATE-FOLLOW-001](../06-state-model.md).
 - OkHttp has no native SSE; the hand-rolled parser only handles the host's single-line
-  `event:`/`data:` shape (`:174`) — fine, but it is *not* a full SSE parser (no multi-line
-  data, no `id:`/`retry:`).
+  `event:`/`data:` shape — fine, but not a full SSE parser (no multi-line data, no
+  `id:`/`retry:`).
 - `readTimeout(0)` is required or the idle SSE socket times out; cancelling the coroutine does
-  **not** unblock `readLine()` — only `Call.cancel()` does (`:100`).
-- AskUserQuestion: a terminal part `status` means already-answered → clear the card, don't
-  re-show (`:78` doc, `:230`).
+  **not** unblock `readLine()` — only `Call.cancel()` does.
+- (Compose-host, not protocol) the floating box's bottom-anchor baseline must be sampled
+  whenever the big panels are collapsed; gating it on transient rows (server banner / error /
+  Done) meant it never sampled while a preview had an error, so panels grew *downward*.
 
 ## Open gaps / deviations
 
-1. ~~Remove the phantom `"end"` event branch~~ — **resolved**: the `"end"` branch is correct;
-   the per-session `/sessions/{id}/events` stream emits `event: end` on host shutdown
-   ([INV-NO-END-001](../08-invariants.md)). The branch should stay.
-2. If this grows into a full chat client, implement the N/A rows (transcript, monotonic merge,
-   reconcile-on-reconnect, optimistic send) rather than re-deriving them.
+1. ExitPlanMode plan card and inline comments are not yet rendered on this surface
+   (AskUserQuestion is). Generic (non-AskUserQuestion) permissions are still handed to the host
+   rather than answered inline.
+2. No session list, `meta`, or revert/fork-from-history beyond the single revert affordance —
+   this is the preview surface, not the full chat. A full-screen native chat would fill the
+   N/A rows; it should reuse `ChatTranscript.kt` rather than re-derive the merge.

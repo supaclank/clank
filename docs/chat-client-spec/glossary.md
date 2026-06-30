@@ -16,8 +16,14 @@ Terms as used in this spec.
   `GET /sessions/{id}/messages`.
 - **Message** — one turn entry (`role: user|assistant`) with `content` and/or `parts`.
 - **Part** — a piece of a message: `text`, `thinking`, `tool_call`, or `tool_result`.
-- **Tool call / tool result** — a tool invocation (`input`) and its outcome (`output`),
-  carried as two updates to the **same part id**.
+- **Tool call / tool result** — a tool invocation (`tool_call`, carrying `tool` + `input`) and
+  its outcome (`tool_result`, carrying `output`, with `tool` **empty**), carried as two parts
+  that share the **same part id** but arrive in **separate messages** (the result in a following
+  `role=user` carrier). A client merges them into one card — see
+  [INV-TOOL-RESULT-CARRIER-001](08-invariants.md).
+- **Tool-result carrier** — the `role=user` message that carries only a `tool_result` part
+  (empty content, empty `tool`); folded into the matching `tool_call` card and never rendered as
+  a user turn. See [INV-TOOL-RESULT-CARRIER-001](08-invariants.md).
 - **Permission prompt** — a `permission` event meaning the agent is **blocked** awaiting the
   user's approval to run a tool.
 - **Permission mode** — Claude's posture: `default` / `acceptEdits` / `plan` /
@@ -42,7 +48,10 @@ Terms as used in this spec.
 - **Assistant shell** — an empty assistant `message` (no id/content/parts) marking a turn
   boundary; rendered as nothing.
 - **Follow** — the auto-scroll intent that keeps the viewport pinned to the latest content.
-- **Abort** — interrupt the current turn; best-effort; observed via `status → idle`.
+- **Abort** — interrupt the current turn; best-effort; observed via `status → idle` (which may
+  arrive **delayed**). On settle a client settles still-running tools terminally and suppresses
+  any "done" affordance until the next send. See [INV-ABORT-SETTLE-TOOLS-001],
+  [INV-ABORT-DONE-001](08-invariants.md).
 - **GitRef** — repo identity (`local_path`/`worktree_id`/`display_name`/`worktree_branch`).
 - **Reducer / projection** — the canonical state transition function and the pure view
   derived from state; the [core model](06-state-model.md).
