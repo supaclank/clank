@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	opencode "github.com/acksell/opencode-go-sdk/sdk"
@@ -52,6 +53,13 @@ type OpenCodeBackend struct {
 	// skip user part updates. Reverts to plain string once the SDK regen exposes
 	// MessageUnion's role as a typed enum on both variants.
 	messageRoles sync.Map // map[string]string
+
+	// SystemPrompt, when non-empty, is attached as the prompt's system field on
+	// the first message of a fresh session — carrying stack-detected guidance.
+	// The host leaves it empty for resumed sessions (the guidance already shaped
+	// the conversation in history). systemSent attaches it exactly once.
+	SystemPrompt string
+	systemSent   atomic.Bool
 }
 
 // NewOpenCodeBackend creates a new OpenCode backend that communicates with
@@ -176,6 +184,12 @@ func (b *OpenCodeBackend) buildPromptParams(opts SendMessageOpts, imgs []resolve
 			ModelID:    opts.Model.ModelID,
 		}
 	}
+	// Attach guidance once, on the first prompt of a fresh session; later turns
+	// rely on it being in conversation history.
+	// TODO(ai-review): concurrent Sends race on this CAS — the loser sends without guidance; serialize Send or flip only after PromptAsync succeeds. https://github.com/Acksell/clank/pull/88#discussion_r3499865275
+	if b.SystemPrompt != "" && b.systemSent.CompareAndSwap(false, true) {
+		req.System = opencode.String(b.SystemPrompt)
+	}
 	return req
 }
 
@@ -192,6 +206,10 @@ func (b *OpenCodeBackend) runPrompt(sid string, req *opencode.SessionPromptAsync
 		}
 	}
 	if err != nil {
+		// Reset so the next Send retries with the guidance system prompt.
+		if req.System != nil {
+			b.systemSent.Store(false)
+		}
 		// Don't surface ctx-cancelled errors from Stop().
 		if b.ctx.Err() != nil {
 			return

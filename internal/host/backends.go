@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/agent/guidance"
 	claudecode "github.com/severity1/claude-agent-sdk-go"
 )
 
@@ -68,7 +69,13 @@ func (m *OpenCodeBackendManager) CreateBackend(ctx context.Context, inv agent.Ba
 	resolver := func(ctx context.Context) (string, error) {
 		return m.serverMgr.GetOrStartServer(ctx, inv.WorkDir)
 	}
-	return agent.NewOpenCodeBackend(serverURL, inv.ResumeExternalID, resolver), nil
+	b := agent.NewOpenCodeBackend(serverURL, inv.ResumeExternalID, resolver)
+	// Inject stack-detected guidance as the system prompt for fresh sessions
+	// only; resumed sessions already carry it in conversation history.
+	if inv.ResumeExternalID == "" {
+		b.SystemPrompt = guidance.Assemble(inv.WorkDir)
+	}
+	return b, nil
 }
 
 // Shutdown stops all managed OpenCode servers.
@@ -199,6 +206,11 @@ func (m *ClaudeBackendManager) CreateBackend(ctx context.Context, inv agent.Back
 	b := agent.NewClaudeCodeBackendForSession(inv.WorkDir, inv.ResumeExternalID)
 	if m.envResolver != nil {
 		b.ExtraEnv = m.envResolver()
+	}
+	// Same guidance the OpenCode backend injects, applied via --append-system-prompt
+	// at CLI launch for fresh sessions only.
+	if inv.ResumeExternalID == "" {
+		b.SystemPrompt = guidance.Assemble(inv.WorkDir)
 	}
 	return b, nil
 }
