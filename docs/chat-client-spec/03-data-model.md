@@ -88,8 +88,8 @@ Source: `internal/agent/agent.go:224`.
 - **[DATA-021] (MUST)** The part `status` lifecycle is **monotonic**: `pending` → `running`
   → `completed`/`error`. A client MUST NOT let a late or re-delivered lower-ranked status
   regress a part that already reached a terminal state. A client that introduces a
-  **client-only terminal status** — e.g. marking a tool the user *cancelled* via abort, since
-  the wire has no `cancelled` value — MUST rank that status **terminal** as well; otherwise a
+  **client-only terminal status** — e.g. marking a tool the user *canceled* via abort, since
+  the wire has no `canceled` value — MUST rank that status **terminal** as well; otherwise a
   post-abort transcript refetch (which still carries the interrupted tool as `running`)
   monotonically "advances" it back to `running` and the spinner resumes. See
   [INV-ABORT-SETTLE-TOOLS-001](08-invariants.md). **Why:** out-of-order or re-fetched snapshots
@@ -169,7 +169,7 @@ Source: `internal/agent/agent.go:565`.
 `GitRef`: repo identity carrying `local_path` and/or `worktree_id`, optional
 `display_name`, optional `worktree_branch`. A client treats it as an opaque object it
 echoes from list/get responses, except at create time where it sets the target repo.
-Source: `internal/agent/gitref.go`.
+Source: `internal/gitref.go`.
 
 ## Image attachments (forward-looking — not yet shipped)
 

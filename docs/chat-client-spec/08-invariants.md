@@ -128,8 +128,7 @@ duplicates the transcript.
 ### [INV-OPTIMISTIC-001] (MUST) Optimistic user echo + id backfill + dedup
 Render the user's message immediately (no id). Backfill the server id when the matching
 `message` event arrives. When the id-less echo and the server copy would both be present,
-keep one (consume-once by content for id-less echoes). Dedup by **normalized text** (trim /
-collapse whitespace): the gateway preserves the trailing whitespace a user typed, while a
+keep one (consume-once by content for id-less echoes). Dedup by **normalized text** (trim leading/trailing whitespace): the gateway preserves the trailing whitespace a user typed, while a
 client typically trims when extracting a message's text, so a raw `==` leaves the echo as a
 permanent duplicate. And the committed copy is **not necessarily the latest entry** — once the
 agent starts streaming, assistant parts follow the user message — so dedup against **any**
@@ -181,11 +180,11 @@ an abort while a prompt is pending no longer wedges the composer. **Conformance:
 When an abort settles (the post-abort `status ∉ {busy, starting}`), a client MUST mark every
 still-`pending`/`running` tool part **terminal** — the interrupted tool never returns a
 result, so its spinner otherwise runs forever. This is the abort analog of
-[INV-DENY-SETTLE-001]. The wire has no `cancelled` status; a client MAY render a neutral
-"cancelled" presentation but MUST treat it as **terminal in the monotonic rank** ([DATA-021])
+[INV-DENY-SETTLE-001]. The wire has no `canceled` status; a client MAY render a neutral
+"canceled" presentation but MUST treat it as **terminal in the monotonic rank** ([DATA-021])
 so the post-abort transcript refetch — which still carries the tool as `running` — cannot
 regress it.
-**Why:** a tool left `running` after Stop spins indefinitely; and a "cancelled" marker that is
+**Why:** a tool left `running` after Stop spins indefinitely; and a "canceled" marker that is
 not terminal-ranked is "advanced" back to `running` by the refetch's monotonic merge — a
 shipped Kotlin bug (the spinner resumed after a cancel).
 **Golden:** `clank-mobile/modules/preview-launcher/android/…/session/ChatTranscript.kt`

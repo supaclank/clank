@@ -2,18 +2,18 @@
 
 > **Scope note.** The Kotlin client is the native **preview-overlay floating box**
 > (`clank-mobile/modules/preview-launcher/android/…/`) that floats over a running preview app.
-> As of PR #78 it grew from a *subset* "agent working / last action / answer-this-question"
+> As of clank-mobile PR #78 it grew from a *subset* "agent working / last action / answer-this-question"
 > chip into a **near-full chat consumer**: a structured streaming transcript (text / thinking /
 > tool cards), monotonic merge, reconnect-reconcile, stop/abort, and revert. It is still a
 > constrained surface (a ~280 dp panel, light-mode only, no session list), and the full-screen
 > mobile chat remains the [React Native client](react-native-ts.md). This file tracks the
 > Kotlin consumer's conformance and the **hard-won lessons** it paid for — several of which
-> hardened the spec itself ([INV-TOOL-RESULT-CARRIER-001], [INV-ABORT-SETTLE-TOOLS-001],
-> [INV-ABORT-DONE-001], and the [INV-OPTIMISTIC-001] normalization clause).
+> hardened the spec itself ([INV-TOOL-RESULT-CARRIER-001](../08-invariants.md), [INV-ABORT-SETTLE-TOOLS-001](../08-invariants.md),
+> [INV-ABORT-DONE-001](../08-invariants.md), and the [INV-OPTIMISTIC-001](../08-invariants.md) normalization clause).
 
 **Platform:** Kotlin / Jetpack Compose / OkHttp / Coroutines (Expo native module) ·
 **Client kind:** **near-full consumer** (preview floating box) · **Spec version:** 0.3.0 ·
-**Last updated:** 2026-06-30 (PR #78)
+**Last updated:** 2026-06-30 (PR #87)
 
 ## Where the pieces live
 

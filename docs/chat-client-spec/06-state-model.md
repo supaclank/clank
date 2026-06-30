@@ -58,7 +58,7 @@ Each `Part` additionally carries a derived `streaming` flag (true while text is 
     a turn-boundary marker; streamed content arrives via `part`. **Golden:**
     `clank-mobile/src/hooks/dispatch.ts:51`.
   - **Id-less user echo** (role=user, no `id`): if a recent user entry already holds the
-    **same normalized text** (trim/collapse whitespace — the gateway preserves a typed trailing
+    **same normalized text** (trim leading/trailing whitespace — the gateway preserves a typed trailing
     space the client trims), drop it (it is the echo of the optimistic local message);
     otherwise it is a genuine message — keep it. Compare against **any** recent user entry, not
     only the tail: once the agent streams, assistant parts follow the user message. See
