@@ -49,6 +49,10 @@ type PublishResult struct {
 // PublishToRemote creates a brand-new repository (private by default) for a
 // remote-less worktree, adds it as origin, commits any uncommitted work, and
 // pushes the current branch. ErrAlreadyPublished when origin already exists.
+//
+// TODO(ai-review): only sanitizeRepoName is covered by tests; the orchestration
+// itself (create repo, add origin, commit, push, error mapping) has no
+// integration coverage yet. https://github.com/Acksell/clank/pull/90#discussion_r3508931108
 func (s *Service) PublishToRemote(ctx context.Context, worktreeID string, req PublishRequest) (PublishResult, error) {
 	if s.github == nil {
 		return PublishResult{}, ErrGitHubManagerUnavailable
@@ -113,7 +117,7 @@ func (s *Service) PublishToRemote(ctx context.Context, worktreeID string, req Pu
 		return PublishResult{}, err
 	}
 
-	pushURL := fmt.Sprintf("https://github.com/%s/%s.git", created.Owner, created.Name)
+	pushURL := created.CloneURL
 	if err := git.RemoteAdd(workdir, "origin", pushURL); err != nil {
 		return PublishResult{}, fmt.Errorf("add origin: %w", err)
 	}
@@ -130,9 +134,15 @@ func (s *Service) PublishToRemote(ctx context.Context, worktreeID string, req Pu
 	}, nil
 }
 
+// maxRepoNameLength is GitHub's own repository name length limit.
+const maxRepoNameLength = 100
+
 // sanitizeRepoName maps an arbitrary display name to GitHub's allowed repo
-// characters ([A-Za-z0-9._-]), collapsing any run of others to a single hyphen
-// and trimming leading/trailing separators. Empty when nothing usable remains.
+// characters ([A-Za-z0-9._-]), collapsing any run of others to a single hyphen,
+// trimming leading/trailing separators, and capping at GitHub's length limit so
+// an over-long name fails as ErrInvalidRepoName here rather than surfacing as a
+// GitHub 422 that classifyCreateRepoError would misreport as ErrRepoNameTaken.
+// Empty when nothing usable remains.
 func sanitizeRepoName(name string) string {
 	var b strings.Builder
 	prevDash := false
@@ -146,5 +156,9 @@ func sanitizeRepoName(name string) string {
 			prevDash = true
 		}
 	}
-	return strings.Trim(b.String(), "-._")
+	trimmed := strings.Trim(b.String(), "-._")
+	if len(trimmed) > maxRepoNameLength {
+		trimmed = strings.Trim(trimmed[:maxRepoNameLength], "-._")
+	}
+	return trimmed
 }

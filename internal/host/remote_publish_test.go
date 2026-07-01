@@ -1,6 +1,9 @@
 package host
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSanitizeRepoName(t *testing.T) {
 	t.Parallel()
@@ -20,5 +23,20 @@ func TestSanitizeRepoName(t *testing.T) {
 		if got := sanitizeRepoName(c.in); got != c.want {
 			t.Errorf("sanitizeRepoName(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestSanitizeRepoName_CapsLength(t *testing.T) {
+	t.Parallel()
+	got := sanitizeRepoName(strings.Repeat("a", maxRepoNameLength+50))
+	if len(got) != maxRepoNameLength {
+		t.Errorf("len(sanitizeRepoName(...)) = %d, want %d", len(got), maxRepoNameLength)
+	}
+
+	// A cut that lands right after a separator must trim it, not leave a
+	// trailing dash that github.com/.../create_repo.go would then reject.
+	got = sanitizeRepoName(strings.Repeat("a", maxRepoNameLength-1) + "---suffix")
+	if strings.HasSuffix(got, "-") {
+		t.Errorf("sanitizeRepoName(...) = %q, want no trailing separator after truncation", got)
 	}
 }

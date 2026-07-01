@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	gogithub "github.com/google/go-github/v66/github"
 )
 
 func TestCreateRepository_CreatesPrivate(t *testing.T) {
@@ -61,5 +63,17 @@ func TestCreateRepository_NameTaken(t *testing.T) {
 	_, err := m.CreateRepository(context.Background(), "gho_test", CreateRepoInput{Name: "taken", Private: true})
 	if !errors.Is(err, ErrRepoNameTaken) {
 		t.Fatalf("CreateRepository err = %v, want ErrRepoNameTaken", err)
+	}
+}
+
+func TestClassifyCreateRepoError_NilResponse(t *testing.T) {
+	t.Parallel()
+	// A nil Response (e.g. a hand-built or mocked error) must not panic on
+	// er.Response.StatusCode.
+	err := classifyCreateRepoError(&gogithub.ErrorResponse{
+		Errors: []gogithub.Error{{Field: "name"}},
+	})
+	if errors.Is(err, ErrRepoNameTaken) {
+		t.Errorf("classifyCreateRepoError with nil Response = %v, want a wrapped generic error, not ErrRepoNameTaken", err)
 	}
 }

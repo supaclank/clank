@@ -66,9 +66,13 @@ func (m *Manager) CreateRepository(ctx context.Context, token string, in CreateR
 
 // classifyCreateRepoError maps GitHub's 422 "name already exists" to
 // ErrRepoNameTaken; everything else wraps through.
+//
+// TODO(ai-review): any 422/name (not just "already taken", e.g. a reserved
+// name) is misreported as ErrRepoNameTaken; sanitizeRepoName's length cap
+// closes the most likely case but not all of them. https://github.com/Acksell/clank/pull/90#discussion_r3508931059
 func classifyCreateRepoError(err error) error {
 	var er *gogithub.ErrorResponse
-	if errors.As(err, &er) && er.Response.StatusCode == http.StatusUnprocessableEntity {
+	if errors.As(err, &er) && er.Response != nil && er.Response.StatusCode == http.StatusUnprocessableEntity {
 		for _, e := range er.Errors {
 			if e.Field == "name" {
 				return ErrRepoNameTaken
