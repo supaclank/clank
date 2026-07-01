@@ -264,6 +264,7 @@ func (g *Gateway) Handler() http.Handler {
 	mx.HandleFunc("GET /v1/github/status", g.handleGitHubStatus)
 	mx.HandleFunc("GET /v1/github/repos", g.handleGitHubListRepos)
 	mx.HandleFunc("GET /v1/github/repos/{owner}/{repo}/branches", g.handleGitHubListBranches)
+	mx.HandleFunc("GET /v1/github/repos/{owner}/{repo}/pulls", g.handleGitHubListPulls)
 	mx.HandleFunc("DELETE /v1/github", g.handleGitHubDisconnect)
 	mx.HandleFunc("POST /v1/github/connect/start", g.handleGitHubConnectStart)
 	mx.HandleFunc("GET /v1/github/connect/status", g.handleGitHubConnectStatus)
@@ -278,6 +279,7 @@ func (g *Gateway) Handler() http.Handler {
 	mx.HandleFunc("POST /v1/worktrees/{id}/remote/push", g.handleRemotePush)
 	mx.HandleFunc("POST /v1/worktrees/{id}/remote/pull", g.handleRemotePull)
 	mx.HandleFunc("POST /v1/worktrees/{id}/remote/resolve", g.handleRemoteResolve)
+	mx.HandleFunc("POST /v1/worktrees/{id}/remote/publish", g.handleRemotePublish)
 	if g.cfg.Images != nil {
 		// POST /v1/images: image-upload presign. More specific than the
 		// sync /v1/ catch-all below, so it wins regardless of order.

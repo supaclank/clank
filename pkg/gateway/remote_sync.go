@@ -44,3 +44,12 @@ func (g *Gateway) handleRemoteResolve(w http.ResponseWriter, r *http.Request) {
 	}
 	g.proxyHostGitHub(w, r, "/worktrees/"+id+"/remote/resolve")
 }
+
+func (g *Gateway) handleRemotePublish(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "worktree id is required", http.StatusBadRequest)
+		return
+	}
+	g.proxyHostGitHub(w, r, "/worktrees/"+id+"/remote/publish")
+}
