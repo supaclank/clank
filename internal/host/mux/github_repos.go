@@ -79,3 +79,40 @@ func (m *Mux) handleGitHubListBranches(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, listBranchesResponse{Branches: branches})
 }
+
+// listPullsResponse wraps the PR slice for the same growth reason as
+// listBranchesResponse.
+type listPullsResponse struct {
+	Pulls []githubpkg.PullRequestSummary `json:"pulls"`
+}
+
+// handleGitHubListPulls services GET
+// /credentials/github/repos/{owner}/{repo}/pulls — the repo-detail screen's
+// open-PR list. Like list-branches, the token never leaves the host.
+func (m *Mux) handleGitHubListPulls(w http.ResponseWriter, r *http.Request) {
+	g, ok := m.requireGitHub(w)
+	if !ok {
+		return
+	}
+	owner := r.PathValue("owner")
+	repo := r.PathValue("repo")
+	if owner == "" || repo == "" {
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "owner and repo are required"})
+		return
+	}
+	if !isValidGitHubName(owner) || !isValidGitHubName(repo) {
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "invalid owner or repo name"})
+		return
+	}
+	token, err := g.AccessToken()
+	if err != nil {
+		writeGitHubFlowErr(w, err)
+		return
+	}
+	pulls, err := g.ListPullRequests(r.Context(), token, owner, repo)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, listPullsResponse{Pulls: pulls})
+}

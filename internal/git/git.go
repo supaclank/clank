@@ -74,6 +74,16 @@ func RemoteURL(dir, remote string) (string, error) {
 	return url, nil
 }
 
+// RemoteAdd runs `git remote add <name> <url>` in dir — used when publishing a
+// previously remote-less worktree to a fresh GitHub repo. Errors if the remote
+// already exists.
+func RemoteAdd(dir, name, url string) error {
+	if _, err := gitCmd(dir, "remote", "add", name, url); err != nil {
+		return fmt.Errorf("git remote add %s: %w", name, err)
+	}
+	return nil
+}
+
 // RemoteURLs returns every configured remote's URL, keyed by remote name.
 // Used by the host's CreateSession when a caller passes Dir: any remote
 // whose canonical form matches the requested GitRef counts as a valid

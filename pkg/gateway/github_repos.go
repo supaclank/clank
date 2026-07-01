@@ -28,3 +28,16 @@ func (g *Gateway) handleGitHubListBranches(w http.ResponseWriter, r *http.Reques
 	}
 	g.proxyHostGitHub(w, r, "/credentials/github/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(repo)+"/branches")
 }
+
+// handleGitHubListPulls proxies GET /v1/github/repos/{owner}/{repo}/pulls to
+// the host's /credentials/github/repos/{owner}/{repo}/pulls — the repo-detail
+// screen's open-PR list. Mirrors handleGitHubListBranches.
+func (g *Gateway) handleGitHubListPulls(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	repo := r.PathValue("repo")
+	if owner == "" || repo == "" {
+		http.Error(w, "owner and repo are required", http.StatusBadRequest)
+		return
+	}
+	g.proxyHostGitHub(w, r, "/credentials/github/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(repo)+"/pulls")
+}
