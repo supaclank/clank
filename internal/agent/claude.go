@@ -127,6 +127,12 @@ type ClaudeCodeBackend struct {
 	// The permission request for a tool always follows its tool_use block, so
 	// the latest id per name is the one being gated. Guarded by b.mu.
 	lastToolUseID map[string]string
+
+	// aiTitleEmitted is set once the CLI-generated session title has been read
+	// from the transcript and published via EventTitleChange. The CLI keeps the
+	// title stable for a session's life, so reading stops after the first emit.
+	// Accessed only from receiveLoop (handleResult), so no lock is needed.
+	aiTitleEmitted bool
 }
 
 // NewClaudeCodeBackend creates a new Claude Code backend. workDir is
@@ -958,6 +964,11 @@ func (b *ClaudeCodeBackend) handleResult(m *claudecode.ResultMessage) {
 		b.setStatus(StatusIdle)
 		return
 	}
+
+	// The CLI writes its generated session title to the transcript, not the
+	// stdout stream the SDK surfaces — publish it as EventTitleChange once it
+	// lands so clients stop showing the first prompt as the title.
+	b.maybeEmitAITitle()
 
 	if m.IsError {
 		errMsg := "unknown error"
