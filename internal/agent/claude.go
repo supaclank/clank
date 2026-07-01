@@ -131,7 +131,8 @@ type ClaudeCodeBackend struct {
 	// aiTitleEmitted is set once the CLI-generated session title has been read
 	// from the transcript and published via EventTitleChange. The CLI keeps the
 	// title stable for a session's life, so reading stops after the first emit.
-	// Accessed only from receiveLoop (handleResult), so no lock is needed.
+	// Guarded by b.mu — Revert can spawn a new receiveLoop before the old one's
+	// in-flight handleResult call has returned.
 	aiTitleEmitted bool
 }
 
@@ -837,12 +838,15 @@ func (b *ClaudeCodeBackend) setStatus(s SessionStatus) {
 }
 
 // TODO(ai-review): emit/Stop TOCTOU — stopped is read under lock but the channel send happens after unlock; Stop can close b.events in that window causing "send on closed channel". Fix with sync.Once close + recover guard. https://github.com/Acksell/clank/pull/68#discussion_r3446660408
-func (b *ClaudeCodeBackend) emit(evt Event) {
+// emit reports whether evt was actually sent — false if the backend was
+// stopped or the events buffer was full, so callers with resolve-once
+// semantics (e.g. maybeEmitAITitle) can retry instead of marking done.
+func (b *ClaudeCodeBackend) emit(evt Event) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	if b.stopped {
-		return
+		return false
 	}
 
 	// Stamp the backend's native session ID on every event so the
@@ -859,8 +863,10 @@ func (b *ClaudeCodeBackend) emit(evt Event) {
 	// exclusive, which is what prevents the send-on-closed-channel race.
 	select {
 	case b.events <- evt:
+		return true
 	default:
 		// Drop if buffer full — avoids blocking the receive loop.
+		return false
 	}
 }
 

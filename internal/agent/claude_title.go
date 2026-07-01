@@ -17,14 +17,15 @@ import (
 // only land on a later turn. Resolve-once — the CLI keeps the title stable for a
 // session's life, so reading stops after the first successful emit.
 //
-// Runs only on the receiveLoop goroutine (via handleResult), so aiTitleEmitted
-// needs no lock; sessionID and projectDir are read under b.mu.
+// Called from handleResult; Revert can spawn a new receiveLoop before the old
+// one's in-flight call here has returned, so aiTitleEmitted, sessionID and
+// projectDir are all read/written under b.mu.
 func (b *ClaudeCodeBackend) maybeEmitAITitle() {
+	b.mu.Lock()
 	if b.aiTitleEmitted {
+		b.mu.Unlock()
 		return
 	}
-
-	b.mu.Lock()
 	sessionID := b.sessionID
 	workDir := b.projectDir
 	b.mu.Unlock()
@@ -34,12 +35,19 @@ func (b *ClaudeCodeBackend) maybeEmitAITitle() {
 		return
 	}
 
-	b.aiTitleEmitted = true
-	b.emit(Event{
+	// Only mark emitted once the send actually lands — emit() drops events
+	// when the buffer is full, and a marked-but-unsent title would never
+	// resolve for the rest of the session's life.
+	sent := b.emit(Event{
 		Type:      EventTitleChange,
 		Timestamp: time.Now(),
 		Data:      TitleChangeData{Title: title},
 	})
+	if sent {
+		b.mu.Lock()
+		b.aiTitleEmitted = true
+		b.mu.Unlock()
+	}
 }
 
 // readAITitle returns the CLI-generated ai-title from a session's on-disk
