@@ -64,11 +64,6 @@ func Command() *cobra.Command {
 // ServerOptions configures the listener for the clankd Hub. Empty Listen
 // means default Unix socket mode (laptop); "tcp://addr:port" enables TCP
 // mode (self-hosted/cloud) with bearer-token auth.
-//
-// In TCP mode, runGatewayServer reads CLANK_SYNC_S3_* env vars via
-// loadSyncFromEnv and, when present, mounts an embedded sync server in
-// the gateway. Unix-socket mode keeps Sync nil — the laptop has no S3
-// access and exposes no sync routes.
 type ServerOptions struct {
 	Listen string
 

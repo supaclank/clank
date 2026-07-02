@@ -21,10 +21,6 @@ import (
 // no-ops and resumes at the failure. "Nothing to delete" is success (204), not
 // 404 — erasing an already-empty account is the desired end state.
 func (g *Gateway) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
-	if g.cfg.Sync == nil {
-		http.Error(w, "sync not configured (Sync unset)", http.StatusServiceUnavailable)
-		return
-	}
 	userID := auth.MustPrincipal(r.Context()).UserID
 
 	// Detach from the request context so a client disconnect doesn't abort a
@@ -33,25 +29,19 @@ func (g *Gateway) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// 1. Destroy all compute first — the riskiest (external provider) call,
-	// and the one that wipes every sprite-side artifact (sessions, ~/work,
-	// Anthropic creds, GitHub tokens). Force-destroys regardless of busy
-	// sessions: a running agent must not block erasure. A failure here leaves
-	// every gateway-side index untouched for a clean retry.
+	// and the one that wipes every sprite-side artifact (sessions, ~/work
+	// repos + worktrees, Anthropic creds, GitHub tokens). The sprite's
+	// filesystem is the only repo/session store, so this step IS the data
+	// purge. Force-destroys regardless of busy sessions: a running agent
+	// must not block erasure. A failure here leaves every gateway-side
+	// index untouched for a clean retry.
 	if err := g.cfg.Provisioner.DestroyHostsByUser(ctx, userID); err != nil {
 		g.log.Printf("account delete: DestroyHostsByUser(%s): %v", userID, err)
 		http.Error(w, "sprite teardown failed (account left intact — retry): "+err.Error(), http.StatusBadGateway)
 		return
 	}
 
-	// 2. Purge sync data (worktrees, checkpoints, head bundles) and all
-	// object-store blobs under "<userID>/".
-	if err := g.cfg.Sync.PurgeUser(ctx, userID); err != nil {
-		g.log.Printf("account delete: PurgeUser(%s): %v", userID, err)
-		http.Error(w, "account data purge failed (retry): "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// 3. Delete push-notification devices (optional surface).
+	// 2. Delete push-notification devices (optional surface).
 	if g.cfg.Notify != nil {
 		if err := g.cfg.Notify.DeleteDevicesByUser(ctx, userID); err != nil {
 			g.log.Printf("account delete: DeleteDevicesByUser(%s): %v", userID, err)
@@ -60,7 +50,7 @@ func (g *Gateway) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 4. Revoke preview routes (optional surface).
+	// 3. Revoke preview routes (optional surface).
 	if g.cfg.PreviewRoutes != nil {
 		if err := g.revokePreviewRoutesForUser(ctx, userID); err != nil {
 			g.log.Printf("account delete: revoke preview routes(%s): %v", userID, err)
@@ -69,7 +59,7 @@ func (g *Gateway) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 5. Delete the user from the external IdP last (the external system of
+	// 4. Delete the user from the external IdP last (the external system of
 	// record). Optional — nil = clank-data-only deletion. Until the IdP
 	// revokes the token, a still-valid JWT could EnsureHost a fresh sprite,
 	// so operators who need a hard erasure wire this.

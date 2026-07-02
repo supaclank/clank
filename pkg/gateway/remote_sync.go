@@ -2,10 +2,7 @@ package gateway
 
 // /v1/worktrees/{id}/remote/{status,push,pull,resolve} — proxied to the
 // host's worktree↔GitHub-remote sync endpoints (internal/host/mux/remote.go).
-// Mounted before the /v1/ catch-all so they reach the host directly rather
-// than falling into the checkpoint-sync proxy. Distinct from the existing
-// checkpoint routes (/v1/worktrees/{id}/pull, /sync) by the "remote/"
-// segment.
+// "Remote" is the git origin on GitHub — the only sync axis clank has.
 
 import "net/http"
 

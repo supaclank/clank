@@ -5,23 +5,8 @@
 package sqlitedb
 
 import (
-	"database/sql"
 	"time"
 )
-
-type Checkpoint struct {
-	ID                    string
-	WorktreeID            string
-	HeadCommit            string
-	HeadRef               string
-	IndexTree             string
-	WorktreeTree          string
-	IncrementalCommit     string
-	CreatedAt             time.Time
-	CreatedBy             string
-	UploadedAt            sql.NullTime
-	SessionsContentDigest string
-}
 
 type Device struct {
 	UserID     string
@@ -29,14 +14,6 @@ type Device struct {
 	Platform   string
 	CreatedAt  time.Time
 	LastSeenAt time.Time
-}
-
-type HeadBundle struct {
-	UserID    string
-	TipSha    string
-	BaseSha   string
-	BlobKey   string
-	CreatedAt time.Time
 }
 
 type Host struct {
@@ -53,20 +30,4 @@ type Host struct {
 	AutoWake      int64
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
-}
-
-type Worktree struct {
-	ID                       string
-	UserID                   string
-	DisplayName              string
-	OriginRepo               string
-	LatestSyncedCheckpoint   string
-	MaterializedCheckpointID string
-	SyncState                string
-	SyncConflictLocalHead    string
-	SyncConflictRemoteHead   string
-	SessionsSyncedHash       string
-	MaterializedHostID       string
-	CreatedAt                time.Time
-	UpdatedAt                time.Time
 }

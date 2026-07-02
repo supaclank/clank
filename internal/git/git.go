@@ -606,7 +606,7 @@ func FetchBundleObjects(dir, bundlePath string) error {
 	// Load the bundle's refs/* into a private temp namespace (force) so
 	// the objects land in the store without touching real branches or the
 	// worktree. Repeated pulls force-overwrite the temp refs (no
-	// accumulation). Mirrors checkpoint.fetchBundle's refspec.
+	// accumulation).
 	if _, err := gitCmd(dir, "fetch", "--no-tags", bundlePath, "+refs/*:refs/clank-pull-tmp/*"); err != nil {
 		return fmt.Errorf("fetch bundle objects from %s: %w", bundlePath, err)
 	}

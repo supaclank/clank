@@ -156,7 +156,7 @@ SELECT id, external_id, backend, status, visibility, follow_up, project_dir, wor
 `
 
 // Used by session-sync to enumerate sessions in a worktree for export.
-// worktree_id is the clank-sync ULID; cross-machine stable identity.
+// worktree_id is the host-minted worktree ULID; cross-machine stable identity.
 func (q *Queries) ListSessionsByWorktree(ctx context.Context, worktreeID string) ([]Session, error) {
 	rows, err := q.db.QueryContext(ctx, listSessionsByWorktree, worktreeID)
 	if err != nil {

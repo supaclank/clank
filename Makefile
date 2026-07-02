@@ -90,9 +90,8 @@ image-print:
 
 # ---- Self-hosted docker stack (smoke testing) ------------------------
 #
-# Brings up minio + clank-sync + clankd in containers. See
-# docker/README.md for the full smoke recipe (register worktree, push
-# checkpoint, trigger migration).
+# Brings up minio (image uploads) + clankd in containers. See
+# docker/README.md for the full smoke recipe.
 
 .PHONY: dev dev-rebuild
 # One-command local dev: bring the docker stack (gateway + minio +

@@ -27,8 +27,8 @@ type S3Config struct {
 	// Region (required by AWS even for S3-alikes; e.g. R2 wants "auto").
 	Region string
 
-	// Endpoint is the URL the gateway uses for its own direct SDK calls
-	// (HeadObject during checkpoint commit, etc.). Should be reachable
+	// Endpoint is the URL the gateway uses for its own direct SDK
+	// calls. Should be reachable
 	// from inside the gateway — for docker-compose dev that's the
 	// internal docker hostname like http://clank-minio:9000. Leave
 	// empty for AWS S3.

@@ -12,13 +12,11 @@ import (
 
 	"github.com/acksell/clank/internal/store"
 	"github.com/acksell/clank/pkg/auth"
-	"github.com/acksell/clank/pkg/blobstore"
 	"github.com/acksell/clank/pkg/notify"
 	"github.com/acksell/clank/pkg/preview/routestore"
 	"github.com/acksell/clank/pkg/preview/routestore/memstore"
 	"github.com/acksell/clank/pkg/preview/tokens"
 	"github.com/acksell/clank/pkg/provisioner/hoststore"
-	clanksync "github.com/acksell/clank/pkg/sync"
 )
 
 // --- real (non-mock) test fixtures for the optional gateway surfaces ---
@@ -82,11 +80,12 @@ func (r *recordingIdP) calls() []string {
 }
 
 // accountGateway bundles a gateway wired with every per-user store so a test
-// can assert account deletion clears each one.
+// can assert account deletion clears each one. The host's own data (repos,
+// worktrees, sessions) lives on the sprite and is erased by
+// DestroyHostsByUser — asserted via the provisioner call count.
 type accountGateway struct {
 	srv    *httptest.Server
 	store  *store.Store
-	mem    *blobstore.Memory
 	prov   *stubProvisioner
 	routes *memstore.Store
 	idp    *recordingIdP
@@ -94,23 +93,16 @@ type accountGateway struct {
 
 func newAccountGateway(t *testing.T, prov *stubProvisioner) *accountGateway {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "sync.db"))
+	st, err := store.Open(filepath.Join(t.TempDir(), "clank.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	mem := blobstore.NewMemory()
-	t.Cleanup(mem.Close)
-	syncSrv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
 	notifyDisp := notify.NewDispatcher(stubHostLookup{}, notifyDeviceAdapter{s: st}, stubPusher{}, nil)
 	routes := memstore.New(nil)
 	idp := &recordingIdP{}
 	g, err := NewGateway(Config{
 		Provisioner:          prov,
-		Sync:                 syncSrv,
 		Notify:               notifyDisp,
 		PreviewRoutes:        routes,
 		PreviewHostLookup:    stubHostLookup{},
@@ -123,46 +115,26 @@ func newAccountGateway(t *testing.T, prov *stubProvisioner) *accountGateway {
 	}
 	gw := httptest.NewServer(localAuth(g.Handler(), delUser))
 	t.Cleanup(gw.Close)
-	return &accountGateway{srv: gw, store: st, mem: mem, prov: prov, routes: routes, idp: idp}
+	return &accountGateway{srv: gw, store: st, prov: prov, routes: routes, idp: idp}
 }
 
-// seedAccountData populates worktree+checkpoint rows, a head-bundle row, object
-// blobs, a device, and a preview route — all owned by userID.
+// seedAccountData populates a device and a preview route owned by userID —
+// the per-user state the gateway itself still holds.
 func seedAccountData(t *testing.T, ag *accountGateway, userID, worktreeID string) {
 	t.Helper()
 	ctx := context.Background()
 	now := time.Now().UTC()
-	if err := ag.store.InsertWorktree(ctx, clanksync.Worktree{ID: worktreeID, UserID: userID, DisplayName: "demo", CreatedAt: now, UpdatedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	if err := ag.store.InsertCheckpoint(ctx, clanksync.Checkpoint{ID: worktreeID + "-ck", WorktreeID: worktreeID, HeadCommit: "h", IndexTree: "i", WorktreeTree: "w", UncommittedCommit: "u", CreatedAt: now, CreatedBy: "test"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := ag.store.InsertHeadBundle(ctx, clanksync.HeadBundle{UserID: userID, TipSHA: "deadbeef", BlobKey: userID + "/heads/deadbeef.bundle"}); err != nil {
-		t.Fatal(err)
-	}
 	if err := ag.store.UpsertDevice(ctx, store.Device{UserID: userID, PushToken: "tok-" + userID, Platform: store.DevicePlatformIOS}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ag.routes.Upsert(ctx, routestore.Route{Token: "rt-" + userID, OwnerUserID: userID, HostID: "h", WorktreeID: worktreeID, ServiceName: "web", InternalPort: 3000, Visibility: tokens.VisibilityOwnerOnly, ExpiresAt: now.Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	ag.mem.Put(userID+"/checkpoints/"+worktreeID+"/"+worktreeID+"-ck/manifest.json", []byte("x"))
-	ag.mem.Put(userID+"/heads/deadbeef.bundle", []byte("y"))
-}
-
-func countBlobs(ag *accountGateway, prefix string) int {
-	n := 0
-	for _, k := range ag.mem.Keys() {
-		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
-			n++
-		}
-	}
-	return n
 }
 
 // TestDeleteAccount_HappyPath: a full account delete returns 204 and clears
-// every store the gateway owns for the caller.
+// every store the gateway owns for the caller (compute, devices, preview
+// routes, IdP).
 func TestDeleteAccount_HappyPath(t *testing.T) {
 	t.Parallel()
 	ag := newAccountGateway(t, &stubProvisioner{})
@@ -176,15 +148,6 @@ func TestDeleteAccount_HappyPath(t *testing.T) {
 	}
 	if n := atomic.LoadInt32(&ag.prov.destroyByUserCalls); n != 1 {
 		t.Fatalf("DestroyHostsByUser calls=%d, want 1", n)
-	}
-	if wts, _ := ag.store.ListWorktreesByUser(ctx, delUser); len(wts) != 0 {
-		t.Fatalf("worktrees=%d after delete, want 0", len(wts))
-	}
-	if _, err := ag.store.GetHeadBundle(ctx, delUser, "deadbeef"); err == nil {
-		t.Fatal("head bundle survived account delete")
-	}
-	if n := countBlobs(ag, delUser+"/"); n != 0 {
-		t.Fatalf("blobs=%d after delete, want 0", n)
 	}
 	if devs, _ := ag.store.ListDevicesByUser(ctx, delUser); len(devs) != 0 {
 		t.Fatalf("devices=%d after delete, want 0", len(devs))
@@ -211,17 +174,8 @@ func TestDeleteAccount_TenancyIsolation(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("status %d, want 204", resp.StatusCode)
 	}
-	if wts, _ := ag.store.ListWorktreesByUser(ctx, "other"); len(wts) != 1 {
-		t.Fatalf("other's worktrees=%d, want 1 (deletion bled across tenants)", len(wts))
-	}
-	if _, err := ag.store.GetHeadBundle(ctx, "other", "deadbeef"); err != nil {
-		t.Fatalf("other's head bundle deleted: %v", err)
-	}
-	if n := countBlobs(ag, "other/"); n != 2 {
-		t.Fatalf("other's blobs=%d, want 2", n)
-	}
 	if devs, _ := ag.store.ListDevicesByUser(ctx, "other"); len(devs) != 1 {
-		t.Fatalf("other's devices=%d, want 1", len(devs))
+		t.Fatalf("other's devices=%d, want 1 (deletion bled across tenants)", len(devs))
 	}
 	if routes, _ := ag.routes.ListByOwner(ctx, "other"); len(routes) != 1 {
 		t.Fatalf("other's preview routes=%d, want 1", len(routes))
@@ -244,7 +198,7 @@ func TestDeleteAccount_Idempotent(t *testing.T) {
 }
 
 // TestDeleteAccount_HostFailureAborts: a provider teardown error returns 502
-// and leaves the caller's sync rows + blobs intact for a retry.
+// and leaves the caller's gateway-side state intact for a retry.
 func TestDeleteAccount_HostFailureAborts(t *testing.T) {
 	t.Parallel()
 	ag := newAccountGateway(t, &stubProvisioner{destroyByUserErr: errSimulated})
@@ -256,16 +210,19 @@ func TestDeleteAccount_HostFailureAborts(t *testing.T) {
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status %d, want 502 on provider failure", resp.StatusCode)
 	}
-	if wts, _ := ag.store.ListWorktreesByUser(ctx, delUser); len(wts) != 1 {
-		t.Fatalf("worktrees=%d after aborted delete, want 1 (must be intact)", len(wts))
+	if devs, _ := ag.store.ListDevicesByUser(ctx, delUser); len(devs) != 1 {
+		t.Fatalf("devices=%d after aborted delete, want 1 (must be intact)", len(devs))
 	}
-	if n := countBlobs(ag, delUser+"/"); n != 2 {
-		t.Fatalf("blobs=%d after aborted delete, want 2 (must be intact)", n)
+	if routes, _ := ag.routes.ListByOwner(ctx, delUser); len(routes) != 1 {
+		t.Fatalf("preview routes=%d after aborted delete, want 1 (must be intact)", len(routes))
+	}
+	if got := ag.idp.calls(); len(got) != 0 {
+		t.Fatalf("IdP DeleteUser calls=%v, want none after aborted delete", got)
 	}
 }
 
 // TestDeleteAccount_ForceDestroysRegardlessOfSessions documents the deliberate
-// divergence from DELETE /v1/worktrees/{id} (TestDeleteWorktree_BusyMaps409):
+// divergence from DELETE /v1/worktrees/{id} (TestDeleteWorktree_BusyForwards409):
 // account deletion goes through the provisioner, which tears down compute
 // unconditionally — there is no busy/409 gate, so a worktree that would block a
 // per-worktree delete does not block account erasure.
@@ -311,9 +268,11 @@ func TestDeleteAccount_IdPFailureReturns500(t *testing.T) {
 	}
 }
 
-// TestDeleteAccount_SyncUnsetReturns503: a proxy-only gateway (no Sync) cannot
-// purge data and must refuse rather than half-delete.
-func TestDeleteAccount_SyncUnsetReturns503(t *testing.T) {
+// TestDeleteAccount_MinimalGateway: with the checkpoint-sync purge step gone,
+// a minimal gateway (provisioner only — no Notify, Preview, or IdP) erases an
+// account successfully instead of refusing with the old Sync-unset 503. The
+// sprite teardown IS the data purge.
+func TestDeleteAccount_MinimalGateway(t *testing.T) {
 	t.Parallel()
 	prov := &stubProvisioner{}
 	g, err := NewGateway(Config{Provisioner: prov}, nil)
@@ -325,11 +284,11 @@ func TestDeleteAccount_SyncUnsetReturns503(t *testing.T) {
 
 	resp := httpDelete(t, gw.URL+"/v1/account")
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("status %d, want 503 when Sync unset", resp.StatusCode)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status %d, want 204 on a minimal gateway", resp.StatusCode)
 	}
-	if n := atomic.LoadInt32(&prov.destroyByUserCalls); n != 0 {
-		t.Fatalf("DestroyHostsByUser calls=%d, want 0 (must refuse before any teardown)", n)
+	if n := atomic.LoadInt32(&prov.destroyByUserCalls); n != 1 {
+		t.Fatalf("DestroyHostsByUser calls=%d, want 1", n)
 	}
 }
 
@@ -338,18 +297,7 @@ func TestDeleteAccount_SyncUnsetReturns503(t *testing.T) {
 func TestDeleteAccount_Unauthenticated(t *testing.T) {
 	t.Parallel()
 	prov := &stubProvisioner{}
-	st, err := store.Open(filepath.Join(t.TempDir(), "sync.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	mem := blobstore.NewMemory()
-	t.Cleanup(mem.Close)
-	syncSrv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	g, err := NewGateway(Config{Provisioner: prov, Sync: syncSrv}, nil)
+	g, err := NewGateway(Config{Provisioner: prov}, nil)
 	if err != nil {
 		t.Fatalf("NewGateway: %v", err)
 	}

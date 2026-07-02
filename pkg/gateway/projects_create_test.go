@@ -2,22 +2,16 @@ package gateway
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
-	"github.com/acksell/clank/internal/store"
-	"github.com/acksell/clank/pkg/blobstore"
 	"github.com/acksell/clank/pkg/provisioner"
-	clanksync "github.com/acksell/clank/pkg/sync"
 )
 
 const projUser = "tester"
@@ -45,12 +39,12 @@ func (s *scaffoldingSprite) server(t *testing.T) *httptest.Server {
 		s.gotName.Store(body.Name)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(createWorktreeResponse{
-			WorktreeID:  s.worktreeID,
-			Branch:      "main",
-			WorktreeDir: "/work/" + s.worktreeID,
-			DisplayName: body.Name,
-			OriginRepo:  body.Name,
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"worktree_id":  s.worktreeID,
+			"branch":       "main",
+			"worktree_dir": "/work/" + s.worktreeID,
+			"display_name": body.Name,
+			"origin_repo":  body.Name,
 		})
 	})
 	srv := httptest.NewServer(mux)
@@ -59,39 +53,29 @@ func (s *scaffoldingSprite) server(t *testing.T) *httptest.Server {
 }
 
 // newProjectsGateway builds a gateway with the given template catalog,
-// pointing its provisioner at sprite, backed by a real SQLite sync store.
-func newProjectsGateway(t *testing.T, sprite *httptest.Server, templates []Template) (*httptest.Server, *store.Store) {
+// pointing its provisioner at sprite. The host filesystem is the repo
+// registry — there is no gateway-side store to wire.
+func newProjectsGateway(t *testing.T, sprite *httptest.Server, templates []Template) *httptest.Server {
 	t.Helper()
 	return newProjectsGatewayWithLogger(t, sprite, templates, nil)
 }
 
 // newProjectsGatewayWithLogger is newProjectsGateway with an injectable
 // logger, for tests asserting on (or withholding secrets from) log output.
-func newProjectsGatewayWithLogger(t *testing.T, sprite *httptest.Server, templates []Template, lg *log.Logger) (*httptest.Server, *store.Store) {
+func newProjectsGatewayWithLogger(t *testing.T, sprite *httptest.Server, templates []Template, lg *log.Logger) *httptest.Server {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "sync.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	mem := blobstore.NewMemory()
-	t.Cleanup(mem.Close)
-	syncSrv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
 	var ref provisioner.HostRef
 	if sprite != nil {
 		ref = provisioner.HostRef{URL: sprite.URL}
 	}
 	prov := &stubProvisioner{ref: ref}
-	g, err := NewGateway(Config{Provisioner: prov, Sync: syncSrv, Templates: templates}, lg)
+	g, err := NewGateway(Config{Provisioner: prov, Templates: templates}, lg)
 	if err != nil {
 		t.Fatalf("NewGateway: %v", err)
 	}
 	gw := httptest.NewServer(localAuth(g.Handler(), projUser))
 	t.Cleanup(gw.Close)
-	return gw, st
+	return gw
 }
 
 func postJSON(t *testing.T, url, body string) *http.Response {
@@ -107,7 +91,7 @@ func TestCreateProject_HappyPath(t *testing.T) {
 	t.Parallel()
 	const cloneURL = "https://example.test/templates/expo.git"
 	sprite := &scaffoldingSprite{worktreeID: "01PROJWT"}
-	gw, st := newProjectsGateway(t, sprite.server(t), []Template{
+	gw := newProjectsGateway(t, sprite.server(t), []Template{
 		{ID: "expo", DisplayName: "Expo app", CloneURL: cloneURL},
 	})
 
@@ -122,20 +106,20 @@ func TestCreateProject_HappyPath(t *testing.T) {
 		t.Fatalf("host clone_url = %v, want %q", got, cloneURL)
 	}
 
-	// The worktree row was persisted for this user.
-	wt, err := st.GetWorktreeByID(context.Background(), "01PROJWT")
-	if err != nil {
-		t.Fatalf("worktree row not persisted: %v", err)
+	// The host's CreateWorktreeResult forwards verbatim.
+	var out map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
 	}
-	if wt.UserID != projUser || wt.DisplayName != "my-app" || wt.OriginRepo != "my-app" {
-		t.Fatalf("unexpected row: %+v", wt)
+	if out["worktree_id"] != "01PROJWT" || out["display_name"] != "my-app" {
+		t.Fatalf("unexpected body: %+v", out)
 	}
 }
 
 func TestCreateProject_UnknownTemplate(t *testing.T) {
 	t.Parallel()
 	sprite := &scaffoldingSprite{worktreeID: "x"}
-	gw, _ := newProjectsGateway(t, sprite.server(t), []Template{
+	gw := newProjectsGateway(t, sprite.server(t), []Template{
 		{ID: "expo", DisplayName: "Expo", CloneURL: "https://example.test/expo.git"},
 	})
 
@@ -151,7 +135,7 @@ func TestCreateProject_UnknownTemplate(t *testing.T) {
 
 func TestCreateProject_MissingFields(t *testing.T) {
 	t.Parallel()
-	gw, _ := newProjectsGateway(t, (&scaffoldingSprite{}).server(t), nil)
+	gw := newProjectsGateway(t, (&scaffoldingSprite{}).server(t), nil)
 	for _, body := range []string{`{"name":"app"}`, `{"template":"expo"}`, `{}`} {
 		resp := postJSON(t, gw.URL+"/v1/projects/create", body)
 		if resp.StatusCode != http.StatusBadRequest {
@@ -161,30 +145,10 @@ func TestCreateProject_MissingFields(t *testing.T) {
 	}
 }
 
-func TestCreateProject_SyncUnconfigured(t *testing.T) {
-	t.Parallel()
-	g, err := NewGateway(Config{
-		Provisioner: &stubProvisioner{ref: provisioner.HostRef{URL: "http://unused"}},
-		Templates:   []Template{{ID: "expo", DisplayName: "Expo", CloneURL: "https://example.test/expo.git"}},
-	}, nil)
-	if err != nil {
-		t.Fatalf("NewGateway: %v", err)
-	}
-	gw := httptest.NewServer(localAuth(g.Handler(), projUser))
-	t.Cleanup(gw.Close)
-
-	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"template":"expo","name":"app"}`)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503 when Sync unconfigured", resp.StatusCode)
-	}
-}
-
 func TestCreateProject_Unauthenticated(t *testing.T) {
 	t.Parallel()
 	g, err := NewGateway(Config{
 		Provisioner: &stubProvisioner{ref: provisioner.HostRef{URL: "http://unused"}},
-		Sync:        mustSyncServer(t),
 		Templates:   []Template{{ID: "expo", DisplayName: "Expo", CloneURL: "https://example.test/expo.git"}},
 	}, nil)
 	if err != nil {
@@ -201,27 +165,9 @@ func TestCreateProject_Unauthenticated(t *testing.T) {
 	}
 }
 
-// mustSyncServer builds a throwaway sync server backed by SQLite + memory
-// storage, for tests that only need a non-nil Sync.
-func mustSyncServer(t *testing.T) *clanksync.Server {
-	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "sync.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	mem := blobstore.NewMemory()
-	t.Cleanup(mem.Close)
-	syncSrv, err := clanksync.NewServer(clanksync.Config{Store: st, Storage: mem, PresignTTL: time.Minute}, nil)
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	return syncSrv
-}
-
 func TestListTemplates(t *testing.T) {
 	t.Parallel()
-	gw, _ := newProjectsGateway(t, (&scaffoldingSprite{}).server(t), []Template{
+	gw := newProjectsGateway(t, (&scaffoldingSprite{}).server(t), []Template{
 		{ID: "expo", DisplayName: "Expo app", CloneURL: "https://secret.test/expo.git"},
 	})
 
@@ -279,7 +225,7 @@ func TestCreateProject_HostErrorDoesNotLeakDetails(t *testing.T) {
 	sprite := httptest.NewServer(mux)
 	t.Cleanup(sprite.Close)
 
-	gw, _ := newProjectsGateway(t, sprite, []Template{
+	gw := newProjectsGateway(t, sprite, []Template{
 		{ID: "expo", DisplayName: "Expo", CloneURL: sensitiveURL},
 	})
 
@@ -308,7 +254,7 @@ func TestCreateProject_HostErrorDoesNotLeakDetailsInLogs(t *testing.T) {
 	t.Cleanup(sprite.Close)
 
 	var logBuf bytes.Buffer
-	gw, _ := newProjectsGatewayWithLogger(t, sprite, []Template{
+	gw := newProjectsGatewayWithLogger(t, sprite, []Template{
 		{ID: "expo", DisplayName: "Expo", CloneURL: sensitiveURL},
 	}, log.New(&logBuf, "", 0))
 
@@ -336,7 +282,7 @@ func TestCreateProject_ForwardsHostErrorVerbatim(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	gw, _ := newProjectsGateway(t, srv, []Template{{ID: "expo", DisplayName: "Expo", CloneURL: cloneURL}})
+	gw := newProjectsGateway(t, srv, []Template{{ID: "expo", DisplayName: "Expo", CloneURL: cloneURL}})
 
 	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"template":"expo","name":"x"}`)
 	defer resp.Body.Close()
@@ -365,7 +311,7 @@ func TestCreateProject_MasksHostUnauthorized(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	gw, _ := newProjectsGateway(t, srv, []Template{{ID: "expo", DisplayName: "Expo", CloneURL: cloneURL}})
+	gw := newProjectsGateway(t, srv, []Template{{ID: "expo", DisplayName: "Expo", CloneURL: cloneURL}})
 
 	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"template":"expo","name":"x"}`)
 	defer resp.Body.Close()

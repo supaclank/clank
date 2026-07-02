@@ -2,8 +2,8 @@ package host
 
 // Worktree↔GitHub-remote sync. Shared resolution + state classification
 // for the remote_status / remote_push / remote_pull / remote_resolve
-// endpoints. This is a DIFFERENT axis from the laptop↔sprite checkpoint
-// sync (pkg/sync, SyncState): here "remote" is the git origin on GitHub.
+// endpoints. "Remote" here is the git origin on GitHub — the only sync
+// axis clank has.
 //
 // Per CLAUDE.md's per-method-file rule, each operation lives in its own
 // remote_*.go; this file holds only what they share.

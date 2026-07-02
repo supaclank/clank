@@ -47,10 +47,10 @@ func seedHostSession(t *testing.T, st *store.Store, id, worktreeID string, statu
 	}
 }
 
-// TestDeleteMaterializedWorktree_RemovesDirAndSessions: an idle worktree is
+// TestDeleteWorktree_RemovesDirAndSessions: an idle worktree is
 // fully cleaned — its ~/work/<id> directory and all its sessions are gone —
 // while a session on a *different* worktree is left untouched.
-func TestDeleteMaterializedWorktree_RemovesDirAndSessions(t *testing.T) {
+func TestDeleteWorktree_RemovesDirAndSessions(t *testing.T) {
 	svc, st, workRoot := newDeleteHostService(t)
 	ctx := context.Background()
 
@@ -69,8 +69,8 @@ func TestDeleteMaterializedWorktree_RemovesDirAndSessions(t *testing.T) {
 	seedHostSession(t, st, sDel, wtDel, agent.StatusIdle)
 	seedHostSession(t, st, sKeep, wtOther, agent.StatusIdle)
 
-	if err := svc.DeleteMaterializedWorktree(ctx, wtDel); err != nil {
-		t.Fatalf("DeleteMaterializedWorktree: %v", err)
+	if err := svc.DeleteWorktree(ctx, wtDel); err != nil {
+		t.Fatalf("DeleteWorktree: %v", err)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("~/work/%s still present: err=%v", wtDel, err)
@@ -91,9 +91,9 @@ func TestDeleteMaterializedWorktree_RemovesDirAndSessions(t *testing.T) {
 	}
 }
 
-// TestDeleteMaterializedWorktree_RefusesWhenBusy: a running session blocks the
+// TestDeleteWorktree_RefusesWhenBusy: a running session blocks the
 // delete (ErrWorktreeBusy) and nothing is removed.
-func TestDeleteMaterializedWorktree_RefusesWhenBusy(t *testing.T) {
+func TestDeleteWorktree_RefusesWhenBusy(t *testing.T) {
 	svc, st, workRoot := newDeleteHostService(t)
 	ctx := context.Background()
 
@@ -106,8 +106,8 @@ func TestDeleteMaterializedWorktree_RefusesWhenBusy(t *testing.T) {
 	}
 	seedHostSession(t, st, sBusy, wtBusy, agent.StatusBusy)
 
-	if err := svc.DeleteMaterializedWorktree(ctx, wtBusy); !errors.Is(err, host.ErrWorktreeBusy) {
-		t.Fatalf("DeleteMaterializedWorktree on busy worktree: err=%v, want ErrWorktreeBusy", err)
+	if err := svc.DeleteWorktree(ctx, wtBusy); !errors.Is(err, host.ErrWorktreeBusy) {
+		t.Fatalf("DeleteWorktree on busy worktree: err=%v, want ErrWorktreeBusy", err)
 	}
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatalf("dir removed despite busy session: %v", err)
@@ -121,11 +121,11 @@ func TestDeleteMaterializedWorktree_RefusesWhenBusy(t *testing.T) {
 	}
 }
 
-// TestDeleteMaterializedWorktree_NeverMaterialized: a worktree with no dir and
+// TestDeleteWorktree_NeverMaterialized: a worktree with no dir and
 // no sessions is a clean no-op (idempotent — supports gateway retry).
-func TestDeleteMaterializedWorktree_NeverMaterialized(t *testing.T) {
+func TestDeleteWorktree_NeverMaterialized(t *testing.T) {
 	svc, _, _ := newDeleteHostService(t)
-	if err := svc.DeleteMaterializedWorktree(context.Background(), ulid.Make().String()); err != nil {
-		t.Fatalf("DeleteMaterializedWorktree on a never-materialized worktree: %v", err)
+	if err := svc.DeleteWorktree(context.Background(), ulid.Make().String()); err != nil {
+		t.Fatalf("DeleteWorktree on a never-created worktree: %v", err)
 	}
 }

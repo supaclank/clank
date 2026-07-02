@@ -27,8 +27,8 @@ var ErrUnauthorized = errors.New("cloud: unauthorized")
 // Client wraps an *http.Client targeting the gateway base URL. It
 // covers the small bootstrap surface the laptop needs *before* it
 // has a session — currently just /auth-config. Authenticated calls
-// (sync, sessions, etc.) go through dedicated clients elsewhere
-// (e.g. pkg/sync/client) wrapping the same gateway URL.
+// go through dedicated clients elsewhere wrapping the same gateway
+// URL.
 type Client struct {
 	gatewayURL string
 	http       *http.Client
