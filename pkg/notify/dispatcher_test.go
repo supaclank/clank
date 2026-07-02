@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -309,6 +310,121 @@ func TestDispatcher_Handle_PurgesDeviceNotRegistered(t *testing.T) {
 	}
 	if remaining[0].PushToken != "alive" {
 		t.Errorf("kept push_token = %q, want alive", remaining[0].PushToken)
+	}
+}
+
+func TestDispatcher_Handle_PurgesMismatchedExperience(t *testing.T) {
+	t.Parallel()
+	hosts := newFakeHostLookup(hoststore.Host{UserID: "alice", NotifierToken: "clnk_alice"})
+	devices := &fakeDeviceStore{}
+	_ = devices.UpsertDevice(context.Background(), Device{UserID: "alice", PushToken: "foreign", Platform: "ios"})
+	_ = devices.UpsertDevice(context.Background(), Device{UserID: "alice", PushToken: "ours", Platform: "ios"})
+	pusher := &recordingPusher{
+		ticketFor: func(m Message) Ticket {
+			if m.To == "foreign" {
+				return Ticket{Status: "error", Details: struct {
+					Error string `json:"error,omitempty"`
+				}{Error: MismatchedExperienceID}}
+			}
+			return Ticket{Status: "ok"}
+		},
+	}
+	d := newDispatcher(t, hosts, devices, pusher)
+
+	postNotification(t, d, "clnk_alice", notifier.Notification{SessionID: "s1", Kind: notifier.KindIdle})
+
+	remaining := devices.snapshot()
+	if len(remaining) != 1 {
+		t.Fatalf("got %d devices, want 1 (foreign-experience token should be purged)", len(remaining))
+	}
+	if remaining[0].PushToken != "ours" {
+		t.Errorf("kept push_token = %q, want ours", remaining[0].PushToken)
+	}
+}
+
+func TestDispatcher_HandleRegister_EvictsLeastRecentlySeenBeyondCap(t *testing.T) {
+	t.Parallel()
+	devices := &fakeDeviceStore{}
+	base := time.Now().Add(-time.Hour)
+	for i := 0; i < maxDevicesPerUser; i++ {
+		_ = devices.UpsertDevice(context.Background(), Device{
+			UserID:     "alice",
+			PushToken:  fmt.Sprintf("tok-%d", i),
+			Platform:   "ios",
+			LastSeenAt: base.Add(time.Duration(i) * time.Minute),
+		})
+	}
+	// Another user at the cap — must be untouched by alice's overflow.
+	_ = devices.UpsertDevice(context.Background(), Device{UserID: "bob", PushToken: "bob-tok", Platform: "ios", LastSeenAt: base})
+	d := newDispatcher(t, newFakeHostLookup(), devices, &recordingPusher{})
+
+	body, _ := json.Marshal(map[string]string{"push_token": "tok-new", "platform": "ios"})
+	r := httptest.NewRequest(http.MethodPost, "/devices", bytes.NewReader(body))
+	r = r.WithContext(auth.WithPrincipal(r.Context(), auth.Principal{UserID: "alice"}))
+	w := httptest.NewRecorder()
+	d.HandleRegister(w, r)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", w.Code)
+	}
+	rows := devices.snapshot()
+	var alice, bob []string
+	for _, row := range rows {
+		if row.UserID == "alice" {
+			alice = append(alice, row.PushToken)
+		} else {
+			bob = append(bob, row.PushToken)
+		}
+	}
+	if len(alice) != maxDevicesPerUser {
+		t.Fatalf("alice has %d devices, want %d (cap)", len(alice), maxDevicesPerUser)
+	}
+	for _, tok := range alice {
+		if tok == "tok-0" {
+			t.Error("tok-0 survived eviction, want least-recently-seen evicted")
+		}
+	}
+	found := false
+	for _, tok := range alice {
+		if tok == "tok-new" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("freshly registered tok-new missing after eviction pass")
+	}
+	if len(bob) != 1 {
+		t.Errorf("bob has %d devices, want 1 (other users untouched)", len(bob))
+	}
+}
+
+func TestDispatcher_HandleRegister_ReRegisterAtCapDoesNotEvict(t *testing.T) {
+	t.Parallel()
+	devices := &fakeDeviceStore{}
+	base := time.Now().Add(-time.Hour)
+	for i := 0; i < maxDevicesPerUser; i++ {
+		_ = devices.UpsertDevice(context.Background(), Device{
+			UserID:     "alice",
+			PushToken:  fmt.Sprintf("tok-%d", i),
+			Platform:   "ios",
+			LastSeenAt: base.Add(time.Duration(i) * time.Minute),
+		})
+	}
+	d := newDispatcher(t, newFakeHostLookup(), devices, &recordingPusher{})
+
+	// Refreshing an existing token keeps the user at the cap — nothing
+	// should be evicted, including the (stalest) token being refreshed.
+	body, _ := json.Marshal(map[string]string{"push_token": "tok-0", "platform": "ios"})
+	r := httptest.NewRequest(http.MethodPost, "/devices", bytes.NewReader(body))
+	r = r.WithContext(auth.WithPrincipal(r.Context(), auth.Principal{UserID: "alice"}))
+	w := httptest.NewRecorder()
+	d.HandleRegister(w, r)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", w.Code)
+	}
+	if got := len(devices.snapshot()); got != maxDevicesPerUser {
+		t.Errorf("got %d devices, want %d (re-register must not evict)", got, maxDevicesPerUser)
 	}
 }
 
