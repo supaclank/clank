@@ -69,6 +69,21 @@ func CloneBare(ctx context.Context, url, gitDir, token, branch, credentialHelper
 			return err
 		}
 	}
+	// A bare clone creates NO remote-tracking refs. Seed the cloned
+	// branch's tracking ref from its tip — truthful (the local tip IS
+	// origin's tip at clone instant) and zero-network — so ahead/behind
+	// has a comparison point from the first moment instead of only after
+	// the first fetch. An EMPTY origin has an unborn HEAD with no tip to
+	// seed; skip quietly (there's nothing to compare against anyway).
+	head, err := HeadBranch(gitDir)
+	if err != nil {
+		return fmt.Errorf("resolve cloned head: %w", err)
+	}
+	if sha, err := RevParse(gitDir, "refs/heads/"+head); err == nil {
+		if _, err := gitCmd(gitDir, "update-ref", "refs/remotes/origin/"+head, sha); err != nil {
+			return fmt.Errorf("seed tracking ref: %w", err)
+		}
+	}
 	return nil
 }
 
