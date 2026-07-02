@@ -82,12 +82,35 @@ func (g *Gateway) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := g.callHostCreateProject(r.Context(), principal.UserID, hostCreateProjectRequest{
+	resp, status, body, err := g.callHostCreateProject(r.Context(), principal.UserID, hostCreateProjectRequest{
 		CloneURL: cloneURL,
 		Name:     req.Name,
 	})
 	if err != nil {
 		g.log.Printf("gateway create-project: host call: %v", err)
+		http.Error(w, "project creation failed", http.StatusBadGateway)
+		return
+	}
+	if status/100 == 4 && status != http.StatusUnauthorized {
+		// Forward the host's typed 4xx verbatim (e.g. 400
+		// invalid_argument) so the client can react precisely — a flat
+		// 502 hid every real cause (the projects_import.go pattern).
+		// 401 is excluded: the host's own auth middleware returns it
+		// only when the gateway's credentials to the host are rejected
+		// (an infra failure, not a client-facing one — the host's
+		// application logic uses 403 for github_not_connected etc.), and
+		// forwarding it verbatim would falsely signal the client's own
+		// gateway session expired.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write(body)
+		return
+	}
+	if status/100 != 2 {
+		// Host 5xx bodies can carry raw git stderr — including the
+		// RESOLVED template clone URL, which may embed credentials — so
+		// mask to a generic 502 and keep the body out of logs too.
+		g.log.Printf("gateway create-project: host returned %d (%d-byte body withheld, may contain credentials)", status, len(body))
 		http.Error(w, "project creation failed", http.StatusBadGateway)
 		return
 	}
@@ -119,28 +142,30 @@ func (g *Gateway) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 }
 
 // callHostCreateProject makes the POST /projects/create request to the
-// user's host and decodes the response. Errors here surface as 502 to
-// the mobile client. Reuses createWorktreeResponse — the host returns
-// the same CreateWorktreeResult shape.
-func (g *Gateway) callHostCreateProject(ctx context.Context, userID string, in hostCreateProjectRequest) (createWorktreeResponse, error) {
+// user's host. Transport-level failures return err (→ 502); a host
+// NON-2xx returns (status, body) for the handler to forward VERBATIM so
+// the client sees the typed error; a 2xx is decoded into resp. Reuses
+// createWorktreeResponse — the host returns the same
+// CreateWorktreeResult shape.
+func (g *Gateway) callHostCreateProject(ctx context.Context, userID string, in hostCreateProjectRequest) (createWorktreeResponse, int, []byte, error) {
 	ref, err := g.cfg.Provisioner.EnsureHost(ctx, userID)
 	if err != nil {
-		return createWorktreeResponse{}, fmt.Errorf("ensure host: %w", err)
+		return createWorktreeResponse{}, 0, nil, fmt.Errorf("ensure host: %w", err)
 	}
 
 	buf, err := json.Marshal(in)
 	if err != nil {
-		return createWorktreeResponse{}, fmt.Errorf("marshal request: %w", err)
+		return createWorktreeResponse{}, 0, nil, fmt.Errorf("marshal request: %w", err)
 	}
 
 	target := strings.TrimRight(ref.URL, "/") + "/projects/create"
 	if _, err := url.Parse(target); err != nil {
-		return createWorktreeResponse{}, fmt.Errorf("invalid host URL: %w", err)
+		return createWorktreeResponse{}, 0, nil, fmt.Errorf("invalid host URL: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(buf))
 	if err != nil {
-		return createWorktreeResponse{}, err
+		return createWorktreeResponse{}, 0, nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -149,20 +174,20 @@ func (g *Gateway) callHostCreateProject(ctx context.Context, userID string, in h
 	cli := &http.Client{Transport: ref.Transport, Timeout: 120 * time.Second}
 	resp, err := cli.Do(req)
 	if err != nil {
-		return createWorktreeResponse{}, fmt.Errorf("post host /projects/create: %w", err)
+		return createWorktreeResponse{}, 0, nil, fmt.Errorf("post host /projects/create: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode/100 != 2 {
-		return createWorktreeResponse{}, fmt.Errorf("host returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return createWorktreeResponse{}, resp.StatusCode, body, nil
 	}
 	var out createWorktreeResponse
 	if err := json.Unmarshal(body, &out); err != nil {
-		return createWorktreeResponse{}, fmt.Errorf("decode host response: %w", err)
+		return createWorktreeResponse{}, 0, nil, fmt.Errorf("decode host response: %w", err)
 	}
 	if out.WorktreeID == "" {
-		return createWorktreeResponse{}, errors.New("host returned empty worktree_id")
+		return createWorktreeResponse{}, 0, nil, errors.New("host returned empty worktree_id")
 	}
-	return out, nil
+	return out, resp.StatusCode, body, nil
 }
