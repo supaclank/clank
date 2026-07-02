@@ -28,12 +28,16 @@ these are normative, not aspirational.
 ## Reliability & resilience
 
 - **[NFR-REL-001] (MUST)** Reconnect the stream automatically with **capped backoff**, then
-  reconcile ([INV-RECONCILE-001]). A single drop MUST NOT require user action. (Today's clients
-  diverge here — TUI re-subscribes at a higher layer, RN does one refresh-reconnect then gives
-  up, Kotlin loops with 1s→15s backoff; the **normative** target is capped-backoff +
-  reconcile.) **Golden:** `…/session/SessionEventStream.kt:121` (capped backoff reference).
+  reconcile ([INV-RECONCILE-001]). A single drop MUST NOT require user action. The wire-level
+  contract — which termination paths this covers, and the foreground-resubscribe duty on
+  suspendable platforms — is [EVT-006](04-event-protocol.md) /
+  [INV-STREAM-SUPERVISE-001](08-invariants.md). (RN's old one-refresh-reconnect-then-give-up
+  was the shipped counterexample: a session created after the stream died froze at
+  "Working…" forever.) **Golden:** `clank-mobile/src/api/events.ts` (`scheduleReconnect`:
+  1s→30s full-jitter backoff), `…/session/SessionEventStream.kt:121` (1s→15s backoff).
 - **[NFR-REL-002] (SHOULD)** Detect half-open connections (no heartbeat exists, [INV-HEARTBEAT-GAP-001])
-  via transport keepalive or a liveness timeout, then treat as a drop.
+  via transport keepalive or a liveness timeout, then treat as a drop. Where neither is
+  available (RN), resubscribe on app foreground instead ([EVT-006]).
 - **[NFR-REL-003] (MUST)** Distinguish recoverable from terminal: transient network / 5xx /
   refresh-timeout keep the session ([CONN-012]); only `invalid_grant` signs out.
 
