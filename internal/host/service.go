@@ -3,10 +3,13 @@ package host
 // Service is the Host plane's domain object: it owns BackendManagers
 // for agent sessions and resolves GitRefs to working directories.
 // LocalPath refs use the path on this host directly; WorktreeID refs
-// resolve to ~/work/<WorktreeID>/, materialized from a synced checkpoint
-// in object storage. NOTE: that S3→host materialization isn't orchestrated
-// yet (see TODO(materialize) in internal/host/mux/sync.go). There is no
-// clone-from-origin path — the model is "synced worktree, single happy path".
+// resolve to ~/work/<WorktreeID>/ — under the repo-first layout, a
+// linked `git worktree` of the repo's bare canonical clone at
+// ~/work/repos/<slug>/repo.git (see repos.go). Worktrees are created by
+// import (clone) or scaffold (template); there is no
+// materialize-from-checkpoint path in the repo-first model. Fork
+// (CreateWorktree) is NOT yet migrated — it still lands worktrees at
+// the legacy ~/.clank/worktrees/<project>/<branch> path (P2).
 
 import (
 	"context"
@@ -104,6 +107,14 @@ type Service struct {
 	// worktree ID.
 	syncLocksMu sync.Mutex
 	syncLocks   map[string]*sync.Mutex
+
+	// repoLocks serialize canonical-repo mutations (clone, fetch,
+	// worktree add/remove, branch create, publish's remote-add) per
+	// repo slug — every ~/work/<id> worktree of a repo shares one bare
+	// canonical, so concurrent ref/config writes must not interleave.
+	// Same lazily-allocated shape as syncLocks. See lockRepo (repos.go).
+	repoLocksMu sync.Mutex
+	repoLocks   map[string]*sync.Mutex
 }
 
 // Options configures a Service at construction time.
@@ -199,6 +210,7 @@ func New(opts Options) *Service {
 		sessionsStore:         opts.SessionsStore,
 		subscribers:           newSubscriberRegistry(),
 		syncLocks:             make(map[string]*sync.Mutex),
+		repoLocks:             make(map[string]*sync.Mutex),
 	}
 	if opts.KeepaliveListener != nil {
 		s.keepaliveLoop = keepalive.New(keepalive.Config{
@@ -1293,6 +1305,7 @@ func (s *Service) CreateWorktree(ctx context.Context, baseWorktreeRef agent.GitR
 		if branchExists {
 			continue
 		}
+		// TODO(ai-review): migrate fork to the repo-first ~/work/<ulid> layout (P2). https://github.com/Acksell/clank/pull/93#discussion_r3512415001
 		dir, err := git.WorktreeDir(projectName, candidate)
 		if err != nil {
 			return CreateWorktreeResult{}, err
@@ -1451,7 +1464,28 @@ func (s *Service) DeleteMaterializedWorktree(ctx context.Context, worktreeID str
 	if err != nil {
 		return err
 	}
-	if err := os.RemoveAll(filepath.Join(root, worktreeID)); err != nil {
+	wtDir := filepath.Join(root, worktreeID)
+
+	// Repo-first worktrees are linked `git worktree`s of a shared bare
+	// canonical: remove them THROUGH git so the canonical's bookkeeping
+	// (and the branch's checked-out lock) is released — a bare rm -rf
+	// would strand a prunable stub and keep the branch unloadable. The
+	// branch ref itself is kept on purpose: refs are cheap, the overview
+	// keeps its history, and reloading the branch stays trivial.
+	if gitDir, linked, cerr := worktreeCanonicalGitDir(wtDir); cerr == nil && linked {
+		slug := filepath.Base(filepath.Dir(gitDir))
+		defer s.lockRepo(slug)()
+		if err := git.RemoveWorktree(gitDir, wtDir, true); err != nil {
+			return fmt.Errorf("remove worktree %s: %w", worktreeID, err)
+		}
+		if err := git.PruneWorktrees(gitDir); err != nil {
+			s.log.Printf("warning: prune worktrees in %s: %v", gitDir, err)
+		}
+		return nil
+	}
+	// Legacy independent clone (or not a repo at all — half-materialized
+	// dir): plain removal, as before the repo-first layout.
+	if err := os.RemoveAll(wtDir); err != nil {
 		return fmt.Errorf("remove materialized worktree %s: %w", worktreeID, err)
 	}
 	return nil

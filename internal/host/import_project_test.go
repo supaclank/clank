@@ -80,17 +80,27 @@ func TestImportProjectFromGitHub_CleansUpWhenBranchReadFails(t *testing.T) {
 		t.Fatal("expected error for empty-repo import, got nil")
 	}
 
-	// Work root must be empty — no orphaned project directory left behind.
+	// No orphaned worktree dirs, and the half-made canonical was rolled
+	// back — only the (empty) repos/ layout dir may remain.
 	entries, err := os.ReadDir(workRoot)
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("ReadDir workRoot: %v", err)
 	}
-	if len(entries) != 0 {
+	for _, e := range entries {
+		if e.Name() != "repos" {
+			t.Errorf("orphaned project dir after failed import: %v", e.Name())
+		}
+	}
+	reposEntries, err := os.ReadDir(filepath.Join(workRoot, "repos"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("ReadDir repos: %v", err)
+	}
+	if len(reposEntries) != 0 {
 		var names []string
-		for _, e := range entries {
+		for _, e := range reposEntries {
 			names = append(names, e.Name())
 		}
-		t.Errorf("orphaned project dirs after failed import: %v", names)
+		t.Errorf("canonical not rolled back after failed import: %v", names)
 	}
 }
 
