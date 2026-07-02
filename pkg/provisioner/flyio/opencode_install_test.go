@@ -147,6 +147,25 @@ func TestEnsureOpenCode_StatErrorFailsFast(t *testing.T) {
 	}
 }
 
+// TestEnsureOpenCode_NilStatFSFailsFast: a nil statFS must fail fast
+// with a wrapped error, not panic inside fs.Stat.
+func TestEnsureOpenCode_NilStatFSFailsFast(t *testing.T) {
+	t.Parallel()
+	probeErr := errors.New("connection closed")
+	stubs := &opencodeStubs{probeErr: probeErr}
+	p := newTestProvisioner(t)
+	reinstalled, err := p.ensureOpenCodeInstalledOn(context.Background(), "s1", stubs.probe, nil, stubs.install)
+	if err == nil {
+		t.Fatal("expected fail-fast error, got nil")
+	}
+	if !errors.Is(err, probeErr) {
+		t.Errorf("error should wrap the probe error; got %v", err)
+	}
+	if reinstalled || stubs.installCalled {
+		t.Errorf("nil statFS must not install; reinstalled=%v installCalled=%v", reinstalled, stubs.installCalled)
+	}
+}
+
 // TestEnsureOpenCode_InstallFailureSurfacesOutput: an install that ran
 // and failed surfaces its combined output in the error.
 func TestEnsureOpenCode_InstallFailureSurfacesOutput(t *testing.T) {

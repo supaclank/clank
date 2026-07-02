@@ -644,6 +644,9 @@ func (p *Provisioner) ensureOpenCodeInstalledOn(ctx context.Context, spriteName 
 	case probeRanOnSprite(probeErr):
 		p.log.Printf("flyio provisioner: opencode probe on %s exited non-zero (%v); reinstalling", spriteName, probeErr)
 	default:
+		if statFS == nil {
+			return false, fmt.Errorf("opencode probe on %s did not complete and no filesystem was provided to verify presence: %w", spriteName, probeErr)
+		}
 		if _, statErr := fs.Stat(statFS, strings.TrimPrefix(opencodePath, "/")); statErr == nil {
 			return false, fmt.Errorf("opencode probe on %s did not complete and %s exists — failing fast for a retry on a fresh conn instead of reinstalling: %w", spriteName, opencodePath, probeErr)
 		} else if !errors.Is(statErr, fs.ErrNotExist) {
