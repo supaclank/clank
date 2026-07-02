@@ -6,8 +6,10 @@ package host
 // resolve to ~/work/<WorktreeID>/ — under the repo-first layout, a
 // linked `git worktree` of the repo's bare canonical clone at
 // ~/work/repos/<slug>/repo.git (see repos.go). Worktrees are created by
-// import (clone), scaffold (template), or fork — there is no
-// materialize-from-checkpoint path in the repo-first model.
+// import (clone) or scaffold (template); there is no
+// materialize-from-checkpoint path in the repo-first model. Fork
+// (CreateWorktree) is NOT yet migrated — it still lands worktrees at
+// the legacy ~/.clank/worktrees/<project>/<branch> path (P2).
 
 import (
 	"context"
@@ -1303,6 +1305,7 @@ func (s *Service) CreateWorktree(ctx context.Context, baseWorktreeRef agent.GitR
 		if branchExists {
 			continue
 		}
+		// TODO(ai-review): migrate fork to the repo-first ~/work/<ulid> layout (P2). https://github.com/Acksell/clank/pull/93#discussion_r3512415001
 		dir, err := git.WorktreeDir(projectName, candidate)
 		if err != nil {
 			return CreateWorktreeResult{}, err
