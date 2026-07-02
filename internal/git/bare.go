@@ -11,6 +11,7 @@ package git
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -143,7 +144,8 @@ func RemoteTrackingBranchExists(dir, remote, branch string) (bool, error) {
 	}
 	// rev-parse --verify --quiet exits 1 for a missing ref with no
 	// stderr; that's the "no" answer, not a fault.
-	if strings.Contains(err.Error(), "exit status 1") {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 		return false, nil
 	}
 	return false, err
@@ -156,7 +158,8 @@ func GetLocalConfig(dir, key string) (string, error) {
 	out, err := gitCmd(dir, "config", "--local", "--get", key)
 	if err != nil {
 		// `git config --get` exits 1 when the key is simply absent.
-		if strings.Contains(err.Error(), "exit status 1") {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 			return "", nil
 		}
 		return "", fmt.Errorf("git config --get %s: %w", key, err)
