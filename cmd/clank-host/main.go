@@ -58,6 +58,14 @@ const (
 )
 
 func main() {
+	// Subcommand dispatch precedes flag parsing — `clank-host
+	// git-credential get` is invoked BY GIT (per repo config, see
+	// internal/host/github/git_credential.go) and takes none of the
+	// serve flags.
+	if len(os.Args) > 1 && os.Args[1] == gitCredentialCommand {
+		os.Exit(runGitCredential(os.Args[2:]))
+	}
+
 	socket := flag.String("socket", "", "Path to Unix socket to listen on (mutually exclusive with --listen)")
 	listen := flag.String("listen", "", "Listener address: tcp://host:port (use :0 for auto-pick) or unix:///path. Mutually exclusive with --socket.")
 	listenAuthToken := flag.String("listen-auth-token", os.Getenv("CLANK_HOST_AUTH_TOKEN"), "Bearer token required on every HTTP request. Empty disables the check (laptop-local mode). Defaults to $CLANK_HOST_AUTH_TOKEN.")
