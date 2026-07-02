@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,12 +36,18 @@ func SetGitHubCloneBaseForTest(base string) (prev string) {
 	return prev
 }
 
-// ImportProjectFromGitHub clones the caller's existing GitHub repo
-// owner/repo into a fresh ~/work/<WorktreeID> project, keeping the .git
-// directory and the origin remote (unlike CreateProjectFromTemplate,
-// which discards them). The clone authenticates with the host's stored
+// ImportProjectFromGitHub loads the caller's existing GitHub repo
+// owner/repo under the repo-first layout: one bare BLOBLESS canonical
+// clone at ~/work/repos/<slug>/repo.git (created on first import, reused
+// after) plus a linked `git worktree` for the requested branch at
+// ~/work/<WorktreeID>. The clone authenticates with the host's stored
 // GitHub token, so private repos work; ErrNotConnected surfaces when no
 // token is present.
+//
+// Idempotent per branch: importing a branch that already has a linked
+// worktree returns that worktree (Created=false) instead of a duplicate —
+// a branch can be checked out in at most one worktree (git's invariant,
+// and the product's).
 //
 // The host builds the clone URL from owner/repo itself — it never accepts
 // a client-supplied URL — matching the template flow's gatekeeping.
@@ -67,71 +74,225 @@ func (s *Service) ImportProjectFromGitHub(ctx context.Context, owner, repo, bran
 		return CreateWorktreeResult{}, err
 	}
 
-	root, err := workRootDir()
+	slug, err := slugForImport(owner, repo)
 	if err != nil {
 		return CreateWorktreeResult{}, err
+	}
+	gitDir, err := canonicalGitDir(slug)
+	if err != nil {
+		return CreateWorktreeResult{}, err
+	}
+
+	// All canonical mutations for this repo — first clone, branch
+	// materialization, worktree add — serialize under the repo lock.
+	defer s.lockRepo(slug)()
+
+	cloneURL := fmt.Sprintf("%s/%s/%s.git", gitHubCloneBase, owner, repo)
+	createdCanonical := false
+	if _, statErr := os.Stat(gitDir); os.IsNotExist(statErr) {
+		if err := s.cloneCanonical(ctx, cloneURL, gitDir, token, branch, owner+"/"+repo); err != nil {
+			return CreateWorktreeResult{}, err
+		}
+		createdCanonical = true
+	} else if statErr != nil {
+		return CreateWorktreeResult{}, fmt.Errorf("check canonical %q: %w", gitDir, statErr)
+	} else {
+		// Canonical exists — make sure it's actually this repo and not a
+		// slug collision against something else (paranoia: slugs are
+		// deterministic, so this only fires on a corrupted layout).
+		remoteURL, urlErr := git.RemoteURL(gitDir, "origin")
+		if urlErr != nil || remoteURL != cloneURL {
+			return CreateWorktreeResult{}, fmt.Errorf("canonical %q origin mismatch (have %q, want %q)", slug, remoteURL, cloneURL)
+		}
+	}
+
+	// Resolve the branch to load: an explicit request, else the
+	// canonical's HEAD (the remote's default at clone time).
+	if branch == "" {
+		branch, err = git.HeadBranch(gitDir)
+		if err != nil {
+			return CreateWorktreeResult{}, s.rollbackCanonical(gitDir, createdCanonical, fmt.Errorf("resolve default branch: %w", err))
+		}
+	}
+
+	// The canonical is a --single-branch clone, so a branch other than
+	// the one it was cloned with may have no local ref yet — fetch it
+	// into the remote-tracking namespace before the worktree add. A
+	// branch that's absent on the remote too falls through to
+	// addRepoWorktree's ErrNotFound.
+	if err := s.ensureBranchFetched(gitDir, branch, token); err != nil {
+		return CreateWorktreeResult{}, s.rollbackCanonical(gitDir, createdCanonical, err)
+	}
+
+	result, err := s.addRepoWorktree(ctx, slug, gitDir, branch, repo)
+	if err != nil {
+		return CreateWorktreeResult{}, s.rollbackCanonical(gitDir, createdCanonical, err)
+	}
+	if result.Created {
+		s.log.Printf("imported %s branch %q → worktree %s", slug, branch, result.WorktreeID)
+	}
+	return result.CreateWorktreeResult, nil
+}
+
+// cloneCanonical creates the bare blobless canonical for a GitHub repo:
+// clone, committer identity (worktree commits read config through the
+// shared git dir), display label, and the persistent credential helper
+// so lazy blob fetches + agent-run git can authenticate on their own.
+func (s *Service) cloneCanonical(ctx context.Context, cloneURL, gitDir, token, branch, label string) error {
+	if err := os.MkdirAll(filepath.Dir(gitDir), 0o755); err != nil {
+		return fmt.Errorf("create canonical dir: %w", err)
+	}
+	if err := git.CloneBare(ctx, cloneURL, gitDir, token, branch, s.credentialHelperValue()); err != nil {
+		// A failed clone can leave a partial gitDir behind — remove it so a
+		// retry doesn't mistake it for an existing canonical.
+		if rmErr := os.RemoveAll(filepath.Dir(gitDir)); rmErr != nil {
+			s.log.Printf("warning: rollback partial canonical %s: %v", gitDir, rmErr)
+		}
+		return fmt.Errorf("clone canonical: %w", err)
+	}
+	if err := git.SetLocalConfig(gitDir, "user.name", s.projectCommitterName); err != nil {
+		return fmt.Errorf("set config user.name: %w", err)
+	}
+	if err := git.SetLocalConfig(gitDir, "user.email", s.projectCommitterEmail); err != nil {
+		return fmt.Errorf("set config user.email: %w", err)
+	}
+	if err := git.SetLocalConfig(gitDir, repoConfigLabelKey, label); err != nil {
+		return fmt.Errorf("set config %s: %w", repoConfigLabelKey, err)
+	}
+	return nil
+}
+
+// repoWorktreeOutcome pairs a CreateWorktreeResult with whether the call
+// actually created the worktree (false = idempotent hit on an existing
+// one).
+type repoWorktreeOutcome struct {
+	CreateWorktreeResult
+	Created bool
+}
+
+// addRepoWorktree links a worktree for branch at ~/work/<newULID> off the
+// canonical at gitDir, stamping the worktree id. When the branch is
+// already checked out in a linked worktree, that worktree is returned
+// instead (Created=false). branch must exist as refs/heads/<branch> or
+// refs/remotes/origin/<branch> (the latter creates the local ref).
+// displayName seeds CreateWorktreeResult.DisplayName.
+//
+// Caller holds the repo lock.
+func (s *Service) addRepoWorktree(ctx context.Context, slug, gitDir, branch, displayName string) (repoWorktreeOutcome, error) {
+	// Idempotency: branch already loaded → hand back its worktree.
+	if existing, err := git.FindWorktreeForBranch(gitDir, branch); err == nil && existing != nil {
+		worktreeID, idErr := agent.ReadLocalWorktreeID(existing.Path)
+		if idErr != nil || worktreeID == "" {
+			return repoWorktreeOutcome{}, fmt.Errorf("branch %q already checked out at %s but its worktree id is unreadable: %v", branch, existing.Path, idErr)
+		}
+		return repoWorktreeOutcome{
+			CreateWorktreeResult: CreateWorktreeResult{
+				WorktreeID:  worktreeID,
+				Branch:      branch,
+				WorktreeDir: existing.Path,
+				DisplayName: displayName,
+				OriginRepo:  repoLabelFor(gitDir),
+				RepoSlug:    slug,
+			},
+			Created: false,
+		}, nil
+	}
+
+	root, err := workRootDir()
+	if err != nil {
+		return repoWorktreeOutcome{}, err
 	}
 	worktreeULID, err := ulid.New(ulid.Now(), cryptoRand)
 	if err != nil {
-		return CreateWorktreeResult{}, fmt.Errorf("generate worktree id: %w", err)
+		return repoWorktreeOutcome{}, fmt.Errorf("generate worktree id: %w", err)
 	}
 	worktreeID := worktreeULID.String()
-	projectDir := filepath.Join(root, worktreeID)
+	wtDir := filepath.Join(root, worktreeID)
 
-	if _, statErr := os.Stat(projectDir); statErr == nil {
-		return CreateWorktreeResult{}, fmt.Errorf("project dir %q already exists", projectDir)
-	} else if !os.IsNotExist(statErr) {
-		return CreateWorktreeResult{}, fmt.Errorf("check project dir %q: %w", projectDir, statErr)
-	}
-
-	cloneURL := fmt.Sprintf("%s/%s/%s.git", gitHubCloneBase, owner, repo)
-	if err := s.importRepo(ctx, projectDir, cloneURL, token, branch, worktreeID); err != nil {
-		// Roll back so a retry doesn't trip the already-exists guard or
-		// leave a half-cloned tree behind.
-		if rmErr := os.RemoveAll(projectDir); rmErr != nil {
-			s.log.Printf("warning: rollback remove project dir %s: %v", projectDir, rmErr)
-		}
-		return CreateWorktreeResult{}, err
-	}
-
-	// Reassign branch to the actual checked-out ref. When a branch was
-	// requested this confirms it; when it was empty this resolves the
-	// remote's default — which is what we report back as Branch.
-	branch, err = git.CurrentBranch(projectDir)
+	// Existing local branch checks out directly; a remote-tracking-only
+	// branch gets its local ref created at the same tip.
+	localExists, err := git.BranchExists(gitDir, branch)
 	if err != nil {
-		if rmErr := os.RemoveAll(projectDir); rmErr != nil {
-			s.log.Printf("warning: rollback remove project dir %s: %v", projectDir, rmErr)
+		return repoWorktreeOutcome{}, fmt.Errorf("check branch: %w", err)
+	}
+	if localExists {
+		err = git.AddWorktree(gitDir, wtDir, branch)
+	} else {
+		remoteExists, remoteErr := git.RemoteTrackingBranchExists(gitDir, "origin", branch)
+		if remoteErr != nil {
+			return repoWorktreeOutcome{}, fmt.Errorf("check remote branch: %w", remoteErr)
 		}
-		return CreateWorktreeResult{}, fmt.Errorf("read checked-out branch: %w", err)
+		if !remoteExists {
+			return repoWorktreeOutcome{}, fmt.Errorf("%w: branch %q not found in %s", ErrNotFound, branch, slug)
+		}
+		err = git.AddWorktreeNewBranch(gitDir, wtDir, branch, "refs/remotes/origin/"+branch)
+	}
+	if err != nil {
+		return repoWorktreeOutcome{}, fmt.Errorf("add worktree: %w", err)
+	}
+	if err := agent.WriteLocalWorktreeID(wtDir, worktreeID); err != nil {
+		// Roll the half-made worktree back so a retry starts clean.
+		if rmErr := git.RemoveWorktree(gitDir, wtDir, true); rmErr != nil {
+			s.log.Printf("warning: rollback worktree %s: %v", wtDir, rmErr)
+		}
+		return repoWorktreeOutcome{}, fmt.Errorf("stamp worktree-id: %w", err)
 	}
 
-	originRepo := owner + "/" + repo
-	s.log.Printf("imported project %s (%q) at %s", worktreeID, originRepo, projectDir)
-	return CreateWorktreeResult{
-		WorktreeID:  worktreeID,
-		Branch:      branch,
-		WorktreeDir: projectDir,
-		DisplayName: repo,
-		OriginRepo:  originRepo,
+	return repoWorktreeOutcome{
+		CreateWorktreeResult: CreateWorktreeResult{
+			WorktreeID:  worktreeID,
+			Branch:      branch,
+			WorktreeDir: wtDir,
+			DisplayName: displayName,
+			OriginRepo:  repoLabelFor(gitDir),
+			RepoSlug:    slug,
+		},
+		Created: true,
 	}, nil
 }
 
-// importRepo clones cloneURL into projectDir keeping its remote, gives it
-// a local committer identity so later commits don't depend on global git
-// config, and stamps the worktree id. Any error leaves cleanup to the
-// caller.
-func (s *Service) importRepo(ctx context.Context, projectDir, cloneURL, token, branch, worktreeID string) error {
-	if err := git.CloneShallowKeepRemote(ctx, cloneURL, projectDir, token, branch); err != nil {
-		return fmt.Errorf("clone repo: %w", err)
+// ensureBranchFetched makes branch resolvable in the canonical at
+// gitDir: a no-op when refs/heads/<branch> or refs/remotes/origin/<branch>
+// already exists, else one single-branch fetch from origin into the
+// remote-tracking namespace (token-authed — harmless for file:// test
+// remotes). A branch missing on the remote is NOT an error here; the
+// caller's worktree add reports ErrNotFound with full context.
+//
+// Caller holds the repo lock.
+func (s *Service) ensureBranchFetched(gitDir, branch, token string) error {
+	local, err := git.BranchExists(gitDir, branch)
+	if err != nil {
+		return fmt.Errorf("check branch: %w", err)
 	}
-	if err := git.SetLocalConfig(projectDir, "user.name", s.projectCommitterName); err != nil {
-		return fmt.Errorf("set config user.name: %w", err)
+	if local {
+		return nil
 	}
-	if err := git.SetLocalConfig(projectDir, "user.email", s.projectCommitterEmail); err != nil {
-		return fmt.Errorf("set config user.email: %w", err)
+	tracking, err := git.RemoteTrackingBranchExists(gitDir, "origin", branch)
+	if err != nil {
+		return fmt.Errorf("check remote branch: %w", err)
 	}
-	if err := agent.WriteLocalWorktreeID(projectDir, worktreeID); err != nil {
-		return fmt.Errorf("stamp worktree-id: %w", err)
+	if tracking {
+		return nil
+	}
+	refspec := "+refs/heads/" + branch + ":refs/remotes/origin/" + branch
+	if err := git.Fetch(gitDir, "origin", refspec, git.PushOptions{ExtraHeader: buildAuthHeader(token)}); err != nil {
+		if isNoRemoteRef(err) {
+			return nil // absent on the remote too → the add reports ErrNotFound
+		}
+		return fmt.Errorf("fetch branch %q: %w", branch, err)
 	}
 	return nil
+}
+
+// rollbackCanonical removes a canonical this call created when a later
+// step failed, so a retry doesn't find a half-initialized repo. Wraps
+// and returns cause unchanged for `return` ergonomics.
+func (s *Service) rollbackCanonical(gitDir string, createdByThisCall bool, cause error) error {
+	if !createdByThisCall {
+		return cause
+	}
+	if err := os.RemoveAll(filepath.Dir(gitDir)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		s.log.Printf("warning: rollback canonical %s: %v", gitDir, err)
+	}
+	return cause
 }
