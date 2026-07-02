@@ -46,7 +46,9 @@ backend is configured.
   **Why:** signing out on a transient refresh failure (e.g. an OS-killed network during a
   backgrounded refresh) ejects the user for no reason; this was a recurring mobile
   regression. **Golden:** `clank-mobile/src/auth/session.ts`,
-  `clank-mobile/src/api/events.ts:119` (single forced-refresh reconnect).
+  `clank-mobile/src/api/events.ts` (a 401 on the stream sets `forceRefresh` for the next
+  reconnect attempt — note the *stream* retries forever per [EVT-006]; "exactly one refresh
+  retry" is the per-request rule).
 - **[CONN-013] (MUST)** Refresh tokens MUST be stored in the platform secure store
   (Keychain / Keystore / equivalent), never in plaintext or app-readable storage, and MUST
   NOT be logged. **Why:** a leaked refresh token is a long-lived credential. Cross-ref

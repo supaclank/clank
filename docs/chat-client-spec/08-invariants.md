@@ -36,7 +36,9 @@ meanwhile, close the socket instead of leaving it live.
 **Why:** a teardown that runs while the token fetch is in flight sees a still-null socket
 and no-ops; the later-created socket then leaks → **two** live connections delivering every
 event **twice**.
-**Golden:** `clank-mobile/src/api/events.ts:71`–`:98` (double `if (closed)` guard).
+**Golden:** `clank-mobile/src/api/events.ts` (`connect()`: the double `closed`/generation
+guard around the token await and the socket assignment — the reconnect loop generalizes the
+original boolean to a generation counter so a superseded connect can also never attach).
 **Conformance:** `CONF-SINGLE-STREAM`.
 
 ### [INV-NO-END-001] (MUST) Detect end-of-stream from the closed connection, not an `end` frame
@@ -53,6 +55,29 @@ earlier draft wrongly called it dead by conflating the two endpoints.
 close, no terminal frame), `internal/host/mux/sessions.go` (`handleSessionEvents`: emits
 `event: end` on shutdown); `…/session/SessionEventStream.kt` (`"end"` branch — correct for the
 per-session stream). **Conformance:** `CONF-NO-END`.
+
+### [INV-STREAM-SUPERVISE-001] (MUST) The stream reconnects forever; a dead stream is never accepted
+Supervise the subscription: **every** termination path schedules a reconnect with capped
+backoff, indefinitely, until deliberate teardown ([EVT-006], [NFR-REL-001]). Resubscribe on
+return-to-foreground — a suspended app's socket can be a zombie that will never error, and
+with no heartbeat ([INV-HEARTBEAT-GAP-001]) nothing else exposes it. Enumerate your SSE
+library's kill paths and route each one to the supervisor — including any that fire **no
+callback** (with `react-native-sse` + `pollingInterval: 0`, a clean server close is exactly
+that; the golden client sets a small `pollingInterval` to delegate that one path to the
+library's re-poll and owns every other path itself).
+**Why:** mobile shipped the counterexample. Its stream died permanently on the first
+transport failure whose single immediate retry also failed — both fell inside the same
+outage (airplane toggle, Wi-Fi↔cellular handoff, Doze, gateway deploy, sprite suspend) —
+and a clean server close killed it with no callback at all. The app then looked healthy
+(HTTP fine) but heard nothing: a **new** session opened to its prompt plus an eternal
+"Working…" (empty transcript, no `part`/`status` ever arriving), the session list stayed
+stale (`session.create`/`status`/`meta` all lost), and only pull-to-refresh + re-entering
+(plain HTTP refetch on mount) revealed the long-finished transcript.
+**Golden:** `clank-mobile/src/api/events.ts` (`openEventStream`: generation-guarded
+supervised loop, `scheduleReconnect`, `restart()`), `clank-mobile/src/hooks/useEventStream.ts`
+(AppState foreground `restart()`; `onReconnect` → `resyncAfterStreamGap`),
+`…/session/SessionEventStream.kt:121` (Kotlin 1s→15s backoff loop).
+**Conformance:** `CONF-STREAM-SUPERVISE`.
 
 ---
 
@@ -260,7 +285,8 @@ After every SSE (re)connection — first open, reconnect, foreground — refetch
 and reconcile monotonically. Drive this from your own transport state.
 **Why:** at-most-once + no replay ([EVT-010]) means a gap loses events; only a refetch
 recovers them.
-**Golden:** `internal/tui/sessionview.go:511`. **Conformance:** `CONF-RECONCILE`.
+**Golden:** `internal/tui/sessionview.go:511`; `clank-mobile/src/hooks/useEventStream.ts`
+(`onReconnect` → `resyncAfterStreamGap`). **Conformance:** `CONF-RECONCILE`.
 
 ### [INV-RECONNECT-SEMANTICS-001] (MUST) `reconnected` is the backend's link, not your socket
 The `reconnecting`/`reconnected` events describe the host↔backend link, delivered over your
@@ -268,8 +294,9 @@ stream. Do not treat `reconnected` as "my SSE came back" and do not rely on it t
 recovery after your own transport drop (which emits no event, since the socket was down).
 **Why:** conflating them means a real client-side blip never triggers a resync, leaving a
 stale transcript.
-**Golden:** `internal/agent/agent.go:297`; current mobile behavior reconciles on this event
-but does not cover its own transport reconnect (`clank-mobile/src/hooks/dispatch.ts:196`).
+**Golden:** `internal/agent/agent.go:297`; `clank-mobile/src/hooks/dispatch.ts`
+(`resyncAfterStreamGap` — run from the `reconnected` event *and*, separately, from the
+client's own transport reconnect via `useEventStream`'s `onReconnect`).
 **Conformance:** `CONF-RECONNECT-SEMANTICS`.
 
 ### [INV-DEAD-BACKEND-REHYDRATE-001] (MUST, host) A dropped backend connection is `dead`, not reused
@@ -337,7 +364,9 @@ re-emit them to a new subscriber on connect.
 The stream sends no keepalive/heartbeat, and the reference clients set no SSE read timeout.
 A half-open TCP connection can therefore go undetected, freezing the UI on stale state.
 **Client duty:** enable transport keepalive or a liveness timeout, then reconnect + reconcile
-([EVT-012], [INV-RECONCILE-001]).
+([EVT-012], [INV-RECONCILE-001]). On suspendable platforms, where no liveness signal is
+available at all, resubscribe on return-to-foreground instead ([EVT-006],
+[INV-STREAM-SUPERVISE-001]).
 **Recommended host fix:** emit a periodic SSE comment (`:\n\n`) as a heartbeat.
 **Golden:** `internal/host/mux/events.go:45` (no heartbeat write). **Conformance:** covered by
 `CONF-RECONCILE` under an injected stall.
