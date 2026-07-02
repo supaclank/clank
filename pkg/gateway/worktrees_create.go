@@ -1,3 +1,7 @@
+// Deprecated: POST /v1/worktrees/create is superseded by the repo-first
+// POST /v1/repos/{slug}/worktrees (repos_proxy.go) — verbatim status
+// forwarding replaces this file's 502 masking. Serving until the mobile
+// cutover, then DELETED with the checkpoint-sync surface.
 package gateway
 
 import (

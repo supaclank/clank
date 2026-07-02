@@ -1,9 +1,11 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -60,6 +62,13 @@ func (s *scaffoldingSprite) server(t *testing.T) *httptest.Server {
 // pointing its provisioner at sprite, backed by a real SQLite sync store.
 func newProjectsGateway(t *testing.T, sprite *httptest.Server, templates []Template) (*httptest.Server, *store.Store) {
 	t.Helper()
+	return newProjectsGatewayWithLogger(t, sprite, templates, nil)
+}
+
+// newProjectsGatewayWithLogger is newProjectsGateway with an injectable
+// logger, for tests asserting on (or withholding secrets from) log output.
+func newProjectsGatewayWithLogger(t *testing.T, sprite *httptest.Server, templates []Template, lg *log.Logger) (*httptest.Server, *store.Store) {
+	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "sync.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +85,7 @@ func newProjectsGateway(t *testing.T, sprite *httptest.Server, templates []Templ
 		ref = provisioner.HostRef{URL: sprite.URL}
 	}
 	prov := &stubProvisioner{ref: ref}
-	g, err := NewGateway(Config{Provisioner: prov, Sync: syncSrv, Templates: templates}, nil)
+	g, err := NewGateway(Config{Provisioner: prov, Sync: syncSrv, Templates: templates}, lg)
 	if err != nil {
 		t.Fatalf("NewGateway: %v", err)
 	}
@@ -282,5 +291,85 @@ func TestCreateProject_HostErrorDoesNotLeakDetails(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if strings.Contains(string(body), sensitiveURL) {
 		t.Fatalf("host error details leaked in gateway 502 body: %q", body)
+	}
+}
+
+// The 5xx body withheld from clients (previous test) must also stay out
+// of server logs — it can carry the resolved clone URL, credentials and
+// all.
+func TestCreateProject_HostErrorDoesNotLeakDetailsInLogs(t *testing.T) {
+	t.Parallel()
+	const sensitiveURL = "https://token@internal.test/template.git"
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /projects/create", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "clone template: git clone: "+sensitiveURL+": exit status 128", http.StatusInternalServerError)
+	})
+	sprite := httptest.NewServer(mux)
+	t.Cleanup(sprite.Close)
+
+	var logBuf bytes.Buffer
+	gw, _ := newProjectsGatewayWithLogger(t, sprite, []Template{
+		{ID: "expo", DisplayName: "Expo", CloneURL: sensitiveURL},
+	}, log.New(&logBuf, "", 0))
+
+	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"template":"expo","name":"app"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+	if strings.Contains(logBuf.String(), sensitiveURL) {
+		t.Fatalf("host error details leaked into gateway logs: %q", logBuf.String())
+	}
+}
+
+// A host non-2xx must arrive at the client VERBATIM (status + typed
+// body), not flattened to a generic 502 — the regression the repo-first
+// cutover fixed for this route (mirrors projects_import.go's contract).
+func TestCreateProject_ForwardsHostErrorVerbatim(t *testing.T) {
+	t.Parallel()
+	const cloneURL = "https://example.test/templates/expo.git"
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /projects/create", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"code":"invalid_argument","error":"template not found in catalog"}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	gw, _ := newProjectsGateway(t, srv, []Template{{ID: "expo", DisplayName: "Expo", CloneURL: cloneURL}})
+
+	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"template":"expo","name":"x"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 forwarded verbatim (not 502)", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "invalid_argument") {
+		t.Errorf("body = %q, want the host's typed error forwarded", body)
+	}
+}
+
+// A host 401 is the host's OWN auth middleware rejecting the gateway's
+// credentials (an infra failure) — never the client's session. Forwarding
+// it verbatim would falsely tell the client its gateway session expired,
+// so it must mask to 502 like any other 5xx, unlike other 4xx which
+// forward verbatim (TestCreateProject_ForwardsHostErrorVerbatim).
+func TestCreateProject_MasksHostUnauthorized(t *testing.T) {
+	t.Parallel()
+	const cloneURL = "https://example.test/templates/expo.git"
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /projects/create", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	gw, _ := newProjectsGateway(t, srv, []Template{{ID: "expo", DisplayName: "Expo", CloneURL: cloneURL}})
+
+	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"template":"expo","name":"x"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (host 401 masked, not forwarded)", resp.StatusCode)
 	}
 }
