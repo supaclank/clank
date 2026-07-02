@@ -332,7 +332,7 @@ func TestCreateProject_ForwardsHostErrorVerbatim(t *testing.T) {
 	mux.HandleFunc("POST /projects/create", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"code":"invalid_argument","error":"name is required"}`))
+		_, _ = w.Write([]byte(`{"code":"invalid_argument","error":"template not found in catalog"}`))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -346,5 +346,30 @@ func TestCreateProject_ForwardsHostErrorVerbatim(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "invalid_argument") {
 		t.Errorf("body = %q, want the host's typed error forwarded", body)
+	}
+}
+
+// A host 401 is the host's OWN auth middleware rejecting the gateway's
+// credentials (an infra failure) — never the client's session. Forwarding
+// it verbatim would falsely tell the client its gateway session expired,
+// so it must mask to 502 like any other 5xx, unlike other 4xx which
+// forward verbatim (TestCreateProject_ForwardsHostErrorVerbatim).
+func TestCreateProject_MasksHostUnauthorized(t *testing.T) {
+	t.Parallel()
+	const cloneURL = "https://example.test/templates/expo.git"
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /projects/create", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	gw, _ := newProjectsGateway(t, srv, []Template{{ID: "expo", DisplayName: "Expo", CloneURL: cloneURL}})
+
+	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"template":"expo","name":"x"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (host 401 masked, not forwarded)", resp.StatusCode)
 	}
 }

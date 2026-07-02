@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -75,6 +76,57 @@ func TestReposProxy_ForwardsStatusVerbatim(t *testing.T) {
 			}
 			if got := sprite.gotPath.Load(); got != tc.wantHost {
 				t.Errorf("host path = %v, want %s", got, tc.wantHost)
+			}
+		})
+	}
+}
+
+// A malformed slug (a "/"-smuggled ".." segment, or characters outside
+// the host's own allowlist) must be rejected at the gateway boundary —
+// never reach the host at all.
+func TestReposProxy_RejectsInvalidSlug(t *testing.T) {
+	t.Parallel()
+	for _, slug := range []string{"foo/../bar", "foo bar", "foo@bar"} {
+		t.Run(slug, func(t *testing.T) {
+			t.Parallel()
+			sprite := &reposSprite{status: http.StatusOK, body: `{}`}
+			gw, _ := newProjectsGateway(t, sprite.server(t), nil)
+
+			resp, err := http.Get(gw.URL + "/v1/repos/" + url.PathEscape(slug) + "/overview")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400 (rejected at gateway)", resp.StatusCode)
+			}
+			if got := sprite.gotPath.Load(); got != nil {
+				t.Errorf("host was hit at %v, want no host call for an invalid slug", got)
+			}
+		})
+	}
+}
+
+// A literal "." or ".." path segment (unescaped) never reaches
+// validRepoSlug at all — http.ServeMux's own path cleaning redirects an
+// unclean request path before dispatch, so these 404 rather than 400.
+// Documents that the belt (gateway allowlist) has a suspenders
+// (stdlib routing) behind it for this specific case.
+func TestReposProxy_DotDotPathCleanedByServeMux(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"/v1/repos/../overview", "/v1/repos/./overview"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			sprite := &reposSprite{status: http.StatusOK, body: `{}`}
+			gw, _ := newProjectsGateway(t, sprite.server(t), nil)
+
+			resp, err := http.Get(gw.URL + path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if got := sprite.gotPath.Load(); got != nil {
+				t.Errorf("host was hit at %v, want no host call", got)
 			}
 		})
 	}

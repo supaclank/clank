@@ -91,10 +91,16 @@ func (g *Gateway) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "project creation failed", http.StatusBadGateway)
 		return
 	}
-	if status/100 == 4 {
+	if status/100 == 4 && status != http.StatusUnauthorized {
 		// Forward the host's typed 4xx verbatim (e.g. 400
 		// invalid_argument) so the client can react precisely — a flat
 		// 502 hid every real cause (the projects_import.go pattern).
+		// 401 is excluded: the host's own auth middleware returns it
+		// only when the gateway's credentials to the host are rejected
+		// (an infra failure, not a client-facing one — the host's
+		// application logic uses 403 for github_not_connected etc.), and
+		// forwarding it verbatim would falsely signal the client's own
+		// gateway session expired.
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write(body)

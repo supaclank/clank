@@ -26,8 +26,8 @@ func (g *Gateway) handleReposList(w http.ResponseWriter, r *http.Request) {
 // branch). Replaces POST /v1/worktrees/create.
 func (g *Gateway) handleRepoWorktreeCreate(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
-	if slug == "" {
-		http.Error(w, "repo slug is required", http.StatusBadRequest)
+	if !validRepoSlug(slug) {
+		http.Error(w, "invalid repo slug", http.StatusBadRequest)
 		return
 	}
 	g.proxyHostGitHub(w, r, "/repos/"+url.PathEscape(slug)+"/worktrees")
@@ -39,8 +39,8 @@ func (g *Gateway) handleRepoWorktreeCreate(w http.ResponseWriter, r *http.Reques
 // proxyHostGitHub's fixed hostGitHubTimeout. https://github.com/Acksell/clank/pull/97#discussion_r3512816237
 func (g *Gateway) handleRepoOverview(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
-	if slug == "" {
-		http.Error(w, "repo slug is required", http.StatusBadRequest)
+	if !validRepoSlug(slug) {
+		http.Error(w, "invalid repo slug", http.StatusBadRequest)
 		return
 	}
 	g.proxyHostGitHub(w, r, "/repos/"+url.PathEscape(slug)+"/overview")
@@ -50,9 +50,28 @@ func (g *Gateway) handleRepoOverview(w http.ResponseWriter, r *http.Request) {
 // (worktrees + sessions + canonical) with the host's busy guard.
 func (g *Gateway) handleRepoDelete(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
-	if slug == "" {
-		http.Error(w, "repo slug is required", http.StatusBadRequest)
+	if !validRepoSlug(slug) {
+		http.Error(w, "invalid repo slug", http.StatusBadRequest)
 		return
 	}
 	g.proxyHostGitHub(w, r, "/repos/"+url.PathEscape(slug))
+}
+
+// validRepoSlug mirrors the host's own slug allowlist
+// (internal/host/repos.go's validSlug) so a malformed slug fails fast at
+// the gateway boundary instead of round-tripping to the host — the host
+// already rejects it, but system boundaries validate their own input
+// rather than relying on a downstream service.
+func validRepoSlug(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
