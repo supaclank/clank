@@ -93,11 +93,13 @@ func (m *Mux) register(mx *http.ServeMux) {
 
 	// Worktree/branch ops. The repo is identified by GitRef in the
 	// request body — the host repo registry was removed in §7.8.
-	// /worktrees/create is intentionally narrow: it accepts a
-	// base_worktree_id (an existing worktree in the target repo) rather
-	// than a path or repo handle, so the host stays out of the
-	// repo-enumeration business. Scaffolding a brand-new repo from a
-	// template lives at POST /projects/create instead.
+	//
+	// Deprecated: POST /worktrees/create is superseded by the repo-first
+	// POST /repos/{slug}/worktrees (repos.go) — the base_worktree_id
+	// indirection addressed a repo by whichever worktree the client held
+	// and placed forks where session GitRefs couldn't resolve them. The
+	// route keeps serving until the mobile cutover, then dies with the
+	// checkpoint-sync deletion.
 	mx.HandleFunc("POST /worktrees/list-branches", m.handleListBranches)
 	mx.HandleFunc("POST /worktrees/resolve", m.handleResolveWorktree)
 	mx.HandleFunc("POST /worktrees/create", m.handleCreateWorktree)
@@ -160,6 +162,10 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// Worktree↔GitHub-remote sync (status / push / pull / resolve).
 	// See internal/host/mux/remote.go.
 	m.registerRemote(mx)
+
+	// Repo-first surface (repo-scoped worktree creation; list/overview/
+	// delete follow). See internal/host/mux/repos.go.
+	m.registerRepos(mx)
 
 	// Cloud-sync ingress. The gateway orchestrates pushes and pulls
 	// through these endpoints; the sandbox is a pure responder.

@@ -120,7 +120,7 @@ func (s *Service) ImportProjectFromGitHub(ctx context.Context, owner, repo, bran
 	// into the remote-tracking namespace before the worktree add. A
 	// branch that's absent on the remote too falls through to
 	// addRepoWorktree's ErrNotFound.
-	if err := s.ensureBranchFetched(gitDir, branch, token); err != nil {
+	if err := s.ensureRepoBranchAvailable(gitDir, branch); err != nil {
 		return CreateWorktreeResult{}, s.rollbackCanonical(gitDir, createdCanonical, err)
 	}
 
@@ -162,12 +162,12 @@ func (s *Service) cloneCanonical(ctx context.Context, cloneURL, gitDir, token, b
 	return nil
 }
 
-// repoWorktreeOutcome pairs a CreateWorktreeResult with whether the call
+// RepoWorktreeResult pairs a CreateWorktreeResult with whether the call
 // actually created the worktree (false = idempotent hit on an existing
-// one).
-type repoWorktreeOutcome struct {
+// one). The wire shape of POST /repos/{slug}/worktrees.
+type RepoWorktreeResult struct {
 	CreateWorktreeResult
-	Created bool
+	Created bool `json:"created"`
 }
 
 // addRepoWorktree links a worktree for branch at ~/work/<newULID> off the
@@ -178,14 +178,14 @@ type repoWorktreeOutcome struct {
 // displayName seeds CreateWorktreeResult.DisplayName.
 //
 // Caller holds the repo lock.
-func (s *Service) addRepoWorktree(ctx context.Context, slug, gitDir, branch, displayName string) (repoWorktreeOutcome, error) {
+func (s *Service) addRepoWorktree(ctx context.Context, slug, gitDir, branch, displayName string) (RepoWorktreeResult, error) {
 	// Idempotency: branch already loaded → hand back its worktree.
 	if existing, err := git.FindWorktreeForBranch(gitDir, branch); err == nil && existing != nil {
 		worktreeID, idErr := agent.ReadLocalWorktreeID(existing.Path)
 		if idErr != nil || worktreeID == "" {
-			return repoWorktreeOutcome{}, fmt.Errorf("branch %q already checked out at %s but its worktree id is unreadable: %v", branch, existing.Path, idErr)
+			return RepoWorktreeResult{}, fmt.Errorf("branch %q already checked out at %s but its worktree id is unreadable: %v", branch, existing.Path, idErr)
 		}
-		return repoWorktreeOutcome{
+		return RepoWorktreeResult{
 			CreateWorktreeResult: CreateWorktreeResult{
 				WorktreeID:  worktreeID,
 				Branch:      branch,
@@ -200,11 +200,11 @@ func (s *Service) addRepoWorktree(ctx context.Context, slug, gitDir, branch, dis
 
 	root, err := workRootDir()
 	if err != nil {
-		return repoWorktreeOutcome{}, err
+		return RepoWorktreeResult{}, err
 	}
 	worktreeULID, err := ulid.New(ulid.Now(), cryptoRand)
 	if err != nil {
-		return repoWorktreeOutcome{}, fmt.Errorf("generate worktree id: %w", err)
+		return RepoWorktreeResult{}, fmt.Errorf("generate worktree id: %w", err)
 	}
 	worktreeID := worktreeULID.String()
 	wtDir := filepath.Join(root, worktreeID)
@@ -213,17 +213,17 @@ func (s *Service) addRepoWorktree(ctx context.Context, slug, gitDir, branch, dis
 	// branch gets its local ref created at the same tip.
 	localExists, err := git.BranchExists(gitDir, branch)
 	if err != nil {
-		return repoWorktreeOutcome{}, fmt.Errorf("check branch: %w", err)
+		return RepoWorktreeResult{}, fmt.Errorf("check branch: %w", err)
 	}
 	if localExists {
 		err = git.AddWorktree(gitDir, wtDir, branch)
 	} else {
 		remoteExists, remoteErr := git.RemoteTrackingBranchExists(gitDir, "origin", branch)
 		if remoteErr != nil {
-			return repoWorktreeOutcome{}, fmt.Errorf("check remote branch: %w", remoteErr)
+			return RepoWorktreeResult{}, fmt.Errorf("check remote branch: %w", remoteErr)
 		}
 		if !remoteExists {
-			return repoWorktreeOutcome{}, fmt.Errorf("%w: branch %q not found in %s", ErrNotFound, branch, slug)
+			return RepoWorktreeResult{}, fmt.Errorf("%w: branch %q not found in %s", ErrNotFound, branch, slug)
 		}
 		err = git.AddWorktreeNewBranch(gitDir, wtDir, branch, "refs/remotes/origin/"+branch)
 	}
@@ -236,17 +236,17 @@ func (s *Service) addRepoWorktree(ctx context.Context, slug, gitDir, branch, dis
 		if pruneErr := git.PruneWorktrees(gitDir); pruneErr != nil {
 			s.log.Printf("warning: prune worktrees in %s: %v", gitDir, pruneErr)
 		}
-		return repoWorktreeOutcome{}, fmt.Errorf("add worktree: %w", err)
+		return RepoWorktreeResult{}, fmt.Errorf("add worktree: %w", err)
 	}
 	if err := agent.WriteLocalWorktreeID(wtDir, worktreeID); err != nil {
 		// Roll the half-made worktree back so a retry starts clean.
 		if rmErr := git.RemoveWorktree(gitDir, wtDir, true); rmErr != nil {
 			s.log.Printf("warning: rollback worktree %s: %v", wtDir, rmErr)
 		}
-		return repoWorktreeOutcome{}, fmt.Errorf("stamp worktree-id: %w", err)
+		return RepoWorktreeResult{}, fmt.Errorf("stamp worktree-id: %w", err)
 	}
 
-	return repoWorktreeOutcome{
+	return RepoWorktreeResult{
 		CreateWorktreeResult: CreateWorktreeResult{
 			WorktreeID:  worktreeID,
 			Branch:      branch,
@@ -257,39 +257,6 @@ func (s *Service) addRepoWorktree(ctx context.Context, slug, gitDir, branch, dis
 		},
 		Created: true,
 	}, nil
-}
-
-// ensureBranchFetched makes branch resolvable in the canonical at
-// gitDir: a no-op when refs/heads/<branch> or refs/remotes/origin/<branch>
-// already exists, else one single-branch fetch from origin into the
-// remote-tracking namespace (token-authed — harmless for file:// test
-// remotes). A branch missing on the remote is NOT an error here; the
-// caller's worktree add reports ErrNotFound with full context.
-//
-// Caller holds the repo lock.
-func (s *Service) ensureBranchFetched(gitDir, branch, token string) error {
-	local, err := git.BranchExists(gitDir, branch)
-	if err != nil {
-		return fmt.Errorf("check branch: %w", err)
-	}
-	if local {
-		return nil
-	}
-	tracking, err := git.RemoteTrackingBranchExists(gitDir, "origin", branch)
-	if err != nil {
-		return fmt.Errorf("check remote branch: %w", err)
-	}
-	if tracking {
-		return nil
-	}
-	refspec := "+refs/heads/" + branch + ":refs/remotes/origin/" + branch
-	if err := git.Fetch(gitDir, "origin", refspec, git.PushOptions{ExtraHeader: buildAuthHeader(token)}); err != nil {
-		if isNoRemoteRef(err) {
-			return nil // absent on the remote too → the add reports ErrNotFound
-		}
-		return fmt.Errorf("fetch branch %q: %w", branch, err)
-	}
-	return nil
 }
 
 // rollbackCanonical removes a canonical this call created when a later
