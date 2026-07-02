@@ -1362,6 +1362,9 @@ func (s *Service) CreateWorktree(ctx context.Context, baseWorktreeRef agent.GitR
 // Returns ErrNotFound (preserving the original "does not exist" semantics) when
 // there's no origin remote or the branch is absent on it; wraps transport/auth
 // failures verbatim.
+//
+// TODO(ai-review): add cancellation/timeout to the git fetch below https://github.com/Acksell/clank/pull/91
+// TODO(ai-review): sanitize branch/refspec before git fetch/push (flag injection) https://github.com/Acksell/clank/pull/91
 func (s *Service) fetchBaseBranchFromOrigin(repoRoot, branch string) error {
 	notFound := fmt.Errorf("%w: base branch %q does not exist in %s", ErrNotFound, branch, filepath.Base(repoRoot))
 
