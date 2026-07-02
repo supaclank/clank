@@ -55,6 +55,10 @@ const HostPort = 8080
 // sprite hibernation.
 const installPath = "/usr/local/bin/clank-host"
 
+// opencodePath is the canonical opencode location — a symlink the
+// install script re-points at bun's global bin on every install.
+const opencodePath = "/usr/local/bin/opencode"
+
 // serviceName is stable — reused across restarts so the running
 // service auto-resumes from hibernation.
 const serviceName = "clank-host"
@@ -587,44 +591,88 @@ func readSidecar(stat fs.FS, sidecarPath string) (string, bool) {
 // a process-local optimization in agent/software_manifest.go that
 // only invalidates on clank-host restart.
 func (p *Provisioner) ensureOpenCodeInstalled(ctx context.Context, sprite *sprites.Sprite) (reinstalled bool, err error) {
+	probe := func(probeCtx context.Context) (string, error) {
+		var versionOut []byte
+		probeErr := retryClosedConn(probeCtx, p.log, func() error {
+			cmd := sprite.CommandContext(probeCtx, opencodePath, "--version")
+			var runErr error
+			versionOut, runErr = cmd.Output()
+			return runErr
+		})
+		return strings.TrimSpace(string(versionOut)), probeErr
+	}
+	install := func(installCtx context.Context) ([]byte, error) {
+		script := strings.ReplaceAll(opencodeInstallScript, "__PINNED_VERSION__", agent.PinnedOpencodeVersion)
+		var out []byte
+		runErr := retryClosedConn(installCtx, p.log, func() error {
+			cmd := sprite.CommandContext(installCtx, "sh", "-c", script)
+			var rerr error
+			out, rerr = cmd.CombinedOutput()
+			return rerr
+		})
+		return out, runErr
+	}
+	return p.ensureOpenCodeInstalledOn(ctx, sprite.Name(), probe, sprite.Filesystem(), install)
+}
+
+// ensureOpenCodeInstalledOn is the testable core of
+// ensureOpenCodeInstalled. The 3-minute install runs ONLY on positive
+// evidence that it's needed:
+//
+//   - the probe succeeded and reported a non-pinned version, or
+//   - the probe executed on the sprite and exited non-zero (broken
+//     binary, dangling symlink), or
+//   - the probe failed at the transport layer AND the filesystem API
+//     confirms opencode is absent (fresh sprite).
+//
+// A transport-level probe failure with opencode present on disk fails
+// fast instead: the install would run over the same wedged channel,
+// and EnsureHost callers retry with a fresh connection anyway. (Seen
+// 2026-07-02: a wake-race probe failure on a freshly-woken sprite
+// burned the full 3-minute install deadline inside the request path
+// while the pinned version was installed all along.)
+func (p *Provisioner) ensureOpenCodeInstalledOn(ctx context.Context, spriteName string, probe func(context.Context) (string, error), statFS fs.FS, install func(context.Context) ([]byte, error)) (reinstalled bool, err error) {
 	probeCtx, probeCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer probeCancel()
-	var versionOut []byte
-	probeErr := retryClosedConn(probeCtx, p.log, func() error {
-		cmd := sprite.CommandContext(probeCtx, "/usr/local/bin/opencode", "--version")
-		var runErr error
-		versionOut, runErr = cmd.Output()
-		return runErr
-	})
-	if probeErr == nil {
-		installed := strings.TrimSpace(string(versionOut))
+	installed, probeErr := probe(probeCtx)
+	switch {
+	case probeErr == nil:
 		if installed == agent.PinnedOpencodeVersion {
 			return false, nil // happy path: present and pinned-version-matched
 		}
-		p.log.Printf("flyio provisioner: opencode on %s is %q, want %q — reinstalling at pinned version", sprite.Name(), installed, agent.PinnedOpencodeVersion)
+		p.log.Printf("flyio provisioner: opencode on %s is %q, want %q — reinstalling at pinned version", spriteName, installed, agent.PinnedOpencodeVersion)
+	case probeRanOnSprite(probeErr):
+		p.log.Printf("flyio provisioner: opencode probe on %s exited non-zero (%v); reinstalling", spriteName, probeErr)
+	default:
+		if _, statErr := fs.Stat(statFS, strings.TrimPrefix(opencodePath, "/")); statErr == nil {
+			return false, fmt.Errorf("opencode probe on %s did not complete and %s exists — failing fast for a retry on a fresh conn instead of reinstalling: %w", spriteName, opencodePath, probeErr)
+		} else if !errors.Is(statErr, fs.ErrNotExist) {
+			return false, fmt.Errorf("opencode probe on %s did not complete and the presence check failed (%v): %w", spriteName, statErr, probeErr)
+		}
+		p.log.Printf("flyio provisioner: opencode absent on %s (probe: %v); installing", spriteName, probeErr)
 	}
 
 	installCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
-	script := strings.ReplaceAll(opencodeInstallScript, "__PINNED_VERSION__", agent.PinnedOpencodeVersion)
-
-	var out []byte
-	runErr := retryClosedConn(installCtx, p.log, func() error {
-		cmd := sprite.CommandContext(installCtx, "sh", "-c", script)
-		var rerr error
-		out, rerr = cmd.CombinedOutput()
-		return rerr
-	})
+	out, runErr := install(installCtx)
 	if runErr != nil {
 		trimmed := strings.TrimSpace(string(out))
 		if len(trimmed) > 8192 {
 			trimmed = "..." + trimmed[len(trimmed)-8192:]
 		}
-		return false, fmt.Errorf("install opencode (sprite=%s): %w\n--- install output ---\n%s\n--- end output ---", sprite.Name(), runErr, trimmed)
+		return false, fmt.Errorf("install opencode (sprite=%s): %w\n--- install output ---\n%s\n--- end output ---", spriteName, runErr, trimmed)
 	}
-	p.log.Printf("flyio provisioner: installed opencode %s on sprite %s", agent.PinnedOpencodeVersion, sprite.Name())
+	p.log.Printf("flyio provisioner: installed opencode %s on sprite %s", agent.PinnedOpencodeVersion, spriteName)
 	return true, nil
+}
+
+// probeRanOnSprite reports whether err carries a sprite-side exit
+// status — i.e. the exec channel worked end-to-end and the failure is
+// evidence about opencode itself, not about the transport.
+func probeRanOnSprite(err error) bool {
+	var exitErr *sprites.ExitError
+	return errors.As(err, &exitErr)
 }
 
 // opencodeInstallScript installs opencode at the pinned version and
@@ -1068,7 +1116,11 @@ func isClosedConnErr(err error) bool {
 	return strings.Contains(msg, "use of closed network connection") ||
 		strings.Contains(msg, "websocket: close") ||
 		strings.Contains(msg, "broken pipe") ||
-		strings.Contains(msg, "connection reset")
+		strings.Contains(msg, "connection reset") ||
+		// sprites-go's exec Wait reports a command whose control conn
+		// died before an exit code arrived as exactly "connection
+		// closed" — the wake-race symptom on a freshly-woken sprite.
+		strings.Contains(msg, "connection closed")
 }
 
 // retryClosedConn runs fn up to 4 times, retrying with 200ms/600ms/
