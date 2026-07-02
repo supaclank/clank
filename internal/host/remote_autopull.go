@@ -65,7 +65,8 @@ func (s *Service) coldStartAutoPull(ctx context.Context) {
 
 // materializedWorktreeIDs lists the worktree IDs present under
 // workRootDir() ($HOME/work/<id>). Each subdirectory name is a worktree ID
-// resolvable by workDirFor.
+// resolvable by workDirFor. Non-ULID entries — chiefly the repos/ subtree
+// holding the bare canonicals — are skipped: they aren't worktrees.
 func materializedWorktreeIDs() ([]string, error) {
 	root, err := workRootDir()
 	if err != nil {
@@ -80,7 +81,7 @@ func materializedWorktreeIDs() ([]string, error) {
 	}
 	var ids []string
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() && isULIDLike(e.Name()) {
 			ids = append(ids, e.Name())
 		}
 	}

@@ -49,8 +49,13 @@ func MainWorktreeRoot(dir string) (string, error) {
 	if commonDir == "" {
 		return "", fmt.Errorf("git common-dir returned empty path for %q", dir)
 	}
-	// commonDir points at the shared `.git`; the main worktree is its parent.
-	// Normalise a trailing `/.git` to its repo root.
+	// A non-bare repo's common dir is its `.git` directory — the main
+	// worktree is the parent. A BARE canonical (repo-first layout:
+	// ~/work/repos/<slug>/repo.git) has no worktree of its own; the bare
+	// dir itself is the repo root every git command should run against.
+	if filepath.Base(commonDir) != ".git" {
+		return commonDir, nil
+	}
 	parent := filepath.Dir(commonDir)
 	if parent == "" || parent == "." {
 		return "", fmt.Errorf("could not derive main worktree root from %q", commonDir)

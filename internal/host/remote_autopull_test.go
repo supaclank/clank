@@ -13,7 +13,10 @@ func TestMaterializedWorktreeIDs(t *testing.T) {
 	prev := SetWorkRootForTest(root)
 	defer SetWorkRootForTest(prev)
 
-	for _, id := range []string{"wt-a", "wt-b"} {
+	// Worktree dirs are ULID-named; only those count.
+	wtA := "01KWABCDEF0123456789ABCDEF"
+	wtB := "01KWABCDEF0123456789ABCDEG"
+	for _, id := range []string{wtA, wtB} {
 		if err := os.MkdirAll(filepath.Join(root, id), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -22,14 +25,21 @@ func TestMaterializedWorktreeIDs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "stray.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The repos/ subtree holds bare canonicals (repo-first layout), and
+	// any other non-ULID dir name isn't a worktree either.
+	for _, dir := range []string{"repos", "not-a-ulid"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	ids, err := materializedWorktreeIDs()
 	if err != nil {
 		t.Fatalf("materializedWorktreeIDs: %v", err)
 	}
 	slices.Sort(ids)
-	if !slices.Equal(ids, []string{"wt-a", "wt-b"}) {
-		t.Errorf("ids = %v, want [wt-a wt-b]", ids)
+	if !slices.Equal(ids, []string{wtA, wtB}) {
+		t.Errorf("ids = %v, want [%s %s]", ids, wtA, wtB)
 	}
 }
 

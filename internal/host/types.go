@@ -67,6 +67,11 @@ type CreateWorktreeResult struct {
 	// (e.g. "acme/api" or a local-dir basename fallback). Persisted on
 	// the worktree row so clients (mobile picker, TUI) can group by repo.
 	OriginRepo string `json:"origin_repo"`
+	// RepoSlug is the repo-first routing key (~/work/repos/<slug>) this
+	// worktree belongs to — the stable, single-segment, host-minted id
+	// clients use for repo-scoped calls. Empty for worktrees created
+	// outside the repo-first layout (laptop LocalPath forks).
+	RepoSlug string `json:"repo_slug,omitempty"`
 }
 
 // HostStatus is the response body of `GET /status` on the Host API. Hub
