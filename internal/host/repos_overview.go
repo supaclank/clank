@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
@@ -136,6 +137,17 @@ func (s *Service) RepoOverview(ctx context.Context, slug string, fetch bool) (Re
 	// branch. PR-only heads (a colleague's branch you never loaded)
 	// become loaded:false entries — the "check out" candidates.
 	s.attachRepoPRs(ctx, &result)
+
+	// attachRepoPRs appends PR-only entries via map iteration (random
+	// order in Go) — resort to restore the most-recently-active-first
+	// contract LocalBranchTips established.
+	sort.Slice(result.Branches, func(i, j int) bool {
+		a, b := result.Branches[i], result.Branches[j]
+		if !a.LastCommitAt.Equal(b.LastCommitAt) {
+			return a.LastCommitAt.After(b.LastCommitAt)
+		}
+		return a.Branch < b.Branch
+	})
 	return result, nil
 }
 
@@ -236,8 +248,11 @@ func (s *Service) attachRepoPRs(ctx context.Context, result *RepoOverviewResult)
 	}
 	for head, pr := range byHead {
 		result.Branches = append(result.Branches, RepoBranchOverview{
-			Branch:       head,
-			Loaded:       false,
+			Branch: head,
+			Loaded: false,
+			// TODO(ai-review): PR-only entries stand in PR UpdatedAt (review/comment
+			// activity) for LastCommitAt (tip commit time) — sort/consumer contract
+			// says "commit time" but this can be neither. https://github.com/Acksell/clank/pull/95#discussion_r3512692389
 			LastCommitAt: pr.UpdatedAt,
 			PR:           pr,
 		})

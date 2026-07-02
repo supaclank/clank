@@ -181,6 +181,67 @@ func TestRepoOverview_PRHalf(t *testing.T) {
 	}
 }
 
+// PR-only heads are merged in via a map iteration (random order in Go);
+// the result must still come out sorted most-recently-active first,
+// matching LocalBranchTips' documented order. Not parallel (fixture
+// globals).
+func TestRepoOverview_PRHalfSortedByRecency(t *testing.T) {
+	svc, workRoot := setupRepoFirstImport(t)
+	ctx := context.Background()
+
+	if _, err := svc.ImportProjectFromGitHub(ctx, "acme", "api", "main"); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/acksell/api/pulls" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"number":10,"title":"Oldest","state":"open","draft":false,
+			 "html_url":"https://github.com/acksell/api/pull/10",
+			 "head":{"ref":"branch-oldest"},"base":{"ref":"main"},
+			 "user":{"login":"alice"},"updated_at":"2026-06-30T00:00:00Z"},
+			{"number":11,"title":"Newest","state":"open","draft":false,
+			 "html_url":"https://github.com/acksell/api/pull/11",
+			 "head":{"ref":"branch-newest"},"base":{"ref":"main"},
+			 "user":{"login":"alice"},"updated_at":"2026-07-02T00:00:00Z"},
+			{"number":12,"title":"Middle","state":"open","draft":false,
+			 "html_url":"https://github.com/acksell/api/pull/12",
+			 "head":{"ref":"branch-middle"},"base":{"ref":"main"},
+			 "user":{"login":"alice"},"updated_at":"2026-07-01T00:00:00Z"}
+		]`))
+	}))
+	t.Cleanup(apiSrv.Close)
+	svc.GitHub().SetAPIBaseURL(apiSrv.URL)
+	if err := svc.GitHub().Store().Write(githubpkg.Credentials{AccessToken: "gho_test", GitHubLogin: "acksell"}); err != nil {
+		t.Fatal(err)
+	}
+	gitDir := filepath.Join(workRoot, "repos", "acme__api", "repo.git")
+	if err := git.SetLocalConfig(gitDir, "remote.origin.url", "https://github.com/acksell/api.git"); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 20; i++ {
+		ov, err := svc.RepoOverview(ctx, "acme__api", false)
+		if err != nil {
+			t.Fatalf("overview: %v", err)
+		}
+		var prOnly []string
+		for _, b := range ov.Branches {
+			if !b.Loaded {
+				prOnly = append(prOnly, b.Branch)
+			}
+		}
+		want := []string{"branch-newest", "branch-middle", "branch-oldest"}
+		if strings.Join(prOnly, ",") != strings.Join(want, ",") {
+			t.Fatalf("iteration %d: PR-only branches = %v, want %v", i, prOnly, want)
+		}
+	}
+}
+
 // Unknown slug → ErrRepoNotFound; greenfield → origin null, main loaded.
 // Not parallel (fixture globals).
 func TestRepoOverview_GreenfieldAndUnknown(t *testing.T) {

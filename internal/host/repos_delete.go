@@ -12,6 +12,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/git"
+	"github.com/oklog/ulid/v2"
 )
 
 // DeleteRepo removes the repo identified by slug: every linked worktree
@@ -48,10 +49,15 @@ func (s *Service) DeleteRepo(ctx context.Context, slug string) error {
 		}
 		id, idErr := agent.ReadLocalWorktreeID(wt.Path)
 		if idErr != nil || id == "" {
-			// A worktree without a readable id has no sessions addressed
-			// to it; it goes down with the canonical dir below.
-			s.log.Printf("delete repo %s: worktree %s has no readable id: %v", slug, wt.Path, idErr)
-			continue
+			// Linked worktrees live outside the canonical dir (~/work/<ULID>),
+			// so they do NOT go down with it below — fall back to the dir
+			// name, which is the ULID the worktree was created under.
+			base := filepath.Base(wt.Path)
+			if _, perr := ulid.ParseStrict(base); perr != nil {
+				s.log.Printf("delete repo %s: worktree %s has no readable id and dir name isn't a ULID: %v", slug, wt.Path, idErr)
+				continue
+			}
+			id = base
 		}
 		targets = append(targets, target{id: id, path: wt.Path})
 	}

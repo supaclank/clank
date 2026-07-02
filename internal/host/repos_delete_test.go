@@ -114,6 +114,29 @@ func TestDeleteRepo_FullCleanup(t *testing.T) {
 	}
 }
 
+func TestDeleteRepo_UnreadableWorktreeIDFallsBackToDirName(t *testing.T) {
+	svc, _, workRoot := setupRepoDeleteFixture(t)
+	ctx := context.Background()
+
+	main, err := svc.ImportProjectFromGitHub(ctx, "acme", "api", "main")
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if _, err := agent.RemoveLocalWorktreeID(main.WorktreeDir); err != nil {
+		t.Fatalf("remove cached worktree id: %v", err)
+	}
+
+	if err := svc.DeleteRepo(ctx, "acme__api"); err != nil {
+		t.Fatalf("DeleteRepo: %v", err)
+	}
+
+	for _, dir := range []string{main.WorktreeDir, filepath.Join(workRoot, "repos", "acme__api")} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("%s still present (orphaned): err=%v", dir, err)
+		}
+	}
+}
+
 func TestDeleteRepo_RefusesWhenBusy(t *testing.T) {
 	svc, st, workRoot := setupRepoDeleteFixture(t)
 	ctx := context.Background()
