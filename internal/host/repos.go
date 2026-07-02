@@ -218,6 +218,9 @@ func (s *Service) ensureRepoBranchAvailable(gitDir, branch string) error {
 
 	remoteURL, err := git.RemoteURL(gitDir, "origin")
 	if err != nil {
+		if !git.IsRemoteNotConfigured(err) {
+			return fmt.Errorf("get origin url: %w", err)
+		}
 		return nil // greenfield: no origin to fetch from
 	}
 	fetchURL := remoteURL

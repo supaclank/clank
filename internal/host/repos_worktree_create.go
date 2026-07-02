@@ -45,7 +45,7 @@ func (s *Service) CreateRepoWorktree(ctx context.Context, slug string, req RepoW
 		return RepoWorktreeResult{}, fmt.Errorf("%w: exactly one of branch or base_branch is required", ErrInvalidArgument)
 	}
 	for _, b := range []string{req.Branch, req.BaseBranch} {
-		if len(b) > 0 && b[0] == '-' {
+		if !validBranchInput(b) {
 			return RepoWorktreeResult{}, fmt.Errorf("%w: invalid branch %q", ErrInvalidArgument, b)
 		}
 	}
@@ -150,8 +150,14 @@ func (s *Service) addRepoWorktreeNewBranch(ctx context.Context, slug, gitDir, br
 		return RepoWorktreeResult{}, fmt.Errorf("add worktree: %w", err)
 	}
 	if err := agent.WriteLocalWorktreeID(wtDir, worktreeID); err != nil {
+		// Best-effort rollback so a retry doesn't accumulate orphaned
+		// worktrees + branches. Logged-and-continue: the stamp error is
+		// what the caller needs to see.
 		if rmErr := git.RemoveWorktree(gitDir, wtDir, true); rmErr != nil {
 			s.log.Printf("warning: rollback worktree %s: %v", wtDir, rmErr)
+		}
+		if delErr := git.DeleteBranch(gitDir, branch, true); delErr != nil {
+			s.log.Printf("warning: rollback delete branch %q: %v", branch, delErr)
 		}
 		return RepoWorktreeResult{}, fmt.Errorf("stamp worktree-id: %w", err)
 	}
@@ -166,6 +172,27 @@ func (s *Service) addRepoWorktreeNewBranch(ctx context.Context, slug, gitDir, br
 		},
 		Created: true,
 	}, nil
+}
+
+// validBranchInput reports whether b is safe to hand to git as a branch
+// name: guards against flag injection ('-' prefix) and whitespace/control
+// characters, which git's ref grammar rejects deep inside `worktree add`
+// with a bare "fatal: Refusing to set 'HEAD' to invalid ref" — surfacing
+// as a 500 instead of a clean 400 invalid_argument. Emptiness is checked
+// separately by the caller.
+func validBranchInput(b string) bool {
+	if b == "" {
+		return true
+	}
+	if b[0] == '-' {
+		return false
+	}
+	for _, r := range b {
+		if r <= ' ' {
+			return false
+		}
+	}
+	return true
 }
 
 // availablePetnameBranch generates a petname branch name that doesn't
