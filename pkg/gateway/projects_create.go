@@ -102,9 +102,9 @@ func (g *Gateway) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	if status/100 != 2 {
 		// Host 5xx bodies can carry raw git stderr — including the
-		// RESOLVED template clone URL, which may embed credentials and
-		// must never reach clients. Mask to a generic 502.
-		g.log.Printf("gateway create-project: host returned %d: %s", status, strings.TrimSpace(string(body)))
+		// RESOLVED template clone URL, which may embed credentials — so
+		// mask to a generic 502 and keep the body out of logs too.
+		g.log.Printf("gateway create-project: host returned %d (%d-byte body withheld, may contain credentials)", status, len(body))
 		http.Error(w, "project creation failed", http.StatusBadGateway)
 		return
 	}
