@@ -145,5 +145,7 @@ C: GET /sessions/{id}/pending-permission          ── ⚠ returns [] today [O
 
 - **[FLOW-RECONNECT-001] (MUST)** A client MUST run this reconcile after **every** stream
   (re)connection, not only the first, and MUST drive it from its own transport state — not
-  from a `reconnected` event (that is the backend's link, [EVT-020]). **Golden:**
-  `internal/tui/sessionview.go:511`, `clank-mobile/src/hooks/dispatch.ts:196`.
+  from a `reconnected` event (that is the backend's link, [EVT-020]). Getting *back* to a
+  connected stream in the first place is [EVT-006]'s supervised-reconnect duty. **Golden:**
+  `internal/tui/sessionview.go:511`, `clank-mobile/src/hooks/useEventStream.ts`
+  (`onReconnect` → `resyncAfterStreamGap`).

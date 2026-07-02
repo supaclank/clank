@@ -41,6 +41,33 @@ this is the wire.
   the global stream multiplexes all sessions; an inbox needs create/delete even for sessions
   it isn't viewing. **Golden:** `internal/tui/sessionview.go:847` (filter + create/delete
   exception).
+- **[EVT-006] (MUST)** The subscription is **supervised**. After *any* termination of the
+  stream — transport error, non-2xx response, timeout, or a clean server close (gateway
+  deploy, LB idle timeout) — a client MUST reconnect automatically with capped backoff
+  ([NFR-REL-001](09-non-functional.md)) and keep trying until the stream is deliberately
+  torn down. A failed attempt schedules the next one; a token-refresh failure is transient
+  too ([CONN-012](02-connection-and-auth.md)) — an auth-refresh retry is **not** a
+  substitute for transport retry. On suspendable platforms (mobile), a client MUST
+  additionally tear down and resubscribe when the app returns to foreground: a suspended
+  process's socket can be half-open — dead without ever erroring — and with no heartbeat on
+  the wire ([EVT-004]) a zombie is indistinguishable from a healthy idle stream. Every
+  re-establishment reconciles per [EVT-010].
+  **Why:** the stream is the app's only realtime channel; a client that stops reconnecting
+  degrades to fetch-on-navigation. Most visibly, a session created after the stream died
+  renders its prompt and then *nothing* — no parts, no status flip, a permanent "working"
+  spinner — while the session list quietly goes stale. This shipped as a mobile bug: one
+  immediate refresh-retry (which ran inside the same outage that killed the socket), then
+  permanent silence for the rest of the app's life. See
+  [INV-STREAM-SUPERVISE-001](08-invariants.md).
+  **Beware your SSE library's termination surface:** enumerate its kill paths and verify
+  each one reaches the supervisor. `react-native-sse` with `pollingInterval: 0` fires **no
+  callback at all** for a clean server close (a 2xx stream that just ends); the golden
+  mobile client sets a small `pollingInterval` so the library's own re-poll covers exactly
+  that invisible path, and closes the socket on every `error` (cancelling that re-poll) so
+  all other paths route through its own backoff loop.
+  **Golden:** `clank-mobile/src/api/events.ts` (`openEventStream`: supervised loop,
+  `scheduleReconnect`, `restart()`), `clank-mobile/src/hooks/useEventStream.ts` (AppState
+  foreground restart), `…/session/SessionEventStream.kt:121` (Kotlin capped-backoff loop).
 
 ## Envelope
 
@@ -71,7 +98,8 @@ single biggest source of cross-client divergence.
   history for a new or reconnecting subscriber. A client MUST therefore reconcile state from
   the transcript (`GET /sessions/{id}/messages`) after **every** (re)connection, not just the
   first. See [INV-RECONCILE-001](08-invariants.md). **Golden:**
-  `internal/host/events.go` (no per-subscriber backlog), `clank-mobile/src/hooks/dispatch.ts:196`.
+  `internal/host/events.go` (no per-subscriber backlog), `clank-mobile/src/hooks/dispatch.ts`
+  (`resyncAfterStreamGap`).
 - **[EVT-011] (MUST)** Each subscriber has a bounded server-side buffer (256 events); when
   it fills, the server **silently drops** events for that subscriber rather than blocking. A
   client MUST drain its socket promptly (do no heavy work on the read path) and MUST rely on
@@ -132,8 +160,9 @@ single biggest source of cross-client divergence.
   backend may have changed state. **Why:** conflating the two means a real client-side
   transport blip (which emits no event, since the socket was down) never triggers a resync,
   leaving a stale transcript. See [INV-RECONNECT-SEMANTICS-001](08-invariants.md). **Golden:**
-  `internal/agent/agent.go:297`–`:309` (payloads describe the backend), `clank-mobile/src/hooks/dispatch.ts:196`
-  (current mobile behavior — reconciles on this event but does not cover its own transport reconnect).
+  `internal/agent/agent.go:297`–`:309` (payloads describe the backend), `clank-mobile/src/hooks/dispatch.ts`
+  (`resyncAfterStreamGap` — run from both the `reconnected` event *and* the client's own
+  transport reconnect via `onReconnect`).
 
 ### Voice events
 

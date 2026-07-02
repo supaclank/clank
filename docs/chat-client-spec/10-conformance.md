@@ -129,6 +129,7 @@ files.
 | `CONF-STALE-STREAM` | Events/closes from a superseded stream don't mutate live state or re-arm a reader | INV-STALE-STREAM-001 |
 | `CONF-SINGLE-STREAM` | A teardown during async connect leaves zero live sockets; no event is delivered twice | INV-SSE-DOUBLE-001, NFR-CONC-002 |
 | `CONF-NO-END` | Stream close (EOF) ends the stream; no `end` event is awaited | INV-NO-END-001 |
+| `CONF-STREAM-SUPERVISE` | every stream termination (incl. a silent clean close) leads back to a live subscription + reconcile; N consecutive failed attempts never end the loop; foreground resubscribes | INV-STREAM-SUPERVISE-001, EVT-006, NFR-REL-001 |
 | `CONF-STREAM-DELTA` | delta appends, snapshot replaces, settles on idle | INV-DELTA-001, STATE-PART-001 |
 | `CONF-TOOL-MERGE` | input (call) + output (result) for one part id both survive | INV-TOOL-MERGE-001, DATA-022 |
 | `CONF-MONOTONIC` | a lagging refetch mid-stream does not shrink/erase streamed content | INV-MONOTONIC-001, NFR-CONS-001 |
