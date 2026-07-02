@@ -47,14 +47,14 @@ func GitCredentialHelperValue(executable string) string {
 // fault, corrupt JSON) is returned — that's a real fault worth git's
 // stderr, not a silent miss.
 func RunGitCredentialHelper(action string, in io.Reader, out io.Writer, store *Store) error {
+	if action != "get" {
+		return nil
+	}
 	attrs, err := parseCredentialAttrs(in)
 	if err != nil {
 		return err
 	}
-	if action != "get" {
-		return nil
-	}
-	if attrs["protocol"] != "https" || attrs["host"] != "github.com" {
+	if !strings.EqualFold(attrs["protocol"], "https") || !strings.EqualFold(attrs["host"], "github.com") {
 		return nil
 	}
 	creds, err := store.Read()
@@ -63,6 +63,9 @@ func RunGitCredentialHelper(action string, in io.Reader, out io.Writer, store *S
 	}
 	if creds.AccessToken == "" {
 		return nil // not connected — clean no-answer
+	}
+	if strings.ContainsAny(creds.AccessToken, "\r\n\x00") {
+		return fmt.Errorf("git-credential: stored access token contains invalid characters")
 	}
 	if _, err := fmt.Fprintf(out, "username=%s\npassword=%s\n", credentialUsername, creds.AccessToken); err != nil {
 		return fmt.Errorf("write credential response: %w", err)

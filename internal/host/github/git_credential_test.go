@@ -72,6 +72,70 @@ func TestRunGitCredentialHelper_MalformedInput(t *testing.T) {
 	}
 }
 
+// Non-get actions must stay silent even when git sends stdin the parser
+// can't read — malformed input on store/erase should never fail the helper.
+func TestRunGitCredentialHelper_NonGetIgnoresMalformedInput(t *testing.T) {
+	t.Parallel()
+	store := NewStore(t.TempDir())
+	var out strings.Builder
+	err := RunGitCredentialHelper("store", strings.NewReader("not-a-key-value\n\n"), &out, store)
+	if err != nil {
+		t.Fatalf("RunGitCredentialHelper(store) with malformed input: err = %v, want nil", err)
+	}
+	if out.String() != "" {
+		t.Errorf("output = %q, want empty", out.String())
+	}
+}
+
+func TestRunGitCredentialHelper_RejectsInvalidTokenCharacters(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		token string
+	}{
+		{"embedded newline", "gho_evil\nurl=http://attacker.example"},
+		{"embedded carriage return", "gho_evil\rurl=http://attacker.example"},
+		{"embedded NUL", "gho_evil\x00trailing"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store := NewStore(t.TempDir())
+			if err := store.Write(Credentials{AccessToken: tc.token}); err != nil {
+				t.Fatalf("store.Write: %v", err)
+			}
+			var out strings.Builder
+			in := strings.NewReader("protocol=https\nhost=github.com\n\n")
+			err := RunGitCredentialHelper("get", in, &out, store)
+			if err == nil {
+				t.Fatal("RunGitCredentialHelper with invalid token characters: err = nil, want error")
+			}
+			if out.String() != "" {
+				t.Errorf("output = %q, want empty (must not leak partial/corrupt token)", out.String())
+			}
+		})
+	}
+}
+
+func TestRunGitCredentialHelper_CaseInsensitiveAttrs(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	store := NewStore(home)
+	if err := store.Write(Credentials{AccessToken: "gho_secret"}); err != nil {
+		t.Fatalf("store.Write: %v", err)
+	}
+
+	var out strings.Builder
+	in := strings.NewReader("protocol=HTTPS\nhost=GitHub.com\n\n")
+	if err := RunGitCredentialHelper("get", in, &out, store); err != nil {
+		t.Fatalf("RunGitCredentialHelper: %v", err)
+	}
+	want := "username=x-access-token\npassword=gho_secret\n"
+	if out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
+	}
+}
+
 func TestGitCredentialHelperValue_QuotesPath(t *testing.T) {
 	t.Parallel()
 	got := GitCredentialHelperValue("/opt/my tools/clank-host")
@@ -120,6 +184,7 @@ func TestGitCredentialFill_EndToEnd(t *testing.T) {
 	// terminal prompting so a miss fails instead of hanging.
 	fill.Env = append(os.Environ(),
 		"HOME="+home,
+		"USERPROFILE="+home, // os.UserHomeDir() prefers USERPROFILE on Windows
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_ASKPASS=",
