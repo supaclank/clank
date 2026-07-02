@@ -284,3 +284,30 @@ func TestCreateProject_HostErrorDoesNotLeakDetails(t *testing.T) {
 		t.Fatalf("host error details leaked in gateway 502 body: %q", body)
 	}
 }
+
+// A host non-2xx must arrive at the client VERBATIM (status + typed
+// body), not flattened to a generic 502 — the regression the repo-first
+// cutover fixed for this route (mirrors projects_import.go's contract).
+func TestCreateProject_ForwardsHostErrorVerbatim(t *testing.T) {
+	t.Parallel()
+	const cloneURL = "https://example.test/templates/expo.git"
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /projects/create", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"code":"invalid_argument","error":"name is required"}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	gw, _ := newProjectsGateway(t, srv, []Template{{ID: "expo", DisplayName: "Expo", CloneURL: cloneURL}})
+
+	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"template":"expo","name":"x"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 forwarded verbatim (not 502)", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "invalid_argument") {
+		t.Errorf("body = %q, want the host's typed error forwarded", body)
+	}
+}

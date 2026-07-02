@@ -1,3 +1,6 @@
+// Deprecated: checkpoint-sync — replaced by the repo-first GitHub-remote
+// model (canonical clones + /v1/repos*; GitHub is the laptop↔sprite
+// bridge). Serving until the mobile cutover, then DELETED wholesale.
 package gateway
 
 import (

@@ -1,3 +1,9 @@
+// Package sync is DEPRECATED: checkpoint-sync is replaced by the
+// repo-first GitHub-remote model (canonical clones + /v1/repos*; GitHub
+// is the laptop↔sprite bridge). Serving until the mobile cutover, then
+// DELETED wholesale — including the worktrees/checkpoints/head_bundles
+// tables it owns.
+//
 // Package sync is the persistent checkpoint substrate behind the
 // laptop→remote autopush and remote→laptop pull flows. It mints
 // presigned URLs for an S3-compatible object store and tracks worktree

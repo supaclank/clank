@@ -272,6 +272,16 @@ func (g *Gateway) Handler() http.Handler {
 	mx.HandleFunc("POST /v1/worktrees/{id}/pr", g.handleGitHubCreatePR)
 	mx.HandleFunc("POST /v1/worktrees/{id}/pr/preview", g.handleGitHubPreviewPR)
 
+	// Repo-first surface: filesystem-derived listing, repo-scoped
+	// worktree creation, the branch∪PR overview, and whole-repo delete.
+	// Pure proxies with verbatim status forwarding — see
+	// pkg/gateway/repos_proxy.go + internal/host/mux/repos.go. Mounted
+	// before the /v1/ catch-all like everything else here.
+	mx.HandleFunc("GET /v1/repos", g.handleReposList)
+	mx.HandleFunc("POST /v1/repos/{slug}/worktrees", g.handleRepoWorktreeCreate)
+	mx.HandleFunc("GET /v1/repos/{slug}/overview", g.handleRepoOverview)
+	mx.HandleFunc("DELETE /v1/repos/{slug}", g.handleRepoDelete)
+
 	// Worktree↔GitHub-remote sync. The "remote/" segment keeps these
 	// distinct from the checkpoint routes above (/pull, /sync). See
 	// pkg/gateway/remote_sync.go + internal/host/mux/remote.go.
