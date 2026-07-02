@@ -228,6 +228,14 @@ func (s *Service) addRepoWorktree(ctx context.Context, slug, gitDir, branch, dis
 		err = git.AddWorktreeNewBranch(gitDir, wtDir, branch, "refs/remotes/origin/"+branch)
 	}
 	if err != nil {
+		// A failed `git worktree add` can still leave a partial wtDir and/or
+		// worktree bookkeeping behind — best-effort clean so a retry starts fresh.
+		if rmErr := os.RemoveAll(wtDir); rmErr != nil {
+			s.log.Printf("warning: cleanup partial worktree dir %s: %v", wtDir, rmErr)
+		}
+		if pruneErr := git.PruneWorktrees(gitDir); pruneErr != nil {
+			s.log.Printf("warning: prune worktrees in %s: %v", gitDir, pruneErr)
+		}
 		return repoWorktreeOutcome{}, fmt.Errorf("add worktree: %w", err)
 	}
 	if err := agent.WriteLocalWorktreeID(wtDir, worktreeID); err != nil {

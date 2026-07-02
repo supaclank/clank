@@ -325,3 +325,61 @@ func TestScaffold_RepoFirstLayout(t *testing.T) {
 		t.Errorf("canonical origin = %q — RemoteAdd from a worktree must write the shared config", fromCanonical)
 	}
 }
+
+// TestImport_CleansUpOnAddWorktreeFailure: when a second branch's `git
+// worktree add` fails (its target directory can't be created), the
+// work root must be left exactly as it was — no orphaned directory, no
+// dangling `git worktree` bookkeeping in the canonical — so a retry
+// starts clean.
+func TestImport_CleansUpOnAddWorktreeFailure(t *testing.T) {
+	if _, err := exec.LookPath("chattr"); err != nil {
+		t.Skip("chattr not available — can't force a worktree-add failure on this host")
+	}
+	svc, workRoot := setupRepoFirstImport(t)
+	ctx := context.Background()
+
+	first, err := svc.ImportProjectFromGitHub(ctx, "acme", "api", "main")
+	if err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+
+	// Lock the work root so the second import's `git worktree add` can't
+	// create its target directory — immutable blocks even root.
+	if out, err := exec.Command("chattr", "+i", workRoot).CombinedOutput(); err != nil {
+		t.Skipf("chattr +i unsupported on this filesystem: %v\n%s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("chattr", "-i", workRoot).Run() })
+
+	if _, err := svc.ImportProjectFromGitHub(ctx, "acme", "api", "feature"); err == nil {
+		t.Fatal("expected the second import to fail while the work root is locked")
+	}
+
+	if err := exec.Command("chattr", "-i", workRoot).Run(); err != nil {
+		t.Fatalf("unlock work root: %v", err)
+	}
+
+	entries, err := os.ReadDir(workRoot)
+	if err != nil {
+		t.Fatalf("ReadDir workRoot: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() != "repos" && e.Name() != filepath.Base(first.WorktreeDir) {
+			t.Errorf("orphaned worktree dir after failed add: %v", e.Name())
+		}
+	}
+
+	gitDir := filepath.Join(workRoot, "repos", "acme__api", "repo.git")
+	wts, err := git.ListWorktrees(gitDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var linked int
+	for _, wt := range wts {
+		if !wt.Bare {
+			linked++
+		}
+	}
+	if linked != 1 {
+		t.Errorf("linked worktrees = %d, want 1 (only main's — no orphan for the failed feature add)", linked)
+	}
+}
