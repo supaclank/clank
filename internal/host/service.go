@@ -1262,7 +1262,16 @@ func (s *Service) CreateWorktree(ctx context.Context, baseWorktreeRef agent.GitR
 		return CreateWorktreeResult{}, fmt.Errorf("check base branch: %w", err)
 	}
 	if !exists {
-		return CreateWorktreeResult{}, fmt.Errorf("%w: base branch %q does not exist in %s", ErrNotFound, baseBranch, filepath.Base(repoRoot))
+		// The base branch isn't present locally. This is the common case
+		// for worktrees materialized from a shallow single-branch clone
+		// (git clone --depth 1 -b <branch>): only the cloned branch exists
+		// locally, yet mobile's "fork from" picker lists the repo's *remote*
+		// branches. Fetch the requested branch from origin before giving up
+		// so forking from e.g. `main` works without re-cloning. Falls back to
+		// the original not-found when there's no reachable origin ref.
+		if err := s.fetchBaseBranchFromOrigin(repoRoot, baseBranch); err != nil {
+			return CreateWorktreeResult{}, err
+		}
 	}
 
 	// Retry the petname loop up to a few times in case AddWorktreeNewBranch
@@ -1342,6 +1351,59 @@ func (s *Service) CreateWorktree(ctx context.Context, baseWorktreeRef agent.GitR
 		DisplayName: newBranch,
 		OriginRepo:  originRepo,
 	}, nil
+}
+
+// fetchBaseBranchFromOrigin materializes a branch that exists on the
+// worktree's origin but not yet locally, creating a local refs/heads/<branch>
+// so the subsequent `git worktree add -b <new> <dir> <branch>` succeeds. It's
+// the recovery path for shallow single-branch clones, whose local repo holds
+// only the branch they were cloned with.
+//
+// Returns ErrNotFound (preserving the original "does not exist" semantics) when
+// there's no origin remote or the branch is absent on it; wraps transport/auth
+// failures verbatim.
+func (s *Service) fetchBaseBranchFromOrigin(repoRoot, branch string) error {
+	notFound := fmt.Errorf("%w: base branch %q does not exist in %s", ErrNotFound, branch, filepath.Base(repoRoot))
+
+	remoteURL, err := git.RemoteURL(repoRoot, "origin")
+	if err != nil {
+		// No origin to fetch from — the branch genuinely doesn't exist.
+		return notFound
+	}
+
+	// Prefer the canonical https URL + token auth for github.com origins (the
+	// stored origin URL carries no credentials); otherwise fetch straight from
+	// the configured origin (local bare-repo remotes in tests, or an already
+	// authenticated URL).
+	fetchURL := remoteURL
+	authHeader := ""
+	if _, _, perr := githubpkg.ParseGitHubRemote(remoteURL); perr == nil {
+		if s.github == nil {
+			return ErrGitHubManagerUnavailable
+		}
+		creds, cerr := s.github.Store().Read()
+		if cerr != nil {
+			return fmt.Errorf("read github credentials: %w", cerr)
+		}
+		if creds.AccessToken == "" {
+			return ErrGitHubNotConnected
+		}
+		owner, repo, _ := githubpkg.ParseGitHubRemote(remoteURL)
+		fetchURL = fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+		authHeader = buildAuthHeader(creds.AccessToken)
+	}
+
+	// Fetch into a local branch of the same name so both the worktree-add
+	// below and any future fork from this base find it locally.
+	refspec := branch + ":refs/heads/" + branch
+	if err := git.Fetch(repoRoot, fetchURL, refspec, git.PushOptions{ExtraHeader: authHeader}); err != nil {
+		if isNoRemoteRef(err) {
+			return notFound
+		}
+		return fmt.Errorf("fetch base branch %q from origin: %w", branch, err)
+	}
+	s.log.Printf("fetched base branch %q from origin into %s for fork", branch, filepath.Base(repoRoot))
+	return nil
 }
 
 // RemoveWorktree removes the worktree for (ref's repo, branch).
