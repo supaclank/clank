@@ -1449,28 +1449,17 @@ func (s *Service) RemoveWorktree(ctx context.Context, ref agent.GitRef, branch s
 
 // DeleteMaterializedWorktree removes a worktree's persisted sessions and ~/work/<id>
 // directory. Refuses with ErrWorktreeBusy when a session is active; idempotent otherwise.
+//
+// LOCK ORDER: repo lock (when the worktree is repo-first linked) BEFORE
+// the per-worktree sync lock — the same order DeleteRepo uses, so the
+// two can't ABBA-deadlock. The linked-ness probe runs before any lock:
+// it's a read-only `git rev-parse` and the answer can't change under us
+// (only this method and DeleteRepo unlink worktrees, both serialized by
+// the repo lock).
 func (s *Service) DeleteMaterializedWorktree(ctx context.Context, worktreeID string) error {
 	if _, err := ulid.ParseStrict(worktreeID); err != nil {
 		return fmt.Errorf("delete materialized worktree: invalid worktreeID %q", worktreeID)
 	}
-	// Serialize against session creation / checkpoint apply on this
-	// worktree and re-check for a live session under the lock.
-	defer s.LockWorktreeSync(worktreeID)()
-
-	active, err := s.WorktreeHasActiveSession(ctx, worktreeID)
-	if err != nil {
-		return err
-	}
-	if active {
-		return ErrWorktreeBusy
-	}
-
-	if s.sessionsStore != nil {
-		if err := s.sessionsStore.DeleteSessionsByWorktree(ctx, worktreeID); err != nil {
-			return err
-		}
-	}
-
 	root, err := workRootDir()
 	if err != nil {
 		return err
@@ -1486,18 +1475,56 @@ func (s *Service) DeleteMaterializedWorktree(ctx context.Context, worktreeID str
 	if gitDir, linked, cerr := worktreeCanonicalGitDir(wtDir); cerr == nil && linked {
 		slug := filepath.Base(filepath.Dir(gitDir))
 		defer s.lockRepo(slug)()
-		if err := git.RemoveWorktree(gitDir, wtDir, true); err != nil {
-			return fmt.Errorf("remove worktree %s: %w", worktreeID, err)
-		}
-		if err := git.PruneWorktrees(gitDir); err != nil {
-			s.log.Printf("warning: prune worktrees in %s: %v", gitDir, err)
-		}
-		return nil
+		return s.removeLinkedWorktree(ctx, worktreeID, wtDir, gitDir)
 	}
+
 	// Legacy independent clone (or not a repo at all — half-materialized
-	// dir): plain removal, as before the repo-first layout.
+	// dir): plain removal, as before the repo-first layout. Serialize
+	// against session creation and re-check for a live session under the
+	// worktree lock.
+	defer s.LockWorktreeSync(worktreeID)()
+	active, err := s.WorktreeHasActiveSession(ctx, worktreeID)
+	if err != nil {
+		return err
+	}
+	if active {
+		return ErrWorktreeBusy
+	}
+	if s.sessionsStore != nil {
+		if err := s.sessionsStore.DeleteSessionsByWorktree(ctx, worktreeID); err != nil {
+			return err
+		}
+	}
 	if err := os.RemoveAll(wtDir); err != nil {
 		return fmt.Errorf("remove materialized worktree %s: %w", worktreeID, err)
+	}
+	return nil
+}
+
+// removeLinkedWorktree is the shared deletion leg for a repo-first
+// linked worktree: session purge + busy guard under the per-worktree
+// sync lock, then git-aware removal. The CALLER holds the repo lock
+// (lock order: repo → worktree).
+func (s *Service) removeLinkedWorktree(ctx context.Context, worktreeID, wtDir, gitDir string) error {
+	defer s.LockWorktreeSync(worktreeID)()
+
+	active, err := s.WorktreeHasActiveSession(ctx, worktreeID)
+	if err != nil {
+		return err
+	}
+	if active {
+		return ErrWorktreeBusy
+	}
+	if s.sessionsStore != nil {
+		if err := s.sessionsStore.DeleteSessionsByWorktree(ctx, worktreeID); err != nil {
+			return err
+		}
+	}
+	if err := git.RemoveWorktree(gitDir, wtDir, true); err != nil {
+		return fmt.Errorf("remove worktree %s: %w", worktreeID, err)
+	}
+	if err := git.PruneWorktrees(gitDir); err != nil {
+		s.log.Printf("warning: prune worktrees in %s: %v", gitDir, err)
 	}
 	return nil
 }
