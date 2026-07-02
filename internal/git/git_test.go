@@ -92,8 +92,12 @@ func TestRemoteURL(t *testing.T) {
 	// resolveLocalRepo and the host's CreateSession verify-and-add
 	// path rely on a clear error here to know the cwd can't be
 	// mapped to a remote-kind GitRef.
-	if _, err := RemoteURL(dir, "origin"); err == nil {
-		t.Fatal("expected error for repo with no origin remote")
+	noRemoteErr, err := RemoteURL(dir, "origin")
+	if err == nil {
+		t.Fatalf("expected error for repo with no origin remote, got %q", noRemoteErr)
+	}
+	if !IsRemoteNotConfigured(err) {
+		t.Errorf("IsRemoteNotConfigured(%v) = false, want true for an unconfigured remote", err)
 	}
 
 	const want = "git@github.com:acksell/clank.git"
@@ -105,6 +109,33 @@ func TestRemoteURL(t *testing.T) {
 	}
 	if got != want {
 		t.Errorf("RemoteURL = %q, want %q", got, want)
+	}
+}
+
+// A corrupt config is a real git failure, not "no remote configured" — a
+// caller like ensureRepoBranchAvailable must not treat the two the same
+// or it silently skips a fetch that should have errored instead.
+func TestRemoteURL_CorruptConfigIsNotUnconfigured(t *testing.T) {
+	t.Parallel()
+	dir := initTestRepo(t)
+	run(t, dir, "git", "remote", "add", "origin", "git@github.com:acksell/clank.git")
+
+	configPath := filepath.Join(dir, ".git", "config")
+	f, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open config: %v", err)
+	}
+	if _, err := f.WriteString("[garbage\n"); err != nil {
+		t.Fatalf("corrupt config: %v", err)
+	}
+	f.Close()
+
+	_, err = RemoteURL(dir, "origin")
+	if err == nil {
+		t.Fatal("expected error reading a corrupt config")
+	}
+	if IsRemoteNotConfigured(err) {
+		t.Errorf("IsRemoteNotConfigured(%v) = true, want false for a corrupt config", err)
 	}
 }
 

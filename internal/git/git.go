@@ -79,6 +79,15 @@ func RemoteURL(dir, remote string) (string, error) {
 	return url, nil
 }
 
+// IsRemoteNotConfigured reports whether err came from RemoteURL finding no
+// such remote configured (git config --get exits 1), as opposed to a real
+// git/filesystem failure (corrupt config, missing repo, etc.) that happens
+// to occur on the same call — those must not be treated as "no remote".
+func IsRemoteNotConfigured(err error) bool {
+	var ee *exec.ExitError
+	return errors.As(err, &ee) && ee.ExitCode() == 1
+}
+
 // RemoteAdd runs `git remote add <name> <url>` in dir — used when publishing a
 // previously remote-less worktree to a fresh GitHub repo. Errors if the remote
 // already exists.
