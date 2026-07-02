@@ -1,8 +1,7 @@
 // Package repolabel derives the owner-independent display label for a
-// git repository, used as the `origin_repo` group key on worktree rows.
-// It lives in its own leaf package so both the host (sprite-side
-// CreateWorktree) and the laptop CLI (clank push registration) can
-// compute the same label without importing each other.
+// git repository, used as the `origin_repo` group key on worktree
+// listings. Leaf package so any layer can compute the same label
+// without cross-imports.
 package repolabel
 
 import (

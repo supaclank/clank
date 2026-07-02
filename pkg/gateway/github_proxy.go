@@ -1,12 +1,10 @@
 package gateway
 
-// Shared helper for the GitHub Connect proxy endpoints. Each
-// handler in github_status.go / github_disconnect.go /
-// github_connect.go / github_pr.go funnels through proxyHostGitHub
-// so the EnsureHost + transport + status-copy plumbing is in one
-// place. Mirrors the shape of handleListBranches at
-// pkg/gateway/worktrees_create.go without the Sync==nil refusal —
-// these endpoints work in laptop mode too.
+// Shared helper for host-proxy endpoints. Each handler in
+// github_status.go / github_disconnect.go / github_connect.go /
+// github_pr.go / repos_proxy.go / worktrees_delete.go funnels through
+// proxyHostGitHub so the EnsureHost + transport + status-copy plumbing
+// is in one place. Works in laptop mode too.
 
 import (
 	"bytes"

@@ -10,10 +10,9 @@ var (
 	// does not exist on the host.
 	ErrNotFound = errors.New("host: not found")
 
-	// ErrWorktreeBusy is returned when an operation that mutates a
-	// worktree's materialized state (e.g. DeleteMaterializedWorktree)
-	// finds a session actively running on it. The caller should retry
-	// once the session goes idle.
+	// ErrWorktreeBusy is returned when a destructive worktree operation
+	// (e.g. DeleteWorktree, DeleteRepo) finds a session actively running
+	// on it. The caller should retry once the session goes idle.
 	ErrWorktreeBusy = errors.New("host: worktree has an active session")
 
 	// ErrCannotMergeDefault is returned when MergeBranch is called with

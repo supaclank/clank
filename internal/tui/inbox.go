@@ -21,8 +21,6 @@ import (
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host"
-	"github.com/acksell/clank/internal/repolabel"
-	syncclient "github.com/acksell/clank/pkg/sync/client"
 )
 
 // inboxScreen tracks which screen is active within the inbox app.
@@ -89,13 +87,12 @@ type InboxModel struct {
 	mouseDragOwner *inboxPane
 
 	// Inbox list state (right pane).
-	groups           []inboxGroup
-	flatRows         []inboxRow
-	cursor           int
-	scrollOffset     int
-	showMenu         bool
-	menu             actionMenuModel
-	menuWorktreePath string // set when menu is a worktree action menu
+	groups       []inboxGroup
+	flatRows     []inboxRow
+	cursor       int
+	scrollOffset int
+	showMenu     bool
+	menu         actionMenuModel
 
 	// notice is a transient success message cleared on the next action.
 	notice string
@@ -138,14 +135,6 @@ type InboxModel struct {
 	// loaded at startup so the first daemon poll that returns identical
 	// data is a no-op write.
 	lastSessionsCacheSig sessionsCacheSignature
-
-	// pendingPushes tracks worktree-push requests still in flight,
-	// keyed by LocalPath. The sidebar reads it to draw an animated
-	// spinner on the affected worktree rows, and the inbox uses it
-	// to render a "Pushing <name>…" status line that's visible from
-	// any screen (chat, inbox, settings). Cleared per worktree when
-	// worktreePushResultMsg arrives for that path.
-	pendingPushes map[string]bool
 
 	// Filter state — structured filters applied as pills in the search bar.
 	projectDir    string // absolute path of the cwd when the inbox was launched
@@ -323,7 +312,6 @@ func NewInboxModel(client *daemonclient.Client) *InboxModel {
 		sidebarWidthRatio:    sidebarWidthRatioFromPrefs(prefs),
 		cachedSessions:       cachedSessions,
 		lastSessionsCacheSig: sessionsCacheSig(cachedSessions),
-		pendingPushes:        map[string]bool{},
 	}
 	if len(cachedSessions) > 0 {
 		m.buildGroups(m.filteredSessions())
@@ -688,30 +676,6 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// paint instantly. Skip when the signature matches what
 			// we last wrote — SSE event bursts shouldn't churn disk.
 			m.persistCacheIfChanged()
-		}
-		return m, nil
-	case worktreeOptionsRequestedMsg:
-		// ':' on a worktree row → action menu. Handled early so the
-		// menu opens even when the right pane is showing a chat;
-		// otherwise the screenSession delegation below routes the
-		// message to the session view, which swallows it.
-		m.menuWorktreePath = msg.localPath
-		m.notice = ""
-		m.menu = newActionMenu("Worktree: "+filepath.Base(msg.localPath), []actionMenuItem{
-			{label: "Push checkpoint", key: "p", action: "push:" + msg.localPath},
-			{label: "Pull  (coming soon)", action: "pull:" + msg.localPath},
-		})
-		m.showMenu = true
-		return m, nil
-	case worktreePushResultMsg:
-		if msg.localPath != "" {
-			delete(m.pendingPushes, msg.localPath)
-			m.sidebar.SetPendingPushes(m.pendingPushes)
-		}
-		if msg.err != nil {
-			m.err = msg.err
-		} else {
-			m.notice = fmt.Sprintf("pushed checkpoint %s (HEAD %s)", msg.checkpointID, msg.headSHA)
 		}
 		return m, nil
 	}
@@ -1619,16 +1583,6 @@ func (m *InboxModel) handleMenuAction(action string) tea.Cmd {
 		return m.openSession(id)
 	case "delete":
 		return m.deleteSession(id)
-	case "push":
-		// Mark this worktree as in-flight so the sidebar can paint a
-		// spinner on its row and the global status line can show the
-		// "Pushing …" indicator until the result arrives.
-		m.pendingPushes[id] = true
-		m.sidebar.SetPendingPushes(m.pendingPushes)
-		return m.worktreePushCmd(id)
-	case "pull":
-		m.notice = "Pull is coming soon"
-		return nil
 	}
 	return nil
 }
@@ -1826,26 +1780,10 @@ func (m *InboxModel) rebuildFlatRows() {
 // --- View ---
 
 // renderStatusLine returns a single-line global status to overlay at
-// the bottom of the screen. Visible from every screen so push results,
-// errors, and in-flight indicators don't get trapped inside the inbox
-// view's renderSessionPane. Returns "" when nothing's happening.
-//
-// Priority: in-flight pushes > error > notice. Pushes win because the
-// user just initiated an action and a stale notice/error from earlier
-// shouldn't mask the current activity.
+// the bottom of the screen. Visible from every screen so errors and
+// notices don't get trapped inside the inbox view's renderSessionPane.
+// Returns "" when nothing's happening. Priority: error > notice.
 func (m *InboxModel) renderStatusLine() string {
-	if len(m.pendingPushes) > 0 {
-		names := make([]string, 0, len(m.pendingPushes))
-		for path := range m.pendingPushes {
-			names = append(names, filepath.Base(path))
-		}
-		sort.Strings(names)
-		spinner := m.spinner.View()
-		label := lipgloss.NewStyle().Foreground(primaryColor).Render(
-			fmt.Sprintf("%s Pushing %s…", spinner, strings.Join(names, ", ")),
-		)
-		return label
-	}
 	if m.err != nil {
 		return lipgloss.NewStyle().Foreground(dangerColor).Render("✗ " + m.err.Error())
 	}
@@ -3130,72 +3068,4 @@ func (m *InboxModel) overlayHelp(base string) string {
 		Render(sb.String())
 
 	return overlayCenter(base, popup, m.width, m.height)
-}
-
-// worktreePushResultMsg is returned by worktreePushCmd.
-type worktreePushResultMsg struct {
-	localPath    string
-	checkpointID string
-	headSHA      string
-	err          error
-}
-
-// worktreePushCmd pushes a checkpoint of localPath to the configured gateway.
-func (m *InboxModel) worktreePushCmd(localPath string) tea.Cmd {
-	return func() tea.Msg {
-		prefs, err := config.LoadPreferences()
-		if err != nil {
-			return worktreePushResultMsg{localPath: localPath, err: fmt.Errorf("load preferences: %w", err)}
-		}
-		profile := prefs.ActiveRemote()
-		if profile == nil || profile.GatewayURL == "" {
-			return worktreePushResultMsg{localPath: localPath, err: fmt.Errorf("no active cloud profile with gateway_url configured")}
-		}
-
-		cli, err := syncclient.New(syncclient.Config{
-			BaseURL:   profile.GatewayURL,
-			AuthToken: profile.AccessToken,
-		})
-		if err != nil {
-			return worktreePushResultMsg{localPath: localPath, err: err}
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-
-		worktreeID, err := agent.ReadLocalWorktreeID(localPath)
-		if err != nil {
-			return worktreePushResultMsg{localPath: localPath, err: fmt.Errorf("load cached worktree id: %w", err)}
-		}
-		if worktreeID == "" {
-			worktreeID, err = cli.RegisterWorktree(ctx, filepath.Base(localPath), repolabel.ComputeRepoLabel(localPath))
-			if err != nil {
-				return worktreePushResultMsg{localPath: localPath, err: fmt.Errorf("register worktree: %w", err)}
-			}
-			if err := agent.WriteLocalWorktreeID(localPath, worktreeID); err != nil {
-				return worktreePushResultMsg{localPath: localPath, err: fmt.Errorf("cache worktree id: %w", err)}
-			}
-		}
-
-		// baseCommit "" — the TUI push doesn't run a parity check, so it
-		// gets a full bundle (or dedup when HEAD is unchanged), not an
-		// incremental. The CLI `clank push` path passes the parity base.
-		res, err := cli.PushCheckpoint(ctx, worktreeID, localPath, "", false, nil)
-		if err != nil {
-			return worktreePushResultMsg{localPath: localPath, err: fmt.Errorf("push checkpoint: %w", err)}
-		}
-		return worktreePushResultMsg{
-			localPath:    localPath,
-			checkpointID: res.CheckpointID,
-			headSHA:      shortSHA(res.Manifest.HeadCommit),
-		}
-	}
-}
-
-// shortSHA returns the first 8 characters of a SHA, or the full string if shorter.
-func shortSHA(s string) string {
-	if len(s) > 8 {
-		return s[:8]
-	}
-	return s
 }

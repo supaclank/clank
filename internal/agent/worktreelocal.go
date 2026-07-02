@@ -61,8 +61,8 @@ func ReadLocalWorktreeID(projectDir string) (string, error) {
 
 // WriteLocalWorktreeID persists the worktree ULID for projectDir at
 // <gitDir>/clank/worktree-id. Idempotent. Errors if projectDir is not
-// inside a git repo (the only caller is `clank push`, which is always
-// invoked from a real git working tree).
+// inside a git repo (callers stamp freshly created worktrees, which are
+// always real git working trees).
 func WriteLocalWorktreeID(projectDir, id string) error {
 	if id == "" {
 		return fmt.Errorf("write worktree id: id is empty")
@@ -78,8 +78,8 @@ func WriteLocalWorktreeID(projectDir, id string) error {
 	return os.WriteFile(filepath.Join(dir, "worktree-id"), []byte(id+"\n"), 0o644)
 }
 
-// RemoveLocalWorktreeID deletes the cached worktree ULID for projectDir,
-// untracking it from `clank push`. Returns true if an id was present.
+// RemoveLocalWorktreeID deletes the stamped worktree ULID for
+// projectDir. Returns true if an id was present.
 func RemoveLocalWorktreeID(projectDir string) (bool, error) {
 	gd, err := GitDir(projectDir)
 	if err != nil {

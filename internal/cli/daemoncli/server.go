@@ -24,7 +24,6 @@ import (
 	"github.com/acksell/clank/pkg/notify"
 	"github.com/acksell/clank/pkg/preview/routestore/memstore"
 	"github.com/acksell/clank/pkg/provisioner"
-	clanksync "github.com/acksell/clank/pkg/sync"
 )
 
 // openHubListener creates the listener for the configured mode and a
@@ -97,13 +96,9 @@ func parseTCPListen(s string) (string, error) {
 // runGatewayServer mounts the daemon gateway on opts.Listen.
 //
 // Modes:
-//   - Unix socket (default): laptop mode. File mode is the gate. Sync
-//     stays nil — laptop has no S3 access and exposes no sync routes.
-//     Push/pull goes through the cloud gateway (prefs.Remote.GatewayURL).
+//   - Unix socket (default): laptop mode. File mode is the gate.
 //   - TCP (opts.Listen non-empty): self-hosted/cloud mode. Auth selected
-//     by opts.Auth when set, else by env (resolveDefaultAuth). If
-//     CLANK_SYNC_S3_BUCKET is set, an embedded sync.Server is built from
-//     CLANK_SYNC_S3_* env and mounted under /v1/.
+//     by opts.Auth when set, else by env (resolveDefaultAuth).
 //
 // Both modes write the PID file at daemonclient.PIDPath().
 func runGatewayServer(prov provisioner.Provisioner, st *store.Store, opts ServerOptions) error {
@@ -112,21 +107,9 @@ func runGatewayServer(prov provisioner.Provisioner, st *store.Store, opts Server
 		return fmt.Errorf("pid path: %w", err)
 	}
 
-	var syncSrv *clanksync.Server
 	var imagesSrv *images.Server
 	if opts.Listen != "" {
-		// TCP mode: build the embedded sync server when CLANK_SYNC_S3_*
-		// env vars are present. Returns nil when unset (TCP without sync
-		// still works — useful for proxy-only hubs).
-		syncSrv, err = loadSyncFromEnv(context.Background(), log.Default())
-		if err != nil {
-			return fmt.Errorf("build sync server: %w", err)
-		}
-		if syncSrv != nil {
-			log.Printf("gateway: embedded sync server enabled (S3 bucket=%s)", os.Getenv("CLANK_SYNC_S3_BUCKET"))
-		}
-
-		// Image uploads use their own independent bucket (CLANK_IMAGES_S3_*).
+		// Image uploads use their own bucket (CLANK_IMAGES_S3_*).
 		// nil when unset — POST /v1/images simply 404s.
 		imagesSrv, err = loadImagesFromEnv(context.Background())
 		if err != nil {
@@ -150,7 +133,6 @@ func runGatewayServer(prov provisioner.Provisioner, st *store.Store, opts Server
 
 	gwCfg := gateway.Config{
 		Provisioner: prov,
-		Sync:        syncSrv,
 		Images:      imagesSrv,
 		AuthConfig:  loadAuthConfigFromEnv(),
 		Notify:      dispatcher,

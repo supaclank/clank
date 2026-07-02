@@ -34,11 +34,11 @@ type sessionCreateResultMsg struct {
 // NewSessionViewComposing creates a SessionViewModel in composing mode.
 // No daemon session exists yet — the user writes their first prompt here.
 //
-// The gitRef is built from projectDir (LocalPath) plus the worktree ID
-// cached by an earlier `clank push` (read via agent.ReadLocalWorktreeID),
-// so the background fetchAgents/fetchModels prefetch can target it.
-// Until a push has populated the cache the ref is local-only and any
-// cross-host operations will fail at launch.
+// The gitRef is built from projectDir (LocalPath) plus the stamped
+// worktree ID, if any (read via agent.ReadLocalWorktreeID), so the
+// background fetchAgents/fetchModels prefetch can target it. Without a
+// stamp the ref is local-only and any cross-host operations will fail
+// at launch.
 func NewSessionViewComposing(client *daemonclient.Client, projectDir string) *SessionViewModel {
 	// Default backend: prefer the user's saved choice, falling back to
 	// agent.DefaultBackend. Errors (corrupt prefs) silently fall back —
@@ -62,8 +62,8 @@ func newSessionViewComposingWithBackend(client *daemonclient.Client, projectDir 
 		spinner.WithStyle(lipgloss.NewStyle().Foreground(successColor)),
 	)
 	// Send LocalPath (laptop-local host uses it directly) plus the
-	// cached worktree ID (cross-host stable identity, set by
-	// `clank push`). See agent.GitRef godoc.
+	// stamped worktree ID (cross-host stable identity), when present.
+	// See agent.GitRef godoc.
 	ref := agent.GitRef{LocalPath: projectDir}
 	if id, _ := agent.ReadLocalWorktreeID(projectDir); id != "" {
 		ref.WorktreeID = id

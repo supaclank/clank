@@ -50,12 +50,6 @@ type SettingsRequestedMsg struct{}
 // "↓ Import Sessions" footer entry in the sidebar.
 type ImportSessionsRequestedMsg struct{}
 
-// worktreeOptionsRequestedMsg is emitted when the user presses ':' on a
-// worktree entry. The inbox opens a Push/Pull action menu for that path.
-type worktreeOptionsRequestedMsg struct {
-	localPath string
-}
-
 // sessionSelectedFromSidebarMsg is emitted when the user presses Enter
 // on a session node in the sidebar tree. The inbox handles it by opening
 // the session view for that ID.
@@ -103,12 +97,9 @@ type SidebarModel struct {
 	cloudStatus       cloudAuthStatus
 	cloudSpinnerFrame string
 
-	// pendingPushes is mirrored from the inbox so worktree rows can
-	// paint an animated spinner next to whichever LocalPath has a
-	// push request in flight. spinnerFrame holds the current spinner
-	// glyph (kept in sync via SetSpinnerFrame on every tick).
-	pendingPushes map[string]bool
-	spinnerFrame  string
+	// spinnerFrame holds the current spinner glyph for animated row
+	// indicators (kept in sync via SetCloudSpinnerFrame on every tick).
+	spinnerFrame string
 
 	// titleAnimations holds in-flight typewriter state keyed by
 	// session ID; see sidebar_title_animation.go.
@@ -287,15 +278,6 @@ func (m *SidebarModel) SetCloudStatus(s cloudAuthStatus) { m.cloudStatus = s }
 func (m *SidebarModel) SetCloudSpinnerFrame(frame string) {
 	m.cloudSpinnerFrame = frame
 	m.spinnerFrame = frame // any animated indicator can share the same frame
-}
-
-// SetPendingPushes mirrors the inbox's map of worktree-LocalPath →
-// in-flight push. Worktree rows whose path is present render an
-// animated spinner alongside the label until the result clears the
-// entry. The map is read-only from the sidebar's perspective; the
-// inbox owns the lifecycle.
-func (m *SidebarModel) SetPendingPushes(pushes map[string]bool) {
-	m.pendingPushes = pushes
 }
 
 // CursorOnImport reports whether the cursor is on the import row.

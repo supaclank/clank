@@ -7,9 +7,8 @@ package cloud
 // laptop daemon's hub. Used by the TUI's Cloud panel for the
 // "Connect provider (in sandbox)" flow.
 //
-// Follows the pattern established by clank push (internal/cli/clankcli/
-// push.go): read GatewayURL + AccessToken from prefs.ActiveRemote() and
-// hit the gateway directly with Authorization: Bearer <token>.
+// Reads GatewayURL + AccessToken from prefs.ActiveRemote() and hits
+// the gateway directly with Authorization: Bearer <token>.
 
 import (
 	"bytes"

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,7 +12,6 @@ import (
 	"time"
 
 	"github.com/acksell/clank/pkg/auth"
-	clanksync "github.com/acksell/clank/pkg/sync"
 )
 
 // createProjectRequest is what mobile sends to POST /v1/projects/create.
@@ -40,22 +38,16 @@ type hostCreateProjectRequest struct {
 //  2. Resolve the requested template id to a clone URL from the
 //     configured catalog. Unknown id → 404; this is the only place
 //     template ids are interpreted.
-//  3. Proxy to the user's host POST /projects/create with the clone URL.
-//     The host clones the template into a fresh ~/work worktree, drops
-//     the template history, re-inits a remote-less repo, and stamps the
-//     worktree-id.
-//  4. Record the resulting row in the caller's worktrees DB so
-//     subsequent GET /v1/worktrees calls see it — same as worktree
-//     creation; we insert the exact ULID the host minted.
+//  3. Proxy to the user's host POST /projects/create with the clone URL
+//     and return the host's response. The host scaffolds a bare
+//     canonical + linked worktree under ~/work (see
+//     internal/host/create_project.go); its filesystem is the registry,
+//     so there is nothing to record gateway-side.
 //
-// Refuses when Sync is unconfigured: Sync is the worktree registry, so
-// without it there's nowhere to record the new project and it'd be
-// invisible to GET /v1/worktrees. Matches the create-worktree route.
+// Host 4xx responses forward verbatim (typed, client-actionable); host
+// 5xx is masked to a flat 502 because the body can carry raw git stderr
+// including the resolved template clone URL, which may embed credentials.
 func (g *Gateway) handleCreateProject(w http.ResponseWriter, r *http.Request) {
-	if g.cfg.Sync == nil {
-		http.Error(w, "create-project not available on this gateway (no Sync configured)", http.StatusServiceUnavailable)
-		return
-	}
 	principal, ok := auth.PrincipalFrom(r.Context())
 	if !ok || principal.UserID == "" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -82,7 +74,7 @@ func (g *Gateway) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, status, body, err := g.callHostCreateProject(r.Context(), principal.UserID, hostCreateProjectRequest{
+	status, body, err := g.callHostCreateProject(r.Context(), principal.UserID, hostCreateProjectRequest{
 		CloneURL: cloneURL,
 		Name:     req.Name,
 	})
@@ -115,79 +107,46 @@ func (g *Gateway) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now().UTC()
-	row := clanksync.Worktree{
-		ID:          resp.WorktreeID,
-		UserID:      principal.UserID,
-		DisplayName: resp.DisplayName,
-		OriginRepo:  resp.OriginRepo,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-	}
-	// TODO(ai-review): if RegisterPrebuiltWorktree fails the host project dir is orphaned;
-	// add a best-effort DELETE /worktrees/{id} rollback call. https://github.com/Acksell/clank/pull/61#discussion_r3428655410
-	if err := g.cfg.Sync.RegisterPrebuiltWorktree(r.Context(), row); err != nil {
-		// The project exists on the host but the row didn't persist.
-		// Surface the error so the user can retry (same caveat as
-		// create-worktree: a retry collides on the PK until rollback/
-		// idempotency lands).
-		g.log.Printf("gateway create-project: store insert: %v", err)
-		http.Error(w, "persist project", http.StatusInternalServerError)
-		return
-	}
-
+	// Success: forward the host's CreateWorktreeResult verbatim.
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(resp)
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
 }
 
 // callHostCreateProject makes the POST /projects/create request to the
-// user's host. Transport-level failures return err (→ 502); a host
-// NON-2xx returns (status, body) for the handler to forward VERBATIM so
-// the client sees the typed error; a 2xx is decoded into resp. Reuses
-// createWorktreeResponse — the host returns the same
-// CreateWorktreeResult shape.
-func (g *Gateway) callHostCreateProject(ctx context.Context, userID string, in hostCreateProjectRequest) (createWorktreeResponse, int, []byte, error) {
+// user's host. Transport-level failures return err (→ 502); otherwise
+// the host's (status, body) come back for the handler to forward.
+func (g *Gateway) callHostCreateProject(ctx context.Context, userID string, in hostCreateProjectRequest) (int, []byte, error) {
 	ref, err := g.cfg.Provisioner.EnsureHost(ctx, userID)
 	if err != nil {
-		return createWorktreeResponse{}, 0, nil, fmt.Errorf("ensure host: %w", err)
+		return 0, nil, fmt.Errorf("ensure host: %w", err)
 	}
 
 	buf, err := json.Marshal(in)
 	if err != nil {
-		return createWorktreeResponse{}, 0, nil, fmt.Errorf("marshal request: %w", err)
+		return 0, nil, fmt.Errorf("marshal request: %w", err)
 	}
 
 	target := strings.TrimRight(ref.URL, "/") + "/projects/create"
 	if _, err := url.Parse(target); err != nil {
-		return createWorktreeResponse{}, 0, nil, fmt.Errorf("invalid host URL: %w", err)
+		return 0, nil, fmt.Errorf("invalid host URL: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(buf))
 	if err != nil {
-		return createWorktreeResponse{}, 0, nil, err
+		return 0, nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	// Cloning a template is a network operation on the host; give it more
-	// headroom than the worktree-create call's 30s.
+	// headroom than a plain proxy call.
 	cli := &http.Client{Transport: ref.Transport, Timeout: 120 * time.Second}
 	resp, err := cli.Do(req)
 	if err != nil {
-		return createWorktreeResponse{}, 0, nil, fmt.Errorf("post host /projects/create: %w", err)
+		return 0, nil, fmt.Errorf("post host /projects/create: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode/100 != 2 {
-		return createWorktreeResponse{}, resp.StatusCode, body, nil
-	}
-	var out createWorktreeResponse
-	if err := json.Unmarshal(body, &out); err != nil {
-		return createWorktreeResponse{}, 0, nil, fmt.Errorf("decode host response: %w", err)
-	}
-	if out.WorktreeID == "" {
-		return createWorktreeResponse{}, 0, nil, errors.New("host returned empty worktree_id")
-	}
-	return out, resp.StatusCode, body, nil
+	return resp.StatusCode, body, nil
 }

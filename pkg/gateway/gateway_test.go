@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -301,123 +300,6 @@ func TestProxy_ForwardsToUpstream(t *testing.T) {
 	}
 	if m := <-gotMethod; m != http.MethodGet {
 		t.Errorf("upstream got method %q, want GET", m)
-	}
-}
-
-// TestProxy_BlocksSyncPathsWhenSyncNil locks in the laptop-gateway
-// security boundary: when Sync is unconfigured (laptop mode), the
-// gateway must refuse to forward /sync/* requests to its local
-// clank-host subprocess. Otherwise any process with socket access
-// could push a checkpoint into ~/work/ on the laptop.
-func TestProxy_BlocksSyncPathsWhenSyncNil(t *testing.T) {
-	t.Parallel()
-	upstreamCalled := false
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		upstreamCalled = true
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(upstream.Close)
-
-	prov := &stubProvisioner{
-		ref: provisioner.HostRef{
-			URL:       upstream.URL,
-			Transport: http.DefaultTransport,
-			Hostname:  "test-host",
-		},
-	}
-	g, _ := NewGateway(Config{Provisioner: prov /* Sync intentionally nil */}, nil)
-	srv := httptest.NewServer(localAuth(g.Handler(), "test"))
-	t.Cleanup(srv.Close)
-
-	// Both the direct path and the host-prefixed path must be blocked;
-	// the gateway strips /hosts/<name>/ during proxying, so guarding only
-	// the raw incoming path would let /hosts/local/sync/* bypass the
-	// boundary and reach the host mux's unconditional /sync/* handlers.
-	for _, path := range []string{"/sync/apply?repo=foo", "/hosts/local/sync/apply-from-urls", "/sync/build", "/sync/builds/abc/upload"} {
-		upstreamCalled = false
-		resp, err := http.Post(srv.URL+path, "application/octet-stream", nil)
-		if err != nil {
-			t.Fatalf("POST %s: %v", path, err)
-		}
-		if resp.StatusCode != http.StatusNotFound {
-			t.Errorf("POST %s status: got %d, want 404", path, resp.StatusCode)
-		}
-		resp.Body.Close()
-		if upstreamCalled {
-			t.Errorf("POST %s reached upstream; the gateway should have denied before proxying", path)
-		}
-	}
-}
-
-// TestPullWorktree_503WhenSyncNil pins that the pull route is mounted
-// unconditionally but refuses with 503 when no sync server is wired —
-// rather than 404 (route missing) or proxying the pull to the host.
-func TestPullWorktree_503WhenSyncNil(t *testing.T) {
-	t.Parallel()
-	upstreamCalled := false
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		upstreamCalled = true
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(upstream.Close)
-
-	prov := &stubProvisioner{ref: provisioner.HostRef{URL: upstream.URL, Transport: http.DefaultTransport, Hostname: "test-host"}}
-	g, _ := NewGateway(Config{Provisioner: prov /* Sync intentionally nil */}, nil)
-	srv := httptest.NewServer(localAuth(g.Handler(), "test"))
-	t.Cleanup(srv.Close)
-
-	resp, err := http.Post(srv.URL+"/v1/worktrees/wt-1/pull", "application/json", nil)
-	if err != nil {
-		t.Fatalf("POST pull: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("status = %d, want 503", resp.StatusCode)
-	}
-	if upstreamCalled {
-		t.Error("pull must not proxy to the host when Sync is unset")
-	}
-}
-
-// TestProxy_AllowsSessionSyncOnLaptopGateway pins the carve-out:
-// /sync/sessions/* IS allowed through on a laptop gateway, because
-// those handlers don't touch ~/work/ — they drive opencode session
-// export/import via the host Service. Without this, `clank push`
-// can't reach the laptop's local clank-host for its session leg and
-// the push fails with a 404 from the proxy itself before any code runs.
-func TestProxy_AllowsSessionSyncOnLaptopGateway(t *testing.T) {
-	t.Parallel()
-	var reached []string
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reached = append(reached, r.URL.Path)
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(upstream.Close)
-
-	prov := &stubProvisioner{ref: provisioner.HostRef{
-		URL: upstream.URL, Transport: http.DefaultTransport, Hostname: "test-host",
-	}}
-	g, _ := NewGateway(Config{Provisioner: prov /* Sync intentionally nil */}, nil)
-	srv := httptest.NewServer(localAuth(g.Handler(), "test"))
-	t.Cleanup(srv.Close)
-
-	for _, path := range []string{
-		"/sync/sessions/build",
-		"/sync/sessions/builds/abc/upload",
-		"/sync/sessions/apply-from-urls",
-		"/hosts/local/sync/sessions/build",
-	} {
-		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader("{}"))
-		if err != nil {
-			t.Fatalf("POST %s: %v", path, err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode == http.StatusNotFound {
-			t.Errorf("POST %s got 404 — the laptop guard is over-blocking the session-sync namespace", path)
-		}
-	}
-	if len(reached) == 0 {
-		t.Errorf("no session-sync request reached upstream; proxy is blocking the carve-out")
 	}
 }
 

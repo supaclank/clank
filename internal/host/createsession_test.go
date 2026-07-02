@@ -91,7 +91,6 @@ func TestCreateSession_LocalRef_RejectsSubdir(t *testing.T) {
 	}
 }
 
-
 // TestCreateSession_WorktreeRef_Success exercises the new sync-path:
 // when a worktree has been migrated to ~/work/<id>/, a session with
 // only WorktreeID set resolves to that directory.
@@ -142,8 +141,7 @@ func TestCreateSession_WorktreeRef_Success(t *testing.T) {
 
 // TestCreateSession_WorktreeRef_MissingErrors guards the explicit
 // "no fall back to clone" contract: a WorktreeID for which no
-// ~/work/<id>/ has been materialized yields a clear error saying the
-// synced checkpoint hasn't been materialized onto this host yet.
+// ~/work/<id>/ exists yields a clear "not present on this host" error.
 func TestCreateSession_WorktreeRef_MissingErrors(t *testing.T) {
 	tmpHome := t.TempDir()
 	prev := host.SetWorkRootForTest(filepath.Join(tmpHome, "work"))
@@ -157,9 +155,9 @@ func TestCreateSession_WorktreeRef_MissingErrors(t *testing.T) {
 	}
 	_, _, err := svc.CreateSession(context.Background(), "sid-missing", req)
 	if err == nil {
-		t.Fatal("expected error for unmaterialized worktree, got nil")
+		t.Fatal("expected error for a missing worktree, got nil")
 	}
-	if !strings.Contains(err.Error(), "materialized") {
-		t.Fatalf("expected error to mention the worktree isn't materialized, got: %v", err)
+	if !strings.Contains(err.Error(), "not present") {
+		t.Fatalf("expected error to say the worktree isn't present on this host, got: %v", err)
 	}
 }

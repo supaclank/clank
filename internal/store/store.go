@@ -1,7 +1,9 @@
 // Package store provides SQLite-backed persistence for the provisioner's
-// host registry (the `hosts` table). PR 3 dropped the hub-owned session,
-// agent, and sync tables; session metadata now lives in the host's own
-// store at internal/host/store.
+// host registry (the `hosts` table) and push-notification devices (the
+// `devices` table). Session metadata lives in the host's own store at
+// internal/host/store; worktrees live on the host filesystem (the
+// checkpoint-sync worktrees/checkpoints/head_bundles tables were
+// dropped in migration v32).
 package store
 
 import (
@@ -314,8 +316,9 @@ func (s *Store) migrate() error {
 		version = 20
 	}
 	if version < 21 {
-		// Sync re-architecture: worktrees + checkpoints back the new
-		// object-storage substrate. See pkg/sync/{storage,checkpoint}.
+		// Sync re-architecture: worktrees + checkpoints backed the
+		// checkpoint-sync object-storage substrate (deleted; tables
+		// dropped again in v32).
 		// worktrees: per-user persistent unit of sync ownership.
 		// owner_kind/owner_id track which actor (laptop device vs.
 		// sandbox sprite) currently holds write authority.
@@ -558,6 +561,24 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("migration v31: %w", err)
 		}
 		version = 31
+	}
+	if version < 32 {
+		// Checkpoint-sync is deleted: the repo-first model (bare
+		// canonicals + linked worktrees on the host; GitHub as the
+		// laptop↔sprite bridge) replaced it wholesale. The host
+		// filesystem is the worktree registry now, so the gateway-side
+		// worktrees/checkpoints/head_bundles tables have no readers or
+		// writers left. Drop them; hosts + devices stay.
+		_, err := s.db.Exec(`
+			DROP TABLE IF EXISTS worktrees;
+			DROP TABLE IF EXISTS checkpoints;
+			DROP TABLE IF EXISTS head_bundles;
+			PRAGMA user_version = 32;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v32: %w", err)
+		}
+		version = 32
 	}
 	_ = version // suppress unused warning after last migration
 

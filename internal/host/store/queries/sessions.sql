@@ -9,7 +9,7 @@ SELECT * FROM sessions ORDER BY updated_at DESC;
 
 -- name: ListSessionsByWorktree :many
 -- Used by session-sync to enumerate sessions in a worktree for export.
--- worktree_id is the clank-sync ULID; cross-machine stable identity.
+-- worktree_id is the host-minted worktree ULID; cross-machine stable identity.
 SELECT * FROM sessions WHERE worktree_id = ? ORDER BY updated_at DESC;
 
 -- name: SearchSessions :many

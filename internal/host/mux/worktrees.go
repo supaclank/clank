@@ -22,16 +22,6 @@ type mergeBranchRequest struct {
 	CommitMessage string       `json:"commit_message,omitempty"`
 }
 
-// createWorktreeRequest is the body of POST /worktrees/create. The
-// host identifies the target repo via base_worktree_id (any existing
-// worktree in the desired repo); host-local paths never appear on the
-// wire because they're not comparable across the laptop/sprite
-// boundary.
-type createWorktreeRequest struct {
-	BaseWorktreeID string `json:"base_worktree_id"`
-	BaseBranch     string `json:"base_branch"`
-}
-
 // HOST
 func (m *Mux) handleListBranches(w http.ResponseWriter, r *http.Request) {
 	var req worktreeBranchRequest
@@ -97,47 +87,21 @@ func (m *Mux) handleRemoveWorktree(w http.ResponseWriter, r *http.Request) {
 }
 
 // HOST
-// handleDeleteMaterializedWorktree services DELETE /worktrees/{id}: the
-// full-cleanup leg of a worktree delete. Removes the materialized
-// ~/work/{id} directory and every session belonging to the worktree.
-// Returns 409 (worktree_busy) when a session is actively running.
-func (m *Mux) handleDeleteMaterializedWorktree(w http.ResponseWriter, r *http.Request) {
+// handleDeleteWorktree services DELETE /worktrees/{id}: purge every
+// session belonging to the worktree, then unlink ~/work/{id} from its
+// repo canonical. Returns 409 (worktree_busy) when a session is
+// actively running.
+func (m *Mux) handleDeleteWorktree(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: "worktree id is required"})
 		return
 	}
-	if err := m.svc.DeleteMaterializedWorktree(r.Context(), id); err != nil {
+	if err := m.svc.DeleteWorktree(r.Context(), id); err != nil {
 		writeError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// HOST
-func (m *Mux) handleCreateWorktree(w http.ResponseWriter, r *http.Request) {
-	var req createWorktreeRequest
-	if err := decodeJSON(r.Body, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
-		return
-	}
-	if req.BaseWorktreeID == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Error: "base_worktree_id is required"})
-		return
-	}
-	if req.BaseBranch == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Error: "base_branch is required"})
-		return
-	}
-	out, err := m.svc.CreateWorktree(r.Context(), agent.GitRef{WorktreeID: req.BaseWorktreeID}, req.BaseBranch)
-	if err != nil {
-		// fetchBaseBranchFromOrigin can fail with the GitHub-connect
-		// sentinels (missing base branch on a github.com origin); route
-		// through writeRemoteError so those map to 503/403 instead of 500.
-		writeRemoteError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, out)
 }
 
 // HOST
