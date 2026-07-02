@@ -131,7 +131,10 @@ func (m *Mux) handleCreateWorktree(w http.ResponseWriter, r *http.Request) {
 	}
 	out, err := m.svc.CreateWorktree(r.Context(), agent.GitRef{WorktreeID: req.BaseWorktreeID}, req.BaseBranch)
 	if err != nil {
-		writeError(w, err)
+		// fetchBaseBranchFromOrigin can fail with the GitHub-connect
+		// sentinels (missing base branch on a github.com origin); route
+		// through writeRemoteError so those map to 503/403 instead of 500.
+		writeRemoteError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, out)

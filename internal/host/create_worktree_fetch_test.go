@@ -21,7 +21,10 @@ import (
 // exist") — which the gateway then masked as a 502. The host now fetches the
 // branch from origin before giving up, so the fork succeeds.
 func TestCreateWorktree_FetchesMissingBaseBranch(t *testing.T) {
-	t.Parallel()
+	// Not parallel: CreateWorktree resolves ~/.clank/worktrees via
+	// os.UserHomeDir(), so t.Setenv(HOME) below can't share a process
+	// with other parallel tests.
+	t.Setenv("HOME", t.TempDir())
 
 	source := newSourceRepoWithBranches(t)
 	clone := shallowCloneSingleBranch(t, source, "feature")
@@ -38,16 +41,18 @@ func TestCreateWorktree_FetchesMissingBaseBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateWorktree off missing-local base branch main: %v", err)
 	}
+	if res.WorktreeID == "" || res.WorktreeDir == "" {
+		t.Fatalf("empty result: %+v", res)
+	}
 	// The forked worktree lands under ~/.clank/worktrees/<project>/<petname>;
 	// remove it (and the now-empty project parent) so the test doesn't leak
 	// into the real home dir.
 	t.Cleanup(func() {
 		_ = svc.RemoveWorktree(ctx, ref, res.Branch, true)
-		_ = os.RemoveAll(filepath.Dir(res.WorktreeDir))
+		if res.WorktreeDir != "" {
+			_ = os.RemoveAll(filepath.Dir(res.WorktreeDir))
+		}
 	})
-	if res.WorktreeID == "" || res.WorktreeDir == "" {
-		t.Fatalf("empty result: %+v", res)
-	}
 
 	// The new worktree must sit on top of main's commit, not feature's.
 	head := strings.TrimSpace(gitOut(t, res.WorktreeDir, "log", "-1", "--pretty=%s"))
@@ -64,7 +69,10 @@ func TestCreateWorktree_FetchesMissingBaseBranch(t *testing.T) {
 // still surfaces as ErrNotFound (not a wrapped transport error), so the caller
 // keeps returning a 404 rather than a 5xx.
 func TestCreateWorktree_BranchAbsentOnRemote(t *testing.T) {
-	t.Parallel()
+	// Not parallel: matches TestCreateWorktree_FetchesMissingBaseBranch's
+	// HOME isolation so a future change to the error path can't silently
+	// start writing under the real ~/.clank/worktrees.
+	t.Setenv("HOME", t.TempDir())
 
 	source := newSourceRepoWithBranches(t)
 	clone := shallowCloneSingleBranch(t, source, "feature")
