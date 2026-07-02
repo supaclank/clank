@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -173,7 +174,10 @@ func (d *Dispatcher) purgeDeadTokens(ctx context.Context, msgs []Message, ticket
 		return
 	}
 	for i, t := range tickets {
-		if !t.IsDeviceNotRegistered() {
+		// Dead tokens (Expo says so) and tokens from a foreign Expo
+		// experience (client is pinned elsewhere — see WithExperienceID)
+		// are both permanently undeliverable from this deployment.
+		if !t.IsDeviceNotRegistered() && !t.IsMismatchedExperience() {
 			continue
 		}
 		if err := d.devices.DeleteDeviceByPushToken(ctx, msgs[i].To); err != nil {
@@ -182,9 +186,20 @@ func (d *Dispatcher) purgeDeadTokens(ctx context.Context, msgs []Message, ticket
 	}
 }
 
+// maxDevicesPerUser caps registered devices per user. Real users have
+// one phone, maybe two — the long tail of rows comes from reinstalls
+// and dev-client rebuilds minting a fresh ExponentPushToken each time
+// while the old row lingers (it's only purged if Expo happens to report
+// it DeviceNotRegistered). On register we evict the least-recently-seen
+// rows beyond the cap; a legitimately active device that gets evicted
+// re-registers on its next app launch.
+const maxDevicesPerUser = 5
+
 // HandleRegister is bound at POST /devices behind the user-bearer
 // auth middleware. Body: {"push_token": "...", "platform": "ios"|"android"}.
 // Idempotent — re-registering the same token refreshes last_seen_at.
+// Registration that pushes the user past maxDevicesPerUser evicts their
+// stalest tokens.
 func (d *Dispatcher) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	principal := auth.MustPrincipal(r.Context())
 	var body struct {
@@ -214,7 +229,40 @@ func (d *Dispatcher) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	d.enforceDeviceCap(r.Context(), principal.UserID, body.PushToken)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// enforceDeviceCap deletes the user's least-recently-seen device rows
+// until at most maxDevicesPerUser remain. The row just registered is
+// never evicted regardless of its stored last_seen_at. Best-effort:
+// failures are logged, not surfaced — the registration itself already
+// succeeded.
+func (d *Dispatcher) enforceDeviceCap(ctx context.Context, userID, justRegistered string) {
+	devs, err := d.devices.ListDevicesByUser(ctx, userID)
+	if err != nil {
+		d.log.Printf("device cap: list devices (user %s): %v", userID, err)
+		return
+	}
+	if len(devs) <= maxDevicesPerUser {
+		return
+	}
+	sort.Slice(devs, func(i, j int) bool { return devs[i].LastSeenAt.Before(devs[j].LastSeenAt) })
+	excess := len(devs) - maxDevicesPerUser
+	for _, dev := range devs {
+		if excess == 0 {
+			return
+		}
+		if dev.PushToken == justRegistered {
+			continue
+		}
+		if err := d.devices.DeleteDevice(ctx, userID, dev.PushToken); err != nil {
+			d.log.Printf("device cap: evict (user %s token=%s): %v", userID, redactToken(dev.PushToken), err)
+			continue
+		}
+		d.log.Printf("device cap: evicted stale device (user %s token=%s, %d over cap)", userID, redactToken(dev.PushToken), excess)
+		excess--
+	}
 }
 
 // HandleDeregister is bound at DELETE /devices/{token}. Removes the
