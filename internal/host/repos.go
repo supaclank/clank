@@ -148,6 +148,104 @@ func (s *Service) lockRepo(slug string) func() {
 	return mu.Unlock
 }
 
+// validSlug reports whether s is safe to use as a repo routing key —
+// i.e. a value slugForImport/slugForName could have minted. The check
+// matters at the HTTP boundary: the slug becomes a path segment under
+// ~/work/repos, so anything outside the sanitize alphabet (or the "."
+// / ".." specials, which the alphabet would otherwise admit) must be
+// rejected before it reaches filepath.Join.
+func validSlug(s string) bool {
+	if s == "" || s == "." || s == ".." || len(s) > 2*maxRepoNameLength+len(importSlugSeparator) {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// resolveRepoSlug validates slug and stats its canonical, returning the
+// canonical git dir. ErrRepoNotFound when no such repo exists on this
+// host; ErrInvalidArgument for a malformed slug.
+func resolveRepoSlug(slug string) (string, error) {
+	if !validSlug(slug) {
+		return "", fmt.Errorf("%w: invalid repo slug %q", ErrInvalidArgument, slug)
+	}
+	gitDir, err := canonicalGitDir(slug)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(gitDir); err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("%w: %q", ErrRepoNotFound, slug)
+		}
+		return "", fmt.Errorf("stat canonical %q: %w", slug, err)
+	}
+	return gitDir, nil
+}
+
+// ensureRepoBranchAvailable makes branch resolvable in the canonical at
+// gitDir: a no-op when refs/heads/<branch> or refs/remotes/origin/<branch>
+// already exists, else one single-branch fetch from origin into the
+// remote-tracking namespace. Auth is resolved from the origin itself:
+// github.com origins use the stored token (ErrGitHubNotConnected when
+// absent — a fetch was genuinely needed and can't happen); other
+// origins (local bare repos in tests) fetch verbatim; NO origin at all
+// (greenfield) is a no-op — there's nowhere to fetch from, and the
+// caller's worktree add reports ErrNotFound with full context. A branch
+// missing on the remote likewise falls through to the caller.
+//
+// Caller holds the repo lock.
+func (s *Service) ensureRepoBranchAvailable(gitDir, branch string) error {
+	local, err := git.BranchExists(gitDir, branch)
+	if err != nil {
+		return fmt.Errorf("check branch: %w", err)
+	}
+	if local {
+		return nil
+	}
+	tracking, err := git.RemoteTrackingBranchExists(gitDir, "origin", branch)
+	if err != nil {
+		return fmt.Errorf("check remote branch: %w", err)
+	}
+	if tracking {
+		return nil
+	}
+
+	remoteURL, err := git.RemoteURL(gitDir, "origin")
+	if err != nil {
+		return nil // greenfield: no origin to fetch from
+	}
+	fetchURL := remoteURL
+	authHeader := ""
+	if owner, repo, perr := githubpkg.ParseGitHubRemote(remoteURL); perr == nil {
+		if s.github == nil {
+			return ErrGitHubManagerUnavailable
+		}
+		creds, cerr := s.github.Store().Read()
+		if cerr != nil {
+			return fmt.Errorf("read github credentials: %w", cerr)
+		}
+		if creds.AccessToken == "" {
+			return ErrGitHubNotConnected
+		}
+		fetchURL = fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+		authHeader = buildAuthHeader(creds.AccessToken)
+	}
+	refspec := "+refs/heads/" + branch + ":refs/remotes/origin/" + branch
+	if err := git.Fetch(gitDir, fetchURL, refspec, git.PushOptions{ExtraHeader: authHeader}); err != nil {
+		if isNoRemoteRef(err) {
+			return nil // absent on the remote too → caller reports ErrNotFound
+		}
+		return fmt.Errorf("fetch branch %q: %w", branch, err)
+	}
+	return nil
+}
+
 // worktreeCanonicalGitDir resolves the canonical repo dir a linked
 // worktree belongs to, via its git common dir. Errors when wtDir isn't
 // a repo; returns ("", false, nil) when it IS a repo but a standalone

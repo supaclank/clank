@@ -1248,6 +1248,13 @@ func (s *Service) ResolveWorktree(ctx context.Context, ref agent.GitRef, branch 
 // filepath.Base(repoRoot) fallback) and returned to the gateway, which
 // persists it on the worktree row so clients can group worktrees by
 // repo in their pickers/sidebars.
+//
+// Deprecated: superseded by CreateRepoWorktree (repos_worktree_create.go),
+// which addresses the repo by slug instead of a "representative"
+// worktree and links the new worktree at ~/work/<newULID> — the path
+// session GitRefs actually resolve (this method's git.WorktreeDir
+// placement leaves forked worktrees unreachable by ID). Serving until
+// the mobile cutover; deleted with the checkpoint-sync surface.
 func (s *Service) CreateWorktree(ctx context.Context, baseWorktreeRef agent.GitRef, baseBranch string) (CreateWorktreeResult, error) {
 	if strings.TrimSpace(baseBranch) == "" {
 		return CreateWorktreeResult{}, ErrInvalidBranchName
@@ -1368,6 +1375,10 @@ func (s *Service) CreateWorktree(ctx context.Context, baseWorktreeRef agent.GitR
 
 // fetchBaseBranchFromOrigin materializes a branch that exists on the
 // worktree's origin but not yet locally, creating a local refs/heads/<branch>
+//
+// Deprecated: only the deprecated CreateWorktree calls this; the
+// repo-first path uses ensureRepoBranchAvailable (repos.go). Deleted
+// together with CreateWorktree at the checkpoint-sync removal.
 // so the subsequent `git worktree add -b <new> <dir> <branch>` succeeds. It's
 // the recovery path for shallow single-branch clones, whose local repo holds
 // only the branch they were cloned with.

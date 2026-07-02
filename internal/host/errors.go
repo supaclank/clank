@@ -56,4 +56,11 @@ var (
 	// ErrInvalidArgument is returned when a Service method is called with
 	// a missing or malformed required argument.
 	ErrInvalidArgument = errors.New("host: invalid argument")
+
+	// ErrRepoNotFound is returned when a repo-scoped operation names a
+	// slug with no canonical clone on this host (~/work/repos/<slug>).
+	// Distinct from ErrNotFound so the mux can emit a repo_not_found
+	// code the client can act on (refresh the repo list) vs a missing
+	// branch/worktree inside a repo that does exist.
+	ErrRepoNotFound = errors.New("host: repo not found")
 )
