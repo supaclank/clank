@@ -223,7 +223,7 @@ func asTooManyExperiences(errs []expoErr) *tooManyExperiencesError {
 		}
 		var groups map[string][]string
 		if err := json.Unmarshal(e.Details, &groups); err != nil || len(groups) == 0 {
-			return nil
+			continue
 		}
 		return &tooManyExperiencesError{groups: groups}
 	}

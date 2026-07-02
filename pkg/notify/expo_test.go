@@ -423,6 +423,21 @@ func TestClient_Push_SubBatchFailureOnlyAffectsItsExperience(t *testing.T) {
 	}
 }
 
+func TestAsTooManyExperiences_SkipsUnparsableEntryAndUsesLaterValidOne(t *testing.T) {
+	t.Parallel()
+	errs := []expoErr{
+		{Code: codeTooManyExperienceIDs, Details: json.RawMessage(`not-json`)},
+		{Code: codeTooManyExperienceIDs, Details: json.RawMessage(`{"@acme/app":["tok1"]}`)},
+	}
+	got := asTooManyExperiences(errs)
+	if got == nil {
+		t.Fatal("expected a tooManyExperiencesError from the second, valid entry")
+	}
+	if want := []string{"tok1"}; len(got.groups["@acme/app"]) != 1 || got.groups["@acme/app"][0] != want[0] {
+		t.Errorf("groups = %v, want %v", got.groups, map[string][]string{"@acme/app": want})
+	}
+}
+
 func TestClient_Push_FailsOnNon2xx(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
