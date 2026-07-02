@@ -118,10 +118,8 @@ func NewLocalClient() (*Client, error) {
 }
 
 // NewRemoteClient returns a TCP client targeting the active remote's
-// gateway_url with its access_token as the bearer. Used by the
-// `clank push`/`clank pull` flows that talk directly to the remote
-// sync server (the laptop's local daemon doesn't orchestrate the
-// remote sync).
+// gateway_url with its access_token as the bearer, for flows that talk
+// to the remote gateway directly rather than through the local daemon.
 //
 // Returns an error when no active remote is configured — surfaces a
 // clear setup message rather than silently falling back to a

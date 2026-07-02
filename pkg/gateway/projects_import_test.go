@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -9,8 +8,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-
-	"github.com/acksell/clank/pkg/provisioner"
 )
 
 // importSprite stands in for the host's POST /projects/import. It records
@@ -47,12 +44,12 @@ func (s *importSprite) server(t *testing.T) *httptest.Server {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(createWorktreeResponse{
-			WorktreeID:  s.worktreeID,
-			Branch:      "main",
-			WorktreeDir: "/work/" + s.worktreeID,
-			DisplayName: body.Repo,
-			OriginRepo:  body.Owner + "/" + body.Repo,
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"worktree_id":  s.worktreeID,
+			"branch":       "main",
+			"worktree_dir": "/work/" + s.worktreeID,
+			"display_name": body.Repo,
+			"origin_repo":  body.Owner + "/" + body.Repo,
 		})
 	})
 	srv := httptest.NewServer(mux)
@@ -63,7 +60,7 @@ func (s *importSprite) server(t *testing.T) *httptest.Server {
 func TestImportProject_HappyPath(t *testing.T) {
 	t.Parallel()
 	sprite := &importSprite{worktreeID: "01IMPORTWT"}
-	gw, st := newProjectsGateway(t, sprite.server(t), nil)
+	gw := newProjectsGateway(t, sprite.server(t), nil)
 
 	resp := postJSON(t, gw.URL+"/v1/projects/import", `{"owner":"acme","repo":"api"}`)
 	defer resp.Body.Close()
@@ -79,13 +76,13 @@ func TestImportProject_HappyPath(t *testing.T) {
 		t.Fatalf("host repo = %v, want api", got)
 	}
 
-	// The worktree row was persisted with the GitHub-derived label.
-	wt, err := st.GetWorktreeByID(context.Background(), "01IMPORTWT")
-	if err != nil {
-		t.Fatalf("worktree row not persisted: %v", err)
+	// The host's CreateWorktreeResult forwards verbatim.
+	var out map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
 	}
-	if wt.UserID != projUser || wt.DisplayName != "api" || wt.OriginRepo != "acme/api" {
-		t.Fatalf("unexpected row: %+v", wt)
+	if out["worktree_id"] != "01IMPORTWT" || out["origin_repo"] != "acme/api" {
+		t.Fatalf("unexpected body: %+v", out)
 	}
 }
 
@@ -96,7 +93,7 @@ func TestImportProject_NotConnectedForwarded(t *testing.T) {
 		errStatus:  http.StatusConflict,
 		errBody:    `{"code":"github_not_connected","error":"github: not connected"}`,
 	}
-	gw, st := newProjectsGateway(t, sprite.server(t), nil)
+	gw := newProjectsGateway(t, sprite.server(t), nil)
 
 	resp := postJSON(t, gw.URL+"/v1/projects/import", `{"owner":"acme","repo":"api"}`)
 	defer resp.Body.Close()
@@ -110,17 +107,12 @@ func TestImportProject_NotConnectedForwarded(t *testing.T) {
 	if !strings.Contains(string(body), "github_not_connected") {
 		t.Fatalf("error code not forwarded: %q", body)
 	}
-
-	// No worktree row should be registered on failure.
-	if _, err := st.GetWorktreeByID(context.Background(), "01SHOULDNOTEXIST"); err == nil {
-		t.Fatal("worktree row persisted despite host error")
-	}
 }
 
 func TestImportProject_MissingFields(t *testing.T) {
 	t.Parallel()
 	sprite := &importSprite{worktreeID: "x"}
-	gw, _ := newProjectsGateway(t, sprite.server(t), nil)
+	gw := newProjectsGateway(t, sprite.server(t), nil)
 	for _, body := range []string{`{"owner":"acme"}`, `{"repo":"api"}`, `{}`} {
 		resp := postJSON(t, gw.URL+"/v1/projects/import", body)
 		if resp.StatusCode != http.StatusBadRequest {
@@ -130,23 +122,5 @@ func TestImportProject_MissingFields(t *testing.T) {
 	}
 	if n := atomic.LoadInt32(&sprite.calls); n != 0 {
 		t.Fatalf("host calls = %d, want 0 (validation precedes the host)", n)
-	}
-}
-
-func TestImportProject_SyncUnconfigured(t *testing.T) {
-	t.Parallel()
-	g, err := NewGateway(Config{
-		Provisioner: &stubProvisioner{ref: provisioner.HostRef{URL: "http://unused"}},
-	}, nil)
-	if err != nil {
-		t.Fatalf("NewGateway: %v", err)
-	}
-	gw := httptest.NewServer(localAuth(g.Handler(), projUser))
-	t.Cleanup(gw.Close)
-
-	resp := postJSON(t, gw.URL+"/v1/projects/import", `{"owner":"acme","repo":"api"}`)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503 when Sync unconfigured", resp.StatusCode)
 	}
 }

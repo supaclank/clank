@@ -18,14 +18,14 @@ import (
 //     When the target host is co-located with the client (laptop TUI
 //     talking to laptop clankd), this is the user's repo path; the
 //     host opens it directly.
-//   - WorktreeID: the server-assigned worktree ULID minted by
-//     clank-sync's `POST /v1/worktrees`. Cached at
-//     `$(git rev-parse --absolute-git-dir)/clank/worktree-id` after
-//     `clank push`. When the
-//     target host is *not* co-located (docker stack, cloud sandbox),
-//     it ignores LocalPath and resolves the worktree from
-//     `~/work/<WorktreeID>/`, materialized from a synced checkpoint in
-//     object storage.
+//   - WorktreeID: the host-minted worktree ULID, stamped at
+//     `$(git rev-parse --absolute-git-dir)/clank/worktree-id` when the
+//     worktree is created (repo import, greenfield scaffold, or
+//     CreateRepoWorktree fork/load). It resolves to the repo-first
+//     linked worktree at `~/work/<WorktreeID>/` — a `git worktree` of
+//     the repo's bare canonical clone at ~/work/repos/<slug>/repo.git.
+//     A host that is *not* co-located (docker stack, cloud sandbox)
+//     ignores LocalPath and resolves by WorktreeID.
 //
 // At least one MUST be set. Both is the common laptop pattern (TUI
 // also sends WorktreeID so moving the session to a remote host later
@@ -35,10 +35,10 @@ import (
 //  1. If LocalPath is set and points at a valid repo on this host →
 //     use it directly.
 //  2. Else if WorktreeID is set → use ~/work/<WorktreeID>/. Error if
-//     that directory doesn't exist (the worktree must be materialized
-//     from object storage first; we deliberately do not silently clone
-//     from origin or pull from the mirror — the model is "synced
-//     worktree, single happy path", not "fall back to clone").
+//     that directory doesn't exist (the worktree must have been
+//     created on this host first; we deliberately do not silently
+//     clone from origin — creation goes through the repo-first
+//     import/scaffold/fork paths, never a session-time fallback).
 //  3. Else → error.
 //
 // DisplayName is an optional human-readable label set by the

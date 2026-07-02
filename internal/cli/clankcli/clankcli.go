@@ -40,11 +40,6 @@ func Command() *cobra.Command {
 		codeCmd(),
 		previewCmd(),
 		inboxCmd(),
-		initCmd(),
-		pushCmd(),
-		pullCmd(),
-		disableCmd(),
-		statusCmd(),
 		remoteCmd(),
 		loginCmd(),
 		logoutCmd(),
@@ -142,7 +137,7 @@ The daemon is auto-started if not already running.`,
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
 
-			worktreeID, _ := agent.ReadLocalWorktreeID(projectDir) // empty if `clank sync push` hasn't been run
+			worktreeID, _ := agent.ReadLocalWorktreeID(projectDir) // empty for plain local repos without a stamped worktree-id
 
 			info, err := client.Sessions().Create(ctx, agent.StartRequest{
 				Backend:  bt,
@@ -264,9 +259,7 @@ func redirectLogToFile() func() {
 //
 // `clank` only ever talks to the local daemon: per-session ops to
 // remote-owned worktrees are proxied transparently through the local
-// gateway. The old ActiveHub toggle (laptop client → remote daemon)
-// is gone; remote daemons are the responsibility of `clank push`/
-// `clank pull` flows that explicitly use NewRemoteClient.
+// gateway.
 func ensureDaemon() (*daemonclient.Client, error) {
 	running, _, err := daemonclient.IsRunning()
 	if err != nil {

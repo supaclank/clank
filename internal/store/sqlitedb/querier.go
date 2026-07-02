@@ -9,37 +9,16 @@ import (
 )
 
 type Querier interface {
-	// checkpoints has no FK back to worktrees(id), so a worktree delete must
-	// clear its checkpoint rows explicitly to avoid orphans (see DeleteWorktree).
-	DeleteCheckpointsByWorktree(ctx context.Context, worktreeID string) error
 	DeleteDevice(ctx context.Context, arg DeleteDeviceParams) error
 	// Used by the dispatcher when Expo returns DeviceNotRegistered for a
 	// token; the user_id is irrelevant, the token itself is dead.
 	DeleteDeviceByPushToken(ctx context.Context, pushToken string) error
-	// Tenant erasure: drop every head-bundle row for a user. Rows are
-	// per-user (PK includes user_id), so this never touches another tenant.
-	DeleteHeadBundlesByUser(ctx context.Context, userID string) error
 	DeleteHostByID(ctx context.Context, id string) error
 	DeleteHostByUser(ctx context.Context, arg DeleteHostByUserParams) error
-	DeleteWorktree(ctx context.Context, id string) error
-	GetCheckpointByID(ctx context.Context, id string) (Checkpoint, error)
-	GetHeadBundle(ctx context.Context, arg GetHeadBundleParams) (HeadBundle, error)
 	GetHostByID(ctx context.Context, id string) (Host, error)
 	GetHostByNotifierToken(ctx context.Context, notifierToken string) (Host, error)
 	GetHostByUser(ctx context.Context, arg GetHostByUserParams) (Host, error)
-	GetWorktreeByID(ctx context.Context, id string) (Worktree, error)
-	InsertCheckpoint(ctx context.Context, arg InsertCheckpointParams) error
-	// Idempotent: a tip's first stored bundle wins, so re-pushing a HEAD the
-	// server already has (already_stored) keeps the original base_sha link.
-	InsertHeadBundle(ctx context.Context, arg InsertHeadBundleParams) error
-	InsertWorktree(ctx context.Context, arg InsertWorktreeParams) error
-	ListCheckpointsByWorktree(ctx context.Context, arg ListCheckpointsByWorktreeParams) ([]Checkpoint, error)
 	ListDevicesByUser(ctx context.Context, userID string) ([]Device, error)
-	ListWorktreesByUser(ctx context.Context, userID string) ([]Worktree, error)
-	MarkCheckpointUploaded(ctx context.Context, arg MarkCheckpointUploadedParams) error
-	UpdateCheckpointSessionsDigest(ctx context.Context, arg UpdateCheckpointSessionsDigestParams) error
-	UpdateWorktreeMaterialization(ctx context.Context, arg UpdateWorktreeMaterializationParams) error
-	UpdateWorktreePointer(ctx context.Context, arg UpdateWorktreePointerParams) error
 	UpsertDevice(ctx context.Context, arg UpsertDeviceParams) error
 	UpsertHost(ctx context.Context, arg UpsertHostParams) error
 }

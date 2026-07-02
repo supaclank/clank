@@ -21,7 +21,6 @@ import (
 	"github.com/acksell/clank/pkg/preview/tokens"
 	"github.com/acksell/clank/pkg/provisioner"
 	"github.com/acksell/clank/pkg/provisioner/hoststore"
-	clanksync "github.com/acksell/clank/pkg/sync"
 )
 
 // PreviewHostLookup is the narrow surface preview handlers need from
@@ -71,9 +70,7 @@ type AuthConfig struct {
 	CallbackPort int `json:"callback_port,omitempty"`
 }
 
-// Config wires the gateway's dependencies. Provisioner is required;
-// Sync is optional (when nil, the pull route returns 503 and the /v1/
-// prefix isn't mounted).
+// Config wires the gateway's dependencies. Provisioner is required.
 //
 // Authentication is the responsibility of an outer middleware (see
 // pkg/auth.Middleware) — by the time a request reaches the gateway,
@@ -83,16 +80,9 @@ type Config struct {
 	// is called per-request; the provisioner caches in-process.
 	Provisioner provisioner.Provisioner
 
-	// Sync is the embedded sync server. When non-nil, the gateway mounts
-	// the sync API routes under /v1/ and the pull route calls sync
-	// methods directly rather than via HTTP. When nil, the pull route
-	// returns 503.
-	Sync *clanksync.Server
-
 	// Images is the embedded image-upload presign server. When non-nil,
-	// the gateway mounts POST /v1/images (more specific than Sync's /v1/
-	// catch-all, so it wins). Independent of Sync — its own bucket. When
-	// nil, /v1/images falls through to the sync server (404).
+	// the gateway mounts POST /v1/images. When nil, the route isn't
+	// mounted (404).
 	Images *images.Server
 
 	// Templates is the catalog of built-in project templates a user can
@@ -217,50 +207,33 @@ func NewGateway(cfg Config, lg *log.Logger) (*Gateway, error) {
 
 // Handler returns the public-listener http.Handler.
 //
-// /ping and /gateway/health answer locally without waking a host;
-// /v1/worktrees/{id}/pull runs the gateway-orchestrated pull flow when
-// Sync is configured; /v1/ (other paths) forwards to the embedded sync
-// server when Sync is configured; every other path proxies to the
-// user's host. Authentication is handled by an outer middleware
+// /ping and /gateway/health answer locally without waking a host; the
+// /v1/* routes below are gateway-orchestrated (mostly pure proxies to
+// the user's host); every other path proxies to the user's host
+// verbatim. Authentication is handled by an outer middleware
 // (pkg/auth.Middleware); handlers read the Principal from r.Context()
 // via auth.MustPrincipal.
 func (g *Gateway) Handler() http.Handler {
 	mx := http.NewServeMux()
 	mx.HandleFunc("GET /ping", g.handlePing)
 	mx.HandleFunc("GET /gateway/health", g.handleGatewayHealth)
-	mx.HandleFunc("POST /v1/worktrees/{id}/pull", g.handlePullWorktree)
-	// /v1/worktrees/create and /v1/worktrees/list-branches must be
-	// mounted BEFORE the `/v1/` catch-all so they reach the host (via
-	// these gateway-orchestrated handlers) instead of the sync server.
-	mx.HandleFunc("POST /v1/worktrees/create", g.handleCreateWorktree)
-	mx.HandleFunc("POST /v1/worktrees/list-branches", g.handleListBranches)
 	// Brand-new project scaffolding. GET lists the template catalog;
 	// POST resolves a template id to its clone URL and asks the host to
-	// scaffold it. Mounted before the /v1/ catch-all for the same reason
-	// as the worktree routes above.
+	// scaffold it.
 	mx.HandleFunc("GET /v1/templates", g.handleListTemplates)
 	mx.HandleFunc("POST /v1/projects/create", g.handleCreateProject)
 	// Import an existing GitHub repo: clone owner/repo (with the host's
-	// stored GitHub token) into a fresh worktree. Mounted before the /v1/
-	// catch-all for the same reason as the routes above.
+	// stored GitHub token) into a fresh worktree. See projects_import.go.
 	mx.HandleFunc("POST /v1/projects/import", g.handleImportProject)
-	// Autosync (S3→sprite): sync-all (mobile homescreen) + per-worktree
-	// (manual sync button / conflict resolution). Mounted before the /v1/
-	// catch-all so they reach these gateway-orchestrated handlers.
-	mx.HandleFunc("POST /v1/worktrees/sync", g.handleSyncAllWorktrees)
-	mx.HandleFunc("POST /v1/worktrees/{id}/sync", g.handleSyncWorktree)
-	// Full-cleanup delete: strip the sprite's materialized copy + sessions,
-	// then delete the sync row + checkpoints. Mounted before the `/v1/`
-	// catch-all so DELETE reaches this gateway handler, not the sync server.
+	// Worktree delete: pure host proxy — the host purges the worktree's
+	// sessions and unlinks ~/work/{id} from its repo canonical.
 	mx.HandleFunc("DELETE /v1/worktrees/{id}", g.handleDeleteWorktree)
-	// GDPR/app-store account erasure: destroy the caller's compute, purge
-	// their sync data + object-store blobs, devices, and preview routes.
-	// Mounted before the `/v1/` catch-all for the same reason.
+	// GDPR/app-store account erasure: destroy the caller's compute (which
+	// holds all repo + session state), devices, and preview routes.
 	mx.HandleFunc("DELETE /v1/account", g.handleDeleteAccount)
 
 	// GitHub Connect: status/disconnect/connect-flow/create-PR are
-	// all pure proxies to the user's host. Mounted before the /v1/
-	// catch-all for the same reason as the worktree routes above.
+	// all pure proxies to the user's host.
 	mx.HandleFunc("GET /v1/github/status", g.handleGitHubStatus)
 	mx.HandleFunc("GET /v1/github/repos", g.handleGitHubListRepos)
 	mx.HandleFunc("GET /v1/github/repos/{owner}/{repo}/branches", g.handleGitHubListBranches)
@@ -275,30 +248,22 @@ func (g *Gateway) Handler() http.Handler {
 	// Repo-first surface: filesystem-derived listing, repo-scoped
 	// worktree creation, the branch∪PR overview, and whole-repo delete.
 	// Pure proxies with verbatim status forwarding — see
-	// pkg/gateway/repos_proxy.go + internal/host/mux/repos.go. Mounted
-	// before the /v1/ catch-all like everything else here.
+	// pkg/gateway/repos_proxy.go + internal/host/mux/repos.go.
 	mx.HandleFunc("GET /v1/repos", g.handleReposList)
 	mx.HandleFunc("POST /v1/repos/{slug}/worktrees", g.handleRepoWorktreeCreate)
 	mx.HandleFunc("GET /v1/repos/{slug}/overview", g.handleRepoOverview)
 	mx.HandleFunc("DELETE /v1/repos/{slug}", g.handleRepoDelete)
 
-	// Worktree↔GitHub-remote sync. The "remote/" segment keeps these
-	// distinct from the checkpoint routes above (/pull, /sync). See
-	// pkg/gateway/remote_sync.go + internal/host/mux/remote.go.
+	// Worktree↔GitHub-remote sync. See pkg/gateway/remote_sync.go +
+	// internal/host/mux/remote.go.
 	mx.HandleFunc("GET /v1/worktrees/{id}/remote/status", g.handleRemoteStatus)
 	mx.HandleFunc("POST /v1/worktrees/{id}/remote/push", g.handleRemotePush)
 	mx.HandleFunc("POST /v1/worktrees/{id}/remote/pull", g.handleRemotePull)
 	mx.HandleFunc("POST /v1/worktrees/{id}/remote/resolve", g.handleRemoteResolve)
 	mx.HandleFunc("POST /v1/worktrees/{id}/remote/publish", g.handleRemotePublish)
 	if g.cfg.Images != nil {
-		// POST /v1/images: image-upload presign. More specific than the
-		// sync /v1/ catch-all below, so it wins regardless of order.
+		// POST /v1/images: image-upload presign.
 		mx.Handle("/v1/images", g.cfg.Images.Handler())
-	}
-	if g.cfg.Sync != nil {
-		// The specific /v1/worktrees/... routes above are more specific
-		// and win over this /v1/ prefix registered here.
-		mx.Handle("/v1/", g.cfg.Sync.Handler())
 	}
 	if g.cfg.Notify != nil {
 		// /devices: user-scoped, inherits outer auth wrap.

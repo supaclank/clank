@@ -227,7 +227,7 @@ func TestDeleteWorktree_LinkedKeepsBranchRef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("import: %v", err)
 	}
-	if err := svc.DeleteMaterializedWorktree(ctx, res.WorktreeID); err != nil {
+	if err := svc.DeleteWorktree(ctx, res.WorktreeID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 

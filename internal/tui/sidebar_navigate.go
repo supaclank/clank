@@ -70,14 +70,6 @@ func (m *SidebarModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return func() tea.Msg {
 			return composeRequestedMsg{worktreePath: worktreePath}
 		}
-	case key.Matches(msg, key.NewBinding(key.WithKeys(":"))):
-		// Worktree options menu (Push/Pull) only valid on a worktree row.
-		if w, ok := m.cursorNode().(worktreeNode); ok {
-			localPath := w.LocalPath
-			return func() tea.Msg {
-				return worktreeOptionsRequestedMsg{localPath: localPath}
-			}
-		}
 	}
 	return nil
 }

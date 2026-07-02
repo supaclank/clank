@@ -54,7 +54,7 @@ func TestReposProxy_ForwardsStatusVerbatim(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			sprite := &reposSprite{status: tc.hostStatus, body: tc.hostBody}
-			gw, _ := newProjectsGateway(t, sprite.server(t), nil)
+			gw := newProjectsGateway(t, sprite.server(t), nil)
 
 			req, err := http.NewRequest(tc.method, gw.URL+tc.path, strings.NewReader(`{}`))
 			if err != nil {
@@ -90,7 +90,7 @@ func TestReposProxy_RejectsInvalidSlug(t *testing.T) {
 		t.Run(slug, func(t *testing.T) {
 			t.Parallel()
 			sprite := &reposSprite{status: http.StatusOK, body: `{}`}
-			gw, _ := newProjectsGateway(t, sprite.server(t), nil)
+			gw := newProjectsGateway(t, sprite.server(t), nil)
 
 			resp, err := http.Get(gw.URL + "/v1/repos/" + url.PathEscape(slug) + "/overview")
 			if err != nil {
@@ -108,25 +108,27 @@ func TestReposProxy_RejectsInvalidSlug(t *testing.T) {
 }
 
 // A literal "." or ".." path segment (unescaped) never reaches
-// validRepoSlug at all — http.ServeMux's own path cleaning redirects an
-// unclean request path before dispatch, so these 404 rather than 400.
-// Documents that the belt (gateway allowlist) has a suspenders
-// (stdlib routing) behind it for this specific case.
+// validRepoSlug at all — http.ServeMux's own path cleaning rewrites the
+// unclean request path before dispatch, so the cleaned path (e.g.
+// /v1/overview) can only fall through to the generic host proxy; it can
+// never smuggle a traversal into a /repos/{slug} handler. Documents
+// that the belt (gateway allowlist) has a suspenders (stdlib routing)
+// behind it for this specific case.
 func TestReposProxy_DotDotPathCleanedByServeMux(t *testing.T) {
 	t.Parallel()
 	for _, path := range []string{"/v1/repos/../overview", "/v1/repos/./overview"} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 			sprite := &reposSprite{status: http.StatusOK, body: `{}`}
-			gw, _ := newProjectsGateway(t, sprite.server(t), nil)
+			gw := newProjectsGateway(t, sprite.server(t), nil)
 
 			resp, err := http.Get(gw.URL + path)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer resp.Body.Close()
-			if got := sprite.gotPath.Load(); got != nil {
-				t.Errorf("host was hit at %v, want no host call", got)
+			if got, ok := sprite.gotPath.Load().(string); ok && strings.HasPrefix(got, "/repos") {
+				t.Errorf("host /repos surface was hit at %q, want the cleaned path to miss every repos handler", got)
 			}
 		})
 	}
@@ -142,7 +144,7 @@ func TestReposProxy_ForwardsQuery(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	t.Cleanup(srv.Close)
-	gw, _ := newProjectsGateway(t, srv, nil)
+	gw := newProjectsGateway(t, srv, nil)
 
 	resp, err := http.Get(gw.URL + "/v1/repos/acme__api/overview?fetch=1")
 	if err != nil {

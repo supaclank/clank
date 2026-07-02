@@ -17,9 +17,7 @@ import (
 // if the bucket is set but a required companion var is missing or
 // malformed, so misconfigurations fail loudly at startup.
 //
-// Images use a FULLY INDEPENDENT bucket from sync — different concern,
-// different blast radius — so the config block is its own, never derived
-// from CLANK_SYNC_S3_*. Required when enabled:
+// Required when enabled:
 //
 //	CLANK_IMAGES_S3_BUCKET
 //	CLANK_IMAGES_S3_REGION
@@ -92,4 +90,15 @@ func loadImagesFromEnv(ctx context.Context) (*images.Server, error) {
 		return nil, fmt.Errorf("build images server: %w", err)
 	}
 	return srv, nil
+}
+
+// requireEnv reads key, erroring if empty. becauseKey names the env var
+// whose presence made key required, so the message points at the real
+// trigger (e.g. "... must be set when CLANK_IMAGES_S3_BUCKET is set").
+func requireEnv(key, becauseKey string) (string, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return "", fmt.Errorf("%s must be set when %s is set", key, becauseKey)
+	}
+	return v, nil
 }

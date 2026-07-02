@@ -15,29 +15,7 @@ import (
 // ReverseProxy upgrades HTTP/1.1 natively, so WebSocket (/events)
 // flows through this same path. Bearer auth happens once at the TCP
 // edge (pkg/auth.Middleware), so we don't re-verify here.
-//
-// Sync-path policy: when Sync is unconfigured (laptop mode), refuse to
-// proxy code-sync routes (/sync, /sync/build, /sync/builds/*,
-// /sync/apply-from-urls) to the local clank-host. The host registers
-// those routes for sandbox use; on a laptop they'd let any client with
-// socket access write code into ~/work/. Cloud gateways (Sync != nil)
-// keep proxying so sprite-side handlers still work.
-//
-// /sync/sessions/* is allowed through on laptop gateways: those
-// handlers operate on opencode storage + host.db, never on ~/work/.
-// They're how the laptop's CLI drives session export/import during
-// `clank push`/`clank pull`.
 func (g *Gateway) proxyToHost(w http.ResponseWriter, r *http.Request) {
-	// Check the effective (post-strip) path: a request to
-	// /hosts/<host>/sync/* would otherwise bypass the guard and reach
-	// the host mux's unconditional /sync/* handlers.
-	effectivePath := stripHostsPrefix(r.URL.Path)
-	if g.cfg.Sync == nil && isBlockedCodeSyncRoute(effectivePath) {
-		g.log.Printf("gateway: denied %s %s (code-sync routes blocked on laptop gateway)", r.Method, r.URL.Path)
-		http.NotFound(w, r)
-		return
-	}
-
 	userID := auth.MustPrincipal(r.Context()).UserID
 
 	ref, err := g.cfg.Provisioner.EnsureHost(r.Context(), userID)
@@ -78,21 +56,6 @@ func (g *Gateway) proxyToHost(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	proxy.ServeHTTP(w, r)
-}
-
-// isBlockedCodeSyncRoute reports whether p is a /sync/* route that
-// writes to ~/work/<repo>/ on the host — the family of routes we
-// firewall on laptop gateways. /sync/sessions/* is deliberately
-// allowed because those handlers don't touch ~/work/; they call into
-// the host Service to drive opencode export/import + host.db upserts.
-func isBlockedCodeSyncRoute(p string) bool {
-	if p != "/sync" && !strings.HasPrefix(p, "/sync/") {
-		return false
-	}
-	if p == "/sync/sessions" || strings.HasPrefix(p, "/sync/sessions/") {
-		return false
-	}
-	return true
 }
 
 // stripHostsPrefix turns "/hosts/{name}/foo/bar" into "/foo/bar". A

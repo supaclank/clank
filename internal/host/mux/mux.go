@@ -24,16 +24,6 @@ type Mux struct {
 	svc       *host.Service
 	log       *log.Logger
 	authToken string
-
-	// builds tracks in-progress pull-back checkpoint builds keyed by
-	// build_id. See internal/host/mux/sync.go for the three-step flow
-	// (build → upload → delete) that uses this.
-	builds *spriteBuildStore
-
-	// sessionBuilds tracks in-progress session-export builds keyed by
-	// build_id. Separate from `builds` so build_id namespaces don't
-	// collide between code and session legs. See sessions_sync.go.
-	sessionBuilds *spriteSessionBuildStore
 }
 
 // New constructs a Mux. log may be nil.
@@ -44,7 +34,7 @@ func New(svc *host.Service, lg *log.Logger) *Mux {
 	if lg == nil {
 		lg = log.Default()
 	}
-	return &Mux{svc: svc, log: lg, builds: newSpriteBuildStore(), sessionBuilds: newSpriteSessionBuildStore()}
+	return &Mux{svc: svc, log: lg}
 }
 
 // SetAuthToken configures the bearer-token middleware. When non-empty,
@@ -91,32 +81,25 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("POST /discover", m.handleDiscoverSessions)
 	mx.HandleFunc("POST /sessions/discover", m.handleDiscoverSessions)
 
-	// Worktree/branch ops. The repo is identified by GitRef in the
-	// request body — the host repo registry was removed in §7.8.
-	//
-	// Deprecated: POST /worktrees/create is superseded by the repo-first
-	// POST /repos/{slug}/worktrees (repos.go) — the base_worktree_id
-	// indirection addressed a repo by whichever worktree the client held
-	// and placed forks where session GitRefs couldn't resolve them. The
-	// route keeps serving until the mobile cutover, then dies with the
-	// checkpoint-sync deletion.
+	// Worktree/branch ops, addressed by GitRef in the request body —
+	// the laptop TUI's flows. Repo-scoped creation for gateway clients
+	// lives under /repos (registerRepos below).
 	mx.HandleFunc("POST /worktrees/list-branches", m.handleListBranches)
 	mx.HandleFunc("POST /worktrees/resolve", m.handleResolveWorktree)
-	mx.HandleFunc("POST /worktrees/create", m.handleCreateWorktree)
-	// /projects/create scaffolds a brand-new local project by cloning a
-	// template (clone_url supplied by the gateway) into a fresh ~/work
+	// /projects/create scaffolds a brand-new local project (clone_url
+	// supplied by the gateway) as a bare canonical + linked ~/work
 	// worktree with no remote. See projects.go.
 	mx.HandleFunc("POST /projects/create", m.handleCreateProject)
 	// /projects/import clones the caller's existing GitHub repo (owner/repo
-	// in the body) into a fresh ~/work worktree, keeping the origin remote.
-	// See import_project.go.
+	// in the body) into a canonical + fresh ~/work worktree, keeping the
+	// origin remote. See import_project.go.
 	mx.HandleFunc("POST /projects/import", m.handleImportProject)
 	mx.HandleFunc("POST /worktrees/remove", m.handleRemoveWorktree)
 	mx.HandleFunc("POST /worktrees/merge", m.handleMergeBranch)
-	// Full-cleanup leg of a worktree delete: remove the materialized
-	// ~/work/{id} directory and the worktree's sessions. The gateway calls
-	// this during DELETE /v1/worktrees/{id}, before deleting the sync row.
-	mx.HandleFunc("DELETE /worktrees/{id}", m.handleDeleteMaterializedWorktree)
+	// Worktree delete: purge the worktree's sessions and unlink
+	// ~/work/{id} from its repo canonical. The gateway proxies
+	// DELETE /v1/worktrees/{id} straight here.
+	mx.HandleFunc("DELETE /worktrees/{id}", m.handleDeleteWorktree)
 
 	// Preview-app control plane. The reverse proxy lives at the
 	// gateway (subdomain-routed via preview-<token>.<root>) — clank-
@@ -163,42 +146,9 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// See internal/host/mux/remote.go.
 	m.registerRemote(mx)
 
-	// Repo-first surface (repo-scoped worktree creation; list/overview/
-	// delete follow). See internal/host/mux/repos.go.
+	// Repo-first surface (repo listing, repo-scoped worktree creation,
+	// overview, repo delete). See internal/host/mux/repos.go.
 	m.registerRepos(mx)
-
-	// Cloud-sync ingress. The gateway orchestrates pushes and pulls
-	// through these endpoints; the sandbox is a pure responder.
-	//
-	//   - POST /sync/apply-from-urls    — apply a checkpoint by pulling presigned
-	//                                     GET URLs the gateway minted. Push path.
-	//   - POST /sync/build?repo=<id>    — pull-back step 1: build bundles to local
-	//                                     disk, return metadata + build_id.
-	//   - POST /sync/builds/{id}/upload — pull-back step 2: PUT bundles to the
-	//                                     presigned URLs in the request body.
-	//   - DELETE /sync/builds/{id}      — pull-back step 3 (idempotent cleanup).
-	// See sync.go.
-	mx.HandleFunc("POST /sync/apply-from-urls", m.handleSyncApplyFromURLs)
-	mx.HandleFunc("POST /sync/build", m.handleSyncBuild)
-	mx.HandleFunc("POST /sync/builds/{id}/upload", m.handleSyncBuildsUpload)
-	mx.HandleFunc("DELETE /sync/builds/{id}", m.handleSyncBuildsDelete)
-
-	// Session-sync leg, mirrors the code-sync trio. See sessions_sync.go.
-	//
-	//   - POST /sync/sessions/build              — quiesce + export sessions for a
-	//                                              worktree; returns manifest entries
-	//                                              + a build_id.
-	//   - POST /sync/sessions/builds/{id}/upload — PUT per-session blobs + the
-	//                                              session-manifest.json to the
-	//                                              presigned URLs in the body.
-	//   - DELETE /sync/sessions/builds/{id}      — idempotent cleanup.
-	//   - POST /sync/sessions/apply-from-urls    — destination side: fetch session
-	//                                              blobs by URL and install them via
-	//                                              Service.RegisterImportedSession.
-	mx.HandleFunc("POST /sync/sessions/build", m.handleSyncSessionsBuild)
-	mx.HandleFunc("POST /sync/sessions/builds/{id}/upload", m.handleSyncSessionsBuildsUpload)
-	mx.HandleFunc("DELETE /sync/sessions/builds/{id}", m.handleSyncSessionsBuildsDelete)
-	mx.HandleFunc("POST /sync/sessions/apply-from-urls", m.handleSyncSessionsApplyFromURLs)
 }
 
 // --- helpers ---

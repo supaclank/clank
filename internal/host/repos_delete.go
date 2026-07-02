@@ -23,9 +23,9 @@ import (
 // per-worktree re-check, leaving a partially-deleted repo the caller
 // can retry (each leg is idempotent).
 //
-// LOCK ORDER: repo lock, then per-worktree sync locks inside
-// removeLinkedWorktree — the same order DeleteMaterializedWorktree
-// uses, so the two can't ABBA-deadlock.
+// LOCK ORDER: repo lock, then per-worktree locks inside
+// removeLinkedWorktree — the same order DeleteWorktree uses, so the
+// two can't ABBA-deadlock.
 func (s *Service) DeleteRepo(ctx context.Context, slug string) error {
 	gitDir, err := resolveRepoSlug(slug)
 	if err != nil {

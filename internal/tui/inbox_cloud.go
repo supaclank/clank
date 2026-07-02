@@ -95,8 +95,7 @@ func (m *InboxModel) updateCloud(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// cloudOpenProviderAuthMsg is emitted by cloudView when the user
 	// presses 'p' in the signed-in state. Builds a cloud.AuthCaller
 	// from the active remote's gateway URL + access token and opens the
-	// provider auth modal. Mirrors what `clank push` does — direct
-	// gateway call, no daemon proxy.
+	// provider auth modal. Direct gateway call, no daemon proxy.
 	if _, ok := msg.(cloudOpenProviderAuthMsg); ok {
 		prefs, _ := config.LoadPreferences()
 		remote := prefs.ActiveRemote()

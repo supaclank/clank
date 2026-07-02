@@ -165,7 +165,7 @@ func TestCreateRepoWorktree_ForkFromUnloadedLocalBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if err := svc.DeleteMaterializedWorktree(ctx, loaded.WorktreeID); err != nil {
+	if err := svc.DeleteWorktree(ctx, loaded.WorktreeID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	res, err := svc.CreateRepoWorktree(ctx, "acme__api", host.RepoWorktreeRequest{BaseBranch: "feature"})

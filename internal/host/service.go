@@ -3,13 +3,11 @@ package host
 // Service is the Host plane's domain object: it owns BackendManagers
 // for agent sessions and resolves GitRefs to working directories.
 // LocalPath refs use the path on this host directly; WorktreeID refs
-// resolve to ~/work/<WorktreeID>/ — under the repo-first layout, a
-// linked `git worktree` of the repo's bare canonical clone at
-// ~/work/repos/<slug>/repo.git (see repos.go). Worktrees are created by
-// import (clone) or scaffold (template); there is no
-// materialize-from-checkpoint path in the repo-first model. Fork
-// (CreateWorktree) is NOT yet migrated — it still lands worktrees at
-// the legacy ~/.clank/worktrees/<project>/<branch> path (P2).
+// resolve to ~/work/<WorktreeID>/ — a linked `git worktree` of the
+// repo's bare canonical clone at ~/work/repos/<slug>/repo.git (see
+// repos.go). Worktrees are created by import (clone), scaffold
+// (template), or fork/load (CreateRepoWorktree,
+// repos_worktree_create.go).
 
 import (
 	"context"
@@ -28,7 +26,6 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/git"
 	githubpkg "github.com/acksell/clank/internal/host/github"
-	"github.com/acksell/clank/internal/host/petname"
 	"github.com/acksell/clank/internal/host/preview"
 	"github.com/acksell/clank/internal/host/store"
 	"github.com/acksell/clank/internal/keepalive"
@@ -36,9 +33,9 @@ import (
 	"github.com/acksell/clank/internal/repolabel"
 )
 
-// cryptoRand is the entropy source for ulid generation in CreateWorktree.
-// Aliased so future callers in this file don't need to remember the
-// rename-on-import.
+// cryptoRand is the entropy source for worktree-ULID generation
+// (CreateRepoWorktree, ImportProject). Aliased so callers don't need
+// to remember the rename-on-import.
 var cryptoRand = cryptoRandImpl.Reader
 
 // Service is the Host plane's domain object. Construct with New; call
@@ -100,19 +97,19 @@ type Service struct {
 	// nothing to gate on.
 	preview *preview.Manager
 
-	// syncLocks serialize checkpoint materialization (autosync's
-	// /sync/apply-from-urls) against session creation per worktree: an
-	// apply does a destructive git restore of ~/work/<id> that would
-	// corrupt a session being started in that same dir. Keyed by
-	// worktree ID.
-	syncLocksMu sync.Mutex
-	syncLocks   map[string]*sync.Mutex
+	// worktreeLocks serialize destructive per-worktree operations
+	// (DeleteWorktree's unlink) against session creation: removing
+	// ~/work/<id> while a session is resolving its workdir or starting
+	// its backend would corrupt it. Keyed by worktree ID. See
+	// lockWorktree.
+	worktreeLocksMu sync.Mutex
+	worktreeLocks   map[string]*sync.Mutex
 
 	// repoLocks serialize canonical-repo mutations (clone, fetch,
 	// worktree add/remove, branch create, publish's remote-add) per
 	// repo slug — every ~/work/<id> worktree of a repo shares one bare
 	// canonical, so concurrent ref/config writes must not interleave.
-	// Same lazily-allocated shape as syncLocks. See lockRepo (repos.go).
+	// Same lazily-allocated shape as worktreeLocks. See lockRepo (repos.go).
 	repoLocksMu sync.Mutex
 	repoLocks   map[string]*sync.Mutex
 }
@@ -209,7 +206,7 @@ func New(opts Options) *Service {
 		branches:              newBranchCache(opts.BranchCacheTTL, opts.Now),
 		sessionsStore:         opts.SessionsStore,
 		subscribers:           newSubscriberRegistry(),
-		syncLocks:             make(map[string]*sync.Mutex),
+		worktreeLocks:         make(map[string]*sync.Mutex),
 		repoLocks:             make(map[string]*sync.Mutex),
 	}
 	if opts.KeepaliveListener != nil {
@@ -558,13 +555,13 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	if err := req.GitRef.Validate(); err != nil {
 		return nil, "", fmt.Errorf("git_ref: %w", err)
 	}
-	// Serialize against autosync materialization of the same worktree:
-	// a checkpoint apply restoring ~/work/<id> while this session is
-	// resolving its workdir / starting its backend would corrupt it.
-	// Held for the rest of CreateSession so the apply waits until the
-	// session is registered (then it sees it via WorktreeHasActiveSession).
+	// Serialize against a concurrent DeleteWorktree of the same
+	// worktree: removing ~/work/<id> while this session is resolving
+	// its workdir / starting its backend would corrupt it. Held for
+	// the rest of CreateSession so the delete waits until the session
+	// is registered (then it sees it via WorktreeHasActiveSession).
 	if wtID := req.GitRef.WorktreeID; wtID != "" {
-		defer s.LockWorktreeSync(wtID)()
+		defer s.lockWorktree(wtID)()
 	}
 	workDir, err := s.workDirFor(ctx, req.GitRef)
 	if err != nil {
@@ -776,10 +773,9 @@ func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
 // Precedence (per the GitRef contract):
 //  1. LocalPath set + usable as a repo on this host → use it.
 //  2. WorktreeID set → use ~/work/<WorktreeID>/. Errors with a clear
-//     message if that directory is missing — the worktree's synced
-//     checkpoint must be materialized onto this host first
-//     (TODO(materialize): the S3→host apply isn't orchestrated yet). We
-//     do NOT fall back to cloning.
+//     message if that directory is missing — the worktree must have
+//     been created on this host (import/scaffold/CreateRepoWorktree)
+//     first. We do NOT fall back to cloning.
 //  3. Neither set / not usable → error.
 //
 // WorktreeBranch (when set) resolves to an additional git worktree
@@ -795,13 +791,13 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 		if res.Usable {
 			base = ref.LocalPath
 		} else if ref.WorktreeID == "" {
-			return "", fmt.Errorf("local_path %q not usable on this host (%w) and no worktree_id was provided — run `clank push` to register and sync this repo, then retry", ref.LocalPath, res.SoftFail)
+			return "", fmt.Errorf("local_path %q not usable on this host (%w) and no worktree_id was provided", ref.LocalPath, res.SoftFail)
 		}
 	}
 
 	if base == "" {
 		if ref.WorktreeID == "" {
-			return "", fmt.Errorf("git ref must set at least one of local_path or worktree_id — run `clank push` from your repo to register a worktree")
+			return "", fmt.Errorf("git ref must set at least one of local_path or worktree_id")
 		}
 		root, err := workRootDir()
 		if err != nil {
@@ -814,7 +810,7 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 			// Wrap ErrNotFound so writeError can map to 404. Other
 			// workDirFor returns are caller-bug (relative paths, etc.)
 			// and stay as 500.
-			return "", fmt.Errorf("%w: worktree %s not present at %s — its synced checkpoint hasn't been materialized onto this host yet", ErrNotFound, ref.WorktreeID, base)
+			return "", fmt.Errorf("%w: worktree %s not present at %s on this host", ErrNotFound, ref.WorktreeID, base)
 		case err != nil:
 			return "", fmt.Errorf("stat worktree dir %q: %w", base, err)
 		case !fi.IsDir():
@@ -833,18 +829,16 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 }
 
 // workRootForTest, when non-empty, overrides the $HOME/work parent
-// for materialized worktrees. Test-only hook — production callers leave
-// this empty and rely on $HOME via os.UserHomeDir(). Avoids t.Setenv
-// in parallel-heavy test packages.
+// for worktrees. Test-only hook — production callers leave this empty
+// and rely on $HOME via os.UserHomeDir(). Avoids t.Setenv in
+// parallel-heavy test packages.
 //
 // TODO(coderabbit): add sync.RWMutex if any test ever runs SetWorkRootForTest with t.Parallel()
 // https://github.com/Acksell/clank/pull/16#discussion_r3213461979
 var workRootForTest string
 
-// workRootDir returns $HOME/work — the parent under which materialized
-// worktrees land at /<WorktreeID>/. Mirrors internal/host/mux's
-// workRoot; consolidating to one helper would require pkg-cycle
-// refactoring (the mux import-path-traverses through hostmux).
+// workRootDir returns $HOME/work — the parent under which worktrees
+// land at /<WorktreeID>/ (and repo canonicals under /repos/).
 func workRootDir() (string, error) {
 	if workRootForTest != "" {
 		return workRootForTest, nil
@@ -921,26 +915,26 @@ func (s *Service) Session(id string) (agent.SessionBackend, bool) {
 	return b, ok
 }
 
-// LockWorktreeSync acquires the per-worktree materialization lock and
-// returns its release func. Autosync (handleSyncApplyFromURLs) and
-// CreateSession both take it so a checkpoint apply and a session start
-// on the same worktree never interleave. Usage: defer LockWorktreeSync(id)().
-func (s *Service) LockWorktreeSync(worktreeID string) func() {
-	s.syncLocksMu.Lock()
-	mu := s.syncLocks[worktreeID]
+// lockWorktree acquires the per-worktree lock and returns its release
+// func. DeleteWorktree and CreateSession both take it so a destructive
+// removal and a session start on the same worktree never interleave.
+// Usage: defer lockWorktree(id)().
+func (s *Service) lockWorktree(worktreeID string) func() {
+	s.worktreeLocksMu.Lock()
+	mu := s.worktreeLocks[worktreeID]
 	if mu == nil {
 		mu = &sync.Mutex{}
-		s.syncLocks[worktreeID] = mu
+		s.worktreeLocks[worktreeID] = mu
 	}
-	s.syncLocksMu.Unlock()
+	s.worktreeLocksMu.Unlock()
 	mu.Lock()
 	return mu.Unlock
 }
 
 // WorktreeHasActiveSession reports whether any session for worktreeID is
-// currently running (busy or starting) on this host. Autosync uses it to
-// skip materializing over a worktree with live work. A Service without a
-// sessions store (test wiring) reports false.
+// currently running (busy or starting) on this host. DeleteWorktree and
+// DeleteRepo use it to refuse removing a worktree with live work. A
+// Service without a sessions store (test wiring) reports false.
 func (s *Service) WorktreeHasActiveSession(ctx context.Context, worktreeID string) (bool, error) {
 	if s.sessionsStore == nil {
 		return false, nil
@@ -1236,202 +1230,6 @@ func (s *Service) ResolveWorktree(ctx context.Context, ref agent.GitRef, branch 
 	return wt, err
 }
 
-// CreateWorktree creates a new worktree on this host, branched off
-// baseBranch, with an auto-generated petname for both the git branch
-// and the display name. The base repo is identified by baseWorktreeRef
-// — any existing worktree in the target repo (most commonly the one
-// the user picked in the mobile UI). The resulting worktree directory
-// is stamped with a fresh ULID so subsequent `clank push` flows
-// recognise it as already-registered.
-//
-// origin_repo is derived once here (RepoLabelFromURL on origin, with a
-// filepath.Base(repoRoot) fallback) and returned to the gateway, which
-// persists it on the worktree row so clients can group worktrees by
-// repo in their pickers/sidebars.
-//
-// Deprecated: superseded by CreateRepoWorktree (repos_worktree_create.go),
-// which addresses the repo by slug instead of a "representative"
-// worktree and links the new worktree at ~/work/<newULID> — the path
-// session GitRefs actually resolve (this method's git.WorktreeDir
-// placement leaves forked worktrees unreachable by ID). Serving until
-// the mobile cutover; deleted with the checkpoint-sync surface.
-func (s *Service) CreateWorktree(ctx context.Context, baseWorktreeRef agent.GitRef, baseBranch string) (CreateWorktreeResult, error) {
-	if strings.TrimSpace(baseBranch) == "" {
-		return CreateWorktreeResult{}, ErrInvalidBranchName
-	}
-
-	baseRef := baseWorktreeRef
-	baseRef.WorktreeBranch = ""
-	baseDir, err := s.workDirFor(ctx, baseRef)
-	if err != nil {
-		return CreateWorktreeResult{}, fmt.Errorf("resolve base worktree: %w", err)
-	}
-
-	// The new worktree must be created off the *main* worktree of the
-	// repo (git worktree add is happy from any worktree, but our naming
-	// convention `~/.clank/worktrees/<project>/<branch>/` keys on the
-	// main worktree's basename).
-	repoRoot, err := git.MainWorktreeRoot(baseDir)
-	if err != nil {
-		return CreateWorktreeResult{}, fmt.Errorf("find main worktree root: %w", err)
-	}
-
-	exists, err := git.BranchExists(repoRoot, baseBranch)
-	if err != nil {
-		return CreateWorktreeResult{}, fmt.Errorf("check base branch: %w", err)
-	}
-	if !exists {
-		// The base branch isn't present locally. This is the common case
-		// for worktrees materialized from a shallow single-branch clone
-		// (git clone --depth 1 -b <branch>): only the cloned branch exists
-		// locally, yet mobile's "fork from" picker lists the repo's *remote*
-		// branches. Fetch the requested branch from origin before giving up
-		// so forking from e.g. `main` works without re-cloning. Falls back to
-		// the original not-found when there's no reachable origin ref.
-		if err := s.fetchBaseBranchFromOrigin(repoRoot, baseBranch); err != nil {
-			return CreateWorktreeResult{}, err
-		}
-	}
-
-	// Retry the petname loop up to a few times in case AddWorktreeNewBranch
-	// fails because the branch (somehow) already exists. The hex suffix
-	// makes collisions astronomically unlikely, but a failed retry is
-	// cheap insurance.
-	var (
-		newBranch string
-		wtDir     string
-	)
-	projectName := filepath.Base(repoRoot)
-	const maxAttempts = 5
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		candidate := petname.Generate()
-		branchExists, err := git.BranchExists(repoRoot, candidate)
-		if err != nil {
-			return CreateWorktreeResult{}, fmt.Errorf("check candidate branch: %w", err)
-		}
-		if branchExists {
-			continue
-		}
-		// TODO(ai-review): migrate fork to the repo-first ~/work/<ulid> layout (P2). https://github.com/Acksell/clank/pull/93#discussion_r3512415001
-		dir, err := git.WorktreeDir(projectName, candidate)
-		if err != nil {
-			return CreateWorktreeResult{}, err
-		}
-		if _, statErr := os.Stat(dir); statErr == nil {
-			continue
-		} else if !os.IsNotExist(statErr) {
-			// Permission or I/O errors mean we can't tell whether the path
-			// is reusable; treating them as "available" would surface as a
-			// confusing `git worktree add` failure downstream.
-			return CreateWorktreeResult{}, fmt.Errorf("check candidate worktree dir %q: %w", dir, statErr)
-		}
-		newBranch = candidate
-		wtDir = dir
-		break
-	}
-	if newBranch == "" {
-		return CreateWorktreeResult{}, fmt.Errorf("could not generate a unique petname after %d attempts", maxAttempts)
-	}
-
-	if err := git.AddWorktreeNewBranch(repoRoot, wtDir, newBranch, baseBranch); err != nil {
-		return CreateWorktreeResult{}, err
-	}
-	// Invalidate by both baseDir and repoRoot because listBranches keys
-	// its cache on whatever projectDir workDirFor resolved to — which can
-	// be the base worktree path rather than the main worktree root.
-	s.branches.invalidate(baseDir)
-	if baseDir != repoRoot {
-		s.branches.invalidate(repoRoot)
-	}
-
-	worktreeULID, err := ulid.New(ulid.Now(), cryptoRand)
-	if err != nil {
-		return CreateWorktreeResult{}, fmt.Errorf("generate worktree id: %w", err)
-	}
-	worktreeID := worktreeULID.String()
-	if err := agent.WriteLocalWorktreeID(wtDir, worktreeID); err != nil {
-		// Best-effort rollback so a retry doesn't accumulate orphaned
-		// worktrees + branches. Logged-and-continue: the stamp error is
-		// what the caller needs to see.
-		if rmErr := git.RemoveWorktree(repoRoot, wtDir, true); rmErr != nil {
-			s.log.Printf("warning: rollback remove worktree %s: %v", wtDir, rmErr)
-		}
-		if delErr := git.DeleteBranch(repoRoot, newBranch, true); delErr != nil {
-			s.log.Printf("warning: rollback delete branch %q: %v", newBranch, delErr)
-		}
-		return CreateWorktreeResult{}, fmt.Errorf("stamp worktree-id: %w", err)
-	}
-
-	originRepo := repolabel.ComputeRepoLabel(repoRoot)
-	s.log.Printf("created worktree %s (branch %q off %q) at %s", worktreeID, newBranch, baseBranch, wtDir)
-	return CreateWorktreeResult{
-		WorktreeID:  worktreeID,
-		Branch:      newBranch,
-		WorktreeDir: wtDir,
-		DisplayName: newBranch,
-		OriginRepo:  originRepo,
-	}, nil
-}
-
-// fetchBaseBranchFromOrigin materializes a branch that exists on the
-// worktree's origin but not yet locally, creating a local refs/heads/<branch>
-//
-// Deprecated: only the deprecated CreateWorktree calls this; the
-// repo-first path uses ensureRepoBranchAvailable (repos.go). Deleted
-// together with CreateWorktree at the checkpoint-sync removal.
-// so the subsequent `git worktree add -b <new> <dir> <branch>` succeeds. It's
-// the recovery path for shallow single-branch clones, whose local repo holds
-// only the branch they were cloned with.
-//
-// Returns ErrNotFound (preserving the original "does not exist" semantics) when
-// there's no origin remote or the branch is absent on it; wraps transport/auth
-// failures verbatim.
-//
-// TODO(ai-review): add cancellation/timeout to the git fetch below https://github.com/Acksell/clank/pull/91
-// TODO(ai-review): sanitize branch/refspec before git fetch/push (flag injection) https://github.com/Acksell/clank/pull/91
-func (s *Service) fetchBaseBranchFromOrigin(repoRoot, branch string) error {
-	notFound := fmt.Errorf("%w: base branch %q does not exist in %s", ErrNotFound, branch, filepath.Base(repoRoot))
-
-	remoteURL, err := git.RemoteURL(repoRoot, "origin")
-	if err != nil {
-		// No origin to fetch from — the branch genuinely doesn't exist.
-		return notFound
-	}
-
-	// Prefer the canonical https URL + token auth for github.com origins (the
-	// stored origin URL carries no credentials); otherwise fetch straight from
-	// the configured origin (local bare-repo remotes in tests, or an already
-	// authenticated URL).
-	fetchURL := remoteURL
-	authHeader := ""
-	if owner, repo, perr := githubpkg.ParseGitHubRemote(remoteURL); perr == nil {
-		if s.github == nil {
-			return ErrGitHubManagerUnavailable
-		}
-		creds, cerr := s.github.Store().Read()
-		if cerr != nil {
-			return fmt.Errorf("read github credentials: %w", cerr)
-		}
-		if creds.AccessToken == "" {
-			return ErrGitHubNotConnected
-		}
-		fetchURL = fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
-		authHeader = buildAuthHeader(creds.AccessToken)
-	}
-
-	// Fetch into a local branch of the same name so both the worktree-add
-	// below and any future fork from this base find it locally.
-	refspec := branch + ":refs/heads/" + branch
-	if err := git.Fetch(repoRoot, fetchURL, refspec, git.PushOptions{ExtraHeader: authHeader}); err != nil {
-		if isNoRemoteRef(err) {
-			return notFound
-		}
-		return fmt.Errorf("fetch base branch %q from origin: %w", branch, err)
-	}
-	s.log.Printf("fetched base branch %q from origin into %s for fork", branch, filepath.Base(repoRoot))
-	return nil
-}
-
 // RemoveWorktree removes the worktree for (ref's repo, branch).
 func (s *Service) RemoveWorktree(ctx context.Context, ref agent.GitRef, branch string, force bool) error {
 	repoRef := ref
@@ -1447,18 +1245,18 @@ func (s *Service) RemoveWorktree(ctx context.Context, ref agent.GitRef, branch s
 	return nil
 }
 
-// DeleteMaterializedWorktree removes a worktree's persisted sessions and ~/work/<id>
+// DeleteWorktree removes a worktree's persisted sessions and ~/work/<id>
 // directory. Refuses with ErrWorktreeBusy when a session is active; idempotent otherwise.
 //
 // LOCK ORDER: repo lock (when the worktree is repo-first linked) BEFORE
-// the per-worktree sync lock — the same order DeleteRepo uses, so the
-// two can't ABBA-deadlock. The linked-ness probe runs before any lock:
+// the per-worktree lock — the same order DeleteRepo uses, so the two
+// can't ABBA-deadlock. The linked-ness probe runs before any lock:
 // it's a read-only `git rev-parse` and the answer can't change under us
 // (only this method and DeleteRepo unlink worktrees, both serialized by
 // the repo lock).
-func (s *Service) DeleteMaterializedWorktree(ctx context.Context, worktreeID string) error {
+func (s *Service) DeleteWorktree(ctx context.Context, worktreeID string) error {
 	if _, err := ulid.ParseStrict(worktreeID); err != nil {
-		return fmt.Errorf("delete materialized worktree: invalid worktreeID %q", worktreeID)
+		return fmt.Errorf("delete worktree: invalid worktreeID %q", worktreeID)
 	}
 	root, err := workRootDir()
 	if err != nil {
@@ -1478,11 +1276,11 @@ func (s *Service) DeleteMaterializedWorktree(ctx context.Context, worktreeID str
 		return s.removeLinkedWorktree(ctx, worktreeID, wtDir, gitDir)
 	}
 
-	// Legacy independent clone (or not a repo at all — half-materialized
-	// dir): plain removal, as before the repo-first layout. Serialize
-	// against session creation and re-check for a live session under the
-	// worktree lock.
-	defer s.LockWorktreeSync(worktreeID)()
+	// Not a linked worktree: the dir is missing (already deleted —
+	// idempotent no-op via RemoveAll) or corrupt (half-created, .git
+	// unreadable) — plain removal. Serialize against session creation
+	// and re-check for a live session under the worktree lock.
+	defer s.lockWorktree(worktreeID)()
 	active, err := s.WorktreeHasActiveSession(ctx, worktreeID)
 	if err != nil {
 		return err
@@ -1496,17 +1294,17 @@ func (s *Service) DeleteMaterializedWorktree(ctx context.Context, worktreeID str
 		}
 	}
 	if err := os.RemoveAll(wtDir); err != nil {
-		return fmt.Errorf("remove materialized worktree %s: %w", worktreeID, err)
+		return fmt.Errorf("remove worktree %s: %w", worktreeID, err)
 	}
 	return nil
 }
 
 // removeLinkedWorktree is the shared deletion leg for a repo-first
 // linked worktree: session purge + busy guard under the per-worktree
-// sync lock, then git-aware removal. The CALLER holds the repo lock
+// lock, then git-aware removal. The CALLER holds the repo lock
 // (lock order: repo → worktree).
 func (s *Service) removeLinkedWorktree(ctx context.Context, worktreeID, wtDir, gitDir string) error {
-	defer s.LockWorktreeSync(worktreeID)()
+	defer s.lockWorktree(worktreeID)()
 
 	active, err := s.WorktreeHasActiveSession(ctx, worktreeID)
 	if err != nil {

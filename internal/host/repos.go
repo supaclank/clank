@@ -135,7 +135,7 @@ func (s *Service) credentialHelperValue() string {
 
 // lockRepo serializes canonical mutations (clone, fetch, worktree
 // add/remove, branch create, publish's remote-add) per slug. Mirrors
-// LockWorktreeSync's lazily-allocated map. Returns the unlock func.
+// lockWorktree's lazily-allocated map. Returns the unlock func.
 func (s *Service) lockRepo(slug string) func() {
 	s.repoLocksMu.Lock()
 	mu := s.repoLocks[slug]

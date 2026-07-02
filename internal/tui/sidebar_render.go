@@ -333,13 +333,6 @@ func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool,
 		leftPrefix, rightSuffix = "<", ">"
 	}
 
-	// Inline spinner when a push for this worktree is in flight, rendered
-	// right after the brackets.
-	pendingGlyph := ""
-	if m.pendingPushes[n.LocalPath] && m.spinnerFrame != "" {
-		pendingGlyph = " " + lipgloss.NewStyle().Foreground(primaryColor).Render(m.spinnerFrame)
-	}
-
 	cursorReserve := 0
 	if selected {
 		cursorReserve = rightCursorWidth
@@ -349,8 +342,8 @@ func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool,
 		repoTagWidth = lipgloss.Width(n.RepoLabel) + 1 // one space gutter
 	}
 
-	// Reserve room for: prefix (1) + suffix (1) + pending glyph + repo tag + cursor.
-	maxLabel := maxWidth - 2 - repoTagWidth - cursorReserve - lipgloss.Width(pendingGlyph)
+	// Reserve room for: prefix (1) + suffix (1) + repo tag + cursor.
+	maxLabel := maxWidth - 2 - repoTagWidth - cursorReserve
 	if maxLabel < 6 {
 		maxLabel = 6
 	}
@@ -375,7 +368,7 @@ func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool,
 		nameStyle = nameStyle.Bold(true)
 	}
 
-	line := nameStyle.Render(leftPrefix+label+rightSuffix) + pendingGlyph
+	line := nameStyle.Render(leftPrefix + label + rightSuffix)
 
 	if n.RepoLabel != "" {
 		repoStyle := lipgloss.NewStyle().Foreground(mutedColor)

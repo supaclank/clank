@@ -2,16 +2,15 @@
 
 Brings up a complete clank backend on your laptop (primarily for development & testing purposes, and as an example setup):
 
-- **minio** — S3-compatible object storage for checkpoint bundles
-- **clankd** — gateway with the embedded sync server (presigned URLs +
-  sqlite metadata) and the local provisioner (spawns clank-host as a
-  subprocess inside the container so migrations land somewhere)
+- **minio** — S3-compatible object storage for image uploads
+- **clankd** — gateway + the local provisioner (spawns clank-host as a
+  subprocess inside the container)
 - **clank-auth-stub** — dev OAuth 2.0 + PKCE server that
   auto-approves every authorization and mints an HS256-signed JWT, so
   `clank login` works end-to-end against the local stack
 
 Everything is self-contained — no fly.io, daytona, or AWS account
-needed. Useful for smoke-testing the sync/migration flow end-to-end.
+needed. Useful for smoke-testing the gateway + host flows end-to-end.
 
 ## One-time setup
 
@@ -32,29 +31,24 @@ laptop, matching how the docker network resolves it from inside.
 A remote sprite can't resolve `clank-minio` — it lives on its own
 network with no host-file injection. It needs a **publicly-reachable,
 real bucket**: provision an S3-compatible bucket (S3, R2, …), set
-`CLANK_SYNC_S3_ENDPOINT` + `CLANK_SYNC_S3_PUBLIC_ENDPOINT` in
+`CLANK_IMAGES_S3_ENDPOINT` + `CLANK_IMAGES_S3_PUBLIC_ENDPOINT` in
 `docker/.env` to its endpoint, then `make dev-rebuild`.
-
-> Earlier dev builds wrapped the local minio in a Cloudflare quick-tunnel so a
-> remote sprite could reach it. That was removed: quick-tunnels are too
-> low-throughput and flaky for blob transfer — the rotating URLs went stale and
-> failed mid-sync with `s3_unreachable`. Use a real bucket for remote testing.
 
 ### Why presigned URLs need one hostname
 
-clankd's embedded sync mints SigV4-signed presigned URLs. SigV4 signs
+clankd's image presigner mints SigV4-signed presigned URLs. SigV4 signs
 the **Host** header into the canonical request, so the URL bears one
 hostname and every consumer (laptop, sprite) must dial that exact
 name. Rewriting the host on a consumer would invalidate the
 signature.
 
 The gateway itself dials minio at the docker-internal hostname
-(`http://clank-minio:9000`, `CLANK_SYNC_S3_ENDPOINT`) for its own direct
-SDK calls (HeadObject at commit time, etc.) and mints presigned URLs with
-`CLANK_SYNC_S3_PUBLIC_ENDPOINT`. For local dev leave that empty — it falls
-back to the same internal hostname, which both the laptop (`127.0.0.1
-clank-minio` in /etc/hosts) and the in-container sprite resolve, so one
-hostname satisfies every consumer with no tunnel.
+(`http://clank-minio:9000`, `CLANK_IMAGES_S3_ENDPOINT`) for its own
+direct SDK calls and mints presigned URLs with
+`CLANK_IMAGES_S3_PUBLIC_ENDPOINT`. For local dev leave that empty — it
+falls back to the same internal hostname, which both the laptop
+(`127.0.0.1 clank-minio` in /etc/hosts) and the in-container sprite
+resolve, so one hostname satisfies every consumer with no tunnel.
 
 ## Bringing the stack up
 
@@ -80,7 +74,7 @@ Logs:
 docker compose -f docker/docker-compose.yml logs -f clankd
 ```
 
-## Smoke-testing the migration flow
+## Smoke-testing against the stack
 
 The dev stack runs the gateway in HS256 JWT mode
 (`CLANK_AUTH_JWT_SECRET` in `docker-compose.yml`, wired to the
@@ -96,8 +90,6 @@ for the env-var selection algorithm.
 From the laptop, with the stack running:
 
 ```sh
-cd ~/some-real-repo
-
 # Register the docker stack as a remote (one-time). `clank login`
 # discovers the auth-stub via the gateway's /auth-config endpoint —
 # no separate auth URL flag needed.
@@ -112,35 +104,22 @@ clank login
 clank remote -v
 # * dev	http://localhost:7878  dev@clank.local
 
-# 1. Push a checkpoint AND hand off ownership to the remote.
-clank push --migrate
+# Import a repo / scaffold a project through the repo-first surface
+# (this is what the mobile app calls):
+curl -X POST http://localhost:7878/v1/projects/import \
+  -H "Authorization: Bearer <access_token>" \
+  -d '{"owner":"<you>","repo":"<repo>"}'
 
-# Output:
-#   registered worktree 01J… as 'some-real-repo'
-#   pushed checkpoint   01J… (HEAD a1b2c3d4)
-#   migrated worktree   01J… → remote/<host_id>
-#
-# The bundles + manifest live in minio; the remote host has the
-# materialized worktree at /root/work/<id>:
-docker compose -f docker/docker-compose.yml exec -T minio \
-  mc ls --recursive local/clank/checkpoints/
+# The host lays the repo out as a bare canonical + linked worktree:
 docker compose -f docker/docker-compose.yml exec clankd ls /root/work/
-
-# 2. Open a session against the synced worktree. clank-host inside
-# the clankd container resolves the WorktreeID to /root/work/<id>/
-# and spawns the configured agent backend there (both `opencode` and
-# `claude` are baked into the image) — no clone, no GitHub auth needed.
-clank code "summarize this codebase"
-
-# 3. When you want to keep working on the laptop, reclaim ownership.
-clank pull --migrate
+docker compose -f docker/docker-compose.yml exec clankd ls /root/work/repos/
 ```
 
 ## What's actually self-hosted
 
 All HTTP services run in containers. Outbound traffic happens only
-when the laptop pushes/pulls bundles via presigned minio URLs. No
-secrets ever leave the docker network.
+for GitHub clones/pushes on the host and presigned minio URLs for
+image uploads. No secrets ever leave the docker network.
 
 The "sandbox" in the default setup is a clank-host subprocess inside
 the clankd container (the `local` provisioner) — useful for
@@ -167,9 +146,9 @@ Edit `docker/preferences.json`:
 }
 ```
 
-When you start exercising sprite-side push (P6), set
-`CLANK_PUBLIC_BASE_URL` in `docker/.env` to a publicly-reachable URL
-of clankd — easiest is a cloudflared tunnel:
+If the sprite needs to call back into clankd (notifications,
+preview webhooks), set `CLANK_PUBLIC_BASE_URL` in `docker/.env` to a
+publicly-reachable URL of clankd — easiest is a cloudflared tunnel:
 
 ```sh
 cloudflared tunnel --url http://localhost:7878

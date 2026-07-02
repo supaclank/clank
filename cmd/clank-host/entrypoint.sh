@@ -1,8 +1,7 @@
 #!/bin/sh
 # Entrypoint for the clank-host sandbox image. Reads minimal env and
-# invokes clank-host. The sprite-side sync flow (P6) doesn't need any
-# long-lived sync credentials on the sandbox — the gateway hands them
-# in per-request when it calls POST /sync/checkpoint.
+# invokes clank-host. No long-lived credentials live on the sandbox —
+# the gateway authenticates per-request with the host bearer token.
 #
 # Required env:
 #   CLANK_HOST_PORT  — TCP port to bind. Defaults to 7878.

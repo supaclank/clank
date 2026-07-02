@@ -1,7 +1,6 @@
 // Package images is the gateway-side presign service for user image
-// uploads. It is independent of clank-sync: its own blobstore.Storage
-// (its own bucket) and its own /v1/images route. The only shared
-// substrate is pkg/blobstore.
+// uploads: its own blobstore.Storage (its own bucket) and its own
+// /v1/images route, built on pkg/blobstore.
 //
 // Flow (see the project plan): the client asks for an upload slot and
 // gets a presigned PUT URL plus a presigned GET URL; it uploads the
@@ -40,8 +39,8 @@ var AllowedMimes = map[string]bool{
 
 // Config wires a Server.
 type Config struct {
-	// Storage is the object store images live in — a DIFFERENT bucket
-	// from clank-sync's checkpoint substrate. Required.
+	// Storage is the object store images live in — its own dedicated
+	// bucket. Required.
 	Storage blobstore.Storage
 
 	// PresignTTL overrides DefaultPresignTTL when non-zero.
