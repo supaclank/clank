@@ -102,6 +102,17 @@ func (t Ticket) IsMismatchedExperience() bool {
 	return t.Status == "error" && t.Details.Error == MismatchedExperienceID
 }
 
+// IsUndeliverable reports whether the token can never receive a push
+// from this deployment, so its device row should be purged rather than
+// retried. This is the provider-agnostic predicate the dispatcher acts
+// on; which error codes qualify (a dead token, a token pinned out by
+// WithExperienceID) is Expo-specific detail that stays here. A future
+// Pusher impl decides its own permanent-failure codes behind the same
+// method.
+func (t Ticket) IsUndeliverable() bool {
+	return t.IsDeviceNotRegistered() || t.IsMismatchedExperience()
+}
+
 // Client is the Expo Push API client. Construct with New.
 type Client struct {
 	endpoint     string

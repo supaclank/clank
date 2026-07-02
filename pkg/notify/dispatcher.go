@@ -83,7 +83,8 @@ func NewDispatcher(hosts HostLookup, devices DeviceStore, pusher Pusher, lg *log
 //  3. Decode the notifier.Notification body.
 //  4. Load the user's registered devices.
 //  5. Translate to Expo Messages and Push.
-//  6. Purge any device row Expo flagged as DeviceNotRegistered.
+//  6. Purge any device row whose ticket says the token is
+//     permanently undeliverable (Ticket.IsUndeliverable).
 //
 // Status codes:
 //
@@ -174,10 +175,7 @@ func (d *Dispatcher) purgeDeadTokens(ctx context.Context, msgs []Message, ticket
 		return
 	}
 	for i, t := range tickets {
-		// Dead tokens (Expo says so) and tokens from a foreign Expo
-		// experience (client is pinned elsewhere — see WithExperienceID)
-		// are both permanently undeliverable from this deployment.
-		if !t.IsDeviceNotRegistered() && !t.IsMismatchedExperience() {
+		if !t.IsUndeliverable() {
 			continue
 		}
 		if err := d.devices.DeleteDeviceByPushToken(ctx, msgs[i].To); err != nil {
