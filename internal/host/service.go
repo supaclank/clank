@@ -1377,7 +1377,7 @@ func (s *Service) fetchBaseBranchFromOrigin(repoRoot, branch string) error {
 	// authenticated URL).
 	fetchURL := remoteURL
 	authHeader := ""
-	if _, _, perr := githubpkg.ParseGitHubRemote(remoteURL); perr == nil {
+	if owner, repo, perr := githubpkg.ParseGitHubRemote(remoteURL); perr == nil {
 		if s.github == nil {
 			return ErrGitHubManagerUnavailable
 		}
@@ -1388,7 +1388,6 @@ func (s *Service) fetchBaseBranchFromOrigin(repoRoot, branch string) error {
 		if creds.AccessToken == "" {
 			return ErrGitHubNotConnected
 		}
-		owner, repo, _ := githubpkg.ParseGitHubRemote(remoteURL)
 		fetchURL = fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
 		authHeader = buildAuthHeader(creds.AccessToken)
 	}
