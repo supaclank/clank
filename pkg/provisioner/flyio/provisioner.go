@@ -59,6 +59,15 @@ const installPath = "/usr/local/bin/clank-host"
 // install script re-points at bun's global bin on every install.
 const opencodePath = "/usr/local/bin/opencode"
 
+// claudePath is the canonical clank-owned claude location. NB: unlike
+// opencode, this is NOT what PATH resolves first on a sprite — the
+// base image bakes its own claude at ~/.local/bin/claude, which
+// precedes /usr/local/bin on PATH. The install script re-points BOTH
+// paths; this one exists so the presence tiebreak in
+// ensureAgentCLIInstalledOn can distinguish "clank never pinned
+// claude here" from "pin installed, transport wedged".
+const claudePath = "/usr/local/bin/claude"
+
 // serviceName is stable — reused across restarts so the running
 // service auto-resumes from hibernation.
 const serviceName = "clank-host"
@@ -446,16 +455,24 @@ func (p *Provisioner) installAndStart(ctx context.Context, sprite *sprites.Sprit
 	if err != nil {
 		return err
 	}
-	// Force a service recreate when either the clank-host binary OR
-	// opencode was just swapped. Binary swap: Linux keeps the old
-	// inode in memory (POSIX unlink), so without a restart the old
-	// process keeps serving even though the path resolves to the new
-	// file. Opencode swap: clank-host's /software-manifest endpoint
+	// The image-baked claude DOES exist but is frozen at image-build
+	// vintage (auto-updates off) — and the CLI is what resolves the
+	// sonnet/opus/haiku aliases to a concrete model, so it gets the
+	// same pin treatment as opencode.
+	claudeReinstalled, err := p.ensureClaudeInstalled(ctx, sprite)
+	if err != nil {
+		return err
+	}
+	// Force a service recreate when the clank-host binary OR an agent
+	// CLI was just swapped. Binary swap: Linux keeps the old inode in
+	// memory (POSIX unlink), so without a restart the old process
+	// keeps serving even though the path resolves to the new file.
+	// Opencode/claude swap: clank-host's /software-manifest endpoint
 	// uses a sync.Once-cached probe (agent.GetSoftwareManifest), so a
-	// fresh opencode at /usr/local/bin/opencode is invisible until
-	// the process restarts and re-probes. Either way, recreate the
-	// service to publish the new state.
-	if err := p.ensureServiceRunning(ctx, sprite, tokens, binReplaced || opencodeReinstalled); err != nil {
+	// freshly pinned CLI is invisible until the process restarts and
+	// re-probes. Either way, recreate the service to publish the new
+	// state.
+	if err := p.ensureServiceRunning(ctx, sprite, tokens, binReplaced || opencodeReinstalled || claudeReinstalled); err != nil {
 		return err
 	}
 	// Re-apply on every run so a manually-disabled URL re-opens.
@@ -616,43 +633,58 @@ func (p *Provisioner) ensureOpenCodeInstalled(ctx context.Context, sprite *sprit
 }
 
 // ensureOpenCodeInstalledOn is the testable core of
-// ensureOpenCodeInstalled. The 3-minute install runs ONLY on positive
-// evidence that it's needed:
+// ensureOpenCodeInstalled; see ensureAgentCLIInstalledOn for the
+// probe/install decision table.
+func (p *Provisioner) ensureOpenCodeInstalledOn(ctx context.Context, spriteName string, probe func(context.Context) (string, error), statFS fs.FS, install func(context.Context) ([]byte, error)) (reinstalled bool, err error) {
+	return p.ensureAgentCLIInstalledOn(ctx, spriteName, "opencode", agent.PinnedOpencodeVersion, opencodePath, probe, statFS, install)
+}
+
+// ensureClaudeInstalledOn is the testable core of
+// ensureClaudeInstalled; see ensureAgentCLIInstalledOn for the
+// probe/install decision table.
+func (p *Provisioner) ensureClaudeInstalledOn(ctx context.Context, spriteName string, probe func(context.Context) (string, error), statFS fs.FS, install func(context.Context) ([]byte, error)) (reinstalled bool, err error) {
+	return p.ensureAgentCLIInstalledOn(ctx, spriteName, "claude", agent.PinnedClaudeVersion, claudePath, probe, statFS, install)
+}
+
+// ensureAgentCLIInstalledOn ensures one agent CLI (opencode, claude)
+// is at its pinned version. The 3-minute install runs ONLY on
+// positive evidence that it's needed:
 //
 //   - the probe succeeded and reported a non-pinned version, or
 //   - the probe executed on the sprite and exited non-zero (broken
 //     binary, dangling symlink), or
 //   - the probe failed at the transport layer AND the filesystem API
-//     confirms opencode is absent (fresh sprite).
+//     confirms the tool is absent at canonicalPath (fresh sprite).
 //
-// A transport-level probe failure with opencode present on disk fails
-// fast instead: the install would run over the same wedged channel,
-// and EnsureHost callers retry with a fresh connection anyway. (Seen
-// 2026-07-02: a wake-race probe failure on a freshly-woken sprite
-// burned the full 3-minute install deadline inside the request path
-// while the pinned version was installed all along.)
-func (p *Provisioner) ensureOpenCodeInstalledOn(ctx context.Context, spriteName string, probe func(context.Context) (string, error), statFS fs.FS, install func(context.Context) ([]byte, error)) (reinstalled bool, err error) {
+// A transport-level probe failure with the binary present on disk
+// fails fast instead: the install would run over the same wedged
+// channel, and EnsureHost callers retry with a fresh connection
+// anyway. (Seen 2026-07-02: a wake-race opencode probe failure on a
+// freshly-woken sprite burned the full 3-minute install deadline
+// inside the request path while the pinned version was installed all
+// along.)
+func (p *Provisioner) ensureAgentCLIInstalledOn(ctx context.Context, spriteName, tool, pinnedVersion, canonicalPath string, probe func(context.Context) (string, error), statFS fs.FS, install func(context.Context) ([]byte, error)) (reinstalled bool, err error) {
 	probeCtx, probeCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer probeCancel()
 	installed, probeErr := probe(probeCtx)
 	switch {
 	case probeErr == nil:
-		if installed == agent.PinnedOpencodeVersion {
+		if installed == pinnedVersion {
 			return false, nil // happy path: present and pinned-version-matched
 		}
-		p.log.Printf("flyio provisioner: opencode on %s is %q, want %q — reinstalling at pinned version", spriteName, installed, agent.PinnedOpencodeVersion)
+		p.log.Printf("flyio provisioner: %s on %s is %q, want %q — reinstalling at pinned version", tool, spriteName, installed, pinnedVersion)
 	case probeRanOnSprite(probeErr):
-		p.log.Printf("flyio provisioner: opencode probe on %s exited non-zero (%v); reinstalling", spriteName, probeErr)
+		p.log.Printf("flyio provisioner: %s probe on %s exited non-zero (%v); reinstalling", tool, spriteName, probeErr)
 	default:
 		if statFS == nil {
-			return false, fmt.Errorf("opencode probe on %s did not complete and no filesystem was provided to verify presence: %w", spriteName, probeErr)
+			return false, fmt.Errorf("%s probe on %s did not complete and no filesystem was provided to verify presence: %w", tool, spriteName, probeErr)
 		}
-		if _, statErr := fs.Stat(statFS, strings.TrimPrefix(opencodePath, "/")); statErr == nil {
-			return false, fmt.Errorf("opencode probe on %s did not complete and %s exists — failing fast for a retry on a fresh conn instead of reinstalling: %w", spriteName, opencodePath, probeErr)
+		if _, statErr := fs.Stat(statFS, strings.TrimPrefix(canonicalPath, "/")); statErr == nil {
+			return false, fmt.Errorf("%s probe on %s did not complete and %s exists — failing fast for a retry on a fresh conn instead of reinstalling: %w", tool, spriteName, canonicalPath, probeErr)
 		} else if !errors.Is(statErr, fs.ErrNotExist) {
-			return false, fmt.Errorf("opencode probe on %s did not complete and the presence check failed (%v): %w", spriteName, statErr, probeErr)
+			return false, fmt.Errorf("%s probe on %s did not complete and the presence check failed (%v): %w", tool, spriteName, statErr, probeErr)
 		}
-		p.log.Printf("flyio provisioner: opencode absent on %s (probe: %v); installing", spriteName, probeErr)
+		p.log.Printf("flyio provisioner: %s absent on %s (probe: %v); installing", tool, spriteName, probeErr)
 	}
 
 	installCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
@@ -664,9 +696,9 @@ func (p *Provisioner) ensureOpenCodeInstalledOn(ctx context.Context, spriteName 
 		if len(trimmed) > 8192 {
 			trimmed = "..." + trimmed[len(trimmed)-8192:]
 		}
-		return false, fmt.Errorf("install opencode (sprite=%s): %w\n--- install output ---\n%s\n--- end output ---", spriteName, runErr, trimmed)
+		return false, fmt.Errorf("install %s (sprite=%s): %w\n--- install output ---\n%s\n--- end output ---", tool, spriteName, runErr, trimmed)
 	}
-	p.log.Printf("flyio provisioner: installed opencode %s on sprite %s", agent.PinnedOpencodeVersion, spriteName)
+	p.log.Printf("flyio provisioner: installed %s %s on sprite %s", tool, pinnedVersion, spriteName)
 	return true, nil
 }
 
@@ -746,6 +778,121 @@ fi
 ln -sf "$BUN_OPENCODE" /usr/local/bin/opencode
 
 echo "::: done — /usr/local/bin/opencode -> $BUN_OPENCODE (version $PINNED)"
+`
+
+// ensureClaudeInstalled ensures the sprite has the claude CLI at the
+// EXACT version clank pins (agent.PinnedClaudeVersion), with the same
+// probe-and-upgrade semantics as ensureOpenCodeInstalled.
+//
+// Why pin: the sprite base image bakes a claude with auto-updates
+// disabled, frozen at image-build time — and the CLI is what resolves
+// clank's sonnet/opus/haiku family aliases to a concrete model, so a
+// stale claude silently downgrades every session's model. See
+// agent.PinnedClaudeVersion's docstring for the 2026-07-05 incident.
+//
+// The probe resolves `claude` via PATH rather than execing
+// claudePath: the image-baked binary at ~/.local/bin shadows
+// /usr/local/bin on the sprite's PATH, and the claude-agent-sdk
+// discovers the CLI with the same PATH lookup — so PATH resolution is
+// the version sessions actually run. The install script re-points
+// both locations, keeping probe and reality convergent.
+//
+// Returns reinstalled=true when the install script ran. Callers MUST
+// use this to force a clank-host service recreate downstream: the
+// /software-manifest probe is sync.Once-cached per process (see
+// agent/software_manifest.go), so the new claude version stays
+// invisible to laptops until clank-host restarts and re-probes.
+func (p *Provisioner) ensureClaudeInstalled(ctx context.Context, sprite *sprites.Sprite) (reinstalled bool, err error) {
+	probe := func(probeCtx context.Context) (string, error) {
+		var versionOut []byte
+		probeErr := retryClosedConn(probeCtx, p.log, func() error {
+			cmd := sprite.CommandContext(probeCtx, "claude", "--version")
+			var runErr error
+			versionOut, runErr = cmd.Output()
+			return runErr
+		})
+		// `claude --version` prints "2.1.201 (Claude Code)" — compare
+		// the bare version, not the raw line.
+		return agent.ParseClaudeVersionOutput(string(versionOut)), probeErr
+	}
+	install := func(installCtx context.Context) ([]byte, error) {
+		script := strings.ReplaceAll(claudeInstallScript, "__PINNED_VERSION__", agent.PinnedClaudeVersion)
+		var out []byte
+		runErr := retryClosedConn(installCtx, p.log, func() error {
+			cmd := sprite.CommandContext(installCtx, "sh", "-c", script)
+			var rerr error
+			out, rerr = cmd.CombinedOutput()
+			return rerr
+		})
+		return out, runErr
+	}
+	return p.ensureClaudeInstalledOn(ctx, sprite.Name(), probe, sprite.Filesystem(), install)
+}
+
+// claudeInstallScript installs claude at the pinned version via bun
+// (same sole-writer design as opencodeInstallScript) and points the
+// canonical paths at the verified binary. One claude-specific twist:
+// the sprite image bakes its own claude at ~/.local/bin/claude, which
+// precedes /usr/local/bin on PATH — leaving it in place would shadow
+// the pinned binary for every PATH-based lookup (the claude-agent-sdk's
+// CLI discovery, interactive shells), making the install a no-op in
+// practice. So the script re-points BOTH /usr/local/bin/claude and
+// ~/.local/bin/claude. Idempotent across reruns; the image-baked
+// symlink is treated as ours to own, and a future image refresh that
+// restores it is healed by the next probe-and-reinstall.
+const claudeInstallScript = `set -e
+
+PINNED="__PINNED_VERSION__"
+
+echo "::: claude install (target version: $PINNED)"
+
+if ! command -v bun >/dev/null 2>&1; then
+  echo "::: ERROR: bun is not on PATH — sprite image is missing the bun runtime" >&2
+  exit 1
+fi
+echo "::: using bun ($(bun --version))"
+bun install -g "@anthropic-ai/claude-code@$PINNED" 2>&1
+
+# Resolve bun's global bin dir. Order: explicit BUN_INSTALL_BIN env,
+# then BUN_INSTALL/bin, then ask bun directly. We never fall back to
+# the canonical paths — those are SYMLINK targets, not writers.
+BUN_BIN_DIR=""
+if [ -n "$BUN_INSTALL_BIN" ] && [ -d "$BUN_INSTALL_BIN" ]; then
+  BUN_BIN_DIR="$BUN_INSTALL_BIN"
+elif [ -n "$BUN_INSTALL" ] && [ -d "$BUN_INSTALL/bin" ]; then
+  BUN_BIN_DIR="$BUN_INSTALL/bin"
+else
+  BUN_BIN_DIR=$(bun pm bin -g 2>/dev/null || true)
+fi
+BUN_CLAUDE="$BUN_BIN_DIR/claude"
+
+if [ ! -x "$BUN_CLAUDE" ]; then
+  echo "::: ERROR: bun install succeeded but $BUN_CLAUDE is missing or not executable" >&2
+  echo "::: BUN_INSTALL=$BUN_INSTALL BUN_INSTALL_BIN=$BUN_INSTALL_BIN" >&2
+  echo "::: BUN_BIN_DIR=$BUN_BIN_DIR" >&2
+  exit 1
+fi
+
+# Strict version check on the bun-produced binary BEFORE touching the
+# canonical paths. Output is "2.1.201 (Claude Code)" — compare the
+# first field only.
+got=$("$BUN_CLAUDE" --version 2>/dev/null)
+got="${got%% *}"
+if [ "$got" != "$PINNED" ]; then
+  echo "::: ERROR: bun installed $got at $BUN_CLAUDE, expected $PINNED" >&2
+  exit 1
+fi
+
+ln -sf "$BUN_CLAUDE" /usr/local/bin/claude
+
+# Re-point the image-baked claude too: $HOME/.local/bin precedes
+# /usr/local/bin on the sprite PATH and would otherwise shadow the
+# pin (both for the SDK's PATH-based CLI discovery and our probe).
+if [ -d "$HOME/.local/bin" ]; then
+  ln -sf "$BUN_CLAUDE" "$HOME/.local/bin/claude"
+fi
+
+echo "::: done — claude -> $BUN_CLAUDE (version $PINNED)"
 `
 
 // ensureServiceRunning registers the clank-host Service, recreating it

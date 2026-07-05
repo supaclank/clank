@@ -72,8 +72,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #                            relay in internal/host (auth_anthropic_setup_token.go).
 ENV HOME=/root
 ENV PATH="/root/.bun/bin:${PATH}"
+# Versions must track agent.PinnedOpencodeVersion and
+# agent.PinnedClaudeVersion (internal/agent/{opencode,claude}_compat.go)
+# so the docker stack runs the same CLIs the fly provisioner pins onto
+# sprites — an unpinned install here drifts to "latest at image build",
+# the exact failure mode the pins exist to prevent.
 RUN npm install -g bun \
-    && bun install -g opencode-ai @anthropic-ai/claude-code \
+    && bun install -g opencode-ai@1.15.1 @anthropic-ai/claude-code@2.1.201 \
     && opencode --version \
     && claude --version
 
