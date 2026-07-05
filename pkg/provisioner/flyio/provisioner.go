@@ -888,7 +888,9 @@ ln -sf "$BUN_CLAUDE" /usr/local/bin/claude
 # Re-point the image-baked claude too: $HOME/.local/bin precedes
 # /usr/local/bin on the sprite PATH and would otherwise shadow the
 # pin (both for the SDK's PATH-based CLI discovery and our probe).
-if [ -d "$HOME/.local/bin" ]; then
+# Guard on $HOME being set — unset/empty would collapse the path to
+# the root-level /.local/bin.
+if [ -n "$HOME" ] && [ -d "$HOME/.local/bin" ]; then
   ln -sf "$BUN_CLAUDE" "$HOME/.local/bin/claude"
 fi
 
