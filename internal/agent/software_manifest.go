@@ -23,14 +23,12 @@ type SoftwareInfo struct {
 	Version string `json:"version"`
 }
 
-// SoftwareManifest is what GET /software-manifest returns. Today
-// only opencode is meaningfully populated; claude and clank-host
-// fields are reserved for future expansion. JSON keys are
-// snake_case to match the rest of clank's wire conventions.
+// SoftwareManifest is what GET /software-manifest returns. JSON keys
+// are snake_case to match the rest of clank's wire conventions.
 type SoftwareManifest struct {
 	OpenCode SoftwareInfo `json:"opencode"`
+	Claude   SoftwareInfo `json:"claude"`
 	// Reserved for future expansion:
-	//   Claude    SoftwareInfo `json:"claude"`
 	//   ClankHost SoftwareInfo `json:"clank_host"`
 }
 
@@ -76,6 +74,9 @@ func probeSoftwareManifest(ctx context.Context) SoftwareManifest {
 	m := SoftwareManifest{}
 	if v, err := OpenCodeVersion(ctx); err == nil {
 		m.OpenCode = SoftwareInfo{Version: v}
+	}
+	if v, err := ClaudeVersion(ctx); err == nil {
+		m.Claude = SoftwareInfo{Version: v}
 	}
 	return m
 }
