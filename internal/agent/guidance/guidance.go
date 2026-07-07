@@ -1,7 +1,15 @@
 // Package guidance assembles the stack-specific guidance that clank injects as
-// the building agent's system prompt at session start. The stack is detected by
-// inspecting the project's package.json; today only Expo / React Native is
-// recognized, returning "" for anything else.
+// the building agent's system prompt at session start, and materializes the
+// stack's detailed playbook as an on-demand skill in the project tree. The
+// stack is detected by inspecting the project's package.json; today only
+// Expo / React Native is recognized, returning "" for anything else.
+//
+// The guidance is deliberately two-layer. The system prompt carries only the
+// distilled reasoning principles (~half a KB of tokens): a large system prompt
+// costs every request and measurably pushes models toward longer thinking, so
+// the detailed mechanisms, case studies, and checklists live in a skill
+// (.claude/skills/<name>/) that the agent reads on demand. The prompt tells
+// the agent the skill exists; the skill's SKILL.md indexes the references.
 //
 // Scope is deliberately narrow: only static, stack-specific guidance lives here.
 // Cross-stack framing and session-environment context (how the session was
@@ -13,7 +21,10 @@ package guidance
 import (
 	"embed"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -35,12 +46,25 @@ const (
 const expoDependency = "expo"
 
 // expoPack lists the embedded docs concatenated, in order, to form the Expo
-// guidance. Order matters: framing first, then the actionable rules.
+// system prompt. Kept to the distilled principles doc on purpose — the
+// detailed playbook ships as the skill below, not in the prompt.
 var expoPack = []string{
-	"docs/expo/intro.md",
-	"docs/expo/dependencies.md",
-	"docs/expo/performance.md",
-	"docs/expo/ux.md",
+	"docs/expo/prompt.md",
+}
+
+// expoSkillRelDir is where InstallSkills materializes the Expo playbook,
+// relative to the project root. The path is what Claude Code scans for
+// project-level skills, and prompt.md points the agent at it by name.
+const expoSkillRelDir = ".claude/skills/expo-dev"
+
+// expoSkillFiles are the embedded sources written (flattened, by base name)
+// into expoSkillRelDir. SKILL.md must lead: it carries the skill frontmatter
+// and indexes the rest.
+var expoSkillFiles = []string{
+	"docs/expo/skill/SKILL.md",
+	"docs/expo/skill/dependencies.md",
+	"docs/expo/skill/performance.md",
+	"docs/expo/skill/ux.md",
 }
 
 // DetectStack inspects workDir/package.json and returns the project's stack.
@@ -80,6 +104,82 @@ func Assemble(workDir string) string {
 	default:
 		return ""
 	}
+}
+
+// InstallSkills materializes the detected stack's playbook into the project's
+// .claude/skills directory so the agent can read it on demand, and excludes
+// the path from git so an agent's `git add -A` never stages clank-managed
+// files into the user's repo. Idempotent — files are overwritten on every
+// call, so a clank upgrade refreshes stale copies in existing worktrees.
+// No-op for unknown stacks.
+func InstallSkills(workDir string) error {
+	switch DetectStack(workDir) {
+	case StackExpo:
+		return installSkillFiles(workDir, expoSkillRelDir, expoSkillFiles)
+	default:
+		return nil
+	}
+}
+
+// installSkillFiles writes the embedded paths (flattened to their base names)
+// under workDir/relDir and registers relDir in the repo's git exclude file.
+func installSkillFiles(workDir, relDir string, srcPaths []string) error {
+	dst := filepath.Join(workDir, filepath.FromSlash(relDir))
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return fmt.Errorf("guidance: create skill dir: %w", err)
+	}
+	for _, p := range srcPaths {
+		data, err := docsFS.ReadFile(p)
+		if err != nil {
+			// A typo'd embed path is a programmer error — surface it so the
+			// pack tests catch it, mirroring readPack's marker-check guard.
+			return fmt.Errorf("guidance: embedded skill doc %s: %w", p, err)
+		}
+		if err := os.WriteFile(filepath.Join(dst, path.Base(p)), data, 0o644); err != nil {
+			return fmt.Errorf("guidance: write skill doc: %w", err)
+		}
+	}
+	return ensureGitExcluded(workDir, relDir)
+}
+
+// ensureGitExcluded appends relDir to the repository's info/exclude so the
+// materialized skill never shows up in git status or gets staged by an
+// agent's `git add -A`. The exclude file is resolved with
+// `git rev-parse --git-path info/exclude`, which is correct for linked
+// worktrees (clank's normal layout) as well as plain checkouts. Best-effort
+// by design: no git binary, not a repo, or an unwritable exclude file leaves
+// the skill functional — it would merely be visible to git.
+func ensureGitExcluded(workDir, relDir string) error {
+	out, err := exec.Command("git", "-C", workDir, "rev-parse", "--git-path", "info/exclude").Output()
+	if err != nil {
+		return nil
+	}
+	excludePath := strings.TrimSpace(string(out))
+	if excludePath == "" {
+		return nil
+	}
+	if !filepath.IsAbs(excludePath) {
+		excludePath = filepath.Join(workDir, excludePath)
+	}
+	line := "/" + relDir + "/"
+	existing, _ := os.ReadFile(excludePath)
+	if strings.Contains(string(existing), line) {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(excludePath), 0o755); err != nil {
+		return nil
+	}
+	f, err := os.OpenFile(excludePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	prefix := ""
+	if n := len(existing); n > 0 && existing[n-1] != '\n' {
+		prefix = "\n"
+	}
+	_, _ = f.WriteString(prefix + line + "\n")
+	return nil
 }
 
 // readPack concatenates embedded docs with blank-line separators. Skipping on

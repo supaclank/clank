@@ -75,7 +75,20 @@ func (m *OpenCodeBackendManager) CreateBackend(ctx context.Context, inv agent.Ba
 	if inv.ResumeExternalID == "" {
 		b.SystemPrompt = guidance.Assemble(inv.WorkDir)
 	}
+	installGuidanceSkills(inv.WorkDir)
 	return b, nil
+}
+
+// installGuidanceSkills materializes the stack playbook the system prompt
+// points at (guidance.InstallSkills) into the project tree. Runs for fresh
+// AND resumed sessions: the prompt already in a resumed session's history
+// references the skill by path, and this refreshes stale copies after a
+// clank upgrade. Non-fatal — a session without the playbook still has the
+// distilled prompt.
+func installGuidanceSkills(workDir string) {
+	if err := guidance.InstallSkills(workDir); err != nil {
+		log.Printf("guidance: install skills in %s: %v", workDir, err)
+	}
 }
 
 // Shutdown stops all managed OpenCode servers.
@@ -212,6 +225,7 @@ func (m *ClaudeBackendManager) CreateBackend(ctx context.Context, inv agent.Back
 	if inv.ResumeExternalID == "" {
 		b.SystemPrompt = guidance.Assemble(inv.WorkDir)
 	}
+	installGuidanceSkills(inv.WorkDir)
 	return b, nil
 }
 
