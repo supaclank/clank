@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/acksell/clank/internal/agent/guidance"
@@ -229,5 +230,56 @@ func TestInstallSkillsGitExcludeMonorepo(t *testing.T) {
 	}
 	if strings.Contains(string(out), ".claude") {
 		t.Errorf("git status shows the skill dir from a nested workDir — exclude did not take:\n%s", out)
+	}
+}
+
+// TestInstallSkillsConcurrent: concurrent sessions can call InstallSkills for
+// the same workDir (e.g. two backends starting in the same project at once).
+// The read-then-append to info/exclude must not race or duplicate entries.
+func TestInstallSkillsConcurrent(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.email", "t@t"},
+		{"config", "user.name", "t"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	writePackageJSON(t, dir, `{"dependencies":{"expo":"~51.0.0"}}`)
+
+	const n = 50
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make([]error, n)
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs[i] = guidance.InstallSkills(dir)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("InstallSkills[%d]: %v", i, err)
+		}
+	}
+
+	excludePath := filepath.Join(dir, ".git", "info", "exclude")
+	data, err := os.ReadFile(excludePath)
+	if err != nil {
+		t.Fatalf("read exclude file: %v", err)
+	}
+	count := strings.Count(string(data), "/.claude/skills/expo-dev/")
+	if count != 1 {
+		t.Errorf("exclude entry appears %d times, want 1:\n%s", count, data)
 	}
 }

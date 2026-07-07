@@ -19,6 +19,7 @@
 package guidance
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -28,6 +29,8 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
 
 //go:embed docs
@@ -107,6 +110,18 @@ func Assemble(workDir string) string {
 	}
 }
 
+// installLocks serializes concurrent InstallSkills calls for the same
+// workDir — two backends starting in the same project at once must not
+// interleave writes to the shared skill files or info/exclude.
+var installLocks sync.Map // map[string]*sync.Mutex, keyed by workDir
+
+func lockInstall(workDir string) func() {
+	v, _ := installLocks.LoadOrStore(workDir, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
 // InstallSkills materializes the detected stack's playbook into the project's
 // .claude/skills directory so the agent can read it on demand, and excludes
 // the path from git so an agent's `git add -A` never stages clank-managed
@@ -116,6 +131,8 @@ func Assemble(workDir string) string {
 func InstallSkills(workDir string) error {
 	switch DetectStack(workDir) {
 	case StackExpo:
+		unlock := lockInstall(workDir)
+		defer unlock()
 		return installSkillFiles(workDir, expoSkillRelDir, expoSkillFiles)
 	default:
 		return nil
@@ -143,6 +160,11 @@ func installSkillFiles(workDir, relDir string, srcPaths []string) error {
 	return ensureGitExcluded(workDir, relDir)
 }
 
+// gitSubprocessTimeout bounds the rev-parse calls in ensureGitExcluded so a
+// hung git (network mount, lock contention, a misbehaving hook) can't leak
+// the process or the goroutine InstallSkills now runs in.
+const gitSubprocessTimeout = 5 * time.Second
+
 // ensureGitExcluded appends relDir to the repository's info/exclude so the
 // materialized skill never shows up in git status or gets staged by an
 // agent's `git add -A`. The exclude file is resolved with
@@ -151,7 +173,9 @@ func installSkillFiles(workDir, relDir string, srcPaths []string) error {
 // by design: no git binary, not a repo, or an unwritable exclude file leaves
 // the skill functional — it would merely be visible to git.
 func ensureGitExcluded(workDir, relDir string) error {
-	out, err := exec.Command("git", "-C", workDir, "rev-parse", "--git-path", "info/exclude").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), gitSubprocessTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", workDir, "rev-parse", "--git-path", "info/exclude").Output()
 	if err != nil {
 		return nil
 	}
@@ -166,7 +190,7 @@ func ensureGitExcluded(workDir, relDir string) error {
 	// workDir nested below the root (monorepo layouts) needs the repo-relative
 	// prefix or the pattern silently fails to match.
 	var repoPrefix string
-	if out, err := exec.Command("git", "-C", workDir, "rev-parse", "--show-prefix").Output(); err == nil {
+	if out, err := exec.CommandContext(ctx, "git", "-C", workDir, "rev-parse", "--show-prefix").Output(); err == nil {
 		repoPrefix = strings.TrimSpace(string(out))
 	}
 	line := "/" + repoPrefix + relDir + "/"
