@@ -19,6 +19,7 @@
 package guidance
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -28,7 +29,14 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
+
+// gitSubprocessTimeout bounds every git subprocess InstallSkills shells out
+// to, so a hung git (lock contention, slow network mount) can't leak the
+// background goroutine installGuidanceSkills spawns per session.
+const gitSubprocessTimeout = 5 * time.Second
 
 //go:embed docs
 var docsFS embed.FS
@@ -107,6 +115,12 @@ func Assemble(workDir string) string {
 	}
 }
 
+// installMu serializes InstallSkills across concurrent callers. backends.go
+// runs it in a goroutine on every CreateBackend (fresh and resumed), so two
+// sessions touching the same workDir around the same time would otherwise
+// race on the same skill files and info/exclude append.
+var installMu sync.Mutex
+
 // InstallSkills materializes the detected stack's playbook into the project's
 // .claude/skills directory so the agent can read it on demand, and excludes
 // the path from git so an agent's `git add -A` never stages clank-managed
@@ -114,6 +128,8 @@ func Assemble(workDir string) string {
 // call, so a clank upgrade refreshes stale copies in existing worktrees.
 // No-op for unknown stacks.
 func InstallSkills(workDir string) error {
+	installMu.Lock()
+	defer installMu.Unlock()
 	switch DetectStack(workDir) {
 	case StackExpo:
 		return installSkillFiles(workDir, expoSkillRelDir, expoSkillFiles)
@@ -151,7 +167,9 @@ func installSkillFiles(workDir, relDir string, srcPaths []string) error {
 // by design: no git binary, not a repo, or an unwritable exclude file leaves
 // the skill functional — it would merely be visible to git.
 func ensureGitExcluded(workDir, relDir string) error {
-	out, err := exec.Command("git", "-C", workDir, "rev-parse", "--git-path", "info/exclude").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), gitSubprocessTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", workDir, "rev-parse", "--git-path", "info/exclude").Output()
 	if err != nil {
 		return nil
 	}
@@ -166,7 +184,7 @@ func ensureGitExcluded(workDir, relDir string) error {
 	// workDir nested below the root (monorepo layouts) needs the repo-relative
 	// prefix or the pattern silently fails to match.
 	var repoPrefix string
-	if out, err := exec.Command("git", "-C", workDir, "rev-parse", "--show-prefix").Output(); err == nil {
+	if out, err := exec.CommandContext(ctx, "git", "-C", workDir, "rev-parse", "--show-prefix").Output(); err == nil {
 		repoPrefix = strings.TrimSpace(string(out))
 	}
 	line := "/" + repoPrefix + relDir + "/"

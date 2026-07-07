@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/acksell/clank/internal/agent/guidance"
@@ -229,5 +230,62 @@ func TestInstallSkillsGitExcludeMonorepo(t *testing.T) {
 	}
 	if strings.Contains(string(out), ".claude") {
 		t.Errorf("git status shows the skill dir from a nested workDir — exclude did not take:\n%s", out)
+	}
+}
+
+// TestInstallSkillsConcurrent: backends.go runs InstallSkills in a goroutine
+// on every CreateBackend (fresh and resumed), so two sessions touching the
+// same workDir around the same time can call it concurrently. The
+// check-then-append in ensureGitExcluded is not atomic on its own — installMu
+// is what makes a concurrent burst converge on exactly one exclude entry
+// instead of racing to duplicate it.
+func TestInstallSkillsConcurrent(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.email", "t@t"},
+		{"config", "user.name", "t"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	writePackageJSON(t, dir, `{"dependencies":{"expo":"~51.0.0"}}`)
+
+	const n = 50
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = guidance.InstallSkills(dir)
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("InstallSkills[%d]: %v", i, err)
+		}
+	}
+
+	excludePath := filepath.Join(dir, ".git", "info", "exclude")
+	data, err := os.ReadFile(excludePath)
+	if err != nil {
+		t.Fatalf("read exclude file: %v", err)
+	}
+	count := 0
+	for _, l := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(l) == "/.claude/skills/expo-dev/" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 exclude entry after %d concurrent installs, got %d:\n%s", n, count, data)
 	}
 }
