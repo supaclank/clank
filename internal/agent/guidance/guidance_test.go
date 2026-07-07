@@ -117,7 +117,11 @@ func TestInstallSkillsExpo(t *testing.T) {
 		t.Fatalf("read SKILL.md: %v", err)
 	}
 	if !strings.HasPrefix(string(skill), "---\nname: expo-dev\n") {
-		t.Errorf("SKILL.md must start with frontmatter naming expo-dev; got prefix %q", string(skill[:40]))
+		preview := string(skill)
+		if len(preview) > 40 {
+			preview = preview[:40]
+		}
+		t.Errorf("SKILL.md must start with frontmatter naming expo-dev; got prefix %q", preview)
 	}
 
 	// Idempotent: a second install must succeed and leave the files in place.
@@ -179,5 +183,148 @@ func TestInstallSkillsGitExclude(t *testing.T) {
 	after, _ := os.ReadFile(excludePath)
 	if string(before) != string(after) {
 		t.Errorf("exclude file grew on re-install:\nbefore: %q\nafter: %q", before, after)
+	}
+}
+
+// TestInstallSkillsGitExcludeNestedWorkDir: info/exclude is repo-root-relative,
+// but workDir can be a subdirectory (an Expo app nested in a monorepo). The
+// exclude pattern must be anchored with the subdirectory's prefix or it silently
+// fails to match, defeating the exclude guarantee for exactly the layout it
+// exists to protect.
+func TestInstallSkillsGitExcludeNestedWorkDir(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	root := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.email", "t@t"},
+		{"config", "user.name", "t"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	appDir := filepath.Join(root, "apps", "mobile")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatalf("mkdir app dir: %v", err)
+	}
+	writePackageJSON(t, appDir, `{"dependencies":{"expo":"~51.0.0"}}`)
+	// A tracked file inside appDir keeps git from collapsing an entirely
+	// untracked apps/mobile into a single "?? apps/mobile/" status line,
+	// which would hide a wrongly-anchored exclude pattern.
+	commitFile(t, root, filepath.Join("apps", "mobile", "package.json"))
+
+	if err := guidance.InstallSkills(appDir); err != nil {
+		t.Fatalf("InstallSkills: %v", err)
+	}
+	out, err := exec.Command("git", "-C", root, "status", "--porcelain").Output()
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	if strings.Contains(string(out), ".claude") {
+		t.Errorf("git status shows the nested skill dir — exclude did not take:\n%s", out)
+	}
+}
+
+// TestInstallSkillsGitExcludeWriteFailureSurfaces: once git has confirmed a
+// repo exists, a failure to actually write info/exclude (e.g. the git dir is
+// damaged) must come back as an error the caller can log — not be silently
+// swallowed as if it were the "not a repo" case.
+func TestInstallSkillsGitExcludeWriteFailureSurfaces(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.email", "t@t"},
+		{"config", "user.name", "t"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	writePackageJSON(t, dir, `{"dependencies":{"expo":"~51.0.0"}}`)
+
+	// Replace .git/info (normally a directory) with a regular file so
+	// writing info/exclude fails regardless of the running user's privileges.
+	infoPath := filepath.Join(dir, ".git", "info")
+	if err := os.RemoveAll(infoPath); err != nil {
+		t.Fatalf("remove .git/info: %v", err)
+	}
+	if err := os.WriteFile(infoPath, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("write file over .git/info: %v", err)
+	}
+
+	if err := guidance.InstallSkills(dir); err == nil {
+		t.Error("InstallSkills: want error when info/exclude cannot be written, got nil")
+	}
+}
+
+// TestInstallSkillsGitExcludeNoSubstringFalsePositive: a substring check
+// against the exclude file's raw content would treat "/.claude/skills/expo-dev/"
+// as already present merely because another app's prefixed entry (e.g.
+// "/apps/other/.claude/skills/expo-dev/") ends with that same suffix. The
+// check must match whole exclude lines, not substrings.
+func TestInstallSkillsGitExcludeNoSubstringFalsePositive(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.email", "t@t"},
+		{"config", "user.name", "t"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	writePackageJSON(t, dir, `{"dependencies":{"expo":"~51.0.0"}}`)
+
+	excludePath := filepath.Join(dir, ".git", "info", "exclude")
+	seed := "/apps/other/.claude/skills/expo-dev/\n"
+	if err := os.WriteFile(excludePath, []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed exclude file: %v", err)
+	}
+
+	if err := guidance.InstallSkills(dir); err != nil {
+		t.Fatalf("InstallSkills: %v", err)
+	}
+	after, err := os.ReadFile(excludePath)
+	if err != nil {
+		t.Fatalf("read exclude file: %v", err)
+	}
+	found := false
+	for _, l := range strings.Split(string(after), "\n") {
+		if strings.TrimSpace(l) == "/.claude/skills/expo-dev/" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("exclude file missing this app's exact entry, only has the other app's prefix line:\n%s", after)
+	}
+}
+
+// commitFile stages and commits relPath (already written under root) so git
+// treats its parent directory as tracked instead of collapsing it wholesale
+// in status output.
+func commitFile(t *testing.T, root, relPath string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"add", relPath},
+		{"commit", "-q", "-m", "init"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
 	}
 }

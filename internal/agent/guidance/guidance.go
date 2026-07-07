@@ -146,9 +146,10 @@ func installSkillFiles(workDir, relDir string, srcPaths []string) error {
 // materialized skill never shows up in git status or gets staged by an
 // agent's `git add -A`. The exclude file is resolved with
 // `git rev-parse --git-path info/exclude`, which is correct for linked
-// worktrees (clank's normal layout) as well as plain checkouts. Best-effort
-// by design: no git binary, not a repo, or an unwritable exclude file leaves
-// the skill functional — it would merely be visible to git.
+// worktrees (clank's normal layout) as well as plain checkouts. No git binary
+// or not a repo is treated as a non-fatal no-op — the skill stays functional,
+// just visible to git. A write failure past that point is a real error,
+// returned so the caller can log it instead of it being silently swallowed.
 func ensureGitExcluded(workDir, relDir string) error {
 	out, err := exec.Command("git", "-C", workDir, "rev-parse", "--git-path", "info/exclude").Output()
 	if err != nil {
@@ -161,24 +162,34 @@ func ensureGitExcluded(workDir, relDir string) error {
 	if !filepath.IsAbs(excludePath) {
 		excludePath = filepath.Join(workDir, excludePath)
 	}
-	line := "/" + relDir + "/"
+	// info/exclude is repo-root-relative, but workDir may be a subdirectory
+	// (an app nested in a monorepo) — anchor the pattern with that prefix.
+	repoPrefix := ""
+	if prefixOut, err := exec.Command("git", "-C", workDir, "rev-parse", "--show-prefix").Output(); err == nil {
+		repoPrefix = strings.TrimSpace(string(prefixOut))
+	}
+	line := "/" + repoPrefix + relDir + "/"
 	existing, _ := os.ReadFile(excludePath)
-	if strings.Contains(string(existing), line) {
-		return nil
+	for _, l := range strings.Split(string(existing), "\n") {
+		if strings.TrimSpace(l) == line {
+			return nil
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(excludePath), 0o755); err != nil {
-		return nil
+		return fmt.Errorf("guidance: create exclude dir: %w", err)
 	}
 	f, err := os.OpenFile(excludePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return nil
+		return fmt.Errorf("guidance: open exclude file: %w", err)
 	}
 	defer f.Close()
 	prefix := ""
 	if n := len(existing); n > 0 && existing[n-1] != '\n' {
 		prefix = "\n"
 	}
-	_, _ = f.WriteString(prefix + line + "\n")
+	if _, err := f.WriteString(prefix + line + "\n"); err != nil {
+		return fmt.Errorf("guidance: write exclude file: %w", err)
+	}
 	return nil
 }
 
