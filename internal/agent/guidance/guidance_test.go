@@ -181,3 +181,52 @@ func TestInstallSkillsGitExclude(t *testing.T) {
 		t.Errorf("exclude file grew on re-install:\nbefore: %q\nafter: %q", before, after)
 	}
 }
+
+// TestInstallSkillsGitExcludeMonorepo: info/exclude patterns are anchored to
+// the repo root, so a workDir nested below it (monorepo layouts) needs the
+// repo-relative prefix or the exclude entry silently fails to match.
+func TestInstallSkillsGitExcludeMonorepo(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	root := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.email", "t@t"},
+		{"config", "user.name", "t"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	appDir := filepath.Join(root, "apps", "mobile")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatalf("mkdir app dir: %v", err)
+	}
+	writePackageJSON(t, appDir, `{"dependencies":{"expo":"~51.0.0"}}`)
+	// Commit the baseline first: otherwise the untracked package.json would
+	// make "apps/" show up as untracked regardless of whether .claude is
+	// excluded, masking the bug this test exists to catch.
+	for _, args := range [][]string{
+		{"add", "-A"},
+		{"commit", "-q", "-m", "baseline"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	if err := guidance.InstallSkills(appDir); err != nil {
+		t.Fatalf("InstallSkills: %v", err)
+	}
+	out, err := exec.Command("git", "-C", root, "status", "--porcelain").Output()
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	if strings.Contains(string(out), ".claude") {
+		t.Errorf("git status shows the skill dir from a nested workDir — exclude did not take:\n%s", out)
+	}
+}

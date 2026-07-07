@@ -22,6 +22,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path"
@@ -161,16 +162,27 @@ func ensureGitExcluded(workDir, relDir string) error {
 	if !filepath.IsAbs(excludePath) {
 		excludePath = filepath.Join(workDir, excludePath)
 	}
-	line := "/" + relDir + "/"
+	// info/exclude patterns are anchored to the repo root, not workDir, so a
+	// workDir nested below the root (monorepo layouts) needs the repo-relative
+	// prefix or the pattern silently fails to match.
+	var repoPrefix string
+	if out, err := exec.Command("git", "-C", workDir, "rev-parse", "--show-prefix").Output(); err == nil {
+		repoPrefix = strings.TrimSpace(string(out))
+	}
+	line := "/" + repoPrefix + relDir + "/"
 	existing, _ := os.ReadFile(excludePath)
-	if strings.Contains(string(existing), line) {
-		return nil
+	for _, l := range strings.Split(string(existing), "\n") {
+		if strings.TrimSpace(l) == line {
+			return nil
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(excludePath), 0o755); err != nil {
+		log.Printf("guidance: create exclude dir %s: %v", filepath.Dir(excludePath), err)
 		return nil
 	}
 	f, err := os.OpenFile(excludePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
+		log.Printf("guidance: open exclude file %s: %v", excludePath, err)
 		return nil
 	}
 	defer f.Close()
@@ -178,7 +190,9 @@ func ensureGitExcluded(workDir, relDir string) error {
 	if n := len(existing); n > 0 && existing[n-1] != '\n' {
 		prefix = "\n"
 	}
-	_, _ = f.WriteString(prefix + line + "\n")
+	if _, err := f.WriteString(prefix + line + "\n"); err != nil {
+		log.Printf("guidance: write exclude entry to %s: %v", excludePath, err)
+	}
 	return nil
 }
 
