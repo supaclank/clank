@@ -117,7 +117,8 @@ func TestInstallSkillsExpo(t *testing.T) {
 		t.Fatalf("read SKILL.md: %v", err)
 	}
 	if !strings.HasPrefix(string(skill), "---\nname: expo-dev\n") {
-		t.Errorf("SKILL.md must start with frontmatter naming expo-dev; got prefix %q", string(skill[:40]))
+		n := min(len(skill), 40)
+		t.Errorf("SKILL.md must start with frontmatter naming expo-dev; got prefix %q", string(skill[:n]))
 	}
 
 	// Idempotent: a second install must succeed and leave the files in place.
