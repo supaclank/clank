@@ -237,7 +237,7 @@ func TestInstallSkillsGitExcludeMonorepo(t *testing.T) {
 // on every CreateBackend (fresh and resumed), so two sessions touching the
 // same workDir around the same time can call it concurrently. The
 // check-then-append in ensureGitExcluded is not atomic on its own —
-// installLocks is what makes a concurrent burst converge on exactly one
+// installMu is what makes a concurrent burst converge on exactly one
 // exclude entry instead of racing to duplicate it.
 func TestInstallSkillsConcurrent(t *testing.T) {
 	t.Parallel()
@@ -287,5 +287,90 @@ func TestInstallSkillsConcurrent(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("expected exactly 1 exclude entry after %d concurrent installs, got %d:\n%s", n, count, data)
+	}
+}
+
+// TestInstallSkillsConcurrentMonorepo: a global lock keyed by workDir would
+// miss this — two subdirectories of the same repo pass different workDir
+// values but ensureGitExcluded resolves both to the same repo-root
+// info/exclude file, so they'd still contend on it. installMu is global, not
+// keyed, so it covers this case too: both entries must land intact.
+func TestInstallSkillsConcurrentMonorepo(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	root := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.email", "t@t"},
+		{"config", "user.name", "t"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	mobileDir := filepath.Join(root, "apps", "mobile")
+	webDir := filepath.Join(root, "apps", "web")
+	for _, dir := range []string{mobileDir, webDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+		writePackageJSON(t, dir, `{"dependencies":{"expo":"~51.0.0"}}`)
+	}
+	for _, args := range [][]string{
+		{"add", "-A"},
+		{"commit", "-q", "-m", "baseline"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	const n = 20
+	var wg sync.WaitGroup
+	errs := make([]error, 2*n)
+	for i := 0; i < n; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			errs[2*i] = guidance.InstallSkills(mobileDir)
+		}(i)
+		go func(i int) {
+			defer wg.Done()
+			errs[2*i+1] = guidance.InstallSkills(webDir)
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("InstallSkills[%d]: %v", i, err)
+		}
+	}
+
+	excludePath := filepath.Join(root, ".git", "info", "exclude")
+	data, err := os.ReadFile(excludePath)
+	if err != nil {
+		t.Fatalf("read exclude file: %v", err)
+	}
+	for _, want := range []string{"/apps/mobile/.claude/skills/expo-dev/", "/apps/web/.claude/skills/expo-dev/"} {
+		count := 0
+		for _, l := range strings.Split(string(data), "\n") {
+			if strings.TrimSpace(l) == want {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Errorf("expected exactly 1 entry %q after concurrent cross-dir installs, got %d:\n%s", want, count, data)
+		}
+	}
+	out, err := exec.Command("git", "-C", root, "status", "--porcelain").Output()
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	if strings.Contains(string(out), ".claude") {
+		t.Errorf("git status shows a skill dir — exclude did not take for both subdirectories:\n%s", out)
 	}
 }

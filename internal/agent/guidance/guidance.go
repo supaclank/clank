@@ -115,14 +115,19 @@ func Assemble(workDir string) string {
 	}
 }
 
-// installLocks serializes InstallSkills per workDir across concurrent
-// callers. backends.go runs it in a goroutine on every CreateBackend (fresh
-// and resumed), so two sessions touching the same workDir around the same
-// time would otherwise race on the same skill files and info/exclude
-// append. Keyed per workDir rather than a single global lock so a slow or
-// hung git subprocess in one project can't stall installs for unrelated
-// ones.
-var installLocks sync.Map // map[string]*sync.Mutex
+// installMu serializes InstallSkills across concurrent callers. backends.go
+// runs it in a goroutine on every CreateBackend (fresh and resumed), so two
+// sessions touching the same workDir around the same time would otherwise
+// race on the same skill files and info/exclude append. A single global
+// lock rather than one keyed by workDir: two different workDirs in the same
+// monorepo still share one repo-root info/exclude file, so per-workDir
+// locks wouldn't actually serialize the resource that matters, and keying
+// by the resolved repo root is circular (resolving it is itself a git call
+// this lock would need to guard). The lock is harmless to share globally —
+// InstallSkills always runs in a background goroutine, so a slow install in
+// one project only delays (never blocks) another's, bounded by
+// gitSubprocessTimeout.
+var installMu sync.Mutex
 
 // InstallSkills materializes the detected stack's playbook into the project's
 // .claude/skills directory so the agent can read it on demand, and excludes
@@ -131,10 +136,8 @@ var installLocks sync.Map // map[string]*sync.Mutex
 // call, so a clank upgrade refreshes stale copies in existing worktrees.
 // No-op for unknown stacks.
 func InstallSkills(workDir string) error {
-	lock, _ := installLocks.LoadOrStore(workDir, &sync.Mutex{})
-	mu := lock.(*sync.Mutex)
-	mu.Lock()
-	defer mu.Unlock()
+	installMu.Lock()
+	defer installMu.Unlock()
 	switch DetectStack(workDir) {
 	case StackExpo:
 		return installSkillFiles(workDir, expoSkillRelDir, expoSkillFiles)
