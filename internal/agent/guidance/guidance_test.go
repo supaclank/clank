@@ -236,9 +236,9 @@ func TestInstallSkillsGitExcludeMonorepo(t *testing.T) {
 // TestInstallSkillsConcurrent: backends.go runs InstallSkills in a goroutine
 // on every CreateBackend (fresh and resumed), so two sessions touching the
 // same workDir around the same time can call it concurrently. The
-// check-then-append in ensureGitExcluded is not atomic on its own — installMu
-// is what makes a concurrent burst converge on exactly one exclude entry
-// instead of racing to duplicate it.
+// check-then-append in ensureGitExcluded is not atomic on its own —
+// installLocks is what makes a concurrent burst converge on exactly one
+// exclude entry instead of racing to duplicate it.
 func TestInstallSkillsConcurrent(t *testing.T) {
 	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {

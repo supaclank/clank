@@ -115,11 +115,14 @@ func Assemble(workDir string) string {
 	}
 }
 
-// installMu serializes InstallSkills across concurrent callers. backends.go
-// runs it in a goroutine on every CreateBackend (fresh and resumed), so two
-// sessions touching the same workDir around the same time would otherwise
-// race on the same skill files and info/exclude append.
-var installMu sync.Mutex
+// installLocks serializes InstallSkills per workDir across concurrent
+// callers. backends.go runs it in a goroutine on every CreateBackend (fresh
+// and resumed), so two sessions touching the same workDir around the same
+// time would otherwise race on the same skill files and info/exclude
+// append. Keyed per workDir rather than a single global lock so a slow or
+// hung git subprocess in one project can't stall installs for unrelated
+// ones.
+var installLocks sync.Map // map[string]*sync.Mutex
 
 // InstallSkills materializes the detected stack's playbook into the project's
 // .claude/skills directory so the agent can read it on demand, and excludes
@@ -128,8 +131,10 @@ var installMu sync.Mutex
 // call, so a clank upgrade refreshes stale copies in existing worktrees.
 // No-op for unknown stacks.
 func InstallSkills(workDir string) error {
-	installMu.Lock()
-	defer installMu.Unlock()
+	lock, _ := installLocks.LoadOrStore(workDir, &sync.Mutex{})
+	mu := lock.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
 	switch DetectStack(workDir) {
 	case StackExpo:
 		return installSkillFiles(workDir, expoSkillRelDir, expoSkillFiles)
