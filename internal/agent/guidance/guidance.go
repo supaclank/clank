@@ -164,6 +164,15 @@ func installSkillFiles(workDir, relDir string, srcPaths []string) error {
 	return ensureGitExcluded(workDir, relDir)
 }
 
+// gitOutput runs a git subcommand in workDir under its own fresh
+// gitSubprocessTimeout budget — a caller making several git calls must not
+// share one context, or an early call eating the budget starves the rest.
+func gitOutput(workDir string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitSubprocessTimeout)
+	defer cancel()
+	return exec.CommandContext(ctx, "git", append([]string{"-C", workDir}, args...)...).Output()
+}
+
 // ensureGitExcluded appends relDir to the repository's info/exclude so the
 // materialized skill never shows up in git status or gets staged by an
 // agent's `git add -A`. The exclude file is resolved with
@@ -172,9 +181,7 @@ func installSkillFiles(workDir, relDir string, srcPaths []string) error {
 // by design: no git binary, not a repo, or an unwritable exclude file leaves
 // the skill functional — it would merely be visible to git.
 func ensureGitExcluded(workDir, relDir string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), gitSubprocessTimeout)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", workDir, "rev-parse", "--git-path", "info/exclude").Output()
+	out, err := gitOutput(workDir, "rev-parse", "--git-path", "info/exclude")
 	if err != nil {
 		return nil
 	}
@@ -189,7 +196,7 @@ func ensureGitExcluded(workDir, relDir string) error {
 	// workDir nested below the root (monorepo layouts) needs the repo-relative
 	// prefix or the pattern silently fails to match.
 	var repoPrefix string
-	if out, err := exec.CommandContext(ctx, "git", "-C", workDir, "rev-parse", "--show-prefix").Output(); err == nil {
+	if out, err := gitOutput(workDir, "rev-parse", "--show-prefix"); err == nil {
 		repoPrefix = strings.TrimSpace(string(out))
 	}
 	line := "/" + repoPrefix + relDir + "/"
