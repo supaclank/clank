@@ -15,14 +15,17 @@ generalization.
 
 ## First principles
 
-1. **Continuous rendering is a cost you should spend deliberately.** A GPU only
-   produces a frame when something invalidates; any *ongoing* animation pins it
-   to ~60fps for as long as it runs (battery, heat, less headroom for other
-   work). That's a fine price for active feedback or a hero moment — and a waste
-   for a permanent idle loop nobody asked for. The question is never "animations
-   are bad," it's "is this frame-every-16ms earning its keep right now?" When the
-   answer is no, gate it on visibility or stop it when
-   off-screen/backgrounded/done.
+1. **Continuous rendering is a cost you should spend deliberately.** The display
+   refreshes ~60×/s regardless, but refresh ≠ render: with a static frame the
+   display controller just re-scans the last composed frame from memory and the
+   CPU/GPU do nothing (and power-gate). An *ongoing* animation invalidates every
+   vsync, so the whole produce-a-frame pipeline (animation tick → record draw
+   commands → rasterize → composite) runs 60×/s for as long as it's mounted —
+   battery and heat, plus standing occupancy of the UI thread that becomes the
+   missing headroom when something heavy happens beside it. "Cheap per frame"
+   doesn't mean free over time. The question is never "animations are bad," it's
+   "is this frame-every-16ms earning its keep right now?" — gate on visibility
+   or stop when off-screen/backgrounded/done where it isn't.
 
 2. **Per-frame work is fine — if each frame is cheap and on the right thread.**
    Things that legitimately move every frame (keyboard tracking, scroll-linked
@@ -76,11 +79,13 @@ absolutely doable; the difference is what each frame of the slide costs:
 
 ## Animations
 
-- **An animation that runs continuously must earn its cost** (principle #1). A
-  continuous loop is right for ongoing status (an active recording indicator, a
-  working spinner) and wrong as a permanent ambient effect. Gate on visibility,
-  stop when done or off-screen — a UX/cost tradeoff decided per element, not a
-  rule.
+- **A continuous animation is a standing cost — weigh what it buys** (see
+  principle #1 for the refresh-vs-render mechanism). Ongoing status during real
+  work (a recording indicator, a working spinner) usually earns its 60fps; a
+  permanent ambient effect on a screen the user sits and reads usually doesn't —
+  but that's a per-element UX/cost call, not a rule. Gating on visibility or
+  stopping when done/off-screen keeps the effect while dropping the standing
+  cost.
 - **A worklet animation's smoothness is orthogonal to React re-renders.** It runs
   off shared values on the UI thread, so the owning component can re-render zero or
   a hundred times a second and the motion is identical. Chasing re-renders (memo,
@@ -92,17 +97,19 @@ absolutely doable; the difference is what each frame of the slide costs:
 - **For a heavy or continuous animation, collapse N animated Views into one Skia
   draw.** N animated `View`s push N view-prop updates through Reanimated's mapper
   onto the UI thread *every frame*; a single `<Canvas>` + one path is one draw.
-  That's *why* a native equivalent stays smooth under load — it does almost no
-  per-frame main-thread work, not because it sits on a faster thread. When an RN
-  animation janks only *under contention* (something heavy mounting or updating
-  beside it), this headroom is usually the fix — match the native approach rather
-  than concluding "RN can't."
+  That's *why* a native (Compose/Skia) equivalent stays smooth under load — it
+  does almost no per-frame main-thread work, not because it sits on a faster
+  thread. When an RN animation janks only *under contention* (something heavy
+  mounting or updating beside it), this headroom is usually the fix — match the
+  native approach rather than concluding "RN can't." (40 animated bars → one
+  Skia path took a waveform from "jitters under load" to "buttery.")
 - **No per-frame allocation in worklets.** A 60fps worklet that allocates — new
   arrays, per-item Skia `Rect`/`RRect` objects, a fresh transform array each frame
   — feeds the UI-runtime GC, which then pauses ~every couple of seconds: a subtle
   but *regular* single-frame skip. Build Skia paths with raw `moveTo`/`lineTo`
   (numbers, no objects), preallocate + mutate, and signal change with a
-  counter/clock rather than a fresh object.
+  counter/clock rather than a fresh object. (One ~2s skip was ~1000 short-lived
+  Skia objects/sec from building bars as `RRect`s; raw path commands removed it.)
 
 ---
 
