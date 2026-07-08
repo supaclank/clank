@@ -60,7 +60,7 @@ The daemon is auto-started if not already running.`,
 			if err != nil {
 				return fmt.Errorf("daemon: %w", err)
 			}
-			return runPlease(cmd.Context(), client, cmd.OutOrStdout(), pleaseOpts{
+			return runPlease(cmd.Context(), client, cmd.OutOrStdout(), cmd.ErrOrStderr(), pleaseOpts{
 				backend:        bt,
 				projectDir:     projectDir,
 				worktreeBranch: worktreeBranch,
@@ -89,7 +89,7 @@ type pleaseOpts struct {
 // prompt server-side) and returns without watching it: fire-and-forget.
 // The session is recorded as the cwd's last session so a bare `clank`
 // drops the user straight into it.
-func runPlease(ctx context.Context, client *daemonclient.Client, out io.Writer, opts pleaseOpts) error {
+func runPlease(ctx context.Context, client *daemonclient.Client, out, errOut io.Writer, opts pleaseOpts) error {
 	ctx, cancel := context.WithTimeout(ctx, createSessionTimeout)
 	defer cancel()
 
@@ -101,7 +101,7 @@ func runPlease(ctx context.Context, client *daemonclient.Client, out io.Writer, 
 	// Synchronous on purpose: the process exits right after, so a
 	// goroutine (as the TUI uses) would race process exit.
 	if err := config.SetLastSessionForCwd(opts.projectDir, info.ID); err != nil {
-		fmt.Fprintf(out, "warning: session started but not recorded as last session: %v\n", err)
+		fmt.Fprintf(errOut, "warning: session started but not recorded as last session: %v\n", err)
 	}
 
 	fmt.Fprintf(out, "Session %s started: %q — run 'clank' to open it.\n", info.ID, previewPrompt(opts.prompt))

@@ -107,8 +107,12 @@ func TestLocalE2E_TUICreatesSession_AndFetches(t *testing.T) {
 	// (and that PR 3 silently broke until phase 6 — the symptom was
 	// "session not started" / spinning busy with no agent reply). We
 	// pin it here so the regression cannot return.
-	openAndSend := stub.Last().OpenAndSendCalled()
-	gotText := stub.Last().LastSendOpts().Text
+	lastBackend := stub.Last()
+	if lastBackend == nil {
+		t.Fatal("no backend created — session was not started")
+	}
+	openAndSend := lastBackend.OpenAndSendCalled()
+	gotText := lastBackend.LastSendOpts().Text
 	if !openAndSend {
 		t.Error("handleCreateSession did not call OpenAndSend on the backend")
 	}
