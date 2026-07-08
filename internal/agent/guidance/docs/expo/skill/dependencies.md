@@ -22,10 +22,10 @@ version instead.
 ## Native modules and the preview — a decision, not a rule
 
 The user previews through an app that works like Expo Go: **JS changes
-hot-reload; native changes don't load over the wire.** A new native module,
-or native configuration (`app.json` config plugins, anything under
-`ios/`/`android/`), only takes effect after a development build — which the
-user must trigger and download. Many common native modules are already
+hot-reload; native changes don't load over the wire.** Development builds
+aren't supported in this environment yet, so a new native module, or native
+configuration (`app.json` config plugins, anything under `ios/`/`android/`),
+simply can't run here for now. Many common native modules are already
 bundled in the preview app and work immediately.
 
 How to reason about it:
@@ -38,12 +38,9 @@ How to reason about it:
   is the right or only tool (a capability gap, a real performance need). Use
   your judgment — the user may not be technical, and a stream of dependency
   questions is its own UX bug. When you do adopt one, tell them in plain
-  language what it buys and that it won't show up in the preview until they
-  build a development build; if they've given guidance about native modules,
-  follow it. And check what the workflow supports first: some preview
-  environments don't offer development builds at all, and there a new native
-  module can't run, period.
+  language what it buys and that it can't run in the preview today; if
+  they've given guidance about native modules, follow it.
 - **Native config edits share the same constraint.** Configure native
   behavior through `app.json` / config plugins — never hand-edit `ios/` or
-  `android/`, which Continuous Native Generation regenerates — and remember
-  the change is inert in the preview until a development build happens.
+  `android/`, which Continuous Native Generation regenerates — even though
+  the change can't run in the preview today.
