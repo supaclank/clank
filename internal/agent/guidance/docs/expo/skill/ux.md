@@ -59,8 +59,11 @@ broken. Full-screen transitions are their own regime — replacing the whole
 screen isn't "shift."
 
 - **Reserve space for elements that appear/disappear** (errors, badges,
-  spinners). Fill state in place — fade a checkmark in — rather than reflowing
-  the screen.
+  spinners), so showing state changes pixels, not geometry. E.g. give a
+  submit row a fixed-size slot for its status icon and reveal the success
+  checkmark or error icon by animating opacity into that slot — a
+  compositor-only change, nothing reflows — instead of inserting the icon
+  on success and pushing its neighbors.
 - **Handle all three states of every async surface:** loading, empty, and
   error — not just the happy path.
 - **Skeletons are a tool, not a default.** They only prevent shift when they
