@@ -1,10 +1,14 @@
 package clankcli
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 )
 
 // fixPromptTemplate is the builtin "fix" command template, instantiated
@@ -49,12 +53,11 @@ The daemon is auto-started if not already running.`,
 			if err != nil {
 				return fmt.Errorf("daemon: %w", err)
 			}
-			return runPlease(cmd.Context(), client, cmd.OutOrStdout(), pleaseOpts{
+			return runFix(cmd.Context(), client, cmd.OutOrStdout(), cmd.ErrOrStderr(), pleaseOpts{
 				backend:        bt,
 				projectDir:     resolvedDir,
 				worktreeBranch: worktreeBranch,
-				prompt:         fixPrompt(args),
-			})
+			}, args)
 		},
 	}
 
@@ -70,6 +73,14 @@ The daemon is auto-started if not already running.`,
 	_ = cmd.Flags().MarkHidden("branch") // hidden alias for familiarity
 
 	return cmd
+}
+
+// runFix instantiates the fix prompt from argv and delegates to runPlease.
+// Extracted from fixCmd's RunE so the call is exercisable against a
+// stubbed backend, the same way runPlease itself is tested.
+func runFix(ctx context.Context, client *daemonclient.Client, out, errOut io.Writer, opts pleaseOpts, argv []string) error {
+	opts.prompt = fixPrompt(argv)
+	return runPlease(ctx, client, out, errOut, opts)
 }
 
 // fixPrompt instantiates the fix template with the shell-quoted argv.

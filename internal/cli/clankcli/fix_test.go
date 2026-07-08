@@ -1,10 +1,16 @@
 package clankcli
 
 import (
+	"bytes"
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/host/hosttest"
 )
 
 func TestShellQuoteJoin(t *testing.T) {
@@ -77,6 +83,41 @@ func TestFixCmd_OwnFlagsBeforeCommandStillParse(t *testing.T) {
 	}
 	if v, _ := cmd.Flags().GetString("project"); v != "/tmp/x" {
 		t.Errorf("--project: got %q, want /tmp/x", v)
+	}
+}
+
+// TestRunFix_CreatesSessionWithFixPrompt exercises runFix against a real
+// host + stub backend (see newTestHost in please_test.go), pinning the
+// call into runPlease: a stacked-branch rebase once desynced this call
+// site from runPlease's signature without a test catching it (build
+// failure only), since fix_test.go only drove fixCmd's flag parsing.
+func TestRunFix_CreatesSessionWithFixPrompt(t *testing.T) {
+	t.Setenv("CLANK_DIR", t.TempDir())
+
+	client, stub := newTestHost(t)
+	repo := hosttest.InitGitRepo(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var out, errOut bytes.Buffer
+	err := runFix(ctx, client, &out, &errOut, pleaseOpts{
+		backend:    agent.BackendOpenCode,
+		projectDir: repo,
+	}, []string{"npx", "expo", "run:android"})
+	if err != nil {
+		t.Fatalf("runFix: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("errOut: got %q, want empty", errOut.String())
+	}
+
+	last := stub.Last()
+	if last == nil {
+		t.Fatal("no backend created — session was not started")
+	}
+	if got := last.LastSendOpts().Text; !strings.Contains(got, "<command>npx expo run:android</command>") {
+		t.Errorf("prompt sent to backend %q lacks the quoted command", got)
 	}
 }
 
