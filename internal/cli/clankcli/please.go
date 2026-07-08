@@ -27,6 +27,8 @@ func pleaseCmd() *cobra.Command {
 	var backend string
 	var projectDir string
 	var worktreeBranch string
+	var toPicker bool
+	var sessionID string
 
 	cmd := &cobra.Command{
 		Use:     "please <prompt...>",
@@ -42,6 +44,10 @@ The session runs in the background; run 'clank' to open it. For a
 prompt that starts with '-', separate it with '--':
 
   clank please -- --verbose is not doing anything, why?
+
+To follow up on an existing session instead of starting a new one,
+pick it interactively with --to, or target it directly with
+--session <id>.
 
 The daemon is auto-started if not already running.`,
 		Args: cobra.MinimumNArgs(1),
@@ -60,11 +66,16 @@ The daemon is auto-started if not already running.`,
 			if err != nil {
 				return fmt.Errorf("daemon: %w", err)
 			}
-			return runPlease(cmd.Context(), client, cmd.OutOrStdout(), cmd.ErrOrStderr(), pleaseOpts{
-				backend:        bt,
-				projectDir:     projectDir,
-				worktreeBranch: worktreeBranch,
-				prompt:         strings.Join(args, " "),
+			target, err := resolveTargetSession(cmd.Context(), client, projectDir, toPicker, sessionID)
+			if err != nil {
+				return err
+			}
+			return runPrompt(cmd.Context(), client, cmd.OutOrStdout(), cmd.ErrOrStderr(), promptOpts{
+				backend:         bt,
+				projectDir:      projectDir,
+				worktreeBranch:  worktreeBranch,
+				prompt:          strings.Join(args, " "),
+				targetSessionID: target,
 			})
 		},
 	}
@@ -74,37 +85,62 @@ The daemon is auto-started if not already running.`,
 	cmd.Flags().StringVar(&worktreeBranch, "worktree", "", "Git branch to work on (creates worktree if needed)")
 	cmd.Flags().StringVar(&worktreeBranch, "branch", "", "Git branch to work on (creates worktree if needed)")
 	_ = cmd.Flags().MarkHidden("branch") // hidden alias for familiarity
+	addTargetSessionFlags(cmd, &toPicker, &sessionID)
 
 	return cmd
 }
 
-type pleaseOpts struct {
+// addTargetSessionFlags registers the existing-session targeting flags
+// shared by please and fix.
+func addTargetSessionFlags(cmd *cobra.Command, toPicker *bool, sessionID *string) {
+	cmd.Flags().BoolVar(toPicker, "to", false, "Pick an existing session to send the prompt to")
+	cmd.Flags().StringVar(sessionID, "session", "", "Send the prompt to this existing session id")
+	cmd.MarkFlagsMutuallyExclusive("to", "session")
+}
+
+type promptOpts struct {
 	backend        agent.BackendType
 	projectDir     string
 	worktreeBranch string
 	prompt         string
+	// targetSessionID, when set, sends the prompt to that existing
+	// session instead of creating a new one.
+	targetSessionID string
 }
 
-// runPlease creates the session (which starts the agent on the initial
-// prompt server-side) and returns without watching it: fire-and-forget.
-// The session is recorded as the cwd's last session so a bare `clank`
-// drops the user straight into it.
-func runPlease(ctx context.Context, client *daemonclient.Client, out, errOut io.Writer, opts pleaseOpts) error {
+// runPrompt delivers the prompt headlessly and returns without watching:
+// fire-and-forget. Default is a new session (creation dispatches the
+// initial prompt server-side); with targetSessionID set it is a
+// follow-up message to that session. Either way the session is recorded
+// as the cwd's last session so a bare `clank` drops the user into it.
+func runPrompt(ctx context.Context, client *daemonclient.Client, out, errOut io.Writer, opts promptOpts) error {
 	ctx, cancel := context.WithTimeout(ctx, createSessionTimeout)
 	defer cancel()
 
-	info, err := client.Sessions().Create(ctx, newStartRequest(opts.backend, opts.projectDir, opts.worktreeBranch, "", opts.prompt))
-	if err != nil {
-		return fmt.Errorf("create session: %w", err)
+	sessionID := opts.targetSessionID
+	if sessionID == "" {
+		info, err := client.Sessions().Create(ctx, newStartRequest(opts.backend, opts.projectDir, opts.worktreeBranch, "", opts.prompt))
+		if err != nil {
+			return fmt.Errorf("create session: %w", err)
+		}
+		sessionID = info.ID
+	} else {
+		if err := client.Session(sessionID).Send(ctx, agent.SendMessageOpts{Text: opts.prompt}); err != nil {
+			return fmt.Errorf("send to session %s: %w", sessionID, err)
+		}
 	}
 
 	// Synchronous on purpose: the process exits right after, so a
 	// goroutine (as the TUI uses) would race process exit.
-	if err := config.SetLastSessionForCwd(opts.projectDir, info.ID); err != nil {
-		fmt.Fprintf(errOut, "warning: session started but not recorded as last session: %v\n", err)
+	if err := config.SetLastSessionForCwd(opts.projectDir, sessionID); err != nil {
+		fmt.Fprintf(errOut, "warning: prompt delivered but session not recorded as last session: %v\n", err)
 	}
 
-	fmt.Fprintf(out, "Session %s started: %q — run 'clank' to open it.\n", info.ID, previewPrompt(opts.prompt))
+	if opts.targetSessionID != "" {
+		fmt.Fprintf(out, "Sent to session %s: %q — run 'clank' to open it.\n", sessionID, previewPrompt(opts.prompt))
+		return nil
+	}
+	fmt.Fprintf(out, "Session %s started: %q — run 'clank' to open it.\n", sessionID, previewPrompt(opts.prompt))
 	return nil
 }
 

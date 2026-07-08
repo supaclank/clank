@@ -24,6 +24,8 @@ func fixCmd() *cobra.Command {
 	var backend string
 	var projectDir string
 	var worktreeBranch string
+	var toPicker bool
+	var sessionID string
 
 	cmd := &cobra.Command{
 		Use:   "fix <command> [args...]",
@@ -35,6 +37,9 @@ output, and debugs any failure — without opening the TUI:
 
 Flags after the command belong to the command; use '--' to be explicit.
 The session runs in the background; run 'clank' to open it.
+
+To hand the command to an existing session instead, pick it
+interactively with --to, or target it directly with --session <id>.
 
 The daemon is auto-started if not already running.`,
 		Args: cobra.MinimumNArgs(1),
@@ -53,10 +58,15 @@ The daemon is auto-started if not already running.`,
 			if err != nil {
 				return fmt.Errorf("daemon: %w", err)
 			}
-			return runFix(cmd.Context(), client, cmd.OutOrStdout(), cmd.ErrOrStderr(), pleaseOpts{
-				backend:        bt,
-				projectDir:     resolvedDir,
-				worktreeBranch: worktreeBranch,
+			target, err := resolveTargetSession(cmd.Context(), client, resolvedDir, toPicker, sessionID)
+			if err != nil {
+				return err
+			}
+			return runFix(cmd.Context(), client, cmd.OutOrStdout(), cmd.ErrOrStderr(), promptOpts{
+				backend:         bt,
+				projectDir:      resolvedDir,
+				worktreeBranch:  worktreeBranch,
+				targetSessionID: target,
 			}, args)
 		},
 	}
@@ -71,16 +81,17 @@ The daemon is auto-started if not already running.`,
 	cmd.Flags().StringVar(&worktreeBranch, "worktree", "", "Git branch to work on (creates worktree if needed)")
 	cmd.Flags().StringVar(&worktreeBranch, "branch", "", "Git branch to work on (creates worktree if needed)")
 	_ = cmd.Flags().MarkHidden("branch") // hidden alias for familiarity
+	addTargetSessionFlags(cmd, &toPicker, &sessionID)
 
 	return cmd
 }
 
-// runFix instantiates the fix prompt from argv and delegates to runPlease.
+// runFix instantiates the fix prompt from argv and delegates to runPrompt.
 // Extracted from fixCmd's RunE so the call is exercisable against a
-// stubbed backend, the same way runPlease itself is tested.
-func runFix(ctx context.Context, client *daemonclient.Client, out, errOut io.Writer, opts pleaseOpts, argv []string) error {
+// stubbed backend, the same way runPrompt itself is tested.
+func runFix(ctx context.Context, client *daemonclient.Client, out, errOut io.Writer, opts promptOpts, argv []string) error {
 	opts.prompt = fixPrompt(argv)
-	return runPlease(ctx, client, out, errOut, opts)
+	return runPrompt(ctx, client, out, errOut, opts)
 }
 
 // fixPrompt instantiates the fix template with the shell-quoted argv.

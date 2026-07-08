@@ -88,8 +88,8 @@ func TestFixCmd_OwnFlagsBeforeCommandStillParse(t *testing.T) {
 
 // TestRunFix_CreatesSessionWithFixPrompt exercises runFix against a real
 // host + stub backend (see newTestHost in please_test.go), pinning the
-// call into runPlease: a stacked-branch rebase once desynced this call
-// site from runPlease's signature without a test catching it (build
+// call into runPrompt: a stacked-branch rebase once desynced this call
+// site from runPrompt's signature without a test catching it (build
 // failure only), since fix_test.go only drove fixCmd's flag parsing.
 func TestRunFix_CreatesSessionWithFixPrompt(t *testing.T) {
 	t.Setenv("CLANK_DIR", t.TempDir())
@@ -101,7 +101,7 @@ func TestRunFix_CreatesSessionWithFixPrompt(t *testing.T) {
 	defer cancel()
 
 	var out, errOut bytes.Buffer
-	err := runFix(ctx, client, &out, &errOut, pleaseOpts{
+	err := runFix(ctx, client, &out, &errOut, promptOpts{
 		backend:    agent.BackendOpenCode,
 		projectDir: repo,
 	}, []string{"npx", "expo", "run:android"})

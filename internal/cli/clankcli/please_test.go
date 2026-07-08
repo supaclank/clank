@@ -59,13 +59,13 @@ func TestRunPlease_CreatesSessionAndRecordsLastSession(t *testing.T) {
 	defer cancel()
 
 	var out, errOut bytes.Buffer
-	err := runPlease(ctx, client, &out, &errOut, pleaseOpts{
+	err := runPrompt(ctx, client, &out, &errOut, promptOpts{
 		backend:    agent.BackendOpenCode,
 		projectDir: repo,
 		prompt:     "install a release build to my phone",
 	})
 	if err != nil {
-		t.Fatalf("runPlease: %v", err)
+		t.Fatalf("runPrompt: %v", err)
 	}
 	if errOut.Len() != 0 {
 		t.Errorf("errOut: got %q, want empty", errOut.String())
