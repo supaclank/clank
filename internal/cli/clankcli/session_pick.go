@@ -23,6 +23,15 @@ const maxPickerSessions = 15
 // errPickCanceled reports that the user dismissed the session picker.
 var errPickCanceled = errors.New("session pick canceled")
 
+// dropPickCanceled turns a user-cancelled picker into a clean exit
+// instead of cobra printing an error.
+func dropPickCanceled(err error) error {
+	if err == errPickCanceled {
+		return nil
+	}
+	return err
+}
+
 // resolveTargetSession turns the targeting flags into a session id:
 // --session wins outright, --to opens the interactive picker, neither
 // means "" (create a new session).

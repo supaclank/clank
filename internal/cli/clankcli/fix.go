@@ -60,7 +60,7 @@ The daemon is auto-started if not already running.`,
 			}
 			target, err := resolveTargetSession(cmd.Context(), client, resolvedDir, toPicker, sessionID)
 			if err != nil {
-				return err
+				return dropPickCanceled(err)
 			}
 			return runFix(cmd.Context(), client, cmd.OutOrStdout(), cmd.ErrOrStderr(), promptOpts{
 				backend:         bt,

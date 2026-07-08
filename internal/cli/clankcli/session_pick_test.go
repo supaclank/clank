@@ -3,6 +3,7 @@ package clankcli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -122,6 +123,20 @@ func TestResolveTargetSession_PickerNeedsTTY(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--session") {
 		t.Errorf("error %q should point the user at --session", err)
+	}
+}
+
+// TestDropPickCanceled: a cancelled picker exits clean; any other error
+// passes through unchanged.
+func TestDropPickCanceled(t *testing.T) {
+	t.Parallel()
+
+	if err := dropPickCanceled(errPickCanceled); err != nil {
+		t.Errorf("errPickCanceled should be dropped, got %v", err)
+	}
+	other := errors.New("boom")
+	if err := dropPickCanceled(other); err != other {
+		t.Errorf("other errors should pass through unchanged, got %v", err)
 	}
 }
 

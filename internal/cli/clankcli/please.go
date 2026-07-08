@@ -68,7 +68,7 @@ The daemon is auto-started if not already running.`,
 			}
 			target, err := resolveTargetSession(cmd.Context(), client, projectDir, toPicker, sessionID)
 			if err != nil {
-				return err
+				return dropPickCanceled(err)
 			}
 			return runPrompt(cmd.Context(), client, cmd.OutOrStdout(), cmd.ErrOrStderr(), promptOpts{
 				backend:         bt,
