@@ -20,6 +20,8 @@ func TestShellQuoteJoin(t *testing.T) {
 		{"embedded single quote", []string{"echo", "don't"}, `echo 'don'\''t'`},
 		{"shell metachars quoted", []string{"sh", "-c", "make 2>&1 | tail"}, `sh -c 'make 2>&1 | tail'`},
 		{"empty arg preserved", []string{"cmd", ""}, "cmd ''"},
+		{"history expansion chars quoted", []string{"echo", "hello!", "a^b"}, "echo 'hello!' 'a^b'"},
+		{"carriage return quoted", []string{"echo", "hello\rworld"}, "echo 'hello\rworld'"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

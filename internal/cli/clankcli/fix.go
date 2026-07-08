@@ -37,7 +37,7 @@ The daemon is auto-started if not already running.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 
-			projectDir, err := resolveProjectDir(projectDir)
+			resolvedDir, err := resolveProjectDir(projectDir)
 			if err != nil {
 				return err
 			}
@@ -51,7 +51,7 @@ The daemon is auto-started if not already running.`,
 			}
 			return runPlease(cmd.Context(), client, cmd.OutOrStdout(), pleaseOpts{
 				backend:        bt,
-				projectDir:     projectDir,
+				projectDir:     resolvedDir,
 				worktreeBranch: worktreeBranch,
 				prompt:         fixPrompt(args),
 			})
@@ -92,7 +92,7 @@ func shellQuoteJoin(argv []string) string {
 // shellQuote single-quotes an argument when needed (POSIX-style: an
 // embedded single quote closes, escapes, and reopens).
 func shellQuote(s string) string {
-	if s != "" && !strings.ContainsAny(s, " \t\n\"'`$&|;()<>*?[]{}~#\\") {
+	if s != "" && !strings.ContainsAny(s, " \t\n\r\"'`$&|;()<>*?[]{}~#\\!^") {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
