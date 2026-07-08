@@ -52,11 +52,14 @@ and Android, with nothing clipped, cramped, hidden behind a notch, or unreachabl
 ## Layout stability — minimize *unexpected* shift
 
 The distinction that matters is expected vs unexpected. A layout shift the user
-caused (tapping an expander, submitting a form) is fine — and can often be made
-to feel smoother with an animation, budget permitting. A shift the user didn't
-cause (content popping in, a spinner replaced by taller content) reads as
-broken. Full-screen transitions are their own regime — replacing the whole
-screen isn't "shift."
+caused (tapping an expander, submitting a form) is fine — and often feels
+smoother animated. Just know what that animation costs: animating geometry
+(height, position of siblings) re-runs layout on every frame of the animation,
+unlike the cheap transform/opacity animations performance.md recommends — fine
+for a tap-triggered moment, worth reconsidering if it janks under load. A shift
+the user didn't cause (content popping in, a spinner replaced by taller
+content) reads as broken. Full-screen transitions are their own regime —
+replacing the whole screen isn't "shift."
 
 - **Reserve space for elements that appear/disappear** (errors, badges,
   spinners), so showing state changes pixels, not geometry. E.g. give a
