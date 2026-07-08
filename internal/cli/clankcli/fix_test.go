@@ -85,7 +85,7 @@ func TestFixPrompt_ContainsCommandLine(t *testing.T) {
 	t.Parallel()
 
 	prompt := fixPrompt([]string{"npx", "expo", "run:android"})
-	if !strings.Contains(prompt, "`npx expo run:android`") {
+	if !strings.Contains(prompt, "<command>npx expo run:android</command>") {
 		t.Errorf("prompt %q lacks the quoted command line", prompt)
 	}
 	if !strings.Contains(prompt, "background") || !strings.Contains(prompt, "diagnose") {

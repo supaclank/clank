@@ -12,7 +12,7 @@ import (
 // (backgrounded, monitored) so stdout+stderr and the exit code are
 // captured by its own tooling — nothing for the CLI to tee or forward.
 // Future user-defined templates generalize this shape (name → template).
-const fixPromptTemplate = "Run this command in the background and monitor its output: `%s`. " +
+const fixPromptTemplate = "Run this command in the background and monitor its output: <command>%s</command>. " +
 	"If it fails or reports errors, diagnose the root cause and fix it, then re-run to verify. " +
 	"If it succeeds, summarize the output briefly."
 
@@ -66,6 +66,8 @@ The daemon is auto-started if not already running.`,
 	cmd.Flags().StringVar(&backend, "backend", "", "Backend to use: opencode (default), claude")
 	cmd.Flags().StringVar(&projectDir, "project", "", "Project directory (default: current directory)")
 	cmd.Flags().StringVar(&worktreeBranch, "worktree", "", "Git branch to work on (creates worktree if needed)")
+	cmd.Flags().StringVar(&worktreeBranch, "branch", "", "Git branch to work on (creates worktree if needed)")
+	_ = cmd.Flags().MarkHidden("branch") // hidden alias for familiarity
 
 	return cmd
 }
