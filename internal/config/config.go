@@ -144,6 +144,11 @@ type Preferences struct {
 	// default" (defaultSidebarWidthRatio).
 	SidebarWidthRatio int `json:"sidebar_width_ratio,omitempty"`
 
+	// SidebarHidden persists the 'w' sidebar toggle across TUI launches.
+	// False (default) = visible. Width-based auto-collapse is not recorded
+	// here — only explicit toggles.
+	SidebarHidden bool `json:"sidebar_hidden,omitempty"`
+
 	// SidebarExpanded is the persisted per-row expand/collapse state for the
 	// IDE-style sidebar tree. Keys follow the scheme used by sidebarNode.Key
 	// (e.g. "wt:<LocalPath>", "older:wt", "older:s:<LocalPath>"). Absent or

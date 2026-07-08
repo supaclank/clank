@@ -310,6 +310,7 @@ func NewInboxModel(client *daemonclient.Client) *InboxModel {
 		hostname:             hostname,
 		gitRef:               gitRef,
 		sidebarWidthRatio:    sidebarWidthRatioFromPrefs(prefs),
+		sidebarHidden:        prefs.SidebarHidden,
 		cachedSessions:       cachedSessions,
 		lastSessionsCacheSig: sessionsCacheSig(cachedSessions),
 	}
@@ -962,7 +963,7 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			case key.Matches(k, key.NewBinding(key.WithKeys("w"))):
-				return m, m.toggleSidebar()
+				return m, m.toggleSidebarFromKey()
 			case key.Matches(k, key.NewBinding(key.WithKeys("n"))):
 				worktreeDir := ""
 				if m.sessionView.info != nil {
@@ -1494,7 +1495,7 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("w"))):
-		return m, m.toggleSidebar()
+		return m, m.toggleSidebarFromKey()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
 		m.showHelp = true
 		return m, nil
@@ -2193,6 +2194,15 @@ func (m *InboxModel) toggleSidebar() tea.Cmd {
 	return tea.ClearScreen
 }
 
+// toggleSidebarFromKey flips sidebar visibility and persists the new state.
+// Persistence lives here rather than in toggleSidebar so tests can drive the
+// pure toggle without writing the preferences file.
+func (m *InboxModel) toggleSidebarFromKey() tea.Cmd {
+	cmd := m.toggleSidebar()
+	go persistSidebarHidden(m.sidebarHidden)
+	return cmd
+}
+
 // sidebarWidthRatioFromPrefs returns the persisted sidebar width ratio, or the
 // default if none has been saved yet.
 func sidebarWidthRatioFromPrefs(prefs config.Preferences) int {
@@ -2212,6 +2222,13 @@ func (m *InboxModel) persistSidebarWidthRatio(ratio int) {
 	prefs, _ := config.LoadPreferences()
 	prefs.SidebarWidthRatio = ratio
 	_ = config.SavePreferences(prefs)
+}
+
+// persistSidebarHidden saves the sidebar's open/closed toggle state.
+// Called in a goroutine so the TUI doesn't block on disk I/O; the value
+// is passed in so concurrent main-loop toggles don't race the write.
+func persistSidebarHidden(hidden bool) {
+	_ = config.UpdatePreferences(func(p *config.Preferences) { p.SidebarHidden = hidden })
 }
 
 // persistSidebarExpanded writes the sidebar's expand-state snapshot to
@@ -2504,7 +2521,7 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		m.cleanupVoice()
 		return m, tea.Quit
 	case key.Matches(msg, key.NewBinding(key.WithKeys("w"))):
-		return m, m.toggleSidebar()
+		return m, m.toggleSidebarFromKey()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
 		m.showHelp = true
 		return m, nil
