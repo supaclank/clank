@@ -45,16 +45,34 @@ and Android, with nothing clipped, cramped, hidden behind a notch, or unreachabl
   keyboard-aware approach (`KeyboardAvoidingView` with the correct per-platform
   `behavior`, or `react-native-keyboard-controller`); see the performance doc for
   doing this smoothly.
-- **Keep content scrollable while the keyboard is up** so the submit button stays
-  reachable, and dismiss the keyboard on scroll / tap-out where it makes sense.
+- **Everything the user needs while typing must stay reachable with the keyboard
+  up** — moved above the keyboard or still scrollable-to. Dismiss the keyboard on
+  scroll / tap-out where it makes sense.
 
-## Layout stability — nothing should jump
+## Layout stability — minimize *unexpected* shift
 
-- **Reserve space for elements that appear/disappear** (errors, badges, spinners).
-  Fill state in place — fade a checkmark in — rather than reflowing the screen.
-- **Handle all three states of every async surface:** loading, empty, and error —
-  not just the happy path. Prefer skeletons that match the final layout over a
-  centered spinner that then shoves content into view.
+The distinction that matters is expected vs unexpected. A layout shift the user
+caused (tapping an expander, submitting a form) is fine — and often feels
+smoother animated. Just know what that animation costs: animating geometry
+(height, position of siblings) re-runs layout on every frame of the animation,
+unlike the cheap transform/opacity animations performance.md recommends — fine
+for a tap-triggered moment, worth reconsidering if it janks under load. A shift
+the user didn't cause (content popping in, a spinner replaced by taller
+content) reads as broken. Full-screen transitions are their own regime —
+replacing the whole screen isn't "shift."
+
+- **Reserve space for elements that appear/disappear** (errors, badges,
+  spinners), so showing state changes pixels, not geometry. E.g. give a
+  submit row a fixed-size slot for its status icon and reveal the success
+  checkmark or error icon by animating opacity into that slot — a
+  compositor-only change, nothing reflows — instead of inserting the icon
+  on success and pushing its neighbors.
+- **Handle all three states of every async surface:** loading, empty, and
+  error — not just the happy path.
+- **Skeletons are a tool, not a default.** They only prevent shift when they
+  match the final layout; a mismatched skeleton *is* an unexpected shift with
+  extra steps. When the final dimensions are unknowable, consider whether a
+  contained spinner or a reserved region is honest instead.
 - **Give images explicit dimensions and a `resizeMode`** so they don't pop the
   layout when they load. Reach for `expo-image` (caching, placeholders) on real
   content.
@@ -65,15 +83,15 @@ and Android, with nothing clipped, cramped, hidden behind a notch, or unreachabl
   text overflows or pushes siblings off-screen.
 - **Don't globally disable font scaling.** Respect the OS Dynamic Type / font-size
   setting and test at a large setting so nothing clips or truncates badly.
-- **Mind contrast and minimum size** — body text ~16pt, with sufficient color
-  contrast (aim for WCAG AA) so it stays legible in sunlight.
+- **Mind contrast and minimum size** — legible body text with sufficient color
+  contrast (aim for WCAG AA) so it stays readable in sunlight.
 
 ## Platform differences
 
 - **iOS and Android render differently:** shadows (`shadowColor/Offset/Opacity/
   Radius` on iOS vs `elevation` on Android), ripple vs opacity press feedback
   (`Pressable` with `android_ripple`), default fonts, and back-gesture behavior.
-  Check both — don't ship an iOS-only look on Android.
+  Check both — don't ship a look tuned to one platform on the other.
 - **Prefer `Pressable`** and give visible pressed feedback so taps feel responsive.
 
 ## Accessibility (also just better UX)
