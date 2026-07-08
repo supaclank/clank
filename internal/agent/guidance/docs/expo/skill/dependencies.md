@@ -35,10 +35,12 @@ How to reason about it:
   problems under this constraint for years. Greenfield apps especially should
   err toward not requiring new native modules.
 - **But don't treat native modules as forbidden.** Sometimes a native module
-  is the right or only tool (a capability gap, a real performance need).
-  That's the user's call: present what the module buys, and that adopting it
-  means their next preview requires a development build. Don't silently
-  avoid the option, and don't silently adopt it.
+  is the right or only tool (a capability gap, a real performance need). Use
+  your judgment — the user may not be technical, and a stream of dependency
+  questions is its own UX bug. When you do adopt one, tell them in plain
+  language what it buys and that it won't show up in the preview until they
+  build a development build; if they've given guidance about native modules,
+  follow it.
 - **Native config edits share the same constraint.** Configure native
   behavior through `app.json` / config plugins — never hand-edit `ios/` or
   `android/`, which Continuous Native Generation regenerates — and remember
