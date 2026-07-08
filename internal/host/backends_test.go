@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
@@ -39,6 +40,40 @@ func TestClaudeBackendManagerCreateBackend(t *testing.T) {
 	// CLI subprocess, which would require the binary to be installed
 	// in the test environment. CreateBackend succeeding (above) is
 	// sufficient as a smoke test.
+}
+
+// installGuidanceSkills runs off the request path (fire-and-forget) so
+// CreateBackend doesn't block on it; this pins that the skill files still
+// land on disk shortly after, i.e. the async wiring didn't drop the work.
+// HOME is overridden (skills install to ~/.claude/skills) so the test never
+// writes into the developer's real home — which also means no t.Parallel().
+func TestClaudeBackendManagerCreateBackend_InstallsGuidanceSkillsAsync(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	mgr := host.NewClaudeBackendManager()
+	defer mgr.Shutdown()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"dependencies":{"expo":"~51.0.0"}}`), 0o644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+
+	if _, err := mgr.CreateBackend(context.Background(), agent.BackendInvocation{WorkDir: dir}); err != nil {
+		t.Fatalf("CreateBackend: %v", err)
+	}
+
+	skillPath := filepath.Join(home, ".claude", "skills", "expo-dev", "SKILL.md")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(skillPath); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("guidance skill file never appeared at %s within timeout", skillPath)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // The env-resolver closure (wired by Service.New to AuthManager) must
