@@ -96,6 +96,7 @@ func TestInstallSkillsExpo(t *testing.T) {
 	// No t.Parallel(): t.Setenv is incompatible with parallel tests.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	dir := t.TempDir()
 	writePackageJSON(t, dir, `{"dependencies":{"expo":"~51.0.0"}}`)
 
@@ -118,8 +119,9 @@ func TestInstallSkillsExpo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read SKILL.md: %v", err)
 	}
-	if !strings.HasPrefix(string(skill), "---\nname: expo-dev\n") {
-		preview := string(skill)
+	normalized := strings.ReplaceAll(string(skill), "\r\n", "\n")
+	if !strings.HasPrefix(normalized, "---\nname: expo-dev\n") {
+		preview := normalized
 		if len(preview) > 40 {
 			preview = preview[:40]
 		}
@@ -136,6 +138,7 @@ func TestInstallSkillsConcurrent(t *testing.T) {
 	// No t.Parallel(): t.Setenv is incompatible with parallel tests.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	dir := t.TempDir()
 	writePackageJSON(t, dir, `{"dependencies":{"expo":"~51.0.0"}}`)
 
@@ -194,6 +197,7 @@ func TestInstallSkillsNonExpo(t *testing.T) {
 	// No t.Parallel(): t.Setenv is incompatible with parallel tests.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	dir := t.TempDir()
 	writePackageJSON(t, dir, `{"dependencies":{"express":"4.0.0"}}`)
 

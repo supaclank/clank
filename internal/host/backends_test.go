@@ -50,6 +50,7 @@ func TestClaudeBackendManagerCreateBackend(t *testing.T) {
 func TestClaudeBackendManagerCreateBackend_InstallsGuidanceSkillsAsync(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	mgr := host.NewClaudeBackendManager()
 	defer mgr.Shutdown()
 
