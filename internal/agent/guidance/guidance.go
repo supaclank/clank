@@ -1,8 +1,9 @@
 // Package guidance assembles the stack-specific guidance that clank injects as
 // the building agent's system prompt at session start, and materializes the
-// stack's detailed playbook as an on-demand skill in the project tree. The
-// stack is detected by inspecting the project's package.json; today only
-// Expo / React Native is recognized, returning "" for anything else.
+// stack's detailed playbook as an on-demand skill in the user's personal
+// skills directory (~/.claude/skills). The stack is detected by inspecting
+// the project's package.json; today only Expo / React Native is recognized,
+// returning "" for anything else.
 //
 // The guidance is deliberately two-layer. The system prompt carries only the
 // distilled reasoning principles (~half a KB of tokens): a large system prompt
@@ -141,11 +142,37 @@ func installSkillFiles(relDir string, srcPaths []string) error {
 			// pack tests catch it, mirroring readPack's marker-check guard.
 			return fmt.Errorf("guidance: embedded skill doc %s: %w", p, err)
 		}
-		if err := os.WriteFile(filepath.Join(dst, path.Base(p)), data, 0o644); err != nil {
+		if err := writeFileAtomic(dst, path.Base(p), data); err != nil {
 			return fmt.Errorf("guidance: write skill doc: %w", err)
 		}
 	}
 	return nil
+}
+
+// writeFileAtomic writes data to dir/name via a temp file + rename. Every
+// session create/resume fires InstallSkills in its own goroutine (see
+// installGuidanceSkills in internal/host), all targeting the same shared
+// dir — a plain os.WriteFile lets one goroutine's truncate land between
+// another's open and write, tearing the file. Each writer gets a uniquely
+// named temp file, so concurrent installs of identical embedded content
+// converge safely without needing to serialize them.
+func writeFileAtomic(dir, name string, data []byte) error {
+	tmp, err := os.CreateTemp(dir, name+".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name()) // no-op once renamed
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), filepath.Join(dir, name))
 }
 
 // readPack concatenates embedded docs with blank-line separators. Skipping on

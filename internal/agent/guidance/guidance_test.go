@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/acksell/clank/internal/agent/guidance"
@@ -128,6 +129,64 @@ func TestInstallSkillsExpo(t *testing.T) {
 	// Idempotent: a second install must succeed and leave the files in place.
 	if err := guidance.InstallSkills(dir); err != nil {
 		t.Fatalf("second InstallSkills: %v", err)
+	}
+}
+
+func TestInstallSkillsConcurrent(t *testing.T) {
+	// No t.Parallel(): t.Setenv is incompatible with parallel tests.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := t.TempDir()
+	writePackageJSON(t, dir, `{"dependencies":{"expo":"~51.0.0"}}`)
+
+	skillDir := filepath.Join(home, ".claude", "skills", "expo-dev")
+	files := []string{"SKILL.md", "dependencies.md", "performance.md", "ux.md"}
+
+	// Baseline: a single install gives the expected byte-for-byte content.
+	if err := guidance.InstallSkills(dir); err != nil {
+		t.Fatalf("baseline InstallSkills: %v", err)
+	}
+	want := make(map[string][]byte, len(files))
+	for _, f := range files {
+		data, err := os.ReadFile(filepath.Join(skillDir, f))
+		if err != nil {
+			t.Fatalf("read baseline %s: %v", f, err)
+		}
+		want[f] = data
+	}
+
+	// installGuidanceSkills (internal/host) fires one goroutine per session
+	// create/resume, all targeting this same shared directory — reproduce
+	// that concurrency here rather than mocking it.
+	const installers = 20
+	errs := make(chan error, installers)
+	var wg sync.WaitGroup
+	for i := 0; i < installers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- guidance.InstallSkills(dir)
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("concurrent InstallSkills: %v", err)
+		}
+	}
+
+	// Every file must still match byte-for-byte — a torn or truncated write
+	// from one goroutine's open(O_TRUNC) landing between another's open and
+	// write would corrupt or shorten the content.
+	for _, f := range files {
+		got, err := os.ReadFile(filepath.Join(skillDir, f))
+		if err != nil {
+			t.Fatalf("skill file %s: %v", f, err)
+		}
+		if string(got) != string(want[f]) {
+			t.Errorf("skill file %s corrupted by concurrent installs: got %d bytes, want %d", f, len(got), len(want[f]))
+		}
 	}
 }
 
