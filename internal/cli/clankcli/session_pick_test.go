@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -113,21 +112,12 @@ func TestSessionPickModel_EscCancels(t *testing.T) {
 
 // TestResolveTargetSession_PickerNeedsTTY: --to in a non-interactive
 // context (pipes, scripts, tests) must fail fast pointing at --session,
-// not hang on an invisible picker. Stdin is forced to a pipe rather
-// than relying on the test process's own stdin, which is a real TTY
-// (and would reach the nil client) when tests run in an interactive
-// terminal instead of CI.
+// not hang on an invisible picker. Test processes have no TTY, so the
+// guard trips naturally here.
 func TestResolveTargetSession_PickerNeedsTTY(t *testing.T) {
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer w.Close()
-	orig := os.Stdin
-	os.Stdin = r
-	defer func() { os.Stdin = orig }() // not parallel-safe: mutates process-global stdin
+	t.Parallel()
 
-	_, err = resolveTargetSession(context.Background(), nil, "/p", true, "")
+	_, err := resolveTargetSession(context.Background(), nil, "/p", true, "")
 	if err == nil {
 		t.Fatal("expected a no-TTY error for --to, got nil")
 	}
