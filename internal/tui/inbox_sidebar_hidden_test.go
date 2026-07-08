@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/acksell/clank/internal/config"
@@ -48,5 +49,39 @@ func TestPersistSidebarHidden_RoundTrip(t *testing.T) {
 	}
 	if prefs.SidebarHidden {
 		t.Error("SidebarHidden after persist(false): got true, want false")
+	}
+}
+
+// TestPersistHelpers_ConcurrentDifferentFields_NoClobber pins that
+// concurrent persist helpers touching different Preferences fields never
+// lose each other's write. Every helper must serialize through
+// config.UpdatePreferences: a raw LoadPreferences+SavePreferences pair can
+// load before, and save after, a concurrent updater — silently reverting
+// its write.
+func TestPersistHelpers_ConcurrentDifferentFields_NoClobber(t *testing.T) {
+	// Not t.Parallel: CLANK_DIR is process-global.
+	t.Setenv("CLANK_DIR", t.TempDir())
+	m := &InboxModel{}
+
+	for i := 0; i < 100; i++ {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			persistSidebarHidden(true)
+		}()
+		go func() {
+			defer wg.Done()
+			m.persistSidebarWidthRatio(42)
+		}()
+		wg.Wait()
+
+		prefs, err := config.LoadPreferences()
+		if err != nil {
+			t.Fatalf("iteration %d: LoadPreferences: %v", i, err)
+		}
+		if !prefs.SidebarHidden || prefs.SidebarWidthRatio != 42 {
+			t.Fatalf("iteration %d: concurrent persist helpers clobbered each other: %+v", i, prefs)
+		}
 	}
 }

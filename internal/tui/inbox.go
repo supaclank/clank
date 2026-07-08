@@ -2219,9 +2219,7 @@ func sidebarWidthRatioFromPrefs(prefs config.Preferences) int {
 // the disk write. Receiver is kept for symmetry with other InboxModel
 // methods.
 func (m *InboxModel) persistSidebarWidthRatio(ratio int) {
-	prefs, _ := config.LoadPreferences()
-	prefs.SidebarWidthRatio = ratio
-	_ = config.SavePreferences(prefs)
+	_ = config.UpdatePreferences(func(p *config.Preferences) { p.SidebarWidthRatio = ratio })
 }
 
 // persistSidebarHidden saves the sidebar's open/closed toggle state.
@@ -2236,9 +2234,7 @@ func persistSidebarHidden(hidden bool) {
 // the TUI doesn't block on disk I/O. The snapshot is captured by the
 // main loop so concurrent writes can't race with the save.
 func (m *InboxModel) persistSidebarExpanded(snapshot map[string]bool) {
-	prefs, _ := config.LoadPreferences()
-	prefs.SidebarExpanded = snapshot
-	_ = config.SavePreferences(prefs)
+	_ = config.UpdatePreferences(func(p *config.Preferences) { p.SidebarExpanded = snapshot })
 }
 
 // persistLastSessionForCwd records the session id that was open most
@@ -2250,12 +2246,12 @@ func persistLastSessionForCwd(cwd, sessionID string) {
 	if cwd == "" {
 		return
 	}
-	prefs, _ := config.LoadPreferences()
-	if prefs.LastSessionByCwd == nil {
-		prefs.LastSessionByCwd = map[string]string{}
-	}
-	prefs.LastSessionByCwd[cwd] = sessionID
-	_ = config.SavePreferences(prefs)
+	_ = config.UpdatePreferences(func(p *config.Preferences) {
+		if p.LastSessionByCwd == nil {
+			p.LastSessionByCwd = map[string]string{}
+		}
+		p.LastSessionByCwd[cwd] = sessionID
+	})
 }
 
 // sidebarRenderWidth returns the width allocated to the sidebar (including border).
