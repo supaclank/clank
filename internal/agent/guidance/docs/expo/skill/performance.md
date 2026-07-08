@@ -21,9 +21,8 @@ generalization.
    work). That's a fine price for active feedback or a hero moment — and a waste
    for a permanent idle loop nobody asked for. The question is never "animations
    are bad," it's "is this frame-every-16ms earning its keep right now?" When the
-   answer is no, make it finite, gate it on visibility, or stop it when
-   off-screen/backgrounded/done. (The idle-render test below tells you if a
-   screen is quietly looping.)
+   answer is no, gate it on visibility or stop it when
+   off-screen/backgrounded/done.
 
 2. **Per-frame work is fine — if each frame is cheap and on the right thread.**
    Things that legitimately move every frame (keyboard tracking, scroll-linked
@@ -57,73 +56,53 @@ generalization.
 
 ---
 
-## Worked example: keyboard avoidance
+## Keyboard avoidance, smoothly
 
-Smoothly following the keyboard at 60fps is absolutely doable — plenty of apps do
-it. The decision is *what the content needs* and *how you move it*:
+Following the keyboard is usually the right UX — content that rides up with the
+keyboard feels native, *as long as it's smooth*. Smooth tracking at 60fps is
+absolutely doable; the difference is what each frame of the slide costs:
 
-- **If content should track the keyboard** (text inputs, footers, a composer
-  that rides up with it): drive a **UI-thread translation that follows the inset
-  each frame**. On Android that's a `WindowInsetsAnimation` callback applying a
-  translation; in RN, libraries like `react-native-keyboard-controller` expose
-  worklet keyboard handlers for exactly this; in Compose, animate a
-  `graphicsLayer`/offset or use the inset-consuming modifiers. Cheap per frame →
-  smooth tracking.
-- **If content only needs to clear the keyboard** (e.g. a floating box that just
-  must not be covered, with no need to visually ride the keyboard): animating
-  **once to the settled target** is simpler and does zero per-frame work.
-- **The anti-pattern** (the floating-box bug below): reading the *animating* inset
-  inside the layout/composition path, so the framework recomputes layout and
-  re-runs effects every frame of the slide. That's the jank — and it's true
-  whether you're tracking or clearing.
-
-So: pick tracking vs. clearing based on the UX, then make the per-frame cost a
-transform, not a relayout. Both can be 60fps.
+- **Drive the movement as a UI-thread transform.**
+  `react-native-keyboard-controller` exposes worklet keyboard handlers that
+  update a shared value per frame; map it to a `translateY` in
+  `useAnimatedStyle` and each frame is one cheap transform.
+- **The anti-pattern is routing the animating inset through React state or
+  layout.** Setting state from keyboard events, or letting the keyboard inset
+  drive padding/height, makes the framework relayout (and re-run effects) on
+  every frame of the ~300ms slide — that's the jank, regardless of which
+  component does it.
 
 ---
 
 ## Animations
 
-- **Infinite vs. finite vs. gated** is the main lever (principle #1). An infinite
-  loop is right for ongoing status (a live waveform, a working spinner) and wrong
-  as a permanent ambient effect; in between, a finite or visibility-gated
-  animation often gives the same perceived affordance for a fraction of the cost.
-  It's a UX/cost tradeoff, not a rule — decide per element.
+- **An animation that runs continuously must earn its cost** (principle #1). A
+  continuous loop is right for ongoing status (an active recording indicator, a
+  working spinner) and wrong as a permanent ambient effect. Gate on visibility,
+  stop when done or off-screen — a UX/cost tradeoff decided per element, not a
+  rule.
 - **A worklet animation's smoothness is orthogonal to React re-renders.** It runs
   off shared values on the UI thread, so the owning component can re-render zero or
   a hundred times a second and the motion is identical. Chasing re-renders (memo,
   state colocation) is worth doing for *render cost*, but it is **not** the lever
   for animation *jank* — the lever is UI-thread availability. Prove it with a
-  render-count log before optimizing the wrong thing (one investigation showed a
-  janky waveform was already memoized and never re-rendered per frame; the jitter
-  was pure UI-thread contention).
+  render-count log before optimizing the wrong thing (see the dictation case
+  study: the janky animation was already memoized and never re-rendered per
+  frame; the jitter was pure UI-thread contention).
 - **For a heavy or continuous animation, collapse N animated Views into one Skia
   draw.** N animated `View`s push N view-prop updates through Reanimated's mapper
   onto the UI thread *every frame*; a single `<Canvas>` + one path is one draw.
-  That's *why* a native (Compose/Skia) equivalent stays smooth under load — it does
-  almost no per-frame main-thread work, not because it sits on a faster thread.
-  When an RN animation janks only *under contention* (a list mounting, text
-  streaming beside it), this headroom is usually the fix — match the native
-  approach rather than concluding "RN can't." (40 animated bars → one Skia path
-  took a waveform from "jitters under load" to "buttery.")
+  That's *why* a native equivalent stays smooth under load — it does almost no
+  per-frame main-thread work, not because it sits on a faster thread. When an RN
+  animation janks only *under contention* (something heavy mounting or updating
+  beside it), this headroom is usually the fix — match the native approach rather
+  than concluding "RN can't."
 - **No per-frame allocation in worklets.** A 60fps worklet that allocates — new
   arrays, per-item Skia `Rect`/`RRect` objects, a fresh transform array each frame
   — feeds the UI-runtime GC, which then pauses ~every couple of seconds: a subtle
   but *regular* single-frame skip. Build Skia paths with raw `moveTo`/`lineTo`
   (numbers, no objects), preallocate + mutate, and signal change with a
-  counter/clock rather than a fresh object. (One ~2s skip was ~1000 short-lived
-  Skia objects/sec from building bars as `RRect`s; raw path commands removed it.)
-- **`useEffect`-started animations can silently fail to start on a cold/fast
-  mount** (the animation runtime may not be ready when the screen mounts
-  immediately on a cold launch). If an entrance animation must be reliable, don't
-  hang it on first-frame timing.
-- **Reanimated + Fast Refresh:** an animation-start effect keyed on a stable
-  shared value won't re-run on Fast Refresh, so an already-running animation
-  keeps going and your edit appears to do nothing. **Cold-reload to test
-  animation changes.**
-- **Reanimated lint:** eslint-config-expo flags `.value` writes as forbidden
-  mutations — a false positive for worklets/props; suppress per-line, don't
-  contort the code.
+  counter/clock rather than a fresh object.
 
 ---
 
@@ -172,63 +151,23 @@ version):**
 
 `@react-navigation/native-stack` (what expo-router's `<Stack>` uses) runs the slide
 on the **UI thread**, so it can't stutter from JS — *but it only starts the
-transition after React commits the destination screen.* A heavy mount (e.g. a
-markdown list) therefore reads as **dead air between the tap and the slide**, not as
-a janky slide. So a "slow transition" is almost always a slow *commit* — profile the
-commit (see toolkit), don't reach for the animation config.
+transition after React commits the destination screen.* A heavy mount therefore
+reads as **dead air between the tap and the slide**, not as a janky slide.
+Consequences (defaults to challenge, not laws):
 
-- **Keep the first commit cheap; defer below-the-fold by one frame.** Render the
-  shell (header, composer, a placeholder) first and mount the heavy list on the next
-  frame, so the slide starts immediately and the content fills in one follow-up
-  commit. Use **`requestAnimationFrame`, not `InteractionManager.runAfterInteractions`**:
-  the latter waits for the *whole* transition to finish (content lands ~300ms late);
-  rAF lands it ~a frame in, during the slide.
-- **…but render enough to cover the viewport in that commit.** Deferring + too small
-  an `initialNumToRender` gives a two-step "a few rows, then the rest" flash. Size the
-  initial batch to fill the screen so it paints in one shot.
+- **Don't lean on stack transitions for perceived smoothness.** If a smoothly
+  animated move between surfaces is the point, `react-native-pager-view` drives
+  the platform's own native paging — its motion doesn't wait on a JS commit the
+  way a stack push does. And often the best-feeling route change is simply an
+  immediate one with no animation, rather than a delayed slide.
+- **Make the destination's first commit cheap.** Render a shell immediately and
+  fill heavy content in a follow-up frame — enough of it to cover the viewport,
+  or you trade dead air for a two-step flash.
 - **Cache-first the destination.** A detail screen usually re-fetches what the list
   already holds. Seed the detail query from the list cache (React Query `initialData`
-  keyed off the list query) and render what you already know (title, the opening
-  content) immediately; let the fetch reconcile in the background. This decouples
-  *perceived* nav speed from network latency — the screen is never blank on a
-  round-trip.
-- **Predictive back (Android):** set `android:enableOnBackInvokedCallback="false"` via a
-  config plugin (`android/` is CNG). React Navigation does not yet fully support
-  Android's predictive back gesture API — opting in (`true`) while the navigator can't
-  drive the seekable transition leaves the system back gesture misbehaving. Flip to
-  `true` the day react-native-screens + React Navigation ship predictive-back support.
-
----
-
-## Profiling toolkit (Android, on-device)
-
-- **Frame stats:** `adb shell dumpsys gfxinfo <pkg> reset`, drive the
-  interaction, read back Janky %, 50/90/95/99th percentiles, and GPU vs. total.
-  **Low GPU time + high frame time ⇒ CPU/UI-thread bound** (the recomposition/JS
-  signature, not graphics).
-- **Idle-render test:** `gfxinfo … reset`, leave the screen *untouched* ~10s,
-  read *Total frames rendered*. **~0 = healthy** (render-on-demand); a steady
-  ~60/s means a continuous loop is running — decide if it's earning it
-  (principle #1).
-- **Animation detector:** two screenshots ~400ms apart; byte-identical ⇒ nothing
-  is animating (handy to tell "fixed" from "never started").
-- **Isolate + verify:** one variable per run; confirm it took effect before
-  believing the number.
-
-**Diagnosing input/interaction latency (taps that feel delayed before *anything* happens):**
-- **Instrument the boundaries, `__DEV__`-only.** A tap→first-commit timer (around
-  `router.push` and a destination `useLayoutEffect`) localizes "dead air" to the JS
-  commit; per-request timing in the API client localizes it to the network. These
-  **vanish in a release build** (dev-gated) — expected, not a bug.
-- **gfxinfo says it outright:** `High input latency` + `Slow UI thread` + a trivial GPU
-  percentile (~3ms) ⇒ CPU/UI-thread bound. Input is waiting on a busy thread, not the GPU.
-- **Measure the endpoint the UI actually waits on, not a health check.** A `/ping` is a
-  no-op (and may 401); the latency that matters lives in the auth'd endpoints that gate
-  a screen.
-- **Beware measurement artifacts.** A wall-clock timer around `await` captures whatever
-  blocked the JS thread before the continuation ran — an in-memory wait can read as
-  ~130ms purely because the thread was mid-commit. The number is real; the
-  *attribution* may not be.
+  keyed off the list query) and render what you already know immediately; let the
+  fetch reconcile in the background. Perceived navigation speed is mostly commit
+  cost + cache policy, not animation config.
 
 ---
 
@@ -288,28 +227,12 @@ multiplier. No ratio, no verdict.**
   unique marker you just added (a small JSON `TransformError` body means it isn't
   compiling). This single check saves long detours where "measurements" were of a
   frozen bundle.
-- **Cold-reload, not Fast Refresh, to test animation changes** (see above).
 
 ---
 
 ## Case studies
 
 > The concrete ground truth. Keep each to: symptom → root cause → fix → result.
-
-### Floating prompt-box keyboard jank
-- **Symptom:** opening the keyboard with a floating box visible was consistently
-  laggy.
-- **Root cause:** the box read the *animating* `WindowInsets.ime` inset inside
-  `BoxWithConstraints` composition, so every frame of the ~300ms slide recomputed
-  layout and re-fired two coroutine effects (a `snapTo` + a spring), ~18
-  cancel/relaunch cycles per open.
-- **Fix:** this box only needs to *clear* the keyboard (not ride it), so it now
-  reads the *settled* `WindowInsets.imeAnimationTarget`, keeps resting `bounds`
-  independent of the inset, and lifts/restores with one spring (remembering the
-  pre-keyboard position so dismiss returns it home). For content that needed to
-  *track* the keyboard you'd have driven a per-frame UI-thread translation instead.
-- **Result:** 95th-pct frame time 73ms → 44ms, jank 12.9% → 7.3% (debug build);
-  visibly smooth.
 
 ### "Shake to open" hint heat
 - **Symptom:** the device warmed up just sitting on a tutorial page.
@@ -318,7 +241,7 @@ multiplier. No ratio, no verdict.**
   pulse not running = **0** idle frames; ~587 frames/10s only with the pulse
   animating.) The continuous cost wasn't earning much here.
 - **Fix:** make the glyph static (the label already conveys the affordance). A
-  finite or gated pulse would also have worked; the call was that the effect
+  visibility-gated pulse would also have worked; the call was that the effect
   wasn't worth any continuous cost on a screen you sit and read.
 - **Result:** idle render → 0 frames.
 

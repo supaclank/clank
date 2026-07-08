@@ -45,8 +45,11 @@ func TestClaudeBackendManagerCreateBackend(t *testing.T) {
 // installGuidanceSkills runs off the request path (fire-and-forget) so
 // CreateBackend doesn't block on it; this pins that the skill files still
 // land on disk shortly after, i.e. the async wiring didn't drop the work.
+// HOME is overridden (skills install to ~/.claude/skills) so the test never
+// writes into the developer's real home — which also means no t.Parallel().
 func TestClaudeBackendManagerCreateBackend_InstallsGuidanceSkillsAsync(t *testing.T) {
-	t.Parallel()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	mgr := host.NewClaudeBackendManager()
 	defer mgr.Shutdown()
 
@@ -59,7 +62,7 @@ func TestClaudeBackendManagerCreateBackend_InstallsGuidanceSkillsAsync(t *testin
 		t.Fatalf("CreateBackend: %v", err)
 	}
 
-	skillPath := filepath.Join(dir, ".claude", "skills", "expo-dev", "SKILL.md")
+	skillPath := filepath.Join(home, ".claude", "skills", "expo-dev", "SKILL.md")
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		if _, err := os.Stat(skillPath); err == nil {

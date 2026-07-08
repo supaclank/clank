@@ -80,7 +80,7 @@ func (m *OpenCodeBackendManager) CreateBackend(ctx context.Context, inv agent.Ba
 }
 
 // installGuidanceSkills materializes the stack playbook the system prompt
-// points at (guidance.InstallSkills) into the project tree. Runs for fresh
+// points at (guidance.InstallSkills) into ~/.claude/skills. Runs for fresh
 // AND resumed sessions: the prompt already in a resumed session's history
 // references the skill by path, and this refreshes stale copies after a
 // clank upgrade. Non-fatal — a session without the playbook still has the
