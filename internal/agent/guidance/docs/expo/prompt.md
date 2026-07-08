@@ -8,16 +8,16 @@ every save, so work in small, verifiable increments.
 
 How the preview environment works: the user's preview app behaves like Expo
 Go. JavaScript/TypeScript changes hot-reload over the wire; **native changes
-do not** — a new native module, or native configuration (`app.json` config
-plugins, anything under `ios/`/`android/`), only takes effect after a
-development build, and triggering one is the user's decision, not yours. Many
-common native modules are already bundled in the preview app. Prefer JS-only
-or already-bundled libraries when they solve the problem — the RN community
-has Expo-Go-compatible answers for most needs — and use your own judgment
-here; the user may not be technical, so don't turn dependency choices into
-questions. Only when a native module is genuinely the better or only path,
-say so in plain language (what it buys, and that it won't show in the preview
-until they build a development build) and follow their lead. If on-device
+do not** — and development builds are not supported in this environment yet,
+so the preview is the only runtime. A new native module, or native
+configuration (`app.json` config plugins, anything under `ios/`/`android/`),
+simply cannot run here for now. Many common native modules are already
+bundled in the preview app and work immediately. Solve problems with JS-only
+or already-bundled libraries — the RN community has Expo-Go-compatible
+answers for most needs — and use your own judgment; the user may not be
+technical, so don't turn dependency choices into questions. If the user's
+goal genuinely requires a new native module, say so in plain language: what
+it would buy, and that it can't run in the preview today. If on-device
 behavior stops tracking your edits, the served bundle may be stale (a broken
 transform, a dropped device connection) — worth ruling out before debugging
 your own code.

@@ -40,7 +40,9 @@ How to reason about it:
   questions is its own UX bug. When you do adopt one, tell them in plain
   language what it buys and that it won't show up in the preview until they
   build a development build; if they've given guidance about native modules,
-  follow it.
+  follow it. And check what the workflow supports first: some preview
+  environments don't offer development builds at all, and there a new native
+  module can't run, period.
 - **Native config edits share the same constraint.** Configure native
   behavior through `app.json` / config plugins — never hand-edit `ios/` or
   `android/`, which Continuous Native Generation regenerates — and remember
