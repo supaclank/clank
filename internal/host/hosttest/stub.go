@@ -88,12 +88,17 @@ type StubBackend struct {
 // test goroutines that race the service's Cleanup don't panic on
 // send-to-closed-channel (and don't trip the race detector).
 func (b *StubBackend) PushEvent(evt agent.Event) {
-	select {
-	case <-b.done:
+	// stopped and pendingPushes.Add must be guarded by the same lock
+	// Stop uses around close(done)+Wait, otherwise Add can race with
+	// (or follow) a Wait that already returned on a zero counter.
+	b.mu.Lock()
+	if b.stopped {
+		b.mu.Unlock()
 		return
-	default:
 	}
 	b.pendingPushes.Add(1)
+	b.mu.Unlock()
+
 	defer b.pendingPushes.Done()
 	select {
 	case b.events <- evt:
@@ -196,15 +201,13 @@ func (b *StubBackend) Abort(context.Context) error {
 
 func (b *StubBackend) Stop() error {
 	b.stopOnce.Do(func() {
+		// stopped and close(done) happen under mu so PushEvent can
+		// never call pendingPushes.Add after this Wait has started.
 		b.mu.Lock()
 		b.stopped = true
-		b.mu.Unlock()
-		// Close done first so any PushEvent that hasn't entered the
-		// send select bails out via its preflight check. Wait for
-		// any push that's already past the preflight to finish
-		// before closing events — that's the only safe way to
-		// guarantee no concurrent send.
 		close(b.done)
+		b.mu.Unlock()
+
 		b.pendingPushes.Wait()
 		close(b.events)
 	})
