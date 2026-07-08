@@ -14,7 +14,6 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/config"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/host"
 )
@@ -107,7 +106,7 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	// watch it on your phone. If not, no session is created here — the
 	// phone creates one (this folder as the GitRef, the first message as
 	// the prompt) when you start talking in the preview overlay.
-	bt, err := resolveBackend(backend)
+	bt, err := resolveBackend(backend, os.Stderr)
 	if err != nil {
 		return err
 	}
@@ -144,33 +143,6 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	<-sigCtx.Done()
 	fmt.Println("\nShutting down preview…")
 	return nil
-}
-
-func resolveProjectDir(projectDir string) (string, error) {
-	if projectDir == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("get working directory: %w", err)
-		}
-		projectDir = cwd
-	}
-	abs, err := filepath.Abs(projectDir)
-	if err != nil {
-		return "", fmt.Errorf("resolve project dir %q: %w", projectDir, err)
-	}
-	return abs, nil
-}
-
-func resolveBackend(backend string) (agent.BackendType, error) {
-	if backend != "" {
-		return agent.ParseBackend(backend)
-	}
-	prefs, _ := config.LoadPreferences()
-	resolved, err := agent.ResolveBackendPreference(prefs.DefaultBackend)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: %v; using %s\n", err, resolved)
-	}
-	return resolved, nil
 }
 
 // stopLocalDaemon sends SIGINT to the running daemon (graceful shutdown).

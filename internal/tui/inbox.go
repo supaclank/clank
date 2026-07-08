@@ -2240,18 +2240,9 @@ func (m *InboxModel) persistSidebarExpanded(snapshot map[string]bool) {
 // persistLastSessionForCwd records the session id that was open most
 // recently from this cwd. Fire-and-forget; failures are silently
 // ignored — "restore the last session" is a convenience, not a
-// correctness guarantee. Empty cwd skips persistence (would conflate
-// every weird launch context under one key).
+// correctness guarantee.
 func persistLastSessionForCwd(cwd, sessionID string) {
-	if cwd == "" {
-		return
-	}
-	_ = config.UpdatePreferences(func(p *config.Preferences) {
-		if p.LastSessionByCwd == nil {
-			p.LastSessionByCwd = map[string]string{}
-		}
-		p.LastSessionByCwd[cwd] = sessionID
-	})
+	_ = config.SetLastSessionForCwd(cwd, sessionID)
 }
 
 // sidebarRenderWidth returns the width allocated to the sidebar (including border).

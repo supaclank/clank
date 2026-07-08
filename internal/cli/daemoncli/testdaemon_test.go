@@ -17,6 +17,7 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/host"
+	"github.com/acksell/clank/internal/host/hosttest"
 	hostmux "github.com/acksell/clank/internal/host/mux"
 	hoststore "github.com/acksell/clank/internal/host/store"
 	"github.com/acksell/clank/pkg/auth"
@@ -30,7 +31,7 @@ import (
 type testDaemon struct {
 	Client  *daemonclient.Client
 	Service *host.Service
-	Backend *stubBackendManager
+	Backend *hosttest.StubBackendManager
 	Store   *hoststore.Store
 	HostURL string
 	DBPath  string
@@ -49,7 +50,7 @@ func newTestDaemon(t *testing.T) *testDaemon {
 func newTestDaemonAt(t *testing.T, dbPath string) *testDaemon {
 	t.Helper()
 
-	stub := &stubBackendManager{}
+	stub := &hosttest.StubBackendManager{}
 
 	hs, err := hoststore.Open(dbPath)
 	if err != nil {
@@ -93,11 +94,11 @@ func newTestDaemonAt(t *testing.T, dbPath string) *testDaemon {
 
 // CreateOpenCodeSession is the one-liner most tests need: creates a
 // session through the daemonclient using a temp git repo. Returns the
-// SessionInfo and the just-attached stubBackend so the test can drive
+// SessionInfo and the just-attached hosttest.StubBackend so the test can drive
 // it directly (push events, observe Send calls, etc).
-func (td *testDaemon) CreateOpenCodeSession(t *testing.T, prompt string) (*agent.SessionInfo, *stubBackend) {
+func (td *testDaemon) CreateOpenCodeSession(t *testing.T, prompt string) (*agent.SessionInfo, *hosttest.StubBackend) {
 	t.Helper()
-	repo := initTestGitRepo(t)
+	repo := hosttest.InitGitRepo(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -109,7 +110,7 @@ func (td *testDaemon) CreateOpenCodeSession(t *testing.T, prompt string) (*agent
 	if err != nil {
 		t.Fatalf("Sessions().Create: %v", err)
 	}
-	b := td.Backend.last
+	b := td.Backend.Last()
 	if b == nil {
 		t.Fatal("backend not registered after Create")
 	}

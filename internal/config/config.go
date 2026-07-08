@@ -461,6 +461,21 @@ func UpdatePreferences(mutate func(*Preferences)) error {
 	return SavePreferences(prefs)
 }
 
+// SetLastSessionForCwd records the most recently active session for a cwd,
+// consumed by the TUI's "reopen where I left off" restore on startup.
+// No-op for empty cwd (would conflate unrelated launch contexts).
+func SetLastSessionForCwd(cwd, sessionID string) error {
+	if cwd == "" {
+		return nil
+	}
+	return UpdatePreferences(func(p *Preferences) {
+		if p.LastSessionByCwd == nil {
+			p.LastSessionByCwd = map[string]string{}
+		}
+		p.LastSessionByCwd[cwd] = sessionID
+	})
+}
+
 // SavePreferences writes preferences to disk, creating the config directory
 // if necessary.
 func SavePreferences(prefs Preferences) error {
