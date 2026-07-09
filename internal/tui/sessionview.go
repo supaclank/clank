@@ -479,11 +479,6 @@ func (m *SessionViewModel) SetStandalone(v bool) {
 	m.standalone = v
 }
 
-// SetWorktreeBranch sets the git worktree branch for the session (used in composing mode).
-func (m *SessionViewModel) SetWorktreeBranch(branch string) {
-	m.worktreeBranch = branch
-}
-
 // DraftText returns the current unsent text in the input textarea.
 func (m *SessionViewModel) DraftText() string {
 	return m.input.Value()
