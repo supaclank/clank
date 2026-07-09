@@ -56,6 +56,20 @@ close, no terminal frame), `internal/host/mux/sessions.go` (`handleSessionEvents
 `event: end` on shutdown); `…/session/SessionEventStream.kt` (`"end"` branch — correct for the
 per-session stream). **Conformance:** `CONF-NO-END`.
 
+### [INV-VIEWER-VIS-001] (MUST) `viewer=1` presence tracks visibility, not connectivity
+A stream opened with `viewer=1` ([EVT-004b]) tells the host "a human is looking at this
+session right now", and the host suppresses "agent finished" pushes while it is open. The
+client MUST therefore close that stream (or reconnect without the param) as soon as the view
+stops being visible — app backgrounded, navigation away, overlay detached — rather than
+letting the socket linger.
+**Why:** the host releases presence the moment the connection closes, but it cannot tell
+"socket alive, human gone" apart from "human watching"; Android keeps background sockets
+alive for minutes, and a lingering viewer swallows exactly the completion push the user
+backgrounded to wait for.
+**Golden:** `internal/host/mux/sessions_events_viewer_test.go` (release-on-disconnect),
+`internal/host/notifier.go` (`startNotifier`: suppression is skipped the moment no viewer
+stream is open).
+
 ### [INV-STREAM-SUPERVISE-001] (MUST) The stream reconnects forever; a dead stream is never accepted
 Supervise the subscription: **every** termination path schedules a reconnect with capped
 backoff, indefinitely, until deliberate teardown ([EVT-006], [NFR-REL-001]). Resubscribe on

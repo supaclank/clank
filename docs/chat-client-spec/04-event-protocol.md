@@ -42,8 +42,18 @@ this is the wire.
   viewed sessions — the finish is already on screen. Machine consumers (relays, log tails,
   background mirrors) MUST NOT pass `viewer=1`: a phantom viewer silently swallows
   notifications the user wanted. Omitting the param is always safe — it only means pushes
-  keep flowing. **Golden:** `internal/host/mux/sessions.go` (`handleSessionEvents`: viewer
-  registration), `internal/host/notifier.go` (`startNotifier`: idle-push suppression).
+  keep flowing.
+  A client that passes `viewer=1` MUST tie the stream to **visibility, not connectivity**: when
+  the view stops being visible (app backgrounded, screen navigated away, overlay detached) it
+  MUST close the stream — or reconnect without the param — even though the socket could stay
+  open. **Why:** the host releases presence on disconnect (Go's server cancels the request
+  context the moment the peer closes), but it cannot distinguish "socket alive, human gone";
+  Android in particular keeps background sockets alive for minutes, and a lingering viewer
+  suppresses exactly the "notify me when it's done" push the user backgrounded for. See
+  [INV-VIEWER-VIS-001](08-invariants.md). **Golden:** `internal/host/mux/sessions.go`
+  (`handleSessionEvents`: viewer registration), `internal/host/notifier.go` (`startNotifier`:
+  idle-push suppression), `internal/host/mux/sessions_events_viewer_test.go`
+  (release-on-disconnect).
 - **[EVT-005] (MUST)** On the **global** stream a client MUST filter events to the session(s)
   it cares about by `session_id`, **except** `session.create` and `session.delete`, which are
   session-list events and MUST be accepted regardless of the currently-open session. **Why:**
