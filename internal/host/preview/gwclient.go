@@ -1,8 +1,9 @@
 // GWClient is the sprite-side HTTP client for the gateway's
 // /webhooks/preview/{register,revoke} endpoints. Manager calls
-// Register after Metro reaches Ready and Revoke on Stop/Shutdown
-// /reap so the gateway's preview_routes table reflects sprite
-// reality.
+// Register BEFORE spawn (Metro needs the resulting public URL in
+// EXPO_PACKAGER_PROXY_URL at startup, so the route briefly exists
+// while nothing listens yet) and Revoke on Stop/Shutdown/reap so the
+// gateway's preview_routes table reflects sprite reality.
 //
 // Bearer auth: the gateway authenticates via the per-host
 // notifier_token (same one used for /webhooks/notifications). One

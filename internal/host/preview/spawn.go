@@ -67,6 +67,10 @@ type spawnRequest struct {
 	// or when ensurePreviewShim failed). See inject.go + clank-metro-shim.js.
 	ShimRequirePath string
 	RuntimePath     string
+
+	// Log receives lifecycle lines (ready flip / probe timeout) from
+	// the readiness goroutine. Optional; nil drops the lines.
+	Log func(format string, v ...any)
 }
 
 // spawn launches the dev server described by req and returns a
@@ -114,6 +118,7 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 		state:       StateStarting,
 		startedAt:   time.Now(),
 		lastTouch:   time.Now(),
+		logf:        req.Log,
 		logs:        logs,
 		pid:         cmd.Process.Pid,
 		pgid:        cmd.Process.Pid, // Setpgid: true → pgid == pid
@@ -286,10 +291,18 @@ func probeReady(r *running, probe ReadyProbe, timeout time.Duration) {
 	for {
 		if probeOnce(client, url, expect) {
 			r.mu.Lock()
-			if r.state == StateStarting {
+			flipped := r.state == StateStarting
+			if flipped {
 				r.state = StateReady
 			}
 			r.mu.Unlock()
+			if flipped {
+				// Spawn→ready duration + I/O pressure: correlates
+				// "was the server actually up, and how loaded was the
+				// host" against gateway-side dial timings.
+				r.printf("preview: %s ready on port %d in %s%s",
+					r.serviceName, r.port, time.Since(r.startedAt).Round(time.Millisecond), ioPressureSuffix())
+			}
 			return
 		}
 		select {
@@ -298,11 +311,16 @@ func probeReady(r *running, probe ReadyProbe, timeout time.Duration) {
 		case <-ticker.C:
 			if time.Now().After(deadline) {
 				r.mu.Lock()
-				if r.state == StateStarting {
+				failed := r.state == StateStarting
+				if failed {
 					r.state = StateFailed
 					r.lastErr = fmt.Sprintf("readiness probe %s did not return expected response within %s", url, timeout)
 				}
 				r.mu.Unlock()
+				if failed {
+					r.printf("preview: %s readiness probe timed out after %s on port %d%s",
+						r.serviceName, timeout, r.port, ioPressureSuffix())
+				}
 				// Tear down the still-starting child via the spawn
 				// context so the wait goroutine reaps it. Don't call
 				// stopProcessGroup here — Manager.Stop is the canonical

@@ -44,6 +44,10 @@ const (
 	// sprite surfaces as a fast 502 (the client can then report
 	// "offline" quickly) instead of a long hang. Cold-wake headroom kept.
 	defaultDialTimeout = 5 * time.Second
+	// defaultSlowDialWarn flags dials that succeeded but ate most of
+	// the DialTimeout budget — near-miss evidence for diagnosing edge/
+	// tunnel latency without waiting for a hard failure.
+	defaultSlowDialWarn = 1 * time.Second
 )
 
 // ErrUninitialized is returned by RoundTrip when a Tunnel is used
@@ -68,16 +72,28 @@ type Config struct {
 	// returned error matches stdlib net dial-timeout semantics so
 	// httputil.ReverseProxy's ErrorHandler can do its 502 dance.
 	DialTimeout time.Duration
+
+	// Log, when set, receives one line per successful-but-slow dial
+	// (≥ SlowDialWarn). Failed dials need no logger — their error
+	// carries the elapsed time and surfaces through the proxy's
+	// ErrorHandler log. Signature matches (*log.Logger).Printf.
+	Log func(format string, v ...any)
+
+	// SlowDialWarn is the duration at or above which a successful
+	// dial is logged via Log. Zero falls back to defaultSlowDialWarn.
+	SlowDialWarn time.Duration
 }
 
 // Tunnel is an http.RoundTripper that dials every request through
 // Provisioner.OpenInternalConn(hostID, port). Safe for concurrent
 // use by multiple goroutines (stdlib *http.Transport semantics).
 type Tunnel struct {
-	prov   provisioner.Provisioner
-	hostID string
-	port   int
-	rt     atomic.Pointer[http.Transport]
+	prov     provisioner.Provisioner
+	hostID   string
+	port     int
+	log      func(format string, v ...any)
+	slowWarn time.Duration
+	rt       atomic.Pointer[http.Transport]
 }
 
 // New constructs a Tunnel ready to receive requests. Returns an
@@ -103,8 +119,11 @@ func New(prov provisioner.Provisioner, hostID string, port int, cfg Config) (*Tu
 	if cfg.DialTimeout <= 0 {
 		cfg.DialTimeout = defaultDialTimeout
 	}
+	if cfg.SlowDialWarn <= 0 {
+		cfg.SlowDialWarn = defaultSlowDialWarn
+	}
 
-	t := &Tunnel{prov: prov, hostID: hostID, port: port}
+	t := &Tunnel{prov: prov, hostID: hostID, port: port, log: cfg.Log, slowWarn: cfg.SlowDialWarn}
 	t.rt.Store(&http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			// Override the inbound addr (which the stdlib derives from
@@ -114,7 +133,22 @@ func New(prov provisioner.Provisioner, hostID string, port int, cfg Config) (*Tu
 			// Provisioner respects ctx for cancellation.
 			dialCtx, cancel := context.WithTimeout(ctx, cfg.DialTimeout)
 			defer cancel()
-			return t.prov.OpenInternalConn(dialCtx, t.hostID, t.port)
+			// Timing evidence for diagnosing tunnel-establishment
+			// latency (gateway → provider edge → host agent): failures
+			// carry elapsed in the error (%w keeps the cause unwrappable
+			// for the ErrorHandler's 502 path); slow successes go to Log.
+			start := time.Now()
+			conn, err := t.prov.OpenInternalConn(dialCtx, t.hostID, t.port)
+			elapsed := time.Since(start).Round(time.Millisecond)
+			if err != nil {
+				return nil, fmt.Errorf("previewtunnel: dial host %s port %d failed after %s (budget %s): %w",
+					t.hostID, t.port, elapsed, cfg.DialTimeout, err)
+			}
+			if t.log != nil && elapsed >= t.slowWarn {
+				t.log("previewtunnel: slow dial host %s port %d took %s (budget %s)",
+					t.hostID, t.port, elapsed, cfg.DialTimeout)
+			}
+			return conn, nil
 		},
 		MaxIdleConns:      cfg.MaxIdleConns,
 		IdleConnTimeout:   cfg.IdleConnTimeout,

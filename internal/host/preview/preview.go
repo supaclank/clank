@@ -109,6 +109,10 @@ type running struct {
 	startedAt   time.Time
 	lastTouch   time.Time
 
+	// logf receives lifecycle lines (ready flip / probe timeout) from
+	// the background readiness goroutine. Nil-safe via printf.
+	logf func(format string, v ...any)
+
 	// Gateway-registered route fields. Populated after a successful
 	// GWClient.Register; empty when the gateway isn't wired (laptop
 	// dev) or registration failed (logged + tolerated).
@@ -132,6 +136,14 @@ type running struct {
 	// CommandContext linkage if it's still alive when the manager is
 	// asked to stop).
 	cancel func()
+}
+
+// printf forwards to logf when wired; drops the line otherwise (tests
+// and laptop paths that spawn without a logger).
+func (r *running) printf(format string, v ...any) {
+	if r.logf != nil {
+		r.logf(format, v...)
+	}
 }
 
 // snapshot copies the externally-visible fields under r.mu so callers

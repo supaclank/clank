@@ -50,6 +50,7 @@ func (g *Gateway) previewSubdomainHandler(fallback http.Handler) http.Handler {
 		signingKey: g.cfg.PreviewSigningKey,
 		now:        time.Now,
 		log:        g.log,
+		lastProbe:  make(map[string]time.Time),
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, ok := tokens.ParseHost(r.Host, state.root)
@@ -74,6 +75,11 @@ type previewState struct {
 	signingKey []byte
 	now        func() time.Time
 	log        logger
+
+	// lastProbe rate-limits the async front-door probe fired on
+	// upstream errors (host_id → last probe time). See preview_probe.go.
+	probeMu   sync.Mutex
+	lastProbe map[string]time.Time
 }
 
 // logger is the subset of *log.Logger that previewState uses. Keeps
@@ -223,7 +229,9 @@ func (s *previewState) tunnelFor(route routestore.Route) (*previewtunnel.Tunnel,
 	if v, ok := s.pool.Load(key); ok {
 		return v.(*previewtunnel.Tunnel), nil
 	}
-	tun, err := previewtunnel.New(s.gw.cfg.Provisioner, route.HostID, route.InternalPort, previewtunnel.Config{})
+	tun, err := previewtunnel.New(s.gw.cfg.Provisioner, route.HostID, route.InternalPort, previewtunnel.Config{
+		Log: s.log.Printf, // surface slow-but-successful dials
+	})
 	if err != nil {
 		return nil, fmt.Errorf("preview-tunnel: %w", err)
 	}
@@ -241,7 +249,7 @@ func (s *previewState) tunnelFor(route routestore.Route) (*previewtunnel.Tunnel,
 // request gets its own *httputil.ReverseProxy because the Director
 // closes over `route` for the upstream URL; the Tunnel (which holds
 // the connection pool) is shared.
-func (s *previewState) serveProxy(w http.ResponseWriter, r *http.Request, tun *previewtunnel.Tunnel, _ routestore.Route) {
+func (s *previewState) serveProxy(w http.ResponseWriter, r *http.Request, tun *previewtunnel.Tunnel, route routestore.Route) {
 	// upstream's Scheme/Host are placeholders — the Tunnel's
 	// DialContext ignores them. We still need a valid URL for
 	// ReverseProxy.Director to compose against.
@@ -281,7 +289,13 @@ func (s *previewState) serveProxy(w http.ResponseWriter, r *http.Request, tun *p
 		// upgrade rides on this Transport unchanged.
 		FlushInterval: -1,
 		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
-			s.log.Printf("preview proxy: upstream error on %s %s: %v", req.Method, req.URL.Path, err)
+			s.log.Printf("preview proxy: upstream error on %s %s (host %s port %d worktree %s): %v",
+				req.Method, req.URL.Path, route.HostID, route.InternalPort, route.WorktreeID, err)
+			// Differential diagnosis, async: if the host's front door
+			// answers while the tunnel dial just failed, the fault is in
+			// the provider's proxy path, not the host — exactly the
+			// evidence an infra-support ticket needs.
+			s.probeHostAfterUpstreamError(route)
 			http.Error(rw, "preview_upstream_error", http.StatusBadGateway)
 		},
 	}

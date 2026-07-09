@@ -220,6 +220,7 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 		ReadyTimeout:    readyTimeoutOverride,
 		ShimRequirePath: shimRequirePath,
 		RuntimePath:     runtimePath,
+		Log:             m.log.Printf,
 	})
 	if err != nil {
 		// Spawn failed — tear down the orphan route the gateway just
@@ -276,7 +277,7 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 	// mid-write. A start that never comes up settles as StateFailed and is
 	// evicted lazily by the next Start's stale-entry check above (its
 	// gateway token expires on its own TTL).
-	m.log.Printf("preview: starting %s on port %d for %s/%s", r.spec.Kind, r.port, worktreeID, serviceName)
+	m.log.Printf("preview: starting %s on port %d for %s/%s%s", r.spec.Kind, r.port, worktreeID, serviceName, ioPressureSuffix())
 	return r.snapshot(), nil
 }
 
