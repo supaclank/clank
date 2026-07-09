@@ -42,6 +42,7 @@ type CreatePRResult struct {
 	HeadBranch string `json:"head_branch"`
 	BaseBranch string `json:"base_branch"`
 	HeadSHA    string `json:"head_sha"`
+	Committed  bool   `json:"committed"` // auto-committed uncommitted work before pushing
 }
 
 // PreviewOriginState classifies what we know about the worktree's
@@ -90,9 +91,9 @@ var (
 	// field. 400.
 	ErrPRMissingField = errors.New("pr request missing required field")
 
-	// ErrNothingToPush fires when the worktree's branch is at or
-	// behind the base — no commits to PR. 400; client UI shows
-	// "nothing to push yet" hint.
+	// ErrNothingToPush fires when the worktree has no uncommitted
+	// work and its branch is at or behind the base — nothing to PR.
+	// 400; client UI shows "nothing to push yet" hint.
 	ErrNothingToPush = errors.New("nothing to push: branch is up to date with base")
 
 	// ErrNoOriginRemote fires when the worktree has no `origin`
@@ -116,8 +117,9 @@ var (
 	ErrBaseRefUnreachable = errors.New("could not fetch base branch from remote — cannot safely verify common history")
 )
 
-// CreatePR pushes the worktree's current branch and opens a pull
-// request against base. Errors surface verbatim — the mux handler
+// CreatePR commits any uncommitted work (same auto-commit as
+// PushToRemote), pushes the worktree's current branch, and opens a
+// pull request against base. Errors surface verbatim — the mux handler
 // classifies them into HTTP statuses; the github package's typed
 // errors (ErrPRAlreadyExists, ErrPushNotFastForward, etc.) pass
 // through.
@@ -154,11 +156,6 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 	}
 	if branch == "HEAD" || branch == req.Base {
 		return CreatePRResult{}, fmt.Errorf("%w: worktree is on %q", ErrNothingToPush, branch)
-	}
-
-	headSHA, err := git.HeadCommit(workdir)
-	if err != nil {
-		return CreatePRResult{}, fmt.Errorf("head commit: %w", err)
 	}
 
 	remoteURL, err := git.RemoteURL(workdir, "origin")
@@ -202,6 +199,9 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 	// content-addresses everything), so an empty merge-base is a
 	// near-certain wrong-destination signal.
 	//
+	// Checked before the auto-commit below so a misconfigured origin
+	// fails without mutating the worktree's history.
+	//
 	// git.Fetch above writes to FETCH_HEAD (and to refs/remotes/origin/<base>
 	// if origin happens to be configured to map there). We check
 	// against FETCH_HEAD specifically — it's always populated by
@@ -213,6 +213,22 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 	}
 	if mb == "" {
 		return CreatePRResult{}, ErrNoCommonAncestor
+	}
+
+	// Auto-commit uncommitted work, same as PushToRemote — "open a PR"
+	// implies "ship what's in the worktree", and without this the
+	// commits-ahead check below rejects worktrees whose only work is
+	// still uncommitted. Runs only after the origin/fetch/ancestor
+	// checks above so a doomed CreatePR call never mutates local
+	// history.
+	committed, err := commitAllIfDirty(workdir, branch)
+	if err != nil {
+		return CreatePRResult{}, err
+	}
+
+	headSHA, err := git.HeadCommit(workdir)
+	if err != nil {
+		return CreatePRResult{}, fmt.Errorf("head commit: %w", err)
 	}
 
 	// Verify there's actually something to push. After the fetch
@@ -256,6 +272,7 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 		HeadBranch: branch,
 		BaseBranch: req.Base,
 		HeadSHA:    headSHA,
+		Committed:  committed,
 	}, nil
 }
 

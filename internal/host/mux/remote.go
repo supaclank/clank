@@ -131,6 +131,10 @@ func writeRemoteError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusConflict, errResp{Code: "remote_diverged", Error: err.Error()})
 	case errors.Is(err, host.ErrNotMerging):
 		writeJSON(w, http.StatusConflict, errResp{Code: "not_merging", Error: err.Error()})
+	case errors.Is(err, host.ErrNoCommonAncestor):
+		writeJSON(w, http.StatusConflict, errResp{Code: "no_common_ancestor", Error: err.Error()})
+	case errors.Is(err, host.ErrBaseRefUnreachable):
+		writeJSON(w, http.StatusBadGateway, errResp{Code: "base_ref_unreachable", Error: err.Error()})
 	case errors.Is(err, git.ErrPushRepoNotFound):
 		writeJSON(w, http.StatusForbidden, errResp{Code: "github_repo_not_accessible", Error: err.Error()})
 	case errors.Is(err, git.ErrPushPermissionDenied):
