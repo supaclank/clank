@@ -2681,7 +2681,7 @@ func (m *InboxModel) buildDisplayLines() {
 		if m.searching && m.searchQuery != "" {
 			emptyMsg = "No matching sessions."
 		} else {
-			emptyMsg = "No sessions. Press 'n' to start a new session, or run 'clank code <prompt>'."
+			emptyMsg = "No sessions. Press 'n' to start a new session, or run 'clank please <prompt>'."
 		}
 		m.displayLines = append(m.displayLines,
 			lipgloss.NewStyle().Foreground(mutedColor).Render(emptyMsg))

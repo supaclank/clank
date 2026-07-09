@@ -93,7 +93,7 @@ func runPlease(ctx context.Context, client *daemonclient.Client, out, errOut io.
 	ctx, cancel := context.WithTimeout(ctx, createSessionTimeout)
 	defer cancel()
 
-	info, err := client.Sessions().Create(ctx, newStartRequest(opts.backend, opts.projectDir, opts.worktreeBranch, "", opts.prompt))
+	info, err := client.Sessions().Create(ctx, newStartRequest(opts.backend, opts.projectDir, opts.worktreeBranch, opts.prompt))
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
 	}

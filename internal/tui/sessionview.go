@@ -284,10 +284,6 @@ type SessionViewModel struct {
 	cachedContent    []string // content lines from last View(), used for selection extraction
 	cachedHeaderRows int      // number of screen rows before the content area
 
-	// standalone is true when this model is run directly (not inside InboxModel).
-	// When true, 'q' quits the program instead of navigating back to inbox.
-	standalone bool
-
 	cancelEvents context.CancelFunc
 
 	// Abort state — tracks in-flight cancellation so noisy backend events
@@ -471,17 +467,6 @@ func NewSessionViewModel(client *daemonclient.Client, sessionID string) *Session
 		input:     ta,
 		spinner:   sp,
 	}
-}
-
-// SetStandalone marks this view as running standalone (not inside InboxModel).
-// When standalone, 'q' quits the program instead of navigating back to inbox.
-func (m *SessionViewModel) SetStandalone(v bool) {
-	m.standalone = v
-}
-
-// SetWorktreeBranch sets the git worktree branch for the session (used in composing mode).
-func (m *SessionViewModel) SetWorktreeBranch(branch string) {
-	m.worktreeBranch = branch
 }
 
 // DraftText returns the current unsent text in the input textarea.
@@ -1254,15 +1239,7 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
 		// Esc is intentionally a no-op in the embedded chat — the
-		// chat is a first-class pane, not an overlay. Standalone mode
-		// (no inbox to fall back to) still treats esc as quit so the
-		// user has a way out.
-		if m.standalone {
-			if m.cancelEvents != nil {
-				m.cancelEvents()
-			}
-			return m, tea.Quit
-		}
+		// chat is a first-class pane, not an overlay.
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("m"))):
 		return m, m.enterMessageMode()
@@ -3158,11 +3135,7 @@ func (m *SessionViewModel) overlaySessionHelp(base string) string {
 	helpLine("space (hold)", "push-to-talk")
 	sb.WriteString(sep + "\n")
 
-	qLabel := "back"
-	if m.standalone {
-		qLabel = "quit"
-	}
-	helpLine("q", qLabel)
+	helpLine("q", "back")
 
 	sb.WriteString("\n")
 	hint := lipgloss.NewStyle().Foreground(dimColor).Render("press any key to dismiss")

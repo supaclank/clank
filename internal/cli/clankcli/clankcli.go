@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -34,7 +32,6 @@ func Command() *cobra.Command {
 	root.CompletionOptions.HiddenDefaultCmd = true
 
 	root.AddCommand(
-		codeCmd(),
 		pleaseCmd(),
 		fixCmd(),
 		previewCmd(),
@@ -46,94 +43,6 @@ func Command() *cobra.Command {
 	)
 
 	return root
-}
-
-// --- clank code ---
-
-func codeCmd() *cobra.Command {
-	var backend string
-	var projectDir string
-	var ticketID string
-	var worktreeBranch string
-
-	cmd := &cobra.Command{
-		Use:   "code [prompt]",
-		Short: "Launch a new coding agent session",
-		Long: `Launch a new coding agent session managed by the Clank daemon.
-
-If a prompt is provided, the session starts immediately and opens the
-session detail TUI. Without a prompt, opens the inbox TUI.
-
-The daemon is auto-started if not already running.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cmd.SilenceUsage = true
-			// Determine prompt.
-			prompt := strings.Join(args, " ")
-			if prompt == "" {
-				// No prompt — open composing view standalone.
-				return runComposing(projectDir, worktreeBranch)
-			}
-
-			projectDir, err := resolveProjectDir(projectDir)
-			if err != nil {
-				return err
-			}
-
-			bt, err := resolveBackend(backend, os.Stderr)
-			if err != nil {
-				return err
-			}
-
-			// Ensure daemon is running.
-			client, err := ensureDaemon()
-			if err != nil {
-				return fmt.Errorf("daemon: %w", err)
-			}
-
-			// Subscribe to SSE BEFORE creating the session so we don't miss
-			// events emitted during session startup.
-			sseCtx, sseCancel := context.WithCancel(context.Background())
-			events, err := client.Sessions().Subscribe(sseCtx)
-			if err != nil {
-				sseCancel()
-				return fmt.Errorf("subscribe events: %w", err)
-			}
-
-			// Create the session. Generous timeout because Daytona-
-			// launched sessions block here while the cloud hub
-			// provisions a sandbox (image build + boot + readiness
-			// probe routinely takes 1-3 minutes for a cold start).
-			// Local-only sessions return in well under a second; the
-			// upper bound only matters for slow paths.
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			defer cancel()
-
-			info, err := client.Sessions().Create(ctx, newStartRequest(bt, projectDir, worktreeBranch, ticketID, prompt))
-			if err != nil {
-				sseCancel()
-				return fmt.Errorf("create session: %w", err)
-			}
-
-			// Open session detail TUI with pre-connected event channel.
-			model := tui.NewSessionViewModel(client, info.ID)
-			model.SetStandalone(true)
-			model.SetEventChannel(events, sseCancel)
-			cleanup := redirectLogToFile()
-			defer cleanup()
-			p := tea.NewProgram(model)
-			_, err = p.Run()
-			return err
-		},
-	}
-
-	cmd.Flags().StringVar(&backend, "backend", "", "Backend to use: opencode (default), claude")
-	cmd.Flags().StringVar(&projectDir, "project", "", "Project directory (default: current directory)")
-	cmd.Flags().StringVar(&ticketID, "ticket", "", "Link to backlog ticket ID")
-	cmd.Flags().StringVar(&worktreeBranch, "worktree", "", "Git branch to work on (creates worktree if needed)")
-	cmd.Flags().StringVar(&worktreeBranch, "branch", "", "Git branch to work on (creates worktree if needed)")
-	_ = cmd.Flags().MarkHidden("branch") // hidden alias for familiarity
-
-	return cmd
 }
 
 func inboxCmd() *cobra.Command {
@@ -156,37 +65,6 @@ func runInbox() error {
 	}
 
 	model := tui.NewInboxModel(client)
-	cleanup := redirectLogToFile()
-	defer cleanup()
-	p := tea.NewProgram(model)
-	_, err = p.Run()
-	return err
-}
-
-// runComposing opens the composing view standalone (not inside inbox).
-// The user types their first prompt and the session is created on send.
-func runComposing(projectDir, worktreeBranch string) error {
-	client, err := ensureDaemon()
-	if err != nil {
-		return fmt.Errorf("daemon: %w", err)
-	}
-
-	if projectDir == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("get working directory: %w", err)
-		}
-		projectDir = cwd
-	}
-	absProjectDir, err := filepath.Abs(projectDir)
-	if err != nil {
-		return fmt.Errorf("resolve project dir %q: %w", projectDir, err)
-	}
-	projectDir = absProjectDir
-
-	model := tui.NewSessionViewComposing(client, projectDir)
-	model.SetWorktreeBranch(worktreeBranch)
-	model.SetStandalone(true)
 	cleanup := redirectLogToFile()
 	defer cleanup()
 	p := tea.NewProgram(model)

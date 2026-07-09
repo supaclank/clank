@@ -49,7 +49,7 @@ func resolveBackend(flagValue string, warnOut io.Writer) (agent.BackendType, err
 
 // newStartRequest builds the wire request for a laptop-local session in
 // projectDir carrying the initial prompt.
-func newStartRequest(backend agent.BackendType, projectDir, worktreeBranch, ticketID, prompt string) agent.StartRequest {
+func newStartRequest(backend agent.BackendType, projectDir, worktreeBranch, prompt string) agent.StartRequest {
 	worktreeID, _ := agent.ReadLocalWorktreeID(projectDir) // empty for plain local repos without a stamped worktree-id
 	return agent.StartRequest{
 		Backend:  backend,
@@ -59,7 +59,6 @@ func newStartRequest(backend agent.BackendType, projectDir, worktreeBranch, tick
 			WorktreeID:     worktreeID,
 			WorktreeBranch: worktreeBranch,
 		},
-		Prompt:   prompt,
-		TicketID: ticketID,
+		Prompt: prompt,
 	}
 }
