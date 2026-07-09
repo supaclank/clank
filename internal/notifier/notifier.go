@@ -273,7 +273,7 @@ func classify(evt agent.Event, sctx SessionContext) (Notification, bool) {
 		title := "Agent finished"
 		body := "Tap to see the result."
 		if sctx.Title != "" {
-			title = sctx.Title
+			title = truncateRunes(sctx.Title, maxTitleLen)
 			body = "Finished — tap to see the result."
 		}
 		if preview := previewText(sctx.LastAssistantText); preview != "" {
@@ -302,7 +302,7 @@ func classify(evt agent.Event, sctx SessionContext) (Notification, bool) {
 		}
 		if sctx.Title != "" {
 			body = fmt.Sprintf("%s — %s", title, body)
-			title = sctx.Title
+			title = truncateRunes(sctx.Title, maxTitleLen)
 		}
 		return Notification{
 			SessionID:  evt.SessionID,
@@ -324,7 +324,7 @@ func classify(evt agent.Event, sctx SessionContext) (Notification, bool) {
 		}
 		if sctx.Title != "" {
 			body = fmt.Sprintf("Agent error — %s", body)
-			title = sctx.Title
+			title = truncateRunes(sctx.Title, maxTitleLen)
 		}
 		return Notification{
 			SessionID:  evt.SessionID,
@@ -348,8 +348,22 @@ func sessionTitleData(data map[string]any, sctx SessionContext) map[string]any {
 	if data == nil {
 		data = make(map[string]any, 1)
 	}
-	data["session_title"] = sctx.Title
+	data["session_title"] = truncateRunes(sctx.Title, maxTitleLen)
 	return data
+}
+
+// maxTitleLen bounds the session title used as notification Title and
+// Data.session_title. Nothing upstream bounds AI-generated or user-set
+// session titles; push providers reject oversized payloads.
+const maxTitleLen = 80
+
+// truncateRunes caps s to max runes, appending an ellipsis when cut.
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max-1]) + "…"
 }
 
 // maxBodyPreviewLen caps the last-reply preview in a notification body.
@@ -357,10 +371,20 @@ func sessionTitleData(data map[string]any, sctx SessionContext) map[string]any {
 // rejects payloads over 4 KiB.
 const maxBodyPreviewLen = 180
 
+// previewScanBytes bounds how much of s previewText inspects before
+// flattening whitespace. Collapsing whitespace only ever shortens the
+// result, so scanning a generous prefix instead of all of s can't change
+// the final maxBodyPreviewLen-rune output, but keeps a huge tool-output
+// reply from costing memory/CPU proportional to its full length.
+const previewScanBytes = maxBodyPreviewLen * 4
+
 // previewText flattens s into a single-line preview: whitespace runs
 // (including newlines) collapse to one space, then the result is
 // truncated to maxBodyPreviewLen runes with an ellipsis.
 func previewText(s string) string {
+	if len(s) > previewScanBytes {
+		s = strings.ToValidUTF8(s[:previewScanBytes], "")
+	}
 	fields := strings.Fields(s)
 	if len(fields) == 0 {
 		return ""

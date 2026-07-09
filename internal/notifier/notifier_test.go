@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/acksell/clank/internal/agent"
 )
@@ -308,6 +309,73 @@ func TestPreviewText_TruncatesLongReplies(t *testing.T) {
 	}
 	if short := previewText("short"); short != "short" {
 		t.Errorf("short input must pass through, got %q", short)
+	}
+}
+
+// TestPreviewText_ScanBoundHandlesReplyLargerThanScanWindow pins that
+// scanning only a bounded prefix (previewScanBytes) instead of the full
+// reply still produces a correctly truncated, valid-UTF8 preview — even
+// when the reply is orders of magnitude larger than that prefix, and
+// even when the scan window cuts through a multi-byte rune.
+func TestPreviewText_ScanBoundHandlesReplyLargerThanScanWindow(t *testing.T) {
+	t.Parallel()
+
+	huge := strings.Repeat("word ", 100_000) // far beyond previewScanBytes
+	got := previewText(huge)
+	if r := []rune(got); len(r) != maxBodyPreviewLen {
+		t.Errorf("len = %d runes, want %d", len(r), maxBodyPreviewLen)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("truncated preview must end with ellipsis, got %q", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("preview must be valid UTF-8, got %q", got)
+	}
+
+	// Multi-byte runes ("café ", 5 bytes) placed right across the
+	// previewScanBytes boundary must not corrupt the output.
+	multiByte := strings.Repeat("café ", (previewScanBytes/5)+50)
+	got = previewText(multiByte)
+	if !utf8.ValidString(got) {
+		t.Errorf("preview must be valid UTF-8 across a multi-byte scan boundary, got %q", got)
+	}
+}
+
+func TestTruncateRunes(t *testing.T) {
+	t.Parallel()
+	if got := truncateRunes("short", 80); got != "short" {
+		t.Errorf("under-limit input must pass through unchanged, got %q", got)
+	}
+	long := strings.Repeat("x", 100)
+	got := truncateRunes(long, maxTitleLen)
+	if r := []rune(got); len(r) != maxTitleLen {
+		t.Errorf("len = %d runes, want %d", len(r), maxTitleLen)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("truncated title must end with ellipsis, got %q", got)
+	}
+}
+
+// TestClassify_LongSessionTitleIsBounded documents why: push providers
+// reject oversized payloads, and nothing upstream bounds an AI-generated
+// or user-set session title before it reaches here.
+func TestClassify_LongSessionTitleIsBounded(t *testing.T) {
+	t.Parallel()
+	longTitle := strings.Repeat("x", 200)
+	evt := agent.Event{
+		Type:      agent.EventStatusChange,
+		SessionID: "s1",
+		Data:      agent.StatusChangeData{OldStatus: agent.StatusBusy, NewStatus: agent.StatusIdle},
+	}
+	n, ok := classify(evt, SessionContext{Title: longTitle})
+	if !ok {
+		t.Fatal("classify rejected a notification-worthy event")
+	}
+	if r := []rune(n.Title); len(r) != maxTitleLen {
+		t.Errorf("Title len = %d runes, want %d", len(r), maxTitleLen)
+	}
+	if r := []rune(n.Data["session_title"].(string)); len(r) != maxTitleLen {
+		t.Errorf("Data[session_title] len = %d runes, want %d", len(r), maxTitleLen)
 	}
 }
 
