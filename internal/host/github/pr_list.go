@@ -1,9 +1,11 @@
 package github
 
-// GET /credentials/github/repos/{owner}/{repo}/pulls — list the OPEN pull
-// requests for a repo, for the repo-detail screen's "Pull requests" section.
-// Mirrors ListBranches' paginate-and-trim approach; the token never leaves the
-// host.
+// GET /credentials/github/repos/{owner}/{repo}/pulls — lists a repo's OPEN
+// pull requests for the repo-detail screen's "Pull requests" section (the
+// mux handler always passes PRListStateOpen). The same ListPullRequests
+// helper, called directly rather than through this endpoint, also backs
+// the repo overview's closed-PR annotations. Mirrors ListBranches'
+// paginate-and-trim approach; the token never leaves the host.
 
 import (
 	"context"
@@ -20,9 +22,19 @@ const maxPulls = 100
 // pullsPerPage is the page size for the PR listing pagination.
 const pullsPerPage = 100
 
+// PRListState selects which pull requests ListPullRequests returns.
+type PRListState string
+
+const (
+	PRListStateOpen   PRListState = "open"
+	PRListStateClosed PRListState = "closed"
+)
+
 // PullRequestSummary is the trimmed PR shape returned to clients. HeadBranch is
 // what the UI cross-references against loaded worktrees (to link a PR to a
-// branch you already have) or forks from (to check a PR out).
+// branch you already have) or forks from (to check a PR out). MergedAt is
+// non-zero only for merged PRs — GitHub reports merged PRs as state "closed",
+// so this is the merged-vs-abandoned discriminator.
 type PullRequestSummary struct {
 	Number     int       `json:"number"`
 	Title      string    `json:"title"`
@@ -33,19 +45,20 @@ type PullRequestSummary struct {
 	BaseBranch string    `json:"base_branch"`
 	Author     string    `json:"author"`
 	UpdatedAt  time.Time `json:"updated_at,omitzero"`
+	MergedAt   time.Time `json:"merged_at,omitzero"`
 }
 
-// ListPullRequests lists the OPEN pull requests of owner/repo, most recently
-// updated first, capped at maxPulls. token authenticates the call (private
-// repos need it). Mirrors ListBranches' paginate-and-trim approach.
-func (m *Manager) ListPullRequests(ctx context.Context, token, owner, repo string) ([]PullRequestSummary, error) {
+// ListPullRequests lists owner/repo's pull requests in the given state, most
+// recently updated first, capped at maxPulls. token authenticates the call
+// (private repos need it). Mirrors ListBranches' paginate-and-trim approach.
+func (m *Manager) ListPullRequests(ctx context.Context, token, owner, repo string, state PRListState) ([]PullRequestSummary, error) {
 	client, err := m.apiClient(token)
 	if err != nil {
 		return nil, fmt.Errorf("build api client: %w", err)
 	}
 
 	opts := &gogithub.PullRequestListOptions{
-		State:       "open",
+		State:       string(state),
 		Sort:        "updated",
 		Direction:   "desc",
 		ListOptions: gogithub.ListOptions{PerPage: pullsPerPage},
@@ -82,5 +95,6 @@ func wirePRSummary(pr *gogithub.PullRequest) PullRequestSummary {
 		BaseBranch: pr.GetBase().GetRef(),
 		Author:     pr.GetUser().GetLogin(),
 		UpdatedAt:  pr.GetUpdatedAt().Time,
+		MergedAt:   pr.GetMergedAt().Time,
 	}
 }
