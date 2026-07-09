@@ -41,15 +41,20 @@ func TestClassifyEvent(t *testing.T) {
 			wantTitle: "Agent finished",
 		},
 		{
-			name: "starting_to_idle_produces_kind_idle",
+			// Regression: Starting→Idle is the backend re-attach handshake
+			// (Open on an existing session flips Starting→Idle once the SDK
+			// connects), NOT a turn finishing — the create path goes directly
+			// Starting→Busy (see ClaudeCodeBackend.OpenAndSend). Treating it
+			// as KindIdle pushed a spurious "Agent finished" ~1s after merely
+			// opening an old session on the phone.
+			name: "starting_to_idle_reattach_dropped",
 			evt: agent.Event{
 				Type:      agent.EventStatusChange,
 				SessionID: "s1",
 				Timestamp: when,
 				Data:      agent.StatusChangeData{OldStatus: agent.StatusStarting, NewStatus: agent.StatusIdle},
 			},
-			wantOK:   true,
-			wantKind: notifier.KindIdle,
+			wantOK: false,
 		},
 		{
 			name: "idle_to_idle_dropped",
