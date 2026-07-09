@@ -117,27 +117,35 @@ func TestRepoOverview_PRHalf(t *testing.T) {
 
 	// Stub the GitHub API and re-point the canonical's origin at a
 	// github-shaped URL so Origin parses. No ?fetch=1 in this test — the
-	// URL is fake; only the API base is real.
+	// URL is fake; only the API base is real. PR #7's head has check
+	// runs; PR #8's check-runs call fails (per-PR best-effort).
 	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/acksell/api/pulls" {
-			http.NotFound(w, r)
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Query().Get("state") == "closed" {
-			_, _ = w.Write([]byte(`[]`))
-			return
+		switch r.URL.Path {
+		case "/repos/acksell/api/pulls":
+			if r.URL.Query().Get("state") == "closed" {
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
+			_, _ = w.Write([]byte(`[
+				{"number":7,"title":"My PR","state":"open","draft":false,
+				 "html_url":"https://github.com/acksell/api/pull/7",
+				 "head":{"ref":"main","sha":"sha7"},"base":{"ref":"main"},
+				 "user":{"login":"acksell"},"updated_at":"2026-07-01T10:00:00Z"},
+				{"number":8,"title":"Colleague PR","state":"open","draft":true,
+				 "html_url":"https://github.com/acksell/api/pull/8",
+				 "head":{"ref":"colleagues-branch","sha":"sha8"},"base":{"ref":"main"},
+				 "user":{"login":"alice"},"updated_at":"2026-07-01T09:00:00Z"}
+			]`))
+		case "/repos/acksell/api/commits/sha7/check-runs":
+			_, _ = w.Write([]byte(`{"total_count":2,"check_runs":[
+				{"name":"build","status":"completed","conclusion":"success"},
+				{"name":"test","status":"completed","conclusion":"failure"}]}`))
+		case "/repos/acksell/api/commits/sha8/check-runs":
+			http.Error(w, "boom", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
 		}
-		_, _ = w.Write([]byte(`[
-			{"number":7,"title":"My PR","state":"open","draft":false,
-			 "html_url":"https://github.com/acksell/api/pull/7",
-			 "head":{"ref":"main"},"base":{"ref":"main"},
-			 "user":{"login":"acksell"},"updated_at":"2026-07-01T10:00:00Z"},
-			{"number":8,"title":"Colleague PR","state":"open","draft":true,
-			 "html_url":"https://github.com/acksell/api/pull/8",
-			 "head":{"ref":"colleagues-branch"},"base":{"ref":"main"},
-			 "user":{"login":"alice"},"updated_at":"2026-07-01T09:00:00Z"}
-		]`))
 	}))
 	t.Cleanup(apiSrv.Close)
 	svc.GitHub().SetAPIBaseURL(apiSrv.URL)
@@ -164,12 +172,19 @@ func TestRepoOverview_PRHalf(t *testing.T) {
 	if main.PR == nil || main.PR.Number != 7 || !main.PR.IsMine || main.PR.State != host.OverviewPRStateOpen {
 		t.Errorf("main.PR = %+v, want open #7 is_mine", main.PR)
 	}
+	wantChecks := githubpkg.CheckRollup{State: githubpkg.CheckStateFailing, Passed: 1, Failed: 1, Total: 2}
+	if main.PR.Checks == nil || *main.PR.Checks != wantChecks {
+		t.Errorf("main.PR.Checks = %+v, want %+v", main.PR.Checks, wantChecks)
+	}
 	colleague, ok := byBranch["colleagues-branch"]
 	if !ok {
 		t.Fatal("PR-only head missing from overview")
 	}
 	if colleague.Loaded || colleague.PR == nil || colleague.PR.Number != 8 || colleague.PR.IsMine || !colleague.PR.Draft {
 		t.Errorf("colleague entry = %+v, want unloaded draft PR #8 by alice", colleague)
+	}
+	if colleague.PR.Checks != nil {
+		t.Errorf("colleague.PR.Checks = %+v, want nil (rollup fetch failed, PR still annotated)", colleague.PR.Checks)
 	}
 
 	// GitHub down → git half intact, no PR annotations, no error.
@@ -278,6 +293,73 @@ func TestRepoOverview_MergedPRMarksLeftoverBranch(t *testing.T) {
 	main, _ = ovBranch(ov, "main")
 	if main.PR == nil || main.PR.Number != 22 || main.PR.State != host.OverviewPRStateOpen {
 		t.Errorf("main.PR = %+v, want open #22 to win over merged #20", main.PR)
+	}
+}
+
+// Two open PRs sharing a head branch name (e.g. same-named branches from
+// different forks) collapse to one byHead entry — last write wins. Run
+// with -race: without the pr.Number guard, both PRs' goroutines write
+// the surviving OverviewPR's Checks field concurrently.
+func TestRepoOverview_PRHalfSharedHeadBranchNoRace(t *testing.T) {
+	svc, workRoot := setupRepoFirstImport(t)
+	ctx := context.Background()
+
+	if _, err := svc.ImportProjectFromGitHub(ctx, "acme", "api", "main"); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/repos/acksell/api/pulls":
+			_, _ = w.Write([]byte(`[
+				{"number":7,"title":"First","state":"open","draft":false,
+				 "html_url":"https://github.com/acksell/api/pull/7",
+				 "head":{"ref":"shared-branch","sha":"sha7"},"base":{"ref":"main"},
+				 "user":{"login":"acksell"},"updated_at":"2026-07-01T10:00:00Z"},
+				{"number":8,"title":"Second","state":"open","draft":false,
+				 "html_url":"https://github.com/acksell/api/pull/8",
+				 "head":{"ref":"shared-branch","sha":"sha8"},"base":{"ref":"other"},
+				 "user":{"login":"alice"},"updated_at":"2026-07-01T09:00:00Z"}
+			]`))
+		case "/repos/acksell/api/commits/sha7/check-runs":
+			_, _ = w.Write([]byte(`{"total_count":1,"check_runs":[
+				{"name":"build","status":"completed","conclusion":"success"}]}`))
+		case "/repos/acksell/api/commits/sha8/check-runs":
+			_, _ = w.Write([]byte(`{"total_count":1,"check_runs":[
+				{"name":"build","status":"completed","conclusion":"failure"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(apiSrv.Close)
+	svc.GitHub().SetAPIBaseURL(apiSrv.URL)
+	if err := svc.GitHub().Store().Write(githubpkg.Credentials{AccessToken: "gho_test", GitHubLogin: "acksell"}); err != nil {
+		t.Fatal(err)
+	}
+	gitDir := filepath.Join(workRoot, "repos", "acme__api", "repo.git")
+	if err := git.SetLocalConfig(gitDir, "remote.origin.url", "https://github.com/acksell/api.git"); err != nil {
+		t.Fatal(err)
+	}
+
+	ov, err := svc.RepoOverview(ctx, "acme__api", false)
+	if err != nil {
+		t.Fatalf("overview: %v", err)
+	}
+	byBranch := map[string]host.RepoBranchOverview{}
+	for _, b := range ov.Branches {
+		byBranch[b.Branch] = b
+	}
+	shared, ok := byBranch["shared-branch"]
+	if !ok || shared.PR == nil {
+		t.Fatalf("shared-branch PR missing: %+v", ov.Branches)
+	}
+	// #8 is listed last in the API response, so it wins the byHead slot.
+	if shared.PR.Number != 8 {
+		t.Fatalf("shared.PR.Number = %d, want 8 (last write wins)", shared.PR.Number)
+	}
+	if shared.PR.Checks == nil || shared.PR.Checks.State != githubpkg.CheckStateFailing {
+		t.Errorf("shared.PR.Checks = %+v, want failing (sha8's own rollup, not sha7's)", shared.PR.Checks)
 	}
 }
 

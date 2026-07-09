@@ -42,6 +42,7 @@ type PullRequestSummary struct {
 	Draft      bool      `json:"draft"`
 	HTMLURL    string    `json:"html_url"`
 	HeadBranch string    `json:"head_branch"`
+	HeadSHA    string    `json:"head_sha"`
 	BaseBranch string    `json:"base_branch"`
 	Author     string    `json:"author"`
 	UpdatedAt  time.Time `json:"updated_at,omitzero"`
@@ -92,6 +93,7 @@ func wirePRSummary(pr *gogithub.PullRequest) PullRequestSummary {
 		Draft:      pr.GetDraft(),
 		HTMLURL:    pr.GetHTMLURL(),
 		HeadBranch: pr.GetHead().GetRef(),
+		HeadSHA:    pr.GetHead().GetSHA(),
 		BaseBranch: pr.GetBase().GetRef(),
 		Author:     pr.GetUser().GetLogin(),
 		UpdatedAt:  pr.GetUpdatedAt().Time,
