@@ -278,6 +278,11 @@ func (m *Mux) handleStopSession(w http.ResponseWriter, r *http.Request) {
 // session id. Subscribes to the global broadcast and filters client-
 // side so multiple consumers can share one source.
 //
+// ?viewer=1 declares a human is watching this stream (mobile session
+// view, guest-app overlay); the host registers presence for the
+// stream's lifetime and the notifier suppresses idle pushes for viewed
+// sessions. Machine consumers (the hub's relay client) omit it.
+//
 // Encoding: `event: <type>\ndata: <json>\n\n`.
 func (m *Mux) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -286,6 +291,10 @@ func (m *Mux) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 	if _, err := m.svc.GetSessionMetadata(r.Context(), id); err != nil {
 		writeError(w, err)
 		return
+	}
+	if r.URL.Query().Get("viewer") == "1" {
+		release := m.svc.AddSessionViewer(id)
+		defer release()
 	}
 
 	flusher, ok := w.(http.Flusher)

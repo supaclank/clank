@@ -47,6 +47,14 @@ func (s *Service) startNotifier() {
 			if !ok {
 				continue
 			}
+			// A watched session doesn't buzz: the finish is already on
+			// screen (guest-app overlay, mobile session view). Permission
+			// and error pushes still go out — missing one because a stale
+			// viewer socket lingered would leave the agent blocked.
+			if n.Kind == notifier.KindIdle && s.SessionHasViewers(evt.SessionID) {
+				s.log.Printf("notifier: suppressed idle push for viewed session %s", evt.SessionID)
+				continue
+			}
 			// Re-classifying with the fetched context keeps all copy
 			// decisions inside classifyEvent.
 			lookupCtx, lookupCancel := context.WithTimeout(ctx, pushContextTimeout)

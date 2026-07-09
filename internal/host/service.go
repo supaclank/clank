@@ -107,6 +107,13 @@ type Service struct {
 	worktreeLocksMu sync.Mutex
 	worktreeLocks   map[string]*sync.Mutex
 
+	// viewers counts live per-session event streams opened with
+	// ?viewer=1 — "a human is watching this session right now". See
+	// viewers.go; the notifier suppresses idle pushes for viewed
+	// sessions.
+	viewersMu sync.Mutex
+	viewers   map[string]int
+
 	// repoLocks serialize canonical-repo mutations (clone, fetch,
 	// worktree add/remove, branch create, publish's remote-add) per
 	// repo slug — every ~/work/<id> worktree of a repo shares one bare
@@ -208,6 +215,7 @@ func New(opts Options) *Service {
 		branches:              newBranchCache(opts.BranchCacheTTL, opts.Now),
 		sessionsStore:         opts.SessionsStore,
 		subscribers:           newSubscriberRegistry(),
+		viewers:               make(map[string]int),
 		worktreeLocks:         make(map[string]*sync.Mutex),
 		repoLocks:             make(map[string]*sync.Mutex),
 	}

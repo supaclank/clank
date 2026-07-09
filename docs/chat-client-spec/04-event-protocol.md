@@ -35,6 +35,15 @@ this is the wire.
   [INV-NO-END-001](08-invariants.md). **Golden:** `internal/host/mux/events.go`
   (`handleEvents`: global loop returns on channel close — no terminal frame),
   `internal/host/mux/sessions.go` (`handleSessionEvents`: emits `event: end` on shutdown).
+- **[EVT-004b] (SHOULD)** A client whose per-session stream backs a **visible session view**
+  (a human is looking at the transcript right now — mobile session screen, guest-app overlay
+  prompt box) SHOULD open it as `GET /sessions/{id}/events?viewer=1`. The host registers
+  viewer presence for the stream's lifetime and **suppresses "agent finished" pushes** for
+  viewed sessions — the finish is already on screen. Machine consumers (relays, log tails,
+  background mirrors) MUST NOT pass `viewer=1`: a phantom viewer silently swallows
+  notifications the user wanted. Omitting the param is always safe — it only means pushes
+  keep flowing. **Golden:** `internal/host/mux/sessions.go` (`handleSessionEvents`: viewer
+  registration), `internal/host/notifier.go` (`startNotifier`: idle-push suppression).
 - **[EVT-005] (MUST)** On the **global** stream a client MUST filter events to the session(s)
   it cares about by `session_id`, **except** `session.create` and `session.delete`, which are
   session-list events and MUST be accepted regardless of the currently-open session. **Why:**
