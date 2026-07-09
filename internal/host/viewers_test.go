@@ -35,6 +35,23 @@ func TestSessionViewers_CountAndRelease(t *testing.T) {
 	}
 }
 
+// A caller that invokes release twice (double defer, retried cleanup) must
+// not decrement past the other viewer still active on the same session.
+func TestSessionViewers_DoubleReleaseIsIdempotent(t *testing.T) {
+	t.Parallel()
+	svc := New(Options{BackendManagers: map[agent.BackendType]agent.BackendManager{}})
+	t.Cleanup(svc.Shutdown)
+
+	rel1 := svc.AddSessionViewer("s1")
+	svc.AddSessionViewer("s1")
+
+	rel1()
+	rel1()
+	if !svc.SessionHasViewers("s1") {
+		t.Fatal("double-release of one viewer must not affect the other active viewer")
+	}
+}
+
 // TestNotifier_ViewedSessionSuppressesIdlePush documents the guest-app
 // overlay scenario: the user chats via the floating prompt box, whose
 // event stream registers as a viewer — the finish is already on their

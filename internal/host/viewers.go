@@ -12,16 +12,20 @@ package host
 // misclassified machine "viewer" would silently swallow notifications.
 // An unmarked stream keeps today's behavior — pushes flow.
 
-// AddSessionViewer registers a live viewer of sessionID and returns a
-// release func. Callers must invoke release exactly once when the
-// viewer's stream closes; it is not idempotent.
+// AddSessionViewer registers a live viewer of sessionID and returns an
+// idempotent release func to call when the viewer's stream closes.
 func (s *Service) AddSessionViewer(sessionID string) (release func()) {
 	s.viewersMu.Lock()
 	s.viewers[sessionID]++
 	s.viewersMu.Unlock()
+	released := false
 	return func() {
 		s.viewersMu.Lock()
 		defer s.viewersMu.Unlock()
+		if released {
+			return
+		}
+		released = true
 		if s.viewers[sessionID] <= 1 {
 			delete(s.viewers, sessionID)
 			return
