@@ -346,7 +346,10 @@ func (s *Service) attachPRChecks(ctx context.Context, token string, origin *Repo
 	var firstErr error
 	for _, pull := range pulls {
 		pr := byHead[pull.HeadBranch]
-		if pr == nil || pull.HeadSHA == "" {
+		// byHead keeps one entry per head branch name; a PR that lost that
+		// slot to another PR sharing the same head branch must not fetch
+		// into the survivor's Checks field (data race + wrong association).
+		if pr == nil || pr.Number != pull.Number || pull.HeadSHA == "" {
 			continue
 		}
 		wg.Add(1)

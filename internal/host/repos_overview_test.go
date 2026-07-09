@@ -296,6 +296,73 @@ func TestRepoOverview_MergedPRMarksLeftoverBranch(t *testing.T) {
 	}
 }
 
+// Two open PRs sharing a head branch name (e.g. same-named branches from
+// different forks) collapse to one byHead entry — last write wins. Run
+// with -race: without the pr.Number guard, both PRs' goroutines write
+// the surviving OverviewPR's Checks field concurrently.
+func TestRepoOverview_PRHalfSharedHeadBranchNoRace(t *testing.T) {
+	svc, workRoot := setupRepoFirstImport(t)
+	ctx := context.Background()
+
+	if _, err := svc.ImportProjectFromGitHub(ctx, "acme", "api", "main"); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/repos/acksell/api/pulls":
+			_, _ = w.Write([]byte(`[
+				{"number":7,"title":"First","state":"open","draft":false,
+				 "html_url":"https://github.com/acksell/api/pull/7",
+				 "head":{"ref":"shared-branch","sha":"sha7"},"base":{"ref":"main"},
+				 "user":{"login":"acksell"},"updated_at":"2026-07-01T10:00:00Z"},
+				{"number":8,"title":"Second","state":"open","draft":false,
+				 "html_url":"https://github.com/acksell/api/pull/8",
+				 "head":{"ref":"shared-branch","sha":"sha8"},"base":{"ref":"other"},
+				 "user":{"login":"alice"},"updated_at":"2026-07-01T09:00:00Z"}
+			]`))
+		case "/repos/acksell/api/commits/sha7/check-runs":
+			_, _ = w.Write([]byte(`{"total_count":1,"check_runs":[
+				{"name":"build","status":"completed","conclusion":"success"}]}`))
+		case "/repos/acksell/api/commits/sha8/check-runs":
+			_, _ = w.Write([]byte(`{"total_count":1,"check_runs":[
+				{"name":"build","status":"completed","conclusion":"failure"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(apiSrv.Close)
+	svc.GitHub().SetAPIBaseURL(apiSrv.URL)
+	if err := svc.GitHub().Store().Write(githubpkg.Credentials{AccessToken: "gho_test", GitHubLogin: "acksell"}); err != nil {
+		t.Fatal(err)
+	}
+	gitDir := filepath.Join(workRoot, "repos", "acme__api", "repo.git")
+	if err := git.SetLocalConfig(gitDir, "remote.origin.url", "https://github.com/acksell/api.git"); err != nil {
+		t.Fatal(err)
+	}
+
+	ov, err := svc.RepoOverview(ctx, "acme__api", false)
+	if err != nil {
+		t.Fatalf("overview: %v", err)
+	}
+	byBranch := map[string]host.RepoBranchOverview{}
+	for _, b := range ov.Branches {
+		byBranch[b.Branch] = b
+	}
+	shared, ok := byBranch["shared-branch"]
+	if !ok || shared.PR == nil {
+		t.Fatalf("shared-branch PR missing: %+v", ov.Branches)
+	}
+	// #8 is listed last in the API response, so it wins the byHead slot.
+	if shared.PR.Number != 8 {
+		t.Fatalf("shared.PR.Number = %d, want 8 (last write wins)", shared.PR.Number)
+	}
+	if shared.PR.Checks == nil || shared.PR.Checks.State != githubpkg.CheckStateFailing {
+		t.Errorf("shared.PR.Checks = %+v, want failing (sha8's own rollup, not sha7's)", shared.PR.Checks)
+	}
+}
+
 // PR-only heads are merged in via a map iteration (random order in Go);
 // the result must still come out sorted most-recently-active first,
 // matching LocalBranchTips' documented order. Not parallel (fixture
