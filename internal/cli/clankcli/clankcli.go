@@ -13,10 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/config"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/host"
 	"github.com/acksell/clank/internal/tui"
 )
 
@@ -38,6 +35,7 @@ func Command() *cobra.Command {
 
 	root.AddCommand(
 		codeCmd(),
+		pleaseCmd(),
 		previewCmd(),
 		inboxCmd(),
 		remoteCmd(),
@@ -75,42 +73,14 @@ The daemon is auto-started if not already running.`,
 				return runComposing(projectDir, worktreeBranch)
 			}
 
-			// Determine project directory. Resolve to an absolute path
-			// so that GitRef.LocalPath is stable regardless of where
-			// the daemon happens to be running from when it consumes
-			// the request.
-			if projectDir == "" {
-				cwd, err := os.Getwd()
-				if err != nil {
-					return fmt.Errorf("get working directory: %w", err)
-				}
-				projectDir = cwd
-			}
-			absProjectDir, err := filepath.Abs(projectDir)
+			projectDir, err := resolveProjectDir(projectDir)
 			if err != nil {
-				return fmt.Errorf("resolve project dir %q: %w", projectDir, err)
+				return err
 			}
-			projectDir = absProjectDir
 
-			// Resolve backend type. Precedence:
-			//   1. --backend flag (explicit override)
-			//   2. preferences.json default_backend
-			//   3. agent.DefaultBackend
-			var bt agent.BackendType
-			if backend != "" {
-				parsed, err := agent.ParseBackend(backend)
-				if err != nil {
-					return err
-				}
-				bt = parsed
-			} else {
-				prefs, _ := config.LoadPreferences()
-				resolved, err := agent.ResolveBackendPreference(prefs.DefaultBackend)
-				if err != nil {
-					// Corrupt preference: warn but proceed with default.
-					fmt.Fprintf(os.Stderr, "warning: %v; using %s\n", err, resolved)
-				}
-				bt = resolved
+			bt, err := resolveBackend(backend, os.Stderr)
+			if err != nil {
+				return err
 			}
 
 			// Ensure daemon is running.
@@ -137,19 +107,7 @@ The daemon is auto-started if not already running.`,
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
 
-			worktreeID, _ := agent.ReadLocalWorktreeID(projectDir) // empty for plain local repos without a stamped worktree-id
-
-			info, err := client.Sessions().Create(ctx, agent.StartRequest{
-				Backend:  bt,
-				Hostname: host.HostLocal,
-				GitRef: agent.GitRef{
-					LocalPath:      projectDir,
-					WorktreeID:     worktreeID,
-					WorktreeBranch: worktreeBranch,
-				},
-				Prompt:   prompt,
-				TicketID: ticketID,
-			})
+			info, err := client.Sessions().Create(ctx, newStartRequest(bt, projectDir, worktreeBranch, ticketID, prompt))
 			if err != nil {
 				sseCancel()
 				return fmt.Errorf("create session: %w", err)
