@@ -83,11 +83,13 @@ type Service struct {
 	keepaliveLoop *keepalive.Loop
 	keepaliveStop context.CancelFunc
 
-	// notifierLoop fans notification-worthy events (idle, permission,
-	// error) out to a provider-specific Provider (webhook, expo, …).
-	// Nil when Options.NotifierLoop is nil — no goroutine, no
-	// subscriber slot. Sibling of keepaliveLoop, NOT a replacement —
-	// the two consume the same fan-out at different granularity.
+	// notifierLoop delivers push Notifications to a provider-specific
+	// Provider (webhook, expo, …). The host decides what's push-worthy
+	// and composes the copy (see startNotifier / classifyEvent); the
+	// Loop only queues and sends. Nil when Options.NotifierLoop is nil
+	// — no goroutine, no subscriber slot. Sibling of keepaliveLoop, NOT
+	// a replacement — the two consume the same fan-out at different
+	// granularity.
 	notifierLoop *notifier.Loop
 	notifierStop context.CancelFunc
 
@@ -143,9 +145,9 @@ type Options struct {
 	// cmd/clank-host/main.go from the --keepalive-provider flag.
 	KeepaliveListener keepalive.Listener
 
-	// NotifierLoop, when set, fans notification-worthy events to an
-	// outbound Provider (webhook/expo/noop). Nil disables the subsystem
-	// — laptop mode default. Construct via notifier.New in
+	// NotifierLoop, when set, delivers the host's push Notifications to
+	// an outbound Provider (webhook/expo/noop). Nil disables the
+	// subsystem — laptop mode default. Construct via notifier.New in
 	// cmd/clank-host/main.go.
 	NotifierLoop *notifier.Loop
 
