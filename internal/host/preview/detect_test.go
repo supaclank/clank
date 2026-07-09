@@ -2,6 +2,7 @@ package preview
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -160,6 +161,47 @@ func TestExpoCmdTemplateBootstrap(t *testing.T) {
 	// work-root location; guard against a regression.
 	if strings.Contains(cmd, "node_modules/.clank") {
 		t.Errorf("bootstrap marker must not live inside node_modules: %q", cmd)
+	}
+}
+
+// TestExpoCmdTemplateBootstrap_CleansMigratedLockOnInstallFailure pins the
+// fix for a bug a review bot caught: bun migrates package-lock.json into
+// bun.lock as a side effect BEFORE dependency resolution can fail, so a
+// transient install failure (network blip, disk pressure) used to leave
+// that migrated bun.lock behind — and since the marker-free check on the
+// next run then reads that leftover lock as "pre-existing", the cleanup
+// stayed permanently disabled. Runs the real shell snippet with a fake
+// `bun` that fails after writing bun.lock, so this exercises actual shell
+// semantics rather than pinning the template string.
+func TestExpoCmdTemplateBootstrap_CleansMigratedLockOnInstallFailure(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	worktree := filepath.Join(root, "worktree")
+	if err := os.Mkdir(worktree, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+
+	bin := t.TempDir()
+	fakeBun := "#!/bin/sh\necho migrated > bun.lock\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "bun"), []byte(fakeBun), 0o755); err != nil {
+		t.Fatalf("write fake bun: %v", err)
+	}
+
+	cmd := exec.Command("sh", "-c", strings.ReplaceAll(expoCmdTemplate[2], "%d", "0"))
+	cmd.Dir = worktree
+	// keep_lock=leaked simulates the uninitialized-variable half of the bug:
+	// with the fix's explicit "keep_lock=;" reset, this must not survive.
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "keep_lock=leaked")
+
+	if err := cmd.Run(); err == nil {
+		t.Fatalf("bootstrap: want failure (fake bun install fails), got success")
+	}
+	if _, err := os.Stat(filepath.Join(worktree, "bun.lock")); !os.IsNotExist(err) {
+		t.Errorf("bun.lock: want removed after a failed install, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".clank-preview-bootstrap")); !os.IsNotExist(err) {
+		t.Errorf("completion marker: must not be written after a failed install")
 	}
 }
 

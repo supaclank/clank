@@ -59,9 +59,10 @@ var expoCmdTemplate = []string{
 	"sh", "-c",
 	`m="../.clank-preview-bootstrap/$(basename "$(pwd)").bun"; ` +
 		`[ -f "$m" ] || rm -rf node_modules; ` +
-		`[ -f bun.lock ] && keep_lock=1; ` +
-		`bun install --no-save && ` +
-		`{ [ -n "$keep_lock" ] || rm -f bun.lock; } && ` +
+		`keep_lock=; [ -f bun.lock ] && keep_lock=1; ` +
+		`bun install --no-save; err=$?; ` +
+		`[ -n "$keep_lock" ] || rm -f bun.lock; ` +
+		`[ "$err" -eq 0 ] && ` +
 		`mkdir -p "$(dirname "$m")" && : > "$m" && ` +
 		`exec npx --yes expo start --port %d --non-interactive`,
 }
