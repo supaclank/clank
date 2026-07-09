@@ -1,9 +1,11 @@
 package github
 
-// GET /credentials/github/repos/{owner}/{repo}/pulls — list pull requests
-// for a repo, for the repo-detail screen's "Pull requests" section and the
-// repo overview's PR annotations. Mirrors ListBranches' paginate-and-trim
-// approach; the token never leaves the host.
+// GET /credentials/github/repos/{owner}/{repo}/pulls — lists a repo's OPEN
+// pull requests for the repo-detail screen's "Pull requests" section (the
+// mux handler always passes PRListStateOpen). The same ListPullRequests
+// helper, called directly rather than through this endpoint, also backs
+// the repo overview's closed-PR annotations. Mirrors ListBranches'
+// paginate-and-trim approach; the token never leaves the host.
 
 import (
 	"context"
