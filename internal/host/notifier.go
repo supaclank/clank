@@ -53,7 +53,7 @@ func (s *Service) sessionNotificationContext(ctx context.Context, sessionID stri
 		switch {
 		case err == nil:
 			out.Title = info.Title
-		case !errors.Is(err, store.ErrSessionNotFound):
+		case !errors.Is(err, store.ErrSessionNotFound) && !isExpiredContext(err):
 			s.log.Printf("notifier: load session %s metadata: %v", sessionID, err)
 		}
 	}
@@ -63,11 +63,20 @@ func (s *Service) sessionNotificationContext(ctx context.Context, sessionID stri
 	}
 	msgs, err := b.Messages(ctx)
 	if err != nil {
-		s.log.Printf("notifier: read transcript for session %s: %v", sessionID, err)
+		if !isExpiredContext(err) {
+			s.log.Printf("notifier: read transcript for session %s: %v", sessionID, err)
+		}
 		return out
 	}
 	out.LastAssistantText = lastAssistantText(msgs)
 	return out
+}
+
+// isExpiredContext reports whether err is the sendCtx deadline or a
+// shutdown cancellation rather than a genuine lookup failure — expected
+// noise on every shutdown/slow-lookup, not worth logging.
+func isExpiredContext(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // lastAssistantText returns the text of the newest assistant message

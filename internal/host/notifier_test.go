@@ -1,7 +1,9 @@
 package host
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -285,6 +287,58 @@ func TestNotifier_NilLoopSkipsWiring(t *testing.T) {
 
 	if got := len(svc.subscribers.subs); got != 0 {
 		t.Errorf("subscriber slots = %d, want 0 (no notifier subscriber)", got)
+	}
+}
+
+// TestSessionNotificationContext_SuppressesExpiredContextLogs pins that
+// a shutdown/timeout-cancelled lookup context degrades silently — only
+// a genuine lookup failure (TestSessionNotificationContext_LogsGenuineFailure)
+// should reach the log.
+func TestSessionNotificationContext_SuppressesExpiredContextLogs(t *testing.T) {
+	t.Parallel()
+	st, err := store.Open(filepath.Join(t.TempDir(), "host.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	var buf bytes.Buffer
+	svc := New(Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{},
+		SessionsStore:   st,
+		Log:             log.New(&buf, "", 0),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	svc.sessionNotificationContext(ctx, "s1")
+
+	if buf.Len() != 0 {
+		t.Errorf("expected no log output for a canceled lookup context, got %q", buf.String())
+	}
+}
+
+// TestSessionNotificationContext_LogsGenuineFailure is the control for
+// the above: a lookup failure that isn't context expiry must still log.
+func TestSessionNotificationContext_LogsGenuineFailure(t *testing.T) {
+	t.Parallel()
+	st, err := store.Open(filepath.Join(t.TempDir(), "host.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	st.Close() // forces GetSession to fail with a non-context error
+
+	var buf bytes.Buffer
+	svc := New(Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{},
+		SessionsStore:   st,
+		Log:             log.New(&buf, "", 0),
+	})
+
+	svc.sessionNotificationContext(context.Background(), "s1")
+
+	if buf.Len() == 0 {
+		t.Error("expected a genuine lookup failure to be logged")
 	}
 }
 
