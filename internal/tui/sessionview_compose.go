@@ -213,13 +213,9 @@ func (m *SessionViewModel) handleComposeKey(msg tea.KeyPressMsg) (tea.Model, tea
 	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
 		// Esc exits compose from any row. (An open picker handles its own
 		// Esc first via the picker blocks in updateCompose, so this only
-		// fires when no picker is open.)
-		if m.standalone {
-			return m, tea.Quit
-		}
-		// Compose is an overlay over whatever the right pane was
-		// previously showing — Esc restores that state, it doesn't
-		// route to the inbox screen.
+		// fires when no picker is open.) Compose is an overlay over
+		// whatever the right pane was previously showing — Esc restores
+		// that state, it doesn't route to the inbox screen.
 		return m, func() tea.Msg { return closeComposeMsg{} }
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+b"))):
@@ -461,9 +457,6 @@ func (m *SessionViewModel) viewCompose() tea.View {
 
 	// Help bar — context-sensitive to the focused row.
 	qLabel := "esc: back"
-	if m.standalone {
-		qLabel = "esc: quit"
-	}
 	var helpParts []string
 	switch m.composeFocus {
 	case focusBackend:

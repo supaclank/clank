@@ -141,32 +141,11 @@ func TestCompose_EnterWithPromptCreatesSession(t *testing.T) {
 	// But we verified it's non-nil, meaning launchSession passed validation.
 }
 
-func TestCompose_EscStandaloneQuits(t *testing.T) {
+func TestCompose_EscClosesOverlay(t *testing.T) {
 	t.Parallel()
 	m := NewSessionViewComposing(nil, "/tmp/project")
 	m.width = 80
 	m.height = 40
-	m.SetStandalone(true)
-
-	model, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	m = model.(*SessionViewModel)
-
-	if cmd == nil {
-		t.Fatal("expected a command from esc")
-	}
-	// In standalone mode, esc should quit.
-	msg := cmd()
-	if _, ok := msg.(tea.QuitMsg); !ok {
-		t.Fatalf("expected tea.QuitMsg, got %T", msg)
-	}
-}
-
-func TestCompose_EscNonStandaloneClosesOverlay(t *testing.T) {
-	t.Parallel()
-	m := NewSessionViewComposing(nil, "/tmp/project")
-	m.width = 80
-	m.height = 40
-	// standalone is false by default.
 
 	model, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	m = model.(*SessionViewModel)

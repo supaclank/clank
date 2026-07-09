@@ -71,7 +71,7 @@ func TestNewStartRequest_EnvWorktreeID(t *testing.T) {
 	t.Setenv(agent.EnvWorktreeID, "01JV7T7F9Y6XQ1R6M8R2W4K3NZ")
 	dir := t.TempDir()
 
-	req := newStartRequest(agent.BackendOpenCode, dir, "feat/x", "TICK-1", "do the thing")
+	req := newStartRequest(agent.BackendOpenCode, dir, "feat/x", "do the thing")
 	if req.GitRef.WorktreeID != "01JV7T7F9Y6XQ1R6M8R2W4K3NZ" {
 		t.Errorf("WorktreeID: got %q, want env override", req.GitRef.WorktreeID)
 	}
@@ -84,8 +84,8 @@ func TestNewStartRequest_EnvWorktreeID(t *testing.T) {
 	if req.Hostname != host.HostLocal {
 		t.Errorf("Hostname: got %q, want %q", req.Hostname, host.HostLocal)
 	}
-	if req.Prompt != "do the thing" || req.TicketID != "TICK-1" {
-		t.Errorf("Prompt/TicketID: got %q/%q", req.Prompt, req.TicketID)
+	if req.Prompt != "do the thing" {
+		t.Errorf("Prompt: got %q", req.Prompt)
 	}
 	if err := req.Validate(); err != nil {
 		t.Errorf("Validate: %v", err)
@@ -97,7 +97,7 @@ func TestNewStartRequest_EnvWorktreeID(t *testing.T) {
 func TestNewStartRequest_NonGitDirValidatesViaLocalPath(t *testing.T) {
 	t.Parallel()
 
-	req := newStartRequest(agent.BackendOpenCode, t.TempDir(), "", "", "hello")
+	req := newStartRequest(agent.BackendOpenCode, t.TempDir(), "", "hello")
 	if req.GitRef.WorktreeID != "" {
 		t.Errorf("WorktreeID: got %q, want empty for a non-git dir", req.GitRef.WorktreeID)
 	}
