@@ -36,6 +36,7 @@ func Command() *cobra.Command {
 	root.AddCommand(
 		codeCmd(),
 		pleaseCmd(),
+		fixCmd(),
 		previewCmd(),
 		inboxCmd(),
 		remoteCmd(),
