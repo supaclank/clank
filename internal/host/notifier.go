@@ -2,7 +2,13 @@ package host
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"time"
+
+	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/host/store"
+	"github.com/acksell/clank/internal/notifier"
 )
 
 // startNotifier subscribes to the subscriber registry and forwards
@@ -34,6 +40,67 @@ func (s *Service) startNotifier() {
 		}
 	}()
 	go s.notifierLoop.Run(ctx)
+}
+
+// sessionNotificationContext resolves the display metadata the notifier
+// stamps onto outgoing pushes: the session title from the sessions store
+// and the agent's latest reply from the backend transcript. Best-effort —
+// a failed lookup degrades the notification copy, never blocks delivery.
+func (s *Service) sessionNotificationContext(ctx context.Context, sessionID string) notifier.SessionContext {
+	var out notifier.SessionContext
+	if s.sessionsStore != nil {
+		info, err := s.sessionsStore.GetSession(ctx, sessionID)
+		switch {
+		case err == nil:
+			out.Title = info.Title
+		case !errors.Is(err, store.ErrSessionNotFound):
+			s.log.Printf("notifier: load session %s metadata: %v", sessionID, err)
+		}
+	}
+	b, ok := s.Session(sessionID)
+	if !ok {
+		return out
+	}
+	msgs, err := b.Messages(ctx)
+	if err != nil {
+		s.log.Printf("notifier: read transcript for session %s: %v", sessionID, err)
+		return out
+	}
+	out.LastAssistantText = lastAssistantText(msgs)
+	return out
+}
+
+// lastAssistantText returns the text of the newest assistant message
+// that has any, walking past tool-only tail messages.
+func lastAssistantText(msgs []agent.MessageData) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != "assistant" {
+			continue
+		}
+		if t := messageText(msgs[i]); t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
+// messageText concatenates a message's text parts; Content covers
+// backends that don't populate parts.
+func messageText(m agent.MessageData) string {
+	var b strings.Builder
+	for _, p := range m.Parts {
+		if p.Type != agent.PartText || p.Text == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(p.Text)
+	}
+	if b.Len() == 0 {
+		return m.Content
+	}
+	return b.String()
 }
 
 // stopNotifier halts the Loop and releases the Provider. Called from

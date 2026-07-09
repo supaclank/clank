@@ -2,6 +2,7 @@ package notifier
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -159,7 +160,7 @@ func TestClassify(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			n, ok := classify(tc.evt)
+			n, ok := classify(tc.evt, SessionContext{})
 			if ok != tc.wantOK {
 				t.Fatalf("classify returned ok=%v, want %v (n=%+v)", ok, tc.wantOK, n)
 			}
@@ -195,6 +196,121 @@ func TestClassify(t *testing.T) {
 	}
 }
 
+// TestClassify_SessionContextEnrichment documents why notifications
+// carry session metadata: a phone showing three "Agent finished" banners
+// is useless — the session name and the reply preview are what let the
+// user decide whether to pick up the phone.
+func TestClassify_SessionContextEnrichment(t *testing.T) {
+	t.Parallel()
+
+	idleEvt := agent.Event{
+		Type:      agent.EventStatusChange,
+		SessionID: "s1",
+		Data:      agent.StatusChangeData{OldStatus: agent.StatusBusy, NewStatus: agent.StatusIdle},
+	}
+	permEvt := agent.Event{
+		Type:      agent.EventPermission,
+		SessionID: "s1",
+		Data:      agent.PermissionData{RequestID: "r1", Tool: "bash", Description: "run `ls -la`"},
+	}
+	errEvt := agent.Event{
+		Type:      agent.EventError,
+		SessionID: "s1",
+		Data:      agent.ErrorData{Message: "model unavailable"},
+	}
+
+	cases := []struct {
+		name          string
+		evt           agent.Event
+		sctx          SessionContext
+		wantTitle     string
+		wantBody      string
+		wantDataTitle string
+	}{
+		{
+			name:          "idle_with_title_and_preview",
+			evt:           idleEvt,
+			sctx:          SessionContext{Title: "Fix login retry", LastAssistantText: "Done. The retry loop now backs off."},
+			wantTitle:     "Fix login retry",
+			wantBody:      "Done. The retry loop now backs off.",
+			wantDataTitle: "Fix login retry",
+		},
+		{
+			name:      "idle_with_title_only_keeps_finished_signal",
+			evt:       idleEvt,
+			sctx:      SessionContext{Title: "Fix login retry"},
+			wantTitle: "Fix login retry",
+			wantBody:  "Finished — tap to see the result.",
+		},
+		{
+			name:      "idle_with_preview_only",
+			evt:       idleEvt,
+			sctx:      SessionContext{LastAssistantText: "All tests pass."},
+			wantTitle: "Agent finished",
+			wantBody:  "All tests pass.",
+		},
+		{
+			name:      "idle_preview_collapses_newlines",
+			evt:       idleEvt,
+			sctx:      SessionContext{LastAssistantText: "Done.\n\n- fixed retry\n- added tests"},
+			wantTitle: "Agent finished",
+			wantBody:  "Done. - fixed retry - added tests",
+		},
+		{
+			name:          "permission_with_title_moves_kind_into_body",
+			evt:           permEvt,
+			sctx:          SessionContext{Title: "Fix login retry"},
+			wantTitle:     "Fix login retry",
+			wantBody:      "Permission requested: bash — run `ls -la`",
+			wantDataTitle: "Fix login retry",
+		},
+		{
+			name:          "error_with_title_moves_kind_into_body",
+			evt:           errEvt,
+			sctx:          SessionContext{Title: "Fix login retry"},
+			wantTitle:     "Fix login retry",
+			wantBody:      "Agent error — model unavailable",
+			wantDataTitle: "Fix login retry",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			n, ok := classify(tc.evt, tc.sctx)
+			if !ok {
+				t.Fatal("classify rejected a notification-worthy event")
+			}
+			if n.Title != tc.wantTitle {
+				t.Errorf("Title = %q, want %q", n.Title, tc.wantTitle)
+			}
+			if n.Body != tc.wantBody {
+				t.Errorf("Body = %q, want %q", n.Body, tc.wantBody)
+			}
+			if tc.wantDataTitle != "" {
+				if got := n.Data["session_title"]; got != tc.wantDataTitle {
+					t.Errorf("Data[session_title] = %v, want %q", got, tc.wantDataTitle)
+				}
+			}
+		})
+	}
+}
+
+func TestPreviewText_TruncatesLongReplies(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("na ", 200)
+	got := previewText(long)
+	if r := []rune(got); len(r) != maxBodyPreviewLen {
+		t.Errorf("len = %d runes, want %d", len(r), maxBodyPreviewLen)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("truncated preview must end with ellipsis, got %q", got[len(got)-8:])
+	}
+	if short := previewText("short"); short != "short" {
+		t.Errorf("short input must pass through, got %q", short)
+	}
+}
+
 func TestClassify_ZeroTimestampDefaultsToNow(t *testing.T) {
 	t.Parallel()
 	evt := agent.Event{
@@ -203,7 +319,7 @@ func TestClassify_ZeroTimestampDefaultsToNow(t *testing.T) {
 		Data:      agent.StatusChangeData{OldStatus: agent.StatusBusy, NewStatus: agent.StatusIdle},
 	}
 	before := time.Now()
-	n, ok := classify(evt)
+	n, ok := classify(evt, SessionContext{})
 	after := time.Now()
 	if !ok {
 		t.Fatal("expected classify to accept the event")
@@ -277,6 +393,63 @@ func TestLoop_DeliversNotificationWorthyEvents(t *testing.T) {
 
 	if got := waitForSent(rec, 2, 500*time.Millisecond); got != 2 {
 		t.Fatalf("got %d notifications, want 2", got)
+	}
+}
+
+// TestLoop_SessionContextEnrichesDeliveredNotification pins the wiring:
+// an installed SessionContextFunc is consulted for notification-worthy
+// events only (not for every chatty part/message event — the lookup
+// hits the session store and transcript), and its result shows up in
+// what the Provider receives.
+func TestLoop_SessionContextEnrichesDeliveredNotification(t *testing.T) {
+	t.Parallel()
+	rec := &recordingProvider{}
+	loop := New(Config{Provider: rec})
+
+	var mu sync.Mutex
+	lookups := 0
+	loop.SetSessionContext(func(_ context.Context, sessionID string) SessionContext {
+		mu.Lock()
+		lookups++
+		mu.Unlock()
+		if sessionID != "s1" {
+			t.Errorf("lookup for session %q, want s1", sessionID)
+		}
+		return SessionContext{Title: "Fix login retry", LastAssistantText: "Done, tests pass."}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go loop.Run(ctx)
+	t.Cleanup(func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer stopCancel()
+		_ = loop.Stop(stopCtx)
+	})
+
+	loop.OnEvent(agent.Event{Type: agent.EventPartUpdate, SessionID: "s1", Data: agent.PartUpdateData{}}) // dropped, no lookup
+	loop.OnEvent(agent.Event{
+		Type:      agent.EventStatusChange,
+		SessionID: "s1",
+		Data:      agent.StatusChangeData{OldStatus: agent.StatusBusy, NewStatus: agent.StatusIdle},
+	})
+
+	if got := waitForSent(rec, 1, 500*time.Millisecond); got != 1 {
+		t.Fatalf("got %d notifications, want 1", got)
+	}
+	rec.mu.Lock()
+	n := rec.sent[0]
+	rec.mu.Unlock()
+	if n.Title != "Fix login retry" {
+		t.Errorf("Title = %q, want session title", n.Title)
+	}
+	if n.Body != "Done, tests pass." {
+		t.Errorf("Body = %q, want last-reply preview", n.Body)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if lookups != 1 {
+		t.Errorf("lookup count = %d, want 1 (dropped events must not trigger lookups)", lookups)
 	}
 }
 

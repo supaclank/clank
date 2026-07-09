@@ -2,11 +2,13 @@ package host
 
 import (
 	"context"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/host/store"
 	"github.com/acksell/clank/internal/notifier"
 )
 
@@ -122,6 +124,135 @@ func TestNotifier_DropsChattyEvents(t *testing.T) {
 	}
 	if got := rec.sentSnapshot()[0].Kind; got != notifier.KindPermission {
 		t.Errorf("Kind = %q, want %q", got, notifier.KindPermission)
+	}
+}
+
+// transcriptBackend is a fixture SessionBackend whose Messages returns
+// a canned transcript. Only the notifier's read path is exercised.
+type transcriptBackend struct {
+	noopBackendForNotifier
+	msgs []agent.MessageData
+}
+
+func (b *transcriptBackend) Messages(_ context.Context) ([]agent.MessageData, error) {
+	return b.msgs, nil
+}
+
+// noopBackendForNotifier satisfies the parts of agent.SessionBackend
+// the notifier tests never touch.
+type noopBackendForNotifier struct{}
+
+func (noopBackendForNotifier) Open(_ context.Context) error                          { return nil }
+func (noopBackendForNotifier) Send(_ context.Context, _ agent.SendMessageOpts) error { return nil }
+func (noopBackendForNotifier) OpenAndSend(_ context.Context, _ agent.SendMessageOpts) error {
+	return nil
+}
+func (noopBackendForNotifier) Abort(_ context.Context) error { return nil }
+func (noopBackendForNotifier) Stop() error                   { return nil }
+func (noopBackendForNotifier) Events() <-chan agent.Event {
+	ch := make(chan agent.Event)
+	close(ch)
+	return ch
+}
+func (noopBackendForNotifier) Status() agent.SessionStatus { return agent.StatusIdle }
+func (noopBackendForNotifier) SessionID() string           { return "" }
+func (noopBackendForNotifier) Messages(_ context.Context) ([]agent.MessageData, error) {
+	return nil, nil
+}
+func (noopBackendForNotifier) Revert(_ context.Context, _ string) error { return nil }
+func (noopBackendForNotifier) Fork(_ context.Context, _ string) (agent.ForkResult, error) {
+	return agent.ForkResult{}, nil
+}
+func (noopBackendForNotifier) RespondPermission(_ context.Context, _ string, _ bool, _ string) error {
+	return nil
+}
+
+// TestNotifier_IdleNotificationCarriesTitleAndLastReply pins the
+// end-to-end enrichment: a session with a persisted title and a live
+// backend transcript produces an idle push titled with the session name
+// and bodied with the agent's final reply — not the generic
+// "Agent finished / Tap to see the result." copy.
+func TestNotifier_IdleNotificationCarriesTitleAndLastReply(t *testing.T) {
+	t.Parallel()
+	st, err := store.Open(filepath.Join(t.TempDir(), "host.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	rec := &recordingNotifierProvider{}
+	loop := notifier.New(notifier.Config{Provider: rec})
+	svc := New(Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{},
+		SessionsStore:   st,
+		NotifierLoop:    loop,
+	})
+	if err := svc.Init(context.Background(), func(agent.BackendType) ([]string, error) { return nil, nil }); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(svc.Shutdown)
+
+	if err := st.UpsertSession(context.Background(), agent.SessionInfo{
+		ID:      "s1",
+		Backend: agent.BackendClaudeCode,
+		Status:  agent.StatusBusy,
+		Title:   "Fix login retry",
+	}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	svc.mu.Lock()
+	svc.sessions["s1"] = &transcriptBackend{msgs: []agent.MessageData{
+		{Role: "user", Content: "please fix the retry loop"},
+		{Role: "assistant", Parts: []agent.Part{
+			{Type: agent.PartText, Text: "Fixed the retry loop and added a regression test."},
+			{Type: agent.PartToolCall, Tool: "bash"},
+		}},
+	}}
+	svc.mu.Unlock()
+
+	svc.subscribers.Broadcast(agent.Event{
+		Type:      agent.EventStatusChange,
+		SessionID: "s1",
+		Data:      agent.StatusChangeData{OldStatus: agent.StatusBusy, NewStatus: agent.StatusIdle},
+	})
+
+	if got := waitForNotifierSent(rec, 1, 500*time.Millisecond); got != 1 {
+		t.Fatalf("got %d notifications, want 1", got)
+	}
+	n := rec.sentSnapshot()[0]
+	if n.Title != "Fix login retry" {
+		t.Errorf("Title = %q, want session title", n.Title)
+	}
+	if n.Body != "Fixed the retry loop and added a regression test." {
+		t.Errorf("Body = %q, want last assistant reply", n.Body)
+	}
+	if got := n.Data["session_title"]; got != "Fix login retry" {
+		t.Errorf("Data[session_title] = %v, want session title", got)
+	}
+}
+
+// TestLastAssistantText documents the transcript-walk rules: the newest
+// assistant message with text wins, tool-only tail messages are skipped,
+// and Content is used when a backend doesn't populate parts.
+func TestLastAssistantText(t *testing.T) {
+	t.Parallel()
+	msgs := []agent.MessageData{
+		{Role: "assistant", Content: "older reply"},
+		{Role: "assistant", Parts: []agent.Part{
+			{Type: agent.PartThinking, Text: "hmm"},
+			{Type: agent.PartText, Text: "final answer"},
+		}},
+		{Role: "assistant", Parts: []agent.Part{{Type: agent.PartToolCall, Tool: "bash"}}},
+		{Role: "user", Content: "thanks"},
+	}
+	if got := lastAssistantText(msgs); got != "final answer" {
+		t.Errorf("lastAssistantText = %q, want %q", got, "final answer")
+	}
+	if got := lastAssistantText([]agent.MessageData{{Role: "assistant", Content: "from content"}}); got != "from content" {
+		t.Errorf("content fallback = %q, want %q", got, "from content")
+	}
+	if got := lastAssistantText(nil); got != "" {
+		t.Errorf("empty transcript = %q, want empty", got)
 	}
 }
 

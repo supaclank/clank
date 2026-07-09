@@ -217,6 +217,9 @@ func New(opts Options) *Service {
 	}
 	if opts.NotifierLoop != nil {
 		s.notifierLoop = opts.NotifierLoop
+		// Installed before Init starts the Loop's worker (see startNotifier),
+		// as SetSessionContext requires.
+		s.notifierLoop.SetSessionContext(s.sessionNotificationContext)
 	}
 
 	// Preview manager. No keepalive wiring — Fly's per-machine

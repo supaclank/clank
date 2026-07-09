@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,6 +47,20 @@ type Notification struct {
 	Data       map[string]any `json:"data,omitempty"`
 	OccurredAt time.Time      `json:"occurred_at"`
 }
+
+// SessionContext is display metadata for the session a notification is
+// about, resolved at delivery time. Zero values mean "unknown" and the
+// notification keeps its generic copy.
+type SessionContext struct {
+	Title             string // Session title (AI-generated or user-set)
+	LastAssistantText string // Plain text of the agent's latest reply
+}
+
+// SessionContextFunc resolves SessionContext for a session. Called from
+// the Loop's worker goroutine only for notification-worthy events, under
+// the same timeout budget as Provider.Send. Implementations must treat
+// failures as "unknown" (return the zero value), never block delivery.
+type SessionContextFunc func(ctx context.Context, sessionID string) SessionContext
 
 // Provider delivers Notifications to the outside world. Implementations
 // live under internal/notifier/<name>/. Send is called serially from
@@ -80,9 +95,10 @@ type Config struct {
 // Loop is the event-driven notifier. Construct with New, drive events
 // in via OnEvent, run the worker with Run, stop with Stop.
 type Loop struct {
-	provider    Provider
-	log         *log.Logger
-	sendTimeout time.Duration
+	provider       Provider
+	log            *log.Logger
+	sendTimeout    time.Duration
+	sessionContext SessionContextFunc
 
 	events chan agent.Event
 	stop   chan struct{}
@@ -117,6 +133,12 @@ func New(cfg Config) *Loop {
 		done:        make(chan struct{}),
 	}
 }
+
+// SetSessionContext installs the lookup used to enrich notifications
+// with session display metadata (title, last assistant reply). Nil
+// keeps the generic copy. Must be called before Run — the worker reads
+// the field unlocked.
+func (l *Loop) SetSessionContext(f SessionContextFunc) { l.sessionContext = f }
 
 // OnEvent enqueues evt for asynchronous classification + delivery.
 // Non-blocking: if the worker's input queue is full, evt is dropped
@@ -173,12 +195,20 @@ func (l *Loop) drainAndExit(ctx context.Context) {
 }
 
 func (l *Loop) handle(ctx context.Context, evt agent.Event) {
-	n, ok := classify(evt)
+	n, ok := classify(evt, SessionContext{})
 	if !ok {
 		return
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, l.sendTimeout)
 	defer cancel()
+	// The context lookup runs only for notification-worthy events (the
+	// zero-context classify above is the filter) and shares the send
+	// timeout budget. Re-classifying keeps all copy decisions in one place.
+	if l.sessionContext != nil {
+		if sctx := l.sessionContext(sendCtx, evt.SessionID); sctx != (SessionContext{}) {
+			n, _ = classify(evt, sctx)
+		}
+	}
 	if err := l.provider.Send(sendCtx, n); err != nil {
 		l.log.Printf("provider send %s for session %s: %v", n.Kind, n.SessionID, err)
 	}
@@ -203,9 +233,9 @@ func (l *Loop) Stop(ctx context.Context) error {
 	return l.closeErr
 }
 
-// classify decides whether evt should produce a Notification. Pure
-// function — no Provider calls, no clock other than the event's own
-// Timestamp — so it's unit-testable in isolation.
+// classify decides whether evt should produce a Notification and builds
+// its copy. Pure function — no Provider calls, no clock other than the
+// event's own Timestamp — so it's unit-testable in isolation.
 //
 // Mappings:
 //   - EventStatusChange to StatusIdle from StatusBusy/StatusStarting
@@ -213,13 +243,17 @@ func (l *Loop) Stop(ctx context.Context) error {
 //     normalization, see host.normalizeStaleSessionStatus) and other
 //     non-busy→idle transitions to avoid spurious "agent finished"
 //     pushes.
-//   - EventPermission → KindPermission. Title from the tool name,
-//     body from the description, Data carries request_id so the
+//   - EventPermission → KindPermission. Data carries request_id so the
 //     mobile client can prefill the approval UI on deep-link.
 //   - EventError → KindError.
 //   - Everything else: dropped (message/part/title/voice/etc. are too
 //     chatty for push).
-func classify(evt agent.Event) (Notification, bool) {
+//
+// Copy layout follows the messaging-app convention: when sctx names the
+// session, the title is the session name and what-happened moves into
+// the body; with a zero sctx the kind-generic copy is used. Data always
+// carries session_title when known so clients can render it regardless.
+func classify(evt agent.Event, sctx SessionContext) (Notification, bool) {
 	when := evt.Timestamp
 	if when.IsZero() {
 		when = time.Now()
@@ -236,11 +270,21 @@ func classify(evt agent.Event) (Notification, bool) {
 		if d.OldStatus != agent.StatusBusy && d.OldStatus != agent.StatusStarting {
 			return Notification{}, false
 		}
+		title := "Agent finished"
+		body := "Tap to see the result."
+		if sctx.Title != "" {
+			title = sctx.Title
+			body = "Finished — tap to see the result."
+		}
+		if preview := previewText(sctx.LastAssistantText); preview != "" {
+			body = preview
+		}
 		return Notification{
 			SessionID:  evt.SessionID,
 			Kind:       KindIdle,
-			Title:      "Agent finished",
-			Body:       "Tap to see the result.",
+			Title:      title,
+			Body:       body,
+			Data:       sessionTitleData(nil, sctx),
 			OccurredAt: when,
 		}, true
 	case agent.EventPermission:
@@ -256,12 +300,16 @@ func classify(evt agent.Event) (Notification, bool) {
 		if body == "" {
 			body = "Tap to review and approve."
 		}
+		if sctx.Title != "" {
+			body = fmt.Sprintf("%s — %s", title, body)
+			title = sctx.Title
+		}
 		return Notification{
 			SessionID:  evt.SessionID,
 			Kind:       KindPermission,
 			Title:      title,
 			Body:       body,
-			Data:       map[string]any{"request_id": d.RequestID, "tool": d.Tool},
+			Data:       sessionTitleData(map[string]any{"request_id": d.RequestID, "tool": d.Tool}, sctx),
 			OccurredAt: when,
 		}, true
 	case agent.EventError:
@@ -269,18 +317,57 @@ func classify(evt agent.Event) (Notification, bool) {
 		if !ok {
 			return Notification{}, false
 		}
+		title := "Agent error"
 		body := d.Message
 		if body == "" {
 			body = "Tap to see details."
 		}
+		if sctx.Title != "" {
+			body = fmt.Sprintf("Agent error — %s", body)
+			title = sctx.Title
+		}
 		return Notification{
 			SessionID:  evt.SessionID,
 			Kind:       KindError,
-			Title:      "Agent error",
+			Title:      title,
 			Body:       body,
+			Data:       sessionTitleData(nil, sctx),
 			OccurredAt: when,
 		}, true
 	default:
 		return Notification{}, false
 	}
+}
+
+// sessionTitleData stamps the session title into a notification's Data
+// map when known, allocating the map only if needed.
+func sessionTitleData(data map[string]any, sctx SessionContext) map[string]any {
+	if sctx.Title == "" {
+		return data
+	}
+	if data == nil {
+		data = make(map[string]any, 1)
+	}
+	data["session_title"] = sctx.Title
+	return data
+}
+
+// maxBodyPreviewLen caps the last-reply preview in a notification body.
+// Push banners show ~2 lines; OSes truncate the rest anyway, and Expo
+// rejects payloads over 4 KiB.
+const maxBodyPreviewLen = 180
+
+// previewText flattens s into a single-line preview: whitespace runs
+// (including newlines) collapse to one space, then the result is
+// truncated to maxBodyPreviewLen runes with an ellipsis.
+func previewText(s string) string {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return ""
+	}
+	out := strings.Join(fields, " ")
+	if r := []rune(out); len(r) > maxBodyPreviewLen {
+		out = string(r[:maxBodyPreviewLen-1]) + "…"
+	}
+	return out
 }
