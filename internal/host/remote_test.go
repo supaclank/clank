@@ -103,6 +103,69 @@ func TestRunPush_DivergedIsTyped(t *testing.T) {
 	}
 }
 
+// TestRunPush_RefusesUnrelatedRemote is the wrong-repo safety net for
+// the push flow, mirroring CreatePR's: when the remote shares no
+// history with the worktree (origin points at the wrong repo), the
+// push must refuse with ErrNoCommonAncestor and leak nothing. Uses a
+// branch that doesn't exist on the remote — the create-new-branch
+// push git itself would happily accept.
+func TestRunPush_RefusesUnrelatedRemote(t *testing.T) {
+	t.Parallel()
+	f := newRemoteFixture(t)
+
+	// A bare repo on a completely independent history — separate
+	// `git init` lineage, so no shared commit SHAs.
+	root := t.TempDir()
+	wrongSeed := filepath.Join(root, "wrong-seed")
+	gitRun(t, "", "init", "-q", "-b", "main", wrongSeed)
+	configGit(t, wrongSeed)
+	writeFile(t, filepath.Join(wrongSeed, "other.txt"), "unrelated")
+	gitRun(t, wrongSeed, "add", ".")
+	gitRun(t, wrongSeed, "commit", "-qm", "their base")
+	wrongBare := filepath.Join(root, "wrong.git")
+	gitRun(t, "", "clone", "-q", "--bare", wrongSeed, wrongBare)
+
+	// Local work on a branch the wrong remote has never seen.
+	gitRun(t, f.rc.workdir, "checkout", "-q", "-b", "feat-x")
+	f.rc.branch = "feat-x"
+	f.rc.pushURL = wrongBare
+	writeFile(t, filepath.Join(f.rc.workdir, "secret.txt"), "must not leak")
+
+	refsBefore := gitRun(t, wrongBare, "show-ref")
+
+	_, err := runPush(f.rc)
+	if !errors.Is(err, ErrNoCommonAncestor) {
+		t.Fatalf("runPush err = %v, want ErrNoCommonAncestor", err)
+	}
+	if refsAfter := gitRun(t, wrongBare, "show-ref"); refsAfter != refsBefore {
+		t.Errorf("wrong remote's refs changed after refused push!\nbefore:\n%s\nafter:\n%s", refsBefore, refsAfter)
+	}
+}
+
+// TestRunPush_AllowsEmptyRemote pins the deliberate carve-out: a
+// remote with no HEAD yet (fresh empty repo, manual first push) has
+// no history to diverge from and must not be blocked by the
+// common-ancestry guard.
+func TestRunPush_AllowsEmptyRemote(t *testing.T) {
+	t.Parallel()
+	f := newRemoteFixture(t)
+	emptyBare := filepath.Join(t.TempDir(), "empty.git")
+	gitRun(t, "", "init", "-q", "--bare", emptyBare)
+	f.rc.pushURL = emptyBare
+	writeFile(t, filepath.Join(f.rc.workdir, "new.txt"), "first push")
+
+	res, err := runPush(f.rc)
+	if err != nil {
+		t.Fatalf("runPush to empty remote: %v", err)
+	}
+	if !res.Pushed {
+		t.Fatalf("res = %+v, want Pushed", res)
+	}
+	if got := gitRun(t, emptyBare, "rev-parse", "main"); got != res.HeadSHA {
+		t.Errorf("empty remote main = %s, want %s", got, res.HeadSHA)
+	}
+}
+
 func TestRunPull_FastForward(t *testing.T) {
 	t.Parallel()
 	f := newRemoteFixture(t)

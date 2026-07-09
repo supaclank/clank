@@ -133,6 +133,32 @@ func (rc remoteContext) fetchBranch() error {
 	return fmt.Errorf("fetch remote branch %q: %w", rc.branch, err)
 }
 
+// verifyCommonHistory refuses a push destination whose history is
+// unrelated to the worktree's — the same wrong-repo safety net
+// CreatePR has. Fetches the remote's HEAD (its default branch; the
+// worktree's own branch may not exist there yet) and requires a
+// merge-base with local HEAD: unrelated repos share no commits, so an
+// empty merge-base almost certainly means origin points at the wrong
+// repo. A remote with no HEAD at all (fresh empty repo) passes —
+// there is no history to diverge from, and a manual first push to a
+// just-created repo is legitimate.
+func (rc remoteContext) verifyCommonHistory() error {
+	if err := git.Fetch(rc.workdir, rc.pushURL, "HEAD", git.PushOptions{ExtraHeader: rc.authHeader}); err != nil {
+		if isNoRemoteRef(err) {
+			return nil
+		}
+		return fmt.Errorf("%w: %v", ErrBaseRefUnreachable, err)
+	}
+	mb, err := git.MergeBase(rc.workdir, "FETCH_HEAD", "HEAD")
+	if err != nil {
+		return fmt.Errorf("verify common history: %w", err)
+	}
+	if mb == "" {
+		return ErrNoCommonAncestor
+	}
+	return nil
+}
+
 // classifyRemoteState maps ahead/behind counts + dirtiness to a
 // RemoteState. A merge-in-progress (RemoteStateConflict) is detected
 // separately by the caller via git.IsMerging.
