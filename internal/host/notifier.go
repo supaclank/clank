@@ -131,9 +131,12 @@ func isExpiredContext(err error) bool {
 //
 // Mappings:
 //   - EventStatusChange to StatusIdle from StatusBusy → KindIdle.
-//     Busy→Idle is the only genuine turn-finish on any backend: the
-//     create path goes Starting→Busy→Idle, and OpenCode never sits in
-//     Starting at all. Everything else reaching Idle is ignored —
+//     Busy→Idle is the only Idle transition we treat as notification-
+//     worthy (this includes a user-initiated Abort, see
+//     ClaudeCodeBackend.handleResult — reaching Idle from Busy is enough,
+//     regardless of how the turn ended). The create path goes
+//     Starting→Busy→Idle, and OpenCode never sits in Starting at all.
+//     Everything else reaching Idle is ignored —
 //     idle→idle (daemon-restart normalization, see
 //     normalizeStaleSessionStatus) and starting→idle (the re-attach
 //     handshake when Open rehydrates an existing session, e.g. the user
