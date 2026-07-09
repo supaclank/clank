@@ -47,7 +47,7 @@ func TestListPullRequests_TrimsAndAuthenticates(t *testing.T) {
 	}
 	got := pulls[0]
 	if got.Number != 7 || got.Title != "Add dark mode" || got.State != "open" ||
-		got.Draft || got.HeadBranch != "dark-mode" || got.BaseBranch != "main" ||
+		got.Draft || got.HeadBranch != "dark-mode" || got.HeadSHA != "abc" || got.BaseBranch != "main" ||
 		got.Author != "octocat" || got.HTMLURL != "https://github.com/acme/api/pull/7" {
 		t.Errorf("pulls[0] = %+v, unexpected fields", got)
 	}

@@ -117,27 +117,35 @@ func TestRepoOverview_PRHalf(t *testing.T) {
 
 	// Stub the GitHub API and re-point the canonical's origin at a
 	// github-shaped URL so Origin parses. No ?fetch=1 in this test — the
-	// URL is fake; only the API base is real.
+	// URL is fake; only the API base is real. PR #7's head has check
+	// runs; PR #8's check-runs call fails (per-PR best-effort).
 	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/acksell/api/pulls" {
-			http.NotFound(w, r)
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Query().Get("state") == "closed" {
-			_, _ = w.Write([]byte(`[]`))
-			return
+		switch r.URL.Path {
+		case "/repos/acksell/api/pulls":
+			if r.URL.Query().Get("state") == "closed" {
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
+			_, _ = w.Write([]byte(`[
+				{"number":7,"title":"My PR","state":"open","draft":false,
+				 "html_url":"https://github.com/acksell/api/pull/7",
+				 "head":{"ref":"main","sha":"sha7"},"base":{"ref":"main"},
+				 "user":{"login":"acksell"},"updated_at":"2026-07-01T10:00:00Z"},
+				{"number":8,"title":"Colleague PR","state":"open","draft":true,
+				 "html_url":"https://github.com/acksell/api/pull/8",
+				 "head":{"ref":"colleagues-branch","sha":"sha8"},"base":{"ref":"main"},
+				 "user":{"login":"alice"},"updated_at":"2026-07-01T09:00:00Z"}
+			]`))
+		case "/repos/acksell/api/commits/sha7/check-runs":
+			_, _ = w.Write([]byte(`{"total_count":2,"check_runs":[
+				{"name":"build","status":"completed","conclusion":"success"},
+				{"name":"test","status":"completed","conclusion":"failure"}]}`))
+		case "/repos/acksell/api/commits/sha8/check-runs":
+			http.Error(w, "boom", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
 		}
-		_, _ = w.Write([]byte(`[
-			{"number":7,"title":"My PR","state":"open","draft":false,
-			 "html_url":"https://github.com/acksell/api/pull/7",
-			 "head":{"ref":"main"},"base":{"ref":"main"},
-			 "user":{"login":"acksell"},"updated_at":"2026-07-01T10:00:00Z"},
-			{"number":8,"title":"Colleague PR","state":"open","draft":true,
-			 "html_url":"https://github.com/acksell/api/pull/8",
-			 "head":{"ref":"colleagues-branch"},"base":{"ref":"main"},
-			 "user":{"login":"alice"},"updated_at":"2026-07-01T09:00:00Z"}
-		]`))
 	}))
 	t.Cleanup(apiSrv.Close)
 	svc.GitHub().SetAPIBaseURL(apiSrv.URL)
@@ -164,12 +172,19 @@ func TestRepoOverview_PRHalf(t *testing.T) {
 	if main.PR == nil || main.PR.Number != 7 || !main.PR.IsMine || main.PR.State != host.OverviewPRStateOpen {
 		t.Errorf("main.PR = %+v, want open #7 is_mine", main.PR)
 	}
+	wantChecks := githubpkg.CheckRollup{State: githubpkg.CheckStateFailing, Passed: 1, Failed: 1, Total: 2}
+	if main.PR.Checks == nil || *main.PR.Checks != wantChecks {
+		t.Errorf("main.PR.Checks = %+v, want %+v", main.PR.Checks, wantChecks)
+	}
 	colleague, ok := byBranch["colleagues-branch"]
 	if !ok {
 		t.Fatal("PR-only head missing from overview")
 	}
 	if colleague.Loaded || colleague.PR == nil || colleague.PR.Number != 8 || colleague.PR.IsMine || !colleague.PR.Draft {
 		t.Errorf("colleague entry = %+v, want unloaded draft PR #8 by alice", colleague)
+	}
+	if colleague.PR.Checks != nil {
+		t.Errorf("colleague.PR.Checks = %+v, want nil (rollup fetch failed, PR still annotated)", colleague.PR.Checks)
 	}
 
 	// GitHub down → git half intact, no PR annotations, no error.
