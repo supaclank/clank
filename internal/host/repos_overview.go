@@ -13,15 +13,17 @@ package host
 // existing origin/* refs). ?fetch=1 adds exactly ONE authed all-heads
 // fetch in the canonical, under the repo lock, so behind-counts are
 // current. The PR half is two GitHub API list calls (open + recently
-// closed), best-effort — an API failure degrades to what's built so far
-// rather than failing the screen (mirroring attachPR in
-// remote_status.go).
+// closed) plus one bounded check-rollup call per open PR head, all
+// best-effort — an API failure degrades to what's built so far (or to
+// PRs without CI status) rather than failing the screen (mirroring
+// attachPR in remote_status.go).
 
 import (
 	"context"
 	"fmt"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
@@ -44,15 +46,18 @@ const (
 // the PR author against the connected GitHub login — the Drafts tab's
 // "mine vs everyone" filter bit. State merged/closed marks a leftover
 // local branch as finished work rather than an in-progress draft.
+// Checks is the head commit's CI rollup, absent when the PR has no
+// check runs (or the rollup fetch failed).
 type OverviewPR struct {
-	Number    int             `json:"number"`
-	Title     string          `json:"title"`
-	State     OverviewPRState `json:"state"`
-	Draft     bool            `json:"draft"`
-	Author    string          `json:"author"`
-	URL       string          `json:"url"`
-	IsMine    bool            `json:"is_mine"`
-	UpdatedAt time.Time       `json:"updated_at,omitzero"`
+	Number    int                    `json:"number"`
+	Title     string                 `json:"title"`
+	State     OverviewPRState        `json:"state"`
+	Draft     bool                   `json:"draft"`
+	Author    string                 `json:"author"`
+	URL       string                 `json:"url"`
+	IsMine    bool                   `json:"is_mine"`
+	UpdatedAt time.Time              `json:"updated_at,omitzero"`
+	Checks    *githubpkg.CheckRollup `json:"checks,omitempty"`
 }
 
 // RepoBranchOverview is one work item: a branch (loaded or not) and/or
@@ -250,6 +255,9 @@ func (s *Service) attachRepoPRs(ctx context.Context, result *RepoOverviewResult)
 	for _, pr := range open {
 		byHead[pr.HeadBranch] = wireOverviewPR(pr, creds.GitHubLogin)
 	}
+	// Checks are fetched for open PRs only — a merged/closed PR's CI
+	// verdict is history, not a work signal worth the extra calls.
+	s.attachPRChecks(ctx, creds.AccessToken, result.Origin, open, byHead)
 	for i := range result.Branches {
 		if pr, ok := byHead[result.Branches[i].Branch]; ok {
 			result.Branches[i].PR = pr
@@ -319,5 +327,52 @@ func wireOverviewPR(pr githubpkg.PullRequestSummary, login string) *OverviewPR {
 		URL:       pr.HTMLURL,
 		IsMine:    login != "" && pr.Author == login,
 		UpdatedAt: pr.UpdatedAt,
+	}
+}
+
+// checkRollupConcurrency bounds the per-PR check-run fan-out so a repo
+// with many open PRs doesn't burst the GitHub API.
+const checkRollupConcurrency = 8
+
+// attachPRChecks annotates each overview PR with its head commit's CI
+// rollup, one bounded Checks API call per PR. Best-effort per PR — a
+// failed rollup leaves that PR without CI status; failures are logged
+// once, aggregated.
+func (s *Service) attachPRChecks(ctx context.Context, token string, origin *RepoOrigin, pulls []githubpkg.PullRequestSummary, byHead map[string]*OverviewPR) {
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, checkRollupConcurrency)
+	var mu sync.Mutex
+	failed := 0
+	var firstErr error
+	for _, pull := range pulls {
+		pr := byHead[pull.HeadBranch]
+		// byHead keeps one entry per head branch name; a PR that lost that
+		// slot to another PR sharing the same head branch must not fetch
+		// into the survivor's Checks field (data race + wrong association).
+		if pr == nil || pr.Number != pull.Number || pull.HeadSHA == "" {
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			rollup, err := s.github.CheckRollupForRef(ctx, token, origin.Owner, origin.Repo, pull.HeadSHA)
+			if err != nil {
+				mu.Lock()
+				failed++
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+				return
+			}
+			pr.Checks = rollup
+		}()
+	}
+	wg.Wait()
+	if failed > 0 {
+		s.log.Printf("repo overview: check rollups for %s/%s: %d of %d failed, first: %v",
+			origin.Owner, origin.Repo, failed, len(pulls), firstErr)
 	}
 }
