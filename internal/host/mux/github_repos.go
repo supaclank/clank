@@ -109,7 +109,7 @@ func (m *Mux) handleGitHubListPulls(w http.ResponseWriter, r *http.Request) {
 		writeGitHubFlowErr(w, err)
 		return
 	}
-	pulls, err := g.ListPullRequests(r.Context(), token, owner, repo)
+	pulls, err := g.ListPullRequests(r.Context(), token, owner, repo, githubpkg.PRListStateOpen)
 	if err != nil {
 		writeError(w, err)
 		return
