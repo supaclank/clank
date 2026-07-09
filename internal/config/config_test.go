@@ -403,3 +403,36 @@ func TestPreferences_OmitEmpty(t *testing.T) {
 		t.Errorf("model should be omitted when nil, got: %s", s)
 	}
 }
+
+// TestPreferences_SidebarHiddenRoundTrip verifies the 'w' sidebar toggle
+// survives a save/load cycle, and that the default (visible) writes no
+// key at all so pre-existing preference files keep their meaning.
+func TestPreferences_SidebarHiddenRoundTrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	if err := SavePreferences(Preferences{SidebarHidden: true}); err != nil {
+		t.Fatalf("SavePreferences: %v", err)
+	}
+	got, err := LoadPreferences()
+	if err != nil {
+		t.Fatalf("LoadPreferences: %v", err)
+	}
+	if !got.SidebarHidden {
+		t.Error("SidebarHidden: got false, want true")
+	}
+
+	if err := SavePreferences(Preferences{}); err != nil {
+		t.Fatalf("SavePreferences: %v", err)
+	}
+	path, err := preferencesPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "sidebar_hidden") {
+		t.Errorf("sidebar_hidden should be omitted when false, got: %s", data)
+	}
+}
