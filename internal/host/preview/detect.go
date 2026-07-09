@@ -11,29 +11,40 @@ import (
 // expoCmdTemplate is the argv that spawns Metro for a detected Expo
 // project ("%d" is the allocated port, substituted by renderArgs).
 //
-// We wrap the invocation in `sh -c` to run `npm install` first: a
+// We wrap the invocation in `sh -c` to run `bun install` first: a
 // materialized worktree only carries what's tracked in git, and
 // node_modules is gitignored, so the first /preview/start on a fresh
-// worktree must install before Metro can start. `npm install` is a fast
+// worktree must install before Metro can start. The install is a fast
 // no-op once node_modules is already present.
+//
+// bun is the installer only — Metro still runs under Node via `npx expo`.
+// bun over npm because it hard-links node_modules from its global cache:
+// sibling worktrees of the same repo cost links instead of gigabytes of
+// small-file writes, which is what an I/O-constrained sprite needs (the
+// cache lives under $HOME, same filesystem as the worktrees; a
+// cross-device cache would silently degrade to copies). `--no-save` keeps
+// bun from touching package.json — but when the repo has a
+// package-lock.json, bun migrates it and writes a bun.lock EVEN under
+// --no-save (verified on bun 1.3.11/1.3.14; no flag disables it), so the
+// bootstrap deletes the migrated bun.lock afterward unless one existed
+// before the install (a genuinely-bun repo keeps its own). The user's repo
+// stays exactly as materialized. bun also refuses to run dependency
+// postinstall scripts outside its trusted allowlist, which we want:
+// preview installs run unattended on the user's behalf.
 //
 // Self-healing bootstrap. A completion marker lives in the host work-root
 // — a sibling of the worktree, NEVER inside the user's repo:
-// ../.clank-preview-bootstrap/<worktree-id> (the worktree is our cwd, so
-// `..` is the work-root and basename(pwd) is its id). It's written only
+// ../.clank-preview-bootstrap/<worktree-id>.bun (the worktree is our cwd,
+// so `..` is the work-root and basename(pwd) is its id). It's written only
 // AFTER a successful install, so an interrupted prior run (marker absent)
-// forces a clean reinstall — npm can't repair a half-extracted tree on its
-// own (its hidden lockfile marks partial packages "installed" and skips
-// re-extracting them, which is how a killed install leaves modules
-// permanently unresolvable). `npm ci` is npm's only clean-by-construction
-// alternative, but it re-extracts everything on EVERY run; the long
-// readiness budget + graceful SIGTERM already make a mid-install kill rare,
-// so the marker is just the cheap recovery for the residual hard-crash case.
+// forces a clean reinstall rather than trusting a half-extracted tree. The
+// installer-specific `.bun` suffix makes worktrees installed by the old
+// npm bootstrap (or a future different installer) reinstall cleanly once
+// instead of running one package manager over another's tree.
 //
-// We pass `--no-audit --no-fund` (drop the audit report + funding banner)
-// but deliberately NOT `--silent`: npm's install output is streamed to the
-// client (ring buffer → /preview/logs) so the multi-minute first-run
-// install shows live progress instead of a blind spinner.
+// Install output is deliberately not silenced: it streams to the client
+// (ring buffer → /preview/logs) so the multi-minute first-run install
+// shows live progress instead of a blind spinner.
 //
 // `exec` replaces the shell with Metro so signals + Setpgid target it
 // directly. `npx --yes` skips npx's install prompt. `--non-interactive`
@@ -46,9 +57,11 @@ import (
 // escaping.
 var expoCmdTemplate = []string{
 	"sh", "-c",
-	`m="../.clank-preview-bootstrap/$(basename "$(pwd)")"; ` +
+	`m="../.clank-preview-bootstrap/$(basename "$(pwd)").bun"; ` +
 		`[ -f "$m" ] || rm -rf node_modules; ` +
-		`npm install --no-audit --no-fund && ` +
+		`[ -f bun.lock ] && keep_lock=1; ` +
+		`bun install --no-save && ` +
+		`{ [ -n "$keep_lock" ] || rm -f bun.lock; } && ` +
 		`mkdir -p "$(dirname "$m")" && : > "$m" && ` +
 		`exec npx --yes expo start --port %d --non-interactive`,
 }

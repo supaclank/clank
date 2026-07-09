@@ -270,7 +270,7 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 	// spawn's background probe (probeReady) flips the record to Ready or
 	// Failed on its own; clients poll /preview/status to observe the
 	// transition and /preview/logs for live setup progress. This decouples
-	// a long first-run `npm install` from the HTTP request lifetime — an
+	// a long first-run `bun install` from the HTTP request lifetime — an
 	// intermediary (Fly edge, tunnel, mobile) that times out a minutes-long
 	// held request can no longer cancel readiness and tear the install down
 	// mid-write. A start that never comes up settles as StateFailed and is

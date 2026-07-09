@@ -81,7 +81,7 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	// projectDir itself; the key just lets us stop it on exit.
 	previewKey := ulid.Make().String()
 
-	// Generous timeout: a cold preview start runs `npm install` first.
+	// Generous timeout: a cold preview start runs `bun install` first.
 	// Derives from sigCtx so Ctrl+C during startup aborts the wait.
 	startCtx, cancel := context.WithTimeout(sigCtx, 10*time.Minute)
 	defer cancel()

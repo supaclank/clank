@@ -143,8 +143,12 @@ func TestExpoCmdTemplateBootstrap(t *testing.T) {
 	cmd := expoCmdTemplate[2]
 	for _, c := range []struct{ want, desc string }{
 		{"../.clank-preview-bootstrap/", "completion marker in the host work-root (not the repo)"},
+		{`.bun"`, "installer-specific marker suffix (forces clean reinstall on installer change)"},
 		{"rm -rf node_modules", "clean-reinstall on missing marker"},
-		{"npm install", "install step present"},
+		{"bun install", "install step present"},
+		{"--no-save", "install must not touch package.json in the user's repo"},
+		{`rm -f bun.lock`, "migrated-lockfile cleanup (bun writes bun.lock from package-lock.json even under --no-save)"},
+		{"keep_lock", "pre-existing bun.lock guard — genuinely-bun repos keep their lockfile"},
 		{"expo start", "metro start present"},
 	} {
 		if !strings.Contains(cmd, c.want) {
