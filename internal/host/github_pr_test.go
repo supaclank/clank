@@ -503,6 +503,89 @@ func TestCreatePR_RefusesPushToUnrelatedRepo(t *testing.T) {
 	}
 }
 
+// TestCreatePR_NoAutoCommitOnUnrelatedRepoRefusal pins that the
+// auto-commit added for uncommitted-work support doesn't run ahead of
+// the origin/fetch/ancestor safety checks: a worktree with dirty work
+// but an origin pointed at an unrelated repo must fail with
+// ErrNoCommonAncestor while leaving the dirty work uncommitted, so a
+// doomed CreatePR call never mutates local history.
+func TestCreatePR_NoAutoCommitOnUnrelatedRepoRefusal(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv(githubpkg.ClientIDEnv, "Ov23li78UDBwea5WvI5v")
+
+	const worktreeID = "01TESTWORKTREE0000000098"
+	workdir := filepath.Join(homeDir, "work", worktreeID)
+	wrongBareDir := filepath.Join(homeDir, "wrong.git")
+
+	mustGit(t, "", "init", workdir)
+	mustGit(t, workdir, "config", "user.email", "test@example.com")
+	mustGit(t, workdir, "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(workdir, "README"), []byte("our v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, workdir, "add", "README")
+	mustGit(t, workdir, "commit", "-m", "our base")
+	mustGit(t, workdir, "branch", "-M", "main")
+	mustGit(t, workdir, "checkout", "-b", "feat-x")
+	// Dirty, uncommitted work — the case the auto-commit exists for.
+	if err := os.WriteFile(filepath.Join(workdir, "README"), []byte("our v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	wrongStaging := filepath.Join(homeDir, "wrong-staging")
+	mustGit(t, "", "init", wrongStaging)
+	mustGit(t, wrongStaging, "config", "user.email", "other@example.com")
+	mustGit(t, wrongStaging, "config", "user.name", "other")
+	if err := os.WriteFile(filepath.Join(wrongStaging, "DIFFERENT"), []byte("completely different content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, wrongStaging, "add", "DIFFERENT")
+	mustGit(t, wrongStaging, "commit", "-m", "their unrelated base")
+	mustGit(t, wrongStaging, "branch", "-M", "main")
+	mustGit(t, "", "init", "--bare", wrongBareDir)
+	mustGit(t, wrongStaging, "remote", "add", "wrongorigin", wrongBareDir)
+	mustGit(t, wrongStaging, "push", "wrongorigin", "main")
+
+	mustGit(t, workdir, "remote", "add", "origin", "https://github.com/wrong/repo.git")
+	mustGit(t, workdir, "config", "url."+wrongBareDir+".insteadOf", "https://github.com/wrong/repo.git")
+
+	store := githubpkg.NewStore(homeDir)
+	if err := store.Write(githubpkg.Credentials{
+		AccessToken: "gho_test",
+		GitHubLogin: "axelengstrom",
+	}); err != nil {
+		t.Fatalf("seed credential: %v", err)
+	}
+
+	headBefore := strings.TrimSpace(mustGit(t, workdir, "rev-parse", "HEAD"))
+
+	prev := host.SetWorkRootForTest(filepath.Join(homeDir, "work"))
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+	})
+	t.Cleanup(svc.Shutdown)
+
+	_, err := svc.CreatePR(context.Background(), worktreeID, host.CreatePRRequest{
+		Title: "feat: doomed", Body: "wrong origin", Base: "main",
+	})
+	if !errors.Is(err, host.ErrNoCommonAncestor) {
+		t.Fatalf("err = %v, want ErrNoCommonAncestor", err)
+	}
+
+	headAfter := strings.TrimSpace(mustGit(t, workdir, "rev-parse", "HEAD"))
+	if headAfter != headBefore {
+		t.Errorf("HEAD changed from %s to %s — refused CreatePR auto-committed local work", headBefore, headAfter)
+	}
+	status := mustGit(t, workdir, "status", "--porcelain")
+	if !strings.Contains(status, "README") {
+		t.Errorf("README no longer shows as dirty after refused CreatePR:\n%s", status)
+	}
+}
+
 // TestPreviewPR_GitHubOrigin pins the happy-path preview: origin
 // parses to a github.com URL, sheet would render the Open PR form
 // with the destination callout populated.

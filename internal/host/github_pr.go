@@ -158,20 +158,6 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 		return CreatePRResult{}, fmt.Errorf("%w: worktree is on %q", ErrNothingToPush, branch)
 	}
 
-	// Auto-commit uncommitted work, same as PushToRemote — "open a PR"
-	// implies "ship what's in the worktree", and without this the
-	// commits-ahead check below rejects worktrees whose only work is
-	// still uncommitted.
-	committed, err := commitAllIfDirty(workdir, branch)
-	if err != nil {
-		return CreatePRResult{}, err
-	}
-
-	headSHA, err := git.HeadCommit(workdir)
-	if err != nil {
-		return CreatePRResult{}, fmt.Errorf("head commit: %w", err)
-	}
-
 	remoteURL, err := git.RemoteURL(workdir, "origin")
 	if err != nil {
 		// git config errors out when the key isn't set — treat any
@@ -213,6 +199,9 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 	// content-addresses everything), so an empty merge-base is a
 	// near-certain wrong-destination signal.
 	//
+	// Checked before the auto-commit below so a misconfigured origin
+	// fails without mutating the worktree's history.
+	//
 	// git.Fetch above writes to FETCH_HEAD (and to refs/remotes/origin/<base>
 	// if origin happens to be configured to map there). We check
 	// against FETCH_HEAD specifically — it's always populated by
@@ -224,6 +213,22 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 	}
 	if mb == "" {
 		return CreatePRResult{}, ErrNoCommonAncestor
+	}
+
+	// Auto-commit uncommitted work, same as PushToRemote — "open a PR"
+	// implies "ship what's in the worktree", and without this the
+	// commits-ahead check below rejects worktrees whose only work is
+	// still uncommitted. Runs only after the origin/fetch/ancestor
+	// checks above so a doomed CreatePR call never mutates local
+	// history.
+	committed, err := commitAllIfDirty(workdir, branch)
+	if err != nil {
+		return CreatePRResult{}, err
+	}
+
+	headSHA, err := git.HeadCommit(workdir)
+	if err != nil {
+		return CreatePRResult{}, fmt.Errorf("head commit: %w", err)
 	}
 
 	// Verify there's actually something to push. After the fetch
