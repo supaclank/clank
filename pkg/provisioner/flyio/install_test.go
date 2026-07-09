@@ -290,6 +290,42 @@ func TestEnsureBinaryInstalled_RemoveErrorIsBestEffort(t *testing.T) {
 	}
 }
 
+// TestEnsureBinaryInstalled_TransportStatErrorFailsFast is the
+// 2026-07-09 regression: with the sprite still waking, the presence
+// stat failed at the transport layer (context deadline exceeded) and
+// was read as "binary not present" — triggering a blind ~20MB
+// reinstall + service restart inside the request path on every slow
+// first-open, even with the current binary installed all along. Only
+// a definitive fs.ErrNotExist may install; any other stat failure
+// must fail fast (no Remove, no Write) so EnsureHost retries on a
+// fresh conn — the same decision table as ensureAgentCLIInstalledOn.
+func TestEnsureBinaryInstalled_TransportStatErrorFailsFast(t *testing.T) {
+	t.Parallel()
+	statErr := &fs.PathError{Op: "stat", Path: "usr/local/bin/clank-host", Err: context.DeadlineExceeded}
+	wf := stubWF{
+		write: func(_ context.Context, name string, _ []byte, _ fs.FileMode) error {
+			t.Errorf("Write(%s) ran on a transport-level stat failure", name)
+			return nil
+		},
+		remove: func(_ context.Context, name string) error {
+			t.Errorf("Remove(%s) ran on a transport-level stat failure", name)
+			return nil
+		},
+	}
+
+	p := newTestProvisioner(t)
+	replaced, err := p.ensureBinaryInstalledOn(context.Background(), failingStatFS{err: statErr}, wf, "/usr/local/bin/clank-host", []byte("new binary"), hashHex([]byte("new binary")))
+	if err == nil {
+		t.Fatal("expected fail-fast error on transport-level stat failure, got nil")
+	}
+	if replaced {
+		t.Errorf("replaced=true on fail-fast path — callers would restart the service for nothing")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error should wrap the stat failure, got %v", err)
+	}
+}
+
 // TestEnsureBinaryInstalled_WriteErrorPropagates: a write failure on
 // the binary itself is surfaced, not swallowed.
 func TestEnsureBinaryInstalled_WriteErrorPropagates(t *testing.T) {
