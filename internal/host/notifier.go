@@ -130,11 +130,15 @@ func isExpiredContext(err error) bool {
 // settings layer plugs in here.
 //
 // Mappings:
-//   - EventStatusChange to StatusIdle from StatusBusy/StatusStarting
-//     → KindIdle. We deliberately ignore idle→idle (daemon-restart
-//     normalization, see normalizeStaleSessionStatus) and other
-//     non-busy→idle transitions to avoid spurious "agent finished"
-//     pushes.
+//   - EventStatusChange to StatusIdle from StatusBusy → KindIdle.
+//     Busy→Idle is the only genuine turn-finish on any backend: the
+//     create path goes Starting→Busy→Idle, and OpenCode never sits in
+//     Starting at all. Everything else reaching Idle is ignored —
+//     idle→idle (daemon-restart normalization, see
+//     normalizeStaleSessionStatus) and starting→idle (the re-attach
+//     handshake when Open rehydrates an existing session, e.g. the user
+//     opening an old session on the phone) would push spurious "agent
+//     finished".
 //   - EventPermission → KindPermission. Data carries request_id so the
 //     mobile client can prefill the approval UI on deep-link.
 //   - EventError → KindError.
@@ -159,7 +163,7 @@ func classifyEvent(evt agent.Event, pctx pushContext) (notifier.Notification, bo
 		if d.NewStatus != agent.StatusIdle {
 			return notifier.Notification{}, false
 		}
-		if d.OldStatus != agent.StatusBusy && d.OldStatus != agent.StatusStarting {
+		if d.OldStatus != agent.StatusBusy {
 			return notifier.Notification{}, false
 		}
 		title := "Agent finished"
