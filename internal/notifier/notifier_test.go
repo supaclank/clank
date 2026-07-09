@@ -5,213 +5,7 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/acksell/clank/internal/agent"
 )
-
-func TestClassify(t *testing.T) {
-	t.Parallel()
-	when := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
-
-	cases := []struct {
-		name      string
-		evt       agent.Event
-		wantOK    bool
-		wantKind  Kind
-		wantTitle string
-		wantData  map[string]any
-	}{
-		{
-			name: "busy_to_idle_produces_kind_idle",
-			evt: agent.Event{
-				Type:      agent.EventStatusChange,
-				SessionID: "s1",
-				Timestamp: when,
-				Data:      agent.StatusChangeData{OldStatus: agent.StatusBusy, NewStatus: agent.StatusIdle},
-			},
-			wantOK:    true,
-			wantKind:  KindIdle,
-			wantTitle: "Agent finished",
-		},
-		{
-			name: "starting_to_idle_produces_kind_idle",
-			evt: agent.Event{
-				Type:      agent.EventStatusChange,
-				SessionID: "s1",
-				Timestamp: when,
-				Data:      agent.StatusChangeData{OldStatus: agent.StatusStarting, NewStatus: agent.StatusIdle},
-			},
-			wantOK:   true,
-			wantKind: KindIdle,
-		},
-		{
-			name: "idle_to_idle_dropped",
-			evt: agent.Event{
-				Type:      agent.EventStatusChange,
-				SessionID: "s1",
-				Timestamp: when,
-				Data:      agent.StatusChangeData{OldStatus: agent.StatusIdle, NewStatus: agent.StatusIdle},
-			},
-			wantOK: false,
-		},
-		{
-			name: "idle_to_busy_dropped",
-			evt: agent.Event{
-				Type:      agent.EventStatusChange,
-				SessionID: "s1",
-				Timestamp: when,
-				Data:      agent.StatusChangeData{OldStatus: agent.StatusIdle, NewStatus: agent.StatusBusy},
-			},
-			wantOK: false,
-		},
-		{
-			name: "error_to_idle_dropped",
-			evt: agent.Event{
-				Type:      agent.EventStatusChange,
-				SessionID: "s1",
-				Timestamp: when,
-				Data:      agent.StatusChangeData{OldStatus: agent.StatusError, NewStatus: agent.StatusIdle},
-			},
-			wantOK: false,
-		},
-		{
-			name: "busy_to_error_dropped",
-			evt: agent.Event{
-				Type:      agent.EventStatusChange,
-				SessionID: "s1",
-				Timestamp: when,
-				Data:      agent.StatusChangeData{OldStatus: agent.StatusBusy, NewStatus: agent.StatusError},
-			},
-			wantOK: false,
-		},
-		{
-			name: "permission_request",
-			evt: agent.Event{
-				Type:      agent.EventPermission,
-				SessionID: "s1",
-				Timestamp: when,
-				Data:      agent.PermissionData{RequestID: "req-1", Tool: "bash", Description: "run `ls -la`"},
-			},
-			wantOK:    true,
-			wantKind:  KindPermission,
-			wantTitle: "Permission requested: bash",
-			wantData:  map[string]any{"request_id": "req-1", "tool": "bash"},
-		},
-		{
-			name: "permission_without_tool_name",
-			evt: agent.Event{
-				Type:      agent.EventPermission,
-				SessionID: "s1",
-				Timestamp: when,
-				Data:      agent.PermissionData{RequestID: "req-2"},
-			},
-			wantOK:    true,
-			wantKind:  KindPermission,
-			wantTitle: "Permission requested",
-		},
-		{
-			name: "error_event",
-			evt: agent.Event{
-				Type:      agent.EventError,
-				SessionID: "s1",
-				Timestamp: when,
-				Data:      agent.ErrorData{Message: "model unavailable"},
-			},
-			wantOK:    true,
-			wantKind:  KindError,
-			wantTitle: "Agent error",
-		},
-		{
-			name: "message_dropped",
-			evt:  agent.Event{Type: agent.EventMessage, SessionID: "s1", Data: agent.MessageData{Role: "user"}},
-		},
-		{
-			name: "part_dropped",
-			evt:  agent.Event{Type: agent.EventPartUpdate, SessionID: "s1", Data: agent.PartUpdateData{}},
-		},
-		{
-			name: "title_dropped",
-			evt:  agent.Event{Type: agent.EventTitleChange, SessionID: "s1", Data: agent.TitleChangeData{Title: "hello"}},
-		},
-		{
-			name: "reconnecting_dropped",
-			evt:  agent.Event{Type: agent.EventReconnecting, SessionID: "s1", Data: agent.ReconnectingData{Attempt: 1}},
-		},
-		{
-			name: "voice_status_dropped",
-			evt:  agent.Event{Type: agent.EventVoiceStatus, SessionID: "s1", Data: agent.VoiceStatusData{Status: agent.VoiceStatusIdle}},
-		},
-		{
-			name: "session_create_dropped",
-			evt:  agent.Event{Type: agent.EventSessionCreate, SessionID: "s1"},
-		},
-		{
-			name: "status_change_with_wrong_data_dropped",
-			evt:  agent.Event{Type: agent.EventStatusChange, SessionID: "s1", Data: "garbage"},
-		},
-		{
-			name: "permission_with_wrong_data_dropped",
-			evt:  agent.Event{Type: agent.EventPermission, SessionID: "s1", Data: "garbage"},
-		},
-	}
-
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			n, ok := classify(tc.evt)
-			if ok != tc.wantOK {
-				t.Fatalf("classify returned ok=%v, want %v (n=%+v)", ok, tc.wantOK, n)
-			}
-			if !ok {
-				return
-			}
-			if n.Kind != tc.wantKind {
-				t.Errorf("Kind = %q, want %q", n.Kind, tc.wantKind)
-			}
-			if n.SessionID != tc.evt.SessionID {
-				t.Errorf("SessionID = %q, want %q", n.SessionID, tc.evt.SessionID)
-			}
-			if tc.wantTitle != "" && n.Title != tc.wantTitle {
-				t.Errorf("Title = %q, want %q", n.Title, tc.wantTitle)
-			}
-			if n.Body == "" {
-				t.Error("Body must not be empty")
-			}
-			for k, want := range tc.wantData {
-				got, ok := n.Data[k]
-				if !ok {
-					t.Errorf("Data[%q] missing", k)
-					continue
-				}
-				if got != want {
-					t.Errorf("Data[%q] = %v, want %v", k, got, want)
-				}
-			}
-			if n.OccurredAt.IsZero() {
-				t.Error("OccurredAt must be set")
-			}
-		})
-	}
-}
-
-func TestClassify_ZeroTimestampDefaultsToNow(t *testing.T) {
-	t.Parallel()
-	evt := agent.Event{
-		Type:      agent.EventStatusChange,
-		SessionID: "s1",
-		Data:      agent.StatusChangeData{OldStatus: agent.StatusBusy, NewStatus: agent.StatusIdle},
-	}
-	before := time.Now()
-	n, ok := classify(evt)
-	after := time.Now()
-	if !ok {
-		t.Fatal("expected classify to accept the event")
-	}
-	if n.OccurredAt.Before(before) || n.OccurredAt.After(after) {
-		t.Errorf("OccurredAt = %v, want in [%v, %v]", n.OccurredAt, before, after)
-	}
-}
 
 // recordingProvider is a real Provider used as a test fixture — it
 // captures every Send + Close call. Not a mock; the Loop talks to it
@@ -244,13 +38,21 @@ func (p *recordingProvider) sentCount() int {
 	return len(p.sent)
 }
 
+func (p *recordingProvider) sentSnapshot() []Notification {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]Notification, len(p.sent))
+	copy(out, p.sent)
+	return out
+}
+
 func (p *recordingProvider) closeCount() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.closes
 }
 
-func TestLoop_DeliversNotificationWorthyEvents(t *testing.T) {
+func TestLoop_DeliversNotificationsInOrder(t *testing.T) {
 	t.Parallel()
 	rec := &recordingProvider{}
 	loop := New(Config{Provider: rec})
@@ -263,26 +65,24 @@ func TestLoop_DeliversNotificationWorthyEvents(t *testing.T) {
 		_ = loop.Stop(stopCtx)
 	})
 
-	loop.OnEvent(agent.Event{
-		Type:      agent.EventStatusChange,
-		SessionID: "s1",
-		Data:      agent.StatusChangeData{OldStatus: agent.StatusBusy, NewStatus: agent.StatusIdle},
-	})
-	loop.OnEvent(agent.Event{Type: agent.EventMessage, SessionID: "s1", Data: agent.MessageData{}}) // dropped
-	loop.OnEvent(agent.Event{
-		Type:      agent.EventPermission,
-		SessionID: "s1",
-		Data:      agent.PermissionData{RequestID: "r1", Tool: "bash"},
-	})
+	loop.Notify(Notification{SessionID: "s1", Kind: KindIdle, Title: "Fix login retry", Body: "Done."})
+	loop.Notify(Notification{SessionID: "s2", Kind: KindPermission, Title: "Permission requested: bash"})
 
 	if got := waitForSent(rec, 2, 500*time.Millisecond); got != 2 {
 		t.Fatalf("got %d notifications, want 2", got)
 	}
+	sent := rec.sentSnapshot()
+	if sent[0].SessionID != "s1" || sent[1].SessionID != "s2" {
+		t.Errorf("delivery order = [%s, %s], want [s1, s2]", sent[0].SessionID, sent[1].SessionID)
+	}
+	if sent[0].Title != "Fix login retry" || sent[0].Body != "Done." {
+		t.Errorf("notification delivered altered: %+v (the Loop must pass copy through untouched)", sent[0])
+	}
 }
 
 // blockingProvider pauses Send until release is called, then records
-// the notification. Used to deterministically queue events in the
-// Loop's input channel before signalling Stop, which is what
+// the notification. Used to deterministically queue notifications in
+// the Loop's input channel before signalling Stop, which is what
 // exercises the drain path.
 type blockingProvider struct {
 	released chan struct{}
@@ -322,12 +122,11 @@ func (p *blockingProvider) sentCount() int {
 	return len(p.sent)
 }
 
-// TestLoop_StopDrainsQueuedEvents pins the regression: before the
-// drain fix, Run returned immediately on l.stop and dropped any
-// events still sitting in l.events. With the drain in place the
-// shutdown path delivers every notification-worthy event that was
-// already classified-and-enqueued.
-func TestLoop_StopDrainsQueuedEvents(t *testing.T) {
+// TestLoop_StopDrainsQueuedNotifications pins the regression: before
+// the drain fix, Run returned immediately on l.stop and dropped any
+// notifications still sitting in l.queue. With the drain in place the
+// shutdown path delivers everything that was already enqueued.
+func TestLoop_StopDrainsQueuedNotifications(t *testing.T) {
 	t.Parallel()
 	rec := newBlockingProvider()
 	loop := New(Config{Provider: rec, Buffer: 4})
@@ -335,22 +134,19 @@ func TestLoop_StopDrainsQueuedEvents(t *testing.T) {
 	defer cancel()
 	go loop.Run(ctx)
 
-	// Three notification-worthy events buffered while the provider
-	// is still blocked. None are delivered yet.
+	// Three notifications buffered while the provider is still blocked.
+	// None are delivered yet.
 	for i := 0; i < 3; i++ {
-		loop.OnEvent(agent.Event{
-			Type:      agent.EventStatusChange,
-			SessionID: "s1",
-			Data:      agent.StatusChangeData{OldStatus: agent.StatusBusy, NewStatus: agent.StatusIdle},
-		})
+		loop.Notify(Notification{SessionID: "s1", Kind: KindIdle})
 	}
-	// Give the worker time to consume the first event into handle()
-	// — that one's blocked on Send. The remaining 2 sit in l.events.
+	// Give the worker time to consume the first notification into
+	// send() — that one's blocked on the provider. The remaining 2 sit
+	// in l.queue.
 	time.Sleep(20 * time.Millisecond)
 
 	// Release the provider AFTER Stop has been signalled so the
 	// blocked Send completes, then the drain runs through the
-	// remaining queued events. Stop blocks until done is closed.
+	// remaining queued notifications. Stop blocks until done is closed.
 	done := make(chan error, 1)
 	go func() {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -364,7 +160,7 @@ func TestLoop_StopDrainsQueuedEvents(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 	if got := rec.sentCount(); got != 3 {
-		t.Errorf("Provider.Send call count = %d, want 3 (drain should deliver every queued event)", got)
+		t.Errorf("Provider.Send call count = %d, want 3 (drain should deliver every queued notification)", got)
 	}
 }
 
