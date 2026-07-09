@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/acksell/clank/internal/git"
@@ -123,6 +124,10 @@ func TestRepoOverview_PRHalf(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("state") == "closed" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		_, _ = w.Write([]byte(`[
 			{"number":7,"title":"My PR","state":"open","draft":false,
 			 "html_url":"https://github.com/acksell/api/pull/7",
@@ -156,8 +161,8 @@ func TestRepoOverview_PRHalf(t *testing.T) {
 		byBranch[b.Branch] = b
 	}
 	main := byBranch["main"]
-	if main.PR == nil || main.PR.Number != 7 || !main.PR.IsMine {
-		t.Errorf("main.PR = %+v, want #7 is_mine", main.PR)
+	if main.PR == nil || main.PR.Number != 7 || !main.PR.IsMine || main.PR.State != host.OverviewPRStateOpen {
+		t.Errorf("main.PR = %+v, want open #7 is_mine", main.PR)
 	}
 	colleague, ok := byBranch["colleagues-branch"]
 	if !ok {
@@ -181,6 +186,101 @@ func TestRepoOverview_PRHalf(t *testing.T) {
 	}
 }
 
+// Regression: a local branch whose PR merged (branch deleted on the
+// remote, worktree left on the sprite) used to come back with no PR at
+// all — indistinguishable from a fresh draft, so it reappeared in the
+// mobile Drafts column. It must now carry its closed PR with state
+// merged/closed; closed PR heads with no local branch must NOT appear;
+// and when a head has both an open and a closed PR (branch reuse), the
+// open PR wins. Not parallel (fixture globals).
+func TestRepoOverview_MergedPRMarksLeftoverBranch(t *testing.T) {
+	svc, workRoot := setupRepoFirstImport(t)
+	ctx := context.Background()
+
+	if _, err := svc.ImportProjectFromGitHub(ctx, "acme", "api", "main"); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	// hasOpenPR toggles the branch-reuse scenario mid-test (atomic: the
+	// stub handler runs on the server's goroutine).
+	var hasOpenPR atomic.Bool
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/acksell/api/pulls" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("state") == "closed" {
+			// Most recently updated first, like GitHub: a merged PR on
+			// the loaded branch, an older abandoned PR on the same head,
+			// and a merged PR whose branch was never loaded here.
+			_, _ = w.Write([]byte(`[
+				{"number":20,"title":"Shipped work","state":"closed","draft":false,
+				 "html_url":"https://github.com/acksell/api/pull/20",
+				 "head":{"ref":"main"},"base":{"ref":"main"},
+				 "user":{"login":"acksell"},"updated_at":"2026-07-05T10:00:00Z",
+				 "merged_at":"2026-07-05T10:00:00Z"},
+				{"number":19,"title":"Abandoned attempt","state":"closed","draft":false,
+				 "html_url":"https://github.com/acksell/api/pull/19",
+				 "head":{"ref":"main"},"base":{"ref":"main"},
+				 "user":{"login":"acksell"},"updated_at":"2026-07-01T10:00:00Z"},
+				{"number":18,"title":"Colleague shipped","state":"closed","draft":false,
+				 "html_url":"https://github.com/acksell/api/pull/18",
+				 "head":{"ref":"never-loaded"},"base":{"ref":"main"},
+				 "user":{"login":"alice"},"updated_at":"2026-07-04T10:00:00Z",
+				 "merged_at":"2026-07-04T10:00:00Z"}
+			]`))
+			return
+		}
+		if !hasOpenPR.Load() {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		_, _ = w.Write([]byte(`[
+			{"number":22,"title":"Round two","state":"open","draft":false,
+			 "html_url":"https://github.com/acksell/api/pull/22",
+			 "head":{"ref":"main"},"base":{"ref":"main"},
+			 "user":{"login":"acksell"},"updated_at":"2026-07-08T10:00:00Z"}
+		]`))
+	}))
+	t.Cleanup(apiSrv.Close)
+	svc.GitHub().SetAPIBaseURL(apiSrv.URL)
+	if err := svc.GitHub().Store().Write(githubpkg.Credentials{AccessToken: "gho_test", GitHubLogin: "acksell"}); err != nil {
+		t.Fatal(err)
+	}
+	gitDir := filepath.Join(workRoot, "repos", "acme__api", "repo.git")
+	if err := git.SetLocalConfig(gitDir, "remote.origin.url", "https://github.com/acksell/api.git"); err != nil {
+		t.Fatal(err)
+	}
+
+	ov, err := svc.RepoOverview(ctx, "acme__api", false)
+	if err != nil {
+		t.Fatalf("overview: %v", err)
+	}
+	main, ok := ovBranch(ov, "main")
+	if !ok {
+		t.Fatal("main missing from overview")
+	}
+	if main.PR == nil || main.PR.Number != 20 || main.PR.State != host.OverviewPRStateMerged {
+		t.Errorf("main.PR = %+v, want merged #20 (most recent closed PR for the head)", main.PR)
+	}
+	if _, ok := ovBranch(ov, "never-loaded"); ok {
+		t.Error("closed PR with no local branch appeared as a work item")
+	}
+
+	// Branch reuse: a new open PR on the same head outranks the old
+	// merged one.
+	hasOpenPR.Store(true)
+	ov, err = svc.RepoOverview(ctx, "acme__api", false)
+	if err != nil {
+		t.Fatalf("overview (reused branch): %v", err)
+	}
+	main, _ = ovBranch(ov, "main")
+	if main.PR == nil || main.PR.Number != 22 || main.PR.State != host.OverviewPRStateOpen {
+		t.Errorf("main.PR = %+v, want open #22 to win over merged #20", main.PR)
+	}
+}
+
 // PR-only heads are merged in via a map iteration (random order in Go);
 // the result must still come out sorted most-recently-active first,
 // matching LocalBranchTips' documented order. Not parallel (fixture
@@ -199,6 +299,10 @@ func TestRepoOverview_PRHalfSortedByRecency(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("state") == "closed" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		_, _ = w.Write([]byte(`[
 			{"number":10,"title":"Oldest","state":"open","draft":false,
 			 "html_url":"https://github.com/acksell/api/pull/10",

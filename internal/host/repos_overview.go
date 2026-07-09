@@ -12,9 +12,10 @@ package host
 // worktree list, per-loaded-worktree dirty checks, ahead/behind against
 // existing origin/* refs). ?fetch=1 adds exactly ONE authed all-heads
 // fetch in the canonical, under the repo lock, so behind-counts are
-// current. The PR half is one GitHub API list call, best-effort — an
-// API failure degrades to the git half rather than failing the screen
-// (mirroring attachPR in remote_status.go).
+// current. The PR half is two GitHub API list calls (open + recently
+// closed), best-effort — an API failure degrades to what's built so far
+// rather than failing the screen (mirroring attachPR in
+// remote_status.go).
 
 import (
 	"context"
@@ -28,17 +29,30 @@ import (
 	githubpkg "github.com/acksell/clank/internal/host/github"
 )
 
+// OverviewPRState is the lifecycle of an overview branch's PR. GitHub's
+// list API reports merged PRs as "closed"; the overview splits them so
+// clients can tell shipped work from abandoned work without a second call.
+type OverviewPRState string
+
+const (
+	OverviewPRStateOpen   OverviewPRState = "open"
+	OverviewPRStateMerged OverviewPRState = "merged"
+	OverviewPRStateClosed OverviewPRState = "closed"
+)
+
 // OverviewPR is the PR annotation on an overview branch. IsMine compares
 // the PR author against the connected GitHub login — the Drafts tab's
-// "mine vs everyone" filter bit.
+// "mine vs everyone" filter bit. State merged/closed marks a leftover
+// local branch as finished work rather than an in-progress draft.
 type OverviewPR struct {
-	Number    int       `json:"number"`
-	Title     string    `json:"title"`
-	Draft     bool      `json:"draft"`
-	Author    string    `json:"author"`
-	URL       string    `json:"url"`
-	IsMine    bool      `json:"is_mine"`
-	UpdatedAt time.Time `json:"updated_at,omitzero"`
+	Number    int             `json:"number"`
+	Title     string          `json:"title"`
+	State     OverviewPRState `json:"state"`
+	Draft     bool            `json:"draft"`
+	Author    string          `json:"author"`
+	URL       string          `json:"url"`
+	IsMine    bool            `json:"is_mine"`
+	UpdatedAt time.Time       `json:"updated_at,omitzero"`
 }
 
 // RepoBranchOverview is one work item: a branch (loaded or not) and/or
@@ -133,9 +147,10 @@ func (s *Service) RepoOverview(ctx context.Context, slug string, fetch bool) (Re
 		result.Branches = append(result.Branches, entry)
 	}
 
-	// PR half: best-effort merge of the repo's open PRs, keyed by head
-	// branch. PR-only heads (a colleague's branch you never loaded)
-	// become loaded:false entries — the "check out" candidates.
+	// PR half: best-effort merge of the repo's PRs, keyed by head
+	// branch. Open PR-only heads (a colleague's branch you never
+	// loaded) become loaded:false entries — the "check out" candidates;
+	// merged/closed PRs mark leftover local branches as finished.
 	s.attachRepoPRs(ctx, &result)
 
 	// attachRepoPRs appends PR-only entries via map iteration (random
@@ -211,10 +226,13 @@ func loadedWorktreesByBranch(gitDir string) (map[string]loadedWorktree, error) {
 	return byBranch, nil
 }
 
-// attachRepoPRs merges the repo's open PRs into the overview: annotate
-// loaded/local branches whose head matches, and append loaded:false
-// entries for PR heads with no local branch. Best-effort — a GitHub
-// API failure logs and returns the git half intact.
+// attachRepoPRs merges the repo's PRs into the overview: annotate
+// loaded/local branches whose head matches an open PR, append
+// loaded:false entries for open PR heads with no local branch, and mark
+// leftover local branches whose PR already merged/closed (so clients
+// can file them under "Closed" instead of mistaking them for drafts).
+// Best-effort — a GitHub API failure logs and returns what's built so
+// far intact.
 func (s *Service) attachRepoPRs(ctx context.Context, result *RepoOverviewResult) {
 	if result.Origin == nil || s.github == nil {
 		return
@@ -223,22 +241,14 @@ func (s *Service) attachRepoPRs(ctx context.Context, result *RepoOverviewResult)
 	if err != nil || creds.AccessToken == "" {
 		return
 	}
-	pulls, err := s.github.ListPullRequests(ctx, creds.AccessToken, result.Origin.Owner, result.Origin.Repo)
+	open, err := s.github.ListPullRequests(ctx, creds.AccessToken, result.Origin.Owner, result.Origin.Repo, githubpkg.PRListStateOpen)
 	if err != nil {
-		s.log.Printf("repo overview: list PRs for %s/%s: %v", result.Origin.Owner, result.Origin.Repo, err)
+		s.log.Printf("repo overview: list open PRs for %s/%s: %v", result.Origin.Owner, result.Origin.Repo, err)
 		return
 	}
-	byHead := make(map[string]*OverviewPR, len(pulls))
-	for _, pr := range pulls {
-		byHead[pr.HeadBranch] = &OverviewPR{
-			Number:    pr.Number,
-			Title:     pr.Title,
-			Draft:     pr.Draft,
-			Author:    pr.Author,
-			URL:       pr.HTMLURL,
-			IsMine:    creds.GitHubLogin != "" && pr.Author == creds.GitHubLogin,
-			UpdatedAt: pr.UpdatedAt,
-		}
+	byHead := make(map[string]*OverviewPR, len(open))
+	for _, pr := range open {
+		byHead[pr.HeadBranch] = wireOverviewPR(pr, creds.GitHubLogin)
 	}
 	for i := range result.Branches {
 		if pr, ok := byHead[result.Branches[i].Branch]; ok {
@@ -256,5 +266,58 @@ func (s *Service) attachRepoPRs(ctx context.Context, result *RepoOverviewResult)
 			LastCommitAt: pr.UpdatedAt,
 			PR:           pr,
 		})
+	}
+	s.attachClosedRepoPRs(ctx, result, creds)
+}
+
+// attachClosedRepoPRs marks local branches whose PR merged or closed.
+// Only annotates branches with no open PR (branch reuse: the open PR
+// wins), and never appends PR-only entries — a colleague's merged PR
+// with no local branch isn't a work item. The listing is sorted most
+// recently updated first, so the first closed PR per head wins.
+//
+// TODO: the listing is capped at maxPulls (100) most recently updated
+// closed PRs, so a branch merged long ago in a very active repo can
+// still come back unannotated and land in Drafts. If that bites, query
+// per-head (GET /pulls?head=owner:branch) for the leftover branches
+// instead of one bulk list.
+func (s *Service) attachClosedRepoPRs(ctx context.Context, result *RepoOverviewResult, creds githubpkg.Credentials) {
+	closed, err := s.github.ListPullRequests(ctx, creds.AccessToken, result.Origin.Owner, result.Origin.Repo, githubpkg.PRListStateClosed)
+	if err != nil {
+		s.log.Printf("repo overview: list closed PRs for %s/%s: %v", result.Origin.Owner, result.Origin.Repo, err)
+		return
+	}
+	byHead := make(map[string]githubpkg.PullRequestSummary, len(closed))
+	for _, pr := range closed {
+		if _, ok := byHead[pr.HeadBranch]; !ok {
+			byHead[pr.HeadBranch] = pr
+		}
+	}
+	for i := range result.Branches {
+		if result.Branches[i].PR != nil {
+			continue
+		}
+		if pr, ok := byHead[result.Branches[i].Branch]; ok {
+			result.Branches[i].PR = wireOverviewPR(pr, creds.GitHubLogin)
+		}
+	}
+}
+
+// wireOverviewPR collapses a PR summary to the overview annotation,
+// splitting GitHub's "closed" into merged vs closed via MergedAt.
+func wireOverviewPR(pr githubpkg.PullRequestSummary, login string) *OverviewPR {
+	state := OverviewPRState(pr.State)
+	if state == OverviewPRStateClosed && !pr.MergedAt.IsZero() {
+		state = OverviewPRStateMerged
+	}
+	return &OverviewPR{
+		Number:    pr.Number,
+		Title:     pr.Title,
+		State:     state,
+		Draft:     pr.Draft,
+		Author:    pr.Author,
+		URL:       pr.HTMLURL,
+		IsMine:    login != "" && pr.Author == login,
+		UpdatedAt: pr.UpdatedAt,
 	}
 }
