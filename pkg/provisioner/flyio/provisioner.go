@@ -521,7 +521,8 @@ func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, w
 		info, err = fs.Stat(stat, strings.TrimPrefix(path, "/"))
 		return err
 	})
-	if statErr == nil && info.Size() == int64(len(want)) {
+	switch {
+	case statErr == nil && info.Size() == int64(len(want)):
 		// Size matches — verify the sidecar before declaring done.
 		// Missing/mismatched sidecar means the size collision is
 		// hiding a real version skew, so fall through to reinstall.
@@ -529,10 +530,18 @@ func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, w
 			return false, nil
 		}
 		p.log.Printf("flyio provisioner: clank-host size matches but hash sidecar missing/stale; reinstalling")
-	} else if statErr == nil {
+	case statErr == nil:
 		p.log.Printf("flyio provisioner: clank-host binary size mismatch (have %d, want %d); replacing", info.Size(), len(want))
-	} else {
-		p.log.Printf("flyio provisioner: clank-host not present on sprite (%v); installing (%d bytes)", statErr, len(want))
+	case errors.Is(statErr, fs.ErrNotExist):
+		p.log.Printf("flyio provisioner: clank-host not present on sprite; installing (%d bytes)", len(want))
+	default:
+		// Transport-level stat failure (sprite still waking, wedged
+		// conn): "couldn't check" is not "absent". Reinstalling here
+		// uploads ~20MB and restarts the service inside the request
+		// path on every slow wake (seen 2026-07-09). Fail fast so
+		// EnsureHost retries on a fresh conn — same decision table as
+		// ensureAgentCLIInstalledOn.
+		return false, fmt.Errorf("clank-host presence check did not complete — failing fast for a retry instead of reinstalling: %w", statErr)
 	}
 
 	// Best-effort unlink before write; ENOENT is fine.
