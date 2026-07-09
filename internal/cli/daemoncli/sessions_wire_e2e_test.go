@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/host/hosttest"
 )
 
 func TestWire_SendMessage(t *testing.T) {
@@ -27,9 +28,7 @@ func TestWire_SendMessage(t *testing.T) {
 	if err := td.Client.Session(info.ID).Send(ctx, agent.SendMessageOpts{Text: "follow-up"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	b.mu.Lock()
-	got := b.sendOpts.Text
-	b.mu.Unlock()
+	got := b.LastSendOpts().Text
 	if got != "follow-up" {
 		t.Errorf("backend.Send received text %q, want %q", got, "follow-up")
 	}
@@ -59,10 +58,7 @@ func TestWire_AbortSession(t *testing.T) {
 	if err := td.Client.Session(info.ID).Abort(ctx); err != nil {
 		t.Fatalf("Abort: %v", err)
 	}
-	b.mu.Lock()
-	aborted := b.aborted
-	b.mu.Unlock()
-	if !aborted {
+	if !b.Aborted() {
 		t.Error("backend.Abort was not called")
 	}
 }
@@ -77,9 +73,7 @@ func TestWire_RevertSession(t *testing.T) {
 	if err := td.Client.Session(info.ID).Revert(ctx, "msg-42"); err != nil {
 		t.Fatalf("Revert: %v", err)
 	}
-	b.mu.Lock()
-	got := b.revertID
-	b.mu.Unlock()
+	got := b.RevertedMessageID()
 	if got != "msg-42" {
 		t.Errorf("backend.Revert message_id = %q, want %q", got, "msg-42")
 	}
@@ -106,9 +100,7 @@ func TestWire_ForkSession(t *testing.T) {
 	if got == nil {
 		t.Fatal("Fork returned nil SessionInfo")
 	}
-	b.mu.Lock()
-	gotID := b.forkID
-	b.mu.Unlock()
+	gotID := b.ForkedMessageID()
 	if gotID != "msg-7" {
 		t.Errorf("backend.Fork message_id = %q, want %q", gotID, "msg-7")
 	}
@@ -271,7 +263,7 @@ func TestWire_ListSessions_ReflectsCreate(t *testing.T) {
 func TestWire_CreateRequiresPrompt(t *testing.T) {
 	t.Parallel()
 	td := newTestDaemon(t)
-	repo := initTestGitRepo(t)
+	repo := hosttest.InitGitRepo(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -376,9 +368,7 @@ func TestWire_PermissionReply(t *testing.T) {
 	if err := td.Client.Session(info.ID).ReplyPermission(ctx, "perm-1", true, ""); err != nil {
 		t.Fatalf("ReplyPermission: %v", err)
 	}
-	b.mu.Lock()
-	called, gotID, gotAllow := b.permissionCalled, b.permissionID, b.permissionAllow
-	b.mu.Unlock()
+	called, gotID, gotAllow := b.PermissionReply()
 	if !called {
 		t.Fatal("backend.RespondPermission was not invoked")
 	}
@@ -634,4 +624,3 @@ func TestWire_StatusEventNormalizesPersistedStatus(t *testing.T) {
 		t.Errorf("status never converged to idle")
 	}
 }
-

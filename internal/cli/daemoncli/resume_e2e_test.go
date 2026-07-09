@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/host/hosttest"
 )
 
 // TestResume_SendToPersistedSessionRehydrates simulates the daemon
@@ -30,7 +31,7 @@ func TestResume_SendToPersistedSessionRehydrates(t *testing.T) {
 	// Pre-seed the store with a session that has no live backend.
 	// Mirrors what the daemon sees on startup after the previous
 	// run's CreateSession persisted this row and the daemon was killed.
-	repo := initTestGitRepo(t)
+	repo := hosttest.InitGitRepo(t)
 	const id = "01PERSISTEDSESSION0000"
 	persisted := agent.SessionInfo{
 		ID:         id,
@@ -64,7 +65,7 @@ func TestResume_SendToPersistedSessionRehydrates(t *testing.T) {
 func TestResume_GetMessagesRehydrates(t *testing.T) {
 	t.Parallel()
 	td := newTestDaemon(t)
-	repo := initTestGitRepo(t)
+	repo := hosttest.InitGitRepo(t)
 	const id = "01MESSAGESPERSIST00000"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -91,7 +92,7 @@ func TestResume_GetMessagesRehydrates(t *testing.T) {
 func TestResume_MarkReadOnPersistedSession(t *testing.T) {
 	t.Parallel()
 	td := newTestDaemon(t)
-	repo := initTestGitRepo(t)
+	repo := hosttest.InitGitRepo(t)
 	const id = "01MARKREADPERSIST00000"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -128,16 +129,13 @@ func TestResume_DoesNotRespawnIfAlreadyLive(t *testing.T) {
 	defer cancel()
 
 	// Send drives ResumeSession internally. The stub backend records
-	// every CreateBackend call via stubBackendManager.last; if a
-	// rehydrate spawned a duplicate, last would point at a different
-	// instance after the call.
+	// every CreateBackend call via hosttest.StubBackendManager.Last();
+	// if a rehydrate spawned a duplicate, Last() would point at a
+	// different instance after the call.
 	if err := td.Client.Session(info.ID).Send(ctx, agent.SendMessageOpts{Text: "hi"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	td.Backend.mu.Lock()
-	last := td.Backend.last
-	td.Backend.mu.Unlock()
-	if last != b {
+	if last := td.Backend.Last(); last != b {
 		t.Error("ResumeSession spawned a duplicate backend instead of reusing the live one")
 	}
 }
@@ -169,7 +167,7 @@ func TestResume_NotFoundForUnknownSession(t *testing.T) {
 // fresh connection.
 func TestResume_SurvivesAcrossNewStoreOpen(t *testing.T) {
 	t.Parallel()
-	repo := initTestGitRepo(t)
+	repo := hosttest.InitGitRepo(t)
 	const id = "01ACROSSREOPENABCDEF00"
 
 	dbDir := t.TempDir()
