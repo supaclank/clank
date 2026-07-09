@@ -191,6 +191,169 @@ func TestCreatePR_EndToEnd(t *testing.T) {
 	}
 }
 
+// TestCreatePR_CommitsUncommittedWork is the regression for "Create
+// pull request" failing with ErrNothingToPush while the worktree had
+// real (but uncommitted) work: the branch ref sat at base, so the
+// commits-ahead check saw zero. Users had to tap "Push to remote"
+// (which auto-commits) before the PR button worked. CreatePR must
+// auto-commit dirty work itself, exactly like PushToRemote.
+func TestCreatePR_CommitsUncommittedWork(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary required")
+	}
+
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv(githubpkg.ClientIDEnv, "Ov23li78UDBwea5WvI5v")
+
+	const worktreeID = "01TESTWORKTREE0000000300"
+	workdir := filepath.Join(homeDir, "work", worktreeID)
+	bareDir := filepath.Join(homeDir, "remote.git")
+
+	// Feature branch at the SAME commit as main — all work uncommitted.
+	mustGit(t, "", "init", workdir)
+	mustGit(t, workdir, "config", "user.email", "test@example.com")
+	mustGit(t, workdir, "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(workdir, "README"), []byte("v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, workdir, "add", "README")
+	mustGit(t, workdir, "commit", "-m", "base")
+	mustGit(t, workdir, "branch", "-M", "main")
+	mustGit(t, workdir, "checkout", "-b", "feat-x")
+	baseSHA := strings.TrimSpace(mustGit(t, workdir, "rev-parse", "HEAD"))
+	// Uncommitted work: one modified tracked file + one untracked file.
+	if err := os.WriteFile(filepath.Join(workdir, "README"), []byte("v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "NEW"), []byte("agent-made file\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mustGit(t, "", "init", "--bare", bareDir)
+	mustGit(t, workdir, "remote", "add", "origin", "https://github.com/acme/api.git")
+	mustGit(t, workdir, "config", "url."+bareDir+".insteadOf", "https://github.com/acme/api.git")
+	mustGit(t, workdir, "push", "origin", "main:refs/heads/main")
+
+	store := githubpkg.NewStore(homeDir)
+	if err := store.Write(githubpkg.Credentials{
+		AccessToken: "gho_test",
+		GitHubLogin: "axelengstrom",
+	}); err != nil {
+		t.Fatalf("seed credential: %v", err)
+	}
+
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/pulls") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{
+				"number": 7,
+				"html_url": "https://github.com/acme/api/pull/7",
+				"head": {"sha": "ignored"}
+			}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(apiSrv.Close)
+
+	prev := host.SetWorkRootForTest(filepath.Join(homeDir, "work"))
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+	})
+	t.Cleanup(svc.Shutdown)
+	svc.GitHub().SetAPIBaseURL(apiSrv.URL)
+
+	result, err := svc.CreatePR(context.Background(), worktreeID, host.CreatePRRequest{
+		Title: "feat: v2",
+		Body:  "uncommitted work should ride along",
+		Base:  "main",
+	})
+	if err != nil {
+		t.Fatalf("CreatePR with uncommitted work: %v", err)
+	}
+	if !result.Committed {
+		t.Error("Committed = false, want true (dirty tree was auto-committed)")
+	}
+	if result.HeadSHA == baseSHA {
+		t.Errorf("HeadSHA still at base %s — dirty work wasn't committed", baseSHA)
+	}
+
+	// The auto-commit (with both files) reached the bare remote.
+	if out := mustGit(t, bareDir, "show-ref", "refs/heads/feat-x"); !strings.Contains(out, result.HeadSHA) {
+		t.Errorf("bare feat-x ref = %q, want HeadSHA %s", out, result.HeadSHA)
+	}
+	files := mustGit(t, bareDir, "ls-tree", "--name-only", "refs/heads/feat-x")
+	if !strings.Contains(files, "NEW") {
+		t.Errorf("pushed tree missing untracked-then-committed file NEW:\n%s", files)
+	}
+	msg := mustGit(t, bareDir, "log", "-1", "--format=%s", "refs/heads/feat-x")
+	if !strings.Contains(msg, "clank: update feat-x") {
+		t.Errorf("auto-commit message = %q, want the clank push template", msg)
+	}
+}
+
+// TestCreatePR_CleanAtBaseStillNothingToPush pins that the auto-commit
+// does not soften the genuine no-work guard: clean tree, branch at
+// base → still ErrNothingToPush.
+func TestCreatePR_CleanAtBaseStillNothingToPush(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary required")
+	}
+
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv(githubpkg.ClientIDEnv, "Ov23li78UDBwea5WvI5v")
+
+	const worktreeID = "01TESTWORKTREE0000000301"
+	workdir := filepath.Join(homeDir, "work", worktreeID)
+	bareDir := filepath.Join(homeDir, "remote.git")
+
+	mustGit(t, "", "init", workdir)
+	mustGit(t, workdir, "config", "user.email", "test@example.com")
+	mustGit(t, workdir, "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(workdir, "README"), []byte("v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, workdir, "add", "README")
+	mustGit(t, workdir, "commit", "-m", "base")
+	mustGit(t, workdir, "branch", "-M", "main")
+	mustGit(t, workdir, "checkout", "-b", "feat-x")
+
+	mustGit(t, "", "init", "--bare", bareDir)
+	mustGit(t, workdir, "remote", "add", "origin", "https://github.com/acme/api.git")
+	mustGit(t, workdir, "config", "url."+bareDir+".insteadOf", "https://github.com/acme/api.git")
+	mustGit(t, workdir, "push", "origin", "main:refs/heads/main")
+
+	store := githubpkg.NewStore(homeDir)
+	if err := store.Write(githubpkg.Credentials{
+		AccessToken: "gho_test",
+		GitHubLogin: "axelengstrom",
+	}); err != nil {
+		t.Fatalf("seed credential: %v", err)
+	}
+
+	prev := host.SetWorkRootForTest(filepath.Join(homeDir, "work"))
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+	})
+	t.Cleanup(svc.Shutdown)
+
+	_, err := svc.CreatePR(context.Background(), worktreeID, host.CreatePRRequest{
+		Title: "x", Body: "y", Base: "main",
+	})
+	if !errors.Is(err, host.ErrNothingToPush) {
+		t.Fatalf("err = %v, want ErrNothingToPush", err)
+	}
+}
+
 func TestCreatePR_NotConnected(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
