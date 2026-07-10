@@ -143,6 +143,10 @@ func TestRepoOverview_PRHalf(t *testing.T) {
 				{"name":"test","status":"completed","conclusion":"failure"}]}`))
 		case "/repos/acksell/api/commits/sha8/check-runs":
 			http.Error(w, "boom", http.StatusInternalServerError)
+		case "/repos/acksell/api/pulls/7":
+			_, _ = w.Write([]byte(`{"number":7,"mergeable":true}`))
+		case "/repos/acksell/api/pulls/8":
+			_, _ = w.Write([]byte(`{"number":8,"mergeable":false}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -185,6 +189,14 @@ func TestRepoOverview_PRHalf(t *testing.T) {
 	}
 	if colleague.PR.Checks != nil {
 		t.Errorf("colleague.PR.Checks = %+v, want nil (rollup fetch failed, PR still annotated)", colleague.PR.Checks)
+	}
+	if main.PR.Mergeable != githubpkg.MergeableStateMergeable {
+		t.Errorf("main.PR.Mergeable = %q, want mergeable", main.PR.Mergeable)
+	}
+	// Per-call best-effort: #8's rollup fetch failed above, but its
+	// mergeability still landed.
+	if colleague.PR.Mergeable != githubpkg.MergeableStateConflicting {
+		t.Errorf("colleague.PR.Mergeable = %q, want conflicting", colleague.PR.Mergeable)
 	}
 
 	// GitHub down → git half intact, no PR annotations, no error.

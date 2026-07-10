@@ -13,10 +13,10 @@ package host
 // existing origin/* refs). ?fetch=1 adds exactly ONE authed all-heads
 // fetch in the canonical, under the repo lock, so behind-counts are
 // current. The PR half is two GitHub API list calls (open + recently
-// closed) plus one bounded check-rollup call per open PR head, all
-// best-effort — an API failure degrades to what's built so far (or to
-// PRs without CI status) rather than failing the screen (mirroring
-// attachPR in remote_status.go).
+// closed) plus two bounded per-PR calls (check rollup + mergeability)
+// per open PR head, all best-effort — an API failure degrades to what's
+// built so far (or to PRs without that annotation) rather than failing
+// the screen (mirroring attachPR in remote_status.go).
 
 import (
 	"context"
@@ -47,17 +47,21 @@ const (
 // "mine vs everyone" filter bit. State merged/closed marks a leftover
 // local branch as finished work rather than an in-progress draft.
 // Checks is the head commit's CI rollup, absent when the PR has no
-// check runs (or the rollup fetch failed).
+// check runs (or the rollup fetch failed). Mergeable is present only
+// once GitHub has computed the test merge (open PRs only) — conflicting
+// PRs get no CI runs, so clients show the conflict where the CI badge
+// would be.
 type OverviewPR struct {
-	Number    int                    `json:"number"`
-	Title     string                 `json:"title"`
-	State     OverviewPRState        `json:"state"`
-	Draft     bool                   `json:"draft"`
-	Author    string                 `json:"author"`
-	URL       string                 `json:"url"`
-	IsMine    bool                   `json:"is_mine"`
-	UpdatedAt time.Time              `json:"updated_at,omitzero"`
-	Checks    *githubpkg.CheckRollup `json:"checks,omitempty"`
+	Number    int                      `json:"number"`
+	Title     string                   `json:"title"`
+	State     OverviewPRState          `json:"state"`
+	Draft     bool                     `json:"draft"`
+	Author    string                   `json:"author"`
+	URL       string                   `json:"url"`
+	IsMine    bool                     `json:"is_mine"`
+	UpdatedAt time.Time                `json:"updated_at,omitzero"`
+	Checks    *githubpkg.CheckRollup   `json:"checks,omitempty"`
+	Mergeable githubpkg.MergeableState `json:"mergeable,omitempty"`
 }
 
 // RepoBranchOverview is one work item: a branch (loaded or not) and/or
@@ -330,26 +334,34 @@ func wireOverviewPR(pr githubpkg.PullRequestSummary, login string) *OverviewPR {
 	}
 }
 
-// checkRollupConcurrency bounds the per-PR check-run fan-out so a repo
+// checkRollupConcurrency bounds the per-PR annotation fan-out so a repo
 // with many open PRs doesn't burst the GitHub API.
 const checkRollupConcurrency = 8
 
 // attachPRChecks annotates each overview PR with its head commit's CI
-// rollup, one bounded Checks API call per PR. Best-effort per PR — a
-// failed rollup leaves that PR without CI status; failures are logged
-// once, aggregated.
+// rollup and its mergeability, two bounded API calls per PR. Best-effort
+// per PR and per call — a failed fetch leaves just that annotation off;
+// failures are logged once, aggregated.
 func (s *Service) attachPRChecks(ctx context.Context, token string, origin *RepoOrigin, pulls []githubpkg.PullRequestSummary, byHead map[string]*OverviewPR) {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, checkRollupConcurrency)
 	var mu sync.Mutex
 	failed := 0
 	var firstErr error
+	record := func(err error) {
+		mu.Lock()
+		failed++
+		if firstErr == nil {
+			firstErr = err
+		}
+		mu.Unlock()
+	}
 	for _, pull := range pulls {
 		pr := byHead[pull.HeadBranch]
 		// byHead keeps one entry per head branch name; a PR that lost that
 		// slot to another PR sharing the same head branch must not fetch
-		// into the survivor's Checks field (data race + wrong association).
-		if pr == nil || pr.Number != pull.Number || pull.HeadSHA == "" {
+		// into the survivor's annotations (data race + wrong association).
+		if pr == nil || pr.Number != pull.Number {
 			continue
 		}
 		wg.Add(1)
@@ -357,22 +369,25 @@ func (s *Service) attachPRChecks(ctx context.Context, token string, origin *Repo
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			rollup, err := s.github.CheckRollupForRef(ctx, token, origin.Owner, origin.Repo, pull.HeadSHA)
-			if err != nil {
-				mu.Lock()
-				failed++
-				if firstErr == nil {
-					firstErr = err
+			if pull.HeadSHA != "" {
+				rollup, err := s.github.CheckRollupForRef(ctx, token, origin.Owner, origin.Repo, pull.HeadSHA)
+				if err != nil {
+					record(err)
+				} else {
+					pr.Checks = rollup
 				}
-				mu.Unlock()
-				return
 			}
-			pr.Checks = rollup
+			state, err := s.github.PRMergeable(ctx, token, origin.Owner, origin.Repo, pull.Number)
+			if err != nil {
+				record(err)
+			} else if state != githubpkg.MergeableStateUnknown {
+				pr.Mergeable = state
+			}
 		}()
 	}
 	wg.Wait()
 	if failed > 0 {
-		s.log.Printf("repo overview: check rollups for %s/%s: %d of %d failed, first: %v",
-			origin.Owner, origin.Repo, failed, len(pulls), firstErr)
+		s.log.Printf("repo overview: PR annotations for %s/%s: %d fetches failed, first: %v",
+			origin.Owner, origin.Repo, failed, firstErr)
 	}
 }
