@@ -6,21 +6,27 @@ import (
 	"fmt"
 
 	"github.com/acksell/clank/internal/git"
+	githubpkg "github.com/acksell/clank/internal/host/github"
 )
 
 // RemoteStatusResult is the wire shape for GET /worktrees/{id}/remote/status.
+// PRMergeable is present only once GitHub has computed the PR's test
+// merge (absent = unknown, not clean) — a conflicting PR gets no CI
+// runs, so clients surface the conflict where CI status would be.
 type RemoteStatusResult struct {
-	Branch     string      `json:"branch"`
-	Owner      string      `json:"owner"`
-	Repo       string      `json:"repo"`
-	State      RemoteState `json:"state"`
-	Ahead      int         `json:"ahead"`
-	Behind     int         `json:"behind"`
-	Dirty      bool        `json:"dirty"`
-	LocalHead  string      `json:"local_head"`
-	RemoteHead string      `json:"remote_head,omitempty"`
-	PRNumber   int         `json:"pr_number,omitempty"`
-	PRURL      string      `json:"pr_url,omitempty"`
+	Branch       string                   `json:"branch"`
+	Owner        string                   `json:"owner"`
+	Repo         string                   `json:"repo"`
+	State        RemoteState              `json:"state"`
+	Ahead        int                      `json:"ahead"`
+	Behind       int                      `json:"behind"`
+	Dirty        bool                     `json:"dirty"`
+	LocalHead    string                   `json:"local_head"`
+	RemoteHead   string                   `json:"remote_head,omitempty"`
+	PRNumber     int                      `json:"pr_number,omitempty"`
+	PRURL        string                   `json:"pr_url,omitempty"`
+	PRBaseBranch string                   `json:"pr_base_branch,omitempty"`
+	PRMergeable  githubpkg.MergeableState `json:"pr_mergeable,omitempty"`
 }
 
 // RemoteSyncStatus reports where the worktree's branch sits relative to
@@ -84,17 +90,28 @@ func computeStatus(rc remoteContext) (RemoteStatusResult, error) {
 	return result, nil
 }
 
-// attachPR best-effort fills PRNumber/PRURL from the open PR for the
-// branch. A lookup failure is logged, not fatal — the status is still
-// useful without the deep-link.
+// attachPR best-effort fills PRNumber/PRURL/PRBaseBranch and the PR's
+// mergeability from the open PR for the branch. Failures are logged,
+// not fatal — the status is still useful without the PR annotations,
+// and a failed mergeability fetch still leaves the deep-link intact.
 func (s *Service) attachPR(ctx context.Context, result *RemoteStatusResult, rc remoteContext) {
 	pr, err := s.github.FindOpenPRForBranch(ctx, rc.token, rc.owner, rc.repo, rc.branch)
 	if err != nil {
 		s.log.Printf("remote status: find PR for %s/%s:%s: %v", rc.owner, rc.repo, rc.branch, err)
 		return
 	}
-	if pr != nil {
-		result.PRNumber = pr.Number
-		result.PRURL = pr.HTMLURL
+	if pr == nil {
+		return
+	}
+	result.PRNumber = pr.Number
+	result.PRURL = pr.HTMLURL
+	result.PRBaseBranch = pr.Base.Ref
+	state, err := s.github.PRMergeable(ctx, rc.token, rc.owner, rc.repo, pr.Number)
+	if err != nil {
+		s.log.Printf("remote status: PR mergeable for %s/%s#%d: %v", rc.owner, rc.repo, pr.Number, err)
+		return
+	}
+	if state != githubpkg.MergeableStateUnknown {
+		result.PRMergeable = state
 	}
 }
