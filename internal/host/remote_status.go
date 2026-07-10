@@ -97,7 +97,9 @@ func computeStatus(rc remoteContext) (RemoteStatusResult, error) {
 func (s *Service) attachPR(ctx context.Context, result *RemoteStatusResult, rc remoteContext) {
 	pr, err := s.github.FindOpenPRForBranch(ctx, rc.token, rc.owner, rc.repo, rc.branch)
 	if err != nil {
-		s.log.Printf("remote status: find PR for %s/%s:%s: %v", rc.owner, rc.repo, rc.branch, err)
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			s.log.Printf("remote status: find PR for %s/%s:%s: %v", rc.owner, rc.repo, rc.branch, err)
+		}
 		return
 	}
 	if pr == nil {
@@ -108,7 +110,9 @@ func (s *Service) attachPR(ctx context.Context, result *RemoteStatusResult, rc r
 	result.PRBaseBranch = pr.Base.Ref
 	state, err := s.github.PRMergeable(ctx, rc.token, rc.owner, rc.repo, pr.Number)
 	if err != nil {
-		s.log.Printf("remote status: PR mergeable for %s/%s#%d: %v", rc.owner, rc.repo, pr.Number, err)
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			s.log.Printf("remote status: PR mergeable for %s/%s#%d: %v", rc.owner, rc.repo, pr.Number, err)
+		}
 		return
 	}
 	if state != githubpkg.MergeableStateUnknown {

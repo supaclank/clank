@@ -1,8 +1,10 @@
 package host_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -150,5 +152,79 @@ func TestRemoteSyncStatus_PRMergeability(t *testing.T) {
 	}
 	if result.PRMergeable != "" {
 		t.Errorf("PRMergeable = %q after detail failure, want empty", result.PRMergeable)
+	}
+}
+
+// A client-cancelled request context is an expected lifecycle event, not
+// an unexpected error — attachPR must not log it.
+func TestRemoteSyncStatus_AttachPRSwallowsContextCancellation(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary required")
+	}
+
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv(githubpkg.ClientIDEnv, "Ov23li78UDBwea5WvI5v")
+
+	const worktreeID = "01TESTWORKTREE0000000001"
+	workdir := filepath.Join(homeDir, "work", worktreeID)
+	bareDir := filepath.Join(homeDir, "remote.git")
+
+	mustGit(t, "", "init", workdir)
+	mustGit(t, workdir, "config", "user.email", "test@example.com")
+	mustGit(t, workdir, "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(workdir, "README"), []byte("v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, workdir, "add", "README")
+	mustGit(t, workdir, "commit", "-m", "base")
+	mustGit(t, workdir, "branch", "-M", "main")
+	mustGit(t, workdir, "checkout", "-b", "feat-x")
+	mustGit(t, "", "init", "--bare", bareDir)
+	mustGit(t, workdir, "remote", "add", "origin", "https://github.com/acme/api.git")
+	mustGit(t, workdir, "config", "url."+bareDir+".insteadOf", "https://github.com/acme/api.git")
+	mustGit(t, workdir, "push", "origin", "main:refs/heads/main")
+	mustGit(t, workdir, "push", "origin", "feat-x:refs/heads/feat-x")
+
+	store := githubpkg.NewStore(homeDir)
+	if err := store.Write(githubpkg.Credentials{
+		AccessToken: "gho_test",
+		GitHubLogin: "axelengstrom",
+		Scopes:      []string{"repo", "read:user"},
+	}); err != nil {
+		t.Fatalf("seed credential: %v", err)
+	}
+
+	// Never responds within the test's lifetime: RemoteSyncStatus's
+	// already-cancelled context aborts the client before any body would
+	// be read.
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(apiSrv.Close)
+
+	prev := host.SetWorkRootForTest(filepath.Join(homeDir, "work"))
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
+	var logBuf bytes.Buffer
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+		Log: log.New(&logBuf, "", 0),
+	})
+	t.Cleanup(svc.Shutdown)
+	svc.GitHub().SetAPIBaseURL(apiSrv.URL)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, err := svc.RemoteSyncStatus(ctx, worktreeID)
+	if err != nil {
+		t.Fatalf("RemoteSyncStatus: %v", err)
+	}
+	if result.PRNumber != 0 {
+		t.Errorf("PRNumber = %d on cancellation, want 0 (attachPR best-effort)", result.PRNumber)
+	}
+	if strings.Contains(logBuf.String(), "remote status:") {
+		t.Errorf("attachPR logged a context-cancellation error: %s", logBuf.String())
 	}
 }
