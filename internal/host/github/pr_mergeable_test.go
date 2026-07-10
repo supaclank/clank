@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 )
 
@@ -24,7 +25,9 @@ func TestPRMergeable(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			var gotAuth atomic.Value // string
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotAuth.Store(r.Header.Get("Authorization"))
 				if r.URL.Path != "/repos/acme/api/pulls/7" {
 					http.NotFound(w, r)
 					return
@@ -43,6 +46,9 @@ func TestPRMergeable(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Errorf("PRMergeable = %q, want %q", got, tc.want)
+			}
+			if a, _ := gotAuth.Load().(string); a != "Bearer gho_test" {
+				t.Errorf("Authorization = %q, want Bearer gho_test", a)
 			}
 		})
 	}
