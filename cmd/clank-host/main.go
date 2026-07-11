@@ -39,6 +39,7 @@ import (
 	"github.com/acksell/clank/internal/host/preview"
 	hoststore "github.com/acksell/clank/internal/host/store"
 	"github.com/acksell/clank/internal/keepalive"
+	keepaliveexit "github.com/acksell/clank/internal/keepalive/exit"
 	keepalivenoop "github.com/acksell/clank/internal/keepalive/noop"
 	"github.com/acksell/clank/internal/keepalive/sprites"
 	"github.com/acksell/clank/internal/notifier"
@@ -51,6 +52,7 @@ const (
 	keepaliveProviderNone    = "none"
 	keepaliveProviderNoop    = "noop"
 	keepaliveProviderSprites = "sprites"
+	keepaliveProviderExit    = "exit"
 
 	notifierProviderNone    = "none"
 	notifierProviderNoop    = "noop"
@@ -70,9 +72,9 @@ func main() {
 	listen := flag.String("listen", "", "Listener address: tcp://host:port (use :0 for auto-pick) or unix:///path. Mutually exclusive with --socket.")
 	listenAuthToken := flag.String("listen-auth-token", os.Getenv("CLANK_HOST_AUTH_TOKEN"), "Bearer token required on every HTTP request. Empty disables the check (laptop-local mode). Defaults to $CLANK_HOST_AUTH_TOKEN.")
 	dataDir := flag.String("data-dir", os.Getenv("CLANK_HOST_DATA_DIR"), "Directory for host-side persistent state (host.db). Defaults to $CLANK_HOST_DATA_DIR; if neither is set, falls back to $HOME/.clank-host. PR 3+ stores session metadata here.")
-	keepaliveProvider := flag.String("keepalive-provider", keepaliveProviderNone, "Provider that receives keepalive Ticks while sessions emit events: 'sprites' (Fly Sprites Tasks API), 'noop' (debug), or 'none' (disabled — laptop default).")
-	notifierProvider := flag.String("notifier-provider", notifierProviderNone, "Provider that receives notification-worthy events (idle, permission, error): 'webhook' (POST to --notifier-webhook-url), 'noop' (debug), or 'none' (disabled — laptop default).")
-	notifierWebhookURL := flag.String("notifier-webhook-url", "", "POST target when --notifier-provider=webhook.")
+	keepaliveProvider := flag.String("keepalive-provider", envDefault("CLANK_KEEPALIVE_PROVIDER", keepaliveProviderNone), "Provider that receives keepalive Ticks while sessions emit events: 'sprites' (Fly Sprites Tasks API), 'exit' (shut down when idle — machine-style sandboxes), 'noop' (debug), or 'none' (disabled — laptop default). Defaults to $CLANK_KEEPALIVE_PROVIDER.")
+	notifierProvider := flag.String("notifier-provider", envDefault("CLANK_NOTIFIER_PROVIDER", notifierProviderNone), "Provider that receives notification-worthy events (idle, permission, error): 'webhook' (POST to --notifier-webhook-url), 'noop' (debug), or 'none' (disabled — laptop default). Defaults to $CLANK_NOTIFIER_PROVIDER.")
+	notifierWebhookURL := flag.String("notifier-webhook-url", os.Getenv("CLANK_NOTIFIER_WEBHOOK_URL"), "POST target when --notifier-provider=webhook. Defaults to $CLANK_NOTIFIER_WEBHOOK_URL.")
 	notifierWebhookToken := flag.String("notifier-webhook-token", os.Getenv("CLANK_NOTIFIER_TOKEN"), "Per-host bearer token sent as 'Authorization: Bearer <token>' to the webhook target. Defaults to $CLANK_NOTIFIER_TOKEN.")
 	previewWebhookURL := flag.String("preview-webhook-url", os.Getenv("CLANK_PREVIEW_WEBHOOK_URL"), "Gateway base for the preview register/revoke webhooks (e.g. https://api.example.dev/webhooks/preview). Empty disables gateway integration — preview servers still spawn but no public token is minted (laptop dev). Defaults to $CLANK_PREVIEW_WEBHOOK_URL.")
 	githubOAuthClientID := flag.String("github-oauth-client-id", os.Getenv("CLANK_GITHUB_OAUTH_CLIENT_ID"), "Clank GitHub OAuth App client_id, used for the GitHub Connect device flow. Empty disables GitHub Connect on this host. Defaults to $CLANK_GITHUB_OAUTH_CLIENT_ID.")
@@ -150,8 +152,9 @@ type runConfig struct {
 
 // buildKeepaliveListener constructs the provider-specific Listener from
 // the --keepalive-provider value. Returns nil for "none" so the host
-// service skips wiring entirely.
-func buildKeepaliveListener(provider string, lg *log.Logger) (keepalive.Listener, error) {
+// service skips wiring entirely. shutdown initiates a graceful process
+// shutdown; only the "exit" provider uses it.
+func buildKeepaliveListener(provider string, shutdown func(), lg *log.Logger) (keepalive.Listener, error) {
 	switch provider {
 	case keepaliveProviderNone:
 		return nil, nil
@@ -159,9 +162,19 @@ func buildKeepaliveListener(provider string, lg *log.Logger) (keepalive.Listener
 		return keepalivenoop.Listener{}, nil
 	case keepaliveProviderSprites:
 		return sprites.New(lg), nil
+	case keepaliveProviderExit:
+		return keepaliveexit.New(keepaliveexit.Options{Shutdown: shutdown, Log: lg}), nil
 	default:
-		return nil, fmt.Errorf("unknown --keepalive-provider %q (want %s|%s|%s)", provider, keepaliveProviderSprites, keepaliveProviderNoop, keepaliveProviderNone)
+		return nil, fmt.Errorf("unknown --keepalive-provider %q (want %s|%s|%s|%s)", provider, keepaliveProviderSprites, keepaliveProviderExit, keepaliveProviderNoop, keepaliveProviderNone)
 	}
+}
+
+// envDefault returns the env var's value when set, else fallback.
+func envDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 // buildNotifierProvider constructs the provider-specific notifier
@@ -259,7 +272,15 @@ func resolveDataDir(dataDir string) (string, error) {
 func run(cfg runConfig) error {
 	lg := log.New(os.Stderr, "[clank-host] ", log.LstdFlags)
 
-	keepaliveListener, err := buildKeepaliveListener(cfg.keepaliveProvider, lg)
+	// The exit provider stops the process when idle; routing through a
+	// self-SIGTERM reuses the exact signal path an operator kill takes
+	// (graceful HTTP drain + backend shutdown below).
+	selfTerminate := func() {
+		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+			lg.Printf("keepalive: self-terminate signal: %v", err)
+		}
+	}
+	keepaliveListener, err := buildKeepaliveListener(cfg.keepaliveProvider, selfTerminate, lg)
 	if err != nil {
 		return err
 	}
@@ -335,7 +356,16 @@ func run(cfg runConfig) error {
 
 	mux := hostmux.New(svc, lg)
 	mux.SetAuthToken(cfg.listenAuthToken)
-	srv := &http.Server{Handler: mux.Handler()}
+	handler := mux.Handler()
+	// Listeners that watch HTTP activity (the exit provider's idle
+	// detection) wrap the handler so requests and in-flight streams
+	// count as signs of life.
+	if tracker, ok := keepaliveListener.(interface {
+		TrackHTTP(http.Handler) http.Handler
+	}); ok {
+		handler = tracker.TrackHTTP(handler)
+	}
+	srv := &http.Server{Handler: handler}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"io"
+	"log"
 	"strings"
 	"testing"
 )
@@ -81,6 +83,45 @@ func TestBuildNotifierProvider(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestBuildKeepaliveListener(t *testing.T) {
+	t.Parallel()
+	shutdown := func() {}
+	cases := []struct {
+		name        string
+		provider    string
+		wantNil     bool
+		wantErr     bool
+		wantErrSubs string
+	}{
+		{name: "none-skips", provider: "none", wantNil: true},
+		{name: "noop-builds", provider: "noop"},
+		{name: "sprites-builds", provider: "sprites"},
+		{name: "exit-builds", provider: "exit"},
+		{name: "unknown-provider", provider: "carrier-pigeon", wantErr: true, wantErrSubs: "unknown --keepalive-provider"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			l, err := buildKeepaliveListener(c.provider, shutdown, log.New(io.Discard, "", 0))
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if c.wantErrSubs != "" && !strings.Contains(err.Error(), c.wantErrSubs) {
+					t.Errorf("error = %q, want substring %q", err.Error(), c.wantErrSubs)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if c.wantNil != (l == nil) {
+				t.Fatalf("listener nil = %v, want %v", l == nil, c.wantNil)
 			}
 		})
 	}
