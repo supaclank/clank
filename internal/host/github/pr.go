@@ -36,6 +36,9 @@ type PullRequest struct {
 	Head    struct {
 		SHA string `json:"sha"`
 	} `json:"head"`
+	Base struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
 }
 
 // Errors returned by CreatePullRequest. ErrPRAlreadyExists carries
@@ -198,6 +201,9 @@ func wirePR(pr *gogithub.PullRequest) PullRequest {
 	}
 	if pr.Head != nil {
 		out.Head.SHA = pr.GetHead().GetSHA()
+	}
+	if pr.Base != nil {
+		out.Base.Ref = pr.GetBase().GetRef()
 	}
 	return out
 }
