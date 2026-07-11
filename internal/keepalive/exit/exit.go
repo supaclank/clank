@@ -120,6 +120,9 @@ func (l *Listener) Tick(_ context.Context, lastActivity time.Time) {
 	if idle < l.idleThreshold {
 		return
 	}
+	if l.inflight.Load() > 0 {
+		return
+	}
 	if l.fired.CompareAndSwap(false, true) {
 		l.log.Printf("exit keepalive: idle %s (threshold %s), initiating shutdown", idle.Round(time.Second), l.idleThreshold)
 		l.shutdown()

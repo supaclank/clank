@@ -163,13 +163,16 @@ func buildKeepaliveListener(provider string, shutdown func(), lg *log.Logger) (k
 	case keepaliveProviderSprites:
 		return sprites.New(lg), nil
 	case keepaliveProviderExit:
+		if shutdown == nil {
+			return nil, fmt.Errorf("--keepalive-provider=%s requires a shutdown function", keepaliveProviderExit)
+		}
 		return keepaliveexit.New(keepaliveexit.Options{Shutdown: shutdown, Log: lg}), nil
 	default:
 		return nil, fmt.Errorf("unknown --keepalive-provider %q (want %s|%s|%s|%s)", provider, keepaliveProviderSprites, keepaliveProviderExit, keepaliveProviderNoop, keepaliveProviderNone)
 	}
 }
 
-// envDefault returns the env var's value when set, else fallback.
+// envDefault returns the env var's value when it's non-empty, else fallback.
 func envDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -276,7 +279,12 @@ func run(cfg runConfig) error {
 	// self-SIGTERM reuses the exact signal path an operator kill takes
 	// (graceful HTTP drain + backend shutdown below).
 	selfTerminate := func() {
-		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		p, err := os.FindProcess(os.Getpid())
+		if err != nil {
+			lg.Printf("keepalive: self-terminate: %v", err)
+			return
+		}
+		if err := p.Signal(syscall.SIGTERM); err != nil {
 			lg.Printf("keepalive: self-terminate signal: %v", err)
 		}
 	}
