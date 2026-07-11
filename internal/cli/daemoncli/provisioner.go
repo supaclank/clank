@@ -1,6 +1,7 @@
 package daemoncli
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"github.com/acksell/clank/pkg/provisioner"
 	daytonaprov "github.com/acksell/clank/pkg/provisioner/daytona"
 	flyioprov "github.com/acksell/clank/pkg/provisioner/flyio"
+	flymachinesprov "github.com/acksell/clank/pkg/provisioner/flymachines"
 	localprov "github.com/acksell/clank/pkg/provisioner/local"
 )
 
@@ -59,8 +61,10 @@ func buildProvisioner(opts ServerOptions, st *store.Store) (provisioner.Provisio
 		return buildDaytonaProvisioner(opts, st, prefs)
 	case "flyio":
 		return buildFlyIOProvisioner(opts, st, prefs)
+	case "flymachines":
+		return buildFlyMachinesProvisioner(opts, st, prefs)
 	default:
-		return nil, nil, fmt.Errorf("unknown provisioner %q (configure preferences.default_launch_host_provider to one of: local, daytona, flyio)", provType)
+		return nil, nil, fmt.Errorf("unknown provisioner %q (configure preferences.default_launch_host_provider to one of: local, daytona, flyio, flymachines)", provType)
 	}
 }
 
@@ -103,6 +107,33 @@ func buildDaytonaProvisioner(opts ServerOptions, st *store.Store, prefs config.P
 	}, st, log.Default())
 	if err != nil {
 		return nil, nil, fmt.Errorf("build daytona provisioner: %w", err)
+	}
+	return prov, prov.Stop, nil
+}
+
+func buildFlyMachinesProvisioner(opts ServerOptions, st *store.Store, prefs config.Preferences) (provisioner.Provisioner, func(), error) {
+	fm := prefs.FlyMachines
+	if fm == nil {
+		return nil, nil, fmt.Errorf("flymachines provisioner: preferences.flymachines required")
+	}
+	prov, err := flymachinesprov.New(context.Background(), flymachinesprov.Options{
+		APIToken:            fm.APIToken,
+		OrgSlug:             fm.OrgSlug,
+		Region:              fm.Region,
+		Image:               fm.Image,
+		GatewayNetwork:      fm.GatewayNetwork,
+		AppNamePrefix:       fm.AppNamePrefix,
+		GuestCPUKind:        fm.GuestCPUKind,
+		GuestCPUs:           fm.GuestCPUs,
+		GuestMemoryMB:       fm.GuestMemoryMB,
+		SwapSizeMB:          fm.SwapSizeMB,
+		VolumeSizeGB:        fm.VolumeSizeGB,
+		NotifierWebhookURL:  notifierWebhookURL(),
+		PreviewWebhookURL:   previewWebhookURL(),
+		GitHubOAuthClientID: os.Getenv("CLANK_GITHUB_OAUTH_CLIENT_ID"),
+	}, st, log.Default())
+	if err != nil {
+		return nil, nil, fmt.Errorf("build flymachines provisioner: %w", err)
 	}
 	return prov, prov.Stop, nil
 }
