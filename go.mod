@@ -115,3 +115,7 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+// Carries the fix for >1MB transcript lines (base64 PDF attachments) breaking
+// GetSessionMessages; drop when https://github.com/severity1/claude-agent-sdk-go/pull/139 lands in a release.
+replace github.com/severity1/claude-agent-sdk-go => github.com/Acksell/claude-agent-sdk-go v0.0.0-20260711074659-86240ce4e005
