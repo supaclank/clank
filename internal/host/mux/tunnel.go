@@ -41,6 +41,7 @@ func (m *Mux) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// TODO(ai-review): dial "localhost" instead of the IPv4 literal so an ::1-only dev server is reachable too. https://github.com/Acksell/clank/pull/125#discussion_r3565157117
 	d := net.Dialer{Timeout: tunnelLocalDialTimeout}
 	target, err := d.DialContext(r.Context(), "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 	if err != nil {

@@ -55,6 +55,7 @@ func Dial(ctx context.Context, baseURL string, rt http.RoundTripper, port int) (
 		HTTPClient: &http.Client{Transport: rt},
 	})
 	if err != nil {
+		// TODO(ai-review): match on hostmux's JSON "port_unreachable" code, not bare 502, so an intermediary's unrelated 502 isn't misclassified. https://github.com/Acksell/clank/pull/125
 		if resp != nil && resp.StatusCode == http.StatusBadGateway {
 			return nil, fmt.Errorf("tunnelclient: dial port %d on %s: %w", port, u.Host, ErrPortUnreachable)
 		}
