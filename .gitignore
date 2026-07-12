@@ -9,7 +9,7 @@
 # CI (.github/workflows/ci.yml) rebuilds it and `git diff`s to fail any
 # stale commit. Rebuild with `make embed-host` (Go pinned by go.mod) and
 # commit it alongside clank-host changes. Legacy path stays ignored:
-pkg/provisioner/flysprites/clank-host-linux-amd64
+internal/provisioner/flyio/clank-host-linux-amd64
 
 # Native clank-host binary produced by `go build ./cmd/clank-host` in
 # the worktree root. Test fixture; not for VCS.
