@@ -1,0 +1,182 @@
+package webpreview
+
+import (
+	"context"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
+
+// startTestStack wires a fake Vite upstream and a fake daemon on a unix
+// socket behind a real proxy Server, mirroring production topology.
+func startTestStack(t *testing.T, upstream http.Handler, daemon http.Handler) *Server {
+	t.Helper()
+
+	up := httptest.NewServer(upstream)
+	t.Cleanup(up.Close)
+	u, _ := url.Parse(up.URL)
+	upPort, _ := strconv.Atoi(u.Port())
+
+	// Not t.TempDir(): its path embeds the test name and blows through
+	// macOS's 104-byte sockaddr_un limit.
+	sockDir, err := os.MkdirTemp("", "wp")
+	if err != nil {
+		t.Fatalf("mktemp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sockDir) })
+	sock := filepath.Join(sockDir, "d.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("unix listen: %v", err)
+	}
+	dsrv := &http.Server{Handler: daemon}
+	go dsrv.Serve(ln)
+	t.Cleanup(func() { dsrv.Close() })
+
+	s, err := Start(Options{
+		UpstreamPort:     upPort,
+		DaemonSocketPath: sock,
+		Token:            "sekrit",
+		OverlayConfig:    map[string]any{"name": "app", "local_path": "/tmp/app"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		s.Shutdown(ctx)
+	})
+	return s
+}
+
+func TestProxyInjectsOverlayIntoHTML(t *testing.T) {
+	t.Parallel()
+	s := startTestStack(t,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Content-Security-Policy", "default-src 'self'")
+			io.WriteString(w, "<html><head><title>x</title></head><body>app</body></html>")
+		}),
+		http.NotFoundHandler(),
+	)
+
+	resp, err := http.Get(s.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	for _, want := range []string{
+		`window.__CLANK_PREVIEW = `,
+		`"token":"sekrit"`,
+		`"local_path":"/tmp/app"`,
+		`src="/__clank/overlay.js"`,
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("injected HTML missing %q\nbody: %s", want, body)
+		}
+	}
+	if idx := strings.Index(string(body), "</head>"); idx < 0 || !strings.Contains(string(body[:idx]), "__CLANK_PREVIEW") {
+		t.Errorf("config script must land inside <head>")
+	}
+	if got := resp.Header.Get("Content-Security-Policy"); got != "" {
+		t.Errorf("CSP must be dropped on injected pages, got %q", got)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("injected HTML must be no-store (it embeds the per-run token), got %q", got)
+	}
+	if cl := resp.Header.Get("Content-Length"); cl != strconv.Itoa(len(body)) {
+		t.Errorf("Content-Length %s != body %d", cl, len(body))
+	}
+}
+
+func TestProxyLeavesNonHTMLAlone(t *testing.T) {
+	t.Parallel()
+	const js = "export const x = 1;"
+	s := startTestStack(t,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/javascript")
+			io.WriteString(w, js)
+		}),
+		http.NotFoundHandler(),
+	)
+	resp, err := http.Get(s.URL + "/src/app.js")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != js {
+		t.Fatalf("non-HTML body modified: %q", body)
+	}
+}
+
+func TestDaemonRelayRequiresTokenAndStripsAuth(t *testing.T) {
+	t.Parallel()
+	var gotPath, gotAuth string
+	s := startTestStack(t,
+		http.NotFoundHandler(),
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath = r.URL.Path
+			gotAuth = r.Header.Get("Authorization")
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	)
+
+	// No token → 401, daemon never sees it.
+	resp, err := http.Get(s.URL + "/__clank/api/sessions")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("tokenless status = %d, want 401", resp.StatusCode)
+	}
+
+	// Bearer token → relayed with the prefix stripped and auth removed.
+	req, _ := http.NewRequest("GET", s.URL+"/__clank/api/sessions", nil)
+	req.Header.Set("Authorization", "Bearer sekrit")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET with token: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+	if gotPath != "/sessions" {
+		t.Errorf("daemon path = %q, want /sessions (prefix stripped)", gotPath)
+	}
+	if gotAuth != "" {
+		t.Errorf("Authorization must not reach the daemon, got %q", gotAuth)
+	}
+}
+
+func TestOverlayAssetsServed(t *testing.T) {
+	t.Parallel()
+	s := startTestStack(t, http.NotFoundHandler(), http.NotFoundHandler())
+	for _, path := range []string{"/__clank/overlay.js", "/__clank/worklet.js"} {
+		resp, err := http.Get(s.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 || len(body) == 0 {
+			t.Errorf("%s: status %d, %d bytes", path, resp.StatusCode, len(body))
+		}
+		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
+			t.Errorf("%s content-type = %q", path, ct)
+		}
+	}
+}

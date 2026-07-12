@@ -1,0 +1,727 @@
+// clank web preview overlay — the browser twin of clank-mobile's
+// floating prompt box (modules/preview-launcher's FloatingPromptBox).
+//
+// Injected into every HTML page by internal/webpreview's proxy. Talks
+// to the clank daemon through the same-origin /__clank/api relay using
+// the per-run token from window.__CLANK_PREVIEW, so no CORS and no
+// credentials beyond the injected config.
+//
+// Interaction model (mobile parity, hotkeys instead of shake):
+//   Alt+C          summon / cycle prompt ⇄ chat   (shake analog)
+//   Esc            leave inspect mode, else hide
+//   Alt+S          toggle element inspect (click tags an element)
+//   Alt+V (hold)   push-to-talk dictation
+//
+// Element → source resolution prefers deterministic compiler metadata:
+// Svelte dev mode stamps every node with __svelte_meta.loc; React ≤18
+// exposes fiber._debugSource; otherwise we fall back to the component
+// owner chain (React 19) or a plain DOM description. Per the design
+// thesis, the agent does the edit — this overlay only has to hand it
+// unambiguous context.
+(() => {
+  'use strict';
+  if (window.__clankOverlay) return;
+  window.__clankOverlay = true;
+
+  const CFG = window.__CLANK_PREVIEW || {};
+  const TOKEN = CFG.token || '';
+  const HOTKEYS = { toggle: 'KeyC', inspect: 'KeyS', talk: 'KeyV' };
+  const DONE_LINGER_MS = 8000; // mobile: PreviewOverlayState.DONE_LINGER_MS
+
+  // ---------- console error ring (context for "why is this broken") ----
+  const recentErrors = [];
+  const pushErr = (msg) => {
+    const s = String(msg).slice(0, 300);
+    recentErrors.push(s);
+    if (recentErrors.length > 20) recentErrors.shift();
+  };
+  const origConsoleError = console.error.bind(console);
+  console.error = (...args) => {
+    try { pushErr(args.map((a) => (a && a.stack) || String(a)).join(' ')); } catch {}
+    origConsoleError(...args);
+  };
+  window.addEventListener('error', (e) => pushErr(e.message + (e.filename ? ` (${e.filename}:${e.lineno})` : '')));
+  window.addEventListener('unhandledrejection', (e) => pushErr('unhandled rejection: ' + ((e.reason && e.reason.message) || e.reason)));
+
+  // ---------- api client -----------------------------------------------
+  const api = async (path, opts = {}) => {
+    const res = await fetch('/__clank/api' + path, {
+      ...opts,
+      headers: {
+        Authorization: 'Bearer ' + TOKEN,
+        ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(opts.headers || {}),
+      },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`${opts.method || 'GET'} ${path}: ${res.status} ${text.slice(0, 200)}`);
+    }
+    return res;
+  };
+  const apiJSON = async (path, opts) => {
+    const res = await api(path, opts);
+    if (res.status === 204) return null;
+    return res.json().catch(() => null);
+  };
+
+  // ---------- state ------------------------------------------------------
+  const store = {
+    box: 'hidden', // hidden | prompt | chat
+    agent: 'idle', // idle | thinking | working | done | error
+    inspect: false,
+    chips: [], // [{label, detail, html, names}]
+    msgs: [], // [{role, text}]
+    streamText: '', // in-flight assistant text
+    permission: null, // {request_id, tool, description}
+    sessionId: sessionStorage.getItem('clank.sessionId') || CFG.session_id || '',
+    lastUserMsgId: '',
+    voice: 'idle', // idle | recording | transcribing (or 'off' when unavailable)
+    sending: false,
+    aborting: false,
+  };
+  if (!CFG.voice) store.voice = 'off';
+  if (store.sessionId) sessionStorage.setItem('clank.sessionId', store.sessionId);
+  let doneTimer = 0;
+
+  const setAgent = (s) => {
+    clearTimeout(doneTimer);
+    store.agent = s;
+    if (s === 'done') doneTimer = setTimeout(() => { store.agent = 'idle'; render(); }, DONE_LINGER_MS);
+    render();
+  };
+
+  // ---------- element → source -------------------------------------------
+  const resolveSource = (el) => {
+    for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+      const m = n.__svelte_meta;
+      if (m && m.loc && m.loc.file) {
+        return { file: m.loc.file, line: m.loc.line, column: m.loc.column, via: 'svelte', names: [], node: n };
+      }
+    }
+    for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+      const key = Object.getOwnPropertyNames(n).find((k) => k.startsWith('__reactFiber$'));
+      if (!key) continue;
+      let fiber = n[key];
+      const names = [];
+      let src = null;
+      while (fiber && names.length < 5) {
+        if (!src && fiber._debugSource) src = fiber._debugSource; // React ≤ 18
+        const t = fiber.type;
+        const nm = typeof t === 'function' ? t.displayName || t.name : t && t.displayName;
+        if (nm && !names.includes(nm)) names.push(nm);
+        fiber = fiber._debugOwner;
+      }
+      if (src) return { file: src.fileName, line: src.lineNumber, column: src.columnNumber, via: 'react', names, node: el };
+      if (names.length) return { via: 'react', names, node: el };
+      break;
+    }
+    return { via: 'dom', names: [], node: el };
+  };
+
+  const domPath = (el) => {
+    const parts = [];
+    for (let n = el; n && n.nodeType === 1 && parts.length < 4; n = n.parentElement) {
+      let p = n.tagName.toLowerCase();
+      if (n.id) { parts.unshift(p + '#' + n.id); break; }
+      if (n.classList.length) p += '.' + [...n.classList].slice(0, 2).join('.');
+      parts.unshift(p);
+    }
+    return parts.join(' > ');
+  };
+
+  const shortHTML = (el) => {
+    let h = el.outerHTML || '';
+    h = h.replace(/\s+/g, ' ');
+    return h.length > 300 ? h.slice(0, 300) + '…' : h;
+  };
+
+  const chipFromElement = (el) => {
+    const s = resolveSource(el);
+    const base = s.file ? `${s.file}:${s.line}${s.column ? ':' + s.column : ''}` : domPath(el);
+    const label = s.file ? `${s.file.split('/').pop()}:${s.line}` : `<${el.tagName.toLowerCase()}>`;
+    return {
+      label,
+      detail: base + (s.names.length ? ` (components: ${s.names.join(' › ')})` : ''),
+      html: shortHTML(el),
+    };
+  };
+
+  const buildContext = () => {
+    if (!store.chips.length && !recentErrors.length) return '';
+    const lines = ['', '', '--- clank preview context (auto-attached by the web overlay) ---'];
+    if (store.chips.length) {
+      lines.push('Selected elements:');
+      store.chips.forEach((c, i) => {
+        lines.push(`${i + 1}. ${c.detail}`);
+        lines.push(`   html: ${c.html}`);
+      });
+    }
+    lines.push(`Route: ${location.pathname}${location.search}`);
+    lines.push(`Viewport: ${innerWidth}x${innerHeight}`);
+    if (recentErrors.length) {
+      lines.push('Recent console errors:');
+      recentErrors.slice(-3).forEach((e) => lines.push('- ' + e));
+    }
+    lines.push('--- end context ---');
+    return lines.join('\n');
+  };
+
+  // ---------- session ------------------------------------------------------
+  const send = async () => {
+    const text = ui.input.value.trim();
+    if (!text || store.sending) return;
+    const full = text + buildContext();
+    store.sending = true;
+    store.msgs.push({ role: 'user', text });
+    store.streamText = '';
+    ui.input.value = '';
+    store.chips = [];
+    setAgent('thinking');
+    try {
+      if (!store.sessionId) {
+        const info = await apiJSON('/sessions', {
+          method: 'POST',
+          body: JSON.stringify({
+            backend: CFG.backend || undefined,
+            hostname: CFG.hostname || 'local',
+            git_ref: { local_path: CFG.local_path },
+            prompt: full,
+          }),
+        });
+        store.sessionId = (info && info.id) || '';
+        if (!store.sessionId) throw new Error('session create returned no id');
+        sessionStorage.setItem('clank.sessionId', store.sessionId);
+        subscribe();
+      } else {
+        await api(`/sessions/${store.sessionId}/message`, { method: 'POST', body: JSON.stringify({ text: full }) });
+      }
+    } catch (err) {
+      toast('send failed: ' + err.message);
+      setAgent('error');
+    } finally {
+      store.sending = false;
+      render();
+    }
+  };
+
+  const abort = async () => {
+    if (!store.sessionId) return;
+    store.aborting = true;
+    render();
+    try { await api(`/sessions/${store.sessionId}/abort`, { method: 'POST' }); } catch (err) { toast(err.message); }
+    store.aborting = false;
+    render();
+  };
+
+  const revert = async () => {
+    if (!store.sessionId || !store.lastUserMsgId) return;
+    try {
+      await api(`/sessions/${store.sessionId}/revert`, { method: 'POST', body: JSON.stringify({ message_id: store.lastUserMsgId }) });
+      toast('reverted last turn');
+    } catch (err) { toast('revert failed: ' + err.message); }
+  };
+
+  const replyPermission = async (allow) => {
+    const p = store.permission;
+    if (!p || !store.sessionId) return;
+    store.permission = null;
+    render();
+    try {
+      await api(`/sessions/${store.sessionId}/permissions/${p.request_id}/reply`, { method: 'POST', body: JSON.stringify({ allow }) });
+    } catch (err) { toast('permission reply failed: ' + err.message); }
+  };
+
+  // ---------- SSE ----------------------------------------------------------
+  let sseAbort = null;
+  let sseBackoff = 1000;
+  const subscribe = () => {
+    if (!store.sessionId) return;
+    if (sseAbort) sseAbort.abort();
+    const ac = new AbortController();
+    sseAbort = ac;
+    const sid = store.sessionId;
+    (async () => {
+      try {
+        const res = await fetch(`/__clank/api/sessions/${sid}/events`, {
+          headers: { Authorization: 'Bearer ' + TOKEN, Accept: 'text/event-stream' },
+          signal: ac.signal,
+        });
+        if (!res.ok || !res.body) throw new Error('events: ' + res.status);
+        sseBackoff = 1000;
+        // Events are at-most-once with no replay: anything emitted between
+        // session create (the agent starts immediately) and this stream
+        // opening is gone, and the same applies across reconnects. Sync the
+        // coarse agent state from the session snapshot so the border can't
+        // stick on a stale state; parts/messages catch up on the live stream.
+        fetch(`/__clank/api/sessions/${sid}`, { headers: { Authorization: 'Bearer ' + TOKEN } })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((info) => {
+            if (!info || store.sessionId !== sid) return;
+            if (info.status === 'busy' && (store.agent === 'idle' || store.agent === 'done')) setAgent('thinking');
+            else if (info.status === 'idle' && (store.agent === 'thinking' || store.agent === 'working')) setAgent('done');
+          })
+          .catch(() => {});
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let idx;
+          while ((idx = buf.indexOf('\n\n')) >= 0) {
+            handleFrame(buf.slice(0, idx));
+            buf = buf.slice(idx + 2);
+          }
+        }
+      } catch (e) {
+        if (ac.signal.aborted) return;
+      }
+      if (ac.signal.aborted || store.sessionId !== sid) return;
+      setTimeout(() => { if (store.sessionId === sid && sseAbort === ac) subscribe(); }, sseBackoff);
+      sseBackoff = Math.min(sseBackoff * 1.5, 15000);
+    })();
+  };
+
+  const handleFrame = (frame) => {
+    let ev = 'message';
+    const datas = [];
+    for (const line of frame.split('\n')) {
+      if (line.startsWith('event:')) ev = line.slice(6).trim();
+      else if (line.startsWith('data:')) datas.push(line.slice(5).trim());
+    }
+    if (!datas.length) return;
+    let d;
+    // The data JSON is the clank Event envelope {type, session_id,
+    // timestamp, data}; the type-specific payload lives under .data
+    // (see internal/agent Event / docs/chat-client-spec 04-event-protocol).
+    try { d = JSON.parse(datas.join('\n')).data || {}; } catch { return; }
+    switch (ev) {
+      case 'status': {
+        const s = d.new_status;
+        if (s === 'idle') { store.streamText && store.msgs.push({ role: 'assistant', text: store.streamText }); store.streamText = ''; setAgent('done'); }
+        else if (s === 'error' || s === 'dead') setAgent('error');
+        else if (s === 'busy' && store.agent === 'idle') setAgent('thinking');
+        break;
+      }
+      case 'part': {
+        const p = d.part || {};
+        if (p.type === 'tool_call') setAgent('working');
+        if (p.type === 'text' && p.text) {
+          if (d.is_delta) store.streamText += p.text;
+          else store.streamText = p.text;
+          render();
+        }
+        break;
+      }
+      case 'message': {
+        if (d.role === 'user' && d.id) store.lastUserMsgId = d.id;
+        if (d.role === 'assistant') {
+          const text = (d.parts || []).filter((p) => p.type === 'text').map((p) => p.text).join('');
+          if (text) { store.msgs.push({ role: 'assistant', text }); store.streamText = ''; }
+        }
+        if (store.msgs.length > 30) store.msgs.splice(0, store.msgs.length - 30);
+        render();
+        break;
+      }
+      case 'permission':
+        store.permission = d;
+        if (store.box === 'hidden') store.box = 'prompt';
+        render();
+        break;
+      case 'error':
+        toast('agent error' + (d && d.message ? ': ' + d.message : ''));
+        setAgent('error');
+        break;
+      case 'revert':
+        toast('session reverted');
+        break;
+      default:
+        break; // title / meta / session.* / voice.* — not rendered here
+    }
+  };
+
+  // ---------- voice (push-to-talk) ----------------------------------------
+  let vws = null; // dictation WebSocket, opened lazily, reused
+  let audio = null; // {ctx, stream, node}
+  let voiceBase = ''; // input text at push-to-talk start; partials append after it
+  const withVoiceText = (t) => (voiceBase ? voiceBase.replace(/\s+$/, '') + ' ' : '') + t;
+  const voiceWS = () =>
+    new Promise((resolve, reject) => {
+      if (vws && vws.readyState === WebSocket.OPEN) return resolve(vws);
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      const w = new WebSocket(`${proto}://${location.host}/__clank/voice?t=${encodeURIComponent(TOKEN)}`);
+      w.onopen = () => { vws = w; resolve(w); };
+      w.onerror = () => reject(new Error('voice socket failed'));
+      w.onmessage = (e) => {
+        let m;
+        try { m = JSON.parse(e.data); } catch { return; }
+        if (m.type === 'partial') {
+          // Cumulative utterance-so-far from the engine's VAD segments —
+          // preview it live in the composer while the key is still held.
+          if ((store.voice === 'recording' || store.voice === 'transcribing') && m.text) {
+            ui.input.value = withVoiceText(m.text);
+          }
+        } else if (m.type === 'final') {
+          if (store.voice === 'transcribing') store.voice = 'idle';
+          ui.input.value = m.text ? withVoiceText(m.text) : voiceBase;
+          ui.input.focus();
+          render();
+        } else if (m.type === 'error') {
+          store.voice = 'idle';
+          ui.input.value = voiceBase;
+          toast('dictation: ' + m.error);
+          render();
+        }
+      };
+      w.onclose = () => { if (vws === w) vws = null; };
+    });
+
+  const startTalk = async () => {
+    if (store.voice !== 'idle') return;
+    store.voice = 'recording';
+    voiceBase = ui.input.value;
+    render();
+    try {
+      const ws = await voiceWS();
+      if (!audio) {
+        const ctx = new AudioContext({ sampleRate: 16000 });
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+        await ctx.audioWorklet.addModule('/__clank/worklet.js');
+        const srcNode = ctx.createMediaStreamSource(stream);
+        const node = new AudioWorkletNode(ctx, 'clank-pcm');
+        node.port.onmessage = (e) => {
+          if (store.voice === 'recording' && vws && vws.readyState === WebSocket.OPEN) {
+            vws.send(e.data.pcm.buffer);
+            ui.micLevel.style.setProperty('--lvl', Math.min(1, e.data.level * 6).toFixed(2));
+          }
+        };
+        srcNode.connect(node);
+        audio = { ctx, stream, node };
+      }
+      await audio.ctx.resume();
+      void ws; // stream flows via node.port.onmessage
+    } catch (err) {
+      store.voice = 'idle';
+      toast('mic: ' + err.message);
+      render();
+    }
+  };
+
+  const stopTalk = () => {
+    if (store.voice !== 'recording') return;
+    store.voice = 'transcribing';
+    render();
+    if (audio) audio.ctx.suspend();
+    if (vws && vws.readyState === WebSocket.OPEN) vws.send(JSON.stringify({ type: 'end' }));
+    else store.voice = 'idle';
+  };
+
+  // ---------- UI -----------------------------------------------------------
+  const host = document.createElement('div');
+  host.id = 'clank-overlay-host';
+  host.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;';
+  const root = host.attachShadow({ mode: 'open' });
+  root.innerHTML = `
+<style>
+  :host { all: initial; }
+  * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .box {
+    position: fixed; right: 24px; bottom: 24px; width: 380px; max-width: calc(100vw - 32px);
+    background: rgba(21,22,26,.94); color: #e8e8ec; border-radius: 18px;
+    border: 1.5px solid #3a3b42; box-shadow: 0 12px 40px rgba(0,0,0,.45);
+    pointer-events: auto; backdrop-filter: blur(14px); display: none; overflow: hidden;
+    transition: border-color .25s ease;
+  }
+  .box.visible { display: block; }
+  .box.thinking { border-color: #f59e0b; animation: pulse 1.6s ease-in-out infinite; }
+  .box.working  { border-color: #3b82f6; }
+  .box.done     { border-color: #22c55e; }
+  .box.error    { border-color: #ef4444; }
+  @keyframes pulse { 50% { border-color: #f59e0b44; } }
+  .hd { display:flex; align-items:center; gap:8px; padding:10px 12px 6px; cursor:grab; user-select:none; }
+  .hd:active { cursor:grabbing; }
+  .dot { width:8px; height:8px; border-radius:50%; background:#6b7280; flex:none; }
+  .thinking .dot { background:#f59e0b; } .working .dot { background:#3b82f6; }
+  .done .dot { background:#22c55e; } .error .dot { background:#ef4444; }
+  .hd .name { font-size:12px; font-weight:600; color:#9ca3af; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .hd .st { font-size:11px; color:#6b7280; }
+  .grip { color:#4b5563; font-size:10px; letter-spacing:2px; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; padding:0 12px 4px; }
+  .chip { display:inline-flex; align-items:center; gap:6px; background:#26272e; border:1px solid #3a3b42;
+    color:#c7d2fe; font-size:11px; padding:3px 8px; border-radius:999px; max-width:100%; }
+  .chip b { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .chip button { all:unset; cursor:pointer; color:#8b8d98; font-size:12px; line-height:1; }
+  .chat { max-height:240px; overflow-y:auto; padding:4px 12px; display:none; }
+  .box.expanded .chat { display:block; }
+  .m { font-size:12.5px; line-height:1.45; margin:6px 0; white-space:pre-wrap; word-break:break-word; }
+  .m.user { color:#93c5fd; }
+  .m.assistant { color:#d1d5db; }
+  .m .who { font-size:10px; text-transform:uppercase; letter-spacing:.6px; color:#6b7280; display:block; }
+  .perm { margin:6px 12px; padding:8px 10px; border:1px solid #f59e0b66; background:#f59e0b14; border-radius:10px; font-size:12px; }
+  .perm .t { font-weight:600; margin-bottom:2px; }
+  .perm .d { color:#9ca3af; margin-bottom:6px; word-break:break-word; }
+  .perm button { all:unset; cursor:pointer; font-size:12px; font-weight:600; padding:4px 12px; border-radius:8px; margin-right:6px; }
+  .perm .allow { background:#22c55e22; color:#4ade80; }
+  .perm .deny { background:#ef444422; color:#f87171; }
+  textarea { width:100%; resize:none; background:transparent; border:0; outline:0; color:#e8e8ec;
+    font-size:13px; line-height:1.4; padding:6px 12px; min-height:34px; max-height:120px; }
+  textarea::placeholder { color:#6b7280; }
+  .bar { display:flex; align-items:center; gap:4px; padding:6px 8px 8px; }
+  .ib { all:unset; cursor:pointer; width:30px; height:30px; border-radius:9px; display:inline-flex;
+    align-items:center; justify-content:center; color:#9ca3af; font-size:15px; }
+  .ib:hover { background:#ffffff14; color:#e8e8ec; }
+  .ib.active { background:#3b82f622; color:#93c5fd; }
+  .ib[disabled] { opacity:.35; cursor:not-allowed; }
+  .mic { position:relative; }
+  .mic.rec { color:#f87171; background:#ef444422; }
+  .mic.rec::after { content:''; position:absolute; inset:-3px; border-radius:12px;
+    border:2px solid rgba(248,113,113, calc(.25 + .75 * var(--lvl, 0))); }
+  .send { margin-left:auto; background:#e8e8ec; color:#111; font-weight:700; }
+  .send:hover { background:#fff; color:#000; }
+  .send.stop { background:#ef4444; color:#fff; }
+  .hint { font-size:10px; color:#4b5563; text-align:center; padding:0 0 7px; }
+  kbd { font-family:inherit; background:#26272e; padding:0 4px; border-radius:4px; }
+  .hl { position:fixed; pointer-events:none; border:1.5px solid #60a5fa; background:#3b82f61f;
+    border-radius:3px; display:none; }
+  .hll { position:fixed; pointer-events:none; background:#111318; color:#c7d2fe; font-size:11px;
+    padding:2px 7px; border-radius:6px; border:1px solid #3a3b42; display:none; white-space:nowrap; }
+  .toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); background:#111318;
+    color:#e8e8ec; border:1px solid #3a3b42; font-size:12px; padding:7px 14px; border-radius:10px;
+    pointer-events:none; opacity:0; transition:opacity .2s; max-width:70vw; }
+  .toast.show { opacity:1; }
+</style>
+<div class="box" part="box">
+  <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><span class="grip">⋮⋮</span></div>
+  <div class="chips"></div>
+  <div class="chat"></div>
+  <div class="perm" style="display:none">
+    <div class="t"></div><div class="d"></div>
+    <button class="allow">Allow</button><button class="deny">Deny</button>
+  </div>
+  <textarea rows="1" placeholder="Ask anything…"></textarea>
+  <div class="bar">
+    <button class="ib sel" title="Select an element (Alt+S)">⌖</button>
+    <button class="ib mic" title="Hold to talk (Alt+V)">🎙</button>
+    <span class="micLevel" style="display:none"></span>
+    <button class="ib send" title="Send (Enter)">↑</button>
+  </div>
+  <div class="hint"><kbd>⌥C</kbd> toggle · <kbd>⌥S</kbd> select · hold <kbd>⌥V</kbd> talk · <kbd>Esc</kbd> hide</div>
+</div>
+<div class="hl"></div><div class="hll"></div><div class="toast"></div>`;
+
+  const $ = (sel) => root.querySelector(sel);
+  const ui = {
+    box: $('.box'), name: $('.name'), st: $('.st'), chips: $('.chips'), chat: $('.chat'),
+    perm: $('.perm'), permT: $('.perm .t'), permD: $('.perm .d'),
+    input: $('textarea'), sel: $('.sel'), mic: $('.mic'), micLevel: $('.mic'),
+    send: $('.send'), hl: $('.hl'), hll: $('.hll'), toast: $('.toast'),
+  };
+  ui.name.textContent = CFG.name || 'clank';
+
+  let toastTimer = 0;
+  const toast = (msg) => {
+    ui.toast.textContent = msg;
+    ui.toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => ui.toast.classList.remove('show'), 3500);
+  };
+
+  const STATUS_TEXT = { idle: '', thinking: 'thinking…', working: 'working…', done: 'done', error: 'error' };
+  const render = () => {
+    ui.box.classList.toggle('visible', store.box !== 'hidden');
+    ui.box.classList.toggle('expanded', store.box === 'chat');
+    for (const s of ['thinking', 'working', 'done', 'error']) ui.box.classList.toggle(s, store.agent === s);
+    ui.st.textContent = store.aborting ? 'stopping…' : STATUS_TEXT[store.agent] || '';
+
+    ui.chips.innerHTML = '';
+    store.chips.forEach((c, i) => {
+      const el = document.createElement('span');
+      el.className = 'chip';
+      el.title = c.detail;
+      const b = document.createElement('b');
+      b.textContent = c.label;
+      const x = document.createElement('button');
+      x.textContent = '✕';
+      x.onclick = () => { store.chips.splice(i, 1); render(); };
+      el.append(b, x);
+      ui.chips.appendChild(el);
+    });
+
+    const frag = document.createDocumentFragment();
+    const rows = [...store.msgs];
+    if (store.streamText) rows.push({ role: 'assistant', text: store.streamText });
+    rows.slice(-8).forEach((m) => {
+      const el = document.createElement('div');
+      el.className = 'm ' + m.role;
+      const who = document.createElement('span');
+      who.className = 'who';
+      who.textContent = m.role === 'user' ? 'you' : 'clank';
+      el.append(who, document.createTextNode(m.text));
+      frag.appendChild(el);
+    });
+    ui.chat.replaceChildren(frag);
+    ui.chat.scrollTop = ui.chat.scrollHeight;
+
+    ui.perm.style.display = store.permission ? '' : 'none';
+    if (store.permission) {
+      ui.permT.textContent = `Allow ${store.permission.tool || 'tool'}?`;
+      ui.permD.textContent = store.permission.description || '';
+    }
+
+    ui.sel.classList.toggle('active', store.inspect);
+    ui.mic.style.display = store.voice === 'off' ? 'none' : '';
+    ui.mic.classList.toggle('rec', store.voice === 'recording');
+    ui.mic.textContent = store.voice === 'transcribing' ? '…' : '🎙';
+
+    const busy = store.agent === 'thinking' || store.agent === 'working';
+    ui.send.classList.toggle('stop', busy);
+    ui.send.textContent = busy ? '◼' : '↑';
+    ui.send.title = busy ? 'Stop the agent' : 'Send (Enter)';
+  };
+
+  // ---------- box visibility (mobile shake state machine, hotkey-driven) --
+  const setBox = (s) => {
+    store.box = s;
+    if (s === 'hidden') exitInspect();
+    render();
+    if (s !== 'hidden') setTimeout(() => ui.input.focus(), 0);
+  };
+  const cycle = () => {
+    if (store.box === 'hidden') setBox('prompt');
+    else if (store.box === 'prompt') setBox('chat');
+    else setBox('prompt');
+  };
+
+  // ---------- inspector -----------------------------------------------------
+  let hoverEl = null;
+  const enterInspect = () => {
+    if (store.inspect) return;
+    store.inspect = true;
+    if (store.box === 'hidden') store.box = 'prompt';
+    document.addEventListener('mousemove', onInspectMove, true);
+    document.addEventListener('click', onInspectClick, true);
+    document.addEventListener('mousedown', squelch, true);
+    document.addEventListener('mouseup', squelch, true);
+    document.body.style.cursor = 'crosshair';
+    render();
+  };
+  const exitInspect = () => {
+    if (!store.inspect) return;
+    store.inspect = false;
+    hoverEl = null;
+    ui.hl.style.display = 'none';
+    ui.hll.style.display = 'none';
+    document.removeEventListener('mousemove', onInspectMove, true);
+    document.removeEventListener('click', onInspectClick, true);
+    document.removeEventListener('mousedown', squelch, true);
+    document.removeEventListener('mouseup', squelch, true);
+    document.body.style.cursor = '';
+    render();
+  };
+  const ours = (t) => t === host || (t && t.getRootNode && t.getRootNode() === root);
+  const squelch = (e) => { if (!ours(e.target)) { e.preventDefault(); e.stopPropagation(); } };
+  const onInspectMove = (e) => {
+    if (ours(e.target)) { ui.hl.style.display = 'none'; ui.hll.style.display = 'none'; hoverEl = null; return; }
+    const el = e.target;
+    if (!(el instanceof Element)) return;
+    hoverEl = el;
+    const r = el.getBoundingClientRect();
+    Object.assign(ui.hl.style, { display: 'block', left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
+    const s = resolveSource(el);
+    ui.hll.textContent = s.file ? `${s.file}:${s.line}` : s.names.length ? s.names.join(' › ') : domPath(el);
+    const ly = r.top > 28 ? r.top - 24 : r.bottom + 4;
+    Object.assign(ui.hll.style, { display: 'block', left: Math.max(4, r.left) + 'px', top: ly + 'px' });
+  };
+  const onInspectClick = (e) => {
+    if (ours(e.target)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (hoverEl) {
+      store.chips.push(chipFromElement(hoverEl));
+      toast('added to context — shift-click to keep selecting');
+    }
+    if (!e.shiftKey) exitInspect();
+    else render();
+  };
+
+  // ---------- drag -----------------------------------------------------------
+  (() => {
+    const hd = $('.hd');
+    let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
+    const saved = sessionStorage.getItem('clank.boxPos');
+    if (saved) { try { const p = JSON.parse(saved); ui.box.style.transform = `translate(${p.x}px, ${p.y}px)`; ui.box.dataset.x = p.x; ui.box.dataset.y = p.y; } catch {} }
+    hd.addEventListener('pointerdown', (e) => {
+      dragging = true;
+      sx = e.clientX; sy = e.clientY;
+      ox = parseFloat(ui.box.dataset.x || '0'); oy = parseFloat(ui.box.dataset.y || '0');
+      hd.setPointerCapture(e.pointerId);
+    });
+    hd.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      const x = ox + e.clientX - sx, y = oy + e.clientY - sy;
+      ui.box.dataset.x = x; ui.box.dataset.y = y;
+      ui.box.style.transform = `translate(${x}px, ${y}px)`;
+    });
+    hd.addEventListener('pointerup', () => {
+      dragging = false;
+      sessionStorage.setItem('clank.boxPos', JSON.stringify({ x: parseFloat(ui.box.dataset.x || '0'), y: parseFloat(ui.box.dataset.y || '0') }));
+    });
+  })();
+
+  // ---------- wiring -----------------------------------------------------------
+  ui.send.onclick = () => { (store.agent === 'thinking' || store.agent === 'working') ? abort() : send(); };
+  ui.sel.onclick = () => (store.inspect ? exitInspect() : enterInspect());
+  ui.mic.addEventListener('pointerdown', (e) => { e.preventDefault(); startTalk(); });
+  ui.mic.addEventListener('pointerup', stopTalk);
+  ui.mic.addEventListener('pointerleave', stopTalk);
+  $('.perm .allow').onclick = () => replyPermission(true);
+  $('.perm .deny').onclick = () => replyPermission(false);
+  ui.input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+    e.stopPropagation(); // typing must never trigger guest-app shortcuts
+  });
+  ui.input.addEventListener('input', () => {
+    ui.input.style.height = 'auto';
+    ui.input.style.height = Math.min(120, ui.input.scrollHeight) + 'px';
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.altKey && !e.metaKey && !e.ctrlKey) {
+      // A held key auto-repeats keydown. The binding must own EVERY
+      // event of its combo — preventDefault unconditionally, act only
+      // on the first — or the repeats fall through and type the
+      // layout's Alt-character into the focused composer (e.g. ⌥V
+      // repeats "‹‹‹‹…" on Nordic layouts while push-to-talk is held).
+      const bound =
+        e.code === HOTKEYS.toggle ||
+        e.code === HOTKEYS.inspect ||
+        (e.code === HOTKEYS.talk && store.voice !== 'off');
+      if (bound) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.repeat) return;
+        if (e.code === HOTKEYS.toggle) cycle();
+        else if (e.code === HOTKEYS.inspect) store.inspect ? exitInspect() : enterInspect();
+        else {
+          if (store.box === 'hidden') setBox('prompt');
+          startTalk();
+        }
+        return;
+      }
+    }
+    if (e.key === 'Escape') {
+      if (store.inspect) { e.preventDefault(); e.stopPropagation(); exitInspect(); }
+      else if (store.box !== 'hidden') { e.preventDefault(); e.stopPropagation(); setBox('hidden'); }
+    }
+  }, true);
+  window.addEventListener('keyup', (e) => {
+    if (e.code === HOTKEYS.talk && store.voice === 'recording') { e.preventDefault(); stopTalk(); }
+  }, true);
+
+  const mount = () => (document.body ? document.body.appendChild(host) : requestAnimationFrame(mount));
+  mount();
+  render();
+  if (store.sessionId) subscribe(); // survive full reloads mid-turn
+})();
