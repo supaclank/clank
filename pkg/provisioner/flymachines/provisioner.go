@@ -407,9 +407,10 @@ func oneShotEnv(cfg *fly.MachineConfig) map[string]string {
 // waitForHostReady polls GET /status until clank-host answers 200.
 // The first request against a stopped machine triggers the Flycast
 // autostart, so early connection errors are expected and retried.
+// The deadline is the caller's ctx (EnsureHost bounds it with
+// ProvisionTimeout) — a cold create's image pull alone can outlast
+// any tighter local timer.
 func waitForHostReady(ctx context.Context, baseURL string, transport http.RoundTripper) error {
-	deadline := time.NewTimer(60 * time.Second)
-	defer deadline.Stop()
 	tick := time.NewTicker(500 * time.Millisecond)
 	defer tick.Stop()
 
@@ -433,9 +434,7 @@ func waitForHostReady(ctx context.Context, baseURL string, transport http.RoundT
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("ctx done (last: %v)", lastErr)
-		case <-deadline.C:
-			return fmt.Errorf("timed out (last: %v)", lastErr)
+			return fmt.Errorf("timed out waiting for host ready (last: %v)", lastErr)
 		case <-tick.C:
 		}
 	}
