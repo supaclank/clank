@@ -8,6 +8,8 @@ import (
 
 	fly "github.com/superfly/fly-go"
 	"github.com/superfly/fly-go/flaps"
+
+	"github.com/acksell/clank/pkg/provisioner"
 )
 
 // TestIsNotFound_OnlyTrustsTypedError pins that a transport error whose
@@ -58,13 +60,14 @@ func TestWithDefaults_RejectsVolumeAboveExtendLimit(t *testing.T) {
 	}
 }
 
-func TestBuildMachineConfig_TemplatesJSON(t *testing.T) {
+func TestBuildMachineConfig_Templates(t *testing.T) {
 	t.Parallel()
 	opts := testOptions(t)
-	opts.TemplatesJSON = `[{"display_name":"Expo","clone_url":"https://x/y.git","source":"builtin"}]`
+	opts.Templates = []provisioner.Template{{DisplayName: "Expo", CloneURL: "https://x/y.git"}}
 	cfg := buildMachineConfig(opts, testTokens(), "vol_1", nil)
-	if cfg.Env["CLANK_TEMPLATES"] != opts.TemplatesJSON {
-		t.Fatalf("CLANK_TEMPLATES = %q, want the catalog JSON", cfg.Env["CLANK_TEMPLATES"])
+	wantJSON := `[{"display_name":"Expo","clone_url":"https://x/y.git"}]`
+	if cfg.Env["CLANK_TEMPLATES"] != wantJSON {
+		t.Fatalf("CLANK_TEMPLATES = %q, want %q", cfg.Env["CLANK_TEMPLATES"], wantJSON)
 	}
 
 	// Steady-state: it must survive the drift reconcile (else machine-
@@ -76,7 +79,7 @@ func TestBuildMachineConfig_TemplatesJSON(t *testing.T) {
 
 	empty := testOptions(t)
 	if _, ok := buildMachineConfig(empty, testTokens(), "vol_1", nil).Env["CLANK_TEMPLATES"]; ok {
-		t.Error("CLANK_TEMPLATES set when TemplatesJSON is empty")
+		t.Error("CLANK_TEMPLATES set when Templates is empty")
 	}
 }
 

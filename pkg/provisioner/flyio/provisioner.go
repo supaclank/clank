@@ -118,11 +118,11 @@ type Options struct {
 	// authenticate these calls, so NotifierWebhookURL must also be set.
 	PreviewWebhookURL string
 
-	// TemplatesJSON, when non-empty, is forwarded to clank-host as
+	// Templates, when non-empty, is forwarded to clank-host as
 	// --templates-json: the builtin half of its GET /templates catalog.
 	// A change here drifts the service args and recreates the service
 	// on the next EnsureHost — how template-catalog updates roll out.
-	TemplatesJSON string
+	Templates []provisioner.Template
 
 	// SDKClient overrides the sprites.Client constructor for tests.
 	SDKClient *sprites.Client
@@ -922,7 +922,7 @@ echo "::: done — claude -> $BUN_CLAUDE (version $PINNED)"
 // case where a flag rename would crash-loop the service across the
 // hibernate/wake cycle and the edge would serve 404s.
 func (p *Provisioner) ensureServiceRunning(ctx context.Context, sprite *sprites.Sprite, tokens hostTokens, forceRecreate bool) error {
-	wantReq := buildServiceRequest(tokens, p.opts.NotifierWebhookURL, p.opts.PreviewWebhookURL, p.opts.GitHubOAuthClientID, p.opts.TemplatesJSON)
+	wantReq := buildServiceRequest(tokens, p.opts.NotifierWebhookURL, p.opts.PreviewWebhookURL, p.opts.GitHubOAuthClientID, provisioner.TemplatesEnvValue(p.opts.Templates))
 
 	var existing *sprites.ServiceWithState
 	var existingErr error
