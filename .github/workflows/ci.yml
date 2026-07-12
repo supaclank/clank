@@ -19,6 +19,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Default pull_request checkout builds refs/pull/<n>/merge (head
+          # merged into base), and Go's build ID hashes every input file's
+          # bytes — a base-branch commit touching anything cmd/clank-host
+          # imports shifts the merge ref's build ID even with zero real drift.
+          # Pin to the actual head SHA so this job builds the same tree
+          # `make embed-host` committed.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       # go-version-file installs exactly the Go version in go.mod's `go` directive;
       # CGO_ENABLED=0 + -trimpath + -buildvcs=false make the output
       # byte-reproducible on linux/amd64 — CI flags any drift from the commit.
