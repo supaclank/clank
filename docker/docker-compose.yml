@@ -132,6 +132,12 @@ services:
       # tokens/<token>/sign request 404s as cross-tenant.
       CLANK_LOCAL_USER_ID: "${CLANK_AUTH_STUB_USER_ID:-dev-user}"
 
+      # Route preview traffic through clank-host's /tunnel endpoint —
+      # the exact data path the Fly Machines backend uses — instead of
+      # the local provisioner's direct loopback dial. On by default in
+      # this stack: it's the whole point of smoke-testing here.
+      CLANK_LOCAL_TUNNEL_INTERNAL_CONN: "${CLANK_LOCAL_TUNNEL_INTERNAL_CONN:-true}"
+
       # Image-upload substrate. clankd's runGatewayServer reads these
       # in TCP mode via loadImagesFromEnv and mounts POST /v1/images
       # when CLANK_IMAGES_S3_BUCKET is set. The sprite downloads
