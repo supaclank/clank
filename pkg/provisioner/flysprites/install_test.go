@@ -1,4 +1,4 @@
-package flyio
+package flysprites
 
 import (
 	"bytes"

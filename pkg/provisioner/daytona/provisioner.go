@@ -7,7 +7,7 @@
 //
 // TODO/Future: refactor to consume a Daytona-backed sandbox-pool
 // package whose API mirrors fly.io sprites — keyed GetOrCreate,
-// stable URL, wake-on-traffic. The flyio provisioner is already that
+// stable URL, wake-on-traffic. The flysprites provisioner is already that
 // shape; daytona drags the lower-level state machine inline. Needs
 // research: how much can use Daytona's name lookup + auto-archive
 // directly, vs. needing a wrapper layer to emulate persistence. Once

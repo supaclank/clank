@@ -171,12 +171,12 @@ func TestHosts_DifferentProviderCoexists(t *testing.T) {
 
 	now := time.Now().Truncate(time.Second)
 	dt := store.Host{ID: "h-dt", UserID: "local", Provider: "daytona", ExternalID: "sb-dt", Hostname: "daytona-dt", Status: store.HostStatusRunning, CreatedAt: now, UpdatedAt: now}
-	fly := store.Host{ID: "h-fly", UserID: "local", Provider: "flyio", ExternalID: "sprite-x", Hostname: "flyio-x", Status: store.HostStatusRunning, AutoWake: true, CreatedAt: now, UpdatedAt: now}
+	fly := store.Host{ID: "h-fly", UserID: "local", Provider: "flysprites", ExternalID: "sprite-x", Hostname: "flysprites-x", Status: store.HostStatusRunning, AutoWake: true, CreatedAt: now, UpdatedAt: now}
 	if err := s.UpsertHost(ctx, dt); err != nil {
 		t.Fatalf("upsert daytona: %v", err)
 	}
 	if err := s.UpsertHost(ctx, fly); err != nil {
-		t.Fatalf("upsert flyio: %v", err)
+		t.Fatalf("upsert flysprites: %v", err)
 	}
 
 	gotDT, err := s.GetHostByUser(ctx, "local", "daytona")
@@ -186,15 +186,15 @@ func TestHosts_DifferentProviderCoexists(t *testing.T) {
 	if gotDT.ID != "h-dt" {
 		t.Errorf("daytona host id: got %q, want h-dt", gotDT.ID)
 	}
-	gotFly, err := s.GetHostByUser(ctx, "local", "flyio")
+	gotFly, err := s.GetHostByUser(ctx, "local", "flysprites")
 	if err != nil {
-		t.Fatalf("get flyio: %v", err)
+		t.Fatalf("get flysprites: %v", err)
 	}
 	if gotFly.ID != "h-fly" {
-		t.Errorf("flyio host id: got %q, want h-fly", gotFly.ID)
+		t.Errorf("flysprites host id: got %q, want h-fly", gotFly.ID)
 	}
 	if !gotFly.AutoWake {
-		t.Error("flyio host should have auto_wake=true")
+		t.Error("flysprites host should have auto_wake=true")
 	}
 }
 

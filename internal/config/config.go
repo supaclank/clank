@@ -93,7 +93,7 @@ type DaytonaPreference struct {
 	SuspendOnStop bool `json:"suspend_on_stop,omitempty"`
 }
 
-// FlyIOPreference configures the Fly.io Sprites host launcher.
+// FlySpritesPreference configures the Fly.io Sprites host launcher.
 // APIToken (a SPRITES_TOKEN) enables the launcher; everything else
 // is optional with sensible defaults.
 //
@@ -101,7 +101,7 @@ type DaytonaPreference struct {
 // time EnsureHost runs and reused indefinitely. The sprite's public
 // URL is set to "public" auth mode; clank-host's bearer-token
 // middleware (see PR 2) is the only auth gate.
-type FlyIOPreference struct {
+type FlySpritesPreference struct {
 	APIToken         string `json:"api_token,omitempty"`
 	OrganizationSlug string `json:"organization_slug,omitempty"`
 	Region           string `json:"region,omitempty"`
@@ -194,11 +194,11 @@ type Preferences struct {
 	// (sessions requesting launch_host.provider="daytona" will 4xx).
 	Daytona *DaytonaPreference `json:"daytona,omitempty"`
 
-	// FlyIO configures the cloud-hub-side Fly.io Sprites launcher.
+	// FlySprites configures the cloud-hub-side Fly.io Sprites launcher.
 	// Only effective on a TCP-listening hub. Empty = launcher
-	// disabled (sessions requesting launch_host.provider="flyio"
+	// disabled (sessions requesting launch_host.provider="flysprites"
 	// will 4xx).
-	FlyIO *FlyIOPreference `json:"flyio,omitempty"`
+	FlySprites *FlySpritesPreference `json:"flysprites,omitempty"`
 
 	// FlyMachines configures the raw Fly Machines provisioner. Nil =
 	// disabled (sessions requesting launch_host.provider=

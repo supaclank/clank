@@ -3,9 +3,9 @@
 # Path of the cross-compiled clank-host binary embedded into the
 # Sprites provisioner. TRACKED in VCS and verified current by CI
 # (rebuild + git diff); rebuilt by `make embed-host`. Path matches the
-# //go:embed directive in pkg/provisioner/flyio/embed.go; changing this
+# //go:embed directive in pkg/provisioner/flysprites/embed.go; changing this
 # requires updating that directive in lockstep.
-EMBED_HOST_BIN := pkg/provisioner/flyio/clank-host-linux-amd64
+EMBED_HOST_BIN := pkg/provisioner/flysprites/clank-host-linux-amd64
 
 .PHONY: install
 install: embed-host
@@ -33,7 +33,7 @@ generate:
 # ---- Embedded clank-host (Sprites host bootstrap) --------------------
 #
 # Cross-compiles cmd/clank-host for linux/amd64 into the path that
-# internal/provisioner/flyio/embed.go expects via //go:embed. The
+# pkg/provisioner/flysprites/embed.go expects via //go:embed. The
 # Sprites provisioner pushes this binary into a sprite via the SDK's
 # filesystem API and registers it as a service.
 #

@@ -10,7 +10,7 @@
 // (compute-saving, state-preserving), and DestroyHost is the only
 // path that throws away workspace state.
 //
-// Concrete implementations live in subpackages: daytona, flyio, local.
+// Concrete implementations live in subpackages: daytona, flysprites, local.
 // Each returns the same HostRef shape so upper layers stay
 // provider-agnostic.
 package provisioner
