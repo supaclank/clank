@@ -54,6 +54,12 @@
       },
     });
     if (!res.ok) {
+      if (res.status === 401) {
+        // The token is per preview run; a restarted `clank preview`
+        // invalidates every open page. Without this the failure mode is
+        // "everything silently stops working" until a reload.
+        toast('preview restarted — reload this page to reconnect');
+      }
       const text = await res.text().catch(() => '');
       throw new Error(`${opts.method || 'GET'} ${path}: ${res.status} ${text.slice(0, 200)}`);
     }
@@ -175,7 +181,7 @@
     store.sending = true;
     store.msgs.push({ role: 'user', text });
     store.streamText = '';
-    ui.input.value = '';
+    setComposer('');
     store.chips = [];
     setAgent('thinking');
     try {
@@ -353,7 +359,12 @@
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
       const w = new WebSocket(`${proto}://${location.host}/__clank/voice?t=${encodeURIComponent(TOKEN)}`);
       w.onopen = () => { vws = w; resolve(w); };
-      w.onerror = () => reject(new Error('voice socket failed'));
+      w.onerror = () => {
+        // Classify before giving up: a rejected upgrade after a preview
+        // restart is a 401 underneath, and api() will say so in a toast.
+        api('/backends').catch(() => {});
+        reject(new Error('voice socket failed'));
+      };
       w.onmessage = (e) => {
         let m;
         try { m = JSON.parse(e.data); } catch { return; }
@@ -361,16 +372,17 @@
           // Cumulative utterance-so-far from the engine's VAD segments —
           // preview it live in the composer while the key is still held.
           if ((store.voice === 'recording' || store.voice === 'transcribing') && m.text) {
-            ui.input.value = withVoiceText(m.text);
+            setComposer(withVoiceText(m.text));
           }
         } else if (m.type === 'final') {
           if (store.voice === 'transcribing') store.voice = 'idle';
-          ui.input.value = m.text ? withVoiceText(m.text) : voiceBase;
+          setComposer(m.text ? withVoiceText(m.text) : voiceBase);
+          if (!m.text) toast('didn’t catch any speech — try again');
           ui.input.focus();
           render();
         } else if (m.type === 'error') {
           store.voice = 'idle';
-          ui.input.value = voiceBase;
+          setComposer(voiceBase);
           toast('dictation: ' + m.error);
           render();
         }
@@ -378,30 +390,56 @@
       w.onclose = () => { if (vws === w) vws = null; };
     });
 
+  const teardownAudio = () => {
+    if (!audio) return;
+    audio.stream.getTracks().forEach((t) => t.stop());
+    audio.ctx.close().catch(() => {});
+    audio = null;
+  };
+  const buildAudio = async () => {
+    const ctx = new AudioContext({ sampleRate: 16000 });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    await ctx.audioWorklet.addModule('/__clank/worklet.js');
+    const srcNode = ctx.createMediaStreamSource(stream);
+    const node = new AudioWorkletNode(ctx, 'clank-pcm');
+    node.port.onmessage = (e) => {
+      if (store.voice === 'recording' && vws && vws.readyState === WebSocket.OPEN) {
+        vws.send(e.data.pcm.buffer);
+        ui.micLevel.style.setProperty('--lvl', Math.min(1, e.data.level * 6).toFixed(2));
+      }
+    };
+    srcNode.connect(node);
+    const a = { ctx, stream, node };
+    // The OS can end the track behind our back (device sleep, another
+    // app grabbing the mic). Drop the graph so the next push-to-talk
+    // rebuilds instead of streaming silence.
+    stream.getTracks().forEach((t) => (t.onended = () => { if (audio === a) teardownAudio(); }));
+    return a;
+  };
+  const audioAlive = () => !!audio && audio.stream.getTracks().some((t) => t.readyState === 'live');
+
   const startTalk = async () => {
     if (store.voice !== 'idle') return;
     store.voice = 'recording';
     voiceBase = ui.input.value;
     render();
     try {
-      const ws = await voiceWS();
-      if (!audio) {
-        const ctx = new AudioContext({ sampleRate: 16000 });
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
-        await ctx.audioWorklet.addModule('/__clank/worklet.js');
-        const srcNode = ctx.createMediaStreamSource(stream);
-        const node = new AudioWorkletNode(ctx, 'clank-pcm');
-        node.port.onmessage = (e) => {
-          if (store.voice === 'recording' && vws && vws.readyState === WebSocket.OPEN) {
-            vws.send(e.data.pcm.buffer);
-            ui.micLevel.style.setProperty('--lvl', Math.min(1, e.data.level * 6).toFixed(2));
-          }
-        };
-        srcNode.connect(node);
-        audio = { ctx, stream, node };
+      await voiceWS();
+      // The graph is suspended between utterances; verify it is actually
+      // revivable rather than trusting it. A dead track — or a resume()
+      // that hangs (Chromium does this when the audio device changed
+      // while suspended) — would otherwise record perfect silence and
+      // "transcribe nothing" with no visible failure.
+      if (!audioAlive()) {
+        teardownAudio();
+        audio = await buildAudio();
       }
-      await audio.ctx.resume();
-      void ws; // stream flows via node.port.onmessage
+      await Promise.race([audio.ctx.resume(), new Promise((r) => setTimeout(r, 1500))]);
+      if (audio.ctx.state !== 'running') {
+        teardownAudio();
+        audio = await buildAudio();
+        await audio.ctx.resume();
+      }
     } catch (err) {
       store.voice = 'idle';
       toast('mic: ' + err.message);
@@ -526,6 +564,20 @@
     ui.toast.classList.add('show');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => ui.toast.classList.remove('show'), 3500);
+  };
+
+  const syncComposerHeight = () => {
+    ui.input.style.height = 'auto';
+    ui.input.style.height = Math.min(120, ui.input.scrollHeight) + 'px';
+  };
+  // setComposer is for programmatic text (transcripts, restores): unlike
+  // user typing it moves the caret to the end and keeps the tail of a
+  // long prompt in view — the browser only auto-scrolls for real keys.
+  const setComposer = (text) => {
+    ui.input.value = text;
+    ui.input.setSelectionRange(text.length, text.length);
+    syncComposerHeight();
+    ui.input.scrollTop = ui.input.scrollHeight;
   };
 
   const STATUS_TEXT = { idle: '', thinking: 'thinking…', working: 'working…', done: 'done', error: 'error' };
@@ -682,10 +734,7 @@
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
     e.stopPropagation(); // typing must never trigger guest-app shortcuts
   });
-  ui.input.addEventListener('input', () => {
-    ui.input.style.height = 'auto';
-    ui.input.style.height = Math.min(120, ui.input.scrollHeight) + 'px';
-  });
+  ui.input.addEventListener('input', syncComposerHeight);
 
   window.addEventListener('keydown', (e) => {
     if (e.altKey && !e.metaKey && !e.ctrlKey) {
