@@ -14,7 +14,7 @@
 // /proxy, authenticated with the org's SPRITES_TOKEN that the
 // Provisioner already holds. The same primitive the Phase 0 spike
 // validated.
-package flyio
+package flysprites
 
 import (
 	"context"

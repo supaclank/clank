@@ -3,7 +3,7 @@
 // The public URL is "public" mode; clank-host's bearer middleware is
 // the only auth gate, with the per-sprite token persisted on the host
 // row so it survives daemon restarts.
-package flyio
+package flysprites
 
 import (
 	"bytes"
@@ -127,6 +127,13 @@ type Options struct {
 	// SDKClient overrides the sprites.Client constructor for tests.
 	SDKClient *sprites.Client
 }
+
+// Provider is the hoststore row discriminator for this backend. It
+// stays "flyio" (not "flysprites") even though the package was renamed:
+// changing it would orphan every existing hosts row and re-provision a
+// fresh sprite for each user. Sprites are being retired for flymachines
+// anyway, so the legacy string ages out naturally.
+const Provider = "flyio"
 
 // Provisioner manages one persistent Sprite per (userID, "flyio").
 type Provisioner struct {
@@ -364,7 +371,7 @@ func (p *Provisioner) refToHost(c *cachedHost) provisioner.HostRef {
 // and we lazy-backfill at that point so the next service-recreate
 // picks up the new flag.
 func (p *Provisioner) resolveOrCreate(ctx context.Context, userID, spriteName string) (*sprites.Sprite, bool, hostTokens, error) {
-	row, err := p.store.GetHostByUser(ctx, userID, "flyio")
+	row, err := p.store.GetHostByUser(ctx, userID, Provider)
 	if err == nil {
 		// If the sprite was deleted out-of-band, clear the row and
 		// fall through to recreate.
@@ -387,7 +394,7 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID, spriteName st
 		}
 		if isNotFound(fetchErr) {
 			p.log.Printf("flyio provisioner: sprite %s for user %s not found upstream; recreating", row.ExternalID, userID)
-			if delErr := p.store.DeleteHostByUser(ctx, userID, "flyio"); delErr != nil {
+			if delErr := p.store.DeleteHostByUser(ctx, userID, Provider); delErr != nil {
 				p.log.Printf("flyio provisioner: clear stale row: %v", delErr)
 			}
 			// fall through
@@ -1085,7 +1092,7 @@ func (p *Provisioner) persistRow(ctx context.Context, userID, externalID, hostna
 	now := time.Now()
 
 	hostID := ""
-	if existing, err := p.store.GetHostByUser(ctx, userID, "flyio"); err == nil {
+	if existing, err := p.store.GetHostByUser(ctx, userID, Provider); err == nil {
 		hostID = existing.ID
 	} else if !errors.Is(err, hoststore.ErrHostNotFound) {
 		return "", err
@@ -1097,7 +1104,7 @@ func (p *Provisioner) persistRow(ctx context.Context, userID, externalID, hostna
 	rec := hoststore.Host{
 		ID:            hostID,
 		UserID:        userID,
-		Provider:      "flyio",
+		Provider:      Provider,
 		ExternalID:    externalID,
 		Hostname:      hostname,
 		Status:        hoststore.HostStatusRunning,
@@ -1155,7 +1162,7 @@ func (p *Provisioner) DestroyHost(ctx context.Context, hostID string) error {
 // returns nil when the user has no row. Force-destroys regardless of session
 // state (account erasure must not be blocked by a busy session).
 func (p *Provisioner) DestroyHostsByUser(ctx context.Context, userID string) error {
-	row, err := p.store.GetHostByUser(ctx, userID, "flyio")
+	row, err := p.store.GetHostByUser(ctx, userID, Provider)
 	if errors.Is(err, hoststore.ErrHostNotFound) {
 		return nil
 	}

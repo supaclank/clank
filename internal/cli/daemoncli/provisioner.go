@@ -12,7 +12,7 @@ import (
 	"github.com/acksell/clank/internal/store"
 	"github.com/acksell/clank/pkg/provisioner"
 	daytonaprov "github.com/acksell/clank/pkg/provisioner/daytona"
-	flyioprov "github.com/acksell/clank/pkg/provisioner/flyio"
+	flyspritesprov "github.com/acksell/clank/pkg/provisioner/flysprites"
 	flymachinesprov "github.com/acksell/clank/pkg/provisioner/flymachines"
 	localprov "github.com/acksell/clank/pkg/provisioner/local"
 )
@@ -78,12 +78,12 @@ func buildProvisioner(opts ServerOptions, st *store.Store) (provisioner.Provisio
 		return buildLocalProvisioner()
 	case "daytona":
 		return buildDaytonaProvisioner(opts, st, prefs)
-	case "flyio":
-		return buildFlyIOProvisioner(opts, st, prefs)
+	case "flyio", "flysprites":
+		return buildFlySpritesProvisioner(opts, st, prefs)
 	case "flymachines":
 		return buildFlyMachinesProvisioner(opts, st, prefs)
 	default:
-		return nil, nil, fmt.Errorf("unknown provisioner %q (configure preferences.default_launch_host_provider to one of: local, daytona, flyio, flymachines)", provType)
+		return nil, nil, fmt.Errorf("unknown provisioner %q (configure preferences.default_launch_host_provider to one of: local, daytona, flysprites, flymachines)", provType)
 	}
 }
 
@@ -162,15 +162,15 @@ func buildFlyMachinesProvisioner(opts ServerOptions, st *store.Store, prefs conf
 	return prov, prov.Stop, nil
 }
 
-func buildFlyIOProvisioner(opts ServerOptions, st *store.Store, prefs config.Preferences) (provisioner.Provisioner, func(), error) {
+func buildFlySpritesProvisioner(opts ServerOptions, st *store.Store, prefs config.Preferences) (provisioner.Provisioner, func(), error) {
 	if prefs.FlyIO == nil || prefs.FlyIO.APIToken == "" {
-		return nil, nil, fmt.Errorf("flyio provisioner: preferences.flyio.api_token required")
+		return nil, nil, fmt.Errorf("flysprites provisioner: preferences.flyio.api_token required")
 	}
 	templates, err := parseTemplatesEnv()
 	if err != nil {
 		return nil, nil, err
 	}
-	prov, err := flyioprov.New(flyioprov.Options{
+	prov, err := flyspritesprov.New(flyspritesprov.Options{
 		APIToken:            prefs.FlyIO.APIToken,
 		OrganizationSlug:    prefs.FlyIO.OrganizationSlug,
 		Region:              prefs.FlyIO.Region,
@@ -183,7 +183,7 @@ func buildFlyIOProvisioner(opts ServerOptions, st *store.Store, prefs config.Pre
 		Templates:           templates,
 	}, st, log.Default())
 	if err != nil {
-		return nil, nil, fmt.Errorf("build flyio provisioner: %w", err)
+		return nil, nil, fmt.Errorf("build flysprites provisioner: %w", err)
 	}
 	return prov, prov.Stop, nil
 }

@@ -36,8 +36,8 @@ jobs:
       - name: Rebuild + diff embedded clank-host
         run: |
           make embed-host
-          if ! git diff --exit-code -- pkg/provisioner/flyio/clank-host-linux-amd64; then
-            echo "::error::Embedded clank-host is stale. Run 'make embed-host' with the go.mod Go version and commit pkg/provisioner/flyio/clank-host-linux-amd64."
+          if ! git diff --exit-code -- pkg/provisioner/flysprites/clank-host-linux-amd64; then
+            echo "::error::Embedded clank-host is stale. Run 'make embed-host' with the go.mod Go version and commit pkg/provisioner/flysprites/clank-host-linux-amd64."
             exit 1
           fi
 

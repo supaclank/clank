@@ -1,9 +1,9 @@
-package flyio_test
+package flysprites_test
 
 // Real-sprite integration tests. Skipped unless SPRITES_TOKEN is in
 // the env so default `go test ./...` stays fast and sandbox-free.
 //
-//   SPRITES_TOKEN=$YOUR_TOKEN go test -count=1 -run TestIntegration_FlyIO ./internal/provisioner/flyio/...
+//   SPRITES_TOKEN=$YOUR_TOKEN go test -count=1 -run TestIntegration_FlyIO ./pkg/provisioner/flysprites/...
 
 import (
 	"context"
@@ -24,7 +24,7 @@ import (
 	"github.com/acksell/clank/pkg/auth"
 	"github.com/acksell/clank/pkg/gateway"
 	"github.com/acksell/clank/pkg/provisioner"
-	"github.com/acksell/clank/pkg/provisioner/flyio"
+	"github.com/acksell/clank/pkg/provisioner/flysprites"
 )
 
 // newGatewayHandler builds a real gateway.Gateway in front of prov so
@@ -78,9 +78,9 @@ func loadFlyIOCreds(t *testing.T) (token, org string) {
 const integrationUserID = "test"
 const integrationSpriteName = "clank-host-test"
 
-// newIntegrationProvisioner builds a flyio.Provisioner against a real
+// newIntegrationProvisioner builds a flysprites.Provisioner against a real
 // Sprites account, deleting any orphan sprite from a previous run.
-func newIntegrationProvisioner(t *testing.T) *flyio.Provisioner {
+func newIntegrationProvisioner(t *testing.T) *flysprites.Provisioner {
 	t.Helper()
 	token, org := loadFlyIOCreds(t)
 	dbPath := filepath.Join(t.TempDir(), "test.db")
@@ -103,16 +103,16 @@ func newIntegrationProvisioner(t *testing.T) *flyio.Provisioner {
 	deleteSprite("pre-cleanup")
 	// Always destroy on exit so the sprite never lingers between runs
 	// (no orphaned billing, no stale resource conflicting with the next
-	// developer to run these tests). Registered before flyio.New so the
+	// developer to run these tests). Registered before flysprites.New so the
 	// cleanup fires even if New fails.
 	t.Cleanup(func() { deleteSprite("post-cleanup") })
 
-	prov, err := flyio.New(flyio.Options{
+	prov, err := flysprites.New(flysprites.Options{
 		APIToken:         token,
 		OrganizationSlug: org,
 	}, st, nil)
 	if err != nil {
-		t.Fatalf("flyio.New: %v", err)
+		t.Fatalf("flysprites.New: %v", err)
 	}
 	return prov
 }
@@ -206,7 +206,7 @@ func TestIntegration_FlyIO_PingRouteIsReachable(t *testing.T) {
 // $CLANK_DIR/clank.db with a (local, flyio) host row — provision a
 // fly.io sprite first via clankd + clank CLI.
 //
-//	CLANK_DIR=$HOME/.clank-cloud go test -count=1 -run TestIntegration_FlyIO_RealSpriteEventsRoute -v ./internal/provisioner/flyio/...
+//	CLANK_DIR=$HOME/.clank-cloud go test -count=1 -run TestIntegration_FlyIO_RealSpriteEventsRoute -v ./pkg/provisioner/flysprites/...
 func TestIntegration_FlyIO_RealSpriteEventsRoute(t *testing.T) {
 	token, org := loadFlyIOCreds(t)
 	clankDir := os.Getenv("CLANK_DIR")
@@ -236,12 +236,12 @@ func TestIntegration_FlyIO_RealSpriteEventsRoute(t *testing.T) {
 		t.Fatalf("look up real sprite row: %v", err)
 	}
 
-	prov, err := flyio.New(flyio.Options{
+	prov, err := flysprites.New(flysprites.Options{
 		APIToken:         token,
 		OrganizationSlug: org,
 	}, st, nil)
 	if err != nil {
-		t.Fatalf("flyio.New: %v", err)
+		t.Fatalf("flysprites.New: %v", err)
 	}
 	t.Cleanup(prov.Stop)
 
@@ -315,7 +315,7 @@ func snippet(s string, max int) string {
 // gateway-only failure modes (Host header, prefix stripping, transport
 // chain, etc.) that the direct-sprite test doesn't.
 //
-//	CLANK_DIR=$HOME/.clank-cloud go test -count=1 -run TestIntegration_FlyIO_GatewayProxyToRealSpriteEvents -v ./internal/provisioner/flyio/...
+//	CLANK_DIR=$HOME/.clank-cloud go test -count=1 -run TestIntegration_FlyIO_GatewayProxyToRealSpriteEvents -v ./pkg/provisioner/flysprites/...
 func TestIntegration_FlyIO_GatewayProxyToRealSpriteEvents(t *testing.T) {
 	token, org := loadFlyIOCreds(t)
 	clankDir := os.Getenv("CLANK_DIR")
@@ -343,12 +343,12 @@ func TestIntegration_FlyIO_GatewayProxyToRealSpriteEvents(t *testing.T) {
 		t.Fatalf("look up real sprite row: %v", err)
 	}
 
-	prov, err := flyio.New(flyio.Options{
+	prov, err := flysprites.New(flysprites.Options{
 		APIToken:         token,
 		OrganizationSlug: org,
 	}, st, nil)
 	if err != nil {
-		t.Fatalf("flyio.New: %v", err)
+		t.Fatalf("flysprites.New: %v", err)
 	}
 	t.Cleanup(prov.Stop)
 
