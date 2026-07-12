@@ -142,7 +142,7 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 
 	// Fast path: Flycast autostart wakes a stopped machine on the
 	// gateway's dial, so no pre-probe and no API traffic.
-	// TODO(ai-review): no TTL/revalidation — out-of-band `fly apps destroy` on a warm-cached user isn't detected until daemon restart (interface contract says EnsureHost detects provider-side deletion). Repo-wide with flyio. https://github.com/Acksell/clank/pull/128#discussion_r3565309498
+	// TODO(ai-review): no TTL/revalidation — out-of-band `fly apps destroy` on a warm-cached user isn't detected until daemon restart (interface contract says EnsureHost detects provider-side deletion). Repo-wide with flyio. https://github.com/Acksell/clank/pull/128
 	if c := p.cacheGet(userID); c != nil {
 		return p.refToHost(c), nil
 	}
@@ -298,7 +298,7 @@ func (p *Provisioner) ensureFlycast(ctx context.Context, appName string) (string
 	if err != nil {
 		return "", fmt.Errorf("list ip assignments for %s: %w", appName, err)
 	}
-	// TODO(ai-review): doesn't verify the existing flycast lives on opts.GatewayNetwork — a gateway_network change after tenants exist strands them on an unreachable IP; fix is delete-and-reallocate (fly-go's IPAssignment carries no network field). https://github.com/Acksell/clank/pull/128#discussion_r3565309614
+	// TODO(ai-review): doesn't verify the existing flycast lives on opts.GatewayNetwork — a gateway_network change after tenants exist strands them on an unreachable IP; fix is delete-and-reallocate (fly-go's IPAssignment carries no network field). https://github.com/Acksell/clank/pull/128
 	for _, ip := range assignments.IPs {
 		if ip.IsFlycast() {
 			return ip.IP, nil
@@ -329,7 +329,7 @@ func (p *Provisioner) ensureVolume(ctx context.Context, appName string) (string,
 			return v.ID, nil
 		}
 	}
-	// TODO(ai-review): volume region+size are matched by name only, never reconciled — a region change plus a machine re-create requests a cross-region mount Fly rejects forever, and volume_size_gb changes are silently ignored while guest/image DO reconcile. https://github.com/Acksell/clank/pull/128#discussion_r3565309644
+	// TODO(ai-review): volume region+size are matched by name only, never reconciled — a region change plus a machine re-create requests a cross-region mount Fly rejects forever, and volume_size_gb changes are silently ignored while guest/image DO reconcile. https://github.com/Acksell/clank/pull/128
 	size := p.opts.VolumeSizeGB
 	retention := DefaultSnapshotRetentionDays
 	vol, err := p.flaps.CreateVolume(ctx, appName, fly.CreateVolumeRequest{
@@ -422,7 +422,7 @@ func oneShotEnv(cfg *fly.MachineConfig) map[string]string {
 // The deadline is the caller's ctx (EnsureHost bounds it with
 // ProvisionTimeout) — a cold create's image pull alone can outlast
 // any tighter local timer.
-// TODO(ai-review): blind /status poll — a crash-looping image burns the full ProvisionTimeout (each probe re-autostarts + re-crashes) and reports only "connection refused"; fly-go's Machine.State + MachineExitEvent (ExitCode/OOMKilled) could fail fast with the real cause. https://github.com/Acksell/clank/pull/128#discussion_r3565309567
+// TODO(ai-review): blind /status poll — a crash-looping image burns the full ProvisionTimeout (each probe re-autostarts + re-crashes) and reports only "connection refused"; fly-go's Machine.State + MachineExitEvent (ExitCode/OOMKilled) could fail fast with the real cause. https://github.com/Acksell/clank/pull/128
 func waitForHostReady(ctx context.Context, baseURL string, transport http.RoundTripper) error {
 	tick := time.NewTicker(500 * time.Millisecond)
 	defer tick.Stop()
