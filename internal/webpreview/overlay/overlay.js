@@ -515,8 +515,8 @@
       return;
     }
     if (audio) audio.ctx.suspend();
-    if (vws && vws.readyState === WebSocket.OPEN) vws.send(JSON.stringify({ type: 'end' }));
-    else store.voice = 'idle';
+    if (vws && vws.readyState === WebSocket.OPEN) { vws.send(JSON.stringify({ type: 'end' })); }
+    else { store.voice = 'idle'; render(); }
     scheduleAudioReap();
   };
 
