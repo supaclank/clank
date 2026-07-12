@@ -53,6 +53,7 @@ type Service struct {
 	// commit (CreateProjectFromTemplate). Defaulted in New.
 	projectCommitterName  string
 	projectCommitterEmail string
+	templates             []Template
 
 	mu       sync.RWMutex
 	sessions map[string]agent.SessionBackend
@@ -173,6 +174,12 @@ type Options struct {
 	// any vendor identity out of this OSS package.
 	ProjectCommitterName  string
 	ProjectCommitterEmail string
+
+	// Templates is the operator-configured builtin half of the
+	// create-project catalog, served by GET /templates alongside the
+	// user's own GitHub template repos. Empty means no builtin
+	// templates (github-only or none).
+	Templates []Template
 }
 
 // New creates a Service. Panics on missing BackendManagers — fast
@@ -204,6 +211,7 @@ func New(opts Options) *Service {
 		log:                   lg,
 		projectCommitterName:  committerName,
 		projectCommitterEmail: committerEmail,
+		templates:             opts.Templates,
 		sessions:              make(map[string]agent.SessionBackend),
 		branches:              newBranchCache(opts.BranchCacheTTL, opts.Now),
 		sessionsStore:         opts.SessionsStore,

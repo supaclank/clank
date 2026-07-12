@@ -85,12 +85,6 @@ type Config struct {
 	// mounted (404).
 	Images *images.Server
 
-	// Templates is the catalog of built-in project templates a user can
-	// scaffold a brand-new project from (POST /v1/projects/create). Each
-	// entry maps a stable id to a clone URL; the operator injects these
-	// at deploy time so neither the id nor the URL is hardcoded in OSS.
-	// Empty means project creation is unavailable (404 on unknown id).
-	Templates []Template
 
 	// AuthConfig, when non-nil, makes AuthConfigHandler() return a
 	// handler that serves this payload as JSON. Daemons wire that
@@ -217,9 +211,9 @@ func (g *Gateway) Handler() http.Handler {
 	mx := http.NewServeMux()
 	mx.HandleFunc("GET /ping", g.handlePing)
 	mx.HandleFunc("GET /gateway/health", g.handleGatewayHealth)
-	// Brand-new project scaffolding. GET lists the template catalog;
-	// POST resolves a template id to its clone URL and asks the host to
-	// scaffold it.
+	// Brand-new project scaffolding: pure host proxies. The host owns
+	// the template catalog (builtin config + the user's GitHub
+	// template repos); clients pick an entry and send its clone_url.
 	mx.HandleFunc("GET /v1/templates", g.handleListTemplates)
 	mx.HandleFunc("POST /v1/projects/create", g.handleCreateProject)
 	// Import an existing GitHub repo: clone owner/repo (with the host's

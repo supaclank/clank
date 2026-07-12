@@ -86,13 +86,13 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// lives under /repos (registerRepos below).
 	mx.HandleFunc("POST /worktrees/list-branches", m.handleListBranches)
 	mx.HandleFunc("POST /worktrees/resolve", m.handleResolveWorktree)
-	// /projects/create scaffolds a brand-new local project (clone_url
-	// or github_template supplied by the gateway) as a bare canonical
-	// + linked ~/work worktree with no remote. See projects.go.
+	// /projects/create scaffolds a brand-new local project (from a
+	// clone_url picked off GET /templates) as a bare canonical +
+	// linked ~/work worktree with no remote. See projects.go.
 	mx.HandleFunc("POST /projects/create", m.handleCreateProject)
-	// The user's own GitHub template repos (is_template=true), merged
-	// by the gateway into the create-project picker. See templates.go.
-	mx.HandleFunc("GET /templates/github", m.handleGitHubListTemplates)
+	// The full create-project catalog: operator builtins (host env) +
+	// the user's own GitHub template repos. See templates.go.
+	mx.HandleFunc("GET /templates", m.handleListTemplates)
 	// /projects/import clones the caller's existing GitHub repo (owner/repo
 	// in the body) into a canonical + fresh ~/work worktree, keeping the
 	// origin remote. See import_project.go.
