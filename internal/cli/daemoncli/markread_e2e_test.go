@@ -82,10 +82,11 @@ func TestMarkRead_StaysReadAfterRedundantEvent(t *testing.T) {
 }
 
 // TestMarkRead_StaysReadAfterDuplicateExternalIDStamp pins the
-// specific ExternalID-only-stamp case: the backend re-emits an event
-// that carries the same ExternalID we already have, but no other
-// state change. Without the dirty check, the (info.ExternalID == "")
-// guard is no-op but we still wrote the row and bumped UpdatedAt.
+// specific ExternalID-only-stamp case: backends stamp ExternalID onto
+// every emit, so per-token part updates carry an ExternalID we already
+// have and no user-visible change. Without the dirty check, the
+// (info.ExternalID == "") guard is no-op but we still wrote the row
+// and bumped UpdatedAt on every token.
 func TestMarkRead_StaysReadAfterDuplicateExternalIDStamp(t *testing.T) {
 	t.Parallel()
 	td := newTestDaemon(t)
@@ -95,10 +96,9 @@ func TestMarkRead_StaysReadAfterDuplicateExternalIDStamp(t *testing.T) {
 
 	// First stamp — actually new.
 	go b.PushEvent(agent.Event{
-		Type:       agent.EventMessage,
+		Type:       agent.EventPartUpdate,
 		ExternalID: "ext-abc",
 		Timestamp:  time.Now(),
-		Data:       agent.MessageData{Role: "assistant"},
 	})
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -120,10 +120,9 @@ func TestMarkRead_StaysReadAfterDuplicateExternalIDStamp(t *testing.T) {
 
 	// Duplicate stamp.
 	go b.PushEvent(agent.Event{
-		Type:       agent.EventMessage,
+		Type:       agent.EventPartUpdate,
 		ExternalID: "ext-abc",
 		Timestamp:  time.Now(),
-		Data:       agent.MessageData{Role: "assistant"},
 	})
 	time.Sleep(150 * time.Millisecond)
 
@@ -134,6 +133,51 @@ func TestMarkRead_StaysReadAfterDuplicateExternalIDStamp(t *testing.T) {
 	if after.Unread() {
 		t.Error("session went back to unread after a duplicate ExternalID stamp")
 	}
+}
+
+// TestMarkRead_MessageEventMarksUnread pins the flip side: a completed
+// message is real activity even when status and ExternalID don't
+// change, so it must bump UpdatedAt and mark the session unread —
+// recency sorting stays honest for backends that append messages
+// without an idle/busy flip.
+func TestMarkRead_MessageEventMarksUnread(t *testing.T) {
+	t.Parallel()
+	td := newTestDaemon(t)
+	info, b := td.CreateOpenCodeSession(t, "task")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := td.Client.Session(info.ID).MarkRead(ctx); err != nil {
+		t.Fatalf("MarkRead: %v", err)
+	}
+	read, _ := td.Store.GetSession(ctx, info.ID)
+	if read.Unread() {
+		t.Fatalf("session should be read after MarkRead")
+	}
+	updatedAtBefore := read.UpdatedAt
+
+	// Unread() compares UpdatedAt strictly after LastReadAt; keep the
+	// stamps from landing in the same instant on fast hardware.
+	time.Sleep(2 * time.Millisecond)
+
+	go b.PushEvent(agent.Event{
+		Type:      agent.EventMessage,
+		Timestamp: time.Now(),
+		Data:      agent.MessageData{Role: "assistant"},
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got, _ := td.Store.GetSession(ctx, info.ID)
+		if got.UpdatedAt.After(updatedAtBefore) {
+			if !got.Unread() {
+				t.Error("new message should mark session unread")
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("UpdatedAt never bumped after a new message event")
 }
 
 // TestMarkRead_DoesNotBumpUpdatedAt is the regression test for the
