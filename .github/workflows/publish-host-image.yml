@@ -55,6 +55,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Print digest for deployments
+        if: steps.push.outputs.digest != ''
         run: |
           echo "### clank-host-fly image" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"

@@ -19,6 +19,7 @@
 
 set -eu
 
+: "${CLANK_HOST_AUTH_TOKEN:?CLANK_HOST_AUTH_TOKEN is required}"
 : "${CLANK_HOST_PORT:=8080}"
 export HOME=/data
 
@@ -28,6 +29,7 @@ if [ ! -f /data/.clank-initialized ]; then
   mkdir -p /data/work
   if [ -n "${CLANK_RESTORE_URL:-}" ]; then
     echo "entrypoint: restoring workspace archive into /data"
+    # TODO(ai-review): validate archive members reject path traversal before extracting https://github.com/Acksell/clank/pull/127#discussion_r3565279767
     curl -fsSL "$CLANK_RESTORE_URL" | tar -xz -C /data
     echo "entrypoint: restore complete"
   fi
