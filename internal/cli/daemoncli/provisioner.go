@@ -83,7 +83,7 @@ func buildProvisioner(opts ServerOptions, st *store.Store) (provisioner.Provisio
 	case "flymachines":
 		return buildFlyMachinesProvisioner(opts, st, prefs)
 	default:
-		return nil, nil, fmt.Errorf("unknown provisioner %q (configure preferences.default_launch_host_provider to one of: local, daytona, flysprites, flymachines)", provType)
+		return nil, nil, fmt.Errorf("unknown provisioner %q (configure preferences.default_launch_host_provider to one of: local, daytona, flyio, flysprites, flymachines)", provType)
 	}
 }
 
