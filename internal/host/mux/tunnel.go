@@ -69,12 +69,18 @@ func (m *Mux) handleTunnel(w http.ResponseWriter, r *http.Request) {
 
 	ws := websocket.NetConn(r.Context(), c, websocket.MessageBinary)
 
+	start := time.Now()
+	var toTarget, toClient int64
 	errc := make(chan error, 2)
-	go func() { _, err := io.Copy(target, ws); errc <- err }()
-	go func() { _, err := io.Copy(ws, target); errc <- err }()
+	go func() { n, err := io.Copy(target, ws); toTarget = n; errc <- err }()
+	go func() { n, err := io.Copy(ws, target); toClient = n; errc <- err }()
 	// First EOF/error wins; closing both conns unblocks the other copy.
 	<-errc
 	_ = ws.Close()
 	_ = target.Close()
 	<-errc
+	// One line per bridged conn: makes "is traffic actually using the
+	// tunnel?" a grep instead of socket forensics. Reads of toTarget/
+	// toClient are safe here — both copy goroutines have sent on errc.
+	m.log.Printf("tunnel: port %d closed after %s (%dB in, %dB out)", port, time.Since(start).Round(time.Millisecond), toTarget, toClient)
 }
