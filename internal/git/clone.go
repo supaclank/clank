@@ -9,20 +9,6 @@ import (
 	"strings"
 )
 
-// Clone shallow-clones the repository at url into dir. dir must not
-// already exist — git creates it. Only the tip commit is fetched
-// (--depth 1); callers that want a template's files but not its history
-// pair this with removing dir/.git and a fresh Init.
-func Clone(ctx context.Context, url, dir string) error {
-	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--", url, dir)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git clone: %s (%w)", strings.TrimSpace(stderr.String()), err)
-	}
-	return nil
-}
-
 // cloneTokenEnv carries the HTTPS auth token into the git subprocess for
 // CloneShallowKeepRemote. Passing it via the environment (not argv) keeps
 // it out of `ps` output; the inline credential helper reads it at runtime.

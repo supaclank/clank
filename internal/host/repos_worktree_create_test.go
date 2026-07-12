@@ -188,7 +188,7 @@ func TestCreateRepoWorktree_GreenfieldOfflineFork(t *testing.T) {
 	templateURL, _ := makeTemplateRepo(t)
 	svc := newTestService(t)
 
-	created, err := svc.CreateProjectFromTemplate(context.Background(), templateURL, "My App")
+	created, err := svc.CreateProjectFromTemplate(context.Background(), templateURL, "", "My App")
 	if err != nil {
 		t.Fatalf("scaffold: %v", err)
 	}

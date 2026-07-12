@@ -269,7 +269,7 @@ func TestScaffold_RepoFirstLayout(t *testing.T) {
 	templateURL, files := makeTemplateRepo(t)
 	svc := newTestService(t)
 
-	res, err := svc.CreateProjectFromTemplate(context.Background(), templateURL, "My App")
+	res, err := svc.CreateProjectFromTemplate(context.Background(), templateURL, "", "My App")
 	if err != nil {
 		t.Fatalf("scaffold: %v", err)
 	}

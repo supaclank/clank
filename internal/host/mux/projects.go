@@ -41,16 +41,18 @@ func (m *Mux) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cloneURL := req.CloneURL
+	cloneURL, githubToken := req.CloneURL, ""
 	if req.GitHubTemplate != "" {
-		resolved, ok := m.resolveGitHubTemplate(w, r, req.GitHubTemplate)
+		resolved, token, ok := m.resolveGitHubTemplate(w, r, req.GitHubTemplate)
 		if !ok {
 			return // response already written
 		}
-		cloneURL = resolved
+		// The token also authenticates the clone — private template
+		// repos resolve AND clone with the user's credential.
+		cloneURL, githubToken = resolved, token
 	}
 
-	out, err := m.svc.CreateProjectFromTemplate(r.Context(), cloneURL, req.Name)
+	out, err := m.svc.CreateProjectFromTemplate(r.Context(), cloneURL, githubToken, req.Name)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -59,28 +61,29 @@ func (m *Mux) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 }
 
 // resolveGitHubTemplate turns an "owner/repo" template ref into a
-// clone URL via the host's GitHub credential. On failure it writes the
-// typed error response and returns ok=false.
-func (m *Mux) resolveGitHubTemplate(w http.ResponseWriter, r *http.Request, ref string) (cloneURL string, ok bool) {
+// clone URL via the host's GitHub credential, returning the token too
+// so the subsequent clone can authenticate (private templates). On
+// failure it writes the typed error response and returns ok=false.
+func (m *Mux) resolveGitHubTemplate(w http.ResponseWriter, r *http.Request, ref string) (cloneURL, token string, ok bool) {
 	owner, repo, valid := strings.Cut(ref, "/")
 	if !valid || owner == "" || repo == "" || strings.Contains(repo, "/") {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_argument", Error: "github_template must be \"owner/repo\""})
-		return "", false
+		return "", "", false
 	}
 	g, hasGitHub := m.requireGitHub(w)
 	if !hasGitHub {
-		return "", false
+		return "", "", false
 	}
-	token, err := g.AccessToken()
+	accessToken, err := g.AccessToken()
 	if err != nil {
 		if errors.Is(err, githubpkg.ErrNotConnected) {
 			writeJSON(w, http.StatusConflict, errResp{Code: "github_not_connected", Error: err.Error()})
-			return "", false
+			return "", "", false
 		}
 		writeError(w, err)
-		return "", false
+		return "", "", false
 	}
-	resolved, err := g.ResolveTemplateRepo(r.Context(), token, owner, repo)
+	resolved, err := g.ResolveTemplateRepo(r.Context(), accessToken, owner, repo)
 	if err != nil {
 		switch {
 		case errors.Is(err, githubpkg.ErrRepoNotFound):
@@ -90,7 +93,7 @@ func (m *Mux) resolveGitHubTemplate(w http.ResponseWriter, r *http.Request, ref 
 		default:
 			writeError(w, err)
 		}
-		return "", false
+		return "", "", false
 	}
-	return resolved, true
+	return resolved, accessToken, true
 }

@@ -52,7 +52,7 @@ func TestCreateProjectFromTemplate(t *testing.T) {
 
 	svc := newTestService(t)
 	const name = "my-cool-app"
-	res, err := svc.CreateProjectFromTemplate(context.Background(), cloneURL, name)
+	res, err := svc.CreateProjectFromTemplate(context.Background(), cloneURL, "", name)
 	if err != nil {
 		t.Fatalf("CreateProjectFromTemplate: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestCreateProjectFromTemplate_ConfiguredCommitter(t *testing.T) {
 	})
 	t.Cleanup(svc.Shutdown)
 
-	res, err := svc.CreateProjectFromTemplate(context.Background(), cloneURL, "app")
+	res, err := svc.CreateProjectFromTemplate(context.Background(), cloneURL, "", "app")
 	if err != nil {
 		t.Fatalf("CreateProjectFromTemplate: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestCreateProjectFromTemplate_Validation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := svc.CreateProjectFromTemplate(context.Background(), tc.cloneURL, tc.project)
+			_, err := svc.CreateProjectFromTemplate(context.Background(), tc.cloneURL, "", tc.project)
 			if !errors.Is(err, host.ErrInvalidArgument) {
 				t.Fatalf("err = %v, want ErrInvalidArgument", err)
 			}
