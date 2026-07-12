@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -48,10 +47,13 @@ type templateSummary struct {
 }
 
 // hostTemplateRepo mirrors the host's GET /templates/github entry
-// (internal/host/github.Repo) — only the fields the picker needs.
+// (internal/host/github.TemplateRepo) — the picker fields plus the
+// clone URL used for create-time resolution. The URL stops here:
+// client-facing summaries never carry it.
 type hostTemplateRepo struct {
 	FullName    string `json:"full_name"`
 	Description string `json:"description"`
+	CloneURL    string `json:"clone_url"`
 }
 
 // githubTemplatesTimeout caps the host call on the picker path. The
@@ -87,7 +89,14 @@ func (g *Gateway) handleListTemplates(w http.ResponseWriter, r *http.Request) {
 	for _, t := range g.cfg.Templates {
 		out = append(out, templateSummary{ID: t.ID, DisplayName: t.DisplayName, Source: templateSourceBuiltin})
 	}
-	out = append(out, g.githubTemplatesForUser(r.Context(), principal.UserID)...)
+	for _, repo := range g.githubTemplatesForUser(r.Context(), principal.UserID) {
+		out = append(out, templateSummary{
+			ID:          githubTemplateIDPrefix + repo.FullName,
+			DisplayName: repo.FullName,
+			Source:      templateSourceGitHub,
+			Description: repo.Description,
+		})
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -95,12 +104,13 @@ func (g *Gateway) handleListTemplates(w http.ResponseWriter, r *http.Request) {
 }
 
 // githubTemplatesForUser fetches the user's GitHub template repos from
-// their host. Best-effort by design: "github not connected" and any
-// transport/host failure both yield nil (logged for the latter) so the
-// builtin catalog always renders. Note this wakes the user's host —
-// acceptable on the create-project path, where the host is about to be
-// needed anyway.
-func (g *Gateway) githubTemplatesForUser(ctx context.Context, userID string) []templateSummary {
+// their host — the single source of truth for both the picker (ids +
+// names) and create-time id resolution (clone URLs). Best-effort by
+// design: "github not connected" and any transport/host failure both
+// yield nil (logged for the latter) so the builtin catalog always
+// renders. Note this wakes the user's host — acceptable on the
+// create-project path, where the host is about to be needed anyway.
+func (g *Gateway) githubTemplatesForUser(ctx context.Context, userID string) []hostTemplateRepo {
 	ctx, cancel := context.WithTimeout(ctx, githubTemplatesTimeout)
 	defer cancel()
 
@@ -135,27 +145,19 @@ func (g *Gateway) githubTemplatesForUser(ctx context.Context, userID string) []t
 		g.log.Printf("gateway templates: decode host response: %v (builtin-only)", err)
 		return nil
 	}
-	out := make([]templateSummary, 0, len(repos))
-	for _, r := range repos {
-		out = append(out, templateSummary{
-			ID:          githubTemplateIDPrefix + r.FullName,
-			DisplayName: r.FullName,
-			Source:      templateSourceGitHub,
-			Description: r.Description,
-		})
-	}
-	return out
+	return repos
 }
 
-// githubTemplateRef extracts and validates the "owner/repo" ref from a
-// github-namespaced template id. Returns ok=false (with a reason) for
-// anything malformed — the gateway validates shape, the host validates
-// existence and template-ness.
-func githubTemplateRef(id string) (ref string, err error) {
-	ref = strings.TrimPrefix(id, githubTemplateIDPrefix)
-	owner, repo, found := strings.Cut(ref, "/")
-	if !found || owner == "" || repo == "" || strings.Contains(repo, "/") {
-		return "", fmt.Errorf("malformed github template id %q (want github:owner/repo)", id)
+// cloneURLForGitHubTemplate resolves a github:owner/repo template id by
+// membership in the user's own template listing — the same list the
+// picker showed. Not-listed (deleted repo, template flag removed, or a
+// guessed id) is indistinguishable from never-existed: 404 territory.
+func (g *Gateway) cloneURLForGitHubTemplate(ctx context.Context, userID, id string) (string, bool) {
+	want := strings.TrimPrefix(id, githubTemplateIDPrefix)
+	for _, repo := range g.githubTemplatesForUser(ctx, userID) {
+		if repo.FullName == want && repo.CloneURL != "" {
+			return repo.CloneURL, true
+		}
 	}
-	return ref, nil
+	return "", false
 }

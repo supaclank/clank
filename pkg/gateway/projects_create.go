@@ -23,13 +23,12 @@ type createProjectRequest struct {
 }
 
 // hostCreateProjectRequest is the body the gateway sends to the host's
-// POST /projects/create. Builtin catalog ids resolve to clone_url here
-// (the host never sees catalog ids); github: ids forward as a
-// github_template ref the HOST resolves with its own credential.
+// POST /projects/create. The host gets the resolved clone_url, never the
+// catalog id — builtin ids resolve from operator config, github: ids
+// from the user's own template listing (see cloneURLForGitHubTemplate).
 type hostCreateProjectRequest struct {
-	CloneURL       string `json:"clone_url,omitempty"`
-	GitHubTemplate string `json:"github_template,omitempty"`
-	Name           string `json:"name"`
+	CloneURL string `json:"clone_url"`
+	Name     string `json:"name"`
 }
 
 // handleCreateProject services POST /v1/projects/create — the mobile
@@ -70,25 +69,19 @@ func (g *Gateway) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hostReq := hostCreateProjectRequest{Name: req.Name}
-	switch {
-	case strings.HasPrefix(req.Template, githubTemplateIDPrefix):
-		ref, err := githubTemplateRef(req.Template)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		hostReq.GitHubTemplate = ref
-	default:
-		cloneURL, ok := g.cloneURLForTemplate(req.Template)
-		if !ok {
-			http.Error(w, fmt.Sprintf("unknown template %q", req.Template), http.StatusNotFound)
-			return
-		}
-		hostReq.CloneURL = cloneURL
+	cloneURL, ok := g.cloneURLForTemplate(req.Template)
+	if !ok && strings.HasPrefix(req.Template, githubTemplateIDPrefix) {
+		cloneURL, ok = g.cloneURLForGitHubTemplate(r.Context(), principal.UserID, req.Template)
+	}
+	if !ok {
+		http.Error(w, fmt.Sprintf("unknown template %q", req.Template), http.StatusNotFound)
+		return
 	}
 
-	status, body, err := g.callHostCreateProject(r.Context(), principal.UserID, hostReq)
+	status, body, err := g.callHostCreateProject(r.Context(), principal.UserID, hostCreateProjectRequest{
+		CloneURL: cloneURL,
+		Name:     req.Name,
+	})
 	if err != nil {
 		g.log.Printf("gateway create-project: host call: %v", err)
 		http.Error(w, "project creation failed", http.StatusBadGateway)

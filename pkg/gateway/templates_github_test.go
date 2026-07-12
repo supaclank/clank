@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,13 +11,12 @@ import (
 )
 
 // templatesHost stands in for the host's template surface: GET
-// /templates/github plus a create endpoint recording the forwarded
-// github_template ref.
+// /templates/github (entries with clone URLs) plus a create endpoint
+// recording the clone_url the gateway resolved.
 type templatesHost struct {
-	githubStatus      int    // status for GET /templates/github
-	githubBody        string // body for GET /templates/github
-	gotGitHubTemplate atomic.Value
-	gotCloneURL       atomic.Value
+	githubStatus int    // status for GET /templates/github
+	githubBody   string // body for GET /templates/github
+	gotCloneURL  atomic.Value
 }
 
 func (h *templatesHost) server(t *testing.T) *httptest.Server {
@@ -29,12 +29,10 @@ func (h *templatesHost) server(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("POST /projects/create", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			CloneURL       string `json:"clone_url"`
-			GitHubTemplate string `json:"github_template"`
-			Name           string `json:"name"`
+			CloneURL string `json:"clone_url"`
+			Name     string `json:"name"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		h.gotGitHubTemplate.Store(body.GitHubTemplate)
 		h.gotCloneURL.Store(body.CloneURL)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
@@ -44,6 +42,11 @@ func (h *templatesHost) server(t *testing.T) *httptest.Server {
 	t.Cleanup(srv.Close)
 	return srv
 }
+
+const githubCatalogBody = `[
+	{"full_name":"acme/expo-tpl","description":"My starter","clone_url":"https://github.example/acme/expo-tpl.git"},
+	{"full_name":"acme/go-tpl","clone_url":"https://github.example/acme/go-tpl.git"}
+]`
 
 func getTemplates(t *testing.T, gwURL string) []templateSummary {
 	t.Helper()
@@ -65,10 +68,7 @@ func getTemplates(t *testing.T, gwURL string) []templateSummary {
 
 func TestListTemplates_MergesGitHubTemplates(t *testing.T) {
 	t.Parallel()
-	h := &templatesHost{
-		githubStatus: http.StatusOK,
-		githubBody:   `[{"full_name":"acme/expo-tpl","description":"My starter"},{"full_name":"acme/go-tpl"}]`,
-	}
+	h := &templatesHost{githubStatus: http.StatusOK, githubBody: githubCatalogBody}
 	gw := newProjectsGateway(t, h.server(t), []Template{
 		{ID: "expo", DisplayName: "Expo app", CloneURL: "https://example.test/expo.git"},
 	})
@@ -82,6 +82,29 @@ func TestListTemplates_MergesGitHubTemplates(t *testing.T) {
 	}
 	if got[1].ID != "github:acme/expo-tpl" || got[1].Source != "github" || got[1].Description != "My starter" {
 		t.Errorf("github entry malformed: %+v", got[1])
+	}
+}
+
+// TestListTemplates_NeverLeaksCloneURLs pins the client-facing
+// invariant: the host hands the gateway clone URLs for resolution, and
+// they must stop there.
+func TestListTemplates_NeverLeaksCloneURLs(t *testing.T) {
+	t.Parallel()
+	h := &templatesHost{githubStatus: http.StatusOK, githubBody: githubCatalogBody}
+	gw := newProjectsGateway(t, h.server(t), []Template{
+		{ID: "expo", DisplayName: "Expo app", CloneURL: "https://example.test/expo.git"},
+	})
+
+	resp, err := http.Get(gw.URL + "/v1/templates")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	for _, secret := range []string{"github.example", "example.test", "clone_url"} {
+		if bytes.Contains(body, []byte(secret)) {
+			t.Fatalf("clone URL material %q leaked to clients: %s", secret, body)
+		}
 	}
 }
 
@@ -103,7 +126,7 @@ func TestListTemplates_GitHubNotConnected_BuiltinOnly(t *testing.T) {
 
 func TestListTemplates_HostUnreachable_BuiltinOnly(t *testing.T) {
 	t.Parallel()
-	// Host that immediately closes: the picker must degrade, not fail.
+	// Host that immediately aborts: the picker must degrade, not fail.
 	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		panic(http.ErrAbortHandler)
 	}))
@@ -118,9 +141,12 @@ func TestListTemplates_HostUnreachable_BuiltinOnly(t *testing.T) {
 	}
 }
 
-func TestCreateProject_GitHubTemplateForwardsRef(t *testing.T) {
+// TestCreateProject_GitHubTemplateResolvedFromListing: a github: id is
+// resolved by membership in the user's own template listing — the host
+// receives the listing's clone_url, exactly like a builtin resolution.
+func TestCreateProject_GitHubTemplateResolvedFromListing(t *testing.T) {
 	t.Parallel()
-	h := &templatesHost{githubStatus: http.StatusOK, githubBody: `[]`}
+	h := &templatesHost{githubStatus: http.StatusOK, githubBody: githubCatalogBody}
 	gw := newProjectsGateway(t, h.server(t), nil)
 
 	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"template":"github:acme/expo-tpl","name":"my-app"}`)
@@ -129,24 +155,24 @@ func TestCreateProject_GitHubTemplateForwardsRef(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
 	}
-	if got := h.gotGitHubTemplate.Load(); got != "acme/expo-tpl" {
-		t.Fatalf("host github_template = %v, want acme/expo-tpl", got)
-	}
-	if got := h.gotCloneURL.Load(); got != "" {
-		t.Fatalf("host clone_url = %v, want empty (the host resolves github refs)", got)
+	if got := h.gotCloneURL.Load(); got != "https://github.example/acme/expo-tpl.git" {
+		t.Fatalf("host clone_url = %v, want the listing's clone URL", got)
 	}
 }
 
-func TestCreateProject_GitHubTemplateMalformed(t *testing.T) {
+// TestCreateProject_GitHubTemplateNotInListing: ids outside the user's
+// own listing 404 — deleted repos, un-flagged templates, guessed names
+// and malformed refs are all indistinguishable from never-existed.
+func TestCreateProject_GitHubTemplateNotInListing(t *testing.T) {
 	t.Parallel()
-	h := &templatesHost{githubStatus: http.StatusOK, githubBody: `[]`}
+	h := &templatesHost{githubStatus: http.StatusOK, githubBody: githubCatalogBody}
 	gw := newProjectsGateway(t, h.server(t), nil)
 
-	for _, id := range []string{"github:", "github:acme", "github:acme/", "github:/tpl", "github:a/b/c"} {
+	for _, id := range []string{"github:acme/ghost", "github:", "github:acme", "github:a/b/c"} {
 		resp := postJSON(t, gw.URL+"/v1/projects/create", `{"template":"`+id+`","name":"x"}`)
 		resp.Body.Close()
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Errorf("template %q: status = %d, want 400", id, resp.StatusCode)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("template %q: status = %d, want 404", id, resp.StatusCode)
 		}
 	}
 }

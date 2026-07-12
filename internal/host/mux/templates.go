@@ -9,8 +9,9 @@ import (
 
 // handleGitHubListTemplates services GET /templates/github — the
 // user's own GitHub repositories marked as templates (is_template),
-// for the create-project picker. The gateway merges these with its
-// builtin catalog on GET /v1/templates.
+// with clone URLs. The gateway merges these with its builtin catalog
+// on GET /v1/templates (stripping URLs toward clients) and resolves
+// github: template ids against this same listing at create time.
 //
 // github_not_connected (409) is an expected state, not a failure: the
 // gateway treats it as "no github templates" and the client may offer
@@ -35,7 +36,7 @@ func (m *Mux) handleGitHubListTemplates(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if repos == nil {
-		repos = []githubpkg.Repo{}
+		repos = []githubpkg.TemplateRepo{}
 	}
 	writeJSON(w, http.StatusOK, repos)
 }

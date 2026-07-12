@@ -42,7 +42,7 @@ func newGitHubTemplatesFixture(t *testing.T, apiHandler http.Handler) *httptest.
 	return srv
 }
 
-func TestGitHubTemplates_ListsOwnTemplates(t *testing.T) {
+func TestGitHubTemplates_ListsOwnTemplatesWithCloneURLs(t *testing.T) {
 	srv := newGitHubTemplatesFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/user/repos" {
 			http.NotFound(w, r)
@@ -50,7 +50,8 @@ func TestGitHubTemplates_ListsOwnTemplates(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`[
-			{"name":"tpl","full_name":"acme/tpl","is_template":true,"owner":{"login":"acme"},"default_branch":"main"},
+			{"name":"tpl","full_name":"acme/tpl","is_template":true,"owner":{"login":"acme"},
+			 "default_branch":"main","clone_url":"https://github.example/acme/tpl.git"},
 			{"name":"app","full_name":"acme/app","is_template":false,"owner":{"login":"acme"},"default_branch":"main"}
 		]`))
 	}))
@@ -60,12 +61,16 @@ func TestGitHubTemplates_ListsOwnTemplates(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
 	}
-	var repos []githubpkg.Repo
+	var repos []githubpkg.TemplateRepo
 	if err := json.Unmarshal(body, &repos); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if len(repos) != 1 || repos[0].FullName != "acme/tpl" {
 		t.Fatalf("repos = %+v, want only acme/tpl", repos)
+	}
+	// The gateway resolves github: template ids against this clone_url.
+	if repos[0].CloneURL != "https://github.example/acme/tpl.git" {
+		t.Fatalf("clone_url = %q", repos[0].CloneURL)
 	}
 }
 
@@ -85,79 +90,31 @@ func TestGitHubTemplates_NotConnected(t *testing.T) {
 	}
 }
 
-// TestCreateProject_GitHubTemplate drives the full flow: the handler
-// resolves owner/repo through the (stub) GitHub API — asserting
-// is_template — then clones the resolved URL, which points at a REAL
-// local template repo, and scaffolds the project.
-func TestCreateProject_GitHubTemplate(t *testing.T) {
-	// The fixture's tmp HOME scopes ~/work, so scaffolding stays in the
-	// test sandbox.
+// TestCreateProject_WorksWithGitHubConnected pins the "most privileged
+// credentials available" behavior: with a credential stored, create
+// still succeeds for a template that never challenges for auth (the
+// token is inert unless the server asks).
+func TestCreateProject_WorksWithGitHubConnected(t *testing.T) {
 	tpl := templateCloneURL(t)
+	srv := newGitHubTemplatesFixture(t, http.NotFoundHandler())
 
-	srv := newGitHubTemplatesFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/repos/acme/tpl":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"name": "tpl", "full_name": "acme/tpl", "is_template": true,
-				"clone_url": tpl, "owner": map[string]string{"login": "acme"},
-			})
-		case "/repos/acme/notatpl":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"name": "notatpl", "full_name": "acme/notatpl", "is_template": false,
-				"clone_url": tpl, "owner": map[string]string{"login": "acme"},
-			})
-		default:
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"message":"Not Found"}`))
-		}
-	}))
-
-	post := func(body string) (*http.Response, []byte) {
-		t.Helper()
-		resp, err := http.Post(srv.URL+"/projects/create", "application/json", bytes.NewReader([]byte(body)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		var buf bytes.Buffer
-		_, _ = buf.ReadFrom(resp.Body)
-		return resp, buf.Bytes()
+	resp, err := http.Post(srv.URL+"/projects/create", "application/json",
+		strings.NewReader(`{"clone_url":"`+tpl+`","name":"from-tpl"}`))
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// Happy path: template resolved + cloned.
-	resp, body := post(`{"github_template":"acme/tpl","name":"from-my-template"}`)
+	defer resp.Body.Close()
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(resp.Body)
 	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, buf.String())
 	}
 	var out host.CreateWorktreeResult
-	if err := json.Unmarshal(body, &out); err != nil {
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if out.WorktreeID == "" || out.DisplayName != "from-my-template" {
+	if out.WorktreeID == "" || out.DisplayName != "from-tpl" {
 		t.Fatalf("unexpected result: %+v", out)
-	}
-
-	// Not marked as a template → typed 422.
-	resp, body = post(`{"github_template":"acme/notatpl","name":"x"}`)
-	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(string(body), "not_a_template") {
-		t.Fatalf("non-template: status=%d body=%s, want 422 not_a_template", resp.StatusCode, body)
-	}
-
-	// Unknown repo → typed 404.
-	resp, body = post(`{"github_template":"acme/ghost","name":"x"}`)
-	if resp.StatusCode != http.StatusNotFound || !strings.Contains(string(body), "template_not_found") {
-		t.Fatalf("missing repo: status=%d body=%s, want 404 template_not_found", resp.StatusCode, body)
-	}
-
-	// Both sources (or neither) rejected.
-	resp, body = post(`{"github_template":"acme/tpl","clone_url":"https://x.test/y.git","name":"x"}`)
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("both sources: status=%d body=%s, want 400", resp.StatusCode, body)
-	}
-	resp, body = post(`{"name":"x"}`)
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("neither source: status=%d body=%s, want 400", resp.StatusCode, body)
 	}
 }
 

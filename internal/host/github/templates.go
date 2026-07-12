@@ -1,35 +1,35 @@
 package github
 
-// Template-repository support for the create-project flow: listing the
-// user's own GitHub template repos (the "Template repository" checkbox
-// on GitHub, is_template=true) and resolving one to a clone URL at
-// create time. The host owns this — it holds the GitHub credential —
-// so private template repos work and the gateway never sees tokens.
+// Template-repository listing for the create-project flow: the user's
+// own GitHub repos marked as templates (the "Template repository"
+// checkbox, is_template=true). The host owns this — it holds the
+// GitHub credential — and returns clone URLs to the GATEWAY, which
+// resolves template ids against them server-side; clients only ever
+// see ids and display names.
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net/http"
 
 	gogithub "github.com/google/go-github/v66/github"
 )
 
-// ErrNotTemplate reports that the referenced repository exists and is
-// accessible but is not marked as a template on GitHub.
-var ErrNotTemplate = errors.New("github: repository is not a template")
-
-// ErrRepoNotFound reports that the referenced repository doesn't exist
-// or the connected account can't see it — GitHub returns 404 for both,
-// deliberately, so we don't distinguish either.
-var ErrRepoNotFound = errors.New("github: repository not found or not accessible")
+// TemplateRepo is one entry in the template listing: the trimmed repo
+// shape plus the clone URL the gateway needs for create-time
+// resolution. The clone URL never travels past the gateway.
+type TemplateRepo struct {
+	Repo
+	CloneURL string `json:"clone_url"`
+}
 
 // ListTemplateRepositories lists repositories OWNED by the
 // authenticated user that are marked as templates, most recently
 // pushed first, capped at maxRepos. Owner-only affiliation is the v1
 // product boundary: "your own templates" — org/community sources come
-// later with their own trust story.
-func (m *Manager) ListTemplateRepositories(ctx context.Context, token string) ([]Repo, error) {
+// later with their own trust story. Membership in this listing is
+// also the create-time authorization: the gateway only creates from
+// ids it can find here (or in the operator catalog).
+func (m *Manager) ListTemplateRepositories(ctx context.Context, token string) ([]TemplateRepo, error) {
 	client, err := m.apiClient(token)
 	if err != nil {
 		return nil, fmt.Errorf("build api client: %w", err)
@@ -41,7 +41,7 @@ func (m *Manager) ListTemplateRepositories(ctx context.Context, token string) ([
 		ListOptions: gogithub.ListOptions{PerPage: reposPerPage},
 	}
 
-	var out []Repo
+	var out []TemplateRepo
 	for {
 		repos, resp, err := client.Repositories.ListByAuthenticatedUser(ctx, opts)
 		if err != nil {
@@ -51,7 +51,7 @@ func (m *Manager) ListTemplateRepositories(ctx context.Context, token string) ([
 			if !r.GetIsTemplate() {
 				continue
 			}
-			out = append(out, wireRepo(r))
+			out = append(out, TemplateRepo{Repo: wireRepo(r), CloneURL: r.GetCloneURL()})
 			if len(out) >= maxRepos {
 				return out, nil
 			}
@@ -61,29 +61,4 @@ func (m *Manager) ListTemplateRepositories(ctx context.Context, token string) ([
 		}
 		opts.Page = resp.NextPage
 	}
-}
-
-// ResolveTemplateRepo validates that owner/repo is an accessible
-// template repository and returns its clone URL. The is_template check
-// is the trust boundary: create-project only clones repos their owner
-// deliberately published as templates.
-func (m *Manager) ResolveTemplateRepo(ctx context.Context, token, owner, repo string) (cloneURL string, err error) {
-	client, err := m.apiClient(token)
-	if err != nil {
-		return "", fmt.Errorf("build api client: %w", err)
-	}
-	r, resp, err := client.Repositories.Get(ctx, owner, repo)
-	if err != nil {
-		if resp != nil && resp.StatusCode == http.StatusNotFound {
-			return "", fmt.Errorf("%w: %s/%s", ErrRepoNotFound, owner, repo)
-		}
-		return "", fmt.Errorf("get repository %s/%s: %w", owner, repo, err)
-	}
-	if !r.GetIsTemplate() {
-		return "", fmt.Errorf("%w: %s/%s", ErrNotTemplate, owner, repo)
-	}
-	if r.GetCloneURL() == "" {
-		return "", fmt.Errorf("repository %s/%s has no clone URL", owner, repo)
-	}
-	return r.GetCloneURL(), nil
 }
