@@ -1,1 +1,74 @@
-bmFtZTogY2kKCm9uOgogIHB1c2g6CiAgICBicmFuY2hlczogW21haW5dCiAgcHVsbF9yZXF1ZXN0OgoKcGVybWlzc2lvbnM6CiAgY29udGVudHM6IHJlYWQKCmpvYnM6CiAgIyBIZWFkbGluZSBndWFyZHJhaWw6IHRoZSBjbGFuay1ob3N0IGJpbmFyeSBpcyBjb21taXR0ZWQgYW5kIHB1c2hlZCB0bwogICMgc3ByaXRlcyB2ZXJiYXRpbSBieSB0aGUgZmx5aW8gcHJvdmlzaW9uZXIuIElmIHRoZSBjb21taXR0ZWQgY29weSBkcmlmdHMKICAjIGZyb20gdGhlIHNvdXJjZSwgdGhlIGdhdGV3YXkgc2hpcHMgYW4gb2xkIGNsYW5rLWhvc3QgdGhhdCA0MDBzIGV2ZXJ5CiAgIyBzcHJpdGUgYXBwbHkgKHRoZSBhcHBseS1wcm90b2NvbCBtaXNtYXRjaCB0aGlzIHByZXZlbnRzKSDigJQgaW52aXNpYmxlIGF0CiAgIyB0aGUgZ2F0ZXdheSwgZmF0YWwgb24gdGhlIHNwcml0ZS4gUmVidWlsZCBpdCBhbmQgZmFpbCBvbiBhbnkgZHJpZnQuCiAgZW1iZWQtaG9zdC1jdXJyZW50OgogICAgbmFtZTogZW1iZWRkZWQgY2xhbmstaG9zdCBtYXRjaGVzIHNvdXJjZQogICAgcnVucy1vbjogdWJ1bnR1LWxhdGVzdAogICAgc3RlcHM6CiAgICAgIC0gdXNlczogYWN0aW9ucy9jaGVja291dEB2NAogICAgICAgIHdpdGg6CiAgICAgICAgICAjIERlZmF1bHQgcHVsbF9yZXF1ZXN0IGNoZWNrb3V0IGJ1aWxkcyByZWZzL3B1bGwvPG4+L21lcmdlIChoZWFkCiAgICAgICAgICAjIG1lcmdlZCBpbnRvIGJhc2UpLCBhbmQgR28ncyBidWlsZCBJRCBoYXNoZXMgZXZlcnkgaW5wdXQgZmlsZSdzCiAgICAgICAgICAjIGJ5dGVzIOKAlCBhIGJhc2UtYnJhbmNoIGNvbW1pdCB0b3VjaGluZyBhbnl0aGluZyBjbWQvY2xhbmstaG9zdAogICAgICAgICAgIyBpbXBvcnRzIHNoaWZ0cyB0aGUgbWVyZ2UgcmVmJ3MgYnVpbGQgSUQgZXZlbiB3aXRoIHplcm8gcmVhbCBkcmlmdC4KICAgICAgICAgICMgUGluIHRvIHRoZSBhY3R1YWwgaGVhZCBTSEEgc28gdGhpcyBqb2IgYnVpbGRzIHRoZSBzYW1lIHRyZWUKICAgICAgICAgICMgYG1ha2UgZW1iZWQtaG9zdGAgY29tbWl0dGVkLgogICAgICAgICAgcmVmOiAke3sgZ2l0aHViLmV2ZW50X25hbWUgPT0gJ3B1bGxfcmVxdWVzdCcgJiYgZ2l0aHViLmV2ZW50LnB1bGxfcmVxdWVzdC5oZWFkLnNoYSB8fCBnaXRodWIuc2hhIH19CiAgICAgICMgZ28tdmVyc2lvbi1maWxlIGluc3RhbGxzIGV4YWN0bHkgdGhlIEdvIHZlcnNpb24gaW4gZ28ubW9kJ3MgYGdvYCBkaXJlY3RpdmU7CiAgICAgICMgQ0dPX0VOQUJMRUQ9MCArIC10cmltcGF0aCArIC1idWlsZHZjcz1mYWxzZSBtYWtlIHRoZSBvdXRwdXQKICAgICAgIyBieXRlLXJlcHJvZHVjaWJsZSBvbiBsaW51eC9hbWQ2NCDigJQgQ0kgZmxhZ3MgYW55IGRyaWZ0IGZyb20gdGhlIGNvbW1pdC4KICAgICAgLSB1c2VzOiBhY3Rpb25zL3NldHVwLWdvQHY1CiAgICAgICAgd2l0aDoKICAgICAgICAgIGdvLXZlcnNpb24tZmlsZTogZ28ubW9kCiAgICAgIC0gbmFtZTogUmVidWlsZCArIGRpZmYgZW1iZWRkZWQgY2xhbmstaG9zdAogICAgICAgIHJ1bjogfAogICAgICAgICAgbWFrZSBlbWJlZC1ob3N0CiAgICAgICAgICBpZiAhIGdpdCBkaWZmIC0tZXhpdC1jb2RlIC0tIHBrZy9wcm92aXNpb25lci9mbHlpby9jbGFuay1ob3N0LWxpbnV4LWFtZDY0OyB0aGVuCiAgICAgICAgICAgIGVjaG8gIjo6ZXJyb3I6OkVtYmVkZGVkIGNsYW5rLWhvc3QgaXMgc3RhbGUuIFJ1biAnbWFrZSBlbWJlZC1ob3N0JyB3aXRoIHRoZSBnby5tb2QgR28gdmVyc2lvbiBhbmQgY29tbWl0IHBrZy9wcm92aXNpb25lci9mbHlpby9jbGFuay1ob3N0LWxpbnV4LWFtZDY0LiIKICAgICAgICAgICAgZXhpdCAxCiAgICAgICAgICBmaQoKICBidWlsZC12ZXQ6CiAgICBuYW1lOiBidWlsZCDCtyB2ZXQKICAgIHJ1bnMtb246IHVidW50dS1sYXRlc3QKICAgIHN0ZXBzOgogICAgICAtIHVzZXM6IGFjdGlvbnMvY2hlY2tvdXRAdjQKICAgICAgLSB1c2VzOiBhY3Rpb25zL3NldHVwLWdvQHY1CiAgICAgICAgd2l0aDoKICAgICAgICAgIGdvLXZlcnNpb24tZmlsZTogZ28ubW9kCiAgICAgIC0gbmFtZTogQnVpbGQKICAgICAgICBydW46IGdvIGJ1aWxkIC4vLi4uCiAgICAgIC0gbmFtZTogVmV0CiAgICAgICAgcnVuOiBnbyB2ZXQgLi8uLi4KICAgICAgIyBUT0RPOiBhZGQgYGdvIHRlc3QgLXNob3J0IC4vLi4uYCBvbmNlIHRoZSBwcmUtZXhpc3RpbmcgZmxha3kgdGVzdHMgb24KICAgICAgIyBtYWluIGFyZSBmaXhlZC9xdWFyYW50aW5lZCAoaW50ZXJuYWwvdHVpLCBpbnRlcm5hbC9jbGkvZGFlbW9uY2xpLAogICAgICAjIGludGVybmFsL2tlZXBhbGl2ZSkuIEtlcHQgb3V0IGZvciBub3cgc28gQ0kgc3RhcnRzIGdyZWVuLgoKICAjIGludGVybmFsL2FnZW50IGlzbid0IGFtb25nIHRoZSBmbGFreSBwYWNrYWdlcyBhYm92ZSwgc28gaXQgcnVucyBoZXJlIG9uIGl0cwogICMgb3duIGFoZWFkIG9mIHRoZSByZXBvLXdpZGUgc3VpdGUuIC1yYWNlIGlzIHRoZSBwb2ludDogdGhlIGJhY2tlbmQgc2h1dGRvd24KICAjIHJlZ3Jlc3Npb24gdGVzdHMgZ3VhcmQgYSBjbG9zZS12cy1zZW5kIGRhdGEgcmFjZSB0aGF0J3MgaW52aXNpYmxlIHdpdGhvdXQKICAjIHRoZSBkZXRlY3Rvci4gb3BlbmNvZGUtZGVwZW5kZW50IHRlc3RzIHNraXAgdmlhIGV4ZWMuTG9va1BhdGggd2hlbiB0aGUKICAjIGJpbmFyeSBpcyBhYnNlbnQ7IHRoZSBpbnRlZ3JhdGlvbiBzdWl0ZSBpcyBiZWhpbmQgLy9nbzpidWlsZCBpbnRlZ3JhdGlvbi4KICB0ZXN0LWFnZW50LXJhY2U6CiAgICBuYW1lOiByYWNlIMK3IGludGVybmFsL2FnZW50CiAgICBydW5zLW9uOiB1YnVudHUtbGF0ZXN0CiAgICBzdGVwczoKICAgICAgLSB1c2VzOiBhY3Rpb25zL2NoZWNrb3V0QHY0CiAgICAgIC0gdXNlczogYWN0aW9ucy9zZXR1cC1nb0B2NQogICAgICAgIHdpdGg6CiAgICAgICAgICBnby12ZXJzaW9uLWZpbGU6IGdvLm1vZAogICAgICAtIG5hbWU6IFJhY2UgdGVzdHMgKGludGVybmFsL2FnZW50KQogICAgICAgIHJ1bjogZ28gdGVzdCAtcmFjZSAuL2ludGVybmFsL2FnZW50Ly4uLgo=
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Headline guardrail: the clank-host binary is committed and pushed to
+  # sprites verbatim by the flyio provisioner. If the committed copy drifts
+  # from the source, the gateway ships an old clank-host that 400s every
+  # sprite apply (the apply-protocol mismatch this prevents) — invisible at
+  # the gateway, fatal on the sprite. Rebuild it and fail on any drift.
+  embed-host-current:
+    name: embedded clank-host matches source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Default pull_request checkout builds refs/pull/<n>/merge (head
+          # merged into base), and Go's build ID hashes every input file's
+          # bytes — a base-branch commit touching anything cmd/clank-host
+          # imports shifts the merge ref's build ID even with zero real drift.
+          # Pin to the actual head SHA so this job builds the same tree
+          # `make embed-host` committed.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      # go-version-file installs exactly the Go version in go.mod's `go` directive;
+      # CGO_ENABLED=0 + -trimpath + -buildvcs=false make the output
+      # byte-reproducible on linux/amd64 — CI flags any drift from the commit.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Rebuild + diff embedded clank-host
+        run: |
+          make embed-host
+          if ! git diff --exit-code -- pkg/provisioner/flyio/clank-host-linux-amd64; then
+            echo "::error::Embedded clank-host is stale. Run 'make embed-host' with the go.mod Go version and commit pkg/provisioner/flyio/clank-host-linux-amd64."
+            exit 1
+          fi
+
+  build-vet:
+    name: build · vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      # TODO: add `go test -short ./...` once the pre-existing flaky tests on
+      # main are fixed/quarantined (internal/tui, internal/cli/daemoncli,
+      # internal/keepalive). Kept out for now so CI starts green.
+
+  # internal/agent isn't among the flaky packages above, so it runs here on its
+  # own ahead of the repo-wide suite. -race is the point: the backend shutdown
+  # regression tests guard a close-vs-send data race that's invisible without
+  # the detector. opencode-dependent tests skip via exec.LookPath when the
+  # binary is absent; the integration suite is behind //go:build integration.
+  test-agent-race:
+    name: race · internal/agent
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Race tests (internal/agent)
+        run: go test -race ./internal/agent/...
