@@ -144,10 +144,10 @@ func printWebPreviewBanner(url string, engine webpreview.Engine) {
 	fmt.Printf("  Preview:  %s\n", styleCmdHint.Render(url))
 	fmt.Println()
 	fmt.Println("  Use the app normally — the clank overlay is one hotkey away:")
-	fmt.Println("    ⇪ caps lock   summon / hide the prompt box (tap its header for chat)")
+	fmt.Println("    ⌘E / Ctrl+E   summon / hide the prompt box (tap its header for chat)")
 	fmt.Println("    hold ⌘ or ⌃   point at elements to attach them as context")
 	if engine != nil {
-		fmt.Println("    hold space    talk, with the composer empty " + styleDim.Render("("+engine.Describe()+")"))
+		fmt.Println("    ⇪ caps lock   tap to talk, tap again to transcribe " + styleDim.Render("("+engine.Describe()+")"))
 	} else {
 		fmt.Println(styleDim.Render("    voice off — install clank-voice (voice-engine/) or set " + webpreview.EngineEnvVar))
 	}

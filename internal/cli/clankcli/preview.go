@@ -25,9 +25,10 @@ Boots (or reuses) the local clank daemon and serves this folder's app:
     on the same Wi-Fi; shake to summon the prompt box.
   - Vite app (Svelte, React, …): fronts the dev server with a local
     proxy that injects the clank overlay, and opens your browser.
-    Caps Lock summons the prompt box, holding Cmd/Ctrl points at
-    elements to attach them as context, and holding Space dictates
-    (with a clank-voice install or ` + "CLANK_VOICE_ASR_CMD" + `).
+    Cmd/Ctrl+E summons the prompt box, holding Cmd/Ctrl points at
+    elements to attach them as context, and tapping Caps Lock starts
+    and stops dictation (with a clank-voice install or
+    ` + "CLANK_VOICE_ASR_CMD" + `).
 
 A prompt is optional: pass one to also start an agent on this folder and
 watch it work in the preview. Pairing/proxy, the dev server, and the agent

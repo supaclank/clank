@@ -7,9 +7,9 @@
 // credentials beyond the injected config.
 //
 // Interaction model (mobile parity, hotkeys instead of shake):
-//   Caps Lock      toggle the prompt box (shake analog)
+//   ⌘E / ⌃E        toggle the prompt box (shake analog)
+//   Caps Lock      tap: start dictation, tap again: stop & transcribe
 //   hold ⌘ / ⌃     momentary element-select; click tags, release exits
-//   hold Space     push-to-talk dictation (box open, composer empty)
 //   Esc            leave inspect mode, else hide
 //   header tap     expand / collapse the chat view
 //
@@ -422,12 +422,16 @@
   };
   const audioAlive = () => !!audio && audio.stream.getTracks().some((t) => t.readyState === 'live');
 
-  const startTalk = async () => {
+  let capturingSince = 0; // when live audio actually started flowing
+  let startingTalk = null; // in-flight startTalk bring-up
+
+  const startTalk = () => {
     if (store.voice !== 'idle') return;
     store.voice = 'recording';
     voiceBase = ui.input.value;
+    capturingSince = 0;
     render();
-    try {
+    startingTalk = (async () => {
       await voiceWS();
       // The graph is suspended between utterances; verify it is actually
       // revivable rather than trusting it. A dead track — or a resume()
@@ -444,20 +448,47 @@
         audio = await buildAudio();
         await audio.ctx.resume();
       }
-    } catch (err) {
+      capturingSince = Date.now();
+    })().catch((err) => {
       store.voice = 'idle';
       toast('mic: ' + err.message);
       render();
-    }
+    });
   };
 
-  const stopTalk = () => {
+  const stopTalk = async () => {
     if (store.voice !== 'recording') return;
     store.voice = 'transcribing';
     render();
+    // The first utterance on a page pays the capture bring-up (mic
+    // permission, worklet load). Ending before any audio flowed would
+    // "transcribe" an empty utterance — wait for the bring-up, then
+    // require a beat of real capture.
+    await startingTalk;
+    if (store.voice !== 'transcribing') return; // bring-up failed; already reset
+    if (!capturingSince || Date.now() - capturingSince < 150) {
+      if (audio) audio.ctx.suspend();
+      if (vws && vws.readyState === WebSocket.OPEN) vws.send(JSON.stringify({ type: 'cancel' }));
+      store.voice = 'idle';
+      toast('mic wasn’t ready — try again');
+      render();
+      return;
+    }
     if (audio) audio.ctx.suspend();
     if (vws && vws.readyState === WebSocket.OPEN) vws.send(JSON.stringify({ type: 'end' }));
     else store.voice = 'idle';
+  };
+
+  // talkToggle is the ⇪ binding: tap to start, tap to stop. Toggle (not
+  // hold) because macOS never reports Caps Lock release — keydown fires
+  // when the lock engages and keyup when it disengages, so "held" is
+  // undetectable there; a tap cycle behaves identically everywhere.
+  const talkToggle = () => {
+    if (store.voice === 'off') return;
+    if (store.voice === 'recording') { stopTalk(); return; }
+    if (store.voice !== 'idle') return; // transcribing — let it finish
+    if (store.box === 'hidden') setBox('prompt');
+    startTalk();
   };
 
   // ---------- UI -----------------------------------------------------------
@@ -545,11 +576,11 @@
   <textarea rows="1" placeholder="Ask anything…"></textarea>
   <div class="bar">
     <button class="ib sel" title="Select an element (Alt+S)">⌖</button>
-    <button class="ib mic" title="Hold to talk (Alt+V)">🎙</button>
+    <button class="ib mic" title="Tap ⇪ to talk (or hold this button)">🎙</button>
     <span class="micLevel" style="display:none"></span>
     <button class="ib send" title="Send (Enter)">↑</button>
   </div>
-  <div class="hint"><kbd>⇪</kbd> toggle · hold <kbd>⌘</kbd> select · hold <kbd>space</kbd> talk · <kbd>Esc</kbd> hide</div>
+  <div class="hint"><kbd>⌘E</kbd> toggle · <kbd>⇪</kbd> talk on/off · hold <kbd>⌘</kbd> select · <kbd>Esc</kbd> hide</div>
 </div>
 <div class="hl"></div><div class="hll"></div><div class="toast"></div>`;
 
@@ -742,11 +773,8 @@
   });
   ui.input.addEventListener('input', syncComposerHeight);
 
-  // Keybindings: ⇪ toggles the box · hold Space = push-to-talk · hold
-  // ⌘/⌃ = momentary element-select · Esc leaves inspect / hides.
-  const realTarget = (e) => (e.composedPath ? e.composedPath()[0] : e.target);
-  const isEditable = (el) => !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName || ''));
-  const capsToggle = () => setBox(store.box === 'hidden' ? 'prompt' : 'hidden');
+  // Keybindings: ⌘E/⌃E toggles the box · ⇪ taps dictation on/off ·
+  // hold ⌘/⌃ = momentary element-select · Esc leaves inspect / hides.
 
   // Momentary select: entering on the modifier's bare keydown would
   // flash the crosshair on every ⌘C/⌘R/⌘T, so inspect only engages
@@ -759,7 +787,7 @@
 
   window.addEventListener('keydown', (e) => {
     if (e.code === 'CapsLock') {
-      if (!e.repeat) capsToggle();
+      if (!e.repeat) talkToggle();
       return; // the OS lock state changes regardless; nothing to prevent
     }
     if (e.key === 'Meta' || e.key === 'Control') {
@@ -774,19 +802,11 @@
     }
     cancelModHold(); // some other key while the modifier was held: it's a shortcut
 
-    if (e.code === 'Space' && store.box !== 'hidden' && store.voice !== 'off') {
-      // Space types a space wherever there is typing intent: any
-      // editable element with content, including the guest app's own
-      // inputs. An EMPTY composer (or non-editable focus) means the
-      // user isn't writing — hold-to-talk takes the key.
-      const t = realTarget(e);
-      const typing = isEditable(t) && !(t === ui.input && !ui.input.value);
-      if (!typing) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (!e.repeat) startTalk();
-        return;
-      }
+    if (e.code === 'KeyE' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+      e.preventDefault(); // ⌘E is the browser's "use selection for find" — expendable
+      e.stopPropagation();
+      if (!e.repeat) setBox(store.box === 'hidden' ? 'prompt' : 'hidden');
+      return;
     }
     if (e.key === 'Escape') {
       if (store.inspect) { e.preventDefault(); e.stopPropagation(); modInspect = false; exitInspect(); }
@@ -797,15 +817,13 @@
   window.addEventListener('keyup', (e) => {
     if (e.code === 'CapsLock') {
       // macOS reports the lock-off press as keyup only (no keydown).
-      if (IS_MAC) capsToggle();
+      if (IS_MAC) talkToggle();
       return;
     }
     if (e.key === 'Meta' || e.key === 'Control') {
       cancelModHold();
       if (modInspect) { modInspect = false; exitInspect(); }
-      return;
     }
-    if (e.code === 'Space' && store.voice === 'recording') { e.preventDefault(); stopTalk(); }
   }, true);
 
   const mount = () => (document.body ? document.body.appendChild(host) : requestAnimationFrame(mount));
