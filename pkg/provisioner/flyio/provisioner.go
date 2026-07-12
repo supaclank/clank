@@ -118,6 +118,12 @@ type Options struct {
 	// authenticate these calls, so NotifierWebhookURL must also be set.
 	PreviewWebhookURL string
 
+	// TemplatesJSON, when non-empty, is forwarded to clank-host as
+	// --templates-json: the builtin half of its GET /templates catalog.
+	// A change here drifts the service args and recreates the service
+	// on the next EnsureHost — how template-catalog updates roll out.
+	TemplatesJSON string
+
 	// SDKClient overrides the sprites.Client constructor for tests.
 	SDKClient *sprites.Client
 }
@@ -916,7 +922,7 @@ echo "::: done — claude -> $BUN_CLAUDE (version $PINNED)"
 // case where a flag rename would crash-loop the service across the
 // hibernate/wake cycle and the edge would serve 404s.
 func (p *Provisioner) ensureServiceRunning(ctx context.Context, sprite *sprites.Sprite, tokens hostTokens, forceRecreate bool) error {
-	wantReq := buildServiceRequest(tokens, p.opts.NotifierWebhookURL, p.opts.PreviewWebhookURL, p.opts.GitHubOAuthClientID)
+	wantReq := buildServiceRequest(tokens, p.opts.NotifierWebhookURL, p.opts.PreviewWebhookURL, p.opts.GitHubOAuthClientID, p.opts.TemplatesJSON)
 
 	var existing *sprites.ServiceWithState
 	var existingErr error
@@ -968,7 +974,7 @@ func (p *Provisioner) ensureServiceRunning(ctx context.Context, sprite *sprites.
 // token, so it only takes effect alongside the notifier flags).
 // githubOAuthClientID likewise conditionally adds --github-oauth-client-id;
 // empty leaves GitHub Connect disabled on the sprite.
-func buildServiceRequest(tokens hostTokens, webhookURL, previewWebhookURL, githubOAuthClientID string) *sprites.ServiceRequest {
+func buildServiceRequest(tokens hostTokens, webhookURL, previewWebhookURL, githubOAuthClientID, templatesJSON string) *sprites.ServiceRequest {
 	port := HostPort
 	args := []string{
 		"--listen", fmt.Sprintf("tcp://[::]:%d", HostPort),
@@ -991,6 +997,12 @@ func buildServiceRequest(tokens hostTokens, webhookURL, previewWebhookURL, githu
 	}
 	if githubOAuthClientID != "" {
 		args = append(args, "--github-oauth-client-id", githubOAuthClientID)
+	}
+	if templatesJSON != "" {
+		// Builtin create-project templates. Deliberately NOT wildcarded
+		// in the args diff: a catalog change should recreate the service
+		// so the new list serves immediately.
+		args = append(args, "--templates-json", templatesJSON)
 	}
 	return &sprites.ServiceRequest{
 		Cmd:      installPath,

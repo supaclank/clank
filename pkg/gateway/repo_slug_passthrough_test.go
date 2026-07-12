@@ -24,7 +24,7 @@ func TestImportProject_RepoSlugPassesThrough(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	gw := newProjectsGateway(t, srv, nil)
+	gw := newProjectsGateway(t, srv)
 
 	resp := postJSON(t, gw.URL+"/v1/projects/import", `{"owner":"acme","repo":"api"}`)
 	defer resp.Body.Close()
@@ -45,9 +45,9 @@ func TestCreateProject_RepoSlugPassesThrough(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	gw := newProjectsGateway(t, srv, []Template{{ID: "expo", DisplayName: "Expo", CloneURL: "https://example.test/t.git"}})
+	gw := newProjectsGateway(t, srv)
 
-	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"template":"expo","name":"My App"}`)
+	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"clone_url":"https://example.test/t.git","name":"My App"}`)
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), `"repo_slug":"My-App"`) {

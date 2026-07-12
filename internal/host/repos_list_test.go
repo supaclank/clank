@@ -23,7 +23,7 @@ func TestListRepos_ReposAndWorktrees(t *testing.T) {
 		t.Fatalf("import feature: %v", err)
 	}
 	templateURL, _ := makeTemplateRepo(t)
-	if _, err := svc.CreateProjectFromTemplate(ctx, templateURL, "My App"); err != nil {
+	if _, err := svc.CreateProjectFromTemplate(ctx, templateURL, "", "My App"); err != nil {
 		t.Fatalf("scaffold: %v", err)
 	}
 

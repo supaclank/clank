@@ -454,7 +454,7 @@ func TestRepoOverview_GreenfieldAndUnknown(t *testing.T) {
 		t.Fatal("unknown slug: err = nil, want ErrRepoNotFound")
 	}
 
-	created, err := svc.CreateProjectFromTemplate(context.Background(), templateURL, "Solo")
+	created, err := svc.CreateProjectFromTemplate(context.Background(), templateURL, "", "Solo")
 	if err != nil {
 		t.Fatal(err)
 	}

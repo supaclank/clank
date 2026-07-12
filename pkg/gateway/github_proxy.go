@@ -28,14 +28,20 @@ const hostGitHubTimeout = 30 * time.Second
 // hard-reject with 413 instead.
 const maxGitHubProxyBody = 1 << 20
 
-// proxyHostGitHub forwards r to <hostURL><hostPath><?rawQuery>.
-// Preserves the request method, copies the body, the response
-// status, the JSON content-type, and the response body verbatim.
+// proxyHostGitHub forwards r to <hostURL><hostPath><?rawQuery> with
+// the standard GitHub-call timeout. See proxyHost.
+func (g *Gateway) proxyHostGitHub(w http.ResponseWriter, r *http.Request, hostPath string) bool {
+	return g.proxyHost(w, r, hostPath, hostGitHubTimeout)
+}
+
+// proxyHost forwards r to <hostURL><hostPath><?rawQuery>. Preserves
+// the request method, copies the body, the response status, the JSON
+// content-type, and the response body verbatim.
 //
 // Returns false when authentication or host resolution failed —
 // the caller's handler should return immediately in that case (the
 // response has already been written).
-func (g *Gateway) proxyHostGitHub(w http.ResponseWriter, r *http.Request, hostPath string) bool {
+func (g *Gateway) proxyHost(w http.ResponseWriter, r *http.Request, hostPath string, timeout time.Duration) bool {
 	principal, ok := auth.PrincipalFrom(r.Context())
 	if !ok || principal.UserID == "" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -75,7 +81,7 @@ func (g *Gateway) proxyHostGitHub(w http.ResponseWriter, r *http.Request, hostPa
 		req.Header.Set("Content-Type", ct)
 	}
 
-	cli := &http.Client{Transport: ref.Transport, Timeout: hostGitHubTimeout}
+	cli := &http.Client{Transport: ref.Transport, Timeout: timeout}
 	resp, err := cli.Do(req)
 	if err != nil {
 		g.log.Printf("gateway github %s: host call: %v", hostPath, err)

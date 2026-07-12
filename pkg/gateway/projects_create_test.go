@@ -1,10 +1,8 @@
 package gateway
 
 import (
-	"bytes"
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,60 +14,65 @@ import (
 
 const projUser = "tester"
 
-// scaffoldingSprite stands in for the host's POST /projects/create. It
-// records the clone_url it received and returns a CreateWorktreeResult.
-type scaffoldingSprite struct {
+// templatesHost stands in for the host's template surface: the catalog
+// listing and the create endpoint, recording what the proxy forwarded.
+type templatesHost struct {
 	gotCloneURL atomic.Value // string
 	gotName     atomic.Value // string
-	calls       int32
-	worktreeID  string
 }
 
-func (s *scaffoldingSprite) server(t *testing.T) *httptest.Server {
+func (h *templatesHost) server(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /templates", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"display_name":"Expo app","clone_url":"https://templates.example/expo.git","source":"builtin"},
+			{"display_name":"acme/tpl","clone_url":"https://github.example/acme/tpl.git","source":"github","description":"Mine"}
+		]`))
+	})
 	mux.HandleFunc("POST /projects/create", func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&s.calls, 1)
 		var body struct {
 			CloneURL string `json:"clone_url"`
 			Name     string `json:"name"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		s.gotCloneURL.Store(body.CloneURL)
-		s.gotName.Store(body.Name)
+		h.gotCloneURL.Store(body.CloneURL)
+		h.gotName.Store(body.Name)
+		if body.CloneURL == "" || body.Name == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":"invalid_argument","error":"clone_url and name are required"}`))
+			return
+		}
+		if strings.Contains(body.CloneURL, "unclonable") {
+			// The host's typed, sanitized clone failure — must forward
+			// verbatim through the proxy.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"code":"template_clone_failed","error":"host: template clone failed"}`))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"worktree_id":  s.worktreeID,
-			"branch":       "main",
-			"worktree_dir": "/work/" + s.worktreeID,
-			"display_name": body.Name,
-			"origin_repo":  body.Name,
-		})
+		_ = json.NewEncoder(w).Encode(map[string]string{"worktree_id": "01PROJWT", "display_name": body.Name})
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
 }
 
-// newProjectsGateway builds a gateway with the given template catalog,
-// pointing its provisioner at sprite. The host filesystem is the repo
-// registry — there is no gateway-side store to wire.
-func newProjectsGateway(t *testing.T, sprite *httptest.Server, templates []Template) *httptest.Server {
-	t.Helper()
-	return newProjectsGatewayWithLogger(t, sprite, templates, nil)
-}
-
-// newProjectsGatewayWithLogger is newProjectsGateway with an injectable
-// logger, for tests asserting on (or withholding secrets from) log output.
-func newProjectsGatewayWithLogger(t *testing.T, sprite *httptest.Server, templates []Template, lg *log.Logger) *httptest.Server {
+// newProjectsGateway wires a gateway whose provisioner points at the
+// stub host. Templates are entirely the host's business now — there is
+// no gateway-side catalog to configure.
+func newProjectsGateway(t *testing.T, sprite *httptest.Server) *httptest.Server {
 	t.Helper()
 	var ref provisioner.HostRef
 	if sprite != nil {
 		ref = provisioner.HostRef{URL: sprite.URL}
 	}
 	prov := &stubProvisioner{ref: ref}
-	g, err := NewGateway(Config{Provisioner: prov, Templates: templates}, lg)
+	g, err := NewGateway(Config{Provisioner: prov}, nil)
 	if err != nil {
 		t.Fatalf("NewGateway: %v", err)
 	}
@@ -87,70 +90,79 @@ func postJSON(t *testing.T, url, body string) *http.Response {
 	return resp
 }
 
-func TestCreateProject_HappyPath(t *testing.T) {
+// The gateway is a pure proxy for the catalog: entries — clone URLs
+// included — pass through verbatim, because clients pick an entry and
+// send its clone_url back to create.
+func TestListTemplates_ProxiesHostCatalog(t *testing.T) {
 	t.Parallel()
-	const cloneURL = "https://example.test/templates/expo.git"
-	sprite := &scaffoldingSprite{worktreeID: "01PROJWT"}
-	gw := newProjectsGateway(t, sprite.server(t), []Template{
-		{ID: "expo", DisplayName: "Expo app", CloneURL: cloneURL},
-	})
+	h := &templatesHost{}
+	gw := newProjectsGateway(t, h.server(t))
 
-	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"template":"expo","name":"my-app"}`)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("status = %d, want 201", resp.StatusCode)
-	}
-
-	// The host received the resolved clone URL, never the template id.
-	if got := sprite.gotCloneURL.Load(); got != cloneURL {
-		t.Fatalf("host clone_url = %v, want %q", got, cloneURL)
-	}
-
-	// The host's CreateWorktreeResult forwards verbatim.
-	var out map[string]string
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	resp, err := http.Get(gw.URL + "/v1/templates")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if out["worktree_id"] != "01PROJWT" || out["display_name"] != "my-app" {
-		t.Fatalf("unexpected body: %+v", out)
-	}
-}
-
-func TestCreateProject_UnknownTemplate(t *testing.T) {
-	t.Parallel()
-	sprite := &scaffoldingSprite{worktreeID: "x"}
-	gw := newProjectsGateway(t, sprite.server(t), []Template{
-		{ID: "expo", DisplayName: "Expo", CloneURL: "https://example.test/expo.git"},
-	})
-
-	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"template":"nope","name":"app"}`)
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404 for unknown template", resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
 	}
-	if n := atomic.LoadInt32(&sprite.calls); n != 0 {
-		t.Fatalf("host calls = %d, want 0 (resolution fails before the host)", n)
+	var got []struct {
+		DisplayName string `json:"display_name"`
+		CloneURL    string `json:"clone_url"`
+		Source      string `json:"source"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode: %v (%s)", err, body)
+	}
+	if len(got) != 2 || got[0].CloneURL != "https://templates.example/expo.git" || got[1].Source != "github" {
+		t.Fatalf("catalog not forwarded verbatim: %+v", got)
 	}
 }
 
-func TestCreateProject_MissingFields(t *testing.T) {
+func TestCreateProject_ForwardsCloneURL(t *testing.T) {
 	t.Parallel()
-	gw := newProjectsGateway(t, (&scaffoldingSprite{}).server(t), nil)
-	for _, body := range []string{`{"name":"app"}`, `{"template":"expo"}`, `{}`} {
-		resp := postJSON(t, gw.URL+"/v1/projects/create", body)
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Errorf("body %s: status = %d, want 400", body, resp.StatusCode)
-		}
-		resp.Body.Close()
+	h := &templatesHost{}
+	gw := newProjectsGateway(t, h.server(t))
+
+	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"clone_url":"https://templates.example/expo.git","name":"my-app"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if got := h.gotCloneURL.Load(); got != "https://templates.example/expo.git" {
+		t.Fatalf("host clone_url = %v", got)
+	}
+	if got := h.gotName.Load(); got != "my-app" {
+		t.Fatalf("host name = %v", got)
 	}
 }
 
+// The host's typed errors — the whole point of the sanitized
+// template_clone_failed design — must reach clients verbatim.
+func TestCreateProject_ForwardsTypedHostErrors(t *testing.T) {
+	t.Parallel()
+	h := &templatesHost{}
+	gw := newProjectsGateway(t, h.server(t))
+
+	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"clone_url":"https://templates.example/unclonable.git","name":"x"}`)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "template_clone_failed") {
+		t.Fatalf("typed error not forwarded: %s", body)
+	}
+}
+
+// Without an authenticated principal, the proxy answers 401 before
+// touching the provisioner or the host.
 func TestCreateProject_Unauthenticated(t *testing.T) {
 	t.Parallel()
-	g, err := NewGateway(Config{
-		Provisioner: &stubProvisioner{ref: provisioner.HostRef{URL: "http://unused"}},
-		Templates:   []Template{{ID: "expo", DisplayName: "Expo", CloneURL: "https://example.test/expo.git"}},
-	}, nil)
+	h := &templatesHost{}
+	g, err := NewGateway(Config{Provisioner: &stubProvisioner{ref: provisioner.HostRef{URL: h.server(t).URL}}}, nil)
 	if err != nil {
 		t.Fatalf("NewGateway: %v", err)
 	}
@@ -158,164 +170,12 @@ func TestCreateProject_Unauthenticated(t *testing.T) {
 	gw := httptest.NewServer(g.Handler())
 	t.Cleanup(gw.Close)
 
-	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"template":"expo","name":"app"}`)
+	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"clone_url":"https://x.test/y.git","name":"x"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401 without a principal", resp.StatusCode)
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
 	}
-}
-
-func TestListTemplates(t *testing.T) {
-	t.Parallel()
-	gw := newProjectsGateway(t, (&scaffoldingSprite{}).server(t), []Template{
-		{ID: "expo", DisplayName: "Expo app", CloneURL: "https://secret.test/expo.git"},
-	})
-
-	resp, err := http.Get(gw.URL + "/v1/templates")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-	var out []map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		t.Fatal(err)
-	}
-	if len(out) != 1 || out[0]["id"] != "expo" || out[0]["display_name"] != "Expo app" {
-		t.Fatalf("unexpected catalog: %+v", out)
-	}
-	// Clone URLs must never leak to clients.
-	if _, leaked := out[0]["clone_url"]; leaked {
-		t.Fatalf("clone_url leaked in catalog: %+v", out[0])
-	}
-}
-
-func TestListTemplates_Unauthenticated(t *testing.T) {
-	t.Parallel()
-	g, err := NewGateway(Config{
-		Provisioner: &stubProvisioner{ref: provisioner.HostRef{URL: "http://unused"}},
-		Templates:   []Template{{ID: "expo", DisplayName: "Expo", CloneURL: "https://secret.test/expo.git"}},
-	}, nil)
-	if err != nil {
-		t.Fatalf("NewGateway: %v", err)
-	}
-	gw := httptest.NewServer(g.Handler())
-	t.Cleanup(gw.Close)
-
-	resp, err := http.Get(gw.URL + "/v1/templates")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401 without a principal", resp.StatusCode)
-	}
-}
-
-func TestCreateProject_HostErrorDoesNotLeakDetails(t *testing.T) {
-	t.Parallel()
-	const sensitiveURL = "https://token@internal.test/template.git"
-	// Sprite that simulates a clone failure — error body includes clone URL detail.
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /projects/create", func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "clone template: git clone: "+sensitiveURL+": exit status 128", http.StatusInternalServerError)
-	})
-	sprite := httptest.NewServer(mux)
-	t.Cleanup(sprite.Close)
-
-	gw := newProjectsGateway(t, sprite, []Template{
-		{ID: "expo", DisplayName: "Expo", CloneURL: sensitiveURL},
-	})
-
-	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"template":"expo","name":"app"}`)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Fatalf("status = %d, want 502", resp.StatusCode)
-	}
-	body, _ := io.ReadAll(resp.Body)
-	if strings.Contains(string(body), sensitiveURL) {
-		t.Fatalf("host error details leaked in gateway 502 body: %q", body)
-	}
-}
-
-// The 5xx body withheld from clients (previous test) must also stay out
-// of server logs — it can carry the resolved clone URL, credentials and
-// all.
-func TestCreateProject_HostErrorDoesNotLeakDetailsInLogs(t *testing.T) {
-	t.Parallel()
-	const sensitiveURL = "https://token@internal.test/template.git"
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /projects/create", func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "clone template: git clone: "+sensitiveURL+": exit status 128", http.StatusInternalServerError)
-	})
-	sprite := httptest.NewServer(mux)
-	t.Cleanup(sprite.Close)
-
-	var logBuf bytes.Buffer
-	gw := newProjectsGatewayWithLogger(t, sprite, []Template{
-		{ID: "expo", DisplayName: "Expo", CloneURL: sensitiveURL},
-	}, log.New(&logBuf, "", 0))
-
-	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"template":"expo","name":"app"}`)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Fatalf("status = %d, want 502", resp.StatusCode)
-	}
-	if strings.Contains(logBuf.String(), sensitiveURL) {
-		t.Fatalf("host error details leaked into gateway logs: %q", logBuf.String())
-	}
-}
-
-// A host non-2xx must arrive at the client VERBATIM (status + typed
-// body), not flattened to a generic 502 — the regression the repo-first
-// cutover fixed for this route (mirrors projects_import.go's contract).
-func TestCreateProject_ForwardsHostErrorVerbatim(t *testing.T) {
-	t.Parallel()
-	const cloneURL = "https://example.test/templates/expo.git"
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /projects/create", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"code":"invalid_argument","error":"template not found in catalog"}`))
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	gw := newProjectsGateway(t, srv, []Template{{ID: "expo", DisplayName: "Expo", CloneURL: cloneURL}})
-
-	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"template":"expo","name":"x"}`)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 forwarded verbatim (not 502)", resp.StatusCode)
-	}
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "invalid_argument") {
-		t.Errorf("body = %q, want the host's typed error forwarded", body)
-	}
-}
-
-// A host 401 is the host's OWN auth middleware rejecting the gateway's
-// credentials (an infra failure) — never the client's session. Forwarding
-// it verbatim would falsely tell the client its gateway session expired,
-// so it must mask to 502 like any other 5xx, unlike other 4xx which
-// forward verbatim (TestCreateProject_ForwardsHostErrorVerbatim).
-func TestCreateProject_MasksHostUnauthorized(t *testing.T) {
-	t.Parallel()
-	const cloneURL = "https://example.test/templates/expo.git"
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /projects/create", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	gw := newProjectsGateway(t, srv, []Template{{ID: "expo", DisplayName: "Expo", CloneURL: cloneURL}})
-
-	resp := postJSON(t, gw.URL+"/v1/projects/create", `{"template":"expo","name":"x"}`)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Fatalf("status = %d, want 502 (host 401 masked, not forwarded)", resp.StatusCode)
+	if h.gotCloneURL.Load() != nil {
+		t.Fatal("unauthenticated request reached the host")
 	}
 }

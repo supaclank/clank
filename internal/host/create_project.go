@@ -38,11 +38,12 @@ const (
 // the bare canonical over the filesystem — `git worktree add --orphan`
 // would be simpler but needs git ≥ 2.42, newer than our runtime floor.
 //
-// cloneURL is supplied by the gateway from its configured template
-// catalog; the host treats it as opaque and never accepts a client-
-// supplied URL directly. name becomes the display name, the label, and
-// (sanitized) the slug.
-func (s *Service) CreateProjectFromTemplate(ctx context.Context, cloneURL, name string) (CreateWorktreeResult, error) {
+// cloneURL comes from one of two trusted resolvers — the gateway's
+// operator catalog, or the host's own GitHub-template resolution (mux) —
+// never a raw client URL. githubToken authenticates the template clone
+// for private repos; empty for public/builtin templates. name becomes
+// the display name, the label, and (sanitized) the slug.
+func (s *Service) CreateProjectFromTemplate(ctx context.Context, cloneURL, githubToken, name string) (CreateWorktreeResult, error) {
 	if cloneURL == "" {
 		return CreateWorktreeResult{}, fmt.Errorf("%w: clone_url is required", ErrInvalidArgument)
 	}
@@ -61,7 +62,7 @@ func (s *Service) CreateProjectFromTemplate(ctx context.Context, cloneURL, name 
 
 	defer s.lockRepo(slug)()
 
-	if err := s.scaffoldCanonical(ctx, gitDir, cloneURL, name); err != nil {
+	if err := s.scaffoldCanonical(ctx, gitDir, cloneURL, githubToken, name); err != nil {
 		// Roll back so a retry doesn't find a half-initialized canonical
 		// (slugForName would otherwise suffix -2 on the corpse).
 		if rmErr := os.RemoveAll(filepath.Dir(gitDir)); rmErr != nil {
@@ -88,7 +89,7 @@ func (s *Service) CreateProjectFromTemplate(ctx context.Context, cloneURL, name 
 // committer identity (shared by all its worktrees' commits), the
 // display label, and the credential helper (dormant until publish wires
 // an origin, then agent-run git + future fetches authenticate).
-func (s *Service) scaffoldCanonical(ctx context.Context, gitDir, cloneURL, name string) error {
+func (s *Service) scaffoldCanonical(ctx context.Context, gitDir, cloneURL, githubToken, name string) error {
 	if err := os.MkdirAll(filepath.Dir(gitDir), 0o755); err != nil {
 		return fmt.Errorf("create canonical dir: %w", err)
 	}
@@ -122,8 +123,16 @@ func (s *Service) scaffoldCanonical(ctx context.Context, gitDir, cloneURL, name 
 		}
 	}()
 	seed := filepath.Join(tmp, "seed")
-	if err := git.Clone(ctx, cloneURL, seed); err != nil {
-		return fmt.Errorf("clone template: %w", err)
+	// CloneShallowKeepRemote for the token plumbing (inline credential
+	// helper, private github templates); the kept .git/origin is stripped
+	// right below, same as before.
+	if err := git.CloneShallowKeepRemote(ctx, cloneURL, seed, githubToken, ""); err != nil {
+		// Full git error (which echoes the clone URL, possibly with
+		// embedded credentials) goes to the server log ONLY; the
+		// returned error is a sanitized sentinel the mux maps to a
+		// typed, client-safe response instead of an opaque 500.
+		s.log.Printf("create-project: clone template failed: %v", err)
+		return fmt.Errorf("%w: git clone failed — check that the template repository exists and is reachable", ErrTemplateCloneFailed)
 	}
 	// Drop the template's history + origin so the new project is a clean
 	// local repo the agent owns from commit one.

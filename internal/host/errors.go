@@ -62,4 +62,12 @@ var (
 	// code the client can act on (refresh the repo list) vs a missing
 	// branch/worktree inside a repo that does exist.
 	ErrRepoNotFound = errors.New("host: repo not found")
+
+	// ErrTemplateCloneFailed is returned when CreateProjectFromTemplate
+	// can't clone the template repository. The message is deliberately
+	// URL-free (clone URLs can embed credentials); the full git error
+	// lands in the host's server log only. The mux maps this to a typed
+	// template_clone_failed response so clients see an actionable error
+	// instead of a masked 502.
+	ErrTemplateCloneFailed = errors.New("host: template clone failed")
 )

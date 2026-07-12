@@ -21,6 +21,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -78,6 +79,7 @@ func main() {
 	githubOAuthClientID := flag.String("github-oauth-client-id", os.Getenv("CLANK_GITHUB_OAUTH_CLIENT_ID"), "Clank GitHub OAuth App client_id, used for the GitHub Connect device flow. Empty disables GitHub Connect on this host. Defaults to $CLANK_GITHUB_OAUTH_CLIENT_ID.")
 	projectCommitterName := flag.String("project-committer-name", os.Getenv("CLANK_PROJECT_COMMITTER_NAME"), "Git committer name stamped on a scaffolded project's seed commit. Empty uses a neutral default. Defaults to $CLANK_PROJECT_COMMITTER_NAME.")
 	projectCommitterEmail := flag.String("project-committer-email", os.Getenv("CLANK_PROJECT_COMMITTER_EMAIL"), "Git committer email stamped on a scaffolded project's seed commit. Empty uses a neutral default. Defaults to $CLANK_PROJECT_COMMITTER_EMAIL.")
+	templatesJSON := flag.String("templates-json", os.Getenv("CLANK_TEMPLATES"), "JSON array of builtin create-project templates ([{\"display_name\":...,\"clone_url\":...}]). Served by GET /templates alongside the user's GitHub template repos. Empty disables builtin templates. Defaults to $CLANK_TEMPLATES.")
 	localFileAttachments := flag.Bool("local-file-attachments", false, "Honor file:// image attachment sources (the client shares this host's filesystem). Set by the local laptop provisioner; off for remote sprites so a message can't make the host read arbitrary local paths.")
 	flag.Parse()
 
@@ -113,6 +115,7 @@ func main() {
 	}
 	cfg := runConfig{
 		addr:                  addr,
+		templatesJSON:         *templatesJSON,
 		listenAuthToken:       *listenAuthToken,
 		dataDir:               *dataDir,
 		keepaliveProvider:     *keepaliveProvider,
@@ -136,6 +139,7 @@ func main() {
 // without touching every test".
 type runConfig struct {
 	addr                  string
+	templatesJSON         string
 	listenAuthToken       string
 	dataDir               string
 	keepaliveProvider     string
@@ -305,12 +309,18 @@ func run(cfg runConfig) error {
 	// been told about the gateway yet.
 	gwClient := preview.NewGWClient(cfg.previewWebhookURL, cfg.notifierWebhookToken)
 
+	templates, err := parseTemplatesJSON(cfg.templatesJSON)
+	if err != nil {
+		return fmt.Errorf("parse --templates-json: %w", err)
+	}
+
 	svc := host.New(host.Options{
 		BackendManagers: map[agent.BackendType]agent.BackendManager{
 			agent.BackendOpenCode:   host.NewOpenCodeBackendManager(),
 			agent.BackendClaudeCode: host.NewClaudeBackendManager(),
 		},
 		Log:                   lg,
+		Templates:             templates,
 		SessionsStore:         hostStore,
 		KeepaliveListener:     keepaliveListener,
 		NotifierLoop:          notifierLoop,
@@ -410,4 +420,24 @@ func openListener(addr string) (net.Listener, string, string, error) {
 	default:
 		return nil, "", "", fmt.Errorf("unsupported listen address %q (want tcp:// or unix://)", addr)
 	}
+}
+
+// parseTemplatesJSON decodes the builtin-template catalog. Empty input
+// means no builtin templates; malformed input or entries missing a
+// display name or clone URL fail startup — a silently-empty picker is
+// exactly the misconfiguration this refuses to hide.
+func parseTemplatesJSON(raw string) ([]host.Template, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	var templates []host.Template
+	if err := json.Unmarshal([]byte(raw), &templates); err != nil {
+		return nil, err
+	}
+	for i, t := range templates {
+		if t.DisplayName == "" || t.CloneURL == "" {
+			return nil, fmt.Errorf("template %d: display_name and clone_url are required", i)
+		}
+	}
+	return templates, nil
 }
