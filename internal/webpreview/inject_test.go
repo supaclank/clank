@@ -1,6 +1,7 @@
 package webpreview
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -48,5 +49,29 @@ func TestInjectHTML(t *testing.T) {
 
 	if got := injectHTML(nil, snip); len(got) != 0 {
 		t.Fatalf("empty body must stay empty, got %q", got)
+	}
+}
+
+// TestInjectHTMLHandlesMultiByteCaseFolding pins a corruption bug: the
+// Kelvin sign (U+212A, 3 UTF-8 bytes) lowercases to 'k' (1 byte), so a
+// bytes.ToLower-based search desyncs its match index from the original
+// buffer and injects at the wrong offset.
+func TestInjectHTMLHandlesMultiByteCaseFolding(t *testing.T) {
+	t.Parallel()
+	snip := []byte("<script>X</script>")
+	in := []byte("<html><head>K</head><body>b</body></html>")
+
+	out := injectHTML(in, snip)
+	idx := bytes.Index(out, snip)
+	if idx < 0 {
+		t.Fatalf("snippet not found: %q", out)
+	}
+	rest := out[idx+len(snip):]
+	if !bytes.HasPrefix(rest, []byte("\n</head>")) {
+		t.Fatalf("snippet must land immediately before </head>, got %q", rest)
+	}
+	reconstructed := append(append([]byte{}, out[:idx]...), rest[1:]...)
+	if !bytes.Equal(reconstructed, in) {
+		t.Fatalf("injection corrupted the body:\n got  %q\n want %q", reconstructed, in)
 	}
 }

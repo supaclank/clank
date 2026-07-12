@@ -46,6 +46,11 @@ type SherpaEngine struct {
 // defaultReadyTimeout allows for a cold Parakeet load on a busy laptop.
 const defaultReadyTimeout = 180 * time.Second
 
+// deliverBlockTimeout bounds how long deliver waits to hand a load-bearing
+// Final/Err result to a stalled consumer before dropping it. Held under
+// sinkMu, so unbounded blocking here would deadlock against Close's detach.
+const deliverBlockTimeout = 1 * time.Second
+
 // NewSherpaEngine returns an engine driving bin with the standard
 // production arguments.
 func NewSherpaEngine(bin, modelsDir string, lg *log.Logger) *SherpaEngine {
@@ -241,7 +246,14 @@ func (p *voiceProc) deliver(r Result) {
 		if !r.Final && r.Err == nil {
 			return
 		}
-		p.sink <- r // block only for finals/errors — they are load-bearing
+		// Finals/errors are load-bearing, but blocking here holds sinkMu
+		// and would deadlock against Close's detach(); give the reader a
+		// grace window, then drop.
+		select {
+		case p.sink <- r:
+		case <-time.After(deliverBlockTimeout):
+			p.log.Printf("webpreview: deliver blocked past %s, dropping result: %+v", deliverBlockTimeout, r)
+		}
 	}
 }
 

@@ -2,6 +2,7 @@ package webpreview
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -12,8 +13,77 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 )
+
+// spyReadCloser records whether Close was called, so tests can assert
+// readUpTo releases the upstream body instead of leaking the connection.
+type spyReadCloser struct {
+	io.Reader
+	closed bool
+}
+
+func (s *spyReadCloser) Close() error {
+	s.closed = true
+	return nil
+}
+
+func TestReadUpToClosesBodyWhenFullyBuffered(t *testing.T) {
+	t.Parallel()
+	rc := &spyReadCloser{Reader: strings.NewReader("hello")}
+	body, overflow, err := readUpTo(rc, 100)
+	if err != nil {
+		t.Fatalf("readUpTo: %v", err)
+	}
+	if overflow != nil {
+		t.Fatalf("want no overflow reader for a body under the limit")
+	}
+	if string(body) != "hello" {
+		t.Fatalf("body = %q, want %q", body, "hello")
+	}
+	if !rc.closed {
+		t.Errorf("original body must be closed once fully buffered, to release the upstream connection")
+	}
+}
+
+func TestReadUpToClosesBodyOnReadError(t *testing.T) {
+	t.Parallel()
+	rc := &spyReadCloser{Reader: iotest.ErrReader(errors.New("boom"))}
+	if _, _, err := readUpTo(rc, 100); err == nil {
+		t.Fatalf("want a read error")
+	}
+	if !rc.closed {
+		t.Errorf("original body must be closed on read error")
+	}
+}
+
+func TestReadUpToLeavesOverflowBodyOpenUntilCallerCloses(t *testing.T) {
+	t.Parallel()
+	rc := &spyReadCloser{Reader: strings.NewReader(strings.Repeat("x", 50))}
+	body, overflow, err := readUpTo(rc, 10)
+	if err != nil {
+		t.Fatalf("readUpTo: %v", err)
+	}
+	if body != nil {
+		t.Fatalf("want nil body when overflowing the limit")
+	}
+	if overflow == nil {
+		t.Fatalf("want an overflow reader")
+	}
+	if rc.closed {
+		t.Fatalf("must not close the body while the overflow reader still wraps it")
+	}
+	if _, err := io.ReadAll(overflow); err != nil {
+		t.Fatalf("drain overflow: %v", err)
+	}
+	if err := overflow.Close(); err != nil {
+		t.Fatalf("close overflow: %v", err)
+	}
+	if !rc.closed {
+		t.Errorf("closing the overflow reader must close the underlying body")
+	}
+}
 
 // startTestStack wires a fake Vite upstream and a fake daemon on a unix
 // socket behind a real proxy Server, mirroring production topology.

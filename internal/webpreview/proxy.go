@@ -275,18 +275,21 @@ func serveJS(body []byte) http.HandlerFunc {
 // the caller can stream the response through unmodified.
 func readUpTo(rc io.ReadCloser, limit int) ([]byte, io.ReadCloser, error) {
 	var buf bytes.Buffer
-	n, err := io.CopyN(&buf, rc, int64(limit)+1)
+	_, err := io.CopyN(&buf, rc, int64(limit)+1)
 	if err == io.EOF {
+		rc.Close()
 		return buf.Bytes(), nil, nil
 	}
 	if err != nil {
+		rc.Close()
 		return nil, nil, err
 	}
-	if n > int64(limit) {
-		return nil, struct {
-			io.Reader
-			io.Closer
-		}{io.MultiReader(bytes.NewReader(buf.Bytes()), rc), rc}, nil
-	}
-	return buf.Bytes(), nil, nil
+	// n == limit+1 here (CopyN only returns a nil error after copying
+	// exactly that many bytes): the body overflowed the cap. Keep rc
+	// open — it's stitched into the replacement reader below, and the
+	// caller's eventual Close on that reader closes rc in turn.
+	return nil, struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(buf.Bytes()), rc), rc}, nil
 }

@@ -153,6 +153,47 @@ func TestSherpaEngineSerializesSessions(t *testing.T) {
 	_ = s2.Close()
 }
 
+// TestSherpaEngineCloseUnblocksOnStalledConsumer pins the fix for a
+// deadlock: deliver held sinkMu while blocking on a full, undrained
+// result channel for a Final/Err result, and Close's detach() needed
+// the same lock — so a stalled reader wedged Close forever along with
+// the engine's serialization semaphore.
+func TestSherpaEngineCloseUnblocksOnStalledConsumer(t *testing.T) {
+	e := fakeEngine(t, "ok")
+	defer e.Close()
+
+	s, err := e.Open(context.Background())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	ch := s.(*sherpaSession).ch
+
+	// Fill the result buffer without draining it, so the upcoming final
+	// has nowhere to land.
+	for i := 0; i < cap(ch); i++ {
+		if err := s.Feed([]byte{byte(i)}); err != nil {
+			t.Fatalf("Feed %d: %v", i, err)
+		}
+	}
+	time.Sleep(200 * time.Millisecond) // let the pump fill the buffer
+	if err := s.End(); err != nil {
+		t.Fatalf("End: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond) // let the pump attempt (and block on) the final
+
+	done := make(chan error, 1)
+	go func() { done <- s.Close() }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("Close deadlocked behind a stalled consumer")
+	}
+}
+
 func TestSherpaEngineRecoversFromCrash(t *testing.T) {
 	e := fakeEngine(t, "crash")
 	defer e.Close()
