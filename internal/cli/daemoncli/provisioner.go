@@ -81,6 +81,11 @@ func buildLocalProvisioner() (provisioner.Provisioner, func(), error) {
 		// surface's owner-only check 404s legitimate requests as
 		// cross-tenant.
 		UserID: os.Getenv("CLANK_LOCAL_USER_ID"),
+		// Opt-in: route preview conns through clank-host's /tunnel
+		// endpoint (the machine-backend data path) instead of a
+		// direct loopback dial — lets the docker dev stack exercise
+		// the production preview path without a cloud provider.
+		TunnelInternalConn: os.Getenv("CLANK_LOCAL_TUNNEL_INTERNAL_CONN") == "true",
 	}, log.Default())
 	return prov, prov.Stop, nil
 }

@@ -67,6 +67,14 @@ type Options struct {
 	// the preview surface's owner-ship check rejects owner_only
 	// tokens as cross-tenant. Empty falls back to "local".
 	UserID string
+
+	// TunnelInternalConn routes OpenInternalConn through clank-host's
+	// /tunnel endpoint (pkg/provisioner/tunnelclient) instead of
+	// dialing 127.0.0.1 directly — the same data path machine-style
+	// cloud backends use. Off for laptop speed; turn on (e.g. in the
+	// docker dev stack) to exercise the production preview path
+	// end-to-end without a cloud provider.
+	TunnelInternalConn bool
 }
 
 // Provisioner manages a single persistent clank-host subprocess.

@@ -23,10 +23,12 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"time"
 
 	"github.com/acksell/clank/pkg/provisioner"
 	"github.com/acksell/clank/pkg/provisioner/hoststore"
+	"github.com/acksell/clank/pkg/provisioner/tunnelclient"
 )
 
 const internalDialTimeout = 5 * time.Second
@@ -54,8 +56,10 @@ func (p *Provisioner) GetHostByID(_ context.Context, hostID string) (provisioner
 	return p.refFromChildLocked(p.current), nil
 }
 
-// OpenInternalConn dials 127.0.0.1:<port> directly. hostID must match
-// the currently-running child so we don't paper over a stale ref
+// OpenInternalConn dials 127.0.0.1:<port> directly — or, with
+// Options.TunnelInternalConn, through clank-host's /tunnel endpoint
+// like the machine-style cloud backends. hostID must match the
+// currently-running child so we don't paper over a stale ref
 // pointing at a different machine state.
 func (p *Provisioner) OpenInternalConn(ctx context.Context, hostID string, port int) (net.Conn, error) {
 	if hostID == "" {
@@ -66,9 +70,18 @@ func (p *Provisioner) OpenInternalConn(ctx context.Context, hostID string, port 
 	}
 	p.mu.Lock()
 	matches := p.current != nil && p.current.hostID == hostID
+	var childURL string
+	var childTransport http.RoundTripper
+	if matches {
+		childURL = p.current.url
+		childTransport = p.current.transport
+	}
 	p.mu.Unlock()
 	if !matches {
 		return nil, hoststore.ErrHostNotFound
+	}
+	if p.opts.TunnelInternalConn {
+		return tunnelclient.Dial(ctx, childURL, childTransport, port)
 	}
 	d := net.Dialer{Timeout: internalDialTimeout}
 	return d.DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", port))

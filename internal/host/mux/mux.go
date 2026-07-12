@@ -101,6 +101,11 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// DELETE /v1/worktrees/{id} straight here.
 	mx.HandleFunc("DELETE /worktrees/{id}", m.handleDeleteWorktree)
 
+	// TCP-over-WebSocket bridge to the host's loopback. Providers
+	// whose edge only routes declared service ports implement
+	// OpenInternalConn through this via pkg/provisioner/tunnelclient.
+	mx.HandleFunc("GET /tunnel/{port}", m.handleTunnel)
+
 	// Preview-app control plane. The reverse proxy lives at the
 	// gateway (subdomain-routed via preview-<token>.<root>) — clank-
 	// host no longer fronts preview traffic; it just spawns the dev
