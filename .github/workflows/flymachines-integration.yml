@@ -1,0 +1,56 @@
+# Real-Fly integration tests for the flymachines provisioner. These
+# create and destroy actual Fly apps/machines/volumes, so they cost
+# real cents and can't run on fork PRs (secrets aren't exposed there)
+# — hence push-to-main (scoped to the package) + manual dispatch only,
+# never on pull_request.
+#
+# API tier only: app/network/flycast/volume/machine provisioning,
+# idempotence, drift, destroy. The network tier (readiness probe +
+# suspend/wake) needs a WireGuard peer into the org's default network,
+# which isn't worth standing up on runners — it self-skips without one.
+#
+# Requires two repo secrets:
+#   FLY_API_TOKEN  — org-scoped Fly token (fly tokens create org -o <org>)
+#   FLY_TEST_ORG   — the org slug (secret only to keep it out of the OSS repo)
+name: flymachines-integration
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pkg/provisioner/flymachines/**"
+      - ".github/workflows/flymachines-integration.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# The suite uses a FIXED test app name, so two concurrent runs would
+# collide on the same Fly resources. Serialize; don't cancel a run
+# mid-teardown (that would leak a billed app).
+concurrency:
+  group: flymachines-integration
+  cancel-in-progress: false
+
+jobs:
+  integration:
+    name: real-Fly provisioning
+    runs-on: ubuntu-latest
+    # Skip cleanly on a fork or a repo without the secrets configured
+    # rather than fail — the tests themselves also t.Skip without them.
+    if: ${{ github.repository == 'Acksell/clank' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: flymachines integration (API tier)
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_TEST_ORG: ${{ secrets.FLY_TEST_ORG }}
+        run: |
+          if [ -z "$FLY_API_TOKEN" ] || [ -z "$FLY_TEST_ORG" ]; then
+            echo "::notice::FLY_API_TOKEN / FLY_TEST_ORG not set — skipping real-Fly integration tests."
+            exit 0
+          fi
+          go test -count=1 -run TestIntegration_FlyMachines ./pkg/provisioner/flymachines/
