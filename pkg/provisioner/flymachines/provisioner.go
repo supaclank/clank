@@ -505,10 +505,12 @@ func (p *Provisioner) SuspendHost(ctx context.Context, hostID string) error {
 	if err != nil {
 		return err
 	}
-	if err := p.flaps.Stop(ctx, row.ExternalID, fly.StopMachineInput{ID: machineID}, ""); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "already") {
-			return nil
-		}
+	// "already stopped" isn't a failure, but still falls through to the
+	// status/cache update below — a prior partial failure (Stop succeeded,
+	// UpsertHost didn't) must self-heal on this idempotent retry instead of
+	// short-circuiting past it again.
+	if err := p.flaps.Stop(ctx, row.ExternalID, fly.StopMachineInput{ID: machineID}, ""); err != nil &&
+		!strings.Contains(strings.ToLower(err.Error()), "already") {
 		return fmt.Errorf("stop machine %s in %s: %w", machineID, row.ExternalID, err)
 	}
 	row.Status = hoststore.HostStatusStopped

@@ -21,12 +21,15 @@ import (
 //   - One raw-TCP service on HostPort, no handlers: gateway↔machine
 //     traffic is in-org (Flycast); TLS terminates at the gateway edge.
 func buildMachineConfig(opts Options, tokens hostTokens, volumeID string, extraEnv map[string]string) *fly.MachineConfig {
-	env := map[string]string{
-		"CLANK_HOST_PORT":          fmt.Sprintf("%d", HostPort),
-		"CLANK_HOST_AUTH_TOKEN":    tokens.auth,
-		"CLANK_NOTIFIER_TOKEN":     tokens.notifier,
-		"CLANK_KEEPALIVE_PROVIDER": "exit",
-	}
+	// extraEnv merges first so the reserved CLANK_* keys below always win —
+	// an ExtraEnvFor callback accidentally reusing one must not weaken auth
+	// or the keepalive contract.
+	env := map[string]string{}
+	maps.Copy(env, extraEnv)
+	env["CLANK_HOST_PORT"] = fmt.Sprintf("%d", HostPort)
+	env["CLANK_HOST_AUTH_TOKEN"] = tokens.auth
+	env["CLANK_NOTIFIER_TOKEN"] = tokens.notifier
+	env["CLANK_KEEPALIVE_PROVIDER"] = "exit"
 	if opts.NotifierWebhookURL != "" {
 		env["CLANK_NOTIFIER_PROVIDER"] = "webhook"
 		env["CLANK_NOTIFIER_WEBHOOK_URL"] = opts.NotifierWebhookURL
@@ -37,7 +40,6 @@ func buildMachineConfig(opts Options, tokens hostTokens, volumeID string, extraE
 	if opts.GitHubOAuthClientID != "" {
 		env["CLANK_GITHUB_OAUTH_CLIENT_ID"] = opts.GitHubOAuthClientID
 	}
-	maps.Copy(env, extraEnv)
 
 	swap := opts.SwapSizeMB
 	return &fly.MachineConfig{
