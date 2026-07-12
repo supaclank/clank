@@ -115,6 +115,30 @@ type FlyIOPreference struct {
 	StorageGB int `json:"storage_gb,omitempty"`
 }
 
+// FlyMachinesPreference configures the raw Fly Machines provisioner
+// (pkg/provisioner/flymachines): one app+machine+volume per user.
+// Required: api_token (org-scoped, app-create rights), org_slug,
+// region, and image (the clank-host-fly OCI ref, ideally digest-
+// pinned). Zero-valued sizing fields use the provisioner defaults.
+type FlyMachinesPreference struct {
+	APIToken string `json:"api_token,omitempty"`
+	OrgSlug  string `json:"org_slug,omitempty"`
+	Region   string `json:"region,omitempty"`
+	Image    string `json:"image,omitempty"`
+	// GatewayNetwork is the Fly private network the per-app Flycast
+	// address is allocated on — where this daemon dials FROM. Empty
+	// means the org's default network.
+	GatewayNetwork string `json:"gateway_network,omitempty"`
+	// AppNamePrefix namespaces this deployment's per-user apps within
+	// the org (e.g. "clank-dev-u"). Empty defaults to "clank-u".
+	AppNamePrefix string `json:"app_name_prefix,omitempty"`
+	GuestCPUKind  string `json:"guest_cpu_kind,omitempty"`
+	GuestCPUs     int    `json:"guest_cpus,omitempty"`
+	GuestMemoryMB int    `json:"guest_memory_mb,omitempty"`
+	SwapSizeMB    int    `json:"swap_size_mb,omitempty"`
+	VolumeSizeGB  int    `json:"volume_size_gb,omitempty"`
+}
+
 // Preferences stores user preferences that persist across sessions.
 // All fields should be optional (omitempty) so the file can grow over
 // time without breaking older installs.
@@ -175,6 +199,11 @@ type Preferences struct {
 	// disabled (sessions requesting launch_host.provider="flyio"
 	// will 4xx).
 	FlyIO *FlyIOPreference `json:"flyio,omitempty"`
+
+	// FlyMachines configures the raw Fly Machines provisioner. Nil =
+	// disabled (sessions requesting launch_host.provider=
+	// "flymachines" will 4xx).
+	FlyMachines *FlyMachinesPreference `json:"flymachines,omitempty"`
 
 	// DefaultLaunchHostProvider, when set, is applied to every new
 	// session whose StartRequest omits LaunchHost. Use this on a
