@@ -230,6 +230,83 @@ func TestVoiceWSReleasesSlotBetweenUtterances(t *testing.T) {
 	}
 }
 
+// waitForSlot polls conn by writing audio until the engine slot is
+// acquired ("partial" comes back instead of "error"), mirroring
+// TestVoiceWSReleasesSlotBetweenUtterances's pattern for an async release.
+func waitForSlot(t *testing.T, conn *websocket.Conn) {
+	t.Helper()
+	ctx := context.Background()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		_ = conn.Write(ctx, websocket.MessageBinary, make([]byte, 4))
+		m := readVoiceMsg(t, conn)
+		if m.Type == "partial" {
+			return
+		}
+		if m.Type != "error" || time.Now().After(deadline) {
+			t.Fatalf("slot never acquired, last message = %+v", m)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// A session that only Cancels (instead of Closing) on the client's
+// {"type":"cancel"} leaves the engine's exclusive slot held for the rest
+// of the connection's lifetime — bricking dictation for every other
+// connection until this one disconnects, the exact zombie-lockout the
+// per-utterance design (see serveVoiceWS's doc comment) exists to avoid.
+func TestVoiceWSCancelReleasesSlot(t *testing.T) {
+	t.Parallel()
+	eng := newSerialStub()
+	conn1, done1 := dialVoice(t, eng)
+	defer done1()
+
+	ctx := context.Background()
+	_ = conn1.Write(ctx, websocket.MessageBinary, make([]byte, 8))
+	if m := readVoiceMsg(t, conn1); m.Type != "partial" {
+		t.Fatalf("conn1 partial = %+v", m)
+	}
+	_ = conn1.Write(ctx, websocket.MessageText, []byte(`{"type":"cancel"}`))
+
+	// conn1 stays connected (idle after cancel); conn2 must still be able
+	// to dictate.
+	conn2, done2 := dialVoice(t, eng)
+	defer done2()
+	waitForSlot(t, conn2)
+}
+
+// Same lockout risk on the utterance-too-long path: erroring out on an
+// oversized utterance must free the slot, not just discard the buffer.
+func TestVoiceWSUtteranceTooLongReleasesSlot(t *testing.T) {
+	t.Parallel()
+	eng := newSerialStub()
+	conn1, done1 := dialVoice(t, eng)
+	defer done1()
+
+	ctx := context.Background()
+	const chunk = 1_000_000 // > maxUtteranceBytes after 17 chunks
+	sent := 0
+	for sent+chunk <= maxUtteranceBytes {
+		if err := conn1.Write(ctx, websocket.MessageBinary, make([]byte, chunk)); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if m := readVoiceMsg(t, conn1); m.Type != "partial" {
+			t.Fatalf("partial = %+v", m)
+		}
+		sent += chunk
+	}
+	if err := conn1.Write(ctx, websocket.MessageBinary, make([]byte, chunk)); err != nil {
+		t.Fatalf("write overflow chunk: %v", err)
+	}
+	if m := readVoiceMsg(t, conn1); m.Type != "error" || !strings.Contains(m.Error, "too long") {
+		t.Fatalf("overflow message = %+v, want a 'too long' error", m)
+	}
+
+	conn2, done2 := dialVoice(t, eng)
+	defer done2()
+	waitForSlot(t, conn2)
+}
+
 func TestVoiceWSCancelResetsUtterance(t *testing.T) {
 	t.Parallel()
 	conn, done := dialVoice(t, &stubEngine{})

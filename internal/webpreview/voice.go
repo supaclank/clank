@@ -178,7 +178,7 @@ func serveVoiceWS(w http.ResponseWriter, r *http.Request, engine Engine, lg *log
 			if utteranceBytes+len(data) > maxUtteranceBytes {
 				writeJSON(voiceMsg{Type: "error", Error: "utterance too long"})
 				utteranceBytes = 0
-				_ = sess.Cancel()
+				closeSess() // Close discards the buffered audio and frees the slot; Cancel alone would strand it
 				continue
 			}
 			utteranceBytes += len(data)
@@ -193,9 +193,7 @@ func serveVoiceWS(w http.ResponseWriter, r *http.Request, engine Engine, lg *log
 			switch m.Type {
 			case "cancel":
 				utteranceBytes = 0
-				if sess != nil {
-					_ = sess.Cancel()
-				}
+				closeSess() // frees the slot; a cancel ends the utterance same as end/final does
 			case "end":
 				utteranceBytes = 0
 				if !writeJSON(voiceMsg{Type: "transcribing"}) {
