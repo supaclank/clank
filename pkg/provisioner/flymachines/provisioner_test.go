@@ -110,6 +110,35 @@ func TestGetHostByID_StoreOnly(t *testing.T) {
 	}
 }
 
+// TestGetHostByID_FailsOnCorruptRowMissingAuthToken: a row with no
+// auth_token would build a Transport that never injects Authorization
+// — better to fail fast than silently serve unauthenticated requests.
+func TestGetHostByID_FailsOnCorruptRowMissingAuthToken(t *testing.T) {
+	t.Parallel()
+	s := mustOpenStore(t)
+	p := &Provisioner{store: s}
+	ctx := context.Background()
+
+	row := hoststore.Host{
+		ID:         "01HOST",
+		UserID:     "u1",
+		Provider:   Provider,
+		ExternalID: "clank-u-abc123def456",
+		Hostname:   "flym-abc123def456",
+		Status:     hoststore.HostStatusRunning,
+		LastURL:    "http://[fdaa:0:1::2]:8080",
+		AuthToken:  "",
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+	if err := s.UpsertHost(ctx, row); err != nil {
+		t.Fatalf("seed row: %v", err)
+	}
+	if _, err := p.GetHostByID(ctx, "01HOST"); err == nil {
+		t.Error("GetHostByID with empty auth_token returned nil error")
+	}
+}
+
 // TestPersistRow_PreservesCreatedAtOnUpdate: a second persistRow call
 // for the same user (config drift, token rotation, …) must keep the
 // row's original CreatedAt rather than overwriting it with the update

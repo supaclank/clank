@@ -40,6 +40,9 @@ func (p *Provisioner) GetHostByID(ctx context.Context, hostID string) (provision
 	if row.LastURL == "" {
 		return provisioner.HostRef{}, fmt.Errorf("flymachines: host %s has no last_url (corrupt row)", hostID)
 	}
+	if row.AuthToken == "" {
+		return provisioner.HostRef{}, fmt.Errorf("flymachines: host %s has no auth_token (corrupt row)", hostID)
+	}
 	parsedURL, err := url.Parse(row.LastURL)
 	if err != nil {
 		return provisioner.HostRef{}, fmt.Errorf("flymachines: parse host URL %q: %w", row.LastURL, err)
