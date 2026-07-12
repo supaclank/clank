@@ -150,7 +150,10 @@ func TestMarkRead_MessageEventMarksUnread(t *testing.T) {
 	if err := td.Client.Session(info.ID).MarkRead(ctx); err != nil {
 		t.Fatalf("MarkRead: %v", err)
 	}
-	read, _ := td.Store.GetSession(ctx, info.ID)
+	read, err := td.Store.GetSession(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
 	if read.Unread() {
 		t.Fatalf("session should be read after MarkRead")
 	}
@@ -168,7 +171,10 @@ func TestMarkRead_MessageEventMarksUnread(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		got, _ := td.Store.GetSession(ctx, info.ID)
+		got, err := td.Store.GetSession(ctx, info.ID)
+		if err != nil {
+			t.Fatalf("GetSession: %v", err)
+		}
 		if got.UpdatedAt.After(updatedAtBefore) {
 			if !got.Unread() {
 				t.Error("new message should mark session unread")
