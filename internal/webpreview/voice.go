@@ -48,7 +48,10 @@ func serveVoiceWS(w http.ResponseWriter, r *http.Request, engine Engine, lg *log
 		lg.Printf("webpreview: voice ws accept: %v", err)
 		return
 	}
-	defer conn.Close(websocket.StatusInternalError, "voice handler exited")
+	// Every exit from the read loop below (client hangup, dead-peer ping
+	// failure, a failed write) is a normal end, not a server fault —
+	// nothing here ever returns after an actual handler error.
+	defer conn.Close(websocket.StatusNormalClosure, "voice handler exited")
 	// A worklet batch is ~4 KiB; raise the per-message limit above the
 	// library's 32 KiB default anyway so a client that batches harder
 	// (tab throttled in background) doesn't get dropped.
