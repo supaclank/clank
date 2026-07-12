@@ -48,6 +48,9 @@ func Dial(ctx context.Context, baseURL string, rt http.RoundTripper, port int) (
 	if err != nil {
 		return nil, fmt.Errorf("tunnelclient: parse base URL %q: %w", baseURL, err)
 	}
+	if u.Scheme == "" || u.Host == "" {
+		return nil, fmt.Errorf("tunnelclient: baseURL %q must be an absolute URL with scheme and host", baseURL)
+	}
 	tunnelURL := u.JoinPath("tunnel", strconv.Itoa(port))
 
 	// websocket.Dial accepts http(s) URLs and switches to ws(s) itself.
