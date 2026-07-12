@@ -420,6 +420,88 @@ func TestClaudeBackendMessagesResumeWithoutStart(t *testing.T) {
 	}
 }
 
+// TestClaudeBackendMessagesOversizedTranscriptLine is the regression test for
+// sessions becoming permanently unreadable after the agent reads a fetched
+// PDF: the CLI embeds the whole document as one base64 line in the transcript
+// (a 1MB PDF ≈ a 1.37MB line), and the SDK's capped bufio.Scanner made every
+// subsequent GetSessionMessages fail with "token too long" — surfacing as
+// HTTP 500 on /sessions/{id}/messages and an empty conversation in clients.
+// Messages() must return the full conversation, with the document block
+// dropped (Part has no binary field) rather than the read failing.
+func TestClaudeBackendMessagesOversizedTranscriptLine(t *testing.T) {
+	// Cannot use t.Parallel because t.Setenv mutates process env.
+	configDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+
+	workDir := t.TempDir()
+	projDir := mkClaudeProjectDir(t, configDir, workDir)
+
+	const sessionID = "sess-bigline-001"
+	// ~2MB of base64-looking payload, generated at runtime — well past the
+	// SDK's old 1MB scanner cap, no fixture file checked in.
+	bigData := strings.Repeat("JVBERi0xLjYNJeLj", 128*1024)
+	writeSessionJSONL(t, projDir, sessionID, []map[string]any{
+		{
+			"type":      "user",
+			"uuid":      "u-1",
+			"timestamp": "2026-07-10T16:04:00Z",
+			"sessionId": sessionID,
+			"cwd":       workDir,
+			"message":   map[string]any{"role": "user", "content": "Read the rules PDF"},
+		},
+		// The oversized record: a user message carrying the PDF document block.
+		{
+			"type":      "user",
+			"uuid":      "u-2",
+			"timestamp": "2026-07-10T16:04:17Z",
+			"sessionId": sessionID,
+			"message": map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type": "document",
+						"source": map[string]any{
+							"type":       "base64",
+							"media_type": "application/pdf",
+							"data":       bigData,
+						},
+					},
+				},
+			},
+		},
+		{
+			"type":      "assistant",
+			"uuid":      "a-1",
+			"timestamp": "2026-07-10T16:04:30Z",
+			"sessionId": sessionID,
+			"message": map[string]any{
+				"id":      "msg_after_pdf",
+				"model":   "claude-sonnet-4",
+				"role":    "assistant",
+				"content": []any{map[string]any{"type": "text", "text": "Read it."}},
+			},
+		},
+	})
+
+	b := agent.NewClaudeCodeBackendForSession(workDir, sessionID)
+	defer b.Stop()
+
+	msgs, err := b.Messages(context.Background())
+	if err != nil {
+		t.Fatalf("Messages: %v (oversized transcript line must not fail the read)", err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("got %d messages, want 3", len(msgs))
+	}
+	// The document block is dropped, not forwarded: no binary over the wire.
+	if msgs[1].Content != "" || len(msgs[1].Parts) != 0 {
+		t.Errorf("msgs[1] (document carrier) = %+v, want empty content and no parts", msgs[1])
+	}
+	if msgs[2].Role != "assistant" || len(msgs[2].Parts) != 1 || msgs[2].Parts[0].Text != "Read it." {
+		t.Errorf("msgs[2] = %+v (conversation after the oversized line must survive)", msgs[2])
+	}
+}
+
 // --- Helpers ---
 
 // mkClaudeProjectDir creates the per-cwd project directory inside a
