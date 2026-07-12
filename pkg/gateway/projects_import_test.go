@@ -60,7 +60,7 @@ func (s *importSprite) server(t *testing.T) *httptest.Server {
 func TestImportProject_HappyPath(t *testing.T) {
 	t.Parallel()
 	sprite := &importSprite{worktreeID: "01IMPORTWT"}
-	gw := newProjectsGateway(t, sprite.server(t), nil)
+	gw := newProjectsGateway(t, sprite.server(t))
 
 	resp := postJSON(t, gw.URL+"/v1/projects/import", `{"owner":"acme","repo":"api"}`)
 	defer resp.Body.Close()
@@ -93,7 +93,7 @@ func TestImportProject_NotConnectedForwarded(t *testing.T) {
 		errStatus:  http.StatusConflict,
 		errBody:    `{"code":"github_not_connected","error":"github: not connected"}`,
 	}
-	gw := newProjectsGateway(t, sprite.server(t), nil)
+	gw := newProjectsGateway(t, sprite.server(t))
 
 	resp := postJSON(t, gw.URL+"/v1/projects/import", `{"owner":"acme","repo":"api"}`)
 	defer resp.Body.Close()
@@ -112,7 +112,7 @@ func TestImportProject_NotConnectedForwarded(t *testing.T) {
 func TestImportProject_MissingFields(t *testing.T) {
 	t.Parallel()
 	sprite := &importSprite{worktreeID: "x"}
-	gw := newProjectsGateway(t, sprite.server(t), nil)
+	gw := newProjectsGateway(t, sprite.server(t))
 	for _, body := range []string{`{"owner":"acme"}`, `{"repo":"api"}`, `{}`} {
 		resp := postJSON(t, gw.URL+"/v1/projects/import", body)
 		if resp.StatusCode != http.StatusBadRequest {

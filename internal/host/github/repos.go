@@ -36,6 +36,7 @@ type Repo struct {
 	FullName      string    `json:"full_name"`
 	Private       bool      `json:"private"`
 	DefaultBranch string    `json:"default_branch"`
+	Description   string    `json:"description,omitempty"`
 	UpdatedAt     time.Time `json:"updated_at,omitzero"`
 }
 
@@ -94,6 +95,7 @@ func wireRepo(r *gogithub.Repository) Repo {
 		FullName:      r.GetFullName(),
 		Private:       r.GetPrivate(),
 		DefaultBranch: r.GetDefaultBranch(),
+		Description:   r.GetDescription(),
 		UpdatedAt:     r.GetUpdatedAt().Time,
 	}
 }

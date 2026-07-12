@@ -54,7 +54,7 @@ func TestReposProxy_ForwardsStatusVerbatim(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			sprite := &reposSprite{status: tc.hostStatus, body: tc.hostBody}
-			gw := newProjectsGateway(t, sprite.server(t), nil)
+			gw := newProjectsGateway(t, sprite.server(t))
 
 			req, err := http.NewRequest(tc.method, gw.URL+tc.path, strings.NewReader(`{}`))
 			if err != nil {
@@ -90,7 +90,7 @@ func TestReposProxy_RejectsInvalidSlug(t *testing.T) {
 		t.Run(slug, func(t *testing.T) {
 			t.Parallel()
 			sprite := &reposSprite{status: http.StatusOK, body: `{}`}
-			gw := newProjectsGateway(t, sprite.server(t), nil)
+			gw := newProjectsGateway(t, sprite.server(t))
 
 			resp, err := http.Get(gw.URL + "/v1/repos/" + url.PathEscape(slug) + "/overview")
 			if err != nil {
@@ -120,7 +120,7 @@ func TestReposProxy_DotDotPathCleanedByServeMux(t *testing.T) {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 			sprite := &reposSprite{status: http.StatusOK, body: `{}`}
-			gw := newProjectsGateway(t, sprite.server(t), nil)
+			gw := newProjectsGateway(t, sprite.server(t))
 
 			resp, err := http.Get(gw.URL + path)
 			if err != nil {
@@ -144,7 +144,7 @@ func TestReposProxy_ForwardsQuery(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	t.Cleanup(srv.Close)
-	gw := newProjectsGateway(t, srv, nil)
+	gw := newProjectsGateway(t, srv)
 
 	resp, err := http.Get(gw.URL + "/v1/repos/acme__api/overview?fetch=1")
 	if err != nil {
