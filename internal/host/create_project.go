@@ -123,7 +123,12 @@ func (s *Service) scaffoldCanonical(ctx context.Context, gitDir, cloneURL, name 
 	}()
 	seed := filepath.Join(tmp, "seed")
 	if err := git.Clone(ctx, cloneURL, seed); err != nil {
-		return fmt.Errorf("clone template: %w", err)
+		// Full git error (which echoes the clone URL, possibly with
+		// embedded credentials) goes to the server log ONLY; the
+		// returned error is a sanitized sentinel the mux maps to a
+		// typed, client-safe response instead of an opaque 500.
+		s.log.Printf("create-project: clone template failed: %v", err)
+		return fmt.Errorf("%w: git clone failed — check that the template repository exists and is reachable", ErrTemplateCloneFailed)
 	}
 	// Drop the template's history + origin so the new project is a clean
 	// local repo the agent owns from commit one.

@@ -23,11 +23,13 @@ type createProjectRequest struct {
 }
 
 // hostCreateProjectRequest is the body the gateway sends to the host's
-// POST /projects/create. The host gets the resolved clone_url, never the
-// catalog id.
+// POST /projects/create. Builtin catalog ids resolve to clone_url here
+// (the host never sees catalog ids); github: ids forward as a
+// github_template ref the HOST resolves with its own credential.
 type hostCreateProjectRequest struct {
-	CloneURL string `json:"clone_url"`
-	Name     string `json:"name"`
+	CloneURL       string `json:"clone_url,omitempty"`
+	GitHubTemplate string `json:"github_template,omitempty"`
+	Name           string `json:"name"`
 }
 
 // handleCreateProject services POST /v1/projects/create — the mobile
@@ -68,16 +70,25 @@ func (g *Gateway) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cloneURL, ok := g.cloneURLForTemplate(req.Template)
-	if !ok {
-		http.Error(w, fmt.Sprintf("unknown template %q", req.Template), http.StatusNotFound)
-		return
+	hostReq := hostCreateProjectRequest{Name: req.Name}
+	switch {
+	case strings.HasPrefix(req.Template, githubTemplateIDPrefix):
+		ref, err := githubTemplateRef(req.Template)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		hostReq.GitHubTemplate = ref
+	default:
+		cloneURL, ok := g.cloneURLForTemplate(req.Template)
+		if !ok {
+			http.Error(w, fmt.Sprintf("unknown template %q", req.Template), http.StatusNotFound)
+			return
+		}
+		hostReq.CloneURL = cloneURL
 	}
 
-	status, body, err := g.callHostCreateProject(r.Context(), principal.UserID, hostCreateProjectRequest{
-		CloneURL: cloneURL,
-		Name:     req.Name,
-	})
+	status, body, err := g.callHostCreateProject(r.Context(), principal.UserID, hostReq)
 	if err != nil {
 		g.log.Printf("gateway create-project: host call: %v", err)
 		http.Error(w, "project creation failed", http.StatusBadGateway)

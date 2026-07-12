@@ -87,9 +87,12 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("POST /worktrees/list-branches", m.handleListBranches)
 	mx.HandleFunc("POST /worktrees/resolve", m.handleResolveWorktree)
 	// /projects/create scaffolds a brand-new local project (clone_url
-	// supplied by the gateway) as a bare canonical + linked ~/work
-	// worktree with no remote. See projects.go.
+	// or github_template supplied by the gateway) as a bare canonical
+	// + linked ~/work worktree with no remote. See projects.go.
 	mx.HandleFunc("POST /projects/create", m.handleCreateProject)
+	// The user's own GitHub template repos (is_template=true), merged
+	// by the gateway into the create-project picker. See templates.go.
+	mx.HandleFunc("GET /templates/github", m.handleGitHubListTemplates)
 	// /projects/import clones the caller's existing GitHub repo (owner/repo
 	// in the body) into a canonical + fresh ~/work worktree, keeping the
 	// origin remote. See import_project.go.
@@ -181,6 +184,11 @@ func writeError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_branch_name", Error: err.Error()})
 	case errors.Is(err, host.ErrInvalidArgument):
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_argument", Error: err.Error()})
+	case errors.Is(err, host.ErrTemplateCloneFailed):
+		// 422: the request was well-formed but the referenced template
+		// couldn't be cloned. Client-safe by construction (the error
+		// message is URL-free; full git stderr is server-log only).
+		writeJSON(w, http.StatusUnprocessableEntity, errResp{Code: "template_clone_failed", Error: err.Error()})
 	default:
 		writeJSON(w, http.StatusInternalServerError, errResp{Code: "internal", Error: err.Error()})
 	}
