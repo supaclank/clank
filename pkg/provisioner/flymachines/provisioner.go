@@ -458,12 +458,12 @@ func hostPortOf(rawURL string) string {
 func (p *Provisioner) persistRow(ctx context.Context, userID string, c *cachedHost, tokens hostTokens) (string, error) {
 	now := time.Now()
 	hostID := ""
-	isNew := false
+	createdAt := now
 	if existing, err := p.store.GetHostByUser(ctx, userID, Provider); err == nil {
 		hostID = existing.ID
+		createdAt = existing.CreatedAt
 	} else if errors.Is(err, hoststore.ErrHostNotFound) {
 		hostID = ulid.Make().String()
-		isNew = true
 	} else {
 		return "", err
 	}
@@ -479,10 +479,8 @@ func (p *Provisioner) persistRow(ctx context.Context, userID string, c *cachedHo
 		AuthToken:     tokens.auth,
 		NotifierToken: tokens.notifier,
 		AutoWake:      true,
+		CreatedAt:     createdAt,
 		UpdatedAt:     now,
-	}
-	if isNew {
-		rec.CreatedAt = now
 	}
 	if err := p.store.UpsertHost(ctx, rec); err != nil {
 		return "", err
@@ -584,6 +582,7 @@ func (p *Provisioner) DestroyHostsByUser(ctx context.Context, userID string) err
 
 // --- concurrency helpers (same shape as the other providers) ---
 
+// TODO(ai-review): keyMu grows unbounded, one entry per distinct userID ever seen; switch to a bounded/sharded mutex pool repo-wide (flyio has the same shape) https://github.com/Acksell/clank/pull/128#discussion_r3565295753
 func (p *Provisioner) userMutex(userID string) *sync.Mutex {
 	p.keyMuMap.Lock()
 	defer p.keyMuMap.Unlock()

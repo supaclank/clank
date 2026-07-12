@@ -21,9 +21,10 @@ const (
 // a name visible to anyone who can query DNS certs.
 //
 // The requested name can still lose a global-uniqueness race against
-// an app outside this org; EnsureHost handles that by suffixing and
-// persisting the ACTUAL name in the store row (ExternalID is the
-// source of truth, never re-derive).
+// an app outside this org; ensureApp surfaces that as an error asking
+// the operator to change AppNamePrefix. Once created, ExternalID in
+// the store row is the source of truth for the actual name — never
+// re-derive.
 func appNameFor(prefix, userID string) string {
 	sum := sha256.Sum256([]byte(userID))
 	return prefix + "-" + hex.EncodeToString(sum[:6])

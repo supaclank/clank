@@ -110,6 +110,46 @@ func TestGetHostByID_StoreOnly(t *testing.T) {
 	}
 }
 
+// TestPersistRow_PreservesCreatedAtOnUpdate: a second persistRow call
+// for the same user (config drift, token rotation, …) must keep the
+// row's original CreatedAt rather than overwriting it with the update
+// time.
+func TestPersistRow_PreservesCreatedAtOnUpdate(t *testing.T) {
+	t.Parallel()
+	s := mustOpenStore(t)
+	p := &Provisioner{store: s}
+	ctx := context.Background()
+	c := &cachedHost{appName: "clank-u-abc", hostname: "flym-abc", url: "http://[fdaa:0:1::2]:8080"}
+	tokens := hostTokens{auth: "tkn", notifier: "clnk_ntf"}
+
+	hostID, err := p.persistRow(ctx, "u1", c, tokens)
+	if err != nil {
+		t.Fatalf("initial persistRow: %v", err)
+	}
+	created, err := s.GetHostByID(ctx, hostID)
+	if err != nil {
+		t.Fatalf("GetHostByID after create: %v", err)
+	}
+	if created.CreatedAt.IsZero() {
+		t.Fatal("CreatedAt is zero after create")
+	}
+
+	time.Sleep(time.Millisecond)
+	if _, err := p.persistRow(ctx, "u1", c, tokens); err != nil {
+		t.Fatalf("second persistRow: %v", err)
+	}
+	updated, err := s.GetHostByID(ctx, hostID)
+	if err != nil {
+		t.Fatalf("GetHostByID after update: %v", err)
+	}
+	if !updated.CreatedAt.Equal(created.CreatedAt) {
+		t.Errorf("CreatedAt changed on update: got %v, want %v", updated.CreatedAt, created.CreatedAt)
+	}
+	if !updated.UpdatedAt.After(created.UpdatedAt) {
+		t.Errorf("UpdatedAt did not advance: got %v, want after %v", updated.UpdatedAt, created.UpdatedAt)
+	}
+}
+
 // TestOpenInternalConn_Validation pins the argument guards; the
 // tunnel data path itself is covered end-to-end in
 // internal/host/mux/tunnel_test.go.
