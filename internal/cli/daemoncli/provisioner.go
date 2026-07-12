@@ -2,6 +2,7 @@ package daemoncli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -32,6 +33,24 @@ func notifierWebhookURL() string {
 // path can leave this empty if not testing the gateway integration).
 func previewWebhookURL() string {
 	return os.Getenv("CLANK_PREVIEW_WEBHOOK_URL")
+}
+
+// parseTemplatesEnv reads the builtin create-project catalog from
+// CLANK_TEMPLATES (a JSON array of {display_name, clone_url}) into the
+// provisioner's strong type. This is the env→config edge: the library
+// takes []provisioner.Template, and clankd (this binary) is the thing
+// that turns an env var into it. Empty/unset → nil (host serves only
+// the user's GitHub templates).
+func parseTemplatesEnv() ([]provisioner.Template, error) {
+	raw := os.Getenv("CLANK_TEMPLATES")
+	if raw == "" {
+		return nil, nil
+	}
+	var templates []provisioner.Template
+	if err := json.Unmarshal([]byte(raw), &templates); err != nil {
+		return nil, fmt.Errorf("CLANK_TEMPLATES: invalid JSON: %w", err)
+	}
+	return templates, nil
 }
 
 // buildProvisioner picks the active provisioner for the gateway based
@@ -116,6 +135,10 @@ func buildFlyMachinesProvisioner(opts ServerOptions, st *store.Store, prefs conf
 	if fm == nil {
 		return nil, nil, fmt.Errorf("flymachines provisioner: preferences.flymachines required")
 	}
+	templates, err := parseTemplatesEnv()
+	if err != nil {
+		return nil, nil, err
+	}
 	prov, err := flymachinesprov.New(context.Background(), flymachinesprov.Options{
 		APIToken:            fm.APIToken,
 		OrgSlug:             fm.OrgSlug,
@@ -131,9 +154,7 @@ func buildFlyMachinesProvisioner(opts ServerOptions, st *store.Store, prefs conf
 		NotifierWebhookURL:  notifierWebhookURL(),
 		PreviewWebhookURL:   previewWebhookURL(),
 		GitHubOAuthClientID: os.Getenv("CLANK_GITHUB_OAUTH_CLIENT_ID"),
-		// Forward the builtin template catalog to the machine host
-		// (host owns GET /templates), same env the sprite provider reads.
-		TemplatesJSON: os.Getenv("CLANK_TEMPLATES"),
+		Templates:           templates,
 	}, st, log.Default())
 	if err != nil {
 		return nil, nil, fmt.Errorf("build flymachines provisioner: %w", err)
@@ -145,6 +166,10 @@ func buildFlyIOProvisioner(opts ServerOptions, st *store.Store, prefs config.Pre
 	if prefs.FlyIO == nil || prefs.FlyIO.APIToken == "" {
 		return nil, nil, fmt.Errorf("flyio provisioner: preferences.flyio.api_token required")
 	}
+	templates, err := parseTemplatesEnv()
+	if err != nil {
+		return nil, nil, err
+	}
 	prov, err := flyioprov.New(flyioprov.Options{
 		APIToken:            prefs.FlyIO.APIToken,
 		OrganizationSlug:    prefs.FlyIO.OrganizationSlug,
@@ -155,6 +180,7 @@ func buildFlyIOProvisioner(opts ServerOptions, st *store.Store, prefs config.Pre
 		StorageGB:           prefs.FlyIO.StorageGB,
 		NotifierWebhookURL:  notifierWebhookURL(),
 		GitHubOAuthClientID: os.Getenv("CLANK_GITHUB_OAUTH_CLIENT_ID"),
+		Templates:           templates,
 	}, st, log.Default())
 	if err != nil {
 		return nil, nil, fmt.Errorf("build flyio provisioner: %w", err)
