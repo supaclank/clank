@@ -26,7 +26,7 @@ make docker-up
 The /etc/hosts entry makes `clank-minio` resolve to localhost from the
 laptop, matching how the docker network resolves it from inside.
 
-### Mode B — real cloud sandbox (`flyio` / `daytona` provisioner)
+### Mode B — real cloud sandbox (`flysprites` / `daytona` provisioner)
 
 A remote sprite can't resolve `clank-minio` — it lives on its own
 network with no host-file injection. It needs a **publicly-reachable,
@@ -138,8 +138,8 @@ Edit `docker/preferences.json`:
 
 ```json
 {
-  "default_launch_host_provider": "flyio",
-  "flyio": {
+  "default_launch_host_provider": "flysprites",
+  "flysprites": {
     "api_token": "<fly-api-token>",
     "organization_slug": "<slug>"
   }

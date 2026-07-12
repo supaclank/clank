@@ -14,7 +14,7 @@
 // /proxy, authenticated with the org's SPRITES_TOKEN that the
 // Provisioner already holds. The same primitive the Phase 0 spike
 // validated.
-package flyio
+package flysprites
 
 import (
 	"context"
@@ -40,21 +40,21 @@ import (
 //     without parsing the host out)
 func (p *Provisioner) GetHostByID(ctx context.Context, hostID string) (provisioner.HostRef, error) {
 	if hostID == "" {
-		return provisioner.HostRef{}, fmt.Errorf("flyio provisioner: hostID is required")
+		return provisioner.HostRef{}, fmt.Errorf("flysprites provisioner: hostID is required")
 	}
 	row, err := p.store.GetHostByID(ctx, hostID)
 	if err != nil {
 		if errors.Is(err, hoststore.ErrHostNotFound) {
 			return provisioner.HostRef{}, err
 		}
-		return provisioner.HostRef{}, fmt.Errorf("flyio provisioner: store get-by-id: %w", err)
+		return provisioner.HostRef{}, fmt.Errorf("flysprites provisioner: store get-by-id: %w", err)
 	}
 	if row.LastURL == "" {
-		return provisioner.HostRef{}, fmt.Errorf("flyio provisioner: host %s has no last_url (corrupt row)", hostID)
+		return provisioner.HostRef{}, fmt.Errorf("flysprites provisioner: host %s has no last_url (corrupt row)", hostID)
 	}
 	parsedURL, err := url.Parse(row.LastURL)
 	if err != nil {
-		return provisioner.HostRef{}, fmt.Errorf("flyio provisioner: parse host URL %q: %w", row.LastURL, err)
+		return provisioner.HostRef{}, fmt.Errorf("flysprites provisioner: parse host URL %q: %w", row.LastURL, err)
 	}
 	return provisioner.HostRef{
 		HostID:    row.ID,
@@ -80,24 +80,24 @@ func (p *Provisioner) GetHostByID(ctx context.Context, hostID string) (provision
 // per-worktree dev servers (Metro etc.) actually bind.
 func (p *Provisioner) OpenInternalConn(ctx context.Context, hostID string, port int) (net.Conn, error) {
 	if hostID == "" {
-		return nil, fmt.Errorf("flyio provisioner: hostID is required")
+		return nil, fmt.Errorf("flysprites provisioner: hostID is required")
 	}
 	if port < 1 || port > 65535 {
-		return nil, fmt.Errorf("flyio provisioner: port %d out of range", port)
+		return nil, fmt.Errorf("flysprites provisioner: port %d out of range", port)
 	}
 	row, err := p.store.GetHostByID(ctx, hostID)
 	if err != nil {
 		if errors.Is(err, hoststore.ErrHostNotFound) {
 			return nil, err
 		}
-		return nil, fmt.Errorf("flyio provisioner: store get-by-id: %w", err)
+		return nil, fmt.Errorf("flysprites provisioner: store get-by-id: %w", err)
 	}
 	if row.ExternalID == "" {
-		return nil, fmt.Errorf("flyio provisioner: host %s has no external_id (sprite name unknown)", hostID)
+		return nil, fmt.Errorf("flysprites provisioner: host %s has no external_id (sprite name unknown)", hostID)
 	}
 	conn, err := p.client.ProxySocket(ctx, "tcp", row.ExternalID, fmt.Sprintf("localhost:%d", port))
 	if err != nil {
-		return nil, fmt.Errorf("flyio provisioner: proxy socket to %s:%d: %w", row.ExternalID, port, err)
+		return nil, fmt.Errorf("flysprites provisioner: proxy socket to %s:%d: %w", row.ExternalID, port, err)
 	}
 	return conn, nil
 }

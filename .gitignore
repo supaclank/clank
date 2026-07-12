@@ -4,7 +4,7 @@
 !.claude/skills/
 
 # The ACTIVE embedded clank-host binary
-# (pkg/provisioner/flyio/clank-host-linux-amd64) is intentionally TRACKED:
+# (pkg/provisioner/flysprites/clank-host-linux-amd64) is intentionally TRACKED:
 # the deploy embeds whatever is committed, so it must match the code.
 # CI (.github/workflows/ci.yml) rebuilds it and `git diff`s to fail any
 # stale commit. Rebuild with `make embed-host` (Go pinned by go.mod) and

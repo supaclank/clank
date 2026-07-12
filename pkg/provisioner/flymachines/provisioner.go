@@ -41,7 +41,7 @@ import (
 )
 
 // Provider is the hoststore provider discriminator. Distinct from
-// flyio ("flyio" = Sprites) so a user's sprite row and machine row
+// flysprites (Sprites) so a user's sprite row and machine row
 // coexist during migration.
 const Provider = "flymachines"
 
@@ -142,7 +142,7 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 
 	// Fast path: Flycast autostart wakes a stopped machine on the
 	// gateway's dial, so no pre-probe and no API traffic.
-	// TODO(ai-review): no TTL/revalidation — out-of-band `fly apps destroy` on a warm-cached user isn't detected until daemon restart (interface contract says EnsureHost detects provider-side deletion). Repo-wide with flyio. https://github.com/Acksell/clank/pull/128
+	// TODO(ai-review): no TTL/revalidation — out-of-band `fly apps destroy` on a warm-cached user isn't detected until daemon restart (interface contract says EnsureHost detects provider-side deletion). Repo-wide with flysprites. https://github.com/Acksell/clank/pull/128
 	if c := p.cacheGet(userID); c != nil {
 		return p.refToHost(c), nil
 	}
@@ -660,7 +660,7 @@ func (p *Provisioner) DestroyHostsByUser(ctx context.Context, userID string) err
 
 // --- concurrency helpers (same shape as the other providers) ---
 
-// TODO(ai-review): keyMu grows unbounded, one entry per distinct userID ever seen; switch to a bounded/sharded mutex pool repo-wide (flyio has the same shape) https://github.com/Acksell/clank/pull/128#discussion_r3565295753
+// TODO(ai-review): keyMu grows unbounded, one entry per distinct userID ever seen; switch to a bounded/sharded mutex pool repo-wide (flysprites has the same shape) https://github.com/Acksell/clank/pull/128#discussion_r3565295753
 func (p *Provisioner) userMutex(userID string) *sync.Mutex {
 	p.keyMuMap.Lock()
 	defer p.keyMuMap.Unlock()

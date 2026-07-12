@@ -37,7 +37,7 @@ type SoftwareManifest struct {
 // nanoseconds instead of paying opencode's JS startup cost on
 // every request. The cache is invalidated only by restarting
 // clank-host — which is also when the embedded clank-host binary
-// gets refreshed (see flyio provisioner's hashSidecar mechanic),
+// gets refreshed (see flysprites provisioner's hashSidecar mechanic),
 // so the cached opencode version going stale relative to a
 // re-install is impossible by construction.
 var (

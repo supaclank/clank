@@ -1,9 +1,9 @@
-// Package flyio implements provisioner.Provisioner using Fly.io
+// Package flysprites implements provisioner.Provisioner using Fly.io
 // Sprites (https://sprites.dev) — one persistent sprite per user.
 // The public URL is "public" mode; clank-host's bearer middleware is
 // the only auth gate, with the per-sprite token persisted on the host
 // row so it survives daemon restarts.
-package flyio
+package flysprites
 
 import (
 	"bytes"
@@ -128,7 +128,10 @@ type Options struct {
 	SDKClient *sprites.Client
 }
 
-// Provisioner manages one persistent Sprite per (userID, "flyio").
+// Provider is the hoststore row discriminator for this backend.
+const Provider = "flysprites"
+
+// Provisioner manages one persistent Sprite per (userID, "flysprites").
 type Provisioner struct {
 	opts   Options
 	log    *log.Logger
@@ -168,7 +171,7 @@ type hostTokens struct {
 // a Postgres-backed implementation. See pkg/provisioner/hoststore.
 func New(opts Options, st hoststore.HostStore, lg *log.Logger) (*Provisioner, error) {
 	if st == nil {
-		return nil, fmt.Errorf("flyio provisioner: store is required")
+		return nil, fmt.Errorf("flysprites provisioner: store is required")
 	}
 	if opts.SpriteNamePrefix == "" {
 		opts.SpriteNamePrefix = defaultSpriteNamePrefix
@@ -183,7 +186,7 @@ func New(opts Options, st hoststore.HostStore, lg *log.Logger) (*Provisioner, er
 	c := opts.SDKClient
 	if c == nil {
 		if opts.APIToken == "" {
-			return nil, fmt.Errorf("flyio provisioner: APIToken is required (or pass an SDKClient for tests)")
+			return nil, fmt.Errorf("flysprites provisioner: APIToken is required (or pass an SDKClient for tests)")
 		}
 		c = sprites.New(opts.APIToken)
 	}
@@ -209,7 +212,7 @@ func (p *Provisioner) Stop() {}
 // callers onto a single in-flight provision.
 func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisioner.HostRef, error) {
 	if userID == "" {
-		return provisioner.HostRef{}, fmt.Errorf("flyio provisioner: userID is required")
+		return provisioner.HostRef{}, fmt.Errorf("flysprites provisioner: userID is required")
 	}
 	mu := p.userMutex(userID)
 	mu.Lock()
@@ -259,7 +262,7 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 		return provisioner.HostRef{}, fmt.Errorf("parse sprite URL %q: %w", fresh.URL, err)
 	}
 	transport := &transportpkg.BearerInjector{Token: tokens.auth, Host: parsedURL.Host}
-	hostname := "flyio-" + safeHostnameSuffix(actualName)
+	hostname := "flysprites-" + safeHostnameSuffix(actualName)
 
 	// The Service "started" event only means the process is running;
 	// the edge still serves a 404 page until clank-host binds its port.
@@ -364,7 +367,7 @@ func (p *Provisioner) refToHost(c *cachedHost) provisioner.HostRef {
 // and we lazy-backfill at that point so the next service-recreate
 // picks up the new flag.
 func (p *Provisioner) resolveOrCreate(ctx context.Context, userID, spriteName string) (*sprites.Sprite, bool, hostTokens, error) {
-	row, err := p.store.GetHostByUser(ctx, userID, "flyio")
+	row, err := p.store.GetHostByUser(ctx, userID, Provider)
 	if err == nil {
 		// If the sprite was deleted out-of-band, clear the row and
 		// fall through to recreate.
@@ -381,14 +384,14 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID, spriteName st
 					return nil, false, hostTokens{}, fmt.Errorf("generate notifier-token: %w", mintErr)
 				}
 				tokens.notifier = minted
-				p.log.Printf("flyio provisioner: backfilled notifier_token for existing host %s", row.ID)
+				p.log.Printf("flysprites provisioner: backfilled notifier_token for existing host %s", row.ID)
 			}
 			return sprite, false, tokens, nil
 		}
 		if isNotFound(fetchErr) {
-			p.log.Printf("flyio provisioner: sprite %s for user %s not found upstream; recreating", row.ExternalID, userID)
-			if delErr := p.store.DeleteHostByUser(ctx, userID, "flyio"); delErr != nil {
-				p.log.Printf("flyio provisioner: clear stale row: %v", delErr)
+			p.log.Printf("flysprites provisioner: sprite %s for user %s not found upstream; recreating", row.ExternalID, userID)
+			if delErr := p.store.DeleteHostByUser(ctx, userID, Provider); delErr != nil {
+				p.log.Printf("flysprites provisioner: clear stale row: %v", delErr)
 			}
 			// fall through
 		} else {
@@ -440,7 +443,7 @@ func (p *Provisioner) createSprite(ctx context.Context, name string, cfg *sprite
 	if err != nil {
 		return nil, fmt.Errorf("create sprite %s: %w", name, err)
 	}
-	p.log.Printf("flyio provisioner: sprite %s created in %s", name, time.Since(startCreate).Round(time.Millisecond))
+	p.log.Printf("flysprites provisioner: sprite %s created in %s", name, time.Since(startCreate).Round(time.Millisecond))
 	return sprite, nil
 }
 
@@ -535,11 +538,11 @@ func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, w
 		if got, ok := readSidecar(stat, path+hashSidecarSuffix); ok && got == wantHashHex {
 			return false, nil
 		}
-		p.log.Printf("flyio provisioner: clank-host size matches but hash sidecar missing/stale; reinstalling")
+		p.log.Printf("flysprites provisioner: clank-host size matches but hash sidecar missing/stale; reinstalling")
 	case statErr == nil:
-		p.log.Printf("flyio provisioner: clank-host binary size mismatch (have %d, want %d); replacing", info.Size(), len(want))
+		p.log.Printf("flysprites provisioner: clank-host binary size mismatch (have %d, want %d); replacing", info.Size(), len(want))
 	case errors.Is(statErr, fs.ErrNotExist):
-		p.log.Printf("flyio provisioner: clank-host not present on sprite; installing (%d bytes)", len(want))
+		p.log.Printf("flysprites provisioner: clank-host not present on sprite; installing (%d bytes)", len(want))
 	default:
 		// Transport-level stat failure (sprite still waking, wedged
 		// conn): "couldn't check" is not "absent". Reinstalling here
@@ -556,7 +559,7 @@ func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, w
 		if err == nil || errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
-		p.log.Printf("flyio provisioner: pre-write remove of %s: %v (continuing)", path, err)
+		p.log.Printf("flysprites provisioner: pre-write remove of %s: %v (continuing)", path, err)
 		return nil
 	})
 
@@ -575,7 +578,7 @@ func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, w
 	if err := retryClosedConn(ctx, p.log, func() error {
 		return wf.WriteFileContext(ctx, path+hashSidecarSuffix, []byte(wantHashHex), 0o644)
 	}); err != nil {
-		p.log.Printf("flyio provisioner: stamp hash sidecar: %v (binary still up to date)", err)
+		p.log.Printf("flysprites provisioner: stamp hash sidecar: %v (binary still up to date)", err)
 	}
 	return true, nil
 }
@@ -687,9 +690,9 @@ func (p *Provisioner) ensureAgentCLIInstalledOn(ctx context.Context, spriteName,
 		if installed == pinnedVersion {
 			return false, nil // happy path: present and pinned-version-matched
 		}
-		p.log.Printf("flyio provisioner: %s on %s is %q, want %q — reinstalling at pinned version", tool, spriteName, installed, pinnedVersion)
+		p.log.Printf("flysprites provisioner: %s on %s is %q, want %q — reinstalling at pinned version", tool, spriteName, installed, pinnedVersion)
 	case probeRanOnSprite(probeErr):
-		p.log.Printf("flyio provisioner: %s probe on %s exited non-zero (%v); reinstalling", tool, spriteName, probeErr)
+		p.log.Printf("flysprites provisioner: %s probe on %s exited non-zero (%v); reinstalling", tool, spriteName, probeErr)
 	default:
 		if statFS == nil {
 			return false, fmt.Errorf("%s probe on %s did not complete and no filesystem was provided to verify presence: %w", tool, spriteName, probeErr)
@@ -699,7 +702,7 @@ func (p *Provisioner) ensureAgentCLIInstalledOn(ctx context.Context, spriteName,
 		} else if !errors.Is(statErr, fs.ErrNotExist) {
 			return false, fmt.Errorf("%s probe on %s did not complete and the presence check failed (%v): %w", tool, spriteName, statErr, probeErr)
 		}
-		p.log.Printf("flyio provisioner: %s absent on %s (probe: %v); installing", tool, spriteName, probeErr)
+		p.log.Printf("flysprites provisioner: %s absent on %s (probe: %v); installing", tool, spriteName, probeErr)
 	}
 
 	installCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
@@ -713,7 +716,7 @@ func (p *Provisioner) ensureAgentCLIInstalledOn(ctx context.Context, spriteName,
 		}
 		return false, fmt.Errorf("install %s (sprite=%s): %w\n--- install output ---\n%s\n--- end output ---", tool, spriteName, runErr, trimmed)
 	}
-	p.log.Printf("flyio provisioner: installed %s %s on sprite %s", tool, pinnedVersion, spriteName)
+	p.log.Printf("flysprites provisioner: installed %s %s on sprite %s", tool, pinnedVersion, spriteName)
 	return true, nil
 }
 
@@ -937,9 +940,9 @@ func (p *Provisioner) ensureServiceRunning(ctx context.Context, sprite *sprites.
 			return nil
 		}
 		if forceRecreate {
-			p.log.Printf("flyio provisioner: service %s binary swapped; restarting", serviceName)
+			p.log.Printf("flysprites provisioner: service %s binary swapped; restarting", serviceName)
 		} else {
-			p.log.Printf("flyio provisioner: service %s args drifted; recreating", serviceName)
+			p.log.Printf("flysprites provisioner: service %s args drifted; recreating", serviceName)
 		}
 		if err := retryClosedConn(ctx, p.log, func() error {
 			return sprite.DeleteService(ctx, serviceName)
@@ -1085,7 +1088,7 @@ func (p *Provisioner) persistRow(ctx context.Context, userID, externalID, hostna
 	now := time.Now()
 
 	hostID := ""
-	if existing, err := p.store.GetHostByUser(ctx, userID, "flyio"); err == nil {
+	if existing, err := p.store.GetHostByUser(ctx, userID, Provider); err == nil {
 		hostID = existing.ID
 	} else if !errors.Is(err, hoststore.ErrHostNotFound) {
 		return "", err
@@ -1097,7 +1100,7 @@ func (p *Provisioner) persistRow(ctx context.Context, userID, externalID, hostna
 	rec := hoststore.Host{
 		ID:            hostID,
 		UserID:        userID,
-		Provider:      "flyio",
+		Provider:      Provider,
 		ExternalID:    externalID,
 		Hostname:      hostname,
 		Status:        hoststore.HostStatusRunning,
@@ -1129,7 +1132,7 @@ func (p *Provisioner) SuspendHost(ctx context.Context, hostID string) error {
 	if err != nil {
 		return fmt.Errorf("look up host %s: %w", hostID, err)
 	}
-	p.log.Printf("flyio provisioner: SuspendHost is a no-op for sprite %s (keepalive-gated hibernate)", row.ExternalID)
+	p.log.Printf("flysprites provisioner: SuspendHost is a no-op for sprite %s (keepalive-gated hibernate)", row.ExternalID)
 	return nil
 }
 
@@ -1151,11 +1154,11 @@ func (p *Provisioner) DestroyHost(ctx context.Context, hostID string) error {
 	return nil
 }
 
-// DestroyHostsByUser destroys the user's flyio sprite, if any. Idempotent:
+// DestroyHostsByUser destroys the user's flysprites sprite, if any. Idempotent:
 // returns nil when the user has no row. Force-destroys regardless of session
 // state (account erasure must not be blocked by a busy session).
 func (p *Provisioner) DestroyHostsByUser(ctx context.Context, userID string) error {
-	row, err := p.store.GetHostByUser(ctx, userID, "flyio")
+	row, err := p.store.GetHostByUser(ctx, userID, Provider)
 	if errors.Is(err, hoststore.ErrHostNotFound) {
 		return nil
 	}
@@ -1311,7 +1314,7 @@ func retryClosedConn(ctx context.Context, lg *log.Logger, fn func() error) error
 			return err
 		}
 		if lg != nil {
-			lg.Printf("flyio provisioner: control conn closed (attempt %d/%d): %v; retrying in %s", attempt+1, len(delays), err, delay)
+			lg.Printf("flysprites provisioner: control conn closed (attempt %d/%d): %v; retrying in %s", attempt+1, len(delays), err, delay)
 		}
 		select {
 		case <-time.After(delay):
@@ -1337,7 +1340,7 @@ func (p *Provisioner) wakeViaHTTP(ctx context.Context, sprite *sprites.Sprite) {
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		p.log.Printf("flyio provisioner: wake %s via HTTP: %v (continuing)", sprite.Name(), err)
+		p.log.Printf("flysprites provisioner: wake %s via HTTP: %v (continuing)", sprite.Name(), err)
 		return
 	}
 	resp.Body.Close()
