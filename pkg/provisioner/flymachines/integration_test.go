@@ -24,6 +24,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/acksell/clank/pkg/provisioner/hoststore"
 )
 
 const integrationUserID = "integration-test"
@@ -210,6 +212,14 @@ func TestIntegration_FlyMachines_EndToEnd(t *testing.T) {
 	// Suspend → machine stops; the next dial must wake it (autostart).
 	if err := p.SuspendHost(ctx, ref.HostID); err != nil {
 		t.Fatalf("SuspendHost: %v", err)
+	}
+	if row, err := p.store.GetHostByID(ctx, ref.HostID); err != nil {
+		t.Fatalf("GetHostByID after suspend: %v", err)
+	} else if row.Status != hoststore.HostStatusStopped {
+		t.Errorf("row.Status after suspend = %q, want %q", row.Status, hoststore.HostStatusStopped)
+	}
+	if c := p.cacheGet(integrationUserID); c != nil {
+		t.Error("cache still holds an entry after SuspendHost — next EnsureHost would skip re-persisting fresh state")
 	}
 	waitForState := func(state string) {
 		t.Helper()
