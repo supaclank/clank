@@ -394,11 +394,27 @@
       w.onclose = () => { if (vws === w) vws = null; };
     });
 
+  // A suspended capture graph rots: after the tab has been backgrounded
+  // a while, Chromium/macOS power management can gut the capture path
+  // while everything still reports healthy — track "live", context
+  // resumes to "running" — and the source then delivers pure zeros.
+  // So idle graphs are torn down on a timer (next tap rebuilds fresh,
+  // ~300 ms, no re-prompt) rather than trusted after a long suspend.
+  // Bonus: the OS mic indicator turns off when you're not dictating.
+  const AUDIO_IDLE_TEARDOWN_MS = 60_000;
+  let audioIdleReap = 0;
+  let utterPeak = 0; // max worklet RMS this utterance; 0.0 = digitally dead capture
+
   const teardownAudio = () => {
+    clearTimeout(audioIdleReap);
     if (!audio) return;
     audio.stream.getTracks().forEach((t) => t.stop());
     audio.ctx.close().catch(() => {});
     audio = null;
+  };
+  const scheduleAudioReap = () => {
+    clearTimeout(audioIdleReap);
+    audioIdleReap = setTimeout(teardownAudio, AUDIO_IDLE_TEARDOWN_MS);
   };
   const buildAudio = async () => {
     const ctx = new AudioContext({ sampleRate: 16000 });
@@ -409,6 +425,7 @@
     node.port.onmessage = (e) => {
       if (store.voice === 'recording' && vws && vws.readyState === WebSocket.OPEN) {
         vws.send(e.data.pcm.buffer);
+        if (e.data.level > utterPeak) utterPeak = e.data.level;
         ui.micLevel.style.setProperty('--lvl', Math.min(1, e.data.level * 6).toFixed(2));
       }
     };
@@ -430,6 +447,8 @@
     store.voice = 'recording';
     voiceBase = ui.input.value;
     capturingSince = 0;
+    utterPeak = 0;
+    clearTimeout(audioIdleReap); // in use — don't reap underneath the utterance
     render();
     startingTalk = (async () => {
       await voiceWS();
@@ -471,12 +490,25 @@
       if (vws && vws.readyState === WebSocket.OPEN) vws.send(JSON.stringify({ type: 'cancel' }));
       store.voice = 'idle';
       toast('mic wasn’t ready — try again');
+      scheduleAudioReap();
+      render();
+      return;
+    }
+    if (utterPeak <= 0.0005) {
+      // Real mics always have a noise floor; an utterance whose PEAK is
+      // digital zero means the capture path is dead (rotted suspend),
+      // not a quiet room. Rebuild instead of decoding silence.
+      if (vws && vws.readyState === WebSocket.OPEN) vws.send(JSON.stringify({ type: 'cancel' }));
+      teardownAudio();
+      store.voice = 'idle';
+      toast('mic captured only silence — rebuilt capture, try again');
       render();
       return;
     }
     if (audio) audio.ctx.suspend();
     if (vws && vws.readyState === WebSocket.OPEN) vws.send(JSON.stringify({ type: 'end' }));
     else store.voice = 'idle';
+    scheduleAudioReap();
   };
 
   // talkToggle is the ⇪ binding: tap to start, tap to stop. Toggle (not
