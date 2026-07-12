@@ -7,10 +7,11 @@
 // credentials beyond the injected config.
 //
 // Interaction model (mobile parity, hotkeys instead of shake):
-//   Alt+C          summon / cycle prompt ⇄ chat   (shake analog)
+//   Caps Lock      toggle the prompt box (shake analog)
+//   hold ⌘ / ⌃     momentary element-select; click tags, release exits
+//   hold Space     push-to-talk dictation (box open, composer empty)
 //   Esc            leave inspect mode, else hide
-//   Alt+S          toggle element inspect (click tags an element)
-//   Alt+V (hold)   push-to-talk dictation
+//   header tap     expand / collapse the chat view
 //
 // Element → source resolution prefers deterministic compiler metadata:
 // Svelte dev mode stamps every node with __svelte_meta.loc; React ≤18
@@ -25,8 +26,11 @@
 
   const CFG = window.__CLANK_PREVIEW || {};
   const TOKEN = CFG.token || '';
-  const HOTKEYS = { toggle: 'KeyC', inspect: 'KeyS', talk: 'KeyV' };
   const DONE_LINGER_MS = 8000; // mobile: PreviewOverlayState.DONE_LINGER_MS
+  // macOS fires CapsLock keydown when the lock engages and keyup when it
+  // disengages — one event per physical press, alternating type. Other
+  // platforms fire a normal down/up pair per press.
+  const IS_MAC = /Mac|iP(hone|ad|od)/.test(navigator.platform);
 
   // ---------- console error ring (context for "why is this broken") ----
   const recentErrors = [];
@@ -545,7 +549,7 @@
     <span class="micLevel" style="display:none"></span>
     <button class="ib send" title="Send (Enter)">↑</button>
   </div>
-  <div class="hint"><kbd>⌥C</kbd> toggle · <kbd>⌥S</kbd> select · hold <kbd>⌥V</kbd> talk · <kbd>Esc</kbd> hide</div>
+  <div class="hint"><kbd>⇪</kbd> toggle · hold <kbd>⌘</kbd> select · hold <kbd>space</kbd> talk · <kbd>Esc</kbd> hide</div>
 </div>
 <div class="hl"></div><div class="hll"></div><div class="toast"></div>`;
 
@@ -640,11 +644,6 @@
     render();
     if (s !== 'hidden') setTimeout(() => ui.input.focus(), 0);
   };
-  const cycle = () => {
-    if (store.box === 'hidden') setBox('prompt');
-    else if (store.box === 'prompt') setBox('chat');
-    else setBox('prompt');
-  };
 
   // ---------- inspector -----------------------------------------------------
   let hoverEl = null;
@@ -692,10 +691,11 @@
     e.stopPropagation();
     if (hoverEl) {
       store.chips.push(chipFromElement(hoverEl));
-      toast('added to context — shift-click to keep selecting');
+      toast('added to context');
     }
-    if (!e.shiftKey) exitInspect();
-    else render();
+    // Stay in select mode: it ends when the held modifier is released
+    // (momentary), or via Esc / the ⌖ button (toggled).
+    render();
   };
 
   // ---------- drag -----------------------------------------------------------
@@ -716,9 +716,15 @@
       ui.box.dataset.x = x; ui.box.dataset.y = y;
       ui.box.style.transform = `translate(${x}px, ${y}px)`;
     });
-    hd.addEventListener('pointerup', () => {
+    hd.addEventListener('pointerup', (e) => {
       dragging = false;
       sessionStorage.setItem('clank.boxPos', JSON.stringify({ x: parseFloat(ui.box.dataset.x || '0'), y: parseFloat(ui.box.dataset.y || '0') }));
+      // A drag that never really moved is a tap: toggle the chat view
+      // (the old second-keypress cycle, now that ⇪ is a plain toggle).
+      if (Math.abs(e.clientX - sx) + Math.abs(e.clientY - sy) < 4) {
+        store.box = store.box === 'chat' ? 'prompt' : 'chat';
+        render();
+      }
     });
   })();
 
@@ -736,37 +742,70 @@
   });
   ui.input.addEventListener('input', syncComposerHeight);
 
+  // Keybindings: ⇪ toggles the box · hold Space = push-to-talk · hold
+  // ⌘/⌃ = momentary element-select · Esc leaves inspect / hides.
+  const realTarget = (e) => (e.composedPath ? e.composedPath()[0] : e.target);
+  const isEditable = (el) => !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName || ''));
+  const capsToggle = () => setBox(store.box === 'hidden' ? 'prompt' : 'hidden');
+
+  // Momentary select: entering on the modifier's bare keydown would
+  // flash the crosshair on every ⌘C/⌘R/⌘T, so inspect only engages
+  // after the modifier has been held alone for a beat — any other key
+  // in the window cancels the intent (it was a shortcut, not a hold).
+  const MOD_HOLD_MS = 200;
+  let modHoldTimer = 0;
+  let modInspect = false;
+  const cancelModHold = () => { if (modHoldTimer) { clearTimeout(modHoldTimer); modHoldTimer = 0; } };
+
   window.addEventListener('keydown', (e) => {
-    if (e.altKey && !e.metaKey && !e.ctrlKey) {
-      // A held key auto-repeats keydown. The binding must own EVERY
-      // event of its combo — preventDefault unconditionally, act only
-      // on the first — or the repeats fall through and type the
-      // layout's Alt-character into the focused composer (e.g. ⌥V
-      // repeats "‹‹‹‹…" on Nordic layouts while push-to-talk is held).
-      const bound =
-        e.code === HOTKEYS.toggle ||
-        e.code === HOTKEYS.inspect ||
-        (e.code === HOTKEYS.talk && store.voice !== 'off');
-      if (bound) {
+    if (e.code === 'CapsLock') {
+      if (!e.repeat) capsToggle();
+      return; // the OS lock state changes regardless; nothing to prevent
+    }
+    if (e.key === 'Meta' || e.key === 'Control') {
+      if (store.box !== 'hidden' && !store.inspect && !e.repeat && !modHoldTimer) {
+        modHoldTimer = setTimeout(() => {
+          modHoldTimer = 0;
+          modInspect = true;
+          enterInspect();
+        }, MOD_HOLD_MS);
+      }
+      return; // never preventDefault a bare modifier — shortcuts must keep working
+    }
+    cancelModHold(); // some other key while the modifier was held: it's a shortcut
+
+    if (e.code === 'Space' && store.box !== 'hidden' && store.voice !== 'off') {
+      // Space types a space wherever there is typing intent: any
+      // editable element with content, including the guest app's own
+      // inputs. An EMPTY composer (or non-editable focus) means the
+      // user isn't writing — hold-to-talk takes the key.
+      const t = realTarget(e);
+      const typing = isEditable(t) && !(t === ui.input && !ui.input.value);
+      if (!typing) {
         e.preventDefault();
         e.stopPropagation();
-        if (e.repeat) return;
-        if (e.code === HOTKEYS.toggle) cycle();
-        else if (e.code === HOTKEYS.inspect) store.inspect ? exitInspect() : enterInspect();
-        else {
-          if (store.box === 'hidden') setBox('prompt');
-          startTalk();
-        }
+        if (!e.repeat) startTalk();
         return;
       }
     }
     if (e.key === 'Escape') {
-      if (store.inspect) { e.preventDefault(); e.stopPropagation(); exitInspect(); }
+      if (store.inspect) { e.preventDefault(); e.stopPropagation(); modInspect = false; exitInspect(); }
       else if (store.box !== 'hidden') { e.preventDefault(); e.stopPropagation(); setBox('hidden'); }
     }
   }, true);
+
   window.addEventListener('keyup', (e) => {
-    if (e.code === HOTKEYS.talk && store.voice === 'recording') { e.preventDefault(); stopTalk(); }
+    if (e.code === 'CapsLock') {
+      // macOS reports the lock-off press as keyup only (no keydown).
+      if (IS_MAC) capsToggle();
+      return;
+    }
+    if (e.key === 'Meta' || e.key === 'Control') {
+      cancelModHold();
+      if (modInspect) { modInspect = false; exitInspect(); }
+      return;
+    }
+    if (e.code === 'Space' && store.voice === 'recording') { e.preventDefault(); stopTalk(); }
   }, true);
 
   const mount = () => (document.body ? document.body.appendChild(host) : requestAnimationFrame(mount));
