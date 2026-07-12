@@ -394,13 +394,15 @@
       w.onclose = () => { if (vws === w) vws = null; };
     });
 
-  // A suspended capture graph rots: after the tab has been backgrounded
-  // a while, Chromium/macOS power management can gut the capture path
-  // while everything still reports healthy — track "live", context
-  // resumes to "running" — and the source then delivers pure zeros.
-  // So idle graphs are torn down on a timer (next tap rebuilds fresh,
-  // ~300 ms, no re-prompt) rather than trusted after a long suspend.
-  // Bonus: the OS mic indicator turns off when you're not dictating.
+  // A suspended capture graph rots when the tab is BACKGROUNDED:
+  // Chromium/macOS power management guts the capture path while
+  // everything still reports healthy — track "live", context resumes
+  // to "running" — and the source then delivers pure zeros. Teardown
+  // therefore fires on the actual trigger (the tab going hidden; a
+  // hidden tab can't be dictated into, so a warm graph there is pure
+  // rot risk), not on a guessed timer. The idle timer below is only
+  // foreground hygiene: it turns the OS mic indicator off when you
+  // haven't dictated in a while. Rebuild costs ~300 ms, no re-prompt.
   const AUDIO_IDLE_TEARDOWN_MS = 60_000;
   let audioIdleReap = 0;
   let utterPeak = 0; // max worklet RMS this utterance; 0.0 = digitally dead capture
@@ -414,8 +416,15 @@
   };
   const scheduleAudioReap = () => {
     clearTimeout(audioIdleReap);
-    audioIdleReap = setTimeout(teardownAudio, AUDIO_IDLE_TEARDOWN_MS);
+    if (document.hidden) teardownAudio(); // already backgrounded — don't let it rot
+    else audioIdleReap = setTimeout(teardownAudio, AUDIO_IDLE_TEARDOWN_MS);
   };
+  document.addEventListener('visibilitychange', () => {
+    // Mid-recording backgrounds are left alone: an ACTIVE graph keeps
+    // capturing (that's a deliberate cmd-tab while dictating), and it
+    // is torn down at stopTalk via scheduleAudioReap seeing hidden.
+    if (document.hidden && store.voice !== 'recording') teardownAudio();
+  });
   const buildAudio = async () => {
     const ctx = new AudioContext({ sampleRate: 16000 });
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
@@ -501,7 +510,7 @@
       if (vws && vws.readyState === WebSocket.OPEN) vws.send(JSON.stringify({ type: 'cancel' }));
       teardownAudio();
       store.voice = 'idle';
-      toast('mic captured only silence — rebuilt capture, try again');
+      toast('the mic went quiet — reconnected it, just try again');
       render();
       return;
     }
