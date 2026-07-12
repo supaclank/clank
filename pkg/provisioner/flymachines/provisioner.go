@@ -142,6 +142,7 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 
 	// Fast path: Flycast autostart wakes a stopped machine on the
 	// gateway's dial, so no pre-probe and no API traffic.
+	// TODO(ai-review): no TTL/revalidation — out-of-band `fly apps destroy` on a warm-cached user isn't detected until daemon restart (interface contract says EnsureHost detects provider-side deletion). Repo-wide with flyio. https://github.com/Acksell/clank/pull/128#discussion_r3565309498
 	if c := p.cacheGet(userID); c != nil {
 		return p.refToHost(c), nil
 	}
@@ -158,7 +159,11 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 		return provisioner.HostRef{}, err
 	}
 
-	transport := &transportpkg.BearerInjector{Token: tokens.auth, Host: hostPortOf(c.url)}
+	hostPort, err := hostPortOf(c.url)
+	if err != nil {
+		return provisioner.HostRef{}, fmt.Errorf("machine %s in app %s: %w", c.machineID, c.appName, err)
+	}
+	transport := &transportpkg.BearerInjector{Token: tokens.auth, Host: hostPort}
 	c.transport = transport
 	c.authToken = tokens.auth
 
@@ -271,6 +276,7 @@ func (p *Provisioner) ensureApp(ctx context.Context, appName string) error {
 	} else if !isNotFound(err) {
 		return fmt.Errorf("get app %s: %w", appName, err)
 	}
+	// TODO(ai-review): a global app-name collision surfaces from GetApp as 401 (not 404), so isNotFound is false and this create path never runs — the "change AppNamePrefix" remedy is unreachable and reads as a broken token. But 401 also = genuinely bad token, so auto-classifying it as name-taken is itself risky; needs the AppNameAvailable check. https://github.com/Acksell/clank/pull/128#discussion_r3565338509
 	_, err := p.flaps.CreateApp(ctx, flaps.CreateAppRequest{
 		Name:    appName,
 		Org:     p.opts.OrgSlug,
@@ -292,6 +298,7 @@ func (p *Provisioner) ensureFlycast(ctx context.Context, appName string) (string
 	if err != nil {
 		return "", fmt.Errorf("list ip assignments for %s: %w", appName, err)
 	}
+	// TODO(ai-review): doesn't verify the existing flycast lives on opts.GatewayNetwork — a gateway_network change after tenants exist strands them on an unreachable IP; fix is delete-and-reallocate (fly-go's IPAssignment carries no network field). https://github.com/Acksell/clank/pull/128#discussion_r3565309614
 	for _, ip := range assignments.IPs {
 		if ip.IsFlycast() {
 			return ip.IP, nil
@@ -322,6 +329,7 @@ func (p *Provisioner) ensureVolume(ctx context.Context, appName string) (string,
 			return v.ID, nil
 		}
 	}
+	// TODO(ai-review): volume region+size are matched by name only, never reconciled — a region change plus a machine re-create requests a cross-region mount Fly rejects forever, and volume_size_gb changes are silently ignored while guest/image DO reconcile. https://github.com/Acksell/clank/pull/128#discussion_r3565309644
 	size := p.opts.VolumeSizeGB
 	retention := DefaultSnapshotRetentionDays
 	vol, err := p.flaps.CreateVolume(ctx, appName, fly.CreateVolumeRequest{
@@ -341,7 +349,9 @@ func (p *Provisioner) ensureVolume(ctx context.Context, appName string) (string,
 // applied on this cold-create only (one-shot restore hooks); steady-
 // state env stays deterministic for the drift check.
 func (p *Provisioner) ensureMachine(ctx context.Context, appName, volumeID string, tokens hostTokens, userID string) (string, error) {
-	machines, err := p.flaps.List(ctx, appName, "")
+	// ListActive excludes destroyed/destroying machines — a plain List
+	// would adopt a dead "clank-host" record and never relaunch.
+	machines, err := p.flaps.ListActive(ctx, appName)
 	if err != nil {
 		return "", fmt.Errorf("list machines for %s: %w", appName, err)
 	}
@@ -350,14 +360,16 @@ func (p *Provisioner) ensureMachine(ctx context.Context, appName, volumeID strin
 			return m.ID, nil
 		}
 	}
-	var extraEnv map[string]string
-	if p.opts.ExtraEnvFor != nil {
-		extraEnv = p.opts.ExtraEnvFor(userID)
+	var oneShot map[string]string
+	if p.opts.RestoreURLFor != nil {
+		if u := p.opts.RestoreURLFor(userID); u != "" {
+			oneShot = map[string]string{restoreEnvKey: u}
+		}
 	}
 	m, err := p.flaps.Launch(ctx, appName, fly.LaunchMachineInput{
 		Name:   machineName,
 		Region: p.opts.Region,
-		Config: buildMachineConfig(p.opts, tokens, volumeID, extraEnv),
+		Config: buildMachineConfig(p.opts, tokens, volumeID, oneShot),
 	})
 	if err != nil {
 		return "", fmt.Errorf("launch machine in %s: %w", appName, err)
@@ -398,8 +410,8 @@ func oneShotEnv(cfg *fly.MachineConfig) map[string]string {
 	if cfg == nil {
 		return nil
 	}
-	if v, ok := cfg.Env["CLANK_RESTORE_URL"]; ok {
-		return map[string]string{"CLANK_RESTORE_URL": v}
+	if v, ok := cfg.Env[restoreEnvKey]; ok {
+		return map[string]string{restoreEnvKey: v}
 	}
 	return nil
 }
@@ -410,6 +422,7 @@ func oneShotEnv(cfg *fly.MachineConfig) map[string]string {
 // The deadline is the caller's ctx (EnsureHost bounds it with
 // ProvisionTimeout) — a cold create's image pull alone can outlast
 // any tighter local timer.
+// TODO(ai-review): blind /status poll — a crash-looping image burns the full ProvisionTimeout (each probe re-autostarts + re-crashes) and reports only "connection refused"; fly-go's Machine.State + MachineExitEvent (ExitCode/OOMKilled) could fail fast with the real cause. https://github.com/Acksell/clank/pull/128#discussion_r3565309567
 func waitForHostReady(ctx context.Context, baseURL string, transport http.RoundTripper) error {
 	tick := time.NewTicker(500 * time.Millisecond)
 	defer tick.Stop()
@@ -419,19 +432,29 @@ func waitForHostReady(ctx context.Context, baseURL string, transport http.RoundT
 	var lastErr error
 	for {
 		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		req, _ := http.NewRequestWithContext(probeCtx, http.MethodGet, statusURL, nil)
+		req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, statusURL, nil)
+		if err != nil {
+			cancel()
+			// A malformed statusURL never becomes valid — fail fast
+			// instead of nil-deref panicking in client.Do(nil).
+			return fmt.Errorf("build status request for %q: %w", statusURL, err)
+		}
 		resp, err := client.Do(req)
-		cancel()
 		if err == nil {
+			// Read the body BEFORE cancel — cancelling the ctx first
+			// aborts the in-flight read, blanking the one diagnostic a
+			// non-200 carries.
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
+				cancel()
 				return nil
 			}
 			lastErr = fmt.Errorf("status %d body=%q", resp.StatusCode, snippet(string(body)))
 		} else {
 			lastErr = err
 		}
+		cancel()
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("timed out waiting for host ready (last: %v)", lastErr)
@@ -449,15 +472,20 @@ func snippet(s string) string {
 	return s
 }
 
-// hostPortOf extracts host:port from a URL for bearer pinning; falls
-// back to the raw string on parse failure (the bearer then never
-// injects, which fails closed).
-func hostPortOf(rawURL string) string {
+// hostPortOf extracts host:port from a URL for bearer pinning. Fails
+// fast on a malformed URL (e.g. a garbage flycast IP from the Fly API)
+// rather than silently returning the raw string — a mismatched pin
+// would drop the bearer, and swallowing it here masks the real fault
+// (repo no-fallbacks rule).
+func hostPortOf(rawURL string) (string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return rawURL
+		return "", fmt.Errorf("parse host URL %q: %w", rawURL, err)
 	}
-	return u.Host
+	if u.Host == "" {
+		return "", fmt.Errorf("host URL %q has no host:port", rawURL)
+	}
+	return u.Host, nil
 }
 
 func (p *Provisioner) persistRow(ctx context.Context, userID string, c *cachedHost, tokens hostTokens) (string, error) {
@@ -501,26 +529,45 @@ func (p *Provisioner) SuspendHost(ctx context.Context, hostID string) error {
 	if err != nil {
 		return fmt.Errorf("look up host %s: %w", hostID, err)
 	}
+	// Serialize against a concurrent EnsureHost for the same user so
+	// the stop + status write can't interleave with a provision's row
+	// write (which would restore stale running-state / an old token).
+	mu := p.userMutex(row.UserID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	machineID, err := p.machineIDForApp(ctx, row.ExternalID, row.UserID)
 	if err != nil {
 		return err
 	}
-	// "already stopped" isn't a failure, but still falls through to the
-	// status/cache update below — a prior partial failure (Stop succeeded,
-	// UpsertHost didn't) must self-heal on this idempotent retry instead of
-	// short-circuiting past it again.
-	if err := p.flaps.Stop(ctx, row.ExternalID, fly.StopMachineInput{ID: machineID}, ""); err != nil &&
-		!strings.Contains(strings.ToLower(err.Error()), "already") {
+	if err := p.flaps.Stop(ctx, row.ExternalID, fly.StopMachineInput{ID: machineID}, ""); err != nil && !isAlreadyStopped(err) {
 		return fmt.Errorf("stop machine %s in %s: %w", machineID, row.ExternalID, err)
 	}
+	// Record stopped + drop the cache on every success path, including
+	// the already-stopped one (a machine that idle-exited on its own) —
+	// otherwise the row keeps reporting Running and the warm cache
+	// serves a stale ref.
 	row.Status = hoststore.HostStatusStopped
 	row.UpdatedAt = time.Now()
 	if err := p.store.UpsertHost(ctx, row); err != nil {
 		p.log.Printf("flymachines: update status after suspend %s: %v", hostID, err)
 	}
-	// Drop in-memory cache so the next EnsureHost re-resolves and persists fresh state.
 	p.cacheDrop(row.UserID)
 	return nil
+}
+
+// isAlreadyStopped matches Fly's "machine already stopped" response so
+// suspending an idle-exited machine is a no-op success. Narrower than
+// a bare "already" substring — it must not swallow lease/state errors
+// that also contain "already".
+func isAlreadyStopped(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "already stopped") ||
+		strings.Contains(msg, "already in stopped state") ||
+		(strings.Contains(msg, "machine still active") && strings.Contains(msg, "stopped"))
 }
 
 // machineIDForApp resolves the app's single machine, preferring the
@@ -529,7 +576,7 @@ func (p *Provisioner) machineIDForApp(ctx context.Context, appName, userID strin
 	if c := p.cacheGet(userID); c != nil && c.appName == appName {
 		return c.machineID, nil
 	}
-	machines, err := p.flaps.List(ctx, appName, "")
+	machines, err := p.flaps.ListActive(ctx, appName)
 	if err != nil {
 		return "", fmt.Errorf("list machines for %s: %w", appName, err)
 	}
@@ -550,7 +597,19 @@ func (p *Provisioner) DestroyHost(ctx context.Context, hostID string) error {
 	if err != nil {
 		return fmt.Errorf("look up host %s: %w", hostID, err)
 	}
-	appName := row.ExternalID
+	mu := p.userMutex(row.UserID)
+	mu.Lock()
+	defer mu.Unlock()
+	return p.destroyLocked(ctx, hostID, row.UserID, row.ExternalID)
+}
+
+// destroyLocked runs the teardown with the per-user mutex already
+// held. Drops the warm cache FIRST (deferred) so any partial upstream
+// failure can't leave the EnsureHost fast path serving a half-
+// destroyed host — a stale cache entry would brick the user until a
+// daemon restart, whereas a dropped cache just re-resolves.
+func (p *Provisioner) destroyLocked(ctx context.Context, hostID, userID, appName string) error {
+	defer p.cacheDrop(userID)
 
 	machines, err := p.flaps.List(ctx, appName, "")
 	if err != nil && !isNotFound(err) {
@@ -576,14 +635,19 @@ func (p *Provisioner) DestroyHost(ctx context.Context, hostID string) error {
 	if err := p.store.DeleteHostByID(ctx, hostID); err != nil {
 		return fmt.Errorf("delete host row %s: %w", hostID, err)
 	}
-	p.cacheDrop(row.UserID)
 	return nil
 }
 
 // DestroyHostsByUser destroys the user's machine host, if any.
 // Idempotent; force-destroys regardless of session state (account
-// erasure must not be blocked by a busy session).
+// erasure must not be blocked by a busy session). Holds the per-user
+// mutex across the lookup AND teardown so a concurrent EnsureHost
+// can't re-insert a row after erasure (resurrecting the account).
 func (p *Provisioner) DestroyHostsByUser(ctx context.Context, userID string) error {
+	mu := p.userMutex(userID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	row, err := p.store.GetHostByUser(ctx, userID, Provider)
 	if errors.Is(err, hoststore.ErrHostNotFound) {
 		return nil
@@ -591,7 +655,7 @@ func (p *Provisioner) DestroyHostsByUser(ctx context.Context, userID string) err
 	if err != nil {
 		return fmt.Errorf("look up host for user %s: %w", userID, err)
 	}
-	return p.DestroyHost(ctx, row.ID)
+	return p.destroyLocked(ctx, row.ID, userID, row.ExternalID)
 }
 
 // --- concurrency helpers (same shape as the other providers) ---
@@ -600,6 +664,9 @@ func (p *Provisioner) DestroyHostsByUser(ctx context.Context, userID string) err
 func (p *Provisioner) userMutex(userID string) *sync.Mutex {
 	p.keyMuMap.Lock()
 	defer p.keyMuMap.Unlock()
+	if p.keyMu == nil {
+		p.keyMu = map[string]*sync.Mutex{}
+	}
 	if mu, ok := p.keyMu[userID]; ok {
 		return mu
 	}
@@ -645,8 +712,12 @@ func generateNotifierToken() (string, error) {
 	return "clnk_" + base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// isNotFound matches flaps 404s. flaps returns *flaps.FlapsError with
-// the status code; fall back to string matching for wrapped paths.
+// isNotFound reports a genuine flaps 404. It trusts ONLY the typed
+// *flaps.FlapsError status — no string fallback: a transport error
+// (*url.Error) embeds the request URL, i.e. the app name, whose
+// 16-hex-char hash contains "404" for ~1 in 315 users, and misreading
+// that as "app gone" triggers destructive recovery (row deletion,
+// skipped volume delete). An unclassifiable error is NOT a 404.
 func isNotFound(err error) bool {
 	if err == nil {
 		return false
@@ -654,6 +725,5 @@ func isNotFound(err error) bool {
 	if fe, ok := errors.AsType[*flaps.FlapsError](err); ok {
 		return fe.ResponseStatusCode == http.StatusNotFound
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "not found") || strings.Contains(msg, "404")
+	return false
 }

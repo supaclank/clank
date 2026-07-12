@@ -22,6 +22,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -197,10 +198,16 @@ func TestIntegration_FlyMachines_EndToEnd(t *testing.T) {
 
 	ref, err := p.EnsureHost(ctx, integrationUserID)
 	if err != nil {
-		// Distinguish "no network path" (skip) from a real failure:
-		// provisioning succeeded iff the app exists.
+		// Skip ONLY for the genuine no-network-path case: everything
+		// provisioned (app + machine both exist) but the readiness probe
+		// couldn't reach the Flycast address. Checking machine existence
+		// (not just the app, which is created first) means a real
+		// failure in volume/machine/reconcile still FAILS rather than
+		// masquerading as the skip — this is the only e2e coverage of
+		// the full EnsureHost pipeline.
 		appName := appNameFor(p.opts.AppNamePrefix, integrationUserID)
-		if _, appErr := p.flaps.GetApp(ctx, appName); appErr == nil {
+		_, machineErr := p.machineIDForApp(ctx, appName, integrationUserID)
+		if machineErr == nil && strings.Contains(err.Error(), "never reached ready") {
 			t.Skipf("EnsureHost readiness probe failed (%v) — flycast is only reachable inside the org network; run `fly wireguard create` and activate the peer to run this tier", err)
 		}
 		t.Fatalf("EnsureHost: %v", err)
@@ -240,8 +247,12 @@ func TestIntegration_FlyMachines_EndToEnd(t *testing.T) {
 	waitForState("stopped")
 
 	// The wake path: a plain TCP dial of the flycast address.
+	hostPort, err := hostPortOf(ref.URL)
+	if err != nil {
+		t.Fatalf("hostPortOf(%q): %v", ref.URL, err)
+	}
 	start := time.Now()
-	conn, err := net.DialTimeout("tcp", hostPortOf(ref.URL), 15*time.Second)
+	conn, err := net.DialTimeout("tcp", hostPort, 15*time.Second)
 	if err != nil {
 		t.Fatalf("dial stopped machine via flycast: %v", err)
 	}

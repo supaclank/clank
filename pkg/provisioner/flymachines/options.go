@@ -74,12 +74,26 @@ type Options struct {
 	PreviewWebhookURL   string
 	GitHubOAuthClientID string
 
-	// ExtraEnvFor, when non-nil, contributes additional machine env
-	// for a user's FIRST provision (e.g. a one-shot CLANK_RESTORE_URL
-	// for sandbox migration). Applied on cold create only — steady-
-	// state env must stay deterministic for the drift check.
-	ExtraEnvFor func(userID string) map[string]string
+	// TemplatesJSON is the operator's builtin create-project catalog,
+	// forwarded to clank-host as $CLANK_TEMPLATES (the flyio provider's
+	// equivalent knob). Empty means the host serves only the user's own
+	// GitHub templates. Part of steady-state machine env so it survives
+	// the drift reconcile.
+	TemplatesJSON string
+
+	// RestoreURLFor, when non-nil and returning non-empty, supplies a
+	// one-shot CLANK_RESTORE_URL for a user's FIRST provision (sandbox
+	// migration: the entrypoint unpacks the tarball, then a marker file
+	// makes it idempotent). Cold-create only, and reconcile preserves
+	// exactly this one key — a single named key rather than an
+	// arbitrary map so nothing the drift check can't account for ever
+	// reaches the machine env.
+	RestoreURLFor func(userID string) string
 }
+
+// restoreEnvKey is the single one-shot env key. Named once so
+// buildMachineConfig (cold create) and oneShotEnv (reconcile) agree.
+const restoreEnvKey = "CLANK_RESTORE_URL"
 
 // withDefaults validates required fields and fills zero values.
 func (o Options) withDefaults() (Options, error) {
@@ -112,6 +126,13 @@ func (o Options) withDefaults() (Options, error) {
 	}
 	if o.VolumeSizeGB == 0 {
 		o.VolumeSizeGB = DefaultVolumeSizeGB
+	}
+	// The mount's auto-extend ceiling is DefaultVolumeSizeLimitGB; a
+	// starting size above it would leave the limit below the volume's
+	// own size (rejected config / inert auto-extension). Fail fast
+	// rather than ship a broken mount.
+	if o.VolumeSizeGB > DefaultVolumeSizeLimitGB {
+		return o, fmt.Errorf("flymachines: VolumeSizeGB %d exceeds the auto-extend limit %d", o.VolumeSizeGB, DefaultVolumeSizeLimitGB)
 	}
 	if o.ProvisionTimeout == 0 {
 		o.ProvisionTimeout = DefaultProvisionTimeout

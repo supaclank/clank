@@ -20,16 +20,13 @@ import (
 //     the entire wake path (HostRef.AutoWake=true).
 //   - One raw-TCP service on HostPort, no handlers: gateway↔machine
 //     traffic is in-org (Flycast); TLS terminates at the gateway edge.
-func buildMachineConfig(opts Options, tokens hostTokens, volumeID string, extraEnv map[string]string) *fly.MachineConfig {
-	// extraEnv merges first so the reserved CLANK_* keys below always win —
-	// an ExtraEnvFor callback accidentally reusing one must not weaken auth
-	// or the keepalive contract.
-	env := map[string]string{}
-	maps.Copy(env, extraEnv)
-	env["CLANK_HOST_PORT"] = fmt.Sprintf("%d", HostPort)
-	env["CLANK_HOST_AUTH_TOKEN"] = tokens.auth
-	env["CLANK_NOTIFIER_TOKEN"] = tokens.notifier
-	env["CLANK_KEEPALIVE_PROVIDER"] = "exit"
+func buildMachineConfig(opts Options, tokens hostTokens, volumeID string, oneShotEnv map[string]string) *fly.MachineConfig {
+	env := map[string]string{
+		"CLANK_HOST_PORT":          fmt.Sprintf("%d", HostPort),
+		"CLANK_HOST_AUTH_TOKEN":    tokens.auth,
+		"CLANK_NOTIFIER_TOKEN":     tokens.notifier,
+		"CLANK_KEEPALIVE_PROVIDER": "exit",
+	}
 	if opts.NotifierWebhookURL != "" {
 		env["CLANK_NOTIFIER_PROVIDER"] = "webhook"
 		env["CLANK_NOTIFIER_WEBHOOK_URL"] = opts.NotifierWebhookURL
@@ -40,6 +37,14 @@ func buildMachineConfig(opts Options, tokens hostTokens, volumeID string, extraE
 	if opts.GitHubOAuthClientID != "" {
 		env["CLANK_GITHUB_OAUTH_CLIENT_ID"] = opts.GitHubOAuthClientID
 	}
+	if opts.TemplatesJSON != "" {
+		// Builtin create-project catalog. Must be part of the machine
+		// config (not ExtraEnvFor) so it's steady-state and survives the
+		// drift reconcile — otherwise a machine-backed host serves an
+		// empty GET /templates (regression vs sprites' --templates-json).
+		env["CLANK_TEMPLATES"] = opts.TemplatesJSON
+	}
+	maps.Copy(env, oneShotEnv)
 
 	swap := opts.SwapSizeMB
 	return &fly.MachineConfig{
@@ -57,7 +62,11 @@ func buildMachineConfig(opts Options, tokens hostTokens, volumeID string, extraE
 			Path:                   "/data",
 			ExtendThresholdPercent: 80,
 			AddSizeGb:              DefaultVolumeExtendGB,
-			SizeGbLimit:            DefaultVolumeSizeLimitGB,
+			// Auto-extend ceiling must be ≥ the volume's own size, else
+			// Fly rejects the config / auto-extension is inert. withDefaults
+			// guarantees VolumeSizeGB ≤ DefaultVolumeSizeLimitGB, so take
+			// whichever is larger to stay correct if that ever changes.
+			SizeGbLimit: max(DefaultVolumeSizeLimitGB, opts.VolumeSizeGB),
 		}},
 		Services: []fly.MachineService{{
 			Protocol:     "tcp",

@@ -131,6 +131,9 @@ func buildFlyMachinesProvisioner(opts ServerOptions, st *store.Store, prefs conf
 		NotifierWebhookURL:  notifierWebhookURL(),
 		PreviewWebhookURL:   previewWebhookURL(),
 		GitHubOAuthClientID: os.Getenv("CLANK_GITHUB_OAUTH_CLIENT_ID"),
+		// Forward the builtin template catalog to the machine host
+		// (host owns GET /templates), same env the sprite provider reads.
+		TemplatesJSON: os.Getenv("CLANK_TEMPLATES"),
 	}, st, log.Default())
 	if err != nil {
 		return nil, nil, fmt.Errorf("build flymachines provisioner: %w", err)
