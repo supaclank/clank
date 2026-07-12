@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   # Headline guardrail: the clank-host binary is committed and pushed to
-  # sprites verbatim by the flyio provisioner. If the committed copy drifts
+  # sprites verbatim by the flysprites provisioner. If the committed copy drifts
   # from the source, the gateway ships an old clank-host that 400s every
   # sprite apply (the apply-protocol mismatch this prevents) — invisible at
   # the gateway, fatal on the sprite. Rebuild it and fail on any drift.

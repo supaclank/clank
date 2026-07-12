@@ -20,7 +20,7 @@ func mustOpenStore(t *testing.T) *store.Store {
 	return s
 }
 
-// TestDestroyHostsByUser_NoHostIsNoOp: erasing a user with no flyio row is a
+// TestDestroyHostsByUser_NoHostIsNoOp: erasing a user with no flysprites row is a
 // clean no-op (idempotent) — the not-found lookup never reaches the client.
 func TestDestroyHostsByUser_NoHostIsNoOp(t *testing.T) {
 	t.Parallel()
@@ -101,7 +101,7 @@ func TestSafeHostnameSuffix(t *testing.T) {
 }
 
 // Bearer-injector unit tests live alongside the shared type in
-// internal/provisioner/transport — the flyio provisioner just wires
+// internal/provisioner/transport — the flysprites provisioner just wires
 // it together with the parsed sprite URL host.
 
 // TestSpriteNameFor_DistinctInputsDistinctNames pins the regression

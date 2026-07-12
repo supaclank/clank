@@ -2,8 +2,8 @@
   "remote_hub": {
     "auth_token": "<set in local docker/preferences.json>"
   },
-  "default_launch_host_provider": "flyio",
-  "flyio": {
+  "default_launch_host_provider": "flysprites",
+  "flysprites": {
     "api_token": "<set in local docker/preferences.json>",
     "organization_slug": "<your-fly-org-slug>",
     "sprite_name_prefix": "test-clank-docker-123"

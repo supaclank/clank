@@ -3,7 +3,7 @@ package flysprites_test
 // Real-sprite integration tests. Skipped unless SPRITES_TOKEN is in
 // the env so default `go test ./...` stays fast and sandbox-free.
 //
-//   SPRITES_TOKEN=$YOUR_TOKEN go test -count=1 -run TestIntegration_FlyIO ./pkg/provisioner/flysprites/...
+//   SPRITES_TOKEN=$YOUR_TOKEN go test -count=1 -run TestIntegration_FlySprites ./pkg/provisioner/flysprites/...
 
 import (
 	"context"
@@ -39,10 +39,10 @@ func newGatewayHandler(prov provisioner.Provisioner) (http.Handler, error) {
 	return auth.Middleware(gw.Handler(), &auth.AllowAll{UserID: "local"}), nil
 }
 
-// loadFlyIOCreds returns Sprites creds from SPRITES_TOKEN, falling
+// loadFlySpritesCreds returns Sprites creds from SPRITES_TOKEN, falling
 // back to CLANK_DIR/preferences.json on non-short runs. Skips when
 // neither yields a token.
-func loadFlyIOCreds(t *testing.T) (token, org string) {
+func loadFlySpritesCreds(t *testing.T) (token, org string) {
 	t.Helper()
 	if v := os.Getenv("SPRITES_TOKEN"); v != "" {
 		return v, os.Getenv("SPRITES_ORG")
@@ -62,15 +62,15 @@ func loadFlyIOCreds(t *testing.T) (token, org string) {
 		t.Skip("integration test: SPRITES_TOKEN not set and no preferences.json — skipping")
 	}
 	var prefs struct {
-		FlyIO struct {
+		FlySprites struct {
 			APIToken         string `json:"api_token"`
 			OrganizationSlug string `json:"organization_slug"`
-		} `json:"flyio"`
+		} `json:"flysprites"`
 	}
-	if err := json.Unmarshal(raw, &prefs); err != nil || prefs.FlyIO.APIToken == "" {
-		t.Skip("integration test: no flyio.api_token in preferences.json — skipping")
+	if err := json.Unmarshal(raw, &prefs); err != nil || prefs.FlySprites.APIToken == "" {
+		t.Skip("integration test: no flysprites.api_token in preferences.json — skipping")
 	}
-	return prefs.FlyIO.APIToken, prefs.FlyIO.OrganizationSlug
+	return prefs.FlySprites.APIToken, prefs.FlySprites.OrganizationSlug
 }
 
 // Shared sprite name across integration tests — adopt-or-recreate
@@ -82,7 +82,7 @@ const integrationSpriteName = "clank-host-test"
 // Sprites account, deleting any orphan sprite from a previous run.
 func newIntegrationProvisioner(t *testing.T) *flysprites.Provisioner {
 	t.Helper()
-	token, org := loadFlyIOCreds(t)
+	token, org := loadFlySpritesCreds(t)
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	st, err := store.Open(dbPath)
 	if err != nil {
@@ -117,11 +117,11 @@ func newIntegrationProvisioner(t *testing.T) *flysprites.Provisioner {
 	return prov
 }
 
-// TestIntegration_FlyIO_EventsRouteIsReachable provisions a sprite
+// TestIntegration_FlySprites_EventsRouteIsReachable provisions a sprite
 // and verifies GET /events returns 200 + text/event-stream + a
 // `event: connected` frame. Fails when the Sprites edge intercepts
 // /events with its own 404 page (the production regression).
-func TestIntegration_FlyIO_EventsRouteIsReachable(t *testing.T) {
+func TestIntegration_FlySprites_EventsRouteIsReachable(t *testing.T) {
 	prov := newIntegrationProvisioner(t)
 	t.Cleanup(prov.Stop)
 
@@ -154,10 +154,10 @@ func TestIntegration_FlyIO_EventsRouteIsReachable(t *testing.T) {
 	}
 }
 
-// TestIntegration_FlyIO_StatusRouteIsReachable sanity-checks the
+// TestIntegration_FlySprites_StatusRouteIsReachable sanity-checks the
 // integration setup itself; isolates "test can reach sprite" from
 // route-specific failures.
-func TestIntegration_FlyIO_StatusRouteIsReachable(t *testing.T) {
+func TestIntegration_FlySprites_StatusRouteIsReachable(t *testing.T) {
 	prov := newIntegrationProvisioner(t)
 	t.Cleanup(prov.Stop)
 
@@ -174,10 +174,10 @@ func TestIntegration_FlyIO_StatusRouteIsReachable(t *testing.T) {
 	}
 }
 
-// TestIntegration_FlyIO_PingRouteIsReachable: /ping returns the
+// TestIntegration_FlySprites_PingRouteIsReachable: /ping returns the
 // running clank-host's version+PID — helpful when chasing stale-
 // binary bugs.
-func TestIntegration_FlyIO_PingRouteIsReachable(t *testing.T) {
+func TestIntegration_FlySprites_PingRouteIsReachable(t *testing.T) {
 	prov := newIntegrationProvisioner(t)
 	t.Cleanup(prov.Stop)
 
@@ -195,7 +195,7 @@ func TestIntegration_FlyIO_PingRouteIsReachable(t *testing.T) {
 	t.Logf("/ping body: %s", body)
 }
 
-// TestIntegration_FlyIO_RealSpriteEventsRoute hits the user's actual
+// TestIntegration_FlySprites_RealSpriteEventsRoute hits the user's actual
 // cloud-hub sprite (clank-host-local) without recreating it — picks
 // up whatever URL settings have accumulated across daemon versions.
 //
@@ -203,12 +203,12 @@ func TestIntegration_FlyIO_PingRouteIsReachable(t *testing.T) {
 // a sprite — that name (`clank-host-local`) collides with what the
 // laptop daemon uses in production, and an integration test must
 // never plant a sprite there. To run this test you need a populated
-// $CLANK_DIR/clank.db with a (local, flyio) host row — provision a
+// $CLANK_DIR/clank.db with a (local, flysprites) host row — provision a
 // fly.io sprite first via clankd + clank CLI.
 //
-//	CLANK_DIR=$HOME/.clank-cloud go test -count=1 -run TestIntegration_FlyIO_RealSpriteEventsRoute -v ./pkg/provisioner/flysprites/...
-func TestIntegration_FlyIO_RealSpriteEventsRoute(t *testing.T) {
-	token, org := loadFlyIOCreds(t)
+//	CLANK_DIR=$HOME/.clank-cloud go test -count=1 -run TestIntegration_FlySprites_RealSpriteEventsRoute -v ./pkg/provisioner/flysprites/...
+func TestIntegration_FlySprites_RealSpriteEventsRoute(t *testing.T) {
+	token, org := loadFlySpritesCreds(t)
 	clankDir := os.Getenv("CLANK_DIR")
 	if clankDir == "" {
 		home, _ := os.UserHomeDir()
@@ -230,7 +230,7 @@ func TestIntegration_FlyIO_RealSpriteEventsRoute(t *testing.T) {
 	// than letting a test claim it).
 	skipCtx, skipCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer skipCancel()
-	if _, err := st.GetHostByUser(skipCtx, "local", "flyio"); errors.Is(err, store.ErrHostNotFound) {
+	if _, err := st.GetHostByUser(skipCtx, "local", flysprites.Provider); errors.Is(err, store.ErrHostNotFound) {
 		t.Skipf("real-sprite test: no (local, flyio) row in %s — provision a fly.io sprite first; refusing to cold-create a sprite named clank-host-local (collides with laptop-mode production)", dbPath)
 	} else if err != nil {
 		t.Fatalf("look up real sprite row: %v", err)
@@ -309,15 +309,15 @@ func snippet(s string, max int) string {
 	return s
 }
 
-// TestIntegration_FlyIO_GatewayProxyToRealSpriteEvents reproduces the
+// TestIntegration_FlySprites_GatewayProxyToRealSpriteEvents reproduces the
 // TUI bug without cloudflared: mounts the real gateway in front of
-// the real flyio provisioner and SSE-subscribes through it. Catches
+// the real flysprites provisioner and SSE-subscribes through it. Catches
 // gateway-only failure modes (Host header, prefix stripping, transport
 // chain, etc.) that the direct-sprite test doesn't.
 //
-//	CLANK_DIR=$HOME/.clank-cloud go test -count=1 -run TestIntegration_FlyIO_GatewayProxyToRealSpriteEvents -v ./pkg/provisioner/flysprites/...
-func TestIntegration_FlyIO_GatewayProxyToRealSpriteEvents(t *testing.T) {
-	token, org := loadFlyIOCreds(t)
+//	CLANK_DIR=$HOME/.clank-cloud go test -count=1 -run TestIntegration_FlySprites_GatewayProxyToRealSpriteEvents -v ./pkg/provisioner/flysprites/...
+func TestIntegration_FlySprites_GatewayProxyToRealSpriteEvents(t *testing.T) {
+	token, org := loadFlySpritesCreds(t)
 	clankDir := os.Getenv("CLANK_DIR")
 	if clankDir == "" {
 		home, _ := os.UserHomeDir()
@@ -333,11 +333,11 @@ func TestIntegration_FlyIO_GatewayProxyToRealSpriteEvents(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	// Same refusal as TestIntegration_FlyIO_RealSpriteEventsRoute: skip
+	// Same refusal as TestIntegration_FlySprites_RealSpriteEventsRoute: skip
 	// rather than cold-create a sprite at the production name.
 	skipCtx, skipCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer skipCancel()
-	if _, err := st.GetHostByUser(skipCtx, "local", "flyio"); errors.Is(err, store.ErrHostNotFound) {
+	if _, err := st.GetHostByUser(skipCtx, "local", flysprites.Provider); errors.Is(err, store.ErrHostNotFound) {
 		t.Skipf("gateway-proxy test: no (local, flyio) row in %s — provision a fly.io sprite first; refusing to cold-create clank-host-local", dbPath)
 	} else if err != nil {
 		t.Fatalf("look up real sprite row: %v", err)
@@ -358,7 +358,7 @@ func TestIntegration_FlyIO_GatewayProxyToRealSpriteEvents(t *testing.T) {
 	}
 	srv := httptest.NewServer(gw)
 	t.Cleanup(srv.Close)
-	t.Logf("gateway listening on %s; proxying to real flyio sprite for user 'local'", srv.URL)
+	t.Logf("gateway listening on %s; proxying to real flysprites sprite for user 'local'", srv.URL)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
