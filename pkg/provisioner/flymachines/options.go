@@ -3,6 +3,8 @@ package flymachines
 import (
 	"fmt"
 	"time"
+
+	"github.com/acksell/clank/pkg/provisioner"
 )
 
 // Defaults for the per-user machine. shared-cpu-8x keeps bundling
@@ -74,12 +76,12 @@ type Options struct {
 	PreviewWebhookURL   string
 	GitHubOAuthClientID string
 
-	// TemplatesJSON is the operator's builtin create-project catalog,
-	// forwarded to clank-host as $CLANK_TEMPLATES (the flyio provider's
-	// equivalent knob). Empty means the host serves only the user's own
-	// GitHub templates. Part of steady-state machine env so it survives
-	// the drift reconcile.
-	TemplatesJSON string
+	// Templates is the operator's builtin create-project catalog,
+	// forwarded to clank-host as $CLANK_TEMPLATES (marshaled by the
+	// provider). Empty means the host serves only the user's own GitHub
+	// templates. Part of steady-state machine env so it survives the
+	// drift reconcile.
+	Templates []provisioner.Template
 
 	// RestoreURLFor, when non-nil and returning non-empty, supplies a
 	// one-shot CLANK_RESTORE_URL for a user's FIRST provision (sandbox
@@ -136,6 +138,11 @@ func (o Options) withDefaults() (Options, error) {
 	}
 	if o.ProvisionTimeout == 0 {
 		o.ProvisionTimeout = DefaultProvisionTimeout
+	}
+	for i, t := range o.Templates {
+		if t.DisplayName == "" || t.CloneURL == "" {
+			return o, fmt.Errorf("flymachines: Templates[%d] needs display_name and clone_url", i)
+		}
 	}
 	return o, nil
 }

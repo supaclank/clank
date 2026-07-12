@@ -5,6 +5,8 @@ import (
 	"maps"
 
 	fly "github.com/superfly/fly-go"
+
+	"github.com/acksell/clank/pkg/provisioner"
 )
 
 // buildMachineConfig assembles the desired config for a user's
@@ -37,12 +39,11 @@ func buildMachineConfig(opts Options, tokens hostTokens, volumeID string, oneSho
 	if opts.GitHubOAuthClientID != "" {
 		env["CLANK_GITHUB_OAUTH_CLIENT_ID"] = opts.GitHubOAuthClientID
 	}
-	if opts.TemplatesJSON != "" {
-		// Builtin create-project catalog. Must be part of the machine
-		// config (not ExtraEnvFor) so it's steady-state and survives the
-		// drift reconcile — otherwise a machine-backed host serves an
-		// empty GET /templates (regression vs sprites' --templates-json).
-		env["CLANK_TEMPLATES"] = opts.TemplatesJSON
+	if tj := provisioner.TemplatesEnvValue(opts.Templates); tj != "" {
+		// Builtin create-project catalog. Part of the machine config
+		// (not one-shot env) so it's steady-state and survives the drift
+		// reconcile — else a machine host serves an empty GET /templates.
+		env["CLANK_TEMPLATES"] = tj
 	}
 	maps.Copy(env, oneShotEnv)
 
