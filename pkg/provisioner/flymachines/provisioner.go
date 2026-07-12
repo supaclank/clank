@@ -259,6 +259,12 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID string) (*cach
 // ensureApp creates the per-tenant app on its own private network.
 // "already exists" (taken by us) is success; taken by another org is
 // surfaced — the operator picks a more distinctive AppNamePrefix.
+//
+// TODO(ai-review): doesn't verify the existing app belongs to this
+// userID before reusing it — appNameFor's 64-bit hash makes a
+// same-org collision cryptographically infeasible today, but a real
+// fix needs a HostStore lookup-by-ExternalID to fail fast on a
+// mismatch. https://github.com/Acksell/clank/pull/128#discussion_r3565338509
 func (p *Provisioner) ensureApp(ctx context.Context, appName string) error {
 	if _, err := p.flaps.GetApp(ctx, appName); err == nil {
 		return nil
@@ -506,6 +512,13 @@ func (p *Provisioner) SuspendHost(ctx context.Context, hostID string) error {
 		}
 		return fmt.Errorf("stop machine %s in %s: %w", machineID, row.ExternalID, err)
 	}
+	row.Status = hoststore.HostStatusStopped
+	row.UpdatedAt = time.Now()
+	if err := p.store.UpsertHost(ctx, row); err != nil {
+		p.log.Printf("flymachines: update status after suspend %s: %v", hostID, err)
+	}
+	// Drop in-memory cache so the next EnsureHost re-resolves and persists fresh state.
+	p.cacheDrop(row.UserID)
 	return nil
 }
 

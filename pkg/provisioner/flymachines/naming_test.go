@@ -46,6 +46,19 @@ func TestAppNameFor(t *testing.T) {
 	}
 }
 
+// TestAppNameForHashWidth pins the truncation at 8 bytes (64 bits):
+// the app name is the tenant-isolation boundary, and ensureApp treats
+// an existing app as "ours" without verifying ownership, so a narrower
+// hash would make cross-tenant collisions a real risk at scale.
+func TestAppNameForHashWidth(t *testing.T) {
+	t.Parallel()
+	name := appNameFor("clank-u", "user-1")
+	hexPart := strings.TrimPrefix(name, "clank-u-")
+	if len(hexPart) != 16 {
+		t.Errorf("appNameFor hash suffix = %q (%d hex chars), want 16 (64 bits)", hexPart, len(hexPart))
+	}
+}
+
 func TestDerivedNames(t *testing.T) {
 	t.Parallel()
 	app := appNameFor("clank-u", "user-1")
