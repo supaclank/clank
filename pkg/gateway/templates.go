@@ -115,7 +115,7 @@ func (g *Gateway) githubTemplatesForUser(ctx context.Context, userID string) []t
 		g.log.Printf("gateway templates: build host request: %v (builtin-only)", err)
 		return nil
 	}
-	cli := &http.Client{Transport: ref.Transport}
+	cli := &http.Client{Transport: ref.Transport, Timeout: githubTemplatesTimeout}
 	resp, err := cli.Do(req)
 	if err != nil {
 		g.log.Printf("gateway templates: host call: %v (builtin-only)", err)
