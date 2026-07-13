@@ -606,6 +606,9 @@
   .done .dot { background:#22c55e; } .error .dot { background:#ef4444; }
   .hd .name { font-size:12px; font-weight:600; color:#6b7280; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .hd .st { font-size:11px; color:#9ca3af; }
+  .beta { font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.6px;
+    color:#ff6e20; background:rgba(255,110,32,.12); border:1px solid rgba(255,110,32,.35);
+    padding:2px 7px; border-radius:999px; line-height:1.4; } /* supaclank coral */
   .grip { color:#9ca3af; display:flex; align-items:center; }
   .grip svg { display:block; pointer-events:none; }
   .chips { display:flex; flex-wrap:wrap; gap:6px; padding:0 12px 4px; }
@@ -655,7 +658,7 @@
   .toast.show { opacity:1; }
 </style>
 <div class="box" part="box" tabindex="-1">
-  <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><span class="grip">${ICONS.grip}</span></div>
+  <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><span class="beta">beta</span><span class="grip">${ICONS.grip}</span></div>
   <div class="chips"></div>
   <div class="chat"></div>
   <div class="perm" style="display:none">
