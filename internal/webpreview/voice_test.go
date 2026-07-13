@@ -37,11 +37,20 @@ type stubSession struct {
 	fed    int
 	closed bool
 	ch     chan Result
+
+	// feedErr/endErr, when set, make Feed/End fail without producing a
+	// Result — simulating a broken pipe / dead subprocess, where the
+	// pump's Err/Final delivery isn't what surfaces the failure.
+	feedErr error
+	endErr  error
 }
 
 func (s *stubSession) Feed(pcm []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.feedErr != nil {
+		return s.feedErr
+	}
 	s.fed += len(pcm)
 	s.ch <- Result{Text: fmt.Sprintf("got %d", s.fed)}
 	return nil
@@ -50,6 +59,9 @@ func (s *stubSession) Feed(pcm []byte) error {
 func (s *stubSession) End() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.endErr != nil {
+		return s.endErr
+	}
 	s.ch <- Result{Text: fmt.Sprintf("final %d", s.fed), Final: true}
 	s.fed = 0
 	return nil
@@ -154,6 +166,10 @@ func TestVoiceWSReportsEngineBusy(t *testing.T) {
 type serialStub struct {
 	stubEngine
 	slot chan struct{}
+
+	// feedErr/endErr are threaded into every session this engine opens.
+	feedErr error
+	endErr  error
 }
 
 func newSerialStub() *serialStub {
@@ -166,7 +182,10 @@ func (e *serialStub) Open(ctx context.Context) (Session, error) {
 	default:
 		return nil, errors.New("slot held")
 	}
-	return &serialSession{stubSession: stubSession{ch: make(chan Result, 8)}, release: func() { <-e.slot }}, nil
+	return &serialSession{
+		stubSession: stubSession{ch: make(chan Result, 8), feedErr: e.feedErr, endErr: e.endErr},
+		release:     func() { <-e.slot },
+	}, nil
 }
 
 type serialSession struct {
@@ -357,4 +376,58 @@ func TestVoiceWSCancelResetsUtterance(t *testing.T) {
 	if m := readVoiceMsg(t, conn); m.Text != "got 6" {
 		t.Fatalf("post-cancel partial = %+v, want counter reset ('got 6')", m)
 	}
+}
+
+// A broken pipe / dead subprocess makes Feed return an error directly,
+// without ever producing an Err Result for the pump to react to. That
+// must still be treated as terminal for the utterance — otherwise the
+// session (and its exclusive engine slot) sits stranded until the
+// connection itself closes.
+func TestVoiceWSFeedErrorReleasesSlot(t *testing.T) {
+	t.Parallel()
+	eng := newSerialStub()
+	eng.feedErr = errors.New("broken pipe")
+	conn1, done1 := dialVoice(t, eng)
+	defer done1()
+
+	ctx := context.Background()
+	if err := conn1.Write(ctx, websocket.MessageBinary, make([]byte, 4)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if m := readVoiceMsg(t, conn1); m.Type != "error" || !strings.Contains(m.Error, "broken pipe") {
+		t.Fatalf("feed error message = %+v, want an error mentioning the cause", m)
+	}
+	eng.feedErr = nil // a real dead subprocess respawns healthy for the next session
+
+	conn2, done2 := dialVoice(t, eng)
+	defer done2()
+	waitForSlot(t, conn2)
+}
+
+// Same lockout risk when End itself fails (vs. the pump seeing an Err
+// Result): the session must still close so the slot is released.
+func TestVoiceWSEndErrorReleasesSlot(t *testing.T) {
+	t.Parallel()
+	eng := newSerialStub()
+	eng.endErr = errors.New("broken pipe")
+	conn1, done1 := dialVoice(t, eng)
+	defer done1()
+
+	ctx := context.Background()
+	_ = conn1.Write(ctx, websocket.MessageBinary, make([]byte, 4))
+	if m := readVoiceMsg(t, conn1); m.Type != "partial" {
+		t.Fatalf("partial = %+v", m)
+	}
+	_ = conn1.Write(ctx, websocket.MessageText, []byte(`{"type":"end"}`))
+	if m := readVoiceMsg(t, conn1); m.Type != "transcribing" {
+		t.Fatalf("after end = %+v, want transcribing", m)
+	}
+	if m := readVoiceMsg(t, conn1); m.Type != "error" || !strings.Contains(m.Error, "broken pipe") {
+		t.Fatalf("end error message = %+v, want an error mentioning the cause", m)
+	}
+	eng.endErr = nil // a real dead subprocess respawns healthy for the next session
+
+	conn2, done2 := dialVoice(t, eng)
+	defer done2()
+	waitForSlot(t, conn2)
 }

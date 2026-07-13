@@ -190,6 +190,8 @@ func serveVoiceWS(w http.ResponseWriter, r *http.Request, engine Engine, lg *log
 			utteranceBytes += len(data)
 			if ferr := sess.Feed(data); ferr != nil {
 				writeJSON(voiceMsg{Type: "error", Error: ferr.Error()})
+				utteranceBytes = 0
+				closeSess() // a broken pipe / dead subprocess is terminal for this utterance — free the slot
 			}
 		case websocket.MessageText:
 			var m voiceMsg
@@ -212,6 +214,7 @@ func serveVoiceWS(w http.ResponseWriter, r *http.Request, engine Engine, lg *log
 				}
 				if eerr := sess.End(); eerr != nil {
 					writeJSON(voiceMsg{Type: "error", Error: eerr.Error()})
+					closeSess() // End failing directly (vs. the pump seeing an Err Result) still ends the utterance — free the slot
 				}
 			}
 		}
