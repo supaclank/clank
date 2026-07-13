@@ -544,8 +544,15 @@
   * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
   .box {
     /* home: horizontally centered, ~one box-height above the bottom
-       (mobile FAB parity). Centered via left, NOT transform — the
-       drag/follow system owns style.transform. */
+       (mobile FAB parity). Drag/follow positioning lives on the
+       standalone \`translate\` property; the entry animation lives on
+       \`transform\`. The split is load-bearing: standalone properties
+       compose BEFORE transform, so an animated scale on translate's
+       side of the chain would multiply the position offset and make
+       the box enter along the center→position vector instead of
+       vertically (observed). With translate first and the animation
+       last, nothing can scale the offset, and transform-origin
+       anchors the entry scale to the box's own bottom edge. */
     position: fixed; left: max(16px, calc(50% - 190px)); bottom: 144px; width: 380px; max-width: calc(100vw - 32px);
     background: rgba(21,22,26,.94); color: #e8e8ec; border-radius: 18px;
     border: 1.5px solid #3a3b42; box-shadow: 0 12px 40px rgba(0,0,0,.45);
@@ -553,17 +560,8 @@
     transition: border-color .25s ease;
     transform-origin: 50% 100%;
   }
-  /* summon: fade + rise + scale from below, like the mobile FAB.
-     Standalone translate/scale properties COMPOSE with the transform
-     property, so the entry plays correctly even at a dragged position.
-     The from-below direction is carried by the rise (translation is
-     origin-independent), not by scale-origin — engines disagree on how
-     transform-origin applies to the standalone scale property, and a
-     center-origin scale next to a small rise reads as "pop from the
-     middle". The 30px includes ~4px compensating for a center-origin
-     shrink so the bottom edge never appears to lift. */
   .box.visible { display: block; animation: boxIn 300ms cubic-bezier(0.26, 1.15, 0.44, 1); }
-  @keyframes boxIn { from { opacity: 0; translate: 0 30px; scale: 0.96; } }
+  @keyframes boxIn { from { opacity: 0; transform: translateY(30px) scale(0.96); } }
   @media (prefers-reduced-motion: reduce) { .box.visible { animation: none; } }
   .box.thinking { border-color: #f59e0b; animation: pulse 1.6s ease-in-out infinite; }
   .box.working  { border-color: #3b82f6; }
@@ -791,7 +789,7 @@
     const hd = $('.hd');
     let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
     const saved = sessionStorage.getItem('clank.boxPos');
-    if (saved) { try { const p = JSON.parse(saved); ui.box.style.transform = `translate(${p.x}px, ${p.y}px)`; ui.box.dataset.x = p.x; ui.box.dataset.y = p.y; } catch {} }
+    if (saved) { try { const p = JSON.parse(saved); ui.box.style.translate = `${p.x}px ${p.y}px`; ui.box.dataset.x = p.x; ui.box.dataset.y = p.y; } catch {} }
     hd.addEventListener('pointerdown', (e) => {
       endFollow(); // manual drag wins over a live shift-follow
       dragging = true;
@@ -803,7 +801,7 @@
       if (!dragging) return;
       const x = ox + e.clientX - sx, y = oy + e.clientY - sy;
       ui.box.dataset.x = x; ui.box.dataset.y = y;
-      ui.box.style.transform = `translate(${x}px, ${y}px)`;
+      ui.box.style.translate = `${x}px ${y}px`;
     });
     hd.addEventListener('pointerup', (e) => {
       dragging = false;
@@ -904,7 +902,7 @@
     }
     ui.box.dataset.x = f.x;
     ui.box.dataset.y = f.y;
-    ui.box.style.transform = `translate(${f.x}px, ${f.y}px)`;
+    ui.box.style.translate = `${f.x}px ${f.y}px`;
     const settled = Math.abs(f.tx - f.x) + Math.abs(f.ty - f.y) < 0.5 && Math.abs(f.vx) + Math.abs(f.vy) < 5;
     if (!f.held && settled) { endFollow(); return; }
     f.raf = requestAnimationFrame(followStep);
