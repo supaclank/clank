@@ -665,7 +665,7 @@
   .toast.show { opacity:1; }
 </style>
 <div class="box" part="box" tabindex="-1">
-  <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><a class="beta" href="https://github.com/Acksell/clank/issues" target="_blank" rel="noopener noreferrer" title="click to report an issue" tabindex="-1">beta</a><span class="grip">${ICONS.grip}</span></div>
+  <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><a class="beta" href="https://github.com/Acksell/clank/issues/new?template=bug_report.yml" target="_blank" rel="noopener noreferrer" title="click to report an issue" tabindex="-1">beta</a><span class="grip">${ICONS.grip}</span></div>
   <div class="chips"></div>
   <div class="chat"></div>
   <div class="perm" style="display:none">
