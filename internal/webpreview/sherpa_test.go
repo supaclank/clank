@@ -62,6 +62,9 @@ func runFakeVoice(mode string) {
 			emit(`{"type":"partial","text":"heard %d"}`, n)
 		case frameEnd:
 			emit(`{"type":"final","text":"total %d bytes"}`, n)
+			if mode == "quickexit" {
+				os.Exit(0) // races cmd.Wait() against the parent's still-unread final line
+			}
 			n = 0
 		case frameCancel:
 			n = 0
@@ -241,6 +244,36 @@ func TestSherpaEnginePumpKillsProcessOnScanError(t *testing.T) {
 	}
 
 	_ = s.Close()
+}
+
+// TestSherpaEnginePumpReadsFinalBeforeReap pins the fix for a race:
+// cmd.Wait() used to run in its own goroutine started right alongside
+// pump(), racing pump's stdout reads (os/exec's StdoutPipe doc: Wait
+// must not run until all reads complete, since Wait closes the pipe on
+// exit). A process exiting immediately after writing its final line
+// could have that line truncated by the close landing mid-read.
+func TestSherpaEnginePumpReadsFinalBeforeReap(t *testing.T) {
+	for i := 0; i < 30; i++ {
+		e := fakeEngine(t, "quickexit")
+		s, err := e.Open(context.Background())
+		if err != nil {
+			t.Fatalf("iter %d: Open: %v", i, err)
+		}
+		if err := s.Feed(make([]byte, 5)); err != nil {
+			t.Fatalf("iter %d: Feed: %v", i, err)
+		}
+		if r := recvResult(t, s); r.Text != "heard 5" {
+			t.Fatalf("iter %d: partial = %+v, want 'heard 5'", i, r)
+		}
+		if err := s.End(); err != nil {
+			t.Logf("iter %d: End returned error (acceptable, process may already be exiting): %v", i, err)
+		}
+		if r := recvResult(t, s); !r.Final || r.Text != "total 5 bytes" {
+			t.Fatalf("iter %d: final = %+v, want final 'total 5 bytes' (lost/truncated by racing Wait?)", i, r)
+		}
+		_ = s.Close()
+		e.Close()
+	}
 }
 
 func TestSherpaEngineRecoversFromCrash(t *testing.T) {
