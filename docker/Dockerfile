@@ -78,7 +78,7 @@ ENV PATH="/root/.bun/bin:${PATH}"
 # sprites — an unpinned install here drifts to "latest at image build",
 # the exact failure mode the pins exist to prevent.
 RUN npm install -g bun \
-    && bun install -g opencode-ai@1.15.1 @anthropic-ai/claude-code@2.1.201 \
+    && bun install -g opencode-ai@1.17.18 @anthropic-ai/claude-code@2.1.201 \
     && opencode --version \
     && claude --version
 

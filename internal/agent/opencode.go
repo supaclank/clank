@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -514,7 +515,7 @@ func (b *OpenCodeBackend) connectAndStreamSSE(attempt int) (connected bool, err 
 	receivedData := false
 
 	for {
-		ev, err := stream.Recv()
+		raw, err := stream.RecvRaw()
 		if err != nil {
 			if err == io.EOF {
 				return receivedData, nil // clean close
@@ -534,6 +535,18 @@ func (b *OpenCodeBackend) connectAndStreamSSE(attempt int) (connected bool, err 
 			})
 		}
 		receivedData = true
+
+		// Decode outside Recv so one undecodable frame drops only itself, not
+		// the connection. opencode's spec and server drift (e.g. 1.15.1 emits
+		// session.next.*.switched with a string timestamp where the spec says
+		// number); killing the stream on such a frame loses every event until
+		// reconnect — including the terminal session.error/session.idle, which
+		// left sessions stuck "busy" forever.
+		var ev opencode.GlobalEvent
+		if err := json.Unmarshal(raw, &ev); err != nil {
+			log.Printf("[opencode] dropping undecodable SSE frame: %v", err)
+			continue
+		}
 		b.handleGlobalEvent(&ev)
 	}
 }
@@ -554,11 +567,16 @@ func (b *OpenCodeBackend) handleGlobalEvent(ev *opencode.GlobalEvent) {
 		b.handlePartDelta(p.MessagePartDelta.Properties)
 
 	case p.PermissionAsked != nil:
-		// EventPermissionAsked.Properties is a *PermissionRequest directly.
 		b.handlePermissionAsked(p.PermissionAsked.Properties)
 
 	case p.SessionIdle != nil:
-		if p.SessionIdle.Properties.SessionID != b.sessionID {
+		if p.SessionIdle.Properties == nil || p.SessionIdle.Properties.SessionID != b.sessionID {
+			return
+		}
+		// session.error is the turn's terminal state; opencode still publishes
+		// session.idle right after it. Don't let that idle clear the error —
+		// clients would lose the failure signal. The next Send resets to busy.
+		if b.Status() == StatusError {
 			return
 		}
 		b.setStatus(StatusIdle)
@@ -575,10 +593,17 @@ func (b *OpenCodeBackend) handleGlobalEvent(ev *opencode.GlobalEvent) {
 		if sid != "" && sid != b.sessionID {
 			return
 		}
-		b.setStatus(StatusError)
-		if props.Error != nil {
-			b.emitError(props.Error.Name)
+		// A user-initiated Abort surfaces as MessageAbortedError — expected
+		// fallout, not a failure. Return to Idle so the session stays usable
+		// instead of wedging in StatusError (mirrors the Claude backend).
+		if props.Error != nil && props.Error.MessageAbortedError != nil {
+			b.setStatus(StatusIdle)
+			return
 		}
+		if props.Error != nil {
+			b.emitError(sessionErrorDetail(props.Error))
+		}
+		b.setStatus(StatusError)
 
 	case p.MessageUpdated != nil:
 		b.handleMessageUpdated(p.MessageUpdated.Properties)
@@ -591,8 +616,37 @@ func (b *OpenCodeBackend) handleGlobalEvent(ev *opencode.GlobalEvent) {
 	}
 }
 
+// sessionErrorDetail flattens the session.error union into a human-readable
+// "Name: message" string. Every variant that carries a message surfaces it —
+// the name alone ("APIError") tells the user nothing actionable.
+func sessionErrorDetail(e *opencode.GlobalEventPayloadSessionErrorPropertiesError) string {
+	msg := ""
+	switch {
+	case e.ProviderAuthError != nil && e.ProviderAuthError.Data != nil:
+		d := e.ProviderAuthError.Data
+		msg = d.Message
+		if d.ProviderID != "" {
+			msg = fmt.Sprintf("provider %s: %s", d.ProviderID, d.Message)
+		}
+	case e.UnknownError != nil && e.UnknownError.Data != nil:
+		msg = e.UnknownError.Data.Message
+	case e.StructuredOutputError != nil && e.StructuredOutputError.Data != nil:
+		msg = e.StructuredOutputError.Data.Message
+	case e.ContextOverflowError != nil && e.ContextOverflowError.Data != nil:
+		msg = e.ContextOverflowError.Data.Message
+	case e.ContentFilterError != nil && e.ContentFilterError.Data != nil:
+		msg = e.ContentFilterError.Data.Message
+	case e.APIError != nil && e.APIError.Data != nil:
+		msg = e.APIError.Data.Message
+	}
+	if msg == "" {
+		return e.Name
+	}
+	return e.Name + ": " + msg
+}
+
 // handlePartDelta processes a message.part.delta event (token-level streaming).
-func (b *OpenCodeBackend) handlePartDelta(props *opencode.EventMessagePartDeltaProperties) {
+func (b *OpenCodeBackend) handlePartDelta(props *opencode.GlobalEventPayloadMessagePartDeltaProperties) {
 	if props == nil || props.SessionID != b.SessionID() {
 		return
 	}
@@ -621,7 +675,7 @@ func (b *OpenCodeBackend) handlePartDelta(props *opencode.EventMessagePartDeltaP
 }
 
 // handlePermissionAsked processes a permission.asked event from /global/event.
-func (b *OpenCodeBackend) handlePermissionAsked(req *opencode.PermissionRequest) {
+func (b *OpenCodeBackend) handlePermissionAsked(req *opencode.GlobalEventPayloadPermissionAskedProperties) {
 	if req == nil || req.SessionID != b.SessionID() {
 		return
 	}
@@ -644,7 +698,7 @@ func (b *OpenCodeBackend) handlePermissionAsked(req *opencode.PermissionRequest)
 // handleMessageUpdated emits user / assistant Message events from a
 // message.updated event. The Message union has Role + User / Assistant
 // variants; only one is non-nil.
-func (b *OpenCodeBackend) handleMessageUpdated(props *opencode.EventMessageUpdatedProperties) {
+func (b *OpenCodeBackend) handleMessageUpdated(props *opencode.GlobalEventPayloadMessageUpdatedProperties) {
 	if props == nil || props.Info == nil || props.SessionID != b.sessionID {
 		return
 	}
@@ -683,7 +737,7 @@ func (b *OpenCodeBackend) handleMessageUpdated(props *opencode.EventMessageUpdat
 
 // handleMessagePartUpdated processes a message.part.updated event by
 // translating the Part union into a clank PartUpdate event.
-func (b *OpenCodeBackend) handleMessagePartUpdated(props *opencode.EventMessagePartUpdatedProperties) {
+func (b *OpenCodeBackend) handleMessagePartUpdated(props *opencode.GlobalEventPayloadMessagePartUpdatedProperties) {
 	if props == nil || props.Part == nil || props.SessionID != b.sessionID {
 		return
 	}
@@ -706,7 +760,7 @@ func (b *OpenCodeBackend) handleMessagePartUpdated(props *opencode.EventMessageP
 }
 
 // handleSessionUpdated emits title + revert change events from session.updated.
-func (b *OpenCodeBackend) handleSessionUpdated(props *opencode.EventSessionUpdatedProperties) {
+func (b *OpenCodeBackend) handleSessionUpdated(props *opencode.GlobalEventPayloadSessionUpdatedProperties) {
 	if props == nil || props.Info == nil || props.Info.ID != b.sessionID {
 		return
 	}

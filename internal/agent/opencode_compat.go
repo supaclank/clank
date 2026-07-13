@@ -24,7 +24,7 @@ import (
 //   3. Sprites probe-and-reinstall on next EnsureHost (~30-90s one-shot cost).
 //   4. Laptops `opencode upgrade` — runtime check refuses migrations
 //      until they do.
-const PinnedOpencodeVersion = "1.15.1"
+const PinnedOpencodeVersion = "1.17.18"
 
 // OpencodeIncompatibleError is returned by AssertOpencodeVersionsCompatible
 // when local and remote opencode versions can't safely round-trip session
