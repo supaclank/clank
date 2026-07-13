@@ -553,11 +553,17 @@
     transition: border-color .25s ease;
     transform-origin: 50% 100%;
   }
-  /* summon: fade + rise + scale from the bottom, like the mobile FAB.
+  /* summon: fade + rise + scale from below, like the mobile FAB.
      Standalone translate/scale properties COMPOSE with the transform
-     property, so the entry plays correctly even at a dragged position. */
-  .box.visible { display: block; animation: boxIn 280ms cubic-bezier(0.26, 1.2, 0.44, 1); }
-  @keyframes boxIn { from { opacity: 0; translate: 0 18px; scale: 0.95; } }
+     property, so the entry plays correctly even at a dragged position.
+     The from-below direction is carried by the rise (translation is
+     origin-independent), not by scale-origin — engines disagree on how
+     transform-origin applies to the standalone scale property, and a
+     center-origin scale next to a small rise reads as "pop from the
+     middle". The 30px includes ~4px compensating for a center-origin
+     shrink so the bottom edge never appears to lift. */
+  .box.visible { display: block; animation: boxIn 300ms cubic-bezier(0.26, 1.15, 0.44, 1); }
+  @keyframes boxIn { from { opacity: 0; translate: 0 30px; scale: 0.96; } }
   @media (prefers-reduced-motion: reduce) { .box.visible { animation: none; } }
   .box.thinking { border-color: #f59e0b; animation: pulse 1.6s ease-in-out infinite; }
   .box.working  { border-color: #3b82f6; }
