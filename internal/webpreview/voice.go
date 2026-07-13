@@ -60,6 +60,12 @@ func serveVoiceWS(w http.ResponseWriter, r *http.Request, engine Engine, lg *log
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
+	// One writer mutex: the read loop (transcribing/error acks), the
+	// results pump, and the liveness ping below all write, and the
+	// coder/websocket library allows only one write (Ping counts) in
+	// flight at a time.
+	var wmu sync.Mutex
+
 	// Liveness pings. A half-open socket — laptop sleep, crashed tab,
 	// network drop — leaves conn.Read blocked forever with no error,
 	// and this handler would hold the (serialized) engine session until
@@ -77,7 +83,9 @@ func serveVoiceWS(w http.ResponseWriter, r *http.Request, engine Engine, lg *log
 				return
 			case <-ticker.C:
 				pctx, pcancel := context.WithTimeout(ctx, 10*time.Second)
+				wmu.Lock()
 				perr := conn.Ping(pctx)
+				wmu.Unlock()
 				pcancel()
 				if perr != nil {
 					cancel()
@@ -87,9 +95,6 @@ func serveVoiceWS(w http.ResponseWriter, r *http.Request, engine Engine, lg *log
 		}
 	}()
 
-	// One writer mutex: the read loop (transcribing/error acks) and the
-	// results pump both write.
-	var wmu sync.Mutex
 	writeJSON := func(m voiceMsg) bool {
 		data, _ := json.Marshal(m)
 		wctx, wcancel := context.WithTimeout(ctx, 10*time.Second)

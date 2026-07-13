@@ -8,6 +8,8 @@ import (
 	"io"
 	"log"
 	"os"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -46,6 +48,15 @@ func runFakeVoice(mode string) {
 		case frameAudio:
 			if mode == "crash" {
 				os.Exit(3)
+			}
+			if mode == "toolong" {
+				// A single line past the pump's 1 MiB scan buffer, no
+				// newline: Scan() fails with ErrTooLong while this
+				// process is still very much alive (it stays blocked
+				// writing, exactly like a real wedged clank-voice).
+				fmt.Fprint(out, strings.Repeat("x", 2<<20))
+				out.Flush()
+				continue
 			}
 			n += len(payload)
 			emit(`{"type":"partial","text":"heard %d"}`, n)
@@ -192,6 +203,44 @@ func TestSherpaEngineCloseUnblocksOnStalledConsumer(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatalf("Close deadlocked behind a stalled consumer")
 	}
+}
+
+// TestSherpaEnginePumpKillsProcessOnScanError pins the fix for a leak:
+// when Scan() fails on something other than clean EOF (e.g. a
+// too-long line), the pump used to mark the process dead and let
+// ensureProc spawn a replacement without ever killing the original —
+// which just sits there, still alive, holding its ~700 MB mmap.
+func TestSherpaEnginePumpKillsProcessOnScanError(t *testing.T) {
+	e := fakeEngine(t, "toolong")
+	defer e.Close()
+
+	s, err := e.Open(context.Background())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := s.Feed(make([]byte, 10)); err != nil {
+		t.Logf("Feed returned error (acceptable): %v", err)
+	}
+
+	proc := s.(*sherpaSession).proc
+	select {
+	case <-proc.dead:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("pump never marked the process dead after the oversized line")
+	}
+
+	// Signal(0) is a liveness probe, not a real signal; it fails once the
+	// process has actually been killed and reaped (unlike reading
+	// cmd.ProcessState directly, which races with the Wait() goroutine).
+	deadline := time.Now().Add(3 * time.Second)
+	for proc.cmd.Process.Signal(syscall.Signal(0)) == nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("clank-voice process was never reaped after the scan error — leaked")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	_ = s.Close()
 }
 
 func TestSherpaEngineRecoversFromCrash(t *testing.T) {
