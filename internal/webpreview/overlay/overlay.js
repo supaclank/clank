@@ -548,9 +548,11 @@
   // Inline SVG icons (lucide-style strokes, currentColor): emoji render
   // differently per OS font; these are identical everywhere.
   const ICONS = {
-    // lucide wand-2, mirrored to point top-left like a cursor, with the
-    // tip segment filled (its edge is the tip-separator line)
-    select: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2.36 3.64 1.28-1.28a1.21 1.21 0 0 1 1.72 0L21.64 18.64a1.21 1.21 0 0 1 0 1.72l-1.28 1.28a1.2 1.2 0 0 1-1.72 0L2.36 5.36a1.2 1.2 0 0 1 0-1.72Z"/><path d="M1.46 2.74 2.74 1.46 7.8 6.5 6.5 7.8Z" fill="currentColor" stroke="none"/><path d="M19 6v4"/><path d="M5 14v4"/><path d="M14 2v2"/><path d="M17 8h4"/><path d="M3 16h4"/><path d="M13 3h2"/></svg>',
+    // wand pointing top-left: hollow shaft (rotated rounded rect) with a
+    // filled tip drawn as a round-capped stroke ALONG THE SAME CENTERLINE
+    // whose width equals the shaft's outer width (2·1.5 + stroke 2 = 5) —
+    // wall-to-wall by construction, cap curvature matches the corners.
+    select: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5.06 2.94 21.06 18.94 18.94 21.06 2.94 5.06Z"/><path d="M4.5 4.5 7.5 7.5" stroke-width="5"/><path d="M19 6v4"/><path d="M5 14v4"/><path d="M14 2v2"/><path d="M17 8h4"/><path d="M3 16h4"/><path d="M13 3h2"/></svg>',
     mic: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><path d="M12 18v4"/></svg>',
     send: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>',
     stop: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="3"/></svg>',
