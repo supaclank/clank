@@ -121,7 +121,9 @@
       if (u.origin !== location.origin) continue;
       // Skip react's own runtime frames (prebundled deps) and vite internals.
       if (u.pathname.includes('/node_modules/') || u.pathname.startsWith('/@')) continue;
-      return { url: u.origin + u.pathname, line: +m[2], column: +m[3] };
+      // href (with Vite's HMR cache-busting query) is the fetch/cache key;
+      // url (query stripped) is what gets displayed.
+      return { url: u.origin + u.pathname, href: u.href, line: +m[2], column: +m[3] };
     }
     return null;
   };
@@ -150,6 +152,7 @@
           vals.push(value & 1 ? -(value >>> 1) : value >>> 1);
           shift = 0; value = 0;
         }
+        if (vals.length === 0) continue;
         genCol += vals[0];
         if (vals.length >= 4) {
           srcIdx += vals[1]; srcLine += vals[2]; srcCol += vals[3];
@@ -161,26 +164,35 @@
     return lines;
   };
 
+  // TODO(ai-review): unbounded across HMR edits within a session; add an eviction/size cap if it matters in practice. https://github.com/Acksell/clank/pull/142
   const sourceMapCache = new Map(); // module url → Promise<lookup fn | null>
   const moduleLookup = (url) => {
     let p = sourceMapCache.get(url);
     if (p) return p;
     p = (async () => {
-      const code = await (await fetch(url)).text();
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      const code = await res.text();
       const m = code.match(/\/\/[#@] sourceMappingURL=data:application\/json[^,]*base64,([A-Za-z0-9+/=]+)\s*$/);
       if (!m) return null;
-      const map = JSON.parse(atob(m[1]));
+      const bytes = Uint8Array.from(atob(m[1]), (c) => c.charCodeAt(0));
+      const map = JSON.parse(new TextDecoder().decode(bytes));
       const lines = decodeMappings(map.mappings);
       return (line, column) => {
-        // Stack positions are 1-based; the map is 0-based.
-        const segs = lines[line - 1];
-        if (!segs || !segs.length) return null;
-        let best = segs[0];
-        for (const s of segs) { if (s[0] <= column - 1) best = s; else break; }
-        const src = map.sources[best[1]] || '';
-        // sources are relative to the module's directory.
-        const file = new URL(src, url).pathname.replace(/^\//, '');
-        return { file, line: best[2] + 1, column: best[3] + 1 };
+        try {
+          // Stack positions are 1-based; the map is 0-based.
+          const segs = lines[line - 1];
+          if (!segs || !segs.length) return null;
+          let best = segs[0];
+          for (const s of segs) { if (s[0] <= column - 1) best = s; else break; }
+          const src = (map.sources && map.sources[best[1]]) || '';
+          if (!src) return null;
+          // sources are relative to the module's directory.
+          const file = new URL(src, url).pathname.replace(/^\//, '');
+          return { file, line: best[2] + 1, column: best[3] + 1 };
+        } catch {
+          return null;
+        }
       };
     })().catch(() => null);
     sourceMapCache.set(url, p);
@@ -189,7 +201,7 @@
 
   // resolveStackPos: served-module position → original source position.
   const resolveStackPos = async (pos) => {
-    const lookup = await moduleLookup(pos.url);
+    const lookup = await moduleLookup(pos.href || pos.url);
     return lookup ? lookup(pos.line, pos.column) : null;
   };
 
