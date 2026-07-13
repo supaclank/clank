@@ -193,6 +193,35 @@
     return lookup ? lookup(pos.line, pos.column) : null;
   };
 
+  // React ≤18's fiber._debugSource carries an absolute FS path — and,
+  // under Vite's react plugin, line numbers shifted by the injected
+  // refresh preamble (Babel stamps positions post-injection). Both are
+  // fixed by the same sourcemap pass as React 19: map the FS path back
+  // to its module URL (the preview config carries the project root;
+  // macOS may report the /private realpath alias) and resolve.
+  const fsPathToModuleURL = (fileName) => {
+    const root = CFG.local_path || '';
+    if (!root) return null;
+    for (const r of [root, '/private' + root]) {
+      if (fileName.startsWith(r + '/')) return location.origin + fileName.slice(r.length);
+    }
+    return null;
+  };
+
+  // servedPosition → the provisional result shape shared by the React
+  // 18 and 19 tiers: exact file (served), approximate line until the
+  // async sourcemap resolution upgrades it in place.
+  const provisionalSource = (pos, names, el, via) => ({
+    file: pos.url.slice(location.origin.length).replace(/^\//, ''),
+    line: pos.line,
+    column: pos.column,
+    approx: true,
+    resolve: resolveStackPos(pos),
+    via,
+    names,
+    node: el,
+  });
+
   // ---------- element → source -------------------------------------------
   const resolveSource = (el) => {
     for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
@@ -222,21 +251,16 @@
         if (nm && !names.includes(nm)) names.push(nm);
         fiber = fiber._debugOwner;
       }
-      if (src) return { file: src.fileName, line: src.lineNumber, column: src.columnNumber, via: 'react', names, node: el };
+      if (src) {
+        // React ≤18: route through the sourcemap when the FS path maps
+        // to a served module; fall back to the raw values otherwise.
+        const url = fsPathToModuleURL(src.fileName);
+        if (url) return provisionalSource({ url, line: src.lineNumber, column: src.columnNumber }, names, el, 'react18');
+        return { file: src.fileName, line: src.lineNumber, column: src.columnNumber, via: 'react', names, node: el };
+      }
       if (stackPos) {
-        // React 19: the sync answer carries the served-module position
-        // (right file, transformed line) as a provisional; `.resolve`
-        // upgrades it to the exact original position via the sourcemap.
-        return {
-          file: stackPos.url.slice(location.origin.length).replace(/^\//, ''),
-          line: stackPos.line,
-          column: stackPos.column,
-          approx: true,
-          resolve: resolveStackPos(stackPos),
-          via: 'react19',
-          names,
-          node: el,
-        };
+        // React 19: the JSX callsite from _debugStack, same upgrade path.
+        return provisionalSource(stackPos, names, el, 'react19');
       }
       if (names.length) return { via: 'react', names, node: el };
       break;
