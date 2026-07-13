@@ -558,17 +558,17 @@
        last, nothing can scale the offset, and transform-origin
        anchors the entry scale to the box's own bottom edge. */
     position: fixed; left: max(16px, calc(50% - 190px)); bottom: 144px; width: 380px; max-width: calc(100vw - 32px);
-    background: rgba(21,22,26,.94); color: #e8e8ec; border-radius: 18px;
-    border: 1.5px solid #3a3b42; box-shadow: 0 12px 40px rgba(0,0,0,.45);
+    background: rgba(255,255,255,.92); color: #1f2937; border-radius: 18px;
+    border: 1.5px solid #e5e7eb; box-shadow: 0 12px 40px rgba(0,0,0,.18);
     pointer-events: auto; backdrop-filter: blur(14px); display: none; overflow: hidden;
     transition: border-color .25s ease;
     transform-origin: 50% 100%;
   }
   .box.visible { display: block; animation: boxIn 300ms cubic-bezier(0.26, 1.15, 0.44, 1); }
   .box:focus { outline: none; } /* focus ANCHOR (tabindex=-1), not a tab stop — no ring */
-  /* every real tab stop shows a ring on KEYBOARD focus only
-     (:focus-visible) — the Tab rotation must be visible to be usable */
-  .box :is(button, textarea):focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
+  /* buttons show a ring on KEYBOARD focus only (:focus-visible) — the
+     Tab rotation must be visible; the composer's caret speaks for itself */
+  .box button:focus-visible { outline: 2px solid #3b82f6; outline-offset: 2px; }
   @keyframes boxIn { from { opacity: 0; transform: translateY(30px) scale(0.96); } }
   @media (prefers-reduced-motion: reduce) { .box.visible { animation: none; } }
   .box.thinking { border-color: #f59e0b; animation: pulse 1.6s ease-in-out infinite; }
@@ -581,44 +581,44 @@
   .dot { width:8px; height:8px; border-radius:50%; background:#6b7280; flex:none; }
   .thinking .dot { background:#f59e0b; } .working .dot { background:#3b82f6; }
   .done .dot { background:#22c55e; } .error .dot { background:#ef4444; }
-  .hd .name { font-size:12px; font-weight:600; color:#9ca3af; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .hd .st { font-size:11px; color:#6b7280; }
-  .grip { color:#4b5563; font-size:10px; letter-spacing:2px; }
+  .hd .name { font-size:12px; font-weight:600; color:#6b7280; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .hd .st { font-size:11px; color:#9ca3af; }
+  .grip { color:#c4c8cf; font-size:10px; letter-spacing:2px; }
   .chips { display:flex; flex-wrap:wrap; gap:6px; padding:0 12px 4px; }
-  .chip { display:inline-flex; align-items:center; gap:6px; background:#26272e; border:1px solid #3a3b42;
-    color:#c7d2fe; font-size:11px; padding:3px 8px; border-radius:999px; max-width:100%; }
+  .chip { display:inline-flex; align-items:center; gap:6px; background:#f3f4f6; border:1px solid #e5e7eb;
+    color:#4338ca; font-size:11px; padding:3px 8px; border-radius:999px; max-width:100%; }
   .chip b { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .chip button { all:unset; cursor:pointer; color:#8b8d98; font-size:12px; line-height:1; }
+  .chip button { all:unset; cursor:pointer; color:#9ca3af; font-size:12px; line-height:1; }
   .chat { max-height:240px; overflow-y:auto; padding:4px 12px; display:none; }
   .box.expanded .chat { display:block; }
   .m { font-size:12.5px; line-height:1.45; margin:6px 0; white-space:pre-wrap; word-break:break-word; }
-  .m.user { color:#93c5fd; }
-  .m.assistant { color:#d1d5db; }
-  .m .who { font-size:10px; text-transform:uppercase; letter-spacing:.6px; color:#6b7280; display:block; }
+  .m.user { color:#2563eb; }
+  .m.assistant { color:#374151; }
+  .m .who { font-size:10px; text-transform:uppercase; letter-spacing:.6px; color:#9ca3af; display:block; }
   .perm { margin:6px 12px; padding:8px 10px; border:1px solid #f59e0b66; background:#f59e0b14; border-radius:10px; font-size:12px; }
   .perm .t { font-weight:600; margin-bottom:2px; }
-  .perm .d { color:#9ca3af; margin-bottom:6px; word-break:break-word; }
+  .perm .d { color:#6b7280; margin-bottom:6px; word-break:break-word; }
   .perm button { all:unset; cursor:pointer; font-size:12px; font-weight:600; padding:4px 12px; border-radius:8px; margin-right:6px; }
-  .perm .allow { background:#22c55e22; color:#4ade80; }
-  .perm .deny { background:#ef444422; color:#f87171; }
-  textarea { width:100%; resize:none; background:transparent; border:0; outline:0; color:#e8e8ec;
+  .perm .allow { background:#22c55e1f; color:#16a34a; }
+  .perm .deny { background:#ef44441f; color:#dc2626; }
+  textarea { width:100%; resize:none; background:transparent; border:0; outline:0; color:#111827;
     font-size:13px; line-height:1.4; padding:6px 12px; min-height:34px; max-height:120px; }
-  textarea::placeholder { color:#6b7280; }
+  textarea::placeholder { color:#9ca3af; }
   .bar { display:flex; align-items:center; gap:4px; padding:6px 8px 8px; }
   .ib { all:unset; cursor:pointer; width:30px; height:30px; border-radius:9px; display:inline-flex;
-    align-items:center; justify-content:center; color:#9ca3af; font-size:15px; }
-  .ib:hover { background:#ffffff14; color:#e8e8ec; }
-  .ib.active { background:#3b82f622; color:#93c5fd; }
+    align-items:center; justify-content:center; color:#6b7280; font-size:15px; }
+  .ib:hover { background:#00000010; color:#111827; }
+  .ib.active { background:#3b82f61f; color:#2563eb; }
   .ib[disabled] { opacity:.35; cursor:not-allowed; }
   .mic { position:relative; }
-  .mic.rec { color:#f87171; background:#ef444422; }
+  .mic.rec { color:#dc2626; background:#ef44441f; }
   .mic.rec::after { content:''; position:absolute; inset:-3px; border-radius:12px;
-    border:2px solid rgba(248,113,113, calc(.25 + .75 * var(--lvl, 0))); }
-  .send { margin-left:auto; background:#e8e8ec; color:#111; font-weight:700; }
-  .send:hover { background:#fff; color:#000; }
+    border:2px solid rgba(220,38,38, calc(.25 + .75 * var(--lvl, 0))); }
+  .send { margin-left:auto; background:#111827; color:#fff; font-weight:700; }
+  .send:hover { background:#000; }
   .send.stop { background:#ef4444; color:#fff; }
-  .hint { font-size:10px; color:#4b5563; text-align:center; padding:0 0 7px; }
-  kbd { font-family:inherit; background:#26272e; padding:0 4px; border-radius:4px; }
+  .hint { font-size:10px; color:#9ca3af; text-align:center; padding:0 0 7px; }
+  kbd { font-family:inherit; background:#f3f4f6; border:1px solid #e5e7eb; padding:0 4px; border-radius:4px; color:#6b7280; }
   .hl { position:fixed; pointer-events:none; border:1.5px solid #60a5fa; background:#3b82f61f;
     border-radius:3px; display:none; }
   .hll { position:fixed; pointer-events:none; background:#111318; color:#c7d2fe; font-size:11px;
