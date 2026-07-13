@@ -299,13 +299,14 @@ func (p *voiceProc) pump(stdout io.Reader) {
 	if sc.Err() != nil {
 		// Scan stopped on something other than clean EOF (e.g. a
 		// too-long line) — the process itself may still be running.
-		// Killing it here is what actually frees its ~700 MB mmap;
+		// Reaping it here is what actually frees its ~700 MB mmap;
 		// without it, marking dead below just lets ensureProc spawn a
 		// replacement while this one leaks, unreaped, in the background.
+		// stop() (not a raw Kill) matters: a scan error can land while
+		// the process is still faulting in the model, and SIGKILL during
+		// that mmap is what wedged macOS into uninterruptible exit before.
 		p.log.Printf("webpreview: clank-voice stdout scan error: %v", sc.Err())
-		if p.cmd.Process != nil {
-			_ = p.cmd.Process.Kill()
-		}
+		p.stop(2 * time.Second)
 	}
 	// Stdout EOF = the process is gone. Mark it dead BEFORE notifying,
 	// so a listener that reacts to the error by reopening can't be
