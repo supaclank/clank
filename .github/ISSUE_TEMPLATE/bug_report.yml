@@ -1,0 +1,51 @@
+name: Bug report
+description: Something broke — in the web preview overlay, voice, mobile preview, daemon, or TUI.
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Where did it go wrong?
+      options:
+        - Web preview overlay (browser)
+        - Voice dictation
+        - Mobile preview (phone)
+        - Daemon / host / agent sessions
+        - TUI
+        - Other / not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, and what did you see instead of what you expected?
+      placeholder: I tapped caps lock to dictate and …
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. clank preview in a SvelteKit project
+        2. ⌘E to open the box
+        3. …
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: "`clank version`, or the commit you built from."
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS and — for overlay issues — the browser.
+      placeholder: macOS 15.5, Chrome 138
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Anything relevant — browser console, `clank preview` terminal output, daemon.log.
+      render: shell

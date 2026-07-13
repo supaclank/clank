@@ -15,10 +15,13 @@ func (c *Client) Preview(worktreeID string) *PreviewClient {
 }
 
 // PreviewStatus is the dev-server state returned by Start/Status. Port is
-// Metro's listen port — populated even on the laptop path, where the
-// gateway-minted public URL/Token fields stay empty.
+// the dev server's listen port — populated even on the laptop path, where
+// the gateway-minted public URL/Token fields stay empty. Kind mirrors
+// preview.Kind ("expo" | "web") and tells `clank preview` which client
+// flow to run (QR + phone vs browser overlay proxy).
 type PreviewStatus struct {
 	Available bool   `json:"available"`
+	Kind      string `json:"kind"`
 	State     string `json:"state"`
 	Port      int    `json:"port"`
 	URL       string `json:"url"`

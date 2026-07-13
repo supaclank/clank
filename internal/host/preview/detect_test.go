@@ -54,6 +54,35 @@ func TestDetect(t *testing.T) {
 			want: &Spec{Kind: KindExpo, ReadyProbe: expoReadyProbe},
 		},
 		{
+			name: "vite via devDependencies",
+			files: map[string]string{
+				"package.json": `{"devDependencies":{"vite":"^6.0.0","svelte":"^5.0.0"}}`,
+			},
+			want: &Spec{Kind: KindWeb, ReadyProbe: webReadyProbe},
+		},
+		{
+			name: "vite via dependencies",
+			files: map[string]string{
+				"package.json": `{"dependencies":{"vite":"^6.0.0"}}`,
+			},
+			want: &Spec{Kind: KindWeb, ReadyProbe: webReadyProbe},
+		},
+		{
+			name: "expo wins over vite when both are declared",
+			files: map[string]string{
+				"package.json": `{"dependencies":{"expo":"~50.0.0"},"devDependencies":{"vite":"^6.0.0"}}`,
+				"app.json":     `{"expo":{"name":"x"}}`,
+			},
+			want: &Spec{Kind: KindExpo, ReadyProbe: expoReadyProbe},
+		},
+		{
+			name: "expo dep without app config falls through to vite",
+			files: map[string]string{
+				"package.json": `{"dependencies":{"expo":"~50.0.0"},"devDependencies":{"vite":"^6.0.0"}}`,
+			},
+			want: &Spec{Kind: KindWeb, ReadyProbe: webReadyProbe},
+		},
+		{
 			name:  "no package.json",
 			files: map[string]string{},
 			want:  nil,

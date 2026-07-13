@@ -16,13 +16,20 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/host"
+	"github.com/acksell/clank/internal/host/preview"
 )
 
-// runPreview makes the local daemon reachable from a phone on the LAN and
-// serves the current folder's Expo app, Expo-style. Pairing, the dev
-// server, and the agent session are independent: a prompt is optional and
-// only starts an agent. Blocks until interrupted, then tears down — and
-// stops the daemon only if it started it.
+// runPreview serves the current folder's app for live preview and tears
+// everything down on interrupt (stopping the daemon only if it started
+// it). What "preview" means depends on what Detect finds:
+//
+//   - Expo: expose the daemon to the phone over the LAN behind a
+//     pairing token and print the QR (the original flow).
+//   - Vite web: front the dev server with the overlay-injecting proxy
+//     and open it in the browser (runWebPreview).
+//
+// Pairing/proxy, the dev server, and the agent session stay independent:
+// a prompt argument is optional and only pre-starts an agent.
 func runPreview(projectDir, prompt, backend string, port int) error {
 	projectDir, err := resolveProjectDir(projectDir)
 	if err != nil {
@@ -32,15 +39,20 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	sigCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	ip, err := lanIP()
-	if err != nil {
-		return err
-	}
-	// Make Metro advertise the LAN IP in its manifest so the phone can
-	// fetch the bundle. The dev server inherits our process env, so
-	// setting it here threads down to `expo start`.
-	if err := os.Setenv("REACT_NATIVE_PACKAGER_HOSTNAME", ip.String()); err != nil {
-		return fmt.Errorf("set packager hostname: %w", err)
+	// LAN details are only needed for the phone path, but Metro reads
+	// REACT_NATIVE_PACKAGER_HOSTNAME from the daemon's environment and
+	// the daemon inherits ours only when we're the one starting it — so
+	// this must run before ensureDaemon, before the Kind is knowable.
+	// Web previews are loopback-only and need neither (a laptop with no
+	// LAN IP can still web-preview, hence the deferred error).
+	ip, ipErr := lanIP()
+	if ipErr == nil {
+		// Make Metro advertise the LAN IP in its manifest so the phone can
+		// fetch the bundle. The dev server inherits our process env, so
+		// setting it here threads down to `expo start`.
+		if err := os.Setenv("REACT_NATIVE_PACKAGER_HOSTNAME", ip.String()); err != nil {
+			return fmt.Errorf("set packager hostname: %w", err)
+		}
 	}
 
 	// Reuse the running daemon, or start one — and remember which, so we
@@ -65,17 +77,6 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 		return fmt.Errorf("daemon socket path: %w", err)
 	}
 
-	fmt.Println("Opening this folder to your phone…")
-	fd, err := startPreviewFrontDoor(ip, port, sockPath, log.Default())
-	if err != nil {
-		return fmt.Errorf("start preview front door: %w", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		fd.Shutdown(ctx)
-	}()
-
 	// Per-run key for the in-place dev server. The server runs against
 	// projectDir itself; the key just lets us stop it on exit.
 	previewKey := ulid.Make().String()
@@ -88,14 +89,11 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	fmt.Println("Starting the dev server on this folder (first run installs dependencies)…")
 	status, err := client.Preview(previewKey).Start(startCtx, projectDir)
 	if err != nil {
-		return fmt.Errorf("start preview (is this an Expo project?): %w", err)
+		return fmt.Errorf("start preview (is this an Expo or Vite project?): %w", err)
 	}
 	if status.Port == 0 {
 		return fmt.Errorf("preview started but the dev server port is unknown (state=%s)", status.State)
 	}
-	// http, not exp:// — the phone fetches this as the Expo manifest base,
-	// and the preview launcher keeps LAN http URLs on http.
-	previewURL := fmt.Sprintf("http://%s:%d", ip, status.Port)
 	defer func() {
 		sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer scancel()
@@ -103,9 +101,9 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	}()
 
 	// A prompt is optional. If you pass one, kick the agent off now and
-	// watch it on your phone. If not, no session is created here — the
-	// phone creates one (this folder as the GitRef, the first message as
-	// the prompt) when you start talking in the preview overlay.
+	// watch it work in the preview. If not, no session is created here —
+	// the overlay (phone or browser) creates one (this folder as the
+	// GitRef, the first message as the prompt) when you start talking.
 	bt, err := resolveBackend(backend, os.Stderr)
 	if err != nil {
 		return err
@@ -124,6 +122,29 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 		}
 		sessionID = info.ID
 	}
+
+	if status.Kind == string(preview.KindWeb) {
+		return runWebPreview(sigCtx, projectDir, sockPath, sessionID, string(bt), status.Port, port)
+	}
+
+	// Phone (Expo) path from here down.
+	if ipErr != nil {
+		return ipErr
+	}
+	fmt.Println("Opening this folder to your phone…")
+	fd, err := startPreviewFrontDoor(ip, port, sockPath, log.Default())
+	if err != nil {
+		return fmt.Errorf("start preview front door: %w", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		fd.Shutdown(ctx)
+	}()
+
+	// http, not exp:// — the phone fetches this as the Expo manifest base,
+	// and the preview launcher keeps LAN http URLs on http.
+	previewURL := fmt.Sprintf("http://%s:%d", ip, status.Port)
 
 	link := PreviewLink{
 		GatewayURL: fd.BaseURL,

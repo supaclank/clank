@@ -7,13 +7,15 @@ import (
 )
 
 // Kind tags what flavor of dev server a Spec describes. Drives the
-// mobile client's render decision once the proxy URL is in hand.
-// v1 only emits KindExpo; the constant exists so the wire format has
-// room to grow without a breaking change.
+// client's render decision once the server is up: KindExpo is consumed
+// by clank-mobile (QR + phone), KindWeb by `clank preview`'s browser
+// flow, which fronts the dev server with the overlay-injecting proxy
+// in internal/webpreview instead of printing a QR.
 type Kind string
 
 const (
 	KindExpo Kind = "expo"
+	KindWeb  Kind = "web"
 )
 
 // State is the lifecycle state of a running server. Status responses
