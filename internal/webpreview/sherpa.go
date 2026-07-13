@@ -163,13 +163,15 @@ func (e *SherpaEngine) ensureProc(ctx context.Context) (*voiceProc, error) {
 	if timeout == 0 {
 		timeout = defaultReadyTimeout
 	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop() // time.After would leak its timer until it fires
 	select {
 	case <-p.ready:
 		e.proc = p
 		return p, nil
 	case <-p.dead:
 		return nil, fmt.Errorf("clank-voice exited before ready (see log)")
-	case <-time.After(timeout):
+	case <-timer.C:
 		go p.stop(2 * time.Second) // failure path — don't hold the caller for the grace window
 		return nil, fmt.Errorf("clank-voice not ready after %s", timeout)
 	case <-ctx.Done():
