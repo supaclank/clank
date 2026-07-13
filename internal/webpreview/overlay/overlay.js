@@ -613,7 +613,9 @@
      bg brand-dim, border brand/30 */
   .beta { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.5px;
     color:#e23e5d; background:rgba(250,85,115,.12); border:1px solid rgba(250,85,115,.3);
-    padding:2px 8px; border-radius:999px; line-height:1.4; }
+    padding:2px 8px; border-radius:999px; line-height:1.4;
+    cursor:pointer; text-decoration:none; }
+  .beta:hover { background:rgba(250,85,115,.22); }
   .grip { color:#9ca3af; display:flex; align-items:center; }
   .grip svg { display:block; pointer-events:none; }
   .chips { display:flex; flex-wrap:wrap; gap:6px; padding:0 12px 4px; }
@@ -663,7 +665,7 @@
   .toast.show { opacity:1; }
 </style>
 <div class="box" part="box" tabindex="-1">
-  <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><span class="beta">beta</span><span class="grip">${ICONS.grip}</span></div>
+  <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><a class="beta" href="https://github.com/Acksell/clank/issues" target="_blank" rel="noopener noreferrer" title="click to report an issue" tabindex="-1">beta</a><span class="grip">${ICONS.grip}</span></div>
   <div class="chips"></div>
   <div class="chat"></div>
   <div class="perm" style="display:none">
@@ -839,6 +841,7 @@
     const saved = sessionStorage.getItem('clank.boxPos');
     if (saved) { try { const p = JSON.parse(saved); ui.box.style.translate = `${p.x}px ${p.y}px`; ui.box.dataset.x = p.x; ui.box.dataset.y = p.y; } catch {} }
     hd.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('.beta')) return; // the pill is a link, not a drag handle
       endFollow(); // manual drag wins over a live shift-follow
       dragging = true;
       sx = e.clientX; sy = e.clientY;
@@ -852,6 +855,7 @@
       ui.box.style.translate = `${x}px ${y}px`;
     });
     hd.addEventListener('pointerup', (e) => {
+      if (!dragging) return; // e.g. a click on the pill link — no drag was armed
       dragging = false;
       sessionStorage.setItem('clank.boxPos', JSON.stringify({ x: parseFloat(ui.box.dataset.x || '0'), y: parseFloat(ui.box.dataset.y || '0') }));
       // A drag that never really moved is a tap: toggle the chat view
