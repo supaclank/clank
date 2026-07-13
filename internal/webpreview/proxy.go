@@ -259,7 +259,11 @@ func requireToken(token string, next http.Handler) http.Handler {
 		if got == "" {
 			got = r.URL.Query().Get("t")
 		}
-		if subtle.ConstantTimeCompare([]byte(got), want) != 1 {
+		// Length check first: cheap (no allocation), and rejects an
+		// oversized got before []byte(got) copies it — a local client
+		// can't force a large per-request allocation just by sending a
+		// long garbage token.
+		if len(got) != len(want) || subtle.ConstantTimeCompare([]byte(got), want) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

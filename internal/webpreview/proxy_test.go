@@ -271,6 +271,27 @@ func TestDaemonRelayRequiresTokenAndStripsAuth(t *testing.T) {
 	}
 }
 
+// TestRequireTokenRejectsOversizedTokenWithoutMatching pins the length
+// short-circuit: a wrong-length token must be rejected without ever
+// running the constant-time byte comparison over it, so a client can't
+// force large per-request allocations by sending an oversized token.
+func TestRequireTokenRejectsOversizedTokenWithoutMatching(t *testing.T) {
+	t.Parallel()
+	s := startTestStack(t, http.NotFoundHandler(), http.NotFoundHandler())
+
+	huge := strings.Repeat("a", 512<<10) // 512 KiB, far longer than any real token but under the server's header-size cap
+	req, _ := http.NewRequest("GET", s.URL+"/__clank/api/sessions", nil)
+	req.Header.Set("X-Clank-Token", huge)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("oversized token status = %d, want 401", resp.StatusCode)
+	}
+}
+
 func TestOverlayAssetsServed(t *testing.T) {
 	t.Parallel()
 	s := startTestStack(t, http.NotFoundHandler(), http.NotFoundHandler())
