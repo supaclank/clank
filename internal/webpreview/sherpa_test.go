@@ -36,7 +36,9 @@ func runFakeVoice(mode string) {
 		fmt.Fprintf(out, format+"\n", args...)
 		out.Flush()
 	}
-	emit(`{"type":"ready"}`)
+	if mode != "noready" {
+		emit(`{"type":"ready"}`)
+	}
 	in := bufio.NewReader(os.Stdin)
 	var n int
 	for {
@@ -307,5 +309,71 @@ func TestSherpaEngineRecoversFromCrash(t *testing.T) {
 	}
 	if r := recvResult(t, s2); r.Text != "heard 5" {
 		t.Fatalf("respawned partial = %+v", r)
+	}
+}
+
+// TestSherpaEngineCloseDoesNotBlockOnSpawnInProgress pins the fix for a
+// hang: ensureProc used to hold procMu across the whole readiness wait
+// (up to ReadyTimeout), so Close (Ctrl+C) blocked behind a still-loading
+// spawn instead of tearing it down promptly.
+func TestSherpaEngineCloseDoesNotBlockOnSpawnInProgress(t *testing.T) {
+	e := fakeEngine(t, "noready")
+	e.ReadyTimeout = 30 * time.Second // must never be reached — Close intervenes first
+
+	openDone := make(chan error, 1)
+	go func() {
+		_, err := e.Open(context.Background())
+		openDone <- err
+	}()
+	time.Sleep(200 * time.Millisecond) // let ensureProc spawn and start waiting on p.ready
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- e.Close() }()
+
+	// Bounded by stop()'s own 3s grace window, nowhere near ReadyTimeout —
+	// proves Close doesn't wait behind the readiness select.
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatalf("Close blocked behind a spawn still waiting on readiness")
+	}
+
+	select {
+	case err := <-openDone:
+		if err == nil {
+			t.Fatalf("Open succeeded after Close killed the process mid-spawn, want error")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("Open never returned after Close killed its process")
+	}
+}
+
+// TestSherpaEnginePrewarmAfterCloseDoesNotLeak pins the closed-flag fix:
+// a Prewarm racing Close used to be able to leave a spawned process
+// running after Close returned, defeating Close's "release ~1GB of RSS"
+// contract.
+func TestSherpaEnginePrewarmAfterCloseDoesNotLeak(t *testing.T) {
+	e := fakeEngine(t, "noready")
+	e.ReadyTimeout = 5 * time.Second
+
+	e.Prewarm()
+	time.Sleep(200 * time.Millisecond) // let Prewarm spawn, well before readiness/timeout
+	if err := e.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond) // let the racing Prewarm goroutine settle
+
+	e.procMu.Lock()
+	proc := e.proc
+	e.procMu.Unlock()
+	if proc != nil && !proc.isDead() {
+		t.Fatalf("engine still has a live process after Close raced Prewarm")
+	}
+
+	if _, err := e.ensureProc(context.Background()); err == nil {
+		t.Fatalf("ensureProc after Close = nil error, want 'engine closed'")
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -158,6 +159,65 @@ func TestVoiceWSReportsEngineBusy(t *testing.T) {
 	}
 	if m := readVoiceMsg(t, conn); m.Type != "error" || !strings.Contains(m.Error, "model held") {
 		t.Fatalf("busy engine message = %+v, want error mentioning the cause", m)
+	}
+}
+
+// countingBusyEngine always fails Open and counts calls, so a test can
+// assert the read loop stops retrying a busy engine on every audio frame.
+type countingBusyEngine struct {
+	opens int32
+}
+
+func (e *countingBusyEngine) Describe() string { return "counting-busy" }
+
+func (e *countingBusyEngine) Open(ctx context.Context) (Session, error) {
+	atomic.AddInt32(&e.opens, 1)
+	return nil, errors.New("busy")
+}
+
+// TestVoiceWSOpenFailureSuppressesRepeatedOpens pins the fix for a stall:
+// once an utterance's engine.Open fails, every subsequent audio frame in
+// the same utterance used to retry Open (up to its own 10s timeout) on
+// the read loop's goroutine, blocking cancel/end processing behind it.
+func TestVoiceWSOpenFailureSuppressesRepeatedOpens(t *testing.T) {
+	t.Parallel()
+	eng := &countingBusyEngine{}
+	conn, done := dialVoice(t, eng)
+	defer done()
+
+	ctx := context.Background()
+	if err := conn.Write(ctx, websocket.MessageBinary, make([]byte, 4)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if m := readVoiceMsg(t, conn); m.Type != "error" {
+		t.Fatalf("first frame = %+v, want error", m)
+	}
+
+	// A second frame in the same (still-failed) utterance must not
+	// re-trigger Open.
+	if err := conn.Write(ctx, websocket.MessageBinary, make([]byte, 4)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if err := conn.Write(ctx, websocket.MessageText, []byte(`{"type":"end"}`)); err != nil {
+		t.Fatalf("write end: %v", err)
+	}
+	if m := readVoiceMsg(t, conn); m.Type != "transcribing" {
+		t.Fatalf("after end = %+v, want transcribing", m)
+	}
+
+	// end clears the failure, so the next utterance retries Open. If a
+	// spurious "final" had been queued for the failed utterance, it would
+	// arrive here instead of the fresh "error" from the retry.
+	if err := conn.Write(ctx, websocket.MessageBinary, make([]byte, 4)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if m := readVoiceMsg(t, conn); m.Type != "error" {
+		t.Fatalf("next utterance frame = %+v, want error (not a spurious final)", m)
+	}
+
+	if got := atomic.LoadInt32(&eng.opens); got != 2 {
+		t.Fatalf("Open called %d times, want exactly 2 (one per utterance)", got)
 	}
 }
 

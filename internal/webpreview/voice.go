@@ -117,6 +117,11 @@ func serveVoiceWS(w http.ResponseWriter, r *http.Request, engine Engine, lg *log
 	var (
 		sess     Session
 		pumpDone chan struct{}
+		// openFailed marks a busy/unavailable engine for the rest of the
+		// current utterance so subsequent audio frames skip straight past
+		// openSess instead of each blocking the read loop on a fresh
+		// engine.Open call (up to its own timeout) — cancel/end clears it.
+		openFailed bool
 	)
 	closeSess := func() {
 		if sess == nil {
@@ -143,12 +148,16 @@ func serveVoiceWS(w http.ResponseWriter, r *http.Request, engine Engine, lg *log
 	}
 
 	openSess := func() bool {
+		if openFailed {
+			return false
+		}
 		octx, ocancel := context.WithTimeout(ctx, 10*time.Second)
 		s, oerr := engine.Open(octx)
 		ocancel()
 		if oerr != nil {
 			lg.Printf("webpreview: voice session open: %v", oerr)
 			writeJSON(voiceMsg{Type: "error", Error: "voice engine busy or unavailable: " + oerr.Error()})
+			openFailed = true
 			return false
 		}
 		done := make(chan struct{})
@@ -206,15 +215,20 @@ func serveVoiceWS(w http.ResponseWriter, r *http.Request, engine Engine, lg *log
 			switch m.Type {
 			case "cancel":
 				utteranceBytes = 0
+				openFailed = false
 				closeSess() // frees the slot; a cancel ends the utterance same as end/final does
 			case "end":
 				utteranceBytes = 0
+				wasFailed := openFailed
+				openFailed = false
 				if !writeJSON(voiceMsg{Type: "transcribing"}) {
 					return
 				}
 				if sess == nil {
-					// Push-to-talk tapped with no audio captured.
-					writeJSON(voiceMsg{Type: "final"})
+					if !wasFailed {
+						// Push-to-talk tapped with no audio captured.
+						writeJSON(voiceMsg{Type: "final"})
+					}
 					continue
 				}
 				if eerr := sess.End(); eerr != nil {

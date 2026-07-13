@@ -41,6 +41,7 @@ type SherpaEngine struct {
 
 	procMu sync.Mutex
 	proc   *voiceProc
+	closed bool
 }
 
 // defaultReadyTimeout allows for a cold Parakeet load on a busy laptop.
@@ -114,6 +115,7 @@ func (e *SherpaEngine) Prewarm() {
 func (e *SherpaEngine) Close() error {
 	e.procMu.Lock()
 	defer e.procMu.Unlock()
+	e.closed = true
 	if e.proc != nil {
 		e.proc.stop(3 * time.Second)
 		e.proc = nil
@@ -122,26 +124,43 @@ func (e *SherpaEngine) Close() error {
 }
 
 // ensureProc returns the live subprocess, spawning (and waiting for its
-// ready line) if needed.
+// ready line) if needed. The readiness wait happens with procMu released
+// — holding it across a wait of up to ReadyTimeout would make Close
+// (Ctrl+C) block for the same duration behind a concurrent spawn.
 func (e *SherpaEngine) ensureProc(ctx context.Context) (*voiceProc, error) {
 	e.procMu.Lock()
-	defer e.procMu.Unlock()
+	if e.closed {
+		e.procMu.Unlock()
+		return nil, fmt.Errorf("engine closed")
+	}
+	readyTimeout := e.ReadyTimeout
+	if readyTimeout == 0 {
+		readyTimeout = defaultReadyTimeout
+	}
 	if e.proc != nil && !e.proc.isDead() {
-		return e.proc, nil
+		p := e.proc
+		e.procMu.Unlock()
+		return waitReady(ctx, p, readyTimeout)
 	}
 	e.proc = nil
 
 	cmd := exec.Command(e.Bin, e.Args...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		e.procMu.Unlock()
 		return nil, fmt.Errorf("clank-voice stdin: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		_ = stdin.Close()
+		e.procMu.Unlock()
 		return nil, fmt.Errorf("clank-voice stdout: %w", err)
 	}
 	cmd.Stderr = &logWriter{log: e.Log, prefix: "clank-voice: "}
 	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		e.procMu.Unlock()
 		return nil, fmt.Errorf("start %s: %w", e.Bin, err)
 	}
 	p := &voiceProc{
@@ -159,15 +178,21 @@ func (e *SherpaEngine) ensureProc(ctx context.Context) (*voiceProc, error) {
 		_ = cmd.Wait()
 	}()
 
-	timeout := e.ReadyTimeout
-	if timeout == 0 {
-		timeout = defaultReadyTimeout
-	}
+	// Published before readiness so a racing Close (see the closed check
+	// above) can find and kill a still-loading process instead of leaking it.
+	e.proc = p
+	e.procMu.Unlock()
+
+	return waitReady(ctx, p, readyTimeout)
+}
+
+// waitReady blocks (unlocked) until p signals ready, dies, or timeout/ctx
+// expires, killing p on any non-ready outcome.
+func waitReady(ctx context.Context, p *voiceProc, timeout time.Duration) (*voiceProc, error) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop() // time.After would leak its timer until it fires
 	select {
 	case <-p.ready:
-		e.proc = p
 		return p, nil
 	case <-p.dead:
 		return nil, fmt.Errorf("clank-voice exited before ready (see log)")
