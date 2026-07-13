@@ -28,7 +28,7 @@ install: embed-host
 # `clank preview`.
 .PHONY: voice
 voice:
-	CGO_ENABLED=1 go -C voice-engine install ./cmd/clank-voice
+	CGO_ENABLED=1 GOWORK=off go -C voice-engine install ./cmd/clank-voice
 
 .PHONY: test test-race
 test: embed-host
