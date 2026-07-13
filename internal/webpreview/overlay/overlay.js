@@ -543,13 +543,22 @@
   :host { all: initial; }
   * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
   .box {
-    position: fixed; right: 24px; bottom: 24px; width: 380px; max-width: calc(100vw - 32px);
+    /* home: horizontally centered, ~one box-height above the bottom
+       (mobile FAB parity). Centered via left, NOT transform — the
+       drag/follow system owns style.transform. */
+    position: fixed; left: max(16px, calc(50% - 190px)); bottom: 144px; width: 380px; max-width: calc(100vw - 32px);
     background: rgba(21,22,26,.94); color: #e8e8ec; border-radius: 18px;
     border: 1.5px solid #3a3b42; box-shadow: 0 12px 40px rgba(0,0,0,.45);
     pointer-events: auto; backdrop-filter: blur(14px); display: none; overflow: hidden;
     transition: border-color .25s ease;
+    transform-origin: 50% 100%;
   }
-  .box.visible { display: block; }
+  /* summon: fade + rise + scale from the bottom, like the mobile FAB.
+     Standalone translate/scale properties COMPOSE with the transform
+     property, so the entry plays correctly even at a dragged position. */
+  .box.visible { display: block; animation: boxIn 280ms cubic-bezier(0.26, 1.2, 0.44, 1); }
+  @keyframes boxIn { from { opacity: 0; translate: 0 18px; scale: 0.95; } }
+  @media (prefers-reduced-motion: reduce) { .box.visible { animation: none; } }
   .box.thinking { border-color: #f59e0b; animation: pulse 1.6s ease-in-out infinite; }
   .box.working  { border-color: #3b82f6; }
   .box.done     { border-color: #22c55e; }
