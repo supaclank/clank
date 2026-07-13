@@ -18,8 +18,8 @@ github.com/MicahParks/keyfunc/v3 v3.8.0 h1:Hx2dgIjAXGk9slakM6rV9BOeaWDPEXXZ4Us8g
 github.com/MicahParks/keyfunc/v3 v3.8.0/go.mod h1:z66bkCviwqfg2YUp+Jcc/xRE9IXLcMq6DrgV/+Htru0=
 github.com/PuerkitoBio/rehttp v1.4.0 h1:rIN7A2s+O9fmHUM1vUcInvlHj9Ysql4hE+Y0wcl/xk8=
 github.com/PuerkitoBio/rehttp v1.4.0/go.mod h1:LUwKPoDbDIA2RL5wYZCNsQ90cx4OJ4AWBmq6KzWZL1s=
-github.com/acksell/opencode-go-sdk/sdk v0.1.1 h1:buXfqxtcgHTG368+mIC0BlHr27Xb5h5fO3WnwHTF0tk=
-github.com/acksell/opencode-go-sdk/sdk v0.1.1/go.mod h1:eRPQEF7jf3rfQWAsG2zqpl3rsEcgwlFnMRG/QgHFAgY=
+github.com/acksell/opencode-go-sdk/sdk v1.17.18 h1:0yB3L/epxfohct7l86H9NCXdi/pNtJh30f0f30zw6+A=
+github.com/acksell/opencode-go-sdk/sdk v1.17.18/go.mod h1:eRPQEF7jf3rfQWAsG2zqpl3rsEcgwlFnMRG/QgHFAgY=
 github.com/agnivade/levenshtein v1.2.1 h1:EHBY3UOn1gwdy/VbFwgo4cxecRznFk7fKWN1KOX7eoM=
 github.com/agnivade/levenshtein v1.2.1/go.mod h1:QVVI16kDrtSuwcpd0p1+xMC6Z/VfhtCyDIjcwga4/DU=
 github.com/alecthomas/assert/v2 v2.11.0 h1:2Q9r3ki8+JYXvGsDyBXwH3LcJ+WK5D0gc5E8vS6K3D0=

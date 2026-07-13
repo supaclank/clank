@@ -7,7 +7,7 @@ require (
 	charm.land/bubbletea/v2 v2.0.2
 	charm.land/lipgloss/v2 v2.0.2
 	github.com/MicahParks/keyfunc/v3 v3.8.0
-	github.com/acksell/opencode-go-sdk/sdk v0.1.1
+	github.com/acksell/opencode-go-sdk/sdk v1.17.18
 	github.com/atotto/clipboard v0.1.4
 	github.com/aws/aws-sdk-go-v2 v1.41.7
 	github.com/aws/aws-sdk-go-v2/config v1.32.17
