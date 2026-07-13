@@ -1,5 +1,7 @@
 package webpreview
 
+import "bytes"
+
 var (
 	headClose = []byte("</head>")
 	bodyClose = []byte("</body>")
@@ -35,16 +37,30 @@ func injectHTML(body, snippet []byte) []byte {
 // copy of body (megabytes of dev-server HTML, on every request) and,
 // worse, can desync its match index from the original buffer whenever a
 // multi-byte rune folds to fewer bytes (e.g. U+212A KELVIN SIGN → 'k').
+//
+// tag's first byte ('<') has no case fold, so bytes.IndexByte — a tight,
+// heavily-optimized stdlib scan — skips the non-candidate bytes instead
+// of running the fold comparison at every position.
 func indexTagFold(body, tag []byte) int {
 	if len(tag) == 0 {
 		return 0
 	}
-	for i := 0; i+len(tag) <= len(body); i++ {
+	first := tag[0]
+	i := 0
+	for {
+		idx := bytes.IndexByte(body[i:], first)
+		if idx < 0 {
+			return -1
+		}
+		i += idx
+		if i+len(tag) > len(body) {
+			return -1
+		}
 		if asciiEqualFold(body[i:i+len(tag)], tag) {
 			return i
 		}
+		i++
 	}
-	return -1
 }
 
 func asciiEqualFold(a, b []byte) bool {
