@@ -307,6 +307,41 @@ func TestVoiceWSUtteranceTooLongReleasesSlot(t *testing.T) {
 	waitForSlot(t, conn2)
 }
 
+// A client that keeps sending after an oversized utterance must not be
+// able to reopen a fresh session on the next frame and bypass the limit
+// indefinitely — the connection itself has to end.
+func TestVoiceWSUtteranceTooLongClosesConnection(t *testing.T) {
+	t.Parallel()
+	eng := newSerialStub()
+	conn, done := dialVoice(t, eng)
+	defer done()
+
+	ctx := context.Background()
+	const chunk = 1_000_000 // > maxUtteranceBytes after 17 chunks
+	sent := 0
+	for sent+chunk <= maxUtteranceBytes {
+		if err := conn.Write(ctx, websocket.MessageBinary, make([]byte, chunk)); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if m := readVoiceMsg(t, conn); m.Type != "partial" {
+			t.Fatalf("partial = %+v", m)
+		}
+		sent += chunk
+	}
+	if err := conn.Write(ctx, websocket.MessageBinary, make([]byte, chunk)); err != nil {
+		t.Fatalf("write overflow chunk: %v", err)
+	}
+	if m := readVoiceMsg(t, conn); m.Type != "error" || !strings.Contains(m.Error, "too long") {
+		t.Fatalf("overflow message = %+v, want a 'too long' error", m)
+	}
+
+	rctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, _, err := conn.Read(rctx); err == nil {
+		t.Fatalf("conn.Read succeeded, want the server to have closed the connection")
+	}
+}
+
 func TestVoiceWSCancelResetsUtterance(t *testing.T) {
 	t.Parallel()
 	conn, done := dialVoice(t, &stubEngine{})

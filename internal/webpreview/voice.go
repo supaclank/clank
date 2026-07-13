@@ -92,11 +92,12 @@ func serveVoiceWS(w http.ResponseWriter, r *http.Request, engine Engine, lg *log
 	var wmu sync.Mutex
 	writeJSON := func(m voiceMsg) bool {
 		data, _ := json.Marshal(m)
-		wctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
+		wctx, wcancel := context.WithTimeout(ctx, 10*time.Second)
+		defer wcancel()
 		wmu.Lock()
 		defer wmu.Unlock()
 		if werr := conn.Write(wctx, websocket.MessageText, data); werr != nil {
+			cancel() // unblock the read loop now instead of waiting for the next ping
 			return false
 		}
 		return true
@@ -180,9 +181,11 @@ func serveVoiceWS(w http.ResponseWriter, r *http.Request, engine Engine, lg *log
 			}
 			if utteranceBytes+len(data) > maxUtteranceBytes {
 				writeJSON(voiceMsg{Type: "error", Error: "utterance too long"})
-				utteranceBytes = 0
 				closeSess() // Close discards the buffered audio and frees the slot; Cancel alone would strand it
-				continue
+				// End the connection, not just the utterance — otherwise a
+				// runaway client just keeps sending and reopens a fresh
+				// session on the next frame, bypassing the limit forever.
+				return
 			}
 			utteranceBytes += len(data)
 			if ferr := sess.Feed(data); ferr != nil {
