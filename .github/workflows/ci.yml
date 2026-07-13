@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+    # ready_for_review on top of the defaults so CI runs when a draft flips to
+    # ready; the skip-drafts condition on each job handles the rest.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -11,6 +14,7 @@ permissions:
 jobs:
   build-vet:
     name: build · vet
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +40,7 @@ jobs:
   # binary is absent; the integration suite is behind //go:build integration.
   test-agent-race:
     name: race · internal/agent
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
