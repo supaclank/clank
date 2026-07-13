@@ -183,6 +183,12 @@ func newUpstreamProxy(port int, snippet []byte, lg *log.Logger) *httputil.Revers
 			if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 				return nil
 			}
+			// The Rewrite hook above requests identity encoding, but an
+			// upstream that ignores Accept-Encoding would otherwise get its
+			// compressed bytes searched and corrupted by injectHTML.
+			if ce := resp.Header.Get("Content-Encoding"); ce != "" && ce != "identity" {
+				return nil
+			}
 			body, overflow, err := readUpTo(resp.Body, maxInjectHTMLBytes)
 			if err != nil {
 				return err

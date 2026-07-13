@@ -1,6 +1,8 @@
 package webpreview
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"io"
@@ -167,6 +169,43 @@ func TestProxyInjectsOverlayIntoHTML(t *testing.T) {
 	}
 	if cl := resp.Header.Get("Content-Length"); cl != strconv.Itoa(len(body)) {
 		t.Errorf("Content-Length %s != body %d", cl, len(body))
+	}
+}
+
+// The Rewrite hook asks upstream for identity encoding, but an upstream
+// that ignores Accept-Encoding and compresses anyway must not have its
+// compressed bytes searched (and corrupted) by injectHTML.
+func TestProxyLeavesCompressedHTMLAlone(t *testing.T) {
+	t.Parallel()
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	io.WriteString(zw, "<html><head></head><body>app</body></html>")
+	if err := zw.Close(); err != nil {
+		t.Fatalf("gzip: %v", err)
+	}
+	compressed := gz.Bytes()
+
+	s := startTestStack(t,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Content-Encoding", "gzip")
+			w.Write(compressed)
+		}),
+		http.NotFoundHandler(),
+	)
+
+	// DisableCompression so this client's own Transport doesn't transparently
+	// gunzip the response — the point is to inspect exactly what the proxy
+	// sent over the wire.
+	client := &http.Client{Transport: &http.Transport{DisableCompression: true}}
+	resp, err := client.Get(s.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if !bytes.Equal(body, compressed) {
+		t.Fatalf("compressed body was modified: got %d bytes, want the original %d untouched", len(body), len(compressed))
 	}
 }
 
