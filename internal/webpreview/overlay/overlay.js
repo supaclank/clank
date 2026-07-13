@@ -822,9 +822,23 @@
   // per frame (compositor-only — the guest never relayouts); box/viewport
   // metrics are cached at follow-start (no per-frame layout reads); the
   // loop exists only from ⇧-down until the spring settles after release.
-  const FOLLOW_GAP = 48; // pointer → box-top distance, ~2–3 cursor heights
   const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)');
   let follow = null;
+
+  // Keydown events carry no pointer coordinates, so the press-time jump
+  // needs the cursor tracked continuously. Passive, two assignments —
+  // nothing else happens outside an active follow.
+  let mouseX = 0, mouseY = 0, mouseSeen = false;
+  window.addEventListener('mousemove', (e) => { mouseX = e.clientX; mouseY = e.clientY; mouseSeen = true; }, { passive: true, capture: true });
+
+  // The box TOP lands at the cursor (nudged 2px in), so the pointer sits
+  // on the header — the drag handle — and follow hands off to click-drag.
+  const followTargetFromPointer = (cx, cy) => {
+    const left = Math.min(Math.max(cx - follow.w / 2, 8), innerWidth - follow.w - 8);
+    const top = Math.min(Math.max(cy - 2, 8), innerHeight - follow.h - 8);
+    follow.tx = left - follow.natX;
+    follow.ty = top - follow.natY;
+  };
 
   const startFollow = () => {
     if (follow || store.box === 'hidden') return;
@@ -837,16 +851,14 @@
       x, y, vx: 0, vy: 0, tx: x, ty: y,
       held: true, lastT: 0, raf: 0,
     };
+    if (mouseSeen) followTargetFromPointer(mouseX, mouseY); // jump starts NOW, not at the next mousemove
     window.addEventListener('mousemove', onFollowMove, true);
     follow.raf = requestAnimationFrame(followStep);
   };
 
   const onFollowMove = (e) => {
-    if (!follow) return;
-    const left = Math.min(Math.max(e.clientX - follow.w / 2, 8), innerWidth - follow.w - 8);
-    const top = Math.min(Math.max(e.clientY + FOLLOW_GAP, 8), innerHeight - follow.h - 8);
-    follow.tx = left - follow.natX;
-    follow.ty = top - follow.natY;
+    if (!follow || !follow.held) return;
+    followTargetFromPointer(e.clientX, e.clientY);
   };
 
   const followStep = (t) => {
@@ -881,8 +893,15 @@
     sessionStorage.setItem('clank.boxPos', JSON.stringify({ x: parseFloat(ui.box.dataset.x || '0'), y: parseFloat(ui.box.dataset.y || '0') }));
   };
 
-  // Release: keep the loop until the momentum settles, then persist.
-  const releaseFollow = () => { if (follow) follow.held = false; };
+  // Release: detach the target-updater IMMEDIATELY — otherwise a moving
+  // cursor keeps refreshing the target and the box chases forever (the
+  // "it never stops following" bug) — then let the momentum play out
+  // toward the last target and settle.
+  const releaseFollow = () => {
+    if (!follow) return;
+    follow.held = false;
+    window.removeEventListener('mousemove', onFollowMove, true);
+  };
   window.addEventListener('blur', endFollow); // ⇧-keyup can be lost to a cmd-tab
 
   // Keybindings: ⌘E/⌃E toggles the box · ⇪ taps dictation on/off ·
@@ -943,7 +962,7 @@
       return;
     }
     if (e.key === 'Shift') {
-      releaseFollow();
+      if (!e.shiftKey) releaseFollow(); // both-shifts edge: only the last release ends it
       return;
     }
     if (e.key === 'Meta' || e.key === 'Control') {
