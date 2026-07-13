@@ -8,7 +8,7 @@
 // in (and fly-proxy autostarts a stopped machine on that dial) while
 // tenants can't reach the gateway's other services or each other.
 //
-// Lifecycle: the image is pre-baked (cmd/clank-host/Dockerfile.fly) —
+// Lifecycle: the image is pre-baked by the operator —
 // nothing is installed at provision time; config changes surface as
 // machine-config drift applied on the next EnsureHost. Sleep is owned
 // by clank-host's exit keepalive (idle self-exit → machine stops,

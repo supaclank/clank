@@ -88,41 +88,6 @@ image-push: image
 image-print:
 	@echo $(IMAGE)
 
-# ---- Fly Machines host image ------------------------------------------
-#
-# Self-contained runtime for Fly Machines sandboxes (Ubuntu + node +
-# bun + pinned agent CLIs + clank-host). CLI versions are extracted
-# from internal/agent's pinned constants during the build — there are
-# no version build args to drift. CI publishes on release tags
-# (.github/workflows/publish-host-image.yml); this target is the local
-# iteration loop.
-#
-# NOTE: unlike the Daytona image (COPY-only runtime layer), this
-# Dockerfile RUNs package managers in the runtime stage. On Apple
-# Silicon the default amd64 platform executes those steps under QEMU
-# — expect 20+ minutes. For local smoke tests build natively:
-#
-#   make image-host-fly IMAGE_PLATFORM=linux/arm64
-#
-# Fly Machines need amd64; CI's ubuntu runners build it natively fast.
-
-FLY_IMAGE_REPO ?= acksell/clank-host-fly
-FLY_IMAGE_TAG  ?= dev
-FLY_IMAGE      := $(IMAGE_REGISTRY)/$(FLY_IMAGE_REPO):$(FLY_IMAGE_TAG)
-
-.PHONY: image-host-fly image-host-fly-push
-
-image-host-fly:
-	docker buildx build \
-		--platform $(IMAGE_PLATFORM) \
-		--load \
-		-f cmd/clank-host/Dockerfile.fly \
-		-t $(FLY_IMAGE) \
-		.
-
-image-host-fly-push: image-host-fly
-	docker push $(FLY_IMAGE)
-
 # ---- Self-hosted docker stack (smoke testing) ------------------------
 #
 # Brings up minio (image uploads) + clankd in containers. See
