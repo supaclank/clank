@@ -126,24 +126,28 @@ func TestPersistence_DiscoverMergePreservesUserFields(t *testing.T) {
 }
 
 // TestPersistence_StaleBusyStatusNormalizedOnInit pins the
-// inbox-ergonomics contract: a session persisted as busy/starting/dead
+// inbox-ergonomics contract: a session persisted as busy/starting/dead/error
 // from a previous daemon run should come back as idle once Init runs
 // on a fresh daemon. Without this, the inbox shows an infinite
-// spinner for sessions interrupted by a kill — the symptom on main
-// before its hub.Run started doing the same sweep.
+// spinner for sessions interrupted by a kill. error is reset too so a
+// transient failure doesn't strand the session permanently red — the
+// next open retries it.
 //
 // We seed the store directly with a stale row, then call Init, then
 // read the row back. The status must have been rewritten to idle
 // without bumping UpdatedAt (a bump would re-hoist every recovered
-// session to the top of the inbox).
+// session to the top of the inbox). An already-idle row rides along
+// as the control: the sweep must pass it through untouched.
 func TestPersistence_StaleBusyStatusNormalizedOnInit(t *testing.T) {
 	t.Parallel()
 	td := newTestDaemon(t)
 
-	staleStatuses := []agent.SessionStatus{
+	seedStatuses := []agent.SessionStatus{
 		agent.StatusBusy,
 		agent.StatusStarting,
 		agent.StatusDead,
+		agent.StatusError,
+		agent.StatusIdle, // control
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -152,8 +156,8 @@ func TestPersistence_StaleBusyStatusNormalizedOnInit(t *testing.T) {
 		id        string
 		updatedAt time.Time
 	}
-	rows := make([]seeded, 0, len(staleStatuses))
-	for i, s := range staleStatuses {
+	rows := make([]seeded, 0, len(seedStatuses))
+	for i, s := range seedStatuses {
 		id := "01STALE000" + string(rune('A'+i))
 		now := time.Now().Add(-time.Hour) // older than wall-clock
 		err := td.Store.UpsertSession(ctx, agent.SessionInfo{
@@ -192,47 +196,6 @@ func TestPersistence_StaleBusyStatusNormalizedOnInit(t *testing.T) {
 		// UpdatedAt" — survives this loosening.
 		if got.UpdatedAt.UnixMilli() != r.updatedAt.UnixMilli() {
 			t.Errorf("session %s: UpdatedAt bumped during sweep (would hoist all recovered sessions to top of inbox): before=%v after=%v", r.id, r.updatedAt, got.UpdatedAt)
-		}
-	}
-}
-
-// TestPersistence_TerminalStatusesPreservedOnInit confirms the sweep
-// only touches transitional statuses. An idle or error session
-// reflects a stable user-facing state that the user might want to
-// see preserved (e.g. "this one errored, don't quietly hide that").
-func TestPersistence_TerminalStatusesPreservedOnInit(t *testing.T) {
-	t.Parallel()
-	td := newTestDaemon(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	preserve := []agent.SessionStatus{agent.StatusIdle, agent.StatusError}
-	for i, s := range preserve {
-		id := "01KEEP000" + string(rune('A'+i))
-		err := td.Store.UpsertSession(ctx, agent.SessionInfo{
-			ID:      id,
-			Backend: agent.BackendOpenCode,
-			Status:  s,
-			GitRef:  agent.GitRef{LocalPath: "/tmp/whatever"},
-			Prompt:  "stable",
-		})
-		if err != nil {
-			t.Fatalf("seed %s: %v", id, err)
-		}
-	}
-
-	if err := td.Service.Init(ctx, nil); err != nil {
-		t.Fatalf("Init: %v", err)
-	}
-
-	for i, want := range preserve {
-		id := "01KEEP000" + string(rune('A'+i))
-		got, err := td.Store.GetSession(ctx, id)
-		if err != nil {
-			t.Fatalf("Get %s: %v", id, err)
-		}
-		if got.Status != want {
-			t.Errorf("session %s: status = %q, want preserved %q", id, got.Status, want)
 		}
 	}
 }
