@@ -68,6 +68,11 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == gitCredentialCommand {
 		os.Exit(runGitCredential(os.Args[2:]))
 	}
+	// `clank-host print-pins` — self-describe the pinned toolchain so an
+	// image build (clank's or an operator's) installs exactly these.
+	if len(os.Args) > 1 && os.Args[1] == printPinsCommand {
+		os.Exit(runPrintPins())
+	}
 
 	socket := flag.String("socket", "", "Path to Unix socket to listen on (mutually exclusive with --listen)")
 	listen := flag.String("listen", "", "Listener address: tcp://host:port (use :0 for auto-pick) or unix:///path. Mutually exclusive with --socket.")
