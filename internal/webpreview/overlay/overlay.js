@@ -9,6 +9,7 @@
 // Interaction model (mobile parity, hotkeys instead of shake):
 //   ⌘E / ⌃E        toggle the prompt box (shake analog)
 //   Caps Lock      tap: start dictation, tap again: stop & transcribe
+//   hold ⇧         the box glides to the cursor (spring), settles on release
 //   hold ⌘ / ⌃     momentary element-select; click tags, release exits
 //   Esc            leave inspect mode, else hide
 //   header tap     expand / collapse the chat view
@@ -621,7 +622,7 @@
     <span class="micLevel" style="display:none"></span>
     <button class="ib send" title="Send (Enter)">↑</button>
   </div>
-  <div class="hint"><kbd>⌘E</kbd> toggle · <kbd>⇪</kbd> talk on/off · hold <kbd>⌘</kbd> select · <kbd>Esc</kbd> hide</div>
+  <div class="hint"><kbd>⌘E</kbd> toggle · <kbd>⇪</kbd> talk · hold <kbd>⌘</kbd> select · hold <kbd>⇧</kbd> move · <kbd>Esc</kbd> hide</div>
 </div>
 <div class="hl"></div><div class="hll"></div><div class="toast"></div>`;
 
@@ -777,6 +778,7 @@
     const saved = sessionStorage.getItem('clank.boxPos');
     if (saved) { try { const p = JSON.parse(saved); ui.box.style.transform = `translate(${p.x}px, ${p.y}px)`; ui.box.dataset.x = p.x; ui.box.dataset.y = p.y; } catch {} }
     hd.addEventListener('pointerdown', (e) => {
+      endFollow(); // manual drag wins over a live shift-follow
       dragging = true;
       sx = e.clientX; sy = e.clientY;
       ox = parseFloat(ui.box.dataset.x || '0'); oy = parseFloat(ui.box.dataset.y || '0');
@@ -814,8 +816,80 @@
   });
   ui.input.addEventListener('input', syncComposerHeight);
 
+  // ---------- shift-follow: the box glides to the cursor while ⇧ is held
+  // Performance shape: mousemove only records the target (input can fire
+  // at 1 kHz); one rAF loop does the motion with a single transform write
+  // per frame (compositor-only — the guest never relayouts); box/viewport
+  // metrics are cached at follow-start (no per-frame layout reads); the
+  // loop exists only from ⇧-down until the spring settles after release.
+  const FOLLOW_GAP = 48; // pointer → box-top distance, ~2–3 cursor heights
+  const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)');
+  let follow = null;
+
+  const startFollow = () => {
+    if (follow || store.box === 'hidden') return;
+    const r = ui.box.getBoundingClientRect(); // once, outside the loop
+    const x = parseFloat(ui.box.dataset.x || '0');
+    const y = parseFloat(ui.box.dataset.y || '0');
+    follow = {
+      // natural (untranslated) top-left, so pointer coords → translate coords
+      natX: r.left - x, natY: r.top - y, w: r.width, h: r.height,
+      x, y, vx: 0, vy: 0, tx: x, ty: y,
+      held: true, lastT: 0, raf: 0,
+    };
+    window.addEventListener('mousemove', onFollowMove, true);
+    follow.raf = requestAnimationFrame(followStep);
+  };
+
+  const onFollowMove = (e) => {
+    if (!follow) return;
+    const left = Math.min(Math.max(e.clientX - follow.w / 2, 8), innerWidth - follow.w - 8);
+    const top = Math.min(Math.max(e.clientY + FOLLOW_GAP, 8), innerHeight - follow.h - 8);
+    follow.tx = left - follow.natX;
+    follow.ty = top - follow.natY;
+  };
+
+  const followStep = (t) => {
+    if (!follow) return;
+    const f = follow;
+    const dt = Math.min(32, f.lastT ? t - f.lastT : 16) / 1000; // clamp: hitches must not slingshot
+    f.lastT = t;
+    if (REDUCED_MOTION.matches) {
+      f.x = f.tx; f.y = f.ty; f.vx = f.vy = 0;
+    } else {
+      // Slightly under-damped spring (semi-implicit Euler): the box
+      // carries momentum instead of gluing 1:1 to the pointer.
+      const K = 170, D = 20;
+      f.vx += (K * (f.tx - f.x) - D * f.vx) * dt;
+      f.vy += (K * (f.ty - f.y) - D * f.vy) * dt;
+      f.x += f.vx * dt;
+      f.y += f.vy * dt;
+    }
+    ui.box.dataset.x = f.x;
+    ui.box.dataset.y = f.y;
+    ui.box.style.transform = `translate(${f.x}px, ${f.y}px)`;
+    const settled = Math.abs(f.tx - f.x) + Math.abs(f.ty - f.y) < 0.5 && Math.abs(f.vx) + Math.abs(f.vy) < 5;
+    if (!f.held && settled) { endFollow(); return; }
+    f.raf = requestAnimationFrame(followStep);
+  };
+
+  const endFollow = () => {
+    if (!follow) return;
+    cancelAnimationFrame(follow.raf);
+    window.removeEventListener('mousemove', onFollowMove, true);
+    follow = null;
+    sessionStorage.setItem('clank.boxPos', JSON.stringify({ x: parseFloat(ui.box.dataset.x || '0'), y: parseFloat(ui.box.dataset.y || '0') }));
+  };
+
+  // Release: keep the loop until the momentum settles, then persist.
+  const releaseFollow = () => { if (follow) follow.held = false; };
+  window.addEventListener('blur', endFollow); // ⇧-keyup can be lost to a cmd-tab
+
   // Keybindings: ⌘E/⌃E toggles the box · ⇪ taps dictation on/off ·
-  // hold ⌘/⌃ = momentary element-select · Esc leaves inspect / hides.
+  // hold ⇧ = box follows the cursor · hold ⌘/⌃ = momentary element-
+  // select · Esc leaves inspect / hides.
+  const realTarget = (e) => (e.composedPath ? e.composedPath()[0] : e.target);
+  const isEditable = (el) => !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName || ''));
 
   // Momentary select: entering on the modifier's bare keydown would
   // flash the crosshair on every ⌘C/⌘R/⌘T, so inspect only engages
@@ -830,6 +904,13 @@
     if (e.code === 'CapsLock') {
       if (!e.repeat) talkToggle();
       return; // the OS lock state changes regardless; nothing to prevent
+    }
+    if (e.key === 'Shift') {
+      // Follow the cursor while held — but never while typing (shift is
+      // how capitals happen) and never preventDefault (shift-click and
+      // shift-selection in the guest must keep working).
+      if (!e.repeat && !isEditable(realTarget(e))) startFollow();
+      return;
     }
     if (e.key === 'Meta' || e.key === 'Control') {
       if (store.box !== 'hidden' && !store.inspect && !e.repeat && !modHoldTimer) {
@@ -859,6 +940,10 @@
     if (e.code === 'CapsLock') {
       // macOS reports the lock-off press as keyup only (no keydown).
       if (IS_MAC) talkToggle();
+      return;
+    }
+    if (e.key === 'Shift') {
+      releaseFollow();
       return;
     }
     if (e.key === 'Meta' || e.key === 'Control') {
