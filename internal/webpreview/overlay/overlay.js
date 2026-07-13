@@ -636,7 +636,8 @@
   .send { margin-left:auto; background:#111827; color:#fff; font-weight:700; }
   .send:hover { background:#000; }
   .send.stop { background:#ef4444; color:#fff; }
-  .hint { font-size:10px; color:#9ca3af; text-align:center; padding:0 0 7px; }
+  .hint { font-size:10px; color:#9ca3af; display:flex; justify-content:center; gap:14px; padding:0 8px 7px; flex-wrap:wrap; }
+  .hint span { white-space:nowrap; }
   kbd { font-family:inherit; background:#f3f4f6; border:1px solid #e5e7eb; padding:0 4px; border-radius:4px; color:#6b7280; }
   .hl { position:fixed; pointer-events:none; border:1.5px solid #60a5fa; background:#3b82f61f;
     border-radius:3px; display:none; }
@@ -662,7 +663,7 @@
     <span class="micLevel" style="display:none"></span>
     <button class="ib send" title="Send (Enter)">${ICONS.send}</button>
   </div>
-  <div class="hint"><kbd>⌘E</kbd> toggle · <kbd>⇪</kbd> talk · <kbd>⌘</kbd> select · <kbd>⇧</kbd> move · <kbd>Esc</kbd> hide</div>
+  <div class="hint"><span><kbd>⇪ caps</kbd> talk</span><span><kbd>⇧</kbd> move</span><span><kbd>⌘</kbd> select</span><span><kbd>⌘E</kbd> toggle</span><span><kbd>Esc</kbd> hide</span></div>
 </div>
 <div class="hl"></div><div class="hll"></div><div class="toast"></div>`;
 
