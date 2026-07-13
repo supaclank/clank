@@ -93,9 +93,9 @@ image-print:
 # Self-contained runtime for Fly Machines sandboxes (Ubuntu + node +
 # bun + pinned agent CLIs + clank-host). CLI versions are extracted
 # from internal/agent's pinned constants during the build — there are
-# no version build args to drift. CI publishes on release tags
-# (.github/workflows/publish-host-image.yml); this target is the local
-# iteration loop.
+# no version build args to drift. This is a reference/local build —
+# the operator (e.g. supaclank) owns production image publishing to
+# their own private registry; clank no longer auto-publishes.
 #
 # NOTE: unlike the Daytona image (COPY-only runtime layer), this
 # Dockerfile RUNs package managers in the runtime stage. On Apple
