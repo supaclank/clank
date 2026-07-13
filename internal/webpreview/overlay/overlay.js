@@ -111,7 +111,14 @@
       }
     }
     for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
-      const key = Object.getOwnPropertyNames(n).find((k) => k.startsWith('__reactFiber$'));
+      // The fiber prop's random suffix is fixed per React instance for the
+      // page's lifetime — resolve it once instead of scanning every
+      // ancestor's full property list on every mousemove.
+      let key = resolveSource.reactFiberKey;
+      if (!key || !(key in n)) {
+        key = Object.getOwnPropertyNames(n).find((k) => k.startsWith('__reactFiber$'));
+        if (key) resolveSource.reactFiberKey = key;
+      }
       if (!key) continue;
       let fiber = n[key];
       const names = [];

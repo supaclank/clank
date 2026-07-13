@@ -223,7 +223,7 @@ func (p *pipeline) cancel() {
 func (p *pipeline) reset() {
 	p.vad.Reset()
 	p.pending = p.pending[:0]
-	p.raw = p.raw[:0]
+	p.raw = nil // drop the up-to-38.4MB buffer instead of retaining its array
 	p.committed = nil
 }
 
