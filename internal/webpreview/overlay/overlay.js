@@ -566,6 +566,9 @@
   }
   .box.visible { display: block; animation: boxIn 300ms cubic-bezier(0.26, 1.15, 0.44, 1); }
   .box:focus { outline: none; } /* focus ANCHOR (tabindex=-1), not a tab stop — no ring */
+  /* every real tab stop shows a ring on KEYBOARD focus only
+     (:focus-visible) — the Tab rotation must be visible to be usable */
+  .box :is(button, textarea):focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
   @keyframes boxIn { from { opacity: 0; transform: translateY(30px) scale(0.96); } }
   @media (prefers-reduced-motion: reduce) { .box.visible { animation: none; } }
   .box.thinking { border-color: #f59e0b; animation: pulse 1.6s ease-in-out infinite; }
