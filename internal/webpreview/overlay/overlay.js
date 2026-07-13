@@ -383,7 +383,11 @@
           if (store.voice === 'transcribing') store.voice = 'idle';
           setComposer(m.text ? withVoiceText(m.text) : voiceBase);
           if (!m.text) toast('didn’t catch any speech — try again');
-          ui.input.focus();
+          // Anchor focus on the container (unless the user is already
+          // typing in the composer): Enter still sends via the box's
+          // Enter handler, shift-move keeps working, Tab reaches the
+          // composer in one press.
+          if (root.activeElement !== ui.input) ui.box.focus({ preventScroll: true });
           render();
         } else if (m.type === 'error') {
           store.voice = 'idle';
@@ -561,6 +565,7 @@
     transform-origin: 50% 100%;
   }
   .box.visible { display: block; animation: boxIn 300ms cubic-bezier(0.26, 1.15, 0.44, 1); }
+  .box:focus { outline: none; } /* focus ANCHOR (tabindex=-1), not a tab stop — no ring */
   @keyframes boxIn { from { opacity: 0; transform: translateY(30px) scale(0.96); } }
   @media (prefers-reduced-motion: reduce) { .box.visible { animation: none; } }
   .box.thinking { border-color: #f59e0b; animation: pulse 1.6s ease-in-out infinite; }
@@ -620,7 +625,7 @@
     pointer-events:none; opacity:0; transition:opacity .2s; max-width:70vw; }
   .toast.show { opacity:1; }
 </style>
-<div class="box" part="box">
+<div class="box" part="box" tabindex="-1">
   <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><span class="grip">⋮⋮</span></div>
   <div class="chips"></div>
   <div class="chat"></div>
@@ -728,7 +733,13 @@
     store.box = s;
     if (s === 'hidden') exitInspect();
     render();
-    if (s !== 'hidden') setTimeout(() => ui.input.focus(), 0);
+    // Focus the CONTAINER, not the composer: typing focus on summon
+    // fights shift-move (editable targets opt out of it) and isn't
+    // wanted anyway. Anchoring focus here parks the tab cursor just
+    // before the box's contents, so Tab #1 = composer, then the
+    // buttons, then onward into the page — sequential navigation
+    // always continues from the focused element.
+    if (s !== 'hidden') setTimeout(() => ui.box.focus({ preventScroll: true }), 0);
   };
 
   // ---------- inspector -----------------------------------------------------
@@ -826,6 +837,13 @@
   ui.input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
     e.stopPropagation(); // typing must never trigger guest-app shortcuts
+  });
+  // Enter with the container itself focused (the post-summon /
+  // post-dictation anchor) fires the primary action, dialog-style.
+  // Guarded to the container: buttons handle their own Enter, and the
+  // composer's handler above stops propagation.
+  ui.box.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target === ui.box && ui.input.value.trim()) { e.preventDefault(); send(); }
   });
   ui.input.addEventListener('input', syncComposerHeight);
 
