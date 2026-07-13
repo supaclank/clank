@@ -538,6 +538,15 @@
   };
 
   // ---------- UI -----------------------------------------------------------
+  // Inline SVG icons (lucide-style strokes, currentColor): emoji render
+  // differently per OS font; these are identical everywhere.
+  const ICONS = {
+    select: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="7"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg>',
+    mic: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><path d="M12 18v4"/></svg>',
+    send: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>',
+    stop: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="3"/></svg>',
+  };
+
   const host = document.createElement('div');
   host.id = 'clank-overlay-host';
   host.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;';
@@ -610,6 +619,7 @@
   .ib:hover { background:#00000010; color:#111827; }
   .ib.active { background:#3b82f61f; color:#2563eb; }
   .ib[disabled] { opacity:.35; cursor:not-allowed; }
+  .ib svg { pointer-events:none; display:block; }
   .mic { position:relative; }
   .mic.rec { color:#dc2626; background:#ef44441f; }
   .mic.rec::after { content:''; position:absolute; inset:-3px; border-radius:12px;
@@ -638,12 +648,12 @@
   </div>
   <textarea rows="1" placeholder="Ask anything…"></textarea>
   <div class="bar">
-    <button class="ib sel" title="Select an element (Alt+S)">⌖</button>
-    <button class="ib mic" title="Tap ⇪ to talk (or hold this button)">🎙</button>
+    <button class="ib sel" title="Select an element (hold ⌘)">${ICONS.select}</button>
+    <button class="ib mic" title="Tap ⇪ to talk (or hold this button)">${ICONS.mic}</button>
     <span class="micLevel" style="display:none"></span>
-    <button class="ib send" title="Send (Enter)">↑</button>
+    <button class="ib send" title="Send (Enter)">${ICONS.send}</button>
   </div>
-  <div class="hint"><kbd>⌘E</kbd> toggle · <kbd>⇪</kbd> talk · hold <kbd>⌘</kbd> select · hold <kbd>⇧</kbd> move · <kbd>Esc</kbd> hide</div>
+  <div class="hint"><kbd>⌘E</kbd> toggle · <kbd>⇪</kbd> talk · <kbd>⌘</kbd> select · <kbd>⇧</kbd> move · <kbd>Esc</kbd> hide</div>
 </div>
 <div class="hl"></div><div class="hll"></div><div class="toast"></div>`;
 
@@ -723,11 +733,11 @@
     ui.sel.classList.toggle('active', store.inspect);
     ui.mic.style.display = store.voice === 'off' ? 'none' : '';
     ui.mic.classList.toggle('rec', store.voice === 'recording');
-    ui.mic.textContent = store.voice === 'transcribing' ? '…' : '🎙';
+    ui.mic.innerHTML = store.voice === 'transcribing' ? '…' : ICONS.mic;
 
     const busy = store.agent === 'thinking' || store.agent === 'working';
     ui.send.classList.toggle('stop', busy);
-    ui.send.textContent = busy ? '◼' : '↑';
+    ui.send.innerHTML = busy ? ICONS.stop : ICONS.send;
     ui.send.title = busy ? 'Stop the agent' : 'Send (Enter)';
   };
 
