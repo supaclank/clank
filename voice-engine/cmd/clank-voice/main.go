@@ -259,14 +259,36 @@ type emitter struct {
 	w *bufio.Writer
 }
 
+// emit writes one line-delimited message. A write failure means the
+// parent has stopped reading stdout — nothing downstream of this call
+// could recover meaningfully, so exit immediately rather than let the
+// pipeline keep decoding audio into a void; the parent's crash-recovery
+// path (ensureProc/isDead) respawns a fresh process.
 func (e *emitter) emit(m msg) {
-	// TODO(ai-review): exit on a write/flush failure instead of swallowing
-	// it (parent already detects a dead subprocess via stdin EOF on exit)
-	// https://github.com/Acksell/clank/pull/135#discussion_r3571183540
-	data, _ := json.Marshal(m)
-	e.w.Write(data)
-	e.w.WriteByte('\n')
-	e.w.Flush() // line-per-message; the parent reads with a line scanner
+	if err := writeMsg(e.w, m); err != nil {
+		fmt.Fprintln(os.Stderr, "clank-voice:", err)
+		os.Exit(1)
+	}
+}
+
+// writeMsg marshals and flushes one line-delimited message, returning
+// the first error encountered (split out from emit so the write-failure
+// path is unit-testable without exercising os.Exit).
+func writeMsg(w *bufio.Writer, m msg) error {
+	data, err := json.Marshal(m)
+	if err != nil {
+		return fmt.Errorf("marshal stdout message: %w", err)
+	}
+	if _, err := w.Write(data); err != nil {
+		return fmt.Errorf("write stdout: %w", err)
+	}
+	if err := w.WriteByte('\n'); err != nil {
+		return fmt.Errorf("write stdout: %w", err)
+	}
+	if err := w.Flush(); err != nil { // line-per-message; the parent reads with a line scanner
+		return fmt.Errorf("flush stdout: %w", err)
+	}
+	return nil
 }
 
 // readFrame mirrors internal/webpreview/protocol.go.
