@@ -58,7 +58,7 @@ type Client struct {
 }
 
 // hubResponseHeaderTimeout caps the wait for response headers. Sized
-// for /sessions when LaunchHost provisions a sandbox (cold Daytona
+// for /sessions when LaunchHost provisions a sandbox (cold sandbox
 // launches routinely take minutes).
 const hubResponseHeaderTimeout = 5 * time.Minute
 

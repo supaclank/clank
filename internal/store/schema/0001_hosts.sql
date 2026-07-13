@@ -11,15 +11,15 @@ CREATE TABLE hosts (
     external_id TEXT NOT NULL,
     hostname    TEXT NOT NULL,
     status      TEXT NOT NULL,
-    -- last_url / last_token: provider-edge-specific cache (e.g. Daytona's
+    -- last_url / last_token: provider-edge-specific cache (e.g. a
     -- preview URL + preview-token). Refreshed on every EnsureHost when
     -- the cached value goes stale (URL rotation across stop/resume).
     last_url    TEXT NOT NULL DEFAULT '',
     last_token  TEXT NOT NULL DEFAULT '',
     -- auth_token: clank-host's own bearer token, checked by the
     -- require-bearer middleware on every HTTP request. Universal
-    -- across providers (Daytona stacks it on top of last_token;
-    -- Sprites use it as the only auth layer). Stable across
+    -- across providers (a provider-edge preview-token may stack on top
+    -- of last_token; Sprites use it as the only auth layer). Stable across
     -- stop/resume — baked into the sandbox/sprite at create time.
     auth_token  TEXT NOT NULL DEFAULT '',
     -- notifier_token: the per-host bearer credential clank-host sends

@@ -9,8 +9,8 @@ Brings up a complete clank backend on your laptop (primarily for development & t
   auto-approves every authorization and mints an HS256-signed JWT, so
   `clank login` works end-to-end against the local stack
 
-Everything is self-contained — no fly.io, daytona, or AWS account
-needed. Useful for smoke-testing the gateway + host flows end-to-end.
+Everything is self-contained — no fly.io or AWS account needed.
+Useful for smoke-testing the gateway + host flows end-to-end.
 
 ## One-time setup
 
@@ -26,7 +26,7 @@ make docker-up
 The /etc/hosts entry makes `clank-minio` resolve to localhost from the
 laptop, matching how the docker network resolves it from inside.
 
-### Mode B — real cloud sandbox (`flysprites` / `daytona` provisioner)
+### Mode B — real cloud sandbox (`flysprites` / `flymachines` provisioner)
 
 A remote sprite can't resolve `clank-minio` — it lives on its own
 network with no host-file injection. It needs a **publicly-reachable,

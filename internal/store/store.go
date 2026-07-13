@@ -227,7 +227,7 @@ func (s *Store) migrate() error {
 		version = 16
 	}
 	if version < 17 {
-		// hosts: per-user persistent compute (Daytona sandbox, Sprite,
+		// hosts: per-user persistent compute (Fly Sprite, Fly Machine,
 		// k8s pod, …). UNIQUE (user_id, provider) enforces the
 		// one-host-per-user-per-provider invariant at the DB layer
 		// even if app code has a bug.
@@ -258,8 +258,8 @@ func (s *Store) migrate() error {
 	if version < 18 {
 		// auth_token: clank-host's bearer-token, checked by the
 		// require-bearer middleware on every HTTP request. Universal
-		// across providers (Daytona stacks it on top of last_token's
-		// preview-token; Sprites use it as the only auth layer).
+		// across providers (a provider-edge preview-token may stack on
+		// top of last_token; Sprites use it as the only auth layer).
 		// See PR 2 of the persistent-host roadmap.
 		//
 		// (Renamed from cap_token to auth_token in v19 — see below.
