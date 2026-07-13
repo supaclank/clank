@@ -5,7 +5,7 @@
 # repointed under a running fleet.
 #
 # Agent-CLI pins are extracted from internal/agent inside the build
-# (see internal/agent/printpins) — there is no version input to this
+# (via `clank-host print-pins`) — there is no version input to this
 # workflow and therefore nothing to drift.
 name: publish-host-image
 
