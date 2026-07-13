@@ -38,7 +38,9 @@ const HostPort = 8080
 // Options configures the Provisioner. APIToken, OrgSlug, Region and
 // Image are required — Image in particular has no sane fallback: it
 // pins exactly which clank-host + agent-CLI versions every machine
-// runs (see cmd/clank-host/Dockerfile.fly).
+// runs. The operator bakes this image (clank-host + the CLI versions
+// it reports via `clank-host print-pins`) and pushes it to a registry
+// their Fly org can pull.
 type Options struct {
 	APIToken string // org-scoped Fly token with app-create rights
 	OrgSlug  string
