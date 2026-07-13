@@ -102,6 +102,138 @@
     render();
   };
 
+  // ---------- react 19: _debugStack → sourcemap --------------------------
+  // React 19 removed fiber._debugSource, but dev fibers carry _debugStack:
+  // an Error whose first same-origin, non-node_modules frame is the JSX
+  // callsite in the SERVED (transformed) module. Vite serves each source
+  // file as its own module with an inline sourcemap, so decoding that map
+  // turns the frame back into the exact original file:line:col — no build
+  // plugin, no config, nothing installed in the user's project.
+
+  // parseDebugStack finds the JSX callsite frame. Handles both stack
+  // shapes: Chrome "at Fn (url:L:C)" / "at url:L:C" and Firefox "Fn@url:L:C".
+  const parseDebugStack = (stack) => {
+    for (const line of String(stack).split('\n')) {
+      const m = line.match(/(?:at\s+(?:.*?\s+\()?|@)(https?:\/\/[^\s()]+?):(\d+):(\d+)\)?$/);
+      if (!m) continue;
+      let u;
+      try { u = new URL(m[1]); } catch { continue; }
+      if (u.origin !== location.origin) continue;
+      // Skip react's own runtime frames (prebundled deps) and vite internals.
+      if (u.pathname.includes('/node_modules/') || u.pathname.startsWith('/@')) continue;
+      // href (with Vite's HMR cache-busting query) is the fetch/cache key;
+      // url (query stripped) is what gets displayed.
+      return { url: u.origin + u.pathname, href: u.href, line: +m[2], column: +m[3] };
+    }
+    return null;
+  };
+
+  // Minimal source-map v3 consumer: decode the VLQ mappings once per
+  // module into per-line segment arrays, then binary-ish scan per lookup.
+  const B64V = (() => {
+    const t = {};
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.split('').forEach((c, i) => (t[c] = i));
+    return t;
+  })();
+  const decodeMappings = (mappings) => {
+    const lines = [];
+    let srcIdx = 0, srcLine = 0, srcCol = 0;
+    for (const lineStr of mappings.split(';')) {
+      const segs = [];
+      let genCol = 0;
+      for (const segStr of lineStr.split(',')) {
+        if (!segStr) continue;
+        const vals = [];
+        let shift = 0, value = 0;
+        for (const ch of segStr) {
+          const d = B64V[ch];
+          value += (d & 31) << shift;
+          if (d & 32) { shift += 5; continue; }
+          vals.push(value & 1 ? -(value >>> 1) : value >>> 1);
+          shift = 0; value = 0;
+        }
+        if (vals.length === 0) continue;
+        genCol += vals[0];
+        if (vals.length >= 4) {
+          srcIdx += vals[1]; srcLine += vals[2]; srcCol += vals[3];
+          segs.push([genCol, srcIdx, srcLine, srcCol]);
+        }
+      }
+      lines.push(segs);
+    }
+    return lines;
+  };
+
+  // TODO(ai-review): unbounded across HMR edits within a session; add an eviction/size cap if it matters in practice. https://github.com/Acksell/clank/pull/142
+  const sourceMapCache = new Map(); // module url → Promise<lookup fn | null>
+  const moduleLookup = (url) => {
+    let p = sourceMapCache.get(url);
+    if (p) return p;
+    p = (async () => {
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      const code = await res.text();
+      const m = code.match(/\/\/[#@] sourceMappingURL=data:application\/json[^,]*base64,([A-Za-z0-9+/=]+)\s*$/);
+      if (!m) return null;
+      const bytes = Uint8Array.from(atob(m[1]), (c) => c.charCodeAt(0));
+      const map = JSON.parse(new TextDecoder().decode(bytes));
+      const lines = decodeMappings(map.mappings);
+      return (line, column) => {
+        try {
+          // Stack positions are 1-based; the map is 0-based.
+          const segs = lines[line - 1];
+          if (!segs || !segs.length) return null;
+          let best = segs[0];
+          for (const s of segs) { if (s[0] <= column - 1) best = s; else break; }
+          const src = (map.sources && map.sources[best[1]]) || '';
+          if (!src) return null;
+          // sources are relative to the module's directory.
+          const file = new URL(src, url).pathname.replace(/^\//, '');
+          return { file, line: best[2] + 1, column: best[3] + 1 };
+        } catch {
+          return null;
+        }
+      };
+    })().catch(() => null);
+    sourceMapCache.set(url, p);
+    return p;
+  };
+
+  // resolveStackPos: served-module position → original source position.
+  const resolveStackPos = async (pos) => {
+    const lookup = await moduleLookup(pos.href || pos.url);
+    return lookup ? lookup(pos.line, pos.column) : null;
+  };
+
+  // React ≤18's fiber._debugSource carries an absolute FS path — and,
+  // under Vite's react plugin, line numbers shifted by the injected
+  // refresh preamble (Babel stamps positions post-injection). Both are
+  // fixed by the same sourcemap pass as React 19: map the FS path back
+  // to its module URL (the preview config carries the project root;
+  // macOS may report the /private realpath alias) and resolve.
+  const fsPathToModuleURL = (fileName) => {
+    const root = CFG.local_path || '';
+    if (!root) return null;
+    for (const r of [root, '/private' + root]) {
+      if (fileName.startsWith(r + '/')) return location.origin + fileName.slice(r.length);
+    }
+    return null;
+  };
+
+  // servedPosition → the provisional result shape shared by the React
+  // 18 and 19 tiers: exact file (served), approximate line until the
+  // async sourcemap resolution upgrades it in place.
+  const provisionalSource = (pos, names, el, via) => ({
+    file: pos.url.slice(location.origin.length).replace(/^\//, ''),
+    line: pos.line,
+    column: pos.column,
+    approx: true,
+    resolve: resolveStackPos(pos),
+    via,
+    names,
+    node: el,
+  });
+
   // ---------- element → source -------------------------------------------
   const resolveSource = (el) => {
     for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
@@ -121,6 +253,7 @@
       }
       if (!key) continue;
       let fiber = n[key];
+      const stackPos = fiber._debugStack ? parseDebugStack(fiber._debugStack.stack) : null;
       const names = [];
       let src = null;
       while (fiber && names.length < 5) {
@@ -130,7 +263,17 @@
         if (nm && !names.includes(nm)) names.push(nm);
         fiber = fiber._debugOwner;
       }
-      if (src) return { file: src.fileName, line: src.lineNumber, column: src.columnNumber, via: 'react', names, node: el };
+      if (src) {
+        // React ≤18: route through the sourcemap when the FS path maps
+        // to a served module; fall back to the raw values otherwise.
+        const url = fsPathToModuleURL(src.fileName);
+        if (url) return provisionalSource({ url, line: src.lineNumber, column: src.columnNumber }, names, el, 'react18');
+        return { file: src.fileName, line: src.lineNumber, column: src.columnNumber, via: 'react', names, node: el };
+      }
+      if (stackPos) {
+        // React 19: the JSX callsite from _debugStack, same upgrade path.
+        return provisionalSource(stackPos, names, el, 'react19');
+      }
       if (names.length) return { via: 'react', names, node: el };
       break;
     }
@@ -156,13 +299,21 @@
 
   const chipFromElement = (el) => {
     const s = resolveSource(el);
+    const comps = s.names.length ? ` (components: ${s.names.join(' › ')})` : '';
     const base = s.file ? `${s.file}:${s.line}${s.column ? ':' + s.column : ''}` : domPath(el);
     const label = s.file ? `${s.file.split('/').pop()}:${s.line}` : `<${el.tagName.toLowerCase()}>`;
-    return {
-      label,
-      detail: base + (s.names.length ? ` (components: ${s.names.join(' › ')})` : ''),
-      html: shortHTML(el),
-    };
+    const chip = { label, detail: base + comps, html: shortHTML(el) };
+    if (s.resolve) {
+      // React 19: upgrade the provisional served-module position to the
+      // sourcemap-exact one in place; render() repaints the chip row.
+      s.resolve.then((orig) => {
+        if (!orig) return;
+        chip.label = `${orig.file.split('/').pop()}:${orig.line}`;
+        chip.detail = `${orig.file}:${orig.line}:${orig.column}${comps}`;
+        render();
+      });
+    }
+    return chip;
   };
 
   const buildContext = () => {
@@ -817,7 +968,13 @@
     const r = el.getBoundingClientRect();
     Object.assign(ui.hl.style, { display: 'block', left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
     const s = resolveSource(el);
-    ui.hll.textContent = s.file ? `${s.file}:${s.line}` : s.names.length ? s.names.join(' › ') : domPath(el);
+    ui.hll.textContent = s.file ? `${s.file}:${s.line}${s.approx ? '…' : ''}` : s.names.length ? s.names.join(' › ') : domPath(el);
+    if (s.resolve) {
+      const target = el;
+      s.resolve.then((orig) => {
+        if (orig && hoverEl === target && store.inspect) ui.hll.textContent = `${orig.file}:${orig.line}`;
+      });
+    }
     const ly = r.top > 28 ? r.top - 24 : r.bottom + 4;
     Object.assign(ui.hll.style, { display: 'block', left: Math.max(4, r.left) + 'px', top: ly + 'px' });
   };
