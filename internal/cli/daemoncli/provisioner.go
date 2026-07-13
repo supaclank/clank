@@ -11,7 +11,6 @@ import (
 	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/store"
 	"github.com/acksell/clank/pkg/provisioner"
-	daytonaprov "github.com/acksell/clank/pkg/provisioner/daytona"
 	flymachinesprov "github.com/acksell/clank/pkg/provisioner/flymachines"
 	flyspritesprov "github.com/acksell/clank/pkg/provisioner/flysprites"
 	localprov "github.com/acksell/clank/pkg/provisioner/local"
@@ -76,14 +75,12 @@ func buildProvisioner(opts ServerOptions, st *store.Store) (provisioner.Provisio
 	switch provType {
 	case "local", "local-stub":
 		return buildLocalProvisioner()
-	case "daytona":
-		return buildDaytonaProvisioner(opts, st, prefs)
 	case "flysprites":
 		return buildFlySpritesProvisioner(opts, st, prefs)
 	case "flymachines":
 		return buildFlyMachinesProvisioner(opts, st, prefs)
 	default:
-		return nil, nil, fmt.Errorf("unknown provisioner %q (configure preferences.default_launch_host_provider to one of: local, daytona, flysprites, flymachines)", provType)
+		return nil, nil, fmt.Errorf("unknown provisioner %q (configure preferences.default_launch_host_provider to one of: local, flysprites, flymachines)", provType)
 	}
 }
 
@@ -110,23 +107,6 @@ func buildLocalProvisioner() (provisioner.Provisioner, func(), error) {
 		// the production preview path without a cloud provider.
 		TunnelInternalConn: os.Getenv("CLANK_LOCAL_TUNNEL_INTERNAL_CONN") == "true",
 	}, log.Default())
-	return prov, prov.Stop, nil
-}
-
-func buildDaytonaProvisioner(opts ServerOptions, st *store.Store, prefs config.Preferences) (provisioner.Provisioner, func(), error) {
-	if prefs.Daytona == nil || prefs.Daytona.APIKey == "" {
-		return nil, nil, fmt.Errorf("daytona provisioner: preferences.daytona.api_key required")
-	}
-	prov, err := daytonaprov.New(daytonaprov.Options{
-		APIKey:   prefs.Daytona.APIKey,
-		Snapshot: prefs.Daytona.Snapshot,
-		Image:    prefs.Daytona.Image,
-		APIUrl:   prefs.Daytona.BaseURL,
-		ExtraEnv: prefs.Daytona.ExtraEnv,
-	}, st, log.Default())
-	if err != nil {
-		return nil, nil, fmt.Errorf("build daytona provisioner: %w", err)
-	}
 	return prov, prov.Stop, nil
 }
 
