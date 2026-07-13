@@ -225,10 +225,12 @@ func TestSherpaEnginePumpKillsProcessOnScanError(t *testing.T) {
 		t.Logf("Feed returned error (acceptable): %v", err)
 	}
 
+	// Bounded well under the 2s grace kill: pump's scan-error branch must
+	// mark dead promptly, not stall behind a synchronous stop()/kill call.
 	proc := s.(*sherpaSession).proc
 	select {
 	case <-proc.dead:
-	case <-time.After(3 * time.Second):
+	case <-time.After(1 * time.Second):
 		t.Fatalf("pump never marked the process dead after the oversized line")
 	}
 
