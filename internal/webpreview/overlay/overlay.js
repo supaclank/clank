@@ -558,7 +558,9 @@
     mic: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><path d="M12 18v4"/></svg>',
     send: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>',
     stop: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="3"/></svg>',
-    grip: '<svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor"><circle cx="3" cy="3" r="1.5"/><circle cx="7" cy="3" r="1.5"/><circle cx="3" cy="8" r="1.5"/><circle cx="7" cy="8" r="1.5"/><circle cx="3" cy="13" r="1.5"/><circle cx="7" cy="13" r="1.5"/></svg>',
+    // 2×3 grid, 5px pitch on BOTH axes: adjacent dots equidistant, so
+    // any four neighbors form a square and all six a rectangle
+    grip: '<svg width="11" height="16" viewBox="0 0 11 16" fill="currentColor"><circle cx="3" cy="3" r="1.5"/><circle cx="8" cy="3" r="1.5"/><circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="3" cy="13" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>',
   };
 
   const host = document.createElement('div');
@@ -606,9 +608,12 @@
   .done .dot { background:#22c55e; } .error .dot { background:#ef4444; }
   .hd .name { font-size:12px; font-weight:600; color:#6b7280; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .hd .st { font-size:11px; color:#9ca3af; }
-  .beta { font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.6px;
-    color:#ff6e20; background:rgba(255,110,32,.12); border:1px solid rgba(255,110,32,.35);
-    padding:2px 7px; border-radius:999px; line-height:1.4; } /* supaclank coral */
+  /* supaclank pill recipe verbatim (web-app src/app.css tokens +
+     landing-page badge classes): brand #FA5573, text brand-muted,
+     bg brand-dim, border brand/30 */
+  .beta { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.5px;
+    color:#e23e5d; background:rgba(250,85,115,.12); border:1px solid rgba(250,85,115,.3);
+    padding:2px 8px; border-radius:999px; line-height:1.4; }
   .grip { color:#9ca3af; display:flex; align-items:center; }
   .grip svg { display:block; pointer-events:none; }
   .chips { display:flex; flex-wrap:wrap; gap:6px; padding:0 12px 4px; }
