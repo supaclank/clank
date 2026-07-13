@@ -151,8 +151,13 @@ func (e *SherpaEngine) ensureProc(ctx context.Context) (*voiceProc, error) {
 		ready: make(chan struct{}),
 		log:   e.Log,
 	}
-	go p.pump(stdout)
-	go func() { _ = cmd.Wait() }() // reap; death is signaled by the pump (stdout EOF fires first)
+	// Wait must not run concurrently with pump's stdout reads: it can close
+	// the pipe as soon as the process exits, truncating buffered output
+	// (os/exec.Cmd.StdoutPipe doc). Reap only after pump has fully drained it.
+	go func() {
+		p.pump(stdout)
+		_ = cmd.Wait()
+	}()
 
 	timeout := e.ReadyTimeout
 	if timeout == 0 {
@@ -302,11 +307,23 @@ func (p *voiceProc) pump(stdout io.Reader) {
 		// Reaping it here is what actually frees its ~700 MB mmap;
 		// without it, marking dead below just lets ensureProc spawn a
 		// replacement while this one leaks, unreaped, in the background.
-		// stop() (not a raw Kill) matters: a scan error can land while
-		// the process is still faulting in the model, and SIGKILL during
-		// that mmap is what wedged macOS into uninterruptible exit before.
+		// Can't reuse stop(): it treats a closed p.dead as "already
+		// exited, nothing to kill", but this goroutine is about to close
+		// p.dead itself regardless of whether the process actually died.
+		// So: close stdin for a clean exit attempt (a scan error can land
+		// while the process is still faulting in the model, and SIGKILL
+		// during that mmap is what wedged macOS into uninterruptible exit
+		// before), then kill unconditionally after grace.
 		p.log.Printf("webpreview: clank-voice stdout scan error: %v", sc.Err())
-		p.stop(2 * time.Second)
+		p.writeMu.Lock()
+		_ = p.stdin.Close()
+		p.writeMu.Unlock()
+		go func() {
+			time.Sleep(2 * time.Second)
+			if p.cmd.Process != nil {
+				_ = p.cmd.Process.Kill()
+			}
+		}()
 	}
 	// Stdout EOF = the process is gone. Mark it dead BEFORE notifying,
 	// so a listener that reacts to the error by reopening can't be
