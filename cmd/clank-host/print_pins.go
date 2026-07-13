@@ -28,14 +28,24 @@ const printPinsCommand = "print-pins"
 // runPrintPins writes the pinned versions to stdout and returns the
 // process exit code.
 func runPrintPins() int {
-	printPins(os.Stdout)
+	if err := printPins(os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "print-pins: %v\n", err)
+		return 1
+	}
 	return 0
 }
 
 // printPins writes the pinned toolchain versions as shell-sourceable
 // KEY=VALUE lines. Split from runPrintPins so the format is unit-testable.
-func printPins(w io.Writer) {
-	fmt.Fprintf(w, "CLAUDE_VERSION=%s\n", agent.PinnedClaudeVersion)
-	fmt.Fprintf(w, "OPENCODE_VERSION=%s\n", agent.PinnedOpencodeVersion)
-	fmt.Fprintf(w, "BUN_VERSION=%s\n", agent.PinnedBunVersion)
+func printPins(w io.Writer) error {
+	if _, err := fmt.Fprintf(w, "CLAUDE_VERSION=%s\n", agent.PinnedClaudeVersion); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "OPENCODE_VERSION=%s\n", agent.PinnedOpencodeVersion); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "BUN_VERSION=%s\n", agent.PinnedBunVersion); err != nil {
+		return err
+	}
+	return nil
 }

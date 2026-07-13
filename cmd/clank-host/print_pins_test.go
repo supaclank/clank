@@ -16,7 +16,9 @@ import (
 func TestPrintPins(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
-	printPins(&buf)
+	if err := printPins(&buf); err != nil {
+		t.Fatalf("printPins: %v", err)
+	}
 
 	want := map[string]string{
 		"CLAUDE_VERSION":   agent.PinnedClaudeVersion,
@@ -38,6 +40,9 @@ func TestPrintPins(t *testing.T) {
 			t.Errorf("key %q has empty value", k)
 		}
 		got[k] = v
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatalf("scanner error: %v", err)
 	}
 	for k, w := range want {
 		if got[k] != w {
