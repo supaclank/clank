@@ -36,6 +36,11 @@ func runWebPreview(sigCtx context.Context, projectDir, sockPath, sessionID, back
 	if closer, ok := engine.(io.Closer); ok {
 		defer closer.Close() // drop the warm model process with the preview
 	}
+	if sigCtx.Err() != nil {
+		// The model download can run for minutes; a Ctrl+C during it must
+		// not still spin up the proxy server and open a browser tab.
+		return sigCtx.Err()
+	}
 	srv, err := webpreview.Start(webpreview.Options{
 		UpstreamPort:     devPort,
 		DaemonSocketPath: sockPath,
