@@ -545,6 +545,7 @@
     mic: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><path d="M12 18v4"/></svg>',
     send: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>',
     stop: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="3"/></svg>',
+    grip: '<svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor"><circle cx="3" cy="3" r="1.5"/><circle cx="7" cy="3" r="1.5"/><circle cx="3" cy="8" r="1.5"/><circle cx="7" cy="8" r="1.5"/><circle cx="3" cy="13" r="1.5"/><circle cx="7" cy="13" r="1.5"/></svg>',
   };
 
   const host = document.createElement('div');
@@ -592,7 +593,8 @@
   .done .dot { background:#22c55e; } .error .dot { background:#ef4444; }
   .hd .name { font-size:12px; font-weight:600; color:#6b7280; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .hd .st { font-size:11px; color:#9ca3af; }
-  .grip { color:#c4c8cf; font-size:10px; letter-spacing:2px; }
+  .grip { color:#9ca3af; display:flex; align-items:center; }
+  .grip svg { display:block; pointer-events:none; }
   .chips { display:flex; flex-wrap:wrap; gap:6px; padding:0 12px 4px; }
   .chip { display:inline-flex; align-items:center; gap:6px; background:#f3f4f6; border:1px solid #e5e7eb;
     color:#4338ca; font-size:11px; padding:3px 8px; border-radius:999px; max-width:100%; }
@@ -639,7 +641,7 @@
   .toast.show { opacity:1; }
 </style>
 <div class="box" part="box" tabindex="-1">
-  <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><span class="grip">⋮⋮</span></div>
+  <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><span class="grip">${ICONS.grip}</span></div>
   <div class="chips"></div>
   <div class="chat"></div>
   <div class="perm" style="display:none">
