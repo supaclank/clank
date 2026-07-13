@@ -629,7 +629,7 @@
   const ui = {
     box: $('.box'), name: $('.name'), st: $('.st'), chips: $('.chips'), chat: $('.chat'),
     perm: $('.perm'), permT: $('.perm .t'), permD: $('.perm .d'),
-    input: $('textarea'), sel: $('.sel'), mic: $('.mic'), micLevel: $('.mic'),
+    input: $('textarea'), sel: $('.sel'), mic: $('.mic'), micLevel: $('.micLevel'),
     send: $('.send'), hl: $('.hl'), hll: $('.hll'), toast: $('.toast'),
   };
   ui.name.textContent = CFG.name || 'clank';
