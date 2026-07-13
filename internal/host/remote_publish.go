@@ -61,7 +61,7 @@ func (s *Service) PublishToRemote(ctx context.Context, worktreeID string, req Pu
 	if name == "" {
 		return PublishResult{}, ErrInvalidRepoName
 	}
-	workdir, err := s.workDirFor(ctx, agent.GitRef{WorktreeID: worktreeID})
+	workdir, err := s.repoRootFor(agent.GitRef{WorktreeID: worktreeID})
 	if err != nil {
 		return PublishResult{}, fmt.Errorf("resolve worktree: %w", err)
 	}

@@ -2,6 +2,7 @@ package clankcli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -89,7 +90,13 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	fmt.Println("Starting the dev server on this folder (first run installs dependencies)…")
 	status, err := client.Preview(previewKey).Start(startCtx, projectDir)
 	if err != nil {
-		return fmt.Errorf("start preview (is this an Expo or Vite project?): %w", err)
+		// The Expo/Vite hint is only true for the daemon's "no app
+		// detected here" answer; any other failure (path resolution,
+		// spawn error) surfaces verbatim so it isn't mislabeled.
+		if errors.Is(err, daemonclient.ErrNotPreviewable) {
+			return fmt.Errorf("start preview (is this an Expo or Vite project?): %w", err)
+		}
+		return fmt.Errorf("start preview: %w", err)
 	}
 	if status.Port == 0 {
 		return fmt.Errorf("preview started but the dev server port is unknown (state=%s)", status.State)

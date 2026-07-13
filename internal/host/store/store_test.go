@@ -635,3 +635,84 @@ func TestOpen_MigrationV2ToV3_UnparseableTimeFallsBackToULID(t *testing.T) {
 		t.Errorf("CreatedAt %v looks pre-2024; ULID-decode probably failed", got.CreatedAt)
 	}
 }
+
+// TestOpen_MigrationV3ToV4_AddsSubdirAndDisplayName seeds a v3-shaped
+// database, re-opens it (v4 adds the subdir + display_name columns),
+// and asserts old rows read as the repo root ("" for both) while new
+// values round-trip.
+func TestOpen_MigrationV3ToV4_AddsSubdirAndDisplayName(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "host.db")
+
+	rawDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rawDB.Exec(`
+		CREATE TABLE sessions (
+			id TEXT PRIMARY KEY,
+			external_id TEXT NOT NULL DEFAULT '',
+			backend TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'idle',
+			visibility TEXT NOT NULL DEFAULT '',
+			follow_up INTEGER NOT NULL DEFAULT 0,
+			project_dir TEXT NOT NULL DEFAULT '',
+			worktree_id TEXT NOT NULL DEFAULT '',
+			worktree_branch TEXT NOT NULL DEFAULT '',
+			prompt TEXT NOT NULL DEFAULT '',
+			title TEXT NOT NULL DEFAULT '',
+			ticket_id TEXT NOT NULL DEFAULT '',
+			agent TEXT NOT NULL DEFAULT '',
+			draft TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			last_read_at INTEGER
+		);
+		CREATE TABLE primary_agents (
+			backend TEXT NOT NULL,
+			project_dir TEXT NOT NULL DEFAULT '',
+			worktree_id TEXT NOT NULL DEFAULT '',
+			primary_agents_json TEXT NOT NULL DEFAULT '[]',
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY (backend, project_dir, worktree_id)
+		);
+		INSERT INTO sessions(id, backend, project_dir, created_at, updated_at)
+		    VALUES ('legacy-root', 'opencode', '/repos/app', 1700000000000, 1700000000000);
+		PRAGMA user_version = 3;
+	`); err != nil {
+		rawDB.Close()
+		t.Fatalf("seed v3 DB: %v", err)
+	}
+	rawDB.Close()
+
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("re-open after v4: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	ctx := context.Background()
+
+	legacy, err := s.GetSession(ctx, "legacy-root")
+	if err != nil {
+		t.Fatalf("GetSession legacy: %v", err)
+	}
+	if legacy.GitRef.Subdir != "" || legacy.GitRef.DisplayName != "" {
+		t.Errorf("legacy row = %+v, want empty Subdir/DisplayName (pre-v4 rows mean the repo root)", legacy.GitRef)
+	}
+
+	want := agent.GitRef{LocalPath: "/repos/app", Subdir: "web-app", DisplayName: "web-app"}
+	if err := s.UpsertSession(ctx, agent.SessionInfo{
+		ID:      "subdir-row",
+		Backend: agent.BackendOpenCode,
+		GitRef:  want,
+	}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	got, err := s.GetSession(ctx, "subdir-row")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.GitRef != want {
+		t.Errorf("round-trip ref = %+v, want %+v", got.GitRef, want)
+	}
+}

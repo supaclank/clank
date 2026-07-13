@@ -1,6 +1,10 @@
 package daemonclient
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -60,6 +64,70 @@ func TestSummarizeBody_TruncatesLongPayloads(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "…") {
 		t.Errorf("expected truncation marker, got tail %q", got[len(got)-10:])
+	}
+}
+
+// errServer returns an httptest server that answers every request
+// with the given status and body.
+func errServer(t *testing.T, status int, contentType, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", contentType)
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestDo_StructuredErrorReturnsAPIError pins the typed-error contract:
+// a {code, error} body surfaces as *APIError carrying the code, while
+// Error() keeps the historical "daemon: <msg>" shape so existing
+// string-matching callers see no change.
+func TestDo_StructuredErrorReturnsAPIError(t *testing.T) {
+	t.Parallel()
+	srv := errServer(t, http.StatusNotFound, "application/json",
+		`{"code":"not_running","error":"preview: no dev server is running"}`)
+
+	err := NewTCPClient(srv.URL, "").Preview("01WT").Stop(context.Background())
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("want *APIError, got %T: %v", err, err)
+	}
+	if apiErr.Code != "not_running" || apiErr.StatusCode != http.StatusNotFound {
+		t.Errorf("APIError = %+v, want code=not_running status=404", apiErr)
+	}
+	if got, want := err.Error(), "daemon: preview: no dev server is running"; got != want {
+		t.Errorf("Error() = %q, want %q (historical shape)", got, want)
+	}
+}
+
+// TestPreviewStart_NoPreviewMapsToErrNotPreviewable pins the sentinel
+// promotion the CLI's Expo/Vite hint gates on.
+func TestPreviewStart_NoPreviewMapsToErrNotPreviewable(t *testing.T) {
+	t.Parallel()
+	srv := errServer(t, http.StatusNotFound, "application/json",
+		`{"code":"no_preview","error":"preview: worktree is not previewable"}`)
+
+	_, err := NewTCPClient(srv.URL, "").Preview("01WT").Start(context.Background(), "/tmp/whatever")
+	if !errors.Is(err, ErrNotPreviewable) {
+		t.Fatalf("want ErrNotPreviewable, got %v", err)
+	}
+}
+
+// TestDo_NonJSONErrorKeepsStatusSummary pins the fallback for upstream
+// proxies that answer with plain text (502s from a dead host, etc).
+func TestDo_NonJSONErrorKeepsStatusSummary(t *testing.T) {
+	t.Parallel()
+	srv := errServer(t, http.StatusBadGateway, "text/plain", "Bad Gateway")
+
+	err := NewTCPClient(srv.URL, "").Preview("01WT").Stop(context.Background())
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		t.Fatalf("non-JSON body must not produce an APIError, got %+v", apiErr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "daemon returned status 502") {
+		t.Errorf("err = %v, want status-summary fallback", err)
 	}
 }
 

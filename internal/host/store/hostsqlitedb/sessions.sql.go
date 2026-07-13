@@ -31,7 +31,7 @@ func (q *Queries) DeleteSessionsByWorktree(ctx context.Context, worktreeID strin
 }
 
 const findSessionByExternalID = `-- name: FindSessionByExternalID :one
-SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions WHERE external_id = ? LIMIT 1
+SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at, subdir, display_name FROM sessions WHERE external_id = ? LIMIT 1
 `
 
 func (q *Queries) FindSessionByExternalID(ctx context.Context, externalID string) (Session, error) {
@@ -55,12 +55,14 @@ func (q *Queries) FindSessionByExternalID(ctx context.Context, externalID string
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LastReadAt,
+		&i.Subdir,
+		&i.DisplayName,
 	)
 	return i, err
 }
 
 const getSession = `-- name: GetSession :one
-SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions WHERE id = ?
+SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at, subdir, display_name FROM sessions WHERE id = ?
 `
 
 func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
@@ -84,6 +86,8 @@ func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LastReadAt,
+		&i.Subdir,
+		&i.DisplayName,
 	)
 	return i, err
 }
@@ -107,7 +111,7 @@ func (q *Queries) ListPrimaryAgents(ctx context.Context, arg ListPrimaryAgentsPa
 }
 
 const listSessions = `-- name: ListSessions :many
-SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions ORDER BY updated_at DESC
+SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at, subdir, display_name FROM sessions ORDER BY updated_at DESC
 `
 
 func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
@@ -137,6 +141,8 @@ func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.LastReadAt,
+			&i.Subdir,
+			&i.DisplayName,
 		); err != nil {
 			return nil, err
 		}
@@ -152,7 +158,7 @@ func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
 }
 
 const listSessionsByWorktree = `-- name: ListSessionsByWorktree :many
-SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions WHERE worktree_id = ? ORDER BY updated_at DESC
+SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at, subdir, display_name FROM sessions WHERE worktree_id = ? ORDER BY updated_at DESC
 `
 
 // Used by session-sync to enumerate sessions in a worktree for export.
@@ -184,6 +190,8 @@ func (q *Queries) ListSessionsByWorktree(ctx context.Context, worktreeID string)
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.LastReadAt,
+			&i.Subdir,
+			&i.DisplayName,
 		); err != nil {
 			return nil, err
 		}
@@ -199,7 +207,7 @@ func (q *Queries) ListSessionsByWorktree(ctx context.Context, worktreeID string)
 }
 
 const searchSessions = `-- name: SearchSessions :many
-SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at FROM sessions
+SELECT id, external_id, backend, status, visibility, follow_up, project_dir, worktree_id, worktree_branch, prompt, title, ticket_id, agent, draft, created_at, updated_at, last_read_at, subdir, display_name FROM sessions
 WHERE
     (CAST(?1 AS TEXT) = '' OR title LIKE '%' || ?1 || '%' OR prompt LIKE '%' || ?1 || '%' OR draft LIKE '%' || ?1 || '%' OR project_dir LIKE '%' || ?1 || '%')
     AND (CAST(?2 AS TEXT) = '' OR visibility = ?2)
@@ -253,6 +261,8 @@ func (q *Queries) SearchSessions(ctx context.Context, arg SearchSessionsParams) 
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.LastReadAt,
+			&i.Subdir,
+			&i.DisplayName,
 		); err != nil {
 			return nil, err
 		}
@@ -298,9 +308,9 @@ func (q *Queries) UpsertPrimaryAgents(ctx context.Context, arg UpsertPrimaryAgen
 const upsertSession = `-- name: UpsertSession :exec
 INSERT INTO sessions (
     id, external_id, backend, status, visibility, follow_up,
-    project_dir, worktree_id, worktree_branch, prompt, title,
+    project_dir, worktree_id, worktree_branch, subdir, display_name, prompt, title,
     ticket_id, agent, draft, created_at, updated_at, last_read_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
     external_id     = excluded.external_id,
     backend         = excluded.backend,
@@ -310,6 +320,8 @@ ON CONFLICT (id) DO UPDATE SET
     project_dir     = excluded.project_dir,
     worktree_id      = excluded.worktree_id,
     worktree_branch = excluded.worktree_branch,
+    subdir          = excluded.subdir,
+    display_name    = excluded.display_name,
     prompt          = excluded.prompt,
     title           = excluded.title,
     ticket_id       = excluded.ticket_id,
@@ -329,6 +341,8 @@ type UpsertSessionParams struct {
 	ProjectDir     string
 	WorktreeID     string
 	WorktreeBranch string
+	Subdir         string
+	DisplayName    string
 	Prompt         string
 	Title          string
 	TicketID       string
@@ -350,6 +364,8 @@ func (q *Queries) UpsertSession(ctx context.Context, arg UpsertSessionParams) er
 		arg.ProjectDir,
 		arg.WorktreeID,
 		arg.WorktreeBranch,
+		arg.Subdir,
+		arg.DisplayName,
 		arg.Prompt,
 		arg.Title,
 		arg.TicketID,

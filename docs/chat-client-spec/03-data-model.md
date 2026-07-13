@@ -171,9 +171,12 @@ Source: `internal/agent/agent.go:565`.
 `ModelOverride`: `{ "model_id": "...", "provider_id": "..." }` (`agent.go:516`).
 
 `GitRef`: repo identity carrying `local_path` and/or `worktree_id`, optional
-`display_name`, optional `worktree_branch`. A client treats it as an opaque object it
-echoes from list/get responses, except at create time where it sets the target repo.
-Source: `internal/gitref.go`.
+`display_name`, optional `worktree_branch`, optional `subdir` (working directory
+relative to the repo/worktree root; empty = the root). A client treats it as an opaque
+object it echoes from list/get responses, except at create time where it sets the
+target repo — a `local_path` pointing inside a repo is fine: the host normalizes it to
+`{local_path: root, subdir: rel}` and the create response returns the normalized form.
+Source: `internal/agent/gitref.go`.
 
 ## Image attachments (forward-looking — not yet shipped)
 

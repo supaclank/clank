@@ -9,7 +9,9 @@ import (
 	"testing"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host"
+	"github.com/acksell/clank/internal/host/store"
 )
 
 // TestCreateSession_LocalRef_Success exercises the §7 happy path: a
@@ -69,25 +71,101 @@ func TestCreateSession_LocalRef_RejectsRelativePath(t *testing.T) {
 	}
 }
 
-// TestCreateSession_LocalRef_RejectsSubdir requires the Local path to be
-// the repo root, not a subdirectory inside it. Accepting a subdirectory
-// would silently change the worktree base.
-func TestCreateSession_LocalRef_RejectsSubdir(t *testing.T) {
+// TestCreateSession_LocalRef_AcceptsSubdir pins monorepo support: a
+// LocalPath pointing inside a repo (e.g. supaclank/web-app) runs the
+// session AT that folder while identity normalizes to the repo root —
+// {LocalPath: root, Subdir: "web-app"} — so keying, sidebar grouping,
+// and git ops stay repo-level.
+func TestCreateSession_LocalRef_AcceptsSubdir(t *testing.T) {
 	t.Parallel()
-	svc := newTestService(t)
+	mgr := &noopBackendManager{}
+	st, err := store.Open(filepath.Join(t.TempDir(), "host.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{agent.BackendOpenCode: mgr},
+		SessionsStore:   st,
+	})
+	t.Cleanup(svc.Shutdown)
 
 	root := initGitRepo(t, "git@github.com:acksell/clank.git")
-	sub := filepath.Join(root, "sub")
+	sub := filepath.Join(root, "web-app")
 	if err := os.Mkdir(sub, 0o755); err != nil {
 		t.Fatal(err)
 	}
+
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
 		GitRef:  agent.GitRef{LocalPath: sub},
 		Prompt:  "hi",
 	}
-	if _, _, err := svc.CreateSession(context.Background(), "sid-sub", req); err == nil {
-		t.Fatal("expected error for non-root dir")
+	_, info, err := svc.CreateSession(context.Background(), "sid-subdir", req)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if mgr.createdWorkDir != sub {
+		t.Errorf("backend workdir = %q, want the requested subdir %q", mgr.createdWorkDir, sub)
+	}
+	want := agent.GitRef{LocalPath: root, Subdir: "web-app", DisplayName: "web-app"}
+	if info.GitRef != want {
+		t.Errorf("normalized ref = %+v, want %+v", info.GitRef, want)
+	}
+	persisted, err := st.GetSession(context.Background(), "sid-subdir")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if persisted.GitRef != want {
+		t.Errorf("persisted ref = %+v, want %+v", persisted.GitRef, want)
+	}
+}
+
+// TestCreateSession_LocalRef_SubdirWithBranch pins the two-axis case:
+// WorktreeBranch resolves against the repo ROOT (the branch worktree is
+// named after the repo, never the subdir) and the subdir then re-applies
+// inside that worktree — the session works on branch X of the whole
+// repo, from its web-app folder.
+func TestCreateSession_LocalRef_SubdirWithBranch(t *testing.T) {
+	t.Parallel()
+	mgr := &noopBackendManager{}
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{agent.BackendOpenCode: mgr},
+	})
+	t.Cleanup(svc.Shutdown)
+
+	root := initGitRepo(t, "git@github.com:acksell/clank.git")
+	sub := filepath.Join(root, "web-app")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Commit the subdir so the branch worktree materializes it.
+	if err := os.WriteFile(filepath.Join(sub, "index.html"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "."}, {"commit", "-m", "web-app"}} {
+		if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s: %v", args, out, err)
+		}
+	}
+
+	wtDir, err := git.WorktreeDir(filepath.Base(root), "feat")
+	if err != nil {
+		t.Fatalf("WorktreeDir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(wtDir)) })
+
+	req := agent.StartRequest{
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{LocalPath: sub, WorktreeBranch: "feat"},
+		Prompt:  "hi",
+	}
+	if _, _, err := svc.CreateSession(context.Background(), "sid-sub-branch", req); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if want := filepath.Join(wtDir, "web-app"); mgr.createdWorkDir != want {
+		t.Errorf("backend workdir = %q, want subdir inside the branch worktree %q", mgr.createdWorkDir, want)
 	}
 }
 
@@ -136,6 +214,47 @@ func TestCreateSession_WorktreeRef_Success(t *testing.T) {
 	}
 	if _, _, err := svc.CreateSession(context.Background(), "sid-wt", req); err != nil {
 		t.Fatalf("CreateSession: %v", err)
+	}
+}
+
+// TestCreateSession_WorktreeRef_Subdir pins the remote-sandbox arm of
+// GitRef.Subdir: a {worktree_id, subdir} ref runs the session at
+// ~/work/<id>/<subdir>, and a subdir that doesn't exist in the worktree
+// fails fast with a clear error instead of spawning in a bogus cwd.
+func TestCreateSession_WorktreeRef_Subdir(t *testing.T) {
+	// NOT parallel — SetWorkRootForTest mutates a package-level global.
+	tmpHome := t.TempDir()
+	prev := host.SetWorkRootForTest(filepath.Join(tmpHome, "work"))
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
+
+	worktreeID := "01HTESTSUBDIR"
+	sub := filepath.Join(tmpHome, "work", worktreeID, "web-app")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := &noopBackendManager{}
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{agent.BackendOpenCode: mgr},
+	})
+	t.Cleanup(svc.Shutdown)
+
+	req := agent.StartRequest{
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{WorktreeID: worktreeID, Subdir: "web-app"},
+		Prompt:  "hi",
+	}
+	if _, _, err := svc.CreateSession(context.Background(), "sid-wt-sub", req); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if mgr.createdWorkDir != sub {
+		t.Errorf("backend workdir = %q, want %q", mgr.createdWorkDir, sub)
+	}
+
+	req.GitRef.Subdir = "does-not-exist"
+	_, _, err := svc.CreateSession(context.Background(), "sid-wt-sub-missing", req)
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("expected missing-subdir error, got %v", err)
 	}
 }
 

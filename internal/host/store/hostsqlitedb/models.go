@@ -34,4 +34,6 @@ type Session struct {
 	CreatedAt      int64
 	UpdatedAt      int64
 	LastReadAt     sql.NullInt64
+	Subdir         string
+	DisplayName    string
 }

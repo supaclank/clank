@@ -28,9 +28,9 @@ LIMIT @lim;
 -- name: UpsertSession :exec
 INSERT INTO sessions (
     id, external_id, backend, status, visibility, follow_up,
-    project_dir, worktree_id, worktree_branch, prompt, title,
+    project_dir, worktree_id, worktree_branch, subdir, display_name, prompt, title,
     ticket_id, agent, draft, created_at, updated_at, last_read_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
     external_id     = excluded.external_id,
     backend         = excluded.backend,
@@ -40,6 +40,8 @@ ON CONFLICT (id) DO UPDATE SET
     project_dir     = excluded.project_dir,
     worktree_id      = excluded.worktree_id,
     worktree_branch = excluded.worktree_branch,
+    subdir          = excluded.subdir,
+    display_name    = excluded.display_name,
     prompt          = excluded.prompt,
     title           = excluded.title,
     ticket_id       = excluded.ticket_id,

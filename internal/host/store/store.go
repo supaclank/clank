@@ -179,6 +179,23 @@ func (s *Store) migrate() error {
 		}
 		version = 3
 	}
+	if version < 4 {
+		// Migration v4: sessions.subdir — the working subdirectory
+		// relative to project_dir (GitRef.Subdir). Empty = the repo
+		// root itself, which is what every pre-v4 row means. And
+		// sessions.display_name — with project_dir now normalized to
+		// the repo root, the label can no longer be re-derived from
+		// the path, so the client/host-stamped GitRef.DisplayName
+		// must survive the round-trip.
+		if _, err := s.db.Exec(`
+			ALTER TABLE sessions ADD COLUMN subdir TEXT NOT NULL DEFAULT '';
+			ALTER TABLE sessions ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
+			PRAGMA user_version = 4;
+		`); err != nil {
+			return fmt.Errorf("migration v4: %w", err)
+		}
+		version = 4
+	}
 	_ = version
 	return nil
 }
