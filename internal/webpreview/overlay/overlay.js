@@ -369,6 +369,8 @@
     new Promise((resolve, reject) => {
       if (vws && vws.readyState === WebSocket.OPEN) return resolve(vws);
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      // TODO(ai-review): move TOKEN off the URL (browser WebSocket has no
+      // custom-header API) https://github.com/Acksell/clank/pull/135#discussion_r3571183477
       const w = new WebSocket(`${proto}://${location.host}/__clank/voice?t=${encodeURIComponent(TOKEN)}`);
       w.onopen = () => { vws = w; resolve(w); };
       w.onerror = () => {

@@ -260,6 +260,9 @@ type emitter struct {
 }
 
 func (e *emitter) emit(m msg) {
+	// TODO(ai-review): exit on a write/flush failure instead of swallowing
+	// it (parent already detects a dead subprocess via stdin EOF on exit)
+	// https://github.com/Acksell/clank/pull/135#discussion_r3571183540
 	data, _ := json.Marshal(m)
 	e.w.Write(data)
 	e.w.WriteByte('\n')
