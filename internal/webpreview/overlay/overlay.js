@@ -831,17 +831,27 @@
   let mouseX = 0, mouseY = 0, mouseSeen = false;
   window.addEventListener('mousemove', (e) => { mouseX = e.clientX; mouseY = e.clientY; mouseSeen = true; }, { passive: true, capture: true });
 
-  // The box TOP lands at the cursor (nudged 2px in), so the pointer sits
-  // on the header — the drag handle — and follow hands off to click-drag.
+  // The pointer lands 12px INTO the header — deep enough that the
+  // grab-cursor hover actually triggers, so a follow hands off straight
+  // into click-drag.
   const followTargetFromPointer = (cx, cy) => {
     const left = Math.min(Math.max(cx - follow.w / 2, 8), innerWidth - follow.w - 8);
-    const top = Math.min(Math.max(cy - 2, 8), innerHeight - follow.h - 8);
+    const top = Math.min(Math.max(cy - 12, 8), innerHeight - follow.h - 8);
     follow.tx = left - follow.natX;
     follow.ty = top - follow.natY;
   };
 
   const startFollow = () => {
-    if (follow || store.box === 'hidden') return;
+    if (store.box === 'hidden') return;
+    if (follow) {
+      // Pressed again while the previous glide is still settling: re-arm
+      // the live spring — retarget to the cursor, keep the velocity —
+      // instead of swallowing the press until it settles.
+      follow.held = true;
+      if (mouseSeen) followTargetFromPointer(mouseX, mouseY);
+      window.addEventListener('mousemove', onFollowMove, true); // no-op if already attached
+      return;
+    }
     const r = ui.box.getBoundingClientRect(); // once, outside the loop
     const x = parseFloat(ui.box.dataset.x || '0');
     const y = parseFloat(ui.box.dataset.y || '0');
