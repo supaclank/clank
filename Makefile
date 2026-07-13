@@ -11,6 +11,25 @@ EMBED_HOST_BIN := pkg/provisioner/flysprites/clank-host-linux-amd64
 install: embed-host
 	go install ./cmd/clank/ ./cmd/clankd/ ./cmd/clank-host/
 
+# ---- Voice (opt-in) --------------------------------------------------
+#
+# clank-voice is the local dictation engine for `clank preview`'s
+# push-to-talk (see voice-engine/README.md). It's a SEPARATE Go module
+# so its cgo sherpa-onnx dependency — and the per-platform onnxruntime
+# libs cgo downloads on first build — never touch the main module's
+# builds, CI, or the CGO_ENABLED=0 embedded clank-host. Hence a separate
+# opt-in target, not part of `install`.
+#
+# Installs into the same GOBIN/$GOPATH/bin as `make install`, so it
+# lands next to `clank`, where the preview flow's FindClankVoice looks
+# for it first (then $PATH). Needs a C compiler (Xcode CLT / build-
+# essential); CGO is forced on in case the environment disabled it. The
+# ~670 MB Parakeet model set is fetched separately, on first use, by
+# `clank preview`.
+.PHONY: voice
+voice:
+	CGO_ENABLED=1 go -C voice-engine install ./cmd/clank-voice
+
 .PHONY: test test-race
 test: embed-host
 	go test ./...
