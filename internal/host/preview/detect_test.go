@@ -54,6 +54,20 @@ func TestDetect(t *testing.T) {
 			want: &Spec{Kind: KindExpo, ReadyProbe: expoReadyProbe},
 		},
 		{
+			name: "next via dependencies",
+			files: map[string]string{
+				"package.json": `{"dependencies":{"next":"^15.0.0","react":"^19.0.0"}}`,
+			},
+			want: &Spec{Kind: KindWeb, ReadyProbe: webReadyProbe},
+		},
+		{
+			name: "next wins over vite when both are declared",
+			files: map[string]string{
+				"package.json": `{"dependencies":{"next":"^15.0.0"},"devDependencies":{"vite":"^6.0.0"}}`,
+			},
+			want: &Spec{Kind: KindWeb, ReadyProbe: webReadyProbe},
+		},
+		{
 			name: "vite via devDependencies",
 			files: map[string]string{
 				"package.json": `{"devDependencies":{"vite":"^6.0.0","svelte":"^5.0.0"}}`,

@@ -70,6 +70,13 @@ var expoCmdTemplate = bootstrapTemplate(`npx --yes expo start --port %d --non-in
 // when stdout is a TTY, and ours is the ring buffer.
 var webCmdTemplate = bootstrapTemplate(`npx --yes vite --port %d --strictPort --host 127.0.0.1`)
 
+// nextCmdTemplate spawns Next.js's own dev server. `-H 127.0.0.1` for
+// the same reason as Vite's --host (loopback parity with the probe and
+// proxy, and no LAN exposure); Next binds the exact -p port or exits,
+// so no strict-port wrangling is needed. The client flow is the same
+// KindWeb browser proxy — only the spawn recipe differs.
+var nextCmdTemplate = bootstrapTemplate(`npx --yes next dev -p %d -H 127.0.0.1`)
+
 // bootstrapTemplate wraps a dev-server exec line in the self-healing
 // bun-install bootstrap documented on expoCmdTemplate. The returned argv
 // is a Spec.CmdTemplate; a "%d" placeholder inside execLine survives
@@ -117,8 +124,8 @@ var appConfigCandidates = []string{
 	"app.config.ts",
 }
 
-// Detect inspects workDir and returns a Spec if it looks like an Expo
-// or Vite web app. The contract:
+// Detect inspects workDir and returns a Spec if it looks like an Expo,
+// Next.js, or Vite web app. The contract:
 //
 //   - (nil, nil) means "not previewable" — a normal answer, NOT an
 //     error. Surface it as preview_available: false / available: false
@@ -131,7 +138,9 @@ var appConfigCandidates = []string{
 //
 // Expo wins over Vite when both match (an Expo app with a vite dep is
 // almost certainly an Expo app; a Vite web app never carries an Expo
-// app config). Detection is intentionally cheap (one Stat for
+// app config), and Next wins over Vite (a Next project's dev server is
+// `next dev` even when vite appears as a transitive tool, e.g. for
+// vitest). Detection is intentionally cheap (one Stat for
 // package.json, one small JSON parse, up to three more Stats for
 // app.config files) so callers can run it per worktree-list row
 // without caching.
@@ -150,6 +159,14 @@ func Detect(workDir string) (*Spec, error) {
 			Kind:        KindExpo,
 			CmdTemplate: append([]string(nil), expoCmdTemplate...),
 			ReadyProbe:  expoReadyProbe,
+		}, nil
+	}
+
+	if packageHasDep(data, "next") {
+		return &Spec{
+			Kind:        KindWeb,
+			CmdTemplate: append([]string(nil), nextCmdTemplate...),
+			ReadyProbe:  webReadyProbe,
 		}, nil
 	}
 
