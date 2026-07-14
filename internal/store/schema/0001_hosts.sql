@@ -32,6 +32,12 @@ CREATE TABLE hosts (
     -- guards INCOMING traffic) — pure mirror, no shared semantics.
     notifier_token TEXT NOT NULL DEFAULT '',
     auto_wake   INTEGER NOT NULL DEFAULT 0,
+    -- provider_meta: provider-owned JSON key→value bag for resource
+    -- handles the provider can't derive (e.g. flymachines' server-
+    -- assigned volume ID). Written ONLY via the CASProviderMeta
+    -- compare-and-set (UpsertHost never touches it) so concurrent
+    -- provisioner instances can serialize resource claims on it.
+    provider_meta TEXT NOT NULL DEFAULT '{}',
     created_at  DATETIME NOT NULL,
     updated_at  DATETIME NOT NULL,
     UNIQUE (user_id, provider)
