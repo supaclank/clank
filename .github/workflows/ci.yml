@@ -12,39 +12,6 @@ permissions:
   contents: read
 
 jobs:
-  # Headline guardrail: the clank-host binary is committed and pushed to
-  # sprites verbatim by the flysprites provisioner. If the committed copy drifts
-  # from the source, the gateway ships an old clank-host that 400s every
-  # sprite apply (the apply-protocol mismatch this prevents) — invisible at
-  # the gateway, fatal on the sprite. Rebuild it and fail on any drift.
-  embed-host-current:
-    name: embedded clank-host matches source
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # Default pull_request checkout builds refs/pull/<n>/merge (head
-          # merged into base), and Go's build ID hashes every input file's
-          # bytes — a base-branch commit touching anything cmd/clank-host
-          # imports shifts the merge ref's build ID even with zero real drift.
-          # Pin to the actual head SHA so this job builds the same tree
-          # `make embed-host` committed.
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-      # go-version-file installs exactly the Go version in go.mod's `go` directive;
-      # CGO_ENABLED=0 + -trimpath + -buildvcs=false make the output
-      # byte-reproducible on linux/amd64 — CI flags any drift from the commit.
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - name: Rebuild + diff embedded clank-host
-        run: |
-          make embed-host
-          if ! git diff --exit-code -- pkg/provisioner/flysprites/clank-host-linux-amd64; then
-            echo "::error::Embedded clank-host is stale. Run 'make embed-host' with the go.mod Go version and commit pkg/provisioner/flysprites/clank-host-linux-amd64."
-            exit 1
-          fi
-
   build-vet:
     name: build · vet
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
@@ -54,6 +21,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # The embedded clank-host is a gitignored build artifact; //go:embed
+      # fails to compile without it on disk.
+      - name: Build embedded clank-host
+        run: make embed-host
       - name: Build
         run: go build ./...
       - name: Vet

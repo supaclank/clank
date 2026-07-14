@@ -1,8 +1,8 @@
 # ---- Build / install -------------------------------------------------
 
 # Path of the cross-compiled clank-host binary embedded into the
-# Sprites provisioner. TRACKED in VCS and verified current by CI
-# (rebuild + git diff); rebuilt by `make embed-host`. Path matches the
+# Sprites provisioner. A gitignored build artifact rebuilt by
+# `make embed-host`, which install/test depend on. Path matches the
 # //go:embed directive in pkg/provisioner/flysprites/embed.go; changing this
 # requires updating that directive in lockstep.
 EMBED_HOST_BIN := pkg/provisioner/flysprites/clank-host-linux-amd64
