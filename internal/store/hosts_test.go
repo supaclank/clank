@@ -3,6 +3,8 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -279,5 +281,195 @@ func TestHosts_UpsertValidatesRequiredFields(t *testing.T) {
 				t.Errorf("UpsertHost(%+v) returned nil error", c.h)
 			}
 		})
+	}
+}
+
+// --- CreateHostIfAbsent: the cross-instance provisioning claim ---
+
+func TestHosts_CreateHostIfAbsent_InsertsThenReturnsWinner(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t, tempDBPath(t))
+	ctx := context.Background()
+
+	first := store.Host{ID: "h1", UserID: "u1", Provider: "flymachines", ExternalID: "app-a", AuthToken: "tok-first"}
+	got, created, err := s.CreateHostIfAbsent(ctx, first)
+	if err != nil {
+		t.Fatalf("first CreateHostIfAbsent: %v", err)
+	}
+	if !created || got.ID != "h1" || got.AuthToken != "tok-first" {
+		t.Fatalf("first claim: created=%v got=%+v", created, got)
+	}
+
+	// A second claimer with DIFFERENT tokens must lose and read back the
+	// winner's row — the exact token-divergence fix.
+	second := store.Host{ID: "h2", UserID: "u1", Provider: "flymachines", ExternalID: "app-a", AuthToken: "tok-second"}
+	got, created, err = s.CreateHostIfAbsent(ctx, second)
+	if err != nil {
+		t.Fatalf("second CreateHostIfAbsent: %v", err)
+	}
+	if created {
+		t.Fatal("second claim reported created=true")
+	}
+	if got.ID != "h1" || got.AuthToken != "tok-first" {
+		t.Fatalf("second claim did not return the winner: %+v", got)
+	}
+}
+
+func TestHosts_CreateHostIfAbsent_ConcurrentSingleWinner(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t, tempDBPath(t))
+	ctx := context.Background()
+
+	const n = 16
+	var wg sync.WaitGroup
+	rows := make([]store.Host, n)
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h := store.Host{
+				ID:        fmt.Sprintf("h%d", i),
+				UserID:    "u-conc",
+				Provider:  "flymachines",
+				AuthToken: fmt.Sprintf("tok-%d", i),
+			}
+			row, _, err := s.CreateHostIfAbsent(ctx, h)
+			if err != nil {
+				t.Errorf("claim %d: %v", i, err)
+				return
+			}
+			rows[i] = row
+		}()
+	}
+	wg.Wait()
+	for i := 1; i < n; i++ {
+		if rows[i].ID != rows[0].ID || rows[i].AuthToken != rows[0].AuthToken {
+			t.Fatalf("claim %d diverged: %+v vs %+v", i, rows[i], rows[0])
+		}
+	}
+}
+
+// --- CASProviderMeta: the resource-claim compare-and-set ---
+
+func TestHosts_CASProviderMeta(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t, tempDBPath(t))
+	ctx := context.Background()
+	if _, _, err := s.CreateHostIfAbsent(ctx, store.Host{ID: "h1", UserID: "u1", Provider: "flymachines"}); err != nil {
+		t.Fatalf("seed row: %v", err)
+	}
+
+	// absent → set wins
+	won, current, err := s.CASProviderMeta(ctx, "h1", "volume_id", "", "vol_a")
+	if err != nil || !won || current != "vol_a" {
+		t.Fatalf("absent CAS: won=%v current=%q err=%v", won, current, err)
+	}
+	// present → if-absent CAS loses and reports the holder
+	won, current, err = s.CASProviderMeta(ctx, "h1", "volume_id", "", "vol_b")
+	if err != nil || won || current != "vol_a" {
+		t.Fatalf("second if-absent CAS: won=%v current=%q err=%v", won, current, err)
+	}
+	// value survives a read
+	row, err := s.GetHostByID(ctx, "h1")
+	if err != nil {
+		t.Fatalf("GetHostByID: %v", err)
+	}
+	if row.ProviderMeta["volume_id"] != "vol_a" {
+		t.Fatalf("meta after CAS = %v", row.ProviderMeta)
+	}
+	// stale-replacement: expected-old must match
+	if won, _, err = s.CASProviderMeta(ctx, "h1", "volume_id", "vol_WRONG", "vol_c"); err != nil || won {
+		t.Fatalf("wrong-old CAS won: won=%v err=%v", won, err)
+	}
+	if won, current, err = s.CASProviderMeta(ctx, "h1", "volume_id", "vol_a", "vol_c"); err != nil || !won || current != "vol_c" {
+		t.Fatalf("correct-old CAS: won=%v current=%q err=%v", won, current, err)
+	}
+	// independent keys coexist
+	if won, _, err = s.CASProviderMeta(ctx, "h1", "other_key", "", "x"); err != nil || !won {
+		t.Fatalf("second key CAS: won=%v err=%v", won, err)
+	}
+	row, _ = s.GetHostByID(ctx, "h1")
+	if row.ProviderMeta["volume_id"] != "vol_c" || row.ProviderMeta["other_key"] != "x" {
+		t.Fatalf("meta after two keys = %v", row.ProviderMeta)
+	}
+	// missing host surfaces as an error, not a silent loss
+	if _, _, err = s.CASProviderMeta(ctx, "missing", "k", "", "v"); err == nil {
+		t.Fatal("CAS on missing host returned nil error")
+	}
+	// path-breaking keys rejected
+	if _, _, err = s.CASProviderMeta(ctx, "h1", "bad.key", "", "v"); err == nil {
+		t.Fatal("dotted key accepted")
+	}
+}
+
+func TestHosts_CASProviderMeta_ConcurrentSingleWinner(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t, tempDBPath(t))
+	ctx := context.Background()
+	if _, _, err := s.CreateHostIfAbsent(ctx, store.Host{ID: "h1", UserID: "u1", Provider: "flymachines"}); err != nil {
+		t.Fatalf("seed row: %v", err)
+	}
+
+	const n = 16
+	var wg sync.WaitGroup
+	winners := make([]bool, n)
+	currents := make([]string, n)
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			won, current, err := s.CASProviderMeta(ctx, "h1", "volume_id", "", fmt.Sprintf("vol_%d", i))
+			if err != nil {
+				t.Errorf("CAS %d: %v", i, err)
+				return
+			}
+			winners[i] = won
+			currents[i] = current
+		}()
+	}
+	wg.Wait()
+	wonCount := 0
+	for i := range n {
+		if winners[i] {
+			wonCount++
+		}
+		if currents[i] != currents[0] {
+			t.Fatalf("CAS %d observed %q, others %q", i, currents[i], currents[0])
+		}
+	}
+	if wonCount != 1 {
+		t.Fatalf("CAS winners = %d, want exactly 1", wonCount)
+	}
+}
+
+// TestHosts_UpsertPreservesProviderMeta pins the write-isolation rule:
+// UpsertHost (the provisioner's status/URL writes) must never clobber
+// the CAS-owned provider_meta.
+func TestHosts_UpsertPreservesProviderMeta(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t, tempDBPath(t))
+	ctx := context.Background()
+	h := store.Host{ID: "h1", UserID: "u1", Provider: "flymachines", AuthToken: "tok"}
+	if _, _, err := s.CreateHostIfAbsent(ctx, h); err != nil {
+		t.Fatalf("seed row: %v", err)
+	}
+	if won, _, err := s.CASProviderMeta(ctx, "h1", "volume_id", "", "vol_a"); err != nil || !won {
+		t.Fatalf("seed CAS: won=%v err=%v", won, err)
+	}
+
+	h.Status = store.HostStatusRunning
+	h.LastURL = "http://[fdaa::2]:8080"
+	if err := s.UpsertHost(ctx, h); err != nil {
+		t.Fatalf("UpsertHost: %v", err)
+	}
+	row, err := s.GetHostByID(ctx, "h1")
+	if err != nil {
+		t.Fatalf("GetHostByID: %v", err)
+	}
+	if row.ProviderMeta["volume_id"] != "vol_a" {
+		t.Fatalf("UpsertHost clobbered provider_meta: %v", row.ProviderMeta)
+	}
+	if row.LastURL != h.LastURL || row.Status != store.HostStatusRunning {
+		t.Fatalf("UpsertHost lost its own writes: %+v", row)
 	}
 }

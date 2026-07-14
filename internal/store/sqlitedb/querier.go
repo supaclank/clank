@@ -18,6 +18,12 @@ type Querier interface {
 	GetHostByID(ctx context.Context, id string) (Host, error)
 	GetHostByNotifierToken(ctx context.Context, notifierToken string) (Host, error)
 	GetHostByUser(ctx context.Context, arg GetHostByUserParams) (Host, error)
+	// The cross-instance claim: exactly one concurrent caller inserts;
+	// everyone else reads the winner's row back. provider_meta is left to
+	// its default (CASProviderMeta is its only writer). ASCII only here:
+	// sqlc slices query text by byte offset but counts chars, so a
+	// multi-byte character in a comment corrupts every later query.
+	InsertHostIfAbsent(ctx context.Context, arg InsertHostIfAbsentParams) (int64, error)
 	ListDevicesByUser(ctx context.Context, userID string) ([]Device, error)
 	UpsertDevice(ctx context.Context, arg UpsertDeviceParams) error
 	UpsertHost(ctx context.Context, arg UpsertHostParams) error

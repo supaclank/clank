@@ -26,6 +26,8 @@ import (
 	"testing"
 	"time"
 
+	fly "github.com/superfly/fly-go"
+
 	"github.com/acksell/clank/pkg/provisioner/hoststore"
 )
 
@@ -114,8 +116,8 @@ func TestIntegration_FlyMachines_ProvisionLifecycle(t *testing.T) {
 	}
 
 	// --- idempotence: second resolve must reuse, not duplicate ---
-	// (row wasn't persisted yet — resolveOrCreate must still converge
-	// on the same upstream objects via get-or-create.)
+	// (the row was claimed up front; the ensure walk must converge on
+	// the same upstream objects via get-or-create.)
 	c2, _, err := p.resolveOrCreate(ctx, integrationUserID)
 	if err != nil {
 		t.Fatalf("resolveOrCreate (warm): %v", err)
@@ -151,11 +153,41 @@ func TestIntegration_FlyMachines_ProvisionLifecycle(t *testing.T) {
 		t.Errorf("freshly-launched machine reads as drifted — API normalization broke the compare.\nhave: %+v\nwant: %+v", m.Config, want)
 	}
 
-	// --- drift applies: image change triggers an update. The update
-	// is asynchronous on Fly's side, so poll for convergence. ---
+	// --- drift NEVER restarts a started machine: an image bump against
+	// the freshly-launched (started) machine must defer, not update. ---
 	p.opts.Image = "jmalloc/echo-server:v0.3.7"
 	if err := p.reconcileMachine(ctx, c, tokens); err != nil {
-		t.Fatalf("reconcileMachine (image bump): %v", err)
+		t.Fatalf("reconcileMachine (image bump, started): %v", err)
+	}
+	m, err = p.flaps.Get(ctx, c.appName, c.machineID)
+	if err != nil {
+		t.Fatalf("Get machine after deferred reconcile: %v", err)
+	}
+	if m.Config.Image == "jmalloc/echo-server:v0.3.7" {
+		t.Fatal("reconcile applied an image bump to a STARTED machine — must defer until stopped")
+	}
+
+	// --- drift applies once stopped: stop the machine, then reconcile.
+	// The update is asynchronous on Fly's side, so poll for convergence. ---
+	if err := p.flaps.Stop(ctx, c.appName, fly.StopMachineInput{ID: c.machineID}, ""); err != nil {
+		t.Fatalf("Stop machine: %v", err)
+	}
+	stopDeadline := time.Now().Add(60 * time.Second)
+	for {
+		m, err = p.flaps.Get(ctx, c.appName, c.machineID)
+		if err != nil {
+			t.Fatalf("Get machine while stopping: %v", err)
+		}
+		if m.State == fly.MachineStateStopped {
+			break
+		}
+		if time.Now().After(stopDeadline) {
+			t.Fatalf("machine never reached stopped (state %q)", m.State)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if err := p.reconcileMachine(ctx, c, tokens); err != nil {
+		t.Fatalf("reconcileMachine (image bump, stopped): %v", err)
 	}
 	updateDeadline := time.Now().Add(60 * time.Second)
 	for {
@@ -173,7 +205,7 @@ func TestIntegration_FlyMachines_ProvisionLifecycle(t *testing.T) {
 	}
 
 	// --- destroy: everything gone, idempotent ---
-	if _, err := p.persistRow(ctx, integrationUserID, c, tokens); err != nil {
+	if err := p.persistRow(ctx, integrationUserID, c, tokens); err != nil {
 		t.Fatalf("persistRow: %v", err)
 	}
 	if err := p.DestroyHostsByUser(ctx, integrationUserID); err != nil {

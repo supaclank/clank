@@ -34,7 +34,7 @@ func (q *Queries) DeleteHostByUser(ctx context.Context, arg DeleteHostByUserPara
 }
 
 const getHostByID = `-- name: GetHostByID :one
-SELECT id, user_id, provider, external_id, hostname, status, last_url, last_token, auth_token, notifier_token, auto_wake, created_at, updated_at FROM hosts
+SELECT id, user_id, provider, external_id, hostname, status, last_url, last_token, auth_token, notifier_token, auto_wake, provider_meta, created_at, updated_at FROM hosts
 WHERE id = ?
 `
 
@@ -53,6 +53,7 @@ func (q *Queries) GetHostByID(ctx context.Context, id string) (Host, error) {
 		&i.AuthToken,
 		&i.NotifierToken,
 		&i.AutoWake,
+		&i.ProviderMeta,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -60,7 +61,7 @@ func (q *Queries) GetHostByID(ctx context.Context, id string) (Host, error) {
 }
 
 const getHostByNotifierToken = `-- name: GetHostByNotifierToken :one
-SELECT id, user_id, provider, external_id, hostname, status, last_url, last_token, auth_token, notifier_token, auto_wake, created_at, updated_at FROM hosts
+SELECT id, user_id, provider, external_id, hostname, status, last_url, last_token, auth_token, notifier_token, auto_wake, provider_meta, created_at, updated_at FROM hosts
 WHERE notifier_token = ? AND notifier_token != ''
 `
 
@@ -79,6 +80,7 @@ func (q *Queries) GetHostByNotifierToken(ctx context.Context, notifierToken stri
 		&i.AuthToken,
 		&i.NotifierToken,
 		&i.AutoWake,
+		&i.ProviderMeta,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -86,7 +88,7 @@ func (q *Queries) GetHostByNotifierToken(ctx context.Context, notifierToken stri
 }
 
 const getHostByUser = `-- name: GetHostByUser :one
-SELECT id, user_id, provider, external_id, hostname, status, last_url, last_token, auth_token, notifier_token, auto_wake, created_at, updated_at FROM hosts
+SELECT id, user_id, provider, external_id, hostname, status, last_url, last_token, auth_token, notifier_token, auto_wake, provider_meta, created_at, updated_at FROM hosts
 WHERE user_id = ? AND provider = ?
 `
 
@@ -110,10 +112,62 @@ func (q *Queries) GetHostByUser(ctx context.Context, arg GetHostByUserParams) (H
 		&i.AuthToken,
 		&i.NotifierToken,
 		&i.AutoWake,
+		&i.ProviderMeta,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const insertHostIfAbsent = `-- name: InsertHostIfAbsent :execrows
+INSERT INTO hosts (
+    id, user_id, provider, external_id, hostname, status,
+    last_url, last_token, auth_token, notifier_token, auto_wake, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (user_id, provider) DO NOTHING
+`
+
+type InsertHostIfAbsentParams struct {
+	ID            string
+	UserID        string
+	Provider      string
+	ExternalID    string
+	Hostname      string
+	Status        string
+	LastUrl       string
+	LastToken     string
+	AuthToken     string
+	NotifierToken string
+	AutoWake      int64
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+// The cross-instance claim: exactly one concurrent caller inserts;
+// everyone else reads the winner's row back. provider_meta is left to
+// its default (CASProviderMeta is its only writer). ASCII only here:
+// sqlc slices query text by byte offset but counts chars, so a
+// multi-byte character in a comment corrupts every later query.
+func (q *Queries) InsertHostIfAbsent(ctx context.Context, arg InsertHostIfAbsentParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertHostIfAbsent,
+		arg.ID,
+		arg.UserID,
+		arg.Provider,
+		arg.ExternalID,
+		arg.Hostname,
+		arg.Status,
+		arg.LastUrl,
+		arg.LastToken,
+		arg.AuthToken,
+		arg.NotifierToken,
+		arg.AutoWake,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const upsertHost = `-- name: UpsertHost :exec

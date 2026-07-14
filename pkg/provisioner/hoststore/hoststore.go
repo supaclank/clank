@@ -24,6 +24,12 @@ const (
 	HostStatusRunning HostStatus = "running"
 	HostStatusStopped HostStatus = "stopped"
 	HostStatusError   HostStatus = "error"
+	// HostStatusProvisioning marks a row claimed by CreateHostIfAbsent
+	// before the host's infrastructure exists. The row is a TOKEN CLAIM,
+	// not a completion marker — provisioners walk their idempotent
+	// create steps regardless of this status, so a crashed provision is
+	// resumed by any later caller with no lease/expiry logic.
+	HostStatusProvisioning HostStatus = "provisioning"
 )
 
 // Host is the persistent record of a user's host across daemon restarts.
@@ -57,6 +63,18 @@ type Host struct {
 	AutoWake      bool
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
+
+	// ProviderMeta is a small provider-owned key→value bag for resource
+	// handles the provider can't derive (e.g. flymachines' server-
+	// assigned volume ID). Written ONLY through CASProviderMeta —
+	// UpsertHost never touches it — so concurrent provisioner instances
+	// can use it as a serialization point. If a second resource kind
+	// ever needs relational queries, promote this to a polymorphic
+	// host_resources table; until then a JSON column is the whole
+	// design. Usage metering must NOT read this — usage ledgers copy
+	// identifiers at observation time so billing history survives
+	// resource deletion.
+	ProviderMeta map[string]string
 }
 
 // ErrHostNotFound is returned by GetHostByUser/GetHostByID when no host
@@ -77,4 +95,24 @@ type HostStore interface {
 	UpsertHost(ctx context.Context, h Host) error
 	DeleteHostByID(ctx context.Context, id string) error
 	DeleteHostByUser(ctx context.Context, userID, provider string) error
+
+	// CreateHostIfAbsent atomically inserts h keyed on UNIQUE(user_id,
+	// provider) and returns the row that now exists: (h, true) when this
+	// call created it, or (the pre-existing row, false) when another
+	// caller — possibly another process — got there first. This is the
+	// cross-instance claim that keeps concurrent provisioners deriving
+	// identical machine configs: exactly one instance's generated tokens
+	// win; everyone else reuses the winner's row. The claimed row is a
+	// TOKEN CLAIM, not a completion marker — do not gate provisioning
+	// steps on it (a winner crashing mid-provision must be resumable by
+	// any later caller).
+	CreateHostIfAbsent(ctx context.Context, h Host) (Host, bool, error)
+
+	// CASProviderMeta atomically sets ProviderMeta[key] = newValue iff
+	// its current value equals oldValue (empty oldValue = key absent).
+	// Returns won=true when the write applied; on won=false, current
+	// holds the value that beat us. The serialization primitive for
+	// provider resources whose IDs are server-assigned (create-then-
+	// claim: losers delete their duplicate and adopt current).
+	CASProviderMeta(ctx context.Context, hostID, key, oldValue, newValue string) (won bool, current string, err error)
 }

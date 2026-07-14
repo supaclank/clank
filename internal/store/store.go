@@ -580,6 +580,21 @@ func (s *Store) migrate() error {
 		}
 		version = 32
 	}
+	if version < 33 {
+		// provider_meta: provider-owned resource handles the provider
+		// can't derive (e.g. flymachines' server-assigned volume ID).
+		// Written only via the CASProviderMeta compare-and-set so
+		// concurrent provisioner instances serialize resource claims on
+		// it. Mirrored in internal/store/schema/0001_hosts.sql.
+		_, err := s.db.Exec(`
+			ALTER TABLE hosts ADD COLUMN provider_meta TEXT NOT NULL DEFAULT '{}';
+			PRAGMA user_version = 33;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v33: %w", err)
+		}
+		version = 33
+	}
 	_ = version // suppress unused warning after last migration
 
 	return nil

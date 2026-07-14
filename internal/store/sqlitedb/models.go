@@ -28,6 +28,7 @@ type Host struct {
 	AuthToken     string
 	NotifierToken string
 	AutoWake      int64
+	ProviderMeta  string
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 }
