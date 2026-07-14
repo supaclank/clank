@@ -96,7 +96,7 @@ func TestConcurrentProvision_ConvergesWithoutSpuriousUpdate(t *testing.T) {
 		t.Errorf("machine updates during concurrent provision = %d, want 0 (an update RESTARTS the machine — the incident's outage amplifier)", updates)
 	}
 	if launches != 1 {
-		t.Errorf("successful machine launches = %d, want exactly 1", launches)
+		t.Fatalf("successful machine launches = %d, want exactly 1", launches)
 	}
 	if got := ff.volumeCount(appName); got != 1 {
 		t.Errorf("volumes on app after race = %d (creates=%d deletes=%d), want exactly 1", got, vCreates, vDeletes)
