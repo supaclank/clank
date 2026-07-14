@@ -3,14 +3,14 @@
 // hosts.
 //
 // A Provisioner is responsible for ensuring that a given user has
-// exactly one persistent host on its provider (Daytona sandbox, Fly.io
-// Sprite, k8s pod, …) and for surfacing the URL/token the gateway
+// exactly one persistent host on its provider (Fly.io Sprite, Fly
+// Machine, k8s pod, …) and for surfacing the URL/token the gateway
 // uses to reach it. Lifecycle is persistence-first: EnsureHost is
 // idempotent (get-or-create-or-wake), SuspendHost is cooperative
 // (compute-saving, state-preserving), and DestroyHost is the only
 // path that throws away workspace state.
 //
-// Concrete implementations live in subpackages: daytona, flysprites, local.
+// Concrete implementations live in subpackages: flysprites, flymachines, local.
 // Each returns the same HostRef shape so upper layers stay
 // provider-agnostic.
 package provisioner
@@ -24,9 +24,9 @@ import (
 
 // ErrUnsupported is returned by provisioners for capability methods
 // they don't implement. The preview-app feature uses this from
-// OpenInternalConn — daytona has no TCP-tunneling primitive
-// equivalent to Sprites' WSS proxy, so it surfaces ErrUnsupported and
-// the gateway returns 503 to mobile rather than a confusing 500.
+// OpenInternalConn — a provider without a TCP-tunneling primitive
+// equivalent to Sprites' WSS proxy surfaces ErrUnsupported and the
+// gateway returns 503 to mobile rather than a confusing 500.
 //
 // Wrap with %w so callers can `errors.Is(err, provisioner.ErrUnsupported)`.
 var ErrUnsupported = errors.New("provisioner: capability unsupported by this provider")
@@ -41,15 +41,15 @@ type HostRef struct {
 	// the caller to invoke SuspendHost or DestroyHost later.
 	HostID string
 
-	// URL is the base URL the gateway will proxy to. For Daytona this
-	// is the preview URL; for Sprites it is the public sprite URL; for
-	// the local-subprocess provider it is http://127.0.0.1:<port>.
+	// URL is the base URL the gateway will proxy to. For Sprites it is
+	// the public sprite URL; for the local-subprocess provider it is
+	// http://127.0.0.1:<port>.
 	URL string
 
 	// Transport is the fully-wired http.RoundTripper that injects
 	// every header required to reach this host: the universal
 	// capability-token (Authorization: Bearer) plus any provider-edge
-	// auth (e.g. Daytona's x-daytona-preview-token). Consumers
+	// auth (e.g. a provider-edge preview token). Consumers
 	// construct an HTTP client as `hostclient.NewHTTP(ref.URL,
 	// ref.Transport)` and stay agnostic to the auth chain shape.
 	//
@@ -65,7 +65,8 @@ type HostRef struct {
 
 	// AutoWake indicates the provider's URL wakes the underlying
 	// compute on incoming traffic without an explicit API call. True
-	// for Sprites; false for Daytona. The gateway uses this to decide
+	// for Sprites and Fly Machines (Flycast); false for the local
+	// subprocess. The gateway uses this to decide
 	// whether a probe failure means "stale URL, re-resolve" (false) or
 	// "edge will wake on retry" (true).
 	// todo(ae): Leaky abstraction. The provisioner should instead always implement auto-wake.
@@ -91,7 +92,7 @@ type Provisioner interface {
 	EnsureHost(ctx context.Context, userID string) (HostRef, error)
 
 	// SuspendHost issues a cooperative suspend on the underlying
-	// compute (Daytona stop, Sprite hibernate, etc.) so the user's
+	// compute (Sprite hibernate, Machine stop, etc.) so the user's
 	// workspace stops billing for compute. State is preserved; a
 	// subsequent EnsureHost wakes it.
 	//

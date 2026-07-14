@@ -18,11 +18,11 @@ func TestHosts_UpsertAndGet(t *testing.T) {
 	h := store.Host{
 		ID:         "host-1",
 		UserID:     "local",
-		Provider:   "daytona",
+		Provider:   "flymachines",
 		ExternalID: "sb-abc-123def456",
-		Hostname:   "daytona-123def456",
+		Hostname:   "flymachines-123def456",
 		Status:     store.HostStatusRunning,
-		LastURL:    "https://example.preview.daytona.app",
+		LastURL:    "https://example.preview.flymachines.app",
 		LastToken:  "tok",
 		AutoWake:   false,
 		CreatedAt:  now,
@@ -33,7 +33,7 @@ func TestHosts_UpsertAndGet(t *testing.T) {
 		t.Fatalf("UpsertHost: %v", err)
 	}
 
-	got, err := s.GetHostByUser(ctx, "local", "daytona")
+	got, err := s.GetHostByUser(ctx, "local", "flymachines")
 	if err != nil {
 		t.Fatalf("GetHostByUser: %v", err)
 	}
@@ -60,9 +60,9 @@ func TestHosts_UpsertReplacesOnConflict(t *testing.T) {
 	first := store.Host{
 		ID:         "host-1",
 		UserID:     "local",
-		Provider:   "daytona",
+		Provider:   "flymachines",
 		ExternalID: "sb-original",
-		Hostname:   "daytona-original",
+		Hostname:   "flymachines-original",
 		Status:     store.HostStatusRunning,
 		CreatedAt:  now,
 		UpdatedAt:  now,
@@ -79,9 +79,9 @@ func TestHosts_UpsertReplacesOnConflict(t *testing.T) {
 	updated := store.Host{
 		ID:         "host-1",
 		UserID:     "local",
-		Provider:   "daytona",
+		Provider:   "flymachines",
 		ExternalID: "sb-new",
-		Hostname:   "daytona-new",
+		Hostname:   "flymachines-new",
 		Status:     store.HostStatusStopped,
 		LastURL:    "https://new.preview",
 		CreatedAt:  later, // ignored on update
@@ -91,7 +91,7 @@ func TestHosts_UpsertReplacesOnConflict(t *testing.T) {
 		t.Fatalf("second UpsertHost: %v", err)
 	}
 
-	got, err := s.GetHostByUser(ctx, "local", "daytona")
+	got, err := s.GetHostByUser(ctx, "local", "flymachines")
 	if err != nil {
 		t.Fatalf("GetHostByUser: %v", err)
 	}
@@ -120,9 +120,9 @@ func TestHosts_UpsertConflictDifferentIDIsRejectedOrMerged(t *testing.T) {
 	first := store.Host{
 		ID:         "host-1",
 		UserID:     "local",
-		Provider:   "daytona",
+		Provider:   "flymachines",
 		ExternalID: "sb-1",
-		Hostname:   "daytona-1",
+		Hostname:   "flymachines-1",
 		Status:     store.HostStatusRunning,
 		CreatedAt:  now,
 		UpdatedAt:  now,
@@ -141,7 +141,7 @@ func TestHosts_UpsertConflictDifferentIDIsRejectedOrMerged(t *testing.T) {
 		t.Fatalf("second UpsertHost: %v", err)
 	}
 
-	got, err := s.GetHostByUser(ctx, "local", "daytona")
+	got, err := s.GetHostByUser(ctx, "local", "flymachines")
 	if err != nil {
 		t.Fatalf("GetHostByUser: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestHosts_GetByUser_NotFound(t *testing.T) {
 	s := mustOpen(t, tempDBPath(t))
 	ctx := context.Background()
 
-	_, err := s.GetHostByUser(ctx, "local", "daytona")
+	_, err := s.GetHostByUser(ctx, "local", "flymachines")
 	if !errors.Is(err, store.ErrHostNotFound) {
 		t.Errorf("want ErrHostNotFound, got %v", err)
 	}
@@ -170,21 +170,21 @@ func TestHosts_DifferentProviderCoexists(t *testing.T) {
 	ctx := context.Background()
 
 	now := time.Now().Truncate(time.Second)
-	dt := store.Host{ID: "h-dt", UserID: "local", Provider: "daytona", ExternalID: "sb-dt", Hostname: "daytona-dt", Status: store.HostStatusRunning, CreatedAt: now, UpdatedAt: now}
+	dt := store.Host{ID: "h-dt", UserID: "local", Provider: "flymachines", ExternalID: "sb-dt", Hostname: "flymachines-dt", Status: store.HostStatusRunning, CreatedAt: now, UpdatedAt: now}
 	fly := store.Host{ID: "h-fly", UserID: "local", Provider: "flysprites", ExternalID: "sprite-x", Hostname: "flysprites-x", Status: store.HostStatusRunning, AutoWake: true, CreatedAt: now, UpdatedAt: now}
 	if err := s.UpsertHost(ctx, dt); err != nil {
-		t.Fatalf("upsert daytona: %v", err)
+		t.Fatalf("upsert flymachines: %v", err)
 	}
 	if err := s.UpsertHost(ctx, fly); err != nil {
 		t.Fatalf("upsert flysprites: %v", err)
 	}
 
-	gotDT, err := s.GetHostByUser(ctx, "local", "daytona")
+	gotDT, err := s.GetHostByUser(ctx, "local", "flymachines")
 	if err != nil {
-		t.Fatalf("get daytona: %v", err)
+		t.Fatalf("get flymachines: %v", err)
 	}
 	if gotDT.ID != "h-dt" {
-		t.Errorf("daytona host id: got %q, want h-dt", gotDT.ID)
+		t.Errorf("flymachines host id: got %q, want h-dt", gotDT.ID)
 	}
 	gotFly, err := s.GetHostByUser(ctx, "local", "flysprites")
 	if err != nil {
@@ -204,7 +204,7 @@ func TestHosts_Delete(t *testing.T) {
 	ctx := context.Background()
 
 	now := time.Now().Truncate(time.Second)
-	h := store.Host{ID: "host-1", UserID: "local", Provider: "daytona", ExternalID: "sb", Hostname: "daytona-x", Status: store.HostStatusRunning, CreatedAt: now, UpdatedAt: now}
+	h := store.Host{ID: "host-1", UserID: "local", Provider: "flymachines", ExternalID: "sb", Hostname: "flymachines-x", Status: store.HostStatusRunning, CreatedAt: now, UpdatedAt: now}
 	if err := s.UpsertHost(ctx, h); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestHosts_Delete(t *testing.T) {
 	if err := s.DeleteHostByID(ctx, "host-1"); err != nil {
 		t.Fatalf("delete by id: %v", err)
 	}
-	if _, err := s.GetHostByUser(ctx, "local", "daytona"); !errors.Is(err, store.ErrHostNotFound) {
+	if _, err := s.GetHostByUser(ctx, "local", "flymachines"); !errors.Is(err, store.ErrHostNotFound) {
 		t.Errorf("after delete: want ErrHostNotFound, got %v", err)
 	}
 
@@ -225,10 +225,10 @@ func TestHosts_Delete(t *testing.T) {
 	if err := s.UpsertHost(ctx, h); err != nil {
 		t.Fatalf("re-upsert: %v", err)
 	}
-	if err := s.DeleteHostByUser(ctx, "local", "daytona"); err != nil {
+	if err := s.DeleteHostByUser(ctx, "local", "flymachines"); err != nil {
 		t.Fatalf("delete by user: %v", err)
 	}
-	if _, err := s.GetHostByUser(ctx, "local", "daytona"); !errors.Is(err, store.ErrHostNotFound) {
+	if _, err := s.GetHostByUser(ctx, "local", "flymachines"); !errors.Is(err, store.ErrHostNotFound) {
 		t.Errorf("after delete-by-user: want ErrHostNotFound, got %v", err)
 	}
 }
@@ -240,7 +240,7 @@ func TestHosts_PersistsAcrossReopen(t *testing.T) {
 
 	{
 		s := mustOpen(t, path)
-		h := store.Host{ID: "h-persist", UserID: "local", Provider: "daytona", ExternalID: "sb-persist", Hostname: "daytona-persist", Status: store.HostStatusRunning, CreatedAt: now, UpdatedAt: now}
+		h := store.Host{ID: "h-persist", UserID: "local", Provider: "flymachines", ExternalID: "sb-persist", Hostname: "flymachines-persist", Status: store.HostStatusRunning, CreatedAt: now, UpdatedAt: now}
 		if err := s.UpsertHost(context.Background(), h); err != nil {
 			t.Fatalf("upsert: %v", err)
 		}
@@ -249,7 +249,7 @@ func TestHosts_PersistsAcrossReopen(t *testing.T) {
 
 	// Reopen the same DB; the row should still be there.
 	s := mustOpen(t, path)
-	got, err := s.GetHostByUser(context.Background(), "local", "daytona")
+	got, err := s.GetHostByUser(context.Background(), "local", "flymachines")
 	if err != nil {
 		t.Fatalf("get after reopen: %v", err)
 	}
@@ -267,8 +267,8 @@ func TestHosts_UpsertValidatesRequiredFields(t *testing.T) {
 		name string
 		h    store.Host
 	}{
-		{"missing-id", store.Host{UserID: "local", Provider: "daytona"}},
-		{"missing-user-id", store.Host{ID: "x", Provider: "daytona"}},
+		{"missing-id", store.Host{UserID: "local", Provider: "flymachines"}},
+		{"missing-user-id", store.Host{ID: "x", Provider: "flymachines"}},
 		{"missing-provider", store.Host{ID: "x", UserID: "local"}},
 	}
 	for _, c := range cases {

@@ -119,7 +119,7 @@ func (s *Store) DeleteHostByID(ctx context.Context, id string) error {
 
 // DeleteHostByUser removes the (user_id, provider) row, if any. Used
 // when the provisioner detects out-of-band deletion at the provider
-// (e.g. user nuked the sandbox via the Daytona dashboard) — clearing
+// (e.g. user nuked the sandbox via the provider dashboard) — clearing
 // our row lets the next EnsureHost create a fresh one.
 func (s *Store) DeleteHostByUser(ctx context.Context, userID, provider string) error {
 	return s.q.DeleteHostByUser(ctx, sqlitedb.DeleteHostByUserParams{

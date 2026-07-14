@@ -8,7 +8,7 @@ import (
 
 // PinnedOpencodeVersion is the opencode version clank ships against.
 // Bumping this constant is a deliberate, reviewable change — it
-// determines what every fly.io / daytona / local provisioner
+// determines what every fly.io / local provisioner
 // installs onto a sprite, AND what the laptop-side error message
 // suggests when versions drift.
 //

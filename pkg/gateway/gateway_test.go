@@ -314,7 +314,7 @@ func TestProxy_UsesHostRefTransport(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	// Custom transport that injects an X-Test-Header — simulates
-	// what Daytona's preview-token injector or Sprites' bearer
+	// what a provider's preview-token injector or Sprites' bearer
 	// injector do in production.
 	tr := &headerInjector{wrapped: http.DefaultTransport, key: "X-Test-Header", value: "from-transport"}
 
