@@ -62,8 +62,7 @@ The daemon is auto-started if not already running.`,
 	}
 
 	// Flags after the first positional belong to the child command
-	// (docker-run pattern): in `clank fix <command> --flag`, cobra
-	// must not eat --flag.
+	// (docker-run pattern): cobra must not eat flags inside <command>.
 	cmd.Flags().SetInterspersed(false)
 
 	cmd.Flags().StringVar(&backend, "backend", "", "Backend to use: opencode (default), claude")
