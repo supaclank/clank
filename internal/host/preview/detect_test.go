@@ -193,7 +193,7 @@ func TestExpoCmdTemplateBootstrap(t *testing.T) {
 		{"--no-save", "install must not touch package.json in the user's repo"},
 		{`rm -f bun.lock`, "migrated-lockfile cleanup (bun writes bun.lock from package-lock.json even under --no-save)"},
 		{"keep_lock", "pre-existing bun.lock guard — genuinely-bun repos keep their lockfile"},
-		{"expo start", "metro start present"},
+		{"exec bun expo start", "metro launched via the worktree-local bin bun just installed"},
 	} {
 		if !strings.Contains(cmd, c.want) {
 			t.Errorf("expoCmdTemplate missing %s: %q not found in shell command", c.desc, c.want)
@@ -204,6 +204,28 @@ func TestExpoCmdTemplateBootstrap(t *testing.T) {
 	// work-root location; guard against a regression.
 	if strings.Contains(cmd, "node_modules/.clank") {
 		t.Errorf("bootstrap marker must not live inside node_modules: %q", cmd)
+	}
+}
+
+// TestCmdTemplates_LaunchViaBun pins that every spawn recipe execs the
+// worktree-local bin via bun instead of npx: detection guarantees the dep
+// is declared and the bootstrap's `bun install` materializes its bin, so
+// an npx registry fetch at spawn time would only add latency, a network
+// dependency, and a prompt to suppress.
+func TestCmdTemplates_LaunchViaBun(t *testing.T) {
+	t.Parallel()
+	for name, tmpl := range map[string][]string{
+		"expo": expoCmdTemplate,
+		"vite": webCmdTemplate,
+		"next": nextCmdTemplate,
+	} {
+		cmd := tmpl[2]
+		if !strings.Contains(cmd, "exec bun ") {
+			t.Errorf("%s template must exec the dev server via bun: %q", name, cmd)
+		}
+		if strings.Contains(cmd, "npx") {
+			t.Errorf("%s template must not invoke npx: %q", name, cmd)
+		}
 	}
 }
 

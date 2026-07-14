@@ -17,7 +17,11 @@ import (
 // worktree must install before Metro can start. The install is a fast
 // no-op once node_modules is already present.
 //
-// bun is the installer only — Metro still runs under Node via `npx expo`.
+// bun installs and launches, but Metro still runs under Node: `bun expo`
+// executes the worktree-local expo bin (which `bun install` just
+// materialized — no registry fetch at spawn time), and bun respects its
+// `#!/usr/bin/env node` shebang. That matters: the preview shim rides
+// NODE_OPTIONS (see spawn.buildEnv), which only Node honors.
 // bun over npm because it hard-links node_modules from its global cache:
 // sibling worktrees of the same repo cost links instead of gigabytes of
 // small-file writes, which is what an I/O-constrained sprite needs (the
@@ -47,15 +51,14 @@ import (
 // shows live progress instead of a blind spinner.
 //
 // `exec` replaces the shell with Metro so signals + Setpgid target it
-// directly. `npx --yes` skips npx's install prompt. `--non-interactive`
-// tells Expo CLI to skip prompts; we deliberately do NOT set CI=true (Metro
-// reads CI and disables watch mode + HMR). EXPO_NO_DOTENV + npm_config_yes
-// are set in spawn.buildEnv. (V1 bootstrap; the long-term shape is a
-// per-repo clank.yaml bootstrap step — see doc.go.)
+// directly. `--non-interactive` tells Expo CLI to skip prompts; we
+// deliberately do NOT set CI=true (Metro reads CI and disables watch mode
+// + HMR). EXPO_NO_DOTENV is set in spawn.buildEnv. (V1 bootstrap; the
+// long-term shape is a per-repo clank.yaml bootstrap step — see doc.go.)
 //
 // Raw string (backticks) so the embedded shell double-quotes don't need
 // escaping.
-var expoCmdTemplate = bootstrapTemplate(`npx --yes expo start --port %d --non-interactive`)
+var expoCmdTemplate = bootstrapTemplate(`bun expo start --port %d --non-interactive`)
 
 // webCmdTemplate spawns Vite for a detected web project behind the same
 // bun-install bootstrap as Expo (same marker file on purpose: the marker
@@ -68,14 +71,14 @@ var expoCmdTemplate = bootstrapTemplate(`npx --yes expo start --port %d --non-in
 // observed on macOS — while probeReady and the webpreview proxy dial
 // IPv4 loopback. No --clearScreen wrangling needed: Vite only clears
 // when stdout is a TTY, and ours is the ring buffer.
-var webCmdTemplate = bootstrapTemplate(`npx --yes vite --port %d --strictPort --host 127.0.0.1`)
+var webCmdTemplate = bootstrapTemplate(`bun vite --port %d --strictPort --host 127.0.0.1`)
 
 // nextCmdTemplate spawns Next.js's own dev server. `-H 127.0.0.1` for
 // the same reason as Vite's --host (loopback parity with the probe and
 // proxy, and no LAN exposure); Next binds the exact -p port or exits,
 // so no strict-port wrangling is needed. The client flow is the same
 // KindWeb browser proxy — only the spawn recipe differs.
-var nextCmdTemplate = bootstrapTemplate(`npx --yes next dev -p %d -H 127.0.0.1`)
+var nextCmdTemplate = bootstrapTemplate(`bun next dev -p %d -H 127.0.0.1`)
 
 // bootstrapTemplate wraps a dev-server exec line in the self-healing
 // bun-install bootstrap documented on expoCmdTemplate. The returned argv

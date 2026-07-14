@@ -19,7 +19,7 @@ func configureProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// Graceful context-cancel: when the spawn context is canceled (readiness
 	// timeout, or the caller bailing out), SIGTERM the whole group so
-	// npm/Metro unwind cleanly instead of being SIGKILL'd mid-write — a
+	// bun/Metro unwind cleanly instead of being SIGKILL'd mid-write — a
 	// half-extracted node_modules is exactly the corruption we're guarding
 	// against. Go's WaitDelay then escalates to its default SIGKILL if the
 	// tree hasn't exited within the grace window.

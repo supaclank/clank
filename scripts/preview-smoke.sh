@@ -19,8 +19,9 @@
 #     and ultimately verified by a separate cloud-side smoke once
 #     the gateway is provisioned with a wildcard cert.
 #
-# Pre-reqs: node + npm/npx in PATH, a real Expo project at
-# CLANK_PREVIEW_SMOKE_DIR (env var, required), jq, curl.
+# Pre-reqs: node + bun in PATH (bun launches the local expo bin, Metro
+# runs under node), a real Expo project at CLANK_PREVIEW_SMOKE_DIR
+# (env var, required), jq, curl.
 
 set -euo pipefail
 
@@ -39,10 +40,10 @@ if [[ ! -f "${EXPO_DIR}/package.json" || ! -f "${EXPO_DIR}/app.json" ]]; then
   exit 1
 fi
 if [[ ! -d "${EXPO_DIR}/node_modules" ]]; then
-  echo "node_modules missing at ${EXPO_DIR} — run 'npm install' or 'bun install' first" >&2
+  echo "node_modules missing at ${EXPO_DIR} — run 'bun install' first" >&2
   exit 1
 fi
-for cmd in jq curl npx; do
+for cmd in jq curl bun node; do
   command -v "${cmd}" >/dev/null 2>&1 || { echo "missing: ${cmd}" >&2; exit 1; }
 done
 
