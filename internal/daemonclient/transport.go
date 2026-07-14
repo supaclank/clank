@@ -18,6 +18,19 @@ import (
 // HTTP request helpers used by all sub-clients. The wire format is
 // JSON-in/JSON-out with a small set of error-code conventions.
 
+// APIError is a structured error response from the daemon/gateway —
+// the {code, error} JSON body every hostmux error path writes. Error()
+// keeps the historical "daemon: <message>" shape; Code carries the
+// machine-readable classification (e.g. "no_preview") for errors.As
+// callers that need to branch on the kind rather than the prose.
+type APIError struct {
+	StatusCode int
+	Code       string
+	Message    string
+}
+
+func (e *APIError) Error() string { return "daemon: " + e.Message }
+
 func (c *Client) get(ctx context.Context, path string, out interface{}) error {
 	return c.do(ctx, "GET", path, nil, out)
 }
@@ -59,11 +72,12 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 	}
 
 	if resp.StatusCode >= 400 {
-		var errResp map[string]string
-		if json.Unmarshal(respBody, &errResp) == nil {
-			if msg, ok := errResp["error"]; ok {
-				return fmt.Errorf("daemon: %s", msg)
-			}
+		var errResp struct {
+			Code  string `json:"code"`
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error != "" {
+			return &APIError{StatusCode: resp.StatusCode, Code: errResp.Code, Message: errResp.Error}
 		}
 		return fmt.Errorf("daemon returned status %d: %s", resp.StatusCode, summarizeBody(resp.Header.Get("Content-Type"), respBody))
 	}

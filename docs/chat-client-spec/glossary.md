@@ -54,6 +54,8 @@ Terms as used in this spec.
   arrive **delayed**). On settle a client settles still-running tools terminally and suppresses
   any "done" affordance until the next send. See [INV-ABORT-SETTLE-TOOLS-001](08-invariants.md),
   [INV-ABORT-DONE-001](08-invariants.md).
-- **GitRef** — repo identity (`local_path`/`worktree_id`/`display_name`/`worktree_branch`).
+- **GitRef** — repo identity (`local_path`/`worktree_id`/`display_name`/`worktree_branch`),
+  plus `subdir` — the working directory relative to the repo root (`""` = root); identity
+  stays root-level, the session runs in the subdir.
 - **Reducer / projection** — the canonical state transition function and the pure view
   derived from state; the [core model](06-state-model.md).

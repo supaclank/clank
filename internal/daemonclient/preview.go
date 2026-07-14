@@ -1,6 +1,21 @@
 package daemonclient
 
-import "context"
+import (
+	"context"
+	"errors"
+	"fmt"
+)
+
+// ErrNotPreviewable mirrors the daemon's structured "no_preview" error:
+// the folder has no detectable Expo or Vite app (host-side
+// preview.ErrNotPreviewable). Callers gate user-facing "is this an
+// Expo or Vite project?" hints on errors.Is — other preview-start
+// failures (path resolution, spawn errors) are NOT this.
+var ErrNotPreviewable = errors.New("preview: project is not previewable")
+
+// codeNoPreview is the wire code hostmux writes for the host's
+// preview.ErrNotPreviewable (see hostmux.writePreviewError).
+const codeNoPreview = "no_preview"
 
 // PreviewClient is the worktree-scoped handle for the Expo/Metro dev-server
 // preview lifecycle. Routes proxy through the gateway to the owning host.
@@ -39,6 +54,10 @@ func (p *PreviewClient) Start(ctx context.Context, localPath string) (*PreviewSt
 	}
 	var s PreviewStatus
 	if err := p.c.post(ctx, "/worktrees/"+p.worktreeID+"/preview/start", body, &s); err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.Code == codeNoPreview {
+			return nil, fmt.Errorf("%w: %s", ErrNotPreviewable, apiErr.Message)
+		}
 		return nil, err
 	}
 	return &s, nil

@@ -1,11 +1,14 @@
 package preview
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/acksell/clank/internal/config"
 )
 
 // expoCmdTemplate is the argv that spawns Metro for a detected Expo
@@ -36,15 +39,17 @@ import (
 // postinstall scripts outside its trusted allowlist, which we want:
 // preview installs run unattended on the user's behalf.
 //
-// Self-healing bootstrap. A completion marker lives in the host work-root
-// — a sibling of the worktree, NEVER inside the user's repo:
-// ../.clank-preview-bootstrap/<worktree-id>.bun (the worktree is our cwd,
-// so `..` is the work-root and basename(pwd) is its id). It's written only
-// AFTER a successful install, so an interrupted prior run (marker absent)
-// forces a clean reinstall rather than trusting a half-extracted tree. The
-// installer-specific `.bun` suffix makes worktrees installed by the old
-// npm bootstrap (or a future different installer) reinstall cleanly once
-// instead of running one package manager over another's tree.
+// Self-healing bootstrap. A completion marker records "this workdir's
+// node_modules was installed by bun". It lives in the clank state dir
+// (<config.Dir()>/preview-bootstrap/, see bootstrapMarkerPath) — never
+// inside or next to the user's repo — and spawn injects its path via
+// $CLANK_PREVIEW_BOOTSTRAP_MARKER so the shell does no path assembly.
+// It's written only AFTER a successful install, so an interrupted prior
+// run (marker absent) forces a clean reinstall rather than trusting a
+// half-extracted tree. The installer-specific `.bun` suffix makes
+// workdirs installed by the old npm bootstrap (or a future different
+// installer) reinstall cleanly once instead of running one package
+// manager over another's tree.
 //
 // Install output is deliberately not silenced: it streams to the client
 // (ring buffer → /preview/logs) so the multi-minute first-run install
@@ -81,14 +86,41 @@ var webCmdTemplate = bootstrapTemplate(`bun vite --port %d --strictPort --host 1
 // KindWeb browser proxy — only the spawn recipe differs.
 var nextCmdTemplate = bootstrapTemplate(`bun next dev -p %d -H 127.0.0.1`)
 
+// bootstrapMarkerEnv carries the bootstrap completion-marker path from
+// spawn into the bootstrapTemplate shell. Env rather than in-shell path
+// assembly: the Go side owns the location (config dir, hash key) and
+// the value needs no shell quoting.
+const bootstrapMarkerEnv = "CLANK_PREVIEW_BOOTSTRAP_MARKER"
+
+// bootstrapMarkerPath returns the completion-marker file for workDir's
+// bun bootstrap. Lives under the clank state dir so nothing is written
+// inside — or next to — the user's repo; keyed by the workdir's
+// basename plus a hash of its absolute path so same-named folders
+// (a monorepo's web-app/, sibling clones) can't collide.
+func bootstrapMarkerPath(workDir string) (string, error) {
+	dir, err := config.Dir()
+	if err != nil {
+		return "", fmt.Errorf("resolve clank dir: %w", err)
+	}
+	abs, err := filepath.Abs(workDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve workdir %q: %w", workDir, err)
+	}
+	sum := sha256.Sum256([]byte(abs))
+	name := fmt.Sprintf("%s-%x.bun", filepath.Base(abs), sum[:6])
+	return filepath.Join(dir, "preview-bootstrap", name), nil
+}
+
 // bootstrapTemplate wraps a dev-server exec line in the self-healing
 // bun-install bootstrap documented on expoCmdTemplate. The returned argv
 // is a Spec.CmdTemplate; a "%d" placeholder inside execLine survives
-// verbatim for renderArgs to substitute.
+// verbatim for renderArgs to substitute. Fails fast when the marker env
+// is missing — a caller bug, never a reason to guess a location.
 func bootstrapTemplate(execLine string) []string {
 	return []string{
 		"sh", "-c",
-		`m="../.clank-preview-bootstrap/$(basename "$(pwd)").bun"; ` +
+		`m="$` + bootstrapMarkerEnv + `"; ` +
+			`[ -n "$m" ] || { echo "` + bootstrapMarkerEnv + ` is not set" >&2; exit 1; }; ` +
 			`[ -f "$m" ] || rm -rf node_modules; ` +
 			`keep_lock=; [ -f bun.lock ] && keep_lock=1; ` +
 			`bun install --no-save; err=$?; ` +

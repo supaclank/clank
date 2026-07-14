@@ -27,7 +27,9 @@ CREATE TABLE sessions (
     draft           TEXT NOT NULL DEFAULT '',
     created_at      INTEGER NOT NULL,                  -- unix millis
     updated_at      INTEGER NOT NULL,                  -- unix millis
-    last_read_at    INTEGER                            -- unix millis, null = unread
+    last_read_at    INTEGER,                           -- unix millis, null = unread
+    subdir          TEXT NOT NULL DEFAULT '',          -- GitRef.Subdir: working dir relative to project_dir; '' = root
+    display_name    TEXT NOT NULL DEFAULT ''           -- GitRef.DisplayName: label; project_dir is root-normalized so not re-derivable
 );
 
 CREATE INDEX idx_sessions_external_id ON sessions(external_id);

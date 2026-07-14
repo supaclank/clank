@@ -32,8 +32,9 @@ import (
 // doesn't require re-creating it).
 //
 // Resolution precedence on the host (see host.Service.workDirFor):
-//  1. If LocalPath is set and points at a valid repo on this host →
-//     use it directly.
+//  1. If LocalPath is set and points at — or inside — a valid repo on
+//     this host → use it directly (the repo root for git/identity, the
+//     pointed-at directory as the cwd).
 //  2. Else if WorktreeID is set → use ~/work/<WorktreeID>/. Error if
 //     that directory doesn't exist (the worktree must have been
 //     created on this host first; we deliberately do not silently
@@ -45,17 +46,28 @@ import (
 // originating client (typically filepath.Base of LocalPath). UIs and
 // logs use it; if empty, callers derive a label from the locator
 // fields.
+//
+// Subdir optionally narrows the *working* directory to a subdirectory
+// of the repo, relative to the locator's root (LocalPath, the
+// ~/work/<WorktreeID> worktree, or the WorktreeBranch worktree).
+// Sessions and previews run there — e.g. a monorepo's web-app/ — while
+// repo identity (RepoKey, persisted project_dir, branch/worktree ops)
+// stays at the root. Hosts normalize a LocalPath that points inside a
+// repo into {LocalPath: root, Subdir: rel} before persisting, so
+// clients may simply send the folder they're in as LocalPath.
 type GitRef struct {
 	LocalPath      string `json:"local_path,omitempty"`
 	WorktreeID     string `json:"worktree_id,omitempty"`
 	DisplayName    string `json:"display_name,omitempty"`
 	WorktreeBranch string `json:"worktree_branch,omitempty"`
+	Subdir         string `json:"subdir,omitempty"`
 }
 
 // Validate enforces: at least one of LocalPath / WorktreeID is set,
-// LocalPath (when set) is absolute. WorktreeID format is not asserted
-// here — the host's lookup of ~/work/<WorktreeID>/ catches invalid
-// values via the underlying validRepoSlug check.
+// LocalPath (when set) is absolute, Subdir (when set) is a local
+// relative path (no absolute, no ".."-escape). WorktreeID format is
+// not asserted here — the host's lookup of ~/work/<WorktreeID>/
+// catches invalid values via the underlying validRepoSlug check.
 func (g GitRef) Validate() error {
 	hasLocal := strings.TrimSpace(g.LocalPath) != ""
 	hasWorktree := strings.TrimSpace(g.WorktreeID) != ""
@@ -64,6 +76,11 @@ func (g GitRef) Validate() error {
 	}
 	if hasLocal && !filepath.IsAbs(g.LocalPath) {
 		return fmt.Errorf("local_path must be absolute, got %q", g.LocalPath)
+	}
+	// "." is rejected on purpose: the repo root is spelled "" here, and
+	// one spelling per location keeps identity comparisons trivial.
+	if g.Subdir != "" && (g.Subdir == "." || !filepath.IsLocal(g.Subdir)) {
+		return fmt.Errorf("subdir must be a relative path inside the repo, got %q", g.Subdir)
 	}
 	return nil
 }
@@ -76,6 +93,10 @@ func (g GitRef) Validate() error {
 // two clients on different hosts referring to the same project share a
 // WorktreeID but have different LocalPaths. Falls back to LocalPath
 // for refs with no WorktreeID. Returns "" for invalid refs.
+//
+// Subdir is deliberately excluded: sessions in different subdirectories
+// of one repo share the repo's identity (agent catalogs and sidebar
+// grouping are repo-level).
 func RepoKey(g GitRef) string {
 	switch {
 	case g.WorktreeID != "":

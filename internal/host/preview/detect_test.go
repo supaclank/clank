@@ -174,10 +174,47 @@ func TestDetect(t *testing.T) {
 	}
 }
 
+// TestDetect_MonorepoSubdir pins that Detect is directory-precise: a
+// monorepo root without a dev-server dep is not previewable while its
+// web-app/ subdir is — the contract subdir preview start relies on
+// (PreviewStartLocal hands Detect the requested subdir, not the root).
+func TestDetect_MonorepoSubdir(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	files := map[string]string{
+		"package.json":         `{"dependencies":{"react":"^18"}}`,
+		"web-app/package.json": `{"devDependencies":{"vite":"^6.0.0"}}`,
+	}
+	for rel, content := range files {
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	rootSpec, err := Detect(root)
+	if err != nil {
+		t.Fatalf("Detect(root): %v", err)
+	}
+	if rootSpec != nil {
+		t.Errorf("Detect(root) = %+v, want nil (react-only root is not previewable)", rootSpec)
+	}
+	subSpec, err := Detect(filepath.Join(root, "web-app"))
+	if err != nil {
+		t.Fatalf("Detect(web-app): %v", err)
+	}
+	if subSpec == nil || subSpec.Kind != KindWeb {
+		t.Errorf("Detect(web-app) = %+v, want KindWeb", subSpec)
+	}
+}
+
 // TestExpoCmdTemplateBootstrap pins the self-healing bootstrap logic in
 // expoCmdTemplate so a future edit can't silently drop the clean-reinstall
 // guard, the completion marker, or — critically — move the marker back
-// inside the user's repo.
+// inside (or next to) the user's repo by assembling a path in-shell.
 func TestExpoCmdTemplateBootstrap(t *testing.T) {
 	t.Parallel()
 	// The template is a sh -c invocation; the shell command is in index 2.
@@ -186,8 +223,8 @@ func TestExpoCmdTemplateBootstrap(t *testing.T) {
 	}
 	cmd := expoCmdTemplate[2]
 	for _, c := range []struct{ want, desc string }{
-		{"../.clank-preview-bootstrap/", "completion marker in the host work-root (not the repo)"},
-		{`.bun"`, "installer-specific marker suffix (forces clean reinstall on installer change)"},
+		{`m="$` + bootstrapMarkerEnv + `"`, "completion marker path injected via env — Go owns the location"},
+		{`[ -n "$m" ] ||`, "fail fast when the marker env is missing"},
 		{"rm -rf node_modules", "clean-reinstall on missing marker"},
 		{"bun install", "install step present"},
 		{"--no-save", "install must not touch package.json in the user's repo"},
@@ -199,11 +236,85 @@ func TestExpoCmdTemplateBootstrap(t *testing.T) {
 			t.Errorf("expoCmdTemplate missing %s: %q not found in shell command", c.desc, c.want)
 		}
 	}
-	// The marker must never live inside the user's repo (node_modules or any
-	// in-tree path) — keeping the repo clean is the whole point of the
-	// work-root location; guard against a regression.
-	if strings.Contains(cmd, "node_modules/.clank") {
-		t.Errorf("bootstrap marker must not live inside node_modules: %q", cmd)
+	// The marker location is Go's job (bootstrapMarkerPath); any relative
+	// path assembled in-shell would land inside or next to the user's repo.
+	if strings.Contains(cmd, "../.clank-preview-bootstrap") {
+		t.Errorf("bootstrap marker must not be assembled relative to the workdir: %q", cmd)
+	}
+}
+
+// TestBootstrapMarkerPath pins the marker location contract: under the
+// clank state dir (never inside or next to the user's repo — laptop
+// `clank preview` runs against the user's own folders), keyed uniquely
+// per absolute workdir so same-named folders can't collide.
+func TestBootstrapMarkerPath(t *testing.T) {
+	t.Setenv("CLANK_DIR", t.TempDir())
+
+	a, err := bootstrapMarkerPath("/repos/one/web-app")
+	if err != nil {
+		t.Fatalf("bootstrapMarkerPath: %v", err)
+	}
+	b, err := bootstrapMarkerPath("/repos/two/web-app")
+	if err != nil {
+		t.Fatalf("bootstrapMarkerPath: %v", err)
+	}
+	wantDir := filepath.Join(os.Getenv("CLANK_DIR"), "preview-bootstrap")
+	if filepath.Dir(a) != wantDir {
+		t.Errorf("marker dir = %q, want %q", filepath.Dir(a), wantDir)
+	}
+	if a == b {
+		t.Errorf("same-named workdirs must get distinct markers, both = %q", a)
+	}
+	if !strings.HasSuffix(a, ".bun") {
+		t.Errorf("marker %q missing installer-specific .bun suffix", a)
+	}
+	// Deterministic: same workdir → same marker across spawns.
+	a2, err := bootstrapMarkerPath("/repos/one/web-app")
+	if err != nil {
+		t.Fatalf("bootstrapMarkerPath: %v", err)
+	}
+	if a != a2 {
+		t.Errorf("marker not deterministic: %q vs %q", a, a2)
+	}
+}
+
+// TestExpoCmdTemplateBootstrap_WritesMarkerToConfiguredPath runs the real
+// shell snippet with a fake succeeding bun and asserts the completion
+// marker lands exactly at $CLANK_PREVIEW_BOOTSTRAP_MARKER — nothing is
+// written inside or next to the workdir.
+func TestExpoCmdTemplateBootstrap_WritesMarkerToConfiguredPath(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	worktree := filepath.Join(root, "worktree")
+	if err := os.Mkdir(worktree, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	marker := filepath.Join(t.TempDir(), "preview-bootstrap", "worktree-abc.bun")
+
+	bin := t.TempDir()
+	// One fake bun serves both roles: `bun install` succeeds, then the
+	// `exec bun expo start` line terminates instantly.
+	if err := os.WriteFile(filepath.Join(bin, "bun"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake bun: %v", err)
+	}
+
+	cmd := exec.Command("sh", "-c", strings.ReplaceAll(expoCmdTemplate[2], "%d", "0"))
+	cmd.Dir = worktree
+	cmd.Env = []string{"PATH=" + bin + ":" + os.Getenv("PATH"), bootstrapMarkerEnv + "=" + marker}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("bootstrap: %v\n%s", err, out)
+	}
+
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("marker: want written at configured path after successful install, stat err = %v", err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("read root: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "worktree" {
+		t.Errorf("bootstrap wrote next to the workdir: %v", entries)
 	}
 }
 
@@ -256,11 +367,16 @@ func TestExpoCmdTemplateBootstrap_CleansMigratedLockOnInstallFailure(t *testing.
 		t.Fatalf("write fake bun: %v", err)
 	}
 
+	marker := filepath.Join(t.TempDir(), "preview-bootstrap", "worktree.bun")
 	cmd := exec.Command("sh", "-c", strings.ReplaceAll(expoCmdTemplate[2], "%d", "0"))
 	cmd.Dir = worktree
 	// keep_lock=leaked simulates the uninitialized-variable half of the bug:
 	// with the fix's explicit "keep_lock=;" reset, this must not survive.
-	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "keep_lock=leaked")
+	cmd.Env = append(os.Environ(),
+		"PATH="+bin+":"+os.Getenv("PATH"),
+		"keep_lock=leaked",
+		bootstrapMarkerEnv+"="+marker,
+	)
 
 	if err := cmd.Run(); err == nil {
 		t.Fatalf("bootstrap: want failure (fake bun install fails), got success")
@@ -268,7 +384,7 @@ func TestExpoCmdTemplateBootstrap_CleansMigratedLockOnInstallFailure(t *testing.
 	if _, err := os.Stat(filepath.Join(worktree, "bun.lock")); !os.IsNotExist(err) {
 		t.Errorf("bun.lock: want removed after a failed install, stat err = %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".clank-preview-bootstrap")); !os.IsNotExist(err) {
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Errorf("completion marker: must not be written after a failed install")
 	}
 }

@@ -137,7 +137,7 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 	// Resolve the worktree to a working directory. Reuses the same
 	// resolver every other Service method uses — keeps the WorktreeID →
 	// path mapping in one place.
-	workdir, err := s.workDirFor(ctx, agent.GitRef{WorktreeID: worktreeID})
+	workdir, err := s.repoRootFor(agent.GitRef{WorktreeID: worktreeID})
 	if err != nil {
 		return CreatePRResult{}, fmt.Errorf("resolve worktree: %w", err)
 	}
@@ -283,8 +283,8 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 //
 // Cheap: no fetch, no network calls, no GitHub API requests. Just
 // resolves the worktree, reads HEAD, classifies origin.
-func (s *Service) PreviewPR(ctx context.Context, worktreeID string) (PreviewPRResult, error) {
-	workdir, err := s.workDirFor(ctx, agent.GitRef{WorktreeID: worktreeID})
+func (s *Service) PreviewPR(_ context.Context, worktreeID string) (PreviewPRResult, error) {
+	workdir, err := s.repoRootFor(agent.GitRef{WorktreeID: worktreeID})
 	if err != nil {
 		return PreviewPRResult{}, fmt.Errorf("resolve worktree: %w", err)
 	}
