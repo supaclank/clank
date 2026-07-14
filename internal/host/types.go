@@ -12,7 +12,7 @@ import (
 // HostLocal is the canonical hostname for the laptop's supervised
 // clank-host child. The TUI defaults to this until the host-selection
 // UX lands. Hostnames are arbitrary strings — short, human-readable
-// slugs ("local", "machine-abc123") chosen by whoever registers the
+// slugs ("local", "flymachines-abc123") chosen by whoever registers the
 // Host. The Hub treats them as opaque keys.
 const HostLocal = "local"
 

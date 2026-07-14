@@ -41,9 +41,9 @@ type HostRef struct {
 	// the caller to invoke SuspendHost or DestroyHost later.
 	HostID string
 
-	// URL is the base URL the gateway will proxy to. For Sprites it is
-	// the public sprite URL; for the local-subprocess provider it is
-	// http://127.0.0.1:<port>.
+	// URL is the base URL the gateway will proxy to. For Sprites and
+	// Fly Machines it is the public host URL; for the local-subprocess
+	// provider it is http://127.0.0.1:<port>.
 	URL string
 
 	// Transport is the fully-wired http.RoundTripper that injects
