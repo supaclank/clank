@@ -31,7 +31,7 @@ func fixCmd() *cobra.Command {
 		Long: `Start an agent session that runs the given command, monitors its
 output, and debugs any failure — without opening the TUI:
 
-  clank fix npx expo run:android --device
+  clank fix bun expo run:android --device
 
 Flags after the command belong to the command; use '--' to be explicit.
 The session runs in the background; run 'clank' to open it.
@@ -62,7 +62,7 @@ The daemon is auto-started if not already running.`,
 	}
 
 	// Flags after the first positional belong to the child command
-	// (docker-run pattern): `clank fix npx expo run:android --device`
+	// (docker-run pattern): `clank fix bun expo run:android --device`
 	// must not have cobra eat --device.
 	cmd.Flags().SetInterspersed(false)
 
