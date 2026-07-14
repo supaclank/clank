@@ -219,6 +219,9 @@ func TestCmdTemplates_LaunchViaBun(t *testing.T) {
 		"vite": webCmdTemplate,
 		"next": nextCmdTemplate,
 	} {
+		if len(tmpl) < 3 {
+			t.Fatalf("%s template len = %d, want ≥ 3 (sh -c <cmd>)", name, len(tmpl))
+		}
 		cmd := tmpl[2]
 		if !strings.Contains(cmd, "exec bun ") {
 			t.Errorf("%s template must exec the dev server via bun: %q", name, cmd)

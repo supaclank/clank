@@ -21,7 +21,7 @@
 #
 # Pre-reqs: node + bun in PATH (bun launches the local expo bin, Metro
 # runs under node), a real Expo project at CLANK_PREVIEW_SMOKE_DIR
-# (env var, required), jq, curl.
+# (env var, required), jq, curl, go, grep.
 
 set -euo pipefail
 
@@ -43,7 +43,7 @@ if [[ ! -d "${EXPO_DIR}/node_modules" ]]; then
   echo "node_modules missing at ${EXPO_DIR} — run 'bun install' first" >&2
   exit 1
 fi
-for cmd in jq curl bun node; do
+for cmd in jq curl bun node go grep; do
   command -v "${cmd}" >/dev/null 2>&1 || { echo "missing: ${cmd}" >&2; exit 1; }
 done
 

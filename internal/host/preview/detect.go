@@ -50,8 +50,9 @@ import (
 // (ring buffer → /preview/logs) so the multi-minute first-run install
 // shows live progress instead of a blind spinner.
 //
-// `exec` replaces the shell with Metro so signals + Setpgid target it
-// directly. `--non-interactive` tells Expo CLI to skip prompts; we
+// `exec` replaces the shell with bun (which then reaches Metro via its
+// node shebang) so signals + Setpgid target the whole tree directly.
+// `--non-interactive` tells Expo CLI to skip prompts; we
 // deliberately do NOT set CI=true (Metro reads CI and disables watch mode
 // + HMR). EXPO_NO_DOTENV is set in spawn.buildEnv. (V1 bootstrap; the
 // long-term shape is a per-repo clank.yaml bootstrap step — see doc.go.)
