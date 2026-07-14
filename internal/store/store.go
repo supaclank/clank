@@ -258,9 +258,9 @@ func (s *Store) migrate() error {
 	if version < 18 {
 		// auth_token: clank-host's bearer-token, checked by the
 		// require-bearer middleware on every HTTP request. Universal
-		// across providers (a provider-edge preview-token may stack on
-		// top of last_token; Sprites use it as the only auth layer).
-		// See PR 2 of the persistent-host roadmap.
+		// across providers: it layers on top of any provider-edge
+		// preview-token stored in last_token; Sprites use it as the
+		// only auth layer. See PR 2 of the persistent-host roadmap.
 		//
 		// (Renamed from cap_token to auth_token in v19 — see below.
 		// This migration uses the post-rename name so installs that

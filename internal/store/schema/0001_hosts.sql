@@ -18,9 +18,10 @@ CREATE TABLE hosts (
     last_token  TEXT NOT NULL DEFAULT '',
     -- auth_token: clank-host's own bearer token, checked by the
     -- require-bearer middleware on every HTTP request. Universal
-    -- across providers (a provider-edge preview-token may stack on top
-    -- of last_token; Sprites use it as the only auth layer). Stable across
-    -- stop/resume — baked into the sandbox/sprite at create time.
+    -- across providers: it layers on top of any provider-edge
+    -- preview-token stored in last_token; Sprites use it as the only
+    -- auth layer. Stable across stop/resume — baked into the
+    -- sandbox/sprite at create time.
     auth_token  TEXT NOT NULL DEFAULT '',
     -- notifier_token: the per-host bearer credential clank-host sends
     -- *outbound* on notifier webhook calls back to clankd. The

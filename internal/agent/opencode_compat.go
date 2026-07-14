@@ -8,9 +8,9 @@ import (
 
 // PinnedOpencodeVersion is the opencode version clank ships against.
 // Bumping this constant is a deliberate, reviewable change — it
-// determines what every fly.io / local provisioner
-// installs onto a sprite, AND what the laptop-side error message
-// suggests when versions drift.
+// determines what every fly.io / local provisioner installs onto a
+// host (and what `clank-host print-pins` reports), AND what the
+// laptop-side error message suggests when versions drift.
 //
 // Why pin: opencode's export/import schema is forward-incompatible
 // across minor versions (we lived through the 1.3 → 1.14 diff
