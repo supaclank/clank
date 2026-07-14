@@ -173,11 +173,9 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 		return provisioner.HostRef{}, fmt.Errorf("machine %s in app %s never reached ready: %w", c.machineID, c.appName, err)
 	}
 
-	hostID, err := p.persistRow(ctx, userID, c, tokens)
-	if err != nil {
+	if err := p.persistRow(ctx, userID, c, tokens); err != nil {
 		return provisioner.HostRef{}, fmt.Errorf("persist host row: %w", err)
 	}
-	c.hostID = hostID
 
 	p.cacheSet(userID, c)
 	return p.refToHost(c), nil
@@ -195,46 +193,27 @@ func (p *Provisioner) refToHost(c *cachedHost) provisioner.HostRef {
 }
 
 // resolveOrCreate returns the user's app/machine/volume, creating any
-// missing piece. Every step is idempotent (get-or-create) so a
-// half-provisioned tenant self-heals on the next call.
+// missing piece. The host row is CLAIMED FIRST (claimHostRow) so every
+// concurrent instance — in-process or across gateway machines — derives
+// identical tokens and machine configs from the same DB state; the
+// ensure* walk below is idempotent (get-or-create), so a half-
+// provisioned tenant self-heals on the next call, including one whose
+// claimer crashed mid-provision. An app deleted out-of-band is simply
+// recreated by ensureApp under the row's ExternalID — no row-deleting
+// "heal" (a fresh claim's not-yet-created app is indistinguishable from
+// a stale one, and deleting the row would race the claim winner).
 func (p *Provisioner) resolveOrCreate(ctx context.Context, userID string) (*cachedHost, hostTokens, error) {
-	appName := appNameFor(p.opts.AppNamePrefix, userID)
-	tokens := hostTokens{}
-
 	row, err := p.store.GetHostByUser(ctx, userID, Provider)
-	switch {
-	case err == nil:
-		// ExternalID is the source of truth for the actual app name —
-		// never re-derive (prefix changes, name-collision suffixes).
-		appName = row.ExternalID
-		tokens = hostTokens{auth: row.AuthToken, notifier: row.NotifierToken}
-		if _, getErr := p.flaps.GetApp(ctx, appName); getErr != nil {
-			if !isNotFound(getErr) {
-				return nil, hostTokens{}, fmt.Errorf("get app %s: %w", appName, getErr)
-			}
-			p.log.Printf("flymachines: app %s for user %s gone upstream; recreating", appName, userID)
-			if delErr := p.store.DeleteHostByUser(ctx, userID, Provider); delErr != nil {
-				p.log.Printf("flymachines: clear stale row: %v", delErr)
-			}
-			appName = appNameFor(p.opts.AppNamePrefix, userID)
-			tokens = hostTokens{}
-		}
-	case errors.Is(err, hoststore.ErrHostNotFound):
-		// cold create below
-	default:
-		return nil, hostTokens{}, fmt.Errorf("look up host: %w", err)
+	if errors.Is(err, hoststore.ErrHostNotFound) {
+		row, err = p.claimHostRow(ctx, userID)
 	}
-
-	if tokens.auth == "" {
-		if tokens.auth, err = generateAuthToken(); err != nil {
-			return nil, hostTokens{}, fmt.Errorf("generate auth-token: %w", err)
-		}
+	if err != nil {
+		return nil, hostTokens{}, fmt.Errorf("resolve host row: %w", err)
 	}
-	if tokens.notifier == "" {
-		if tokens.notifier, err = generateNotifierToken(); err != nil {
-			return nil, hostTokens{}, fmt.Errorf("generate notifier-token: %w", err)
-		}
-	}
+	// ExternalID is the source of truth for the actual app name —
+	// never re-derive (prefix changes, name-collision suffixes).
+	appName := row.ExternalID
+	tokens := hostTokens{auth: row.AuthToken, notifier: row.NotifierToken}
 
 	if err := p.ensureApp(ctx, appName); err != nil {
 		return nil, hostTokens{}, err
@@ -243,7 +222,7 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID string) (*cach
 	if err != nil {
 		return nil, hostTokens{}, err
 	}
-	volumeID, err := p.ensureVolume(ctx, appName)
+	volumeID, err := p.ensureVolume(ctx, row)
 	if err != nil {
 		return nil, hostTokens{}, err
 	}
@@ -256,9 +235,55 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID string) (*cach
 		appName:   appName,
 		machineID: machineID,
 		volumeID:  volumeID,
+		hostID:    row.ID,
 		hostname:  hostnameFor(appName),
 		url:       fmt.Sprintf("http://[%s]:%d", flycastIP, HostPort),
 	}, tokens, nil
+}
+
+// claimHostRow generates candidate tokens and atomically claims the
+// (userID, Provider) row; exactly one concurrent claimer wins and
+// every other instance reuses the winner's tokens — the fix for the
+// 2026-07 incident where two gateway instances each held a DIFFERENT
+// in-memory token for 30-60s of cold provision, and the loser's
+// "drift" update restarted the machine into a 5-minute 401 window.
+//
+// The claimed row is a TOKEN CLAIM, not a completion marker: the
+// ensure* walk creates any missing infrastructure regardless of row
+// state, so a claimer crashing mid-provision is resumed by any later
+// caller with no lease/expiry logic. Do not "optimize" this into a
+// done-flag.
+func (p *Provisioner) claimHostRow(ctx context.Context, userID string) (hoststore.Host, error) {
+	auth, err := generateAuthToken()
+	if err != nil {
+		return hoststore.Host{}, fmt.Errorf("generate auth-token: %w", err)
+	}
+	notifier, err := generateNotifierToken()
+	if err != nil {
+		return hoststore.Host{}, fmt.Errorf("generate notifier-token: %w", err)
+	}
+	appName := appNameFor(p.opts.AppNamePrefix, userID)
+	now := time.Now()
+	row, created, err := p.store.CreateHostIfAbsent(ctx, hoststore.Host{
+		ID:            ulid.Make().String(),
+		UserID:        userID,
+		Provider:      Provider,
+		ExternalID:    appName,
+		Hostname:      hostnameFor(appName),
+		Status:        hoststore.HostStatusProvisioning,
+		AuthToken:     auth,
+		NotifierToken: notifier,
+		AutoWake:      true,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	})
+	if err != nil {
+		return hoststore.Host{}, err
+	}
+	if !created {
+		p.log.Printf("flymachines: host row for user %s already claimed by another instance; reusing its tokens", userID)
+	}
+	return row, nil
 }
 
 // ensureApp creates the per-tenant app on its own private network.
@@ -283,6 +308,13 @@ func (p *Provisioner) ensureApp(ctx context.Context, appName string) error {
 		Network: networkNameFor(appName),
 	})
 	if err != nil {
+		// A concurrent instance may have created it between our GetApp
+		// and CreateApp — re-check before failing (app create is not
+		// idempotent; the name is globally unique).
+		if _, getErr := p.flaps.GetApp(ctx, appName); getErr == nil {
+			p.log.Printf("flymachines: app %s created concurrently; adopting", appName)
+			return nil
+		}
 		return fmt.Errorf("create app %s (name is global across Fly — if taken, change AppNamePrefix): %w", appName, err)
 	}
 	p.log.Printf("flymachines: created app %s on network %s", appName, networkNameFor(appName))
@@ -316,18 +348,63 @@ func (p *Provisioner) ensureFlycast(ctx context.Context, appName string) (string
 	return res.IP, nil
 }
 
-// ensureVolume creates the user's single data volume with snapshot
-// retention widened past Fly's 5-day default — daily snapshots are
-// the only recovery from a host NVMe loss.
-func (p *Provisioner) ensureVolume(ctx context.Context, appName string) (string, error) {
+// volumeMetaKey is the ProviderMeta key recording which volume ID this
+// host's machine mounts. Volume creation is the one non-idempotent
+// ensure step — Fly does NOT enforce unique volume names and IDs are
+// server-assigned — so concurrent creators serialize through a
+// compare-and-set on this key instead.
+const volumeMetaKey = "volume_id"
+
+// ensureVolume resolves the user's single data volume via
+// create-then-claim: adopt whatever the row's provider_meta already
+// records; otherwise adopt an existing unclaimed volume (a prior
+// claimer crashed between create and claim); otherwise create one and
+// CAS it — the loser deletes its just-created duplicate (safe by
+// construction: a volume is only ever attached AFTER it wins the
+// claim) and adopts the winner's. A duplicate whose delete fails is
+// reaper food, not a correctness problem. Snapshot retention is
+// widened past Fly's 5-day default — daily snapshots are the only
+// recovery from a host NVMe loss.
+func (p *Provisioner) ensureVolume(ctx context.Context, row hoststore.Host) (string, error) {
+	appName := row.ExternalID
+	claimed := row.ProviderMeta[volumeMetaKey]
 	vols, err := p.flaps.GetVolumes(ctx, appName)
 	if err != nil {
 		return "", fmt.Errorf("list volumes for %s: %w", appName, err)
 	}
+	var named []fly.Volume
 	for _, v := range vols {
 		if v.Name == volumeName {
-			return v.ID, nil
+			named = append(named, v)
 		}
+	}
+	// The claimed volume, while it still exists, is THE volume.
+	for _, v := range named {
+		if v.ID == claimed {
+			return claimed, nil
+		}
+	}
+	if len(named) > 0 {
+		// Unclaimed (or stale-claimed — e.g. the app was recreated
+		// upstream) volumes exist: adopt the oldest deterministically.
+		oldest := named[0]
+		for _, v := range named[1:] {
+			if v.CreatedAt.Before(oldest.CreatedAt) {
+				oldest = v
+			}
+		}
+		won, current, err := p.store.CASProviderMeta(ctx, row.ID, volumeMetaKey, claimed, oldest.ID)
+		if err != nil {
+			return "", fmt.Errorf("claim adopted volume %s for %s: %w", oldest.ID, appName, err)
+		}
+		if !won && current == "" {
+			return "", fmt.Errorf("volume claim for %s lost with no winner recorded", appName)
+		}
+		if !won {
+			return current, nil
+		}
+		p.log.Printf("flymachines: adopted volume %s for app %s", oldest.ID, appName)
+		return oldest.ID, nil
 	}
 	// TODO(ai-review): volume region+size are matched by name only, never reconciled — a region change plus a machine re-create requests a cross-region mount Fly rejects forever, and volume_size_gb changes are silently ignored while guest/image DO reconcile. https://github.com/Acksell/clank/pull/128
 	size := p.opts.VolumeSizeGB
@@ -340,6 +417,23 @@ func (p *Provisioner) ensureVolume(ctx context.Context, appName string) (string,
 	})
 	if err != nil {
 		return "", fmt.Errorf("create volume for %s: %w", appName, err)
+	}
+	won, current, err := p.store.CASProviderMeta(ctx, row.ID, volumeMetaKey, claimed, vol.ID)
+	if err != nil {
+		// The volume exists but its claim didn't commit — leave it for
+		// the next call's adoption pass (or the reaper) rather than
+		// guessing here.
+		return "", fmt.Errorf("claim created volume %s for %s: %w", vol.ID, appName, err)
+	}
+	if !won {
+		p.log.Printf("flymachines: volume claim lost for app %s; deleting duplicate %s (winner %s)", appName, vol.ID, current)
+		if _, delErr := p.flaps.DeleteVolume(ctx, appName, vol.ID); delErr != nil {
+			p.log.Printf("flymachines: delete duplicate volume %s: %v (reaper food)", vol.ID, delErr)
+		}
+		if current == "" {
+			return "", fmt.Errorf("volume claim for %s lost with no winner recorded", appName)
+		}
+		return current, nil
 	}
 	p.log.Printf("flymachines: created volume %s (%dGB) for app %s", vol.ID, size, appName)
 	return vol.ID, nil
@@ -372,6 +466,21 @@ func (p *Provisioner) ensureMachine(ctx context.Context, appName, volumeID strin
 		Config: buildMachineConfig(p.opts, tokens, volumeID, oneShot),
 	})
 	if err != nil {
+		// A concurrent instance may have launched it between our list
+		// and Launch — Fly enforces unique machine names, so the loser
+		// sees "already_exists: unique machine name violation" (the
+		// 2026-07 incident's literal error). Re-list and adopt instead
+		// of surfacing a 500; both instances derive the same config
+		// from the claimed row, so whichever launch won is correct.
+		machines, listErr := p.flaps.ListActive(ctx, appName)
+		if listErr == nil {
+			for _, existing := range machines {
+				if existing.Name == machineName {
+					p.log.Printf("flymachines: machine %s launched concurrently in %s; adopting", existing.ID, appName)
+					return existing.ID, nil
+				}
+			}
+		}
 		return "", fmt.Errorf("launch machine in %s: %w", appName, err)
 	}
 	p.log.Printf("flymachines: launched machine %s in app %s", m.ID, appName)
@@ -379,9 +488,14 @@ func (p *Provisioner) ensureMachine(ctx context.Context, appName, volumeID strin
 }
 
 // reconcileMachine applies config drift (image bump, guest resize,
-// token/webhook change) via a machine update. Update restarts the
-// workload — sessions resume lazily afterwards — so it fires only on
-// real drift. ExtraEnvFor env (one-shot restore) is preserved from
+// token/webhook change) via a machine update — but ONLY when the
+// machine is stopped. flaps.Update RESTARTS the workload: applied to a
+// started machine it kills in-flight agent runs, and in the 2026-07
+// provisioning race it restarted a machine mid-provision into a
+// 5-minute 401 window. Drift on a started machine is deferred — the
+// control plane's out-of-band sweep (ApplyPendingConfig) converges it
+// after the next idle-exit, which stops machines within minutes of
+// going idle. ExtraEnvFor env (one-shot restore) is preserved from
 // the live config: it was cold-create-only by contract, and dropping
 // it here would count as perpetual drift.
 func (p *Provisioner) reconcileMachine(ctx context.Context, c *cachedHost, tokens hostTokens) error {
@@ -389,18 +503,73 @@ func (p *Provisioner) reconcileMachine(ctx context.Context, c *cachedHost, token
 	if err != nil {
 		return fmt.Errorf("get machine %s: %w", c.machineID, err)
 	}
-	want := buildMachineConfig(p.opts, tokens, c.volumeID, oneShotEnv(m.Config))
+	_, err = p.updateIfStoppedAndDrifted(ctx, c.appName, m, tokens, c.volumeID)
+	return err
+}
+
+// updateIfStoppedAndDrifted is the single drift-application path shared
+// by the EnsureHost cold walk and the ApplyPendingConfig sweep. Returns
+// whether an update was applied.
+func (p *Provisioner) updateIfStoppedAndDrifted(ctx context.Context, appName string, m *fly.Machine, tokens hostTokens, volumeID string) (bool, error) {
+	want := buildMachineConfig(p.opts, tokens, volumeID, oneShotEnv(m.Config))
 	if !needsUpdate(m.Config, want) {
-		return nil
+		return false, nil
 	}
-	p.log.Printf("flymachines: config drift on machine %s in app %s; updating (restarts workload)", c.machineID, c.appName)
-	if _, err := p.flaps.Update(ctx, c.appName, fly.LaunchMachineInput{
-		ID:     c.machineID,
+	if m.State != fly.MachineStateStopped {
+		p.log.Printf("flymachines: config drift on machine %s in app %s deferred (state %q — never restart an in-use machine; applied when stopped)", m.ID, appName, m.State)
+		return false, nil
+	}
+	p.log.Printf("flymachines: config drift on stopped machine %s in app %s; updating", m.ID, appName)
+	if _, err := p.flaps.Update(ctx, appName, fly.LaunchMachineInput{
+		ID:     m.ID,
 		Config: want,
 	}, ""); err != nil {
-		return fmt.Errorf("update machine %s: %w", c.machineID, err)
+		return false, fmt.Errorf("update machine %s: %w", m.ID, err)
 	}
-	return nil
+	return true, nil
+}
+
+// ApplyPendingConfig reconciles one user's machine config out-of-band,
+// applying drift ONLY to a stopped machine — it never wakes, never
+// restarts, so it is always safe to call. The control plane's sweep
+// loop drives this (policy — cadence, fleet iteration — lives with the
+// caller); idle-exit feeds it naturally since machines stop within
+// minutes of going idle. Returns whether an update was applied.
+// A user with no host row or no machine is (false, nil): nothing to do.
+func (p *Provisioner) ApplyPendingConfig(ctx context.Context, userID string) (bool, error) {
+	if userID == "" {
+		return false, fmt.Errorf("flymachines: userID is required")
+	}
+	mu := p.userMutex(userID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	row, err := p.store.GetHostByUser(ctx, userID, Provider)
+	if errors.Is(err, hoststore.ErrHostNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("look up host for user %s: %w", userID, err)
+	}
+	machines, err := p.flaps.ListActive(ctx, row.ExternalID)
+	if err != nil {
+		return false, fmt.Errorf("list machines for %s: %w", row.ExternalID, err)
+	}
+	for _, m := range machines {
+		if m.Name != machineName {
+			continue
+		}
+		// The mounted volume is the live truth; an update must never
+		// re-mount, so want-config derives from it (falling back to the
+		// row's claim for a machine record without mounts).
+		volumeID := row.ProviderMeta[volumeMetaKey]
+		if m.Config != nil && len(m.Config.Mounts) == 1 {
+			volumeID = m.Config.Mounts[0].Volume
+		}
+		tokens := hostTokens{auth: row.AuthToken, notifier: row.NotifierToken}
+		return p.updateIfStoppedAndDrifted(ctx, row.ExternalID, m, tokens, volumeID)
+	}
+	return false, nil
 }
 
 // oneShotEnv extracts cold-create-only env (CLANK_RESTORE_URL) from a
@@ -488,21 +657,13 @@ func hostPortOf(rawURL string) (string, error) {
 	return u.Host, nil
 }
 
-func (p *Provisioner) persistRow(ctx context.Context, userID string, c *cachedHost, tokens hostTokens) (string, error) {
-	now := time.Now()
-	hostID := ""
-	createdAt := now
-	if existing, err := p.store.GetHostByUser(ctx, userID, Provider); err == nil {
-		hostID = existing.ID
-		createdAt = existing.CreatedAt
-	} else if errors.Is(err, hoststore.ErrHostNotFound) {
-		hostID = ulid.Make().String()
-	} else {
-		return "", err
-	}
-
-	rec := hoststore.Host{
-		ID:            hostID,
+// persistRow records the ready host's URL + running status on the row
+// claimed at the start of resolveOrCreate. The upsert never touches
+// provider_meta (CASProviderMeta is its only writer) and the conflict
+// clause preserves created_at.
+func (p *Provisioner) persistRow(ctx context.Context, userID string, c *cachedHost, tokens hostTokens) error {
+	return p.store.UpsertHost(ctx, hoststore.Host{
+		ID:            c.hostID,
 		UserID:        userID,
 		Provider:      Provider,
 		ExternalID:    c.appName,
@@ -512,13 +673,8 @@ func (p *Provisioner) persistRow(ctx context.Context, userID string, c *cachedHo
 		AuthToken:     tokens.auth,
 		NotifierToken: tokens.notifier,
 		AutoWake:      true,
-		CreatedAt:     createdAt,
-		UpdatedAt:     now,
-	}
-	if err := p.store.UpsertHost(ctx, rec); err != nil {
-		return "", err
-	}
-	return hostID, nil
+		UpdatedAt:     time.Now(),
+	})
 }
 
 // SuspendHost stops the machine — a real implementation at last

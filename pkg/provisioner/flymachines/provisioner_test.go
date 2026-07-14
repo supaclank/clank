@@ -3,6 +3,8 @@ package flymachines
 import (
 	"context"
 	"errors"
+	"io"
+	"log"
 	"path/filepath"
 	"testing"
 	"time"
@@ -139,43 +141,48 @@ func TestGetHostByID_FailsOnCorruptRowMissingAuthToken(t *testing.T) {
 	}
 }
 
-// TestPersistRow_PreservesCreatedAtOnUpdate: a second persistRow call
-// for the same user (config drift, token rotation, …) must keep the
-// row's original CreatedAt rather than overwriting it with the update
-// time.
-func TestPersistRow_PreservesCreatedAtOnUpdate(t *testing.T) {
+// TestClaimThenPersistRow_PreservesCreatedAt: the claim-first flow —
+// claimHostRow writes the row up front; persistRow's later
+// running-status write must keep the claim's CreatedAt (and its
+// tokens must round-trip unchanged) rather than overwriting them.
+func TestClaimThenPersistRow_PreservesCreatedAt(t *testing.T) {
 	t.Parallel()
 	s := mustOpenStore(t)
-	p := &Provisioner{store: s}
+	p := &Provisioner{store: s, log: log.New(io.Discard, "", 0)}
 	ctx := context.Background()
-	c := &cachedHost{appName: "clank-u-abc", hostname: "flym-abc", url: "http://[fdaa:0:1::2]:8080"}
-	tokens := hostTokens{auth: "tkn", notifier: "clnk_ntf"}
 
-	hostID, err := p.persistRow(ctx, "u1", c, tokens)
+	claim, err := p.claimHostRow(ctx, "u1")
 	if err != nil {
-		t.Fatalf("initial persistRow: %v", err)
+		t.Fatalf("claimHostRow: %v", err)
 	}
-	created, err := s.GetHostByID(ctx, hostID)
-	if err != nil {
-		t.Fatalf("GetHostByID after create: %v", err)
+	if claim.Status != hoststore.HostStatusProvisioning {
+		t.Errorf("claim status = %q, want provisioning", claim.Status)
 	}
-	if created.CreatedAt.IsZero() {
-		t.Fatal("CreatedAt is zero after create")
+	if claim.AuthToken == "" || claim.NotifierToken == "" {
+		t.Fatal("claim minted empty tokens")
 	}
 
 	time.Sleep(time.Millisecond)
-	if _, err := p.persistRow(ctx, "u1", c, tokens); err != nil {
-		t.Fatalf("second persistRow: %v", err)
+	c := &cachedHost{hostID: claim.ID, appName: claim.ExternalID, hostname: claim.Hostname, url: "http://[fdaa:0:1::2]:8080"}
+	tokens := hostTokens{auth: claim.AuthToken, notifier: claim.NotifierToken}
+	if err := p.persistRow(ctx, "u1", c, tokens); err != nil {
+		t.Fatalf("persistRow: %v", err)
 	}
-	updated, err := s.GetHostByID(ctx, hostID)
+	updated, err := s.GetHostByID(ctx, claim.ID)
 	if err != nil {
-		t.Fatalf("GetHostByID after update: %v", err)
+		t.Fatalf("GetHostByID after persist: %v", err)
 	}
-	if !updated.CreatedAt.Equal(created.CreatedAt) {
-		t.Errorf("CreatedAt changed on update: got %v, want %v", updated.CreatedAt, created.CreatedAt)
+	if !updated.CreatedAt.Equal(claim.CreatedAt) {
+		t.Errorf("CreatedAt changed on persist: got %v, want %v", updated.CreatedAt, claim.CreatedAt)
 	}
-	if !updated.UpdatedAt.After(created.UpdatedAt) {
-		t.Errorf("UpdatedAt did not advance: got %v, want after %v", updated.UpdatedAt, created.UpdatedAt)
+	if !updated.UpdatedAt.After(claim.UpdatedAt) {
+		t.Errorf("UpdatedAt did not advance: got %v, want after %v", updated.UpdatedAt, claim.UpdatedAt)
+	}
+	if updated.Status != hoststore.HostStatusRunning {
+		t.Errorf("status after persist = %q, want running", updated.Status)
+	}
+	if updated.AuthToken != claim.AuthToken || updated.NotifierToken != claim.NotifierToken {
+		t.Error("tokens changed between claim and persist")
 	}
 }
 
