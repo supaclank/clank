@@ -170,21 +170,21 @@ func TestHosts_DifferentProviderCoexists(t *testing.T) {
 	ctx := context.Background()
 
 	now := time.Now().Truncate(time.Second)
-	dt := store.Host{ID: "h-dt", UserID: "local", Provider: "flymachines", ExternalID: "sb-dt", Hostname: "flymachines-dt", Status: store.HostStatusRunning, CreatedAt: now, UpdatedAt: now}
+	fm := store.Host{ID: "h-fm", UserID: "local", Provider: "flymachines", ExternalID: "sb-fm", Hostname: "flymachines-fm", Status: store.HostStatusRunning, CreatedAt: now, UpdatedAt: now}
 	fly := store.Host{ID: "h-fly", UserID: "local", Provider: "flysprites", ExternalID: "sprite-x", Hostname: "flysprites-x", Status: store.HostStatusRunning, AutoWake: true, CreatedAt: now, UpdatedAt: now}
-	if err := s.UpsertHost(ctx, dt); err != nil {
+	if err := s.UpsertHost(ctx, fm); err != nil {
 		t.Fatalf("upsert flymachines: %v", err)
 	}
 	if err := s.UpsertHost(ctx, fly); err != nil {
 		t.Fatalf("upsert flysprites: %v", err)
 	}
 
-	gotDT, err := s.GetHostByUser(ctx, "local", "flymachines")
+	gotFM, err := s.GetHostByUser(ctx, "local", "flymachines")
 	if err != nil {
 		t.Fatalf("get flymachines: %v", err)
 	}
-	if gotDT.ID != "h-dt" {
-		t.Errorf("flymachines host id: got %q, want h-dt", gotDT.ID)
+	if gotFM.ID != "h-fm" {
+		t.Errorf("flymachines host id: got %q, want h-fm", gotFM.ID)
 	}
 	gotFly, err := s.GetHostByUser(ctx, "local", "flysprites")
 	if err != nil {
