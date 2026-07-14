@@ -93,8 +93,8 @@ func RunStart(foreground bool, opts ServerOptions) error {
 		// stack. The daemon picks one provisioner based on
 		// preferences.default_launch_host_provider (default "local")
 		// and mounts the gateway on opts.Listen. Every request flows
-		// gateway → user's host (subprocess for "local", Daytona
-		// sandbox or Fly Sprite for the cloud variants).
+		// gateway → user's host (subprocess for "local", Fly Sprite
+		// or Fly Machine for the cloud variants).
 
 		// Open SQLite store for the host registry. Session metadata
 		// now lives on the host's own host.db (managed by clank-host

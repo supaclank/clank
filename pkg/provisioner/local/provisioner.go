@@ -1,6 +1,6 @@
 // Package local implements provisioner.Provisioner by spawning a
 // clank-host subprocess on the local machine. Laptop-mode counterpart
-// to daytona / flysprites: same Provisioner interface, same HostRef shape,
+// to flysprites / flymachines: same Provisioner interface, same HostRef shape,
 // different "compute" — a child process bound to a random localhost
 // port instead of a remote sandbox.
 //
@@ -122,7 +122,7 @@ func (p *Provisioner) Stop() {
 // EnsureHost implements provisioner.Provisioner. Returns the cached
 // HostRef when the child is healthy, otherwise spawns a fresh one.
 //
-// userID is accepted for interface symmetry with daytona/flysprites but
+// userID is accepted for interface symmetry with flysprites/flymachines but
 // is ignored — the local provisioner serves a single user. Multi-
 // tenant routing is PR 4.
 func (p *Provisioner) EnsureHost(_ context.Context, _ string) (provisioner.HostRef, error) {

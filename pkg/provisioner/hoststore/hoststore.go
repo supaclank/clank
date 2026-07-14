@@ -1,5 +1,5 @@
 // Package hoststore defines the persistence contract used by cloud
-// provisioners (flysprites, daytona, …) for tracking the per-(userID, provider)
+// provisioners (flysprites, flymachines, …) for tracking the per-(userID, provider)
 // host record. Splitting it out lets the laptop daemon back it with
 // SQLite and lets external integrators (e.g. multi-tenant cloud control planes) back it with
 // Postgres without modifying the provisioners themselves.

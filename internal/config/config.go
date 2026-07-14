@@ -69,30 +69,6 @@ func (m ModelPreference) IsZero() bool {
 	return m.ModelID == "" && m.ProviderID == ""
 }
 
-// DaytonaPreference configures the Daytona host launcher on a cloud
-// hub. APIKey enables the launcher; everything else is optional and
-// has sensible defaults. Forwarded into spawned sandboxes via env so
-// the agent backend has the credentials it needs.
-type DaytonaPreference struct {
-	APIKey string `json:"api_key,omitempty"`
-	// Snapshot is a Daytona-side snapshot name (created via `daytona
-	// snapshot create`). When set, sandboxes are spawned from the
-	// pre-warmed snapshot and boot in ~hundreds of ms vs. seconds for
-	// cold OCI image pulls. Takes precedence over Image.
-	Snapshot string            `json:"snapshot,omitempty"`
-	Image    string            `json:"image,omitempty"`
-	BaseURL  string            `json:"base_url,omitempty"`
-	ExtraEnv map[string]string `json:"extra_env,omitempty"`
-
-	// SuspendOnStop, when true, asks the daemon to suspend the
-	// persistent sandbox on shutdown (Daytona Stop) so it stops
-	// billing for compute. Default false: leaves the sandbox
-	// running for zero cold-resume latency on the next start.
-	// Daytona bills per-second and a quick laptop reboot costs
-	// cents, so the default favors latency over cost.
-	SuspendOnStop bool `json:"suspend_on_stop,omitempty"`
-}
-
 // FlySpritesPreference configures the Fly.io Sprites host launcher.
 // APIToken (a SPRITES_TOKEN) enables the launcher; everything else
 // is optional with sensible defaults.
@@ -189,11 +165,6 @@ type Preferences struct {
 	// repo when they launch from elsewhere.
 	LastSessionByCwd map[string]string `json:"last_session_by_cwd,omitempty"`
 
-	// Daytona configures the cloud-hub-side Daytona launcher. Only
-	// effective on a TCP-listening hub. Empty = launcher disabled
-	// (sessions requesting launch_host.provider="daytona" will 4xx).
-	Daytona *DaytonaPreference `json:"daytona,omitempty"`
-
 	// FlySprites configures the cloud-hub-side Fly.io Sprites launcher.
 	// Only effective on a TCP-listening hub. Empty = launcher
 	// disabled (sessions requesting launch_host.provider="flysprites"
@@ -208,7 +179,7 @@ type Preferences struct {
 	// DefaultLaunchHostProvider, when set, is applied to every new
 	// session whose StartRequest omits LaunchHost. Use this on a
 	// cloud hub to make TUI-created sessions automatically spin up
-	// sandboxes (e.g. "daytona") without each client having to know
+	// sandboxes (e.g. "flymachines") without each client having to know
 	// about launchers.
 	//
 	// Empty (default) = no auto-launch; sessions land on the hub's

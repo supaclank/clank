@@ -180,7 +180,7 @@ type AuthManager struct {
 }
 
 // NewAuthManager constructs an AuthManager. Resolves $HOME via
-// os.UserHomeDir() so the same code works on a Daytona container
+// os.UserHomeDir() so the same code works on a cloud sandbox container
 // (where it's /root) and a developer's laptop.
 func NewAuthManager(restart func(ctx context.Context) error) (*AuthManager, error) {
 	home, err := os.UserHomeDir()

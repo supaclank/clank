@@ -82,8 +82,8 @@ func TestSafeSpriteSuffix(t *testing.T) {
 	}
 }
 
-// TestSafeHostnameSuffix locks the trailing-segment cap mirroring the
-// Daytona convention. The host catalog assumes Hostname uniqueness
+// TestSafeHostnameSuffix locks the trailing-segment cap that keeps the
+// Hostname short and stable. The host catalog assumes Hostname uniqueness
 // across providers AND a stable shape; drift here would produce
 // "host not registered" errors that are hard to debug.
 func TestSafeHostnameSuffix(t *testing.T) {

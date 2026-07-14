@@ -349,14 +349,14 @@ type AgentInfo struct {
 
 // LaunchHostSpec asks the Hub to provision a fresh Host (sandbox) for
 // this session before dispatching it. When set, the Hub consults a
-// registered HostLauncher (e.g. "daytona", "local-stub") which spins
+// registered HostLauncher (e.g. "flymachines", "local-stub") which spins
 // up a Host, registers it in the catalog, and rewrites Hostname to
 // the launcher-chosen name.
 //
 // Mutually exclusive with Hostname (Hostname is the launcher's output,
 // not its input).
 type LaunchHostSpec struct {
-	Provider string `json:"provider"` // "daytona", "local-stub", ...
+	Provider string `json:"provider"` // "flymachines", "local-stub", ...
 }
 
 // StartRequest contains the parameters needed to start a new agent session.

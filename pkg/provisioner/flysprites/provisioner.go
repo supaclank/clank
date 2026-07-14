@@ -1260,7 +1260,7 @@ func safeSpriteSuffix(userID string) string {
 }
 
 // safeHostnameSuffix returns the trailing segment of a sprite name,
-// capped at 12 chars to match the Daytona naming convention.
+// capped at 12 chars to keep the Hostname short and stable.
 func safeHostnameSuffix(spriteName string) string {
 	if i := strings.LastIndex(spriteName, "-"); i >= 0 {
 		spriteName = spriteName[i+1:]
