@@ -111,21 +111,75 @@
   // plugin, no config, nothing installed in the user's project.
 
   // parseDebugStack finds the JSX callsite frame. Handles both stack
-  // shapes: Chrome "at Fn (url:L:C)" / "at url:L:C" and Firefox "Fn@url:L:C".
+  // shapes — Chrome "at Fn (url:L:C)" / "at url:L:C" and Firefox
+  // "Fn@url:L:C" — and two URL families:
+  //   http(s) same-origin  → Vite-style per-file modules (inline maps)
+  //   bundler schemes      → Next/webpack "webpack-internal:///(group)/./app/page.jsx"
+  //                          and Turbopack equivalents, resolved via
+  //                          Next's own dev endpoint (see resolveNextFrame)
   const parseDebugStack = (stack) => {
     for (const line of String(stack).split('\n')) {
-      const m = line.match(/(?:at\s+(?:.*?\s+\()?|@)(https?:\/\/[^\s()]+?):(\d+):(\d+)\)?$/);
+      // \S*? (not [^()]) because bundler URLs contain parens:
+      // "webpack-internal:///(app-pages-browser)/./app/page.jsx" — the
+      // trailing :line:col)?$ anchor keeps the lazy match honest.
+      const m = line.match(/(?:at\s+(?:.*?\s+\()?|@)([a-z+-]+:\/\/\S*?):(\d+):(\d+)\)?$/);
       if (!m) continue;
-      let u;
-      try { u = new URL(m[1]); } catch { continue; }
-      if (u.origin !== location.origin) continue;
-      // Skip react's own runtime frames (prebundled deps) and vite internals.
-      if (u.pathname.includes('/node_modules/') || u.pathname.startsWith('/@')) continue;
-      // href (with Vite's HMR cache-busting query) is the fetch/cache key;
-      // url (query stripped) is what gets displayed.
-      return { url: u.origin + u.pathname, href: u.href, line: +m[2], column: +m[3] };
+      const [, raw, ln, col] = m;
+      if (raw.includes('/node_modules/') || raw.includes('next/dist')) continue;
+      if (/^https?:\/\//.test(raw)) {
+        let u;
+        try { u = new URL(raw); } catch { continue; }
+        if (u.origin !== location.origin) continue;
+        if (u.pathname.startsWith('/@')) continue; // vite internals
+        // href (with Vite's HMR cache-busting query) is the fetch/cache
+        // key; url (query stripped) is what gets displayed.
+        return { url: u.origin + u.pathname, href: u.href, line: +ln, column: +col };
+      }
+      // Non-http bundler scheme: keep the raw specifier for the resolver
+      // endpoint, plus a cleaned display path (strip scheme, "(group)/",
+      // leading "./").
+      const cleaned = raw.replace(/^[a-z+-]+:\/\/\/?/, '').replace(/^\([^)]*\)\//, '').replace(/^\.\//, '');
+      return { bundlerFile: raw, file: cleaned, line: +ln, column: +col };
     }
     return null;
+  };
+
+  // resolveNextFrame: exact original position for bundler-scheme frames,
+  // courtesy of Next's own dev middleware (the same endpoint its error
+  // overlay uses — it holds the webpack/turbopack sourcemaps server-side).
+  // Field names changed across Next versions (lineNumber/column →
+  // line1/column1 in 15.5); send both, accept both.
+  const nextFrameCache = new Map();
+  const resolveNextFrame = (pos) => {
+    const key = `${pos.bundlerFile}:${pos.line}:${pos.column}`;
+    let p = nextFrameCache.get(key);
+    if (p) return p;
+    p = (async () => {
+      const res = await fetch('/__nextjs_original-stack-frames', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          frames: [{
+            file: pos.bundlerFile, methodName: '<unknown>', arguments: [],
+            line1: pos.line, column1: pos.column,
+            lineNumber: pos.line, column: pos.column,
+          }],
+          isServer: false, isEdgeServer: false, isAppDirectory: true,
+        }),
+      });
+      if (!res.ok) return null;
+      const arr = await res.json();
+      const f = arr && arr[0] && arr[0].status === 'fulfilled' && arr[0].value && arr[0].value.originalStackFrame;
+      if (!f || !f.file) return null;
+      const line = f.line1 ?? f.lineNumber;
+      const column = f.column1 ?? f.column;
+      // An unresolved lookup echoes the bundler specifier back — treat
+      // that (or a missing line) as failure rather than showing it.
+      if (line == null || /^[a-z+-]+:\/\//.test(f.file)) return null;
+      return { file: f.file.replace(/^\.\//, ''), line, column: column ?? 1 };
+    })().catch(() => null);
+    nextFrameCache.set(key, p);
+    return p;
   };
 
   // Minimal source-map v3 consumer: decode the VLQ mappings once per
@@ -270,8 +324,19 @@
         if (url) return provisionalSource({ url, line: src.lineNumber, column: src.columnNumber }, names, el, 'react18');
         return { file: src.fileName, line: src.lineNumber, column: src.columnNumber, via: 'react', names, node: el };
       }
+      if (stackPos && stackPos.bundlerFile) {
+        // Next.js (webpack/turbopack schemes): provisional shows the
+        // cleaned bundler path + transformed line; Next's own resolver
+        // upgrades it to the exact original position.
+        return {
+          file: stackPos.file, line: stackPos.line, column: stackPos.column,
+          approx: true, resolve: resolveNextFrame(stackPos),
+          via: 'next', names, node: el,
+        };
+      }
       if (stackPos) {
-        // React 19: the JSX callsite from _debugStack, same upgrade path.
+        // React 19 on Vite: the JSX callsite from _debugStack, same
+        // upgrade path through the module's inline sourcemap.
         return provisionalSource(stackPos, names, el, 'react19');
       }
       if (names.length) return { via: 'react', names, node: el };
