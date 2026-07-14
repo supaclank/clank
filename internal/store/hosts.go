@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/acksell/clank/internal/store/sqlitedb"
@@ -122,7 +121,7 @@ func (s *Store) CreateHostIfAbsent(ctx context.Context, h Host) (Host, bool, err
 		return Host{}, false, fmt.Errorf("create host if absent: id, user_id, provider are required")
 	}
 	if h.UpdatedAt.IsZero() {
-		h.UpdatedAt = time.Now()
+		h.UpdatedAt = time.Now().UTC()
 	}
 	if h.CreatedAt.IsZero() {
 		h.CreatedAt = h.UpdatedAt
@@ -170,8 +169,11 @@ func (s *Store) CASProviderMeta(ctx context.Context, hostID, key, oldValue, newV
 	if hostID == "" || key == "" || newValue == "" {
 		return false, "", fmt.Errorf("cas provider meta: hostID, key, newValue are required")
 	}
-	if strings.ContainsAny(key, ".\"[]$") {
-		return false, "", fmt.Errorf("cas provider meta: key %q must be a plain identifier", key)
+	for _, r := range key {
+		isAlnum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if !isAlnum && r != '_' {
+			return false, "", fmt.Errorf("cas provider meta: key %q must be a plain alphanumeric identifier", key)
+		}
 	}
 	path := "$." + key
 	res, err := s.db.ExecContext(ctx, `
@@ -179,7 +181,7 @@ func (s *Store) CASProviderMeta(ctx context.Context, hostID, key, oldValue, newV
 		SET provider_meta = json_set(provider_meta, ?, ?),
 		    updated_at    = ?
 		WHERE id = ? AND COALESCE(json_extract(provider_meta, ?), '') = ?`,
-		path, newValue, time.Now(), hostID, path, oldValue)
+		path, newValue, time.Now().UTC(), hostID, path, oldValue)
 	if err != nil {
 		return false, "", fmt.Errorf("cas provider_meta[%s] on host %s: %w", key, hostID, err)
 	}
@@ -217,7 +219,7 @@ func hostFromRow(r sqlitedb.Host) (Host, error) {
 	var meta map[string]string
 	if r.ProviderMeta != "" && r.ProviderMeta != "{}" {
 		if err := json.Unmarshal([]byte(r.ProviderMeta), &meta); err != nil {
-			return Host{}, fmt.Errorf("host %s: malformed provider_meta %q: %w", r.ID, r.ProviderMeta, err)
+			return Host{}, fmt.Errorf("host %s: malformed provider_meta: %w", r.ID, err)
 		}
 	}
 	return Host{

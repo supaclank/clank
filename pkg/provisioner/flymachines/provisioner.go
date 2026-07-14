@@ -263,7 +263,7 @@ func (p *Provisioner) claimHostRow(ctx context.Context, userID string) (hoststor
 		return hoststore.Host{}, fmt.Errorf("generate notifier-token: %w", err)
 	}
 	appName := appNameFor(p.opts.AppNamePrefix, userID)
-	now := time.Now()
+	now := time.Now().UTC()
 	row, created, err := p.store.CreateHostIfAbsent(ctx, hoststore.Host{
 		ID:            ulid.Make().String(),
 		UserID:        userID,
@@ -673,7 +673,7 @@ func (p *Provisioner) persistRow(ctx context.Context, userID string, c *cachedHo
 		AuthToken:     tokens.auth,
 		NotifierToken: tokens.notifier,
 		AutoWake:      true,
-		UpdatedAt:     time.Now(),
+		UpdatedAt:     time.Now().UTC(),
 	})
 }
 
