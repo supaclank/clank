@@ -957,8 +957,8 @@ func TestOpenCodeBackendSSEEventTypes(t *testing.T) {
 						return map[string]interface{}{
 							"id":         "per_abc123",
 							"permission": "bash",
-							"patterns":   []string{"npx cowsay hello"},
-							"always":     []string{"npx *"},
+							"patterns":   []string{"bunx cowsay hello"},
+							"always":     []string{"bunx *"},
 							"sessionID":  sid,
 							"metadata":   map[string]interface{}{},
 							"tool": map[string]interface{}{
@@ -980,8 +980,8 @@ func TestOpenCodeBackendSSEEventTypes(t *testing.T) {
 						if data.Tool != "bash" {
 							t.Errorf("Tool = %q, want %q", data.Tool, "bash")
 						}
-						if data.Description != "bash: npx cowsay hello" {
-							t.Errorf("Description = %q, want %q", data.Description, "bash: npx cowsay hello")
+						if data.Description != "bash: bunx cowsay hello" {
+							t.Errorf("Description = %q, want %q", data.Description, "bash: bunx cowsay hello")
 						}
 						return
 					}

@@ -679,7 +679,7 @@ func (b *OpenCodeBackend) handlePermissionAsked(req *opencode.GlobalEventPayload
 	if req == nil || req.SessionID != b.SessionID() {
 		return
 	}
-	// Build a human-readable description, e.g. "bash: npx cowsay hello".
+	// Build a human-readable description, e.g. "bash: bunx cowsay hello".
 	description := req.Permission
 	if len(req.Patterns) > 0 {
 		description += ": " + strings.Join(req.Patterns, ", ")

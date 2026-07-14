@@ -24,10 +24,10 @@ your own code.
 
 Principles that prevent the most damage:
 
-- **Let Expo own versions.** Add packages with `npx expo install` (never a
+- **Let Expo own versions.** Add packages with `bun expo install` (never a
   raw package manager): native-module versions are locked to the Expo SDK,
   and a mismatch breaks the user's preview build. Realign a drifted tree with
-  `npx expo install --fix`.
+  `bun expo install --fix`.
 - **Treat per-frame work as a budget.** Smooth means cheap work on the right
   thread every frame. Continuous animation is a cost you spend deliberately,
   not a default.

@@ -230,7 +230,7 @@ func TestBuildEnv_EmptyPublicURL_OmitsProxyVar(t *testing.T) {
 // CI=true (or =1) in Metro's env makes Metro disable file watching +
 // HMR ("Metro is running in CI mode, reloads are disabled"). The
 // codebase MUST suppress interactive prompts via narrower flags
-// (--non-interactive on the argv, npm_config_yes for npm) instead.
+// (--non-interactive on the argv) instead.
 // If we ever add CI here again, HMR silently breaks for every
 // preview launch.
 func TestBuildEnv_OmitsCI(t *testing.T) {
