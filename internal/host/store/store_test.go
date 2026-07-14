@@ -37,6 +37,73 @@ func TestOpen_CreatesDB(t *testing.T) {
 	}
 }
 
+// TestOpen_ReconcilesV4ColumnsWhenVersionAlreadyBumped reproduces the
+// migration-version collision: a divergent dev branch also claimed
+// user_version 4 (with a different column), so an existing DB can sit at
+// version 4 yet lack subdir/display_name. The versioned `if version < 4`
+// gate then skips silently, and later `SELECT ... subdir` fails. Open
+// must self-heal via the probe-based reconcile.
+func TestOpen_ReconcilesV4ColumnsWhenVersionAlreadyBumped(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "host.db")
+
+	s1, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	s1.Close()
+
+	// Simulate the collided DB: drop the v4 columns but keep the counter
+	// at 4, mimicking the branch whose v4 added a different column.
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	for _, stmt := range []string{
+		`ALTER TABLE sessions DROP COLUMN subdir`,
+		`ALTER TABLE sessions DROP COLUMN display_name`,
+		`ALTER TABLE sessions ADD COLUMN revert_message_id TEXT NOT NULL DEFAULT ''`,
+		`PRAGMA user_version = 4`,
+	} {
+		if _, err := raw.Exec(stmt); err != nil {
+			t.Fatalf("simulate collided v4 (%q): %v", stmt, err)
+		}
+	}
+	raw.Close()
+
+	s2, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("reopen after collided v4: %v", err)
+	}
+	defer s2.Close()
+
+	ctx := context.Background()
+	// The exact path that failed in production (list/get select subdir).
+	if _, err := s2.ListSessions(ctx); err != nil {
+		t.Fatalf("ListSessions after reconcile: %v", err)
+	}
+	// Round-trip a Subdir to prove the column is real, not just present.
+	now := time.Now()
+	info := agent.SessionInfo{
+		ID:        "ses-subdir",
+		Backend:   agent.BackendClaudeCode,
+		GitRef:    agent.GitRef{LocalPath: "/tmp/repo", Subdir: "web-app"},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := s2.UpsertSession(ctx, info); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	got, err := s2.GetSession(ctx, "ses-subdir")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.GitRef.Subdir != "web-app" {
+		t.Errorf("Subdir = %q, want %q", got.GitRef.Subdir, "web-app")
+	}
+}
+
 func TestOpen_MigrationIdempotent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

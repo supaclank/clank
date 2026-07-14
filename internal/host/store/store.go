@@ -180,23 +180,52 @@ func (s *Store) migrate() error {
 		version = 3
 	}
 	if version < 4 {
-		// Migration v4: sessions.subdir — the working subdirectory
-		// relative to project_dir (GitRef.Subdir). Empty = the repo
-		// root itself, which is what every pre-v4 row means. And
-		// sessions.display_name — with project_dir now normalized to
-		// the repo root, the label can no longer be re-derived from
-		// the path, so the client/host-stamped GitRef.DisplayName
-		// must survive the round-trip.
-		if _, err := s.db.Exec(`
-			ALTER TABLE sessions ADD COLUMN subdir TEXT NOT NULL DEFAULT '';
-			ALTER TABLE sessions ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
-			PRAGMA user_version = 4;
-		`); err != nil {
-			return fmt.Errorf("migration v4: %w", err)
+		if _, err := s.db.Exec(`PRAGMA user_version = 4`); err != nil {
+			return fmt.Errorf("migration v4: bump version: %w", err)
 		}
 		version = 4
 	}
+	// Migration v4 columns are reconciled by probing rather than the
+	// version gate. sessions.subdir is the working subdirectory relative
+	// to project_dir (GitRef.Subdir; empty = repo root, what every pre-v4
+	// row means); sessions.display_name carries GitRef.DisplayName, which
+	// can no longer be re-derived once project_dir is normalized to the
+	// repo root.
+	//
+	// Probing (not `if version < 4`) because the user_version counter is
+	// global to the file and can't express branch divergence: a divergent
+	// dev branch also claimed v4 with a different column, so a DB can sit
+	// at user_version=4 yet still lack these. ensureColumn is idempotent,
+	// so this self-heals regardless of which v4 ran first.
+	if err := ensureColumn(s.db, "sessions", "subdir", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("migration v4: %w", err)
+	}
+	if err := ensureColumn(s.db, "sessions", "display_name", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("migration v4: %w", err)
+	}
 	_ = version
+	return nil
+}
+
+// ensureColumn adds `name` (with the given type/constraint decl) to
+// `table` when it is absent, and is a no-op when it already exists.
+// Idempotent by design: it reconciles additive migrations whose global
+// user_version gate was consumed by a colliding migration on a divergent
+// branch. table/name/decl are internal constants, not user input.
+func ensureColumn(db *sql.DB, table, name, decl string) error {
+	var count int
+	if err := db.QueryRow(
+		fmt.Sprintf(`SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name = ?`, table),
+		name,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("probe %s.%s: %w", table, name, err)
+	}
+	if count > 0 {
+		return nil
+	}
+	if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, name, decl)); err != nil {
+		return fmt.Errorf("add %s.%s: %w", table, name, err)
+	}
 	return nil
 }
 
