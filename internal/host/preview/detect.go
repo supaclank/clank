@@ -124,8 +124,8 @@ var appConfigCandidates = []string{
 	"app.config.ts",
 }
 
-// Detect inspects workDir and returns a Spec if it looks like an Expo
-// or Vite web app. The contract:
+// Detect inspects workDir and returns a Spec if it looks like an Expo,
+// Next.js, or Vite web app. The contract:
 //
 //   - (nil, nil) means "not previewable" — a normal answer, NOT an
 //     error. Surface it as preview_available: false / available: false

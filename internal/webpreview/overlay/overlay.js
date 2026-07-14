@@ -178,6 +178,9 @@
       if (line == null || /^[a-z+-]+:\/\//.test(f.file)) return null;
       return { file: f.file.replace(/^\.\//, ''), line, column: column ?? 1 };
     })().catch(() => null);
+    // Evict failed lookups so a transient dev-server hiccup doesn't
+    // permanently pin this frame to the approximate location.
+    p.then((res) => { if (!res) nextFrameCache.delete(key); });
     nextFrameCache.set(key, p);
     return p;
   };
