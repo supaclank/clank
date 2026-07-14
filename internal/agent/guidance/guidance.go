@@ -56,7 +56,7 @@ var expoPack = []string{
 // relative to the HOME directory — the path Claude Code scans for personal
 // skills, and where sprite images already ship their bundled skills.
 // prompt.md points the agent at it by name. Longer-term these skills are
-// meant to be published and versioned as a standalone package (npx skills);
+// meant to be published and versioned as a standalone package (bunx skills);
 // embedding + materializing from the clank binary is the interim mechanism.
 const expoSkillRelDir = ".claude/skills/expo-dev"
 

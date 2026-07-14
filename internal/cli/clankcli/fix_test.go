@@ -21,7 +21,7 @@ func TestShellQuoteJoin(t *testing.T) {
 		argv []string
 		want string
 	}{
-		{"plain args pass through", []string{"npx", "expo", "run:android", "--device"}, "npx expo run:android --device"},
+		{"plain args pass through", []string{"make", "test", "--verbose"}, "make test --verbose"},
 		{"arg with spaces requoted", []string{"grep", "a b", "file"}, "grep 'a b' file"},
 		{"embedded single quote", []string{"echo", "don't"}, `echo 'don'\''t'`},
 		{"shell metachars quoted", []string{"sh", "-c", "make 2>&1 | tail"}, `sh -c 'make 2>&1 | tail'`},
@@ -52,11 +52,11 @@ func TestFixCmd_ChildFlagsStayInArgs(t *testing.T) {
 		got = append([]string{}, args...)
 		return nil
 	}
-	cmd.SetArgs([]string{"npx", "expo", "run:android", "--device"})
+	cmd.SetArgs([]string{"make", "test", "--verbose"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	want := []string{"npx", "expo", "run:android", "--device"}
+	want := []string{"make", "test", "--verbose"}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("args: got %q, want %q", got, want)
 	}
@@ -104,7 +104,7 @@ func TestRunFix_CreatesSessionWithFixPrompt(t *testing.T) {
 	err := runFix(ctx, client, &out, &errOut, pleaseOpts{
 		backend:    agent.BackendOpenCode,
 		projectDir: repo,
-	}, []string{"npx", "expo", "run:android"})
+	}, []string{"make", "test"})
 	if err != nil {
 		t.Fatalf("runFix: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestRunFix_CreatesSessionWithFixPrompt(t *testing.T) {
 	if last == nil {
 		t.Fatal("no backend created — session was not started")
 	}
-	if got := last.LastSendOpts().Text; !strings.Contains(got, "<command>npx expo run:android</command>") {
+	if got := last.LastSendOpts().Text; !strings.Contains(got, "<command>make test</command>") {
 		t.Errorf("prompt sent to backend %q lacks the quoted command", got)
 	}
 }
@@ -127,8 +127,8 @@ func TestRunFix_CreatesSessionWithFixPrompt(t *testing.T) {
 func TestFixPrompt_ContainsCommandLine(t *testing.T) {
 	t.Parallel()
 
-	prompt := fixPrompt([]string{"npx", "expo", "run:android"})
-	if !strings.Contains(prompt, "<command>npx expo run:android</command>") {
+	prompt := fixPrompt([]string{"make", "test"})
+	if !strings.Contains(prompt, "<command>make test</command>") {
 		t.Errorf("prompt %q lacks the quoted command line", prompt)
 	}
 	if !strings.Contains(prompt, "background") || !strings.Contains(prompt, "diagnose") {

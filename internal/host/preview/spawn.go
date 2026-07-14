@@ -196,9 +196,8 @@ func renderArgs(tmpl []string, port int) ([]string, error) {
 // Metro reading the repo's .env into its own process; the .env is
 // still loaded by the app the bundle runs as.
 //
-// npm_config_yes=true tells npm to skip its own prompts. Expo CLI's
-// prompts are skipped via `--non-interactive` on the argv (see
-// expoCmdTemplate). We deliberately do NOT set CI=true here: Metro
+// Expo CLI's prompts are skipped via `--non-interactive` on the argv
+// (see expoCmdTemplate). We deliberately do NOT set CI=true here: Metro
 // reads the CI env var and disables file-watching + HMR ("Metro is
 // running in CI mode, reloads are disabled"). Skipping prompts via
 // argv keeps HMR alive.
@@ -241,10 +240,7 @@ func buildEnv(publicURL, shimRequirePath, runtimePath string) []string {
 		}
 		env = append(env, e)
 	}
-	env = append(env,
-		"EXPO_NO_DOTENV=1",
-		"npm_config_yes=true",
-	)
+	env = append(env, "EXPO_NO_DOTENV=1")
 	if requireFlag != "" && !nodeOptionsMerged {
 		env = append(env, "NODE_OPTIONS="+requireFlag)
 	}

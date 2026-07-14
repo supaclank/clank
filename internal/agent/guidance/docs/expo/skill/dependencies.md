@@ -2,15 +2,16 @@
 
 ## Install the Expo way
 
-**Always add packages with `npx expo install <package>` — never `npm
-install`, `yarn add`, `pnpm add`, or `npx install`.** Expo pins each package
+**Always add packages with `bun expo install <package>` — never `npm
+install`, `bun add`, `yarn add`, or `pnpm add`.** Expo pins each package
 to the version compatible with the project's Expo SDK. Installing with a raw
 package manager pulls the latest version, which routinely mismatches the
 native runtime and breaks the preview build (red-screen native errors,
 incompatible native modules). `expo install` resolves the SDK-compatible
-version instead.
+version instead. Run it through bun (`bun expo …`, not `npx expo …`) —
+this environment installs with bun, and npx would re-fetch the CLI.
 
-- **Fix an already-mismatched tree:** `npx expo install --fix` realigns every
+- **Fix an already-mismatched tree:** `bun expo install --fix` realigns every
   dependency to the current SDK.
 - **Never manually bump `react`, `react-native`, or `expo`** to chase a
   feature. Their versions are locked together by the SDK; move the SDK as a

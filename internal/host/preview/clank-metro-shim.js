@@ -24,8 +24,9 @@
  *     graph modules; it can't add one — that's why the premodule approach
  *     never worked.)
  *
- * MUST never throw: NODE_OPTIONS also applies to `npm install` / npx, and a
- * throwing --require aborts the host process. Everything is wrapped.
+ * MUST never throw: NODE_OPTIONS reaches every Node process in this env
+ * (bun-launched node-shebang bins, any package-manager the agent runs), and
+ * a throwing --require aborts the host process. Everything is wrapped.
  *
  * The runtime's absolute path comes from CLANK_PREVIEW_RUNTIME (set by the
  * backend). No-op if it's unset.

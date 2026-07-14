@@ -43,24 +43,27 @@ FROM debian:bookworm-slim AS runtime
 #                    SDK 55 requires Node >= 20.19.4. Debian Bookworm's
 #                    apt nodejs is v18 which errors on Array.toReversed
 #                    inside metro-config, so we install Node 22 LTS from
-#                    NodeSource. npm ships with it.
+#                    NodeSource.
 # gnupg:             NodeSource setup script needs gpg to install its
 #                    apt signing key.
+# unzip:             bun's official installer unpacks a zip.
 #
 # Debian (glibc) base because opencode-ai's npm package ships only
 # glibc binaries via optionalDependencies; alpine/musl can't run them.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git ca-certificates tini libsqlite3-0 \
-        wget curl gnupg \
+        wget curl gnupg unzip \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Mirror the sprite install path: bun is the sole writer for the agent
-# CLIs, matching pkg/provisioner/flyio's opencodeInstallScript so docker-
-# and sprite-side surfaces stay on the same toolchain. Bun's global bin
-# dir is $HOME/.bun/bin — put it on PATH so the clank-host subprocess
-# resolves `opencode` and `claude` without symlinking.
+# CLIs, matching pkg/provisioner/flysprites' opencodeInstallScript so
+# docker- and sprite-side surfaces stay on the same toolchain. bun itself
+# comes from its official installer, which drops the binary in
+# $HOME/.bun/bin alongside bun's global package bins — put that on PATH
+# so the clank-host subprocess resolves `bun`, `opencode`, and `claude`
+# without symlinking.
 #
 # HOME is set explicitly because debian:bookworm-slim doesn't export it
 # to non-login RUN shells, and bun resolves ~/.bun off $HOME.
@@ -72,12 +75,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #                            relay in internal/host (auth_anthropic_setup_token.go).
 ENV HOME=/root
 ENV PATH="/root/.bun/bin:${PATH}"
-# Versions must track agent.PinnedOpencodeVersion and
-# agent.PinnedClaudeVersion (internal/agent/{opencode,claude}_compat.go)
-# so the docker stack runs the same CLIs the fly provisioner pins onto
+# Versions must track agent.PinnedBunVersion, agent.PinnedOpencodeVersion,
+# and agent.PinnedClaudeVersion (internal/agent/{bun,opencode,claude}_compat.go)
+# so the docker stack runs the same toolchain the fly provisioner pins onto
 # sprites — an unpinned install here drifts to "latest at image build",
 # the exact failure mode the pins exist to prevent.
-RUN npm install -g bun \
+RUN curl -fsSL https://bun.sh/install | bash -s -- bun-v1.3.14 \
     && bun install -g opencode-ai@1.17.18 @anthropic-ai/claude-code@2.1.201 \
     && opencode --version \
     && claude --version

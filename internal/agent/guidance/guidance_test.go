@@ -59,7 +59,7 @@ func TestAssembleExpo(t *testing.T) {
 	// the install rule and the pointer at the on-demand skill.
 	for _, marker := range []string{
 		"existing Expo",    // framing
-		"npx expo install", // the #1 environment-breaker rule
+		"bun expo install", // the #1 environment-breaker rule
 		"expo-dev",         // the skill pointer
 	} {
 		if !strings.Contains(got, marker) {
