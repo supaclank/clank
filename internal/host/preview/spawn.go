@@ -89,13 +89,18 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 		return nil, err
 	}
 
+	markerPath, err := bootstrapMarkerPath(req.WorkDir)
+	if err != nil {
+		return nil, err
+	}
+
 	// Tie the child to a per-spawn context so Stop's cancel() can kick
 	// in if the process is still in startup when the user bails out.
 	childCtx, cancel := context.WithCancel(ctx)
 
 	cmd := exec.CommandContext(childCtx, args[0], args[1:]...)
 	cmd.Dir = req.WorkDir
-	cmd.Env = buildEnv(req.PublicURL, req.ShimRequirePath, req.RuntimePath)
+	cmd.Env = buildEnv(markerPath, req.PublicURL, req.ShimRequirePath, req.RuntimePath)
 	configureProcessGroup(cmd)
 
 	logs := newRingBuf(ringCapacity)
@@ -192,7 +197,9 @@ func renderArgs(tmpl []string, port int) ([]string, error) {
 }
 
 // buildEnv returns the env slice for the spawned child. Inherits the
-// parent process env (so PATH, HOME, … work). EXPO_NO_DOTENV stops
+// parent process env (so PATH, HOME, … work). markerPath threads the
+// bootstrap completion-marker location into the bootstrapTemplate
+// shell (see bootstrapMarkerEnv). EXPO_NO_DOTENV stops
 // Metro reading the repo's .env into its own process; the .env is
 // still loaded by the app the bundle runs as.
 //
@@ -216,7 +223,7 @@ func renderArgs(tmpl []string, port int) ([]string, error) {
 // the guest-side preview runtime is injected into every bundle in-memory (no
 // files in the user's repo). The --require flag is MERGED into any inherited
 // NODE_OPTIONS rather than clobbering it.
-func buildEnv(publicURL, shimRequirePath, runtimePath string) []string {
+func buildEnv(markerPath, publicURL, shimRequirePath, runtimePath string) []string {
 	parent := os.Environ()
 	env := make([]string, 0, len(parent)+4)
 
@@ -240,7 +247,10 @@ func buildEnv(publicURL, shimRequirePath, runtimePath string) []string {
 		}
 		env = append(env, e)
 	}
-	env = append(env, "EXPO_NO_DOTENV=1")
+	env = append(env,
+		"EXPO_NO_DOTENV=1",
+		bootstrapMarkerEnv+"="+markerPath,
+	)
 	if requireFlag != "" && !nodeOptionsMerged {
 		env = append(env, "NODE_OPTIONS="+requireFlag)
 	}

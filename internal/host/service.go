@@ -516,6 +516,12 @@ func (s *Service) persistSnapshots(ctx context.Context, snaps []agent.SessionSna
 			s.log.Printf("discover: lookup snapshot extID=%s: %v", snap.ID, lookupErr)
 			continue
 		}
+		ref := agent.GitRef{LocalPath: snap.Directory}
+		// Best-effort: discovery records sessions wherever the backend
+		// ran them; an odd path must not block registration.
+		if norm, err := s.normalizeGitRef(ref); err == nil {
+			ref = norm
+		}
 		info := agent.SessionInfo{
 			ID:              ulid.Make().String(),
 			ExternalID:      snap.ID,
@@ -523,7 +529,7 @@ func (s *Service) persistSnapshots(ctx context.Context, snaps []agent.SessionSna
 			Status:          agent.StatusIdle,
 			Title:           snap.Title,
 			RevertMessageID: snap.RevertMessageID,
-			GitRef:          agent.GitRef{LocalPath: snap.Directory},
+			GitRef:          ref,
 			CreatedAt:       snap.CreatedAt,
 			UpdatedAt:       snap.UpdatedAt,
 		}
@@ -537,34 +543,44 @@ func (s *Service) persistSnapshots(ctx context.Context, snaps []agent.SessionSna
 // CreateSession registers a fresh SessionBackend under sessionID. The
 // backend is NOT started — callers call Start() or Watch().
 //
-// Returns the resolved serverURL (empty for backends without an HTTP
-// server, e.g. Claude Code). req.GitRef is resolved to workDir via
-// workDirFor.
-func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, string, error) {
+// Returns a SessionInfo snapshot: req.GitRef is normalized (a
+// LocalPath inside a repo becomes {root, Subdir}), and ServerURL is
+// populated for backends with an HTTP server (OpenCode only) but never
+// persisted — it's process-local. Persisting the rest is attempted
+// when a store is configured and is best-effort: a write failure is
+// logged, not surfaced, since rolling back a running backend is worse
+// UX than an unpersisted row. The session's working directory is
+// workDirFor of the normalized ref.
+func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, agent.SessionInfo, error) {
 	if sessionID == "" {
-		return nil, "", fmt.Errorf("session id is required")
+		return nil, agent.SessionInfo{}, fmt.Errorf("session id is required")
 	}
 	if req.Backend == "" {
-		return nil, "", fmt.Errorf("backend is required")
+		return nil, agent.SessionInfo{}, fmt.Errorf("backend is required")
 	}
 	mgr, ok := s.backendManagers[req.Backend]
 	if !ok {
-		return nil, "", fmt.Errorf("no backend manager for %s", req.Backend)
+		return nil, agent.SessionInfo{}, fmt.Errorf("no backend manager for %s", req.Backend)
 	}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return nil, "", fmt.Errorf("host service is shut down")
+		return nil, agent.SessionInfo{}, fmt.Errorf("host service is shut down")
 	}
 	if _, exists := s.sessions[sessionID]; exists {
 		s.mu.Unlock()
-		return nil, "", fmt.Errorf("session %s already registered", sessionID)
+		return nil, agent.SessionInfo{}, fmt.Errorf("session %s already registered", sessionID)
 	}
 	s.mu.Unlock()
 
 	if err := req.GitRef.Validate(); err != nil {
-		return nil, "", fmt.Errorf("git_ref: %w", err)
+		return nil, agent.SessionInfo{}, fmt.Errorf("git_ref: %w", err)
 	}
+	normRef, err := s.normalizeGitRef(req.GitRef)
+	if err != nil {
+		return nil, agent.SessionInfo{}, fmt.Errorf("git_ref: %w", err)
+	}
+	req.GitRef = normRef
 	// Serialize against a concurrent DeleteWorktree of the same
 	// worktree: removing ~/work/<id> while this session is resolving
 	// its workdir / starting its backend would corrupt it. Held for
@@ -575,7 +591,7 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	}
 	workDir, err := s.workDirFor(ctx, req.GitRef)
 	if err != nil {
-		return nil, "", err
+		return nil, agent.SessionInfo{}, err
 	}
 
 	b, err := mgr.CreateBackend(ctx, agent.BackendInvocation{
@@ -583,7 +599,7 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 		ResumeExternalID: req.SessionID,
 	})
 	if err != nil {
-		return nil, "", err
+		return nil, agent.SessionInfo{}, err
 	}
 	// Re-check closed and duplicate-id under the lock — CreateBackend
 	// can take seconds, so a Shutdown or racing CreateSession could
@@ -594,35 +610,36 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 		if stopErr := b.Stop(); stopErr != nil {
 			s.log.Printf("warning: stop backend created during shutdown: %v", stopErr)
 		}
-		return nil, "", fmt.Errorf("host service is shut down")
+		return nil, agent.SessionInfo{}, fmt.Errorf("host service is shut down")
 	}
 	if _, exists := s.sessions[sessionID]; exists {
 		s.mu.Unlock()
 		if stopErr := b.Stop(); stopErr != nil {
 			s.log.Printf("warning: stop backend for duplicate session %s: %v", sessionID, stopErr)
 		}
-		return nil, "", fmt.Errorf("session %s already registered", sessionID)
+		return nil, agent.SessionInfo{}, fmt.Errorf("session %s already registered", sessionID)
 	}
 	s.sessions[sessionID] = b
 	s.mu.Unlock()
 
+	now := time.Now()
+	info := agent.SessionInfo{
+		ID:         sessionID,
+		ExternalID: req.SessionID, // empty for fresh; populated for resume
+		Backend:    req.Backend,
+		Status:     agent.StatusStarting,
+		Hostname:   req.Hostname,
+		GitRef:     req.GitRef,
+		Prompt:     req.Prompt,
+		TicketID:   req.TicketID,
+		Agent:      req.Agent,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
 	// Persist initial metadata. Errors are logged, not surfaced —
 	// rolling back a running backend is worse UX than an unpersisted
 	// row.
 	if s.sessionsStore != nil {
-		now := time.Now()
-		info := agent.SessionInfo{
-			ID:         sessionID,
-			ExternalID: req.SessionID, // empty for fresh; populated for resume
-			Backend:    req.Backend,
-			Status:     agent.StatusStarting,
-			GitRef:     req.GitRef,
-			Prompt:     req.Prompt,
-			TicketID:   req.TicketID,
-			Agent:      req.Agent,
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
 		if err := s.sessionsStore.UpsertSession(ctx, info); err != nil {
 			s.log.Printf("warning: persist session %s metadata: %v", sessionID, err)
 		}
@@ -641,17 +658,16 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 
 	// Per-session serverURL is OpenCode-only; CreateBackend already
 	// ensured a server exists for workDir.
-	serverURL := ""
 	if oc, ok := mgr.(*OpenCodeBackendManager); ok {
 		for _, srv := range oc.ListServers() {
 			if srv.ProjectDir == workDir {
-				serverURL = srv.URL
+				info.ServerURL = srv.URL
 				break
 			}
 		}
 	}
 
-	return b, serverURL, nil
+	return b, info, nil
 }
 
 // relayBackendEvents drains backend.Events() into the subscriber
@@ -778,64 +794,132 @@ func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
 	s.broadcastMetaChange(info)
 }
 
-// workDirFor resolves a GitRef to an absolute working directory.
+// resolveRefDirs resolves ref's locator to the directory pair the two
+// kinds of consumers need: base is the repo root (LocalPath refs) or
+// the ~/work/<WorktreeID> worktree (worktree refs) — where git,
+// branch, and worktree operations run; subdir is the working
+// subdirectory relative to base ("" = base itself). WorktreeBranch is
+// deliberately ignored here — branch worktrees are a workDirFor
+// concern.
 //
 // Precedence (per the GitRef contract):
-//  1. LocalPath set + usable as a repo on this host → use it.
-//  2. WorktreeID set → use ~/work/<WorktreeID>/. Errors with a clear
+//  1. LocalPath set + inside a repo on this host → that repo's root.
+//  2. WorktreeID set → ~/work/<WorktreeID>/. Errors with a clear
 //     message if that directory is missing — the worktree must have
 //     been created on this host (import/scaffold/CreateRepoWorktree)
 //     first. We do NOT fall back to cloning.
 //  3. Neither set / not usable → error.
-//
-// WorktreeBranch (when set) resolves to an additional git worktree
-// rooted under base.
-func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, error) {
-	var base string
-
+func (s *Service) resolveRefDirs(ref agent.GitRef) (base, subdir string, err error) {
 	if ref.LocalPath != "" {
+		// Resolve the root from LocalPath alone — joining Subdir here
+		// would make repo-root callers (repoRootFor) fail whenever the
+		// subdir is missing on disk, even though they never use it.
+		// workDirFor validates/stats the subdir itself once applied.
 		res := s.tryLocalPath(ref.LocalPath)
 		if res.HardErr != nil {
-			return "", res.HardErr
+			return "", "", res.HardErr
 		}
 		if res.Usable {
-			base = ref.LocalPath
-		} else if ref.WorktreeID == "" {
-			return "", fmt.Errorf("local_path %q not usable on this host (%w) and no worktree_id was provided", ref.LocalPath, res.SoftFail)
+			return res.Root, filepath.Join(res.Subdir, ref.Subdir), nil
 		}
-	}
-
-	if base == "" {
 		if ref.WorktreeID == "" {
-			return "", fmt.Errorf("git ref must set at least one of local_path or worktree_id")
-		}
-		root, err := workRootDir()
-		if err != nil {
-			return "", err
-		}
-		base = filepath.Join(root, ref.WorktreeID)
-		fi, err := os.Stat(base)
-		switch {
-		case os.IsNotExist(err):
-			// Wrap ErrNotFound so writeError can map to 404. Other
-			// workDirFor returns are caller-bug (relative paths, etc.)
-			// and stay as 500.
-			return "", fmt.Errorf("%w: worktree %s not present at %s on this host", ErrNotFound, ref.WorktreeID, base)
-		case err != nil:
-			return "", fmt.Errorf("stat worktree dir %q: %w", base, err)
-		case !fi.IsDir():
-			return "", fmt.Errorf("worktree %s path %q is not a directory", ref.WorktreeID, base)
+			return "", "", fmt.Errorf("local_path %q not usable on this host (%w) and no worktree_id was provided", ref.LocalPath, res.SoftFail)
 		}
 	}
 
+	if ref.WorktreeID == "" {
+		return "", "", fmt.Errorf("git ref must set at least one of local_path or worktree_id")
+	}
+	root, err := workRootDir()
+	if err != nil {
+		return "", "", err
+	}
+	base = filepath.Join(root, ref.WorktreeID)
+	fi, err := os.Stat(base)
+	switch {
+	case os.IsNotExist(err):
+		// Wrap ErrNotFound so writeError can map to 404. Other
+		// resolveRefDirs returns are caller-bug (relative paths, etc.)
+		// and stay as 500.
+		return "", "", fmt.Errorf("%w: worktree %s not present at %s on this host", ErrNotFound, ref.WorktreeID, base)
+	case err != nil:
+		return "", "", fmt.Errorf("stat worktree dir %q: %w", base, err)
+	case !fi.IsDir():
+		return "", "", fmt.Errorf("worktree %s path %q is not a directory", ref.WorktreeID, base)
+	}
+	return base, ref.Subdir, nil
+}
+
+// workDirFor resolves a GitRef to the absolute working directory a
+// session or preview dev server runs in: resolveRefDirs' base,
+// narrowed to Subdir when set. WorktreeBranch (when set) first
+// resolves to an additional git worktree of the base repo; Subdir then
+// applies inside that worktree.
+func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, error) {
+	base, subdir, err := s.resolveRefDirs(ref)
+	if err != nil {
+		return "", err
+	}
+	dir := base
 	if ref.WorktreeBranch != "" {
 		wt, err := s.resolveWorktree(ctx, base, ref.WorktreeBranch)
 		if err != nil {
 			return "", fmt.Errorf("resolve worktree for branch %q: %w", ref.WorktreeBranch, err)
 		}
-		return wt.WorktreeDir, nil
+		dir = wt.WorktreeDir
 	}
-	return base, nil
+	if subdir == "" {
+		return dir, nil
+	}
+	workDir := filepath.Join(dir, subdir)
+	fi, err := os.Stat(workDir)
+	switch {
+	case os.IsNotExist(err):
+		return "", fmt.Errorf("subdir %q does not exist under %s", subdir, dir)
+	case err != nil:
+		return "", fmt.Errorf("stat subdir %q: %w", workDir, err)
+	case !fi.IsDir():
+		return "", fmt.Errorf("subdir path %q is not a directory", workDir)
+	}
+	return workDir, nil
+}
+
+// repoRootFor resolves ref to the directory git, branch, and worktree
+// operations run against: the repo root for LocalPath refs, the
+// ~/work/<WorktreeID> worktree otherwise. Ignores WorktreeBranch and
+// Subdir — those narrow the working directory (workDirFor), never the
+// repo identity.
+func (s *Service) repoRootFor(ref agent.GitRef) (string, error) {
+	base, _, err := s.resolveRefDirs(ref)
+	return base, err
+}
+
+// normalizeGitRef canonicalizes a usable LocalPath into the repo root
+// plus a relative Subdir, so persisted identity (project_dir, RepoKey,
+// sidebar grouping) always keys on the root while the session still
+// runs at the requested folder. Unusable LocalPaths (SoftFail) pass
+// through unchanged — the worktree_id fallback handles them. When the
+// requested folder is a subdirectory and the client set no
+// DisplayName, the folder's basename becomes the DisplayName so UIs
+// keep showing the folder the user actually started in.
+func (s *Service) normalizeGitRef(ref agent.GitRef) (agent.GitRef, error) {
+	if ref.LocalPath == "" {
+		return ref, nil
+	}
+	requested := filepath.Join(ref.LocalPath, ref.Subdir)
+	res := s.tryLocalPath(requested)
+	if res.HardErr != nil {
+		return agent.GitRef{}, res.HardErr
+	}
+	if !res.Usable {
+		return ref, nil
+	}
+	if res.Subdir != "" && ref.DisplayName == "" {
+		ref.DisplayName = filepath.Base(requested)
+	}
+	ref.LocalPath = res.Root
+	ref.Subdir = res.Subdir
+	return ref, nil
 }
 
 // workRootForTest, when non-empty, overrides the $HOME/work parent
@@ -870,21 +954,30 @@ func SetWorkRootForTest(path string) string {
 	return prev
 }
 
-// localPathResult is the outcome of tryLocalPath. Exactly one field
-// is meaningful:
-//   - Usable: path is the repo root, use it directly.
+// localPathResult is the outcome of tryLocalPath. Exactly one of the
+// three states is meaningful:
+//   - Usable: path is inside a git repo. Root is the repo root and
+//     Subdir the path's location relative to it ("" when path IS the
+//     root) — Root for git/identity, Join(Root, Subdir) as the cwd.
 //   - SoftFail: path missing or not a git repo — caller may fall back
-//     to a remote clone.
-//   - HardErr: caller bug (relative path, not the repo root, etc.) —
+//     to a worktree_id.
+//   - HardErr: caller bug (relative path, unresolvable symlinks) —
 //     never fall back.
 type localPathResult struct {
-	Usable   bool
+	Usable bool
+	// Root is the repo root, in the caller's own path spelling where
+	// verifiable (git's spelling otherwise — see rootInCallerSpelling).
+	Root string
+	// Subdir is path relative to Root; "" when path is the root.
+	Subdir   string
 	SoftFail error
 	HardErr  error
 }
 
-// tryLocalPath checks whether path is usable as a session work
-// directory; see localPathResult for the field semantics.
+// tryLocalPath checks whether path is usable as a session working
+// directory; see localPathResult for the field semantics. Any
+// directory inside a git repo is accepted — the repo root is derived
+// from the path, not required of it.
 func (s *Service) tryLocalPath(path string) localPathResult {
 	if !filepath.IsAbs(path) {
 		return localPathResult{HardErr: fmt.Errorf("local_path must be absolute, got %q", path)}
@@ -909,10 +1002,32 @@ func (s *Service) tryLocalPath(path string) localPathResult {
 	if err != nil {
 		return localPathResult{HardErr: fmt.Errorf("resolve symlinks for repo root %q: %w", root, err)}
 	}
-	if filepath.Clean(rootAbs) != filepath.Clean(givenAbs) {
-		return localPathResult{HardErr: fmt.Errorf("local_path %q is not the repo root (root is %q)", path, root)}
+	rel, err := filepath.Rel(filepath.Clean(rootAbs), filepath.Clean(givenAbs))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		// Impossible for a root derived from path itself; guard anyway.
+		return localPathResult{HardErr: fmt.Errorf("local_path %q resolves outside its repo root %q", path, root)}
 	}
-	return localPathResult{Usable: true}
+	if rel == "." {
+		return localPathResult{Usable: true, Root: path}
+	}
+	return localPathResult{Usable: true, Root: rootInCallerSpelling(path, root, rel, rootAbs), Subdir: rel}
+}
+
+// rootInCallerSpelling returns the repo root spelled the way the
+// caller spelled path (e.g. /var/... instead of macOS's resolved
+// /private/var/...), by trimming rel's components off path. Falls back
+// to git's own spelling when the trimmed candidate doesn't resolve to
+// the same directory — an intermediate component of path was a
+// symlink, so pure trimming can't reconstruct the root.
+func rootInCallerSpelling(path, gitRoot, rel, rootAbs string) string {
+	candidate := filepath.Clean(path)
+	for range strings.SplitSeq(rel, string(filepath.Separator)) {
+		candidate = filepath.Dir(candidate)
+	}
+	if resolved, err := filepath.EvalSymlinks(candidate); err == nil && filepath.Clean(resolved) == filepath.Clean(rootAbs) {
+		return candidate
+	}
+	return gitRoot
 }
 
 // Session returns the live SessionBackend for id, or (nil, false).
@@ -1213,9 +1328,7 @@ func (s *Service) RespondPermission(ctx context.Context, id, permissionID string
 // for the repository identified by ref. Skips bare and detached entries.
 // ref.WorktreeBranch is ignored — listing operates on the repo root.
 func (s *Service) ListBranches(ctx context.Context, ref agent.GitRef) ([]BranchInfo, error) {
-	repoRef := ref
-	repoRef.WorktreeBranch = ""
-	root, err := s.workDirFor(ctx, repoRef)
+	root, err := s.repoRootFor(ref)
 	if err != nil {
 		return nil, err
 	}
@@ -1227,9 +1340,7 @@ func (s *Service) ListBranches(ctx context.Context, ref agent.GitRef) ([]BranchI
 // distinct argument so the caller's intent ("resolve THIS branch") is
 // explicit at the call site.
 func (s *Service) ResolveWorktree(ctx context.Context, ref agent.GitRef, branch string) (WorktreeInfo, error) {
-	repoRef := ref
-	repoRef.WorktreeBranch = ""
-	root, err := s.workDirFor(ctx, repoRef)
+	root, err := s.repoRootFor(ref)
 	if err != nil {
 		return WorktreeInfo{}, err
 	}
@@ -1242,9 +1353,7 @@ func (s *Service) ResolveWorktree(ctx context.Context, ref agent.GitRef, branch 
 
 // RemoveWorktree removes the worktree for (ref's repo, branch).
 func (s *Service) RemoveWorktree(ctx context.Context, ref agent.GitRef, branch string, force bool) error {
-	repoRef := ref
-	repoRef.WorktreeBranch = ""
-	root, err := s.workDirFor(ctx, repoRef)
+	root, err := s.repoRootFor(ref)
 	if err != nil {
 		return err
 	}
@@ -1339,9 +1448,7 @@ func (s *Service) removeLinkedWorktree(ctx context.Context, worktreeID, wtDir, g
 
 // MergeBranch merges branch into ref's repo's default branch.
 func (s *Service) MergeBranch(ctx context.Context, ref agent.GitRef, branch, commitMessage string) (MergeResult, error) {
-	repoRef := ref
-	repoRef.WorktreeBranch = ""
-	root, err := s.workDirFor(ctx, repoRef)
+	root, err := s.repoRootFor(ref)
 	if err != nil {
 		return MergeResult{}, err
 	}

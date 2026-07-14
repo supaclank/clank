@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/oklog/ulid/v2"
 
@@ -34,7 +33,10 @@ func (m *Mux) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionID := ulid.Make().String()
-	_, serverURL, err := m.svc.CreateSession(r.Context(), sessionID, req)
+	// info is the session as persisted — GitRef normalized by the host
+	// (a LocalPath inside a repo becomes {root, subdir}), so clients
+	// see the same identity the store and sidebar grouping key on.
+	_, info, err := m.svc.CreateSession(r.Context(), sessionID, req)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -56,21 +58,8 @@ func (m *Mux) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now()
-	info := agent.SessionInfo{
-		ID:         sessionID,
-		ExternalID: extID,
-		Backend:    req.Backend,
-		Status:     status,
-		Hostname:   req.Hostname,
-		GitRef:     req.GitRef,
-		Prompt:     req.Prompt,
-		TicketID:   req.TicketID,
-		Agent:      req.Agent,
-		ServerURL:  serverURL,
-		CreatedAt:  now,
-		UpdatedAt:  now,
-	}
+	info.ExternalID = extID
+	info.Status = status
 	writeJSON(w, http.StatusCreated, info)
 }
 

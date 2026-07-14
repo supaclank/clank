@@ -77,11 +77,11 @@ type remoteContext struct {
 // remote, reading the connected token. Mirrors CreatePR's resolution. The
 // github.com-origin requirement lives here so the run* helpers stay
 // transport-agnostic.
-func (s *Service) remoteContextFor(ctx context.Context, worktreeID string) (remoteContext, error) {
+func (s *Service) remoteContextFor(_ context.Context, worktreeID string) (remoteContext, error) {
 	if s.github == nil {
 		return remoteContext{}, ErrGitHubManagerUnavailable
 	}
-	workdir, err := s.workDirFor(ctx, agent.GitRef{WorktreeID: worktreeID})
+	workdir, err := s.repoRootFor(agent.GitRef{WorktreeID: worktreeID})
 	if err != nil {
 		return remoteContext{}, fmt.Errorf("resolve worktree: %w", err)
 	}

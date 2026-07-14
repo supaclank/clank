@@ -12,6 +12,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
+	"github.com/acksell/clank/internal/host/hosttest"
 )
 
 // previewTestEnv stands up a real *host.Service rooted at a temp
@@ -151,6 +152,53 @@ func TestPreviewStart_NotPreviewableYields404(t *testing.T) {
 	}
 	if body.Code != "no_preview" {
 		t.Errorf("code = %q; want no_preview", body.Code)
+	}
+}
+
+// TestPreviewStart_LocalPathSubdir_DetectsAtSubdir pins monorepo
+// support for the laptop `clank preview` path: local_path may point at
+// a subdirectory of a git repo, and Detect runs AT that subdirectory.
+// The fixture makes the two failure modes distinguishable — the repo
+// ROOT is previewable (Vite) while sub/ is not, so the correct
+// subdir-precise Detect yields 404 no_preview, whereas the old
+// repo-root rejection yielded a 500 and a root-resolving regression
+// would find the root's Vite app instead.
+func TestPreviewStart_LocalPathSubdir_DetectsAtSubdir(t *testing.T) {
+	env := newPreviewTestEnv(t, nil)
+	repo := hosttest.InitGitRepo(t)
+	files := map[string]string{
+		"package.json":     `{"devDependencies":{"vite":"^6.0.0"}}`,
+		"sub/package.json": `{"dependencies":{"react":"^18"}}`,
+	}
+	for rel, content := range files {
+		path := filepath.Join(repo, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir for %s: %v", path, err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	reqBody, err := json.Marshal(map[string]string{"local_path": filepath.Join(repo, "sub")})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	resp, err := http.Post(env.srv.URL+"/worktrees/"+env.worktreeID+"/preview/start",
+		"application/json", bytes.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (no_preview at the subdir)", resp.StatusCode)
+	}
+	var body errResp
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Code != "no_preview" {
+		t.Errorf("code = %q; want no_preview (Detect must run at the subdir)", body.Code)
 	}
 }
 

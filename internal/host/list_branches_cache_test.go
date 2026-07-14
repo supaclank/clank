@@ -141,6 +141,24 @@ func TestListBranches_InvalidatedOnResolveWorktree(t *testing.T) {
 	}
 }
 
+// TestListBranches_IgnoresMissingSubdir is a regression test:
+// repoRootFor (and its callers — ListBranches, ResolveWorktree,
+// RemoveWorktree, MergeBranch) is documented to ignore GitRef.Subdir,
+// but resolveRefDirs used to resolve the root via
+// tryLocalPath(LocalPath+Subdir), so a Subdir absent on disk broke
+// every repo-level git operation even though none of them touch it.
+func TestListBranches_IgnoresMissingSubdir(t *testing.T) {
+	t.Parallel()
+
+	repo := initGitRepo(t, "git@example.com:acme/widget.git")
+	svc := newTestService(t)
+
+	ref := agent.GitRef{LocalPath: repo, Subdir: "web-app"} // never created on disk
+	if _, err := svc.ListBranches(context.Background(), ref); err != nil {
+		t.Fatalf("ListBranches with missing subdir: %v (repo-root ops must ignore Subdir)", err)
+	}
+}
+
 // --- helpers ---
 
 func gitRun(t *testing.T, dir string, args ...string) {

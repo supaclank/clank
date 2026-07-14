@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -35,11 +36,13 @@ const (
 // native-CLI shell-out, derives display name from GitRef".
 //
 // For Claude Code: runs `claude --resume <externalID>` with cmd.Dir set to
-// the repo's LocalPath. Unlike OpenCode there is no server URL to anchor the
-// project, so cmd.Dir is required. The claude CLI's `--resume` resolves
-// sessions across the repo's git worktrees automatically (mirroring the SDK's
-// ListSessions behaviour — see internal/host/backends.go:194-196), so passing
-// the repo root is sufficient even for sessions started in a worktree.
+// the session's working directory — LocalPath narrowed to GitRef.Subdir when
+// set, since Claude keys transcript projects by cwd. Unlike OpenCode there is
+// no server URL to anchor the project, so cmd.Dir is required. The claude
+// CLI's `--resume` resolves sessions across the repo's git worktrees
+// automatically (mirroring the SDK's ListSessions behaviour — see
+// internal/host/backends.go), so LocalPath is sufficient even for sessions
+// started in a worktree.
 func nativeCLICmd(info *agent.SessionInfo) (*exec.Cmd, error) {
 	if info == nil {
 		return nil, fmt.Errorf("no session info")
@@ -67,7 +70,7 @@ func nativeCLICmd(info *agent.SessionInfo) (*exec.Cmd, error) {
 			return nil, fmt.Errorf("session %q has no local path; cannot launch claude CLI", info.ID)
 		}
 		cmd := exec.Command(claudeBin, claudeResumeFlag, info.ExternalID)
-		cmd.Dir = info.GitRef.LocalPath
+		cmd.Dir = filepath.Join(info.GitRef.LocalPath, info.GitRef.Subdir)
 		return cmd, nil
 	default:
 		return nil, fmt.Errorf("native CLI not supported for %s backend", info.Backend)

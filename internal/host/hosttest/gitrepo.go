@@ -7,7 +7,7 @@ import (
 )
 
 // InitGitRepo creates a git repo with an "origin" remote so
-// host.workDirFor accepts the LocalPath as a usable repo root.
+// host.workDirFor accepts a LocalPath at (or inside) it.
 func InitGitRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

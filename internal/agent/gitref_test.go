@@ -41,6 +41,11 @@ func TestGitRefValidate(t *testing.T) {
 		{"worktree only", GitRef{WorktreeID: "01HXYZ"}, false},
 		{"both ok", GitRef{LocalPath: "/x", WorktreeID: "01HXYZ"}, false},
 		{"both but local relative", GitRef{LocalPath: "rel", WorktreeID: "01HXYZ"}, true},
+		{"subdir ok", GitRef{LocalPath: "/x", Subdir: "web-app"}, false},
+		{"subdir nested ok", GitRef{WorktreeID: "01HXYZ", Subdir: "apps/web"}, false},
+		{"subdir absolute", GitRef{LocalPath: "/x", Subdir: "/abs"}, true},
+		{"subdir escapes", GitRef{LocalPath: "/x", Subdir: "../y"}, true},
+		{"subdir dot", GitRef{LocalPath: "/x", Subdir: "."}, true},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -80,5 +85,11 @@ func TestRepoKey(t *testing.T) {
 	e := GitRef{WorktreeID: "01HXYZ"}
 	if RepoKey(d) == RepoKey(e) {
 		t.Fatalf("expected distinct keys for distinct identifiers")
+	}
+	// Subdir does not enter the key: sessions in different subdirs of
+	// one repo share the repo's identity.
+	f := GitRef{LocalPath: "/x", Subdir: "web-app"}
+	if RepoKey(d) != RepoKey(f) {
+		t.Fatalf("expected subdir to be excluded from RepoKey, got %q vs %q", RepoKey(d), RepoKey(f))
 	}
 }
