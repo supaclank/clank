@@ -543,11 +543,14 @@ func (s *Service) persistSnapshots(ctx context.Context, snaps []agent.SessionSna
 // CreateSession registers a fresh SessionBackend under sessionID. The
 // backend is NOT started — callers call Start() or Watch().
 //
-// Returns the created SessionInfo as persisted: req.GitRef is
-// normalized (a LocalPath inside a repo becomes {root, Subdir}) and
-// ServerURL is populated for backends with an HTTP server (OpenCode
-// only). The session's working directory is workDirFor of the
-// normalized ref.
+// Returns a SessionInfo snapshot: req.GitRef is normalized (a
+// LocalPath inside a repo becomes {root, Subdir}), and ServerURL is
+// populated for backends with an HTTP server (OpenCode only) but never
+// persisted — it's process-local. Persisting the rest is attempted
+// when a store is configured and is best-effort: a write failure is
+// logged, not surfaced, since rolling back a running backend is worse
+// UX than an unpersisted row. The session's working directory is
+// workDirFor of the normalized ref.
 func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, agent.SessionInfo, error) {
 	if sessionID == "" {
 		return nil, agent.SessionInfo{}, fmt.Errorf("session id is required")
@@ -808,12 +811,16 @@ func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
 //  3. Neither set / not usable → error.
 func (s *Service) resolveRefDirs(ref agent.GitRef) (base, subdir string, err error) {
 	if ref.LocalPath != "" {
-		res := s.tryLocalPath(filepath.Join(ref.LocalPath, ref.Subdir))
+		// Resolve the root from LocalPath alone — joining Subdir here
+		// would make repo-root callers (repoRootFor) fail whenever the
+		// subdir is missing on disk, even though they never use it.
+		// workDirFor validates/stats the subdir itself once applied.
+		res := s.tryLocalPath(ref.LocalPath)
 		if res.HardErr != nil {
 			return "", "", res.HardErr
 		}
 		if res.Usable {
-			return res.Root, res.Subdir, nil
+			return res.Root, filepath.Join(res.Subdir, ref.Subdir), nil
 		}
 		if ref.WorktreeID == "" {
 			return "", "", fmt.Errorf("local_path %q not usable on this host (%w) and no worktree_id was provided", ref.LocalPath, res.SoftFail)
