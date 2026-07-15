@@ -368,8 +368,9 @@ func cloudReachabilityProbe(gatewayURL, accessToken string) tea.Cmd {
 
 // loginCmd kicks off the full PKCE flow in a goroutine and returns
 // the result via cloudLoginResultMsg. It performs two HTTP roundtrips:
-//   1. GET <gateway>/auth-config (discover OAuth 2.0 endpoints + client_id)
-//   2. The OAuth dance (browser open, callback, token exchange)
+//  1. GET <gateway>/auth-config (discover OAuth 2.0 endpoints + client_id)
+//  2. The OAuth dance (browser open, callback, token exchange)
+//
 // Both run inside the supplied ctx; cancelling ctx aborts the flow.
 func (m *cloudView) loginCmd(ctx context.Context) tea.Cmd {
 	client := m.client

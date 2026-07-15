@@ -300,12 +300,18 @@ type Question struct {
 	Text        string `json:"text"`                   // full question text
 	Header      string `json:"header,omitempty"`       // short label (chip/tag)
 	MultiSelect bool   `json:"multi_select,omitempty"` // multiple options may be selected
-	// AllowCustom reports whether a free-text answer is accepted. Always
-	// serialized: clients default a MISSING field to true (it's absent on
-	// their older fixtures), so omitting false would re-enable free text on
-	// exactly the questions that forbid it (opencode custom=false).
-	AllowCustom bool             `json:"allow_custom"`
+	// AllowCustom reports whether a free-text answer is accepted. Tri-state:
+	// nil means the provider didn't say and clients treat it as allowed (the
+	// universal default). A pointer rather than a bool so an explicit false —
+	// opencode's custom=false — survives omitempty and reaches clients.
+	AllowCustom *bool            `json:"allow_custom,omitempty"`
 	Options     []QuestionOption `json:"options"`
+}
+
+// CustomAllowed reports whether a free-text answer is accepted, treating an
+// unspecified AllowCustom as allowed.
+func (q Question) CustomAllowed() bool {
+	return q.AllowCustom == nil || *q.AllowCustom
 }
 
 // QuestionOption is one selectable choice for a Question.

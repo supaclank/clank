@@ -154,4 +154,3 @@ func TestSettingsView_ViewContainsLabelAndValue(t *testing.T) {
 		t.Errorf("expected current value in view, got:\n%s", out)
 	}
 }
-

@@ -93,11 +93,12 @@ func parseClaudeQuestions(input map[string]any) []Question {
 		if len(opts) == 0 {
 			return nil
 		}
+		allow := true
 		out = append(out, Question{
 			Text:        text,
 			Header:      header,
 			MultiSelect: multi,
-			AllowCustom: true,
+			AllowCustom: &allow,
 			Options:     opts,
 		})
 	}

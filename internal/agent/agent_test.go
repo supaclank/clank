@@ -111,7 +111,7 @@ func TestStartRequest_Validate_GitRef(t *testing.T) {
 			req: agent.StartRequest{
 				Backend: agent.BackendOpenCode,
 				GitRef: agent.GitRef{
-					LocalPath: "/tmp/repo",
+					LocalPath:  "/tmp/repo",
 					WorktreeID: "01HXYZWORKTREE",
 				},
 				Prompt: "hi",
