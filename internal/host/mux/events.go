@@ -59,16 +59,6 @@ func (m *Mux) handleEvents(w http.ResponseWriter, r *http.Request) {
 		m.log.Printf("hostmux: SSE connected frame failed for sub=%s: %v", subID, err)
 		return
 	}
-	// Replay prompts still awaiting an answer: the live stream starts "now",
-	// so a (re)connecting client would otherwise lose its question cards.
-	// Clients apply question events idempotently by request_id, so a prompt
-	// that also arrives live (raced the subscribe) is harmless.
-	for _, evt := range m.svc.PendingQuestionEvents() {
-		if err := writeSSE(w, string(evt.Type), evt); err != nil {
-			m.log.Printf("hostmux: SSE question replay failed for sub=%s: %v", subID, err)
-			return
-		}
-	}
 	flusher.Flush()
 
 	for {

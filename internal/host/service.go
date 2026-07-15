@@ -74,16 +74,6 @@ type Service struct {
 	// subscribers fans out backend events to SSE/WebSocket handlers.
 	subscribers *subscriberRegistry
 
-	// pendingQuestions snapshots question events still awaiting an answer,
-	// per session. The SSE stream is live-only, so without this a client
-	// (re)opening a session would lose the prompt; the mux replays these
-	// into every new subscription (clients apply them idempotently by
-	// request_id). Maintained by trackPendingQuestion from the relay;
-	// cleared when the backend's event stream closes (its parked prompts
-	// die with it). Guarded by questionsMu.
-	questionsMu      sync.Mutex
-	pendingQuestions map[string][]agent.Event
-
 	// wg tracks per-session event-relay goroutines so Shutdown can
 	// wait for them before closing the subscriber registry.
 	wg sync.WaitGroup
@@ -223,7 +213,6 @@ func New(opts Options) *Service {
 		projectCommitterEmail: committerEmail,
 		templates:             opts.Templates,
 		sessions:              make(map[string]agent.SessionBackend),
-		pendingQuestions:      make(map[string][]agent.Event),
 		branches:              newBranchCache(opts.BranchCacheTTL, opts.Now),
 		sessionsStore:         opts.SessionsStore,
 		subscribers:           newSubscriberRegistry(),
@@ -688,69 +677,9 @@ func (s *Service) relayBackendEvents(sessionID string, b agent.SessionBackend) {
 	defer s.wg.Done()
 	for evt := range b.Events() {
 		evt.SessionID = sessionID
-		// Track before Broadcast so a client that fetches right after
-		// receiving the event sees consistent state.
-		s.trackPendingQuestion(evt)
 		s.subscribers.Broadcast(evt)
 		s.applyEventToMetadata(sessionID, evt)
 	}
-	// The backend stopped; its pending prompts died with it.
-	s.questionsMu.Lock()
-	delete(s.pendingQuestions, sessionID)
-	s.questionsMu.Unlock()
-}
-
-// trackPendingQuestion maintains the pending-question snapshot replayed to
-// (re)subscribing SSE clients: question events accumulate, question.resolved
-// events retire them.
-func (s *Service) trackPendingQuestion(evt agent.Event) {
-	switch evt.Type {
-	case agent.EventQuestion:
-		data, ok := evt.Data.(agent.QuestionData)
-		if !ok {
-			return
-		}
-		s.questionsMu.Lock()
-		defer s.questionsMu.Unlock()
-		for _, e := range s.pendingQuestions[evt.SessionID] {
-			if q, ok := e.Data.(agent.QuestionData); ok && q.RequestID == data.RequestID {
-				return
-			}
-		}
-		s.pendingQuestions[evt.SessionID] = append(s.pendingQuestions[evt.SessionID], evt)
-	case agent.EventQuestionResolved:
-		data, ok := evt.Data.(agent.QuestionResolvedData)
-		if !ok {
-			return
-		}
-		s.questionsMu.Lock()
-		defer s.questionsMu.Unlock()
-		evts := s.pendingQuestions[evt.SessionID]
-		kept := evts[:0]
-		for _, e := range evts {
-			if q, ok := e.Data.(agent.QuestionData); ok && q.RequestID == data.RequestID {
-				continue
-			}
-			kept = append(kept, e)
-		}
-		if len(kept) == 0 {
-			delete(s.pendingQuestions, evt.SessionID)
-		} else {
-			s.pendingQuestions[evt.SessionID] = kept
-		}
-	}
-}
-
-// PendingQuestionEvents returns the question events still awaiting an
-// answer, across all sessions, for replay into a new SSE subscription.
-func (s *Service) PendingQuestionEvents() []agent.Event {
-	s.questionsMu.Lock()
-	defer s.questionsMu.Unlock()
-	var out []agent.Event
-	for _, evts := range s.pendingQuestions {
-		out = append(out, evts...)
-	}
-	return out
 }
 
 // applyEventToMetadata persists status/title changes and the first-

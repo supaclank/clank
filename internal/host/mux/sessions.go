@@ -316,19 +316,6 @@ func (m *Mux) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 	subID, ch := m.svc.Subscribe()
 	defer m.svc.Unsubscribe(subID)
 
-	// Replay this session's prompts still awaiting an answer (see the
-	// global-stream handler for rationale; applied idempotently by clients).
-	for _, evt := range m.svc.PendingQuestionEvents() {
-		if evt.SessionID != id {
-			continue
-		}
-		if err := writeSSE(w, string(evt.Type), evt); err != nil {
-			m.log.Printf("hostmux: SSE question replay for %s: %v", id, err)
-			return
-		}
-	}
-	flusher.Flush()
-
 	ctx := r.Context()
 	for {
 		select {
