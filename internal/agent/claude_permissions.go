@@ -17,6 +17,16 @@ type permissionDecision struct {
 	denyMessage string
 }
 
+// claudeQuestion is a pending AskUserQuestion prompt awaiting RespondQuestion.
+type claudeQuestion struct {
+	toolUseID string
+	questions []Question
+	// viaPerm marks a prompt parked on handleCanUseTool (gated modes): the
+	// formatted answers ride the permission deny. When false the tool auto-ran
+	// (bypassPermissions) and answers go back as a follow-up user message.
+	viaPerm bool
+}
+
 // handleCanUseTool is the SDK CanUseTool callback. The SDK invokes it
 // synchronously on its control-protocol read goroutine whenever the CLI wants
 // to use a tool the current permission mode doesn't auto-approve. It bridges
@@ -38,12 +48,37 @@ func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, i
 	id := fmt.Sprintf("perm-%d", b.permSeq)
 	b.pendingPerms[id] = decision
 	toolUseID := b.lastToolUseID[tool]
+
+	// Normalize AskUserQuestion into a structured EventQuestion so clients
+	// don't have to sniff tool names out of part input. The permission event
+	// still follows (same request id) for clients that predate EventQuestion;
+	// question-aware clients suppress it by matching request_id.
+	var questions []Question
+	if tool == ClaudeToolAskUserQuestion {
+		if questions = parseClaudeQuestions(input); questions != nil {
+			b.pendingQuestions[id] = claudeQuestion{toolUseID: toolUseID, questions: questions, viaPerm: true}
+			if toolUseID != "" {
+				b.questionToolUses[toolUseID] = true
+			}
+		}
+	}
 	b.mu.Unlock()
 
 	defer func() {
 		b.mu.Lock()
 		delete(b.pendingPerms, id)
+		_, wasQuestion := b.pendingQuestions[id]
+		delete(b.pendingQuestions, id)
 		b.mu.Unlock()
+		// However the prompt resolved (answers, deny, abort), tell every client
+		// to clear the question card.
+		if wasQuestion {
+			b.emit(Event{
+				Type:      EventQuestionResolved,
+				Timestamp: time.Now(),
+				Data:      QuestionResolvedData{RequestID: id},
+			})
+		}
 	}()
 
 	// The CLI asks for permission just before the content_block_stop that would
@@ -71,6 +106,21 @@ func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, i
 		})
 	}
 
+	// Emit the question before the permission so a question-aware client has
+	// already registered the request id when the permission arrives and can
+	// suppress the redundant generic prompt.
+	if questions != nil {
+		b.emit(Event{
+			Type:      EventQuestion,
+			Timestamp: time.Now(),
+			Data: QuestionData{
+				RequestID: id,
+				ToolUseID: toolUseID,
+				Questions: questions,
+			},
+		})
+	}
+
 	b.emit(Event{
 		Type:      EventPermission,
 		Timestamp: time.Now(),
@@ -94,7 +144,7 @@ func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, i
 			// mode to unknown so the next Send always re-asserts the user's
 			// chosen mode. The re-assert always succeeds: the session was
 			// launched with --dangerously-skip-permissions (see Open).
-			if tool == "ExitPlanMode" {
+			if tool == ClaudeToolExitPlanMode {
 				b.mu.Lock()
 				b.currentPermMode = ""
 				b.mu.Unlock()
@@ -145,6 +195,47 @@ func (b *ClaudeCodeBackend) RespondPermission(_ context.Context, permissionID st
 	return nil
 }
 
+// RespondQuestion delivers structured answers to a pending question prompt.
+// For a prompt parked on handleCanUseTool (gated modes) the formatted answers
+// ride the permission deny — allow would run the tool's interactive picker
+// headless and re-deadlock, so deny-with-message is the only transport that
+// reaches the model. For a prompt whose tool auto-ran (bypassPermissions) the
+// answers are dispatched as a follow-up user message, mirroring the mobile
+// client's fallback.
+func (b *ClaudeCodeBackend) RespondQuestion(ctx context.Context, requestID string, answers []QuestionAnswer, reject bool) error {
+	b.mu.Lock()
+	q, ok := b.pendingQuestions[requestID]
+	b.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("no pending question %q", requestID)
+	}
+	if !reject && len(answers) != len(q.questions) {
+		return fmt.Errorf("question %q expects %d answers, got %d", requestID, len(q.questions), len(answers))
+	}
+
+	if q.viaPerm {
+		// The parked handleCanUseTool owns cleanup and the resolved event.
+		msg := questionsDismissedMessage
+		if !reject {
+			msg = formatQuestionAnswers(q.questions, answers)
+		}
+		return b.RespondPermission(ctx, requestID, false, msg)
+	}
+
+	b.mu.Lock()
+	delete(b.pendingQuestions, requestID)
+	b.mu.Unlock()
+	b.emit(Event{
+		Type:      EventQuestionResolved,
+		Timestamp: time.Now(),
+		Data:      QuestionResolvedData{RequestID: requestID},
+	})
+	if reject {
+		return nil
+	}
+	return b.Send(ctx, SendMessageOpts{Text: formatQuestionAnswers(q.questions, answers)})
+}
+
 // failPendingPermissions denies every parked permission request. Called on
 // Abort so the SDK read goroutine is freed immediately rather than waiting for
 // the interrupt to propagate through the CLI. Stop relies on b.ctx cancellation
@@ -172,6 +263,12 @@ func (b *ClaudeCodeBackend) failPendingPermissions() {
 func describeToolCall(tool string, input map[string]any) string {
 	var detail string
 	switch {
+	case tool == ClaudeToolAskUserQuestion:
+		// Show the first question instead of the bare tool name (which renders
+		// as the unhelpful "AskUserQuestion: AskUserQuestion" on old clients).
+		if qs := parseClaudeQuestions(input); len(qs) > 0 {
+			detail = qs[0].Text
+		}
 	case input["command"] != nil:
 		detail = fmt.Sprint(input["command"])
 	case input["file_path"] != nil:

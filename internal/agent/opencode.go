@@ -569,6 +569,32 @@ func (b *OpenCodeBackend) handleGlobalEvent(ev *opencode.GlobalEvent) {
 	case p.PermissionAsked != nil:
 		b.handlePermissionAsked(p.PermissionAsked.Properties)
 
+	case p.QuestionAsked != nil:
+		b.handleQuestionAsked(p.QuestionAsked.Properties)
+
+	case p.QuestionV2Asked != nil:
+		b.handleQuestionV2Asked(p.QuestionV2Asked.Properties)
+
+	case p.QuestionReplied != nil:
+		if props := p.QuestionReplied.Properties; props != nil {
+			b.handleQuestionResolved(props.SessionID, props.RequestID)
+		}
+
+	case p.QuestionRejected != nil:
+		if props := p.QuestionRejected.Properties; props != nil {
+			b.handleQuestionResolved(props.SessionID, props.RequestID)
+		}
+
+	case p.QuestionV2Replied != nil:
+		if props := p.QuestionV2Replied.Properties; props != nil {
+			b.handleQuestionResolved(props.SessionID, props.RequestID)
+		}
+
+	case p.QuestionV2Rejected != nil:
+		if props := p.QuestionV2Rejected.Properties; props != nil {
+			b.handleQuestionResolved(props.SessionID, props.RequestID)
+		}
+
 	case p.SessionIdle != nil:
 		if p.SessionIdle.Properties == nil || p.SessionIdle.Properties.SessionID != b.sessionID {
 			return

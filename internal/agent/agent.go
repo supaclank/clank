@@ -47,18 +47,20 @@ const (
 type EventType string
 
 const (
-	EventStatusChange  EventType = "status"       // Session status changed
-	EventMessage       EventType = "message"      // New message (user or assistant)
-	EventPartUpdate    EventType = "part"         // Part updated (tool call progress, text delta)
-	EventPermission    EventType = "permission"   // Agent requests permission for a tool
-	EventError         EventType = "error"        // Error occurred
-	EventTitleChange   EventType = "title"        // Session title updated
-	EventRevertChange  EventType = "revert"       // Session revert state changed
-	EventReconnecting  EventType = "reconnecting" // Backend is reconnecting to server
-	EventReconnected   EventType = "reconnected"  // Backend successfully reconnected
-	EventSessionCreate EventType = "session.create"
-	EventSessionDelete EventType = "session.delete"
-	EventMetaChange    EventType = "meta" // Session metadata changed (read state, visibility, draft, follow-up)
+	EventStatusChange     EventType = "status"            // Session status changed
+	EventMessage          EventType = "message"           // New message (user or assistant)
+	EventPartUpdate       EventType = "part"              // Part updated (tool call progress, text delta)
+	EventPermission       EventType = "permission"        // Agent requests permission for a tool
+	EventQuestion         EventType = "question"          // Agent asks the user structured question(s)
+	EventQuestionResolved EventType = "question.resolved" // A pending question was answered or dismissed
+	EventError            EventType = "error"             // Error occurred
+	EventTitleChange      EventType = "title"             // Session title updated
+	EventRevertChange     EventType = "revert"            // Session revert state changed
+	EventReconnecting     EventType = "reconnecting"      // Backend is reconnecting to server
+	EventReconnected      EventType = "reconnected"       // Backend successfully reconnected
+	EventSessionCreate    EventType = "session.create"
+	EventSessionDelete    EventType = "session.delete"
+	EventMetaChange       EventType = "meta" // Session metadata changed (read state, visibility, draft, follow-up)
 
 	// Voice events — emitted by the voice agent running on the daemon.
 	EventVoiceTranscript EventType = "voice.transcript" // Model's spoken response as text
@@ -127,6 +129,18 @@ func (e *Event) UnmarshalJSON(b []byte) error {
 		var d PermissionData
 		if err := json.Unmarshal(raw.Data, &d); err != nil {
 			return fmt.Errorf("unmarshal PermissionData: %w", err)
+		}
+		e.Data = d
+	case EventQuestion:
+		var d QuestionData
+		if err := json.Unmarshal(raw.Data, &d); err != nil {
+			return fmt.Errorf("unmarshal QuestionData: %w", err)
+		}
+		e.Data = d
+	case EventQuestionResolved:
+		var d QuestionResolvedData
+		if err := json.Unmarshal(raw.Data, &d); err != nil {
+			return fmt.Errorf("unmarshal QuestionResolvedData: %w", err)
 		}
 		e.Data = d
 	case EventError:
@@ -271,6 +285,49 @@ type PermissionData struct {
 	// tool-call card it already rendered (whose id is the tool_use id) instead
 	// of guessing by tool name. Empty when the backend can't attribute it.
 	ToolUseID string `json:"tool_use_id,omitempty"`
+}
+
+// QuestionData is the payload for EventQuestion: a structured, stop-and-wait
+// prompt from the agent, normalized across backends (Claude's AskUserQuestion
+// tool, OpenCode's question API). Clients render the questions and reply via
+// RespondQuestion with one QuestionAnswer per question, in order. The backend
+// owns translating the answers into its provider's transport.
+type QuestionData struct {
+	RequestID string `json:"request_id"`
+	// ToolUseID is the id of the tool_call part this question originated from,
+	// when the backend can determine it. Lets clients correlate the prompt with
+	// an already-rendered tool-call card. Empty when unattributable.
+	ToolUseID string     `json:"tool_use_id,omitempty"`
+	Questions []Question `json:"questions"`
+}
+
+// Question is one question within a QuestionData prompt.
+type Question struct {
+	Text        string           `json:"text"`                   // full question text
+	Header      string           `json:"header,omitempty"`       // short label (chip/tag)
+	MultiSelect bool             `json:"multi_select,omitempty"` // multiple options may be selected
+	AllowCustom bool             `json:"allow_custom,omitempty"` // a free-text answer is accepted
+	Options     []QuestionOption `json:"options"`
+}
+
+// QuestionOption is one selectable choice for a Question.
+type QuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+// QuestionAnswer is the user's answer to one Question. Both fields empty means
+// the user delegated that question back to the agent.
+type QuestionAnswer struct {
+	Selected []string `json:"selected,omitempty"` // labels of the chosen options
+	Custom   string   `json:"custom,omitempty"`   // free-text answer
+}
+
+// QuestionResolvedData is the payload for EventQuestionResolved. Emitted when a
+// pending question is answered or dismissed (possibly by another client), so
+// every client can clear the prompt.
+type QuestionResolvedData struct {
+	RequestID string `json:"request_id"`
 }
 
 // ErrorData is the payload for EventError.
@@ -674,6 +731,13 @@ type SessionBackend interface {
 	// it is ignored when allow=true and by backends whose protocol has no
 	// deny-reason field.
 	RespondPermission(ctx context.Context, permissionID string, allow bool, denyMessage string) error
+
+	// RespondQuestion replies to a pending EventQuestion prompt. answers must
+	// carry one entry per question, in order; an all-empty QuestionAnswer
+	// delegates that question back to the agent. reject=true dismisses the
+	// prompt without answers (answers is ignored). Returns an error for an
+	// unknown requestID so callers fail fast on a stale prompt.
+	RespondQuestion(ctx context.Context, requestID string, answers []QuestionAnswer, reject bool) error
 }
 
 // BackendInvocation is the host-resolved, backend-only view of a session

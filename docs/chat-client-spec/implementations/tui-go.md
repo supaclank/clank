@@ -46,7 +46,7 @@
 | INV-RECONNECT-SEMANTICS-001 | ✅ | does not key reconcile off `reconnected`; reconnect handled by re-subscribe |
 | INV-PENDING-PERM-GAP-001 | 🟡 | calls `fetchPendingPermission` `:553` (receives `[]`); blocked-state not specially surfaced — same host gap as all clients |
 | INV-HEARTBEAT-GAP-001 | 🟡 | SSE client has no read timeout (`transport.go:122`); relies on re-subscribe; no explicit liveness timer |
-| INV-INTERACTIVE-001 | ❌ gap | handles the permission but renders no AskUserQuestion/ExitPlanMode UI and no inline comments — RN is the reference ([11](../11-interactive-tools.md)) |
+| INV-INTERACTIVE-001 | 🟡 | questions ✅ via the `question` event (`sessionview_question.go`: options picker, multi-select, Other free-text, reject; suppresses the paired permission per QST-002); ExitPlanMode ✅ plan text + approve/request-changes/deny in the permission card; inline comments still ❌ ([11](../11-interactive-tools.md)) |
 | INV-SIDEBAR-META-001 | ✅ | `inbox_sse.go:149` — list driven by `meta`; field-level `status`/`title` deliberately ignored for the list (`:23`) |
 
 ## Conformance

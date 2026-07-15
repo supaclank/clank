@@ -31,8 +31,9 @@ Terms as used in this spec.
 - **Plan mode** — `permission_mode: plan`; the agent plans read-only and calls **ExitPlanMode**
   to ask to proceed.
 - **ExitPlanMode / AskUserQuestion** — **interactive ("stop-and-wait") tools**: a tool-call
-  part carries their UI (`input`), gated by a paired permission; the answer is the permission
-  reply.
+  part carries their UI (`input`), gated by a paired permission. Questions additionally
+  arrive as the normalized `question` event and are answered on the questions endpoint; the
+  plan decision rides the permission reply.
 - **Revert** — roll files back + truncate the transcript at a message; supported on **both**
   backends (Claude: durable rollback, requires a message id, since #68; OpenCode: a toggleable
   session marker whose empty id clears it). Surfaced via `revert_message_id`. See

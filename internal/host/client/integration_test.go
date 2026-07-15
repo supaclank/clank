@@ -68,7 +68,12 @@ func (b *stubBackend) Revert(_ context.Context, _ string) error                {
 func (b *stubBackend) Fork(_ context.Context, _ string) (agent.ForkResult, error) {
 	return agent.ForkResult{ID: "forked-" + b.id, Title: "Forked"}, nil
 }
-func (b *stubBackend) RespondPermission(_ context.Context, _ string, _ bool, _ string) error { return nil }
+func (b *stubBackend) RespondPermission(_ context.Context, _ string, _ bool, _ string) error {
+	return nil
+}
+func (b *stubBackend) RespondQuestion(_ context.Context, _ string, _ []agent.QuestionAnswer, _ bool) error {
+	return nil
+}
 
 // stubManager is a BackendManager that returns the same stubBackend per
 // CreateBackend call (held in `next`).

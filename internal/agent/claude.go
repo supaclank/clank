@@ -128,6 +128,16 @@ type ClaudeCodeBackend struct {
 	// the latest id per name is the one being gated. Guarded by b.mu.
 	lastToolUseID map[string]string
 
+	// pendingQuestions maps a question request ID to the normalized questions
+	// awaiting RespondQuestion. Guarded by b.mu.
+	pendingQuestions map[string]claudeQuestion
+
+	// questionToolUses records AskUserQuestion tool_use ids already surfaced as
+	// an EventQuestion via handleCanUseTool, so handleContentBlockStop (which
+	// runs after the parked prompt resolves) doesn't emit a duplicate. Guarded
+	// by b.mu.
+	questionToolUses map[string]bool
+
 	// aiTitleEmitted is set once the CLI-generated session title has been read
 	// from the transcript and published via EventTitleChange. The CLI keeps the
 	// title stable for a session's life, so reading stops after the first emit.
@@ -159,6 +169,8 @@ func NewClaudeCodeBackendForSession(workDir, resumeSessionID string) *ClaudeCode
 		events:           make(chan Event, 128),
 		activeToolBlocks: make(map[int]*activeToolBlock),
 		pendingPerms:     make(map[string]chan permissionDecision),
+		pendingQuestions: make(map[string]claudeQuestion),
+		questionToolUses: make(map[string]bool),
 		lastToolUseID:    make(map[string]string),
 		initialPermMode:  ClaudePermBypass,
 		ctx:              ctx,
@@ -1160,6 +1172,44 @@ func (b *ClaudeCodeBackend) handleContentBlockStop(event map[string]any) {
 		Status: PartCompleted,
 		Input:  inputMap,
 	}, false)
+
+	b.maybeEmitBypassQuestion(tb.partID, tb.tool, inputMap)
+}
+
+// maybeEmitBypassQuestion surfaces an AskUserQuestion as an EventQuestion when
+// no permission prompt will do it. In gated modes handleCanUseTool parks the
+// reader before this block's stop arrives and emits the question itself (and
+// marks the tool_use id); in bypassPermissions the CLI never consults us, the
+// tool auto-runs, and this stream-side hook is the only place the question can
+// be surfaced. Answers for such prompts go back as a follow-up user message
+// (see RespondQuestion).
+func (b *ClaudeCodeBackend) maybeEmitBypassQuestion(toolUseID, tool string, input map[string]any) {
+	if tool != ClaudeToolAskUserQuestion || toolUseID == "" {
+		return
+	}
+	questions := parseClaudeQuestions(input)
+	if questions == nil {
+		return
+	}
+	id := "q-" + toolUseID
+	b.mu.Lock()
+	if b.questionToolUses[toolUseID] {
+		b.mu.Unlock()
+		return
+	}
+	b.questionToolUses[toolUseID] = true
+	b.pendingQuestions[id] = claudeQuestion{toolUseID: toolUseID, questions: questions}
+	b.mu.Unlock()
+
+	b.emit(Event{
+		Type:      EventQuestion,
+		Timestamp: time.Now(),
+		Data: QuestionData{
+			RequestID: id,
+			ToolUseID: toolUseID,
+			Questions: questions,
+		},
+	})
 }
 
 // --- Type mapping helpers ---

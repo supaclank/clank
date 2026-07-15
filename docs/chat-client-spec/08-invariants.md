@@ -323,16 +323,17 @@ emit an error reason on dispatch failure), `internal/host/service.go` (`ensureBa
 
 ## Interactive tools & session list
 
-### [INV-INTERACTIVE-001] (MUST) Render interactive tools; the TUI is not golden here
-Render `AskUserQuestion` / `ExitPlanMode` (and OpenCode's `question`) as structured UI from
-the `tool_call` part `input`, and submit answers per [11](11-interactive-tools.md). The TUI
-renders **no** interactive UI for these — the **RN client is the reference**; do not infer
-from the TUI's absence that no UI is required. Identifying these by tool name is a known hack
-([11 open questions](11-interactive-tools.md#open-design-questions-non-normative)).
-**Why:** a client that treats them as opaque tool cards loses the plan/question UX the mobile
-client already ships.
-**Golden:** `clank-mobile/src/lib/askQuestion.ts`, `…/planReview.ts`, `…/chatReview.ts`.
-**Conformance:** `CONF-INTERACTIVE-ASK`, `CONF-INTERACTIVE-PLAN`, `CONF-INLINE-COMMENT`.
+### [INV-INTERACTIVE-001] (MUST) Render interactive tools as structured UI
+Render questions from the normalized `question` event ([QST-001](11-interactive-tools.md))
+and plans (`ExitPlanMode`) from the `tool_call` part `input`, and submit answers per
+[11](11-interactive-tools.md). A client MUST NOT present a question as a bare allow/deny
+permission when it understands `question` events ([QST-002] suppression). Legacy clients that
+predate the event fall back to tool-name matching on the part input (RN reference:
+`clank-mobile/src/lib/askQuestion.ts`, `…/planReview.ts`).
+**Why:** a client that treats them as opaque tool cards loses the plan/question UX.
+**Golden:** `internal/tui/sessionview_question.go` (questions), `clank-mobile/src/lib/planReview.ts`
+(plan review), `…/chatReview.ts` (inline comments).
+**Conformance:** `CONF-QUESTION-EVENT`, `CONF-INTERACTIVE-ASK`, `CONF-INTERACTIVE-PLAN`, `CONF-INLINE-COMMENT`.
 
 ### [INV-SIDEBAR-META-001] (MUST) Drive the session list from `meta`, not field-level events
 A session list/sidebar MUST update rows from `meta` (+ `session.create`/`session.delete`),
