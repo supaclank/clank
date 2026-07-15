@@ -336,6 +336,12 @@ func (m *SessionViewModel) handleQuestionReplyResult(msg questionReplyResultMsg)
 			return
 		}
 	}
+	// Lazy init: SessionViewModel has several construction sites (NewSessionViewModel,
+	// the compose-path literal) and reads on a nil map are safe — only this
+	// write needs the map to exist.
+	if m.answeredQuestions == nil {
+		m.answeredQuestions = make(map[string]bool)
+	}
 	m.answeredQuestions[msg.requestID] = true
 	// The gating permission (Claude default/plan mode) was resolved through
 	// the question reply; drop the suppressed local copy if one queued.

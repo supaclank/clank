@@ -480,12 +480,11 @@ func NewSessionViewModel(client *daemonclient.Client, sessionID string) *Session
 		spinner.WithStyle(lipgloss.NewStyle().Foreground(successColor)),
 	)
 	return &SessionViewModel{
-		client:            client,
-		sessionID:         sessionID,
-		follow:            true,
-		input:             ta,
-		spinner:           sp,
-		answeredQuestions: make(map[string]bool),
+		client:    client,
+		sessionID: sessionID,
+		follow:    true,
+		input:     ta,
+		spinner:   sp,
 	}
 }
 

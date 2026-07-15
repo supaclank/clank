@@ -248,6 +248,25 @@ func TestSessionView_QuestionAnswerErrorKeepsPrompt(t *testing.T) {
 	}
 }
 
+// Regression: dismissing a question in a session view built through the
+// COMPOSE constructor (a struct literal, unlike NewSessionViewModel) panicked
+// with "assignment to entry in nil map" — answeredQuestions was never
+// initialized on that path.
+func TestSessionView_QuestionDismissOnComposePathDoesNotPanic(t *testing.T) {
+	t.Parallel()
+	m := newSessionViewComposingWithBackend(nil, t.TempDir(), agent.BackendClaudeCode)
+	m.width, m.height = 100, 40
+
+	m.handleEvent(questionPartEvent("toolu_1", "q-toolu_1"))
+	if cmd := pressKey(t, m, tea.KeyPressMsg{Code: tea.KeyEscape}); cmd == nil {
+		t.Fatal("esc must dispatch a reject reply")
+	}
+	m.handleQuestionReplyResult(questionReplyResultMsg{requestID: "q-toolu_1", reject: true})
+	if m.activeQuestionPart() != nil {
+		t.Error("prompt still active after dismissal")
+	}
+}
+
 // The question card must render the options and selection state.
 func TestSessionView_QuestionCardRenders(t *testing.T) {
 	t.Parallel()
