@@ -89,18 +89,20 @@ C: next send carries permission_mode:"" → backend re-asserts the user's chosen
 
 ## 5. Questions (interactive tool)
 
-Questions arrive pre-normalized as a `question` event ([QST-001](11-interactive-tools.md)):
-the client renders a structured prompt and replies with structured answers on the questions
-endpoint; the paired `permission` (same `request_id`, gated Claude sessions only) is
-suppressed. Legacy clients instead parse the `AskUserQuestion` tool-call part.
+Questions arrive as their tool-call part, pre-normalized via the `part.question` tag
+([QST-001](11-interactive-tools.md)): the client renders a structured prompt and replies with
+structured answers on the questions endpoint; the paired `permission` (same `request_id`,
+gated Claude sessions only) is suppressed. Because the tag also rides `Messages()` history,
+reopening a session restores the prompt from the ordinary refetch. Legacy clients instead
+parse the `AskUserQuestion` tool-call part input by tool name.
 
-- **[FLOW-ASK-001] (MUST)** A question-aware client MUST render the `question` event's
-  questions and reply per [QST-001](11-interactive-tools.md); a `question.resolved` event (or,
-  on the legacy path, a **terminal** part `status`) means it was already answered — the card
-  MUST clear rather than reappear. Legacy clients parse the question(s) from the
-  `AskUserQuestion` tool-call part `input` and submit a formatted `SendMessage` per
+- **[FLOW-ASK-001] (MUST)** A tag-aware client MUST render the tagged part per
+  [QST-001](11-interactive-tools.md) while it is awaiting an answer per [QST-002]
+  (positional: it is the conversation's last content); once the conversation moves past it,
+  the card MUST render read-only rather than reappear. Legacy clients parse the question(s)
+  from the `AskUserQuestion` tool-call part `input` and submit a formatted `SendMessage` per
   [ITOOL-004](11-interactive-tools.md), resolving the gating permission when one is pending.
-  **Why:** stop-and-wait tools must clear on the "already handled" signal or they flicker back.
+  **Why:** stop-and-wait tools must retire on the "already handled" signal or they flicker back.
   **Golden:** `internal/tui/sessionview_question.go`, `clank-mobile/src/lib/askQuestion.ts`
   (legacy path), `…/session/SessionEventStream.kt:230` (clears on terminal status).
 

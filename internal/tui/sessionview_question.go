@@ -1,14 +1,22 @@
 package tui
 
-// sessionview_question.go — interactive question prompts (EventQuestion).
+// sessionview_question.go — interactive question prompts.
 //
-// The backend normalizes provider question tools (Claude AskUserQuestion,
-// OpenCode question) into agent.QuestionData; this file renders the prompt as
-// an options picker and replies with structured agent.QuestionAnswer values
-// via the /questions/{id}/reply endpoint. The generic permission y/n prompt
-// for the same request id is suppressed (the question card supersedes it).
+// Backends tag a question tool call's Part with the normalized prompt
+// (agent.Part.Question — Claude AskUserQuestion, OpenCode question), on both
+// streamed part events and Messages() history. The TUI therefore has no
+// question-specific wire state: the active prompt is DERIVED from the
+// transcript — a tagged tool part is answerable iff it is the conversation's
+// last content entry (nothing after it superseded it) and wasn't answered
+// here. Reopening a session restores the card from the ordinary history
+// refetch for free.
 //
-// Key model while a question prompt is front:
+// Answers go back via the questions reply endpoint using the tag's
+// request_id; the backend owns the provider transport. The generic permission
+// prompt that gates the tool in Claude's default/plan modes is suppressed
+// (matched by request id / part id) — the card supersedes it.
+//
+// Key model while a question prompt is active:
 //
 //	↑/k ↓/j   move the option cursor
 //	1-9       toggle that option (single-select: pick it and advance)
@@ -16,7 +24,7 @@ package tui
 //	o         edit the free-text "Other" answer (when the question allows it)
 //	enter     next question; on the last one, submit all answers
 //	backspace previous question
-//	esc       dismiss the whole prompt (reject)
+//	esc       dismiss the whole prompt (best-effort reject; always unlocks)
 
 import (
 	"context"
@@ -34,10 +42,11 @@ import (
 // questionReplyResultMsg is sent after the daemon accepts or rejects a
 // question reply.
 type questionReplyResultMsg struct {
-	question agent.QuestionData
-	answers  []agent.QuestionAnswer
-	reject   bool
-	err      error
+	requestID string
+	questions []agent.Question
+	answers   []agent.QuestionAnswer
+	reject    bool
+	err       error
 }
 
 // newQuestionTextInput builds the single-line input used for free-text
@@ -60,56 +69,75 @@ func newQuestionTextInput(placeholder string) textinput.Model {
 // composing are locked out.
 func (m *SessionViewModel) promptActive() bool {
 	return len(m.pendingPerms) > 0 || m.replyingPermID != "" ||
-		len(m.pendingQuestions) > 0 || m.replyingQuestionID != ""
+		m.activeQuestionPart() != nil || m.replyingQuestionID != ""
 }
 
-// pushQuestion ingests an EventQuestion. Idempotent on request id. Also
-// retroactively drops a suppressed permission prompt for the same request
-// (belt-and-braces: the backend emits question before permission, but a
-// reconnect can replay them in either order).
-func (m *SessionViewModel) pushQuestion(data agent.QuestionData) {
-	if len(data.Questions) == 0 {
-		return
-	}
-	for _, q := range m.pendingQuestions {
-		if q.RequestID == data.RequestID {
-			return
+// activeQuestionPart returns the tool part of the question prompt currently
+// awaiting an answer, or nil. A tagged part is answerable iff it is the last
+// content entry in the transcript — anything after it (agent text, another
+// tool, a user message) means the conversation moved on — and it wasn't
+// answered or dismissed in this view. Status "error" (deny/abort fallout)
+// also retires it.
+func (m *SessionViewModel) activeQuestionPart() *agent.Part {
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		e := &m.entries[i]
+		// Decorations don't count as the conversation moving on.
+		if e.kind == entryStatus || e.kind == entryPermResult {
+			continue
 		}
+		if e.kind != entryTool || e.toolPart == nil || e.toolPart.Question == nil {
+			return nil
+		}
+		p := e.toolPart
+		if p.Status == agent.PartFailed || m.answeredQuestions[p.Question.RequestID] {
+			return nil
+		}
+		return p
 	}
-	m.pendingQuestions = append(m.pendingQuestions, data)
-	m.dropPermission(data.RequestID)
-	if len(m.pendingQuestions) == 1 {
-		m.resetQuestionUI()
-	}
-	// The prompt needs answers — release the textarea so keys reach the
-	// question handler instead of being typed into the composer.
-	m.deactivateInput()
-	if m.follow {
-		m.scrollToBottom()
-	}
+	return nil
 }
 
-// removeQuestion clears a question prompt by request id (answered here or on
-// another client, or resolved by the backend).
-func (m *SessionViewModel) removeQuestion(requestID string) {
-	filtered := m.pendingQuestions[:0]
-	frontRemoved := len(m.pendingQuestions) > 0 && m.pendingQuestions[0].RequestID == requestID
-	for _, q := range m.pendingQuestions {
-		if q.RequestID != requestID {
-			filtered = append(filtered, q)
+// syncQuestionUI resets the per-prompt selection state when the active
+// question changes (or clears). Called before key handling and rendering so
+// derived state and UI state can't diverge.
+func (m *SessionViewModel) syncQuestionUI() *agent.Part {
+	p := m.activeQuestionPart()
+	if p == nil {
+		m.activeQuestionID = ""
+		return nil
+	}
+	if m.activeQuestionID != p.ID {
+		m.activeQuestionID = p.ID
+		n := len(p.Question.Questions)
+		m.questionSel = make([]map[int]bool, n)
+		for i := range m.questionSel {
+			m.questionSel[i] = make(map[int]bool)
 		}
+		m.questionCustom = make([]string, n)
+		m.questionIdx = 0
+		m.questionCursor = 0
+		m.questionTyping = false
+		// The prompt needs answers — release the textarea so keys reach the
+		// question handler instead of being typed into the composer.
+		m.deactivateInput()
 	}
-	m.pendingQuestions = filtered
-	if m.replyingQuestionID == requestID {
-		m.replyingQuestionID = ""
+	return p
+}
+
+// questionSuppressesPermission reports whether a permission prompt is
+// superseded by the question card for the same request (Claude gated mode
+// emits both; the tagged part always precedes the permission).
+func (m *SessionViewModel) questionSuppressesPermission(perm agent.PermissionData) bool {
+	p := m.activeQuestionPart()
+	if p == nil {
+		return false
 	}
-	if frontRemoved {
-		m.resetQuestionUI()
-	}
+	return p.Question.RequestID == perm.RequestID || (perm.ToolUseID != "" && perm.ToolUseID == p.ID)
 }
 
 // dropPermission removes a pending permission prompt by request id without
-// replying to it (used when a question card supersedes it).
+// replying to it (its question card was answered; the backend resolves the
+// parked prompt through the question reply).
 func (m *SessionViewModel) dropPermission(requestID string) {
 	filtered := m.pendingPerms[:0]
 	for _, p := range m.pendingPerms {
@@ -120,53 +148,23 @@ func (m *SessionViewModel) dropPermission(requestID string) {
 	m.pendingPerms = filtered
 }
 
-// questionSuppressed reports whether a permission prompt is superseded by a
-// pending question card with the same request id.
-func (m *SessionViewModel) questionSuppressed(requestID string) bool {
-	for _, q := range m.pendingQuestions {
-		if q.RequestID == requestID {
-			return true
-		}
-	}
-	return false
-}
-
-// resetQuestionUI (re)initializes the per-prompt selection state for the
-// current front prompt (no-op state when the queue is empty).
-func (m *SessionViewModel) resetQuestionUI() {
-	m.questionIdx = 0
-	m.questionCursor = 0
-	m.questionTyping = false
-	m.questionSel = nil
-	m.questionCustom = nil
-	if len(m.pendingQuestions) == 0 {
-		return
-	}
-	n := len(m.pendingQuestions[0].Questions)
-	m.questionSel = make([]map[int]bool, n)
-	for i := range m.questionSel {
-		m.questionSel[i] = make(map[int]bool)
-	}
-	m.questionCustom = make([]string, n)
-}
-
-// handleQuestionKey processes a key press while question prompts are pending.
+// handleQuestionKey processes a key press while a question prompt is active.
 // Returns handled=false when no prompt is active or for keys the caller owns
 // (ctrl+c).
 func (m *SessionViewModel) handleQuestionKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
-	if len(m.pendingQuestions) == 0 && m.replyingQuestionID == "" {
-		return false, nil
-	}
 	if msg.String() == "ctrl+c" {
 		return false, nil
 	}
-	// A reply is in flight (or the queue emptied under an in-flight reply):
-	// swallow keys until the result lands.
-	if m.replyingQuestionID != "" || len(m.pendingQuestions) == 0 {
+	// A reply in flight swallows keys until the result lands.
+	if m.replyingQuestionID != "" {
 		return true, nil
 	}
+	p := m.syncQuestionUI()
+	if p == nil {
+		return false, nil
+	}
 
-	prompt := m.pendingQuestions[0]
+	prompt := p.Question
 	q := prompt.Questions[m.questionIdx]
 	otherRow := len(q.Options) // cursor position of the "Other" row, when shown
 
@@ -214,7 +212,6 @@ func (m *SessionViewModel) handleQuestionKey(msg tea.KeyPressMsg) (bool, tea.Cmd
 	case "o":
 		if q.AllowCustom {
 			m.startQuestionTyping()
-			return true, nil
 		}
 		return true, nil
 	case "enter":
@@ -263,8 +260,12 @@ func (m *SessionViewModel) handleQuestionKey(msg tea.KeyPressMsg) (bool, tea.Cmd
 }
 
 func (m *SessionViewModel) startQuestionTyping() {
+	p := m.activeQuestionPart()
+	if p == nil {
+		return
+	}
 	m.questionTyping = true
-	m.questionCursor = len(m.pendingQuestions[0].Questions[m.questionIdx].Options)
+	m.questionCursor = len(p.Question.Questions[m.questionIdx].Options)
 	m.questionInput = newQuestionTextInput("Type your answer...")
 	m.questionInput.SetValue(m.questionCustom[m.questionIdx])
 	m.questionInput.Focus()
@@ -296,7 +297,7 @@ func (m *SessionViewModel) toggleQuestionOption(q agent.Question, idx int) {
 
 // submitQuestionAnswers converts the selection state into structured answers
 // and dispatches the reply.
-func (m *SessionViewModel) submitQuestionAnswers(prompt agent.QuestionData) tea.Cmd {
+func (m *SessionViewModel) submitQuestionAnswers(prompt *agent.QuestionPrompt) tea.Cmd {
 	answers := make([]agent.QuestionAnswer, len(prompt.Questions))
 	for i, q := range prompt.Questions {
 		var selected []string
@@ -311,14 +312,16 @@ func (m *SessionViewModel) submitQuestionAnswers(prompt agent.QuestionData) tea.
 	return m.replyQuestion(prompt, answers, false)
 }
 
-func (m *SessionViewModel) replyQuestion(prompt agent.QuestionData, answers []agent.QuestionAnswer, reject bool) tea.Cmd {
+func (m *SessionViewModel) replyQuestion(prompt *agent.QuestionPrompt, answers []agent.QuestionAnswer, reject bool) tea.Cmd {
 	client := m.client
 	sessionID := m.sessionID
+	requestID := prompt.RequestID
+	questions := prompt.Questions
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		err := client.Session(sessionID).ReplyQuestion(ctx, prompt.RequestID, answers, reject)
-		return questionReplyResultMsg{question: prompt, answers: answers, reject: reject, err: err}
+		err := client.Session(sessionID).ReplyQuestion(ctx, requestID, answers, reject)
+		return questionReplyResultMsg{requestID: requestID, questions: questions, answers: answers, reject: reject, err: err}
 	}
 }
 
@@ -327,12 +330,19 @@ func (m *SessionViewModel) handleQuestionReplyResult(msg questionReplyResultMsg)
 	m.replyingQuestionID = ""
 	if msg.err != nil {
 		m.err = msg.err
-		return
+		// A failed answer keeps the card for retry; a failed dismissal still
+		// dismisses locally so the UI can never lock into a dead prompt.
+		if !msg.reject {
+			return
+		}
 	}
-	m.removeQuestion(msg.question.RequestID)
+	m.answeredQuestions[msg.requestID] = true
+	// The gating permission (Claude default/plan mode) was resolved through
+	// the question reply; drop the suppressed local copy if one queued.
+	m.dropPermission(msg.requestID)
 	m.entries = append(m.entries, displayEntry{
 		kind:        entryPermResult,
-		content:     summarizeQuestionReply(msg.question, msg.answers, msg.reject),
+		content:     summarizeQuestionReply(msg.questions, msg.answers, msg.reject),
 		permGranted: !msg.reject,
 	})
 	if m.follow {
@@ -342,12 +352,12 @@ func (m *SessionViewModel) handleQuestionReplyResult(msg questionReplyResultMsg)
 
 // summarizeQuestionReply renders the one-line transcript record of a question
 // reply, e.g. `Answered — Auth: JWT · Storage: (delegated)`.
-func summarizeQuestionReply(prompt agent.QuestionData, answers []agent.QuestionAnswer, reject bool) string {
+func summarizeQuestionReply(questions []agent.Question, answers []agent.QuestionAnswer, reject bool) string {
 	if reject {
 		return "Dismissed questions"
 	}
-	parts := make([]string, 0, len(prompt.Questions))
-	for i, q := range prompt.Questions {
+	parts := make([]string, 0, len(questions))
+	for i, q := range questions {
 		var a agent.QuestionAnswer
 		if i < len(answers) {
 			a = answers[i]
@@ -393,9 +403,10 @@ func (m *SessionViewModel) planTextFor(perm agent.PermissionData) string {
 }
 
 // renderQuestionCard renders the interactive prompt card appended below the
-// transcript, mirroring the permission card's framing.
-func (m *SessionViewModel) renderQuestionCard() []string {
-	prompt := m.pendingQuestions[0]
+// transcript, mirroring the permission card's framing. Callers guarantee an
+// active question exists (syncQuestionUI returned non-nil).
+func (m *SessionViewModel) renderQuestionCard(p *agent.Part) []string {
+	prompt := p.Question
 	q := prompt.Questions[m.questionIdx]
 
 	maxWidth := m.width
@@ -414,9 +425,6 @@ func (m *SessionViewModel) renderQuestionCard() []string {
 	title := "? " + q.Header
 	if len(prompt.Questions) > 1 {
 		title += fmt.Sprintf("  (%d/%d)", m.questionIdx+1, len(prompt.Questions))
-	}
-	if len(m.pendingQuestions) > 1 {
-		title += fmt.Sprintf("  [prompt 1/%d]", len(m.pendingQuestions))
 	}
 
 	var content []string

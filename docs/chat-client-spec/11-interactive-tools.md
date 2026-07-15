@@ -6,44 +6,54 @@ and **ExitPlanMode** (Claude); OpenCode has an analogous `question` tool and emi
 plain assistant messages (no `ExitPlanMode`). This document also covers **inline comments**,
 the client-side mechanism for replying to specific parts of a message.
 
-> **Golden-reference note.** For the **question** flow the normalized `question` event below
-> is the contract, and the **TUI** implements it (`internal/tui/sessionview_question.go`).
+> **Golden-reference note.** For the **question** flow the backend-tagged tool part below is
+> the contract, and the **TUI** implements it (`internal/tui/sessionview_question.go`).
 > For plan review and inline comments the **React Native client** remains the reference.
 
-## The `question` event (normalized path)
+## The question tag (normalized path)
 
-The backend normalizes provider question tools into a semantic event so clients do not sniff
-tool names: Claude `AskUserQuestion` (both gated and bypass modes) and OpenCode's `question`
-API both surface as `question` / `question.resolved` events with a structured payload
-(`agent.QuestionData` — see the [event catalog](04-event-protocol.md#event-catalog)).
+The backend normalizes provider question tools by tagging the question's own **tool-call
+part** with the structured prompt: `part.question = { request_id, questions[] }`
+(`agent.QuestionPrompt`; each question `{ text, header?, multi_select?, allow_custom?,
+options[{label, description?}] }`). Claude `AskUserQuestion` (gated and bypass modes) and
+OpenCode's `question` API produce the same tag. There is deliberately **no separate wire
+event**: the part is the one object clients already reconcile across the live stream AND the
+`Messages()` history refetch, so the prompt has a single source of truth, needs no
+correlation or dedup, and survives reopening the session (and, on Claude, daemon restarts —
+the tag is re-derived from the transcript).
 
-- **[QST-001] (MUST — preferred path)** A client that understands `question` events MUST
-  render them as a structured prompt (options per question, multi-select where flagged,
-  free-text where `allow_custom`) and reply via
-  `POST /sessions/{id}/questions/{request_id}/reply` with
+- **[QST-001] (MUST — tag rendering & reply)** A client MUST render a tagged part as a
+  structured prompt (options per question, multi-select where flagged, free-text where
+  `allow_custom`) and reply via `POST /sessions/{id}/questions/{request_id}/reply` with
   `{ answers: [{selected?[], custom?}] }` (one per question, in order; an all-empty answer
   delegates that question) or `{ reject: true }` to dismiss. The **backend** owns translating
-  answers to the provider transport (Claude: permission-deny message or follow-up send;
-  OpenCode: its structured question API) — clients never format answer text themselves.
-  **Golden:** `internal/agent/claude_permissions.go` (`RespondQuestion`),
+  answers to the provider transport (Claude: permission-deny message while parked, follow-up
+  send after auto-run; OpenCode: its structured question API) — clients never format answer
+  text themselves. **Golden:** `internal/agent/claude_permissions.go` (`RespondQuestion`),
   `internal/agent/opencode_questions.go`, `internal/tui/sessionview_question.go`.
-  **Conformance:** `CONF-QUESTION-EVENT`.
+  **Conformance:** `CONF-QUESTION-TAG`.
 
-- **[QST-002] (MUST)** For a gated Claude question the backend also emits the legacy
-  `permission` event with the **same `request_id`** so pre-`question` clients keep working. A
-  question-aware client MUST suppress that permission prompt (match by `request_id`), in
-  either arrival order. **Golden:** `internal/tui/sessionview_question.go`
-  (`questionSuppressed`/`dropPermission`); test
+- **[QST-002] (MUST — answerability is positional)** A tagged part is **awaiting an answer**
+  iff it is the conversation's **last content** (no later assistant text/tool part and no
+  later user message; a paired `tool_result` on the same part id does not count) and its
+  status is not `error`. Anything after it means the conversation moved on — render the tag
+  read-only. This is [ITOOL-002] generalized: no resolved event exists; answering elsewhere
+  is observed as ordinary transcript movement (the gated part completes; a bypass answer
+  arrives as the user's follow-up message).
+  **Golden:** `internal/tui/sessionview_question.go` (`activeQuestionPart`),
+  `clank-mobile/src/lib/activeToolCall.ts` (same heuristic, client-parsed).
+
+- **[QST-003] (MUST — permission suppression)** For a gated Claude question (default/plan
+  mode) the backend still emits the `permission` event, with the **same `request_id`** as the
+  tag, so pre-tag clients keep working; the tagged part is emitted first. A tag-aware client
+  MUST suppress that permission prompt (match `request_id` or `tool_use_id`) — the card
+  supersedes it, and the question reply resolves the parked prompt server-side.
+  **Golden:** `internal/tui/sessionview_question.go` (`questionSuppressesPermission`); test
   `TestSessionView_QuestionSuppressesMatchingPermission`.
 
-- **[QST-003] (MUST)** On `question.resolved`, clear the pending prompt for that
-  `request_id` — it was answered or dismissed, possibly on another client or via the legacy
-  permission reply. **Golden:** `internal/agent/claude_permissions.go` (resolved emit on any
-  unpark), `internal/agent/opencode_questions.go` (`handleQuestionResolved`).
-
 The rules below remain normative for **plan review**, for **legacy clients** that predate the
-`question` event, and as the fallback when a question input fails to parse (no `question`
-event is emitted; the generic permission flow applies).
+tag, and as the fallback when a question input fails to parse (no tag is stamped; the generic
+permission flow applies).
 
 ## How interactive tools arrive (legacy part-sniffing path)
 
@@ -53,9 +63,9 @@ event is emitted; the generic permission flow applies).
   - `ExitPlanMode` → `input.plan` (a markdown string).
   A client identifies them by **matching the literal tool name** and parsing `input`; if the
   shape is unexpected, fall back to the generic tool-call card.
-  **Why:** questions now also arrive as the semantic `question` event ([QST-001]) — prefer
-  that. This name-matching path remains the contract for **plans** and for clients that
-  predate the event.
+  **Why:** question parts now also carry the pre-parsed `part.question` tag ([QST-001]) —
+  prefer that. This name-matching path remains the contract for **plans** and for clients
+  that predate the tag.
   **Golden:** `clank-mobile/src/lib/askQuestion.ts:12` (`parseAskUserQuestion`),
   `clank-mobile/src/lib/planReview.ts:35` (`parsePlan`).
 
@@ -135,13 +145,13 @@ comment.
 | Reply to a specific section | inline comments | inline comments | inline comments ([ICOMMENT-001]) |
 
 - **[ITOOL-006] (SHOULD)** A client SHOULD present `AskUserQuestion` and OpenCode's
-  `question` through the **same** question UI (the `question` event delivers both
+  `question` through the **same** question UI (the `part.question` tag delivers both
   pre-normalized, [QST-001]), and OpenCode plans through inline comments on the message.
   **Why:** one consistent interaction across backends.
 
 ## TUI status
 
-The TUI implements the `question` event path ([QST-001..003]) and renders ExitPlanMode
+The TUI implements the question-tag path ([QST-001..003]) and renders ExitPlanMode
 permission prompts with the plan text plus approve / request-changes (deny with notes) / deny
 choices (`internal/tui/sessionview_question.go`, `sessionview.go` prompt card). It still has
 **no inline comments** ([ICOMMENT-001]) — for those the RN client remains the reference.
@@ -150,12 +160,15 @@ choices (`internal/tui/sessionview_question.go`, `sessionview.go` prompt card). 
 
 These capture intended direction; **none is normative yet.**
 
-1. **Plan as a first-class object.** Whether to give plans a typed event (vs. `ExitPlanMode`
-   input on Claude / plain message on OpenCode) so plan-review UI is backend-uniform —
-   the analogue of what the `question` event did for questions.
-2. **Question snapshot for late joiners.** Pending questions are SSE-only (same gap as
-   [INV-PENDING-PERM-GAP-001](08-invariants.md)); OpenCode's `question.list` could back a
-   recovery endpoint.
+1. **Plan as a first-class tag.** Whether to tag `ExitPlanMode` parts the way questions are
+   tagged (vs. clients parsing `input.plan` / OpenCode plain messages) so plan-review UI is
+   backend-uniform.
+2. **Gated mid-park reopen.** A parked (default/plan mode) prompt whose tool_use hasn't been
+   flushed to the transcript yet is unrecoverable after a reopen — the same gap as
+   [INV-PENDING-PERM-GAP-001](08-invariants.md); a permission snapshot would close both.
+3. **OpenCode cross-restart tags.** OpenCode request-id ↔ call-id correlation lives in
+   backend memory; hydrating it from `question.list` on Open would keep transcript reloads
+   tagged across daemon restarts (Claude already is — its tag derives from the transcript).
 
 When these are decided, add normative rules + conformance scenarios here and supersede the
 flagged mechanisms above per the [maintenance loop](README.md#maintenance).

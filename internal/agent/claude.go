@@ -129,14 +129,10 @@ type ClaudeCodeBackend struct {
 	lastToolUseID map[string]string
 
 	// pendingQuestions maps a question request ID to the normalized questions
-	// awaiting RespondQuestion. Guarded by b.mu.
+	// awaiting RespondQuestion. A routing cache, not the source of truth: a
+	// "q-<tool_use_id>" request that misses here is recovered from the tagged
+	// transcript part (questionFromTranscript). Guarded by b.mu.
 	pendingQuestions map[string]claudeQuestion
-
-	// questionToolUses records AskUserQuestion tool_use ids already surfaced as
-	// an EventQuestion via handleCanUseTool, so handleContentBlockStop (which
-	// runs after the parked prompt resolves) doesn't emit a duplicate. Guarded
-	// by b.mu.
-	questionToolUses map[string]bool
 
 	// aiTitleEmitted is set once the CLI-generated session title has been read
 	// from the transcript and published via EventTitleChange. The CLI keeps the
@@ -170,7 +166,6 @@ func NewClaudeCodeBackendForSession(workDir, resumeSessionID string) *ClaudeCode
 		activeToolBlocks: make(map[int]*activeToolBlock),
 		pendingPerms:     make(map[string]chan permissionDecision),
 		pendingQuestions: make(map[string]claudeQuestion),
-		questionToolUses: make(map[string]bool),
 		lastToolUseID:    make(map[string]string),
 		initialPermMode:  ClaudePermBypass,
 		ctx:              ctx,
@@ -1165,51 +1160,30 @@ func (b *ClaudeCodeBackend) handleContentBlockStop(event map[string]any) {
 		_ = json.Unmarshal([]byte(raw), &inputMap)
 	}
 
-	b.emitPart(Part{
+	part := Part{
 		ID:     tb.partID,
 		Type:   PartToolCall,
 		Tool:   tb.tool,
 		Status: PartCompleted,
 		Input:  inputMap,
-	}, false)
-
-	b.maybeEmitBypassQuestion(tb.partID, tb.tool, inputMap)
-}
-
-// maybeEmitBypassQuestion surfaces an AskUserQuestion as an EventQuestion when
-// no permission prompt will do it. In gated modes handleCanUseTool parks the
-// reader before this block's stop arrives and emits the question itself (and
-// marks the tool_use id); in bypassPermissions the CLI never consults us, the
-// tool auto-runs, and this stream-side hook is the only place the question can
-// be surfaced. Answers for such prompts go back as a follow-up user message
-// (see RespondQuestion).
-func (b *ClaudeCodeBackend) maybeEmitBypassQuestion(toolUseID, tool string, input map[string]any) {
-	if tool != ClaudeToolAskUserQuestion || toolUseID == "" {
-		return
 	}
-	questions := parseClaudeQuestions(input)
-	if questions == nil {
-		return
-	}
-	id := "q-" + toolUseID
-	b.mu.Lock()
-	if b.questionToolUses[toolUseID] {
+	// Tag an AskUserQuestion with its normalized prompt, addressed by the
+	// deterministic bypass id. In bypassPermissions the tool auto-ran and this
+	// tag is what clients render/answer from (via a follow-up message); in
+	// gated modes the prompt was already answered through the parked
+	// permission by the time this stop arrives, so the tag is only ever used
+	// to render the historical card.
+	if part.Question = tagQuestionPart(tb.partID, tb.tool, inputMap); part.Question != nil {
+		b.mu.Lock()
+		if _, exists := b.pendingQuestions[part.Question.RequestID]; !exists {
+			b.pendingQuestions[part.Question.RequestID] = claudeQuestion{
+				toolUseID: tb.partID,
+				questions: part.Question.Questions,
+			}
+		}
 		b.mu.Unlock()
-		return
 	}
-	b.questionToolUses[toolUseID] = true
-	b.pendingQuestions[id] = claudeQuestion{toolUseID: toolUseID, questions: questions}
-	b.mu.Unlock()
-
-	b.emit(Event{
-		Type:      EventQuestion,
-		Timestamp: time.Now(),
-		Data: QuestionData{
-			RequestID: id,
-			ToolUseID: toolUseID,
-			Questions: questions,
-		},
-	})
+	b.emitPart(part, false)
 }
 
 // --- Type mapping helpers ---
@@ -1330,6 +1304,8 @@ func sessionBlockToPart(block claudecode.SessionContentBlock, msgID string, inde
 			Tool:   block.Name,
 			Status: PartCompleted,
 			Input:  block.Input,
+			// Question prompts stay renderable/answerable from history alone.
+			Question: tagQuestionPart(block.ID, block.Name, block.Input),
 		}, true
 	case claudecode.SessionBlockTypeToolResult:
 		status := PartCompleted

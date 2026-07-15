@@ -22,6 +22,25 @@ const questionsDelegatedMessage = "Delegating these to you — use your best jud
 // question prompt without answering.
 const questionsDismissedMessage = "User dismissed the questions — proceed using your best judgment."
 
+// bypassQuestionIDPrefix + tool_use id forms the request id for a question
+// whose tool auto-ran (bypassPermissions). Deterministic so the id is
+// recoverable from the transcript alone (see questionFromTranscript).
+const bypassQuestionIDPrefix = "q-"
+
+// tagQuestionPart builds the QuestionPrompt tag for an AskUserQuestion tool
+// part, addressed by the deterministic bypass request id. Returns nil for
+// other tools or unparseable input (the part stays a generic tool card).
+func tagQuestionPart(toolUseID, tool string, input map[string]any) *QuestionPrompt {
+	if tool != ClaudeToolAskUserQuestion || toolUseID == "" {
+		return nil
+	}
+	questions := parseClaudeQuestions(input)
+	if questions == nil {
+		return nil
+	}
+	return &QuestionPrompt{RequestID: bypassQuestionIDPrefix + toolUseID, Questions: questions}
+}
+
 // parseClaudeQuestions normalizes an AskUserQuestion tool input into clank
 // Questions. Returns nil for any unexpected shape (callers then fall back to
 // the generic permission flow instead of rendering a broken card). Claude's

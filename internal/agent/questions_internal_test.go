@@ -70,7 +70,7 @@ func TestParseClaudeQuestions_InvalidShapesReturnNil(t *testing.T) {
 	}
 	for name, input := range cases {
 		if got := parseClaudeQuestions(input); got != nil {
-			t.Errorf("%s: parseClaudeQuestions = %+v, want nil (fall back to generic permission)", name, got)
+			t.Errorf("%s: parseClaudeQuestions = %+v, want nil (fall back to generic tool card)", name, got)
 		}
 	}
 }
@@ -107,45 +107,50 @@ func TestFormatQuestionAnswers_Templates(t *testing.T) {
 	}
 }
 
-// A question surfaced via handleCanUseTool (gated mode) must not be re-emitted
-// when the tool_use block's stop arrives after the prompt resolves.
-func TestMaybeEmitBypassQuestion_DedupesToolUseID(t *testing.T) {
+func TestTagQuestionPart(t *testing.T) {
 	t.Parallel()
-	b := NewClaudeCodeBackend(t.TempDir())
-	defer b.Stop()
-
 	input := map[string]any{"questions": []any{
 		map[string]any{"question": "Q?", "header": "Q", "options": []any{map[string]any{"label": "A"}}},
 	}}
 
-	b.maybeEmitBypassQuestion("toolu_1", ClaudeToolAskUserQuestion, input)
-	select {
-	case evt := <-b.Events():
-		if evt.Type != EventQuestion {
-			t.Fatalf("first call emitted %s, want %s", evt.Type, EventQuestion)
-		}
-		if evt.Data.(QuestionData).RequestID != "q-toolu_1" {
-			t.Errorf("RequestID = %q, want q-toolu_1", evt.Data.(QuestionData).RequestID)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("first call emitted nothing")
+	tag := tagQuestionPart("toolu_1", ClaudeToolAskUserQuestion, input)
+	if tag == nil {
+		t.Fatal("valid AskUserQuestion input produced no tag")
+	}
+	if tag.RequestID != "q-toolu_1" {
+		t.Errorf("RequestID = %q, want q-toolu_1 (deterministic, transcript-recoverable)", tag.RequestID)
+	}
+	if len(tag.Questions) != 1 || tag.Questions[0].Header != "Q" {
+		t.Errorf("Questions = %+v", tag.Questions)
 	}
 
-	b.maybeEmitBypassQuestion("toolu_1", ClaudeToolAskUserQuestion, input)
-	select {
-	case evt := <-b.Events():
-		t.Fatalf("second call for the same tool_use emitted %s; want dedupe", evt.Type)
-	case <-time.After(50 * time.Millisecond):
+	if tagQuestionPart("toolu_1", "Bash", map[string]any{"command": "ls"}) != nil {
+		t.Error("non-question tool must not be tagged")
+	}
+	if tagQuestionPart("toolu_1", ClaudeToolAskUserQuestion, map[string]any{"questions": "junk"}) != nil {
+		t.Error("unparseable input must not be tagged")
+	}
+	if tagQuestionPart("", ClaudeToolAskUserQuestion, input) != nil {
+		t.Error("missing tool_use id must not be tagged (no addressable request id)")
 	}
 }
 
-// OpenCode question.asked events must map field-for-field onto QuestionData.
-func TestOpenCodeHandleQuestionAsked_MapsToQuestionData(t *testing.T) {
-	t.Parallel()
-	b := NewOpenCodeBackend("http://127.0.0.1:0", "sess-1", nil)
+// opencodeQuestionToolPart builds an SDK part for the question tool call.
+func opencodeQuestionToolPart(callID string) *opencode.Part {
+	return &opencode.Part{
+		Tool: &opencode.ToolPart{
+			ID:     "prt_1",
+			CallID: callID,
+			Tool:   OpenCodeToolQuestion,
+			State:  &opencode.ToolState{Running: &opencode.ToolStateRunning{}},
+		},
+	}
+}
+
+func opencodeQuestionAskedProps(callID, requestID string) *opencode.GlobalEventPayloadQuestionAskedProperties {
 	multiple, custom := true, true
-	props := &opencode.GlobalEventPayloadQuestionAskedProperties{
-		ID:        "req-1",
+	return &opencode.GlobalEventPayloadQuestionAskedProperties{
+		ID:        requestID,
 		SessionID: "sess-1",
 		Questions: []*opencode.QuestionInfo{{
 			Question: "Which DB?",
@@ -157,82 +162,102 @@ func TestOpenCodeHandleQuestionAsked_MapsToQuestionData(t *testing.T) {
 				{Label: "SQLite"},
 			},
 		}},
-		Tool: &opencode.QuestionTool{MessageID: "msg-1", CallID: "call-1"},
+		Tool: &opencode.QuestionTool{MessageID: "msg-1", CallID: callID},
+	}
+}
+
+// question.asked arriving BEFORE the tool part: the part must come out of
+// conversion already tagged.
+func TestOpenCodeQuestionTag_AskedThenPart(t *testing.T) {
+	t.Parallel()
+	b := NewOpenCodeBackend("http://127.0.0.1:0", "sess-1", nil)
+
+	b.handleGlobalEvent(&opencode.GlobalEvent{Payload: &opencode.GlobalEventPayload{
+		QuestionAsked: &opencode.GlobalEventPayloadQuestionAsked{Properties: opencodeQuestionAskedProps("call-1", "req-1")},
+	}})
+
+	part := b.convertSDKPart(opencodeQuestionToolPart("call-1"))
+	if part == nil || part.Question == nil {
+		t.Fatalf("converted part = %+v, want a question tag", part)
+	}
+	if part.Question.RequestID != "req-1" {
+		t.Errorf("RequestID = %q, want req-1", part.Question.RequestID)
+	}
+	q := part.Question.Questions[0]
+	if q.Text != "Which DB?" || q.Header != "DB" || !q.MultiSelect || !q.AllowCustom {
+		t.Errorf("question = %+v", q)
+	}
+	if len(q.Options) != 2 || q.Options[0].Description != "relational" {
+		t.Errorf("options = %+v", q.Options)
+	}
+}
+
+// The tool part arriving BEFORE question.asked: registering the prompt must
+// re-emit the cached part with the tag so live clients aren't left untagged.
+func TestOpenCodeQuestionTag_PartThenAsked(t *testing.T) {
+	t.Parallel()
+	b := NewOpenCodeBackend("http://127.0.0.1:0", "sess-1", nil)
+
+	if part := b.convertSDKPart(opencodeQuestionToolPart("call-1")); part.Question != nil {
+		t.Fatal("part converted before question.asked must not be tagged yet")
 	}
 
-	// Route through the global-event dispatcher to cover the switch wiring.
 	b.handleGlobalEvent(&opencode.GlobalEvent{Payload: &opencode.GlobalEventPayload{
-		QuestionAsked: &opencode.GlobalEventPayloadQuestionAsked{Properties: props},
+		QuestionAsked: &opencode.GlobalEventPayloadQuestionAsked{Properties: opencodeQuestionAskedProps("call-1", "req-1")},
 	}})
 
 	select {
 	case evt := <-b.Events():
-		if evt.Type != EventQuestion {
-			t.Fatalf("event type = %s, want %s", evt.Type, EventQuestion)
+		if evt.Type != EventPartUpdate {
+			t.Fatalf("event type = %s, want %s", evt.Type, EventPartUpdate)
 		}
-		data := evt.Data.(QuestionData)
-		if data.RequestID != "req-1" || data.ToolUseID != "call-1" {
-			t.Errorf("ids = %q/%q, want req-1/call-1", data.RequestID, data.ToolUseID)
-		}
-		if len(data.Questions) != 1 {
-			t.Fatalf("got %d questions, want 1", len(data.Questions))
-		}
-		q := data.Questions[0]
-		if q.Text != "Which DB?" || q.Header != "DB" || !q.MultiSelect || !q.AllowCustom {
-			t.Errorf("question = %+v", q)
-		}
-		if len(q.Options) != 2 || q.Options[0].Description != "relational" {
-			t.Errorf("options = %+v", q.Options)
+		part := evt.Data.(PartUpdateData).Part
+		if part.ID != "prt_1" || part.Question == nil || part.Question.RequestID != "req-1" {
+			t.Errorf("re-emitted part = %+v, want prt_1 tagged req-1", part)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("no event emitted")
+		t.Fatal("no tagged part re-emitted after question.asked")
 	}
 }
 
-// Events for other sessions must be ignored; replied/rejected must surface as
-// EventQuestionResolved for this session.
-func TestOpenCodeQuestionResolved_FiltersBySession(t *testing.T) {
+// Events for other sessions must not register prompts.
+func TestOpenCodeQuestionTag_FiltersBySession(t *testing.T) {
 	t.Parallel()
 	b := NewOpenCodeBackend("http://127.0.0.1:0", "sess-1", nil)
 
-	b.handleQuestionResolved("other-session", "req-9")
-	select {
-	case evt := <-b.Events():
-		t.Fatalf("event %s emitted for another session's question", evt.Type)
-	case <-time.After(50 * time.Millisecond):
-	}
+	props := opencodeQuestionAskedProps("call-9", "req-9")
+	props.SessionID = "other-session"
+	b.handleGlobalEvent(&opencode.GlobalEvent{Payload: &opencode.GlobalEventPayload{
+		QuestionAsked: &opencode.GlobalEventPayloadQuestionAsked{Properties: props},
+	}})
 
-	b.handleQuestionResolved("sess-1", "req-9")
-	select {
-	case evt := <-b.Events():
-		if evt.Type != EventQuestionResolved {
-			t.Fatalf("event type = %s, want %s", evt.Type, EventQuestionResolved)
-		}
-		if evt.Data.(QuestionResolvedData).RequestID != "req-9" {
-			t.Errorf("RequestID = %q, want req-9", evt.Data.(QuestionResolvedData).RequestID)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("no resolved event emitted")
+	if part := b.convertSDKPart(opencodeQuestionToolPart("call-9")); part.Question != nil {
+		t.Errorf("another session's question tagged our part: %+v", part.Question)
 	}
 }
 
-// The question events must round-trip through the Event JSON envelope into
-// their concrete payload types (what SSE clients rely on).
-func TestEventJSONRoundTrip_Question(t *testing.T) {
+// A tagged part must round-trip through the Event JSON envelope with the tag
+// intact (what SSE clients and the Messages() endpoint rely on).
+func TestPartQuestionJSONRoundTrip(t *testing.T) {
 	t.Parallel()
 	src := Event{
-		Type:      EventQuestion,
+		Type:      EventPartUpdate,
 		Timestamp: time.Now().UTC(),
-		Data: QuestionData{
-			RequestID: "perm-3",
-			ToolUseID: "toolu_9",
-			Questions: []Question{{
-				Text:        "Pick one",
-				Header:      "Pick",
-				AllowCustom: true,
-				Options:     []QuestionOption{{Label: "A", Description: "first"}},
-			}},
-		},
+		Data: PartUpdateData{Part: Part{
+			ID:     "toolu_9",
+			Type:   PartToolCall,
+			Tool:   ClaudeToolAskUserQuestion,
+			Status: PartRunning,
+			Question: &QuestionPrompt{
+				RequestID: "perm-3",
+				Questions: []Question{{
+					Text:        "Pick one",
+					Header:      "Pick",
+					AllowCustom: true,
+					Options:     []QuestionOption{{Label: "A", Description: "first"}},
+				}},
+			},
+		}},
 	}
 	raw, err := json.Marshal(src)
 	if err != nil {
@@ -242,24 +267,9 @@ func TestEventJSONRoundTrip_Question(t *testing.T) {
 	if err := json.Unmarshal(raw, &back); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	data, ok := back.Data.(QuestionData)
-	if !ok {
-		t.Fatalf("decoded Data type = %T, want QuestionData", back.Data)
-	}
-	if data.RequestID != "perm-3" || data.ToolUseID != "toolu_9" ||
-		len(data.Questions) != 1 || data.Questions[0].Options[0].Description != "first" {
-		t.Errorf("round-trip mismatch: %+v", data)
-	}
-
-	resolved := Event{Type: EventQuestionResolved, Data: QuestionResolvedData{RequestID: "perm-3"}}
-	raw, err = json.Marshal(resolved)
-	if err != nil {
-		t.Fatalf("marshal resolved: %v", err)
-	}
-	if err := json.Unmarshal(raw, &back); err != nil {
-		t.Fatalf("unmarshal resolved: %v", err)
-	}
-	if rd, ok := back.Data.(QuestionResolvedData); !ok || rd.RequestID != "perm-3" {
-		t.Errorf("resolved round-trip: %#v", back.Data)
+	part := back.Data.(PartUpdateData).Part
+	if part.Question == nil || part.Question.RequestID != "perm-3" ||
+		len(part.Question.Questions) != 1 || part.Question.Questions[0].Options[0].Description != "first" {
+		t.Errorf("round-trip mismatch: %+v", part.Question)
 	}
 }

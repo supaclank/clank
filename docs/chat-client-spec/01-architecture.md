@@ -71,8 +71,8 @@ behaviors do, and the spec calls each out where relevant:
 3. **Revert vs. fork.** Claude supports `revert` (file rollback + transcript truncation);
    OpenCode supports `fork`. Calling the unsupported one errors. See [05](05-operations.md).
 4. **Interactive ("stop-and-wait") tools** — `ExitPlanMode`, `AskUserQuestion` (and
-   OpenCode's `question`) — pause the turn and need a *structured* reply. Questions are
-   normalized into the semantic `question` event (answered on the questions endpoint); plans
+   OpenCode's `question`) — pause the turn and need a *structured* reply. Question tool parts
+   carry a backend-normalized `part.question` tag (answered on the questions endpoint); plans
    surface through a `tool_call` part + a gating permission, identified by tool name (a known
    hack). See [11](11-interactive-tools.md).
 

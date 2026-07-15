@@ -239,15 +239,17 @@ type SessionViewModel struct {
 	// permission prompt; the notes ride the deny message. Reuses questionInput.
 	planNotesActive bool
 
-	// Question prompt state (see sessionview_question.go). The front of
-	// pendingQuestions is the active prompt; the Sel/Custom/Idx/Cursor fields
-	// track the in-progress answers for it.
-	pendingQuestions   []agent.QuestionData
-	questionSel        []map[int]bool // per-question selected option indices
-	questionCustom     []string       // per-question free-text ("Other") answers
-	questionIdx        int            // active question within the front prompt
-	questionCursor     int            // highlighted option row (== len(options) is the Other row)
-	questionTyping     bool           // typing into the Other field
+	// Question prompt state (see sessionview_question.go). The active prompt
+	// is DERIVED from the transcript (activeQuestionPart); these fields track
+	// the in-progress answers for it, reset by syncQuestionUI when the active
+	// part changes.
+	activeQuestionID   string          // part id the Sel/Custom state belongs to
+	answeredQuestions  map[string]bool // request ids answered/dismissed in this view
+	questionSel        []map[int]bool  // per-question selected option indices
+	questionCustom     []string        // per-question free-text ("Other") answers
+	questionIdx        int             // active question within the prompt
+	questionCursor     int             // highlighted option row (== len(options) is the Other row)
+	questionTyping     bool            // typing into the Other field
 	questionInput      textinput.Model
 	replyingQuestionID string // non-empty while a reply is in flight
 
@@ -478,11 +480,12 @@ func NewSessionViewModel(client *daemonclient.Client, sessionID string) *Session
 		spinner.WithStyle(lipgloss.NewStyle().Foreground(successColor)),
 	)
 	return &SessionViewModel{
-		client:    client,
-		sessionID: sessionID,
-		follow:    true,
-		input:     ta,
-		spinner:   sp,
+		client:            client,
+		sessionID:         sessionID,
+		follow:            true,
+		input:             ta,
+		spinner:           sp,
+		answeredQuestions: make(map[string]bool),
 	}
 }
 
@@ -1453,8 +1456,9 @@ func (m *SessionViewModel) handleEvent(evt agent.Event) tea.Cmd {
 	case agent.EventPermission:
 		if data, ok := evt.Data.(agent.PermissionData); ok {
 			// A question card supersedes the generic prompt for the same
-			// request (the backend emits both so old clients keep working).
-			if m.questionSuppressed(data.RequestID) {
+			// request (the backend emits both so old clients keep working;
+			// the tagged part always precedes the permission).
+			if m.questionSuppressesPermission(data) {
 				break
 			}
 			m.pendingPerms = append(m.pendingPerms, data)
@@ -1464,16 +1468,6 @@ func (m *SessionViewModel) handleEvent(evt agent.Event) tea.Cmd {
 			if m.follow {
 				m.scrollToBottom()
 			}
-		}
-
-	case agent.EventQuestion:
-		if data, ok := evt.Data.(agent.QuestionData); ok {
-			m.pushQuestion(data)
-		}
-
-	case agent.EventQuestionResolved:
-		if data, ok := evt.Data.(agent.QuestionResolvedData); ok {
-			m.removeQuestion(data.RequestID)
 		}
 
 	case agent.EventError:
@@ -1550,10 +1544,9 @@ func (m *SessionViewModel) handleStatusChange(data agent.StatusChangeData) {
 			// wedging on a now-dead prompt. See INV-ABORT-PERM-001.
 			m.pendingPerms = nil
 			m.replyingPermID = ""
-			m.pendingQuestions = nil
 			m.replyingQuestionID = ""
 			m.planNotesActive = false
-			m.resetQuestionUI()
+			m.questionTyping = false
 		}
 		if m.follow {
 			m.scrollToBottom()
@@ -1768,6 +1761,13 @@ func (m *SessionViewModel) upsertPartEntry(p agent.Part, isDelta bool) {
 						}
 						if pCopy.Tool == "" && e.toolPart.Tool != "" {
 							pCopy.Tool = e.toolPart.Tool
+						}
+						// A question tag arrives on some updates only (the
+						// gated running part, an opencode re-emit); an
+						// untagged follow-up (tool_result pairing) must not
+						// strip it.
+						if pCopy.Question == nil && e.toolPart.Question != nil {
+							pCopy.Question = e.toolPart.Question
 						}
 					}
 					e.toolPart = &pCopy
@@ -2718,9 +2718,9 @@ func (m *SessionViewModel) buildContentLines() []string {
 
 	// Append the virtual active prompt (not a real entry). A question card
 	// supersedes the generic permission prompt.
-	if len(m.pendingQuestions) > 0 {
+	if q := m.syncQuestionUI(); q != nil {
 		lines = append(lines, "")
-		lines = append(lines, m.renderQuestionCard()...)
+		lines = append(lines, m.renderQuestionCard(q)...)
 	} else if len(m.pendingPerms) > 0 {
 		perm := m.pendingPerms[0]
 		isPlan := perm.Tool == agent.ClaudeToolExitPlanMode
@@ -3080,7 +3080,7 @@ func (m *SessionViewModel) buildHelpText() string {
 	if !m.lastCtrlC.IsZero() && time.Since(m.lastCtrlC) < time.Second {
 		return "press ctrl+c again to quit"
 	}
-	if len(m.pendingQuestions) > 0 {
+	if m.activeQuestionPart() != nil {
 		if m.questionTyping {
 			return "enter: save | esc: cancel"
 		}

@@ -55,6 +55,17 @@ type OpenCodeBackend struct {
 	// MessageUnion's role as a typed enum on both variants.
 	messageRoles sync.Map // map[string]string
 
+	// questionPrompts maps a question tool call id to its normalized prompt
+	// (from question.asked); convertSDKPart consults it to tag tool parts
+	// (Part.Question) on live updates and Messages() reloads alike. Entries
+	// live for the session so historical parts stay tagged. Guarded by mu.
+	questionPrompts map[string]*QuestionPrompt
+
+	// questionToolParts caches the latest converted question-tool part per
+	// call id so a question.asked arriving after the part update can re-emit
+	// it tagged. Guarded by mu.
+	questionToolParts map[string]Part
+
 	// SystemPrompt, when non-empty, is attached as the prompt's system field on
 	// the first message of a fresh session — carrying stack-detected guidance.
 	// The host leaves it empty for resumed sessions (the guidance already shaped
@@ -76,14 +87,16 @@ func NewOpenCodeBackend(serverURL string, sessionID string, resolver ServerResol
 	ctx, cancel := context.WithCancel(context.Background())
 	serverURL = strings.TrimRight(serverURL, "/")
 	return &OpenCodeBackend{
-		status:    StatusIdle,
-		serverURL: serverURL,
-		resolver:  resolver,
-		sessionID: sessionID,
-		events:    make(chan Event, 128),
-		ctx:       ctx,
-		cancel:    cancel,
-		client:    client.NewClient(option.WithBaseURL(serverURL)),
+		status:            StatusIdle,
+		serverURL:         serverURL,
+		resolver:          resolver,
+		sessionID:         sessionID,
+		events:            make(chan Event, 128),
+		questionPrompts:   make(map[string]*QuestionPrompt),
+		questionToolParts: make(map[string]Part),
+		ctx:               ctx,
+		cancel:            cancel,
+		client:            client.NewClient(option.WithBaseURL(serverURL)),
 	}
 }
 
@@ -575,26 +588,6 @@ func (b *OpenCodeBackend) handleGlobalEvent(ev *opencode.GlobalEvent) {
 	case p.QuestionV2Asked != nil:
 		b.handleQuestionV2Asked(p.QuestionV2Asked.Properties)
 
-	case p.QuestionReplied != nil:
-		if props := p.QuestionReplied.Properties; props != nil {
-			b.handleQuestionResolved(props.SessionID, props.RequestID)
-		}
-
-	case p.QuestionRejected != nil:
-		if props := p.QuestionRejected.Properties; props != nil {
-			b.handleQuestionResolved(props.SessionID, props.RequestID)
-		}
-
-	case p.QuestionV2Replied != nil:
-		if props := p.QuestionV2Replied.Properties; props != nil {
-			b.handleQuestionResolved(props.SessionID, props.RequestID)
-		}
-
-	case p.QuestionV2Rejected != nil:
-		if props := p.QuestionV2Rejected.Properties; props != nil {
-			b.handleQuestionResolved(props.SessionID, props.RequestID)
-		}
-
 	case p.SessionIdle != nil:
 		if p.SessionIdle.Properties == nil || p.SessionIdle.Properties.SessionID != b.sessionID {
 			return
@@ -917,7 +910,9 @@ func (b *OpenCodeBackend) convertSDKPart(p *opencode.Part) *Part {
 			Text: p.Text.Text,
 		}
 	case p.Tool != nil:
-		return convertToolPart(p.Tool)
+		out := convertToolPart(p.Tool)
+		b.tagQuestionToolPart(p.Tool.CallID, p.Tool.Tool, out)
+		return out
 	case p.Reasoning != nil:
 		return &Part{
 			ID:   p.Reasoning.ID,

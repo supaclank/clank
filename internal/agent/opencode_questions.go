@@ -9,12 +9,17 @@ import (
 	opencode "github.com/acksell/opencode-go-sdk/sdk"
 )
 
-// handleQuestionAsked emits a normalized EventQuestion from a question.asked
-// global event. OpenCode's question API is already structured, so this is a
-// straight field mapping (no permission event is involved — OpenCode gates
-// questions on its own question endpoints, not the permission ones).
+// OpenCodeToolQuestion is OpenCode's interactive question tool name.
+const OpenCodeToolQuestion = "question"
+
+// handleQuestionAsked captures a question.asked event: it normalizes the
+// prompt, keys it by the tool call id so convertSDKPart tags the tool part
+// (Part.Question) on live updates and Messages() reloads alike, and — when
+// the part already streamed past untagged — re-emits it with the tag.
+// OpenCode's question API is already structured, so this is a straight field
+// mapping; no permission event is involved.
 func (b *OpenCodeBackend) handleQuestionAsked(props *opencode.GlobalEventPayloadQuestionAskedProperties) {
-	if props == nil || props.SessionID != b.SessionID() {
+	if props == nil || props.SessionID != b.SessionID() || props.Tool == nil {
 		return
 	}
 	questions := make([]Question, 0, len(props.Questions))
@@ -36,18 +41,14 @@ func (b *OpenCodeBackend) handleQuestionAsked(props *opencode.GlobalEventPayload
 		}
 		questions = append(questions, q)
 	}
-	toolUseID := ""
-	if props.Tool != nil {
-		toolUseID = props.Tool.CallID
-	}
-	b.emitQuestion(props.ID, toolUseID, questions)
+	b.registerQuestionPrompt(props.Tool.CallID, props.ID, questions)
 }
 
 // handleQuestionV2Asked is the question.v2.asked variant of
 // handleQuestionAsked. The payload is structurally identical but uses
 // distinct SDK types, hence the parallel mapping.
 func (b *OpenCodeBackend) handleQuestionV2Asked(props *opencode.GlobalEventPayloadQuestionV2AskedProperties) {
-	if props == nil || props.SessionID != b.SessionID() {
+	if props == nil || props.SessionID != b.SessionID() || props.Tool == nil {
 		return
 	}
 	questions := make([]Question, 0, len(props.Questions))
@@ -69,39 +70,49 @@ func (b *OpenCodeBackend) handleQuestionV2Asked(props *opencode.GlobalEventPaylo
 		}
 		questions = append(questions, q)
 	}
-	toolUseID := ""
-	if props.Tool != nil {
-		toolUseID = props.Tool.CallID
-	}
-	b.emitQuestion(props.ID, toolUseID, questions)
+	b.registerQuestionPrompt(props.Tool.CallID, props.ID, questions)
 }
 
-func (b *OpenCodeBackend) emitQuestion(requestID, toolUseID string, questions []Question) {
-	if requestID == "" || len(questions) == 0 {
+func (b *OpenCodeBackend) registerQuestionPrompt(callID, requestID string, questions []Question) {
+	if callID == "" || requestID == "" || len(questions) == 0 {
 		return
 	}
-	b.emit(Event{
-		Type:      EventQuestion,
-		Timestamp: time.Now(),
-		Data: QuestionData{
-			RequestID: requestID,
-			ToolUseID: toolUseID,
-			Questions: questions,
-		},
-	})
+	prompt := &QuestionPrompt{RequestID: requestID, Questions: questions}
+
+	b.mu.Lock()
+	b.questionPrompts[callID] = prompt
+	cached, hasPart := b.questionToolParts[callID]
+	b.mu.Unlock()
+
+	// question.asked and the tool's part update race on separate streams: if
+	// the part already went out untagged, re-emit it with the tag; otherwise
+	// convertSDKPart tags it on arrival via questionPrompts.
+	if hasPart {
+		cached.Question = prompt
+		b.emit(Event{
+			Type:      EventPartUpdate,
+			Timestamp: time.Now(),
+			Data:      PartUpdateData{Part: cached},
+		})
+	}
 }
 
-// handleQuestionResolved relays question.replied / question.rejected so every
-// client clears the prompt, including ones that didn't answer it.
-func (b *OpenCodeBackend) handleQuestionResolved(sessionID, requestID string) {
-	if sessionID != b.SessionID() || requestID == "" {
+// tagQuestionToolPart stamps a converted tool part with its question prompt
+// when one is registered for its call id, and caches question-tool parts so
+// a later question.asked can re-emit them tagged (see registerQuestionPrompt).
+func (b *OpenCodeBackend) tagQuestionToolPart(callID, tool string, part *Part) {
+	if part == nil || callID == "" {
 		return
 	}
-	b.emit(Event{
-		Type:      EventQuestionResolved,
-		Timestamp: time.Now(),
-		Data:      QuestionResolvedData{RequestID: requestID},
-	})
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if prompt := b.questionPrompts[callID]; prompt != nil {
+		part.Question = prompt
+		return
+	}
+	if tool == OpenCodeToolQuestion {
+		b.questionToolParts[callID] = *part
+	}
 }
 
 // RespondQuestion replies to a pending OpenCode question via its structured

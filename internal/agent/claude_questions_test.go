@@ -28,17 +28,54 @@ func askUserQuestionInput() map[string]any {
 	}
 }
 
-// A gated AskUserQuestion must surface as a normalized EventQuestion before
-// its EventPermission (same request id), and RespondQuestion must deliver the
-// formatted answers to the model as the permission deny reason — the only
-// transport that reaches a parked prompt (allow would re-run the tool's
-// interactive picker headless and deadlock).
+// waitForQuestionPart drains events until a tool part carrying a question tag
+// arrives, returning it.
+func waitForQuestionPart(t *testing.T, ch <-chan agent.Event, timeout time.Duration) agent.Part {
+	t.Helper()
+	timer := time.After(timeout)
+	for {
+		select {
+		case evt, ok := <-ch:
+			if !ok {
+				t.Fatal("events channel closed before a tagged question part")
+			}
+			if evt.Type != agent.EventPartUpdate {
+				continue
+			}
+			if d, ok := evt.Data.(agent.PartUpdateData); ok && d.Part.Question != nil {
+				return d.Part
+			}
+		case <-timer:
+			t.Fatal("timed out waiting for a tagged question part")
+		}
+	}
+}
+
+// A gated AskUserQuestion must surface as a tool part tagged with the
+// normalized prompt (before the permission event, same request id), and
+// RespondQuestion must deliver the formatted answers to the model as the
+// permission deny reason — the only transport that reaches a parked prompt
+// (allow would re-run the tool's interactive picker headless and deadlock).
 func TestClaudeCodeBackend_Question_GatedFlow(t *testing.T) {
 	t.Parallel()
-	transport := newMockTransport(nil)
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.StreamEvent{Event: map[string]any{
+			"type":  "content_block_start",
+			"index": float64(0),
+			"content_block": map[string]any{
+				"type": "tool_use",
+				"id":   "toolu_gated",
+				"name": "AskUserQuestion",
+			},
+		}},
+	})
 	b := agent.NewClaudeCodeBackend(t.TempDir())
 	defer b.Stop()
 	resolved := captureOpenOptions(t, b, transport)
+
+	// The tool_use block must have streamed (populating lastToolUseID) before
+	// the CLI raises the permission callback.
+	waitForToolPart(t, b.Events(), "AskUserQuestion", 2*time.Second)
 
 	done := make(chan any, 1)
 	go func() {
@@ -46,20 +83,19 @@ func TestClaudeCodeBackend_Question_GatedFlow(t *testing.T) {
 		done <- res
 	}()
 
-	qEvt := waitForEventType(t, b.Events(), agent.EventQuestion, 2*time.Second)
-	qData, ok := qEvt.Data.(agent.QuestionData)
-	if !ok {
-		t.Fatalf("EventQuestion data type = %T, want QuestionData", qEvt.Data)
+	part := waitForQuestionPart(t, b.Events(), 2*time.Second)
+	if part.ID != "toolu_gated" || part.Status != agent.PartRunning {
+		t.Fatalf("tagged part = id %q status %q, want the running toolu_gated part", part.ID, part.Status)
 	}
-	if len(qData.Questions) != 1 || qData.Questions[0].Header != "Auth" {
-		t.Fatalf("normalized questions = %+v", qData.Questions)
+	if len(part.Question.Questions) != 1 || part.Question.Questions[0].Header != "Auth" {
+		t.Fatalf("normalized questions = %+v", part.Question.Questions)
 	}
 
 	pEvt := waitForEventType(t, b.Events(), agent.EventPermission, 2*time.Second)
 	pData := pEvt.Data.(agent.PermissionData)
-	if pData.RequestID != qData.RequestID {
-		t.Errorf("permission RequestID %q != question RequestID %q (clients suppress by matching them)",
-			pData.RequestID, qData.RequestID)
+	if pData.RequestID != part.Question.RequestID {
+		t.Errorf("permission RequestID %q != part tag RequestID %q (clients suppress by matching them)",
+			pData.RequestID, part.Question.RequestID)
 	}
 	// The legacy prompt description must show the question, not the doubled
 	// tool name.
@@ -68,7 +104,7 @@ func TestClaudeCodeBackend_Question_GatedFlow(t *testing.T) {
 	}
 
 	answers := []agent.QuestionAnswer{{Selected: []string{"JWT"}}}
-	if err := b.RespondQuestion(context.Background(), qData.RequestID, answers, false); err != nil {
+	if err := b.RespondQuestion(context.Background(), part.Question.RequestID, answers, false); err != nil {
 		t.Fatalf("RespondQuestion: %v", err)
 	}
 
@@ -84,12 +120,6 @@ func TestClaudeCodeBackend_Question_GatedFlow(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("callback did not return after RespondQuestion")
-	}
-
-	rEvt := waitForEventType(t, b.Events(), agent.EventQuestionResolved, 2*time.Second)
-	if rEvt.Data.(agent.QuestionResolvedData).RequestID != qData.RequestID {
-		t.Errorf("resolved RequestID = %q, want %q",
-			rEvt.Data.(agent.QuestionResolvedData).RequestID, qData.RequestID)
 	}
 }
 
@@ -107,9 +137,9 @@ func TestClaudeCodeBackend_Question_RejectDismisses(t *testing.T) {
 		res, _ := resolved.CanUseTool(context.Background(), "AskUserQuestion", askUserQuestionInput(), nil)
 		done <- res
 	}()
-	qData := waitForEventType(t, b.Events(), agent.EventQuestion, 2*time.Second).Data.(agent.QuestionData)
+	pData := waitForEventType(t, b.Events(), agent.EventPermission, 2*time.Second).Data.(agent.PermissionData)
 
-	if err := b.RespondQuestion(context.Background(), qData.RequestID, nil, true); err != nil {
+	if err := b.RespondQuestion(context.Background(), pData.RequestID, nil, true); err != nil {
 		t.Fatalf("RespondQuestion(reject): %v", err)
 	}
 	select {
@@ -126,31 +156,6 @@ func TestClaudeCodeBackend_Question_RejectDismisses(t *testing.T) {
 	}
 }
 
-// Answering a question the old way — a plain permission deny from a legacy
-// client — must still emit EventQuestionResolved so question-aware clients
-// clear their card. Regression guard for mixed-client sessions.
-func TestClaudeCodeBackend_Question_LegacyPermissionReplyResolves(t *testing.T) {
-	t.Parallel()
-	transport := newMockTransport(nil)
-	b := agent.NewClaudeCodeBackend(t.TempDir())
-	defer b.Stop()
-	resolved := captureOpenOptions(t, b, transport)
-
-	go func() {
-		_, _ = resolved.CanUseTool(context.Background(), "AskUserQuestion", askUserQuestionInput(), nil)
-	}()
-	qData := waitForEventType(t, b.Events(), agent.EventQuestion, 2*time.Second).Data.(agent.QuestionData)
-
-	if err := b.RespondPermission(context.Background(), qData.RequestID, false, "Answers: JWT"); err != nil {
-		t.Fatalf("RespondPermission: %v", err)
-	}
-	rEvt := waitForEventType(t, b.Events(), agent.EventQuestionResolved, 2*time.Second)
-	if rEvt.Data.(agent.QuestionResolvedData).RequestID != qData.RequestID {
-		t.Errorf("resolved RequestID = %q, want %q",
-			rEvt.Data.(agent.QuestionResolvedData).RequestID, qData.RequestID)
-	}
-}
-
 func TestClaudeCodeBackend_RespondQuestion_Validation(t *testing.T) {
 	t.Parallel()
 	transport := newMockTransport(nil)
@@ -161,25 +166,30 @@ func TestClaudeCodeBackend_RespondQuestion_Validation(t *testing.T) {
 	if err := b.RespondQuestion(context.Background(), "does-not-exist", nil, true); err == nil {
 		t.Error("RespondQuestion(unknown id) = nil, want error")
 	}
+	// An unknown bypass-style id with no transcript behind it must also fail
+	// (the recovery path found nothing).
+	if err := b.RespondQuestion(context.Background(), "q-ghost", nil, true); err == nil {
+		t.Error("RespondQuestion(q-unknown) = nil, want error")
+	}
 
 	go func() {
 		_, _ = resolved.CanUseTool(context.Background(), "AskUserQuestion", askUserQuestionInput(), nil)
 	}()
-	qData := waitForEventType(t, b.Events(), agent.EventQuestion, 2*time.Second).Data.(agent.QuestionData)
+	pData := waitForEventType(t, b.Events(), agent.EventPermission, 2*time.Second).Data.(agent.PermissionData)
 
 	// One question, two answers → fail fast, keep the prompt pending.
-	err := b.RespondQuestion(context.Background(), qData.RequestID, make([]agent.QuestionAnswer, 2), false)
+	err := b.RespondQuestion(context.Background(), pData.RequestID, make([]agent.QuestionAnswer, 2), false)
 	if err == nil {
 		t.Error("RespondQuestion(count mismatch) = nil, want error")
 	}
 	// The prompt must still be answerable after the failed attempt.
-	if err := b.RespondQuestion(context.Background(), qData.RequestID, nil, true); err != nil {
+	if err := b.RespondQuestion(context.Background(), pData.RequestID, nil, true); err != nil {
 		t.Errorf("RespondQuestion after failed attempt: %v", err)
 	}
 }
 
 // In bypassPermissions the CLI never consults CanUseTool — the question must
-// be surfaced from the stream (content_block_stop) instead, and the answers
+// surface as the completed tool part's tag (from the stream), and the answers
 // must go back as a follow-up user message.
 func TestClaudeCodeBackend_Question_BypassFlow(t *testing.T) {
 	t.Parallel()
@@ -232,10 +242,8 @@ func TestClaudeCodeBackend_Question_BypassFlow(t *testing.T) {
 	b := agent.NewClaudeCodeBackend(t.TempDir())
 	defer b.Stop()
 
-	var sentPrompts []string
 	promptCh := make(chan string, 1)
 	transport.onSend = func(prompt string) []claudecode.Message {
-		sentPrompts = append(sentPrompts, prompt)
 		select {
 		case promptCh <- prompt:
 		default:
@@ -243,20 +251,18 @@ func TestClaudeCodeBackend_Question_BypassFlow(t *testing.T) {
 		return nil
 	}
 
-	resolved := captureOpenOptions(t, b, transport)
-	_ = resolved
+	_ = captureOpenOptions(t, b, transport)
 
-	qEvt := waitForEventType(t, b.Events(), agent.EventQuestion, 2*time.Second)
-	qData := qEvt.Data.(agent.QuestionData)
-	if qData.RequestID != "q-toolu_q1" {
-		t.Errorf("RequestID = %q, want q-toolu_q1 (stream-derived id)", qData.RequestID)
+	part := waitForQuestionPart(t, b.Events(), 2*time.Second)
+	if part.ID != "toolu_q1" || part.Status != agent.PartCompleted {
+		t.Fatalf("tagged part = id %q status %q, want completed toolu_q1", part.ID, part.Status)
 	}
-	if qData.ToolUseID != "toolu_q1" {
-		t.Errorf("ToolUseID = %q, want toolu_q1", qData.ToolUseID)
+	if part.Question.RequestID != "q-toolu_q1" {
+		t.Errorf("RequestID = %q, want q-toolu_q1 (deterministic bypass id)", part.Question.RequestID)
 	}
 
 	answers := []agent.QuestionAnswer{{Selected: []string{"Sessions"}, Custom: "prefer cookies"}}
-	if err := b.RespondQuestion(context.Background(), qData.RequestID, answers, false); err != nil {
+	if err := b.RespondQuestion(context.Background(), part.Question.RequestID, answers, false); err != nil {
 		t.Fatalf("RespondQuestion: %v", err)
 	}
 
@@ -267,12 +273,6 @@ func TestClaudeCodeBackend_Question_BypassFlow(t *testing.T) {
 			t.Errorf("follow-up message = %q, want %q", prompt, want)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatalf("no follow-up message dispatched; sent so far: %v", sentPrompts)
-	}
-
-	rEvt := waitForEventType(t, b.Events(), agent.EventQuestionResolved, 2*time.Second)
-	if rEvt.Data.(agent.QuestionResolvedData).RequestID != qData.RequestID {
-		t.Errorf("resolved RequestID = %q, want %q",
-			rEvt.Data.(agent.QuestionResolvedData).RequestID, qData.RequestID)
+		t.Fatal("no follow-up message dispatched")
 	}
 }

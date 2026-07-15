@@ -49,17 +49,16 @@ func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, i
 	b.pendingPerms[id] = decision
 	toolUseID := b.lastToolUseID[tool]
 
-	// Normalize AskUserQuestion into a structured EventQuestion so clients
-	// don't have to sniff tool names out of part input. The permission event
-	// still follows (same request id) for clients that predate EventQuestion;
-	// question-aware clients suppress it by matching request_id.
+	// Normalize AskUserQuestion by tagging its tool part with the structured
+	// prompt (see Part.Question) instead of a side-channel event: the part is
+	// what clients already reconcile across both the live stream and history
+	// refetch, so the prompt survives reopening the session. The permission
+	// event still follows (same request id) for clients that predate the tag;
+	// tag-aware clients suppress it by matching request_id / tool_use_id.
 	var questions []Question
 	if tool == ClaudeToolAskUserQuestion {
 		if questions = parseClaudeQuestions(input); questions != nil {
 			b.pendingQuestions[id] = claudeQuestion{toolUseID: toolUseID, questions: questions, viaPerm: true}
-			if toolUseID != "" {
-				b.questionToolUses[toolUseID] = true
-			}
 		}
 	}
 	b.mu.Unlock()
@@ -67,18 +66,8 @@ func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, i
 	defer func() {
 		b.mu.Lock()
 		delete(b.pendingPerms, id)
-		_, wasQuestion := b.pendingQuestions[id]
 		delete(b.pendingQuestions, id)
 		b.mu.Unlock()
-		// However the prompt resolved (answers, deny, abort), tell every client
-		// to clear the question card.
-		if wasQuestion {
-			b.emit(Event{
-				Type:      EventQuestionResolved,
-				Timestamp: time.Now(),
-				Data:      QuestionResolvedData{RequestID: id},
-			})
-		}
 	}()
 
 	// The CLI asks for permission just before the content_block_stop that would
@@ -91,33 +80,20 @@ func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, i
 	// (currentMsgID is owned by receiveLoop; reading it here would race), and
 	// clients attach tool parts by part id.
 	if toolUseID != "" {
+		part := Part{
+			ID:     toolUseID,
+			Type:   PartToolCall,
+			Tool:   tool,
+			Status: PartRunning,
+			Input:  input,
+		}
+		if questions != nil {
+			part.Question = &QuestionPrompt{RequestID: id, Questions: questions}
+		}
 		b.emit(Event{
 			Type:      EventPartUpdate,
 			Timestamp: time.Now(),
-			Data: PartUpdateData{
-				Part: Part{
-					ID:     toolUseID,
-					Type:   PartToolCall,
-					Tool:   tool,
-					Status: PartRunning,
-					Input:  input,
-				},
-			},
-		})
-	}
-
-	// Emit the question before the permission so a question-aware client has
-	// already registered the request id when the permission arrives and can
-	// suppress the redundant generic prompt.
-	if questions != nil {
-		b.emit(Event{
-			Type:      EventQuestion,
-			Timestamp: time.Now(),
-			Data: QuestionData{
-				RequestID: id,
-				ToolUseID: toolUseID,
-				Questions: questions,
-			},
+			Data:      PartUpdateData{Part: part},
 		})
 	}
 
@@ -195,26 +171,31 @@ func (b *ClaudeCodeBackend) RespondPermission(_ context.Context, permissionID st
 	return nil
 }
 
-// RespondQuestion delivers structured answers to a pending question prompt.
+// RespondQuestion delivers structured answers to a question prompt.
 // For a prompt parked on handleCanUseTool (gated modes) the formatted answers
 // ride the permission deny — allow would run the tool's interactive picker
 // headless and re-deadlock, so deny-with-message is the only transport that
 // reaches the model. For a prompt whose tool auto-ran (bypassPermissions) the
 // answers are dispatched as a follow-up user message, mirroring the mobile
-// client's fallback.
+// client's fallback. A "q-<tool_use_id>" request not in the in-memory map
+// (e.g. after a daemon restart) is recovered from the transcript, so answers
+// to a question restored from history always work.
 func (b *ClaudeCodeBackend) RespondQuestion(ctx context.Context, requestID string, answers []QuestionAnswer, reject bool) error {
 	b.mu.Lock()
 	q, ok := b.pendingQuestions[requestID]
 	b.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("no pending question %q", requestID)
+		var err error
+		if q, err = b.questionFromTranscript(ctx, requestID); err != nil {
+			return err
+		}
 	}
 	if !reject && len(answers) != len(q.questions) {
 		return fmt.Errorf("question %q expects %d answers, got %d", requestID, len(q.questions), len(answers))
 	}
 
 	if q.viaPerm {
-		// The parked handleCanUseTool owns cleanup and the resolved event.
+		// The parked handleCanUseTool owns cleanup.
 		msg := questionsDismissedMessage
 		if !reject {
 			msg = formatQuestionAnswers(q.questions, answers)
@@ -225,15 +206,33 @@ func (b *ClaudeCodeBackend) RespondQuestion(ctx context.Context, requestID strin
 	b.mu.Lock()
 	delete(b.pendingQuestions, requestID)
 	b.mu.Unlock()
-	b.emit(Event{
-		Type:      EventQuestionResolved,
-		Timestamp: time.Now(),
-		Data:      QuestionResolvedData{RequestID: requestID},
-	})
 	if reject {
 		return nil
 	}
 	return b.Send(ctx, SendMessageOpts{Text: formatQuestionAnswers(q.questions, answers)})
+}
+
+// questionFromTranscript recovers a bypass question's definition from the
+// on-disk transcript by its "q-<tool_use_id>" request id. This is the
+// restart-proof path: the in-memory pendingQuestions map dies with the
+// process, but the tagged tool part is durable in the transcript.
+func (b *ClaudeCodeBackend) questionFromTranscript(ctx context.Context, requestID string) (claudeQuestion, error) {
+	toolUseID, ok := strings.CutPrefix(requestID, bypassQuestionIDPrefix)
+	if !ok {
+		return claudeQuestion{}, fmt.Errorf("no pending question %q", requestID)
+	}
+	msgs, err := b.Messages(ctx)
+	if err != nil {
+		return claudeQuestion{}, fmt.Errorf("no pending question %q (transcript lookup: %w)", requestID, err)
+	}
+	for _, m := range msgs {
+		for _, p := range m.Parts {
+			if p.ID == toolUseID && p.Question != nil {
+				return claudeQuestion{toolUseID: toolUseID, questions: p.Question.Questions}, nil
+			}
+		}
+	}
+	return claudeQuestion{}, fmt.Errorf("no pending question %q", requestID)
 }
 
 // failPendingPermissions denies every parked permission request. Called on

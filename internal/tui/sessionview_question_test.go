@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -10,13 +11,14 @@ import (
 	"github.com/acksell/clank/internal/agent"
 )
 
-func questionEvent(requestID string) agent.Event {
-	return agent.Event{
-		Type:      agent.EventQuestion,
-		Timestamp: time.Now(),
-		Data: agent.QuestionData{
+func taggedQuestionPart(partID, requestID string) agent.Part {
+	return agent.Part{
+		ID:     partID,
+		Type:   agent.PartToolCall,
+		Tool:   "AskUserQuestion",
+		Status: agent.PartCompleted,
+		Question: &agent.QuestionPrompt{
 			RequestID: requestID,
-			ToolUseID: "toolu_1",
 			Questions: []agent.Question{
 				{
 					Text:        "Which auth method should we use?",
@@ -41,6 +43,14 @@ func questionEvent(requestID string) agent.Event {
 	}
 }
 
+func questionPartEvent(partID, requestID string) agent.Event {
+	return agent.Event{
+		Type:      agent.EventPartUpdate,
+		Timestamp: time.Now(),
+		Data:      agent.PartUpdateData{Part: taggedQuestionPart(partID, requestID)},
+	}
+}
+
 func newQuestionTestModel(t *testing.T) *SessionViewModel {
 	t.Helper()
 	m := NewSessionViewModel(nil, "sess-1")
@@ -54,20 +64,63 @@ func pressKey(t *testing.T, m *SessionViewModel, msg tea.KeyPressMsg) tea.Cmd {
 	return cmd
 }
 
-// The permission event that trails a question (same request id) must be
-// suppressed — the question card supersedes the generic y/n prompt.
+// A tagged tool part that is the transcript's last content entry is the
+// active question; the conversation moving past it (a later text part)
+// retires it.
+func TestSessionView_ActiveQuestionDerivedFromTranscript(t *testing.T) {
+	t.Parallel()
+	m := newQuestionTestModel(t)
+
+	m.handleEvent(questionPartEvent("toolu_1", "q-toolu_1"))
+	p := m.activeQuestionPart()
+	if p == nil || p.Question.RequestID != "q-toolu_1" {
+		t.Fatalf("activeQuestionPart = %+v, want the tagged part", p)
+	}
+
+	// The model moved on: a later assistant text entry retires the prompt.
+	m.handleEvent(agent.Event{
+		Type: agent.EventPartUpdate,
+		Data: agent.PartUpdateData{Part: agent.Part{ID: "txt-1", Type: agent.PartText, Text: "Proceeding with JWT."}},
+	})
+	if p := m.activeQuestionPart(); p != nil {
+		t.Fatalf("activeQuestionPart = %+v after the conversation moved on, want nil", p)
+	}
+}
+
+// Reopening a session restores the card from the plain history refetch — the
+// exact bug this design fixes (prompts used to live only in ephemeral
+// events).
+func TestSessionView_QuestionRestoredFromHistoryRefetch(t *testing.T) {
+	t.Parallel()
+	m := newQuestionTestModel(t)
+
+	m.handleSessionMessages([]agent.MessageData{
+		{ID: "m1", Role: "user", Content: "help me pick auth"},
+		{ID: "m2", Role: "assistant", Parts: []agent.Part{
+			{ID: "m2-0", Type: agent.PartText, Text: "Sure — quick question."},
+			taggedQuestionPart("toolu_hist", "q-toolu_hist"),
+		}},
+	})
+
+	p := m.activeQuestionPart()
+	if p == nil || p.Question.RequestID != "q-toolu_hist" {
+		t.Fatalf("activeQuestionPart after refetch = %+v, want the restored question", p)
+	}
+}
+
+// The permission event that gates a question (same request id, Claude
+// default/plan mode) must be suppressed — the question card supersedes it.
 func TestSessionView_QuestionSuppressesMatchingPermission(t *testing.T) {
 	t.Parallel()
 	m := newQuestionTestModel(t)
 
-	m.handleEvent(questionEvent("perm-1"))
-	if len(m.pendingQuestions) != 1 {
-		t.Fatalf("pendingQuestions len=%d, want 1", len(m.pendingQuestions))
-	}
-
+	m.handleEvent(questionPartEvent("toolu_1", "perm-1"))
 	m.handleEvent(agent.Event{
 		Type: agent.EventPermission,
-		Data: agent.PermissionData{RequestID: "perm-1", Tool: "AskUserQuestion", Description: "AskUserQuestion"},
+		Data: agent.PermissionData{
+			RequestID: "perm-1", Tool: "AskUserQuestion",
+			Description: "Which auth method should we use?", ToolUseID: "toolu_1",
+		},
 	})
 	if len(m.pendingPerms) != 0 {
 		t.Errorf("pendingPerms len=%d, want 0 (suppressed by the question card)", len(m.pendingPerms))
@@ -83,33 +136,13 @@ func TestSessionView_QuestionSuppressesMatchingPermission(t *testing.T) {
 	}
 }
 
-// Replayed-out-of-order delivery: if the permission lands before the question
-// (SSE reconnect), the question's arrival must retroactively drop it.
-func TestSessionView_QuestionDropsAlreadyQueuedPermission(t *testing.T) {
-	t.Parallel()
-	m := newQuestionTestModel(t)
-
-	m.handleEvent(agent.Event{
-		Type: agent.EventPermission,
-		Data: agent.PermissionData{RequestID: "perm-1", Tool: "AskUserQuestion", Description: "AskUserQuestion"},
-	})
-	m.handleEvent(questionEvent("perm-1"))
-
-	if len(m.pendingPerms) != 0 {
-		t.Errorf("pendingPerms len=%d, want 0 after question arrived", len(m.pendingPerms))
-	}
-	if len(m.pendingQuestions) != 1 {
-		t.Errorf("pendingQuestions len=%d, want 1", len(m.pendingQuestions))
-	}
-}
-
 // Walking the prompt: digit-select on a single-select question advances to the
 // next question; enter on the last question submits with the collected
 // structured answers.
 func TestSessionView_QuestionSelectAndSubmit(t *testing.T) {
 	t.Parallel()
 	m := newQuestionTestModel(t)
-	m.handleEvent(questionEvent("perm-1"))
+	m.handleEvent(questionPartEvent("toolu_1", "q-toolu_1"))
 
 	// "1" picks JWT on the single-select first question and auto-advances.
 	if cmd := pressKey(t, m, tea.KeyPressMsg{Code: '1', Text: "1"}); cmd != nil {
@@ -131,24 +164,22 @@ func TestSessionView_QuestionSelectAndSubmit(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("enter on the last question must dispatch the reply")
 	}
-	if m.replyingQuestionID != "perm-1" {
-		t.Fatalf("replyingQuestionID=%q, want perm-1", m.replyingQuestionID)
+	if m.replyingQuestionID != "q-toolu_1" {
+		t.Fatalf("replyingQuestionID=%q, want q-toolu_1", m.replyingQuestionID)
 	}
 
-	// Applying the success result clears the prompt and records a transcript
+	// Applying the success result retires the prompt and records a transcript
 	// entry summarizing the answers.
 	m.handleQuestionReplyResult(questionReplyResultMsg{
-		question: m.pendingQuestions[0],
+		requestID: "q-toolu_1",
+		questions: taggedQuestionPart("toolu_1", "q-toolu_1").Question.Questions,
 		answers: []agent.QuestionAnswer{
 			{Selected: []string{"JWT"}},
 			{Selected: []string{"Search", "Export"}},
 		},
 	})
-	if len(m.pendingQuestions) != 0 || m.replyingQuestionID != "" {
-		t.Errorf("prompt not cleared: questions=%d replying=%q", len(m.pendingQuestions), m.replyingQuestionID)
-	}
-	if len(m.entries) == 0 {
-		t.Fatal("no transcript entry recorded for the reply")
+	if m.activeQuestionPart() != nil || m.replyingQuestionID != "" {
+		t.Errorf("prompt not retired after reply")
 	}
 	last := m.entries[len(m.entries)-1]
 	if last.kind != entryPermResult || !strings.Contains(last.content, "Auth: JWT") {
@@ -156,41 +187,64 @@ func TestSessionView_QuestionSelectAndSubmit(t *testing.T) {
 	}
 }
 
-// Esc dismisses the whole prompt as a reject.
+// Esc dismisses the prompt (best-effort reject); even a failed reject
+// dismisses locally so the UI can never lock into a dead prompt.
 func TestSessionView_QuestionEscRejects(t *testing.T) {
 	t.Parallel()
 	m := newQuestionTestModel(t)
-	m.handleEvent(questionEvent("perm-1"))
+	m.handleEvent(questionPartEvent("toolu_1", "q-toolu_1"))
 
 	cmd := pressKey(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
 	if cmd == nil {
 		t.Fatal("esc must dispatch a reject reply")
 	}
-	if m.replyingQuestionID != "perm-1" {
-		t.Fatalf("replyingQuestionID=%q, want perm-1", m.replyingQuestionID)
+	if m.replyingQuestionID != "q-toolu_1" {
+		t.Fatalf("replyingQuestionID=%q, want q-toolu_1", m.replyingQuestionID)
 	}
-	m.handleQuestionReplyResult(questionReplyResultMsg{
-		question: questionEvent("perm-1").Data.(agent.QuestionData),
-		reject:   true,
-	})
+	m.handleQuestionReplyResult(questionReplyResultMsg{requestID: "q-toolu_1", reject: true})
+	if m.activeQuestionPart() != nil {
+		t.Error("prompt still active after dismissal")
+	}
 	last := m.entries[len(m.entries)-1]
 	if last.permGranted || !strings.Contains(last.content, "Dismissed") {
 		t.Errorf("transcript entry = %+v, want a Dismissed record", last)
 	}
 }
 
-// A question.resolved event (answered on another client) must clear the card.
-func TestSessionView_QuestionResolvedEventClears(t *testing.T) {
+// A reject that errors (stale prompt, dead backend) must still dismiss
+// locally — otherwise the modal card wedges the whole view.
+func TestSessionView_QuestionRejectErrorStillDismisses(t *testing.T) {
 	t.Parallel()
 	m := newQuestionTestModel(t)
-	m.handleEvent(questionEvent("perm-1"))
+	m.handleEvent(questionPartEvent("toolu_1", "q-toolu_1"))
 
-	m.handleEvent(agent.Event{
-		Type: agent.EventQuestionResolved,
-		Data: agent.QuestionResolvedData{RequestID: "perm-1"},
+	m.replyingQuestionID = "q-toolu_1"
+	m.handleQuestionReplyResult(questionReplyResultMsg{
+		requestID: "q-toolu_1",
+		reject:    true,
+		err:       context.DeadlineExceeded,
 	})
-	if len(m.pendingQuestions) != 0 {
-		t.Errorf("pendingQuestions len=%d, want 0 after question.resolved", len(m.pendingQuestions))
+	if m.activeQuestionPart() != nil {
+		t.Error("failed dismissal left the prompt active (modal lock-in)")
+	}
+	if m.err == nil {
+		t.Error("dismissal error not surfaced")
+	}
+}
+
+// A failed answer keeps the prompt so the user can retry.
+func TestSessionView_QuestionAnswerErrorKeepsPrompt(t *testing.T) {
+	t.Parallel()
+	m := newQuestionTestModel(t)
+	m.handleEvent(questionPartEvent("toolu_1", "q-toolu_1"))
+
+	m.replyingQuestionID = "q-toolu_1"
+	m.handleQuestionReplyResult(questionReplyResultMsg{
+		requestID: "q-toolu_1",
+		err:       context.DeadlineExceeded,
+	})
+	if m.activeQuestionPart() == nil {
+		t.Error("failed answer dismissed the prompt; want it kept for retry")
 	}
 }
 
@@ -198,10 +252,14 @@ func TestSessionView_QuestionResolvedEventClears(t *testing.T) {
 func TestSessionView_QuestionCardRenders(t *testing.T) {
 	t.Parallel()
 	m := newQuestionTestModel(t)
-	m.handleEvent(questionEvent("perm-1"))
+	m.handleEvent(questionPartEvent("toolu_1", "q-toolu_1"))
 	pressKey(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
 
-	card := strings.Join(m.renderQuestionCard(), "\n")
+	p := m.syncQuestionUI()
+	if p == nil {
+		t.Fatal("no active question to render")
+	}
+	card := strings.Join(m.renderQuestionCard(p), "\n")
 	for _, want := range []string{"Auth", "Which auth method", "JWT", "Sessions", "Other"} {
 		if !strings.Contains(card, want) {
 			t.Errorf("question card missing %q:\n%s", want, card)
