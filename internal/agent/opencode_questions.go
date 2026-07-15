@@ -24,12 +24,12 @@ func (b *OpenCodeBackend) handleQuestionAsked(props *opencode.GlobalEventPayload
 	}
 	questions := make([]Question, 0, len(props.Questions))
 	for _, qi := range props.Questions {
-		if qi == nil {
+		if qi == nil || qi.Question == "" {
 			continue
 		}
 		q := Question{
 			Text:        qi.Question,
-			Header:      qi.Header,
+			Header:      questionHeaderOrDefault(qi.Header, qi.Question),
 			MultiSelect: qi.Multiple != nil && *qi.Multiple,
 			AllowCustom: qi.Custom != nil && *qi.Custom,
 		}
@@ -38,6 +38,9 @@ func (b *OpenCodeBackend) handleQuestionAsked(props *opencode.GlobalEventPayload
 				continue
 			}
 			q.Options = append(q.Options, QuestionOption{Label: opt.Label, Description: opt.Description})
+		}
+		if len(q.Options) == 0 {
+			continue
 		}
 		questions = append(questions, q)
 	}
@@ -53,12 +56,12 @@ func (b *OpenCodeBackend) handleQuestionV2Asked(props *opencode.GlobalEventPaylo
 	}
 	questions := make([]Question, 0, len(props.Questions))
 	for _, qi := range props.Questions {
-		if qi == nil {
+		if qi == nil || qi.Question == "" {
 			continue
 		}
 		q := Question{
 			Text:        qi.Question,
-			Header:      qi.Header,
+			Header:      questionHeaderOrDefault(qi.Header, qi.Question),
 			MultiSelect: qi.Multiple != nil && *qi.Multiple,
 			AllowCustom: qi.Custom != nil && *qi.Custom,
 		}
@@ -67,6 +70,9 @@ func (b *OpenCodeBackend) handleQuestionV2Asked(props *opencode.GlobalEventPaylo
 				continue
 			}
 			q.Options = append(q.Options, QuestionOption{Label: opt.Label, Description: opt.Description})
+		}
+		if len(q.Options) == 0 {
+			continue
 		}
 		questions = append(questions, q)
 	}
@@ -82,6 +88,9 @@ func (b *OpenCodeBackend) registerQuestionPrompt(callID, requestID string, quest
 	b.mu.Lock()
 	b.questionPrompts[callID] = prompt
 	cached, hasPart := b.questionToolParts[callID]
+	if hasPart {
+		delete(b.questionToolParts, callID) // consumed; avoid unbounded growth
+	}
 	b.mu.Unlock()
 
 	// question.asked and the tool's part update race on separate streams: if

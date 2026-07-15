@@ -273,3 +273,145 @@ func TestPartQuestionJSONRoundTrip(t *testing.T) {
 		t.Errorf("round-trip mismatch: %+v", part.Question)
 	}
 }
+
+// An empty header defaults to the first 12 chars of the question text,
+// matching parseClaudeQuestions (mirrors the mobile client).
+func TestOpenCodeQuestionTag_HeaderDefaultsToQuestionPrefix(t *testing.T) {
+	t.Parallel()
+	b := NewOpenCodeBackend("http://127.0.0.1:0", "sess-1", nil)
+
+	props := opencodeQuestionAskedProps("call-1", "req-1")
+	props.Questions[0].Header = ""
+	props.Questions[0].Question = "Which database engine do you want?"
+	b.handleGlobalEvent(&opencode.GlobalEvent{Payload: &opencode.GlobalEventPayload{
+		QuestionAsked: &opencode.GlobalEventPayloadQuestionAsked{Properties: props},
+	}})
+
+	part := b.convertSDKPart(opencodeQuestionToolPart("call-1"))
+	if part == nil || part.Question == nil {
+		t.Fatalf("converted part = %+v, want a question tag", part)
+	}
+	if got, want := part.Question.Questions[0].Header, "Which databa"[:12]; got != want {
+		t.Errorf("Header = %q, want first-12-chars default %q", got, want)
+	}
+}
+
+// Questions with empty text or zero valid options are dropped rather than
+// producing an unrenderable part.question tag (mirrors parseClaudeQuestions).
+func TestOpenCodeQuestionTag_FiltersInvalidQuestions(t *testing.T) {
+	t.Parallel()
+	b := NewOpenCodeBackend("http://127.0.0.1:0", "sess-1", nil)
+
+	props := opencodeQuestionAskedProps("call-1", "req-1")
+	props.Questions = []*opencode.QuestionInfo{
+		{Question: "", Options: []*opencode.QuestionOption{{Label: "A"}}},                               // empty text
+		{Question: "No valid options", Options: []*opencode.QuestionOption{{Description: "no label"}}},  // no valid options
+		{Question: "Which DB?", Header: "DB", Options: []*opencode.QuestionOption{{Label: "Postgres"}}}, // valid
+	}
+	b.handleGlobalEvent(&opencode.GlobalEvent{Payload: &opencode.GlobalEventPayload{
+		QuestionAsked: &opencode.GlobalEventPayloadQuestionAsked{Properties: props},
+	}})
+
+	part := b.convertSDKPart(opencodeQuestionToolPart("call-1"))
+	if part == nil || part.Question == nil {
+		t.Fatalf("converted part = %+v, want a question tag", part)
+	}
+	if len(part.Question.Questions) != 1 || part.Question.Questions[0].Text != "Which DB?" {
+		t.Errorf("Questions = %+v, want only the valid entry", part.Question.Questions)
+	}
+}
+
+// When every question in the batch is invalid, no prompt is registered at
+// all — the tool part must convert untagged rather than carry a broken tag.
+func TestOpenCodeQuestionTag_AllInvalidSkipsRegistration(t *testing.T) {
+	t.Parallel()
+	b := NewOpenCodeBackend("http://127.0.0.1:0", "sess-1", nil)
+
+	props := opencodeQuestionAskedProps("call-1", "req-1")
+	props.Questions = []*opencode.QuestionInfo{
+		{Question: "", Options: []*opencode.QuestionOption{{Label: "A"}}},
+	}
+	b.handleGlobalEvent(&opencode.GlobalEvent{Payload: &opencode.GlobalEventPayload{
+		QuestionAsked: &opencode.GlobalEventPayloadQuestionAsked{Properties: props},
+	}})
+
+	if part := b.convertSDKPart(opencodeQuestionToolPart("call-1")); part.Question != nil {
+		t.Errorf("part tagged from an all-invalid batch: %+v", part.Question)
+	}
+}
+
+// registerQuestionPrompt must remove the questionToolParts cache entry once
+// consumed, or the map grows unbounded across a session's part-first questions.
+func TestOpenCodeRegisterQuestionPrompt_ConsumesCachedPart(t *testing.T) {
+	t.Parallel()
+	b := NewOpenCodeBackend("http://127.0.0.1:0", "sess-1", nil)
+
+	b.convertSDKPart(opencodeQuestionToolPart("call-1"))
+	b.mu.Lock()
+	_, cachedBefore := b.questionToolParts["call-1"]
+	b.mu.Unlock()
+	if !cachedBefore {
+		t.Fatal("tool part must be cached before question.asked arrives")
+	}
+
+	b.handleGlobalEvent(&opencode.GlobalEvent{Payload: &opencode.GlobalEventPayload{
+		QuestionAsked: &opencode.GlobalEventPayloadQuestionAsked{Properties: opencodeQuestionAskedProps("call-1", "req-1")},
+	}})
+	<-b.Events() // drain the re-emitted tagged part
+
+	b.mu.Lock()
+	_, cachedAfter := b.questionToolParts["call-1"]
+	b.mu.Unlock()
+	if cachedAfter {
+		t.Error("questionToolParts entry not deleted after registerQuestionPrompt consumed it")
+	}
+}
+
+// opencodeQuestionV2AskedProps mirrors opencodeQuestionAskedProps for the
+// question.v2.asked payload shape.
+func opencodeQuestionV2AskedProps(callID, requestID string) *opencode.GlobalEventPayloadQuestionV2AskedProperties {
+	multiple, custom := true, true
+	return &opencode.GlobalEventPayloadQuestionV2AskedProperties{
+		ID:        requestID,
+		SessionID: "sess-1",
+		Questions: []*opencode.QuestionV2Info{{
+			Question: "Which DB?",
+			Header:   "DB",
+			Multiple: &multiple,
+			Custom:   &custom,
+			Options: []*opencode.QuestionV2Option{
+				{Label: "Postgres", Description: "relational"},
+				{Label: "SQLite"},
+			},
+		}},
+		Tool: &opencode.QuestionV2Tool{MessageID: "msg-1", CallID: callID},
+	}
+}
+
+// question.v2.asked exercises the same tagging path as question.asked; this
+// pins the previously-untested V2 payload against the same header-default and
+// invalid-question-filtering behavior.
+func TestOpenCodeQuestionV2Tag_HeaderDefaultAndFiltering(t *testing.T) {
+	t.Parallel()
+	b := NewOpenCodeBackend("http://127.0.0.1:0", "sess-1", nil)
+
+	props := opencodeQuestionV2AskedProps("call-1", "req-1")
+	props.Questions = []*opencode.QuestionV2Info{
+		{Question: "", Options: []*opencode.QuestionV2Option{{Label: "A"}}},                                          // empty text, dropped
+		{Question: "Which database engine do you want?", Options: []*opencode.QuestionV2Option{{Label: "Postgres"}}}, // empty header, defaulted
+	}
+	b.handleGlobalEvent(&opencode.GlobalEvent{Payload: &opencode.GlobalEventPayload{
+		QuestionV2Asked: &opencode.GlobalEventPayloadQuestionV2Asked{Properties: props},
+	}})
+
+	part := b.convertSDKPart(opencodeQuestionToolPart("call-1"))
+	if part == nil || part.Question == nil {
+		t.Fatalf("converted part = %+v, want a question tag", part)
+	}
+	if len(part.Question.Questions) != 1 {
+		t.Fatalf("Questions = %+v, want the empty-text entry filtered out", part.Question.Questions)
+	}
+	if got, want := part.Question.Questions[0].Header, "Which databa"[:12]; got != want {
+		t.Errorf("Header = %q, want first-12-chars default %q", got, want)
+	}
+}

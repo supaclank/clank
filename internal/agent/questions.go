@@ -41,6 +41,19 @@ func tagQuestionPart(toolUseID, tool string, input map[string]any) *QuestionProm
 	return &QuestionPrompt{RequestID: bypassQuestionIDPrefix + toolUseID, Questions: questions}
 }
 
+// questionHeaderOrDefault returns header, or — when empty — the first 12
+// characters of text (mirrors the mobile client's default).
+func questionHeaderOrDefault(header, text string) string {
+	if header != "" {
+		return header
+	}
+	r := []rune(text)
+	if len(r) > 12 {
+		r = r[:12]
+	}
+	return string(r)
+}
+
 // parseClaudeQuestions normalizes an AskUserQuestion tool input into clank
 // Questions. Returns nil for any unexpected shape (callers then fall back to
 // the generic permission flow instead of rendering a broken card). Claude's
@@ -61,14 +74,7 @@ func parseClaudeQuestions(input map[string]any) []Question {
 			return nil
 		}
 		header, _ := qm["header"].(string)
-		if header == "" {
-			// Same default as the mobile client: first 12 chars of the question.
-			r := []rune(text)
-			if len(r) > 12 {
-				r = r[:12]
-			}
-			header = string(r)
-		}
+		header = questionHeaderOrDefault(header, text)
 		multi, _ := qm["multiSelect"].(bool)
 		rawOpts, _ := qm["options"].([]any)
 		opts := make([]QuestionOption, 0, len(rawOpts))
