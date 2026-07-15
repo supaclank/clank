@@ -1322,6 +1322,16 @@ func (s *Service) RespondPermission(ctx context.Context, id, permissionID string
 	return b.RespondPermission(ctx, permissionID, allow, denyMessage)
 }
 
+// RespondQuestion replies to a pending question prompt with structured
+// answers (one per question, in order), or dismisses it when reject is true.
+func (s *Service) RespondQuestion(ctx context.Context, id, requestID string, answers []agent.QuestionAnswer, reject bool) error {
+	b, err := s.ensureBackend(ctx, id)
+	if err != nil {
+		return err
+	}
+	return b.RespondQuestion(ctx, requestID, answers, reject)
+}
+
 // --- Worktree / branch ops ----------------------------------------------
 
 // ListBranches returns the branches (and their checked-out worktrees)

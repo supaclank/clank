@@ -38,3 +38,7 @@ func (b *noopBackend) Fork(_ context.Context, _ string) (agent.ForkResult, error
 func (b *noopBackend) RespondPermission(_ context.Context, _ string, _ bool, _ string) error {
 	return nil
 }
+
+func (b *noopBackend) RespondQuestion(_ context.Context, _ string, _ []agent.QuestionAnswer, _ bool) error {
+	return nil
+}

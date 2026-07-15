@@ -81,26 +81,30 @@ C: next send carries permission_mode:"" → backend re-asserts the user's chosen
   (the agent re-plans). The answer goes back per [11 · Interactive Tools](11-interactive-tools.md)
   via the **permission reply** (allow to approve, deny-with-notes to revise) — not a
   `permission_mode` send; ordinary follow-ups keep `permission_mode:""` ([DATA-040]).
-  The **TUI does not render this** — the RN client is the reference. **Why:** treating it as
+  **Why:** treating it as
   opaque hides the plan; re-sending a non-empty default would re-flip the mode. **Golden:**
-  `clank-mobile/src/lib/planReview.ts`, `internal/agent/claude_permissions.go:97` (mode reset
-  on approval).
+  `clank-mobile/src/lib/planReview.ts` (full review UX; RN is the reference),
+  `internal/tui/sessionview.go` (plan text + approve/request-changes in the prompt card),
+  `internal/agent/claude_permissions.go:97` (mode reset on approval).
 
-## 5. AskUserQuestion (interactive tool)
+## 5. Questions (interactive tool)
 
-Same shape as ExitPlanMode: a tool-call part carries typed questions in `input`; a paired
-`permission` gates it. The client renders an inline multiple-choice card and answers via the
-permission reply.
+Questions arrive as their tool-call part, pre-normalized via the `part.question` tag
+([QST-001](11-interactive-tools.md)): the client renders a structured prompt and replies with
+structured answers on the questions endpoint; the paired `permission` (same `request_id`,
+gated Claude sessions only) is suppressed. Because the tag also rides `Messages()` history,
+reopening a session restores the prompt from the ordinary refetch. Legacy clients instead
+parse the `AskUserQuestion` tool-call part input by tool name.
 
-- **[FLOW-ASK-001] (MUST)** A client MUST parse the question(s) from the `AskUserQuestion`
-  tool-call part `input`, render a choice UI, and submit the answer per
-  [11 · Interactive Tools](11-interactive-tools.md) (today: a formatted `SendMessage`; resolve
-  the gating permission when one is pending). A **terminal** part `status` (completed/error)
-  means it was already answered (possibly on another client) — the card MUST clear rather than
-  reappear. The **TUI does not render this** — the RN client is the reference. **Why:**
-  stop-and-wait tools render from the part; a terminal status is the "already handled" signal.
-  **Golden:** `clank-mobile/src/lib/askQuestion.ts`, `…/session/SessionEventStream.kt:230`
-  (clears on terminal status).
+- **[FLOW-ASK-001] (MUST)** A tag-aware client MUST render the tagged part per
+  [QST-001](11-interactive-tools.md) while it is awaiting an answer per [QST-002]
+  (positional: it is the conversation's last content); once the conversation moves past it,
+  the card MUST render read-only rather than reappear. Legacy clients parse the question(s)
+  from the `AskUserQuestion` tool-call part `input` and submit a formatted `SendMessage` per
+  [ITOOL-004](11-interactive-tools.md), resolving the gating permission when one is pending.
+  **Why:** stop-and-wait tools must retire on the "already handled" signal or they flicker back.
+  **Golden:** `internal/tui/sessionview_question.go`, `clank-mobile/src/lib/askQuestion.ts`
+  (legacy path), `…/session/SessionEventStream.kt:230` (clears on terminal status).
 
 ## 6. Revert
 

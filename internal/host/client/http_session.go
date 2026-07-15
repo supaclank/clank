@@ -196,6 +196,18 @@ func (b *httpSessionBackend) RespondPermission(ctx context.Context, permissionID
 	return b.c.do(ctx, http.MethodPost, p, body, nil)
 }
 
+func (b *httpSessionBackend) RespondQuestion(ctx context.Context, requestID string, answers []agent.QuestionAnswer, reject bool) error {
+	body := struct {
+		Answers []agent.QuestionAnswer `json:"answers,omitempty"`
+		Reject  bool                   `json:"reject,omitempty"`
+	}{answers, reject}
+	p, err := b.path("/questions/" + url.PathEscape(requestID) + "/reply")
+	if err != nil {
+		return err
+	}
+	return b.c.do(ctx, http.MethodPost, p, body, nil)
+}
+
 // Events returns a channel of agent.Event values translated from the
 // host's SSE stream. The first call starts a background goroutine that
 // holds the SSE response open and pumps events into the channel; the

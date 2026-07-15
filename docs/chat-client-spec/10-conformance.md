@@ -148,7 +148,8 @@ files.
 | `CONF-RECONCILE` | reconnect + refetch recovers events missed during the gap | INV-RECONCILE-001, EVT-010 |
 | `CONF-RECONNECT-SEMANTICS` | own-transport reconnect triggers reconcile; `reconnected` event alone does not substitute | INV-RECONNECT-SEMANTICS-001 |
 | `CONF-PENDING-PERM-GAP` | a join to a blocked session is surfaced honestly (not shown as plain "working") | INV-PENDING-PERM-GAP-001 |
-| `CONF-INTERACTIVE-ASK` | AskUserQuestion renders from part input; terminal status clears; answer submitted | ITOOL-001/002/004, FLOW-ASK-001 |
+| `CONF-QUESTION-TAG` | a `part.question` tag renders the structured prompt (live stream AND history refetch), suppresses the paired `permission`, replies via the questions endpoint; the conversation moving past it retires the card | QST-001/002/003, INV-INTERACTIVE-001 |
+| `CONF-INTERACTIVE-ASK` | AskUserQuestion renders from part input; terminal status clears; answer submitted (legacy path) | ITOOL-001/002/004, FLOW-ASK-001 |
 | `CONF-INTERACTIVE-PLAN` | ExitPlanMode plan renders; Approve→build, Revise→plan | ITOOL-004/005, FLOW-PLAN-001 |
 | `CONF-INLINE-COMMENT` | per-block comments format as a quoted-comment SendMessage | ICOMMENT-001 |
 | `CONF-SIDEBAR-SYNC` | list updates from `meta` + create/delete (not field-level); reconnect resyncs | INV-SIDEBAR-META-001, LIST-002/003/004/006 |

@@ -20,6 +20,7 @@ Source of truth for routes: `internal/host/mux/mux.go:72`. All require the beare
 | GET | `/sessions/{id}/messages` | — | `200` `MessageData[]` | Yes | The reconciliation source. |
 | GET | `/sessions/{id}/pending-permission` | — | `200` `[]` | Yes | **Currently always empty** — see [OP-007]. |
 | POST | `/sessions/{id}/permissions/{permID}/reply` | `{ allow, message? }` | `204` | Yes* | Answer a permission prompt. |
+| POST | `/sessions/{id}/questions/{requestID}/reply` | `{ answers?, reject? }` | `204` | Yes* | Answer or dismiss a question prompt ([QST-001](11-interactive-tools.md)). |
 | POST | `/sessions/{id}/read` | — | `204` | Yes | Mark read; does not bump `updated_at`. |
 | POST | `/sessions/{id}/visibility` | `{ visibility }` | `204` | Yes | `done`/`archived`/`""`. |
 | POST | `/sessions/{id}/draft` | `{ draft }` | `204` | Yes | Save composer draft. |
@@ -70,6 +71,17 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
   double-replying races the backend; the deny-reason is the model's only feedback channel on
   a rejection. **Golden:** `internal/host/mux/sessions.go:252`, `internal/agent/claude_permissions.go:134`
   (`RespondPermission`), `internal/tui/sessionview.go:2168`.
+
+### Reply to question — `POST /sessions/{id}/questions/{requestID}/reply`
+
+- **[OP-011] (MUST)** Body is `{ "answers": [{ "selected"?: [labels], "custom"?: string }] }`
+  (one entry per question, in order; an all-empty entry delegates that question) or
+  `{ "reject": true }` to dismiss. `requestID` comes from the part's `question` tag
+  ([QST-001](11-interactive-tools.md)). The backend translates answers into the provider
+  transport — clients never format answer text. Single-flight per request ID. **Golden:**
+  `internal/host/mux/sessions.go` (`handleQuestionReply`),
+  `internal/agent/claude_permissions.go` (`RespondQuestion`),
+  `internal/agent/opencode_questions.go` (`RespondQuestion`).
 
 ### Abort — `POST /sessions/{id}/abort`
 

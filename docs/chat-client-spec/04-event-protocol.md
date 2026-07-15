@@ -127,8 +127,8 @@ single biggest source of cross-client divergence.
 |---|---|---|---|
 | `status` | `{ old_status, new_status }` | Session work-state changed. | [STATE-STATUS-001](06-state-model.md) |
 | `message` | `MessageData` | A user or assistant message (often a streaming "shell"; a `role=user` message may also be a **tool-result carrier** — empty content, one `tool_result` part, empty `tool` — see [DATA-022](03-data-model.md), [INV-TOOL-RESULT-CARRIER-001](08-invariants.md)). | [STATE-MSG-001](06-state-model.md) |
-| `part` | `{ message_id?, part, is_delta? }` | A part appeared or advanced (text delta, tool progress). A `tool_call` and its `tool_result` share one part id but arrive in **separate messages**. | [STATE-PART-001](06-state-model.md) |
-| `permission` | `{ request_id, tool, description, tool_use_id? }` | Agent is **blocked** awaiting a tool decision. | [STATE-PERM-001](06-state-model.md) |
+| `part` | `{ message_id?, part, is_delta? }` | A part appeared or advanced (text delta, tool progress). A `tool_call` and its `tool_result` share one part id but arrive in **separate messages**. A question tool part carries the backend-normalized prompt in `part.question` `{ request_id, questions[] }` — see [11 · question tag](11-interactive-tools.md#the-question-tag-normalized-path); merge-preserve it across updates for the same id. | [STATE-PART-001](06-state-model.md) |
+| `permission` | `{ request_id, tool, description, tool_use_id? }` | Agent is **blocked** awaiting a tool decision. Suppressed by a question tag with the same `request_id` ([QST-003](11-interactive-tools.md)). | [STATE-PERM-001](06-state-model.md) |
 | `error` | `{ message }` | An error occurred on the session. | [STATE-ERR-001](06-state-model.md) |
 | `title` | `{ title }` | AI-generated title set/changed. | [STATE-META-001](06-state-model.md) |
 | `revert` | `{ message_id }` | Revert marker changed; empty = un-revert. | [STATE-REVERT-001](06-state-model.md) |
