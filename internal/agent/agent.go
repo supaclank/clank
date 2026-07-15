@@ -295,7 +295,7 @@ type QuestionPrompt struct {
 	Questions []Question `json:"questions"`
 }
 
-// Question is one question within a QuestionData prompt.
+// Question is one question within a QuestionPrompt.
 type Question struct {
 	Text        string           `json:"text"`                   // full question text
 	Header      string           `json:"header,omitempty"`       // short label (chip/tag)
@@ -719,7 +719,7 @@ type SessionBackend interface {
 	// deny-reason field.
 	RespondPermission(ctx context.Context, permissionID string, allow bool, denyMessage string) error
 
-	// RespondQuestion replies to a pending EventQuestion prompt. answers must
+	// RespondQuestion replies to a pending QuestionPrompt (Part.Question). answers must
 	// carry one entry per question, in order; an all-empty QuestionAnswer
 	// delegates that question back to the agent. reject=true dismisses the
 	// prompt without answers (answers is ignored). Returns an error for an
