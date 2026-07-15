@@ -12,8 +12,8 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
+	"github.com/acksell/clank/internal/host"
 )
 
 // mergeResultMsg is emitted when the merge overlay completes (success or cancel).

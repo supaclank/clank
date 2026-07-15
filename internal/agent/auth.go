@@ -29,7 +29,7 @@ type AuthCredential struct {
 	// provider stops appearing in /config/providers. Copilot tokens
 	// don't have a tracked TTL so 0 is the upstream-blessed value,
 	// but it must be present.
-	Expires int64 `json:"expires"`
+	Expires int64  `json:"expires"`
 	Key     string `json:"key,omitempty"`
 
 	// EnterpriseURL carries through extra fields the github-copilot

@@ -31,8 +31,8 @@ func TestPartitionWorktreesByActivityWindow_BeyondCutoffHides(t *testing.T) {
 	in := []worktreeNode{
 		{LocalPath: "/r/today", LatestUpdatedAt: latest},
 		{LocalPath: "/r/lastweek", LatestUpdatedAt: latest.AddDate(0, 0, -RecentWindowDays).Add(time.Hour)}, // inside the window
-		{LocalPath: "/r/oneweek", LatestUpdatedAt: latest.AddDate(0, 0, -RecentWindowDays)},                // exactly on the boundary (kept)
-		{LocalPath: "/r/older", LatestUpdatedAt: latest.AddDate(0, 0, -RecentWindowDays-1)},                // past the boundary
+		{LocalPath: "/r/oneweek", LatestUpdatedAt: latest.AddDate(0, 0, -RecentWindowDays)},                 // exactly on the boundary (kept)
+		{LocalPath: "/r/older", LatestUpdatedAt: latest.AddDate(0, 0, -RecentWindowDays-1)},                 // past the boundary
 	}
 	recent, older := PartitionWorktreesByActivityWindow(in, "")
 	if got := pathsOf(recent); !equalStrings(got, []string{"/r/today", "/r/lastweek", "/r/oneweek"}) {

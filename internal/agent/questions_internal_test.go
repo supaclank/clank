@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,7 +40,7 @@ func TestParseClaudeQuestions_Valid(t *testing.T) {
 	if q0.Text != "Which auth method should we use?" || q0.Header != "Auth" || q0.MultiSelect {
 		t.Errorf("q0 = %+v, want text/header preserved and single-select", q0)
 	}
-	if !q0.AllowCustom {
+	if !q0.CustomAllowed() {
 		t.Error("Claude questions must always allow a custom answer (the tool's implicit Other)")
 	}
 	if len(q0.Options) != 2 || q0.Options[0].Description != "Stateless tokens" || q0.Options[1].Label != "Sessions" {
@@ -184,7 +185,7 @@ func TestOpenCodeQuestionTag_AskedThenPart(t *testing.T) {
 		t.Errorf("RequestID = %q, want req-1", part.Question.RequestID)
 	}
 	q := part.Question.Questions[0]
-	if q.Text != "Which DB?" || q.Header != "DB" || !q.MultiSelect || !q.AllowCustom {
+	if q.Text != "Which DB?" || q.Header != "DB" || !q.MultiSelect || !q.CustomAllowed() {
 		t.Errorf("question = %+v", q)
 	}
 	if len(q.Options) != 2 || q.Options[0].Description != "relational" {
@@ -253,7 +254,7 @@ func TestPartQuestionJSONRoundTrip(t *testing.T) {
 				Questions: []Question{{
 					Text:        "Pick one",
 					Header:      "Pick",
-					AllowCustom: true,
+					AllowCustom: boolPtr(true),
 					Options:     []QuestionOption{{Label: "A", Description: "first"}},
 				}},
 			},
@@ -271,6 +272,38 @@ func TestPartQuestionJSONRoundTrip(t *testing.T) {
 	if part.Question == nil || part.Question.RequestID != "perm-3" ||
 		len(part.Question.Questions) != 1 || part.Question.Questions[0].Options[0].Description != "first" {
 		t.Errorf("round-trip mismatch: %+v", part.Question)
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+// An explicit AllowCustom=false must stay on the wire (the pointer makes it
+// survive omitempty), while nil — unspecified — is omitted and clients treat
+// it as allowed. See agent.go's Question doc.
+func TestQuestion_AllowCustom_WireTriState(t *testing.T) {
+	t.Parallel()
+	raw, err := json.Marshal(Question{Text: "Q?", AllowCustom: boolPtr(false), Options: []QuestionOption{{Label: "A"}}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"allow_custom":false`) {
+		t.Errorf("marshaled Question = %s, want explicit allow_custom:false", raw)
+	}
+
+	raw, err = json.Marshal(Question{Text: "Q?", Options: []QuestionOption{{Label: "A"}}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), "allow_custom") {
+		t.Errorf("marshaled Question = %s, want unspecified allow_custom omitted", raw)
+	}
+
+	var back Question
+	if err := json.Unmarshal([]byte(`{"text":"Q?","options":[{"label":"A"}]}`), &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !back.CustomAllowed() {
+		t.Error("CustomAllowed() = false for an unspecified field, want true (the universal default)")
 	}
 }
 
@@ -293,6 +326,51 @@ func TestOpenCodeQuestionTag_HeaderDefaultsToQuestionPrefix(t *testing.T) {
 	}
 	if got, want := part.Question.Questions[0].Header, "Which databa"[:12]; got != want {
 		t.Errorf("Header = %q, want first-12-chars default %q", got, want)
+	}
+}
+
+// A nil Custom field (absent from OpenCode's payload, e.g. older fixtures)
+// must default AllowCustom to true, matching what clients already assume for
+// a missing allow_custom on the wire. An explicit false must still forbid it.
+func TestOpenCodeQuestionTag_AllowCustomDefaultsTrueWhenNil(t *testing.T) {
+	t.Parallel()
+	b := NewOpenCodeBackend("http://127.0.0.1:0", "sess-1", nil)
+
+	props := opencodeQuestionAskedProps("call-1", "req-1")
+	props.Questions[0].Custom = nil
+	b.handleGlobalEvent(&opencode.GlobalEvent{Payload: &opencode.GlobalEventPayload{
+		QuestionAsked: &opencode.GlobalEventPayloadQuestionAsked{Properties: props},
+	}})
+
+	part := b.convertSDKPart(opencodeQuestionToolPart("call-1"))
+	if part == nil || part.Question == nil {
+		t.Fatalf("converted part = %+v, want a question tag", part)
+	}
+	if part.Question.Questions[0].AllowCustom != nil {
+		t.Error("AllowCustom set, want nil pass-through when Custom is nil (clients default missing to allowed)")
+	}
+	if !part.Question.Questions[0].CustomAllowed() {
+		t.Error("CustomAllowed() = false, want true when Custom is nil")
+	}
+}
+
+func TestOpenCodeQuestionTag_AllowCustomExplicitFalse(t *testing.T) {
+	t.Parallel()
+	b := NewOpenCodeBackend("http://127.0.0.1:0", "sess-1", nil)
+
+	custom := false
+	props := opencodeQuestionAskedProps("call-1", "req-1")
+	props.Questions[0].Custom = &custom
+	b.handleGlobalEvent(&opencode.GlobalEvent{Payload: &opencode.GlobalEventPayload{
+		QuestionAsked: &opencode.GlobalEventPayloadQuestionAsked{Properties: props},
+	}})
+
+	part := b.convertSDKPart(opencodeQuestionToolPart("call-1"))
+	if part == nil || part.Question == nil {
+		t.Fatalf("converted part = %+v, want a question tag", part)
+	}
+	if part.Question.Questions[0].CustomAllowed() {
+		t.Error("CustomAllowed() = true, want false when Custom is explicitly false")
 	}
 }
 

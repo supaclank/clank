@@ -84,7 +84,7 @@ Source: `internal/agent/agent.go:224`.
 | Status | `status` | enum | `pending` \| `running` \| `completed` \| `error`. Tool lifecycle. |
 | Input | `input` | object | Tool-call arguments (e.g. `command`, `file_path`). |
 | Output | `output` | string | Tool result text. |
-| Question | `question` | object? | Backend-normalized interactive-question prompt `{ request_id, questions[{text, header?, multi_select?, allow_custom?, options[{label, description?}]}] }` on question tool calls (Claude `AskUserQuestion`, OpenCode `question`). Present on streamed parts AND `Messages()` history; merge-preserve across updates. See [11 · question tag](11-interactive-tools.md#the-question-tag-normalized-path). |
+| Question | `question` | object? | Backend-normalized interactive-question prompt `{ request_id, questions[{text, header?, multi_select?, allow_custom?, options[{label, description?}]}] }` on question tool calls (`allow_custom` is tri-state: **absent means allowed**; an explicit `false` forbids free text) (Claude `AskUserQuestion`, OpenCode `question`). Present on streamed parts AND `Messages()` history; merge-preserve across updates. See [11 · question tag](11-interactive-tools.md#the-question-tag-normalized-path). |
 
 - **[DATA-021] (MUST)** The part `status` lifecycle is **monotonic**: `pending` → `running`
   → `completed`/`error`. A client MUST NOT let a late or re-delivered lower-ranked status

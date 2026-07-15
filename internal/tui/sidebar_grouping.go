@@ -62,4 +62,3 @@ func PartitionSessionsByRecency(sessions []agent.SessionInfo) (recent, older []a
 	older = append([]agent.SessionInfo(nil), sessions[MaxRecentSessionsBeforeBucket:]...)
 	return recent, older
 }
-
