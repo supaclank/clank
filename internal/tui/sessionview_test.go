@@ -2608,3 +2608,78 @@ func TestBuildContentLines_ToolVerboseWrapsToWidth(t *testing.T) {
 		t.Errorf("expected wrapped verbose output to produce more lines than raw newlines (%d), got %d", rawNewlines, len(lines))
 	}
 }
+
+// TestHandleStatusChange_ReconnectMidTurnInitializesElapsedClock is a
+// regression test: a reconnect (or any status event carrying the same busy
+// state on both sides, e.g. Starting -> Busy within one turn) must still
+// start the elapsed clock if it isn't already running, since busy && !wasBusy
+// alone misses that case and leaves turnStartedAt zero for the rest of the turn.
+func TestHandleStatusChange_ReconnectMidTurnInitializesElapsedClock(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionModel(nil)
+	m.info = &agent.SessionInfo{Status: agent.StatusBusy}
+
+	m.handleStatusChange(agent.StatusChangeData{OldStatus: agent.StatusBusy, NewStatus: agent.StatusBusy})
+
+	if m.turnStartedAt.IsZero() {
+		t.Error("turnStartedAt still zero after a busy->busy status change; elapsed clock will never show")
+	}
+}
+
+// TestThinkingFooter_ShowSuppressConditions pins the "thinking… (Ns)" footer's
+// visibility rules: only while busy, with no permission prompt pending, and
+// no entry actively streaming.
+func TestThinkingFooter_ShowSuppressConditions(t *testing.T) {
+	t.Parallel()
+
+	newBusyModel := func() *SessionViewModel {
+		m := newTestSessionModel(testEntries())
+		m.info = &agent.SessionInfo{Status: agent.StatusBusy}
+		m.turnStartedAt = time.Now()
+		return m
+	}
+
+	t.Run("shown while busy with nothing streaming", func(t *testing.T) {
+		t.Parallel()
+		m := newBusyModel()
+
+		joined := strings.Join(m.buildContentLines(), "\n")
+		if !strings.Contains(joined, "thinking…") {
+			t.Error("expected \"thinking…\" footer while busy and idle-streaming")
+		}
+	})
+
+	t.Run("suppressed while last entry is streaming", func(t *testing.T) {
+		t.Parallel()
+		m := newBusyModel()
+		m.entries[len(m.entries)-1].streaming = true
+
+		joined := strings.Join(m.buildContentLines(), "\n")
+		if strings.Contains(joined, "thinking…") {
+			t.Error("did not expect \"thinking…\" footer while content is streaming")
+		}
+	})
+
+	t.Run("suppressed while a permission prompt is pending", func(t *testing.T) {
+		t.Parallel()
+		m := newBusyModel()
+		m.pendingPerms = []agent.PermissionData{{Tool: "bash", Description: "echo hi"}}
+
+		joined := strings.Join(m.buildContentLines(), "\n")
+		if strings.Contains(joined, "thinking…") {
+			t.Error("did not expect \"thinking…\" footer while a permission prompt is pending")
+		}
+	})
+
+	t.Run("suppressed when idle", func(t *testing.T) {
+		t.Parallel()
+		m := newTestSessionModel(testEntries())
+		m.info = &agent.SessionInfo{Status: agent.StatusIdle}
+
+		joined := strings.Join(m.buildContentLines(), "\n")
+		if strings.Contains(joined, "thinking…") {
+			t.Error("did not expect \"thinking…\" footer while idle")
+		}
+	})
+}

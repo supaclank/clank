@@ -267,6 +267,13 @@ type SessionViewModel struct {
 	// Spinner for busy/running state animation.
 	spinner spinner.Model
 
+	// turnStartedAt is when the current turn last transitioned into a
+	// busy/starting state. Drives the "thinking… (elapsed)" footer so the
+	// user sees the agent is working during the long server-side
+	// generation gap between tool calls (extended thinking is redacted, so
+	// there's no streamable content to show during it). Zero when idle.
+	turnStartedAt time.Time
+
 	// Layout.
 	width  int
 	height int
@@ -1518,6 +1525,13 @@ func (m *SessionViewModel) handleEvent(evt agent.Event) tea.Cmd {
 }
 
 func (m *SessionViewModel) handleStatusChange(data agent.StatusChangeData) {
+	busy := data.NewStatus == agent.StatusBusy || data.NewStatus == agent.StatusStarting
+	wasBusy := data.OldStatus == agent.StatusBusy || data.OldStatus == agent.StatusStarting
+	if busy && (!wasBusy || m.turnStartedAt.IsZero()) {
+		m.turnStartedAt = time.Now() // start the "thinking… (elapsed)" clock
+	} else if !busy {
+		m.turnStartedAt = time.Time{}
+	}
 	if m.info != nil {
 		m.info.Status = data.NewStatus
 	}
@@ -2267,9 +2281,21 @@ func (m *SessionViewModel) statusIcon(status agent.PartStatus) string {
 	}
 }
 
-// isBusy returns true when the agent is actively streaming output.
+// isBusy returns true when the session's turn is busy or starting, regardless
+// of whether content is actively streaming (see lastEntryStreaming for that).
 func (m *SessionViewModel) isBusy() bool {
 	return m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting)
+}
+
+// lastEntryStreaming reports whether the final entry is a part still
+// receiving streamed deltas (e.g. assistant text mid-render). Used to
+// suppress the "thinking…" footer while visible content is actively
+// arriving — the content itself is the "working" signal there.
+func (m *SessionViewModel) lastEntryStreaming() bool {
+	if len(m.entries) == 0 {
+		return false
+	}
+	return m.entries[len(m.entries)-1].streaming
 }
 
 func (m *SessionViewModel) sendMessage(text string, atts []agent.Attachment) tea.Cmd {
@@ -2715,11 +2741,29 @@ func (m *SessionViewModel) buildContentLines() []string {
 		lines = append(lines, lipgloss.NewStyle().Foreground(dimColor).Render(msg))
 	}
 
+	activeQuestion := m.syncQuestionUI()
+
+	// Transient "thinking…" footer: while the turn is busy but nothing is
+	// actively streaming, the model is generating server-side (extended
+	// thinking is redacted, so there's no content to show during that
+	// gap). A spinner + elapsed clock signals the agent is working, not
+	// frozen. Suppressed while text is streaming (the text itself is the
+	// signal) and while a permission or question prompt is up (that takes
+	// the footer).
+	if m.isBusy() && activeQuestion == nil && len(m.pendingPerms) == 0 && !m.lastEntryStreaming() {
+		elapsed := ""
+		if !m.turnStartedAt.IsZero() {
+			elapsed = fmt.Sprintf(" (%ds)", int(time.Since(m.turnStartedAt)/time.Second))
+		}
+		dim := lipgloss.NewStyle().Foreground(dimColor).Italic(true)
+		lines = append(lines, "", m.spinner.View()+dim.Render(" thinking…"+elapsed))
+	}
+
 	// Append the virtual active prompt (not a real entry). A question card
 	// supersedes the generic permission prompt.
-	if q := m.syncQuestionUI(); q != nil {
+	if activeQuestion != nil {
 		lines = append(lines, "")
-		lines = append(lines, m.renderQuestionCard(q)...)
+		lines = append(lines, m.renderQuestionCard(activeQuestion)...)
 	} else if len(m.pendingPerms) > 0 {
 		perm := m.pendingPerms[0]
 		isPlan := perm.Tool == agent.ClaudeToolExitPlanMode
