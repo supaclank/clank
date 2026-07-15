@@ -31,7 +31,10 @@ func (b *OpenCodeBackend) handleQuestionAsked(props *opencode.GlobalEventPayload
 			Text:        qi.Question,
 			Header:      questionHeaderOrDefault(qi.Header, qi.Question),
 			MultiSelect: qi.Multiple != nil && *qi.Multiple,
-			AllowCustom: qi.Custom != nil && *qi.Custom,
+			// Missing Custom means the field is absent from OpenCode's
+			// payload (older fixtures); default to allowed, matching what
+			// clients already assume for a missing allow_custom.
+			AllowCustom: qi.Custom == nil || *qi.Custom,
 		}
 		for _, opt := range qi.Options {
 			if opt == nil || opt.Label == "" {
@@ -63,7 +66,7 @@ func (b *OpenCodeBackend) handleQuestionV2Asked(props *opencode.GlobalEventPaylo
 			Text:        qi.Question,
 			Header:      questionHeaderOrDefault(qi.Header, qi.Question),
 			MultiSelect: qi.Multiple != nil && *qi.Multiple,
-			AllowCustom: qi.Custom != nil && *qi.Custom,
+			AllowCustom: qi.Custom == nil || *qi.Custom,
 		}
 		for _, opt := range qi.Options {
 			if opt == nil || opt.Label == "" {

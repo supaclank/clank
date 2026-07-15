@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -274,6 +275,19 @@ func TestPartQuestionJSONRoundTrip(t *testing.T) {
 	}
 }
 
+// AllowCustom=false must stay on the wire: omitempty would have dropped it,
+// and clients default a missing field to true (see agent.go's Question doc).
+func TestQuestion_AllowCustomFalse_AlwaysSerialized(t *testing.T) {
+	t.Parallel()
+	raw, err := json.Marshal(Question{Text: "Q?", AllowCustom: false, Options: []QuestionOption{{Label: "A"}}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"allow_custom":false`) {
+		t.Errorf("marshaled Question = %s, want explicit allow_custom:false", raw)
+	}
+}
+
 // An empty header defaults to the first 12 chars of the question text,
 // matching parseClaudeQuestions (mirrors the mobile client).
 func TestOpenCodeQuestionTag_HeaderDefaultsToQuestionPrefix(t *testing.T) {
@@ -293,6 +307,48 @@ func TestOpenCodeQuestionTag_HeaderDefaultsToQuestionPrefix(t *testing.T) {
 	}
 	if got, want := part.Question.Questions[0].Header, "Which databa"[:12]; got != want {
 		t.Errorf("Header = %q, want first-12-chars default %q", got, want)
+	}
+}
+
+// A nil Custom field (absent from OpenCode's payload, e.g. older fixtures)
+// must default AllowCustom to true, matching what clients already assume for
+// a missing allow_custom on the wire. An explicit false must still forbid it.
+func TestOpenCodeQuestionTag_AllowCustomDefaultsTrueWhenNil(t *testing.T) {
+	t.Parallel()
+	b := NewOpenCodeBackend("http://127.0.0.1:0", "sess-1", nil)
+
+	props := opencodeQuestionAskedProps("call-1", "req-1")
+	props.Questions[0].Custom = nil
+	b.handleGlobalEvent(&opencode.GlobalEvent{Payload: &opencode.GlobalEventPayload{
+		QuestionAsked: &opencode.GlobalEventPayloadQuestionAsked{Properties: props},
+	}})
+
+	part := b.convertSDKPart(opencodeQuestionToolPart("call-1"))
+	if part == nil || part.Question == nil {
+		t.Fatalf("converted part = %+v, want a question tag", part)
+	}
+	if !part.Question.Questions[0].AllowCustom {
+		t.Error("AllowCustom = false, want true when Custom is nil")
+	}
+}
+
+func TestOpenCodeQuestionTag_AllowCustomExplicitFalse(t *testing.T) {
+	t.Parallel()
+	b := NewOpenCodeBackend("http://127.0.0.1:0", "sess-1", nil)
+
+	custom := false
+	props := opencodeQuestionAskedProps("call-1", "req-1")
+	props.Questions[0].Custom = &custom
+	b.handleGlobalEvent(&opencode.GlobalEvent{Payload: &opencode.GlobalEventPayload{
+		QuestionAsked: &opencode.GlobalEventPayloadQuestionAsked{Properties: props},
+	}})
+
+	part := b.convertSDKPart(opencodeQuestionToolPart("call-1"))
+	if part == nil || part.Question == nil {
+		t.Fatalf("converted part = %+v, want a question tag", part)
+	}
+	if part.Question.Questions[0].AllowCustom {
+		t.Error("AllowCustom = true, want false when Custom is explicitly false")
 	}
 }
 
