@@ -297,10 +297,14 @@ type QuestionPrompt struct {
 
 // Question is one question within a QuestionPrompt.
 type Question struct {
-	Text        string           `json:"text"`                   // full question text
-	Header      string           `json:"header,omitempty"`       // short label (chip/tag)
-	MultiSelect bool             `json:"multi_select,omitempty"` // multiple options may be selected
-	AllowCustom bool             `json:"allow_custom,omitempty"` // a free-text answer is accepted
+	Text        string `json:"text"`                   // full question text
+	Header      string `json:"header,omitempty"`       // short label (chip/tag)
+	MultiSelect bool   `json:"multi_select,omitempty"` // multiple options may be selected
+	// AllowCustom reports whether a free-text answer is accepted. Always
+	// serialized: clients default a MISSING field to true (it's absent on
+	// their older fixtures), so omitting false would re-enable free text on
+	// exactly the questions that forbid it (opencode custom=false).
+	AllowCustom bool             `json:"allow_custom"`
 	Options     []QuestionOption `json:"options"`
 }
 
