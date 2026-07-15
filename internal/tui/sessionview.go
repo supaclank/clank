@@ -1463,7 +1463,7 @@ func (m *SessionViewModel) handleEvent(evt agent.Event) tea.Cmd {
 func (m *SessionViewModel) handleStatusChange(data agent.StatusChangeData) {
 	busy := data.NewStatus == agent.StatusBusy || data.NewStatus == agent.StatusStarting
 	wasBusy := data.OldStatus == agent.StatusBusy || data.OldStatus == agent.StatusStarting
-	if busy && !wasBusy {
+	if busy && (!wasBusy || m.turnStartedAt.IsZero()) {
 		m.turnStartedAt = time.Now() // start the "thinking… (elapsed)" clock
 	} else if !busy {
 		m.turnStartedAt = time.Time{}
@@ -2207,7 +2207,8 @@ func (m *SessionViewModel) statusIcon(status agent.PartStatus) string {
 	}
 }
 
-// isBusy returns true when the agent is actively streaming output.
+// isBusy returns true when the session's turn is busy or starting, regardless
+// of whether content is actively streaming (see lastEntryStreaming for that).
 func (m *SessionViewModel) isBusy() bool {
 	return m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting)
 }
@@ -2666,7 +2667,7 @@ func (m *SessionViewModel) buildContentLines() []string {
 	if m.isBusy() && len(m.pendingPerms) == 0 && !m.lastEntryStreaming() {
 		elapsed := ""
 		if !m.turnStartedAt.IsZero() {
-			elapsed = fmt.Sprintf(" (%ds)", int(time.Since(m.turnStartedAt).Seconds()))
+			elapsed = fmt.Sprintf(" (%ds)", int(time.Since(m.turnStartedAt)/time.Second))
 		}
 		dim := lipgloss.NewStyle().Foreground(dimColor).Italic(true)
 		lines = append(lines, "", m.spinner.View()+dim.Render(" thinking…"+elapsed))
