@@ -307,9 +307,7 @@ func run(cfg runConfig) error {
 		if s == nil {
 			return 0
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return s.BusySessionCount(ctx)
+		return s.BusySessionCount()
 	}
 	keepaliveListener, err := buildKeepaliveListener(cfg.keepaliveProvider, selfTerminate, busySessions, lg)
 	if err != nil {

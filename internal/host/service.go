@@ -335,23 +335,17 @@ func (s *Service) Init(ctx context.Context, knownDirs func(agent.BackendType) ([
 // (busy or starting). The exit keepalive uses this as its don't-kill
 // veto: a long tool execution emits no backend events between start
 // and result, so event-fed activity alone reads as idle while an agent
-// is working. Statuses are trustworthy in a live process (the same
-// transitions drive the idle notifier); stale rows from a crash are
-// normalized to idle at boot.
-func (s *Service) BusySessionCount(ctx context.Context) int {
-	if s.sessionsStore == nil {
-		return 0
-	}
-	sessions, err := s.sessionsStore.ListSessions(ctx)
-	if err != nil {
-		s.log.Printf("warning: list sessions for busy count: %v", err)
-		// Fail toward "busy": exiting under an unknown state kills work;
-		// staying up one more tick costs pennies.
-		return 1
-	}
+// is working. Reads the in-memory registry rather than the session
+// store — the keepalive loop ticks as often as every few seconds, and
+// this must stay cheap and non-blocking (see the SQLite contention
+// notes on applyEventToMetadata).
+func (s *Service) BusySessionCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	n := 0
-	for _, info := range sessions {
-		if info.Status == agent.StatusBusy || info.Status == agent.StatusStarting {
+	for _, b := range s.sessions {
+		switch b.Status() {
+		case agent.StatusBusy, agent.StatusStarting:
 			n++
 		}
 	}
