@@ -186,6 +186,23 @@ func (s *SessionClient) ReplyPermission(ctx context.Context, permissionID string
 	return s.c.post(ctx, p, body, nil)
 }
 
+// ReplyQuestion answers a question prompt with one QuestionAnswer per
+// question, in order. reject=true dismisses the prompt without answers.
+func (s *SessionClient) ReplyQuestion(ctx context.Context, requestID string, answers []agent.QuestionAnswer, reject bool) error {
+	if requestID == "" {
+		return errors.New("hubclient: empty question request id")
+	}
+	p, err := s.path("/questions/" + url.PathEscape(requestID) + "/reply")
+	if err != nil {
+		return err
+	}
+	body := struct {
+		Answers []agent.QuestionAnswer `json:"answers,omitempty"`
+		Reject  bool                   `json:"reject,omitempty"`
+	}{answers, reject}
+	return s.c.post(ctx, p, body, nil)
+}
+
 // PendingPermissions returns all pending permissions for the session.
 func (s *SessionClient) PendingPermissions(ctx context.Context) ([]agent.PermissionData, error) {
 	p, err := s.path("/pending-permission")

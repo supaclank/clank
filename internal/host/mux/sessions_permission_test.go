@@ -25,6 +25,11 @@ type captureBackend struct {
 	gotCalled      bool
 	gotAllow       bool
 	gotDenyMessage string
+
+	gotQuestionCalled  bool
+	gotQuestionID      string
+	gotQuestionAnswers []agent.QuestionAnswer
+	gotQuestionReject  bool
 }
 
 func (b *captureBackend) Open(context.Context) error { return nil }
@@ -54,6 +59,16 @@ func (b *captureBackend) RespondPermission(_ context.Context, _ string, allow bo
 	b.gotCalled = true
 	b.gotAllow = allow
 	b.gotDenyMessage = denyMessage
+	b.mu.Unlock()
+	return nil
+}
+
+func (b *captureBackend) RespondQuestion(_ context.Context, requestID string, answers []agent.QuestionAnswer, reject bool) error {
+	b.mu.Lock()
+	b.gotQuestionCalled = true
+	b.gotQuestionID = requestID
+	b.gotQuestionAnswers = answers
+	b.gotQuestionReject = reject
 	b.mu.Unlock()
 	return nil
 }

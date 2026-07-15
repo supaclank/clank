@@ -20,12 +20,12 @@ type failingOpenBackend struct {
 	stopped bool
 }
 
-func (b *failingOpenBackend) Open(_ context.Context) error                  { return b.openErr }
+func (b *failingOpenBackend) Open(_ context.Context) error { return b.openErr }
 func (b *failingOpenBackend) OpenAndSend(_ context.Context, _ agent.SendMessageOpts) error {
 	return b.openErr
 }
 func (b *failingOpenBackend) Send(_ context.Context, _ agent.SendMessageOpts) error { return nil }
-func (b *failingOpenBackend) Abort(_ context.Context) error                          { return nil }
+func (b *failingOpenBackend) Abort(_ context.Context) error                         { return nil }
 func (b *failingOpenBackend) Stop() error {
 	b.stopped = true
 	return nil
@@ -35,8 +35,8 @@ func (b *failingOpenBackend) Events() <-chan agent.Event {
 	close(ch)
 	return ch
 }
-func (b *failingOpenBackend) Status() agent.SessionStatus              { return agent.StatusError }
-func (b *failingOpenBackend) SessionID() string                        { return "" }
+func (b *failingOpenBackend) Status() agent.SessionStatus { return agent.StatusError }
+func (b *failingOpenBackend) SessionID() string           { return "" }
 func (b *failingOpenBackend) Messages(_ context.Context) ([]agent.MessageData, error) {
 	return nil, nil
 }
@@ -48,9 +48,13 @@ func (b *failingOpenBackend) RespondPermission(_ context.Context, _ string, _ bo
 	return nil
 }
 
+func (b *failingOpenBackend) RespondQuestion(_ context.Context, _ string, _ []agent.QuestionAnswer, _ bool) error {
+	return nil
+}
+
 type failingOpenBackendManager struct {
-	openErr  error
-	created  []*failingOpenBackend
+	openErr     error
+	created     []*failingOpenBackend
 	createCalls int
 }
 
@@ -226,6 +230,10 @@ func (b *wedgeableBackend) Fork(_ context.Context, _ string) (agent.ForkResult, 
 	return agent.ForkResult{}, nil
 }
 func (b *wedgeableBackend) RespondPermission(_ context.Context, _ string, _ bool, _ string) error {
+	return nil
+}
+
+func (b *wedgeableBackend) RespondQuestion(_ context.Context, _ string, _ []agent.QuestionAnswer, _ bool) error {
 	return nil
 }
 

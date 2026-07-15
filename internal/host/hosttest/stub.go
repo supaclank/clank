@@ -81,6 +81,11 @@ type StubBackend struct {
 	permissionID     string
 	permissionAllow  bool
 	permissionCalled bool
+
+	questionRequestID string
+	questionAnswers   []agent.QuestionAnswer
+	questionReject    bool
+	questionCalled    bool
 }
 
 // PushEvent injects an event into the backend's events channel as if
@@ -169,6 +174,14 @@ func (b *StubBackend) PermissionReply() (called bool, permissionID string, allow
 	return b.permissionCalled, b.permissionID, b.permissionAllow
 }
 
+// QuestionReply returns whether RespondQuestion was called and with which
+// request id, answers, and reject flag.
+func (b *StubBackend) QuestionReply() (called bool, requestID string, answers []agent.QuestionAnswer, reject bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.questionCalled, b.questionRequestID, b.questionAnswers, b.questionReject
+}
+
 func (b *StubBackend) Open(context.Context) error {
 	b.mu.Lock()
 	b.openCalled = true
@@ -254,6 +267,16 @@ func (b *StubBackend) RespondPermission(_ context.Context, permissionID string, 
 	b.permissionID = permissionID
 	b.permissionAllow = allow
 	b.permissionCalled = true
+	return nil
+}
+
+func (b *StubBackend) RespondQuestion(_ context.Context, requestID string, answers []agent.QuestionAnswer, reject bool) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.questionRequestID = requestID
+	b.questionAnswers = answers
+	b.questionReject = reject
+	b.questionCalled = true
 	return nil
 }
 

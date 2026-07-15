@@ -229,6 +229,16 @@ type Part struct {
 	Status PartStatus     `json:"status,omitempty"`
 	Input  map[string]any `json:"input,omitempty"`  // Tool call arguments (e.g. filePath, command)
 	Output string         `json:"output,omitempty"` // Tool result text
+
+	// Question is backend-appended metadata marking this tool call as an
+	// interactive question prompt (Claude AskUserQuestion, OpenCode question
+	// tool), normalized so clients render structured UI without parsing
+	// provider-specific input. Present on both streamed part events and
+	// Messages() transcripts — the tool part is the single source of truth
+	// for the prompt, so a client that reopens a session recovers it from
+	// the ordinary history refetch. Reply via RespondQuestion using
+	// Question.RequestID.
+	Question *QuestionPrompt `json:"question,omitempty"`
 }
 
 // PartType classifies the content of a Part.
@@ -271,6 +281,40 @@ type PermissionData struct {
 	// tool-call card it already rendered (whose id is the tool_use id) instead
 	// of guessing by tool name. Empty when the backend can't attribute it.
 	ToolUseID string `json:"tool_use_id,omitempty"`
+}
+
+// QuestionPrompt is the normalized question payload carried on a tool-call
+// Part (see Part.Question). Clients render the questions and reply via
+// RespondQuestion with one QuestionAnswer per question, in order; the backend
+// owns translating the answers into its provider's transport. Whether the
+// prompt is still answerable is positional, not flagged: it is when the tool
+// part is the conversation's last content (nothing after it means nothing
+// superseded it).
+type QuestionPrompt struct {
+	RequestID string     `json:"request_id"`
+	Questions []Question `json:"questions"`
+}
+
+// Question is one question within a QuestionPrompt.
+type Question struct {
+	Text        string           `json:"text"`                   // full question text
+	Header      string           `json:"header,omitempty"`       // short label (chip/tag)
+	MultiSelect bool             `json:"multi_select,omitempty"` // multiple options may be selected
+	AllowCustom bool             `json:"allow_custom,omitempty"` // a free-text answer is accepted
+	Options     []QuestionOption `json:"options"`
+}
+
+// QuestionOption is one selectable choice for a Question.
+type QuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+// QuestionAnswer is the user's answer to one Question. Both fields empty means
+// the user delegated that question back to the agent.
+type QuestionAnswer struct {
+	Selected []string `json:"selected,omitempty"` // labels of the chosen options
+	Custom   string   `json:"custom,omitempty"`   // free-text answer
 }
 
 // ErrorData is the payload for EventError.
@@ -674,6 +718,13 @@ type SessionBackend interface {
 	// it is ignored when allow=true and by backends whose protocol has no
 	// deny-reason field.
 	RespondPermission(ctx context.Context, permissionID string, allow bool, denyMessage string) error
+
+	// RespondQuestion replies to a pending QuestionPrompt (Part.Question). answers must
+	// carry one entry per question, in order; an all-empty QuestionAnswer
+	// delegates that question back to the agent. reject=true dismisses the
+	// prompt without answers (answers is ignored). Returns an error for an
+	// unknown requestID so callers fail fast on a stale prompt.
+	RespondQuestion(ctx context.Context, requestID string, answers []QuestionAnswer, reject bool) error
 }
 
 // BackendInvocation is the host-resolved, backend-only view of a session

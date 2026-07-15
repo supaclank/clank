@@ -561,6 +561,10 @@ func (noopBackendForNotifier) RespondPermission(_ context.Context, _ string, _ b
 	return nil
 }
 
+func (noopBackendForNotifier) RespondQuestion(_ context.Context, _ string, _ []agent.QuestionAnswer, _ bool) error {
+	return nil
+}
+
 // TestNotifier_IdleNotificationCarriesTitleAndLastReply pins the
 // end-to-end enrichment: a session with a persisted title and a live
 // backend transcript produces an idle push titled with the session name

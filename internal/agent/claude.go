@@ -128,6 +128,12 @@ type ClaudeCodeBackend struct {
 	// the latest id per name is the one being gated. Guarded by b.mu.
 	lastToolUseID map[string]string
 
+	// pendingQuestions maps a question request ID to the normalized questions
+	// awaiting RespondQuestion. A routing cache, not the source of truth: a
+	// "q-<tool_use_id>" request that misses here is recovered from the tagged
+	// transcript part (questionFromTranscript). Guarded by b.mu.
+	pendingQuestions map[string]claudeQuestion
+
 	// aiTitleEmitted is set once the CLI-generated session title has been read
 	// from the transcript and published via EventTitleChange. The CLI keeps the
 	// title stable for a session's life, so reading stops after the first emit.
@@ -159,6 +165,7 @@ func NewClaudeCodeBackendForSession(workDir, resumeSessionID string) *ClaudeCode
 		events:           make(chan Event, 128),
 		activeToolBlocks: make(map[int]*activeToolBlock),
 		pendingPerms:     make(map[string]chan permissionDecision),
+		pendingQuestions: make(map[string]claudeQuestion),
 		lastToolUseID:    make(map[string]string),
 		initialPermMode:  ClaudePermBypass,
 		ctx:              ctx,
@@ -1153,13 +1160,30 @@ func (b *ClaudeCodeBackend) handleContentBlockStop(event map[string]any) {
 		_ = json.Unmarshal([]byte(raw), &inputMap)
 	}
 
-	b.emitPart(Part{
+	part := Part{
 		ID:     tb.partID,
 		Type:   PartToolCall,
 		Tool:   tb.tool,
 		Status: PartCompleted,
 		Input:  inputMap,
-	}, false)
+	}
+	// Tag an AskUserQuestion with its normalized prompt, addressed by the
+	// deterministic bypass id. In bypassPermissions the tool auto-ran and this
+	// tag is what clients render/answer from (via a follow-up message); in
+	// gated modes the prompt was already answered through the parked
+	// permission by the time this stop arrives, so the tag is only ever used
+	// to render the historical card.
+	if part.Question = tagQuestionPart(tb.partID, tb.tool, inputMap); part.Question != nil {
+		b.mu.Lock()
+		if _, exists := b.pendingQuestions[part.Question.RequestID]; !exists {
+			b.pendingQuestions[part.Question.RequestID] = claudeQuestion{
+				toolUseID: tb.partID,
+				questions: part.Question.Questions,
+			}
+		}
+		b.mu.Unlock()
+	}
+	b.emitPart(part, false)
 }
 
 // --- Type mapping helpers ---
@@ -1280,6 +1304,8 @@ func sessionBlockToPart(block claudecode.SessionContentBlock, msgID string, inde
 			Tool:   block.Name,
 			Status: PartCompleted,
 			Input:  block.Input,
+			// Question prompts stay renderable/answerable from history alone.
+			Question: tagQuestionPart(block.ID, block.Name, block.Input),
 		}, true
 	case claudecode.SessionBlockTypeToolResult:
 		status := PartCompleted
