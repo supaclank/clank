@@ -590,3 +590,142 @@ func newBackendForDir(t *testing.T, workDir, sessionID string) *agent.ClaudeCode
 	waitForStatus(t, b.Events(), agent.StatusIdle, 5*time.Second)
 	return b
 }
+
+// While a permission is parked on handleCanUseTool, the gated tool_use block
+// hasn't been flushed to the transcript — Messages must synthesize the
+// in-flight tool part (with its question tag) so a client that (re)joins
+// mid-park can render and answer the prompt. Regression: reopening a session
+// blocked on AskUserQuestion showed no card and no permission prompt.
+func TestClaudeBackendMessages_ParkedPermissionSynthesized(t *testing.T) {
+	// Cannot use t.Parallel because t.Setenv mutates process env.
+	configDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+
+	workDir := t.TempDir()
+	projDir := mkClaudeProjectDir(t, configDir, workDir)
+
+	const sessionID = "sess-parked-001"
+	userEntry := map[string]any{
+		"type":      "user",
+		"uuid":      "u-1",
+		"timestamp": "2026-07-15T10:00:00Z",
+		"sessionId": sessionID,
+		"cwd":       workDir,
+		"message":   map[string]any{"role": "user", "content": "Set up auth."},
+	}
+	writeSessionJSONL(t, projDir, sessionID, []map[string]any{userEntry})
+
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.StreamEvent{Event: map[string]any{
+			"type":  "content_block_start",
+			"index": float64(0),
+			"content_block": map[string]any{
+				"type": "tool_use",
+				"id":   "toolu_ask",
+				"name": "AskUserQuestion",
+			},
+		}},
+	})
+	b := agent.NewClaudeCodeBackendForSession(workDir, sessionID)
+	defer b.Stop()
+	resolved := captureOpenOptions(t, b, transport)
+	waitForToolPart(t, b.Events(), "AskUserQuestion", 2*time.Second)
+
+	input := map[string]any{"questions": []any{map[string]any{
+		"question": "Which auth?",
+		"header":   "Auth",
+		"options":  []any{map[string]any{"label": "JWT"}, map[string]any{"label": "Session"}},
+	}}}
+	done := make(chan struct{})
+	go func() {
+		_, _ = resolved.CanUseTool(context.Background(), "AskUserQuestion", input, nil)
+		close(done)
+	}()
+	evt := waitForEventType(t, b.Events(), agent.EventPermission, 2*time.Second)
+	perm := evt.Data.(agent.PermissionData)
+
+	msgs, err := b.Messages(context.Background())
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	last := msgs[len(msgs)-1]
+	if last.ID != "pending-"+perm.RequestID || last.Role != "assistant" {
+		t.Fatalf("last message = {ID:%q Role:%q}, want the synthetic pending message", last.ID, last.Role)
+	}
+	if len(last.Parts) != 1 {
+		t.Fatalf("synthetic message has %d parts, want 1", len(last.Parts))
+	}
+	part := last.Parts[0]
+	if part.ID != "toolu_ask" || part.Tool != "AskUserQuestion" || part.Status != agent.PartRunning {
+		t.Errorf("part = {ID:%q Tool:%q Status:%q}, want the parked tool_use, running", part.ID, part.Tool, part.Status)
+	}
+	if part.Question == nil {
+		t.Fatal("part.Question is nil; the question card can't render from restored history")
+	}
+	// The tag must address the parked permission, not the "q-" bypass id —
+	// a bypass-routed answer would Send into a session blocked on the park.
+	if part.Question.RequestID != perm.RequestID {
+		t.Errorf("Question.RequestID = %q, want %q", part.Question.RequestID, perm.RequestID)
+	}
+	if len(part.Question.Questions) != 1 || len(part.Question.Questions[0].Options) != 2 {
+		t.Errorf("Question tag = %+v, want the parsed prompt", part.Question)
+	}
+
+	// Once the transcript contains the tool_use block (CLI flushed it), the
+	// synthetic copy must not duplicate it.
+	writeSessionJSONL(t, projDir, sessionID, []map[string]any{
+		userEntry,
+		{
+			"type":      "assistant",
+			"uuid":      "a-1",
+			"timestamp": "2026-07-15T10:00:05Z",
+			"sessionId": sessionID,
+			"message": map[string]any{
+				"id":    "msg_api_1",
+				"model": "claude-sonnet-4",
+				"role":  "assistant",
+				"content": []any{map[string]any{
+					"type":  "tool_use",
+					"id":    "toolu_ask",
+					"name":  "AskUserQuestion",
+					"input": input,
+				}},
+			},
+		},
+	})
+	msgs, err = b.Messages(context.Background())
+	if err != nil {
+		t.Fatalf("Messages (flushed): %v", err)
+	}
+	for _, m := range msgs {
+		if strings.HasPrefix(m.ID, "pending-") {
+			t.Errorf("synthetic message %q still present after the tool_use reached the transcript", m.ID)
+		}
+	}
+
+	// Answering retires the synthetic message entirely.
+	writeSessionJSONL(t, projDir, sessionID, []map[string]any{userEntry})
+	if err := b.RespondPermission(context.Background(), perm.RequestID, false, "answered"); err != nil {
+		t.Fatalf("RespondPermission: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("callback did not return after RespondPermission")
+	}
+	deadline := time.After(2 * time.Second)
+	for {
+		msgs, err = b.Messages(context.Background())
+		if err != nil {
+			t.Fatalf("Messages (after reply): %v", err)
+		}
+		if len(msgs) == 1 {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("Messages still returns %d messages after reply, want 1", len(msgs))
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}

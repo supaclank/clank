@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,6 +16,22 @@ import (
 type permissionDecision struct {
 	allow       bool
 	denyMessage string
+}
+
+// parkedPermission is a permission prompt awaiting RespondPermission: the
+// decision channel the parked handleCanUseTool blocks on, plus the prompt
+// snapshot that PendingPermissions and the synthetic Messages part serve to
+// clients that (re)join mid-park.
+type parkedPermission struct {
+	seq      uint64
+	decision chan permissionDecision
+	data     PermissionData
+	// input is the gated tool's arguments, kept so a rejoining client can
+	// render the tool card (plan text, question options) whose tool_use block
+	// the CLI hasn't flushed to the transcript yet.
+	input map[string]any
+	// questions is the parsed AskUserQuestion prompt (nil for other tools).
+	questions []Question
 }
 
 // claudeQuestion is a pending AskUserQuestion prompt awaiting RespondQuestion.
@@ -46,7 +63,6 @@ func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, i
 	}
 	b.permSeq++
 	id := fmt.Sprintf("perm-%d", b.permSeq)
-	b.pendingPerms[id] = decision
 	toolUseID := b.lastToolUseID[tool]
 
 	// Normalize AskUserQuestion by tagging its tool part with the structured
@@ -60,6 +76,19 @@ func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, i
 		if questions = parseClaudeQuestions(input); questions != nil {
 			b.pendingQuestions[id] = claudeQuestion{toolUseID: toolUseID, questions: questions, viaPerm: true}
 		}
+	}
+	data := PermissionData{
+		RequestID:   id,
+		Tool:        tool,
+		Description: describeToolCall(tool, input),
+		ToolUseID:   toolUseID,
+	}
+	b.pendingPerms[id] = &parkedPermission{
+		seq:       b.permSeq,
+		decision:  decision,
+		data:      data,
+		input:     input,
+		questions: questions,
 	}
 	b.mu.Unlock()
 
@@ -100,12 +129,7 @@ func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, i
 	b.emit(Event{
 		Type:      EventPermission,
 		Timestamp: time.Now(),
-		Data: PermissionData{
-			RequestID:   id,
-			Tool:        tool,
-			Description: describeToolCall(tool, input),
-			ToolUseID:   toolUseID,
-		},
+		Data:      data,
 	})
 
 	select {
@@ -159,16 +183,83 @@ func (b *ClaudeCodeBackend) handleCanUseTool(ctx context.Context, tool string, i
 // an error for an unknown ID so callers fail fast on a stale prompt.
 func (b *ClaudeCodeBackend) RespondPermission(_ context.Context, permissionID string, allow bool, denyMessage string) error {
 	b.mu.Lock()
-	decision, ok := b.pendingPerms[permissionID]
+	parked, ok := b.pendingPerms[permissionID]
 	b.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("no pending permission %q", permissionID)
 	}
 	select {
-	case decision <- permissionDecision{allow: allow, denyMessage: denyMessage}:
+	case parked.decision <- permissionDecision{allow: allow, denyMessage: denyMessage}:
 	default:
 	}
 	return nil
+}
+
+// PendingPermissions returns the parked permission prompts, oldest first.
+// In-memory only: a parked prompt lives exactly as long as the blocked
+// handleCanUseTool call, so there is nothing to serve across a restart.
+func (b *ClaudeCodeBackend) PendingPermissions(_ context.Context) ([]PermissionData, error) {
+	parked := b.parkedPermissions()
+	perms := make([]PermissionData, len(parked))
+	for i, p := range parked {
+		perms[i] = p.data
+	}
+	return perms, nil
+}
+
+// parkedPermissions snapshots the pending permission queue, oldest first.
+func (b *ClaudeCodeBackend) parkedPermissions() []*parkedPermission {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	parked := make([]*parkedPermission, 0, len(b.pendingPerms))
+	for _, p := range b.pendingPerms {
+		parked = append(parked, p)
+	}
+	sort.Slice(parked, func(i, j int) bool { return parked[i].seq < parked[j].seq })
+	return parked
+}
+
+// pendingPermissionMessages synthesizes an in-flight assistant message for
+// each parked permission whose tool_use block isn't in the transcript yet:
+// the CLI requests permission before flushing the block, so a client that
+// (re)joins mid-park would otherwise have no part to render the gated tool
+// from — most visibly the AskUserQuestion card and the ExitPlanMode plan.
+// The part mirrors the one handleCanUseTool emitted live (same part id, same
+// question tag), so answering works identically from restored state.
+func (b *ClaudeCodeBackend) pendingPermissionMessages(transcript []MessageData) []MessageData {
+	flushed := make(map[string]bool)
+	for _, m := range transcript {
+		for _, p := range m.Parts {
+			if p.Type == PartToolCall {
+				flushed[p.ID] = true
+			}
+		}
+	}
+
+	var msgs []MessageData
+	for _, parked := range b.parkedPermissions() {
+		if parked.data.ToolUseID == "" || flushed[parked.data.ToolUseID] {
+			continue
+		}
+		part := Part{
+			ID:     parked.data.ToolUseID,
+			Type:   PartToolCall,
+			Tool:   parked.data.Tool,
+			Status: PartRunning,
+			Input:  parked.input,
+		}
+		if len(parked.questions) > 0 {
+			// RequestID is the permission id (not the "q-" bypass form) so the
+			// reply routes through the parked prompt (RespondQuestion viaPerm).
+			part.Question = &QuestionPrompt{RequestID: parked.data.RequestID, Questions: parked.questions}
+		}
+		msgs = append(msgs, MessageData{
+			ID:    "pending-" + parked.data.RequestID,
+			Role:  "assistant",
+			Parts: []Part{part},
+		})
+	}
+	return msgs
 }
 
 // RespondQuestion delivers structured answers to a question prompt.
@@ -242,8 +333,8 @@ func (b *ClaudeCodeBackend) questionFromTranscript(ctx context.Context, requestI
 func (b *ClaudeCodeBackend) failPendingPermissions() {
 	b.mu.Lock()
 	waiters := make([]chan permissionDecision, 0, len(b.pendingPerms))
-	for _, ch := range b.pendingPerms {
-		waiters = append(waiters, ch)
+	for _, p := range b.pendingPerms {
+		waiters = append(waiters, p.decision)
 	}
 	b.mu.Unlock()
 

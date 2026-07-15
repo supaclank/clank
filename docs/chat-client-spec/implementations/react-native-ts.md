@@ -41,7 +41,7 @@
 | INV-REVERT-001 | ✅ | `dispatch.ts:165` (revert marker + invalidate messages) |
 | INV-RECONCILE-001 | ✅ | `resyncAfterStreamGap` (`dispatch.ts`) runs on the backend `reconnected` event, on the client's own transport reconnect (`useEventStream.ts` `onReconnect`), and after every foreground `restart()` |
 | INV-RECONNECT-SEMANTICS-001 | ✅ | own-transport recovery is `useEventStream.ts` `onReconnect` → `resyncAfterStreamGap`, independent of the backend `reconnected` event (fixed 2026-07-02; was the frozen-new-session bug) |
-| INV-PENDING-PERM-GAP-001 | ⛔ | blocked-on-permission session after (re)join is not surfaced honestly (host gap + client) |
+| INV-PENDING-PERM-GAP-001 | ⛔ | host now serves the parked queue (OP-007) but this client doesn't call `/pending-permission` on (re)join yet; blocked state not surfaced honestly |
 | INV-STREAM-SUPERVISE-001 | ✅ | `events.ts` supervised loop: capped 1s→30s full-jitter backoff, never gives up, 401→`forceRefresh`; clean-close delegated to the library re-poll (`CLEAN_CLOSE_REPOLL_MS`); foreground `restart()` in `useEventStream.ts` ([NFR-REL-001/002]). No liveness timer while foregrounded (heartbeat gap remains) |
 | INV-INTERACTIVE-001 | ✅ (reference) | `src/lib/{askQuestion,planReview,chatReview}.ts` + `AskQuestionCard.tsx`/`PlanReviewCard.tsx`. Tool-name sniffing (known hack); answer via `SendMessage` |
 | INV-SIDEBAR-META-001 | ⛔ | **gap**: no `meta` case in `dispatch.ts`; list patched from `status`/`title` + invalidation; `meta`-only changes (visibility/draft/follow-up) don't push live |
@@ -70,7 +70,7 @@ rows above.
 
 ## Open gaps / deviations
 
-1. **INV-PENDING-PERM-GAP-001** — surface a long blocked-with-no-activity session honestly.
+1. **INV-PENDING-PERM-GAP-001 / OP-007** — fetch `/pending-permission` on (re)join (the host now serves the parked queue) and surface a long blocked-with-no-activity session honestly.
 2. **INV-SIDEBAR-META-001** — consume the `meta` event to push-update list rows (incl.
    visibility/draft/follow-up from other clients) instead of relying on `status`/`title`
    patches + list invalidation.

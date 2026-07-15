@@ -142,9 +142,10 @@ The transcript-recovery flow, run on first open and after any drop:
 C: (re)open SSE stream                            ── single stream [EVT-001]
 C: GET /sessions/{id}                             ── current status/metadata
 C: GET /sessions/{id}/messages → monotonic merge  ── [OP-006], [STATE-001]
-C: GET /sessions/{id}/pending-permission          ── ⚠ returns [] today [OP-007]
+C: GET /sessions/{id}/pending-permission → replace local queue  ── [OP-007]
    → recovers transcript missed during the gap (no replay [EVT-010])
-   → does NOT recover a permission the session is blocked on (gap [INV-PENDING-PERM-GAP-001])
+   → recovers a permission the session is blocked on (in-memory only —
+     a daemon restart empties it, [INV-PENDING-PERM-GAP-001])
 ```
 
 - **[FLOW-RECONNECT-001] (MUST)** A client MUST run this reconcile after **every** stream

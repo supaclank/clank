@@ -347,6 +347,50 @@ func (b *OpenCodeBackend) RespondPermission(ctx context.Context, permissionID st
 	return nil
 }
 
+// PendingPermissions returns this session's parked permission prompts from
+// the OpenCode server (which owns permission state), mapped the same way as
+// the live permission.asked event so clients can't tell the paths apart.
+func (b *OpenCodeBackend) PendingPermissions(ctx context.Context) ([]PermissionData, error) {
+	if b.SessionID() == "" {
+		return nil, nil
+	}
+	reqs, err := b.client.Permission.List(ctx, &opencode.PermissionListRequest{})
+	if err != nil && isConnectionError(err) && b.resolver != nil {
+		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
+			reqs, err = b.client.Permission.List(ctx, &opencode.PermissionListRequest{})
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list permissions: %w", err)
+	}
+
+	var perms []PermissionData
+	for _, req := range reqs {
+		if req.GetSessionID() != b.SessionID() {
+			continue
+		}
+		perms = append(perms, permissionDataFromRequest(
+			req.GetID(), req.GetPermission(), req.GetPatterns(), req.GetTool().GetCallID()))
+	}
+	return perms, nil
+}
+
+// permissionDataFromRequest builds the wire PermissionData for an OpenCode
+// permission request — shared by the live permission.asked event and the
+// PendingPermissions list so both produce identical prompts.
+func permissionDataFromRequest(id, permission string, patterns []string, callID string) PermissionData {
+	description := permission
+	if len(patterns) > 0 {
+		description += ": " + strings.Join(patterns, ", ")
+	}
+	return PermissionData{
+		RequestID:   id,
+		Tool:        permission,
+		Description: description,
+		ToolUseID:   callID,
+	}
+}
+
 func (b *OpenCodeBackend) setStatus(s SessionStatus) {
 	b.mu.Lock()
 	old := b.status
@@ -698,19 +742,11 @@ func (b *OpenCodeBackend) handlePermissionAsked(req *opencode.GlobalEventPayload
 	if req == nil || req.SessionID != b.SessionID() {
 		return
 	}
-	// Build a human-readable description, e.g. "bash: bunx cowsay hello".
-	description := req.Permission
-	if len(req.Patterns) > 0 {
-		description += ": " + strings.Join(req.Patterns, ", ")
-	}
 	b.emit(Event{
 		Type:      EventPermission,
 		Timestamp: time.Now(),
-		Data: PermissionData{
-			RequestID:   req.ID,
-			Tool:        req.Permission,
-			Description: description,
-		},
+		Data: permissionDataFromRequest(
+			req.ID, req.Permission, req.Patterns, req.Tool.GetCallID()),
 	})
 }
 

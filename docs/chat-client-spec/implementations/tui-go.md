@@ -44,7 +44,7 @@
 | INV-REVERT-001 | ✅ | `handleSessionMessages` `:1535` (filter), `:1162` (clear on send) |
 | INV-RECONCILE-001 | ✅ | `Init` `:511` fetches messages+pending+info; refetch on reopen |
 | INV-RECONNECT-SEMANTICS-001 | ✅ | does not key reconcile off `reconnected`; reconnect handled by re-subscribe |
-| INV-PENDING-PERM-GAP-001 | 🟡 | calls `fetchPendingPermission` `:553` (receives `[]`); blocked-state not specially surfaced — same host gap as all clients |
+| INV-PENDING-PERM-GAP-001 | 🟡 | `fetchPendingPermission` on Init now receives the parked queue (OP-007) and replaces `pendingPerms`; the parked interactive tool part restores from the history refetch. Remaining 🟡: post-restart blocked-state (empty queue) not specially surfaced |
 | INV-HEARTBEAT-GAP-001 | 🟡 | SSE client has no read timeout (`transport.go:122`); relies on re-subscribe; no explicit liveness timer |
 | INV-INTERACTIVE-001 | 🟡 | questions ✅ via the `part.question` tag (`sessionview_question.go`: transcript-derived active prompt, options picker, multi-select, Other free-text, dismiss; suppresses the paired permission per QST-003; restores on reopen from the history refetch); ExitPlanMode ✅ plan text + approve/request-changes/deny in the permission card; inline comments still ❌ ([11](../11-interactive-tools.md)) |
 | INV-SIDEBAR-META-001 | ✅ | `inbox_sse.go:149` — list driven by `meta`; field-level `status`/`title` deliberately ignored for the list (`:23`) |

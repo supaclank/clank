@@ -334,15 +334,15 @@ func TestWire_GetMessages_Empty(t *testing.T) {
 	}
 }
 
-// TestWire_PendingPermission_StubReturnsEmpty pins the post-PR-3
-// behavior: the host doesn't snapshot pending permissions yet, but
-// the TUI's recovery path calls /pending-permission and we must
-// return an empty list (not 404). When a real queue lands in a
-// future PR, this test should be expanded to assert on its contents.
-func TestWire_PendingPermission_StubReturnsEmpty(t *testing.T) {
+// TestWire_PendingPermission_ServesBackendQueue pins that the TUI's
+// recovery path (GET /pending-permission on reopen) serves the
+// backend's parked prompt queue end to end: empty when nothing is
+// parked (not 404), and the backend's PermissionData verbatim when a
+// prompt is blocking the session.
+func TestWire_PendingPermission_ServesBackendQueue(t *testing.T) {
 	t.Parallel()
 	td := newTestDaemon(t)
-	info, _ := td.CreateOpenCodeSession(t, "tmp")
+	info, b := td.CreateOpenCodeSession(t, "tmp")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -351,7 +351,23 @@ func TestWire_PendingPermission_StubReturnsEmpty(t *testing.T) {
 		t.Fatalf("PendingPermissions: %v", err)
 	}
 	if len(perms) != 0 {
-		t.Errorf("stub should return empty; got %d entries", len(perms))
+		t.Errorf("expected empty queue before parking; got %d entries", len(perms))
+	}
+
+	parked := agent.PermissionData{
+		RequestID:   "perm-1",
+		Tool:        "AskUserQuestion",
+		Description: "AskUserQuestion: Which auth?",
+		ToolUseID:   "toolu_q",
+	}
+	b.SetPendingPermissions([]agent.PermissionData{parked})
+
+	perms, err = td.Client.Session(info.ID).PendingPermissions(ctx)
+	if err != nil {
+		t.Fatalf("PendingPermissions (parked): %v", err)
+	}
+	if len(perms) != 1 || perms[0] != parked {
+		t.Errorf("PendingPermissions = %+v, want [%+v]", perms, parked)
 	}
 }
 

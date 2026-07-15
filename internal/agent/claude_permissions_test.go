@@ -755,3 +755,83 @@ func TestClaudeCodeBackend_RespondPermission_UnknownID(t *testing.T) {
 		t.Error("RespondPermission(unknown) = nil, want error")
 	}
 }
+
+// PendingPermissions must serve the parked prompt to a client that (re)joins
+// mid-park (its SSE subscription never saw the EventPermission), and clear it
+// once the prompt is answered. Regression: a session blocked on a permission
+// looked idle forever after switching away and back.
+func TestClaudeCodeBackend_PendingPermissions_Lifecycle(t *testing.T) {
+	t.Parallel()
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.StreamEvent{Event: map[string]any{
+			"type":  "content_block_start",
+			"index": float64(0),
+			"content_block": map[string]any{
+				"type": "tool_use",
+				"id":   "toolu_ask",
+				"name": "AskUserQuestion",
+			},
+		}},
+	})
+	b := agent.NewClaudeCodeBackend(t.TempDir())
+	defer b.Stop()
+	resolved := captureOpenOptions(t, b, transport)
+	waitForToolPart(t, b.Events(), "AskUserQuestion", 2*time.Second)
+
+	if perms, err := b.PendingPermissions(context.Background()); err != nil || len(perms) != 0 {
+		t.Fatalf("PendingPermissions before park = %v, %v; want empty, nil", perms, err)
+	}
+
+	input := map[string]any{"questions": []any{map[string]any{
+		"question": "Which auth?",
+		"header":   "Auth",
+		"options":  []any{map[string]any{"label": "JWT"}, map[string]any{"label": "Session"}},
+	}}}
+	done := make(chan struct{})
+	go func() {
+		_, _ = resolved.CanUseTool(context.Background(), "AskUserQuestion", input, nil)
+		close(done)
+	}()
+
+	evt := waitForEventType(t, b.Events(), agent.EventPermission, 2*time.Second)
+	want := evt.Data.(agent.PermissionData)
+
+	perms, err := b.PendingPermissions(context.Background())
+	if err != nil {
+		t.Fatalf("PendingPermissions: %v", err)
+	}
+	if len(perms) != 1 {
+		t.Fatalf("PendingPermissions = %d prompts, want 1", len(perms))
+	}
+	if perms[0] != want {
+		t.Errorf("PendingPermissions[0] = %+v, want the emitted EventPermission payload %+v", perms[0], want)
+	}
+	if perms[0].ToolUseID != "toolu_ask" {
+		t.Errorf("ToolUseID = %q, want toolu_ask", perms[0].ToolUseID)
+	}
+
+	if err := b.RespondPermission(context.Background(), want.RequestID, false, "answered"); err != nil {
+		t.Fatalf("RespondPermission: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("callback did not return after RespondPermission")
+	}
+	// Cleanup runs in the callback's deferred func; poll briefly.
+	deadline := time.After(2 * time.Second)
+	for {
+		perms, err := b.PendingPermissions(context.Background())
+		if err != nil {
+			t.Fatalf("PendingPermissions after reply: %v", err)
+		}
+		if len(perms) == 0 {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("PendingPermissions still %d prompts after reply, want 0", len(perms))
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}

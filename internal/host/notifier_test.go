@@ -543,6 +543,9 @@ func (noopBackendForNotifier) OpenAndSend(_ context.Context, _ agent.SendMessage
 }
 func (noopBackendForNotifier) Abort(_ context.Context) error { return nil }
 func (noopBackendForNotifier) Stop() error                   { return nil }
+func (noopBackendForNotifier) PendingPermissions(_ context.Context) ([]agent.PermissionData, error) {
+	return nil, nil
+}
 func (noopBackendForNotifier) Events() <-chan agent.Event {
 	ch := make(chan agent.Event)
 	close(ch)

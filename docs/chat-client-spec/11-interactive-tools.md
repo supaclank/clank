@@ -163,9 +163,12 @@ These capture intended direction; **none is normative yet.**
 1. **Plan as a first-class tag.** Whether to tag `ExitPlanMode` parts the way questions are
    tagged (vs. clients parsing `input.plan` / OpenCode plain messages) so plan-review UI is
    backend-uniform.
-2. **Gated mid-park reopen.** A parked (default/plan mode) prompt whose tool_use hasn't been
-   flushed to the transcript yet is unrecoverable after a reopen — the same gap as
-   [INV-PENDING-PERM-GAP-001](08-invariants.md); a permission snapshot would close both.
+2. **Gated mid-park reopen — resolved.** The host now serves the parked permission queue
+   from backend memory ([OP-007](05-operations.md)) and `Messages()` synthesizes the parked
+   tool part (same part id and question tag as the live emit), so a reopen mid-park
+   restores the card and the reply routes through the parked prompt. Remaining slice of
+   [INV-PENDING-PERM-GAP-001](08-invariants.md): the park is in-memory, so a daemon
+   restart still loses it.
 3. **OpenCode cross-restart tags.** OpenCode request-id ↔ call-id correlation lives in
    backend memory; hydrating it from `question.list` on Open would keep transcript reloads
    tagged across daemon restarts (Claude already is — its tag derives from the transcript).

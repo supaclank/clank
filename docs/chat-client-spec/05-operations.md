@@ -18,7 +18,7 @@ Source of truth for routes: `internal/host/mux/mux.go:72`. All require the beare
 | POST | `/sessions/{id}/revert` | `{ message_id }` | `204` | **No** | **Both** backends; empty id clears the marker on OpenCode. See [OP-005]. |
 | POST | `/sessions/{id}/fork` | `{ message_id? }` | `200` `SessionInfo` | **No** | OpenCode only; Claude errors. |
 | GET | `/sessions/{id}/messages` | — | `200` `MessageData[]` | Yes | The reconciliation source. |
-| GET | `/sessions/{id}/pending-permission` | — | `200` `[]` | Yes | **Currently always empty** — see [OP-007]. |
+| GET | `/sessions/{id}/pending-permission` | — | `200` `PermissionData[]` | Yes | Parked prompts, oldest first — see [OP-007]. |
 | POST | `/sessions/{id}/permissions/{permID}/reply` | `{ allow, message? }` | `204` | Yes* | Answer a permission prompt. |
 | POST | `/sessions/{id}/questions/{requestID}/reply` | `{ answers?, reject? }` | `204` | Yes* | Answer or dismiss a question prompt ([QST-001](11-interactive-tools.md)). |
 | POST | `/sessions/{id}/read` | — | `204` | Yes | Mark read; does not bump `updated_at`. |
@@ -135,15 +135,23 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
 
 ### Pending permission — `GET /sessions/{id}/pending-permission`
 
-- **[OP-007] (MUST — known limitation)** This endpoint **currently always returns an empty
-  array.** The host does not yet snapshot pending permissions; the SSE `permission` event is
-  the only source. Consequence: a client that opens or reconnects to a session **blocked on a
-  permission** cannot recover the prompt — the session looks idle but the agent is stuck. A
-  client MUST still call it (its contract may change), MUST NOT treat `[]` as "no permission
-  was ever pending," and SHOULD surface this state honestly if detected. See
-  [INV-PENDING-PERM-GAP-001](08-invariants.md) for the recommended host fix. **Golden:**
-  `internal/host/mux/sessions.go:236` (returns `[]`, `TODO: persistent permission snapshot`),
-  `internal/tui/sessionview.go:808` (restore path, receives `[]`).
+- **[OP-007] (MUST)** Returns the permission prompts currently blocking the session's
+  backend, **oldest first**, as `PermissionData[]` — the same payload as the SSE
+  `permission` event. A client MUST call it on every (re)join/reconcile and **replace** its
+  local pending queue with the result; this is how a prompt whose `permission` event
+  predates the subscription is recovered. The queue is served from the backend's
+  **in-memory** parked state (Claude: the parked `CanUseTool` bridge; OpenCode: the
+  server's own permission list) — it is deliberately not persisted, so after a daemon
+  restart the endpoint returns `[]` even though the turn died blocked; a client therefore
+  MUST NOT treat `[]` as "no permission was ever pending" and SHOULD surface a long
+  `busy`-with-no-activity session honestly ([INV-PENDING-PERM-GAP-001](08-invariants.md)).
+  For a parked **interactive** tool the history refetch also carries a synthesized
+  in-flight tool part (same part id and question tag as the live emit), so the question
+  card / plan text restore alongside the prompt ([QST-001](11-interactive-tools.md)).
+  **Golden:** `internal/host/mux/sessions.go` (`handlePendingPermissions`),
+  `internal/agent/claude_permissions.go` (`PendingPermissions`, `pendingPermissionMessages`),
+  `internal/agent/opencode.go` (`PendingPermissions`),
+  `internal/tui/sessionview.go` (`fetchPendingPermission` restore path).
 
 ### Metadata mutations
 

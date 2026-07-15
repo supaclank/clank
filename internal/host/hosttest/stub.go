@@ -86,6 +86,8 @@ type StubBackend struct {
 	questionAnswers   []agent.QuestionAnswer
 	questionReject    bool
 	questionCalled    bool
+
+	pendingPerms []agent.PermissionData
 }
 
 // PushEvent injects an event into the backend's events channel as if
@@ -259,6 +261,20 @@ func (b *StubBackend) Fork(_ context.Context, msgID string) (agent.ForkResult, e
 	b.forkID = msgID
 	b.mu.Unlock()
 	return agent.ForkResult{ID: "ext-forked-" + msgID}, nil
+}
+
+// SetPendingPermissions programs what PendingPermissions returns, standing in
+// for a backend with parked prompts.
+func (b *StubBackend) SetPendingPermissions(perms []agent.PermissionData) {
+	b.mu.Lock()
+	b.pendingPerms = perms
+	b.mu.Unlock()
+}
+
+func (b *StubBackend) PendingPermissions(context.Context) ([]agent.PermissionData, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.pendingPerms, nil
 }
 
 func (b *StubBackend) RespondPermission(_ context.Context, permissionID string, allow bool, _ string) error {

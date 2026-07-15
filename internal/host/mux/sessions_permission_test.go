@@ -30,6 +30,8 @@ type captureBackend struct {
 	gotQuestionID      string
 	gotQuestionAnswers []agent.QuestionAnswer
 	gotQuestionReject  bool
+
+	pendingPerms []agent.PermissionData
 }
 
 func (b *captureBackend) Open(context.Context) error { return nil }
@@ -61,6 +63,12 @@ func (b *captureBackend) RespondPermission(_ context.Context, _ string, allow bo
 	b.gotDenyMessage = denyMessage
 	b.mu.Unlock()
 	return nil
+}
+
+func (b *captureBackend) PendingPermissions(context.Context) ([]agent.PermissionData, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.pendingPerms, nil
 }
 
 func (b *captureBackend) RespondQuestion(_ context.Context, requestID string, answers []agent.QuestionAnswer, reject bool) error {
@@ -196,5 +204,59 @@ func TestPermissionReply_ForwardsDenyMessage(t *testing.T) {
 	}
 	if backend.gotDenyMessage != wantMsg {
 		t.Errorf("backend received denyMessage=%q, want %q", backend.gotDenyMessage, wantMsg)
+	}
+}
+
+// GET pending-permission must serve the backend's parked prompts — a client
+// that (re)joins a session blocked on a permission recovers the prompt here
+// (its SSE subscription never saw the original event). Regression for the
+// stub that always returned [] and left rejoined sessions looking stuck.
+func TestPendingPermissions_ServesBackendQueue(t *testing.T) {
+	parked := []agent.PermissionData{
+		{RequestID: "perm-1", Tool: "AskUserQuestion", Description: "AskUserQuestion: Which auth?", ToolUseID: "toolu_q"},
+		{RequestID: "perm-2", Tool: "bash", Description: "bash: rm -rf /tmp/x"},
+	}
+	backend := &captureBackend{pendingPerms: parked}
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendClaudeCode: &captureBackendManager{backend: backend},
+		},
+	})
+	t.Cleanup(svc.Shutdown)
+	m := New(svc, nil)
+
+	dir := initGitRepoMux(t)
+	body, err := json.Marshal(agent.StartRequest{
+		Backend: agent.BackendClaudeCode,
+		GitRef:  agent.GitRef{LocalPath: dir},
+		Prompt:  "hi",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	w := httptest.NewRecorder()
+	m.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/sessions", bytes.NewReader(body)))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s, want 201", w.Code, w.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || created.ID == "" {
+		t.Fatalf("decode created session id: err=%v body=%s", err, w.Body.String())
+	}
+
+	gw := httptest.NewRecorder()
+	m.Handler().ServeHTTP(gw, httptest.NewRequest(http.MethodGet,
+		"/sessions/"+created.ID+"/pending-permission", nil))
+	if gw.Code != http.StatusOK {
+		t.Fatalf("get status=%d body=%s, want 200", gw.Code, gw.Body.String())
+	}
+	var got []agent.PermissionData
+	if err := json.Unmarshal(gw.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v body=%s", err, gw.Body.String())
+	}
+	if len(got) != 2 || got[0] != parked[0] || got[1] != parked[1] {
+		t.Errorf("pending permissions = %+v, want %+v", got, parked)
 	}
 }

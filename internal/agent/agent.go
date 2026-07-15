@@ -719,6 +719,12 @@ type SessionBackend interface {
 	// deny-reason field.
 	RespondPermission(ctx context.Context, permissionID string, allow bool, denyMessage string) error
 
+	// PendingPermissions returns the permission prompts currently awaiting a
+	// reply, oldest first. Clients call this on (re)join to recover prompts
+	// whose EventPermission they never saw — without it a session blocked on
+	// a permission looks idle forever. Empty when nothing is parked.
+	PendingPermissions(ctx context.Context) ([]PermissionData, error)
+
 	// RespondQuestion replies to a pending QuestionPrompt (Part.Question). answers must
 	// carry one entry per question, in order; an all-empty QuestionAnswer
 	// delegates that question back to the agent. reject=true dismisses the

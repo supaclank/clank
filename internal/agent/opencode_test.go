@@ -27,6 +27,7 @@ type mockOpenCodeServer struct {
 	sessionIDSeq int              // auto-increment for session IDs
 	sseHandler   http.HandlerFunc // custom SSE handler for tests
 	promptBlock  chan struct{}    // if non-nil, handlePrompt waits on this before responding
+	pendingPerms []map[string]any // served by GET /permission
 
 	server *httptest.Server
 }
@@ -55,6 +56,8 @@ func newMockOpenCodeServer() *mockOpenCodeServer {
 	mux.HandleFunc("GET /global/event", m.handleSSE)
 	// Health check.
 	mux.HandleFunc("GET /global/health", m.handleHealth)
+	// Pending permission requests across all sessions.
+	mux.HandleFunc("GET /permission", m.handlePermissionList)
 
 	m.server = httptest.NewServer(mux)
 	return m
@@ -89,6 +92,17 @@ func (m *mockOpenCodeServer) handleCreateSession(w http.ResponseWriter, r *http.
 			"updated": float64(time.Now().Unix()),
 		},
 	})
+}
+
+func (m *mockOpenCodeServer) handlePermissionList(w http.ResponseWriter, _ *http.Request) {
+	m.mu.Lock()
+	perms := m.pendingPerms
+	m.mu.Unlock()
+	if perms == nil {
+		perms = []map[string]any{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(perms)
 }
 
 func (m *mockOpenCodeServer) handlePrompt(w http.ResponseWriter, r *http.Request) {
@@ -2265,5 +2279,50 @@ func TestReconcilerStartFailureNotifiesWaiters(t *testing.T) {
 	servers := mgr.ListServers()
 	if len(servers) != 0 {
 		t.Errorf("expected 0 servers after failure, got %d", len(servers))
+	}
+}
+
+// PendingPermissions must serve this session's parked prompts from the
+// server's permission list, mapped identically to the live permission.asked
+// event (id, tool, "permission: patterns" description, tool call id) and
+// filtered to the backend's session.
+func TestOpenCodeBackendPendingPermissions(t *testing.T) {
+	t.Parallel()
+	mock := newMockOpenCodeServer()
+	defer mock.Close()
+
+	mock.mu.Lock()
+	mock.sessions["existing-session"] = true
+	mock.pendingPerms = []map[string]any{
+		{
+			"id":         "perm-abc",
+			"sessionID":  "existing-session",
+			"permission": "bash",
+			"patterns":   []string{"rm -rf /tmp/x"},
+			"tool":       map[string]any{"messageID": "msg-1", "callID": "call-1"},
+		},
+		{
+			"id":         "perm-other",
+			"sessionID":  "other-session",
+			"permission": "edit",
+		},
+	}
+	mock.mu.Unlock()
+
+	b := agent.NewOpenCodeBackend(mock.URL(), "existing-session", nil)
+	defer b.Stop()
+
+	perms, err := b.PendingPermissions(context.Background())
+	if err != nil {
+		t.Fatalf("PendingPermissions: %v", err)
+	}
+	want := []agent.PermissionData{{
+		RequestID:   "perm-abc",
+		Tool:        "bash",
+		Description: "bash: rm -rf /tmp/x",
+		ToolUseID:   "call-1",
+	}}
+	if len(perms) != 1 || perms[0] != want[0] {
+		t.Errorf("PendingPermissions = %+v, want %+v (other sessions' prompts filtered out)", perms, want)
 	}
 }

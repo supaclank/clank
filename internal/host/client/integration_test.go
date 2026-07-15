@@ -68,6 +68,9 @@ func (b *stubBackend) Revert(_ context.Context, _ string) error                {
 func (b *stubBackend) Fork(_ context.Context, _ string) (agent.ForkResult, error) {
 	return agent.ForkResult{ID: "forked-" + b.id, Title: "Forked"}, nil
 }
+func (b *stubBackend) PendingPermissions(context.Context) ([]agent.PermissionData, error) {
+	return nil, nil
+}
 func (b *stubBackend) RespondPermission(_ context.Context, _ string, _ bool, _ string) error {
 	return nil
 }

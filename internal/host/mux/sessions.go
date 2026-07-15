@@ -223,20 +223,21 @@ type PermissionReplyRequest struct {
 	Message string `json:"message,omitempty"`
 }
 
-// GET /sessions/{id}/pending-permission returns blocked permission
-// requests. The host doesn't snapshot these yet — the SSE stream is
-// the canonical source — so this returns an empty list to keep the
-// TUI's recovery path from 404'ing.
-//
-// TODO: persistent permission snapshot.
+// GET /sessions/{id}/pending-permission returns the permission requests
+// currently blocking the session's backend, oldest first. Serves the
+// backend's in-memory parked state — a client that (re)joins mid-park
+// recovers here what its SSE subscription never saw.
 func (m *Mux) handlePendingPermissions(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	// Store-only lookup — don't rehydrate a backend just to return [].
-	if _, err := m.svc.GetSessionMetadata(r.Context(), id); err != nil {
+	perms, err := m.svc.PendingPermissions(r.Context(), id)
+	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, []any{})
+	if perms == nil {
+		perms = []agent.PermissionData{}
+	}
+	writeJSON(w, http.StatusOK, perms)
 }
 
 func (m *Mux) handlePermissionReply(w http.ResponseWriter, r *http.Request) {

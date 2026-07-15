@@ -196,6 +196,15 @@ func (b *httpSessionBackend) RespondPermission(ctx context.Context, permissionID
 	return b.c.do(ctx, http.MethodPost, p, body, nil)
 }
 
+func (b *httpSessionBackend) PendingPermissions(ctx context.Context) ([]agent.PermissionData, error) {
+	p, err := b.path("/pending-permission")
+	if err != nil {
+		return nil, err
+	}
+	var perms []agent.PermissionData
+	return perms, b.c.do(ctx, http.MethodGet, p, nil, &perms)
+}
+
 func (b *httpSessionBackend) RespondQuestion(ctx context.Context, requestID string, answers []agent.QuestionAnswer, reject bool) error {
 	body := struct {
 		Answers []agent.QuestionAnswer `json:"answers,omitempty"`

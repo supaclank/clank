@@ -1322,6 +1322,17 @@ func (s *Service) RespondPermission(ctx context.Context, id, permissionID string
 	return b.RespondPermission(ctx, permissionID, allow, denyMessage)
 }
 
+// PendingPermissions returns the permission prompts parked on the session's
+// backend, oldest first, so a client that (re)joins mid-park can recover the
+// prompt its SSE subscription never saw.
+func (s *Service) PendingPermissions(ctx context.Context, id string) ([]agent.PermissionData, error) {
+	b, err := s.ensureBackend(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return b.PendingPermissions(ctx)
+}
+
 // RespondQuestion replies to a pending question prompt with structured
 // answers (one per question, in order), or dismisses it when reject is true.
 func (s *Service) RespondQuestion(ctx context.Context, id, requestID string, answers []agent.QuestionAnswer, reject bool) error {

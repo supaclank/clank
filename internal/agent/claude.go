@@ -113,10 +113,11 @@ type ClaudeCodeBackend struct {
 	// In-memory only; not persisted. Guarded by b.mu.
 	revertMessageID string
 
-	// pendingPerms maps a synthesized permission request ID to the channel that
-	// delivers the user's decision. handleCanUseTool registers an entry and
-	// blocks on it; RespondPermission resolves it. Guarded by b.mu.
-	pendingPerms map[string]chan permissionDecision
+	// pendingPerms maps a synthesized permission request ID to the parked
+	// prompt. handleCanUseTool registers an entry and blocks on its decision
+	// channel; RespondPermission resolves it. PendingPermissions and Messages
+	// serve the snapshot half to clients that (re)join mid-park. Guarded by b.mu.
+	pendingPerms map[string]*parkedPermission
 
 	// permSeq generates unique permission request IDs. Guarded by b.mu.
 	permSeq uint64
@@ -164,7 +165,7 @@ func NewClaudeCodeBackendForSession(workDir, resumeSessionID string) *ClaudeCode
 		sessionID:        resumeSessionID,
 		events:           make(chan Event, 128),
 		activeToolBlocks: make(map[int]*activeToolBlock),
-		pendingPerms:     make(map[string]chan permissionDecision),
+		pendingPerms:     make(map[string]*parkedPermission),
 		pendingQuestions: make(map[string]claudeQuestion),
 		lastToolUseID:    make(map[string]string),
 		initialPermMode:  ClaudePermBypass,
@@ -637,7 +638,10 @@ func (b *ClaudeCodeBackend) Messages(ctx context.Context) ([]MessageData, error)
 			}
 		}
 	}
-	return msgs, nil
+	// A parked permission's tool_use block hasn't been flushed to the
+	// transcript; append it synthetically so mid-park (re)joins can render
+	// the gated tool (question card, plan text).
+	return append(msgs, b.pendingPermissionMessages(msgs)...), nil
 }
 
 // Revert undoes a turn: it rolls tracked files back to their state at the given

@@ -44,6 +44,9 @@ func (b *failingOpenBackend) Revert(_ context.Context, _ string) error { return 
 func (b *failingOpenBackend) Fork(_ context.Context, _ string) (agent.ForkResult, error) {
 	return agent.ForkResult{}, nil
 }
+func (b *failingOpenBackend) PendingPermissions(context.Context) ([]agent.PermissionData, error) {
+	return nil, nil
+}
 func (b *failingOpenBackend) RespondPermission(_ context.Context, _ string, _ bool, _ string) error {
 	return nil
 }
@@ -228,6 +231,9 @@ func (b *wedgeableBackend) Messages(_ context.Context) ([]agent.MessageData, err
 func (b *wedgeableBackend) Revert(_ context.Context, _ string) error { return nil }
 func (b *wedgeableBackend) Fork(_ context.Context, _ string) (agent.ForkResult, error) {
 	return agent.ForkResult{}, nil
+}
+func (b *wedgeableBackend) PendingPermissions(context.Context) ([]agent.PermissionData, error) {
+	return nil, nil
 }
 func (b *wedgeableBackend) RespondPermission(_ context.Context, _ string, _ bool, _ string) error {
 	return nil

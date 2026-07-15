@@ -348,18 +348,20 @@ session that just got activity fails to hoist. RN diverges (no `meta` handler; p
 
 These are real gaps in the host today. Clients must cope; the host should fix.
 
-### [INV-PENDING-PERM-GAP-001] (known limitation) Pending permissions don't survive a (re)join
-`GET /sessions/{id}/pending-permission` always returns `[]` ([OP-007]), and the SSE
-`permission` event is not replayed. A client that opens or reconnects to a session **blocked
-on a permission** cannot recover the prompt — the agent stays parked and the session looks
-idle.
-**Client duty:** call the endpoint anyway; do not assume `[]` ⇒ "never blocked"; if a session
-reads `busy`/`starting` for a long time with no activity, surface it honestly rather than as
-"working".
-**Recommended host fix:** snapshot pending permissions (return them from the endpoint) **or**
-re-emit them to a new subscriber on connect.
-**Golden:** `internal/host/mux/sessions.go:236`. **Conformance:** `CONF-PENDING-PERM-GAP`
-(documents the limitation; the assertion is the honest-surfacing behavior).
+### [INV-PENDING-PERM-GAP-001] (known limitation — narrowed) Parked permissions don't survive a daemon restart
+`GET /sessions/{id}/pending-permission` now serves the backend's parked queue ([OP-007]),
+so an ordinary (re)join recovers the prompt (and, for interactive tools, the history
+refetch carries the synthesized parked tool part). What remains is the **restart** case:
+the queue is in-memory by design — a parked prompt lives exactly as long as the blocked
+tool-permission bridge — so after a daemon restart the endpoint returns `[]` even though
+the turn died blocked, and the SSE `permission` event is never replayed.
+**Client duty:** call the endpoint on every (re)join and replace the local queue with the
+result; do not assume `[]` ⇒ "never blocked"; if a session reads `busy`/`starting` for a
+long time with no activity, surface it honestly rather than as "working".
+**Golden:** `internal/host/mux/sessions.go` (`handlePendingPermissions`),
+`internal/agent/claude_permissions.go` (`PendingPermissions`).
+**Conformance:** `CONF-PENDING-PERM-GAP` (recovery on rejoin + honest surfacing after a
+restart).
 
 ### [INV-HEARTBEAT-GAP-001] (known limitation) No heartbeat
 The stream sends no keepalive/heartbeat, and the reference clients set no SSE read timeout.
