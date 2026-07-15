@@ -709,10 +709,13 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.screen == screenSession && m.sessionView != nil {
 		if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
 			// Tab swaps panes everywhere — including from inside the
-			// chat. Skip when the chat's text input is active so Tab
-			// continues to cycle agents in compose mode.
+			// chat. Skip when the chat is capturing keys (text input
+			// active, or a permission/question prompt awaiting input)
+			// so Tab keeps cycling agents / stays out of the prompt.
+			chatCapturesKeys := m.pane == paneSessions &&
+				(m.sessionView.inputActive || m.sessionView.promptActive())
 			if m.showTwoPanes() && key.Matches(normalizeKeyCase(keyMsg), key.NewBinding(key.WithKeys("tab"))) &&
-				!(m.pane == paneSessions && m.sessionView.inputActive) {
+				!chatCapturesKeys {
 				if m.pane == paneSidebar {
 					m.setPane(paneSessions)
 				} else {
@@ -939,10 +942,11 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		// Intercept pane-switching shortcuts before they reach the
-		// session view — only when its text input isn't capturing the
-		// key (i.e. m.inputActive==false), so typing 'w' or 'left' in
-		// the compose box still does the right thing.
-		if m.sessionView != nil && !m.sessionView.inputActive {
+		// session view — only when it isn't capturing keys: the compose
+		// textarea owns typed text, and an active permission/question
+		// prompt owns its reply keys ("n" must deny, not open compose;
+		// plan-revision/"Other" typing must not toggle panes).
+		if m.sessionView != nil && !m.sessionView.inputActive && !m.sessionView.promptActive() {
 			raw := msg.(tea.KeyPressMsg)
 			// Compose a new session prefilled with the current chat's
 			// worktree — same gesture as "n"/"Shift+N" in the sidebar, but
