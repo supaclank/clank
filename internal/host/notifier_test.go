@@ -97,6 +97,45 @@ func TestClassifyEvent(t *testing.T) {
 			wantOK: false,
 		},
 		{
+			// Regression (2026-07-15): the CLI died mid-turn (giant
+			// tool-output lines) → busy→dead with no ResultMessage; the
+			// user got no push and the session silently looked "Ready".
+			name: "busy_to_dead_notifies_crash",
+			evt: agent.Event{
+				Type:      agent.EventStatusChange,
+				SessionID: "s1",
+				Timestamp: when,
+				Data:      agent.StatusChangeData{OldStatus: agent.StatusBusy, NewStatus: agent.StatusDead},
+			},
+			wantOK:    true,
+			wantKind:  notifier.KindCrashed,
+			wantTitle: "Agent stopped unexpectedly",
+		},
+		{
+			name: "starting_to_dead_notifies_crash",
+			evt: agent.Event{
+				Type:      agent.EventStatusChange,
+				SessionID: "s1",
+				Timestamp: when,
+				Data:      agent.StatusChangeData{OldStatus: agent.StatusStarting, NewStatus: agent.StatusDead},
+			},
+			wantOK:   true,
+			wantKind: notifier.KindCrashed,
+		},
+		{
+			// A settled (idle) session whose transport later drops is
+			// marked dead too (TestConnectionClosedWhileIdle_MarksDead),
+			// but that's not a mid-turn crash — no push.
+			name: "idle_to_dead_dropped",
+			evt: agent.Event{
+				Type:      agent.EventStatusChange,
+				SessionID: "s1",
+				Timestamp: when,
+				Data:      agent.StatusChangeData{OldStatus: agent.StatusIdle, NewStatus: agent.StatusDead},
+			},
+			wantOK: false,
+		},
+		{
 			name: "permission_request",
 			evt: agent.Event{
 				Type:      agent.EventPermission,

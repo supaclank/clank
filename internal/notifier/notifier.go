@@ -29,6 +29,7 @@ const (
 	KindIdle       Kind = "idle"       // Agent transitioned to idle (finished a turn)
 	KindPermission Kind = "permission" // Agent is waiting for tool permission
 	KindError      Kind = "error"      // Agent encountered an error
+	KindCrashed    Kind = "crashed"    // Agent process died mid-turn (no result) — resumable
 )
 
 // Notification is the canonical, provider-agnostic shape. Providers

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -225,6 +226,13 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 		// callback the SDK auto-denies every request, so this is required for
 		// the default/acceptEdits/plan modes to work at all.
 		claudecode.WithCanUseTool(b.handleCanUseTool),
+		// Capture the CLI's stderr into clank-host's own log stream. The
+		// SDK otherwise isolates it to a /tmp file, which on Fly Machines
+		// is rootfs — WIPED when the machine stops (idle-exit fires
+		// minutes after a mid-turn CLI death), so every post-mortem was
+		// lost. Routing it here lands it in Fly's retained logs, the one
+		// place the evidence survives a stop.
+		claudecode.WithStderrCallback(b.logCLIStderr),
 	}
 	if resumeID != "" {
 		// Plain --resume: Revert physically truncates the transcript, so the
@@ -818,6 +826,24 @@ func (b *ClaudeCodeBackend) Fork(ctx context.Context, messageID string) (ForkRes
 // bridge it resolves.
 
 // --- Internal helpers ---
+
+// logCLIStderr forwards one line of the claude CLI's stderr into
+// clank-host's log stream (the default logger writes to os.Stderr,
+// which Fly retains). Prefixed with the CLI session ID so concurrent
+// sessions on one host are separable. This is the only durable record
+// of a silent CLI death — see the WithStderrCallback wiring in Open.
+func (b *ClaudeCodeBackend) logCLIStderr(line string) {
+	if line == "" {
+		return
+	}
+	b.mu.Lock()
+	sid := b.sessionID
+	b.mu.Unlock()
+	if sid == "" {
+		sid = "?"
+	}
+	log.Printf("[claude-cli %s] %s", sid, line)
+}
 
 func (b *ClaudeCodeBackend) setStatus(s SessionStatus) {
 	b.mu.Lock()

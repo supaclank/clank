@@ -163,6 +163,29 @@ func classifyEvent(evt agent.Event, pctx pushContext) (notifier.Notification, bo
 		if !ok {
 			return notifier.Notification{}, false
 		}
+		// Mid-turn death: the CLI subprocess exited without a
+		// ResultMessage (giant tool-output lines have crashed it —
+		// see receiveLoop's channel-closed → StatusDead). It reaches
+		// StatusDead straight from Busy/Starting (never via Idle), so
+		// the finished-turn push never fires and the session silently
+		// looks "Ready". Surface it as its own resumable-crash push.
+		if d.NewStatus == agent.StatusDead &&
+			(d.OldStatus == agent.StatusBusy || d.OldStatus == agent.StatusStarting) {
+			title := "Agent stopped unexpectedly"
+			body := "The task ended early — tap to resume."
+			if pctx.Title != "" {
+				title = truncateRunes(pctx.Title, maxTitleLen)
+				body = "Stopped unexpectedly — tap to resume."
+			}
+			return notifier.Notification{
+				SessionID:  evt.SessionID,
+				Kind:       notifier.KindCrashed,
+				Title:      title,
+				Body:       body,
+				Data:       sessionTitleData(nil, pctx),
+				OccurredAt: when,
+			}, true
+		}
 		if d.NewStatus != agent.StatusIdle {
 			return notifier.Notification{}, false
 		}
