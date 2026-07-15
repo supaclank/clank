@@ -31,6 +31,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -163,7 +164,7 @@ type runConfig struct {
 // the --keepalive-provider value. Returns nil for "none" so the host
 // service skips wiring entirely. shutdown initiates a graceful process
 // shutdown; only the "exit" provider uses it.
-func buildKeepaliveListener(provider string, shutdown func(), lg *log.Logger) (keepalive.Listener, error) {
+func buildKeepaliveListener(provider string, shutdown func(), busy func() int, lg *log.Logger) (keepalive.Listener, error) {
 	switch provider {
 	case keepaliveProviderNone:
 		return nil, nil
@@ -175,7 +176,7 @@ func buildKeepaliveListener(provider string, shutdown func(), lg *log.Logger) (k
 		if shutdown == nil {
 			return nil, fmt.Errorf("--keepalive-provider=%s requires a shutdown function", keepaliveProviderExit)
 		}
-		return keepaliveexit.New(keepaliveexit.Options{Shutdown: shutdown, Log: lg}), nil
+		return keepaliveexit.New(keepaliveexit.Options{Shutdown: shutdown, Busy: busy, Log: lg}), nil
 	default:
 		return nil, fmt.Errorf("unknown --keepalive-provider %q (want %s|%s|%s|%s)", provider, keepaliveProviderSprites, keepaliveProviderExit, keepaliveProviderNoop, keepaliveProviderNone)
 	}
@@ -297,7 +298,20 @@ func run(cfg runConfig) error {
 			lg.Printf("keepalive: self-terminate signal: %v", err)
 		}
 	}
-	keepaliveListener, err := buildKeepaliveListener(cfg.keepaliveProvider, selfTerminate, lg)
+	// The busy source is late-bound: the exit listener is constructed
+	// before the host service it queries. Nil until the service exists,
+	// which the closure treats as "not busy".
+	var busySvc atomic.Pointer[host.Service]
+	busySessions := func() int {
+		s := busySvc.Load()
+		if s == nil {
+			return 0
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return s.BusySessionCount(ctx)
+	}
+	keepaliveListener, err := buildKeepaliveListener(cfg.keepaliveProvider, selfTerminate, busySessions, lg)
 	if err != nil {
 		return err
 	}
@@ -363,6 +377,7 @@ func run(cfg runConfig) error {
 		ProjectCommitterName:  cfg.projectCommitterName,
 		ProjectCommitterEmail: cfg.projectCommitterEmail,
 	})
+	busySvc.Store(svc)
 	if keepaliveListener != nil {
 		lg.Printf("keepalive provider: %s", cfg.keepaliveProvider)
 	}

@@ -8,11 +8,18 @@
 // cleanly once idle and the provider's edge restarts it on the next
 // request.
 //
-// "Active" is the union of three signals:
+// "Active" is the union of four signals:
 //   - backend events (the Tick's lastActivity, fed by agent sessions)
 //   - HTTP traffic (every request through TrackHTTP refreshes the clock)
 //   - in-flight requests (open SSE streams, tunnel bridges — any
 //     request still being served vetoes exit regardless of timestamps)
+//   - busy sessions (Options.Busy > 0 vetoes exit AND counts as
+//     activity): a single long tool execution emits NO backend events
+//     between tool start and result, so event-fed activity can go
+//     silent for many minutes while an agent is mid-turn. Without this
+//     veto the host self-exits under a running agent, killing the CLI
+//     and truncating the turn (observed 2026-07-15: a 3m10s "idle"
+//     shutdown mid-scaffold after the phone app closed its stream).
 //
 // Process start counts as activity so a machine woken for a single
 // request always gets a full idle window to serve it.
@@ -38,6 +45,13 @@ type Options struct {
 	IdleThreshold time.Duration // zero → DefaultIdleThreshold
 	Log           *log.Logger   // nil → log.Default()
 
+	// Busy reports the number of agent sessions currently mid-turn
+	// (status busy/starting). While > 0 the listener never exits and
+	// stamps activity, so the idle window restarts from the moment the
+	// last turn ends. Nil means no busy source (tests, callers without
+	// session tracking).
+	Busy func() int
+
 	// Now overrides the clock. Tests inject a controllable clock to
 	// drive the decision table without sleeping. Nil means time.Now.
 	Now func() time.Time
@@ -50,6 +64,7 @@ type Listener struct {
 	shutdown      func()
 	idleThreshold time.Duration
 	log           *log.Logger
+	busy          func() int
 	now           func() time.Time
 
 	startedAt   time.Time
@@ -77,6 +92,7 @@ func New(opts Options) *Listener {
 		shutdown:      opts.Shutdown,
 		idleThreshold: opts.IdleThreshold,
 		log:           opts.Log,
+		busy:          opts.Busy,
 		now:           opts.Now,
 		startedAt:     opts.Now(),
 	}
@@ -107,6 +123,13 @@ func (l *Listener) Tick(_ context.Context, lastActivity time.Time) {
 		return
 	}
 	if l.inflight.Load() > 0 {
+		return
+	}
+	if l.busy != nil && l.busy() > 0 {
+		// Mid-turn: veto AND stamp, so the idle window restarts from
+		// the moment the last turn ends even if the turn's final events
+		// are sparse.
+		l.lastRequest.Store(l.now().UnixNano())
 		return
 	}
 	last := l.startedAt

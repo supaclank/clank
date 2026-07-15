@@ -153,3 +153,60 @@ func TestInFlightRequestVetoesRegardlessOfAge(t *testing.T) {
 		t.Fatal("did not fire after the post-request idle window")
 	}
 }
+
+// TestBusySessionsVetoExit is the regression test for the 2026-07-15
+// mid-run shutdown: a long tool execution emits no backend events and
+// holds no HTTP request (phone app closed), so every timestamp signal
+// goes stale while the agent is working. Busy > 0 must veto the exit
+// no matter how old the clocks are.
+func TestBusySessionsVetoExit(t *testing.T) {
+	t.Parallel()
+	clock := newFakeClock()
+	var fires atomic.Int64
+	var busy atomic.Int64
+	l := New(Options{
+		Shutdown:      func() { fires.Add(1) },
+		IdleThreshold: 3 * time.Minute,
+		Log:           log.New(io.Discard, "", 0),
+		Busy:          func() int { return int(busy.Load()) },
+		Now:           clock.Now,
+	})
+
+	busy.Store(1)
+	// Way past threshold with zero event/HTTP activity — the exact
+	// incident shape (3m10s "idle" during an Expo scaffold).
+	clock.Advance(30 * time.Minute)
+	l.Tick(context.Background(), time.Time{})
+	if fires.Load() != 0 {
+		t.Fatal("exit fired while a session was busy — kills the agent mid-turn")
+	}
+
+	// Turn ends: busy observed at least once must have stamped
+	// activity, so the idle window restarts NOW, not from the stale
+	// pre-turn timestamps.
+	busy.Store(0)
+	clock.Advance(2 * time.Minute)
+	l.Tick(context.Background(), time.Time{})
+	if fires.Load() != 0 {
+		t.Fatal("exit fired inside the post-turn idle window")
+	}
+	clock.Advance(1*time.Minute + 2*time.Second)
+	l.Tick(context.Background(), time.Time{})
+	if fires.Load() != 1 {
+		t.Fatalf("exit did not fire after a full idle window post-turn (fires=%d)", fires.Load())
+	}
+}
+
+// TestNilBusyKeepsTimestampBehavior pins that callers without a busy
+// source (nil) get the original three-signal behavior.
+func TestNilBusyKeepsTimestampBehavior(t *testing.T) {
+	t.Parallel()
+	clock := newFakeClock()
+	l, fires := newTestListener(t, clock)
+
+	clock.Advance(3*time.Minute + time.Second)
+	l.Tick(context.Background(), time.Time{})
+	if fires.Load() != 1 {
+		t.Fatalf("nil-Busy listener did not fire on idle (fires=%d)", fires.Load())
+	}
+}

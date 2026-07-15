@@ -107,7 +107,7 @@ func TestBuildKeepaliveListener(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			l, err := buildKeepaliveListener(c.provider, shutdown, log.New(io.Discard, "", 0))
+			l, err := buildKeepaliveListener(c.provider, shutdown, func() int { return 0 }, log.New(io.Discard, "", 0))
 			if c.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got nil")

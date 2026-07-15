@@ -331,6 +331,33 @@ func (s *Service) Init(ctx context.Context, knownDirs func(agent.BackendType) ([
 	return nil
 }
 
+// BusySessionCount reports how many sessions are currently mid-turn
+// (busy or starting). The exit keepalive uses this as its don't-kill
+// veto: a long tool execution emits no backend events between start
+// and result, so event-fed activity alone reads as idle while an agent
+// is working. Statuses are trustworthy in a live process (the same
+// transitions drive the idle notifier); stale rows from a crash are
+// normalized to idle at boot.
+func (s *Service) BusySessionCount(ctx context.Context) int {
+	if s.sessionsStore == nil {
+		return 0
+	}
+	sessions, err := s.sessionsStore.ListSessions(ctx)
+	if err != nil {
+		s.log.Printf("warning: list sessions for busy count: %v", err)
+		// Fail toward "busy": exiting under an unknown state kills work;
+		// staying up one more tick costs pennies.
+		return 1
+	}
+	n := 0
+	for _, info := range sessions {
+		if info.Status == agent.StatusBusy || info.Status == agent.StatusStarting {
+			n++
+		}
+	}
+	return n
+}
+
 // normalizeStaleSessionStatus rewrites busy/starting/dead/error sessions
 // back to idle on startup — none can advance without the live backend that
 // set them, and that backend died with the previous process. error is reset
