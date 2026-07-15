@@ -931,14 +931,31 @@ func (b *ClaudeCodeBackend) handleSystemMessage(m *claudecode.SystemMessage) {
 }
 
 func (b *ClaudeCodeBackend) handleAssistantMessage(m *claudecode.AssistantMessage) {
+	// Thinking is the exception to "content arrives via streaming deltas":
+	// an extended-thinking block streams only a content_block_start and a
+	// signature_delta — the thinking TEXT is NEVER sent as a thinking_delta
+	// (verified against Sonnet 5, 2026-07-15), so the streaming path only
+	// ever produces an empty PartThinking. The full text lands only in this
+	// completed message (and the on-disk transcript). Surface it here, keyed
+	// to the same {msgID}-{index} the streaming path used, so it REPLACES
+	// that empty part rather than duplicating. text/tool_use DO stream, so
+	// those stay with the streaming path to avoid double-emitting.
+	for i, block := range m.Content {
+		if tb, ok := block.(*claudecode.ThinkingBlock); ok && tb.Thinking != "" {
+			b.emitPart(Part{
+				ID:   b.blockID(i),
+				Type: PartThinking,
+				Text: tb.Thinking,
+			}, false)
+		}
+	}
+
 	// Emit a content-less shell — matching the OpenCode pattern.
 	// The TUI ignores EventMessage content after history loads, and new
-	// content arrives exclusively via EventPartUpdate from streaming deltas
-	// (handleContentBlockStart/Delta). Emitting parts here would duplicate
-	// what the streaming path already delivered.
-	//
-	// Full message content (including parts) is reconstructed on demand by
-	// Messages() reading the on-disk JSONL transcript via the SDK.
+	// text/tool content arrives via EventPartUpdate from streaming deltas
+	// (handleContentBlockStart/Delta). Full message content is
+	// reconstructed on demand by Messages() reading the on-disk JSONL
+	// transcript via the SDK.
 	b.emit(Event{
 		Type:      EventMessage,
 		Timestamp: time.Now(),
