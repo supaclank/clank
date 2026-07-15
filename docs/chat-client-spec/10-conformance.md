@@ -149,6 +149,7 @@ files.
 | `CONF-RECONNECT-SEMANTICS` | own-transport reconnect triggers reconcile; `reconnected` event alone does not substitute | INV-RECONNECT-SEMANTICS-001 |
 | `CONF-PENDING-PERM-GAP` | a join to a blocked session is surfaced honestly (not shown as plain "working") | INV-PENDING-PERM-GAP-001 |
 | `CONF-QUESTION-EVENT` | a `question` event renders the structured prompt, suppresses the paired `permission`, replies via the questions endpoint; `question.resolved` clears it | QST-001/002/003, INV-INTERACTIVE-001 |
+| `CONF-QUESTION-REPLAY` | a subscriber connecting while a question is pending receives it replayed; after resolve (or the conversation moving past a bypass question) later subscribers do not | QST-004 |
 | `CONF-INTERACTIVE-ASK` | AskUserQuestion renders from part input; terminal status clears; answer submitted (legacy path) | ITOOL-001/002/004, FLOW-ASK-001 |
 | `CONF-INTERACTIVE-PLAN` | ExitPlanMode plan renders; Approve→build, Revise→plan | ITOOL-004/005, FLOW-PLAN-001 |
 | `CONF-INLINE-COMMENT` | per-block comments format as a quoted-comment SendMessage | ICOMMENT-001 |

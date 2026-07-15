@@ -41,6 +41,19 @@ API both surface as `question` / `question.resolved` events with a structured pa
   permission reply. **Golden:** `internal/agent/claude_permissions.go` (resolved emit on any
   unpark), `internal/agent/opencode_questions.go` (`handleQuestionResolved`).
 
+- **[QST-004] (MUST — host)** The SSE stream is live-only, so the host **replays** still-
+  pending `question` events into every new subscription (global and per-session streams)
+  before the live tail. Clients need no recovery fetch — idempotent application by
+  `request_id` ([EVT-013]) absorbs the replay/live race. The snapshot is host-memory: it
+  tracks `question`/`question.resolved` through the relay and dies with the backend's event
+  stream (matching the real lifetime of a parked prompt). To keep replays from ever being
+  stale, the Claude backend auto-resolves a bypass question once the conversation moves past
+  it (a later assistant content block, or a user follow-up send).
+  **Golden:** `internal/host/service.go` (`trackPendingQuestion`/`PendingQuestionEvents`),
+  `internal/host/mux/events.go` + `mux/sessions.go` (replay on subscribe),
+  `internal/agent/claude.go` (`resolveMovedOnBypassQuestions`). **Conformance:**
+  `CONF-QUESTION-REPLAY`.
+
 The rules below remain normative for **plan review**, for **legacy clients** that predate the
 `question` event, and as the fallback when a question input fails to parse (no `question`
 event is emitted; the generic permission flow applies).
@@ -153,9 +166,11 @@ These capture intended direction; **none is normative yet.**
 1. **Plan as a first-class object.** Whether to give plans a typed event (vs. `ExitPlanMode`
    input on Claude / plain message on OpenCode) so plan-review UI is backend-uniform —
    the analogue of what the `question` event did for questions.
-2. **Question snapshot for late joiners.** Pending questions are SSE-only (same gap as
-   [INV-PENDING-PERM-GAP-001](08-invariants.md)); OpenCode's `question.list` could back a
-   recovery endpoint.
+2. **Permission replay.** [QST-004]'s replay-on-subscribe mechanism applied to pending
+   `permission` events would close [INV-PENDING-PERM-GAP-001](08-invariants.md) for every
+   client with zero client changes (needs care around deny cascades / multi-prompt queues).
+3. **Cross-restart question recovery.** The [QST-004] snapshot dies with the host process;
+   OpenCode's `question.list` could rehydrate its questions on backend open.
 
 When these are decided, add normative rules + conformance scenarios here and supersede the
 flagged mechanisms above per the [maintenance loop](README.md#maintenance).

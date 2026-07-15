@@ -526,6 +526,11 @@ func (b *ClaudeCodeBackend) Send(ctx context.Context, opts SendMessageOpts) erro
 		return fmt.Errorf("send prompt: %w", err)
 	}
 
+	// A user follow-up supersedes any question the agent was still waiting
+	// on in bypass mode (RespondQuestion's own answer-send already retired
+	// its question before dispatching).
+	b.resolveMovedOnBypassQuestions()
+
 	return nil
 }
 
@@ -1064,6 +1069,14 @@ func (b *ClaudeCodeBackend) handleContentBlockStart(event map[string]any) {
 		return
 	}
 
+	// Any new assistant content block means the conversation moved past a
+	// bypass question (the model got the auto-run tool result and continued);
+	// resolve it so clients — including ones that connect later and get the
+	// pending snapshot replayed — never see a stale card. A question's own
+	// block can't self-resolve: it registers at content_block_stop, after
+	// this start. Mirrors the mobile client's "moved on" heuristic.
+	b.resolveMovedOnBypassQuestions()
+
 	index := intFromAny(event["index"])
 	blockType, _ := block["type"].(string)
 
@@ -1174,6 +1187,30 @@ func (b *ClaudeCodeBackend) handleContentBlockStop(event map[string]any) {
 	}, false)
 
 	b.maybeEmitBypassQuestion(tb.partID, tb.tool, inputMap)
+}
+
+// resolveMovedOnBypassQuestions retires pending bypass questions once the
+// conversation has moved past them — a later assistant content block or a
+// user follow-up. Gated (viaPerm) prompts are exempt: they park the stream
+// and resolve through handleCanUseTool.
+func (b *ClaudeCodeBackend) resolveMovedOnBypassQuestions() {
+	b.mu.Lock()
+	var resolved []string
+	for id, q := range b.pendingQuestions {
+		if !q.viaPerm {
+			resolved = append(resolved, id)
+			delete(b.pendingQuestions, id)
+		}
+	}
+	b.mu.Unlock()
+
+	for _, id := range resolved {
+		b.emit(Event{
+			Type:      EventQuestionResolved,
+			Timestamp: time.Now(),
+			Data:      QuestionResolvedData{RequestID: id},
+		})
+	}
 }
 
 // maybeEmitBypassQuestion surfaces an AskUserQuestion as an EventQuestion when
