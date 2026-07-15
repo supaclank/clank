@@ -24,21 +24,21 @@ type voiceUnlistenResultMsg struct{ err error }
 type voiceAudioErrMsg struct{ err error }
 type voiceStartAndListenResultMsg struct{}
 
-func (m *InboxModel) startVoice() tea.Cmd                                            { return nil }
-func (m *InboxModel) stopVoice() tea.Cmd                                             { return nil }
-func (m *InboxModel) voiceListen() tea.Cmd                                           { return nil }
-func (m *InboxModel) voiceUnlisten() tea.Cmd                                         { return nil }
-func (m *InboxModel) cleanupVoice()                                                  {}
-func (m *InboxModel) handleVoiceEvent(_ agent.Event)                                 {}
-func (m *InboxModel) voiceInputBlocked() bool                                        { return false }
-func (m *InboxModel) voiceStartAndListen() tea.Cmd                                   { return nil }
-func (m *InboxModel) handleVoiceMsg(tea.Msg) (bool, tea.Model, tea.Cmd)              { return false, m, nil }
-func (m *InboxModel) handleVoiceKeyPress(tea.KeyPressMsg) (bool, tea.Cmd)            { return false, nil }
-func (m *InboxModel) handleVoiceKeyRelease(tea.KeyReleaseMsg) (bool, tea.Cmd)        { return false, nil }
-func (m *InboxModel) handleVoiceSSE(sessionEventMsg) bool                            { return false }
-func (m *InboxModel) overlayKittyWarning(base string) string                         { return base }
-func (m *InboxModel) voiceCleanupOnQuit() tea.Cmd                                    { return nil }
-func (m *InboxModel) passVoiceState()                                                {}
+func (m *InboxModel) startVoice() tea.Cmd                                     { return nil }
+func (m *InboxModel) stopVoice() tea.Cmd                                      { return nil }
+func (m *InboxModel) voiceListen() tea.Cmd                                    { return nil }
+func (m *InboxModel) voiceUnlisten() tea.Cmd                                  { return nil }
+func (m *InboxModel) cleanupVoice()                                           {}
+func (m *InboxModel) handleVoiceEvent(_ agent.Event)                          {}
+func (m *InboxModel) voiceInputBlocked() bool                                 { return false }
+func (m *InboxModel) voiceStartAndListen() tea.Cmd                            { return nil }
+func (m *InboxModel) handleVoiceMsg(tea.Msg) (bool, tea.Model, tea.Cmd)       { return false, m, nil }
+func (m *InboxModel) handleVoiceKeyPress(tea.KeyPressMsg) (bool, tea.Cmd)     { return false, nil }
+func (m *InboxModel) handleVoiceKeyRelease(tea.KeyReleaseMsg) (bool, tea.Cmd) { return false, nil }
+func (m *InboxModel) handleVoiceSSE(sessionEventMsg) bool                     { return false }
+func (m *InboxModel) overlayKittyWarning(base string) string                  { return base }
+func (m *InboxModel) voiceCleanupOnQuit() tea.Cmd                             { return nil }
+func (m *InboxModel) passVoiceState()                                         {}
 
 func voiceHeaderBadge(_ voiceState) string { return "" }
 func voiceHelpItem(_ voiceState) string    { return "" }

@@ -23,7 +23,7 @@ func taggedQuestionPart(partID, requestID string) agent.Part {
 				{
 					Text:        "Which auth method should we use?",
 					Header:      "Auth",
-					AllowCustom: true,
+					AllowCustom: func() *bool { b := true; return &b }(),
 					Options: []agent.QuestionOption{
 						{Label: "JWT", Description: "Stateless tokens"},
 						{Label: "Sessions"},

@@ -187,7 +187,7 @@ func (m *SessionViewModel) handleQuestionKey(msg tea.KeyPressMsg) (bool, tea.Cmd
 	}
 
 	maxCursor := len(q.Options) - 1
-	if q.AllowCustom {
+	if q.CustomAllowed() {
 		maxCursor = otherRow
 	}
 
@@ -203,14 +203,14 @@ func (m *SessionViewModel) handleQuestionKey(msg tea.KeyPressMsg) (bool, tea.Cmd
 		}
 		return true, nil
 	case "space", "x", " ":
-		if m.questionCursor == otherRow && q.AllowCustom {
+		if m.questionCursor == otherRow && q.CustomAllowed() {
 			m.startQuestionTyping()
 			return true, nil
 		}
 		m.toggleQuestionOption(q, m.questionCursor)
 		return true, nil
 	case "o":
-		if q.AllowCustom {
+		if q.CustomAllowed() {
 			m.startQuestionTyping()
 		}
 		return true, nil
@@ -447,7 +447,7 @@ func (m *SessionViewModel) renderQuestionCard(p *agent.Part) []string {
 	for idx, opt := range q.Options {
 		content = append(content, m.renderQuestionOption(idx, opt, sel[idx], q.MultiSelect, innerWidth)...)
 	}
-	if q.AllowCustom {
+	if q.CustomAllowed() {
 		cursor := "  "
 		if m.questionCursor == len(q.Options) {
 			cursor = "> "

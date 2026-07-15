@@ -11,11 +11,11 @@ import (
 func TestAssertOpencodeVersionsCompatible(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name              string
-		local, remote     string
-		wantWarn          bool
-		wantErr           bool
-		errContainsAny    []string // any of these substrings should be in the error
+		name           string
+		local, remote  string
+		wantWarn       bool
+		wantErr        bool
+		errContainsAny []string // any of these substrings should be in the error
 	}{
 		{
 			name:   "exact match",

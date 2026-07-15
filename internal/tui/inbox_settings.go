@@ -195,4 +195,3 @@ func persistDefaultBackend(bt agent.BackendType) {
 		p.DefaultBackend = string(bt)
 	})
 }
-
