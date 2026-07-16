@@ -803,6 +803,20 @@ type SessionDiscoverer interface {
 	DiscoverSessions(ctx context.Context, seedDir string) ([]SessionSnapshot, error)
 }
 
+// TranscriptReader is an optional interface for BackendManagers whose
+// session history lives in on-disk transcripts readable without a live
+// backend (Claude Code's JSONL). The host serves history through it when
+// no live backend is registered, so a pure read never spawns the agent
+// process. externalID is the backend's own session id; empty means the
+// session was never opened and yields (nil, nil), mirroring
+// SessionBackend.Messages before a session id exists.
+//
+// Backends whose history API needs a live server (opencode) deliberately
+// do NOT implement this — they keep the rehydrate-on-read behavior.
+type TranscriptReader interface {
+	ReadTranscript(ctx context.Context, workDir, externalID string) ([]MessageData, error)
+}
+
 // AllSessionDiscoverer is an optional interface for BackendManagers whose
 // underlying storage allows enumerating every historical session globally
 // (across all known projects) without first naming a seed directory.

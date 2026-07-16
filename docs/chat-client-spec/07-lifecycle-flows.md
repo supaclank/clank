@@ -147,6 +147,10 @@ C: GET /sessions/{id}/pending-permission          ── ⚠ returns [] today [O
    → does NOT recover a permission the session is blocked on (gap [INV-PENDING-PERM-GAP-001])
 ```
 
+The GETs are pure reads: they do not wake the agent or flip `status`, so a session at rest
+stays at its stored status until the user sends ([OP-010]). The stream (step 1) is the only
+liveness channel — subscribe before/alongside the fetches, never instead of them.
+
 - **[FLOW-RECONNECT-001] (MUST)** A client MUST run this reconcile after **every** stream
   (re)connection, not only the first, and MUST drive it from its own transport state — not
   from a `reconnected` event (that is the backend's link, [EVT-020]). Getting *back* to a
