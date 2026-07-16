@@ -947,7 +947,7 @@
     <button class="ib send" title="Send (Enter)">${ICONS.send}</button>
   </div>
   <input type="file" class="file" multiple style="display:none">
-  <div class="hint"><span><kbd>⇪ caps</kbd> talk</span><span><kbd>⇧</kbd> move</span><span><kbd>⌘</kbd> select</span><span><kbd>⌘E</kbd> toggle</span><span><kbd>Esc</kbd> hide</span></div>
+  <div class="hint"><span><kbd>⇪ caps</kbd> talk</span><span><kbd>⇧</kbd> move</span><span><kbd>⌘</kbd> select</span><span><kbd>⌘E</kbd> toggle</span></div>
 </div>
 <div class="hl"></div><div class="hll"></div>
 <div class="crop">
