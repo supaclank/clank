@@ -282,6 +282,7 @@ func resolveDataDir(dataDir string) (string, error) {
 // "unix:///path" URL) and serves the host API on it until
 // SIGINT/SIGTERM.
 func run(cfg runConfig) error {
+	procStart := time.Now()
 	lg := log.New(os.Stderr, "[clank-host] ", log.LstdFlags)
 
 	// The exit provider stops the process when idle; routing through a
@@ -395,6 +396,10 @@ func run(cfg runConfig) error {
 
 	serveErr := make(chan error, 1)
 	go func() {
+		// Startup duration on its own line: the "listening on" line is a
+		// parsed contract (LocalLauncher reads everything after
+		// "listening on " as the address) and must not grow suffixes.
+		lg.Printf("startup ready in %s", time.Since(procStart).Round(time.Millisecond))
 		// Print the actual bound address so parents that asked for
 		// port :0 (LocalLauncher) can read it from stderr.
 		lg.Printf("listening on %s://%s", kind, ln.Addr().String())

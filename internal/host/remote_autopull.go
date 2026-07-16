@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"time"
 )
 
 // startColdStartAutoPull kicks a one-shot best-effort fast-forward pass in
@@ -34,6 +35,13 @@ func (s *Service) coldStartAutoPull(ctx context.Context) {
 		s.log.Printf("cold-start auto-pull: list worktrees: %v", err)
 		return
 	}
+	if len(ids) == 0 {
+		return
+	}
+	// Timed because the pass runs git fetches during the cold-boot
+	// window, competing for the same disk/CPU as the first session open.
+	passStart := time.Now()
+	var pulled int
 	for _, id := range ids {
 		select {
 		case <-ctx.Done():
@@ -58,9 +66,12 @@ func (s *Service) coldStartAutoPull(ctx context.Context) {
 			continue
 		}
 		if res.FastForwarded {
+			pulled++
 			s.log.Printf("cold-start auto-pull: fast-forwarded %s", id)
 		}
 	}
+	s.log.Printf("cold-start auto-pull: done in %s (worktrees=%d fast-forwarded=%d)",
+		time.Since(passStart).Round(time.Millisecond), len(ids), pulled)
 }
 
 // materializedWorktreeIDs lists the worktree IDs present under
