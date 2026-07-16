@@ -91,6 +91,13 @@ func TestReadUpToLeavesOverflowBodyOpenUntilCallerCloses(t *testing.T) {
 // socket behind a real proxy Server, mirroring production topology.
 func startTestStack(t *testing.T, upstream http.Handler, daemon http.Handler) *Server {
 	t.Helper()
+	return startTestStackOpts(t, upstream, daemon, nil)
+}
+
+// startTestStackOpts is startTestStack with an Options hook applied
+// just before Start, for tests exercising non-default options.
+func startTestStackOpts(t *testing.T, upstream http.Handler, daemon http.Handler, mutate func(*Options)) *Server {
+	t.Helper()
 
 	up := httptest.NewServer(upstream)
 	t.Cleanup(up.Close)
@@ -113,12 +120,16 @@ func startTestStack(t *testing.T, upstream http.Handler, daemon http.Handler) *S
 	go dsrv.Serve(ln)
 	t.Cleanup(func() { dsrv.Close() })
 
-	s, err := Start(Options{
+	opts := Options{
 		UpstreamPort:     upPort,
 		DaemonSocketPath: sock,
 		Token:            "sekrit",
 		OverlayConfig:    map[string]any{"name": "app", "local_path": "/tmp/app"},
-	})
+	}
+	if mutate != nil {
+		mutate(&opts)
+	}
+	s, err := Start(opts)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}

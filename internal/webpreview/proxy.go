@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -60,9 +61,21 @@ type Options struct {
 	// optional session_id). Token and voice availability are added here.
 	OverlayConfig map[string]any
 
-	// Engine powers dictation; nil marks voice unavailable in the
-	// overlay config and 503s the voice endpoint.
+	// Engine powers local dictation; nil marks the local engine
+	// unavailable in the overlay config and 503s the voice endpoint.
+	// The overlay may still offer the browser's Web Speech API, which
+	// it detects client-side.
 	Engine Engine
+
+	// DictationEngine is the persisted engine choice injected into the
+	// overlay config. Empty means unchosen (the overlay asks on first
+	// dictation); anything else must parse via ParseDictationEngine.
+	DictationEngine DictationEngine
+
+	// PersistDictationEngine stores a choice made in the overlay's
+	// engine picker so it survives preview restarts. nil means choices
+	// only last for this run.
+	PersistDictationEngine func(DictationEngine) error
 
 	// ListenPort for the proxy on 127.0.0.1; 0 picks a free port.
 	ListenPort int
@@ -98,18 +111,34 @@ func Start(opts Options) (*Server, error) {
 		lg = log.Default()
 	}
 
-	cfg := map[string]any{}
-	for k, v := range opts.OverlayConfig {
-		cfg[k] = v
+	if opts.DictationEngine != "" {
+		if _, ok := ParseDictationEngine(string(opts.DictationEngine)); !ok {
+			return nil, fmt.Errorf("webpreview: unknown dictation engine %q", opts.DictationEngine)
+		}
 	}
+
+	cfg := map[string]any{}
+	maps.Copy(cfg, opts.OverlayConfig)
 	cfg["token"] = opts.Token
+	// Local engine availability only — Web Speech availability is a
+	// browser fact the overlay detects itself. The kind lets the picker
+	// name what "fully local" actually runs (Parakeet vs. a user command).
 	cfg["voice"] = opts.Engine != nil
-	cfgJSON, err := json.Marshal(cfg) // encoding/json escapes <,>,& — safe inside <script>
-	if err != nil {
+	cfg["voice_engine"] = localVoiceKind(opts.Engine)
+	if _, err := json.Marshal(cfg); err != nil { // validate caller values once, at Start
 		return nil, fmt.Errorf("webpreview: marshal overlay config: %w", err)
 	}
-	snippet := []byte("<script>window.__CLANK_PREVIEW = " + string(cfgJSON) + ";</script>\n" +
-		`<script type="module" src="/__clank/overlay.js"></script>`)
+	dictation := &dictationState{engine: opts.DictationEngine}
+	// Built per response, not once: the engine picker changes state
+	// mid-run and a reloaded page must see the current choice.
+	snippet := func() []byte {
+		m := make(map[string]any, len(cfg)+1)
+		maps.Copy(m, cfg)
+		m["dictation_engine"] = string(dictation.get())
+		cfgJSON, _ := json.Marshal(m) // encoding/json escapes <,>,& — safe inside <script>; validated above
+		return []byte("<script>window.__CLANK_PREVIEW = " + string(cfgJSON) + ";</script>\n" +
+			`<script type="module" src="/__clank/overlay.js"></script>`)
+	}
 
 	upstream := newUpstreamProxy(opts.UpstreamPort, snippet, lg)
 	daemon := newDaemonProxy(opts.DaemonSocketPath)
@@ -127,6 +156,8 @@ func Start(opts Options) (*Server, error) {
 			}
 			serveVoiceWS(w, r, opts.Engine, lg)
 		})))
+	mux.Handle("POST /__clank/voice/engine", requireToken(opts.Token,
+		handleSetDictationEngine(dictation, opts.PersistDictationEngine, lg)))
 	mux.Handle("/", upstream)
 
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", opts.ListenPort))
@@ -164,8 +195,9 @@ func (s *Server) Shutdown(ctx context.Context) {
 // newUpstreamProxy fronts the dev server and injects the overlay into
 // HTML responses. WebSocket upgrades (Vite HMR) pass through
 // httputil.ReverseProxy's native upgrade handling; ModifyResponse
-// guards on 200+text/html so 101s are untouched.
-func newUpstreamProxy(port int, snippet []byte, lg *log.Logger) *httputil.ReverseProxy {
+// guards on 200+text/html so 101s are untouched. snippet is invoked
+// per injected response (its config reflects live state).
+func newUpstreamProxy(port int, snippet func() []byte, lg *log.Logger) *httputil.ReverseProxy {
 	target := &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", port)}
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -198,7 +230,7 @@ func newUpstreamProxy(port int, snippet []byte, lg *log.Logger) *httputil.Revers
 				resp.Body = overflow
 				return nil
 			}
-			injected := injectHTML(body, snippet)
+			injected := injectHTML(body, snippet())
 			resp.Body = io.NopCloser(bytes.NewReader(injected))
 			resp.ContentLength = int64(len(injected))
 			resp.Header.Set("Content-Length", strconv.Itoa(len(injected)))

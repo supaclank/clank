@@ -139,6 +139,16 @@ type Preferences struct {
 	// Validate at the boundary via agent.ResolveBackendPreference.
 	DefaultBackend string `json:"default_backend,omitempty"`
 
+	// WebPreviewDictation is the dictation engine `clank preview`'s
+	// browser overlay uses: "local" (the clank-voice/exec engine on
+	// this machine) or "webspeech" (the browser's SpeechRecognition
+	// service, which typically uploads audio to the browser vendor).
+	// Empty means not chosen yet — the overlay asks on first dictation.
+	//
+	// Stored as a plain string (same reasoning as DefaultBackend);
+	// validated at the boundary via webpreview.ParseDictationEngine.
+	WebPreviewDictation string `json:"web_preview_dictation,omitempty"`
+
 	// SidebarWidthRatio is the sidebar width as a percentage of the terminal
 	// width, adjusted with +/- in the TUI. Zero means "use the built-in
 	// default" (defaultSidebarWidthRatio).

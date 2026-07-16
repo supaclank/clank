@@ -27,8 +27,12 @@ Boots (or reuses) the local clank daemon and serves this folder's app:
     proxy that injects the clank overlay, and opens your browser.
     Cmd/Ctrl+E summons the prompt box, holding Cmd/Ctrl points at
     elements to attach them as context, and tapping Caps Lock starts
-    and stops dictation (with a clank-voice install or
-    ` + "CLANK_VOICE_ASR_CMD" + `).
+    and stops dictation. On first dictation you pick the engine —
+    fully local (clank-voice running the ~670 MB NVIDIA Parakeet v3
+    model on your machine, or ` + "CLANK_VOICE_ASR_CMD" + `) or the
+    browser's Web Speech API (audio goes to the browser vendor's
+    speech service) — and can switch later via the chevron next to
+    the mic.
 
 A prompt is optional: pass one to also start an agent on this folder and
 watch it work in the preview. Pairing/proxy, the dev server, and the agent
