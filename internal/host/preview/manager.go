@@ -161,6 +161,7 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 		// (no path to respawn except an explicit /stop first).
 		if snap.State == StateReady || snap.State == StateStarting {
 			m.mu.Unlock()
+			existing.touch()
 			return snap, nil
 		}
 		delete(m.servers, key)
@@ -325,6 +326,7 @@ func (m *Manager) Status(_ context.Context, worktreeID, workDir string) (Status,
 	r, ok := m.servers[key]
 	m.mu.Unlock()
 	if ok {
+		r.touch()
 		return r.snapshot(), nil
 	}
 
@@ -400,11 +402,12 @@ func (m *Manager) reaperLoop() {
 // kill outside the lock so a long stopProcessGroup wait doesn't stall
 // other Start/Stop calls.
 //
-// NB: lastTouch is currently bumped only on Start (no per-request
-// touch since the gateway proxy lives one hop earlier). For v1 the
-// idle reaper effectively expires anything that's been up longer
-// than idleTimeout; we'll wire a per-request touch via a webhook
-// from the gateway once the multi-service shape lands.
+// NB: lastTouch is bumped at spawn and on control-plane reads (Status,
+// idempotent Start) — that's the CLI keepalive + phone polling. Actual
+// preview traffic doesn't touch: LAN Metro traffic never crosses the
+// daemon, and gateway-proxied requests terminate one hop earlier. A
+// per-request touch via a gateway webhook is still TODO for the cloud
+// path once the multi-service shape lands.
 func (m *Manager) reapIdle() {
 	cutoff := time.Now().Add(-m.idleTimeout)
 	type victim struct {

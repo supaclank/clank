@@ -20,6 +20,11 @@ import (
 	"github.com/acksell/clank/internal/host/preview"
 )
 
+// previewKeepaliveInterval paces the CLI's liveness pings against the
+// daemon's idle reaper (preview.DefaultIdleTimeout, 15m) — wide margin
+// so a couple of missed ticks never let a live preview get reaped.
+const previewKeepaliveInterval = 1 * time.Minute
+
 // runPreview serves the current folder's app for live preview and tears
 // everything down on interrupt (stopping the daemon only if it started
 // it). What "preview" means depends on what Detect finds:
@@ -105,6 +110,34 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 		sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer scancel()
 		_ = client.Preview(previewKey).Stop(sctx)
+	}()
+
+	// Keepalive: the daemon's idle reaper only sees control-plane reads —
+	// preview traffic itself never crosses it (LAN Metro is fetched
+	// directly; the web proxy below runs in this process). Re-issuing the
+	// idempotent Start marks the server live for as long as we're running.
+	// Registered after the Stop defer so LIFO tears this down first — a
+	// late tick must not respawn the server Stop just removed.
+	kaCtx, kaCancel := context.WithCancel(sigCtx)
+	kaDone := make(chan struct{})
+	go func() {
+		defer close(kaDone)
+		ticker := time.NewTicker(previewKeepaliveInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-kaCtx.Done():
+				return
+			case <-ticker.C:
+				tctx, tcancel := context.WithTimeout(kaCtx, 10*time.Second)
+				_, _ = client.Preview(previewKey).Start(tctx, projectDir) // best-effort; failures surface on the next user interaction
+				tcancel()
+			}
+		}
+	}()
+	defer func() {
+		kaCancel()
+		<-kaDone
 	}()
 
 	// A prompt is optional. If you pass one, kick the agent off now and
