@@ -217,7 +217,10 @@ func resolveRepoSlug(slug string) (resolvedRepo, error) {
 		// Moved or deleted folder — an honest 404, like a removed canonical.
 		return resolvedRepo{}, fmt.Errorf("%w: %q", ErrRepoNotFound, slug)
 	}
-	root, err := git.RepoRoot(path)
+	// Normalize to the main worktree root — the identity the listing
+	// mints — so a slug encoding a linked worktree's path addresses the
+	// same repo (and the same lock) as the listing's slug.
+	root, err := localCheckoutRoot(path)
 	if err != nil {
 		return resolvedRepo{}, fmt.Errorf("%w: %q", ErrRepoNotFound, slug)
 	}

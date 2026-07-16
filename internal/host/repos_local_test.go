@@ -61,12 +61,13 @@ func newLocalRepoService(t *testing.T, projectDirs ...string) *host.Service {
 }
 
 // localSlugFor mirrors the slug encoding so tests can address a
-// checkout the way clients do (base64url of the resolved root).
+// checkout the way clients do: base64url of the identity root, which
+// is the MAIN worktree's root (the same resolution discovery uses).
 func localSlugFor(t *testing.T, dir string) (slug, root string) {
 	t.Helper()
-	root, err := git.RepoRoot(dir)
+	root, err := git.MainWorktreeRoot(dir)
 	if err != nil {
-		t.Fatalf("RepoRoot(%s): %v", dir, err)
+		t.Fatalf("MainWorktreeRoot(%s): %v", dir, err)
 	}
 	return base64.RawURLEncoding.EncodeToString([]byte(root)), root
 }
@@ -83,6 +84,18 @@ func TestListRepos_DiscoversLocalCheckouts(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// A linked worktree of repoA, the way months of TUI sessions leave
+	// them behind — it must collapse into repoA, not list as its own
+	// repo (show-toplevel reports a worktree's own path as its root).
+	wtA := filepath.Join(t.TempDir(), "wt-side")
+	gitIn(t, repoA, "worktree", "add", "-b", "side", wtA)
+
+	// A bare repo (old sync-era mirror shape): not a checkout, skipped.
+	bareDir := filepath.Join(t.TempDir(), "mirror.git")
+	if out, err := exec.Command("git", "init", "--bare", bareDir).CombinedOutput(); err != nil {
+		t.Fatalf("init bare: %v\n%s", err, out)
+	}
+
 	plainDir := t.TempDir()                            // session outside any repo
 	goneDir := filepath.Join(t.TempDir(), "vanished")  // folder deleted since
 	workDir := filepath.Join(workRoot, "01WORKTREEXX") // canonical worktree — already listed via its repo
@@ -90,7 +103,9 @@ func TestListRepos_DiscoversLocalCheckouts(t *testing.T) {
 	svc := newLocalRepoService(t,
 		repoA,
 		repoA,                       // duplicate session on the same repo
+		wtA,                         // linked worktree — same repo as repoA
 		filepath.Join(repoB, "sub"), // subdir resolves to repoB's root
+		bareDir,
 		plainDir,
 		goneDir,
 		workDir,

@@ -20,6 +20,7 @@ package host
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -67,6 +68,23 @@ func localRepoPath(slug string) (string, bool) {
 	return p, true
 }
 
+// localCheckoutRoot resolves dir to the repo identity every local-
+// checkout flow keys on: the MAIN worktree's root. show-toplevel would
+// return a linked worktree's own path, so a repo the user has ten
+// worktrees of would list as ten repos — the main root collapses them
+// all into one. Bare repos (old sync mirrors, repo-first canonicals)
+// are rejected: a local checkout is by definition a work tree.
+func localCheckoutRoot(dir string) (string, error) {
+	root, err := git.MainWorktreeRoot(dir)
+	if err != nil {
+		return "", err
+	}
+	if fi, err := os.Stat(filepath.Join(root, ".git")); err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("%q is not a non-bare repo root", root)
+	}
+	return root, nil
+}
+
 // discoveredLocalRepos derives the local-checkout repo list from
 // session history: every session's project_dir, filtered to dirs that
 // still exist, sit outside ~/work (worktrees of canonicals are already
@@ -106,9 +124,12 @@ func (s *Service) discoveredLocalRepos(ctx context.Context) ([]RepoInfo, error) 
 		if _, statErr := os.Stat(dir); statErr != nil {
 			continue // folder is gone — stale session row, not a repo
 		}
-		root, rootErr := git.RepoRoot(dir)
+		root, rootErr := localCheckoutRoot(dir)
 		if rootErr != nil {
-			continue // sessions in non-repo scratch dirs aren't repos
+			continue // sessions in non-repo scratch dirs (or bare repos) aren't checkouts
+		}
+		if root == workRoot || strings.HasPrefix(root, workRoot+string(filepath.Separator)) {
+			continue // resolves into clank's own layout — not the user's
 		}
 		if rootSeen[root] {
 			continue
