@@ -9,6 +9,7 @@
 // Interaction model (mobile parity, hotkeys instead of shake):
 //   ⌘E / ⌃E        toggle the prompt box (shake analog)
 //   Caps Lock      tap: start dictation, tap again: stop & transcribe
+//                  (first use picks local vs Web Speech; ▾ by the mic switches)
 //   hold ⇧         the box glides to the cursor (spring), settles on release
 //   hold ⌘ / ⌃     momentary element-select; click tags, release exits
 //   Esc            leave inspect mode, else hide
@@ -95,10 +96,19 @@
     sessionId: sessionStorage.getItem('clank.sessionId') || CFG.session_id || '',
     lastUserMsgId: '',
     voice: 'idle', // idle | recording | transcribing (or 'off' when unavailable)
+    engine: CFG.dictation_engine || '', // '' (ask on first use) | 'local' | 'webspeech'
+    enginePick: false, // engine picker panel open
     sending: false,
     aborting: false,
   };
-  if (!CFG.voice) store.voice = 'off';
+  // Dictation engines. 'local' streams PCM to the preview process
+  // (CFG.voice = that engine exists); 'webspeech' is the browser's own
+  // SpeechRecognition, which sends audio to the browser vendor's
+  // service — never auto-picked: the user opts in via the picker, and
+  // the CLI persists the choice across preview runs.
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const LOCAL_VOICE = !!CFG.voice;
+  if (!LOCAL_VOICE && !SR) store.voice = 'off';
   if (store.sessionId) sessionStorage.setItem('clank.sessionId', store.sessionId);
   let doneTimer = 0;
 
@@ -599,7 +609,107 @@
     }
   };
 
-  // ---------- voice (push-to-talk) ----------------------------------------
+  // ---------- voice: engine choice -----------------------------------------
+  // usableEngine gates every dictation start. '' opens the picker: no
+  // stored choice yet, or the stored engine isn't available here (e.g.
+  // chose local, clank-voice missing this run) — never silently swap a
+  // "local only" choice for a cloud service.
+  const usableEngine = () => {
+    if (store.engine === 'local' && LOCAL_VOICE) return 'local';
+    if (store.engine === 'webspeech' && SR) return 'webspeech';
+    if (!store.engine && LOCAL_VOICE && !SR) return 'local'; // only the private option exists — nothing to ask
+    return '';
+  };
+  const ENGINE_LABEL = { local: 'fully local', webspeech: 'Web Speech API' };
+  let enginePickPending = false; // a talk gesture is waiting on the picker
+  const openEnginePick = (pending) => {
+    enginePickPending = pending;
+    store.enginePick = true;
+    if (store.box === 'hidden') store.box = 'prompt';
+    render();
+  };
+  const closeEnginePick = () => {
+    enginePickPending = false;
+    store.enginePick = false;
+    render();
+  };
+  const chooseEngine = (eng) => {
+    const wasPending = enginePickPending;
+    store.engine = eng;
+    // Persist for future preview runs. The switch itself is already
+    // live — a failed save only costs durability, so keep going.
+    fetch('/__clank/voice/engine', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ engine: eng }),
+    }).then((r) => { if (!r.ok) throw new Error('HTTP ' + r.status); })
+      .catch(() => toast('couldn’t save the choice — it applies to this preview only'));
+    closeEnginePick();
+    if (wasPending) startTalk();
+  };
+
+  // ---------- voice: Web Speech API engine ----------------------------------
+  // The browser's built-in recognizer, run entirely in-page: no
+  // worklet, nothing on the /__clank/voice socket — but audio is
+  // processed by the browser vendor's speech service, which is exactly
+  // why it's opt-in above.
+  let rec = null; // active recognition; non-null marks a webspeech utterance
+  const WEBSPEECH_ERRORS = {
+    'not-allowed': 'microphone permission denied',
+    'service-not-allowed': 'the browser blocked its speech service',
+    network: 'speech service unreachable (Web Speech needs network)',
+  };
+  const startWebSpeech = () => {
+    const r = new SR();
+    rec = r;
+    r.continuous = true; // ⇪ ends the utterance, not the first pause
+    r.interimResults = true; // live partials in the composer, local-engine parity
+    r.lang = navigator.language || 'en-US';
+    let text = '';
+    let failure = '';
+    r.onresult = (e) => {
+      // e.results is cumulative (finals + current interim) — the same
+      // utterance-so-far shape the local engine's partials have.
+      text = '';
+      for (const res of e.results) text += res[0].transcript;
+      text = text.trim();
+      if ((store.voice === 'recording' || store.voice === 'transcribing') && text) setComposer(withVoiceText(text));
+    };
+    r.onerror = (e) => {
+      // no-speech is just an empty utterance; aborted a deliberate stop.
+      if (e.error !== 'no-speech' && e.error !== 'aborted') failure = WEBSPEECH_ERRORS[e.error] || e.error;
+    };
+    // onend follows rec.stop(), every error, AND service-initiated ends
+    // (silence timeout mid-hold) — the single finalize point.
+    r.onend = () => {
+      if (rec !== r) return; // superseded — a newer utterance owns the state
+      rec = null;
+      if (store.voice !== 'recording' && store.voice !== 'transcribing') return;
+      store.voice = 'idle';
+      if (failure) {
+        setComposer(voiceBase);
+        toast('dictation: ' + failure);
+      } else if (text) {
+        setComposer(withVoiceText(text));
+        // Same post-dictation anchor as the local final: Enter sends.
+        if (root.activeElement !== ui.input) ui.box.focus({ preventScroll: true });
+      } else {
+        setComposer(voiceBase);
+        toast('didn’t catch any speech — try again');
+      }
+      render();
+    };
+    try {
+      r.start();
+    } catch (err) {
+      rec = null;
+      store.voice = 'idle';
+      toast('mic: ' + err.message);
+      render();
+    }
+  };
+
+  // ---------- voice (push-to-talk, local engine transport) ------------------
   let vws = null; // dictation WebSocket, opened lazily, reused
   let audio = null; // {ctx, stream, node}
   let voiceBase = ''; // input text at push-to-talk start; partials append after it
@@ -706,12 +816,15 @@
 
   const startTalk = () => {
     if (store.voice !== 'idle') return;
+    const eng = usableEngine();
+    if (!eng) { openEnginePick(true); return; } // first dictation, or the stored engine isn't available here
     store.voice = 'recording';
     voiceBase = ui.input.value;
+    render();
+    if (eng === 'webspeech') { startWebSpeech(); return; }
     capturingSince = 0;
     utterPeak = 0;
     clearTimeout(audioIdleReap); // in use — don't reap underneath the utterance
-    render();
     startingTalk = (async () => {
       await voiceWS();
       // The graph is suspended between utterances; verify it is actually
@@ -741,6 +854,7 @@
     if (store.voice !== 'recording') return;
     store.voice = 'transcribing';
     render();
+    if (rec) { rec.stop(); return; } // webspeech: its onend finalizes
     // The first utterance on a page pays the capture bring-up (mic
     // permission, worklet load). Ending before any audio flowed would
     // "transcribe" an empty utterance — wait for the bring-up, then
@@ -799,6 +913,7 @@
     shot: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/></svg>',
     close: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
     plus: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>',
+    chevron: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>',
     send: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>',
     stop: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="3"/></svg>',
     // 2×3 grid, 5px pitch on BOTH axes: adjacent dots equidistant, so
@@ -894,6 +1009,16 @@
   .mic.rec { color:#dc2626; background:#ef44441f; }
   .mic.rec::after { content:''; position:absolute; inset:-3px; border-radius:12px;
     border:2px solid rgba(220,38,38, calc(.25 + .75 * var(--lvl, 0))); }
+  .eng { width:18px; margin-left:-5px; color:#9ca3af; }
+  .engpick { margin:6px 12px; padding:8px 10px; border:1px solid #3b82f666; background:#3b82f60d; border-radius:10px; font-size:12px; }
+  .engpick .t { font-weight:600; margin-bottom:4px; }
+  .engpick .opt { all:unset; display:block; width:100%; box-sizing:border-box; cursor:pointer;
+    padding:6px 8px; border-radius:8px; border:1px solid transparent; }
+  .engpick .opt:hover:not([disabled]) { background:#00000008; }
+  .engpick .opt.cur { border-color:#3b82f6aa; background:#3b82f614; }
+  .engpick .opt[disabled] { opacity:.45; cursor:not-allowed; }
+  .engpick .opt b { display:block; font-weight:600; }
+  .engpick .opt .d { color:#6b7280; }
   .send { background:#111827; color:#fff; font-weight:700; }
   .send:hover { background:#000; }
   .send.stop { background:#ef4444; color:#fff; }
@@ -936,6 +1061,11 @@
     <div class="t"></div><div class="d"></div>
     <button class="allow">Allow</button><button class="deny">Deny</button>
   </div>
+  <div class="engpick" style="display:none">
+    <div class="t">How should dictation transcribe your voice?</div>
+    <button class="opt" data-eng="local"><b>Fully local</b><span class="d"></span></button>
+    <button class="opt" data-eng="webspeech"><b>Web Speech API</b><span class="d"></span></button>
+  </div>
   <textarea rows="1" placeholder="Ask anything…"></textarea>
   <div class="bar">
     <button class="ib att" title="Attach images (or paste into the box)">${ICONS.plus}</button>
@@ -943,6 +1073,7 @@
     <button class="ib sel" title="Select an element (hold ⌘)">${ICONS.select}</button>
     <span class="sp"></span>
     <button class="ib mic" title="Tap ⇪ to talk (or hold this button)">${ICONS.mic}</button>
+    <button class="ib eng" title="Dictation engine">${ICONS.chevron}</button>
     <span class="micLevel" style="display:none"></span>
     <button class="ib send" title="Send (Enter)">${ICONS.send}</button>
   </div>
@@ -963,6 +1094,7 @@
     box: $('.box'), name: $('.name'), st: $('.st'), chips: $('.chips'), chat: $('.chat'),
     perm: $('.perm'), permT: $('.perm .t'), permD: $('.perm .d'),
     input: $('textarea'), sel: $('.sel'), mic: $('.mic'), micLevel: $('.micLevel'),
+    eng: $('.eng'), engpick: $('.engpick'), engOpts: [...root.querySelectorAll('.engpick .opt')],
     send: $('.send'), hl: $('.hl'), hll: $('.hll'), toast: $('.toast'),
     shot: $('.shot'), att: $('.att'), file: $('.file'),
     crop: $('.crop'), cropDim: $('.crop-dim'), cropSel: $('.crop-sel'),
@@ -1055,6 +1187,13 @@
     ui.mic.style.display = store.voice === 'off' ? 'none' : '';
     ui.mic.classList.toggle('rec', store.voice === 'recording');
     ui.mic.innerHTML = store.voice === 'transcribing' ? '…' : ICONS.mic;
+    const eng = usableEngine();
+    ui.mic.title = 'Tap ⇪ to talk (or hold this button)' + (eng ? ' — ' + ENGINE_LABEL[eng] : '');
+    ui.eng.style.display = store.voice === 'off' ? 'none' : '';
+    ui.eng.title = 'Dictation engine' + (eng ? ': ' + ENGINE_LABEL[eng] : '');
+    ui.eng.classList.toggle('active', store.enginePick);
+    ui.engpick.style.display = store.enginePick ? '' : 'none';
+    ui.engOpts.forEach((b) => b.classList.toggle('cur', b.dataset.eng === store.engine));
 
     const busy = store.agent === 'thinking' || store.agent === 'working';
     ui.send.classList.toggle('stop', busy);
@@ -1065,7 +1204,11 @@
   // ---------- box visibility (mobile shake state machine, hotkey-driven) --
   const setBox = (s) => {
     store.box = s;
-    if (s === 'hidden') exitInspect();
+    if (s === 'hidden') {
+      exitInspect();
+      enginePickPending = false;
+      store.enginePick = false;
+    }
     render();
     // Focus the CONTAINER, not the composer: typing focus on summon
     // fights shift-move (editable targets opt out of it) and isn't
@@ -1474,6 +1617,30 @@
   ui.mic.addEventListener('pointerdown', (e) => { e.preventDefault(); startTalk(); });
   ui.mic.addEventListener('pointerup', stopTalk);
   ui.mic.addEventListener('pointerleave', stopTalk);
+  ui.eng.onclick = () => {
+    if (store.voice === 'recording' || store.voice === 'transcribing') return; // not mid-utterance
+    if (store.enginePick) closeEnginePick();
+    else openEnginePick(false);
+  };
+  // Engine picker copy. Availability is fixed for the page's lifetime,
+  // and the descriptions double as the consent text — name where the
+  // audio goes and what does the transcribing (CFG.voice_engine says
+  // which implementation backs the local path).
+  const LOCAL_DESC = {
+    sherpa: 'transcribed on this machine by the ~670 MB NVIDIA Parakeet v3 model — audio never leaves it',
+    exec: 'transcribed on this machine by your CLANK_VOICE_ASR_CMD command — audio never leaves it',
+  };
+  ui.engOpts.forEach((b) => {
+    const local = b.dataset.eng === 'local';
+    const avail = local ? LOCAL_VOICE : !!SR;
+    b.disabled = !avail;
+    b.querySelector('.d').textContent = local
+      ? (avail ? (LOCAL_DESC[CFG.voice_engine] || 'transcribed on this machine — audio never leaves it')
+        : 'unavailable — install clank-voice (runs the ~670 MB Parakeet v3 model locally) or set CLANK_VOICE_ASR_CMD, then restart the preview')
+      : (avail ? 'the browser’s speech service — audio is sent to your browser vendor (e.g. Google in Chrome, Apple in Safari)'
+        : 'not supported in this browser');
+    b.onclick = () => { if (!b.disabled) chooseEngine(b.dataset.eng); };
+  });
   $('.perm .allow').onclick = () => replyPermission(true);
   $('.perm .deny').onclick = () => replyPermission(false);
   ui.input.addEventListener('keydown', (e) => {
@@ -1639,7 +1806,8 @@
       return;
     }
     if (e.key === 'Escape') {
-      if (store.inspect) { e.preventDefault(); e.stopPropagation(); modInspect = false; exitInspect(); }
+      if (store.enginePick) { e.preventDefault(); e.stopPropagation(); closeEnginePick(); }
+      else if (store.inspect) { e.preventDefault(); e.stopPropagation(); modInspect = false; exitInspect(); }
       else if (store.box !== 'hidden') { e.preventDefault(); e.stopPropagation(); setBox('hidden'); }
     }
   }, true);

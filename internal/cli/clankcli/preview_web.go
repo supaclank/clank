@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/host"
 	"github.com/acksell/clank/internal/webpreview"
 )
@@ -42,11 +43,13 @@ func runWebPreview(sigCtx context.Context, projectDir, sockPath, sessionID, back
 		return sigCtx.Err()
 	}
 	srv, err := webpreview.Start(webpreview.Options{
-		UpstreamPort:     devPort,
-		DaemonSocketPath: sockPath,
-		Token:            token,
-		Engine:           engine,
-		ListenPort:       listenPort,
+		UpstreamPort:           devPort,
+		DaemonSocketPath:       sockPath,
+		Token:                  token,
+		Engine:                 engine,
+		DictationEngine:        loadDictationPreference(),
+		PersistDictationEngine: persistDictationPreference,
+		ListenPort:             listenPort,
 		OverlayConfig: map[string]any{
 			"hostname":   host.HostLocal,
 			"local_path": projectDir,
@@ -69,6 +72,35 @@ func runWebPreview(sigCtx context.Context, projectDir, sockPath, sessionID, back
 	<-sigCtx.Done()
 	fmt.Println("\nShutting down preview…")
 	return nil
+}
+
+// loadDictationPreference reads the overlay's persisted local-vs-
+// webspeech choice. Unreadable prefs or an unknown stored value degrade
+// to "unchosen" with a warning (the overlay asks again) — dictation
+// must never block the preview.
+func loadDictationPreference() webpreview.DictationEngine {
+	prefs, err := config.LoadPreferences()
+	if err != nil {
+		fmt.Println(styleWarn.Render("dictation choice reset (couldn't read preferences): " + err.Error()))
+		return ""
+	}
+	if prefs.WebPreviewDictation == "" {
+		return ""
+	}
+	dictation, ok := webpreview.ParseDictationEngine(prefs.WebPreviewDictation)
+	if !ok {
+		fmt.Println(styleWarn.Render(fmt.Sprintf("dictation choice reset (unknown web_preview_dictation %q in preferences)", prefs.WebPreviewDictation)))
+		return ""
+	}
+	return dictation
+}
+
+// persistDictationPreference stores the overlay picker's choice for
+// future preview runs.
+func persistDictationPreference(engine webpreview.DictationEngine) error {
+	return config.UpdatePreferences(func(p *config.Preferences) {
+		p.WebPreviewDictation = string(engine)
+	})
 }
 
 // resolveVoiceEngine picks the dictation engine for this preview:
@@ -152,9 +184,10 @@ func printWebPreviewBanner(url string, engine webpreview.Engine) {
 	fmt.Println("    ⌘E / Ctrl+E   summon / hide the prompt box (tap its header for chat)")
 	fmt.Println("    hold ⌘ or ⌃   point at elements to attach them as context")
 	if engine != nil {
-		fmt.Println("    ⇪ caps lock   tap to talk, tap again to transcribe " + styleDim.Render("("+engine.Describe()+")"))
+		fmt.Println("    ⇪ caps lock   tap to talk, tap again to transcribe " + styleDim.Render("(local: "+engine.Describe()+")"))
 	} else {
-		fmt.Println(styleDim.Render("    voice off — install clank-voice (voice-engine/) or set " + webpreview.EngineEnvVar))
+		fmt.Println("    ⇪ caps lock   tap to talk, tap again to transcribe " + styleDim.Render("(browser Web Speech API, where supported — audio goes to the browser vendor)"))
+		fmt.Println(styleDim.Render("                  install clank-voice (voice-engine/) or set " + webpreview.EngineEnvVar + " for fully-local dictation"))
 	}
 	fmt.Println()
 	fmt.Println("Press Ctrl+C to stop the preview and shut everything down.")

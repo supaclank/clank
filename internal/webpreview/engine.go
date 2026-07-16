@@ -81,6 +81,30 @@ type Session interface {
 	Close() error
 }
 
+// Local-engine kinds injected as overlay config "voice_engine".
+// overlay.js keys its "Fully local" picker copy off these values —
+// naming the bundled Parakeet model for the sherpa engine vs. the
+// user's own command for exec.
+const (
+	localVoiceKindSherpa = "sherpa"
+	localVoiceKindExec   = "exec"
+)
+
+// localVoiceKind classifies the engine behind the local dictation
+// path for the overlay config. Empty for nil (voice off) and for
+// custom Engine implementations, which get the overlay's generic
+// "on this machine" wording.
+func localVoiceKind(e Engine) string {
+	switch e.(type) {
+	case *SherpaEngine:
+		return localVoiceKindSherpa
+	case *ExecEngine:
+		return localVoiceKindExec
+	default:
+		return ""
+	}
+}
+
 // EngineFromEnv returns the exec-command engine configured via
 // EngineEnvVar, or nil when unset.
 func EngineFromEnv() Engine {
