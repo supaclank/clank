@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/git"
@@ -46,12 +47,17 @@ func newLocalRepoService(t *testing.T, projectDirs ...string) *host.Service {
 		SessionsStore: st,
 	})
 	t.Cleanup(svc.Shutdown)
+	// Explicit increasing timestamps: recency ordering must be
+	// deterministic, and same-millisecond seeds would tie-break
+	// arbitrarily.
+	base := time.Now().Add(-time.Hour)
 	for i, dir := range projectDirs {
 		info := agent.SessionInfo{
-			ID:      "01SESSION" + string(rune('A'+i)),
-			Backend: agent.BackendOpenCode,
-			Status:  agent.StatusIdle,
-			GitRef:  agent.GitRef{LocalPath: dir},
+			ID:        "01SESSION" + string(rune('A'+i)),
+			Backend:   agent.BackendOpenCode,
+			Status:    agent.StatusIdle,
+			GitRef:    agent.GitRef{LocalPath: dir},
+			UpdatedAt: base.Add(time.Duration(i) * time.Second),
 		}
 		if err := st.UpsertSession(context.Background(), info); err != nil {
 			t.Fatalf("seed session for %s: %v", dir, err)
@@ -61,13 +67,18 @@ func newLocalRepoService(t *testing.T, projectDirs ...string) *host.Service {
 }
 
 // localSlugFor mirrors the slug encoding so tests can address a
-// checkout the way clients do: base64url of the identity root, which
-// is the MAIN worktree's root (the same resolution discovery uses).
+// checkout the way clients do: base64url of the identity root — the
+// MAIN worktree's root, symlink-resolved (the same resolution
+// discovery uses).
 func localSlugFor(t *testing.T, dir string) (slug, root string) {
 	t.Helper()
 	root, err := git.MainWorktreeRoot(dir)
 	if err != nil {
 		t.Fatalf("MainWorktreeRoot(%s): %v", dir, err)
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%s): %v", root, err)
 	}
 	return base64.RawURLEncoding.EncodeToString([]byte(root)), root
 }
@@ -117,6 +128,13 @@ func TestListRepos_DiscoversLocalCheckouts(t *testing.T) {
 	}
 	if len(repos) != 2 {
 		t.Fatalf("repos = %d (%+v), want 2 discovered checkouts", len(repos), repos)
+	}
+
+	// Recency order (IDE recents): repoB's session was seeded last, so
+	// it's the most recently updated and must list first.
+	_, wantFirst := localSlugFor(t, repoB)
+	if repos[0].Path != wantFirst {
+		t.Errorf("repos[0].Path = %q, want most-recently-used %q", repos[0].Path, wantFirst)
 	}
 
 	byPath := map[string]host.RepoInfo{}

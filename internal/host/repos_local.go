@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 
@@ -69,15 +68,21 @@ func localRepoPath(slug string) (string, bool) {
 }
 
 // localCheckoutRoot resolves dir to the repo identity every local-
-// checkout flow keys on: the MAIN worktree's root. show-toplevel would
-// return a linked worktree's own path, so a repo the user has ten
-// worktrees of would list as ten repos — the main root collapses them
-// all into one. Bare repos (old sync mirrors, repo-first canonicals)
-// are rejected: a local checkout is by definition a work tree.
+// checkout flow keys on: the MAIN worktree's root, symlink-resolved.
+// show-toplevel would return a linked worktree's own path, so a repo
+// the user has ten worktrees of would list as ten repos — the main
+// root collapses them all into one — and symlink resolution keeps two
+// spellings of one folder (/tmp vs /private/tmp on macOS) from listing
+// twice. Bare repos (old sync mirrors, repo-first canonicals) are
+// rejected: a local checkout is by definition a work tree.
 func localCheckoutRoot(dir string) (string, error) {
 	root, err := git.MainWorktreeRoot(dir)
 	if err != nil {
 		return "", err
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve symlinks: %w", err)
 	}
 	if fi, err := os.Stat(filepath.Join(root, ".git")); err != nil || !fi.IsDir() {
 		return "", fmt.Errorf("%q is not a non-bare repo root", root)
@@ -137,7 +142,9 @@ func (s *Service) discoveredLocalRepos(ctx context.Context) ([]RepoInfo, error) 
 		rootSeen[root] = true
 		roots = append(roots, root)
 	}
-	sort.Strings(roots)
+	// roots is already in the order clients want: sessions arrive
+	// most-recently-updated first, so first-seen == most recently used
+	// (IDE-recents ordering). Do not re-sort.
 
 	// Each root spawns several git subprocesses (localRepoInfoFor) —
 	// run them concurrently so listing latency is one round-trip, not
