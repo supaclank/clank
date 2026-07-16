@@ -128,6 +128,18 @@ func repoLabelFor(gitDir string) string {
 	return fallback
 }
 
+// repoDisplayLabel derives a repo's display label the way its shape
+// requires: repoLabelFor's canonical-slug fallback for a
+// <slug>/repo.git bare canonical, or repolabel.ComputeRepoLabel's
+// repo-basename fallback for a local checkout, whose gitDir IS the
+// checkout root rather than a canonical's parent-slug layout.
+func repoDisplayLabel(gitDir string, localCheckout bool) string {
+	if localCheckout {
+		return repolabel.ComputeRepoLabel(gitDir)
+	}
+	return repoLabelFor(gitDir)
+}
+
 // credentialHelperValue renders the persistent credential.helper config
 // value pointing at this binary's git-credential subcommand, or "" (with
 // a log line) when the executable can't be resolved — canonicals then

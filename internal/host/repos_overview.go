@@ -106,7 +106,7 @@ func (s *Service) RepoOverview(ctx context.Context, slug string, fetch bool) (Re
 	origin := repoOriginFor(gitDir)
 	result := RepoOverviewResult{
 		Slug:     repo.slug,
-		Label:    repoLabelFor(gitDir),
+		Label:    repoDisplayLabel(gitDir, repo.localCheckout),
 		Origin:   origin,
 		Branches: []RepoBranchOverview{},
 	}

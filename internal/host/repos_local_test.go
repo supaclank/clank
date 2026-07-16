@@ -402,3 +402,48 @@ func TestRepoOverview_LocalCheckout(t *testing.T) {
 		t.Errorf("branches = %v, want the user's real refs/heads (main, wip)", branches)
 	}
 }
+
+func TestRepoOverview_LocalCheckoutNoOriginLabelsByRepoName(t *testing.T) {
+	// Not parallel: SetWorkRootForTest mutates a global.
+	workRoot := filepath.Join(t.TempDir(), "work")
+	prev := host.SetWorkRootForTest(workRoot)
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
+
+	// Greenfield local repo, no origin yet. repoLabelFor's fallback
+	// (parent-dir name, correct for a canonical's <slug>/repo.git
+	// shape) must not leak into a checkout's label — a checkout's
+	// gitDir IS the repo root, so the parent dir is the OWNER, not the
+	// repo. Same shape ListRepos already labels correctly via
+	// repolabel.ComputeRepoLabel.
+	source := filepath.Join(t.TempDir(), "acme", "widget")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, source, "init", "-b", "main")
+	gitIn(t, source, "config", "user.email", "t@t")
+	gitIn(t, source, "config", "user.name", "T")
+	if err := os.WriteFile(filepath.Join(source, "README"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, source, "add", ".")
+	gitIn(t, source, "commit", "-m", "initial")
+
+	svc := newLocalRepoService(t, source)
+	slug, _ := localSlugFor(t, source)
+
+	overview, err := svc.RepoOverview(context.Background(), slug, false)
+	if err != nil {
+		t.Fatalf("RepoOverview: %v", err)
+	}
+	if overview.Label != "widget" {
+		t.Errorf("label = %q, want %q (repo basename, not parent/owner dir)", overview.Label, "widget")
+	}
+
+	forked, err := svc.CreateRepoWorktree(context.Background(), slug, host.RepoWorktreeRequest{BaseBranch: "main"})
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	if forked.OriginRepo != "widget" {
+		t.Errorf("fork OriginRepo = %q, want %q", forked.OriginRepo, "widget")
+	}
+}
