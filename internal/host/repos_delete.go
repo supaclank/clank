@@ -27,12 +27,16 @@ import (
 // removeLinkedWorktree — the same order DeleteWorktree uses, so the
 // two can't ABBA-deadlock.
 func (s *Service) DeleteRepo(ctx context.Context, slug string) error {
-	gitDir, err := resolveRepoSlug(slug)
+	repo, err := resolveRepoSlug(slug)
 	if err != nil {
 		return err
 	}
+	if repo.localCheckout {
+		return fmt.Errorf("%w: %s", ErrCannotDeleteLocalCheckout, repo.gitDir)
+	}
+	gitDir := repo.gitDir
 
-	defer s.lockRepo(slug)()
+	defer s.lockRepo(repo.slug)()
 
 	worktrees, err := git.ListWorktrees(gitDir)
 	if err != nil {

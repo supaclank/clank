@@ -71,7 +71,7 @@ func (s *Service) CreateProjectFromTemplate(ctx context.Context, cloneURL, githu
 		return CreateWorktreeResult{}, err
 	}
 
-	result, err := s.addRepoWorktree(ctx, slug, gitDir, projectInitialBranch, name)
+	result, err := s.addRepoWorktree(ctx, slug, gitDir, false, projectInitialBranch, name)
 	if err != nil {
 		if rmErr := os.RemoveAll(filepath.Dir(gitDir)); rmErr != nil {
 			s.log.Printf("warning: rollback canonical %s: %v", gitDir, rmErr)

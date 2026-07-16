@@ -70,4 +70,15 @@ var (
 	// template_clone_failed response so clients see an actionable error
 	// instead of a masked 502.
 	ErrTemplateCloneFailed = errors.New("host: template clone failed")
+
+	// ErrCannotDeleteLocalCheckout is returned when DeleteRepo names a
+	// discovered local checkout. The user's own folders are never
+	// clank's to delete — only ~/work/repos canonicals are.
+	ErrCannotDeleteLocalCheckout = errors.New("host: repo is a checkout owned by the user, not clank; refusing to delete")
+
+	// ErrBranchCheckedOutElsewhere is returned when loading a branch
+	// that is checked out in a worktree clank does not manage (a local
+	// checkout's primary worktree, or one the user added by hand). Git
+	// allows a branch in at most one worktree; fork off it instead.
+	ErrBranchCheckedOutElsewhere = errors.New("host: branch is checked out in a worktree clank does not manage; fork off it instead")
 )
