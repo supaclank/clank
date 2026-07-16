@@ -16,6 +16,8 @@
 //   ⛶ (toolbar)    grab a screenshot area — freeze a tab capture, crop
 //                  it (mobile ScreenshotCropOverlay parity), and stage
 //                  the PNG as an image attachment on the next send
+//   paste / +      paste an image into the box (or pick local files
+//                  via the + button) to stage it the same way
 //
 // Element → source resolution prefers deterministic compiler metadata:
 // Svelte dev mode stamps every node with __svelte_meta.loc; React ≤18
@@ -86,7 +88,7 @@
     inspect: false,
     crop: false, // screenshot crop layer is up
     chips: [], // [{label, detail, html, names}]
-    shots: [], // staged screenshot crops [{dataURL, w, h}]
+    images: [], // staged image attachments [{dataURL, mime, filename, label, w, h}]
     msgs: [], // [{role, text}]
     streamText: '', // in-flight assistant text
     permission: null, // {request_id, tool, description}
@@ -390,7 +392,7 @@
   };
 
   const buildContext = () => {
-    if (!store.chips.length && !recentErrors.length && !store.shots.length) return '';
+    if (!store.chips.length && !recentErrors.length && !store.images.length) return '';
     const lines = ['', '', '--- clank preview context (auto-attached by the web overlay) ---'];
     if (store.chips.length) {
       lines.push('Selected elements:');
@@ -399,8 +401,10 @@
         lines.push(`   html: ${c.html}`);
       });
     }
-    if (store.shots.length) {
-      lines.push(`Attached screenshots: ${store.shots.length} — area grabs of the page as currently rendered.`);
+    if (store.images.length) {
+      const names = store.images.map((s) => s.filename);
+      const grabNote = names.includes('screenshot.png') ? ' (screenshot.png = an area grab of the page as currently rendered)' : '';
+      lines.push(`Attached images: ${names.join(', ')}${grabNote}.`);
     }
     lines.push(`Route: ${location.pathname}${location.search}`);
     lines.push(`Viewport: ${innerWidth}x${innerHeight}`);
@@ -417,19 +421,15 @@
     const text = ui.input.value.trim();
     if (!text || store.sending) return;
     const full = text + buildContext();
-    // Staged crops ride as inline data: attachments — resolveAttachments
+    // Staged images ride as inline data: attachments — resolveAttachments
     // decodes them daemon-side, so no upload service is needed here.
-    const attachments = store.shots.map((s, i) => ({
-      mime: 'image/png',
-      filename: store.shots.length > 1 ? `screenshot-${i + 1}.png` : 'screenshot.png',
-      source: s.dataURL,
-    }));
+    const attachments = store.images.map((s) => ({ mime: s.mime, filename: s.filename, source: s.dataURL }));
     store.sending = true;
     store.msgs.push({ role: 'user', text });
     store.streamText = '';
     setComposer('');
     store.chips = [];
-    store.shots = [];
+    store.images = [];
     setAgent('thinking');
     try {
       if (!store.sessionId) {
@@ -798,6 +798,7 @@
     // viewfinder corner brackets — mobile PromptIcons.ScreenCapture
     shot: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/></svg>',
     close: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+    plus: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>',
     send: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>',
     stop: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="3"/></svg>',
     // 2×3 grid, 5px pitch on BOTH axes: adjacent dots equidistant, so
@@ -888,11 +889,12 @@
   .ib.active { background:#3b82f61f; color:#2563eb; }
   .ib[disabled] { opacity:.35; cursor:not-allowed; }
   .ib svg { pointer-events:none; display:block; }
+  .sp { flex:1; }
   .mic { position:relative; }
   .mic.rec { color:#dc2626; background:#ef44441f; }
   .mic.rec::after { content:''; position:absolute; inset:-3px; border-radius:12px;
     border:2px solid rgba(220,38,38, calc(.25 + .75 * var(--lvl, 0))); }
-  .send { margin-left:auto; background:#111827; color:#fff; font-weight:700; }
+  .send { background:#111827; color:#fff; font-weight:700; }
   .send:hover { background:#000; }
   .send.stop { background:#ef4444; color:#fff; }
   .hint { font-size:10px; color:#9ca3af; display:flex; justify-content:center; gap:14px; padding:0 8px 7px; flex-wrap:wrap; }
@@ -936,12 +938,15 @@
   </div>
   <textarea rows="1" placeholder="Ask anything…"></textarea>
   <div class="bar">
-    <button class="ib shot" title="Grab a screenshot area">${ICONS.shot}</button>
     <button class="ib sel" title="Select an element (hold ⌘)">${ICONS.select}</button>
+    <button class="ib att" title="Attach images (or paste into the box)">${ICONS.plus}</button>
+    <span class="sp"></span>
+    <button class="ib shot" title="Grab a screenshot area">${ICONS.shot}</button>
     <button class="ib mic" title="Tap ⇪ to talk (or hold this button)">${ICONS.mic}</button>
     <span class="micLevel" style="display:none"></span>
     <button class="ib send" title="Send (Enter)">${ICONS.send}</button>
   </div>
+  <input type="file" class="file" multiple style="display:none">
   <div class="hint"><span><kbd>⇪ caps</kbd> talk</span><span><kbd>⇧</kbd> move</span><span><kbd>⌘</kbd> select</span><span><kbd>⌘E</kbd> toggle</span><span><kbd>Esc</kbd> hide</span></div>
 </div>
 <div class="hl"></div><div class="hll"></div>
@@ -959,7 +964,8 @@
     perm: $('.perm'), permT: $('.perm .t'), permD: $('.perm .d'),
     input: $('textarea'), sel: $('.sel'), mic: $('.mic'), micLevel: $('.micLevel'),
     send: $('.send'), hl: $('.hl'), hll: $('.hll'), toast: $('.toast'),
-    shot: $('.shot'), crop: $('.crop'), cropDim: $('.crop-dim'), cropSel: $('.crop-sel'),
+    shot: $('.shot'), att: $('.att'), file: $('.file'),
+    crop: $('.crop'), cropDim: $('.crop-dim'), cropSel: $('.crop-sel'),
     cropBar: $('.crop-bar'), cropAdd: $('.crop-add'), cropX: $('.crop-bar .crop-x'), cropX0: $('.crop-x0'),
   };
   ui.name.textContent = CFG.name || 'clank';
@@ -1009,17 +1015,17 @@
       el.append(b, x);
       ui.chips.appendChild(el);
     });
-    store.shots.forEach((s, i) => {
+    store.images.forEach((s, i) => {
       const el = document.createElement('span');
       el.className = 'chip';
-      el.title = `screenshot ${s.w}×${s.h}`;
+      el.title = `${s.label} ${s.w}×${s.h}`;
       const img = document.createElement('img');
       img.src = s.dataURL;
       const b = document.createElement('b');
-      b.textContent = 'screenshot';
+      b.textContent = s.label;
       const x = document.createElement('button');
       x.textContent = '✕';
-      x.onclick = () => { store.shots.splice(i, 1); render(); };
+      x.onclick = () => { store.images.splice(i, 1); render(); };
       el.append(img, b, x);
       ui.chips.appendChild(el);
     });
@@ -1129,6 +1135,31 @@
     render();
   };
 
+  // ---------- image attachments ---------------------------------------------
+  // Staged images (screenshot crops, pasted images, picked files) ride
+  // the next send as inline data: attachments.
+  const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']; // pkg/images.AllowedMimes
+  const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // daemon-side per-image cap
+  const ATTACH_MAX_COUNT = 6; // mobile MAX_ATTACHMENTS
+  ui.file.accept = IMAGE_MIMES.join(',');
+
+  const stageImageFile = (file) => {
+    if (store.images.length >= ATTACH_MAX_COUNT) { toast(`max ${ATTACH_MAX_COUNT} images per message`); return; }
+    if (!IMAGE_MIMES.includes(file.type)) { toast(`can't attach ${file.type || file.name || 'that'} — images only`); return; }
+    if (file.size > MAX_IMAGE_BYTES) { toast(`${file.name || 'image'} is too large (5 MB max)`); return; }
+    const rd = new FileReader();
+    rd.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const name = file.name || 'pasted-image';
+        store.images.push({ dataURL: rd.result, mime: file.type, filename: name, label: name, w: img.naturalWidth, h: img.naturalHeight });
+        render();
+      };
+      img.src = rd.result;
+    };
+    rd.readAsDataURL(file);
+  };
+
   // ---------- screenshot area grab -----------------------------------------
   // Mobile ScreenshotCropOverlay parity: capture first (frozen bitmap),
   // then crop on top of it. The bitmap is stretched to the viewport
@@ -1136,51 +1167,103 @@
   const SHOT_MIN_SIZE = 48; // mobile MIN_SIZE_DP
   const SHOT_HANDLE_HIT = 32; // mobile HANDLE_TOUCH_DP
   const SHOT_MAX_EDGE = 2000; // keep PNGs under the daemon's 5 MiB image cap
-  const SHOT_MAX_COUNT = 6; // mobile MAX_ATTACHMENTS
   let shotCanvas = null; // frozen tab bitmap being cropped
   let cropSel = null; // selection {x,y,w,h} in viewport px
   let cropDrag = null; // {mode, sx, sy, orig}
 
+  // The browser prompts on EVERY getDisplayMedia call — there is no
+  // persistent grant — so the stream from the first Allow is kept warm
+  // and re-grabbed from directly. Only the first grab per page prompts;
+  // the browser shows its tab-sharing indicator while warm, and ending
+  // the share there just means the next grab prompts once again.
+  let shotStream = null;
+  let shotVideo = null; // stays playing so a warm grab is one drawImage
+
+  const shotAlive = () => !!shotStream && shotStream.getVideoTracks().some((t) => t.readyState === 'live');
+  const dropShotStream = () => {
+    if (shotStream) shotStream.getTracks().forEach((t) => t.stop());
+    shotStream = null;
+    shotVideo = null;
+  };
+
+  // Wait for a composited frame, but never trust rVFC alone — it can
+  // stay silent for an off-DOM video whose frames still draw fine — so
+  // a settle timeout unblocks either way (mobile's 48ms analog).
+  const awaitFrame = (video, ms) =>
+    new Promise((r) => {
+      if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(() => r());
+      setTimeout(r, ms);
+    });
+
+  const grabFrame = async () => {
+    await awaitFrame(shotVideo, 300);
+    if (!shotVideo.videoWidth) return null;
+    const c = document.createElement('canvas');
+    c.width = shotVideo.videoWidth;
+    c.height = shotVideo.videoHeight;
+    c.getContext('2d').drawImage(shotVideo, 0, 0);
+    return c;
+  };
+
+  // A dead capture path (rotted while backgrounded) delivers pure-black
+  // or transparent frames; real page pixels essentially never do.
+  const isDeadFrame = (src) => {
+    const t = document.createElement('canvas');
+    t.width = 8;
+    t.height = 8;
+    const g = t.getContext('2d');
+    g.drawImage(src, 0, 0, 8, 8);
+    const d = g.getImageData(0, 0, 8, 8).data;
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i + 3] !== 0 && (d[i] || d[i + 1] || d[i + 2])) return false;
+    }
+    return true;
+  };
+
+  const acquireShotStream = async () => {
+    // preferCurrentTab: Chromium's picker offers just this tab — the
+    // closest the web gets to mobile's window PixelCopy.
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: false,
+      preferCurrentTab: true,
+      selfBrowserSurface: 'include',
+    });
+    const video = document.createElement('video');
+    video.srcObject = stream;
+    video.muted = true;
+    await video.play();
+    // The user can end the share from the browser's own UI at any time.
+    stream.getVideoTracks().forEach((t) => (t.onended = () => { if (shotStream === stream) dropShotStream(); }));
+    shotStream = stream;
+    shotVideo = video;
+  };
+
   const beginShot = async () => {
     if (store.crop) return;
-    if (store.shots.length >= SHOT_MAX_COUNT) { toast(`max ${SHOT_MAX_COUNT} screenshots per message`); return; }
+    if (store.images.length >= ATTACH_MAX_COUNT) { toast(`max ${ATTACH_MAX_COUNT} images per message`); return; }
     exitInspect();
     // Keep the overlay out of the shot (mobile hides its overlay view
     // before PixelCopy).
     host.style.visibility = 'hidden';
-    let stream;
     try {
-      // preferCurrentTab: Chromium's picker offers just this tab — the
-      // closest the web gets to mobile's window PixelCopy.
-      stream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: false,
-        preferCurrentTab: true,
-        selfBrowserSurface: 'include',
-      });
-      const video = document.createElement('video');
-      video.srcObject = stream;
-      video.muted = true;
-      await video.play();
-      // The first frames can be blank; prefer a real composited frame
-      // but never trust rVFC alone — it can stall for an off-DOM video —
-      // so a settle timeout unblocks either way (mobile's 48ms analog).
-      await new Promise((r) => {
-        if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(() => r());
-        setTimeout(r, 300);
-      });
-      const c = document.createElement('canvas');
-      c.width = video.videoWidth;
-      c.height = video.videoHeight;
-      c.getContext('2d').drawImage(video, 0, 0);
+      let c = shotAlive() ? await grabFrame() : null;
+      if (!c || isDeadFrame(c)) {
+        // No warm stream, or it rotted — (re)acquire; this is the only
+        // path that shows the browser's share prompt.
+        dropShotStream();
+        await acquireShotStream();
+        c = await grabFrame();
+      }
+      if (!c) throw new Error('capture produced no frame');
       shotCanvas = c;
     } catch (err) {
       // NotAllowedError = the user dismissed the share picker; not an error.
       if (!err || err.name !== 'NotAllowedError') toast('screenshot failed: ' + (err && err.message));
+      dropShotStream();
       shotCanvas = null;
       return;
     } finally {
-      if (stream) stream.getTracks().forEach((t) => t.stop());
       host.style.visibility = '';
     }
     store.crop = true;
@@ -1208,12 +1291,15 @@
     const sy = shotCanvas.height / innerHeight;
     const cw = Math.round(cropSel.w * sx);
     const ch = Math.round(cropSel.h * sy);
+    // A zero/non-finite crop (zero-sized viewport, collapsed selection)
+    // would silently stage an empty "data:" attachment — refuse instead.
+    if (!isFinite(cw) || !isFinite(ch) || cw < 1 || ch < 1) { toast('empty selection — try again'); return; }
     const scale = Math.min(1, SHOT_MAX_EDGE / Math.max(cw, ch));
     const out = document.createElement('canvas');
     out.width = Math.max(1, Math.round(cw * scale));
     out.height = Math.max(1, Math.round(ch * scale));
     out.getContext('2d').drawImage(shotCanvas, cropSel.x * sx, cropSel.y * sy, cw, ch, 0, 0, out.width, out.height);
-    store.shots.push({ dataURL: out.toDataURL('image/png'), w: out.width, h: out.height });
+    store.images.push({ dataURL: out.toDataURL('image/png'), mime: 'image/png', filename: 'screenshot.png', label: 'screenshot', w: out.width, h: out.height });
     exitCrop();
     toast('added to context');
     if (store.box === 'hidden') setBox('prompt');
@@ -1350,6 +1436,14 @@
   ui.cropAdd.onclick = confirmCrop;
   ui.cropX.onclick = exitCrop;
   ui.cropX0.onclick = exitCrop;
+  ui.att.onclick = () => ui.file.click();
+  ui.file.onchange = () => { [...ui.file.files].forEach(stageImageFile); ui.file.value = ''; };
+  ui.box.addEventListener('paste', (e) => {
+    const files = [...((e.clipboardData && e.clipboardData.files) || [])].filter((f) => IMAGE_MIMES.includes(f.type));
+    if (!files.length) return; // plain text pastes stay the browser's business
+    e.preventDefault();
+    files.forEach(stageImageFile);
+  });
   ui.mic.addEventListener('pointerdown', (e) => { e.preventDefault(); startTalk(); });
   ui.mic.addEventListener('pointerup', stopTalk);
   ui.mic.addEventListener('pointerleave', stopTalk);
