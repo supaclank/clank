@@ -52,11 +52,12 @@ func (m *Mux) SetAuthToken(token string) {
 // Handler returns an http.Handler with all routes registered. When an
 // auth token is configured via SetAuthToken, the entire handler is
 // wrapped in the requireBearer middleware so every endpoint is
-// gated uniformly.
+// gated uniformly. The access log wraps outermost so rejected (401)
+// requests are visible too.
 func (m *Mux) Handler() http.Handler {
 	mx := http.NewServeMux()
 	m.register(mx)
-	return requireBearer(m.authToken)(mx)
+	return accessLog(m.log)(requireBearer(m.authToken)(mx))
 }
 
 func (m *Mux) register(mx *http.ServeMux) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -263,10 +264,16 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 
 	// Only commit b.client after a successful Connect, so a failed Open
 	// leaves the backend retryable instead of stuck in a half-open state.
+	// Connect spawns the CLI subprocess — on a cold machine this is the
+	// dominant session-open cost, so its duration is always logged.
+	connectStart := time.Now()
 	if err := client.Connect(b.ctx); err != nil {
+		log.Printf("[claude-open] connect failed after %s (resume=%t dir=%s): %v",
+			time.Since(connectStart).Round(time.Millisecond), resumeID != "", workDir, err)
 		b.setStatus(StatusError)
 		return fmt.Errorf("connect to claude CLI: %w", err)
 	}
+	connectDur := time.Since(connectStart)
 
 	// The launch flag forces the active mode to bypassPermissions. Restrict to
 	// the user's actual mode now — before OpenAndSend issues the first Query —
@@ -281,13 +288,20 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	// running, so committing before the restrict would both leak the subprocess
 	// and wedge the backend half-open on failure. Disconnect on failure so the
 	// retry starts from a clean slate.
+	var restrictDur time.Duration
 	if permMode != ClaudePermBypass {
+		restrictStart := time.Now()
 		if err := client.SetPermissionMode(b.ctx, claudecode.PermissionMode(permMode)); err != nil {
+			log.Printf("[claude-open] restrict to %q failed after %s: %v",
+				permMode, time.Since(restrictStart).Round(time.Millisecond), err)
 			b.setStatus(StatusError)
 			client.Disconnect()
 			return fmt.Errorf("restrict to %q permission mode: %w", permMode, err)
 		}
+		restrictDur = time.Since(restrictStart)
 	}
+	log.Printf("[claude-open] connect=%s restrict=%s resume=%t dir=%s",
+		connectDur.Round(time.Millisecond), restrictDur.Round(time.Millisecond), resumeID != "", workDir)
 
 	b.mu.Lock()
 	b.client = client
