@@ -233,6 +233,13 @@ func (m *ClaudeBackendManager) CreateBackend(ctx context.Context, inv agent.Back
 	return b, nil
 }
 
+// ReadTranscript implements agent.TranscriptReader: it serves a Claude
+// session's history straight from the on-disk JSONL transcript, without
+// constructing a backend or spawning the claude CLI.
+func (m *ClaudeBackendManager) ReadTranscript(ctx context.Context, workDir, externalID string) ([]agent.MessageData, error) {
+	return agent.ReadClaudeTranscript(ctx, workDir, externalID)
+}
+
 // Init is a no-op for Claude — there are no long-lived servers to manage.
 func (m *ClaudeBackendManager) Init(ctx context.Context, knownDirs func() ([]string, error)) error {
 	return nil

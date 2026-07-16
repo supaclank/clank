@@ -1275,13 +1275,51 @@ func (s *Service) ForkSession(ctx context.Context, id, messageID string) (agent.
 	return info, nil
 }
 
-// SessionMessages returns the conversation history.
+// SessionMessages returns the conversation history. A live backend serves
+// it directly. Without one, backends whose manager implements
+// agent.TranscriptReader (Claude) are served straight from the on-disk
+// transcript — no backend registration, no Open, no CLI spawn — so a pure
+// history read never wakes the agent. Backends whose history API needs the
+// live server (opencode) keep rehydrating via ensureBackend.
 func (s *Service) SessionMessages(ctx context.Context, id string) ([]agent.MessageData, error) {
+	// A dead backend is skipped, not used: reads don't repair the
+	// registry — the next dispatching op (Send/Abort/…) rehydrates it.
+	if b, ok := s.Session(id); ok && b.Status() != agent.StatusDead {
+		return b.Messages(ctx)
+	}
+	if s.sessionsStore != nil {
+		info, err := s.sessionsStore.GetSession(ctx, id)
+		switch {
+		case errors.Is(err, store.ErrSessionNotFound):
+			// Fall through to ensureBackend for the ErrNotFound mapping.
+		case err != nil:
+			return nil, fmt.Errorf("session messages %s: load session: %w", id, err)
+		default:
+			if r, ok := s.backendManagers[info.Backend].(agent.TranscriptReader); ok {
+				return s.readTranscript(ctx, r, info)
+			}
+		}
+	}
 	b, err := s.ensureBackend(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	return b.Messages(ctx)
+}
+
+// readTranscript serves info's history from its backend's on-disk
+// transcript via the manager's TranscriptReader capability.
+func (s *Service) readTranscript(ctx context.Context, r agent.TranscriptReader, info agent.SessionInfo) ([]agent.MessageData, error) {
+	// A fresh session that never opened has no transcript (and possibly
+	// no external id ever) — empty history, not an error.
+	if info.ExternalID == "" {
+		return nil, nil
+	}
+	workDir, err := s.workDirFor(ctx, info.GitRef)
+	if err != nil {
+		return nil, fmt.Errorf("session messages %s: %w", info.ID, err)
+	}
+	return r.ReadTranscript(ctx, workDir, info.ExternalID)
 }
 
 // OpenSession ensures the backend is live and its SSE listener is

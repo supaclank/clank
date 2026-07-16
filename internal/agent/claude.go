@@ -611,27 +611,13 @@ func (b *ClaudeCodeBackend) Messages(ctx context.Context) ([]MessageData, error)
 	b.mu.Lock()
 	sessionID := b.sessionID
 	workDir := b.projectDir
-	b.mu.Unlock()
-
-	if sessionID == "" {
-		return nil, nil
-	}
-
-	opts := []claudecode.SessionOption{}
-	if workDir != "" {
-		opts = append(opts, claudecode.WithSessionDirectory(workDir))
-	}
-
-	b.mu.Lock()
 	revertID := b.revertMessageID
 	b.mu.Unlock()
 
-	sdkMsgs, err := claudecode.GetSessionMessages(sessionID, opts...)
+	msgs, err := ReadClaudeTranscript(ctx, workDir, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("read claude session %s: %w", sessionID, err)
+		return nil, err
 	}
-
-	msgs := coalesceSessionMessages(sdkMsgs)
 	// While a revert is active but the user hasn't re-prompted yet, the CLI hasn't
 	// branched the transcript, so the on-disk JSONL still holds the reverted tail.
 	// Truncate the reload at the revert target so the hidden messages don't
@@ -646,6 +632,26 @@ func (b *ClaudeCodeBackend) Messages(ctx context.Context) ([]MessageData, error)
 		}
 	}
 	return msgs, nil
+}
+
+// ReadClaudeTranscript returns the conversation recorded in Claude Code's
+// on-disk JSONL transcript for sessionID, coalesced into clank MessageData.
+// A pure disk read — no CLI subprocess, no SDK client — so the host can
+// serve history for sessions with no live backend. An empty sessionID
+// returns (nil, nil): the session has no transcript yet.
+func ReadClaudeTranscript(_ context.Context, workDir, sessionID string) ([]MessageData, error) {
+	if sessionID == "" {
+		return nil, nil
+	}
+	opts := []claudecode.SessionOption{}
+	if workDir != "" {
+		opts = append(opts, claudecode.WithSessionDirectory(workDir))
+	}
+	sdkMsgs, err := claudecode.GetSessionMessages(sessionID, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("read claude session %s: %w", sessionID, err)
+	}
+	return coalesceSessionMessages(sdkMsgs), nil
 }
 
 // Revert undoes a turn: it rolls tracked files back to their state at the given
