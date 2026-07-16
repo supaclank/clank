@@ -1634,11 +1634,17 @@
     const local = b.dataset.eng === 'local';
     const avail = local ? LOCAL_VOICE : !!SR;
     b.disabled = !avail;
-    b.querySelector('.d').textContent = local
-      ? (avail ? (LOCAL_DESC[CFG.voice_engine] || 'transcribed on this machine — audio never leaves it')
-        : 'unavailable — install clank-voice (runs the ~670 MB Parakeet v3 model locally) or set CLANK_VOICE_ASR_CMD, then restart the preview')
-      : (avail ? 'the browser’s speech service — audio is sent to your browser vendor (e.g. Google in Chrome, Apple in Safari)'
-        : 'not supported in this browser');
+    let desc;
+    if (local) {
+      desc = avail
+        ? (LOCAL_DESC[CFG.voice_engine] || 'transcribed on this machine — audio never leaves it')
+        : 'unavailable — install clank-voice (runs the ~670 MB Parakeet v3 model locally) or set CLANK_VOICE_ASR_CMD, then restart the preview';
+    } else {
+      desc = avail
+        ? 'the browser’s speech service — audio is sent to your browser vendor (e.g. Google in Chrome, Apple in Safari)'
+        : 'not supported in this browser';
+    }
+    b.querySelector('.d').textContent = desc;
     b.onclick = () => { if (!b.disabled) chooseEngine(b.dataset.eng); };
   });
   $('.perm .allow').onclick = () => replyPermission(true);
