@@ -15,7 +15,7 @@ import (
 // Why pin: the sprite base image bakes its own claude CLI with
 // auto-updates disabled, frozen at whatever was current when the
 // image was built. The CLI is not just a runtime: the family aliases
-// clank passes as models (sonnet / opus / haiku — see
+// clank passes as models (sonnet / opus / haiku / fable — see
 // internal/host/backends.go) resolve to a CONCRETE model inside the
 // CLI binary, so a stale claude silently downgrades every session's
 // model. Seen 2026-07-05: an image-baked 2.1.168 resolved `sonnet`

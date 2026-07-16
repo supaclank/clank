@@ -242,8 +242,9 @@ func (m *ClaudeBackendManager) Init(ctx context.Context, knownDirs func() ([]str
 func (m *ClaudeBackendManager) Shutdown() {}
 
 // claudeModelCatalog enumerates the model families the claude CLI
-// accepts via --model. These are the AgentModel string constants from
-// claude-agent-sdk-go (sonnet / opus / haiku) — family aliases the CLI
+// accepts via --model. These are AgentModel string constants
+// (sonnet / opus / haiku from claude-agent-sdk-go, fable from
+// internal/agent until the SDK ships it) — family aliases the CLI
 // resolves to the latest version of each tier. We deliberately omit
 // `inherit` because it's a "use whatever the caller's default is"
 // passthrough, not a user-pickable model.
@@ -268,6 +269,12 @@ var claudeModelCatalog = []agent.ModelInfo{
 	{
 		ID:           string(claudecode.AgentModelHaiku),
 		Name:         "Claude Haiku",
+		ProviderID:   ProviderAnthropicClaudeCode,
+		ProviderName: "Anthropic",
+	},
+	{
+		ID:           string(agent.AgentModelFable),
+		Name:         "Claude Fable",
 		ProviderID:   ProviderAnthropicClaudeCode,
 		ProviderName: "Anthropic",
 	},
