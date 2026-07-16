@@ -54,6 +54,11 @@ func (s *Service) coldStartAutoPull(ctx context.Context) {
 		if busy, err := s.WorktreeHasActiveSession(ctx, id); err == nil && busy {
 			continue
 		}
+		// TODO(ai-review): give this a per-worktree timeout so one hung
+		// remote can't stall the whole pass — needs context plumbed through
+		// git.Fetch (exec.Command -> exec.CommandContext), not just a ctx
+		// wrap here (remoteContextFor/runPull don't honor ctx today).
+		// https://github.com/Acksell/clank/pull/158#discussion_r3596541125
 		res, err := s.PullFromRemote(ctx, id)
 		if err != nil {
 			// Expected skips (dirty, diverged, no upstream, no origin,

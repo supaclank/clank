@@ -20,7 +20,9 @@ func accessLog(lg *log.Logger) func(http.Handler) http.Handler {
 			start := time.Now()
 			sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 			h.ServeHTTP(sw, r)
-			lg.Printf("hostmux: %s %s -> %d in %s", r.Method, r.URL.Path, sw.status, time.Since(start).Round(time.Millisecond))
+			if lg != nil {
+				lg.Printf("hostmux: %s %s -> %d in %s", r.Method, r.URL.Path, sw.status, time.Since(start).Round(time.Millisecond))
+			}
 		})
 	}
 }
@@ -39,6 +41,14 @@ func (w *statusWriter) WriteHeader(code int) {
 		w.wroteHeader = true
 	}
 	w.ResponseWriter.WriteHeader(code)
+}
+
+// Write marks the header as sent on first call, matching net/http's
+// implicit-200 behavior — otherwise a later WriteHeader call would
+// overwrite the recorded status even though the client already got 200.
+func (w *statusWriter) Write(b []byte) (int, error) {
+	w.wroteHeader = true
+	return w.ResponseWriter.Write(b)
 }
 
 func (w *statusWriter) Flush() {
