@@ -116,6 +116,25 @@ func TestMarkPRReadyForReview_GraphQLError(t *testing.T) {
 	}
 }
 
+// The FORBIDDEN error isn't always first in the errors array — the
+// classifier must scan all of them, not just body.Errors[0].
+func TestMarkPRReadyForReview_GraphQLForbidden_NotFirstError(t *testing.T) {
+	t.Parallel()
+	fa := &fakeReadyAPI{
+		getStatus: http.StatusOK,
+		getBody:   `{"number": 7, "draft": true, "node_id": "PR_kwDOtest7"}`,
+		gqlStatus: http.StatusOK,
+		gqlBody:   `{"data": null, "errors": [{"type": "SOME_OTHER", "message": "unrelated"}, {"type": "FORBIDDEN", "message": "Resource not accessible"}]}`,
+	}
+	srv := newFakeReadyAPI(t, fa)
+	m := newPRTestManager(t, srv.URL)
+
+	err := m.MarkPRReadyForReview(context.Background(), "gho_test", "acme", "api", 7)
+	if !errors.Is(err, ErrPRForbidden) {
+		t.Fatalf("err = %v, want ErrPRForbidden", err)
+	}
+}
+
 func TestMarkPRReadyForReview_GraphQLForbidden(t *testing.T) {
 	t.Parallel()
 	fa := &fakeReadyAPI{

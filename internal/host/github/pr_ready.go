@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	gogithub "github.com/google/go-github/v66/github"
 )
@@ -40,6 +41,7 @@ func (m *Manager) MarkPRReadyForReview(ctx context.Context, accessToken, owner, 
 	if nodeID == "" {
 		return fmt.Errorf("pr %s/%s#%d: response carried no node_id", owner, repo, number)
 	}
+	// TODO(ai-review): a PR flipped to ready between this GET and the mutation below surfaces as a hard error instead of the idempotent no-op the doc comment promises. https://github.com/Acksell/clank/pull/165#discussion_r3598342520 https://github.com/Acksell/clank/pull/165#discussion_r3598342551
 	return m.graphQL(ctx, accessToken, markReadyMutation, map[string]any{"id": nodeID})
 }
 
@@ -103,8 +105,12 @@ func (m *Manager) graphQL(ctx context.Context, accessToken, query string, variab
 	if len(body.Errors) == 0 {
 		return nil
 	}
-	if body.Errors[0].Type == "FORBIDDEN" {
-		return ErrPRForbidden
+	var messages []string
+	for _, gqlErr := range body.Errors {
+		if gqlErr.Type == "FORBIDDEN" {
+			return ErrPRForbidden
+		}
+		messages = append(messages, gqlErr.Message)
 	}
-	return fmt.Errorf("graphql: %s", body.Errors[0].Message)
+	return fmt.Errorf("graphql: %s", strings.Join(messages, "; "))
 }
