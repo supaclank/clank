@@ -1108,6 +1108,12 @@ func (s *Service) ensureBackend(ctx context.Context, id string) (agent.SessionBa
 		// backend and fall through to recreate it — mirroring the Open-failure
 		// teardown below. Any other status is a live, reusable backend.
 		if b.Status() != agent.StatusDead {
+			// Open is idempotent and serialized per backend, so a caller that
+			// lost the registration race to an in-flight Open blocks here
+			// instead of getting back a backend whose client isn't set yet.
+			if err := b.Open(ctx); err != nil {
+				return nil, fmt.Errorf("ensure backend %s: open: %w", id, err)
+			}
 			return b, nil
 		}
 		if err := s.StopSession(id); err != nil && !errors.Is(err, ErrNotFound) {
