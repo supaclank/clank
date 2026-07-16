@@ -440,7 +440,17 @@ func TestRepoOverview_LocalCheckout(t *testing.T) {
 	gitIn(t, source, "checkout", "-b", "wip")
 
 	svc := newLocalRepoService(t, source)
-	slug, _ := localSlugFor(t, source)
+	slug, root := localSlugFor(t, source)
+
+	// A branch loaded through clank, and uncommitted work in the user's
+	// primary checkout (on wip).
+	forked, err := svc.CreateRepoWorktree(context.Background(), slug, host.RepoWorktreeRequest{BaseBranch: "main"})
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "README"), []byte("edited\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	overview, err := svc.RepoOverview(context.Background(), slug, false)
 	if err != nil {
@@ -449,12 +459,40 @@ func TestRepoOverview_LocalCheckout(t *testing.T) {
 	if overview.Slug != slug || overview.DefaultBranch != "main" {
 		t.Errorf("slug=%q default=%q, want %q / main", overview.Slug, overview.DefaultBranch, slug)
 	}
-	branches := map[string]bool{}
+	branches := map[string]host.RepoBranchOverview{}
 	for _, b := range overview.Branches {
-		branches[b.Branch] = true
+		branches[b.Branch] = b
 	}
-	if !branches["main"] || !branches["wip"] {
-		t.Errorf("branches = %v, want the user's real refs/heads (main, wip)", branches)
+
+	// wip: checked out in the user's primary worktree — not loadable,
+	// but the overview must say WHERE it lives (and that it's dirty) so
+	// clients can offer open-in-place instead of a doomed check-out.
+	wip, ok := branches["wip"]
+	if !ok {
+		t.Fatalf("branches = %v, want the user's real refs/heads", branches)
+	}
+	if wip.Loaded || wip.WorktreeID != "" || wip.CheckedOutPath != root || !wip.Dirty {
+		t.Errorf("wip = %+v, want unloaded, checked_out_path=%q, dirty", wip, root)
+	}
+
+	// The clank-managed fork: loaded, addressed by worktree id, no
+	// checked-out-path (the two are mutually exclusive).
+	fork, ok := branches[forked.Branch]
+	if !ok {
+		t.Fatalf("fork branch %q missing from overview: %v", forked.Branch, branches)
+	}
+	if !fork.Loaded || fork.WorktreeID != forked.WorktreeID || fork.CheckedOutPath != "" {
+		t.Errorf("fork = %+v, want loaded via worktree %s", fork, forked.WorktreeID)
+	}
+
+	// main: a plain ref with no checkout anywhere — the legitimate
+	// check-out candidate.
+	main, ok := branches["main"]
+	if !ok {
+		t.Fatalf("main missing from overview: %v", branches)
+	}
+	if main.Loaded || main.CheckedOutPath != "" {
+		t.Errorf("main = %+v, want neither loaded nor checked out", main)
 	}
 }
 

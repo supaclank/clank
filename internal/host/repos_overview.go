@@ -71,9 +71,18 @@ type OverviewPR struct {
 // available", not "in sync"). Dirty is computed only for loaded
 // branches (it's a property of a worktree's working tree).
 type RepoBranchOverview struct {
-	Branch       string      `json:"branch"`
-	WorktreeID   string      `json:"worktree_id,omitempty"`
-	Loaded       bool        `json:"loaded"`
+	Branch     string `json:"branch"`
+	WorktreeID string `json:"worktree_id,omitempty"`
+	Loaded     bool   `json:"loaded"`
+
+	// CheckedOutPath names the working tree holding this branch when it
+	// is checked out OUTSIDE clank's management — a local checkout's
+	// primary worktree, or one the user (or another tool) added by
+	// hand. Mutually exclusive with WorktreeID. Such a branch cannot be
+	// loaded (git allows one checkout per branch): clients should offer
+	// opening it in place, or forking off it — not a check-out.
+	CheckedOutPath string `json:"checked_out_path,omitempty"`
+
 	Dirty        bool        `json:"dirty,omitempty"`
 	Ahead        *int        `json:"ahead,omitempty"`
 	Behind       *int        `json:"behind,omitempty"`
@@ -149,8 +158,14 @@ func (s *Service) RepoOverview(ctx context.Context, slug string, fetch bool) (Re
 	for _, tip := range tips {
 		entry := RepoBranchOverview{Branch: tip.Branch, LastCommitAt: tip.CommittedAt}
 		if wt, ok := loadedByBranch[tip.Branch]; ok {
-			entry.Loaded = true
-			entry.WorktreeID = wt.worktreeID
+			if wt.worktreeID != "" {
+				entry.Loaded = true
+				entry.WorktreeID = wt.worktreeID
+			} else {
+				entry.CheckedOutPath = wt.path
+			}
+			// Dirty is meaningful either way: an unmanaged checkout with
+			// uncommitted work is exactly the "open it in place" case.
 			if dirty, derr := git.WorkingTreeDirty(wt.path); derr == nil {
 				entry.Dirty = dirty
 			}
@@ -211,15 +226,19 @@ func (s *Service) fetchAllHeads(gitDir, remoteURL string) error {
 // same refspec CloneBare configures as the canonical's default.
 const allHeadsFetchRefspec = "+refs/heads/*:refs/remotes/origin/*"
 
-// loadedWorktree pairs a linked worktree's path with its stamped id.
+// loadedWorktree pairs a checked-out branch's working tree path with
+// its stamped worktree id — empty when the worktree isn't clank's (the
+// local checkout's primary worktree, or one the user added by hand).
 type loadedWorktree struct {
 	path       string
 	worktreeID string
 }
 
-// loadedWorktreesByBranch maps branch → linked worktree from one
-// `git worktree list` pass, skipping the bare entry, vanished dirs, and
-// worktrees with unreadable ids.
+// loadedWorktreesByBranch maps branch → working tree from one
+// `git worktree list` pass, skipping the bare entry and vanished dirs.
+// Unmanaged worktrees (no readable clank id) are kept with an empty
+// worktreeID: the overview must report that the branch has a checkout
+// somewhere, or clients offer a check-out git is guaranteed to refuse.
 func loadedWorktreesByBranch(gitDir string) (map[string]loadedWorktree, error) {
 	worktrees, err := git.ListWorktrees(gitDir)
 	if err != nil {
@@ -233,10 +252,7 @@ func loadedWorktreesByBranch(gitDir string) (map[string]loadedWorktree, error) {
 		if _, statErr := os.Stat(wt.Path); statErr != nil {
 			continue
 		}
-		id, idErr := agent.ReadLocalWorktreeID(wt.Path)
-		if idErr != nil || id == "" {
-			continue
-		}
+		id, _ := agent.ReadLocalWorktreeID(wt.Path)
 		byBranch[wt.Branch] = loadedWorktree{path: wt.Path, worktreeID: id}
 	}
 	return byBranch, nil
