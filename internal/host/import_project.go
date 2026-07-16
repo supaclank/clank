@@ -179,11 +179,14 @@ type RepoWorktreeResult struct {
 //
 // Caller holds the repo lock.
 func (s *Service) addRepoWorktree(ctx context.Context, slug, gitDir, branch, displayName string) (RepoWorktreeResult, error) {
-	// Idempotency: branch already loaded → hand back its worktree.
+	// Idempotency: branch already loaded → hand back its worktree. A
+	// worktree with no readable id isn't clank's (a local checkout's
+	// primary worktree, one the user added by hand, or a corrupted
+	// stamp) — git allows a branch in at most one worktree either way.
 	if existing, err := git.FindWorktreeForBranch(gitDir, branch); err == nil && existing != nil {
 		worktreeID, idErr := agent.ReadLocalWorktreeID(existing.Path)
 		if idErr != nil || worktreeID == "" {
-			return RepoWorktreeResult{}, fmt.Errorf("branch %q already checked out at %s but its worktree id is unreadable: %v", branch, existing.Path, idErr)
+			return RepoWorktreeResult{}, fmt.Errorf("%w: branch %q at %s", ErrBranchCheckedOutElsewhere, branch, existing.Path)
 		}
 		return RepoWorktreeResult{
 			CreateWorktreeResult: CreateWorktreeResult{

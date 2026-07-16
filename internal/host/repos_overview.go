@@ -95,21 +95,28 @@ type RepoOverviewResult struct {
 // refs/remotes/origin/* first (one authed fetch; a no-op for
 // unpublished repos). ErrRepoNotFound for an unknown slug.
 func (s *Service) RepoOverview(ctx context.Context, slug string, fetch bool) (RepoOverviewResult, error) {
-	gitDir, err := resolveRepoSlug(slug)
+	repo, err := resolveRepoSlug(slug)
 	if err != nil {
 		return RepoOverviewResult{}, err
 	}
+	gitDir := repo.gitDir
 
-	defer s.lockRepo(slug)()
+	defer s.lockRepo(repo.slug)()
 
 	origin := repoOriginFor(gitDir)
 	result := RepoOverviewResult{
-		Slug:     slug,
+		Slug:     repo.slug,
 		Label:    repoLabelFor(gitDir),
 		Origin:   origin,
 		Branches: []RepoBranchOverview{},
 	}
-	result.DefaultBranch, err = git.HeadBranch(gitDir)
+	if repo.localCheckout {
+		// A checkout's HEAD is whatever the user has checked out right
+		// now — probe the default instead (canonical HEAD IS the default).
+		result.DefaultBranch, err = git.DefaultBranch(gitDir)
+	} else {
+		result.DefaultBranch, err = git.HeadBranch(gitDir)
+	}
 	if err != nil {
 		return RepoOverviewResult{}, err
 	}

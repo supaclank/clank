@@ -149,13 +149,14 @@ func (s *Service) lockRepo(slug string) func() {
 }
 
 // validSlug reports whether s is safe to use as a repo routing key —
-// i.e. a value slugForImport/slugForName could have minted. The check
-// matters at the HTTP boundary: the slug becomes a path segment under
-// ~/work/repos, so anything outside the sanitize alphabet (or the "."
-// / ".." specials, which the alphabet would otherwise admit) must be
-// rejected before it reaches filepath.Join.
+// a value slugForImport/slugForName could have minted, or a local-
+// checkout slug (base64url path, see repos_local.go; hence the length
+// bound). The check matters at the HTTP boundary: the slug becomes a
+// path segment under ~/work/repos, so anything outside the sanitize
+// alphabet (or the "." / ".." specials, which the alphabet would
+// otherwise admit) must be rejected before it reaches filepath.Join.
 func validSlug(s string) bool {
-	if s == "" || s == "." || s == ".." || len(s) > 2*maxRepoNameLength+len(importSlugSeparator) {
+	if s == "" || s == "." || s == ".." || len(s) > maxRepoSlugLength {
 		return false
 	}
 	for _, r := range s {
@@ -168,24 +169,49 @@ func validSlug(s string) bool {
 	return true
 }
 
-// resolveRepoSlug validates slug and stats its canonical, returning the
-// canonical git dir. ErrRepoNotFound when no such repo exists on this
-// host; ErrInvalidArgument for a malformed slug.
-func resolveRepoSlug(slug string) (string, error) {
+// resolvedRepo is a slug resolved to the git dir repo-scoped operations
+// run against: a bare canonical (~/work/repos/<slug>/repo.git) or a
+// discovered local checkout's root. Slug is normalized — for local
+// checkouts it re-encodes the resolved root, so two spellings of the
+// same repo share one lock key.
+type resolvedRepo struct {
+	gitDir        string
+	slug          string
+	localCheckout bool
+}
+
+// resolveRepoSlug validates slug and resolves it: the canonical wins
+// when ~/work/repos/<slug> exists, else the slug is decoded as a
+// local-checkout path (repos_local.go) and verified to still be a git
+// repo. ErrRepoNotFound when neither resolves; ErrInvalidArgument for
+// a malformed slug.
+func resolveRepoSlug(slug string) (resolvedRepo, error) {
 	if !validSlug(slug) {
-		return "", fmt.Errorf("%w: invalid repo slug %q", ErrInvalidArgument, slug)
+		return resolvedRepo{}, fmt.Errorf("%w: invalid repo slug %q", ErrInvalidArgument, slug)
 	}
 	gitDir, err := canonicalGitDir(slug)
 	if err != nil {
-		return "", err
+		return resolvedRepo{}, err
 	}
-	if _, err := os.Stat(gitDir); err != nil {
-		if os.IsNotExist(err) {
-			return "", fmt.Errorf("%w: %q", ErrRepoNotFound, slug)
-		}
-		return "", fmt.Errorf("stat canonical %q: %w", slug, err)
+	switch _, statErr := os.Stat(gitDir); {
+	case statErr == nil:
+		return resolvedRepo{gitDir: gitDir, slug: slug}, nil
+	case !os.IsNotExist(statErr):
+		return resolvedRepo{}, fmt.Errorf("stat canonical %q: %w", slug, statErr)
 	}
-	return gitDir, nil
+	path, ok := localRepoPath(slug)
+	if !ok {
+		return resolvedRepo{}, fmt.Errorf("%w: %q", ErrRepoNotFound, slug)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		// Moved or deleted folder — an honest 404, like a removed canonical.
+		return resolvedRepo{}, fmt.Errorf("%w: %q", ErrRepoNotFound, slug)
+	}
+	root, err := git.RepoRoot(path)
+	if err != nil {
+		return resolvedRepo{}, fmt.Errorf("%w: %q", ErrRepoNotFound, slug)
+	}
+	return resolvedRepo{gitDir: root, slug: localRepoSlug(root), localCheckout: true}, nil
 }
 
 // ensureRepoBranchAvailable makes branch resolvable in the canonical at

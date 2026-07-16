@@ -110,6 +110,10 @@ func writeRepoError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusServiceUnavailable, errResp{Code: "github_unavailable", Error: err.Error()})
 	case errors.Is(err, host.ErrGitHubNotConnected):
 		writeJSON(w, http.StatusForbidden, errResp{Code: "github_not_connected", Error: err.Error()})
+	case errors.Is(err, host.ErrCannotDeleteLocalCheckout):
+		writeJSON(w, http.StatusForbidden, errResp{Code: "cannot_delete_local_checkout", Error: err.Error()})
+	case errors.Is(err, host.ErrBranchCheckedOutElsewhere):
+		writeJSON(w, http.StatusConflict, errResp{Code: "branch_checked_out", Error: err.Error()})
 	default:
 		writeError(w, err)
 	}

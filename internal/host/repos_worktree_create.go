@@ -49,17 +49,31 @@ func (s *Service) CreateRepoWorktree(ctx context.Context, slug string, req RepoW
 			return RepoWorktreeResult{}, fmt.Errorf("%w: invalid branch %q", ErrInvalidArgument, b)
 		}
 	}
-	gitDir, err := resolveRepoSlug(slug)
+	repo, err := resolveRepoSlug(slug)
 	if err != nil {
 		return RepoWorktreeResult{}, err
 	}
 
-	defer s.lockRepo(slug)()
+	// A local checkout's default branch belongs to the user's primary
+	// worktree — even when it happens not to be checked out right now,
+	// loading it would block their next `git checkout <default>`.
+	// Forking off it is always safe.
+	if repo.localCheckout && req.Branch != "" {
+		defaultBranch, err := git.DefaultBranch(repo.gitDir)
+		if err != nil {
+			return RepoWorktreeResult{}, fmt.Errorf("resolve default branch: %w", err)
+		}
+		if req.Branch == defaultBranch {
+			return RepoWorktreeResult{}, fmt.Errorf("%w: %q", ErrReservedBranch, req.Branch)
+		}
+	}
+
+	defer s.lockRepo(repo.slug)()
 
 	if req.Branch != "" {
-		return s.loadRepoBranch(ctx, slug, gitDir, req.Branch)
+		return s.loadRepoBranch(ctx, repo.slug, repo.gitDir, req.Branch)
 	}
-	return s.forkRepoBranch(ctx, slug, gitDir, req.BaseBranch)
+	return s.forkRepoBranch(ctx, repo.slug, repo.gitDir, req.BaseBranch)
 }
 
 // loadRepoBranch checks the named branch out into a worktree (fetching

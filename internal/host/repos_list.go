@@ -44,22 +44,27 @@ type RepoInfo struct {
 	Origin        *RepoOrigin        `json:"origin"`
 	DefaultBranch string             `json:"default_branch"`
 	Worktrees     []RepoWorktreeInfo `json:"worktrees"`
+
+	// IsLocalCheckout marks a repo discovered from the user's own
+	// filesystem (see repos_local.go) rather than a ~/work/repos
+	// canonical: it cannot be deleted through clank, and Path names its
+	// root so clients can show where it lives.
+	IsLocalCheckout bool   `json:"is_local_checkout,omitempty"`
+	Path            string `json:"path,omitempty"`
 }
 
 // ListRepos enumerates the canonical clones under ~/work/repos and
-// their linked worktrees. Repos whose slug dir lacks a repo.git (torn
-// creation) are skipped; worktree entries whose dir has vanished
-// (manual rm — prunable bookkeeping) are filtered out.
+// their linked worktrees, then the local checkouts discovered from
+// session history (repos_local.go). Repos whose slug dir lacks a
+// repo.git (torn creation) are skipped; worktree entries whose dir has
+// vanished (manual rm — prunable bookkeeping) are filtered out.
 func (s *Service) ListRepos(ctx context.Context) ([]RepoInfo, error) {
 	root, err := reposRootDir()
 	if err != nil {
 		return nil, err
 	}
 	entries, err := os.ReadDir(root)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []RepoInfo{}, nil // no repos yet
-		}
+	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
 	repos := make([]RepoInfo, 0, len(entries))
@@ -80,7 +85,13 @@ func (s *Service) ListRepos(ctx context.Context) ([]RepoInfo, error) {
 		}
 		repos = append(repos, info)
 	}
-	return repos, nil
+	locals, err := s.discoveredLocalRepos(ctx)
+	if err != nil {
+		// The canonical half is still a truthful listing — degrade, so a
+		// store hiccup doesn't blank the phone's repo screen.
+		s.log.Printf("list repos: discover local checkouts: %v", err)
+	}
+	return append(repos, locals...), nil
 }
 
 // repoInfoFor assembles one repo's listing entry from its canonical.
@@ -89,17 +100,29 @@ func (s *Service) repoInfoFor(slug, gitDir string) (RepoInfo, error) {
 	if err != nil {
 		return RepoInfo{}, err
 	}
-	info := RepoInfo{
+	worktrees, err := s.stampedWorktreeInfos(gitDir)
+	if err != nil {
+		return RepoInfo{}, err
+	}
+	return RepoInfo{
 		Slug:          slug,
 		Label:         repoLabelFor(gitDir),
 		Origin:        repoOriginFor(gitDir),
 		DefaultBranch: defaultBranch,
-		Worktrees:     []RepoWorktreeInfo{},
-	}
+		Worktrees:     worktrees,
+	}, nil
+}
+
+// stampedWorktreeInfos lists the repo's clank-managed worktrees: the
+// linked, worktree-id-stamped checkouts sessions address. Unstamped
+// worktrees are skipped quietly — a discovered checkout's primary
+// worktree (and any the user added by hand) is theirs, not clank's.
+func (s *Service) stampedWorktreeInfos(gitDir string) ([]RepoWorktreeInfo, error) {
 	worktrees, err := git.ListWorktrees(gitDir)
 	if err != nil {
-		return RepoInfo{}, err
+		return nil, err
 	}
+	infos := []RepoWorktreeInfo{}
 	for _, wt := range worktrees {
 		if wt.Bare || wt.Branch == "" {
 			continue
@@ -111,16 +134,15 @@ func (s *Service) repoInfoFor(slug, gitDir string) (RepoInfo, error) {
 		}
 		worktreeID, idErr := agent.ReadLocalWorktreeID(wt.Path)
 		if idErr != nil || worktreeID == "" {
-			s.log.Printf("list repos: %s worktree %s has no readable id: %v", slug, wt.Path, idErr)
 			continue
 		}
-		info.Worktrees = append(info.Worktrees, RepoWorktreeInfo{
+		infos = append(infos, RepoWorktreeInfo{
 			WorktreeID:  worktreeID,
 			Branch:      wt.Branch,
 			DisplayName: wt.Branch,
 		})
 	}
-	return info, nil
+	return infos, nil
 }
 
 // repoOriginFor derives the nullable origin object from the canonical's
