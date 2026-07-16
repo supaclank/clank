@@ -17,6 +17,24 @@ import (
 func (m *Mux) registerGitHubPR(mx *http.ServeMux) {
 	mx.HandleFunc("POST /worktrees/{id}/pr", m.handleGitHubCreatePR)
 	mx.HandleFunc("POST /worktrees/{id}/pr/preview", m.handleGitHubPreviewPR)
+	mx.HandleFunc("POST /worktrees/{id}/pr/ready", m.handleGitHubMarkPRReady)
+}
+
+// handleGitHubMarkPRReady services POST /worktrees/{id}/pr/ready —
+// flips the branch's open draft PR to ready-for-review. No body;
+// the worktree's current branch identifies the PR.
+func (m *Mux) handleGitHubMarkPRReady(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "worktree id is required"})
+		return
+	}
+	result, err := m.svc.MarkPRReady(r.Context(), id)
+	if err != nil {
+		writePRError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // handleGitHubPreviewPR services POST /worktrees/{id}/pr/preview —
@@ -76,6 +94,8 @@ func writePRError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "nothing_to_push", Error: err.Error()})
 	case errors.Is(err, host.ErrNoOriginRemote):
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "no_origin_remote", Error: err.Error()})
+	case errors.Is(err, host.ErrNoOpenPRForBranch):
+		writeJSON(w, http.StatusNotFound, errResp{Code: "no_open_pr", Error: err.Error()})
 	case errors.Is(err, host.ErrNoCommonAncestor):
 		writeJSON(w, http.StatusConflict, errResp{Code: "no_common_ancestor", Error: err.Error()})
 	case errors.Is(err, host.ErrBaseRefUnreachable):

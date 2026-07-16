@@ -10,7 +10,7 @@ func TestFindOpenPRForBranch_Found(t *testing.T) {
 	t.Parallel()
 	fa := &fakeAPI{
 		getStatus: http.StatusOK,
-		getBody:   `[{"number": 7, "html_url": "https://github.com/acme/api/pull/7", "head": {"sha": "abc"}, "base": {"ref": "main"}}]`,
+		getBody:   `[{"number": 7, "html_url": "https://github.com/acme/api/pull/7", "draft": true, "head": {"sha": "abc"}, "base": {"ref": "main"}}]`,
 	}
 	srv := newFakeAPI(t, fa)
 	m := newPRTestManager(t, srv.URL)
@@ -30,6 +30,9 @@ func TestFindOpenPRForBranch_Found(t *testing.T) {
 	}
 	if pr.Base.Ref != "main" {
 		t.Errorf("Base.Ref = %q, want main", pr.Base.Ref)
+	}
+	if !pr.Draft {
+		t.Error("Draft = false, want true (drives remote status pr_draft)")
 	}
 }
 

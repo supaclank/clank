@@ -27,3 +27,14 @@ func (g *Gateway) handleGitHubPreviewPR(w http.ResponseWriter, r *http.Request) 
 	}
 	g.proxyHostGitHub(w, r, "/worktrees/"+id+"/pr/preview")
 }
+
+// handleGitHubMarkPRReady proxies POST /v1/worktrees/{id}/pr/ready —
+// flip the branch's open draft PR to ready-for-review on the host.
+func (g *Gateway) handleGitHubMarkPRReady(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "worktree id is required", http.StatusBadRequest)
+		return
+	}
+	g.proxyHostGitHub(w, r, "/worktrees/"+id+"/pr/ready")
+}
