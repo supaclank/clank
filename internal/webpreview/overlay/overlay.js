@@ -13,6 +13,9 @@
 //   hold ⌘ / ⌃     momentary element-select; click tags, release exits
 //   Esc            leave inspect mode, else hide
 //   header tap     expand / collapse the chat view
+//   ⛶ (toolbar)    grab a screenshot area — freeze a tab capture, crop
+//                  it (mobile ScreenshotCropOverlay parity), and stage
+//                  the PNG as an image attachment on the next send
 //
 // Element → source resolution prefers deterministic compiler metadata:
 // Svelte dev mode stamps every node with __svelte_meta.loc; React ≤18
@@ -81,7 +84,9 @@
     box: 'hidden', // hidden | prompt | chat
     agent: 'idle', // idle | thinking | working | done | error
     inspect: false,
+    crop: false, // screenshot crop layer is up
     chips: [], // [{label, detail, html, names}]
+    shots: [], // staged screenshot crops [{dataURL, w, h}]
     msgs: [], // [{role, text}]
     streamText: '', // in-flight assistant text
     permission: null, // {request_id, tool, description}
@@ -385,7 +390,7 @@
   };
 
   const buildContext = () => {
-    if (!store.chips.length && !recentErrors.length) return '';
+    if (!store.chips.length && !recentErrors.length && !store.shots.length) return '';
     const lines = ['', '', '--- clank preview context (auto-attached by the web overlay) ---'];
     if (store.chips.length) {
       lines.push('Selected elements:');
@@ -393,6 +398,9 @@
         lines.push(`${i + 1}. ${c.detail}`);
         lines.push(`   html: ${c.html}`);
       });
+    }
+    if (store.shots.length) {
+      lines.push(`Attached screenshots: ${store.shots.length} — area grabs of the page as currently rendered.`);
     }
     lines.push(`Route: ${location.pathname}${location.search}`);
     lines.push(`Viewport: ${innerWidth}x${innerHeight}`);
@@ -409,11 +417,19 @@
     const text = ui.input.value.trim();
     if (!text || store.sending) return;
     const full = text + buildContext();
+    // Staged crops ride as inline data: attachments — resolveAttachments
+    // decodes them daemon-side, so no upload service is needed here.
+    const attachments = store.shots.map((s, i) => ({
+      mime: 'image/png',
+      filename: store.shots.length > 1 ? `screenshot-${i + 1}.png` : 'screenshot.png',
+      source: s.dataURL,
+    }));
     store.sending = true;
     store.msgs.push({ role: 'user', text });
     store.streamText = '';
     setComposer('');
     store.chips = [];
+    store.shots = [];
     setAgent('thinking');
     try {
       if (!store.sessionId) {
@@ -424,6 +440,7 @@
             hostname: CFG.hostname || 'local',
             git_ref: { local_path: CFG.local_path },
             prompt: full,
+            ...(attachments.length ? { attachments } : {}),
           }),
         });
         store.sessionId = (info && info.id) || '';
@@ -431,7 +448,10 @@
         sessionStorage.setItem('clank.sessionId', store.sessionId);
         subscribe();
       } else {
-        await api(`/sessions/${store.sessionId}/message`, { method: 'POST', body: JSON.stringify({ text: full }) });
+        await api(`/sessions/${store.sessionId}/message`, {
+          method: 'POST',
+          body: JSON.stringify({ text: full, ...(attachments.length ? { attachments } : {}) }),
+        });
       }
     } catch (err) {
       toast('send failed: ' + err.message);
@@ -775,6 +795,9 @@
     // wall-to-wall by construction, cap curvature matches the corners.
     select: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5.06 2.94 21.06 18.94 18.94 21.06 2.94 5.06Z"/><path d="M4.5 4.5 7.5 7.5" stroke-width="5"/><path d="M19 6v4"/><path d="M5 14v4"/><path d="M14 2v2"/><path d="M17 8h4"/><path d="M3 16h4"/><path d="M13 3h2"/></svg>',
     mic: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><path d="M12 18v4"/></svg>',
+    // viewfinder corner brackets — mobile PromptIcons.ScreenCapture
+    shot: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/></svg>',
+    close: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
     send: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>',
     stop: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="3"/></svg>',
     // 2×3 grid, 5px pitch on BOTH axes: adjacent dots equidistant, so
@@ -842,6 +865,7 @@
     color:#4338ca; font-size:11px; padding:3px 8px; border-radius:999px; max-width:100%; }
   .chip b { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .chip button { all:unset; cursor:pointer; color:#9ca3af; font-size:12px; line-height:1; }
+  .chip img { width:18px; height:18px; object-fit:cover; border-radius:4px; }
   .chat { max-height:240px; overflow-y:auto; padding:4px 12px; display:none; }
   .box.expanded .chat { display:block; }
   .m { font-size:12.5px; line-height:1.45; margin:6px 0; white-space:pre-wrap; word-break:break-word; }
@@ -882,6 +906,25 @@
     color:#e8e8ec; border:1px solid #3a3b42; font-size:12px; padding:7px 14px; border-radius:10px;
     pointer-events:none; opacity:0; transition:opacity .2s; max-width:70vw; }
   .toast.show { opacity:1; }
+  /* screenshot area grab — clank-mobile ScreenshotCropOverlay theme:
+     55% black scrim, 2px dashed #FA5573 outline, pink rounded corner
+     handles, white ✕ + pink "Add to context" pill */
+  .crop { position:fixed; inset:0; display:none; pointer-events:auto; cursor:crosshair;
+    touch-action:none; user-select:none; }
+  .crop.on { display:block; }
+  .crop canvas { position:absolute; inset:0; width:100%; height:100%; }
+  .crop-dim { position:absolute; inset:0; background:rgba(0,0,0,.55); }
+  .crop-sel { position:absolute; border:2px dashed #FA5573; box-shadow:0 0 0 100vmax rgba(0,0,0,.55); }
+  .crop-sel i { position:absolute; width:10px; height:10px; background:#FA5573; border-radius:2px; }
+  .crop-sel .tl { left:-7px; top:-7px; } .crop-sel .tr { right:-7px; top:-7px; }
+  .crop-sel .bl { left:-7px; bottom:-7px; } .crop-sel .br { right:-7px; bottom:-7px; }
+  .crop-bar { position:absolute; display:none; align-items:center; gap:6px; }
+  .crop-x { all:unset; cursor:pointer; width:32px; height:32px; border-radius:50%; background:#fff;
+    color:#1f1f23; display:inline-flex; align-items:center; justify-content:center;
+    box-shadow:0 2px 8px rgba(0,0,0,.35); }
+  .crop-add { all:unset; cursor:pointer; background:#FA5573; color:#fff; font-size:13px; font-weight:500;
+    padding:7px 12px; border-radius:999px; box-shadow:0 3px 12px rgba(0,0,0,.35); white-space:nowrap; }
+  .crop-x0 { position:absolute; top:12px; right:16px; }
 </style>
 <div class="box" part="box" tabindex="-1">
   <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><a class="beta" href="https://github.com/Acksell/clank/issues/new?template=bug_report.yml" target="_blank" rel="noopener noreferrer" title="click to report an issue" tabindex="-1">beta</a><span class="grip">${ICONS.grip}</span></div>
@@ -893,6 +936,7 @@
   </div>
   <textarea rows="1" placeholder="Ask anything…"></textarea>
   <div class="bar">
+    <button class="ib shot" title="Grab a screenshot area">${ICONS.shot}</button>
     <button class="ib sel" title="Select an element (hold ⌘)">${ICONS.select}</button>
     <button class="ib mic" title="Tap ⇪ to talk (or hold this button)">${ICONS.mic}</button>
     <span class="micLevel" style="display:none"></span>
@@ -900,7 +944,14 @@
   </div>
   <div class="hint"><span><kbd>⇪ caps</kbd> talk</span><span><kbd>⇧</kbd> move</span><span><kbd>⌘</kbd> select</span><span><kbd>⌘E</kbd> toggle</span><span><kbd>Esc</kbd> hide</span></div>
 </div>
-<div class="hl"></div><div class="hll"></div><div class="toast"></div>`;
+<div class="hl"></div><div class="hll"></div>
+<div class="crop">
+  <div class="crop-dim"></div>
+  <div class="crop-sel"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
+  <div class="crop-bar"><button class="crop-x" title="Cancel">${ICONS.close}</button><button class="crop-add">Add to context</button></div>
+  <button class="crop-x crop-x0" title="Cancel (Esc)">${ICONS.close}</button>
+</div>
+<div class="toast"></div>`;
 
   const $ = (sel) => root.querySelector(sel);
   const ui = {
@@ -908,8 +959,13 @@
     perm: $('.perm'), permT: $('.perm .t'), permD: $('.perm .d'),
     input: $('textarea'), sel: $('.sel'), mic: $('.mic'), micLevel: $('.micLevel'),
     send: $('.send'), hl: $('.hl'), hll: $('.hll'), toast: $('.toast'),
+    shot: $('.shot'), crop: $('.crop'), cropDim: $('.crop-dim'), cropSel: $('.crop-sel'),
+    cropBar: $('.crop-bar'), cropAdd: $('.crop-add'), cropX: $('.crop-bar .crop-x'), cropX0: $('.crop-x0'),
   };
   ui.name.textContent = CFG.name || 'clank';
+  // Tab capture is the capture primitive; without it there is no
+  // screenshot feature (same pattern as voice: 'off').
+  if (!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia)) ui.shot.style.display = 'none';
 
   let toastTimer = 0;
   const toast = (msg) => {
@@ -951,6 +1007,20 @@
       x.textContent = '✕';
       x.onclick = () => { store.chips.splice(i, 1); render(); };
       el.append(b, x);
+      ui.chips.appendChild(el);
+    });
+    store.shots.forEach((s, i) => {
+      const el = document.createElement('span');
+      el.className = 'chip';
+      el.title = `screenshot ${s.w}×${s.h}`;
+      const img = document.createElement('img');
+      img.src = s.dataURL;
+      const b = document.createElement('b');
+      b.textContent = 'screenshot';
+      const x = document.createElement('button');
+      x.textContent = '✕';
+      x.onclick = () => { store.shots.splice(i, 1); render(); };
+      el.append(img, b, x);
       ui.chips.appendChild(el);
     });
 
@@ -1059,6 +1129,187 @@
     render();
   };
 
+  // ---------- screenshot area grab -----------------------------------------
+  // Mobile ScreenshotCropOverlay parity: capture first (frozen bitmap),
+  // then crop on top of it. The bitmap is stretched to the viewport
+  // (FillBounds), so selection→bitmap mapping is a plain ratio.
+  const SHOT_MIN_SIZE = 48; // mobile MIN_SIZE_DP
+  const SHOT_HANDLE_HIT = 32; // mobile HANDLE_TOUCH_DP
+  const SHOT_MAX_EDGE = 2000; // keep PNGs under the daemon's 5 MiB image cap
+  const SHOT_MAX_COUNT = 6; // mobile MAX_ATTACHMENTS
+  let shotCanvas = null; // frozen tab bitmap being cropped
+  let cropSel = null; // selection {x,y,w,h} in viewport px
+  let cropDrag = null; // {mode, sx, sy, orig}
+
+  const beginShot = async () => {
+    if (store.crop) return;
+    if (store.shots.length >= SHOT_MAX_COUNT) { toast(`max ${SHOT_MAX_COUNT} screenshots per message`); return; }
+    exitInspect();
+    // Keep the overlay out of the shot (mobile hides its overlay view
+    // before PixelCopy).
+    host.style.visibility = 'hidden';
+    let stream;
+    try {
+      // preferCurrentTab: Chromium's picker offers just this tab — the
+      // closest the web gets to mobile's window PixelCopy.
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: false,
+        preferCurrentTab: true,
+        selfBrowserSurface: 'include',
+      });
+      const video = document.createElement('video');
+      video.srcObject = stream;
+      video.muted = true;
+      await video.play();
+      // The first frames can be blank; prefer a real composited frame
+      // but never trust rVFC alone — it can stall for an off-DOM video —
+      // so a settle timeout unblocks either way (mobile's 48ms analog).
+      await new Promise((r) => {
+        if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(() => r());
+        setTimeout(r, 300);
+      });
+      const c = document.createElement('canvas');
+      c.width = video.videoWidth;
+      c.height = video.videoHeight;
+      c.getContext('2d').drawImage(video, 0, 0);
+      shotCanvas = c;
+    } catch (err) {
+      // NotAllowedError = the user dismissed the share picker; not an error.
+      if (!err || err.name !== 'NotAllowedError') toast('screenshot failed: ' + (err && err.message));
+      shotCanvas = null;
+      return;
+    } finally {
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+      host.style.visibility = '';
+    }
+    store.crop = true;
+    cropSel = null;
+    cropDrag = null;
+    shotCanvas.setAttribute('aria-hidden', 'true');
+    ui.crop.prepend(shotCanvas);
+    ui.crop.classList.add('on');
+    renderCrop();
+  };
+
+  const exitCrop = () => {
+    if (!store.crop) return;
+    store.crop = false;
+    cropSel = null;
+    cropDrag = null;
+    ui.crop.classList.remove('on');
+    if (shotCanvas) shotCanvas.remove();
+    shotCanvas = null;
+  };
+
+  const confirmCrop = () => {
+    if (!cropSel || !shotCanvas) return;
+    const sx = shotCanvas.width / innerWidth;
+    const sy = shotCanvas.height / innerHeight;
+    const cw = Math.round(cropSel.w * sx);
+    const ch = Math.round(cropSel.h * sy);
+    const scale = Math.min(1, SHOT_MAX_EDGE / Math.max(cw, ch));
+    const out = document.createElement('canvas');
+    out.width = Math.max(1, Math.round(cw * scale));
+    out.height = Math.max(1, Math.round(ch * scale));
+    out.getContext('2d').drawImage(shotCanvas, cropSel.x * sx, cropSel.y * sy, cw, ch, 0, 0, out.width, out.height);
+    store.shots.push({ dataURL: out.toDataURL('image/png'), w: out.width, h: out.height });
+    exitCrop();
+    toast('added to context');
+    if (store.box === 'hidden') setBox('prompt');
+    else render();
+  };
+
+  const renderCrop = () => {
+    const s = cropSel;
+    ui.cropDim.style.display = s ? 'none' : '';
+    ui.cropX0.style.display = s ? 'none' : '';
+    ui.cropSel.style.display = s ? 'block' : 'none';
+    ui.cropBar.style.display = s ? 'flex' : 'none';
+    if (!s) return;
+    Object.assign(ui.cropSel.style, { left: s.x + 'px', top: s.y + 'px', width: s.w + 'px', height: s.h + 'px' });
+    // The bar hangs 12px below the selection's bottom-right corner,
+    // clamped to 12px screen margins; tucks inside when there's no room
+    // below (mobile CropActionBar anchoring).
+    const bw = ui.cropBar.offsetWidth, bh = ui.cropBar.offsetHeight;
+    const bx = Math.max(12, Math.min(s.x + s.w - bw, innerWidth - bw - 12));
+    let by = s.y + s.h + 12;
+    if (by + bh > innerHeight - 12) by = innerHeight - bh - 12;
+    Object.assign(ui.cropBar.style, { left: bx + 'px', top: by + 'px' });
+  };
+
+  // Corners win, then edge bands, then interior = move, else a new box
+  // (mobile hitTest order).
+  const cropHit = (x, y) => {
+    const s = cropSel;
+    if (!s) return 'new';
+    const H = SHOT_HANDLE_HIT;
+    const nearL = Math.abs(x - s.x) <= H, nearR = Math.abs(x - s.x - s.w) <= H;
+    const nearT = Math.abs(y - s.y) <= H, nearB = Math.abs(y - s.y - s.h) <= H;
+    if (nearL && nearT) return 'tl';
+    if (nearR && nearT) return 'tr';
+    if (nearL && nearB) return 'bl';
+    if (nearR && nearB) return 'br';
+    const inX = x >= s.x && x <= s.x + s.w, inY = y >= s.y && y <= s.y + s.h;
+    if (nearL && inY) return 'l';
+    if (nearR && inY) return 'r';
+    if (nearT && inX) return 't';
+    if (nearB && inX) return 'b';
+    if (inX && inY) return 'move';
+    return 'new';
+  };
+
+  // Recompute the selection for the drag-in-progress: move clamps the
+  // whole box on-screen; resizes pin the opposite edge and enforce the
+  // min size (mobile applyDrag + normalizedRect).
+  const cropApply = (x, y) => {
+    const { mode, sx, sy, orig: o } = cropDrag;
+    if (mode === 'move') {
+      cropSel = {
+        x: Math.min(Math.max(o.x + x - sx, 0), innerWidth - o.w),
+        y: Math.min(Math.max(o.y + y - sy, 0), innerHeight - o.h),
+        w: o.w, h: o.h,
+      };
+      return;
+    }
+    let l, t, r, b;
+    if (mode === 'new') {
+      l = Math.min(sx, x); r = Math.max(sx, x);
+      t = Math.min(sy, y); b = Math.max(sy, y);
+      if (r - l < SHOT_MIN_SIZE) { if (x < sx) l = r - SHOT_MIN_SIZE; else r = l + SHOT_MIN_SIZE; }
+      if (b - t < SHOT_MIN_SIZE) { if (y < sy) t = b - SHOT_MIN_SIZE; else b = t + SHOT_MIN_SIZE; }
+    } else {
+      l = o.x; t = o.y; r = o.x + o.w; b = o.y + o.h;
+      const dx = x - sx, dy = y - sy;
+      if (/l/.test(mode)) l = Math.min(l + dx, r - SHOT_MIN_SIZE);
+      if (/r/.test(mode)) r = Math.max(r + dx, l + SHOT_MIN_SIZE);
+      if (/t/.test(mode)) t = Math.min(t + dy, b - SHOT_MIN_SIZE);
+      if (/b/.test(mode)) b = Math.max(b + dy, t + SHOT_MIN_SIZE);
+    }
+    l = Math.max(0, l); t = Math.max(0, t);
+    r = Math.min(innerWidth, r); b = Math.min(innerHeight, b);
+    cropSel = { x: l, y: t, w: r - l, h: b - t };
+  };
+
+  ui.crop.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    if (e.target.closest && e.target.closest('button')) return; // bar buttons handle their own clicks
+    e.preventDefault();
+    const mode = cropHit(e.clientX, e.clientY);
+    cropDrag = { mode, sx: e.clientX, sy: e.clientY, orig: cropSel && { ...cropSel } };
+    if (mode === 'new') cropSel = null; // the old box dissolves; the drag draws a fresh one
+    ui.crop.setPointerCapture(e.pointerId);
+    renderCrop();
+  });
+  ui.crop.addEventListener('pointermove', (e) => {
+    if (!cropDrag) return;
+    cropApply(e.clientX, e.clientY);
+    renderCrop();
+  });
+  const cropDragEnd = () => { cropDrag = null; };
+  ui.crop.addEventListener('pointerup', cropDragEnd);
+  ui.crop.addEventListener('pointercancel', cropDragEnd);
+
   // ---------- drag -----------------------------------------------------------
   (() => {
     const hd = $('.hd');
@@ -1095,6 +1346,10 @@
   // ---------- wiring -----------------------------------------------------------
   ui.send.onclick = () => { (store.agent === 'thinking' || store.agent === 'working') ? abort() : send(); };
   ui.sel.onclick = () => (store.inspect ? exitInspect() : enterInspect());
+  ui.shot.onclick = beginShot;
+  ui.cropAdd.onclick = confirmCrop;
+  ui.cropX.onclick = exitCrop;
+  ui.cropX0.onclick = exitCrop;
   ui.mic.addEventListener('pointerdown', (e) => { e.preventDefault(); startTalk(); });
   ui.mic.addEventListener('pointerup', stopTalk);
   ui.mic.addEventListener('pointerleave', stopTalk);
@@ -1227,6 +1482,12 @@
   const cancelModHold = () => { if (modHoldTimer) { clearTimeout(modHoldTimer); modHoldTimer = 0; } };
 
   window.addEventListener('keydown', (e) => {
+    if (store.crop) {
+      // The crop layer owns the keyboard: Esc cancels, everything else
+      // (including overlay hotkeys) stays off while it's up.
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); exitCrop(); }
+      return;
+    }
     if (e.code === 'CapsLock') {
       if (!e.repeat) talkToggle();
       return; // the OS lock state changes regardless; nothing to prevent
