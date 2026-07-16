@@ -184,6 +184,58 @@ func TestManagerStatusReflectsAvailability(t *testing.T) {
 	}
 }
 
+// TestManagerReaperSparesTouchedServers pins the liveness contract the
+// LAN `clank preview` keepalive depends on: Status reads and idempotent
+// re-Starts count as activity. Regression — lastTouch used to be set
+// only at spawn, so the reaper killed every LAN preview idleTimeout
+// after start even while the CLI and phone were actively using it
+// (their Metro traffic never crosses the daemon).
+func TestManagerReaperSparesTouchedServers(t *testing.T) {
+	t.Parallel()
+	m := New(Options{StopGrace: 1 * time.Second})
+	defer m.Shutdown()
+
+	dir := fixtureExpoWorkDir(t)
+	spec := testSpec(fakeMetroScript(""))
+	wids := []string{"wt-status-polled", "wt-restarted", "wt-untouched"}
+	for _, wid := range wids {
+		if _, err := m.startWithSpec(context.Background(), wid, dir, "default", spec, 0); err != nil {
+			t.Fatalf("start %s: %v", wid, err)
+		}
+	}
+
+	// Age every record past the idle cutoff, then touch two of them via
+	// the paths the CLI keepalive and phone polling actually hit.
+	stale := time.Now().Add(-2 * m.idleTimeout)
+	m.mu.Lock()
+	for _, r := range m.servers {
+		r.mu.Lock()
+		r.lastTouch = stale
+		r.mu.Unlock()
+	}
+	m.mu.Unlock()
+
+	if _, err := m.Status(context.Background(), "wt-status-polled", dir); err != nil {
+		t.Fatalf("status poll: %v", err)
+	}
+	if _, err := m.startWithSpec(context.Background(), "wt-restarted", dir, "default", spec, 0); err != nil {
+		t.Fatalf("idempotent restart: %v", err)
+	}
+
+	m.reapIdle()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, wid := range []string{"wt-status-polled", "wt-restarted"} {
+		if _, ok := m.servers[serviceKey{WorktreeID: wid, ServiceName: "default"}]; !ok {
+			t.Errorf("%s was reaped despite being touched after going stale", wid)
+		}
+	}
+	if _, ok := m.servers[serviceKey{WorktreeID: "wt-untouched", ServiceName: "default"}]; ok {
+		t.Errorf("wt-untouched survived the reaper despite being stale")
+	}
+}
+
 // TestManagerShutdownStopsAll spawns two stubs and confirms Shutdown
 // reaps both process trees (Change 2 again, at the manager level).
 func TestManagerShutdownStopsAll(t *testing.T) {
