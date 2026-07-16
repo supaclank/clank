@@ -107,10 +107,10 @@ func TestClaudeBackendManager_EnvResolver_ThreadsIntoExtraEnv(t *testing.T) {
 	}
 }
 
-// ListModels returns the three claude model families the CLI supports
-// via --model. Surfaced through /models?backend=claude-code so mobile's
-// compose flow can let users pick sonnet/opus/haiku. Hardcoded values
-// pinned here so an SDK bump that drops one family fails loudly.
+// ListModels returns the claude model families the CLI supports via
+// --model. Surfaced through /models?backend=claude-code so mobile's
+// compose flow can let users pick sonnet/opus/haiku/fable. Hardcoded
+// values pinned here so an SDK bump that drops one family fails loudly.
 func TestClaudeBackendManager_ListModels(t *testing.T) {
 	t.Parallel()
 	mgr := host.NewClaudeBackendManager()
@@ -128,7 +128,7 @@ func TestClaudeBackendManager_ListModels(t *testing.T) {
 			t.Errorf("model %s: ProviderID=%q, want %s", m.ID, m.ProviderID, host.ProviderAnthropicClaudeCode)
 		}
 	}
-	for _, want := range []string{"sonnet", "opus", "haiku"} {
+	for _, want := range []string{"sonnet", "opus", "haiku", "fable"} {
 		if !gotIDs[want] {
 			t.Errorf("missing %s in ListModels result", want)
 		}

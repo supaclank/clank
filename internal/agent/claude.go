@@ -312,6 +312,13 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	return nil
 }
 
+// AgentModelFable is the fable family alias (Claude Fable 5). The
+// pinned claude-agent-sdk-go doesn't ship this constant yet;
+// AgentModel is a plain string the SDK forwards to `claude --model`
+// unvalidated, and the CLI accepts the alias since 2.1.170 (below
+// PinnedClaudeVersion). Drop this once the SDK adds AgentModelFable.
+const AgentModelFable claudecode.AgentModel = "fable"
+
 // validClaudeModels is the closed set the claude CLI accepts via
 // --model. `inherit` is omitted on purpose — see ClaudeBackendManager
 // in internal/host/backends.go for the same rationale: it's a "use
@@ -324,6 +331,7 @@ var validClaudeModels = map[string]struct{}{
 	string(claudecode.AgentModelSonnet): {},
 	string(claudecode.AgentModelOpus):   {},
 	string(claudecode.AgentModelHaiku):  {},
+	string(AgentModelFable):             {},
 }
 
 // IsValidClaudeModel reports whether id is one of the family aliases
@@ -362,7 +370,7 @@ func (b *ClaudeCodeBackend) OpenAndSend(ctx context.Context, opts SendMessageOpt
 	// parameters — clear API contracts over silent corrections.
 	if opts.Model != nil && opts.Model.ModelID != "" && !IsValidClaudeModel(opts.Model.ModelID) {
 		b.setStatus(StatusError)
-		return fmt.Errorf("claude backend: model %q is not a valid claude CLI model (valid: sonnet, opus, haiku)", opts.Model.ModelID)
+		return fmt.Errorf("claude backend: model %q is not a valid claude CLI model (valid: sonnet, opus, haiku, fable)", opts.Model.ModelID)
 	}
 
 	// Mark Busy before Open so Open's "Starting → Idle" conditional
