@@ -176,6 +176,30 @@ func TestGitHubProxy_PreviewPR_ForwardsID(t *testing.T) {
 	}
 }
 
+func TestGitHubProxy_MarkPRReady_ForwardsID(t *testing.T) {
+	t.Parallel()
+	host := &captureHost{
+		respStatus: http.StatusOK,
+		respCT:     "application/json",
+		respBody:   `{"pr_number":7,"pr_url":"https://github.com/acme/api/pull/7"}`,
+	}
+	gw := newGatewayForGitHubProxyTest(t, host)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/worktrees/01WT/pr/ready", nil)
+	rr := httptest.NewRecorder()
+	gw.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if host.path.Load() != "/worktrees/01WT/pr/ready" {
+		t.Errorf("host path = %v, want /worktrees/01WT/pr/ready", host.path.Load())
+	}
+	if !strings.Contains(rr.Body.String(), `"pr_number":7`) {
+		t.Errorf("body not forwarded verbatim: %s", rr.Body.String())
+	}
+}
+
 func TestGitHubProxy_CreatePR_ForwardsIDAndBody(t *testing.T) {
 	t.Parallel()
 	host := &captureHost{

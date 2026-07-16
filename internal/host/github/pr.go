@@ -33,6 +33,7 @@ type CreatePRInput struct {
 type PullRequest struct {
 	Number  int    `json:"number"`
 	HTMLURL string `json:"html_url"`
+	Draft   bool   `json:"draft"`
 	Head    struct {
 		SHA string `json:"sha"`
 	} `json:"head"`
@@ -198,6 +199,7 @@ func wirePR(pr *gogithub.PullRequest) PullRequest {
 	out := PullRequest{
 		Number:  pr.GetNumber(),
 		HTMLURL: pr.GetHTMLURL(),
+		Draft:   pr.GetDraft(),
 	}
 	if pr.Head != nil {
 		out.Head.SHA = pr.GetHead().GetSHA()
