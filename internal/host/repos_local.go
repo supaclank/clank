@@ -129,6 +129,12 @@ func (s *Service) discoveredLocalRepos(ctx context.Context) ([]RepoInfo, error) 
 		if _, statErr := os.Stat(dir); statErr != nil {
 			continue // folder is gone — stale session row, not a repo
 		}
+		// TODO(ai-review): localCheckoutRoot spawns a git subprocess per
+		// candidate dir, sequentially — bounded to maxDiscoveredLocalRepos
+		// valid roots, but a host with many stale/scratch session dirs
+		// interleaved with real repos still pays one sequential spawn per
+		// dir scanned (not just per root kept) before hitting the cap.
+		// https://github.com/Acksell/clank/pull/161#discussion_r3599240729
 		root, rootErr := localCheckoutRoot(dir)
 		if rootErr != nil {
 			continue // sessions in non-repo scratch dirs (or bare repos) aren't checkouts
