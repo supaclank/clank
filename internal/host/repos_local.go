@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/repolabel"
@@ -32,6 +33,16 @@ import (
 // maxRepoSlugLength bounds any repo slug at the HTTP boundary. Sized
 // for a local-checkout slug: base64url of a near-PATH_MAX path.
 const maxRepoSlugLength = 1400
+
+// maxDiscoveredLocalRepos bounds how many distinct checkouts a listing
+// mines from session history. Sessions are read most-recently-updated
+// first, so the cap keeps the listing to recents rather than growing
+// unbounded (and unresponsive) over months of history.
+const maxDiscoveredLocalRepos = 30
+
+// MaxDiscoveredLocalReposForTest exposes maxDiscoveredLocalRepos to the
+// external host_test package. Test-only.
+const MaxDiscoveredLocalReposForTest = maxDiscoveredLocalRepos
 
 // localRepoSlug encodes a checkout's absolute root path as its routing
 // key. base64url stays inside the slug alphabet, is lossless, and
@@ -79,6 +90,9 @@ func (s *Service) discoveredLocalRepos(ctx context.Context) ([]RepoInfo, error) 
 	rootSeen := map[string]bool{}
 	var roots []string
 	for _, sess := range sessions {
+		if len(roots) >= maxDiscoveredLocalRepos {
+			break // sessions are most-recently-updated first — keep the recents
+		}
 		dir := sess.GitRef.LocalPath
 		if dir == "" || !filepath.IsAbs(dir) || dirSeen[dir] {
 			continue
@@ -104,15 +118,31 @@ func (s *Service) discoveredLocalRepos(ctx context.Context) ([]RepoInfo, error) 
 	}
 	sort.Strings(roots)
 
+	// Each root spawns several git subprocesses (localRepoInfoFor) —
+	// run them concurrently so listing latency is one round-trip, not
+	// len(roots) of them.
+	results := make([]*RepoInfo, len(roots))
+	var wg sync.WaitGroup
+	for i, root := range roots {
+		wg.Add(1)
+		go func(i int, root string) {
+			defer wg.Done()
+			info, infoErr := s.localRepoInfoFor(root)
+			if infoErr != nil {
+				// One broken checkout must not take the whole listing down.
+				s.log.Printf("list repos: skip local checkout %s: %v", root, infoErr)
+				return
+			}
+			results[i] = &info
+		}(i, root)
+	}
+	wg.Wait()
+
 	infos := make([]RepoInfo, 0, len(roots))
-	for _, root := range roots {
-		info, infoErr := s.localRepoInfoFor(root)
-		if infoErr != nil {
-			// One broken checkout must not take the whole listing down.
-			s.log.Printf("list repos: skip local checkout %s: %v", root, infoErr)
-			continue
+	for _, info := range results {
+		if info != nil {
+			infos = append(infos, *info)
 		}
-		infos = append(infos, info)
 	}
 	return infos, nil
 }

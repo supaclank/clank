@@ -47,6 +47,14 @@ const (
 	// single '-', so a sanitized name can never contain "__" — making
 	// the mapping unambiguous.
 	importSlugSeparator = "__"
+
+	// canonicalSlugNameMax bounds a slug considered for the canonical
+	// stat: NAME_MAX on ext4/APFS is 255 bytes, and every minted
+	// canonical slug (sanitized owner__repo) is far shorter. A
+	// local-checkout slug (base64url of a real path) routinely exceeds
+	// it — stat-ing it as a dir name risks ENAMETOOLONG instead of
+	// ErrNotExist, so it's skipped rather than misread as a stat error.
+	canonicalSlugNameMax = 255
 )
 
 // reposRootDir returns the directory holding the canonical clones
@@ -189,15 +197,17 @@ func resolveRepoSlug(slug string) (resolvedRepo, error) {
 	if !validSlug(slug) {
 		return resolvedRepo{}, fmt.Errorf("%w: invalid repo slug %q", ErrInvalidArgument, slug)
 	}
-	gitDir, err := canonicalGitDir(slug)
-	if err != nil {
-		return resolvedRepo{}, err
-	}
-	switch _, statErr := os.Stat(gitDir); {
-	case statErr == nil:
-		return resolvedRepo{gitDir: gitDir, slug: slug}, nil
-	case !os.IsNotExist(statErr):
-		return resolvedRepo{}, fmt.Errorf("stat canonical %q: %w", slug, statErr)
+	if len(slug) <= canonicalSlugNameMax {
+		gitDir, err := canonicalGitDir(slug)
+		if err != nil {
+			return resolvedRepo{}, err
+		}
+		switch _, statErr := os.Stat(gitDir); {
+		case statErr == nil:
+			return resolvedRepo{gitDir: gitDir, slug: slug}, nil
+		case !os.IsNotExist(statErr):
+			return resolvedRepo{}, fmt.Errorf("stat canonical %q: %w", slug, statErr)
+		}
 	}
 	path, ok := localRepoPath(slug)
 	if !ok {

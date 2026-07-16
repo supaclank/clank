@@ -265,6 +265,80 @@ func TestResolveRepoSlug_CanonicalWinsOverLocalDecoding(t *testing.T) {
 	}
 }
 
+func TestResolveRepoSlug_LongLocalPathFallsBackToLocalDecoding(t *testing.T) {
+	// Not parallel: SetWorkRootForTest mutates a global.
+	workRoot := filepath.Join(t.TempDir(), "work")
+	prev := host.SetWorkRootForTest(workRoot)
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
+
+	// ~/work/repos must exist for the canonical stat to actually reach
+	// (and fail on) the long component — on any host with at least one
+	// canonical it already does; an absent parent dir would fail at
+	// ENOENT before the length is ever evaluated.
+	if err := os.MkdirAll(filepath.Join(workRoot, "repos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build a root whose base64url slug exceeds a single path
+	// component's NAME_MAX (255 bytes on ext4/APFS) — regression for
+	// resolveRepoSlug treating the resulting ENAMETOOLONG canonical
+	// stat as a hard error instead of falling through to local
+	// decoding (base64 inflates length by ~4/3, so ~200 raw bytes is
+	// enough to cross 255 encoded).
+	long := t.TempDir()
+	for len(long) < 220 {
+		long = filepath.Join(long, strings.Repeat("x", 40))
+	}
+	if err := os.MkdirAll(long, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, long, "init", "-b", "main")
+	gitIn(t, long, "config", "user.email", "t@t")
+	gitIn(t, long, "config", "user.name", "T")
+	gitIn(t, long, "remote", "add", "origin", "git@github.com:acme/widget.git")
+	if err := os.WriteFile(filepath.Join(long, "README"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, long, "add", ".")
+	gitIn(t, long, "commit", "-m", "initial")
+
+	svc := newLocalRepoService(t, long)
+	slug, _ := localSlugFor(t, long)
+	if len(slug) <= 255 {
+		t.Fatalf("test setup: slug length = %d, want > 255 to exercise ENAMETOOLONG", len(slug))
+	}
+
+	overview, err := svc.RepoOverview(context.Background(), slug, false)
+	if err != nil {
+		t.Fatalf("RepoOverview: %v", err)
+	}
+	if overview.Slug != slug {
+		t.Errorf("slug = %q, want %q", overview.Slug, slug)
+	}
+}
+
+func TestListRepos_CapsDiscoveredLocalRepos(t *testing.T) {
+	// Not parallel: SetWorkRootForTest mutates a global.
+	workRoot := filepath.Join(t.TempDir(), "work")
+	prev := host.SetWorkRootForTest(workRoot)
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
+
+	const total = host.MaxDiscoveredLocalReposForTest + 5
+	dirs := make([]string, total)
+	for i := range dirs {
+		dirs[i] = initGitRepo(t, "git@github.com:acme/widget.git")
+	}
+
+	svc := newLocalRepoService(t, dirs...)
+	repos, err := svc.ListRepos(context.Background())
+	if err != nil {
+		t.Fatalf("ListRepos: %v", err)
+	}
+	if len(repos) != host.MaxDiscoveredLocalReposForTest {
+		t.Fatalf("repos = %d, want capped at %d", len(repos), host.MaxDiscoveredLocalReposForTest)
+	}
+}
+
 func TestRepoOverview_LocalCheckout(t *testing.T) {
 	// Not parallel: SetWorkRootForTest + t.Setenv mutate globals.
 	t.Setenv("HOME", t.TempDir())
