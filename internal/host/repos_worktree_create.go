@@ -49,26 +49,40 @@ func (s *Service) CreateRepoWorktree(ctx context.Context, slug string, req RepoW
 			return RepoWorktreeResult{}, fmt.Errorf("%w: invalid branch %q", ErrInvalidArgument, b)
 		}
 	}
-	gitDir, err := resolveRepoSlug(slug)
+	repo, err := resolveRepoSlug(slug)
 	if err != nil {
 		return RepoWorktreeResult{}, err
 	}
 
-	defer s.lockRepo(slug)()
+	// A local checkout's default branch belongs to the user's primary
+	// worktree — even when it happens not to be checked out right now,
+	// loading it would block their next `git checkout <default>`.
+	// Forking off it is always safe.
+	if repo.localCheckout && req.Branch != "" {
+		defaultBranch, err := git.DefaultBranch(repo.gitDir)
+		if err != nil {
+			return RepoWorktreeResult{}, fmt.Errorf("resolve default branch: %w", err)
+		}
+		if req.Branch == defaultBranch {
+			return RepoWorktreeResult{}, fmt.Errorf("%w: %q", ErrReservedBranch, req.Branch)
+		}
+	}
+
+	defer s.lockRepo(repo.slug)()
 
 	if req.Branch != "" {
-		return s.loadRepoBranch(ctx, slug, gitDir, req.Branch)
+		return s.loadRepoBranch(ctx, repo.slug, repo.gitDir, repo.localCheckout, req.Branch)
 	}
-	return s.forkRepoBranch(ctx, slug, gitDir, req.BaseBranch)
+	return s.forkRepoBranch(ctx, repo.slug, repo.gitDir, repo.localCheckout, req.BaseBranch)
 }
 
 // loadRepoBranch checks the named branch out into a worktree (fetching
 // it from origin when it isn't local yet). Caller holds the repo lock.
-func (s *Service) loadRepoBranch(ctx context.Context, slug, gitDir, branch string) (RepoWorktreeResult, error) {
+func (s *Service) loadRepoBranch(ctx context.Context, slug, gitDir string, localCheckout bool, branch string) (RepoWorktreeResult, error) {
 	if err := s.ensureRepoBranchAvailable(gitDir, branch); err != nil {
 		return RepoWorktreeResult{}, err
 	}
-	result, err := s.addRepoWorktree(ctx, slug, gitDir, branch, branch)
+	result, err := s.addRepoWorktree(ctx, slug, gitDir, localCheckout, branch, branch)
 	if err != nil {
 		return RepoWorktreeResult{}, err
 	}
@@ -81,7 +95,7 @@ func (s *Service) loadRepoBranch(ctx context.Context, slug, gitDir, branch strin
 // forkRepoBranch creates a fresh petname branch off base and loads it.
 // The base may be a loaded branch's live ref, a canonical-local ref, or
 // remote-only (fetched on demand). Caller holds the repo lock.
-func (s *Service) forkRepoBranch(ctx context.Context, slug, gitDir, base string) (RepoWorktreeResult, error) {
+func (s *Service) forkRepoBranch(ctx context.Context, slug, gitDir string, localCheckout bool, base string) (RepoWorktreeResult, error) {
 	if err := s.ensureRepoBranchAvailable(gitDir, base); err != nil {
 		return RepoWorktreeResult{}, err
 	}
@@ -94,7 +108,7 @@ func (s *Service) forkRepoBranch(ctx context.Context, slug, gitDir, base string)
 	if err != nil {
 		return RepoWorktreeResult{}, err
 	}
-	result, err := s.addRepoWorktreeNewBranch(ctx, slug, gitDir, branch, baseRef)
+	result, err := s.addRepoWorktreeNewBranch(ctx, slug, gitDir, localCheckout, branch, baseRef)
 	if err != nil {
 		return RepoWorktreeResult{}, err
 	}
@@ -126,7 +140,7 @@ func resolveRepoRef(gitDir, branch string) (string, error) {
 // addRepoWorktreeNewBranch is addRepoWorktree's fork twin: create a NEW
 // branch at baseRef and link its worktree at ~/work/<newULID>. No
 // idempotency arm — the petname is freshly minted under the repo lock.
-func (s *Service) addRepoWorktreeNewBranch(ctx context.Context, slug, gitDir, branch, baseRef string) (RepoWorktreeResult, error) {
+func (s *Service) addRepoWorktreeNewBranch(ctx context.Context, slug, gitDir string, localCheckout bool, branch, baseRef string) (RepoWorktreeResult, error) {
 	root, err := workRootDir()
 	if err != nil {
 		return RepoWorktreeResult{}, err
@@ -167,7 +181,7 @@ func (s *Service) addRepoWorktreeNewBranch(ctx context.Context, slug, gitDir, br
 			Branch:      branch,
 			WorktreeDir: wtDir,
 			DisplayName: branch,
-			OriginRepo:  repoLabelFor(gitDir),
+			OriginRepo:  repoDisplayLabel(gitDir, localCheckout),
 			RepoSlug:    slug,
 		},
 		Created: true,

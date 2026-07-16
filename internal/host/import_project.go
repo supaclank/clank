@@ -124,7 +124,7 @@ func (s *Service) ImportProjectFromGitHub(ctx context.Context, owner, repo, bran
 		return CreateWorktreeResult{}, s.rollbackCanonical(gitDir, createdCanonical, err)
 	}
 
-	result, err := s.addRepoWorktree(ctx, slug, gitDir, branch, repo)
+	result, err := s.addRepoWorktree(ctx, slug, gitDir, false, branch, repo)
 	if err != nil {
 		return CreateWorktreeResult{}, s.rollbackCanonical(gitDir, createdCanonical, err)
 	}
@@ -178,12 +178,18 @@ type RepoWorktreeResult struct {
 // displayName seeds CreateWorktreeResult.DisplayName.
 //
 // Caller holds the repo lock.
-func (s *Service) addRepoWorktree(ctx context.Context, slug, gitDir, branch, displayName string) (RepoWorktreeResult, error) {
-	// Idempotency: branch already loaded → hand back its worktree.
+func (s *Service) addRepoWorktree(ctx context.Context, slug, gitDir string, localCheckout bool, branch, displayName string) (RepoWorktreeResult, error) {
+	// Idempotency: branch already loaded → hand back its worktree. A
+	// worktree with no readable id isn't clank's (a local checkout's
+	// primary worktree, one the user added by hand, or a corrupted
+	// stamp) — git allows a branch in at most one worktree either way.
 	if existing, err := git.FindWorktreeForBranch(gitDir, branch); err == nil && existing != nil {
 		worktreeID, idErr := agent.ReadLocalWorktreeID(existing.Path)
-		if idErr != nil || worktreeID == "" {
-			return RepoWorktreeResult{}, fmt.Errorf("branch %q already checked out at %s but its worktree id is unreadable: %v", branch, existing.Path, idErr)
+		if idErr != nil {
+			return RepoWorktreeResult{}, fmt.Errorf("%w: branch %q at %s: %v", ErrBranchCheckedOutElsewhere, branch, existing.Path, idErr)
+		}
+		if worktreeID == "" {
+			return RepoWorktreeResult{}, fmt.Errorf("%w: branch %q at %s: empty worktree id stamp", ErrBranchCheckedOutElsewhere, branch, existing.Path)
 		}
 		return RepoWorktreeResult{
 			CreateWorktreeResult: CreateWorktreeResult{
@@ -191,7 +197,7 @@ func (s *Service) addRepoWorktree(ctx context.Context, slug, gitDir, branch, dis
 				Branch:      branch,
 				WorktreeDir: existing.Path,
 				DisplayName: displayName,
-				OriginRepo:  repoLabelFor(gitDir),
+				OriginRepo:  repoDisplayLabel(gitDir, localCheckout),
 				RepoSlug:    slug,
 			},
 			Created: false,
@@ -252,7 +258,7 @@ func (s *Service) addRepoWorktree(ctx context.Context, slug, gitDir, branch, dis
 			Branch:      branch,
 			WorktreeDir: wtDir,
 			DisplayName: displayName,
-			OriginRepo:  repoLabelFor(gitDir),
+			OriginRepo:  repoDisplayLabel(gitDir, localCheckout),
 			RepoSlug:    slug,
 		},
 		Created: true,
