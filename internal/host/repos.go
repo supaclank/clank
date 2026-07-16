@@ -16,6 +16,7 @@ package host
 // creation.
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -280,15 +281,15 @@ func (s *Service) ensureRepoBranchAvailable(gitDir, branch string) error {
 		if s.github == nil {
 			return ErrGitHubManagerUnavailable
 		}
-		creds, cerr := s.github.Store().Read()
-		if cerr != nil {
-			return fmt.Errorf("read github credentials: %w", cerr)
-		}
-		if creds.AccessToken == "" {
-			return ErrGitHubNotConnected
+		token, terr := s.github.AccessToken()
+		if terr != nil {
+			if errors.Is(terr, githubpkg.ErrNotConnected) {
+				return ErrGitHubNotConnected
+			}
+			return fmt.Errorf("github token: %w", terr)
 		}
 		fetchURL = fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
-		authHeader = buildAuthHeader(creds.AccessToken)
+		authHeader = buildAuthHeader(token)
 	}
 	refspec := "+refs/heads/" + branch + ":refs/remotes/origin/" + branch
 	if err := git.Fetch(gitDir, fetchURL, refspec, git.PushOptions{ExtraHeader: authHeader}); err != nil {

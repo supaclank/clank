@@ -39,6 +39,11 @@ type Manager struct {
 	// StartConnect cancels the previous flow before starting.
 	flowMu      sync.Mutex
 	currentFlow *flowState
+
+	// ghCLIFallback lets AccessToken borrow the machine's own gh CLI
+	// login when the store holds no token. Set once at wiring time via
+	// EnableGhCLIFallback, before the manager serves requests.
+	ghCLIFallback bool
 }
 
 // NewManager constructs a Manager rooted at homeDir with the given
@@ -82,6 +87,15 @@ func (t *userAgentTransport) RoundTrip(req *http.Request) (*http.Response, error
 	return t.base.RoundTrip(cloned)
 }
 
+// EnableGhCLIFallback lets AccessToken (and Status) fall back to the
+// machine's own gh CLI login when no clank connection exists. A
+// deployment decision, not a default: the local laptop provisioner
+// enables it — the host IS the user's machine, where agent sessions
+// could run `gh auth token` themselves, so borrowing it exposes
+// nothing new — while sandboxes keep token access explicit. Call once
+// at wiring time, before the manager serves requests.
+func (m *Manager) EnableGhCLIFallback() { m.ghCLIFallback = true }
+
 // SetPollSafetyMargin overrides the slack added to each device-flow
 // poll interval. Defaults to 3s (matches RFC 8628 §3.4 guidance);
 // tests set 0 so the flow polls at GitHub's returned cadence.
@@ -117,6 +131,18 @@ func (m *Manager) ClientID() string { return m.clientID }
 func (m *Manager) IsAvailable() bool { return m.clientID != "" }
 
 // Status is the wire shape returned from GET /credentials/github/status.
+// CredentialSource values for Status.Source.
+const (
+	// CredentialSourceStore is a token from clank's own device-flow
+	// store — connected/disconnected through clank.
+	CredentialSourceStore = "store"
+	// CredentialSourceGhCLI is a token borrowed live from the
+	// machine's gh CLI login. clank stores nothing and cannot
+	// disconnect it — that's `gh auth logout`'s job — so clients
+	// should hide the disconnect affordance for this source.
+	CredentialSourceGhCLI = "gh_cli"
+)
+
 // `available` is the host-level capability flag; `connected` is the
 // per-user "do we have a token" flag. Both are needed by the UI so it
 // can distinguish "this host doesn't support GitHub" from "this host
@@ -124,6 +150,7 @@ func (m *Manager) IsAvailable() bool { return m.clientID != "" }
 type Status struct {
 	Available   bool      `json:"available"`
 	Connected   bool      `json:"connected"`
+	Source      string    `json:"source,omitempty"` // CredentialSource* when connected
 	GitHubLogin string    `json:"github_login,omitempty"`
 	Scopes      []string  `json:"scopes,omitempty"`
 	InstalledAt time.Time `json:"installed_at,omitzero"`
@@ -131,19 +158,28 @@ type Status struct {
 
 // Status returns the current connection state. Reads the credential
 // file on every call — cheap and avoids stale-cache bugs across
-// disconnect/reconnect.
+// disconnect/reconnect. With the gh CLI fallback enabled, a host with
+// no stored token but a logged-in gh still reports connected (source
+// gh_cli, login unknown — identity isn't part of gh's token handoff).
 func (m *Manager) Status(_ context.Context) (Status, error) {
 	c, err := m.store.Read()
 	if err != nil {
 		return Status{}, err
 	}
-	return Status{
+	st := Status{
 		Available:   m.IsAvailable(),
 		Connected:   c.AccessToken != "",
 		GitHubLogin: c.GitHubLogin,
 		Scopes:      c.Scopes,
 		InstalledAt: c.InstalledAt,
-	}, nil
+	}
+	if st.Connected {
+		st.Source = CredentialSourceStore
+	} else if m.ghCLIFallback && ghCLIToken() != "" {
+		st.Connected = true
+		st.Source = CredentialSourceGhCLI
+	}
+	return st, nil
 }
 
 // Disconnect removes the stored credential. Idempotent: missing file

@@ -20,6 +20,7 @@ package host
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -206,15 +207,15 @@ func (s *Service) fetchAllHeads(gitDir, remoteURL string) error {
 		if s.github == nil {
 			return ErrGitHubManagerUnavailable
 		}
-		creds, cerr := s.github.Store().Read()
-		if cerr != nil {
-			return fmt.Errorf("read github credentials: %w", cerr)
-		}
-		if creds.AccessToken == "" {
-			return ErrGitHubNotConnected
+		token, terr := s.github.AccessToken()
+		if terr != nil {
+			if errors.Is(terr, githubpkg.ErrNotConnected) {
+				return ErrGitHubNotConnected
+			}
+			return fmt.Errorf("github token: %w", terr)
 		}
 		fetchURL = fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
-		authHeader = buildAuthHeader(creds.AccessToken)
+		authHeader = buildAuthHeader(token)
 	}
 	if err := git.Fetch(gitDir, fetchURL, allHeadsFetchRefspec, git.PushOptions{ExtraHeader: authHeader}); err != nil {
 		return fmt.Errorf("fetch origin heads: %w", err)
@@ -269,22 +270,25 @@ func (s *Service) attachRepoPRs(ctx context.Context, result *RepoOverviewResult)
 	if result.Origin == nil || s.github == nil {
 		return
 	}
-	creds, err := s.github.Store().Read()
-	if err != nil || creds.AccessToken == "" {
+	token, err := s.github.AccessToken()
+	if err != nil {
 		return
 	}
-	open, err := s.github.ListPullRequests(ctx, creds.AccessToken, result.Origin.Owner, result.Origin.Repo, githubpkg.PRListStateOpen)
+	// Login is annotation-only (is_mine); unknown for gh CLI-borrowed
+	// tokens, where every PR degrades to is_mine=false.
+	login := s.github.StoredLogin()
+	open, err := s.github.ListPullRequests(ctx, token, result.Origin.Owner, result.Origin.Repo, githubpkg.PRListStateOpen)
 	if err != nil {
 		s.log.Printf("repo overview: list open PRs for %s/%s: %v", result.Origin.Owner, result.Origin.Repo, err)
 		return
 	}
 	byHead := make(map[string]*OverviewPR, len(open))
 	for _, pr := range open {
-		byHead[pr.HeadBranch] = wireOverviewPR(pr, creds.GitHubLogin)
+		byHead[pr.HeadBranch] = wireOverviewPR(pr, login)
 	}
 	// Checks are fetched for open PRs only — a merged/closed PR's CI
 	// verdict is history, not a work signal worth the extra calls.
-	s.attachPRChecks(ctx, creds.AccessToken, result.Origin, open, byHead)
+	s.attachPRChecks(ctx, token, result.Origin, open, byHead)
 	for i := range result.Branches {
 		if pr, ok := byHead[result.Branches[i].Branch]; ok {
 			result.Branches[i].PR = pr
@@ -302,7 +306,7 @@ func (s *Service) attachRepoPRs(ctx context.Context, result *RepoOverviewResult)
 			PR:           pr,
 		})
 	}
-	s.attachClosedRepoPRs(ctx, result, creds)
+	s.attachClosedRepoPRs(ctx, result, token, login)
 }
 
 // attachClosedRepoPRs marks local branches whose PR merged or closed.
@@ -316,8 +320,8 @@ func (s *Service) attachRepoPRs(ctx context.Context, result *RepoOverviewResult)
 // still come back unannotated and land in Drafts. If that bites, query
 // per-head (GET /pulls?head=owner:branch) for the leftover branches
 // instead of one bulk list.
-func (s *Service) attachClosedRepoPRs(ctx context.Context, result *RepoOverviewResult, creds githubpkg.Credentials) {
-	closed, err := s.github.ListPullRequests(ctx, creds.AccessToken, result.Origin.Owner, result.Origin.Repo, githubpkg.PRListStateClosed)
+func (s *Service) attachClosedRepoPRs(ctx context.Context, result *RepoOverviewResult, token, login string) {
+	closed, err := s.github.ListPullRequests(ctx, token, result.Origin.Owner, result.Origin.Repo, githubpkg.PRListStateClosed)
 	if err != nil {
 		s.log.Printf("repo overview: list closed PRs for %s/%s: %v", result.Origin.Owner, result.Origin.Repo, err)
 		return
@@ -333,7 +337,7 @@ func (s *Service) attachClosedRepoPRs(ctx context.Context, result *RepoOverviewR
 			continue
 		}
 		if pr, ok := byHead[result.Branches[i].Branch]; ok {
-			result.Branches[i].PR = wireOverviewPR(pr, creds.GitHubLogin)
+			result.Branches[i].PR = wireOverviewPR(pr, login)
 		}
 	}
 }

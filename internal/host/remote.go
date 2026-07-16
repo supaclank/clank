@@ -85,12 +85,12 @@ func (s *Service) remoteContextFor(_ context.Context, worktreeID string) (remote
 	if err != nil {
 		return remoteContext{}, fmt.Errorf("resolve worktree: %w", err)
 	}
-	creds, err := s.github.Store().Read()
+	token, err := s.github.AccessToken()
 	if err != nil {
-		return remoteContext{}, fmt.Errorf("read github credentials: %w", err)
-	}
-	if creds.AccessToken == "" {
-		return remoteContext{}, ErrGitHubNotConnected
+		if errors.Is(err, githubpkg.ErrNotConnected) {
+			return remoteContext{}, ErrGitHubNotConnected
+		}
+		return remoteContext{}, fmt.Errorf("github token: %w", err)
 	}
 	branch, err := git.CurrentBranch(workdir)
 	if err != nil {
@@ -113,8 +113,8 @@ func (s *Service) remoteContextFor(_ context.Context, worktreeID string) (remote
 		owner:      owner,
 		repo:       repo,
 		pushURL:    fmt.Sprintf("https://github.com/%s/%s.git", owner, repo),
-		authHeader: buildAuthHeader(creds.AccessToken),
-		token:      creds.AccessToken,
+		authHeader: buildAuthHeader(token),
+		token:      token,
 	}, nil
 }
 

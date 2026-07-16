@@ -172,6 +172,10 @@ func (p *Provisioner) EnsureHost(_ context.Context, _ string) (provisioner.HostR
 		// The laptop host shares the user's filesystem, so honor file://
 		// image attachments (zero-copy). Remote sprites never get this flag.
 		"--local-file-attachments",
+		// Same reasoning for GitHub auth: the machine's own gh CLI login
+		// is right there (and agent sessions could read it anyway), so
+		// borrow it instead of demanding a second device-flow connect.
+		"--gh-cli-auth",
 	}
 	if p.opts.DataDir != "" {
 		if err := os.MkdirAll(p.opts.DataDir, 0o700); err != nil {
