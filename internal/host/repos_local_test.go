@@ -555,12 +555,16 @@ func TestResolveRepoSlug_PathMaxLengthSlugIsValid(t *testing.T) {
 	// staying well under a Linux PATH_MAX (4096) path's ~5460-char slug.
 	// Regression for validSlug rejecting a slug ListRepos would have
 	// happily returned.
+	// Built one segment at a time: a checkout this deep can only exist
+	// where the OS allows it (macOS caps a path at 1024 bytes, so the
+	// regression is unreachable there — skip rather than fake it).
 	long := t.TempDir()
 	for len(long) < 1100 {
-		long = filepath.Join(long, strings.Repeat("x", 40))
-	}
-	if err := os.MkdirAll(long, 0o755); err != nil {
-		t.Fatal(err)
+		next := filepath.Join(long, strings.Repeat("x", 40))
+		if err := os.Mkdir(next, 0o755); err != nil {
+			t.Skipf("this OS cannot hold a path deep enough to exercise the cap: %v", err)
+		}
+		long = next
 	}
 	gitIn(t, long, "init", "-b", "main")
 	gitIn(t, long, "config", "user.email", "t@t")
