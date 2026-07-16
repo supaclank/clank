@@ -26,6 +26,7 @@ type RemoteStatusResult struct {
 	PRNumber     int                      `json:"pr_number,omitempty"`
 	PRURL        string                   `json:"pr_url,omitempty"`
 	PRBaseBranch string                   `json:"pr_base_branch,omitempty"`
+	PRDraft      bool                     `json:"pr_draft,omitempty"`
 	PRMergeable  githubpkg.MergeableState `json:"pr_mergeable,omitempty"`
 }
 
@@ -108,6 +109,7 @@ func (s *Service) attachPR(ctx context.Context, result *RemoteStatusResult, rc r
 	result.PRNumber = pr.Number
 	result.PRURL = pr.HTMLURL
 	result.PRBaseBranch = pr.Base.Ref
+	result.PRDraft = pr.Draft
 	state, err := s.github.PRMergeable(ctx, rc.token, rc.owner, rc.repo, pr.Number)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {

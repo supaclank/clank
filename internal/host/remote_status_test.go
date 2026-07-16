@@ -75,7 +75,7 @@ func TestRemoteSyncStatus_PRMergeability(t *testing.T) {
 		switch {
 		case r.URL.Path == "/repos/acme/api/pulls" && r.Method == http.MethodGet:
 			_, _ = w.Write([]byte(`[{"number":7,"html_url":"https://github.com/acme/api/pull/7",
-				"head":{"sha":"abc"},"base":{"ref":"main"}}]`))
+				"draft":true,"head":{"sha":"abc"},"base":{"ref":"main"}}]`))
 		case r.URL.Path == "/repos/acme/api/pulls/7" && r.Method == http.MethodGet:
 			mu.Lock()
 			status, body := detailStatus, detailBody
@@ -112,6 +112,9 @@ func TestRemoteSyncStatus_PRMergeability(t *testing.T) {
 	if result.PRNumber != 7 || result.PRBaseBranch != "main" {
 		t.Errorf("PR fields = #%d base %q, want #7 base main", result.PRNumber, result.PRBaseBranch)
 	}
+	if !result.PRDraft {
+		t.Error("PRDraft = false, want true (drives the mobile mark-ready button)")
+	}
 	if result.PRMergeable != githubpkg.MergeableStateConflicting {
 		t.Errorf("PRMergeable = %q, want conflicting", result.PRMergeable)
 	}
@@ -120,7 +123,8 @@ func TestRemoteSyncStatus_PRMergeability(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(wire), `"pr_mergeable":"conflicting"`) ||
-		!strings.Contains(string(wire), `"pr_base_branch":"main"`) {
+		!strings.Contains(string(wire), `"pr_base_branch":"main"`) ||
+		!strings.Contains(string(wire), `"pr_draft":true`) {
 		t.Errorf("wire JSON missing PR annotations: %s", wire)
 	}
 
