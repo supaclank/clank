@@ -31,8 +31,11 @@ import (
 )
 
 // maxRepoSlugLength bounds any repo slug at the HTTP boundary. Sized
-// for a local-checkout slug: base64url of a near-PATH_MAX path.
-const maxRepoSlugLength = 1400
+// for a local-checkout slug: base64url of a Linux PATH_MAX (4096-byte,
+// so 4095 usable) path is 5460 chars — below that, a legitimate deep
+// checkout would mint a slug ListRepos returns but resolveRepoSlug then
+// rejects as invalid.
+const maxRepoSlugLength = 5460
 
 // maxDiscoveredLocalRepos bounds how many distinct checkouts a listing
 // mines from session history. Sessions are read most-recently-updated
@@ -185,7 +188,7 @@ func (s *Service) discoveredLocalRepos(ctx context.Context) ([]RepoInfo, error) 
 			info, infoErr := s.localRepoInfoFor(root)
 			if infoErr != nil {
 				// One broken checkout must not take the whole listing down.
-				s.log.Printf("list repos: skip local checkout %s: %v", root, infoErr)
+				s.log.Printf("list repos: skip local checkout %q: %v", root, infoErr)
 				return
 			}
 			results[i] = &info

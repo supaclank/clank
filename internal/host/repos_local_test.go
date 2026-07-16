@@ -502,3 +502,49 @@ func TestRepoOverview_LocalCheckoutNoOriginLabelsByRepoName(t *testing.T) {
 		t.Errorf("fork OriginRepo = %q, want %q", forked.OriginRepo, "widget")
 	}
 }
+
+func TestResolveRepoSlug_PathMaxLengthSlugIsValid(t *testing.T) {
+	// Not parallel: SetWorkRootForTest mutates a global.
+	workRoot := filepath.Join(t.TempDir(), "work")
+	prev := host.SetWorkRootForTest(workRoot)
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
+	if err := os.MkdirAll(filepath.Join(workRoot, "repos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// A deep-but-legitimate checkout path: base64 inflates length by
+	// ~4/3, so ~1100 raw bytes crosses the old 1400-char slug cap while
+	// staying well under a Linux PATH_MAX (4096) path's ~5460-char slug.
+	// Regression for validSlug rejecting a slug ListRepos would have
+	// happily returned.
+	long := t.TempDir()
+	for len(long) < 1100 {
+		long = filepath.Join(long, strings.Repeat("x", 40))
+	}
+	if err := os.MkdirAll(long, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, long, "init", "-b", "main")
+	gitIn(t, long, "config", "user.email", "t@t")
+	gitIn(t, long, "config", "user.name", "T")
+	gitIn(t, long, "remote", "add", "origin", "git@github.com:acme/widget.git")
+	if err := os.WriteFile(filepath.Join(long, "README"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, long, "add", ".")
+	gitIn(t, long, "commit", "-m", "initial")
+
+	svc := newLocalRepoService(t, long)
+	slug, _ := localSlugFor(t, long)
+	if len(slug) <= 1400 {
+		t.Fatalf("test setup: slug length = %d, want > 1400 to exercise the old cap", len(slug))
+	}
+
+	overview, err := svc.RepoOverview(context.Background(), slug, false)
+	if err != nil {
+		t.Fatalf("RepoOverview: %v", err)
+	}
+	if overview.Slug != slug {
+		t.Errorf("slug = %q, want %q", overview.Slug, slug)
+	}
+}
