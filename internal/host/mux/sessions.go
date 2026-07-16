@@ -82,23 +82,6 @@ func (m *Mux) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, info)
 }
 
-// handleSessionSnapshot serves the lightweight response shape used by
-// the in-process host/client path; the gateway-facing GET routes to
-// handleGetSession.
-func (m *Mux) handleSessionSnapshot(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	status, extID, err := m.svc.OpenSession(r.Context(), id)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, SessionSnapshot{
-		SessionID:  id,
-		ExternalID: extID,
-		Status:     status,
-	})
-}
-
 func (m *Mux) handleOpenSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	status, extID, err := m.svc.OpenSession(r.Context(), id)
