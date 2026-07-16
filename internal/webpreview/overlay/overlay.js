@@ -939,9 +939,9 @@
   <textarea rows="1" placeholder="Ask anything…"></textarea>
   <div class="bar">
     <button class="ib att" title="Attach images (or paste into the box)">${ICONS.plus}</button>
+    <button class="ib shot" title="Grab a screenshot area">${ICONS.shot}</button>
     <button class="ib sel" title="Select an element (hold ⌘)">${ICONS.select}</button>
     <span class="sp"></span>
-    <button class="ib shot" title="Grab a screenshot area">${ICONS.shot}</button>
     <button class="ib mic" title="Tap ⇪ to talk (or hold this button)">${ICONS.mic}</button>
     <span class="micLevel" style="display:none"></span>
     <button class="ib send" title="Send (Enter)">${ICONS.send}</button>
