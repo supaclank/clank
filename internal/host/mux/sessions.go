@@ -211,6 +211,9 @@ func (m *Mux) handleGetMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	if msgs == nil {
+		msgs = []agent.MessageData{}
+	}
 	writeJSON(w, http.StatusOK, msgs)
 }
 
@@ -296,7 +299,8 @@ func (m *Mux) handleStopSession(w http.ResponseWriter, r *http.Request) {
 func (m *Mux) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	// Existence check only — don't rehydrate the backend on the SSE
-	// path. Events flow once Send/Messages/etc trigger a rehydrate.
+	// path. Events flow once a dispatching op (Send/Abort/…) triggers
+	// a rehydrate; messages GET is a pure read and doesn't either.
 	if _, err := m.svc.GetSessionMetadata(r.Context(), id); err != nil {
 		writeError(w, err)
 		return

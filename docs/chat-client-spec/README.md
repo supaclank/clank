@@ -1,6 +1,6 @@
 # Clank Chat-Client Specification
 
-**Spec version:** 0.3.0 · **Last updated:** 2026-06-30 · **Status:** Draft
+**Spec version:** 0.4.0 · **Last updated:** 2026-07-16 · **Status:** Draft
 
 This is the normative contract for any client that drives a clank **chat session** — the
 TUI, the React Native app, the native Android/iOS overlays, a future Swift or web client.

@@ -355,6 +355,21 @@ func TestClaudeBackendMessagesNoSessionID(t *testing.T) {
 	}
 }
 
+// TestReadClaudeTranscriptEmptySessionID pins the TranscriptReader contract
+// the host's messages read path relies on: a session that never opened (no
+// external id yet) has no transcript — (nil, nil), not an error.
+func TestReadClaudeTranscriptEmptySessionID(t *testing.T) {
+	t.Parallel()
+
+	msgs, err := agent.ReadClaudeTranscript(context.Background(), t.TempDir(), "")
+	if err != nil {
+		t.Fatalf("ReadClaudeTranscript: %v", err)
+	}
+	if msgs != nil {
+		t.Errorf("ReadClaudeTranscript with empty session id = %v, want nil", msgs)
+	}
+}
+
 // TestClaudeBackendMessagesResumeWithoutStart is the regression test for the
 // "Waiting for agent output..." bug on reopening Claude sessions. The hub's
 // activateBackend path constructs a backend via the manager but only calls

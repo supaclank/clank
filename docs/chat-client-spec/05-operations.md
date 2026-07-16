@@ -17,7 +17,7 @@ Source of truth for routes: `internal/host/mux/mux.go:72`. All require the beare
 | POST | `/sessions/{id}/abort` | — | `204` | Yes | Interrupt the current turn. |
 | POST | `/sessions/{id}/revert` | `{ message_id }` | `204` | **No** | **Both** backends; empty id clears the marker on OpenCode. See [OP-005]. |
 | POST | `/sessions/{id}/fork` | `{ message_id? }` | `200` `SessionInfo` | **No** | OpenCode only; Claude errors. |
-| GET | `/sessions/{id}/messages` | — | `200` `MessageData[]` | Yes | The reconciliation source. |
+| GET | `/sessions/{id}/messages` | — | `200` `MessageData[]` | Yes | The reconciliation source. Pure read — does not wake the agent ([OP-010]). |
 | GET | `/sessions/{id}/pending-permission` | — | `200` `[]` | Yes | **Currently always empty** — see [OP-007]. |
 | POST | `/sessions/{id}/permissions/{permID}/reply` | `{ allow, message? }` | `204` | Yes* | Answer a permission prompt. |
 | POST | `/sessions/{id}/questions/{requestID}/reply` | `{ answers?, reject? }` | `204` | Yes* | Answer or dismiss a question prompt ([QST-001](11-interactive-tools.md)). |
@@ -34,9 +34,11 @@ still single-flight it in the UI ([INV-PERM-SINGLEFLIGHT-001](08-invariants.md))
 **Intentionally omitted.** The host exposes session-lifecycle/host-management routes a chat
 client driving Create + `/message` + SSE does not need: `POST /sessions/{id}/open` and
 `POST /sessions/{id}/open-and-send` (backend rehydration/orchestration — `POST /sessions` already opens-and-sends
-internally, and the SSE/messages paths lazily rehydrate), and `POST /sessions/{id}/stop`
+internally, and every op that **dispatches into the backend** — `/message`, `/abort`,
+`/revert`, `/fork`, permission/question replies — lazily rehydrates it), and `POST /sessions/{id}/stop`
 (backend **process teardown** — distinct from `/abort`, which only interrupts the current
 turn). Worktree / project / sync / auth / GitHub routes are likewise out of chat scope.
+The GETs are reads: none of them is a wake/attach mechanism ([OP-010]).
 
 This lazy rehydration MUST also recover a backend whose connection dropped *mid-session*
 (status `dead`), not just a cold host after restart — otherwise a chat client, which has no
@@ -132,6 +134,33 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
   transcript is committed **asynchronously**, so a fetch fired mid-turn can lag the live
   stream — the client MUST NOT let the lagging snapshot erase streamed content. **Golden:**
   `internal/tui/sessionview.go:1521` (`handleSessionMessages`), `clank-mobile/src/lib/mergeMessages.ts`.
+
+#### The messages GET is a pure read
+
+- **[OP-010] (MUST, host + client)** Fetching messages is a **pure read**: it does not wake
+  the agent, does not attach/open a backend for the session, and does not cause status
+  transitions. A client MUST NOT rely on the fetch as a wake or "connect" mechanism, and MUST
+  NOT expect opening a session screen to move `status` (a session at rest stays at its
+  stored status — typically `idle` — until the user actually sends). Consequently a client
+  MUST subscribe to the event stream *before or alongside* the snapshot fetch and reconcile
+  the two by message/part IDs ([OP-006], [INV-CREATE-RACE-001](08-invariants.md)) — there is
+  no event replay to paper over a late subscribe. **Why:** the eager-open behavior this
+  replaces spawned the claude CLI on every history read (~25s on a cold Fly rootfs, measured
+  in [clank#158](https://github.com/Acksell/clank/pull/158)) and registered a
+  `starting`-status backend that clients rendered as a stuck "Starting…". Claude history is
+  served straight from the on-disk transcript; OpenCode reads still boot its per-project
+  server (an implementation detail, not a contract — do not rely on it). **Golden:**
+  `internal/host/service.go` (`SessionMessages` — live backend, else `agent.TranscriptReader`),
+  `internal/host/session_messages_test.go` (`TestSessionMessages_ClaudeColdReadDoesNotSpawnBackend`).
+
+  **Considered and rejected — double-read to close the snapshot/stream race.** Reading
+  messages twice (fetch, subscribe, fetch again) to catch events landing between snapshot
+  and subscribe is unnecessary under this contract and stays rejected: when a turn is
+  streaming, a **live backend exists** and serves the fetch exactly as before (the snapshot
+  can lag the stream, and monotonic merge by IDs already handles that — [OP-006]); when **no
+  live backend exists, nothing is producing events** (the agent process dies with the host
+  daemon), so the on-disk transcript is complete and there is no gap for a second read to
+  close. Subscribe-then-fetch plus ID-based reconciliation remains the whole protocol.
 
 ### Pending permission — `GET /sessions/{id}/pending-permission`
 

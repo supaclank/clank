@@ -305,7 +305,9 @@ closes), the host MUST set status `dead` regardless of the turn's prior status, 
 operation that needs the backend (`/message`, `/abort`, …) MUST tear the dead backend down and
 lazily rehydrate a fresh one (resume via the stored external id) rather than dispatch into the
 dead one. A failed dispatch MUST surface a reason ([STATE-ERR-001](06-state-model.md)), never a
-silent status flip.
+silent status flip. The messages GET is not such an operation — it is a pure read that serves
+history without repairing the registry ([OP-010](05-operations.md)); rehydration stays with the
+dispatching ops.
 **Why:** an interrupt issued the instant a turn starts can leave the agent process exited while
 the session still reads `idle`; reusing that backend fails every subsequent dispatch
 (`client not connected`), flips the session to `error` with no recovery path, and — since a chat
@@ -317,7 +319,9 @@ emit an error reason on dispatch failure), `internal/host/service.go` (`ensureBa
 `dead` backend and recreates).
 **Conformance:** host regression tests — `internal/agent/claude_status_regression_test.go`
 (`TestConnectionClosedWhileIdle_MarksDead`, `TestSendDispatchFailure_EmitsErrorReason`),
-`internal/host/ensure_backend_test.go` (`TestEnsureBackend_DeadBackendIsRehydrated`).
+`internal/host/ensure_backend_test.go` (`TestEnsureBackend_DeadBackendIsRehydrated`),
+`internal/host/session_messages_test.go` (`TestSessionMessages_DeadBackendServedFromTranscript`
+— the read-path half: a fetch serves history without rehydrating).
 
 ---
 
