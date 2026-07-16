@@ -40,6 +40,11 @@ const maxRepoSlugLength = 1400
 // unbounded (and unresponsive) over months of history.
 const maxDiscoveredLocalRepos = 30
 
+// localInfoConcurrency bounds the per-checkout git subprocess fan-out in
+// discoveredLocalRepos, mirroring checkRollupConcurrency's cap on the
+// overview's PR-check fan-out.
+const localInfoConcurrency = 8
+
 // MaxDiscoveredLocalReposForTest exposes maxDiscoveredLocalRepos to the
 // external host_test package. Test-only.
 const MaxDiscoveredLocalReposForTest = maxDiscoveredLocalRepos
@@ -108,6 +113,18 @@ func (s *Service) discoveredLocalRepos(ctx context.Context) ([]RepoInfo, error) 
 	if err != nil {
 		return nil, err
 	}
+	// localCheckoutRoot symlink-resolves every candidate root before the
+	// containment checks below run — workRoot must match that resolution,
+	// or a clank-owned worktree reached through a symlinked home (macOS
+	// /tmp vs /private/tmp) slips past the filter and leaks as a "local
+	// repo". A workRoot that doesn't exist yet (fresh host, no worktrees
+	// created) can't contain anything either way, so that failure mode is
+	// not an error.
+	if resolved, err := filepath.EvalSymlinks(workRoot); err == nil {
+		workRoot = resolved
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("resolve work root symlinks: %w", err)
+	}
 
 	dirSeen := map[string]bool{}
 	rootSeen := map[string]bool{}
@@ -152,15 +169,19 @@ func (s *Service) discoveredLocalRepos(ctx context.Context) ([]RepoInfo, error) 
 	// most-recently-updated first, so first-seen == most recently used
 	// (IDE-recents ordering). Do not re-sort.
 
-	// Each root spawns several git subprocesses (localRepoInfoFor) —
-	// run them concurrently so listing latency is one round-trip, not
-	// len(roots) of them.
+	// Each root spawns several git subprocesses (localRepoInfoFor) — run
+	// them concurrently, capped at localInfoConcurrency, so listing
+	// latency is one round-trip and not len(roots) of them, without
+	// bursting every git subprocess at once.
 	results := make([]*RepoInfo, len(roots))
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, localInfoConcurrency)
 	for i, root := range roots {
 		wg.Add(1)
+		sem <- struct{}{}
 		go func(i int, root string) {
 			defer wg.Done()
+			defer func() { <-sem }()
 			info, infoErr := s.localRepoInfoFor(root)
 			if infoErr != nil {
 				// One broken checkout must not take the whole listing down.

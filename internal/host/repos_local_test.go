@@ -175,6 +175,61 @@ func TestListRepos_DiscoversLocalCheckouts(t *testing.T) {
 	}
 }
 
+// TestListRepos_SymlinkedWorkRootExcludesInternalCheckouts pins the
+// macOS /tmp-vs-/private/tmp class of bug: localCheckoutRoot
+// symlink-resolves every candidate root before the containment check
+// runs, but workRootDir() returns the unresolved spelling. A session
+// whose recorded path already names clank's work directory through its
+// resolved (non-alias) form — e.g. because something upstream resolved
+// symlinks before persisting it — bypasses the raw-string pre-filter and
+// then, since the resolved root can't match the still-unresolved
+// workRoot either, leaks into the listing as a "local repo".
+func TestListRepos_SymlinkedWorkRootExcludesInternalCheckouts(t *testing.T) {
+	// Not parallel: SetWorkRootForTest mutates a global.
+	realWorkRoot := t.TempDir()
+	symlinkedWorkRoot := filepath.Join(t.TempDir(), "work")
+	if err := os.Symlink(realWorkRoot, symlinkedWorkRoot); err != nil {
+		t.Fatalf("symlink work root: %v", err)
+	}
+	prev := host.SetWorkRootForTest(symlinkedWorkRoot)
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
+
+	// A worktree dir created directly under the real (resolved) root —
+	// same location clank's own worktrees live in, just named through
+	// its resolved spelling rather than the workRootDir() alias.
+	internalWorktree := filepath.Join(realWorkRoot, "01WORKTREEYY")
+	if err := os.MkdirAll(internalWorktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = internalWorktree
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	run("git", "init", "-b", "main")
+	run("git", "config", "user.email", "t@t")
+	run("git", "config", "user.name", "T")
+	if err := os.WriteFile(filepath.Join(internalWorktree, "README"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("git", "add", ".")
+	run("git", "commit", "-m", "initial")
+
+	svc := newLocalRepoService(t, internalWorktree)
+
+	repos, err := svc.ListRepos(context.Background())
+	if err != nil {
+		t.Fatalf("ListRepos: %v", err)
+	}
+	for _, r := range repos {
+		if r.Path == realWorkRoot || strings.HasPrefix(r.Path, realWorkRoot+string(filepath.Separator)) {
+			t.Errorf("clank-owned worktree %q leaked into discovered local repos: %+v", r.Path, repos)
+		}
+	}
+}
+
 func TestCreateRepoWorktree_LocalCheckoutForkAndLoad(t *testing.T) {
 	// Not parallel: SetWorkRootForTest mutates a global.
 	workRoot := filepath.Join(t.TempDir(), "work")
