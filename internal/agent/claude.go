@@ -134,6 +134,16 @@ type ClaudeCodeBackend struct {
 	// Guarded by b.mu — Revert can spawn a new receiveLoop before the old one's
 	// in-flight handleResult call has returned.
 	aiTitleEmitted bool
+
+	// aiTitleRecheckActive is set while a post-turn title recheck goroutine is
+	// running, so overlapping handleResult calls schedule at most one. Guarded
+	// by b.mu.
+	aiTitleRecheckActive bool
+
+	// AITitleRecheckDelay overrides the interval between post-turn ai-title
+	// re-reads (see scheduleAITitleRecheck). Test hook like ClientFactory;
+	// zero means the production default.
+	AITitleRecheckDelay time.Duration
 }
 
 // NewClaudeCodeBackend creates a new Claude Code backend. workDir is
@@ -302,6 +312,15 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 
 	// Start receiving messages from the SDK in the background.
 	go b.receiveLoop()
+
+	// Catch-up: a resumed transcript may already carry a CLI-generated
+	// ai-title that was never surfaced — the turn that would have read it in
+	// handleResult died first (daemon restart, machine idle-exit mid-turn) or
+	// finished before the CLI's concurrent titling landed. Goroutine keeps
+	// transcript I/O off the Open critical path.
+	if resumeID != "" {
+		go b.maybeEmitAITitle()
+	}
 	return nil
 }
 
@@ -973,8 +992,12 @@ func (b *ClaudeCodeBackend) handleResult(m *claudecode.ResultMessage) {
 
 	// The CLI writes its generated session title to the transcript, not the
 	// stdout stream the SDK surfaces — publish it as EventTitleChange once it
-	// lands so clients stop showing the first prompt as the title.
-	b.maybeEmitAITitle()
+	// lands so clients stop showing the first prompt as the title. Titling runs
+	// concurrently with the turn, so a fast turn's result can beat the title to
+	// the transcript; the recheck picks it up without waiting for another turn.
+	if !b.maybeEmitAITitle() {
+		b.scheduleAITitleRecheck()
+	}
 
 	if m.IsError {
 		errMsg := "unknown error"
