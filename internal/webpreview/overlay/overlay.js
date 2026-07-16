@@ -1143,14 +1143,23 @@
   const ATTACH_MAX_COUNT = 6; // mobile MAX_ATTACHMENTS
   ui.file.accept = IMAGE_MIMES.join(',');
 
+  // Decode is async, so a synchronous store.images.length check alone lets
+  // concurrent stages (multi-select, multi-paste) blow past ATTACH_MAX_COUNT —
+  // pendingImageCount reserves a slot for the whole decode.
+  let pendingImageCount = 0;
+
   const stageImageFile = (file) => {
-    if (store.images.length >= ATTACH_MAX_COUNT) { toast(`max ${ATTACH_MAX_COUNT} images per message`); return; }
+    if (store.images.length + pendingImageCount >= ATTACH_MAX_COUNT) { toast(`max ${ATTACH_MAX_COUNT} images per message`); return; }
     if (!IMAGE_MIMES.includes(file.type)) { toast(`can't attach ${file.type || file.name || 'that'} — images only`); return; }
     if (file.size > MAX_IMAGE_BYTES) { toast(`${file.name || 'image'} is too large (5 MB max)`); return; }
+    pendingImageCount++;
     const rd = new FileReader();
+    rd.onerror = () => { pendingImageCount--; toast(`couldn't read ${file.name || 'that image'}`); };
     rd.onload = () => {
       const img = new Image();
+      img.onerror = () => { pendingImageCount--; toast(`couldn't decode ${file.name || 'that image'}`); };
       img.onload = () => {
+        pendingImageCount--;
         const name = file.name || 'pasted-image';
         store.images.push({ dataURL: rd.result, mime: file.type, filename: name, label: name, w: img.naturalWidth, h: img.naturalHeight });
         render();
@@ -1191,8 +1200,14 @@
   // a settle timeout unblocks either way (mobile's 48ms analog).
   const awaitFrame = (video, ms) =>
     new Promise((r) => {
-      if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(() => r());
-      setTimeout(r, ms);
+      let rvfcId;
+      const done = () => {
+        clearTimeout(timer);
+        if (rvfcId && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(rvfcId);
+        r();
+      };
+      const timer = setTimeout(done, ms);
+      if (video.requestVideoFrameCallback) rvfcId = video.requestVideoFrameCallback(done);
     });
 
   const grabFrame = async () => {
@@ -1306,6 +1321,11 @@
     else render();
   };
 
+  // The bar's content (icon + fixed "Add to context" label) never changes
+  // size within a crop session — measure once and reuse, instead of forcing
+  // a layout reflow on offsetWidth/offsetHeight every pointermove.
+  let cropBarSize = null;
+
   const renderCrop = () => {
     const s = cropSel;
     ui.cropDim.style.display = s ? 'none' : '';
@@ -1317,7 +1337,8 @@
     // The bar hangs 12px below the selection's bottom-right corner,
     // clamped to 12px screen margins; tucks inside when there's no room
     // below (mobile CropActionBar anchoring).
-    const bw = ui.cropBar.offsetWidth, bh = ui.cropBar.offsetHeight;
+    if (!cropBarSize) cropBarSize = { w: ui.cropBar.offsetWidth, h: ui.cropBar.offsetHeight };
+    const { w: bw, h: bh } = cropBarSize;
     const bx = Math.max(12, Math.min(s.x + s.w - bw, innerWidth - bw - 12));
     let by = s.y + s.h + 12;
     if (by + bh > innerHeight - 12) by = innerHeight - bh - 12;
@@ -1372,8 +1393,14 @@
       if (/t/.test(mode)) t = Math.min(t + dy, b - SHOT_MIN_SIZE);
       if (/b/.test(mode)) b = Math.max(b + dy, t + SHOT_MIN_SIZE);
     }
+    const preL = l, preT = t;
     l = Math.max(0, l); t = Math.max(0, t);
     r = Math.min(innerWidth, r); b = Math.min(innerHeight, b);
+    // The viewport clamp above can shrink a resize below SHOT_MIN_SIZE near
+    // a screen edge (e.g. dragging the right handle while already close to
+    // innerWidth) — pull the edge that wasn't clamped back in to restore it.
+    if (r - l < SHOT_MIN_SIZE) { if (l !== preL) r = Math.min(innerWidth, l + SHOT_MIN_SIZE); else l = Math.max(0, r - SHOT_MIN_SIZE); }
+    if (b - t < SHOT_MIN_SIZE) { if (t !== preT) b = Math.min(innerHeight, t + SHOT_MIN_SIZE); else t = Math.max(0, b - SHOT_MIN_SIZE); }
     cropSel = { x: l, y: t, w: r - l, h: b - t };
   };
 
