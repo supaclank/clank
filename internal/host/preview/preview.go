@@ -136,6 +136,16 @@ type running struct {
 	cancel func()
 }
 
+// touch marks the record as recently used so the idle reaper spares
+// it. Called on every control-plane read (Status, idempotent Start) —
+// the CLI keepalive and phone polling are the liveness signal for LAN
+// previews, whose Metro traffic never crosses the daemon.
+func (r *running) touch() {
+	r.mu.Lock()
+	r.lastTouch = time.Now()
+	r.mu.Unlock()
+}
+
 // snapshot copies the externally-visible fields under r.mu so callers
 // can format JSON without holding a lock across I/O.
 func (r *running) snapshot() Status {
