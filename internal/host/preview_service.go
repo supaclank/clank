@@ -28,6 +28,9 @@ func (s *Service) previewWorkDirFor(ctx context.Context, key string) (string, er
 	if wtErr == nil {
 		return workDir, nil
 	}
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
 	path, ok := localRepoPath(key)
 	if !ok {
 		return "", wtErr
