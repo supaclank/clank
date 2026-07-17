@@ -2,6 +2,7 @@ package daemonclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -93,8 +94,19 @@ func (p *PreviewClient) Logs(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("daemon request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("daemon returned status %d", resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
 	}
-	return io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		var errResp struct {
+			Code  string `json:"code"`
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(body, &errResp) == nil && errResp.Error != "" {
+			return nil, &APIError{StatusCode: resp.StatusCode, Code: errResp.Code, Message: errResp.Error}
+		}
+		return nil, fmt.Errorf("daemon returned status %d: %s", resp.StatusCode, summarizeBody(resp.Header.Get("Content-Type"), body))
+	}
+	return body, nil
 }
