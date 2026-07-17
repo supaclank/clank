@@ -27,6 +27,7 @@ const (
 	previewLinkParamLocalPath  = "lp"   // laptop folder the agent + Metro run against
 	previewLinkParamBackend    = "bk"   // agent backend the laptop can run (opencode|claude-code)
 	previewLinkParamName       = "name" // project display name (optional)
+	previewLinkParamWorktreeID = "wid"  // preview key for /worktrees/<wid>/preview/{status,logs} polling
 )
 
 // PreviewLink is the payload carried by the QR.
@@ -38,6 +39,9 @@ const (
 //   - LocalPath + Backend: when there's no SessionID, the phone creates the
 //     session itself on the first message — same call it makes for cloud
 //     worktrees, with LocalPath instead of WorktreeID.
+//   - WorktreeID: the preview key (folder slug) — lets the phone poll the
+//     dev server's status/logs through the gateway while Metro boots,
+//     instead of hitting a not-yet-listening port raw.
 type PreviewLink struct {
 	GatewayURL string
 	Token      string
@@ -46,6 +50,7 @@ type PreviewLink struct {
 	LocalPath  string
 	Backend    string
 	Name       string
+	WorktreeID string
 }
 
 // Encode renders the link as a clank://link URL. GatewayURL and Token are
@@ -67,6 +72,7 @@ func (l PreviewLink) Encode() (string, error) {
 	setIfPresent(q, previewLinkParamLocalPath, l.LocalPath)
 	setIfPresent(q, previewLinkParamBackend, l.Backend)
 	setIfPresent(q, previewLinkParamName, l.Name)
+	setIfPresent(q, previewLinkParamWorktreeID, l.WorktreeID)
 	u := url.URL{Scheme: previewLinkScheme, Host: previewLinkHost, RawQuery: q.Encode()}
 	return u.String(), nil
 }
@@ -90,6 +96,7 @@ func ParsePreviewLink(s string) (PreviewLink, error) {
 		LocalPath:  q.Get(previewLinkParamLocalPath),
 		Backend:    q.Get(previewLinkParamBackend),
 		Name:       q.Get(previewLinkParamName),
+		WorktreeID: q.Get(previewLinkParamWorktreeID),
 	}
 	if link.GatewayURL == "" || link.Token == "" {
 		return PreviewLink{}, fmt.Errorf("preview link: missing required %s/%s in %q", previewLinkParamGateway, previewLinkParamToken, s)

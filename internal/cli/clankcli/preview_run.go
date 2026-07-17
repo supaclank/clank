@@ -12,8 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/oklog/ulid/v2"
-
 	"github.com/acksell/clank/internal/agent"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/host"
@@ -83,9 +81,11 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 		return fmt.Errorf("daemon socket path: %w", err)
 	}
 
-	// Per-run key for the in-place dev server. The server runs against
-	// projectDir itself; the key just lets us stop it on exit.
-	previewKey := ulid.Make().String()
+	// The preview key is the folder's slug — the identity the daemon
+	// resolves back to projectDir (host.previewWorkDirFor), the phone
+	// polls status/logs with (via the QR), and a re-run reattaches
+	// through: same folder, same key, same running server.
+	previewKey := host.LocalRepoSlug(projectDir)
 
 	// Generous timeout: a cold preview start runs `bun install` first.
 	// Derives from sigCtx so Ctrl+C during startup aborts the wait.
@@ -93,7 +93,7 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	defer cancel()
 
 	fmt.Println("Starting the dev server on this folder (first run installs dependencies)…")
-	status, err := client.Preview(previewKey).Start(startCtx, projectDir)
+	status, err := client.Preview(previewKey).Start(startCtx)
 	if err != nil {
 		// The Expo/Vite hint is only true for the daemon's "no app
 		// detected here" answer; any other failure (path resolution,
@@ -110,34 +110,6 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 		sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer scancel()
 		_ = client.Preview(previewKey).Stop(sctx)
-	}()
-
-	// Keepalive: the daemon's idle reaper only sees control-plane reads —
-	// preview traffic itself never crosses it (LAN Metro is fetched
-	// directly; the web proxy below runs in this process). Re-issuing the
-	// idempotent Start marks the server live for as long as we're running.
-	// Registered after the Stop defer so LIFO tears this down first — a
-	// late tick must not respawn the server Stop just removed.
-	kaCtx, kaCancel := context.WithCancel(sigCtx)
-	kaDone := make(chan struct{})
-	go func() {
-		defer close(kaDone)
-		ticker := time.NewTicker(previewKeepaliveInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-kaCtx.Done():
-				return
-			case <-ticker.C:
-				tctx, tcancel := context.WithTimeout(kaCtx, 10*time.Second)
-				_, _ = client.Preview(previewKey).Start(tctx, projectDir) // best-effort; failures surface on the next user interaction
-				tcancel()
-			}
-		}
-	}()
-	defer func() {
-		kaCancel()
-		<-kaDone
 	}()
 
 	// A prompt is optional. If you pass one, kick the agent off now and
@@ -164,6 +136,24 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	}
 
 	if status.Kind == string(preview.KindWeb) {
+		// Keepalive: the daemon's idle reaper counts Status reads as
+		// liveness, and nothing else does — the overlay proxy below runs
+		// in this process, so no preview traffic ever crosses the daemon.
+		// Status never spawns, so no shutdown ordering vs the Stop defer.
+		go func() {
+			ticker := time.NewTicker(previewKeepaliveInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-sigCtx.Done():
+					return
+				case <-ticker.C:
+					tctx, tcancel := context.WithTimeout(sigCtx, 10*time.Second)
+					_, _ = client.Preview(previewKey).Status(tctx)
+					tcancel()
+				}
+			}
+		}()
 		return runWebPreview(sigCtx, projectDir, sockPath, sessionID, string(bt), status.Port, port)
 	}
 
@@ -194,6 +184,7 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 		LocalPath:  projectDir,
 		Backend:    string(bt),
 		Name:       filepath.Base(projectDir),
+		WorktreeID: previewKey,
 	}
 	linkStr, err := link.Encode()
 	if err != nil {
@@ -201,7 +192,9 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	}
 
 	printPreviewBanner(linkStr, fd.BaseURL, previewURL)
-	<-sigCtx.Done()
+	if err := watchExpoPreview(sigCtx, client.Preview(previewKey), status.State); err != nil {
+		return err
+	}
 	fmt.Println("\nShutting down preview…")
 	return nil
 }

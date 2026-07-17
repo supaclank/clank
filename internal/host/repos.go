@@ -237,7 +237,7 @@ func resolveRepoSlug(slug string) (resolvedRepo, error) {
 	if err != nil {
 		return resolvedRepo{}, fmt.Errorf("%w: %q", ErrRepoNotFound, slug)
 	}
-	return resolvedRepo{gitDir: root, slug: localRepoSlug(root), localCheckout: true}, nil
+	return resolvedRepo{gitDir: root, slug: LocalRepoSlug(root), localCheckout: true}, nil
 }
 
 // ensureRepoBranchAvailable makes branch resolvable in the canonical at

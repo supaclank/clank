@@ -109,7 +109,7 @@ func TestPreviewStart_NoPreviewMapsToErrNotPreviewable(t *testing.T) {
 	srv := errServer(t, http.StatusNotFound, "application/json",
 		`{"code":"no_preview","error":"preview: worktree is not previewable"}`)
 
-	_, err := NewTCPClient(srv.URL, "").Preview("01WT").Start(context.Background(), "/tmp/whatever")
+	_, err := NewTCPClient(srv.URL, "").Preview("01WT").Start(context.Background())
 	if !errors.Is(err, ErrNotPreviewable) {
 		t.Fatalf("want ErrNotPreviewable, got %v", err)
 	}
@@ -128,6 +128,41 @@ func TestDo_NonJSONErrorKeepsStatusSummary(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "daemon returned status 502") {
 		t.Errorf("err = %v, want status-summary fallback", err)
+	}
+}
+
+// TestPreviewLogs_StructuredErrorReturnsAPIError pins Logs' error path
+// to the same {code,error} contract as do() — it used its own raw
+// request path and previously dropped the body, surfacing only
+// "daemon returned status N".
+func TestPreviewLogs_StructuredErrorReturnsAPIError(t *testing.T) {
+	t.Parallel()
+	srv := errServer(t, http.StatusNotFound, "application/json",
+		`{"code":"not_running","error":"preview: no dev server is running"}`)
+
+	_, err := NewTCPClient(srv.URL, "").Preview("01WT").Logs(context.Background())
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("want *APIError, got %T: %v", err, err)
+	}
+	if apiErr.Code != "not_running" || apiErr.StatusCode != http.StatusNotFound {
+		t.Errorf("APIError = %+v, want code=not_running status=404", apiErr)
+	}
+}
+
+// TestPreviewLogs_NonJSONErrorKeepsStatusSummary mirrors
+// TestDo_NonJSONErrorKeepsStatusSummary for Logs' separate request path.
+func TestPreviewLogs_NonJSONErrorKeepsStatusSummary(t *testing.T) {
+	t.Parallel()
+	srv := errServer(t, http.StatusBadGateway, "text/plain", "Bad Gateway")
+
+	_, err := NewTCPClient(srv.URL, "").Preview("01WT").Logs(context.Background())
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		t.Fatalf("non-JSON body must not produce an APIError, got %+v", apiErr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "daemon returned status 502: Bad Gateway") {
+		t.Errorf("err = %v, want status-summary fallback with body", err)
 	}
 }
 
