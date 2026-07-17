@@ -147,17 +147,23 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 		return p.refToHost(c), nil
 	}
 
+	// Slow path (cache miss) — timed per phase so cold-boot latency can
+	// be attributed from logs: flaps walk vs machine wake/readiness.
+	slowStart := time.Now()
 	c, tokens, err := p.resolveOrCreate(ctx, userID)
 	if err != nil {
 		return provisioner.HostRef{}, err
 	}
+	resolveDur := time.Since(slowStart)
 
 	// Reconcile the live machine config with the desired one (image
 	// bumps, guest resizes, webhook changes). Update restarts the
 	// workload, so only drift triggers it.
+	reconcileStart := time.Now()
 	if err := p.reconcileMachine(ctx, c, tokens); err != nil {
 		return provisioner.HostRef{}, err
 	}
+	reconcileDur := time.Since(reconcileStart)
 
 	hostPort, err := hostPortOf(c.url)
 	if err != nil {
@@ -169,7 +175,11 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 
 	// First probe of a stopped machine IS the wake — expect it to take
 	// the autostart latency (~1.5s verified) rather than fail.
+	readyStart := time.Now()
 	if err := waitForHostReady(ctx, c.url, transport); err != nil {
+		p.log.Printf("flymachines: ensure host user=%s failed after resolve=%s reconcile=%s ready-wait=%s",
+			userID, resolveDur.Round(time.Millisecond), reconcileDur.Round(time.Millisecond),
+			time.Since(readyStart).Round(time.Millisecond))
 		return provisioner.HostRef{}, fmt.Errorf("machine %s in app %s never reached ready: %w", c.machineID, c.appName, err)
 	}
 
@@ -178,6 +188,9 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 	}
 
 	p.cacheSet(userID, c)
+	p.log.Printf("flymachines: ensure host user=%s ready in %s (resolve=%s reconcile=%s ready-wait=%s)",
+		userID, time.Since(slowStart).Round(time.Millisecond), resolveDur.Round(time.Millisecond),
+		reconcileDur.Round(time.Millisecond), time.Since(readyStart).Round(time.Millisecond))
 	return p.refToHost(c), nil
 }
 
