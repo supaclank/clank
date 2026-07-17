@@ -247,11 +247,24 @@ with can post statuses.
 
 ```bash
 # $act_url: the newest activity comment's html_url — "Details" links there.
+# Exit status reflects the gh api call — callers detect failure via post_status
+# below rather than have it swallowed here.
 set_status() {  # set_status <pending|success|error> <description ≤140 chars>
   gh api -X POST "repos/$PR_OWNER/$PR_REPO/statuses/$HEAD_SHA" \
     -f state="$1" -f context=review-bot \
     -f description="$2" -f target_url="$act_url" \
-    >/dev/null || true  # a failed status post must never kill the run
+    >/dev/null
+}
+
+# Every call site uses this, never set_status directly: a failed post must
+# never kill the run, and the first failure disables the rest (see below).
+status_disabled=false
+post_status() {
+  $status_disabled && return 0
+  if ! set_status "$@"; then
+    status_disabled=true
+    post_activity_comment "⚠️ can't post commit statuses — merge-box signal disabled this run"
+  fi
 }
 ```
 
@@ -262,7 +275,7 @@ nothing left to do"; `error` means the run aborted. The status describes
 the *routine*, never code quality:
 
 - **Run start** (right after the acknowledgment comment):
-  `set_status pending "run started — waiting on bot reviews"`.
+  `post_status pending "run started — waiting on bot reviews"`.
 - **Every phase boundary and every heartbeat**: re-post `pending` with a
   fresh description mirroring the newest activity comment ("waiting on
   bots — 9m/25m", "triaging 6 findings", "implementing fixes").
@@ -270,7 +283,7 @@ the *routine*, never code quality:
   the merge box.
 - **Converged exit** — the "Should I run?" gate said no, or the run
   finished with nothing to push (all verdicts Won't-do/Skip):
-  `set_status success "converged — nothing new to triage"` (or "triage
+  `post_status success "converged — nothing new to triage"` (or "triage
   complete — replies only, nothing pushed"), paired with the prominent
   converged terminal comment (see "Activity stream").
 - **After pushing fixes**: re-resolve `HEAD_SHA` to the new sha and post
@@ -279,7 +292,7 @@ the *routine*, never code quality:
   pushed** — the `synchronize` successor owns that sha's terminal state.
   The old sha's status needs no cleanup; the merge box only shows HEAD.
 - **Abnormal exit** (missing inputs, unrecoverable error):
-  `set_status error "<one-line reason>"`, then exit.
+  `post_status error "<one-line reason>"`, then exit.
 
 **Per-commit reconciliation.** A status binds to one sha, and the merge
 box only ever shows the *current* HEAD's statuses — nothing carries
@@ -302,11 +315,12 @@ a `review-bot` `pending` whose most recent update is older than ~45
 minutes means that run died — a later run (or a human) may supersede it
 rather than wait forever.
 
-If the *first* status post fails (HTTP 403 — a fine-grained token
-missing "Commit statuses: write"; classic `repo` scope always has it),
-post one ⚠️ comment to the activity stream ("can't post commit statuses
-— merge-box signal disabled this run") and skip status calls for the
-rest of the run. Statuses are a signal, never a reason to abort triage.
+`post_status` is what makes the first-failure handling automatic: the
+first `set_status` call that fails (HTTP 403 — a fine-grained token
+missing "Commit statuses: write"; classic `repo` scope always has it)
+flips `status_disabled` and posts the one-time warning comment, so every
+later `post_status` call is a silent no-op. Statuses are a signal, never
+a reason to abort triage.
 
 To turn the signal into a hard gate, make `review-bot` a **required
 status check** in the repo's branch protection / ruleset — GitHub then
@@ -331,7 +345,7 @@ Otherwise proceed.
 
 A "silent" exit still settles the run's bookkeeping: post the prominent
 `# ✅ Review-bot converged` terminal comment (see "Activity stream") and
-`set_status success` — silent means no triage table, not a vanished run.
+`post_status success` — silent means no triage table, not a vanished run.
 
 This is the only state carried between runs — no hidden markers, no
 JSON. The triage-comment header acts as the implicit cursor.
@@ -381,13 +395,15 @@ PR_OWNER=…; PR_REPO=…; PR_NUM=…
 HEAD_SHA=$(gh api "repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUM" --jq .head.sha)
 BOT_CHECK_SLUGS=(coderabbitai cubic-dev-ai greptile-apps)
 
-start=$(date +%s); grace=$((start + 180)); cap=$((start + 25*60)); i=0
+start=$(date +%s); grace=$((start + 180)); cap=$((start + 25*60)); last_heartbeat=$start
 
 while :; do
   now=$(date +%s)
-  # Every 4th poll (~2m): heartbeat — bump elapsed on the newest stream
-  # comment (post a fresh one if buried) + re-post the pending status.
-  (( i++ % 4 == 0 )) && heartbeat
+  # Every ~2m, skipping t=0 (the ack comment already covers that moment):
+  # heartbeat — bump elapsed on the newest stream comment (post a fresh one
+  # if buried) + re-post the pending status. `if`, not `&&`, so a 0 (no-op)
+  # arithmetic result can't trip `set -e`.
+  if (( now - last_heartbeat >= 120 )); then heartbeat; last_heartbeat=$now; fi
   runs=$(gh api "repos/$PR_OWNER/$PR_REPO/commits/$HEAD_SHA/check-runs" --paginate)
 
   # Lines: <slug>\t<status>  — one per bot check.
