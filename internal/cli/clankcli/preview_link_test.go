@@ -16,6 +16,7 @@ func TestPreviewLinkRoundTrip(t *testing.T) {
 		LocalPath:  "/Users/me/my-expo-app",
 		Backend:    "claude-code",
 		Name:       "my expo app",
+		WorktreeID: "L1VzZXJzL21lL215LWV4cG8tYXBw",
 	}
 	encoded, err := want.Encode()
 	if err != nil {

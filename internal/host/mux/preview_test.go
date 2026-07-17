@@ -155,15 +155,15 @@ func TestPreviewStart_NotPreviewableYields404(t *testing.T) {
 	}
 }
 
-// TestPreviewStart_LocalPathSubdir_DetectsAtSubdir pins monorepo
-// support for the laptop `clank preview` path: local_path may point at
-// a subdirectory of a git repo, and Detect runs AT that subdirectory.
-// The fixture makes the two failure modes distinguishable — the repo
-// ROOT is previewable (Vite) while sub/ is not, so the correct
-// subdir-precise Detect yields 404 no_preview, whereas the old
-// repo-root rejection yielded a 500 and a root-resolving regression
-// would find the root's Vite app instead.
-func TestPreviewStart_LocalPathSubdir_DetectsAtSubdir(t *testing.T) {
+// TestPreviewStart_FolderSlug_DetectsAtSubdir pins monorepo support
+// for the laptop `clank preview` path: the preview key is the
+// base64url slug of the previewed FOLDER — which may be a subdirectory
+// of a repo — and Detect runs AT that folder. The fixture makes the
+// failure modes distinguishable: the repo ROOT is previewable (Vite)
+// while sub/ is not, so folder-precise Detect yields 404 no_preview,
+// whereas a regression that normalizes the slug to the repo root
+// (resolveRepoSlug semantics) would find the root's Vite app instead.
+func TestPreviewStart_FolderSlug_DetectsAtSubdir(t *testing.T) {
 	env := newPreviewTestEnv(t, nil)
 	repo := hosttest.InitGitRepo(t)
 	files := map[string]string{
@@ -180,12 +180,9 @@ func TestPreviewStart_LocalPathSubdir_DetectsAtSubdir(t *testing.T) {
 		}
 	}
 
-	reqBody, err := json.Marshal(map[string]string{"local_path": filepath.Join(repo, "sub")})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	resp, err := http.Post(env.srv.URL+"/worktrees/"+env.worktreeID+"/preview/start",
-		"application/json", bytes.NewReader(reqBody))
+	slug := host.LocalRepoSlug(filepath.Join(repo, "sub"))
+	resp, err := http.Post(env.srv.URL+"/worktrees/"+slug+"/preview/start",
+		"application/json", bytes.NewReader(nil))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -198,7 +195,60 @@ func TestPreviewStart_LocalPathSubdir_DetectsAtSubdir(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	if body.Code != "no_preview" {
-		t.Errorf("code = %q; want no_preview (Detect must run at the subdir)", body.Code)
+		t.Errorf("code = %q; want no_preview (Detect must run at the slug's folder)", body.Code)
+	}
+}
+
+// TestPreviewStatus_FolderSlug_ResolvesOutsideWorkRoot is the
+// regression at the heart of the slug re-key: status/logs polling by
+// the QR-carried key. With the old per-run ULID key, status resolution
+// went through workDirFor and failed for any folder outside ~/work —
+// the phone's loading screen had nothing to poll. A folder slug must
+// resolve wherever the folder lives, git repo or not.
+func TestPreviewStatus_FolderSlug_ResolvesOutsideWorkRoot(t *testing.T) {
+	env := newPreviewTestEnv(t, nil)
+	dir := t.TempDir() // outside the env's workRoot, not a git repo
+	for rel, content := range expoFixture() {
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	resp, err := http.Get(env.srv.URL + "/worktrees/" + host.LocalRepoSlug(dir) + "/preview/status")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for a live folder slug", resp.StatusCode)
+	}
+	var body struct {
+		Available bool   `json:"available"`
+		Kind      string `json:"kind"`
+		State     string `json:"state"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !body.Available || body.Kind != "expo" || body.State != "stopped" {
+		t.Errorf("status = %+v; want Available=true, Kind=expo, State=stopped", body)
+	}
+}
+
+// TestPreviewStatus_FolderSlugGone_Yields404 pins the moved/deleted
+// folder answer: a slug that decodes cleanly but names nothing on disk
+// is an honest 404, not a 500.
+func TestPreviewStatus_FolderSlugGone_Yields404(t *testing.T) {
+	env := newPreviewTestEnv(t, nil)
+	gone := host.LocalRepoSlug(filepath.Join(t.TempDir(), "vanished"))
+
+	resp, err := http.Get(env.srv.URL + "/worktrees/" + gone + "/preview/status")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for a vanished folder", resp.StatusCode)
 	}
 }
 
@@ -241,23 +291,3 @@ func TestPreviewStart_UnknownWorktreeIDYields4xx(t *testing.T) {
 	}
 }
 
-func TestPreviewStart_MalformedBodyYields400(t *testing.T) {
-	env := newPreviewTestEnv(t, expoFixture())
-
-	resp, err := http.Post(env.srv.URL+"/worktrees/"+env.worktreeID+"/preview/start",
-		"application/json", bytes.NewReader([]byte(`{not json`)))
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 for malformed body", resp.StatusCode)
-	}
-	var body errResp
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if body.Code != "invalid_request" {
-		t.Errorf("code = %q; want invalid_request", body.Code)
-	}
-}

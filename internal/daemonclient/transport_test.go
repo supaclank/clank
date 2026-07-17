@@ -109,7 +109,7 @@ func TestPreviewStart_NoPreviewMapsToErrNotPreviewable(t *testing.T) {
 	srv := errServer(t, http.StatusNotFound, "application/json",
 		`{"code":"no_preview","error":"preview: worktree is not previewable"}`)
 
-	_, err := NewTCPClient(srv.URL, "").Preview("01WT").Start(context.Background(), "/tmp/whatever")
+	_, err := NewTCPClient(srv.URL, "").Preview("01WT").Start(context.Background())
 	if !errors.Is(err, ErrNotPreviewable) {
 		t.Fatalf("want ErrNotPreviewable, got %v", err)
 	}

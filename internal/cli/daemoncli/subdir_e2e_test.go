@@ -16,15 +16,16 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/daemonclient"
+	"github.com/acksell/clank/internal/host"
 	"github.com/acksell/clank/internal/host/hosttest"
 )
 
-// TestPreviewStartLocal_Subdir_NoPreviewSurvivesGateway proves the
-// structured no_preview code crosses the whole stack intact: for a repo
-// subdir with no detectable app the daemonclient surfaces
-// ErrNotPreviewable — previously this path 500'd with a misleading
-// "local_path is not the repo root".
-func TestPreviewStartLocal_Subdir_NoPreviewSurvivesGateway(t *testing.T) {
+// TestPreviewStart_SubdirSlug_NoPreviewSurvivesGateway proves the
+// structured no_preview code crosses the whole stack intact: for a
+// folder-slug key naming a repo subdir with no detectable app, the
+// daemonclient surfaces ErrNotPreviewable — previously this path 500'd
+// with a misleading "local_path is not the repo root".
+func TestPreviewStart_SubdirSlug_NoPreviewSurvivesGateway(t *testing.T) {
 	t.Parallel()
 	td := newTestDaemon(t)
 
@@ -36,7 +37,7 @@ func TestPreviewStartLocal_Subdir_NoPreviewSurvivesGateway(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := td.Client.Preview("01SUBDIRPREVIEW").Start(ctx, sub)
+	_, err := td.Client.Preview(host.LocalRepoSlug(sub)).Start(ctx)
 	if !errors.Is(err, daemonclient.ErrNotPreviewable) {
 		t.Fatalf("want ErrNotPreviewable, got %v", err)
 	}

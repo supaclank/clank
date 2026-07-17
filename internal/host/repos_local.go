@@ -52,11 +52,14 @@ const localInfoConcurrency = 8
 // external host_test package. Test-only.
 const MaxDiscoveredLocalReposForTest = maxDiscoveredLocalRepos
 
-// localRepoSlug encodes a checkout's absolute root path as its routing
-// key. base64url stays inside the slug alphabet, is lossless, and
+// LocalRepoSlug encodes an absolute folder path as its routing key —
+// the repo slug for local checkouts, and the preview key `clank
+// preview` mints for the folder it serves (which may be a monorepo
+// subdir, so no root normalization here).
+// base64url stays inside the slug alphabet, is lossless, and
 // needs no lookup table to reverse — the path IS the identity, so a
 // moved folder is honestly a new repo (matching how IDE recents work).
-func localRepoSlug(root string) string {
+func LocalRepoSlug(root string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(root))
 }
 
@@ -219,7 +222,7 @@ func (s *Service) localRepoInfoFor(root string) (RepoInfo, error) {
 		return RepoInfo{}, err
 	}
 	return RepoInfo{
-		Slug:            localRepoSlug(root),
+		Slug:            LocalRepoSlug(root),
 		Label:           repolabel.ComputeRepoLabel(root),
 		Origin:          repoOriginFor(root),
 		DefaultBranch:   defaultBranch,

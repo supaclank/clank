@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 )
 
 // ErrNotPreviewable mirrors the daemon's structured "no_preview" error:
@@ -43,17 +45,12 @@ type PreviewStatus struct {
 	Token     string `json:"token"`
 }
 
-// Start spawns (or returns the existing) dev server for the worktree.
-// Idempotent on the host side. A non-empty localPath starts an in-place
-// preview on that folder (laptop `clank preview`) instead of resolving a
-// ~/work worktree by id.
-func (p *PreviewClient) Start(ctx context.Context, localPath string) (*PreviewStatus, error) {
-	var body any
-	if localPath != "" {
-		body = map[string]string{"local_path": localPath}
-	}
+// Start spawns (or returns the existing) dev server for the preview
+// key — a managed worktree ID or a folder slug (host.LocalRepoSlug);
+// the host resolves both. Idempotent on the host side.
+func (p *PreviewClient) Start(ctx context.Context) (*PreviewStatus, error) {
 	var s PreviewStatus
-	if err := p.c.post(ctx, "/worktrees/"+p.worktreeID+"/preview/start", body, &s); err != nil {
+	if err := p.c.post(ctx, "/worktrees/"+p.worktreeID+"/preview/start", nil, &s); err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.Code == codeNoPreview {
 			return nil, fmt.Errorf("%w: %s", ErrNotPreviewable, apiErr.Message)
@@ -77,4 +74,27 @@ func (p *PreviewClient) Status(ctx context.Context) (*PreviewStatus, error) {
 // want naive idempotency should ignore it.
 func (p *PreviewClient) Stop(ctx context.Context) error {
 	return p.c.post(ctx, "/worktrees/"+p.worktreeID+"/preview/stop", nil, nil)
+}
+
+// Logs returns the dev server's captured stdout/stderr tail
+// (text/plain, ANSI-stripped host-side; empty when nothing is
+// running). Raw request — the shared do() helper assumes JSON bodies.
+func (p *PreviewClient) Logs(ctx context.Context) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET",
+		p.c.baseURL+"/worktrees/"+p.worktreeID+"/preview/logs", nil)
+	if err != nil {
+		return nil, err
+	}
+	if p.c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+p.c.authToken)
+	}
+	resp, err := p.c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("daemon request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("daemon returned status %d", resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
 }
