@@ -596,10 +596,11 @@ def strip_noise(body: str) -> str:
 
 data = json.load(sys.stdin)
 for c in data:
-    if not is_bot(c.get('user', {}).get('login', '')):
+    login = (c.get('user') or {}).get('login', '')
+    if not is_bot(login):
         continue
-    body = strip_noise(c.get('body', ''))
-    print(f'\n=== bot={c["user"]["login"]} id={c["id"]} '
+    body = strip_noise(c.get('body') or '')
+    print(f'\n=== bot={login} id={c.get("id", "?")} '
           f'{c.get("path","?")}:{c.get("line","?")} ===')
     print(body[:3500])
 ```
