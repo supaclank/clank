@@ -65,12 +65,12 @@ func (s *Service) PublishToRemote(ctx context.Context, worktreeID string, req Pu
 	if err != nil {
 		return PublishResult{}, fmt.Errorf("resolve worktree: %w", err)
 	}
-	creds, err := s.github.Store().Read()
+	token, err := s.github.AccessToken()
 	if err != nil {
-		return PublishResult{}, fmt.Errorf("read github credentials: %w", err)
-	}
-	if creds.AccessToken == "" {
-		return PublishResult{}, ErrGitHubNotConnected
+		if errors.Is(err, githubpkg.ErrNotConnected) {
+			return PublishResult{}, ErrGitHubNotConnected
+		}
+		return PublishResult{}, fmt.Errorf("github token: %w", err)
 	}
 	// Already wired to a remote → publishing would clobber; the caller should
 	// push instead. RemoteURL errors when there's no origin — that's our path.
@@ -109,7 +109,7 @@ func (s *Service) PublishToRemote(ctx context.Context, worktreeID string, req Pu
 	if req.Private != nil {
 		private = *req.Private
 	}
-	created, err := s.github.CreateRepository(ctx, creds.AccessToken, githubpkg.CreateRepoInput{
+	created, err := s.github.CreateRepository(ctx, token, githubpkg.CreateRepoInput{
 		Name:    name,
 		Private: private,
 	})
@@ -121,7 +121,7 @@ func (s *Service) PublishToRemote(ctx context.Context, worktreeID string, req Pu
 	if err := git.RemoteAdd(workdir, "origin", pushURL); err != nil {
 		return PublishResult{}, fmt.Errorf("add origin: %w", err)
 	}
-	if err := git.Push(workdir, pushURL, branch+":refs/heads/"+branch, git.PushOptions{ExtraHeader: buildAuthHeader(creds.AccessToken)}); err != nil {
+	if err := git.Push(workdir, pushURL, branch+":refs/heads/"+branch, git.PushOptions{ExtraHeader: buildAuthHeader(token)}); err != nil {
 		return PublishResult{}, err
 	}
 	s.log.Printf("published worktree %s to %s/%s (branch %s)", worktreeID, created.Owner, created.Name, branch)

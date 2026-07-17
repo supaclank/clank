@@ -142,12 +142,12 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 		return CreatePRResult{}, fmt.Errorf("resolve worktree: %w", err)
 	}
 
-	creds, err := s.github.Store().Read()
+	token, err := s.github.AccessToken()
 	if err != nil {
-		return CreatePRResult{}, fmt.Errorf("read github credentials: %w", err)
-	}
-	if creds.AccessToken == "" {
-		return CreatePRResult{}, ErrGitHubNotConnected
+		if errors.Is(err, githubpkg.ErrNotConnected) {
+			return CreatePRResult{}, ErrGitHubNotConnected
+		}
+		return CreatePRResult{}, fmt.Errorf("github token: %w", err)
 	}
 
 	branch, err := git.CurrentBranch(workdir)
@@ -170,7 +170,7 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 		return CreatePRResult{}, fmt.Errorf("parse origin url %q: %w", remoteURL, err)
 	}
 
-	authHeader := buildAuthHeader(creds.AccessToken)
+	authHeader := buildAuthHeader(token)
 
 	// Push and fetch use an explicit HTTPS URL built from the parsed
 	// (owner, repo), not the literal "origin". This decouples the
@@ -255,7 +255,7 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 		return CreatePRResult{}, err
 	}
 
-	pr, err := s.github.CreatePullRequest(ctx, creds.AccessToken, owner, repo, githubpkg.CreatePRInput{
+	pr, err := s.github.CreatePullRequest(ctx, token, owner, repo, githubpkg.CreatePRInput{
 		Title: req.Title,
 		Body:  req.Body,
 		Head:  branch,
