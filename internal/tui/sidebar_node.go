@@ -12,8 +12,7 @@ import (
 type sidebarNodeKind int
 
 const (
-	nodeAllSessions sidebarNodeKind = iota
-	nodeWorktree
+	nodeWorktree sidebarNodeKind = iota
 	nodeSession
 	nodeOlderWorktrees
 	nodeOlderSessions
@@ -36,16 +35,6 @@ type sidebarNode interface {
 	// Depth is the nesting level used for indentation. 0 = top-level row.
 	Depth() int
 }
-
-// allSessionsNode is the virtual "All sessions" entry pinned at the top
-// of the sidebar. Selecting it surfaces the date-grouped inbox.
-type allSessionsNode struct{}
-
-func (allSessionsNode) Kind() sidebarNodeKind { return nodeAllSessions }
-func (allSessionsNode) Key() string           { return "all" }
-func (allSessionsNode) IsSelectable() bool    { return true }
-func (allSessionsNode) IsExpandable() bool    { return false }
-func (allSessionsNode) Depth() int            { return 0 }
 
 // worktreeNode represents one worktree row. It carries the session set
 // used to render the child rows when expanded; PartitionSessionsByAge

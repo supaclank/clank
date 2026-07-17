@@ -101,8 +101,8 @@ func (m *SidebarModel) NodeAtRow(y int) int {
 	return m.rowFlat[line]
 }
 
-// renderBody emits the non-footer rows (AllSessions + worktrees + older
-// bucket), respecting the scroll offset. footerLineCount is returned so
+// renderBody emits the non-footer rows (worktrees + older bucket),
+// respecting the scroll offset. footerLineCount is returned so
 // View can pad to push the footer to the bottom regardless of how many
 // rows the body produced.
 func (m *SidebarModel) renderBody(contentWidth int) (lines []string, flatByLine []int, footerLineCount int) {
@@ -130,16 +130,13 @@ func (m *SidebarModel) renderBody(contentWidth int) (lines []string, flatByLine 
 		selected := idx == m.cursor && m.focused
 		// Insert a dim rule before every top-level row (worktree or
 		// top-level overflow bucket) whenever any body row already
-		// rendered. That covers both the divider between consecutive
-		// worktrees and the divider between the AllSessions header
-		// and the first worktree. The rule is attributed to the row it
-		// precedes so clicking the thin divider still selects it.
+		// rendered — the divider between consecutive worktrees. The
+		// rule is attributed to the row it precedes so clicking the
+		// thin divider still selects it.
 		if (n.Kind() == nodeWorktree || n.Kind() == nodeOlderWorktrees) && hasContent {
 			emit(idx, m.renderWorktreeSeparator(contentWidth))
 		}
 		switch typed := n.(type) {
-		case allSessionsNode:
-			emit(idx, m.renderAllRow(selected, contentWidth))
 		case worktreeNode:
 			emit(idx, m.renderWorktreeRow(typed, idx, selected, contentWidth))
 		case sessionNode:
@@ -285,28 +282,6 @@ func (m *SidebarModel) listHeight() int {
 		h = 5
 	}
 	return h
-}
-
-// renderAllRow renders the virtual "All sessions" entry pinned at the
-// top of the body. Uses the same right-edge cursor marker as worktree
-// rows so the "you are here" signal stays consistent across the
-// whole tree — the label sits at the left margin, selection only
-// adds a bold weight and the right-edge ◀.
-func (m *SidebarModel) renderAllRow(selected bool, maxWidth int) string {
-	label := "  All sessions"
-	style := lipgloss.NewStyle().Foreground(dimColor)
-	if m.cursor == 0 {
-		style = lipgloss.NewStyle().Foreground(textColor)
-	}
-	if selected {
-		style = style.Bold(true)
-	}
-	line := style.Render(label)
-	if selected {
-		line = padRight(line, maxWidth-rightCursorWidth) + " " +
-			lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render(rightCursorGlyph)
-	}
-	return line
 }
 
 // renderInputRow renders the inline new-branch input.

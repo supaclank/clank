@@ -41,9 +41,6 @@ func TestSidebarNodeAtRow_MapsRenderedRowsToNodes(t *testing.T) {
 		return m.flat[idx].Kind()
 	}
 
-	if k := kindAt("All sessions"); k != nodeAllSessions {
-		t.Errorf("All sessions row → kind %d, want nodeAllSessions", k)
-	}
 	if k := kindAt("AlphaSession"); k != nodeSession {
 		t.Errorf("session row → kind %d, want nodeSession", k)
 	}
@@ -151,41 +148,13 @@ func TestSidebarClick_SettingsOpensSettingsScreen(t *testing.T) {
 	}
 }
 
-func TestSidebarClick_AllSessionsReturnsToInbox(t *testing.T) {
-	t.Parallel()
-	m := newInboxWithSidebar(t)
-	m.showSettings() // preview the settings page in the right pane
-	if m.screen != screenSettings {
-		t.Fatalf("setup: screen = %v, want screenSettings", m.screen)
-	}
-	m, _ = clickSidebarKind(t, m, nodeAllSessions)
-	if m.screen != screenInbox {
-		t.Errorf("clicking All sessions → screen %v, want screenInbox", m.screen)
-	}
-}
-
-func TestSidebarClick_AllSessionsFromChatReturnsToInbox(t *testing.T) {
-	t.Parallel()
-	m := newInboxWithSidebar(t) // starts on the chat screen
-	if m.screen != screenSession {
-		t.Fatalf("setup: screen = %v, want screenSession", m.screen)
-	}
-	m, cmd := clickSidebarKind(t, m, nodeAllSessions)
-	if cmd == nil {
-		t.Fatal("clicking All sessions from a chat produced no command")
-	}
-	if _, ok := cmd().(backToInboxMsg); !ok {
-		t.Fatalf("clicking All sessions from a chat emitted %T, want backToInboxMsg", cmd())
-	}
-}
-
 // With the sidebar visible, mouse reporting is on for every screen, so a
 // wheel over the sidebar must move its cursor even on the inbox screen
 // (where it previously couldn't, mouse reporting being chat-only).
 func TestSidebarMouse_WheelOverSidebarOnInboxScreen(t *testing.T) {
 	t.Parallel()
 	m := newInboxWithSidebar(t)
-	m.screen = screenInbox
+	m.screen = screenWelcome
 	_ = m.View()
 	before := m.sidebar.cursor
 	nm, _ := m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown, X: 2, Y: 5})
@@ -200,7 +169,7 @@ func TestSidebarMouse_WheelOverSidebarOnInboxScreen(t *testing.T) {
 func TestSidebarMouse_WheelOverRightPaneOnInboxNoPanic(t *testing.T) {
 	t.Parallel()
 	m := newInboxWithSidebar(t)
-	m.screen = screenInbox
+	m.screen = screenWelcome
 	m.sessionView = nil
 	_ = m.View()
 	_, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown, X: 90, Y: 10})
@@ -217,22 +186,5 @@ func TestSidebarClick_OnBorderIsNoOp(t *testing.T) {
 	if m.screen != screenBefore || len(m.sidebar.flat) != flatBefore {
 		t.Errorf("border click changed state: screen %v->%v, flat %d->%d",
 			screenBefore, m.screen, flatBefore, len(m.sidebar.flat))
-	}
-}
-
-// Enter on "All sessions" must return to the inbox list — same as a left click.
-func TestSidebarKey_EnterOnAllSessionsReturnsToInbox(t *testing.T) {
-	t.Parallel()
-	m := newInboxWithSidebar(t)
-	m.showSettings()
-	if m.screen != screenSettings {
-		t.Fatalf("setup: screen = %v, want screenSettings", m.screen)
-	}
-	m.setPane(paneSidebar)
-	m.sidebar.SetCursor(0) // "All sessions" is always flat index 0
-	nm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = nm.(*InboxModel)
-	if m.screen != screenInbox {
-		t.Errorf("Enter on All sessions → screen %v, want screenInbox", m.screen)
 	}
 }

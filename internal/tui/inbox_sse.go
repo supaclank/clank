@@ -174,14 +174,10 @@ func (m *InboxModel) replaceCachedSession(info agent.SessionInfo) bool {
 }
 
 // refreshSidebarFromCache pushes the current cachedSessions into the
-// sidebar and rebuilds groups when no search filter is active. Used
-// by the SSE event handler so a single in-place mutation feeds both
-// sidebar and inbox views without a daemon round-trip.
+// sidebar. Used by the SSE event handler so a single in-place mutation
+// feeds the sidebar without a daemon round-trip.
 func (m *InboxModel) refreshSidebarFromCache() {
 	m.sidebar.SetSessions(m.cachedSessions)
-	if m.searchQuery == "" {
-		m.buildGroups(m.filteredSessions())
-	}
 }
 
 // persistCacheIfChanged writes cachedSessions to disk when its

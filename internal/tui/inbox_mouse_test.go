@@ -66,7 +66,7 @@ func TestInboxView_MouseFollowsSidebarVisibility(t *testing.T) {
 		name   string
 		screen inboxScreen
 	}{
-		{"inbox list", screenInbox},
+		{"inbox list", screenWelcome},
 		{"settings", screenSettings},
 		{"cloud", screenCloud},
 	}

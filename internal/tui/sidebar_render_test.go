@@ -106,8 +106,8 @@ func TestRenderSessionRow_Indicator(t *testing.T) {
 }
 
 // Hovered (cursor) rows bold the title — mirrors the behaviour of
-// other sidebar sections (e.g. the "All sessions" row in renderAllRow).
-// No color change; bold is the only emphasis.
+// other sidebar sections (e.g. worktree rows). No color change; bold is
+// the only emphasis.
 func TestRenderSessionRow_HoveredIsBold(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)

@@ -33,7 +33,7 @@ func (m *InboxModel) openSettings() {
 // closeSettings returns from the Settings screen back to the inbox list.
 // Focus goes back to the sidebar so the user lands where they came from.
 func (m *InboxModel) closeSettings() {
-	m.screen = screenInbox
+	m.screen = screenWelcome
 	m.setPane(paneSidebar)
 	m.settings.SetFocused(false)
 }
@@ -111,7 +111,7 @@ func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok && m.pane == paneSidebar {
 		tm, cmd := m.handleSidebarKey(keyMsg)
 		if m.screen == screenSettings && !m.sidebar.CursorOnSettings() {
-			m.screen = screenInbox
+			m.screen = screenWelcome
 			m.settings.SetFocused(false)
 		}
 		return tm, cmd

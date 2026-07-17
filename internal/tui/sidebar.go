@@ -9,8 +9,7 @@ package tui
 //
 // Layout (top-to-bottom):
 //
-//	[0]             → AllSessions (virtual; selecting opens the inbox)
-//	[1 .. N]        → Recent worktrees, each expandable into sessions
+//	[0 .. N]        → Recent worktrees, each expandable into sessions
 //	[…]             → Older worktrees bucket (collapsible)
 //	[footer]        → Import / Cloud / Settings rows pinned to bottom
 //
@@ -119,7 +118,7 @@ func NewSidebarModel(client *daemonclient.Client, hostname string, gitRef agent.
 		userToggles: map[string]bool{},
 		cycleIdx:    map[string]int{},
 		nowFn:       time.Now,
-		cursor:      0, // AllSessions selected by default
+		cursor:      0, // first body row (worktree, or footer if none) selected by default
 	}
 }
 
@@ -295,12 +294,6 @@ func (m *SidebarModel) CursorOnSettings() bool {
 	return m.cursorNodeKind() == nodeSettings
 }
 
-// CursorOnAllSessions reports whether the cursor is on the "All sessions"
-// row (which surfaces the date-grouped inbox in the right pane).
-func (m *SidebarModel) CursorOnAllSessions() bool {
-	return m.cursorNodeKind() == nodeAllSessions
-}
-
 // SetCursor moves the cursor to the given flat index, clamped to the
 // list. Used by mouse-click selection to jump straight to a row.
 func (m *SidebarModel) SetCursor(idx int) {
@@ -316,16 +309,6 @@ func (m *SidebarModel) cursorNodeKind() sidebarNodeKind {
 	}
 	return m.flat[m.cursor].Kind()
 }
-
-// SelectedBranch returns the LocalPath used by the inbox to filter its
-// session list. In the IDE-style sidebar the inbox is only ever active
-// on the AllSessions row, so this always returns "" — preserved for
-// call-site compatibility (the badges in inbox.renderRow read it).
-func (m *SidebarModel) SelectedBranch() string { return "" }
-
-// SelectedWorktreeDir mirrors SelectedBranch — always "" in the
-// tree-driven sidebar. Kept for call-site compatibility.
-func (m *SidebarModel) SelectedWorktreeDir() string { return "" }
 
 // SelectedBranchInfo always returns nil; merge overlay disabled until
 // sessions carry git branch metadata.
@@ -346,8 +329,8 @@ func (m *SidebarModel) SelectedSessionID() string {
 
 // CursorWorktreePath returns the LocalPath of the worktree the cursor
 // is currently on (or whose session the cursor is on). Empty means
-// the cursor isn't anywhere worktree-shaped (AllSessions, Older
-// buckets, footer rows). Callers fall back to the cwd's worktree in
+// the cursor isn't anywhere worktree-shaped (Older buckets, footer
+// rows). Callers fall back to the cwd's worktree in
 // that case.
 //
 // Used by the unified "n" gesture to prefill the compose view's
@@ -389,8 +372,8 @@ func (m *SidebarModel) Update(msg tea.Msg) tea.Cmd {
 // skipping over any session rows in between so the gesture stays
 // coarse and symmetric (shift+down then shift+up returns to where you
 // started). When there's no worktree left in that direction it falls
-// back to the next section anchor — AllSessions / Older bucket /
-// footer — so the user can still navigate to the edges of the list.
+// back to the next section anchor — Older bucket / footer — so the
+// user can still navigate to the edges of the list.
 func (m *SidebarModel) shiftJump(forward bool) {
 	if len(m.flat) == 0 {
 		return
@@ -421,11 +404,11 @@ func (m *SidebarModel) isWorktreeAt(i int) bool {
 }
 
 // isSectionAnchorAt returns true for the rows shift+up/down can fall
-// back to when there's no worktree to jump to: AllSessions, the Older
-// bucket, and the footer entries.
+// back to when there's no worktree to jump to: the Older bucket and the
+// footer entries.
 func (m *SidebarModel) isSectionAnchorAt(i int) bool {
 	switch m.flat[i].Kind() {
-	case nodeAllSessions, nodeOlderWorktrees, nodeImport, nodeCloud, nodeSettings:
+	case nodeOlderWorktrees, nodeImport, nodeCloud, nodeSettings:
 		return true
 	}
 	return false

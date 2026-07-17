@@ -196,7 +196,7 @@ func (s settingsView) Update(msg tea.Msg) (settingsView, tea.Cmd) {
 }
 
 // View renders the settings page content. It returns a plain string that
-// the inbox composes into the right pane (parallel to renderSessionPane).
+// the inbox composes into the right pane (parallel to renderWelcomePane).
 func (s settingsView) View() string {
 	var sb strings.Builder
 

@@ -87,7 +87,7 @@ func TestSidebarM_NoActiveSession_FallsBackToMerge(t *testing.T) {
 	m := &InboxModel{
 		width:  120,
 		height: 40,
-		screen: screenInbox, // no session shown
+		screen: screenWelcome, // no session shown
 		pane:   paneSidebar,
 	}
 
@@ -105,7 +105,7 @@ func TestSidebarM_NoActiveSession_FallsBackToMerge(t *testing.T) {
 func TestFocusActiveChatMessageMode_NoSession(t *testing.T) {
 	t.Parallel()
 
-	m := &InboxModel{screen: screenInbox, pane: paneSidebar}
+	m := &InboxModel{screen: screenWelcome, pane: paneSidebar}
 
 	if cmd := m.focusActiveChatMessageMode(); cmd != nil {
 		t.Errorf("expected nil cmd when no session view present, got %T", cmd)

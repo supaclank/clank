@@ -14,7 +14,6 @@ func TestFlattenSidebar_CollapsedWorktreesYieldNoSessionRows(t *testing.T) {
 
 	got := flattenSidebar(tree, map[string]bool{}, now)
 	wantKeys := []string{
-		"all",
 		"wt:/r/alpha",
 		"wt:/r/beta",
 		"footer:import", "footer:cloud", "footer:settings",
@@ -32,7 +31,6 @@ func TestFlattenSidebar_ExpandedWorktreeShowsSessions(t *testing.T) {
 	expanded := map[string]bool{"wt:/r/alpha": true}
 	got := flattenSidebar(tree, expanded, now)
 	wantKeys := []string{
-		"all",
 		"wt:/r/alpha",
 		"s:a-new", "s:a-old",
 		"wt:/r/beta",
@@ -57,7 +55,6 @@ func TestFlattenSidebar_OlderWorktreeBucketHidesUntilExpanded(t *testing.T) {
 
 	collapsed := flattenSidebar(tree, map[string]bool{}, today)
 	if got := keysOf(collapsed); !equalStrings(got, []string{
-		"all",
 		"wt:/r/recent1", "wt:/r/recent2",
 		"older:wt",
 		"footer:import", "footer:cloud", "footer:settings",
@@ -67,7 +64,6 @@ func TestFlattenSidebar_OlderWorktreeBucketHidesUntilExpanded(t *testing.T) {
 
 	expanded := flattenSidebar(tree, map[string]bool{"older:wt": true}, today)
 	if got := keysOf(expanded); !equalStrings(got, []string{
-		"all",
 		"wt:/r/recent1", "wt:/r/recent2",
 		"older:wt",
 		"wt:/r/older",
@@ -90,7 +86,6 @@ func TestFlattenSidebar_CwdWorktreeAlwaysVisible(t *testing.T) {
 	tree := buildSidebarTree(sessions, "/r/cwd", today)
 	rows := flattenSidebar(tree, map[string]bool{}, today)
 	if got := keysOf(rows); !equalStrings(got, []string{
-		"all",
 		"wt:/r/active", "wt:/r/cwd",
 		"footer:import", "footer:cloud", "footer:settings",
 	}) {
@@ -117,7 +112,6 @@ func TestFlattenSidebar_PerWorktreeOlderSessionsBucket(t *testing.T) {
 	// Worktree expanded, per-worktree older bucket collapsed.
 	rows := flattenSidebar(tree, map[string]bool{"wt:" + path: true}, now)
 	want := []string{
-		"all",
 		"wt:" + path,
 		"s:s0", "s:s1", "s:s2", "s:s3", "s:s4",
 		"older:s:" + path,
@@ -133,7 +127,6 @@ func TestFlattenSidebar_PerWorktreeOlderSessionsBucket(t *testing.T) {
 		"older:s:" + path: true,
 	}, now)
 	want = []string{
-		"all",
 		"wt:" + path,
 		"s:s0", "s:s1", "s:s2", "s:s3", "s:s4",
 		"older:s:" + path,
