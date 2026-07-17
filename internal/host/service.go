@@ -165,6 +165,13 @@ type Options struct {
 	// env var the laptop's clank-host inherits from clankd.
 	GitHubOAuthClientID string
 
+	// GitHubGhCLIAuth lets GitHub token resolution fall back to the
+	// machine's own gh CLI login (`gh auth token`) when no clank
+	// connection exists. Set by the local laptop provisioner — the
+	// host IS the user's machine there; remote sandboxes keep token
+	// access explicit.
+	GitHubGhCLIAuth bool
+
 	// ProjectCommitterName / ProjectCommitterEmail set the git committer
 	// identity stamped on the seed commit of a project scaffolded via
 	// CreateProjectFromTemplate (also persisted as the new repo's local
@@ -281,6 +288,9 @@ func New(opts Options) *Service {
 		s.log.Printf("github manager unavailable: %v", herr)
 	} else {
 		s.github = githubpkg.NewManager(home, clientID)
+		if opts.GitHubGhCLIAuth {
+			s.github.EnableGhCLIFallback()
+		}
 	}
 
 	return s

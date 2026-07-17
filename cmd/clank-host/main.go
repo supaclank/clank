@@ -88,6 +88,7 @@ func main() {
 	projectCommitterEmail := flag.String("project-committer-email", os.Getenv("CLANK_PROJECT_COMMITTER_EMAIL"), "Git committer email stamped on a scaffolded project's seed commit. Empty uses a neutral default. Defaults to $CLANK_PROJECT_COMMITTER_EMAIL.")
 	templatesJSON := flag.String("templates-json", os.Getenv("CLANK_TEMPLATES"), "JSON array of builtin create-project templates ([{\"display_name\":...,\"clone_url\":...}]). Served by GET /templates alongside the user's GitHub template repos. Empty disables builtin templates. Defaults to $CLANK_TEMPLATES.")
 	localFileAttachments := flag.Bool("local-file-attachments", false, "Honor file:// image attachment sources (the client shares this host's filesystem). Set by the local laptop provisioner; off for remote sprites so a message can't make the host read arbitrary local paths.")
+	ghCLIAuth := flag.Bool("gh-cli-auth", false, "Resolve GitHub tokens from the machine's gh CLI login (gh auth token) when no clank GitHub connection exists. Set by the local laptop provisioner; off for remote sprites, which have no gh login to borrow.")
 	flag.Parse()
 
 	if *socket == "" && *listen == "" {
@@ -131,6 +132,7 @@ func main() {
 		notifierWebhookToken:  *notifierWebhookToken,
 		previewWebhookURL:     *previewWebhookURL,
 		githubOAuthClientID:   *githubOAuthClientID,
+		ghCLIAuth:             *ghCLIAuth,
 		projectCommitterName:  *projectCommitterName,
 		projectCommitterEmail: *projectCommitterEmail,
 	}
@@ -155,6 +157,7 @@ type runConfig struct {
 	notifierWebhookToken  string
 	previewWebhookURL     string
 	githubOAuthClientID   string
+	ghCLIAuth             bool
 	projectCommitterName  string
 	projectCommitterEmail string
 }
@@ -360,6 +363,7 @@ func run(cfg runConfig) error {
 		NotifierLoop:          notifierLoop,
 		PreviewGWClient:       gwClient,
 		GitHubOAuthClientID:   cfg.githubOAuthClientID,
+		GitHubGhCLIAuth:       cfg.ghCLIAuth,
 		ProjectCommitterName:  cfg.projectCommitterName,
 		ProjectCommitterEmail: cfg.projectCommitterEmail,
 	})

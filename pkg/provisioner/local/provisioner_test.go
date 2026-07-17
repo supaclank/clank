@@ -43,6 +43,7 @@ func main() {
 	_ = flag.String("listen-auth-token", "", "")
 	_ = flag.String("data-dir", "", "")
 	_ = flag.Bool("local-file-attachments", false, "")
+	_ = flag.Bool("gh-cli-auth", false, "")
 	flag.Parse()
 	addr := strings.TrimPrefix(*listen, "tcp://")
 	ln, err := net.Listen("tcp", addr)

@@ -40,18 +40,38 @@ type Repo struct {
 	UpdatedAt     time.Time `json:"updated_at,omitzero"`
 }
 
-// AccessToken returns the stored GitHub access token, or ErrNotConnected
-// when none is present. Centralizes the "connected?" check so callers
-// (repo listing, import) don't re-implement it.
+// AccessToken returns the GitHub access token every API and authed-git
+// flow should use, or ErrNotConnected when none is available.
+// Centralizes the "connected?" check so callers don't re-implement it.
+// An explicit clank connection (the store) always wins; with the gh
+// CLI fallback enabled, a laptop host borrows the machine's own gh
+// login instead of demanding a second device flow.
 func (m *Manager) AccessToken() (string, error) {
 	c, err := m.store.Read()
 	if err != nil {
 		return "", err
 	}
-	if c.AccessToken == "" {
-		return "", ErrNotConnected
+	if c.AccessToken != "" {
+		return c.AccessToken, nil
 	}
-	return c.AccessToken, nil
+	if m.ghCLIFallback {
+		if token := ghCLIToken(); token != "" {
+			return token, nil
+		}
+	}
+	return "", ErrNotConnected
+}
+
+// StoredLogin returns the connected account's login when clank knows
+// it, "" otherwise (no connection, or a gh CLI-borrowed token —
+// identity isn't part of gh's token handoff). Best-effort: callers use
+// it for annotations like is_mine, never for auth decisions.
+func (m *Manager) StoredLogin() string {
+	c, err := m.store.Read()
+	if err != nil {
+		return ""
+	}
+	return c.GitHubLogin
 }
 
 // ListRepositories lists repositories the authenticated user can access

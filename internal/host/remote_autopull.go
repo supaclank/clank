@@ -24,9 +24,10 @@ func (s *Service) startColdStartAutoPull(ctx context.Context) {
 }
 
 func (s *Service) coldStartAutoPull(ctx context.Context) {
-	// Skip the whole pass when GitHub isn't connected — every pull would
-	// just fail with ErrGitHubNotConnected.
-	if creds, err := s.github.Store().Read(); err != nil || creds.AccessToken == "" {
+	// Skip the whole pass when no GitHub credential is available (store
+	// or gh CLI fallback) — every pull would just fail with
+	// ErrGitHubNotConnected.
+	if _, err := s.github.AccessToken(); err != nil {
 		return
 	}
 	ids, err := materializedWorktreeIDs()
