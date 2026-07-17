@@ -321,16 +321,16 @@ const rightCursorWidth = 2
 
 // renderWorktreeRow renders one worktree as a single line. Layout:
 //
-//	>label<              <repoLabel>  ◀     (collapsed)
-//	<label>              <repoLabel>  ◀     (expanded)
+//	▸ label              <repoLabel>  ◀     (collapsed)
+//	▾ label              <repoLabel>  ◀     (expanded)
 //
-// Brackets wrap the worktree name tightly — the arrow direction is
-// the affordance ("pointing inward" closed, "pointing outward" open).
-// Both variants are the same width so adjacent rows align.
+// A single chevron sits to the left of the name and flips direction to
+// show expand/collapse state, matching the accordion chevrons used
+// elsewhere in the sidebar (e.g. the Done/Archive toggles).
 func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool, maxWidth int) string {
-	leftPrefix, rightSuffix := ">", "<"
+	chevron := "▸"
 	if m.expanded[n.Key()] {
-		leftPrefix, rightSuffix = "<", ">"
+		chevron = "▾"
 	}
 
 	cursorReserve := 0
@@ -342,7 +342,7 @@ func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool,
 		repoTagWidth = lipgloss.Width(n.RepoLabel) + 1 // one space gutter
 	}
 
-	// Reserve room for: prefix (1) + suffix (1) + repo tag + cursor.
+	// Reserve room for: chevron (1) + space (1) + repo tag + cursor.
 	maxLabel := maxWidth - 2 - repoTagWidth - cursorReserve
 	if maxLabel < 6 {
 		maxLabel = 6
@@ -368,7 +368,7 @@ func (m *SidebarModel) renderWorktreeRow(n worktreeNode, idx int, selected bool,
 		nameStyle = nameStyle.Bold(true)
 	}
 
-	line := nameStyle.Render(leftPrefix + label + rightSuffix)
+	line := nameStyle.Render(chevron + " " + label)
 
 	if n.RepoLabel != "" {
 		repoStyle := lipgloss.NewStyle().Foreground(mutedColor)
