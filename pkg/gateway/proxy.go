@@ -5,8 +5,20 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/acksell/clank/pkg/auth"
+)
+
+const (
+	// slowEnsureHostThreshold flags EnsureHost calls that left the
+	// in-process cache fast path (full resolve/reconcile/ready walk).
+	slowEnsureHostThreshold = 250 * time.Millisecond
+	// slowUpstreamThreshold flags proxied requests whose upstream took
+	// long to produce response headers — the signature of a Flycast
+	// dial absorbing a machine cold boot. Measured to headers, not
+	// body end, so long-lived streams (SSE) don't false-positive.
+	slowUpstreamThreshold = 1 * time.Second
 )
 
 // proxyToHost resolves the userID (from the verified Principal in
@@ -18,11 +30,17 @@ import (
 func (g *Gateway) proxyToHost(w http.ResponseWriter, r *http.Request) {
 	userID := auth.MustPrincipal(r.Context()).UserID
 
+	ensureStart := time.Now()
 	ref, err := g.cfg.Provisioner.EnsureHost(r.Context(), userID)
 	if err != nil {
-		g.log.Printf("gateway: ensure host for user %s: %v", userID, err)
+		g.log.Printf("gateway: ensure host for user %s after %s: %v",
+			userID, time.Since(ensureStart).Round(time.Millisecond), err)
 		http.Error(w, "host unavailable", http.StatusBadGateway)
 		return
+	}
+	if d := time.Since(ensureStart); d > slowEnsureHostThreshold {
+		g.log.Printf("gateway: ensure host user=%s took %s (left the cache fast path)",
+			userID, d.Round(time.Millisecond))
 	}
 
 	target, err := url.Parse(ref.URL)
@@ -32,6 +50,7 @@ func (g *Gateway) proxyToHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	upstreamStart := time.Now()
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			// Strip /hosts/{name}/ from the *incoming* path before
@@ -50,8 +69,19 @@ func (g *Gateway) proxyToHost(w http.ResponseWriter, r *http.Request) {
 			pr.Out.URL.RawPath = singleJoiningSlash(target.RawPath, strippedRaw)
 		},
 		Transport: ref.Transport,
+		// Slow time-to-headers on a proxied request is the wake cost a
+		// client actually experienced (Flycast dial + machine boot +
+		// host handling) — the number that attributes cold-boot latency.
+		ModifyResponse: func(resp *http.Response) error {
+			if d := time.Since(upstreamStart); d > slowUpstreamThreshold {
+				g.log.Printf("gateway: slow upstream %s %s -> %d headers after %s (user=%s)",
+					r.Method, r.URL.Path, resp.StatusCode, d.Round(time.Millisecond), userID)
+			}
+			return nil
+		},
 		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
-			g.log.Printf("gateway: proxy %s %s: %v", req.Method, req.URL.Path, err)
+			g.log.Printf("gateway: proxy %s %s after %s: %v",
+				req.Method, req.URL.Path, time.Since(upstreamStart).Round(time.Millisecond), err)
 			http.Error(rw, "upstream error", http.StatusBadGateway)
 		},
 	}

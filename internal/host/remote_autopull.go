@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"time"
 )
 
 // startColdStartAutoPull kicks a one-shot best-effort fast-forward pass in
@@ -35,6 +36,13 @@ func (s *Service) coldStartAutoPull(ctx context.Context) {
 		s.log.Printf("cold-start auto-pull: list worktrees: %v", err)
 		return
 	}
+	if len(ids) == 0 {
+		return
+	}
+	// Timed because the pass runs git fetches during the cold-boot
+	// window, competing for the same disk/CPU as the first session open.
+	passStart := time.Now()
+	var pulled int
 	for _, id := range ids {
 		select {
 		case <-ctx.Done():
@@ -47,6 +55,11 @@ func (s *Service) coldStartAutoPull(ctx context.Context) {
 		if busy, err := s.WorktreeHasActiveSession(ctx, id); err == nil && busy {
 			continue
 		}
+		// TODO(ai-review): give this a per-worktree timeout so one hung
+		// remote can't stall the whole pass — needs context plumbed through
+		// git.Fetch (exec.Command -> exec.CommandContext), not just a ctx
+		// wrap here (remoteContextFor/runPull don't honor ctx today).
+		// https://github.com/Acksell/clank/pull/158#discussion_r3596541125
 		res, err := s.PullFromRemote(ctx, id)
 		if err != nil {
 			// Expected skips (dirty, diverged, no upstream, no origin,
@@ -59,9 +72,12 @@ func (s *Service) coldStartAutoPull(ctx context.Context) {
 			continue
 		}
 		if res.FastForwarded {
+			pulled++
 			s.log.Printf("cold-start auto-pull: fast-forwarded %s", id)
 		}
 	}
+	s.log.Printf("cold-start auto-pull: done in %s (worktrees=%d fast-forwarded=%d)",
+		time.Since(passStart).Round(time.Millisecond), len(ids), pulled)
 }
 
 // materializedWorktreeIDs lists the worktree IDs present under

@@ -1118,6 +1118,12 @@ func (s *Service) ensureBackend(ctx context.Context, id string) (agent.SessionBa
 		// backend and fall through to recreate it — mirroring the Open-failure
 		// teardown below. Any other status is a live, reusable backend.
 		if b.Status() != agent.StatusDead {
+			// Open is idempotent and serialized per backend, so a caller that
+			// lost the registration race to an in-flight Open blocks here
+			// instead of getting back a backend whose client isn't set yet.
+			if err := b.Open(ctx); err != nil {
+				return nil, fmt.Errorf("ensure backend %s: open: %w", id, err)
+			}
 			return b, nil
 		}
 		if err := s.StopSession(id); err != nil && !errors.Is(err, ErrNotFound) {
@@ -1146,10 +1152,17 @@ func (s *Service) ensureBackend(ctx context.Context, id string) (agent.SessionBa
 		return nil, fmt.Errorf("ensure backend %s: host is shut down", id)
 	}
 
+	// Rehydrate = first touch after a daemon restart or backend drop.
+	// Timed per phase: on a cold machine this path dominates session-
+	// open latency (Open spawns the agent CLI), and the log line is how
+	// we attribute it.
+	rehydrateStart := time.Now()
 	workDir, err := s.workDirFor(ctx, info.GitRef)
 	if err != nil {
 		return nil, fmt.Errorf("ensure backend %s: %w", id, err)
 	}
+	workDirDur := time.Since(rehydrateStart)
+	createStart := time.Now()
 	b, err := mgr.CreateBackend(ctx, agent.BackendInvocation{
 		WorkDir:          workDir,
 		ResumeExternalID: info.ExternalID,
@@ -1157,6 +1170,7 @@ func (s *Service) ensureBackend(ctx context.Context, id string) (agent.SessionBa
 	if err != nil {
 		return nil, fmt.Errorf("ensure backend %s: %w", id, err)
 	}
+	createDur := time.Since(createStart)
 
 	s.mu.Lock()
 	if existing, ok := s.sessions[id]; ok {
@@ -1184,6 +1198,7 @@ func (s *Service) ensureBackend(ctx context.Context, id string) (agent.SessionBa
 	// fast-fail on an unopened backend. On Open failure tear down the
 	// registration so the next call re-runs ensureBackend instead of
 	// finding a broken wrapper in s.sessions.
+	openStart := time.Now()
 	if err := b.Open(ctx); err != nil {
 		s.mu.Lock()
 		delete(s.sessions, id)
@@ -1191,8 +1206,14 @@ func (s *Service) ensureBackend(ctx context.Context, id string) (agent.SessionBa
 		if stopErr := b.Stop(); stopErr != nil {
 			s.log.Printf("warning: stop backend after open failure for %s: %v", id, stopErr)
 		}
+		s.log.Printf("rehydrate %s failed: backend=%s workdir=%s create=%s open=%s: %v",
+			id, info.Backend, workDirDur.Round(time.Millisecond), createDur.Round(time.Millisecond),
+			time.Since(openStart).Round(time.Millisecond), err)
 		return nil, fmt.Errorf("ensure backend %s: open: %w", id, err)
 	}
+	s.log.Printf("rehydrate %s: backend=%s workdir=%s create=%s open=%s",
+		id, info.Backend, workDirDur.Round(time.Millisecond), createDur.Round(time.Millisecond),
+		time.Since(openStart).Round(time.Millisecond))
 
 	return b, nil
 }

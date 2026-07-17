@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
@@ -322,5 +323,192 @@ func TestEnsureBackend_DeadBackendIsRehydrated(t *testing.T) {
 	}
 	if !first.wasStopped() {
 		t.Error("the dead backend must be Stopped when dropped from the registry")
+	}
+}
+
+// blockingOpenBackend defers completing Open() until the test closes
+// release — modeling a real backend's openMu, where a second caller's
+// Open() blocks until the first in-flight Open finishes rather than
+// racing ahead. Send() checks opened state independently of that gate, so
+// it reflects exactly what a caller would observe if ensureBackend handed
+// back the backend without opening it first.
+type blockingOpenBackend struct {
+	mu              sync.Mutex
+	opened          bool
+	openStarted     chan struct{}
+	openStartedOnce sync.Once
+	release         chan struct{}
+}
+
+func newBlockingOpenBackend() *blockingOpenBackend {
+	return &blockingOpenBackend{
+		openStarted: make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+}
+
+func (b *blockingOpenBackend) Open(_ context.Context) error {
+	b.openStartedOnce.Do(func() { close(b.openStarted) })
+
+	b.mu.Lock()
+	already := b.opened
+	b.mu.Unlock()
+	if already {
+		return nil
+	}
+
+	<-b.release
+
+	b.mu.Lock()
+	b.opened = true
+	b.mu.Unlock()
+	return nil
+}
+func (b *blockingOpenBackend) OpenAndSend(ctx context.Context, opts agent.SendMessageOpts) error {
+	if err := b.Open(ctx); err != nil {
+		return err
+	}
+	return b.Send(ctx, opts)
+}
+func (b *blockingOpenBackend) Send(_ context.Context, _ agent.SendMessageOpts) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.opened {
+		return errors.New("client not connected")
+	}
+	return nil
+}
+func (b *blockingOpenBackend) Abort(_ context.Context) error { return nil }
+func (b *blockingOpenBackend) Stop() error                   { return nil }
+func (b *blockingOpenBackend) Events() <-chan agent.Event {
+	ch := make(chan agent.Event)
+	close(ch)
+	return ch
+}
+func (b *blockingOpenBackend) Status() agent.SessionStatus {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.opened {
+		return agent.StatusIdle
+	}
+	return agent.StatusStarting
+}
+func (b *blockingOpenBackend) SessionID() string { return "" }
+func (b *blockingOpenBackend) Messages(_ context.Context) ([]agent.MessageData, error) {
+	return nil, nil
+}
+func (b *blockingOpenBackend) Revert(_ context.Context, _ string) error { return nil }
+func (b *blockingOpenBackend) Fork(_ context.Context, _ string) (agent.ForkResult, error) {
+	return agent.ForkResult{}, nil
+}
+func (b *blockingOpenBackend) RespondPermission(_ context.Context, _ string, _ bool, _ string) error {
+	return nil
+}
+func (b *blockingOpenBackend) RespondQuestion(_ context.Context, _ string, _ []agent.QuestionAnswer, _ bool) error {
+	return nil
+}
+
+type blockingOpenBackendManager struct {
+	mu          sync.Mutex
+	created     []*blockingOpenBackend
+	createCalls int
+}
+
+func (m *blockingOpenBackendManager) Init(_ context.Context, _ func() ([]string, error)) error {
+	return nil
+}
+func (m *blockingOpenBackendManager) CreateBackend(_ context.Context, _ agent.BackendInvocation) (agent.SessionBackend, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.createCalls++
+	b := newBlockingOpenBackend()
+	m.created = append(m.created, b)
+	return b, nil
+}
+func (m *blockingOpenBackendManager) Shutdown() {}
+
+// TestEnsureBackend_CachedPathWaitsForOpen pins a race where a concurrent
+// ensureBackend call could find a freshly-registered backend before its
+// Open() completed and hand it back straight from cache — the caller's
+// Send then failed with "client not connected" even though the session
+// existed and CreateBackend had already run. The cached path must Open()
+// too: idempotent, so it's a fast no-op once already open, and it blocks
+// a caller that arrives while the first Open is still in flight.
+func TestEnsureBackend_CachedPathWaitsForOpen(t *testing.T) {
+	t.Parallel()
+	dbPath := filepath.Join(t.TempDir(), "host.db")
+	st, err := hoststore.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	repo := initGitRepo(t, "git@example.com:acme/repo.git")
+	mgr := &blockingOpenBackendManager{}
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: mgr,
+		},
+		SessionsStore: st,
+	})
+	t.Cleanup(svc.Shutdown)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	const id = "01CACHEDOPENRACE00000001"
+	if err := st.UpsertSession(ctx, agent.SessionInfo{
+		ID:      id,
+		Backend: agent.BackendOpenCode,
+		Status:  agent.StatusIdle,
+		GitRef:  agent.GitRef{LocalPath: repo},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	firstErr := make(chan error, 1)
+	go func() {
+		firstErr <- svc.SendMessage(ctx, id, agent.SendMessageOpts{Text: "first"})
+	}()
+
+	var b *blockingOpenBackend
+	for b == nil {
+		mgr.mu.Lock()
+		if len(mgr.created) > 0 {
+			b = mgr.created[0]
+		}
+		mgr.mu.Unlock()
+	}
+
+	select {
+	case <-b.openStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for first Open() to start")
+	}
+
+	// b is registered in s.sessions but not yet Open. Start a second,
+	// concurrent SendMessage while the first Open is still blocked.
+	secondErr := make(chan error, 1)
+	go func() {
+		secondErr <- svc.SendMessage(ctx, id, agent.SendMessageOpts{Text: "second"})
+	}()
+
+	// Give the second call room to reach the cached path before the first
+	// Open completes — this is exactly the window the bug lived in.
+	time.Sleep(20 * time.Millisecond)
+	close(b.release)
+
+	if err := <-firstErr; err != nil {
+		t.Fatalf("first SendMessage: %v", err)
+	}
+	if err := <-secondErr; err != nil {
+		t.Fatalf("second SendMessage: %v (cached path returned an unopened backend)", err)
+	}
+
+	mgr.mu.Lock()
+	calls := mgr.createCalls
+	mgr.mu.Unlock()
+	if calls != 1 {
+		t.Errorf("CreateBackend calls = %d, want 1 (cached path must not recreate)", calls)
 	}
 }
