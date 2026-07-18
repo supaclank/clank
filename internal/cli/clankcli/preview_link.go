@@ -3,6 +3,7 @@ package clankcli
 import (
 	"fmt"
 	"net/url"
+	"strings"
 )
 
 // clank://link is the deep-link a phone scans from the QR that
@@ -20,8 +21,9 @@ const (
 	previewLinkVersion = "1"
 
 	previewLinkParamVersion    = "v"
-	previewLinkParamGateway    = "gw"   // gateway base URL, e.g. http://192.168.1.20:7878
-	previewLinkParamToken      = "tok"  // pairing bearer (auth.StaticBearer)
+	previewLinkParamGateway    = "gw"   // primary gateway base URL (tailnet if present, else LAN)
+	previewLinkParamAlts       = "alt"  // comma-separated additional gateway base URLs (optional)
+	previewLinkParamToken      = "tok"  // bridge root secret (only until a phone first connects, and in `clank pair`)
 	previewLinkParamPreviewURL = "url"  // Metro dev server, e.g. http://192.168.1.20:8081
 	previewLinkParamSessionID  = "sid"  // a prompt-started session to open (optional)
 	previewLinkParamLocalPath  = "lp"   // laptop folder the agent + Metro run against
@@ -32,7 +34,11 @@ const (
 
 // PreviewLink is the payload carried by the QR.
 //
-//   - GatewayURL + Token: the pairing capability (required).
+//   - GatewayURL (+ Alts): where the phone reaches the daemon's bridge —
+//     the candidate set it remembers and probes on every reconnect.
+//   - Token: the bridge root secret. Present in `clank pair` QRs and in
+//     preview QRs only until a phone has ever connected; after that the
+//     QR is a tokenless invitation and the phone uses its stored secret.
 //   - PreviewURL: the dev server to open.
 //   - SessionID: set only when `clank preview <prompt>` already started an
 //     agent — the phone attaches to it.
@@ -44,6 +50,7 @@ const (
 //     instead of hitting a not-yet-listening port raw.
 type PreviewLink struct {
 	GatewayURL string
+	Alts       []string
 	Token      string
 	PreviewURL string
 	SessionID  string
@@ -53,20 +60,19 @@ type PreviewLink struct {
 	WorktreeID string
 }
 
-// Encode renders the link as a clank://link URL. GatewayURL and Token are
-// required — they're the whole point of pairing, so a link without them is
-// a programmer error, not a partial-but-usable payload.
+// Encode renders the link as a clank://link URL. GatewayURL is
+// required — a link that names no gateway is a programmer error, not
+// a partial-but-usable payload. Token is optional: tokenless links
+// are invitations for already-connected phones.
 func (l PreviewLink) Encode() (string, error) {
 	if l.GatewayURL == "" {
 		return "", fmt.Errorf("preview link: GatewayURL is required")
 	}
-	if l.Token == "" {
-		return "", fmt.Errorf("preview link: Token is required")
-	}
 	q := url.Values{}
 	q.Set(previewLinkParamVersion, previewLinkVersion)
 	q.Set(previewLinkParamGateway, l.GatewayURL)
-	q.Set(previewLinkParamToken, l.Token)
+	setIfPresent(q, previewLinkParamAlts, strings.Join(l.Alts, ","))
+	setIfPresent(q, previewLinkParamToken, l.Token)
 	setIfPresent(q, previewLinkParamPreviewURL, l.PreviewURL)
 	setIfPresent(q, previewLinkParamSessionID, l.SessionID)
 	setIfPresent(q, previewLinkParamLocalPath, l.LocalPath)
@@ -98,8 +104,11 @@ func ParsePreviewLink(s string) (PreviewLink, error) {
 		Name:       q.Get(previewLinkParamName),
 		WorktreeID: q.Get(previewLinkParamWorktreeID),
 	}
-	if link.GatewayURL == "" || link.Token == "" {
-		return PreviewLink{}, fmt.Errorf("preview link: missing required %s/%s in %q", previewLinkParamGateway, previewLinkParamToken, s)
+	if alts := q.Get(previewLinkParamAlts); alts != "" {
+		link.Alts = strings.Split(alts, ",")
+	}
+	if link.GatewayURL == "" {
+		return PreviewLink{}, fmt.Errorf("preview link: missing required %s in %q", previewLinkParamGateway, s)
 	}
 	return link, nil
 }
