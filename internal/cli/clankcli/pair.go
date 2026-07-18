@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 )
@@ -180,6 +181,9 @@ func ensurePhoneReachable(ctx context.Context, client *daemonclient.Client, in i
 		if !stdinIsTTY(in) {
 			return nil, fmt.Errorf("this network isn't trusted for unencrypted serving — run `clank pair` interactively to approve it, or connect both devices to Tailscale")
 		}
+		if st.Network.Fingerprint == "" {
+			return nil, fmt.Errorf("couldn't identify this network to remember a trust choice — connect Tailscale for encrypted access instead")
+		}
 		label := st.Network.Label
 		if label == "" {
 			label = "this network"
@@ -189,10 +193,11 @@ func ensurePhoneReachable(ctx context.Context, client *daemonclient.Client, in i
 		if !readYes(in) {
 			return nil, fmt.Errorf("not serving on an untrusted network — connect both devices to Tailscale for encrypted access, or re-run and answer y")
 		}
-		if st.Network.Fingerprint == "" {
-			return nil, fmt.Errorf("couldn't identify this network to remember the choice — connect Tailscale for encrypted access instead")
-		}
-		st, err = client.Bridge().TrustNetwork(ctx, st.Network.Fingerprint, st.Network.Label)
+		// Fresh timeout for the daemon call: readYes above waits on the
+		// user, which must not eat into the RPC's own deadline.
+		trustCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		st, err = client.Bridge().TrustNetwork(trustCtx, st.Network.Fingerprint, st.Network.Label)
 		if err != nil {
 			return nil, fmt.Errorf("trust network: %w", err)
 		}
@@ -221,15 +226,12 @@ func readYes(in io.Reader) bool {
 }
 
 // stdinIsTTY reports whether in is an interactive terminal — the
-// trust prompt never blocks a script.
+// trust prompt never blocks a script. os.ModeCharDevice alone would
+// misidentify /dev/null (a common non-interactive stand-in) as a TTY.
 func stdinIsTTY(in io.Reader) bool {
 	f, ok := in.(*os.File)
 	if !ok {
 		return false
 	}
-	fi, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(f.Fd()))
 }
