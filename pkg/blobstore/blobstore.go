@@ -32,6 +32,12 @@ var ErrInvalidPathComponent = errors.New("blobstore: invalid path component")
 // Wrapped, not unwrapped — callers should errors.Is.
 var ErrNotFound = errors.New("blobstore: object not found")
 
+// ErrUnavailable is returned when a Storage implementation has no
+// reachable backing yet (e.g. a LAN blobstore before any address is
+// bound). Distinguishes a temporary not-ready state from a genuine
+// failure so callers can surface 503 instead of 500.
+var ErrUnavailable = errors.New("blobstore: storage unavailable")
+
 // Storage is the minimal contract for object storage. Implementations
 // MUST be safe for concurrent use.
 type Storage interface {

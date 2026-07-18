@@ -41,6 +41,11 @@ type bridgeRuntime struct {
 	port      int
 	log       *log.Logger
 
+	// newBlob constructs the LAN blobstore; blobstore.NewLAN by
+	// default, overridable in tests to exercise reconcileBlob's
+	// failure/retry path.
+	newBlob func(bindAddr, advertiseHost string, signKey []byte) (*blobstore.LAN, error)
+
 	blobMu   sync.Mutex
 	blob     *blobstore.LAN
 	blobHost string
@@ -83,7 +88,7 @@ func setupBridge(opts ServerOptions, lg *log.Logger) *bridgeRuntime {
 			port = p
 		}
 	}
-	return &bridgeRuntime{store: store, storage: storage, imagesSrv: imagesSrv, port: port, log: lg}
+	return &bridgeRuntime{store: store, storage: storage, imagesSrv: imagesSrv, port: port, log: lg, newBlob: blobstore.NewLAN}
 }
 
 // Images is the server to hang on gateway.Config.Images — built
@@ -148,20 +153,23 @@ func (b *bridgeRuntime) reconcileBlob(status bridge.Status) {
 		b.blob = nil
 		b.storage.swap(nil)
 	}
-	b.blobHost = host
 	if host == "" {
+		b.blobHost = ""
 		return
 	}
 	signKey := make([]byte, 32)
 	if _, err := rand.Read(signKey); err != nil {
 		b.log.Printf("bridge: blob sign key: %v", err)
+		b.blobHost = ""
 		return
 	}
-	blob, err := blobstore.NewLAN("0.0.0.0:0", host, signKey)
+	blob, err := b.newBlob("0.0.0.0:0", host, signKey)
 	if err != nil {
 		b.log.Printf("bridge: blob store: %v", err)
+		b.blobHost = ""
 		return
 	}
+	b.blobHost = host
 	b.blob = blob
 	b.storage.swap(blob)
 	b.log.Printf("bridge: image uploads via %s", blob.BaseURL())
@@ -285,7 +293,7 @@ type swappableStorage struct {
 	inner blobstore.Storage
 }
 
-var errNoBlobStorage = fmt.Errorf("bridge: no reachable address for image uploads yet")
+var errNoBlobStorage = fmt.Errorf("bridge: no reachable address for image uploads yet: %w", blobstore.ErrUnavailable)
 
 func (s *swappableStorage) swap(inner blobstore.Storage) {
 	s.mu.Lock()

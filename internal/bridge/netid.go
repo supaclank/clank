@@ -166,6 +166,10 @@ func subnetContaining(gwIP string) string {
 			}
 		}
 	}
-	fallback := net.IPNet{IP: ip.Mask(net.CIDRMask(24, 32)), Mask: net.CIDRMask(24, 32)}
+	if ip4 := ip.To4(); ip4 != nil {
+		fallback := net.IPNet{IP: ip4.Mask(net.CIDRMask(24, 32)), Mask: net.CIDRMask(24, 32)}
+		return fallback.String()
+	}
+	fallback := net.IPNet{IP: ip.Mask(net.CIDRMask(64, 128)), Mask: net.CIDRMask(64, 128)}
 	return fallback.String()
 }

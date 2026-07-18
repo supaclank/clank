@@ -133,19 +133,22 @@ func (l *Listeners) Refresh(ctx context.Context) Status {
 	desired := desiredBinds(l.opts.Store, tn, lanIP, network)
 
 	l.mu.Lock()
-	defer l.mu.Unlock()
 
 	want := make(map[string]bool, len(desired))
 	for _, d := range desired {
 		want[d.IP] = true
 	}
 	// Stop binds the policy no longer wants (network change, trust
-	// revoked by hand-editing bridge.json).
+	// revoked by hand-editing bridge.json). Shutdown is deferred until
+	// after the lock is released — it blocks up to 3s per server since
+	// SSE (/events) holds connections open, and would otherwise stall
+	// concurrent LastStatus/admin calls for the same duration.
+	var stale []*boundServer
 	for ip, bs := range l.servers {
 		if want[ip] {
 			continue
 		}
-		l.shutdownLocked(bs)
+		stale = append(stale, bs)
 		delete(l.servers, ip)
 		l.opts.Log.Printf("bridge: unbound %s:%d", ip, l.opts.Port)
 	}
@@ -171,6 +174,11 @@ func (l *Listeners) Refresh(ctx context.Context) Status {
 		status.Binds = append(status.Binds, bs)
 	}
 	l.status = status
+	l.mu.Unlock()
+
+	for _, bs := range stale {
+		go l.shutdownLocked(bs)
+	}
 	return status
 }
 

@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/acksell/clank/internal/bridge"
+	"github.com/acksell/clank/pkg/blobstore"
 )
 
 // TestSetupBridgeCloudModeIsNil is the cloud guard: a TCP-mode daemon
@@ -38,6 +39,49 @@ func TestSetupBridgeCloudModeIsNil(t *testing.T) {
 	}
 	br.Start(nil) // must be a nil-safe no-op
 	br.Close()
+}
+
+// TestReconcileBlob_RetriesAfterConstructorFailure pins a bug where a
+// failed blobstore construction still latched blobHost to the new
+// host, so every later reconcileBlob call for that same host
+// early-returned without retrying — image uploads stayed permanently
+// disabled until the address changed again or the daemon restarted.
+func TestReconcileBlob_RetriesAfterConstructorFailure(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLANK_DIR", dir)
+
+	br := setupBridge(ServerOptions{}, testLogger(t))
+	if br == nil {
+		t.Fatal("laptop mode must construct the bridge")
+	}
+	t.Cleanup(br.Close)
+
+	const host = "100.64.1.2"
+	status := bridge.Status{Binds: []bridge.BindStatus{{IP: host, Reason: "tailnet"}}}
+
+	calls := 0
+	br.newBlob = func(bindAddr, advertiseHost string, signKey []byte) (*blobstore.LAN, error) {
+		calls++
+		if calls == 1 {
+			return nil, fmt.Errorf("simulated bind failure")
+		}
+		return blobstore.NewLAN(bindAddr, advertiseHost, signKey)
+	}
+
+	br.reconcileBlob(status)
+	if br.blob != nil {
+		t.Fatal("first reconcileBlob call should have failed to construct a blobstore")
+	}
+
+	// Same host again, simulating the next Refresh poll after the
+	// transient failure.
+	br.reconcileBlob(status)
+	if br.blob == nil {
+		t.Fatal("reconcileBlob must retry construction for the same host after a prior failure")
+	}
+	if calls != 2 {
+		t.Fatalf("newBlob calls = %d, want 2 (no retry-skip)", calls)
+	}
 }
 
 func TestSetupBridgeLaptopMode(t *testing.T) {
