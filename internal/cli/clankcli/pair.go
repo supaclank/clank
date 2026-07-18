@@ -257,6 +257,9 @@ func ensurePhoneReachable(ctx context.Context, client *daemonclient.Client, in i
 		}
 		// Fresh timeout for the daemon call: readYes above waits on the
 		// user, which must not eat into the RPC's own deadline.
+		// TODO(ai-review): context.Background() means Ctrl+C during this
+		// call can't cancel it — needs the signal-only ctx threaded in.
+		// https://github.com/Acksell/clank/pull/175#discussion_r3609121580
 		trustCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		st, err = client.Bridge().TrustNetwork(trustCtx, st.Network.Fingerprint, st.Network.Label)
@@ -270,8 +273,8 @@ func ensurePhoneReachable(ctx context.Context, client *daemonclient.Client, in i
 	return nil, fmt.Errorf("your phone can't reach this laptop yet — connect to Wi-Fi or Tailscale and retry")
 }
 
-// bridgeStatus fetches bridge state, translating the 404 an old
-// (pre-bridge) daemon returns into an actionable hint.
+// bridgeStatus fetches bridge state, wrapping any transport error with
+// a hint that the daemon may predate `clank pair` and need a restart.
 func bridgeStatus(ctx context.Context, client *daemonclient.Client) (*daemonclient.BridgeStatus, error) {
 	st, err := client.Bridge().Status(ctx)
 	if err != nil {

@@ -212,6 +212,9 @@ func (b *bridgeRuntime) AdminHandler() http.Handler {
 		return nil
 	}
 	mux := http.NewServeMux()
+	// TODO(ai-review): throttle re-discovery — `clank pair`'s 1Hz poll
+	// currently forces a full tailscale/route/arp exec on every GET.
+	// https://github.com/Acksell/clank/pull/175#discussion_r3609118211
 	mux.HandleFunc("GET /v1/bridge/status", func(w http.ResponseWriter, r *http.Request) {
 		b.writeStatus(w, b.Refresh(r.Context()))
 	})

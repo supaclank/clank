@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/acksell/clank/pkg/auth"
 )
@@ -77,6 +79,20 @@ func TestAuthenticatorRejectsOldBearerAfterRotate(t *testing.T) {
 	r.Header.Set("Authorization", "Bearer "+oldBearer)
 	if _, err := a.Verify(r); !errors.Is(err, auth.ErrUnauthenticated) {
 		t.Fatalf("rotate must revoke old bearers, got %v", err)
+	}
+}
+
+func TestSanitizeDeviceNameTruncatesOnRuneBoundary(t *testing.T) {
+	t.Parallel()
+	// 70 multi-byte runes: a byte-index truncation at 64 would split
+	// the 65th rune's UTF-8 encoding in half.
+	name := strings.Repeat("é", 70)
+	got := sanitizeDeviceName(name)
+	if !utf8.ValidString(got) {
+		t.Fatalf("sanitizeDeviceName(%d runes) = %q, not valid UTF-8", len([]rune(name)), got)
+	}
+	if want := strings.Repeat("é", 64); got != want {
+		t.Fatalf("sanitizeDeviceName(%d runes) = %q, want %q", len([]rune(name)), got, want)
 	}
 }
 

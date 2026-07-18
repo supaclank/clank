@@ -86,8 +86,8 @@ func (a *Authenticator) LastConnection() (device string, at time.Time) {
 func sanitizeDeviceName(name string) string {
 	name = strings.Join(strings.Fields(name), " ")
 	const maxLen = 64
-	if len(name) > maxLen {
-		name = name[:maxLen]
+	if runes := []rune(name); len(runes) > maxLen {
+		name = string(runes[:maxLen])
 	}
 	if name == "" {
 		return "phone"
