@@ -26,6 +26,12 @@
 // owner chain (React 19) or a plain DOM description. Per the design
 // thesis, the agent does the edit — this overlay only has to hand it
 // unambiguous context.
+import {
+  PLAN_TOOL, textFromParts, activeQuestionFromParts, chatFromMessages,
+  questionSuppressesPermission, pushPermission, dropPermission,
+  customAllowed, toggleSelection, buildAnswers, collectPlanParts, planTextFor,
+} from './chat.js';
+
 (() => {
   'use strict';
   if (window.__clankOverlay) return;
@@ -92,7 +98,11 @@
     images: [], // staged image attachments [{dataURL, mime, filename, label, w, h}]
     msgs: [], // [{role, text}]
     streamText: '', // in-flight assistant text
-    permission: null, // {request_id, tool, description}
+    perms: [], // pending permission queue [{request_id, tool, description, tool_use_id?}] — head renders
+    // Active question card [QST-001]: prompt fields + per-question UI
+    // selection state. null when no question awaits an answer.
+    question: null, // {request_id, partId, questions, idx, sel: [Set], custom: [string], sending}
+    planParts: [], // recent ExitPlanMode plans [{id, plan}] for the review card
     sessionId: sessionStorage.getItem('clank.sessionId') || CFG.session_id || '',
     lastUserMsgId: '',
     voice: 'idle', // idle | recording | transcribing (or 'off' when unavailable)
@@ -436,6 +446,7 @@
     const attachments = store.images.map((s) => ({ mime: s.mime, filename: s.filename, source: s.dataURL }));
     store.sending = true;
     store.msgs.push({ role: 'user', text });
+    store.question = null; // a user message after the tagged part retires it [QST-002]
     store.streamText = '';
     setComposer('');
     store.chips = [];
@@ -475,6 +486,10 @@
   const abort = async () => {
     if (!store.sessionId) return;
     store.aborting = true;
+    // Abort settles every pending prompt server-side (INV-ABORT-PERM-001)
+    // — mirror that locally so no dead card lingers.
+    store.perms = [];
+    store.question = null;
     render();
     try { await api(`/sessions/${store.sessionId}/abort`, { method: 'POST' }); } catch (err) { toast(err.message); }
     store.aborting = false;
@@ -490,16 +505,94 @@
   };
 
   const replyPermission = async (allow) => {
-    const p = store.permission;
+    const p = store.perms[0];
     if (!p || !store.sessionId) return;
-    store.permission = null;
+    store.perms = store.perms.slice(1); // head answered; the next queued prompt renders
+    // Plan review [INV-PERMMODE-EXITPLAN-001]: Approve = allow (the
+    // backend exits plan mode); Revise = deny with the notes as the
+    // reason so the agent re-plans in plan mode.
+    const message = !allow && p.tool === PLAN_TOOL ? ui.notes.value.trim() : '';
+    if (p.tool === PLAN_TOOL) ui.notes.value = '';
     render();
     try {
-      await api(`/sessions/${store.sessionId}/permissions/${p.request_id}/reply`, { method: 'POST', body: JSON.stringify({ allow }) });
+      await api(`/sessions/${store.sessionId}/permissions/${p.request_id}/reply`, {
+        method: 'POST',
+        body: JSON.stringify({ allow, ...(message ? { message } : {}) }),
+      });
     } catch (err) { toast('permission reply failed: ' + err.message); }
   };
 
+  // answeredQuestions: request ids resolved in this page, so a re-emit
+  // of the same tagged part (turn settle, refetch) can't resurrect the
+  // card [QST-002].
+  const answeredQuestions = new Set();
+
+  // applyQuestion activates a tagged question part [QST-001]. Keeps the
+  // in-progress selection when the same prompt re-emits; drops any
+  // queued permission the card supersedes [QST-003].
+  const applyQuestion = (q) => {
+    if (!q || answeredQuestions.has(q.prompt.request_id)) return;
+    if (store.question && store.question.request_id === q.prompt.request_id) return;
+    const questions = q.prompt.questions || [];
+    store.question = {
+      request_id: q.prompt.request_id,
+      partId: q.partId,
+      questions,
+      idx: 0,
+      sel: questions.map(() => new Set()),
+      custom: questions.map(() => ''),
+      sending: false,
+    };
+    store.perms = store.perms.filter((p) => !questionSuppressesPermission(store.question, p));
+    if (store.box === 'hidden') store.box = 'prompt';
+  };
+
+  const replyQuestion = async (reject) => {
+    const q = store.question;
+    if (!q || q.sending || !store.sessionId) return;
+    q.sending = true;
+    render();
+    const body = reject ? { reject: true } : { answers: buildAnswers(q.questions, q.sel, q.custom) };
+    try {
+      await api(`/sessions/${store.sessionId}/questions/${q.request_id}/reply`, { method: 'POST', body: JSON.stringify(body) });
+    } catch (err) {
+      toast((reject ? 'dismiss' : 'answer') + ' failed: ' + err.message);
+      // A failed answer keeps the card for retry; a failed dismissal
+      // still dismisses locally so the UI can't lock into a dead prompt.
+      if (!reject) { q.sending = false; render(); return; }
+    }
+    answeredQuestions.add(q.request_id);
+    // The gating permission (Claude default/plan mode) resolves through
+    // the question reply server-side; drop any local copy.
+    store.perms = dropPermission(store.perms, q.request_id);
+    store.question = null;
+    render();
+  };
+
   // ---------- SSE ----------------------------------------------------------
+  const CHAT_CAP = 30; // rolling transcript window (the view shows the last 8)
+
+  // reconcile refetches the transcript on every stream (re)open
+  // [INV-RECONCILE-001]: events are at-most-once, so this is what
+  // restores chat after a reload and backfills anything emitted while
+  // disconnected — including a pending question, whose tag rides the
+  // transcript [QST-001]. The refetch is point-in-time and may race a
+  // fresher live event; it therefore never *clears* a live question,
+  // and the next settle re-syncs the transcript.
+  const reconcile = async (sid) => {
+    let history;
+    try {
+      history = await apiJSON(`/sessions/${sid}/messages`);
+    } catch { return; }
+    if (!Array.isArray(history) || store.sessionId !== sid) return;
+    const c = chatFromMessages(history, CHAT_CAP);
+    store.msgs = c.msgs;
+    if (c.lastUserMsgId) store.lastUserMsgId = c.lastUserMsgId;
+    store.planParts = c.planParts;
+    applyQuestion(c.question);
+    render();
+  };
+
   let sseAbort = null;
   let sseBackoff = 1000;
   const subscribe = () => {
@@ -518,9 +611,11 @@
         sseBackoff = 1000;
         // Events are at-most-once with no replay: anything emitted between
         // session create (the agent starts immediately) and this stream
-        // opening is gone, and the same applies across reconnects. Sync the
-        // coarse agent state from the session snapshot so the border can't
-        // stick on a stale state; parts/messages catch up on the live stream.
+        // opening is gone, and the same applies across reconnects. The
+        // transcript refetch recovers settled content; the session
+        // snapshot syncs the coarse agent state so the border can't
+        // stick on a stale state.
+        reconcile(sid);
         fetch(`/__clank/api/sessions/${sid}`, { headers: { Authorization: 'Bearer ' + TOKEN } })
           .then((r) => (r.ok ? r.json() : null))
           .then((info) => {
@@ -574,8 +669,20 @@
       }
       case 'part': {
         const p = d.part || {};
-        if (p.type === 'tool_call') setAgent('working');
+        if (p.type === 'tool_call') {
+          setAgent('working');
+          store.planParts = collectPlanParts(store.planParts, [p]);
+          if (p.question && (p.question.questions || []).length && p.status !== 'error') {
+            applyQuestion({ partId: p.id, prompt: p.question });
+          } else if (store.question && p.id !== store.question.partId) {
+            store.question = null; // a later tool call means the conversation moved on [QST-002]
+          } else if (store.question && p.status === 'error') {
+            store.question = null; // deny/abort fallout retires the prompt
+          }
+          render();
+        }
         if (p.type === 'text' && p.text) {
+          if (store.question && p.id !== store.question.partId) store.question = null; // moved on [QST-002]
           if (d.is_delta) store.streamText += p.text;
           else store.streamText = p.text;
           render();
@@ -583,18 +690,28 @@
         break;
       }
       case 'message': {
-        if (d.role === 'user' && d.id) store.lastUserMsgId = d.id;
-        if (d.role === 'assistant') {
-          const text = (d.parts || []).filter((p) => p.type === 'text').map((p) => p.text).join('');
-          if (text) { store.msgs.push({ role: 'assistant', text }); store.streamText = ''; }
+        if (d.role === 'user') {
+          if (d.id) store.lastUserMsgId = d.id;
+          store.question = null; // e.g. a bypass answer sent from another client [QST-002]
         }
-        if (store.msgs.length > 30) store.msgs.splice(0, store.msgs.length - 30);
+        if (d.role === 'assistant') {
+          const text = textFromParts(d.parts);
+          if (text) { store.msgs.push({ role: 'assistant', text }); store.streamText = ''; }
+          store.planParts = collectPlanParts(store.planParts, d.parts);
+          // The settled message is authoritative for its own parts: a
+          // trailing tag (re)activates the card; a question part that is
+          // no longer last means it was answered elsewhere.
+          const q = activeQuestionFromParts(d.parts);
+          if (q) applyQuestion(q);
+          else if (store.question && (d.parts || []).some((p) => p.id === store.question.partId)) store.question = null;
+        }
+        if (store.msgs.length > CHAT_CAP) store.msgs.splice(0, store.msgs.length - CHAT_CAP);
         render();
         break;
       }
       case 'permission':
-        store.permission = d;
-        if (store.box === 'hidden') store.box = 'prompt';
+        store.perms = pushPermission(store.perms, d, store.question);
+        if (store.perms.length && store.box === 'hidden') store.box = 'prompt';
         render();
         break;
       case 'error':
@@ -994,6 +1111,30 @@
   .perm button { all:unset; cursor:pointer; font-size:12px; font-weight:600; padding:4px 12px; border-radius:8px; margin-right:6px; }
   .perm .allow { background:#22c55e1f; color:#16a34a; }
   .perm .deny { background:#ef44441f; color:#dc2626; }
+  .perm .plan { max-height:140px; overflow-y:auto; white-space:pre-wrap; word-break:break-word; margin:0 0 6px;
+    padding:6px 8px; background:#00000008; border:1px solid #e5e7eb; border-radius:8px;
+    font-family:inherit; font-size:11.5px; color:#374151; }
+  .perm .notes { min-height:0; max-height:80px; margin:0 0 6px; padding:4px 8px; font-size:12px;
+    border:1px solid #e5e7eb; border-radius:8px; background:#ffffffa6; }
+  .ques { margin:6px 12px; padding:8px 10px; border:1px solid #3b82f666; background:#3b82f60d; border-radius:10px; font-size:12px; }
+  .ques .t { font-weight:600; margin-bottom:2px; }
+  .ques .qx { color:#374151; margin-bottom:4px; white-space:pre-wrap; word-break:break-word; }
+  .ques .qh { color:#6b7280; font-size:11px; margin-bottom:4px; }
+  .ques .opt { all:unset; display:block; width:100%; box-sizing:border-box; cursor:pointer;
+    padding:6px 8px; border-radius:8px; border:1px solid transparent; }
+  .ques .opt:hover { background:#00000008; }
+  .ques .opt.cur { border-color:#3b82f6aa; background:#3b82f614; }
+  .ques .opt b { display:block; font-weight:600; }
+  .ques .opt .d { color:#6b7280; }
+  .ques .qother { width:100%; box-sizing:border-box; margin-top:4px; padding:4px 8px; font-size:12px;
+    border:1px solid #e5e7eb; border-radius:8px; background:#ffffffa6; outline:0; color:#111827; }
+  .ques .qbar { display:flex; align-items:center; gap:6px; margin-top:8px; }
+  .ques .qbar .sp { flex:1; }
+  .ques .qb { all:unset; cursor:pointer; font-size:12px; font-weight:600; padding:4px 12px; border-radius:8px; }
+  .ques .qnext { background:#3b82f6; color:#fff; }
+  .ques .qback { background:#00000010; color:#374151; }
+  .ques .qdismiss { color:#9ca3af; padding-left:0; }
+  .ques .qb[disabled], .ques .opt[disabled] { opacity:.5; cursor:default; }
   textarea { width:100%; resize:none; background:transparent; border:0; outline:0; color:#111827;
     font-size:13px; line-height:1.4; padding:6px 12px; min-height:34px; max-height:120px; }
   textarea::placeholder { color:#9ca3af; }
@@ -1059,8 +1200,11 @@
   <div class="chat"></div>
   <div class="perm" style="display:none">
     <div class="t"></div><div class="d"></div>
+    <pre class="plan" style="display:none"></pre>
+    <textarea class="notes" rows="2" placeholder="Revision notes — sent with Request changes" style="display:none"></textarea>
     <button class="allow">Allow</button><button class="deny">Deny</button>
   </div>
+  <div class="ques" style="display:none"></div>
   <div class="engpick" style="display:none">
     <div class="t">How should dictation transcribe your voice?</div>
     <button class="opt" data-eng="local"><b>Fully local</b><span class="d"></span></button>
@@ -1093,6 +1237,8 @@
   const ui = {
     box: $('.box'), name: $('.name'), st: $('.st'), chips: $('.chips'), chat: $('.chat'),
     perm: $('.perm'), permT: $('.perm .t'), permD: $('.perm .d'),
+    plan: $('.perm .plan'), notes: $('.perm .notes'),
+    permAllow: $('.perm .allow'), permDeny: $('.perm .deny'), ques: $('.ques'),
     input: $('textarea'), sel: $('.sel'), mic: $('.mic'), micLevel: $('.micLevel'),
     eng: $('.eng'), engpick: $('.engpick'), engOpts: [...root.querySelectorAll('.engpick .opt')],
     send: $('.send'), hl: $('.hl'), hll: $('.hll'), toast: $('.toast'),
@@ -1125,6 +1271,89 @@
     ui.input.setSelectionRange(text.length, text.length);
     syncComposerHeight();
     ui.input.scrollTop = ui.input.scrollHeight;
+  };
+
+  // renderQuestion rebuilds the interactive question card [QST-001]
+  // from store.question: one question at a time (Back/Next across a
+  // multi-question prompt), clickable options, a free-text "Other"
+  // input when allowed, Dismiss = reject. Rebuilt on every render;
+  // focus/caret in the Other input survives the rebuild.
+  const renderQuestion = () => {
+    const q = store.question;
+    ui.ques.style.display = q ? '' : 'none';
+    if (!q) { ui.ques.replaceChildren(); return; }
+    const prevOther = ui.ques.querySelector('.qother');
+    const otherFocused = prevOther && root.activeElement === prevOther;
+    const caret = otherFocused ? prevOther.selectionStart : 0;
+
+    const question = q.questions[q.idx];
+    const last = q.idx === q.questions.length - 1;
+    const nextAction = () => {
+      if (q.sending) return;
+      if (last) replyQuestion(false);
+      else { q.idx++; render(); }
+    };
+    const el = (tag, cls, text) => {
+      const n = document.createElement(tag);
+      n.className = cls;
+      if (text) n.textContent = text;
+      return n;
+    };
+
+    const frag = document.createDocumentFragment();
+    const count = q.questions.length > 1 ? `  (${q.idx + 1}/${q.questions.length})` : '';
+    frag.append(el('div', 't', '? ' + (question.header || 'Question') + count));
+    frag.append(el('div', 'qx', question.text || ''));
+    if (question.multi_select) frag.append(el('div', 'qh', 'select all that apply'));
+    (question.options || []).forEach((opt, i) => {
+      const b = el('button', 'opt' + (q.sel[q.idx].has(i) ? ' cur' : ''));
+      b.disabled = q.sending;
+      b.append(el('b', '', opt.label));
+      if (opt.description) b.append(el('span', 'd', opt.description));
+      b.onclick = () => {
+        if (q.sending) return;
+        q.sel[q.idx] = toggleSelection(question, q.sel[q.idx], i);
+        // Single-select: picking an answer advances to the next question
+        // (never auto-submits on the last one).
+        if (!question.multi_select && q.sel[q.idx].has(i) && !last) q.idx++;
+        render();
+      };
+      frag.append(b);
+    });
+    if (customAllowed(question)) {
+      const o = el('input', 'qother');
+      o.placeholder = 'Other — type your own answer';
+      o.value = q.custom[q.idx];
+      o.disabled = q.sending;
+      o.addEventListener('input', () => { q.custom[q.idx] = o.value; });
+      o.addEventListener('keydown', (e) => {
+        e.stopPropagation(); // typing must never trigger guest-app or overlay shortcuts
+        if (e.key === 'Enter') { e.preventDefault(); nextAction(); }
+      });
+      frag.append(o);
+    }
+    const bar = el('div', 'qbar');
+    const dismiss = el('button', 'qb qdismiss', 'Dismiss');
+    dismiss.disabled = q.sending;
+    dismiss.onclick = () => replyQuestion(true);
+    bar.append(dismiss, el('span', 'sp'));
+    if (q.idx > 0) {
+      const back = el('button', 'qb qback', 'Back');
+      back.disabled = q.sending;
+      back.onclick = () => { if (!q.sending) { q.idx--; render(); } };
+      bar.append(back);
+    }
+    const next = el('button', 'qb qnext', q.sending ? 'Sending…' : last ? 'Answer' : 'Next');
+    next.disabled = q.sending;
+    next.onclick = nextAction;
+    bar.append(next);
+    frag.append(bar);
+
+    ui.ques.replaceChildren(frag);
+    if (otherFocused) {
+      const o = ui.ques.querySelector('.qother');
+      if (o) { o.focus(); o.setSelectionRange(caret, caret); }
+    }
   };
 
   const STATUS_TEXT = { idle: '', thinking: 'thinking…', working: 'working…', done: 'done', error: 'error' };
@@ -1177,11 +1406,25 @@
     ui.chat.replaceChildren(frag);
     ui.chat.scrollTop = ui.chat.scrollHeight;
 
-    ui.perm.style.display = store.permission ? '' : 'none';
-    if (store.permission) {
-      ui.permT.textContent = `Allow ${store.permission.tool || 'tool'}?`;
-      ui.permD.textContent = store.permission.description || '';
+    const perm = store.perms[0] || null;
+    ui.perm.style.display = perm ? '' : 'none';
+    if (perm) {
+      const isPlan = perm.tool === PLAN_TOOL;
+      const queued = store.perms.length > 1 ? `  (+${store.perms.length - 1} queued)` : '';
+      const plan = isPlan ? planTextFor(store.planParts, perm) : '';
+      ui.permT.textContent = (isPlan ? 'Review the plan' : `Allow ${perm.tool || 'tool'}?`) + queued;
+      // The plan block replaces the description (which is just the raw
+      // input echo for ExitPlanMode); keep the description as fallback
+      // when no plan text could be located.
+      ui.permD.textContent = plan ? '' : perm.description || '';
+      ui.permD.style.display = ui.permD.textContent ? '' : 'none';
+      ui.plan.style.display = plan ? '' : 'none';
+      ui.plan.textContent = plan;
+      ui.notes.style.display = isPlan ? '' : 'none';
+      ui.permAllow.textContent = isPlan ? 'Approve' : 'Allow';
+      ui.permDeny.textContent = isPlan && ui.notes.value.trim() ? 'Request changes' : 'Deny';
     }
+    renderQuestion();
 
     ui.sel.classList.toggle('active', store.inspect);
     ui.mic.style.display = store.voice === 'off' ? 'none' : '';
@@ -1649,6 +1892,10 @@
   });
   $('.perm .allow').onclick = () => replyPermission(true);
   $('.perm .deny').onclick = () => replyPermission(false);
+  // Typing revision notes must not trigger guest-app shortcuts; render
+  // keeps the Deny/Request-changes label in sync with the notes text.
+  ui.notes.addEventListener('keydown', (e) => e.stopPropagation());
+  ui.notes.addEventListener('input', render);
   ui.input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
     e.stopPropagation(); // typing must never trigger guest-app shortcuts
