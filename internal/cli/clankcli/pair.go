@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -63,7 +65,9 @@ func runPairQR() error {
 	if err != nil {
 		return fmt.Errorf("daemon: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	sigCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(sigCtx, 30*time.Second)
 	defer cancel()
 
 	st, err := ensurePhoneReachable(ctx, client, os.Stdin, os.Stdout)
@@ -71,18 +75,18 @@ func runPairQR() error {
 		return err
 	}
 
-	hostname, _ := os.Hostname()
 	link := PreviewLink{
 		GatewayURL: st.URLs[0],
 		Alts:       st.URLs[1:],
 		Token:      st.PairToken,
-		Name:       hostname,
+		Name:       shortHostname(),
 	}
 	linkStr, err := link.Encode()
 	if err != nil {
 		return err
 	}
 
+	shownAt := time.Now()
 	fmt.Println("⚠  This code grants full access to this laptop — treat it like a password.")
 	fmt.Println("   Scan it with the clank app (revoke every phone with `clank pair revoke`):")
 	fmt.Println()
@@ -91,7 +95,65 @@ func runPairQR() error {
 	if st.Tailnet == nil {
 		fmt.Println("Tip: with Tailscale on both devices, the connection is encrypted and works from anywhere.")
 	}
+	fmt.Println("\nWaiting for a scan… (Ctrl+C to stop showing the code)")
+
+	// The QR carries the secret — don't leave it on screen (or in
+	// scrollback) once it has done its job.
+	device, connected := waitForConnection(sigCtx, client, shownAt)
+	if !connected {
+		clearTerminal()
+		fmt.Println("Stopped showing the pairing code. Run `clank pair` to show it again.")
+		return nil
+	}
+	clearTerminal()
+	fmt.Printf("✓ %s connected — this laptop is now in your phone's gateway picker.\n", device)
+	fmt.Println("  Manage with `clank pair status`; disconnect every phone with `clank pair revoke`.")
 	return nil
+}
+
+// waitForConnection polls bridge status until a phone authenticates
+// after shownAt, or ctx cancels. Returns the device name on success.
+func waitForConnection(ctx context.Context, client *daemonclient.Client, shownAt time.Time) (device string, connected bool) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return "", false
+		case <-ticker.C:
+		}
+		tctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		st, err := client.Bridge().Status(tctx)
+		cancel()
+		if err != nil {
+			continue
+		}
+		if st.LastConnectedAt != nil && st.LastConnectedAt.After(shownAt) {
+			name := st.LastDevice
+			if name == "" {
+				name = "Your phone"
+			}
+			return name, true
+		}
+	}
+}
+
+// shortHostname is the laptop's display name for phones: the hostname
+// with the domain suffix dropped ("Axels-MBP.lan" → "Axels-MBP") —
+// full mDNS/DHCP suffixes read as noise in the picker.
+func shortHostname() string {
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		return "laptop"
+	}
+	return stripHostSuffix(hostname)
+}
+
+func stripHostSuffix(hostname string) string {
+	if short, _, found := strings.Cut(hostname, "."); found && short != "" {
+		return short
+	}
+	return hostname
 }
 
 func runPairStatus() error {

@@ -203,7 +203,24 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 		return err
 	}
 
+	bannerAt := time.Now()
 	printPreviewBanner(linkStr, bst.URLs[0], previewURL)
+	if link.Token != "" {
+		// This QR carries the secret — retire it from the screen (and
+		// scrollback) the moment the phone connects. Armed only for the
+		// credential-bearing first run: before it, no phone holds a
+		// bearer, so the first authenticated request IS the scan.
+		// Tokenless invitations are safe to linger and would false-fire
+		// on background traffic from an already-connected phone.
+		go func() {
+			if device, ok := waitForConnection(sigCtx, client, bannerAt); ok {
+				clearTerminal()
+				fmt.Printf("✓ %s connected — opening the preview on your phone.\n", device)
+				fmt.Printf("  Gateway: %s\n  Metro:   %s\n", bst.URLs[0], previewURL)
+				fmt.Println("  Press Ctrl+C to stop the preview.")
+			}
+		}()
+	}
 	if err := watchExpoPreview(sigCtx, client.Preview(previewKey), status.State); err != nil {
 		return err
 	}

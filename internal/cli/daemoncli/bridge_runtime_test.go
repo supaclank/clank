@@ -178,6 +178,7 @@ func TestBridgePhoneSurface(t *testing.T) {
 	}
 	req, _ := http.NewRequest("GET", base+"/v1/repos", nil)
 	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.Header.Set(bridge.DeviceHeader, "  Pixel   8  ")
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -186,8 +187,14 @@ func TestBridgePhoneSurface(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("authed request = %d, want 204", resp.StatusCode)
 	}
-	if status := adminStatus(t, br); !status.FirstConnected {
+	connected := adminStatus(t, br)
+	if !connected.FirstConnected {
 		t.Fatal("first authenticated request must latch first_connected")
+	}
+	// Device attribution: name normalized from the header, timestamp set
+	// — what `clank pair` waits on to clear the QR and name the phone.
+	if connected.LastDevice != "Pixel 8" || connected.LastConnectedAt == nil {
+		t.Fatalf("last connection = %q/%v, want normalized device + timestamp", connected.LastDevice, connected.LastConnectedAt)
 	}
 
 	// Rotate revokes: old bearer 401s, pair token changes.

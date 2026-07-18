@@ -1,6 +1,9 @@
 package daemonclient
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // BridgeClient is the local-CLI handle for the daemon's laptop↔phone
 // bridge (`clank pair`, `clank preview`'s QR building). Admin routes
@@ -48,6 +51,10 @@ type BridgeStatus struct {
 	FirstConnected bool           `json:"first_connected"`
 	PairToken      string         `json:"pair_token"`
 	URLs           []string       `json:"urls"`
+	// Most recent authenticated connection this daemon run — the CLI
+	// waits on this to clear the QR and name the phone.
+	LastDevice      string     `json:"last_device,omitempty"`
+	LastConnectedAt *time.Time `json:"last_connected_at,omitempty"`
 }
 
 // Status fetches (and freshly re-discovers) the bridge state.

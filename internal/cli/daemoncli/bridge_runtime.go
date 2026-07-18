@@ -36,6 +36,7 @@ const bridgeStateFile = "bridge.json"
 type bridgeRuntime struct {
 	store     *bridge.Store
 	listeners *bridge.Listeners
+	auth      *bridge.Authenticator
 	storage   *swappableStorage
 	imagesSrv *images.Server
 	port      int
@@ -108,9 +109,10 @@ func (b *bridgeRuntime) Start(gwHandler http.Handler) {
 	if b == nil {
 		return
 	}
+	b.auth = bridge.NewAuthenticator(b.store, staticUserID(), b.log)
 	mux := http.NewServeMux()
 	mux.Handle("GET /bridge/ping", bridge.ProbeHandler(b.store))
-	mux.Handle("/", auth.Middleware(gwHandler, bridge.NewAuthenticator(b.store, staticUserID(), b.log)))
+	mux.Handle("/", auth.Middleware(gwHandler, b.auth))
 	b.listeners = bridge.NewListeners(bridge.ListenerOptions{
 		Port:    b.port,
 		Handler: mux,
@@ -196,9 +198,11 @@ func (b *bridgeRuntime) Close() {
 // this surface is mounted on the unix socket only.
 type bridgeStatusResponse struct {
 	bridge.Status
-	FirstConnected bool     `json:"first_connected"`
-	PairToken      string   `json:"pair_token"`
-	URLs           []string `json:"urls"`
+	FirstConnected  bool       `json:"first_connected"`
+	PairToken       string     `json:"pair_token"`
+	URLs            []string   `json:"urls"`
+	LastDevice      string     `json:"last_device,omitempty"`
+	LastConnectedAt *time.Time `json:"last_connected_at,omitempty"`
 }
 
 // AdminHandler serves /v1/bridge/* for the local CLI. Nil-safe: a
@@ -245,6 +249,12 @@ func (b *bridgeRuntime) writeStatus(w http.ResponseWriter, status bridge.Status)
 		FirstConnected: b.store.FirstConnected(),
 		PairToken:      bridge.EncodeRoot(b.store.Root()),
 		URLs:           phoneURLs(status),
+	}
+	if b.auth != nil {
+		if device, at := b.auth.LastConnection(); !at.IsZero() {
+			resp.LastDevice = device
+			resp.LastConnectedAt = &at
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)

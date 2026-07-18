@@ -30,3 +30,19 @@ func TestStdinIsTTY_NonFileReaderIsNotATerminal(t *testing.T) {
 		t.Fatalf("stdinIsTTY(bytes.Reader) = true, want false")
 	}
 }
+
+func TestShortHostnameDropsDomainSuffix(t *testing.T) {
+	t.Parallel()
+	// shortHostname reads os.Hostname; pin the suffix-stripping rule via
+	// the same Cut logic on representative values.
+	cases := map[string]string{
+		"Axels-MacBook-Pro.local": "Axels-MacBook-Pro",
+		"Mac.lan":                 "Mac",
+		"plainhost":               "plainhost",
+	}
+	for in, want := range cases {
+		if got := stripHostSuffix(in); got != want {
+			t.Errorf("stripHostSuffix(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

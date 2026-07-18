@@ -4,18 +4,33 @@ import (
 	"crypto/subtle"
 	"log"
 	"net/http"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/acksell/clank/pkg/auth"
 )
+
+// DeviceHeader carries the phone's self-reported model/name on bridge
+// requests — cosmetic attribution ("✓ Pixel 8 connected", `clank pair
+// status`), never an authorization input.
+const DeviceHeader = "X-Clank-Device"
 
 // Authenticator verifies the phone's derived bearer against the
 // store's current root. Implements pkg/auth.Authenticator, so the
 // bridge listener is the daemon's existing handler behind
 // auth.Middleware(authenticator) — no proxy, no second API surface.
+//
+// It also remembers the most recent successful connection (device
+// name + time), in memory only: liveness display, not audit log.
 type Authenticator struct {
 	store  *Store
 	userID string
 	log    *log.Logger
+
+	mu         sync.Mutex
+	lastDevice string
+	lastSeen   time.Time
 }
 
 // NewAuthenticator wires the store to the single-user principal the
@@ -50,5 +65,32 @@ func (a *Authenticator) Verify(r *http.Request) (auth.Principal, error) {
 		// Auth succeeded; the latch is UX state, not a gate.
 		a.log.Printf("bridge: persist first-connected latch: %v", err)
 	}
+	a.mu.Lock()
+	a.lastDevice = sanitizeDeviceName(r.Header.Get(DeviceHeader))
+	a.lastSeen = time.Now()
+	a.mu.Unlock()
 	return auth.Principal{UserID: a.userID}, nil
+}
+
+// LastConnection reports the most recent authenticated device and
+// when it was seen. Zero time = never (this daemon run).
+func (a *Authenticator) LastConnection() (device string, at time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lastDevice, a.lastSeen
+}
+
+// sanitizeDeviceName bounds the attacker-suppliable header: one line,
+// trimmed, capped. Cosmetic only, but it lands in terminals and
+// status output.
+func sanitizeDeviceName(name string) string {
+	name = strings.Join(strings.Fields(name), " ")
+	const maxLen = 64
+	if len(name) > maxLen {
+		name = name[:maxLen]
+	}
+	if name == "" {
+		return "phone"
+	}
+	return name
 }
