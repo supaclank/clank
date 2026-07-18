@@ -2,6 +2,8 @@
 
 > No web chat client exists yet. Placeholder to be filled when one is built **from this spec**
 > ([CONF-GATE-003](../10-conformance.md)). Copy the structure from [_template.md](_template.md).
+> The preview overlay's minimal chat box is tracked separately in
+> [web-preview-overlay.md](web-preview-overlay.md) — it is a partial consumer, not this client.
 
 **Platform:** Browser (TypeScript) · **Client kind:** full chat client (planned) ·
 **Spec version targeted:** 0.2.0 · **Status:** ⛔ not started
