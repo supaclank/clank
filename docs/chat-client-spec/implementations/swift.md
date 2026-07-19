@@ -8,8 +8,9 @@
 > [React Native client](react-native-ts.md).
 
 **Platform:** Swift / URLSession · **Client kind:** preview-overlay chat client ·
-**Spec version targeted:** 0.4.0 · **Status:** 🚧 overlay client built (clank-mobile PR #134);
-pending a real iOS build + on-device pass; conformance fixtures not yet authored
+**Spec version targeted:** 0.4.0 · **Last updated:** 2026-07-19 · **Status:** 🚧 overlay
+client built (clank-mobile PR #134); pending a real iOS build + on-device pass;
+conformance fixtures not yet authored
 
 ## Where the pieces live (clank-mobile `modules/preview-launcher/ios/`)
 
@@ -27,8 +28,8 @@ pending a real iOS build + on-device pass; conformance fixtures not yet authored
 - **SSE**: `URLSession` has no SSE type — `SessionEventStream` parses
   `event:`/`data:`/blank-line frames **byte-level** over `bytes(for:)`
   (Foundation's `AsyncLineSequence` is not trusted with the empty-line frame
-  boundary). Skips `connected` ([EVT-003]); ends on stream close, never on an
-  `end` event ([INV-NO-END-001]); reconnects 1s→15s capped, forever
+  boundary). Skips `connected` ([EVT-003]); ends on stream close — the
+  per-session `end` frame is not relied upon ([INV-NO-END-001]); reconnects 1s→15s capped, forever
   ([INV-STREAM-SUPERVISE-001]) with stream-generation guards
   ([INV-STALE-STREAM-001]).
 - **Reducer**: pure value-type `apply*` functions (no network/UI imports), so
@@ -62,7 +63,7 @@ resubscribe), INV-INTERACTIVE-001 + QST-001..003 (question tag path).
 N/A on this surface (as android-kotlin): INV-CREATE-RACE-001 (attach-only;
 lazy-create posts the first prompt), INV-META-REPLACE-001 /
 INV-SIDEBAR-META-001 / LIST-* (no session list), INV-PERMMODE-* (no mode
-picker), ExitPlanMode plan card + inline comments (deferred, as on the
+picker), `ExitPlanMode` plan card + inline comments (deferred, as on the
 Kotlin overlay).
 
 Known gaps: INV-PENDING-PERM-GAP-001 (host limitation, same as every
