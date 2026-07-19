@@ -32,7 +32,7 @@ func pairCmd() *cobra.Command {
 			return runPairQR()
 		},
 	}
-	cmd.AddCommand(pairStatusCmd(), pairRevokeCmd())
+	cmd.AddCommand(pairStatusCmd(), pairListCmd(), pairRevokeCmd())
 	return cmd
 }
 
@@ -47,15 +47,32 @@ func pairStatusCmd() *cobra.Command {
 	}
 }
 
-func pairRevokeCmd() *cobra.Command {
+func pairListCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "revoke",
-		Short: "Disconnect every phone by rotating the laptop's secret",
-		Long: "Rotates the laptop's pairing secret. Every connected phone is\n" +
-			"disconnected immediately; scan `clank pair` again to reconnect.",
+		Use:   "list",
+		Short: "List the phones approved to connect to this laptop",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
-			return runPairRevoke()
+			return runPairList()
+		},
+	}
+}
+
+func pairRevokeCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "revoke [device]",
+		Short: "Disconnect a paired phone (or every phone)",
+		Long: "Removes a phone's key from this laptop's approved devices. With no\n" +
+			"argument, removes every phone. Revoked phones re-pair by scanning\n" +
+			"`clank pair` and typing the code again.",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
+			device := ""
+			if len(args) == 1 {
+				device = args[0]
+			}
+			return runPairRevoke(device)
 		},
 	}
 }
@@ -75,12 +92,13 @@ func runPairQR() error {
 		return err
 	}
 
-	// Tokenless QR — the secret is never embedded. A new phone scans,
-	// shows a code, and you approve it below; a phone that already
-	// paired reconnects on its own.
+	// The QR is all public: addresses + the laptop's identity key. A
+	// new phone scans, shows a code, and you approve it below; a phone
+	// that already paired reconnects on its own.
 	link := PreviewLink{
 		GatewayURL: st.URLs[0],
 		Alts:       st.URLs[1:],
+		HostKey:    st.HostKey,
 		Name:       shortHostname(),
 	}
 	linkStr, err := link.Encode()
@@ -171,10 +189,13 @@ func runPairStatus() error {
 		return err
 	}
 
-	if st.FirstConnected {
-		fmt.Println("Paired: a phone has connected with the current secret.")
-	} else {
-		fmt.Println("Not paired yet: no phone has connected with the current secret — run `clank pair`.")
+	switch n := len(st.Devices); n {
+	case 0:
+		fmt.Println("Paired devices: none — run `clank pair` and approve your phone.")
+	case 1:
+		fmt.Printf("Paired devices: 1 (%s)\n", st.Devices[0].Name)
+	default:
+		fmt.Printf("Paired devices: %d — see `clank pair list`\n", n)
 	}
 	if len(st.URLs) > 0 {
 		fmt.Printf("Reachable at: %s\n", strings.Join(st.URLs, ", "))
@@ -211,23 +232,74 @@ func runPairStatus() error {
 	return nil
 }
 
-func runPairRevoke() error {
+func runPairList() error {
 	client, err := ensureDaemon()
 	if err != nil {
 		return fmt.Errorf("daemon: %w", err)
 	}
-	fmt.Print("Disconnect every phone paired with this laptop? [y/N] ")
-	if !readYes(os.Stdin) {
-		fmt.Println("Nothing revoked.")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	st, err := bridgeStatus(ctx, client)
+	if err != nil {
+		return err
+	}
+	if len(st.Devices) == 0 {
+		fmt.Println("No paired devices — run `clank pair` and approve your phone.")
 		return nil
+	}
+	for _, d := range st.Devices {
+		seen := "never seen"
+		if d.LastSeen != nil {
+			seen = "last seen " + d.LastSeen.Local().Format("Jan 2 15:04")
+		}
+		fmt.Printf("%s — paired %s, %s\n", d.Name, d.AddedAt.Local().Format("Jan 2"), seen)
+	}
+	return nil
+}
+
+func runPairRevoke(device string) error {
+	client, err := ensureDaemon()
+	if err != nil {
+		return fmt.Errorf("daemon: %w", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := client.Bridge().Rotate(ctx); err != nil {
-		return fmt.Errorf("rotate secret: %w", err)
+
+	if device == "" {
+		fmt.Print("Disconnect every phone paired with this laptop? [y/N] ")
+		if !readYes(os.Stdin) {
+			fmt.Println("Nothing revoked.")
+			return nil
+		}
+		if _, err := client.Bridge().RevokeAllDevices(ctx); err != nil {
+			return fmt.Errorf("revoke devices: %w", err)
+		}
+		fmt.Println("All phones disconnected. Run `clank pair` to reconnect one.")
+		return nil
 	}
-	fmt.Println("All phones disconnected. Run `clank pair` to reconnect one.")
-	return nil
+
+	st, err := bridgeStatus(ctx, client)
+	if err != nil {
+		return err
+	}
+	var matches []daemonclient.BridgeDevice
+	for _, d := range st.Devices {
+		if strings.EqualFold(d.Name, device) {
+			matches = append(matches, d)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return fmt.Errorf("no paired device named %q — see `clank pair list`", device)
+	case 1:
+		if _, err := client.Bridge().RevokeDevice(ctx, matches[0].PubKey); err != nil {
+			return fmt.Errorf("revoke device: %w", err)
+		}
+		fmt.Printf("%s disconnected. It can re-pair via `clank pair`.\n", matches[0].Name)
+		return nil
+	default:
+		return fmt.Errorf("%d paired devices are named %q — run `clank pair revoke` (no argument) to disconnect all, then re-pair the ones you keep", len(matches), device)
+	}
 }
 
 // ensurePhoneReachable returns a bridge status with at least one

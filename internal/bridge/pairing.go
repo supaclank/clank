@@ -6,20 +6,21 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"sync"
 	"time"
 )
 
 // Pairing is the typed-code approval ceremony: a new phone scans the
-// (tokenless) QR, POSTs its device name, and gets a 6-digit code it
-// displays; the laptop user types that code to release the root secret
-// to that phone. The typed code SELECTS the attempt — device names are
-// cosmetic and never gate approval, so a stranger's concurrent attempt
-// can't harvest your keystroke.
+// (tokenless) QR, POSTs its device name + public key, and gets a
+// 6-digit code it displays; the laptop user types that code to approve
+// the phone — its key is recorded in the device registry, and nothing
+// secret ever crosses the wire. The typed code SELECTS the attempt —
+// device names are cosmetic and never gate approval, so a stranger's
+// concurrent attempt can't harvest your keystroke.
 //
 // The window is open only while a CLI is showing the QR (it leases the
-// window by polling); outside that, Begin is refused. Delivery hands
-// the root secret over the wire exactly once.
+// window by polling); outside that, Begin is refused.
 type Pairing struct {
 	store *Store
 	now   func() time.Time
@@ -58,6 +59,8 @@ var (
 	ErrPairLockedOut = errors.New("bridge: pairing locked after repeated wrong codes — wait a moment")
 	// ErrPairCodeMismatch: typed code matched no pending attempt.
 	ErrPairCodeMismatch = errors.New("bridge: that code matches no waiting phone")
+	// ErrPairBadKey: Begin without a valid device public key.
+	ErrPairBadKey = errors.New("bridge: pairing requires the phone's public key")
 )
 
 // AttemptState is the phone-visible lifecycle of one attempt.
@@ -73,17 +76,17 @@ type pairAttempt struct {
 	id        string
 	code      string
 	device    string
+	pubkey    []byte
 	expiresAt time.Time
 	approved  bool
-	delivered bool
 }
 
 func (a *pairAttempt) pending(now time.Time) bool {
 	return !a.approved && now.Before(a.expiresAt)
 }
 
-// NewPairing wires the ceremony to the secret store. now==nil uses the
-// wall clock.
+// NewPairing wires the ceremony to the device registry. now==nil uses
+// the wall clock.
 func NewPairing(store *Store, now func() time.Time) *Pairing {
 	if now == nil {
 		now = time.Now
@@ -109,10 +112,14 @@ func (p *Pairing) RefreshWindow() []string {
 	return devices
 }
 
-// Begin registers a scanning phone and returns its attempt id + the
-// code it must display. Pre-auth by nature — window gating, the
-// pending cap, and the lockout are the whole defense.
-func (p *Pairing) Begin(device string) (id, code string, err error) {
+// Begin registers a scanning phone — its cosmetic name and the public
+// key that approval will trust — and returns its attempt id + the code
+// it must display. Pre-auth by nature — window gating, the pending
+// cap, and the lockout are the whole defense.
+func (p *Pairing) Begin(device string, pubkey []byte) (id, code string, err error) {
+	if len(pubkey) != KeyLen {
+		return "", "", ErrPairBadKey
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.gcLocked()
@@ -144,14 +151,16 @@ func (p *Pairing) Begin(device string) (id, code string, err error) {
 		id:        id,
 		code:      code,
 		device:    sanitizeDeviceName(device),
+		pubkey:    pubkey,
 		expiresAt: now.Add(pairAttemptTTL),
 	})
 	return id, code, nil
 }
 
 // Complete consumes a code typed at the laptop, approving the matching
-// pending attempt. A miss burns one wrong-entry; enough of them trip a
-// time-based lockout.
+// pending attempt by recording its public key in the device registry.
+// A miss burns one wrong-entry; enough of them trip a time-based
+// lockout.
 func (p *Pairing) Complete(typed string) (device string, err error) {
 	code := normalizeCode(typed)
 	p.mu.Lock()
@@ -163,6 +172,11 @@ func (p *Pairing) Complete(typed string) (device string, err error) {
 	}
 	for _, a := range p.attempts {
 		if a.pending(now) && a.code == code {
+			// Record before approving: an approval the registry never
+			// saw would leave the phone signing into 401s.
+			if err := p.store.AddDevice(a.pubkey, a.device); err != nil {
+				return "", err
+			}
 			a.approved = true
 			return a.device, nil
 		}
@@ -175,11 +189,10 @@ func (p *Pairing) Complete(typed string) (device string, err error) {
 	return "", ErrPairCodeMismatch
 }
 
-// PollAttempt reports an attempt's state to the polling phone. The
-// first poll after approval delivers the root secret and marks it
-// delivered — the daemon never hands the secret out twice, and holds
-// it in the clear no longer than the delivery.
-func (p *Pairing) PollAttempt(id string) (state AttemptState, secret []byte) {
+// PollAttempt reports an attempt's state to the polling phone.
+// Approval carries no payload — the phone's own key is now trusted,
+// and its next signed request just works.
+func (p *Pairing) PollAttempt(id string) AttemptState {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.gcLocked()
@@ -189,21 +202,18 @@ func (p *Pairing) PollAttempt(id string) (state AttemptState, secret []byte) {
 			continue
 		}
 		switch {
-		case a.approved && !a.delivered:
-			a.delivered = true
-			return AttemptApproved, p.store.Root()
 		case a.approved:
-			return AttemptApproved, nil
+			return AttemptApproved
 		case a.pending(now):
-			return AttemptPending, nil
+			return AttemptPending
 		}
 	}
-	return AttemptExpired, nil
+	return AttemptExpired
 }
 
 // gcLocked drops attempts past a hard lifetime cap (2×TTL from
 // creation: pending expiry plus a grace for the phone to observe
-// approval + fetch the secret). Caller holds p.mu.
+// approval). Caller holds p.mu.
 func (p *Pairing) gcLocked() {
 	now := p.now()
 	kept := p.attempts[:0]
@@ -269,4 +279,19 @@ func normalizeCode(s string) string {
 		}
 	}
 	return string(out)
+}
+
+// sanitizeDeviceName bounds the phone-suppliable name: one line,
+// trimmed, capped. Cosmetic only, but it lands in terminals and
+// status output.
+func sanitizeDeviceName(name string) string {
+	name = strings.Join(strings.Fields(name), " ")
+	const maxLen = 64
+	if runes := []rune(name); len(runes) > maxLen {
+		name = string(runes[:maxLen])
+	}
+	if name == "" {
+		return "phone"
+	}
+	return name
 }

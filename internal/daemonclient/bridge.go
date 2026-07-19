@@ -37,10 +37,19 @@ type BridgeNetwork struct {
 	Label       string `json:"label,omitempty"`
 }
 
-// BridgeStatus is the admin status payload. PairToken carries the
-// root secret (unix-socket-only surface); URLs are the
-// phone-reachable base URLs, best-first, empty when nothing beyond
-// loopback is bound — the CLI's cue to run the trust-LAN prompt.
+// BridgeDevice is one approved phone in the daemon's registry.
+type BridgeDevice struct {
+	PubKey   string     `json:"pubkey"`
+	Name     string     `json:"name"`
+	AddedAt  time.Time  `json:"added_at"`
+	LastSeen *time.Time `json:"last_seen,omitempty"`
+}
+
+// BridgeStatus is the admin status payload — all public: HostKey is
+// the laptop's identity public key (the QR's hk param), Devices the
+// approved registry, URLs the phone-reachable base URLs, best-first,
+// empty when nothing beyond loopback is bound — the CLI's cue to run
+// the trust-LAN prompt.
 type BridgeStatus struct {
 	Port           int            `json:"port"`
 	Binds          []BridgeBind   `json:"binds"`
@@ -48,8 +57,8 @@ type BridgeStatus struct {
 	LANIP          string         `json:"lan_ip,omitempty"`
 	Network        BridgeNetwork  `json:"network"`
 	NetworkTrusted bool           `json:"network_trusted"`
-	FirstConnected bool           `json:"first_connected"`
-	PairToken      string         `json:"pair_token"`
+	HostKey        string         `json:"host_key"`
+	Devices        []BridgeDevice `json:"devices"`
 	URLs           []string       `json:"urls"`
 	// Most recent authenticated connection this daemon run — the CLI
 	// waits on this to clear the QR and name the phone.
@@ -66,10 +75,20 @@ func (b *BridgeClient) Status(ctx context.Context) (*BridgeStatus, error) {
 	return &s, nil
 }
 
-// Rotate mints a new root secret, disconnecting every phone.
-func (b *BridgeClient) Rotate(ctx context.Context) (*BridgeStatus, error) {
+// RevokeDevice removes one approved phone by its public key.
+func (b *BridgeClient) RevokeDevice(ctx context.Context, pubkey string) (*BridgeStatus, error) {
 	var s BridgeStatus
-	if err := b.c.post(ctx, "/v1/bridge/rotate", nil, &s); err != nil {
+	if err := b.c.post(ctx, "/v1/bridge/pair/revoke", map[string]any{"pubkey": pubkey}, &s); err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+// RevokeAllDevices removes every approved phone. The host key stays —
+// returning phones still recognize the laptop, they just re-pair.
+func (b *BridgeClient) RevokeAllDevices(ctx context.Context) (*BridgeStatus, error) {
+	var s BridgeStatus
+	if err := b.c.post(ctx, "/v1/bridge/pair/revoke", map[string]any{"all": true}, &s); err != nil {
 		return nil, err
 	}
 	return &s, nil

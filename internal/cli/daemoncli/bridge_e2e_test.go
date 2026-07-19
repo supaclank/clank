@@ -3,12 +3,14 @@ package daemoncli
 // End-to-end: the bridge chain in front of a REAL gateway + host, the
 // exact composition runGatewayServer builds for a laptop daemon. Pins
 // that the phone's flow works against production routes: probe proves
-// identity pre-auth, the derived bearer traverses auth.Middleware into
-// gw.Handler(), and the buildHubHandler admin surface mounts only in
-// laptop mode.
+// identity pre-auth, an approved device's signed request traverses
+// auth.Middleware into gw.Handler(), and the buildHubHandler admin
+// surface mounts only in laptop mode.
 
 import (
+	"crypto/ed25519"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -57,21 +59,32 @@ func TestBridgeOverRealGateway(t *testing.T) {
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", br.port)
 	status := adminStatus(t, br)
-	root, err := bridge.DecodeRoot(status.PairToken)
+	hostPub, err := bridge.DecodeKey(status.HostKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Probe first — no credentials — then the real gateway route with
-	// the derived bearer: the phone's exact connect sequence.
-	nonce := hex.EncodeToString(vectorProbeNonce())
-	resp, err := http.Get(base + "/bridge/ping?nonce=" + nonce)
+	// Probe first — no credentials, laptop identity verified — then the
+	// real gateway route with a signed request: the phone's exact
+	// connect sequence.
+	nonce := vectorProbeNonce()
+	resp, err := http.Get(base + "/bridge/ping?nonce=" + hex.EncodeToString(nonce))
 	if err != nil {
 		t.Fatal(err)
 	}
+	var probe struct {
+		Sig string `json:"sig"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&probe); err != nil {
+		t.Fatal(err)
+	}
 	resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("probe = %d, want 200", resp.StatusCode)
+	sig, err := bridge.DecodeSig(probe.Sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ed25519.Verify(ed25519.PublicKey(hostPub), nonce, sig) {
+		t.Fatal("probe signature did not verify against the advertised host key")
 	}
 
 	resp, err = http.Get(base + "/ping")
@@ -83,19 +96,17 @@ func TestBridgeOverRealGateway(t *testing.T) {
 		t.Fatalf("unauthed /ping = %d, want 401", resp.StatusCode)
 	}
 
-	bearer, err := bridge.BearerString(root)
-	if err != nil {
+	priv, pub := newDeviceKey(t)
+	if err := br.store.AddDevice(pub, "Pixel 8"); err != nil {
 		t.Fatal(err)
 	}
-	req, _ := http.NewRequest("GET", base+"/ping", nil)
-	req.Header.Set("Authorization", "Bearer "+bearer)
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = http.DefaultClient.Do(signedBridgeRequest(t, priv, "GET", base+"/ping", ""))
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != 200 {
-		t.Fatalf("authed /ping through real gateway = %d, want 200", resp.StatusCode)
+		t.Fatalf("signed /ping through real gateway = %d, want 200", resp.StatusCode)
 	}
 }
 

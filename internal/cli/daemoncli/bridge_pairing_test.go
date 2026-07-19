@@ -13,9 +13,10 @@ import (
 )
 
 // TestBridgePairingCeremony drives the full typed-code flow over the
-// real listener chain: a phone begins pre-auth, the laptop (unix admin)
-// sees it pending and completes with the code, the phone's poll
-// delivers the root secret, and the derived bearer then authenticates.
+// real listener chain: a phone begins pre-auth with its public key,
+// the laptop (unix admin) sees it pending and completes with the code,
+// the phone's poll reports approved — and the phone's own signed
+// request then authenticates. Nothing secret ever crossed the wire.
 func TestBridgePairingCeremony(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CLANK_DIR", dir)
@@ -32,15 +33,23 @@ func TestBridgePairingCeremony(t *testing.T) {
 	base := fmt.Sprintf("http://127.0.0.1:%d", br.port)
 	admin := br.AdminHandler()
 
+	priv, pub := newDeviceKey(t)
+	pubB64 := bridge.EncodeKey(pub)
+
 	// Before a CLI polls, the window is closed — begin is refused.
-	if code := beginPair(t, base, "Pixel 8").status; code != http.StatusConflict {
+	if code := beginPair(t, base, "Pixel 8", pubB64).status; code != http.StatusConflict {
 		t.Fatalf("begin with no window = %d, want 409", code)
 	}
 
 	// The CLI leases the window (this is pairingLoop's per-tick poll).
 	adminPost(t, admin, "/v1/bridge/pair/poll", "")
 
-	begun := beginPair(t, base, "Pixel 8")
+	// A begin without a key is refused outright.
+	if code := beginPair(t, base, "Pixel 8", "").status; code != http.StatusBadRequest {
+		t.Fatalf("begin without key = %d, want 400", code)
+	}
+
+	begun := beginPair(t, base, "Pixel 8", pubB64)
 	if begun.status != http.StatusOK || begun.AttemptID == "" || len(begun.Code) != 6 {
 		t.Fatalf("begin = %d %+v", begun.status, begun)
 	}
@@ -51,6 +60,17 @@ func TestBridgePairingCeremony(t *testing.T) {
 		t.Fatalf("poll pending = %s, want the device name", poll)
 	}
 
+	// Pre-approval, the phone's signed requests still 401 — begin alone
+	// grants nothing.
+	resp, err := http.DefaultClient.Do(signedBridgeRequest(t, priv, "GET", base+"/v1/repos", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("pre-approval signed request = %d, want 401", resp.StatusCode)
+	}
+
 	// A wrong code doesn't approve; the right one does.
 	if body := adminPost(t, admin, "/v1/bridge/pair/complete", `{"code":"000000"}`); !strings.Contains(body, "error") {
 		t.Fatalf("wrong code = %s, want error", body)
@@ -59,33 +79,29 @@ func TestBridgePairingCeremony(t *testing.T) {
 		t.Fatalf("complete = %s, want device", body)
 	}
 
-	// The phone's poll now delivers the root secret exactly once.
+	// The phone's poll reports approved — no payload.
 	att := attemptPoll(t, base, begun.AttemptID)
-	if att.State != "approved" || att.Secret == "" {
-		t.Fatalf("attempt after approval = %+v, want approved + secret", att)
+	if att.State != "approved" {
+		t.Fatalf("attempt after approval = %+v, want approved", att)
 	}
-	if again := attemptPoll(t, base, begun.AttemptID); again.Secret != "" {
-		t.Fatalf("secret delivered twice: %s", again.Secret)
+	if att.Secret != "" {
+		t.Fatalf("approval must carry no secret, got %q", att.Secret)
 	}
 
-	// The delivered secret derives a bearer that authenticates.
-	root, err := bridge.DecodeRoot(att.Secret)
-	if err != nil {
-		t.Fatalf("delivered secret invalid: %v", err)
-	}
-	bearer, err := bridge.BearerString(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req, _ := http.NewRequest("GET", base+"/v1/repos", nil)
-	req.Header.Set("Authorization", "Bearer "+bearer)
-	resp, err := http.DefaultClient.Do(req)
+	// The phone's key is now trusted: its signed request authenticates.
+	resp, err = http.DefaultClient.Do(signedBridgeRequest(t, priv, "GET", base+"/v1/repos", ""))
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("authed with ceremony-delivered bearer = %d, want 204", resp.StatusCode)
+		t.Fatalf("post-ceremony signed request = %d, want 204", resp.StatusCode)
+	}
+
+	// And the registry shows it, named.
+	status := adminStatus(t, br)
+	if len(status.Devices) != 1 || status.Devices[0].Name != "Pixel 8" || status.Devices[0].PubKey != pubB64 {
+		t.Fatalf("registry after ceremony = %+v", status.Devices)
 	}
 }
 
@@ -95,9 +111,9 @@ type beginResult struct {
 	Code      string `json:"code"`
 }
 
-func beginPair(t *testing.T, base, device string) beginResult {
+func beginPair(t *testing.T, base, device, pubB64 string) beginResult {
 	t.Helper()
-	body, _ := json.Marshal(map[string]string{"device": device})
+	body, _ := json.Marshal(map[string]string{"device": device, "pubkey": pubB64})
 	resp, err := http.Post(base+"/bridge/pair/begin", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("begin: %v", err)

@@ -1,31 +1,70 @@
 package bridge
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
+	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/acksell/clank/pkg/auth"
 )
 
-func TestAuthenticatorAcceptsDerivedBearerAndLatches(t *testing.T) {
+// reqBuilder signs one request honestly, then optionally tampers with
+// what's actually sent — the signature stops covering reality.
+type reqBuilder struct {
+	priv       ed25519.PrivateKey
+	ts         int64
+	nonce      string
+	method     string
+	uri        string
+	body       string
+	tamperBody string
+	tamperURI  string
+	garbageSig bool
+}
+
+func (b *reqBuilder) request() *http.Request {
+	sig := SignRequest(b.priv, b.ts, b.nonce, b.method, b.uri, []byte(b.body))
+	if b.garbageSig {
+		sig = EncodeSig(make([]byte, ed25519.SignatureSize))
+	}
+	sentURI, sentBody := b.uri, b.body
+	if b.tamperURI != "" {
+		sentURI = b.tamperURI
+	}
+	if b.tamperBody != "" {
+		sentBody = b.tamperBody
+	}
+	r := httptest.NewRequest(b.method, sentURI, strings.NewReader(sentBody))
+	r.Header.Set(HeaderKey, EncodeKey(b.priv.Public().(ed25519.PublicKey)))
+	r.Header.Set(HeaderTimestamp, strconv.FormatInt(b.ts, 10))
+	r.Header.Set(HeaderNonce, b.nonce)
+	r.Header.Set(HeaderSignature, sig)
+	return r
+}
+
+func TestSignedRequestAuth(t *testing.T) {
 	t.Parallel()
 	s, _ := testStore(t)
-	a := NewAuthenticator(s, "axel", nil)
-
-	bearer, err := BearerString(s.Root())
-	if err != nil {
+	dev := vectorKey(t, vectorDevSeedB64)
+	devPub := dev.Public().(ed25519.PublicKey)
+	if err := s.AddDevice(devPub, "Pixel 8"); err != nil {
 		t.Fatal(err)
 	}
-	r := httptest.NewRequest("GET", "/v1/repos", nil)
-	r.Header.Set("Authorization", "Bearer "+bearer)
+	a := NewAuthenticator(s, "axel", nil, func() time.Time { return time.Unix(vectorTS, 0) })
 
+	b := &reqBuilder{priv: dev, ts: vectorTS, nonce: "10101010101010101010101010101010",
+		method: "POST", uri: "/v1/sessions", body: `{"x":1}`}
+	r := b.request()
 	p, err := a.Verify(r)
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
@@ -33,52 +72,80 @@ func TestAuthenticatorAcceptsDerivedBearerAndLatches(t *testing.T) {
 	if p.UserID != "axel" {
 		t.Errorf("UserID = %q, want axel", p.UserID)
 	}
-	if !s.FirstConnected() {
-		t.Error("first successful auth must latch first_connected_at")
+	// The body must be readable downstream after verification consumed it.
+	got, _ := io.ReadAll(r.Body)
+	if string(got) != `{"x":1}` {
+		t.Fatalf("body after Verify = %q", got)
+	}
+	// Success recorded: last connection + registry last_seen.
+	if device, at := a.LastConnection(); device != "Pixel 8" || at.IsZero() {
+		t.Fatalf("LastConnection = %q %v", device, at)
+	}
+	if rec, _ := s.Device(devPub); rec.LastSeen == nil {
+		t.Fatal("Verify must touch the device's last_seen")
 	}
 }
 
-func TestAuthenticatorRejects(t *testing.T) {
+func TestSignedRequestAuthRejects(t *testing.T) {
 	t.Parallel()
 	s, _ := testStore(t)
-	a := NewAuthenticator(s, "axel", nil)
+	dev := vectorKey(t, vectorDevSeedB64)
+	devPub := dev.Public().(ed25519.PublicKey)
+	stranger := vectorKey(t, vectorHostSeedB64) // valid key, never registered
+	if err := s.AddDevice(devPub, "Pixel 8"); err != nil {
+		t.Fatal(err)
+	}
+	a := NewAuthenticator(s, "axel", nil, func() time.Time { return time.Unix(vectorTS, 0) })
 
-	// No header.
-	r := httptest.NewRequest("GET", "/", nil)
-	if _, err := a.Verify(r); err == nil {
-		t.Fatal("missing bearer must fail")
+	nonceN := 0
+	build := func(priv ed25519.PrivateKey, mutate func(b *reqBuilder)) *reqBuilder {
+		nonceN++
+		b := &reqBuilder{priv: priv, ts: vectorTS, nonce: fmt.Sprintf("%032x", nonceN),
+			method: "GET", uri: "/v1/repos"}
+		if mutate != nil {
+			mutate(b)
+		}
+		return b
 	}
 
-	// Wrong bearer — including the RAW ROOT: only the derivation
-	// authenticates, so a leaked probe exchange (which involves the
-	// identity subkey) can never be replayed as a credential.
-	for _, bad := range []string{"clankb_wrong", EncodeRoot(s.Root())} {
-		r := httptest.NewRequest("GET", "/", nil)
-		r.Header.Set("Authorization", "Bearer "+bad)
-		if _, err := a.Verify(r); !errors.Is(err, auth.ErrUnauthenticated) {
-			t.Fatalf("bearer %q: got %v, want ErrUnauthenticated", bad, err)
+	cases := []struct {
+		name string
+		b    *reqBuilder
+	}{
+		{"unregistered key", build(stranger, nil)},
+		{"stale timestamp", build(dev, func(b *reqBuilder) { b.ts = vectorTS - 300 })},
+		{"future timestamp", build(dev, func(b *reqBuilder) { b.ts = vectorTS + 300 })},
+		{"tampered body", build(dev, func(b *reqBuilder) { b.method = "POST"; b.body = `{"x":1}`; b.tamperBody = `{"evil":1}` })},
+		{"tampered path", build(dev, func(b *reqBuilder) { b.tamperURI = "/v1/hosts" })},
+		{"garbage signature", build(dev, func(b *reqBuilder) { b.garbageSig = true })},
+	}
+	for _, tc := range cases {
+		if _, err := a.Verify(tc.b.request()); !errors.Is(err, auth.ErrUnauthenticated) {
+			t.Errorf("%s: got %v, want ErrUnauthenticated", tc.name, err)
 		}
 	}
-	if s.FirstConnected() {
-		t.Error("failed auths must not latch first_connected_at")
-	}
-}
 
-func TestAuthenticatorRejectsOldBearerAfterRotate(t *testing.T) {
-	t.Parallel()
-	s, _ := testStore(t)
-	a := NewAuthenticator(s, "axel", nil)
-	oldBearer, err := BearerString(s.Root())
-	if err != nil {
+	// Missing headers entirely.
+	if _, err := a.Verify(httptest.NewRequest("GET", "/", nil)); !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Errorf("bare request: got %v", err)
+	}
+
+	// Replay: the same signed request verbatim must fail the second time.
+	replay := build(dev, nil)
+	if _, err := a.Verify(replay.request()); err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+	if _, err := a.Verify(replay.request()); !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Fatalf("replay: got %v, want ErrUnauthenticated", err)
+	}
+
+	// Revocation: removing the device kills its next request.
+	ok := build(dev, nil)
+	if _, err := s.RemoveDevice(devPub); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Rotate(); err != nil {
-		t.Fatal(err)
-	}
-	r := httptest.NewRequest("GET", "/", nil)
-	r.Header.Set("Authorization", "Bearer "+oldBearer)
-	if _, err := a.Verify(r); !errors.Is(err, auth.ErrUnauthenticated) {
-		t.Fatalf("rotate must revoke old bearers, got %v", err)
+	if _, err := a.Verify(ok.request()); !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Fatalf("revoked device: got %v, want ErrUnauthenticated", err)
 	}
 }
 
@@ -108,23 +175,21 @@ func TestProbeHandlerProvesIdentity(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	var body struct {
-		Proof string `json:"proof"`
-		Name  string `json:"name"`
+		Sig  string `json:"sig"`
+		Name string `json:"name"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
 
-	// Verify the proof the way the phone does: HMAC over the nonce
-	// with the identity subkey.
-	idKey, err := identityKey(s.Root())
+	// Verify the answer the way the phone does: the host key's
+	// signature over the nonce, checked against the QR-learned pubkey.
+	sig, err := DecodeSig(body.Sig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mac := hmac.New(sha256.New, idKey)
-	mac.Write(nonce)
-	if want := hex.EncodeToString(mac.Sum(nil)); body.Proof != want {
-		t.Fatalf("proof = %s, want %s", body.Proof, want)
+	if !ed25519.Verify(ed25519.PublicKey(s.HostPublicKey()), nonce, sig) {
+		t.Fatal("probe signature did not verify against the host public key")
 	}
 }
 

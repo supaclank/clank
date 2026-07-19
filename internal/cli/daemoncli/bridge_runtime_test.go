@@ -2,7 +2,8 @@ package daemoncli
 
 import (
 	"bytes"
-	"crypto/hmac"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -14,10 +15,42 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/acksell/clank/internal/bridge"
 	"github.com/acksell/clank/pkg/blobstore"
 )
+
+// newDeviceKey mints a phone-side keypair for tests.
+func newDeviceKey(t *testing.T) (ed25519.PrivateKey, []byte) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return priv, pub
+}
+
+// signedBridgeRequest builds a request signed the way the phone signs:
+// fresh nonce, current timestamp, signature over the canonical string.
+func signedBridgeRequest(t *testing.T, priv ed25519.PrivateKey, method, rawURL, body string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(method, rawURL, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonceRaw := make([]byte, 16)
+	if _, err := rand.Read(nonceRaw); err != nil {
+		t.Fatal(err)
+	}
+	nonce := hex.EncodeToString(nonceRaw)
+	ts := time.Now().Unix()
+	req.Header.Set(bridge.HeaderKey, bridge.EncodeKey(priv.Public().(ed25519.PublicKey)))
+	req.Header.Set(bridge.HeaderTimestamp, fmt.Sprintf("%d", ts))
+	req.Header.Set(bridge.HeaderNonce, nonce)
+	req.Header.Set(bridge.HeaderSignature, bridge.SignRequest(priv, ts, nonce, method, req.URL.RequestURI(), []byte(body)))
+	return req
+}
 
 // TestSetupBridgeCloudModeIsNil is the cloud guard: a TCP-mode daemon
 // must get no bridge — no runtime, no bridge.json, and (via
@@ -107,10 +140,10 @@ func TestSetupBridgeLaptopMode(t *testing.T) {
 }
 
 // TestBridgePhoneSurface drives the real listener chain the phone
-// hits: unauthenticated probe proves identity, bearer-less API calls
-// 401, the derived bearer reaches the inner handler and latches
-// first_connected, and rotation revokes it — all over a real TCP
-// bind on loopback.
+// hits: unauthenticated probe proves the laptop's identity, unsigned
+// API calls 401, an approved device's signed request reaches the inner
+// handler (named from the registry), and revocation kills the next one
+// — all over a real TCP bind on loopback.
 func TestBridgePhoneSurface(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CLANK_DIR", dir)
@@ -129,94 +162,166 @@ func TestBridgePhoneSurface(t *testing.T) {
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", br.port)
 
-	// Admin status: pair token present, nothing connected yet.
+	// Admin status: host key public, no devices yet.
 	status := adminStatus(t, br)
-	if status.PairToken == "" || status.FirstConnected {
-		t.Fatalf("fresh status = %+v; want pair token + not connected", status)
+	if status.HostKey == "" || len(status.Devices) != 0 {
+		t.Fatalf("fresh status = %+v; want host key + empty registry", status)
 	}
-	root, err := bridge.DecodeRoot(status.PairToken)
+	hostPub, err := bridge.DecodeKey(status.HostKey)
 	if err != nil {
-		t.Fatalf("pair token invalid: %v", err)
+		t.Fatalf("host key invalid: %v", err)
 	}
 
-	// Probe: identity proof verifies against the shared root, with no
-	// credentials sent.
+	// Probe: the laptop signs the phone's nonce; the phone verifies
+	// against the QR-learned host key. No credentials sent.
 	nonce := bytes.Repeat([]byte{0xAB}, 16)
 	resp, err := http.Get(base + "/bridge/ping?nonce=" + hex.EncodeToString(nonce))
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
 	var probe struct {
-		Proof string `json:"proof"`
+		Sig string `json:"sig"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&probe); err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	wantProof, err := bridge.Proof(root, nonce)
+	sig, err := bridge.DecodeSig(probe.Sig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hmac.Equal([]byte(probe.Proof), []byte(wantProof)) {
-		t.Fatalf("probe proof mismatch: got %s want %s", probe.Proof, wantProof)
+	if !ed25519.Verify(ed25519.PublicKey(hostPub), nonce, sig) {
+		t.Fatal("probe signature did not verify against the advertised host key")
 	}
 
-	// No bearer → 401 before the inner handler.
+	// Unsigned → 401 before the inner handler.
 	resp, err = http.Get(base + "/v1/repos")
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("bearer-less request = %d, want 401", resp.StatusCode)
+		t.Fatalf("unsigned request = %d, want 401", resp.StatusCode)
 	}
 
-	// Derived bearer → inner handler, and the first-connected latch flips.
-	bearer, err := bridge.BearerString(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req, _ := http.NewRequest("GET", base+"/v1/repos", nil)
-	req.Header.Set("Authorization", "Bearer "+bearer)
-	req.Header.Set(bridge.DeviceHeader, "  Pixel   8  ")
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("authed request = %d, want 204", resp.StatusCode)
-	}
-	connected := adminStatus(t, br)
-	if !connected.FirstConnected {
-		t.Fatal("first authenticated request must latch first_connected")
-	}
-	// Device attribution: name normalized from the header, timestamp set
-	// — what `clank pair` waits on to clear the QR and name the phone.
-	if connected.LastDevice != "Pixel 8" || connected.LastConnectedAt == nil {
-		t.Fatalf("last connection = %q/%v, want normalized device + timestamp", connected.LastDevice, connected.LastConnectedAt)
-	}
-
-	// Rotate revokes: old bearer 401s, pair token changes.
-	rec := httptest.NewRecorder()
-	br.AdminHandler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/bridge/rotate", nil))
-	if rec.Code != 200 {
-		t.Fatalf("rotate = %d", rec.Code)
-	}
-	var rotated bridgeStatusResponse
-	if err := json.NewDecoder(rec.Body).Decode(&rotated); err != nil {
-		t.Fatal(err)
-	}
-	if rotated.PairToken == status.PairToken || rotated.FirstConnected {
-		t.Fatal("rotate must change the pair token and re-arm first_connected")
-	}
-	resp, err = http.DefaultClient.Do(req)
+	// A signed request from an UNAPPROVED key also 401s.
+	stranger, _ := newDeviceKey(t)
+	resp, err = http.DefaultClient.Do(signedBridgeRequest(t, stranger, "GET", base+"/v1/repos", ""))
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("old bearer after rotate = %d, want 401", resp.StatusCode)
+		t.Fatalf("unapproved signed request = %d, want 401", resp.StatusCode)
+	}
+
+	// Approve a device; its signed request reaches the inner handler.
+	priv, pub := newDeviceKey(t)
+	if err := br.store.AddDevice(pub, "Pixel 8"); err != nil {
+		t.Fatal(err)
+	}
+	resp, err = http.DefaultClient.Do(signedBridgeRequest(t, priv, "GET", base+"/v1/repos", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("approved signed request = %d, want 204", resp.StatusCode)
+	}
+	connected := adminStatus(t, br)
+	// Device attribution from the registry, timestamp set — what
+	// `clank pair` waits on to clear the QR and name the phone.
+	if connected.LastDevice != "Pixel 8" || connected.LastConnectedAt == nil {
+		t.Fatalf("last connection = %q/%v, want registry name + timestamp", connected.LastDevice, connected.LastConnectedAt)
+	}
+	if len(connected.Devices) != 1 || connected.Devices[0].LastSeen == nil {
+		t.Fatalf("devices after auth = %+v, want one with last_seen", connected.Devices)
+	}
+
+	// Revoke-all: the same device's next signed request 401s; the host
+	// key is unchanged (returning phones still recognize the laptop).
+	rec := httptest.NewRecorder()
+	br.AdminHandler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/bridge/pair/revoke", strings.NewReader(`{"all":true}`)))
+	if rec.Code != 200 {
+		t.Fatalf("revoke all = %d", rec.Code)
+	}
+	var revoked bridgeStatusResponse
+	if err := json.NewDecoder(rec.Body).Decode(&revoked); err != nil {
+		t.Fatal(err)
+	}
+	if len(revoked.Devices) != 0 || revoked.HostKey != status.HostKey {
+		t.Fatal("revoke-all must wipe devices and keep the host key")
+	}
+	resp, err = http.DefaultClient.Do(signedBridgeRequest(t, priv, "GET", base+"/v1/repos", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("revoked device request = %d, want 401", resp.StatusCode)
+	}
+}
+
+// TestBridgeRevokeSingleDevice pins per-device revocation: removing
+// one phone leaves the other connected.
+func TestBridgeRevokeSingleDevice(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLANK_DIR", dir)
+	t.Setenv(envBridgePort, fmt.Sprintf("%d", freeTestPort(t)))
+
+	br := setupBridge(ServerOptions{}, testLogger(t))
+	if br == nil {
+		t.Fatal("setupBridge returned nil")
+	}
+	t.Cleanup(br.Close)
+	br.Start(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	base := fmt.Sprintf("http://127.0.0.1:%d", br.port)
+
+	privA, pubA := newDeviceKey(t)
+	privB, pubB := newDeviceKey(t)
+	if err := br.store.AddDevice(pubA, "Pixel 8"); err != nil {
+		t.Fatal(err)
+	}
+	if err := br.store.AddDevice(pubB, "iPhone"); err != nil {
+		t.Fatal(err)
+	}
+
+	body := fmt.Sprintf(`{"pubkey":%q}`, bridge.EncodeKey(pubA))
+	rec := httptest.NewRecorder()
+	br.AdminHandler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/bridge/pair/revoke", strings.NewReader(body)))
+	if rec.Code != 200 {
+		t.Fatalf("revoke A = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	resp, err := http.DefaultClient.Do(signedBridgeRequest(t, privA, "GET", base+"/v1/repos", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("revoked A = %d, want 401", resp.StatusCode)
+	}
+	resp, err = http.DefaultClient.Do(signedBridgeRequest(t, privB, "GET", base+"/v1/repos", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("surviving B = %d, want 204", resp.StatusCode)
+	}
+
+	// Unknown key → 404; garbage body → 400.
+	rec = httptest.NewRecorder()
+	br.AdminHandler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/bridge/pair/revoke", strings.NewReader(body)))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("re-revoke A = %d, want 404", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	br.AdminHandler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/bridge/pair/revoke", strings.NewReader(`{}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty revoke = %d, want 400", rec.Code)
 	}
 }
 

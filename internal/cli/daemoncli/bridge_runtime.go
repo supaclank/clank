@@ -106,16 +106,16 @@ func (b *bridgeRuntime) Images() *images.Server {
 
 // Start binds the phone-facing listeners around the in-process
 // gateway handler: pre-auth /bridge/ping (the identity probe), then
-// the derived-bearer middleware in front of everything else.
+// the signature-verifying middleware in front of everything else.
 func (b *bridgeRuntime) Start(gwHandler http.Handler) {
 	if b == nil {
 		return
 	}
-	b.auth = bridge.NewAuthenticator(b.store, staticUserID(), b.log)
+	b.auth = bridge.NewAuthenticator(b.store, staticUserID(), b.log, nil)
 	b.pairing = bridge.NewPairing(b.store, nil)
 	mux := http.NewServeMux()
 	mux.Handle("GET /bridge/ping", bridge.ProbeHandler(b.store))
-	// Pre-auth pairing ceremony: a new phone (no stored secret) begins
+	// Pre-auth pairing ceremony: a new phone (unapproved key) begins
 	// here and polls for approval. Window-gated + capped in Pairing.
 	mux.Handle("POST /bridge/pair/begin", b.pairBeginHandler())
 	mux.Handle("GET /bridge/pair/attempt", b.pairAttemptHandler())
@@ -201,15 +201,15 @@ func (b *bridgeRuntime) Close() {
 }
 
 // bridgeStatusResponse is the admin status payload `clank pair` and
-// `clank preview` build QRs from. PairToken carries the root secret —
-// this surface is mounted on the unix socket only.
+// `clank preview` build QRs from — all public: the host public key,
+// the approved-device registry, and the reachable URLs.
 type bridgeStatusResponse struct {
 	bridge.Status
-	FirstConnected  bool       `json:"first_connected"`
-	PairToken       string     `json:"pair_token"`
-	URLs            []string   `json:"urls"`
-	LastDevice      string     `json:"last_device,omitempty"`
-	LastConnectedAt *time.Time `json:"last_connected_at,omitempty"`
+	HostKey         string                `json:"host_key"`
+	Devices         []bridge.DeviceRecord `json:"devices"`
+	URLs            []string              `json:"urls"`
+	LastDevice      string                `json:"last_device,omitempty"`
+	LastConnectedAt *time.Time            `json:"last_connected_at,omitempty"`
 }
 
 // AdminHandler serves /v1/bridge/* for the local CLI. Nil-safe: a
@@ -228,9 +228,41 @@ func (b *bridgeRuntime) AdminHandler() http.Handler {
 	mux.HandleFunc("POST /v1/bridge/refresh", func(w http.ResponseWriter, r *http.Request) {
 		b.writeStatus(w, b.Refresh(r.Context()))
 	})
-	mux.HandleFunc("POST /v1/bridge/rotate", func(w http.ResponseWriter, r *http.Request) {
-		if err := b.store.Rotate(); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+	// Revoke one device by public key, or every device at once. The
+	// host key stays either way — returning phones still recognize the
+	// laptop, they just have to re-pair.
+	mux.HandleFunc("POST /v1/bridge/pair/revoke", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			PubKey string `json:"pubkey"`
+			All    bool   `json:"all"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		switch {
+		case body.All:
+			if _, err := b.store.RemoveAllDevices(); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		case body.PubKey != "":
+			pub, err := bridge.DecodeKey(body.PubKey)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			removed, err := b.store.RemoveDevice(pub)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if !removed {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such device"})
+				return
+			}
+		default:
+			http.Error(w, "pubkey or all required", http.StatusBadRequest)
 			return
 		}
 		b.writeStatus(w, b.Refresh(r.Context()))
@@ -274,16 +306,23 @@ func (b *bridgeRuntime) AdminHandler() http.Handler {
 	return mux
 }
 
-// pairBeginHandler registers a scanning phone (pre-auth, on the bridge
-// listener) and returns the code it must display. Window/cap/lockout
-// failures map to 409/429 so the phone can message precisely.
+// pairBeginHandler registers a scanning phone — its name and the
+// public key approval will trust — pre-auth on the bridge listener,
+// and returns the code it must display. Window/cap/lockout failures
+// map to 409/429 so the phone can message precisely.
 func (b *bridgeRuntime) pairBeginHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Device string `json:"device"`
+			PubKey string `json:"pubkey"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body) // empty body is fine
-		id, code, err := b.pairing.Begin(body.Device)
+		_ = json.NewDecoder(r.Body).Decode(&body) // key validated below
+		pub, err := bridge.DecodeKey(body.PubKey)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": bridge.ErrPairBadKey.Error()})
+			return
+		}
+		id, code, err := b.pairing.Begin(body.Device, pub)
 		if err != nil {
 			status := http.StatusConflict
 			if errors.Is(err, bridge.ErrPairTooManyPending) || errors.Is(err, bridge.ErrPairLockedOut) {
@@ -296,16 +335,13 @@ func (b *bridgeRuntime) pairBeginHandler() http.Handler {
 	})
 }
 
-// pairAttemptHandler reports an attempt's state to the polling phone,
-// delivering the root secret once on approval.
+// pairAttemptHandler reports an attempt's state to the polling phone.
+// Approval carries no payload — the phone's key is now trusted and its
+// next signed request just works.
 func (b *bridgeRuntime) pairAttemptHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		state, secret := b.pairing.PollAttempt(r.URL.Query().Get("id"))
-		resp := map[string]string{"state": string(state)}
-		if len(secret) > 0 {
-			resp["secret"] = bridge.EncodeRoot(secret)
-		}
-		writeJSON(w, http.StatusOK, resp)
+		state := b.pairing.PollAttempt(r.URL.Query().Get("id"))
+		writeJSON(w, http.StatusOK, map[string]string{"state": string(state)})
 	})
 }
 
@@ -318,10 +354,10 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 func (b *bridgeRuntime) writeStatus(w http.ResponseWriter, status bridge.Status) {
 	resp := bridgeStatusResponse{
-		Status:         status,
-		FirstConnected: b.store.FirstConnected(),
-		PairToken:      bridge.EncodeRoot(b.store.Root()),
-		URLs:           phoneURLs(status),
+		Status:  status,
+		HostKey: bridge.EncodeKey(b.store.HostPublicKey()),
+		Devices: b.store.Devices(),
+		URLs:    phoneURLs(status),
 	}
 	if b.auth != nil {
 		if device, at := b.auth.LastConnection(); !at.IsZero() {

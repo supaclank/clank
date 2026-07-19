@@ -181,12 +181,13 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	// and the preview launcher keeps LAN http URLs on http.
 	previewURL := fmt.Sprintf("http://%s:%d", ip, status.Port)
 
-	// Tokenless QR — the secret is never embedded. A new phone pairs
-	// via the typed-code ceremony (pairingLoop below); a phone that
-	// already paired reconnects on its own.
+	// The QR is all public: addresses + the laptop's identity key. A
+	// new phone pairs via the typed-code ceremony (pairingLoop below);
+	// a phone that already paired reconnects on its own.
 	link := PreviewLink{
 		GatewayURL: bst.URLs[0],
 		Alts:       bst.URLs[1:],
+		HostKey:    bst.HostKey,
 		PreviewURL: previewURL,
 		SessionID:  sessionID, // empty unless a prompt was passed
 		LocalPath:  projectDir,
