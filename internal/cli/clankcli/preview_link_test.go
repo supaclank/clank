@@ -13,7 +13,6 @@ func TestPreviewLinkRoundTrip(t *testing.T) {
 	want := PreviewLink{
 		GatewayURL: "http://100.99.1.2:7880",
 		Alts:       []string{"http://axels-mbp.tail1234.ts.net:7880", "http://192.168.1.20:7880"},
-		Token:      "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
 		PreviewURL: "http://192.168.1.20:8081",
 		SessionID:  "01HSESSION",
 		LocalPath:  "/Users/me/my-expo-app",
@@ -37,37 +36,27 @@ func TestPreviewLinkRoundTrip(t *testing.T) {
 	}
 }
 
-// TestPreviewLinkTokenlessRoundTrip pins the invitation shape: once a
-// phone has connected, preview QRs carry no secret — just where to
-// reach the bridge.
-func TestPreviewLinkTokenlessRoundTrip(t *testing.T) {
+// TestPreviewLinkCarriesNoSecret pins the PR-E contract: the QR is a
+// tokenless invitation — a scanning phone authenticates through the
+// typed-code ceremony, never a secret read off the code.
+func TestPreviewLinkCarriesNoSecret(t *testing.T) {
 	t.Parallel()
-	want := PreviewLink{
+	encoded, err := PreviewLink{
 		GatewayURL: "http://100.99.1.2:7880",
 		PreviewURL: "http://192.168.1.20:8081",
-		LocalPath:  "/Users/me/my-expo-app",
-		Backend:    "claude-code",
 		WorktreeID: "L1VzZXJzL21lL215LWV4cG8tYXBw",
-	}
-	encoded, err := want.Encode()
+	}.Encode()
 	if err != nil {
-		t.Fatalf("Encode tokenless: %v", err)
+		t.Fatalf("Encode: %v", err)
 	}
 	if strings.Contains(encoded, "tok=") {
-		t.Fatalf("tokenless link leaked a tok param: %q", encoded)
-	}
-	got, err := ParsePreviewLink(encoded)
-	if err != nil {
-		t.Fatalf("ParsePreviewLink: %v", err)
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("round-trip mismatch:\n got %+v\nwant %+v", got, want)
+		t.Fatalf("preview link leaked a secret param: %q", encoded)
 	}
 }
 
 func TestPreviewLinkEncodeRequiresGateway(t *testing.T) {
 	t.Parallel()
-	if _, err := (PreviewLink{Token: "t"}).Encode(); err == nil {
+	if _, err := (PreviewLink{PreviewURL: "http://192.168.1.20:8081"}).Encode(); err == nil {
 		t.Fatal("expected error when GatewayURL is empty")
 	}
 }
@@ -76,8 +65,8 @@ func TestParsePreviewLinkRejectsForeignScheme(t *testing.T) {
 	t.Parallel()
 	cases := []string{
 		"clank://preview?url=exp://x", // existing preview-only deep link, not a pairing link
-		"https://link?gw=x&tok=y",     // right path, wrong scheme
-		"clank://link?tok=y",          // missing gateway
+		"https://link?gw=x&name=y",    // right path, wrong scheme
+		"clank://link?name=y",         // missing gateway
 	}
 	for _, in := range cases {
 		if _, err := ParsePreviewLink(in); err == nil {
