@@ -119,6 +119,9 @@ func (b *bridgeRuntime) Start(gwHandler http.Handler) {
 	// here and polls for approval. Window-gated + capped in Pairing.
 	mux.Handle("POST /bridge/pair/begin", b.pairBeginHandler())
 	mux.Handle("GET /bridge/pair/attempt", b.pairAttemptHandler())
+	// Signed-request-only: mints the static short-TTL bearer the native
+	// preview overlay authenticates with (it can't run the signer).
+	mux.Handle("POST /bridge/session-token", auth.Middleware(b.sessionTokenHandler(), b.auth))
 	mux.Handle("/", auth.Middleware(gwHandler, b.auth))
 	b.listeners = bridge.NewListeners(bridge.ListenerOptions{
 		Port:    b.port,
@@ -342,6 +345,29 @@ func (b *bridgeRuntime) pairAttemptHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		state := b.pairing.PollAttempt(r.URL.Query().Get("id"))
 		writeJSON(w, http.StatusOK, map[string]string{"state": string(state)})
+	})
+}
+
+// sessionTokenHandler mints the native overlay's bearer. Runs behind
+// auth.Middleware, but only a SIGNED request qualifies: the signature
+// headers must be present (a session token can't mint a session
+// token), and the mint is bound to the signing device.
+func (b *bridgeRuntime) sessionTokenHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pub, err := bridge.DecodeKey(r.Header.Get(bridge.HeaderKey))
+		if err != nil {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "session tokens are minted by signed requests only"})
+			return
+		}
+		token, expiresAt, err := b.auth.MintSessionToken(pub)
+		if err != nil {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "unknown device"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"token":      token,
+			"expires_at": expiresAt.UTC().Format(time.RFC3339),
+		})
 	})
 }
 
