@@ -85,3 +85,30 @@ func (b *BridgeClient) TrustNetwork(ctx context.Context, fingerprint, label stri
 	}
 	return &s, nil
 }
+
+// PairPoll leases the pairing window open (the CLI calls it each tick
+// while showing the QR) and returns the device names of phones waiting
+// for the laptop user to type their code.
+func (b *BridgeClient) PairPoll(ctx context.Context) ([]string, error) {
+	var resp struct {
+		Pending []string `json:"pending"`
+	}
+	if err := b.c.post(ctx, "/v1/bridge/pair/poll", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Pending, nil
+}
+
+// PairComplete submits the code the laptop user typed, approving the
+// matching pending attempt. Returns the paired device name; a code
+// that matches no waiting phone surfaces as an error (the transport
+// maps the 400 body's message).
+func (b *BridgeClient) PairComplete(ctx context.Context, code string) (string, error) {
+	var resp struct {
+		Device string `json:"device"`
+	}
+	if err := b.c.post(ctx, "/v1/bridge/pair/complete", map[string]string{"code": code}, &resp); err != nil {
+		return "", err
+	}
+	return resp.Device, nil
+}

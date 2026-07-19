@@ -75,10 +75,12 @@ func runPairQR() error {
 		return err
 	}
 
+	// Tokenless QR — the secret is never embedded. A new phone scans,
+	// shows a code, and you approve it below; a phone that already
+	// paired reconnects on its own.
 	link := PreviewLink{
 		GatewayURL: st.URLs[0],
 		Alts:       st.URLs[1:],
-		Token:      st.PairToken,
 		Name:       shortHostname(),
 	}
 	linkStr, err := link.Encode()
@@ -87,22 +89,23 @@ func runPairQR() error {
 	}
 
 	shownAt := time.Now()
-	fmt.Println("⚠  This code grants full access to this laptop — treat it like a password.")
-	fmt.Println("   Scan it with the clank app (revoke every phone with `clank pair revoke`):")
+	fmt.Println("Scan this with the clank app to connect your phone to this laptop:")
 	fmt.Println()
 	printQR(linkStr)
 	fmt.Printf("Reachable at: %s\n", strings.Join(st.URLs, ", "))
 	if st.Tailnet == nil {
 		fmt.Println("Tip: with Tailscale on both devices, the connection is encrypted and works from anywhere.")
 	}
-	fmt.Println("\nWaiting for a scan… (Ctrl+C to stop showing the code)")
+	fmt.Println("\nWaiting for a scan… (Ctrl+C to stop)")
 
-	// The QR carries the secret — don't leave it on screen (or in
-	// scrollback) once it has done its job.
+	// Service inbound pairing ceremonies (a new phone shows a code you
+	// type here) concurrently with waiting for any phone — new or
+	// returning — to authenticate.
+	go pairingLoop(sigCtx, client, os.Stdin, os.Stdout)
 	device, connected := waitForConnection(sigCtx, client, shownAt)
 	if !connected {
 		clearTerminal()
-		fmt.Println("Stopped showing the pairing code. Run `clank pair` to show it again.")
+		fmt.Println("Stopped waiting. Run `clank pair` to show the code again.")
 		return nil
 	}
 	clearTerminal()

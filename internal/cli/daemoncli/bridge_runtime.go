@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -37,6 +38,7 @@ type bridgeRuntime struct {
 	store     *bridge.Store
 	listeners *bridge.Listeners
 	auth      *bridge.Authenticator
+	pairing   *bridge.Pairing
 	storage   *swappableStorage
 	imagesSrv *images.Server
 	port      int
@@ -110,8 +112,13 @@ func (b *bridgeRuntime) Start(gwHandler http.Handler) {
 		return
 	}
 	b.auth = bridge.NewAuthenticator(b.store, staticUserID(), b.log)
+	b.pairing = bridge.NewPairing(b.store, nil)
 	mux := http.NewServeMux()
 	mux.Handle("GET /bridge/ping", bridge.ProbeHandler(b.store))
+	// Pre-auth pairing ceremony: a new phone (no stored secret) begins
+	// here and polls for approval. Window-gated + capped in Pairing.
+	mux.Handle("POST /bridge/pair/begin", b.pairBeginHandler())
+	mux.Handle("GET /bridge/pair/attempt", b.pairAttemptHandler())
 	mux.Handle("/", auth.Middleware(gwHandler, b.auth))
 	b.listeners = bridge.NewListeners(bridge.ListenerOptions{
 		Port:    b.port,
@@ -243,7 +250,70 @@ func (b *bridgeRuntime) AdminHandler() http.Handler {
 		}
 		b.writeStatus(w, b.Refresh(r.Context()))
 	})
+	// Pairing ceremony admin (unix socket = trusted local): the CLI
+	// leases the window by polling, and submits the code the laptop
+	// user typed. Approval can only happen here, physically local.
+	mux.HandleFunc("POST /v1/bridge/pair/poll", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"pending": b.pairing.RefreshWindow()})
+	})
+	mux.HandleFunc("POST /v1/bridge/pair/complete", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Code string `json:"code"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		device, err := b.pairing.Complete(body.Code)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"device": device})
+	})
 	return mux
+}
+
+// pairBeginHandler registers a scanning phone (pre-auth, on the bridge
+// listener) and returns the code it must display. Window/cap/lockout
+// failures map to 409/429 so the phone can message precisely.
+func (b *bridgeRuntime) pairBeginHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Device string `json:"device"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body) // empty body is fine
+		id, code, err := b.pairing.Begin(body.Device)
+		if err != nil {
+			status := http.StatusConflict
+			if errors.Is(err, bridge.ErrPairTooManyPending) || errors.Is(err, bridge.ErrPairLockedOut) {
+				status = http.StatusTooManyRequests
+			}
+			writeJSON(w, status, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"attempt_id": id, "code": code})
+	})
+}
+
+// pairAttemptHandler reports an attempt's state to the polling phone,
+// delivering the root secret once on approval.
+func (b *bridgeRuntime) pairAttemptHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		state, secret := b.pairing.PollAttempt(r.URL.Query().Get("id"))
+		resp := map[string]string{"state": string(state)}
+		if len(secret) > 0 {
+			resp["secret"] = bridge.EncodeRoot(secret)
+		}
+		writeJSON(w, http.StatusOK, resp)
+	})
+}
+
+// writeJSON is the bridge admin/pairing handlers' small response helper.
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 func (b *bridgeRuntime) writeStatus(w http.ResponseWriter, status bridge.Status) {

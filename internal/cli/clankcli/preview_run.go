@@ -181,6 +181,9 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	// and the preview launcher keeps LAN http URLs on http.
 	previewURL := fmt.Sprintf("http://%s:%d", ip, status.Port)
 
+	// Tokenless QR — the secret is never embedded. A new phone pairs
+	// via the typed-code ceremony (pairingLoop below); a phone that
+	// already paired reconnects on its own.
 	link := PreviewLink{
 		GatewayURL: bst.URLs[0],
 		Alts:       bst.URLs[1:],
@@ -191,36 +194,16 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 		Name:       filepath.Base(projectDir),
 		WorktreeID: previewKey,
 	}
-	// The QR carries the secret only until the first phone ever
-	// connects; after that it's a tokenless invitation (safe to
-	// screen-share) and phones use their stored secret. `clank pair`
-	// is the deliberate credential surface.
-	if !bst.FirstConnected {
-		link.Token = bst.PairToken
-	}
 	linkStr, err := link.Encode()
 	if err != nil {
 		return err
 	}
 
-	bannerAt := time.Now()
 	printPreviewBanner(linkStr, bst.URLs[0], previewURL)
-	if link.Token != "" {
-		// This QR carries the secret — retire it from the screen (and
-		// scrollback) the moment the phone connects. Armed only for the
-		// credential-bearing first run: before it, no phone holds a
-		// bearer, so the first authenticated request IS the scan.
-		// Tokenless invitations are safe to linger and would false-fire
-		// on background traffic from an already-connected phone.
-		go func() {
-			if device, ok := waitForConnection(sigCtx, client, bannerAt); ok {
-				clearTerminal()
-				fmt.Printf("✓ %s connected — opening the preview on your phone.\n", device)
-				fmt.Printf("  Gateway: %s\n  Metro:   %s\n", bst.URLs[0], previewURL)
-				fmt.Println("  Press Ctrl+C to stop the preview.")
-			}
-		}()
-	}
+	// Service inbound pairing ceremonies for the whole preview session:
+	// a new phone that scans shows a code the terminal prompts you to
+	// type. Returning phones just reconnect (probe path, no ceremony).
+	go pairingLoop(sigCtx, client, os.Stdin, os.Stdout)
 	if err := watchExpoPreview(sigCtx, client.Preview(previewKey), status.State); err != nil {
 		return err
 	}
