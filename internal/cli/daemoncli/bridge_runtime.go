@@ -3,6 +3,7 @@ package daemoncli
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -115,9 +116,10 @@ func (b *bridgeRuntime) Start(gwHandler http.Handler) {
 	b.pairing = bridge.NewPairing(b.store, nil)
 	mux := http.NewServeMux()
 	mux.Handle("GET /bridge/ping", bridge.ProbeHandler(b.store))
-	// Pre-auth pairing ceremony: a new phone (unapproved key) begins
-	// here and polls for approval. Window-gated + capped in Pairing.
+	// Pre-auth pairing ceremony: a new phone (unapproved key) commits,
+	// reveals, and polls for approval. Window-gated + capped in Pairing.
 	mux.Handle("POST /bridge/pair/begin", b.pairBeginHandler())
+	mux.Handle("POST /bridge/pair/reveal", b.pairRevealHandler())
 	mux.Handle("GET /bridge/pair/attempt", b.pairAttemptHandler())
 	// Signed-request-only: mints the static short-TTL bearer the native
 	// preview overlay authenticates with (it can't run the signer).
@@ -309,32 +311,68 @@ func (b *bridgeRuntime) AdminHandler() http.Handler {
 	return mux
 }
 
-// pairBeginHandler registers a scanning phone — its name and the
-// public key approval will trust — pre-auth on the bridge listener,
-// and returns the code it must display. Window/cap/lockout failures
-// map to 409/429 so the phone can message precisely.
+// pairBeginHandler opens an attempt for a scanning phone (its name +
+// commitment), pre-auth on the bridge listener, and returns the daemon
+// nonce plus a host-key signature the phone verifies against hk.
+// Window/cap/lockout failures map to 409/429 so the phone can message
+// precisely.
 func (b *bridgeRuntime) pairBeginHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Device string `json:"device"`
-			PubKey string `json:"pubkey"`
+			Commit string `json:"commit"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body) // key validated below
-		pub, err := bridge.DecodeKey(body.PubKey)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": bridge.ErrPairBadKey.Error()})
-			return
-		}
-		id, code, err := b.pairing.Begin(body.Device, pub)
+		_ = json.NewDecoder(r.Body).Decode(&body) // commit validated in Begin
+		id, nonceD, replySig, err := b.pairing.Begin(body.Device, body.Commit)
 		if err != nil {
 			status := http.StatusConflict
-			if errors.Is(err, bridge.ErrPairTooManyPending) || errors.Is(err, bridge.ErrPairLockedOut) {
+			switch {
+			case errors.Is(err, bridge.ErrPairTooManyPending), errors.Is(err, bridge.ErrPairLockedOut):
 				status = http.StatusTooManyRequests
+			case errors.Is(err, bridge.ErrPairBadCommit):
+				status = http.StatusBadRequest
 			}
 			writeJSON(w, status, map[string]string{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"attempt_id": id, "code": code})
+		writeJSON(w, http.StatusOK, map[string]string{
+			"attempt_id": id,
+			"nonce_d":    hex.EncodeToString(nonceD),
+			"reply_sig":  replySig,
+		})
+	})
+}
+
+// pairRevealHandler opens the phone's commitment: it verifies the
+// revealed device key + nonce hash to the commit, after which both
+// sides can derive the SAS. A reveal that doesn't open the commit is a
+// 400 (the attempt is burned server-side).
+func (b *bridgeRuntime) pairRevealHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			AttemptID string `json:"attempt_id"`
+			DevicePub string `json:"device_pub"`
+			NonceP    string `json:"nonce_p"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+			return
+		}
+		pub, keyErr := bridge.DecodeKey(body.DevicePub)
+		nonceP, nonceErr := hex.DecodeString(body.NonceP)
+		if keyErr != nil || nonceErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": bridge.ErrPairBadKey.Error()})
+			return
+		}
+		if err := b.pairing.Reveal(body.AttemptID, pub, nonceP); err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, bridge.ErrPairNoAttempt) {
+				status = http.StatusNotFound
+			}
+			writeJSON(w, status, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
 	})
 }
 

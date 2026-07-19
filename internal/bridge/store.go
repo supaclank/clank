@@ -114,6 +114,15 @@ func (s *Store) SignNonce(nonce []byte) []byte {
 	return ed25519.Sign(s.priv, nonce)
 }
 
+// SignSASReply signs the pairing handshake reply with the host key,
+// binding the daemon's nonce to the phone's commit. The phone verifies
+// it against the QR's hk before deriving the SAS.
+func (s *Store) SignSASReply(attemptID, commitHex string, nonceD []byte) []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return ed25519.Sign(s.priv, sasReplyMessage(attemptID, commitHex, nonceD))
+}
+
 // NetworkTrusted reports whether the fingerprinted network has been
 // consented to for plain-LAN serving. Empty fingerprints (detection
 // failed) are never trusted.
