@@ -1210,7 +1210,7 @@ import {
     <button class="opt" data-eng="local"><b>Fully local</b><span class="d"></span></button>
     <button class="opt" data-eng="webspeech"><b>Web Speech API</b><span class="d"></span></button>
   </div>
-  <textarea rows="1" placeholder="Ask anything…"></textarea>
+  <textarea class="compose" rows="1" placeholder="Ask anything…"></textarea>
   <div class="bar">
     <button class="ib att" title="Attach images (or paste into the box)">${ICONS.plus}</button>
     <button class="ib shot" title="Grab a screenshot area">${ICONS.shot}</button>
@@ -1239,7 +1239,7 @@ import {
     perm: $('.perm'), permT: $('.perm .t'), permD: $('.perm .d'),
     plan: $('.perm .plan'), notes: $('.perm .notes'),
     permAllow: $('.perm .allow'), permDeny: $('.perm .deny'), ques: $('.ques'),
-    input: $('textarea'), sel: $('.sel'), mic: $('.mic'), micLevel: $('.micLevel'),
+    input: $('.compose'), sel: $('.sel'), mic: $('.mic'), micLevel: $('.micLevel'),
     eng: $('.eng'), engpick: $('.engpick'), engOpts: [...root.querySelectorAll('.engpick .opt')],
     send: $('.send'), hl: $('.hl'), hll: $('.hll'), toast: $('.toast'),
     shot: $('.shot'), att: $('.att'), file: $('.file'),
