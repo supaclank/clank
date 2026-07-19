@@ -107,11 +107,15 @@ clank://link?v=1
   test MUST assert no `tok=` (or equivalent) is ever emitted. **Golden:**
   `TestPreviewLinkCarriesNoSecret`.
 - **[PAIR-023] (MUST)** Both the in-app scanner and the operating-system camera
-  MUST route a scanned `clank://link` into the pairing flow. **Why:** the QR's
-  URL form exists precisely so a system-camera scan works without opening the
-  app first ([PAIR-020]); a link that only the in-app scanner handles defeats
-  that. **Golden:** `clank-mobile/app/scan.tsx`,
-  `clank-mobile/app/+native-intent.ts`.
+  MUST route a scanned `clank://link` into the pairing flow, sharing one
+  implementation. **Why:** the QR's URL form exists precisely so a system-camera
+  scan works without opening the app first ([PAIR-020]); a link that only the
+  in-app scanner handles defeats that. The signed-out → sign-in guard MUST
+  exempt the pairing route, since pairing can itself establish the session
+  ([PAIR-014] — a paired gateway has no static token, so "paired" is the
+  signed-in state). **Golden:** `clank-mobile/app/link.tsx` (deep-link route),
+  `clank-mobile/app/scan.tsx` (camera), `clank-mobile/src/lib/bridgeLink.ts`
+  (shared parse), `clank-mobile/app/_layout.tsx` (`AuthGate` exemption).
 
 ---
 
