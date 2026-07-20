@@ -186,13 +186,13 @@ func (p *Provisioner) EnsureHost(_ context.Context, _ string) (provisioner.HostR
 	}
 	if p.opts.DataDir != "" {
 		if err := os.MkdirAll(p.opts.DataDir, 0o700); err != nil {
-			return provisioner.HostRef{}, fmt.Errorf("create data dir %s: %w", p.opts.DataDir, err)
+			return provisioner.HostRef{}, fmt.Errorf("create data dir %q: %w", p.opts.DataDir, err)
 		}
 		args = append(args, "--data-dir", p.opts.DataDir)
 	}
 	if p.opts.WorkRoot != "" {
 		if err := os.MkdirAll(p.opts.WorkRoot, 0o700); err != nil {
-			return provisioner.HostRef{}, fmt.Errorf("create work root %s: %w", p.opts.WorkRoot, err)
+			return provisioner.HostRef{}, fmt.Errorf("create work root %q: %w", p.opts.WorkRoot, err)
 		}
 		args = append(args, "--work-root", p.opts.WorkRoot)
 	}
