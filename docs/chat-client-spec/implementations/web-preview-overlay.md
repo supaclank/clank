@@ -67,7 +67,8 @@ Only rules the overlay's surface touches are listed; the rest are N/A for a part
   reply (`sending` flag) ✅; create carries the first prompt ✅; messages refetch as the
   reconcile source ✅.
 - Projections ([06](../06-state-model.md)): streaming vs settled ✅; cancelling ✅
-  (send button doubles as stop); error border ✅; composer lock ✅.
+  (send button doubles as stop); error border ✅; composer lock ⛔ (the textarea
+  stays editable while sending/agent-busy — only the send button state changes).
 
 ## Platform gotchas
 
