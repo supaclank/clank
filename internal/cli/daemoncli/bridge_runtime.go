@@ -311,6 +311,10 @@ func (b *bridgeRuntime) AdminHandler() http.Handler {
 	return mux
 }
 
+// maxPairBeginBody caps the pre-auth /bridge/pair/begin body (device
+// name + a fixed-length commit hex) against a DoS from oversized reads.
+const maxPairBeginBody = 4096
+
 // pairBeginHandler opens an attempt for a scanning phone (its name +
 // commitment), pre-auth on the bridge listener, and returns the daemon
 // nonce plus a host-key signature the phone verifies against hk.
@@ -318,6 +322,7 @@ func (b *bridgeRuntime) AdminHandler() http.Handler {
 // precisely.
 func (b *bridgeRuntime) pairBeginHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxPairBeginBody)
 		var body struct {
 			Device string `json:"device"`
 			Commit string `json:"commit"`

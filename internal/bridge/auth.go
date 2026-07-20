@@ -115,12 +115,6 @@ func (a *Authenticator) Verify(r *http.Request) (auth.Principal, error) {
 	if err != nil {
 		return auth.Principal{}, auth.ErrUnauthenticated
 	}
-	// Reserve the nonce before the signature check so two concurrent
-	// replays can't both pass; a reservation burned by a bad signature
-	// only blocks whoever chose that nonce.
-	if !a.reserveNonce(nonce, now) {
-		return auth.Principal{}, auth.ErrUnauthenticated
-	}
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -128,8 +122,17 @@ func (a *Authenticator) Verify(r *http.Request) (auth.Principal, error) {
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
+	// Verify before reserving the nonce: an approved pubkey is public
+	// (bridge.json's authorized_keys equivalent), so reserving first let
+	// anyone who knows one flood the cache with garbage signatures — a
+	// signature-less nonce burn. Reservation still stays atomic (mu-
+	// guarded), so two concurrent replays of one genuinely valid,
+	// identical signed request still can't both pass.
 	canonical := CanonicalRequest(ts, nonce, r.Method, requestURI(r), body)
 	if !ed25519.Verify(ed25519.PublicKey(pub), canonical, sig) {
+		return auth.Principal{}, auth.ErrUnauthenticated
+	}
+	if !a.reserveNonce(nonce, now) {
 		return auth.Principal{}, auth.ErrUnauthenticated
 	}
 

@@ -149,6 +149,62 @@ func TestSignedRequestAuthRejects(t *testing.T) {
 	}
 }
 
+func TestBadSignatureDoesNotBurnNonce(t *testing.T) {
+	t.Parallel()
+	s, _ := testStore(t)
+	dev := vectorKey(t, vectorDevSeedB64)
+	devPub := dev.Public().(ed25519.PublicKey)
+	if err := s.AddDevice(devPub, "Pixel 8"); err != nil {
+		t.Fatal(err)
+	}
+	a := NewAuthenticator(s, "axel", nil, func() time.Time { return time.Unix(vectorTS, 0) })
+
+	// An unauthenticated attacker who only knows the (public) device key
+	// sends garbage signatures to flood the nonce cache.
+	nonce := "20202020202020202020202020202020"
+	bad := &reqBuilder{priv: dev, ts: vectorTS, nonce: nonce, method: "GET", uri: "/v1/repos", garbageSig: true}
+	if _, err := a.Verify(bad.request()); !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Fatalf("bad signature: got %v, want ErrUnauthenticated", err)
+	}
+
+	// The same nonce, now genuinely signed, must still succeed — a
+	// rejected signature must not have reserved (burned) the nonce.
+	good := &reqBuilder{priv: dev, ts: vectorTS, nonce: nonce, method: "GET", uri: "/v1/repos"}
+	if _, err := a.Verify(good.request()); err != nil {
+		t.Fatalf("genuine signature after a bad one on the same nonce: %v", err)
+	}
+}
+
+func TestSessionTokenExpiry(t *testing.T) {
+	t.Parallel()
+	s, _ := testStore(t)
+	dev := vectorKey(t, vectorDevSeedB64)
+	devPub := dev.Public().(ed25519.PublicKey)
+	if err := s.AddDevice(devPub, "Pixel 8"); err != nil {
+		t.Fatal(err)
+	}
+	clk := newClock()
+	a := NewAuthenticator(s, "axel", nil, clk.now)
+
+	token, _, err := a.MintSessionToken(devPub)
+	if err != nil {
+		t.Fatalf("MintSessionToken: %v", err)
+	}
+	bearer := func() *http.Request {
+		r := httptest.NewRequest("GET", "/v1/repos", nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		return r
+	}
+	if _, err := a.Verify(bearer()); err != nil {
+		t.Fatalf("fresh token: %v", err)
+	}
+
+	clk.advance(sessionTokenTTL + time.Second)
+	if _, err := a.Verify(bearer()); !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Fatalf("expired token: got %v, want ErrUnauthenticated", err)
+	}
+}
+
 func TestSanitizeDeviceNameTruncatesOnRuneBoundary(t *testing.T) {
 	t.Parallel()
 	// 70 multi-byte runes: a byte-index truncation at 64 would split
