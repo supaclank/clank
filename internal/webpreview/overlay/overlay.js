@@ -506,20 +506,27 @@ import {
 
   const replyPermission = async (allow) => {
     const p = store.perms[0];
-    if (!p || !store.sessionId) return;
-    store.perms = store.perms.slice(1); // head answered; the next queued prompt renders
+    if (!p || p.sending || !store.sessionId) return;
+    p.sending = true;
+    render();
     // Plan review [INV-PERMMODE-EXITPLAN-001]: Approve = allow (the
     // backend exits plan mode); Revise = deny with the notes as the
     // reason so the agent re-plans in plan mode.
     const message = !allow && p.tool === PLAN_TOOL ? ui.notes.value.trim() : '';
-    if (p.tool === PLAN_TOOL) ui.notes.value = '';
-    render();
     try {
       await api(`/sessions/${store.sessionId}/permissions/${p.request_id}/reply`, {
         method: 'POST',
         body: JSON.stringify({ allow, ...(message ? { message } : {}) }),
       });
-    } catch (err) { toast('permission reply failed: ' + err.message); }
+    } catch (err) {
+      toast('permission reply failed: ' + err.message);
+      p.sending = false; // keep the prompt queued so the user can retry
+      render();
+      return;
+    }
+    store.perms = store.perms.slice(1); // head answered; the next queued prompt renders
+    if (p.tool === PLAN_TOOL) ui.notes.value = '';
+    render();
   };
 
   // answeredQuestions: request ids resolved in this page, so a re-emit
@@ -1423,6 +1430,7 @@ import {
       ui.notes.style.display = isPlan ? '' : 'none';
       ui.permAllow.textContent = isPlan ? 'Approve' : 'Allow';
       ui.permDeny.textContent = isPlan && ui.notes.value.trim() ? 'Request changes' : 'Deny';
+      ui.permAllow.disabled = ui.permDeny.disabled = !!perm.sending;
     }
     renderQuestion();
 
