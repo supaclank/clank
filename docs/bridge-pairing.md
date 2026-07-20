@@ -437,8 +437,8 @@ below); a compromised laptop; a compromised phone secure store.
 - **Signature relay (confused deputy)** is prevented by [PAIR-054]. A device-key
   signature carries no gateway audience, so a phone lured into signing a request
   to an attacker-controlled gateway — via an external `clank://preview?gw=…` deep
-  link — would hand the attacker a signature it could relay to the real laptop
-  and act as the phone (e.g. minting a session token, [§9](#9-native-preview-overlay--the-one-exception)).
+  link — would hand the attacker a signature that could be relayed to the real
+  laptop to act as the phone (e.g. minting a session token, [§9](#9-native-preview-overlay--the-one-exception)).
   The phone therefore signs only to a host-key-verified gateway; an unverified
   `gw` is refused before any request is built. Binding the gateway authority into
   the request transcript is the planned defense-in-depth
