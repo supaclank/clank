@@ -49,7 +49,7 @@ if clank preview was the one that started it.`,
 
 	cmd.Flags().StringVar(&projectDir, "project", "", "Project directory (default: current directory)")
 	cmd.Flags().StringVar(&backend, "backend", "", "Backend to use: opencode (default), claude")
-	cmd.Flags().IntVar(&port, "port", 0, "Port to listen on — phone gateway (Expo) or browser proxy (web) (default: auto-assigned)")
+	cmd.Flags().IntVar(&port, "port", 0, "Browser-proxy port for web previews (default: auto-assigned). Phone previews use the daemon's bridge port.")
 	cmd.Flags().BoolVar(&tunnel, "tunnel", false, "Expose over an encrypted tunnel for off-LAN phones (not yet implemented)")
 
 	return cmd

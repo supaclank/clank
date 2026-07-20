@@ -3,13 +3,16 @@ package clankcli
 import (
 	"fmt"
 	"net/url"
+	"strings"
 )
 
 // clank://link is the deep-link a phone scans from the QR that
 // `clank preview` renders. One scan re-points the phone's active gateway
-// at the laptop, authenticates it with the pairing token, and opens the
-// preview. The mobile app (clank-mobile app/scan.tsx) parses this exact
-// shape — keep the scheme/host/param names in sync on both sides.
+// at the laptop and opens the preview. The QR carries no secret: a new
+// phone authenticates through the typed-code pairing ceremony, a
+// returning phone with its stored secret. The mobile app (clank-mobile
+// app/scan.tsx) parses this exact shape — keep the scheme/host/param
+// names in sync on both sides.
 const (
 	previewLinkScheme = "clank"
 	previewLinkHost   = "link"
@@ -20,19 +23,24 @@ const (
 	previewLinkVersion = "1"
 
 	previewLinkParamVersion    = "v"
-	previewLinkParamGateway    = "gw"   // gateway base URL, e.g. http://192.168.1.20:7878
-	previewLinkParamToken      = "tok"  // pairing bearer (auth.StaticBearer)
+	previewLinkParamGateway    = "gw"   // primary gateway base URL (tailnet if present, else LAN)
+	previewLinkParamAlts       = "alt"  // comma-separated additional gateway base URLs (optional)
+	previewLinkParamHostKey    = "hk"   // laptop's Ed25519 identity public key (public — verifies probes)
 	previewLinkParamPreviewURL = "url"  // Metro dev server, e.g. http://192.168.1.20:8081
 	previewLinkParamSessionID  = "sid"  // a prompt-started session to open (optional)
 	previewLinkParamLocalPath  = "lp"   // laptop folder the agent + Metro run against
 	previewLinkParamBackend    = "bk"   // agent backend the laptop can run (opencode|claude-code)
-	previewLinkParamName       = "name" // project display name (optional)
+	previewLinkParamName       = "name" // laptop display name for the gateway picker (optional)
 	previewLinkParamWorktreeID = "wid"  // preview key for /worktrees/<wid>/preview/{status,logs} polling
 )
 
 // PreviewLink is the payload carried by the QR.
 //
-//   - GatewayURL + Token: the pairing capability (required).
+//   - GatewayURL (+ Alts): where the phone reaches the daemon's bridge —
+//     the candidate set it remembers and probes on every reconnect.
+//   - HostKey: the laptop's identity public key. The phone pins it and
+//     verifies every probe answer against it, so a remembered address
+//     that got reassigned can't impersonate the laptop.
 //   - PreviewURL: the dev server to open.
 //   - SessionID: set only when `clank preview <prompt>` already started an
 //     agent — the phone attaches to it.
@@ -44,7 +52,8 @@ const (
 //     instead of hitting a not-yet-listening port raw.
 type PreviewLink struct {
 	GatewayURL string
-	Token      string
+	Alts       []string
+	HostKey    string
 	PreviewURL string
 	SessionID  string
 	LocalPath  string
@@ -53,20 +62,22 @@ type PreviewLink struct {
 	WorktreeID string
 }
 
-// Encode renders the link as a clank://link URL. GatewayURL and Token are
-// required — they're the whole point of pairing, so a link without them is
-// a programmer error, not a partial-but-usable payload.
+// Encode renders the link as a clank://link URL. GatewayURL and
+// HostKey are required — a link that names no gateway, or one the
+// phone couldn't verify a probe against, is a programmer error, not a
+// partial-but-usable payload.
 func (l PreviewLink) Encode() (string, error) {
 	if l.GatewayURL == "" {
 		return "", fmt.Errorf("preview link: GatewayURL is required")
 	}
-	if l.Token == "" {
-		return "", fmt.Errorf("preview link: Token is required")
+	if l.HostKey == "" {
+		return "", fmt.Errorf("preview link: HostKey is required")
 	}
 	q := url.Values{}
 	q.Set(previewLinkParamVersion, previewLinkVersion)
 	q.Set(previewLinkParamGateway, l.GatewayURL)
-	q.Set(previewLinkParamToken, l.Token)
+	q.Set(previewLinkParamHostKey, l.HostKey)
+	setIfPresent(q, previewLinkParamAlts, strings.Join(l.Alts, ","))
 	setIfPresent(q, previewLinkParamPreviewURL, l.PreviewURL)
 	setIfPresent(q, previewLinkParamSessionID, l.SessionID)
 	setIfPresent(q, previewLinkParamLocalPath, l.LocalPath)
@@ -90,7 +101,7 @@ func ParsePreviewLink(s string) (PreviewLink, error) {
 	q := u.Query()
 	link := PreviewLink{
 		GatewayURL: q.Get(previewLinkParamGateway),
-		Token:      q.Get(previewLinkParamToken),
+		HostKey:    q.Get(previewLinkParamHostKey),
 		PreviewURL: q.Get(previewLinkParamPreviewURL),
 		SessionID:  q.Get(previewLinkParamSessionID),
 		LocalPath:  q.Get(previewLinkParamLocalPath),
@@ -98,8 +109,14 @@ func ParsePreviewLink(s string) (PreviewLink, error) {
 		Name:       q.Get(previewLinkParamName),
 		WorktreeID: q.Get(previewLinkParamWorktreeID),
 	}
-	if link.GatewayURL == "" || link.Token == "" {
-		return PreviewLink{}, fmt.Errorf("preview link: missing required %s/%s in %q", previewLinkParamGateway, previewLinkParamToken, s)
+	if alts := q.Get(previewLinkParamAlts); alts != "" {
+		link.Alts = strings.Split(alts, ",")
+	}
+	if link.GatewayURL == "" {
+		return PreviewLink{}, fmt.Errorf("preview link: missing required %s in %q", previewLinkParamGateway, s)
+	}
+	if link.HostKey == "" {
+		return PreviewLink{}, fmt.Errorf("preview link: missing required %s in %q", previewLinkParamHostKey, s)
 	}
 	return link, nil
 }

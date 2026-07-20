@@ -132,6 +132,17 @@ func runGatewayServer(prov provisioner.Provisioner, st *store.Store, opts Server
 		Notify:      dispatcher,
 	}
 
+	// Laptop mode grows the bridge: the durable phone↔laptop surface
+	// (standing secret, tailnet/LAN listeners, LAN-backed image
+	// uploads). Cloud/TCP daemons get nil — no listeners, no
+	// bridge.json, no routes. Must run before NewGateway so the
+	// images server rides gwCfg.Images.
+	br := setupBridge(opts, log.Default())
+	if br != nil {
+		gwCfg.Images = br.Images()
+		defer br.Close()
+	}
+
 	// Wire the preview surface when CLANK_PREVIEW_ROOT_DOMAIN is set.
 	// For laptop/docker dev we use an in-process memstore for routes
 	// (the cloud path uses Postgres via supaclank's pgx adapter). The
@@ -192,25 +203,12 @@ func runGatewayServer(prov provisioner.Provisioner, st *store.Store, opts Server
 	}
 	logAuthMode(authDesc)
 
-	// Wire pre-auth routes (no user bearer required) on a parent mux,
-	// then mount the auth-wrapped gateway as the catch-all.
-	mux := http.NewServeMux()
-	if h := gw.NotifyWebhookHandler(); h != nil {
-		mux.Handle("POST /webhooks/notifications", h)
-	}
-	if h := gw.PreviewWebhookHandler(); h != nil {
-		mux.Handle("/webhooks/preview/", h)
-	}
-	if ach := gw.AuthConfigHandler(); ach != nil {
-		mux.Handle("GET /auth-config", ach)
-		log.Printf("gateway: /auth-config discovery enabled")
-	}
-	mux.Handle("/", auth.Middleware(gw.Handler(), authenticator))
-	// Wrap with the preview-subdomain dispatcher so requests to
-	// preview-<token>.<root> reach the tokenized proxy before the
-	// auth middleware fires. No-op when CLANK_PREVIEW_ROOT_DOMAIN
-	// is unset.
-	var handler http.Handler = gw.WrapPreviewSubdomain(mux)
+	// Phone-facing bridge listeners wrap the same in-process gateway
+	// handler the hub serves — one gateway, one host.db, different
+	// front door auth.
+	br.Start(gw.Handler())
+
+	handler := buildHubHandler(gw, authenticator, br.AdminHandler())
 
 	listener, cleanup, err := openHubListener(opts)
 	if err != nil {
@@ -256,6 +254,34 @@ func runGatewayServer(prov provisioner.Provisioner, st *store.Store, opts Server
 	return nil
 }
 
+// buildHubHandler assembles the hub listener's handler: pre-auth
+// routes (webhooks, auth-config discovery, and — laptop mode only —
+// the /v1/bridge admin surface) on a parent mux, then the
+// auth-wrapped gateway as the catch-all. Extracted from
+// runGatewayServer so tests can pin the route surface per mode; Go
+// 1.22 mux precedence lets the specific patterns shadow "/".
+func buildHubHandler(gw *gateway.Gateway, authenticator auth.Authenticator, bridgeAdmin http.Handler) http.Handler {
+	mux := http.NewServeMux()
+	if h := gw.NotifyWebhookHandler(); h != nil {
+		mux.Handle("POST /webhooks/notifications", h)
+	}
+	if h := gw.PreviewWebhookHandler(); h != nil {
+		mux.Handle("/webhooks/preview/", h)
+	}
+	if ach := gw.AuthConfigHandler(); ach != nil {
+		mux.Handle("GET /auth-config", ach)
+		log.Printf("gateway: /auth-config discovery enabled")
+	}
+	if bridgeAdmin != nil {
+		mux.Handle("/v1/bridge/", bridgeAdmin)
+	}
+	mux.Handle("/", auth.Middleware(gw.Handler(), authenticator))
+	// Wrap with the preview-subdomain dispatcher so requests to
+	// preview-<token>.<root> reach the tokenized proxy before the
+	// auth middleware fires. No-op when CLANK_PREVIEW_ROOT_DOMAIN
+	// is unset.
+	return gw.WrapPreviewSubdomain(mux)
+}
 
 // loadAuthConfigFromEnv builds a gateway.AuthConfig from CLANK_AUTH_*
 // env vars for the dev / docker-stack path. Returns nil when the core

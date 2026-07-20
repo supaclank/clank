@@ -2,10 +2,12 @@ package images
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/acksell/clank/pkg/auth"
+	"github.com/acksell/clank/pkg/blobstore"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -63,12 +65,12 @@ func (s *Server) handlePresignImage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	putURL, err := s.store.PresignPut(ctx, key, s.presignTTL)
 	if err != nil {
-		http.Error(w, "presign put", http.StatusInternalServerError)
+		writeStorageError(w, "presign put", err)
 		return
 	}
 	getURL, err := s.store.PresignGet(ctx, key, s.presignTTL)
 	if err != nil {
-		http.Error(w, "presign get", http.StatusInternalServerError)
+		writeStorageError(w, "presign get", err)
 		return
 	}
 
@@ -78,6 +80,17 @@ func (s *Server) handlePresignImage(w http.ResponseWriter, r *http.Request) {
 		GetURL:    getURL,
 		ExpiresAt: time.Now().Add(s.presignTTL).UTC().Format(time.RFC3339),
 	})
+}
+
+// writeStorageError maps a Storage error to a status the client can act
+// on: 503 for a temporarily unreachable backing (e.g. the LAN blobstore
+// before any phone-reachable address is bound), 500 otherwise.
+func writeStorageError(w http.ResponseWriter, op string, err error) {
+	if errors.Is(err, blobstore.ErrUnavailable) {
+		http.Error(w, op+": image uploads aren't reachable from this network yet", http.StatusServiceUnavailable)
+		return
+	}
+	http.Error(w, op, http.StatusInternalServerError)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

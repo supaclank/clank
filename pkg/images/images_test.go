@@ -2,6 +2,7 @@ package images_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/acksell/clank/pkg/auth"
 	"github.com/acksell/clank/pkg/blobstore"
@@ -168,3 +170,30 @@ func TestPresignImage_EntropyFailure(t *testing.T) {
 type errorReader struct{}
 
 func (errorReader) Read(_ []byte) (int, error) { return 0, errors.New("entropy read failed") }
+
+// unavailableStorage simulates a blobstore.Storage backing that hasn't
+// bound a reachable address yet (e.g. bridge's LAN blobstore pre-bind).
+type unavailableStorage struct{}
+
+func (unavailableStorage) PresignPut(context.Context, string, time.Duration) (string, error) {
+	return "", blobstore.ErrUnavailable
+}
+func (unavailableStorage) PresignGet(context.Context, string, time.Duration) (string, error) {
+	return "", blobstore.ErrUnavailable
+}
+func (unavailableStorage) Exists(context.Context, string) (bool, error) { return false, nil }
+func (unavailableStorage) DeletePrefix(context.Context, string) error  { return nil }
+
+func TestPresignImage_UnavailableStorageReturns503(t *testing.T) {
+	t.Parallel()
+	srv, err := images.NewServer(images.Config{Storage: unavailableStorage{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := srv.Handler()
+
+	rr, _ := presign(t, h, "user-A", `{"mime":"image/png"}`)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unavailable storage: want 503, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
