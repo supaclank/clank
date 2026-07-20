@@ -54,3 +54,36 @@ func TestCreateRepoWorktree_HonorsWorkRootOption(t *testing.T) {
 		t.Errorf("worktree dir %q: stat err=%v", result.WorktreeDir, err)
 	}
 }
+
+// TestCreateRepoWorktree_InstanceWorkRootBeatsTestOverride pins the
+// precedence a review-bot pass flagged: Options.WorkRoot must win over
+// the legacy global workRootForTest, so a test using the instance
+// field can run in parallel with tests still on the global hook
+// without either clobbering the other's target directory.
+func TestCreateRepoWorktree_InstanceWorkRootBeatsTestOverride(t *testing.T) {
+	instanceRoot := filepath.Join(t.TempDir(), "instance-work")
+	globalRoot := filepath.Join(t.TempDir(), "global-work")
+	prev := host.SetWorkRootForTest(globalRoot)
+	defer host.SetWorkRootForTest(prev)
+
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+		WorkRoot: instanceRoot,
+	})
+	t.Cleanup(svc.Shutdown)
+
+	checkout := initGitRepo(t, "https://github.com/acme/app.git")
+	slug := host.LocalRepoSlug(checkout)
+
+	result, err := svc.CreateRepoWorktree(context.Background(), slug, host.RepoWorktreeRequest{
+		BaseBranch: "main",
+	})
+	if err != nil {
+		t.Fatalf("CreateRepoWorktree: %v", err)
+	}
+	if got := filepath.Dir(result.WorktreeDir); got != instanceRoot {
+		t.Errorf("worktree parent = %q, want the instance work root %q (global override must not win)", got, instanceRoot)
+	}
+}

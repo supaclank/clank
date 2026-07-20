@@ -954,14 +954,16 @@ func (s *Service) normalizeGitRef(ref agent.GitRef) (agent.GitRef, error) {
 var workRootForTest string
 
 // workRootDir returns the parent under which worktrees land at
-// /<WorktreeID>/ (and repo canonicals under /repos/): the test
-// override when set, else Options.WorkRoot, else $HOME/work.
+// /<WorktreeID>/ (and repo canonicals under /repos/): Options.WorkRoot
+// when set, else the test override, else $HOME/work. Instance-level
+// takes precedence so a parallel test's own s.workRoot can't be
+// clobbered by another test's global workRootForTest.
 func (s *Service) workRootDir() (string, error) {
-	if workRootForTest != "" {
-		return workRootForTest, nil
-	}
 	if s.workRoot != "" {
 		return s.workRoot, nil
+	}
+	if workRootForTest != "" {
+		return workRootForTest, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
