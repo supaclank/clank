@@ -35,6 +35,7 @@ func Command() *cobra.Command {
 		pleaseCmd(),
 		fixCmd(),
 		previewCmd(),
+		pairCmd(),
 		inboxCmd(),
 		remoteCmd(),
 		loginCmd(),

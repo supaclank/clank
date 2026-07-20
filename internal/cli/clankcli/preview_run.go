@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -16,6 +14,7 @@ import (
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/host"
 	"github.com/acksell/clank/internal/host/preview"
+	"github.com/acksell/clank/internal/lannet"
 )
 
 // previewKeepaliveInterval paces the CLI's liveness pings against the
@@ -49,7 +48,14 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	// this must run before ensureDaemon, before the Kind is knowable.
 	// Web previews are loopback-only and need neither (a laptop with no
 	// LAN IP can still web-preview, hence the deferred error).
-	ip, ipErr := lanIP()
+	ip, ipErr := lannet.LANIP()
+	if ipErr != nil {
+		// No physical LAN (ethernet unplugged, hotspot off) — a
+		// tailnet-only laptop still serves Metro over WireGuard.
+		if tn := lannet.TailnetIP(); tn != nil {
+			ip, ipErr = tn, nil
+		}
+	}
 	if ipErr == nil {
 		// Make Metro advertise the LAN IP in its manifest so the phone can
 		// fetch the bundle. The dev server inherits our process env, so
@@ -157,33 +163,38 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 		return runWebPreview(sigCtx, projectDir, sockPath, sessionID, string(bt), status.Port, port)
 	}
 
-	// Phone (Expo) path from here down.
+	// Phone (Expo) path from here down. The daemon's bridge is the
+	// phone's gateway — standing listeners, standing secret; the
+	// trust-this-LAN prompt runs inside ensurePhoneReachable when a
+	// plain LAN is the only path and hasn't been consented to.
 	if ipErr != nil {
 		return ipErr
 	}
-	fmt.Println("Opening this folder to your phone…")
-	fd, err := startPreviewFrontDoor(ip, port, sockPath, log.Default())
+	bst, err := ensurePhoneReachable(sigCtx, client, os.Stdin, os.Stdout)
 	if err != nil {
-		return fmt.Errorf("start preview front door: %w", err)
+		return err
 	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		fd.Shutdown(ctx)
-	}()
+	fmt.Println("Opening this folder to your phone…")
 
 	// http, not exp:// — the phone fetches this as the Expo manifest base,
 	// and the preview launcher keeps LAN http URLs on http.
 	previewURL := fmt.Sprintf("http://%s:%d", ip, status.Port)
 
+	// The QR is all public: addresses + the laptop's identity key. A
+	// new phone pairs via the typed-code ceremony (pairingLoop below);
+	// a phone that already paired reconnects on its own.
 	link := PreviewLink{
-		GatewayURL: fd.BaseURL,
-		Token:      fd.Token,
+		GatewayURL: bst.URLs[0],
+		Alts:       bst.URLs[1:],
+		HostKey:    bst.HostKey,
 		PreviewURL: previewURL,
 		SessionID:  sessionID, // empty unless a prompt was passed
 		LocalPath:  projectDir,
 		Backend:    string(bt),
-		Name:       filepath.Base(projectDir),
+		// Name is the laptop's gateway-picker label — its hostname, the
+		// same as `clank pair`. NOT the project folder: the QR pairs the
+		// phone to the LAPTOP, and the project rides LocalPath/WorktreeID.
+		Name:       shortHostname(),
 		WorktreeID: previewKey,
 	}
 	linkStr, err := link.Encode()
@@ -191,7 +202,11 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 		return err
 	}
 
-	printPreviewBanner(linkStr, fd.BaseURL, previewURL)
+	printPreviewBanner(linkStr, bst.URLs[0], previewURL)
+	// Service inbound pairing ceremonies for the whole preview session:
+	// a new phone that scans shows a code the terminal prompts you to
+	// type. Returning phones just reconnect (probe path, no ceremony).
+	go pairingLoop(sigCtx, client, os.Stdin, os.Stdout)
 	if err := watchExpoPreview(sigCtx, client.Preview(previewKey), status.State); err != nil {
 		return err
 	}

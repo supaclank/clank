@@ -2,6 +2,8 @@ package clankcli
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -191,4 +193,13 @@ func printWebPreviewBanner(url string, engine webpreview.Engine) {
 	}
 	fmt.Println()
 	fmt.Println("Press Ctrl+C to stop the preview and shut everything down.")
+}
+
+// randomToken mints a URL-safe random bearer (web preview overlay auth).
+func randomToken(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }

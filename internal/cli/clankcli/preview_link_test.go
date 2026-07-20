@@ -1,7 +1,9 @@
 package clankcli
 
 import (
+	"github.com/acksell/clank/internal/lannet"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -9,8 +11,9 @@ import (
 func TestPreviewLinkRoundTrip(t *testing.T) {
 	t.Parallel()
 	want := PreviewLink{
-		GatewayURL: "http://192.168.1.20:7878",
-		Token:      "pair_abc123",
+		GatewayURL: "http://100.99.1.2:7880",
+		Alts:       []string{"http://axels-mbp.tail1234.ts.net:7880", "http://192.168.1.20:7880"},
+		HostKey:    "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w",
 		PreviewURL: "http://192.168.1.20:8081",
 		SessionID:  "01HSESSION",
 		LocalPath:  "/Users/me/my-expo-app",
@@ -29,18 +32,41 @@ func TestPreviewLinkRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParsePreviewLink(%q): %v", encoded, err)
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("round-trip mismatch:\n got %+v\nwant %+v", got, want)
 	}
 }
 
-func TestPreviewLinkEncodeRequiresGatewayAndToken(t *testing.T) {
+// TestPreviewLinkCarriesNoSecret pins the trust contract: the QR is
+// all public — addresses + the laptop's identity PUBLIC key. A phone
+// authenticates through the typed-code ceremony and its own keypair,
+// never a secret read off the code.
+func TestPreviewLinkCarriesNoSecret(t *testing.T) {
 	t.Parallel()
-	if _, err := (PreviewLink{Token: "t"}).Encode(); err == nil {
+	encoded, err := PreviewLink{
+		GatewayURL: "http://100.99.1.2:7880",
+		HostKey:    "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w",
+		PreviewURL: "http://192.168.1.20:8081",
+		WorktreeID: "L1VzZXJzL21lL215LWV4cG8tYXBw",
+	}.Encode()
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if strings.Contains(encoded, "tok=") {
+		t.Fatalf("preview link leaked a secret param: %q", encoded)
+	}
+	if !strings.Contains(encoded, "hk=") {
+		t.Fatalf("preview link must carry the host key: %q", encoded)
+	}
+}
+
+func TestPreviewLinkEncodeRequiredFields(t *testing.T) {
+	t.Parallel()
+	if _, err := (PreviewLink{HostKey: "k"}).Encode(); err == nil {
 		t.Fatal("expected error when GatewayURL is empty")
 	}
-	if _, err := (PreviewLink{GatewayURL: "http://x"}).Encode(); err == nil {
-		t.Fatal("expected error when Token is empty")
+	if _, err := (PreviewLink{GatewayURL: "http://x:7880"}).Encode(); err == nil {
+		t.Fatal("expected error when HostKey is empty")
 	}
 }
 
@@ -48,9 +74,9 @@ func TestParsePreviewLinkRejectsForeignScheme(t *testing.T) {
 	t.Parallel()
 	cases := []string{
 		"clank://preview?url=exp://x", // existing preview-only deep link, not a pairing link
-		"https://link?gw=x&tok=y",     // right path, wrong scheme
-		"clank://link?gw=x",           // missing token
-		"clank://link?tok=y",          // missing gateway
+		"https://link?gw=x&hk=y",      // right path, wrong scheme
+		"clank://link?hk=y",           // missing gateway
+		"clank://link?gw=x",           // missing host key
 	}
 	for _, in := range cases {
 		if _, err := ParsePreviewLink(in); err == nil {
@@ -61,7 +87,7 @@ func TestParsePreviewLinkRejectsForeignScheme(t *testing.T) {
 
 func TestLANIPIsRoutableWhenFound(t *testing.T) {
 	t.Parallel()
-	ip, err := lanIP()
+	ip, err := lannet.LANIP()
 	if err != nil {
 		t.Skipf("no LAN IP in this environment: %v", err) // CI without a routable interface
 	}
