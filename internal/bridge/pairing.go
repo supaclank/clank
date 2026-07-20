@@ -251,6 +251,7 @@ func (p *Pairing) Complete(typed string) (device string, err error) {
 			return "", err
 		}
 		a.approved = true
+		p.wrong = 0 // a clean pairing must not carry stale mismatches into the next one
 		return a.device, nil
 	case 0:
 		p.wrong++

@@ -52,12 +52,25 @@ func pairingLoop(ctx context.Context, client *daemonclient.Client, in io.Reader,
 			if err != nil {
 				continue
 			}
-			if len(pending) > 0 && !prompted {
+			show, next := pendingPrompt(prompted, len(pending))
+			prompted = next
+			if show {
 				fmt.Fprintf(out, "\n📱 %s wants to connect. Type the code shown on it: ", pending[0])
-				prompted = true
 			}
 		}
 	}
+}
+
+// pendingPrompt decides whether a tick should print the "phone wants to
+// connect" prompt, given whether one is already showing and how many
+// attempts are pending. Split out so the reset-on-empty edge (an
+// attempt disappears — expired or cancelled — before the user types
+// anything) is unit-testable without a daemon client.
+func pendingPrompt(prompted bool, pendingCount int) (show, nextPrompted bool) {
+	if pendingCount == 0 {
+		return false, false
+	}
+	return !prompted, true
 }
 
 // readLines forwards newline-delimited input to lines until EOF. A

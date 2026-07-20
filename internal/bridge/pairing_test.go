@@ -298,6 +298,26 @@ func TestPairingLockout(t *testing.T) {
 	}
 }
 
+func TestPairingSuccessResetsWrongCounter(t *testing.T) {
+	t.Parallel()
+	p, store, _ := newPairing(t)
+	p.RefreshWindow()
+	ph := newPhone(t, 0x01)
+	_, sas := ph.run(t, p, store, "phone")
+
+	for i := 0; i < pairMaxWrong-1; i++ {
+		if _, err := p.Complete("000000"); err != ErrPairCodeMismatch {
+			t.Fatalf("wrong %d = %v, want mismatch", i, err)
+		}
+	}
+	if _, err := p.Complete(sas); err != nil {
+		t.Fatalf("Complete(sas): %v", err)
+	}
+	if p.wrong != 0 {
+		t.Fatalf("wrong = %d after a successful pairing, want 0 — a stale count must not carry into the next one", p.wrong)
+	}
+}
+
 func TestPairingAttemptExpiry(t *testing.T) {
 	t.Parallel()
 	p, store, clk := newPairing(t)
