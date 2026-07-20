@@ -78,7 +78,7 @@ func (s *Service) ImportProjectFromGitHub(ctx context.Context, owner, repo, bran
 	if err != nil {
 		return CreateWorktreeResult{}, err
 	}
-	gitDir, err := canonicalGitDir(slug)
+	gitDir, err := s.canonicalGitDir(slug)
 	if err != nil {
 		return CreateWorktreeResult{}, err
 	}
@@ -204,7 +204,7 @@ func (s *Service) addRepoWorktree(ctx context.Context, slug, gitDir string, loca
 		}, nil
 	}
 
-	root, err := workRootDir()
+	root, err := s.workRootDir()
 	if err != nil {
 		return RepoWorktreeResult{}, err
 	}

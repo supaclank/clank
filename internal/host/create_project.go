@@ -51,11 +51,11 @@ func (s *Service) CreateProjectFromTemplate(ctx context.Context, cloneURL, githu
 		return CreateWorktreeResult{}, fmt.Errorf("%w: name is required", ErrInvalidArgument)
 	}
 
-	slug, err := slugForName(name)
+	slug, err := s.slugForName(name)
 	if err != nil {
 		return CreateWorktreeResult{}, err
 	}
-	gitDir, err := canonicalGitDir(slug)
+	gitDir, err := s.canonicalGitDir(slug)
 	if err != nil {
 		return CreateWorktreeResult{}, err
 	}
