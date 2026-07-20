@@ -284,6 +284,18 @@ X-Clank-Sig:    <base64url Ed25519 sig over the canonical request>
   per request, and sign the exact bytes it sends. **Golden:**
   `clank-mobile/src/lib/deviceKey.ts` (`signedRequestHeaders`),
   `clank-mobile/src/api/client.ts` (`signRequest`).
+- **[PAIR-054] (MUST)** The client MUST attach its device-key signature only to
+  requests bound for a gateway whose host key it has verified — the pinned
+  pairing slot ([PAIR-014]) or a freshly probe-verified address ([PAIR-031]). A
+  gateway address arriving from an untrusted source — e.g. an external
+  `clank://preview?gw=…` deep link, which the in-app scanner strips and the
+  pairing ceremony never forwards — MUST NOT receive a signed request. **Why:**
+  the request signature binds no gateway audience ([§7.2](#72-transcripts)), so a
+  signed request sent to an attacker-chosen host is a relayable credential — the
+  attacker replays it to the real laptop (a confused-deputy relay). **Golden:**
+  `clank-mobile/src/lib/bridgeConnect.ts` (`isVerifiedPairingGateway`),
+  `clank-mobile/app/preview/index.tsx`,
+  `bridgeConnect.test.ts` ("isVerifiedPairingGateway").
 
 ---
 
@@ -422,6 +434,15 @@ below); a compromised laptop; a compromised phone secure store.
 - **Reassigned / squatted address** cannot harvest anything: the probe
   ([PAIR-031]) rejects it before the phone transmits, and a phone transmits only
   signatures anyway.
+- **Signature relay (confused deputy)** is prevented by [PAIR-054]. A device-key
+  signature carries no gateway audience, so a phone lured into signing a request
+  to an attacker-controlled gateway — via an external `clank://preview?gw=…` deep
+  link — would hand the attacker a signature it could relay to the real laptop
+  and act as the phone (e.g. minting a session token, [§9](#9-native-preview-overlay--the-one-exception)).
+  The phone therefore signs only to a host-key-verified gateway; an unverified
+  `gw` is refused before any request is built. Binding the gateway authority into
+  the request transcript is the planned defense-in-depth
+  ([§12](#12-non-goals--future-work)).
 
 ---
 
@@ -438,6 +459,13 @@ below); a compromised laptop; a compromised phone secure store.
   (laptop moved networks, no tailnet) rescans the QR today. An opaque encrypted
   "mailbox" that carries only an address note is the planned freshness upgrade;
   it changes discovery, never trust.
+- **Request audience binding.** The request signature transcript
+  ([§7.2](#72-transcripts)) does not yet bind the target gateway's authority, so a
+  signature is portable across any gateway that trusts the same device key. v1
+  closes the exposure at the client — the phone signs only to a host-key-verified
+  gateway ([PAIR-054]) — but binding the authority/host into `clank-sig-v1` on
+  both the Go and TypeScript sides is the planned protocol-level closure. It
+  changes the transcript and the shared vectors together ([PAIR-061]).
 
 ---
 
@@ -446,3 +474,6 @@ below); a compromised laptop; a compromised phone secure store.
 - **v1 (2026-07)** — initial per-device trust model: Ed25519 host + device keys,
   signed requests, SAS pairing ceremony. Supersedes the retired shared-root-secret
   model (single key handed out in the QR).
+- **v1 · rev 2 (2026-07)** — [PAIR-054]: the phone signs only to a host-key-
+  verified gateway, closing a confused-deputy signature relay via an external
+  `clank://preview?gw=…` deep link. No wire or transcript change.
