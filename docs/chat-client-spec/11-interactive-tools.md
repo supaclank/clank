@@ -149,12 +149,17 @@ comment.
   pre-normalized, [QST-001]), and OpenCode plans through inline comments on the message.
   **Why:** one consistent interaction across backends.
 
-## TUI status
+## Client status
 
 The TUI implements the question-tag path ([QST-001..003]) and renders ExitPlanMode
 permission prompts with the plan text plus approve / request-changes (deny with notes) / deny
 choices (`internal/tui/sessionview_question.go`, `sessionview.go` prompt card). It still has
 **no inline comments** ([ICOMMENT-001]) — for those the RN client remains the reference.
+
+The web preview overlay (`internal/webpreview/overlay`, checklist:
+[implementations/web-preview-overlay.md](implementations/web-preview-overlay.md)) also
+implements the tag path and plan review; its positional-answerability and suppression logic
+lives in `overlay/chat.js` with `node --test` coverage.
 
 ## Open design questions (non-normative)
 

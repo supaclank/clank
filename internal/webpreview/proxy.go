@@ -27,6 +27,13 @@ import (
 //go:embed overlay/overlay.js
 var overlayJS []byte
 
+// chatJS is the overlay's pure chat-protocol module (question cards,
+// permission queue, transcript reconcile) — a separate ES module so
+// `node --test` covers it without a DOM; overlay.js imports it.
+//
+//go:embed overlay/chat.js
+var chatJS []byte
+
 // workletJS is the AudioWorklet processor that batches mic PCM for the
 // dictation WebSocket. Served as its own module because AudioWorklets
 // load from a URL, not inline.
@@ -145,6 +152,7 @@ func Start(opts Options) (*Server, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /__clank/overlay.js", serveJS(overlayJS))
+	mux.HandleFunc("GET /__clank/chat.js", serveJS(chatJS))
 	mux.HandleFunc("GET /__clank/worklet.js", serveJS(workletJS))
 	mux.Handle("/__clank/api/", requireToken(opts.Token,
 		http.StripPrefix("/__clank/api", daemon)))
