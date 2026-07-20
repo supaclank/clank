@@ -272,9 +272,14 @@ X-Clank-Sig:    <base64url Ed25519 sig over the canonical request>
   (path + query), and a hash of the exact body, so tampering with any of them
   breaks the signature. The verifier MUST read and restore the body for the
   downstream handler. **Golden:** `sign.go` (`CanonicalRequest`), `auth.go`.
-- **[PAIR-052] (MUST)** The nonce MUST be reserved before the signature check
-  (so two concurrent replays can't both pass) and MUST expire after the skew
-  window closes on both sides. **Golden:** `auth.go` (`reserveNonce`).
+- **[PAIR-052] (MUST)** The signature MUST be verified before the nonce is
+  reserved — an approved device key is public ([PAIR-013]'s registry is an
+  `authorized_keys` analogue), so reserving first would let anyone who knows
+  one flood the nonce cache with garbage-signed requests. Reservation MUST
+  stay atomic so two concurrent replays of one genuinely valid, identical
+  signed request still can't both pass, and a nonce MUST expire after the
+  skew window closes on both sides. **Golden:** `auth.go` (`Verify`,
+  `reserveNonce`), `TestBadSignatureDoesNotBurnNonce`.
 - **[PAIR-053] (MUST)** The client MUST use a fresh nonce and current timestamp
   per request, and sign the exact bytes it sends. **Golden:**
   `clank-mobile/src/lib/deviceKey.ts` (`signedRequestHeaders`),
