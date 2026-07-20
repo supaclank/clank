@@ -30,7 +30,7 @@ const (
 	previewLinkParamSessionID  = "sid"  // a prompt-started session to open (optional)
 	previewLinkParamLocalPath  = "lp"   // laptop folder the agent + Metro run against
 	previewLinkParamBackend    = "bk"   // agent backend the laptop can run (opencode|claude-code)
-	previewLinkParamName       = "name" // project display name (optional)
+	previewLinkParamName       = "name" // laptop display name for the gateway picker (optional)
 	previewLinkParamWorktreeID = "wid"  // preview key for /worktrees/<wid>/preview/{status,logs} polling
 )
 

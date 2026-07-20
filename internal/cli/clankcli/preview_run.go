@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -192,7 +191,10 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 		SessionID:  sessionID, // empty unless a prompt was passed
 		LocalPath:  projectDir,
 		Backend:    string(bt),
-		Name:       filepath.Base(projectDir),
+		// Name is the laptop's gateway-picker label — its hostname, the
+		// same as `clank pair`. NOT the project folder: the QR pairs the
+		// phone to the LAPTOP, and the project rides LocalPath/WorktreeID.
+		Name:       shortHostname(),
 		WorktreeID: previewKey,
 	}
 	linkStr, err := link.Encode()
