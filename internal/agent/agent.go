@@ -18,6 +18,7 @@ type BackendType string
 const (
 	BackendOpenCode   BackendType = "opencode"
 	BackendClaudeCode BackendType = "claude-code"
+	BackendCodex      BackendType = "codex"
 )
 
 // SessionStatus represents the current state of an agent session.
@@ -445,7 +446,7 @@ func (r StartRequest) Validate() error {
 	if r.Backend == "" {
 		return fmt.Errorf("backend is required")
 	}
-	if r.Backend != BackendOpenCode && r.Backend != BackendClaudeCode {
+	if r.Backend != BackendOpenCode && r.Backend != BackendClaudeCode && r.Backend != BackendCodex {
 		return fmt.Errorf("unknown backend: %s", r.Backend)
 	}
 	if err := r.GitRef.Validate(); err != nil {

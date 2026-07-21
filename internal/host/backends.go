@@ -189,6 +189,39 @@ func (m *OpenCodeBackendManager) DiscoverSessions(ctx context.Context, seedDir s
 	return all, nil
 }
 
+// CodexBackendManager implements agent.BackendManager for OpenAI Codex
+// sessions. Each session spawns its own `codex app-server` subprocess (the
+// Claude shape) — there are no shared servers to manage.
+type CodexBackendManager struct{}
+
+// NewCodexBackendManager creates a new codex backend manager.
+func NewCodexBackendManager() *CodexBackendManager {
+	return &CodexBackendManager{}
+}
+
+// CreateBackend creates a codex SessionBackend. When inv.ResumeExternalID is
+// set, the backend reattaches to the existing codex thread via thread/resume
+// at Open.
+func (m *CodexBackendManager) CreateBackend(ctx context.Context, inv agent.BackendInvocation) (agent.SessionBackend, error) {
+	b := agent.NewCodexBackendForSession(inv.WorkDir, inv.ResumeExternalID)
+	// Same guidance the other backends inject, carried as codex
+	// developerInstructions at thread start. Fresh sessions only — the
+	// instructions persist in codex thread state across resume/fork.
+	if inv.ResumeExternalID == "" {
+		b.SystemPrompt = guidance.Assemble(inv.WorkDir)
+	}
+	installGuidanceSkills(inv.WorkDir)
+	return b, nil
+}
+
+// Init is a no-op for codex — no long-lived servers to manage.
+func (m *CodexBackendManager) Init(ctx context.Context, knownDirs func() ([]string, error)) error {
+	return nil
+}
+
+// Shutdown is a no-op for codex — each session owns its subprocess.
+func (m *CodexBackendManager) Shutdown() {}
+
 // ClaudeBackendManager implements agent.BackendManager for Claude Code sessions.
 type ClaudeBackendManager struct {
 	// envResolver, when non-nil, is called once per CreateBackend to

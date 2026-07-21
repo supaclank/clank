@@ -356,6 +356,7 @@ func run(cfg runConfig) error {
 		BackendManagers: map[agent.BackendType]agent.BackendManager{
 			agent.BackendOpenCode:   host.NewOpenCodeBackendManager(),
 			agent.BackendClaudeCode: host.NewClaudeBackendManager(),
+			agent.BackendCodex:      host.NewCodexBackendManager(),
 		},
 		Log:                   lg,
 		Templates:             templates,

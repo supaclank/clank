@@ -62,6 +62,7 @@ require (
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
+	github.com/pmenglund/codex-sdk-go v0.144.6 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/superfly/client-signals/go v0.3.0 // indirect
 	github.com/superfly/graphql v0.2.6 // indirect
