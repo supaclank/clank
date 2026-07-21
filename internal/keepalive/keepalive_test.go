@@ -295,12 +295,15 @@ func TestLoop_BumpIsConcurrencySafe(t *testing.T) {
 	// The burst can finish before the run goroutine is ever scheduled, so
 	// don't assert immediately: a Bump is still pending in the 1-slot
 	// channel, guaranteeing a Tick once the loop runs.
-	deadline := time.After(2 * time.Second)
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(1 * time.Millisecond)
+	defer poll.Stop()
 	for rec.tickCount() == 0 {
 		select {
-		case <-deadline:
+		case <-deadline.C:
 			t.Fatal("no tick within 2s of concurrent Bump burst")
-		case <-time.After(1 * time.Millisecond):
+		case <-poll.C:
 		}
 	}
 }
