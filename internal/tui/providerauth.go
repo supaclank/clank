@@ -625,10 +625,14 @@ func (m providerAuthModel) View() string {
 				status := lipgloss.NewStyle().Foreground(dimColor).Render("not connected")
 				if p.Connected {
 					label := "connected"
-					if p.Source == agent.CredentialSourceClaudeCLI {
-						// Borrowed from the machine's own claude login;
-						// clank can't disconnect it — say where it's from.
+					// Borrowed credentials (machine's claude login, env
+					// vars) aren't disconnectable through clank — say
+					// where they're from.
+					switch p.Source {
+					case agent.CredentialSourceClaudeCLI:
 						label = "connected (claude cli)"
+					case agent.CredentialSourceEnv:
+						label = "connected (env)"
 					}
 					status = lipgloss.NewStyle().Foreground(successColor).Render(label)
 				}

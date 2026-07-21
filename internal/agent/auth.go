@@ -87,6 +87,12 @@ const (
 	// disconnect it — that's `claude /logout`'s job — so clients
 	// should hide the disconnect affordance for this source.
 	CredentialSourceClaudeCLI = "claude_cli"
+	// CredentialSourceEnv means no stored credential, but the
+	// provider's env var is set in the host process's environment and
+	// spawned agent CLIs inherit it (operator-injected on sandboxes,
+	// shell exports on laptops). Not disconnectable through clank —
+	// clients should hide the disconnect affordance for this source.
+	CredentialSourceEnv = "env"
 )
 
 // ProviderAuthInfo is the snapshot a client gets from
