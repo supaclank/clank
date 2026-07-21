@@ -22,6 +22,7 @@ require (
 	github.com/google/go-github/v66 v66.0.0
 	github.com/hinshun/vt10x v0.0.0-20220301184237-5011da428d02
 	github.com/oklog/ulid/v2 v2.1.1
+	github.com/pmenglund/codex-sdk-go v0.144.6
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/spf13/cobra v1.10.2
 	github.com/superfly/fly-go v0.9.0
@@ -62,7 +63,6 @@ require (
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/pmenglund/codex-sdk-go v0.144.6 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/superfly/client-signals/go v0.3.0 // indirect
 	github.com/superfly/graphql v0.2.6 // indirect
