@@ -27,13 +27,12 @@ func TestSlugForImport(t *testing.T) {
 	}
 }
 
-// Not parallel: SetWorkRootForTest mutates a package-level override.
 func TestSlugForName_SuffixesOnCollision(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
-	prev := SetWorkRootForTest(root)
-	defer SetWorkRootForTest(prev)
+	s := &Service{workRoot: root}
 
-	got, err := slugForName("My Todo App")
+	got, err := s.slugForName("My Todo App")
 	if err != nil {
 		t.Fatalf("slugForName: %v", err)
 	}
@@ -45,7 +44,7 @@ func TestSlugForName_SuffixesOnCollision(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, reposDirName, "My-Todo-App"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got, err = slugForName("My Todo App")
+	got, err = s.slugForName("My Todo App")
 	if err != nil {
 		t.Fatalf("slugForName (collision): %v", err)
 	}
@@ -53,7 +52,7 @@ func TestSlugForName_SuffixesOnCollision(t *testing.T) {
 		t.Errorf("slug = %q, want My-Todo-App-2", got)
 	}
 
-	if _, err := slugForName("!!!"); err == nil {
+	if _, err := s.slugForName("!!!"); err == nil {
 		t.Error("slugForName with unusable name: err = nil, want error")
 	}
 }

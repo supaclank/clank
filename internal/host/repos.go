@@ -59,9 +59,9 @@ const (
 )
 
 // reposRootDir returns the directory holding the canonical clones
-// (~/work/repos), honoring the test work-root override.
-func reposRootDir() (string, error) {
-	root, err := workRootDir()
+// (<work root>/repos), honoring the work-root overrides.
+func (s *Service) reposRootDir() (string, error) {
+	root, err := s.workRootDir()
 	if err != nil {
 		return "", err
 	}
@@ -69,9 +69,9 @@ func reposRootDir() (string, error) {
 }
 
 // canonicalGitDir returns the bare canonical's path for slug
-// (~/work/repos/<slug>/repo.git).
-func canonicalGitDir(slug string) (string, error) {
-	root, err := reposRootDir()
+// (<work root>/repos/<slug>/repo.git).
+func (s *Service) canonicalGitDir(slug string) (string, error) {
+	root, err := s.reposRootDir()
 	if err != nil {
 		return "", err
 	}
@@ -95,12 +95,12 @@ func slugForImport(owner, repo string) (string, error) {
 // suffixing -2, -3, … on collision with an existing slug dir. Unlike
 // imports there's nothing to be idempotent against — two apps named
 // "todo" are two repos.
-func slugForName(name string) (string, error) {
+func (s *Service) slugForName(name string) (string, error) {
 	base := sanitizeRepoName(name)
 	if base == "" {
 		return "", ErrInvalidRepoName
 	}
-	root, err := reposRootDir()
+	root, err := s.reposRootDir()
 	if err != nil {
 		return "", err
 	}
@@ -206,12 +206,12 @@ type resolvedRepo struct {
 // local-checkout path (repos_local.go) and verified to still be a git
 // repo. ErrRepoNotFound when neither resolves; ErrInvalidArgument for
 // a malformed slug.
-func resolveRepoSlug(slug string) (resolvedRepo, error) {
+func (s *Service) resolveRepoSlug(slug string) (resolvedRepo, error) {
 	if !validSlug(slug) {
 		return resolvedRepo{}, fmt.Errorf("%w: invalid repo slug %q", ErrInvalidArgument, slug)
 	}
 	if len(slug) <= canonicalSlugNameMax {
-		gitDir, err := canonicalGitDir(slug)
+		gitDir, err := s.canonicalGitDir(slug)
 		if err != nil {
 			return resolvedRepo{}, err
 		}

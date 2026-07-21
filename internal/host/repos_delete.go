@@ -27,7 +27,7 @@ import (
 // removeLinkedWorktree — the same order DeleteWorktree uses, so the
 // two can't ABBA-deadlock.
 func (s *Service) DeleteRepo(ctx context.Context, slug string) error {
-	repo, err := resolveRepoSlug(slug)
+	repo, err := s.resolveRepoSlug(slug)
 	if err != nil {
 		return err
 	}

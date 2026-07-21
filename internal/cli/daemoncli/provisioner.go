@@ -93,7 +93,11 @@ func buildLocalProvisioner() (provisioner.Provisioner, func(), error) {
 		// Each laptop daemon has its own host data dir alongside
 		// the daemon's own clank.db. clank-host's --data-dir flag
 		// receives this; it opens host.db inside.
-		DataDir:            filepath.Join(dir, "host"),
+		DataDir: filepath.Join(dir, "host"),
+		// Worktrees + repo canonicals live under the clank config dir
+		// (~/.clank/work), not the sprite-style $HOME/work — the laptop
+		// host shares the user's home and must not litter it.
+		WorkRoot:           filepath.Join(dir, "work"),
 		NotifierWebhookURL: notifierWebhookURL(),
 		PreviewWebhookURL:  previewWebhookURL(),
 		// CLANK_LOCAL_USER_ID must match the sub claim of JWTs the

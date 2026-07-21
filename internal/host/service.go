@@ -55,6 +55,10 @@ type Service struct {
 	projectCommitterEmail string
 	templates             []Template
 
+	// workRoot overrides the $HOME/work parent for worktrees and repo
+	// canonicals. Empty resolves to $HOME/work per call; see workRootDir.
+	workRoot string
+
 	mu       sync.RWMutex
 	sessions map[string]agent.SessionBackend
 	// closed gates new registrations. CreateSession re-checks after
@@ -195,6 +199,13 @@ type Options struct {
 	// user's own GitHub template repos. Empty means no builtin
 	// templates (github-only or none).
 	Templates []Template
+
+	// WorkRoot is the parent directory for worktrees (/<WorktreeID>)
+	// and repo canonicals (/repos). Empty uses $HOME/work — the
+	// dedicated-sandbox default. The local laptop provisioner sets
+	// this to <config dir>/work so the host doesn't drop a work/
+	// directory into the user's home.
+	WorkRoot string
 }
 
 // New creates a Service. Panics on missing BackendManagers — fast
@@ -227,6 +238,7 @@ func New(opts Options) *Service {
 		projectCommitterName:  committerName,
 		projectCommitterEmail: committerEmail,
 		templates:             opts.Templates,
+		workRoot:              opts.WorkRoot,
 		sessions:              make(map[string]agent.SessionBackend),
 		branches:              newBranchCache(opts.BranchCacheTTL, opts.Now),
 		sessionsStore:         opts.SessionsStore,
@@ -851,7 +863,7 @@ func (s *Service) resolveRefDirs(ref agent.GitRef) (base, subdir string, err err
 	if ref.WorktreeID == "" {
 		return "", "", fmt.Errorf("git ref must set at least one of local_path or worktree_id")
 	}
-	root, err := workRootDir()
+	root, err := s.workRootDir()
 	if err != nil {
 		return "", "", err
 	}
@@ -943,18 +955,24 @@ func (s *Service) normalizeGitRef(ref agent.GitRef) (agent.GitRef, error) {
 	return ref, nil
 }
 
-// workRootForTest, when non-empty, overrides the $HOME/work parent
-// for worktrees. Test-only hook — production callers leave this empty
-// and rely on $HOME via os.UserHomeDir(). Avoids t.Setenv in
-// parallel-heavy test packages.
+// workRootForTest, when non-empty, overrides the work-root parent
+// for worktrees. Test-only hook — production configuration goes
+// through Options.WorkRoot. Avoids t.Setenv in parallel-heavy test
+// packages.
 //
 // TODO(coderabbit): add sync.RWMutex if any test ever runs SetWorkRootForTest with t.Parallel()
 // https://github.com/Acksell/clank/pull/16#discussion_r3213461979
 var workRootForTest string
 
-// workRootDir returns $HOME/work — the parent under which worktrees
-// land at /<WorktreeID>/ (and repo canonicals under /repos/).
-func workRootDir() (string, error) {
+// workRootDir returns the parent under which worktrees land at
+// /<WorktreeID>/ (and repo canonicals under /repos/): Options.WorkRoot
+// when set, else the test override, else $HOME/work. Instance-level
+// takes precedence so a parallel test's own s.workRoot can't be
+// clobbered by another test's global workRootForTest.
+func (s *Service) workRootDir() (string, error) {
+	if s.workRoot != "" {
+		return s.workRoot, nil
+	}
 	if workRootForTest != "" {
 		return workRootForTest, nil
 	}
@@ -1467,7 +1485,7 @@ func (s *Service) DeleteWorktree(ctx context.Context, worktreeID string) error {
 	if _, err := ulid.ParseStrict(worktreeID); err != nil {
 		return fmt.Errorf("delete worktree: invalid worktreeID %q", worktreeID)
 	}
-	root, err := workRootDir()
+	root, err := s.workRootDir()
 	if err != nil {
 		return err
 	}

@@ -7,11 +7,10 @@ import (
 	"testing"
 )
 
-// Not parallel: SetWorkRootForTest mutates a package-level override.
 func TestMaterializedWorktreeIDs(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
-	prev := SetWorkRootForTest(root)
-	defer SetWorkRootForTest(prev)
+	s := &Service{workRoot: root}
 
 	// Worktree dirs are ULID-named; only those count.
 	wtA := "01KWABCDEF0123456789ABCDEF"
@@ -33,7 +32,7 @@ func TestMaterializedWorktreeIDs(t *testing.T) {
 		}
 	}
 
-	ids, err := materializedWorktreeIDs()
+	ids, err := s.materializedWorktreeIDs()
 	if err != nil {
 		t.Fatalf("materializedWorktreeIDs: %v", err)
 	}
@@ -45,10 +44,10 @@ func TestMaterializedWorktreeIDs(t *testing.T) {
 
 // A missing work root is "nothing materialized yet", not an error.
 func TestMaterializedWorktreeIDs_NoWorkRoot(t *testing.T) {
-	prev := SetWorkRootForTest(filepath.Join(t.TempDir(), "does-not-exist"))
-	defer SetWorkRootForTest(prev)
+	t.Parallel()
+	s := &Service{workRoot: filepath.Join(t.TempDir(), "does-not-exist")}
 
-	ids, err := materializedWorktreeIDs()
+	ids, err := s.materializedWorktreeIDs()
 	if err != nil {
 		t.Fatalf("materializedWorktreeIDs: %v", err)
 	}

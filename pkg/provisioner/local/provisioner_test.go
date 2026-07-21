@@ -42,10 +42,17 @@ func main() {
 	listen := flag.String("listen", "tcp://127.0.0.1:0", "")
 	_ = flag.String("listen-auth-token", "", "")
 	_ = flag.String("data-dir", "", "")
+	workRoot := flag.String("work-root", "", "")
 	_ = flag.Bool("local-file-attachments", false, "")
 	_ = flag.Bool("gh-cli-auth", false, "")
 	_ = flag.Bool("claude-cli-auth", false, "")
 	flag.Parse()
+	if f := os.Getenv("FAKE_HOST_WORK_ROOT_FILE"); f != "" {
+		if err := os.WriteFile(f, []byte(*workRoot), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "dump work-root:", err)
+			os.Exit(1)
+		}
+	}
 	addr := strings.TrimPrefix(*listen, "tcp://")
 	ln, err := net.Listen("tcp", addr)
 	if err != nil { fmt.Fprintln(os.Stderr, "listen:", err); os.Exit(1) }
@@ -77,6 +84,39 @@ func main() {
 		t.Fatalf("build fake host: %v\n%s", err, out)
 	}
 	return binPath
+}
+
+// TestEnsureHost_PassesWorkRoot: Options.WorkRoot must reach the child
+// as --work-root (and the directory must exist before spawn) — the
+// laptop daemon relies on this to keep worktrees under the clank
+// config dir instead of the sprite-style $HOME/work.
+func TestEnsureHost_PassesWorkRoot(t *testing.T) {
+	// No t.Parallel: t.Setenv is incompatible with parallel tests.
+	bin := fakeHostBin(t)
+	workRoot := filepath.Join(t.TempDir(), "clank-work")
+	dumpFile := filepath.Join(t.TempDir(), "work-root.txt")
+	t.Setenv("FAKE_HOST_WORK_ROOT_FILE", dumpFile)
+
+	p := local.New(local.Options{
+		BinPath:          bin,
+		WorkRoot:         workRoot,
+		ProvisionTimeout: 5 * time.Second,
+	}, nil)
+	t.Cleanup(p.Stop)
+
+	if _, err := p.EnsureHost(context.Background(), ""); err != nil {
+		t.Fatalf("EnsureHost: %v", err)
+	}
+	if fi, err := os.Stat(workRoot); err != nil || !fi.IsDir() {
+		t.Errorf("work root %q not created before spawn: stat err=%v", workRoot, err)
+	}
+	got, err := os.ReadFile(dumpFile)
+	if err != nil {
+		t.Fatalf("read child's --work-root dump: %v", err)
+	}
+	if string(got) != workRoot {
+		t.Errorf("child received --work-root %q, want %q", got, workRoot)
+	}
 }
 
 // TestDestroyHostsByUser_NoChildIsNoOp: account erasure on the local
