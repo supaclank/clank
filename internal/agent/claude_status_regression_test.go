@@ -133,3 +133,105 @@ func TestSendDispatchFailure_EmitsErrorReason(t *testing.T) {
 		t.Errorf("status after failed dispatch: got %s, want %s", got, agent.StatusError)
 	}
 }
+
+// TestSelfInitiatedTurn_StreamFlipsBusyThenIdle pins the background-task
+// status contract. When the agent spawns a background task (run_in_background
+// Bash/Agent, Workflow), its turn ends immediately — result → StatusIdle —
+// and the CLI later re-invokes the model ON ITS OWN when the task completes.
+// No Send precedes that follow-up turn, and setStatus dedupes the terminating
+// idle→idle, so before the markModelActive hook the entire re-invoked turn
+// streamed with ZERO status frames: clients showed no spinner and no Stop
+// button, and kept Send enabled against a working agent.
+//
+// The first message_start of the self-initiated turn must flip idle → Busy,
+// and its result must settle Busy → Idle — real transitions on the wire for
+// both edges.
+func TestSelfInitiatedTurn_StreamFlipsBusyThenIdle(t *testing.T) {
+	t.Parallel()
+
+	const sessionID = "claude-bg-reinvoke-stream"
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.SystemMessage{
+			MessageType: "system",
+			Subtype:     "init",
+			Data:        map[string]any{"session_id": sessionID},
+		},
+		// Turn 1 ends the moment the background task is spawned.
+		&claudecode.ResultMessage{MessageType: "result", SessionID: sessionID},
+		// Background task finished — the harness re-invokes the model.
+		// message_start is the first wire signal; nothing else announces it.
+		&claudecode.StreamEvent{
+			SessionID: sessionID,
+			Event: map[string]any{
+				"type":    "message_start",
+				"message": map[string]any{"id": "msg_reinvoke"},
+			},
+		},
+		&claudecode.ResultMessage{MessageType: "result", SessionID: sessionID},
+	})
+	b := newTestBackend(t, transport)
+	defer b.Stop()
+
+	ch := b.Events()
+	if err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{Text: "run the tests in the background"}); err != nil {
+		t.Fatalf("OpenAndSend: %v", err)
+	}
+	// Turn 1 settles while the background task runs.
+	waitForStatus(t, ch, agent.StatusIdle, 5*time.Second)
+
+	// The self-initiated turn must surface as a genuine idle→busy edge…
+	events := waitForStatus(t, ch, agent.StatusBusy, 5*time.Second)
+	last := events[len(events)-1]
+	if d, ok := last.Data.(agent.StatusChangeData); !ok || d.OldStatus != agent.StatusIdle {
+		t.Fatalf("busy transition should come from idle, got %+v", last.Data)
+	}
+	// …and settle back to idle when its result lands.
+	waitForStatus(t, ch, agent.StatusIdle, 5*time.Second)
+	if got := b.Status(); got != agent.StatusIdle {
+		t.Fatalf("status after self-initiated turn: got %s, want %s", got, agent.StatusIdle)
+	}
+}
+
+// TestSelfInitiatedTurn_AssistantMessageFlipsBusy is the no-partial-streaming
+// variant of the test above: if stream events are unavailable, the full
+// AssistantMessage snapshot is the first assistant-origin signal and must
+// flip idle → Busy itself.
+func TestSelfInitiatedTurn_AssistantMessageFlipsBusy(t *testing.T) {
+	t.Parallel()
+
+	const sessionID = "claude-bg-reinvoke-snapshot"
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.SystemMessage{
+			MessageType: "system",
+			Subtype:     "init",
+			Data:        map[string]any{"session_id": sessionID},
+		},
+		&claudecode.ResultMessage{MessageType: "result", SessionID: sessionID},
+		// Self-initiated turn delivered as a full snapshot, no stream events.
+		&claudecode.AssistantMessage{
+			MessageType: "assistant",
+			Content: []claudecode.ContentBlock{
+				&claudecode.TextBlock{
+					MessageType: "text",
+					Text:        "The background tests finished — all green.",
+				},
+			},
+		},
+		&claudecode.ResultMessage{MessageType: "result", SessionID: sessionID},
+	})
+	b := newTestBackend(t, transport)
+	defer b.Stop()
+
+	ch := b.Events()
+	if err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{Text: "run the tests in the background"}); err != nil {
+		t.Fatalf("OpenAndSend: %v", err)
+	}
+	waitForStatus(t, ch, agent.StatusIdle, 5*time.Second)
+
+	events := waitForStatus(t, ch, agent.StatusBusy, 5*time.Second)
+	last := events[len(events)-1]
+	if d, ok := last.Data.(agent.StatusChangeData); !ok || d.OldStatus != agent.StatusIdle {
+		t.Fatalf("busy transition should come from idle, got %+v", last.Data)
+	}
+	waitForStatus(t, ch, agent.StatusIdle, 5*time.Second)
+}

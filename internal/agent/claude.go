@@ -984,7 +984,35 @@ func (b *ClaudeCodeBackend) handleSystemMessage(m *claudecode.SystemMessage) {
 	}
 }
 
+// markModelActive flips an idle (or error) session back to Busy when model
+// output arrives outside a host-initiated turn. Claude Code re-invokes itself
+// when a background task (run_in_background Bash/Agent, Workflow) completes:
+// the turn that spawned the task already ended (result → StatusIdle) and no
+// Send precedes the follow-up turn — so without this flip the entire
+// re-invoked turn streams while the session still reads idle (setStatus
+// dedupes the terminating idle→idle, so clients get ZERO status frames:
+// no spinner, no Stop, and Send stays enabled against a working agent).
+//
+// Safe by construction: model output is always terminated by a ResultMessage
+// (handleResult restores idle/error), so the flip can't strand the session
+// Busy. Only assistant-origin signals call this — user-role tool_result
+// echoes must NOT, since a post-abort straggler would then flip Busy with no
+// result to settle it. Starting is left alone (Open's handshake owns it) and
+// Dead is unreachable here (receiveLoop has exited by then).
+func (b *ClaudeCodeBackend) markModelActive() {
+	b.mu.Lock()
+	st := b.status
+	b.mu.Unlock()
+	if st == StatusIdle || st == StatusError {
+		b.setStatus(StatusBusy)
+	}
+}
+
 func (b *ClaudeCodeBackend) handleAssistantMessage(m *claudecode.AssistantMessage) {
+	// Model output while the session reads idle = a self-initiated turn
+	// (background-task re-invocation). Normally a no-op — Send already set
+	// Busy — and when streaming is on, message_start beat us to it.
+	b.markModelActive()
 	// Emit a content-less shell — matching the OpenCode pattern.
 	// The TUI ignores EventMessage content after history loads, and new
 	// content arrives exclusively via EventPartUpdate from streaming deltas
@@ -1054,6 +1082,11 @@ func (b *ClaudeCodeBackend) handleStreamEvent(m *claudecode.StreamEvent) {
 
 	switch eventType {
 	case claudecode.StreamEventTypeMessageStart:
+		// Earliest wire signal that the model is producing output. For a
+		// turn the CLI started on its own (background task finished →
+		// harness re-invocation) this is what flips idle → Busy; for a
+		// host-initiated turn Send already set Busy and this is a no-op.
+		b.markModelActive()
 		// Extract the Anthropic API message ID (e.g. "msg_01XFD...") from the
 		// nested message object. Each API call produces a unique message ID,
 		// so this changes on every message cycle (including within a single turn
