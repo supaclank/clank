@@ -829,7 +829,7 @@ func listAnthropicProviders(t *testing.T, a *AuthManager) (sub, api agent.Provid
 // the spawned claude keeps resolving its own credential.
 func TestAuthManager_ListProviders_ClaudeCLIFallback(t *testing.T) {
 	// Not parallel: t.Setenv (PATH).
-	putFakeSecurity(t, `[ "$1" = "find-generic-password" ] && exit 0; exit 1`)
+	putFakeSecurity(t, `if [ "$1" = "find-generic-password" ] || [ "$1" = "show-keychain-info" ]; then exit 0; fi; exit 1`)
 	a, _ := newTestAuthManager(t)
 	a.EnableClaudeCLIFallback()
 

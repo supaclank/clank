@@ -25,15 +25,20 @@ const claudeKeychainService = "Claude Code-credentials"
 // network.
 const claudeKeychainProbeTimeout = 3 * time.Second
 
+// lookPath resolves the security binary; a package var so tests can
+// simulate its absence without mutating the process-wide PATH (which
+// would race with unrelated t.Parallel() tests that spawn git).
+var lookPath = exec.LookPath
+
 // claudeCLILoginPresent reports whether the machine's claude CLI has a
 // stored login the spawned claude would pick up on its own. False on
 // any probe failure — for the status fallback that's an ordinary "no
 // credential here", not a fault to surface.
-func claudeCLILoginPresent(homeDir string) bool {
+func claudeCLILoginPresent(ctx context.Context, homeDir string) bool {
 	if claudeCredentialsFileExists(homeDir) {
 		return true
 	}
-	return claudeKeychainEntryExists()
+	return claudeKeychainEntryExists(ctx)
 }
 
 // claudeCredentialsFileExists checks the claude CLI's file-based
@@ -46,15 +51,22 @@ func claudeCredentialsFileExists(homeDir string) bool {
 
 // claudeKeychainEntryExists probes the macOS Keychain for the claude
 // CLI's credential item. Exit code only — without -w, `security` does
-// a metadata search: no secret bytes are read and no unlock prompt
-// fires. On platforms without `security` the probe is skipped.
-func claudeKeychainEntryExists() bool {
-	path, err := exec.LookPath("security")
+// a metadata search: no secret bytes are read. A locked keychain is
+// checked first via show-keychain-info, since find-generic-password on
+// a locked keychain triggers a disruptive GUI unlock prompt.
+// On platforms without `security` the probe is skipped.
+func claudeKeychainEntryExists(ctx context.Context) bool {
+	path, err := lookPath("security")
 	if err != nil {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), claudeKeychainProbeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, claudeKeychainProbeTimeout)
 	defer cancel()
+
+	if exec.CommandContext(ctx, path, "show-keychain-info").Run() != nil {
+		return false // locked (or unreadable) — avoid the unlock prompt
+	}
+
 	cmd := exec.CommandContext(ctx, path, "find-generic-password", "-s", claudeKeychainService)
 	// Attribute output includes the account label (often an email) —
 	// discard it; only found/not-found matters.

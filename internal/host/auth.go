@@ -307,7 +307,7 @@ func (a *AuthManager) AnthropicEnv() map[string]string {
 // opencode-session compose flow doesn't surface "Anthropic (Claude
 // subscription)", and a claude-code-session flow doesn't surface
 // "GitHub Copilot"). Empty backend returns the full catalog.
-func (a *AuthManager) ListProviders(_ context.Context, backend agent.BackendType) ([]agent.ProviderAuthInfo, error) {
+func (a *AuthManager) ListProviders(ctx context.Context, backend agent.BackendType) ([]agent.ProviderAuthInfo, error) {
 	store, err := a.readAuthJSON()
 	if err != nil {
 		return nil, err
@@ -335,7 +335,7 @@ func (a *AuthManager) ListProviders(_ context.Context, backend agent.BackendType
 		case a.envCredentialPresent(p.ProviderID):
 			p.Connected = true
 			p.Source = agent.CredentialSourceEnv
-		case p.ProviderID == ProviderAnthropicClaudeCode && a.claudeCLIFallback && claudeCLILoginPresent(a.homeDir):
+		case p.ProviderID == ProviderAnthropicClaudeCode && a.claudeCLIFallback && claudeCLILoginPresent(ctx, a.homeDir):
 			p.Connected = true
 			p.Source = agent.CredentialSourceClaudeCLI
 		}

@@ -1,7 +1,9 @@
 package host
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -39,17 +41,17 @@ func TestClaudeCLILoginPresent_CredentialsFile(t *testing.T) {
 	home := t.TempDir()
 	writeClaudeCredentialsFile(t, home, `{"claudeAiOauth":{}}`)
 
-	if !claudeCLILoginPresent(home) {
+	if !claudeCLILoginPresent(context.Background(), home) {
 		t.Error("want present=true with a non-empty ~/.claude/.credentials.json")
 	}
 }
 
 func TestClaudeCLILoginPresent_KeychainEntry(t *testing.T) {
 	// Not parallel: t.Setenv (PATH).
-	putFakeSecurity(t, `[ "$1" = "find-generic-password" ] && exit 0; exit 1`)
+	putFakeSecurity(t, `if [ "$1" = "find-generic-password" ] || [ "$1" = "show-keychain-info" ]; then exit 0; fi; exit 1`)
 
 	// Empty home: only the keychain probe can answer.
-	if !claudeCLILoginPresent(t.TempDir()) {
+	if !claudeCLILoginPresent(context.Background(), t.TempDir()) {
 		t.Error("want present=true when the keychain probe finds the entry")
 	}
 }
@@ -58,7 +60,7 @@ func TestClaudeCLILoginPresent_NoLoginAnywhere(t *testing.T) {
 	// Not parallel: t.Setenv (PATH).
 	putFakeSecurity(t, `exit 44`)
 
-	if claudeCLILoginPresent(t.TempDir()) {
+	if claudeCLILoginPresent(context.Background(), t.TempDir()) {
 		t.Error("want present=false with no file and no keychain entry")
 	}
 }
@@ -69,19 +71,21 @@ func TestClaudeCLILoginPresent_EmptyCredentialsFile(t *testing.T) {
 	home := t.TempDir()
 	writeClaudeCredentialsFile(t, home, "")
 
-	if claudeCLILoginPresent(home) {
+	if claudeCLILoginPresent(context.Background(), home) {
 		t.Error("want present=false for a zero-byte credentials file")
 	}
 }
 
 func TestClaudeKeychainEntryExists_NoSecurityBinary(t *testing.T) {
-	// Not parallel: t.Setenv (PATH).
-	// PATH with only an empty dir: LookPath("security") must miss, and
-	// the probe must degrade to false instead of erroring (the Linux
-	// laptop case).
-	t.Setenv("PATH", t.TempDir())
+	t.Parallel()
+	// Override the lookPath seam instead of mutating PATH — this
+	// package has unrelated t.Parallel() tests that spawn git, and
+	// clobbering process-wide PATH would race with them.
+	orig := lookPath
+	lookPath = func(string) (string, error) { return "", exec.ErrNotFound }
+	t.Cleanup(func() { lookPath = orig })
 
-	if claudeKeychainEntryExists() {
+	if claudeKeychainEntryExists(context.Background()) {
 		t.Error("want present=false when no security binary exists")
 	}
 }
