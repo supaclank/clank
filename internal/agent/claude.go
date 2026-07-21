@@ -997,14 +997,31 @@ func (b *ClaudeCodeBackend) handleSystemMessage(m *claudecode.SystemMessage) {
 // (handleResult restores idle/error), so the flip can't strand the session
 // Busy. Only assistant-origin signals call this — user-role tool_result
 // echoes must NOT, since a post-abort straggler would then flip Busy with no
-// result to settle it. Starting is left alone (Open's handshake owns it) and
-// Dead is unreachable here (receiveLoop has exited by then).
+// result to settle it. Starting is left alone (Open's handshake owns it).
+//
+// The check-and-set happens under one lock cycle, not via setStatus (which
+// would re-acquire the lock after the read): Revert can have a new
+// receiveLoop's markModelActive racing the old receiveLoop's tail marking the
+// session Dead, and a split lock would let the flip land after Dead and
+// resurrect a dead session to Busy.
 func (b *ClaudeCodeBackend) markModelActive() {
 	b.mu.Lock()
-	st := b.status
+	old := b.status
+	changed := old == StatusIdle || old == StatusError
+	if changed {
+		b.status = StatusBusy
+	}
 	b.mu.Unlock()
-	if st == StatusIdle || st == StatusError {
-		b.setStatus(StatusBusy)
+
+	if changed {
+		b.emit(Event{
+			Type:      EventStatusChange,
+			Timestamp: time.Now(),
+			Data: StatusChangeData{
+				OldStatus: old,
+				NewStatus: StatusBusy,
+			},
+		})
 	}
 }
 
