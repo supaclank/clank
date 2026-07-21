@@ -105,7 +105,7 @@ type RepoOverviewResult struct {
 // refs/remotes/origin/* first (one authed fetch; a no-op for
 // unpublished repos). ErrRepoNotFound for an unknown slug.
 func (s *Service) RepoOverview(ctx context.Context, slug string, fetch bool) (RepoOverviewResult, error) {
-	repo, err := resolveRepoSlug(slug)
+	repo, err := s.resolveRepoSlug(slug)
 	if err != nil {
 		return RepoOverviewResult{}, err
 	}
