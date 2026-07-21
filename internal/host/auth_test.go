@@ -430,6 +430,9 @@ func TestAuthManager_ListProviders_IncludesEntireCatalog(t *testing.T) {
 	if !openai.Connected {
 		t.Errorf("expected openai connected after writing")
 	}
+	if openai.Source != agent.CredentialSourceStore {
+		t.Errorf("openai Source=%q, want %q", openai.Source, agent.CredentialSourceStore)
+	}
 	if copilot.Connected {
 		t.Errorf("expected github-copilot disconnected (not written)")
 	}
@@ -781,8 +784,102 @@ func TestAuthManager_ListProviders_AnthropicConnectedState(t *testing.T) {
 	if !sub.Connected {
 		t.Errorf("anthropic-claude-code should be Connected after write")
 	}
+	if sub.Source != agent.CredentialSourceStore {
+		t.Errorf("Source=%q, want %q for a sink-stored credential", sub.Source, agent.CredentialSourceStore)
+	}
 	if api.Connected {
 		t.Errorf("anthropic-api should not be Connected when only subscription token is set")
+	}
+	if api.Source != "" {
+		t.Errorf("Source=%q, want empty when disconnected", api.Source)
+	}
+}
+
+// listAnthropicProviders returns the two Anthropic catalog entries
+// from a full ListProviders call.
+func listAnthropicProviders(t *testing.T, a *AuthManager) (sub, api agent.ProviderAuthInfo) {
+	t.Helper()
+	infos, err := a.ListProviders(context.Background(), "")
+	if err != nil {
+		t.Fatalf("ListProviders: %v", err)
+	}
+	for _, p := range infos {
+		switch p.ProviderID {
+		case ProviderAnthropicClaudeCode:
+			sub = p
+		case ProviderAnthropicAPI:
+			api = p
+		}
+	}
+	return sub, api
+}
+
+// With the fallback enabled and an empty sink, a machine-local claude
+// login must surface as connected (source claude_cli) on the
+// subscription provider only — and must NOT start injecting env vars:
+// the spawned claude keeps resolving its own credential.
+func TestAuthManager_ListProviders_ClaudeCLIFallback(t *testing.T) {
+	// Not parallel: t.Setenv (PATH).
+	putFakeSecurity(t, `[ "$1" = "find-generic-password" ] && exit 0; exit 1`)
+	a, _ := newTestAuthManager(t)
+	a.EnableClaudeCLIFallback()
+
+	sub, api := listAnthropicProviders(t, a)
+	if !sub.Connected || sub.Source != agent.CredentialSourceClaudeCLI {
+		t.Errorf("sub = connected=%v source=%q, want connected via %s", sub.Connected, sub.Source, agent.CredentialSourceClaudeCLI)
+	}
+	if api.Connected {
+		t.Errorf("anthropic-api should not report the borrowed subscription login")
+	}
+	if env := a.AnthropicEnv(); env != nil {
+		t.Errorf("AnthropicEnv() = %v, want nil — the fallback is status-only", env)
+	}
+}
+
+// The fallback is a wiring decision (local laptop provisioner). Left
+// disabled — the sprite default — a machine-local claude login must
+// not leak into provider status.
+func TestAuthManager_ListProviders_ClaudeCLIFallbackDisabled(t *testing.T) {
+	// Not parallel: t.Setenv (PATH).
+	putFakeSecurity(t, `exit 0`)
+	a, _ := newTestAuthManager(t)
+
+	sub, _ := listAnthropicProviders(t, a)
+	if sub.Connected || sub.Source != "" {
+		t.Errorf("sub = connected=%v source=%q, want disconnected with the fallback off", sub.Connected, sub.Source)
+	}
+}
+
+// An explicit clank connection must win over the borrowed login: the
+// user connected through clank, so status says store — which also
+// keeps the disconnect affordance meaningful.
+func TestAuthManager_ListProviders_StoreWinsOverClaudeCLI(t *testing.T) {
+	// Not parallel: t.Setenv (PATH).
+	putFakeSecurity(t, `exit 0`)
+	a, _ := newTestAuthManager(t)
+	a.EnableClaudeCLIFallback()
+	if err := a.writeAnthropicCredential(ProviderAnthropicClaudeCode, "tok"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	sub, _ := listAnthropicProviders(t, a)
+	if !sub.Connected || sub.Source != agent.CredentialSourceStore {
+		t.Errorf("sub = connected=%v source=%q, want connected via %s", sub.Connected, sub.Source, agent.CredentialSourceStore)
+	}
+}
+
+// The credentials-file variant of the fallback: no keychain entry, but
+// ~/.claude/.credentials.json exists in the manager's home.
+func TestAuthManager_ListProviders_ClaudeCLIFallback_CredentialsFile(t *testing.T) {
+	// Not parallel: t.Setenv (PATH).
+	putFakeSecurity(t, `exit 44`)
+	a, home := newTestAuthManager(t)
+	a.EnableClaudeCLIFallback()
+	writeClaudeCredentialsFile(t, home, `{"claudeAiOauth":{}}`)
+
+	sub, _ := listAnthropicProviders(t, a)
+	if !sub.Connected || sub.Source != agent.CredentialSourceClaudeCLI {
+		t.Errorf("sub = connected=%v source=%q, want connected via %s", sub.Connected, sub.Source, agent.CredentialSourceClaudeCLI)
 	}
 }
 

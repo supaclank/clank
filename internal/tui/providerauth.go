@@ -624,7 +624,13 @@ func (m providerAuthModel) View() string {
 				}
 				status := lipgloss.NewStyle().Foreground(dimColor).Render("not connected")
 				if p.Connected {
-					status = lipgloss.NewStyle().Foreground(successColor).Render("connected")
+					label := "connected"
+					if p.Source == agent.CredentialSourceClaudeCLI {
+						// Borrowed from the machine's own claude login;
+						// clank can't disconnect it — say where it's from.
+						label = "connected (claude cli)"
+					}
+					status = lipgloss.NewStyle().Foreground(successColor).Render(label)
 				}
 				row := fmt.Sprintf("%s%s", prefix, labelStyle.Render(p.DisplayName))
 				gap := innerWidth - lipgloss.Width(row) - lipgloss.Width(status) - 2

@@ -89,6 +89,7 @@ func main() {
 	templatesJSON := flag.String("templates-json", os.Getenv("CLANK_TEMPLATES"), "JSON array of builtin create-project templates ([{\"display_name\":...,\"clone_url\":...}]). Served by GET /templates alongside the user's GitHub template repos. Empty disables builtin templates. Defaults to $CLANK_TEMPLATES.")
 	localFileAttachments := flag.Bool("local-file-attachments", false, "Honor file:// image attachment sources (the client shares this host's filesystem). Set by the local laptop provisioner; off for remote sprites so a message can't make the host read arbitrary local paths.")
 	ghCLIAuth := flag.Bool("gh-cli-auth", false, "Resolve GitHub tokens from the machine's gh CLI login (gh auth token) when no clank GitHub connection exists. Set by the local laptop provisioner; off for remote sprites, which have no gh login to borrow.")
+	claudeCLIAuth := flag.Bool("claude-cli-auth", false, "Report the machine's own claude CLI login (Keychain / ~/.claude/.credentials.json) as a connected Anthropic provider when no clank connection exists — presence detection only, the credential is never read. Set by the local laptop provisioner; off for remote sprites, which have no claude login to borrow.")
 	flag.Parse()
 
 	if *socket == "" && *listen == "" {
@@ -133,6 +134,7 @@ func main() {
 		previewWebhookURL:     *previewWebhookURL,
 		githubOAuthClientID:   *githubOAuthClientID,
 		ghCLIAuth:             *ghCLIAuth,
+		claudeCLIAuth:         *claudeCLIAuth,
 		projectCommitterName:  *projectCommitterName,
 		projectCommitterEmail: *projectCommitterEmail,
 	}
@@ -158,6 +160,7 @@ type runConfig struct {
 	previewWebhookURL     string
 	githubOAuthClientID   string
 	ghCLIAuth             bool
+	claudeCLIAuth         bool
 	projectCommitterName  string
 	projectCommitterEmail string
 }
@@ -357,16 +360,17 @@ func run(cfg runConfig) error {
 			agent.BackendOpenCode:   host.NewOpenCodeBackendManager(),
 			agent.BackendClaudeCode: host.NewClaudeBackendManager(),
 		},
-		Log:                   lg,
-		Templates:             templates,
-		SessionsStore:         hostStore,
-		KeepaliveListener:     keepaliveListener,
-		NotifierLoop:          notifierLoop,
-		PreviewGWClient:       gwClient,
-		GitHubOAuthClientID:   cfg.githubOAuthClientID,
-		GitHubGhCLIAuth:       cfg.ghCLIAuth,
-		ProjectCommitterName:  cfg.projectCommitterName,
-		ProjectCommitterEmail: cfg.projectCommitterEmail,
+		Log:                    lg,
+		Templates:              templates,
+		SessionsStore:          hostStore,
+		KeepaliveListener:      keepaliveListener,
+		NotifierLoop:           notifierLoop,
+		PreviewGWClient:        gwClient,
+		GitHubOAuthClientID:    cfg.githubOAuthClientID,
+		GitHubGhCLIAuth:        cfg.ghCLIAuth,
+		AnthropicClaudeCLIAuth: cfg.claudeCLIAuth,
+		ProjectCommitterName:   cfg.projectCommitterName,
+		ProjectCommitterEmail:  cfg.projectCommitterEmail,
 	})
 	if keepaliveListener != nil {
 		lg.Printf("keepalive provider: %s", cfg.keepaliveProvider)

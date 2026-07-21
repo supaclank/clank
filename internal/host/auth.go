@@ -177,6 +177,12 @@ type AuthManager struct {
 	// loop. Tests can replace via SetHTTPClient. Default has a sane
 	// timeout so a hung GitHub doesn't lock the goroutine forever.
 	httpc *http.Client
+
+	// claudeCLIFallback lets ListProviders report the machine's own
+	// claude CLI login as a connected Anthropic provider when the sink
+	// is empty. Set once at wiring time via EnableClaudeCLIFallback,
+	// before the manager serves requests.
+	claudeCLIFallback bool
 }
 
 // NewAuthManager constructs an AuthManager. Resolves $HOME via
@@ -202,6 +208,17 @@ func (a *AuthManager) SetHTTPClient(c *http.Client) {
 		a.httpc = c
 	}
 }
+
+// EnableClaudeCLIFallback lets ListProviders report the machine's own
+// claude CLI login (Keychain / ~/.claude/.credentials.json) as a
+// connected subscription provider when the anthropic sink is empty. A
+// deployment decision, not a default: the local laptop provisioner
+// enables it — the host IS the user's machine, where AnthropicEnv
+// already returns nil and the spawned claude uses that login anyway —
+// while sandboxes keep connection state explicit. Presence-only: the
+// credential itself is never read. Call once at wiring time, before
+// the manager serves requests.
+func (a *AuthManager) EnableClaudeCLIFallback() { a.claudeCLIFallback = true }
 
 // AuthJSONPath is where OpenCode stores credentials inside this host.
 // Exposed for tests and verification probes.
@@ -255,7 +272,9 @@ func (a *AuthManager) AnthropicAPIKey() string {
 // precedence resolution never kicks in.
 //
 // Returns nil when no Anthropic provider is connected, so claude
-// falls back to its own keychain/OAuth login flow.
+// falls back to its own keychain/OAuth login flow. On laptop hosts,
+// ListProviders' claude CLI fallback reports that borrowed login in
+// provider status (see claude_cli.go).
 func (a *AuthManager) AnthropicEnv() map[string]string {
 	sink, err := a.readAnthropicSink()
 	if err != nil || (sink.OAuthToken == "" && sink.APIKey == "") {
@@ -270,12 +289,15 @@ func (a *AuthManager) AnthropicEnv() map[string]string {
 // ListProviders returns the providers this host knows how to
 // authenticate, with their current connection state read from the
 // appropriate sink — opencode's auth.json for OpenCode providers,
-// our anthropic.json for Anthropic providers. When backend is
-// non-empty, the result is filtered to providers that target that
-// agent CLI (so an opencode-session compose flow doesn't surface
-// "Anthropic (Claude subscription)", and a claude-code-session
-// flow doesn't surface "GitHub Copilot"). Empty backend returns
-// the full catalog.
+// our anthropic.json for Anthropic providers. Connected entries carry
+// Source; with the claude CLI fallback enabled, an empty sink on a
+// machine with its own claude login still reports the subscription
+// provider connected (source claude_cli), so clients don't prompt a
+// connect that would change nothing. When backend is non-empty, the
+// result is filtered to providers that target that agent CLI (so an
+// opencode-session compose flow doesn't surface "Anthropic (Claude
+// subscription)", and a claude-code-session flow doesn't surface
+// "GitHub Copilot"). Empty backend returns the full catalog.
 func (a *AuthManager) ListProviders(_ context.Context, backend agent.BackendType) ([]agent.ProviderAuthInfo, error) {
 	store, err := a.readAuthJSON()
 	if err != nil {
@@ -293,10 +315,17 @@ func (a *AuthManager) ListProviders(_ context.Context, backend agent.BackendType
 		switch p.ProviderID {
 		case ProviderAnthropicClaudeCode:
 			p.Connected = sink.OAuthToken != ""
+			if !p.Connected && a.claudeCLIFallback && claudeCLILoginPresent(a.homeDir) {
+				p.Connected = true
+				p.Source = agent.CredentialSourceClaudeCLI
+			}
 		case ProviderAnthropicAPI:
 			p.Connected = sink.APIKey != ""
 		default:
 			p.Connected = store[p.ProviderID].Type != ""
+		}
+		if p.Connected && p.Source == "" {
+			p.Source = agent.CredentialSourceStore
 		}
 		infos = append(infos, p)
 	}

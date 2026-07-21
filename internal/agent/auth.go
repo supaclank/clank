@@ -75,6 +75,20 @@ const (
 	AuthTypeOAuthCode = "oauth-code"
 )
 
+// CredentialSource values for ProviderAuthInfo.Source.
+const (
+	// CredentialSourceStore is a credential clank stored itself (the
+	// anthropic sink or opencode's auth.json) — connected and
+	// disconnectable through clank.
+	CredentialSourceStore = "store"
+	// CredentialSourceClaudeCLI means no stored credential, but the
+	// machine's own claude CLI login exists and the spawned claude
+	// will use it (laptop hosts only). clank stores nothing and cannot
+	// disconnect it — that's `claude /logout`'s job — so clients
+	// should hide the disconnect affordance for this source.
+	CredentialSourceClaudeCLI = "claude_cli"
+)
+
 // ProviderAuthInfo is the snapshot a client gets from
 // GET /auth/providers. AuthType selects which begin-flow the client
 // dispatches to; Backend identifies which agent CLI actually consumes
@@ -90,6 +104,7 @@ type ProviderAuthInfo struct {
 	AuthType    string           `json:"auth_type"`
 	Backend     BackendType      `json:"backend"`
 	Connected   bool             `json:"connected"`
+	Source      string           `json:"source,omitempty"` // CredentialSource* when connected
 	Prompts     []ProviderPrompt `json:"prompts,omitempty"`
 }
 
