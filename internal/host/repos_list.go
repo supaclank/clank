@@ -59,7 +59,7 @@ type RepoInfo struct {
 // repo.git (torn creation) are skipped; worktree entries whose dir has
 // vanished (manual rm — prunable bookkeeping) are filtered out.
 func (s *Service) ListRepos(ctx context.Context) ([]RepoInfo, error) {
-	root, err := reposRootDir()
+	root, err := s.reposRootDir()
 	if err != nil {
 		return nil, err
 	}

@@ -43,6 +43,13 @@ type Options struct {
 	// Empty → clank-host uses its own default ($HOME/.clank-host).
 	DataDir string
 
+	// WorkRoot is passed to clank-host as --work-root — the parent for
+	// worktrees and repo canonicals. Empty → clank-host uses its own
+	// default ($HOME/work, the dedicated-sandbox layout). Laptop
+	// deployments set this under the user's clank config dir so the
+	// host doesn't drop a work/ directory into their home.
+	WorkRoot string
+
 	// ProvisionTimeout caps how long EnsureHost waits for the child
 	// to print its bound listen address. Default: 10 seconds.
 	ProvisionTimeout time.Duration
@@ -179,9 +186,15 @@ func (p *Provisioner) EnsureHost(_ context.Context, _ string) (provisioner.HostR
 	}
 	if p.opts.DataDir != "" {
 		if err := os.MkdirAll(p.opts.DataDir, 0o700); err != nil {
-			return provisioner.HostRef{}, fmt.Errorf("create data dir %s: %w", p.opts.DataDir, err)
+			return provisioner.HostRef{}, fmt.Errorf("create data dir %q: %w", p.opts.DataDir, err)
 		}
 		args = append(args, "--data-dir", p.opts.DataDir)
+	}
+	if p.opts.WorkRoot != "" {
+		if err := os.MkdirAll(p.opts.WorkRoot, 0o700); err != nil {
+			return provisioner.HostRef{}, fmt.Errorf("create work root %q: %w", p.opts.WorkRoot, err)
+		}
+		args = append(args, "--work-root", p.opts.WorkRoot)
 	}
 	if notifierToken != "" {
 		args = append(args, "--notifier-webhook-token", notifierToken)

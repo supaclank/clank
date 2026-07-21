@@ -49,7 +49,7 @@ func (s *Service) CreateRepoWorktree(ctx context.Context, slug string, req RepoW
 			return RepoWorktreeResult{}, fmt.Errorf("%w: invalid branch %q", ErrInvalidArgument, b)
 		}
 	}
-	repo, err := resolveRepoSlug(slug)
+	repo, err := s.resolveRepoSlug(slug)
 	if err != nil {
 		return RepoWorktreeResult{}, err
 	}
@@ -141,7 +141,7 @@ func resolveRepoRef(gitDir, branch string) (string, error) {
 // branch at baseRef and link its worktree at ~/work/<newULID>. No
 // idempotency arm — the petname is freshly minted under the repo lock.
 func (s *Service) addRepoWorktreeNewBranch(ctx context.Context, slug, gitDir string, localCheckout bool, branch, baseRef string) (RepoWorktreeResult, error) {
-	root, err := workRootDir()
+	root, err := s.workRootDir()
 	if err != nil {
 		return RepoWorktreeResult{}, err
 	}

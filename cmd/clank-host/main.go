@@ -78,6 +78,7 @@ func main() {
 	listen := flag.String("listen", "", "Listener address: tcp://host:port (use :0 for auto-pick) or unix:///path. Mutually exclusive with --socket.")
 	listenAuthToken := flag.String("listen-auth-token", os.Getenv("CLANK_HOST_AUTH_TOKEN"), "Bearer token required on every HTTP request. Empty disables the check (laptop-local mode). Defaults to $CLANK_HOST_AUTH_TOKEN.")
 	dataDir := flag.String("data-dir", os.Getenv("CLANK_HOST_DATA_DIR"), "Directory for host-side persistent state (host.db). Defaults to $CLANK_HOST_DATA_DIR; if neither is set, falls back to $HOME/.clank-host. PR 3+ stores session metadata here.")
+	workRoot := flag.String("work-root", os.Getenv("CLANK_WORK_ROOT"), "Parent directory for worktrees (/<id>) and repo canonicals (/repos). Empty uses $HOME/work — the dedicated-sandbox default. The local laptop provisioner sets this under the user's clank config dir so worktrees stay out of $HOME. Defaults to $CLANK_WORK_ROOT.")
 	keepaliveProvider := flag.String("keepalive-provider", envDefault("CLANK_KEEPALIVE_PROVIDER", keepaliveProviderNone), "Provider that receives keepalive Ticks while sessions emit events: 'sprites' (Fly Sprites Tasks API), 'exit' (shut down when idle — machine-style sandboxes), 'noop' (debug), or 'none' (disabled — laptop default). Defaults to $CLANK_KEEPALIVE_PROVIDER.")
 	notifierProvider := flag.String("notifier-provider", envDefault("CLANK_NOTIFIER_PROVIDER", notifierProviderNone), "Provider that receives notification-worthy events (idle, permission, error): 'webhook' (POST to --notifier-webhook-url), 'noop' (debug), or 'none' (disabled — laptop default). Defaults to $CLANK_NOTIFIER_PROVIDER.")
 	notifierWebhookURL := flag.String("notifier-webhook-url", os.Getenv("CLANK_NOTIFIER_WEBHOOK_URL"), "POST target when --notifier-provider=webhook. Defaults to $CLANK_NOTIFIER_WEBHOOK_URL.")
@@ -126,6 +127,7 @@ func main() {
 		templatesJSON:         *templatesJSON,
 		listenAuthToken:       *listenAuthToken,
 		dataDir:               *dataDir,
+		workRoot:              *workRoot,
 		keepaliveProvider:     *keepaliveProvider,
 		notifierProvider:      *notifierProvider,
 		notifierWebhookURL:    *notifierWebhookURL,
@@ -151,6 +153,7 @@ type runConfig struct {
 	templatesJSON         string
 	listenAuthToken       string
 	dataDir               string
+	workRoot              string
 	keepaliveProvider     string
 	notifierProvider      string
 	notifierWebhookURL    string
@@ -360,6 +363,7 @@ func run(cfg runConfig) error {
 		Log:                   lg,
 		Templates:             templates,
 		SessionsStore:         hostStore,
+		WorkRoot:              cfg.workRoot,
 		KeepaliveListener:     keepaliveListener,
 		NotifierLoop:          notifierLoop,
 		PreviewGWClient:       gwClient,

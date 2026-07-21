@@ -115,7 +115,7 @@ func (s *Service) discoveredLocalRepos(ctx context.Context) ([]RepoInfo, error) 
 	if err != nil {
 		return nil, err
 	}
-	workRoot, err := workRootDir()
+	workRoot, err := s.workRootDir()
 	if err != nil {
 		return nil, err
 	}

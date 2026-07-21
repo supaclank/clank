@@ -31,7 +31,7 @@ func (s *Service) coldStartAutoPull(ctx context.Context) {
 	if _, err := s.github.AccessToken(); err != nil {
 		return
 	}
-	ids, err := materializedWorktreeIDs()
+	ids, err := s.materializedWorktreeIDs()
 	if err != nil {
 		s.log.Printf("cold-start auto-pull: list worktrees: %v", err)
 		return
@@ -80,12 +80,12 @@ func (s *Service) coldStartAutoPull(ctx context.Context) {
 		time.Since(passStart).Round(time.Millisecond), len(ids), pulled)
 }
 
-// materializedWorktreeIDs lists the worktree IDs present under
-// workRootDir() ($HOME/work/<id>). Each subdirectory name is a worktree ID
+// materializedWorktreeIDs lists the worktree IDs present under the
+// work root (<work root>/<id>). Each subdirectory name is a worktree ID
 // resolvable by workDirFor. Non-ULID entries — chiefly the repos/ subtree
 // holding the bare canonicals — are skipped: they aren't worktrees.
-func materializedWorktreeIDs() ([]string, error) {
-	root, err := workRootDir()
+func (s *Service) materializedWorktreeIDs() ([]string, error) {
+	root, err := s.workRootDir()
 	if err != nil {
 		return nil, err
 	}
