@@ -17,18 +17,27 @@ import (
 )
 
 // newTestAuthManager constructs an AuthManager pinned to a temp dir
-// (so writes don't touch the real $HOME) and a no-op restart hook.
+// (so writes don't touch the real $HOME), a no-op restart hook, and an
+// empty env (so a dev machine's exported API keys can't leak into
+// status assertions; tests that want env credentials set lookupEnv).
 // homeDir is exposed for assertions on the on-disk auth.json.
 func newTestAuthManager(t *testing.T) (*AuthManager, string) {
 	t.Helper()
 	dir := t.TempDir()
 	a := &AuthManager{
-		homeDir: dir,
-		restart: func(context.Context) error { return nil },
-		flows:   make(map[string]*flowState),
-		httpc:   &http.Client{Timeout: 5 * time.Second},
+		homeDir:   dir,
+		restart:   func(context.Context) error { return nil },
+		flows:     make(map[string]*flowState),
+		httpc:     &http.Client{Timeout: 5 * time.Second},
+		lookupEnv: func(string) string { return "" },
 	}
 	return a, dir
+}
+
+// mapEnv returns a lookupEnv over a fixed map — the test stand-in for
+// os.Getenv.
+func mapEnv(vars map[string]string) func(string) string {
+	return func(name string) string { return vars[name] }
 }
 
 func TestAuthManager_ListProviders_EmptyFile(t *testing.T) {
@@ -430,6 +439,9 @@ func TestAuthManager_ListProviders_IncludesEntireCatalog(t *testing.T) {
 	if !openai.Connected {
 		t.Errorf("expected openai connected after writing")
 	}
+	if openai.Source != agent.CredentialSourceStore {
+		t.Errorf("openai Source=%q, want %q", openai.Source, agent.CredentialSourceStore)
+	}
 	if copilot.Connected {
 		t.Errorf("expected github-copilot disconnected (not written)")
 	}
@@ -781,8 +793,241 @@ func TestAuthManager_ListProviders_AnthropicConnectedState(t *testing.T) {
 	if !sub.Connected {
 		t.Errorf("anthropic-claude-code should be Connected after write")
 	}
+	if sub.Source != agent.CredentialSourceStore {
+		t.Errorf("Source=%q, want %q for a sink-stored credential", sub.Source, agent.CredentialSourceStore)
+	}
 	if api.Connected {
 		t.Errorf("anthropic-api should not be Connected when only subscription token is set")
+	}
+	if api.Source != "" {
+		t.Errorf("Source=%q, want empty when disconnected", api.Source)
+	}
+}
+
+// listAnthropicProviders returns the two Anthropic catalog entries
+// from a full ListProviders call.
+func listAnthropicProviders(t *testing.T, a *AuthManager) (sub, api agent.ProviderAuthInfo) {
+	t.Helper()
+	infos, err := a.ListProviders(context.Background(), "")
+	if err != nil {
+		t.Fatalf("ListProviders: %v", err)
+	}
+	for _, p := range infos {
+		switch p.ProviderID {
+		case ProviderAnthropicClaudeCode:
+			sub = p
+		case ProviderAnthropicAPI:
+			api = p
+		}
+	}
+	return sub, api
+}
+
+// With the fallback enabled and an empty sink, a machine-local claude
+// login must surface as connected (source claude_cli) on the
+// subscription provider only — and must NOT start injecting env vars:
+// the spawned claude keeps resolving its own credential.
+func TestAuthManager_ListProviders_ClaudeCLIFallback(t *testing.T) {
+	// Not parallel: t.Setenv (PATH).
+	putFakeSecurity(t, `if [ "$1" = "find-generic-password" ] || [ "$1" = "show-keychain-info" ]; then exit 0; fi; exit 1`)
+	a, _ := newTestAuthManager(t)
+	a.EnableClaudeCLIFallback()
+
+	sub, api := listAnthropicProviders(t, a)
+	if !sub.Connected || sub.Source != agent.CredentialSourceClaudeCLI {
+		t.Errorf("sub = connected=%v source=%q, want connected via %s", sub.Connected, sub.Source, agent.CredentialSourceClaudeCLI)
+	}
+	if api.Connected {
+		t.Errorf("anthropic-api should not report the borrowed subscription login")
+	}
+	if env := a.AnthropicEnv(); env != nil {
+		t.Errorf("AnthropicEnv() = %v, want nil — the fallback is status-only", env)
+	}
+}
+
+// The fallback is a wiring decision (local laptop provisioner). Left
+// disabled — the sprite default — a machine-local claude login must
+// not leak into provider status.
+func TestAuthManager_ListProviders_ClaudeCLIFallbackDisabled(t *testing.T) {
+	// Not parallel: t.Setenv (PATH).
+	putFakeSecurity(t, `exit 0`)
+	a, _ := newTestAuthManager(t)
+
+	sub, _ := listAnthropicProviders(t, a)
+	if sub.Connected || sub.Source != "" {
+		t.Errorf("sub = connected=%v source=%q, want disconnected with the fallback off", sub.Connected, sub.Source)
+	}
+}
+
+// An explicit clank connection must win over the borrowed login: the
+// user connected through clank, so status says store — which also
+// keeps the disconnect affordance meaningful.
+func TestAuthManager_ListProviders_StoreWinsOverClaudeCLI(t *testing.T) {
+	// Not parallel: t.Setenv (PATH).
+	putFakeSecurity(t, `exit 0`)
+	a, _ := newTestAuthManager(t)
+	a.EnableClaudeCLIFallback()
+	if err := a.writeAnthropicCredential(ProviderAnthropicClaudeCode, "tok"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	sub, _ := listAnthropicProviders(t, a)
+	if !sub.Connected || sub.Source != agent.CredentialSourceStore {
+		t.Errorf("sub = connected=%v source=%q, want connected via %s", sub.Connected, sub.Source, agent.CredentialSourceStore)
+	}
+}
+
+// Env-borne credentials surface as connected (source env) on every
+// host, per provider, and only for providers whose env var is
+// actually set. Copilot must stay disconnected even with GITHUB_TOKEN
+// exported: opencode would env-enable it, but generic tokens rarely
+// carry Copilot entitlement (see providerEnvVars).
+func TestAuthManager_ListProviders_EnvCredentials(t *testing.T) {
+	t.Parallel()
+	a, _ := newTestAuthManager(t)
+	a.lookupEnv = mapEnv(map[string]string{
+		EnvClaudeCodeOAuthToken: "env-oauth",
+		EnvAnthropicAPIKey:      "env-key",
+		"GEMINI_API_KEY":        "env-gemini", // third name in google's any-of list
+		"GITHUB_TOKEN":          "gho_generic",
+		"OPENAI_API_KEY":        "", // set-but-empty is absence, matching opencode
+	})
+
+	infos, err := a.ListProviders(context.Background(), "")
+	if err != nil {
+		t.Fatalf("ListProviders: %v", err)
+	}
+	byID := make(map[string]agent.ProviderAuthInfo, len(infos))
+	for _, p := range infos {
+		byID[p.ProviderID] = p
+	}
+	for _, id := range []string{ProviderAnthropicClaudeCode, ProviderAnthropicAPI, "google"} {
+		if p := byID[id]; !p.Connected || p.Source != agent.CredentialSourceEnv {
+			t.Errorf("%s = connected=%v source=%q, want connected via %s", id, p.Connected, p.Source, agent.CredentialSourceEnv)
+		}
+	}
+	for _, id := range []string{ProviderGitHubCopilot, "openai", "groq"} {
+		if p := byID[id]; p.Connected || p.Source != "" {
+			t.Errorf("%s = connected=%v source=%q, want disconnected", id, p.Connected, p.Source)
+		}
+	}
+}
+
+// The gateway-style bearer token (ANTHROPIC_AUTH_TOKEN) counts as
+// env-borne auth for the API provider — it's how custom LLM gateways
+// authenticate the spawned claude.
+func TestAuthManager_ListProviders_EnvAuthTokenVariant(t *testing.T) {
+	t.Parallel()
+	a, _ := newTestAuthManager(t)
+	a.lookupEnv = mapEnv(map[string]string{EnvAnthropicAuthToken: "gw-bearer"})
+
+	_, api := listAnthropicProviders(t, a)
+	if !api.Connected || api.Source != agent.CredentialSourceEnv {
+		t.Errorf("api = connected=%v source=%q, want connected via %s", api.Connected, api.Source, agent.CredentialSourceEnv)
+	}
+}
+
+// Stored credentials must win over env vars — mirroring both spawn
+// reality (the sink's ExtraEnv is appended after os.Environ, so it
+// overrides) and opencode's own merge order (auth.json api entries
+// merge over env-sourced providers).
+func TestAuthManager_ListProviders_StoreWinsOverEnv(t *testing.T) {
+	t.Parallel()
+	a, _ := newTestAuthManager(t)
+	a.lookupEnv = mapEnv(map[string]string{
+		EnvClaudeCodeOAuthToken: "env-oauth",
+		"OPENAI_API_KEY":        "env-openai",
+	})
+	if err := a.writeAnthropicCredential(ProviderAnthropicClaudeCode, "sink-tok"); err != nil {
+		t.Fatalf("write sink: %v", err)
+	}
+	if err := a.writeAuthJSON("openai", agent.AuthCredential{Type: "api", Key: "stored"}); err != nil {
+		t.Fatalf("write auth.json: %v", err)
+	}
+
+	infos, err := a.ListProviders(context.Background(), "")
+	if err != nil {
+		t.Fatalf("ListProviders: %v", err)
+	}
+	for _, p := range infos {
+		if p.ProviderID == ProviderAnthropicClaudeCode || p.ProviderID == "openai" {
+			if !p.Connected || p.Source != agent.CredentialSourceStore {
+				t.Errorf("%s = connected=%v source=%q, want connected via %s", p.ProviderID, p.Connected, p.Source, agent.CredentialSourceStore)
+			}
+		}
+	}
+}
+
+// Env beats the claude CLI keychain fallback: claude's own precedence
+// uses an inherited env credential over its keychain login, so status
+// says env even when both are present.
+func TestAuthManager_ListProviders_EnvWinsOverClaudeCLI(t *testing.T) {
+	// Not parallel: t.Setenv (PATH).
+	putFakeSecurity(t, `exit 0`)
+	a, _ := newTestAuthManager(t)
+	a.EnableClaudeCLIFallback()
+	a.lookupEnv = mapEnv(map[string]string{EnvClaudeCodeOAuthToken: "env-oauth"})
+
+	sub, _ := listAnthropicProviders(t, a)
+	if !sub.Connected || sub.Source != agent.CredentialSourceEnv {
+		t.Errorf("sub = connected=%v source=%q, want connected via %s", sub.Connected, sub.Source, agent.CredentialSourceEnv)
+	}
+}
+
+// The production default reads the real process environment: a
+// NewAuthManager-constructed manager (no injected lookup) must see a
+// t.Setenv-exported key.
+func TestAuthManager_ListProviders_EnvDefaultsToProcessEnv(t *testing.T) {
+	// Not parallel: t.Setenv (HOME + env var).
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GROQ_API_KEY", "from-process-env")
+	a, err := NewAuthManager(nil)
+	if err != nil {
+		t.Fatalf("NewAuthManager: %v", err)
+	}
+
+	infos, err := a.ListProviders(context.Background(), "")
+	if err != nil {
+		t.Fatalf("ListProviders: %v", err)
+	}
+	for _, p := range infos {
+		if p.ProviderID == "groq" {
+			if !p.Connected || p.Source != agent.CredentialSourceEnv {
+				t.Errorf("groq = connected=%v source=%q, want connected via %s", p.Connected, p.Source, agent.CredentialSourceEnv)
+			}
+			return
+		}
+	}
+	t.Fatal("groq not in catalog")
+}
+
+// Every env-detectable provider must exist in the catalog — a rename
+// there would silently orphan the env mapping.
+func TestProviderEnvVars_MatchCatalog(t *testing.T) {
+	t.Parallel()
+	inCatalog := make(map[string]bool, len(providerCatalog))
+	for _, p := range providerCatalog {
+		inCatalog[p.ProviderID] = true
+	}
+	for id := range providerEnvVars {
+		if !inCatalog[id] {
+			t.Errorf("providerEnvVars key %q has no catalog entry", id)
+		}
+	}
+}
+
+// The credentials-file variant of the fallback: no keychain entry, but
+// ~/.claude/.credentials.json exists in the manager's home.
+func TestAuthManager_ListProviders_ClaudeCLIFallback_CredentialsFile(t *testing.T) {
+	// Not parallel: t.Setenv (PATH).
+	putFakeSecurity(t, `exit 44`)
+	a, home := newTestAuthManager(t)
+	a.EnableClaudeCLIFallback()
+	writeClaudeCredentialsFile(t, home, `{"claudeAiOauth":{}}`)
+
+	sub, _ := listAnthropicProviders(t, a)
+	if !sub.Connected || sub.Source != agent.CredentialSourceClaudeCLI {
+		t.Errorf("sub = connected=%v source=%q, want connected via %s", sub.Connected, sub.Source, agent.CredentialSourceClaudeCLI)
 	}
 }
 

@@ -92,13 +92,13 @@ func startSetupToken(_ context.Context) (*setupTokenSession, error) {
 	// minting a fresh one.
 	env := make([]string, 0, len(os.Environ()))
 	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "CLAUDE_CODE_OAUTH_TOKEN=") {
+		if strings.HasPrefix(e, EnvClaudeCodeOAuthToken+"=") {
 			continue
 		}
-		if strings.HasPrefix(e, "ANTHROPIC_API_KEY=") {
+		if strings.HasPrefix(e, EnvAnthropicAPIKey+"=") {
 			continue
 		}
-		if strings.HasPrefix(e, "ANTHROPIC_AUTH_TOKEN=") {
+		if strings.HasPrefix(e, EnvAnthropicAuthToken+"=") {
 			continue
 		}
 		env = append(env, e)

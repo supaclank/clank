@@ -183,6 +183,10 @@ func (p *Provisioner) EnsureHost(_ context.Context, _ string) (provisioner.HostR
 		// is right there (and agent sessions could read it anyway), so
 		// borrow it instead of demanding a second device-flow connect.
 		"--gh-cli-auth",
+		// And for Anthropic: spawned claude CLIs already fall back to
+		// the machine's own login, so report it in provider status
+		// instead of prompting a connect that would change nothing.
+		"--claude-cli-auth",
 	}
 	if p.opts.DataDir != "" {
 		if err := os.MkdirAll(p.opts.DataDir, 0o700); err != nil {
