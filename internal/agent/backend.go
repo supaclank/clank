@@ -1,6 +1,10 @@
 package agent
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+	"strings"
+)
 
 // DefaultBackend is the backend used when neither a CLI flag nor a user
 // preference specifies one. Centralised so we don't hard-code "opencode"
@@ -26,11 +30,41 @@ func ParseBackend(s string) (BackendType, error) {
 		return BackendOpenCode, nil
 	case string(BackendClaudeCode), "claude":
 		return BackendClaudeCode, nil
+	case string(BackendCodex):
+		return BackendCodex, nil
 	case "":
 		return "", fmt.Errorf("backend name is empty")
 	default:
-		return "", fmt.Errorf("unknown backend: %s (valid: opencode, claude, claude-code)", s)
+		return "", fmt.Errorf("unknown backend: %s (valid: opencode, claude, claude-code, codex)", s)
 	}
+}
+
+// ParseBackendSet parses a comma-separated backend list (the
+// --acp-backends flag format). "none" or an empty string yields an empty
+// set; "all" expands to AllBackends. Individual names go through
+// ParseBackend, so aliases work. Duplicates collapse; unknown names error.
+func ParseBackendSet(csv string) ([]BackendType, error) {
+	switch strings.TrimSpace(csv) {
+	case "", "none":
+		return nil, nil
+	case "all":
+		return slices.Clone(AllBackends), nil
+	}
+	var set []BackendType
+	for _, tok := range strings.Split(csv, ",") {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		bt, err := ParseBackend(tok)
+		if err != nil {
+			return nil, err
+		}
+		if !slices.Contains(set, bt) {
+			set = append(set, bt)
+		}
+	}
+	return set, nil
 }
 
 // ResolveBackendPreference turns the raw string from preferences.json
