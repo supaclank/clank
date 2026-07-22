@@ -176,6 +176,14 @@ type Options struct {
 	// access explicit.
 	GitHubGhCLIAuth bool
 
+	// AnthropicClaudeCLIAuth lets Anthropic provider status report the
+	// machine's own claude CLI login (Keychain / .credentials.json)
+	// as connected when clank's anthropic sink is empty — presence
+	// detection only, the credential is never read. Set by the local
+	// laptop provisioner for the same reason as GitHubGhCLIAuth: the
+	// spawned claude already uses that login there.
+	AnthropicClaudeCLIAuth bool
+
 	// ProjectCommitterName / ProjectCommitterEmail set the git committer
 	// identity stamped on the seed commit of a project scaffolded via
 	// CreateProjectFromTemplate (also persisted as the new repo's local
@@ -276,6 +284,9 @@ func New(opts Options) *Service {
 		s.log.Printf("auth manager unavailable: %v", err)
 	} else {
 		s.auth = am
+		if opts.AnthropicClaudeCLIAuth {
+			am.EnableClaudeCLIFallback()
+		}
 		// Wire claude-code to read its env vars from this AuthManager.
 		// Resolved per-session so a mid-day credential change applies
 		// to the next new session without a daemon restart.

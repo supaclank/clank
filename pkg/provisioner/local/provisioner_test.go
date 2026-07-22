@@ -45,6 +45,7 @@ func main() {
 	workRoot := flag.String("work-root", "", "")
 	_ = flag.Bool("local-file-attachments", false, "")
 	_ = flag.Bool("gh-cli-auth", false, "")
+	_ = flag.Bool("claude-cli-auth", false, "")
 	flag.Parse()
 	if f := os.Getenv("FAKE_HOST_WORK_ROOT_FILE"); f != "" {
 		if err := os.WriteFile(f, []byte(*workRoot), 0o644); err != nil {
