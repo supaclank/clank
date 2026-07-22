@@ -92,19 +92,20 @@ func NewCodexBackendForSession(workDir, resumeThreadID string) *CodexBackend {
 	}
 }
 
-// codexTurnPolicy maps clank's permission posture onto codex approval policy
-// + sandbox mode. Codex has no plan mode: "plan" degrades to a read-only
-// sandbox with approvals, which prevents edits like Claude's plan mode does
-// but never produces an ExitPlanMode review. acceptEdits has no codex analog
-// (sandboxed edits never prompt anyway) and behaves like default.
-func codexTurnPolicy(mode ClaudePermissionMode) (approval codex.ApprovalPolicy, sandbox codex.SandboxMode) {
+// codexTurnPolicy maps clank's permission posture onto codex per-turn
+// policy: approval policy + tagged sandbox-policy kind. Codex has no plan
+// mode: "plan" degrades to a read-only sandbox with approvals, which
+// prevents edits like Claude's plan mode does but never produces an
+// ExitPlanMode review. acceptEdits has no codex analog (sandboxed edits
+// never prompt anyway) and behaves like default.
+func codexTurnPolicy(mode ClaudePermissionMode) (codex.ApprovalPolicy, protocol.SandboxPolicyKind) {
 	switch mode {
 	case ClaudePermBypass:
-		return codex.ApprovalPolicyNever, codex.SandboxModeDangerFullAccess
+		return codex.ApprovalPolicyNever, protocol.SandboxPolicyKindDangerFullAccess
 	case ClaudePermPlan:
-		return codex.ApprovalPolicyOnRequest, codex.SandboxModeReadOnly
+		return codex.ApprovalPolicyOnRequest, protocol.SandboxPolicyKindReadOnly
 	default: // ClaudePermDefault, ClaudePermAcceptEdits, ""
-		return codex.ApprovalPolicyOnRequest, codex.SandboxModeWorkspaceWrite
+		return codex.ApprovalPolicyOnRequest, protocol.SandboxPolicyKindWorkspaceWrite
 	}
 }
 
@@ -116,18 +117,13 @@ func rawJSONString(s string) json.RawMessage {
 }
 
 // codexSandboxPolicyJSON renders the tagged SandboxPolicy union turn/start
-// expects. Unlike thread/start's `sandbox` (a plain mode string), the
-// per-turn `sandboxPolicy` is an internally tagged object — a plain string
-// is rejected with "expected internally tagged enum SandboxPolicyDeserialize".
-func codexSandboxPolicyJSON(mode codex.SandboxMode) json.RawMessage {
-	switch mode {
-	case codex.SandboxModeDangerFullAccess:
-		return json.RawMessage(`{"type":"dangerFullAccess"}`)
-	case codex.SandboxModeReadOnly:
-		return json.RawMessage(`{"type":"readOnly"}`)
-	default:
-		return json.RawMessage(`{"type":"workspaceWrite"}`)
-	}
+// expects (thread-level fields take plain mode strings; the turn-level field
+// rejects them). The bare variant carries protocol defaults — deliberately
+// NOT the host's [sandbox_workspace_write] config, so sandbox posture stays
+// deterministic across hosts.
+func codexSandboxPolicyJSON(kind protocol.SandboxPolicyKind) json.RawMessage {
+	b, _ := json.Marshal(map[string]protocol.SandboxPolicyKind{"type": kind})
+	return b
 }
 
 // Open spawns the codex app-server subprocess, starts the notification pump,
@@ -175,20 +171,19 @@ func (b *CodexBackend) Open(ctx context.Context) error {
 	sub := client.Client().SubscribeNotifications(256)
 	go b.notificationPump(sub)
 
-	approval, sandbox := codexTurnPolicy(permMode)
+	// Thread-level approval/sandbox are deliberately not set: every turn
+	// carries explicit policy (see buildCodexTurnParams), the single
+	// mechanism — a thread-level default would go stale after a mid-session
+	// mode switch and silently govern any turn that forgot its override.
 	var thread *codex.Thread
 	if resumeID != "" {
 		thread, err = client.ResumeThread(b.ctx, codex.ThreadResumeOptions{
-			ThreadID:       resumeID,
-			Cwd:            workDir,
-			ApprovalPolicy: approval,
-			Sandbox:        sandbox,
+			ThreadID: resumeID,
+			Cwd:      workDir,
 		})
 	} else {
 		thread, err = client.StartThread(b.ctx, codex.ThreadStartOptions{
-			Cwd:            workDir,
-			ApprovalPolicy: approval,
-			SandboxPolicy:  sandbox,
+			Cwd: workDir,
 			// Fresh sessions only: instructions persist in codex thread
 			// state, so resumed/forked threads already carry them.
 			DeveloperInstructions: systemPrompt,
@@ -245,6 +240,24 @@ func (b *CodexBackend) Send(ctx context.Context, opts SendMessageOpts) error {
 		model = opts.Model.ModelID
 	}
 
+	params, err := buildCodexTurnParams(threadID, mode, model, opts)
+	if err != nil {
+		return err
+	}
+
+	b.setStatus(StatusBusy)
+	if _, err := client.Client().TurnStart(ctx, params); err != nil {
+		b.setStatus(StatusError)
+		return fmt.Errorf("start codex turn: %w", err)
+	}
+	return nil
+}
+
+// buildCodexTurnParams assembles turn/start params. Every turn carries
+// explicit approval and sandbox policy — the single policy mechanism (no
+// thread-level defaults that could go stale after a mode switch); the unit
+// tests pin this invariant.
+func buildCodexTurnParams(threadID string, mode ClaudePermissionMode, model string, opts SendMessageOpts) (protocol.TurnStartParams, error) {
 	inputs := make([]protocol.TurnStartParamsInputElem, 0, 1+len(opts.Attachments))
 	if opts.Text != "" {
 		inputs = append(inputs, codex.TextInput(opts.Text))
@@ -256,30 +269,24 @@ func (b *CodexBackend) Send(ctx context.Context, opts SendMessageOpts) error {
 		case strings.HasPrefix(att.Source, "file://"):
 			inputs = append(inputs, codex.LocalImageInput(strings.TrimPrefix(att.Source, "file://")))
 		default:
-			return fmt.Errorf("codex backend does not support attachment source scheme in %q", att.Source)
+			return protocol.TurnStartParams{}, fmt.Errorf("codex backend does not support attachment source scheme in %q", att.Source)
 		}
 	}
 	if len(inputs) == 0 {
-		return fmt.Errorf("empty prompt")
+		return protocol.TurnStartParams{}, fmt.Errorf("empty prompt")
 	}
 
-	approval, sandbox := codexTurnPolicy(mode)
+	approval, sandboxKind := codexTurnPolicy(mode)
 	params := protocol.TurnStartParams{
 		ThreadID:       threadID,
 		Input:          inputs,
 		ApprovalPolicy: rawJSONString(string(approval)),
-		SandboxPolicy:  codexSandboxPolicyJSON(sandbox),
+		SandboxPolicy:  codexSandboxPolicyJSON(sandboxKind),
 	}
 	if model != "" {
 		params.Model = &model
 	}
-
-	b.setStatus(StatusBusy)
-	if _, err := client.Client().TurnStart(ctx, params); err != nil {
-		b.setStatus(StatusError)
-		return fmt.Errorf("start codex turn: %w", err)
-	}
-	return nil
+	return params, nil
 }
 
 // OpenAndSend opens the session and dispatches the first prompt.
@@ -381,16 +388,14 @@ func (b *CodexBackend) Fork(ctx context.Context, messageID string) (ForkResult, 
 	b.mu.Lock()
 	client := b.client
 	threadID := b.threadID
-	mode := b.currentPermMode
 	workDir := b.projectDir
 	b.mu.Unlock()
 
-	approval, sandbox := codexTurnPolicy(mode)
+	// No thread-level policy on the fork either — the forked session's turns
+	// carry explicit policy, same as ours (see buildCodexTurnParams).
 	params := protocol.ThreadForkParams{
-		ThreadID:       threadID,
-		Cwd:            &workDir,
-		ApprovalPolicy: rawJSONString(string(approval)),
-		Sandbox:        rawJSONString(string(sandbox)),
+		ThreadID: threadID,
+		Cwd:      &workDir,
 	}
 	if messageID != "" {
 		params.LastTurnID = &messageID

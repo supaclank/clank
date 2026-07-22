@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -103,5 +104,50 @@ events:
 	}
 	if !strings.Contains(reply, "OK") {
 		t.Errorf("assistant reply = %q, want it to contain OK", reply)
+	}
+
+	// Second turn in default mode: on-request approvals + bare
+	// {"type":"workspaceWrite"} sandbox. The write below must succeed, proving
+	// the bare tagged policy (protocol defaults, no [sandbox_workspace_write]
+	// merge) keeps the cwd implicitly writable — the semantic clank's default
+	// mode depends on. Any approval request is auto-allowed so the test can't
+	// wedge if the model chooses to ask.
+	if err := b.Send(ctx, SendMessageOpts{
+		Text:           "Using a shell command, create a file named cwd-write-proof.txt in the current directory containing exactly: proven",
+		PermissionMode: ClaudePermDefault,
+	}); err != nil {
+		t.Fatalf("send workspace-write turn: %v", err)
+	}
+	deadline = time.After(2 * time.Minute)
+	for done := false; !done; {
+		select {
+		case ev, ok := <-b.Events():
+			if !ok {
+				t.Fatal("event channel closed during workspace-write turn")
+			}
+			switch d := ev.Data.(type) {
+			case PermissionData:
+				t.Logf("auto-allowing approval: %s", d.Description)
+				if err := b.RespondPermission(ctx, d.RequestID, true, ""); err != nil {
+					t.Fatalf("respond permission: %v", err)
+				}
+			case StatusChangeData:
+				if d.NewStatus == StatusIdle {
+					done = true
+				}
+				if d.NewStatus == StatusError || d.NewStatus == StatusDead {
+					t.Fatalf("workspace-write turn entered %s", d.NewStatus)
+				}
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for workspace-write turn")
+		}
+	}
+	proof, err := os.ReadFile(filepath.Join(workDir, "cwd-write-proof.txt"))
+	if err != nil {
+		t.Fatalf("cwd write did not land under bare workspaceWrite policy: %v", err)
+	}
+	if got := strings.TrimSpace(string(proof)); got != "proven" {
+		t.Errorf("proof file content = %q, want %q", got, "proven")
 	}
 }

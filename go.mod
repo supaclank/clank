@@ -22,7 +22,7 @@ require (
 	github.com/google/go-github/v66 v66.0.0
 	github.com/hinshun/vt10x v0.0.0-20220301184237-5011da428d02
 	github.com/oklog/ulid/v2 v2.1.1
-	github.com/pmenglund/codex-sdk-go v0.144.6
+	github.com/pmenglund/codex-sdk-go v0.145.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/spf13/cobra v1.10.2
 	github.com/superfly/fly-go v0.9.0
