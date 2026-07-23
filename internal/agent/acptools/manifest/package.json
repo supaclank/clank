@@ -1,0 +1,9 @@
+{
+  "name": "clank-acp-tools",
+  "private": true,
+  "description": "Pinned ACP adapter packages clank provisions per host; bun.lock freezes the transitive graph (notably codex-acp's caret on @openai/codex).",
+  "dependencies": {
+    "@agentclientprotocol/codex-acp": "1.1.7",
+    "@openai/codex": "0.145.0"
+  }
+}

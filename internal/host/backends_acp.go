@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/agent/acp"
+	"github.com/acksell/clank/internal/agent/acptools"
 	"github.com/acksell/clank/internal/agent/guidance"
 	sdk "github.com/coder/acp-go-sdk"
 )
@@ -20,22 +22,61 @@ import (
 type ACPBackendManager struct {
 	profile acp.AdapterProfile
 	sup     *acp.AdapterSupervisor
+	envFn   atomic.Pointer[func() map[string]string]
 }
 
 // NewACPBackendManager builds a manager for the given adapter profile.
+// The profile's Env is routed through SetEnvResolver so credentials can
+// be wired after construction (the AuthManager exists later) and rotated
+// at runtime via the supervisor's env-fingerprint restarts.
 func NewACPBackendManager(profile acp.AdapterProfile) (*ACPBackendManager, error) {
+	m := &ACPBackendManager{}
+	profile.Env = func() map[string]string {
+		if f := m.envFn.Load(); f != nil {
+			return (*f)()
+		}
+		return nil
+	}
 	sup, err := acp.NewAdapterSupervisor(profile, log.Printf)
 	if err != nil {
 		return nil, err
 	}
-	return &ACPBackendManager{profile: profile, sup: sup}, nil
+	m.profile, m.sup = profile, sup
+	return m, nil
 }
 
-// NewCodexACPManager builds the codex manager: codex-acp under bun, env
-// from the OpenAI sink (nil env = codex's own ChatGPT login fallback).
-func NewCodexACPManager(bunBin, adapterEntry string, env func() map[string]string) (*ACPBackendManager, error) {
-	return NewACPBackendManager(acp.CodexProfile(bunBin, adapterEntry, env))
+// NewCodexACPManager builds the codex manager: the pinned codex-acp
+// adapter run as plain JS under bun, provisioned lazily into toolsDir on
+// first use (host startup never blocks on it, and hosts that never run
+// codex never install it). Env arrives via SetEnvResolver (OpenAI sink;
+// nil = codex's own ChatGPT login fallback).
+func NewCodexACPManager(toolsDir string) (*ACPBackendManager, error) {
+	var paths atomic.Pointer[acptools.Paths]
+	profile := acp.CodexProfile("", "", nil)
+	profile.Prepare = func(ctx context.Context) error {
+		p, err := acptools.Ensure(ctx, toolsDir)
+		if err != nil {
+			return err
+		}
+		paths.Store(&p)
+		return nil
+	}
+	profile.Command = func(string) (string, []string) {
+		p := paths.Load() // Prepare ran first (execSpawn ordering)
+		return p.BunBin, []string{p.CodexACPEntry}
+	}
+	return NewACPBackendManager(profile)
 }
+
+// SetEnvResolver wires credential env for adapter spawns and nudges the
+// supervisor so the env-fingerprint restart picks up rotations.
+func (m *ACPBackendManager) SetEnvResolver(f func() map[string]string) {
+	m.envFn.Store(&f)
+	m.sup.Nudge()
+}
+
+// BackendType reports which clank backend this manager serves.
+func (m *ACPBackendManager) BackendType() agent.BackendType { return m.profile.Backend }
 
 // Supervisor exposes the adapter supervisor for credential-rotation
 // nudges and test spawn injection.

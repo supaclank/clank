@@ -19,7 +19,7 @@ func TestACPBackendManager_CreateOpenSendAndDiscover(t *testing.T) {
 	// installGuidanceSkills writes under $HOME — isolate it.
 	t.Setenv("HOME", t.TempDir())
 
-	mgr, err := host.NewCodexACPManager("unused-bun", "unused-entry", nil)
+	mgr, err := host.NewCodexACPManager(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewCodexACPManager: %v", err)
 	}

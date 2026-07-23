@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -19,8 +20,12 @@ type AdapterProfile struct {
 	// Backend is the clank backend type this profile serves.
 	Backend agent.BackendType
 	Scope   AdapterScope
+	// Prepare provisions whatever Command needs (e.g. installing the
+	// adapter package) before each spawn attempt. Must be idempotent and
+	// cheap once satisfied; it owns its own timeout budget. nil = ready.
+	Prepare func(ctx context.Context) error
 	// Command returns the argv that launches the adapter for scopeDir
-	// (empty for ScopeHost profiles).
+	// (empty for ScopeHost profiles). Called after Prepare succeeded.
 	Command func(scopeDir string) (bin string, args []string)
 	// Env returns credential/config env vars merged over the parent
 	// environment at spawn. A change in the returned map restarts the

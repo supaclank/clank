@@ -94,6 +94,25 @@ type selectableMode struct {
 	perm  agent.ClaudePermissionMode // Claude permission mode (empty for OpenCode)
 }
 
+// modesFromInfo builds the Tab-cycle list from the agent-advertised
+// session modes on runtime SessionInfo, selecting the active one. ok is
+// false when the backend reported no modes (dead session or a backend
+// without a ModeReporter).
+func modesFromInfo(info *agent.SessionInfo) ([]selectableMode, int, bool) {
+	if info == nil || len(info.AvailableModes) == 0 {
+		return nil, 0, false
+	}
+	modes := make([]selectableMode, len(info.AvailableModes))
+	selected := 0
+	for i, sm := range info.AvailableModes {
+		modes[i] = selectableMode{label: sm.Name, perm: agent.ClaudePermissionMode(sm.ID)}
+		if sm.ID == info.CurrentModeID {
+			selected = i
+		}
+	}
+	return modes, selected, true
+}
+
 // claudePermissionModes builds the static Tab-cycle list for the Claude
 // backend, defaulting the selection to bypassPermissions.
 func claudePermissionModes() ([]selectableMode, int) {
@@ -792,12 +811,21 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.hostname = host.HostLocal
 			}
 			m.gitRef = m.info.GitRef
+			// Agent-advertised modes (runtime SessionInfo) win for every
+			// backend; static claude list is the dead-session fallback.
+			if modes, sel, ok := modesFromInfo(m.info); ok {
+				m.modes, m.selectedMode = modes, sel
+			}
 			switch m.info.Backend {
 			case agent.BackendOpenCode:
 				// Selected agent is matched against the fetched list in agentsResultMsg.
 				return m, tea.Batch(m.fetchAgents(), m.fetchModels())
 			case agent.BackendClaudeCode:
-				m.modes, m.selectedMode = claudePermissionModes()
+				if len(m.info.AvailableModes) == 0 {
+					m.modes, m.selectedMode = claudePermissionModes()
+				}
+				return m, m.fetchModels()
+			default:
 				return m, m.fetchModels()
 			}
 		}

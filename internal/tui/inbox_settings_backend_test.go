@@ -27,8 +27,15 @@ func TestNextDefaultBackend_CyclesAndPersists(t *testing.T) {
 	}
 	persistDefaultBackend(got)
 
-	// Second call: current is claude-code → cycle wraps to opencode.
+	// Second call: current is claude-code → next is codex.
 	got = nextDefaultBackend(string(agent.BackendClaudeCode))
+	if got != agent.BackendCodex {
+		t.Fatalf("second cycle: got %q, want codex", got)
+	}
+	persistDefaultBackend(got)
+
+	// Third call: current is codex → cycle wraps to opencode.
+	got = nextDefaultBackend(string(agent.BackendCodex))
 	if got != agent.BackendOpenCode {
 		t.Fatalf("wrap cycle: got %q, want opencode", got)
 	}

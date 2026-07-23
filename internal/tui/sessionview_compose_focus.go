@@ -6,6 +6,7 @@ package tui
 // open a picker) without leaving the keyboard.
 
 import (
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -72,20 +73,21 @@ func (m *SessionViewModel) setComposeFocus(f composeFocus) tea.Cmd {
 	return nil
 }
 
-// backendCursorIndex maps a backend to its horizontal cursor position.
+// backendCursorIndex maps a backend to its horizontal cursor position
+// in the AllBackends display order.
 func backendCursorIndex(b agent.BackendType) int {
-	if b == agent.BackendClaudeCode {
-		return 1
+	if i := slices.Index(agent.AllBackends, b); i >= 0 {
+		return i
 	}
 	return 0
 }
 
 // backendForCursor is the inverse of backendCursorIndex.
 func backendForCursor(i int) agent.BackendType {
-	if i == 1 {
-		return agent.BackendClaudeCode
+	if i >= 0 && i < len(agent.AllBackends) {
+		return agent.AllBackends[i]
 	}
-	return agent.BackendOpenCode
+	return agent.DefaultBackend
 }
 
 // handleComposeNavKey handles keys while a non-prompt row is focused.
@@ -154,20 +156,25 @@ func (m *SessionViewModel) applyBackend(b agent.BackendType) tea.Cmd {
 	m.backend = b
 	m.models = nil
 	m.selectedModel = -1
-	if b == agent.BackendClaudeCode {
+	switch b {
+	case agent.BackendClaudeCode:
 		m.modes, m.selectedMode = claudePermissionModes()
 		return m.fetchModels()
+	case agent.BackendOpenCode:
+		m.modes, m.selectedMode = nil, 0
+		return tea.Batch(m.fetchAgents(), m.fetchModels())
+	default:
+		// ACP-served backends own their mode vocabulary — modes appear
+		// in-session once the agent advertises them (session/new).
+		m.modes, m.selectedMode = nil, 0
+		return m.fetchModels()
 	}
-	m.modes, m.selectedMode = nil, 0
-	return tea.Batch(m.fetchAgents(), m.fetchModels())
 }
 
-// toggleBackend flips between the two backends (the ctrl+b shortcut).
+// toggleBackend cycles through AllBackends (the ctrl+b shortcut).
 func (m *SessionViewModel) toggleBackend() tea.Cmd {
-	if m.backend == agent.BackendOpenCode {
-		return m.applyBackend(agent.BackendClaudeCode)
-	}
-	return m.applyBackend(agent.BackendOpenCode)
+	next := backendForCursor((backendCursorIndex(m.backend) + 1) % len(agent.AllBackends))
+	return m.applyBackend(next)
 }
 
 // composeFieldSpec is one row in the compose field grid: a left-hand label

@@ -295,6 +295,13 @@ func New(opts Options) *Service {
 				return am.AnthropicEnv()
 			})
 		}
+		// ACP-served backends read credentials from profile env; a
+		// credential write nudges the supervisor so the env-fingerprint
+		// restart cycles the adapter with the new value.
+		if acpMgr, ok := s.backendManagers[agent.BackendCodex].(*ACPBackendManager); ok {
+			acpMgr.SetEnvResolver(am.OpenAIEnv)
+			am.SetOpenAICredentialCallback(acpMgr.Supervisor().Nudge)
+		}
 	}
 
 	// GitHub Connect: one manager per host. ClientID prefers the

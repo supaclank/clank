@@ -98,6 +98,17 @@ func TestCompose_ToggleBackToOpenCodeClearsModes(t *testing.T) {
 		t.Fatal("expected claude modes after toggle to claude")
 	}
 
+	// Next in the cycle is codex: an ACP-served backend whose modes are
+	// agent-owned and arrive in-session — the compose picker clears them.
+	model, _ = m.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
+	m = model.(*SessionViewModel)
+	if m.backend != agent.BackendCodex {
+		t.Fatalf("backend=%s, want codex", m.backend)
+	}
+	if len(m.modes) != 0 {
+		t.Fatalf("expected modes cleared on toggle to codex, got %d", len(m.modes))
+	}
+
 	model, _ = m.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
 	m = model.(*SessionViewModel)
 	if m.backend != agent.BackendOpenCode {

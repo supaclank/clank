@@ -226,9 +226,10 @@ func (s *AdapterSupervisor) reconcile(ctx context.Context) {
 	results := make(chan started, len(missing))
 	for _, key := range missing {
 		go func(key string) {
-			spawnCtx, cancel := context.WithTimeout(ctx, spawnTimeout)
-			defer cancel()
-			p, err := s.spawn(spawnCtx, key)
+			// No timeout here: spawn implementations own their budgets
+			// (Prepare may run a cold adapter install; initialize uses
+			// spawnTimeout).
+			p, err := s.spawn(ctx, key)
 			if err == nil {
 				p.envFP = currentFP
 			}
@@ -277,6 +278,14 @@ func (s *AdapterSupervisor) profileEnv() map[string]string {
 // profile env merged over the parent environment, wire pipes, and watch
 // for process exit.
 func (s *AdapterSupervisor) execSpawn(ctx context.Context, scopeDir string) (*AdapterProc, error) {
+	if s.profile.Prepare != nil {
+		if err := s.profile.Prepare(ctx); err != nil {
+			return nil, fmt.Errorf("acp %s: prepare: %w", s.profile.ID, err)
+		}
+	}
+	initCtx, cancel := context.WithTimeout(ctx, spawnTimeout)
+	defer cancel()
+	ctx = initCtx
 	bin, args := s.profile.Command(scopeDir)
 	// Deliberately not CommandContext: the spawn ctx only bounds startup;
 	// the supervisor owns process lifetime via Stop.
