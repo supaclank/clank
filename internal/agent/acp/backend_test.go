@@ -353,6 +353,36 @@ func TestBackend_AbortReleasesPendingPermissionAndSettlesIdle(t *testing.T) {
 	}
 }
 
+// Abort() before Open() hits the conn==nil early return, which used to
+// leave b.aborting stuck true forever (the reset paths are all gated on a
+// live conn/session). A later genuine turn failure would then be
+// misread as a cancellation and silently swallowed instead of surfacing
+// as StatusError.
+func TestBackend_AbortBeforeOpen_DoesNotSwallowLaterTurnError(t *testing.T) {
+	t.Parallel()
+	scripted := &acptest.ScriptedAgent{}
+	scripted.PromptFn = func(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResponse, error) {
+		return sdk.PromptResponse{}, fmt.Errorf("provider exploded")
+	}
+	f := newBackendFixture(t, scripted, "")
+	ctx := context.Background()
+	if err := f.backend.Abort(ctx); err != nil {
+		t.Fatalf("Abort before Open: %v", err)
+	}
+	if err := f.backend.Open(ctx); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "go"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	evts := f.waitFor(10*time.Second, func(evts []agent.Event) bool {
+		return statusOf(evts) == agent.StatusError && countType(evts, agent.EventError) >= 1
+	})
+	if countType(evts, agent.EventError) == 0 {
+		t.Errorf("turn error after a pre-Open Abort was swallowed; got %s", eventTypes(evts))
+	}
+}
+
 // Stop's sweep is the pure path (no session/cancel involved): the agent
 // must observe the swept cancelled outcome itself.
 func TestBackend_StopSweepsPendingPermission(t *testing.T) {

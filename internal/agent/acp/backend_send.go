@@ -97,6 +97,13 @@ func (b *Backend) Abort(ctx context.Context) error {
 	b.mu.Unlock()
 
 	if conn == nil || sid == "" {
+		// No turn is running (and none can be, without a conn/session), so
+		// there's nothing for runTurns' cleanup to reset — do it here.
+		// Otherwise b.aborting sticks forever and swallows the next
+		// genuine turn's RPC error as a false cancellation.
+		b.mu.Lock()
+		b.aborting = false
+		b.mu.Unlock()
 		return nil
 	}
 	if err := conn.Conn().Cancel(ctx, sdk.CancelNotification{SessionId: sdk.SessionId(sid)}); err != nil {
@@ -112,6 +119,16 @@ func (b *Backend) Abort(ctx context.Context) error {
 		b.mu.Unlock()
 	}
 	return nil
+}
+
+// shouldSwallowPromptErrLocked reports whether a Prompt RPC error should
+// fold into the cancellation path (queue cleared, no EventError/StatusError)
+// rather than surface as a turn failure. Besides the usual abort/stop
+// cases, an already-Dead status means watchConn saw the transport die
+// first — the error is just that same death observed from runTurns'
+// side, and StatusError must not regress a Dead session back to Error.
+func (b *Backend) shouldSwallowPromptErrLocked(aborting bool) bool {
+	return aborting || b.stopping || b.status == agent.StatusDead
 }
 
 // runTurns is the single per-backend turn runner: it dispatches queued
@@ -148,7 +165,7 @@ func (b *Backend) runTurns() {
 		}
 		aborting := b.aborting
 		switch {
-		case err != nil && (aborting || b.stopping):
+		case err != nil && b.shouldSwallowPromptErrLocked(aborting):
 			// Cancellation surfaces as an RPC error on some adapters;
 			// treat like stopReason=cancelled.
 			b.queue = nil
