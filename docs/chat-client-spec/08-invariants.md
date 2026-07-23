@@ -248,7 +248,7 @@ concrete default to mean "unchanged".
 **Golden:** `internal/agent/agent.go:571`, `internal/tui/sessionview.go:2162`.
 **Conformance:** `CONF-PERMMODE-NOCHANGE`.
 
-### [INV-PERMMODE-EXITPLAN-001] (MUST) ExitPlanMode is approve/reject; mode self-resets
+### ~~[INV-PERMMODE-EXITPLAN-001]~~ (retired 0.6.0 — M3) (MUST) ExitPlanMode is approve/reject; mode self-resets
 Render `ExitPlanMode` from its tool-call part `input` (the plan) as an approve/reject
 decision. After approval the backend exits plan mode and resets its tracked mode; the client
 keeps sending `""` until the user changes the mode explicitly.
@@ -269,7 +269,7 @@ It is also the **session-list** row-sync signal ([INV-SIDEBAR-META-001], [12](12
 the RN client currently has no `meta` handler (divergence).
 **Golden:** `internal/agent/agent.go:205`. **Conformance:** `CONF-META-REPLACE`.
 
-### [INV-REVERT-001] (MUST) Filter the transcript by `revert_message_id`
+### ~~[INV-REVERT-001]~~ (retired 0.6.0 — M3) (MUST) Filter the transcript by `revert_message_id`
 When `revert_message_id` is set, drop the message with that id and everything after it, on
 the live view and on every refetch. A new send clears it (the tail reappears).
 **Why:** the reverted tail must vanish and stay gone until the user resends.
@@ -327,7 +327,7 @@ emit an error reason on dispatch failure), `internal/host/service.go` (`ensureBa
 
 ## Interactive tools & session list
 
-### [INV-INTERACTIVE-001] (MUST) Render interactive tools as structured UI
+### ~~[INV-INTERACTIVE-001]~~ (retired 0.6.0 — M3: question tags and plan review went with the ACP migration; inline comments live on in 11) (MUST) Render interactive tools as structured UI
 Render questions from the `part.question` tag ([QST-001](11-interactive-tools.md)) and plans
 (`ExitPlanMode`) from the `tool_call` part `input`, and submit answers per
 [11](11-interactive-tools.md). A client MUST NOT present a question as a bare allow/deny

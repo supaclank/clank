@@ -49,6 +49,14 @@ func newTestDaemon(t *testing.T) *testDaemon {
 // at the same SQLite file as a torn-down first one.
 func newTestDaemonAt(t *testing.T, dbPath string) *testDaemon {
 	t.Helper()
+	return newTestDaemonWithManagers(t, dbPath, nil)
+}
+
+// newTestDaemonWithManagers is newTestDaemonAt with extra backend
+// managers merged over the stub defaults (ACP e2e wiring registers a
+// real manager for codex here).
+func newTestDaemonWithManagers(t *testing.T, dbPath string, extra map[agent.BackendType]agent.BackendManager) *testDaemon {
+	t.Helper()
 
 	stub := &hosttest.StubBackendManager{}
 
@@ -58,14 +66,28 @@ func newTestDaemonAt(t *testing.T, dbPath string) *testDaemon {
 	}
 	t.Cleanup(func() { hs.Close() })
 
+	managers := map[agent.BackendType]agent.BackendManager{
+		agent.BackendOpenCode:   stub,
+		agent.BackendClaudeCode: stub,
+	}
+	for bt, mgr := range extra {
+		managers[bt] = mgr
+	}
+
 	svc := host.New(host.Options{
-		BackendManagers: map[agent.BackendType]agent.BackendManager{
-			agent.BackendOpenCode:   stub,
-			agent.BackendClaudeCode: stub,
-		},
-		SessionsStore: hs,
+		BackendManagers: managers,
+		SessionsStore:   hs,
 	})
 	t.Cleanup(svc.Shutdown)
+
+	// Production runs Service.Init (manager Init incl. ACP supervisor
+	// loops, stale-status normalization). The daemon lifetime context
+	// ends at cleanup so supervisor goroutines stop with the test.
+	initCtx, initCancel := context.WithCancel(context.Background())
+	t.Cleanup(initCancel)
+	if err := svc.Init(initCtx, nil); err != nil {
+		t.Fatalf("svc.Init: %v", err)
+	}
 
 	hostHTTP := httptest.NewServer(hostmux.New(svc, nil).Handler())
 	t.Cleanup(hostHTTP.Close)

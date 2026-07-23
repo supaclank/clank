@@ -57,13 +57,22 @@ Owns everything a chat client cares about:
   rendered state and host state is the root class of chat bugs. **Golden:**
   `internal/host/mux/sessions.go`, `internal/tui/sessionview.go` (`handleSessionMessages`).
 
-## The backend (`internal/agent/`, Claude Code / OpenCode)
+## The backend (`internal/agent/`, Claude Code / OpenCode / Codex)
 
-Behind the host; a client never addresses it directly. It mostly does not leak — but four
-behaviors do, and the spec calls each out where relevant:
+Behind the host; a client never addresses it directly. **Since 0.5.0 clank is migrating
+backends onto the Agent Client Protocol** (`internal/agent/acp/`: the host spawns and
+supervises ACP adapter processes — Codex today, OpenCode and Claude Code in later
+milestones). This is deliberately client-invisible: the wire contract in this spec is the
+compatibility gate for each migration step. Runtime note: ACP adapters distributed as npm
+packages run as plain JS under the pinned **bun**; provisioning is lazy per host
+(`internal/agent/acptools`). It mostly does not leak — but the following behaviors do, and
+the spec calls each out where relevant:
 
-1. **Permission modes** are a Claude concept (`default` / `acceptEdits` / `plan` /
-   `bypassPermissions`); OpenCode ignores them. See [03](03-data-model.md), [07](07-lifecycle-flows.md).
+1. **Session modes are agent-owned** (0.5.0): the agent advertises `{id, name, description}`
+   modes on runtime session info and clients render the list as-is — permission presets for
+   Claude (`default`/`acceptEdits`/`plan`/`bypassPermissions`, plus `auto`/`dontAsk` via
+   ACP) and Codex (`read-only`/`agent`/`agent-full-access`); agents for OpenCode. See
+   [03](03-data-model.md), [07](07-lifecycle-flows.md).
 2. **Message-ID timing differs.** OpenCode assigns IDs synchronously; Claude assigns the
    session/external ID asynchronously and streams text/thinking parts whose `message_id` is
    *empty* (the owning message is encoded in the part ID). See [EVT](04-event-protocol.md),

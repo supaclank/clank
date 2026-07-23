@@ -143,29 +143,6 @@ func (m *Mux) handleAbortSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// RevertRequest is the body for POST /sessions/{id}/revert.
-type RevertRequest struct {
-	MessageID string `json:"message_id"`
-}
-
-func (m *Mux) handleRevertSession(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	var req RevertRequest
-	if err := decodeJSON(r.Body, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
-		return
-	}
-	if req.MessageID == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Error: "message_id is required"})
-		return
-	}
-	if err := m.svc.RevertSession(r.Context(), id, req.MessageID); err != nil {
-		writeError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 // ForkRequest is the body for POST /sessions/{id}/fork.
 type ForkRequest struct {
 	MessageID string `json:"message_id"`
@@ -234,31 +211,6 @@ func (m *Mux) handlePermissionReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := m.svc.RespondPermission(r.Context(), id, permID, req.Allow, req.Message); err != nil {
-		writeError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// QuestionReplyRequest is the body for POST
-// /sessions/{id}/questions/{requestID}/reply.
-type QuestionReplyRequest struct {
-	// Answers carries one entry per question, in order. An all-empty entry
-	// delegates that question back to the agent. Ignored when Reject is true.
-	Answers []agent.QuestionAnswer `json:"answers,omitempty"`
-	// Reject dismisses the prompt without answers.
-	Reject bool `json:"reject,omitempty"`
-}
-
-func (m *Mux) handleQuestionReply(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	requestID := r.PathValue("requestID")
-	var req QuestionReplyRequest
-	if err := decodeJSON(r.Body, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
-		return
-	}
-	if err := m.svc.RespondQuestion(r.Context(), id, requestID, req.Answers, req.Reject); err != nil {
 		writeError(w, err)
 		return
 	}

@@ -57,11 +57,18 @@ func TestCompose_BackendToggle(t *testing.T) {
 		t.Fatalf("expected claude-code after toggle, got %s", m.backend)
 	}
 
-	// Toggle back.
+	// Third backend in the cycle.
+	model, _ = m.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
+	m = model.(*SessionViewModel)
+	if m.backend != agent.BackendCodex {
+		t.Fatalf("expected codex after second toggle, got %s", m.backend)
+	}
+
+	// Wraps back to the first.
 	model, _ = m.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
 	m = model.(*SessionViewModel)
 	if m.backend != agent.BackendOpenCode {
-		t.Fatalf("expected opencode after second toggle, got %s", m.backend)
+		t.Fatalf("expected opencode after wrap toggle, got %s", m.backend)
 	}
 }
 

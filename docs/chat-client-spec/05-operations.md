@@ -15,12 +15,10 @@ Source of truth for routes: `internal/host/mux/mux.go:72`. All require the beare
 | DELETE | `/sessions/{id}` | — | `204` | Yes | Stops backend + removes metadata. |
 | POST | `/sessions/{id}/message` | `SendMessageOpts` | `204` | **No** | Follow-up; fire-and-forget. Alias: `/send`. |
 | POST | `/sessions/{id}/abort` | — | `204` | Yes | Interrupt the current turn. |
-| POST | `/sessions/{id}/revert` | `{ message_id }` | `204` | **No** | **Both** backends; empty id clears the marker on OpenCode. See [OP-005]. |
-| POST | `/sessions/{id}/fork` | `{ message_id? }` | `200` `SessionInfo` | **No** | OpenCode only; Claude errors. |
+| POST | `/sessions/{id}/fork` | `{ message_id? }` | `200` `SessionInfo` | **No** | Capability-gated; `501 unsupported` where the agent has no fork. See [OP-005]. |
 | GET | `/sessions/{id}/messages` | — | `200` `MessageData[]` | Yes | The reconciliation source. Pure read — does not wake the agent ([OP-010]). |
 | GET | `/sessions/{id}/pending-permission` | — | `200` `[]` | Yes | **Currently always empty** — see [OP-007]. |
 | POST | `/sessions/{id}/permissions/{permID}/reply` | `{ allow, message? }` | `204` | Yes* | Answer a permission prompt. |
-| POST | `/sessions/{id}/questions/{requestID}/reply` | `{ answers?, reject? }` | `204` | Yes* | Answer or dismiss a question prompt ([QST-001](11-interactive-tools.md)). |
 | POST | `/sessions/{id}/read` | — | `204` | Yes | Mark read; does not bump `updated_at`. |
 | POST | `/sessions/{id}/visibility` | `{ visibility }` | `204` | Yes | `done`/`archived`/`""`. |
 | POST | `/sessions/{id}/draft` | `{ draft }` | `204` | Yes | Save composer draft. |
@@ -35,7 +33,7 @@ still single-flight it in the UI ([INV-PERM-SINGLEFLIGHT-001](08-invariants.md))
 client driving Create + `/message` + SSE does not need: `POST /sessions/{id}/open` and
 `POST /sessions/{id}/open-and-send` (backend rehydration/orchestration — `POST /sessions` already opens-and-sends
 internally, and every op that **dispatches into the backend** — `/message`, `/abort`,
-`/revert`, `/fork`, permission/question replies — lazily rehydrates it), and `POST /sessions/{id}/stop`
+`/fork`, permission replies — lazily rehydrates it), and `POST /sessions/{id}/stop`
 (backend **process teardown** — distinct from `/abort`, which only interrupts the current
 turn). Worktree / project / sync / auth / GitHub routes are likewise out of chat scope.
 The GETs are reads: none of them is a wake/attach mechanism ([OP-010]).
@@ -64,6 +62,15 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
   at a time). **Why:** treating `204` as "done" or allowing concurrent sends desynchronizes
   the turn. **Golden:** `internal/agent/agent.go:597` (Send "returns once dispatched, NOT
   when the LLM finishes"), `internal/tui/sessionview.go:1151` (`submitting` guard), `:2163`.
+- **[OP-012] (MUST, 0.5.0)** On ACP-served backends a send that arrives while the session is
+  **busy** is accepted (`204`) and **queued host-side** (FIFO, cap 8); prompts dispatch
+  sequentially and `status` stays `busy` until the queue drains to `idle`. A queue-full send
+  fails with a normal error envelope. Clients keep the OP-002 posture unchanged — user
+  messages appear via the standard flow, and no steering/interjection semantics exist (the
+  queued prompt starts a fresh turn). **Why:** ACP is one-prompt-at-a-time; queueing
+  preserves today's send-while-busy UX without protocol tricks. **Golden:**
+  `internal/agent/acp/backend_send.go` (`maxQueuedPrompts`, `runTurns`); regression
+  `TestBackend_QueueWhileBusy`.
 
 ### Reply to permission — `POST /sessions/{id}/permissions/{permID}/reply`
 
@@ -74,9 +81,9 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
   a rejection. **Golden:** `internal/host/mux/sessions.go:252`, `internal/agent/claude_permissions.go:134`
   (`RespondPermission`), `internal/tui/sessionview.go:2168`.
 
-### Reply to question — `POST /sessions/{id}/questions/{requestID}/reply`
+### ~~Reply to question~~ — retired 0.6.0 (endpoint removed)
 
-- **[OP-011] (MUST)** Body is `{ "answers": [{ "selected"?: [labels], "custom"?: string }] }`
+- **~~[OP-011]~~ (retired 0.6.0 — M3) (MUST)** Body is `{ "answers": [{ "selected"?: [labels], "custom"?: string }] }`
   (one entry per question, in order; an all-empty entry delegates that question) or
   `{ "reject": true }` to dismiss. `requestID` comes from the part's `question` tag
   ([QST-001](11-interactive-tools.md)). The backend translates answers into the provider
@@ -106,25 +113,19 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
 
 ### Revert / fork — backend-specific
 
-- **[OP-005] (MUST)** **Revert** is supported on **both** backends — Claude since clank #68
-  (2026-06-21: file rollback + transcript truncation), OpenCode via its session revert marker.
-  **Fork** is **OpenCode-only** (Claude's `Fork` returns *"fork is not supported by Claude Code
-  backend"*). Two semantics a client MUST respect: (1) Claude revert **requires** a non-empty
-  `message_id`; OpenCode additionally treats an **empty** `message_id` as *clear the revert
-  marker* (un-revert). (2) The host does **not** gate by backend — `RevertSession`/`ForkSession`
-  call straight through to the backend — so an unsupported combination (fork on Claude) returns
-  a backend error. A client MUST therefore offer **revert on both** backends, restrict **fork to
-  OpenCode**, and handle the unsupported-op error gracefully (hide the action for the wrong
-  backend) rather than surfacing it as a failure. Revert's effect is observed via the `revert`
-  event + a messages refetch filtered by `revert_message_id`
-  ([STATE-REVERT-001](06-state-model.md)); the call returns `204`. **Why:** an earlier draft of
-  this rule wrongly said revert was Claude-only — it has worked on both since #68, yet the RN
-  client still hides it on Claude (now stale); hiding revert where it works, or offering fork
-  where it errors, both produce missing/confusing affordances. **Golden:**
-  `internal/agent/claude.go:634` (Claude `Revert`), `:794` (Claude `Fork` errors),
-  `internal/agent/opencode.go:227` (OpenCode `Revert`), `:247` (OpenCode `Fork`),
-  `internal/host/service.go:1099` (`RevertSession` — no backend gate),
-  `internal/tui/sessionview.go:1334` (TUI offers revert on user messages, fork on any — ungated).
+- **[OP-005] (MUST)** **Revert is retired** (0.6.0): no backend implements it, the endpoint
+  is gone, and `revert_message_id` is a permanently-empty field until 1.0. **Fork** is
+  capability-gated: the host asks the agent, and OpenCode advertises it today while Claude
+  and Codex do not; ACP fork has no message anchor, so only a **tip** fork is honest — a
+  mid-history `message_id` is refused rather than silently forking the tip. Both an
+  unsupported backend and a mid-history request return the typed
+  `501 {code: "unsupported"}` (mapped back to `agent.ErrUnsupported` in-process); a client
+  MUST handle it gracefully — hide or soft-disable the affordance — never surface it as a
+  generic failure. **Why:** offering an action the host will refuse, or surfacing a refusal
+  as a crash, both read as breakage. **Golden:**
+  `internal/agent/acp/backend_history.go` (`Fork` capability gate + tip-only check),
+  `internal/host/mux/mux.go` (`writeError` → 501 `unsupported`),
+  `internal/tui/sessionview.go` (fork-only action menu, 501-tolerant banner).
 
 ### Messages — `GET /sessions/{id}/messages`
 

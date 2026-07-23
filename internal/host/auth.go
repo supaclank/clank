@@ -47,6 +47,11 @@ const ProviderAnthropicClaudeCode = "anthropic-claude-code"
 // console.anthropic.com API keys. Passed as ANTHROPIC_API_KEY.
 const ProviderAnthropicAPI = "anthropic-api"
 
+// ProviderOpenAICodexAPI is the clank provider ID for the codex backend's
+// OpenAI API key. Stored in clank's openai.json sink and injected into
+// codex-acp spawns as CODEX_API_KEY.
+const ProviderOpenAICodexAPI = "openai-codex-api"
+
 // providerCatalog enumerates the providers this AuthManager knows
 // how to authenticate. Three classes today:
 //   - device-flow OAuth (Phase 1): github-copilot
@@ -68,6 +73,12 @@ var providerCatalog = []agent.ProviderAuthInfo{
 	// pushed off-screen by the 11-entry OpenCode list below.
 	{ProviderID: ProviderAnthropicClaudeCode, DisplayName: "Anthropic (Claude subscription)", AuthType: agent.AuthTypeOAuthCode, Backend: agent.BackendClaudeCode},
 	{ProviderID: ProviderAnthropicAPI, DisplayName: "Anthropic (Console API key)", AuthType: agent.AuthTypeAPI, Backend: agent.BackendClaudeCode},
+
+	// Codex-consumed provider — credential lives in clank's openai.json
+	// and is injected into codex-acp spawns as CODEX_API_KEY; the ACP
+	// supervisor restarts the adapter on rotation. Unconnected, codex
+	// falls back to its own ChatGPT login in ~/.codex.
+	{ProviderID: ProviderOpenAICodexAPI, DisplayName: "OpenAI (Codex API key)", AuthType: agent.AuthTypeAPI, Backend: agent.BackendCodex},
 
 	// OpenCode-consumed providers — credential lives in opencode's
 	// own auth.json and an OpenCode server restart picks it up.
@@ -99,6 +110,10 @@ var providerCatalog = []agent.ProviderAuthInfo{
 		},
 	},
 }
+
+// SetOpenAICredentialCallback wires the post-write hook for OpenAI
+// credentials (ACP supervisor nudge). Call before serving requests.
+func (a *AuthManager) SetOpenAICredentialCallback(f func()) { a.onOpenAICredential = f }
 
 // isAnthropicProvider reports whether providerID's credential lives
 // in the anthropic sink rather than opencode's auth.json.
@@ -163,8 +178,8 @@ type flowState struct {
 type AuthManager struct {
 	homeDir string
 
-	// restart triggers a full OpenCode server restart after a
-	// credential write. Wired to OpenCodeBackendManager.RestartAllServers
+	// restart cycles opencode after a credential write (auth.json is
+	// read at process start). Wired to the ACP supervisor's RestartAll
 	// at construction; tests inject a stub.
 	restart func(ctx context.Context) error
 
@@ -183,6 +198,11 @@ type AuthManager struct {
 	// is empty. Set once at wiring time via EnableClaudeCLIFallback,
 	// before the manager serves requests.
 	claudeCLIFallback bool
+
+	// onOpenAICredential fires after an OpenAI credential write so the
+	// ACP supervisor's env-fingerprint restart picks it up. Wired via
+	// SetOpenAICredentialCallback before the manager serves requests.
+	onOpenAICredential func()
 
 	// lookupEnv resolves env-borne credentials for provider status
 	// (see env_credentials.go). os.Getenv in production; tests inject
@@ -326,6 +346,8 @@ func (a *AuthManager) ListProviders(ctx context.Context, backend agent.BackendTy
 			p.Connected = sink.OAuthToken != ""
 		case ProviderAnthropicAPI:
 			p.Connected = sink.APIKey != ""
+		case ProviderOpenAICodexAPI:
+			p.Connected = a.OpenAIEnv() != nil
 		default:
 			p.Connected = store[p.ProviderID].Type != ""
 		}
@@ -453,6 +475,18 @@ func (a *AuthManager) runAPIKeyFlow(ctx context.Context, flowID, providerID, key
 			return
 		}
 		a.transition(flowID, agent.DeviceFlowAuthorized, "")
+		a.transition(flowID, agent.DeviceFlowSuccess, "")
+		return
+	}
+	if providerID == ProviderOpenAICodexAPI {
+		if err := a.SetOpenAIAPIKey(key); err != nil {
+			a.transition(flowID, agent.DeviceFlowError, "write openai credential: "+err.Error())
+			return
+		}
+		a.transition(flowID, agent.DeviceFlowAuthorized, "")
+		if a.onOpenAICredential != nil {
+			a.onOpenAICredential()
+		}
 		a.transition(flowID, agent.DeviceFlowSuccess, "")
 		return
 	}

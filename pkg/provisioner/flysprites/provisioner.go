@@ -802,11 +802,12 @@ echo "::: done — /usr/local/bin/opencode -> $BUN_OPENCODE (version $PINNED)"
 // EXACT version clank pins (agent.PinnedClaudeVersion), with the same
 // probe-and-upgrade semantics as ensureOpenCodeInstalled.
 //
-// Why pin: the sprite base image bakes a claude with auto-updates
-// disabled, frozen at image-build time — and the CLI is what resolves
-// clank's sonnet/opus/haiku family aliases to a concrete model, so a
-// stale claude silently downgrades every session's model. See
-// agent.PinnedClaudeVersion's docstring for the 2026-07-05 incident.
+// Since the ACP migration this CLI is NOT the agent runtime — the
+// claude-agent-acp adapter carries its own bundled CLI (pinned by
+// acptools' lockfile). It stays because clank's Anthropic auth still
+// shells out to it: `claude setup-token` (auth_anthropic_setup_token.go)
+// and the borrowed-login probe (claude_cli.go). The pin tracks the
+// adapter's bundled vintage so both see the same credential formats.
 //
 // The probe resolves `claude` via PATH rather than execing
 // claudePath: the image-baked binary at ~/.local/bin shadows

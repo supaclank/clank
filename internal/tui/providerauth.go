@@ -853,6 +853,8 @@ func backendDisplayName(bt agent.BackendType) string {
 		return "Claude Code"
 	case agent.BackendOpenCode:
 		return "OpenCode"
+	case agent.BackendCodex:
+		return "Codex"
 	default:
 		return string(bt)
 	}

@@ -22,18 +22,19 @@ event**: the part is the one object clients already reconcile across the live st
 correlation or dedup, and survives reopening the session (and, on Claude, daemon restarts —
 the tag is re-derived from the transcript).
 
-- **[QST-001] (MUST — tag rendering & reply)** A client MUST render a tagged part as a
+- **~~[QST-001]~~ (retired 0.6.0 — M3) (MUST — tag rendering & reply)** A client MUST render a tagged part as a
   structured prompt (options per question, multi-select where flagged, free-text where
   `allow_custom`) and reply via `POST /sessions/{id}/questions/{request_id}/reply` with
   `{ answers: [{selected?[], custom?}] }` (one per question, in order; an all-empty answer
   delegates that question) or `{ reject: true }` to dismiss. The **backend** owns translating
   answers to the provider transport (Claude: permission-deny message while parked, follow-up
-  send after auto-run; OpenCode: its structured question API) — clients never format answer
-  text themselves. **Golden:** `internal/agent/claude_permissions.go` (`RespondQuestion`),
-  `internal/agent/opencode_questions.go`, `internal/tui/sessionview_question.go`.
+  send after auto-run; OpenCode's structured question API went with its bespoke backend at
+  M2 — ACP-served backends never emit question tags) — clients never format answer text
+  themselves. **Golden:** `internal/agent/claude_permissions.go` (`RespondQuestion`),
+  `internal/tui/sessionview_question.go`.
   **Conformance:** `CONF-QUESTION-TAG`.
 
-- **[QST-002] (MUST — answerability is positional)** A tagged part is **awaiting an answer**
+- **~~[QST-002]~~ (retired 0.6.0 — M3) (MUST — answerability is positional)** A tagged part is **awaiting an answer**
   iff it is the conversation's **last content** (no later assistant text/tool part and no
   later user message; a paired `tool_result` on the same part id does not count) and its
   status is not `error`. Anything after it means the conversation moved on — render the tag
@@ -43,7 +44,7 @@ the tag is re-derived from the transcript).
   **Golden:** `internal/tui/sessionview_question.go` (`activeQuestionPart`),
   `clank-mobile/src/lib/activeToolCall.ts` (same heuristic, client-parsed).
 
-- **[QST-003] (MUST — permission suppression)** For a gated Claude question (default/plan
+- **~~[QST-003]~~ (retired 0.6.0 — M3) (MUST — permission suppression)** For a gated Claude question (default/plan
   mode) the backend still emits the `permission` event, with the **same `request_id`** as the
   tag, so pre-tag clients keep working; the tagged part is emitted first. A tag-aware client
   MUST suppress that permission prompt (match `request_id` or `tool_use_id`) — the card
@@ -110,7 +111,7 @@ permission flow applies).
   `clank-mobile/src/lib/planReview.ts:78` (`formatPlanApproval`), `:69` (`formatPlanReview`),
   `:30` (`APPROVAL_MESSAGE`). **Conformance:** `CONF-INTERACTIVE-ASK`, `CONF-INTERACTIVE-PLAN`.
 
-- **[ITOOL-005] (MUST)** Plan-mode posture follows [INV-PERMMODE-EXITPLAN-001](08-invariants.md):
+- **~~[ITOOL-005]~~ (retired 0.6.0 — M3) (MUST)** Plan-mode posture follows [INV-PERMMODE-EXITPLAN-001](08-invariants.md):
   Approve = **reply `allow`** to the parked `ExitPlanMode` permission; the **backend** then
   exits plan mode and resets its tracked mode (`internal/agent/claude_permissions.go:97`). The
   client does **not** send a `permission_mode` to switch to build — it simply keeps sending
@@ -144,7 +145,7 @@ comment.
 | Propose a plan for approval | `ExitPlanMode` tool call (plan in `input`) | plain assistant message | plan card (Claude) / inline comments on the message (OpenCode) |
 | Reply to a specific section | inline comments | inline comments | inline comments ([ICOMMENT-001]) |
 
-- **[ITOOL-006] (SHOULD)** A client SHOULD present `AskUserQuestion` and OpenCode's
+- **~~[ITOOL-006]~~ (retired 0.6.0 — M3) (SHOULD)** A client SHOULD present `AskUserQuestion` and OpenCode's
   `question` through the **same** question UI (the `part.question` tag delivers both
   pre-normalized, [QST-001]), and OpenCode plans through inline comments on the message.
   **Why:** one consistent interaction across backends.

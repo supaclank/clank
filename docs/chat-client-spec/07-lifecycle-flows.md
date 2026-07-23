@@ -59,65 +59,18 @@ The blocking is real: the host parks the backend's reader, so the tool `input` i
 *before* the permission and no further events arrive until the answer. Golden:
 `internal/agent/claude_permissions.go:29`–`:127`.
 
-## 4. Plan mode + ExitPlanMode (interactive tool)
+## ~~4. Plan mode + ExitPlanMode~~ / ~~5. Questions~~ — retired 0.6.0 (M3)
 
-In `plan` mode the agent works read-only, then calls `ExitPlanMode` to ask permission to
-proceed. `ExitPlanMode` is a normal `permission` prompt (its plan text rides in the
-correlated tool-call part's `input`):
+Plan review (approve / request-changes / deny) and structured question prompts went with
+the ACP migration. `plan` **mode** survives where the agent advertises it — the agent's
+`ExitPlanMode` request now arrives as an ordinary permission prompt (flow 3), with the plan
+text rendered from the tool part. See the retire register in
+[README](README.md#retired-in-060-the-acp-migration-m3).
 
-```
-session started with permission_mode: plan
-H→C: part {id:T, type:tool_call, tool:ExitPlanMode, input:{plan…}}
-H→C: permission {request_id:P, tool:ExitPlanMode, tool_use_id:T}
-C: render the plan from part T's input; LOCK composer        ── [VIEW-PENDING-PERM-001]
-C: user approves → POST …/reply {allow:true}                 ── [OP-003]
-   (backend auto-exits plan mode; it resets its tracked mode)
-C: next send carries permission_mode:"" → backend re-asserts the user's chosen mode
-```
+## ~~6. Revert~~ — retired 0.6.0 (M3)
 
-- **[FLOW-PLAN-001] (MUST)** A client MUST present `ExitPlanMode` as an approve/revise
-  decision rendered from the tool-call part's `input` (the plan), not as a normal tool —
-  **Approve** switches to build mode (the agent implements), **Revise** stays in plan mode
-  (the agent re-plans). The answer goes back per [11 · Interactive Tools](11-interactive-tools.md)
-  via the **permission reply** (allow to approve, deny-with-notes to revise) — not a
-  `permission_mode` send; ordinary follow-ups keep `permission_mode:""` ([DATA-040]).
-  **Why:** treating it as
-  opaque hides the plan; re-sending a non-empty default would re-flip the mode. **Golden:**
-  `clank-mobile/src/lib/planReview.ts` (full review UX; RN is the reference),
-  `internal/tui/sessionview.go` (plan text + approve/request-changes in the prompt card),
-  `internal/agent/claude_permissions.go:97` (mode reset on approval).
-
-## 5. Questions (interactive tool)
-
-Questions arrive as their tool-call part, pre-normalized via the `part.question` tag
-([QST-001](11-interactive-tools.md)): the client renders a structured prompt and replies with
-structured answers on the questions endpoint; the paired `permission` (same `request_id`,
-gated Claude sessions only) is suppressed. Because the tag also rides `Messages()` history,
-reopening a session restores the prompt from the ordinary refetch. Legacy clients instead
-parse the `AskUserQuestion` tool-call part input by tool name.
-
-- **[FLOW-ASK-001] (MUST)** A tag-aware client MUST render the tagged part per
-  [QST-001](11-interactive-tools.md) while it is awaiting an answer per [QST-002]
-  (positional: it is the conversation's last content); once the conversation moves past it,
-  the card MUST render read-only rather than reappear. Legacy clients parse the question(s)
-  from the `AskUserQuestion` tool-call part `input` and submit a formatted `SendMessage` per
-  [ITOOL-004](11-interactive-tools.md), resolving the gating permission when one is pending.
-  **Why:** stop-and-wait tools must retire on the "already handled" signal or they flicker back.
-  **Golden:** `internal/tui/sessionview_question.go`, `clank-mobile/src/lib/askQuestion.ts`
-  (legacy path), `…/session/SessionEventStream.kt:230` (clears on terminal status).
-
-## 6. Revert
-
-```
-C: user picks "revert to this message" (id:M)
-C: POST /sessions/{id}/revert {message_id:M}     ── both backends [OP-005]
-H: rolls files back + truncates transcript at M  ── claude.go:634 / opencode.go:227
-H→C: 204
-H→C: revert {message_id:M}                        ── [STATE-REVERT-001]
-C: set revert_message_id=M; prefill composer with M's prompt; refetch messages
-C: apply revert filter → drop M and everything after  ── [INV-REVERT-001]
-   (next send clears revert_message_id → tail reappears) ── [STATE-SUBMIT-001]
-```
+No backend implements revert; the endpoint and its `revert` event are gone.
+See the retire register in [README](README.md#retired-in-060-the-acp-migration-m3).
 
 ## 7. Abort / cancel
 

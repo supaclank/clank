@@ -459,10 +459,31 @@ func (r StartRequest) Validate() error {
 	if r.Prompt == "" && len(r.Attachments) == 0 {
 		return fmt.Errorf("prompt or attachment is required")
 	}
-	if r.PermissionMode != "" && !r.PermissionMode.IsValid() {
-		return fmt.Errorf("unknown permission_mode: %s", r.PermissionMode)
-	}
+	// PermissionMode is an agent-defined mode id (ACP: the agent owns its
+	// mode vocabulary and advertises it per session) — no closed-enum
+	// validation here; the serving agent rejects ids it doesn't offer.
 	return nil
+}
+
+// ClaudeToolExitPlanMode is the Claude tool name carried on ExitPlanMode
+// permission prompts (via the adapter's _meta.claudeCode.toolName).
+// Clients render those prompts as a plan review (approve/deny).
+const ClaudeToolExitPlanMode = "ExitPlanMode"
+
+// SessionMode is one agent-advertised session mode (the ACP
+// session/set_mode vocabulary). The agent owns the list; clients render
+// it as-is and send back the chosen ID as PermissionMode.
+type SessionMode struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// ModeReporter is implemented by backends whose agent advertises session
+// modes. The host stamps the result onto runtime SessionInfo so clients
+// can render the agent-owned mode picker.
+type ModeReporter interface {
+	Modes() (currentID string, available []SessionMode)
 }
 
 // SessionInfo is a snapshot of a managed session, returned by the daemon API.
@@ -482,6 +503,8 @@ type SessionInfo struct {
 	Draft           string            `json:"draft,omitempty"`             // Unsent follow-up text the user was composing
 	RevertMessageID string            `json:"revert_message_id,omitempty"` // When set, messages from this ID onward are reverted (hidden)
 	ServerURL       string            `json:"server_url,omitempty"`        // Runtime-only: backend server URL (e.g. OpenCode serve endpoint). Not persisted.
+	CurrentModeID   string            `json:"current_mode_id,omitempty"`   // Runtime-only: the agent-owned session mode currently active. Not persisted.
+	AvailableModes  []SessionMode     `json:"available_modes,omitempty"`   // Runtime-only: agent-advertised modes for the picker. Not persisted.
 	IsRemote        bool              `json:"is_remote,omitempty"`         // Runtime-only: decoration stamped by the laptop daemon's session router when this session's worktree is owned by the active remote. Always false on direct host responses; populated by gateway routing.
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`
@@ -717,14 +740,9 @@ type SessionBackend interface {
 	// support history retrieval).
 	Messages(ctx context.Context) ([]MessageData, error)
 
-	// Revert removes the specified message and all subsequent messages.
-	// Returns an error if the backend does not support reverting
-	// (e.g. Claude Code).
-	Revert(ctx context.Context, messageID string) error
-
 	// Fork creates a new session branched from the given message.
-	// Returns the new session's external ID and title. Returns an error
-	// if the backend does not support forking.
+	// Returns the new session's external ID and title. Returns a typed
+	// ErrUnsupported when the backend/agent does not advertise forking.
 	Fork(ctx context.Context, messageID string) (ForkResult, error)
 
 	// RespondPermission replies to a pending permission prompt.
@@ -733,13 +751,6 @@ type SessionBackend interface {
 	// it is ignored when allow=true and by backends whose protocol has no
 	// deny-reason field.
 	RespondPermission(ctx context.Context, permissionID string, allow bool, denyMessage string) error
-
-	// RespondQuestion replies to a pending QuestionPrompt (Part.Question). answers must
-	// carry one entry per question, in order; an all-empty QuestionAnswer
-	// delegates that question back to the agent. reject=true dismisses the
-	// prompt without answers (answers is ignored). Returns an error for an
-	// unknown requestID so callers fail fast on a stale prompt.
-	RespondQuestion(ctx context.Context, requestID string, answers []QuestionAnswer, reject bool) error
 }
 
 // BackendInvocation is the host-resolved, backend-only view of a session
@@ -806,20 +817,6 @@ type ModelLister interface {
 // implement to discover historical sessions from the underlying backend.
 type SessionDiscoverer interface {
 	DiscoverSessions(ctx context.Context, seedDir string) ([]SessionSnapshot, error)
-}
-
-// TranscriptReader is an optional interface for BackendManagers whose
-// session history lives in on-disk transcripts readable without a live
-// backend (Claude Code's JSONL). The host serves history through it when
-// no live backend is registered, so a pure read never spawns the agent
-// process. externalID is the backend's own session id; empty means the
-// session was never opened and yields (nil, nil), mirroring
-// SessionBackend.Messages before a session id exists.
-//
-// Backends whose history API needs a live server (opencode) deliberately
-// do NOT implement this — they keep the rehydrate-on-read behavior.
-type TranscriptReader interface {
-	ReadTranscript(ctx context.Context, workDir, externalID string) ([]MessageData, error)
 }
 
 // AllSessionDiscoverer is an optional interface for BackendManagers whose

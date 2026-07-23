@@ -535,9 +535,11 @@ func (m *SessionViewModel) backendValue(focused bool) string {
 		bracket := lipgloss.NewStyle().Foreground(bracketColor).Bold(hovered)
 		return bracket.Render(lb) + text + bracket.Render(rb)
 	}
-	oc := option("OpenCode", 0, m.backend == agent.BackendOpenCode)
-	cc := option("Claude Code", 1, m.backend == agent.BackendClaudeCode)
-	return oc + "  " + cc
+	parts := make([]string, len(agent.AllBackends))
+	for i, b := range agent.AllBackends {
+		parts[i] = option(backendDisplayName(b), i, m.backend == b)
+	}
+	return strings.Join(parts, "  ")
 }
 
 // newWorktreeValue renders the New-worktree toggle's current state.
