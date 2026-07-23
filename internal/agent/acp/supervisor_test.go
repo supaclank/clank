@@ -3,6 +3,9 @@ package acp_test
 import (
 	"context"
 	"fmt"
+	"os"
+	"runtime"
+	"runtime/debug"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -226,5 +229,47 @@ func TestSupervisor_StopAllFailsWaitersAndConns(t *testing.T) {
 	}
 	if _, err := f.sup.GetConn(context.Background(), "/dir/a"); err == nil {
 		t.Error("GetConn after StopAll should error")
+	}
+}
+
+// execSpawn's NewAdapterConn-failure branch (reached after cmd.Start()
+// already opened the stdin/stdout pipes) must close them like its sibling
+// error branches do — otherwise a supervisor repeatedly failing to spawn
+// (bad binary, crashing adapter) leaks 2 fds per attempt until the
+// runtime GC finalizes them. Exercises the real execSpawn (no SpawnFunc
+// override): /bin/true exits immediately without speaking ACP, so the
+// initialize handshake fails right after a successful process start.
+func TestSupervisor_ExecSpawnClosesPipesOnInitializeFailure(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("/proc/self/fd is Linux-only")
+	}
+	// Not t.Parallel(): disabling GC is process-global, and this asserts
+	// an exact fd-count delta that concurrent tests' own pipes would pollute.
+	oldGC := debug.SetGCPercent(-1)
+	defer debug.SetGCPercent(oldGC)
+
+	profile := testProfile(acpx.ScopePerDir, nil)
+	profile.Command = func(string) (string, []string) { return "/bin/true", nil }
+	sup, err := acpx.NewAdapterSupervisor(profile, t.Logf)
+	if err != nil {
+		t.Fatalf("NewAdapterSupervisor: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sup.Run(ctx)
+
+	before, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatalf("ReadDir /proc/self/fd: %v", err)
+	}
+	if _, err := sup.GetConn(context.Background(), t.TempDir()); err == nil {
+		t.Fatal("GetConn against /bin/true should fail the ACP handshake")
+	}
+	after, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatalf("ReadDir /proc/self/fd (after): %v", err)
+	}
+	if got, want := len(after), len(before); got != want {
+		t.Errorf("open fds after a failed spawn = %d, want %d (unchanged) — stdin/stdout pipes leaked", got, want)
 	}
 }

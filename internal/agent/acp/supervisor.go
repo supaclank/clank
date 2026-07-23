@@ -336,6 +336,8 @@ func (s *AdapterSupervisor) execSpawn(ctx context.Context, scopeDir string) (*Ad
 	if err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		_ = stdin.Close()
+		_ = stdout.Close()
 		return nil, err
 	}
 	// Process exit ⇒ conn closed, even if the pipes wedge.
