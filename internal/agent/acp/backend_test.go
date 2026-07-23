@@ -131,7 +131,7 @@ func TestBackend_TurnLifecycle(t *testing.T) {
 	}
 
 	evts := f.waitFor(5*time.Second, func(evts []agent.Event) bool {
-		return statusOf(evts) == agent.StatusIdle && countType(evts, agent.EventMessage) >= 3
+		return statusOf(evts) == agent.StatusIdle && countType(evts, agent.EventMessage) >= 2
 	})
 
 	// Every event carries the external id.
@@ -140,32 +140,45 @@ func TestBackend_TurnLifecycle(t *testing.T) {
 			t.Errorf("event %s missing ExternalID", e.Type)
 		}
 	}
-	// The user message precedes busy; committed assistant + carrier follow.
+	// Live message events: the full user message, then an assistant
+	// SHELL. Regression for the triple-render bug: a live assistant
+	// message event carrying Content or Parts makes clients render the
+	// turn once per channel (streamed part + Content append + parts
+	// re-add) on fresh sessions — rendering must flow through
+	// EventPartUpdate only.
 	var roles []string
-	for _, e := range evts {
-		if e.Type == agent.EventMessage {
-			roles = append(roles, e.Data.(agent.MessageData).Role)
-		}
-	}
-	if fmt.Sprint(roles) != "[user assistant user]" {
-		t.Errorf("message roles = %v, want [user assistant user] (prompt, reply, tool-result carrier)", roles)
-	}
-	// Tool call + result share one part id across the two messages.
-	var callID, resultID string
 	for _, e := range evts {
 		if e.Type != agent.EventMessage {
 			continue
 		}
 		md := e.Data.(agent.MessageData)
-		for _, p := range md.Parts {
-			switch p.Type {
-			case agent.PartToolCall:
-				callID = p.ID
-			case agent.PartToolResult:
-				resultID = p.ID
-				if p.Output != "done" {
-					t.Errorf("tool result output = %q, want done", p.Output)
-				}
+		roles = append(roles, md.Role)
+		if md.Role == "assistant" {
+			if md.Content != "" || len(md.Parts) != 0 {
+				t.Errorf("assistant message event must be a shell; got Content=%q Parts=%d", md.Content, len(md.Parts))
+			}
+			if md.ID == "" {
+				t.Error("assistant shell missing message ID")
+			}
+		}
+	}
+	if fmt.Sprint(roles) != "[user assistant]" {
+		t.Errorf("live message events = %v, want [user assistant] (no carrier event)", roles)
+	}
+	// Tool call + result share one part id, delivered via part updates.
+	var callID, resultID string
+	for _, e := range evts {
+		if e.Type != agent.EventPartUpdate {
+			continue
+		}
+		p := e.Data.(agent.PartUpdateData).Part
+		switch p.Type {
+		case agent.PartToolCall:
+			callID = p.ID
+		case agent.PartToolResult:
+			resultID = p.ID
+			if p.Output != "done" {
+				t.Errorf("tool result output = %q, want done", p.Output)
 			}
 		}
 	}
@@ -176,13 +189,18 @@ func TestBackend_TurnLifecycle(t *testing.T) {
 	if countDeltas(evts) < 2 {
 		t.Errorf("expected streamed text deltas, got %d", countDeltas(evts))
 	}
-	// Messages() equals the committed transcript shape.
+	// Messages() carries the FULL committed transcript (user, assistant
+	// with text+tool parts, tool-result carrier) — the shell events never
+	// thin it out.
 	msgs, err := f.backend.Messages(ctx)
 	if err != nil {
 		t.Fatalf("Messages: %v", err)
 	}
 	if len(msgs) != 3 || msgs[1].Content != "hello world" {
-		t.Errorf("Messages = %d entries (assistant content %q), want 3 with 'hello world'", len(msgs), msgs[1].Content)
+		t.Fatalf("Messages = %d entries (assistant content %q), want 3 with 'hello world'", len(msgs), msgs[1].Content)
+	}
+	if len(msgs[1].Parts) == 0 || msgs[2].Role != "user" || len(msgs[2].Parts) != 1 {
+		t.Errorf("committed transcript shape wrong: assistant parts=%d carrier=%+v", len(msgs[1].Parts), msgs[2])
 	}
 }
 
@@ -571,16 +589,16 @@ func TestBackend_LateUpdates_DrainedIntoTurnThenDroppedAfterIdle(t *testing.T) {
 	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "go"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	evts := f.waitFor(10*time.Second, func(evts []agent.Event) bool {
+	f.waitFor(10*time.Second, func(evts []agent.Event) bool {
 		return statusOf(evts) == agent.StatusIdle
 	})
 	// The drained completion must be part of the committed transcript.
+	msgs, err := f.backend.Messages(ctx)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
 	committed := false
-	for _, e := range evts {
-		if e.Type != agent.EventMessage {
-			continue
-		}
-		md := e.Data.(agent.MessageData)
+	for _, md := range msgs {
 		for _, p := range md.Parts {
 			if p.ID == "tc-late" && p.Status == agent.PartCompleted {
 				committed = true

@@ -275,9 +275,13 @@ func (r *reducer) onSessionInfo(si *sdk.SessionSessionInfoUpdate) []agent.Event 
 	return []agent.Event{{Type: agent.EventTitleChange, Data: agent.TitleChangeData{Title: r.title}}}
 }
 
-// commitTurn moves the open turn into the committed transcript and
-// returns the committed-message events (assistant, then the tool-result
-// carrier) — empty while replaying.
+// commitTurn moves the open turn into the committed transcript. Live, it
+// returns only an assistant SHELL event ({ID, Role} — no content, no
+// parts): rendering already happened through EventPartUpdate, and the
+// golden client reducer treats live message events as redundant shells
+// (a full-bodied one triple-renders the turn on a fresh session: streamed
+// part + Content append + parts re-add). Full data stays in r.messages
+// for Messages(); the shell still bumps host metadata (UpdatedAt).
 func (r *reducer) commitTurn() []agent.Event {
 	t := r.cur
 	r.cur = nil
@@ -305,7 +309,10 @@ func (r *reducer) commitTurn() []agent.Event {
 		}
 		r.messages = append(r.messages, md)
 		if !r.replaying {
-			events = append(events, agent.Event{Type: agent.EventMessage, Data: md})
+			events = append(events, agent.Event{Type: agent.EventMessage, Data: agent.MessageData{
+				ID:   md.ID,
+				Role: "assistant",
+			}})
 		}
 	}
 	if len(t.carrierParts) > 0 {
@@ -315,9 +322,9 @@ func (r *reducer) commitTurn() []agent.Event {
 			Parts: t.carrierParts,
 		}
 		r.messages = append(r.messages, md)
-		if !r.replaying {
-			events = append(events, agent.Event{Type: agent.EventMessage, Data: md})
-		}
+		// No live event for the carrier: its tool-result parts already
+		// streamed, and a user-role shell could mis-backfill a typed
+		// entry's message ID client-side.
 	}
 	return events
 }
