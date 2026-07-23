@@ -61,8 +61,9 @@ func (b *Backend) Open(ctx context.Context) error {
 		b.mu.Lock()
 		b.sessionID = sid
 		b.red.setSessionID(sid)
-		b.applySessionStateLocked(ns.Modes, ns.ConfigOptions)
+		publish := b.applySessionStateLocked(ns.Modes, ns.ConfigOptions)
 		b.mu.Unlock()
+		publish()
 
 		if b.initialMode != "" {
 			b.applyMode(ctx, conn, string(b.initialMode))
@@ -81,13 +82,14 @@ func (b *Backend) Open(ctx context.Context) error {
 			Cwd:        b.workDir,
 			McpServers: []sdk.McpServer{},
 		})
+		var publish func()
 		b.mu.Lock()
 		if err == nil {
 			// session/load carries the same modes + config options as
 			// session/new. Skipping them here left every RESUMED session
 			// with no mode picker and no model list — i.e. almost every
 			// session a user opens from the inbox.
-			b.applySessionStateLocked(loaded.Modes, loaded.ConfigOptions)
+			publish = b.applySessionStateLocked(loaded.Modes, loaded.ConfigOptions)
 		}
 		if err != nil {
 			// Updates may have streamed in before the RPC failed; discard
@@ -97,6 +99,9 @@ func (b *Backend) Open(ctx context.Context) error {
 			b.red.finishReplay()
 		}
 		b.mu.Unlock()
+		if publish != nil {
+			publish()
+		}
 		if err != nil {
 			conn.Deregister(sdk.SessionId(resume))
 			return fmt.Errorf("acp %s: session/load %s: %w", b.profile.ID, resume, err)
@@ -166,8 +171,11 @@ func (b *Backend) Modes() (string, []agent.SessionMode) {
 
 // applySessionStateLocked records the agent-advertised session state that
 // every open path returns: modes (the mode picker) and config options
-// (the model picker). Callers hold b.mu.
-func (b *Backend) applySessionStateLocked(modes *sdk.SessionModeState, opts []sdk.SessionConfigOption) {
+// (the model picker). Callers hold b.mu. Returns the sinks to invoke and
+// their arguments so the caller can publish after releasing b.mu —
+// calling out to the manager (which takes its own catalogMu) while
+// holding b.mu would invert the two locks' usual order.
+func (b *Backend) applySessionStateLocked(modes *sdk.SessionModeState, opts []sdk.SessionConfigOption) (publish func()) {
 	// Two channels carry the same thing and agents differ in which they
 	// use: claude-agent-acp sends a SessionModeState AND a "mode" config
 	// option; `opencode acp` sends ONLY the config option (its agents).
@@ -183,11 +191,15 @@ func (b *Backend) applySessionStateLocked(modes *sdk.SessionModeState, opts []sd
 		b.currentModel = current
 		b.availableModels = models
 	}
-	if b.onCatalog != nil && len(b.availableModels) > 0 {
-		b.onCatalog(b.workDir, b.availableModels)
-	}
-	if b.onModes != nil && len(b.availableModes) > 0 {
-		b.onModes(b.workDir, b.availableModes)
+	onCatalog, workDir, models := b.onCatalog, b.workDir, b.availableModels
+	onModes, modesOut := b.onModes, b.availableModes
+	return func() {
+		if onCatalog != nil && len(models) > 0 {
+			onCatalog(workDir, models)
+		}
+		if onModes != nil && len(modesOut) > 0 {
+			onModes(workDir, modesOut)
+		}
 	}
 }
 

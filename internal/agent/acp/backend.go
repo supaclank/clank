@@ -77,9 +77,6 @@ type queuedPrompt struct{ blocks []sdk.ContentBlock }
 
 type permDecision struct{ allow bool }
 
-// NewBackend builds a SessionBackend for one clank session.
-// resumeExternalID != "" resumes an existing ACP session via
-// session/load; guidance is injected only on fresh sessions.
 // SetCatalogSink registers the manager callback that receives this
 // session's agent-advertised model list.
 func (b *Backend) SetCatalogSink(fn func(workDir string, models []agent.ModelInfo)) {
@@ -96,6 +93,9 @@ func (b *Backend) SetModeSink(fn func(workDir string, modes []agent.SessionMode)
 	b.onModes = fn
 }
 
+// NewBackend builds a SessionBackend for one clank session.
+// resumeExternalID != "" resumes an existing ACP session via
+// session/load; guidance is injected only on fresh sessions.
 func NewBackend(profile AdapterProfile, workDir, resumeExternalID, guidance string, initialMode agent.ClaudePermissionMode, resolver ConnResolver, logf func(string, ...any)) *Backend {
 	if logf == nil {
 		logf = func(string, ...any) {}

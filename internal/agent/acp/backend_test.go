@@ -881,3 +881,42 @@ func TestBackend_PublishesModelCatalogOnOpen(t *testing.T) {
 		t.Fatal("session open never published a model catalog")
 	}
 }
+
+// The catalog/mode sinks are manager callbacks that take their own lock;
+// invoking them while b.mu is still held would invert the usual
+// b.mu → catalogMu order and deadlock the moment a sink calls back into
+// the backend.
+func TestBackend_CatalogSinkCanCallBackIntoBackend(t *testing.T) {
+	t.Parallel()
+	category := sdk.SessionConfigOptionCategory("model")
+	scripted := &acptest.ScriptedAgent{}
+	scripted.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+		return sdk.NewSessionResponse{
+			SessionId: "s-lock-order",
+			ConfigOptions: []sdk.SessionConfigOption{{Select: &sdk.SessionConfigOptionSelect{
+				Id: "model", Name: "Model", Category: &category, CurrentValue: "sonnet",
+				Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+					{Value: "sonnet", Name: "Sonnet"},
+				}},
+			}}},
+		}, nil
+	}
+	f := newBackendFixture(t, scripted, "")
+	f.backend.SetCatalogSink(func(dir string, models []agent.ModelInfo) {
+		f.backend.Modes() // acquires b.mu — deadlocks if Open still holds it here
+	})
+	f.backend.SetModeSink(func(dir string, modes []agent.SessionMode) {
+		f.backend.Modes() // same hazard via the mode sink
+	})
+
+	done := make(chan error, 1)
+	go func() { done <- f.backend.Open(context.Background()) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Open deadlocked: a sink called back into a b.mu-held method")
+	}
+}

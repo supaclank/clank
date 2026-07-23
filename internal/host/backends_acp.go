@@ -289,7 +289,8 @@ func (m *ACPBackendManager) putCatalog(workDir string, models []agent.ModelInfo)
 	if m.catalog == nil {
 		m.catalog = make(map[string][]agent.ModelInfo)
 	}
-	m.catalog[workDir] = models
+	// Clone so the catalog is independent of the producer's backing array.
+	m.catalog[workDir] = slices.Clone(models)
 }
 
 // putModes records a session's advertised modes for its project dir.
@@ -302,7 +303,8 @@ func (m *ACPBackendManager) putModes(workDir string, modes []agent.SessionMode) 
 	if m.modes == nil {
 		m.modes = make(map[string][]agent.SessionMode)
 	}
-	m.modes[workDir] = modes
+	// Clone so the catalog is independent of the producer's backing array.
+	m.modes[workDir] = slices.Clone(modes)
 }
 
 // ListModes implements agent.ModeLister from what a session reported.
