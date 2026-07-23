@@ -25,6 +25,26 @@ func TestClaudePermissionModes_DefaultsToBypass(t *testing.T) {
 	}
 }
 
+// modelsResultMsg always follows the sessionInfoMsg seeding block (every
+// backend branch there returns a fetchModels() command), so the agent's
+// current model must be re-derived from m.info here — a bare "reset to -1"
+// silently discards the active-model marking on every session open.
+func TestSessionView_ModelsResultMsg_PreservesAgentCurrentModel(t *testing.T) {
+	t.Parallel()
+	m := NewSessionViewModel(nil, "sess-1")
+	m.width, m.height = 80, 40
+	m.info = &agent.SessionInfo{CurrentModelID: "opus"}
+
+	model, _ := m.Update(modelsResultMsg{models: []agent.ModelInfo{
+		{ID: "sonnet"}, {ID: "opus"},
+	}})
+	m = model.(*SessionViewModel)
+
+	if m.selectedModel != 1 {
+		t.Fatalf("selectedModel = %d, want 1 (opus, the agent's current model)", m.selectedModel)
+	}
+}
+
 func TestAgentSelectableModes_Selection(t *testing.T) {
 	t.Parallel()
 	agents := []agent.AgentInfo{{Name: "plan"}, {Name: "build"}, {Name: "review"}}

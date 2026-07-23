@@ -830,10 +830,10 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.modes, m.selectedMode = modes, sel
 			}
 			if len(m.info.AvailableModels) > 0 {
+				// selectedModel is computed in modelsResultMsg (the
+				// fetchModels() below always follows and would otherwise
+				// discard this index immediately).
 				m.models = m.info.AvailableModels
-				m.selectedModel = slices.IndexFunc(m.models, func(mi agent.ModelInfo) bool {
-					return mi.ID == m.info.CurrentModelID
-				})
 			}
 			// A dead session reports no runtime modes; fetch the
 			// backend's advertised list rather than guessing one.
@@ -885,6 +885,14 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case modelsResultMsg:
 		m.models = msg.models
 		m.selectedModel = -1 // default: no override
+		// Agent-advertised current model wins over no selection — computed
+		// here since this always runs after the sessionInfoMsg seeding
+		// block and would otherwise discard that index immediately.
+		if m.info != nil && m.info.CurrentModelID != "" {
+			m.selectedModel = slices.IndexFunc(m.models, func(mi agent.ModelInfo) bool {
+				return mi.ID == m.info.CurrentModelID
+			})
+		}
 
 		// Per-backend pref lookup; see updateCompose for the rationale.
 		prefs, _ := config.LoadPreferences()
