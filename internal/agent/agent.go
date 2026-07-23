@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 )
@@ -18,6 +19,10 @@ type BackendType string
 const (
 	BackendOpenCode   BackendType = "opencode"
 	BackendClaudeCode BackendType = "claude-code"
+	// BackendCodex is served by the ACP adapter path. Declared ahead of its
+	// manager landing; it joins AllBackends (and thus StartRequest.Validate)
+	// only once a manager is registered for it.
+	BackendCodex BackendType = "codex"
 )
 
 // SessionStatus represents the current state of an agent session.
@@ -445,7 +450,7 @@ func (r StartRequest) Validate() error {
 	if r.Backend == "" {
 		return fmt.Errorf("backend is required")
 	}
-	if r.Backend != BackendOpenCode && r.Backend != BackendClaudeCode {
+	if !slices.Contains(AllBackends, r.Backend) {
 		return fmt.Errorf("unknown backend: %s", r.Backend)
 	}
 	if err := r.GitRef.Validate(); err != nil {

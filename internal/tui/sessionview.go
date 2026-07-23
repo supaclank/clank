@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -978,7 +979,11 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case forkResultMsg:
 		if msg.err != nil {
-			m.err = msg.err
+			if errors.Is(msg.err, agent.ErrUnsupported) {
+				m.err = fmt.Errorf("this backend does not support forking")
+			} else {
+				m.err = msg.err
+			}
 			return m, nil
 		}
 		// Tell the inbox to navigate to the new forked session.

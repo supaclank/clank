@@ -16,6 +16,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
 )
 
@@ -196,6 +197,8 @@ func writeError(w http.ResponseWriter, err error) {
 		// couldn't be cloned. Client-safe by construction (the error
 		// message is URL-free; full git stderr is server-log only).
 		writeJSON(w, http.StatusUnprocessableEntity, errResp{Code: "template_clone_failed", Error: err.Error()})
+	case errors.Is(err, agent.ErrUnsupported):
+		writeJSON(w, http.StatusNotImplemented, errResp{Code: "unsupported", Error: err.Error()})
 	default:
 		writeJSON(w, http.StatusInternalServerError, errResp{Code: "internal", Error: err.Error()})
 	}

@@ -865,7 +865,7 @@ func resumeTargetUUID(msgs []claudecode.SessionMessage, userUUID string) string 
 }
 
 func (b *ClaudeCodeBackend) Fork(ctx context.Context, messageID string) (ForkResult, error) {
-	return ForkResult{}, fmt.Errorf("fork is not supported by Claude Code backend")
+	return ForkResult{}, fmt.Errorf("fork is not supported by the Claude Code backend: %w", ErrUnsupported)
 }
 
 // RespondPermission lives in claude_permissions.go alongside the CanUseTool

@@ -91,6 +91,7 @@ func main() {
 	localFileAttachments := flag.Bool("local-file-attachments", false, "Honor file:// image attachment sources (the client shares this host's filesystem). Set by the local laptop provisioner; off for remote sprites so a message can't make the host read arbitrary local paths.")
 	ghCLIAuth := flag.Bool("gh-cli-auth", false, "Resolve GitHub tokens from the machine's gh CLI login (gh auth token) when no clank GitHub connection exists. Set by the local laptop provisioner; off for remote sprites, which have no gh login to borrow.")
 	claudeCLIAuth := flag.Bool("claude-cli-auth", false, "Report the machine's own claude CLI login (Keychain / ~/.claude/.credentials.json) as a connected Anthropic provider when no clank connection exists — presence detection only, the credential is never read. Set by the local laptop provisioner; off for remote sprites, which have no claude login to borrow.")
+	acpBackends := flag.String("acp-backends", envDefault("CLANK_ACP_BACKENDS", ""), "Comma-separated backends served through the ACP adapter path instead of the bespoke integration (opencode, claude-code, codex; 'all', 'none'). ACP manager wiring lands in a later release — any non-empty value is currently a startup error. Defaults to $CLANK_ACP_BACKENDS.")
 	flag.Parse()
 
 	if *socket == "" && *listen == "" {
@@ -139,6 +140,7 @@ func main() {
 		claudeCLIAuth:         *claudeCLIAuth,
 		projectCommitterName:  *projectCommitterName,
 		projectCommitterEmail: *projectCommitterEmail,
+		acpBackends:           *acpBackends,
 	}
 	if err := run(cfg); err != nil {
 		log.Fatalf("clank-host: %v", err)
@@ -166,6 +168,7 @@ type runConfig struct {
 	claudeCLIAuth         bool
 	projectCommitterName  string
 	projectCommitterEmail string
+	acpBackends           string
 }
 
 // buildKeepaliveListener constructs the provider-specific Listener from
@@ -356,6 +359,17 @@ func run(cfg runConfig) error {
 	templates, err := parseTemplatesJSON(cfg.templatesJSON)
 	if err != nil {
 		return fmt.Errorf("parse --templates-json: %w", err)
+	}
+
+	// Seam for the ACP migration: once the ACP managers land, entries in
+	// this set swap the corresponding BackendManagers below to the ACP
+	// implementation. Fail fast until then — no silent fallback.
+	acpSet, err := agent.ParseBackendSet(cfg.acpBackends)
+	if err != nil {
+		return fmt.Errorf("--acp-backends: %w", err)
+	}
+	if len(acpSet) > 0 {
+		return fmt.Errorf("--acp-backends: ACP backend implementations are not available in this build (requested: %v)", acpSet)
 	}
 
 	svc := host.New(host.Options{
