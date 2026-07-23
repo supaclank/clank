@@ -36,7 +36,7 @@ type sessionCreateResultMsg struct {
 //
 // The gitRef is built from projectDir (LocalPath) plus the stamped
 // worktree ID, if any (read via agent.ReadLocalWorktreeID), so the
-// background fetchAgents/fetchModels prefetch can target it. Without a
+// background modes/models prefetch can target it. Without a
 // stamp the ref is local-only and any cross-host operations will fail
 // at launch.
 func NewSessionViewComposing(client *daemonclient.Client, projectDir string) *SessionViewModel {
@@ -160,10 +160,6 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.modes[i] = selectableMode{label: sm.Name, perm: agent.ClaudePermissionMode(sm.ID)}
 			}
 		}
-		return m, nil
-
-	case agentsResultMsg:
-		m.modes, m.selectedMode = agentSelectableModes(msg.agents, "")
 		return m, nil
 
 	case modelsResultMsg:
@@ -602,11 +598,10 @@ func (m *SessionViewModel) applyProjectFolder(dir string, returnTo composeFocus)
 	}
 	m.composeFocus = returnTo
 
-	cmds := []tea.Cmd{m.fetchModels()}
-	if m.backend == agent.BackendOpenCode {
-		cmds = append(cmds, m.fetchAgents())
-	}
-	return tea.Batch(cmds...)
+	// Clear before refetching: modes and models are project-scoped, so the
+	// previous folder's list must not linger over the new one.
+	m.modes, m.selectedMode = nil, 0
+	return tea.Batch(m.fetchModes(), m.fetchModels())
 }
 
 // overlayFolderPicker composites the folder picker over the compose view.

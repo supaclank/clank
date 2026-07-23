@@ -23,7 +23,7 @@ func TestACPBackendManager_CreateOpenSendAndDiscover(t *testing.T) {
 	// installGuidanceSkills writes under $HOME — isolate it.
 	t.Setenv("HOME", t.TempDir())
 
-	mgr, err := host.NewCodexACPManager(t.TempDir())
+	mgr, err := host.NewCodexACPManager(acpDirs(t))
 	if err != nil {
 		t.Fatalf("NewCodexACPManager: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestACPBackendManager_CreateOpenSendAndDiscover(t *testing.T) {
 // every backend shipped with an empty model picker.
 func TestACPBackendManager_ImplementsModelLister(t *testing.T) {
 	t.Parallel()
-	mgr, err := host.NewCodexACPManager(t.TempDir())
+	mgr, err := host.NewCodexACPManager(acpDirs(t))
 	if err != nil {
 		t.Fatalf("NewCodexACPManager: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestACPBackendManager_ImplementsModelLister(t *testing.T) {
 func TestACPBackendManager_ListModelsServesSessionCatalog(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // installGuidanceSkills writes under $HOME
 
-	mgr, err := host.NewCodexACPManager(t.TempDir())
+	mgr, err := host.NewCodexACPManager(acpDirs(t))
 	if err != nil {
 		t.Fatalf("NewCodexACPManager: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestACPBackendManager_ListModelsServesSessionCatalog(t *testing.T) {
 func TestACPBackendManager_ProbesOncePerDirToFillCatalog(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // installGuidanceSkills writes under $HOME
 
-	mgr, err := host.NewCodexACPManager(t.TempDir())
+	mgr, err := host.NewCodexACPManager(acpDirs(t))
 	if err != nil {
 		t.Fatalf("NewCodexACPManager: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestACPBackendManager_ProbesOncePerDirToFillCatalog(t *testing.T) {
 func TestACPBackendManager_ProbeFailureRetriesInsteadOfPermanentlyEmptyingCatalog(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // installGuidanceSkills writes under $HOME
 
-	mgr, err := host.NewCodexACPManager(t.TempDir())
+	mgr, err := host.NewCodexACPManager(acpDirs(t))
 	if err != nil {
 		t.Fatalf("NewCodexACPManager: %v", err)
 	}
@@ -314,5 +314,101 @@ func TestACPBackendManager_ProbeFailureRetriesInsteadOfPermanentlyEmptyingCatalo
 	}
 	if got := attempts.Load(); got != 2 {
 		t.Errorf("warm read after success made %d attempts, want no new ones", got)
+	}
+}
+
+// acpDirs gives a manager isolated on-disk state: a throwaway tools dir
+// and a throwaway catalog, so a test never reads or writes the
+// developer's real ~/.clank catalog.
+func acpDirs(t *testing.T) host.ACPDirs {
+	t.Helper()
+	return host.ACPDirs{Tools: t.TempDir(), Catalog: t.TempDir()}
+}
+
+// A restart (or just revisiting a folder) must not re-probe: the catalog
+// a session advertised is persisted per project dir, so a brand-new
+// manager over the same catalog dir answers /modes and /models
+// immediately, opening no session at all.
+func TestACPBackendManager_CatalogSurvivesRestart(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // installGuidanceSkills writes under $HOME
+
+	catalogDir := t.TempDir()
+	workDir := t.TempDir()
+	var sessions atomic.Int64
+	category := sdk.SessionConfigOptionCategory("model")
+	modeCategory := sdk.SessionConfigOptionCategory("mode")
+	scripted := func(string) *acptest.ScriptedAgent {
+		a := &acptest.ScriptedAgent{}
+		a.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+			sessions.Add(1)
+			return sdk.NewSessionResponse{
+				SessionId: sdk.SessionId("s-" + strconv.FormatInt(sessions.Load(), 10)),
+				ConfigOptions: []sdk.SessionConfigOption{
+					{Select: &sdk.SessionConfigOptionSelect{
+						Id: "model", Name: "Model", Category: &category, CurrentValue: "gpt-5.2-codex",
+						Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+							{Value: "gpt-5.2-codex", Name: "GPT-5.2 Codex"},
+						}},
+					}},
+					{Select: &sdk.SessionConfigOptionSelect{
+						Id: "mode", Name: "Mode", Category: &modeCategory, CurrentValue: "agent",
+						Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+							{Value: "read-only", Name: "Read Only"},
+							{Value: "agent", Name: "Agent"},
+						}},
+					}},
+				},
+			}, nil
+		}
+		return a
+	}
+
+	// start builds a manager sharing catalogDir — the second call stands in
+	// for a daemon restart.
+	start := func(t *testing.T) (*host.ACPBackendManager, context.CancelFunc) {
+		t.Helper()
+		mgr, err := host.NewCodexACPManager(host.ACPDirs{Tools: t.TempDir(), Catalog: catalogDir})
+		if err != nil {
+			t.Fatalf("NewCodexACPManager: %v", err)
+		}
+		mgr.Supervisor().SetSpawnFunc(acptest.SpawnFunc(scripted, acpx.CodexProfile("bun", "entry", nil), t.Logf))
+		mgr.Supervisor().SetReconcileInterval(20 * time.Millisecond)
+		ctx, cancel := context.WithCancel(context.Background())
+		if err := mgr.Init(ctx, func() ([]string, error) { return nil, nil }); err != nil {
+			cancel()
+			t.Fatalf("Init: %v", err)
+		}
+		return mgr, func() { mgr.Shutdown(); cancel() }
+	}
+
+	first, stopFirst := start(t)
+	ctx := context.Background()
+	if _, err := first.ListModels(ctx, workDir); err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if got := sessions.Load(); got != 1 {
+		t.Fatalf("cold dir opened %d sessions, want 1 probe", got)
+	}
+	stopFirst()
+
+	second, stopSecond := start(t)
+	defer stopSecond()
+
+	models, err := second.ListModels(ctx, workDir)
+	if err != nil {
+		t.Fatalf("ListModels after restart: %v", err)
+	}
+	modes, err := second.ListModes(ctx, workDir)
+	if err != nil {
+		t.Fatalf("ListModes after restart: %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "gpt-5.2-codex" {
+		t.Errorf("models after restart = %+v, want the persisted catalog", models)
+	}
+	if len(modes) != 2 || modes[0].ID != "read-only" {
+		t.Errorf("modes after restart = %+v, want the persisted catalog", modes)
+	}
+	if got := sessions.Load(); got != 1 {
+		t.Errorf("restart opened %d sessions total, want no new probe", got)
 	}
 }

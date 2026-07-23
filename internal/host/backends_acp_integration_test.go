@@ -24,7 +24,7 @@ func TestIntegration_CodexACP_ProvisionSpawnOpen(t *testing.T) {
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	t.Setenv("HOME", t.TempDir()) // isolate installGuidanceSkills
 
-	mgr, err := host.NewCodexACPManager(t.TempDir())
+	mgr, err := host.NewCodexACPManager(acpDirs(t))
 	if err != nil {
 		t.Fatalf("NewCodexACPManager: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestIntegration_OpenCodeACP_ResumeAcrossProcesses(t *testing.T) {
 	defer cancel()
 
 	// Phase 1: create + complete a turn.
-	mgr1, err := host.NewOpenCodeACPManager()
+	mgr1, err := host.NewOpenCodeACPManager(acpDirs(t))
 	if err != nil {
 		t.Fatalf("NewOpenCodeACPManager: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestIntegration_OpenCodeACP_ResumeAcrossProcesses(t *testing.T) {
 	mgr1.Shutdown()
 
 	// Phase 2: fresh manager (fresh adapter process) resumes + continues.
-	mgr2, err := host.NewOpenCodeACPManager()
+	mgr2, err := host.NewOpenCodeACPManager(acpDirs(t))
 	if err != nil {
 		t.Fatalf("NewOpenCodeACPManager (2): %v", err)
 	}

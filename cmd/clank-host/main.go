@@ -374,23 +374,27 @@ func run(cfg runConfig) error {
 	if err != nil {
 		return fmt.Errorf("resolve home dir: %w", err)
 	}
-	acpToolsDir := filepath.Join(home, ".clank", "tools", "acp")
+	clankDir := filepath.Join(home, ".clank")
+	acpDirs := host.ACPDirs{
+		Tools:   filepath.Join(clankDir, "tools", "acp"),
+		Catalog: filepath.Join(clankDir, "cache", "acp-catalog"),
+	}
 	for _, bt := range acpSet {
 		switch bt {
 		case agent.BackendCodex:
-			codexMgr, err := host.NewCodexACPManager(acpToolsDir)
+			codexMgr, err := host.NewCodexACPManager(acpDirs)
 			if err != nil {
 				return fmt.Errorf("--acp-backends: codex: %w", err)
 			}
 			backendManagers[agent.BackendCodex] = codexMgr
 		case agent.BackendOpenCode:
-			ocMgr, err := host.NewOpenCodeACPManager()
+			ocMgr, err := host.NewOpenCodeACPManager(acpDirs)
 			if err != nil {
 				return fmt.Errorf("--acp-backends: opencode: %w", err)
 			}
 			backendManagers[agent.BackendOpenCode] = ocMgr
 		case agent.BackendClaudeCode:
-			claudeMgr, err := host.NewClaudeACPManager(acpToolsDir)
+			claudeMgr, err := host.NewClaudeACPManager(acpDirs)
 			if err != nil {
 				return fmt.Errorf("--acp-backends: claude-code: %w", err)
 			}

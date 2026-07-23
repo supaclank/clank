@@ -80,11 +80,6 @@ type sessionInfoMsg struct {
 	info *agent.SessionInfo
 }
 
-// agentsResultMsg carries the result of fetching available agents.
-type agentsResultMsg struct {
-	agents []agent.AgentInfo
-}
-
 // selectableMode is one entry in the Tab-cycle list shown above the compose
 // box. For OpenCode it names an agent; for Claude it names a permission mode.
 // Exactly one of agent/perm is set.
@@ -123,23 +118,6 @@ func claudePermissionModes() ([]selectableMode, int) {
 	for i, pm := range agent.ClaudePermissionModes {
 		modes[i] = selectableMode{label: pm.Label(), perm: pm}
 		if pm == agent.ClaudePermBypass {
-			selected = i
-		}
-	}
-	return modes, selected
-}
-
-// agentSelectableModes converts fetched OpenCode agents into the cycle list,
-// selecting current (or "build" when current is empty/absent).
-func agentSelectableModes(agents []agent.AgentInfo, current string) ([]selectableMode, int) {
-	if current == "" {
-		current = "build"
-	}
-	modes := make([]selectableMode, len(agents))
-	selected := 0
-	for i, a := range agents {
-		modes[i] = selectableMode{label: a.Name, agent: a.Name}
-		if a.Name == current {
 			selected = i
 		}
 	}
@@ -549,7 +527,7 @@ func (m *SessionViewModel) SetEventChannel(ch <-chan agent.Event, cancel context
 func (m *SessionViewModel) Init() tea.Cmd {
 	// In composing mode, no session exists yet — nothing to subscribe to.
 	if m.composing {
-		return tea.Batch(m.input.Focus(), m.fetchAgents(), m.fetchModels())
+		return tea.Batch(m.input.Focus(), m.fetchModes(), m.fetchModels())
 	}
 	cmds := []tea.Cmd{m.fetchSessionInfo(), m.fetchSessionMessages(), m.fetchPendingPermission(), m.spinner.Tick}
 	if m.eventsCh != nil {
@@ -602,31 +580,8 @@ func (m *SessionViewModel) fetchPendingPermission() tea.Cmd {
 	}
 }
 
-// fetchAgents loads the available agents for the current backend/repo.
-// Fired eagerly on compose init; the result arrives before the user finishes typing.
-// Skipped when gitRef is unresolved — the wire surface requires a real ref (§7.3).
-func (m *SessionViewModel) fetchAgents() tea.Cmd {
-	client := m.client
-	backend := m.backend
-	hostname := m.hostname
-	ref := m.gitRef
-	if ref.LocalPath == "" && ref.WorktreeID == "" {
-		return func() tea.Msg { return agentsResultMsg{} }
-	}
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		agents, err := client.Backend(backend).Agents(ctx, hostname, ref)
-		if err != nil {
-			// Non-fatal: degrade gracefully with no agent selector.
-			return agentsResultMsg{}
-		}
-		return agentsResultMsg{agents: agents}
-	}
-}
-
 // fetchModels loads available models for the current backend/repo.
-// Fired eagerly on compose init alongside fetchAgents.
+// Fired eagerly on compose init alongside fetchModes.
 // fetchModes loads the agent-advertised session modes for the selected
 // backend. The compose view has no session yet, so the host answers from
 // what a session last reported for the project (ACP advertises modes per
@@ -841,10 +796,6 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.info.AvailableModes) == 0 {
 				cmds = append(cmds, m.fetchModes())
 			}
-			if m.info.Backend == agent.BackendOpenCode {
-				// Selected agent is matched against the fetched list in agentsResultMsg.
-				cmds = append(cmds, m.fetchAgents())
-			}
 			return m, tea.Batch(cmds...)
 		}
 		return m, nil
@@ -856,14 +807,6 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 		}
 		return m, tea.Batch(m.fetchSessionInfo(), m.fetchSessionMessages())
-
-	case agentsResultMsg:
-		current := ""
-		if m.info != nil {
-			current = m.info.Agent
-		}
-		m.modes, m.selectedMode = agentSelectableModes(msg.agents, current)
-		return m, nil
 
 	case modesResultMsg:
 		if len(msg.modes) > 0 {

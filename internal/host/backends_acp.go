@@ -31,25 +31,49 @@ type ACPBackendManager struct {
 	// catalog caches the agent-advertised model list per workDir. ACP
 	// surfaces models as per-session config options, so the manager can
 	// only answer /models from what a session has already reported —
-	// it publishes on every session open (fresh and resumed).
+	// it publishes on every session open (fresh and resumed). Seeded from
+	// store at construction and written back through it.
 	catalogMu sync.Mutex
 	catalog   map[string][]agent.ModelInfo
 	modes     map[string][]agent.SessionMode
 	// probed marks dirs whose catalog we have already tried to fill, so a
 	// dir whose agent advertises nothing isn't probed on every request.
+	// Persisted dirs start probed: their answer is already known.
 	probed map[string]bool
 	// probing single-flights concurrent probes per dir — /modes and
 	// /models both miss on a cold dir and would otherwise each open a
 	// session.
 	probing map[string]chan struct{}
+	// store persists the catalog so the maps above survive a restart.
+	store *catalogStore
+}
+
+// ACPDirs locates the on-disk state an ACP manager owns.
+type ACPDirs struct {
+	// Tools holds the provisioned adapter runtime (bun plus the pinned
+	// npm packages). Unused by backends that run the user's own binary.
+	Tools string
+	// Catalog holds the durable per-project mode/model catalog.
+	Catalog string
 }
 
 // NewACPBackendManager builds a manager for the given adapter profile.
 // The profile's Env is routed through SetEnvResolver so credentials can
 // be wired after construction (the AuthManager exists later) and rotated
 // at runtime via the supervisor's env-fingerprint restarts.
-func NewACPBackendManager(profile acp.AdapterProfile) (*ACPBackendManager, error) {
-	m := &ACPBackendManager{}
+func NewACPBackendManager(profile acp.AdapterProfile, dirs ACPDirs) (*ACPBackendManager, error) {
+	store, err := newCatalogStore(dirs.Catalog, profile.Backend)
+	if err != nil {
+		return nil, err
+	}
+	m := &ACPBackendManager{
+		store:   store,
+		catalog: map[string][]agent.ModelInfo{},
+		modes:   map[string][]agent.SessionMode{},
+		probed:  map[string]bool{},
+		probing: map[string]chan struct{}{},
+	}
+	m.seed(store.all())
 	scoped := profile.Env
 	profile.Env = func(scopeDir string) map[string]string {
 		merged := map[string]string{}
@@ -81,11 +105,14 @@ func NewACPBackendManager(profile acp.AdapterProfile) (*ACPBackendManager, error
 // first use (host startup never blocks on it, and hosts that never run
 // codex never install it). Env arrives via SetEnvResolver (OpenAI sink;
 // nil = codex's own ChatGPT login fallback).
-func NewCodexACPManager(toolsDir string) (*ACPBackendManager, error) {
+func NewCodexACPManager(dirs ACPDirs) (*ACPBackendManager, error) {
+	if dirs.Tools == "" {
+		return nil, fmt.Errorf("codex acp: tools dir is required")
+	}
 	var paths atomic.Pointer[acptools.Paths]
 	profile := acp.CodexProfile("", "", nil)
 	profile.Prepare = func(ctx context.Context, _ string) error {
-		p, err := acptools.Ensure(ctx, toolsDir)
+		p, err := acptools.Ensure(ctx, dirs.Tools)
 		if err != nil {
 			return err
 		}
@@ -96,7 +123,7 @@ func NewCodexACPManager(toolsDir string) (*ACPBackendManager, error) {
 		p := paths.Load() // Prepare ran first (execSpawn ordering)
 		return p.BunBin, []string{p.CodexACPEntry}
 	}
-	return NewACPBackendManager(profile)
+	return NewACPBackendManager(profile, dirs)
 }
 
 // NewClaudeACPManager serves claude-code through the pinned
@@ -106,11 +133,14 @@ func NewCodexACPManager(toolsDir string) (*ACPBackendManager, error) {
 // arrive via SetEnvResolver (Anthropic sink); the profile adds
 // IS_SANDBOX=1 when running as root so bypassPermissions works on
 // sprites.
-func NewClaudeACPManager(toolsDir string) (*ACPBackendManager, error) {
+func NewClaudeACPManager(dirs ACPDirs) (*ACPBackendManager, error) {
+	if dirs.Tools == "" {
+		return nil, fmt.Errorf("claude acp: tools dir is required")
+	}
 	var paths atomic.Pointer[acptools.Paths]
 	profile := acp.ClaudeProfile("", "", nil)
 	profile.Prepare = func(ctx context.Context, _ string) error {
-		p, err := acptools.Ensure(ctx, toolsDir)
+		p, err := acptools.Ensure(ctx, dirs.Tools)
 		if err != nil {
 			return err
 		}
@@ -121,7 +151,7 @@ func NewClaudeACPManager(toolsDir string) (*ACPBackendManager, error) {
 		p := paths.Load() // Prepare ran first (execSpawn ordering)
 		return p.BunBin, []string{p.ClaudeACPEntry}
 	}
-	return NewACPBackendManager(profile)
+	return NewACPBackendManager(profile, dirs)
 }
 
 // NewOpenCodeACPManager serves opencode through `opencode acp` on the
@@ -131,7 +161,7 @@ func NewClaudeACPManager(toolsDir string) (*ACPBackendManager, error) {
 // instructions file inside the worktree's git dir; Env points opencode
 // at it via inline config. Guidance is best-effort: it never blocks a
 // session.
-func NewOpenCodeACPManager() (*ACPBackendManager, error) {
+func NewOpenCodeACPManager(dirs ACPDirs) (*ACPBackendManager, error) {
 	profile := acp.OpenCodeProfile("opencode")
 	var floor onceUntilSuccess
 	profile.Prepare = func(ctx context.Context, scopeDir string) error {
@@ -156,7 +186,7 @@ func NewOpenCodeACPManager() (*ACPBackendManager, error) {
 		return nil
 	}
 	profile.Env = opencodeGuidanceEnv
-	return NewACPBackendManager(profile)
+	return NewACPBackendManager(profile, dirs)
 }
 
 // onceUntilSuccess runs fn on every call until one succeeds, then
@@ -288,36 +318,32 @@ func (m *ACPBackendManager) CreateBackend(ctx context.Context, inv agent.Backend
 
 // putCatalog records a session's advertised models for its project dir.
 func (m *ACPBackendManager) putCatalog(workDir string, models []agent.ModelInfo) {
-	if len(models) == 0 {
+	if len(models) == 0 || workDir == "" {
 		return
 	}
 	m.catalogMu.Lock()
-	defer m.catalogMu.Unlock()
-	if m.catalog == nil {
-		m.catalog = make(map[string][]agent.ModelInfo)
-	}
 	// Clone so the catalog is independent of the producer's backing array.
 	m.catalog[workDir] = slices.Clone(models)
+	m.catalogMu.Unlock()
+	// Write through outside catalogMu: a real session open is also how a
+	// stale persisted catalog heals, so this runs on every open.
+	m.store.put(workDir, func(e *catalogEntry) { e.Models = slices.Clone(models) })
 }
 
 // putModes records a session's advertised modes for its project dir.
 func (m *ACPBackendManager) putModes(workDir string, modes []agent.SessionMode) {
-	if len(modes) == 0 {
+	if len(modes) == 0 || workDir == "" {
 		return
 	}
 	m.catalogMu.Lock()
-	defer m.catalogMu.Unlock()
-	if m.modes == nil {
-		m.modes = make(map[string][]agent.SessionMode)
-	}
 	// Clone so the catalog is independent of the producer's backing array.
 	m.modes[workDir] = slices.Clone(modes)
+	m.catalogMu.Unlock()
+	m.store.put(workDir, func(e *catalogEntry) { e.Modes = slices.Clone(modes) })
 }
 
-// ListModes implements agent.ModeLister from what a session reported.
-// Same caveat as ListModels: ACP advertises modes per session, so this
-// is empty until one has opened, and any known list is a better answer
-// than none for a dir we haven't seen.
+// ListModes implements agent.ModeLister from the per-dir catalog, probing
+// a dir this host has never seen (see ensureCatalog).
 func (m *ACPBackendManager) ListModes(ctx context.Context, projectDir string) ([]agent.SessionMode, error) {
 	m.ensureCatalog(ctx, projectDir)
 	m.catalogMu.Lock()
@@ -329,9 +355,8 @@ func (m *ACPBackendManager) ListModes(ctx context.Context, projectDir string) ([
 }
 
 // ListModels implements agent.ModelLister from the per-dir catalog a
-// session published on open. Empty before this host has opened a session
-// in projectDir — ACP has no session-independent model listing, so the
-// picker fills in once a session exists rather than showing a guess.
+// session published on open, probing a dir this host has never seen (see
+// ensureCatalog).
 func (m *ACPBackendManager) ListModels(ctx context.Context, projectDir string) ([]agent.ModelInfo, error) {
 	m.ensureCatalog(ctx, projectDir)
 	m.catalogMu.Lock()
@@ -342,9 +367,10 @@ func (m *ACPBackendManager) ListModels(ctx context.Context, projectDir string) (
 }
 
 // ensureCatalog fills projectDir's mode/model catalog by opening a
-// short-lived session, once per dir — ACP only advertises modes and
-// models on the session/new|load|resume response, so a picker shown
-// before the user's first session has to probe one to see them
+// short-lived session, once per dir ever — the result is persisted, so
+// this is a first-visit cost, not a per-restart one. ACP only advertises
+// modes and models on the session/new|load|resume response, so a picker
+// shown before the user's first session has to probe one to see them
 // (zed-industries/zed#52500).
 //
 // The probe session is stopped but not deleted: only claude-agent-acp

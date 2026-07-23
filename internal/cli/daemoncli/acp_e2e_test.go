@@ -103,7 +103,7 @@ func (s *acpAgentStore) scriptedFactory() func(string) *acptest.ScriptedAgent {
 func newACPManager(t *testing.T, store *acpAgentStore) *host.ACPBackendManager {
 	t.Helper()
 	profile := acpx.CodexProfile("unused-bun", "unused-entry", nil)
-	mgr, err := host.NewACPBackendManager(profile)
+	mgr, err := host.NewACPBackendManager(profile, host.ACPDirs{Tools: t.TempDir(), Catalog: t.TempDir()})
 	if err != nil {
 		t.Fatalf("NewACPBackendManager: %v", err)
 	}

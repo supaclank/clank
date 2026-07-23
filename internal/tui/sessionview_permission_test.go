@@ -45,27 +45,6 @@ func TestSessionView_ModelsResultMsg_PreservesAgentCurrentModel(t *testing.T) {
 	}
 }
 
-func TestAgentSelectableModes_Selection(t *testing.T) {
-	t.Parallel()
-	agents := []agent.AgentInfo{{Name: "plan"}, {Name: "build"}, {Name: "review"}}
-
-	modes, sel := agentSelectableModes(agents, "")
-	if modes[sel].agent != "build" {
-		t.Errorf("default selected agent=%q, want build", modes[sel].agent)
-	}
-	// Agent rows carry no permission mode.
-	for _, m := range modes {
-		if m.agent == "" || m.perm != "" {
-			t.Errorf("malformed agent mode row: %+v", m)
-		}
-	}
-
-	modes2, sel2 := agentSelectableModes(agents, "review")
-	if modes2[sel2].agent != "review" {
-		t.Errorf("selected agent=%q, want review (current override)", modes2[sel2].agent)
-	}
-}
-
 // Toggling to the Claude backend seeds the static permission modes (default
 // bypass), and Tab cycles through them, wrapping around.
 func TestCompose_ClaudeBackendSeedsAndCyclesModes(t *testing.T) {
@@ -219,5 +198,63 @@ func TestCompose_ModesComeFromTheHostNotAHardcodedList(t *testing.T) {
 	}
 	if m.modes[0].perm != "read-only" || m.modes[2].label != "Full Access" {
 		t.Errorf("compose rendered %+v, want the agent's advertised modes verbatim", m.modes)
+	}
+}
+
+// batchYields reports whether cmd (possibly a tea.Batch) produces a
+// message of type T when run. Compose models built with an empty
+// projectDir short-circuit their fetches to result messages, so the batch
+// runs in-process with no client.
+func batchYields[T tea.Msg](t *testing.T, cmd tea.Cmd) bool {
+	t.Helper()
+	if cmd == nil {
+		return false
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, sub := range batch {
+			if batchYields[T](t, sub) {
+				return true
+			}
+		}
+		return false
+	}
+	_, ok := msg.(T)
+	return ok
+}
+
+// Opening compose ("n" from the chat view) must fetch the agent's modes.
+// Only the backend-CHANGE path did, so the mode row stayed empty until the
+// user cycled backends with ctrl+b and came back.
+func TestCompose_InitFetchesModes(t *testing.T) {
+	t.Parallel()
+	m := newSessionViewComposingWithBackend(nil, "", agent.BackendCodex)
+	m.width, m.height = 80, 40
+
+	if !batchYields[modesResultMsg](t, m.Init()) {
+		t.Fatal("compose Init dispatched no modes fetch — the mode picker stays empty on open")
+	}
+}
+
+// Modes and models are project-scoped, so switching the compose folder has
+// to drop the old list and refetch rather than carry one project's agents
+// into another.
+func TestCompose_FolderChangeRefetchesModes(t *testing.T) {
+	t.Parallel()
+	m := newSessionViewComposingWithBackend(nil, "", agent.BackendOpenCode)
+	m.width, m.height = 80, 40
+
+	model, _ := m.Update(modesResultMsg{modes: []agent.SessionMode{{ID: "build", Name: "Build"}}})
+	m = model.(*SessionViewModel)
+	if len(m.modes) != 1 {
+		t.Fatalf("setup: modes = %d, want 1", len(m.modes))
+	}
+
+	cmd := m.applyProjectFolder("", focusFolder)
+	if len(m.modes) != 0 {
+		t.Errorf("previous folder's modes survived the switch: %+v", m.modes)
+	}
+	if !batchYields[modesResultMsg](t, cmd) {
+		t.Fatal("folder switch dispatched no modes fetch")
 	}
 }
