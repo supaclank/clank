@@ -376,6 +376,25 @@ func TestCompose_ApplyProjectFolderFetchesModes(t *testing.T) {
 	t.Fatalf("applyProjectFolder() never dispatched fetchModes(); mode picker goes stale after a folder change, got msgs %#v", msgs)
 }
 
+// OpenCode has no agent.ModeLister, so fetchModes() always answers empty for
+// it; the picker only fills in via fetchAgents (see applyProjectFolder).
+// applyBackend dropped that call when it stopped hardcoding a per-backend
+// switch, leaving the OpenCode mode picker permanently empty after a Ctrl+B
+// toggle.
+func TestCompose_ApplyBackendToOpenCodeFetchesAgents(t *testing.T) {
+	t.Parallel()
+	m := newSessionViewComposingWithBackend(nil, "", agent.BackendClaudeCode)
+	m.width, m.height = 80, 40
+
+	msgs := flattenCmdMsgs(m.applyBackend(agent.BackendOpenCode))
+	for _, msg := range msgs {
+		if _, ok := msg.(agentsResultMsg); ok {
+			return
+		}
+	}
+	t.Fatalf("applyBackend(BackendOpenCode) never dispatched fetchAgents(); mode picker stays empty after Ctrl+B, got msgs %#v", msgs)
+}
+
 // The in-session modesResultMsg handler preserves the user's mode selection
 // by ID across a refetch; compose's handler unconditionally reset
 // selectedMode to 0 instead, silently discarding a Tab-cycled choice every

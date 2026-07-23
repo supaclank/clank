@@ -160,7 +160,13 @@ func (m *SessionViewModel) applyBackend(b agent.BackendType) tea.Cmd {
 	// list is fetched, never hardcoded — a static claude list here was
 	// both stale (missing auto/dontAsk) and wrong for the others.
 	m.modes, m.selectedMode = nil, 0
-	return tea.Batch(m.fetchModes(), m.fetchModels())
+	cmds := []tea.Cmd{m.fetchModes(), m.fetchModels()}
+	if b == agent.BackendOpenCode {
+		// OpenCode has no agent.ModeLister; its mode picker is populated via
+		// fetchAgents (see applyProjectFolder), not fetchModes.
+		cmds = append(cmds, m.fetchAgents())
+	}
+	return tea.Batch(cmds...)
 }
 
 // toggleBackend cycles through AllBackends (the ctrl+b shortcut).
