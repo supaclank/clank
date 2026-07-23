@@ -66,6 +66,11 @@ func (b *Backend) Send(ctx context.Context, opts agent.SendMessageOpts) error {
 	if b.stopping {
 		return fmt.Errorf("acp %s: backend stopped", b.profile.ID)
 	}
+	if b.status == agent.StatusDead {
+		// watchConn can mark the session dead while attachments/mode/model
+		// calls above were in flight; don't resurrect it to Busy.
+		return fmt.Errorf("acp %s: backend dead", b.profile.ID)
+	}
 	b.userSeq++
 	userMsg := agent.MessageData{
 		ID:      fmt.Sprintf("%s:u%d", b.sessionID, b.userSeq),

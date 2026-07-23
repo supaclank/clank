@@ -56,3 +56,25 @@ func TestShouldSwallowPromptErrLocked_GenuineError(t *testing.T) {
 		t.Error("a live, non-aborting turn's RPC error must still surface as StatusError")
 	}
 }
+
+// Send's second lock (after attachment resolution / mode / model calls)
+// re-checks only b.stopping, not b.status — so a watchConn-triggered Dead
+// landing between the two locks got silently overwritten with Busy,
+// stranding the host's rebuild contract (which is keyed on StatusDead).
+func TestBackend_Send_RejectsWhenTransportDead(t *testing.T) {
+	t.Parallel()
+	b := NewBackend(AdapterProfile{}, "/work", "", "", "", nil, nil)
+	b.opened = true
+	b.conn = &AdapterConn{}
+	b.status = agent.StatusDead
+
+	if err := b.Send(context.Background(), agent.SendMessageOpts{Text: "hi"}); err == nil {
+		t.Error("Send on a dead backend must error, not resurrect status to Busy")
+	}
+	if b.status != agent.StatusDead {
+		t.Errorf("status = %v after Send, want StatusDead preserved", b.status)
+	}
+	if b.runnerOn {
+		t.Error("Send must not start a turn runner against a dead connection")
+	}
+}
