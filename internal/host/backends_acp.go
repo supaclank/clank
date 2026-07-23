@@ -110,38 +110,60 @@ func NewClaudeACPManager(toolsDir string) (*ACPBackendManager, error) {
 
 // NewOpenCodeACPManager serves opencode through `opencode acp` on the
 // user's own binary — their install, their state, no version skew clank
-// can introduce. Prepare gates on the verified-surface floor (once) and
-// materializes stack-detected guidance as an instructions file inside
-// the worktree's git dir; Env points opencode at it via inline config.
-// Guidance is best-effort: it never blocks a session.
+// can introduce. Prepare gates on the verified-surface floor (retried
+// until it passes) and materializes stack-detected guidance as an
+// instructions file inside the worktree's git dir; Env points opencode
+// at it via inline config. Guidance is best-effort: it never blocks a
+// session.
 func NewOpenCodeACPManager() (*ACPBackendManager, error) {
 	profile := acp.OpenCodeProfile("opencode")
-	var floorOnce sync.Once
-	var floorErr error
+	var floor onceUntilSuccess
 	profile.Prepare = func(ctx context.Context, scopeDir string) error {
-		floorOnce.Do(func() {
+		err := floor.do(func() error {
 			v, err := agent.OpenCodeVersion(ctx)
 			if err != nil {
-				floorErr = fmt.Errorf("probe opencode version: %w", err)
-				return
+				return fmt.Errorf("probe opencode version: %w", err)
 			}
 			ok, err := agent.OpencodeVersionAtLeast(v, agent.PinnedOpencodeVersion)
 			if err != nil {
-				floorErr = err
-				return
+				return err
 			}
 			if !ok {
-				floorErr = fmt.Errorf("opencode %s is older than the verified ACP floor %s — run `opencode upgrade`", v, agent.PinnedOpencodeVersion)
+				return fmt.Errorf("opencode %s is older than the verified ACP floor %s — run `opencode upgrade`", v, agent.PinnedOpencodeVersion)
 			}
+			return nil
 		})
-		if floorErr != nil {
-			return floorErr
+		if err != nil {
+			return err
 		}
 		writeOpenCodeGuidance(scopeDir)
 		return nil
 	}
 	profile.Env = opencodeGuidanceEnv
 	return NewACPBackendManager(profile)
+}
+
+// onceUntilSuccess runs fn on every call until one succeeds, then
+// short-circuits forever. Unlike sync.Once, a failing attempt is
+// retried on the next call instead of permanently poisoning every
+// later caller — e.g. a canceled ctx on the first Prepare() must not
+// brick the opencode ACP backend for the rest of the process.
+type onceUntilSuccess struct {
+	mu   sync.Mutex
+	done bool
+}
+
+func (o *onceUntilSuccess) do(fn func() error) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.done {
+		return nil
+	}
+	if err := fn(); err != nil {
+		return err
+	}
+	o.done = true
+	return nil
 }
 
 // opencodeGuidancePath is where materialized guidance lives: inside the
