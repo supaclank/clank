@@ -297,6 +297,8 @@ func New(opts Options) *Service {
 			cbm.SetEnvResolver(func() map[string]string {
 				return am.AnthropicEnv()
 			})
+		} else if acpMgr, ok := s.backendManagers[agent.BackendClaudeCode].(*ACPBackendManager); ok {
+			acpMgr.SetEnvResolver(am.AnthropicEnv)
 		}
 		// ACP-served backends read credentials from profile env; a
 		// credential write nudges the supervisor so the env-fingerprint

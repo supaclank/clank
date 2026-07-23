@@ -374,14 +374,15 @@ func run(cfg runConfig) error {
 	backendManagers := map[agent.BackendType]agent.BackendManager{
 		agent.BackendClaudeCode: host.NewClaudeBackendManager(),
 	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve home dir: %w", err)
+	}
+	acpToolsDir := filepath.Join(home, ".clank", "tools", "acp")
 	for _, bt := range acpSet {
 		switch bt {
 		case agent.BackendCodex:
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return fmt.Errorf("--acp-backends: codex: resolve home dir: %w", err)
-			}
-			codexMgr, err := host.NewCodexACPManager(filepath.Join(home, ".clank", "tools", "acp"))
+			codexMgr, err := host.NewCodexACPManager(acpToolsDir)
 			if err != nil {
 				return fmt.Errorf("--acp-backends: codex: %w", err)
 			}
@@ -392,8 +393,14 @@ func run(cfg runConfig) error {
 				return fmt.Errorf("--acp-backends: opencode: %w", err)
 			}
 			backendManagers[agent.BackendOpenCode] = ocMgr
+		case agent.BackendClaudeCode:
+			claudeMgr, err := host.NewClaudeACPManager(acpToolsDir)
+			if err != nil {
+				return fmt.Errorf("--acp-backends: claude-code: %w", err)
+			}
+			backendManagers[agent.BackendClaudeCode] = claudeMgr
 		default:
-			return fmt.Errorf("--acp-backends: %s is not served over ACP in this build yet (codex, opencode)", bt)
+			return fmt.Errorf("--acp-backends: unknown backend %s", bt)
 		}
 	}
 

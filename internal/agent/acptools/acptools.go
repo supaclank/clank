@@ -23,8 +23,9 @@ var manifestFS embed.FS
 // Pinned adapter versions. A unit test asserts these match the embedded
 // manifest so a pin bump is always a reviewed two-file diff.
 const (
-	PinnedCodexACPVersion = "1.1.7"
-	PinnedCodexVersion    = "0.145.0"
+	PinnedCodexACPVersion  = "1.1.7"
+	PinnedCodexVersion     = "0.145.0"
+	PinnedClaudeACPVersion = "0.61.0"
 )
 
 // installTimeout bounds the cold-cache bun install (the codex platform
@@ -33,9 +34,10 @@ const installTimeout = 3 * time.Minute
 
 // Paths locates the provisioned tools for spawning.
 type Paths struct {
-	Dir           string
-	BunBin        string
-	CodexACPEntry string
+	Dir            string
+	BunBin         string
+	CodexACPEntry  string
+	ClaudeACPEntry string
 }
 
 var (
@@ -67,7 +69,8 @@ func Ensure(ctx context.Context, toolsDir string) (Paths, error) {
 	p := Paths{
 		Dir:           toolsDir,
 		BunBin:        bunBin,
-		CodexACPEntry: filepath.Join(toolsDir, "node_modules", "@agentclientprotocol", "codex-acp", "dist", "index.js"),
+		CodexACPEntry:  filepath.Join(toolsDir, "node_modules", "@agentclientprotocol", "codex-acp", "dist", "index.js"),
+		ClaudeACPEntry: filepath.Join(toolsDir, "node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js"),
 	}
 	if changed || !entryExists(p) {
 		installCtx, cancel := context.WithTimeout(ctx, installTimeout)
@@ -111,8 +114,12 @@ func materializeManifest(toolsDir string) (bool, error) {
 }
 
 func entryExists(p Paths) bool {
-	_, err := os.Stat(p.CodexACPEntry)
-	return err == nil
+	for _, entry := range []string{p.CodexACPEntry, p.ClaudeACPEntry} {
+		if _, err := os.Stat(entry); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func tail(b []byte, n int) string {

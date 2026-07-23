@@ -36,7 +36,7 @@ import (
 // Unlike PinnedOpencodeVersion there is no laptop-side compat gate:
 // claude session blobs never round-trip through clank migrations, so
 // drift is a quality problem (wrong model), not a corruption problem.
-const PinnedClaudeVersion = "2.1.201"
+const PinnedClaudeVersion = "2.1.217"
 
 // ParseClaudeVersionOutput extracts the bare version from `claude
 // --version` output. The CLI prints a suffixed form ("2.1.201

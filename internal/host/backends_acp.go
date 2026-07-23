@@ -83,6 +83,31 @@ func NewCodexACPManager(toolsDir string) (*ACPBackendManager, error) {
 	return NewACPBackendManager(profile)
 }
 
+// NewClaudeACPManager serves claude-code through the pinned
+// claude-agent-acp adapter under bun, provisioned lazily into toolsDir
+// alongside codex-acp. The adapter's exact-pinned Agent SDK bundles the
+// Claude CLI, so the agent version is fixed by the lockfile. Credentials
+// arrive via SetEnvResolver (Anthropic sink); the profile adds
+// IS_SANDBOX=1 when running as root so bypassPermissions works on
+// sprites.
+func NewClaudeACPManager(toolsDir string) (*ACPBackendManager, error) {
+	var paths atomic.Pointer[acptools.Paths]
+	profile := acp.ClaudeProfile("", "", nil)
+	profile.Prepare = func(ctx context.Context, _ string) error {
+		p, err := acptools.Ensure(ctx, toolsDir)
+		if err != nil {
+			return err
+		}
+		paths.Store(&p)
+		return nil
+	}
+	profile.Command = func(string) (string, []string) {
+		p := paths.Load() // Prepare ran first (execSpawn ordering)
+		return p.BunBin, []string{p.ClaudeACPEntry}
+	}
+	return NewACPBackendManager(profile)
+}
+
 // NewOpenCodeACPManager serves opencode through `opencode acp` on the
 // user's own binary — their install, their state, no version skew clank
 // can introduce. Prepare gates on the verified-surface floor (once) and
