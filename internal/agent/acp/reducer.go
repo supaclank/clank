@@ -336,6 +336,20 @@ func (r *reducer) finishReplay() {
 	r.replaying = false
 }
 
+// messageCount reports the transcript length so a caller can snapshot
+// it before a replay attempt and roll back on failure.
+func (r *reducer) messageCount() int { return len(r.messages) }
+
+// rollbackReplay discards messages/turn state accumulated by a failed
+// session/load, so a retried Open on the same Backend doesn't duplicate
+// history when the adapter replays it again from the start.
+func (r *reducer) rollbackReplay(preLoadCount int) {
+	r.messages = r.messages[:preLoadCount]
+	r.cur = nil
+	r.replayUser = nil
+	r.replaying = false
+}
+
 // snapshot deep-copies the transcript, including the in-flight turn as a
 // partial assistant message (clients reconcile via the monotonic rule).
 func (r *reducer) snapshot() []agent.MessageData {

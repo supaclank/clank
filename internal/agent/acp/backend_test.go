@@ -383,6 +383,39 @@ func TestBackend_AbortBeforeOpen_DoesNotSwallowLaterTurnError(t *testing.T) {
 	}
 }
 
+// Same hazard as above, but via the other unreset path: Cancel's RPC
+// itself fails with no turn in flight, so neither reset branch (the
+// conn==nil guard, nor the post-Cancel !hadTurn branch) ever runs.
+func TestBackend_AbortCancelFails_NoActiveTurn_DoesNotSwallowLaterTurnError(t *testing.T) {
+	t.Parallel()
+	scripted := &acptest.ScriptedAgent{}
+	scripted.PromptFn = func(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResponse, error) {
+		return sdk.PromptResponse{}, fmt.Errorf("provider exploded")
+	}
+	f := newBackendFixture(t, scripted, "")
+	ctx := context.Background()
+	if err := f.backend.Open(ctx); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	// session/cancel is a JSON-RPC notification: the only way Cancel()
+	// itself returns an error is a local send failure, e.g. an
+	// already-cancelled context.
+	abortCtx, cancelAbort := context.WithCancel(ctx)
+	cancelAbort()
+	if err := f.backend.Abort(abortCtx); err == nil {
+		t.Fatal("Abort with a cancelled context: want the Cancel send error surfaced, got nil")
+	}
+	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "go"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	evts := f.waitFor(10*time.Second, func(evts []agent.Event) bool {
+		return statusOf(evts) == agent.StatusError && countType(evts, agent.EventError) >= 1
+	})
+	if countType(evts, agent.EventError) == 0 {
+		t.Errorf("turn error after a failed no-op Abort was swallowed; got %s", eventTypes(evts))
+	}
+}
+
 // Stop's sweep is the pure path (no session/cancel involved): the agent
 // must observe the swept cancelled outcome itself.
 func TestBackend_StopSweepsPendingPermission(t *testing.T) {
@@ -463,6 +496,49 @@ func TestBackend_LoadReplayBuildsTranscriptWithoutEvents(t *testing.T) {
 		if e.Type == agent.EventPartUpdate || e.Type == agent.EventMessage {
 			t.Errorf("replay leaked live event %s", e.Type)
 		}
+	}
+}
+
+// session/update notifications can stream into the reducer before a
+// failing session/load RPC returns, and finishReplay used to commit that
+// partial state unconditionally. A retried Open on the same Backend then
+// duplicated the replayed history on top of the leftover partial commit.
+func TestBackend_FailedLoadSession_RetryDoesNotDuplicateMessages(t *testing.T) {
+	t.Parallel()
+	attempt := 0
+	scripted := &acptest.ScriptedAgent{}
+	scripted.LoadSessionFn = func(ctx context.Context, p sdk.LoadSessionRequest) (sdk.LoadSessionResponse, error) {
+		attempt++
+		conn := scripted.Conn()
+		push := func(u sdk.SessionUpdate) {
+			_ = conn.SessionUpdate(ctx, sdk.SessionNotification{SessionId: p.SessionId, Update: u})
+		}
+		push(sdk.UpdateUserMessageText("earlier question"))
+		push(sdk.UpdateAgentMessageText("earlier answer"))
+		if attempt == 1 {
+			return sdk.LoadSessionResponse{}, fmt.Errorf("adapter hiccup")
+		}
+		return sdk.LoadSessionResponse{}, nil
+	}
+	f := newBackendFixture(t, scripted, "ses-resume-retry")
+	ctx := context.Background()
+	if err := f.backend.Open(ctx); err == nil {
+		t.Fatal("Open (resume, first attempt): want the LoadSession error surfaced, got nil")
+	}
+	if err := f.backend.Open(ctx); err != nil {
+		t.Fatalf("Open (resume, retry): %v", err)
+	}
+
+	msgs, err := f.backend.Messages(ctx)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	var roles []string
+	for _, m := range msgs {
+		roles = append(roles, m.Role)
+	}
+	if fmt.Sprint(roles) != "[user assistant]" {
+		t.Fatalf("post-retry replayed roles = %v, want [user assistant] (no duplicates from the failed attempt)", roles)
 	}
 }
 

@@ -73,6 +73,7 @@ func (b *Backend) Open(ctx context.Context) error {
 		conn.Register(sdk.SessionId(resume), b)
 		b.mu.Lock()
 		b.red.setSessionID(resume)
+		preLoadCount := b.red.messageCount()
 		b.red.replaying = true
 		b.mu.Unlock()
 
@@ -82,7 +83,13 @@ func (b *Backend) Open(ctx context.Context) error {
 			McpServers: []sdk.McpServer{},
 		})
 		b.mu.Lock()
-		b.red.finishReplay()
+		if err != nil {
+			// Updates may have streamed in before the RPC failed; discard
+			// them so a retried Open doesn't duplicate replayed history.
+			b.red.rollbackReplay(preLoadCount)
+		} else {
+			b.red.finishReplay()
+		}
 		b.mu.Unlock()
 		if err != nil {
 			conn.Deregister(sdk.SessionId(resume))

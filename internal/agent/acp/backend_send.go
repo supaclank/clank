@@ -107,6 +107,14 @@ func (b *Backend) Abort(ctx context.Context) error {
 		return nil
 	}
 	if err := conn.Conn().Cancel(ctx, sdk.CancelNotification{SessionId: sdk.SessionId(sid)}); err != nil {
+		if !hadTurn {
+			// No runTurns cleanup will fire for this call — reset here so
+			// a failed Cancel doesn't stick b.aborting forever (same
+			// hazard as the conn==nil case above).
+			b.mu.Lock()
+			b.aborting = false
+			b.mu.Unlock()
+		}
 		return fmt.Errorf("acp %s: session/cancel: %w", b.profile.ID, err)
 	}
 	if !hadTurn {
