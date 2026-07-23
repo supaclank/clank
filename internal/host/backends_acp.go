@@ -342,23 +342,14 @@ func (m *ACPBackendManager) ListModels(ctx context.Context, projectDir string) (
 }
 
 // ensureCatalog fills projectDir's mode/model catalog by opening a
-// short-lived session, once per dir.
+// short-lived session, once per dir — ACP only advertises modes and
+// models on the session/new|load|resume response, so a picker shown
+// before the user's first session has to probe one to see them
+// (zed-industries/zed#52500).
 //
-// ACP advertises modes and models ONLY on the session/new|load|resume
-// response, so a client that offers a picker before the user starts a
-// session has to open one. Every shipping ACP client does this eagerly
-// (Zed, the VS Code clients, the nvim/Emacs plugins, marimo) and none of
-// them reuse it — Zed mints a session per thread-open, which is what
-// zed-industries/zed#52500 complains about. Probing once per dir and
-// remembering the answer keeps our footprint below that: one extra
-// session per (backend, dir) for this daemon's lifetime.
-//
-// The probe session is closed but generally NOT deleted: only
-// claude-agent-acp supports session/delete, codex hides never-prompted
-// threads from its own listings, and `opencode acp` neither deletes nor
-// defers persistence (anomalyco/opencode#38064 — its own TUI creates
-// sessions lazily; only its ACP entry point persists eagerly). So an
-// empty opencode row is the accepted cost, matching the ecosystem.
+// The probe session is stopped but not deleted: only claude-agent-acp
+// supports session/delete, so an empty per-backend row is the accepted
+// cost of probing.
 func (m *ACPBackendManager) ensureCatalog(ctx context.Context, projectDir string) {
 	if projectDir == "" {
 		return
