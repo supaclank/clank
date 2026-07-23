@@ -184,8 +184,6 @@ func alive(p *AdapterProc) bool {
 // env-stale procs, then start whatever is missing (in parallel), then
 // notify waiters.
 func (s *AdapterSupervisor) reconcile(ctx context.Context) {
-	currentFP := envFingerprint(s.profileEnv())
-
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
@@ -197,7 +195,7 @@ func (s *AdapterSupervisor) reconcile(ctx context.Context) {
 		case !alive(p):
 			s.logf("acp %s: adapter for %q died; will restart while desired", s.profile.ID, key)
 			delete(s.procs, key)
-		case p.envFP != currentFP:
+		case p.envFP != envFingerprint(s.profileEnv(key)):
 			s.logf("acp %s: env changed; restarting adapter for %q", s.profile.ID, key)
 			toStop = append(toStop, p)
 			delete(s.procs, key)
@@ -231,7 +229,7 @@ func (s *AdapterSupervisor) reconcile(ctx context.Context) {
 			// spawnTimeout).
 			p, err := s.spawn(ctx, key)
 			if err == nil {
-				p.envFP = currentFP
+				p.envFP = envFingerprint(s.profileEnv(key))
 			}
 			results <- started{key: key, proc: p, err: err}
 		}(key)
@@ -267,11 +265,31 @@ func (s *AdapterSupervisor) reconcile(ctx context.Context) {
 	}
 }
 
-func (s *AdapterSupervisor) profileEnv() map[string]string {
+func (s *AdapterSupervisor) profileEnv(scopeDir string) map[string]string {
 	if s.profile.Env == nil {
 		return nil
 	}
-	return s.profile.Env()
+	return s.profile.Env(scopeDir)
+}
+
+// RestartAll stops every running adapter while keeping the desired set,
+// so the reconciler respawns them with fresh Prepare/Env — the ACP
+// analog of OpenCode's restart-on-credential-write. Backends observe the
+// transport loss, go dead, and rehydrate lazily via ensureBackend.
+func (s *AdapterSupervisor) RestartAll() {
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
+	procs := maps.Clone(s.procs)
+	s.procs = make(map[string]*AdapterProc)
+	s.mu.Unlock()
+
+	for _, p := range procs {
+		p.Stop()
+	}
+	s.Nudge()
 }
 
 // execSpawn is the production SpawnFunc: launch the adapter argv with the
@@ -279,7 +297,7 @@ func (s *AdapterSupervisor) profileEnv() map[string]string {
 // for process exit.
 func (s *AdapterSupervisor) execSpawn(ctx context.Context, scopeDir string) (*AdapterProc, error) {
 	if s.profile.Prepare != nil {
-		if err := s.profile.Prepare(ctx); err != nil {
+		if err := s.profile.Prepare(ctx, scopeDir); err != nil {
 			return nil, fmt.Errorf("acp %s: prepare: %w", s.profile.ID, err)
 		}
 	}
@@ -294,7 +312,7 @@ func (s *AdapterSupervisor) execSpawn(ctx context.Context, scopeDir string) (*Ad
 		cmd.Dir = scopeDir
 	}
 	cmd.Env = os.Environ()
-	for k, v := range s.profileEnv() {
+	for k, v := range s.profileEnv(scopeDir) {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 	cmd.Stderr = os.Stderr

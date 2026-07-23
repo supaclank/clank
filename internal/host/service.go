@@ -278,6 +278,13 @@ func New(opts Options) *Service {
 		restart = func(ctx context.Context) error {
 			return oc.ServerManager().RestartAllServers(ctx)
 		}
+	} else if am, ok := s.backendManagers[agent.BackendOpenCode].(*ACPBackendManager); ok {
+		// ACP-served opencode: credentials still land in opencode's own
+		// auth.json (read at process start), so cycle the adapters.
+		restart = func(context.Context) error {
+			am.Supervisor().RestartAll()
+			return nil
+		}
 	}
 	am, err := NewAuthManager(restart)
 	if err != nil {

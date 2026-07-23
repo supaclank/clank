@@ -2,9 +2,12 @@ package host
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -31,11 +34,23 @@ type ACPBackendManager struct {
 // at runtime via the supervisor's env-fingerprint restarts.
 func NewACPBackendManager(profile acp.AdapterProfile) (*ACPBackendManager, error) {
 	m := &ACPBackendManager{}
-	profile.Env = func() map[string]string {
-		if f := m.envFn.Load(); f != nil {
-			return (*f)()
+	scoped := profile.Env
+	profile.Env = func(scopeDir string) map[string]string {
+		merged := map[string]string{}
+		if scoped != nil {
+			for k, v := range scoped(scopeDir) {
+				merged[k] = v
+			}
 		}
-		return nil
+		if f := m.envFn.Load(); f != nil {
+			for k, v := range (*f)() {
+				merged[k] = v
+			}
+		}
+		if len(merged) == 0 {
+			return nil
+		}
+		return merged
 	}
 	sup, err := acp.NewAdapterSupervisor(profile, log.Printf)
 	if err != nil {
@@ -53,7 +68,7 @@ func NewACPBackendManager(profile acp.AdapterProfile) (*ACPBackendManager, error
 func NewCodexACPManager(toolsDir string) (*ACPBackendManager, error) {
 	var paths atomic.Pointer[acptools.Paths]
 	profile := acp.CodexProfile("", "", nil)
-	profile.Prepare = func(ctx context.Context) error {
+	profile.Prepare = func(ctx context.Context, _ string) error {
 		p, err := acptools.Ensure(ctx, toolsDir)
 		if err != nil {
 			return err
@@ -66,6 +81,93 @@ func NewCodexACPManager(toolsDir string) (*ACPBackendManager, error) {
 		return p.BunBin, []string{p.CodexACPEntry}
 	}
 	return NewACPBackendManager(profile)
+}
+
+// NewOpenCodeACPManager serves opencode through `opencode acp` on the
+// user's own binary — their install, their state, no version skew clank
+// can introduce. Prepare gates on the verified-surface floor (once) and
+// materializes stack-detected guidance as an instructions file inside
+// the worktree's git dir; Env points opencode at it via inline config.
+// Guidance is best-effort: it never blocks a session.
+func NewOpenCodeACPManager() (*ACPBackendManager, error) {
+	profile := acp.OpenCodeProfile("opencode")
+	var floorOnce sync.Once
+	var floorErr error
+	profile.Prepare = func(ctx context.Context, scopeDir string) error {
+		floorOnce.Do(func() {
+			v, err := agent.OpenCodeVersion(ctx)
+			if err != nil {
+				floorErr = fmt.Errorf("probe opencode version: %w", err)
+				return
+			}
+			ok, err := agent.OpencodeVersionAtLeast(v, agent.PinnedOpencodeVersion)
+			if err != nil {
+				floorErr = err
+				return
+			}
+			if !ok {
+				floorErr = fmt.Errorf("opencode %s is older than the verified ACP floor %s — run `opencode upgrade`", v, agent.PinnedOpencodeVersion)
+			}
+		})
+		if floorErr != nil {
+			return floorErr
+		}
+		writeOpenCodeGuidance(scopeDir)
+		return nil
+	}
+	profile.Env = opencodeGuidanceEnv
+	return NewACPBackendManager(profile)
+}
+
+// opencodeGuidancePath is where materialized guidance lives: inside the
+// per-worktree git dir (worktree-id precedent) so it never dirties the
+// working tree.
+func opencodeGuidancePath(scopeDir string) (string, bool) {
+	gitDir, err := agent.GitDir(scopeDir)
+	if err != nil {
+		return "", false
+	}
+	return filepath.Join(gitDir, "clank", "guidance.md"), true
+}
+
+// writeOpenCodeGuidance materializes (or removes) the guidance file for
+// scopeDir. Best-effort by design — a guidance failure must never block
+// an agent session.
+func writeOpenCodeGuidance(scopeDir string) {
+	path, ok := opencodeGuidancePath(scopeDir)
+	if !ok {
+		return
+	}
+	text := guidance.Assemble(scopeDir)
+	if text == "" {
+		_ = os.Remove(path)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		log.Printf("[opencode-acp] guidance dir: %v", err)
+		return
+	}
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		log.Printf("[opencode-acp] guidance write: %v", err)
+	}
+}
+
+// opencodeGuidanceEnv injects the guidance file as an opencode
+// instructions entry via inline config. Keyed on file existence only,
+// so guidance content changes don't churn adapter restarts.
+func opencodeGuidanceEnv(scopeDir string) map[string]string {
+	path, ok := opencodeGuidancePath(scopeDir)
+	if !ok {
+		return nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		return nil
+	}
+	cfg, err := json.Marshal(map[string]any{"instructions": []string{path}})
+	if err != nil {
+		return nil
+	}
+	return map[string]string{"OPENCODE_CONFIG_CONTENT": string(cfg)}
 }
 
 // SetEnvResolver wires credential env for adapter spawns and nudges the

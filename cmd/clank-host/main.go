@@ -91,7 +91,7 @@ func main() {
 	localFileAttachments := flag.Bool("local-file-attachments", false, "Honor file:// image attachment sources (the client shares this host's filesystem). Set by the local laptop provisioner; off for remote sprites so a message can't make the host read arbitrary local paths.")
 	ghCLIAuth := flag.Bool("gh-cli-auth", false, "Resolve GitHub tokens from the machine's gh CLI login (gh auth token) when no clank GitHub connection exists. Set by the local laptop provisioner; off for remote sprites, which have no gh login to borrow.")
 	claudeCLIAuth := flag.Bool("claude-cli-auth", false, "Report the machine's own claude CLI login (Keychain / ~/.claude/.credentials.json) as a connected Anthropic provider when no clank connection exists — presence detection only, the credential is never read. Set by the local laptop provisioner; off for remote sprites, which have no claude login to borrow.")
-	acpBackends := flag.String("acp-backends", envDefault("CLANK_ACP_BACKENDS", string(agent.BackendCodex)), "Comma-separated backends served through the ACP adapter path instead of the bespoke integration (opencode, claude-code, codex; 'all', 'none'). codex is ACP-only and enabled by default; opencode/claude-code ACP serving lands in a later release. Defaults to $CLANK_ACP_BACKENDS, else 'codex'.")
+	acpBackends := flag.String("acp-backends", envDefault("CLANK_ACP_BACKENDS", string(agent.BackendCodex)+","+string(agent.BackendOpenCode)), "Comma-separated backends served through the ACP adapter path instead of the bespoke integration (opencode, claude-code, codex; 'all', 'none'). codex is ACP-only; opencode is ACP by default (M2 — rollback: set this to 'codex'); claude-code ACP serving lands in a later release. Defaults to $CLANK_ACP_BACKENDS, else 'codex,opencode'.")
 	flag.Parse()
 
 	if *socket == "" && *listen == "" {
@@ -384,13 +384,19 @@ func run(cfg runConfig) error {
 				return fmt.Errorf("--acp-backends: codex: %w", err)
 			}
 			backendManagers[agent.BackendCodex] = codexMgr
+		case agent.BackendOpenCode:
+			ocMgr, err := host.NewOpenCodeACPManager()
+			if err != nil {
+				return fmt.Errorf("--acp-backends: opencode: %w", err)
+			}
+			backendManagers[agent.BackendOpenCode] = ocMgr
 		default:
-			return fmt.Errorf("--acp-backends: %s is not served over ACP in this build yet (only codex)", bt)
+			return fmt.Errorf("--acp-backends: %s is not served over ACP in this build yet (codex, opencode)", bt)
 		}
 	}
 
 	svc := host.New(host.Options{
-		BackendManagers: backendManagers,
+		BackendManagers:        backendManagers,
 		Log:                    lg,
 		Templates:              templates,
 		SessionsStore:          hostStore,

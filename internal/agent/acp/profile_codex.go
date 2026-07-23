@@ -10,7 +10,7 @@ import "github.com/acksell/clank/internal/agent"
 // back to its own ChatGPT login in ~/.codex). Modes are agent-owned:
 // codex advertises its approval/sandbox presets (read-only / agent /
 // agent-full-access) and clank passes the chosen id straight through.
-func CodexProfile(bunBin, adapterEntry string, env func() map[string]string) AdapterProfile {
+func CodexProfile(bunBin, adapterEntry string, env func(string) map[string]string) AdapterProfile {
 	return AdapterProfile{
 		ID:      "codex-acp",
 		Backend: agent.BackendCodex,

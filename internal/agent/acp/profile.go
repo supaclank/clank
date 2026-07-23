@@ -20,17 +20,18 @@ type AdapterProfile struct {
 	// Backend is the clank backend type this profile serves.
 	Backend agent.BackendType
 	Scope   AdapterScope
-	// Prepare provisions whatever Command needs (e.g. installing the
-	// adapter package) before each spawn attempt. Must be idempotent and
-	// cheap once satisfied; it owns its own timeout budget. nil = ready.
-	Prepare func(ctx context.Context) error
+	// Prepare provisions whatever Command/Env need for scopeDir (e.g.
+	// installing the adapter package, materializing guidance) before each
+	// spawn attempt. Must be idempotent and cheap once satisfied; it owns
+	// its own timeout budget. nil = ready.
+	Prepare func(ctx context.Context, scopeDir string) error
 	// Command returns the argv that launches the adapter for scopeDir
 	// (empty for ScopeHost profiles). Called after Prepare succeeded.
 	Command func(scopeDir string) (bin string, args []string)
-	// Env returns credential/config env vars merged over the parent
-	// environment at spawn. A change in the returned map restarts the
-	// adapter on the next reconcile (see envFingerprint).
-	Env func() map[string]string
+	// Env returns credential/config env vars for scopeDir, merged over
+	// the parent environment at spawn. A change in the returned map
+	// restarts that scope's adapter on the next reconcile (fingerprint).
+	Env func(scopeDir string) map[string]string
 	// SessionNewMeta builds session/new's _meta payload; guidance is the
 	// assembled system prompt for fresh sessions ("" on resume). nil =
 	// no meta (the adapter has no session-level injection channel).

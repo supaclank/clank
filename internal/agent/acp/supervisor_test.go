@@ -13,7 +13,7 @@ import (
 	sdk "github.com/coder/acp-go-sdk"
 )
 
-func testProfile(scope acpx.AdapterScope, env func() map[string]string) acpx.AdapterProfile {
+func testProfile(scope acpx.AdapterScope, env func(string) map[string]string) acpx.AdapterProfile {
 	return acpx.AdapterProfile{
 		ID:      "test-adapter",
 		Backend: agent.BackendOpenCode,
@@ -32,7 +32,7 @@ type supFixture struct {
 	cancel   context.CancelFunc
 }
 
-func newSupFixture(t *testing.T, scope acpx.AdapterScope, env func() map[string]string) *supFixture {
+func newSupFixture(t *testing.T, scope acpx.AdapterScope, env func(string) map[string]string) *supFixture {
 	t.Helper()
 	profile := testProfile(scope, env)
 	sup, err := acpx.NewAdapterSupervisor(profile, t.Logf)
@@ -147,7 +147,7 @@ func TestSupervisor_EnvChangeRestarts(t *testing.T) {
 	t.Parallel()
 	var envVal atomic.Value
 	envVal.Store("v1")
-	env := func() map[string]string { return map[string]string{"TOKEN": envVal.Load().(string)} }
+	env := func(string) map[string]string { return map[string]string{"TOKEN": envVal.Load().(string)} }
 	f := newSupFixture(t, acpx.ScopePerDir, env)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

@@ -434,11 +434,14 @@ func TestBackend_AbortCancelFails_NoActiveTurn_DoesNotSwallowLaterTurnError(t *t
 	}
 }
 
-// Stop's sweep is the pure path (no session/cancel involved): the agent
-// must observe the swept cancelled outcome itself.
-func TestBackend_StopSweepsPendingPermission(t *testing.T) {
+// Stop must release a parked permission. Two valid release paths race:
+// the sweep resolves it with a cancelled outcome, and Stop's bgCancel
+// kills the in-flight prompt RPC whose cancellation propagates to the
+// agent's RequestPermission ctx. Either way the agent unblocks and a
+// non-cancelled outcome is a bug.
+func TestBackend_StopReleasesPendingPermission(t *testing.T) {
 	t.Parallel()
-	outcome := make(chan sdk.RequestPermissionResponse, 1)
+	released := make(chan struct{}, 1)
 	scripted := &acptest.ScriptedAgent{}
 	scripted.PromptFn = func(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResponse, error) {
 		resp, err := scripted.Conn().RequestPermission(ctx, sdk.RequestPermissionRequest{
@@ -446,9 +449,10 @@ func TestBackend_StopSweepsPendingPermission(t *testing.T) {
 			ToolCall:  sdk.ToolCallUpdate{ToolCallId: "tc-2"},
 			Options:   []sdk.PermissionOption{{OptionId: "yes", Name: "Allow", Kind: sdk.PermissionOptionKindAllowOnce}},
 		})
-		if err == nil {
-			outcome <- resp
+		if err == nil && resp.Outcome.Cancelled == nil {
+			t.Errorf("stopped permission outcome = %+v, want cancelled (or ctx error)", resp.Outcome)
 		}
+		released <- struct{}{}
 		return sdk.PromptResponse{StopReason: sdk.StopReasonCancelled}, nil
 	}
 	f := newBackendFixture(t, scripted, "")
@@ -466,12 +470,9 @@ func TestBackend_StopSweepsPendingPermission(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 	select {
-	case resp := <-outcome:
-		if resp.Outcome.Cancelled == nil {
-			t.Fatalf("swept permission outcome = %+v, want cancelled", resp.Outcome)
-		}
+	case <-released:
 	case <-time.After(5 * time.Second):
-		t.Fatal("pending permission was not swept on stop")
+		t.Fatal("parked permission was not released on stop")
 	}
 }
 

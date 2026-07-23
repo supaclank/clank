@@ -176,6 +176,17 @@ func DiagnoseOpencodeMismatch(local, remote, pin string) OpencodeMismatch {
 // compareOpencodeVersions returns -1/0/1 for a<b / a==b / a>b after
 // parsing both as major.minor[.patch]. The bool is false when either
 // side is unparseable.
+// OpencodeVersionAtLeast reports whether version v is >= floor. Used by
+// the ACP path to gate `opencode acp` on a verified-surface floor.
+// Returns an error when either version fails to parse.
+func OpencodeVersionAtLeast(v, floor string) (bool, error) {
+	cmp, ok := compareOpencodeVersions(v, floor)
+	if !ok {
+		return false, fmt.Errorf("unparseable opencode version: %q vs floor %q", v, floor)
+	}
+	return cmp >= 0, nil
+}
+
 func compareOpencodeVersions(a, b string) (int, bool) {
 	aMaj, aMin, aPat, errA := parseOpencodeVersion(a)
 	if errA != nil {
