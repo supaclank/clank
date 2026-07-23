@@ -172,6 +172,9 @@ func (b *Backend) runTurns() {
 // tool_call_updates land in the turn they belong to (claude #864 class).
 // Session-scoped updates (title, mode) are safe at any time and don't
 // need this window.
+//
+// TODO(ai-review): switch the 25ms poll below to a timer/cond-based wait
+// to cut wakeups during the drain window. https://github.com/Acksell/clank/pull/185
 func (b *Backend) drainLateUpdates() {
 	deadline := time.Now().Add(drainCap)
 	for time.Now().Before(deadline) {

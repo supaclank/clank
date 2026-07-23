@@ -341,22 +341,43 @@ func (r *reducer) finishReplay() {
 func (r *reducer) snapshot() []agent.MessageData {
 	out := make([]agent.MessageData, 0, len(r.messages)+2)
 	for _, m := range r.messages {
-		m.Parts = append([]agent.Part(nil), m.Parts...)
+		m.Parts = clonePartsDeep(m.Parts)
 		out = append(out, m)
 	}
 	if t := r.cur; t != nil && len(t.assistantParts) > 0 {
 		out = append(out, agent.MessageData{
 			ID:    r.assistantMessageID(t.seq),
 			Role:  "assistant",
-			Parts: append([]agent.Part(nil), t.assistantParts...),
+			Parts: clonePartsDeep(t.assistantParts),
 		})
 		if len(t.carrierParts) > 0 {
 			out = append(out, agent.MessageData{
 				ID:    r.carrierMessageID(t.seq),
 				Role:  "user",
-				Parts: append([]agent.Part(nil), t.carrierParts...),
+				Parts: clonePartsDeep(t.carrierParts),
 			})
 		}
+	}
+	return out
+}
+
+// clonePartsDeep copies parts plus their Input map and Question pointer so
+// a caller mutating the returned snapshot can't corrupt live reducer state.
+func clonePartsDeep(parts []agent.Part) []agent.Part {
+	out := make([]agent.Part, len(parts))
+	for i, p := range parts {
+		if p.Input != nil {
+			input := make(map[string]any, len(p.Input))
+			for k, v := range p.Input {
+				input[k] = v
+			}
+			p.Input = input
+		}
+		if p.Question != nil {
+			q := *p.Question
+			p.Question = &q
+		}
+		out[i] = p
 	}
 	return out
 }

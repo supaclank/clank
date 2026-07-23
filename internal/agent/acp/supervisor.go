@@ -296,9 +296,12 @@ func (s *AdapterSupervisor) execSpawn(ctx context.Context, scopeDir string) (*Ad
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		_ = stdin.Close()
 		return nil, fmt.Errorf("acp %s: stdout pipe: %w", s.profile.ID, err)
 	}
 	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
 		return nil, fmt.Errorf("acp %s: start %s: %w", s.profile.ID, bin, err)
 	}
 
