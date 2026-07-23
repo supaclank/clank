@@ -309,27 +309,45 @@ func (m *ACPBackendManager) putModes(workDir string, modes []agent.SessionMode) 
 
 // ListModes implements agent.ModeLister from what a session reported.
 // Same caveat as ListModels: ACP advertises modes per session, so this
-// is empty until one has opened in projectDir — strictly per-dir, never
-// another dir's list (see the cross-contamination note below).
+// is empty until one has opened, and any known list is a better answer
+// than none for a dir we haven't seen (host-scoped profiles only — see
+// the per-dir note below).
 func (m *ACPBackendManager) ListModes(_ context.Context, projectDir string) ([]agent.SessionMode, error) {
 	m.catalogMu.Lock()
 	defer m.catalogMu.Unlock()
-	// Strictly per-dir: agents/modes are project-scoped (opencode reads
-	// .opencode/agent/ from the repo), so answering for a dir we have not
-	// seen with another dir's list would cross-contaminate projects.
-	return slices.Clone(m.modes[projectDir]), nil
+	if modes := m.modes[projectDir]; len(modes) > 0 {
+		return slices.Clone(modes), nil
+	}
+	// Per-dir strictness only matters where the vocabulary can vary by
+	// project (opencode reads .opencode/agent/ from the repo). Host-scoped
+	// profiles (codex, claude) own one adapter process for the whole host,
+	// so any known list answers a dir we haven't seen without
+	// cross-contaminating opencode's per-project catalogs.
+	if m.profile.Scope == acp.ScopeHost {
+		for _, modes := range m.modes {
+			return slices.Clone(modes), nil
+		}
+	}
+	return nil, nil
 }
 
 // ListModels implements agent.ModelLister from the per-dir catalog a
 // session published on open. Empty before this host has opened a session
 // in projectDir — ACP has no session-independent model listing, so the
-// picker fills in once a session exists rather than showing a guess.
+// picker fills in once a session exists rather than showing a guess
+// (host-scoped profiles only — see ListModes' per-dir note).
 func (m *ACPBackendManager) ListModels(_ context.Context, projectDir string) ([]agent.ModelInfo, error) {
 	m.catalogMu.Lock()
 	defer m.catalogMu.Unlock()
-	// Per-dir for the same reason as ListModes: project config can add or
-	// restrict providers, so another dir's catalog is not a safe answer.
-	return slices.Clone(m.catalog[projectDir]), nil
+	if models := m.catalog[projectDir]; len(models) > 0 {
+		return slices.Clone(models), nil
+	}
+	if m.profile.Scope == acp.ScopeHost {
+		for _, models := range m.catalog {
+			return slices.Clone(models), nil
+		}
+	}
+	return nil, nil
 }
 
 // Shutdown stops every adapter process.
