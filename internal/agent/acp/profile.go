@@ -26,6 +26,16 @@ type AdapterProfile struct {
 	// environment at spawn. A change in the returned map restarts the
 	// adapter on the next reconcile (see envFingerprint).
 	Env func() map[string]string
+	// SessionNewMeta builds session/new's _meta payload; guidance is the
+	// assembled system prompt for fresh sessions ("" on resume). nil =
+	// no meta (the adapter has no session-level injection channel).
+	SessionNewMeta func(guidance string) map[string]any
+	// ModeFor maps clank's permission mode onto the adapter's ACP mode
+	// id. nil or !ok = the mode is not sent (opencode ignores modes).
+	ModeFor func(mode agent.ClaudePermissionMode) (string, bool)
+	// ModelOption maps a model override onto a session config option
+	// (option id + value). nil = overrides are ignored for this adapter.
+	ModelOption func(o agent.ModelOverride) (id, value string, ok bool)
 }
 
 // ScopeKey maps a session workDir onto the supervisor's process key.

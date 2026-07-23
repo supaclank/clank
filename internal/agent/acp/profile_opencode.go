@@ -15,5 +15,13 @@ func OpenCodeProfile(bin string) AdapterProfile {
 		Command: func(scopeDir string) (string, []string) {
 			return bin, []string{"acp", "--cwd", scopeDir}
 		},
+		// opencode ignores clank permission modes (ModeFor nil, matching
+		// the bespoke backend); models are its "model" config option.
+		ModelOption: func(o agent.ModelOverride) (string, string, bool) {
+			if o.ModelID == "" || o.ProviderID == "" {
+				return "", "", false
+			}
+			return "model", o.ProviderID + "/" + o.ModelID, true
+		},
 	}
 }
