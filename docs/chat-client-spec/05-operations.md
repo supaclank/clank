@@ -64,6 +64,15 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
   at a time). **Why:** treating `204` as "done" or allowing concurrent sends desynchronizes
   the turn. **Golden:** `internal/agent/agent.go:597` (Send "returns once dispatched, NOT
   when the LLM finishes"), `internal/tui/sessionview.go:1151` (`submitting` guard), `:2163`.
+- **[OP-012] (MUST, 0.5.0)** On ACP-served backends a send that arrives while the session is
+  **busy** is accepted (`204`) and **queued host-side** (FIFO, cap 8); prompts dispatch
+  sequentially and `status` stays `busy` until the queue drains to `idle`. A queue-full send
+  fails with a normal error envelope. Clients keep the OP-002 posture unchanged — user
+  messages appear via the standard flow, and no steering/interjection semantics exist (the
+  queued prompt starts a fresh turn). **Why:** ACP is one-prompt-at-a-time; queueing
+  preserves today's send-while-busy UX without protocol tricks. **Golden:**
+  `internal/agent/acp/backend_send.go` (`maxQueuedPrompts`, `runTurns`); regression
+  `TestBackend_QueueWhileBusy`.
 
 ### Reply to permission — `POST /sessions/{id}/permissions/{permID}/reply`
 
@@ -106,16 +115,17 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
 
 ### Revert / fork — backend-specific
 
-- **[OP-005] (MUST)** **Revert** is supported on **both** backends — Claude since clank #68
-  (2026-06-21: file rollback + transcript truncation), OpenCode via its session revert marker.
-  **Fork** is **OpenCode-only** (Claude's `Fork` returns *"fork is not supported by Claude Code
-  backend"*). Two semantics a client MUST respect: (1) Claude revert **requires** a non-empty
-  `message_id`; OpenCode additionally treats an **empty** `message_id` as *clear the revert
-  marker* (un-revert). (2) The host does **not** gate by backend — `RevertSession`/`ForkSession`
-  call straight through to the backend — so an unsupported combination (fork on Claude) returns
-  a backend error. A client MUST therefore offer **revert on both** backends, restrict **fork to
-  OpenCode**, and handle the unsupported-op error gracefully (hide the action for the wrong
-  backend) rather than surfacing it as a failure. Revert's effect is observed via the `revert`
+- **[OP-005] (MUST)** **Revert** is supported on the two bespoke backends — Claude since
+  clank #68 (2026-06-21: file rollback + transcript truncation), OpenCode via its session
+  revert marker — and **unsupported on ACP-served backends** (`codex` today; approved cut).
+  **Fork** is capability-dependent: OpenCode supports it; Claude and Codex do not. Semantics a
+  client MUST respect: (1) Claude revert **requires** a non-empty `message_id`; OpenCode
+  additionally treats an **empty** `message_id` as *clear the revert marker* (un-revert).
+  (2) The host does **not** gate by backend — `RevertSession`/`ForkSession` call straight
+  through — but **(0.5.0)** an unsupported operation now returns a **typed error**:
+  `501 {code: "unsupported"}` instead of the old opaque 500 (mapped back to
+  `agent.ErrUnsupported` for in-process clients). A client MUST handle `unsupported`
+  gracefully — hide or soft-disable the affordance — never surface it as a generic failure. Revert's effect is observed via the `revert`
   event + a messages refetch filtered by `revert_message_id`
   ([STATE-REVERT-001](06-state-model.md)); the call returns `204`. **Why:** an earlier draft of
   this rule wrongly said revert was Claude-only — it has worked on both since #68, yet the RN

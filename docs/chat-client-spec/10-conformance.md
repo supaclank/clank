@@ -117,9 +117,11 @@ Fixtures are not invented — they are captured or lifted:
   `clank-mobile/src/hooks/__tests__/dispatch.test.ts` and `…/lib/__tests__` (delta, monotonic
   merge, shell drop).
 
-Fixtures will live in `docs/chat-client-spec/fixtures/<CONF-ID>.json` (the directory is not
-yet checked in; it grows as scenarios are authored). Each client's harness loads the same
-files.
+Fixtures live in `docs/chat-client-spec/fixtures/`. Checked in today (0.5.0):
+`fixtures/acp/` — verbatim frames captured from the real pinned ACP adapters, replayed
+through the production reducer by `internal/agent/acp/fixtures_test.go` (see the fixture
+README for provenance and format). Per-scenario `<CONF-ID>.json` projections are still to
+come; each client's harness loads the same files.
 
 ## Scenario matrix
 

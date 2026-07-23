@@ -168,3 +168,20 @@ single biggest source of cross-client divergence.
 
 - **[EVT-021] (MUST)** A chat client MUST ignore `voice.*` events. They are emitted only by
   the on-host voice agent and carry no chat-transcript state. **Golden:** `internal/agent/agent.go:63`.
+
+### Message shells (0.5.0)
+
+- **[EVT-022] (MUST)** Live `message` events are **shells**, and live rendering flows through
+  `part` events only. Backend side: a live assistant `message` event MUST NOT carry `content`
+  or `parts` (shell = `{id?, role, model_id?}`), and the tool-result carrier produces **no
+  live message event at all** — its parts already streamed, and a user-role shell could
+  mis-backfill a typed entry's message id. Client side: render live turns from `part` events
+  (idempotent upsert by part id), use assistant shells only for metadata (model tracking),
+  and user shells only for message-id backfill; the existing skip of empty message events is
+  load-bearing. **Why:** a full-bodied live assistant `message` triple-renders the turn on a
+  fresh session — the streamed part entry, the shell's `content` appended as a text entry,
+  and its parts re-added — the first ACP dogfood bug. The full transcript is only ever read
+  via `GET /sessions/{id}/messages`. **Golden:** `internal/agent/acp/reducer.go`
+  (`commitTurn` shell emission), `internal/agent/opencode.go:734` (bespoke shells),
+  `internal/tui/sessionview.go:1615` (`handleMessage` shell handling). Regression:
+  `TestBackend_TurnLifecycle` (`internal/agent/acp/backend_test.go`).
