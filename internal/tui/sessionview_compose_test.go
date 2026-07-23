@@ -320,3 +320,58 @@ func TestCompose_WordBackwardOnEmptyInput(t *testing.T) {
 		})
 	}
 }
+
+// flattenCmdMsgs executes cmd and, if it yields a tea.BatchMsg, recurses into
+// each sub-command, returning every resulting message. Lets a test assert
+// which fetches a tea.Batch actually dispatched.
+func flattenCmdMsgs(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		return []tea.Msg{msg}
+	}
+	var out []tea.Msg
+	for _, sub := range batch {
+		out = append(out, flattenCmdMsgs(sub)...)
+	}
+	return out
+}
+
+// Init() previously seeded the mode picker only via applyBackend (an explicit
+// backend switch), leaving it permanently empty on first compose open for
+// every ACP backend (claude, codex) — the exact symptom this PR set out to
+// fix. An empty projectDir keeps gitRef unresolved so fetchModes/fetchModels
+// take their synchronous zero-value path instead of touching the nil client.
+func TestCompose_InitFetchesModes(t *testing.T) {
+	t.Parallel()
+	m := newSessionViewComposingWithBackend(nil, "", agent.BackendClaudeCode)
+	m.width, m.height = 80, 40
+
+	msgs := flattenCmdMsgs(m.Init())
+	for _, msg := range msgs {
+		if _, ok := msg.(modesResultMsg); ok {
+			return
+		}
+	}
+	t.Fatalf("Init() never dispatched fetchModes(); mode picker stays empty on first compose open, got msgs %#v", msgs)
+}
+
+// applyProjectFolder had the same gap as Init(): switching the compose
+// project folder refreshed models but never modes, so an ACP backend's mode
+// picker went stale after a folder change.
+func TestCompose_ApplyProjectFolderFetchesModes(t *testing.T) {
+	t.Parallel()
+	m := newSessionViewComposingWithBackend(nil, "", agent.BackendClaudeCode)
+	m.width, m.height = 80, 40
+
+	msgs := flattenCmdMsgs(m.applyProjectFolder("", focusFolder))
+	for _, msg := range msgs {
+		if _, ok := msg.(modesResultMsg); ok {
+			return
+		}
+	}
+	t.Fatalf("applyProjectFolder() never dispatched fetchModes(); mode picker goes stale after a folder change, got msgs %#v", msgs)
+}

@@ -602,7 +602,7 @@ func (m *SessionViewModel) applyProjectFolder(dir string, returnTo composeFocus)
 	}
 	m.composeFocus = returnTo
 
-	cmds := []tea.Cmd{m.fetchModels()}
+	cmds := []tea.Cmd{m.fetchModels(), m.fetchModes()}
 	if m.backend == agent.BackendOpenCode {
 		cmds = append(cmds, m.fetchAgents())
 	}
