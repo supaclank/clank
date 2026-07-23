@@ -157,12 +157,14 @@ func TestStartRequest_Validate_PermissionMode(t *testing.T) {
 		}
 	})
 
-	t.Run("invalid_rejected", func(t *testing.T) {
+	t.Run("agent_defined_id_accepted", func(t *testing.T) {
 		t.Parallel()
+		// Modes are agent-owned (ACP vocabulary): Validate accepts any
+		// id; the serving agent rejects ones it doesn't advertise.
 		req := base
-		req.PermissionMode = "not-a-real-mode"
-		if err := req.Validate(); err == nil {
-			t.Fatal("expected error for invalid permission_mode, got nil")
+		req.PermissionMode = "read-only"
+		if err := req.Validate(); err != nil {
+			t.Fatalf("agent-defined permission_mode: unexpected error %v", err)
 		}
 	})
 }

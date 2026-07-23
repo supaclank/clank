@@ -20,6 +20,8 @@ const (
 	EnvClaudeCodeOAuthToken = "CLAUDE_CODE_OAUTH_TOKEN"
 	EnvAnthropicAPIKey      = "ANTHROPIC_API_KEY"
 	EnvAnthropicAuthToken   = "ANTHROPIC_AUTH_TOKEN"
+	// EnvCodexAPIKey authenticates the codex-acp adapter (OpenAI).
+	EnvCodexAPIKey = "CODEX_API_KEY"
 )
 
 // providerEnvVars maps catalog provider IDs to the env var names that

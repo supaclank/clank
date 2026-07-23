@@ -247,13 +247,6 @@ func (b *StubBackend) SessionID() string {
 
 func (*StubBackend) Messages(context.Context) ([]agent.MessageData, error) { return nil, nil }
 
-func (b *StubBackend) Revert(_ context.Context, msgID string) error {
-	b.mu.Lock()
-	b.revertID = msgID
-	b.mu.Unlock()
-	return nil
-}
-
 func (b *StubBackend) Fork(_ context.Context, msgID string) (agent.ForkResult, error) {
 	b.mu.Lock()
 	b.forkID = msgID
@@ -267,16 +260,6 @@ func (b *StubBackend) RespondPermission(_ context.Context, permissionID string, 
 	b.permissionID = permissionID
 	b.permissionAllow = allow
 	b.permissionCalled = true
-	return nil
-}
-
-func (b *StubBackend) RespondQuestion(_ context.Context, requestID string, answers []agent.QuestionAnswer, reject bool) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.questionRequestID = requestID
-	b.questionAnswers = answers
-	b.questionReject = reject
-	b.questionCalled = true
 	return nil
 }
 

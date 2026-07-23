@@ -1,6 +1,6 @@
 # Clank Chat-Client Specification
 
-**Spec version:** 0.4.0 · **Last updated:** 2026-07-16 · **Status:** Draft
+**Spec version:** 0.6.0 · **Last updated:** 2026-07-23 · **Status:** Draft
 
 This is the normative contract for any client that drives a clank **chat session** — the
 TUI, the React Native app, the native Android/iOS overlays, a future Swift or web client.
@@ -113,6 +113,21 @@ This spec is only useful while it is true. The loop, on every behavior change:
    its trace fixture.
 4. **Bump the spec version** (top of this file) — patch for clarifications, minor for new
    rules, major for a breaking wire change.
+
+### Retired in 0.6.0 (the ACP migration, M3)
+
+Struck through in place, never deleted — a client that still implements them is not wrong,
+just carrying dead weight. The host no longer produces any of these behaviors:
+
+| Retired | Was | Why it went |
+|---|---|---|
+| `INV-REVERT-001`, `STATE-REVERT-001`, `STATE-REVERT-RESULT-001`, `VIEW-REVERT-PREFILL-001`, `CONF-REVERT-FILTER`, the `revert` event + endpoint | revert / un-revert | ACP has no revert primitive; the bespoke Claude implementation (file rollback + transcript truncation) went with its backend. `revert_message_id` stays on the wire as a permanently-empty field until 1.0. |
+| `QST-001/002/003`, `OP-011`, `FLOW-ASK-001`, `CONF-QUESTION-TAG`, `CONF-INTERACTIVE-ASK`, `part.question`, the questions endpoint | AskUserQuestion structured prompts | no ACP equivalent; such requests now arrive as ordinary permission prompts. |
+| `INV-PERMMODE-EXITPLAN-001`, `FLOW-PLAN-001`, `ITOOL-005/006`, `CONF-INTERACTIVE-PLAN`, `CONF-PLAN-EXIT` | ExitPlanMode approve / request-changes / deny | plan review degrades to an ordinary permission prompt (approve/deny); the plan text still renders from the tool part. |
+| `INV-INTERACTIVE-001` | render interactive tools as structured UI | its two subjects (questions, plan review) are both retired. Inline comments ([11](11-interactive-tools.md)) survive and are now the only structured-feedback path. |
+
+Permission **modes** are unaffected — they became agent-owned in 0.5.0
+([DATA-040](03-data-model.md)) and `plan` mode still exists on backends that advertise it.
 5. **Update each affected Implementation Checklist** status in [implementations/](implementations/).
 
 A change that touches client-observable behavior but skips steps 2–3 is incomplete.

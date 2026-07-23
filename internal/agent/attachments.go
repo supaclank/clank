@@ -34,6 +34,16 @@ type resolvedImage struct {
 	Data     []byte
 }
 
+// ResolvedImage aliases resolvedImage for backend subpackages
+// (internal/agent/acp); the fields are already exported.
+type ResolvedImage = resolvedImage
+
+// ResolveAttachments is the exported entry to resolveAttachments for
+// backend subpackages.
+func ResolveAttachments(ctx context.Context, atts []Attachment) ([]ResolvedImage, error) {
+	return resolveAttachments(ctx, atts)
+}
+
 // resolveAttachments resolves every attachment's bytes. Fails fast on the first
 // error — a missing/oversized/wrong-type image must surface, never be silently
 // dropped.

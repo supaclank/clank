@@ -16,6 +16,7 @@ const DefaultBackend = BackendOpenCode
 var AllBackends = []BackendType{
 	BackendOpenCode,
 	BackendClaudeCode,
+	BackendCodex,
 }
 
 // ParseBackend resolves a user-facing backend name (CLI flag, settings

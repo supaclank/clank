@@ -161,17 +161,6 @@ func (b *httpSessionBackend) Messages(ctx context.Context) ([]agent.MessageData,
 	return out, b.c.do(ctx, http.MethodGet, p, nil, &out)
 }
 
-func (b *httpSessionBackend) Revert(ctx context.Context, messageID string) error {
-	body := struct {
-		MessageID string `json:"message_id"`
-	}{messageID}
-	p, err := b.path("/revert")
-	if err != nil {
-		return err
-	}
-	return b.c.do(ctx, http.MethodPost, p, body, nil)
-}
-
 func (b *httpSessionBackend) Fork(ctx context.Context, messageID string) (agent.ForkResult, error) {
 	body := struct {
 		MessageID string `json:"message_id"`
@@ -190,18 +179,6 @@ func (b *httpSessionBackend) RespondPermission(ctx context.Context, permissionID
 		Message string `json:"message,omitempty"`
 	}{allow, denyMessage}
 	p, err := b.path("/permissions/" + url.PathEscape(permissionID) + "/reply")
-	if err != nil {
-		return err
-	}
-	return b.c.do(ctx, http.MethodPost, p, body, nil)
-}
-
-func (b *httpSessionBackend) RespondQuestion(ctx context.Context, requestID string, answers []agent.QuestionAnswer, reject bool) error {
-	body := struct {
-		Answers []agent.QuestionAnswer `json:"answers,omitempty"`
-		Reject  bool                   `json:"reject,omitempty"`
-	}{answers, reject}
-	p, err := b.path("/questions/" + url.PathEscape(requestID) + "/reply")
 	if err != nil {
 		return err
 	}

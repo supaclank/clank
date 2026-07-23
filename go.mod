@@ -7,7 +7,6 @@ require (
 	charm.land/bubbletea/v2 v2.0.2
 	charm.land/lipgloss/v2 v2.0.2
 	github.com/MicahParks/keyfunc/v3 v3.8.0
-	github.com/acksell/opencode-go-sdk/sdk v1.17.18
 	github.com/atotto/clipboard v0.1.4
 	github.com/aws/aws-sdk-go-v2 v1.41.7
 	github.com/aws/aws-sdk-go-v2/config v1.32.17
@@ -16,6 +15,7 @@ require (
 	github.com/aws/smithy-go v1.25.1
 	github.com/charmbracelet/glamour v1.0.0
 	github.com/charmbracelet/x/ansi v0.11.6
+	github.com/coder/acp-go-sdk v0.13.5
 	github.com/coder/websocket v1.8.14
 	github.com/creack/pty v1.1.24
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -112,7 +112,6 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/severity1/claude-agent-sdk-go v0.6.22
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yuin/goldmark v1.7.13 // indirect
@@ -125,7 +124,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-// Carries the fix for >1MB transcript lines (base64 PDF attachments) breaking
-// GetSessionMessages; drop when https://github.com/severity1/claude-agent-sdk-go/pull/139 lands in a release.
-replace github.com/severity1/claude-agent-sdk-go => github.com/Acksell/claude-agent-sdk-go v0.0.0-20260711074659-86240ce4e005

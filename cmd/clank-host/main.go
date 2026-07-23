@@ -91,7 +91,7 @@ func main() {
 	localFileAttachments := flag.Bool("local-file-attachments", false, "Honor file:// image attachment sources (the client shares this host's filesystem). Set by the local laptop provisioner; off for remote sprites so a message can't make the host read arbitrary local paths.")
 	ghCLIAuth := flag.Bool("gh-cli-auth", false, "Resolve GitHub tokens from the machine's gh CLI login (gh auth token) when no clank GitHub connection exists. Set by the local laptop provisioner; off for remote sprites, which have no gh login to borrow.")
 	claudeCLIAuth := flag.Bool("claude-cli-auth", false, "Report the machine's own claude CLI login (Keychain / ~/.claude/.credentials.json) as a connected Anthropic provider when no clank connection exists — presence detection only, the credential is never read. Set by the local laptop provisioner; off for remote sprites, which have no claude login to borrow.")
-	acpBackends := flag.String("acp-backends", envDefault("CLANK_ACP_BACKENDS", ""), "Comma-separated backends served through the ACP adapter path instead of the bespoke integration (opencode, claude-code, codex; 'all', 'none'). ACP manager wiring lands in a later release — any non-empty value is currently a startup error. Defaults to $CLANK_ACP_BACKENDS.")
+	acpBackends := flag.String("acp-backends", envDefault("CLANK_ACP_BACKENDS", "all"), "Backends this host serves, comma-separated (opencode, claude-code, codex; 'all', 'none'). Every backend runs as an ACP agent; omitting one disables it on this host (its sessions then fail to open rather than silently using something else). Defaults to $CLANK_ACP_BACKENDS, else 'all'.")
 	flag.Parse()
 
 	if *socket == "" && *listen == "" {
@@ -361,22 +361,47 @@ func run(cfg runConfig) error {
 		return fmt.Errorf("parse --templates-json: %w", err)
 	}
 
-	// Seam for the ACP migration: once the ACP managers land, entries in
-	// this set swap the corresponding BackendManagers below to the ACP
-	// implementation. Fail fast until then — no silent fallback.
+	// acpSet selects which backends this host serves; all three run
+	// through the ACP adapter path (M3 complete).
 	acpSet, err := agent.ParseBackendSet(cfg.acpBackends)
 	if err != nil {
 		return fmt.Errorf("--acp-backends: %w", err)
 	}
-	if len(acpSet) > 0 {
-		return fmt.Errorf("--acp-backends: ACP backend implementations are not available in this build (requested: %v)", acpSet)
+	// backendManagers is populated solely from acpSet — a backend
+	// missing here fails fast rather than falling back silently.
+	backendManagers := map[agent.BackendType]agent.BackendManager{}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve home dir: %w", err)
+	}
+	acpToolsDir := filepath.Join(home, ".clank", "tools", "acp")
+	for _, bt := range acpSet {
+		switch bt {
+		case agent.BackendCodex:
+			codexMgr, err := host.NewCodexACPManager(acpToolsDir)
+			if err != nil {
+				return fmt.Errorf("--acp-backends: codex: %w", err)
+			}
+			backendManagers[agent.BackendCodex] = codexMgr
+		case agent.BackendOpenCode:
+			ocMgr, err := host.NewOpenCodeACPManager()
+			if err != nil {
+				return fmt.Errorf("--acp-backends: opencode: %w", err)
+			}
+			backendManagers[agent.BackendOpenCode] = ocMgr
+		case agent.BackendClaudeCode:
+			claudeMgr, err := host.NewClaudeACPManager(acpToolsDir)
+			if err != nil {
+				return fmt.Errorf("--acp-backends: claude-code: %w", err)
+			}
+			backendManagers[agent.BackendClaudeCode] = claudeMgr
+		default:
+			return fmt.Errorf("--acp-backends: unknown backend %s", bt)
+		}
 	}
 
 	svc := host.New(host.Options{
-		BackendManagers: map[agent.BackendType]agent.BackendManager{
-			agent.BackendOpenCode:   host.NewOpenCodeBackendManager(),
-			agent.BackendClaudeCode: host.NewClaudeBackendManager(),
-		},
+		BackendManagers:        backendManagers,
 		Log:                    lg,
 		Templates:              templates,
 		SessionsStore:          hostStore,

@@ -650,12 +650,25 @@ func TestAuthManager_ListProviders_FiltersByBackend(t *testing.T) {
 		}
 	}
 
+	codexOnly, err := a.ListProviders(context.Background(), agent.BackendCodex)
+	if err != nil {
+		t.Fatalf("ListProviders(codex): %v", err)
+	}
+	if len(codexOnly) == 0 {
+		t.Fatal("codex list should contain the OpenAI provider")
+	}
+	for _, p := range codexOnly {
+		if p.Backend != agent.BackendCodex {
+			t.Errorf("codex filter leaked: %s has Backend=%q", p.ProviderID, p.Backend)
+		}
+	}
+
 	all, err := a.ListProviders(context.Background(), "")
 	if err != nil {
 		t.Fatalf("ListProviders(all): %v", err)
 	}
-	if len(all) != len(openCodeOnly)+len(claudeOnly) {
-		t.Errorf("all (%d) != opencode (%d) + claude (%d)", len(all), len(openCodeOnly), len(claudeOnly))
+	if len(all) != len(openCodeOnly)+len(claudeOnly)+len(codexOnly) {
+		t.Errorf("all (%d) != opencode (%d) + claude (%d) + codex (%d)", len(all), len(openCodeOnly), len(claudeOnly), len(codexOnly))
 	}
 }
 

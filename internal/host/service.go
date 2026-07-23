@@ -274,9 +274,12 @@ func New(opts Options) *Service {
 	// Anthropic credentials just sit in env vars consumed by the next
 	// claude spawn, no in-place reload needed.
 	var restart func(ctx context.Context) error
-	if oc, ok := s.backendManagers[agent.BackendOpenCode].(*OpenCodeBackendManager); ok {
-		restart = func(ctx context.Context) error {
-			return oc.ServerManager().RestartAllServers(ctx)
+	if am, ok := s.backendManagers[agent.BackendOpenCode].(*ACPBackendManager); ok {
+		// Credentials land in opencode's own auth.json (read at process
+		// start), so cycle the adapters on writes.
+		restart = func(context.Context) error {
+			am.Supervisor().RestartAll()
+			return nil
 		}
 	}
 	am, err := NewAuthManager(restart)
@@ -287,13 +290,18 @@ func New(opts Options) *Service {
 		if opts.AnthropicClaudeCLIAuth {
 			am.EnableClaudeCLIFallback()
 		}
-		// Wire claude-code to read its env vars from this AuthManager.
-		// Resolved per-session so a mid-day credential change applies
-		// to the next new session without a daemon restart.
-		if cbm, ok := s.backendManagers[agent.BackendClaudeCode].(*ClaudeBackendManager); ok {
-			cbm.SetEnvResolver(func() map[string]string {
-				return am.AnthropicEnv()
-			})
+		// Wire claude-code to read its env vars from this AuthManager,
+		// resolved at adapter spawn so credential changes apply on the
+		// next supervisor cycle.
+		if acpMgr, ok := s.backendManagers[agent.BackendClaudeCode].(*ACPBackendManager); ok {
+			acpMgr.SetEnvResolver(am.AnthropicEnv)
+		}
+		// ACP-served backends read credentials from profile env; a
+		// credential write nudges the supervisor so the env-fingerprint
+		// restart cycles the adapter with the new value.
+		if acpMgr, ok := s.backendManagers[agent.BackendCodex].(*ACPBackendManager); ok {
+			acpMgr.SetEnvResolver(am.OpenAIEnv)
+			am.SetOpenAICredentialCallback(acpMgr.Supervisor().Nudge)
 		}
 	}
 
@@ -688,17 +696,6 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	// Sole drain on b.Events(); subscribers fan out to SSE handlers.
 	s.wg.Add(1)
 	go s.relayBackendEvents(sessionID, b)
-
-	// Per-session serverURL is OpenCode-only; CreateBackend already
-	// ensured a server exists for workDir.
-	if oc, ok := mgr.(*OpenCodeBackendManager); ok {
-		for _, srv := range oc.ListServers() {
-			if srv.ProjectDir == workDir {
-				info.ServerURL = srv.URL
-				break
-			}
-		}
-	}
 
 	return b, info, nil
 }
@@ -1286,15 +1283,6 @@ func (s *Service) AbortSession(ctx context.Context, id string) error {
 	return b.Abort(ctx)
 }
 
-// RevertSession truncates the conversation at messageID.
-func (s *Service) RevertSession(ctx context.Context, id, messageID string) error {
-	b, err := s.ensureBackend(ctx, id)
-	if err != nil {
-		return err
-	}
-	return b.Revert(ctx, messageID)
-}
-
 // ForkSession creates a sibling session forked off messageID and
 // persists it as a new row so callers can navigate to it by the host's
 // internal ID. Without this the wire response would only carry the
@@ -1347,39 +1335,11 @@ func (s *Service) SessionMessages(ctx context.Context, id string) ([]agent.Messa
 	if b, ok := s.Session(id); ok && b.Status() != agent.StatusDead {
 		return b.Messages(ctx)
 	}
-	if s.sessionsStore != nil {
-		info, err := s.sessionsStore.GetSession(ctx, id)
-		switch {
-		case errors.Is(err, store.ErrSessionNotFound):
-			// Fall through to ensureBackend for the ErrNotFound mapping.
-		case err != nil:
-			return nil, fmt.Errorf("session messages %s: load session: %w", id, err)
-		default:
-			if r, ok := s.backendManagers[info.Backend].(agent.TranscriptReader); ok {
-				return s.readTranscript(ctx, r, info)
-			}
-		}
-	}
 	b, err := s.ensureBackend(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	return b.Messages(ctx)
-}
-
-// readTranscript serves info's history from its backend's on-disk
-// transcript via the manager's TranscriptReader capability.
-func (s *Service) readTranscript(ctx context.Context, r agent.TranscriptReader, info agent.SessionInfo) ([]agent.MessageData, error) {
-	// A fresh session that never opened has no transcript (and possibly
-	// no external id ever) — empty history, not an error.
-	if info.ExternalID == "" {
-		return nil, nil
-	}
-	workDir, err := s.workDirFor(ctx, info.GitRef)
-	if err != nil {
-		return nil, fmt.Errorf("session messages %s: %w", info.ID, err)
-	}
-	return r.ReadTranscript(ctx, workDir, info.ExternalID)
 }
 
 // OpenSession ensures the backend is live and its SSE listener is
@@ -1418,16 +1378,6 @@ func (s *Service) RespondPermission(ctx context.Context, id, permissionID string
 		return err
 	}
 	return b.RespondPermission(ctx, permissionID, allow, denyMessage)
-}
-
-// RespondQuestion replies to a pending question prompt with structured
-// answers (one per question, in order), or dismisses it when reject is true.
-func (s *Service) RespondQuestion(ctx context.Context, id, requestID string, answers []agent.QuestionAnswer, reject bool) error {
-	b, err := s.ensureBackend(ctx, id)
-	if err != nil {
-		return err
-	}
-	return b.RespondQuestion(ctx, requestID, answers, reject)
 }
 
 // --- Worktree / branch ops ----------------------------------------------

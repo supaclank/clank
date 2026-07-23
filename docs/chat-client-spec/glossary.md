@@ -6,8 +6,16 @@ Terms as used in this spec.
   host wake/lifecycle, and (soon) image buckets. Stateless w.r.t. chat. See [01](01-architecture.md).
 - **Host / clank-host** — the server (`internal/host/`) that owns session state, the
   transcript, and the event stream. Reached only through the gateway.
-- **Backend** — the coding agent behind the host: **Claude Code** or **OpenCode**
-  (`internal/agent/`). A client never addresses it directly.
+- **Backend** — the coding agent behind the host: **Claude Code**, **OpenCode**, or
+  **Codex** (`internal/agent/`). A client never addresses it directly.
+- **ACP** — the Agent Client Protocol (agentclientprotocol.com). Codex is served through an
+  ACP adapter today (`internal/agent/acp/`); OpenCode and Claude Code migrate in later
+  milestones. Client-invisible by design — the wire contract in this spec is unchanged —
+  except where rules note ACP-served behavior (agent-owned modes, typed `unsupported`).
+- **Session mode** — an **agent-owned** mode id (`available_modes` on runtime session info):
+  permission presets for Claude/Codex, agents for OpenCode. Clients render the advertised
+  list as-is; the legacy four Claude mode ids remain valid because the Claude adapter uses
+  the same strings.
 - **Sprite** — the user's host instance/sandbox; may be asleep and woken by the gateway on
   demand (source of cold-start latency).
 - **Session** — one chat conversation, identified by host-assigned `id`. `external_id` is the

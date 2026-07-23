@@ -62,30 +62,6 @@ func TestWire_AbortSession(t *testing.T) {
 		t.Error("backend.Abort was not called")
 	}
 }
-
-func TestWire_RevertSession(t *testing.T) {
-	t.Parallel()
-	td := newTestDaemon(t)
-	info, b := td.CreateOpenCodeSession(t, "task")
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	if err := td.Client.Session(info.ID).Revert(ctx, "msg-42"); err != nil {
-		t.Fatalf("Revert: %v", err)
-	}
-	got := b.RevertedMessageID()
-	if got != "msg-42" {
-		t.Errorf("backend.Revert message_id = %q, want %q", got, "msg-42")
-	}
-}
-
-// Regression: the daemon used to return ForkResult ({ID, Title} with
-// uppercase JSON keys) which case-insensitively unmarshalled into
-// SessionInfo so the client received SessionInfo.ID = backend's external
-// session id (e.g. "ses_…"). The TUI then navigated to /sessions/ses_…
-// and saw "host: not found" because the host store is keyed by internal
-// ULID. Assert the response has a fresh ULID id, a populated external
-// id, and is reachable through GetSession.
 func TestWire_ForkSession(t *testing.T) {
 	t.Parallel()
 	td := newTestDaemon(t)

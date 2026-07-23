@@ -70,11 +70,10 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("GET /events", m.handleEvents)
 	mx.HandleFunc("GET /backends", m.handleListBackends)
 	// GET /software-manifest: returns versions of every relevant
-	// CLI tool installed on this host (opencode today, claude /
-	// clank-host reserved for future). Used by the laptop CLI to
-	// compare versions across hosts before a migration so we can
-	// refuse mismatched majors/minors early — see
-	// agent.AssertOpencodeVersionsCompatible.
+	// CLI tool installed on this host (opencode, claude, clank-host).
+	// Informational since the ACP migration — version skew is gated by
+	// the per-backend floors (agent.OpencodeVersionAtLeast), not by
+	// migration-time refusal.
 	mx.HandleFunc("GET /software-manifest", m.handleSoftwareManifest)
 	mx.HandleFunc("GET /agents", m.handleListAgents)
 	mx.HandleFunc("GET /models", m.handleListModels)
@@ -130,7 +129,6 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("POST /sessions/{id}/send", m.handleSendSession)
 	mx.HandleFunc("POST /sessions/{id}/open-and-send", m.handleOpenAndSendSession)
 	mx.HandleFunc("POST /sessions/{id}/abort", m.handleAbortSession)
-	mx.HandleFunc("POST /sessions/{id}/revert", m.handleRevertSession)
 	mx.HandleFunc("POST /sessions/{id}/fork", m.handleForkSession)
 	mx.HandleFunc("POST /sessions/{id}/read", m.handleMarkSessionRead)
 	mx.HandleFunc("POST /sessions/{id}/followup", m.handleToggleSessionFollowUp)
@@ -141,7 +139,6 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("GET /sessions/{id}/events", m.handleSessionEvents)
 	mx.HandleFunc("GET /sessions/{id}/pending-permission", m.handlePendingPermissions)
 	mx.HandleFunc("POST /sessions/{id}/permissions/{permID}/reply", m.handlePermissionReply)
-	mx.HandleFunc("POST /sessions/{id}/questions/{requestID}/reply", m.handleQuestionReply)
 	mx.HandleFunc("POST /sessions/{id}/stop", m.handleStopSession)
 	mx.HandleFunc("GET /sessions/{id}", m.handleGetSession)
 

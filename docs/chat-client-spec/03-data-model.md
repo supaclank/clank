@@ -22,7 +22,7 @@ The session metadata snapshot, returned by create/get/list/search and embedded i
 |---|---|---|---|
 | ID | `id` | string | Host-assigned session ID (ULID). The identity a client uses everywhere. |
 | ExternalID | `external_id` | string | Backend-native session ID. May be empty until the backend assigns it (async for Claude). |
-| Backend | `backend` | enum | `opencode` \| `claude-code`. |
+| Backend | `backend` | enum | `opencode` \| `claude-code` \| `codex` (0.5.0; ACP-served). |
 | Status | `status` | enum | Runtime status; see [SessionStatus](#enums). |
 | Visibility | `visibility` | enum | `""` \| `done` \| `archived`; user-set. |
 | FollowUp | `follow_up` | bool | User-set flag. |
@@ -36,11 +36,15 @@ The session metadata snapshot, returned by create/get/list/search and embedded i
 | RevertMessageID | `revert_message_id` | string | When set, messages from this ID onward are reverted (hidden). See [DATA-012]. |
 | ServerURL | `server_url` | string | **Runtime-only, not persisted.** |
 | IsRemote | `is_remote` | bool | **Runtime-only**, stamped by gateway routing. |
+| CurrentModeID | `current_mode_id` | string | **Runtime-only** (0.5.0). The agent-owned session mode currently active. Empty when the backend is not live. |
+| AvailableModes | `available_modes` | `SessionMode[]` | **Runtime-only** (0.5.0). Agent-advertised modes `{id, name, description?}` for the mode picker. Empty when the backend is not live or reports none. |
 | CreatedAt / UpdatedAt / LastReadAt | `created_at` / `updated_at` / `last_read_at` | timestamp | RFC 3339. |
 
-- **[DATA-010] (MUST)** A client MUST NOT persist `server_url` or `is_remote` as session
-  identity; they are runtime decorations that change between responses. **Why:** caching
-  them as identity produces stale routing. **Golden:** `internal/agent/agent.go:422`.
+- **[DATA-010] (MUST)** A client MUST NOT persist `server_url`, `is_remote`,
+  `current_mode_id`, or `available_modes` as session identity/state; they are runtime
+  decorations that change between responses. **Why:** caching them as identity produces
+  stale routing; caching modes shows a dead session's picker as live. **Golden:**
+  `internal/agent/agent.go:422`.
 - **[DATA-011] (SHOULD)** A client that sorts an inbox by recency SHOULD sort on
   `updated_at`, and rely on the fact that **only agent-driven activity bumps `updated_at`** —
   user-driven metadata mutations (mark-read, draft, visibility, follow-up) deliberately do
@@ -106,6 +110,12 @@ Source: `internal/agent/agent.go:224`.
   call. So the merge is **cross-message**, and the empty user-role carrier MUST be folded away
   rather than rendered as a user turn or a second, nameless "tool" card. See
   [INV-TOOL-MERGE-001](08-invariants.md) and [INV-TOOL-RESULT-CARRIER-001](08-invariants.md).
+  **Amended 0.5.0 (ACP):** refetched history from an ACP-served backend MAY arrive
+  **pre-merged** — the committed assistant message carries the call part and a following
+  `role=user` carrier holds the result, exactly as above, but a `session/load` replay can
+  also deliver whole messages with both shapes already coalesced. The client fold MUST be a
+  no-op on pre-merged input (idempotent by part id — the same rule that makes live re-emits
+  safe). Fixture: `fixtures/acp/opencode-1.17.18-load-replay.jsonl`.
   **Verified in source** (`coalesceSessionMessages` coalesces an assistant turn, but a user
   record — where tool results live — breaks the run) **and** against the live gateway
   (`assistant{tool_call toolu_X}` then `user{tool_result toolu_X}`). **Golden:**
@@ -166,6 +176,14 @@ Source: `internal/agent/agent.go:565`.
   backend; sending a default silently flips a `plan`/`acceptEdits` session. **Golden:**
   `internal/agent/agent.go:571`, `internal/tui/sessionview.go:2162` (sends only the selected
   mode).
+  **Amended 0.5.0 — modes are agent-owned:** a non-empty value is an **agent-defined mode
+  id** the client picked from the session's `available_modes` (runtime session info), not a
+  closed clank enum — `StartRequest` validation no longer rejects unknown ids. The legacy
+  four Claude ids remain valid verbatim (the Claude adapter uses the same strings). On
+  ACP-served backends the host **skips** ids the agent did not advertise (logged, not an
+  error) so a stale client selection can never flip a session into an error state. **Golden:**
+  `internal/agent/acp/backend_open.go` (`applyMode`), `internal/tui/sessionview.go`
+  (`modesFromInfo`).
 
 ### `ModelOverride` / `GitRef`
 
