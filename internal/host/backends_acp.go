@@ -309,8 +309,8 @@ func (m *ACPBackendManager) putModes(workDir string, modes []agent.SessionMode) 
 
 // ListModes implements agent.ModeLister from what a session reported.
 // Same caveat as ListModels: ACP advertises modes per session, so this
-// is empty until one has opened, and any known list is a better answer
-// than none for a dir we haven't seen.
+// is empty until one has opened in projectDir — strictly per-dir, never
+// another dir's list (see the cross-contamination note below).
 func (m *ACPBackendManager) ListModes(_ context.Context, projectDir string) ([]agent.SessionMode, error) {
 	m.catalogMu.Lock()
 	defer m.catalogMu.Unlock()

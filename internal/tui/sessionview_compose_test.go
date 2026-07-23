@@ -416,3 +416,27 @@ func TestCompose_ModesResultMsgPreservesSelectionByID(t *testing.T) {
 		t.Fatalf("selectedMode reset to %q after refresh; want preserved selection %q", got, "auto")
 	}
 }
+
+// agentsResultMsg unconditionally overwrote m.modes, so an empty result
+// (there is no agent.AgentLister for ACP backends, only agent.ModeLister)
+// racing in after modesResultMsg landed would silently wipe the just-fetched
+// agent-advertised modes. Mirrors the existing modesResultMsg empty-guard.
+func TestCompose_AgentsResultMsgEmptyDoesNotClearModes(t *testing.T) {
+	t.Parallel()
+	m := newSessionViewComposingWithBackend(nil, "", agent.BackendClaudeCode)
+	m.width, m.height = 80, 40
+
+	modes := []agent.SessionMode{{ID: "default", Name: "Default"}, {ID: "auto", Name: "Auto"}}
+	updated, _ := m.updateCompose(modesResultMsg{modes: modes})
+	m = updated.(*SessionViewModel)
+	if len(m.modes) == 0 {
+		t.Fatal("expected fetched modes to populate the picker")
+	}
+
+	updated, _ = m.updateCompose(agentsResultMsg{})
+	m = updated.(*SessionViewModel)
+
+	if len(m.modes) == 0 {
+		t.Fatal("empty agentsResultMsg wiped the modes fetched via modesResultMsg")
+	}
+}

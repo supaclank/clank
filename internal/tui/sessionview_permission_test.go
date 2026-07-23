@@ -30,7 +30,11 @@ func TestClaudePermissionModes_DefaultsToBypass(t *testing.T) {
 // current model must be re-derived from m.info here — a bare "reset to -1"
 // silently discards the active-model marking on every session open.
 func TestSessionView_ModelsResultMsg_PreservesAgentCurrentModel(t *testing.T) {
-	t.Parallel()
+	// modelsResultMsg unconditionally calls config.LoadPreferences(), which
+	// reads $CLANK_DIR/preferences.json; pin it to an empty temp dir so the
+	// test doesn't depend on a real developer's preferences file. Setenv
+	// rules out t.Parallel() for this test.
+	t.Setenv("CLANK_DIR", t.TempDir())
 	m := NewSessionViewModel(nil, "sess-1")
 	m.width, m.height = 80, 40
 	m.info = &agent.SessionInfo{CurrentModelID: "opus"}
@@ -167,6 +171,30 @@ func TestSessionView_InboxClaudeBackend_FetchesModels(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("expected fetch commands from inbox Claude session, got nil")
+	}
+}
+
+// agentsResultMsg unconditionally overwrote m.modes, so an empty result
+// (there is no agent.AgentLister for ACP backends, only agent.ModeLister)
+// racing in after modesResultMsg landed would silently wipe the just-fetched
+// agent-advertised modes. Mirrors the existing modesResultMsg empty-guard.
+func TestSessionView_AgentsResultMsgEmptyDoesNotClearModes(t *testing.T) {
+	t.Parallel()
+	m := NewSessionViewModel(nil, "sess-1")
+	m.width, m.height = 80, 40
+
+	modes := []agent.SessionMode{{ID: "default", Name: "Default"}, {ID: "auto", Name: "Auto"}}
+	model, _ := m.Update(modesResultMsg{modes: modes})
+	m = model.(*SessionViewModel)
+	if len(m.modes) == 0 {
+		t.Fatal("expected fetched modes to populate the picker")
+	}
+
+	model, _ = m.Update(agentsResultMsg{})
+	m = model.(*SessionViewModel)
+
+	if len(m.modes) == 0 {
+		t.Fatal("empty agentsResultMsg wiped the modes fetched via modesResultMsg")
 	}
 }
 

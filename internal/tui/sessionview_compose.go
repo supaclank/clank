@@ -172,7 +172,12 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case agentsResultMsg:
-		m.modes, m.selectedMode = agentSelectableModes(msg.agents, "")
+		// There is no agent.AgentLister for ACP backends, so this can race
+		// modesResultMsg and land after it with an empty result; only apply
+		// non-empty results, mirroring the modesResultMsg guard above.
+		if len(msg.agents) > 0 {
+			m.modes, m.selectedMode = agentSelectableModes(msg.agents, "")
+		}
 		return m, nil
 
 	case modelsResultMsg:

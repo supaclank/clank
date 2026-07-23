@@ -862,11 +862,16 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.fetchSessionInfo(), m.fetchSessionMessages())
 
 	case agentsResultMsg:
-		current := ""
-		if m.info != nil {
-			current = m.info.Agent
+		// There is no agent.AgentLister for ACP backends, so this can race
+		// modesResultMsg and land after it with an empty result; only apply
+		// non-empty results, mirroring the modesResultMsg guard below.
+		if len(msg.agents) > 0 {
+			current := ""
+			if m.info != nil {
+				current = m.info.Agent
+			}
+			m.modes, m.selectedMode = agentSelectableModes(msg.agents, current)
 		}
-		m.modes, m.selectedMode = agentSelectableModes(msg.agents, current)
 		return m, nil
 
 	case modesResultMsg:
