@@ -12,7 +12,7 @@ import (
 type sidebarNodeKind int
 
 const (
-	nodeAllSessions sidebarNodeKind = iota
+	nodeHome sidebarNodeKind = iota
 	nodeWorktree
 	nodeSession
 	nodeOlderWorktrees
@@ -37,15 +37,14 @@ type sidebarNode interface {
 	Depth() int
 }
 
-// allSessionsNode is the virtual "All sessions" entry pinned at the top
-// of the sidebar. Selecting it surfaces the date-grouped inbox.
-type allSessionsNode struct{}
+// homeNode opens the welcome screen.
+type homeNode struct{}
 
-func (allSessionsNode) Kind() sidebarNodeKind { return nodeAllSessions }
-func (allSessionsNode) Key() string           { return "all" }
-func (allSessionsNode) IsSelectable() bool    { return true }
-func (allSessionsNode) IsExpandable() bool    { return false }
-func (allSessionsNode) Depth() int            { return 0 }
+func (homeNode) Kind() sidebarNodeKind { return nodeHome }
+func (homeNode) Key() string           { return "home" }
+func (homeNode) IsSelectable() bool    { return true }
+func (homeNode) IsExpandable() bool    { return false }
+func (homeNode) Depth() int            { return 0 }
 
 // worktreeNode represents one worktree row. It carries the session set
 // used to render the child rows when expanded; PartitionSessionsByAge
