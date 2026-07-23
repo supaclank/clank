@@ -166,11 +166,14 @@ func (b *Backend) runTurns() {
 		b.red.beginTurn()
 		b.mu.Unlock()
 
+		// Captured before dispatch: the drain floors its quiet window on
+		// this, so a turn whose updates lag the response still gets one.
+		turnStart := time.Now()
 		resp, err := conn.Conn().Prompt(b.bgCtx, sdk.PromptRequest{
 			SessionId: sdk.SessionId(sid),
 			Prompt:    item.blocks,
 		})
-		b.drainLateUpdates()
+		b.drainLateUpdates(turnStart)
 
 		b.mu.Lock()
 		for _, e := range b.red.finishTurn() {
@@ -198,22 +201,32 @@ func (b *Backend) runTurns() {
 	}
 }
 
-// drainLateUpdates waits for the update stream to go quiet so trailing
-// tool_call_updates land in the turn they belong to (claude #864 class).
-// Session-scoped updates (title, mode) are safe at any time and don't
-// need this window.
+// drainLateUpdates waits for this turn's update stream to go quiet so
+// trailing tool_call_updates land in the turn they belong to (claude
+// #864 class). Session-scoped updates (title, mode) are safe at any time
+// and don't need this window.
 //
-// TODO(ai-review): lastUpdate is session-scoped and never reset per turn,
-// so a queued turn following a >300ms gap with no updates of its own can
-// exit the drain immediately and drop its own late updates.
-// https://github.com/Acksell/clank/pull/185
+// The quiet window is measured from max(lastUpdate, turnStart), never
+// from lastUpdate alone: that timestamp is session-scoped, so on a turn
+// whose own updates haven't been processed yet it still holds a stale
+// (or zero) value and an unfloored comparison would exit the drain
+// instantly. That is not hypothetical — notification dispatch races the
+// prompt response, so on a loaded machine the very first turn of a
+// session would commit before its tool_call arrived, then attribute the
+// tool's updates to a phantom follow-up turn and leak part events after
+// idle. The floor also covers a queued turn that follows a >drainQuiet
+// gap with no updates of its own.
 //
 // TODO(ai-review): switch the 25ms poll below to a timer/cond-based wait
 // to cut wakeups during the drain window. https://github.com/Acksell/clank/pull/185
-func (b *Backend) drainLateUpdates() {
+func (b *Backend) drainLateUpdates(turnStart time.Time) {
 	deadline := time.Now().Add(drainCap)
 	for time.Now().Before(deadline) {
-		if b.lastUpdate.sinceSet() >= drainQuiet {
+		quietSince := b.lastUpdate.get()
+		if quietSince.Before(turnStart) {
+			quietSince = turnStart
+		}
+		if time.Since(quietSince) >= drainQuiet {
 			return
 		}
 		select {

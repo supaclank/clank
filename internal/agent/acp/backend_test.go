@@ -30,13 +30,13 @@ func newBackendFixture(t *testing.T, scripted *acptest.ScriptedAgent, resume str
 	t.Helper()
 	f := &backendFixture{t: t, agent: scripted, notify: make(chan struct{}, 256)}
 	profile := testProfile(acpx.ScopeHost, nil)
-	proc, err := acptest.Proc(context.Background(), profile, scripted, t.Logf)
+	proc, err := acptest.Proc(context.Background(), profile, scripted, testLogf(t))
 	if err != nil {
 		t.Fatalf("acptest.Proc: %v", err)
 	}
 	t.Cleanup(proc.Stop)
 	resolver := func(context.Context) (*acpx.AdapterConn, error) { return proc.Conn, nil }
-	f.backend = acpx.NewBackend(profile, "/work", resume, "", "", resolver, t.Logf)
+	f.backend = acpx.NewBackend(profile, "/work", resume, "", "", resolver, testLogf(t))
 	t.Cleanup(func() { _ = f.backend.Stop() })
 	go func() {
 		for e := range f.backend.Events() {
@@ -96,6 +96,33 @@ func statusOf(evts []agent.Event) agent.SessionStatus {
 	return last
 }
 
+// settledTurns counts turns that ran to a terminal state (busy → idle or
+// busy → error).
+//
+// Waiting on "the last status is idle" is NOT a turn-completion signal:
+// Open emits starting → idle before any turn exists, so that predicate
+// matches the pre-turn idle and lets a test read the transcript while the
+// turn is still streaming — every later assertion then races the turn it
+// meant to observe. Tests wait on this instead.
+func settledTurns(evts []agent.Event) int {
+	settled, busy := 0, false
+	for _, e := range evts {
+		if e.Type != agent.EventStatusChange {
+			continue
+		}
+		switch e.Data.(agent.StatusChangeData).NewStatus {
+		case agent.StatusBusy:
+			busy = true
+		case agent.StatusIdle, agent.StatusError:
+			if busy {
+				settled++
+				busy = false
+			}
+		}
+	}
+	return settled
+}
+
 // scriptEchoTurn scripts a turn: one text chunk, one tool call that
 // completes, then end_turn.
 func scriptEchoTurn(a *acptest.ScriptedAgent) {
@@ -131,7 +158,7 @@ func TestBackend_TurnLifecycle(t *testing.T) {
 	}
 
 	evts := f.waitFor(5*time.Second, func(evts []agent.Event) bool {
-		return statusOf(evts) == agent.StatusIdle && countType(evts, agent.EventMessage) >= 2
+		return settledTurns(evts) >= 1 && countType(evts, agent.EventMessage) >= 2
 	})
 
 	// Every event carries the external id.
@@ -259,7 +286,7 @@ func TestBackend_QueueWhileBusy(t *testing.T) {
 	}
 	close(release)
 	f.waitFor(10*time.Second, func(evts []agent.Event) bool {
-		return statusOf(evts) == agent.StatusIdle
+		return settledTurns(evts) >= 1
 	})
 	mu.Lock()
 	defer mu.Unlock()
@@ -364,7 +391,7 @@ func TestBackend_AbortReleasesPendingPermissionAndSettlesIdle(t *testing.T) {
 		t.Fatal("parked permission was not released on abort")
 	}
 	evts := f.waitFor(10*time.Second, func(evts []agent.Event) bool {
-		return statusOf(evts) == agent.StatusIdle
+		return settledTurns(evts) >= 1
 	})
 	if countType(evts, agent.EventError) != 0 {
 		t.Errorf("abort should not produce error events; got %s", eventTypes(evts))
@@ -394,7 +421,7 @@ func TestBackend_AbortBeforeOpen_DoesNotSwallowLaterTurnError(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 	evts := f.waitFor(10*time.Second, func(evts []agent.Event) bool {
-		return statusOf(evts) == agent.StatusError && countType(evts, agent.EventError) >= 1
+		return settledTurns(evts) >= 1 && statusOf(evts) == agent.StatusError && countType(evts, agent.EventError) >= 1
 	})
 	if countType(evts, agent.EventError) == 0 {
 		t.Errorf("turn error after a pre-Open Abort was swallowed; got %s", eventTypes(evts))
@@ -427,7 +454,7 @@ func TestBackend_AbortCancelFails_NoActiveTurn_DoesNotSwallowLaterTurnError(t *t
 		t.Fatalf("Send: %v", err)
 	}
 	evts := f.waitFor(10*time.Second, func(evts []agent.Event) bool {
-		return statusOf(evts) == agent.StatusError && countType(evts, agent.EventError) >= 1
+		return settledTurns(evts) >= 1 && statusOf(evts) == agent.StatusError && countType(evts, agent.EventError) >= 1
 	})
 	if countType(evts, agent.EventError) == 0 {
 		t.Errorf("turn error after a failed no-op Abort was swallowed; got %s", eventTypes(evts))
@@ -591,7 +618,7 @@ func TestBackend_LateUpdates_DrainedIntoTurnThenDroppedAfterIdle(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 	f.waitFor(10*time.Second, func(evts []agent.Event) bool {
-		return statusOf(evts) == agent.StatusIdle
+		return settledTurns(evts) >= 1
 	})
 	// The drained completion must be part of the committed transcript.
 	msgs, err := f.backend.Messages(ctx)
@@ -617,7 +644,7 @@ func TestBackend_LateUpdates_DrainedIntoTurnThenDroppedAfterIdle(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	for _, e := range f.snapshot()[before:] {
 		if e.Type == agent.EventPartUpdate || e.Type == agent.EventMessage {
-			t.Errorf("post-idle turn-scoped update leaked: %s", e.Type)
+			t.Errorf("post-idle turn-scoped update leaked: %s data=%+v", e.Type, e.Data)
 		}
 	}
 
@@ -647,14 +674,14 @@ func TestBackend_PromptErrorTurnsErrorThenRecovers(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 	f.waitFor(10*time.Second, func(evts []agent.Event) bool {
-		return statusOf(evts) == agent.StatusError && countType(evts, agent.EventError) >= 1
+		return settledTurns(evts) >= 1 && statusOf(evts) == agent.StatusError && countType(evts, agent.EventError) >= 1
 	})
 	fail = false
 	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "again"}); err != nil {
 		t.Fatalf("Send after error: %v", err)
 	}
 	f.waitFor(10*time.Second, func(evts []agent.Event) bool {
-		return statusOf(evts) == agent.StatusIdle
+		return settledTurns(evts) >= 1
 	})
 }
 
@@ -750,14 +777,14 @@ func TestBackend_AgentOwnedModes(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("agent never received set_mode")
 	}
-	f.waitFor(10*time.Second, func(evts []agent.Event) bool { return statusOf(evts) == agent.StatusIdle })
+	f.waitFor(10*time.Second, func(evts []agent.Event) bool { return settledTurns(evts) >= 1 })
 
 	// Unadvertised id is skipped, not sent.
 	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "again", PermissionMode: "bogus-mode"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	f.waitFor(10*time.Second, func(evts []agent.Event) bool {
-		return countType(evts, agent.EventMessage) >= 2 && statusOf(evts) == agent.StatusIdle
+		return countType(evts, agent.EventMessage) >= 2 && settledTurns(evts) >= 2
 	})
 	select {
 	case got := <-setModes:

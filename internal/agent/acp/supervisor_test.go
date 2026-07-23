@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,6 +16,57 @@ import (
 	"github.com/acksell/clank/internal/agent/acp/acptest"
 	sdk "github.com/coder/acp-go-sdk"
 )
+
+// testLogf returns a logger that goes quiet once the test completes.
+// Supervisor and adapter goroutines can outlive a test by a scheduling
+// hair — a reconcile already in flight when the test's cancel fires still
+// logs the resulting "context canceled" spawn error — and t.Logf panics
+// with "Log in goroutine after ... completed" if that lands late. The
+// cleanup is registered at construction, so LIFO ordering runs it last:
+// every other cleanup still logs normally.
+func testLogf(t *testing.T) func(string, ...any) {
+	t.Helper()
+	var mu sync.Mutex
+	done := false
+	t.Cleanup(func() {
+		mu.Lock()
+		done = true
+		mu.Unlock()
+	})
+	return func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		if done {
+			return
+		}
+		t.Logf(format, args...)
+	}
+}
+
+// runSupervisor starts sup.Run and registers cleanup that cancels it and
+// WAITS for the loop to exit, so no reconcile is in flight past the test.
+func runSupervisor(t *testing.T, sup *acpx.AdapterSupervisor) (stop func()) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sup.Run(ctx)
+	}()
+	var once sync.Once
+	stop = func() {
+		once.Do(func() {
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Error("supervisor Run did not exit within 5s of cancellation")
+			}
+		})
+	}
+	t.Cleanup(stop)
+	return stop
+}
 
 func testProfile(scope acpx.AdapterScope, env func(string) map[string]string) acpx.AdapterProfile {
 	return acpx.AdapterProfile{
@@ -32,13 +84,13 @@ type supFixture struct {
 	sup      *acpx.AdapterSupervisor
 	spawns   atomic.Int64
 	lastProc atomic.Pointer[acpx.AdapterProc]
-	cancel   context.CancelFunc
+	stop     func()
 }
 
 func newSupFixture(t *testing.T, scope acpx.AdapterScope, env func(string) map[string]string) *supFixture {
 	t.Helper()
 	profile := testProfile(scope, env)
-	sup, err := acpx.NewAdapterSupervisor(profile, t.Logf)
+	sup, err := acpx.NewAdapterSupervisor(profile, testLogf(t))
 	if err != nil {
 		t.Fatalf("NewAdapterSupervisor: %v", err)
 	}
@@ -46,7 +98,7 @@ func newSupFixture(t *testing.T, scope acpx.AdapterScope, env func(string) map[s
 	inner := acptest.SpawnFunc(func(string) *acptest.ScriptedAgent {
 		f.spawns.Add(1)
 		return &acptest.ScriptedAgent{}
-	}, profile, t.Logf)
+	}, profile, testLogf(t))
 	sup.SetSpawnFunc(func(ctx context.Context, scopeDir string) (*acpx.AdapterProc, error) {
 		p, err := inner(ctx, scopeDir)
 		if err == nil {
@@ -55,10 +107,7 @@ func newSupFixture(t *testing.T, scope acpx.AdapterScope, env func(string) map[s
 		return p, err
 	})
 	sup.SetReconcileInterval(20 * time.Millisecond)
-	ctx, cancel := context.WithCancel(context.Background())
-	f.cancel = cancel
-	go sup.Run(ctx)
-	t.Cleanup(cancel)
+	f.stop = runSupervisor(t, sup)
 	return f
 }
 
@@ -190,7 +239,7 @@ func TestSupervisor_EnvRotatedDuringSpawnTriggersRestart(t *testing.T) {
 	envVal.Store("v1")
 	env := func(string) map[string]string { return map[string]string{"TOKEN": envVal.Load().(string)} }
 	profile := testProfile(acpx.ScopePerDir, env)
-	sup, err := acpx.NewAdapterSupervisor(profile, t.Logf)
+	sup, err := acpx.NewAdapterSupervisor(profile, testLogf(t))
 	if err != nil {
 		t.Fatalf("NewAdapterSupervisor: %v", err)
 	}
@@ -198,7 +247,7 @@ func TestSupervisor_EnvRotatedDuringSpawnTriggersRestart(t *testing.T) {
 	inner := acptest.SpawnFunc(func(string) *acptest.ScriptedAgent {
 		spawns.Add(1)
 		return &acptest.ScriptedAgent{}
-	}, profile, t.Logf)
+	}, profile, testLogf(t))
 	sup.SetSpawnFunc(func(ctx context.Context, scopeDir string) (*acpx.AdapterProc, error) {
 		p, err := inner(ctx, scopeDir)
 		if err == nil && spawns.Load() == 1 {
@@ -211,9 +260,7 @@ func TestSupervisor_EnvRotatedDuringSpawnTriggersRestart(t *testing.T) {
 	})
 	sup.SetReconcileInterval(20 * time.Millisecond)
 
-	runCtx, runCancel := context.WithCancel(context.Background())
-	defer runCancel()
-	go sup.Run(runCtx)
+	runSupervisor(t, sup)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -227,20 +274,27 @@ func TestSupervisor_EnvRotatedDuringSpawnTriggersRestart(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("rotation mid-spawn went undetected: adapter never restarted onto the rotated env")
 	}
-	if spawns.Load() != 2 {
-		t.Errorf("spawns = %d, want 2 (restart once the rotated env is observed)", spawns.Load())
+	// The respawn trails the stop — reconcile tears the stale proc down
+	// before starting its replacement, so asserting the count the instant
+	// c1 closes races the spawn goroutine.
+	deadline := time.Now().Add(3 * time.Second)
+	for spawns.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := spawns.Load(); got != 2 {
+		t.Errorf("spawns = %d, want 2 (restart once the rotated env is observed)", got)
 	}
 }
 
 func TestSupervisor_SpawnErrorFailsWaiterThenRecovers(t *testing.T) {
 	t.Parallel()
 	profile := testProfile(acpx.ScopePerDir, nil)
-	sup, err := acpx.NewAdapterSupervisor(profile, t.Logf)
+	sup, err := acpx.NewAdapterSupervisor(profile, testLogf(t))
 	if err != nil {
 		t.Fatalf("NewAdapterSupervisor: %v", err)
 	}
 	var attempts atomic.Int64
-	good := acptest.SpawnFunc(func(string) *acptest.ScriptedAgent { return &acptest.ScriptedAgent{} }, profile, t.Logf)
+	good := acptest.SpawnFunc(func(string) *acptest.ScriptedAgent { return &acptest.ScriptedAgent{} }, profile, testLogf(t))
 	sup.SetSpawnFunc(func(ctx context.Context, scopeDir string) (*acpx.AdapterProc, error) {
 		if attempts.Add(1) == 1 {
 			return nil, fmt.Errorf("boom")
@@ -248,9 +302,7 @@ func TestSupervisor_SpawnErrorFailsWaiterThenRecovers(t *testing.T) {
 		return good(ctx, scopeDir)
 	})
 	sup.SetReconcileInterval(20 * time.Millisecond)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go sup.Run(ctx)
+	runSupervisor(t, sup)
 
 	callCtx, callCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer callCancel()
@@ -273,7 +325,7 @@ func TestSupervisor_StopAllFailsWaitersAndConns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetConn: %v", err)
 	}
-	f.cancel() // ctx cancel → Run exits → StopAll
+	f.stop() // Run exits → StopAll
 
 	select {
 	case <-c1.Closed():
@@ -303,13 +355,11 @@ func TestSupervisor_ExecSpawnClosesPipesOnInitializeFailure(t *testing.T) {
 
 	profile := testProfile(acpx.ScopePerDir, nil)
 	profile.Command = func(string) (string, []string) { return "/bin/true", nil }
-	sup, err := acpx.NewAdapterSupervisor(profile, t.Logf)
+	sup, err := acpx.NewAdapterSupervisor(profile, testLogf(t))
 	if err != nil {
 		t.Fatalf("NewAdapterSupervisor: %v", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go sup.Run(ctx)
+	runSupervisor(t, sup)
 
 	before, err := os.ReadDir("/proc/self/fd")
 	if err != nil {

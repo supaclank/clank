@@ -29,7 +29,7 @@ func TestConn_RoutesUpdatesAndPermissions(t *testing.T) {
 	defer cancel()
 
 	agentImpl := &acptest.ScriptedAgent{}
-	proc, err := acptest.Proc(ctx, testProfile(acpx.ScopeHost, nil), agentImpl, t.Logf)
+	proc, err := acptest.Proc(ctx, testProfile(acpx.ScopeHost, nil), agentImpl, testLogf(t))
 	if err != nil {
 		t.Fatalf("Proc: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestConn_ProtocolVersionMismatchFailsConstruction(t *testing.T) {
 			return sdk.InitializeResponse{ProtocolVersion: 99}, nil
 		},
 	}
-	if _, err := acptest.Proc(ctx, testProfile(acpx.ScopeHost, nil), agentImpl, t.Logf); err == nil {
+	if _, err := acptest.Proc(ctx, testProfile(acpx.ScopeHost, nil), agentImpl, testLogf(t)); err == nil {
 		t.Fatal("expected protocol-version mismatch error")
 	}
 }

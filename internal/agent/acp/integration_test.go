@@ -27,13 +27,11 @@ func TestIntegration_OpenCodeACP_SpawnInitializeNewSession(t *testing.T) {
 		t.Fatalf("git init: %v", err)
 	}
 
-	sup, err := acpx.NewAdapterSupervisor(acpx.OpenCodeProfile("opencode"), t.Logf)
+	sup, err := acpx.NewAdapterSupervisor(acpx.OpenCodeProfile("opencode"), testLogf(t))
 	if err != nil {
 		t.Fatalf("NewAdapterSupervisor: %v", err)
 	}
-	runCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go sup.Run(runCtx)
+	runSupervisor(t, sup)
 
 	ctx, callCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer callCancel()

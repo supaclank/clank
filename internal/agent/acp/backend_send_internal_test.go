@@ -18,12 +18,29 @@ func TestDrainLateUpdates_ExitsOnContextCancellation(t *testing.T) {
 	cancel()
 
 	b := &Backend{bgCtx: ctx}
-	b.lastUpdate.set(time.Now()) // fresh, so sinceSet() starts under drainQuiet
+	b.lastUpdate.set(time.Now()) // fresh, so the window starts under drainQuiet
 
 	start := time.Now()
-	b.drainLateUpdates()
+	b.drainLateUpdates(time.Now())
 	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
 		t.Errorf("drainLateUpdates took %v after ctx cancellation, want well under drainQuiet (%v)", elapsed, drainQuiet)
+	}
+}
+
+// The quiet window must be floored on the turn's own start: lastUpdate is
+// session-scoped, so a turn whose updates haven't been processed yet sees
+// a stale (or zero) value. Unfloored, that exits the drain instantly — the
+// CI-only failure where the first turn of a session committed before its
+// tool_call arrived, leaking the tool's updates into a phantom next turn.
+func TestDrainLateUpdates_FloorsWindowOnTurnStart(t *testing.T) {
+	t.Parallel()
+	b := &Backend{bgCtx: context.Background()}
+	// Zero lastUpdate: an unfloored time.Since() reads as decades of quiet.
+
+	start := time.Now()
+	b.drainLateUpdates(time.Now())
+	if elapsed := time.Since(start); elapsed < drainQuiet {
+		t.Errorf("drain returned after %v with a zero lastUpdate, want >= drainQuiet (%v)", elapsed, drainQuiet)
 	}
 }
 
