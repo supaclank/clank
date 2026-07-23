@@ -73,6 +73,9 @@ type InboxModel struct {
 	// notice is a transient success message cleared on the next action.
 	notice string
 
+	// welcomeCursor identifies the action selected on the welcome screen.
+	welcomeCursor welcomeAction
+
 	// Confirm dialog state.
 	showConfirm bool
 	confirm     confirmDialogModel
@@ -1057,6 +1060,14 @@ func (m *InboxModel) handleWelcomeKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("q"))):
 		m.cleanupVoice()
 		return m, tea.Quit
+	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k"))):
+		m.moveWelcomeCursor(-1)
+		return m, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("down", "j"))):
+		m.moveWelcomeCursor(1)
+		return m, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+		return m, m.activateWelcomeAction()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("n"))):
 		// New session in the cwd's worktree. (Shift+N, handled above,
 		// opens on a fresh worktree instead.)
@@ -1070,7 +1081,7 @@ func (m *InboxModel) handleWelcomeKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		// Open Settings so the user can configure their agent backend.
 		m.openSettings()
 		return m, nil
-	case key.Matches(msg, key.NewBinding(key.WithKeys("left", "shift+left", "enter"))):
+	case key.Matches(msg, key.NewBinding(key.WithKeys("left", "shift+left"))):
 		// Move into the sidebar to start navigating branches/worktrees.
 		if m.showTwoPanes() {
 			m.setPane(paneSidebar)
@@ -1423,7 +1434,6 @@ func offsetMouseX(msg tea.MouseMsg, dx int) tea.MouseMsg {
 func (m *InboxModel) renderWelcomePane() string {
 	var sb strings.Builder
 
-	// Header.
 	header := lipgloss.NewStyle().
 		Foreground(primaryColor).
 		Bold(true).
@@ -1435,7 +1445,7 @@ func (m *InboxModel) renderWelcomePane() string {
 	sb.WriteString(header)
 	sb.WriteString("\n")
 	sb.WriteString(lipgloss.NewStyle().Foreground(mutedColor).
-		Render("Run coding agents across your branches and worktrees."))
+		Render("Choose a starting point, then continue step by step."))
 	sb.WriteString("\n\n")
 
 	// Error / notice.
@@ -1448,47 +1458,62 @@ func (m *InboxModel) renderWelcomePane() string {
 		sb.WriteString("\n\n")
 	}
 
-	keyStyle := lipgloss.NewStyle().Foreground(textColor).Bold(true)
 	descStyle := lipgloss.NewStyle().Foreground(dimColor)
 	sectionStyle := lipgloss.NewStyle().Foreground(secondaryColor).Bold(true)
 
-	// Each row is "  <key>   <description>", key column padded to a fixed
-	// width so descriptions line up.
-	row := func(k, d string) {
-		rk := keyStyle.Render(k)
-		pad := 14 - lipgloss.Width(rk)
-		if pad < 1 {
-			pad = 1
+	sb.WriteString(" " + sectionStyle.Render("Start here"))
+	sb.WriteString("\n")
+	for i, action := range welcomeActionItems {
+		selected := m.pane == paneSessions && m.welcomeCursor == welcomeAction(i)
+		cursor := "  "
+		titleStyle := lipgloss.NewStyle().Foreground(textColor)
+		if selected {
+			cursor = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("› ")
+			titleStyle = titleStyle.Bold(true)
 		}
-		sb.WriteString("  " + rk + strings.Repeat(" ", pad) + descStyle.Render(d) + "\n")
+		title := titleStyle.Render(action.Title)
+		padding := 28 - lipgloss.Width(title)
+		if padding < 2 {
+			padding = 2
+		}
+		sb.WriteString(cursor + title + strings.Repeat(" ", padding) + descStyle.Render(action.Description) + "\n")
 	}
-
-	// Get set up — concrete actions available right here.
-	sb.WriteString(sectionStyle.Render("Get set up"))
-	sb.WriteString("\n")
-	row("i", "Import your existing sessions")
-	row("s", "Settings — configure your agent backend provider")
-	sb.WriteString("\n")
-
-	// Navigating the TUI — orientation tips.
-	sb.WriteString(sectionStyle.Render("Around the TUI"))
-	sb.WriteString("\n")
-	row("w", "Toggle the sidebar (branches & worktrees)")
-	row("n", "New session")
-	row("shift+n", "New session on a fresh worktree")
-	row("m", "Message the active session")
-	row(":", "Session actions menu")
-	row("?", "All keybindings")
-	sb.WriteString("\n")
-	sb.WriteString(lipgloss.NewStyle().Foreground(mutedColor).
-		Render("…or just click around with the mouse."))
 	sb.WriteString("\n\n")
 
-	// Help bar.
-	parts := []string{"i: import", "s: settings", "n: new", "w: sidebar", "?: help", "q: quit"}
+	parts := []string{"↑/↓: navigate", "enter: select", "←: worktrees", "?: help", "q: quit"}
 	sb.WriteString(helpStyle.Render(strings.Join(parts, " | ")))
 
-	return sb.String()
+	width, height := m.welcomePaneSize()
+	return centerWelcomeContent(sb.String(), width, height)
+}
+
+// centerWelcomeContent centers the welcome block while preserving its internal
+// left alignment. lipgloss.Place centers each line independently, which would
+// shift shorter action rows away from the shared title column.
+func centerWelcomeContent(content string, width, height int) string {
+	left := (width - lipgloss.Width(content)) / 2
+	if left < 0 {
+		left = 0
+	}
+	indent := strings.Repeat(" ", left)
+	content = indent + strings.ReplaceAll(content, "\n", "\n"+indent)
+	return lipgloss.PlaceVertical(height, lipgloss.Center, content)
+}
+
+// welcomePaneSize returns the available area inside the right pane.
+func (m *InboxModel) welcomePaneSize() (int, int) {
+	width := m.sessionPaneWidth()
+	height := m.height
+	if m.showTwoPanes() {
+		height -= paneBorderInset
+	}
+	if width < 1 {
+		width = 1
+	}
+	if height < 1 {
+		height = 1
+	}
+	return width, height
 }
 
 // --- Two-pane layout helpers ---
@@ -1814,6 +1839,12 @@ func (m *InboxModel) handleSidebarClick(msg tea.MouseClickMsg) (tea.Model, tea.C
 // worktree or "show more" bucket toggles its expand state.
 func (m *InboxModel) activateSidebarCursor() (tea.Model, tea.Cmd) {
 	switch {
+	case m.sidebar.CursorOnHome():
+		m.screen = screenWelcome
+		m.cloud.SetFocused(false)
+		m.settings.SetFocused(false)
+		m.setPane(paneSessions)
+		return m, nil
 	case m.sidebar.CursorOnSettings():
 		m.openSettings()
 		return m, nil

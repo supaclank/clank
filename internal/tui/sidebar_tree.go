@@ -15,6 +15,7 @@ import (
 // itself rather than a pre-flattened list so the same tree can be
 // re-flattened cheaply as expand state changes.
 type sidebarTree struct {
+	Home            homeNode
 	RecentWorktrees []worktreeNode
 	OlderWorktrees  olderWorktreesNode
 	Import          importNode
@@ -54,6 +55,7 @@ func buildSidebarTree(sessions []agent.SessionInfo, cwdLocalPath string, now tim
 
 	recent, older := PartitionWorktreesByActivityWindow(worktrees, cwdLocalPath)
 	return sidebarTree{
+		Home:            homeNode{},
 		RecentWorktrees: recent,
 		OlderWorktrees:  olderWorktreesNode{Hidden: older},
 		Import:          importNode{},

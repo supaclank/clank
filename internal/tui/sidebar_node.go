@@ -12,7 +12,8 @@ import (
 type sidebarNodeKind int
 
 const (
-	nodeWorktree sidebarNodeKind = iota
+	nodeHome sidebarNodeKind = iota
+	nodeWorktree
 	nodeSession
 	nodeOlderWorktrees
 	nodeOlderSessions
@@ -35,6 +36,15 @@ type sidebarNode interface {
 	// Depth is the nesting level used for indentation. 0 = top-level row.
 	Depth() int
 }
+
+// homeNode opens the welcome screen.
+type homeNode struct{}
+
+func (homeNode) Kind() sidebarNodeKind { return nodeHome }
+func (homeNode) Key() string           { return "home" }
+func (homeNode) IsSelectable() bool    { return true }
+func (homeNode) IsExpandable() bool    { return false }
+func (homeNode) Depth() int            { return 0 }
 
 // worktreeNode represents one worktree row. It carries the session set
 // used to render the child rows when expanded; PartitionSessionsByAge

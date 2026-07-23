@@ -9,7 +9,8 @@ package tui
 //
 // Layout (top-to-bottom):
 //
-//	[0 .. N]        → Recent worktrees, each expandable into sessions
+//	[0]             → Home
+//	[1 .. N]        → Recent worktrees, each expandable into sessions
 //	[…]             → Older worktrees bucket (collapsible)
 //	[footer]        → Import / Cloud / Settings rows pinned to bottom
 //
@@ -284,6 +285,11 @@ func (m *SidebarModel) CursorOnImport() bool {
 	return m.cursorNodeKind() == nodeImport
 }
 
+// CursorOnHome reports whether the cursor is on the Home entry.
+func (m *SidebarModel) CursorOnHome() bool {
+	return m.cursorNodeKind() == nodeHome
+}
+
 // CursorOnCloud reports whether the cursor is on the cloud row.
 func (m *SidebarModel) CursorOnCloud() bool {
 	return m.cursorNodeKind() == nodeCloud
@@ -404,11 +410,11 @@ func (m *SidebarModel) isWorktreeAt(i int) bool {
 }
 
 // isSectionAnchorAt returns true for the rows shift+up/down can fall
-// back to when there's no worktree to jump to: the Older bucket and the
-// footer entries.
+// back to when there's no worktree to jump to: Home, the Older bucket,
+// and the footer entries.
 func (m *SidebarModel) isSectionAnchorAt(i int) bool {
 	switch m.flat[i].Kind() {
-	case nodeOlderWorktrees, nodeImport, nodeCloud, nodeSettings:
+	case nodeHome, nodeOlderWorktrees, nodeImport, nodeCloud, nodeSettings:
 		return true
 	}
 	return false

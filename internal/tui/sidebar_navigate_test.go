@@ -32,16 +32,15 @@ func newTestSidebarCwd(now time.Time, cwdLocalPath string, sessions ...agent.Ses
 func TestSidebar_DefaultCursorIsFirstRow(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)
-	// With a worktree present, the default cursor (index 0) lands on the
-	// first worktree row now that the "All sessions" row is gone.
+	// Home is the first selectable row, before the worktree list.
 	m := newTestSidebar(now,
 		agent.SessionInfo{ID: "a", UpdatedAt: now, GitRef: agent.GitRef{LocalPath: "/r/x"}},
 	)
 	if m.cursor != 0 {
 		t.Errorf("expected default cursor at index 0, got %d", m.cursor)
 	}
-	if k := m.cursorNodeKind(); k != nodeWorktree {
-		t.Errorf("expected default cursor on first worktree, got kind %d", k)
+	if k := m.cursorNodeKind(); k != nodeHome {
+		t.Errorf("expected default cursor on Home, got kind %d", k)
 	}
 }
 
@@ -52,7 +51,7 @@ func TestSidebar_EnterOnWorktreeTogglesExpand(t *testing.T) {
 		agent.SessionInfo{ID: "a", UpdatedAt: now, GitRef: agent.GitRef{LocalPath: "/r/x"}},
 	)
 	// Default: non-cwd worktrees start collapsed. Enter expands.
-	m.cursor = 0 // worktree row (first row now that "All sessions" is gone)
+	m.cursor = 1 // worktree row
 	if m.expanded["wt:/r/x"] {
 		t.Fatalf("precondition: non-cwd worktree should start collapsed")
 	}
@@ -73,7 +72,7 @@ func TestSidebar_EnterOnSessionEmitsSelection(t *testing.T) {
 	m := newTestSidebarCwd(now, "/r/x",
 		agent.SessionInfo{ID: "abc123", UpdatedAt: now, GitRef: agent.GitRef{LocalPath: "/r/x"}},
 	)
-	m.cursor = 1 // session row (worktree at 0, its session at 1)
+	m.cursor = 2 // session row (Home at 0, worktree at 1)
 
 	cmd := m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
@@ -100,7 +99,7 @@ func TestSidebar_ShiftEnter_StartsAtFirstUnread(t *testing.T) {
 		{ID: "s2", UpdatedAt: now.Add(-2 * time.Hour), LastReadAt: read, GitRef: agent.GitRef{LocalPath: "/r/x"}},
 	}
 	m := newTestSidebar(now, sessions...)
-	m.cursor = 0 // worktree row
+	m.cursor = 1 // worktree row
 
 	cmd := m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
 	if cmd == nil {
@@ -121,7 +120,7 @@ func TestSidebar_ShiftEnter_AdvancesAndWraps(t *testing.T) {
 		{ID: "s2", UpdatedAt: now.Add(-2 * time.Hour), GitRef: agent.GitRef{LocalPath: "/r/x"}},
 	}
 	m := newTestSidebar(now, sessions...)
-	m.cursor = 0 // worktree row
+	m.cursor = 1 // worktree row
 
 	gotIDs := make([]string, 0, 5)
 	for i := 0; i < 5; i++ {
@@ -144,11 +143,11 @@ func TestSidebar_ShiftEnter_OnNonWorktreeIsNoOp(t *testing.T) {
 	m := newTestSidebar(now,
 		agent.SessionInfo{ID: "a", UpdatedAt: now, GitRef: agent.GitRef{LocalPath: "/r/x"}},
 	)
-	// flat is: [worktree /r/x, Import, Cloud, Settings]. Park on Import
+	// flat is: [Home, worktree /r/x, Import, Cloud, Settings]. Park on Import
 	// (a non-worktree footer row) — Shift+Enter there must be a no-op.
-	m.cursor = 1
+	m.cursor = 2
 	if !m.CursorOnImport() {
-		t.Fatalf("setup: expected cursor on Import at idx 1, got kind %d", m.cursorNodeKind())
+		t.Fatalf("setup: expected cursor on Import at idx 2, got kind %d", m.cursorNodeKind())
 	}
 	cmd := m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
 	if cmd != nil {
@@ -166,7 +165,7 @@ func TestSidebar_SpaceTogglesExpand(t *testing.T) {
 	// moving the cursor; Space again collapses. (Tab is reserved for
 	// pane switching at the inbox level and intentionally does NOT
 	// reach sidebar.handleKey.)
-	m.cursor = 0 // worktree row
+	m.cursor = 1 // worktree row
 	m.handleKey(tea.KeyPressMsg{Code: tea.KeySpace})
 	if !m.expanded["wt:/r/x"] {
 		t.Errorf("expected Space to expand the worktree")
@@ -275,7 +274,7 @@ func TestSidebar_UserCollapseBeatsAutoExpand(t *testing.T) {
 	m := newTestSidebarCwd(now, "/r/x",
 		agent.SessionInfo{ID: "a", UpdatedAt: now, GitRef: agent.GitRef{LocalPath: "/r/x"}},
 	)
-	m.cursor = 0 // cwd worktree row
+	m.cursor = 1 // cwd worktree row
 	// Cwd auto-expanded → Enter collapses → user toggle = false.
 	m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.expanded["wt:/r/x"] {
@@ -351,17 +350,16 @@ func TestSidebar_ShiftJump_FallsBackToSectionAnchorsAtEdges(t *testing.T) {
 	m := newTestSidebar(now,
 		agent.SessionInfo{ID: "a", UpdatedAt: now, GitRef: agent.GitRef{LocalPath: "/r/only"}},
 	)
-	// flat is: [worktree /r/only, Import, Cloud, Settings]. Park on the
-	// only worktree (index 0). There's no row above it (the "All sessions"
-	// anchor is gone), so shift+up stays put.
-	m.cursor = 0
+	// flat is: [Home, worktree /r/only, Import, Cloud, Settings]. Park on
+	// the only worktree. Shift+up reaches Home.
+	m.cursor = 1
 	m.shiftJump(false)
-	if k := m.flat[m.cursor].Kind(); k != nodeWorktree {
-		t.Errorf("shift+up from the first worktree should stay on it, got kind %d", k)
+	if k := m.flat[m.cursor].Kind(); k != nodeHome {
+		t.Errorf("shift+up from the first worktree should land on Home, got kind %d", k)
 	}
 	// Reset cursor on the worktree and try shift+down: no more
 	// worktrees below → falls through to the first footer row.
-	m.cursor = 0
+	m.cursor = 1
 	m.shiftJump(true)
 	if k := m.flat[m.cursor].Kind(); k != nodeImport {
 		t.Errorf("shift+down past last worktree should land on Import (first footer), got kind %d", k)
@@ -371,19 +369,19 @@ func TestSidebar_ShiftJump_FallsBackToSectionAnchorsAtEdges(t *testing.T) {
 func TestSidebar_CursorOnFooterRows(t *testing.T) {
 	t.Parallel()
 	m := newTestSidebar(time.Now())
-	// flat is: Import, Cloud, Settings (no worktrees in fixture).
-	if len(m.flat) != 3 {
-		t.Fatalf("expected 3 nodes, got %d (%v)", len(m.flat), keysOf(m.flat))
+	// flat is: Home, Import, Cloud, Settings (no worktrees in fixture).
+	if len(m.flat) != 4 {
+		t.Fatalf("expected 4 nodes, got %d (%v)", len(m.flat), keysOf(m.flat))
 	}
-	m.cursor = 0
+	m.cursor = 1
 	if !m.CursorOnImport() {
 		t.Errorf("expected CursorOnImport at idx 0")
 	}
-	m.cursor = 1
+	m.cursor = 2
 	if !m.CursorOnCloud() {
 		t.Errorf("expected CursorOnCloud at idx 1")
 	}
-	m.cursor = 2
+	m.cursor = 3
 	if !m.CursorOnSettings() {
 		t.Errorf("expected CursorOnSettings at idx 2")
 	}

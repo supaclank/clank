@@ -41,7 +41,14 @@ func (m *SidebarModel) View() string {
 		}
 	}
 
+	add(noNodeRow, lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("Home"))
+	homeIndex := 0
+	if len(m.flat) == 0 || m.flat[0].Kind() != nodeHome {
+		homeIndex = noNodeRow
+	}
+	add(homeIndex, m.renderHomeRow(homeIndex == m.cursor && m.focused, contentWidth))
 	add(noNodeRow,
+		"",
 		lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("Worktrees"),
 		"",
 	)
@@ -101,7 +108,7 @@ func (m *SidebarModel) NodeAtRow(y int) int {
 	return m.rowFlat[line]
 }
 
-// renderBody emits the non-footer rows (worktrees + older bucket),
+// renderBody emits the non-footer rows below Home (worktrees + older bucket),
 // respecting the scroll offset. footerLineCount is returned so
 // View can pad to push the footer to the bottom regardless of how many
 // rows the body produced.
@@ -157,6 +164,8 @@ func (m *SidebarModel) renderBody(contentWidth int) (lines []string, flatByLine 
 func (m *SidebarModel) bodyNodes() (body []int, footerStart int) {
 	for i, n := range m.flat {
 		switch n.Kind() {
+		case nodeHome:
+			continue
 		case nodeImport, nodeCloud, nodeSettings:
 			if footerStart == 0 {
 				footerStart = i
@@ -267,12 +276,17 @@ func (m *SidebarModel) nodeLineCost(idx int, isFirstVisible bool) int {
 // active the input also lives in the body (accounted for in
 // nodeLineCost), so no extra deduction is needed here.
 func (m *SidebarModel) bodyViewportH() int {
-	const overhead = 2 + 4 // header block + footer block
+	const overhead = 4 + 4 // Home/Worktrees header block + footer block
 	vh := m.listHeight() - overhead
 	if vh < 1 {
 		vh = 1
 	}
 	return vh
+}
+
+// renderHomeRow renders the fixed link to the welcome screen.
+func (m *SidebarModel) renderHomeRow(selected bool, maxWidth int) string {
+	return m.renderFooterRow("⌂ Home", selected)
 }
 
 // listHeight returns the height available for the body (excluding border).

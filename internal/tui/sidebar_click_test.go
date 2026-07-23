@@ -148,6 +148,16 @@ func TestSidebarClick_SettingsOpensSettingsScreen(t *testing.T) {
 	}
 }
 
+func TestSidebarClick_HomeOpensWelcomeScreen(t *testing.T) {
+	t.Parallel()
+	m := newInboxWithSidebar(t)
+	m.screen = screenSettings
+	m, _ = clickSidebarKind(t, m, nodeHome)
+	if m.screen != screenWelcome {
+		t.Errorf("clicking Home → screen %v, want screenWelcome", m.screen)
+	}
+}
+
 // With the sidebar visible, mouse reporting is on for every screen, so a
 // wheel over the sidebar must move its cursor even on the inbox screen
 // (where it previously couldn't, mouse reporting being chat-only).
