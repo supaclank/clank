@@ -9,6 +9,10 @@ import (
 	sdk "github.com/coder/acp-go-sdk"
 )
 
+// permIDPrefix namespaces parked-permission request ids so they can't
+// collide with other id spaces (e.g. session/message ids).
+const permIDPrefix = "perm-"
+
 // HandleSessionUpdate implements SessionHandler: reduce, then emit.
 func (b *Backend) HandleSessionUpdate(_ context.Context, n sdk.SessionNotification) {
 	b.lastUpdate.set(time.Now())
@@ -32,9 +36,9 @@ func (b *Backend) HandleRequestPermission(ctx context.Context, req sdk.RequestPe
 		return sdk.RequestPermissionResponse{Outcome: sdk.NewRequestPermissionOutcomeCancelled()}, nil
 	}
 	b.permSeq++
-	requestID := fmt.Sprintf("perm-%d", b.permSeq)
+	requestID := fmt.Sprintf("%s%d", permIDPrefix, b.permSeq)
 	if toolUseID != "" {
-		requestID = "perm-" + toolUseID
+		requestID = permIDPrefix + toolUseID
 	}
 	ch := make(chan permDecision, 1)
 	b.pendingPerms[requestID] = ch
