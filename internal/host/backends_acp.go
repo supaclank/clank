@@ -35,6 +35,13 @@ type ACPBackendManager struct {
 	catalogMu sync.Mutex
 	catalog   map[string][]agent.ModelInfo
 	modes     map[string][]agent.SessionMode
+	// probed marks dirs whose catalog we have already tried to fill, so a
+	// dir whose agent advertises nothing isn't probed on every request.
+	probed map[string]bool
+	// probing single-flights concurrent probes per dir — /modes and
+	// /models both miss on a cold dir and would otherwise each open a
+	// session.
+	probing map[string]chan struct{}
 }
 
 // NewACPBackendManager builds a manager for the given adapter profile.
@@ -311,7 +318,8 @@ func (m *ACPBackendManager) putModes(workDir string, modes []agent.SessionMode) 
 // Same caveat as ListModels: ACP advertises modes per session, so this
 // is empty until one has opened, and any known list is a better answer
 // than none for a dir we haven't seen.
-func (m *ACPBackendManager) ListModes(_ context.Context, projectDir string) ([]agent.SessionMode, error) {
+func (m *ACPBackendManager) ListModes(ctx context.Context, projectDir string) ([]agent.SessionMode, error) {
+	m.ensureCatalog(ctx, projectDir)
 	m.catalogMu.Lock()
 	defer m.catalogMu.Unlock()
 	// Strictly per-dir: agents/modes are project-scoped (opencode reads
@@ -324,12 +332,78 @@ func (m *ACPBackendManager) ListModes(_ context.Context, projectDir string) ([]a
 // session published on open. Empty before this host has opened a session
 // in projectDir — ACP has no session-independent model listing, so the
 // picker fills in once a session exists rather than showing a guess.
-func (m *ACPBackendManager) ListModels(_ context.Context, projectDir string) ([]agent.ModelInfo, error) {
+func (m *ACPBackendManager) ListModels(ctx context.Context, projectDir string) ([]agent.ModelInfo, error) {
+	m.ensureCatalog(ctx, projectDir)
 	m.catalogMu.Lock()
 	defer m.catalogMu.Unlock()
 	// Per-dir for the same reason as ListModes: project config can add or
 	// restrict providers, so another dir's catalog is not a safe answer.
 	return slices.Clone(m.catalog[projectDir]), nil
+}
+
+// ensureCatalog fills projectDir's mode/model catalog by opening a
+// short-lived session, once per dir.
+//
+// ACP advertises modes and models ONLY on the session/new|load|resume
+// response, so a client that offers a picker before the user starts a
+// session has to open one. Every shipping ACP client does this eagerly
+// (Zed, the VS Code clients, the nvim/Emacs plugins, marimo) and none of
+// them reuse it — Zed mints a session per thread-open, which is what
+// zed-industries/zed#52500 complains about. Probing once per dir and
+// remembering the answer keeps our footprint below that: one extra
+// session per (backend, dir) for this daemon's lifetime.
+//
+// The probe session is closed but generally NOT deleted: only
+// claude-agent-acp supports session/delete, codex hides never-prompted
+// threads from its own listings, and `opencode acp` neither deletes nor
+// defers persistence (anomalyco/opencode#38064 — its own TUI creates
+// sessions lazily; only its ACP entry point persists eagerly). So an
+// empty opencode row is the accepted cost, matching the ecosystem.
+func (m *ACPBackendManager) ensureCatalog(ctx context.Context, projectDir string) {
+	if projectDir == "" {
+		return
+	}
+	m.catalogMu.Lock()
+	if m.probed[projectDir] {
+		m.catalogMu.Unlock()
+		return
+	}
+	if wait, inFlight := m.probing[projectDir]; inFlight {
+		m.catalogMu.Unlock()
+		select {
+		case <-wait:
+		case <-ctx.Done():
+		}
+		return
+	}
+	done := make(chan struct{})
+	if m.probing == nil {
+		m.probing = make(map[string]chan struct{})
+	}
+	m.probing[projectDir] = done
+	m.catalogMu.Unlock()
+
+	defer func() {
+		m.catalogMu.Lock()
+		if m.probed == nil {
+			m.probed = make(map[string]bool)
+		}
+		m.probed[projectDir] = true
+		delete(m.probing, projectDir)
+		m.catalogMu.Unlock()
+		close(done)
+	}()
+
+	b, err := m.CreateBackend(ctx, agent.BackendInvocation{WorkDir: projectDir})
+	if err != nil {
+		log.Printf("[%s] catalog probe for %s: %v", m.profile.ID, projectDir, err)
+		return
+	}
+	// Open publishes modes + models to the sinks CreateBackend wired.
+	if err := b.Open(ctx); err != nil {
+		log.Printf("[%s] catalog probe for %s: %v", m.profile.ID, projectDir, err)
+	}
+	_ = b.Stop()
 }
 
 // Shutdown stops every adapter process.

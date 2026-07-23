@@ -2,6 +2,9 @@ package host_test
 
 import (
 	"context"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -130,10 +133,10 @@ func TestACPBackendManager_ListModelsServesSessionCatalog(t *testing.T) {
 	}
 	defer mgr.Shutdown()
 
+	// (A cold dir is no longer empty — ListModels probes to fill it; see
+	// TestACPBackendManager_ProbesOncePerDirToFillCatalog. This test covers
+	// the other direction: a REAL session's catalog reaching ListModels.)
 	workDir := t.TempDir()
-	if models, err := mgr.ListModels(ctx, workDir); err != nil || len(models) != 0 {
-		t.Fatalf("ListModels before any session = %v/%v, want empty (no session has reported yet)", models, err)
-	}
 
 	b, err := mgr.CreateBackend(ctx, agent.BackendInvocation{WorkDir: workDir})
 	if err != nil {
@@ -152,5 +155,87 @@ func TestACPBackendManager_ListModelsServesSessionCatalog(t *testing.T) {
 	}
 	if len(models) != 1 || models[0].ID != "gpt-5.2-codex" || models[0].Name != "GPT-5.2 Codex" {
 		t.Fatalf("ListModels after session open = %+v, want the agent-advertised catalog", models)
+	}
+}
+
+// A cold project dir has no catalog, so the picker would be empty before
+// the user's first session. ACP only advertises modes/models on
+// session/new, so the manager opens one short-lived session per dir —
+// ONCE, and single-flighted, since /modes and /models both miss together.
+func TestACPBackendManager_ProbesOncePerDirToFillCatalog(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // installGuidanceSkills writes under $HOME
+
+	mgr, err := host.NewCodexACPManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewCodexACPManager: %v", err)
+	}
+	category := sdk.SessionConfigOptionCategory("model")
+	modeCategory := sdk.SessionConfigOptionCategory("mode")
+	var sessions atomic.Int64
+	scripted := func(string) *acptest.ScriptedAgent {
+		a := &acptest.ScriptedAgent{}
+		a.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+			sessions.Add(1)
+			return sdk.NewSessionResponse{
+				SessionId: sdk.SessionId("probe-" + strconv.FormatInt(sessions.Load(), 10)),
+				ConfigOptions: []sdk.SessionConfigOption{
+					{Select: &sdk.SessionConfigOptionSelect{
+						Id: "model", Name: "Model", Category: &category, CurrentValue: "gpt-5.2-codex",
+						Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+							{Value: "gpt-5.2-codex", Name: "GPT-5.2 Codex"},
+						}},
+					}},
+					{Select: &sdk.SessionConfigOptionSelect{
+						Id: "mode", Name: "Mode", Category: &modeCategory, CurrentValue: "agent",
+						Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+							{Value: "read-only", Name: "Read Only"},
+							{Value: "agent", Name: "Agent"},
+						}},
+					}},
+				},
+			}, nil
+		}
+		return a
+	}
+	mgr.Supervisor().SetSpawnFunc(acptest.SpawnFunc(scripted, acpx.CodexProfile("bun", "entry", nil), t.Logf))
+	mgr.Supervisor().SetReconcileInterval(20 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := mgr.Init(ctx, func() ([]string, error) { return nil, nil }); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer mgr.Shutdown()
+
+	workDir := t.TempDir()
+
+	// Concurrent cold callers (the TUI fires /modes and /models together).
+	var wg sync.WaitGroup
+	var modes []agent.SessionMode
+	var models []agent.ModelInfo
+	wg.Add(2)
+	go func() { defer wg.Done(); modes, _ = mgr.ListModes(ctx, workDir) }()
+	go func() { defer wg.Done(); models, _ = mgr.ListModels(ctx, workDir) }()
+	wg.Wait()
+
+	if len(modes) != 2 || modes[0].ID != "read-only" {
+		t.Errorf("probed modes = %+v, want the agent's advertised list", modes)
+	}
+	if len(models) != 1 || models[0].ID != "gpt-5.2-codex" {
+		t.Errorf("probed models = %+v, want the agent's advertised list", models)
+	}
+	if got := sessions.Load(); got != 1 {
+		t.Fatalf("probe opened %d sessions, want 1 (single-flighted across both callers)", got)
+	}
+
+	// Warm dir: served from the catalog, no further sessions.
+	if _, err := mgr.ListModes(ctx, workDir); err != nil {
+		t.Fatalf("ListModes (warm): %v", err)
+	}
+	if _, err := mgr.ListModels(ctx, workDir); err != nil {
+		t.Fatalf("ListModels (warm): %v", err)
+	}
+	if got := sessions.Load(); got != 1 {
+		t.Errorf("warm reads opened %d sessions, want no new ones", got)
 	}
 }
