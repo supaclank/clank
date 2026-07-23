@@ -60,11 +60,15 @@ func TestCompose_ClaudeBackendSeedsAndCyclesModes(t *testing.T) {
 	if m.backend != agent.BackendClaudeCode {
 		t.Fatalf("backend=%s, want claude-code", m.backend)
 	}
+	// Modes arrive from the host (agent-advertised), not from a seed.
+	advertised := make([]agent.SessionMode, 0, len(agent.ClaudePermissionModes))
+	for _, pm := range agent.ClaudePermissionModes {
+		advertised = append(advertised, agent.SessionMode{ID: string(pm), Name: pm.Label()})
+	}
+	model, _ = m.Update(modesResultMsg{modes: advertised})
+	m = model.(*SessionViewModel)
 	if len(m.modes) != len(agent.ClaudePermissionModes) {
 		t.Fatalf("modes len=%d, want %d", len(m.modes), len(agent.ClaudePermissionModes))
-	}
-	if m.modes[m.selectedMode].perm != agent.ClaudePermBypass {
-		t.Fatalf("initial selected=%q, want bypassPermissions", m.modes[m.selectedMode].perm)
 	}
 
 	start := m.selectedMode
@@ -94,8 +98,10 @@ func TestCompose_ToggleBackToOpenCodeClearsModes(t *testing.T) {
 
 	model, _ := m.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
 	m = model.(*SessionViewModel)
+	model, _ = m.Update(modesResultMsg{modes: []agent.SessionMode{{ID: "plan", Name: "Plan"}}})
+	m = model.(*SessionViewModel)
 	if len(m.modes) == 0 {
-		t.Fatal("expected claude modes after toggle to claude")
+		t.Fatal("expected fetched modes to populate the picker")
 	}
 
 	// Next in the cycle is codex: an ACP-served backend whose modes are
@@ -134,11 +140,13 @@ func TestSessionView_InboxClaudeBackend_FetchesModels(t *testing.T) {
 	model, cmd := m.Update(sessionInfoMsg{info: info})
 	m = model.(*SessionViewModel)
 
-	if len(m.modes) == 0 {
-		t.Fatal("Claude permission modes not seeded from inbox sessionInfoMsg")
+	// No runtime modes on this info (dead session): the view must FETCH
+	// the agent's list rather than seeding a hardcoded one.
+	if len(m.modes) != 0 {
+		t.Fatalf("modes len=%d, want 0 until the host answers", len(m.modes))
 	}
 	if cmd == nil {
-		t.Fatal("expected fetchModels command from inbox Claude session, got nil")
+		t.Fatal("expected fetch commands from inbox Claude session, got nil")
 	}
 }
 
@@ -159,5 +167,37 @@ func TestSessionView_ActiveTabCyclesModes(t *testing.T) {
 	}
 	if m.modes[m.selectedMode].perm == "" {
 		t.Error("selected mode lost its permission value after cycling")
+	}
+}
+
+// The compose view has no session, so its mode picker can only come from
+// the host's agent-advertised list. It previously seeded a hardcoded
+// claude list here (stale: no auto/dontAsk) and showed nothing at all for
+// other backends. Compose routes messages through updateCompose, which
+// has its own switch — a handler on the main Update path never fires
+// while composing, which is how this stayed broken after the in-session
+// picker was fixed.
+func TestCompose_ModesComeFromTheHostNotAHardcodedList(t *testing.T) {
+	t.Parallel()
+	m := newSessionViewComposingWithBackend(nil, "/tmp/project", agent.BackendCodex)
+	m.width, m.height = 80, 40
+
+	if len(m.modes) != 0 {
+		t.Fatalf("compose seeded %d modes before the host answered", len(m.modes))
+	}
+
+	// Codex's own vocabulary — nothing a hardcoded claude list contains.
+	model, _ := m.Update(modesResultMsg{modes: []agent.SessionMode{
+		{ID: "read-only", Name: "Read Only"},
+		{ID: "agent", Name: "Agent"},
+		{ID: "agent-full-access", Name: "Full Access"},
+	}})
+	m = model.(*SessionViewModel)
+
+	if len(m.modes) != 3 {
+		t.Fatalf("compose modes len=%d, want 3 from the host", len(m.modes))
+	}
+	if m.modes[0].perm != "read-only" || m.modes[2].label != "Full Access" {
+		t.Errorf("compose rendered %+v, want the agent's advertised modes verbatim", m.modes)
 	}
 }

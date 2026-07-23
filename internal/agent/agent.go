@@ -817,6 +817,13 @@ type ModelInfo struct {
 	ProviderName string `json:"provider_name"` // Human-readable provider name
 }
 
+// ModeLister is an optional interface BackendManagers implement to expose
+// the agent-advertised session modes for a project without a live
+// session — the compose view needs them before a session exists.
+type ModeLister interface {
+	ListModes(ctx context.Context, projectDir string) ([]SessionMode, error)
+}
+
 // ModelLister is an optional interface that BackendManagers can implement
 // to expose available models for a project.
 type ModelLister interface {

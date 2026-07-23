@@ -113,8 +113,10 @@ func modesFromInfo(info *agent.SessionInfo) ([]selectableMode, int, bool) {
 	return modes, selected, true
 }
 
-// claudePermissionModes builds the static Tab-cycle list for the Claude
-// backend, defaulting the selection to bypassPermissions.
+// claudePermissionModes builds a mode list from the legacy
+// ClaudePermissionModes enum. Production code no longer calls it —
+// modes are agent-advertised and fetched — but tests use it to build a
+// realistic picker without standing up a backend.
 func claudePermissionModes() ([]selectableMode, int) {
 	modes := make([]selectableMode, len(agent.ClaudePermissionModes))
 	selected := 0
@@ -142,6 +144,11 @@ func agentSelectableModes(agents []agent.AgentInfo, current string) ([]selectabl
 		}
 	}
 	return modes, selected
+}
+
+// modesResultMsg carries the result of fetching agent-advertised modes.
+type modesResultMsg struct {
+	modes []agent.SessionMode
 }
 
 // modelsResultMsg carries the result of fetching available models.
@@ -620,6 +627,30 @@ func (m *SessionViewModel) fetchAgents() tea.Cmd {
 
 // fetchModels loads available models for the current backend/repo.
 // Fired eagerly on compose init alongside fetchAgents.
+// fetchModes loads the agent-advertised session modes for the selected
+// backend. The compose view has no session yet, so the host answers from
+// what a session last reported for the project (ACP advertises modes per
+// session) — empty until one has opened, never a hardcoded guess.
+func (m *SessionViewModel) fetchModes() tea.Cmd {
+	client := m.client
+	backend := m.backend
+	hostname := m.hostname
+	ref := m.gitRef
+	if ref.LocalPath == "" && ref.WorktreeID == "" {
+		return func() tea.Msg { return modesResultMsg{} }
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		modes, err := client.Backend(backend).Modes(ctx, hostname, ref)
+		if err != nil {
+			// Non-fatal: degrade gracefully with no mode selector.
+			return modesResultMsg{}
+		}
+		return modesResultMsg{modes: modes}
+	}
+}
+
 func (m *SessionViewModel) fetchModels() tea.Cmd {
 	client := m.client
 	backend := m.backend
@@ -804,18 +835,17 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return mi.ID == m.info.CurrentModelID
 				})
 			}
-			switch m.info.Backend {
-			case agent.BackendOpenCode:
-				// Selected agent is matched against the fetched list in agentsResultMsg.
-				return m, tea.Batch(m.fetchAgents(), m.fetchModels())
-			case agent.BackendClaudeCode:
-				if len(m.info.AvailableModes) == 0 {
-					m.modes, m.selectedMode = claudePermissionModes()
-				}
-				return m, m.fetchModels()
-			default:
-				return m, m.fetchModels()
+			// A dead session reports no runtime modes; fetch the
+			// backend's advertised list rather than guessing one.
+			cmds := []tea.Cmd{m.fetchModels()}
+			if len(m.info.AvailableModes) == 0 {
+				cmds = append(cmds, m.fetchModes())
 			}
+			if m.info.Backend == agent.BackendOpenCode {
+				// Selected agent is matched against the fetched list in agentsResultMsg.
+				cmds = append(cmds, m.fetchAgents())
+			}
+			return m, tea.Batch(cmds...)
 		}
 		return m, nil
 
@@ -833,6 +863,23 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			current = m.info.Agent
 		}
 		m.modes, m.selectedMode = agentSelectableModes(msg.agents, current)
+		return m, nil
+
+	case modesResultMsg:
+		if len(msg.modes) > 0 {
+			prev := ""
+			if m.selectedMode >= 0 && m.selectedMode < len(m.modes) {
+				prev = string(m.modes[m.selectedMode].perm)
+			}
+			m.modes = make([]selectableMode, len(msg.modes))
+			m.selectedMode = 0
+			for i, sm := range msg.modes {
+				m.modes[i] = selectableMode{label: sm.Name, perm: agent.ClaudePermissionMode(sm.ID)}
+				if sm.ID == prev {
+					m.selectedMode = i
+				}
+			}
+		}
 		return m, nil
 
 	case modelsResultMsg:

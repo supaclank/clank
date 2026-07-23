@@ -80,11 +80,8 @@ func newSessionViewComposingWithBackend(client *daemonclient.Client, projectDir 
 		input:       ta,
 		spinner:     sp,
 	}
-	// Claude's modes are a static set seeded up front; OpenCode's agents arrive
-	// asynchronously via fetchAgents (Init).
-	if defaultBackend == agent.BackendClaudeCode {
-		m.modes, m.selectedMode = claudePermissionModes()
-	}
+	// Modes are agent-owned and fetched (Init → fetchModes); nothing is
+	// seeded here, so the picker never shows a mode the agent doesn't have.
 	return m
 }
 
@@ -153,8 +150,19 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.SetWidth(m.width - promptInputBorderSize)
 		return m, nil
 
+	case modesResultMsg:
+		// Agent-advertised modes for the selected backend. Compose has no
+		// session yet, so this is the only source — nothing is hardcoded.
+		if len(msg.modes) > 0 {
+			m.modes = make([]selectableMode, len(msg.modes))
+			m.selectedMode = 0
+			for i, sm := range msg.modes {
+				m.modes[i] = selectableMode{label: sm.Name, perm: agent.ClaudePermissionMode(sm.ID)}
+			}
+		}
+		return m, nil
+
 	case agentsResultMsg:
-		// OpenCode only — Claude seeds its static modes synchronously.
 		m.modes, m.selectedMode = agentSelectableModes(msg.agents, "")
 		return m, nil
 

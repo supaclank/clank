@@ -92,8 +92,9 @@ func TestNewSessionViewComposing_ResolvesDefaultBackendFromPreferences(t *testin
 		t.Fatalf("empty prefs: expected no seeded modes for opencode, got %d", len(m.modes))
 	}
 
-	// A saved claude-code preference resolves to the claude backend with its
-	// static permission modes seeded up front.
+	// A saved claude-code preference resolves to the claude backend. Modes
+	// are agent-advertised and fetched (not seeded), so none are present
+	// until the host answers.
 	if err := config.SavePreferences(config.Preferences{DefaultBackend: string(agent.BackendClaudeCode)}); err != nil {
 		t.Fatalf("SavePreferences: %v", err)
 	}
@@ -101,8 +102,8 @@ func TestNewSessionViewComposing_ResolvesDefaultBackendFromPreferences(t *testin
 	if m.backend != agent.BackendClaudeCode {
 		t.Fatalf("claude pref: backend=%s, want claude-code", m.backend)
 	}
-	if len(m.modes) != len(agent.ClaudePermissionModes) {
-		t.Fatalf("claude pref: modes len=%d, want %d", len(m.modes), len(agent.ClaudePermissionModes))
+	if len(m.modes) != 0 {
+		t.Fatalf("claude pref: modes len=%d, want 0 (modes are fetched, never hardcoded)", len(m.modes))
 	}
 }
 

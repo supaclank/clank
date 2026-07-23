@@ -34,6 +34,7 @@ type ACPBackendManager struct {
 	// it publishes on every session open (fresh and resumed).
 	catalogMu sync.Mutex
 	catalog   map[string][]agent.ModelInfo
+	modes     map[string][]agent.SessionMode
 }
 
 // NewACPBackendManager builds a manager for the given adapter profile.
@@ -274,6 +275,7 @@ func (m *ACPBackendManager) CreateBackend(ctx context.Context, inv agent.Backend
 	}
 	b := acp.NewBackend(m.profile, inv.WorkDir, inv.ResumeExternalID, guidanceText, "", resolver, log.Printf)
 	b.SetCatalogSink(m.putCatalog)
+	b.SetModeSink(m.putModes)
 	return b, nil
 }
 
@@ -290,6 +292,35 @@ func (m *ACPBackendManager) putCatalog(workDir string, models []agent.ModelInfo)
 	m.catalog[workDir] = models
 }
 
+// putModes records a session's advertised modes for its project dir.
+func (m *ACPBackendManager) putModes(workDir string, modes []agent.SessionMode) {
+	if len(modes) == 0 {
+		return
+	}
+	m.catalogMu.Lock()
+	defer m.catalogMu.Unlock()
+	if m.modes == nil {
+		m.modes = make(map[string][]agent.SessionMode)
+	}
+	m.modes[workDir] = modes
+}
+
+// ListModes implements agent.ModeLister from what a session reported.
+// Same caveat as ListModels: ACP advertises modes per session, so this
+// is empty until one has opened, and any known list is a better answer
+// than none for a dir we haven't seen.
+func (m *ACPBackendManager) ListModes(_ context.Context, projectDir string) ([]agent.SessionMode, error) {
+	m.catalogMu.Lock()
+	defer m.catalogMu.Unlock()
+	if modes, ok := m.modes[projectDir]; ok {
+		return slices.Clone(modes), nil
+	}
+	for _, modes := range m.modes {
+		return slices.Clone(modes), nil
+	}
+	return nil, nil
+}
+
 // ListModels implements agent.ModelLister from the per-dir catalog a
 // session published on open. Empty before this host has opened a session
 // in projectDir — ACP has no session-independent model listing, so the
@@ -300,12 +331,8 @@ func (m *ACPBackendManager) ListModels(_ context.Context, projectDir string) ([]
 	if models, ok := m.catalog[projectDir]; ok {
 		return slices.Clone(models), nil
 	}
-	// Host-scoped adapters (codex, claude) advertise the same models for
-	// every dir; fall back to any catalog we have rather than nothing.
-	if m.profile.Scope == acp.ScopeHost {
-		for _, models := range m.catalog {
-			return slices.Clone(models), nil
-		}
+	for _, models := range m.catalog {
+		return slices.Clone(models), nil
 	}
 	return nil, nil
 }

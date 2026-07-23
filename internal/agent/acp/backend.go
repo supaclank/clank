@@ -62,6 +62,9 @@ type Backend struct {
 	// onCatalog publishes the agent-advertised model list to the manager
 	// so /models can answer without a live session of its own.
 	onCatalog func(workDir string, models []agent.ModelInfo)
+	// onModes publishes the agent-advertised mode list to the manager so
+	// the compose view can offer modes before a session exists.
+	onModes func(workDir string, modes []agent.SessionMode)
 
 	lastUpdate atomicTime
 
@@ -83,6 +86,14 @@ func (b *Backend) SetCatalogSink(fn func(workDir string, models []agent.ModelInf
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.onCatalog = fn
+}
+
+// SetModeSink registers the manager callback that receives this
+// session's agent-advertised mode list.
+func (b *Backend) SetModeSink(fn func(workDir string, modes []agent.SessionMode)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.onModes = fn
 }
 
 func NewBackend(profile AdapterProfile, workDir, resumeExternalID, guidance string, initialMode agent.ClaudePermissionMode, resolver ConnResolver, logf func(string, ...any)) *Backend {

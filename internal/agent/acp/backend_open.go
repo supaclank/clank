@@ -168,9 +168,16 @@ func (b *Backend) Modes() (string, []agent.SessionMode) {
 // every open path returns: modes (the mode picker) and config options
 // (the model picker). Callers hold b.mu.
 func (b *Backend) applySessionStateLocked(modes *sdk.SessionModeState, opts []sdk.SessionConfigOption) {
+	// Two channels carry the same thing and agents differ in which they
+	// use: claude-agent-acp sends a SessionModeState AND a "mode" config
+	// option; `opencode acp` sends ONLY the config option (its agents).
+	// Reading just the state left opencode with no mode list at all.
 	if modes != nil {
 		b.currentMode = string(modes.CurrentModeId)
 		b.availableModes = modesFromState(modes)
+	} else if sel := selectByCategory(opts, modeConfigOptionID); sel != nil {
+		b.currentMode = string(sel.CurrentValue)
+		b.availableModes = modesFromSelect(sel)
 	}
 	if current, models, ok := modelsFromConfigOptions(opts); ok {
 		b.currentModel = current
@@ -179,34 +186,60 @@ func (b *Backend) applySessionStateLocked(modes *sdk.SessionModeState, opts []sd
 	if b.onCatalog != nil && len(b.availableModels) > 0 {
 		b.onCatalog(b.workDir, b.availableModels)
 	}
+	if b.onModes != nil && len(b.availableModes) > 0 {
+		b.onModes(b.workDir, b.availableModes)
+	}
 }
 
-// modelsFromConfigOptions extracts the model picker from the agent's
-// session config options: the select option whose category is "model"
-// (falling back to the conventional "model" id). ok is false when the
-// agent advertises no model choice.
-func modelsFromConfigOptions(opts []sdk.SessionConfigOption) (current string, models []agent.ModelInfo, ok bool) {
+// selectByCategory finds the select config option for a semantic
+// category ("model", "mode"), falling back to the conventional id for
+// agents that omit the category.
+func selectByCategory(opts []sdk.SessionConfigOption, category string) *sdk.SessionConfigOptionSelect {
 	for _, o := range opts {
 		sel := o.Select
 		if sel == nil {
 			continue
 		}
-		isModel := string(sel.Id) == modelConfigOptionID
 		if sel.Category != nil {
-			isModel = string(*sel.Category) == modelConfigOptionID
-		}
-		if !isModel {
+			if string(*sel.Category) == category {
+				return sel
+			}
 			continue
 		}
-		for _, item := range selectItems(sel.Options) {
-			models = append(models, agent.ModelInfo{
-				ID:   string(item.Value),
-				Name: item.Name,
-			})
+		if string(sel.Id) == category {
+			return sel
 		}
-		return string(sel.CurrentValue), models, true
 	}
-	return "", nil, false
+	return nil
+}
+
+// modesFromSelect maps a "mode"-category config option onto clank's
+// agent-owned mode type.
+func modesFromSelect(sel *sdk.SessionConfigOptionSelect) []agent.SessionMode {
+	items := selectItems(sel.Options)
+	out := make([]agent.SessionMode, 0, len(items))
+	for _, item := range items {
+		desc := ""
+		if item.Description != nil {
+			desc = *item.Description
+		}
+		out = append(out, agent.SessionMode{ID: string(item.Value), Name: item.Name, Description: desc})
+	}
+	return out
+}
+
+// modelsFromConfigOptions extracts the model picker from the agent's
+// session config options. ok is false when the agent advertises no
+// model choice.
+func modelsFromConfigOptions(opts []sdk.SessionConfigOption) (current string, models []agent.ModelInfo, ok bool) {
+	sel := selectByCategory(opts, modelConfigOptionID)
+	if sel == nil {
+		return "", nil, false
+	}
+	for _, item := range selectItems(sel.Options) {
+		models = append(models, agent.ModelInfo{ID: string(item.Value), Name: item.Name})
+	}
+	return string(sel.CurrentValue), models, true
 }
 
 // selectItems flattens a select's options, which the protocol allows to
