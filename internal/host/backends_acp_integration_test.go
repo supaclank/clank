@@ -67,20 +67,18 @@ func TestIntegration_CodexACP_ProvisionSpawnOpen(t *testing.T) {
 	}
 }
 
-// The opencode cutover gate (G-OC-RESUME): sessions must resume across
-// implementations in BOTH directions, because rollback is an env flip.
-// Bespoke (`opencode serve` + SDK) and ACP (`opencode acp`) share the
-// same binary and session store, so the external id is the bridge.
-// Sequential phases — production never runs both paths on one dir at
-// once (toggle = restart), and neither does this test.
-func TestIntegration_OpenCodeACP_CrossImplResume(t *testing.T) {
+// Resume must survive a full manager teardown (the daemon-restart
+// shape): a fresh supervisor + adapter process rebuilds the session
+// from the agent's own store via session/load. The bespoke↔ACP
+// cross-impl variant of this gate ran before the bespoke deletion (M2);
+// both directions passed against the shared session store.
+func TestIntegration_OpenCodeACP_ResumeAcrossProcesses(t *testing.T) {
 	if os.Getenv("CLANK_TEST_OPENCODE_ACP") == "" {
 		t.Skip("set CLANK_TEST_OPENCODE_ACP=1 to run against the real opencode binary")
 	}
 	if _, err := exec.LookPath("opencode"); err != nil {
 		t.Skip("opencode not on PATH")
 	}
-	// Real HOME on purpose: the user's opencode store IS the fixture.
 	// Fresh temp projects may have no usable model provider (e.g. only a
 	// revoked copilot login), so a real project dir can be supplied.
 	dir := os.Getenv("CLANK_TEST_OPENCODE_DIR")
@@ -105,16 +103,6 @@ func TestIntegration_OpenCodeACP_CrossImplResume(t *testing.T) {
 		}
 		t.Fatalf("%s: never reached idle", phase)
 	}
-	transcript := func(b agent.SessionBackend, phase string) []agent.MessageData {
-		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		msgs, err := b.Messages(ctx)
-		if err != nil {
-			t.Fatalf("%s: Messages: %v", phase, err)
-		}
-		return msgs
-	}
 	containsText := func(msgs []agent.MessageData, want string) bool {
 		for _, m := range msgs {
 			if strings.Contains(m.Content, want) {
@@ -129,92 +117,71 @@ func TestIntegration_OpenCodeACP_CrossImplResume(t *testing.T) {
 		return false
 	}
 
-	// Phase 1: bespoke creates a session and completes a turn.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	bespoke := host.NewOpenCodeBackendManager()
-	if err := bespoke.Init(ctx, func() ([]string, error) { return []string{dir}, nil }); err != nil {
-		t.Fatalf("bespoke Init: %v", err)
-	}
-	b1, err := bespoke.CreateBackend(ctx, agent.BackendInvocation{WorkDir: dir})
-	if err != nil {
-		t.Fatalf("bespoke CreateBackend: %v", err)
-	}
-	go func() {
-		for e := range b1.Events() {
-			t.Logf("bespoke event: %s %+v", e.Type, e.Data)
-		}
-	}()
-	sendCtx, sendCancel := context.WithTimeout(ctx, 60*time.Second)
-	if err := b1.OpenAndSend(sendCtx, agent.SendMessageOpts{Text: "Reply with exactly: XIMPL_A", Model: &agent.ModelOverride{ProviderID: "opencode", ModelID: "big-pickle"}}); err != nil {
-		sendCancel()
-		t.Fatalf("bespoke OpenAndSend: %v", err)
-	}
-	sendCancel()
-	waitIdle(b1, "bespoke turn")
-	ext := b1.SessionID()
-	if ext == "" {
-		t.Fatal("bespoke backend has no external id")
-	}
-	_ = b1.Stop()
-	bespoke.Shutdown() // sequential phases: no double server on one dir
 
-	// Phase 2: ACP resumes the bespoke-created session and continues it.
-	acpMgr, err := host.NewOpenCodeACPManager()
+	// Phase 1: create + complete a turn.
+	mgr1, err := host.NewOpenCodeACPManager()
 	if err != nil {
 		t.Fatalf("NewOpenCodeACPManager: %v", err)
 	}
-	acpMgr.Supervisor().SetReconcileInterval(50 * time.Millisecond)
-	if err := acpMgr.Init(ctx, func() ([]string, error) { return nil, nil }); err != nil {
-		t.Fatalf("acp Init: %v", err)
+	mgr1.Supervisor().SetReconcileInterval(50 * time.Millisecond)
+	if err := mgr1.Init(ctx, func() ([]string, error) { return nil, nil }); err != nil {
+		t.Fatalf("mgr1 Init: %v", err)
 	}
-	b2, err := acpMgr.CreateBackend(ctx, agent.BackendInvocation{WorkDir: dir, ResumeExternalID: ext})
+	b1, err := mgr1.CreateBackend(ctx, agent.BackendInvocation{WorkDir: dir})
 	if err != nil {
-		t.Fatalf("acp CreateBackend (resume): %v", err)
+		t.Fatalf("mgr1 CreateBackend: %v", err)
+	}
+	sendCtx, sendCancel := context.WithTimeout(ctx, 60*time.Second)
+	if err := b1.OpenAndSend(sendCtx, agent.SendMessageOpts{Text: "Reply with exactly: XPROC_A", Model: &agent.ModelOverride{ProviderID: "opencode", ModelID: "big-pickle"}}); err != nil {
+		sendCancel()
+		t.Fatalf("OpenAndSend: %v", err)
+	}
+	sendCancel()
+	waitIdle(b1, "first turn")
+	ext := b1.SessionID()
+	if ext == "" {
+		t.Fatal("no external id after first turn")
+	}
+	_ = b1.Stop()
+	mgr1.Shutdown()
+
+	// Phase 2: fresh manager (fresh adapter process) resumes + continues.
+	mgr2, err := host.NewOpenCodeACPManager()
+	if err != nil {
+		t.Fatalf("NewOpenCodeACPManager (2): %v", err)
+	}
+	mgr2.Supervisor().SetReconcileInterval(50 * time.Millisecond)
+	if err := mgr2.Init(ctx, func() ([]string, error) { return nil, nil }); err != nil {
+		t.Fatalf("mgr2 Init: %v", err)
+	}
+	defer mgr2.Shutdown()
+	b2, err := mgr2.CreateBackend(ctx, agent.BackendInvocation{WorkDir: dir, ResumeExternalID: ext})
+	if err != nil {
+		t.Fatalf("mgr2 CreateBackend (resume): %v", err)
 	}
 	openCtx, openCancel := context.WithTimeout(ctx, 60*time.Second)
 	if err := b2.Open(openCtx); err != nil {
 		openCancel()
-		t.Fatalf("acp Open (resume bespoke session): %v", err)
+		t.Fatalf("Open (resume): %v", err)
 	}
 	openCancel()
-	msgs := transcript(b2, "acp resume")
-	if !containsText(msgs, "XIMPL_A") {
-		t.Fatalf("acp replay lost the bespoke turn; got %d messages", len(msgs))
+	msgCtx, msgCancel := context.WithTimeout(ctx, 30*time.Second)
+	msgs, err := b2.Messages(msgCtx)
+	msgCancel()
+	if err != nil {
+		t.Fatalf("Messages after resume: %v", err)
+	}
+	if !containsText(msgs, "XPROC_A") {
+		t.Fatalf("resume lost the first turn; got %d messages", len(msgs))
 	}
 	sendCtx2, sendCancel2 := context.WithTimeout(ctx, 60*time.Second)
-	if err := b2.Send(sendCtx2, agent.SendMessageOpts{Text: "Reply with exactly: XIMPL_B", Model: &agent.ModelOverride{ProviderID: "opencode", ModelID: "big-pickle"}}); err != nil {
+	if err := b2.Send(sendCtx2, agent.SendMessageOpts{Text: "Reply with exactly: XPROC_B", Model: &agent.ModelOverride{ProviderID: "opencode", ModelID: "big-pickle"}}); err != nil {
 		sendCancel2()
-		t.Fatalf("acp Send after cross-impl resume: %v", err)
+		t.Fatalf("Send after resume: %v", err)
 	}
 	sendCancel2()
-	waitIdle(b2, "acp follow-up turn")
-	if msgs = transcript(b2, "acp after follow-up"); !containsText(msgs, "XIMPL_B") {
-		t.Fatal("acp follow-up reply missing")
-	}
+	waitIdle(b2, "follow-up turn")
 	_ = b2.Stop()
-	acpMgr.Shutdown()
-
-	// Phase 3 (rollback direction): bespoke resumes the ACP-continued
-	// session and sees both turns.
-	bespoke2 := host.NewOpenCodeBackendManager()
-	if err := bespoke2.Init(ctx, func() ([]string, error) { return []string{dir}, nil }); err != nil {
-		t.Fatalf("bespoke2 Init: %v", err)
-	}
-	defer bespoke2.Shutdown()
-	b3, err := bespoke2.CreateBackend(ctx, agent.BackendInvocation{WorkDir: dir, ResumeExternalID: ext})
-	if err != nil {
-		t.Fatalf("bespoke CreateBackend (resume acp session): %v", err)
-	}
-	openCtx3, openCancel3 := context.WithTimeout(ctx, 60*time.Second)
-	if err := b3.Open(openCtx3); err != nil {
-		openCancel3()
-		t.Fatalf("bespoke Open (rollback resume): %v", err)
-	}
-	openCancel3()
-	msgs = transcript(b3, "bespoke rollback resume")
-	if !containsText(msgs, "XIMPL_A") || !containsText(msgs, "XIMPL_B") {
-		t.Fatalf("rollback resume lost turns (A=%v B=%v)", containsText(msgs, "XIMPL_A"), containsText(msgs, "XIMPL_B"))
-	}
-	_ = b3.Stop()
 }

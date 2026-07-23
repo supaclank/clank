@@ -115,26 +115,28 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
 
 ### Revert / fork — backend-specific
 
-- **[OP-005] (MUST)** **Revert** is supported on the two bespoke backends — Claude since
-  clank #68 (2026-06-21: file rollback + transcript truncation), OpenCode via its session
-  revert marker — and **unsupported on ACP-served backends** (`codex` today; approved cut).
-  **Fork** is capability-dependent: OpenCode supports it; Claude and Codex do not. Semantics a
-  client MUST respect: (1) Claude revert **requires** a non-empty `message_id`; OpenCode
-  additionally treats an **empty** `message_id` as *clear the revert marker* (un-revert).
-  (2) The host does **not** gate by backend — `RevertSession`/`ForkSession` call straight
-  through — but **(0.5.0)** an unsupported operation now returns a **typed error**:
+- **[OP-005] (MUST)** **Revert** is **Claude-only** since M2: the bespoke Claude backend
+  keeps it (clank #68: file rollback + transcript truncation, non-empty `message_id`
+  required); OpenCode lost it with the ACP cutover (approved cut — its bespoke
+  revert-marker semantics went with the bespoke backend), and Codex never had it.
+  **Fork** is capability-dependent: OpenCode supports it (ACP unstable `session/fork`,
+  tip-only — a mid-history `message_id` is refused); Claude and Codex do not.
+  The host does **not** gate by backend — `RevertSession`/`ForkSession` call straight
+  through — but **(0.5.0)** an unsupported operation returns a **typed error**:
   `501 {code: "unsupported"}` instead of the old opaque 500 (mapped back to
   `agent.ErrUnsupported` for in-process clients). A client MUST handle `unsupported`
-  gracefully — hide or soft-disable the affordance — never surface it as a generic failure. Revert's effect is observed via the `revert`
+  gracefully — hide or soft-disable the affordance — never surface it as a generic failure;
+  the TUI hides revert on non-Claude backends. Revert's effect is observed via the `revert`
   event + a messages refetch filtered by `revert_message_id`
   ([STATE-REVERT-001](06-state-model.md)); the call returns `204`. **Why:** an earlier draft of
   this rule wrongly said revert was Claude-only — it has worked on both since #68, yet the RN
   client still hides it on Claude (now stale); hiding revert where it works, or offering fork
   where it errors, both produce missing/confusing affordances. **Golden:**
   `internal/agent/claude.go:634` (Claude `Revert`), `:794` (Claude `Fork` errors),
-  `internal/agent/opencode.go:227` (OpenCode `Revert`), `:247` (OpenCode `Fork`),
-  `internal/host/service.go:1099` (`RevertSession` — no backend gate),
-  `internal/tui/sessionview.go:1334` (TUI offers revert on user messages, fork on any — ungated).
+  `internal/agent/acp/backend_history.go` (ACP `Fork` capability-gated tip-only;
+  `Revert` → `ErrUnsupported`), `internal/host/service.go:1099` (`RevertSession` — no
+  backend gate), `internal/tui/sessionview.go` (revert offered on Claude only; fork on any,
+  501-tolerant).
 
 ### Messages — `GET /sessions/{id}/messages`
 

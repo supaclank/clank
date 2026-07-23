@@ -110,8 +110,8 @@ parse the `AskUserQuestion` tool-call part input by tool name.
 
 ```
 C: user picks "revert to this message" (id:M)
-C: POST /sessions/{id}/revert {message_id:M}     ── both backends [OP-005]
-H: rolls files back + truncates transcript at M  ── claude.go:634 / opencode.go:227
+C: POST /sessions/{id}/revert {message_id:M}     ── Claude only since M2 [OP-005]
+H: rolls files back + truncates transcript at M  ── claude.go:634
 H→C: 204
 H→C: revert {message_id:M}                        ── [STATE-REVERT-001]
 C: set revert_message_id=M; prefill composer with M's prompt; refetch messages

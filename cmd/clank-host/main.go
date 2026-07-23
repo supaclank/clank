@@ -368,8 +368,10 @@ func run(cfg runConfig) error {
 	if err != nil {
 		return fmt.Errorf("--acp-backends: %w", err)
 	}
+	// opencode has no bespoke path anymore (M2 complete) — it is served
+	// only when listed in --acp-backends; claude-code keeps its bespoke
+	// manager until M3.
 	backendManagers := map[agent.BackendType]agent.BackendManager{
-		agent.BackendOpenCode:   host.NewOpenCodeBackendManager(),
 		agent.BackendClaudeCode: host.NewClaudeBackendManager(),
 	}
 	for _, bt := range acpSet {

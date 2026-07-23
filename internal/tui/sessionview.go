@@ -1405,7 +1405,9 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.menuMessageContent = entry.content
 				m.showMenu = true
 				var items []actionMenuItem
-				if entry.kind == entryUser {
+				// Revert is Claude-only since the ACP cutover (OP-005) —
+				// hide it where the host would 501.
+				if entry.kind == entryUser && m.info != nil && m.info.Backend == agent.BackendClaudeCode {
 					items = append(items, actionMenuItem{label: "Revert to this message", key: "r", action: "revert"})
 				}
 				items = append(items, actionMenuItem{label: "Fork from here", key: "f", action: "fork"})

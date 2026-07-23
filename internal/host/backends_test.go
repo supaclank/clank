@@ -13,14 +13,6 @@ import (
 	"github.com/acksell/clank/internal/host"
 )
 
-func TestOpenCodeBackendManagerCreateBackend(t *testing.T) {
-	t.Parallel()
-	// Smoke test: creating an OpenCodeBackendManager should not panic.
-	mgr := host.NewOpenCodeBackendManager()
-	defer mgr.Shutdown()
-	_ = mgr
-}
-
 func TestClaudeBackendManagerCreateBackend(t *testing.T) {
 	t.Parallel()
 	mgr := host.NewClaudeBackendManager()

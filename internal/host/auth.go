@@ -178,8 +178,8 @@ type flowState struct {
 type AuthManager struct {
 	homeDir string
 
-	// restart triggers a full OpenCode server restart after a
-	// credential write. Wired to OpenCodeBackendManager.RestartAllServers
+	// restart cycles opencode after a credential write (auth.json is
+	// read at process start). Wired to the ACP supervisor's RestartAll
 	// at construction; tests inject a stub.
 	restart func(ctx context.Context) error
 

@@ -28,9 +28,10 @@ the tag is re-derived from the transcript).
   `{ answers: [{selected?[], custom?}] }` (one per question, in order; an all-empty answer
   delegates that question) or `{ reject: true }` to dismiss. The **backend** owns translating
   answers to the provider transport (Claude: permission-deny message while parked, follow-up
-  send after auto-run; OpenCode: its structured question API) — clients never format answer
-  text themselves. **Golden:** `internal/agent/claude_permissions.go` (`RespondQuestion`),
-  `internal/agent/opencode_questions.go`, `internal/tui/sessionview_question.go`.
+  send after auto-run; OpenCode's structured question API went with its bespoke backend at
+  M2 — ACP-served backends never emit question tags) — clients never format answer text
+  themselves. **Golden:** `internal/agent/claude_permissions.go` (`RespondQuestion`),
+  `internal/tui/sessionview_question.go`.
   **Conformance:** `CONF-QUESTION-TAG`.
 
 - **[QST-002] (MUST — answerability is positional)** A tagged part is **awaiting an answer**

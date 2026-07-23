@@ -182,6 +182,7 @@ single biggest source of cross-client divergence.
   fresh session — the streamed part entry, the shell's `content` appended as a text entry,
   and its parts re-added — the first ACP dogfood bug. The full transcript is only ever read
   via `GET /sessions/{id}/messages`. **Golden:** `internal/agent/acp/reducer.go`
-  (`commitTurn` shell emission), `internal/agent/opencode.go:734` (bespoke shells),
-  `internal/tui/sessionview.go:1615` (`handleMessage` shell handling). Regression:
-  `TestBackend_TurnLifecycle` (`internal/agent/acp/backend_test.go`).
+  (`commitTurn` shell emission; the bespoke opencode backend emitted the same shells until
+  its M2 removal — see git history), `internal/tui/sessionview.go:1615` (`handleMessage`
+  shell handling). Regression: `TestBackend_TurnLifecycle`
+  (`internal/agent/acp/backend_test.go`).

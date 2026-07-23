@@ -274,13 +274,9 @@ func New(opts Options) *Service {
 	// Anthropic credentials just sit in env vars consumed by the next
 	// claude spawn, no in-place reload needed.
 	var restart func(ctx context.Context) error
-	if oc, ok := s.backendManagers[agent.BackendOpenCode].(*OpenCodeBackendManager); ok {
-		restart = func(ctx context.Context) error {
-			return oc.ServerManager().RestartAllServers(ctx)
-		}
-	} else if am, ok := s.backendManagers[agent.BackendOpenCode].(*ACPBackendManager); ok {
-		// ACP-served opencode: credentials still land in opencode's own
-		// auth.json (read at process start), so cycle the adapters.
+	if am, ok := s.backendManagers[agent.BackendOpenCode].(*ACPBackendManager); ok {
+		// Credentials land in opencode's own auth.json (read at process
+		// start), so cycle the adapters on writes.
 		restart = func(context.Context) error {
 			am.Supervisor().RestartAll()
 			return nil
@@ -702,17 +698,6 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	// Sole drain on b.Events(); subscribers fan out to SSE handlers.
 	s.wg.Add(1)
 	go s.relayBackendEvents(sessionID, b)
-
-	// Per-session serverURL is OpenCode-only; CreateBackend already
-	// ensured a server exists for workDir.
-	if oc, ok := mgr.(*OpenCodeBackendManager); ok {
-		for _, srv := range oc.ListServers() {
-			if srv.ProjectDir == workDir {
-				info.ServerURL = srv.URL
-				break
-			}
-		}
-	}
 
 	return b, info, nil
 }
