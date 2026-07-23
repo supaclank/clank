@@ -2,6 +2,7 @@ package host_test
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -237,5 +238,81 @@ func TestACPBackendManager_ProbesOncePerDirToFillCatalog(t *testing.T) {
 	}
 	if got := sessions.Load(); got != 1 {
 		t.Errorf("warm reads opened %d sessions, want no new ones", got)
+	}
+}
+
+// A transient probe failure (adapter not ready, timeout) must not
+// permanently brick the picker: only a successful probe may mark a dir
+// as probed, so the next caller gets to retry.
+func TestACPBackendManager_ProbeFailureRetriesInsteadOfPermanentlyEmptyingCatalog(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // installGuidanceSkills writes under $HOME
+
+	mgr, err := host.NewCodexACPManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewCodexACPManager: %v", err)
+	}
+	category := sdk.SessionConfigOptionCategory("model")
+	var attempts atomic.Int64
+	scripted := func(string) *acptest.ScriptedAgent {
+		a := &acptest.ScriptedAgent{}
+		a.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+			if attempts.Add(1) == 1 {
+				return sdk.NewSessionResponse{}, errors.New("adapter not ready yet")
+			}
+			return sdk.NewSessionResponse{
+				SessionId: "probe-2",
+				ConfigOptions: []sdk.SessionConfigOption{{Select: &sdk.SessionConfigOptionSelect{
+					Id: "model", Name: "Model", Category: &category, CurrentValue: "gpt-5.2-codex",
+					Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+						{Value: "gpt-5.2-codex", Name: "GPT-5.2 Codex"},
+					}},
+				}}},
+			}, nil
+		}
+		return a
+	}
+	mgr.Supervisor().SetSpawnFunc(acptest.SpawnFunc(scripted, acpx.CodexProfile("bun", "entry", nil), t.Logf))
+	mgr.Supervisor().SetReconcileInterval(20 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := mgr.Init(ctx, func() ([]string, error) { return nil, nil }); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer mgr.Shutdown()
+
+	workDir := t.TempDir()
+
+	// First probe fails: catalog stays empty, but the dir must NOT be
+	// marked probed — otherwise it's stuck empty for the daemon's lifetime.
+	models, err := mgr.ListModels(ctx, workDir)
+	if err != nil {
+		t.Fatalf("ListModels (failed probe): %v", err)
+	}
+	if len(models) != 0 {
+		t.Fatalf("ListModels after failed probe = %+v, want empty", models)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("attempts after first call = %d, want 1", got)
+	}
+
+	// Second call retries the probe and succeeds.
+	models, err = mgr.ListModels(ctx, workDir)
+	if err != nil {
+		t.Fatalf("ListModels (retried probe): %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "gpt-5.2-codex" {
+		t.Fatalf("ListModels after retried probe = %+v, want the agent's advertised catalog", models)
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("attempts after retried call = %d, want 2 (probe must retry after a failure)", got)
+	}
+
+	// Warm dir now: served from the catalog, no further probe attempts.
+	if _, err := mgr.ListModels(ctx, workDir); err != nil {
+		t.Fatalf("ListModels (warm): %v", err)
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Errorf("warm read after success made %d attempts, want no new ones", got)
 	}
 }

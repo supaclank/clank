@@ -383,12 +383,15 @@ func (m *ACPBackendManager) ensureCatalog(ctx context.Context, projectDir string
 	m.probing[projectDir] = done
 	m.catalogMu.Unlock()
 
+	succeeded := false
 	defer func() {
 		m.catalogMu.Lock()
-		if m.probed == nil {
-			m.probed = make(map[string]bool)
+		if succeeded {
+			if m.probed == nil {
+				m.probed = make(map[string]bool)
+			}
+			m.probed[projectDir] = true
 		}
-		m.probed[projectDir] = true
 		delete(m.probing, projectDir)
 		m.catalogMu.Unlock()
 		close(done)
@@ -402,7 +405,10 @@ func (m *ACPBackendManager) ensureCatalog(ctx context.Context, projectDir string
 	// Open publishes modes + models to the sinks CreateBackend wired.
 	if err := b.Open(ctx); err != nil {
 		log.Printf("[%s] catalog probe for %s: %v", m.profile.ID, projectDir, err)
+		_ = b.Stop()
+		return
 	}
+	succeeded = true
 	_ = b.Stop()
 }
 
