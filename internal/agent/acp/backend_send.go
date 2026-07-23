@@ -140,6 +140,12 @@ func (b *Backend) Abort(ctx context.Context) error {
 // cases, an already-Dead status means watchConn saw the transport die
 // first — the error is just that same death observed from runTurns'
 // side, and StatusError must not regress a Dead session back to Error.
+//
+// TODO(ai-review): this only swallows when watchConn already won the race
+// to set StatusDead; if runTurns' Prompt error lands first, status flips
+// Busy->Error->Dead instead of Busy->Dead (transient, self-correcting, but
+// a spurious EventError reaches the caller). Closing it needs both sides
+// to key off conn.Closed() directly instead of lock-ordering. https://github.com/Acksell/clank/pull/185
 func (b *Backend) shouldSwallowPromptErrLocked(aborting bool) bool {
 	return aborting || b.stopping || b.status == agent.StatusDead
 }
