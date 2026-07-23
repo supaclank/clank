@@ -342,9 +342,11 @@ func (r *reducer) messageCount() int { return len(r.messages) }
 
 // rollbackReplay discards messages/turn state accumulated by a failed
 // session/load, so a retried Open on the same Backend doesn't duplicate
-// history when the adapter replays it again from the start.
-func (r *reducer) rollbackReplay(preLoadCount int) {
+// history when the adapter replays it again from the start. turnSeq
+// rewinds too, keeping minted message IDs deterministic across retries.
+func (r *reducer) rollbackReplay(preLoadCount, preTurnSeq int) {
 	r.messages = r.messages[:preLoadCount]
+	r.turnSeq = preTurnSeq
 	r.cur = nil
 	r.replayUser = nil
 	r.replaying = false

@@ -74,6 +74,7 @@ func (b *Backend) Open(ctx context.Context) error {
 		b.mu.Lock()
 		b.red.setSessionID(resume)
 		preLoadCount := b.red.messageCount()
+		preTurnSeq := b.red.turnSeq
 		b.red.replaying = true
 		b.mu.Unlock()
 
@@ -86,7 +87,7 @@ func (b *Backend) Open(ctx context.Context) error {
 		if err != nil {
 			// Updates may have streamed in before the RPC failed; discard
 			// them so a retried Open doesn't duplicate replayed history.
-			b.red.rollbackReplay(preLoadCount)
+			b.red.rollbackReplay(preLoadCount, preTurnSeq)
 		} else {
 			b.red.finishReplay()
 		}

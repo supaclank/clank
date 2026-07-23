@@ -540,6 +540,11 @@ func TestBackend_FailedLoadSession_RetryDoesNotDuplicateMessages(t *testing.T) {
 	if fmt.Sprint(roles) != "[user assistant]" {
 		t.Fatalf("post-retry replayed roles = %v, want [user assistant] (no duplicates from the failed attempt)", roles)
 	}
+	// turnSeq rewinds with the rollback: the retry mints the same
+	// deterministic message IDs a first-try replay would have.
+	if msgs[1].ID != "ses-resume-retry:t1" {
+		t.Errorf("post-retry assistant message ID = %q, want ses-resume-retry:t1", msgs[1].ID)
+	}
 }
 
 func TestBackend_LateUpdates_DrainedIntoTurnThenDroppedAfterIdle(t *testing.T) {
