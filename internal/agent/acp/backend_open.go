@@ -61,10 +61,7 @@ func (b *Backend) Open(ctx context.Context) error {
 		b.mu.Lock()
 		b.sessionID = sid
 		b.red.setSessionID(sid)
-		if ns.Modes != nil {
-			b.currentMode = string(ns.Modes.CurrentModeId)
-			b.availableModes = modesFromState(ns.Modes)
-		}
+		b.applySessionStateLocked(ns.Modes, ns.ConfigOptions)
 		b.mu.Unlock()
 
 		if b.initialMode != "" {
@@ -79,12 +76,19 @@ func (b *Backend) Open(ctx context.Context) error {
 		b.red.replaying = true
 		b.mu.Unlock()
 
-		_, err := conn.Conn().LoadSession(ctx, sdk.LoadSessionRequest{
+		loaded, err := conn.Conn().LoadSession(ctx, sdk.LoadSessionRequest{
 			SessionId:  sdk.SessionId(resume),
 			Cwd:        b.workDir,
 			McpServers: []sdk.McpServer{},
 		})
 		b.mu.Lock()
+		if err == nil {
+			// session/load carries the same modes + config options as
+			// session/new. Skipping them here left every RESUMED session
+			// with no mode picker and no model list — i.e. almost every
+			// session a user opens from the inbox.
+			b.applySessionStateLocked(loaded.Modes, loaded.ConfigOptions)
+		}
 		if err != nil {
 			// Updates may have streamed in before the RPC failed; discard
 			// them so a retried Open doesn't duplicate replayed history.
@@ -158,6 +162,74 @@ func (b *Backend) Modes() (string, []agent.SessionMode) {
 		b.currentMode = m
 	}
 	return b.currentMode, slices.Clone(b.availableModes)
+}
+
+// applySessionStateLocked records the agent-advertised session state that
+// every open path returns: modes (the mode picker) and config options
+// (the model picker). Callers hold b.mu.
+func (b *Backend) applySessionStateLocked(modes *sdk.SessionModeState, opts []sdk.SessionConfigOption) {
+	if modes != nil {
+		b.currentMode = string(modes.CurrentModeId)
+		b.availableModes = modesFromState(modes)
+	}
+	if current, models, ok := modelsFromConfigOptions(opts); ok {
+		b.currentModel = current
+		b.availableModels = models
+	}
+	if b.onCatalog != nil && len(b.availableModels) > 0 {
+		b.onCatalog(b.workDir, b.availableModels)
+	}
+}
+
+// modelsFromConfigOptions extracts the model picker from the agent's
+// session config options: the select option whose category is "model"
+// (falling back to the conventional "model" id). ok is false when the
+// agent advertises no model choice.
+func modelsFromConfigOptions(opts []sdk.SessionConfigOption) (current string, models []agent.ModelInfo, ok bool) {
+	for _, o := range opts {
+		sel := o.Select
+		if sel == nil {
+			continue
+		}
+		isModel := string(sel.Id) == modelConfigOptionID
+		if sel.Category != nil {
+			isModel = string(*sel.Category) == modelConfigOptionID
+		}
+		if !isModel {
+			continue
+		}
+		for _, item := range selectItems(sel.Options) {
+			models = append(models, agent.ModelInfo{
+				ID:   string(item.Value),
+				Name: item.Name,
+			})
+		}
+		return string(sel.CurrentValue), models, true
+	}
+	return "", nil, false
+}
+
+// selectItems flattens a select's options, which the protocol allows to
+// be either a flat list or grouped under headers.
+func selectItems(o sdk.SessionConfigSelectOptions) []sdk.SessionConfigSelectOption {
+	if o.Ungrouped != nil {
+		return *o.Ungrouped
+	}
+	var out []sdk.SessionConfigSelectOption
+	if o.Grouped != nil {
+		for _, g := range *o.Grouped {
+			out = append(out, g.Options...)
+		}
+	}
+	return out
+}
+
+// Models implements agent.ModelReporter: the agent-advertised model
+// choices for this session plus the active one.
+func (b *Backend) Models() (string, []agent.ModelInfo) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.currentModel, slices.Clone(b.availableModels)
 }
 
 // modesFromState maps the SDK mode state onto clank's agent-owned type.

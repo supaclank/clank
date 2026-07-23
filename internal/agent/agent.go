@@ -486,6 +486,14 @@ type ModeReporter interface {
 	Modes() (currentID string, available []SessionMode)
 }
 
+// ModelReporter is implemented by backends whose agent advertises a model
+// choice for the session. Stamped onto runtime SessionInfo alongside
+// modes so a client can render the picker (and the active model) without
+// a second round trip.
+type ModelReporter interface {
+	Models() (currentID string, available []ModelInfo)
+}
+
 // SessionInfo is a snapshot of a managed session, returned by the daemon API.
 type SessionInfo struct {
 	ID              string            `json:"id"`
@@ -505,6 +513,8 @@ type SessionInfo struct {
 	ServerURL       string            `json:"server_url,omitempty"`        // Runtime-only: backend server URL (e.g. OpenCode serve endpoint). Not persisted.
 	CurrentModeID   string            `json:"current_mode_id,omitempty"`   // Runtime-only: the agent-owned session mode currently active. Not persisted.
 	AvailableModes  []SessionMode     `json:"available_modes,omitempty"`   // Runtime-only: agent-advertised modes for the picker. Not persisted.
+	CurrentModelID  string            `json:"current_model_id,omitempty"`  // Runtime-only: the agent-selected model for this session. Not persisted.
+	AvailableModels []ModelInfo       `json:"available_models,omitempty"`  // Runtime-only: agent-advertised models for the picker. Not persisted.
 	IsRemote        bool              `json:"is_remote,omitempty"`         // Runtime-only: decoration stamped by the laptop daemon's session router when this session's worktree is owned by the active remote. Always false on direct host responses; populated by gateway routing.
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`

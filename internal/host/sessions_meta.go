@@ -71,6 +71,9 @@ func (s *Service) GetSessionMetadata(ctx context.Context, id string) (agent.Sess
 		if mr, ok := b.(agent.ModeReporter); ok {
 			info.CurrentModeID, info.AvailableModes = mr.Modes()
 		}
+		if mr, ok := b.(agent.ModelReporter); ok {
+			info.CurrentModelID, info.AvailableModels = mr.Models()
+		}
 	}
 	return info, nil
 }

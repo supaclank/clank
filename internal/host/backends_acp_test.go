@@ -81,3 +81,76 @@ func TestACPBackendManager_CreateOpenSendAndDiscover(t *testing.T) {
 		t.Errorf("snapshot = %+v", s)
 	}
 }
+
+// The manager MUST implement agent.ModelLister: Service.ListModels type-
+// asserts it and silently returns nil otherwise, which is exactly how
+// every backend shipped with an empty model picker.
+func TestACPBackendManager_ImplementsModelLister(t *testing.T) {
+	t.Parallel()
+	mgr, err := host.NewCodexACPManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewCodexACPManager: %v", err)
+	}
+	if _, ok := any(mgr).(agent.ModelLister); !ok {
+		t.Fatal("ACPBackendManager does not implement agent.ModelLister — /models will return nil for every ACP backend")
+	}
+}
+
+// A session's advertised models must reach ListModels for its project dir.
+func TestACPBackendManager_ListModelsServesSessionCatalog(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // installGuidanceSkills writes under $HOME
+
+	mgr, err := host.NewCodexACPManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewCodexACPManager: %v", err)
+	}
+	category := sdk.SessionConfigOptionCategory("model")
+	scripted := func(string) *acptest.ScriptedAgent {
+		a := &acptest.ScriptedAgent{}
+		a.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+			return sdk.NewSessionResponse{
+				SessionId: "s-1",
+				ConfigOptions: []sdk.SessionConfigOption{{Select: &sdk.SessionConfigOptionSelect{
+					Id: "model", Name: "Model", Category: &category, CurrentValue: "gpt-5.2-codex",
+					Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+						{Value: "gpt-5.2-codex", Name: "GPT-5.2 Codex"},
+					}},
+				}}},
+			}, nil
+		}
+		return a
+	}
+	mgr.Supervisor().SetSpawnFunc(acptest.SpawnFunc(scripted, acpx.CodexProfile("bun", "entry", nil), t.Logf))
+	mgr.Supervisor().SetReconcileInterval(20 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := mgr.Init(ctx, func() ([]string, error) { return nil, nil }); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer mgr.Shutdown()
+
+	workDir := t.TempDir()
+	if models, err := mgr.ListModels(ctx, workDir); err != nil || len(models) != 0 {
+		t.Fatalf("ListModels before any session = %v/%v, want empty (no session has reported yet)", models, err)
+	}
+
+	b, err := mgr.CreateBackend(ctx, agent.BackendInvocation{WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("CreateBackend: %v", err)
+	}
+	defer func() { _ = b.Stop() }()
+	openCtx, openCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer openCancel()
+	if err := b.Open(openCtx); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	models, err := mgr.ListModels(ctx, workDir)
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "gpt-5.2-codex" || models[0].Name != "GPT-5.2 Codex" {
+		t.Fatalf("ListModels after session open = %+v, want the agent-advertised catalog", models)
+	}
+}

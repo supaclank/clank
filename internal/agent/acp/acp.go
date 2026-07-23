@@ -19,6 +19,11 @@ const (
 	ScopePerDir
 )
 
+// modelConfigOptionID is the ACP session-config option that carries the
+// model picker — matched on the semantic category, with the id as a
+// fallback for agents that omit the category.
+const modelConfigOptionID = "model"
+
 const (
 	// defaultReconcileEvery matches OpenCodeServerManager's cadence.
 	defaultReconcileEvery = 5 * time.Second

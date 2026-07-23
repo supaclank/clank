@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -797,6 +798,12 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if modes, sel, ok := modesFromInfo(m.info); ok {
 				m.modes, m.selectedMode = modes, sel
 			}
+			if len(m.info.AvailableModels) > 0 {
+				m.models = m.info.AvailableModels
+				m.selectedModel = slices.IndexFunc(m.models, func(mi agent.ModelInfo) bool {
+					return mi.ID == m.info.CurrentModelID
+				})
+			}
 			switch m.info.Backend {
 			case agent.BackendOpenCode:
 				// Selected agent is matched against the fetched list in agentsResultMsg.
@@ -847,6 +854,16 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionMessagesMsg:
 		m.handleSessionMessages(msg.messages)
+		// The opening info fetch races the backend coming live: it runs in
+		// parallel with this message fetch, and it is the message fetch
+		// that rehydrates the backend. Runtime-only fields (agent-owned
+		// modes and models) are therefore empty on that first response —
+		// re-fetch now that a backend exists, or the picker shows nothing
+		// (and a client with a legacy fallback shows a stale hardcoded
+		// list instead of what the agent advertises).
+		if m.info != nil && len(m.info.AvailableModes) == 0 && len(m.info.AvailableModels) == 0 {
+			return m, m.fetchSessionInfo()
+		}
 		return m, nil
 
 	case pendingPermissionMsg:
