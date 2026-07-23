@@ -352,6 +352,66 @@ func TestSupervisor_RestartAllRespawns(t *testing.T) {
 	}
 }
 
+// RestartAll's Stop can block for stopGrace (a real process's shutdown
+// latency). A concurrent ticker-driven reconcile must not see the scope
+// as missing and spawn a duplicate while the old adapter is still
+// stopping — s.procs must stay populated with the (dying) old entry
+// until reconcile's own liveness check retires it.
+func TestSupervisor_RestartAllDoesNotRaceReconcile(t *testing.T) {
+	t.Parallel()
+	profile := testProfile(acpx.ScopeHost, nil)
+	sup, err := acpx.NewAdapterSupervisor(profile, t.Logf)
+	if err != nil {
+		t.Fatalf("NewAdapterSupervisor: %v", err)
+	}
+
+	var spawns atomic.Int64
+	inner := acptest.SpawnFunc(func(string) *acptest.ScriptedAgent {
+		return &acptest.ScriptedAgent{}
+	}, profile, t.Logf)
+	sup.SetSpawnFunc(func(ctx context.Context, scopeDir string) (*acpx.AdapterProc, error) {
+		spawns.Add(1)
+		p, err := inner(ctx, scopeDir)
+		if err != nil {
+			return nil, err
+		}
+		innerStop := p.Stop
+		// Simulate a real process's shutdown latency (SIGINT + wait),
+		// widening the window a naive RestartAll would leave open.
+		p.Stop = func() {
+			time.Sleep(60 * time.Millisecond)
+			innerStop()
+		}
+		return p, nil
+	})
+	sup.SetReconcileInterval(5 * time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sup.Run(ctx)
+
+	callCtx, callCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer callCancel()
+	if _, err := sup.GetConn(callCtx, ""); err != nil {
+		t.Fatalf("GetConn: %v", err)
+	}
+	if got := spawns.Load(); got != 1 {
+		t.Fatalf("spawns before restart = %d, want 1", got)
+	}
+
+	go sup.RestartAll()
+	// Several reconcile ticks land during the old adapter's Stop delay;
+	// none of them should have spawned a replacement yet.
+	time.Sleep(25 * time.Millisecond)
+	if got := spawns.Load(); got != 1 {
+		t.Errorf("spawns mid-restart = %d, want 1 — reconcile spawned a duplicate while the old adapter was still stopping", got)
+	}
+
+	time.Sleep(150 * time.Millisecond) // let the delayed Stop finish and reconcile catch up
+	if got := spawns.Load(); got != 2 {
+		t.Errorf("spawns after restart settled = %d, want 2", got)
+	}
+}
+
 func TestSupervisor_StopAllFailsWaitersAndConns(t *testing.T) {
 	t.Parallel()
 	f := newSupFixture(t, acpx.ScopePerDir, nil)

@@ -279,6 +279,12 @@ func (s *AdapterSupervisor) profileEnv(scopeDir string) map[string]string {
 // so the reconciler respawns them with fresh Prepare/Env — the ACP
 // analog of OpenCode's restart-on-credential-write. Backends observe the
 // transport loss, go dead, and rehydrate lazily via ensureBackend.
+//
+// s.procs is left untouched (not cleared) until reconcile's own
+// liveness check retires each entry — Stop can block for stopGrace,
+// and clearing early would let a concurrent ticker-driven reconcile
+// see the scope as missing and spawn a duplicate while the old
+// process is still shutting down.
 func (s *AdapterSupervisor) RestartAll() {
 	s.mu.Lock()
 	if s.stopped {
@@ -286,7 +292,6 @@ func (s *AdapterSupervisor) RestartAll() {
 		return
 	}
 	procs := maps.Clone(s.procs)
-	s.procs = make(map[string]*AdapterProc)
 	s.mu.Unlock()
 
 	for _, p := range procs {
