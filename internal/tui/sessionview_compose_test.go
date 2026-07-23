@@ -359,6 +359,23 @@ func TestCompose_InitFetchesModes(t *testing.T) {
 	t.Fatalf("Init() never dispatched fetchModes(); mode picker stays empty on first compose open, got msgs %#v", msgs)
 }
 
+// ACP backends have no agent.AgentLister, so fetchAgents() always answers
+// empty for them — Init() dispatched it unconditionally for every backend
+// anyway (unlike applyBackend/applyProjectFolder, which gate it to
+// BackendOpenCode), costing every claude/codex compose-open a wasted RPC.
+func TestCompose_InitDoesNotFetchAgentsForACPBackend(t *testing.T) {
+	t.Parallel()
+	m := newSessionViewComposingWithBackend(nil, "", agent.BackendClaudeCode)
+	m.width, m.height = 80, 40
+
+	msgs := flattenCmdMsgs(m.Init())
+	for _, msg := range msgs {
+		if _, ok := msg.(agentsResultMsg); ok {
+			t.Fatalf("Init() dispatched fetchAgents() for BackendClaudeCode; ACP has no AgentLister, got msgs %#v", msgs)
+		}
+	}
+}
+
 // applyProjectFolder had the same gap as Init(): switching the compose
 // project folder refreshed models but never modes, so an ACP backend's mode
 // picker went stale after a folder change.

@@ -549,7 +549,13 @@ func (m *SessionViewModel) SetEventChannel(ch <-chan agent.Event, cancel context
 func (m *SessionViewModel) Init() tea.Cmd {
 	// In composing mode, no session exists yet — nothing to subscribe to.
 	if m.composing {
-		return tea.Batch(m.input.Focus(), m.fetchAgents(), m.fetchModels(), m.fetchModes())
+		cmds := []tea.Cmd{m.input.Focus(), m.fetchModels(), m.fetchModes()}
+		if m.backend == agent.BackendOpenCode {
+			// OpenCode has no agent.ModeLister; its mode picker is populated via
+			// fetchAgents (see applyBackend/applyProjectFolder), not fetchModes.
+			cmds = append(cmds, m.fetchAgents())
+		}
+		return tea.Batch(cmds...)
 	}
 	cmds := []tea.Cmd{m.fetchSessionInfo(), m.fetchSessionMessages(), m.fetchPendingPermission(), m.spinner.Tick}
 	if m.eventsCh != nil {
