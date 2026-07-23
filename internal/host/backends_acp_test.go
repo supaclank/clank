@@ -16,6 +16,32 @@ import (
 	sdk "github.com/coder/acp-go-sdk"
 )
 
+// The codex manager exposes its login ceremony (device auth needs the
+// pinned codex CLI); a generic profile manager exposes none.
+func TestACPBackendManager_LoginArgvOnlyForCodex(t *testing.T) {
+	t.Parallel()
+	codexMgr, err := host.NewCodexACPManager(host.ACPDirs{Tools: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewCodexACPManager: %v", err)
+	}
+	if _, ok := codexMgr.LoginArgv(); !ok {
+		t.Error("codex manager should expose a login command")
+	}
+
+	generic, err := host.NewACPBackendManager(acpx.AdapterProfile{
+		ID:      "test-adapter",
+		Backend: agent.BackendOpenCode,
+		Scope:   acpx.ScopeHost,
+		Command: func(string) (string, []string) { return "unused", nil },
+	})
+	if err != nil {
+		t.Fatalf("NewACPBackendManager: %v", err)
+	}
+	if _, ok := generic.LoginArgv(); ok {
+		t.Error("generic manager should not expose a login command")
+	}
+}
+
 // End-to-end through the manager: supervisor spawn (scripted agent over
 // real pipes), fresh CreateBackend → Open → Send roundtrip, and
 // discovery mapping incl. the ghost-row filter.

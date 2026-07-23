@@ -224,6 +224,8 @@ func writeAuthErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_auth_code", Error: err.Error()})
 	case errors.Is(err, host.ErrFlowNotOAuthCode):
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "flow_not_oauth_code", Error: err.Error()})
+	case errors.Is(err, host.ErrCodexDeviceAuthUnavailable):
+		writeJSON(w, http.StatusServiceUnavailable, errResp{Code: "codex_unavailable", Error: err.Error()})
 	default:
 		writeError(w, err)
 	}

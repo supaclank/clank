@@ -315,6 +315,43 @@ func TestSupervisor_SpawnErrorFailsWaiterThenRecovers(t *testing.T) {
 	}
 }
 
+// RestartAll must cycle the running adapter (fresh spawns re-read
+// on-disk credential state like codex's auth.json, which never shows
+// up in the env fingerprint) while keeping the supervisor usable —
+// unlike StopAll, a later GetConn gets a fresh conn.
+func TestSupervisor_RestartAllRespawns(t *testing.T) {
+	t.Parallel()
+	f := newSupFixture(t, acpx.ScopeHost, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c1, err := f.sup.GetConn(ctx, "")
+	if err != nil {
+		t.Fatalf("GetConn: %v", err)
+	}
+	if got := f.spawns.Load(); got != 1 {
+		t.Fatalf("spawns before restart = %d, want 1", got)
+	}
+
+	f.sup.RestartAll()
+	select {
+	case <-c1.Closed():
+	case <-time.After(3 * time.Second):
+		t.Fatal("conn not closed by RestartAll")
+	}
+
+	c2, err := f.sup.GetConn(ctx, "")
+	if err != nil {
+		t.Fatalf("GetConn after RestartAll: %v", err)
+	}
+	if c2 == c1 {
+		t.Error("GetConn after RestartAll returned the stopped conn")
+	}
+	if got := f.spawns.Load(); got != 2 {
+		t.Errorf("spawns after restart = %d, want 2", got)
+	}
+}
+
 func TestSupervisor_StopAllFailsWaitersAndConns(t *testing.T) {
 	t.Parallel()
 	f := newSupFixture(t, acpx.ScopePerDir, nil)
