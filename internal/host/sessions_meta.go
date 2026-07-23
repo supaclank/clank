@@ -53,7 +53,9 @@ func (s *Service) SearchSessionMetadata(ctx context.Context, p store.SearchParam
 	return s.sessionsStore.SearchSessions(ctx, p)
 }
 
-// GetSessionMetadata returns one persisted session by ID.
+// GetSessionMetadata returns one persisted session by ID, decorated
+// with runtime-only fields from the live backend when one is registered
+// (agent-owned session modes for the client's mode picker).
 func (s *Service) GetSessionMetadata(ctx context.Context, id string) (agent.SessionInfo, error) {
 	if s.sessionsStore == nil {
 		return agent.SessionInfo{}, SessionStoreNotConfigured
@@ -62,7 +64,15 @@ func (s *Service) GetSessionMetadata(ctx context.Context, id string) (agent.Sess
 	if errors.Is(err, store.ErrSessionNotFound) {
 		return agent.SessionInfo{}, fmt.Errorf("session %s: %w", id, ErrNotFound)
 	}
-	return info, err
+	if err != nil {
+		return info, err
+	}
+	if b, ok := s.Session(id); ok {
+		if mr, ok := b.(agent.ModeReporter); ok {
+			info.CurrentModeID, info.AvailableModes = mr.Modes()
+		}
+	}
+	return info, nil
 }
 
 // FindSessionByExternalID looks up a session by the backend-assigned

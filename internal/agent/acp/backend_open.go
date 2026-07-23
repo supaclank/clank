@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -63,11 +64,12 @@ func (b *Backend) Open(ctx context.Context) error {
 		b.red.setSessionID(sid)
 		if ns.Modes != nil {
 			b.currentMode = string(ns.Modes.CurrentModeId)
+			b.availableModes = modesFromState(ns.Modes)
 		}
 		b.mu.Unlock()
 
 		if b.initialMode != "" {
-			b.applyMode(ctx, conn, b.initialMode)
+			b.applyMode(ctx, conn, string(b.initialMode))
 		}
 	} else {
 		conn.Register(sdk.SessionId(resume), b)
@@ -117,21 +119,22 @@ func (b *Backend) OpenAndSend(ctx context.Context, opts agent.SendMessageOpts) e
 	return b.Send(ctx, opts)
 }
 
-// applyMode sends session/set_mode when the profile maps the clank mode;
-// failures log rather than fail the session (mode is advisory UX).
-func (b *Backend) applyMode(ctx context.Context, conn *AdapterConn, mode agent.ClaudePermissionMode) {
-	if b.profile.ModeFor == nil {
-		return
-	}
-	modeID, ok := b.profile.ModeFor(mode)
-	if !ok {
-		return
-	}
+// applyMode sends session/set_mode with the agent-owned mode id as-is.
+// When the agent advertised a mode list, unknown ids are skipped (a
+// stale client selection must not flip the session into an error state);
+// with no advertised list the id is sent optimistically. Failures log
+// rather than fail the session (mode is advisory UX).
+func (b *Backend) applyMode(ctx context.Context, conn *AdapterConn, modeID string) {
 	b.mu.Lock()
 	sid := b.sessionID
 	current := b.currentMode
+	advertised := b.availableModes
 	b.mu.Unlock()
-	if sid == "" || modeID == current {
+	if sid == "" || modeID == "" || modeID == current {
+		return
+	}
+	if len(advertised) > 0 && !slices.ContainsFunc(advertised, func(m agent.SessionMode) bool { return m.ID == modeID }) {
+		b.logf("acp %s: skipping set_mode %q: not advertised by the agent", b.profile.ID, modeID)
 		return
 	}
 	_, err := conn.Conn().SetSessionMode(ctx, sdk.SetSessionModeRequest{
@@ -145,6 +148,30 @@ func (b *Backend) applyMode(ctx context.Context, conn *AdapterConn, mode agent.C
 	b.mu.Lock()
 	b.currentMode = modeID
 	b.mu.Unlock()
+}
+
+// Modes implements agent.ModeReporter: the agent-advertised session
+// modes plus the currently active id, untranslated.
+func (b *Backend) Modes() (string, []agent.SessionMode) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if m := b.red.modeID; m != "" {
+		b.currentMode = m
+	}
+	return b.currentMode, slices.Clone(b.availableModes)
+}
+
+// modesFromState maps the SDK mode state onto clank's agent-owned type.
+func modesFromState(st *sdk.SessionModeState) []agent.SessionMode {
+	out := make([]agent.SessionMode, 0, len(st.AvailableModes))
+	for _, m := range st.AvailableModes {
+		desc := ""
+		if m.Description != nil {
+			desc = *m.Description
+		}
+		out = append(out, agent.SessionMode{ID: string(m.Id), Name: m.Name, Description: desc})
+	}
+	return out
 }
 
 func connAlive(c *AdapterConn) bool {

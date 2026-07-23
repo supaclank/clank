@@ -39,22 +39,23 @@ type Backend struct {
 	// openMu serializes Open/OpenAndSend (idempotency contract).
 	openMu sync.Mutex
 
-	mu           sync.Mutex
-	opened       bool
-	status       agent.SessionStatus
-	sessionID    string
-	conn         *AdapterConn
-	red          *reducer
-	events       chan agent.Event
-	eventsClosed bool
-	queue        []queuedPrompt
-	runnerOn     bool
-	aborting     bool
-	stopping     bool
-	pendingPerms map[string]chan permDecision
-	permSeq      int
-	userSeq      int
-	currentMode  string
+	mu             sync.Mutex
+	opened         bool
+	status         agent.SessionStatus
+	sessionID      string
+	conn           *AdapterConn
+	red            *reducer
+	events         chan agent.Event
+	eventsClosed   bool
+	queue          []queuedPrompt
+	runnerOn       bool
+	aborting       bool
+	stopping       bool
+	pendingPerms   map[string]chan permDecision
+	permSeq        int
+	userSeq        int
+	currentMode    string
+	availableModes []agent.SessionMode
 
 	lastUpdate atomicTime
 

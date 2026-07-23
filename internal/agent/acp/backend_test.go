@@ -676,3 +676,73 @@ func TestBackend_StopMarksDeadAndClosesEvents(t *testing.T) {
 		t.Error("Send after Stop should error")
 	}
 }
+
+// Modes are agent-owned: the advertised list surfaces untranslated via
+// Modes(), chosen ids pass through to session/set_mode raw, and ids the
+// agent never advertised are skipped instead of risking an error state.
+func TestBackend_AgentOwnedModes(t *testing.T) {
+	t.Parallel()
+	setModes := make(chan string, 4)
+	scripted := &acptest.ScriptedAgent{}
+	scripted.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+		desc := "Read-only sandbox"
+		return sdk.NewSessionResponse{
+			SessionId: "codex-thread-1",
+			Modes: &sdk.SessionModeState{
+				CurrentModeId: "agent",
+				AvailableModes: []sdk.SessionMode{
+					{Id: "read-only", Name: "Read Only", Description: &desc},
+					{Id: "agent", Name: "Agent"},
+					{Id: "agent-full-access", Name: "Full Access"},
+				},
+			},
+		}, nil
+	}
+	scripted.SetModeFn = func(ctx context.Context, p sdk.SetSessionModeRequest) (sdk.SetSessionModeResponse, error) {
+		setModes <- string(p.ModeId)
+		return sdk.SetSessionModeResponse{}, nil
+	}
+	scripted.PromptFn = func(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResponse, error) {
+		return sdk.PromptResponse{StopReason: sdk.StopReasonEndTurn}, nil
+	}
+	f := newBackendFixture(t, scripted, "")
+	ctx := context.Background()
+	if err := f.backend.Open(ctx); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	current, available := f.backend.Modes()
+	if current != "agent" || len(available) != 3 {
+		t.Fatalf("Modes() = %q / %d modes, want agent / 3", current, len(available))
+	}
+	if available[0].ID != "read-only" || available[0].Name != "Read Only" || available[0].Description != "Read-only sandbox" {
+		t.Errorf("advertised mode surfaced wrong: %+v", available[0])
+	}
+
+	// Advertised id passes through raw.
+	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "go", PermissionMode: "read-only"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	select {
+	case got := <-setModes:
+		if got != "read-only" {
+			t.Fatalf("set_mode id = %q, want read-only", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("agent never received set_mode")
+	}
+	f.waitFor(10*time.Second, func(evts []agent.Event) bool { return statusOf(evts) == agent.StatusIdle })
+
+	// Unadvertised id is skipped, not sent.
+	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "again", PermissionMode: "bogus-mode"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	f.waitFor(10*time.Second, func(evts []agent.Event) bool {
+		return countType(evts, agent.EventMessage) >= 2 && statusOf(evts) == agent.StatusIdle
+	})
+	select {
+	case got := <-setModes:
+		t.Fatalf("unadvertised mode id was sent to the agent: %q", got)
+	default:
+	}
+}

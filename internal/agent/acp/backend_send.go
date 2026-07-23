@@ -42,7 +42,7 @@ func (b *Backend) Send(ctx context.Context, opts agent.SendMessageOpts) error {
 	}
 
 	if opts.PermissionMode != "" {
-		b.applyMode(ctx, conn, opts.PermissionMode)
+		b.applyMode(ctx, conn, string(opts.PermissionMode))
 	}
 	if opts.Model != nil && b.profile.ModelOption != nil {
 		if id, value, ok := b.profile.ModelOption(*opts.Model); ok {

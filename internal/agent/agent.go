@@ -459,10 +459,26 @@ func (r StartRequest) Validate() error {
 	if r.Prompt == "" && len(r.Attachments) == 0 {
 		return fmt.Errorf("prompt or attachment is required")
 	}
-	if r.PermissionMode != "" && !r.PermissionMode.IsValid() {
-		return fmt.Errorf("unknown permission_mode: %s", r.PermissionMode)
-	}
+	// PermissionMode is an agent-defined mode id (ACP: the agent owns its
+	// mode vocabulary and advertises it per session) — no closed-enum
+	// validation here; the serving agent rejects ids it doesn't offer.
 	return nil
+}
+
+// SessionMode is one agent-advertised session mode (the ACP
+// session/set_mode vocabulary). The agent owns the list; clients render
+// it as-is and send back the chosen ID as PermissionMode.
+type SessionMode struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// ModeReporter is implemented by backends whose agent advertises session
+// modes. The host stamps the result onto runtime SessionInfo so clients
+// can render the agent-owned mode picker.
+type ModeReporter interface {
+	Modes() (currentID string, available []SessionMode)
 }
 
 // SessionInfo is a snapshot of a managed session, returned by the daemon API.
@@ -482,6 +498,8 @@ type SessionInfo struct {
 	Draft           string            `json:"draft,omitempty"`             // Unsent follow-up text the user was composing
 	RevertMessageID string            `json:"revert_message_id,omitempty"` // When set, messages from this ID onward are reverted (hidden)
 	ServerURL       string            `json:"server_url,omitempty"`        // Runtime-only: backend server URL (e.g. OpenCode serve endpoint). Not persisted.
+	CurrentModeID   string            `json:"current_mode_id,omitempty"`   // Runtime-only: the agent-owned session mode currently active. Not persisted.
+	AvailableModes  []SessionMode     `json:"available_modes,omitempty"`   // Runtime-only: agent-advertised modes for the picker. Not persisted.
 	IsRemote        bool              `json:"is_remote,omitempty"`         // Runtime-only: decoration stamped by the laptop daemon's session router when this session's worktree is owned by the active remote. Always false on direct host responses; populated by gateway routing.
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`

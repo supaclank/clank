@@ -30,11 +30,12 @@ type AdapterProfile struct {
 	// assembled system prompt for fresh sessions ("" on resume). nil =
 	// no meta (the adapter has no session-level injection channel).
 	SessionNewMeta func(guidance string) map[string]any
-	// ModeFor maps clank's permission mode onto the adapter's ACP mode
-	// id. nil or !ok = the mode is not sent (opencode ignores modes).
-	ModeFor func(mode agent.ClaudePermissionMode) (string, bool)
 	// ModelOption maps a model override onto a session config option
 	// (option id + value). nil = overrides are ignored for this adapter.
+	//
+	// Session modes need no profile hook: the agent owns its mode
+	// vocabulary — clank passes mode ids through to session/set_mode and
+	// surfaces the advertised list untranslated.
 	ModelOption func(o agent.ModelOverride) (id, value string, ok bool)
 }
 

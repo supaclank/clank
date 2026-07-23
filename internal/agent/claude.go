@@ -868,6 +868,19 @@ func (b *ClaudeCodeBackend) Fork(ctx context.Context, messageID string) (ForkRes
 	return ForkResult{}, fmt.Errorf("fork is not supported by the Claude Code backend: %w", ErrUnsupported)
 }
 
+// Modes implements ModeReporter with the CLI's static permission modes,
+// so clients render one agent-owned mode picker across backends. The
+// ACP path replaces this with the adapter-advertised list.
+func (b *ClaudeCodeBackend) Modes() (string, []SessionMode) {
+	modes := make([]SessionMode, 0, len(ClaudePermissionModes))
+	for _, m := range ClaudePermissionModes {
+		modes = append(modes, SessionMode{ID: string(m), Name: m.Label()})
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.currentPermMode), modes
+}
+
 // RespondPermission lives in claude_permissions.go alongside the CanUseTool
 // bridge it resolves.
 
