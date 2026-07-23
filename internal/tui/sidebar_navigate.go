@@ -75,7 +75,6 @@ func (m *SidebarModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 }
 
 // handleEnter implements the per-node-kind Enter behavior:
-//   - AllSessions → no-op here (inbox listens for cursor change instead)
 //   - Worktree    → toggle expand
 //   - Session     → emit sessionSelectedFromSidebarMsg
 //   - Older bucket → toggle expand

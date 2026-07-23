@@ -41,7 +41,14 @@ func (m *SidebarModel) View() string {
 		}
 	}
 
+	add(noNodeRow, lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("Home"))
+	homeIndex := 0
+	if len(m.flat) == 0 || m.flat[0].Kind() != nodeHome {
+		homeIndex = noNodeRow
+	}
+	add(homeIndex, m.renderHomeRow(homeIndex == m.cursor && m.focused, contentWidth))
 	add(noNodeRow,
+		"",
 		lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("Worktrees"),
 		"",
 	)
@@ -101,8 +108,8 @@ func (m *SidebarModel) NodeAtRow(y int) int {
 	return m.rowFlat[line]
 }
 
-// renderBody emits the non-footer rows (AllSessions + worktrees + older
-// bucket), respecting the scroll offset. footerLineCount is returned so
+// renderBody emits the non-footer rows below Home (worktrees + older bucket),
+// respecting the scroll offset. footerLineCount is returned so
 // View can pad to push the footer to the bottom regardless of how many
 // rows the body produced.
 func (m *SidebarModel) renderBody(contentWidth int) (lines []string, flatByLine []int, footerLineCount int) {
@@ -130,16 +137,13 @@ func (m *SidebarModel) renderBody(contentWidth int) (lines []string, flatByLine 
 		selected := idx == m.cursor && m.focused
 		// Insert a dim rule before every top-level row (worktree or
 		// top-level overflow bucket) whenever any body row already
-		// rendered. That covers both the divider between consecutive
-		// worktrees and the divider between the AllSessions header
-		// and the first worktree. The rule is attributed to the row it
-		// precedes so clicking the thin divider still selects it.
+		// rendered — the divider between consecutive worktrees. The
+		// rule is attributed to the row it precedes so clicking the
+		// thin divider still selects it.
 		if (n.Kind() == nodeWorktree || n.Kind() == nodeOlderWorktrees) && hasContent {
 			emit(idx, m.renderWorktreeSeparator(contentWidth))
 		}
 		switch typed := n.(type) {
-		case allSessionsNode:
-			emit(idx, m.renderAllRow(selected, contentWidth))
 		case worktreeNode:
 			emit(idx, m.renderWorktreeRow(typed, idx, selected, contentWidth))
 		case sessionNode:
@@ -160,6 +164,8 @@ func (m *SidebarModel) renderBody(contentWidth int) (lines []string, flatByLine 
 func (m *SidebarModel) bodyNodes() (body []int, footerStart int) {
 	for i, n := range m.flat {
 		switch n.Kind() {
+		case nodeHome:
+			continue
 		case nodeImport, nodeCloud, nodeSettings:
 			if footerStart == 0 {
 				footerStart = i
@@ -265,17 +271,48 @@ func (m *SidebarModel) nodeLineCost(idx int, isFirstVisible bool) int {
 
 // bodyViewportH returns the number of rendered terminal lines the
 // body section can fill. The body shares listHeight with the
-// fixed-overhead rows: header(1) + blank(1) at the top, footer
-// separator + 3 footer rows at the bottom = 6. When creating mode is
-// active the input also lives in the body (accounted for in
-// nodeLineCost), so no extra deduction is needed here.
+// fixed-overhead rows: "Home" + home row + blank + "Worktrees" + blank
+// (5) at the top, footer separator + 3 footer rows (4) at the bottom.
+// When creating mode is active the input also lives in the body
+// (accounted for in nodeLineCost), so no extra deduction is needed here.
 func (m *SidebarModel) bodyViewportH() int {
-	const overhead = 2 + 4 // header block + footer block
+	const overhead = 5 + 4 // Home/Worktrees header block + footer block
 	vh := m.listHeight() - overhead
 	if vh < 1 {
 		vh = 1
 	}
 	return vh
+}
+
+// renderHomeRow renders the fixed link to the welcome screen. The
+// right-edge cursor chevron (◀) tracks the keyboard cursor only, like
+// worktree rows. A primary-colored left rail (▎) marks the row while
+// the welcome screen is the active right-pane view — matching the
+// active-session rail — so "what's open" stays visible even after the
+// cursor moves elsewhere in the sidebar.
+func (m *SidebarModel) renderHomeRow(selected bool, maxWidth int) string {
+	const label = "⌂ Home"
+	cursorHere := selected && m.focused
+	// The ▎ rail is a single "what's open" marker shared with sessions;
+	// never paint it on Home while a session also claims it.
+	homeRail := m.homeActive && m.activeSessionID == ""
+
+	nameStyle := lipgloss.NewStyle().Foreground(dimColor)
+	if cursorHere || homeRail {
+		nameStyle = lipgloss.NewStyle().Foreground(textColor).Bold(true)
+	}
+
+	rail := " "
+	if homeRail {
+		rail = lipgloss.NewStyle().Foreground(primaryColor).Render(activeSessionRail)
+	}
+	line := rail + nameStyle.Render(label)
+
+	if cursorHere {
+		line = padRight(line, maxWidth-rightCursorWidth) + " " +
+			lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render(rightCursorGlyph)
+	}
+	return line
 }
 
 // listHeight returns the height available for the body (excluding border).
@@ -285,28 +322,6 @@ func (m *SidebarModel) listHeight() int {
 		h = 5
 	}
 	return h
-}
-
-// renderAllRow renders the virtual "All sessions" entry pinned at the
-// top of the body. Uses the same right-edge cursor marker as worktree
-// rows so the "you are here" signal stays consistent across the
-// whole tree — the label sits at the left margin, selection only
-// adds a bold weight and the right-edge ◀.
-func (m *SidebarModel) renderAllRow(selected bool, maxWidth int) string {
-	label := "  All sessions"
-	style := lipgloss.NewStyle().Foreground(dimColor)
-	if m.cursor == 0 {
-		style = lipgloss.NewStyle().Foreground(textColor)
-	}
-	if selected {
-		style = style.Bold(true)
-	}
-	line := style.Render(label)
-	if selected {
-		line = padRight(line, maxWidth-rightCursorWidth) + " " +
-			lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render(rightCursorGlyph)
-	}
-	return line
 }
 
 // renderInputRow renders the inline new-branch input.

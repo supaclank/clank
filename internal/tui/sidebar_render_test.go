@@ -106,8 +106,8 @@ func TestRenderSessionRow_Indicator(t *testing.T) {
 }
 
 // Hovered (cursor) rows bold the title — mirrors the behaviour of
-// other sidebar sections (e.g. the "All sessions" row in renderAllRow).
-// No color change; bold is the only emphasis.
+// other sidebar sections (e.g. worktree rows). No color change; bold is
+// the only emphasis.
 func TestRenderSessionRow_HoveredIsBold(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)
@@ -172,5 +172,134 @@ func TestRenderSessionRow_AgeLineColor(t *testing.T) {
 				t.Errorf("age line %q missing wrapped dim time %q", ageLine, wantTime)
 			}
 		})
+	}
+}
+
+// While the welcome screen is active, the Home row shows the left rail
+// (▎) to mark "what's open". The right-edge cursor chevron tracks the
+// keyboard cursor only, so an unfocused sidebar (cursor elsewhere) must
+// NOT show the chevron on Home even while active.
+func TestRenderHomeRow_RailWhenUnfocusedActive(t *testing.T) {
+	t.Parallel()
+
+	m := NewSidebarModel(nil, "host", agent.GitRef{}, "/r")
+	m.SetFocused(false)
+
+	inactive := m.renderHomeRow(false, 60)
+	if strings.Contains(inactive, activeSessionRail) {
+		t.Fatalf("home-inactive row unexpectedly shows rail: %q", inactive)
+	}
+
+	m.SetHomeActive(true)
+	active := m.renderHomeRow(false, 60)
+	if !strings.Contains(active, activeSessionRail) {
+		t.Errorf("home-active unfocused row missing rail %q: %q", activeSessionRail, active)
+	}
+	if strings.Contains(active, rightCursorGlyph) {
+		t.Errorf("home-active unfocused row should not show cursor chevron (cursor is elsewhere): %q", active)
+	}
+}
+
+// The ▎ rail is a single shared "what's open" marker. If a session is
+// active, Home must not also paint the rail — otherwise the rail shows
+// on two rows at once.
+func TestRenderHomeRow_RailSuppressedWhenSessionActive(t *testing.T) {
+	t.Parallel()
+
+	m := NewSidebarModel(nil, "host", agent.GitRef{}, "/r")
+	m.SetFocused(false)
+	m.SetHomeActive(true)
+	m.SetActiveSessionID("sess-1")
+
+	row := m.renderHomeRow(false, 60)
+	if strings.Contains(row, activeSessionRail) {
+		t.Errorf("Home rail rendered while a session is active: %q", row)
+	}
+}
+
+// The chevron tracks the keyboard cursor: it must disappear from Home
+// once the cursor moves away, even while the welcome screen stays
+// active (rail persists, chevron does not).
+func TestRenderHomeRow_ChevronTracksCursorNotActive(t *testing.T) {
+	t.Parallel()
+
+	m := NewSidebarModel(nil, "host", agent.GitRef{}, "/r")
+	m.SetFocused(true)
+	m.SetHomeActive(true)
+
+	// Cursor moved off Home (selected=false) while still focused.
+	row := m.renderHomeRow(false, 60)
+	if strings.Contains(row, rightCursorGlyph) {
+		t.Errorf("chevron lingered on Home after cursor moved away: %q", row)
+	}
+	if !strings.Contains(row, activeSessionRail) {
+		t.Errorf("rail should persist while welcome screen active: %q", row)
+	}
+}
+
+// The focused cursor on Home shows the same right-edge chevron as
+// worktree rows.
+func TestRenderHomeRow_ChevronWhenFocused(t *testing.T) {
+	t.Parallel()
+
+	m := NewSidebarModel(nil, "host", agent.GitRef{}, "/r")
+	m.SetFocused(true)
+
+	row := m.renderHomeRow(true, 60)
+	if !strings.Contains(row, rightCursorGlyph) {
+		t.Errorf("focused+selected home row missing chevron %q: %q", rightCursorGlyph, row)
+	}
+}
+
+// The Home/Worktrees header block emits 5 lines (Home, home row, blank,
+// "Worktrees", blank), but bodyViewportH's overhead constant only
+// accounted for 4 — one short. A full body then renders one line taller
+// than listHeight, pushing the sidebar's border past its allotted size
+// instead of clipping to it.
+func TestView_DoesNotOverflowListHeight_WhenBodyIsFull(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)
+	const pathA = "/repo/a"
+	const pathB = "/repo/b"
+	newSessions := func(path string, updatedAt time.Time, n int) []agent.SessionInfo {
+		out := make([]agent.SessionInfo, n)
+		for i := range out {
+			out[i] = agent.SessionInfo{
+				ID:         path + string(rune('a'+i)),
+				Title:      "session",
+				Status:     agent.StatusIdle,
+				UpdatedAt:  updatedAt,
+				LastReadAt: updatedAt,
+				GitRef:     agent.GitRef{LocalPath: path},
+			}
+		}
+		return out
+	}
+	// MaxRecentSessionsBeforeBucket is 5 per worktree, so 5+5 across two
+	// worktrees stays unbucketed — every row is a plain 2-line session
+	// or worktree row, giving a predictable per-item cost of exactly 2.
+	var sessions []agent.SessionInfo
+	sessions = append(sessions, newSessions(pathA, now, 5)...)
+	sessions = append(sessions, newSessions(pathB, now.Add(-time.Hour), 5)...)
+
+	m := NewSidebarModel(nil, "host", agent.GitRef{LocalPath: pathA}, pathA)
+	m.nowFn = func() time.Time { return now }
+	m.SetSessions(sessions)
+	m.SetExpanded(map[string]bool{"wt:" + pathB: true}) // pathA auto-expands as cwd
+	m.SetSize(40, 24)                                   // listHeight() == 20
+
+	// Scroll past worktree A's anchor row (cost 1) so every subsequent
+	// visible node costs exactly 2 (session, or worktree-with-separator)
+	// — the only way to land exactly on bodyViewportH's off-by-one.
+	m.scroll = 1
+
+	out := m.View()
+	const borderRows = 2 // top + bottom border, outside listHeight's accounting
+	if got, want := strings.Count(out, "\n")+1, m.listHeight()+borderRows; got > want {
+		t.Errorf("sidebar rendered %d lines, want <= listHeight()+border %d (bodyViewportH overhead undercounts the header): %q", got, want, out)
+	}
+	if !strings.Contains(out, "Settings") {
+		t.Errorf("rendered sidebar is missing the Settings footer row:\n%s", out)
 	}
 }

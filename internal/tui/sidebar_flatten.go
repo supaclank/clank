@@ -17,8 +17,8 @@ import "time"
 // injecting a deterministic clock for future age-aware behavior
 // without another touch to every call site.
 func flattenSidebar(t sidebarTree, expanded map[string]bool, now time.Time) []sidebarNode {
-	out := make([]sidebarNode, 0, 4+len(t.RecentWorktrees)+len(t.OlderWorktrees.Hidden))
-	out = append(out, t.AllSessions)
+	out := make([]sidebarNode, 0, 5+len(t.RecentWorktrees)+len(t.OlderWorktrees.Hidden))
+	out = append(out, t.Home)
 	out = appendWorktreeRows(out, t.RecentWorktrees, expanded, now)
 	if len(t.OlderWorktrees.Hidden) > 0 {
 		out = append(out, t.OlderWorktrees)

@@ -49,7 +49,7 @@ func (m *InboxModel) openCloud() tea.Cmd {
 // closeCloud returns from the Cloud screen back to the inbox list.
 // Focus goes back to the sidebar so the user lands where they came from.
 func (m *InboxModel) closeCloud() {
-	m.screen = screenInbox
+	m.screen = screenWelcome
 	m.setPane(paneSidebar)
 	m.cloud.SetFocused(false)
 }
@@ -150,7 +150,7 @@ func (m *InboxModel) updateCloud(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok && m.pane == paneSidebar {
 		tm, cmd := m.handleSidebarKey(keyMsg)
 		if m.screen == screenCloud && !m.sidebar.CursorOnCloud() {
-			m.screen = screenInbox
+			m.screen = screenWelcome
 			m.cloud.SetFocused(false)
 		}
 		return tm, cmd
