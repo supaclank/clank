@@ -1552,28 +1552,6 @@ func TestColonOpensActionMenu_OnUserMessage(t *testing.T) {
 	})
 }
 
-func TestActionMenu_RevertTriggersConfirmDialog(t *testing.T) {
-	t.Parallel()
-
-	m := newTestSessionModel([]displayEntry{
-		{kind: entryUser, content: "original prompt", messageID: "msg-10"},
-	})
-	m.cursor = 0
-	m.menuMessageID = "msg-10"
-	m.menuMessageContent = "original prompt"
-	m.showMenu = true
-
-	// Simulate selecting "revert" from the action menu.
-	cmd := m.handleMenuAction("revert")
-
-	if cmd != nil {
-		t.Error("expected no command from handleMenuAction (it opens a confirm dialog)")
-	}
-	if !m.showConfirm {
-		t.Fatal("expected showConfirm=true after selecting revert")
-	}
-}
-
 func TestHandleSessionMessages_PopulatesMessageID(t *testing.T) {
 	t.Parallel()
 
@@ -2054,57 +2032,29 @@ func TestActionMenu_ForkFromAssistantMessage(t *testing.T) {
 	}
 }
 
-func TestActionMenu_UserMessageHasRevertAndFork(t *testing.T) {
+// Revert is fully retired at M3 (no backend supports it) — every
+// message's action menu offers fork only, on every backend.
+func TestActionMenu_UserMessageHasForkOnly(t *testing.T) {
 	t.Parallel()
 	colon := tea.KeyPressMsg{Code: ':'}
 
-	entries := []displayEntry{
-		{kind: entryUser, content: "hello", messageID: "msg-1"},
-	}
-	m := newTestSessionModel(entries)
-	// Revert is Claude-only since the ACP cutover (OP-005).
-	m.info = &agent.SessionInfo{Backend: agent.BackendClaudeCode}
-	m.cursor = 0
+	for _, backend := range agent.AllBackends {
+		entries := []displayEntry{
+			{kind: entryUser, content: "hello", messageID: "msg-1"},
+		}
+		m := newTestSessionModel(entries)
+		m.info = &agent.SessionInfo{Backend: backend}
+		m.cursor = 0
 
-	_, _ = m.handleKey(colon)
+		_, _ = m.handleKey(colon)
 
-	if !m.showMenu {
-		t.Fatal("expected menu to open")
-	}
-	// Claude user messages should have both revert and fork.
-	items := m.menu.items
-	if len(items) != 2 {
-		t.Fatalf("expected 2 menu items, got %d", len(items))
-	}
-	if items[0].action != "revert" {
-		t.Errorf("first item action = %q, want revert", items[0].action)
-	}
-	if items[1].action != "fork" {
-		t.Errorf("second item action = %q, want fork", items[1].action)
-	}
-}
-
-// Revert is hidden on ACP-served backends (the host would 501) — the
-// user-message menu offers fork only.
-func TestActionMenu_UserMessageOnACPBackendHasForkOnly(t *testing.T) {
-	t.Parallel()
-	colon := tea.KeyPressMsg{Code: ':'}
-
-	entries := []displayEntry{
-		{kind: entryUser, content: "hello", messageID: "msg-1"},
-	}
-	m := newTestSessionModel(entries)
-	m.info = &agent.SessionInfo{Backend: agent.BackendOpenCode}
-	m.cursor = 0
-
-	_, _ = m.handleKey(colon)
-
-	if !m.showMenu {
-		t.Fatal("expected menu to open")
-	}
-	items := m.menu.items
-	if len(items) != 1 || items[0].action != "fork" {
-		t.Fatalf("expected fork-only menu on opencode, got %+v", items)
+		if !m.showMenu {
+			t.Fatalf("%s: expected menu to open", backend)
+		}
+		items := m.menu.items
+		if len(items) != 1 || items[0].action != "fork" {
+			t.Fatalf("%s: expected fork-only menu, got %+v", backend, items)
+		}
 	}
 }
 

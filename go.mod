@@ -112,7 +112,6 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/severity1/claude-agent-sdk-go v0.6.22
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yuin/goldmark v1.7.13 // indirect
@@ -125,7 +124,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-// Carries the fix for >1MB transcript lines (base64 PDF attachments) breaking
-// GetSessionMessages; drop when https://github.com/severity1/claude-agent-sdk-go/pull/139 lands in a release.
-replace github.com/severity1/claude-agent-sdk-go => github.com/Acksell/claude-agent-sdk-go v0.0.0-20260711074659-86240ce4e005

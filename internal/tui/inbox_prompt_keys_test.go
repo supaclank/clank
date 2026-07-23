@@ -63,40 +63,6 @@ func TestSessionKeys_PermissionPromptShiftN_DoesNotCompose(t *testing.T) {
 		t.Errorf("replyingPermID = %q, want empty (Shift+N is not a deny)", m.sessionView.replyingPermID)
 	}
 }
-
-// While typing ExitPlanMode revision notes (a text-entry sub-mode where
-// inputActive is false), letters bound to pane shortcuts must land in the
-// notes input — "n" must neither deny nor open compose, "w" must not
-// toggle the sidebar.
-func TestSessionKeys_PlanNotesTyping_KeysReachNotesInput(t *testing.T) {
-	t.Parallel()
-
-	m := newInboxWithPermissionPrompt()
-	m.sessionView.pendingPerms[0].Tool = agent.ClaudeToolExitPlanMode
-	m.sessionView.planNotesActive = true
-	m.sessionView.questionInput = newQuestionTextInput("notes")
-	m.sessionView.questionInput.Focus()
-
-	for _, key := range []tea.KeyPressMsg{
-		{Code: 'n', Text: "n"},
-		{Code: 'w', Text: "w"},
-	} {
-		model, _ := m.Update(key)
-		m = model.(*InboxModel)
-	}
-
-	if m.activeCompose {
-		t.Fatal("typing plan notes opened the compose view")
-	}
-	if m.sessionView.replyingPermID != "" {
-		t.Errorf("replyingPermID = %q, want empty (typed 'n' is not a deny)", m.sessionView.replyingPermID)
-	}
-	if got := m.sessionView.questionInput.Value(); got != "nw" {
-		t.Errorf("notes input = %q, want %q", got, "nw")
-	}
-}
-
-// Tab must not swap focus to the sidebar while a prompt owns the keyboard.
 func TestSessionKeys_PermissionPromptTab_DoesNotSwapPane(t *testing.T) {
 	t.Parallel()
 

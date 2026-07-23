@@ -83,18 +83,6 @@ func (s *SessionClient) Abort(ctx context.Context) error {
 	return s.c.post(ctx, p, nil, nil)
 }
 
-// Revert reverts the session to messageID, removing all subsequent messages.
-func (s *SessionClient) Revert(ctx context.Context, messageID string) error {
-	p, err := s.path("/revert")
-	if err != nil {
-		return err
-	}
-	body := struct {
-		MessageID string `json:"message_id"`
-	}{MessageID: messageID}
-	return s.c.post(ctx, p, body, nil)
-}
-
 // Fork forks the session from messageID. Empty messageID forks the entire
 // session (from start).
 func (s *SessionClient) Fork(ctx context.Context, messageID string) (*agent.SessionInfo, error) {
@@ -183,23 +171,6 @@ func (s *SessionClient) ReplyPermission(ctx context.Context, permissionID string
 		Allow   bool   `json:"allow"`
 		Message string `json:"message,omitempty"`
 	}{allow, denyMessage}
-	return s.c.post(ctx, p, body, nil)
-}
-
-// ReplyQuestion answers a question prompt with one QuestionAnswer per
-// question, in order. reject=true dismisses the prompt without answers.
-func (s *SessionClient) ReplyQuestion(ctx context.Context, requestID string, answers []agent.QuestionAnswer, reject bool) error {
-	if requestID == "" {
-		return errors.New("hubclient: empty question request id")
-	}
-	p, err := s.path("/questions/" + url.PathEscape(requestID) + "/reply")
-	if err != nil {
-		return err
-	}
-	body := struct {
-		Answers []agent.QuestionAnswer `json:"answers,omitempty"`
-		Reject  bool                   `json:"reject,omitempty"`
-	}{answers, reject}
 	return s.c.post(ctx, p, body, nil)
 }
 

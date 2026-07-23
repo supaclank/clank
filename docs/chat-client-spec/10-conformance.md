@@ -144,15 +144,15 @@ come; each client's harness loads the same files.
 | `CONF-ABORT-PERM` | abort clears pending perms, unlocks composer, session survives | INV-ABORT-PERM-001 |
 | `CONF-ABORT-NOISE` | during abort, intermediate statuses/errors are suppressed; "Cancelling"→"Cancelled" | STATE-STATUS-001, VIEW-CANCELLING-001 |
 | `CONF-PERMMODE-NOCHANGE` | an unchanged-mode send carries `permission_mode:""` | INV-PERMMODE-001 |
-| `CONF-PLAN-EXIT` | ExitPlanMode renders the plan + approve/reject; later sends stay `""` | INV-PERMMODE-EXITPLAN-001, FLOW-PLAN-001 |
+| ~~`CONF-PLAN-EXIT`~~ (retired 0.6.0) | ExitPlanMode renders the plan + approve/reject; later sends stay `""` | INV-PERMMODE-EXITPLAN-001, FLOW-PLAN-001 |
 | `CONF-META-REPLACE` | a `meta` event replaces the whole SessionInfo (no field-merge) | INV-META-REPLACE-001 |
-| `CONF-REVERT-FILTER` | revert hides the tail; a new send un-hides it | INV-REVERT-001 |
+| ~~`CONF-REVERT-FILTER`~~ (retired 0.6.0) | revert hides the tail; a new send un-hides it | INV-REVERT-001 |
 | `CONF-RECONCILE` | reconnect + refetch recovers events missed during the gap | INV-RECONCILE-001, EVT-010 |
 | `CONF-RECONNECT-SEMANTICS` | own-transport reconnect triggers reconcile; `reconnected` event alone does not substitute | INV-RECONNECT-SEMANTICS-001 |
 | `CONF-PENDING-PERM-GAP` | a join to a blocked session is surfaced honestly (not shown as plain "working") | INV-PENDING-PERM-GAP-001 |
-| `CONF-QUESTION-TAG` | a `part.question` tag renders the structured prompt (live stream AND history refetch), suppresses the paired `permission`, replies via the questions endpoint; the conversation moving past it retires the card | QST-001/002/003, INV-INTERACTIVE-001 |
-| `CONF-INTERACTIVE-ASK` | AskUserQuestion renders from part input; terminal status clears; answer submitted (legacy path) | ITOOL-001/002/004, FLOW-ASK-001 |
-| `CONF-INTERACTIVE-PLAN` | ExitPlanMode plan renders; Approve→build, Revise→plan | ITOOL-004/005, FLOW-PLAN-001 |
+| ~~`CONF-QUESTION-TAG`~~ (retired 0.6.0) | a `part.question` tag renders the structured prompt (live stream AND history refetch), suppresses the paired `permission`, replies via the questions endpoint; the conversation moving past it retires the card | QST-001/002/003, INV-INTERACTIVE-001 |
+| ~~`CONF-INTERACTIVE-ASK`~~ (retired 0.6.0) | AskUserQuestion renders from part input; terminal status clears; answer submitted (legacy path) | ITOOL-001/002/004, FLOW-ASK-001 |
+| ~~`CONF-INTERACTIVE-PLAN`~~ (retired 0.6.0) | ExitPlanMode plan renders; Approve→build, Revise→plan | ITOOL-004/005, FLOW-PLAN-001 |
 | `CONF-INLINE-COMMENT` | per-block comments format as a quoted-comment SendMessage | ICOMMENT-001 |
 | `CONF-SIDEBAR-SYNC` | list updates from `meta` + create/delete (not field-level); reconnect resyncs | INV-SIDEBAR-META-001, LIST-002/003/004/006 |
 | `CONF-TOOL-MERGE-CROSSMSG` | a `tool_call` (assistant msg) + `tool_result` (following `role=user` carrier) sharing one part id merge into ONE card at the call's position; the empty carrier is dropped | INV-TOOL-RESULT-CARRIER-001, DATA-022 |

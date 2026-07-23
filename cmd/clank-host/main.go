@@ -91,7 +91,7 @@ func main() {
 	localFileAttachments := flag.Bool("local-file-attachments", false, "Honor file:// image attachment sources (the client shares this host's filesystem). Set by the local laptop provisioner; off for remote sprites so a message can't make the host read arbitrary local paths.")
 	ghCLIAuth := flag.Bool("gh-cli-auth", false, "Resolve GitHub tokens from the machine's gh CLI login (gh auth token) when no clank GitHub connection exists. Set by the local laptop provisioner; off for remote sprites, which have no gh login to borrow.")
 	claudeCLIAuth := flag.Bool("claude-cli-auth", false, "Report the machine's own claude CLI login (Keychain / ~/.claude/.credentials.json) as a connected Anthropic provider when no clank connection exists — presence detection only, the credential is never read. Set by the local laptop provisioner; off for remote sprites, which have no claude login to borrow.")
-	acpBackends := flag.String("acp-backends", envDefault("CLANK_ACP_BACKENDS", string(agent.BackendCodex)+","+string(agent.BackendOpenCode)), "Comma-separated backends served through the ACP adapter path instead of the bespoke integration (opencode, claude-code, codex; 'all', 'none'). codex is ACP-only; opencode is ACP by default (M2 — rollback: set this to 'codex'); claude-code ACP serving lands in a later release. Defaults to $CLANK_ACP_BACKENDS, else 'codex,opencode'.")
+	acpBackends := flag.String("acp-backends", envDefault("CLANK_ACP_BACKENDS", "all"), "Comma-separated backends served through the ACP adapter path instead of the bespoke integration (opencode, claude-code, codex; 'all', 'none'). All three backends are ACP-served (M3 complete); removing one from the set disables it on this host. Defaults to $CLANK_ACP_BACKENDS, else 'all'.")
 	flag.Parse()
 
 	if *socket == "" && *listen == "" {
@@ -368,12 +368,9 @@ func run(cfg runConfig) error {
 	if err != nil {
 		return fmt.Errorf("--acp-backends: %w", err)
 	}
-	// opencode has no bespoke path anymore (M2 complete) — it is served
-	// only when listed in --acp-backends; claude-code keeps its bespoke
-	// manager until M3.
-	backendManagers := map[agent.BackendType]agent.BackendManager{
-		agent.BackendClaudeCode: host.NewClaudeBackendManager(),
-	}
+	// Every backend is ACP-served (M3 complete): the map is populated
+	// solely from --acp-backends.
+	backendManagers := map[agent.BackendType]agent.BackendManager{}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("resolve home dir: %w", err)

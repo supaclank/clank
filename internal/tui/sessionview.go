@@ -13,7 +13,6 @@ import (
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
@@ -254,24 +253,6 @@ type SessionViewModel struct {
 	// Permission state.
 	pendingPerms   []agent.PermissionData
 	replyingPermID string // non-empty while a reply is in flight (prevents double-tap)
-
-	// planNotesActive is set while typing revision notes for an ExitPlanMode
-	// permission prompt; the notes ride the deny message. Reuses questionInput.
-	planNotesActive bool
-
-	// Question prompt state (see sessionview_question.go). The active prompt
-	// is DERIVED from the transcript (activeQuestionPart); these fields track
-	// the in-progress answers for it, reset by syncQuestionUI when the active
-	// part changes.
-	activeQuestionID   string          // part id the Sel/Custom state belongs to
-	answeredQuestions  map[string]bool // request ids answered/dismissed in this view
-	questionSel        []map[int]bool  // per-question selected option indices
-	questionCustom     []string        // per-question free-text ("Other") answers
-	questionIdx        int             // active question within the prompt
-	questionCursor     int             // highlighted option row (== len(options) is the Other row)
-	questionTyping     bool            // typing into the Other field
-	questionInput      textinput.Model
-	replyingQuestionID string // non-empty while a reply is in flight
 
 	// SSE event channel (stored so we can re-schedule waitForEvent).
 	eventsCh <-chan agent.Event
@@ -966,10 +947,6 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case questionReplyResultMsg:
-		m.handleQuestionReplyResult(msg)
-		return m, nil
-
 	case sessionFollowUpResultMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -988,22 +965,6 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancelEvents()
 		}
 		return m, func() tea.Msg { return backToInboxMsg{} }
-
-	case revertResultMsg:
-		if msg.err != nil {
-			m.err = msg.err
-			return m, nil
-		}
-		// Store the revert state so handleSessionMessages can filter messages.
-		m.info.RevertMessageID = msg.messageID
-		// Reload the message history and prefill the prompt with the
-		// reverted user message so the user can edit and resend.
-		m.err = nil
-		m.input.SetValue(msg.prompt)
-		m.inputActive = true
-		m.input.Focus()
-		m.follow = true
-		return m, m.fetchSessionMessages()
 
 	case forkResultMsg:
 		if msg.err != nil {
@@ -1173,35 +1134,10 @@ func (m *SessionViewModel) deactivateInput() {
 func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	msg = normalizeKeyCase(msg)
 
-	// Question prompt takes priority over everything (it supersedes the
-	// permission prompt for the same request).
-	if handled, cmd := m.handleQuestionKey(msg); handled {
-		return m, cmd
-	}
-
 	// Permission prompt takes priority — respond to the front of the queue.
 	// Block while a reply is already in flight (replyingPermID != "").
 	if len(m.pendingPerms) > 0 && m.replyingPermID == "" && !m.inputActive {
-		// Typing revision notes for an ExitPlanMode prompt: enter sends the
-		// deny with the notes as the reason, esc returns to the y/r/n choice.
-		if m.planNotesActive {
-			switch msg.String() {
-			case "esc":
-				m.planNotesActive = false
-				return m, nil
-			case "enter":
-				perm := m.pendingPerms[0]
-				m.planNotesActive = false
-				m.replyingPermID = perm.RequestID
-				return m, m.replyPermission(perm, false, formatPlanRevisionNotes(m.questionInput.Value()))
-			case "ctrl+c":
-				// fall through to the lockout block below
-			default:
-				var cmd tea.Cmd
-				m.questionInput, cmd = m.questionInput.Update(tea.Msg(msg))
-				return m, cmd
-			}
-		} else {
+		{
 			switch msg.String() {
 			case "y":
 				perm := m.pendingPerms[0]
@@ -1211,14 +1147,6 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				perm := m.pendingPerms[0]
 				m.replyingPermID = perm.RequestID
 				return m, m.replyPermission(perm, false, "")
-			case "r":
-				// Request changes on a plan: collect notes that ride the deny.
-				if m.pendingPerms[0].Tool == agent.ClaudeToolExitPlanMode {
-					m.planNotesActive = true
-					m.questionInput = newQuestionTextInput("Describe the changes you want...")
-					m.questionInput.Focus()
-					return m, nil
-				}
 			}
 		}
 	}
@@ -1405,11 +1333,6 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.menuMessageContent = entry.content
 				m.showMenu = true
 				var items []actionMenuItem
-				// Revert is Claude-only since the ACP cutover (OP-005) —
-				// hide it where the host would 501.
-				if entry.kind == entryUser && m.info != nil && m.info.Backend == agent.BackendClaudeCode {
-					items = append(items, actionMenuItem{label: "Revert to this message", key: "r", action: "revert"})
-				}
 				items = append(items, actionMenuItem{label: "Fork from here", key: "f", action: "fork"})
 				m.menu = newActionMenu("Actions", items)
 				return m, nil
@@ -1496,12 +1419,6 @@ func (m *SessionViewModel) handleEvent(evt agent.Event) tea.Cmd {
 
 	case agent.EventPermission:
 		if data, ok := evt.Data.(agent.PermissionData); ok {
-			// A question card supersedes the generic prompt for the same
-			// request (the backend emits both so old clients keep working;
-			// the tagged part always precedes the permission).
-			if m.questionSuppressesPermission(data) {
-				break
-			}
 			m.pendingPerms = append(m.pendingPerms, data)
 			// A permission needs an answer — release the textarea so y/n
 			// keys reach the permission handler instead of being typed in.
@@ -1592,9 +1509,6 @@ func (m *SessionViewModel) handleStatusChange(data agent.StatusChangeData) {
 			// wedging on a now-dead prompt. See INV-ABORT-PERM-001.
 			m.pendingPerms = nil
 			m.replyingPermID = ""
-			m.replyingQuestionID = ""
-			m.planNotesActive = false
-			m.questionTyping = false
 		}
 		if m.follow {
 			m.scrollToBottom()
@@ -2365,14 +2279,28 @@ func (m *SessionViewModel) replyPermission(perm agent.PermissionData, allow bool
 	}
 }
 
-// formatPlanRevisionNotes wraps plan-review notes in the revise template the
-// model expects (mirrors the mobile client's formatPlanReview).
-func formatPlanRevisionNotes(notes string) string {
-	notes = strings.TrimSpace(notes)
-	if notes == "" {
-		return "Please revise the plan."
+// planTextFor returns the plan text for an ExitPlanMode permission prompt by
+// locating the tool part the prompt gates (matched by tool_use id, falling
+// back to the most recent ExitPlanMode part with a plan).
+func (m *SessionViewModel) planTextFor(perm agent.PermissionData) string {
+	var fallback string
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		e := &m.entries[i]
+		if e.kind != entryTool || e.toolPart == nil || e.toolPart.Tool != agent.ClaudeToolExitPlanMode {
+			continue
+		}
+		plan, _ := e.toolPart.Input["plan"].(string)
+		if plan == "" {
+			continue
+		}
+		if e.toolPart.ID == perm.ToolUseID || perm.ToolUseID == "" {
+			return plan
+		}
+		if fallback == "" {
+			fallback = plan
+		}
 	}
-	return "Here's my review of the plan. Please revise it based on the comments below.\n\n" + notes
+	return fallback
 }
 
 func (m *SessionViewModel) toggleFollowUp() tea.Cmd {
@@ -2432,33 +2360,16 @@ func (m *SessionViewModel) handleConfirmAction(action string) tea.Cmd {
 		return m.setVisibility(agent.VisibilityDone)
 	case "archive":
 		return m.setVisibility(agent.VisibilityArchived)
-	case "revert":
-		return m.revertSession(m.menuMessageID)
 	}
 	return nil
 }
 
 func (m *SessionViewModel) handleMenuAction(action string) tea.Cmd {
 	switch action {
-	case "revert":
-		m.showConfirm = true
-		m.confirm = newConfirmDialog(
-			"Revert",
-			"Revert to this message?\nAll messages after it will be removed.",
-			"revert",
-		)
-		return nil
 	case "fork":
 		return m.forkSession(m.menuNextMessageID)
 	}
 	return nil
-}
-
-// revertResultMsg carries the result of a revert operation back to the TUI.
-type revertResultMsg struct {
-	messageID string // the target message ID that was reverted to
-	prompt    string // the user message content to prefill in the prompt
-	err       error
 }
 
 // forkResultMsg carries the result of a fork operation back to the TUI.
@@ -2470,20 +2381,6 @@ type forkResultMsg struct {
 // openForkedSessionMsg tells the inbox to navigate to the forked session.
 type openForkedSessionMsg struct {
 	sessionID string
-}
-
-func (m *SessionViewModel) revertSession(messageID string) tea.Cmd {
-	client := m.client
-	sessionID := m.sessionID
-	prompt := m.menuMessageContent
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := client.Session(sessionID).Revert(ctx, messageID); err != nil {
-			return revertResultMsg{err: err}
-		}
-		return revertResultMsg{messageID: messageID, prompt: prompt}
-	}
 }
 
 // forkSession creates a new session forked from the current one.
@@ -2776,16 +2673,13 @@ func (m *SessionViewModel) buildContentLines() []string {
 		lines = append(lines, lipgloss.NewStyle().Foreground(dimColor).Render(msg))
 	}
 
-	activeQuestion := m.syncQuestionUI()
-
 	// Transient "thinking…" footer: while the turn is busy but nothing is
 	// actively streaming, the model is generating server-side (extended
 	// thinking is redacted, so there's no content to show during that
 	// gap). A spinner + elapsed clock signals the agent is working, not
 	// frozen. Suppressed while text is streaming (the text itself is the
-	// signal) and while a permission or question prompt is up (that takes
-	// the footer).
-	if m.isBusy() && activeQuestion == nil && len(m.pendingPerms) == 0 && !m.lastEntryStreaming() {
+	// signal) and while a permission prompt is up (that takes the footer).
+	if m.isBusy() && len(m.pendingPerms) == 0 && !m.lastEntryStreaming() {
 		elapsed := ""
 		if !m.turnStartedAt.IsZero() {
 			elapsed = fmt.Sprintf(" (%ds)", int(time.Since(m.turnStartedAt)/time.Second))
@@ -2794,12 +2688,8 @@ func (m *SessionViewModel) buildContentLines() []string {
 		lines = append(lines, "", m.spinner.View()+dim.Render(" thinking…"+elapsed))
 	}
 
-	// Append the virtual active prompt (not a real entry). A question card
-	// supersedes the generic permission prompt.
-	if activeQuestion != nil {
-		lines = append(lines, "")
-		lines = append(lines, m.renderQuestionCard(activeQuestion)...)
-	} else if len(m.pendingPerms) > 0 {
+	// Append the virtual active prompt (not a real entry).
+	if len(m.pendingPerms) > 0 {
 		perm := m.pendingPerms[0]
 		isPlan := perm.Tool == agent.ClaudeToolExitPlanMode
 		prompt := fmt.Sprintf("Allow %s: %s?", perm.Tool, perm.Description)
@@ -2846,11 +2736,8 @@ func (m *SessionViewModel) buildContentLines() []string {
 		switch {
 		case m.replyingPermID != "":
 			contentParts = append(contentParts, dimStyle.Render("Sending..."))
-		case m.planNotesActive:
-			contentParts = append(contentParts, m.questionInput.View())
-			contentParts = append(contentParts, dimStyle.Render("enter: request changes · esc: cancel"))
 		case isPlan:
-			contentParts = append(contentParts, dimStyle.Render("[y] Approve  [r] Request changes  [n] Deny"))
+			contentParts = append(contentParts, dimStyle.Render("[y] Approve  [n] Deny"))
 		default:
 			contentParts = append(contentParts, dimStyle.Render("[y] Allow  [n] Deny"))
 		}
@@ -3154,22 +3041,19 @@ func (m *SessionViewModel) overlayBorderLabel(topLine string) string {
 	return sb.String()
 }
 
+// promptActive reports whether an interactive prompt (a pending
+// permission) is awaiting the user.
+func (m *SessionViewModel) promptActive() bool {
+	return len(m.pendingPerms) > 0
+}
+
 func (m *SessionViewModel) buildHelpText() string {
 	if !m.lastCtrlC.IsZero() && time.Since(m.lastCtrlC) < time.Second {
 		return "press ctrl+c again to quit"
 	}
-	if m.activeQuestionPart() != nil {
-		if m.questionTyping {
-			return "enter: save | esc: cancel"
-		}
-		return "space: select | enter: next/submit | esc: dismiss"
-	}
 	if len(m.pendingPerms) > 0 {
 		if m.pendingPerms[0].Tool == agent.ClaudeToolExitPlanMode {
-			if m.planNotesActive {
-				return "enter: request changes | esc: cancel"
-			}
-			return "y: approve | r: request changes | n: deny"
+			return "y: approve | n: deny"
 		}
 		return "y: allow | n: deny"
 	}

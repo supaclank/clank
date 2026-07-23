@@ -162,7 +162,7 @@ Each `Part` additionally carries a derived `streaming` flag (true while text is 
   the next send ([INV-ABORT-DONE-001](08-invariants.md)). **Golden:** `sessionview.go:2203`
   (`startAbort`), `handleStatusChange` (abort-settle clears `pendingPerms`), `:952` (error path);
   `clank-mobile/…/PreviewOverlayContainer.kt` (settle-tools + `stoppedSinceLastSend` gating).
-- **[STATE-REVERT-RESULT-001] (MUST)** On revert success, set `session.revert_message_id`,
+- **~~[STATE-REVERT-RESULT-001]~~ (retired 0.6.0 — M3) (MUST)** On revert success, set `session.revert_message_id`,
   prefill the composer with the reverted user prompt, activate + focus it, and refetch the
   filtered transcript. **Golden:** `sessionview.go:924`–`:938`.
 
@@ -230,6 +230,6 @@ These are pure functions of the canonical state. Conformance asserts on them.
 - **[VIEW-ERROR-001] (MUST)** A non-abort error shows as a **recoverable** banner/reason on the
   session, cleared on the next non-error status; it MUST NOT look like a terminal crash and
   MUST NOT appear during an abort. **Golden:** `dispatch.ts:180`, `:33`.
-- **[VIEW-REVERT-PREFILL-001] (MUST)** After a revert, the composer is prefilled with the
+- **~~[VIEW-REVERT-PREFILL-001]~~ (retired 0.6.0 — M3) (MUST)** After a revert, the composer is prefilled with the
   reverted user prompt and focused, and the reverted tail is hidden. **Golden:**
   `internal/tui/sessionview.go:934`.
