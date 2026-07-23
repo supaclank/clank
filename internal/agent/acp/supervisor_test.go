@@ -179,6 +179,59 @@ func TestSupervisor_EnvChangeRestarts(t *testing.T) {
 	}
 }
 
+// TestSupervisor_EnvRotatedDuringSpawnTriggersRestart pins the fingerprint
+// to the env at spawn *start*. Recording it from a second profileEnv() call
+// after spawn returns would race a rotation landing mid-spawn: the recorded
+// fingerprint would match the (already-rotated) current env, so reconcile
+// would never notice the running process was built from the stale value.
+func TestSupervisor_EnvRotatedDuringSpawnTriggersRestart(t *testing.T) {
+	t.Parallel()
+	var envVal atomic.Value
+	envVal.Store("v1")
+	env := func(string) map[string]string { return map[string]string{"TOKEN": envVal.Load().(string)} }
+	profile := testProfile(acpx.ScopePerDir, env)
+	sup, err := acpx.NewAdapterSupervisor(profile, t.Logf)
+	if err != nil {
+		t.Fatalf("NewAdapterSupervisor: %v", err)
+	}
+	var spawns atomic.Int64
+	inner := acptest.SpawnFunc(func(string) *acptest.ScriptedAgent {
+		spawns.Add(1)
+		return &acptest.ScriptedAgent{}
+	}, profile, t.Logf)
+	sup.SetSpawnFunc(func(ctx context.Context, scopeDir string) (*acpx.AdapterProc, error) {
+		p, err := inner(ctx, scopeDir)
+		if err == nil && spawns.Load() == 1 {
+			// Rotation lands while this first spawn is still "in flight"
+			// from reconcile's perspective (spawn has just returned but
+			// the fingerprint hasn't been recorded yet).
+			envVal.Store("v2")
+		}
+		return p, err
+	})
+	sup.SetReconcileInterval(20 * time.Millisecond)
+
+	runCtx, runCancel := context.WithCancel(context.Background())
+	defer runCancel()
+	go sup.Run(runCtx)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c1, err := sup.GetConn(ctx, "/dir/a")
+	if err != nil {
+		t.Fatalf("GetConn: %v", err)
+	}
+
+	select {
+	case <-c1.Closed():
+	case <-time.After(3 * time.Second):
+		t.Fatal("rotation mid-spawn went undetected: adapter never restarted onto the rotated env")
+	}
+	if spawns.Load() != 2 {
+		t.Errorf("spawns = %d, want 2 (restart once the rotated env is observed)", spawns.Load())
+	}
+}
+
 func TestSupervisor_SpawnErrorFailsWaiterThenRecovers(t *testing.T) {
 	t.Parallel()
 	profile := testProfile(acpx.ScopePerDir, nil)

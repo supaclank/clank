@@ -224,12 +224,15 @@ func (s *AdapterSupervisor) reconcile(ctx context.Context) {
 	results := make(chan started, len(missing))
 	for _, key := range missing {
 		go func(key string) {
-			// No timeout here: spawn implementations own their budgets
-			// (Prepare may run a cold adapter install; initialize uses
-			// spawnTimeout).
+			// Fingerprint the env before spawning, not after: spawn has no
+			// timeout (Prepare may run a cold adapter install) and can run
+			// long enough for a rotation to land mid-flight. Fingerprinting
+			// afterward would record the already-rotated value, so the next
+			// reconcile sees no change and never restarts onto it.
+			envFP := envFingerprint(s.profileEnv(key))
 			p, err := s.spawn(ctx, key)
 			if err == nil {
-				p.envFP = envFingerprint(s.profileEnv(key))
+				p.envFP = envFP
 			}
 			results <- started{key: key, proc: p, err: err}
 		}(key)

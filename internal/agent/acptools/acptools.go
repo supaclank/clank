@@ -81,8 +81,8 @@ func Ensure(ctx context.Context, toolsDir string) (Paths, error) {
 			return Paths{}, fmt.Errorf("bun install acp tools in %s: %w: %s", toolsDir, err, tail(out, 400))
 		}
 	}
-	if !entryExists(p) {
-		return Paths{}, fmt.Errorf("acp tools install finished but %s is missing", p.CodexACPEntry)
+	if missing := firstMissingEntry(p); missing != "" {
+		return Paths{}, fmt.Errorf("acp tools install finished but %s is missing", missing)
 	}
 	ensureDone[toolsDir] = p
 	return p, nil
@@ -114,12 +114,18 @@ func materializeManifest(toolsDir string) (bool, error) {
 }
 
 func entryExists(p Paths) bool {
+	return firstMissingEntry(p) == ""
+}
+
+// firstMissingEntry returns the path of whichever adapter entry point
+// doesn't exist yet, or "" if both are present.
+func firstMissingEntry(p Paths) string {
 	for _, entry := range []string{p.CodexACPEntry, p.ClaudeACPEntry} {
 		if _, err := os.Stat(entry); err != nil {
-			return false
+			return entry
 		}
 	}
-	return true
+	return ""
 }
 
 func tail(b []byte, n int) string {
