@@ -855,6 +855,10 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.err = msg.err
 		}
+		// TODO(ai-review): this fetchSessionInfo() races the conditional
+		// re-fetch sessionMessagesMsg may trigger below; a slow response here
+		// landing after that one would silently clobber fresh runtime fields
+		// with stale ones. https://github.com/Acksell/clank/pull/187
 		return m, tea.Batch(m.fetchSessionInfo(), m.fetchSessionMessages())
 
 	case agentsResultMsg:

@@ -375,3 +375,25 @@ func TestCompose_ApplyProjectFolderFetchesModes(t *testing.T) {
 	}
 	t.Fatalf("applyProjectFolder() never dispatched fetchModes(); mode picker goes stale after a folder change, got msgs %#v", msgs)
 }
+
+// The in-session modesResultMsg handler preserves the user's mode selection
+// by ID across a refetch; compose's handler unconditionally reset
+// selectedMode to 0 instead, silently discarding a Tab-cycled choice every
+// time Init/applyBackend/applyProjectFolder re-fetched modes.
+func TestCompose_ModesResultMsgPreservesSelectionByID(t *testing.T) {
+	t.Parallel()
+	m := newSessionViewComposingWithBackend(nil, "", agent.BackendClaudeCode)
+	m.width, m.height = 80, 40
+
+	modes := []agent.SessionMode{{ID: "default", Name: "Default"}, {ID: "auto", Name: "Auto"}}
+	updated, _ := m.updateCompose(modesResultMsg{modes: modes})
+	m = updated.(*SessionViewModel)
+	m.selectedMode = 1 // user Tab-cycles to "auto"
+
+	updated, _ = m.updateCompose(modesResultMsg{modes: modes})
+	m = updated.(*SessionViewModel)
+
+	if got := string(m.modes[m.selectedMode].perm); got != "auto" {
+		t.Fatalf("selectedMode reset to %q after refresh; want preserved selection %q", got, "auto")
+	}
+}

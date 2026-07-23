@@ -154,10 +154,19 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Agent-advertised modes for the selected backend. Compose has no
 		// session yet, so this is the only source — nothing is hardcoded.
 		if len(msg.modes) > 0 {
+			// Preserve the user's selection by ID across a folder/backend
+			// refresh, mirroring the in-session modesResultMsg handler.
+			prev := ""
+			if m.selectedMode >= 0 && m.selectedMode < len(m.modes) {
+				prev = string(m.modes[m.selectedMode].perm)
+			}
 			m.modes = make([]selectableMode, len(msg.modes))
 			m.selectedMode = 0
 			for i, sm := range msg.modes {
 				m.modes[i] = selectableMode{label: sm.Name, perm: agent.ClaudePermissionMode(sm.ID)}
+				if sm.ID == prev {
+					m.selectedMode = i
+				}
 			}
 		}
 		return m, nil
