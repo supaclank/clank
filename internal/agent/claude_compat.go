@@ -33,9 +33,15 @@ import (
 //  2. `make install` — laptops get the new clank that knows the new pin.
 //  3. Sprites probe-and-reinstall on next EnsureHost.
 //
+// Since the ACP migration this pin governs the standalone claude CLI
+// used for AUTH ONLY (`claude setup-token`, borrowed-login probe) — the
+// agent runtime is the claude-agent-acp adapter's own bundled CLI,
+// pinned by acptools' lockfile. Keep this tracking the adapter's
+// bundled vintage so both paths agree on credential formats.
+//
 // Unlike PinnedOpencodeVersion there is no laptop-side compat gate:
 // claude session blobs never round-trip through clank migrations, so
-// drift is a quality problem (wrong model), not a corruption problem.
+// drift is a quality problem, not a corruption problem.
 const PinnedClaudeVersion = "2.1.217"
 
 // ParseClaudeVersionOutput extracts the bare version from `claude

@@ -91,7 +91,7 @@ func main() {
 	localFileAttachments := flag.Bool("local-file-attachments", false, "Honor file:// image attachment sources (the client shares this host's filesystem). Set by the local laptop provisioner; off for remote sprites so a message can't make the host read arbitrary local paths.")
 	ghCLIAuth := flag.Bool("gh-cli-auth", false, "Resolve GitHub tokens from the machine's gh CLI login (gh auth token) when no clank GitHub connection exists. Set by the local laptop provisioner; off for remote sprites, which have no gh login to borrow.")
 	claudeCLIAuth := flag.Bool("claude-cli-auth", false, "Report the machine's own claude CLI login (Keychain / ~/.claude/.credentials.json) as a connected Anthropic provider when no clank connection exists — presence detection only, the credential is never read. Set by the local laptop provisioner; off for remote sprites, which have no claude login to borrow.")
-	acpBackends := flag.String("acp-backends", envDefault("CLANK_ACP_BACKENDS", "all"), "Comma-separated backends served through the ACP adapter path instead of the bespoke integration (opencode, claude-code, codex; 'all', 'none'). All three backends are ACP-served (M3 complete); removing one from the set disables it on this host. Defaults to $CLANK_ACP_BACKENDS, else 'all'.")
+	acpBackends := flag.String("acp-backends", envDefault("CLANK_ACP_BACKENDS", "all"), "Backends this host serves, comma-separated (opencode, claude-code, codex; 'all', 'none'). Every backend runs as an ACP agent; omitting one disables it on this host (its sessions then fail to open rather than silently using something else). Defaults to $CLANK_ACP_BACKENDS, else 'all'.")
 	flag.Parse()
 
 	if *socket == "" && *listen == "" {
