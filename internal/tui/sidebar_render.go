@@ -284,9 +284,35 @@ func (m *SidebarModel) bodyViewportH() int {
 	return vh
 }
 
-// renderHomeRow renders the fixed link to the welcome screen.
+// renderHomeRow renders the fixed link to the welcome screen. The
+// right-edge cursor chevron (◀) tracks the keyboard cursor only, like
+// worktree rows. A primary-colored left rail (▎) marks the row while
+// the welcome screen is the active right-pane view — matching the
+// active-session rail — so "what's open" stays visible even after the
+// cursor moves elsewhere in the sidebar.
 func (m *SidebarModel) renderHomeRow(selected bool, maxWidth int) string {
-	return m.renderFooterRow("⌂ Home", selected)
+	const label = "⌂ Home"
+	cursorHere := selected && m.focused
+	// The ▎ rail is a single "what's open" marker shared with sessions;
+	// never paint it on Home while a session also claims it.
+	homeRail := m.homeActive && m.activeSessionID == ""
+
+	nameStyle := lipgloss.NewStyle().Foreground(dimColor)
+	if cursorHere || homeRail {
+		nameStyle = lipgloss.NewStyle().Foreground(textColor).Bold(true)
+	}
+
+	rail := " "
+	if homeRail {
+		rail = lipgloss.NewStyle().Foreground(primaryColor).Render(activeSessionRail)
+	}
+	line := rail + nameStyle.Render(label)
+
+	if cursorHere {
+		line = padRight(line, maxWidth-rightCursorWidth) + " " +
+			lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render(rightCursorGlyph)
+	}
+	return line
 }
 
 // listHeight returns the height available for the body (excluding border).

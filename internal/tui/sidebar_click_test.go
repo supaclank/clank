@@ -158,6 +158,38 @@ func TestSidebarClick_HomeOpensWelcomeScreen(t *testing.T) {
 	}
 }
 
+// Opening Home must clear the active-session rail so the previously
+// open session's row no longer reads as "current" — otherwise the old
+// selection lingers next to the Home selection.
+func TestSidebarClick_HomeClearsActiveSession(t *testing.T) {
+	t.Parallel()
+	m := newInboxWithSidebar(t)
+	m.activeConnID = "sess-123"
+	m.sidebar.SetActiveSessionID("sess-123")
+	m, _ = clickSidebarKind(t, m, nodeHome)
+	if m.activeConnID != "" {
+		t.Errorf("activeConnID = %q, want cleared after opening Home", m.activeConnID)
+	}
+	if m.sidebar.activeSessionID != "" {
+		t.Errorf("sidebar activeSessionID = %q, want cleared after opening Home", m.sidebar.activeSessionID)
+	}
+}
+
+// Opening Home keeps keyboard focus on the sidebar so up/down
+// navigation continues without a left-arrow round-trip from the
+// welcome pane.
+func TestSidebarClick_HomeKeepsSidebarFocus(t *testing.T) {
+	t.Parallel()
+	m := newInboxWithSidebar(t)
+	m, _ = clickSidebarKind(t, m, nodeHome)
+	if m.pane != paneSidebar {
+		t.Errorf("pane = %v, want paneSidebar after opening Home", m.pane)
+	}
+	if !m.sidebar.focused {
+		t.Error("sidebar not focused after opening Home")
+	}
+}
+
 // With the sidebar visible, mouse reporting is on for every screen, so a
 // wheel over the sidebar must move its cursor even on the inbox screen
 // (where it previously couldn't, mouse reporting being chat-only).

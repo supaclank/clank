@@ -1262,6 +1262,7 @@ func (m *InboxModel) View() tea.View {
 	var content string
 
 	if m.showTwoPanes() {
+		m.sidebar.SetHomeActive(m.screen == screenWelcome)
 		sidebarView := m.sidebar.View()
 		// The chat view skips the outer pane border — every message
 		// already paints its own rounded border when selected, so a
@@ -1841,9 +1842,13 @@ func (m *InboxModel) activateSidebarCursor() (tea.Model, tea.Cmd) {
 	switch {
 	case m.sidebar.CursorOnHome():
 		m.screen = screenWelcome
+		m.activeConnID = ""
+		m.sidebar.SetActiveSessionID("")
 		m.cloud.SetFocused(false)
 		m.settings.SetFocused(false)
-		m.setPane(paneSessions)
+		// Keep focus on the sidebar so up/down navigation continues
+		// without a left-arrow round-trip back from the welcome pane.
+		m.setPane(paneSidebar)
 		return m, nil
 	case m.sidebar.CursorOnSettings():
 		m.openSettings()
@@ -1985,9 +1990,13 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		// inbox if we were previewing either.
 		if m.screen == screenCloud {
 			m.screen = screenWelcome
+			m.activeConnID = ""
+			m.sidebar.SetActiveSessionID("")
 			m.cloud.SetFocused(false)
 		} else if m.screen == screenSettings {
 			m.screen = screenWelcome
+			m.activeConnID = ""
+			m.sidebar.SetActiveSessionID("")
 			m.settings.SetFocused(false)
 		}
 	}

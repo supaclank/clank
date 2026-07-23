@@ -75,6 +75,7 @@ type SidebarModel struct {
 	userToggles     map[string]bool  // explicit user expand/collapse choices (persisted)
 	cycleIdx        map[string]int   // per-worktree index used by Shift+Enter session-rotate
 	activeSessionID string           // session currently rendered in the right pane (drives the left-rail indicator)
+	homeActive      bool             // welcome/home screen is the one shown in the right pane (drives the Home row's active indicator)
 	nowFn           func() time.Time // injected for deterministic tests
 
 	cursor int
@@ -269,6 +270,12 @@ func (m *SidebarModel) toggleExpand() bool {
 // that session's row, so the user can see "what's open" independent of
 // where their arrow-key cursor sits. Pass "" to clear.
 func (m *SidebarModel) SetActiveSessionID(id string) { m.activeSessionID = id }
+
+// SetHomeActive marks whether the welcome/home screen is the one
+// currently shown in the right pane. The sidebar uses it to keep the
+// Home row highlighted (via a left-edge rail) even when the sidebar
+// itself is unfocused, mirroring the active-session rail.
+func (m *SidebarModel) SetHomeActive(active bool) { m.homeActive = active }
 
 // SetCloudStatus updates the cloud connection indicator shown next to
 // the "☁ Cloud" footer row.
