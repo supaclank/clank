@@ -361,15 +361,14 @@ func run(cfg runConfig) error {
 		return fmt.Errorf("parse --templates-json: %w", err)
 	}
 
-	// ACP migration seam: entries in this set are served through the ACP
-	// adapter path. codex is ACP-only; opencode/claude-code swaps land in
-	// later milestones (fail fast until then — no silent fallback).
+	// acpSet selects which backends this host serves; all three run
+	// through the ACP adapter path (M3 complete).
 	acpSet, err := agent.ParseBackendSet(cfg.acpBackends)
 	if err != nil {
 		return fmt.Errorf("--acp-backends: %w", err)
 	}
-	// Every backend is ACP-served (M3 complete): the map is populated
-	// solely from --acp-backends.
+	// backendManagers is populated solely from acpSet — a backend
+	// missing here fails fast rather than falling back silently.
 	backendManagers := map[agent.BackendType]agent.BackendManager{}
 	home, err := os.UserHomeDir()
 	if err != nil {
