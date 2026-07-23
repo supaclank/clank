@@ -67,8 +67,8 @@ func Ensure(ctx context.Context, toolsDir string) (Paths, error) {
 		return Paths{}, err
 	}
 	p := Paths{
-		Dir:           toolsDir,
-		BunBin:        bunBin,
+		Dir:            toolsDir,
+		BunBin:         bunBin,
 		CodexACPEntry:  filepath.Join(toolsDir, "node_modules", "@agentclientprotocol", "codex-acp", "dist", "index.js"),
 		ClaudeACPEntry: filepath.Join(toolsDir, "node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js"),
 	}
