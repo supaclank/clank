@@ -314,13 +314,10 @@ func (m *ACPBackendManager) putModes(workDir string, modes []agent.SessionMode) 
 func (m *ACPBackendManager) ListModes(_ context.Context, projectDir string) ([]agent.SessionMode, error) {
 	m.catalogMu.Lock()
 	defer m.catalogMu.Unlock()
-	if modes, ok := m.modes[projectDir]; ok {
-		return slices.Clone(modes), nil
-	}
-	for _, modes := range m.modes {
-		return slices.Clone(modes), nil
-	}
-	return nil, nil
+	// Strictly per-dir: agents/modes are project-scoped (opencode reads
+	// .opencode/agent/ from the repo), so answering for a dir we have not
+	// seen with another dir's list would cross-contaminate projects.
+	return slices.Clone(m.modes[projectDir]), nil
 }
 
 // ListModels implements agent.ModelLister from the per-dir catalog a
@@ -330,13 +327,9 @@ func (m *ACPBackendManager) ListModes(_ context.Context, projectDir string) ([]a
 func (m *ACPBackendManager) ListModels(_ context.Context, projectDir string) ([]agent.ModelInfo, error) {
 	m.catalogMu.Lock()
 	defer m.catalogMu.Unlock()
-	if models, ok := m.catalog[projectDir]; ok {
-		return slices.Clone(models), nil
-	}
-	for _, models := range m.catalog {
-		return slices.Clone(models), nil
-	}
-	return nil, nil
+	// Per-dir for the same reason as ListModes: project config can add or
+	// restrict providers, so another dir's catalog is not a safe answer.
+	return slices.Clone(m.catalog[projectDir]), nil
 }
 
 // Shutdown stops every adapter process.
