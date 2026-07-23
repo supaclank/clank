@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 
+	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
 )
 
@@ -119,6 +120,8 @@ func errorFromResp(resp *http.Response) error {
 		return fmt.Errorf("%s: %w", e.Error, host.ErrReservedBranch)
 	case "invalid_branch_name":
 		return fmt.Errorf("%s: %w", e.Error, host.ErrInvalidBranchName)
+	case "unsupported":
+		return fmt.Errorf("%s: %w", e.Error, agent.ErrUnsupported)
 	default:
 		return fmt.Errorf("host: %s", e.Error)
 	}
