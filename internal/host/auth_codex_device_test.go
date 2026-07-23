@@ -479,3 +479,60 @@ func TestSetOpenAIAPIKey_PreservesChatGPTConnection(t *testing.T) {
 		t.Errorf("sink = %+v, want both credentials recorded", sink)
 	}
 }
+
+// A read failure other than "file doesn't exist" (permission denied,
+// I/O error) must surface as an error, not get silently folded into
+// "no sink" just because the failed read also returned no data.
+func TestReadOpenAISink_SurfacesNonNotExistReadErrors(t *testing.T) {
+	t.Parallel()
+	a, _ := newTestAuthManager(t)
+	// os.ReadFile on a directory fails with a non-ENOENT error and no data.
+	if err := os.MkdirAll(a.OpenAISinkPath(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.readOpenAISink(); err == nil {
+		t.Fatal("readOpenAISink should surface the read error, not report an empty sink")
+	}
+}
+
+// awaitFlowState polls until the flow reaches wantState, for catching
+// it mid-ceremony (e.g. Authorized) rather than only at the terminal end.
+func awaitFlowState(t *testing.T, a *AuthManager, flowID string, wantState agent.DeviceFlowState) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		st, err := a.GetFlowStatus(context.Background(), flowID)
+		if err != nil {
+			t.Fatalf("GetFlowStatus: %v", err)
+		}
+		if st.State == wantState {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("flow %s never reached state %s", flowID, wantState)
+}
+
+// onOpenAICredential can block (RestartAll stops adapters). A cancel
+// that lands while it's still running must stick — the terminal
+// Success transition after the callback returns must not clobber a
+// cancel recorded during the callback.
+func TestCodexDeviceFlow_CancelDuringCredentialCallbackWins(t *testing.T) {
+	a, _ := newCodexAuthManager(t, "happy")
+	unblock := make(chan struct{})
+	a.SetOpenAICredentialCallback(func() { <-unblock })
+
+	start, err := a.StartDeviceFlow(context.Background(), ProviderOpenAICodexChatGPT)
+	if err != nil {
+		t.Fatalf("StartDeviceFlow: %v", err)
+	}
+	awaitFlowState(t, a, start.FlowID, agent.DeviceFlowAuthorized)
+	if err := a.CancelFlow(context.Background(), start.FlowID); err != nil {
+		t.Fatalf("CancelFlow: %v", err)
+	}
+	close(unblock)
+
+	if st := awaitTerminalFlowState(t, a, start.FlowID); st.State != agent.DeviceFlowCanceled {
+		t.Fatalf("terminal = %s (%q), want canceled — the callback-blocked Success transition clobbered it", st.State, st.Error)
+	}
+}

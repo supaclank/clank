@@ -216,24 +216,18 @@ type AuthManager struct {
 	// before the manager serves requests.
 	claudeCLIFallback bool
 
-	// onOpenAICredential fires after any OpenAI credential change (API
-	// key write, ChatGPT device login, disconnect) so the codex-acp
-	// adapters restart and their app-server children re-read auth state.
-	// Wired via SetOpenAICredentialCallback before the manager serves
-	// requests.
+	// onOpenAICredential fires after any OpenAI credential change so
+	// codex-acp adapters restart and re-read auth state. Wired via
+	// SetOpenAICredentialCallback.
 	onOpenAICredential func()
 
-	// codexLogin resolves the argv that runs the pinned codex CLI's
-	// device login (provisioning the ACP tools on first use). Nil when
-	// the codex backend isn't enabled on this host — the device flow
-	// then reports ErrCodexDeviceAuthUnavailable. Wired via
-	// SetCodexLoginCommand; tests inject a fake binary.
+	// codexLogin resolves the argv for the pinned codex CLI's device
+	// login; nil when the codex backend isn't enabled (device flow
+	// reports ErrCodexDeviceAuthUnavailable). Wired via SetCodexLoginCommand.
 	codexLogin func(ctx context.Context) ([]string, error)
 
-	// codexCLIAuth lets ListProviders report the machine's own codex
-	// CLI login as a connected subscription provider when clank didn't
-	// run the ceremony. Set once at wiring time via
-	// EnableCodexCLIFallback, before the manager serves requests.
+	// codexCLIAuth reports a pre-existing codex CLI login as a
+	// connected subscription. Set via EnableCodexCLIFallback.
 	codexCLIAuth bool
 
 	// lookupEnv resolves env-borne credentials for provider status

@@ -36,11 +36,14 @@ func (a *AuthManager) readOpenAISink() (openaiSink, error) {
 func (a *AuthManager) readOpenAISinkLocked() (openaiSink, error) {
 	var sink openaiSink
 	data, err := os.ReadFile(a.OpenAISinkPath())
-	if errors.Is(err, os.ErrNotExist) || len(data) == 0 {
+	if errors.Is(err, os.ErrNotExist) {
 		return sink, nil
 	}
 	if err != nil {
 		return sink, fmt.Errorf("read %s: %w", a.OpenAISinkPath(), err)
+	}
+	if len(data) == 0 {
+		return sink, nil
 	}
 	if err := json.Unmarshal(data, &sink); err != nil {
 		return sink, fmt.Errorf("parse %s: %w", a.OpenAISinkPath(), err)

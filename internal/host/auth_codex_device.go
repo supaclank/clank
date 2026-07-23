@@ -124,6 +124,15 @@ func (s *codexDeviceSession) awaitLoginDetails(ctx context.Context) (verificatio
 		}
 		select {
 		case <-s.doneCh:
+			// cmd.Wait() only returns once every io.Copy goroutine has
+			// finished, so re-read: the loop's read above can race a
+			// final write that landed just before doneCh closed.
+			text = s.output()
+			urlMatch = codexDeviceURLRe.FindStringSubmatch(text)
+			codeMatch = codexDeviceCodeRe.FindStringSubmatch(text)
+			if urlMatch != nil && codeMatch != nil {
+				return urlMatch[1], codeMatch[1], nil
+			}
 			return "", "", fmt.Errorf("codex login exited before printing the sign-in code: %s", s.outputTail())
 		default:
 		}
@@ -159,13 +168,8 @@ func (a *AuthManager) SetCodexLoginCommand(f func(ctx context.Context) ([]string
 }
 
 // EnableCodexCLIFallback lets ListProviders report the machine's own
-// codex CLI login ($CODEX_HOME/auth.json) as a connected subscription
-// provider when clank didn't run the ceremony itself. A deployment
-// decision like EnableClaudeCLIFallback: the local laptop provisioner
-// enables it — the adapter inherits the host environment there and
-// uses that login anyway — while sandboxes keep connection state
-// explicit. Presence-only: the credential is never read. Call once at
-// wiring time, before the manager serves requests.
+// codex CLI login as a connected subscription when clank didn't run
+// the ceremony. Presence-only: the credential is never read.
 func (a *AuthManager) EnableCodexCLIFallback() { a.codexCLIAuth = true }
 
 // startCodexDeviceFlow spawns the codex device login, waits for it to
@@ -281,7 +285,9 @@ func (a *AuthManager) awaitCodexDeviceAuth(ctx context.Context, flowID string, s
 	if a.onOpenAICredential != nil {
 		a.onOpenAICredential()
 	}
-	a.transition(flowID, agent.DeviceFlowSuccess, "")
+	// onOpenAICredential can block (RestartAll stops adapters); guard
+	// against CancelFlow having already recorded Canceled meanwhile.
+	a.finishFlowIfActive(flowID, agent.DeviceFlowSuccess, "")
 }
 
 // scrubEnv returns env without any of the named variables.
