@@ -14,9 +14,8 @@ import (
 // atomicTime tracks the last session/update arrival for the turn drain.
 type atomicTime struct{ v atomic.Int64 }
 
-func (t *atomicTime) set(now time.Time)       { t.v.Store(now.UnixNano()) }
-func (t *atomicTime) get() time.Time          { return time.Unix(0, t.v.Load()) }
-func (t *atomicTime) sinceSet() time.Duration { return time.Since(t.get()) }
+func (t *atomicTime) set(now time.Time) { t.v.Store(now.UnixNano()) }
+func (t *atomicTime) get() time.Time    { return time.Unix(0, t.v.Load()) }
 
 // Open establishes the ACP session: session/new for fresh sessions,
 // session/load (full replay into the reducer, no events) for resumes.
