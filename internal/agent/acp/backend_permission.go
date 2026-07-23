@@ -3,7 +3,6 @@ package acp
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
@@ -100,11 +99,9 @@ func (b *Backend) RespondPermission(ctx context.Context, permissionID string, al
 // allow prefers allow_once, deny prefers reject_once; same-family
 // fallback covers agents that only offer the *_always variants.
 func pickOption(options []sdk.PermissionOption, allow bool) (sdk.PermissionOptionId, bool) {
-	prefix := "reject"
-	first := sdk.PermissionOptionKindRejectOnce
+	first, second := sdk.PermissionOptionKindRejectOnce, sdk.PermissionOptionKindRejectAlways
 	if allow {
-		prefix = "allow"
-		first = sdk.PermissionOptionKindAllowOnce
+		first, second = sdk.PermissionOptionKindAllowOnce, sdk.PermissionOptionKindAllowAlways
 	}
 	for _, o := range options {
 		if o.Kind == first {
@@ -112,7 +109,7 @@ func pickOption(options []sdk.PermissionOption, allow bool) (sdk.PermissionOptio
 		}
 	}
 	for _, o := range options {
-		if strings.HasPrefix(string(o.Kind), prefix) {
+		if o.Kind == second {
 			return o.OptionId, true
 		}
 	}

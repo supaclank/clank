@@ -173,6 +173,11 @@ func (b *Backend) runTurns() {
 // Session-scoped updates (title, mode) are safe at any time and don't
 // need this window.
 //
+// TODO(ai-review): lastUpdate is session-scoped and never reset per turn,
+// so a queued turn following a >300ms gap with no updates of its own can
+// exit the drain immediately and drop its own late updates.
+// https://github.com/Acksell/clank/pull/185
+//
 // TODO(ai-review): switch the 25ms poll below to a timer/cond-based wait
 // to cut wakeups during the drain window. https://github.com/Acksell/clank/pull/185
 func (b *Backend) drainLateUpdates() {
@@ -181,7 +186,11 @@ func (b *Backend) drainLateUpdates() {
 		if b.lastUpdate.sinceSet() >= drainQuiet {
 			return
 		}
-		time.Sleep(25 * time.Millisecond)
+		select {
+		case <-b.bgCtx.Done():
+			return
+		case <-time.After(25 * time.Millisecond):
+		}
 	}
 }
 
