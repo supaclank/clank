@@ -271,12 +271,12 @@ func (m *SidebarModel) nodeLineCost(idx int, isFirstVisible bool) int {
 
 // bodyViewportH returns the number of rendered terminal lines the
 // body section can fill. The body shares listHeight with the
-// fixed-overhead rows: header(1) + blank(1) at the top, footer
-// separator + 3 footer rows at the bottom = 6. When creating mode is
-// active the input also lives in the body (accounted for in
-// nodeLineCost), so no extra deduction is needed here.
+// fixed-overhead rows: "Home" + home row + blank + "Worktrees" + blank
+// (5) at the top, footer separator + 3 footer rows (4) at the bottom.
+// When creating mode is active the input also lives in the body
+// (accounted for in nodeLineCost), so no extra deduction is needed here.
 func (m *SidebarModel) bodyViewportH() int {
-	const overhead = 4 + 4 // Home/Worktrees header block + footer block
+	const overhead = 5 + 4 // Home/Worktrees header block + footer block
 	vh := m.listHeight() - overhead
 	if vh < 1 {
 		vh = 1

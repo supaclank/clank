@@ -250,3 +250,56 @@ func TestRenderHomeRow_ChevronWhenFocused(t *testing.T) {
 		t.Errorf("focused+selected home row missing chevron %q: %q", rightCursorGlyph, row)
 	}
 }
+
+// The Home/Worktrees header block emits 5 lines (Home, home row, blank,
+// "Worktrees", blank), but bodyViewportH's overhead constant only
+// accounted for 4 — one short. A full body then renders one line taller
+// than listHeight, pushing the sidebar's border past its allotted size
+// instead of clipping to it.
+func TestView_DoesNotOverflowListHeight_WhenBodyIsFull(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)
+	const pathA = "/repo/a"
+	const pathB = "/repo/b"
+	newSessions := func(path string, updatedAt time.Time, n int) []agent.SessionInfo {
+		out := make([]agent.SessionInfo, n)
+		for i := range out {
+			out[i] = agent.SessionInfo{
+				ID:         path + string(rune('a'+i)),
+				Title:      "session",
+				Status:     agent.StatusIdle,
+				UpdatedAt:  updatedAt,
+				LastReadAt: updatedAt,
+				GitRef:     agent.GitRef{LocalPath: path},
+			}
+		}
+		return out
+	}
+	// MaxRecentSessionsBeforeBucket is 5 per worktree, so 5+5 across two
+	// worktrees stays unbucketed — every row is a plain 2-line session
+	// or worktree row, giving a predictable per-item cost of exactly 2.
+	var sessions []agent.SessionInfo
+	sessions = append(sessions, newSessions(pathA, now, 5)...)
+	sessions = append(sessions, newSessions(pathB, now.Add(-time.Hour), 5)...)
+
+	m := NewSidebarModel(nil, "host", agent.GitRef{LocalPath: pathA}, pathA)
+	m.nowFn = func() time.Time { return now }
+	m.SetSessions(sessions)
+	m.SetExpanded(map[string]bool{"wt:" + pathB: true}) // pathA auto-expands as cwd
+	m.SetSize(40, 24)                                   // listHeight() == 20
+
+	// Scroll past worktree A's anchor row (cost 1) so every subsequent
+	// visible node costs exactly 2 (session, or worktree-with-separator)
+	// — the only way to land exactly on bodyViewportH's off-by-one.
+	m.scroll = 1
+
+	out := m.View()
+	const borderRows = 2 // top + bottom border, outside listHeight's accounting
+	if got, want := strings.Count(out, "\n")+1, m.listHeight()+borderRows; got > want {
+		t.Errorf("sidebar rendered %d lines, want <= listHeight()+border %d (bodyViewportH overhead undercounts the header): %q", got, want, out)
+	}
+	if !strings.Contains(out, "Settings") {
+		t.Errorf("rendered sidebar is missing the Settings footer row:\n%s", out)
+	}
+}
