@@ -9,6 +9,7 @@ import (
 // the welcome / onboarding content (replacing the removed all-sessions
 // list) with the key actions and orientation hints.
 func TestRenderWelcomePane_ShowsOnboarding(t *testing.T) {
+	t.Parallel()
 	m := &InboxModel{width: 100, height: 40, screen: screenWelcome, pane: paneSessions}
 
 	out := m.renderWelcomePane()
@@ -30,6 +31,7 @@ func TestRenderWelcomePane_ShowsOnboarding(t *testing.T) {
 // renders the welcome pane through the top-level View, and that no residual
 // "Inbox" list header leaks through.
 func TestView_WelcomeScreenIsDefault(t *testing.T) {
+	t.Parallel()
 	// sidebarHidden keeps this single-pane so View() renders only the
 	// welcome pane (an unconfigured sidebar isn't the subject here).
 	m := &InboxModel{width: 100, height: 40, sidebarHidden: true, sidebarWidthRatio: defaultSidebarWidthRatio}
