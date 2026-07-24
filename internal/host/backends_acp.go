@@ -577,7 +577,20 @@ func (m *ACPBackendManager) probe(ctx context.Context, dir string, global bool) 
 // session-history repos have their agents ready too). Best-effort and
 // invisible — it runs in the background at host start and never blocks
 // readiness. Re-running is safe: it heals a stale or lost catalog.
+//
+// Registers with probeWG like every other probe path, so Shutdown — called
+// from PrewarmCatalogs's untracked `go pw.Prewarm(ctx)` — still waits it out
+// instead of returning while Prewarm is mid-probe.
 func (m *ACPBackendManager) Prewarm(ctx context.Context) {
+	m.catalogMu.Lock()
+	if m.closed {
+		m.catalogMu.Unlock()
+		return
+	}
+	m.probeWG.Add(1)
+	m.catalogMu.Unlock()
+	defer m.probeWG.Done()
+
 	neutral, err := os.MkdirTemp("", "clank-catalog-probe-")
 	if err != nil {
 		log.Printf("[%s] prewarm: temp dir: %v", m.profile.ID, err)

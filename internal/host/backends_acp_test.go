@@ -566,6 +566,80 @@ func TestACPBackendManager_PrewarmSingleFlightsAgainstConcurrentLiveRead(t *test
 	}
 }
 
+// Shutdown documents that it waits for in-flight catalog probes so no
+// goroutine outlives the manager. Prewarm is launched as a bare `go
+// pw.Prewarm(ctx)` by the caller (PrewarmCatalogs), so it must register
+// itself with probeWG on entry — otherwise Shutdown can return while
+// Prewarm is still mid-probe.
+//
+// Blocks Prewarm inside its knownDirs() call (pure Go synchronization, no
+// transport) rather than inside a session/new RPC: Shutdown's StopAll()
+// kills the adapter process first, which would otherwise unblock an RPC
+// on its own and make the probeWG wait itself unobservable.
+func TestACPBackendManager_ShutdownWaitsForPrewarm(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // installGuidanceSkills writes under $HOME
+
+	mgr := newPerDirManager(t, acpDirs(t))
+	category := sdk.SessionConfigOptionCategory("model")
+	scripted := func(string) *acptest.ScriptedAgent {
+		a := &acptest.ScriptedAgent{}
+		a.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+			return sdk.NewSessionResponse{
+				SessionId: "s-1",
+				ConfigOptions: []sdk.SessionConfigOption{{Select: &sdk.SessionConfigOptionSelect{
+					Id: "model", Name: "Model", Category: &category, CurrentValue: "gpt-5.2-codex",
+					Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+						{Value: "gpt-5.2-codex", Name: "GPT-5.2 Codex"},
+					}},
+				}}},
+			}, nil
+		}
+		return a
+	}
+	mgr.Supervisor().SetSpawnFunc(acptest.SpawnFunc(scripted, acpx.CodexProfile("bun", "entry", nil), t.Logf))
+	mgr.Supervisor().SetReconcileInterval(20 * time.Millisecond)
+
+	var calls atomic.Int64
+	started := make(chan struct{})
+	release := make(chan struct{})
+	knownDirs := func() ([]string, error) {
+		if calls.Add(1) == 1 {
+			return nil, nil // Init's own synchronous call
+		}
+		close(started) // Prewarm's call — block until released
+		<-release
+		return nil, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := mgr.Init(ctx, knownDirs); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	go mgr.Prewarm(ctx)
+	<-started // Prewarm finished its neutral probe and is now blocked in knownDirs()
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		mgr.Shutdown()
+		close(shutdownDone)
+	}()
+
+	select {
+	case <-shutdownDone:
+		t.Fatal("Shutdown returned while Prewarm was still blocked in knownDirs()")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-shutdownDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown did not return after Prewarm finished")
+	}
+}
+
 // A host-scoped backend has no per-dir probe, so if the startup Prewarm
 // never filled the global catalog (adapter still provisioning), a read must
 // still recover: it serves empty immediately and re-probes the global
