@@ -189,13 +189,17 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
   SHOULD fetch them lazily/cached, not on every render. They are pure reads. **Golden:**
   `internal/host/mux`.
 
-- **[OP-013] (MAY)** `GET /modes` and `/models` are answered **per project dir**: ACP
-  advertises both only on session open, so a host MAY open one short-lived probe session
-  the first time it is asked about a dir. A client MUST therefore tolerate a first call
-  that takes seconds, and MUST NOT treat an empty list as final — the same query for the
-  same dir answers from a persisted catalog afterwards. Answers are never shared between
-  dirs: project config decides which agents and providers exist. **Golden:**
-  `internal/host/backends_acp.go` (`ensureCatalog`), `internal/host/catalogstore.go`.
+- **[OP-013] (MUST)** `GET /modes` and `/models` are **non-blocking** and answered **per
+  project dir**. ACP advertises both only on session open, so a host prewarms a
+  backend-global catalog at start and serves it for any dir immediately; a per-dir backend
+  (whose catalog varies by repo, e.g. opencode) additionally probes the specific dir in the
+  background and refines its answer. A client MUST NOT treat the first response as final: it
+  MUST re-read shortly after (the reference client re-fetches once after
+  `catalogRefineDelay`) to pick up a dir-specific list that landed after the initial read,
+  and MUST tolerate an empty list before the prewarm completes (e.g. a cold sandbox wake).
+  Answers are never shared between dirs beyond the global seed: project config decides which
+  agents and providers exist. **Golden:** `internal/host/backends_acp.go` (`Prewarm`,
+  `probeDirInBackground`), `internal/host/catalogstore.go`.
 
 - **[OP-014] (SHOULD)** `GET /agents` is **deprecated in 0.6.0** and returns `[]` on every
   ACP-served backend. OpenCode agents are now agent-advertised session modes: clients

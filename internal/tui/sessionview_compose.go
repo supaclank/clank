@@ -23,6 +23,20 @@ import (
 	"github.com/acksell/clank/internal/host/petname"
 )
 
+// catalogRefineDelay is how long compose waits after showing the prewarmed
+// (backend-global) picker before re-fetching once. A per-dir backend
+// (opencode) probes the specific repo in the background on first visit; the
+// re-fetch surfaces its per-repo agents when the probe lands. Host-scoped
+// backends return the same list, so the re-fetch is a harmless no-op.
+const catalogRefineDelay = 2 * time.Second
+
+// refineCatalogMsg fires once after catalogRefineDelay to re-fetch the picker.
+type refineCatalogMsg struct{}
+
+func refineCatalog() tea.Cmd {
+	return tea.Tick(catalogRefineDelay, func(time.Time) tea.Msg { return refineCatalogMsg{} })
+}
+
 // sessionCreateResultMsg carries the result of creating a session from composing mode.
 type sessionCreateResultMsg struct {
 	sessionID string
@@ -153,14 +167,29 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case modesResultMsg:
 		// Agent-advertised modes for the selected backend. Compose has no
 		// session yet, so this is the only source — nothing is hardcoded.
+		// A background refine re-fetches after the seed, so preserve the
+		// user's current pick if the refreshed list still offers it.
 		if len(msg.modes) > 0 {
+			prev := ""
+			if m.selectedMode >= 0 && m.selectedMode < len(m.modes) {
+				prev = string(m.modes[m.selectedMode].perm)
+			}
 			m.modes = make([]selectableMode, len(msg.modes))
 			m.selectedMode = 0
 			for i, sm := range msg.modes {
 				m.modes[i] = selectableMode{label: sm.Name, perm: agent.ClaudePermissionMode(sm.ID)}
+				if string(sm.ID) == prev {
+					m.selectedMode = i
+				}
 			}
 		}
 		return m, nil
+
+	case refineCatalogMsg:
+		// The prewarmed picker showed instantly; a per-dir backend probes
+		// the specific repo in the background, so re-fetch once to surface
+		// its per-repo agents. Host-scoped backends return the same list.
+		return m, tea.Batch(m.fetchModes(), m.fetchModels())
 
 	case modelsResultMsg:
 		m.models = msg.models
@@ -601,7 +630,7 @@ func (m *SessionViewModel) applyProjectFolder(dir string, returnTo composeFocus)
 	// Clear before refetching: modes and models are project-scoped, so the
 	// previous folder's list must not linger over the new one.
 	m.modes, m.selectedMode = nil, 0
-	return tea.Batch(m.fetchModes(), m.fetchModels())
+	return tea.Batch(m.fetchModes(), m.fetchModels(), refineCatalog())
 }
 
 // overlayFolderPicker composites the folder picker over the compose view.

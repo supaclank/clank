@@ -16,25 +16,50 @@ func TestCatalogStore_RoundTripsPerDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newCatalogStore: %v", err)
 	}
-	s.put("/proj/a", func(e *catalogEntry) { e.Models = []agent.ModelInfo{{ID: "gpt-5.2-codex"}} })
-	s.put("/proj/a", func(e *catalogEntry) { e.Modes = []agent.SessionMode{{ID: "agent"}} })
-	s.put("/proj/b", func(e *catalogEntry) { e.Models = []agent.ModelInfo{{ID: "o5"}} })
+	s.putDir("/proj/a", func(e *catalogEntry) { e.Models = []agent.ModelInfo{{ID: "gpt-5.2-codex"}} })
+	s.putDir("/proj/a", func(e *catalogEntry) { e.Modes = []agent.SessionMode{{ID: "agent"}} })
+	s.putDir("/proj/b", func(e *catalogEntry) { e.Models = []agent.ModelInfo{{ID: "o5"}} })
 
 	reopened, err := newCatalogStore(dir, agent.BackendCodex)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	all := reopened.all()
+	_, dirs := reopened.snapshot()
 	// Both sinks land on the same dir entry: the modes write must not
 	// clobber the models the previous write recorded.
-	if got := all["/proj/a"]; len(got.Models) != 1 || len(got.Modes) != 1 {
+	if got := dirs["/proj/a"]; len(got.Models) != 1 || len(got.Modes) != 1 {
 		t.Errorf("/proj/a = %+v, want both models and modes", got)
 	}
-	if got := all["/proj/b"].Models; len(got) != 1 || got[0].ID != "o5" {
+	if got := dirs["/proj/b"].Models; len(got) != 1 || got[0].ID != "o5" {
 		t.Errorf("/proj/b models = %+v", got)
 	}
-	if dirs := reopened.persistedDirs(); len(dirs) != 2 {
-		t.Errorf("persisted dirs = %v, want both projects", dirs)
+	if ds := reopened.persistedDirs(); len(ds) != 2 {
+		t.Errorf("persisted dirs = %v, want both projects", ds)
+	}
+}
+
+// The backend-global entry (from the neutral prewarm) persists alongside
+// the per-dir entries and survives a reopen.
+func TestCatalogStore_RoundTripsGlobal(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	s, err := newCatalogStore(dir, agent.BackendCodex)
+	if err != nil {
+		t.Fatalf("newCatalogStore: %v", err)
+	}
+	s.putGlobal(func(e *catalogEntry) {
+		e.Models = []agent.ModelInfo{{ID: "gpt-5.2-codex"}}
+		e.Modes = []agent.SessionMode{{ID: "agent"}}
+	})
+
+	reopened, err := newCatalogStore(dir, agent.BackendCodex)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	global, _ := reopened.snapshot()
+	if len(global.Models) != 1 || len(global.Modes) != 1 {
+		t.Errorf("global = %+v, want persisted models and modes", global)
 	}
 }
 
@@ -48,14 +73,14 @@ func TestCatalogStore_IsPerBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newCatalogStore: %v", err)
 	}
-	codex.put("/proj/a", func(e *catalogEntry) { e.Modes = []agent.SessionMode{{ID: "agent"}} })
+	codex.putDir("/proj/a", func(e *catalogEntry) { e.Modes = []agent.SessionMode{{ID: "agent"}} })
 
 	oc, err := newCatalogStore(dir, agent.BackendOpenCode)
 	if err != nil {
 		t.Fatalf("newCatalogStore: %v", err)
 	}
-	if got := oc.all(); len(got) != 0 {
-		t.Errorf("opencode store read codex's catalog: %+v", got)
+	if _, dirs := oc.snapshot(); len(dirs) != 0 {
+		t.Errorf("opencode store read codex's catalog: %+v", dirs)
 	}
 }
 
@@ -72,17 +97,17 @@ func TestCatalogStore_CorruptFileStartsEmptyAndStaysWritable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newCatalogStore on corrupt file: %v", err)
 	}
-	if got := s.all(); len(got) != 0 {
-		t.Fatalf("corrupt file yielded %+v, want an empty catalog", got)
+	if _, dirs := s.snapshot(); len(dirs) != 0 {
+		t.Fatalf("corrupt file yielded %+v, want an empty catalog", dirs)
 	}
 
-	s.put("/proj/a", func(e *catalogEntry) { e.Models = []agent.ModelInfo{{ID: "gpt-5.2-codex"}} })
+	s.putDir("/proj/a", func(e *catalogEntry) { e.Models = []agent.ModelInfo{{ID: "gpt-5.2-codex"}} })
 	reopened, err := newCatalogStore(dir, agent.BackendCodex)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	if got := reopened.all()["/proj/a"].Models; len(got) != 1 {
-		t.Errorf("catalog did not recover after a corrupt read: %+v", got)
+	if _, dirs := reopened.snapshot(); len(dirs["/proj/a"].Models) != 1 {
+		t.Errorf("catalog did not recover after a corrupt read: %+v", dirs)
 	}
 }
 
@@ -96,14 +121,14 @@ func TestCatalogStore_CreatesMissingDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newCatalogStore: %v", err)
 	}
-	s.put("/proj/a", func(e *catalogEntry) { e.Modes = []agent.SessionMode{{ID: "plan"}} })
+	s.putDir("/proj/a", func(e *catalogEntry) { e.Modes = []agent.SessionMode{{ID: "plan"}} })
 
 	reopened, err := newCatalogStore(dir, agent.BackendClaudeCode)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	if got := reopened.all()["/proj/a"].Modes; len(got) != 1 {
-		t.Errorf("first write to a missing dir was lost: %+v", got)
+	if _, dirs := reopened.snapshot(); len(dirs["/proj/a"].Modes) != 1 {
+		t.Errorf("first write to a missing dir was lost: %+v", dirs)
 	}
 }
 

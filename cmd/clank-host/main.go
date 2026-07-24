@@ -432,6 +432,9 @@ func run(cfg runConfig) error {
 	if err := svc.Init(ctx, func(agent.BackendType) ([]string, error) { return nil, nil }); err != nil {
 		lg.Printf("warning: host.Init: %v", err)
 	}
+	// Fill mode/model pickers before the user reaches compose. Background
+	// and best-effort — never blocks host readiness.
+	svc.PrewarmCatalogs(ctx)
 
 	mux := hostmux.New(svc, lg)
 	mux.SetAuthToken(cfg.listenAuthToken)

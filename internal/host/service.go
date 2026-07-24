@@ -372,6 +372,24 @@ func (s *Service) Init(ctx context.Context, knownDirs func(agent.BackendType) ([
 	return nil
 }
 
+// catalogPrewarmer is implemented by backend managers that can fill their
+// mode/model catalog ahead of the first picker read.
+type catalogPrewarmer interface {
+	Prewarm(ctx context.Context)
+}
+
+// PrewarmCatalogs fills each backend's mode/model catalog in the background
+// so compose pickers are ready before the user opens them. Best-effort and
+// non-blocking: it returns immediately and each backend warms on its own
+// goroutine. Call after Init (which wires each manager's known dirs).
+func (s *Service) PrewarmCatalogs(ctx context.Context) {
+	for _, mgr := range s.backendManagers {
+		if pw, ok := mgr.(catalogPrewarmer); ok {
+			go pw.Prewarm(ctx)
+		}
+	}
+}
+
 // normalizeStaleSessionStatus rewrites busy/starting/dead/error sessions
 // back to idle on startup — none can advance without the live backend that
 // set them, and that backend died with the previous process. error is reset

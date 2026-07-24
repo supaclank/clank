@@ -166,10 +166,7 @@ func TestACPBackendManager_ListModelsServesSessionCatalog(t *testing.T) {
 func TestACPBackendManager_ProbesOncePerDirToFillCatalog(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // installGuidanceSkills writes under $HOME
 
-	mgr, err := host.NewCodexACPManager(acpDirs(t))
-	if err != nil {
-		t.Fatalf("NewCodexACPManager: %v", err)
-	}
+	mgr := newPerDirManager(t, acpDirs(t))
 	category := sdk.SessionConfigOptionCategory("model")
 	modeCategory := sdk.SessionConfigOptionCategory("mode")
 	var sessions atomic.Int64
@@ -211,14 +208,21 @@ func TestACPBackendManager_ProbesOncePerDirToFillCatalog(t *testing.T) {
 	workDir := t.TempDir()
 
 	// Concurrent cold callers (the TUI fires /modes and /models together).
+	// Reads return immediately and single-flight ONE background probe.
 	var wg sync.WaitGroup
-	var modes []agent.SessionMode
-	var models []agent.ModelInfo
 	wg.Add(2)
-	go func() { defer wg.Done(); modes, _ = mgr.ListModes(ctx, workDir) }()
-	go func() { defer wg.Done(); models, _ = mgr.ListModels(ctx, workDir) }()
+	go func() { defer wg.Done(); _, _ = mgr.ListModes(ctx, workDir) }()
+	go func() { defer wg.Done(); _, _ = mgr.ListModels(ctx, workDir) }()
 	wg.Wait()
 
+	// The probe fills the catalog asynchronously; the picker refines once
+	// it lands (the TUI re-fetches).
+	waitFor(t, "probe to fill the catalog", func() bool {
+		m, _ := mgr.ListModels(ctx, workDir)
+		return len(m) == 1
+	})
+	modes, _ := mgr.ListModes(ctx, workDir)
+	models, _ := mgr.ListModels(ctx, workDir)
 	if len(modes) != 2 || modes[0].ID != "read-only" {
 		t.Errorf("probed modes = %+v, want the agent's advertised list", modes)
 	}
@@ -230,12 +234,8 @@ func TestACPBackendManager_ProbesOncePerDirToFillCatalog(t *testing.T) {
 	}
 
 	// Warm dir: served from the catalog, no further sessions.
-	if _, err := mgr.ListModes(ctx, workDir); err != nil {
-		t.Fatalf("ListModes (warm): %v", err)
-	}
-	if _, err := mgr.ListModels(ctx, workDir); err != nil {
-		t.Fatalf("ListModels (warm): %v", err)
-	}
+	_, _ = mgr.ListModes(ctx, workDir)
+	_, _ = mgr.ListModels(ctx, workDir)
 	if got := sessions.Load(); got != 1 {
 		t.Errorf("warm reads opened %d sessions, want no new ones", got)
 	}
@@ -247,10 +247,7 @@ func TestACPBackendManager_ProbesOncePerDirToFillCatalog(t *testing.T) {
 func TestACPBackendManager_ProbeFailureRetriesInsteadOfPermanentlyEmptyingCatalog(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // installGuidanceSkills writes under $HOME
 
-	mgr, err := host.NewCodexACPManager(acpDirs(t))
-	if err != nil {
-		t.Fatalf("NewCodexACPManager: %v", err)
-	}
+	mgr := newPerDirManager(t, acpDirs(t))
 	category := sdk.SessionConfigOptionCategory("model")
 	var attempts atomic.Int64
 	scripted := func(string) *acptest.ScriptedAgent {
@@ -283,38 +280,44 @@ func TestACPBackendManager_ProbeFailureRetriesInsteadOfPermanentlyEmptyingCatalo
 
 	workDir := t.TempDir()
 
-	// First probe fails: catalog stays empty, but the dir must NOT be
-	// marked probed — otherwise it's stuck empty for the daemon's lifetime.
-	models, err := mgr.ListModels(ctx, workDir)
+	// First read serves the (empty) global catalog and kicks a probe that
+	// fails — the dir must NOT be marked probed, or it's stuck empty for the
+	// daemon's lifetime. Subsequent reads retry until one probe succeeds.
+	first, err := mgr.ListModels(ctx, workDir)
 	if err != nil {
 		t.Fatalf("ListModels (failed probe): %v", err)
 	}
-	if len(models) != 0 {
-		t.Fatalf("ListModels after failed probe = %+v, want empty", models)
-	}
-	if got := attempts.Load(); got != 1 {
-		t.Fatalf("attempts after first call = %d, want 1", got)
+	if len(first) != 0 {
+		t.Fatalf("ListModels before any successful probe = %+v, want empty", first)
 	}
 
-	// Second call retries the probe and succeeds.
-	models, err = mgr.ListModels(ctx, workDir)
-	if err != nil {
-		t.Fatalf("ListModels (retried probe): %v", err)
-	}
-	if len(models) != 1 || models[0].ID != "gpt-5.2-codex" {
-		t.Fatalf("ListModels after retried probe = %+v, want the agent's advertised catalog", models)
-	}
+	waitFor(t, "catalog to fill after a retried probe", func() bool {
+		m, _ := mgr.ListModels(ctx, workDir)
+		return len(m) == 1
+	})
 	if got := attempts.Load(); got != 2 {
-		t.Fatalf("attempts after retried call = %d, want 2 (probe must retry after a failure)", got)
+		t.Fatalf("probe attempts = %d, want 2 (one failure + one retry)", got)
 	}
 
 	// Warm dir now: served from the catalog, no further probe attempts.
-	if _, err := mgr.ListModels(ctx, workDir); err != nil {
-		t.Fatalf("ListModels (warm): %v", err)
-	}
+	_, _ = mgr.ListModels(ctx, workDir)
 	if got := attempts.Load(); got != 2 {
 		t.Errorf("warm read after success made %d attempts, want no new ones", got)
 	}
+}
+
+// waitFor polls fn until it returns true or the deadline passes. Background
+// probes fill the catalog asynchronously, so tests observe them by re-reading.
+func waitFor(t *testing.T, what string, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
 }
 
 // acpDirs gives a manager isolated on-disk state: a throwaway tools dir
@@ -323,6 +326,21 @@ func TestACPBackendManager_ProbeFailureRetriesInsteadOfPermanentlyEmptyingCatalo
 func acpDirs(t *testing.T) host.ACPDirs {
 	t.Helper()
 	return host.ACPDirs{Tools: t.TempDir(), Catalog: t.TempDir()}
+}
+
+// newPerDirManager builds a manager whose catalog varies per dir (opencode's
+// shape), so ListModels/ListModes trigger a folder probe. It reuses the
+// codex scripted profile but flips the scope; host-scoped backends rely on
+// Prewarm instead and never folder-probe.
+func newPerDirManager(t *testing.T, dirs host.ACPDirs) *host.ACPBackendManager {
+	t.Helper()
+	profile := acpx.CodexProfile("bun", "entry", nil)
+	profile.Scope = acpx.ScopePerDir
+	mgr, err := host.NewACPBackendManager(profile, dirs)
+	if err != nil {
+		t.Fatalf("NewACPBackendManager: %v", err)
+	}
+	return mgr
 }
 
 // A restart (or just revisiting a folder) must not re-probe: the catalog
@@ -367,10 +385,7 @@ func TestACPBackendManager_CatalogSurvivesRestart(t *testing.T) {
 	// for a daemon restart.
 	start := func(t *testing.T) (*host.ACPBackendManager, context.CancelFunc) {
 		t.Helper()
-		mgr, err := host.NewCodexACPManager(host.ACPDirs{Tools: t.TempDir(), Catalog: catalogDir})
-		if err != nil {
-			t.Fatalf("NewCodexACPManager: %v", err)
-		}
+		mgr := newPerDirManager(t, host.ACPDirs{Tools: t.TempDir(), Catalog: catalogDir})
 		mgr.Supervisor().SetSpawnFunc(acptest.SpawnFunc(scripted, acpx.CodexProfile("bun", "entry", nil), t.Logf))
 		mgr.Supervisor().SetReconcileInterval(20 * time.Millisecond)
 		ctx, cancel := context.WithCancel(context.Background())
@@ -383,9 +398,10 @@ func TestACPBackendManager_CatalogSurvivesRestart(t *testing.T) {
 
 	first, stopFirst := start(t)
 	ctx := context.Background()
-	if _, err := first.ListModels(ctx, workDir); err != nil {
-		t.Fatalf("ListModels: %v", err)
-	}
+	waitFor(t, "first probe to fill the catalog", func() bool {
+		m, _ := first.ListModels(ctx, workDir)
+		return len(m) == 1
+	})
 	if got := sessions.Load(); got != 1 {
 		t.Fatalf("cold dir opened %d sessions, want 1 probe", got)
 	}
@@ -410,5 +426,127 @@ func TestACPBackendManager_CatalogSurvivesRestart(t *testing.T) {
 	}
 	if got := sessions.Load(); got != 1 {
 		t.Errorf("restart opened %d sessions total, want no new probe", got)
+	}
+}
+
+// Prewarm fills the backend-global catalog so every dir answers instantly.
+// A host-scoped backend (codex, claude) has no per-dir variance, so one
+// neutral prewarm serves all dirs and reads open no per-dir session — the
+// zero-spinner path for the picker.
+func TestACPBackendManager_PrewarmServesEveryDirWithoutPerDirSessions(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // installGuidanceSkills writes under $HOME
+
+	mgr, err := host.NewCodexACPManager(acpDirs(t))
+	if err != nil {
+		t.Fatalf("NewCodexACPManager: %v", err)
+	}
+	category := sdk.SessionConfigOptionCategory("model")
+	modeCategory := sdk.SessionConfigOptionCategory("mode")
+	var sessions atomic.Int64
+	scripted := func(string) *acptest.ScriptedAgent {
+		a := &acptest.ScriptedAgent{}
+		a.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+			sessions.Add(1)
+			return sdk.NewSessionResponse{
+				SessionId: sdk.SessionId("s-" + strconv.FormatInt(sessions.Load(), 10)),
+				ConfigOptions: []sdk.SessionConfigOption{
+					{Select: &sdk.SessionConfigOptionSelect{
+						Id: "model", Name: "Model", Category: &category, CurrentValue: "gpt-5.2-codex",
+						Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+							{Value: "gpt-5.2-codex", Name: "GPT-5.2 Codex"},
+						}},
+					}},
+					{Select: &sdk.SessionConfigOptionSelect{
+						Id: "mode", Name: "Mode", Category: &modeCategory, CurrentValue: "agent",
+						Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+							{Value: "read-only", Name: "Read Only"},
+							{Value: "agent", Name: "Agent"},
+						}},
+					}},
+				},
+			}, nil
+		}
+		return a
+	}
+	mgr.Supervisor().SetSpawnFunc(acptest.SpawnFunc(scripted, acpx.CodexProfile("bun", "entry", nil), t.Logf))
+	mgr.Supervisor().SetReconcileInterval(20 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := mgr.Init(ctx, func() ([]string, error) { return nil, nil }); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer mgr.Shutdown()
+
+	mgr.Prewarm(ctx) // synchronous when called directly
+	if got := sessions.Load(); got != 1 {
+		t.Fatalf("prewarm opened %d sessions, want 1 neutral probe", got)
+	}
+
+	// Any dir now serves the global catalog and opens no further sessions.
+	for _, d := range []string{"/proj/a", "/proj/b", t.TempDir()} {
+		models, _ := mgr.ListModels(ctx, d)
+		modes, _ := mgr.ListModes(ctx, d)
+		if len(models) != 1 || models[0].ID != "gpt-5.2-codex" {
+			t.Errorf("models for %s = %+v, want the global catalog", d, models)
+		}
+		if len(modes) != 2 || modes[0].ID != "read-only" {
+			t.Errorf("modes for %s = %+v, want the global catalog", d, modes)
+		}
+	}
+	if got := sessions.Load(); got != 1 {
+		t.Errorf("reads after prewarm opened %d sessions, want no new ones", got)
+	}
+}
+
+// A host-scoped backend has no per-dir probe, so if the startup Prewarm
+// never filled the global catalog (adapter still provisioning), a read must
+// still recover: it serves empty immediately and re-probes the global
+// catalog in the background — once.
+func TestACPBackendManager_HostScopeRecoversGlobalCatalogWithoutPrewarm(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // installGuidanceSkills writes under $HOME
+
+	mgr, err := host.NewCodexACPManager(acpDirs(t))
+	if err != nil {
+		t.Fatalf("NewCodexACPManager: %v", err)
+	}
+	category := sdk.SessionConfigOptionCategory("model")
+	var sessions atomic.Int64
+	scripted := func(string) *acptest.ScriptedAgent {
+		a := &acptest.ScriptedAgent{}
+		a.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+			sessions.Add(1)
+			return sdk.NewSessionResponse{
+				SessionId: sdk.SessionId("s-" + strconv.FormatInt(sessions.Load(), 10)),
+				ConfigOptions: []sdk.SessionConfigOption{{Select: &sdk.SessionConfigOptionSelect{
+					Id: "model", Name: "Model", Category: &category, CurrentValue: "gpt-5.2-codex",
+					Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+						{Value: "gpt-5.2-codex", Name: "GPT-5.2 Codex"},
+					}},
+				}}},
+			}, nil
+		}
+		return a
+	}
+	mgr.Supervisor().SetSpawnFunc(acptest.SpawnFunc(scripted, acpx.CodexProfile("bun", "entry", nil), t.Logf))
+	mgr.Supervisor().SetReconcileInterval(20 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := mgr.Init(ctx, func() ([]string, error) { return nil, nil }); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer mgr.Shutdown()
+
+	// No Prewarm. The first read is empty but kicks a background global probe.
+	if m, _ := mgr.ListModels(ctx, t.TempDir()); len(m) != 0 {
+		t.Fatalf("first read = %+v, want empty (recovery probe is async)", m)
+	}
+	waitFor(t, "lazy global probe to fill the catalog", func() bool {
+		m, _ := mgr.ListModels(ctx, t.TempDir())
+		return len(m) == 1
+	})
+	if got := sessions.Load(); got != 1 {
+		t.Errorf("recovery opened %d sessions, want 1 (single-flighted)", got)
 	}
 }

@@ -258,3 +258,53 @@ func TestCompose_FolderChangeRefetchesModes(t *testing.T) {
 		t.Fatal("folder switch dispatched no modes fetch")
 	}
 }
+
+// The prewarmed picker shows instantly; a background refine re-fetches once
+// so a per-dir backend's per-repo agents surface a beat later.
+func TestCompose_RefineReFetchesModesAndModels(t *testing.T) {
+	t.Parallel()
+	m := newSessionViewComposingWithBackend(nil, "", agent.BackendOpenCode)
+	m.width, m.height = 80, 40
+
+	model, cmd := m.Update(refineCatalogMsg{})
+	m = model.(*SessionViewModel)
+	if !batchYields[modesResultMsg](t, cmd) {
+		t.Error("refine dispatched no modes re-fetch")
+	}
+	if !batchYields[modelsResultMsg](t, cmd) {
+		t.Error("refine dispatched no models re-fetch")
+	}
+}
+
+// A refine must not reset the user's mode pick: if the refreshed list still
+// offers it, the selection follows it by id (its index may shift as
+// per-repo agents are appended).
+func TestCompose_RefinePreservesSelectedMode(t *testing.T) {
+	t.Parallel()
+	m := newSessionViewComposingWithBackend(nil, "/tmp/project", agent.BackendOpenCode)
+	m.width, m.height = 80, 40
+
+	model, _ := m.Update(modesResultMsg{modes: []agent.SessionMode{
+		{ID: "build", Name: "Build"}, {ID: "plan", Name: "Plan"},
+	}})
+	m = model.(*SessionViewModel)
+	m.selectedMode = 1 // user picks "plan"
+
+	// Refine lands: same built-ins plus a per-repo agent, reordered.
+	model, _ = m.Update(modesResultMsg{modes: []agent.SessionMode{
+		{ID: "reviewer", Name: "Reviewer"}, {ID: "build", Name: "Build"}, {ID: "plan", Name: "Plan"},
+	}})
+	m = model.(*SessionViewModel)
+	if got := string(m.modes[m.selectedMode].perm); got != "plan" {
+		t.Fatalf("selected mode = %q after refine, want plan preserved across reorder", got)
+	}
+
+	// If the refreshed list drops the pick, selection resets to the first.
+	model, _ = m.Update(modesResultMsg{modes: []agent.SessionMode{
+		{ID: "build", Name: "Build"},
+	}})
+	m = model.(*SessionViewModel)
+	if m.selectedMode != 0 {
+		t.Fatalf("selectedMode = %d after pick vanished, want 0", m.selectedMode)
+	}
+}
