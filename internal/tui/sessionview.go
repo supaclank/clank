@@ -580,8 +580,6 @@ func (m *SessionViewModel) fetchPendingPermission() tea.Cmd {
 	}
 }
 
-// fetchModels loads available models for the current backend/repo.
-// Fired eagerly on compose init alongside fetchModes.
 // fetchModes loads the agent-advertised session modes for the selected
 // backend. The compose view has no session yet, so the host answers from
 // what a session last reported for the project (ACP advertises modes per
@@ -606,6 +604,8 @@ func (m *SessionViewModel) fetchModes() tea.Cmd {
 	}
 }
 
+// fetchModels loads available models for the current backend/repo.
+// Fired eagerly on compose init alongside fetchModes.
 func (m *SessionViewModel) fetchModels() tea.Cmd {
 	client := m.client
 	backend := m.backend
