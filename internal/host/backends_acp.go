@@ -517,6 +517,14 @@ func (m *ACPBackendManager) probe(ctx context.Context, dir string, global bool) 
 		return false
 	}
 	defer func() { _ = b.Stop() }()
+	if global {
+		// dir is a throwaway temp path removed right after this call returns;
+		// clear the per-dir sinks so Open doesn't persist a dead entry for it.
+		if nb, ok := b.(*acp.Backend); ok {
+			nb.SetCatalogSink(nil)
+			nb.SetModeSink(nil)
+		}
+	}
 	if err := b.Open(ctx); err != nil {
 		log.Printf("[%s] catalog probe for %s: %v", m.profile.ID, dir, err)
 		return false

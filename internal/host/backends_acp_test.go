@@ -2,7 +2,10 @@ package host_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -548,5 +551,61 @@ func TestACPBackendManager_HostScopeRecoversGlobalCatalogWithoutPrewarm(t *testi
 	})
 	if got := sessions.Load(); got != 1 {
 		t.Errorf("recovery opened %d sessions, want 1 (single-flighted)", got)
+	}
+}
+
+// A neutral/global probe opens its session in a throwaway temp dir that's
+// removed the moment the probe returns. The per-session catalog sinks fire
+// during Open regardless of who called it, so without a guard they persist
+// a dead entry keyed by that already-deleted path — accumulating one per
+// Prewarm/recovery call, forever, across every restart.
+func TestACPBackendManager_GlobalProbeDoesNotPersistNeutralDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // installGuidanceSkills writes under $HOME
+
+	catalogDir := t.TempDir()
+	mgr, err := host.NewCodexACPManager(host.ACPDirs{Tools: t.TempDir(), Catalog: catalogDir})
+	if err != nil {
+		t.Fatalf("NewCodexACPManager: %v", err)
+	}
+	category := sdk.SessionConfigOptionCategory("model")
+	scripted := func(string) *acptest.ScriptedAgent {
+		a := &acptest.ScriptedAgent{}
+		a.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+			return sdk.NewSessionResponse{
+				SessionId: sdk.SessionId("s-1"),
+				ConfigOptions: []sdk.SessionConfigOption{{Select: &sdk.SessionConfigOptionSelect{
+					Id: "model", Name: "Model", Category: &category, CurrentValue: "gpt-5.2-codex",
+					Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+						{Value: "gpt-5.2-codex", Name: "GPT-5.2 Codex"},
+					}},
+				}}},
+			}, nil
+		}
+		return a
+	}
+	mgr.Supervisor().SetSpawnFunc(acptest.SpawnFunc(scripted, acpx.CodexProfile("bun", "entry", nil), t.Logf))
+	mgr.Supervisor().SetReconcileInterval(20 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := mgr.Init(ctx, func() ([]string, error) { return nil, nil }); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer mgr.Shutdown()
+
+	mgr.Prewarm(ctx) // synchronous when called directly; opens the neutral probe
+
+	raw, err := os.ReadFile(filepath.Join(catalogDir, "codex.json"))
+	if err != nil {
+		t.Fatalf("read catalog file: %v", err)
+	}
+	var file struct {
+		Dirs map[string]json.RawMessage `json:"dirs"`
+	}
+	if err := json.Unmarshal(raw, &file); err != nil {
+		t.Fatalf("parse catalog file: %v", err)
+	}
+	if len(file.Dirs) != 0 {
+		t.Errorf("persisted catalog has %d dir entries after a neutral prewarm, want 0 (leaked probe temp dir): %v", len(file.Dirs), file.Dirs)
 	}
 }
