@@ -450,6 +450,8 @@ func (m *ACPBackendManager) probeGlobalInBackground() {
 		if neutral, err := os.MkdirTemp("", "clank-catalog-probe-"); err == nil {
 			defer os.RemoveAll(neutral)
 			m.probe(ctx, neutral, true)
+		} else {
+			log.Printf("[%s] catalog re-probe: temp dir: %v", m.profile.ID, err)
 		}
 		m.catalogMu.Lock()
 		m.globalProbing = false
