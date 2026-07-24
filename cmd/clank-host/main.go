@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/host"
 	hostmux "github.com/acksell/clank/internal/host/mux"
 	"github.com/acksell/clank/internal/host/preview"
@@ -370,11 +371,14 @@ func run(cfg runConfig) error {
 	// backendManagers is populated solely from acpSet — a backend
 	// missing here fails fast rather than falling back silently.
 	backendManagers := map[agent.BackendType]agent.BackendManager{}
-	home, err := os.UserHomeDir()
+	// config.Dir honors CLANK_DIR (local isolated dev stacks) and otherwise
+	// resolves to $HOME/.clank — which on a sandbox is /data/.clank, i.e. the
+	// Fly volume (HOME=/data), so the tools and catalog persist across
+	// machine restarts and recreation without any extra wiring.
+	clankDir, err := config.Dir()
 	if err != nil {
-		return fmt.Errorf("resolve home dir: %w", err)
+		return fmt.Errorf("resolve clank dir: %w", err)
 	}
-	clankDir := filepath.Join(home, ".clank")
 	acpDirs := host.ACPDirs{
 		Tools:   filepath.Join(clankDir, "tools", "acp"),
 		Catalog: filepath.Join(clankDir, "cache", "acp-catalog"),
