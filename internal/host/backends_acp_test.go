@@ -566,6 +566,68 @@ func TestACPBackendManager_PrewarmSingleFlightsAgainstConcurrentLiveRead(t *test
 	}
 }
 
+// Prewarm's neutral probe must single-flight against a concurrent live read
+// on a host-scoped backend, same as the per-dir case above: probe() doesn't
+// return until Open completes, and until then globalModels/globalModes are
+// still empty. probeGlobalInBackground's no-op guard checks globalProbing,
+// but Prewarm never set it — so a read racing the neutral probe used to see
+// globalProbing=false and open a second session for the same backend.
+func TestACPBackendManager_PrewarmSingleFlightsGlobalProbeAgainstConcurrentLiveRead(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // installGuidanceSkills writes under $HOME
+
+	mgr, err := host.NewCodexACPManager(acpDirs(t))
+	if err != nil {
+		t.Fatalf("NewCodexACPManager: %v", err)
+	}
+	category := sdk.SessionConfigOptionCategory("model")
+	var sessions atomic.Int64
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce sync.Once
+	scripted := func(string) *acptest.ScriptedAgent {
+		a := &acptest.ScriptedAgent{}
+		a.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+			n := sessions.Add(1)
+			if n == 1 {
+				startedOnce.Do(func() { close(started) })
+				<-release
+			}
+			return sdk.NewSessionResponse{
+				SessionId: sdk.SessionId("s-" + strconv.FormatInt(n, 10)),
+				ConfigOptions: []sdk.SessionConfigOption{{Select: &sdk.SessionConfigOptionSelect{
+					Id: "model", Name: "Model", Category: &category, CurrentValue: "gpt-5.2-codex",
+					Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+						{Value: "gpt-5.2-codex", Name: "GPT-5.2 Codex"},
+					}},
+				}}},
+			}, nil
+		}
+		return a
+	}
+	mgr.Supervisor().SetSpawnFunc(acptest.SpawnFunc(scripted, acpx.CodexProfile("bun", "entry", nil), t.Logf))
+	mgr.Supervisor().SetReconcileInterval(20 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := mgr.Init(ctx, func() ([]string, error) { return nil, nil }); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer mgr.Shutdown()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); mgr.Prewarm(ctx) }()
+
+	<-started                               // Prewarm's neutral probe is now in flight
+	_, _ = mgr.ListModels(ctx, t.TempDir()) // must not open a second session
+	close(release)
+	wg.Wait()
+
+	if got := sessions.Load(); got != 1 {
+		t.Fatalf("prewarm + concurrent live read opened %d sessions, want 1 (single-flighted)", got)
+	}
+}
+
 // Shutdown documents that it waits for in-flight catalog probes so no
 // goroutine outlives the manager. Prewarm is launched as a bare `go
 // pw.Prewarm(ctx)` by the caller (PrewarmCatalogs), so it must register

@@ -588,6 +588,7 @@ func (m *ACPBackendManager) Prewarm(ctx context.Context) {
 		return
 	}
 	m.probeWG.Add(1)
+	m.globalProbing = true
 	m.catalogMu.Unlock()
 	defer m.probeWG.Done()
 
@@ -598,6 +599,13 @@ func (m *ACPBackendManager) Prewarm(ctx context.Context) {
 		defer os.RemoveAll(neutral)
 		m.probe(ctx, neutral, true)
 	}
+
+	// Release before the per-dir sweep: by now globalModels/globalModes are
+	// filled (or the probe failed and a future read will retry), so
+	// probeGlobalInBackground's own no-op guard takes over from here.
+	m.catalogMu.Lock()
+	m.globalProbing = false
+	m.catalogMu.Unlock()
 
 	if m.profile.Scope != acp.ScopePerDir || m.knownDirs == nil {
 		return
