@@ -479,12 +479,14 @@ func (m *ACPBackendManager) probeDirInBackground(projectDir string) {
 	if !skip {
 		_, skip = m.probing[projectDir]
 	}
+	if !skip {
+		m.probeWG.Add(1)
+	}
 	m.catalogMu.Unlock()
 	if skip {
 		return
 	}
 
-	m.probeWG.Add(1)
 	go func() {
 		defer m.probeWG.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), catalogProbeTimeout)
