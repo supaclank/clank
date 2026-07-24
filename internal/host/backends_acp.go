@@ -465,41 +465,63 @@ func (m *ACPBackendManager) probeGlobalInBackground() {
 // — their prewarmed global catalog is authoritative, so this is a no-op and
 // no dead per-folder session is ever created for them.
 //
-// Fire-and-forget and single-flighted: /modes and /models miss together on
-// a cold dir but open only one session. The probe runs on its own context,
-// not the request's — the HTTP read returns immediately, and cancelling it
-// must not abort a probe another caller is waiting on.
+// Fire-and-forget: /modes and /models miss together on a cold dir but open
+// only one session, single-flighted via probeOnceForDir against any other
+// caller — including Prewarm's own per-dir sweep. The probe runs on its own
+// context, not the request's — the HTTP read returns immediately, and
+// cancelling it must not abort a probe another caller is waiting on.
 func (m *ACPBackendManager) probeDirInBackground(projectDir string) {
 	if projectDir == "" || m.profile.Scope != acp.ScopePerDir {
 		return
 	}
 	m.catalogMu.Lock()
-	if m.closed || m.probed[projectDir] {
-		m.catalogMu.Unlock()
-		return
+	skip := m.closed || m.probed[projectDir]
+	if !skip {
+		_, skip = m.probing[projectDir]
 	}
-	if _, inFlight := m.probing[projectDir]; inFlight {
-		m.catalogMu.Unlock()
-		return
-	}
-	done := make(chan struct{})
-	m.probing[projectDir] = done
-	m.probeWG.Add(1)
 	m.catalogMu.Unlock()
+	if skip {
+		return
+	}
 
+	m.probeWG.Add(1)
 	go func() {
 		defer m.probeWG.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), catalogProbeTimeout)
 		defer cancel()
-		ok := m.probe(ctx, projectDir, false)
-		m.catalogMu.Lock()
-		if ok {
-			m.probed[projectDir] = true
-		}
-		delete(m.probing, projectDir)
-		m.catalogMu.Unlock()
-		close(done)
+		m.probeOnceForDir(ctx, projectDir)
 	}()
+}
+
+// probeOnceForDir single-flights probe() for dir against every caller —
+// probeDirInBackground and Prewarm's per-dir sweep alike — so a dir being
+// probed by one never gets a second, redundant session opened by the other.
+// Returns false without probing if dir is already probed, already in
+// flight, or the manager is shutting down.
+func (m *ACPBackendManager) probeOnceForDir(ctx context.Context, dir string) bool {
+	m.catalogMu.Lock()
+	if m.closed || m.probed[dir] {
+		m.catalogMu.Unlock()
+		return false
+	}
+	if _, inFlight := m.probing[dir]; inFlight {
+		m.catalogMu.Unlock()
+		return false
+	}
+	done := make(chan struct{})
+	m.probing[dir] = done
+	m.catalogMu.Unlock()
+
+	ok := m.probe(ctx, dir, false)
+
+	m.catalogMu.Lock()
+	if ok {
+		m.probed[dir] = true
+	}
+	delete(m.probing, dir)
+	m.catalogMu.Unlock()
+	close(done)
+	return ok
 }
 
 // probe opens one session in dir, reads the catalog it advertises, and
@@ -577,11 +599,7 @@ func (m *ACPBackendManager) Prewarm(ctx context.Context) {
 		if _, statErr := os.Stat(dir); statErr != nil {
 			continue
 		}
-		if m.probe(ctx, dir, false) {
-			m.catalogMu.Lock()
-			m.probed[dir] = true
-			m.catalogMu.Unlock()
-		}
+		m.probeOnceForDir(ctx, dir)
 	}
 }
 

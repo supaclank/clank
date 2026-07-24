@@ -502,6 +502,70 @@ func TestACPBackendManager_PrewarmServesEveryDirWithoutPerDirSessions(t *testing
 	}
 }
 
+// Prewarm's per-dir sweep must single-flight against a concurrent live read
+// for the same dir, not just against itself: racing a ListModes call while
+// Prewarm's own probe for that dir is still in flight must not open a
+// second session.
+func TestACPBackendManager_PrewarmSingleFlightsAgainstConcurrentLiveRead(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // installGuidanceSkills writes under $HOME
+
+	workDir := t.TempDir()
+	mgr := newPerDirManager(t, acpDirs(t))
+	category := sdk.SessionConfigOptionCategory("model")
+	var sessions, workDirSessions atomic.Int64
+	started := make(chan struct{})
+	release := make(chan struct{})
+	// Prewarm's neutral probe (a separate scopeDir) must open and complete
+	// unblocked — only the workDir-scoped probe holds, so `started`/`release`
+	// isolate the per-dir race instead of the unrelated neutral one.
+	scripted := func(scopeDir string) *acptest.ScriptedAgent {
+		a := &acptest.ScriptedAgent{}
+		a.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+			n := sessions.Add(1)
+			if scopeDir == workDir && workDirSessions.Add(1) == 1 {
+				close(started)
+				<-release
+			}
+			return sdk.NewSessionResponse{
+				SessionId: sdk.SessionId("s-" + strconv.FormatInt(n, 10)),
+				ConfigOptions: []sdk.SessionConfigOption{{Select: &sdk.SessionConfigOptionSelect{
+					Id: "model", Name: "Model", Category: &category, CurrentValue: "gpt-5.2-codex",
+					Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+						{Value: "gpt-5.2-codex", Name: "GPT-5.2 Codex"},
+					}},
+				}}},
+			}, nil
+		}
+		return a
+	}
+	mgr.Supervisor().SetSpawnFunc(acptest.SpawnFunc(scripted, acpx.CodexProfile("bun", "entry", nil), t.Logf))
+	mgr.Supervisor().SetReconcileInterval(20 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := mgr.Init(ctx, func() ([]string, error) { return []string{workDir}, nil }); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer mgr.Shutdown()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); mgr.Prewarm(ctx) }()
+
+	<-started                          // Prewarm's per-dir probe for workDir is now in flight
+	_, _ = mgr.ListModes(ctx, workDir) // must not open a second session for the same dir
+	close(release)
+	wg.Wait()
+
+	waitFor(t, "probe to fill the catalog", func() bool {
+		m, _ := mgr.ListModels(ctx, workDir)
+		return len(m) == 1
+	})
+	if got := workDirSessions.Load(); got != 1 {
+		t.Fatalf("prewarm + concurrent live read opened %d sessions for workDir, want 1 (single-flighted)", got)
+	}
+}
+
 // A host-scoped backend has no per-dir probe, so if the startup Prewarm
 // never filled the global catalog (adapter still provisioning), a read must
 // still recover: it serves empty immediately and re-probes the global
