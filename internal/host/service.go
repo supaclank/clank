@@ -511,7 +511,6 @@ func (s *Service) ListAgents(ctx context.Context, bt agent.BackendType, ref agen
 	return lister.ListAgents(ctx, workDir)
 }
 
-// ListModels mirrors ListAgents for model catalogs.
 // ListModes returns the agent-advertised session modes for a backend in
 // ref's project, for clients that must offer a mode before a session
 // exists (the compose view). Empty when the backend can't report them.
@@ -531,6 +530,7 @@ func (s *Service) ListModes(ctx context.Context, bt agent.BackendType, ref agent
 	return lister.ListModes(ctx, workDir)
 }
 
+// ListModels mirrors ListModes for model catalogs.
 func (s *Service) ListModels(ctx context.Context, bt agent.BackendType, ref agent.GitRef) ([]ModelInfo, error) {
 	mgr, ok := s.backendManagers[bt]
 	if !ok {

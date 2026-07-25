@@ -145,6 +145,7 @@ func (b *Backend) applyMode(ctx context.Context, conn *AdapterConn, modeID strin
 		b.logf("acp %s: skipping set_mode %q: not advertised by the agent", b.profile.ID, modeID)
 		return
 	}
+	// TODO(ai-review): opencode advertises modes via the config-option channel; verify it honors set_mode here or add a SetSessionConfigOption apply path like models have. https://github.com/Acksell/clank/pull/188
 	_, err := conn.Conn().SetSessionMode(ctx, sdk.SetSessionModeRequest{
 		SessionId: sdk.SessionId(sid),
 		ModeId:    sdk.SessionModeId(modeID),

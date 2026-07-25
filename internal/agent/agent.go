@@ -661,9 +661,11 @@ type SendMessageOpts struct {
 	Text  string         `json:"text"`
 	Agent string         `json:"agent,omitempty"` // OpenCode agent name; empty = use session default
 	Model *ModelOverride `json:"model,omitempty"` // Per-message model override; nil = use default
-	// PermissionMode, when set, applies a Claude permission posture: at session
-	// start it picks the initial mode; on a follow-up it changes the mode at
-	// runtime. Empty means "no change". Ignored by the OpenCode backend.
+	// PermissionMode, when set, selects an agent-owned mode: at session start
+	// it picks the initial mode; on a follow-up it changes it at runtime.
+	// Empty means "no change". For Claude these are permission postures
+	// (default/plan/bypassPermissions); OpenCode and Codex reuse the field to
+	// carry their own agent/mode id.
 	PermissionMode ClaudePermissionMode `json:"permission_mode,omitempty"`
 	// Attachments are images the client uploaded out-of-band; the backend
 	// downloads each via its presigned GetURL and inlines it into the agent
