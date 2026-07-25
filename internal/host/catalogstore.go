@@ -1,6 +1,7 @@
 package host
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -42,6 +43,10 @@ type catalogStore struct {
 	path string
 	mu   sync.Mutex
 	data catalogFile
+	// lastSaved is the marshaled bytes of the last successful write, so an
+	// unchanged save (every resume Open republishes byte-identical catalog)
+	// skips the disk write on the session-open path.
+	lastSaved []byte
 }
 
 // newCatalogStore opens the catalog for one backend under dir, reading
@@ -78,6 +83,11 @@ func (s *catalogStore) load() {
 		data.Dirs = map[string]catalogEntry{}
 	}
 	s.data = data
+	// Seed lastSaved with the canonical marshaling so the first no-change
+	// save after a restart is a no-op, not a redundant rewrite.
+	if canonical, err := json.Marshal(s.data); err == nil {
+		s.lastSaved = canonical
+	}
 }
 
 // snapshot deep-copies the persisted catalog for seeding the manager's
@@ -122,13 +132,16 @@ func (s *catalogStore) putGlobal(mutate func(*catalogEntry)) {
 // leaves the previous catalog intact instead of a truncated one. Caller
 // holds s.mu.
 func (s *catalogStore) save() {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
-		log.Printf("acp catalog: mkdir %s: %v", filepath.Dir(s.path), err)
-		return
-	}
 	raw, err := json.Marshal(s.data)
 	if err != nil {
 		log.Printf("acp catalog: marshal %s: %v", s.path, err)
+		return
+	}
+	if bytes.Equal(raw, s.lastSaved) {
+		return // Unchanged since the last write — skip redundant disk I/O.
+	}
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+		log.Printf("acp catalog: mkdir %s: %v", filepath.Dir(s.path), err)
 		return
 	}
 	tmp := s.path + ".tmp"
@@ -138,7 +151,9 @@ func (s *catalogStore) save() {
 	}
 	if err := os.Rename(tmp, s.path); err != nil {
 		log.Printf("acp catalog: rename %s: %v", s.path, err)
+		return
 	}
+	s.lastSaved = raw
 }
 
 // seed copies the persisted catalog into the manager's in-memory state

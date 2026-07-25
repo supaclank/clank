@@ -348,6 +348,7 @@ func (m *ACPBackendManager) putModes(workDir string, modes []agent.SessionMode) 
 	m.storeDirModes(workDir, modes)
 }
 
+// TODO(ai-review): probed[dir] is one flag but models and modes are independent catalogs — a session advertising only one marks the dir probed for both, so the other serves the neutral global fallback and never re-probes to heal. https://github.com/Acksell/clank/pull/188
 func (m *ACPBackendManager) storeDirModels(workDir string, models []agent.ModelInfo) {
 	if len(models) == 0 || workDir == "" {
 		return
@@ -374,6 +375,9 @@ func (m *ACPBackendManager) storeDirModes(workDir string, modes []agent.SessionM
 }
 
 func (m *ACPBackendManager) storeGlobal(models []agent.ModelInfo, modes []agent.SessionMode) {
+	if len(models) == 0 && len(modes) == 0 {
+		return // A probe that advertised nothing must not persist an empty global entry.
+	}
 	m.catalogMu.Lock()
 	if len(models) > 0 {
 		m.globalModels = slices.Clone(models)
@@ -434,6 +438,7 @@ func (m *ACPBackendManager) ensureCatalogAsync(projectDir string) {
 // host-scoped backend whose Prewarm hasn't succeeded yet. No-op once the
 // catalog is non-empty or a probe is already in flight.
 func (m *ACPBackendManager) probeGlobalInBackground() {
+	// TODO(ai-review): a backend that opens but advertises nothing has no terminal flag, so it re-probes on every read; add a backoff that still heals once auth lands. https://github.com/Acksell/clank/pull/188
 	m.catalogMu.Lock()
 	if m.closed || m.globalProbing || len(m.globalModels) > 0 || len(m.globalModes) > 0 {
 		m.catalogMu.Unlock()
