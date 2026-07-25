@@ -837,14 +837,19 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 
-		// Per-backend pref lookup; see updateCompose for the rationale.
-		prefs, _ := config.LoadPreferences()
-		pref := prefs.ModelFor(string(m.backend))
-		if !pref.IsZero() {
-			for i, model := range m.models {
-				if model.ID == pref.ModelID && model.ProviderID == pref.ProviderID {
-					m.selectedModel = i
-					break
+		// Per-backend pref only fills in when the session reports no current
+		// model (dead session): a live session already runs a model, and the
+		// saved pref must not silently override it into a --model switch on
+		// the next send. See updateCompose for the pref rationale.
+		if m.selectedModel < 0 {
+			prefs, _ := config.LoadPreferences()
+			pref := prefs.ModelFor(string(m.backend))
+			if !pref.IsZero() {
+				for i, model := range m.models {
+					if model.ID == pref.ModelID && model.ProviderID == pref.ProviderID {
+						m.selectedModel = i
+						break
+					}
 				}
 			}
 		}

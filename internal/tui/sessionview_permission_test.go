@@ -6,6 +6,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/config"
 )
 
 func TestClaudePermissionModes_DefaultsToBypass(t *testing.T) {
@@ -42,6 +43,41 @@ func TestSessionView_ModelsResultMsg_PreservesAgentCurrentModel(t *testing.T) {
 
 	if m.selectedModel != 1 {
 		t.Fatalf("selectedModel = %d, want 1 (opus, the agent's current model)", m.selectedModel)
+	}
+}
+
+// A live session already runs a model (info.CurrentModelID); a saved
+// per-backend preference must NOT override it. Otherwise reopening a
+// session running opus would highlight the user's global pref (sonnet)
+// and the next send would silently switch the running session's model.
+func TestSessionView_ModelsResultMsg_CurrentModelWinsOverPref(t *testing.T) {
+	// Not t.Parallel: CLANK_DIR is process-global.
+	t.Setenv("CLANK_DIR", t.TempDir())
+	if err := config.SavePreferences(config.Preferences{}); err != nil {
+		t.Fatalf("SavePreferences: %v", err)
+	}
+	prefs, err := config.LoadPreferences()
+	if err != nil {
+		t.Fatalf("LoadPreferences: %v", err)
+	}
+	prefs.SetModelFor(string(agent.BackendClaudeCode), config.ModelPreference{ModelID: "sonnet", ProviderID: "anthropic"})
+	if err := config.SavePreferences(prefs); err != nil {
+		t.Fatalf("SavePreferences: %v", err)
+	}
+
+	m := NewSessionViewModel(nil, "sess-1")
+	m.width, m.height = 80, 40
+	m.backend = agent.BackendClaudeCode
+	m.info = &agent.SessionInfo{Backend: agent.BackendClaudeCode, CurrentModelID: "opus"}
+
+	model, _ := m.Update(modelsResultMsg{models: []agent.ModelInfo{
+		{ID: "sonnet", ProviderID: "anthropic"},
+		{ID: "opus", ProviderID: "anthropic"},
+	}})
+	m = model.(*SessionViewModel)
+
+	if m.selectedModel != 1 {
+		t.Fatalf("selectedModel = %d, want 1 (opus, the session's current model, not the sonnet pref)", m.selectedModel)
 	}
 }
 

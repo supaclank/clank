@@ -33,6 +33,7 @@ const catalogRefineDelay = 2 * time.Second
 // refineCatalogMsg fires once after catalogRefineDelay to re-fetch the picker.
 type refineCatalogMsg struct{}
 
+// TODO(ai-review): fires once, so a per-dir probe slower than catalogRefineDelay (cold open up to catalogProbeTimeout) never surfaces its per-repo agents — bounded re-arm, or make the probe push its result. https://github.com/Acksell/clank/pull/188
 func refineCatalog() tea.Cmd {
 	return tea.Tick(catalogRefineDelay, func(time.Time) tea.Msg { return refineCatalogMsg{} })
 }
@@ -355,6 +356,8 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 		Prompt:      prompt,
 		Attachments: atts,
 	}
+	// TODO(ai-review): Claude compose no longer defaults to bypassPermissions (empty modes → no PermissionMode; loaded → selectedMode 0, order-dependent); decide the intended default posture for autonomous sessions. https://github.com/Acksell/clank/pull/188
+	// TODO(ai-review): sel.agent is always empty now (modes carry the id in .perm), so req.Agent is dead — drop the vestigial Agent plumbing once the mode-apply path above is settled. https://github.com/Acksell/clank/pull/188
 	if len(m.modes) > 0 {
 		sel := m.modes[m.selectedMode]
 		req.Agent = sel.agent
@@ -628,8 +631,12 @@ func (m *SessionViewModel) applyProjectFolder(dir string, returnTo composeFocus)
 	m.composeFocus = returnTo
 
 	// Clear before refetching: modes and models are project-scoped, so the
-	// previous folder's list must not linger over the new one.
+	// previous folder's list must not linger over the new one. Dropping the
+	// stale model index mirrors applyBackend — otherwise a leftover
+	// selectedModel is forwarded as a `--model <id>` override the new
+	// folder/backend may not accept.
 	m.modes, m.selectedMode = nil, 0
+	m.models, m.selectedModel = nil, -1
 	return tea.Batch(m.fetchModes(), m.fetchModels(), refineCatalog())
 }
 
