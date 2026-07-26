@@ -920,3 +920,179 @@ func TestBackend_CatalogSinkCanCallBackIntoBackend(t *testing.T) {
 		t.Fatal("Open deadlocked: a sink called back into a b.mu-held method")
 	}
 }
+
+// Rejecting a permission with a reason must deliver that reason to the
+// agent. ACP permission outcomes carry an option id and nothing else, so
+// the text becomes the user's next prompt — which is exactly what makes
+// plan revision work: rejecting ExitPlanMode keeps the session in plan mode
+// and ends the turn, then "use click instead" arrives and the agent revises.
+// Previously the text was logged and dropped, so the comments went nowhere.
+func TestBackend_DenyMessageBecomesFollowUpPrompt(t *testing.T) {
+	t.Parallel()
+	const denyMsg = "No — use click instead of argparse, and add a --quiet flag."
+
+	prompts := make(chan string, 4)
+	outcome := make(chan sdk.RequestPermissionResponse, 1)
+	var mu sync.Mutex
+	turns := 0
+
+	scripted := &acptest.ScriptedAgent{}
+	scripted.PromptFn = func(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResponse, error) {
+		text := ""
+		for _, blk := range p.Prompt {
+			if blk.Text != nil {
+				text += blk.Text.Text
+			}
+		}
+		prompts <- text
+
+		mu.Lock()
+		turns++
+		first := turns == 1
+		mu.Unlock()
+		if !first {
+			// The follow-up turn: the revision request, nothing to ask about.
+			return sdk.PromptResponse{StopReason: sdk.StopReasonEndTurn}, nil
+		}
+
+		resp, err := scripted.Conn().RequestPermission(ctx, sdk.RequestPermissionRequest{
+			SessionId: p.SessionId,
+			ToolCall:  sdk.ToolCallUpdate{ToolCallId: "tc-plan", Title: sdk.Ptr("Ready to code?")},
+			Options: []sdk.PermissionOption{
+				{OptionId: "default", Name: "Yes, and manually approve edits", Kind: sdk.PermissionOptionKindAllowOnce},
+				{OptionId: "plan", Name: "No, keep planning", Kind: sdk.PermissionOptionKindRejectOnce},
+			},
+		})
+		if err != nil {
+			return sdk.PromptResponse{}, err
+		}
+		outcome <- resp
+		return sdk.PromptResponse{StopReason: sdk.StopReasonEndTurn}, nil
+	}
+
+	f := newBackendFixture(t, scripted, "")
+	ctx := context.Background()
+	if err := f.backend.Open(ctx); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "plan the flag"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	evts := f.waitFor(5*time.Second, func(evts []agent.Event) bool {
+		return countType(evts, agent.EventPermission) == 1
+	})
+	var perm agent.PermissionData
+	for _, e := range evts {
+		if e.Type == agent.EventPermission {
+			perm = e.Data.(agent.PermissionData)
+		}
+	}
+
+	if err := f.backend.RespondPermission(ctx, perm.RequestID, false, denyMsg); err != nil {
+		t.Fatalf("RespondPermission: %v", err)
+	}
+
+	// The agent sees a rejection (stay in plan mode) …
+	select {
+	case resp := <-outcome:
+		if resp.Outcome.Selected == nil || resp.Outcome.Selected.OptionId != "plan" {
+			t.Fatalf("agent saw outcome %+v, want the reject option", resp.Outcome)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("agent never received the permission outcome")
+	}
+
+	// … and the reason arrives as the next prompt, not dropped.
+	deadline := time.After(5 * time.Second)
+	var got []string
+	for {
+		select {
+		case p := <-prompts:
+			got = append(got, p)
+			if p == denyMsg {
+				goto delivered
+			}
+		case <-deadline:
+			t.Fatalf("deny message never reached the agent; prompts seen: %q", got)
+		}
+	}
+delivered:
+
+	// It is also a visible user message, not an invisible side channel.
+	f.waitFor(5*time.Second, func(evts []agent.Event) bool {
+		for _, e := range evts {
+			if e.Type == agent.EventMessage {
+				if m, ok := e.Data.(agent.MessageData); ok && m.Role == "user" && m.Content == denyMsg {
+					return true
+				}
+			}
+		}
+		return false
+	})
+}
+
+// An approved permission has no reason to carry: a message alongside
+// allow=true must NOT become a phantom follow-up prompt (OP-003).
+func TestBackend_AllowIgnoresMessage(t *testing.T) {
+	t.Parallel()
+	prompts := make(chan string, 4)
+	var mu sync.Mutex
+	turns := 0
+
+	scripted := &acptest.ScriptedAgent{}
+	scripted.PromptFn = func(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResponse, error) {
+		text := ""
+		for _, blk := range p.Prompt {
+			if blk.Text != nil {
+				text += blk.Text.Text
+			}
+		}
+		prompts <- text
+		mu.Lock()
+		turns++
+		first := turns == 1
+		mu.Unlock()
+		if !first {
+			return sdk.PromptResponse{StopReason: sdk.StopReasonEndTurn}, nil
+		}
+		if _, err := scripted.Conn().RequestPermission(ctx, sdk.RequestPermissionRequest{
+			SessionId: p.SessionId,
+			ToolCall:  sdk.ToolCallUpdate{ToolCallId: "tc-1", Title: sdk.Ptr("Run tests")},
+			Options: []sdk.PermissionOption{
+				{OptionId: "yes", Name: "Allow", Kind: sdk.PermissionOptionKindAllowOnce},
+				{OptionId: "no", Name: "Reject", Kind: sdk.PermissionOptionKindRejectOnce},
+			},
+		}); err != nil {
+			return sdk.PromptResponse{}, err
+		}
+		return sdk.PromptResponse{StopReason: sdk.StopReasonEndTurn}, nil
+	}
+
+	f := newBackendFixture(t, scripted, "")
+	ctx := context.Background()
+	if err := f.backend.Open(ctx); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "go"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	evts := f.waitFor(5*time.Second, func(evts []agent.Event) bool {
+		return countType(evts, agent.EventPermission) == 1
+	})
+	var perm agent.PermissionData
+	for _, e := range evts {
+		if e.Type == agent.EventPermission {
+			perm = e.Data.(agent.PermissionData)
+		}
+	}
+	if err := f.backend.RespondPermission(ctx, perm.RequestID, true, "ignore me"); err != nil {
+		t.Fatalf("RespondPermission: %v", err)
+	}
+	<-prompts // the original prompt
+	select {
+	case p := <-prompts:
+		t.Fatalf("allow=true sent a follow-up prompt %q; the message must be ignored", p)
+	case <-time.After(500 * time.Millisecond):
+	}
+}
