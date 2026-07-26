@@ -81,6 +81,42 @@ func TestSessionView_ModelsResultMsg_CurrentModelWinsOverPref(t *testing.T) {
 	}
 }
 
+// A live session reports a current model that isn't in its own advertised
+// options list (e.g. a deprecated or custom model id) — IndexFunc yields -1,
+// the same sentinel as "no current model at all." A saved pref must still
+// not override it: the session is live, just running a model the picker
+// can't display, not a dead session with no opinion.
+func TestSessionView_ModelsResultMsg_CurrentModelNotInListStillBeatsPref(t *testing.T) {
+	// Not t.Parallel: CLANK_DIR is process-global.
+	t.Setenv("CLANK_DIR", t.TempDir())
+	if err := config.SavePreferences(config.Preferences{}); err != nil {
+		t.Fatalf("SavePreferences: %v", err)
+	}
+	prefs, err := config.LoadPreferences()
+	if err != nil {
+		t.Fatalf("LoadPreferences: %v", err)
+	}
+	prefs.SetModelFor(string(agent.BackendClaudeCode), config.ModelPreference{ModelID: "sonnet", ProviderID: "anthropic"})
+	if err := config.SavePreferences(prefs); err != nil {
+		t.Fatalf("SavePreferences: %v", err)
+	}
+
+	m := NewSessionViewModel(nil, "sess-1")
+	m.width, m.height = 80, 40
+	m.backend = agent.BackendClaudeCode
+	m.info = &agent.SessionInfo{Backend: agent.BackendClaudeCode, CurrentModelID: "some-deprecated-model"}
+
+	model, _ := m.Update(modelsResultMsg{models: []agent.ModelInfo{
+		{ID: "sonnet", ProviderID: "anthropic"},
+		{ID: "opus", ProviderID: "anthropic"},
+	}})
+	m = model.(*SessionViewModel)
+
+	if m.selectedModel >= 0 {
+		t.Fatalf("selectedModel = %d, want -1 (no display override, but pref must not have filled in for a live session)", m.selectedModel)
+	}
+}
+
 // Toggling to the Claude backend seeds the static permission modes (default
 // bypass), and Tab cycles through them, wrapping around.
 func TestCompose_ClaudeBackendSeedsAndCyclesModes(t *testing.T) {

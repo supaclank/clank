@@ -831,7 +831,8 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Agent-advertised current model wins over no selection — computed
 		// here since this always runs after the sessionInfoMsg seeding
 		// block and would otherwise discard that index immediately.
-		if m.info != nil && m.info.CurrentModelID != "" {
+		agentReportsCurrentModel := m.info != nil && m.info.CurrentModelID != ""
+		if agentReportsCurrentModel {
 			m.selectedModel = slices.IndexFunc(m.models, func(mi agent.ModelInfo) bool {
 				return mi.ID == m.info.CurrentModelID
 			})
@@ -840,8 +841,11 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Per-backend pref only fills in when the session reports no current
 		// model (dead session): a live session already runs a model, and the
 		// saved pref must not silently override it into a --model switch on
-		// the next send. See updateCompose for the pref rationale.
-		if m.selectedModel < 0 {
+		// the next send. See updateCompose for the pref rationale. Guard on
+		// agentReportsCurrentModel, not just the -1 sentinel: a current model
+		// absent from its own options list also yields -1, and must still
+		// block the pref fallback.
+		if m.selectedModel < 0 && !agentReportsCurrentModel {
 			prefs, _ := config.LoadPreferences()
 			pref := prefs.ModelFor(string(m.backend))
 			if !pref.IsZero() {
