@@ -4,7 +4,7 @@
 > the mapping and the **known gaps** so they stop resurfacing as fresh bugs.
 
 **Platform:** React Native / Expo + react-query + Zustand · **Client kind:** full chat client ·
-**Spec version:** 0.2.0 · **Last updated:** 2026-07-02
+**Spec version:** 0.6.1 · **Last updated:** 2026-07-25
 
 ## Where the pieces live
 
@@ -36,7 +36,7 @@
 | INV-DENY-SETTLE-001 | 🟡 | **verify** running-tool settle on deny matches golden `markRunningToolsFailed` |
 | INV-ABORT-PERM-001 | 🟡 | **verify** composer re-enables + queue clears after abort |
 | INV-PERMMODE-001 | ✅ | `sessions.ts` send omits mode unless changed |
-| INV-PERMMODE-EXITPLAN-001 | 🟡 | plan-review UI exists; **verify** mode stays `""` after approval |
+| ~~INV-PERMMODE-EXITPLAN-001~~ | ➖ | retired 0.6.0 — plan review is an ordinary permission prompt |
 | INV-META-REPLACE-001 | 🟡 | uses `patchSessionInCache` per-field for title/status; **verify** `meta` does a full replace, not a field-merge |
 | INV-REVERT-001 | ✅ | `dispatch.ts:165` (revert marker + invalidate messages) |
 | INV-RECONCILE-001 | ✅ | `resyncAfterStreamGap` (`dispatch.ts`) runs on the backend `reconnected` event, on the client's own transport reconnect (`useEventStream.ts` `onReconnect`), and after every foreground `restart()` |
@@ -75,6 +75,22 @@ rows above.
    visibility/draft/follow-up from other clients) instead of relying on `status`/`title`
    patches + list invalidation.
 3. Verify the 🟡 rows against golden behavior and the fixtures.
+
+### ACP migration follow-ups (0.6.x, not yet done)
+
+4. **Modes are hardcoded** — `src/lib/modes.ts` maps a binary Build/Plan toggle onto
+   claude-specific wire fields. Modes are agent-owned since 0.5.0 ([DATA-040](../03-data-model.md)):
+   the `agent` field is no longer read by any backend, and a claude mode id is silently
+   skipped by an agent that does not advertise it, so the picker is a **no-op on opencode
+   and codex**. Fix: populate from `GET /modes` and send the chosen id as `permission_mode`.
+5. **`revert` is gone** — the endpoint was removed in 0.6.0; the client still calls it and
+   the affordance is user-reachable, so it 404s. Remove it.
+6. **Questions are retired** — `/questions/.../reply` and the `question` part tag no longer
+   exist ([README retire register](../README.md)); the card is unreachable. Delete it.
+7. **`/modes` and `/models` are prewarmed but not instant** — tolerate an empty first
+   response and re-read ([OP-013](../05-operations.md)).
+8. **Deny messages now become a follow-up user message** ([OP-015](../05-operations.md)) —
+   expect the text in the transcript and the session to go busy after a rejection.
 
 Fixed 2026-07-02 (was #1/#2 here): own-transport reconnect + supervised backoff loop +
 foreground resubscribe — `events.ts` rewrite ([EVT-006], [INV-STREAM-SUPERVISE-001]). The
