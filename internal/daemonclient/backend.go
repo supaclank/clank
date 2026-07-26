@@ -44,6 +44,16 @@ func (b *BackendClient) Models(ctx context.Context, hostname string, ref agent.G
 	return out, nil
 }
 
+// Modes returns the agent-advertised session modes for this backend.
+func (b *BackendClient) Modes(ctx context.Context, hostname string, ref agent.GitRef) ([]agent.SessionMode, error) {
+	path := "/modes?" + catalogQuery(b.backend, hostname, ref).Encode()
+	var out []agent.SessionMode
+	if err := b.c.get(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func catalogQuery(bt agent.BackendType, hostname string, ref agent.GitRef) url.Values {
 	v := url.Values{
 		"backend":  {string(bt)},

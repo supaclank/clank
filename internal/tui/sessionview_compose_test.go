@@ -92,8 +92,9 @@ func TestNewSessionViewComposing_ResolvesDefaultBackendFromPreferences(t *testin
 		t.Fatalf("empty prefs: expected no seeded modes for opencode, got %d", len(m.modes))
 	}
 
-	// A saved claude-code preference resolves to the claude backend with its
-	// static permission modes seeded up front.
+	// A saved claude-code preference resolves to the claude backend. Modes
+	// are agent-advertised and fetched (not seeded), so none are present
+	// until the host answers.
 	if err := config.SavePreferences(config.Preferences{DefaultBackend: string(agent.BackendClaudeCode)}); err != nil {
 		t.Fatalf("SavePreferences: %v", err)
 	}
@@ -101,8 +102,37 @@ func TestNewSessionViewComposing_ResolvesDefaultBackendFromPreferences(t *testin
 	if m.backend != agent.BackendClaudeCode {
 		t.Fatalf("claude pref: backend=%s, want claude-code", m.backend)
 	}
-	if len(m.modes) != len(agent.ClaudePermissionModes) {
-		t.Fatalf("claude pref: modes len=%d, want %d", len(m.modes), len(agent.ClaudePermissionModes))
+	if len(m.modes) != 0 {
+		t.Fatalf("claude pref: modes len=%d, want 0 (modes are fetched, never hardcoded)", len(m.modes))
+	}
+}
+
+// Switching the compose project folder must drop the previous folder's
+// model selection along with its modes — both are project-scoped. A
+// lingering selectedModel index would be forwarded as a `--model <id>`
+// override into the new folder, which may not offer that model. This
+// mirrors the guard applyBackend already has for backend switches.
+func TestCompose_ApplyProjectFolder_ClearsStaleModel(t *testing.T) {
+	t.Parallel()
+	m := newSessionViewComposingWithBackend(nil, "/tmp/old-project", agent.BackendOpenCode)
+	m.width, m.height = 80, 40
+
+	// Seed a stale selection from the previous folder.
+	m.models = []agent.ModelInfo{{ID: "gpt-5", ProviderID: "openai"}}
+	m.selectedModel = 0
+	m.modes = []selectableMode{{label: "build", perm: "build"}}
+	m.selectedMode = 0
+
+	m.applyProjectFolder(t.TempDir(), focusFolder)
+
+	if m.models != nil {
+		t.Errorf("models = %+v, want nil after folder switch", m.models)
+	}
+	if m.selectedModel != -1 {
+		t.Errorf("selectedModel = %d, want -1 after folder switch", m.selectedModel)
+	}
+	if m.modes != nil {
+		t.Errorf("modes = %+v, want nil after folder switch", m.modes)
 	}
 }
 

@@ -24,7 +24,8 @@ Source of truth for routes: `internal/host/mux/mux.go:72`. All require the beare
 | POST | `/sessions/{id}/draft` | `{ draft }` | `204` | Yes | Save composer draft. |
 | POST | `/sessions/{id}/followup` | — | `200` `SessionInfo` | Yes | Toggle follow-up flag. |
 | GET | `/events`, `/sessions/{id}/events` | — | `200` SSE | — | See [04](04-event-protocol.md). |
-| GET | `/backends`, `/agents`, `/models` | query | `200` …`Info[]` | Yes | Capability lookups. |
+| GET | `/backends`, `/modes`, `/models` | query | `200` …`Info[]` | Yes | Capability lookups, per project dir — see [OP-013]. |
+| GET | `/agents` | query | `200` `[]` | Yes | **Deprecated 0.6.0**, always empty — see [OP-014]. |
 
 `*` reply is idempotent at the host (an unknown/duplicate permID errors fast); clients
 still single-flight it in the UI ([INV-PERM-SINGLEFLIGHT-001](08-invariants.md)).
@@ -184,6 +185,22 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
 
 ### Capability lookups
 
-- **[OP-009] (SHOULD)** `GET /backends`, `/agents`, `/models` populate pickers. A client
+- **[OP-009] (SHOULD)** `GET /backends`, `/modes`, `/models` populate pickers. A client
   SHOULD fetch them lazily/cached, not on every render. They are pure reads. **Golden:**
-  `internal/host/mux/mux.go:79`, `:87`, `:88`.
+  `internal/host/mux`.
+
+- **[OP-013] (MUST)** `GET /modes` and `/models` are **non-blocking** and answered **per
+  project dir**. ACP advertises both only on session open, so a host prewarms a
+  backend-global catalog at start and serves it for any dir immediately; a per-dir backend
+  (whose catalog varies by repo, e.g. opencode) additionally probes the specific dir in the
+  background and refines its answer. A client MUST NOT treat the first response as final: it
+  MUST re-read shortly after (the reference client re-fetches once after
+  `catalogRefineDelay`) to pick up a dir-specific list that landed after the initial read,
+  and MUST tolerate an empty list before the prewarm completes (e.g. a cold sandbox wake).
+  Answers are never shared between dirs beyond the global seed: project config decides which
+  agents and providers exist. **Golden:** `internal/host/backends_acp.go` (`Prewarm`,
+  `probeDirInBackground`), `internal/host/catalogstore.go`.
+
+- **[OP-014] (SHOULD)** `GET /agents` is **deprecated in 0.6.0** and returns `[]` on every
+  ACP-served backend. OpenCode agents are now agent-advertised session modes: clients
+  SHOULD read `/modes` and `available_modes` ([DATA-040](03-data-model.md)) instead.
