@@ -361,18 +361,33 @@ func TestSupervisor_ExecSpawnClosesPipesOnInitializeFailure(t *testing.T) {
 	}
 	runSupervisor(t, sup)
 
-	before, err := os.ReadDir("/proc/self/fd")
-	if err != nil {
-		t.Fatalf("ReadDir /proc/self/fd: %v", err)
+	countFDs := func() int {
+		t.Helper()
+		ents, err := os.ReadDir("/proc/self/fd")
+		if err != nil {
+			t.Fatalf("ReadDir /proc/self/fd: %v", err)
+		}
+		return len(ents)
 	}
+
+	before := countFDs()
 	if _, err := sup.GetConn(context.Background(), t.TempDir()); err == nil {
 		t.Fatal("GetConn against /bin/true should fail the ACP handshake")
 	}
-	after, err := os.ReadDir("/proc/self/fd")
-	if err != nil {
-		t.Fatalf("ReadDir /proc/self/fd (after): %v", err)
+
+	// Poll rather than sample once: GetConn returns as soon as the waiter
+	// has the error, but the teardown it races (the conn's reader goroutine
+	// releasing the pipes) can land a moment later. The invariant is that a
+	// failed spawn leaks nothing, not that every close is done by the
+	// instant GetConn returns — sampling immediately made this flaky, with
+	// the surplus varying run to run. GC is off, so nothing here is closed
+	// by a finalizer: settling means the pipes were closed explicitly.
+	after := before
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		if after = countFDs(); after == before {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if got, want := len(after), len(before); got != want {
-		t.Errorf("open fds after a failed spawn = %d, want %d (unchanged) — stdin/stdout pipes leaked", got, want)
-	}
+	t.Errorf("open fds after a failed spawn = %d, want %d (unchanged) — stdin/stdout pipes leaked", after, before)
 }
