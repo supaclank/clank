@@ -77,6 +77,7 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("GET /software-manifest", m.handleSoftwareManifest)
 	mx.HandleFunc("GET /agents", m.handleListAgents)
 	mx.HandleFunc("GET /models", m.handleListModels)
+	mx.HandleFunc("GET /modes", m.handleListModes)
 	// /discover is the legacy host-client path; /sessions/discover
 	// is the TUI-facing path the gateway routes from.
 	mx.HandleFunc("POST /discover", m.handleDiscoverSessions)

@@ -792,3 +792,131 @@ func TestBackend_AgentOwnedModes(t *testing.T) {
 	default:
 	}
 }
+
+// Resumed sessions must surface the agent's modes and models. session/load
+// returns the same modes + configOptions as session/new, and dropping them
+// left every reopened session with an empty mode picker (clients then fell
+// back to a hardcoded list) and an empty model picker.
+func TestBackend_ResumeCapturesModesAndModels(t *testing.T) {
+	t.Parallel()
+	desc := "Read-only sandbox"
+	state := &sdk.SessionModeState{
+		CurrentModeId: "agent",
+		AvailableModes: []sdk.SessionMode{
+			{Id: "read-only", Name: "Read Only", Description: &desc},
+			{Id: "agent", Name: "Agent"},
+		},
+	}
+	category := sdk.SessionConfigOptionCategory("model")
+	opts := []sdk.SessionConfigOption{{Select: &sdk.SessionConfigOptionSelect{
+		Id:           "model",
+		Name:         "Model",
+		Category:     &category,
+		CurrentValue: "gpt-5.2-codex",
+		Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+			{Value: "gpt-5.2-codex", Name: "GPT-5.2 Codex"},
+			{Value: "o4-mini", Name: "o4-mini"},
+		}},
+	}}}
+
+	scripted := &acptest.ScriptedAgent{}
+	scripted.LoadSessionFn = func(ctx context.Context, p sdk.LoadSessionRequest) (sdk.LoadSessionResponse, error) {
+		return sdk.LoadSessionResponse{Modes: state, ConfigOptions: opts}, nil
+	}
+	f := newBackendFixture(t, scripted, "ses-resume-modes")
+	if err := f.backend.Open(context.Background()); err != nil {
+		t.Fatalf("Open (resume): %v", err)
+	}
+
+	curMode, modes := f.backend.Modes()
+	if curMode != "agent" || len(modes) != 2 || modes[0].ID != "read-only" || modes[0].Description != "Read-only sandbox" {
+		t.Errorf("resumed modes = %q / %+v, want the agent-advertised list", curMode, modes)
+	}
+	curModel, models := f.backend.Models()
+	if curModel != "gpt-5.2-codex" || len(models) != 2 || models[0].ID != "gpt-5.2-codex" || models[0].Name != "GPT-5.2 Codex" {
+		t.Errorf("resumed models = %q / %+v, want the agent-advertised list", curModel, models)
+	}
+}
+
+// Fresh sessions publish their model list to the manager's catalog sink
+// so /models can answer for the project dir.
+func TestBackend_PublishesModelCatalogOnOpen(t *testing.T) {
+	t.Parallel()
+	category := sdk.SessionConfigOptionCategory("model")
+	scripted := &acptest.ScriptedAgent{}
+	scripted.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+		return sdk.NewSessionResponse{
+			SessionId: "s-models",
+			ConfigOptions: []sdk.SessionConfigOption{{Select: &sdk.SessionConfigOptionSelect{
+				Id: "model", Name: "Model", Category: &category, CurrentValue: "sonnet",
+				Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+					{Value: "sonnet", Name: "Sonnet"},
+					{Value: "opus", Name: "Opus"},
+				}},
+			}}},
+		}, nil
+	}
+	f := newBackendFixture(t, scripted, "")
+
+	type published struct {
+		dir    string
+		models []agent.ModelInfo
+	}
+	got := make(chan published, 1)
+	f.backend.SetCatalogSink(func(dir string, models []agent.ModelInfo) {
+		select {
+		case got <- published{dir, models}:
+		default:
+		}
+	})
+	if err := f.backend.Open(context.Background()); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	select {
+	case p := <-got:
+		if p.dir != "/work" || len(p.models) != 2 || p.models[1].ID != "opus" {
+			t.Errorf("published catalog = %s / %+v, want /work with both models", p.dir, p.models)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("session open never published a model catalog")
+	}
+}
+
+// The catalog/mode sinks are manager callbacks that take their own lock;
+// invoking them while b.mu is still held would invert the usual
+// b.mu → catalogMu order and deadlock the moment a sink calls back into
+// the backend.
+func TestBackend_CatalogSinkCanCallBackIntoBackend(t *testing.T) {
+	t.Parallel()
+	category := sdk.SessionConfigOptionCategory("model")
+	scripted := &acptest.ScriptedAgent{}
+	scripted.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+		return sdk.NewSessionResponse{
+			SessionId: "s-lock-order",
+			ConfigOptions: []sdk.SessionConfigOption{{Select: &sdk.SessionConfigOptionSelect{
+				Id: "model", Name: "Model", Category: &category, CurrentValue: "sonnet",
+				Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+					{Value: "sonnet", Name: "Sonnet"},
+				}},
+			}}},
+		}, nil
+	}
+	f := newBackendFixture(t, scripted, "")
+	f.backend.SetCatalogSink(func(dir string, models []agent.ModelInfo) {
+		f.backend.Modes() // acquires b.mu — deadlocks if Open still holds it here
+	})
+	f.backend.SetModeSink(func(dir string, modes []agent.SessionMode) {
+		f.backend.Modes() // same hazard via the mode sink
+	})
+
+	done := make(chan error, 1)
+	go func() { done <- f.backend.Open(context.Background()) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Open deadlocked: a sink called back into a b.mu-held method")
+	}
+}

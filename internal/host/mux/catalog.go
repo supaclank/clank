@@ -51,6 +51,25 @@ func (m *Mux) handleListAgents(w http.ResponseWriter, r *http.Request) {
 }
 
 // HOST
+func (m *Mux) handleListModes(w http.ResponseWriter, r *http.Request) {
+	bt := agent.BackendType(r.URL.Query().Get("backend"))
+	ref, err := refFromQuery(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
+		return
+	}
+	if bt == "" {
+		writeJSON(w, http.StatusBadRequest, errResp{Error: "backend is required"})
+		return
+	}
+	out, err := m.svc.ListModes(r.Context(), bt, ref)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (m *Mux) handleListModels(w http.ResponseWriter, r *http.Request) {
 	bt := agent.BackendType(r.URL.Query().Get("backend"))
 	ref, err := refFromQuery(r)

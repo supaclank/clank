@@ -23,6 +23,21 @@ import (
 	"github.com/acksell/clank/internal/host/petname"
 )
 
+// catalogRefineDelay is how long compose waits after showing the prewarmed
+// (backend-global) picker before re-fetching once. A per-dir backend
+// (opencode) probes the specific repo in the background on first visit; the
+// re-fetch surfaces its per-repo agents when the probe lands. Host-scoped
+// backends return the same list, so the re-fetch is a harmless no-op.
+const catalogRefineDelay = 2 * time.Second
+
+// refineCatalogMsg fires once after catalogRefineDelay to re-fetch the picker.
+type refineCatalogMsg struct{}
+
+// TODO(ai-review): fires once, so a per-dir probe slower than catalogRefineDelay (cold open up to catalogProbeTimeout) never surfaces its per-repo agents — bounded re-arm, or make the probe push its result. https://github.com/Acksell/clank/pull/188
+func refineCatalog() tea.Cmd {
+	return tea.Tick(catalogRefineDelay, func(time.Time) tea.Msg { return refineCatalogMsg{} })
+}
+
 // sessionCreateResultMsg carries the result of creating a session from composing mode.
 type sessionCreateResultMsg struct {
 	sessionID string
@@ -36,7 +51,7 @@ type sessionCreateResultMsg struct {
 //
 // The gitRef is built from projectDir (LocalPath) plus the stamped
 // worktree ID, if any (read via agent.ReadLocalWorktreeID), so the
-// background fetchAgents/fetchModels prefetch can target it. Without a
+// background modes/models prefetch can target it. Without a
 // stamp the ref is local-only and any cross-host operations will fail
 // at launch.
 func NewSessionViewComposing(client *daemonclient.Client, projectDir string) *SessionViewModel {
@@ -80,11 +95,8 @@ func newSessionViewComposingWithBackend(client *daemonclient.Client, projectDir 
 		input:       ta,
 		spinner:     sp,
 	}
-	// Claude's modes are a static set seeded up front; OpenCode's agents arrive
-	// asynchronously via fetchAgents (Init).
-	if defaultBackend == agent.BackendClaudeCode {
-		m.modes, m.selectedMode = claudePermissionModes()
-	}
+	// Modes are agent-owned and fetched (Init → fetchModes); nothing is
+	// seeded here, so the picker never shows a mode the agent doesn't have.
 	return m
 }
 
@@ -153,10 +165,32 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.SetWidth(m.width - promptInputBorderSize)
 		return m, nil
 
-	case agentsResultMsg:
-		// OpenCode only — Claude seeds its static modes synchronously.
-		m.modes, m.selectedMode = agentSelectableModes(msg.agents, "")
+	case modesResultMsg:
+		// Agent-advertised modes for the selected backend. Compose has no
+		// session yet, so this is the only source — nothing is hardcoded.
+		// A background refine re-fetches after the seed, so preserve the
+		// user's current pick if the refreshed list still offers it.
+		if len(msg.modes) > 0 {
+			prev := ""
+			if m.selectedMode >= 0 && m.selectedMode < len(m.modes) {
+				prev = string(m.modes[m.selectedMode].perm)
+			}
+			m.modes = make([]selectableMode, len(msg.modes))
+			m.selectedMode = 0
+			for i, sm := range msg.modes {
+				m.modes[i] = selectableMode{label: sm.Name, perm: agent.ClaudePermissionMode(sm.ID)}
+				if string(sm.ID) == prev {
+					m.selectedMode = i
+				}
+			}
+		}
 		return m, nil
+
+	case refineCatalogMsg:
+		// The prewarmed picker showed instantly; a per-dir backend probes
+		// the specific repo in the background, so re-fetch once to surface
+		// its per-repo agents. Host-scoped backends return the same list.
+		return m, tea.Batch(m.fetchModes(), m.fetchModels())
 
 	case modelsResultMsg:
 		m.models = msg.models
@@ -322,6 +356,8 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 		Prompt:      prompt,
 		Attachments: atts,
 	}
+	// TODO(ai-review): Claude compose no longer defaults to bypassPermissions (empty modes → no PermissionMode; loaded → selectedMode 0, order-dependent); decide the intended default posture for autonomous sessions. https://github.com/Acksell/clank/pull/188
+	// TODO(ai-review): sel.agent is always empty now (modes carry the id in .perm), so req.Agent is dead — drop the vestigial Agent plumbing once the mode-apply path above is settled. https://github.com/Acksell/clank/pull/188
 	if len(m.modes) > 0 {
 		sel := m.modes[m.selectedMode]
 		req.Agent = sel.agent
@@ -594,11 +630,14 @@ func (m *SessionViewModel) applyProjectFolder(dir string, returnTo composeFocus)
 	}
 	m.composeFocus = returnTo
 
-	cmds := []tea.Cmd{m.fetchModels()}
-	if m.backend == agent.BackendOpenCode {
-		cmds = append(cmds, m.fetchAgents())
-	}
-	return tea.Batch(cmds...)
+	// Clear before refetching: modes and models are project-scoped, so the
+	// previous folder's list must not linger over the new one. Dropping the
+	// stale model index mirrors applyBackend — otherwise a leftover
+	// selectedModel is forwarded as a `--model <id>` override the new
+	// folder/backend may not accept.
+	m.modes, m.selectedMode = nil, 0
+	m.models, m.selectedModel = nil, -1
+	return tea.Batch(m.fetchModes(), m.fetchModels(), refineCatalog())
 }
 
 // overlayFolderPicker composites the folder picker over the compose view.

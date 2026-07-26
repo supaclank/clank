@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -79,11 +80,6 @@ type sessionInfoMsg struct {
 	info *agent.SessionInfo
 }
 
-// agentsResultMsg carries the result of fetching available agents.
-type agentsResultMsg struct {
-	agents []agent.AgentInfo
-}
-
 // selectableMode is one entry in the Tab-cycle list shown above the compose
 // box. For OpenCode it names an agent; for Claude it names a permission mode.
 // Exactly one of agent/perm is set.
@@ -112,8 +108,10 @@ func modesFromInfo(info *agent.SessionInfo) ([]selectableMode, int, bool) {
 	return modes, selected, true
 }
 
-// claudePermissionModes builds the static Tab-cycle list for the Claude
-// backend, defaulting the selection to bypassPermissions.
+// claudePermissionModes builds a mode list from the legacy
+// ClaudePermissionModes enum. Production code no longer calls it —
+// modes are agent-advertised and fetched — but tests use it to build a
+// realistic picker without standing up a backend.
 func claudePermissionModes() ([]selectableMode, int) {
 	modes := make([]selectableMode, len(agent.ClaudePermissionModes))
 	selected := 0
@@ -126,21 +124,9 @@ func claudePermissionModes() ([]selectableMode, int) {
 	return modes, selected
 }
 
-// agentSelectableModes converts fetched OpenCode agents into the cycle list,
-// selecting current (or "build" when current is empty/absent).
-func agentSelectableModes(agents []agent.AgentInfo, current string) ([]selectableMode, int) {
-	if current == "" {
-		current = "build"
-	}
-	modes := make([]selectableMode, len(agents))
-	selected := 0
-	for i, a := range agents {
-		modes[i] = selectableMode{label: a.Name, agent: a.Name}
-		if a.Name == current {
-			selected = i
-		}
-	}
-	return modes, selected
+// modesResultMsg carries the result of fetching agent-advertised modes.
+type modesResultMsg struct {
+	modes []agent.SessionMode
 }
 
 // modelsResultMsg carries the result of fetching available models.
@@ -541,7 +527,7 @@ func (m *SessionViewModel) SetEventChannel(ch <-chan agent.Event, cancel context
 func (m *SessionViewModel) Init() tea.Cmd {
 	// In composing mode, no session exists yet — nothing to subscribe to.
 	if m.composing {
-		return tea.Batch(m.input.Focus(), m.fetchAgents(), m.fetchModels())
+		return tea.Batch(m.input.Focus(), m.fetchModes(), m.fetchModels(), refineCatalog())
 	}
 	cmds := []tea.Cmd{m.fetchSessionInfo(), m.fetchSessionMessages(), m.fetchPendingPermission(), m.spinner.Tick}
 	if m.eventsCh != nil {
@@ -594,31 +580,32 @@ func (m *SessionViewModel) fetchPendingPermission() tea.Cmd {
 	}
 }
 
-// fetchAgents loads the available agents for the current backend/repo.
-// Fired eagerly on compose init; the result arrives before the user finishes typing.
-// Skipped when gitRef is unresolved — the wire surface requires a real ref (§7.3).
-func (m *SessionViewModel) fetchAgents() tea.Cmd {
+// fetchModes loads the agent-advertised session modes for the selected
+// backend. The compose view has no session yet, so the host answers from
+// what a session last reported for the project (ACP advertises modes per
+// session) — empty until one has opened, never a hardcoded guess.
+func (m *SessionViewModel) fetchModes() tea.Cmd {
 	client := m.client
 	backend := m.backend
 	hostname := m.hostname
 	ref := m.gitRef
 	if ref.LocalPath == "" && ref.WorktreeID == "" {
-		return func() tea.Msg { return agentsResultMsg{} }
+		return func() tea.Msg { return modesResultMsg{} }
 	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		agents, err := client.Backend(backend).Agents(ctx, hostname, ref)
+		modes, err := client.Backend(backend).Modes(ctx, hostname, ref)
 		if err != nil {
-			// Non-fatal: degrade gracefully with no agent selector.
-			return agentsResultMsg{}
+			// Non-fatal: degrade gracefully with no mode selector.
+			return modesResultMsg{}
 		}
-		return agentsResultMsg{agents: agents}
+		return modesResultMsg{modes: modes}
 	}
 }
 
 // fetchModels loads available models for the current backend/repo.
-// Fired eagerly on compose init alongside fetchAgents.
+// Fired eagerly on compose init alongside fetchModes.
 func (m *SessionViewModel) fetchModels() tea.Cmd {
 	client := m.client
 	backend := m.backend
@@ -797,18 +784,19 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if modes, sel, ok := modesFromInfo(m.info); ok {
 				m.modes, m.selectedMode = modes, sel
 			}
-			switch m.info.Backend {
-			case agent.BackendOpenCode:
-				// Selected agent is matched against the fetched list in agentsResultMsg.
-				return m, tea.Batch(m.fetchAgents(), m.fetchModels())
-			case agent.BackendClaudeCode:
-				if len(m.info.AvailableModes) == 0 {
-					m.modes, m.selectedMode = claudePermissionModes()
-				}
-				return m, m.fetchModels()
-			default:
-				return m, m.fetchModels()
+			if len(m.info.AvailableModels) > 0 {
+				// selectedModel is computed in modelsResultMsg (the
+				// fetchModels() below always follows and would otherwise
+				// discard this index immediately).
+				m.models = m.info.AvailableModels
 			}
+			// A dead session reports no runtime modes; fetch the
+			// backend's advertised list rather than guessing one.
+			cmds := []tea.Cmd{m.fetchModels()}
+			if len(m.info.AvailableModes) == 0 {
+				cmds = append(cmds, m.fetchModes())
+			}
+			return m, tea.Batch(cmds...)
 		}
 		return m, nil
 
@@ -820,26 +808,52 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(m.fetchSessionInfo(), m.fetchSessionMessages())
 
-	case agentsResultMsg:
-		current := ""
-		if m.info != nil {
-			current = m.info.Agent
+	case modesResultMsg:
+		if len(msg.modes) > 0 {
+			prev := ""
+			if m.selectedMode >= 0 && m.selectedMode < len(m.modes) {
+				prev = string(m.modes[m.selectedMode].perm)
+			}
+			m.modes = make([]selectableMode, len(msg.modes))
+			m.selectedMode = 0
+			for i, sm := range msg.modes {
+				m.modes[i] = selectableMode{label: sm.Name, perm: agent.ClaudePermissionMode(sm.ID)}
+				if sm.ID == prev {
+					m.selectedMode = i
+				}
+			}
 		}
-		m.modes, m.selectedMode = agentSelectableModes(msg.agents, current)
 		return m, nil
 
 	case modelsResultMsg:
 		m.models = msg.models
 		m.selectedModel = -1 // default: no override
+		// Agent-advertised current model wins over no selection — computed
+		// here since this always runs after the sessionInfoMsg seeding
+		// block and would otherwise discard that index immediately.
+		agentReportsCurrentModel := m.info != nil && m.info.CurrentModelID != ""
+		if agentReportsCurrentModel {
+			m.selectedModel = slices.IndexFunc(m.models, func(mi agent.ModelInfo) bool {
+				return mi.ID == m.info.CurrentModelID
+			})
+		}
 
-		// Per-backend pref lookup; see updateCompose for the rationale.
-		prefs, _ := config.LoadPreferences()
-		pref := prefs.ModelFor(string(m.backend))
-		if !pref.IsZero() {
-			for i, model := range m.models {
-				if model.ID == pref.ModelID && model.ProviderID == pref.ProviderID {
-					m.selectedModel = i
-					break
+		// Per-backend pref only fills in when the session reports no current
+		// model (dead session): a live session already runs a model, and the
+		// saved pref must not silently override it into a --model switch on
+		// the next send. See updateCompose for the pref rationale. Guard on
+		// agentReportsCurrentModel, not just the -1 sentinel: a current model
+		// absent from its own options list also yields -1, and must still
+		// block the pref fallback.
+		if m.selectedModel < 0 && !agentReportsCurrentModel {
+			prefs, _ := config.LoadPreferences()
+			pref := prefs.ModelFor(string(m.backend))
+			if !pref.IsZero() {
+				for i, model := range m.models {
+					if model.ID == pref.ModelID && model.ProviderID == pref.ProviderID {
+						m.selectedModel = i
+						break
+					}
 				}
 			}
 		}
@@ -847,6 +861,16 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionMessagesMsg:
 		m.handleSessionMessages(msg.messages)
+		// The opening info fetch races the backend coming live: it runs in
+		// parallel with this message fetch, and it is the message fetch
+		// that rehydrates the backend. Runtime-only fields (agent-owned
+		// modes and models) are therefore empty on that first response —
+		// re-fetch now that a backend exists, or the picker shows nothing
+		// (and a client with a legacy fallback shows a stale hardcoded
+		// list instead of what the agent advertises).
+		if m.info != nil && len(m.info.AvailableModes) == 0 && len(m.info.AvailableModels) == 0 {
+			return m, m.fetchSessionInfo()
+		}
 		return m, nil
 
 	case pendingPermissionMsg:

@@ -486,6 +486,14 @@ type ModeReporter interface {
 	Modes() (currentID string, available []SessionMode)
 }
 
+// ModelReporter is implemented by backends whose agent advertises a model
+// choice for the session. Stamped onto runtime SessionInfo alongside
+// modes so a client can render the picker (and the active model) without
+// a second round trip.
+type ModelReporter interface {
+	Models() (currentID string, available []ModelInfo)
+}
+
 // SessionInfo is a snapshot of a managed session, returned by the daemon API.
 type SessionInfo struct {
 	ID              string            `json:"id"`
@@ -505,6 +513,8 @@ type SessionInfo struct {
 	ServerURL       string            `json:"server_url,omitempty"`        // Runtime-only: backend server URL (e.g. OpenCode serve endpoint). Not persisted.
 	CurrentModeID   string            `json:"current_mode_id,omitempty"`   // Runtime-only: the agent-owned session mode currently active. Not persisted.
 	AvailableModes  []SessionMode     `json:"available_modes,omitempty"`   // Runtime-only: agent-advertised modes for the picker. Not persisted.
+	CurrentModelID  string            `json:"current_model_id,omitempty"`  // Runtime-only: the agent-selected model for this session. Not persisted.
+	AvailableModels []ModelInfo       `json:"available_models,omitempty"`  // Runtime-only: agent-advertised models for the picker. Not persisted.
 	IsRemote        bool              `json:"is_remote,omitempty"`         // Runtime-only: decoration stamped by the laptop daemon's session router when this session's worktree is owned by the active remote. Always false on direct host responses; populated by gateway routing.
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`
@@ -651,9 +661,11 @@ type SendMessageOpts struct {
 	Text  string         `json:"text"`
 	Agent string         `json:"agent,omitempty"` // OpenCode agent name; empty = use session default
 	Model *ModelOverride `json:"model,omitempty"` // Per-message model override; nil = use default
-	// PermissionMode, when set, applies a Claude permission posture: at session
-	// start it picks the initial mode; on a follow-up it changes the mode at
-	// runtime. Empty means "no change". Ignored by the OpenCode backend.
+	// PermissionMode, when set, selects an agent-owned mode: at session start
+	// it picks the initial mode; on a follow-up it changes it at runtime.
+	// Empty means "no change". For Claude these are permission postures
+	// (default/plan/bypassPermissions); OpenCode and Codex reuse the field to
+	// carry their own agent/mode id.
 	PermissionMode ClaudePermissionMode `json:"permission_mode,omitempty"`
 	// Attachments are images the client uploaded out-of-band; the backend
 	// downloads each via its presigned GetURL and inlines it into the agent
@@ -805,6 +817,13 @@ type ModelInfo struct {
 	Name         string `json:"name"`          // Human-readable name (e.g. "Claude Opus")
 	ProviderID   string `json:"provider_id"`   // Provider ID (e.g. "github-copilot")
 	ProviderName string `json:"provider_name"` // Human-readable provider name
+}
+
+// ModeLister is an optional interface BackendManagers implement to expose
+// the agent-advertised session modes for a project without a live
+// session — the compose view needs them before a session exists.
+type ModeLister interface {
+	ListModes(ctx context.Context, projectDir string) ([]SessionMode, error)
 }
 
 // ModelLister is an optional interface that BackendManagers can implement

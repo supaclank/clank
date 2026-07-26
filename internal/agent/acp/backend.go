@@ -39,23 +39,32 @@ type Backend struct {
 	// openMu serializes Open/OpenAndSend (idempotency contract).
 	openMu sync.Mutex
 
-	mu             sync.Mutex
-	opened         bool
-	status         agent.SessionStatus
-	sessionID      string
-	conn           *AdapterConn
-	red            *reducer
-	events         chan agent.Event
-	eventsClosed   bool
-	queue          []queuedPrompt
-	runnerOn       bool
-	aborting       bool
-	stopping       bool
-	pendingPerms   map[string]chan permDecision
-	permSeq        int
-	userSeq        int
-	currentMode    string
-	availableModes []agent.SessionMode
+	mu              sync.Mutex
+	opened          bool
+	status          agent.SessionStatus
+	sessionID       string
+	conn            *AdapterConn
+	red             *reducer
+	events          chan agent.Event
+	eventsClosed    bool
+	queue           []queuedPrompt
+	runnerOn        bool
+	aborting        bool
+	stopping        bool
+	pendingPerms    map[string]chan permDecision
+	permSeq         int
+	userSeq         int
+	currentMode     string
+	availableModes  []agent.SessionMode
+	currentModel    string
+	availableModels []agent.ModelInfo
+
+	// onCatalog publishes the agent-advertised model list to the manager
+	// so /models can answer without a live session of its own.
+	onCatalog func(workDir string, models []agent.ModelInfo)
+	// onModes publishes the agent-advertised mode list to the manager so
+	// the compose view can offer modes before a session exists.
+	onModes func(workDir string, modes []agent.SessionMode)
 
 	lastUpdate atomicTime
 
@@ -67,6 +76,22 @@ type Backend struct {
 type queuedPrompt struct{ blocks []sdk.ContentBlock }
 
 type permDecision struct{ allow bool }
+
+// SetCatalogSink registers the manager callback that receives this
+// session's agent-advertised model list.
+func (b *Backend) SetCatalogSink(fn func(workDir string, models []agent.ModelInfo)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.onCatalog = fn
+}
+
+// SetModeSink registers the manager callback that receives this
+// session's agent-advertised mode list.
+func (b *Backend) SetModeSink(fn func(workDir string, modes []agent.SessionMode)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.onModes = fn
+}
 
 // NewBackend builds a SessionBackend for one clank session.
 // resumeExternalID != "" resumes an existing ACP session via

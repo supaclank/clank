@@ -124,6 +124,7 @@ just carrying dead weight. The host no longer produces any of these behaviors:
 | `INV-REVERT-001`, `STATE-REVERT-001`, `STATE-REVERT-RESULT-001`, `VIEW-REVERT-PREFILL-001`, `CONF-REVERT-FILTER`, the `revert` event + endpoint | revert / un-revert | ACP has no revert primitive; the bespoke Claude implementation (file rollback + transcript truncation) went with its backend. `revert_message_id` stays on the wire as a permanently-empty field until 1.0. |
 | `QST-001/002/003`, `OP-011`, `FLOW-ASK-001`, `CONF-QUESTION-TAG`, `CONF-INTERACTIVE-ASK`, `part.question`, the questions endpoint | AskUserQuestion structured prompts | no ACP equivalent; such requests now arrive as ordinary permission prompts. |
 | `INV-PERMMODE-EXITPLAN-001`, `FLOW-PLAN-001`, `ITOOL-005/006`, `CONF-INTERACTIVE-PLAN`, `CONF-PLAN-EXIT` | ExitPlanMode approve / request-changes / deny | plan review degrades to an ordinary permission prompt (approve/deny); the plan text still renders from the tool part. |
+| `OP-009`'s `/agents` arm (endpoint kept, always `[]`) | per-repo OpenCode agent list | agents are agent-advertised session modes now; `/modes` replaces it ([OP-014](05-operations.md)). |
 | `INV-INTERACTIVE-001` | render interactive tools as structured UI | its two subjects (questions, plan review) are both retired. Inline comments ([11](11-interactive-tools.md)) survive and are now the only structured-feedback path. |
 
 Permission **modes** are unaffected — they became agent-owned in 0.5.0
