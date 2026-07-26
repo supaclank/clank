@@ -79,8 +79,19 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
   reason forwarded to the model when `allow=false` (e.g. plan-review comments) and is
   **ignored when `allow=true`**. A client MUST single-flight the reply per request ID. **Why:**
   double-replying races the backend; the deny-reason is the model's only feedback channel on
-  a rejection. **Golden:** `internal/host/mux/sessions.go:252`, `internal/agent/claude_permissions.go:134`
-  (`RespondPermission`), `internal/tui/sessionview.go:2168`.
+  a rejection. **Golden:** `internal/host/mux/sessions.go`,
+  `internal/agent/acp/backend_permission.go` (`RespondPermission`), `internal/tui/sessionview.go`.
+- **[OP-015] (MUST, 0.6.1)** On ACP-served backends the deny `message` is delivered as the
+  session's **next user prompt**, not as part of the permission outcome — ACP outcomes carry
+  an option id and nothing else. Two consequences a client MUST expect: the text appears in
+  the transcript as an ordinary **user message** (it is not an invisible side channel), and
+  the session goes **busy** again as the follow-up turn runs. A `5xx` on the reply can mean
+  the denial landed but the message did not; the reply is still single-flight, and the user
+  can resend the text as a normal message. **Why:** this is what makes plan revision work —
+  rejecting `ExitPlanMode` keeps the session in plan mode and ends the turn, and the queued
+  message is what asks for the changes. **Golden:**
+  `internal/agent/acp/backend_permission.go`; regression
+  `TestBackend_DenyMessageBecomesFollowUpPrompt`.
 
 ### ~~Reply to question~~ — retired 0.6.0 (endpoint removed)
 

@@ -79,8 +79,12 @@ func (b *Backend) HandleRequestPermission(ctx context.Context, req sdk.RequestPe
 	return sdk.RequestPermissionResponse{Outcome: sdk.NewRequestPermissionOutcomeCancelled()}, nil
 }
 
-// RespondPermission resolves a parked request. denyMessage is dropped:
-// ACP permission outcomes carry an option id only (approved cut).
+// RespondPermission resolves a parked request. A denyMessage becomes a
+// follow-up prompt: ACP permission outcomes carry an option id and nothing
+// else, so the reason reaches the model as the user's next message. That is
+// how plan revision works — rejecting ExitPlanMode keeps the session in plan
+// mode and ends the turn, and the queued message asks for the changes.
+// Ignored when allow is true (a granted permission has no reason to carry).
 func (b *Backend) RespondPermission(ctx context.Context, permissionID string, allow bool, denyMessage string) error {
 	b.mu.Lock()
 	ch, ok := b.pendingPerms[permissionID]
@@ -91,11 +95,20 @@ func (b *Backend) RespondPermission(ctx context.Context, permissionID string, al
 	if !ok {
 		return fmt.Errorf("acp %s: unknown permission request %q", b.profile.ID, permissionID)
 	}
-	if denyMessage != "" {
-		b.logf("acp %s: deny message dropped (no ACP channel): %q", b.profile.ID, denyMessage)
-	}
 	ch <- permDecision{allow: allow}
 	close(ch)
+
+	if allow || denyMessage == "" {
+		return nil
+	}
+	// bgCtx, not ctx: the follow-up must outlive the reply request that
+	// carried it. Send queues behind the turn this denial is ending, so it
+	// dispatches once the agent settles.
+	if err := b.Send(b.bgCtx, agent.SendMessageOpts{Text: denyMessage}); err != nil {
+		// The denial already landed; surface the message failure rather than
+		// dropping the user's text silently.
+		return fmt.Errorf("acp %s: permission denied but follow-up message failed: %w", b.profile.ID, err)
+	}
 	return nil
 }
 
