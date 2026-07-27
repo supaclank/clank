@@ -630,6 +630,7 @@ func (m *SessionViewModel) fetchPresets() tea.Cmd {
 		ps, err := client.Backend(backend).Presets(ctx, string(hostname))
 		if err != nil {
 			// Non-fatal for rendering; submit stays gated until it loads.
+			// TODO(ai-review): a failed fetch here never retries — compose is stuck on "presets still loading" until restart/backend switch. https://github.com/Acksell/clank/pull/191#discussion_r3661708435
 			return presetsResultMsg{backend: backend}
 		}
 		return presetsResultMsg{backend: backend, presets: ps}
