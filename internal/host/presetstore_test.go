@@ -1,6 +1,7 @@
 package host
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,6 +74,53 @@ func TestPresetStore_CorruptFileRefusesToLoad(t *testing.T) {
 	}
 	if _, err := newPresetStore(dir); err == nil {
 		t.Fatal("corrupt presets.json must fail loudly, not clobber user data")
+	}
+}
+
+// Put rejects a builtin-flagged/builtin-prefixed preset, so the on-disk
+// load path must enforce the same invariant — a hand-edited presets.json
+// smuggling one in must not silently join the user store.
+func TestPresetStore_RejectsForgedBuiltinOnLoad(t *testing.T) {
+	t.Parallel()
+
+	t.Run("builtin flag", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		p := userPreset("mine")
+		p.Builtin = true
+		writePresetsJSON(t, dir, p)
+		if _, err := newPresetStore(dir); err == nil {
+			t.Fatal("a loaded preset with Builtin=true must fail, not join the user store")
+		}
+	})
+
+	t.Run("builtin id prefix", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writePresetsJSON(t, dir, userPreset(presets.BuiltinDefaultPrefix+"claude-code"))
+		if _, err := newPresetStore(dir); err == nil {
+			t.Fatal("a loaded preset claiming a builtin id must fail, not join the user store")
+		}
+	})
+
+	t.Run("invalid preset", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writePresetsJSON(t, dir, presets.Preset{ID: "mine"}) // missing Name/Backend/Config
+		if _, err := newPresetStore(dir); err == nil {
+			t.Fatal("a loaded preset failing Validate must fail, not join the user store")
+		}
+	})
+}
+
+func writePresetsJSON(t *testing.T, dir string, ps ...presets.Preset) {
+	t.Helper()
+	raw, err := json.Marshal(ps)
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "presets.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -43,9 +43,20 @@ func newPresetStore(dir string) (*presetStore, error) {
 		return nil, fmt.Errorf("parse %s: %w (fix or remove the file)", s.path, err)
 	}
 	for _, p := range list {
+		if err := p.Validate(); err != nil {
+			return nil, fmt.Errorf("%s: preset %q: %w (fix or remove the file)", s.path, p.ID, err)
+		}
+		if isBuiltinID(p.ID) || p.Builtin {
+			return nil, fmt.Errorf("%s: preset %q: built-ins can't live in the user store (fix or remove the file)", s.path, p.ID)
+		}
 		s.byID[p.ID] = p
 	}
 	return s, nil
+}
+
+// isBuiltinID reports whether id is reserved for built-in presets.
+func isBuiltinID(id string) bool {
+	return strings.HasPrefix(id, presets.BuiltinDefaultPrefix) || strings.HasPrefix(id, presets.BuiltinPlanPrefix)
 }
 
 // List returns user presets, sorted by ID for stable output.
@@ -65,7 +76,7 @@ func (s *presetStore) Put(p presets.Preset) error {
 	if err := p.Validate(); err != nil {
 		return err
 	}
-	if strings.HasPrefix(p.ID, presets.BuiltinDefaultPrefix) || strings.HasPrefix(p.ID, presets.BuiltinPlanPrefix) || p.Builtin {
+	if isBuiltinID(p.ID) || p.Builtin {
 		return fmt.Errorf("preset %q: built-in presets are immutable — duplicate under a new id to customize", p.ID)
 	}
 	s.mu.Lock()
