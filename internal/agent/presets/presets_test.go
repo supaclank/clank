@@ -136,3 +136,14 @@ func TestEnvValueParseRoundTrip(t *testing.T) {
 		t.Error("invalid preset in env must error")
 	}
 }
+
+// A provisioner declaring a built-in outside the reserved prefix could
+// later collide with a user preset claiming the same id — the store only
+// guards ids that already look reserved.
+func TestParse_RejectsUnreservedBuiltinID(t *testing.T) {
+	t.Parallel()
+	env := `[{"id":"custom-tool","name":"Custom","backend":"codex","config":{"mode":"agent"}}]`
+	if _, err := presets.Parse(env); err == nil {
+		t.Error("builtin id outside the reserved prefix must error")
+	}
+}

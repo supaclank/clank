@@ -49,6 +49,9 @@ func newPresetStore(dir string) (*presetStore, error) {
 		if isBuiltinID(p.ID) || p.Builtin {
 			return nil, fmt.Errorf("%s: preset %q: built-ins can't live in the user store (fix or remove the file)", s.path, p.ID)
 		}
+		if _, dup := s.byID[p.ID]; dup {
+			return nil, fmt.Errorf("%s: preset %q: duplicate id (fix or remove the file)", s.path, p.ID)
+		}
 		s.byID[p.ID] = p
 	}
 	return s, nil

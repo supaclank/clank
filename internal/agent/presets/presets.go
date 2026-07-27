@@ -21,6 +21,7 @@ package presets
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/acksell/clank/internal/agent"
 )
@@ -193,6 +194,9 @@ func Parse(env string) ([]Preset, error) {
 	for i := range ps {
 		if err := ps[i].Validate(); err != nil {
 			return nil, fmt.Errorf("builtin preset %d: %w", i, err)
+		}
+		if !strings.HasPrefix(ps[i].ID, BuiltinDefaultPrefix) && !strings.HasPrefix(ps[i].ID, BuiltinPlanPrefix) {
+			return nil, fmt.Errorf("builtin preset %d: id %q must use a reserved builtin prefix (%s or %s)", i, ps[i].ID, BuiltinDefaultPrefix, BuiltinPlanPrefix)
 		}
 		ps[i].Builtin = true
 	}

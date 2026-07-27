@@ -113,6 +113,21 @@ func TestPresetStore_RejectsForgedBuiltinOnLoad(t *testing.T) {
 	})
 }
 
+// A duplicate id in presets.json must not silently pick "last one wins" —
+// that hides corruption and drops user data.
+func TestPresetStore_RejectsDuplicateIDOnLoad(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	first := userPreset("mine")
+	first.Config["effort"] = "low"
+	second := userPreset("mine")
+	second.Config["effort"] = "max"
+	writePresetsJSON(t, dir, first, second)
+	if _, err := newPresetStore(dir); err == nil {
+		t.Fatal("a duplicate preset id on load must fail, not silently overwrite")
+	}
+}
+
 func writePresetsJSON(t *testing.T, dir string, ps ...presets.Preset) {
 	t.Helper()
 	raw, err := json.Marshal(ps)
