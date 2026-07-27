@@ -92,6 +92,7 @@ func main() {
 	localFileAttachments := flag.Bool("local-file-attachments", false, "Honor file:// image attachment sources (the client shares this host's filesystem). Set by the local laptop provisioner; off for remote sprites so a message can't make the host read arbitrary local paths.")
 	ghCLIAuth := flag.Bool("gh-cli-auth", false, "Resolve GitHub tokens from the machine's gh CLI login (gh auth token) when no clank GitHub connection exists. Set by the local laptop provisioner; off for remote sprites, which have no gh login to borrow.")
 	claudeCLIAuth := flag.Bool("claude-cli-auth", false, "Report the machine's own claude CLI login (Keychain / ~/.claude/.credentials.json) as a connected Anthropic provider when no clank connection exists — presence detection only, the credential is never read. Set by the local laptop provisioner; off for remote sprites, which have no claude login to borrow.")
+	permissionPosture := flag.String("permission-posture", envDefault("CLANK_PERMISSION_POSTURE", string(agent.PostureConservative)), "Default permission stance for NEW sessions when the client doesn't pick a mode: 'permissive' (disposable sandboxes — no prompts) or 'conservative' (real machines — auto-accept edits at most). Set by the provisioner; the safe default is conservative. Defaults to $CLANK_PERMISSION_POSTURE.")
 	acpBackends := flag.String("acp-backends", envDefault("CLANK_ACP_BACKENDS", "all"), "Backends this host serves, comma-separated (opencode, claude-code, codex; 'all', 'none'). Every backend runs as an ACP agent; omitting one disables it on this host (its sessions then fail to open rather than silently using something else). Defaults to $CLANK_ACP_BACKENDS, else 'all'.")
 	flag.Parse()
 
@@ -101,6 +102,12 @@ func main() {
 	}
 	if *socket != "" && *listen != "" {
 		fmt.Fprintln(os.Stderr, "clank-host: --socket and --listen are mutually exclusive")
+		os.Exit(2)
+	}
+	switch agent.PermissionPosture(*permissionPosture) {
+	case agent.PosturePermissive, agent.PostureConservative:
+	default:
+		fmt.Fprintf(os.Stderr, "clank-host: --permission-posture must be %q or %q, got %q\n", agent.PosturePermissive, agent.PostureConservative, *permissionPosture)
 		os.Exit(2)
 	}
 
@@ -142,6 +149,7 @@ func main() {
 		projectCommitterName:  *projectCommitterName,
 		projectCommitterEmail: *projectCommitterEmail,
 		acpBackends:           *acpBackends,
+		permissionPosture:     agent.PermissionPosture(*permissionPosture),
 	}
 	if err := run(cfg); err != nil {
 		log.Fatalf("clank-host: %v", err)
@@ -170,6 +178,7 @@ type runConfig struct {
 	projectCommitterName  string
 	projectCommitterEmail string
 	acpBackends           string
+	permissionPosture     agent.PermissionPosture
 }
 
 // buildKeepaliveListener constructs the provider-specific Listener from
@@ -390,18 +399,21 @@ func run(cfg runConfig) error {
 			if err != nil {
 				return fmt.Errorf("--acp-backends: codex: %w", err)
 			}
+			codexMgr.SetPosture(cfg.permissionPosture)
 			backendManagers[agent.BackendCodex] = codexMgr
 		case agent.BackendOpenCode:
 			ocMgr, err := host.NewOpenCodeACPManager(acpDirs)
 			if err != nil {
 				return fmt.Errorf("--acp-backends: opencode: %w", err)
 			}
+			ocMgr.SetPosture(cfg.permissionPosture)
 			backendManagers[agent.BackendOpenCode] = ocMgr
 		case agent.BackendClaudeCode:
 			claudeMgr, err := host.NewClaudeACPManager(acpDirs)
 			if err != nil {
 				return fmt.Errorf("--acp-backends: claude-code: %w", err)
 			}
+			claudeMgr.SetPosture(cfg.permissionPosture)
 			backendManagers[agent.BackendClaudeCode] = claudeMgr
 		default:
 			return fmt.Errorf("--acp-backends: unknown backend %s", bt)

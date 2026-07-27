@@ -809,3 +809,79 @@ func TestACPBackendManager_GlobalProbeDoesNotPersistNeutralDir(t *testing.T) {
 		t.Errorf("persisted catalog has %d dir entries after a neutral prewarm, want 0 (leaked probe temp dir): %v", len(file.Dirs), file.Dirs)
 	}
 }
+
+// The host posture decides the mode a FRESH session opens in when the
+// client picks none: permissive hosts (disposable sandboxes) run without
+// prompts, everything else gets the conservative stance. This is what
+// replaced clients defaulting to whatever the agent's own first mode was
+// ("Manual" on mobile).
+func TestACPBackendManager_PostureDefaultsFreshSessionMode(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // installGuidanceSkills writes under $HOME
+
+	for _, tc := range []struct {
+		posture  agent.PermissionPosture
+		wantMode string
+	}{
+		// codex profile: permissive=agent-full-access, conservative=agent.
+		{agent.PosturePermissive, "agent-full-access"},
+		{agent.PostureConservative, "agent"},
+	} {
+		mgr, err := host.NewCodexACPManager(acpDirs(t))
+		if err != nil {
+			t.Fatalf("NewCodexACPManager: %v", err)
+		}
+		mgr.SetPosture(tc.posture)
+
+		setModes := make(chan string, 4)
+		scripted := func(string) *acptest.ScriptedAgent {
+			a := &acptest.ScriptedAgent{}
+			a.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+				return sdk.NewSessionResponse{
+					SessionId: "s-1",
+					Modes: &sdk.SessionModeState{
+						CurrentModeId: "read-only",
+						AvailableModes: []sdk.SessionMode{
+							{Id: "read-only", Name: "Read Only"},
+							{Id: "agent", Name: "Agent"},
+							{Id: "agent-full-access", Name: "Full Access"},
+						},
+					},
+				}, nil
+			}
+			a.SetModeFn = func(ctx context.Context, p sdk.SetSessionModeRequest) (sdk.SetSessionModeResponse, error) {
+				setModes <- string(p.ModeId)
+				return sdk.SetSessionModeResponse{}, nil
+			}
+			return a
+		}
+		mgr.Supervisor().SetSpawnFunc(acptest.SpawnFunc(scripted, acpx.CodexProfile("bun", "entry", nil), t.Logf))
+		mgr.Supervisor().SetReconcileInterval(20 * time.Millisecond)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		if err := mgr.Init(ctx, func() ([]string, error) { return nil, nil }); err != nil {
+			cancel()
+			t.Fatalf("Init: %v", err)
+		}
+
+		b, err := mgr.CreateBackend(ctx, agent.BackendInvocation{WorkDir: t.TempDir()})
+		if err != nil {
+			t.Fatalf("CreateBackend: %v", err)
+		}
+		openCtx, openCancel := context.WithTimeout(ctx, 10*time.Second)
+		if err := b.Open(openCtx); err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		select {
+		case got := <-setModes:
+			if got != tc.wantMode {
+				t.Errorf("posture %s: fresh session opened with set_mode %q, want %q", tc.posture, got, tc.wantMode)
+			}
+		case <-time.After(5 * time.Second):
+			t.Errorf("posture %s: fresh open never applied the posture-default mode", tc.posture)
+		}
+		openCancel()
+		_ = b.Stop()
+		mgr.Shutdown()
+		cancel()
+	}
+}

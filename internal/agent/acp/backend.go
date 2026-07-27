@@ -29,12 +29,16 @@ type ConnResolver func(ctx context.Context) (*AdapterConn, error)
 // Backend adapts one ACP session to agent.SessionBackend. One value per
 // clank session; the adapter process behind it is shared and supervised.
 type Backend struct {
-	profile     AdapterProfile
-	resolver    ConnResolver
-	workDir     string
-	guidance    string
-	initialMode agent.ClaudePermissionMode
-	logf        func(format string, args ...any)
+	profile  AdapterProfile
+	resolver ConnResolver
+	workDir  string
+	guidance string
+	// initialConfig is applied once after a FRESH session opens (never on
+	// resume): the host's posture-default mode, and any option the client
+	// pinned at creation. Client entries land after (and thus win over)
+	// whatever the manager seeded, because Send re-applies its own Config.
+	initialConfig map[string]string
+	logf          func(format string, args ...any)
 
 	// openMu serializes Open/OpenAndSend (idempotency contract).
 	openMu sync.Mutex
@@ -96,25 +100,25 @@ func (b *Backend) SetModeSink(fn func(workDir string, modes []agent.SessionMode)
 // NewBackend builds a SessionBackend for one clank session.
 // resumeExternalID != "" resumes an existing ACP session via
 // session/load; guidance is injected only on fresh sessions.
-func NewBackend(profile AdapterProfile, workDir, resumeExternalID, guidance string, initialMode agent.ClaudePermissionMode, resolver ConnResolver, logf func(string, ...any)) *Backend {
+func NewBackend(profile AdapterProfile, workDir, resumeExternalID, guidance string, initialConfig map[string]string, resolver ConnResolver, logf func(string, ...any)) *Backend {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &Backend{
-		profile:      profile,
-		resolver:     resolver,
-		workDir:      workDir,
-		guidance:     guidance,
-		initialMode:  initialMode,
-		logf:         logf,
-		status:       agent.StatusStarting,
-		sessionID:    resumeExternalID,
-		red:          newReducer(logf),
-		events:       make(chan agent.Event, eventBufferSize),
-		pendingPerms: make(map[string]chan permDecision),
-		bgCtx:        ctx,
-		bgCancel:     cancel,
+		profile:       profile,
+		resolver:      resolver,
+		workDir:       workDir,
+		guidance:      guidance,
+		initialConfig: initialConfig,
+		logf:          logf,
+		status:        agent.StatusStarting,
+		sessionID:     resumeExternalID,
+		red:           newReducer(logf),
+		events:        make(chan agent.Event, eventBufferSize),
+		pendingPerms:  make(map[string]chan permDecision),
+		bgCtx:         ctx,
+		bgCancel:      cancel,
 	}
 	return b
 }

@@ -6,6 +6,7 @@ import (
 
 	fly "github.com/superfly/fly-go"
 
+	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/pkg/provisioner"
 )
 
@@ -28,6 +29,11 @@ func buildMachineConfig(opts Options, tokens hostTokens, volumeID string, oneSho
 		"CLANK_HOST_AUTH_TOKEN":    tokens.auth,
 		"CLANK_NOTIFIER_TOKEN":     tokens.notifier,
 		"CLANK_KEEPALIVE_PROVIDER": "exit",
+		// Machines are disposable: new sessions run without permission
+		// prompts unless the client picks a mode itself. Hosts that are
+		// not provisioned by us (a laptop, a self-hosted box) omit this
+		// and get clank-host's conservative default.
+		"CLANK_PERMISSION_POSTURE": string(agent.PosturePermissive),
 	}
 	if opts.NotifierWebhookURL != "" {
 		env["CLANK_NOTIFIER_PROVIDER"] = "webhook"

@@ -43,6 +43,26 @@ type AdapterProfile struct {
 	// vocabulary — clank passes mode ids through to session/set_mode and
 	// surfaces the advertised list untranslated.
 	ModelOption func(o agent.ModelOverride) (id, value string, ok bool)
+	// DefaultModes names the mode id a NEW session starts in per host
+	// posture, applied at open only when the client set none. Values are
+	// this agent's own advertised ids; one it stops advertising is
+	// skipped by the same guard as any mode switch. Zero value = never
+	// set a default.
+	DefaultModes PostureModes
+}
+
+// PostureModes is an adapter's mode id per host permission posture.
+type PostureModes struct {
+	Permissive   string
+	Conservative string
+}
+
+// ForPosture returns the mode id for p, "" when unset.
+func (m PostureModes) ForPosture(p agent.PermissionPosture) string {
+	if p == agent.PosturePermissive {
+		return m.Permissive
+	}
+	return m.Conservative
 }
 
 // ScopeKey maps a session workDir onto the supervisor's process key.

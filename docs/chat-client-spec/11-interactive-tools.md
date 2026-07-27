@@ -114,8 +114,8 @@ permission flow applies).
 - **~~[ITOOL-005]~~ (retired 0.6.0 — M3) (MUST)** Plan-mode posture follows [INV-PERMMODE-EXITPLAN-001](08-invariants.md):
   Approve = **reply `allow`** to the parked `ExitPlanMode` permission; the **backend** then
   exits plan mode and resets its tracked mode (`internal/agent/claude_permissions.go:97`). The
-  client does **not** send a `permission_mode` to switch to build — it simply keeps sending
-  `permission_mode:""` on ordinary follow-ups ([INV-PERMMODE-001](08-invariants.md)) until the
+  client does **not** send a `config.mode` to switch to build — it simply omits `config` on
+  ordinary follow-ups ([INV-PERMMODE-001](08-invariants.md)) until the
   user explicitly changes the mode. Revise = **reply `deny`** with the revision notes as the
   deny-reason. **Golden:** `clank-mobile/src/lib/planReview.ts` (`formatPlanApproval`/`formatPlanReview`),
   `internal/agent/claude_permissions.go:97` (backend mode reset on approval).

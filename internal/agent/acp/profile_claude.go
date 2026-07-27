@@ -32,6 +32,12 @@ func ClaudeProfile(bunBin, adapterEntry string, env func(string) map[string]stri
 			return bunBin, []string{adapterEntry}
 		},
 		Env: env,
+		// bypassPermissions/acceptEdits per the advertised list (Manual/
+		// Accept Edits/Plan Mode/Don't Ask/Bypass Permissions/Auto).
+		DefaultModes: PostureModes{
+			Permissive:   string(agent.ClaudePermBypass),
+			Conservative: string(agent.ClaudePermAcceptEdits),
+		},
 		SessionNewMeta: func(guidance string) map[string]any {
 			if guidance == "" {
 				return nil

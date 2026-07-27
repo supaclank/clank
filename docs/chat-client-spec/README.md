@@ -1,6 +1,6 @@
 # Clank Chat-Client Specification
 
-**Spec version:** 0.6.1 · **Last updated:** 2026-07-25 · **Status:** Draft
+**Spec version:** 0.6.2 · **Last updated:** 2026-07-27 · **Status:** Draft
 
 This is the normative contract for any client that drives a clank **chat session** — the
 TUI, the React Native app, the native Android/iOS overlays, a future Swift or web client.
@@ -125,6 +125,7 @@ just carrying dead weight. The host no longer produces any of these behaviors:
 | `QST-001/002/003`, `OP-011`, `FLOW-ASK-001`, `CONF-QUESTION-TAG`, `CONF-INTERACTIVE-ASK`, `part.question`, the questions endpoint | AskUserQuestion structured prompts | **opt-in, and clank does not opt in.** ACP's equivalent is the (unstable) `elicitation/create`, and `claude-agent-acp` gates the tool on `clientCapabilities.elicitation.form`. clank advertises no elicitation capability, so the tool is never offered to the model and the agent asks in prose instead. Verified against claude-agent-acp 0.61.0; `opencode acp` 1.17.18 exposes no question tool at all. Re-enabling is a deliberate act (advertise the capability + handle `elicitation/create`), never a side effect of an adapter bump. |
 | `INV-PERMMODE-EXITPLAN-001`, `FLOW-PLAN-001`, `ITOOL-005/006`, `CONF-INTERACTIVE-PLAN`, `CONF-PLAN-EXIT` | ExitPlanMode approve / request-changes / deny | plan review degrades to an ordinary permission prompt (approve/deny); the plan text still renders from the tool part. |
 | `OP-009`'s `/agents` arm (endpoint kept, always `[]`) | per-repo OpenCode agent list | agents are agent-advertised session modes now; `/modes` replaces it ([OP-014](05-operations.md)). |
+| `permission_mode` + `agent` request fields (0.6.2) | mode/agent selection on create + send | replaced by the generic `config` option map ([DATA-040](03-data-model.md)); new sessions without a `mode` key open in the host's posture default. |
 | `INV-INTERACTIVE-001` | render interactive tools as structured UI | its two subjects (questions, plan review) are both retired. Inline comments ([11](11-interactive-tools.md)) survive and are now the only structured-feedback path. |
 
 Permission **modes** are unaffected — they became agent-owned in 0.5.0

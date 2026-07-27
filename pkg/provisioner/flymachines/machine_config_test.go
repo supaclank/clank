@@ -75,6 +75,8 @@ func TestMachineConfigShape(t *testing.T) {
 		"CLANK_PREVIEW_WEBHOOK_URL":    "https://gw.example.com/webhooks/preview",
 		"CLANK_GITHUB_OAUTH_CLIENT_ID": "ghclient",
 		"CLANK_RESTORE_URL":            "https://s3/x.tgz",
+		// Machines are disposable, so new sessions run without prompts.
+		"CLANK_PERMISSION_POSTURE": "permissive",
 	}
 	for k, want := range wantEnv {
 		if got := cfg.Env[k]; got != want {

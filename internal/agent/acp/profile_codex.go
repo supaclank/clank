@@ -19,6 +19,14 @@ func CodexProfile(bunBin, adapterEntry string, env func(string) map[string]strin
 			return bunBin, []string{adapterEntry}
 		},
 		Env: env,
+		// codex advertises read-only/agent/agent-full-access. Full access
+		// also lifts codex's own inner sandbox (network etc.), which is
+		// redundant inside a disposable clank sandbox; `agent`
+		// (workspace-write) is the conservative stance.
+		DefaultModes: PostureModes{
+			Permissive:   "agent-full-access",
+			Conservative: "agent",
+		},
 		ModelOption: func(o agent.ModelOverride) (string, string, bool) {
 			if o.ModelID == "" {
 				return "", "", false

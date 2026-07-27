@@ -710,7 +710,6 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 		GitRef:     req.GitRef,
 		Prompt:     req.Prompt,
 		TicketID:   req.TicketID,
-		Agent:      req.Agent,
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}

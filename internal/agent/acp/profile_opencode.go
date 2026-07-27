@@ -15,8 +15,12 @@ func OpenCodeProfile(bin string) AdapterProfile {
 		Command: func(scopeDir string) (string, []string) {
 			return bin, []string{"acp", "--cwd", scopeDir}
 		},
-		// opencode ignores clank permission modes (ModeFor nil, matching
-		// the bespoke backend); models are its "model" config option.
+		// build is opencode's own default agent in both postures — its
+		// per-tool permission gates come from the repo's opencode config,
+		// which is the user's own declared stance. Setting it is a no-op
+		// guard against a repo that reorders its default.
+		DefaultModes: PostureModes{Permissive: "build", Conservative: "build"},
+		// Models are opencode's "model" config option.
 		ModelOption: func(o agent.ModelOverride) (string, string, bool) {
 			if o.ModelID == "" || o.ProviderID == "" {
 				return "", "", false

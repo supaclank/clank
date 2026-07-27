@@ -36,7 +36,7 @@ func newBackendFixture(t *testing.T, scripted *acptest.ScriptedAgent, resume str
 	}
 	t.Cleanup(proc.Stop)
 	resolver := func(context.Context) (*acpx.AdapterConn, error) { return proc.Conn, nil }
-	f.backend = acpx.NewBackend(profile, "/work", resume, "", "", resolver, testLogf(t))
+	f.backend = acpx.NewBackend(profile, "/work", resume, "", nil, resolver, testLogf(t))
 	t.Cleanup(func() { _ = f.backend.Stop() })
 	go func() {
 		for e := range f.backend.Events() {
@@ -766,7 +766,7 @@ func TestBackend_AgentOwnedModes(t *testing.T) {
 	}
 
 	// Advertised id passes through raw.
-	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "go", PermissionMode: "read-only"}); err != nil {
+	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "go", Config: map[string]string{agent.ConfigOptionMode: "read-only"}}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	select {
@@ -780,7 +780,7 @@ func TestBackend_AgentOwnedModes(t *testing.T) {
 	f.waitFor(10*time.Second, func(evts []agent.Event) bool { return settledTurns(evts) >= 1 })
 
 	// Unadvertised id is skipped, not sent.
-	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "again", PermissionMode: "bogus-mode"}); err != nil {
+	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "again", Config: map[string]string{agent.ConfigOptionMode: "bogus-mode"}}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	f.waitFor(10*time.Second, func(evts []agent.Event) bool {
@@ -1094,5 +1094,194 @@ func TestBackend_AllowIgnoresMessage(t *testing.T) {
 	case p := <-prompts:
 		t.Fatalf("allow=true sent a follow-up prompt %q; the message must be ignored", p)
 	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+// newBackendFixtureWithConfig is newBackendFixture with an initial config —
+// the manager's posture-default injection path.
+func newBackendFixtureWithConfig(t *testing.T, scripted *acptest.ScriptedAgent, resume string, initialConfig map[string]string) *backendFixture {
+	t.Helper()
+	f := &backendFixture{t: t, agent: scripted, notify: make(chan struct{}, 256)}
+	profile := testProfile(acpx.ScopeHost, nil)
+	proc, err := acptest.Proc(context.Background(), profile, scripted, testLogf(t))
+	if err != nil {
+		t.Fatalf("acptest.Proc: %v", err)
+	}
+	t.Cleanup(proc.Stop)
+	resolver := func(context.Context) (*acpx.AdapterConn, error) { return proc.Conn, nil }
+	f.backend = acpx.NewBackend(profile, "/work", resume, "", initialConfig, resolver, testLogf(t))
+	t.Cleanup(func() { _ = f.backend.Stop() })
+	go func() {
+		for e := range f.backend.Events() {
+			f.mu.Lock()
+			f.events = append(f.events, e)
+			f.mu.Unlock()
+			select {
+			case f.notify <- struct{}{}:
+			default:
+			}
+		}
+	}()
+	return f
+}
+
+// scriptedWithModes returns a ScriptedAgent advertising codex-shaped modes
+// with the given current id, recording set_mode ids into setModes.
+func scriptedWithModes(current string, setModes chan string) *acptest.ScriptedAgent {
+	a := &acptest.ScriptedAgent{}
+	a.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+		return sdk.NewSessionResponse{
+			SessionId: "s-modes",
+			Modes: &sdk.SessionModeState{
+				CurrentModeId: sdk.SessionModeId(current),
+				AvailableModes: []sdk.SessionMode{
+					{Id: "read-only", Name: "Read Only"},
+					{Id: "agent", Name: "Agent"},
+					{Id: "agent-full-access", Name: "Full Access"},
+				},
+			},
+		}, nil
+	}
+	a.SetModeFn = func(ctx context.Context, p sdk.SetSessionModeRequest) (sdk.SetSessionModeResponse, error) {
+		setModes <- string(p.ModeId)
+		return sdk.SetSessionModeResponse{}, nil
+	}
+	a.PromptFn = func(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResponse, error) {
+		return sdk.PromptResponse{StopReason: sdk.StopReasonEndTurn}, nil
+	}
+	return a
+}
+
+// A fresh session opens in the host's posture-default mode: the manager
+// passes it as initialConfig and the backend applies it right after
+// session/new — before any prompt, so the very first turn already runs in
+// the intended posture (the "Manual by default" complaint).
+func TestBackend_InitialConfigModeAppliedOnFreshOpen(t *testing.T) {
+	t.Parallel()
+	setModes := make(chan string, 4)
+	f := newBackendFixtureWithConfig(t, scriptedWithModes("read-only", setModes), "",
+		map[string]string{agent.ConfigOptionMode: "agent-full-access"})
+
+	if err := f.backend.Open(context.Background()); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	select {
+	case got := <-setModes:
+		if got != "agent-full-access" {
+			t.Fatalf("set_mode = %q, want agent-full-access", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("fresh open never applied the initial mode")
+	}
+}
+
+// The client's explicit choice wins: initialConfig applies at open, the
+// first send's Config lands after it. Order on the wire proves precedence.
+func TestBackend_ClientConfigOverridesInitialModeOnFirstSend(t *testing.T) {
+	t.Parallel()
+	setModes := make(chan string, 4)
+	f := newBackendFixtureWithConfig(t, scriptedWithModes("read-only", setModes), "",
+		map[string]string{agent.ConfigOptionMode: "agent-full-access"})
+	ctx := context.Background()
+	if err := f.backend.Open(ctx); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := f.backend.Send(ctx, agent.SendMessageOpts{
+		Text:   "go",
+		Config: map[string]string{agent.ConfigOptionMode: "agent"},
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	want := []string{"agent-full-access", "agent"}
+	for i, w := range want {
+		select {
+		case got := <-setModes:
+			if got != w {
+				t.Fatalf("set_mode[%d] = %q, want %q", i, got, w)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("set_mode[%d] never arrived", i)
+		}
+	}
+}
+
+// Resume never re-modes a session: the agent restored its own state, and
+// re-applying a posture default would stomp whatever the user had set.
+func TestBackend_InitialConfigSkippedOnResume(t *testing.T) {
+	t.Parallel()
+	setModes := make(chan string, 4)
+	scripted := scriptedWithModes("read-only", setModes)
+	scripted.LoadSessionFn = func(ctx context.Context, p sdk.LoadSessionRequest) (sdk.LoadSessionResponse, error) {
+		return sdk.LoadSessionResponse{
+			Modes: &sdk.SessionModeState{
+				CurrentModeId: "agent",
+				AvailableModes: []sdk.SessionMode{
+					{Id: "read-only", Name: "Read Only"},
+					{Id: "agent", Name: "Agent"},
+					{Id: "agent-full-access", Name: "Full Access"},
+				},
+			},
+		}, nil
+	}
+	f := newBackendFixtureWithConfig(t, scripted, "resumed-1",
+		map[string]string{agent.ConfigOptionMode: "agent-full-access"})
+
+	if err := f.backend.Open(context.Background()); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	select {
+	case got := <-setModes:
+		t.Fatalf("resume applied an initial mode %q; it must not re-mode", got)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// Config keys beyond the mode ride session/set_config_option — this is what
+// makes effort/thought_level reachable at all (no client could set it
+// before). Mode is applied first: it can gate what other options mean.
+func TestBackend_SendConfigSetsNonModeOptions(t *testing.T) {
+	t.Parallel()
+	type call struct{ kind, id, value string }
+	calls := make(chan call, 8)
+	scripted := scriptedWithModes("read-only", nil)
+	scripted.SetModeFn = func(ctx context.Context, p sdk.SetSessionModeRequest) (sdk.SetSessionModeResponse, error) {
+		calls <- call{kind: "mode", value: string(p.ModeId)}
+		return sdk.SetSessionModeResponse{}, nil
+	}
+	scripted.SetConfigFn = func(ctx context.Context, p sdk.SetSessionConfigOptionRequest) (sdk.SetSessionConfigOptionResponse, error) {
+		calls <- call{kind: "config", id: string(p.ValueId.ConfigId), value: string(p.ValueId.Value)}
+		return sdk.SetSessionConfigOptionResponse{}, nil
+	}
+	f := newBackendFixture(t, scripted, "")
+	ctx := context.Background()
+	if err := f.backend.Open(ctx); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := f.backend.Send(ctx, agent.SendMessageOpts{
+		Text: "go",
+		Config: map[string]string{
+			"effort":               "high",
+			agent.ConfigOptionMode: "agent",
+			"collaboration_mode":   "plan",
+		},
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	want := []call{
+		{kind: "mode", value: "agent"},
+		{kind: "config", id: "collaboration_mode", value: "plan"},
+		{kind: "config", id: "effort", value: "high"},
+	}
+	for i, w := range want {
+		select {
+		case got := <-calls:
+			if got != w {
+				t.Fatalf("call[%d] = %+v, want %+v", i, got, w)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("call[%d] never arrived", i)
+		}
 	}
 }

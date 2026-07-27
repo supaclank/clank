@@ -2287,7 +2287,10 @@ func (m *SessionViewModel) sendMessage(text string, atts []agent.Attachment) tea
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		opts := agent.SendMessageOpts{Text: text, Agent: sel.agent, Model: modelOverride, PermissionMode: sel.perm, Attachments: atts}
+		opts := agent.SendMessageOpts{Text: text, Model: modelOverride, Attachments: atts}
+		if sel.perm != "" {
+			opts.Config = map[string]string{agent.ConfigOptionMode: string(sel.perm)}
+		}
 		err := m.client.Session(m.sessionID).Send(ctx, opts)
 		return sessionSendResultMsg{err: err}
 	}

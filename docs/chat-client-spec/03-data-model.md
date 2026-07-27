@@ -166,24 +166,29 @@ Source: `internal/agent/agent.go:565`.
 | Field | JSON | Notes |
 |---|---|---|
 | Text | `text` | The message. |
-| Agent | `agent` | OpenCode agent; empty = session default. |
 | Model | `model` | Per-message override; omit = default. |
-| PermissionMode | `permission_mode` | Claude mode change; **`""` = no change**. See [INV-PERMMODE-001](08-invariants.md). |
+| Config | `config` | Agent config changes, option-id → value-id; **omit/empty = no change**. See [DATA-040]. |
 
-- **[DATA-040] (MUST)** A client MUST send `permission_mode: ""` (or omit it) when the user
-  has not changed the mode on this send. A client MUST NOT send a default value (e.g.
-  `"default"`) to mean "unchanged". **Why:** any non-empty value *re-asserts* the mode on the
-  backend; sending a default silently flips a `plan`/`acceptEdits` session. **Golden:**
-  `internal/agent/agent.go:571`, `internal/tui/sessionview.go:2162` (sends only the selected
-  mode).
-  **Amended 0.5.0 — modes are agent-owned:** a non-empty value is an **agent-defined mode
-  id** the client picked from the session's `available_modes` (runtime session info), not a
-  closed clank enum — `StartRequest` validation no longer rejects unknown ids. The legacy
-  four Claude ids remain valid verbatim (the Claude adapter uses the same strings). On
-  ACP-served backends the host **skips** ids the agent did not advertise (logged, not an
-  error) so a stale client selection can never flip a session into an error state. **Golden:**
-  `internal/agent/acp/backend_open.go` (`applyMode`), `internal/tui/sessionview.go`
-  (`modesFromInfo`).
+- **[DATA-040] (MUST, rewritten 0.6.2)** `config` is a map of **agent-advertised config
+  options** to set before this prompt dispatches: keys are option ids, values are value ids
+  from that option's advertised list — e.g. `{"mode": "plan", "effort": "high"}` (claude) or
+  `{"collaboration_mode": "plan"}` (codex). The agent owns the vocabulary; the host routes
+  the well-known `mode` key through ACP `session/set_mode` and every other key through
+  `session/set_config_option`, and **skips** ids/values the agent did not advertise (logged,
+  not an error) so a stale client selection can never flip a session into an error state.
+  A client MUST omit the map (or a key) to mean "no change" and MUST NOT re-send current
+  values to mean "unchanged" — any present key *re-asserts* that option.
+  **Posture default:** when a NEW session's create carries no `mode` key, the host opens it
+  in its environment's posture default — `permissive` on disposable sandboxes (no permission
+  prompts), `conservative` elsewhere (declared by the provisioner via
+  `--permission-posture` / `$CLANK_PERMISSION_POSTURE`; conservative when undeclared). An
+  explicit `mode` from the client always wins; resumed sessions are never re-moded.
+  **Retired with this rewrite:** the `permission_mode` and `agent` request fields
+  (0.5.0-era). `permission_mode` survives only as the persisted SessionInfo field.
+  **Golden:** `internal/agent/acp/backend_send.go` (`applyConfig`),
+  `internal/host/backends_acp.go` (`SetPosture`), `internal/agent/acp/profile.go`
+  (`PostureModes`); regressions `TestBackend_InitialConfigModeAppliedOnFreshOpen`,
+  `TestACPBackendManager_PostureDefaultsFreshSessionMode`.
 
 ### `ModelOverride` / `GitRef`
 

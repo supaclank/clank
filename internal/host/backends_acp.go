@@ -65,6 +65,10 @@ type ACPBackendManager struct {
 	// knownDirs, stashed from Init, are the project dirs Prewarm warms up
 	// front for per-dir backends (the sandbox's repo, session-history dirs).
 	knownDirs func() ([]string, error)
+	// posture is the host environment's permission stance (set once at
+	// startup via SetPosture, before any session). Decides the mode a
+	// fresh session opens in when the client pinned none.
+	posture atomic.Pointer[agent.PermissionPosture]
 }
 
 // ACPDirs locates the on-disk state an ACP manager owns.
@@ -282,6 +286,19 @@ func opencodeGuidanceEnv(scopeDir string) map[string]string {
 	return map[string]string{"OPENCODE_CONFIG_CONTENT": string(cfg)}
 }
 
+// SetPosture declares the host environment's permission stance. Call at
+// startup, before sessions; the zero state behaves as PostureConservative.
+func (m *ACPBackendManager) SetPosture(p agent.PermissionPosture) {
+	m.posture.Store(&p)
+}
+
+func (m *ACPBackendManager) resolvedPosture() agent.PermissionPosture {
+	if p := m.posture.Load(); p != nil {
+		return *p
+	}
+	return agent.PostureConservative
+}
+
 // SetEnvResolver wires credential env for adapter spawns and nudges the
 // supervisor so the env-fingerprint restart picks up rotations.
 func (m *ACPBackendManager) SetEnvResolver(f func() map[string]string) {
@@ -330,7 +347,16 @@ func (m *ACPBackendManager) CreateBackend(ctx context.Context, inv agent.Backend
 	resolver := func(ctx context.Context) (*acp.AdapterConn, error) {
 		return m.sup.GetConn(ctx, inv.WorkDir)
 	}
-	b := acp.NewBackend(m.profile, inv.WorkDir, inv.ResumeExternalID, guidanceText, "", resolver, log.Printf)
+	// Fresh sessions open in the posture-default mode for this host; the
+	// client's own Config (applied on its first send, after open) wins
+	// when it names a mode. Resume never re-modes a session.
+	var initialConfig map[string]string
+	if inv.ResumeExternalID == "" {
+		if mode := m.profile.DefaultModes.ForPosture(m.resolvedPosture()); mode != "" {
+			initialConfig = map[string]string{agent.ConfigOptionMode: mode}
+		}
+	}
+	b := acp.NewBackend(m.profile, inv.WorkDir, inv.ResumeExternalID, guidanceText, initialConfig, resolver, log.Printf)
 	b.SetCatalogSink(m.putCatalog)
 	b.SetModeSink(m.putModes)
 	return b, nil

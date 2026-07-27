@@ -131,9 +131,10 @@ func TestStartRequest_Validate_GitRef(t *testing.T) {
 	}
 }
 
-// Invalid permission_mode values must be caught by StartRequest.Validate so
-// the HTTP layer returns a 400 instead of a 500 from a deeper validation point.
-func TestStartRequest_Validate_PermissionMode(t *testing.T) {
+// Config values are agent-owned ids: Validate accepts any of them (empty,
+// well-known, or agent-specific) — the serving agent skips ids it doesn't
+// advertise, so there is no closed enum to enforce at the HTTP layer.
+func TestStartRequest_Validate_Config(t *testing.T) {
 	t.Parallel()
 	base := agent.StartRequest{
 		Backend: agent.BackendClaudeCode,
@@ -144,27 +145,20 @@ func TestStartRequest_Validate_PermissionMode(t *testing.T) {
 	t.Run("empty_ok", func(t *testing.T) {
 		t.Parallel()
 		if err := base.Validate(); err != nil {
-			t.Fatalf("empty permission_mode: unexpected error %v", err)
+			t.Fatalf("empty config: unexpected error %v", err)
 		}
 	})
 
-	t.Run("valid_ok", func(t *testing.T) {
+	t.Run("agent_defined_ids_accepted", func(t *testing.T) {
 		t.Parallel()
 		req := base
-		req.PermissionMode = agent.ClaudePermPlan
-		if err := req.Validate(); err != nil {
-			t.Fatalf("valid permission_mode: unexpected error %v", err)
+		req.Config = map[string]string{
+			agent.ConfigOptionMode: "read-only",
+			"effort":               "high",
+			"collaboration_mode":   "plan",
 		}
-	})
-
-	t.Run("agent_defined_id_accepted", func(t *testing.T) {
-		t.Parallel()
-		// Modes are agent-owned (ACP vocabulary): Validate accepts any
-		// id; the serving agent rejects ones it doesn't advertise.
-		req := base
-		req.PermissionMode = "read-only"
 		if err := req.Validate(); err != nil {
-			t.Fatalf("agent-defined permission_mode: unexpected error %v", err)
+			t.Fatalf("agent-defined config: unexpected error %v", err)
 		}
 	})
 }

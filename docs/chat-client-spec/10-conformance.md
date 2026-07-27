@@ -143,7 +143,7 @@ come; each client's harness loads the same files.
 | `CONF-DENY-SETTLE` | on deny, running tools settle to error and state reconciles | INV-DENY-SETTLE-001 |
 | `CONF-ABORT-PERM` | abort clears pending perms, unlocks composer, session survives | INV-ABORT-PERM-001 |
 | `CONF-ABORT-NOISE` | during abort, intermediate statuses/errors are suppressed; "Cancelling"→"Cancelled" | STATE-STATUS-001, VIEW-CANCELLING-001 |
-| `CONF-PERMMODE-NOCHANGE` | an unchanged-mode send carries `permission_mode:""` | INV-PERMMODE-001 |
+| `CONF-PERMMODE-NOCHANGE` | an unchanged-mode send omits `config` (no `mode` key) | INV-PERMMODE-001 |
 | ~~`CONF-PLAN-EXIT`~~ (retired 0.6.0) | ExitPlanMode renders the plan + approve/reject; later sends stay `""` | INV-PERMMODE-EXITPLAN-001, FLOW-PLAN-001 |
 | `CONF-META-REPLACE` | a `meta` event replaces the whole SessionInfo (no field-merge) | INV-META-REPLACE-001 |
 | ~~`CONF-REVERT-FILTER`~~ (retired 0.6.0) | revert hides the tail; a new send un-hides it | INV-REVERT-001 |
