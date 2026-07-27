@@ -34,9 +34,10 @@ type Backend struct {
 	workDir  string
 	guidance string
 	// initialConfig is applied once after a FRESH session opens (never on
-	// resume): the host's posture-default mode, and any option the client
-	// pinned at creation. Client entries land after (and thus win over)
-	// whatever the manager seeded, because Send re-applies its own Config.
+	// resume). It only ever carries what the manager seeds — currently the
+	// host's posture-default mode — never anything the client pinned; the
+	// client's own Config is applied later via Send, which lands after (and
+	// wins over) whatever was seeded here.
 	initialConfig map[string]string
 	logf          func(format string, args ...any)
 

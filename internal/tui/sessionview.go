@@ -2288,6 +2288,7 @@ func (m *SessionViewModel) sendMessage(text string, atts []agent.Attachment) tea
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		opts := agent.SendMessageOpts{Text: text, Model: modelOverride, Attachments: atts}
+		// TODO(ai-review): m.modes/m.selectedMode only resync to the server's CurrentModeID when empty (sessionInfoMsg's len(m.modes)==0 guard), so a backend-driven mode change (e.g. auto ExitPlanMode) leaves sel stale and re-asserts the old mode here, violating "resume never re-modes". https://github.com/Acksell/clank/pull/190#discussion_r3659485320
 		if sel.perm != "" {
 			opts.Config = map[string]string{agent.ConfigOptionMode: string(sel.perm)}
 		}

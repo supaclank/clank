@@ -359,6 +359,7 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 	// No mode selected → Config stays empty and the HOST's posture default
 	// decides what a fresh session opens in (permissive on sandboxes,
 	// conservative elsewhere). An explicit pick here overrides it.
+	// TODO(ai-review): fetchModes() auto-seeds a non-empty selection before any user action, so this always fires and the posture-default path below is unreachable from the TUI. https://github.com/Acksell/clank/pull/190#discussion_r3659485260
 	if len(m.modes) > 0 {
 		sel := m.modes[m.selectedMode]
 		if sel.perm != "" {
