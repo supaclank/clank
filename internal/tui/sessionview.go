@@ -531,7 +531,7 @@ func (m *SessionViewModel) SetEventChannel(ch <-chan agent.Event, cancel context
 func (m *SessionViewModel) Init() tea.Cmd {
 	// In composing mode, no session exists yet — nothing to subscribe to.
 	if m.composing {
-		return tea.Batch(m.input.Focus(), m.fetchModes(), m.fetchModels(), refineCatalog())
+		return tea.Batch(m.input.Focus(), m.fetchModes(), m.fetchModels(), m.fetchPresets(), refineCatalog())
 	}
 	cmds := []tea.Cmd{m.fetchSessionInfo(), m.fetchSessionMessages(), m.fetchPendingPermission(), m.spinner.Tick}
 	if m.eventsCh != nil {
@@ -2303,11 +2303,26 @@ func (m *SessionViewModel) lastEntryStreaming() bool {
 	return m.entries[len(m.entries)-1].streaming
 }
 
+// modeConfigForSend returns the config to carry on a follow-up send. The
+// spec treats omitted config as "no change" (sessions remember their own
+// state), so this stays nil unless the picker actually differs from the
+// mode the session already reports as current.
+func modeConfigForSend(sel selectableMode, info *agent.SessionInfo) map[string]string {
+	if sel.perm == "" {
+		return nil
+	}
+	if info != nil && string(sel.perm) == info.CurrentModeID {
+		return nil
+	}
+	return map[string]string{agent.ConfigOptionMode: string(sel.perm)}
+}
+
 func (m *SessionViewModel) sendMessage(text string, atts []agent.Attachment) tea.Cmd {
 	var sel selectableMode
 	if len(m.modes) > 0 {
 		sel = m.modes[m.selectedMode]
 	}
+	cfg := modeConfigForSend(sel, m.info)
 	var modelOverride *agent.ModelOverride
 	if m.selectedModel >= 0 && m.selectedModel < len(m.models) {
 		model := m.models[m.selectedModel]
@@ -2319,10 +2334,7 @@ func (m *SessionViewModel) sendMessage(text string, atts []agent.Attachment) tea
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		opts := agent.SendMessageOpts{Text: text, Model: modelOverride, Attachments: atts}
-		if sel.perm != "" {
-			opts.Config = map[string]string{agent.ConfigOptionMode: string(sel.perm)}
-		}
+		opts := agent.SendMessageOpts{Text: text, Model: modelOverride, Attachments: atts, Config: cfg}
 		err := m.client.Session(m.sessionID).Send(ctx, opts)
 		return sessionSendResultMsg{err: err}
 	}

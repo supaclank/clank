@@ -368,6 +368,14 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 		m.err = fmt.Errorf("project directory is required")
 		return m, nil
 	}
+	cfg := m.composeConfig()
+	if cfg == nil {
+		// Presets for this backend haven't loaded yet — the host would
+		// reject this with 400 config_incomplete anyway; gate here so
+		// the user gets an immediate reason instead of a round-trip error.
+		m.err = fmt.Errorf("presets still loading — try again in a moment")
+		return m, nil
+	}
 
 	m.err = nil
 	m.submitting = true
@@ -392,7 +400,7 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 	}
 	// TODO(ai-review): Claude compose no longer defaults to bypassPermissions (empty modes → no PermissionMode; loaded → selectedMode 0, order-dependent); decide the intended default posture for autonomous sessions. https://github.com/Acksell/clank/pull/188
 	// TODO(ai-review): sel.agent is always empty now (modes carry the id in .perm), so req.Agent is dead — drop the vestigial Agent plumbing once the mode-apply path above is settled. https://github.com/Acksell/clank/pull/188
-	req.Config = m.composeConfig()
+	req.Config = cfg
 	if m.selectedModel >= 0 && m.selectedModel < len(m.models) {
 		model := m.models[m.selectedModel]
 		req.Model = &agent.ModelOverride{
