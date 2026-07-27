@@ -36,7 +36,7 @@ func newBackendFixture(t *testing.T, scripted *acptest.ScriptedAgent, resume str
 	}
 	t.Cleanup(proc.Stop)
 	resolver := func(context.Context) (*acpx.AdapterConn, error) { return proc.Conn, nil }
-	f.backend = acpx.NewBackend(profile, "/work", resume, "", "", resolver, testLogf(t))
+	f.backend = acpx.NewBackend(profile, "/work", resume, "", resolver, testLogf(t))
 	t.Cleanup(func() { _ = f.backend.Stop() })
 	go func() {
 		for e := range f.backend.Events() {
@@ -766,7 +766,7 @@ func TestBackend_AgentOwnedModes(t *testing.T) {
 	}
 
 	// Advertised id passes through raw.
-	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "go", PermissionMode: "read-only"}); err != nil {
+	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "go", Config: map[string]string{agent.ConfigOptionMode: "read-only"}}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	select {
@@ -780,7 +780,7 @@ func TestBackend_AgentOwnedModes(t *testing.T) {
 	f.waitFor(10*time.Second, func(evts []agent.Event) bool { return settledTurns(evts) >= 1 })
 
 	// Unadvertised id is skipped, not sent.
-	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "again", PermissionMode: "bogus-mode"}); err != nil {
+	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "again", Config: map[string]string{agent.ConfigOptionMode: "bogus-mode"}}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	f.waitFor(10*time.Second, func(evts []agent.Event) bool {
@@ -1094,5 +1094,71 @@ func TestBackend_AllowIgnoresMessage(t *testing.T) {
 	case p := <-prompts:
 		t.Fatalf("allow=true sent a follow-up prompt %q; the message must be ignored", p)
 	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+// Config keys beyond the mode ride session/set_config_option — this is
+// what makes effort/thought_level reachable at all (the old wire carried
+// only a mode). Mode applies first (it can gate what other options mean),
+// the rest in sorted order, all before the prompt dispatches.
+func TestBackend_SendConfigAppliesModeFirstThenSortedOptions(t *testing.T) {
+	t.Parallel()
+	type call struct{ kind, id, value string }
+	calls := make(chan call, 8)
+	desc := "Read-only sandbox"
+	scripted := &acptest.ScriptedAgent{}
+	scripted.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+		return sdk.NewSessionResponse{
+			SessionId: "s-cfg",
+			Modes: &sdk.SessionModeState{
+				CurrentModeId: "read-only",
+				AvailableModes: []sdk.SessionMode{
+					{Id: "read-only", Name: "Read Only", Description: &desc},
+					{Id: "agent", Name: "Agent"},
+				},
+			},
+		}, nil
+	}
+	scripted.SetModeFn = func(ctx context.Context, p sdk.SetSessionModeRequest) (sdk.SetSessionModeResponse, error) {
+		calls <- call{kind: "mode", value: string(p.ModeId)}
+		return sdk.SetSessionModeResponse{}, nil
+	}
+	scripted.SetConfigFn = func(ctx context.Context, p sdk.SetSessionConfigOptionRequest) (sdk.SetSessionConfigOptionResponse, error) {
+		calls <- call{kind: "config", id: string(p.ValueId.ConfigId), value: string(p.ValueId.Value)}
+		return sdk.SetSessionConfigOptionResponse{}, nil
+	}
+	scripted.PromptFn = func(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResponse, error) {
+		return sdk.PromptResponse{StopReason: sdk.StopReasonEndTurn}, nil
+	}
+	f := newBackendFixture(t, scripted, "")
+	ctx := context.Background()
+	if err := f.backend.Open(ctx); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := f.backend.Send(ctx, agent.SendMessageOpts{
+		Text: "go",
+		Config: map[string]string{
+			"reasoning_effort":     "high",
+			agent.ConfigOptionMode: "agent",
+			"collaboration_mode":   "plan",
+		},
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	want := []call{
+		{kind: "mode", value: "agent"},
+		{kind: "config", id: "collaboration_mode", value: "plan"},
+		{kind: "config", id: "reasoning_effort", value: "high"},
+	}
+	for i, w := range want {
+		select {
+		case got := <-calls:
+			if got != w {
+				t.Fatalf("call[%d] = %+v, want %+v", i, got, w)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("call[%d] never arrived", i)
+		}
 	}
 }

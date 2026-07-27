@@ -150,7 +150,8 @@ func NewWithEndpoint(endpoint string, lg *log.Logger) *Client {
 // for dev.
 //
 // Chainable so the wiring stays a one-liner:
-//   notify.New(lg).WithAccessToken(os.Getenv("EXPO_ACCESS_TOKEN"))
+//
+//	notify.New(lg).WithAccessToken(os.Getenv("EXPO_ACCESS_TOKEN"))
 func (c *Client) WithAccessToken(token string) *Client {
 	c.accessToken = token
 	return c
@@ -199,8 +200,8 @@ func (c *Client) Push(ctx context.Context, msgs []Message) ([]Ticket, error) {
 }
 
 type expoResponse struct {
-	Data   []Ticket   `json:"data"`
-	Errors []expoErr  `json:"errors,omitempty"`
+	Data   []Ticket  `json:"data"`
+	Errors []expoErr `json:"errors,omitempty"`
 }
 
 type expoErr struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
@@ -41,9 +42,7 @@ func (b *Backend) Send(ctx context.Context, opts agent.SendMessageOpts) error {
 		return err
 	}
 
-	if opts.PermissionMode != "" {
-		b.applyMode(ctx, conn, string(opts.PermissionMode))
-	}
+	b.applyConfig(ctx, conn, opts.Config)
 	if opts.Model != nil && b.profile.ModelOption != nil {
 		if id, value, ok := b.profile.ModelOption(*opts.Model); ok {
 			b.setConfigValue(ctx, conn, id, value)
@@ -239,6 +238,33 @@ func (b *Backend) drainLateUpdates(turnStart time.Time) {
 		case <-b.bgCtx.Done():
 			return
 		case <-time.After(25 * time.Millisecond):
+		}
+	}
+}
+
+// applyConfig applies option-id → value-id entries in deterministic order:
+// ConfigOptionMode first (it can gate what other options mean), the rest
+// sorted. The mode key rides session/set_mode with the advertised-list
+// guard; everything else rides session/set_config_option. Values are the
+// agent's jurisdiction — ids it doesn't advertise are skipped and logged,
+// never a failed send. The host never adds entries of its own.
+func (b *Backend) applyConfig(ctx context.Context, conn *AdapterConn, cfg map[string]string) {
+	if len(cfg) == 0 {
+		return
+	}
+	if mode, ok := cfg[agent.ConfigOptionMode]; ok && mode != "" {
+		b.applyMode(ctx, conn, mode)
+	}
+	rest := make([]string, 0, len(cfg))
+	for id := range cfg {
+		if id != agent.ConfigOptionMode {
+			rest = append(rest, id)
+		}
+	}
+	slices.Sort(rest)
+	for _, id := range rest {
+		if cfg[id] != "" {
+			b.setConfigValue(ctx, conn, id, cfg[id])
 		}
 	}
 }

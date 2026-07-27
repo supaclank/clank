@@ -170,12 +170,12 @@ func TestSignedURL_RoundTrip(t *testing.T) {
 func TestPortFromHost(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
-		"localhost:7878":            "7878",
-		"localhost":                 "",
-		"api.example.dev":           "",
-		"api.example.dev:443":       "443",
-		"[::1]:7878":                "7878",
-		"localhost:notanumber":      "",
+		"localhost:7878":       "7878",
+		"localhost":            "",
+		"api.example.dev":      "",
+		"api.example.dev:443":  "443",
+		"[::1]:7878":           "7878",
+		"localhost:notanumber": "",
 	}
 	for in, want := range cases {
 		if got := PortFromHost(in); got != want {

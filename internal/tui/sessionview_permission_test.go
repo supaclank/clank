@@ -6,6 +6,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/agent/presets"
 	"github.com/acksell/clank/internal/config"
 )
 
@@ -378,5 +379,47 @@ func TestCompose_RefinePreservesSelectedMode(t *testing.T) {
 	m = model.(*SessionViewModel)
 	if m.selectedMode != 0 {
 		t.Fatalf("selectedMode = %d after pick vanished, want 0", m.selectedMode)
+	}
+}
+
+// Compose builds its create config from the backend's Default preset (which
+// carries every host-required key) overlaid with the picker's explicit mode
+// selection. Before presets load it returns nil — the host then rejects the
+// create loudly instead of the session opening in a factory default.
+func TestCompose_ConfigComesFromDefaultPresetPlusModePick(t *testing.T) {
+	t.Parallel()
+	m := newSessionViewComposingWithBackend(nil, "/tmp/project", agent.BackendClaudeCode)
+	m.width, m.height = 80, 40
+
+	if cfg := m.composeConfig(); cfg != nil {
+		t.Fatalf("config before presets load = %v, want nil (host rejects, no silent default)", cfg)
+	}
+
+	model, _ := m.Update(presetsResultMsg{backend: agent.BackendClaudeCode, presets: presets.Sandbox()})
+	m = model.(*SessionViewModel)
+
+	cfg := m.composeConfig()
+	if cfg["model"] != "default" || cfg["effort"] != "default" || cfg[agent.ConfigOptionMode] != "bypassPermissions" {
+		t.Fatalf("config = %v, want the Default preset verbatim", cfg)
+	}
+
+	// An explicit mode pick overlays the preset's mode; the other required
+	// keys still ride along.
+	model, _ = m.Update(modesResultMsg{modes: []agent.SessionMode{
+		{ID: "plan", Name: "Plan Mode"}, {ID: "acceptEdits", Name: "Accept Edits"},
+	}})
+	m = model.(*SessionViewModel)
+	m.selectedMode = 0
+	cfg = m.composeConfig()
+	if cfg[agent.ConfigOptionMode] != "plan" || cfg["model"] != "default" || cfg["effort"] != "default" {
+		t.Fatalf("config after mode pick = %v, want mode overlaid on the preset", cfg)
+	}
+
+	// Presets for another backend must not satisfy this one.
+	m2 := newSessionViewComposingWithBackend(nil, "/tmp/project", agent.BackendCodex)
+	model, _ = m2.Update(presetsResultMsg{backend: agent.BackendClaudeCode, presets: presets.Sandbox()})
+	m2 = model.(*SessionViewModel)
+	if cfg := m2.composeConfig(); cfg != nil {
+		t.Fatalf("cross-backend presets satisfied codex compose: %v", cfg)
 	}
 }

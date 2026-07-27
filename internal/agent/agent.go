@@ -434,11 +434,15 @@ type StartRequest struct {
 	Prompt     string          `json:"prompt"`
 	SessionID  string          `json:"session_id,omitempty"` // Backend-external session ID for resume; empty = new session.
 	TicketID   string          `json:"ticket_id,omitempty"`  // Optional backlog ticket link
-	Agent      string          `json:"agent,omitempty"`      // OpenCode agent name (e.g. "build", "plan")
 	Model      *ModelOverride  `json:"model,omitempty"`      // Per-message model override; nil = use default
-	// PermissionMode is the initial Claude permission posture for a new session.
-	// Ignored by the OpenCode backend.
-	PermissionMode ClaudePermissionMode `json:"permission_mode,omitempty"`
+	// Config sets agent-advertised session config options at creation:
+	// option id → value id from that option's advertised list, e.g.
+	// {"mode": "plan", "effort": "high"}. The host validates that every
+	// key of the backend's built-in Default preset is present — it never
+	// fills values in (no fallbacks; a missing key fails the create) —
+	// and passes values through verbatim: the agent owns the vocabulary
+	// and skips ids it does not advertise.
+	Config map[string]string `json:"config,omitempty"`
 	// Attachments are images for the first message, forwarded to the backend's
 	// OpenAndSend. Same semantics as SendMessageOpts.Attachments.
 	Attachments []Attachment `json:"attachments,omitempty"`
@@ -459,9 +463,10 @@ func (r StartRequest) Validate() error {
 	if r.Prompt == "" && len(r.Attachments) == 0 {
 		return fmt.Errorf("prompt or attachment is required")
 	}
-	// PermissionMode is an agent-defined mode id (ACP: the agent owns its
-	// mode vocabulary and advertises it per session) — no closed-enum
-	// validation here; the serving agent rejects ids it doesn't offer.
+	// Config VALUES are agent-defined ids (the agent owns its vocabulary
+	// and advertises it per session) — no closed-enum validation here.
+	// Required KEYS are enforced by the host against its built-in Default
+	// preset, where the backend is known alongside the preset data.
 	return nil
 }
 
@@ -613,6 +618,11 @@ type ModelOverride struct {
 	ProviderID string `json:"provider_id"`
 }
 
+// ConfigOptionMode is the config-option id every serving agent advertises
+// for its session mode. Routed through ACP session/set_mode; every other
+// option id rides session/set_config_option.
+const ConfigOptionMode = "mode"
+
 // ClaudePermissionMode is the permission posture the Claude Code CLI runs
 // under. Values are the wire strings claude-agent-sdk-go accepts via
 // --permission-mode; they must stay in sync with claudecode.PermissionMode*.
@@ -623,6 +633,7 @@ const (
 	ClaudePermAcceptEdits ClaudePermissionMode = "acceptEdits"       // Auto-accept file edits; prompt for the rest.
 	ClaudePermPlan        ClaudePermissionMode = "plan"              // Plan only; no edits.
 	ClaudePermBypass      ClaudePermissionMode = "bypassPermissions" // Skip all permission checks.
+	ClaudePermAuto        ClaudePermissionMode = "auto"              // Claude decides routine permissions itself.
 )
 
 // ClaudePermissionModes is the ordered set the TUI cycles through (Tab).
@@ -659,14 +670,13 @@ func (m ClaudePermissionMode) Label() string {
 // SendMessageOpts contains options for sending a follow-up message.
 type SendMessageOpts struct {
 	Text  string         `json:"text"`
-	Agent string         `json:"agent,omitempty"` // OpenCode agent name; empty = use session default
 	Model *ModelOverride `json:"model,omitempty"` // Per-message model override; nil = use default
-	// PermissionMode, when set, selects an agent-owned mode: at session start
-	// it picks the initial mode; on a follow-up it changes it at runtime.
-	// Empty means "no change". For Claude these are permission postures
-	// (default/plan/bypassPermissions); OpenCode and Codex reuse the field to
-	// carry their own agent/mode id.
-	PermissionMode ClaudePermissionMode `json:"permission_mode,omitempty"`
+	// Config changes agent-advertised session config options before this
+	// prompt dispatches: option id → value id, e.g. {"mode": "plan"}.
+	// Omitted map or key means "no change" — the session keeps the state
+	// it already has (sessions remember themselves). Values ride verbatim;
+	// the agent skips ids it does not advertise.
+	Config map[string]string `json:"config,omitempty"`
 	// Attachments are images the client uploaded out-of-band; the backend
 	// downloads each via its presigned GetURL and inlines it into the agent
 	// (Claude base64 content block / OpenCode file part). Empty for text-only

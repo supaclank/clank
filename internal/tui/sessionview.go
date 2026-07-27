@@ -21,6 +21,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/agent/presets"
 	"github.com/acksell/clank/internal/config"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/host"
@@ -345,6 +346,9 @@ type SessionViewModel struct {
 	// existing sessions opened from the inbox.
 	modes        []selectableMode
 	selectedMode int // index into modes slice
+	// presets are the host's agent presets for the compose backend; the
+	// Default one carries the create-time required config keys.
+	presets []presets.Preset
 
 	// Model selection — populated eagerly when compose view loads.
 	// The user cycles models with Shift+Tab.
@@ -601,6 +605,34 @@ func (m *SessionViewModel) fetchModes() tea.Cmd {
 			return modesResultMsg{}
 		}
 		return modesResultMsg{modes: modes}
+	}
+}
+
+// presetsResultMsg carries the host's presets for the compose backend.
+type presetsResultMsg struct {
+	backend agent.BackendType
+	presets []presets.Preset
+}
+
+// fetchPresets loads the host's agent presets for the compose backend.
+// The Default preset supplies the create-time required config keys, so
+// compose cannot submit before this lands (host store read — instant).
+func (m *SessionViewModel) fetchPresets() tea.Cmd {
+	client := m.client
+	backend := m.backend
+	hostname := m.hostname
+	if client == nil {
+		return func() tea.Msg { return presetsResultMsg{backend: backend} }
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		ps, err := client.Backend(backend).Presets(ctx, string(hostname))
+		if err != nil {
+			// Non-fatal for rendering; submit stays gated until it loads.
+			return presetsResultMsg{backend: backend}
+		}
+		return presetsResultMsg{backend: backend, presets: ps}
 	}
 }
 
@@ -2287,7 +2319,10 @@ func (m *SessionViewModel) sendMessage(text string, atts []agent.Attachment) tea
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		opts := agent.SendMessageOpts{Text: text, Agent: sel.agent, Model: modelOverride, PermissionMode: sel.perm, Attachments: atts}
+		opts := agent.SendMessageOpts{Text: text, Model: modelOverride, Attachments: atts}
+		if sel.perm != "" {
+			opts.Config = map[string]string{agent.ConfigOptionMode: string(sel.perm)}
+		}
 		err := m.client.Session(m.sessionID).Send(ctx, opts)
 		return sessionSendResultMsg{err: err}
 	}

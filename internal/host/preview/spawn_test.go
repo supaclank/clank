@@ -374,4 +374,3 @@ func psCountForGroup(t *testing.T, pgid int) int {
 	pids := strings.Fields(string(out))
 	return len(pids)
 }
-

@@ -170,9 +170,9 @@ func TestDevices_UpsertRejectsMissingFields(t *testing.T) {
 	ctx := context.Background()
 
 	cases := []Device{
-		{PushToken: "tok", Platform: DevicePlatformIOS},   // missing UserID
-		{UserID: "alice", Platform: DevicePlatformIOS},    // missing PushToken
-		{UserID: "alice", PushToken: "tok"},               // missing Platform
+		{PushToken: "tok", Platform: DevicePlatformIOS}, // missing UserID
+		{UserID: "alice", Platform: DevicePlatformIOS},  // missing PushToken
+		{UserID: "alice", PushToken: "tok"},             // missing Platform
 	}
 	for _, d := range cases {
 		if err := s.UpsertDevice(ctx, d); err == nil {

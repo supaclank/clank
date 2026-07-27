@@ -134,8 +134,8 @@ Source: `internal/agent/agent.go:224`.
 |---|---|---|
 | `SessionStatus` | `starting`, `busy`, `idle`, `error`, `dead` | `agent.go:26` |
 | `SessionVisibility` | `""` (visible), `done`, `archived`, `all` (query-only pseudo-value) | `agent.go:39` |
-| `BackendType` | `opencode`, `claude-code` | `agent.go:18` |
-| `ClaudePermissionMode` | `default`, `acceptEdits`, `plan`, `bypassPermissions`; `""` = "no change" | `agent.go:526` |
+| `BackendType` | `opencode`, `claude-code`, `codex` | `internal/agent` |
+| session mode ids | **agent-owned, not a closed enum** ([DATA-040]): claude `default`/`acceptEdits`/`plan`/`bypassPermissions`/`auto`/`dontAsk`, codex `read-only`/`agent`/`agent-full-access`, opencode its configured agents | advertised per session |
 | `PartType` | `text`, `tool_call`, `tool_result`, `thinking` | `agent.go:237` |
 | `PartStatus` | `pending`, `running`, `completed`, `error` | `agent.go:247` |
 
@@ -166,24 +166,27 @@ Source: `internal/agent/agent.go:565`.
 | Field | JSON | Notes |
 |---|---|---|
 | Text | `text` | The message. |
-| Agent | `agent` | OpenCode agent; empty = session default. |
 | Model | `model` | Per-message override; omit = default. |
-| PermissionMode | `permission_mode` | Claude mode change; **`""` = no change**. See [INV-PERMMODE-001](08-invariants.md). |
+| Config | `config` | Agent config changes, option-id → value-id; **omit/empty = no change**. See [DATA-040]. |
 
-- **[DATA-040] (MUST)** A client MUST send `permission_mode: ""` (or omit it) when the user
-  has not changed the mode on this send. A client MUST NOT send a default value (e.g.
-  `"default"`) to mean "unchanged". **Why:** any non-empty value *re-asserts* the mode on the
-  backend; sending a default silently flips a `plan`/`acceptEdits` session. **Golden:**
-  `internal/agent/agent.go:571`, `internal/tui/sessionview.go:2162` (sends only the selected
-  mode).
-  **Amended 0.5.0 — modes are agent-owned:** a non-empty value is an **agent-defined mode
-  id** the client picked from the session's `available_modes` (runtime session info), not a
-  closed clank enum — `StartRequest` validation no longer rejects unknown ids. The legacy
-  four Claude ids remain valid verbatim (the Claude adapter uses the same strings). On
-  ACP-served backends the host **skips** ids the agent did not advertise (logged, not an
-  error) so a stale client selection can never flip a session into an error state. **Golden:**
-  `internal/agent/acp/backend_open.go` (`applyMode`), `internal/tui/sessionview.go`
-  (`modesFromInfo`).
+- **[DATA-040] (MUST, rewritten 0.6.2)** `config` is a map of **agent-advertised config
+  options**: keys are option ids, values are value ids from that option's advertised list —
+  `{"mode": "plan", "effort": "default"}` (claude), `{"collaboration_mode": "plan"}` (codex).
+  The host routes the well-known `mode` key through ACP `session/set_mode` and every other
+  key through `session/set_config_option`, mode first, before the prompt dispatches. Values
+  are the agent's jurisdiction: ids it did not advertise are **skipped** (logged, not an
+  error) so a stale selection can never flip a session into an error state.
+  **On follow-up sends** an omitted map/key means "no change" — sessions remember their own
+  state; a client MUST NOT re-send current values to mean "unchanged".
+  **On create** the host enforces the preset contract instead: every key of the backend's
+  built-in **Default preset** is REQUIRED, and a missing key fails with `400
+  config_incomplete` naming the gaps. The host never fills values in — no fallbacks; clients
+  take the keys from `GET /presets` ([OP-016](05-operations.md)) and overlay their own
+  choices. **Retired with this rewrite:** the `permission_mode` and `agent` request fields.
+  **Golden:** `internal/agent/acp/backend_send.go` (`applyConfig`),
+  `internal/host/presetstore.go` (`ValidateCreateConfig`), `internal/agent/presets`;
+  regressions `TestCreateSession_RejectsIncompleteConfig`,
+  `TestBackend_SendConfigAppliesModeFirstThenSortedOptions`.
 
 ### `ModelOverride` / `GitRef`
 

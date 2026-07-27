@@ -10,6 +10,12 @@ var (
 	// does not exist on the host.
 	ErrNotFound = errors.New("host: not found")
 
+	// ErrConfigIncomplete rejects a session create whose config is missing
+	// required keys (the backend's Default-preset keys). The host never
+	// fills values in, so the create fails instead of silently opening in
+	// an agent factory default nobody chose.
+	ErrConfigIncomplete = errors.New("host: session config incomplete")
+
 	// ErrWorktreeBusy is returned when a destructive worktree operation
 	// (e.g. DeleteWorktree, DeleteRepo) finds a session actively running
 	// on it. The caller should retry once the session goes idle.

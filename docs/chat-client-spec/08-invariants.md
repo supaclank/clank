@@ -240,8 +240,10 @@ a completed one (a shipped Kotlin bug, seen in PR #78 device testing).
 
 ## Permission modes
 
-### [INV-PERMMODE-001] (MUST) `permission_mode: ""` means "no change"
-Send `permission_mode: ""` (or omit it) unless the user just changed the mode. Never send a
+### [INV-PERMMODE-001] (MUST) an omitted `config` key means "no change"
+(0.6.2: `permission_mode` became `config`'s `mode` key — [DATA-040](03-data-model.md);
+creates are the exception, where the Default preset's keys are required.)
+Omit `config` (or the `mode` key) on follow-ups unless the user just changed it. Never send a
 concrete default to mean "unchanged".
 **Why:** any non-empty value re-asserts the mode on the backend, silently flipping a
 `plan`/`acceptEdits` session to whatever you sent.
