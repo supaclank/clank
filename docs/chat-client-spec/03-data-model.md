@@ -134,8 +134,8 @@ Source: `internal/agent/agent.go:224`.
 |---|---|---|
 | `SessionStatus` | `starting`, `busy`, `idle`, `error`, `dead` | `agent.go:26` |
 | `SessionVisibility` | `""` (visible), `done`, `archived`, `all` (query-only pseudo-value) | `agent.go:39` |
-| `BackendType` | `opencode`, `claude-code` | `agent.go:18` |
-| `ClaudePermissionMode` | `default`, `acceptEdits`, `plan`, `bypassPermissions`; `""` = "no change" | `agent.go:526` |
+| `BackendType` | `opencode`, `claude-code`, `codex` | `internal/agent` |
+| session mode ids | **agent-owned, not a closed enum** ([DATA-040]): claude `default`/`acceptEdits`/`plan`/`bypassPermissions`/`auto`/`dontAsk`, codex `read-only`/`agent`/`agent-full-access`, opencode its configured agents | advertised per session |
 | `PartType` | `text`, `tool_call`, `tool_result`, `thinking` | `agent.go:237` |
 | `PartStatus` | `pending`, `running`, `completed`, `error` | `agent.go:247` |
 

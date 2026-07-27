@@ -32,11 +32,15 @@ func ClaudeProfile(bunBin, adapterEntry string, env func(string) map[string]stri
 			return bunBin, []string{adapterEntry}
 		},
 		Env: env,
-		// bypassPermissions/acceptEdits per the advertised list (Manual/
-		// Accept Edits/Plan Mode/Don't Ask/Bypass Permissions/Auto).
+		// Per the advertised list (Auto/Manual/Accept Edits/Plan Mode/
+		// Don't Ask/Bypass Permissions). Conservative is auto, not
+		// acceptEdits: acceptEdits still prompts for every bash command,
+		// which is unusable from a phone; auto has the agent decide
+		// routine permissions itself. If an older adapter doesn't
+		// advertise auto, the set_mode guard skips it.
 		DefaultModes: PostureModes{
 			Permissive:   string(agent.ClaudePermBypass),
-			Conservative: string(agent.ClaudePermAcceptEdits),
+			Conservative: string(agent.ClaudePermAuto),
 		},
 		SessionNewMeta: func(guidance string) map[string]any {
 			if guidance == "" {

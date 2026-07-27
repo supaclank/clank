@@ -649,6 +649,7 @@ const (
 	ClaudePermAcceptEdits ClaudePermissionMode = "acceptEdits"       // Auto-accept file edits; prompt for the rest.
 	ClaudePermPlan        ClaudePermissionMode = "plan"              // Plan only; no edits.
 	ClaudePermBypass      ClaudePermissionMode = "bypassPermissions" // Skip all permission checks.
+	ClaudePermAuto        ClaudePermissionMode = "auto"              // Claude decides routine permissions itself.
 )
 
 // ClaudePermissionModes is the ordered set the TUI cycles through (Tab).
