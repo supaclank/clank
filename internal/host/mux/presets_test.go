@@ -84,6 +84,43 @@ func TestPresets_CRUDOverHTTP(t *testing.T) {
 	}
 }
 
+// PUT/DELETE against a host with no PresetsDir configured (presetStore is
+// nil) must surface as 503 — a server-side misconfiguration, not a bad
+// client payload — so clients can tell "feature disabled" apart from
+// "bad preset". Regression for a review-bot finding: both handlers used
+// to blanket-400 every svc error, including this one.
+func TestPresets_StoreUnavailableIs503(t *testing.T) {
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendClaudeCode: &captureBackendManager{backend: &captureBackend{}},
+		},
+		BuiltinPresets: presets.Sandbox(),
+		// PresetsDir intentionally omitted.
+	})
+	t.Cleanup(svc.Shutdown)
+	m := New(svc, nil)
+
+	user := presets.Preset{
+		ID: "review", Name: "Review", Backend: agent.BackendClaudeCode,
+		Config: map[string]string{agent.ConfigOptionMode: "plan", "model": "default", "effort": "max"},
+	}
+	body, _ := json.Marshal(user)
+	w := httptest.NewRecorder()
+	m.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/presets", bytes.NewReader(body)))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("POST with no preset store: status=%d body=%s, want 503", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "preset_store_unavailable") {
+		t.Errorf("body must carry the preset_store_unavailable code, got: %s", w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	m.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/presets/review", nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("DELETE with no preset store: status=%d body=%s, want 503", w.Code, w.Body.String())
+	}
+}
+
 // A create whose config is missing the backend's required keys (the
 // Default preset's keys) fails with 400 and names every gap — the host
 // never fills values in.

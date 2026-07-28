@@ -164,7 +164,7 @@ func (s *Service) ValidateCreateConfig(bt agent.BackendType, cfg map[string]stri
 // PutPreset stores a user preset.
 func (s *Service) PutPreset(p presets.Preset) error {
 	if s.presetStore == nil {
-		return fmt.Errorf("preset store unavailable (no data dir)")
+		return ErrPresetStoreUnavailable
 	}
 	return s.presetStore.Put(p)
 }
@@ -172,7 +172,7 @@ func (s *Service) PutPreset(p presets.Preset) error {
 // DeletePreset removes a user preset.
 func (s *Service) DeletePreset(id string) error {
 	if s.presetStore == nil {
-		return fmt.Errorf("preset store unavailable (no data dir)")
+		return ErrPresetStoreUnavailable
 	}
 	return s.presetStore.Delete(id)
 }

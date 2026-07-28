@@ -87,4 +87,10 @@ var (
 	// checkout's primary worktree, or one the user added by hand). Git
 	// allows a branch in at most one worktree; fork off it instead.
 	ErrBranchCheckedOutElsewhere = errors.New("host: branch is checked out in a worktree clank does not manage; fork off it instead")
+
+	// ErrPresetStoreUnavailable is returned by PutPreset/DeletePreset when
+	// the host has no PresetsDir configured. Server-side misconfiguration,
+	// not a bad request — the mux maps it to 503 so clients can tell
+	// "feature disabled" apart from "bad preset payload".
+	ErrPresetStoreUnavailable = errors.New("host: preset store unavailable (no data dir)")
 )
