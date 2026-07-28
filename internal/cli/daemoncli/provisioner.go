@@ -34,16 +34,38 @@ func previewWebhookURL() string {
 	return os.Getenv("CLANK_PREVIEW_WEBHOOK_URL")
 }
 
-// parseTemplatesEnv reads the builtin create-project catalog from
-// CLANK_TEMPLATES (a JSON array of {display_name, clone_url}) into the
-// provisioner's strong type. This is the env→config edge: the library
-// takes []provisioner.Template, and clankd (this binary) is the thing
-// that turns an env var into it. Empty/unset → nil (host serves only
-// the user's GitHub templates).
-func parseTemplatesEnv() ([]provisioner.Template, error) {
+// Default builtin create-project template: the project's curated Expo
+// starter, so a zero-config daemon can scaffold a phone-previewable
+// Expo app out of the box. Deliberate exception to the no-vendor-refs
+// rule — the starter's contents are brand-neutral.
+const (
+	defaultTemplateDisplayName = "Expo app"
+	defaultTemplateCloneURL    = "https://github.com/supaclank/expo-56-starter-template.git"
+)
+
+// defaultTemplates returns the builtin catalog clankd serves when the
+// operator hasn't configured CLANK_TEMPLATES.
+func defaultTemplates() []provisioner.Template {
+	return []provisioner.Template{{
+		DisplayName: defaultTemplateDisplayName,
+		CloneURL:    defaultTemplateCloneURL,
+	}}
+}
+
+// builtinTemplates resolves the builtin create-project catalog every
+// provisioner forwards to clank-host. This is the env→config edge: the
+// library takes []provisioner.Template, and clankd (this binary) is the
+// thing that turns an env var into it.
+//
+// CLANK_TEMPLATES (a JSON array of {display_name, clone_url}) replaces
+// the default catalog when set; an explicit empty array ("[]") disables
+// builtin templates — the host then serves only the user's own GitHub
+// template repos. Unset (or empty, which env passthroughs like
+// docker-compose produce for unset host vars) → defaultTemplates().
+func builtinTemplates() ([]provisioner.Template, error) {
 	raw := os.Getenv("CLANK_TEMPLATES")
 	if raw == "" {
-		return nil, nil
+		return defaultTemplates(), nil
 	}
 	var templates []provisioner.Template
 	if err := json.Unmarshal([]byte(raw), &templates); err != nil {
@@ -89,6 +111,10 @@ func buildLocalProvisioner() (provisioner.Provisioner, func(), error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("config dir: %w", err)
 	}
+	templates, err := builtinTemplates()
+	if err != nil {
+		return nil, nil, err
+	}
 	prov := localprov.New(localprov.Options{
 		// Each laptop daemon has its own host data dir alongside
 		// the daemon's own clank.db. clank-host's --data-dir flag
@@ -110,6 +136,7 @@ func buildLocalProvisioner() (provisioner.Provisioner, func(), error) {
 		// direct loopback dial — lets the docker dev stack exercise
 		// the production preview path without a cloud provider.
 		TunnelInternalConn: os.Getenv("CLANK_LOCAL_TUNNEL_INTERNAL_CONN") == "true",
+		Templates:          templates,
 	}, log.Default())
 	return prov, prov.Stop, nil
 }
@@ -119,7 +146,7 @@ func buildFlyMachinesProvisioner(opts ServerOptions, st *store.Store, prefs conf
 	if fm == nil {
 		return nil, nil, fmt.Errorf("flymachines provisioner: preferences.flymachines required")
 	}
-	templates, err := parseTemplatesEnv()
+	templates, err := builtinTemplates()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -150,7 +177,7 @@ func buildFlySpritesProvisioner(opts ServerOptions, st *store.Store, prefs confi
 	if prefs.FlySprites == nil || prefs.FlySprites.APIToken == "" {
 		return nil, nil, fmt.Errorf("flysprites provisioner: preferences.flysprites.api_token required")
 	}
-	templates, err := parseTemplatesEnv()
+	templates, err := builtinTemplates()
 	if err != nil {
 		return nil, nil, err
 	}
