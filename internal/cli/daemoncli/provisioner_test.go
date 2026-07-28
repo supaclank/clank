@@ -10,8 +10,8 @@ import (
 )
 
 // Tests for builtinTemplates, the env→config edge feeding every
-// provisioner's builtin create-project catalog. None are parallel:
-// t.Setenv is incompatible with t.Parallel.
+// provisioner's builtin create-project catalog. The env-reading tests
+// aren't parallel: t.Setenv is incompatible with t.Parallel.
 
 // A daemon with no CLANK_TEMPLATES must still serve a create-project
 // catalog — laptop users get the Expo starter with zero config.
@@ -83,6 +83,16 @@ func TestBuiltinTemplates_InvalidJSONErrors(t *testing.T) {
 
 	if _, err := builtinTemplates(); err == nil {
 		t.Fatal("builtinTemplates accepted invalid JSON")
+	}
+}
+
+// "null" is valid JSON that unmarshals into a nil slice — it must fail
+// fast like any other non-array value, not silently disable builtins.
+func TestBuiltinTemplates_NullRejected(t *testing.T) {
+	t.Setenv("CLANK_TEMPLATES", "null")
+
+	if _, err := builtinTemplates(); err == nil {
+		t.Fatal("builtinTemplates accepted CLANK_TEMPLATES=null")
 	}
 }
 
