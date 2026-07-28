@@ -317,11 +317,17 @@ func selectItems(o sdk.SessionConfigSelectOptions) []sdk.SessionConfigSelectOpti
 }
 
 // ConfigOptions implements agent.ConfigOptionsReporter: the agent's
-// full advertised config knobs, untranslated.
+// full advertised config knobs, untranslated. Deep-cloned (including each
+// option's Values) so callers can't mutate retained backend state.
 func (b *Backend) ConfigOptions() []agent.ConfigOption {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return slices.Clone(b.configOptions)
+	out := make([]agent.ConfigOption, len(b.configOptions))
+	for i, co := range b.configOptions {
+		out[i] = co
+		out[i].Values = slices.Clone(co.Values)
+	}
+	return out
 }
 
 // Models implements agent.ModelReporter: the agent-advertised model

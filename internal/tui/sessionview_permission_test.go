@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
@@ -223,6 +224,32 @@ func batchYields[T tea.Msg](t *testing.T, cmd tea.Cmd) bool {
 	return ok
 }
 
+// firstBatchMsg unwraps a (possibly batched) cmd and returns the first
+// message of type T, failing the test if none is found.
+func firstBatchMsg[T tea.Msg](t *testing.T, cmd tea.Cmd) T {
+	t.Helper()
+	var zero T
+	if cmd == nil {
+		t.Fatal("firstBatchMsg: nil cmd")
+		return zero
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, sub := range batch {
+			if v, ok := sub().(T); ok {
+				return v
+			}
+		}
+		t.Fatalf("firstBatchMsg: no %T in batch", zero)
+		return zero
+	}
+	v, ok := msg.(T)
+	if !ok {
+		t.Fatalf("firstBatchMsg: got %T, want %T", msg, zero)
+	}
+	return v
+}
+
 // Opening compose must also fetch presets — composeConfig() stays nil (and
 // launchSession refuses to submit) until they load. fetchPresets was defined
 // but never wired into any command batch, so every compose session create
@@ -392,6 +419,13 @@ func TestCompose_ModelPickerProbesOnOpen(t *testing.T) {
 	}
 	if !batchYields[configOptionsResultMsg](t, cmd) {
 		t.Fatal("shift+tab dispatched no config-options probe")
+	}
+
+	// No project folder/worktree selected yet: the probe result must name
+	// that as the reason, not claim the agent advertises no models.
+	probeMsg := firstBatchMsg[configOptionsResultMsg](t, cmd)
+	if !errors.Is(probeMsg.err, errNoProjectFolderForConfigOptions) {
+		t.Fatalf("no-folder probe err = %v, want errNoProjectFolderForConfigOptions", probeMsg.err)
 	}
 
 	// esc cancels the wait.

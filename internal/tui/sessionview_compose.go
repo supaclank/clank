@@ -736,6 +736,17 @@ func (m *SessionViewModel) overlayWorktreePicker(base string) string {
 	return overlayCenter(base, m.worktreePicker.View(), m.width, m.height)
 }
 
+// modelBadgeLabel formats a model for the compose badge. Some agents
+// (e.g. opencode) already advertise provider-qualified value ids, so the
+// group prefix is added only when it isn't already there — otherwise the
+// badge would double up ("opencode/opencode/big-pickle").
+func modelBadgeLabel(model agent.ModelInfo) string {
+	if model.ProviderID != "" && !strings.HasPrefix(model.ID, model.ProviderID+"/") {
+		return model.ProviderID + "/" + model.ID
+	}
+	return model.ID
+}
+
 // renderPromptBox renders the prompt textarea with an integrated mode badge
 // inside the border. The border color matches the current agent mode.
 func (m *SessionViewModel) renderPromptBox() string {
@@ -778,11 +789,7 @@ func (m *SessionViewModel) renderPromptBox() string {
 	// Model badge (shown after mode badge when a model override is selected).
 	modelBadge := ""
 	if m.selectedModel >= 0 && m.selectedModel < len(m.models) {
-		model := m.models[m.selectedModel]
-		label := model.ID
-		if model.ProviderID != "" {
-			label = model.ProviderID + "/" + model.ID
-		}
+		label := modelBadgeLabel(m.models[m.selectedModel])
 		modelBadge = lipgloss.NewStyle().Foreground(secondaryColor).Render(label)
 	}
 

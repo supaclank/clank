@@ -349,3 +349,41 @@ func TestCompose_WordBackwardOnEmptyInput(t *testing.T) {
 		})
 	}
 }
+
+// TestModelBadgeLabel_NoDoublePrefix is a regression test: some agents
+// (opencode) already advertise provider-qualified value ids in ID, so
+// prefixing ProviderID unconditionally produced a duplicated badge like
+// "opencode/opencode/big-pickle".
+func TestModelBadgeLabel_NoDoublePrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		model agent.ModelInfo
+		want  string
+	}{
+		{
+			name:  "already provider-qualified id is left alone",
+			model: agent.ModelInfo{ID: "opencode/big-pickle", ProviderID: "opencode"},
+			want:  "opencode/big-pickle",
+		},
+		{
+			name:  "bare id gets the provider prefix",
+			model: agent.ModelInfo{ID: "claude-sonnet-5", ProviderID: "github-copilot"},
+			want:  "github-copilot/claude-sonnet-5",
+		},
+		{
+			name:  "no provider id: label is the bare id",
+			model: agent.ModelInfo{ID: "default"},
+			want:  "default",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := modelBadgeLabel(tt.model); got != tt.want {
+				t.Fatalf("modelBadgeLabel(%+v) = %q, want %q", tt.model, got, tt.want)
+			}
+		})
+	}
+}

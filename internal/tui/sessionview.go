@@ -584,6 +584,11 @@ func (m *SessionViewModel) fetchPendingPermission() tea.Cmd {
 	}
 }
 
+// errNoProjectFolderForConfigOptions distinguishes "no folder/worktree
+// selected yet" from a genuine empty advertised set, so the picker names
+// the actual blocker instead of claiming the agent has no models.
+var errNoProjectFolderForConfigOptions = errors.New("select a project folder or worktree first")
+
 // fetchConfigOptions probes the agent's live advertised config options
 // via the host (which opens one short-lived session). Slow by design —
 // fired only when the compose model picker opens, behind its loading
@@ -594,7 +599,7 @@ func (m *SessionViewModel) fetchConfigOptions() tea.Cmd {
 	hostname := m.hostname
 	ref := m.gitRef
 	if ref.LocalPath == "" && ref.WorktreeID == "" {
-		return func() tea.Msg { return configOptionsResultMsg{backend: backend} }
+		return func() tea.Msg { return configOptionsResultMsg{backend: backend, err: errNoProjectFolderForConfigOptions} }
 	}
 	return func() tea.Msg {
 		// The host-side probe is bounded at 30s; leave headroom so its

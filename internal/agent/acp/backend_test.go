@@ -947,6 +947,39 @@ func TestBackend_ConfigOptionUpdateRefreshesRetainedOptions(t *testing.T) {
 	}
 }
 
+// ConfigOptions() must hand out a deep copy: mutating a caller's returned
+// Values slice must not corrupt the backend's retained state, which a
+// concurrent caller (or this same caller on its next probe) still reads.
+func TestBackend_ConfigOptionsReturnsIndependentCopy(t *testing.T) {
+	t.Parallel()
+	category := sdk.SessionConfigOptionCategory("model")
+	scripted := &acptest.ScriptedAgent{}
+	scripted.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+		return sdk.NewSessionResponse{
+			SessionId: "s-clone",
+			ConfigOptions: []sdk.SessionConfigOption{{Select: &sdk.SessionConfigOptionSelect{
+				Id: "model", Name: "Model", Category: &category, CurrentValue: "sonnet",
+				Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+					{Value: "sonnet", Name: "Sonnet"},
+					{Value: "opus", Name: "Opus"},
+				}},
+			}}},
+		}, nil
+	}
+	f := newBackendFixture(t, scripted, "")
+	if err := f.backend.Open(context.Background()); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	first := f.backend.ConfigOptions()
+	first[0].Values[0].Value = "corrupted"
+
+	second := f.backend.ConfigOptions()
+	if second[0].Values[0].Value != "sonnet" {
+		t.Fatalf("second ConfigOptions() call = %+v, want unaffected by mutating the first call's result", second[0].Values)
+	}
+}
+
 // Rejecting a permission with a reason must deliver that reason to the
 // agent. ACP permission outcomes carry an option id and nothing else, so
 // the text becomes the user's next prompt — which is exactly what makes
