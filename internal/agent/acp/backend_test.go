@@ -1162,3 +1162,50 @@ func TestBackend_SendConfigAppliesModeFirstThenSortedOptions(t *testing.T) {
 		}
 	}
 }
+
+// An empty option id is never something an agent advertises — forwarding
+// it would just be a meaningless set_config_option RPC (ConfigId="").
+func TestBackend_SendConfigSkipsEmptyOptionID(t *testing.T) {
+	t.Parallel()
+	type call struct{ kind, id, value string }
+	calls := make(chan call, 8)
+	scripted := &acptest.ScriptedAgent{}
+	scripted.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+		return sdk.NewSessionResponse{SessionId: "s-empty-id"}, nil
+	}
+	scripted.SetConfigFn = func(ctx context.Context, p sdk.SetSessionConfigOptionRequest) (sdk.SetSessionConfigOptionResponse, error) {
+		calls <- call{kind: "config", id: string(p.ValueId.ConfigId), value: string(p.ValueId.Value)}
+		return sdk.SetSessionConfigOptionResponse{}, nil
+	}
+	scripted.PromptFn = func(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResponse, error) {
+		return sdk.PromptResponse{StopReason: sdk.StopReasonEndTurn}, nil
+	}
+	f := newBackendFixture(t, scripted, "")
+	ctx := context.Background()
+	if err := f.backend.Open(ctx); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := f.backend.Send(ctx, agent.SendMessageOpts{
+		Text: "go",
+		Config: map[string]string{
+			"":       "should-be-skipped",
+			"effort": "high",
+		},
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	select {
+	case got := <-calls:
+		if got.id != "effort" {
+			t.Fatalf("call = %+v, want id=effort", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("expected config call never arrived")
+	}
+	select {
+	case got := <-calls:
+		t.Fatalf("unexpected extra call %+v; empty option id must be skipped", got)
+	case <-time.After(300 * time.Millisecond):
+	}
+}

@@ -257,7 +257,7 @@ func (b *Backend) applyConfig(ctx context.Context, conn *AdapterConn, cfg map[st
 	}
 	rest := make([]string, 0, len(cfg))
 	for id := range cfg {
-		if id != agent.ConfigOptionMode {
+		if id != agent.ConfigOptionMode && id != "" {
 			rest = append(rest, id)
 		}
 	}
