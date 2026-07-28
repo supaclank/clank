@@ -82,6 +82,14 @@ type Options struct {
 	// docker dev stack) to exercise the production preview path
 	// end-to-end without a cloud provider.
 	TunnelInternalConn bool
+
+	// Templates is the builtin create-project catalog, forwarded to the
+	// subprocess as --templates-json (the builtin half of its GET
+	// /templates). Passed as an explicit flag so it beats any
+	// CLANK_TEMPLATES the child would inherit from this process's env.
+	// Empty passes no flag — clank-host then serves only the user's
+	// own GitHub template repos.
+	Templates []provisioner.Template
 }
 
 // Provisioner manages a single persistent clank-host subprocess.
@@ -211,6 +219,9 @@ func (p *Provisioner) EnsureHost(_ context.Context, _ string) (provisioner.HostR
 	}
 	if p.opts.PreviewWebhookURL != "" {
 		args = append(args, "--preview-webhook-url", p.opts.PreviewWebhookURL)
+	}
+	if tj := provisioner.TemplatesEnvValue(p.opts.Templates); tj != "" {
+		args = append(args, "--templates-json", tj)
 	}
 
 	cmd := exec.Command(bin, args...)

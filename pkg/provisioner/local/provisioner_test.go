@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acksell/clank/pkg/provisioner"
 	"github.com/acksell/clank/pkg/provisioner/local"
 )
 
@@ -43,6 +44,7 @@ func main() {
 	_ = flag.String("listen-auth-token", "", "")
 	_ = flag.String("data-dir", "", "")
 	workRoot := flag.String("work-root", "", "")
+	templatesJSON := flag.String("templates-json", "", "")
 	_ = flag.Bool("local-file-attachments", false, "")
 	_ = flag.Bool("gh-cli-auth", false, "")
 	_ = flag.Bool("claude-cli-auth", false, "")
@@ -50,6 +52,12 @@ func main() {
 	if f := os.Getenv("FAKE_HOST_WORK_ROOT_FILE"); f != "" {
 		if err := os.WriteFile(f, []byte(*workRoot), 0o644); err != nil {
 			fmt.Fprintln(os.Stderr, "dump work-root:", err)
+			os.Exit(1)
+		}
+	}
+	if f := os.Getenv("FAKE_HOST_TEMPLATES_FILE"); f != "" {
+		if err := os.WriteFile(f, []byte(*templatesJSON), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "dump templates-json:", err)
 			os.Exit(1)
 		}
 	}
@@ -116,6 +124,64 @@ func TestEnsureHost_PassesWorkRoot(t *testing.T) {
 	}
 	if string(got) != workRoot {
 		t.Errorf("child received --work-root %q, want %q", got, workRoot)
+	}
+}
+
+// TestEnsureHost_PassesTemplatesJSON: Options.Templates must reach the
+// child as --templates-json — the laptop daemon relies on this to serve
+// its builtin create-project catalog (e.g. the default Expo starter)
+// from the spawned clank-host's GET /templates.
+func TestEnsureHost_PassesTemplatesJSON(t *testing.T) {
+	// No t.Parallel: t.Setenv is incompatible with parallel tests.
+	bin := fakeHostBin(t)
+	dumpFile := filepath.Join(t.TempDir(), "templates.txt")
+	t.Setenv("FAKE_HOST_TEMPLATES_FILE", dumpFile)
+
+	templates := []provisioner.Template{{
+		DisplayName: "Expo app",
+		CloneURL:    "https://templates.example/expo.git",
+	}}
+	p := local.New(local.Options{
+		BinPath:          bin,
+		Templates:        templates,
+		ProvisionTimeout: 5 * time.Second,
+	}, nil)
+	t.Cleanup(p.Stop)
+
+	if _, err := p.EnsureHost(context.Background(), ""); err != nil {
+		t.Fatalf("EnsureHost: %v", err)
+	}
+	got, err := os.ReadFile(dumpFile)
+	if err != nil {
+		t.Fatalf("read child's --templates-json dump: %v", err)
+	}
+	want := provisioner.TemplatesEnvValue(templates)
+	if string(got) != want {
+		t.Errorf("child received --templates-json %q, want %q", got, want)
+	}
+}
+
+// TestEnsureHost_NoTemplatesOmitsFlag: with an empty catalog the flag
+// must stay absent so the child's own default (its env / no builtins)
+// applies rather than an explicit empty override.
+func TestEnsureHost_NoTemplatesOmitsFlag(t *testing.T) {
+	// No t.Parallel: t.Setenv is incompatible with parallel tests.
+	bin := fakeHostBin(t)
+	dumpFile := filepath.Join(t.TempDir(), "templates.txt")
+	t.Setenv("FAKE_HOST_TEMPLATES_FILE", dumpFile)
+
+	p := local.New(local.Options{BinPath: bin, ProvisionTimeout: 5 * time.Second}, nil)
+	t.Cleanup(p.Stop)
+
+	if _, err := p.EnsureHost(context.Background(), ""); err != nil {
+		t.Fatalf("EnsureHost: %v", err)
+	}
+	got, err := os.ReadFile(dumpFile)
+	if err != nil {
+		t.Fatalf("read child's --templates-json dump: %v", err)
+	}
+	if string(got) != "" {
+		t.Errorf("child received --templates-json %q, want flag absent", got)
 	}
 }
 
