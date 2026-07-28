@@ -16,12 +16,12 @@ import (
 // Auth mode selector env vars. Exactly one must be set in TCP mode
 // (and not at all in Unix-socket mode); resolveDefaultAuth enforces.
 const (
-	envJWTSecret     = "CLANK_AUTH_JWT_SECRET"     // HS256 mode
-	envStaticToken   = "CLANK_AUTH_TOKEN"          // Static-bearer mode
-	envAllowStatic   = "CLANK_AUTH_ALLOW_STATIC"   // Opt-in for static-bearer
-	envOIDCIssuer    = "CLANK_AUTH_OIDC_ISSUER"    // OIDC mode
-	envOIDCAudience  = "CLANK_AUTH_OIDC_AUDIENCE"  // required when OIDC mode on
-	envOIDCJWKSURL   = "CLANK_AUTH_OIDC_JWKS_URL"  // optional; defaults via discovery
+	envJWTSecret     = "CLANK_AUTH_JWT_SECRET"    // HS256 mode
+	envStaticToken   = "CLANK_AUTH_TOKEN"         // Static-bearer mode
+	envAllowStatic   = "CLANK_AUTH_ALLOW_STATIC"  // Opt-in for static-bearer
+	envOIDCIssuer    = "CLANK_AUTH_OIDC_ISSUER"   // OIDC mode
+	envOIDCAudience  = "CLANK_AUTH_OIDC_AUDIENCE" // required when OIDC mode on
+	envOIDCJWKSURL   = "CLANK_AUTH_OIDC_JWKS_URL" // optional; defaults via discovery
 	envOIDCUserClaim = "CLANK_AUTH_OIDC_USER_CLAIM"
 	envOIDCAlgs      = "CLANK_AUTH_OIDC_ALGORITHMS" // comma-separated
 )

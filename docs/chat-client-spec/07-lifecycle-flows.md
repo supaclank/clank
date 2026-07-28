@@ -27,7 +27,7 @@ the void (no replay, [EVT-010]). Golden: `internal/tui/sessionview_compose.go:28
 C: user submits text
 C: append optimistic user msg (no id), submitting=true, follow=true, lock composer
      └─ also clears revert_message_id                       ── [STATE-SUBMIT-001]
-C: POST /sessions/{id}/message {text, permission_mode:""}   ── "" = no mode change [DATA-040]
+C: POST /sessions/{id}/message {text}                       ── no config = no mode change [DATA-040]
 H→C: 204                                                    ── dispatched ≠ done [OP-002]
 H→C: status idle→busy
 H→C: message {role:user, id} → backfill id on optimistic msg ── [STATE-MSG-001]

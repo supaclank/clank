@@ -330,7 +330,7 @@ func (m *ACPBackendManager) CreateBackend(ctx context.Context, inv agent.Backend
 	resolver := func(ctx context.Context) (*acp.AdapterConn, error) {
 		return m.sup.GetConn(ctx, inv.WorkDir)
 	}
-	b := acp.NewBackend(m.profile, inv.WorkDir, inv.ResumeExternalID, guidanceText, "", resolver, log.Printf)
+	b := acp.NewBackend(m.profile, inv.WorkDir, inv.ResumeExternalID, guidanceText, resolver, log.Printf)
 	b.SetCatalogSink(m.putCatalog)
 	b.SetModeSink(m.putModes)
 	return b, nil

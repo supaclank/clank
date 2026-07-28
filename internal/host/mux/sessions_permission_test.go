@@ -21,7 +21,7 @@ import (
 // can assert what the HTTP layer forwarded.
 type captureBackend struct {
 	mu             sync.Mutex
-	gotPerm        agent.ClaudePermissionMode
+	gotConfig      map[string]string
 	gotCalled      bool
 	gotAllow       bool
 	gotDenyMessage string
@@ -35,7 +35,7 @@ type captureBackend struct {
 func (b *captureBackend) Open(context.Context) error { return nil }
 func (b *captureBackend) OpenAndSend(_ context.Context, opts agent.SendMessageOpts) error {
 	b.mu.Lock()
-	b.gotPerm = opts.PermissionMode
+	b.gotConfig = opts.Config
 	b.mu.Unlock()
 	return nil
 }
@@ -104,9 +104,10 @@ func initGitRepoMux(t *testing.T) string {
 	return dir
 }
 
-// A new Claude session created over HTTP must carry the selected permission
-// mode from StartRequest through to the backend's OpenAndSend.
-func TestCreateSession_ClaudePermissionMode_ReachesBackend(t *testing.T) {
+// A new session created over HTTP must carry the client's config (mode +
+// any other option ids) from StartRequest through to the backend's
+// OpenAndSend, where applyConfig dispatches it.
+func TestCreateSession_ConfigReachesBackend(t *testing.T) {
 	backend := &captureBackend{}
 	svc := host.New(host.Options{
 		BackendManagers: map[agent.BackendType]agent.BackendManager{
@@ -118,10 +119,10 @@ func TestCreateSession_ClaudePermissionMode_ReachesBackend(t *testing.T) {
 
 	dir := initGitRepoMux(t)
 	body, err := json.Marshal(agent.StartRequest{
-		Backend:        agent.BackendClaudeCode,
-		GitRef:         agent.GitRef{LocalPath: dir},
-		Prompt:         "hi",
-		PermissionMode: agent.ClaudePermPlan,
+		Backend: agent.BackendClaudeCode,
+		GitRef:  agent.GitRef{LocalPath: dir},
+		Prompt:  "hi",
+		Config:  map[string]string{agent.ConfigOptionMode: string(agent.ClaudePermPlan), "effort": "high"},
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -136,10 +137,10 @@ func TestCreateSession_ClaudePermissionMode_ReachesBackend(t *testing.T) {
 	}
 
 	backend.mu.Lock()
-	got := backend.gotPerm
+	got := backend.gotConfig
 	backend.mu.Unlock()
-	if got != agent.ClaudePermPlan {
-		t.Errorf("backend received PermissionMode=%q, want plan", got)
+	if got[agent.ConfigOptionMode] != string(agent.ClaudePermPlan) || got["effort"] != "high" {
+		t.Errorf("backend received Config=%v, want mode=plan effort=high", got)
 	}
 }
 
@@ -157,10 +158,9 @@ func TestPermissionReply_ForwardsDenyMessage(t *testing.T) {
 
 	dir := initGitRepoMux(t)
 	body, err := json.Marshal(agent.StartRequest{
-		Backend:        agent.BackendClaudeCode,
-		GitRef:         agent.GitRef{LocalPath: dir},
-		Prompt:         "hi",
-		PermissionMode: agent.ClaudePermPlan,
+		Backend: agent.BackendClaudeCode,
+		GitRef:  agent.GitRef{LocalPath: dir},
+		Prompt:  "hi",
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)

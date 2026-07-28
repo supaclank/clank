@@ -6,6 +6,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/agent/presets"
 	"github.com/acksell/clank/internal/config"
 )
 
@@ -308,6 +309,43 @@ func TestCompose_InitFetchesModes(t *testing.T) {
 	}
 }
 
+// Opening compose must also fetch presets — composeConfig() stays nil (and
+// launchSession refuses to submit) until they load. fetchPresets was defined
+// but never wired into any command batch, so every compose session create
+// failed the host's 400 config_incomplete check.
+func TestCompose_InitFetchesPresets(t *testing.T) {
+	t.Parallel()
+	m := newSessionViewComposingWithBackend(nil, "", agent.BackendCodex)
+	m.width, m.height = 80, 40
+
+	if !batchYields[presetsResultMsg](t, m.Init()) {
+		t.Fatal("compose Init dispatched no presets fetch — composeConfig() can never leave nil")
+	}
+}
+
+// Presets are backend-scoped (composeConfig matches p.Backend == m.backend),
+// so switching backends must drop the old list and refetch, mirroring the
+// modes/models pattern.
+func TestCompose_BackendSwitchRefetchesPresets(t *testing.T) {
+	t.Parallel()
+	m := newSessionViewComposingWithBackend(nil, "", agent.BackendOpenCode)
+	m.width, m.height = 80, 40
+
+	model, _ := m.Update(presetsResultMsg{backend: agent.BackendOpenCode, presets: presets.Sandbox()})
+	m = model.(*SessionViewModel)
+	if len(m.presets) == 0 {
+		t.Fatalf("setup: presets = %d, want > 0", len(m.presets))
+	}
+
+	cmd := m.applyBackend(agent.BackendClaudeCode)
+	if len(m.presets) != 0 {
+		t.Errorf("previous backend's presets survived the switch: %+v", m.presets)
+	}
+	if !batchYields[presetsResultMsg](t, cmd) {
+		t.Fatal("backend switch dispatched no presets fetch")
+	}
+}
+
 // Modes and models are project-scoped, so switching the compose folder has
 // to drop the old list and refetch rather than carry one project's agents
 // into another.
@@ -378,5 +416,111 @@ func TestCompose_RefinePreservesSelectedMode(t *testing.T) {
 	m = model.(*SessionViewModel)
 	if m.selectedMode != 0 {
 		t.Fatalf("selectedMode = %d after pick vanished, want 0", m.selectedMode)
+	}
+}
+
+// Compose builds its create config from the backend's Default preset (which
+// carries every host-required key) overlaid with the picker's explicit mode
+// selection. Before presets load it returns nil — the host then rejects the
+// create loudly instead of the session opening in a factory default.
+func TestCompose_ConfigComesFromDefaultPresetPlusModePick(t *testing.T) {
+	t.Parallel()
+	m := newSessionViewComposingWithBackend(nil, "/tmp/project", agent.BackendClaudeCode)
+	m.width, m.height = 80, 40
+
+	if cfg := m.composeConfig(); cfg != nil {
+		t.Fatalf("config before presets load = %v, want nil (host rejects, no silent default)", cfg)
+	}
+
+	model, _ := m.Update(presetsResultMsg{backend: agent.BackendClaudeCode, presets: presets.Sandbox()})
+	m = model.(*SessionViewModel)
+
+	cfg := m.composeConfig()
+	if cfg["model"] != "default" || cfg["effort"] != "default" || cfg[agent.ConfigOptionMode] != "bypassPermissions" {
+		t.Fatalf("config = %v, want the Default preset verbatim", cfg)
+	}
+
+	// An explicit mode pick overlays the preset's mode; the other required
+	// keys still ride along.
+	model, _ = m.Update(modesResultMsg{modes: []agent.SessionMode{
+		{ID: "plan", Name: "Plan Mode"}, {ID: "acceptEdits", Name: "Accept Edits"},
+	}})
+	m = model.(*SessionViewModel)
+	m.selectedMode = 0
+	cfg = m.composeConfig()
+	if cfg[agent.ConfigOptionMode] != "plan" || cfg["model"] != "default" || cfg["effort"] != "default" {
+		t.Fatalf("config after mode pick = %v, want mode overlaid on the preset", cfg)
+	}
+
+	// Presets for another backend must not satisfy this one.
+	m2 := newSessionViewComposingWithBackend(nil, "/tmp/project", agent.BackendCodex)
+	model, _ = m2.Update(presetsResultMsg{backend: agent.BackendClaudeCode, presets: presets.Sandbox()})
+	m2 = model.(*SessionViewModel)
+	if cfg := m2.composeConfig(); cfg != nil {
+		t.Fatalf("cross-backend presets satisfied codex compose: %v", cfg)
+	}
+}
+
+// launchSession must not submit while presets haven't loaded yet —
+// composeConfig() is nil then, and the host would reject the create with
+// 400 config_incomplete anyway. Gating here surfaces an immediate reason
+// instead of a round-trip failure.
+func TestLaunchSession_BlocksUntilPresetsLoad(t *testing.T) {
+	t.Parallel()
+	dir := initGitRepoForCompose(t)
+	m := newSessionViewComposingWithBackend(nil, dir, agent.BackendClaudeCode)
+	m.width, m.height = 80, 40
+	m.input.SetValue("fix the bug")
+
+	model, cmd := m.launchSession()
+	m = model.(*SessionViewModel)
+	if cmd != nil {
+		t.Fatal("launchSession returned a submit command before presets loaded")
+	}
+	if m.submitting {
+		t.Fatal("submitting=true before presets loaded")
+	}
+	if m.err == nil {
+		t.Fatal("expected m.err explaining why submit was blocked")
+	}
+
+	model, _ = m.Update(presetsResultMsg{backend: agent.BackendClaudeCode, presets: presets.Sandbox()})
+	m = model.(*SessionViewModel)
+	_, cmd = m.launchSession()
+	if cmd == nil {
+		t.Fatal("expected launchSession to submit once presets loaded")
+	}
+}
+
+// A follow-up send must omit config when the picker still matches the
+// session's current mode — the spec treats omitted config as "no change,"
+// so resending an unchanged mode on every message would violate that
+// invariant (and reassert state the session already has).
+func TestModeConfigForSend_OmitsWhenModeUnchanged(t *testing.T) {
+	t.Parallel()
+	sel := selectableMode{perm: agent.ClaudePermPlan}
+	info := &agent.SessionInfo{CurrentModeID: "plan"}
+	if cfg := modeConfigForSend(sel, info); cfg != nil {
+		t.Fatalf("config = %v, want nil (picker matches session's current mode)", cfg)
+	}
+}
+
+func TestModeConfigForSend_IncludesWhenModeChanged(t *testing.T) {
+	t.Parallel()
+	sel := selectableMode{perm: agent.ClaudePermPlan}
+	info := &agent.SessionInfo{CurrentModeID: "bypassPermissions"}
+	cfg := modeConfigForSend(sel, info)
+	if cfg[agent.ConfigOptionMode] != "plan" {
+		t.Fatalf("config = %v, want mode=plan", cfg)
+	}
+}
+
+// Before session info has ever loaded, there is no "current mode" to
+// compare against — an explicit picker value must still ride along.
+func TestModeConfigForSend_NilInfoSendsExplicitPick(t *testing.T) {
+	t.Parallel()
+	sel := selectableMode{perm: agent.ClaudePermPlan}
+	if cfg := modeConfigForSend(sel, nil); cfg[agent.ConfigOptionMode] != "plan" {
+		t.Fatalf("config = %v, want mode=plan when session info is unknown", cfg)
 	}
 }

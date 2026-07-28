@@ -160,7 +160,10 @@ func (m *SessionViewModel) applyBackend(b agent.BackendType) tea.Cmd {
 	// list is fetched, never hardcoded — a static claude list here was
 	// both stale (missing auto/dontAsk) and wrong for the others.
 	m.modes, m.selectedMode = nil, 0
-	return tea.Batch(m.fetchModes(), m.fetchModels(), refineCatalog())
+	// Presets are backend-scoped too (composeConfig matches p.Backend == m.backend);
+	// drop the old backend's list so a stale Default preset can't linger.
+	m.presets = nil
+	return tea.Batch(m.fetchModes(), m.fetchModels(), m.fetchPresets(), refineCatalog())
 }
 
 // toggleBackend cycles through AllBackends (the ctrl+b shortcut).

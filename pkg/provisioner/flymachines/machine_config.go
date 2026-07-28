@@ -6,6 +6,7 @@ import (
 
 	fly "github.com/superfly/fly-go"
 
+	"github.com/acksell/clank/internal/agent/presets"
 	"github.com/acksell/clank/pkg/provisioner"
 )
 
@@ -28,6 +29,10 @@ func buildMachineConfig(opts Options, tokens hostTokens, volumeID string, oneSho
 		"CLANK_HOST_AUTH_TOKEN":    tokens.auth,
 		"CLANK_NOTIFIER_TOKEN":     tokens.notifier,
 		"CLANK_KEEPALIVE_PROVIDER": "exit",
+		// Machines are disposable, so they ship the permissive preset set
+		// (sessions run without permission prompts by default). Hosts not
+		// provisioned by us omit this and get the Workstation set.
+		"CLANK_BUILTIN_PRESETS": presets.EnvValue(presets.Sandbox()),
 	}
 	if opts.NotifierWebhookURL != "" {
 		env["CLANK_NOTIFIER_PROVIDER"] = "webhook"

@@ -65,9 +65,6 @@ func (b *Backend) Open(ctx context.Context) error {
 		b.mu.Unlock()
 		publish()
 
-		if b.initialMode != "" {
-			b.applyMode(ctx, conn, string(b.initialMode))
-		}
 	} else {
 		conn.Register(sdk.SessionId(resume), b)
 		b.mu.Lock()

@@ -290,4 +290,3 @@ func TestPreviewStart_UnknownWorktreeIDYields4xx(t *testing.T) {
 		t.Fatalf("status = %d, want 4xx for unknown worktree", resp.StatusCode)
 	}
 }
-

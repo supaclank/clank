@@ -104,9 +104,9 @@ type pendingCode struct {
 type server struct {
 	cfg config
 
-	mu       sync.Mutex
-	pending  map[string]pendingCode // keyed by authorization code
-	refresh  map[string]bool        // valid refresh tokens (single-use)
+	mu      sync.Mutex
+	pending map[string]pendingCode // keyed by authorization code
+	refresh map[string]bool        // valid refresh tokens (single-use)
 }
 
 func newServer(cfg config) *server {

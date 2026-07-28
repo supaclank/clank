@@ -24,6 +24,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/agent/presets"
 	"github.com/acksell/clank/internal/git"
 	githubpkg "github.com/acksell/clank/internal/host/github"
 	"github.com/acksell/clank/internal/host/preview"
@@ -42,6 +43,11 @@ var cryptoRand = cryptoRandImpl.Reader
 // Init to start background goroutines and Shutdown to release them.
 // Owns a registry of live SessionBackends keyed by session ULID.
 type Service struct {
+	// builtinPresets are host-shipped, read-only (see Options.BuiltinPresets).
+	builtinPresets []presets.Preset
+	// presetStore persists user presets; nil when no data dir.
+	presetStore *presetStore
+
 	id              string
 	startedAt       time.Time
 	backendManagers map[agent.BackendType]agent.BackendManager
@@ -206,6 +212,22 @@ type Options struct {
 	// this to <config dir>/work so the host doesn't drop a work/
 	// directory into the user's home.
 	WorkRoot string
+
+	// BuiltinPresets are the host-shipped agent presets, declared by the
+	// provisioner via $CLANK_BUILTIN_PRESETS (the environment knows its
+	// own blast radius). Served read-only by GET /presets, and each
+	// backend's Default preset defines the REQUIRED config keys for
+	// session creation. Empty means presets.Workstation() — the
+	// conservative set (cmd/clank-host resolves that before New).
+	// TODO(ai-review): New() stores this verbatim rather than defaulting
+	// empty to Workstation() itself, so any caller that skips the
+	// cmd/clank-host convention silently gets create-time validation off.
+	// https://github.com/Acksell/clank/pull/191#discussion_r3661500546
+	BuiltinPresets []presets.Preset
+
+	// PresetsDir is where user-created presets persist (presets.json).
+	// Empty disables user presets; built-ins still serve.
+	PresetsDir string
 }
 
 // New creates a Service. Panics on missing BackendManagers — fast
@@ -245,6 +267,16 @@ func New(opts Options) *Service {
 		subscribers:           newSubscriberRegistry(),
 		worktreeLocks:         make(map[string]*sync.Mutex),
 		repoLocks:             make(map[string]*sync.Mutex),
+		builtinPresets:        opts.BuiltinPresets,
+	}
+	if opts.PresetsDir != "" {
+		ps, err := newPresetStore(opts.PresetsDir)
+		if err != nil {
+			// User data with a parse problem — surface loudly rather than
+			// running with their presets invisible and overwritable.
+			panic(fmt.Sprintf("host.New: preset store: %v", err))
+		}
+		s.presetStore = ps
 	}
 	if opts.KeepaliveListener != nil {
 		s.keepaliveLoop = keepalive.New(keepalive.Config{
@@ -710,7 +742,6 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 		GitRef:     req.GitRef,
 		Prompt:     req.Prompt,
 		TicketID:   req.TicketID,
-		Agent:      req.Agent,
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}

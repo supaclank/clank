@@ -26,6 +26,9 @@ Source of truth for routes: `internal/host/mux/mux.go:72`. All require the beare
 | GET | `/events`, `/sessions/{id}/events` | — | `200` SSE | — | See [04](04-event-protocol.md). |
 | GET | `/backends`, `/modes`, `/models` | query | `200` …`Info[]` | Yes | Capability lookups, per project dir — see [OP-013]. |
 | GET | `/agents` | query | `200` `[]` | Yes | **Deprecated 0.6.0**, always empty — see [OP-014]. |
+| GET | `/presets` | `backend?` | `200` `Preset[]` | Yes | Built-in + user presets; built-ins first — see [OP-016]. |
+| POST | `/presets` | `Preset` | `200` | Yes | Create/replace a USER preset; built-in ids reserved. |
+| DELETE | `/presets/{id}` | — | `204` | Yes | Delete a USER preset; unknown id `400`. |
 
 `*` reply is idempotent at the host (an unknown/duplicate permID errors fast); clients
 still single-flight it in the UI ([INV-PERM-SINGLEFLIGHT-001](08-invariants.md)).
@@ -54,6 +57,21 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
   duplicate session. Cross-ref [CONN-030/031](02-connection-and-auth.md). **Golden:**
   `internal/tui/sessionview_compose.go:235`, `:296`. Note the **create race**: subscribe to
   events *before* creating — see [INV-CREATE-RACE-001](08-invariants.md).
+
+### Presets — `GET/POST /presets`, `DELETE /presets/{id}`
+
+- **[OP-016] (MUST, 0.6.2)** Presets are named config bundles the HOST stores and serves but
+  **never applies** — the client is the only thing that sends `config` on requests. Built-ins
+  are declared per host by its provisioner (`$CLANK_BUILTIN_PRESETS`, serialized from
+  `internal/agent/presets`; sandboxes ship the permissive set, everything else the
+  conservative Workstation set) and are immutable — duplicate to customize. Each backend's
+  **Default** preset doubles as the create contract: its config keys are the REQUIRED keys
+  for `POST /sessions` ([DATA-040](03-data-model.md)). A client's create flow is: `GET
+  /presets` → chosen preset's config → overlay explicit picks → send. **Why:** per-host
+  storage is what lets every client of a host (mobile, TUI, the web preview overlay) share
+  one preset set, and keeps a sandbox's permissive defaults from ever leaking onto a bridged
+  laptop — each host serves its own. **Golden:** `internal/host/presetstore.go`,
+  `internal/host/mux/presets.go`; regression `TestPresets_CRUDOverHTTP`.
 
 ### Send — `POST /sessions/{id}/message`
 

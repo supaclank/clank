@@ -17,6 +17,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/agent/presets"
 	"github.com/acksell/clank/internal/config"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/host"
@@ -98,6 +99,33 @@ func newSessionViewComposingWithBackend(client *daemonclient.Client, projectDir 
 	// Modes are agent-owned and fetched (Init → fetchModes); nothing is
 	// seeded here, so the picker never shows a mode the agent doesn't have.
 	return m
+}
+
+// composeConfig assembles the create-time config: the backend's Default
+// preset (which carries every required key) overlaid with the pickers'
+// explicit selections. Nil until presets load — the host then rejects the
+// create with the missing keys named, which is the fail-fast contract.
+func (m *SessionViewModel) composeConfig() map[string]string {
+	var base map[string]string
+	for _, p := range m.presets {
+		if p.Backend == m.backend && p.ID == presets.BuiltinDefaultPrefix+string(m.backend) {
+			base = p.Config
+			break
+		}
+	}
+	if base == nil {
+		return nil
+	}
+	cfg := make(map[string]string, len(base)+1)
+	for k, v := range base {
+		cfg[k] = v
+	}
+	if len(m.modes) > 0 {
+		if sel := m.modes[m.selectedMode]; sel.perm != "" {
+			cfg[agent.ConfigOptionMode] = string(sel.perm)
+		}
+	}
+	return cfg
 }
 
 // updateCompose handles all messages while in composing mode.
@@ -191,6 +219,12 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the specific repo in the background, so re-fetch once to surface
 		// its per-repo agents. Host-scoped backends return the same list.
 		return m, tea.Batch(m.fetchModes(), m.fetchModels())
+
+	case presetsResultMsg:
+		if msg.backend == m.backend {
+			m.presets = msg.presets
+		}
+		return m, nil
 
 	case modelsResultMsg:
 		m.models = msg.models
@@ -334,6 +368,14 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 		m.err = fmt.Errorf("project directory is required")
 		return m, nil
 	}
+	cfg := m.composeConfig()
+	if cfg == nil {
+		// Presets for this backend haven't loaded yet — the host would
+		// reject this with 400 config_incomplete anyway; gate here so
+		// the user gets an immediate reason instead of a round-trip error.
+		m.err = fmt.Errorf("presets still loading — try again in a moment")
+		return m, nil
+	}
 
 	m.err = nil
 	m.submitting = true
@@ -356,13 +398,7 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 		Prompt:      prompt,
 		Attachments: atts,
 	}
-	// TODO(ai-review): Claude compose no longer defaults to bypassPermissions (empty modes → no PermissionMode; loaded → selectedMode 0, order-dependent); decide the intended default posture for autonomous sessions. https://github.com/Acksell/clank/pull/188
-	// TODO(ai-review): sel.agent is always empty now (modes carry the id in .perm), so req.Agent is dead — drop the vestigial Agent plumbing once the mode-apply path above is settled. https://github.com/Acksell/clank/pull/188
-	if len(m.modes) > 0 {
-		sel := m.modes[m.selectedMode]
-		req.Agent = sel.agent
-		req.PermissionMode = sel.perm
-	}
+	req.Config = cfg
 	if m.selectedModel >= 0 && m.selectedModel < len(m.models) {
 		model := m.models[m.selectedModel]
 		req.Model = &agent.ModelOverride{

@@ -78,6 +78,9 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("GET /agents", m.handleListAgents)
 	mx.HandleFunc("GET /models", m.handleListModels)
 	mx.HandleFunc("GET /modes", m.handleListModes)
+	mx.HandleFunc("GET /presets", m.handleListPresets)
+	mx.HandleFunc("POST /presets", m.handlePutPreset)
+	mx.HandleFunc("DELETE /presets/{id}", m.handleDeletePreset)
 	// /discover is the legacy host-client path; /sessions/discover
 	// is the TUI-facing path the gateway routes from.
 	mx.HandleFunc("POST /discover", m.handleDiscoverSessions)
@@ -172,6 +175,8 @@ func writeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, host.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, errResp{Code: "not_found", Error: err.Error()})
+	case errors.Is(err, host.ErrConfigIncomplete):
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "config_incomplete", Error: err.Error()})
 	case errors.Is(err, host.ErrWorktreeBusy):
 		writeJSON(w, http.StatusConflict, errResp{Code: "worktree_busy", Error: err.Error()})
 	case errors.Is(err, host.ErrCannotMergeDefault):

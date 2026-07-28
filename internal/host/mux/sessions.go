@@ -32,6 +32,13 @@ func (m *Mux) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
+	// Required keys come from the backend's built-in Default preset; the
+	// host never fills values in (a hidden substitution is worse than a
+	// loud 400 — the client fetches the preset and sends explicitly).
+	if err := m.svc.ValidateCreateConfig(req.Backend, req.Config); err != nil {
+		writeError(w, err)
+		return
+	}
 	sessionID := ulid.Make().String()
 	// info is the session as persisted — GitRef normalized by the host
 	// (a LocalPath inside a repo becomes {root, subdir}), so clients
@@ -46,11 +53,10 @@ func (m *Mux) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// Send is fire-and-forget on the backend's long-lived context.
 	// Failure tears down the host-side registration so retry works.
 	status, extID, err := m.svc.OpenAndSend(r.Context(), sessionID, agent.SendMessageOpts{
-		Text:           req.Prompt,
-		Agent:          req.Agent,
-		Model:          req.Model,
-		PermissionMode: req.PermissionMode,
-		Attachments:    req.Attachments,
+		Text:        req.Prompt,
+		Model:       req.Model,
+		Config:      req.Config,
+		Attachments: req.Attachments,
 	})
 	if err != nil {
 		_ = m.svc.StopSession(sessionID)
