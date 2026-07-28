@@ -398,8 +398,6 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 		Prompt:      prompt,
 		Attachments: atts,
 	}
-	// TODO(ai-review): Claude compose no longer defaults to bypassPermissions (empty modes → no PermissionMode; loaded → selectedMode 0, order-dependent); decide the intended default posture for autonomous sessions. https://github.com/Acksell/clank/pull/188
-	// TODO(ai-review): sel.agent is always empty now (modes carry the id in .perm), so req.Agent is dead — drop the vestigial Agent plumbing once the mode-apply path above is settled. https://github.com/Acksell/clank/pull/188
 	req.Config = cfg
 	if m.selectedModel >= 0 && m.selectedModel < len(m.models) {
 		model := m.models[m.selectedModel]
