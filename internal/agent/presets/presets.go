@@ -171,8 +171,8 @@ func RequiredKeys(builtins []Preset, bt agent.BackendType) []string {
 
 // EnvValue serializes presets for $CLANK_BUILTIN_PRESETS (provisioner →
 // host boundary). An empty list serializes to "" — indistinguishable from
-// an unset env, since Parse treats both as "not declared" and falls back
-// to Workstation() either way.
+// an unset env, since Parse treats both as "not declared" (callers then
+// fall back to Workstation()).
 func EnvValue(ps []Preset) string {
 	if len(ps) == 0 {
 		return ""
