@@ -57,7 +57,9 @@ func main() {
 		}
 	}
 	if f := os.Getenv("FAKE_HOST_TEMPLATES_FILE"); f != "" {
-		if err := os.WriteFile(f, []byte(*templatesJSON), 0o644); err != nil {
+		set := false
+		flag.Visit(func(fl *flag.Flag) { if fl.Name == "templates-json" { set = true } })
+		if err := os.WriteFile(f, []byte(fmt.Sprintf("set=%v value=%s", set, *templatesJSON)), 0o644); err != nil {
 			fmt.Fprintln(os.Stderr, "dump templates-json:", err)
 			os.Exit(1)
 		}
@@ -156,7 +158,7 @@ func TestEnsureHost_PassesTemplatesJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read child's --templates-json dump: %v", err)
 	}
-	want := provisioner.TemplatesEnvValue(templates)
+	want := "set=true value=" + provisioner.TemplatesEnvValue(templates)
 	if string(got) != want {
 		t.Errorf("child received --templates-json %q, want %q", got, want)
 	}
@@ -181,8 +183,10 @@ func TestEnsureHost_NoTemplatesOmitsFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read child's --templates-json dump: %v", err)
 	}
-	if string(got) != "" {
-		t.Errorf("child received --templates-json %q, want flag absent", got)
+	// set=false distinguishes a truly absent flag from an explicit
+	// --templates-json "" (which would override the child's env default).
+	if want := "set=false value="; string(got) != want {
+		t.Errorf("child received --templates-json dump %q, want %q", got, want)
 	}
 }
 
