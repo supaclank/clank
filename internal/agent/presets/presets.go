@@ -126,8 +126,11 @@ func Workstation() []Preset {
 
 func defaultPreset(bt agent.BackendType, cfg map[string]string) Preset {
 	return Preset{
-		ID:      BuiltinDefaultPrefix + string(bt),
-		Name:    "Default",
+		ID: BuiltinDefaultPrefix + string(bt),
+		// Displayed as "Build" (the doing-work counterpart to "Plan");
+		// the ID keeps the -default- prefix because it doubles as the
+		// create-time required-keys contract (RequiredKeys).
+		Name:    "Build",
 		Backend: bt,
 		Config:  cfg,
 		Builtin: true,
