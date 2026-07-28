@@ -90,9 +90,9 @@ const (
 func Sandbox() []Preset {
 	return withPlans([]Preset{
 		defaultPreset(agent.BackendClaudeCode, map[string]string{
-			agent.ConfigOptionMode: string(agent.ClaudePermBypass),
-			"model":                "default",
-			"effort":               "default",
+			agent.ConfigOptionMode:  string(agent.ClaudePermBypass),
+			agent.ConfigOptionModel: "default",
+			"effort":                "default",
 		}),
 		defaultPreset(agent.BackendCodex, map[string]string{
 			agent.ConfigOptionMode: "agent-full-access",
@@ -110,9 +110,9 @@ func Sandbox() []Preset {
 func Workstation() []Preset {
 	return withPlans([]Preset{
 		defaultPreset(agent.BackendClaudeCode, map[string]string{
-			agent.ConfigOptionMode: string(agent.ClaudePermAuto),
-			"model":                "default",
-			"effort":               "default",
+			agent.ConfigOptionMode:  string(agent.ClaudePermAuto),
+			agent.ConfigOptionModel: "default",
+			"effort":                "default",
 		}),
 		defaultPreset(agent.BackendCodex, map[string]string{
 			agent.ConfigOptionMode: "agent",
@@ -145,9 +145,9 @@ func withPlans(defaults []Preset) []Preset {
 			ID: BuiltinPlanPrefix + string(agent.BackendClaudeCode), Name: "Plan",
 			Backend: agent.BackendClaudeCode, Builtin: true,
 			Config: map[string]string{
-				agent.ConfigOptionMode: string(agent.ClaudePermPlan),
-				"model":                "default",
-				"effort":               "default",
+				agent.ConfigOptionMode:  string(agent.ClaudePermPlan),
+				agent.ConfigOptionModel: "default",
+				"effort":                "default",
 			},
 		},
 		{

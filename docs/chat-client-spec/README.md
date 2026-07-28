@@ -126,6 +126,7 @@ just carrying dead weight. The host no longer produces any of these behaviors:
 | `INV-PERMMODE-EXITPLAN-001`, `FLOW-PLAN-001`, `ITOOL-005/006`, `CONF-INTERACTIVE-PLAN`, `CONF-PLAN-EXIT` | ExitPlanMode approve / request-changes / deny | plan review degrades to an ordinary permission prompt (approve/deny); the plan text still renders from the tool part. |
 | `OP-009`'s `/agents` arm (endpoint kept, always `[]`) | per-repo OpenCode agent list | agents are agent-advertised session modes now; `/modes` replaces it ([OP-014](05-operations.md)). |
 | `permission_mode` + `agent` request fields (0.6.2) | mode/agent selection on create + send | replaced by the generic `config` option map; on create the backend's Default-preset keys are required and the host fills nothing in ([DATA-040](03-data-model.md), [OP-016](05-operations.md)). |
+| `GET /modes`, `GET /models`, the prewarm/refine contract (0.6.2) | pre-session mode/model pickers, serve-then-refine catalog | presets carry the create config; the on-demand `GET /config-options` probe serves knob editors, and live sessions ride `config_options` on runtime session info ([OP-013](05-operations.md), [DATA-041](03-data-model.md)). |
 | `INV-INTERACTIVE-001` | render interactive tools as structured UI | its two subjects (questions, plan review) are both retired. Inline comments ([11](11-interactive-tools.md)) survive and are now the only structured-feedback path. |
 
 Permission **modes** are unaffected — they became agent-owned in 0.5.0
