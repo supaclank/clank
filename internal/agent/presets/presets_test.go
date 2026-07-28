@@ -137,6 +137,17 @@ func TestEnvValueParseRoundTrip(t *testing.T) {
 	}
 }
 
+// "[]" unmarshals to a non-nil empty slice, distinct from the nil Parse("")
+// returns — callers' `builtins == nil` fallback to Workstation() wouldn't
+// fire, so a declared-but-empty list would silently disable required-key
+// validation for every backend instead of failing loudly.
+func TestParse_RejectsDeclaredEmptyList(t *testing.T) {
+	t.Parallel()
+	if _, err := presets.Parse("[]"); err == nil {
+		t.Error("declared-but-empty builtin presets must error")
+	}
+}
+
 // A provisioner declaring a built-in outside the reserved prefix could
 // later collide with a user preset claiming the same id — the store only
 // guards ids that already look reserved.

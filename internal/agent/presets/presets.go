@@ -207,6 +207,13 @@ func Parse(env string) ([]Preset, error) {
 	if err := json.Unmarshal([]byte(env), &ps); err != nil {
 		return nil, fmt.Errorf("parse builtin presets: %w", err)
 	}
+	// A declared-but-empty list ("[]") is a non-nil empty slice, distinct
+	// from "" — callers' `builtins == nil` fallback to Workstation()
+	// wouldn't fire, silently disabling required-key validation for every
+	// backend instead of failing loudly.
+	if len(ps) == 0 {
+		return nil, fmt.Errorf("builtin presets declared but empty; omit $CLANK_BUILTIN_PRESETS entirely to use Workstation() defaults")
+	}
 	seen := make(map[string]bool, len(ps))
 	for i := range ps {
 		if err := ps[i].Validate(); err != nil {
