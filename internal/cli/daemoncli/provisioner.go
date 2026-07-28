@@ -71,6 +71,11 @@ func builtinTemplates() ([]provisioner.Template, error) {
 	if err := json.Unmarshal([]byte(raw), &templates); err != nil {
 		return nil, fmt.Errorf("CLANK_TEMPLATES: invalid JSON: %w", err)
 	}
+	// JSON "null" unmarshals into a nil slice without error; reject it
+	// rather than silently disabling builtin templates.
+	if templates == nil {
+		return nil, fmt.Errorf("CLANK_TEMPLATES: must be a JSON array, got %q", raw)
+	}
 	return templates, nil
 }
 
