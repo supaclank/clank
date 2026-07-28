@@ -147,3 +147,27 @@ func TestParse_RejectsUnreservedBuiltinID(t *testing.T) {
 		t.Error("builtin id outside the reserved prefix must error")
 	}
 }
+
+// A duplicate id would let RequiredKeys silently pick whichever entry it
+// happens to scan first instead of failing the boot on a provisioner bug.
+func TestParse_RejectsDuplicateIDs(t *testing.T) {
+	t.Parallel()
+	env := `[
+		{"id":"builtin-default-codex","name":"Default","backend":"codex","config":{"mode":"agent"}},
+		{"id":"builtin-default-codex","name":"Default2","backend":"codex","config":{"mode":"agent-full-access"}}
+	]`
+	if _, err := presets.Parse(env); err == nil {
+		t.Error("duplicate builtin preset id must error")
+	}
+}
+
+// A Default preset with no Config would make RequiredKeys return an empty
+// required-key set — silently disabling create-time validation instead of
+// failing loudly, the opposite of this package's "no fallbacks" contract.
+func TestParse_RejectsDefaultPresetWithoutConfig(t *testing.T) {
+	t.Parallel()
+	env := `[{"id":"builtin-default-codex","name":"Default","backend":"codex","instructions":"be careful"}]`
+	if _, err := presets.Parse(env); err == nil {
+		t.Error("default preset without config must error")
+	}
+}

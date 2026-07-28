@@ -192,12 +192,22 @@ func Parse(env string) ([]Preset, error) {
 	if err := json.Unmarshal([]byte(env), &ps); err != nil {
 		return nil, fmt.Errorf("parse builtin presets: %w", err)
 	}
+	seen := make(map[string]bool, len(ps))
 	for i := range ps {
 		if err := ps[i].Validate(); err != nil {
 			return nil, fmt.Errorf("builtin preset %d: %w", i, err)
 		}
 		if !strings.HasPrefix(ps[i].ID, BuiltinDefaultPrefix) && !strings.HasPrefix(ps[i].ID, BuiltinPlanPrefix) {
 			return nil, fmt.Errorf("builtin preset %d: id %q must use a reserved builtin prefix (%s or %s)", i, ps[i].ID, BuiltinDefaultPrefix, BuiltinPlanPrefix)
+		}
+		if seen[ps[i].ID] {
+			return nil, fmt.Errorf("builtin preset %d: duplicate id %q", i, ps[i].ID)
+		}
+		seen[ps[i].ID] = true
+		// Default presets double as the create-time required-keys contract
+		// (RequiredKeys); one with no Config would silently disable it.
+		if strings.HasPrefix(ps[i].ID, BuiltinDefaultPrefix) && len(ps[i].Config) == 0 {
+			return nil, fmt.Errorf("builtin preset %d: default preset %q must carry config", i, ps[i].ID)
 		}
 		ps[i].Builtin = true
 	}
