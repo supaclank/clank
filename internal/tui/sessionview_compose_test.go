@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/agent/presets"
 	"github.com/acksell/clank/internal/config"
 )
 
@@ -163,6 +164,11 @@ func TestCompose_EnterWithPromptCreatesSession(t *testing.T) {
 
 	// Set a prompt value.
 	m.input.SetValue("fix the auth bug")
+
+	// Presets must load before launchSession will submit (composeConfig()
+	// is nil until then — see TestLaunchSession_BlocksUntilPresetsLoad).
+	model, _ := m.Update(presetsResultMsg{backend: m.backend, presets: presets.Sandbox()})
+	m = model.(*SessionViewModel)
 
 	// Enter should emit a command (the createSessionCmd).
 	model, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})

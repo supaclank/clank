@@ -42,8 +42,8 @@ func newOIDCEnv(t *testing.T) *oidcEnv {
 	// Discovery doc — points jwks_uri at the JWKS endpoint above.
 	mux.HandleFunc("GET /.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
 		doc := map[string]any{
-			"issuer":                 srv.URL,
-			"jwks_uri":               srv.URL + "/jwks.json",
+			"issuer":                                srv.URL,
+			"jwks_uri":                              srv.URL + "/jwks.json",
 			"id_token_signing_alg_values_supported": []string{"RS256"},
 		}
 		_ = json.NewEncoder(w).Encode(doc)
@@ -351,4 +351,3 @@ func TestOIDCInvalidConfig(t *testing.T) {
 		})
 	}
 }
-

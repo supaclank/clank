@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	fly "github.com/superfly/fly-go"
+
+	"github.com/acksell/clank/internal/agent/presets"
 )
 
 func testOptions(t *testing.T) Options {
@@ -75,6 +77,7 @@ func TestMachineConfigShape(t *testing.T) {
 		"CLANK_PREVIEW_WEBHOOK_URL":    "https://gw.example.com/webhooks/preview",
 		"CLANK_GITHUB_OAUTH_CLIENT_ID": "ghclient",
 		"CLANK_RESTORE_URL":            "https://s3/x.tgz",
+		"CLANK_BUILTIN_PRESETS":        presets.EnvValue(presets.Sandbox()),
 	}
 	for k, want := range wantEnv {
 		if got := cfg.Env[k]; got != want {

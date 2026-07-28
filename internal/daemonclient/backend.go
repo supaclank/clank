@@ -5,6 +5,7 @@ import (
 	"net/url"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/agent/presets"
 )
 
 // BackendClient is bound to a backend type. Backend selection on the wire
@@ -39,6 +40,19 @@ func (b *BackendClient) Models(ctx context.Context, hostname string, ref agent.G
 	path := "/models?" + catalogQuery(b.backend, hostname, ref).Encode()
 	var out []agent.ModelInfo
 	if err := b.c.get(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Presets returns the host's agent presets for this backend — built-ins
+// (provisioner-declared) first, then user-saved ones. The Default preset's
+// config keys double as the create-time required keys, so compose flows
+// start from it.
+func (b *BackendClient) Presets(ctx context.Context, hostname string) ([]presets.Preset, error) {
+	v := url.Values{"backend": {string(b.backend)}, "hostname": {hostname}}
+	var out []presets.Preset
+	if err := b.c.get(ctx, "/presets?"+v.Encode(), &out); err != nil {
 		return nil, err
 	}
 	return out, nil

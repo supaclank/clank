@@ -10,6 +10,12 @@ var (
 	// does not exist on the host.
 	ErrNotFound = errors.New("host: not found")
 
+	// ErrConfigIncomplete rejects a session create whose config is missing
+	// required keys (the backend's Default-preset keys). The host never
+	// fills values in, so the create fails instead of silently opening in
+	// an agent factory default nobody chose.
+	ErrConfigIncomplete = errors.New("host: session config incomplete")
+
 	// ErrWorktreeBusy is returned when a destructive worktree operation
 	// (e.g. DeleteWorktree, DeleteRepo) finds a session actively running
 	// on it. The caller should retry once the session goes idle.
@@ -81,4 +87,10 @@ var (
 	// checkout's primary worktree, or one the user added by hand). Git
 	// allows a branch in at most one worktree; fork off it instead.
 	ErrBranchCheckedOutElsewhere = errors.New("host: branch is checked out in a worktree clank does not manage; fork off it instead")
+
+	// ErrPresetStoreUnavailable is returned by PutPreset/DeletePreset when
+	// the host has no PresetsDir configured. Server-side misconfiguration,
+	// not a bad request — the mux maps it to 503 so clients can tell
+	// "feature disabled" apart from "bad preset payload".
+	ErrPresetStoreUnavailable = errors.New("host: preset store unavailable (no data dir)")
 )

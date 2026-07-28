@@ -169,11 +169,11 @@ func TestPreviewLogs_NonJSONErrorKeepsStatusSummary(t *testing.T) {
 func TestHTMLTitle_HandlesAttributesAndCase(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
-		`<title>Plain</title>`:           "Plain",
-		`<TITLE>Upper</TITLE>`:           "Upper",
-		`<title id="x">  Spaced  </title>`: "Spaced",
+		`<title>Plain</title>`:                                   "Plain",
+		`<TITLE>Upper</TITLE>`:                                   "Upper",
+		`<title id="x">  Spaced  </title>`:                       "Spaced",
 		`<head><title>First</title><title>Second</title></head>`: "First",
-		`no title here`:                  "",
+		`no title here`:                                          "",
 	}
 	for in, want := range cases {
 		if got := htmlTitle([]byte(in)); got != want {

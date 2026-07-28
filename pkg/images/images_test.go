@@ -182,7 +182,7 @@ func (unavailableStorage) PresignGet(context.Context, string, time.Duration) (st
 	return "", blobstore.ErrUnavailable
 }
 func (unavailableStorage) Exists(context.Context, string) (bool, error) { return false, nil }
-func (unavailableStorage) DeletePrefix(context.Context, string) error  { return nil }
+func (unavailableStorage) DeletePrefix(context.Context, string) error   { return nil }
 
 func TestPresignImage_UnavailableStorageReturns503(t *testing.T) {
 	t.Parallel()

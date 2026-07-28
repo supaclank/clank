@@ -85,7 +85,6 @@ type Config struct {
 	// mounted (404).
 	Images *images.Server
 
-
 	// AuthConfig, when non-nil, makes AuthConfigHandler() return a
 	// handler that serves this payload as JSON. Daemons wire that
 	// handler pre-auth on GET /auth-config so the laptop can

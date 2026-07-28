@@ -21,6 +21,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/agent/presets"
 	"github.com/acksell/clank/internal/config"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/host"
@@ -345,6 +346,9 @@ type SessionViewModel struct {
 	// existing sessions opened from the inbox.
 	modes        []selectableMode
 	selectedMode int // index into modes slice
+	// presets are the host's agent presets for the compose backend; the
+	// Default one carries the create-time required config keys.
+	presets []presets.Preset
 
 	// Model selection — populated eagerly when compose view loads.
 	// The user cycles models with Shift+Tab.
@@ -527,7 +531,7 @@ func (m *SessionViewModel) SetEventChannel(ch <-chan agent.Event, cancel context
 func (m *SessionViewModel) Init() tea.Cmd {
 	// In composing mode, no session exists yet — nothing to subscribe to.
 	if m.composing {
-		return tea.Batch(m.input.Focus(), m.fetchModes(), m.fetchModels(), refineCatalog())
+		return tea.Batch(m.input.Focus(), m.fetchModes(), m.fetchModels(), m.fetchPresets(), refineCatalog())
 	}
 	cmds := []tea.Cmd{m.fetchSessionInfo(), m.fetchSessionMessages(), m.fetchPendingPermission(), m.spinner.Tick}
 	if m.eventsCh != nil {
@@ -601,6 +605,35 @@ func (m *SessionViewModel) fetchModes() tea.Cmd {
 			return modesResultMsg{}
 		}
 		return modesResultMsg{modes: modes}
+	}
+}
+
+// presetsResultMsg carries the host's presets for the compose backend.
+type presetsResultMsg struct {
+	backend agent.BackendType
+	presets []presets.Preset
+}
+
+// fetchPresets loads the host's agent presets for the compose backend.
+// The Default preset supplies the create-time required config keys, so
+// compose cannot submit before this lands (host store read — instant).
+func (m *SessionViewModel) fetchPresets() tea.Cmd {
+	client := m.client
+	backend := m.backend
+	hostname := m.hostname
+	if client == nil {
+		return func() tea.Msg { return presetsResultMsg{backend: backend} }
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		ps, err := client.Backend(backend).Presets(ctx, string(hostname))
+		if err != nil {
+			// Non-fatal for rendering; submit stays gated until it loads.
+			// TODO(ai-review): a failed fetch here never retries — compose is stuck on "presets still loading" until restart/backend switch. https://github.com/Acksell/clank/pull/191#discussion_r3661708435
+			return presetsResultMsg{backend: backend}
+		}
+		return presetsResultMsg{backend: backend, presets: ps}
 	}
 }
 
@@ -2271,11 +2304,26 @@ func (m *SessionViewModel) lastEntryStreaming() bool {
 	return m.entries[len(m.entries)-1].streaming
 }
 
+// modeConfigForSend returns the config to carry on a follow-up send. The
+// spec treats omitted config as "no change" (sessions remember their own
+// state), so this stays nil unless the picker actually differs from the
+// mode the session already reports as current.
+func modeConfigForSend(sel selectableMode, info *agent.SessionInfo) map[string]string {
+	if sel.perm == "" {
+		return nil
+	}
+	if info != nil && string(sel.perm) == info.CurrentModeID {
+		return nil
+	}
+	return map[string]string{agent.ConfigOptionMode: string(sel.perm)}
+}
+
 func (m *SessionViewModel) sendMessage(text string, atts []agent.Attachment) tea.Cmd {
 	var sel selectableMode
 	if len(m.modes) > 0 {
 		sel = m.modes[m.selectedMode]
 	}
+	cfg := modeConfigForSend(sel, m.info)
 	var modelOverride *agent.ModelOverride
 	if m.selectedModel >= 0 && m.selectedModel < len(m.models) {
 		model := m.models[m.selectedModel]
@@ -2287,7 +2335,7 @@ func (m *SessionViewModel) sendMessage(text string, atts []agent.Attachment) tea
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		opts := agent.SendMessageOpts{Text: text, Agent: sel.agent, Model: modelOverride, PermissionMode: sel.perm, Attachments: atts}
+		opts := agent.SendMessageOpts{Text: text, Model: modelOverride, Attachments: atts, Config: cfg}
 		err := m.client.Session(m.sessionID).Send(ctx, opts)
 		return sessionSendResultMsg{err: err}
 	}

@@ -80,7 +80,7 @@ func TestEventRoundTrip_InjectedTypes(t *testing.T) {
 				Timestamp: time.Now(),
 				Data: agent.PartUpdateData{
 					MessageID: "msg-123",
-					Part: agent.Part{ID: "p1", Type: agent.PartText, Text: "hi"},
+					Part:      agent.Part{ID: "p1", Type: agent.PartText, Text: "hi"},
 				},
 			},
 			check: func(t *testing.T, evt agent.Event) {

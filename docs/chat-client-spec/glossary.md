@@ -36,7 +36,7 @@ Terms as used in this spec.
   user's approval to run a tool.
 - **Permission mode** — Claude's posture: `default` / `acceptEdits` / `plan` /
   `bypassPermissions`. `""` on the wire means "no change".
-- **Plan mode** — `permission_mode: plan`; the agent plans read-only and calls **ExitPlanMode**
+- **Plan mode** — the Plan preset (`config: {"mode": "plan"}` on claude); the agent plans read-only and calls **ExitPlanMode**
   to ask to proceed.
 - **ExitPlanMode / AskUserQuestion** — **interactive ("stop-and-wait") tools**: a tool-call
   part carries their UI, gated by a paired permission in prompting modes. Question parts
