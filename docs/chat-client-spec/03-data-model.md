@@ -154,9 +154,8 @@ Source: `internal/agent/agent.go:370`. Required: `backend`, `git_ref`, `prompt`.
 | GitRef | `git_ref` | Required repo identity. |
 | Prompt | `prompt` | Required initial message. |
 | Hostname | `hostname` | Target host; empty = `local`. |
-| Agent | `agent` | OpenCode agent name. |
 | Model | `model` | `ModelOverride`; omit for default. |
-| PermissionMode | `permission_mode` | Initial Claude mode; `""` = backend default. |
+| Config | `config` | Agent config, option-id → value-id; every key of the backend's Default preset REQUIRED. See [DATA-040]. |
 | TicketID / SessionID | `ticket_id` / `session_id` | Optional. |
 
 ### `SendMessageOpts` (`POST /sessions/{id}/message`)

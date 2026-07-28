@@ -50,6 +50,11 @@ func (p Preset) Validate() error {
 	if p.ID == "" {
 		return fmt.Errorf("preset id is required")
 	}
+	// DELETE /presets/{id} routes on a single path segment: an id carrying
+	// "/" or "\" couldn't be addressed to delete it again.
+	if strings.TrimSpace(p.ID) != p.ID || strings.ContainsAny(p.ID, " \t\n/\\") {
+		return fmt.Errorf("preset id %q must not contain whitespace or path separators", p.ID)
+	}
 	if p.Name == "" {
 		return fmt.Errorf("preset name is required")
 	}

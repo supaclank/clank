@@ -148,6 +148,18 @@ func TestParse_RejectsUnreservedBuiltinID(t *testing.T) {
 	}
 }
 
+// Preset.ID rides DELETE /presets/{id} as a single path segment; a "/" or
+// "\" in it would make the preset impossible to address for deletion.
+func TestPreset_ValidateRejectsPathUnsafeID(t *testing.T) {
+	t.Parallel()
+	for _, id := range []string{"foo/bar", `foo\bar`, "foo bar", " foo", "foo "} {
+		p := presets.Preset{ID: id, Name: "N", Backend: agent.BackendCodex, Config: map[string]string{"mode": "agent"}}
+		if err := p.Validate(); err == nil {
+			t.Errorf("Validate() with id %q = nil error, want rejection", id)
+		}
+	}
+}
+
 // A duplicate id would let RequiredKeys silently pick whichever entry it
 // happens to scan first instead of failing the boot on a provisioner bug.
 func TestParse_RejectsDuplicateIDs(t *testing.T) {
