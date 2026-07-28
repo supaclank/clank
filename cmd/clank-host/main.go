@@ -377,15 +377,14 @@ func run(cfg runConfig) error {
 	backendManagers := map[agent.BackendType]agent.BackendManager{}
 	// config.Dir honors CLANK_DIR (local isolated dev stacks) and otherwise
 	// resolves to $HOME/.clank — which on a sandbox is /data/.clank, i.e. the
-	// Fly volume (HOME=/data), so the tools and catalog persist across
-	// machine restarts and recreation without any extra wiring.
+	// Fly volume (HOME=/data), so the tools persist across machine
+	// restarts and recreation without any extra wiring.
 	clankDir, err := config.Dir()
 	if err != nil {
 		return fmt.Errorf("resolve clank dir: %w", err)
 	}
 	acpDirs := host.ACPDirs{
-		Tools:   filepath.Join(clankDir, "tools", "acp"),
-		Catalog: filepath.Join(clankDir, "cache", "acp-catalog"),
+		Tools: filepath.Join(clankDir, "tools", "acp"),
 	}
 	for _, bt := range acpSet {
 		switch bt {
@@ -396,7 +395,7 @@ func run(cfg runConfig) error {
 			}
 			backendManagers[agent.BackendCodex] = codexMgr
 		case agent.BackendOpenCode:
-			ocMgr, err := host.NewOpenCodeACPManager(acpDirs)
+			ocMgr, err := host.NewOpenCodeACPManager()
 			if err != nil {
 				return fmt.Errorf("--acp-backends: opencode: %w", err)
 			}
@@ -454,10 +453,6 @@ func run(cfg runConfig) error {
 	if err := svc.Init(ctx, func(agent.BackendType) ([]string, error) { return nil, nil }); err != nil {
 		lg.Printf("warning: host.Init: %v", err)
 	}
-	// Fill mode/model pickers before the user reaches compose. Background
-	// and best-effort — never blocks host readiness.
-	svc.PrewarmCatalogs(ctx)
-
 	mux := hostmux.New(svc, lg)
 	mux.SetAuthToken(cfg.listenAuthToken)
 	handler := mux.Handler()

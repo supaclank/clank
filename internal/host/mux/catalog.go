@@ -51,7 +51,12 @@ func (m *Mux) handleListAgents(w http.ResponseWriter, r *http.Request) {
 }
 
 // HOST
-func (m *Mux) handleListModes(w http.ResponseWriter, r *http.Request) {
+// handleConfigOptions serves GET /config-options?backend=&git_local_path=|
+// git_worktree_id=&worktree_branch=: the agent's live advertised config
+// options for that project, probed on demand (one short-lived session).
+// Slow by design — clients call it when a knob editor opens, behind a
+// spinner, never on a hot path.
+func (m *Mux) handleConfigOptions(w http.ResponseWriter, r *http.Request) {
 	bt := agent.BackendType(r.URL.Query().Get("backend"))
 	ref, err := refFromQuery(r)
 	if err != nil {
@@ -62,26 +67,7 @@ func (m *Mux) handleListModes(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: "backend is required"})
 		return
 	}
-	out, err := m.svc.ListModes(r.Context(), bt, ref)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (m *Mux) handleListModels(w http.ResponseWriter, r *http.Request) {
-	bt := agent.BackendType(r.URL.Query().Get("backend"))
-	ref, err := refFromQuery(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
-		return
-	}
-	if bt == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Error: "backend is required"})
-		return
-	}
-	out, err := m.svc.ListModels(r.Context(), bt, ref)
+	out, err := m.svc.ConfigOptions(r.Context(), bt, ref)
 	if err != nil {
 		writeError(w, err)
 		return

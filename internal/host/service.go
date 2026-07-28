@@ -404,24 +404,6 @@ func (s *Service) Init(ctx context.Context, knownDirs func(agent.BackendType) ([
 	return nil
 }
 
-// catalogPrewarmer is implemented by backend managers that can fill their
-// mode/model catalog ahead of the first picker read.
-type catalogPrewarmer interface {
-	Prewarm(ctx context.Context)
-}
-
-// PrewarmCatalogs fills each backend's mode/model catalog in the background
-// so compose pickers are ready before the user opens them. Best-effort and
-// non-blocking: it returns immediately and each backend warms on its own
-// goroutine. Call after Init (which wires each manager's known dirs).
-func (s *Service) PrewarmCatalogs(ctx context.Context) {
-	for _, mgr := range s.backendManagers {
-		if pw, ok := mgr.(catalogPrewarmer); ok {
-			go pw.Prewarm(ctx)
-		}
-	}
-}
-
 // normalizeStaleSessionStatus rewrites busy/starting/dead/error sessions
 // back to idle on startup — none can advance without the live backend that
 // set them, and that backend died with the previous process. error is reset
@@ -543,15 +525,16 @@ func (s *Service) ListAgents(ctx context.Context, bt agent.BackendType, ref agen
 	return lister.ListAgents(ctx, workDir)
 }
 
-// ListModes returns the agent-advertised session modes for a backend in
-// ref's project, for clients that must offer a mode before a session
-// exists (the compose view). Empty when the backend can't report them.
-func (s *Service) ListModes(ctx context.Context, bt agent.BackendType, ref agent.GitRef) ([]agent.SessionMode, error) {
+// ConfigOptions probes the agent's advertised config options for a
+// backend in ref's project, for knob editors that open before a session
+// exists (compose). On-demand and uncached — the caller shows a spinner
+// for exactly this call. Empty when the backend can't report them.
+func (s *Service) ConfigOptions(ctx context.Context, bt agent.BackendType, ref agent.GitRef) ([]agent.ConfigOption, error) {
 	mgr, ok := s.backendManagers[bt]
 	if !ok {
 		return nil, nil
 	}
-	lister, ok := mgr.(agent.ModeLister)
+	lister, ok := mgr.(agent.ConfigOptionsLister)
 	if !ok {
 		return nil, nil
 	}
@@ -559,24 +542,7 @@ func (s *Service) ListModes(ctx context.Context, bt agent.BackendType, ref agent
 	if err != nil {
 		return nil, err
 	}
-	return lister.ListModes(ctx, workDir)
-}
-
-// ListModels mirrors ListModes for model catalogs.
-func (s *Service) ListModels(ctx context.Context, bt agent.BackendType, ref agent.GitRef) ([]ModelInfo, error) {
-	mgr, ok := s.backendManagers[bt]
-	if !ok {
-		return nil, nil
-	}
-	lister, ok := mgr.(agent.ModelLister)
-	if !ok {
-		return nil, nil
-	}
-	workDir, err := s.workDirFor(ctx, ref)
-	if err != nil {
-		return nil, err
-	}
-	return lister.ListModels(ctx, workDir)
+	return lister.ConfigOptions(ctx, workDir)
 }
 
 // DiscoverSessions asks the backend manager for historical sessions.

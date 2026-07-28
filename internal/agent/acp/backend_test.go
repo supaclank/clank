@@ -838,15 +838,73 @@ func TestBackend_ResumeCapturesModesAndModels(t *testing.T) {
 	}
 }
 
-// Fresh sessions publish their model list to the manager's catalog sink
-// so /models can answer for the project dir.
-func TestBackend_PublishesModelCatalogOnOpen(t *testing.T) {
+// Fresh sessions retain the FULL advertised config-option set, with a
+// mode entry synthesized from SessionModeState when no mode config option
+// exists — one uniform knob list regardless of which channel the agent
+// used. Grouped values flatten with their group label retained.
+func TestBackend_RetainsConfigOptionsOnOpen(t *testing.T) {
 	t.Parallel()
 	category := sdk.SessionConfigOptionCategory("model")
 	scripted := &acptest.ScriptedAgent{}
 	scripted.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
 		return sdk.NewSessionResponse{
-			SessionId: "s-models",
+			SessionId: "s-options",
+			Modes: &sdk.SessionModeState{
+				CurrentModeId: "default",
+				AvailableModes: []sdk.SessionMode{
+					{Id: "default", Name: "Default"},
+					{Id: "plan", Name: "Plan"},
+				},
+			},
+			ConfigOptions: []sdk.SessionConfigOption{{Select: &sdk.SessionConfigOptionSelect{
+				Id: "model", Name: "Model", Category: &category, CurrentValue: "sonnet",
+				Options: sdk.SessionConfigSelectOptions{Grouped: &sdk.SessionConfigSelectOptionsGrouped{
+					{Group: "anthropic", Name: "Anthropic", Options: []sdk.SessionConfigSelectOption{
+						{Value: "sonnet", Name: "Sonnet"},
+						{Value: "opus", Name: "Opus"},
+					}},
+				}},
+			}}},
+		}, nil
+	}
+	f := newBackendFixture(t, scripted, "")
+	if err := f.backend.Open(context.Background()); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	opts := f.backend.ConfigOptions()
+	if len(opts) != 2 {
+		t.Fatalf("ConfigOptions = %+v, want synthesized mode + model", opts)
+	}
+	mode := opts[0]
+	if mode.ID != "mode" || mode.CurrentValue != "default" || len(mode.Values) != 2 || mode.Values[1].Value != "plan" {
+		t.Errorf("synthesized mode option = %+v, want the SessionModeState verbatim", mode)
+	}
+	model := opts[1]
+	if model.ID != "model" || model.CurrentValue != "sonnet" || len(model.Values) != 2 {
+		t.Fatalf("model option = %+v, want both grouped values flattened", model)
+	}
+	if model.Values[0].Group != "Anthropic" || model.Values[1].Value != "opus" {
+		t.Errorf("flattened values = %+v, want group label retained", model.Values)
+	}
+}
+
+// config_option_update notifications carry the FULL replacement set; the
+// retained options must follow it, and the synthesized mode entry must
+// survive an update that carries no mode option — mode state rides a
+// different channel the update never re-sends, so rebuilding from the
+// update alone would silently drop the mode knob.
+func TestBackend_ConfigOptionUpdateRefreshesRetainedOptions(t *testing.T) {
+	t.Parallel()
+	category := sdk.SessionConfigOptionCategory("model")
+	scripted := &acptest.ScriptedAgent{}
+	scripted.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+		return sdk.NewSessionResponse{
+			SessionId: "s-update",
+			Modes: &sdk.SessionModeState{
+				CurrentModeId:  "default",
+				AvailableModes: []sdk.SessionMode{{Id: "default", Name: "Default"}},
+			},
 			ConfigOptions: []sdk.SessionConfigOption{{Select: &sdk.SessionConfigOptionSelect{
 				Id: "model", Name: "Model", Category: &category, CurrentValue: "sonnet",
 				Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
@@ -857,67 +915,68 @@ func TestBackend_PublishesModelCatalogOnOpen(t *testing.T) {
 		}, nil
 	}
 	f := newBackendFixture(t, scripted, "")
-
-	type published struct {
-		dir    string
-		models []agent.ModelInfo
-	}
-	got := make(chan published, 1)
-	f.backend.SetCatalogSink(func(dir string, models []agent.ModelInfo) {
-		select {
-		case got <- published{dir, models}:
-		default:
-		}
-	})
 	if err := f.backend.Open(context.Background()); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	select {
-	case p := <-got:
-		if p.dir != "/work" || len(p.models) != 2 || p.models[1].ID != "opus" {
-			t.Errorf("published catalog = %s / %+v, want /work with both models", p.dir, p.models)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("session open never published a model catalog")
+
+	f.backend.HandleSessionUpdate(context.Background(), sdk.SessionNotification{
+		SessionId: "s-update",
+		Update: sdk.SessionUpdate{ConfigOptionUpdate: &sdk.SessionConfigOptionUpdate{
+			ConfigOptions: []sdk.SessionConfigOption{{Select: &sdk.SessionConfigOptionSelect{
+				Id: "model", Name: "Model", Category: &category, CurrentValue: "opus",
+				Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+					{Value: "sonnet", Name: "Sonnet"},
+					{Value: "opus", Name: "Opus"},
+				}},
+			}}},
+		}},
+	})
+
+	opts := f.backend.ConfigOptions()
+	if len(opts) != 2 {
+		t.Fatalf("ConfigOptions after update = %+v, want synthesized mode preserved + model", opts)
+	}
+	if opts[0].ID != "mode" || opts[0].CurrentValue != "default" {
+		t.Errorf("mode option after update = %+v, want it preserved from session state", opts[0])
+	}
+	if opts[1].CurrentValue != "opus" {
+		t.Errorf("model current after update = %q, want opus", opts[1].CurrentValue)
+	}
+	if current, _ := f.backend.Models(); current != "opus" {
+		t.Errorf("Models() current after update = %q, want opus (same channel)", current)
 	}
 }
 
-// The catalog/mode sinks are manager callbacks that take their own lock;
-// invoking them while b.mu is still held would invert the usual
-// b.mu → catalogMu order and deadlock the moment a sink calls back into
-// the backend.
-func TestBackend_CatalogSinkCanCallBackIntoBackend(t *testing.T) {
+// ConfigOptions() must hand out a deep copy: mutating a caller's returned
+// Values slice must not corrupt the backend's retained state, which a
+// concurrent caller (or this same caller on its next probe) still reads.
+func TestBackend_ConfigOptionsReturnsIndependentCopy(t *testing.T) {
 	t.Parallel()
 	category := sdk.SessionConfigOptionCategory("model")
 	scripted := &acptest.ScriptedAgent{}
 	scripted.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
 		return sdk.NewSessionResponse{
-			SessionId: "s-lock-order",
+			SessionId: "s-clone",
 			ConfigOptions: []sdk.SessionConfigOption{{Select: &sdk.SessionConfigOptionSelect{
 				Id: "model", Name: "Model", Category: &category, CurrentValue: "sonnet",
 				Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
 					{Value: "sonnet", Name: "Sonnet"},
+					{Value: "opus", Name: "Opus"},
 				}},
 			}}},
 		}, nil
 	}
 	f := newBackendFixture(t, scripted, "")
-	f.backend.SetCatalogSink(func(dir string, models []agent.ModelInfo) {
-		f.backend.Modes() // acquires b.mu — deadlocks if Open still holds it here
-	})
-	f.backend.SetModeSink(func(dir string, modes []agent.SessionMode) {
-		f.backend.Modes() // same hazard via the mode sink
-	})
+	if err := f.backend.Open(context.Background()); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
 
-	done := make(chan error, 1)
-	go func() { done <- f.backend.Open(context.Background()) }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Open: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Open deadlocked: a sink called back into a b.mu-held method")
+	first := f.backend.ConfigOptions()
+	first[0].Values[0].Value = "corrupted"
+
+	second := f.backend.ConfigOptions()
+	if second[0].Values[0].Value != "sonnet" {
+		t.Fatalf("second ConfigOptions() call = %+v, want unaffected by mutating the first call's result", second[0].Values)
 	}
 }
 

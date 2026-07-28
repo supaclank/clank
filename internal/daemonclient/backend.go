@@ -34,17 +34,6 @@ func (b *BackendClient) Agents(ctx context.Context, hostname string, ref agent.G
 	return out, nil
 }
 
-// Models returns available models for this backend, scoped to the
-// (hostname, gitRef) tuple. Same wire shape as Agents (§7.3).
-func (b *BackendClient) Models(ctx context.Context, hostname string, ref agent.GitRef) ([]agent.ModelInfo, error) {
-	path := "/models?" + catalogQuery(b.backend, hostname, ref).Encode()
-	var out []agent.ModelInfo
-	if err := b.c.get(ctx, path, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // Presets returns the host's agent presets for this backend — built-ins
 // (provisioner-declared) first, then user-saved ones. The Default preset's
 // config keys double as the create-time required keys, so compose flows
@@ -58,10 +47,13 @@ func (b *BackendClient) Presets(ctx context.Context, hostname string) ([]presets
 	return out, nil
 }
 
-// Modes returns the agent-advertised session modes for this backend.
-func (b *BackendClient) Modes(ctx context.Context, hostname string, ref agent.GitRef) ([]agent.SessionMode, error) {
-	path := "/modes?" + catalogQuery(b.backend, hostname, ref).Encode()
-	var out []agent.SessionMode
+// ConfigOptions returns the agent's live advertised config options for
+// this backend in ref's project, probed on demand by the host (one
+// short-lived session). Slow by design — call it when a knob editor
+// opens, behind a spinner, never on a hot path.
+func (b *BackendClient) ConfigOptions(ctx context.Context, hostname string, ref agent.GitRef) ([]agent.ConfigOption, error) {
+	path := "/config-options?" + catalogQuery(b.backend, hostname, ref).Encode()
+	var out []agent.ConfigOption
 	if err := b.c.get(ctx, path, &out); err != nil {
 		return nil, err
 	}

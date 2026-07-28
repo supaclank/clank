@@ -103,8 +103,8 @@ func (r *reducer) reduce(n sdk.SessionNotification) []agent.Event {
 		return nil
 	case u.Plan != nil, u.PlanUpdate != nil, u.PlanRemoved != nil,
 		u.AvailableCommandsUpdate != nil, u.ConfigOptionUpdate != nil:
-		// Recognized but unmapped in v1 (plan approval is cut; commands/
-		// config feed catalogs elsewhere).
+		// Recognized but produce no transcript events (plan approval is
+		// cut; config updates refresh Backend.configOptions pre-reduce).
 		return nil
 	default:
 		b, _ := json.Marshal(u)

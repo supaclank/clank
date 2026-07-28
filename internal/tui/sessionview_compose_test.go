@@ -109,10 +109,9 @@ func TestNewSessionViewComposing_ResolvesDefaultBackendFromPreferences(t *testin
 }
 
 // Switching the compose project folder must drop the previous folder's
-// model selection along with its modes — both are project-scoped. A
-// lingering selectedModel index would be forwarded as a `--model <id>`
-// override into the new folder, which may not offer that model. This
-// mirrors the guard applyBackend already has for backend switches.
+// model pick — model options are project-scoped (opencode aggregates
+// per-repo providers), and a lingering pick would ride into the new
+// folder as a config["model"] the agent there never advertised.
 func TestCompose_ApplyProjectFolder_ClearsStaleModel(t *testing.T) {
 	t.Parallel()
 	m := newSessionViewComposingWithBackend(nil, "/tmp/old-project", agent.BackendOpenCode)
@@ -121,8 +120,6 @@ func TestCompose_ApplyProjectFolder_ClearsStaleModel(t *testing.T) {
 	// Seed a stale selection from the previous folder.
 	m.models = []agent.ModelInfo{{ID: "gpt-5", ProviderID: "openai"}}
 	m.selectedModel = 0
-	m.modes = []selectableMode{{label: "build", perm: "build"}}
-	m.selectedMode = 0
 
 	m.applyProjectFolder(t.TempDir(), focusFolder)
 
@@ -131,9 +128,6 @@ func TestCompose_ApplyProjectFolder_ClearsStaleModel(t *testing.T) {
 	}
 	if m.selectedModel != -1 {
 		t.Errorf("selectedModel = %d, want -1 after folder switch", m.selectedModel)
-	}
-	if m.modes != nil {
-		t.Errorf("modes = %+v, want nil after folder switch", m.modes)
 	}
 }
 
@@ -351,6 +345,44 @@ func TestCompose_WordBackwardOnEmptyInput(t *testing.T) {
 			m = model.(*SessionViewModel)
 			if m.input.Value() != "" {
 				t.Fatalf("expected empty input, got %q", m.input.Value())
+			}
+		})
+	}
+}
+
+// TestModelBadgeLabel_NoDoublePrefix is a regression test: some agents
+// (opencode) already advertise provider-qualified value ids in ID, so
+// prefixing ProviderID unconditionally produced a duplicated badge like
+// "opencode/opencode/big-pickle".
+func TestModelBadgeLabel_NoDoublePrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		model agent.ModelInfo
+		want  string
+	}{
+		{
+			name:  "already provider-qualified id is left alone",
+			model: agent.ModelInfo{ID: "opencode/big-pickle", ProviderID: "opencode"},
+			want:  "opencode/big-pickle",
+		},
+		{
+			name:  "bare id gets the provider prefix",
+			model: agent.ModelInfo{ID: "claude-sonnet-5", ProviderID: "github-copilot"},
+			want:  "github-copilot/claude-sonnet-5",
+		},
+		{
+			name:  "no provider id: label is the bare id",
+			model: agent.ModelInfo{ID: "default"},
+			want:  "default",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := modelBadgeLabel(tt.model); got != tt.want {
+				t.Fatalf("modelBadgeLabel(%+v) = %q, want %q", tt.model, got, tt.want)
 			}
 		})
 	}

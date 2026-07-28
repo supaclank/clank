@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,10 +18,10 @@ import (
 	sdk "github.com/coder/acp-go-sdk"
 )
 
-// catalogProbeTimeout bounds a background catalog probe: it opens one
-// session and reads the advertised lists, so a few seconds is ample. Past
-// it the adapter is unhealthy and the next read retries.
-const catalogProbeTimeout = 30 * time.Second
+// configOptionsProbeTimeout bounds an on-demand config-options probe: it
+// opens one session and reads the advertised options, so a few seconds is
+// ample. Past it the adapter is unhealthy and the client retries.
+const configOptionsProbeTimeout = 30 * time.Second
 
 // ACPBackendManager adapts one acp.AdapterProfile to agent.BackendManager:
 // a supervised adapter process pool plus per-session acp.Backend values.
@@ -33,38 +32,12 @@ type ACPBackendManager struct {
 	sup     *acp.AdapterSupervisor
 	envFn   atomic.Pointer[func() map[string]string]
 
-	// catalog caches the agent-advertised model/mode list per workDir. ACP
-	// surfaces both only on the session/new|load|resume response, so the
-	// manager answers /models and /modes from what a session reported and
-	// publishes on every open (fresh and resumed). globalModels/globalModes
-	// hold the backend-wide catalog from the neutral prewarm, served for any
-	// dir a session hasn't specialized. All seeded from store and written
-	// back through it.
-	catalogMu    sync.Mutex
-	catalog      map[string][]agent.ModelInfo
-	modes        map[string][]agent.SessionMode
-	globalModels []agent.ModelInfo
-	globalModes  []agent.SessionMode
-	// probed marks dirs whose catalog we have already tried to fill, so a
-	// dir whose agent advertises nothing isn't probed on every request.
-	// Persisted dirs start probed: their answer is already known.
-	probed map[string]bool
-	// probing single-flights concurrent probes per dir — /modes and
-	// /models both miss on a cold dir and would otherwise each open a
-	// session.
-	probing map[string]chan struct{}
-	// probeWG tracks background probe goroutines so Shutdown can wait them
-	// out; closed stops new probes from starting during teardown.
+	// probeMu guards the single-flight state for on-demand config-option
+	// probes; probeWG lets Shutdown wait out in-flight probes.
+	probeMu sync.Mutex
+	probing map[string]*configProbe
 	probeWG sync.WaitGroup
 	closed  bool
-	// globalProbing single-flights the neutral global probe that recovers a
-	// host-scoped backend when the startup Prewarm failed (adapter warming).
-	globalProbing bool
-	// store persists the catalog so the maps above survive a restart.
-	store *catalogStore
-	// knownDirs, stashed from Init, are the project dirs Prewarm warms up
-	// front for per-dir backends (the sandbox's repo, session-history dirs).
-	knownDirs func() ([]string, error)
 }
 
 // ACPDirs locates the on-disk state an ACP manager owns.
@@ -72,27 +45,16 @@ type ACPDirs struct {
 	// Tools holds the provisioned adapter runtime (bun plus the pinned
 	// npm packages). Unused by backends that run the user's own binary.
 	Tools string
-	// Catalog holds the durable per-project mode/model catalog.
-	Catalog string
 }
 
 // NewACPBackendManager builds a manager for the given adapter profile.
 // The profile's Env is routed through SetEnvResolver so credentials can
 // be wired after construction (the AuthManager exists later) and rotated
 // at runtime via the supervisor's env-fingerprint restarts.
-func NewACPBackendManager(profile acp.AdapterProfile, dirs ACPDirs) (*ACPBackendManager, error) {
-	store, err := newCatalogStore(dirs.Catalog, profile.Backend)
-	if err != nil {
-		return nil, err
-	}
+func NewACPBackendManager(profile acp.AdapterProfile) (*ACPBackendManager, error) {
 	m := &ACPBackendManager{
-		store:   store,
-		catalog: map[string][]agent.ModelInfo{},
-		modes:   map[string][]agent.SessionMode{},
-		probed:  map[string]bool{},
-		probing: map[string]chan struct{}{},
+		probing: map[string]*configProbe{},
 	}
-	m.seed(store.snapshot())
 	scoped := profile.Env
 	profile.Env = func(scopeDir string) map[string]string {
 		merged := map[string]string{}
@@ -142,7 +104,7 @@ func NewCodexACPManager(dirs ACPDirs) (*ACPBackendManager, error) {
 		p := paths.Load() // Prepare ran first (execSpawn ordering)
 		return p.BunBin, []string{p.CodexACPEntry}
 	}
-	return NewACPBackendManager(profile, dirs)
+	return NewACPBackendManager(profile)
 }
 
 // NewClaudeACPManager serves claude-code through the pinned
@@ -170,7 +132,7 @@ func NewClaudeACPManager(dirs ACPDirs) (*ACPBackendManager, error) {
 		p := paths.Load() // Prepare ran first (execSpawn ordering)
 		return p.BunBin, []string{p.ClaudeACPEntry}
 	}
-	return NewACPBackendManager(profile, dirs)
+	return NewACPBackendManager(profile)
 }
 
 // NewOpenCodeACPManager serves opencode through `opencode acp` on the
@@ -180,7 +142,7 @@ func NewClaudeACPManager(dirs ACPDirs) (*ACPBackendManager, error) {
 // instructions file inside the worktree's git dir; Env points opencode
 // at it via inline config. Guidance is best-effort: it never blocks a
 // session.
-func NewOpenCodeACPManager(dirs ACPDirs) (*ACPBackendManager, error) {
+func NewOpenCodeACPManager() (*ACPBackendManager, error) {
 	profile := acp.OpenCodeProfile("opencode")
 	var floor onceUntilSuccess
 	profile.Prepare = func(ctx context.Context, scopeDir string) error {
@@ -205,7 +167,7 @@ func NewOpenCodeACPManager(dirs ACPDirs) (*ACPBackendManager, error) {
 		return nil
 	}
 	profile.Env = opencodeGuidanceEnv
-	return NewACPBackendManager(profile, dirs)
+	return NewACPBackendManager(profile)
 }
 
 // onceUntilSuccess runs fn on every call until one succeeds, then
@@ -299,7 +261,6 @@ func (m *ACPBackendManager) Supervisor() *acp.AdapterSupervisor { return m.sup }
 // Init seeds per-dir profiles with known project dirs (host-scoped
 // profiles start lazily on first use) and starts the reconciler.
 func (m *ACPBackendManager) Init(ctx context.Context, knownDirs func() ([]string, error)) error {
-	m.knownDirs = knownDirs
 	if m.profile.Scope == acp.ScopePerDir {
 		dirs, err := knownDirs()
 		if err != nil {
@@ -330,313 +291,91 @@ func (m *ACPBackendManager) CreateBackend(ctx context.Context, inv agent.Backend
 	resolver := func(ctx context.Context) (*acp.AdapterConn, error) {
 		return m.sup.GetConn(ctx, inv.WorkDir)
 	}
-	b := acp.NewBackend(m.profile, inv.WorkDir, inv.ResumeExternalID, guidanceText, resolver, log.Printf)
-	b.SetCatalogSink(m.putCatalog)
-	b.SetModeSink(m.putModes)
-	return b, nil
+	return acp.NewBackend(m.profile, inv.WorkDir, inv.ResumeExternalID, guidanceText, resolver, log.Printf), nil
 }
 
-// putCatalog records a session's advertised models for its project dir.
-// Wired as the model sink on every backend, so a real session open heals a
-// stale persisted catalog for free.
-func (m *ACPBackendManager) putCatalog(workDir string, models []agent.ModelInfo) {
-	m.storeDirModels(workDir, models)
+// configProbe is one in-flight on-demand config-options probe; waiters
+// share its result.
+type configProbe struct {
+	done chan struct{}
+	opts []agent.ConfigOption
+	err  error
 }
 
-// putModes records a session's advertised modes for its project dir.
-func (m *ACPBackendManager) putModes(workDir string, modes []agent.SessionMode) {
-	m.storeDirModes(workDir, modes)
-}
-
-// TODO(ai-review): probed[dir] is one flag but models and modes are independent catalogs — a session advertising only one marks the dir probed for both, so the other serves the neutral global fallback and never re-probes to heal. https://github.com/Acksell/clank/pull/188
-func (m *ACPBackendManager) storeDirModels(workDir string, models []agent.ModelInfo) {
-	if len(models) == 0 || workDir == "" {
-		return
+// ConfigOptions implements agent.ConfigOptionsLister: it opens one
+// short-lived session in projectDir and returns the config options the
+// agent advertises there — ACP surfaces them only on session open
+// (zed-industries/zed#52500), so this is the only pre-session source.
+// On-demand and uncached: callers (knob editors) show a spinner for
+// exactly this call. Concurrent requests share one probe; the probe runs
+// on its own context so one caller disconnecting doesn't fail the rest.
+func (m *ACPBackendManager) ConfigOptions(ctx context.Context, projectDir string) ([]agent.ConfigOption, error) {
+	key := projectDir
+	if m.profile.Scope != acp.ScopePerDir {
+		key = "" // host-scoped agents advertise the same options everywhere
 	}
-	m.catalogMu.Lock()
-	// Clone so the catalog is independent of the producer's backing array.
-	m.catalog[workDir] = slices.Clone(models)
-	// A real session filled this dir — no background probe needed for it.
-	m.probed[workDir] = true
-	m.catalogMu.Unlock()
-	// Write through outside catalogMu (store takes its own lock).
-	m.store.putDir(workDir, func(e *catalogEntry) { e.Models = slices.Clone(models) })
-}
-
-func (m *ACPBackendManager) storeDirModes(workDir string, modes []agent.SessionMode) {
-	if len(modes) == 0 || workDir == "" {
-		return
+	m.probeMu.Lock()
+	if m.closed {
+		m.probeMu.Unlock()
+		return nil, fmt.Errorf("acp %s: manager is shut down", m.profile.ID)
 	}
-	m.catalogMu.Lock()
-	m.modes[workDir] = slices.Clone(modes)
-	m.probed[workDir] = true
-	m.catalogMu.Unlock()
-	m.store.putDir(workDir, func(e *catalogEntry) { e.Modes = slices.Clone(modes) })
-}
-
-func (m *ACPBackendManager) storeGlobal(models []agent.ModelInfo, modes []agent.SessionMode) {
-	if len(models) == 0 && len(modes) == 0 {
-		return // A probe that advertised nothing must not persist an empty global entry.
-	}
-	m.catalogMu.Lock()
-	if len(models) > 0 {
-		m.globalModels = slices.Clone(models)
-	}
-	if len(modes) > 0 {
-		m.globalModes = slices.Clone(modes)
-	}
-	m.catalogMu.Unlock()
-	m.store.putGlobal(func(e *catalogEntry) {
-		if len(models) > 0 {
-			e.Models = slices.Clone(models)
-		}
-		if len(modes) > 0 {
-			e.Modes = slices.Clone(modes)
-		}
-	})
-}
-
-// ListModes implements agent.ModeLister. It never blocks: it serves the
-// dir's catalog if a session has specialized it, else the backend-global
-// catalog from prewarm. A per-dir backend on a dir it hasn't seen kicks a
-// background probe so the specialized list is ready on the next read.
-func (m *ACPBackendManager) ListModes(_ context.Context, projectDir string) ([]agent.SessionMode, error) {
-	m.ensureCatalogAsync(projectDir)
-	m.catalogMu.Lock()
-	defer m.catalogMu.Unlock()
-	if v, ok := m.modes[projectDir]; ok {
-		return slices.Clone(v), nil
-	}
-	return slices.Clone(m.globalModes), nil
-}
-
-// ListModels implements agent.ModelLister with the same serve-then-refine
-// contract as ListModes.
-func (m *ACPBackendManager) ListModels(_ context.Context, projectDir string) ([]agent.ModelInfo, error) {
-	m.ensureCatalogAsync(projectDir)
-	m.catalogMu.Lock()
-	defer m.catalogMu.Unlock()
-	if v, ok := m.catalog[projectDir]; ok {
-		return slices.Clone(v), nil
-	}
-	return slices.Clone(m.globalModels), nil
-}
-
-// ensureCatalogAsync kicks whatever background probe a cold read needs: a
-// per-dir backend probes the specific repo; a host-scoped backend re-probes
-// the neutral global catalog if the startup Prewarm never filled it. Both
-// are non-blocking and single-flighted.
-func (m *ACPBackendManager) ensureCatalogAsync(projectDir string) {
-	if m.profile.Scope == acp.ScopePerDir {
-		m.probeDirInBackground(projectDir)
-		return
-	}
-	m.probeGlobalInBackground()
-}
-
-// probeGlobalInBackground refills the backend-global catalog for a
-// host-scoped backend whose Prewarm hasn't succeeded yet. No-op once the
-// catalog is non-empty or a probe is already in flight.
-func (m *ACPBackendManager) probeGlobalInBackground() {
-	// TODO(ai-review): a backend that opens but advertises nothing has no terminal flag, so it re-probes on every read; add a backoff that still heals once auth lands. https://github.com/Acksell/clank/pull/188
-	m.catalogMu.Lock()
-	if m.closed || m.globalProbing || len(m.globalModels) > 0 || len(m.globalModes) > 0 {
-		m.catalogMu.Unlock()
-		return
-	}
-	m.globalProbing = true
-	m.probeWG.Add(1)
-	m.catalogMu.Unlock()
-
-	go func() {
-		defer m.probeWG.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), catalogProbeTimeout)
-		defer cancel()
-		if neutral, err := os.MkdirTemp("", "clank-catalog-probe-"); err == nil {
-			defer os.RemoveAll(neutral)
-			m.probe(ctx, neutral, true)
-		} else {
-			log.Printf("[%s] catalog re-probe: temp dir: %v", m.profile.ID, err)
-		}
-		m.catalogMu.Lock()
-		m.globalProbing = false
-		m.catalogMu.Unlock()
-	}()
-}
-
-// probeDirInBackground opens one short-lived session for a per-dir backend
-// on a dir it hasn't specialized yet, so opencode's per-repo agents reach
-// the picker. Host-scoped backends (claude, codex) have no per-dir variance
-// — their prewarmed global catalog is authoritative, so this is a no-op and
-// no dead per-folder session is ever created for them.
-//
-// Fire-and-forget: /modes and /models miss together on a cold dir but open
-// only one session, single-flighted via probeOnceForDir against any other
-// caller — including Prewarm's own per-dir sweep. The probe runs on its own
-// context, not the request's — the HTTP read returns immediately, and
-// cancelling it must not abort a probe another caller is waiting on.
-func (m *ACPBackendManager) probeDirInBackground(projectDir string) {
-	if projectDir == "" || m.profile.Scope != acp.ScopePerDir {
-		return
-	}
-	m.catalogMu.Lock()
-	skip := m.closed || m.probed[projectDir]
-	if !skip {
-		_, skip = m.probing[projectDir]
-	}
-	if !skip {
+	p, inFlight := m.probing[key]
+	if !inFlight {
+		p = &configProbe{done: make(chan struct{})}
+		m.probing[key] = p
 		m.probeWG.Add(1)
+		go m.runConfigProbe(key, projectDir, p)
 	}
-	m.catalogMu.Unlock()
-	if skip {
-		return
-	}
+	m.probeMu.Unlock()
 
-	go func() {
-		defer m.probeWG.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), catalogProbeTimeout)
-		defer cancel()
-		m.probeOnceForDir(ctx, projectDir)
-	}()
+	select {
+	case <-p.done:
+		return p.opts, p.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
-// probeOnceForDir single-flights probe() for dir against every caller —
-// probeDirInBackground and Prewarm's per-dir sweep alike — so a dir being
-// probed by one never gets a second, redundant session opened by the other.
-// Returns false without probing if dir is already probed, already in
-// flight, or the manager is shutting down.
-func (m *ACPBackendManager) probeOnceForDir(ctx context.Context, dir string) bool {
-	m.catalogMu.Lock()
-	if m.closed || m.probed[dir] {
-		m.catalogMu.Unlock()
-		return false
+func (m *ACPBackendManager) runConfigProbe(key, dir string, p *configProbe) {
+	defer m.probeWG.Done()
+	ctx, cancel := context.WithTimeout(context.Background(), configOptionsProbeTimeout)
+	defer cancel()
+	p.opts, p.err = m.probeConfigOptions(ctx, dir)
+	if p.err != nil {
+		log.Printf("[%s] config-options probe for %s: %v", m.profile.ID, dir, p.err)
 	}
-	if _, inFlight := m.probing[dir]; inFlight {
-		m.catalogMu.Unlock()
-		return false
-	}
-	done := make(chan struct{})
-	m.probing[dir] = done
-	m.catalogMu.Unlock()
-
-	ok := m.probe(ctx, dir, false)
-
-	m.catalogMu.Lock()
-	if ok {
-		m.probed[dir] = true
-	}
-	delete(m.probing, dir)
-	m.catalogMu.Unlock()
-	close(done)
-	return ok
+	m.probeMu.Lock()
+	delete(m.probing, key)
+	m.probeMu.Unlock()
+	close(p.done)
 }
 
-// probe opens one session in dir, reads the catalog it advertises, and
-// stores it globally or per-dir. Returns whether the session opened — a
-// transient failure (adapter warming up, timeout) must not mark the dir
-// probed, so the next caller retries. ACP advertises modes and models only
-// on session open, so this is the only way to fill a picker before the
-// user's first prompt (zed-industries/zed#52500).
-//
-// The session is stopped but not deleted: only claude-agent-acp supports
-// session/delete, so an empty per-backend row is the accepted cost, matching
-// every shipping ACP client.
-func (m *ACPBackendManager) probe(ctx context.Context, dir string, global bool) bool {
+// probeConfigOptions opens one session in dir and reads what it
+// advertises. The session is stopped but not deleted: only
+// claude-agent-acp supports session/delete, so an empty per-backend row
+// is the accepted cost, matching every shipping ACP client.
+func (m *ACPBackendManager) probeConfigOptions(ctx context.Context, dir string) ([]agent.ConfigOption, error) {
 	b, err := m.CreateBackend(ctx, agent.BackendInvocation{WorkDir: dir})
 	if err != nil {
-		log.Printf("[%s] catalog probe for %s: %v", m.profile.ID, dir, err)
-		return false
+		return nil, err
 	}
 	defer func() { _ = b.Stop() }()
-	if global {
-		// dir is a throwaway temp path removed right after this call returns;
-		// clear the per-dir sinks so Open doesn't persist a dead entry for it.
-		if nb, ok := b.(*acp.Backend); ok {
-			nb.SetCatalogSink(nil)
-			nb.SetModeSink(nil)
-		}
-	}
 	if err := b.Open(ctx); err != nil {
-		log.Printf("[%s] catalog probe for %s: %v", m.profile.ID, dir, err)
-		return false
+		return nil, err
 	}
-	// The sinks fired per-dir during Open; for the global prewarm read the
-	// advertised catalog directly and store it under the global scope.
-	if global {
-		var models []agent.ModelInfo
-		var modes []agent.SessionMode
-		if r, ok := b.(agent.ModelReporter); ok {
-			_, models = r.Models()
-		}
-		if r, ok := b.(agent.ModeReporter); ok {
-			_, modes = r.Modes()
-		}
-		m.storeGlobal(models, modes)
+	r, ok := b.(agent.ConfigOptionsReporter)
+	if !ok {
+		return nil, nil
 	}
-	return true
+	return r.ConfigOptions(), nil
 }
 
-// Prewarm fills the catalog before the user reaches a picker: one neutral
-// probe for the backend-global catalog (so any dir answers instantly), plus
-// each known dir for per-dir backends (so a sandbox's repo or a laptop's
-// session-history repos have their agents ready too). Best-effort and
-// invisible — it runs in the background at host start and never blocks
-// readiness. Re-running is safe: it heals a stale or lost catalog.
-//
-// Registers with probeWG like every other probe path, so Shutdown — called
-// from PrewarmCatalogs's untracked `go pw.Prewarm(ctx)` — still waits it out
-// instead of returning while Prewarm is mid-probe.
-func (m *ACPBackendManager) Prewarm(ctx context.Context) {
-	m.catalogMu.Lock()
-	if m.closed {
-		m.catalogMu.Unlock()
-		return
-	}
-	m.probeWG.Add(1)
-	m.globalProbing = true
-	m.catalogMu.Unlock()
-	defer m.probeWG.Done()
-
-	neutral, err := os.MkdirTemp("", "clank-catalog-probe-")
-	if err != nil {
-		log.Printf("[%s] prewarm: temp dir: %v", m.profile.ID, err)
-	} else {
-		defer os.RemoveAll(neutral)
-		m.probe(ctx, neutral, true)
-	}
-
-	// Release before the per-dir sweep: by now globalModels/globalModes are
-	// filled (or the probe failed and a future read will retry), so
-	// probeGlobalInBackground's own no-op guard takes over from here.
-	m.catalogMu.Lock()
-	m.globalProbing = false
-	m.catalogMu.Unlock()
-
-	if m.profile.Scope != acp.ScopePerDir || m.knownDirs == nil {
-		return
-	}
-	dirs, err := m.knownDirs()
-	if err != nil {
-		log.Printf("[%s] prewarm: known dirs: %v", m.profile.ID, err)
-		return
-	}
-	for _, dir := range dirs {
-		if ctx.Err() != nil {
-			return
-		}
-		if _, statErr := os.Stat(dir); statErr != nil {
-			continue
-		}
-		m.probeOnceForDir(ctx, dir)
-	}
-}
-
-// Shutdown stops every adapter process and waits for in-flight catalog
-// probes so no goroutine outlives the manager.
+// Shutdown stops every adapter process and waits for in-flight
+// config-option probes so no goroutine outlives the manager.
 func (m *ACPBackendManager) Shutdown() {
-	m.catalogMu.Lock()
+	m.probeMu.Lock()
 	m.closed = true
-	m.catalogMu.Unlock()
+	m.probeMu.Unlock()
 	m.sup.StopAll()
 	m.probeWG.Wait()
 }

@@ -478,6 +478,35 @@ const ClaudeToolExitPlanMode = "ExitPlanMode"
 // SessionMode is one agent-advertised session mode (the ACP
 // session/set_mode vocabulary). The agent owns the list; clients render
 // it as-is and send back the chosen ID as PermissionMode.
+// ConfigOption is one agent-advertised session config option (ACP
+// SessionConfigOption), served verbatim: the id/value vocabulary is the
+// agent's own. This is the data behind every knob editor — mode, model,
+// effort/reasoning_effort, collaboration_mode, fast — one shape for all
+// of them, so a new option an adapter grows appears in clients with zero
+// clank changes.
+type ConfigOption struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Category    string `json:"category,omitempty"`
+	// CurrentValue is the option's live value id — for an unset knob this
+	// is the agent's own resolved default (e.g. opencode's concrete
+	// default model), which is how clients display truth without clank
+	// substituting anything.
+	CurrentValue string              `json:"current_value"`
+	Values       []ConfigOptionValue `json:"values"`
+}
+
+// ConfigOptionValue is one selectable value of a ConfigOption.
+type ConfigOptionValue struct {
+	Value       string `json:"value"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	// Group is the advertised group header, when the agent groups values
+	// (e.g. models by provider). Flattened: clients regroup if they care.
+	Group string `json:"group,omitempty"`
+}
+
 type SessionMode struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -489,6 +518,13 @@ type SessionMode struct {
 // can render the agent-owned mode picker.
 type ModeReporter interface {
 	Modes() (currentID string, available []SessionMode)
+}
+
+// ConfigOptionsReporter is implemented by backends whose agent advertises
+// session config options; the host stamps them onto runtime SessionInfo
+// and serves them via GET /config-options.
+type ConfigOptionsReporter interface {
+	ConfigOptions() []ConfigOption
 }
 
 // ModelReporter is implemented by backends whose agent advertises a model
@@ -520,6 +556,7 @@ type SessionInfo struct {
 	AvailableModes  []SessionMode     `json:"available_modes,omitempty"`   // Runtime-only: agent-advertised modes for the picker. Not persisted.
 	CurrentModelID  string            `json:"current_model_id,omitempty"`  // Runtime-only: the agent-selected model for this session. Not persisted.
 	AvailableModels []ModelInfo       `json:"available_models,omitempty"`  // Runtime-only: agent-advertised models for the picker. Not persisted.
+	ConfigOptions   []ConfigOption    `json:"config_options,omitempty"`    // Runtime-only: the agent's full advertised config options (mode/model/effort/…), for knob editors. Not persisted.
 	IsRemote        bool              `json:"is_remote,omitempty"`         // Runtime-only: decoration stamped by the laptop daemon's session router when this session's worktree is owned by the active remote. Always false on direct host responses; populated by gateway routing.
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`
@@ -618,10 +655,16 @@ type ModelOverride struct {
 	ProviderID string `json:"provider_id"`
 }
 
-// ConfigOptionMode is the config-option id every serving agent advertises
-// for its session mode. Routed through ACP session/set_mode; every other
-// option id rides session/set_config_option.
-const ConfigOptionMode = "mode"
+const (
+	// ConfigOptionMode is the config-option id every serving agent
+	// advertises for its session mode. Routed through ACP
+	// session/set_mode; every other option id rides
+	// session/set_config_option.
+	ConfigOptionMode = "mode"
+	// ConfigOptionModel is the conventional id/category of the model
+	// config option, the semantic key model pickers branch on.
+	ConfigOptionModel = "model"
+)
 
 // ClaudePermissionMode is the permission posture the Claude Code CLI runs
 // under. Values are the wire strings claude-agent-sdk-go accepts via
@@ -830,17 +873,11 @@ type ModelInfo struct {
 	ProviderName string `json:"provider_name"` // Human-readable provider name
 }
 
-// ModeLister is an optional interface BackendManagers implement to expose
-// the agent-advertised session modes for a project without a live
-// session — the compose view needs them before a session exists.
-type ModeLister interface {
-	ListModes(ctx context.Context, projectDir string) ([]SessionMode, error)
-}
-
-// ModelLister is an optional interface that BackendManagers can implement
-// to expose available models for a project.
-type ModelLister interface {
-	ListModels(ctx context.Context, projectDir string) ([]ModelInfo, error)
+// ConfigOptionsLister is an optional interface BackendManagers implement
+// to probe the agent's advertised config options for a project dir before
+// any session exists (the pre-session knob editor's data source).
+type ConfigOptionsLister interface {
+	ConfigOptions(ctx context.Context, projectDir string) ([]ConfigOption, error)
 }
 
 // SessionDiscoverer is an optional interface that BackendManagers can
