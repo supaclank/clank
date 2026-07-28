@@ -642,13 +642,14 @@ var ClaudePermissionModes = []ClaudePermissionMode{
 	ClaudePermAcceptEdits,
 	ClaudePermPlan,
 	ClaudePermBypass,
+	ClaudePermAuto,
 }
 
-// IsValid reports whether m is one of the four known modes. The empty
+// IsValid reports whether m is one of the known modes. The empty
 // string is not valid — callers use "" to mean "no mode specified".
 func (m ClaudePermissionMode) IsValid() bool {
 	switch m {
-	case ClaudePermDefault, ClaudePermAcceptEdits, ClaudePermPlan, ClaudePermBypass:
+	case ClaudePermDefault, ClaudePermAcceptEdits, ClaudePermPlan, ClaudePermBypass, ClaudePermAuto:
 		return true
 	default:
 		return false

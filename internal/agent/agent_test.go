@@ -7,6 +7,28 @@ import (
 	"github.com/acksell/clank/internal/agent"
 )
 
+// Regression: ClaudePermAuto was added to support the Workstation preset's
+// "auto" mode but was left out of ClaudePermissionModes and IsValid(),
+// which still only recognized the four modes that predate it.
+func TestClaudePermAuto_IsValidAndListed(t *testing.T) {
+	t.Parallel()
+
+	if !agent.ClaudePermAuto.IsValid() {
+		t.Error("ClaudePermAuto.IsValid() = false, want true")
+	}
+
+	found := false
+	for _, m := range agent.ClaudePermissionModes {
+		if m == agent.ClaudePermAuto {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("ClaudePermissionModes = %v, want it to include ClaudePermAuto", agent.ClaudePermissionModes)
+	}
+}
+
 func TestParseTimeParam(t *testing.T) {
 	t.Parallel()
 
