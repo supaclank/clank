@@ -109,12 +109,12 @@ services:
 
       # ── project-creation catalog ───────────────────────────────
       # Optional. JSON array of {display_name, clone_url} entries — the
-      # builtin half of GET /v1/templates. Read by CLANK-HOST (the
-      # local provisioner's subprocess inherits this env), not the
-      # gateway: the host owns the template surface so self-hosted /
-      # laptop deployments need no gateway involvement. Empty → only
-      # the user's GitHub templates (if connected) appear. Set in
-      # docker/.env (gitignored) — see docker/.env.example.
+      # builtin half of GET /v1/templates. clankd resolves this and
+      # forwards it to clank-host as --templates-json; the host owns
+      # the template surface so self-hosted / laptop deployments need
+      # no gateway involvement. Unset/empty → clankd's default catalog
+      # (the bundled Expo starter); "[]" disables builtin templates.
+      # Set in docker/.env (gitignored) — see docker/.env.example.
       CLANK_TEMPLATES: "${CLANK_TEMPLATES:-}"
 
       # GitHub Connect: clank-host (spawned by clankd via the local
