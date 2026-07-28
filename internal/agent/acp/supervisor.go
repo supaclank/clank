@@ -286,9 +286,10 @@ func (s *AdapterSupervisor) RestartAll() {
 		return
 	}
 	procs := maps.Clone(s.procs)
-	s.procs = make(map[string]*AdapterProc)
 	s.mu.Unlock()
 
+	// s.procs stays untouched until reconcile retires it — clearing here
+	// would let a concurrent reconcile spawn a duplicate mid-shutdown.
 	for _, p := range procs {
 		p.Stop()
 	}

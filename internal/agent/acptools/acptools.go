@@ -38,6 +38,10 @@ type Paths struct {
 	BunBin         string
 	CodexACPEntry  string
 	ClaudeACPEntry string
+	// CodexBin is the pinned codex CLI's JS launcher (run under bun).
+	// The auth ceremony uses it so `codex login` and the adapter's
+	// app-server child are always the same codex version.
+	CodexBin string
 }
 
 var (
@@ -66,12 +70,7 @@ func Ensure(ctx context.Context, toolsDir string) (Paths, error) {
 	if err != nil {
 		return Paths{}, err
 	}
-	p := Paths{
-		Dir:            toolsDir,
-		BunBin:         bunBin,
-		CodexACPEntry:  filepath.Join(toolsDir, "node_modules", "@agentclientprotocol", "codex-acp", "dist", "index.js"),
-		ClaudeACPEntry: filepath.Join(toolsDir, "node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js"),
-	}
+	p := pathsFor(toolsDir, bunBin)
 	if changed || !entryExists(p) {
 		installCtx, cancel := context.WithTimeout(ctx, installTimeout)
 		defer cancel()
@@ -86,6 +85,17 @@ func Ensure(ctx context.Context, toolsDir string) (Paths, error) {
 	}
 	ensureDone[toolsDir] = p
 	return p, nil
+}
+
+// pathsFor computes where the manifest's packages land inside toolsDir.
+func pathsFor(toolsDir, bunBin string) Paths {
+	return Paths{
+		Dir:            toolsDir,
+		BunBin:         bunBin,
+		CodexACPEntry:  filepath.Join(toolsDir, "node_modules", "@agentclientprotocol", "codex-acp", "dist", "index.js"),
+		ClaudeACPEntry: filepath.Join(toolsDir, "node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js"),
+		CodexBin:       filepath.Join(toolsDir, "node_modules", "@openai", "codex", "bin", "codex.js"),
+	}
 }
 
 // materializeManifest writes the embedded manifest files, reporting
@@ -117,10 +127,10 @@ func entryExists(p Paths) bool {
 	return firstMissingEntry(p) == ""
 }
 
-// firstMissingEntry returns the path of whichever adapter entry point
-// doesn't exist yet, or "" if both are present.
+// firstMissingEntry returns the path of whichever provisioned tool
+// doesn't exist yet, or "" if all are present.
 func firstMissingEntry(p Paths) string {
-	for _, entry := range []string{p.CodexACPEntry, p.ClaudeACPEntry} {
+	for _, entry := range []string{p.CodexACPEntry, p.ClaudeACPEntry, p.CodexBin} {
 		if _, err := os.Stat(entry); err != nil {
 			return entry
 		}

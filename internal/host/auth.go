@@ -1,17 +1,24 @@
 package host
 
 // AuthManager mediates AI provider authentication for agent CLIs
-// running in this host's sandbox. Credentials live in two sinks:
+// running in this host's sandbox. Credentials live in three sinks:
 //   - OpenCode providers → ~/.local/share/opencode/auth.json
 //     (opencode's own schema; a server restart picks up changes)
 //   - Anthropic providers → ~/.local/share/clank/anthropic.json
 //     (our schema; the next claude-code spawn picks up changes via
 //     CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY env vars)
+//   - OpenAI/Codex providers → ~/.local/share/clank/openai.json
+//     (our schema; codex-acp adapters restart on changes — the API
+//     key rides CODEX_API_KEY, while the ChatGPT subscription lives
+//     in codex's own $CODEX_HOME/auth.json with openai.json only
+//     recording that the ceremony completed)
 //
 // Credentials never travel through clank's infrastructure for OAuth
 // providers — the device-flow polling happens between this process
 // and the provider (e.g. github.com), with clank only mediating the
 // UX (showing the user_code + verification URL to the TUI/mobile UI).
+// The codex device login goes one step further: the codex CLI itself
+// talks to OpenAI and writes its own credential file.
 
 import (
 	"context"
@@ -52,6 +59,14 @@ const ProviderAnthropicAPI = "anthropic-api"
 // codex-acp spawns as CODEX_API_KEY.
 const ProviderOpenAICodexAPI = "openai-codex-api"
 
+// ProviderOpenAICodexChatGPT is the clank provider ID for the codex
+// backend's ChatGPT-subscription path (Plus/Pro/Team). The credential
+// is codex's own $CODEX_HOME/auth.json, written by the CLI's
+// device-code login that clank drives headless (see
+// auth_codex_device.go); clank records the connection in openai.json
+// but never holds the tokens.
+const ProviderOpenAICodexChatGPT = "openai-codex-chatgpt"
+
 // providerCatalog enumerates the providers this AuthManager knows
 // how to authenticate. Three classes today:
 //   - device-flow OAuth (Phase 1): github-copilot
@@ -74,10 +89,12 @@ var providerCatalog = []agent.ProviderAuthInfo{
 	{ProviderID: ProviderAnthropicClaudeCode, DisplayName: "Anthropic (Claude subscription)", AuthType: agent.AuthTypeOAuthCode, Backend: agent.BackendClaudeCode},
 	{ProviderID: ProviderAnthropicAPI, DisplayName: "Anthropic (Console API key)", AuthType: agent.AuthTypeAPI, Backend: agent.BackendClaudeCode},
 
-	// Codex-consumed provider — credential lives in clank's openai.json
-	// and is injected into codex-acp spawns as CODEX_API_KEY; the ACP
-	// supervisor restarts the adapter on rotation. Unconnected, codex
-	// falls back to its own ChatGPT login in ~/.codex.
+	// Codex-consumed providers. The subscription's credential is codex's
+	// own $CODEX_HOME/auth.json (device-auth ceremony); the API key lives
+	// in clank's openai.json and is injected into codex-acp spawns as
+	// CODEX_API_KEY. Either write restarts the adapters. With both
+	// connected, which credential wins is codex's own resolution.
+	{ProviderID: ProviderOpenAICodexChatGPT, DisplayName: "OpenAI (ChatGPT subscription)", AuthType: agent.AuthTypeDevice, Backend: agent.BackendCodex},
 	{ProviderID: ProviderOpenAICodexAPI, DisplayName: "OpenAI (Codex API key)", AuthType: agent.AuthTypeAPI, Backend: agent.BackendCodex},
 
 	// OpenCode-consumed providers — credential lives in opencode's
@@ -199,10 +216,19 @@ type AuthManager struct {
 	// before the manager serves requests.
 	claudeCLIFallback bool
 
-	// onOpenAICredential fires after an OpenAI credential write so the
-	// ACP supervisor's env-fingerprint restart picks it up. Wired via
-	// SetOpenAICredentialCallback before the manager serves requests.
+	// onOpenAICredential fires after any OpenAI credential change so
+	// codex-acp adapters restart and re-read auth state. Wired via
+	// SetOpenAICredentialCallback.
 	onOpenAICredential func()
+
+	// codexLogin resolves the argv for the pinned codex CLI's device
+	// login; nil when the codex backend isn't enabled (device flow
+	// reports ErrCodexDeviceAuthUnavailable). Wired via SetCodexLoginCommand.
+	codexLogin func(ctx context.Context) ([]string, error)
+
+	// codexCLIAuth reports a pre-existing codex CLI login as a
+	// connected subscription. Set via EnableCodexCLIFallback.
+	codexCLIAuth bool
 
 	// lookupEnv resolves env-borne credentials for provider status
 	// (see env_credentials.go). os.Getenv in production; tests inject
@@ -348,6 +374,8 @@ func (a *AuthManager) ListProviders(ctx context.Context, backend agent.BackendTy
 			p.Connected = sink.APIKey != ""
 		case ProviderOpenAICodexAPI:
 			p.Connected = a.OpenAIEnv() != nil
+		case ProviderOpenAICodexChatGPT:
+			p.Connected = a.openAIChatGPTConnected()
 		default:
 			p.Connected = store[p.ProviderID].Type != ""
 		}
@@ -360,6 +388,9 @@ func (a *AuthManager) ListProviders(ctx context.Context, backend agent.BackendTy
 		case p.ProviderID == ProviderAnthropicClaudeCode && a.claudeCLIFallback && claudeCLILoginPresent(ctx, a.homeDir):
 			p.Connected = true
 			p.Source = agent.CredentialSourceClaudeCLI
+		case p.ProviderID == ProviderOpenAICodexChatGPT && a.codexCLIAuth && codexCLILoginPresent(a.codexAuthJSONPath()):
+			p.Connected = true
+			p.Source = agent.CredentialSourceCodexCLI
 		}
 		infos = append(infos, p)
 	}
@@ -372,14 +403,18 @@ var ErrUnknownProvider = errors.New("unknown auth provider")
 
 // StartDeviceFlow begins a device-flow auth for providerID. Returns
 // the user-facing fields the TUI surfaces and a flow_id for status
-// polls. Spawns a background goroutine that polls the provider,
-// writes auth.json on success, and triggers an OpenCode restart;
-// the flow's in-memory state is updated as it transitions
-// pending → authorized → success.
+// polls. Spawns a background goroutine that watches the provider —
+// polling GitHub's token endpoint for Copilot, watching the codex
+// login subprocess for the ChatGPT subscription — and updates the
+// flow's in-memory state as it transitions pending → authorized →
+// success.
 func (a *AuthManager) StartDeviceFlow(ctx context.Context, providerID string) (agent.DeviceFlowStart, error) {
 	info, ok := providerByID(providerID)
 	if !ok || info.AuthType != agent.AuthTypeDevice {
 		return agent.DeviceFlowStart{}, ErrUnknownProvider
+	}
+	if providerID == ProviderOpenAICodexChatGPT {
+		return a.startCodexDeviceFlow(ctx)
 	}
 	device, err := a.startCopilotDeviceCode(ctx)
 	if err != nil {
@@ -629,13 +664,20 @@ func (a *AuthManager) awaitOAuthCodeToken(ctx context.Context, flowID, providerI
 // non-terminal. Guards against a late awaiter error (e.g. ctx canceled
 // by CancelFlow) clobbering a Canceled/Success state already recorded.
 func (a *AuthManager) failFlowIfActive(flowID, errMsg string) {
+	a.finishFlowIfActive(flowID, agent.DeviceFlowError, errMsg)
+}
+
+// finishFlowIfActive records a terminal state only while the flow is
+// still non-terminal, so late awaiter outcomes can't clobber a
+// Canceled/Success already recorded.
+func (a *AuthManager) finishFlowIfActive(flowID string, state agent.DeviceFlowState, errMsg string) {
 	a.flowMu.Lock()
 	defer a.flowMu.Unlock()
 	f, ok := a.flows[flowID]
 	if !ok || (f.state != agent.DeviceFlowPending && f.state != agent.DeviceFlowAuthorized) {
 		return
 	}
-	f.state = agent.DeviceFlowError
+	f.state = state
 	f.errMsg = errMsg
 	f.finishedAt = time.Now()
 	a.gcFlowsLocked()
@@ -741,7 +783,10 @@ func (a *AuthManager) CancelFlow(_ context.Context, flowID string) error {
 // DeleteCredential removes providerID's credential from the appropriate
 // sink. For OpenCode providers, triggers a server restart so the new
 // auth state takes effect; for Anthropic providers, no restart — the
-// next claude-code spawn simply sees no env var.
+// next claude-code spawn simply sees no env var. Codex providers
+// restart the ACP adapters via the OpenAI credential callback; the
+// ChatGPT variant deletes codex's own auth.json, which logs this
+// host's codex CLI out entirely.
 func (a *AuthManager) DeleteCredential(ctx context.Context, providerID string) error {
 	if _, ok := providerByID(providerID); !ok {
 		return ErrUnknownProvider
@@ -749,11 +794,29 @@ func (a *AuthManager) DeleteCredential(ctx context.Context, providerID string) e
 	if isAnthropicProvider(providerID) {
 		return a.removeAnthropicCredential(providerID)
 	}
-	if err := a.removeFromAuthJSON(providerID); err != nil {
-		return err
+	switch providerID {
+	case ProviderOpenAICodexAPI:
+		if err := a.clearOpenAIAPIKey(); err != nil {
+			return err
+		}
+	case ProviderOpenAICodexChatGPT:
+		if err := os.Remove(a.codexAuthJSONPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove codex auth.json: %w", err)
+		}
+		if err := a.clearOpenAIChatGPTConnected(); err != nil {
+			return err
+		}
+	default:
+		if err := a.removeFromAuthJSON(providerID); err != nil {
+			return err
+		}
+		if a.restart != nil {
+			return a.restart(ctx)
+		}
+		return nil
 	}
-	if a.restart != nil {
-		return a.restart(ctx)
+	if a.onOpenAICredential != nil {
+		a.onOpenAICredential()
 	}
 	return nil
 }

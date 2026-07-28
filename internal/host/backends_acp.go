@@ -32,6 +32,11 @@ type ACPBackendManager struct {
 	sup     *acp.AdapterSupervisor
 	envFn   atomic.Pointer[func() map[string]string]
 
+	// loginArgv resolves the argv for the adapter CLI's own login
+	// ceremony, provisioning tools on first use. Set by profile-specific
+	// constructors that have one (codex device auth); nil otherwise.
+	loginArgv func(ctx context.Context) ([]string, error)
+
 	// probeMu guards the single-flight state for on-demand config-option
 	// probes; probeWG lets Shutdown wait out in-flight probes.
 	probeMu sync.Mutex
@@ -104,8 +109,30 @@ func NewCodexACPManager(dirs ACPDirs) (*ACPBackendManager, error) {
 		p := paths.Load() // Prepare ran first (execSpawn ordering)
 		return p.BunBin, []string{p.CodexACPEntry}
 	}
-	return NewACPBackendManager(profile)
+	m, err := NewACPBackendManager(profile)
+	if err != nil {
+		return nil, err
+	}
+	m.loginArgv = func(ctx context.Context) ([]string, error) {
+		p, err := acptools.Ensure(ctx, dirs.Tools)
+		if err != nil {
+			return nil, err
+		}
+		return []string{p.BunBin, p.CodexBin, "login", "--device-auth"}, nil
+	}
+	return m, nil
 }
+
+// LoginArgv resolves the argv for this adapter's login ceremony, or
+// reports that the profile doesn't have one.
+func (m *ACPBackendManager) LoginArgv() (func(ctx context.Context) ([]string, error), bool) {
+	return m.loginArgv, m.loginArgv != nil
+}
+
+// RestartAdapters cycles every adapter process so fresh spawns pick up
+// credential state — both env-borne values and on-disk state the env
+// fingerprint can't see (codex's $CODEX_HOME/auth.json).
+func (m *ACPBackendManager) RestartAdapters() { m.sup.RestartAll() }
 
 // NewClaudeACPManager serves claude-code through the pinned
 // claude-agent-acp adapter under bun, provisioned lazily into toolsDir

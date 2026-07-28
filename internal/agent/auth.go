@@ -93,6 +93,13 @@ const (
 	// shell exports on laptops). Not disconnectable through clank —
 	// clients should hide the disconnect affordance for this source.
 	CredentialSourceEnv = "env"
+	// CredentialSourceCodexCLI means clank didn't run the codex login
+	// ceremony, but the machine's own codex CLI login ($CODEX_HOME/
+	// auth.json) exists and the codex adapter will use it (laptop
+	// hosts only). Disconnecting through clank would log the user's
+	// own CLI out, so clients should hide the disconnect affordance
+	// for this source — that's `codex logout`'s job.
+	CredentialSourceCodexCLI = "codex_cli"
 )
 
 // ProviderAuthInfo is the snapshot a client gets from

@@ -26,7 +26,6 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"strings"
 	"sync"
 	"time"
 
@@ -90,20 +89,7 @@ func startSetupToken(_ context.Context) (*setupTokenSession, error) {
 	// CLAUDE_CODE_OAUTH_TOKEN in the daemon's environment would make
 	// setup-token "succeed" using the inherited token instead of
 	// minting a fresh one.
-	env := make([]string, 0, len(os.Environ()))
-	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, EnvClaudeCodeOAuthToken+"=") {
-			continue
-		}
-		if strings.HasPrefix(e, EnvAnthropicAPIKey+"=") {
-			continue
-		}
-		if strings.HasPrefix(e, EnvAnthropicAuthToken+"=") {
-			continue
-		}
-		env = append(env, e)
-	}
-	cmd.Env = env
+	cmd.Env = scrubEnv(os.Environ(), EnvClaudeCodeOAuthToken, EnvAnthropicAPIKey, EnvAnthropicAuthToken)
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: setupTokenCols, Rows: setupTokenRows})
 	if err != nil {
