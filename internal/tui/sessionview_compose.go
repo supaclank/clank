@@ -7,7 +7,9 @@ package tui
 import (
 	"context"
 	"fmt"
+	"image/color"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,21 +26,6 @@ import (
 	"github.com/acksell/clank/internal/host/petname"
 )
 
-// catalogRefineDelay is how long compose waits after showing the prewarmed
-// (backend-global) picker before re-fetching once. A per-dir backend
-// (opencode) probes the specific repo in the background on first visit; the
-// re-fetch surfaces its per-repo agents when the probe lands. Host-scoped
-// backends return the same list, so the re-fetch is a harmless no-op.
-const catalogRefineDelay = 2 * time.Second
-
-// refineCatalogMsg fires once after catalogRefineDelay to re-fetch the picker.
-type refineCatalogMsg struct{}
-
-// TODO(ai-review): fires once, so a per-dir probe slower than catalogRefineDelay (cold open up to catalogProbeTimeout) never surfaces its per-repo agents — bounded re-arm, or make the probe push its result. https://github.com/Acksell/clank/pull/188
-func refineCatalog() tea.Cmd {
-	return tea.Tick(catalogRefineDelay, func(time.Time) tea.Msg { return refineCatalogMsg{} })
-}
-
 // sessionCreateResultMsg carries the result of creating a session from composing mode.
 type sessionCreateResultMsg struct {
 	sessionID string
@@ -52,9 +39,8 @@ type sessionCreateResultMsg struct {
 //
 // The gitRef is built from projectDir (LocalPath) plus the stamped
 // worktree ID, if any (read via agent.ReadLocalWorktreeID), so the
-// background modes/models prefetch can target it. Without a
-// stamp the ref is local-only and any cross-host operations will fail
-// at launch.
+// on-demand config-options probe can target it. Without a stamp the ref
+// is local-only and any cross-host operations will fail at launch.
 func NewSessionViewComposing(client *daemonclient.Client, projectDir string) *SessionViewModel {
 	// Default backend: prefer the user's saved choice, falling back to
 	// agent.DefaultBackend. Errors (corrupt prefs) silently fall back —
@@ -96,36 +82,88 @@ func newSessionViewComposingWithBackend(client *daemonclient.Client, projectDir 
 		input:       ta,
 		spinner:     sp,
 	}
-	// Modes are agent-owned and fetched (Init → fetchModes); nothing is
-	// seeded here, so the picker never shows a mode the agent doesn't have.
+	// Presets are host-served and fetched (Init → fetchPresets); nothing
+	// is seeded here, so compose never offers a config nobody declared.
 	return m
 }
 
-// composeConfig assembles the create-time config: the backend's Default
-// preset (which carries every required key) overlaid with the pickers'
-// explicit selections. Nil until presets load — the host then rejects the
-// create with the missing keys named, which is the fail-fast contract.
+// composeConfig assembles the create-time config: the selected preset's
+// bundle (the Default preset carries every required key) overlaid with
+// the model picker's explicit override. Nil until presets load — the
+// host then rejects the create with the missing keys named, which is
+// the fail-fast contract.
 func (m *SessionViewModel) composeConfig() map[string]string {
-	var base map[string]string
-	for _, p := range m.presets {
-		if p.Backend == m.backend && p.ID == presets.BuiltinDefaultPrefix+string(m.backend) {
-			base = p.Config
-			break
-		}
-	}
-	if base == nil {
+	sel := m.composeSelectedPreset()
+	if sel == nil {
 		return nil
 	}
-	cfg := make(map[string]string, len(base)+1)
-	for k, v := range base {
+	cfg := make(map[string]string, len(sel.Config)+1)
+	for k, v := range sel.Config {
 		cfg[k] = v
 	}
-	if len(m.modes) > 0 {
-		if sel := m.modes[m.selectedMode]; sel.perm != "" {
-			cfg[agent.ConfigOptionMode] = string(sel.perm)
-		}
+	if m.selectedModel >= 0 && m.selectedModel < len(m.models) {
+		cfg[agent.ConfigOptionModel] = m.models[m.selectedModel].ID
 	}
 	return cfg
+}
+
+// composeSelectedPreset returns the Tab-selected preset for the compose
+// backend, nil until the host's preset list has loaded. m.presets is
+// already backend-scoped (fetchPresets filters server-side and
+// presetsResultMsg is gated on the backend still matching).
+func (m *SessionViewModel) composeSelectedPreset() *presets.Preset {
+	if len(m.presets) == 0 {
+		return nil
+	}
+	if m.selectedPreset < 0 || m.selectedPreset >= len(m.presets) {
+		return &m.presets[0]
+	}
+	return &m.presets[m.selectedPreset]
+}
+
+// handleComposeConfigOptions lands the on-demand /config-options probe
+// the compose model picker is waiting on: build the picker from the
+// model option's values, or surface why there is nothing to pick.
+func (m *SessionViewModel) handleComposeConfigOptions(msg configOptionsResultMsg) (tea.Model, tea.Cmd) {
+	m.modelOptionsLoading = false
+	if msg.backend != m.backend {
+		// Stale probe from before a backend toggle; drop it.
+		return m, nil
+	}
+	if msg.err != nil {
+		m.showModelPicker = false
+		m.err = fmt.Errorf("load model options: %w", msg.err)
+		return m, m.input.Focus()
+	}
+	models := modelInfosFromConfigOptions(msg.options)
+	if len(models) == 0 {
+		m.showModelPicker = false
+		m.err = fmt.Errorf("%s advertises no model choice here", m.backend)
+		return m, m.input.Focus()
+	}
+	m.models = models
+
+	// Preselect: the user's earlier pick this compose, else the saved
+	// per-backend preference, else the agent's own current value —
+	// highlight only, nothing is sent unless the user confirms.
+	sel := m.selectedModel
+	if sel < 0 {
+		prefs, _ := config.LoadPreferences()
+		if pref := prefs.ModelFor(string(m.backend)); !pref.IsZero() {
+			sel = slices.IndexFunc(models, func(mi agent.ModelInfo) bool {
+				return mi.ID == pref.ModelID && mi.ProviderID == pref.ProviderID
+			})
+		}
+	}
+	if sel < 0 {
+		if mo := modelOptionFromConfig(msg.options); mo != nil {
+			sel = slices.IndexFunc(models, func(mi agent.ModelInfo) bool {
+				return mi.ID == mo.CurrentValue
+			})
+		}
+	}
+	m.modelPicker = newModelPicker(models, sel, m.backend)
+	return m, m.modelPicker.Init()
 }
 
 // updateCompose handles all messages while in composing mode.
@@ -133,6 +171,8 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Model picker takes priority when open.
 	if m.showModelPicker {
 		switch msg := msg.(type) {
+		case configOptionsResultMsg:
+			return m.handleComposeConfigOptions(msg)
 		case modelPickerResultMsg:
 			m.showModelPicker = false
 			m.selectedModel = msg.selectedModel
@@ -141,12 +181,30 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.input.Focus()
 		case modelPickerCancelMsg:
 			m.showModelPicker = false
+			m.modelOptionsLoading = false
 			return m, m.input.Focus()
 		case modelPickerConnectProviderMsg:
 			m.showModelPicker = false
 			backend := m.backend
 			return m, func() tea.Msg { return openProviderAuthFromSessionMsg{backend: backend} }
+		case tea.KeyPressMsg:
+			// While the probe is in flight only esc (cancel) applies; the
+			// picker component doesn't exist yet to take other keys.
+			if m.modelOptionsLoading {
+				if key.Matches(msg, key.NewBinding(key.WithKeys("esc"))) {
+					m.showModelPicker = false
+					m.modelOptionsLoading = false
+					return m, m.input.Focus()
+				}
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.modelPicker, cmd = m.modelPicker.Update(msg)
+			return m, cmd
 		default:
+			if m.modelOptionsLoading {
+				return m, nil
+			}
 			var cmd tea.Cmd
 			m.modelPicker, cmd = m.modelPicker.Update(msg)
 			return m, cmd
@@ -193,54 +251,19 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.SetWidth(m.width - promptInputBorderSize)
 		return m, nil
 
-	case modesResultMsg:
-		// Agent-advertised modes for the selected backend. Compose has no
-		// session yet, so this is the only source — nothing is hardcoded.
-		// A background refine re-fetches after the seed, so preserve the
-		// user's current pick if the refreshed list still offers it.
-		if len(msg.modes) > 0 {
-			prev := ""
-			if m.selectedMode >= 0 && m.selectedMode < len(m.modes) {
-				prev = string(m.modes[m.selectedMode].perm)
-			}
-			m.modes = make([]selectableMode, len(msg.modes))
-			m.selectedMode = 0
-			for i, sm := range msg.modes {
-				m.modes[i] = selectableMode{label: sm.Name, perm: agent.ClaudePermissionMode(sm.ID)}
-				if string(sm.ID) == prev {
-					m.selectedMode = i
-				}
-			}
-		}
-		return m, nil
-
-	case refineCatalogMsg:
-		// The prewarmed picker showed instantly; a per-dir backend probes
-		// the specific repo in the background, so re-fetch once to surface
-		// its per-repo agents. Host-scoped backends return the same list.
-		return m, tea.Batch(m.fetchModes(), m.fetchModels())
-
 	case presetsResultMsg:
 		if msg.backend == m.backend {
+			// Keep the user's pick by id across a refetch (backend
+			// toggled away and back) when the list still offers it.
+			prevID := ""
+			if p := m.composeSelectedPreset(); p != nil {
+				prevID = p.ID
+			}
 			m.presets = msg.presets
-		}
-		return m, nil
-
-	case modelsResultMsg:
-		m.models = msg.models
-		m.selectedModel = -1 // default: no override
-
-		// Restore the user's preferred model for this backend.
-		// Per-backend so a github-copilot model picked under opencode
-		// doesn't leak into a claude-code session and crash the CLI
-		// with `--model claude-opus-4.7` (or any other id not in the
-		// claude-code closed enum).
-		prefs, _ := config.LoadPreferences()
-		pref := prefs.ModelFor(string(m.backend))
-		if !pref.IsZero() {
-			for i, model := range m.models {
-				if model.ID == pref.ModelID && model.ProviderID == pref.ProviderID {
-					m.selectedModel = i
+			m.selectedPreset = 0
+			for i, p := range m.presets {
+				if p.ID == prevID {
+					m.selectedPreset = i
 					break
 				}
 			}
@@ -318,19 +341,19 @@ func (m *SessionViewModel) handleComposeKey(msg tea.KeyPressMsg) (tea.Model, tea
 		}
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
-		// Cycle through modes (OpenCode agents or Claude permission modes).
-		if len(m.modes) > 1 {
-			m.selectedMode = (m.selectedMode + 1) % len(m.modes)
+		// Cycle agent presets (Default, Plan, user-saved) for the backend.
+		if len(m.presets) > 1 {
+			m.selectedPreset = (m.selectedPreset + 1) % len(m.presets)
 		}
 		return m, nil
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab"))):
-		// Open model picker modal.
-		if len(m.models) > 0 {
-			m.showModelPicker = true
-			m.modelPicker = newModelPicker(m.models, m.selectedModel, m.backend)
-		}
-		return m, m.modelPicker.Init()
+		// Open the model picker: probe the agent's live config options
+		// first (the host opens a short-lived session), showing the
+		// loading overlay until they land.
+		m.showModelPicker = true
+		m.modelOptionsLoading = true
+		return m, m.fetchConfigOptions()
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 		// Send prompt — shift+enter inserts newline (handled by textarea keybinding).
@@ -398,14 +421,10 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 		Prompt:      prompt,
 		Attachments: atts,
 	}
+	// cfg already carries the model override (composeConfig) — the
+	// config channel is the only model channel in compose, using the
+	// agent's own advertised value ids.
 	req.Config = cfg
-	if m.selectedModel >= 0 && m.selectedModel < len(m.models) {
-		model := m.models[m.selectedModel]
-		req.Model = &agent.ModelOverride{
-			ModelID:    model.ID,
-			ProviderID: model.ProviderID,
-		}
-	}
 
 	return m, m.createSessionCmd(req)
 }
@@ -458,10 +477,11 @@ func (m *SessionViewModel) handleCreateResult(msg sessionCreateResultMsg) (tea.M
 	m.input.Blur()
 	m.input.Reset()
 
-	// Show the user's prompt as the first entry.
+	// Show the user's prompt as the first entry, tagged with the preset
+	// it launched under.
 	modeLabel := ""
-	if len(m.modes) > 0 {
-		modeLabel = m.modes[m.selectedMode].label
+	if p := m.composeSelectedPreset(); p != nil {
+		modeLabel = p.Name
 	}
 	m.entries = append(m.entries, displayEntry{
 		kind:    entryUser,
@@ -486,6 +506,16 @@ func (m *SessionViewModel) handleCreateResult(msg sessionCreateResultMsg) (tea.M
 		m.spinner.Tick,
 		func() tea.Msg { return composeSubmittedMsg{sessionID: newID} },
 	)
+}
+
+// presetColor is the badge color for a preset: cyan for the read-only
+// Plan built-in (mirroring the plan permission-mode color), green
+// otherwise.
+func presetColor(p presets.Preset) color.Color {
+	if strings.HasPrefix(p.ID, presets.BuiltinPlanPrefix) {
+		return secondaryColor
+	}
+	return successColor
 }
 
 // viewCompose renders the composing mode screen.
@@ -541,13 +571,10 @@ func (m *SessionViewModel) viewCompose() tea.View {
 		helpParts = []string{"enter: toggle", "↑↓: navigate", qLabel}
 	default: // focusPrompt
 		helpParts = []string{"↑: fields", "enter: launch", "shift+enter: newline", "ctrl+v: image", "ctrl+b: toggle backend"}
-		if len(m.modes) > 1 {
-			helpParts = append(helpParts, "tab: cycle mode")
+		if len(m.presets) > 1 {
+			helpParts = append(helpParts, "tab: cycle preset")
 		}
-		if m.backend == agent.BackendOpenCode && len(m.models) > 0 {
-			helpParts = append(helpParts, "shift+tab: select model")
-		}
-		helpParts = append(helpParts, qLabel)
+		helpParts = append(helpParts, "shift+tab: model", qLabel)
 	}
 	help := helpStyle.Render(strings.Join(helpParts, " | "))
 	sb.WriteString(help)
@@ -655,9 +682,9 @@ func (m *SessionViewModel) openFolderPicker() tea.Cmd {
 	return m.folderPicker.Init()
 }
 
-// applyProjectFolder repoints the compose session at dir and refreshes the
-// per-repo agent/model catalog. Focus stays on returnTo (the row the picker
-// was opened from) rather than jumping to the prompt.
+// applyProjectFolder repoints the compose session at dir. Focus stays on
+// returnTo (the row the picker was opened from) rather than jumping to
+// the prompt.
 func (m *SessionViewModel) applyProjectFolder(dir string, returnTo composeFocus) tea.Cmd {
 	m.projectDir = dir
 	m.gitRef = agent.GitRef{LocalPath: dir}
@@ -666,14 +693,12 @@ func (m *SessionViewModel) applyProjectFolder(dir string, returnTo composeFocus)
 	}
 	m.composeFocus = returnTo
 
-	// Clear before refetching: modes and models are project-scoped, so the
-	// previous folder's list must not linger over the new one. Dropping the
-	// stale model index mirrors applyBackend — otherwise a leftover
-	// selectedModel is forwarded as a `--model <id>` override the new
-	// folder/backend may not accept.
-	m.modes, m.selectedMode = nil, 0
+	// Model options are project-scoped (opencode aggregates per-repo
+	// providers), so a pick made under the previous folder must not ride
+	// into the new one as a stale config override. Presets are
+	// host-scoped and stay. The picker re-probes on next open.
 	m.models, m.selectedModel = nil, -1
-	return tea.Batch(m.fetchModes(), m.fetchModels(), refineCatalog())
+	return nil
 }
 
 // overlayFolderPicker composites the folder picker over the compose view.
@@ -721,7 +746,17 @@ func (m *SessionViewModel) renderPromptBox() string {
 	modeBadge := ""
 	bc := mutedColor
 
-	if len(m.modes) > 0 {
+	if m.composing {
+		if p := m.composeSelectedPreset(); p != nil {
+			mc := presetColor(*p)
+			modeBadge = lipgloss.NewStyle().Foreground(mc).Bold(true).Render(p.Name)
+			if m.input.Focused() {
+				bc = mc
+			}
+		} else if m.input.Focused() {
+			bc = primaryColor
+		}
+	} else if len(m.modes) > 0 {
 		sel := m.modes[m.selectedMode]
 		mc := modeColor(sel)
 		modeBadge = lipgloss.NewStyle().Foreground(mc).Bold(true).Render(sel.label)
@@ -744,7 +779,11 @@ func (m *SessionViewModel) renderPromptBox() string {
 	modelBadge := ""
 	if m.selectedModel >= 0 && m.selectedModel < len(m.models) {
 		model := m.models[m.selectedModel]
-		modelBadge = lipgloss.NewStyle().Foreground(secondaryColor).Render(model.ProviderID + "/" + model.ID)
+		label := model.ID
+		if model.ProviderID != "" {
+			label = model.ProviderID + "/" + model.ID
+		}
+		modelBadge = lipgloss.NewStyle().Foreground(secondaryColor).Render(label)
 	}
 
 	// Double-tap ctrl+c hint (shown briefly after first press).

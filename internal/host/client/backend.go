@@ -33,15 +33,6 @@ func (b *BackendClient) Agents(ctx context.Context, ref agent.GitRef) ([]host.Ag
 	return out, err
 }
 
-// Models lists models available for this backend in the given repo.
-// Same wire shape as Agents (see §7.3).
-func (b *BackendClient) Models(ctx context.Context, ref agent.GitRef) ([]host.ModelInfo, error) {
-	q := refQuery(b.bt, ref)
-	var out []host.ModelInfo
-	err := b.c.do(ctx, http.MethodGet, "/models?"+q.Encode(), nil, &out)
-	return out, err
-}
-
 // refQuery serializes a GitRef as discrete query params. Mirrors
 // hostmux.refFromQuery — keep the field names in sync.
 func refQuery(bt agent.BackendType, ref agent.GitRef) url.Values {

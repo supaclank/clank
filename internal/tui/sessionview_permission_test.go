@@ -1,13 +1,13 @@
 package tui
 
 import (
+	"fmt"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/agent/presets"
-	"github.com/acksell/clank/internal/config"
 )
 
 func TestClaudePermissionModes_DefaultsToBypass(t *testing.T) {
@@ -27,180 +27,139 @@ func TestClaudePermissionModes_DefaultsToBypass(t *testing.T) {
 	}
 }
 
-// modelsResultMsg always follows the sessionInfoMsg seeding block (every
-// backend branch there returns a fetchModels() command), so the agent's
-// current model must be re-derived from m.info here — a bare "reset to -1"
-// silently discards the active-model marking on every session open.
-func TestSessionView_ModelsResultMsg_PreservesAgentCurrentModel(t *testing.T) {
+// Runtime SessionInfo is the ONLY in-session model source (the catalog
+// endpoints are gone): the seeding block must highlight the agent's
+// current model, not reset to -1 and discard the active-model marking.
+func TestSessionView_InfoSeedsModelsAndHighlightsCurrent(t *testing.T) {
 	t.Parallel()
 	m := NewSessionViewModel(nil, "sess-1")
 	m.width, m.height = 80, 40
-	m.info = &agent.SessionInfo{CurrentModelID: "opus"}
 
-	model, _ := m.Update(modelsResultMsg{models: []agent.ModelInfo{
-		{ID: "sonnet"}, {ID: "opus"},
+	model, _ := m.Update(sessionInfoMsg{info: &agent.SessionInfo{
+		CurrentModelID:  "opus",
+		AvailableModels: []agent.ModelInfo{{ID: "sonnet"}, {ID: "opus"}},
 	}})
 	m = model.(*SessionViewModel)
 
+	if len(m.models) != 2 {
+		t.Fatalf("models = %+v, want the runtime list seeded", m.models)
+	}
 	if m.selectedModel != 1 {
 		t.Fatalf("selectedModel = %d, want 1 (opus, the agent's current model)", m.selectedModel)
 	}
 }
 
-// A live session already runs a model (info.CurrentModelID); a saved
-// per-backend preference must NOT override it. Otherwise reopening a
-// session running opus would highlight the user's global pref (sonnet)
-// and the next send would silently switch the running session's model.
-func TestSessionView_ModelsResultMsg_CurrentModelWinsOverPref(t *testing.T) {
-	// Not t.Parallel: CLANK_DIR is process-global.
-	t.Setenv("CLANK_DIR", t.TempDir())
-	if err := config.SavePreferences(config.Preferences{}); err != nil {
-		t.Fatalf("SavePreferences: %v", err)
-	}
-	prefs, err := config.LoadPreferences()
-	if err != nil {
-		t.Fatalf("LoadPreferences: %v", err)
-	}
-	prefs.SetModelFor(string(agent.BackendClaudeCode), config.ModelPreference{ModelID: "sonnet", ProviderID: "anthropic"})
-	if err := config.SavePreferences(prefs); err != nil {
-		t.Fatalf("SavePreferences: %v", err)
-	}
-
+// A session reporting no current model must stay at -1 (no override):
+// nothing — not a saved preference, not a guess — may fill in a model
+// the running session didn't report. Sending an unrequested override
+// would silently switch the session's model on the next send.
+func TestSessionView_InfoWithoutCurrentModelSelectsNoOverride(t *testing.T) {
+	t.Parallel()
 	m := NewSessionViewModel(nil, "sess-1")
 	m.width, m.height = 80, 40
-	m.backend = agent.BackendClaudeCode
-	m.info = &agent.SessionInfo{Backend: agent.BackendClaudeCode, CurrentModelID: "opus"}
 
-	model, _ := m.Update(modelsResultMsg{models: []agent.ModelInfo{
-		{ID: "sonnet", ProviderID: "anthropic"},
-		{ID: "opus", ProviderID: "anthropic"},
+	model, _ := m.Update(sessionInfoMsg{info: &agent.SessionInfo{
+		AvailableModels: []agent.ModelInfo{{ID: "sonnet"}, {ID: "opus"}},
 	}})
 	m = model.(*SessionViewModel)
 
-	if m.selectedModel != 1 {
-		t.Fatalf("selectedModel = %d, want 1 (opus, the session's current model, not the sonnet pref)", m.selectedModel)
+	if m.selectedModel != -1 {
+		t.Fatalf("selectedModel = %d, want -1 (no current model reported, no override invented)", m.selectedModel)
 	}
 }
 
-// A live session reports a current model that isn't in its own advertised
-// options list (e.g. a deprecated or custom model id) — IndexFunc yields -1,
-// the same sentinel as "no current model at all." A saved pref must still
-// not override it: the session is live, just running a model the picker
-// can't display, not a dead session with no opinion.
-func TestSessionView_ModelsResultMsg_CurrentModelNotInListStillBeatsPref(t *testing.T) {
-	// Not t.Parallel: CLANK_DIR is process-global.
-	t.Setenv("CLANK_DIR", t.TempDir())
-	if err := config.SavePreferences(config.Preferences{}); err != nil {
-		t.Fatalf("SavePreferences: %v", err)
-	}
-	prefs, err := config.LoadPreferences()
-	if err != nil {
-		t.Fatalf("LoadPreferences: %v", err)
-	}
-	prefs.SetModelFor(string(agent.BackendClaudeCode), config.ModelPreference{ModelID: "sonnet", ProviderID: "anthropic"})
-	if err := config.SavePreferences(prefs); err != nil {
-		t.Fatalf("SavePreferences: %v", err)
-	}
-
+// A current model absent from its own advertised list (deprecated or
+// custom id) also yields no override — but must not be treated as "no
+// opinion" either. IndexFunc's -1 covers both; the invariant is simply
+// that nothing else fills in.
+func TestSessionView_CurrentModelNotInListSelectsNoOverride(t *testing.T) {
+	t.Parallel()
 	m := NewSessionViewModel(nil, "sess-1")
 	m.width, m.height = 80, 40
-	m.backend = agent.BackendClaudeCode
-	m.info = &agent.SessionInfo{Backend: agent.BackendClaudeCode, CurrentModelID: "some-deprecated-model"}
 
-	model, _ := m.Update(modelsResultMsg{models: []agent.ModelInfo{
-		{ID: "sonnet", ProviderID: "anthropic"},
-		{ID: "opus", ProviderID: "anthropic"},
+	model, _ := m.Update(sessionInfoMsg{info: &agent.SessionInfo{
+		CurrentModelID:  "some-deprecated-model",
+		AvailableModels: []agent.ModelInfo{{ID: "sonnet"}, {ID: "opus"}},
 	}})
 	m = model.(*SessionViewModel)
 
 	if m.selectedModel >= 0 {
-		t.Fatalf("selectedModel = %d, want -1 (no display override, but pref must not have filled in for a live session)", m.selectedModel)
+		t.Fatalf("selectedModel = %d, want -1 (current model not displayable, no substitute)", m.selectedModel)
 	}
 }
 
-// Toggling to the Claude backend seeds the static permission modes (default
-// bypass), and Tab cycles through them, wrapping around.
-func TestCompose_ClaudeBackendSeedsAndCyclesModes(t *testing.T) {
+// In compose, Tab cycles the host-served presets (Default, Plan, …),
+// wrapping around. Presets arrive from the host, never from a seed.
+func TestCompose_TabCyclesPresets(t *testing.T) {
 	t.Parallel()
-	// Pin opencode as the starting backend so the toggle-to-claude step
-	// doesn't depend on the developer's saved DefaultBackend preference.
-	m := newSessionViewComposingWithBackend(nil, "/tmp/project", agent.BackendOpenCode)
+	m := newSessionViewComposingWithBackend(nil, "/tmp/project", agent.BackendClaudeCode)
 	m.width, m.height = 80, 40
 
-	model, _ := m.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
-	m = model.(*SessionViewModel)
-	if m.backend != agent.BackendClaudeCode {
-		t.Fatalf("backend=%s, want claude-code", m.backend)
+	if len(m.presets) != 0 {
+		t.Fatalf("compose seeded %d presets before the host answered", len(m.presets))
 	}
-	// Modes arrive from the host (agent-advertised), not from a seed.
-	advertised := make([]agent.SessionMode, 0, len(agent.ClaudePermissionModes))
-	for _, pm := range agent.ClaudePermissionModes {
-		advertised = append(advertised, agent.SessionMode{ID: string(pm), Name: pm.Label()})
+	claude := make([]presets.Preset, 0, 2)
+	for _, p := range presets.Sandbox() {
+		if p.Backend == agent.BackendClaudeCode {
+			claude = append(claude, p)
+		}
 	}
-	model, _ = m.Update(modesResultMsg{modes: advertised})
+	model, _ := m.Update(presetsResultMsg{backend: agent.BackendClaudeCode, presets: claude})
 	m = model.(*SessionViewModel)
-	if len(m.modes) != len(agent.ClaudePermissionModes) {
-		t.Fatalf("modes len=%d, want %d", len(m.modes), len(agent.ClaudePermissionModes))
+	if len(m.presets) != 2 {
+		t.Fatalf("presets len=%d, want Default+Plan", len(m.presets))
 	}
 
-	start := m.selectedMode
+	start := m.selectedPreset
 	model, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	m = model.(*SessionViewModel)
-	if m.selectedMode == start {
-		t.Fatal("Tab did not advance selectedMode")
+	if m.selectedPreset == start {
+		t.Fatal("Tab did not advance selectedPreset")
 	}
 
 	// Completing the cycle returns to the starting selection.
-	for range len(m.modes) - 1 {
+	for range len(m.presets) - 1 {
 		model, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 		m = model.(*SessionViewModel)
 	}
-	if m.selectedMode != start {
-		t.Fatalf("after full cycle selectedMode=%d, want %d", m.selectedMode, start)
+	if m.selectedPreset != start {
+		t.Fatalf("after full cycle selectedPreset=%d, want %d", m.selectedPreset, start)
 	}
 }
 
-// Toggling back to OpenCode clears the Claude modes so the agent list refetches.
-func TestCompose_ToggleBackToOpenCodeClearsModes(t *testing.T) {
+// Toggling backends clears the previous backend's presets and model
+// options — a stale Default preset carries the wrong required keys, and
+// a model value id from one backend is not advertised by another.
+func TestCompose_BackendToggleClearsPresetsAndModels(t *testing.T) {
 	t.Parallel()
-	// Pin opencode as the starting backend so the toggle sequence doesn't
-	// depend on the developer's saved DefaultBackend preference.
+	// Pin the starting backend so the toggle sequence doesn't depend on
+	// the developer's saved DefaultBackend preference.
 	m := newSessionViewComposingWithBackend(nil, "/tmp/project", agent.BackendOpenCode)
 	m.width, m.height = 80, 40
 
-	model, _ := m.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
+	model, _ := m.Update(presetsResultMsg{backend: agent.BackendOpenCode, presets: presets.Sandbox()})
 	m = model.(*SessionViewModel)
-	model, _ = m.Update(modesResultMsg{modes: []agent.SessionMode{{ID: "plan", Name: "Plan"}}})
-	m = model.(*SessionViewModel)
-	if len(m.modes) == 0 {
-		t.Fatal("expected fetched modes to populate the picker")
+	if len(m.presets) == 0 {
+		t.Fatal("setup: presets never populated")
 	}
-
-	// Next in the cycle is codex: an ACP-served backend whose modes are
-	// agent-owned and arrive in-session — the compose picker clears them.
-	model, _ = m.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
-	m = model.(*SessionViewModel)
-	if m.backend != agent.BackendCodex {
-		t.Fatalf("backend=%s, want codex", m.backend)
-	}
-	if len(m.modes) != 0 {
-		t.Fatalf("expected modes cleared on toggle to codex, got %d", len(m.modes))
-	}
+	m.models = []agent.ModelInfo{{ID: "opencode/big-pickle"}}
+	m.selectedModel = 0
 
 	model, _ = m.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
 	m = model.(*SessionViewModel)
-	if m.backend != agent.BackendOpenCode {
-		t.Fatalf("backend=%s, want opencode", m.backend)
+	if len(m.presets) != 0 || m.selectedPreset != 0 {
+		t.Fatalf("presets survived the toggle: %d selected=%d", len(m.presets), m.selectedPreset)
 	}
-	if len(m.modes) != 0 {
-		t.Fatalf("expected modes cleared on toggle to opencode, got %d", len(m.modes))
+	if len(m.models) != 0 || m.selectedModel != -1 {
+		t.Fatalf("model override survived the toggle: %d selected=%d", len(m.models), m.selectedModel)
 	}
 }
 
-// When an existing Claude session is opened from the inbox (sessionInfoMsg with
-// BackendClaudeCode), the model must also dispatch fetchModels so model overrides
-// remain available — matching the compose path behaviour.
-func TestSessionView_InboxClaudeBackend_FetchesModels(t *testing.T) {
+// A dead session opened from the inbox reports no runtime modes/models.
+// Nothing is hardcoded in their place; the message fetch rehydrates the
+// backend, and its handler must then re-fetch SessionInfo so the runtime
+// fields (the only picker source) arrive on the second pass.
+func TestSessionView_DeadSessionHealsPickersViaInfoRefetch(t *testing.T) {
 	t.Parallel()
 	m := NewSessionViewModel(nil, "sess-1")
 	m.width, m.height = 80, 40
@@ -209,16 +168,16 @@ func TestSessionView_InboxClaudeBackend_FetchesModels(t *testing.T) {
 		Backend: agent.BackendClaudeCode,
 		GitRef:  agent.GitRef{LocalPath: "/tmp/project"},
 	}
-	model, cmd := m.Update(sessionInfoMsg{info: info})
+	model, _ := m.Update(sessionInfoMsg{info: info})
 	m = model.(*SessionViewModel)
-
-	// No runtime modes on this info (dead session): the view must FETCH
-	// the agent's list rather than seeding a hardcoded one.
-	if len(m.modes) != 0 {
-		t.Fatalf("modes len=%d, want 0 until the host answers", len(m.modes))
+	if len(m.modes) != 0 || len(m.models) != 0 {
+		t.Fatalf("dead session seeded modes=%d models=%d, want none (no hardcoded lists)", len(m.modes), len(m.models))
 	}
+
+	model, cmd := m.Update(sessionMessagesMsg{})
+	m = model.(*SessionViewModel)
 	if cmd == nil {
-		t.Fatal("expected fetch commands from inbox Claude session, got nil")
+		t.Fatal("message load with empty runtime fields must re-fetch SessionInfo — pickers stay empty forever otherwise")
 	}
 }
 
@@ -242,38 +201,6 @@ func TestSessionView_ActiveTabCyclesModes(t *testing.T) {
 	}
 }
 
-// The compose view has no session, so its mode picker can only come from
-// the host's agent-advertised list. It previously seeded a hardcoded
-// claude list here (stale: no auto/dontAsk) and showed nothing at all for
-// other backends. Compose routes messages through updateCompose, which
-// has its own switch — a handler on the main Update path never fires
-// while composing, which is how this stayed broken after the in-session
-// picker was fixed.
-func TestCompose_ModesComeFromTheHostNotAHardcodedList(t *testing.T) {
-	t.Parallel()
-	m := newSessionViewComposingWithBackend(nil, "/tmp/project", agent.BackendCodex)
-	m.width, m.height = 80, 40
-
-	if len(m.modes) != 0 {
-		t.Fatalf("compose seeded %d modes before the host answered", len(m.modes))
-	}
-
-	// Codex's own vocabulary — nothing a hardcoded claude list contains.
-	model, _ := m.Update(modesResultMsg{modes: []agent.SessionMode{
-		{ID: "read-only", Name: "Read Only"},
-		{ID: "agent", Name: "Agent"},
-		{ID: "agent-full-access", Name: "Full Access"},
-	}})
-	m = model.(*SessionViewModel)
-
-	if len(m.modes) != 3 {
-		t.Fatalf("compose modes len=%d, want 3 from the host", len(m.modes))
-	}
-	if m.modes[0].perm != "read-only" || m.modes[2].label != "Full Access" {
-		t.Errorf("compose rendered %+v, want the agent's advertised modes verbatim", m.modes)
-	}
-}
-
 // batchYields reports whether cmd (possibly a tea.Batch) produces a
 // message of type T when run. Compose models built with an empty
 // projectDir short-circuit their fetches to result messages, so the batch
@@ -294,19 +221,6 @@ func batchYields[T tea.Msg](t *testing.T, cmd tea.Cmd) bool {
 	}
 	_, ok := msg.(T)
 	return ok
-}
-
-// Opening compose ("n" from the chat view) must fetch the agent's modes.
-// Only the backend-CHANGE path did, so the mode row stayed empty until the
-// user cycled backends with ctrl+b and came back.
-func TestCompose_InitFetchesModes(t *testing.T) {
-	t.Parallel()
-	m := newSessionViewComposingWithBackend(nil, "", agent.BackendCodex)
-	m.width, m.height = 80, 40
-
-	if !batchYields[modesResultMsg](t, m.Init()) {
-		t.Fatal("compose Init dispatched no modes fetch — the mode picker stays empty on open")
-	}
 }
 
 // Opening compose must also fetch presets — composeConfig() stays nil (and
@@ -346,84 +260,73 @@ func TestCompose_BackendSwitchRefetchesPresets(t *testing.T) {
 	}
 }
 
-// Modes and models are project-scoped, so switching the compose folder has
-// to drop the old list and refetch rather than carry one project's agents
-// into another.
-func TestCompose_FolderChangeRefetchesModes(t *testing.T) {
+// Model options are project-scoped (opencode aggregates per-repo
+// providers), so switching the compose folder drops the override —
+// carrying a stale value id into another project would send a config the
+// new folder's agent never advertised. Presets are host-scoped and stay.
+func TestCompose_FolderChangeDropsModelOverrideKeepsPresets(t *testing.T) {
 	t.Parallel()
 	m := newSessionViewComposingWithBackend(nil, "", agent.BackendOpenCode)
 	m.width, m.height = 80, 40
 
-	model, _ := m.Update(modesResultMsg{modes: []agent.SessionMode{{ID: "build", Name: "Build"}}})
+	model, _ := m.Update(presetsResultMsg{backend: agent.BackendOpenCode, presets: presets.Sandbox()})
 	m = model.(*SessionViewModel)
-	if len(m.modes) != 1 {
-		t.Fatalf("setup: modes = %d, want 1", len(m.modes))
-	}
+	m.models = []agent.ModelInfo{{ID: "opencode/big-pickle"}}
+	m.selectedModel = 0
 
-	cmd := m.applyProjectFolder("", focusFolder)
-	if len(m.modes) != 0 {
-		t.Errorf("previous folder's modes survived the switch: %+v", m.modes)
+	_ = m.applyProjectFolder("", focusFolder)
+	if len(m.models) != 0 || m.selectedModel != -1 {
+		t.Errorf("previous folder's model override survived: %d selected=%d", len(m.models), m.selectedModel)
 	}
-	if !batchYields[modesResultMsg](t, cmd) {
-		t.Fatal("folder switch dispatched no modes fetch")
+	if len(m.presets) == 0 {
+		t.Error("presets are host-scoped and must survive a folder change")
 	}
 }
 
-// The prewarmed picker shows instantly; a background refine re-fetches once
-// so a per-dir backend's per-repo agents surface a beat later.
-func TestCompose_RefineReFetchesModesAndModels(t *testing.T) {
+// A preset refetch (backend toggled away and back) must not reset the
+// user's pick when the refreshed list still offers it: selection follows
+// the preset id, not its index.
+func TestCompose_PresetRefetchPreservesSelectionByID(t *testing.T) {
 	t.Parallel()
-	m := newSessionViewComposingWithBackend(nil, "", agent.BackendOpenCode)
+	m := newSessionViewComposingWithBackend(nil, "/tmp/project", agent.BackendClaudeCode)
 	m.width, m.height = 80, 40
 
-	model, cmd := m.Update(refineCatalogMsg{})
-	m = model.(*SessionViewModel)
-	if !batchYields[modesResultMsg](t, cmd) {
-		t.Error("refine dispatched no modes re-fetch")
+	claude := make([]presets.Preset, 0, 2)
+	for _, p := range presets.Sandbox() {
+		if p.Backend == agent.BackendClaudeCode {
+			claude = append(claude, p)
+		}
 	}
-	if !batchYields[modelsResultMsg](t, cmd) {
-		t.Error("refine dispatched no models re-fetch")
-	}
-}
-
-// A refine must not reset the user's mode pick: if the refreshed list still
-// offers it, the selection follows it by id (its index may shift as
-// per-repo agents are appended).
-func TestCompose_RefinePreservesSelectedMode(t *testing.T) {
-	t.Parallel()
-	m := newSessionViewComposingWithBackend(nil, "/tmp/project", agent.BackendOpenCode)
-	m.width, m.height = 80, 40
-
-	model, _ := m.Update(modesResultMsg{modes: []agent.SessionMode{
-		{ID: "build", Name: "Build"}, {ID: "plan", Name: "Plan"},
-	}})
+	model, _ := m.Update(presetsResultMsg{backend: agent.BackendClaudeCode, presets: claude})
 	m = model.(*SessionViewModel)
-	m.selectedMode = 1 // user picks "plan"
+	m.selectedPreset = 1 // user picks Plan
 
-	// Refine lands: same built-ins plus a per-repo agent, reordered.
-	model, _ = m.Update(modesResultMsg{modes: []agent.SessionMode{
-		{ID: "reviewer", Name: "Reviewer"}, {ID: "build", Name: "Build"}, {ID: "plan", Name: "Plan"},
-	}})
+	// Refetch lands with a user preset prepended-by-the-host after the
+	// built-ins; the pick must follow Plan's id to its new index.
+	extended := append([]presets.Preset{}, claude...)
+	extended = append(extended, presets.Preset{
+		ID: "review", Name: "Review", Backend: agent.BackendClaudeCode,
+		Config: map[string]string{agent.ConfigOptionMode: "plan", "model": "default", "effort": "max"},
+	})
+	model, _ = m.Update(presetsResultMsg{backend: agent.BackendClaudeCode, presets: extended})
 	m = model.(*SessionViewModel)
-	if got := string(m.modes[m.selectedMode].perm); got != "plan" {
-		t.Fatalf("selected mode = %q after refine, want plan preserved across reorder", got)
+	if p := m.composeSelectedPreset(); p == nil || p.Name != "Plan" {
+		t.Fatalf("selected preset after refetch = %+v, want Plan preserved by id", p)
 	}
 
 	// If the refreshed list drops the pick, selection resets to the first.
-	model, _ = m.Update(modesResultMsg{modes: []agent.SessionMode{
-		{ID: "build", Name: "Build"},
-	}})
+	model, _ = m.Update(presetsResultMsg{backend: agent.BackendClaudeCode, presets: claude[:1]})
 	m = model.(*SessionViewModel)
-	if m.selectedMode != 0 {
-		t.Fatalf("selectedMode = %d after pick vanished, want 0", m.selectedMode)
+	if m.selectedPreset != 0 {
+		t.Fatalf("selectedPreset = %d after pick vanished, want 0", m.selectedPreset)
 	}
 }
 
-// Compose builds its create config from the backend's Default preset (which
-// carries every host-required key) overlaid with the picker's explicit mode
-// selection. Before presets load it returns nil — the host then rejects the
-// create loudly instead of the session opening in a factory default.
-func TestCompose_ConfigComesFromDefaultPresetPlusModePick(t *testing.T) {
+// Compose's create config IS the selected preset (the Default preset
+// carries every host-required key), plus the model picker's explicit
+// override. Before presets load it returns nil — the host then rejects
+// the create loudly instead of the session opening in a factory default.
+func TestCompose_ConfigComesFromSelectedPresetPlusModelPick(t *testing.T) {
 	t.Parallel()
 	m := newSessionViewComposingWithBackend(nil, "/tmp/project", agent.BackendClaudeCode)
 	m.width, m.height = 80, 40
@@ -432,7 +335,14 @@ func TestCompose_ConfigComesFromDefaultPresetPlusModePick(t *testing.T) {
 		t.Fatalf("config before presets load = %v, want nil (host rejects, no silent default)", cfg)
 	}
 
-	model, _ := m.Update(presetsResultMsg{backend: agent.BackendClaudeCode, presets: presets.Sandbox()})
+	// The host serves backend-scoped lists (GET /presets?backend=).
+	claude := make([]presets.Preset, 0, 2)
+	for _, p := range presets.Sandbox() {
+		if p.Backend == agent.BackendClaudeCode {
+			claude = append(claude, p)
+		}
+	}
+	model, _ := m.Update(presetsResultMsg{backend: agent.BackendClaudeCode, presets: claude})
 	m = model.(*SessionViewModel)
 
 	cfg := m.composeConfig()
@@ -440,16 +350,22 @@ func TestCompose_ConfigComesFromDefaultPresetPlusModePick(t *testing.T) {
 		t.Fatalf("config = %v, want the Default preset verbatim", cfg)
 	}
 
-	// An explicit mode pick overlays the preset's mode; the other required
-	// keys still ride along.
-	model, _ = m.Update(modesResultMsg{modes: []agent.SessionMode{
-		{ID: "plan", Name: "Plan Mode"}, {ID: "acceptEdits", Name: "Accept Edits"},
-	}})
+	// Tab to the Plan preset: the config is THAT preset, wholesale — not
+	// a mode knob twiddled on top of Default.
+	model, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	m = model.(*SessionViewModel)
-	m.selectedMode = 0
 	cfg = m.composeConfig()
 	if cfg[agent.ConfigOptionMode] != "plan" || cfg["model"] != "default" || cfg["effort"] != "default" {
-		t.Fatalf("config after mode pick = %v, want mode overlaid on the preset", cfg)
+		t.Fatalf("config after Tab = %v, want the Plan preset", cfg)
+	}
+
+	// A model pick (picker confirm) overlays the preset's model with the
+	// agent-advertised value id.
+	m.models = []agent.ModelInfo{{ID: "opus", Name: "Opus"}}
+	m.selectedModel = 0
+	cfg = m.composeConfig()
+	if cfg["model"] != "opus" || cfg[agent.ConfigOptionMode] != "plan" {
+		t.Fatalf("config after model pick = %v, want model overlaid on the preset", cfg)
 	}
 
 	// Presets for another backend must not satisfy this one.
@@ -458,6 +374,85 @@ func TestCompose_ConfigComesFromDefaultPresetPlusModePick(t *testing.T) {
 	m2 = model.(*SessionViewModel)
 	if cfg := m2.composeConfig(); cfg != nil {
 		t.Fatalf("cross-backend presets satisfied codex compose: %v", cfg)
+	}
+}
+
+// shift+tab opens the model picker in its loading state and kicks the
+// on-demand config-options probe — the only spinner moment. esc cancels
+// the wait; a result for a stale backend is dropped.
+func TestCompose_ModelPickerProbesOnOpen(t *testing.T) {
+	t.Parallel()
+	m := newSessionViewComposingWithBackend(nil, "", agent.BackendClaudeCode)
+	m.width, m.height = 80, 40
+
+	model, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	m = model.(*SessionViewModel)
+	if !m.showModelPicker || !m.modelOptionsLoading {
+		t.Fatalf("shift+tab: showModelPicker=%v loading=%v, want both true", m.showModelPicker, m.modelOptionsLoading)
+	}
+	if !batchYields[configOptionsResultMsg](t, cmd) {
+		t.Fatal("shift+tab dispatched no config-options probe")
+	}
+
+	// esc cancels the wait.
+	model, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = model.(*SessionViewModel)
+	if m.showModelPicker || m.modelOptionsLoading {
+		t.Fatalf("esc during load: showModelPicker=%v loading=%v, want both false", m.showModelPicker, m.modelOptionsLoading)
+	}
+}
+
+// The probe result builds the picker from the model option's values —
+// value ids as IDs (what the config channel sends), group labels as the
+// provider column. An errored or optionless probe closes the picker with
+// a visible reason instead of rendering an empty list.
+func TestCompose_ConfigOptionsResultBuildsModelPicker(t *testing.T) {
+	t.Parallel()
+	m := newSessionViewComposingWithBackend(nil, "", agent.BackendOpenCode)
+	m.width, m.height = 80, 40
+	m.showModelPicker = true
+	m.modelOptionsLoading = true
+	m.selectedModel = 0 // pre-set: skips the saved-preference lookup
+	m.models = []agent.ModelInfo{{ID: "opencode/big-pickle"}}
+
+	model, _ := m.Update(configOptionsResultMsg{
+		backend: agent.BackendOpenCode,
+		options: []agent.ConfigOption{{
+			ID: "model", Name: "Model", Category: agent.ConfigOptionModel, CurrentValue: "opencode/big-pickle",
+			Values: []agent.ConfigOptionValue{
+				{Value: "opencode/big-pickle", Name: "Big Pickle", Group: "opencode"},
+				{Value: "github-copilot/claude-sonnet-5", Name: "Claude Sonnet 5", Group: "github-copilot"},
+			},
+		}},
+	})
+	m = model.(*SessionViewModel)
+	if m.modelOptionsLoading || !m.showModelPicker {
+		t.Fatalf("after result: loading=%v picker=%v, want picker open and loaded", m.modelOptionsLoading, m.showModelPicker)
+	}
+	if len(m.models) != 2 || m.models[0].ID != "opencode/big-pickle" || m.models[1].ProviderID != "github-copilot" {
+		t.Fatalf("picker models = %+v, want value ids + group-as-provider", m.models)
+	}
+
+	// An error closes the picker with a reason.
+	m2 := newSessionViewComposingWithBackend(nil, "", agent.BackendOpenCode)
+	m2.width, m2.height = 80, 40
+	m2.showModelPicker = true
+	m2.modelOptionsLoading = true
+	model, _ = m2.Update(configOptionsResultMsg{backend: agent.BackendOpenCode, err: fmt.Errorf("adapter down")})
+	m2 = model.(*SessionViewModel)
+	if m2.showModelPicker || m2.err == nil {
+		t.Fatalf("errored probe: picker=%v err=%v, want closed with a reason", m2.showModelPicker, m2.err)
+	}
+
+	// A stale result (backend toggled mid-probe) is dropped.
+	m3 := newSessionViewComposingWithBackend(nil, "", agent.BackendCodex)
+	m3.width, m3.height = 80, 40
+	m3.showModelPicker = true
+	m3.modelOptionsLoading = true
+	model, _ = m3.Update(configOptionsResultMsg{backend: agent.BackendOpenCode, options: nil})
+	m3 = model.(*SessionViewModel)
+	if len(m3.models) != 0 {
+		t.Fatalf("stale probe populated models: %+v", m3.models)
 	}
 }
 

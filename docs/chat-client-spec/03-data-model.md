@@ -38,10 +38,13 @@ The session metadata snapshot, returned by create/get/list/search and embedded i
 | IsRemote | `is_remote` | bool | **Runtime-only**, stamped by gateway routing. |
 | CurrentModeID | `current_mode_id` | string | **Runtime-only** (0.5.0). The agent-owned session mode currently active. Empty when the backend is not live. |
 | AvailableModes | `available_modes` | `SessionMode[]` | **Runtime-only** (0.5.0). Agent-advertised modes `{id, name, description?}` for the mode picker. Empty when the backend is not live or reports none. |
+| CurrentModelID / AvailableModels | `current_model_id` / `available_models` | string / `ModelInfo[]` | **Runtime-only** (0.6.0). Agent-advertised models, same live-backend caveats as modes. |
+| ConfigOptions | `config_options` | `ConfigOption[]` | **Runtime-only** (0.6.2). The agent's FULL advertised config-option set — see [DATA-041]. |
 | CreatedAt / UpdatedAt / LastReadAt | `created_at` / `updated_at` / `last_read_at` | timestamp | RFC 3339. |
 
 - **[DATA-010] (MUST)** A client MUST NOT persist `server_url`, `is_remote`,
-  `current_mode_id`, or `available_modes` as session identity/state; they are runtime
+  `current_mode_id`, `available_modes`, `current_model_id`, `available_models`, or
+  `config_options` as session identity/state; they are runtime
   decorations that change between responses. **Why:** caching them as identity produces
   stale routing; caching modes shows a dead session's picker as live. **Golden:**
   `internal/agent/agent.go:422`.
@@ -154,8 +157,8 @@ Source: `internal/agent/agent.go:370`. Required: `backend`, `git_ref`, `prompt`.
 | GitRef | `git_ref` | Required repo identity. |
 | Prompt | `prompt` | Required initial message. |
 | Hostname | `hostname` | Target host; empty = `local`. |
-| Model | `model` | `ModelOverride`; omit for default. |
-| Config | `config` | Agent config, option-id → value-id; every key of the backend's Default preset REQUIRED. See [DATA-040]. |
+| Config | `config` | Option-id → value-id map; on create the backend's Default-preset keys are REQUIRED — see [DATA-040]. |
+| Model | `model` | `ModelOverride`; omit for default. Prefer `config`'s `model` key — this survives for older clients until 1.0. |
 | TicketID / SessionID | `ticket_id` / `session_id` | Optional. |
 
 ### `SendMessageOpts` (`POST /sessions/{id}/message`)
@@ -186,6 +189,19 @@ Source: `internal/agent/agent.go:565`.
   `internal/host/presetstore.go` (`ValidateCreateConfig`), `internal/agent/presets`;
   regressions `TestCreateSession_RejectsIncompleteConfig`,
   `TestBackend_SendConfigAppliesModeFirstThenSortedOptions`.
+
+- **[DATA-041] (SHOULD, 0.6.2)** `ConfigOption` is the uniform knob shape every editor
+  reads: `{id, name, description?, category?, current_value, values: [{value, name,
+  description?, group?}]}`, served verbatim from what the agent advertises (grouped value
+  lists flatten; the group label survives on each value). `current_value` is the agent's own
+  resolved state — for an untouched knob that is its real default (e.g. opencode's concrete
+  default model), which is how clients display truth without the host substituting
+  anything. Agents that express mode only as ACP `SessionModeState` still yield a `mode`
+  entry (synthesized host-side), so one list covers every agent shape. Sources: `GET
+  /config-options` ([OP-013](05-operations.md)) pre-session, `config_options` on runtime
+  session info in-session. The `value` ids are exactly what `config` sends ([DATA-040]).
+  **Golden:** `internal/agent/acp/backend_open.go` (`configOptionsFromACP`),
+  `internal/agent/agent.go` (`ConfigOption`).
 
 ### `ModelOverride` / `GitRef`
 

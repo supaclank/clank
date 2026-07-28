@@ -76,8 +76,7 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// migration-time refusal.
 	mx.HandleFunc("GET /software-manifest", m.handleSoftwareManifest)
 	mx.HandleFunc("GET /agents", m.handleListAgents)
-	mx.HandleFunc("GET /models", m.handleListModels)
-	mx.HandleFunc("GET /modes", m.handleListModes)
+	mx.HandleFunc("GET /config-options", m.handleConfigOptions)
 	mx.HandleFunc("GET /presets", m.handleListPresets)
 	mx.HandleFunc("POST /presets", m.handlePutPreset)
 	mx.HandleFunc("DELETE /presets/{id}", m.handleDeletePreset)

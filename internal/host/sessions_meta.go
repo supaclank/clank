@@ -74,6 +74,9 @@ func (s *Service) GetSessionMetadata(ctx context.Context, id string) (agent.Sess
 		if mr, ok := b.(agent.ModelReporter); ok {
 			info.CurrentModelID, info.AvailableModels = mr.Models()
 		}
+		if cr, ok := b.(agent.ConfigOptionsReporter); ok {
+			info.ConfigOptions = cr.ConfigOptions()
+		}
 	}
 	return info, nil
 }

@@ -61,9 +61,8 @@ func (b *Backend) Open(ctx context.Context) error {
 		b.mu.Lock()
 		b.sessionID = sid
 		b.red.setSessionID(sid)
-		publish := b.applySessionStateLocked(ns.Modes, ns.ConfigOptions)
+		b.applySessionStateLocked(ns.Modes, ns.ConfigOptions)
 		b.mu.Unlock()
-		publish()
 
 	} else {
 		conn.Register(sdk.SessionId(resume), b)
@@ -79,14 +78,13 @@ func (b *Backend) Open(ctx context.Context) error {
 			Cwd:        b.workDir,
 			McpServers: []sdk.McpServer{},
 		})
-		var publish func()
 		b.mu.Lock()
 		if err == nil {
 			// session/load carries the same modes + config options as
 			// session/new. Skipping them here left every RESUMED session
 			// with no mode picker and no model list — i.e. almost every
 			// session a user opens from the inbox.
-			publish = b.applySessionStateLocked(loaded.Modes, loaded.ConfigOptions)
+			b.applySessionStateLocked(loaded.Modes, loaded.ConfigOptions)
 		}
 		if err != nil {
 			// Updates may have streamed in before the RPC failed; discard
@@ -96,9 +94,6 @@ func (b *Backend) Open(ctx context.Context) error {
 			b.red.finishReplay()
 		}
 		b.mu.Unlock()
-		if publish != nil {
-			publish()
-		}
 		if err != nil {
 			conn.Deregister(sdk.SessionId(resume))
 			return fmt.Errorf("acp %s: session/load %s: %w", b.profile.ID, resume, err)
@@ -167,13 +162,11 @@ func (b *Backend) Modes() (string, []agent.SessionMode) {
 	return b.currentMode, slices.Clone(b.availableModes)
 }
 
-// applySessionStateLocked records the agent-advertised session state that
-// every open path returns: modes (the mode picker) and config options
-// (the model picker). Callers hold b.mu. Returns the sinks to invoke and
-// their arguments so the caller can publish after releasing b.mu —
-// calling out to the manager (which takes its own catalogMu) while
-// holding b.mu would invert the two locks' usual order.
-func (b *Backend) applySessionStateLocked(modes *sdk.SessionModeState, opts []sdk.SessionConfigOption) (publish func()) {
+// applySessionStateLocked records the agent-advertised session state
+// that session/new, session/load, and config_option_update all carry:
+// modes, the model list, and the full config-option set. Callers hold
+// b.mu.
+func (b *Backend) applySessionStateLocked(modes *sdk.SessionModeState, opts []sdk.SessionConfigOption) {
 	// Two channels carry the same thing and agents differ in which they
 	// use: claude-agent-acp sends a SessionModeState AND a "mode" config
 	// option; `opencode acp` sends ONLY the config option (its agents).
@@ -189,16 +182,72 @@ func (b *Backend) applySessionStateLocked(modes *sdk.SessionModeState, opts []sd
 		b.currentModel = current
 		b.availableModels = models
 	}
-	onCatalog, workDir, models := b.onCatalog, b.workDir, b.availableModels
-	onModes, modesOut := b.onModes, b.availableModes
-	return func() {
-		if onCatalog != nil && len(models) > 0 {
-			onCatalog(workDir, models)
-		}
-		if onModes != nil && len(modesOut) > 0 {
-			onModes(workDir, modesOut)
-		}
+	b.configOptions = configOptionsFromACP(opts)
+	// An agent that expresses mode ONLY as SessionModeState still yields
+	// one uniform knob list. Sourced from the retained fields so a later
+	// config_option_update (which carries no mode state) can't lose it.
+	if selectByCategory(opts, modeConfigOptionID) == nil && len(b.availableModes) > 0 {
+		b.configOptions = append([]agent.ConfigOption{synthesizedModeOption(b.currentMode, b.availableModes)}, b.configOptions...)
 	}
+}
+
+// configOptionsFromACP converts advertised config options to the wire
+// type verbatim, flattening grouped values (group label retained).
+func configOptionsFromACP(opts []sdk.SessionConfigOption) []agent.ConfigOption {
+	out := make([]agent.ConfigOption, 0, len(opts))
+	for _, o := range opts {
+		sel := o.Select
+		if sel == nil {
+			continue // non-select option kinds: nothing selectable to offer
+		}
+		co := agent.ConfigOption{
+			ID:           string(sel.Id),
+			Name:         sel.Name,
+			CurrentValue: string(sel.CurrentValue),
+		}
+		if sel.Category != nil {
+			co.Category = string(*sel.Category)
+		}
+		if sel.Description != nil {
+			co.Description = *sel.Description
+		}
+		switch {
+		case sel.Options.Ungrouped != nil:
+			for _, it := range *sel.Options.Ungrouped {
+				co.Values = append(co.Values, configValueFromACP(it, ""))
+			}
+		case sel.Options.Grouped != nil:
+			for _, g := range *sel.Options.Grouped {
+				for _, it := range g.Options {
+					co.Values = append(co.Values, configValueFromACP(it, g.Name))
+				}
+			}
+		}
+		out = append(out, co)
+	}
+	return out
+}
+
+func configValueFromACP(it sdk.SessionConfigSelectOption, group string) agent.ConfigOptionValue {
+	v := agent.ConfigOptionValue{Value: string(it.Value), Name: it.Name, Group: group}
+	if it.Description != nil {
+		v.Description = *it.Description
+	}
+	return v
+}
+
+// synthesizedModeOption presents SessionModeState as a config option.
+func synthesizedModeOption(current string, modes []agent.SessionMode) agent.ConfigOption {
+	co := agent.ConfigOption{
+		ID:           modeConfigOptionID,
+		Name:         "Mode",
+		Category:     modeConfigOptionID,
+		CurrentValue: current,
+	}
+	for _, m := range modes {
+		co.Values = append(co.Values, agent.ConfigOptionValue{Value: m.ID, Name: m.Name, Description: m.Description})
+	}
+	return co
 }
 
 // selectByCategory finds the select config option for a semantic
@@ -265,6 +314,14 @@ func selectItems(o sdk.SessionConfigSelectOptions) []sdk.SessionConfigSelectOpti
 		}
 	}
 	return out
+}
+
+// ConfigOptions implements agent.ConfigOptionsReporter: the agent's
+// full advertised config knobs, untranslated.
+func (b *Backend) ConfigOptions() []agent.ConfigOption {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.configOptions)
 }
 
 // Models implements agent.ModelReporter: the agent-advertised model

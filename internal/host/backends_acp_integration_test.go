@@ -121,7 +121,7 @@ func TestIntegration_OpenCodeACP_ResumeAcrossProcesses(t *testing.T) {
 	defer cancel()
 
 	// Phase 1: create + complete a turn.
-	mgr1, err := host.NewOpenCodeACPManager(acpDirs(t))
+	mgr1, err := host.NewOpenCodeACPManager()
 	if err != nil {
 		t.Fatalf("NewOpenCodeACPManager: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestIntegration_OpenCodeACP_ResumeAcrossProcesses(t *testing.T) {
 	mgr1.Shutdown()
 
 	// Phase 2: fresh manager (fresh adapter process) resumes + continues.
-	mgr2, err := host.NewOpenCodeACPManager(acpDirs(t))
+	mgr2, err := host.NewOpenCodeACPManager()
 	if err != nil {
 		t.Fatalf("NewOpenCodeACPManager (2): %v", err)
 	}

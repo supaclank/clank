@@ -18,6 +18,10 @@ func (b *Backend) HandleSessionUpdate(_ context.Context, n sdk.SessionNotificati
 	b.lastUpdate.set(time.Now())
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if cu := n.Update.ConfigOptionUpdate; cu != nil {
+		// Carries the FULL option set; keep the retained knobs current.
+		b.applySessionStateLocked(nil, cu.ConfigOptions)
+	}
 	for _, e := range b.red.reduce(n) {
 		b.emitLocked(e)
 	}

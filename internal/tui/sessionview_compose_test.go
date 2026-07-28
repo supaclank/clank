@@ -109,10 +109,9 @@ func TestNewSessionViewComposing_ResolvesDefaultBackendFromPreferences(t *testin
 }
 
 // Switching the compose project folder must drop the previous folder's
-// model selection along with its modes — both are project-scoped. A
-// lingering selectedModel index would be forwarded as a `--model <id>`
-// override into the new folder, which may not offer that model. This
-// mirrors the guard applyBackend already has for backend switches.
+// model pick — model options are project-scoped (opencode aggregates
+// per-repo providers), and a lingering pick would ride into the new
+// folder as a config["model"] the agent there never advertised.
 func TestCompose_ApplyProjectFolder_ClearsStaleModel(t *testing.T) {
 	t.Parallel()
 	m := newSessionViewComposingWithBackend(nil, "/tmp/old-project", agent.BackendOpenCode)
@@ -121,8 +120,6 @@ func TestCompose_ApplyProjectFolder_ClearsStaleModel(t *testing.T) {
 	// Seed a stale selection from the previous folder.
 	m.models = []agent.ModelInfo{{ID: "gpt-5", ProviderID: "openai"}}
 	m.selectedModel = 0
-	m.modes = []selectableMode{{label: "build", perm: "build"}}
-	m.selectedMode = 0
 
 	m.applyProjectFolder(t.TempDir(), focusFolder)
 
@@ -131,9 +128,6 @@ func TestCompose_ApplyProjectFolder_ClearsStaleModel(t *testing.T) {
 	}
 	if m.selectedModel != -1 {
 		t.Errorf("selectedModel = %d, want -1 after folder switch", m.selectedModel)
-	}
-	if m.modes != nil {
-		t.Errorf("modes = %+v, want nil after folder switch", m.modes)
 	}
 }
 

@@ -82,13 +82,16 @@ rows above.
    claude-specific wire fields. Modes are agent-owned since 0.5.0 ([DATA-040](../03-data-model.md)):
    the `agent` field is no longer read by any backend, and a claude mode id is silently
    skipped by an agent that does not advertise it, so the picker is a **no-op on opencode
-   and codex**. Fix: populate from `GET /modes` and send the chosen id as `permission_mode`.
+   and codex**. Fix: build the create flow on `GET /presets` + the `config` map
+   ([DATA-040](../03-data-model.md), [OP-016](../05-operations.md)).
 5. **`revert` is gone** — the endpoint was removed in 0.6.0; the client still calls it and
    the affordance is user-reachable, so it 404s. Remove it.
 6. **Questions are retired** — `/questions/.../reply` and the `question` part tag no longer
    exist ([README retire register](../README.md)); the card is unreachable. Delete it.
-7. **`/modes` and `/models` are prewarmed but not instant** — tolerate an empty first
-   response and re-read ([OP-013](../05-operations.md)).
+7. **`/modes` and `/models` are retired (0.6.2)** — creates without the Default-preset
+   config keys now fail `400 config_incomplete`; fetch `GET /presets`, send the chosen
+   preset's `config`, and use `GET /config-options` only for knob editors
+   ([OP-013](../05-operations.md), [OP-016](../05-operations.md)).
 8. **Deny messages now become a follow-up user message** ([OP-015](../05-operations.md)) —
    expect the text in the transcript and the session to go busy after a rejection.
 

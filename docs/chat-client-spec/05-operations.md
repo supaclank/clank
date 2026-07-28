@@ -24,7 +24,8 @@ Source of truth for routes: `internal/host/mux/mux.go:72`. All require the beare
 | POST | `/sessions/{id}/draft` | `{ draft }` | `204` | Yes | Save composer draft. |
 | POST | `/sessions/{id}/followup` | — | `200` `SessionInfo` | Yes | Toggle follow-up flag. |
 | GET | `/events`, `/sessions/{id}/events` | — | `200` SSE | — | See [04](04-event-protocol.md). |
-| GET | `/backends`, `/modes`, `/models` | query | `200` …`Info[]` | Yes | Capability lookups, per project dir — see [OP-013]. |
+| GET | `/backends` | — | `200` `BackendInfo[]` | Yes | Capability lookup — see [OP-009]. |
+| GET | `/config-options` | query | `200` `ConfigOption[]` | Yes | Live agent config options, probed on demand (slow by design) — see [OP-013]. |
 | GET | `/agents` | query | `200` `[]` | Yes | **Deprecated 0.6.0**, always empty — see [OP-014]. |
 | GET | `/presets` | `backend?` | `200` `Preset[]` | Yes | Built-in + user presets; built-ins first — see [OP-016]. |
 | POST | `/presets` | `Preset` | `200` | Yes | Create/replace a USER preset; built-in ids reserved. |
@@ -214,22 +215,26 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
 
 ### Capability lookups
 
-- **[OP-009] (SHOULD)** `GET /backends`, `/modes`, `/models` populate pickers. A client
-  SHOULD fetch them lazily/cached, not on every render. They are pure reads. **Golden:**
-  `internal/host/mux`.
+- **[OP-009] (SHOULD)** `GET /backends` and `GET /presets` populate pickers; both are pure
+  host-store reads a client can fetch eagerly. `GET /config-options` is NOT in that class —
+  see [OP-013]. **Golden:** `internal/host/mux`.
 
-- **[OP-013] (MUST)** `GET /modes` and `/models` are **non-blocking** and answered **per
-  project dir**. ACP advertises both only on session open, so a host prewarms a
-  backend-global catalog at start and serves it for any dir immediately; a per-dir backend
-  (whose catalog varies by repo, e.g. opencode) additionally probes the specific dir in the
-  background and refines its answer. A client MUST NOT treat the first response as final: it
-  MUST re-read shortly after (the reference client re-fetches once after
-  `catalogRefineDelay`) to pick up a dir-specific list that landed after the initial read,
-  and MUST tolerate an empty list before the prewarm completes (e.g. a cold sandbox wake).
-  Answers are never shared between dirs beyond the global seed: project config decides which
-  agents and providers exist. **Golden:** `internal/host/backends_acp.go` (`Prewarm`,
-  `probeDirInBackground`), `internal/host/catalogstore.go`.
+- **[OP-013] (MUST, rewritten 0.6.2)** `GET /config-options?backend=&git_local_path=|
+  git_worktree_id=` returns the agent's **live advertised config options**
+  ([DATA-041](03-data-model.md)) for that project by opening one short-lived agent session
+  server-side — ACP advertises options only on session open, so this is the only
+  pre-session source. It is **blocking, on-demand, and uncached**: expect seconds, call it
+  when a knob editor opens (behind a spinner), never eagerly on compose open or per render.
+  The host single-flights concurrent requests (per backend, per project dir for per-dir
+  backends like opencode; host-wide otherwise) and surfaces probe failures as errors — an
+  empty `200` list means the agent really advertises nothing. Everyday flows never need this
+  endpoint: presets carry the create config ([OP-016]), and a live session's options ride
+  `config_options` on runtime session info. **Retired with this rewrite:** `GET /modes`,
+  `GET /models`, and the prewarm/refine contract (serve-then-refine, `catalogRefineDelay`
+  re-reads, per-dir background probes, the persisted catalog). **Golden:**
+  `internal/host/backends_acp.go` (`ConfigOptions`), `internal/host/mux/catalog.go`.
 
 - **[OP-014] (SHOULD)** `GET /agents` is **deprecated in 0.6.0** and returns `[]` on every
   ACP-served backend. OpenCode agents are now agent-advertised session modes: clients
-  SHOULD read `/modes` and `available_modes` ([DATA-040](03-data-model.md)) instead.
+  SHOULD read `available_modes`/`config_options` on runtime session info (or
+  `/config-options` pre-session) instead.

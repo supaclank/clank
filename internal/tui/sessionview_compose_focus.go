@@ -140,15 +140,15 @@ func (m *SessionViewModel) handleComposeNavKey(msg tea.KeyPressMsg) (tea.Model, 
 	return m, nil
 }
 
-// applyBackend switches to backend b and rebuilds the per-backend model
-// and mode state, returning the catalog-refetch command. No-op (nil cmd)
-// when b is already selected so re-selecting doesn't flicker the lists.
+// applyBackend switches to backend b and rebuilds the per-backend state,
+// returning the preset-refetch command. No-op (nil cmd) when b is already
+// selected so re-selecting doesn't flicker the lists.
 //
-// Each backend has its own model catalog (claude-code is a closed
-// sonnet/opus/haiku enum; opencode aggregates the user's configured
-// providers). Dropping the stale list and refetching prevents submitting
-// the previous backend's selectedModel index, which would be forwarded as
-// `--model <opencode-id>` to the claude CLI and crash on spawn.
+// Model options and presets are both backend-scoped: a model value id
+// picked under one backend is not advertised by another, and a stale
+// Default preset would carry the wrong required keys. Drop both; the
+// preset list refetches now (host store read — instant) and the model
+// picker re-probes on next open.
 func (m *SessionViewModel) applyBackend(b agent.BackendType) tea.Cmd {
 	if m.backend == b {
 		return nil
@@ -156,14 +156,9 @@ func (m *SessionViewModel) applyBackend(b agent.BackendType) tea.Cmd {
 	m.backend = b
 	m.models = nil
 	m.selectedModel = -1
-	// Every backend is ACP-served and owns its mode vocabulary, so the
-	// list is fetched, never hardcoded — a static claude list here was
-	// both stale (missing auto/dontAsk) and wrong for the others.
 	m.modes, m.selectedMode = nil, 0
-	// Presets are backend-scoped too (composeConfig matches p.Backend == m.backend);
-	// drop the old backend's list so a stale Default preset can't linger.
-	m.presets = nil
-	return tea.Batch(m.fetchModes(), m.fetchModels(), m.fetchPresets(), refineCatalog())
+	m.presets, m.selectedPreset = nil, 0
+	return m.fetchPresets()
 }
 
 // toggleBackend cycles through AllBackends (the ctrl+b shortcut).
