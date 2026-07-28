@@ -23,7 +23,9 @@ import (
 )
 
 // TestMain builds the fake claude binary once and points
-// setupTokenBinary at the absolute path. Subsequent tests share it.
+// setupTokenBinary at the absolute path, and the fake codex binary
+// for the device-auth ceremony tests (auth_codex_device_test.go).
+// Subsequent tests share them.
 func TestMain(m *testing.M) {
 	bin, cleanup, err := buildFakeClaude()
 	if err != nil {
@@ -34,6 +36,14 @@ func TestMain(m *testing.M) {
 	prev := setupTokenBinary
 	setupTokenBinary = bin
 	defer func() { setupTokenBinary = prev }()
+
+	codexBin, codexCleanup, err := buildFakeCodex()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "buildFakeCodex:", err)
+		os.Exit(1)
+	}
+	defer codexCleanup()
+	fakeCodexBin = codexBin
 
 	// Fake binary has no TUI debounce; zero delay is fine in tests.
 	prevDelay := setupTokenSubmitDelay

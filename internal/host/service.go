@@ -190,6 +190,14 @@ type Options struct {
 	// spawned claude already uses that login there.
 	AnthropicClaudeCLIAuth bool
 
+	// OpenAICodexCLIAuth lets codex provider status report the
+	// machine's own codex CLI login ($CODEX_HOME/auth.json) as a
+	// connected ChatGPT subscription when clank didn't run the device
+	// ceremony — presence detection only. Set by the local laptop
+	// provisioner: the codex-acp adapter inherits the host environment
+	// there and uses that login anyway.
+	OpenAICodexCLIAuth bool
+
 	// ProjectCommitterName / ProjectCommitterEmail set the git committer
 	// identity stamped on the seed commit of a project scaffolded via
 	// CreateProjectFromTemplate (also persisted as the new repo's local
@@ -322,18 +330,26 @@ func New(opts Options) *Service {
 		if opts.AnthropicClaudeCLIAuth {
 			am.EnableClaudeCLIFallback()
 		}
+		if opts.OpenAICodexCLIAuth {
+			am.EnableCodexCLIFallback()
+		}
 		// Wire claude-code to read its env vars from this AuthManager,
 		// resolved at adapter spawn so credential changes apply on the
 		// next supervisor cycle.
 		if acpMgr, ok := s.backendManagers[agent.BackendClaudeCode].(*ACPBackendManager); ok {
 			acpMgr.SetEnvResolver(am.AnthropicEnv)
 		}
-		// ACP-served backends read credentials from profile env; a
-		// credential write nudges the supervisor so the env-fingerprint
-		// restart cycles the adapter with the new value.
+		// ACP-served backends read credentials from profile env and, for
+		// codex's ChatGPT login, from $CODEX_HOME/auth.json. Any OpenAI
+		// credential change restarts the adapters so their app-server
+		// children re-read both. The device-auth ceremony runs the same
+		// pinned codex the adapter uses.
 		if acpMgr, ok := s.backendManagers[agent.BackendCodex].(*ACPBackendManager); ok {
 			acpMgr.SetEnvResolver(am.OpenAIEnv)
-			am.SetOpenAICredentialCallback(acpMgr.Supervisor().Nudge)
+			am.SetOpenAICredentialCallback(acpMgr.RestartAdapters)
+			if login, ok := acpMgr.LoginArgv(); ok {
+				am.SetCodexLoginCommand(login)
+			}
 		}
 	}
 

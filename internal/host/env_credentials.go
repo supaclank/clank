@@ -22,6 +22,10 @@ const (
 	EnvAnthropicAuthToken   = "ANTHROPIC_AUTH_TOKEN"
 	// EnvCodexAPIKey authenticates the codex-acp adapter (OpenAI).
 	EnvCodexAPIKey = "CODEX_API_KEY"
+	// EnvOpenAIAPIKey is OpenAI's generic key var; the codex CLI honors
+	// it too, so the device-auth ceremony scrubs it (see
+	// auth_codex_device.go).
+	EnvOpenAIAPIKey = "OPENAI_API_KEY"
 )
 
 // providerEnvVars maps catalog provider IDs to the env var names that
@@ -35,7 +39,8 @@ const (
 var providerEnvVars = map[string][]string{
 	ProviderAnthropicClaudeCode: {EnvClaudeCodeOAuthToken},
 	ProviderAnthropicAPI:        {EnvAnthropicAPIKey, EnvAnthropicAuthToken},
-	"openai":                    {"OPENAI_API_KEY"},
+	ProviderOpenAICodexAPI:      {EnvCodexAPIKey},
+	"openai":                    {EnvOpenAIAPIKey},
 	"google":                    {"GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GEMINI_API_KEY"},
 	"xai":                       {"XAI_API_KEY"},
 	"groq":                      {"GROQ_API_KEY"},

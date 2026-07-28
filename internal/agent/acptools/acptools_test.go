@@ -66,3 +66,23 @@ func TestFirstMissingEntry_NamesTheActualGap(t *testing.T) {
 		t.Error("entryExists = false, want true once both entries exist")
 	}
 }
+
+// Every spawn entry lives under a package the manifest pins: the two
+// adapter dist bundles and codex's own bin launcher (used by the
+// device-auth ceremony so login and adapter share one codex version).
+func TestPathsFor_LocatesPinnedEntries(t *testing.T) {
+	t.Parallel()
+	p := pathsFor("/tools", "/usr/bin/bun")
+	if p.BunBin != "/usr/bin/bun" || p.Dir != "/tools" {
+		t.Errorf("pathsFor basics: %+v", p)
+	}
+	if want := "/tools/node_modules/@agentclientprotocol/codex-acp/dist/index.js"; p.CodexACPEntry != want {
+		t.Errorf("CodexACPEntry = %q, want %q", p.CodexACPEntry, want)
+	}
+	if want := "/tools/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"; p.ClaudeACPEntry != want {
+		t.Errorf("ClaudeACPEntry = %q, want %q", p.ClaudeACPEntry, want)
+	}
+	if want := "/tools/node_modules/@openai/codex/bin/codex.js"; p.CodexBin != want {
+		t.Errorf("CodexBin = %q, want %q", p.CodexBin, want)
+	}
+}

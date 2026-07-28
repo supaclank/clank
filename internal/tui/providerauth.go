@@ -32,7 +32,6 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
 )
 
 // providerAuthCaller is the call surface the modal needs to drive an
@@ -654,7 +653,8 @@ func (m providerAuthModel) View() string {
 
 	case providerPhaseConfirm:
 		var warn string
-		if isAnthropicProviderID(m.activeProvider.ProviderID) {
+		switch m.activeProvider.Backend {
+		case agent.BackendClaudeCode:
 			// Anthropic creds are env vars consumed by the NEXT claude
 			// spawn — no in-place restart, no impact on running sessions.
 			warn = fmt.Sprintf(
@@ -662,7 +662,13 @@ func (m providerAuthModel) View() string {
 					"Sessions already running continue with their current credentials.",
 				m.activeProvider.DisplayName,
 			)
-		} else {
+		case agent.BackendCodex:
+			warn = fmt.Sprintf(
+				"Connecting %s restarts the codex adapter in this sandbox.\n"+
+					"Running codex sessions reconnect on their next message.",
+				m.activeProvider.DisplayName,
+			)
+		default:
 			warn = fmt.Sprintf(
 				"Connecting %s will restart the OpenCode server in this sandbox.\n"+
 					"Any sessions currently running will need to be restarted manually.",
@@ -753,7 +759,7 @@ func (m providerAuthModel) View() string {
 				Render("  " + m.flow.UserCode))
 			sb.WriteString("\n\n")
 		}
-		label := awaitingLabel(m.flowState, m.activeProvider.AuthType, isAnthropicProviderID(m.activeProvider.ProviderID))
+		label := awaitingLabel(m.flowState, m.activeProvider)
 		sb.WriteString(m.spinner.View() + " " + label)
 		sb.WriteString("\n\n")
 		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
@@ -781,18 +787,22 @@ func (m providerAuthModel) View() string {
 		Render(sb.String())
 }
 
-// awaitingLabel chooses the spinner label based on flow state, the
-// provider's AuthType, and whether the provider is Anthropic (no
-// opencode-server restart involved; credential is just persisted for
-// the next claude spawn).
-func awaitingLabel(state agent.DeviceFlowState, authType string, isAnthropic bool) string {
+// awaitingLabel chooses the spinner label based on flow state and the
+// provider: the authorized phase describes what the credential write
+// actually restarts (OpenCode's server, codex's adapter, or nothing —
+// Anthropic creds are just persisted for the next claude spawn).
+func awaitingLabel(state agent.DeviceFlowState, provider agent.ProviderAuthInfo) string {
 	if state == agent.DeviceFlowAuthorized {
-		if isAnthropic {
+		switch provider.Backend {
+		case agent.BackendOpenCode:
+			return "Authorized — restarting OpenCode server (this can take 10–15s)…"
+		case agent.BackendCodex:
+			return "Authorized — restarting codex adapter…"
+		default:
 			return "Saved — finalizing…"
 		}
-		return "Authorized — restarting OpenCode server (this can take 10–15s)…"
 	}
-	switch authType {
+	switch provider.AuthType {
 	case agent.AuthTypeDevice:
 		return "Waiting for authorization…"
 	case agent.AuthTypeOAuthCode:
@@ -800,16 +810,6 @@ func awaitingLabel(state agent.DeviceFlowState, authType string, isAnthropic boo
 	default:
 		return "Saving credential…"
 	}
-}
-
-// isAnthropicProviderID reports whether providerID is one of the
-// Anthropic catalog entries (whose credentials live in clank's
-// anthropic sink, not opencode's auth.json). Mirrors the host-side
-// isAnthropicProvider, kept inline here to avoid leaking that helper
-// across package boundaries.
-func isAnthropicProviderID(providerID string) bool {
-	return providerID == host.ProviderAnthropicClaudeCode ||
-		providerID == host.ProviderAnthropicAPI
 }
 
 // providerSectionBreakpoints returns the cursor positions at the top

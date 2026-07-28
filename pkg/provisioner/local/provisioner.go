@@ -187,6 +187,10 @@ func (p *Provisioner) EnsureHost(_ context.Context, _ string) (provisioner.HostR
 		// the machine's own login, so report it in provider status
 		// instead of prompting a connect that would change nothing.
 		"--claude-cli-auth",
+		// And for codex: the adapter inherits the host environment and
+		// reads $CODEX_HOME/auth.json, so an existing `codex login`
+		// already authenticates sessions on this machine.
+		"--codex-cli-auth",
 	}
 	if p.opts.DataDir != "" {
 		if err := os.MkdirAll(p.opts.DataDir, 0o700); err != nil {
