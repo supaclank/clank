@@ -148,11 +148,13 @@ func TestParse_RejectsUnreservedBuiltinID(t *testing.T) {
 	}
 }
 
-// Preset.ID rides DELETE /presets/{id} as a single path segment; a "/" or
-// "\" in it would make the preset impossible to address for deletion.
+// Preset.ID rides DELETE /presets/{id} as a single URL path segment; "/"
+// and "\" break segment addressing, and "?", "#", "%" are URL-structural
+// characters that could truncate or mis-decode the id before it reaches
+// the handler.
 func TestPreset_ValidateRejectsPathUnsafeID(t *testing.T) {
 	t.Parallel()
-	for _, id := range []string{"foo/bar", `foo\bar`, "foo bar", " foo", "foo "} {
+	for _, id := range []string{"foo/bar", `foo\bar`, "foo bar", " foo", "foo ", "foo?bar", "foo#bar", "foo%2Fbar"} {
 		p := presets.Preset{ID: id, Name: "N", Backend: agent.BackendCodex, Config: map[string]string{"mode": "agent"}}
 		if err := p.Validate(); err == nil {
 			t.Errorf("Validate() with id %q = nil error, want rejection", id)

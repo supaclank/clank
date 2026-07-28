@@ -21,10 +21,17 @@ package presets
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/acksell/clank/internal/agent"
 )
+
+// validIDPattern is the id alphabet safe to route as a single URL path
+// segment (DELETE /presets/{id}): no "/", "\", whitespace, or URL-reserved
+// characters ("?", "#", "%", …) that could make the id ambiguous or
+// truncated before it reaches the handler.
+var validIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // Preset is one named config bundle for one backend.
 type Preset struct {
@@ -50,10 +57,13 @@ func (p Preset) Validate() error {
 	if p.ID == "" {
 		return fmt.Errorf("preset id is required")
 	}
-	// DELETE /presets/{id} routes on a single path segment: an id carrying
-	// "/" or "\" couldn't be addressed to delete it again.
-	if strings.TrimSpace(p.ID) != p.ID || strings.ContainsAny(p.ID, " \t\n/\\") {
-		return fmt.Errorf("preset id %q must not contain whitespace or path separators", p.ID)
+	// DELETE /presets/{id} routes id as a single URL path segment: "/" and
+	// "\" break segment addressing outright, and "?", "#", "%" are URL
+	// syntax (query/fragment start, percent-decoding) that can make the id
+	// ambiguous or truncated before it reaches the handler. Restrict to a
+	// safe id alphabet instead of chasing individual unsafe characters.
+	if !validIDPattern.MatchString(p.ID) {
+		return fmt.Errorf("preset id %q must match %s", p.ID, validIDPattern)
 	}
 	if p.Name == "" {
 		return fmt.Errorf("preset name is required")
