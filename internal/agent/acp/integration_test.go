@@ -174,7 +174,7 @@ func TestIntegration_HermesACP_FullTurn(t *testing.T) {
 			case agent.EventMessage:
 				// The assistant message event is a shell (INV: content
 				// streams as part deltas); never clobber accumulated text.
-				if md := e.Data.(agent.MessageData); md.Role == "assistant" && md.Content != "" {
+				if md := e.Data.(agent.MessageData); md.Role == "assistant" && md.Content != "" && assistant == "" {
 					assistant = md.Content
 				}
 			case agent.EventPartUpdate:

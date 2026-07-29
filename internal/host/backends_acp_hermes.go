@@ -26,7 +26,7 @@ func NewHermesACPManager() (*ACPBackendManager, error) {
 				return err
 			}
 			if !ok {
-				return fmt.Errorf("hermes %s is older than the verified ACP floor %s — upgrade hermes-agent", v, agent.PinnedHermesVersion)
+				return fmt.Errorf("hermes %s is older than the verified ACP floor %s — run `pipx upgrade hermes-agent`", v, agent.PinnedHermesVersion)
 			}
 			return nil
 		})
