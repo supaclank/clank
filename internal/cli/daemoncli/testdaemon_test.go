@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/agent/presets"
 	"github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/host"
 	"github.com/acksell/clank/internal/host/hosttest"
@@ -128,6 +129,7 @@ func (td *testDaemon) CreateOpenCodeSession(t *testing.T, prompt string) (*agent
 		Backend: agent.BackendOpenCode,
 		GitRef:  agent.GitRef{LocalPath: repo, WorktreeID: "git@example.com:acme/repo.git"},
 		Prompt:  prompt,
+		Config:  workstationConfig(agent.BackendOpenCode),
 	})
 	if err != nil {
 		t.Fatalf("Sessions().Create: %v", err)
@@ -184,4 +186,11 @@ func receiveEventsByType(t *testing.T, ch <-chan agent.Event, want agent.EventTy
 			return nil, all
 		}
 	}
+}
+
+// workstationConfig is the create-time config a real client sends: the
+// backend's built-in Default preset bundle. Test hosts get Workstation
+// built-ins (host.New's default), so creates missing these keys 400.
+func workstationConfig(bt agent.BackendType) map[string]string {
+	return presets.DefaultFor(presets.Workstation(), bt).Config
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/agent/presets"
 	"github.com/acksell/clank/internal/host"
 	hostclient "github.com/acksell/clank/internal/host/client"
 	hostmux "github.com/acksell/clank/internal/host/mux"
@@ -156,6 +157,7 @@ func TestHTTPRoundTrip_CreateSessionAndEvents(t *testing.T) {
 		Backend: agent.BackendOpenCode,
 		GitRef:  agent.GitRef{LocalPath: dir},
 		Prompt:  "hi",
+		Config:  presets.DefaultFor(presets.Workstation(), agent.BackendOpenCode).Config,
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -238,6 +240,7 @@ func TestHTTPRoundTrip_SendMessageAndAbort(t *testing.T) {
 	ctx := context.Background()
 	be, _, err := c.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode, GitRef: agent.GitRef{LocalPath: dir}, Prompt: "hi",
+		Config: presets.DefaultFor(presets.Workstation(), agent.BackendOpenCode).Config,
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -303,6 +306,7 @@ func TestHTTPRoundTrip_CreatePopulatesExternalID(t *testing.T) {
 		Backend: agent.BackendOpenCode,
 		GitRef:  agent.GitRef{LocalPath: dir},
 		Prompt:  "hi",
+		Config:  presets.DefaultFor(presets.Workstation(), agent.BackendOpenCode).Config,
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)

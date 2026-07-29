@@ -64,6 +64,7 @@ func TestCreateSession_Subdir_NormalizedThroughGateway(t *testing.T) {
 		Backend: agent.BackendOpenCode,
 		GitRef:  agent.GitRef{LocalPath: sub},
 		Prompt:  "hi",
+		Config:  workstationConfig(agent.BackendOpenCode),
 	})
 	if err != nil {
 		t.Fatalf("Sessions().Create: %v", err)

@@ -103,6 +103,33 @@ func TestRequiredKeys(t *testing.T) {
 	}
 }
 
+// DefaultFor is how clients pick the create-time bundle: only the
+// backend's builtin-default id counts — Plan and user presets never
+// stand in for it, and an absent Default is nil, not a substitute.
+func TestDefaultFor(t *testing.T) {
+	t.Parallel()
+	ws := presets.Workstation()
+	p := presets.DefaultFor(ws, agent.BackendOpenCode)
+	if p == nil {
+		t.Fatal("DefaultFor(Workstation, opencode) = nil, want the builtin Default")
+	}
+	if p.ID != presets.BuiltinDefaultPrefix+string(agent.BackendOpenCode) {
+		t.Errorf("picked %q, want the builtin-default id", p.ID)
+	}
+	if p.Config[agent.ConfigOptionMode] == "" {
+		t.Errorf("Default preset config %v lacks mode", p.Config)
+	}
+	if got := presets.DefaultFor(ws, agent.BackendType("future-agent")); got != nil {
+		t.Errorf("unknown backend = %+v, want nil", got)
+	}
+	onlyPlans := []presets.Preset{
+		{ID: presets.BuiltinPlanPrefix + string(agent.BackendOpenCode), Name: "Plan", Backend: agent.BackendOpenCode, Config: map[string]string{"mode": "plan"}, Builtin: true},
+	}
+	if got := presets.DefaultFor(onlyPlans, agent.BackendOpenCode); got != nil {
+		t.Errorf("Plan preset stood in for Default: %+v", got)
+	}
+}
+
 // EnvValue/Parse is the provisioner→host boundary: a lossless round trip,
 // with Builtin forced on so a provisioner cannot ship mutable built-ins.
 func TestEnvValueParseRoundTrip(t *testing.T) {

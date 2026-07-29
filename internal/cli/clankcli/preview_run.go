@@ -129,16 +129,10 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	var sessionID string
 	if strings.TrimSpace(prompt) != "" {
 		fmt.Println("Starting the agent on this folder…")
-		info, cerr := client.Sessions().Create(startCtx, agent.StartRequest{
-			Backend:  bt,
-			Hostname: host.HostLocal,
-			GitRef:   agent.GitRef{LocalPath: projectDir},
-			Prompt:   prompt,
-		})
-		if cerr != nil {
-			return fmt.Errorf("create session: %w", cerr)
+		sessionID, err = startPreviewAgent(startCtx, client, bt, projectDir, prompt)
+		if err != nil {
+			return err
 		}
-		sessionID = info.ID
 	}
 
 	if status.Kind == string(preview.KindWeb) {
@@ -212,6 +206,28 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	}
 	fmt.Println("\nShutting down preview…")
 	return nil
+}
+
+// startPreviewAgent creates the prompt-argument session for `clank
+// preview <prompt>`: this folder as the GitRef, config from the
+// backend's Default preset (creates without it are rejected by the
+// host as config_incomplete).
+func startPreviewAgent(ctx context.Context, client *daemonclient.Client, bt agent.BackendType, projectDir, prompt string) (string, error) {
+	cfg, err := defaultPresetConfig(ctx, client, bt, host.HostLocal)
+	if err != nil {
+		return "", err
+	}
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
+		Backend:  bt,
+		Hostname: host.HostLocal,
+		GitRef:   agent.GitRef{LocalPath: projectDir},
+		Prompt:   prompt,
+		Config:   cfg,
+	})
+	if err != nil {
+		return "", fmt.Errorf("create session: %w", err)
+	}
+	return info.ID, nil
 }
 
 // stopLocalDaemon sends SIGINT to the running daemon (graceful shutdown).

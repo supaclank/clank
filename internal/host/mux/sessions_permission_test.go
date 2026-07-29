@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/agent/presets"
 	"github.com/acksell/clank/internal/host"
 )
 
@@ -122,7 +123,7 @@ func TestCreateSession_ConfigReachesBackend(t *testing.T) {
 		Backend: agent.BackendClaudeCode,
 		GitRef:  agent.GitRef{LocalPath: dir},
 		Prompt:  "hi",
-		Config:  map[string]string{agent.ConfigOptionMode: string(agent.ClaudePermPlan), "effort": "high"},
+		Config:  map[string]string{agent.ConfigOptionMode: string(agent.ClaudePermPlan), "model": "default", "effort": "high"},
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -161,6 +162,7 @@ func TestPermissionReply_ForwardsDenyMessage(t *testing.T) {
 		Backend: agent.BackendClaudeCode,
 		GitRef:  agent.GitRef{LocalPath: dir},
 		Prompt:  "hi",
+		Config:  presets.DefaultFor(presets.Workstation(), agent.BackendClaudeCode).Config,
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)

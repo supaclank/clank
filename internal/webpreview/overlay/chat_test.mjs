@@ -7,6 +7,7 @@ import {
   activeQuestionFromParts, chatFromMessages, questionSuppressesPermission,
   pushPermission, dropPermission, customAllowed, toggleSelection,
   buildAnswers, collectPlanParts, planTextFor, textFromParts,
+  defaultPresetConfig,
 } from './chat.js';
 
 const prompt = (id) => ({
@@ -154,4 +155,36 @@ test('planTextFor: tool_use id match wins, newest as fallback', () => {
 test('textFromParts joins text parts only', () => {
   assert.equal(textFromParts([{ type: 'text', text: 'a' }, { type: 'tool_call' }, { type: 'text', text: 'b' }]), 'ab');
   assert.equal(textFromParts(undefined), '');
+});
+
+// Session create must carry the Default preset's config verbatim — the
+// host 400s (config_incomplete) otherwise and never fills values in.
+test('defaultPresetConfig: picks builtin-default-<backend>, copies its config', () => {
+  const presets = [
+    { id: 'builtin-default-claude-code', backend: 'claude-code', config: { mode: 'acceptEdits', model: 'default', effort: 'default' } },
+    { id: 'builtin-plan-claude-code', backend: 'claude-code', config: { mode: 'plan', model: 'default', effort: 'default' } },
+    { id: 'my-preset', backend: 'claude-code', config: { mode: 'bypassPermissions' } },
+  ];
+  const cfg = defaultPresetConfig(presets, 'claude-code');
+  assert.deepEqual(cfg, { mode: 'acceptEdits', model: 'default', effort: 'default' });
+  cfg.mode = 'mutated';
+  assert.equal(presets[0].config.mode, 'acceptEdits'); // a copy, not the list's object
+});
+
+test('defaultPresetConfig: Plan and user presets never stand in for Default', () => {
+  assert.equal(defaultPresetConfig([
+    { id: 'builtin-plan-claude-code', backend: 'claude-code', config: { mode: 'plan' } },
+    { id: 'my-preset', backend: 'claude-code', config: { mode: 'bypassPermissions' } },
+  ], 'claude-code'), null);
+});
+
+test('defaultPresetConfig: wrong backend, malformed list, missing backend → null', () => {
+  const other = [{ id: 'builtin-default-opencode', backend: 'opencode', config: { mode: 'build' } }];
+  assert.equal(defaultPresetConfig(other, 'claude-code'), null);
+  // Defense against a spoofed id claiming another backend's default slot.
+  assert.equal(defaultPresetConfig([{ id: 'builtin-default-claude-code', backend: 'opencode', config: { mode: 'build' } }], 'claude-code'), null);
+  assert.equal(defaultPresetConfig(null, 'claude-code'), null);
+  assert.equal(defaultPresetConfig({ error: 'nope' }, 'claude-code'), null);
+  assert.equal(defaultPresetConfig([{ id: 'builtin-default-claude-code', backend: 'claude-code' }], 'claude-code'), null); // no config field
+  assert.equal(defaultPresetConfig(other, ''), null);
 });
