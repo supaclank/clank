@@ -38,3 +38,10 @@ JSONL; each line is `{"t": <rfc3339>, "kind": <string>, "payload": <json>}`.
 Capture more with the spike driver pattern: spawn the adapter, log every
 `SessionUpdate` notification verbatim. Redact anything account-specific
 before committing (these captures contain none).
+
+TODO: `gemini` (pinned `@google/gemini-cli`) has no turn fixtures yet —
+capturing one needs Google credentials (`GEMINI_API_KEY` or a cached
+`gemini` OAuth login), which the capture machine lacked. The handshake
+and the unauthenticated session/new error surface are pinned by the
+gated integration test instead
+(`TestIntegration_GeminiACP_SpawnInitializeNewSession`).

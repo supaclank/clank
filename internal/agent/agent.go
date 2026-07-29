@@ -23,6 +23,8 @@ const (
 	// manager landing; it joins AllBackends (and thus StartRequest.Validate)
 	// only once a manager is registered for it.
 	BackendCodex BackendType = "codex"
+	// BackendGemini is Google's gemini-cli in its native ACP mode.
+	BackendGemini BackendType = "gemini"
 )
 
 // SessionStatus represents the current state of an agent session.

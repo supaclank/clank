@@ -408,11 +408,16 @@ func (m *ACPBackendManager) Shutdown() {
 }
 
 // DiscoverSessions lists the agent's own sessions for seedDir via ACP
-// session/list, marking the dir desired for per-dir profiles.
+// session/list, marking the dir desired for per-dir profiles. Agents
+// that don't advertise the session/list capability (gemini-cli) yield
+// nothing rather than a method-not-found error on every discovery pass.
 func (m *ACPBackendManager) DiscoverSessions(ctx context.Context, seedDir string) ([]agent.SessionSnapshot, error) {
 	conn, err := m.sup.GetConn(ctx, seedDir)
 	if err != nil {
 		return nil, err
+	}
+	if conn.Init().AgentCapabilities.SessionCapabilities.List == nil {
+		return nil, nil
 	}
 	lr, err := conn.Conn().ListSessions(ctx, sdk.ListSessionsRequest{Cwd: &seedDir})
 	if err != nil {
@@ -433,6 +438,9 @@ func (m *ACPBackendManager) DiscoverAllSessions(ctx context.Context) ([]agent.Se
 	conn, err := m.sup.GetConn(ctx, "")
 	if err != nil {
 		return nil, err
+	}
+	if conn.Init().AgentCapabilities.SessionCapabilities.List == nil {
+		return nil, nil
 	}
 	lr, err := conn.Conn().ListSessions(ctx, sdk.ListSessionsRequest{})
 	if err != nil {

@@ -26,6 +26,7 @@ const (
 	PinnedCodexACPVersion  = "1.1.7"
 	PinnedCodexVersion     = "0.145.0"
 	PinnedClaudeACPVersion = "0.61.0"
+	PinnedGeminiCLIVersion = "0.53.0"
 )
 
 // installTimeout bounds the cold-cache bun install (the codex platform
@@ -42,6 +43,9 @@ type Paths struct {
 	// The auth ceremony uses it so `codex login` and the adapter's
 	// app-server child are always the same codex version.
 	CodexBin string
+	// GeminiACPEntry is gemini-cli's bundled launcher; the same file is
+	// the interactive CLI and, with --acp, the ACP agent.
+	GeminiACPEntry string
 }
 
 var (
@@ -63,7 +67,7 @@ func Ensure(ctx context.Context, toolsDir string) (Paths, error) {
 
 	bunBin, err := exec.LookPath("bun")
 	if err != nil {
-		return Paths{}, fmt.Errorf("the codex backend needs bun to run its ACP adapter: install bun (https://bun.sh) and retry: %w", err)
+		return Paths{}, fmt.Errorf("this backend needs bun to run its ACP adapter: install bun (https://bun.sh) and retry: %w", err)
 	}
 
 	changed, err := materializeManifest(toolsDir)
@@ -95,6 +99,7 @@ func pathsFor(toolsDir, bunBin string) Paths {
 		CodexACPEntry:  filepath.Join(toolsDir, "node_modules", "@agentclientprotocol", "codex-acp", "dist", "index.js"),
 		ClaudeACPEntry: filepath.Join(toolsDir, "node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js"),
 		CodexBin:       filepath.Join(toolsDir, "node_modules", "@openai", "codex", "bin", "codex.js"),
+		GeminiACPEntry: filepath.Join(toolsDir, "node_modules", "@google", "gemini-cli", "bundle", "gemini.js"),
 	}
 }
 
@@ -130,7 +135,7 @@ func entryExists(p Paths) bool {
 // firstMissingEntry returns the path of whichever provisioned tool
 // doesn't exist yet, or "" if all are present.
 func firstMissingEntry(p Paths) string {
-	for _, entry := range []string{p.CodexACPEntry, p.ClaudeACPEntry, p.CodexBin} {
+	for _, entry := range []string{p.CodexACPEntry, p.ClaudeACPEntry, p.CodexBin, p.GeminiACPEntry} {
 		if _, err := os.Stat(entry); err != nil {
 			return entry
 		}
