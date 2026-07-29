@@ -30,6 +30,9 @@ func TestPins_MatchEmbeddedManifest(t *testing.T) {
 	if got := m.Dependencies["@agentclientprotocol/claude-agent-acp"]; got != PinnedClaudeACPVersion {
 		t.Errorf("claude-agent-acp pin: manifest %q, const %q", got, PinnedClaudeACPVersion)
 	}
+	if got := m.Dependencies["@google/gemini-cli"]; got != PinnedGeminiCLIVersion {
+		t.Errorf("gemini-cli pin: manifest %q, const %q", got, PinnedGeminiCLIVersion)
+	}
 	lock, err := manifestFS.ReadFile("manifest/bun.lock")
 	if err != nil || len(lock) == 0 {
 		t.Fatalf("embedded bun.lock missing or empty (err=%v)", err)
@@ -84,5 +87,8 @@ func TestPathsFor_LocatesPinnedEntries(t *testing.T) {
 	}
 	if want := "/tools/node_modules/@openai/codex/bin/codex.js"; p.CodexBin != want {
 		t.Errorf("CodexBin = %q, want %q", p.CodexBin, want)
+	}
+	if want := "/tools/node_modules/@google/gemini-cli/bundle/gemini.js"; p.GeminiACPEntry != want {
+		t.Errorf("GeminiACPEntry = %q, want %q", p.GeminiACPEntry, want)
 	}
 }

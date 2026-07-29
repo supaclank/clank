@@ -17,6 +17,7 @@ var AllBackends = []BackendType{
 	BackendOpenCode,
 	BackendClaudeCode,
 	BackendCodex,
+	BackendGemini,
 }
 
 // ParseBackend resolves a user-facing backend name (CLI flag, settings
@@ -33,10 +34,12 @@ func ParseBackend(s string) (BackendType, error) {
 		return BackendClaudeCode, nil
 	case string(BackendCodex):
 		return BackendCodex, nil
+	case string(BackendGemini):
+		return BackendGemini, nil
 	case "":
 		return "", fmt.Errorf("backend name is empty")
 	default:
-		return "", fmt.Errorf("unknown backend: %s (valid: opencode, claude, claude-code, codex)", s)
+		return "", fmt.Errorf("unknown backend: %s (valid: opencode, claude, claude-code, codex, gemini)", s)
 	}
 }
 

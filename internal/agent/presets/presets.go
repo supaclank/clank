@@ -11,11 +11,12 @@
 // marshaled only at the process boundary.
 //
 // Every config value below is a value id the agent ADVERTISES (measured
-// against claude-agent-acp 0.61.0, codex-acp 1.1.7, opencode 1.17.18 —
-// re-probe on adapter bumps). Keys a backend cannot express truthfully are
-// absent: codex and opencode advertise no "default" alias for model, so
-// their presets leave the model knob untouched and the agent's own config
-// governs (visible to clients as the option's current value).
+// against claude-agent-acp 0.61.0, codex-acp 1.1.7, opencode 1.17.18,
+// gemini-cli 0.53.0 — re-probe on adapter bumps). Keys a backend cannot
+// express truthfully are absent: codex and opencode advertise no
+// "default" alias for model, so their presets leave the model knob
+// untouched and the agent's own config governs (visible to clients as
+// the option's current value).
 package presets
 
 import (
@@ -101,6 +102,9 @@ func Sandbox() []Preset {
 		defaultPreset(agent.BackendOpenCode, map[string]string{
 			agent.ConfigOptionMode: "build",
 		}),
+		defaultPreset(agent.BackendGemini, map[string]string{
+			agent.ConfigOptionMode: "yolo",
+		}),
 	})
 }
 
@@ -120,6 +124,9 @@ func Workstation() []Preset {
 		}),
 		defaultPreset(agent.BackendOpenCode, map[string]string{
 			agent.ConfigOptionMode: "build",
+		}),
+		defaultPreset(agent.BackendGemini, map[string]string{
+			agent.ConfigOptionMode: "default",
 		}),
 	})
 }
@@ -161,6 +168,13 @@ func withPlans(defaults []Preset) []Preset {
 		{
 			ID: BuiltinPlanPrefix + string(agent.BackendOpenCode), Name: "Plan",
 			Backend: agent.BackendOpenCode, Builtin: true,
+			Config: map[string]string{
+				agent.ConfigOptionMode: "plan",
+			},
+		},
+		{
+			ID: BuiltinPlanPrefix + string(agent.BackendGemini), Name: "Plan",
+			Backend: agent.BackendGemini, Builtin: true,
 			Config: map[string]string{
 				agent.ConfigOptionMode: "plan",
 			},
