@@ -49,4 +49,13 @@ func TestOverlayInlineCommentWiring(t *testing.T) {
 	if !strings.Contains(js, "'clank-pending'") || !strings.Contains(js, "'clank-comment'") {
 		t.Error("overlay.js must register both the clank-comment and clank-pending highlights")
 	}
+	// Chips are the edit surface (clickable text can't work reliably —
+	// highlight marks receive no events and ranges die on live reload).
+	if !strings.Contains(js, "editChipComment(c, el.getBoundingClientRect())") {
+		t.Error("overlay.js chips must open the prefilled comment editor on click")
+	}
+	// One chip per ⌘-selected element: a re-click edits, never duplicates.
+	if !strings.Contains(js, "store.chips.find((c) => c.node === hoverEl)") {
+		t.Error("overlay.js inspector clicks must dedupe by anchored element node")
+	}
 }

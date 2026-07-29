@@ -95,7 +95,7 @@ import {
     agent: 'idle', // idle | thinking | working | done | error
     inspect: false,
     crop: false, // screenshot crop layer is up
-    chips: [], // [{label, detail, html?, text?, comment?, range?}] — comment = inline comment pinned to the anchor
+    chips: [], // [{label, detail, html?, text?, comment?, range?, node?}] — comment = inline comment pinned to the anchor; node dedupes ⌘-selected elements
     images: [], // staged image attachments [{dataURL, mime, filename, label, w, h}]
     msgs: [], // [{role, text}]
     streamText: '', // in-flight assistant text
@@ -1100,6 +1100,7 @@ import {
   .chips { display:flex; flex-wrap:wrap; gap:6px; padding:0 12px 4px; }
   .chip { display:inline-flex; align-items:center; gap:6px; background:#f3f4f6; border:1px solid #e5e7eb;
     color:#4338ca; font-size:11px; padding:3px 8px; border-radius:999px; max-width:100%; }
+  .chip.editable { cursor:pointer; }
   .chip b { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .chip button { all:unset; cursor:pointer; color:#9ca3af; font-size:12px; line-height:1; }
   .chip img { width:18px; height:18px; object-fit:cover; border-radius:4px; }
@@ -1385,8 +1386,9 @@ import {
     ui.chips.innerHTML = '';
     store.chips.forEach((c, i) => {
       const el = document.createElement('span');
-      el.className = 'chip' + (c.comment ? ' cmt' : '');
-      el.title = c.detail + (c.comment ? ' — ' + c.comment : '');
+      el.className = 'chip editable' + (c.comment ? ' cmt' : '');
+      el.title = c.detail + (c.comment ? ' — ' + c.comment : '') + ' (click to edit the comment)';
+      el.onclick = () => editChipComment(c, el.getBoundingClientRect());
       const b = document.createElement('b');
       b.textContent = c.label;
       el.append(b);
@@ -1398,7 +1400,7 @@ import {
       }
       const x = document.createElement('button');
       x.textContent = '✕';
-      x.onclick = () => { store.chips.splice(i, 1); render(); };
+      x.onclick = (e) => { e.stopPropagation(); store.chips.splice(i, 1); render(); };
       el.append(x);
       ui.chips.appendChild(el);
     });
@@ -1541,16 +1543,25 @@ import {
     e.preventDefault();
     e.stopPropagation();
     if (hoverEl) {
-      const chip = chipFromElement(hoverEl);
-      store.chips.push(chip);
-      toast('added to context');
-      // The chip is attached either way (today's behavior); the popover
-      // just offers to pin an inline comment on it. The range keeps the
-      // element's text visibly marked after ⌘-release hides the inspect
-      // box.
-      const range = document.createRange();
-      range.selectNodeContents(hoverEl);
-      showCommentPopover({ kind: 'element', chip, range }, hoverEl.getBoundingClientRect());
+      // One chip per element: re-clicking an attached element edits its
+      // comment instead of duplicating the chip.
+      const existing = store.chips.find((c) => c.node === hoverEl);
+      if (existing) {
+        toast('already attached — edit its comment');
+        editChipComment(existing, hoverEl.getBoundingClientRect());
+      } else {
+        const chip = chipFromElement(hoverEl);
+        chip.node = hoverEl;
+        store.chips.push(chip);
+        toast('added to context');
+        // The chip is attached either way (today's behavior); the popover
+        // just offers to pin an inline comment on it. The range keeps the
+        // element's text visibly marked after ⌘-release hides the inspect
+        // box.
+        const range = document.createRange();
+        range.selectNodeContents(hoverEl);
+        showCommentPopover({ kind: 'element', chip, range }, hoverEl.getBoundingClientRect());
+      }
     }
     // Stay in select mode: it ends when the held modifier is released
     // (momentary), or via Esc / the ⌖ button (toggled).
@@ -1619,12 +1630,13 @@ import {
         pendingMark.add(target.range);
       }
     }
-    ui.cpopIn.value = '';
-    // Short placeholders (the box is 300px); the empty-Enter nuance
-    // lives in the hint line, which has the room.
-    ui.cpopIn.placeholder = target.kind === 'text' ? 'Comment for the agent…' : 'Comment on this element…';
-    ui.cpopHint.innerHTML = target.kind === 'text'
-      ? '<kbd>Enter</kbd> add · empty = attach only · <kbd>Esc</kbd> dismiss'
+    ui.cpopIn.value = target.kind === 'edit' ? target.chip.comment || '' : '';
+    ui.cpopIn.placeholder = target.kind === 'text' ? 'Comment for the agent…'
+      : target.kind === 'edit' ? 'Comment…'
+      : 'Comment on this element…';
+    ui.cpopHint.innerHTML = target.kind === 'edit'
+      ? '<kbd>Enter</kbd> save · <kbd>Esc</kbd> cancel'
+      : target.kind === 'text' ? '<kbd>Enter</kbd> add · <kbd>Esc</kbd> dismiss'
       : '<kbd>Enter</kbd> add comment · <kbd>Esc</kbd> keep as plain context';
     ui.cpop.classList.add('show');
     syncCpopHeight();
@@ -1634,7 +1646,11 @@ import {
     if (top > innerHeight - 72) top = rect.top - 64;
     top = Math.min(Math.max(top, 8), innerHeight - 72);
     Object.assign(ui.cpop.style, { left: left + 'px', top: top + 'px' });
-    setTimeout(() => ui.cpopIn.focus({ preventScroll: true }), 0);
+    setTimeout(() => {
+      ui.cpopIn.focus({ preventScroll: true });
+      const n = ui.cpopIn.value.length; // caret at the end for prefilled edits
+      ui.cpopIn.setSelectionRange(n, n);
+    }, 0);
   };
   const hideCommentPopover = () => {
     if (!commentTarget) return;
@@ -1652,6 +1668,11 @@ import {
       if (t.range) chip.range = t.range;
       store.chips.push(chip);
       toast(comment ? 'comment added' : 'added to context');
+    } else if (t.kind === 'edit') {
+      // Saving empty clears the comment; the chip stays plain context.
+      if (comment) t.chip.comment = comment;
+      else delete t.chip.comment;
+      toast(comment ? 'comment updated' : 'comment cleared');
     } else if (comment) {
       t.chip.comment = comment;
       toast('comment added');
@@ -1659,6 +1680,18 @@ import {
     hideCommentPopover();
     if (store.box === 'hidden') store.box = 'prompt';
     render();
+  };
+
+  // editChipComment reopens the popover on an existing chip, prefilled.
+  // The pending mark re-paints the chip's anchor when it's still live
+  // (its stored selection range, or the ⌘-selected element's contents).
+  const editChipComment = (c, rect) => {
+    let range = c.range || null;
+    if (!range && c.node && c.node.isConnected) {
+      range = document.createRange();
+      range.selectNodeContents(c.node);
+    }
+    showCommentPopover({ kind: 'edit', chip: c, range }, rect);
   };
 
   const onSelectionMouseUp = (e) => {
