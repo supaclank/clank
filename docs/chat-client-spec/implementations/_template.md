@@ -47,7 +47,7 @@
 | INV-RECONNECT-SEMANTICS-001 (`reconnected` ≠ socket) | | | |
 | INV-INTERACTIVE-001 (render interactive tools) | | | |
 | INV-SIDEBAR-META-001 (drive list from meta) | | | |
-| INV-PENDING-PERM-GAP-001 (honest blocked-state) | | | |
+| OP-007 (restore parked prompts on (re)join) | | | |
 | INV-HEARTBEAT-GAP-001 (liveness detection) | | | |
 
 ## Conformance scenarios ([10](../10-conformance.md)) — the gate
@@ -75,7 +75,7 @@
 | CONF-REVERT-FILTER | | | |
 | CONF-RECONCILE | | | |
 | CONF-RECONNECT-SEMANTICS | | | |
-| CONF-PENDING-PERM-GAP | | | |
+| CONF-PENDING-PERM-RESTORE | | | |
 | CONF-INTERACTIVE-ASK | | | |
 | CONF-INTERACTIVE-PLAN | | | |
 | CONF-INLINE-COMMENT | | | |

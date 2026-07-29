@@ -7,6 +7,7 @@ package hosttest
 
 import (
 	"context"
+	"slices"
 	"sync"
 
 	"github.com/acksell/clank/internal/agent"
@@ -81,6 +82,7 @@ type StubBackend struct {
 	permissionID     string
 	permissionAllow  bool
 	permissionCalled bool
+	pendingPerms     []agent.PermissionData
 
 	questionRequestID string
 	questionAnswers   []agent.QuestionAnswer
@@ -260,7 +262,26 @@ func (b *StubBackend) RespondPermission(_ context.Context, permissionID string, 
 	b.permissionID = permissionID
 	b.permissionAllow = allow
 	b.permissionCalled = true
+	// Mimic the real parking contract: an answered request leaves the queue.
+	b.pendingPerms = slices.DeleteFunc(b.pendingPerms, func(p agent.PermissionData) bool {
+		return p.RequestID == permissionID
+	})
 	return nil
+}
+
+// SetPendingPermissions primes the parked-permission snapshot, as if the
+// agent had requested them and no decision landed yet.
+func (b *StubBackend) SetPendingPermissions(perms ...agent.PermissionData) {
+	b.mu.Lock()
+	b.pendingPerms = slices.Clone(perms)
+	b.mu.Unlock()
+}
+
+// PendingPermissions implements agent.PendingPermissionsReporter.
+func (b *StubBackend) PendingPermissions() []agent.PermissionData {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.pendingPerms)
 }
 
 func (b *StubBackend) Events() <-chan agent.Event { return b.events }

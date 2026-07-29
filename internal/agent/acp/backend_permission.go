@@ -1,8 +1,11 @@
 package acp
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
@@ -44,21 +47,19 @@ func (b *Backend) HandleRequestPermission(ctx context.Context, req sdk.RequestPe
 	if toolUseID != "" {
 		requestID = permIDPrefix + toolUseID
 	}
-	ch := make(chan permDecision, 1)
-	b.pendingPerms[requestID] = ch
 	title := ""
 	if req.ToolCall.Title != nil {
 		title = *req.ToolCall.Title
 	}
-	b.emitLocked(agent.Event{
-		Type: agent.EventPermission,
-		Data: agent.PermissionData{
-			RequestID:   requestID,
-			Tool:        toolName(title, req.ToolCall.Meta),
-			Description: title,
-			ToolUseID:   toolUseID,
-		},
-	})
+	data := agent.PermissionData{
+		RequestID:   requestID,
+		Tool:        toolName(title, req.ToolCall.Meta),
+		Description: title,
+		ToolUseID:   toolUseID,
+	}
+	ch := make(chan permDecision, 1)
+	b.pendingPerms[requestID] = parkedPermission{seq: b.permSeq, data: data, ch: ch}
+	b.emitLocked(agent.Event{Type: agent.EventPermission, Data: data})
 	b.mu.Unlock()
 
 	var decision permDecision
@@ -91,7 +92,7 @@ func (b *Backend) HandleRequestPermission(ctx context.Context, req sdk.RequestPe
 // Ignored when allow is true (a granted permission has no reason to carry).
 func (b *Backend) RespondPermission(ctx context.Context, permissionID string, allow bool, denyMessage string) error {
 	b.mu.Lock()
-	ch, ok := b.pendingPerms[permissionID]
+	p, ok := b.pendingPerms[permissionID]
 	if ok {
 		delete(b.pendingPerms, permissionID)
 	}
@@ -99,8 +100,8 @@ func (b *Backend) RespondPermission(ctx context.Context, permissionID string, al
 	if !ok {
 		return fmt.Errorf("acp %s: unknown permission request %q", b.profile.ID, permissionID)
 	}
-	ch <- permDecision{allow: allow}
-	close(ch)
+	p.ch <- permDecision{allow: allow}
+	close(p.ch)
 
 	if allow || denyMessage == "" {
 		return nil
@@ -114,6 +115,23 @@ func (b *Backend) RespondPermission(ctx context.Context, permissionID string, al
 		return fmt.Errorf("acp %s: permission denied but follow-up message failed: %w", b.profile.ID, err)
 	}
 	return nil
+}
+
+// PendingPermissions implements agent.PendingPermissionsReporter: the
+// requests currently parked in HandleRequestPermission, oldest first, so
+// a client that (re)joins mid-block can re-render the prompt it never
+// saw on the live stream.
+func (b *Backend) PendingPermissions() []agent.PermissionData {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	parked := slices.SortedFunc(maps.Values(b.pendingPerms), func(x, y parkedPermission) int {
+		return cmp.Compare(x.seq, y.seq)
+	})
+	out := make([]agent.PermissionData, len(parked))
+	for i, p := range parked {
+		out[i] = p.data
+	}
+	return out
 }
 
 // pickOption maps a binary allow/deny onto the agent's option list:

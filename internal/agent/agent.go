@@ -535,6 +535,16 @@ type ModelReporter interface {
 	Models() (currentID string, available []ModelInfo)
 }
 
+// PendingPermissionsReporter is implemented by backends that can snapshot
+// the permission requests currently parked awaiting a user decision. The
+// host serves the snapshot via GET /sessions/{id}/pending-permission so a
+// client that (re)joins a session blocked on a prompt — and so never saw
+// its EventPermission on the live stream — can still render and answer it.
+type PendingPermissionsReporter interface {
+	// PendingPermissions returns the parked requests, oldest first.
+	PendingPermissions() []PermissionData
+}
+
 // SessionInfo is a snapshot of a managed session, returned by the daemon API.
 type SessionInfo struct {
 	ID              string            `json:"id"`

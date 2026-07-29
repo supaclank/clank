@@ -351,6 +351,100 @@ func TestBackend_PermissionRoundtrip(t *testing.T) {
 	}
 }
 
+// TestBackend_PendingPermissionsSnapshot pins the (re)join recovery
+// contract behind GET /sessions/{id}/pending-permission: while requests
+// are parked, PendingPermissions returns the same PermissionData the SSE
+// events carried, oldest first, and answering a request removes exactly
+// that entry — so a client that joined mid-block re-renders only the
+// prompts still awaiting a decision.
+func TestBackend_PendingPermissionsSnapshot(t *testing.T) {
+	t.Parallel()
+	options := []sdk.PermissionOption{
+		{OptionId: "yes", Name: "Allow", Kind: sdk.PermissionOptionKindAllowOnce},
+		{OptionId: "no", Name: "Reject", Kind: sdk.PermissionOptionKindRejectOnce},
+	}
+	// secondParked gates the second request so the two park in a
+	// deterministic order (the snapshot promises oldest-first).
+	secondParked := make(chan struct{})
+	scripted := &acptest.ScriptedAgent{}
+	scripted.PromptFn = func(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResponse, error) {
+		errs := make(chan error, 2)
+		request := func(toolCallID, title string) {
+			_, err := scripted.Conn().RequestPermission(ctx, sdk.RequestPermissionRequest{
+				SessionId: p.SessionId,
+				ToolCall:  sdk.ToolCallUpdate{ToolCallId: sdk.ToolCallId(toolCallID), Title: sdk.Ptr(title)},
+				Options:   options,
+			})
+			errs <- err
+		}
+		go request("tc-first", "Run tests")
+		<-secondParked
+		go request("tc-second", "Edit file")
+		for range 2 {
+			if err := <-errs; err != nil {
+				return sdk.PromptResponse{}, err
+			}
+		}
+		return sdk.PromptResponse{StopReason: sdk.StopReasonEndTurn}, nil
+	}
+	f := newBackendFixture(t, scripted, "")
+	ctx := context.Background()
+	if err := f.backend.Open(ctx); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if len(f.backend.PendingPermissions()) != 0 {
+		t.Fatal("fresh backend should have no pending permissions")
+	}
+	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "go"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	f.waitFor(5*time.Second, func(evts []agent.Event) bool {
+		return countType(evts, agent.EventPermission) == 1
+	})
+	close(secondParked)
+	evts := f.waitFor(5*time.Second, func(evts []agent.Event) bool {
+		return countType(evts, agent.EventPermission) == 2
+	})
+
+	var emitted []agent.PermissionData
+	for _, e := range evts {
+		if e.Type == agent.EventPermission {
+			emitted = append(emitted, e.Data.(agent.PermissionData))
+		}
+	}
+	perms := f.backend.PendingPermissions()
+	if len(perms) != 2 {
+		t.Fatalf("pending = %+v, want the 2 parked requests", perms)
+	}
+	for i, want := range emitted {
+		if perms[i] != want {
+			t.Errorf("pending[%d] = %+v, want the emitted event data %+v", i, perms[i], want)
+		}
+	}
+	if perms[0].ToolUseID != "tc-first" || perms[1].ToolUseID != "tc-second" {
+		t.Errorf("pending order = [%s, %s], want oldest first [tc-first, tc-second]",
+			perms[0].ToolUseID, perms[1].ToolUseID)
+	}
+
+	// Answering the first request must leave only the second parked.
+	if err := f.backend.RespondPermission(ctx, perms[0].RequestID, true, ""); err != nil {
+		t.Fatalf("RespondPermission first: %v", err)
+	}
+	if remaining := f.backend.PendingPermissions(); len(remaining) != 1 || remaining[0].ToolUseID != "tc-second" {
+		t.Fatalf("pending after first reply = %+v, want only tc-second", remaining)
+	}
+	if err := f.backend.RespondPermission(ctx, perms[1].RequestID, true, ""); err != nil {
+		t.Fatalf("RespondPermission second: %v", err)
+	}
+	if remaining := f.backend.PendingPermissions(); len(remaining) != 0 {
+		t.Fatalf("pending after both replies = %+v, want empty", remaining)
+	}
+	f.waitFor(10*time.Second, func(evts []agent.Event) bool {
+		return settledTurns(evts) >= 1
+	})
+}
+
 // Abort must release a parked permission promptly (the SDK cancels the
 // in-flight prompt's context on session/cancel, so the agent may see
 // either the swept cancelled outcome or a context error — both mean the
