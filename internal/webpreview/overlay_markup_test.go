@@ -23,3 +23,28 @@ func TestOverlayComposerSelectorIsClassScoped(t *testing.T) {
 		t.Error("overlay.js must select the composer via $('.compose')")
 	}
 }
+
+// TestOverlayInlineCommentWiring pins the inline-comment feature's
+// contact points: the popover exists in the markup, and send() decides
+// sendability via composerTextForSend — a raw ui.input.value guard
+// would silently break comment-only submits (empty composer, comment
+// chips attached).
+func TestOverlayInlineCommentWiring(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	if !strings.Contains(js, `<div class="cpop">`) || !strings.Contains(js, `class="cpop-in"`) {
+		t.Error("overlay.js must carry the comment popover markup (.cpop with .cpop-in input)")
+	}
+	if !strings.Contains(js, "$('.cpop')") || !strings.Contains(js, "$('.cpop-in')") {
+		t.Error("overlay.js must select the comment popover via $('.cpop') / $('.cpop-in')")
+	}
+	if !strings.Contains(js, "composerTextForSend(ui.input.value, store.chips)") {
+		t.Error("send paths must gate on composerTextForSend(ui.input.value, store.chips) so comment-only submits work")
+	}
+	// Focusing the popover input deactivates the browser's own selection
+	// highlight; without the pending mark the selection visibly vanishes
+	// the moment the popover opens.
+	if !strings.Contains(js, "'clank-pending'") || !strings.Contains(js, "'clank-comment'") {
+		t.Error("overlay.js must register both the clank-comment and clank-pending highlights")
+	}
+}

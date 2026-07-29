@@ -65,26 +65,15 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 		}
 	}
 
-	// Reuse the running daemon, or start one — and remember which, so we
-	// only stop it on exit if we started it.
-	wasRunning, _, isRunningErr := daemonclient.IsRunning()
-	if isRunningErr != nil {
-		wasRunning = true // safe side: avoid stopping an unrelated daemon if IsRunning fails
-	}
-	client, err := ensureDaemon()
+	client, sockPath, startedDaemon, err := ensurePreviewDaemon()
 	if err != nil {
-		return fmt.Errorf("daemon: %w", err)
+		return err
 	}
-	if !wasRunning {
+	if startedDaemon {
 		defer func() {
 			fmt.Println("Stopping the daemon clank preview started…")
 			stopLocalDaemon()
 		}()
-	}
-
-	sockPath, err := daemonclient.SocketPath()
-	if err != nil {
-		return fmt.Errorf("daemon socket path: %w", err)
 	}
 
 	// The preview key is the folder's slug — the identity the daemon
@@ -154,6 +143,10 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 				}
 			}
 		}()
+		fmt.Println("Waiting for the dev server to come up…")
+		if err := waitHTTPReady(sigCtx, status.Port, 10*time.Minute); err != nil {
+			return fmt.Errorf("dev server on port %d never came up (first-run installs can be slow; re-run to retry): %w", status.Port, err)
+		}
 		return runWebPreview(sigCtx, projectDir, sockPath, sessionID, string(bt), status.Port, port)
 	}
 
@@ -206,6 +199,25 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	}
 	fmt.Println("\nShutting down preview…")
 	return nil
+}
+
+// ensurePreviewDaemon reuses the running daemon or starts one, and
+// reports whether this process started it (callers stop only a daemon
+// they started — never an unrelated one).
+func ensurePreviewDaemon() (client *daemonclient.Client, sockPath string, startedByUs bool, err error) {
+	wasRunning, _, isRunningErr := daemonclient.IsRunning()
+	if isRunningErr != nil {
+		wasRunning = true // safe side: avoid stopping an unrelated daemon if IsRunning fails
+	}
+	client, err = ensureDaemon()
+	if err != nil {
+		return nil, "", false, fmt.Errorf("daemon: %w", err)
+	}
+	sockPath, err = daemonclient.SocketPath()
+	if err != nil {
+		return nil, "", false, fmt.Errorf("daemon socket path: %w", err)
+	}
+	return client, sockPath, !wasRunning, nil
 }
 
 // startPreviewAgent creates the prompt-argument session for `clank
