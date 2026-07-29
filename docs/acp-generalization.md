@@ -17,7 +17,7 @@ doesn't get re-litigated from scratch on backend seven.
 
 The supervisor, conn, reducer, and `ACPBackendManager` contain zero
 backend conditionals. All variance flows through one seam,
-`acp.AdapterProfile` (7 fields), built by a per-backend constructor in
+`acp.AdapterProfile`, built by a per-backend constructor in
 `internal/host`. The six profiles total ~200 lines, the constructors
 ~230 — mostly comments and closures. That is the consolidation; a YAML
 layer would sit on top of it, not replace it.
