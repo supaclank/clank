@@ -129,6 +129,163 @@ func TestIntegration_HermesACP_SpawnInitializeNewSession(t *testing.T) {
 	}
 }
 
+// Exercises the production spawn path against the real pinned pi-acp +
+// pi pair (provisioned via acptools, adapter under bun, pi spawned via
+// the materialized bun shim). Gated: set CLANK_TEST_PI_ACP=1 to run.
+// With a configured pi (~/.pi/agent/models.json or a login) session/new
+// must advertise the model/thought_level options and thinking-level
+// modes; without one it must fail with pi's auth error while the
+// adapter stays alive.
+func TestIntegration_PiACP_SpawnInitializeNewSession(t *testing.T) {
+	if os.Getenv("CLANK_TEST_PI_ACP") == "" {
+		t.Skip("set CLANK_TEST_PI_ACP=1 to run against the real pinned pi-acp")
+	}
+	if _, err := exec.LookPath("bun"); err != nil {
+		t.Skip("bun not on PATH")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	toolsDir := t.TempDir()
+	tools, err := acptools.Ensure(ctx, toolsDir)
+	if err != nil {
+		t.Fatalf("acptools.Ensure: %v", err)
+	}
+
+	dir := t.TempDir()
+	if err := exec.Command("git", "-C", dir, "init", "-q").Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+
+	profile := acpx.PiProfile(tools.BunBin, tools.PiACPEntry, tools.PiWrapper)
+	sup, err := acpx.NewAdapterSupervisor(profile, testLogf(t))
+	if err != nil {
+		t.Fatalf("NewAdapterSupervisor: %v", err)
+	}
+	runSupervisor(t, sup)
+
+	conn, err := sup.GetConn(ctx, dir)
+	if err != nil {
+		t.Fatalf("GetConn: %v", err)
+	}
+
+	init := conn.Init()
+	if init.ProtocolVersion != sdk.ProtocolVersionNumber {
+		t.Errorf("protocolVersion = %d, want %d", init.ProtocolVersion, sdk.ProtocolVersionNumber)
+	}
+	if !init.AgentCapabilities.LoadSession {
+		t.Error("expected loadSession capability from pi-acp")
+	}
+	if init.AgentCapabilities.SessionCapabilities.List == nil {
+		t.Error("expected session/list capability from pi-acp")
+	}
+
+	ns, err := conn.Conn().NewSession(ctx, sdk.NewSessionRequest{Cwd: dir, McpServers: []sdk.McpServer{}})
+	if err != nil {
+		// Unconfigured pi: an auth-shaped failure, not a dead adapter.
+		select {
+		case <-conn.Closed():
+			t.Fatal("adapter conn died after unconfigured session/new")
+		default:
+		}
+		t.Logf("session/new requires a configured pi: %v", err)
+		return
+	}
+	if ns.SessionId == "" {
+		t.Error("session/new returned empty session id")
+	}
+	if ns.Modes == nil || len(ns.Modes.AvailableModes) == 0 {
+		t.Fatal("expected thinking-level modes from pi-acp")
+	}
+	// The built-in presets reference mode id "off" (thinking level).
+	found := false
+	for _, m := range ns.Modes.AvailableModes {
+		if string(m.Id) == "off" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("pi did not advertise mode \"off\" (preset vocabulary drift)")
+	}
+}
+
+// Drives a full turn through the production Backend (Open → Send →
+// Events) against the pinned pi pair. Gated on CLANK_TEST_PI_ACP_TURN=1
+// because it needs a configured pi (~/.pi/agent/models.json — a local
+// OpenAI-compatible server is enough) and burns a real completion.
+func TestIntegration_PiACP_FullTurn(t *testing.T) {
+	if os.Getenv("CLANK_TEST_PI_ACP_TURN") == "" {
+		t.Skip("set CLANK_TEST_PI_ACP_TURN=1 (needs a configured pi) to run")
+	}
+	if _, err := exec.LookPath("bun"); err != nil {
+		t.Skip("bun not on PATH")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	tools, err := acptools.Ensure(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("acptools.Ensure: %v", err)
+	}
+	dir := t.TempDir()
+	if err := exec.Command("git", "-C", dir, "init", "-q").Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+
+	profile := acpx.PiProfile(tools.BunBin, tools.PiACPEntry, tools.PiWrapper)
+	sup, err := acpx.NewAdapterSupervisor(profile, testLogf(t))
+	if err != nil {
+		t.Fatalf("NewAdapterSupervisor: %v", err)
+	}
+	runSupervisor(t, sup)
+
+	resolver := func(ctx context.Context) (*acpx.AdapterConn, error) { return sup.GetConn(ctx, dir) }
+	b := acpx.NewBackend(profile, dir, "", "", resolver, testLogf(t))
+	defer func() { _ = b.Stop() }()
+
+	if err := b.Open(ctx); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := b.Send(ctx, agent.SendMessageOpts{Text: "Reply with exactly: SPIKE_OK"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	// pi streams pre-turn agent chunks (its skills preamble) right after
+	// session/new, so only the busy→idle cycle bounds the actual turn;
+	// accumulation resets when the prompt dispatches.
+	var assistant string
+	sawBusy := false
+	for {
+		select {
+		case e := <-b.Events():
+			switch e.Type {
+			case agent.EventPartUpdate:
+				if p := e.Data.(agent.PartUpdateData); p.Part.Type == agent.PartText && p.IsDelta {
+					assistant += p.Part.Text
+				}
+			case agent.EventStatusChange:
+				switch e.Data.(agent.StatusChangeData).NewStatus {
+				case agent.StatusBusy:
+					sawBusy = true
+					assistant = ""
+				case agent.StatusIdle:
+					if !sawBusy {
+						continue
+					}
+					if !strings.Contains(assistant, "SPIKE_OK") {
+						t.Fatalf("assistant said %q, want SPIKE_OK", assistant)
+					}
+					return
+				}
+			case agent.EventError:
+				t.Fatalf("backend error: %+v", e.Data)
+			}
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for the turn; assistant so far: %q", assistant)
+		}
+	}
+}
+
 // Drives a full turn through the production Backend (Open → Send →
 // Events) against the machine's real hermes install. Gated on
 // CLANK_TEST_HERMES_ACP_TURN=1 because it needs a hermes with a working
@@ -166,23 +323,27 @@ func TestIntegration_HermesACP_FullTurn(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 
+	// The busy→idle cycle bounds the turn; text accumulates from part
+	// deltas (the assistant message event is a content-less shell).
 	var assistant string
+	sawBusy := false
 	for {
 		select {
 		case e := <-b.Events():
 			switch e.Type {
-			case agent.EventMessage:
-				// The assistant message event is a shell (INV: content
-				// streams as part deltas); never clobber accumulated text.
-				if md := e.Data.(agent.MessageData); md.Role == "assistant" && md.Content != "" {
-					assistant = md.Content
-				}
 			case agent.EventPartUpdate:
 				if p := e.Data.(agent.PartUpdateData); p.Part.Type == agent.PartText && p.IsDelta {
 					assistant += p.Part.Text
 				}
 			case agent.EventStatusChange:
-				if e.Data.(agent.StatusChangeData).NewStatus == agent.StatusIdle && assistant != "" {
+				switch e.Data.(agent.StatusChangeData).NewStatus {
+				case agent.StatusBusy:
+					sawBusy = true
+					assistant = ""
+				case agent.StatusIdle:
+					if !sawBusy {
+						continue
+					}
 					if !strings.Contains(assistant, "SPIKE_OK") {
 						t.Fatalf("assistant said %q, want SPIKE_OK", assistant)
 					}

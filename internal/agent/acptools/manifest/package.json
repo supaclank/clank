@@ -6,6 +6,8 @@
     "@agentclientprotocol/codex-acp": "1.1.7",
     "@openai/codex": "0.145.0",
     "@agentclientprotocol/claude-agent-acp": "0.61.0",
-    "@google/gemini-cli": "0.53.0"
+    "@google/gemini-cli": "0.53.0",
+    "pi-acp": "0.0.32",
+    "@earendil-works/pi-coding-agent": "0.82.1"
   }
 }

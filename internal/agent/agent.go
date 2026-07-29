@@ -27,6 +27,9 @@ const (
 	BackendGemini BackendType = "gemini"
 	// BackendHermes is Nous Research's hermes-agent via `hermes acp`.
 	BackendHermes BackendType = "hermes"
+	// BackendPi is the Pi coding agent (earendil-works/pi) via the
+	// pi-acp adapter.
+	BackendPi BackendType = "pi"
 )
 
 // SessionStatus represents the current state of an agent session.

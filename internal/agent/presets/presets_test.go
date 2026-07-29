@@ -70,11 +70,12 @@ func TestBuiltinSets_DifferOnlyInDefaultMode(t *testing.T) {
 		if p.ID != presets.BuiltinDefaultPrefix+string(p.Backend) {
 			continue
 		}
-		// opencode's build agent is its own default in both postures; the
-		// host-scoped agents diverge.
-		if p.Backend == agent.BackendOpenCode {
+		// opencode's build agent is its own default in both postures, and
+		// pi has no permission posture at all (its mode knob is thinking
+		// level); every other backend diverges.
+		if p.Backend == agent.BackendOpenCode || p.Backend == agent.BackendPi {
 			if sandboxModes[p.Backend] != p.Config[agent.ConfigOptionMode] {
-				t.Errorf("opencode Default should match across sets")
+				t.Errorf("%s Default should match across sets", p.Backend)
 			}
 		} else if sandboxModes[p.Backend] == p.Config[agent.ConfigOptionMode] {
 			t.Errorf("%s: sandbox and workstation Default share mode %q — the posture split is the point", p.Backend, p.Config[agent.ConfigOptionMode])

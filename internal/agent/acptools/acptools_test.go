@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -32,6 +33,12 @@ func TestPins_MatchEmbeddedManifest(t *testing.T) {
 	}
 	if got := m.Dependencies["@google/gemini-cli"]; got != PinnedGeminiCLIVersion {
 		t.Errorf("gemini-cli pin: manifest %q, const %q", got, PinnedGeminiCLIVersion)
+	}
+	if got := m.Dependencies["pi-acp"]; got != PinnedPiACPVersion {
+		t.Errorf("pi-acp pin: manifest %q, const %q", got, PinnedPiACPVersion)
+	}
+	if got := m.Dependencies["@earendil-works/pi-coding-agent"]; got != PinnedPiVersion {
+		t.Errorf("pi pin: manifest %q, const %q", got, PinnedPiVersion)
 	}
 	lock, err := manifestFS.ReadFile("manifest/bun.lock")
 	if err != nil || len(lock) == 0 {
@@ -90,5 +97,46 @@ func TestPathsFor_LocatesPinnedEntries(t *testing.T) {
 	}
 	if want := "/tools/node_modules/@google/gemini-cli/bundle/gemini.js"; p.GeminiACPEntry != want {
 		t.Errorf("GeminiACPEntry = %q, want %q", p.GeminiACPEntry, want)
+	}
+	if want := "/tools/node_modules/pi-acp/dist/index.js"; p.PiACPEntry != want {
+		t.Errorf("PiACPEntry = %q, want %q", p.PiACPEntry, want)
+	}
+	if want := "/tools/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"; p.PiBin != want {
+		t.Errorf("PiBin = %q, want %q", p.PiBin, want)
+	}
+	if want := "/tools/pi-under-bun.sh"; p.PiWrapper != want || PiWrapperPath("/tools") != want {
+		t.Errorf("PiWrapper = %q / PiWrapperPath = %q, want %q", p.PiWrapper, PiWrapperPath("/tools"), want)
+	}
+}
+
+// The wrapper must exec the exact bun+pi pair pathsFor computed, and
+// regenerate when either moves (e.g. a bun upgrade changes BunBin).
+func TestMaterializePiWrapper_TracksPaths(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	p := pathsFor(dir, "/usr/local/bin/bun")
+	if err := materializePiWrapper(p); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	b, err := os.ReadFile(p.PiWrapper)
+	if err != nil {
+		t.Fatalf("read wrapper: %v", err)
+	}
+	want := "#!/bin/sh\nexec \"/usr/local/bin/bun\" \"" + p.PiBin + "\" \"$@\"\n"
+	if string(b) != want {
+		t.Errorf("wrapper content = %q, want %q", b, want)
+	}
+	info, err := os.Stat(p.PiWrapper)
+	if err != nil || info.Mode()&0o111 == 0 {
+		t.Errorf("wrapper not executable (mode %v, err %v)", info.Mode(), err)
+	}
+
+	p2 := pathsFor(dir, "/opt/homebrew/bin/bun")
+	if err := materializePiWrapper(p2); err != nil {
+		t.Fatalf("re-materialize: %v", err)
+	}
+	b2, _ := os.ReadFile(p2.PiWrapper)
+	if !strings.Contains(string(b2), "/opt/homebrew/bin/bun") {
+		t.Errorf("wrapper did not track the new bun: %q", b2)
 	}
 }

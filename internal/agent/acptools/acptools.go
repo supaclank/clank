@@ -27,6 +27,10 @@ const (
 	PinnedCodexVersion     = "0.145.0"
 	PinnedClaudeACPVersion = "0.61.0"
 	PinnedGeminiCLIVersion = "0.53.0"
+	// The pi pair pins adapter and agent together (the adapter README
+	// warns of minor breaking changes between the two).
+	PinnedPiACPVersion = "0.0.32"
+	PinnedPiVersion    = "0.82.1"
 )
 
 // installTimeout bounds the cold-cache bun install (the codex platform
@@ -46,6 +50,15 @@ type Paths struct {
 	// GeminiACPEntry is gemini-cli's bundled launcher; the same file is
 	// the interactive CLI and, with --acp, the ACP agent.
 	GeminiACPEntry string
+	// PiACPEntry is the pi-acp adapter's dist bundle (run under bun).
+	PiACPEntry string
+	// PiBin is the pinned pi CLI's JS entry (run under bun). The adapter
+	// spawns it per session via PI_ACP_PI_COMMAND → PiWrapper.
+	PiBin string
+	// PiWrapper is a generated /bin/sh shim execing bun+PiBin:
+	// PI_ACP_PI_COMMAND takes a single executable path, so the pinned
+	// pi-under-bun pair needs one file to point at.
+	PiWrapper string
 }
 
 var (
@@ -84,6 +97,9 @@ func Ensure(ctx context.Context, toolsDir string) (Paths, error) {
 			return Paths{}, fmt.Errorf("bun install acp tools in %s: %w: %s", toolsDir, err, tail(out, 400))
 		}
 	}
+	if err := materializePiWrapper(p); err != nil {
+		return Paths{}, err
+	}
 	if missing := firstMissingEntry(p); missing != "" {
 		return Paths{}, fmt.Errorf("acp tools install finished but %s is missing", missing)
 	}
@@ -100,7 +116,31 @@ func pathsFor(toolsDir, bunBin string) Paths {
 		ClaudeACPEntry: filepath.Join(toolsDir, "node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js"),
 		CodexBin:       filepath.Join(toolsDir, "node_modules", "@openai", "codex", "bin", "codex.js"),
 		GeminiACPEntry: filepath.Join(toolsDir, "node_modules", "@google", "gemini-cli", "bundle", "gemini.js"),
+		PiACPEntry:     filepath.Join(toolsDir, "node_modules", "pi-acp", "dist", "index.js"),
+		PiBin:          filepath.Join(toolsDir, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
+		PiWrapper:      PiWrapperPath(toolsDir),
 	}
+}
+
+// PiWrapperPath is where Ensure materializes the pi-under-bun shim.
+// Exposed so the profile env can name it before provisioning ran (the
+// supervisor fingerprints env ahead of the first spawn).
+func PiWrapperPath(toolsDir string) string {
+	return filepath.Join(toolsDir, "pi-under-bun.sh")
+}
+
+// materializePiWrapper (re)writes the shim so it always points at the
+// current bun and pinned pi entry.
+func materializePiWrapper(p Paths) error {
+	content := fmt.Sprintf("#!/bin/sh\nexec %q %q \"$@\"\n", p.BunBin, p.PiBin)
+	have, err := os.ReadFile(p.PiWrapper)
+	if err == nil && string(have) == content {
+		return nil
+	}
+	if err := os.WriteFile(p.PiWrapper, []byte(content), 0o755); err != nil {
+		return fmt.Errorf("write pi wrapper: %w", err)
+	}
+	return nil
 }
 
 // materializeManifest writes the embedded manifest files, reporting
@@ -135,7 +175,7 @@ func entryExists(p Paths) bool {
 // firstMissingEntry returns the path of whichever provisioned tool
 // doesn't exist yet, or "" if all are present.
 func firstMissingEntry(p Paths) string {
-	for _, entry := range []string{p.CodexACPEntry, p.ClaudeACPEntry, p.CodexBin, p.GeminiACPEntry} {
+	for _, entry := range []string{p.CodexACPEntry, p.ClaudeACPEntry, p.CodexBin, p.GeminiACPEntry, p.PiACPEntry, p.PiBin, p.PiWrapper} {
 		if _, err := os.Stat(entry); err != nil {
 			return entry
 		}

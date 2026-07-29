@@ -47,6 +47,16 @@ JSONL; each line is `{"t": <rfc3339>, "kind": <string>, "payload": <json>}`.
   real `session/request_permission` exchange (conn-level frames, kept
   for reference), and NO `tool_call_update` — the call stays
   result-less by adapter design.
+- `pi-acp-0.0.32-turn.jsonl` — full live turn through the pi-acp
+  adapter driving pi 0.82.1 (2026-07-29, local OpenAI-compatible
+  model): text deltas plus `session_info_update`s before and after the
+  reply. Workspace paths redacted to `/tmp/clank-spike`.
+- `pi-acp-0.0.32-load-replay.jsonl` — `session/load` replay in a fresh
+  adapter process: pre-merged whole-message chunks (DATA-022 shape).
+- `pi-acp-0.0.32-tool-turn.jsonl` — a write-tool turn with NO
+  permission prompt (pi has no permission system for core tools):
+  `tool_call` pending → in_progress → completed `tool_call_update`s,
+  the terminal update carrying diff content.
 
 Capture more with the spike driver pattern: spawn the adapter, log every
 `SessionUpdate` notification verbatim. Redact anything account-specific

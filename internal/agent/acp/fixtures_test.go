@@ -284,6 +284,83 @@ func TestFixture_HermesToolTurn(t *testing.T) {
 	}
 }
 
+// The pi turn fixture (pi-acp 0.0.32 driving pi 0.82.1 over a local
+// OpenAI-compatible model) streams text deltas and session_info_updates
+// both before and after the reply.
+func TestFixture_PiTurn(t *testing.T) {
+	t.Parallel()
+	events, msgs := reduceLive(t, loadFixtureUpdates(t, "pi-acp-0.0.32-turn.jsonl"))
+
+	if got := strings.TrimSpace(assistantText(msgs)); got != "SPIKE_OK" {
+		t.Errorf("assistant content = %q, want SPIKE_OK", got)
+	}
+	for _, e := range events {
+		if e.Type != agent.EventPartUpdate {
+			continue
+		}
+		if p := e.Data.(agent.PartUpdateData); p.Part.Type == agent.PartText && !p.IsDelta {
+			t.Errorf("pi live text arrived as snapshot, want deltas: %+v", p.Part)
+		}
+	}
+}
+
+func TestFixture_PiLoadReplay(t *testing.T) {
+	t.Parallel()
+	updates := loadFixtureUpdates(t, "pi-acp-0.0.32-load-replay.jsonl")
+	r := newReducer(t.Logf)
+	r.setSessionID("fixture")
+	r.replaying = true
+	for _, n := range updates {
+		if evts := r.reduce(n); len(evts) != 0 {
+			t.Errorf("replay emitted %d live events, want none", len(evts))
+		}
+	}
+	r.finishReplay()
+	msgs := r.snapshot()
+	if len(msgs) != 2 || msgs[0].Role != "user" || msgs[1].Role != "assistant" {
+		t.Fatalf("replayed transcript shape = %+v", msgs)
+	}
+	if msgs[0].Content != "Reply with exactly: SPIKE_OK" || strings.TrimSpace(msgs[1].Content) != "SPIKE_OK" {
+		t.Errorf("replayed contents = %q / %q", msgs[0].Content, msgs[1].Content)
+	}
+}
+
+// pi runs its core tools with NO permission prompt (it has no permission
+// system) — the write tool goes straight to tool_call + tool_call_update
+// lifecycle frames, ending completed with diff content.
+func TestFixture_PiToolTurn(t *testing.T) {
+	t.Parallel()
+	_, msgs := reduceLive(t, loadFixtureUpdates(t, "pi-acp-0.0.32-tool-turn.jsonl"))
+
+	var call, result *agent.Part
+	for i := range msgs {
+		for j := range msgs[i].Parts {
+			p := &msgs[i].Parts[j]
+			switch p.Type {
+			case agent.PartToolCall:
+				call = p
+			case agent.PartToolResult:
+				result = p
+			}
+		}
+	}
+	if call == nil || result == nil {
+		t.Fatalf("expected tool call + result, got call=%v result=%v", call, result)
+	}
+	if call.ID != result.ID {
+		t.Errorf("tool parts must share one id: call=%q result=%q", call.ID, result.ID)
+	}
+	if call.Tool != "write" {
+		t.Errorf("tool name = %q, want write (pi title)", call.Tool)
+	}
+	if call.Status != agent.PartCompleted {
+		t.Errorf("tool status = %q, want completed", call.Status)
+	}
+	if !strings.Contains(result.Output, "SPIKE_PERM_OK") {
+		t.Errorf("tool result output = %q, want the diff content", result.Output)
+	}
+}
+
 func TestFixture_ClaudeLoadReplay(t *testing.T) {
 	t.Parallel()
 	updates := loadFixtureUpdates(t, "claude-agent-acp-0.61.0-load-replay.jsonl")
