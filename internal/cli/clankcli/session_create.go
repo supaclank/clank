@@ -1,13 +1,17 @@
 package clankcli
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/agent/presets"
 	"github.com/acksell/clank/internal/config"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/host"
 )
 
@@ -61,4 +65,21 @@ func newStartRequest(backend agent.BackendType, projectDir, worktreeBranch, prom
 		},
 		Prompt: prompt,
 	}
+}
+
+// defaultPresetConfig fetches the host's presets and returns a copy of
+// the backend's built-in Default ("Build") config — the bundle headless
+// creates apply verbatim, which by construction carries every create-time
+// required key (the host 400s a create missing any and never fills values
+// in). No fallbacks: a host without the preset errors here by name.
+func defaultPresetConfig(ctx context.Context, client *daemonclient.Client, bt agent.BackendType, hostname string) (map[string]string, error) {
+	ps, err := client.Backend(bt).Presets(ctx, hostname)
+	if err != nil {
+		return nil, fmt.Errorf("fetch %s presets: %w", bt, err)
+	}
+	p := presets.DefaultFor(ps, bt)
+	if p == nil {
+		return nil, fmt.Errorf("host serves no built-in Default preset for backend %s (is the host's $CLANK_BUILTIN_PRESETS misdeclared?)", bt)
+	}
+	return maps.Clone(p.Config), nil
 }

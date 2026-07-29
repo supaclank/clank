@@ -88,6 +88,7 @@ func TestLocalE2E_TUICreatesSession_AndFetches(t *testing.T) {
 		Backend: agent.BackendOpenCode,
 		GitRef:  agent.GitRef{LocalPath: repo, WorktreeID: "01JV7T7F9Y6XQ1R6M8R2W4K3NZ"},
 		Prompt:  "hello",
+		Config:  workstationConfig(agent.BackendOpenCode),
 	})
 	if err != nil {
 		t.Fatalf("Sessions().Create: %v", err)
