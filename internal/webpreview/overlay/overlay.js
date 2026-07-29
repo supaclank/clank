@@ -1180,8 +1180,9 @@ import {
     background:rgba(255,255,255,.96); border:1.5px solid #e5e7eb; border-radius:12px;
     box-shadow:0 10px 36px rgba(0,0,0,.2); padding:8px 10px 6px; backdrop-filter:blur(14px); }
   .cpop.show { display:block; }
-  .cpop input { width:100%; border:0; outline:0; background:transparent; color:#111827; font-size:12.5px; }
-  .cpop input::placeholder { color:#9ca3af; }
+  /* overrides of the shared textarea rule: no inner padding (the popover
+     pads), one-row start, grows with the comment like the composer */
+  .cpop textarea { font-size:12.5px; padding:0; min-height:18px; max-height:96px; display:block; }
   .cpop .cpop-h { font-size:10px; color:#9ca3af; margin-top:4px; }
   .chip.cmt { background:#fffbeb; border-color:#f59e0bb3; color:#92400e; }
   .chip .ctext { font-weight:400; color:#6b7280; overflow:hidden; text-overflow:ellipsis;
@@ -1241,7 +1242,7 @@ import {
   <div class="hint"><span><kbd>⇪ caps</kbd> talk</span><span><kbd>⇧</kbd> move</span><span><kbd>⌘</kbd> select</span><span><kbd>⌘E</kbd> toggle</span></div>
 </div>
 <div class="hl"></div><div class="hll"></div>
-<div class="cpop"><input class="cpop-in" type="text"><div class="cpop-h"><kbd>Enter</kbd> add · <kbd>Esc</kbd> dismiss</div></div>
+<div class="cpop"><textarea class="cpop-in" rows="1"></textarea><div class="cpop-h"><kbd>Enter</kbd> add · <kbd>Esc</kbd> dismiss</div></div>
 <div class="crop">
   <div class="crop-dim"></div>
   <div class="crop-sel"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
@@ -1259,7 +1260,7 @@ import {
     input: $('.compose'), sel: $('.sel'), mic: $('.mic'), micLevel: $('.micLevel'),
     eng: $('.eng'), engpick: $('.engpick'), engOpts: [...root.querySelectorAll('.engpick .opt')],
     send: $('.send'), hl: $('.hl'), hll: $('.hll'), toast: $('.toast'),
-    cpop: $('.cpop'), cpopIn: $('.cpop-in'),
+    cpop: $('.cpop'), cpopIn: $('.cpop-in'), cpopHint: $('.cpop-h'),
     shot: $('.shot'), att: $('.att'), file: $('.file'),
     crop: $('.crop'), cropDim: $('.crop-dim'), cropSel: $('.crop-sel'),
     cropBar: $('.crop-bar'), cropAdd: $('.crop-add'), cropX: $('.crop-bar .crop-x'), cropX0: $('.crop-x0'),
@@ -1604,6 +1605,11 @@ import {
     return { label, detail: 'text selection on ' + location.pathname, text: clipped };
   };
 
+  const syncCpopHeight = () => {
+    ui.cpopIn.style.height = 'auto';
+    ui.cpopIn.style.height = Math.min(96, ui.cpopIn.scrollHeight) + 'px';
+  };
+
   const showCommentPopover = (target, rect) => {
     commentTarget = target;
     if (pendingMark) {
@@ -1614,10 +1620,14 @@ import {
       }
     }
     ui.cpopIn.value = '';
-    ui.cpopIn.placeholder = target.kind === 'text'
-      ? 'Comment for the agent — empty Enter just attaches'
-      : 'Comment on this element (optional)';
+    // Short placeholders (the box is 300px); the empty-Enter nuance
+    // lives in the hint line, which has the room.
+    ui.cpopIn.placeholder = target.kind === 'text' ? 'Comment for the agent…' : 'Comment on this element…';
+    ui.cpopHint.innerHTML = target.kind === 'text'
+      ? '<kbd>Enter</kbd> add · empty = attach only · <kbd>Esc</kbd> dismiss'
+      : '<kbd>Enter</kbd> add comment · <kbd>Esc</kbd> keep as plain context';
     ui.cpop.classList.add('show');
+    syncCpopHeight();
     const w = ui.cpop.offsetWidth || 300;
     const left = Math.min(Math.max(rect.left, 8), Math.max(8, innerWidth - w - 8));
     let top = rect.bottom + 8;
@@ -1678,9 +1688,10 @@ import {
   }, true);
   window.addEventListener('scroll', () => hideCommentPopover(), true);
   ui.cpopIn.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); confirmComment(); }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); confirmComment(); }
     e.stopPropagation(); // typing must never trigger guest-app shortcuts
   });
+  ui.cpopIn.addEventListener('input', syncCpopHeight);
 
   // ---------- image attachments ---------------------------------------------
   // Staged images (screenshot crops, pasted images, picked files) ride

@@ -182,7 +182,11 @@ const chipContextLines = (c, i) => {
     for (const l of String(c.text).split('\n')) lines.push('   > ' + l);
   }
   if (c.html) lines.push(`   html: ${c.html}`);
-  if (c.comment) lines.push(`   comment: ${c.comment}`);
+  if (c.comment) {
+    const parts = String(c.comment).split('\n');
+    lines.push(`   comment: ${parts[0]}`);
+    for (const l of parts.slice(1)) lines.push('   ' + l);
+  }
   return lines;
 };
 

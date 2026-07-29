@@ -32,8 +32,10 @@ func TestOverlayComposerSelectorIsClassScoped(t *testing.T) {
 func TestOverlayInlineCommentWiring(t *testing.T) {
 	t.Parallel()
 	js := string(overlayJS)
-	if !strings.Contains(js, `<div class="cpop">`) || !strings.Contains(js, `class="cpop-in"`) {
-		t.Error("overlay.js must carry the comment popover markup (.cpop with .cpop-in input)")
+	// A textarea, not an input: the comment must wrap and grow as you
+	// type past the popover's width.
+	if !strings.Contains(js, `<div class="cpop">`) || !strings.Contains(js, `<textarea class="cpop-in"`) {
+		t.Error("overlay.js must carry the comment popover markup (.cpop with a .cpop-in textarea)")
 	}
 	if !strings.Contains(js, "$('.cpop')") || !strings.Contains(js, "$('.cpop-in')") {
 		t.Error("overlay.js must select the comment popover via $('.cpop') / $('.cpop-in')")

@@ -222,6 +222,13 @@ test('buildPreviewContext: multi-line selections quote every line', () => {
   assert.match(ctx, /   > line one\n   > line two/);
 });
 
+test('buildPreviewContext: multi-line comments (Shift+Enter) keep their lines indented', () => {
+  const ctx = buildPreviewContext({
+    chips: [{ label: 'x', detail: 'div > p', html: '<p>x</p>', comment: 'first line\nsecond line' }],
+  });
+  assert.match(ctx, /   comment: first line\n   second line/);
+});
+
 test('buildPreviewContext: nothing attached yields the empty string', () => {
   assert.equal(buildPreviewContext({}), '');
   assert.equal(buildPreviewContext({ chips: [], images: [], errors: [], route: '/x', viewport: '1x1' }), '');
