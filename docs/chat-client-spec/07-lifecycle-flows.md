@@ -57,7 +57,7 @@ H→C: (allow) part {id:T, …, status:completed/output…} → merge        ─
 
 The blocking is real: the host parks the backend's reader, so the tool `input` is emitted
 *before* the permission and no further events arrive until the answer. Golden:
-`internal/agent/claude_permissions.go:29`–`:127`.
+`internal/agent/acp/backend_permission.go` (`HandleRequestPermission`).
 
 ## ~~4. Plan mode + ExitPlanMode~~ / ~~5. Questions~~ — retired 0.6.0 (M3)
 
@@ -95,9 +95,11 @@ The transcript-recovery flow, run on first open and after any drop:
 C: (re)open SSE stream                            ── single stream [EVT-001]
 C: GET /sessions/{id}                             ── current status/metadata
 C: GET /sessions/{id}/messages → monotonic merge  ── [OP-006], [STATE-001]
-C: GET /sessions/{id}/pending-permission          ── ⚠ returns [] today [OP-007]
+C: GET /sessions/{id}/pending-permission          ── parked prompts, oldest first [OP-007]
    → recovers transcript missed during the gap (no replay [EVT-010])
-   → does NOT recover a permission the session is blocked on (gap [INV-PENDING-PERM-GAP-001])
+   → replace the local pending queue with the result: a permission the
+     session is blocked on re-renders ([VIEW-PENDING-PERM-001]); [] after a
+     host restart is honest — the queue died with the agent process
 ```
 
 The GETs are pure reads: they do not wake the agent or flip `status`, so a session at rest

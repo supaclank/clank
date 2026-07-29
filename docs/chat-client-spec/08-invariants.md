@@ -354,18 +354,17 @@ session that just got activity fails to hoist. RN diverges (no `meta` handler; p
 
 These are real gaps in the host today. Clients must cope; the host should fix.
 
-### [INV-PENDING-PERM-GAP-001] (known limitation) Pending permissions don't survive a (re)join
-`GET /sessions/{id}/pending-permission` always returns `[]` ([OP-007]), and the SSE
-`permission` event is not replayed. A client that opens or reconnects to a session **blocked
-on a permission** cannot recover the prompt — the agent stays parked and the session looks
-idle.
-**Client duty:** call the endpoint anyway; do not assume `[]` ⇒ "never blocked"; if a session
-reads `busy`/`starting` for a long time with no activity, surface it honestly rather than as
-"working".
-**Recommended host fix:** snapshot pending permissions (return them from the endpoint) **or**
-re-emit them to a new subscriber on connect.
-**Golden:** `internal/host/mux/sessions.go:236`. **Conformance:** `CONF-PENDING-PERM-GAP`
-(documents the limitation; the assertion is the honest-surfacing behavior).
+### ~~[INV-PENDING-PERM-GAP-001]~~ (resolved 0.6.3) Pending permissions don't survive a (re)join
+Resolved: the host now snapshots parked permission requests in memory and serves them from
+`GET /sessions/{id}/pending-permission` ([OP-007]) — a client that opens or reconnects to a
+blocked session recovers the prompt by replacing its local queue with the fetch result
+([VIEW-PENDING-PERM-001](06-state-model.md)). The deliberate boundary that remains: the
+queue is **in-memory only**, so after a host restart the endpoint returns `[]` — honest,
+because the agent process and its parked requests died together; nothing is waiting.
+**Client duty (unchanged):** fetch on every (re)join; do not read `[]` as "never blocked".
+**Golden:** `internal/host/service.go` (`PendingPermissions`),
+`internal/agent/acp/backend_permission.go`. **Conformance:** `CONF-PENDING-PERM-RESTORE`
+(replaces `CONF-PENDING-PERM-GAP`).
 
 ### [INV-HEARTBEAT-GAP-001] (known limitation) No heartbeat
 The stream sends no keepalive/heartbeat, and the reference clients set no SSE read timeout.

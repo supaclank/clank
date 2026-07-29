@@ -149,7 +149,7 @@ come; each client's harness loads the same files.
 | ~~`CONF-REVERT-FILTER`~~ (retired 0.6.0) | revert hides the tail; a new send un-hides it | INV-REVERT-001 |
 | `CONF-RECONCILE` | reconnect + refetch recovers events missed during the gap | INV-RECONCILE-001, EVT-010 |
 | `CONF-RECONNECT-SEMANTICS` | own-transport reconnect triggers reconcile; `reconnected` event alone does not substitute | INV-RECONNECT-SEMANTICS-001 |
-| `CONF-PENDING-PERM-GAP` | a join to a blocked session is surfaced honestly (not shown as plain "working") | INV-PENDING-PERM-GAP-001 |
+| `CONF-PENDING-PERM-RESTORE` (replaces `CONF-PENDING-PERM-GAP`, 0.6.3) | a join to a blocked session re-renders the parked prompt from the pending-permission fetch (queue replaced, oldest first); after a host restart the fetch returns `[]` and no stale prompt renders | OP-007, VIEW-PENDING-PERM-001 |
 | ~~`CONF-QUESTION-TAG`~~ (retired 0.6.0) | a `part.question` tag renders the structured prompt (live stream AND history refetch), suppresses the paired `permission`, replies via the questions endpoint; the conversation moving past it retires the card | QST-001/002/003, INV-INTERACTIVE-001 |
 | ~~`CONF-INTERACTIVE-ASK`~~ (retired 0.6.0) | AskUserQuestion renders from part input; terminal status clears; answer submitted (legacy path) | ITOOL-001/002/004, FLOW-ASK-001 |
 | ~~`CONF-INTERACTIVE-PLAN`~~ (retired 0.6.0) | ExitPlanMode plan renders; Approve→build, Revise→plan | ITOOL-004/005, FLOW-PLAN-001 |

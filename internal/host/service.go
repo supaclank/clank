@@ -1431,6 +1431,30 @@ func (s *Service) RespondPermission(ctx context.Context, id, permissionID string
 	return b.RespondPermission(ctx, permissionID, allow, denyMessage)
 }
 
+// PendingPermissions returns the permission requests parked on the
+// session's live backend, oldest first, so a client (re)joining a
+// blocked session can re-render the prompt. A pure in-memory read: it
+// never rehydrates a backend, because without a live one nothing can be
+// parked — the agent process and its queue die together — and waking an
+// agent to ask "are you blocked?" would violate the pure-read contract
+// (see SessionMessages).
+func (s *Service) PendingPermissions(ctx context.Context, id string) ([]agent.PermissionData, error) {
+	// A dead backend is skipped, not repaired — reads don't touch the
+	// registry, and the disconnect sweep already cancelled its parked
+	// requests.
+	if b, ok := s.Session(id); ok && b.Status() != agent.StatusDead {
+		if r, ok := b.(agent.PendingPermissionsReporter); ok {
+			return r.PendingPermissions(), nil
+		}
+		return nil, nil
+	}
+	// No live backend: the store lookup keeps unknown ids a 404.
+	if _, err := s.GetSessionMetadata(ctx, id); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
 // --- Worktree / branch ops ----------------------------------------------
 
 // ListBranches returns the branches (and their checked-out worktrees)

@@ -53,7 +53,7 @@
 | INV-ABORT-SETTLE-TOOLS-001 | ✅ | `cancelPendingParts` settles running tools to `canceled` (terminal in `preferStatus`) — **found the "spinner resumes after a refetch" bug** |
 | INV-ABORT-DONE-001 | ✅ | `stoppedSinceLastSend` gates the "Done" pill, not the one-shot `aborting` — **found the delayed-"Done" bug** |
 | INV-SIDEBAR-META-001 | N/A | no session list / sidebar on this surface |
-| INV-PENDING-PERM-GAP-001 | ⛔ | on (re)attach to a blocked session it won't learn of the parked permission (host gap) |
+| ~~INV-PENDING-PERM-GAP-001~~ (resolved 0.6.3, [OP-007](../05-operations.md)) | ⛔ | the host now serves parked prompts from `/pending-permission`; this client doesn't fetch it on (re)attach yet |
 | INV-HEARTBEAT-GAP-001 | ✅ | OkHttp `readTimeout(0)` + an explicit capped-backoff reconnect loop (1 s → 15 s) |
 
 ## Conformance

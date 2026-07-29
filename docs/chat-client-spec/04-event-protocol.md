@@ -104,7 +104,8 @@ single biggest source of cross-client divergence.
   it fills, the server **silently drops** events for that subscriber rather than blocking. A
   client MUST drain its socket promptly (do no heavy work on the read path) and MUST rely on
   reconciliation ([EVT-010]) to recover anything dropped. **Why:** a slow consumer loses
-  events with no error — including, potentially, a `permission` prompt. **Golden:**
+  events with no error — including, potentially, a `permission` prompt (recovered by the
+  pending-permission fetch in the reconcile, [OP-007](05-operations.md)). **Golden:**
   `internal/host/events.go:13` (`eventBufferSize = 256`), `:58` (drop-on-full select/default).
 - **[EVT-012] (SHOULD)** Because there is no heartbeat ([EVT-004]), a client SHOULD enable
   transport-level keepalive or a liveness timeout to detect a half-open connection, then

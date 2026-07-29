@@ -17,7 +17,7 @@ Source of truth for routes: `internal/host/mux/mux.go:72`. All require the beare
 | POST | `/sessions/{id}/abort` | — | `204` | Yes | Interrupt the current turn. |
 | POST | `/sessions/{id}/fork` | `{ message_id? }` | `200` `SessionInfo` | **No** | Capability-gated; `501 unsupported` where the agent has no fork. See [OP-005]. |
 | GET | `/sessions/{id}/messages` | — | `200` `MessageData[]` | Yes | The reconciliation source. Pure read — does not wake the agent ([OP-010]). |
-| GET | `/sessions/{id}/pending-permission` | — | `200` `[]` | Yes | **Currently always empty** — see [OP-007]. |
+| GET | `/sessions/{id}/pending-permission` | — | `200` `PermissionData[]` | Yes | Parked prompts on the live backend, oldest first; in-memory only — see [OP-007]. |
 | POST | `/sessions/{id}/permissions/{permID}/reply` | `{ allow, message? }` | `204` | Yes* | Answer a permission prompt. |
 | POST | `/sessions/{id}/read` | — | `204` | Yes | Mark read; does not bump `updated_at`. |
 | POST | `/sessions/{id}/visibility` | `{ visibility }` | `204` | Yes | `done`/`archived`/`""`. |
@@ -200,15 +200,23 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
 
 ### Pending permission — `GET /sessions/{id}/pending-permission`
 
-- **[OP-007] (MUST — known limitation)** This endpoint **currently always returns an empty
-  array.** The host does not yet snapshot pending permissions; the SSE `permission` event is
-  the only source. Consequence: a client that opens or reconnects to a session **blocked on a
-  permission** cannot recover the prompt — the session looks idle but the agent is stuck. A
-  client MUST still call it (its contract may change), MUST NOT treat `[]` as "no permission
-  was ever pending," and SHOULD surface this state honestly if detected. See
-  [INV-PENDING-PERM-GAP-001](08-invariants.md) for the recommended host fix. **Golden:**
-  `internal/host/mux/sessions.go:236` (returns `[]`, `TODO: persistent permission snapshot`),
-  `internal/tui/sessionview.go:808` (restore path, receives `[]`).
+- **[OP-007] (MUST, rewritten 0.6.3)** Returns the permission requests currently **parked on
+  the session's live backend** (`PermissionData[]`, oldest first) — the same payloads the SSE
+  `permission` event carried. The SSE event is not replayed, so this endpoint is the only way
+  a client that opens or reconnects to a **blocked** session recovers the prompt. A client
+  MUST call it on open and after every reconnect (alongside the [OP-006] snapshot) and
+  replace its local pending queue with the result
+  ([VIEW-PENDING-PERM-001](06-state-model.md)). The queue is **in-memory only, never
+  persisted**: a host restart kills the agent process and its parked requests together, so
+  `[]` from a restarted host is the honest answer, not a lost prompt. The read follows
+  [OP-010] discipline — it never wakes/rehydrates a backend; with no live backend it returns
+  `[]` (unknown session ids still 404). `[]` therefore means "nothing is parked *now*," not
+  "no permission was ever pending." **Golden:** `internal/host/mux/sessions.go`
+  (`handlePendingPermissions`), `internal/host/service.go` (`PendingPermissions` — live
+  registry only), `internal/agent/acp/backend_permission.go` (`PendingPermissions`),
+  `internal/tui/sessionview.go:574` (restore path). **Conformance:** `CONF-PENDING-PERM-RESTORE`
+  (`internal/cli/daemoncli/sessions_wire_e2e_test.go`,
+  `TestWire_PendingPermission_RoundTrip` / `TestWire_PendingPermission_EmptyAfterRestart`).
 
 ### Metadata mutations
 
