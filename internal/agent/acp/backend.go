@@ -50,7 +50,7 @@ type Backend struct {
 	runnerOn        bool
 	aborting        bool
 	stopping        bool
-	pendingPerms    map[string]chan permDecision
+	pendingPerms    map[string]parkedPermission
 	permSeq         int
 	userSeq         int
 	currentMode     string
@@ -70,6 +70,17 @@ type queuedPrompt struct{ blocks []sdk.ContentBlock }
 
 type permDecision struct{ allow bool }
 
+// parkedPermission is one blocked HandleRequestPermission call: the
+// channel that resolves it plus the PermissionData it emitted, retained
+// so PendingPermissions can re-serve the prompt to clients that joined
+// after the EventPermission was broadcast. seq orders snapshots by
+// arrival (map iteration is random).
+type parkedPermission struct {
+	seq  int
+	data agent.PermissionData
+	ch   chan permDecision
+}
+
 // NewBackend builds a SessionBackend for one clank session.
 // resumeExternalID != "" resumes an existing ACP session via
 // session/load; guidance is injected only on fresh sessions.
@@ -88,7 +99,7 @@ func NewBackend(profile AdapterProfile, workDir, resumeExternalID, guidance stri
 		sessionID:    resumeExternalID,
 		red:          newReducer(logf),
 		events:       make(chan agent.Event, eventBufferSize),
-		pendingPerms: make(map[string]chan permDecision),
+		pendingPerms: make(map[string]parkedPermission),
 		bgCtx:        ctx,
 		bgCancel:     cancel,
 	}
@@ -96,6 +107,7 @@ func NewBackend(profile AdapterProfile, workDir, resumeExternalID, guidance stri
 }
 
 var _ agent.SessionBackend = (*Backend)(nil)
+var _ agent.PendingPermissionsReporter = (*Backend)(nil)
 var _ SessionHandler = (*Backend)(nil)
 
 // Events returns the backend's event stream (hub relay is the sole drain).
@@ -208,8 +220,8 @@ func (b *Backend) watchConn(conn *AdapterConn) {
 // failPendingPermsLocked resolves every parked permission request as
 // cancelled (abort/stop/disconnect sweep).
 func (b *Backend) failPendingPermsLocked() {
-	for id, ch := range b.pendingPerms {
-		close(ch)
+	for id, p := range b.pendingPerms {
+		close(p.ch)
 		delete(b.pendingPerms, id)
 	}
 }

@@ -9,6 +9,7 @@ package daemoncli
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -310,24 +311,89 @@ func TestWire_GetMessages_Empty(t *testing.T) {
 	}
 }
 
-// TestWire_PendingPermission_StubReturnsEmpty pins the post-PR-3
-// behavior: the host doesn't snapshot pending permissions yet, but
-// the TUI's recovery path calls /pending-permission and we must
-// return an empty list (not 404). When a real queue lands in a
-// future PR, this test should be expanded to assert on its contents.
-func TestWire_PendingPermission_StubReturnsEmpty(t *testing.T) {
+// TestWire_PendingPermission_RoundTrip pins the (re)join recovery
+// contract: a client that opens a session blocked on permission prompts
+// gets them from GET /pending-permission (oldest first, full
+// PermissionData), and an answered prompt leaves the queue — so a rejoin
+// after the reply doesn't re-render a settled prompt.
+func TestWire_PendingPermission_RoundTrip(t *testing.T) {
 	t.Parallel()
 	td := newTestDaemon(t)
-	info, _ := td.CreateOpenCodeSession(t, "tmp")
+	info, b := td.CreateOpenCodeSession(t, "tmp")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
+	// Nothing parked yet: an empty list (not a 404 — the TUI recovery
+	// path calls this on every session open).
 	perms, err := td.Client.Session(info.ID).PendingPermissions(ctx)
 	if err != nil {
-		t.Fatalf("PendingPermissions: %v", err)
+		t.Fatalf("PendingPermissions (fresh): %v", err)
 	}
 	if len(perms) != 0 {
-		t.Errorf("stub should return empty; got %d entries", len(perms))
+		t.Fatalf("fresh session pending = %+v, want empty", perms)
+	}
+
+	first := agent.PermissionData{RequestID: "perm-tc-1", Tool: "Bash", Description: "Run tests", ToolUseID: "tc-1"}
+	second := agent.PermissionData{RequestID: "perm-tc-2", Tool: "Edit", Description: "Edit file", ToolUseID: "tc-2"}
+	b.SetPendingPermissions(first, second)
+
+	perms, err = td.Client.Session(info.ID).PendingPermissions(ctx)
+	if err != nil {
+		t.Fatalf("PendingPermissions (blocked): %v", err)
+	}
+	if len(perms) != 2 || perms[0] != first || perms[1] != second {
+		t.Fatalf("pending = %+v, want [%+v, %+v] (regression: a client rejoining a blocked session must see the parked prompts)", perms, first, second)
+	}
+
+	if err := td.Client.Session(info.ID).ReplyPermission(ctx, first.RequestID, true, ""); err != nil {
+		t.Fatalf("ReplyPermission: %v", err)
+	}
+	perms, err = td.Client.Session(info.ID).PendingPermissions(ctx)
+	if err != nil {
+		t.Fatalf("PendingPermissions (after reply): %v", err)
+	}
+	if len(perms) != 1 || perms[0] != second {
+		t.Fatalf("pending after reply = %+v, want only %+v", perms, second)
+	}
+
+	// Unknown ids still 404 — the empty list is for real sessions only.
+	if _, err := td.Client.Session("01DEFINITELYNOTFOUND00").PendingPermissions(ctx); err == nil {
+		t.Fatal("PendingPermissions on unknown session should error, got nil")
+	}
+}
+
+// TestWire_PendingPermission_EmptyAfterRestart pins the in-memory-only
+// contract: a daemon restart kills the agent process and its parked
+// requests together, so the endpoint answers a rejoin with an honest
+// empty list — never an error, never a stale replay of prompts nothing
+// is waiting on. It must do so WITHOUT waking a backend: rehydrating on
+// this read would spawn an agent process on every session open.
+func TestWire_PendingPermission_EmptyAfterRestart(t *testing.T) {
+	t.Parallel()
+	dbPath := filepath.Join(t.TempDir(), "host.db")
+
+	// Daemon #1: a session blocked on a permission.
+	td1 := newTestDaemonAt(t, dbPath)
+	info, b := td1.CreateOpenCodeSession(t, "tmp")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	b.SetPendingPermissions(agent.PermissionData{RequestID: "perm-tc-1", Tool: "Bash", Description: "Run tests", ToolUseID: "tc-1"})
+	td1.Service.Shutdown()
+	if err := td1.Store.Close(); err != nil {
+		t.Fatalf("close store on daemon #1: %v", err)
+	}
+
+	// Daemon #2 on the same store: the row survived, the queue did not.
+	td2 := newTestDaemonAt(t, dbPath)
+	perms, err := td2.Client.Session(info.ID).PendingPermissions(ctx)
+	if err != nil {
+		t.Fatalf("PendingPermissions after restart: %v", err)
+	}
+	if len(perms) != 0 {
+		t.Fatalf("pending after restart = %+v, want empty (in-memory only)", perms)
+	}
+	if td2.Backend.Last() != nil {
+		t.Fatal("pending-permission read rehydrated a backend; it must stay a pure read")
 	}
 }
 

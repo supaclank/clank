@@ -217,7 +217,9 @@ These are pure functions of the canonical state. Conformance asserts on them.
   `internal/tui/sessionview.go:1112`–`:1123`.
 - **[VIEW-PENDING-PERM-001] (MUST)** When `pendingPermissions` is non-empty, the **front**
   entry is presented as the active prompt, shown with its correlated tool-call context
-  (matched by `tool_use_id`). **Golden:** `internal/agent/claude_permissions.go:58`.
+  (matched by `tool_use_id`). The queue is fed by both live `permission` events and the
+  [OP-007](05-operations.md) fetch on (re)join. **Golden:** `internal/tui/sessionview.go:2726`
+  (front-entry prompt render), `:871` (fetch result replaces the queue).
 - **[VIEW-STREAMING-001] (MUST)** A part with `streaming=true` renders as incremental/raw; a
   settled part renders final (e.g. full markdown). The flip happens on settle ([STATE-STATUS-001]).
   **Golden:** `internal/tui/sessionview.go:1432`, `:1668`.

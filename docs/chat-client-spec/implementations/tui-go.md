@@ -44,7 +44,7 @@
 | INV-REVERT-001 | ✅ | `handleSessionMessages` `:1535` (filter), `:1162` (clear on send) |
 | INV-RECONCILE-001 | ✅ | `Init` `:511` fetches messages+pending+info; refetch on reopen |
 | INV-RECONNECT-SEMANTICS-001 | ✅ | does not key reconcile off `reconnected`; reconnect handled by re-subscribe |
-| INV-PENDING-PERM-GAP-001 | 🟡 | calls `fetchPendingPermission` `:553` (receives `[]`); blocked-state not specially surfaced — same host gap as all clients |
+| ~~INV-PENDING-PERM-GAP-001~~ (resolved 0.6.3) | ✅ | `fetchPendingPermission` `:574` on open + post-deny resync; `pendingPermissionMsg` replaces the queue and re-renders the prompt ([OP-007](../05-operations.md)) |
 | INV-HEARTBEAT-GAP-001 | 🟡 | SSE client has no read timeout (`transport.go:122`); relies on re-subscribe; no explicit liveness timer |
 | INV-INTERACTIVE-001 | 🟡 | questions ✅ via the `part.question` tag (`sessionview_question.go`: transcript-derived active prompt, options picker, multi-select, Other free-text, dismiss; suppresses the paired permission per QST-003; restores on reopen from the history refetch); ExitPlanMode ✅ plan text + approve/request-changes/deny in the permission card; inline comments still ❌ ([11](../11-interactive-tools.md)) |
 | INV-SIDEBAR-META-001 | ✅ | `inbox_sse.go:149` — list driven by `meta`; field-level `status`/`title` deliberately ignored for the list (`:23`) |
@@ -55,9 +55,10 @@ All `MUST`-guarding scenarios are exercised by the golden tests; lift fixtures f
 ([10 §fixture sources](../10-conformance.md)):
 `internal/tui/session_sse_stale_test.go` (CONF-STALE-STREAM, CONF-SINGLE-STREAM),
 `internal/tui/sessionview_test.go` (CONF-PERM-LOCK, CONF-OPTIMISTIC-BACKFILL, CONF-REVERT-FILTER,
-CONF-ABORT-*, CONF-PENDING-PERM-GAP restore path), `internal/agent/claude_*_test.go`
-(CONF-PLAN-EXIT, revert). A formal `applyInput`/`project` harness is **not yet** extracted —
-follow-up ([NFR-TEST-001](../09-non-functional.md)).
+CONF-ABORT-*, CONF-PENDING-PERM-RESTORE client half),
+`internal/cli/daemoncli/sessions_wire_e2e_test.go` (CONF-PENDING-PERM-RESTORE wire half),
+`internal/agent/claude_*_test.go` (CONF-PLAN-EXIT, revert). A formal `applyInput`/`project`
+harness is **not yet** extracted — follow-up ([NFR-TEST-001](../09-non-functional.md)).
 
 ## Notes / gotchas
 

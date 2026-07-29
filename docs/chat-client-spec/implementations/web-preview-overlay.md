@@ -44,7 +44,7 @@ Only rules the overlay's surface touches are listed; the rest are N/A for a part
 | INV-REVERT-001 (revert filter) | 🟡 | revert issued; `revert` event only toasts — the view catches up at the next reconcile (reconnect/reload) |
 | INV-RECONCILE-001 (reconcile on reconnect) | ✅ | `reconcile()` refetches messages on every stream open (reload, reconnect, first subscribe); point-in-time — it never clears a live question |
 | INV-INTERACTIVE-001 (render interactive tools) | ✅ | question card + plan review (below) |
-| INV-PENDING-PERM-GAP-001 (honest blocked-state) | 🟡 | a pending **question** survives reload (tag rides the transcript); a bare permission does not — the host has no snapshot yet (`handlePendingPermissions` TODO) |
+| ~~INV-PENDING-PERM-GAP-001~~ (resolved 0.6.3, [OP-007](../05-operations.md)) | 🟡 | a pending **question** survives reload (tag rides the transcript); a bare permission still doesn't — the host now serves the snapshot, but the overlay's reconcile doesn't fetch `/pending-permission` yet |
 
 ## Interactive tools ([11](../11-interactive-tools.md))
 
@@ -87,7 +87,8 @@ Only rules the overlay's surface touches are listed; the rest are N/A for a part
 
 1. **Generic tool-call cards** — tool activity still renders as a border state only
    (INV-TOOL-MERGE-001 🟡). Deliberate for now; revisit if users ask what the agent is doing.
-2. **Pending bare permission lost on reload** (INV-PENDING-PERM-GAP-001) — needs the host-side
-   permission snapshot (`internal/host/mux` `handlePendingPermissions` TODO), not overlay work.
+2. **Pending bare permission lost on reload** — now overlay work: the host serves the
+   snapshot ([OP-007](../05-operations.md), 0.6.3), so the fix is fetching
+   `/sessions/{id}/pending-permission` in `reconcile()` and replacing `state.perms`.
 3. **Revert view lag** (INV-REVERT-001 🟡) — reverted messages disappear at the next
    reconcile, not on the `revert` event.
