@@ -25,6 +25,8 @@ const (
 	BackendCodex BackendType = "codex"
 	// BackendGemini is Google's gemini-cli in its native ACP mode.
 	BackendGemini BackendType = "gemini"
+	// BackendHermes is Nous Research's hermes-agent via `hermes acp`.
+	BackendHermes BackendType = "hermes"
 )
 
 // SessionStatus represents the current state of an agent session.

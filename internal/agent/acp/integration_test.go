@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acksell/clank/internal/agent"
 	acpx "github.com/acksell/clank/internal/agent/acp"
 	"github.com/acksell/clank/internal/agent/acptools"
 	sdk "github.com/coder/acp-go-sdk"
@@ -59,6 +60,140 @@ func TestIntegration_OpenCodeACP_SpawnInitializeNewSession(t *testing.T) {
 	}
 	if ns.SessionId == "" {
 		t.Error("session/new returned empty session id")
+	}
+}
+
+// Exercises the production spawn path against the machine's real hermes
+// install (`hermes acp`). Gated: set CLANK_TEST_HERMES_ACP=1 to run.
+// session/new needs no credentials (auth bites at prompt time), so this
+// asserts the full advertised surface incl. the preset mode vocabulary.
+func TestIntegration_HermesACP_SpawnInitializeNewSession(t *testing.T) {
+	if os.Getenv("CLANK_TEST_HERMES_ACP") == "" {
+		t.Skip("set CLANK_TEST_HERMES_ACP=1 to run against the real hermes binary")
+	}
+	if _, err := exec.LookPath("hermes"); err != nil {
+		t.Skip("hermes not on PATH")
+	}
+
+	dir := t.TempDir()
+	if err := exec.Command("git", "-C", dir, "init", "-q").Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+
+	sup, err := acpx.NewAdapterSupervisor(acpx.HermesProfile("hermes"), testLogf(t))
+	if err != nil {
+		t.Fatalf("NewAdapterSupervisor: %v", err)
+	}
+	runSupervisor(t, sup)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	conn, err := sup.GetConn(ctx, dir)
+	if err != nil {
+		t.Fatalf("GetConn: %v", err)
+	}
+
+	init := conn.Init()
+	if init.ProtocolVersion != sdk.ProtocolVersionNumber {
+		t.Errorf("protocolVersion = %d, want %d", init.ProtocolVersion, sdk.ProtocolVersionNumber)
+	}
+	if !init.AgentCapabilities.LoadSession {
+		t.Error("expected loadSession capability from hermes acp")
+	}
+	if init.AgentCapabilities.SessionCapabilities.List == nil {
+		t.Error("expected session/list capability from hermes acp")
+	}
+
+	ns, err := conn.Conn().NewSession(ctx, sdk.NewSessionRequest{Cwd: dir, McpServers: []sdk.McpServer{}})
+	if err != nil {
+		t.Fatalf("session/new: %v", err)
+	}
+	if ns.SessionId == "" {
+		t.Error("session/new returned empty session id")
+	}
+	if ns.Modes == nil {
+		t.Fatal("expected advertised session modes from hermes acp")
+	}
+	// The built-in presets reference these ids; a vocabulary change on a
+	// floor bump must fail here, not in production.
+	want := map[string]bool{"default": false, "accept_edits": false, "dont_ask": false}
+	for _, m := range ns.Modes.AvailableModes {
+		if _, ok := want[string(m.Id)]; ok {
+			want[string(m.Id)] = true
+		}
+	}
+	for id, seen := range want {
+		if !seen {
+			t.Errorf("hermes did not advertise mode %q (preset vocabulary drift)", id)
+		}
+	}
+}
+
+// Drives a full turn through the production Backend (Open → Send →
+// Events) against the machine's real hermes install. Gated on
+// CLANK_TEST_HERMES_ACP_TURN=1 because it needs a hermes with a working
+// model provider configured (any provider — a local OpenAI-compatible
+// server is enough) and burns a real completion.
+func TestIntegration_HermesACP_FullTurn(t *testing.T) {
+	if os.Getenv("CLANK_TEST_HERMES_ACP_TURN") == "" {
+		t.Skip("set CLANK_TEST_HERMES_ACP_TURN=1 (needs a configured hermes install) to run")
+	}
+	if _, err := exec.LookPath("hermes"); err != nil {
+		t.Skip("hermes not on PATH")
+	}
+
+	dir := t.TempDir()
+	if err := exec.Command("git", "-C", dir, "init", "-q").Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+
+	sup, err := acpx.NewAdapterSupervisor(acpx.HermesProfile("hermes"), testLogf(t))
+	if err != nil {
+		t.Fatalf("NewAdapterSupervisor: %v", err)
+	}
+	runSupervisor(t, sup)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	resolver := func(ctx context.Context) (*acpx.AdapterConn, error) { return sup.GetConn(ctx, dir) }
+	b := acpx.NewBackend(acpx.HermesProfile("hermes"), dir, "", "", resolver, testLogf(t))
+	defer func() { _ = b.Stop() }()
+
+	if err := b.Open(ctx); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := b.Send(ctx, agent.SendMessageOpts{Text: "Reply with exactly: SPIKE_OK"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	var assistant string
+	for {
+		select {
+		case e := <-b.Events():
+			switch e.Type {
+			case agent.EventMessage:
+				// The assistant message event is a shell (INV: content
+				// streams as part deltas); never clobber accumulated text.
+				if md := e.Data.(agent.MessageData); md.Role == "assistant" && md.Content != "" {
+					assistant = md.Content
+				}
+			case agent.EventPartUpdate:
+				if p := e.Data.(agent.PartUpdateData); p.Part.Type == agent.PartText && p.IsDelta {
+					assistant += p.Part.Text
+				}
+			case agent.EventStatusChange:
+				if e.Data.(agent.StatusChangeData).NewStatus == agent.StatusIdle && assistant != "" {
+					if !strings.Contains(assistant, "SPIKE_OK") {
+						t.Fatalf("assistant said %q, want SPIKE_OK", assistant)
+					}
+					return
+				}
+			case agent.EventError:
+				t.Fatalf("backend error: %+v", e.Data)
+			}
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for the turn; assistant so far: %q", assistant)
+		}
 	}
 }
 

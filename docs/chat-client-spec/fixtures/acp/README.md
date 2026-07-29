@@ -34,6 +34,19 @@ JSONL; each line is `{"t": <rfc3339>, "kind": <string>, "payload": <json>}`.
 - `claude-agent-acp-0.61.0-tool-turn.jsonl` — a turn with a real Bash
   tool call: `tool_call` + several `tool_call_update`s carrying
   `_meta.claudeCode.toolName`, kind/rawInput/rawOutput.
+- `hermes-agent-0.19.0-turn.jsonl` — full live turn on `hermes acp`
+  (2026-07-29, local OpenAI-compatible model): text deltas, a
+  hermes-shaped `usage_update` variant the reducer must drop
+  harmlessly, and the late-title class (`session_info_update` after
+  the prompt resolved).
+- `hermes-agent-0.19.0-load-replay.jsonl` — the same session replayed
+  via `session/load` in a fresh process: pre-merged whole-message
+  chunks (DATA-022 shape).
+- `hermes-agent-0.19.0-tool-turn.jsonl` — an edit-tool turn: one
+  `tool_call` (diff content, title as the only tool-name channel), a
+  real `session/request_permission` exchange (conn-level frames, kept
+  for reference), and NO `tool_call_update` — the call stays
+  result-less by adapter design.
 
 Capture more with the spike driver pattern: spawn the adapter, log every
 `SessionUpdate` notification verbatim. Redact anything account-specific

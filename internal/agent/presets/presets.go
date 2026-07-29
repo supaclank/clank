@@ -12,7 +12,7 @@
 //
 // Every config value below is a value id the agent ADVERTISES (measured
 // against claude-agent-acp 0.61.0, codex-acp 1.1.7, opencode 1.17.18,
-// gemini-cli 0.53.0 — re-probe on adapter bumps). Keys a backend cannot
+// gemini-cli 0.53.0, hermes-agent 0.19.0 — re-probe on adapter bumps). Keys a backend cannot
 // express truthfully are absent: codex and opencode advertise no
 // "default" alias for model, so their presets leave the model knob
 // untouched and the agent's own config governs (visible to clients as
@@ -105,6 +105,9 @@ func Sandbox() []Preset {
 		defaultPreset(agent.BackendGemini, map[string]string{
 			agent.ConfigOptionMode: "yolo",
 		}),
+		defaultPreset(agent.BackendHermes, map[string]string{
+			agent.ConfigOptionMode: "dont_ask",
+		}),
 	})
 }
 
@@ -128,6 +131,9 @@ func Workstation() []Preset {
 		defaultPreset(agent.BackendGemini, map[string]string{
 			agent.ConfigOptionMode: "default",
 		}),
+		defaultPreset(agent.BackendHermes, map[string]string{
+			agent.ConfigOptionMode: "default",
+		}),
 	})
 }
 
@@ -145,7 +151,10 @@ func defaultPreset(bt agent.BackendType, cfg map[string]string) Preset {
 }
 
 // withPlans appends the Plan preset per backend. Identical across
-// environment sets: planning is read-only by construction.
+// environment sets: planning is read-only by construction. Backends
+// with no plan-analog mode (hermes advertises only
+// default/accept_edits/dont_ask) get no Plan preset — a preset naming
+// an unadvertised mode id would silently no-op.
 func withPlans(defaults []Preset) []Preset {
 	plans := []Preset{
 		{

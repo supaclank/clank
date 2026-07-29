@@ -196,6 +196,94 @@ func TestFixture_ClaudeToolTurn(t *testing.T) {
 	}
 }
 
+// The hermes turn fixture (hermes-agent 0.19.0 over a local
+// OpenAI-compatible model) carries text deltas plus the late-title
+// class: a session_info_update arriving after the prompt resolved.
+func TestFixture_HermesTurn(t *testing.T) {
+	t.Parallel()
+	events, msgs := reduceLive(t, loadFixtureUpdates(t, "hermes-agent-0.19.0-turn.jsonl"))
+
+	if got := assistantText(msgs); got != "SPIKE_OK" {
+		t.Errorf("assistant content = %q, want SPIKE_OK", got)
+	}
+	for _, e := range events {
+		if e.Type != agent.EventPartUpdate {
+			continue
+		}
+		if p := e.Data.(agent.PartUpdateData); p.Part.Type == agent.PartText && !p.IsDelta {
+			t.Errorf("hermes live text arrived as snapshot, want deltas: %+v", p.Part)
+		}
+	}
+	titles := 0
+	for _, e := range events {
+		if e.Type == agent.EventTitleChange {
+			titles++
+			if e.Data.(agent.TitleChangeData).Title == "" {
+				t.Error("empty title event")
+			}
+		}
+	}
+	if titles != 1 {
+		t.Errorf("title events = %d, want 1 (late session_info_update passes through)", titles)
+	}
+}
+
+func TestFixture_HermesLoadReplay(t *testing.T) {
+	t.Parallel()
+	updates := loadFixtureUpdates(t, "hermes-agent-0.19.0-load-replay.jsonl")
+	r := newReducer(t.Logf)
+	r.setSessionID("fixture")
+	r.replaying = true
+	for _, n := range updates {
+		if evts := r.reduce(n); len(evts) != 0 {
+			t.Errorf("replay emitted %d live events, want none", len(evts))
+		}
+	}
+	r.finishReplay()
+	msgs := r.snapshot()
+	if len(msgs) != 2 || msgs[0].Role != "user" || msgs[1].Role != "assistant" {
+		t.Fatalf("replayed transcript shape = %+v", msgs)
+	}
+	if msgs[0].Content != "Reply with exactly: SPIKE_OK" || msgs[1].Content != "SPIKE_OK" {
+		t.Errorf("replayed contents = %q / %q", msgs[0].Content, msgs[1].Content)
+	}
+}
+
+// Hermes emits a tool_call for its edit tool (the permission prompt rides
+// the conn layer, not session/update) and then NO tool_call_update — the
+// call must land in the transcript and stay result-less without wedging
+// the turn.
+func TestFixture_HermesToolTurn(t *testing.T) {
+	t.Parallel()
+	_, msgs := reduceLive(t, loadFixtureUpdates(t, "hermes-agent-0.19.0-tool-turn.jsonl"))
+
+	var call, result *agent.Part
+	for i := range msgs {
+		for j := range msgs[i].Parts {
+			p := &msgs[i].Parts[j]
+			switch p.Type {
+			case agent.PartToolCall:
+				call = p
+			case agent.PartToolResult:
+				result = p
+			}
+		}
+	}
+	if call == nil {
+		t.Fatal("expected a tool call part in the transcript")
+	}
+	if result != nil {
+		t.Errorf("hermes sends no tool_call_update; expected no result part, got %+v", result)
+	}
+	// No _meta tool name channel: the display title is the tool name.
+	if call.Tool != "write: perm_test.txt" {
+		t.Errorf("tool name = %q, want the title fallback", call.Tool)
+	}
+	if got := assistantText(msgs); !strings.Contains(got, "SPIKE_PERM_OK") {
+		t.Errorf("assistant text = %q, want it to contain SPIKE_PERM_OK", got)
+	}
+}
+
 func TestFixture_ClaudeLoadReplay(t *testing.T) {
 	t.Parallel()
 	updates := loadFixtureUpdates(t, "claude-agent-acp-0.61.0-load-replay.jsonl")
