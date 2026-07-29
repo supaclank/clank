@@ -22,7 +22,7 @@ The session metadata snapshot, returned by create/get/list/search and embedded i
 |---|---|---|---|
 | ID | `id` | string | Host-assigned session ID (ULID). The identity a client uses everywhere. |
 | ExternalID | `external_id` | string | Backend-native session ID. May be empty until the backend assigns it (async for Claude). |
-| Backend | `backend` | enum | `opencode` \| `claude-code` \| `codex` (0.5.0; ACP-served) \| `gemini` (0.6.4). Open-ended per [DATA-001]: clients tolerate ids they don't know. |
+| Backend | `backend` | enum | `opencode` \| `claude-code` \| `codex` (0.5.0; ACP-served) \| `gemini` (0.6.4) \| `hermes` (0.6.5). Open-ended per [DATA-001]: clients tolerate ids they don't know. |
 | Status | `status` | enum | Runtime status; see [SessionStatus](#enums). |
 | Visibility | `visibility` | enum | `""` \| `done` \| `archived`; user-set. |
 | FollowUp | `follow_up` | bool | User-set flag. |
