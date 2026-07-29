@@ -121,6 +121,7 @@ func createACPSession(t *testing.T, td *testDaemon, prompt string) *agent.Sessio
 		Backend: agent.BackendCodex,
 		GitRef:  agent.GitRef{LocalPath: repo, WorktreeID: "git@example.com:acme/repo.git"},
 		Prompt:  prompt,
+		Config:  workstationConfig(agent.BackendCodex),
 	})
 	if err != nil {
 		t.Fatalf("Sessions().Create: %v", err)

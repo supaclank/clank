@@ -72,7 +72,11 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
   storage is what lets every client of a host (mobile, TUI, the web preview overlay) share
   one preset set, and keeps a sandbox's permissive defaults from ever leaking onto a bridged
   laptop — each host serves its own. **Golden:** `internal/host/presetstore.go`,
-  `internal/host/mux/presets.go`; regression `TestPresets_CRUDOverHTTP`.
+  `internal/host/mux/presets.go`; client side, headless flows apply the Default preset:
+  `defaultPresetConfig` in `internal/webpreview/overlay/chat.js` (web overlay) and
+  `internal/cli/clankcli/session_create.go` (`please`, `preview <prompt>`); regressions
+  `TestPresets_CRUDOverHTTP`, `TestRunPlease_CreatesSessionAndRecordsLastSession`,
+  `TestStartPreviewAgent_AppliesDefaultPresetConfig`.
 
 ### Send — `POST /sessions/{id}/message`
 

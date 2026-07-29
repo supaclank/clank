@@ -414,16 +414,13 @@ func run(cfg runConfig) error {
 		}
 	}
 
-	// Built-in presets: the provisioner's declaration, or the conservative
-	// Workstation set when the host was started by hand. A malformed value
+	// Built-in presets: the provisioner's declaration. A malformed value
 	// is a deploy bug — fail the boot, don't run with silently-wrong
-	// defaults.
+	// defaults. Empty (a host started by hand) resolves to the
+	// conservative Workstation set inside host.New.
 	builtins, err := presets.Parse(cfg.builtinPresets)
 	if err != nil {
 		return fmt.Errorf("--builtin-presets: %w", err)
-	}
-	if builtins == nil {
-		builtins = presets.Workstation()
 	}
 
 	svc := host.New(host.Options{

@@ -169,22 +169,34 @@ func withPlans(defaults []Preset) []Preset {
 	return append(defaults, plans...)
 }
 
+// DefaultFor returns the backend's built-in Default preset from ps, or
+// nil when absent. The Default preset is the bundle a client applies
+// verbatim when the user picked nothing, and its keys double as the
+// create-time required keys (RequiredKeys).
+func DefaultFor(ps []Preset, bt agent.BackendType) *Preset {
+	for i := range ps {
+		if ps[i].Backend == bt && ps[i].ID == BuiltinDefaultPrefix+string(bt) {
+			return &ps[i]
+		}
+	}
+	return nil
+}
+
 // RequiredKeys returns the create-time required config keys per backend:
 // exactly the keys of that backend's built-in Default preset. Data-defined
 // strictness — a create missing any of them fails loudly (the host never
 // fills values in), and a client following the preset flow satisfies it by
 // construction.
 func RequiredKeys(builtins []Preset, bt agent.BackendType) []string {
-	for _, p := range builtins {
-		if p.Backend == bt && p.ID == BuiltinDefaultPrefix+string(bt) {
-			keys := make([]string, 0, len(p.Config))
-			for k := range p.Config {
-				keys = append(keys, k)
-			}
-			return keys
-		}
+	p := DefaultFor(builtins, bt)
+	if p == nil {
+		return nil
 	}
-	return nil
+	keys := make([]string, 0, len(p.Config))
+	for k := range p.Config {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // EnvValue serializes presets for $CLANK_BUILTIN_PRESETS (provisioner →

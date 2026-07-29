@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/agent/presets"
 	"github.com/acksell/clank/internal/config"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/host"
@@ -20,7 +21,9 @@ import (
 
 // newTestHost mounts a real host service (real store, real mux, stub
 // backend) behind an HTTP test server and returns a daemonclient wired
-// to it. Only the backend process boundary is stubbed.
+// to it. Only the backend process boundary is stubbed. Built-in presets
+// are the Workstation set — the same default a real clank-host resolves
+// — so create-time required-key validation is live, as in production.
 func newTestHost(t *testing.T) (*daemonclient.Client, *hosttest.StubBackendManager) {
 	t.Helper()
 
@@ -35,7 +38,8 @@ func newTestHost(t *testing.T) (*daemonclient.Client, *hosttest.StubBackendManag
 		BackendManagers: map[agent.BackendType]agent.BackendManager{
 			agent.BackendOpenCode: stub,
 		},
-		SessionsStore: hs,
+		SessionsStore:  hs,
+		BuiltinPresets: presets.Workstation(),
 	})
 	t.Cleanup(svc.Shutdown)
 
@@ -80,6 +84,18 @@ func TestRunPlease_CreatesSessionAndRecordsLastSession(t *testing.T) {
 	}
 	if got := last.LastSendOpts().Text; got != "install a release build to my phone" {
 		t.Errorf("prompt received by backend: got %q", got)
+	}
+	// Regression: creates without the Default preset's config are 400ed
+	// by the host (config_incomplete) — please must fetch and apply it.
+	wantCfg := presets.DefaultFor(presets.Workstation(), agent.BackendOpenCode).Config
+	if got := last.LastSendOpts().Config; len(got) == 0 {
+		t.Error("no config reached the backend — the Default preset was not applied")
+	} else {
+		for k, v := range wantCfg {
+			if got[k] != v {
+				t.Errorf("config[%q]: got %q, want %q (Default preset value)", k, got[k], v)
+			}
+		}
 	}
 
 	prefs, err := config.LoadPreferences()

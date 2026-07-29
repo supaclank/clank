@@ -30,6 +30,7 @@ import {
   PLAN_TOOL, textFromParts, activeQuestionFromParts, chatFromMessages,
   questionSuppressesPermission, pushPermission, dropPermission,
   customAllowed, toggleSelection, buildAnswers, collectPlanParts, planTextFor,
+  defaultPresetConfig,
 } from './chat.js';
 
 (() => {
@@ -454,13 +455,21 @@ import {
     setAgent('thinking');
     try {
       if (!store.sessionId) {
+        // Create-time config is the backend's Default preset, applied
+        // verbatim — the host rejects a create missing any of its keys
+        // (config_incomplete) and never fills values in.
+        if (!CFG.backend) throw new Error('no backend in the preview config — restart clank preview');
+        const presetList = await apiJSON('/presets?' + new URLSearchParams({ backend: CFG.backend, hostname: CFG.hostname || 'local' }));
+        const config = defaultPresetConfig(presetList, CFG.backend);
+        if (!config) throw new Error(`no Default preset for backend ${CFG.backend} — is the daemon up to date?`);
         const info = await apiJSON('/sessions', {
           method: 'POST',
           body: JSON.stringify({
-            backend: CFG.backend || undefined,
+            backend: CFG.backend,
             hostname: CFG.hostname || 'local',
             git_ref: { local_path: CFG.local_path },
             prompt: full,
+            config,
             ...(attachments.length ? { attachments } : {}),
           }),
         });

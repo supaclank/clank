@@ -126,6 +126,21 @@ export const collectPlanParts = (planParts, parts) => {
   return out;
 };
 
+// Mirrors internal/agent/presets BuiltinDefaultPrefix — the id contract
+// a session create's Default-preset lookup must match on both clients.
+export const BUILTIN_DEFAULT_PREFIX = 'builtin-default-';
+
+// defaultPresetConfig picks the backend's built-in Default ("Build")
+// preset from a GET /presets list and returns a copy of its config —
+// the create-time bundle a session create must carry verbatim (the host
+// 400s on missing keys and never fills values in). null when absent: the
+// caller fails the send loudly instead of creating a config-less session.
+export const defaultPresetConfig = (presetList, backend) => {
+  if (!Array.isArray(presetList) || !backend) return null;
+  const p = presetList.find((x) => x && x.backend === backend && x.id === BUILTIN_DEFAULT_PREFIX + backend);
+  return p && p.config ? { ...p.config } : null;
+};
+
 // planTextFor returns the plan text an ExitPlanMode permission prompt
 // gates: matched by tool_use id, falling back to the most recent plan
 // when the backend couldn't attribute one (mirrors the TUI golden ref).

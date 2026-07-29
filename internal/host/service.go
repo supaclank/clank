@@ -226,11 +226,8 @@ type Options struct {
 	// own blast radius). Served read-only by GET /presets, and each
 	// backend's Default preset defines the REQUIRED config keys for
 	// session creation. Empty means presets.Workstation() — the
-	// conservative set (cmd/clank-host resolves that before New).
-	// TODO(ai-review): New() stores this verbatim rather than defaulting
-	// empty to Workstation() itself, so any caller that skips the
-	// cmd/clank-host convention silently gets create-time validation off.
-	// https://github.com/Acksell/clank/pull/191#discussion_r3661500546
+	// conservative set — resolved by New itself, so no construction path
+	// (tests included) silently runs with create-time validation off.
 	BuiltinPresets []presets.Preset
 
 	// PresetsDir is where user-created presets persist (presets.json).
@@ -260,6 +257,10 @@ func New(opts Options) *Service {
 	if committerEmail == "" {
 		committerEmail = defaultProjectCommitterEmail
 	}
+	builtins := opts.BuiltinPresets
+	if len(builtins) == 0 {
+		builtins = presets.Workstation()
+	}
 	s := &Service{
 		id:                    id,
 		startedAt:             time.Now(),
@@ -275,7 +276,7 @@ func New(opts Options) *Service {
 		subscribers:           newSubscriberRegistry(),
 		worktreeLocks:         make(map[string]*sync.Mutex),
 		repoLocks:             make(map[string]*sync.Mutex),
-		builtinPresets:        opts.BuiltinPresets,
+		builtinPresets:        builtins,
 	}
 	if opts.PresetsDir != "" {
 		ps, err := newPresetStore(opts.PresetsDir)
