@@ -44,6 +44,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: migrations-lint diffs new migration files
+          # against origin/main.
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -55,6 +59,8 @@ jobs:
         run: make generate && git diff --exit-code
       - name: migrations match schema.sql
         run: make migrations-check
+      - name: lint new migrations for destructive changes
+        run: make migrations-lint
       - name: Store tests
         run: go test ./internal/store/... ./internal/host/store/... ./internal/sqlmigrate/...
 

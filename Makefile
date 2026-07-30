@@ -77,6 +77,18 @@ migration:
 	    --to "file://$(store)/schema.sql" \
 	    --dev-url "sqlite://dev?mode=memory"
 
+# Lints migrations added since LINT_BASE (default origin/main) for
+# destructive/risky changes; Atlas exits non-zero on findings (e.g.
+# DS103 column drop), failing CI. https://atlasgo.io/lint/analyzers
+.PHONY: migrations-lint
+migrations-lint:
+	@for s in $(SQLITE_STORES); do \
+	    atlas migrate lint \
+	        --dir "file://$$s/migrations?format=goose" \
+	        --dev-url "sqlite://dev?mode=memory" \
+	        --git-base "$(or $(LINT_BASE),origin/main)" || exit 1; \
+	done
+
 # Verifies migrations/ ≡ schema.sql for every store (CI runs this). A
 # drifted schema makes the diff emit a new migration file, which the
 # git-clean check turns into a failure.
