@@ -95,7 +95,9 @@ func ResolvePackager(dir string) (Packager, string, error) {
 // packagerSignalIn checks a single directory for a package-manager
 // signal. Empty Packager with nil error means "no signal here".
 func packagerSignalIn(dir string) (Packager, string, error) {
-	if data, err := os.ReadFile(filepath.Join(dir, "package.json")); err == nil {
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	switch {
+	case err == nil:
 		pm, evidence, perr := packagerFromPackageJSON(data)
 		if perr != nil {
 			return "", "", perr
@@ -103,6 +105,10 @@ func packagerSignalIn(dir string) (Packager, string, error) {
 		if pm != "" {
 			return pm, evidence, nil
 		}
+	case !os.IsNotExist(err):
+		// A permission or I/O failure is not "no signal" — surface it
+		// rather than silently falling through to bun.
+		return "", "", fmt.Errorf("read %s: %w", filepath.Join(dir, "package.json"), err)
 	}
 	for _, lf := range packagerLockfiles {
 		if _, err := os.Stat(filepath.Join(dir, lf.file)); err == nil {

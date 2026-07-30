@@ -48,6 +48,11 @@ func TestResolvePackager(t *testing.T) {
 			want:  PackagerBun,
 		},
 		{
+			name:    "unreadable package.json errors instead of defaulting to bun",
+			files:   map[string]string{"package.json/": ""}, // a directory, not a file: os.ReadFile fails with a non-not-exist error
+			wantErr: "package.json",
+		},
+		{
 			name: "packageManager field wins over lockfile",
 			files: map[string]string{
 				"package.json":      `{"packageManager":"pnpm@9.1.0"}`,

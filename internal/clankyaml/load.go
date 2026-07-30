@@ -51,6 +51,16 @@ func parse(data []byte) (*File, error) {
 		}
 		return nil, fmt.Errorf("parse: %w", err)
 	}
+	// A trailing `---`-delimited document must not silently vanish —
+	// decode it too so a malformed or unexpected second document errors
+	// instead of being ignored.
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, fmt.Errorf("parse: clank.yaml must contain a single YAML document")
+		}
+		return nil, fmt.Errorf("parse: %w", err)
+	}
 	if err := f.validate(); err != nil {
 		return nil, err
 	}

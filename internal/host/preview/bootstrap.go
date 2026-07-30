@@ -40,6 +40,9 @@ const (
 // workdir's basename plus a hash of its absolute path so same-named
 // folders (a monorepo's web-app/, sibling clones) can't collide. The
 // file's CONTENT records which installer produced the tree.
+// TODO(ai-review): key on a stable worktree identity, not just the abs
+// path, so a local-checkout import reusing a path can't inherit a prior
+// project's packager marker. https://github.com/Acksell/clank/pull/204#discussion_r3684840392
 func bootstrapMarkerPath(workDir string) (string, error) {
 	dir, err := config.Dir()
 	if err != nil {

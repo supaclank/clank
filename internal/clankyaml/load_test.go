@@ -112,6 +112,16 @@ preview:
 			yaml:    "preview: just-a-string\n",
 			wantErr: "parse",
 		},
+		{
+			name:    "malformed trailing document rejected",
+			yaml:    "preview:\n  dir: web-app\n---\n[unclosed\n",
+			wantErr: "parse",
+		},
+		{
+			name:    "second valid document rejected",
+			yaml:    "preview:\n  dir: web-app\n---\npreview:\n  dir: other\n",
+			wantErr: "single",
+		},
 	}
 
 	for _, tt := range tests {
