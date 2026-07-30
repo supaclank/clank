@@ -1,14 +1,12 @@
--- Baseline: the full schema as of the goose adoption (squashes the
--- retired PRAGMA user_version chain, v1–v4). IF NOT EXISTS makes it a
--- no-op on databases created by that chain, so they adopt in place —
--- goose records the row and takes over from here.
+-- Baseline: the full schema as of the goose adoption; plain CREATEs,
+-- so a database not created through goose fails loudly here.
 --
 -- Column documentation lives in ../schema.sql (the declarative source
 -- of truth this file was generated from). Later migrations are
 -- generated with `make migration`; don't hand-edit applied ones.
 
 -- +goose Up
-CREATE TABLE IF NOT EXISTS sessions (
+CREATE TABLE sessions (
     id              TEXT PRIMARY KEY,
     external_id     TEXT NOT NULL DEFAULT '',
     backend         TEXT NOT NULL,
@@ -30,11 +28,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     display_name    TEXT NOT NULL DEFAULT ''
 );
 
-CREATE INDEX IF NOT EXISTS idx_sessions_external_id ON sessions (external_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions (status);
-CREATE INDEX IF NOT EXISTS idx_sessions_visibility ON sessions (visibility);
+CREATE INDEX idx_sessions_external_id ON sessions (external_id);
+CREATE INDEX idx_sessions_status ON sessions (status);
+CREATE INDEX idx_sessions_visibility ON sessions (visibility);
 
-CREATE TABLE IF NOT EXISTS primary_agents (
+CREATE TABLE primary_agents (
     backend             TEXT NOT NULL,
     project_dir         TEXT NOT NULL DEFAULT '',
     worktree_id         TEXT NOT NULL DEFAULT '',
