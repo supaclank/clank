@@ -51,9 +51,7 @@ CREATE TABLE hosts (
 -- code has a bug. A named index rather than an inline UNIQUE constraint:
 -- SQLite backs inline constraints with unnamed auto-indexes, which
 -- Atlas's inspection can't round-trip stably (spurious drop/create
--- diffs). Databases adopted from the pre-goose era additionally carry
--- the original inline constraint — redundant, harmless. Upserts with
--- ON CONFLICT (user_id, provider) match either form.
+-- diffs). Upserts with ON CONFLICT (user_id, provider) match it.
 CREATE UNIQUE INDEX hosts_user_id_provider_idx
 ON hosts (user_id, provider);
 

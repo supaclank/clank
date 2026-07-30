@@ -1,12 +1,10 @@
 package store_test
 
 import (
-	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/acksell/clank/internal/host/store"
 	"github.com/acksell/clank/internal/sqlmigrate"
@@ -15,93 +13,18 @@ import (
 // baselineVersion is the goose version id of the baseline migration.
 const baselineVersion = 20260730000001
 
-// legacyFinalSchema is the exact shape the retired PRAGMA user_version
-// chain (v1–v4 plus the probe-based column reconcile) left behind.
-// Frozen here as the adoption contract: databases in this shape must
-// open cleanly under goose, with the baseline no-opping via
-// IF NOT EXISTS.
-const legacyFinalSchema = `
-	CREATE TABLE sessions (
-		id              TEXT PRIMARY KEY,
-		external_id     TEXT NOT NULL DEFAULT '',
-		backend         TEXT NOT NULL,
-		status          TEXT NOT NULL DEFAULT 'idle',
-		visibility      TEXT NOT NULL DEFAULT '',
-		follow_up       INTEGER NOT NULL DEFAULT 0,
-		project_dir     TEXT NOT NULL DEFAULT '',
-		worktree_id     TEXT NOT NULL DEFAULT '',
-		worktree_branch TEXT NOT NULL DEFAULT '',
-		prompt          TEXT NOT NULL DEFAULT '',
-		title           TEXT NOT NULL DEFAULT '',
-		ticket_id       TEXT NOT NULL DEFAULT '',
-		agent           TEXT NOT NULL DEFAULT '',
-		draft           TEXT NOT NULL DEFAULT '',
-		created_at      INTEGER NOT NULL,
-		updated_at      INTEGER NOT NULL,
-		last_read_at    INTEGER
-	);
-	ALTER TABLE sessions ADD COLUMN subdir TEXT NOT NULL DEFAULT '';
-	ALTER TABLE sessions ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
-	CREATE INDEX idx_sessions_external_id ON sessions(external_id);
-	CREATE INDEX idx_sessions_status ON sessions(status);
-	CREATE INDEX idx_sessions_visibility ON sessions(visibility);
-	CREATE TABLE primary_agents (
-		backend             TEXT NOT NULL,
-		project_dir         TEXT NOT NULL DEFAULT '',
-		worktree_id         TEXT NOT NULL DEFAULT '',
-		primary_agents_json TEXT NOT NULL DEFAULT '[]',
-		updated_at          INTEGER NOT NULL,
-		PRIMARY KEY (backend, project_dir, worktree_id)
-	);
-	PRAGMA user_version = 4;
-`
-
-// TestOpen_AdoptsLegacyUserVersionDatabase seeds a database exactly as
-// the retired migration chain left it — including a session row — and
-// asserts goose takes it over in place: no error, data intact,
-// bookkeeping recorded.
-func TestOpen_AdoptsLegacyUserVersionDatabase(t *testing.T) {
+// TestOpen_RecordsBaselineOnFreshDB pins the goose bookkeeping for the
+// from-scratch path.
+func TestOpen_RecordsBaselineOnFreshDB(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "host.db")
-
-	raw, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := raw.Exec(legacyFinalSchema); err != nil {
-		raw.Close()
-		t.Fatalf("seed legacy schema: %v", err)
-	}
-	seededMs := time.Date(2026, 5, 12, 14, 55, 0, 0, time.UTC).UnixMilli()
-	if _, err := raw.Exec(
-		`INSERT INTO sessions (id, backend, title, subdir, created_at, updated_at)
-		 VALUES ('adopted-1', 'opencode', 'pre-goose session', 'web-app', ?, ?)`,
-		seededMs, seededMs,
-	); err != nil {
-		raw.Close()
-		t.Fatalf("seed session row: %v", err)
-	}
-	raw.Close()
-
 	s, err := store.Open(path)
 	if err != nil {
-		t.Fatalf("Open on legacy-shaped DB: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
-	defer s.Close()
+	s.Close()
 
-	got, err := s.GetSession(context.Background(), "adopted-1")
-	if err != nil {
-		t.Fatalf("GetSession after adoption: %v", err)
-	}
-	if got.Title != "pre-goose session" || got.GitRef.Subdir != "web-app" {
-		t.Errorf("adopted session = %+v, want seeded title/subdir", got)
-	}
-	if got.CreatedAt.UnixMilli() != seededMs {
-		t.Errorf("CreatedAt = %d ms, want %d ms (timestamps must survive adoption untouched)",
-			got.CreatedAt.UnixMilli(), seededMs)
-	}
-
-	raw, err = sql.Open("sqlite", path)
+	raw, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
