@@ -132,6 +132,8 @@ func (h *Handler) handleFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isRawHTML(rel) {
+		// TODO(ai-review): raw HTML previews don't get the reload-on-edit
+		// client injected, unlike the text shell. https://github.com/Acksell/clank/pull/197#discussion_r3686130928
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		http.ServeContent(w, r, "", info.ModTime(), f)
 		return

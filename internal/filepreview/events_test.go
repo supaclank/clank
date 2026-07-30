@@ -71,6 +71,41 @@ func TestEventsEmitOnFileChange(t *testing.T) {
 	awaitLine(t, lines, "data: change")
 }
 
+// TestEventsNotifyOnDeletion pins the fix for a real deletion (as
+// opposed to an editor's brief unlink-then-rename gap): past the grace
+// period, the client must be told to reload rather than sit on stale
+// content forever.
+func TestEventsNotifyOnDeletion(t *testing.T) {
+	t.Parallel()
+	srv, root := newTestServer(t, "note.txt", map[string]string{"note.txt": "v1"})
+	lines := openEvents(t, srv.URL+"/__file/events?path=note.txt")
+	awaitLine(t, lines, ": watching")
+
+	if err := os.Remove(filepath.Join(root, "note.txt")); err != nil {
+		t.Fatal(err)
+	}
+	awaitLine(t, lines, "data: change")
+}
+
+// TestEventsSurviveRenameGap pins the opposite side of the same fix: a
+// brief unlink-then-recreate (well under the grace period) must still
+// be reported as the single content change it is, not a deletion.
+func TestEventsSurviveRenameGap(t *testing.T) {
+	t.Parallel()
+	srv, root := newTestServer(t, "note.txt", map[string]string{"note.txt": "v1"})
+	lines := openEvents(t, srv.URL+"/__file/events?path=note.txt")
+	awaitLine(t, lines, ": watching")
+
+	target := filepath.Join(root, "note.txt")
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	awaitLine(t, lines, "data: change")
+}
+
 func TestEventsRequirePath(t *testing.T) {
 	t.Parallel()
 	srv, _ := newTestServer(t, "note.txt", map[string]string{"note.txt": "v1"})
