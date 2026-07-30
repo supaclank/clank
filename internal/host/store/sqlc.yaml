@@ -4,11 +4,15 @@ version: "2"
 # (sessions, primary_agents) — completely separate database file from
 # the provisioner-side clank.db.
 #
-# Regenerate with:  sqlc generate -f internal/host/store/sqlc.yaml
+# schema.sql is the declarative source of truth; Atlas diffs it against
+# migrations/ to generate the goose migrations that actually run at
+# Open() (see the `make migration` target).
+#
+# Regenerate with:  make generate   (or: sqlc generate -f internal/host/store/sqlc.yaml)
 sql:
   - engine: "sqlite"
     queries: "queries"
-    schema: "schema"
+    schema: "schema.sql"
     gen:
       go:
         package: "hostsqlitedb"
@@ -16,5 +20,5 @@ sql:
         sql_package: "database/sql"
         emit_interface: true
         emit_json_tags: false
-        emit_prepared_queries: false
         emit_pointers_for_null_types: false
+        emit_prepared_queries: false

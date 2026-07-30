@@ -39,15 +39,74 @@ test-race: embed-host
 
 # ---- Code generation -------------------------------------------------
 #
-# Regenerates sqlc-derived code (internal/store/sqlitedb/*) from the
-# schema and queries under internal/store/{schema,queries}. Run after
-# editing either, then commit the generated files alongside.
+# Regenerates sqlc-derived code from each store's declarative schema.sql
+# and queries/. Run after editing either, then commit the generated
+# files alongside.
 #
 # Requires sqlc on PATH (`brew install sqlc` on macOS).
 
+# Every SQLite store package: holds schema.sql (declarative truth,
+# read by sqlc), migrations/ (goose files applied at Open()), and
+# sqlc.yaml. New stores join this list to inherit the migration
+# tooling below.
+SQLITE_STORES := internal/store internal/host/store
+
 .PHONY: generate
 generate:
-	sqlc generate -f internal/store/sqlc.yaml
+	@for s in $(SQLITE_STORES); do sqlc generate -f $$s/sqlc.yaml || exit 1; done
+
+# ---- Schema migrations -----------------------------------------------
+#
+# Declarative workflow: edit <store>/schema.sql to the desired shape,
+# then have Atlas generate the goose migration implementing the change:
+#
+#   make migration store=internal/store name=add_some_column
+#
+# Review the generated file in <store>/migrations/, then `make generate`
+# to refresh sqlc code, and commit all three together. goose applies
+# migrations/ at Open(); Atlas is only ever a dev/CI tool.
+#
+# Requires atlas on PATH (`brew install atlas` on macOS).
+
+.PHONY: migration
+migration:
+	@test -n "$(store)" && test -n "$(name)" || \
+	    { echo "usage: make migration store=internal/store name=add_some_column"; exit 1; }
+	atlas migrate diff $(name) \
+	    --dir "file://$(store)/migrations?format=goose" \
+	    --to "file://$(store)/schema.sql" \
+	    --dev-url "sqlite://dev?mode=memory"
+
+# Lints migrations added since LINT_BASE (default origin/main) for
+# destructive/risky changes; Atlas exits non-zero on findings (e.g.
+# DS103 column drop), failing CI. https://atlasgo.io/lint/analyzers
+.PHONY: migrations-lint
+migrations-lint:
+	@for s in $(SQLITE_STORES); do \
+	    atlas migrate lint \
+	        --dir "file://$$s/migrations?format=goose" \
+	        --dev-url "sqlite://dev?mode=memory" \
+	        --git-base "$(or $(LINT_BASE),origin/main)" || exit 1; \
+	done
+
+# Verifies migrations/ ≡ schema.sql for every store (CI runs this). A
+# drifted schema makes the diff emit a new migration file, which the
+# git-clean check turns into a failure.
+.PHONY: migrations-check
+migrations-check:
+	@for s in $(SQLITE_STORES); do \
+	    atlas migrate diff ci_drift_check \
+	        --dir "file://$$s/migrations?format=goose" \
+	        --to "file://$$s/schema.sql" \
+	        --dev-url "sqlite://dev?mode=memory" || exit 1; \
+	done
+	@drift="$$(git status --porcelain -- $(addsuffix /migrations,$(SQLITE_STORES)))"; \
+	test -z "$$drift" || { \
+	    echo "$$drift"; \
+	    echo "schema.sql and migrations/ have drifted — inspect the generated ci_drift_check file,"; \
+	    echo "regenerate it with a real name via 'make migration', and commit it."; \
+	    exit 1; \
+	}
 
 # ---- Embedded clank-host (Sprites host bootstrap) --------------------
 #
