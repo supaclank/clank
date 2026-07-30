@@ -54,7 +54,13 @@ jobs:
       - uses: sqlc-dev/setup-sqlc@v5
         with:
           sqlc-version: "1.30.0"
-      - uses: ariga/setup-atlas@v0
+      # The community edition, NOT ariga/setup-atlas: official binaries
+      # gate `migrate lint` behind Atlas Pro since v0.38, while the
+      # Apache-licensed community build keeps it. Pinned to the version
+      # verified locally (brew ships the same source build; bump both
+      # together).
+      - name: Install Atlas community edition
+        run: curl -sSf https://atlasgo.sh | ATLAS_VERSION=v1.2.3 sh -s -- --community
       - name: sqlc code is regenerated and committed
         run: make generate && git diff --exit-code
       - name: migrations match schema.sql

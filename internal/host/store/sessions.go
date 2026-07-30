@@ -97,7 +97,7 @@ func (s *Store) SearchSessions(ctx context.Context, p SearchParams) ([]agent.Ses
 		Visibility: string(p.Visibility),
 		Lim:        limit,
 	}
-	// Since/Until columns are unix millis post-v3 migration; sqlc
+	// Time columns are unix millis (see schema.sql); sqlc
 	// types them as interface{} (because the SQL is "@since IS NULL
 	// OR …" which sqlc can't infer). Pass int64 when present, nil
 	// otherwise so the NULL-check short-circuits inside SQLite.

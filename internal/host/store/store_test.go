@@ -310,8 +310,8 @@ func TestPersistsAcrossReopen(t *testing.T) {
 // inserted via UpsertSession used to be stored as Go's String()
 // output (including the m=+... suffix), and ListSessions then
 // failed with "Scan error … unsupported Scan, storing driver.Value
-// type string into type *time.Time". After the v3 INTEGER-millis
-// migration the bug is structurally impossible — this test pins
+// type string into type *time.Time". With the INTEGER-millis
+// schema the bug is structurally impossible — this test pins
 // that property so a future schema change can't silently
 // re-introduce it.
 func TestUpsertSession_TimeNowRoundTripsLosslessly(t *testing.T) {
