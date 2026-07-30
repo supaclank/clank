@@ -76,6 +76,7 @@ func (h *Handler) handleEvents(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			missingSince = time.Time{}
+			// TODO(ai-review): same-size edit with unchanged/coarse ModTime can be missed https://github.com/Acksell/clank/pull/197#discussion_r3686218283
 			if info.ModTime().Equal(lastMod) && info.Size() == lastSize {
 				continue
 			}
