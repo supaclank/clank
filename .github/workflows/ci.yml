@@ -33,6 +33,31 @@ jobs:
       # main are fixed/quarantined (internal/tui, internal/cli/daemoncli,
       # internal/keepalive). Kept out for now so CI starts green.
 
+  # Schema toolchain sync: sqlc-generated code must match schema.sql, and
+  # the goose migrations must produce exactly the schema schema.sql
+  # declares (Atlas replays migrations/ into an in-memory SQLite and
+  # diffs). The store tests then cover the runtime side: goose adoption
+  # of pre-goose databases and the migrated≡declared identity check.
+  schema-sync:
+    name: sqlc · migrations
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: sqlc-dev/setup-sqlc@v5
+        with:
+          sqlc-version: "1.30.0"
+      - uses: ariga/setup-atlas@v0
+      - name: sqlc code is regenerated and committed
+        run: make generate && git diff --exit-code
+      - name: migrations match schema.sql
+        run: make migrations-check
+      - name: Store tests
+        run: go test ./internal/store/... ./internal/host/store/... ./internal/sqlmigrate/...
+
   # internal/agent isn't among the flaky packages above, so it runs here on its
   # own ahead of the repo-wide suite. -race is the point: the backend shutdown
   # regression tests guard a close-vs-send data race that's invisible without
