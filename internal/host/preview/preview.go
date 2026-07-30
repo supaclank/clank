@@ -34,13 +34,43 @@ const (
 // shape ever escapes, that's the signal that v2's config-file work has
 // landed and Spec should be reborn as a typed wire schema.
 type Spec struct {
-	// Kind identifies which client integration to use. Today: always
-	// KindExpo.
+	// Kind identifies which client integration to use: KindExpo drives
+	// the phone/QR flow, KindWeb the `clank preview` browser flow.
 	Kind Kind
 
-	// CmdTemplate is the argv template. "%d" is replaced with the
-	// allocated port at spawn time.
+	// CmdTemplate is the argv template; PortToken occurrences are
+	// replaced with the allocated port at spawn time.
 	CmdTemplate []string
+
+	// PortToken is the placeholder renderArgs substitutes. Detect
+	// always emits clankyaml.PortPlaceholder — one token for
+	// synthesized and user recipes alike, so a literal "%d" in a user
+	// command or install string never gets mangled. Empty means "%d"
+	// (internal and test recipes predating the config work).
+	PortToken string
+
+	// Dir is the repo-relative subdirectory the dev server runs in
+	// (clank.yaml preview.dir). Empty means the workdir itself.
+	Dir string
+
+	// Installer records what installs dependencies, for the bootstrap
+	// completion marker: a Packager name for synthesized installs, the
+	// verbatim clank.yaml preview.install command for overrides, empty
+	// when the spec has no install step (custom command without an
+	// install). Drives the cross-packager node_modules wipe decision
+	// (needsNodeModulesWipe).
+	Installer string
+
+	// RequiredTool is a binary that must be on PATH for the spawn to
+	// make sense (the detected package manager). Start fails fast,
+	// citing ToolEvidence, when it's missing; empty skips the check
+	// (custom commands own their own tooling).
+	RequiredTool string
+
+	// ToolEvidence is the human-readable reason RequiredTool is
+	// required — the lockfile or package.json field that decided, per
+	// ResolvePackager. Empty for the no-signal bun default.
+	ToolEvidence string
 
 	// ReadyProbe is the HTTP poll Manager runs after spawn to flip
 	// State from Starting to Ready. Concrete contract beats stdout-

@@ -1,135 +1,42 @@
 package preview
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
-	"github.com/acksell/clank/internal/config"
+	"github.com/acksell/clank/internal/clankyaml"
 )
 
-// expoCmdTemplate is the argv that spawns Metro for a detected Expo
-// project ("%d" is the allocated port, substituted by renderArgs).
+// Framework dev-server invocations, without the package-manager launch
+// prefix (execLine adds it) and without the install bootstrap
+// (bootstrapShell adds it). ${PORT} is the allocated port, substituted
+// by renderArgs — the same token clank.yaml commands use, so one
+// substitution rule covers both.
 //
-// We wrap the invocation in `sh -c` to run `bun install` first: a
-// materialized worktree only carries what's tracked in git, and
-// node_modules is gitignored, so the first /preview/start on a fresh
-// worktree must install before Metro can start. The install is a fast
-// no-op once node_modules is already present.
-//
-// bun installs and launches, but Metro still runs under Node: `bun expo`
-// executes the worktree-local expo bin (which `bun install` just
-// materialized — no registry fetch at spawn time), and bun respects its
-// `#!/usr/bin/env node` shebang. That matters: the preview shim rides
-// NODE_OPTIONS (see spawn.buildEnv), which only Node honors.
-// bun over npm because it hard-links node_modules from its global cache:
-// sibling worktrees of the same repo cost links instead of gigabytes of
-// small-file writes, which is what an I/O-constrained sprite needs (the
-// cache lives under $HOME, same filesystem as the worktrees; a
-// cross-device cache would silently degrade to copies). `--no-save` keeps
-// bun from touching package.json — but when the repo has a
-// package-lock.json, bun migrates it and writes a bun.lock EVEN under
-// --no-save (verified on bun 1.3.11/1.3.14; no flag disables it), so the
-// bootstrap deletes the migrated bun.lock afterward unless one existed
-// before the install (a genuinely-bun repo keeps its own). The user's repo
-// stays exactly as materialized. bun also refuses to run dependency
-// postinstall scripts outside its trusted allowlist, which we want:
-// preview installs run unattended on the user's behalf.
-//
-// Self-healing bootstrap. A completion marker records "this workdir's
-// node_modules was installed by bun". It lives in the clank state dir
-// (<config.Dir()>/preview-bootstrap/, see bootstrapMarkerPath) — never
-// inside or next to the user's repo — and spawn injects its path via
-// $CLANK_PREVIEW_BOOTSTRAP_MARKER so the shell does no path assembly.
-// It's written only AFTER a successful install, so an interrupted prior
-// run (marker absent) forces a clean reinstall rather than trusting a
-// half-extracted tree. The installer-specific `.bun` suffix makes
-// workdirs installed by the old npm bootstrap (or a future different
-// installer) reinstall cleanly once instead of running one package
-// manager over another's tree.
-//
-// Install output is deliberately not silenced: it streams to the client
-// (ring buffer → /preview/logs) so the multi-minute first-run install
-// shows live progress instead of a blind spinner.
-//
-// `exec` replaces the shell with bun (which then reaches Metro via its
-// node shebang) so signals + Setpgid target the whole tree directly.
-// `--non-interactive` tells Expo CLI to skip prompts; we
-// deliberately do NOT set CI=true (Metro reads CI and disables watch mode
-// + HMR). EXPO_NO_DOTENV is set in spawn.buildEnv. (V1 bootstrap; the
-// long-term shape is a per-repo clank.yaml bootstrap step — see doc.go.)
-//
-// Raw string (backticks) so the embedded shell double-quotes don't need
-// escaping.
-var expoCmdTemplate = bootstrapTemplate(`bun expo start --port %d --non-interactive`)
+// expo: `--non-interactive` tells Expo CLI to skip prompts; we
+// deliberately do NOT set CI=true (Metro reads CI and disables watch
+// mode + HMR). EXPO_NO_DOTENV is set in spawn.buildEnv.
+const expoToolArgs = "expo start --port ${PORT} --non-interactive"
 
-// webCmdTemplate spawns Vite for a detected web project behind the same
-// bun-install bootstrap as Expo (same marker file on purpose: the marker
-// records "this worktree's node_modules was installed by bun", which is
-// kind-independent). `--strictPort` because Manager allocated the port
-// and the readiness probe polls exactly it — Vite's default
-// auto-increment on a busy port would leave the probe polling a dead
-// socket until timeout. `--host 127.0.0.1` because Vite's default host
-// is "localhost", which Node ≥17 may resolve (and bind) as ::1 only —
+// vite: `--strictPort` because Manager allocated the port and the
+// readiness probe polls exactly it — Vite's default auto-increment on
+// a busy port would leave the probe polling a dead socket until
+// timeout. `--host 127.0.0.1` because Vite's default host is
+// "localhost", which Node ≥17 may resolve (and bind) as ::1 only —
 // observed on macOS — while probeReady and the webpreview proxy dial
 // IPv4 loopback. No --clearScreen wrangling needed: Vite only clears
 // when stdout is a TTY, and ours is the ring buffer.
-var webCmdTemplate = bootstrapTemplate(`bun vite --port %d --strictPort --host 127.0.0.1`)
+const viteToolArgs = "vite --port ${PORT} --strictPort --host 127.0.0.1"
 
-// nextCmdTemplate spawns Next.js's own dev server. `-H 127.0.0.1` for
-// the same reason as Vite's --host (loopback parity with the probe and
-// proxy, and no LAN exposure); Next binds the exact -p port or exits,
-// so no strict-port wrangling is needed. The client flow is the same
-// KindWeb browser proxy — only the spawn recipe differs.
-var nextCmdTemplate = bootstrapTemplate(`bun next dev -p %d -H 127.0.0.1`)
-
-// bootstrapMarkerEnv carries the bootstrap completion-marker path from
-// spawn into the bootstrapTemplate shell. Env rather than in-shell path
-// assembly: the Go side owns the location (config dir, hash key) and
-// the value needs no shell quoting.
-const bootstrapMarkerEnv = "CLANK_PREVIEW_BOOTSTRAP_MARKER"
-
-// bootstrapMarkerPath returns the completion-marker file for workDir's
-// bun bootstrap. Lives under the clank state dir so nothing is written
-// inside — or next to — the user's repo; keyed by the workdir's
-// basename plus a hash of its absolute path so same-named folders
-// (a monorepo's web-app/, sibling clones) can't collide.
-func bootstrapMarkerPath(workDir string) (string, error) {
-	dir, err := config.Dir()
-	if err != nil {
-		return "", fmt.Errorf("resolve clank dir: %w", err)
-	}
-	abs, err := filepath.Abs(workDir)
-	if err != nil {
-		return "", fmt.Errorf("resolve workdir %q: %w", workDir, err)
-	}
-	sum := sha256.Sum256([]byte(abs))
-	name := fmt.Sprintf("%s-%x.bun", filepath.Base(abs), sum[:6])
-	return filepath.Join(dir, "preview-bootstrap", name), nil
-}
-
-// bootstrapTemplate wraps a dev-server exec line in the self-healing
-// bun-install bootstrap documented on expoCmdTemplate. The returned argv
-// is a Spec.CmdTemplate; a "%d" placeholder inside execLine survives
-// verbatim for renderArgs to substitute. Fails fast when the marker env
-// is missing — a caller bug, never a reason to guess a location.
-func bootstrapTemplate(execLine string) []string {
-	return []string{
-		"sh", "-c",
-		`m="$` + bootstrapMarkerEnv + `"; ` +
-			`[ -n "$m" ] || { echo "` + bootstrapMarkerEnv + ` is not set" >&2; exit 1; }; ` +
-			`[ -f "$m" ] || rm -rf node_modules; ` +
-			`keep_lock=; [ -f bun.lock ] && keep_lock=1; ` +
-			`bun install --no-save; err=$?; ` +
-			`[ -n "$keep_lock" ] || rm -f bun.lock; ` +
-			`[ "$err" -eq 0 ] && ` +
-			`mkdir -p "$(dirname "$m")" && : > "$m" && ` +
-			`exec ` + execLine,
-	}
-}
+// next: `-H 127.0.0.1` for the same reason as Vite's --host (loopback
+// parity with the probe and proxy, and no LAN exposure); Next binds
+// the exact -p port or exits, so no strict-port wrangling is needed.
+// The client flow is the same KindWeb browser proxy — only the spawn
+// recipe differs.
+const nextToolArgs = "next dev -p ${PORT} -H 127.0.0.1"
 
 // expoReadyProbe asks Metro's /status endpoint, which has returned
 // "packager-status:running" stably since at least Expo SDK 49. The
@@ -142,11 +49,12 @@ var expoReadyProbe = ReadyProbe{
 	ExpectedSubstr: "packager-status:running",
 }
 
-// webReadyProbe: a bare 200 on / is the only signal Vite gives that's
+// webReadyProbe: a bare 200 on / is the only signal that's
 // framework-independent (a Vite SPA serves index.html; SvelteKit SSR
 // renders the page). No body substring — there's nothing stable to
 // match across frameworks, and Vite binds the port only when it's
-// actually able to serve.
+// actually able to serve. Also the default probe for clank.yaml
+// custom commands, overridable via preview.ready.
 var webReadyProbe = ReadyProbe{
 	Path: "/",
 }
@@ -160,28 +68,155 @@ var appConfigCandidates = []string{
 	"app.config.ts",
 }
 
-// Detect inspects workDir and returns a Spec if it looks like an Expo,
-// Next.js, or Vite web app. The contract:
+// Detect inspects workDir and returns the Spec Manager uses to spawn
+// its dev server. The contract:
 //
 //   - (nil, nil) means "not previewable" — a normal answer, NOT an
 //     error. Surface it as preview_available: false / available: false
 //     to the client.
-//   - (nil, err) means I/O blew up reading the worktree. The caller
-//     should log and treat as not-previewable, but a flood of these
-//     signals a real problem (disk, perms, racy worktree removal).
+//   - (nil, err) means I/O blew up reading the worktree, clank.yaml is
+//     invalid, or the config asks for something impossible. A user who
+//     wrote config gets a loud error, never a silent "not previewable".
 //   - (*Spec, nil) means the dev server should be spawnable with the
 //     returned recipe.
 //
-// Expo wins over Vite when both match (an Expo app with a vite dep is
-// almost certainly an Expo app; a Vite web app never carries an Expo
-// app config), and Next wins over Vite (a Next project's dev server is
-// `next dev` even when vite appears as a transitive tool, e.g. for
-// vitest). Detection is intentionally cheap (one Stat for
-// package.json, one small JSON parse, up to three more Stats for
-// app.config files) so callers can run it per worktree-list row
+// clank.yaml wins over framework sniffing: preview.dir re-roots
+// detection into a subdirectory (monorepos), preview.command bypasses
+// detection entirely (KindWeb, the command owns everything but the
+// allocated port), preview.install replaces the synthesized
+// package-manager install, preview.ready overrides the probe. With no
+// config, detection synthesizes the install from the project's own
+// package manager (ResolvePackager) so a pnpm/yarn/npm project is
+// installed by its own resolver against its own lockfile.
+//
+// Detection stays cheap (a few Stats and one small JSON parse, plus
+// one clank.yaml read) so callers can run it per worktree-list row
 // without caching.
 func Detect(workDir string) (*Spec, error) {
-	pkgPath := filepath.Join(workDir, "package.json")
+	cfg, err := clankyaml.Load(workDir)
+	if err != nil {
+		return nil, err
+	}
+	var pv *clankyaml.Preview
+	if cfg != nil {
+		pv = cfg.Preview
+	}
+
+	root := workDir
+	subdir := ""
+	if pv != nil && pv.Dir != "" {
+		subdir = filepath.Clean(pv.Dir)
+		root = filepath.Join(workDir, subdir)
+		if fi, statErr := os.Stat(root); statErr != nil || !fi.IsDir() {
+			return nil, fmt.Errorf("%s: preview.dir %q is not a directory under %s", clankyaml.FileName, pv.Dir, workDir)
+		}
+	}
+
+	if pv != nil && pv.Command != "" {
+		return customSpec(pv, subdir), nil
+	}
+
+	match, err := detectFramework(root)
+	if err != nil {
+		return nil, err
+	}
+	if match == nil {
+		if pv != nil && previewConfigured(pv) {
+			// The user explicitly configured a preview; "nothing to
+			// run" must fail loudly, not render a missing button.
+			return nil, fmt.Errorf("%s: preview is configured but no supported framework was detected in %s and no preview.command is set", clankyaml.FileName, root)
+		}
+		return nil, nil
+	}
+
+	pm, evidence, err := ResolvePackager(root)
+	if err != nil {
+		return nil, err
+	}
+
+	install := installFragment(pm)
+	installer := string(pm)
+	requiredTool := string(pm)
+	if pv != nil && pv.Install != "" {
+		install = pv.Install
+		installer = pv.Install
+		// bun and yarn also LAUNCH the tool, so they stay required with
+		// an install override; npm/pnpm exec node_modules/.bin directly
+		// and are only needed for the install they no longer run.
+		if pm == PackagerNPM || pm == PackagerPNPM {
+			requiredTool = ""
+		}
+	}
+
+	probe := match.probe
+	if pv != nil && pv.Ready != nil {
+		probe = ReadyProbe{Path: pv.Ready.Path, ExpectedSubstr: pv.Ready.Expect}
+	}
+
+	return &Spec{
+		Kind:         match.kind,
+		CmdTemplate:  []string{"sh", "-c", bootstrapShell(install, execLine(pm, match.toolArgs))},
+		PortToken:    clankyaml.PortPlaceholder,
+		Dir:          subdir,
+		Installer:    installer,
+		RequiredTool: requiredTool,
+		ToolEvidence: evidence,
+		ReadyProbe:   probe,
+	}, nil
+}
+
+// customSpec builds the Spec for a clank.yaml preview.command: always
+// the KindWeb browser flow, detection fully bypassed. Without a
+// preview.install the command owns its own dependencies (no bootstrap,
+// no marker); with one, the install runs behind the same marker
+// protocol as synthesized recipes.
+//
+// No `exec` prefix on user commands — a compound command (a && b)
+// would never run past the exec, and teardown doesn't rely on it: the
+// Setpgid group kill reaches every child either way.
+func customSpec(pv *clankyaml.Preview, subdir string) *Spec {
+	probe := webReadyProbe
+	if pv.Ready != nil {
+		probe = ReadyProbe{Path: pv.Ready.Path, ExpectedSubstr: pv.Ready.Expect}
+	}
+	spec := &Spec{
+		Kind:       KindWeb,
+		PortToken:  clankyaml.PortPlaceholder,
+		Dir:        subdir,
+		ReadyProbe: probe,
+	}
+	if pv.Install != "" {
+		spec.Installer = pv.Install
+		spec.CmdTemplate = []string{"sh", "-c", bootstrapShell(pv.Install, pv.Command)}
+	} else {
+		spec.CmdTemplate = []string{"sh", "-c", pv.Command}
+	}
+	return spec
+}
+
+// previewConfigured reports whether the user set anything in the
+// preview section (an empty `preview:` block reads as absent).
+// Command is handled before this is consulted.
+func previewConfigured(pv *clankyaml.Preview) bool {
+	return pv.Dir != "" || pv.Install != "" || pv.Ready != nil
+}
+
+// frameworkMatch is a recognized framework: what to launch and how to
+// know it's up. The package-manager half is resolved separately.
+type frameworkMatch struct {
+	kind     Kind
+	toolArgs string
+	probe    ReadyProbe
+}
+
+// detectFramework classifies dir as an Expo, Next.js, or Vite project,
+// or nil for none. Expo wins over Vite when both match (an Expo app
+// with a vite dep is almost certainly an Expo app; a Vite web app
+// never carries an Expo app config), and Next wins over Vite (a Next
+// project's dev server is `next dev` even when vite appears as a
+// transitive tool, e.g. for vitest).
+func detectFramework(dir string) (*frameworkMatch, error) {
+	pkgPath := filepath.Join(dir, "package.json")
 	data, err := os.ReadFile(pkgPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -190,30 +225,15 @@ func Detect(workDir string) (*Spec, error) {
 		return nil, fmt.Errorf("read %s: %w", pkgPath, err)
 	}
 
-	if packageHasExpo(data) && hasExpoAppConfig(workDir) {
-		return &Spec{
-			Kind:        KindExpo,
-			CmdTemplate: append([]string(nil), expoCmdTemplate...),
-			ReadyProbe:  expoReadyProbe,
-		}, nil
+	if packageHasExpo(data) && hasExpoAppConfig(dir) {
+		return &frameworkMatch{kind: KindExpo, toolArgs: expoToolArgs, probe: expoReadyProbe}, nil
 	}
-
 	if packageHasDep(data, "next") {
-		return &Spec{
-			Kind:        KindWeb,
-			CmdTemplate: append([]string(nil), nextCmdTemplate...),
-			ReadyProbe:  webReadyProbe,
-		}, nil
+		return &frameworkMatch{kind: KindWeb, toolArgs: nextToolArgs, probe: webReadyProbe}, nil
 	}
-
 	if packageHasDep(data, "vite") {
-		return &Spec{
-			Kind:        KindWeb,
-			CmdTemplate: append([]string(nil), webCmdTemplate...),
-			ReadyProbe:  webReadyProbe,
-		}, nil
+		return &frameworkMatch{kind: KindWeb, toolArgs: viteToolArgs, probe: webReadyProbe}, nil
 	}
-
 	return nil, nil
 }
 

@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/acksell/clank/internal/clankyaml"
 )
 
 // Default lifecycle timers. Bumpable via Options for tests.
@@ -126,6 +129,18 @@ func (m *Manager) Start(ctx context.Context, worktreeID, workDir, serviceName st
 	}
 	if spec == nil {
 		return Status{}, ErrNotPreviewable
+	}
+	// Fail before spawning, with the detection evidence in hand — a
+	// missing binary surfacing as a cryptic mid-bootstrap shell error
+	// would hide the actual fix from the user.
+	if spec.RequiredTool != "" {
+		if _, lookErr := exec.LookPath(spec.RequiredTool); lookErr != nil {
+			why := spec.ToolEvidence
+			if why == "" {
+				why = "clank's default installer"
+			}
+			return Status{}, fmt.Errorf("preview: this project uses %s (%s) — install %s, or set preview.install in %s to override", spec.RequiredTool, why, spec.RequiredTool, clankyaml.FileName)
+		}
 	}
 	return m.startWithSpec(ctx, worktreeID, workDir, serviceName, *spec, 0)
 }

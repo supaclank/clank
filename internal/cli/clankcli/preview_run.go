@@ -11,11 +11,32 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/clankyaml"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/host"
 	"github.com/acksell/clank/internal/host/preview"
 	"github.com/acksell/clank/internal/lannet"
 )
+
+// printPackagerNote tells the user which package manager the preview
+// will install with when it isn't bun — the project's own lockfile or
+// packageManager field decided (preview.ResolvePackager). Purely
+// informational: detection failures stay silent here and surface
+// through Start's canonical error path instead. No switching
+// instructions: adopting bun (a bun.lock appearing) or a clank.yaml
+// preview.install both flip detection on their own, and the docs
+// cover the rest.
+func printPackagerNote(projectDir string) {
+	spec, err := preview.Detect(projectDir)
+	if err != nil || spec == nil {
+		return
+	}
+	switch preview.Packager(spec.Installer) {
+	case preview.PackagerNPM, preview.PackagerPNPM, preview.PackagerYarn:
+		fmt.Printf("Installing with %s (%s).\n", spec.Installer, spec.ToolEvidence)
+		fmt.Println("Tip: bun is ~10x faster on cold worktrees and uses ~60x less disk.")
+	}
+}
 
 // previewKeepaliveInterval paces the CLI's liveness pings against the
 // daemon's idle reaper (preview.DefaultIdleTimeout, 15m) — wide margin
@@ -93,19 +114,20 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	// through: same folder, same key, same running server.
 	previewKey := host.LocalRepoSlug(projectDir)
 
-	// Generous timeout: a cold preview start runs `bun install` first.
-	// Derives from sigCtx so Ctrl+C during startup aborts the wait.
+	// Generous timeout: a cold preview start installs dependencies
+	// first. Derives from sigCtx so Ctrl+C during startup aborts the wait.
 	startCtx, cancel := context.WithTimeout(sigCtx, 10*time.Minute)
 	defer cancel()
 
+	printPackagerNote(projectDir)
 	fmt.Println("Starting the dev server on this folder (first run installs dependencies)…")
 	status, err := client.Preview(previewKey).Start(startCtx)
 	if err != nil {
-		// The Expo/Vite hint is only true for the daemon's "no app
+		// The framework hint is only true for the daemon's "no app
 		// detected here" answer; any other failure (path resolution,
 		// spawn error) surfaces verbatim so it isn't mislabeled.
 		if errors.Is(err, daemonclient.ErrNotPreviewable) {
-			return fmt.Errorf("start preview (is this an Expo or Vite project?): %w", err)
+			return fmt.Errorf("start preview (no Expo, Next.js, or Vite app detected here — any other stack can declare its dev server via preview.command in %s): %w", clankyaml.FileName, err)
 		}
 		return fmt.Errorf("start preview: %w", err)
 	}

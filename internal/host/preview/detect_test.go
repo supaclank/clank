@@ -2,16 +2,42 @@ package preview
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// Detect's job is small: classify a directory as Expo-previewable or
-// not. The table doubles as the spec for what we mean by "Expo
-// project" — adding a new positive or negative row IS the place to
-// document an edge case.
+// detectSpec runs Detect over a fixture tree (a .git dir is always
+// planted so ResolvePackager's walk-up stays inside the fixture) and
+// fails the test on error or a nil spec.
+func detectSpec(t *testing.T, files map[string]string) *Spec {
+	t.Helper()
+	dir := t.TempDir()
+	writeTree(t, dir, files)
+	writeTree(t, dir, map[string]string{".git/": ""})
+	spec, err := Detect(dir)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	if spec == nil {
+		t.Fatalf("Detect: want spec for fixture %v, got nil", files)
+	}
+	return spec
+}
+
+// shellOf returns the sh -c body of a spec's CmdTemplate.
+func shellOf(t *testing.T, spec *Spec) string {
+	t.Helper()
+	if len(spec.CmdTemplate) != 3 || spec.CmdTemplate[0] != "sh" || spec.CmdTemplate[1] != "-c" {
+		t.Fatalf("CmdTemplate = %v, want [sh -c <cmd>]", spec.CmdTemplate)
+	}
+	return spec.CmdTemplate[2]
+}
+
+// Detect's job is small: classify a directory as previewable or not.
+// The table doubles as the spec for what we mean by "Expo project" /
+// "web project" — adding a new positive or negative row IS the place
+// to document an edge case.
 func TestDetect(t *testing.T) {
 	t.Parallel()
 
@@ -19,12 +45,11 @@ func TestDetect(t *testing.T) {
 		// name is the subtest name.
 		name string
 		// files maps "relative/path" → file contents to create under
-		// the test's temp dir. nil contents means "don't create".
+		// the test's temp dir.
 		files map[string]string
 		// want is what Detect should return: nil for not-previewable,
 		// &Spec{...} for previewable. We compare the spec's Kind and
-		// ReadyPattern; CmdTemplate is checked separately because it
-		// uses an opaque %d placeholder.
+		// ReadyProbe; CmdTemplate contents are pinned separately.
 		want *Spec
 	}
 
@@ -138,15 +163,8 @@ func TestDetect(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
-			for rel, content := range tc.files {
-				path := filepath.Join(dir, rel)
-				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-					t.Fatalf("mkdir %s: %v", path, err)
-				}
-				if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-					t.Fatalf("write %s: %v", path, err)
-				}
-			}
+			writeTree(t, dir, tc.files)
+			writeTree(t, dir, map[string]string{".git/": ""})
 
 			got, err := Detect(dir)
 			if err != nil {
@@ -168,7 +186,7 @@ func TestDetect(t *testing.T) {
 				t.Errorf("ReadyProbe = %+v, want %+v", got.ReadyProbe, tc.want.ReadyProbe)
 			}
 			if len(got.CmdTemplate) == 0 {
-				t.Errorf("CmdTemplate is empty; want non-empty argv with one %%d")
+				t.Errorf("CmdTemplate is empty; want non-empty argv with a port placeholder")
 			}
 		})
 	}
@@ -181,19 +199,11 @@ func TestDetect(t *testing.T) {
 func TestDetect_MonorepoSubdir(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	files := map[string]string{
+	writeTree(t, root, map[string]string{
+		".git/":                "",
 		"package.json":         `{"dependencies":{"react":"^18"}}`,
 		"web-app/package.json": `{"devDependencies":{"vite":"^6.0.0"}}`,
-	}
-	for rel, content := range files {
-		path := filepath.Join(root, rel)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", path, err)
-		}
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			t.Fatalf("write %s: %v", path, err)
-		}
-	}
+	})
 
 	rootSpec, err := Detect(root)
 	if err != nil {
@@ -211,182 +221,241 @@ func TestDetect_MonorepoSubdir(t *testing.T) {
 	}
 }
 
-// TestExpoCmdTemplateBootstrap pins the self-healing bootstrap logic in
-// expoCmdTemplate so a future edit can't silently drop the clean-reinstall
-// guard, the completion marker, or — critically — move the marker back
-// inside (or next to) the user's repo by assembling a path in-shell.
-func TestExpoCmdTemplateBootstrap(t *testing.T) {
+// TestDetect_DefaultLaunchesViaBun pins the no-signal default: with no
+// lockfile or packageManager field (clank-created template projects),
+// every recipe execs the worktree-local bin via bun instead of npx —
+// detection guarantees the dep is declared and the bootstrap's install
+// materializes its bin, so an npx registry fetch at spawn time would
+// only add latency, a network dependency, and a prompt to suppress.
+func TestDetect_DefaultLaunchesViaBun(t *testing.T) {
 	t.Parallel()
-	// The template is a sh -c invocation; the shell command is in index 2.
-	if len(expoCmdTemplate) < 3 {
-		t.Fatalf("expoCmdTemplate len = %d, want ≥ 3 (sh -c <cmd>)", len(expoCmdTemplate))
-	}
-	cmd := expoCmdTemplate[2]
-	for _, c := range []struct{ want, desc string }{
-		{`m="$` + bootstrapMarkerEnv + `"`, "completion marker path injected via env — Go owns the location"},
-		{`[ -n "$m" ] ||`, "fail fast when the marker env is missing"},
-		{"rm -rf node_modules", "clean-reinstall on missing marker"},
-		{"bun install", "install step present"},
-		{"--no-save", "install must not touch package.json in the user's repo"},
-		{`rm -f bun.lock`, "migrated-lockfile cleanup (bun writes bun.lock from package-lock.json even under --no-save)"},
-		{"keep_lock", "pre-existing bun.lock guard — genuinely-bun repos keep their lockfile"},
-		{"exec bun expo start", "metro launched via the worktree-local bin bun just installed"},
+	for name, files := range map[string]map[string]string{
+		"expo": {
+			"package.json": `{"dependencies":{"expo":"~50.0.0"}}`,
+			"app.json":     `{"expo":{}}`,
+		},
+		"vite": {"package.json": `{"devDependencies":{"vite":"^6.0.0"}}`},
+		"next": {"package.json": `{"dependencies":{"next":"^15.0.0"}}`},
 	} {
-		if !strings.Contains(cmd, c.want) {
-			t.Errorf("expoCmdTemplate missing %s: %q not found in shell command", c.desc, c.want)
-		}
-	}
-	// The marker location is Go's job (bootstrapMarkerPath); any relative
-	// path assembled in-shell would land inside or next to the user's repo.
-	if strings.Contains(cmd, "../.clank-preview-bootstrap") {
-		t.Errorf("bootstrap marker must not be assembled relative to the workdir: %q", cmd)
-	}
-}
-
-// TestBootstrapMarkerPath pins the marker location contract: under the
-// clank state dir (never inside or next to the user's repo — laptop
-// `clank preview` runs against the user's own folders), keyed uniquely
-// per absolute workdir so same-named folders can't collide.
-func TestBootstrapMarkerPath(t *testing.T) {
-	t.Setenv("CLANK_DIR", t.TempDir())
-
-	a, err := bootstrapMarkerPath("/repos/one/web-app")
-	if err != nil {
-		t.Fatalf("bootstrapMarkerPath: %v", err)
-	}
-	b, err := bootstrapMarkerPath("/repos/two/web-app")
-	if err != nil {
-		t.Fatalf("bootstrapMarkerPath: %v", err)
-	}
-	wantDir := filepath.Join(os.Getenv("CLANK_DIR"), "preview-bootstrap")
-	if filepath.Dir(a) != wantDir {
-		t.Errorf("marker dir = %q, want %q", filepath.Dir(a), wantDir)
-	}
-	if a == b {
-		t.Errorf("same-named workdirs must get distinct markers, both = %q", a)
-	}
-	if !strings.HasSuffix(a, ".bun") {
-		t.Errorf("marker %q missing installer-specific .bun suffix", a)
-	}
-	// Deterministic: same workdir → same marker across spawns.
-	a2, err := bootstrapMarkerPath("/repos/one/web-app")
-	if err != nil {
-		t.Fatalf("bootstrapMarkerPath: %v", err)
-	}
-	if a != a2 {
-		t.Errorf("marker not deterministic: %q vs %q", a, a2)
-	}
-}
-
-// TestExpoCmdTemplateBootstrap_WritesMarkerToConfiguredPath runs the real
-// shell snippet with a fake succeeding bun and asserts the completion
-// marker lands exactly at $CLANK_PREVIEW_BOOTSTRAP_MARKER — nothing is
-// written inside or next to the workdir.
-func TestExpoCmdTemplateBootstrap_WritesMarkerToConfiguredPath(t *testing.T) {
-	t.Parallel()
-
-	root := t.TempDir()
-	worktree := filepath.Join(root, "worktree")
-	if err := os.Mkdir(worktree, 0o755); err != nil {
-		t.Fatalf("mkdir worktree: %v", err)
-	}
-	marker := filepath.Join(t.TempDir(), "preview-bootstrap", "worktree-abc.bun")
-
-	bin := t.TempDir()
-	// One fake bun serves both roles: `bun install` succeeds, then the
-	// `exec bun expo start` line terminates instantly.
-	if err := os.WriteFile(filepath.Join(bin, "bun"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake bun: %v", err)
-	}
-
-	cmd := exec.Command("sh", "-c", strings.ReplaceAll(expoCmdTemplate[2], "%d", "0"))
-	cmd.Dir = worktree
-	cmd.Env = []string{"PATH=" + bin + ":" + os.Getenv("PATH"), bootstrapMarkerEnv + "=" + marker}
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("bootstrap: %v\n%s", err, out)
-	}
-
-	if _, err := os.Stat(marker); err != nil {
-		t.Errorf("marker: want written at configured path after successful install, stat err = %v", err)
-	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		t.Fatalf("read root: %v", err)
-	}
-	if len(entries) != 1 || entries[0].Name() != "worktree" {
-		t.Errorf("bootstrap wrote next to the workdir: %v", entries)
-	}
-}
-
-// TestCmdTemplates_LaunchViaBun pins that every spawn recipe execs the
-// worktree-local bin via bun instead of npx: detection guarantees the dep
-// is declared and the bootstrap's `bun install` materializes its bin, so
-// an npx registry fetch at spawn time would only add latency, a network
-// dependency, and a prompt to suppress.
-func TestCmdTemplates_LaunchViaBun(t *testing.T) {
-	t.Parallel()
-	for name, tmpl := range map[string][]string{
-		"expo": expoCmdTemplate,
-		"vite": webCmdTemplate,
-		"next": nextCmdTemplate,
-	} {
-		if len(tmpl) < 3 {
-			t.Fatalf("%s template len = %d, want ≥ 3 (sh -c <cmd>)", name, len(tmpl))
-		}
-		cmd := tmpl[2]
+		spec := detectSpec(t, files)
+		cmd := shellOf(t, spec)
 		if !strings.Contains(cmd, "exec bun ") {
-			t.Errorf("%s template must exec the dev server via bun: %q", name, cmd)
+			t.Errorf("%s recipe must exec the dev server via bun: %q", name, cmd)
 		}
 		if strings.Contains(cmd, "npx") {
-			t.Errorf("%s template must not invoke npx: %q", name, cmd)
+			t.Errorf("%s recipe must not invoke npx: %q", name, cmd)
+		}
+		if spec.Installer != string(PackagerBun) {
+			t.Errorf("%s Installer = %q, want %q", name, spec.Installer, PackagerBun)
+		}
+		if spec.RequiredTool != string(PackagerBun) || spec.ToolEvidence != "" {
+			t.Errorf("%s RequiredTool/ToolEvidence = %q/%q, want bun with no evidence", name, spec.RequiredTool, spec.ToolEvidence)
 		}
 	}
 }
 
-// TestExpoCmdTemplateBootstrap_CleansMigratedLockOnInstallFailure pins the
-// fix for a bug a review bot caught: bun migrates package-lock.json into
-// bun.lock as a side effect BEFORE dependency resolution can fail, so a
-// transient install failure (network blip, disk pressure) used to leave
-// that migrated bun.lock behind — and since the marker-free check on the
-// next run then reads that leftover lock as "pre-existing", the cleanup
-// stayed permanently disabled. Runs the real shell snippet with a fake
-// `bun` that fails after writing bun.lock, so this exercises actual shell
-// semantics rather than pinning the template string.
-func TestExpoCmdTemplateBootstrap_CleansMigratedLockOnInstallFailure(t *testing.T) {
+// TestDetect_ReusesProjectPackager is the heart of the
+// stop-imposing-bun change: a project with its own lockfile is
+// installed by its own package manager against that lockfile, and the
+// dev tool is launched through the manager-appropriate form.
+func TestDetect_ReusesProjectPackager(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		lockfile    string
+		wantInstall string
+		wantExec    string
+	}{
+		{"pnpm", "pnpm-lock.yaml", "pnpm install", "exec node_modules/.bin/vite"},
+		{"npm", "package-lock.json", "npm install", "exec node_modules/.bin/vite"},
+		{"yarn", "yarn.lock", "yarn install", "exec yarn vite"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			spec := detectSpec(t, map[string]string{
+				"package.json": `{"devDependencies":{"vite":"^6.0.0"}}`,
+				tc.lockfile:    "",
+			})
+			cmd := shellOf(t, spec)
+			if !strings.Contains(cmd, tc.wantInstall) {
+				t.Errorf("recipe missing %q: %q", tc.wantInstall, cmd)
+			}
+			if !strings.Contains(cmd, tc.wantExec) {
+				t.Errorf("recipe missing %q: %q", tc.wantExec, cmd)
+			}
+			if strings.Contains(cmd, "bun install") {
+				t.Errorf("recipe must not fall back to bun for a %s project: %q", tc.name, cmd)
+			}
+			if spec.Installer != tc.name {
+				t.Errorf("Installer = %q, want %q", spec.Installer, tc.name)
+			}
+			if spec.RequiredTool != tc.name || !strings.Contains(spec.ToolEvidence, tc.lockfile) {
+				t.Errorf("RequiredTool/ToolEvidence = %q/%q, want %s via %s", spec.RequiredTool, spec.ToolEvidence, tc.name, tc.lockfile)
+			}
+		})
+	}
+}
+
+// clank.yaml handling: explicit config wins over detection.
+func TestDetect_ClankYAML(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
-	worktree := filepath.Join(root, "worktree")
-	if err := os.Mkdir(worktree, 0o755); err != nil {
-		t.Fatalf("mkdir worktree: %v", err)
-	}
+	t.Run("custom command bypasses detection", func(t *testing.T) {
+		t.Parallel()
+		spec := detectSpec(t, map[string]string{
+			"clank.yaml": "preview:\n  command: ./serve.sh --listen ${PORT}\n",
+		})
+		if spec.Kind != KindWeb {
+			t.Errorf("Kind = %q, want %q (custom commands are the browser flow)", spec.Kind, KindWeb)
+		}
+		if cmd := shellOf(t, spec); cmd != "./serve.sh --listen ${PORT}" {
+			t.Errorf("command not verbatim: %q", cmd)
+		}
+		if spec.ReadyProbe != webReadyProbe {
+			t.Errorf("ReadyProbe = %+v, want default %+v", spec.ReadyProbe, webReadyProbe)
+		}
+		if spec.Installer != "" || spec.RequiredTool != "" {
+			t.Errorf("custom command without install must not carry Installer/RequiredTool: %q/%q", spec.Installer, spec.RequiredTool)
+		}
+	})
 
-	bin := t.TempDir()
-	fakeBun := "#!/bin/sh\necho migrated > bun.lock\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(bin, "bun"), []byte(fakeBun), 0o755); err != nil {
-		t.Fatalf("write fake bun: %v", err)
-	}
+	t.Run("custom command wins over a detectable framework", func(t *testing.T) {
+		t.Parallel()
+		spec := detectSpec(t, map[string]string{
+			"package.json": `{"devDependencies":{"vite":"^6.0.0"}}`,
+			"clank.yaml":   "preview:\n  command: ./serve.sh --listen ${PORT}\n",
+		})
+		if cmd := shellOf(t, spec); strings.Contains(cmd, "vite") {
+			t.Errorf("detection leaked into a custom command: %q", cmd)
+		}
+	})
 
-	marker := filepath.Join(t.TempDir(), "preview-bootstrap", "worktree.bun")
-	cmd := exec.Command("sh", "-c", strings.ReplaceAll(expoCmdTemplate[2], "%d", "0"))
-	cmd.Dir = worktree
-	// keep_lock=leaked simulates the uninitialized-variable half of the bug:
-	// with the fix's explicit "keep_lock=;" reset, this must not survive.
-	cmd.Env = append(os.Environ(),
-		"PATH="+bin+":"+os.Getenv("PATH"),
-		"keep_lock=leaked",
-		bootstrapMarkerEnv+"="+marker,
-	)
+	t.Run("ready override", func(t *testing.T) {
+		t.Parallel()
+		spec := detectSpec(t, map[string]string{
+			"clank.yaml": "preview:\n  command: ./serve.sh ${PORT}\n  ready:\n    path: /healthz\n    expect: ok\n",
+		})
+		want := ReadyProbe{Path: "/healthz", ExpectedSubstr: "ok"}
+		if spec.ReadyProbe != want {
+			t.Errorf("ReadyProbe = %+v, want %+v", spec.ReadyProbe, want)
+		}
+	})
 
-	if err := cmd.Run(); err == nil {
-		t.Fatalf("bootstrap: want failure (fake bun install fails), got success")
-	}
-	if _, err := os.Stat(filepath.Join(worktree, "bun.lock")); !os.IsNotExist(err) {
-		t.Errorf("bun.lock: want removed after a failed install, stat err = %v", err)
-	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Errorf("completion marker: must not be written after a failed install")
-	}
+	t.Run("custom command with install gets the bootstrap", func(t *testing.T) {
+		t.Parallel()
+		spec := detectSpec(t, map[string]string{
+			"clank.yaml": "preview:\n  install: make deps\n  command: make serve PORT=${PORT}\n",
+		})
+		cmd := shellOf(t, spec)
+		if !strings.Contains(cmd, "make deps") || !strings.Contains(cmd, "make serve PORT=${PORT}") {
+			t.Errorf("bootstrap missing install or command: %q", cmd)
+		}
+		if strings.Contains(cmd, "exec make serve") {
+			t.Errorf("user commands must not be exec-prefixed (compound commands would break): %q", cmd)
+		}
+		if spec.Installer != "make deps" {
+			t.Errorf("Installer = %q, want the verbatim install command", spec.Installer)
+		}
+	})
+
+	t.Run("install override on a detected framework", func(t *testing.T) {
+		t.Parallel()
+		spec := detectSpec(t, map[string]string{
+			"package.json":      `{"devDependencies":{"vite":"^6.0.0"}}`,
+			"package-lock.json": "{}",
+			"clank.yaml":        "preview:\n  install: npm ci\n",
+		})
+		cmd := shellOf(t, spec)
+		if !strings.Contains(cmd, "npm ci") || strings.Contains(cmd, "npm install") {
+			t.Errorf("install override not applied: %q", cmd)
+		}
+		if !strings.Contains(cmd, "exec node_modules/.bin/vite") {
+			t.Errorf("detected launch must survive an install override: %q", cmd)
+		}
+		if spec.Installer != "npm ci" {
+			t.Errorf("Installer = %q, want the override", spec.Installer)
+		}
+		// npm only mattered for the install the override replaced.
+		if spec.RequiredTool != "" {
+			t.Errorf("RequiredTool = %q, want none with the install overridden", spec.RequiredTool)
+		}
+	})
+
+	t.Run("dir re-roots detection", func(t *testing.T) {
+		t.Parallel()
+		spec := detectSpec(t, map[string]string{
+			"clank.yaml":           "preview:\n  dir: web-app\n",
+			"web-app/package.json": `{"devDependencies":{"vite":"^6.0.0"}}`,
+		})
+		if spec.Kind != KindWeb || spec.Dir != "web-app" {
+			t.Errorf("Kind/Dir = %q/%q, want web/web-app", spec.Kind, spec.Dir)
+		}
+	})
+
+	t.Run("dir applies to custom commands", func(t *testing.T) {
+		t.Parallel()
+		spec := detectSpec(t, map[string]string{
+			"clank.yaml": "preview:\n  dir: site\n  command: ./serve.sh ${PORT}\n",
+			"site/":      "",
+		})
+		if spec.Dir != "site" {
+			t.Errorf("Dir = %q, want site", spec.Dir)
+		}
+	})
+
+	t.Run("missing dir errors", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeTree(t, dir, map[string]string{
+			".git/":      "",
+			"clank.yaml": "preview:\n  dir: gone\n",
+		})
+		_, err := Detect(dir)
+		if err == nil || !strings.Contains(err.Error(), "preview.dir") {
+			t.Fatalf("err = %v, want preview.dir error", err)
+		}
+	})
+
+	t.Run("configured preview with nothing to run errors", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeTree(t, dir, map[string]string{
+			".git/":      "",
+			"clank.yaml": "preview:\n  install: npm install\n",
+		})
+		_, err := Detect(dir)
+		if err == nil || !strings.Contains(err.Error(), "no supported framework") {
+			t.Fatalf("err = %v, want configured-but-nothing-to-run error", err)
+		}
+	})
+
+	t.Run("empty preview section stays not-previewable", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeTree(t, dir, map[string]string{
+			".git/":      "",
+			"clank.yaml": "preview: {}\n",
+		})
+		spec, err := Detect(dir)
+		if err != nil || spec != nil {
+			t.Fatalf("Detect = %+v, %v; want nil, nil", spec, err)
+		}
+	})
+
+	t.Run("malformed clank.yaml errors loudly", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeTree(t, dir, map[string]string{
+			".git/":        "",
+			"package.json": `{"devDependencies":{"vite":"^6.0.0"}}`,
+			"clank.yaml":   "preview:\n  command: no placeholder here\n",
+		})
+		_, err := Detect(dir)
+		if err == nil {
+			t.Fatalf("Detect: want error for invalid clank.yaml on an otherwise-previewable dir, got nil")
+		}
+	})
 }
 
 func TestDetectIOError(t *testing.T) {

@@ -142,6 +142,45 @@ func TestSpawnReadinessTimeoutFails(t *testing.T) {
 	}
 }
 
+// TestRenderArgs pins the two-token port substitution: the legacy "%d"
+// (empty PortToken) keeps its one-arg strictness for internal recipes,
+// while the ${PORT} token replaces every occurrence AND leaves literal
+// %d in user shell (date/printf formats) untouched.
+func TestRenderArgs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("legacy token substitutes once", func(t *testing.T) {
+		t.Parallel()
+		got, err := renderArgs([]string{"sh", "-c", "serve --port %d"}, 4321, "")
+		if err != nil {
+			t.Fatalf("renderArgs: %v", err)
+		}
+		if got[2] != "serve --port 4321" {
+			t.Errorf("arg = %q", got[2])
+		}
+	})
+
+	t.Run("legacy token in two args is a recipe bug", func(t *testing.T) {
+		t.Parallel()
+		if _, err := renderArgs([]string{"--a=%d", "--b=%d"}, 1, ""); err == nil {
+			t.Fatal("want error when two args carry the legacy token")
+		}
+	})
+
+	t.Run("port placeholder replaces every occurrence and spares literal %d", func(t *testing.T) {
+		t.Parallel()
+		cmd := "log() { date +%d; }; serve --port ${PORT} --origin http://127.0.0.1:${PORT}"
+		got, err := renderArgs([]string{"sh", "-c", cmd}, 4321, "${PORT}")
+		if err != nil {
+			t.Fatalf("renderArgs: %v", err)
+		}
+		want := "log() { date +%d; }; serve --port 4321 --origin http://127.0.0.1:4321"
+		if got[2] != want {
+			t.Errorf("arg =\n %q\nwant\n %q", got[2], want)
+		}
+	})
+}
+
 // waitForState polls r.state until it matches want or deadline expires.
 func waitForState(t *testing.T, r *running, want State, timeout time.Duration) {
 	t.Helper()
@@ -203,7 +242,7 @@ func waitForGroupEmpty(t *testing.T, pgid int, timeout time.Duration) int {
 // port half — see Expo's UrlCreator.ts).
 func TestBuildEnv_EmptyPublicURL_OmitsProxyVar(t *testing.T) {
 	t.Parallel()
-	env := buildEnv("/tmp/marker.bun", "", "", "")
+	env := buildEnv(childEnv{markerPath: "/tmp/marker"})
 	for _, e := range env {
 		if strings.HasPrefix(e, "REACT_NATIVE_PACKAGER_HOSTNAME=") {
 			t.Errorf("buildEnv set REACT_NATIVE_PACKAGER_HOSTNAME — overrides only the hostname half: %q", e)
@@ -242,7 +281,7 @@ func TestBuildEnv_OmitsCI(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			for _, e := range buildEnv("/tmp/marker.bun", c.url, "", "") {
+			for _, e := range buildEnv(childEnv{markerPath: "/tmp/marker", publicURL: c.url}) {
 				if strings.HasPrefix(e, "CI=") {
 					t.Errorf("buildEnv leaked CI to child process — disables Metro HMR: %q", e)
 				}
@@ -261,7 +300,7 @@ func TestBuildEnv_OmitsCI(t *testing.T) {
 func TestBuildEnv_PublicURL_SetsProxyVar(t *testing.T) {
 	t.Parallel()
 	publicURL := "http://preview-abc.localhost:7878"
-	env := buildEnv("/tmp/marker.bun", publicURL, "", "")
+	env := buildEnv(childEnv{markerPath: "/tmp/marker", publicURL: publicURL})
 	want := "EXPO_PACKAGER_PROXY_URL=" + publicURL
 	var saw bool
 	for _, e := range env {
@@ -280,7 +319,11 @@ func TestBuildEnv_PublicURL_SetsProxyVar(t *testing.T) {
 // carries the runtime path. Not parallel: mutates the process env.
 func TestBuildEnv_ShimRequireMergesNodeOptions(t *testing.T) {
 	t.Setenv("NODE_OPTIONS", "--max-old-space-size=4096")
-	env := buildEnv("/tmp/marker.bun", "", "/tmp/clank-preview/shim.js", "/tmp/clank-preview/runtime.js")
+	env := buildEnv(childEnv{
+		markerPath:      "/tmp/marker",
+		shimRequirePath: "/tmp/clank-preview/shim.js",
+		runtimePath:     "/tmp/clank-preview/runtime.js",
+	})
 
 	var nodeOpts, runtime string
 	nodeOptsCount := 0
