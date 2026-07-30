@@ -58,4 +58,21 @@ func TestOverlayInlineCommentWiring(t *testing.T) {
 	if !strings.Contains(js, "store.chips.find((c) => c.node === hoverEl)") {
 		t.Error("overlay.js inspector clicks must dedupe by anchored element node")
 	}
+	// The pending mark adopts the page's own ::selection color (with the
+	// blue fallback), and ⌘C in the focused popover copies the anchor
+	// text — both were user-reported papercuts.
+	if !strings.Contains(js, "var(--clank-pending-bg") || !strings.Contains(js, "'::selection'") {
+		t.Error("overlay.js pending mark must adopt the page's ::selection color via --clank-pending-bg")
+	}
+	if !strings.Contains(js, "navigator.clipboard.writeText") {
+		t.Error("overlay.js popover must bridge ⌘C to copy the anchor text")
+	}
+	// Scrolling must reposition the popover along its anchor, not dismiss
+	// it — highlight + input surviving a scroll is the point.
+	if strings.Contains(js, "window.addEventListener('scroll', () => hideCommentPopover()") {
+		t.Error("overlay.js must not dismiss the comment popover on scroll")
+	}
+	if !strings.Contains(js, "positionCommentPopover(r)") {
+		t.Error("overlay.js must reposition the comment popover on scroll")
+	}
 }

@@ -1591,8 +1591,22 @@ import {
     markStyleInjected = true;
     const st = document.createElement('style');
     st.textContent = '::highlight(clank-comment){background:rgba(245,158,11,.35);}' +
-      '::highlight(clank-pending){background:rgba(59,130,246,.30);}';
+      '::highlight(clank-pending){background:var(--clank-pending-bg, rgba(59,130,246,.30));}';
     document.head.appendChild(st);
+  };
+
+  // pendingColorFor adopts the page's own ::selection background for the
+  // pending mark, so the repaint reads as "your selection is still here"
+  // rather than a foreign color. Empty = unstyled, use the fallback.
+  const pendingColorFor = (range) => {
+    let el = range && range.startContainer;
+    if (el && el.nodeType !== 1) el = el.parentElement;
+    if (!el) return '';
+    try {
+      const c = getComputedStyle(el, '::selection').backgroundColor;
+      if (c && c !== 'transparent' && !/^rgba\(\d+, \d+, \d+, 0\)$/.test(c)) return c;
+    } catch { /* pseudo-element lookup unsupported */ }
+    return '';
   };
   const syncCommentMarks = () => {
     if (!commentMarks) return;
@@ -1621,6 +1635,15 @@ import {
     ui.cpopIn.style.height = Math.min(96, ui.cpopIn.scrollHeight) + 'px';
   };
 
+  const positionCommentPopover = (rect) => {
+    const w = ui.cpop.offsetWidth || 300;
+    const left = Math.min(Math.max(rect.left, 8), Math.max(8, innerWidth - w - 8));
+    let top = rect.bottom + 8;
+    if (top > innerHeight - 72) top = rect.top - 64;
+    top = Math.min(Math.max(top, 8), innerHeight - 72);
+    Object.assign(ui.cpop.style, { left: left + 'px', top: top + 'px' });
+  };
+
   const showCommentPopover = (target, rect) => {
     commentTarget = target;
     if (pendingMark) {
@@ -1628,6 +1651,9 @@ import {
       if (target.range) {
         ensureMarkStyle();
         pendingMark.add(target.range);
+        const c = pendingColorFor(target.range);
+        if (c) document.documentElement.style.setProperty('--clank-pending-bg', c);
+        else document.documentElement.style.removeProperty('--clank-pending-bg');
       }
     }
     ui.cpopIn.value = target.kind === 'edit' ? target.chip.comment || '' : '';
@@ -1639,13 +1665,9 @@ import {
       : target.kind === 'text' ? '<kbd>Enter</kbd> add · <kbd>Esc</kbd> dismiss'
       : '<kbd>Enter</kbd> add comment · <kbd>Esc</kbd> keep as plain context';
     ui.cpop.classList.add('show');
+    ui.cpop.style.visibility = '';
     syncCpopHeight();
-    const w = ui.cpop.offsetWidth || 300;
-    const left = Math.min(Math.max(rect.left, 8), Math.max(8, innerWidth - w - 8));
-    let top = rect.bottom + 8;
-    if (top > innerHeight - 72) top = rect.top - 64;
-    top = Math.min(Math.max(top, 8), innerHeight - 72);
-    Object.assign(ui.cpop.style, { left: left + 'px', top: top + 'px' });
+    positionCommentPopover(rect);
     setTimeout(() => {
       ui.cpopIn.focus({ preventScroll: true });
       const n = ui.cpopIn.value.length; // caret at the end for prefilled edits
@@ -1657,6 +1679,7 @@ import {
     commentTarget = null;
     if (pendingMark) pendingMark.clear();
     ui.cpop.classList.remove('show');
+    ui.cpop.style.visibility = '';
   };
   const confirmComment = () => {
     const t = commentTarget;
@@ -1714,14 +1737,41 @@ import {
     }, 0);
   };
   document.addEventListener('mouseup', onSelectionMouseUp, true);
-  // Click-away dismisses; the popover's fixed position goes stale on
-  // scroll, so scrolling dismisses too (the selection itself survives).
+  // Click-away dismisses. Scrolling does NOT: the popover follows its
+  // anchor (below), so you can scroll for context mid-comment.
   document.addEventListener('mousedown', (e) => {
     if (commentTarget && !ui.cpop.contains(realTarget(e))) hideCommentPopover();
   }, true);
-  window.addEventListener('scroll', () => hideCommentPopover(), true);
+  // Follow the anchor on scroll/resize. Only range-anchored popovers
+  // move with the page; a chip-opened editor sits on the fixed-position
+  // box and stays put. Off-screen anchor = hidden popover, state kept.
+  // No rAF hop: scroll events are already frame-coalesced, and rAF
+  // pauses entirely in non-rendered documents.
+  const onAnchorScroll = () => {
+    const t = commentTarget;
+    if (!t || !t.range || t.kind === 'edit') return;
+    const r = t.range.getBoundingClientRect();
+    const off = r.bottom < 0 || r.top > innerHeight;
+    ui.cpop.style.visibility = off ? 'hidden' : '';
+    if (!off) positionCommentPopover(r);
+  };
+  window.addEventListener('scroll', onAnchorScroll, true);
+  window.addEventListener('resize', onAnchorScroll);
   ui.cpopIn.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); confirmComment(); }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      confirmComment();
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c' && ui.cpopIn.selectionStart === ui.cpopIn.selectionEnd) {
+      // Focus lives here, but the user's mental target is the page
+      // highlight — ⌘C with nothing selected inside the input copies
+      // the anchor text. A selection inside the input keeps native copy.
+      const t = commentTarget;
+      const text = t && (t.kind === 'text' ? t.text : t.range ? t.range.toString() : '');
+      if (text && navigator.clipboard) {
+        e.preventDefault();
+        navigator.clipboard.writeText(text).then(() => toast('copied'), () => toast('copy failed'));
+      }
+    }
     e.stopPropagation(); // typing must never trigger guest-app shortcuts
   });
   ui.cpopIn.addEventListener('input', syncCpopHeight);
