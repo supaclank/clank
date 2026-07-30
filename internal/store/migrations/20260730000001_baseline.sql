@@ -1,14 +1,12 @@
--- Baseline: the full schema as of the goose adoption (squashes the
--- retired PRAGMA user_version chain, v1–v33). IF NOT EXISTS makes it a
--- no-op on databases created by that chain, so they adopt in place —
--- goose records the row and takes over from here.
+-- Baseline: the full schema as of the goose adoption; plain CREATEs,
+-- so a database not created through goose fails loudly here.
 --
 -- Column documentation lives in ../schema.sql (the declarative source
 -- of truth this file was generated from). Later migrations are
 -- generated with `make migration`; don't hand-edit applied ones.
 
 -- +goose Up
-CREATE TABLE IF NOT EXISTS hosts (
+CREATE TABLE hosts (
     id          TEXT PRIMARY KEY,
     user_id     TEXT NOT NULL,
     provider    TEXT NOT NULL,
@@ -25,14 +23,14 @@ CREATE TABLE IF NOT EXISTS hosts (
     updated_at  DATETIME NOT NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS hosts_user_id_provider_idx
+CREATE UNIQUE INDEX hosts_user_id_provider_idx
 ON hosts (user_id, provider);
 
-CREATE UNIQUE INDEX IF NOT EXISTS hosts_notifier_token_idx
+CREATE UNIQUE INDEX hosts_notifier_token_idx
 ON hosts (notifier_token)
 WHERE notifier_token != '';
 
-CREATE TABLE IF NOT EXISTS devices (
+CREATE TABLE devices (
     user_id      TEXT NOT NULL,
     push_token   TEXT NOT NULL,
     platform     TEXT NOT NULL CHECK (platform IN ('ios', 'android')),
@@ -41,9 +39,9 @@ CREATE TABLE IF NOT EXISTS devices (
     PRIMARY KEY (user_id, push_token)
 );
 
-CREATE INDEX IF NOT EXISTS devices_user_id_idx ON devices (user_id);
+CREATE INDEX devices_user_id_idx ON devices (user_id);
 
-CREATE INDEX IF NOT EXISTS devices_push_token_idx ON devices (push_token);
+CREATE INDEX devices_push_token_idx ON devices (push_token);
 
 -- +goose Down
 DROP INDEX IF EXISTS devices_push_token_idx;

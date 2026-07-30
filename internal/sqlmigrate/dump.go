@@ -95,15 +95,46 @@ func userObjects(db *sql.DB, objType string) ([]string, error) {
 // hand-written and stored/generated DDL: line comments, IF NOT EXISTS,
 // identifier quoting, and whitespace runs.
 func normalizeDDL(ddl string) string {
-	var kept []string
-	for line := range strings.SplitSeq(ddl, "\n") {
-		if i := strings.Index(line, "--"); i >= 0 {
-			line = line[:i]
-		}
-		kept = append(kept, line)
-	}
-	s := strings.Join(kept, " ")
+	s := stripLineComments(ddl)
 	s = strings.ReplaceAll(s, "IF NOT EXISTS ", "")
 	s = strings.NewReplacer("`", "", `"`, "").Replace(s)
 	return strings.Join(strings.Fields(s), " ")
+}
+
+// stripLineComments removes SQL `--` line comments while respecting
+// quoted regions ('literals', "identifiers", `identifiers`, with
+// doubled-quote escapes), so a `--` inside a string — e.g. a partial-
+// index predicate — never truncates the DDL being compared.
+func stripLineComments(s string) string {
+	var b strings.Builder
+	var quote rune
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch {
+		case quote != 0:
+			if r == quote {
+				if i+1 < len(runes) && runes[i+1] == quote {
+					b.WriteRune(r)
+					i++
+				} else {
+					quote = 0
+				}
+			}
+			b.WriteRune(r)
+		case r == '\'' || r == '"' || r == '`':
+			quote = r
+			b.WriteRune(r)
+		case r == '-' && i+1 < len(runes) && runes[i+1] == '-':
+			for i < len(runes) && runes[i] != '\n' {
+				i++
+			}
+			if i < len(runes) {
+				b.WriteRune('\n')
+			}
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
