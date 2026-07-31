@@ -184,6 +184,42 @@ func TestBootstrapShell_PreservesForeignNodeModules(t *testing.T) {
 	}
 }
 
+// TestBootstrapShell_WipeFailureAbortsInstall pins the fix for a bug a
+// review bot caught: a failed required wipe used to fall through to
+// installFragment anyway, letting the new installer run over whatever
+// survived the failed rm -rf — exactly the mixed-packager-artifact tree
+// the wipe exists to prevent. A fake `rm` that always fails proves the
+// bootstrap now aborts instead of continuing.
+func TestBootstrapShell_WipeFailureAbortsInstall(t *testing.T) {
+	t.Parallel()
+
+	workDir := t.TempDir()
+	writeTree(t, workDir, map[string]string{"node_modules/left-pad/index.js": "x"})
+	marker := filepath.Join(t.TempDir(), "m")
+
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "rm"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write fake rm: %v", err)
+	}
+
+	sentinel := filepath.Join(workDir, "installed")
+	shellCmd := bootstrapShell("touch "+sentinel, "true")
+	cmd := exec.Command("sh", "-c", shellCmd)
+	cmd.Dir = workDir
+	cmd.Env = []string{
+		"PATH=" + bin + ":" + os.Getenv("PATH"),
+		bootstrapMarkerEnv + "=" + marker,
+		bootstrapInstallerEnv + "=npm",
+		bootstrapWipeEnv + "=1",
+	}
+	if err := cmd.Run(); err == nil {
+		t.Fatalf("bootstrap: want failure when rm -rf fails, got success")
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Errorf("install ran after a failed wipe — sentinel file should not exist")
+	}
+}
+
 // TestBootstrapShell_CleansMigratedLockOnInstallFailure pins the fix
 // for a bug a review bot caught: bun migrates package-lock.json into
 // bun.lock as a side effect BEFORE dependency resolution can fail, so

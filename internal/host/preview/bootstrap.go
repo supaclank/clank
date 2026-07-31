@@ -95,7 +95,7 @@ func bootstrapShell(installFragment, launch string) string {
 		`[ -n "$m" ] || { echo "` + bootstrapMarkerEnv + ` is not set" >&2; exit 1; }; ` +
 		`inst="$` + bootstrapInstallerEnv + `"; ` +
 		`[ -n "$inst" ] || { echo "` + bootstrapInstallerEnv + ` is not set" >&2; exit 1; }; ` +
-		`[ -z "$` + bootstrapWipeEnv + `" ] || rm -rf node_modules; ` +
+		`[ -z "$` + bootstrapWipeEnv + `" ] || rm -rf node_modules || exit 1; ` +
 		`mkdir -p "$(dirname "$m")" && printf '%s' "$inst" > "$m` + markerInstallingSuffix + `" || exit 1; ` +
 		installFragment + ` && ` +
 		`printf '%s' "$inst" > "$m" && rm -f "$m` + markerInstallingSuffix + `" && ` +

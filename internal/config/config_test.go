@@ -440,3 +440,39 @@ func TestPreferences_SidebarHiddenRoundTrip(t *testing.T) {
 		t.Errorf("sidebar_hidden should be omitted when false, got: %s", data)
 	}
 }
+
+// TestDir_ResolvesRelativeCLANK_DIRToAbsolute pins that a relative CLANK_DIR
+// resolves to the same absolute path regardless of the caller's cwd —
+// otherwise two callers with different working directories (e.g. a daemon
+// process vs. a preview's spawned shell, which runs with cwd=workDir) would
+// silently split one logical state dir into two on-disk locations.
+func TestDir_ResolvesRelativeCLANK_DIRToAbsolute(t *testing.T) {
+	// Not t.Parallel: Chdir and CLANK_DIR are both process-global.
+	t.Setenv("CLANK_DIR", "relative-clank-state")
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Dir()
+	if err != nil {
+		t.Fatalf("Dir: %v", err)
+	}
+	if !filepath.IsAbs(got) {
+		t.Errorf("Dir() = %q, want an absolute path", got)
+	}
+	want := filepath.Join(cwd, "relative-clank-state")
+	if got != want {
+		t.Errorf("Dir() = %q, want %q", got, want)
+	}
+}

@@ -26,7 +26,19 @@ var prefsMu sync.Mutex
 // values, a launchd/systemd unit, a docker `-e`).
 func Dir() (string, error) {
 	if d := os.Getenv("CLANK_DIR"); d != "" {
-		return expandHome(d)
+		expanded, err := expandHome(d)
+		if err != nil {
+			return "", err
+		}
+		// Absolute: a relative CLANK_DIR resolves against whatever cwd
+		// happens to be current, which differs between callers (e.g. a
+		// preview's spawned shell runs with cwd=workDir) and silently
+		// splits one logical state dir into several on-disk locations.
+		abs, err := filepath.Abs(expanded)
+		if err != nil {
+			return "", fmt.Errorf("resolve CLANK_DIR %q: %w", d, err)
+		}
+		return abs, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
