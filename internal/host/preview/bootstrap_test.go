@@ -247,6 +247,7 @@ func TestNeedsNodeModulesWipe(t *testing.T) {
 		name      string
 		completed string // "" = no completion marker
 		sentinel  bool
+		legacyBun bool // pre-suffix-drop marker at markerPath+".bun"
 		installer string
 		want      bool
 	}{
@@ -254,6 +255,18 @@ func TestNeedsNodeModulesWipe(t *testing.T) {
 			name:      "no markers, user tree: never wipe",
 			installer: "bun",
 			want:      false,
+		},
+		{
+			name:      "legacy bun marker, same packager re-run: reuse",
+			legacyBun: true,
+			installer: "bun",
+			want:      false,
+		},
+		{
+			name:      "legacy bun marker, packager switch: exactly one wipe",
+			legacyBun: true,
+			installer: "npm",
+			want:      true,
 		},
 		{
 			name:      "interrupted first install: wipe the half-extracted tree",
@@ -300,6 +313,11 @@ func TestNeedsNodeModulesWipe(t *testing.T) {
 			}
 			if tt.sentinel {
 				if err := os.WriteFile(marker+markerInstallingSuffix, []byte(sentinelContent), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.legacyBun {
+				if err := os.WriteFile(marker+legacyBunMarkerSuffix, nil, 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}

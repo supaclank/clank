@@ -255,6 +255,10 @@ func execLine(pm Packager, toolAndArgs string) string {
 	case PackagerBun:
 		return "exec bun " + toolAndArgs
 	case PackagerNPM, PackagerPNPM:
+		// TODO(ai-review): a tool hoisted to a workspace root's
+		// node_modules/.bin (root-only devDependency in an npm/pnpm
+		// workspace) isn't found here — only workDir's own .bin is
+		// searched. https://github.com/Acksell/clank/pull/205#discussion_r3690349688
 		return "exec node_modules/.bin/" + toolAndArgs
 	case PackagerYarn:
 		return "exec yarn " + toolAndArgs

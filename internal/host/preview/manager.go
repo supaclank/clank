@@ -233,6 +233,11 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 	// HTTP request context in production) gets canceled the moment
 	// Start writes its response — that would SIGKILL Metro before it
 	// printed a single line.
+	//
+	// TODO(ai-review): two concurrent Start calls for the same key can both
+	// reach here before either publishes to m.servers below, so a wipe
+	// decided by one spawn can race the other's install in the same workDir.
+	// https://github.com/Acksell/clank/pull/205#discussion_r3690349686
 	r, err := spawn(m.bgCtx, spawnRequest{
 		WorkDir:         workDir,
 		Spec:            spec,

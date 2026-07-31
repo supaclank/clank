@@ -32,6 +32,14 @@ const (
 	// "<marker>.installing" is written before the install and removed
 	// after the completion marker lands.
 	markerInstallingSuffix = ".installing"
+
+	// legacyBunMarkerSuffix is where bootstrapMarkerPath used to write
+	// the completion marker before it dropped the installer-specific
+	// suffix (every preview bootstrap installer was bun back then).
+	// needsNodeModulesWipe still reads it so previews bootstrapped
+	// before this suffix change don't lose their "installed by bun"
+	// signal and run a different packager's install unwiped.
+	legacyBunMarkerSuffix = ".bun"
 )
 
 // bootstrapMarkerPath returns the completion-marker file for workDir's
@@ -113,8 +121,12 @@ func bootstrapShell(installFragment, launch string) string {
 func needsNodeModulesWipe(markerPath, installer string) bool {
 	completed, err := os.ReadFile(markerPath)
 	if err != nil {
-		_, serr := os.Stat(markerPath + markerInstallingSuffix)
-		return serr == nil
+		if _, lerr := os.Stat(markerPath + legacyBunMarkerSuffix); lerr == nil {
+			completed = []byte(PackagerBun)
+		} else {
+			_, serr := os.Stat(markerPath + markerInstallingSuffix)
+			return serr == nil
+		}
 	}
 	prev := strings.TrimSpace(string(completed))
 	return prev != installer && isPackagerName(prev) && isPackagerName(installer)
