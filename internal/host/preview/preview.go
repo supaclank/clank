@@ -34,13 +34,30 @@ const (
 // shape ever escapes, that's the signal that v2's config-file work has
 // landed and Spec should be reborn as a typed wire schema.
 type Spec struct {
-	// Kind identifies which client integration to use. Today: always
-	// KindExpo.
+	// Kind identifies which client integration to use: KindExpo drives
+	// the phone/QR flow, KindWeb the `clank preview` browser flow.
 	Kind Kind
 
 	// CmdTemplate is the argv template. "%d" is replaced with the
 	// allocated port at spawn time.
 	CmdTemplate []string
+
+	// Installer records what installs dependencies, for the bootstrap
+	// completion marker: a Packager name. Drives the cross-packager
+	// node_modules wipe decision (needsNodeModulesWipe). Empty skips
+	// the bootstrap env wiring (test specs without an install step).
+	Installer string
+
+	// RequiredTool is a binary that must be on PATH for the spawn to
+	// make sense (the resolved package manager). Start fails fast,
+	// citing ToolEvidence, when it's missing; empty skips the check.
+	RequiredTool string
+
+	// ToolEvidence is the human-readable reason RequiredTool is
+	// required — the lockfile or package.json field that decided (see
+	// ResolvePackager), or the user's saved choice. Empty for the
+	// no-signal bun default.
+	ToolEvidence string
 
 	// ReadyProbe is the HTTP poll Manager runs after spawn to flip
 	// State from Starting to Ready. Concrete contract beats stdout-

@@ -2,16 +2,42 @@ package preview
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// Detect's job is small: classify a directory as Expo-previewable or
-// not. The table doubles as the spec for what we mean by "Expo
-// project" — adding a new positive or negative row IS the place to
-// document an edge case.
+// detectSpec runs Detect (reuse-project policy) over a fixture tree (a
+// .git dir is always planted so ResolvePackager's walk-up stays inside
+// the fixture) and fails the test on error or a nil spec.
+func detectSpec(t *testing.T, files map[string]string) *Spec {
+	t.Helper()
+	dir := t.TempDir()
+	writeTree(t, dir, files)
+	writeTree(t, dir, map[string]string{".git/": ""})
+	spec, err := Detect(dir, PackagerPolicyReuseProject)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	if spec == nil {
+		t.Fatalf("Detect: want spec for fixture %v, got nil", files)
+	}
+	return spec
+}
+
+// shellOf returns the sh -c body of a spec's CmdTemplate.
+func shellOf(t *testing.T, spec *Spec) string {
+	t.Helper()
+	if len(spec.CmdTemplate) != 3 || spec.CmdTemplate[0] != "sh" || spec.CmdTemplate[1] != "-c" {
+		t.Fatalf("CmdTemplate = %v, want [sh -c <cmd>]", spec.CmdTemplate)
+	}
+	return spec.CmdTemplate[2]
+}
+
+// Detect's job is small: classify a directory as previewable or not.
+// The table doubles as the spec for what we mean by "Expo project" /
+// "web project" — adding a new positive or negative row IS the place
+// to document an edge case.
 func TestDetect(t *testing.T) {
 	t.Parallel()
 
@@ -19,12 +45,11 @@ func TestDetect(t *testing.T) {
 		// name is the subtest name.
 		name string
 		// files maps "relative/path" → file contents to create under
-		// the test's temp dir. nil contents means "don't create".
+		// the test's temp dir.
 		files map[string]string
 		// want is what Detect should return: nil for not-previewable,
 		// &Spec{...} for previewable. We compare the spec's Kind and
-		// ReadyPattern; CmdTemplate is checked separately because it
-		// uses an opaque %d placeholder.
+		// ReadyProbe; CmdTemplate contents are pinned separately.
 		want *Spec
 	}
 
@@ -138,17 +163,10 @@ func TestDetect(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
-			for rel, content := range tc.files {
-				path := filepath.Join(dir, rel)
-				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-					t.Fatalf("mkdir %s: %v", path, err)
-				}
-				if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-					t.Fatalf("write %s: %v", path, err)
-				}
-			}
+			writeTree(t, dir, tc.files)
+			writeTree(t, dir, map[string]string{".git/": ""})
 
-			got, err := Detect(dir)
+			got, err := Detect(dir, PackagerPolicyReuseProject)
 			if err != nil {
 				t.Fatalf("Detect: unexpected error %v", err)
 			}
@@ -168,7 +186,7 @@ func TestDetect(t *testing.T) {
 				t.Errorf("ReadyProbe = %+v, want %+v", got.ReadyProbe, tc.want.ReadyProbe)
 			}
 			if len(got.CmdTemplate) == 0 {
-				t.Errorf("CmdTemplate is empty; want non-empty argv with one %%d")
+				t.Errorf("CmdTemplate is empty; want non-empty argv with a port placeholder")
 			}
 		})
 	}
@@ -181,28 +199,20 @@ func TestDetect(t *testing.T) {
 func TestDetect_MonorepoSubdir(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	files := map[string]string{
+	writeTree(t, root, map[string]string{
+		".git/":                "",
 		"package.json":         `{"dependencies":{"react":"^18"}}`,
 		"web-app/package.json": `{"devDependencies":{"vite":"^6.0.0"}}`,
-	}
-	for rel, content := range files {
-		path := filepath.Join(root, rel)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", path, err)
-		}
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			t.Fatalf("write %s: %v", path, err)
-		}
-	}
+	})
 
-	rootSpec, err := Detect(root)
+	rootSpec, err := Detect(root, PackagerPolicyReuseProject)
 	if err != nil {
 		t.Fatalf("Detect(root): %v", err)
 	}
 	if rootSpec != nil {
 		t.Errorf("Detect(root) = %+v, want nil (react-only root is not previewable)", rootSpec)
 	}
-	subSpec, err := Detect(filepath.Join(root, "web-app"))
+	subSpec, err := Detect(filepath.Join(root, "web-app"), PackagerPolicyReuseProject)
 	if err != nil {
 		t.Fatalf("Detect(web-app): %v", err)
 	}
@@ -211,181 +221,184 @@ func TestDetect_MonorepoSubdir(t *testing.T) {
 	}
 }
 
-// TestExpoCmdTemplateBootstrap pins the self-healing bootstrap logic in
-// expoCmdTemplate so a future edit can't silently drop the clean-reinstall
-// guard, the completion marker, or — critically — move the marker back
-// inside (or next to) the user's repo by assembling a path in-shell.
-func TestExpoCmdTemplateBootstrap(t *testing.T) {
+// TestDetect_DefaultLaunchesViaBun pins the no-signal default: with no
+// lockfile or packageManager field (clank-created template projects),
+// every recipe execs the worktree-local bin via bun instead of npx —
+// detection guarantees the dep is declared and the bootstrap's install
+// materializes its bin, so an npx registry fetch at spawn time would
+// only add latency, a network dependency, and a prompt to suppress.
+func TestDetect_DefaultLaunchesViaBun(t *testing.T) {
 	t.Parallel()
-	// The template is a sh -c invocation; the shell command is in index 2.
-	if len(expoCmdTemplate) < 3 {
-		t.Fatalf("expoCmdTemplate len = %d, want ≥ 3 (sh -c <cmd>)", len(expoCmdTemplate))
-	}
-	cmd := expoCmdTemplate[2]
-	for _, c := range []struct{ want, desc string }{
-		{`m="$` + bootstrapMarkerEnv + `"`, "completion marker path injected via env — Go owns the location"},
-		{`[ -n "$m" ] ||`, "fail fast when the marker env is missing"},
-		{"rm -rf node_modules", "clean-reinstall on missing marker"},
-		{"bun install", "install step present"},
-		{"--no-save", "install must not touch package.json in the user's repo"},
-		{`rm -f bun.lock`, "migrated-lockfile cleanup (bun writes bun.lock from package-lock.json even under --no-save)"},
-		{"keep_lock", "pre-existing bun.lock guard — genuinely-bun repos keep their lockfile"},
-		{"exec bun expo start", "metro launched via the worktree-local bin bun just installed"},
+	for name, files := range map[string]map[string]string{
+		"expo": {
+			"package.json": `{"dependencies":{"expo":"~50.0.0"}}`,
+			"app.json":     `{"expo":{}}`,
+		},
+		"vite": {"package.json": `{"devDependencies":{"vite":"^6.0.0"}}`},
+		"next": {"package.json": `{"dependencies":{"next":"^15.0.0"}}`},
 	} {
-		if !strings.Contains(cmd, c.want) {
-			t.Errorf("expoCmdTemplate missing %s: %q not found in shell command", c.desc, c.want)
-		}
-	}
-	// The marker location is Go's job (bootstrapMarkerPath); any relative
-	// path assembled in-shell would land inside or next to the user's repo.
-	if strings.Contains(cmd, "../.clank-preview-bootstrap") {
-		t.Errorf("bootstrap marker must not be assembled relative to the workdir: %q", cmd)
-	}
-}
-
-// TestBootstrapMarkerPath pins the marker location contract: under the
-// clank state dir (never inside or next to the user's repo — laptop
-// `clank preview` runs against the user's own folders), keyed uniquely
-// per absolute workdir so same-named folders can't collide.
-func TestBootstrapMarkerPath(t *testing.T) {
-	t.Setenv("CLANK_DIR", t.TempDir())
-
-	a, err := bootstrapMarkerPath("/repos/one/web-app")
-	if err != nil {
-		t.Fatalf("bootstrapMarkerPath: %v", err)
-	}
-	b, err := bootstrapMarkerPath("/repos/two/web-app")
-	if err != nil {
-		t.Fatalf("bootstrapMarkerPath: %v", err)
-	}
-	wantDir := filepath.Join(os.Getenv("CLANK_DIR"), "preview-bootstrap")
-	if filepath.Dir(a) != wantDir {
-		t.Errorf("marker dir = %q, want %q", filepath.Dir(a), wantDir)
-	}
-	if a == b {
-		t.Errorf("same-named workdirs must get distinct markers, both = %q", a)
-	}
-	if !strings.HasSuffix(a, ".bun") {
-		t.Errorf("marker %q missing installer-specific .bun suffix", a)
-	}
-	// Deterministic: same workdir → same marker across spawns.
-	a2, err := bootstrapMarkerPath("/repos/one/web-app")
-	if err != nil {
-		t.Fatalf("bootstrapMarkerPath: %v", err)
-	}
-	if a != a2 {
-		t.Errorf("marker not deterministic: %q vs %q", a, a2)
-	}
-}
-
-// TestExpoCmdTemplateBootstrap_WritesMarkerToConfiguredPath runs the real
-// shell snippet with a fake succeeding bun and asserts the completion
-// marker lands exactly at $CLANK_PREVIEW_BOOTSTRAP_MARKER — nothing is
-// written inside or next to the workdir.
-func TestExpoCmdTemplateBootstrap_WritesMarkerToConfiguredPath(t *testing.T) {
-	t.Parallel()
-
-	root := t.TempDir()
-	worktree := filepath.Join(root, "worktree")
-	if err := os.Mkdir(worktree, 0o755); err != nil {
-		t.Fatalf("mkdir worktree: %v", err)
-	}
-	marker := filepath.Join(t.TempDir(), "preview-bootstrap", "worktree-abc.bun")
-
-	bin := t.TempDir()
-	// One fake bun serves both roles: `bun install` succeeds, then the
-	// `exec bun expo start` line terminates instantly.
-	if err := os.WriteFile(filepath.Join(bin, "bun"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake bun: %v", err)
-	}
-
-	cmd := exec.Command("sh", "-c", strings.ReplaceAll(expoCmdTemplate[2], "%d", "0"))
-	cmd.Dir = worktree
-	cmd.Env = []string{"PATH=" + bin + ":" + os.Getenv("PATH"), bootstrapMarkerEnv + "=" + marker}
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("bootstrap: %v\n%s", err, out)
-	}
-
-	if _, err := os.Stat(marker); err != nil {
-		t.Errorf("marker: want written at configured path after successful install, stat err = %v", err)
-	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		t.Fatalf("read root: %v", err)
-	}
-	if len(entries) != 1 || entries[0].Name() != "worktree" {
-		t.Errorf("bootstrap wrote next to the workdir: %v", entries)
-	}
-}
-
-// TestCmdTemplates_LaunchViaBun pins that every spawn recipe execs the
-// worktree-local bin via bun instead of npx: detection guarantees the dep
-// is declared and the bootstrap's `bun install` materializes its bin, so
-// an npx registry fetch at spawn time would only add latency, a network
-// dependency, and a prompt to suppress.
-func TestCmdTemplates_LaunchViaBun(t *testing.T) {
-	t.Parallel()
-	for name, tmpl := range map[string][]string{
-		"expo": expoCmdTemplate,
-		"vite": webCmdTemplate,
-		"next": nextCmdTemplate,
-	} {
-		if len(tmpl) < 3 {
-			t.Fatalf("%s template len = %d, want ≥ 3 (sh -c <cmd>)", name, len(tmpl))
-		}
-		cmd := tmpl[2]
+		spec := detectSpec(t, files)
+		cmd := shellOf(t, spec)
 		if !strings.Contains(cmd, "exec bun ") {
-			t.Errorf("%s template must exec the dev server via bun: %q", name, cmd)
+			t.Errorf("%s recipe must exec the dev server via bun: %q", name, cmd)
 		}
 		if strings.Contains(cmd, "npx") {
-			t.Errorf("%s template must not invoke npx: %q", name, cmd)
+			t.Errorf("%s recipe must not invoke npx: %q", name, cmd)
+		}
+		if spec.Installer != string(PackagerBun) {
+			t.Errorf("%s Installer = %q, want %q", name, spec.Installer, PackagerBun)
+		}
+		if spec.RequiredTool != string(PackagerBun) || spec.ToolEvidence != "" {
+			t.Errorf("%s RequiredTool/ToolEvidence = %q/%q, want bun with no evidence", name, spec.RequiredTool, spec.ToolEvidence)
 		}
 	}
 }
 
-// TestExpoCmdTemplateBootstrap_CleansMigratedLockOnInstallFailure pins the
-// fix for a bug a review bot caught: bun migrates package-lock.json into
-// bun.lock as a side effect BEFORE dependency resolution can fail, so a
-// transient install failure (network blip, disk pressure) used to leave
-// that migrated bun.lock behind — and since the marker-free check on the
-// next run then reads that leftover lock as "pre-existing", the cleanup
-// stayed permanently disabled. Runs the real shell snippet with a fake
-// `bun` that fails after writing bun.lock, so this exercises actual shell
-// semantics rather than pinning the template string.
-func TestExpoCmdTemplateBootstrap_CleansMigratedLockOnInstallFailure(t *testing.T) {
+// TestDetect_ReusesProjectPackager is the heart of the
+// stop-imposing-bun change: under the reuse-project policy, a project
+// with its own lockfile is installed by its own package manager
+// against that lockfile, and the dev tool is launched through the
+// manager-appropriate form.
+func TestDetect_ReusesProjectPackager(t *testing.T) {
 	t.Parallel()
+	cases := []struct {
+		name        string
+		lockfile    string
+		wantInstall string
+		wantExec    string
+	}{
+		{"pnpm", "pnpm-lock.yaml", "pnpm install", "exec node_modules/.bin/vite"},
+		{"npm", "package-lock.json", "npm install", "exec node_modules/.bin/vite"},
+		{"yarn", "yarn.lock", "yarn install", "exec yarn vite"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			spec := detectSpec(t, map[string]string{
+				"package.json": `{"devDependencies":{"vite":"^6.0.0"}}`,
+				tc.lockfile:    "",
+			})
+			cmd := shellOf(t, spec)
+			if !strings.Contains(cmd, tc.wantInstall) {
+				t.Errorf("recipe missing %q: %q", tc.wantInstall, cmd)
+			}
+			if !strings.Contains(cmd, tc.wantExec) {
+				t.Errorf("recipe missing %q: %q", tc.wantExec, cmd)
+			}
+			if strings.Contains(cmd, "bun install") {
+				t.Errorf("recipe must not fall back to bun for a %s project: %q", tc.name, cmd)
+			}
+			if spec.Installer != tc.name {
+				t.Errorf("Installer = %q, want %q", spec.Installer, tc.name)
+			}
+			if spec.RequiredTool != tc.name || !strings.Contains(spec.ToolEvidence, tc.lockfile) {
+				t.Errorf("RequiredTool/ToolEvidence = %q/%q, want %s via %s", spec.RequiredTool, spec.ToolEvidence, tc.name, tc.lockfile)
+			}
+		})
+	}
+}
 
-	root := t.TempDir()
-	worktree := filepath.Join(root, "worktree")
-	if err := os.Mkdir(worktree, 0o755); err != nil {
-		t.Fatalf("mkdir worktree: %v", err)
+// TestDetect_PolicyAlwaysBun pins the cloud posture: the always-bun
+// policy installs with bun REGARDLESS of the repo's own lockfile —
+// machine worktrees are materialized fresh (no user tree to protect)
+// and bun's speed is the deliberate trade. The paired reuse-project
+// assertion above (TestDetect_ReusesProjectPackager) is the laptop
+// side; together they document the split.
+func TestDetect_PolicyAlwaysBun(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		".git/":          "",
+		"package.json":   `{"devDependencies":{"vite":"^6.0.0"}}`,
+		"pnpm-lock.yaml": "",
+	})
+	spec, err := Detect(dir, PackagerPolicyAlwaysBun)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	cmd := shellOf(t, spec)
+	if !strings.Contains(cmd, "bun install --no-save") || !strings.Contains(cmd, "exec bun vite") {
+		t.Errorf("always-bun recipe must install and launch via bun: %q", cmd)
+	}
+	if strings.Contains(cmd, "pnpm") {
+		t.Errorf("always-bun recipe consulted the lockfile: %q", cmd)
+	}
+	if spec.Installer != string(PackagerBun) || spec.RequiredTool != string(PackagerBun) {
+		t.Errorf("Installer/RequiredTool = %q/%q, want bun/bun", spec.Installer, spec.RequiredTool)
+	}
+}
+
+// TestDetect_UnknownPolicyErrors pins the no-fallbacks contract: a
+// typo'd policy is a wiring bug and must not silently pick a side.
+func TestDetect_UnknownPolicyErrors(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		".git/":        "",
+		"package.json": `{"devDependencies":{"vite":"^6.0.0"}}`,
+	})
+	if _, err := Detect(dir, PackagerPolicy("bun-sometimes")); err == nil {
+		t.Fatal("Detect accepted an unknown policy")
+	}
+}
+
+// TestDetect_SavedChoiceWins pins the one-time prompt's contract: a
+// saved per-project choice beats lockfile detection under the
+// reuse-project policy (and is ignored under always-bun, which never
+// consults the repo side at all). Not parallel: CLANK_DIR pins the
+// choice location.
+func TestDetect_SavedChoiceWins(t *testing.T) {
+	t.Setenv("CLANK_DIR", t.TempDir())
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		".git/":             "",
+		"package.json":      `{"devDependencies":{"vite":"^6.0.0"}}`,
+		"package-lock.json": "{}",
+	})
+	if err := SavePackagerChoice(dir, PackagerBun); err != nil {
+		t.Fatalf("SavePackagerChoice: %v", err)
+	}
+	spec, err := Detect(dir, PackagerPolicyReuseProject)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	if spec.Installer != string(PackagerBun) {
+		t.Errorf("Installer = %q, want the saved bun choice to beat package-lock.json", spec.Installer)
+	}
+	if spec.ToolEvidence != packagerChoiceEvidence {
+		t.Errorf("ToolEvidence = %q, want %q", spec.ToolEvidence, packagerChoiceEvidence)
+	}
+}
+
+func TestPackagerChoiceRoundTrip(t *testing.T) {
+	t.Setenv("CLANK_DIR", t.TempDir())
+	dir := t.TempDir()
+
+	if _, ok := LoadPackagerChoice(dir); ok {
+		t.Fatal("LoadPackagerChoice: want no choice before save")
+	}
+	if err := SavePackagerChoice(dir, PackagerPNPM); err != nil {
+		t.Fatalf("SavePackagerChoice: %v", err)
+	}
+	pm, ok := LoadPackagerChoice(dir)
+	if !ok || pm != PackagerPNPM {
+		t.Fatalf("LoadPackagerChoice = %q, %v; want pnpm, true", pm, ok)
 	}
 
-	bin := t.TempDir()
-	fakeBun := "#!/bin/sh\necho migrated > bun.lock\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(bin, "bun"), []byte(fakeBun), 0o755); err != nil {
-		t.Fatalf("write fake bun: %v", err)
+	// A corrupt file re-prompts instead of driving an undefined install.
+	path, err := packagerChoicePath(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("weirdpm"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := LoadPackagerChoice(dir); ok {
+		t.Fatal("LoadPackagerChoice honored a corrupt choice file")
 	}
 
-	marker := filepath.Join(t.TempDir(), "preview-bootstrap", "worktree.bun")
-	cmd := exec.Command("sh", "-c", strings.ReplaceAll(expoCmdTemplate[2], "%d", "0"))
-	cmd.Dir = worktree
-	// keep_lock=leaked simulates the uninitialized-variable half of the bug:
-	// with the fix's explicit "keep_lock=;" reset, this must not survive.
-	cmd.Env = append(os.Environ(),
-		"PATH="+bin+":"+os.Getenv("PATH"),
-		"keep_lock=leaked",
-		bootstrapMarkerEnv+"="+marker,
-	)
-
-	if err := cmd.Run(); err == nil {
-		t.Fatalf("bootstrap: want failure (fake bun install fails), got success")
-	}
-	if _, err := os.Stat(filepath.Join(worktree, "bun.lock")); !os.IsNotExist(err) {
-		t.Errorf("bun.lock: want removed after a failed install, stat err = %v", err)
-	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Errorf("completion marker: must not be written after a failed install")
+	if err := SavePackagerChoice(dir, Packager("weirdpm")); err == nil {
+		t.Fatal("SavePackagerChoice accepted an unknown packager")
 	}
 }
 
@@ -398,7 +411,7 @@ func TestDetectIOError(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "package.json"), 0o755); err != nil {
 		t.Fatalf("mkdir trap: %v", err)
 	}
-	_, err := Detect(dir)
+	_, err := Detect(dir, PackagerPolicyReuseProject)
 	if err == nil {
 		t.Fatalf("Detect: want error for unreadable package.json, got nil")
 	}

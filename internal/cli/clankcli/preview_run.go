@@ -93,19 +93,20 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	// through: same folder, same key, same running server.
 	previewKey := host.LocalRepoSlug(projectDir)
 
-	// Generous timeout: a cold preview start runs `bun install` first.
-	// Derives from sigCtx so Ctrl+C during startup aborts the wait.
+	// Generous timeout: a cold preview start installs dependencies
+	// first. Derives from sigCtx so Ctrl+C during startup aborts the wait.
 	startCtx, cancel := context.WithTimeout(sigCtx, 10*time.Minute)
 	defer cancel()
 
+	promptPackagerChoice(projectDir, os.Stdin, os.Stdout, stdinIsTTY(os.Stdin))
 	fmt.Println("Starting the dev server on this folder (first run installs dependencies)…")
 	status, err := client.Preview(previewKey).Start(startCtx)
 	if err != nil {
-		// The Expo/Vite hint is only true for the daemon's "no app
+		// The framework hint is only true for the daemon's "no app
 		// detected here" answer; any other failure (path resolution,
 		// spawn error) surfaces verbatim so it isn't mislabeled.
 		if errors.Is(err, daemonclient.ErrNotPreviewable) {
-			return fmt.Errorf("start preview (is this an Expo or Vite project?): %w", err)
+			return fmt.Errorf("start preview (is this an Expo, Next.js, or Vite project?): %w", err)
 		}
 		return fmt.Errorf("start preview: %w", err)
 	}

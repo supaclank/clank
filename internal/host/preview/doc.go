@@ -1,15 +1,18 @@
 // Package preview spawns and supervises per-worktree development
-// servers (today: Expo's Metro) inside the sprite. The gateway
-// reaches these servers via Sprites' WSS proxy and routes traffic to
-// them based on a tokenized public URL — clank-host itself no longer
-// proxies preview traffic.
+// servers (Expo's Metro, Next.js, or Vite) inside the sprite. The
+// gateway reaches these servers via Sprites' WSS proxy and routes
+// traffic to them based on a tokenized public URL — clank-host itself
+// no longer proxies preview traffic.
 //
 // The goal is the "▶ Preview app" affordance on the mobile client:
 // tapping it brings up a running dev server in the user's sprite
-// without a laptop in the loop. Only Expo is detected and exposed in v1 — other
-// frameworks are explicit out-of-scope (the registry is keyed by
-// (worktree, service) so a future clank.preview.yaml loader can drop
-// in without another refactor).
+// without a laptop in the loop. Detect recognizes Expo (phone flow)
+// plus Next.js and Vite (browser flow); dependency installs follow
+// PackagerPolicy — the project's own package manager on laptops
+// (ResolvePackager, or the user's saved choice), always bun on cloud
+// machines. Other frameworks are out-of-scope for detection (the
+// registry is keyed by (worktree, service) so a future clank.yaml
+// loader can drop in without another refactor).
 //
 // Lifetime: Manager is constructed once per host.Service. It holds an
 // in-memory map of running servers keyed by (worktree ID, service

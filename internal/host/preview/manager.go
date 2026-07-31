@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os/exec"
 	"sync"
 	"time"
 )
@@ -47,6 +48,12 @@ type Options struct {
 	// (or a disabled client) leaves Status.Token/URL empty — useful
 	// for laptop dev where there's no gateway to register with.
 	GWClient *GWClient
+
+	// PackagerPolicy selects how detected frameworks get their
+	// installer (see the PackagerPolicy consts). The zero value
+	// behaves as reuse-project; the cloud machine's clank-host opts
+	// into always-bun via its flag.
+	PackagerPolicy PackagerPolicy
 }
 
 // serviceKey is the registry key. Two services on the same worktree
@@ -61,10 +68,11 @@ type serviceKey struct {
 // exposes the lifecycle (Start/Stop/Status). One Manager lives on
 // each host.Service.
 type Manager struct {
-	idleTimeout time.Duration
-	stopGrace   time.Duration
-	log         *log.Logger
-	gw          *GWClient
+	idleTimeout    time.Duration
+	stopGrace      time.Duration
+	log            *log.Logger
+	gw             *GWClient
+	packagerPolicy PackagerPolicy
 
 	mu       sync.Mutex
 	servers  map[serviceKey]*running
@@ -94,14 +102,15 @@ func New(opts Options) *Manager {
 	}
 	bgCtx, cancel := context.WithCancel(context.Background())
 	m := &Manager{
-		idleTimeout: opts.IdleTimeout,
-		stopGrace:   opts.StopGrace,
-		log:         opts.Log,
-		gw:          opts.GWClient,
-		servers:     make(map[serviceKey]*running),
-		stopCh:      make(chan struct{}),
-		bgCtx:       bgCtx,
-		bgCancel:    cancel,
+		idleTimeout:    opts.IdleTimeout,
+		stopGrace:      opts.StopGrace,
+		log:            opts.Log,
+		gw:             opts.GWClient,
+		packagerPolicy: opts.PackagerPolicy,
+		servers:        make(map[serviceKey]*running),
+		stopCh:         make(chan struct{}),
+		bgCtx:          bgCtx,
+		bgCancel:       cancel,
 	}
 	m.reaperWG.Add(1)
 	go m.reaperLoop()
@@ -120,12 +129,24 @@ func New(opts Options) *Manager {
 //
 // Returns ErrNotPreviewable when Detect found no recognizable framework.
 func (m *Manager) Start(ctx context.Context, worktreeID, workDir, serviceName string) (Status, error) {
-	spec, err := Detect(workDir)
+	spec, err := Detect(workDir, m.packagerPolicy)
 	if err != nil {
 		return Status{}, fmt.Errorf("detect: %w", err)
 	}
 	if spec == nil {
 		return Status{}, ErrNotPreviewable
+	}
+	// Fail before spawning, with the detection evidence in hand — a
+	// missing binary surfacing as a cryptic mid-bootstrap shell error
+	// would hide the actual fix from the user.
+	if spec.RequiredTool != "" {
+		if _, lookErr := exec.LookPath(spec.RequiredTool); lookErr != nil {
+			why := spec.ToolEvidence
+			if why == "" {
+				why = "clank's default installer"
+			}
+			return Status{}, fmt.Errorf("preview: this project uses %s (%s) — install %s to continue", spec.RequiredTool, why, spec.RequiredTool)
+		}
 	}
 	return m.startWithSpec(ctx, worktreeID, workDir, serviceName, *spec, 0)
 }
@@ -330,7 +351,7 @@ func (m *Manager) Status(_ context.Context, worktreeID, workDir string) (Status,
 		return r.snapshot(), nil
 	}
 
-	spec, err := Detect(workDir)
+	spec, err := Detect(workDir, m.packagerPolicy)
 	if err != nil {
 		return Status{}, fmt.Errorf("detect: %w", err)
 	}

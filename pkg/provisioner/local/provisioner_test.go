@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acksell/clank/internal/host/preview"
 	"github.com/acksell/clank/pkg/provisioner"
 	"github.com/acksell/clank/pkg/provisioner/local"
 )
@@ -49,7 +50,14 @@ func main() {
 	_ = flag.Bool("gh-cli-auth", false, "")
 	_ = flag.Bool("claude-cli-auth", false, "")
 	_ = flag.Bool("codex-cli-auth", false, "")
+	packagerPolicy := flag.String("preview-packager-policy", "", "")
 	flag.Parse()
+	if f := os.Getenv("FAKE_HOST_PACKAGER_POLICY_FILE"); f != "" {
+		if err := os.WriteFile(f, []byte(*packagerPolicy), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "dump packager-policy:", err)
+			os.Exit(1)
+		}
+	}
 	if f := os.Getenv("FAKE_HOST_WORK_ROOT_FILE"); f != "" {
 		if err := os.WriteFile(f, []byte(*workRoot), 0o644); err != nil {
 			fmt.Fprintln(os.Stderr, "dump work-root:", err)
@@ -127,6 +135,34 @@ func TestEnsureHost_PassesWorkRoot(t *testing.T) {
 	}
 	if string(got) != workRoot {
 		t.Errorf("child received --work-root %q, want %q", got, workRoot)
+	}
+}
+
+// TestEnsureHost_PassesPackagerPolicy: the laptop child must be told
+// --preview-packager-policy=reuse-project. Without it the binary's
+// cloud default (always-bun) would apply to previews of the user's
+// own checkouts — the exact posture split this flag exists for.
+func TestEnsureHost_PassesPackagerPolicy(t *testing.T) {
+	// No t.Parallel: t.Setenv is incompatible with parallel tests.
+	bin := fakeHostBin(t)
+	dumpFile := filepath.Join(t.TempDir(), "packager-policy.txt")
+	t.Setenv("FAKE_HOST_PACKAGER_POLICY_FILE", dumpFile)
+
+	p := local.New(local.Options{
+		BinPath:          bin,
+		ProvisionTimeout: 5 * time.Second,
+	}, nil)
+	t.Cleanup(p.Stop)
+
+	if _, err := p.EnsureHost(context.Background(), ""); err != nil {
+		t.Fatalf("EnsureHost: %v", err)
+	}
+	got, err := os.ReadFile(dumpFile)
+	if err != nil {
+		t.Fatalf("read child's --preview-packager-policy dump: %v", err)
+	}
+	if want := string(preview.PackagerPolicyReuseProject); string(got) != want {
+		t.Errorf("child received --preview-packager-policy %q, want %q", got, want)
 	}
 }
 

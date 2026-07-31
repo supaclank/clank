@@ -21,10 +21,10 @@ const ringCapacity = 64 * 1024
 
 // readyTimeout caps how long Manager.Start waits for the dev server to
 // pass its readiness probe. On a freshly-materialized worktree the spawn
-// command runs `bun install` FIRST (node_modules is gitignored, so it's
-// fetched on the first preview) before Metro starts — a cold install of a
-// large app can take several minutes — so this budget is generous and wraps
-// install + start. A genuinely crashed dev server is caught immediately via
+// command runs the dependency install FIRST (node_modules is gitignored,
+// so it's fetched on the first preview) before the dev server starts — a
+// cold install of a large app can take several minutes — so this budget
+// is generous and wraps install + start. A genuinely crashed dev server is caught immediately via
 // the process-exit path (r.done closes); this limit only applies while the
 // child process is still alive. Overridable per spawn via spawnRequest.ReadyTimeout.
 const readyTimeout = 10 * time.Minute
@@ -100,7 +100,14 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 
 	cmd := exec.CommandContext(childCtx, args[0], args[1:]...)
 	cmd.Dir = req.WorkDir
-	cmd.Env = buildEnv(markerPath, req.PublicURL, req.ShimRequirePath, req.RuntimePath)
+	cmd.Env = buildEnv(childEnv{
+		markerPath:      markerPath,
+		installer:       req.Spec.Installer,
+		wipeNodeModules: req.Spec.Installer != "" && needsNodeModulesWipe(markerPath, req.Spec.Installer),
+		publicURL:       req.PublicURL,
+		shimRequirePath: req.ShimRequirePath,
+		runtimePath:     req.RuntimePath,
+	})
 	configureProcessGroup(cmd)
 
 	logs := newRingBuf(ringCapacity)
@@ -196,15 +203,26 @@ func renderArgs(tmpl []string, port int) ([]string, error) {
 	return out, nil
 }
 
+// childEnv carries the per-spawn values buildEnv threads into the
+// child's environment.
+type childEnv struct {
+	markerPath      string
+	installer       string
+	wipeNodeModules bool
+	publicURL       string
+	shimRequirePath string
+	runtimePath     string
+}
+
 // buildEnv returns the env slice for the spawned child. Inherits the
-// parent process env (so PATH, HOME, … work). markerPath threads the
-// bootstrap completion-marker location into the bootstrapTemplate
-// shell (see bootstrapMarkerEnv). EXPO_NO_DOTENV stops
+// parent process env (so PATH, HOME, … work). markerPath/installer/
+// wipeNodeModules thread the bootstrap protocol into the
+// bootstrapShell (see bootstrap.go). EXPO_NO_DOTENV stops
 // Metro reading the repo's .env into its own process; the .env is
 // still loaded by the app the bundle runs as.
 //
 // Expo CLI's prompts are skipped via `--non-interactive` on the argv
-// (see expoCmdTemplate). We deliberately do NOT set CI=true here: Metro
+// (see expoToolArgs). We deliberately do NOT set CI=true here: Metro
 // reads the CI env var and disables file-watching + HMR ("Metro is
 // running in CI mode, reloads are disabled"). Skipping prompts via
 // argv keeps HMR alive.
@@ -223,13 +241,13 @@ func renderArgs(tmpl []string, port int) ([]string, error) {
 // the guest-side preview runtime is injected into every bundle in-memory (no
 // files in the user's repo). The --require flag is MERGED into any inherited
 // NODE_OPTIONS rather than clobbering it.
-func buildEnv(markerPath, publicURL, shimRequirePath, runtimePath string) []string {
+func buildEnv(p childEnv) []string {
 	parent := os.Environ()
-	env := make([]string, 0, len(parent)+4)
+	env := make([]string, 0, len(parent)+6)
 
 	requireFlag := ""
-	if shimRequirePath != "" {
-		requireFlag = "--require " + shimRequirePath
+	if p.shimRequirePath != "" {
+		requireFlag = "--require " + p.shimRequirePath
 	}
 
 	nodeOptionsMerged := false
@@ -249,16 +267,22 @@ func buildEnv(markerPath, publicURL, shimRequirePath, runtimePath string) []stri
 	}
 	env = append(env,
 		"EXPO_NO_DOTENV=1",
-		bootstrapMarkerEnv+"="+markerPath,
+		bootstrapMarkerEnv+"="+p.markerPath,
 	)
+	if p.installer != "" {
+		env = append(env, bootstrapInstallerEnv+"="+p.installer)
+	}
+	if p.wipeNodeModules {
+		env = append(env, bootstrapWipeEnv+"=1")
+	}
 	if requireFlag != "" && !nodeOptionsMerged {
 		env = append(env, "NODE_OPTIONS="+requireFlag)
 	}
-	if runtimePath != "" {
-		env = append(env, "CLANK_PREVIEW_RUNTIME="+runtimePath)
+	if p.runtimePath != "" {
+		env = append(env, "CLANK_PREVIEW_RUNTIME="+p.runtimePath)
 	}
-	if publicURL != "" {
-		env = append(env, "EXPO_PACKAGER_PROXY_URL="+publicURL)
+	if p.publicURL != "" {
+		env = append(env, "EXPO_PACKAGER_PROXY_URL="+p.publicURL)
 	}
 	return env
 }

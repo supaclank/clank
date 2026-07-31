@@ -29,6 +29,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
+	"github.com/acksell/clank/internal/host/preview"
 	"github.com/acksell/clank/pkg/provisioner"
 	transportpkg "github.com/acksell/clank/pkg/provisioner/transport"
 )
@@ -199,6 +200,12 @@ func (p *Provisioner) EnsureHost(_ context.Context, _ string) (provisioner.HostR
 		// reads $CODEX_HOME/auth.json, so an existing `codex login`
 		// already authenticates sessions on this machine.
 		"--codex-cli-auth",
+		// Previews here run against the user's own checkout, so install
+		// with the project's own package manager (lockfile/packageManager
+		// signals, or the user's saved per-project choice) instead of the
+		// cloud's always-bun default — a foreign resolver would drift
+		// from their lockfile and churn their node_modules.
+		"--preview-packager-policy", string(preview.PackagerPolicyReuseProject),
 	}
 	if p.opts.DataDir != "" {
 		if err := os.MkdirAll(p.opts.DataDir, 0o700); err != nil {

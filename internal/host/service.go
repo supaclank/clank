@@ -168,6 +168,12 @@ type Options struct {
 	// the dev server runs but Status.Token/URL stay empty.
 	PreviewGWClient *preview.GWClient
 
+	// PreviewPackagerPolicy selects how preview installs pick their
+	// package manager (see preview.PackagerPolicy): reuse-project on
+	// laptops (the zero value), always-bun on cloud machines. Wired
+	// from clank-host's --preview-packager-policy flag.
+	PreviewPackagerPolicy preview.PackagerPolicy
+
 	// GitHubOAuthClientID is the Clank GitHub OAuth App's client_id,
 	// used by the host's GitHub Connect device flow. Empty disables
 	// the connect surface (status reports available:false). When
@@ -306,7 +312,11 @@ func New(opts Options) *Service {
 	// GWClient is what registers each spawned dev server with the
 	// gateway so a public tokenized URL gets minted; nil / disabled
 	// keeps spawning local-only.
-	s.preview = preview.New(preview.Options{Log: lg, GWClient: opts.PreviewGWClient})
+	s.preview = preview.New(preview.Options{
+		Log:            lg,
+		GWClient:       opts.PreviewGWClient,
+		PackagerPolicy: opts.PreviewPackagerPolicy,
+	})
 
 	// AuthManager handles credentials for every backend that has
 	// connectable providers (OpenCode + Anthropic today). The restart

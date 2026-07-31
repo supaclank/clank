@@ -96,6 +96,7 @@ func main() {
 	codexCLIAuth := flag.Bool("codex-cli-auth", false, "Report the machine's own codex CLI login ($CODEX_HOME/auth.json) as a connected ChatGPT subscription when clank didn't run the device-auth ceremony — presence detection only, the credential is never read. Set by the local laptop provisioner; off for remote sprites, which have no codex login to borrow.")
 	builtinPresets := flag.String("builtin-presets", os.Getenv("CLANK_BUILTIN_PRESETS"), "JSON array of built-in agent presets, serialized from internal/agent/presets by the provisioner (the environment knows its own blast radius: sandboxes ship the permissive set). Empty uses the conservative Workstation set. Each backend's Default preset also defines the REQUIRED config keys for session creation.")
 	acpBackends := flag.String("acp-backends", envDefault("CLANK_ACP_BACKENDS", "all"), "Backends this host serves, comma-separated (opencode, claude-code, codex; 'all', 'none'). Every backend runs as an ACP agent; omitting one disables it on this host (its sessions then fail to open rather than silently using something else). Defaults to $CLANK_ACP_BACKENDS, else 'all'.")
+	previewPackagerPolicy := flag.String("preview-packager-policy", envDefault("CLANK_PREVIEW_PACKAGER_POLICY", string(preview.PackagerPolicyAlwaysBun)), "How preview installs pick their package manager: 'always-bun' (cloud default — machine worktrees are materialized fresh, bun's speed and hard-linked disk win) or 'reuse-project' (respect the repo's own lockfile/packageManager; set by the local laptop provisioner, where previews run against the user's own checkout). Defaults to $CLANK_PREVIEW_PACKAGER_POLICY.")
 	flag.Parse()
 
 	if *socket == "" && *listen == "" {
@@ -147,6 +148,7 @@ func main() {
 		projectCommitterEmail: *projectCommitterEmail,
 		acpBackends:           *acpBackends,
 		builtinPresets:        *builtinPresets,
+		previewPackagerPolicy: *previewPackagerPolicy,
 	}
 	if err := run(cfg); err != nil {
 		log.Fatalf("clank-host: %v", err)
@@ -177,6 +179,7 @@ type runConfig struct {
 	projectCommitterEmail string
 	acpBackends           string
 	builtinPresets        string
+	previewPackagerPolicy string
 }
 
 // buildKeepaliveListener constructs the provider-specific Listener from
@@ -423,6 +426,13 @@ func run(cfg runConfig) error {
 		return fmt.Errorf("--builtin-presets: %w", err)
 	}
 
+	// A malformed policy is a deploy bug — fail the boot rather than
+	// run with a silently-wrong install posture.
+	packagerPolicy, err := preview.ParsePackagerPolicy(cfg.previewPackagerPolicy)
+	if err != nil {
+		return fmt.Errorf("--preview-packager-policy: %w", err)
+	}
+
 	svc := host.New(host.Options{
 		BackendManagers:        backendManagers,
 		BuiltinPresets:         builtins,
@@ -434,6 +444,7 @@ func run(cfg runConfig) error {
 		KeepaliveListener:      keepaliveListener,
 		NotifierLoop:           notifierLoop,
 		PreviewGWClient:        gwClient,
+		PreviewPackagerPolicy:  packagerPolicy,
 		GitHubOAuthClientID:    cfg.githubOAuthClientID,
 		GitHubGhCLIAuth:        cfg.ghCLIAuth,
 		AnthropicClaudeCLIAuth: cfg.claudeCLIAuth,
