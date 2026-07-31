@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -84,12 +86,19 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 	}
 	port := req.Port
 
-	args, err := renderArgs(req.Spec.CmdTemplate, port)
+	args, err := renderArgs(req.Spec.CmdTemplate, port, req.Spec.PortToken)
 	if err != nil {
 		return nil, err
 	}
 
-	markerPath, err := bootstrapMarkerPath(req.WorkDir)
+	// Spec.Dir re-roots the dev server into a subdirectory (clank.yaml
+	// preview.dir); the marker is keyed by the effective dir so sibling
+	// apps in one monorepo track their installs independently.
+	workDir := req.WorkDir
+	if req.Spec.Dir != "" {
+		workDir = filepath.Join(req.WorkDir, req.Spec.Dir)
+	}
+	markerPath, err := bootstrapMarkerPath(workDir)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +108,7 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 	childCtx, cancel := context.WithCancel(ctx)
 
 	cmd := exec.CommandContext(childCtx, args[0], args[1:]...)
-	cmd.Dir = req.WorkDir
+	cmd.Dir = workDir
 	cmd.Env = buildEnv(childEnv{
 		markerPath:      markerPath,
 		installer:       req.Spec.Installer,
@@ -183,22 +192,33 @@ func allocatePort() (int, error) {
 	return port, nil
 }
 
-// renderArgs substitutes "%d" in the spec template with port. A
-// template that mentions %d zero times is fine (the framework picks
-// the port itself, e.g. via env), but more than one match is rejected
-// as a config bug.
-func renderArgs(tmpl []string, port int) ([]string, error) {
+// renderArgs substitutes every occurrence of the spec's port token
+// with the allocated port. An empty token means "%d" — the internal
+// recipe convention predating clank.yaml — and keeps that shape's
+// strictness: more than one arg carrying it is a recipe bug. The
+// ${PORT} token has no arg limit (a user command may legitimately
+// mention the port several times, e.g. a listen flag plus an
+// allowed-origin flag) and never collides with a literal %d in user
+// shell (date/printf formats). A template that mentions the token
+// zero times is fine for internal recipes; user commands are
+// validated to contain it at config-load time.
+func renderArgs(tmpl []string, port int, token string) ([]string, error) {
+	legacy := token == ""
+	if legacy {
+		token = "%d"
+	}
+	portStr := strconv.Itoa(port)
 	out := make([]string, 0, len(tmpl))
 	matches := 0
 	for _, arg := range tmpl {
-		if strings.Contains(arg, "%d") {
+		if strings.Contains(arg, token) {
 			matches++
-			arg = strings.ReplaceAll(arg, "%d", fmt.Sprintf("%d", port))
+			arg = strings.ReplaceAll(arg, token, portStr)
 		}
 		out = append(out, arg)
 	}
-	if matches > 1 {
-		return nil, fmt.Errorf("spec.CmdTemplate contains %d %%d placeholders, want at most 1", matches)
+	if legacy && matches > 1 {
+		return nil, fmt.Errorf("spec.CmdTemplate contains %d %q placeholders, want at most 1", matches, token)
 	}
 	return out, nil
 }

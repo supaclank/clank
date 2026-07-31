@@ -1,8 +1,8 @@
 // Package preview spawns and supervises per-worktree development
-// servers (Expo's Metro, Next.js, or Vite) inside the sprite. The
-// gateway reaches these servers via Sprites' WSS proxy and routes
-// traffic to them based on a tokenized public URL — clank-host itself
-// no longer proxies preview traffic.
+// servers (Expo's Metro, Next.js, Vite, or a clank.yaml-declared
+// command) inside the sprite. The gateway reaches these servers via
+// Sprites' WSS proxy and routes traffic to them based on a tokenized
+// public URL — clank-host itself no longer proxies preview traffic.
 //
 // The goal is the "▶ Preview app" affordance on the mobile client:
 // tapping it brings up a running dev server in the user's sprite
@@ -15,9 +15,13 @@
 // the checkout), always bun's reconciling install on cloud machines,
 // whose trees clank owns — while the launch derives from the repo's
 // layout (launchLine: yarn/PnP → `yarn <tool>`, else
-// node_modules/.bin). Other frameworks are out-of-scope for detection
-// (the registry is keyed by (worktree, service) so a future
-// clank.yaml loader can drop in without another refactor).
+// node_modules/.bin). Every other stack declares its dev server via
+// clank.yaml's preview section (internal/clankyaml,
+// docs/clank-yaml.md), which also re-roots monorepo subdirectory
+// previews, replaces installs, and overrides readiness probes —
+// explicit config outranks detection and policy alike. The registry
+// stays keyed by (worktree, service) so multi-service previews can
+// land without another refactor.
 //
 // Lifetime: Manager is constructed once per host.Service. It holds an
 // in-memory map of running servers keyed by (worktree ID, service

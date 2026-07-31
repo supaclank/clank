@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/acksell/clank/internal/clankyaml"
 )
 
 // TestBootstrapShell_Expo pins the self-healing bootstrap in the
@@ -124,7 +126,7 @@ func TestBootstrapShell_RecordsInstallerAndClearsSentinel(t *testing.T) {
 		"package.json": `{"dependencies":{"expo":"~50.0.0"}}`,
 		"app.json":     `{"expo":{}}`,
 		"yarn.lock":    "",
-	})), "%d", "0")
+	})), clankyaml.PortPlaceholder, "0")
 	cmd := exec.Command("sh", "-c", shellCmd)
 	cmd.Dir = worktree
 	cmd.Env = []string{
@@ -285,7 +287,7 @@ func TestBootstrapShell_CleansMigratedLockOnInstallFailure(t *testing.T) {
 	shellCmd := strings.ReplaceAll(shellOf(t, detectSpec(t, map[string]string{
 		"package.json": `{"dependencies":{"expo":"~50.0.0"}}`,
 		"app.json":     `{"expo":{}}`,
-	})), "%d", "0")
+	})), clankyaml.PortPlaceholder, "0")
 	cmd := exec.Command("sh", "-c", shellCmd)
 	cmd.Dir = worktree
 	// keep_lock=leaked simulates the uninitialized-variable half of the bug:

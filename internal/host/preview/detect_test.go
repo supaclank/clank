@@ -375,6 +375,186 @@ func TestDetect_UnknownPolicyErrors(t *testing.T) {
 	}
 }
 
+// clank.yaml handling: explicit config wins over detection and
+// policy alike.
+func TestDetect_ClankYAML(t *testing.T) {
+	t.Parallel()
+
+	t.Run("custom command bypasses detection", func(t *testing.T) {
+		t.Parallel()
+		spec := detectSpec(t, map[string]string{
+			"clank.yaml": "preview:\n  command: ./serve.sh --listen ${PORT}\n",
+		})
+		if spec.Kind != KindWeb {
+			t.Errorf("Kind = %q, want %q (custom commands are the browser flow)", spec.Kind, KindWeb)
+		}
+		if cmd := shellOf(t, spec); cmd != "./serve.sh --listen ${PORT}" {
+			t.Errorf("command not verbatim: %q", cmd)
+		}
+		if spec.ReadyProbe != webReadyProbe {
+			t.Errorf("ReadyProbe = %+v, want default %+v", spec.ReadyProbe, webReadyProbe)
+		}
+		if spec.Installer != "" || spec.RequiredTool != "" {
+			t.Errorf("custom command without install must not carry Installer/RequiredTool: %q/%q", spec.Installer, spec.RequiredTool)
+		}
+	})
+
+	t.Run("custom command wins over a detectable framework", func(t *testing.T) {
+		t.Parallel()
+		spec := detectSpec(t, map[string]string{
+			"package.json": `{"devDependencies":{"vite":"^6.0.0"}}`,
+			"clank.yaml":   "preview:\n  command: ./serve.sh --listen ${PORT}\n",
+		})
+		if cmd := shellOf(t, spec); strings.Contains(cmd, "vite") {
+			t.Errorf("detection leaked into a custom command: %q", cmd)
+		}
+	})
+
+	t.Run("ready override", func(t *testing.T) {
+		t.Parallel()
+		spec := detectSpec(t, map[string]string{
+			"clank.yaml": "preview:\n  command: ./serve.sh ${PORT}\n  ready:\n    path: /healthz\n    expect: ok\n",
+		})
+		want := ReadyProbe{Path: "/healthz", ExpectedSubstr: "ok"}
+		if spec.ReadyProbe != want {
+			t.Errorf("ReadyProbe = %+v, want %+v", spec.ReadyProbe, want)
+		}
+	})
+
+	t.Run("custom command with install gets the bootstrap", func(t *testing.T) {
+		t.Parallel()
+		spec := detectSpec(t, map[string]string{
+			"clank.yaml": "preview:\n  install: make deps\n  command: make serve PORT=${PORT}\n",
+		})
+		cmd := shellOf(t, spec)
+		if !strings.Contains(cmd, "make deps") || !strings.Contains(cmd, "make serve PORT=${PORT}") {
+			t.Errorf("bootstrap missing install or command: %q", cmd)
+		}
+		if strings.Contains(cmd, "exec make serve") {
+			t.Errorf("user commands must not be exec-prefixed (compound commands would break): %q", cmd)
+		}
+		if spec.Installer != "make deps" {
+			t.Errorf("Installer = %q, want the verbatim install command", spec.Installer)
+		}
+	})
+
+	t.Run("install override on a detected framework", func(t *testing.T) {
+		t.Parallel()
+		spec := detectSpec(t, map[string]string{
+			"package.json":      `{"devDependencies":{"vite":"^6.0.0"}}`,
+			"package-lock.json": "{}",
+			"clank.yaml":        "preview:\n  install: npm ci\n",
+		})
+		cmd := shellOf(t, spec)
+		if !strings.Contains(cmd, "npm ci") || strings.Contains(cmd, "npm install") {
+			t.Errorf("install override not applied: %q", cmd)
+		}
+		if !strings.Contains(cmd, "exec node_modules/.bin/vite") {
+			t.Errorf("detected launch must survive an install override: %q", cmd)
+		}
+		if spec.Installer != "npm ci" {
+			t.Errorf("Installer = %q, want the override", spec.Installer)
+		}
+		// npm only mattered for the install the override replaced.
+		if spec.RequiredTool != "" {
+			t.Errorf("RequiredTool = %q, want none with the install overridden", spec.RequiredTool)
+		}
+	})
+
+	t.Run("install override beats the always-bun policy", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeTree(t, dir, map[string]string{
+			".git/":        "",
+			"package.json": `{"devDependencies":{"vite":"^6.0.0"}}`,
+			"clank.yaml":   "preview:\n  install: pnpm install --prod=false\n",
+		})
+		spec, err := Detect(dir, PackagerPolicyAlwaysBun)
+		if err != nil {
+			t.Fatalf("Detect: %v", err)
+		}
+		if !strings.Contains(shellOf(t, spec), "pnpm install --prod=false") {
+			t.Errorf("explicit preview.install must win in the cloud too: %q", shellOf(t, spec))
+		}
+	})
+
+	t.Run("dir re-roots detection", func(t *testing.T) {
+		t.Parallel()
+		spec := detectSpec(t, map[string]string{
+			"clank.yaml":           "preview:\n  dir: web-app\n",
+			"web-app/package.json": `{"devDependencies":{"vite":"^6.0.0"}}`,
+		})
+		if spec.Kind != KindWeb || spec.Dir != "web-app" {
+			t.Errorf("Kind/Dir = %q/%q, want web/web-app", spec.Kind, spec.Dir)
+		}
+	})
+
+	t.Run("dir applies to custom commands", func(t *testing.T) {
+		t.Parallel()
+		spec := detectSpec(t, map[string]string{
+			"clank.yaml": "preview:\n  dir: site\n  command: ./serve.sh ${PORT}\n",
+			"site/":      "",
+		})
+		if spec.Dir != "site" {
+			t.Errorf("Dir = %q, want site", spec.Dir)
+		}
+	})
+
+	t.Run("missing dir errors", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeTree(t, dir, map[string]string{
+			".git/":      "",
+			"clank.yaml": "preview:\n  dir: gone\n",
+		})
+		_, err := Detect(dir, PackagerPolicyReuseProject)
+		if err == nil || !strings.Contains(err.Error(), "preview.dir") {
+			t.Fatalf("err = %v, want preview.dir error", err)
+		}
+	})
+
+	t.Run("configured preview with nothing to run errors", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeTree(t, dir, map[string]string{
+			".git/":      "",
+			"clank.yaml": "preview:\n  install: npm install\n",
+		})
+		_, err := Detect(dir, PackagerPolicyReuseProject)
+		if err == nil || !strings.Contains(err.Error(), "no supported framework") {
+			t.Fatalf("err = %v, want configured-but-nothing-to-run error", err)
+		}
+	})
+
+	t.Run("empty preview section stays not-previewable", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeTree(t, dir, map[string]string{
+			".git/":      "",
+			"clank.yaml": "preview: {}\n",
+		})
+		spec, err := Detect(dir, PackagerPolicyReuseProject)
+		if err != nil || spec != nil {
+			t.Fatalf("Detect = %+v, %v; want nil, nil", spec, err)
+		}
+	})
+
+	t.Run("invalid clank.yaml errors loudly", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeTree(t, dir, map[string]string{
+			".git/":        "",
+			"package.json": `{"devDependencies":{"vite":"^6.0.0"}}`,
+			"clank.yaml":   "preview:\n  command: no placeholder here\n",
+		})
+		_, err := Detect(dir, PackagerPolicyReuseProject)
+		if err == nil {
+			t.Fatalf("Detect: want error for invalid clank.yaml on an otherwise-previewable dir, got nil")
+		}
+	})
+}
+
+
 func TestDetectIOError(t *testing.T) {
 	t.Parallel()
 	// Pass a path that exists but isn't a directory; ReadFile returns

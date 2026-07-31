@@ -27,7 +27,8 @@ func packagerFixture(t *testing.T, files map[string]string) string {
 	return dir
 }
 
-// The packager note is narration only: no questions, no stored state.
+// The packager note is narration only: no questions, no stored state,
+// and it reads the same Resolution the daemon acts on.
 func TestPrintPackagerNote(t *testing.T) {
 	t.Parallel()
 
@@ -64,6 +65,38 @@ func TestPrintPackagerNote(t *testing.T) {
 		}
 		if strings.Contains(out.String(), "Installing with npm") {
 			t.Errorf("claims an install that will be skipped: %q", out.String())
+		}
+	})
+
+	t.Run("clank.yaml pinned install narrates the config, no tip machinery", func(t *testing.T) {
+		t.Parallel()
+		dir := packagerFixture(t, map[string]string{
+			"package.json":   `{"devDependencies":{"vite":"^6"}}`,
+			"pnpm-lock.yaml": "",
+			"clank.yaml":     "preview:\n  install: pnpm install --frozen-lockfile\n",
+		})
+		var out strings.Builder
+		printPackagerNote(dir, &out)
+		if !strings.Contains(out.String(), "clank.yaml") {
+			t.Errorf("missing config narration: %q", out.String())
+		}
+		if strings.Contains(out.String(), "Tip:") {
+			t.Errorf("pinned installs need no tip: %q", out.String())
+		}
+	})
+
+	t.Run("clank.yaml dir re-roots the deps-present check", func(t *testing.T) {
+		t.Parallel()
+		dir := packagerFixture(t, map[string]string{
+			"clank.yaml":                         "preview:\n  dir: web-app\n",
+			"web-app/package.json":               `{"devDependencies":{"vite":"^6"}}`,
+			"web-app/package-lock.json":          "{}",
+			"web-app/node_modules/left-pad/x.js": "x",
+		})
+		var out strings.Builder
+		printPackagerNote(dir, &out)
+		if !strings.Contains(out.String(), "existing dependencies") {
+			t.Errorf("deps-present check did not follow preview.dir: %q", out.String())
 		}
 	})
 

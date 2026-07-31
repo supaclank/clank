@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/acksell/clank/internal/clankyaml"
 )
 
 // Default lifecycle timers. Bumpable via Options for tests.
@@ -163,7 +165,7 @@ func (m *Manager) Start(ctx context.Context, worktreeID, workDir, serviceName st
 			if why == "" {
 				why = "clank's default installer"
 			}
-			return Status{}, fmt.Errorf("preview: this project uses %s (%s) — install %s to continue", spec.RequiredTool, why, spec.RequiredTool)
+			return Status{}, fmt.Errorf("preview: this project uses %s (%s) — install %s, or set preview.install in %s to override", spec.RequiredTool, why, spec.RequiredTool, clankyaml.FileName)
 		}
 	}
 	return m.startWithSpec(ctx, worktreeID, workDir, serviceName, *spec, 0)

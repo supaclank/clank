@@ -6,17 +6,21 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/acksell/clank/internal/clankyaml"
 )
 
-// Framework dev-server invocations, without the package-manager launch
-// prefix (execLine adds it) and without the install bootstrap
-// (bootstrapShell adds it). "%d" is the allocated port, substituted by
-// renderArgs.
+// Framework dev-server invocations, without the launch prefix
+// (launchLine adds it) and without the install bootstrap
+// (bootstrapShell adds it). ${PORT} is the allocated port, substituted
+// by renderArgs — the same token clank.yaml commands use, so one
+// substitution rule covers both and a literal %d in user shell
+// (date/printf formats) can never be mangled.
 //
 // expo: `--non-interactive` tells Expo CLI to skip prompts; we
 // deliberately do NOT set CI=true (Metro reads CI and disables watch
 // mode + HMR). EXPO_NO_DOTENV is set in spawn.buildEnv.
-const expoToolArgs = "expo start --port %d --non-interactive"
+const expoToolArgs = "expo start --port ${PORT} --non-interactive"
 
 // vite: `--strictPort` because Manager allocated the port and the
 // readiness probe polls exactly it — Vite's default auto-increment on
@@ -26,14 +30,14 @@ const expoToolArgs = "expo start --port %d --non-interactive"
 // observed on macOS — while probeReady and the webpreview proxy dial
 // IPv4 loopback. No --clearScreen wrangling needed: Vite only clears
 // when stdout is a TTY, and ours is the ring buffer.
-const viteToolArgs = "vite --port %d --strictPort --host 127.0.0.1"
+const viteToolArgs = "vite --port ${PORT} --strictPort --host 127.0.0.1"
 
 // next: `-H 127.0.0.1` for the same reason as Vite's --host (loopback
 // parity with the probe and proxy, and no LAN exposure); Next binds
 // the exact -p port or exits, so no strict-port wrangling is needed.
 // The client flow is the same KindWeb browser proxy — only the spawn
 // recipe differs.
-const nextToolArgs = "next dev -p %d -H 127.0.0.1"
+const nextToolArgs = "next dev -p ${PORT} -H 127.0.0.1"
 
 // expoReadyProbe asks Metro's /status endpoint, which has returned
 // "packager-status:running" stably since at least Expo SDK 49. The
@@ -50,7 +54,8 @@ var expoReadyProbe = ReadyProbe{
 // framework-independent (a Vite SPA serves index.html; SvelteKit SSR
 // renders the page). No body substring — there's nothing stable to
 // match across frameworks, and Vite binds the port only when it's
-// actually able to serve.
+// actually able to serve. Also the default probe for clank.yaml
+// custom commands, overridable via preview.ready.
 var webReadyProbe = ReadyProbe{
 	Path: "/",
 }
@@ -64,53 +69,164 @@ var appConfigCandidates = []string{
 	"app.config.ts",
 }
 
+// Resolution is Detect's spec plus the provenance the CLI narrates
+// from — one resolver interprets config, directories, and managers,
+// so the daemon and the CLI can never drift apart.
+type Resolution struct {
+	Spec *Spec
+
+	// EffectiveDir is where installs and the dev server run: workDir,
+	// re-rooted by preview.dir when set.
+	EffectiveDir string
+
+	// DeclaredPackager/DeclaredEvidence are the repo's own
+	// declared/detected manager (independent of policy or overrides);
+	// empty when the repo declares nothing clank recognizes.
+	DeclaredPackager Packager
+	DeclaredEvidence string
+
+	// InstallPinned reports that clank.yaml supplies the install (via
+	// preview.install, or a preview.command that owns its own setup) —
+	// there is no synthesized install to narrate about.
+	InstallPinned bool
+}
+
 // Detect inspects workDir and returns the Spec Manager uses to spawn
-// its dev server. The contract:
+// its dev server. See Resolve for the full contract; Detect is the
+// spec-only view.
+func Detect(workDir string, policy PackagerPolicy) (*Spec, error) {
+	res, err := Resolve(workDir, policy)
+	if err != nil || res == nil {
+		return nil, err
+	}
+	return res.Spec, nil
+}
+
+// Resolve inspects workDir and produces the complete preview plan.
+// The contract:
 //
 //   - (nil, nil) means "not previewable" — a normal answer, NOT an
 //     error. Surface it as preview_available: false / available: false
 //     to the client.
-//   - (nil, err) means I/O blew up reading the worktree, or the
-//     project declares a package manager clank can't drive. The
-//     caller should log and surface it.
-//   - (*Spec, nil) means the dev server should be spawnable with the
-//     returned recipe.
+//   - (nil, err) means I/O blew up reading the worktree, clank.yaml is
+//     invalid, or the config asks for something impossible. A user who
+//     wrote config gets a loud error, never a silent "not previewable".
+//   - (*Resolution, nil) means the dev server should be spawnable with
+//     the returned recipe.
+//
+// clank.yaml wins over everything: preview.dir re-roots detection into
+// a subdirectory (monorepos), preview.command bypasses detection
+// entirely (KindWeb, the command owns everything but the allocated
+// port), preview.install replaces the install regardless of policy —
+// including in the cloud — and preview.ready overrides the probe.
 //
 // Install and launch are resolved independently. The INSTALL follows
-// policy — reuse-project uses the project's own manager
+// config, then policy: reuse-project uses the project's own manager
 // (ResolvePackager) with the shared-checkout posture (skip when
 // dependencies are already present; frozen mode when creating a
 // missing tree from a lockfile, so drift fails loudly instead of
 // dirtying the checkout), always-bun pins bun's reconciling install
 // for the cloud's owned trees. The LAUNCH derives from the repo's
 // declared manager and dependency layout (launchLine), never from who
-// installs.
+// installs — a preview.install override is arbitrary shell and is
+// deliberately never parsed for launcher inference; when the declared
+// manager is one clank can't launch tools for, the config must supply
+// preview.command as well.
 //
-// Detection stays cheap (a few Stats and small reads) so callers can
-// run it per worktree-list row without caching.
-func Detect(workDir string, policy PackagerPolicy) (*Spec, error) {
-	match, err := detectFramework(workDir)
-	if err != nil || match == nil {
-		return nil, err
-	}
-
-	pm, evidence, err := installPackagerFor(workDir, policy)
+// Detection stays cheap (a few Stats and small reads, plus one
+// clank.yaml read) so callers can run it per worktree-list row
+// without caching.
+func Resolve(workDir string, policy PackagerPolicy) (*Resolution, error) {
+	cfg, err := clankyaml.Load(workDir)
 	if err != nil {
 		return nil, err
 	}
+	var pv *clankyaml.Preview
+	if cfg != nil {
+		pv = cfg.Preview
+	}
 
+	root := workDir
+	subdir := ""
+	if pv != nil && pv.Dir != "" {
+		subdir = filepath.Clean(pv.Dir)
+		root = filepath.Join(workDir, subdir)
+		if fi, statErr := os.Stat(root); statErr != nil || !fi.IsDir() {
+			return nil, fmt.Errorf("%s: preview.dir %q is not a directory under %s", clankyaml.FileName, pv.Dir, workDir)
+		}
+	}
+
+	res := &Resolution{EffectiveDir: root}
+	if declared, declEvidence, declErr := ResolvePackager(root); declErr == nil {
+		res.DeclaredPackager = declared
+		res.DeclaredEvidence = declEvidence
+	}
+
+	if pv != nil && pv.Command != "" {
+		res.Spec = customSpec(pv, subdir)
+		res.InstallPinned = true
+		return res, nil
+	}
+
+	match, err := detectFramework(root)
+	if err != nil {
+		return nil, err
+	}
+	if match == nil {
+		if pv != nil && previewConfigured(pv) {
+			// The user explicitly configured a preview; "nothing to
+			// run" must fail loudly, not render a missing button.
+			return nil, fmt.Errorf("%s: preview is configured but no supported framework was detected in %s and no preview.command is set", clankyaml.FileName, root)
+		}
+		return nil, nil
+	}
+
+	launch := launchLine(launchViaYarn(root), match.toolArgs)
+	probe := match.probe
+	if pv != nil && pv.Ready != nil {
+		probe = ReadyProbe{Path: pv.Ready.Path, ExpectedSubstr: pv.Ready.Expect}
+	}
 	shared := policy != PackagerPolicyAlwaysBun
-	frozen := shared && hasLockfileFor(workDir, pm)
-	launch := launchLine(launchViaYarn(workDir), match.toolArgs)
 
-	return &Spec{
+	if pv != nil && pv.Install != "" {
+		// The override replaces the install step and ONLY the install
+		// step: it's arbitrary shell, so no launcher, required binary,
+		// or manager identity is ever inferred from it. The launch is
+		// synthesized from the layout — and when the repo declares a
+		// manager clank can't launch tools for, that synthesis would be
+		// a guess, so the config must take over the launch too.
+		if name, unsupported := unsupportedDeclaredManager(root); unsupported {
+			return nil, fmt.Errorf("%s: this project declares packageManager %q, which clank can't launch tools for — set preview.command alongside preview.install", clankyaml.FileName, name)
+		}
+		res.Spec = &Spec{
+			Kind:        match.kind,
+			CmdTemplate: []string{"sh", "-c", bootstrapShell(pv.Install, launch, shared)},
+			PortToken:   clankyaml.PortPlaceholder,
+			Dir:         subdir,
+			Installer:   pv.Install,
+			ReadyProbe:  probe,
+		}
+		res.InstallPinned = true
+		return res, nil
+	}
+
+	pm, evidence, err := installPackagerFor(root, policy)
+	if err != nil {
+		return nil, err
+	}
+	frozen := shared && hasLockfileFor(root, pm)
+
+	res.Spec = &Spec{
 		Kind:         match.kind,
 		CmdTemplate:  []string{"sh", "-c", bootstrapShell(installFragment(pm, frozen), launch, shared)},
+		PortToken:    clankyaml.PortPlaceholder,
+		Dir:          subdir,
 		Installer:    string(pm),
 		RequiredTool: string(pm),
 		ToolEvidence: evidence,
-		ReadyProbe:   match.probe,
-	}, nil
+		ReadyProbe:   probe,
+	}
+	return res, nil
 }
 
 // installPackagerFor picks the installer under policy. The empty
@@ -143,8 +259,46 @@ func hasLockfileFor(dir string, pm Packager) bool {
 	return false
 }
 
+// customSpec builds the Spec for a clank.yaml preview.command: always
+// the KindWeb browser flow, detection fully bypassed. Without a
+// preview.install the command owns its own dependencies (no bootstrap,
+// no marker); with one, the install runs behind the same marker
+// protocol as synthesized recipes — but without the deps-present skip:
+// a freeform install owns its own idempotence, and clank can't know
+// what "already installed" means for it.
+//
+// No `exec` prefix on user commands — a compound command (a && b)
+// would never run past the exec, and teardown doesn't rely on it: the
+// Setpgid group kill reaches every child either way.
+func customSpec(pv *clankyaml.Preview, subdir string) *Spec {
+	probe := webReadyProbe
+	if pv.Ready != nil {
+		probe = ReadyProbe{Path: pv.Ready.Path, ExpectedSubstr: pv.Ready.Expect}
+	}
+	spec := &Spec{
+		Kind:       KindWeb,
+		PortToken:  clankyaml.PortPlaceholder,
+		Dir:        subdir,
+		ReadyProbe: probe,
+	}
+	if pv.Install != "" {
+		spec.Installer = pv.Install
+		spec.CmdTemplate = []string{"sh", "-c", bootstrapShell(pv.Install, pv.Command, false)}
+	} else {
+		spec.CmdTemplate = []string{"sh", "-c", pv.Command}
+	}
+	return spec
+}
+
+// previewConfigured reports whether the user set anything in the
+// preview section (an empty `preview:` block reads as absent).
+// Command is handled before this is consulted.
+func previewConfigured(pv *clankyaml.Preview) bool {
+	return pv.Dir != "" || pv.Install != "" || pv.Ready != nil
+}
+
 // frameworkMatch is a recognized framework: what to launch and how to
-// know it's up. The package-manager half is resolved separately.
+// know it's up. The install and launch halves are resolved separately.
 type frameworkMatch struct {
 	kind     Kind
 	toolArgs string

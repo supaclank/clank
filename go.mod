@@ -28,6 +28,7 @@ require (
 	github.com/superfly/fly-go v0.9.0
 	github.com/superfly/sprites-go v0.0.0-20260421132718-b8bf80ad51d3
 	golang.org/x/oauth2 v0.36.0
+	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.54.0
 )
 

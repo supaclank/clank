@@ -28,10 +28,10 @@ type PackagerPolicy string
 
 const (
 	// PackagerPolicyReuseProject installs with the project's own
-	// manager: the user's saved per-project choice when one exists,
-	// else detection via ResolvePackager. The laptop posture — the
-	// preview runs against the user's own checkout, so respect its
-	// resolver and lockfile. Also the zero-value behavior: it's the
+	// manager (ResolvePackager). The laptop posture — the preview runs
+	// against the user's own checkout, so respect its resolver and
+	// lockfile, skip installing over an existing tree, and freeze
+	// installs that create one. Also the zero-value behavior: it's the
 	// side that never surprises a repo.
 	PackagerPolicyReuseProject PackagerPolicy = "reuse-project"
 
@@ -160,7 +160,7 @@ func packagerFromPackageJSON(data []byte) (Packager, string, error) {
 	if pkg.PackageManager != "" {
 		name, _, _ := strings.Cut(pkg.PackageManager, "@")
 		if !isPackagerName(name) {
-			return "", "", fmt.Errorf("package.json declares packageManager %q — clank previews support %s; set preview.install in clank.yaml to use it", pkg.PackageManager, supportedPackagerList())
+			return "", "", fmt.Errorf("package.json declares packageManager %q — clank previews support %s; set preview.install and preview.command in clank.yaml to use it", pkg.PackageManager, supportedPackagerList())
 		}
 		return Packager(name), fmt.Sprintf("package.json packageManager %q", pkg.PackageManager), nil
 	}
@@ -168,7 +168,7 @@ func packagerFromPackageJSON(data []byte) (Packager, string, error) {
 		name := devEnginesPackagerName(pkg.DevEngines.PackageManager)
 		if name != "" {
 			if !isPackagerName(name) {
-				return "", "", fmt.Errorf("package.json declares devEngines.packageManager %q — clank previews support %s; set preview.install in clank.yaml to use it", name, supportedPackagerList())
+				return "", "", fmt.Errorf("package.json declares devEngines.packageManager %q — clank previews support %s; set preview.install and preview.command in clank.yaml to use it", name, supportedPackagerList())
 			}
 			return Packager(name), fmt.Sprintf("package.json devEngines.packageManager %q", name), nil
 		}
@@ -301,6 +301,46 @@ func launchLine(viaYarn bool, toolAndArgs string) string {
 	// workspace) isn't found here — only workDir's own .bin is
 	// searched. https://github.com/Acksell/clank/pull/205#discussion_r3690349688
 	return "exec node_modules/.bin/" + toolAndArgs
+}
+
+// declaredManagerName extracts the manager name package.json declares
+// via packageManager (the corepack convention, "pnpm@9.1.0") or
+// devEngines.packageManager; "" when neither is set or parseable.
+func declaredManagerName(data []byte) string {
+	var pkg struct {
+		PackageManager string `json:"packageManager"`
+		DevEngines     struct {
+			PackageManager json.RawMessage `json:"packageManager"`
+		} `json:"devEngines"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return ""
+	}
+	if pkg.PackageManager != "" {
+		name, _, _ := strings.Cut(pkg.PackageManager, "@")
+		return name
+	}
+	if len(pkg.DevEngines.PackageManager) > 0 {
+		return devEnginesPackagerName(pkg.DevEngines.PackageManager)
+	}
+	return ""
+}
+
+// unsupportedDeclaredManager reports the manager name dir's
+// package.json declares when it isn't one of the supported four —
+// the case where clank cannot synthesize a launcher and clank.yaml
+// must supply preview.command. Lenient by design: no declaration, an
+// unreadable file, or a supported manager all answer false.
+func unsupportedDeclaredManager(dir string) (string, bool) {
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return "", false
+	}
+	name := declaredManagerName(data)
+	if name == "" || isPackagerName(name) {
+		return "", false
+	}
+	return name, true
 }
 
 // launchViaYarn reports whether dir's dev tools must launch through

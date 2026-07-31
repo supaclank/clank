@@ -142,6 +142,45 @@ func TestSpawnReadinessTimeoutFails(t *testing.T) {
 	}
 }
 
+// TestRenderArgs pins the two-token port substitution: the legacy "%d"
+// (empty PortToken) keeps its one-arg strictness for internal recipes,
+// while the ${PORT} token replaces every occurrence AND leaves literal
+// %d in user shell (date/printf formats) untouched.
+func TestRenderArgs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("legacy token substitutes once", func(t *testing.T) {
+		t.Parallel()
+		got, err := renderArgs([]string{"sh", "-c", "serve --port %d"}, 4321, "")
+		if err != nil {
+			t.Fatalf("renderArgs: %v", err)
+		}
+		if got[2] != "serve --port 4321" {
+			t.Errorf("arg = %q", got[2])
+		}
+	})
+
+	t.Run("legacy token in two args is a recipe bug", func(t *testing.T) {
+		t.Parallel()
+		if _, err := renderArgs([]string{"--a=%d", "--b=%d"}, 1, ""); err == nil {
+			t.Fatal("want error when two args carry the legacy token")
+		}
+	})
+
+	t.Run("port placeholder replaces every occurrence and spares literal %d", func(t *testing.T) {
+		t.Parallel()
+		cmd := "log() { date +%d; }; serve --port ${PORT} --origin http://127.0.0.1:${PORT}"
+		got, err := renderArgs([]string{"sh", "-c", cmd}, 4321, "${PORT}")
+		if err != nil {
+			t.Fatalf("renderArgs: %v", err)
+		}
+		want := "log() { date +%d; }; serve --port 4321 --origin http://127.0.0.1:4321"
+		if got[2] != want {
+			t.Errorf("arg =\n %q\nwant\n %q", got[2], want)
+		}
+	})
+}
+
 // waitForState polls r.state until it matches want or deadline expires.
 func waitForState(t *testing.T, r *running, want State, timeout time.Duration) {
 	t.Helper()

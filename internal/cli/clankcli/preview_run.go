@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/clankyaml"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/host"
 	"github.com/acksell/clank/internal/host/preview"
@@ -106,7 +107,7 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 		// detected here" answer; any other failure (path resolution,
 		// spawn error) surfaces verbatim so it isn't mislabeled.
 		if errors.Is(err, daemonclient.ErrNotPreviewable) {
-			return fmt.Errorf("start preview (is this an Expo, Next.js, or Vite project?): %w", err)
+			return fmt.Errorf("start preview (no Expo, Next.js, or Vite app detected here — any other stack can declare its dev server via preview.command in %s): %w", clankyaml.FileName, err)
 		}
 		return fmt.Errorf("start preview: %w", err)
 	}

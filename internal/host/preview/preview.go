@@ -38,14 +38,27 @@ type Spec struct {
 	// the phone/QR flow, KindWeb the `clank preview` browser flow.
 	Kind Kind
 
-	// CmdTemplate is the argv template. "%d" is replaced with the
-	// allocated port at spawn time.
+	// CmdTemplate is the argv template; PortToken occurrences are
+	// replaced with the allocated port at spawn time.
 	CmdTemplate []string
 
+	// PortToken is the placeholder renderArgs substitutes. Detect
+	// always emits clankyaml.PortPlaceholder — one token for
+	// synthesized and user recipes alike, so a literal "%d" in a user
+	// command or install string never gets mangled. Empty means "%d"
+	// (internal and test recipes predating the config work).
+	PortToken string
+
+	// Dir is the repo-relative subdirectory the dev server runs in
+	// (clank.yaml preview.dir). Empty means the workdir itself.
+	Dir string
+
 	// Installer records what installs dependencies, for the bootstrap
-	// completion marker: a Packager name. Drives the cross-packager
-	// node_modules wipe decision (needsNodeModulesWipe). Empty skips
-	// the bootstrap env wiring (test specs without an install step).
+	// completion marker: a Packager name for synthesized installs, the
+	// verbatim clank.yaml preview.install command for overrides, empty
+	// when the spec has no install step (custom command without an
+	// install). Drives the cross-packager node_modules wipe decision
+	// (needsNodeModulesWipe).
 	Installer string
 
 	// RequiredTool is a binary that must be on PATH for the spawn to
