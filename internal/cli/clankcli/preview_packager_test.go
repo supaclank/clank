@@ -1,13 +1,10 @@
 package clankcli
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/acksell/clank/internal/host/preview"
 )
 
 // packagerFixture creates a project dir with the given files plus a
@@ -19,130 +16,80 @@ func packagerFixture(t *testing.T, files map[string]string) string {
 		t.Fatal(err)
 	}
 	for name, content := range files {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
 	return dir
 }
 
-// The one-time packager question: fires once for a non-bun project,
-// persists either answer, and never asks again. Not parallel:
-// CLANK_DIR pins where choices are saved.
-func TestPromptPackagerChoice(t *testing.T) {
-	t.Setenv("CLANK_DIR", t.TempDir())
+// The packager note is narration only: no questions, no stored state.
+func TestPrintPackagerNote(t *testing.T) {
+	t.Parallel()
 
-	t.Run("yes switches to bun and persists", func(t *testing.T) {
-		dir := packagerFixture(t, map[string]string{
-			"package.json":      `{"devDependencies":{"vite":"^6"}}`,
-			"package-lock.json": "{}",
-		})
-		var out strings.Builder
-		promptPackagerChoice(dir, bytes.NewBufferString("y\n"), &out, true)
-
-		if !strings.Contains(out.String(), "Detected npm (package-lock.json)") {
-			t.Errorf("missing detection line: %q", out.String())
-		}
-		if !strings.Contains(out.String(), "Clank prefers bun") {
-			t.Errorf("missing recommendation: %q", out.String())
-		}
-		pm, ok := preview.LoadPackagerChoice(dir)
-		if !ok || pm != preview.PackagerBun {
-			t.Errorf("saved choice = %q, %v; want bun, true", pm, ok)
-		}
-	})
-
-	t.Run("save failure falls back to detected, not the unsaved choice", func(t *testing.T) {
-		// The daemon's Detect re-resolves from scratch and can't see an
-		// unsaved choice, so a save failure must fall back to detected —
-		// reporting the unsaved bun choice here would claim a manager
-		// that won't actually be used for this run.
-		clankDir := filepath.Join(t.TempDir(), "not-a-dir")
-		if err := os.WriteFile(clankDir, nil, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		t.Setenv("CLANK_DIR", clankDir)
-
-		dir := packagerFixture(t, map[string]string{
-			"package.json":      `{"devDependencies":{"vite":"^6"}}`,
-			"package-lock.json": "{}",
-		})
-		var out strings.Builder
-		promptPackagerChoice(dir, bytes.NewBufferString("y\n"), &out, true)
-
-		if strings.Contains(out.String(), "using bun for this run") {
-			t.Errorf("claims bun will be used despite the unsaved choice: %q", out.String())
-		}
-		if !strings.Contains(out.String(), "falling back to npm for this run") {
-			t.Errorf("missing accurate fallback message: %q", out.String())
-		}
-	})
-
-	t.Run("no keeps the detected manager and persists", func(t *testing.T) {
+	t.Run("non-bun project gets the plan and the tip", func(t *testing.T) {
+		t.Parallel()
 		dir := packagerFixture(t, map[string]string{
 			"package.json":   `{"devDependencies":{"vite":"^6"}}`,
 			"pnpm-lock.yaml": "",
 		})
 		var out strings.Builder
-		promptPackagerChoice(dir, bytes.NewBufferString("\n"), &out, true)
-
-		pm, ok := preview.LoadPackagerChoice(dir)
-		if !ok || pm != preview.PackagerPNPM {
-			t.Errorf("saved choice = %q, %v; want pnpm, true", pm, ok)
+		printPackagerNote(dir, &out)
+		if !strings.Contains(out.String(), "Installing with pnpm (pnpm-lock.yaml)") {
+			t.Errorf("missing install plan: %q", out.String())
 		}
-
-		// Second run: saved choice short-circuits, no re-prompt (an
-		// empty stdin would fail readYes if it were consulted).
-		var again strings.Builder
-		promptPackagerChoice(dir, bytes.NewBuffer(nil), &again, true)
-		if !strings.Contains(again.String(), "your saved choice") {
-			t.Errorf("second run did not honor the saved choice: %q", again.String())
-		}
-		if strings.Contains(again.String(), "[y/N]") {
-			t.Errorf("second run re-prompted: %q", again.String())
-		}
-	})
-
-	t.Run("non-interactive narrates but saves nothing", func(t *testing.T) {
-		dir := packagerFixture(t, map[string]string{
-			"package.json": `{"devDependencies":{"vite":"^6"}}`,
-			"yarn.lock":    "",
-		})
-		var out strings.Builder
-		promptPackagerChoice(dir, bytes.NewBuffer(nil), &out, false)
-
-		if !strings.Contains(out.String(), "Installing with yarn.") {
-			t.Errorf("missing narration: %q", out.String())
+		if !strings.Contains(out.String(), "bun install") {
+			t.Errorf("missing the bun tip: %q", out.String())
 		}
 		if strings.Contains(out.String(), "[y/N]") {
-			t.Errorf("non-interactive run prompted: %q", out.String())
-		}
-		if _, ok := preview.LoadPackagerChoice(dir); ok {
-			t.Error("non-interactive run saved a choice — a later interactive run can never ask")
+			t.Errorf("the note must never ask anything: %q", out.String())
 		}
 	})
 
-	t.Run("bun via repo signal narrates without a question", func(t *testing.T) {
+	t.Run("existing dependencies are called out as untouched", func(t *testing.T) {
+		t.Parallel()
+		dir := packagerFixture(t, map[string]string{
+			"package.json":               `{"devDependencies":{"vite":"^6"}}`,
+			"package-lock.json":          "{}",
+			"node_modules/left-pad/x.js": "x",
+		})
+		var out strings.Builder
+		printPackagerNote(dir, &out)
+		if !strings.Contains(out.String(), "existing dependencies") {
+			t.Errorf("missing the untouched-tree narration: %q", out.String())
+		}
+		if strings.Contains(out.String(), "Installing with npm") {
+			t.Errorf("claims an install that will be skipped: %q", out.String())
+		}
+	})
+
+	t.Run("bun project narrates its evidence, no tip", func(t *testing.T) {
+		t.Parallel()
 		dir := packagerFixture(t, map[string]string{
 			"package.json": `{"devDependencies":{"vite":"^6"}}`,
 			"bun.lock":     "",
 		})
 		var out strings.Builder
-		promptPackagerChoice(dir, bytes.NewBuffer(nil), &out, true)
+		printPackagerNote(dir, &out)
 		if !strings.Contains(out.String(), "Installing with bun (bun.lock)") {
 			t.Errorf("missing bun narration: %q", out.String())
 		}
-		if strings.Contains(out.String(), "[y/N]") {
-			t.Errorf("bun project prompted: %q", out.String())
+		if strings.Contains(out.String(), "Tip:") {
+			t.Errorf("bun projects need no tip: %q", out.String())
 		}
 	})
 
 	t.Run("no signal stays silent", func(t *testing.T) {
+		t.Parallel()
 		dir := packagerFixture(t, map[string]string{
 			"package.json": `{"devDependencies":{"vite":"^6"}}`,
 		})
 		var out strings.Builder
-		promptPackagerChoice(dir, bytes.NewBuffer(nil), &out, true)
+		printPackagerNote(dir, &out)
 		if out.Len() != 0 {
 			t.Errorf("template-style project produced output: %q", out.String())
 		}

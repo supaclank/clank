@@ -208,19 +208,37 @@ func isRepoRoot(dir string) bool {
 // installFragment returns the shell fragment that installs
 // dependencies with pm, leaving $? honest for the bootstrap chain.
 //
-// Flags are deliberately the lockfile-respecting, non-destructive
-// variants: plain `npm install` (NOT `npm ci`, which wipes
-// node_modules by design), plain `pnpm install` / `yarn install`.
-// Frozen-lockfile flags would hard-fail unattended previews of repos
-// whose lockfile has drifted, so we accept the manager's default
-// reconcile behavior instead.
+// frozen selects the manager's immutable mode — used ONLY when clank
+// is creating a missing tree from an existing lockfile on a shared
+// (laptop) checkout: the install must reproduce the lockfile exactly
+// and fail loudly on drift rather than reconcile (and thereby dirty)
+// the user's checkout. `npm ci` is safe precisely here because there
+// is no tree for it to wipe. Yarn takes `--frozen-lockfile`: classic
+// only knows that spelling, and berry keeps it as a deprecated alias
+// of --immutable, so one flag covers both.
 //
-// bun keeps its historical dance: `--no-save` stops bun touching
-// package.json, but when the repo has a package-lock.json bun migrates
-// it and writes a bun.lock EVEN under --no-save (verified on bun
-// 1.3.11/1.3.14; no flag disables it), so the fragment deletes the
-// migrated bun.lock afterward unless one existed before the install.
-func installFragment(pm Packager) string {
+// Non-frozen is the reconciling variant, for trees clank owns (cloud
+// machines) and for lockfile-less projects where frozen is
+// meaningless. bun keeps its historical dance there: `--no-save`
+// stops bun touching package.json, but when the repo has a
+// package-lock.json bun migrates it and writes a bun.lock EVEN under
+// --no-save (verified on bun 1.3.11/1.3.14; no flag disables it), so
+// the fragment deletes the migrated bun.lock afterward unless one
+// existed before the install.
+func installFragment(pm Packager, frozen bool) string {
+	if frozen {
+		switch pm {
+		case PackagerBun:
+			return "bun install --frozen-lockfile"
+		case PackagerNPM:
+			return "npm ci"
+		case PackagerPNPM:
+			return "pnpm install --frozen-lockfile"
+		case PackagerYarn:
+			return "yarn install --frozen-lockfile"
+		}
+		return "echo 'unknown packager " + string(pm) + "' >&2; false"
+	}
 	switch pm {
 	case PackagerBun:
 		return `keep_lock=; [ -f bun.lock ] && keep_lock=1; ` +
@@ -238,30 +256,66 @@ func installFragment(pm Packager) string {
 	return "echo 'unknown packager " + string(pm) + "' >&2; false"
 }
 
-// execLine returns the shell line that launches toolAndArgs (e.g.
-// "expo start --port %d") under pm, prefixed with `exec` so signals +
-// Setpgid target the dev server directly.
+// pnpArtifacts are yarn Plug'n'Play's on-disk dependency state — the
+// layouts that have no node_modules at all.
+var pnpArtifacts = []string{".pnp.cjs", ".pnp.loader.mjs"}
+
+// DependenciesPresent reports whether dir already carries installed
+// dependency state in any supported layout: a node_modules tree, or
+// yarn PnP artifacts (which intentionally have no node_modules).
+// Shared (laptop) previews skip installing over either — the tree is
+// the user's own.
+func DependenciesPresent(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "node_modules")); err == nil {
+		return true
+	}
+	for _, a := range pnpArtifacts {
+		if _, err := os.Stat(filepath.Join(dir, a)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// launchLine returns the shell line that launches toolAndArgs (e.g.
+// "expo start --port ${PORT}"), prefixed with `exec` so signals +
+// Setpgid target the dev server directly. The launch form derives
+// from the repo's DECLARED manager and dependency layout — never from
+// who installs — so an install override or policy can't break the
+// launch:
 //
-//   - bun runs the worktree-local bin and honors its `#!/usr/bin/env
-//     node` shebang — required, because the preview shim rides
-//     NODE_OPTIONS (see spawn.buildEnv), which only Node honors.
-//   - npm/pnpm exec node_modules/.bin directly: deterministic
-//     (`npx` would fall back to fetching from the registry when the
-//     bin is missing) and the shebang lands on Node the same way.
-//   - yarn must run `yarn <tool>`: yarn PnP has no node_modules/.bin,
-//     and `yarn` injects its resolver for both classic and berry.
-func execLine(pm Packager, toolAndArgs string) string {
-	switch pm {
-	case PackagerBun:
-		return "exec bun " + toolAndArgs
-	case PackagerNPM, PackagerPNPM:
-		// TODO(ai-review): a tool hoisted to a workspace root's
-		// node_modules/.bin (root-only devDependency in an npm/pnpm
-		// workspace) isn't found here — only workDir's own .bin is
-		// searched. https://github.com/Acksell/clank/pull/205#discussion_r3690349688
-		return "exec node_modules/.bin/" + toolAndArgs
-	case PackagerYarn:
+//   - yarn repos (and any PnP layout) launch via `yarn <tool>`: PnP
+//     has no node_modules/.bin, and `yarn` injects its resolver for
+//     both classic and berry.
+//   - everything else execs node_modules/.bin directly: bun, npm, and
+//     pnpm all materialize .bin, the tool's `#!/usr/bin/env node`
+//     shebang lands on Node (required — the preview shim rides
+//     NODE_OPTIONS, which only Node honors), and there's no npx-style
+//     registry fetch when the bin is missing.
+func launchLine(viaYarn bool, toolAndArgs string) string {
+	if viaYarn {
 		return "exec yarn " + toolAndArgs
 	}
-	return "echo 'unknown packager " + string(pm) + "' >&2; false"
+	// TODO(ai-review): a tool hoisted to a workspace root's
+	// node_modules/.bin (root-only devDependency in an npm/pnpm
+	// workspace) isn't found here — only workDir's own .bin is
+	// searched. https://github.com/Acksell/clank/pull/205#discussion_r3690349688
+	return "exec node_modules/.bin/" + toolAndArgs
+}
+
+// launchViaYarn reports whether dir's dev tools must launch through
+// `yarn <tool>`: the repo declares yarn, or PnP artifacts are on disk
+// (covering install overrides on PnP repos regardless of what the
+// declared-manager walk finds). Declaration errors (an unsupported
+// packageManager field) resolve leniently to the .bin default here —
+// the launcher can't be synthesized from a manager clank doesn't
+// know, and whether the INSTALL is possible is judged separately.
+func launchViaYarn(dir string) bool {
+	for _, a := range pnpArtifacts {
+		if _, err := os.Stat(filepath.Join(dir, a)); err == nil {
+			return true
+		}
+	}
+	declared, _, err := ResolvePackager(dir)
+	return err == nil && declared == PackagerYarn
 }

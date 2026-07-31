@@ -66,11 +66,20 @@ func bootstrapMarkerPath(workDir string) (string, error) {
 // bootstrap: install, record the completion marker, then launch. A
 // materialized worktree only carries what's tracked in git —
 // node_modules is gitignored — so the first spawn must install before
-// the dev server can start. The install runs unconditionally (a warm
-// tree makes it a fast no-op) and its output is deliberately not
+// the dev server can start. Install output is deliberately not
 // silenced: it streams to the client (ring buffer → /preview/logs) so
 // a multi-minute first run shows live progress instead of a blind
 // spinner.
+//
+// skipWhenDepsPresent is the shared-checkout (laptop) posture: when
+// the directory already carries installed dependency state — a
+// node_modules tree or yarn PnP artifacts — the install is skipped
+// entirely and the dev server launches against the user's own tree
+// (never reconciled, never dirtied; launch failures surface in the
+// logs). The check runs AFTER the wipe line so an ordered clean slate
+// still reinstalls. Cloud machines own their trees and pass false:
+// their install runs unconditionally (a warm tree makes it a fast
+// no-op).
 //
 // Marker protocol (all paths from env — the shell assembles none):
 //
@@ -87,17 +96,29 @@ func bootstrapMarkerPath(workDir string) (string, error) {
 //     write goes through "<m>.tmp" + mv so a kill mid-write can never
 //     leave needsNodeModulesWipe reading a truncated installer name.
 //
+// The wipe also clears PnP artifacts: it only ever fires on trees
+// clank itself installed (marker- or sentinel-proven), and a torn
+// yarn install can leave a partial .pnp.cjs that would otherwise pass
+// the deps-present check.
+//
 // Fails fast when either env is missing — a caller bug, never a
 // reason to guess. installFragment must leave $? honest; launch is
 // used verbatim (synthesized recipes carry their own `exec` prefix,
 // clank.yaml commands run as written so compound commands work — the
 // Setpgid group kill reaches every child either way).
-func bootstrapShell(installFragment, launch string) string {
+func bootstrapShell(installFragment, launch string, skipWhenDepsPresent bool) string {
+	skip := ""
+	if skipWhenDepsPresent {
+		skip = `if [ -d node_modules ] || [ -f .pnp.cjs ] || [ -f .pnp.loader.mjs ]; then ` +
+			launch + `
+exit $?; fi; `
+	}
 	return `m="$` + bootstrapMarkerEnv + `"; ` +
 		`[ -n "$m" ] || { echo "` + bootstrapMarkerEnv + ` is not set" >&2; exit 1; }; ` +
 		`inst="$` + bootstrapInstallerEnv + `"; ` +
 		`[ -n "$inst" ] || { echo "` + bootstrapInstallerEnv + ` is not set" >&2; exit 1; }; ` +
-		`[ -z "$` + bootstrapWipeEnv + `" ] || rm -rf node_modules || exit 1; ` +
+		`[ -z "$` + bootstrapWipeEnv + `" ] || rm -rf node_modules .pnp.cjs .pnp.loader.mjs || exit 1; ` +
+		skip +
 		`mkdir -p "$(dirname "$m")" && printf '%s' "$inst" > "$m` + markerInstallingSuffix + `" || exit 1; ` +
 		installFragment + ` && ` +
 		`printf '%s' "$inst" > "$m.tmp" && mv "$m.tmp" "$m" && rm -f "$m` + markerInstallingSuffix + `" && ` +

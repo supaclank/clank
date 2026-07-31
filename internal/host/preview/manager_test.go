@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -275,6 +276,65 @@ func TestManagerShutdownStopsAll(t *testing.T) {
 	for _, pgid := range pgids {
 		if got := waitForGroupEmpty(t, pgid, 2*time.Second); got != 0 {
 			t.Errorf("group %d not empty after Shutdown (got %d)", pgid, got)
+		}
+	}
+}
+
+// TestManagerStart_SerializesBootstrapPerWorkdir pins the workdir
+// bootstrap lease: two starts for the SAME directory under DIFFERENT
+// registry keys (worktree ID vs. folder slug is the real-world case)
+// must never run their bootstrap phases concurrently — a wipe decided
+// by one could race the other's install. The child command exits 90
+// if it observes another bootstrap mid-flight in the directory, so a
+// broken lease turns into a Failed record.
+func TestManagerStart_SerializesBootstrapPerWorkdir(t *testing.T) {
+	t.Parallel()
+	m := New(Options{StopGrace: 1 * time.Second})
+	defer m.Shutdown()
+
+	dir := t.TempDir()
+	guard := filepath.Join(dir, "bootstrap-guard")
+	spec := testSpec([]string{"sh", "-c",
+		"if [ -f " + guard + " ]; then exit 90; fi; touch " + guard + "; sleep 0.4; rm " + guard + "; " + fakeMetroBody(),
+	})
+
+	wids := []string{"wt-lease-a", "wt-lease-b"}
+	var wg sync.WaitGroup
+	errs := make([]error, len(wids))
+	for i, wid := range wids {
+		wg.Add(1)
+		go func(i int, wid string) {
+			defer wg.Done()
+			_, errs[i] = m.startWithSpec(context.Background(), wid, dir, "default", spec, 0)
+		}(i, wid)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("start %s: %v", wids[i], err)
+		}
+	}
+
+	// Both must reach Ready: with the lease, the second bootstrap only
+	// begins after the first record leaves Starting, so neither child
+	// ever sees the other's guard file.
+	for _, wid := range wids {
+		deadline := time.Now().Add(8 * time.Second)
+		for {
+			st, err := m.Status(context.Background(), wid, dir)
+			if err != nil {
+				t.Fatalf("status %s: %v", wid, err)
+			}
+			if st.State == StateReady {
+				break
+			}
+			if st.State == StateFailed {
+				t.Fatalf("%s failed — bootstraps overlapped: %s\nlogs:\n%s", wid, st.LastErr, m.LogTail(wid))
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s did not become ready (state=%s)", wid, st.State)
+			}
+			time.Sleep(50 * time.Millisecond)
 		}
 	}
 }

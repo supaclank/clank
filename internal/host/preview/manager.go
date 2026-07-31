@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -30,6 +31,12 @@ var ErrNotPreviewable = errors.New("preview: worktree is not previewable")
 // ErrNotRunning is returned by Stop when no server exists for the
 // worktree. Mapped to 404.
 var ErrNotRunning = errors.New("preview: no preview server running for worktree")
+
+// ErrBootstrapBusy is returned by Start when another preview is
+// mid-bootstrap (wipe/install) in the same directory under a
+// different registry key, so this start can't safely proceed yet.
+// Retryable: the client should re-issue Start shortly.
+var ErrBootstrapBusy = errors.New("preview: a preview is already installing in this folder — retry shortly")
 
 // Options configures a Manager. Each field is optional with a sensible
 // default — pass Options{} for a bare manager.
@@ -80,6 +87,16 @@ type Manager struct {
 	reaperWG sync.WaitGroup
 	stopCh   chan struct{}
 
+	// bootMu guards bootLeases: one mutex per canonical workdir,
+	// serializing the bootstrap phase (wipe decision → install →
+	// marker) across everything that might touch that directory —
+	// concurrent services, and the same folder arriving under
+	// different registry keys (worktree ID vs. folder slug). The
+	// server registry above stays keyed by (worktree, service); this
+	// is a second, directory-scoped coordination layer.
+	bootMu     sync.Mutex
+	bootLeases map[string]*sync.Mutex
+
 	// bgCtx is the manager-scoped lifetime context handed to spawn.
 	// Distinct from the HTTP request ctx because the request ends as
 	// soon as Start writes its response — using the request ctx would
@@ -108,6 +125,7 @@ func New(opts Options) *Manager {
 		gw:             opts.GWClient,
 		packagerPolicy: opts.PackagerPolicy,
 		servers:        make(map[serviceKey]*running),
+		bootLeases:     make(map[string]*sync.Mutex),
 		stopCh:         make(chan struct{}),
 		bgCtx:          bgCtx,
 		bgCancel:       cancel,
@@ -189,12 +207,47 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 	}
 	m.mu.Unlock()
 
+	// Take the directory's bootstrap lease before anything destructive
+	// is decided: a wipe chosen by one spawn must never race another's
+	// install in the same workdir. TryLock, not Lock — an install can
+	// run for minutes and Start must stay non-blocking. On contention,
+	// a short poll usually resolves the common case (a same-key
+	// duplicate that loses the ms-wide race above finds the winner's
+	// published record); a genuinely different key bootstrapping the
+	// same folder gets a retryable ErrBootstrapBusy instead of a
+	// request held across the whole install.
+	lease := m.workdirLease(workDir)
+	if !lease.TryLock() {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			m.mu.Lock()
+			existing, ok := m.servers[key]
+			m.mu.Unlock()
+			if ok {
+				existing.touch()
+				return existing.snapshot(), nil
+			}
+			if lease.TryLock() {
+				goto leased
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		return Status{}, ErrBootstrapBusy
+	}
+leased:
+	// Every failure path below must release; success hands the lease
+	// to a watcher that releases when the bootstrap phase ends (the
+	// record leaves StateStarting or the child exits).
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(lease.Unlock) }
+
 	// Allocate the listen port BEFORE registering so the gateway can
 	// reserve a route to it AND we can thread the resulting public URL
 	// into Metro's EXPO_PACKAGER_PROXY_URL. Order matters: Metro reads
 	// the env var at startup, so we have to know the URL before spawn.
 	port, err := allocatePort()
 	if err != nil {
+		release()
 		return Status{}, fmt.Errorf("allocate port: %w", err)
 	}
 
@@ -232,12 +285,9 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 	// wires this to exec.CommandContext, and the caller's ctx (the
 	// HTTP request context in production) gets canceled the moment
 	// Start writes its response — that would SIGKILL Metro before it
-	// printed a single line.
-	//
-	// TODO(ai-review): two concurrent Start calls for the same key can both
-	// reach here before either publishes to m.servers below, so a wipe
-	// decided by one spawn can race the other's install in the same workDir.
-	// https://github.com/Acksell/clank/pull/205#discussion_r3690349686
+	// printed a single line. The workdir bootstrap lease taken above
+	// is what keeps this spawn's wipe/install from racing another
+	// start in the same directory.
 	r, err := spawn(m.bgCtx, spawnRequest{
 		WorkDir:         workDir,
 		Spec:            spec,
@@ -249,6 +299,7 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 		RuntimePath:     runtimePath,
 	})
 	if err != nil {
+		release()
 		// Spawn failed — tear down the orphan route the gateway just
 		// registered (if any) so we don't leave dangling tokens.
 		if regErr == nil {
@@ -271,6 +322,7 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 	if m.closed {
 		m.mu.Unlock()
 		r.stopWithGrace(m.stopGrace)
+		release()
 		if regErr == nil {
 			m.revokeBestEffort(worktreeID, serviceName)
 		}
@@ -282,6 +334,7 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 		snap := existing.snapshot()
 		m.mu.Unlock()
 		r.stopWithGrace(m.stopGrace)
+		release()
 		if regErr == nil {
 			// TODO(ai-review): revoke here uses (worktreeID, serviceName) which may evict the winner's live route if the gateway resolves by service pair rather than token. https://github.com/Acksell/clank/pull/36#discussion_r3324139755
 			m.revokeBestEffort(worktreeID, serviceName)
@@ -291,6 +344,30 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 	}
 	m.servers[key] = r
 	m.mu.Unlock()
+
+	// Hand the lease to a watcher: the bootstrap phase is over when
+	// the record leaves StateStarting (probe passed or startup failed)
+	// or the child exits — only then may another start touch this
+	// directory's dependencies.
+	go func() {
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			r.mu.Lock()
+			s := r.state
+			r.mu.Unlock()
+			if s != StateStarting {
+				release()
+				return
+			}
+			select {
+			case <-r.done:
+				release()
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 
 	// Non-blocking: the record is published as StateStarting, so return it
 	// immediately instead of blocking the caller's request on readiness.
@@ -460,6 +537,29 @@ func (m *Manager) reapIdle() {
 		m.revokeBestEffort(v.key.WorktreeID, v.key.ServiceName)
 		m.log.Printf("preview: reaped idle %s/%s (idle > %s)", v.key.WorktreeID, v.key.ServiceName, m.idleTimeout)
 	}
+}
+
+// workdirLease returns the bootstrap mutex for workDir, keyed by its
+// canonical absolute path so the same folder arriving as a worktree
+// ID, a folder slug, or through a symlinked prefix (macOS /tmp) maps
+// to one lease. Leases are never removed — a handful of small mutexes
+// per previewed folder for the process lifetime.
+func (m *Manager) workdirLease(workDir string) *sync.Mutex {
+	canon := workDir
+	if abs, err := filepath.Abs(canon); err == nil {
+		canon = abs
+	}
+	if resolved, err := filepath.EvalSymlinks(canon); err == nil {
+		canon = resolved
+	}
+	m.bootMu.Lock()
+	defer m.bootMu.Unlock()
+	l, ok := m.bootLeases[canon]
+	if !ok {
+		l = &sync.Mutex{}
+		m.bootLeases[canon] = l
+	}
+	return l
 }
 
 // revokeBestEffort calls the gateway's revoke webhook with a bounded

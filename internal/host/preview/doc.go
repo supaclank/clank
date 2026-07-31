@@ -7,12 +7,17 @@
 // The goal is the "▶ Preview app" affordance on the mobile client:
 // tapping it brings up a running dev server in the user's sprite
 // without a laptop in the loop. Detect recognizes Expo (phone flow)
-// plus Next.js and Vite (browser flow); dependency installs follow
-// PackagerPolicy — the project's own package manager on laptops
-// (ResolvePackager, or the user's saved choice), always bun on cloud
-// machines. Other frameworks are out-of-scope for detection (the
-// registry is keyed by (worktree, service) so a future clank.yaml
-// loader can drop in without another refactor).
+// plus Next.js and Vite (browser flow). Install and launch are
+// resolved independently: the install follows PackagerPolicy — the
+// project's own manager on laptops (shared checkouts: skip when
+// dependencies already exist, frozen mode when creating a missing
+// tree from a lockfile, so drift fails loudly instead of dirtying
+// the checkout), always bun's reconciling install on cloud machines,
+// whose trees clank owns — while the launch derives from the repo's
+// layout (launchLine: yarn/PnP → `yarn <tool>`, else
+// node_modules/.bin). Other frameworks are out-of-scope for detection
+// (the registry is keyed by (worktree, service) so a future
+// clank.yaml loader can drop in without another refactor).
 //
 // Lifetime: Manager is constructed once per host.Service. It holds an
 // in-memory map of running servers keyed by (worktree ID, service

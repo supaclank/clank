@@ -221,13 +221,14 @@ func TestDetect_MonorepoSubdir(t *testing.T) {
 	}
 }
 
-// TestDetect_DefaultLaunchesViaBun pins the no-signal default: with no
-// lockfile or packageManager field (clank-created template projects),
-// every recipe execs the worktree-local bin via bun instead of npx —
-// detection guarantees the dep is declared and the bootstrap's install
-// materializes its bin, so an npx registry fetch at spawn time would
-// only add latency, a network dependency, and a prompt to suppress.
-func TestDetect_DefaultLaunchesViaBun(t *testing.T) {
+// TestDetect_DefaultInstallsWithBun pins the no-signal default: with
+// no lockfile or packageManager field (clank-created template
+// projects), bun installs — and the LAUNCH goes through the
+// worktree-local node_modules/.bin regardless, never npx (which would
+// add a registry fetch, a network dependency, and a prompt) and never
+// a manager-specific runner: install and launch are resolved
+// independently.
+func TestDetect_DefaultInstallsWithBun(t *testing.T) {
 	t.Parallel()
 	for name, files := range map[string]map[string]string{
 		"expo": {
@@ -239,11 +240,14 @@ func TestDetect_DefaultLaunchesViaBun(t *testing.T) {
 	} {
 		spec := detectSpec(t, files)
 		cmd := shellOf(t, spec)
-		if !strings.Contains(cmd, "exec bun ") {
-			t.Errorf("%s recipe must exec the dev server via bun: %q", name, cmd)
+		if !strings.Contains(cmd, "bun install --no-save") {
+			t.Errorf("%s recipe must install with bun's reconciling default (no lockfile to freeze against): %q", name, cmd)
 		}
-		if strings.Contains(cmd, "npx") {
-			t.Errorf("%s recipe must not invoke npx: %q", name, cmd)
+		if !strings.Contains(cmd, "exec node_modules/.bin/") {
+			t.Errorf("%s recipe must launch via node_modules/.bin: %q", name, cmd)
+		}
+		if strings.Contains(cmd, "exec bun ") || strings.Contains(cmd, "npx") {
+			t.Errorf("%s recipe launched via a manager instead of the layout: %q", name, cmd)
 		}
 		if spec.Installer != string(PackagerBun) {
 			t.Errorf("%s Installer = %q, want %q", name, spec.Installer, PackagerBun)
@@ -256,9 +260,11 @@ func TestDetect_DefaultLaunchesViaBun(t *testing.T) {
 
 // TestDetect_ReusesProjectPackager is the heart of the
 // stop-imposing-bun change: under the reuse-project policy, a project
-// with its own lockfile is installed by its own package manager
-// against that lockfile, and the dev tool is launched through the
-// manager-appropriate form.
+// with its own lockfile is installed by its own package manager in
+// FROZEN mode — the lockfile is reproduced exactly and drift fails
+// loudly instead of dirtying the user's checkout — and the launch
+// derives from the layout (.bin, or yarn for yarn repos), not the
+// installer.
 func TestDetect_ReusesProjectPackager(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -267,9 +273,10 @@ func TestDetect_ReusesProjectPackager(t *testing.T) {
 		wantInstall string
 		wantExec    string
 	}{
-		{"pnpm", "pnpm-lock.yaml", "pnpm install", "exec node_modules/.bin/vite"},
-		{"npm", "package-lock.json", "npm install", "exec node_modules/.bin/vite"},
-		{"yarn", "yarn.lock", "yarn install", "exec yarn vite"},
+		{"pnpm", "pnpm-lock.yaml", "pnpm install --frozen-lockfile", "exec node_modules/.bin/vite"},
+		{"npm", "package-lock.json", "npm ci", "exec node_modules/.bin/vite"},
+		{"yarn", "yarn.lock", "yarn install --frozen-lockfile", "exec yarn vite"},
+		{"bun", "bun.lock", "bun install --frozen-lockfile", "exec node_modules/.bin/vite"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -285,8 +292,13 @@ func TestDetect_ReusesProjectPackager(t *testing.T) {
 			if !strings.Contains(cmd, tc.wantExec) {
 				t.Errorf("recipe missing %q: %q", tc.wantExec, cmd)
 			}
-			if strings.Contains(cmd, "bun install") {
+			if tc.name != string(PackagerBun) && strings.Contains(cmd, "bun install") {
 				t.Errorf("recipe must not fall back to bun for a %s project: %q", tc.name, cmd)
+			}
+			// The shared-checkout posture: an existing tree is never
+			// installed over.
+			if !strings.Contains(cmd, "[ -d node_modules ]") {
+				t.Errorf("local recipe missing the deps-present skip: %q", cmd)
 			}
 			if spec.Installer != tc.name {
 				t.Errorf("Installer = %q, want %q", spec.Installer, tc.name)
@@ -295,6 +307,22 @@ func TestDetect_ReusesProjectPackager(t *testing.T) {
 				t.Errorf("RequiredTool/ToolEvidence = %q/%q, want %s via %s", spec.RequiredTool, spec.ToolEvidence, tc.name, tc.lockfile)
 			}
 		})
+	}
+}
+
+// TestDetect_PnPLayoutLaunchesViaYarn pins the layout half of the
+// install/launch split: committed PnP artifacts route the launch
+// through `yarn <tool>` (there is no node_modules/.bin to exec) even
+// when the declared-manager walk says something else entirely.
+func TestDetect_PnPLayoutLaunchesViaYarn(t *testing.T) {
+	t.Parallel()
+	spec := detectSpec(t, map[string]string{
+		"package.json":      `{"devDependencies":{"vite":"^6.0.0"}}`,
+		"package-lock.json": "{}",
+		".pnp.cjs":          "// zero-install artifact",
+	})
+	if cmd := shellOf(t, spec); !strings.Contains(cmd, "exec yarn vite") {
+		t.Errorf("PnP layout must launch via yarn: %q", cmd)
 	}
 }
 
@@ -317,11 +345,16 @@ func TestDetect_PolicyAlwaysBun(t *testing.T) {
 		t.Fatalf("Detect: %v", err)
 	}
 	cmd := shellOf(t, spec)
-	if !strings.Contains(cmd, "bun install --no-save") || !strings.Contains(cmd, "exec bun vite") {
-		t.Errorf("always-bun recipe must install and launch via bun: %q", cmd)
+	if !strings.Contains(cmd, "bun install --no-save") || !strings.Contains(cmd, "exec node_modules/.bin/vite") {
+		t.Errorf("always-bun recipe must install via bun and launch via .bin: %q", cmd)
 	}
 	if strings.Contains(cmd, "pnpm") {
-		t.Errorf("always-bun recipe consulted the lockfile: %q", cmd)
+		t.Errorf("always-bun recipe consulted the lockfile for the install: %q", cmd)
+	}
+	// Cloud machines own their trees: the install runs unconditionally,
+	// with no deps-present skip.
+	if strings.Contains(cmd, "[ -d node_modules ]") {
+		t.Errorf("always-bun recipe must not skip installs on present deps: %q", cmd)
 	}
 	if spec.Installer != string(PackagerBun) || spec.RequiredTool != string(PackagerBun) {
 		t.Errorf("Installer/RequiredTool = %q/%q, want bun/bun", spec.Installer, spec.RequiredTool)
@@ -339,66 +372,6 @@ func TestDetect_UnknownPolicyErrors(t *testing.T) {
 	})
 	if _, err := Detect(dir, PackagerPolicy("bun-sometimes")); err == nil {
 		t.Fatal("Detect accepted an unknown policy")
-	}
-}
-
-// TestDetect_SavedChoiceWins pins the one-time prompt's contract: a
-// saved per-project choice beats lockfile detection under the
-// reuse-project policy (and is ignored under always-bun, which never
-// consults the repo side at all). Not parallel: CLANK_DIR pins the
-// choice location.
-func TestDetect_SavedChoiceWins(t *testing.T) {
-	t.Setenv("CLANK_DIR", t.TempDir())
-	dir := t.TempDir()
-	writeTree(t, dir, map[string]string{
-		".git/":             "",
-		"package.json":      `{"devDependencies":{"vite":"^6.0.0"}}`,
-		"package-lock.json": "{}",
-	})
-	if err := SavePackagerChoice(dir, PackagerBun); err != nil {
-		t.Fatalf("SavePackagerChoice: %v", err)
-	}
-	spec, err := Detect(dir, PackagerPolicyReuseProject)
-	if err != nil {
-		t.Fatalf("Detect: %v", err)
-	}
-	if spec.Installer != string(PackagerBun) {
-		t.Errorf("Installer = %q, want the saved bun choice to beat package-lock.json", spec.Installer)
-	}
-	if spec.ToolEvidence != packagerChoiceEvidence {
-		t.Errorf("ToolEvidence = %q, want %q", spec.ToolEvidence, packagerChoiceEvidence)
-	}
-}
-
-func TestPackagerChoiceRoundTrip(t *testing.T) {
-	t.Setenv("CLANK_DIR", t.TempDir())
-	dir := t.TempDir()
-
-	if _, ok := LoadPackagerChoice(dir); ok {
-		t.Fatal("LoadPackagerChoice: want no choice before save")
-	}
-	if err := SavePackagerChoice(dir, PackagerPNPM); err != nil {
-		t.Fatalf("SavePackagerChoice: %v", err)
-	}
-	pm, ok := LoadPackagerChoice(dir)
-	if !ok || pm != PackagerPNPM {
-		t.Fatalf("LoadPackagerChoice = %q, %v; want pnpm, true", pm, ok)
-	}
-
-	// A corrupt file re-prompts instead of driving an undefined install.
-	path, err := packagerChoicePath(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("weirdpm"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := LoadPackagerChoice(dir); ok {
-		t.Fatal("LoadPackagerChoice honored a corrupt choice file")
-	}
-
-	if err := SavePackagerChoice(dir, Packager("weirdpm")); err == nil {
-		t.Fatal("SavePackagerChoice accepted an unknown packager")
 	}
 }
 

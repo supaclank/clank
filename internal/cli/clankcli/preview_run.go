@@ -98,8 +98,8 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 	startCtx, cancel := context.WithTimeout(sigCtx, 10*time.Minute)
 	defer cancel()
 
-	promptPackagerChoice(projectDir, os.Stdin, os.Stdout, stdinIsTTY(os.Stdin))
-	fmt.Println("Starting the dev server on this folder (first run installs dependencies)…")
+	printPackagerNote(projectDir, os.Stdout)
+	fmt.Println("Starting the dev server on this folder…")
 	status, err := client.Preview(previewKey).Start(startCtx)
 	if err != nil {
 		// The framework hint is only true for the daemon's "no app

@@ -76,10 +76,15 @@ var appConfigCandidates = []string{
 //   - (*Spec, nil) means the dev server should be spawnable with the
 //     returned recipe.
 //
-// The install half of the recipe follows policy: reuse-project
-// resolves the project's own package manager (the user's saved
-// per-project choice first, then ResolvePackager), always-bun pins
-// bun — see PackagerPolicy.
+// Install and launch are resolved independently. The INSTALL follows
+// policy — reuse-project uses the project's own manager
+// (ResolvePackager) with the shared-checkout posture (skip when
+// dependencies are already present; frozen mode when creating a
+// missing tree from a lockfile, so drift fails loudly instead of
+// dirtying the checkout), always-bun pins bun's reconciling install
+// for the cloud's owned trees. The LAUNCH derives from the repo's
+// declared manager and dependency layout (launchLine), never from who
+// installs.
 //
 // Detection stays cheap (a few Stats and small reads) so callers can
 // run it per worktree-list row without caching.
@@ -94,9 +99,13 @@ func Detect(workDir string, policy PackagerPolicy) (*Spec, error) {
 		return nil, err
 	}
 
+	shared := policy != PackagerPolicyAlwaysBun
+	frozen := shared && hasLockfileFor(workDir, pm)
+	launch := launchLine(launchViaYarn(workDir), match.toolArgs)
+
 	return &Spec{
 		Kind:         match.kind,
-		CmdTemplate:  []string{"sh", "-c", bootstrapShell(installFragment(pm), execLine(pm, match.toolArgs))},
+		CmdTemplate:  []string{"sh", "-c", bootstrapShell(installFragment(pm, frozen), launch, shared)},
 		Installer:    string(pm),
 		RequiredTool: string(pm),
 		ToolEvidence: evidence,
@@ -112,12 +121,26 @@ func installPackagerFor(workDir string, policy PackagerPolicy) (Packager, string
 	case PackagerPolicyAlwaysBun:
 		return PackagerBun, "", nil
 	case PackagerPolicyReuseProject, "":
-		if pm, ok := LoadPackagerChoice(workDir); ok {
-			return pm, packagerChoiceEvidence, nil
-		}
 		return ResolvePackager(workDir)
 	}
 	return "", "", fmt.Errorf("unknown packager policy %q", policy)
+}
+
+// hasLockfileFor reports whether dir itself carries pm's lockfile —
+// the gate for frozen installs. Deliberately not the walk-up:
+// monorepos with a root-level lockfile need the workspace-aware
+// reconciling install, and frozen modes generally refuse to run from
+// a workspace child anyway.
+func hasLockfileFor(dir string, pm Packager) bool {
+	for _, lf := range packagerLockfiles {
+		if lf.pm != pm {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(dir, lf.file)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // frameworkMatch is a recognized framework: what to launch and how to

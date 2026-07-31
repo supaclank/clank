@@ -25,11 +25,12 @@ func TestBootstrapShell_Expo(t *testing.T) {
 		{`inst="$` + bootstrapInstallerEnv + `"`, "installer identity injected via env"},
 		{`[ -z "$` + bootstrapWipeEnv + `" ] || rm -rf node_modules`, "node_modules wipe gated on Go's decision, never unconditional"},
 		{`"$m` + markerInstallingSuffix + `"`, "in-flight sentinel marks clank-owned installs"},
+		{`if [ -d node_modules ] || [ -f .pnp.cjs ]`, "shared checkouts skip installing over existing dependencies"},
 		{"bun install", "install step present"},
 		{"--no-save", "install must not touch package.json in the user's repo"},
 		{`rm -f bun.lock`, "migrated-lockfile cleanup (bun writes bun.lock from package-lock.json even under --no-save)"},
 		{"keep_lock", "pre-existing bun.lock guard — genuinely-bun repos keep their lockfile"},
-		{"exec bun expo start", "metro launched via the worktree-local bin bun just installed"},
+		{"exec node_modules/.bin/expo start", "metro launched via the worktree-local bin the install materialized"},
 	} {
 		if !strings.Contains(cmd, c.want) {
 			t.Errorf("bootstrap missing %s: %q not found in shell command", c.desc, c.want)
@@ -99,10 +100,11 @@ func runBootstrap(t *testing.T, shellCmd, workDir, marker, installer string, ext
 }
 
 // TestBootstrapShell_RecordsInstallerAndClearsSentinel runs the real
-// Expo recipe with a fake succeeding bun: the completion marker lands
-// exactly at $CLANK_PREVIEW_BOOTSTRAP_MARKER with the installer as its
-// content, the in-flight sentinel is cleaned up, and nothing is
-// written inside or next to the workdir.
+// recipe of a yarn project with a fake succeeding yarn (which both
+// installs and launches, so the whole chain runs): the completion
+// marker lands exactly at $CLANK_PREVIEW_BOOTSTRAP_MARKER with the
+// installer as its content, the in-flight sentinel is cleaned up, and
+// nothing is written inside or next to the workdir.
 func TestBootstrapShell_RecordsInstallerAndClearsSentinel(t *testing.T) {
 	t.Parallel()
 
@@ -114,22 +116,21 @@ func TestBootstrapShell_RecordsInstallerAndClearsSentinel(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "preview-bootstrap", "worktree-abc")
 
 	bin := t.TempDir()
-	// One fake bun serves both roles: `bun install` succeeds, then the
-	// `exec bun expo start` line terminates instantly.
-	if err := os.WriteFile(filepath.Join(bin, "bun"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake bun: %v", err)
+	if err := os.WriteFile(filepath.Join(bin, "yarn"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake yarn: %v", err)
 	}
 
 	shellCmd := strings.ReplaceAll(shellOf(t, detectSpec(t, map[string]string{
 		"package.json": `{"dependencies":{"expo":"~50.0.0"}}`,
 		"app.json":     `{"expo":{}}`,
+		"yarn.lock":    "",
 	})), "%d", "0")
 	cmd := exec.Command("sh", "-c", shellCmd)
 	cmd.Dir = worktree
 	cmd.Env = []string{
 		"PATH=" + bin + ":" + os.Getenv("PATH"),
 		bootstrapMarkerEnv + "=" + marker,
-		bootstrapInstallerEnv + "=" + string(PackagerBun),
+		bootstrapInstallerEnv + "=" + string(PackagerYarn),
 	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("bootstrap: %v\n%s", err, out)
@@ -139,8 +140,8 @@ func TestBootstrapShell_RecordsInstallerAndClearsSentinel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marker: want written at configured path after successful install: %v", err)
 	}
-	if got := strings.TrimSpace(string(content)); got != string(PackagerBun) {
-		t.Errorf("marker content = %q, want %q (records WHAT installed)", got, PackagerBun)
+	if got := strings.TrimSpace(string(content)); got != string(PackagerYarn) {
+		t.Errorf("marker content = %q, want %q (records WHAT installed)", got, PackagerYarn)
 	}
 	if _, err := os.Stat(marker + markerInstallingSuffix); !os.IsNotExist(err) {
 		t.Errorf("in-flight sentinel must be removed after success, stat err = %v", err)
@@ -169,7 +170,7 @@ func TestBootstrapShell_PreservesForeignNodeModules(t *testing.T) {
 	writeTree(t, workDir, map[string]string{"node_modules/left-pad/index.js": "module.exports = x => x"})
 	marker := filepath.Join(t.TempDir(), "m")
 
-	shellCmd := bootstrapShell("true", "true")
+	shellCmd := bootstrapShell("true", "true", false)
 	if err := runBootstrap(t, shellCmd, workDir, marker, "npm"); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
@@ -184,6 +185,38 @@ func TestBootstrapShell_PreservesForeignNodeModules(t *testing.T) {
 	}
 	if _, err := os.Stat(keep); !os.IsNotExist(err) {
 		t.Errorf("wipe env set but node_modules survived, stat err = %v", err)
+	}
+}
+
+// TestBootstrapShell_SkipsInstallWhenDepsPresent pins the shared-
+// checkout posture: with dependency state already on disk (a
+// node_modules tree, or PnP artifacts alone), the bootstrap launches
+// without installing — the user's tree is never reconciled. An empty
+// directory still installs.
+func TestBootstrapShell_SkipsInstallWhenDepsPresent(t *testing.T) {
+	t.Parallel()
+
+	run := func(t *testing.T, files map[string]string) (installed bool) {
+		t.Helper()
+		workDir := t.TempDir()
+		writeTree(t, workDir, files)
+		probe := filepath.Join(workDir, "install-ran")
+		marker := filepath.Join(t.TempDir(), "m")
+		if err := runBootstrap(t, bootstrapShell("touch "+probe, "true", true), workDir, marker, "npm"); err != nil {
+			t.Fatalf("bootstrap: %v", err)
+		}
+		_, err := os.Stat(probe)
+		return err == nil
+	}
+
+	if run(t, map[string]string{"node_modules/left-pad/index.js": "x"}) {
+		t.Error("install ran over an existing node_modules")
+	}
+	if run(t, map[string]string{".pnp.cjs": "// pnp"}) {
+		t.Error("install ran over a PnP layout (which never has node_modules)")
+	}
+	if !run(t, map[string]string{"package.json": "{}"}) {
+		t.Error("install skipped on a dependency-less directory")
 	}
 }
 
@@ -206,7 +239,7 @@ func TestBootstrapShell_WipeFailureAbortsInstall(t *testing.T) {
 	}
 
 	sentinel := filepath.Join(workDir, "installed")
-	shellCmd := bootstrapShell("touch "+sentinel, "true")
+	shellCmd := bootstrapShell("touch "+sentinel, "true", false)
 	cmd := exec.Command("sh", "-c", shellCmd)
 	cmd.Dir = workDir
 	cmd.Env = []string{
@@ -386,7 +419,7 @@ func TestInstallFragments_RealPackagers(t *testing.T) {
 				"package.json": `{"name":"clank-fixture","version":"0.0.1","private":true}`,
 			})
 			marker := filepath.Join(t.TempDir(), "m")
-			if err := runBootstrap(t, bootstrapShell(installFragment(pm), "true"), workDir, marker, string(pm)); err != nil {
+			if err := runBootstrap(t, bootstrapShell(installFragment(pm, false), "true", false), workDir, marker, string(pm)); err != nil {
 				t.Fatalf("%s install fragment failed: %v", pm, err)
 			}
 			content, err := os.ReadFile(marker)
