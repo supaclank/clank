@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/acksell/clank/pkg/preview/tokens"
 )
 
 // fixtureExpoWorkDir creates a minimal worktree that Detect classifies
@@ -135,7 +137,7 @@ func TestManagerStartNotPreviewable(t *testing.T) {
 	defer m.Shutdown()
 
 	plain := t.TempDir() // no package.json
-	_, err := m.Start(context.Background(), "wt-empty", plain, "http://localhost:8080/preview/test")
+	_, err := m.Start(context.Background(), "wt-empty", plain, tokens.DefaultServiceName)
 	if !errors.Is(err, ErrNotPreviewable) {
 		t.Fatalf("Start on non-Expo dir: got %v, want ErrNotPreviewable", err)
 	}

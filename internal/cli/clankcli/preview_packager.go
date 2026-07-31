@@ -57,7 +57,7 @@ func promptPackagerChoice(projectDir string, in io.Reader, out io.Writer, intera
 	// per run. On failure, fall through to the detected manager and
 	// say so; a broken state dir must not block the preview.
 	if err := preview.SavePackagerChoice(projectDir, choice); err != nil {
-		fmt.Fprintln(out, styleWarn.Render(fmt.Sprintf("Couldn't save the choice (%v) — using %s for this run.", err, detected)))
+		fmt.Fprintln(out, styleWarn.Render(fmt.Sprintf("Couldn't save the choice (%v) — using %s for this run.", err, choice)))
 		return
 	}
 	fmt.Fprintln(out, styleDim.Render(fmt.Sprintf("Installing with %s (saved for this project).", choice)))
