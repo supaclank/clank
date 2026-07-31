@@ -116,6 +116,22 @@ func TestPrintPackagerNote(t *testing.T) {
 		}
 	})
 
+	t.Run("missing dir stays silent, never prompts off the parent's signals", func(t *testing.T) {
+		dir := packagerFixture(t, map[string]string{
+			"package.json":      `{"devDependencies":{"vite":"^6"}}`,
+			"package-lock.json": "{}",
+			"clank.yaml":        "preview:\n  dir: gone\n",
+		})
+		var out strings.Builder
+		promptPackagerChoice(dir, bytes.NewBufferString("y\n"), &out, true)
+		if out.Len() != 0 {
+			t.Errorf("missing preview.dir produced output: %q (Start will reject this config anyway)", out.String())
+		}
+		if _, ok := preview.LoadPackagerChoice(filepath.Join(dir, "gone")); ok {
+			t.Error("missing preview.dir saved a choice keyed to a directory that doesn't exist")
+		}
+	})
+
 	t.Run("no signal stays silent", func(t *testing.T) {
 		t.Parallel()
 		dir := packagerFixture(t, map[string]string{

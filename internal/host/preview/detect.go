@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/acksell/clank/internal/clankyaml"
 )
@@ -154,6 +155,11 @@ func Resolve(workDir string, policy PackagerPolicy) (*Resolution, error) {
 		if fi, statErr := os.Stat(root); statErr != nil || !fi.IsDir() {
 			return nil, fmt.Errorf("%s: preview.dir %q is not a directory under %s", clankyaml.FileName, pv.Dir, workDir)
 		}
+		// clankyaml.validate only checks pv.Dir lexically (filepath.IsLocal);
+		// a symlink committed in the repo can still resolve outside workDir.
+		if err := requireWithinRoot(workDir, root); err != nil {
+			return nil, fmt.Errorf("%s: preview.dir %q %w", clankyaml.FileName, pv.Dir, err)
+		}
 	}
 
 	res := &Resolution{EffectiveDir: root}
@@ -227,6 +233,25 @@ func Resolve(workDir string, policy PackagerPolicy) (*Resolution, error) {
 		ReadyProbe:   probe,
 	}
 	return res, nil
+}
+
+// requireWithinRoot rejects a target that resolves — following any
+// symlink component — outside base, so detection and spawn never run
+// against a directory outside the worktree.
+func requireWithinRoot(base, target string) error {
+	resolvedBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return fmt.Errorf("resolve %s: %w", base, err)
+	}
+	resolvedTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return fmt.Errorf("resolve %s: %w", target, err)
+	}
+	rel, err := filepath.Rel(resolvedBase, resolvedTarget)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("resolves outside %s", base)
+	}
+	return nil
 }
 
 // installPackagerFor picks the installer under policy. The empty

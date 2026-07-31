@@ -513,6 +513,26 @@ func TestDetect_ClankYAML(t *testing.T) {
 		}
 	})
 
+	t.Run("dir escaping via symlink errors", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		outside := t.TempDir()
+		writeTree(t, outside, map[string]string{
+			"package.json": `{"dependencies":{"vite":"^6.0.0"}}`,
+		})
+		writeTree(t, dir, map[string]string{
+			".git/":      "",
+			"clank.yaml": "preview:\n  dir: web-app\n",
+		})
+		if err := os.Symlink(outside, filepath.Join(dir, "web-app")); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Detect(dir, PackagerPolicyReuseProject)
+		if err == nil || !strings.Contains(err.Error(), "preview.dir") {
+			t.Fatalf("err = %v, want preview.dir escape error", err)
+		}
+	})
+
 	t.Run("configured preview with nothing to run errors", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
