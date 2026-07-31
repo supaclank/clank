@@ -41,14 +41,14 @@ func promptPackagerChoice(projectDir string, in io.Reader, out io.Writer, intera
 	fmt.Fprintf(out, "Detected %s (%s).\n", detected, evidence)
 	fmt.Fprintln(out, styleCmdHint.Render(
 		"Clank prefers bun for its ~10x faster installs and disk-space savings, letting you run more previews in parallel. "+
-			"Most frameworks support bun nowadays — though pnpm workspaces and yarn PnP setups should keep their own manager. "+
+			"Most frameworks support bun nowadays, though pnpm workspaces and yarn PnP setups should keep their own manager. "+
 			"We recommend switching, but it's up to you!"))
 	if !interactive {
 		fmt.Fprintln(out, styleDim.Render(fmt.Sprintf("Installing with %s.", detected)))
 		return
 	}
 
-	fmt.Fprintf(out, "Use bun for this project's previews? [y/N] ")
+	fmt.Fprintf(out, "Use bun for clank's preview installs? [y/N] ")
 	choice := detected
 	if readYes(in) {
 		choice = preview.PackagerBun
