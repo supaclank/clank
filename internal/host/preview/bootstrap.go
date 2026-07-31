@@ -83,7 +83,9 @@ func bootstrapMarkerPath(workDir string) (string, error) {
 //     WHAT installed ($CLANK_PREVIEW_INSTALLER). A later spawn wipes
 //     node_modules only on a proven packager switch — never merely
 //     because the marker is absent, which would delete a user's own
-//     node_modules on their first preview of an existing project.
+//     node_modules on their first preview of an existing project. The
+//     write goes through "<m>.tmp" + mv so a kill mid-write can never
+//     leave needsNodeModulesWipe reading a truncated installer name.
 //
 // Fails fast when either env is missing — a caller bug, never a
 // reason to guess. installFragment must leave $? honest; launch is
@@ -98,7 +100,7 @@ func bootstrapShell(installFragment, launch string) string {
 		`[ -z "$` + bootstrapWipeEnv + `" ] || rm -rf node_modules || exit 1; ` +
 		`mkdir -p "$(dirname "$m")" && printf '%s' "$inst" > "$m` + markerInstallingSuffix + `" || exit 1; ` +
 		installFragment + ` && ` +
-		`printf '%s' "$inst" > "$m" && rm -f "$m` + markerInstallingSuffix + `" && ` +
+		`printf '%s' "$inst" > "$m.tmp" && mv "$m.tmp" "$m" && rm -f "$m` + markerInstallingSuffix + `" && ` +
 		launch
 }
 
@@ -124,6 +126,10 @@ func needsNodeModulesWipe(markerPath, installer string) bool {
 		if _, lerr := os.Stat(markerPath + legacyBunMarkerSuffix); lerr == nil {
 			completed = []byte(PackagerBun)
 		} else {
+			// TODO(ai-review): markerless preserve-by-default assumes the
+			// tree is a user's own — true for reuse-project, not for
+			// always-bun cloud worktrees, which have no policy signal
+			// here to distinguish the two. https://github.com/Acksell/clank/pull/205#discussion_r3690659728
 			_, serr := os.Stat(markerPath + markerInstallingSuffix)
 			return serr == nil
 		}

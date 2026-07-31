@@ -145,6 +145,9 @@ func TestBootstrapShell_RecordsInstallerAndClearsSentinel(t *testing.T) {
 	if _, err := os.Stat(marker + markerInstallingSuffix); !os.IsNotExist(err) {
 		t.Errorf("in-flight sentinel must be removed after success, stat err = %v", err)
 	}
+	if _, err := os.Stat(marker + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("atomic-write temp file must not survive a successful install, stat err = %v", err)
+	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		t.Fatalf("read root: %v", err)
