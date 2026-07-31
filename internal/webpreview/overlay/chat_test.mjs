@@ -7,7 +7,8 @@ import {
   activeQuestionFromParts, chatFromMessages, questionSuppressesPermission,
   pushPermission, dropPermission, customAllowed, toggleSelection,
   buildAnswers, collectPlanParts, planTextFor, textFromParts,
-  defaultPresetConfig,
+  defaultPresetConfig, buildPreviewContext, composerTextForSend,
+  COMMENTS_DEFAULT_PROMPT,
 } from './chat.js';
 
 const prompt = (id) => ({
@@ -187,4 +188,66 @@ test('defaultPresetConfig: wrong backend, malformed list, missing backend → nu
   assert.equal(defaultPresetConfig({ error: 'nope' }, 'claude-code'), null);
   assert.equal(defaultPresetConfig([{ id: 'builtin-default-claude-code', backend: 'claude-code' }], 'claude-code'), null); // no config field
   assert.equal(defaultPresetConfig(other, ''), null);
+});
+
+// ---------- send-time context serialization --------------------------
+
+test('buildPreviewContext: comments numbered with anchors, plain chips separate', () => {
+  const ctx = buildPreviewContext({
+    chips: [
+      { label: '“Getting sta…”', detail: 'text selection on /README.md', text: 'Getting started', comment: 'make this friendlier' },
+      { label: 'app.jsx:12', detail: 'src/app.jsx:12:3', html: '<h1>Hi</h1>', comment: 'wrong copy' },
+      { label: '<p>', detail: 'div > p', html: '<p>x</p>' },
+    ],
+    route: '/README.md',
+    viewport: '800x600',
+  });
+  assert.match(ctx, /Inline comments — address each one:/);
+  assert.match(ctx, /1\. text selection on \/README\.md/);
+  assert.match(ctx, /> Getting started/);
+  assert.match(ctx, /comment: make this friendlier/);
+  assert.match(ctx, /2\. src\/app\.jsx:12:3/);
+  assert.match(ctx, /html: <h1>Hi<\/h1>/);
+  assert.match(ctx, /comment: wrong copy/);
+  // The commentless chip lands under its own heading, not the comments.
+  assert.match(ctx, /Attached context:\n1\. div > p/);
+  assert.match(ctx, /Route: \/README\.md/);
+  assert.match(ctx, /Viewport: 800x600/);
+});
+
+test('buildPreviewContext: multi-line selections quote every line', () => {
+  const ctx = buildPreviewContext({
+    chips: [{ label: 'x', detail: 'text selection on /a.txt', text: 'line one\nline two', comment: 'tighten' }],
+  });
+  assert.match(ctx, /   > line one\n   > line two/);
+});
+
+test('buildPreviewContext: multi-line comments (Shift+Enter) keep their lines indented', () => {
+  const ctx = buildPreviewContext({
+    chips: [{ label: 'x', detail: 'div > p', html: '<p>x</p>', comment: 'first line\nsecond line' }],
+  });
+  assert.match(ctx, /   comment: first line\n   second line/);
+});
+
+test('buildPreviewContext: nothing attached yields the empty string', () => {
+  assert.equal(buildPreviewContext({}), '');
+  assert.equal(buildPreviewContext({ chips: [], images: [], errors: [], route: '/x', viewport: '1x1' }), '');
+});
+
+test('buildPreviewContext: images and errors keep their notes', () => {
+  const ctx = buildPreviewContext({
+    images: ['screenshot.png', 'logo.png'],
+    errors: ['e1', 'e2', 'e3', 'e4'],
+  });
+  assert.match(ctx, /Attached images: screenshot\.png, logo\.png \(screenshot\.png = an area grab/);
+  // Only the most recent three errors ride along.
+  assert.doesNotMatch(ctx, /- e1/);
+  assert.match(ctx, /- e2\n- e3\n- e4/);
+});
+
+test('composerTextForSend: typed text wins; comments alone get the default; plain chips do not', () => {
+  assert.equal(composerTextForSend('fix it', [{ comment: 'x' }]), 'fix it');
+  assert.equal(composerTextForSend('  ', [{ comment: 'x' }]), COMMENTS_DEFAULT_PROMPT);
+  assert.equal(composerTextForSend('', [{ label: 'plain' }]), '');
+  assert.equal(composerTextForSend('', []), '');
 });

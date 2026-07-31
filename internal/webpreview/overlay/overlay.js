@@ -30,7 +30,7 @@ import {
   PLAN_TOOL, textFromParts, activeQuestionFromParts, chatFromMessages,
   questionSuppressesPermission, pushPermission, dropPermission,
   customAllowed, toggleSelection, buildAnswers, collectPlanParts, planTextFor,
-  defaultPresetConfig,
+  defaultPresetConfig, buildPreviewContext, composerTextForSend,
 } from './chat.js';
 
 (() => {
@@ -95,7 +95,7 @@ import {
     agent: 'idle', // idle | thinking | working | done | error
     inspect: false,
     crop: false, // screenshot crop layer is up
-    chips: [], // [{label, detail, html, names}]
+    chips: [], // [{label, detail, html?, text?, comment?, range?, node?}] — comment = inline comment pinned to the anchor; node dedupes ⌘-selected elements
     images: [], // staged image attachments [{dataURL, mime, filename, label, w, h}]
     msgs: [], // [{role, text}]
     streamText: '', // in-flight assistant text
@@ -412,35 +412,23 @@ import {
     return chip;
   };
 
-  const buildContext = () => {
-    if (!store.chips.length && !recentErrors.length && !store.images.length) return '';
-    const lines = ['', '', '--- clank preview context (auto-attached by the web overlay) ---'];
-    if (store.chips.length) {
-      lines.push('Selected elements:');
-      store.chips.forEach((c, i) => {
-        lines.push(`${i + 1}. ${c.detail}`);
-        lines.push(`   html: ${c.html}`);
-      });
-    }
-    if (store.images.length) {
-      const names = store.images.map((s) => s.filename);
-      const grabNote = names.includes('screenshot.png') ? ' (screenshot.png = an area grab of the page as currently rendered)' : '';
-      lines.push(`Attached images: ${names.join(', ')}${grabNote}.`);
-    }
-    lines.push(`Route: ${location.pathname}${location.search}`);
-    lines.push(`Viewport: ${innerWidth}x${innerHeight}`);
-    if (recentErrors.length) {
-      lines.push('Recent console errors:');
-      recentErrors.slice(-3).forEach((e) => lines.push('- ' + e));
-    }
-    lines.push('--- end context ---');
-    return lines.join('\n');
-  };
+  // Serialization lives in chat.js (buildPreviewContext) so node --test
+  // covers the exact context format the agent receives.
+  const buildContext = () => buildPreviewContext({
+    chips: store.chips,
+    images: store.images.map((s) => s.filename),
+    route: location.pathname + location.search,
+    viewport: `${innerWidth}x${innerHeight}`,
+    errors: recentErrors,
+  });
 
   // ---------- session ------------------------------------------------------
   const send = async () => {
-    const text = ui.input.value.trim();
+    // Comment-only submits are real sends: the default instruction rides
+    // with the inline comments when the composer is empty.
+    const text = composerTextForSend(ui.input.value, store.chips);
     if (!text || store.sending) return;
+    hideCommentPopover();
     const full = text + buildContext();
     // Staged images ride as inline data: attachments — resolveAttachments
     // decodes them daemon-side, so no upload service is needed here.
@@ -1112,6 +1100,7 @@ import {
   .chips { display:flex; flex-wrap:wrap; gap:6px; padding:0 12px 4px; }
   .chip { display:inline-flex; align-items:center; gap:6px; background:#f3f4f6; border:1px solid #e5e7eb;
     color:#4338ca; font-size:11px; padding:3px 8px; border-radius:999px; max-width:100%; }
+  .chip.editable { cursor:pointer; }
   .chip b { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .chip button { all:unset; cursor:pointer; color:#9ca3af; font-size:12px; line-height:1; }
   .chip img { width:18px; height:18px; object-fit:cover; border-radius:4px; }
@@ -1186,6 +1175,19 @@ import {
     border-radius:3px; display:none; }
   .hll { position:fixed; pointer-events:none; background:#111318; color:#c7d2fe; font-size:11px;
     padding:2px 7px; border-radius:6px; border:1px solid #3a3b42; display:none; white-space:nowrap; }
+  /* inline comment popover — appears at a text selection (or a
+     ⌘-selected element) so the instruction lands where you look */
+  .cpop { position:fixed; display:none; width:300px; max-width:calc(100vw - 16px); pointer-events:auto;
+    background:rgba(255,255,255,.96); border:1.5px solid #e5e7eb; border-radius:12px;
+    box-shadow:0 10px 36px rgba(0,0,0,.2); padding:8px 10px 6px; backdrop-filter:blur(14px); }
+  .cpop.show { display:block; }
+  /* overrides of the shared textarea rule: no inner padding (the popover
+     pads), one-row start, grows with the comment like the composer */
+  .cpop textarea { font-size:12.5px; padding:0; min-height:18px; max-height:96px; display:block; }
+  .cpop .cpop-h { font-size:10px; color:#9ca3af; margin-top:4px; }
+  .chip.cmt { background:#fffbeb; border-color:#f59e0bb3; color:#92400e; }
+  .chip .ctext { font-weight:400; color:#6b7280; overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; max-width:150px; }
   .toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); background:#111318;
     color:#e8e8ec; border:1px solid #3a3b42; font-size:12px; padding:7px 14px; border-radius:10px;
     pointer-events:none; opacity:0; transition:opacity .2s; max-width:70vw; }
@@ -1241,6 +1243,7 @@ import {
   <div class="hint"><span><kbd>⇪ caps</kbd> talk</span><span><kbd>⇧</kbd> move</span><span><kbd>⌘</kbd> select</span><span><kbd>⌘E</kbd> toggle</span></div>
 </div>
 <div class="hl"></div><div class="hll"></div>
+<div class="cpop"><textarea class="cpop-in" rows="1"></textarea><div class="cpop-h"><kbd>Enter</kbd> add · <kbd>Esc</kbd> dismiss</div></div>
 <div class="crop">
   <div class="crop-dim"></div>
   <div class="crop-sel"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
@@ -1258,6 +1261,7 @@ import {
     input: $('.compose'), sel: $('.sel'), mic: $('.mic'), micLevel: $('.micLevel'),
     eng: $('.eng'), engpick: $('.engpick'), engOpts: [...root.querySelectorAll('.engpick .opt')],
     send: $('.send'), hl: $('.hl'), hll: $('.hll'), toast: $('.toast'),
+    cpop: $('.cpop'), cpopIn: $('.cpop-in'), cpopHint: $('.cpop-h'),
     shot: $('.shot'), att: $('.att'), file: $('.file'),
     crop: $('.crop'), cropDim: $('.crop-dim'), cropSel: $('.crop-sel'),
     cropBar: $('.crop-bar'), cropAdd: $('.crop-add'), cropX: $('.crop-bar .crop-x'), cropX0: $('.crop-x0'),
@@ -1382,16 +1386,25 @@ import {
     ui.chips.innerHTML = '';
     store.chips.forEach((c, i) => {
       const el = document.createElement('span');
-      el.className = 'chip';
-      el.title = c.detail;
+      el.className = 'chip editable' + (c.comment ? ' cmt' : '');
+      el.title = c.detail + (c.comment ? ' — ' + c.comment : '') + ' (click to edit the comment)';
+      el.onclick = () => editChipComment(c, el.getBoundingClientRect());
       const b = document.createElement('b');
       b.textContent = c.label;
+      el.append(b);
+      if (c.comment) {
+        const s = document.createElement('span');
+        s.className = 'ctext';
+        s.textContent = c.comment;
+        el.append(s);
+      }
       const x = document.createElement('button');
       x.textContent = '✕';
-      x.onclick = () => { store.chips.splice(i, 1); render(); };
-      el.append(b, x);
+      x.onclick = (e) => { e.stopPropagation(); store.chips.splice(i, 1); render(); };
+      el.append(x);
       ui.chips.appendChild(el);
     });
+    syncCommentMarks();
     store.images.forEach((s, i) => {
       const el = document.createElement('span');
       el.className = 'chip';
@@ -1530,13 +1543,238 @@ import {
     e.preventDefault();
     e.stopPropagation();
     if (hoverEl) {
-      store.chips.push(chipFromElement(hoverEl));
-      toast('added to context');
+      // One chip per element: re-clicking an attached element edits its
+      // comment instead of duplicating the chip.
+      const existing = store.chips.find((c) => c.node === hoverEl);
+      if (existing) {
+        toast('already attached — edit its comment');
+        editChipComment(existing, hoverEl.getBoundingClientRect());
+      } else {
+        const chip = chipFromElement(hoverEl);
+        chip.node = hoverEl;
+        store.chips.push(chip);
+        toast('added to context');
+        // The chip is attached either way (today's behavior); the popover
+        // just offers to pin an inline comment on it. The range keeps the
+        // element's text visibly marked after ⌘-release hides the inspect
+        // box.
+        const range = document.createRange();
+        range.selectNodeContents(hoverEl);
+        showCommentPopover({ kind: 'element', chip, range }, hoverEl.getBoundingClientRect());
+      }
     }
     // Stay in select mode: it ends when the held modifier is released
     // (momentary), or via Esc / the ⌖ button (toggled).
     render();
   };
+
+  // ---------- inline comments -----------------------------------------------
+  // Highlight text (or ⌘-select an element) → a comment input appears at
+  // the anchor → Enter pins the instruction to it as a comment chip.
+  // Several comments then ride ONE submit, each unambiguously anchored —
+  // no untangling "which part did you mean" in the composer.
+  let commentTarget = null; // {kind:'text', text, range} | {kind:'element', chip}
+
+  // Commented ranges get an in-page mark via the CSS Custom Highlight
+  // API — no guest-DOM mutation, so framework hydration can't break.
+  // Marks are cosmetic: chips survive a live-reload swap, marks don't.
+  // pendingMark repaints the anchor while the popover is up — focusing
+  // the popover input deactivates the browser's own selection highlight,
+  // which otherwise vanishes right as you start typing.
+  const commentMarks = typeof Highlight === 'function' && CSS.highlights ? new Highlight() : null;
+  if (commentMarks) CSS.highlights.set('clank-comment', commentMarks);
+  const pendingMark = typeof Highlight === 'function' && CSS.highlights ? new Highlight() : null;
+  if (pendingMark) CSS.highlights.set('clank-pending', pendingMark);
+  let markStyleInjected = false;
+  const ensureMarkStyle = () => {
+    if (markStyleInjected) return;
+    markStyleInjected = true;
+    const st = document.createElement('style');
+    st.textContent = '::highlight(clank-comment){background:rgba(245,158,11,.35);}' +
+      '::highlight(clank-pending){background:var(--clank-pending-bg, rgba(59,130,246,.30));}';
+    document.head.appendChild(st);
+  };
+
+  // pendingColorFor adopts the page's own ::selection background for the
+  // pending mark, so the repaint reads as "your selection is still here"
+  // rather than a foreign color. Empty = unstyled, use the fallback.
+  const pendingColorFor = (range) => {
+    let el = range && range.startContainer;
+    if (el && el.nodeType !== 1) el = el.parentElement;
+    if (!el) return '';
+    try {
+      const c = getComputedStyle(el, '::selection').backgroundColor;
+      if (c && c !== 'transparent' && !/^rgba\(\d+, \d+, \d+, 0\)$/.test(c)) return c;
+    } catch { /* pseudo-element lookup unsupported */ }
+    return '';
+  };
+  const syncCommentMarks = () => {
+    if (!commentMarks) return;
+    commentMarks.clear();
+    // A hidden box hides its marks too: ⌘E away = a clean page.
+    if (store.box === 'hidden') return;
+    for (const c of store.chips) {
+      if (!c.range) continue;
+      ensureMarkStyle();
+      commentMarks.add(c.range);
+    }
+  };
+
+  // SELECTION_TEXT_CAP bounds the context block; the agent greps the
+  // source for anything past it.
+  const SELECTION_TEXT_CAP = 2000;
+  const chipFromSelection = (text) => {
+    const oneLine = text.replace(/\s+/g, ' ').trim();
+    const label = '“' + (oneLine.length > 24 ? oneLine.slice(0, 24) + '…' : oneLine) + '”';
+    const clipped = text.length > SELECTION_TEXT_CAP ? text.slice(0, SELECTION_TEXT_CAP) + '…' : text;
+    return { label, detail: 'text selection on ' + location.pathname, text: clipped };
+  };
+
+  const syncCpopHeight = () => {
+    ui.cpopIn.style.height = 'auto';
+    ui.cpopIn.style.height = Math.min(96, ui.cpopIn.scrollHeight) + 'px';
+  };
+
+  const positionCommentPopover = (rect) => {
+    const w = ui.cpop.offsetWidth || 300;
+    const left = Math.min(Math.max(rect.left, 8), Math.max(8, innerWidth - w - 8));
+    let top = rect.bottom + 8;
+    if (top > innerHeight - 72) top = rect.top - 64;
+    top = Math.min(Math.max(top, 8), innerHeight - 72);
+    Object.assign(ui.cpop.style, { left: left + 'px', top: top + 'px' });
+  };
+
+  const showCommentPopover = (target, rect) => {
+    commentTarget = target;
+    if (pendingMark) {
+      pendingMark.clear();
+      if (target.range) {
+        ensureMarkStyle();
+        pendingMark.add(target.range);
+        const c = pendingColorFor(target.range);
+        if (c) document.documentElement.style.setProperty('--clank-pending-bg', c);
+        else document.documentElement.style.removeProperty('--clank-pending-bg');
+      }
+    }
+    ui.cpopIn.value = target.kind === 'edit' ? target.chip.comment || '' : '';
+    ui.cpopIn.placeholder = target.kind === 'text' ? 'Comment for the agent…'
+      : target.kind === 'edit' ? 'Comment…'
+      : 'Comment on this element…';
+    ui.cpopHint.innerHTML = target.kind === 'edit'
+      ? '<kbd>Enter</kbd> save · <kbd>Esc</kbd> cancel'
+      : target.kind === 'text' ? '<kbd>Enter</kbd> add · <kbd>Esc</kbd> dismiss'
+      : '<kbd>Enter</kbd> add comment · <kbd>Esc</kbd> keep as plain context';
+    ui.cpop.classList.add('show');
+    ui.cpop.style.visibility = '';
+    syncCpopHeight();
+    positionCommentPopover(rect);
+    setTimeout(() => {
+      ui.cpopIn.focus({ preventScroll: true });
+      const n = ui.cpopIn.value.length; // caret at the end for prefilled edits
+      ui.cpopIn.setSelectionRange(n, n);
+    }, 0);
+  };
+  const hideCommentPopover = () => {
+    if (!commentTarget) return;
+    commentTarget = null;
+    if (pendingMark) pendingMark.clear();
+    ui.cpop.classList.remove('show');
+    ui.cpop.style.visibility = '';
+  };
+  const confirmComment = () => {
+    const t = commentTarget;
+    if (!t) return;
+    const comment = ui.cpopIn.value.trim();
+    if (t.kind === 'text') {
+      const chip = chipFromSelection(t.text);
+      if (comment) chip.comment = comment;
+      if (t.range) chip.range = t.range;
+      store.chips.push(chip);
+      toast(comment ? 'comment added' : 'added to context');
+    } else if (t.kind === 'edit') {
+      // Saving empty clears the comment; the chip stays plain context.
+      if (comment) t.chip.comment = comment;
+      else delete t.chip.comment;
+      toast(comment ? 'comment updated' : 'comment cleared');
+    } else if (comment) {
+      t.chip.comment = comment;
+      toast('comment added');
+    }
+    hideCommentPopover();
+    if (store.box === 'hidden') store.box = 'prompt';
+    render();
+  };
+
+  // editChipComment reopens the popover on an existing chip, prefilled.
+  // The pending mark re-paints the chip's anchor when it's still live
+  // (its stored selection range, or the ⌘-selected element's contents).
+  const editChipComment = (c, rect) => {
+    let range = c.range || null;
+    if (!range && c.node && c.node.isConnected) {
+      range = document.createRange();
+      range.selectNodeContents(c.node);
+    }
+    showCommentPopover({ kind: 'edit', chip: c, range }, rect);
+  };
+
+  const onSelectionMouseUp = (e) => {
+    if (store.inspect || store.crop) return;
+    if (ours(realTarget(e))) return;
+    // Defer past the browser's own mouseup handling: double-click
+    // word-selection only lands after the event.
+    setTimeout(() => {
+      if (store.inspect || store.crop) return;
+      const sel = document.getSelection();
+      if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+      const n = sel.anchorNode;
+      if (n && n.getRootNode && n.getRootNode() === root) return; // composer selections are ours
+      const text = sel.toString();
+      if (!text.trim()) return;
+      const range = sel.getRangeAt(0).cloneRange();
+      const rect = range.getBoundingClientRect();
+      if (!rect.width && !rect.height) return;
+      showCommentPopover({ kind: 'text', text, range }, rect);
+    }, 0);
+  };
+  document.addEventListener('mouseup', onSelectionMouseUp, true);
+  // Click-away dismisses. Scrolling does NOT: the popover follows its
+  // anchor (below), so you can scroll for context mid-comment.
+  document.addEventListener('mousedown', (e) => {
+    if (commentTarget && !ui.cpop.contains(realTarget(e))) hideCommentPopover();
+  }, true);
+  // Follow the anchor on scroll/resize. Only range-anchored popovers
+  // move with the page; a chip-opened editor sits on the fixed-position
+  // box and stays put. Off-screen anchor = hidden popover, state kept.
+  // No rAF hop: scroll events are already frame-coalesced, and rAF
+  // pauses entirely in non-rendered documents.
+  const onAnchorScroll = () => {
+    const t = commentTarget;
+    if (!t || !t.range || t.kind === 'edit') return;
+    const r = t.range.getBoundingClientRect();
+    const off = r.bottom < 0 || r.top > innerHeight;
+    ui.cpop.style.visibility = off ? 'hidden' : '';
+    if (!off) positionCommentPopover(r);
+  };
+  window.addEventListener('scroll', onAnchorScroll, true);
+  window.addEventListener('resize', onAnchorScroll);
+  ui.cpopIn.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      confirmComment();
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c' && ui.cpopIn.selectionStart === ui.cpopIn.selectionEnd) {
+      // Focus lives here, but the user's mental target is the page
+      // highlight — ⌘C with nothing selected inside the input copies
+      // the anchor text. A selection inside the input keeps native copy.
+      const t = commentTarget;
+      const text = t && (t.kind === 'text' ? t.text : t.range ? t.range.toString() : '');
+      if (text && navigator.clipboard) {
+        e.preventDefault();
+        navigator.clipboard.writeText(text).then(() => toast('copied'), () => toast('copy failed'));
+      }
+    }
+    e.stopPropagation(); // typing must never trigger guest-app shortcuts
+  });
+  ui.cpopIn.addEventListener('input', syncCpopHeight);
 
   // ---------- image attachments ---------------------------------------------
   // Staged images (screenshot crops, pasted images, picked files) ride
@@ -1922,7 +2160,7 @@ import {
   // Guarded to the container: buttons handle their own Enter, and the
   // composer's handler above stops propagation.
   ui.box.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && e.target === ui.box && ui.input.value.trim()) { e.preventDefault(); send(); }
+    if (e.key === 'Enter' && e.target === ui.box && composerTextForSend(ui.input.value, store.chips)) { e.preventDefault(); send(); }
   });
   ui.input.addEventListener('input', syncComposerHeight);
 
@@ -2077,6 +2315,7 @@ import {
     }
     if (e.key === 'Escape') {
       if (store.enginePick) { e.preventDefault(); e.stopPropagation(); closeEnginePick(); }
+      else if (commentTarget) { e.preventDefault(); e.stopPropagation(); hideCommentPopover(); }
       else if (store.inspect) { e.preventDefault(); e.stopPropagation(); modInspect = false; exitInspect(); }
       else if (store.box !== 'hidden') { e.preventDefault(); e.stopPropagation(); setBox('hidden'); }
     }
