@@ -54,10 +54,12 @@ func promptPackagerChoice(projectDir string, in io.Reader, out io.Writer, intera
 		choice = preview.PackagerBun
 	}
 	// Save either answer — the question is once per project, not once
-	// per run. On failure, fall through to the detected manager and
-	// say so; a broken state dir must not block the preview.
+	// per run. On failure, the daemon's Detect can't see an unsaved
+	// choice and re-resolves from scratch, so this run falls back to
+	// detected regardless of what was answered; a broken state dir
+	// must not block the preview.
 	if err := preview.SavePackagerChoice(projectDir, choice); err != nil {
-		fmt.Fprintln(out, styleWarn.Render(fmt.Sprintf("Couldn't save the choice (%v) — using %s for this run.", err, choice)))
+		fmt.Fprintln(out, styleWarn.Render(fmt.Sprintf("Couldn't save the choice (%v) — falling back to %s for this run.", err, detected)))
 		return
 	}
 	fmt.Fprintln(out, styleDim.Render(fmt.Sprintf("Installing with %s (saved for this project).", choice)))

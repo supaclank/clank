@@ -52,6 +52,32 @@ func TestPromptPackagerChoice(t *testing.T) {
 		}
 	})
 
+	t.Run("save failure falls back to detected, not the unsaved choice", func(t *testing.T) {
+		// The daemon's Detect re-resolves from scratch and can't see an
+		// unsaved choice, so a save failure must fall back to detected —
+		// reporting the unsaved bun choice here would claim a manager
+		// that won't actually be used for this run.
+		clankDir := filepath.Join(t.TempDir(), "not-a-dir")
+		if err := os.WriteFile(clankDir, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("CLANK_DIR", clankDir)
+
+		dir := packagerFixture(t, map[string]string{
+			"package.json":      `{"devDependencies":{"vite":"^6"}}`,
+			"package-lock.json": "{}",
+		})
+		var out strings.Builder
+		promptPackagerChoice(dir, bytes.NewBufferString("y\n"), &out, true)
+
+		if strings.Contains(out.String(), "using bun for this run") {
+			t.Errorf("claims bun will be used despite the unsaved choice: %q", out.String())
+		}
+		if !strings.Contains(out.String(), "falling back to npm for this run") {
+			t.Errorf("missing accurate fallback message: %q", out.String())
+		}
+	})
+
 	t.Run("no keeps the detected manager and persists", func(t *testing.T) {
 		dir := packagerFixture(t, map[string]string{
 			"package.json":   `{"devDependencies":{"vite":"^6"}}`,
