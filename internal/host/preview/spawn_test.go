@@ -251,6 +251,48 @@ func TestBuildEnv_OmitsCI(t *testing.T) {
 	}
 }
 
+// TestBuildEnv_StripsAmbientBootstrapControlVars pins the fix for a bug
+// a review bot caught: buildEnv copied the parent process's entire
+// environment before deciding whether to set bootstrapWipeEnv, so an
+// ambient CLANK_PREVIEW_WIPE_NODE_MODULES (leaked into the daemon's own
+// env) survived into the child and could trigger the destructive
+// rm -rf even when Go's decision was to preserve node_modules.
+func TestBuildEnv_StripsAmbientBootstrapControlVars(t *testing.T) {
+	// Not t.Parallel: t.Setenv forbids it.
+	t.Setenv(bootstrapWipeEnv, "1")
+	t.Setenv(bootstrapMarkerEnv, "/ambient/marker")
+	t.Setenv(bootstrapInstallerEnv, "ambient-installer")
+
+	env := buildEnv(childEnv{markerPath: "/tmp/marker", installer: "npm"})
+
+	var wipeCount, markerCount, installerCount int
+	for _, e := range env {
+		switch {
+		case strings.HasPrefix(e, bootstrapWipeEnv+"="):
+			wipeCount++
+		case strings.HasPrefix(e, bootstrapMarkerEnv+"="):
+			markerCount++
+			if e != bootstrapMarkerEnv+"=/tmp/marker" {
+				t.Errorf("marker env = %q, want Go's value, not the ambient one", e)
+			}
+		case strings.HasPrefix(e, bootstrapInstallerEnv+"="):
+			installerCount++
+			if e != bootstrapInstallerEnv+"=npm" {
+				t.Errorf("installer env = %q, want Go's value, not the ambient one", e)
+			}
+		}
+	}
+	if wipeCount != 0 {
+		t.Errorf("buildEnv leaked ambient %s into the child (p.wipeNodeModules was false): count=%d", bootstrapWipeEnv, wipeCount)
+	}
+	if markerCount != 1 {
+		t.Errorf("%s appeared %d times in child env, want exactly 1", bootstrapMarkerEnv, markerCount)
+	}
+	if installerCount != 1 {
+		t.Errorf("%s appeared %d times in child env, want exactly 1", bootstrapInstallerEnv, installerCount)
+	}
+}
+
 // TestBuildEnv_PublicURL_SetsProxyVar pins the gateway-wired path:
 // the public URL minted by the gateway's register webhook gets
 // threaded into EXPO_PACKAGER_PROXY_URL so Metro advertises the

@@ -258,6 +258,16 @@ func buildEnv(p childEnv) []string {
 		if strings.HasPrefix(e, "CI=") {
 			continue
 		}
+		// Strip clank's own bootstrap control vars so an ambient value
+		// (a stray export in the daemon's own environment) can never
+		// override the decision made below — bootstrapWipeEnv in
+		// particular gates a destructive rm -rf, so only Go's explicit
+		// append may set it.
+		if strings.HasPrefix(e, bootstrapMarkerEnv+"=") ||
+			strings.HasPrefix(e, bootstrapInstallerEnv+"=") ||
+			strings.HasPrefix(e, bootstrapWipeEnv+"=") {
+			continue
+		}
 		if requireFlag != "" && strings.HasPrefix(e, "NODE_OPTIONS=") {
 			env = append(env, e+" "+requireFlag)
 			nodeOptionsMerged = true
