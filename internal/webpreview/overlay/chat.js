@@ -150,3 +150,74 @@ export const planTextFor = (planParts, perm) => {
   }
   return planParts.length ? planParts[planParts.length - 1].plan : '';
 };
+
+// ---------- send-time context serialization --------------------------
+// Chips are the overlay's attached context: {label, detail, html?,
+// text?, comment?}. `text` anchors a chip to a page text selection,
+// `html` to a ⌘-selected element, and `comment` turns either into an
+// inline comment — an instruction pinned to that anchor.
+
+// COMMENTS_DEFAULT_PROMPT is the message when the user submits inline
+// comments with an empty composer — the comments are the instructions.
+export const COMMENTS_DEFAULT_PROMPT = 'Address the attached inline comments.';
+
+// hasComments reports whether any chip carries an inline comment.
+export const hasComments = (chips) => (chips || []).some((c) => c && c.comment);
+
+// composerTextForSend returns the message text a send should carry: the
+// typed text, or the default instruction when only inline comments ride
+// along. Empty means there is nothing to send.
+export const composerTextForSend = (typed, chips) => {
+  const t = (typed || '').trim();
+  if (t) return t;
+  return hasComments(chips) ? COMMENTS_DEFAULT_PROMPT : '';
+};
+
+// chipContextLines serializes one chip: its anchor (element source /
+// dom path, or the quoted text selection), then the user's comment.
+const chipContextLines = (c, i) => {
+  const lines = [`${i + 1}. ${c.detail}`];
+  if (c.text) {
+    lines.push('   selected text:');
+    for (const l of String(c.text).split('\n')) lines.push('   > ' + l);
+  }
+  if (c.html) lines.push(`   html: ${c.html}`);
+  if (c.comment) {
+    const parts = String(c.comment).split('\n');
+    lines.push(`   comment: ${parts[0]}`);
+    for (const l of parts.slice(1)) lines.push('   ' + l);
+  }
+  return lines;
+};
+
+// buildPreviewContext renders the auto-attached context block appended
+// to every send: inline comments first (each pinned to its anchor, the
+// agent addresses them in order), then plain attached context, then
+// page facts. Empty when there is nothing to attach. images is the
+// staged attachments' filenames.
+export const buildPreviewContext = ({ chips = [], images = [], route = '', viewport = '', errors = [] }) => {
+  if (!chips.length && !images.length && !errors.length) return '';
+  const comments = chips.filter((c) => c.comment);
+  const plain = chips.filter((c) => !c.comment);
+  const lines = ['', '', '--- clank preview context (auto-attached by the web overlay) ---'];
+  if (comments.length) {
+    lines.push('Inline comments — address each one:');
+    comments.forEach((c, i) => lines.push(...chipContextLines(c, i)));
+  }
+  if (plain.length) {
+    lines.push('Attached context:');
+    plain.forEach((c, i) => lines.push(...chipContextLines(c, i)));
+  }
+  if (images.length) {
+    const grabNote = images.includes('screenshot.png') ? ' (screenshot.png = an area grab of the page as currently rendered)' : '';
+    lines.push(`Attached images: ${images.join(', ')}${grabNote}.`);
+  }
+  if (route) lines.push(`Route: ${route}`);
+  if (viewport) lines.push(`Viewport: ${viewport}`);
+  if (errors.length) {
+    lines.push('Recent console errors:');
+    errors.slice(-3).forEach((e) => lines.push('- ' + e));
+  }
+  lines.push('--- end context ---');
+  return lines.join('\n');
+};

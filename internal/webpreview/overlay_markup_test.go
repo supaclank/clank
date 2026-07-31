@@ -23,3 +23,56 @@ func TestOverlayComposerSelectorIsClassScoped(t *testing.T) {
 		t.Error("overlay.js must select the composer via $('.compose')")
 	}
 }
+
+// TestOverlayInlineCommentWiring pins the inline-comment feature's
+// contact points: the popover exists in the markup, and send() decides
+// sendability via composerTextForSend — a raw ui.input.value guard
+// would silently break comment-only submits (empty composer, comment
+// chips attached).
+func TestOverlayInlineCommentWiring(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	// A textarea, not an input: the comment must wrap and grow as you
+	// type past the popover's width.
+	if !strings.Contains(js, `<div class="cpop">`) || !strings.Contains(js, `<textarea class="cpop-in"`) {
+		t.Error("overlay.js must carry the comment popover markup (.cpop with a .cpop-in textarea)")
+	}
+	if !strings.Contains(js, "$('.cpop')") || !strings.Contains(js, "$('.cpop-in')") {
+		t.Error("overlay.js must select the comment popover via $('.cpop') / $('.cpop-in')")
+	}
+	if !strings.Contains(js, "composerTextForSend(ui.input.value, store.chips)") {
+		t.Error("send paths must gate on composerTextForSend(ui.input.value, store.chips) so comment-only submits work")
+	}
+	// Focusing the popover input deactivates the browser's own selection
+	// highlight; without the pending mark the selection visibly vanishes
+	// the moment the popover opens.
+	if !strings.Contains(js, "'clank-pending'") || !strings.Contains(js, "'clank-comment'") {
+		t.Error("overlay.js must register both the clank-comment and clank-pending highlights")
+	}
+	// Chips are the edit surface (clickable text can't work reliably —
+	// highlight marks receive no events and ranges die on live reload).
+	if !strings.Contains(js, "editChipComment(c, el.getBoundingClientRect())") {
+		t.Error("overlay.js chips must open the prefilled comment editor on click")
+	}
+	// One chip per ⌘-selected element: a re-click edits, never duplicates.
+	if !strings.Contains(js, "store.chips.find((c) => c.node === hoverEl)") {
+		t.Error("overlay.js inspector clicks must dedupe by anchored element node")
+	}
+	// The pending mark adopts the page's own ::selection color (with the
+	// blue fallback), and ⌘C in the focused popover copies the anchor
+	// text — both were user-reported papercuts.
+	if !strings.Contains(js, "var(--clank-pending-bg") || !strings.Contains(js, "'::selection'") {
+		t.Error("overlay.js pending mark must adopt the page's ::selection color via --clank-pending-bg")
+	}
+	if !strings.Contains(js, "navigator.clipboard.writeText") {
+		t.Error("overlay.js popover must bridge ⌘C to copy the anchor text")
+	}
+	// Scrolling must reposition the popover along its anchor, not dismiss
+	// it — highlight + input surviving a scroll is the point.
+	if strings.Contains(js, "window.addEventListener('scroll', () => hideCommentPopover()") {
+		t.Error("overlay.js must not dismiss the comment popover on scroll")
+	}
+	if !strings.Contains(js, "positionCommentPopover(r)") {
+		t.Error("overlay.js must reposition the comment popover on scroll")
+	}
+}
