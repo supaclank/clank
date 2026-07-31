@@ -3,13 +3,12 @@
 // clank.yaml lives at the directory the user previews from (the repo
 // or worktree root) and is written by the user, never by clank. The
 // file is organized as independent top-level sections so future
-// features (e.g. agent config) can join without a schema break:
-// unknown top-level sections are tolerated, unknown keys INSIDE a
-// known section are errors (a typo'd key must fail loudly, not
-// silently no-op).
+// features (e.g. agent config) can join as siblings — and decoding is
+// strict at EVERY level: a typo'd key or section must fail loudly,
+// and a binary older than a repo's config must refuse ("unknown
+// section — upgrade clank") rather than silently ignore semantics it
+// doesn't understand.
 package clankyaml
-
-import "gopkg.in/yaml.v3"
 
 // FileName is the config file name looked up at the preview root.
 const FileName = "clank.yaml"
@@ -23,12 +22,6 @@ const PortPlaceholder = "${PORT}"
 // File is the parsed clank.yaml document.
 type File struct {
 	Preview *Preview `yaml:"preview"`
-
-	// rest absorbs unknown top-level sections so a clank binary older
-	// than a repo's config keeps working. Intentionally unexported:
-	// nothing reads it — it exists so strict decoding doesn't reject
-	// future sections.
-	Rest map[string]yaml.Node `yaml:",inline"`
 }
 
 // Preview configures `clank preview` for this repo. Every field is

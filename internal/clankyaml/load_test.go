@@ -50,22 +50,14 @@ preview:
 			},
 		},
 		{
-			name: "unknown top-level section tolerated",
-			yaml: "agent:\n  backend: claude\npreview:\n  install: npm install\n",
-			want: func(t *testing.T, f *File) {
-				if f.Preview.Install != "npm install" {
-					t.Errorf("install = %q", f.Preview.Install)
-				}
-			},
+			name:    "unknown top-level section errors",
+			yaml:    "agent:\n  backend: claude\npreview:\n  install: npm install\n",
+			wantErr: "agent",
 		},
 		{
-			name: "no preview section",
-			yaml: "agent:\n  backend: claude\n",
-			want: func(t *testing.T, f *File) {
-				if f.Preview != nil {
-					t.Errorf("preview = %+v, want nil", f.Preview)
-				}
-			},
+			name:    "typo'd section name errors instead of vanishing",
+			yaml:    "preveiw:\n  command: ./serve.sh ${PORT}\n",
+			wantErr: "preveiw",
 		},
 		{
 			name:    "unknown key inside preview errors",

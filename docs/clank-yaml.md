@@ -6,10 +6,10 @@ auto-detect everything; with it, any stack can preview. clank never
 writes this file.
 
 The file is organized as independent top-level sections so future
-features can join without a schema break. Unknown top-level sections
-are ignored by older clank binaries; unknown keys *inside* a known
-section are errors (a typo'd key fails loudly instead of silently
-doing nothing).
+features can join as siblings — and parsing is strict at every level:
+a typo'd key or section fails loudly, and a clank binary older than a
+repo's config refuses unknown sections ("upgrade clank") instead of
+silently ignoring semantics it doesn't understand.
 
 ## `preview`
 
@@ -22,10 +22,13 @@ preview:
 
   # Dependency-install command, run through `sh -c` in the preview
   # dir before the dev server starts. Replaces the install clank
-  # would otherwise synthesize from your lockfile. Gated by a
-  # completion marker outside your repo: it re-runs on every start
-  # (fast no-op when warm) and never wipes a node_modules it didn't
-  # build.
+  # would otherwise synthesize from your lockfile — and ONLY the
+  # install: it's arbitrary shell, so clank never parses it to infer
+  # how tools launch or which binaries it needs. Gated by a
+  # completion marker outside your repo, and never wipes a
+  # node_modules it didn't build. If your package.json declares a
+  # manager clank can't launch tools for (say deno), set `command`
+  # alongside it.
   install: pnpm install
 
   # Dev-server command, run through `sh -c` in the preview dir. Must
@@ -55,32 +58,38 @@ entirely.
 ## Zero-config behavior (no clank.yaml)
 
 `clank preview` detects Expo (phone flow), Next.js, and Vite (browser
-flow) projects. How dependencies are installed depends on where the
-preview runs:
+flow) projects. Install and launch are resolved independently: the
+launch always follows the repo's layout (`yarn <tool>` for yarn/PnP
+repos, `node_modules/.bin/<tool>` for everything else), while the
+install depends on where the preview runs.
 
-**On your laptop** (previewing your own checkout), the project's own
-package manager is used, resolved in this order:
+**On your laptop** (previewing your own checkout), clank treats the
+tree as yours:
 
-1. A `preview.install` in clank.yaml — always wins, everywhere.
-2. Your saved per-project answer to the one-time packager question
-   (stored under clank's state dir, never in the repo).
-3. `package.json` `packageManager` (the corepack convention, e.g.
-   `"pnpm@9.1.0"`) or `devEngines.packageManager` — authoritative.
-4. The lockfile: `bun.lock`/`bun.lockb` → bun, `pnpm-lock.yaml` →
-   pnpm, `yarn.lock` → yarn, `package-lock.json` → npm. The nearest
-   directory wins, walking up to the repo root (monorepos keep the
-   lockfile at the root).
-5. No signal → bun (clank-created templates ship no lockfile; bun
-   installs are roughly 10× faster than npm on cold worktrees).
+- Dependencies already installed — a `node_modules` tree, or yarn PnP
+  artifacts — are used as-is; clank never installs over them or
+  reconciles them.
+- A missing tree is created with the project's own manager, resolved
+  by `package.json` `packageManager` (the corepack convention, e.g.
+  `"pnpm@9.1.0"`) / `devEngines.packageManager`, then the lockfile
+  (`bun.lock`/`bun.lockb` → bun, `pnpm-lock.yaml` → pnpm, `yarn.lock`
+  → yarn, `package-lock.json` → npm; nearest directory wins, walking
+  up to the repo root), else bun (clank-created templates ship no
+  lockfile; bun installs are roughly 10× faster than npm on cold
+  worktrees).
+- When a lockfile exists, the install runs in the manager's frozen
+  mode (`npm ci`, `pnpm install --frozen-lockfile`, `yarn install
+  --frozen-lockfile`, `bun install --frozen-lockfile`): a drifted
+  lockfile fails loudly instead of clank dirtying your checkout.
 
 **In the cloud**, installs use bun regardless of the repo — machine
 worktrees are materialized fresh from git, and bun's speed and
 hard-linked disk usage are what an I/O-constrained machine needs.
-`preview.install` overrides that too (e.g. a pnpm-workspace repo that
-can't install under bun).
 
-A detected manager that isn't installed fails the preview start with
-the evidence in the error — set `preview.install` to sidestep it.
+`preview.install` overrides the install everywhere — laptop and cloud
+alike (e.g. a pnpm-workspace repo that can't install under bun). A
+detected manager that isn't installed fails the preview start with
+the evidence in the error — `preview.install` sidesteps it.
 
 ## Element-to-source resolution
 

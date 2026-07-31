@@ -574,7 +574,6 @@ func TestDetect_ClankYAML(t *testing.T) {
 	})
 }
 
-
 func TestDetectIOError(t *testing.T) {
 	t.Parallel()
 	// Pass a path that exists but isn't a directory; ReadFile returns
@@ -588,4 +587,53 @@ func TestDetectIOError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Detect: want error for unreadable package.json, got nil")
 	}
+}
+
+// TestDetect_UnsupportedManagerNeedsFullConfig pins the no-inference
+// rule: clank never invents a launcher for a manager it doesn't know,
+// and never parses preview.install (arbitrary shell) to find one.
+func TestDetect_UnsupportedManagerNeedsFullConfig(t *testing.T) {
+	t.Parallel()
+	pkg := `{"packageManager":"deno@2.0.0","devDependencies":{"vite":"^6.0.0"}}`
+
+	t.Run("bare repo errors naming both escape hatches", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeTree(t, dir, map[string]string{".git/": "", "package.json": pkg})
+		_, err := Detect(dir, PackagerPolicyReuseProject)
+		if err == nil || !strings.Contains(err.Error(), "preview.install") || !strings.Contains(err.Error(), "preview.command") {
+			t.Fatalf("err = %v, want both escape hatches named", err)
+		}
+	})
+
+	t.Run("install-only still errors, requiring command", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeTree(t, dir, map[string]string{
+			".git/":        "",
+			"package.json": pkg,
+			"clank.yaml":   "preview:\n  install: deno install\n",
+		})
+		_, err := Detect(dir, PackagerPolicyReuseProject)
+		if err == nil || !strings.Contains(err.Error(), "preview.command") {
+			t.Fatalf("err = %v, want preview.command required (no launcher can be synthesized)", err)
+		}
+	})
+
+	t.Run("install plus command previews", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeTree(t, dir, map[string]string{
+			".git/":        "",
+			"package.json": pkg,
+			"clank.yaml":   "preview:\n  install: deno install\n  command: deno task dev --port ${PORT}\n",
+		})
+		spec, err := Detect(dir, PackagerPolicyReuseProject)
+		if err != nil || spec == nil {
+			t.Fatalf("Detect = %+v, %v; want a runnable spec", spec, err)
+		}
+		if !strings.Contains(shellOf(t, spec), "deno task dev") {
+			t.Errorf("command not used: %q", shellOf(t, spec))
+		}
+	})
 }

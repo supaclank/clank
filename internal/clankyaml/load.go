@@ -41,8 +41,9 @@ func Load(dir string) (*File, error) {
 func parse(data []byte) (*File, error) {
 	var f File
 	dec := yaml.NewDecoder(bytes.NewReader(data))
-	// Unknown keys inside known sections are errors; unknown top-level
-	// sections land in File.Rest and pass.
+	// Strict at every level: a typo'd key or section fails loudly, and
+	// a binary older than the config refuses future sections instead
+	// of silently ignoring their semantics.
 	dec.KnownFields(true)
 	if err := dec.Decode(&f); err != nil {
 		if errors.Is(err, io.EOF) {
