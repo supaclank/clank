@@ -34,17 +34,18 @@ import (
 	"github.com/acksell/clank/internal/agent"
 )
 
-// providerAuthCaller is the call surface the modal needs to drive an
-// auth flow against a host. Two implementations exist today:
+// ProviderAuthCaller is the call surface the modal needs to drive an
+// auth flow against a host. Three implementations exist today:
 //   - daemonclient.HostClient via hub.Host(hostname), used by the
-//     Settings entry to target the local clank-host through the hub.
+//     Settings entry to target the local clank-host through the hub,
+//     and by `clank connect` outside the inbox entirely.
 //   - cloud.AuthCaller, used by the Cloud panel's
 //     "Connect provider (in sandbox)" entry to talk directly to the
 //     active remote gateway with the user's OAuth bearer.
 //
 // Mirrors the names on daemonclient.HostClient so existing call sites
 // satisfy the interface without changes.
-type providerAuthCaller interface {
+type ProviderAuthCaller interface {
 	ListAuthProviders(ctx context.Context, backend agent.BackendType) ([]agent.ProviderAuthInfo, error)
 	StartAuthDeviceFlow(ctx context.Context, providerID string) (agent.DeviceFlowStart, error)
 	SubmitAuthAPIKey(ctx context.Context, providerID, key string, metadata map[string]string) (agent.DeviceFlowStart, error)
@@ -112,7 +113,7 @@ const providerAuthPollInterval = 2 * time.Second
 // providerAuthModel is the modal's state. Constructed via
 // newProviderAuthModel; rendered through overlayCenter by the inbox.
 type providerAuthModel struct {
-	caller providerAuthCaller
+	caller ProviderAuthCaller
 
 	// backend, when non-empty, scopes the provider list to those
 	// consumed by that agent CLI (opencode | claude-code). The model
@@ -181,7 +182,7 @@ const providerSlowLoadAfter = 2 * time.Second
 // has no downside there.
 const providerListLoadTimeout = 30 * time.Second
 
-func newProviderAuthModel(caller providerAuthCaller, backend agent.BackendType, slowLoadHint string) providerAuthModel {
+func newProviderAuthModel(caller ProviderAuthCaller, backend agent.BackendType, slowLoadHint string) providerAuthModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(primaryColor)

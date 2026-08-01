@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 )
@@ -366,12 +365,5 @@ func readYes(in io.Reader) bool {
 }
 
 // stdinIsTTY reports whether in is an interactive terminal — the
-// trust prompt never blocks a script. os.ModeCharDevice alone would
-// misidentify /dev/null (a common non-interactive stand-in) as a TTY.
-func stdinIsTTY(in io.Reader) bool {
-	f, ok := in.(*os.File)
-	if !ok {
-		return false
-	}
-	return term.IsTerminal(int(f.Fd()))
-}
+// trust prompt never blocks a script.
+func stdinIsTTY(in io.Reader) bool { return fileIsTTY(in) }
