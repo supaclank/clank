@@ -8,7 +8,6 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host/preview"
-	"github.com/acksell/clank/pkg/preview/tokens"
 )
 
 // ErrPreviewUnavailable is returned by every PreviewXxx method when
@@ -44,14 +43,14 @@ func (s *Service) previewWorkDirFor(ctx context.Context, key string) (string, er
 }
 
 // PreviewStart resolves the preview key (worktree ID or folder slug)
-// to a workdir and asks the preview manager to spawn the dev server
-// for the "default" service. The returned Status carries the
+// to a workdir and asks the preview manager to spawn the selected launch. An
+// empty launch name resolves Expo or the configured default. Status carries the
 // gateway-minted public URL + token when the host is wired to a
 // gateway; on laptop dev with no gateway, those fields stay empty.
 //
 // Idempotent — a second call for the same key returns the existing
 // snapshot.
-func (s *Service) PreviewStart(ctx context.Context, worktreeID string) (preview.Status, error) {
+func (s *Service) PreviewStart(ctx context.Context, worktreeID, launchName string) (preview.Status, error) {
 	if s.preview == nil {
 		return preview.Status{}, ErrPreviewUnavailable
 	}
@@ -59,23 +58,24 @@ func (s *Service) PreviewStart(ctx context.Context, worktreeID string) (preview.
 	if err != nil {
 		return preview.Status{}, err
 	}
-	return s.preview.Start(ctx, worktreeID, workDir, tokens.DefaultServiceName)
+	return s.preview.Start(ctx, worktreeID, workDir, launchName)
 }
 
-// PreviewStop terminates every dev server registered under worktreeID.
-// In v1 that's the single "default" service. Returns ErrNotRunning
-// when nothing's running — the mux maps it to 404.
-func (s *Service) PreviewStop(_ context.Context, worktreeID string) error {
+// PreviewStop terminates the selected service. An empty service name stops all
+// services registered under the worktree, preserving the original mobile API.
+func (s *Service) PreviewStop(_ context.Context, worktreeID, serviceName string) error {
 	if s.preview == nil {
 		return ErrPreviewUnavailable
 	}
-	return s.preview.Stop(worktreeID)
+	if serviceName == "" {
+		return s.preview.Stop(worktreeID)
+	}
+	return s.preview.StopService(worktreeID, serviceName)
 }
 
-// PreviewStatus returns availability + running state for the
-// "default" service on the preview key (worktree ID or folder slug).
-// Runs Detect every call so the Available bit reflects on-disk truth.
-func (s *Service) PreviewStatus(ctx context.Context, worktreeID string) (preview.Status, error) {
+// PreviewStatus returns availability and state for the selected launch on the
+// preview key (worktree ID or folder slug).
+func (s *Service) PreviewStatus(ctx context.Context, worktreeID, launchName string) (preview.Status, error) {
 	if s.preview == nil {
 		return preview.Status{}, ErrPreviewUnavailable
 	}
@@ -83,16 +83,23 @@ func (s *Service) PreviewStatus(ctx context.Context, worktreeID string) (preview
 	if err != nil {
 		return preview.Status{}, err
 	}
-	return s.preview.Status(ctx, worktreeID, workDir)
+	return s.preview.StatusNamed(ctx, worktreeID, workDir, launchName)
 }
 
-// PreviewLogs returns the most recent stdout/stderr captured from the
-// "default" service's dev server (ANSI-stripped). Returns nil when no
-// server is running. Bounded to ringCapacity in the preview package;
-// safe to expose via HTTP without pagination.
-func (s *Service) PreviewLogs(worktreeID string) []byte {
+// PreviewLogs returns the selected service's ANSI-stripped stdout/stderr tail.
+// An empty name resolves Expo or the configured default, same as PreviewStatus.
+// The result is bounded by the preview package's ring capacity and needs no
+// pagination.
+func (s *Service) PreviewLogs(ctx context.Context, worktreeID, serviceName string) []byte {
 	if s.preview == nil {
 		return nil
 	}
-	return s.preview.LogTail(worktreeID)
+	if serviceName != "" {
+		return s.preview.LogTailNamed(worktreeID, serviceName)
+	}
+	workDir, err := s.previewWorkDirFor(ctx, worktreeID)
+	if err != nil {
+		return nil
+	}
+	return s.preview.LogTail(worktreeID, workDir)
 }

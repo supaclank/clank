@@ -5,8 +5,13 @@ package preview
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -34,9 +39,10 @@ func mustWrite(t *testing.T, path, content string) {
 // package-level expoCmdTemplate that previously raced under -race).
 func testSpec(argv []string) Spec {
 	return Spec{
-		Kind:        KindExpo,
-		CmdTemplate: argv,
-		ReadyProbe:  expoReadyProbe,
+		Kind:                 KindExpo,
+		CmdTemplate:          argv,
+		ShouldSubstitutePort: true,
+		ReadyProbe:           expoReadyProbe,
 	}
 }
 
@@ -127,17 +133,147 @@ func TestManagerStartRespawnsAfterFailure(t *testing.T) {
 	waitForState(t, r2, StateReady, 5*time.Second)
 }
 
-// TestManagerStartNotPreviewable confirms Start fast-fails on a
-// non-Expo worktree without leaving anything behind.
-func TestManagerStartNotPreviewable(t *testing.T) {
+// TestManagerStartRequiresSetup confirms Start fast-fails on a
+// non-Expo worktree without launch configuration.
+func TestManagerStartRequiresSetup(t *testing.T) {
 	t.Parallel()
 	m := New(Options{StopGrace: 1 * time.Second})
 	defer m.Shutdown()
 
 	plain := t.TempDir() // no package.json
-	_, err := m.Start(context.Background(), "wt-empty", plain, "http://localhost:8080/preview/test")
-	if !errors.Is(err, ErrNotPreviewable) {
-		t.Fatalf("Start on non-Expo dir: got %v, want ErrNotPreviewable", err)
+	_, err := m.Start(context.Background(), "wt-empty", plain, "")
+	if !errors.Is(err, ErrSetupRequired) {
+		t.Fatalf("Start on non-Expo dir: got %v, want ErrSetupRequired", err)
+	}
+}
+
+func TestManagerStartsConfiguredWebPreview(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 is required for the managed-preview integration fixture")
+	}
+	t.Setenv("CLANK_DIR", t.TempDir())
+
+	dir := t.TempDir()
+	writePreviewLaunchConfig(t, dir, `default: web
+previews:
+  web:
+    directory: .
+    command: echo "$PORT" >/dev/null; exit 1
+    ready:
+      path: /
+`)
+
+	m := New(Options{StopGrace: time.Second})
+	defer m.Shutdown()
+	failed, err := m.Start(context.Background(), "wt-configured-web", dir, "web")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	key := serviceKey{WorktreeID: "wt-configured-web", ServiceName: "web"}
+	m.mu.Lock()
+	r := m.servers[key]
+	m.mu.Unlock()
+	if r == nil {
+		t.Fatal("configured server was not registered by its launch name")
+	}
+	waitForState(t, r, StateFailed, 5*time.Second)
+
+	writePreviewLaunchConfig(t, dir, `default: web
+previews:
+  web:
+    directory: .
+    command: python3 -m http.server "$PORT" --bind 127.0.0.1
+    ready:
+      path: /
+`)
+	status, err := m.Start(context.Background(), "wt-configured-web", dir, "web")
+	if err != nil {
+		t.Fatalf("restart after failed command: %v", err)
+	}
+	if status.Kind != KindWeb || status.ServiceName != "web" || status.Port == 0 || status.Port == failed.Port {
+		t.Fatalf("restart status = %+v; failed status = %+v", status, failed)
+	}
+	m.mu.Lock()
+	r = m.servers[key]
+	m.mu.Unlock()
+	if r == nil {
+		t.Fatal("healthy configured server was not registered")
+	}
+	waitForState(t, r, StateReady, 5*time.Second)
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", status.Port))
+	if err != nil {
+		t.Fatalf("GET configured preview: %v", err)
+	}
+	body, readErr := io.ReadAll(resp.Body)
+	closeErr := resp.Body.Close()
+	if readErr != nil || closeErr != nil {
+		t.Fatalf("read response: read=%v close=%v", readErr, closeErr)
+	}
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "Directory listing") {
+		t.Fatalf("response = %d %q", resp.StatusCode, body)
+	}
+	if err := m.StopService("wt-configured-web", "web"); err != nil {
+		t.Fatalf("StopService: %v", err)
+	}
+}
+
+// TestManagerLogTailResolvesConfiguredDefault pins a regression: an
+// unnamed configured web preview registers under its launch name, but
+// LogTail used to always look up the Expo-only "default" key and
+// silently returned nothing for it. Regression for cubic review on #209.
+func TestManagerLogTailResolvesConfiguredDefault(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 is required for the managed-preview integration fixture")
+	}
+	t.Setenv("CLANK_DIR", t.TempDir())
+
+	dir := t.TempDir()
+	writePreviewLaunchConfig(t, dir, `default: web
+previews:
+  web:
+    directory: .
+    command: python3 -m http.server "$PORT" --bind 127.0.0.1
+    ready:
+      path: /
+`)
+
+	m := New(Options{StopGrace: time.Second})
+	defer m.Shutdown()
+
+	wid := "wt-logtail-default"
+	status, err := m.Start(context.Background(), wid, dir, "")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if status.ServiceName != "web" {
+		t.Fatalf("status.ServiceName = %q, want %q", status.ServiceName, "web")
+	}
+
+	key := serviceKey{WorktreeID: wid, ServiceName: "web"}
+	m.mu.Lock()
+	r := m.servers[key]
+	m.mu.Unlock()
+	if r == nil {
+		t.Fatal("configured server was not registered under its launch name")
+	}
+	waitForState(t, r, StateReady, 5*time.Second)
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", status.Port))
+	if err != nil {
+		t.Fatalf("GET configured preview: %v", err)
+	}
+	if closeErr := resp.Body.Close(); closeErr != nil {
+		t.Fatalf("close response body: %v", closeErr)
+	}
+
+	logs := m.LogTail(wid, dir)
+	if len(logs) == 0 {
+		t.Fatal("LogTail returned no output for an unnamed configured preview")
+	}
+	if string(logs) != string(m.LogTailNamed(wid, "web")) {
+		t.Fatal("LogTail did not resolve to the configured default service's logs")
 	}
 }
 
@@ -179,8 +315,8 @@ func TestManagerStatusReflectsAvailability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status on plain dir: %v", err)
 	}
-	if s2.Available || s2.State != StateStopped {
-		t.Errorf("plain dir status = %+v; want Available=false, State=stopped", s2)
+	if s2.Available || !s2.SetupRequired || s2.State != StateStopped {
+		t.Errorf("plain dir status = %+v; want Available=false, SetupRequired=true, State=stopped", s2)
 	}
 }
 

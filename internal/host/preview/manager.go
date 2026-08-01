@@ -21,11 +21,6 @@ const (
 	gwRevokeTimeout = 5 * time.Second
 )
 
-// ErrNotPreviewable is returned by Start when Detect found nothing to
-// spawn. The mux handler maps it to a 404 with a structured code so
-// the mobile UI can fall back to hiding the button.
-var ErrNotPreviewable = errors.New("preview: worktree is not previewable")
-
 // ErrNotRunning is returned by Stop when no server exists for the
 // worktree. Mapped to 404.
 var ErrNotRunning = errors.New("preview: no preview server running for worktree")
@@ -49,9 +44,8 @@ type Options struct {
 	GWClient *GWClient
 }
 
-// serviceKey is the registry key. Two services on the same worktree
-// (e.g. expo + a backend dev server in the future) live as distinct
-// entries; today's caller always passes ServiceName = "default".
+// serviceKey is the registry key. Configured previews use their declared
+// names; Expo retains the default service name.
 type serviceKey struct {
 	WorktreeID  string
 	ServiceName string
@@ -118,16 +112,28 @@ func New(opts Options) *Manager {
 // so subsequent Status calls surface them. When GWClient is nil or
 // disabled, Status.Token/URL stay empty (laptop dev path).
 //
-// Returns ErrNotPreviewable when Detect found no recognizable framework.
-func (m *Manager) Start(ctx context.Context, worktreeID, workDir, serviceName string) (Status, error) {
-	spec, err := Detect(workDir)
+// Returns ErrSetupRequired when a non-Expo project has no launch config.
+func (m *Manager) Start(ctx context.Context, worktreeID, workDir, launchName string) (Status, error) {
+	if launchName != "" {
+		key := serviceKey{WorktreeID: worktreeID, ServiceName: launchName}
+		m.mu.Lock()
+		r, ok := m.servers[key]
+		if ok {
+			snapshot := r.snapshot()
+			if snapshot.State == StateReady || snapshot.State == StateStarting {
+				m.mu.Unlock()
+				r.touch()
+				return snapshot, nil
+			}
+			delete(m.servers, key)
+		}
+		m.mu.Unlock()
+	}
+	launch, err := resolveLaunch(workDir, launchName)
 	if err != nil {
-		return Status{}, fmt.Errorf("detect: %w", err)
+		return Status{}, fmt.Errorf("resolve launch: %w", err)
 	}
-	if spec == nil {
-		return Status{}, ErrNotPreviewable
-	}
-	return m.startWithSpec(ctx, worktreeID, workDir, serviceName, *spec, 0)
+	return m.startWithSpec(ctx, worktreeID, launch.WorkDir, launch.ServiceName, launch.Spec, 0)
 }
 
 // startWithSpec is the lock+spawn+register core that Start wraps.
@@ -196,7 +202,7 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 	// which preloads the shim via NODE_OPTIONS=--require so it injects the
 	// runtime into every guest bundle in-memory. Best-effort — on failure the
 	// preview still runs (no guest-side suppression; the clank-mobile host still
-	// hides the native redbox). Expo-only; Detect today emits only KindExpo.
+	// hides the native redbox). Expo-only.
 	var shimRequirePath, runtimePath string
 	if spec.Kind == KindExpo {
 		if sp, rp, ierr := ensurePreviewShim(); ierr != nil {
@@ -281,9 +287,7 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 	return r.snapshot(), nil
 }
 
-// Stop terminates every dev server registered under worktreeID. In v1
-// that's the single "default" service; future multi-service callers
-// can call once and have all services for the worktree torn down.
+// Stop terminates every dev server registered under worktreeID.
 // Blocks until each process tree is reaped. Returns ErrNotRunning
 // when no services exist for the worktree.
 func (m *Manager) Stop(worktreeID string) error {
@@ -316,12 +320,64 @@ func (m *Manager) Stop(worktreeID string) error {
 	return nil
 }
 
-// Status returns the snapshot for (worktreeID, "default") in v1.
-// Future multi-service callers will get a Status-per-service API.
-// Runs Detect every call when there's no running server so the
-// Available bit reflects on-disk truth.
-func (m *Manager) Status(_ context.Context, worktreeID, workDir string) (Status, error) {
-	key := serviceKey{WorktreeID: worktreeID, ServiceName: defaultServiceName()}
+// StopService terminates one named preview without affecting sibling services.
+func (m *Manager) StopService(worktreeID, serviceName string) error {
+	if worktreeID == "" {
+		return fmt.Errorf("preview: worktree id is required")
+	}
+	if serviceName == "" {
+		return fmt.Errorf("preview: service name is required")
+	}
+	key := serviceKey{WorktreeID: worktreeID, ServiceName: serviceName}
+	m.mu.Lock()
+	r, ok := m.servers[key]
+	if ok {
+		delete(m.servers, key)
+	}
+	m.mu.Unlock()
+	if !ok {
+		return ErrNotRunning
+	}
+
+	r.stopWithGrace(m.stopGrace)
+	m.revokeBestEffort(worktreeID, serviceName)
+	m.log.Printf("preview: stopped %s/%s", worktreeID, serviceName)
+	return nil
+}
+
+// Status resolves Expo or the configured default launch.
+func (m *Manager) Status(ctx context.Context, worktreeID, workDir string) (Status, error) {
+	return m.StatusNamed(ctx, worktreeID, workDir, "")
+}
+
+// StatusNamed returns one named launch or its current running service.
+func (m *Manager) StatusNamed(_ context.Context, worktreeID, workDir, launchName string) (Status, error) {
+	if launchName != "" {
+		key := serviceKey{WorktreeID: worktreeID, ServiceName: launchName}
+		m.mu.Lock()
+		r, ok := m.servers[key]
+		m.mu.Unlock()
+		if ok {
+			r.touch()
+			return r.snapshot(), nil
+		}
+	}
+	launch, err := resolveLaunch(workDir, launchName)
+	if err != nil {
+		var setup *SetupRequiredError
+		if errors.As(err, &setup) {
+			return Status{
+				State:             StateStopped,
+				SetupRequired:     true,
+				SetupPrompt:       setup.Prompt,
+				ProjectConfigPath: setup.ProjectConfigPath,
+				HostConfigPath:    setup.HostConfigPath,
+			}, nil
+		}
+		return Status{}, fmt.Errorf("resolve launch: %w", err)
+	}
+
+	key := serviceKey{WorktreeID: worktreeID, ServiceName: launch.ServiceName}
 	m.mu.Lock()
 	r, ok := m.servers[key]
 	m.mu.Unlock()
@@ -330,23 +386,29 @@ func (m *Manager) Status(_ context.Context, worktreeID, workDir string) (Status,
 		return r.snapshot(), nil
 	}
 
-	spec, err := Detect(workDir)
-	if err != nil {
-		return Status{}, fmt.Errorf("detect: %w", err)
-	}
-	out := Status{State: StateStopped}
-	if spec != nil {
-		out.Available = true
-		out.Kind = spec.Kind
-	}
-	return out, nil
+	return Status{
+		Available:   true,
+		Kind:        launch.Spec.Kind,
+		ServiceName: launch.ServiceName,
+		State:       StateStopped,
+	}, nil
 }
 
-// LogTail returns the last N bytes of stdout/stderr captured from the
-// "default" service for worktreeID. Returns nil when no server is
-// running.
-func (m *Manager) LogTail(worktreeID string) []byte {
-	key := serviceKey{WorktreeID: worktreeID, ServiceName: defaultServiceName()}
+// LogTail returns the default service's stdout/stderr tail: Expo's
+// fixed service, or a configured web project's default launch entry —
+// resolved the same way Start and StatusNamed pick the default, so an
+// unnamed configured preview's logs aren't silently empty.
+func (m *Manager) LogTail(worktreeID, workDir string) []byte {
+	launch, err := resolveLaunch(workDir, "")
+	if err != nil {
+		return nil
+	}
+	return m.LogTailNamed(worktreeID, launch.ServiceName)
+}
+
+// LogTailNamed returns one named service's stdout/stderr tail.
+func (m *Manager) LogTailNamed(worktreeID, serviceName string) []byte {
+	key := serviceKey{WorktreeID: worktreeID, ServiceName: serviceName}
 	m.mu.Lock()
 	r, ok := m.servers[key]
 	m.mu.Unlock()
@@ -445,11 +507,4 @@ func (m *Manager) revokeBestEffort(worktreeID, serviceName string) {
 	if err := m.gw.Revoke(ctx, RevokeRequest{WorktreeID: worktreeID, ServiceName: serviceName}); err != nil {
 		m.log.Printf("preview: gateway revoke for %s/%s failed (non-fatal): %v", worktreeID, serviceName, err)
 	}
-}
-
-// defaultServiceName returns the "default" service name for v1.
-// Kept in a tiny helper so the multi-service migration is a
-// search-and-replace away.
-func defaultServiceName() string {
-	return "default"
 }

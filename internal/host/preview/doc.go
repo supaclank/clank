@@ -1,50 +1,17 @@
-// Package preview spawns and supervises per-worktree development
-// servers (today: Expo's Metro) inside the sprite. The gateway
-// reaches these servers via Sprites' WSS proxy and routes traffic to
-// them based on a tokenized public URL — clank-host itself no longer
-// proxies preview traffic.
+// Package preview resolves, spawns, and supervises per-worktree development
+// servers on a Clank host.
 //
-// The goal is the "▶ Preview app" affordance on the mobile client:
-// tapping it brings up a running dev server in the user's sprite
-// without a laptop in the loop. Only Expo is detected and exposed in v1 — other
-// frameworks are explicit out-of-scope (the registry is keyed by
-// (worktree, service) so a future clank.preview.yaml loader can drop
-// in without another refactor).
+// Expo retains its built-in detection and bootstrap. Arbitrary web servers use
+// the strict launch configuration loaded by internal/launchconfig; project
+// discovery and command selection happen once in a connected-agent setup task,
+// not in this package.
 //
-// Lifetime: Manager is constructed once per host.Service. It holds an
-// in-memory map of running servers keyed by (worktree ID, service
-// name); sprite hibernation kills the children and Manager respawns
-// on the next /start request. The gateway tracks tokenized public
-// URLs in its own persistent store (preview_routes); the sprite-side
-// state here is process-bound only.
+// Manager keeps running processes keyed by (worktree ID, configured service
+// name). Start allocates a loopback port, exports it as PORT, spawns the command,
+// and returns StateStarting while an HTTP probe transitions it to Ready or
+// Failed. Stop, idle reaping, and Shutdown terminate the process group.
 //
-// Architecture:
-//
-//   - GWClient calls the gateway's /webhooks/preview/{register,revoke}
-//     to mint and tear down public tokens.
-//   - Start spawns the dev server, blocks on readiness, then calls
-//     GWClient.Register to mint a token + public URL. Empty
-//     GWClient = laptop dev: Status.Token/URL stay empty.
-//   - Stop/Shutdown/reap call GWClient.Revoke so the gateway's row
-//     is marked revoked the moment the sprite stops serving.
-//
-// # Future direction
-//
-// Long term, replace the sprite-side spawn supervisor with a
-// gateway-owned manifest: the gateway becomes the reconciler that
-// uses Sprites' CreateService / DeleteService API to spawn Metro as
-// a first-class sprite service (own internal port, own restart
-// policy, own dependency declaration). This package then shrinks to
-// the Spec/Detect surface and goes away.
-//
-// That migration is forecast-friendly from where this code lives
-// today: the (wid, service) key is already in place, the
-// OpenInternalConn provisioner method already works for whatever
-// port Sprites allocates, and the token + visibility model is
-// gateway-owned. The mobile contract (`{preview_url, token,
-// expires_at}` from /preview/start) doesn't change.
-//
-// Don't entrench process-supervisor responsibilities in this
-// package — anything bigger than "spawn a Cmd and wait for /status"
-// belongs at the gateway when that migration lands.
+// When configured, GWClient registers the selected service and internal port
+// with the cloud gateway. The gateway owns multi-tenant authentication and the
+// external reverse-proxy route; clank-host never proxies preview traffic.
 package preview

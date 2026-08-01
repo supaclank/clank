@@ -9,8 +9,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/acksell/clank/internal/launchconfig"
 )
 
 // ringCapacity is the size of the per-server stdout/stderr ring. 64 KiB
@@ -84,14 +87,17 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 	}
 	port := req.Port
 
-	args, err := renderArgs(req.Spec.CmdTemplate, port)
+	args, err := renderSpecArgs(req.Spec, port)
 	if err != nil {
 		return nil, err
 	}
 
-	markerPath, err := bootstrapMarkerPath(req.WorkDir)
-	if err != nil {
-		return nil, err
+	var markerPath string
+	if req.Spec.Kind == KindExpo {
+		markerPath, err = bootstrapMarkerPath(req.WorkDir)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Tie the child to a per-spawn context so Stop's cancel() can kick
@@ -100,7 +106,7 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 
 	cmd := exec.CommandContext(childCtx, args[0], args[1:]...)
 	cmd.Dir = req.WorkDir
-	cmd.Env = buildEnv(markerPath, req.PublicURL, req.ShimRequirePath, req.RuntimePath)
+	cmd.Env = buildEnv(req.Spec.Kind, markerPath, req.PublicURL, req.ShimRequirePath, req.RuntimePath, port)
 	configureProcessGroup(cmd)
 
 	logs := newRingBuf(ringCapacity)
@@ -160,6 +166,13 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 	return r, nil
 }
 
+func renderSpecArgs(spec Spec, port int) ([]string, error) {
+	if !spec.ShouldSubstitutePort {
+		return append([]string(nil), spec.CmdTemplate...), nil
+	}
+	return renderArgs(spec.CmdTemplate, port)
+}
+
 // allocatePort opens a TCP listener on an OS-chosen port, closes it,
 // and returns the freed number. There's a tiny TOCTOU window between
 // close and the child binding — on a single-tenant sprite this is
@@ -196,12 +209,9 @@ func renderArgs(tmpl []string, port int) ([]string, error) {
 	return out, nil
 }
 
-// buildEnv returns the env slice for the spawned child. Inherits the
-// parent process env (so PATH, HOME, … work). markerPath threads the
-// bootstrap completion-marker location into the bootstrapTemplate
-// shell (see bootstrapMarkerEnv). EXPO_NO_DOTENV stops
-// Metro reading the repo's .env into its own process; the .env is
-// still loaded by the app the bundle runs as.
+// buildEnv inherits the host environment and pins the allocated PORT for every
+// launch. Expo additionally receives its bootstrap, gateway, and runtime-shim
+// variables; configured web commands otherwise keep the user's environment.
 //
 // Expo CLI's prompts are skipped via `--non-interactive` on the argv
 // (see expoCmdTemplate). We deliberately do NOT set CI=true here: Metro
@@ -223,7 +233,7 @@ func renderArgs(tmpl []string, port int) ([]string, error) {
 // the guest-side preview runtime is injected into every bundle in-memory (no
 // files in the user's repo). The --require flag is MERGED into any inherited
 // NODE_OPTIONS rather than clobbering it.
-func buildEnv(markerPath, publicURL, shimRequirePath, runtimePath string) []string {
+func buildEnv(kind Kind, markerPath, publicURL, shimRequirePath, runtimePath string, port int) []string {
 	parent := os.Environ()
 	env := make([]string, 0, len(parent)+4)
 
@@ -234,30 +244,37 @@ func buildEnv(markerPath, publicURL, shimRequirePath, runtimePath string) []stri
 
 	nodeOptionsMerged := false
 	for _, e := range parent {
+		key, _, _ := strings.Cut(e, "=")
 		// Strip CI so Metro doesn't disable file-watching and HMR.
 		// Metro treats CI=true as a signal to run in non-interactive
 		// mode, which disables the hot-reload machinery we depend on.
-		if strings.HasPrefix(e, "CI=") {
+		if kind == KindExpo {
+			switch key {
+			case "CI", "EXPO_NO_DOTENV", bootstrapMarkerEnv, "CLANK_PREVIEW_RUNTIME", "EXPO_PACKAGER_PROXY_URL":
+				continue
+			}
+		}
+		if key == launchconfig.PortEnvironmentName {
 			continue
 		}
-		if requireFlag != "" && strings.HasPrefix(e, "NODE_OPTIONS=") {
+		if requireFlag != "" && key == "NODE_OPTIONS" {
 			env = append(env, e+" "+requireFlag)
 			nodeOptionsMerged = true
 			continue
 		}
 		env = append(env, e)
 	}
-	env = append(env,
-		"EXPO_NO_DOTENV=1",
-		bootstrapMarkerEnv+"="+markerPath,
-	)
+	env = append(env, launchconfig.PortEnvironmentName+"="+strconv.Itoa(port))
+	if kind == KindExpo {
+		env = append(env, "EXPO_NO_DOTENV=1", bootstrapMarkerEnv+"="+markerPath)
+	}
 	if requireFlag != "" && !nodeOptionsMerged {
 		env = append(env, "NODE_OPTIONS="+requireFlag)
 	}
-	if runtimePath != "" {
+	if kind == KindExpo && runtimePath != "" {
 		env = append(env, "CLANK_PREVIEW_RUNTIME="+runtimePath)
 	}
-	if publicURL != "" {
+	if kind == KindExpo && publicURL != "" {
 		env = append(env, "EXPO_PACKAGER_PROXY_URL="+publicURL)
 	}
 	return env
