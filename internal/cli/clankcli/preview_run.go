@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/host"
 	"github.com/acksell/clank/internal/host/preview"
@@ -20,7 +18,10 @@ import (
 // previewKeepaliveInterval paces the CLI's liveness pings against the
 // daemon's idle reaper (preview.DefaultIdleTimeout, 15m) — wide margin
 // so a couple of missed ticks never let a live preview get reaped.
-const previewKeepaliveInterval = 1 * time.Minute
+const (
+	previewKeepaliveInterval = 1 * time.Minute
+	previewStartupTimeout    = 10 * time.Minute
+)
 
 // runPreview serves the current folder's app for live preview and tears
 // everything down on interrupt (stopping the daemon only if it started
@@ -30,10 +31,7 @@ const previewKeepaliveInterval = 1 * time.Minute
 //     pairing token and print the QR (the original flow).
 //   - Vite web: front the dev server with the overlay-injecting proxy
 //     and open it in the browser (runWebPreview).
-//
-// Pairing/proxy, the dev server, and the agent session stay independent:
-// a prompt argument is optional and only pre-starts an agent.
-func runPreview(projectDir, prompt, backend string, port int) error {
+func runPreview(projectDir, backend string, port int) error {
 	projectDir, err := resolveProjectDir(projectDir)
 	if err != nil {
 		return err
@@ -84,7 +82,7 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 
 	// Generous timeout: a cold preview start runs `bun install` first.
 	// Derives from sigCtx so Ctrl+C during startup aborts the wait.
-	startCtx, cancel := context.WithTimeout(sigCtx, 10*time.Minute)
+	startCtx, cancel := context.WithTimeout(sigCtx, previewStartupTimeout)
 	defer cancel()
 
 	fmt.Println("Starting the dev server on this folder (first run installs dependencies)…")
@@ -107,21 +105,9 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 		_ = client.Preview(previewKey).Stop(sctx)
 	}()
 
-	// A prompt is optional. If you pass one, kick the agent off now and
-	// watch it work in the preview. If not, no session is created here —
-	// the overlay (phone or browser) creates one (this folder as the
-	// GitRef, the first message as the prompt) when you start talking.
 	bt, err := resolveBackend(backend, os.Stderr)
 	if err != nil {
 		return err
-	}
-	var sessionID string
-	if strings.TrimSpace(prompt) != "" {
-		fmt.Println("Starting the agent on this folder…")
-		sessionID, err = startPreviewAgent(startCtx, client, bt, projectDir, prompt)
-		if err != nil {
-			return err
-		}
 	}
 
 	if status.Kind == string(preview.KindWeb) {
@@ -143,7 +129,12 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 				}
 			}
 		}()
-		return runWebPreview(sigCtx, projectDir, sockPath, sessionID, string(bt), status.Port, port)
+		fmt.Println("Waiting for the dev server to come up…")
+		upstreamURL := previewLoopbackURL(status.Port)
+		if err := waitHTTPReady(sigCtx, upstreamURL, previewStartupTimeout); err != nil {
+			return fmt.Errorf("dev server on port %d never came up (first-run installs can be slow; re-run to retry): %w", status.Port, err)
+		}
+		return runWebPreview(sigCtx, projectDir, sockPath, string(bt), upstreamURL, port)
 	}
 
 	// Phone (Expo) path from here down. The daemon's bridge is the
@@ -171,7 +162,6 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 		Alts:       bst.URLs[1:],
 		HostKey:    bst.HostKey,
 		PreviewURL: previewURL,
-		SessionID:  sessionID, // empty unless a prompt was passed
 		LocalPath:  projectDir,
 		Backend:    string(bt),
 		// Name is the laptop's gateway-picker label — its hostname, the
@@ -214,28 +204,6 @@ func ensurePreviewDaemon() (client *daemonclient.Client, sockPath string, starte
 		return nil, "", false, fmt.Errorf("daemon socket path: %w", err)
 	}
 	return client, sockPath, !wasRunning, nil
-}
-
-// startPreviewAgent creates the prompt-argument session for `clank
-// preview <prompt>`: this folder as the GitRef, config from the
-// backend's Default preset (creates without it are rejected by the
-// host as config_incomplete).
-func startPreviewAgent(ctx context.Context, client *daemonclient.Client, bt agent.BackendType, projectDir, prompt string) (string, error) {
-	cfg, err := defaultPresetConfig(ctx, client, bt, host.HostLocal)
-	if err != nil {
-		return "", err
-	}
-	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:  bt,
-		Hostname: host.HostLocal,
-		GitRef:   agent.GitRef{LocalPath: projectDir},
-		Prompt:   prompt,
-		Config:   cfg,
-	})
-	if err != nil {
-		return "", fmt.Errorf("create session: %w", err)
-	}
-	return info.ID, nil
 }
 
 // stopLocalDaemon sends SIGINT to the running daemon (graceful shutdown).

@@ -27,7 +27,7 @@ const (
 	previewLinkParamAlts       = "alt"  // comma-separated additional gateway base URLs (optional)
 	previewLinkParamHostKey    = "hk"   // laptop's Ed25519 identity public key (public — verifies probes)
 	previewLinkParamPreviewURL = "url"  // Metro dev server, e.g. http://192.168.1.20:8081
-	previewLinkParamSessionID  = "sid"  // a prompt-started session to open (optional)
+	previewLinkParamSessionID  = "sid"  // session to open in links produced by older clients (optional)
 	previewLinkParamLocalPath  = "lp"   // laptop folder the agent + Metro run against
 	previewLinkParamBackend    = "bk"   // agent backend the laptop can run (opencode|claude-code)
 	previewLinkParamName       = "name" // laptop display name for the gateway picker (optional)
@@ -42,8 +42,7 @@ const (
 //     verifies every probe answer against it, so a remembered address
 //     that got reassigned can't impersonate the laptop.
 //   - PreviewURL: the dev server to open.
-//   - SessionID: set only when `clank preview <prompt>` already started an
-//     agent — the phone attaches to it.
+//   - SessionID: optional legacy field retained so older links remain readable.
 //   - LocalPath + Backend: when there's no SessionID, the phone creates the
 //     session itself on the first message — same call it makes for cloud
 //     worktrees, with LocalPath instead of WorktreeID.

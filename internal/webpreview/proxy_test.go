@@ -102,7 +102,6 @@ func startTestStackOpts(t *testing.T, upstream http.Handler, daemon http.Handler
 	up := httptest.NewServer(upstream)
 	t.Cleanup(up.Close)
 	u, _ := url.Parse(up.URL)
-	upPort, _ := strconv.Atoi(u.Port())
 
 	// Not t.TempDir(): its path embeds the test name and blows through
 	// macOS's 104-byte sockaddr_un limit.
@@ -121,7 +120,7 @@ func startTestStackOpts(t *testing.T, upstream http.Handler, daemon http.Handler
 	t.Cleanup(func() { dsrv.Close() })
 
 	opts := Options{
-		UpstreamPort:     upPort,
+		UpstreamURL:      u,
 		DaemonSocketPath: sock,
 		Token:            "sekrit",
 		OverlayConfig:    map[string]any{"name": "app", "local_path": "/tmp/app"},
