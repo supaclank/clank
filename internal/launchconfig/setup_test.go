@@ -17,7 +17,7 @@ func TestLaunchSchemaIsJSONSchema(t *testing.T) {
 	if err := json.Unmarshal([]byte(LaunchSchema()), &schema); err != nil {
 		t.Fatalf("LaunchSchema: %v", err)
 	}
-	if schema["$schema"] == "" {
+	if v, ok := schema["$schema"]; !ok || v == "" {
 		t.Fatal("LaunchSchema has no $schema declaration")
 	}
 }
