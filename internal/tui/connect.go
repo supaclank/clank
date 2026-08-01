@@ -152,10 +152,10 @@ func (m *ConnectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyPressMsg:
-		// ctrl+c is the root program's business — the inbox owned it
+		// Quitting is the root program's business — the inbox owned it
 		// before, and providerAuthModel only knows esc.
-		if key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))) {
-			return m, tea.Quit
+		if m.isQuitKey(msg) {
+			return m, m.quitCmd()
 		}
 		if m.phase != connectPhaseProvider {
 			return m.handleKey(msg)
@@ -176,9 +176,32 @@ func (m *ConnectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// isQuitKey reports whether msg ends the program. ctrl+c always does;
+// "q" does everywhere except a focused text field, where it is a
+// character the user is typing (an API key may well contain one).
+func (m *ConnectModel) isQuitKey(msg tea.KeyPressMsg) bool {
+	if key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))) {
+		return true
+	}
+	if m.phase == connectPhaseProvider && m.providerAuth.acceptsTextInput() {
+		return false
+	}
+	return key.Matches(msg, key.NewBinding(key.WithKeys("q", "Q")))
+}
+
+// quitCmd ends the program, first aborting any flow still running on
+// the host: this process exiting does not stop a device poll or a
+// setup-token PTY that clank-host started on its behalf.
+func (m *ConnectModel) quitCmd() tea.Cmd {
+	if m.phase == connectPhaseProvider && m.providerAuth.hasLiveFlow() {
+		return tea.Sequence(m.providerAuth.cancelFlowCmd(), tea.Quit)
+	}
+	return tea.Quit
+}
+
 func (m *ConnectModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	msg = normalizeKeyCase(msg)
-	if key.Matches(msg, key.NewBinding(key.WithKeys("esc", "q"))) {
+	if key.Matches(msg, key.NewBinding(key.WithKeys("esc"))) {
 		return m, tea.Quit
 	}
 
@@ -299,7 +322,7 @@ func (m *ConnectModel) body() string {
 		}
 		sb.WriteString("\n")
 		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
-			Render("↑↓ navigate · enter select · esc cancel"))
+			Render("↑↓ navigate · enter select · q quit"))
 	}
 
 	return lipgloss.NewStyle().

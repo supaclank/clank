@@ -31,6 +31,12 @@ import (
 // hanging it.
 const connectProgramTimeout = 20 * time.Second
 
+// gatedKeyPollInterval paces the wait for a frame to appear. Frames land
+// in milliseconds, so this only bounds the response delay — kept coarse
+// so several of these programs running beside the rest of the suite
+// don't spin a core each.
+const gatedKeyPollInterval = 10 * time.Millisecond
+
 // runConnectProgram drives the connect UI through steps — each one's
 // keys held back until its screen appears — and returns the result plus
 // everything rendered. The final step must quit, or the run dies on the
@@ -175,7 +181,7 @@ func (g *gatedKeys) Read(p []byte) (int, error) {
 		select {
 		case <-g.done:
 			return 0, io.EOF
-		case <-time.After(2 * time.Millisecond):
+		case <-time.After(gatedKeyPollInterval):
 		}
 	}
 	g.next++
@@ -219,5 +225,45 @@ func TestConnectProgram_EscFromProvidersReturnsToPicker(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "GitHub Copilot") {
 		t.Errorf("setup: the provider list never rendered:\n%s", rendered)
+	}
+}
+
+// q is the one-key exit from a real run: quit straight out of the
+// provider list without touching esc or ctrl+c.
+func TestConnectProgram_QQuitsFromTheProviderList(t *testing.T) {
+	client := newConnectTestClient(t)
+
+	result, rendered := runConnectProgram(t, client, agent.BackendClaudeCode,
+		keyStep{UntilVisible: "Anthropic", Keys: "q"})
+
+	if result.IsConnected {
+		t.Error("quitting must not report a connection")
+	}
+	if !strings.Contains(rendered, "Anthropic") {
+		t.Errorf("setup: the provider list never rendered:\n%s", rendered)
+	}
+}
+
+// …but inside the key form q is a character. Typing "q" then quitting
+// with ctrl+c proves the letter reached the field instead of ending the
+// program — an API key with a q in it has to be enterable.
+func TestConnectProgram_QTypesInsideTheKeyForm(t *testing.T) {
+	client := newConnectTestClient(t)
+
+	// OpenAI is an api-key provider: enter opens the confirm gate, y
+	// opens the key form, then "q" must land in the field.
+	_, rendered := runConnectProgram(t, client, agent.BackendOpenCode,
+		keyStep{UntilVisible: "OpenAI", Keys: "\x1b[B\r"},
+		keyStep{UntilVisible: "will restart the OpenCode server", Keys: "y"},
+		keyStep{UntilVisible: "API key", Keys: "q"},
+		keyStep{UntilVisible: "•", Keys: "\x03"})
+
+	if !strings.Contains(rendered, "API key") {
+		t.Fatalf("setup: never reached the key form:\n%s", rendered)
+	}
+	// The field masks input, so the typed q shows as a bullet — and the
+	// program is still alive to have rendered it.
+	if !strings.Contains(rendered, "•") {
+		t.Errorf("q did not reach the masked key field:\n%s", rendered)
 	}
 }

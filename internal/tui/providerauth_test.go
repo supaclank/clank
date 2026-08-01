@@ -334,3 +334,58 @@ func isCancelCmd(cmd tea.Cmd) bool {
 	_, ok := cmd().(providerAuthCancelMsg)
 	return ok
 }
+
+// hasLiveFlow decides whether backing out has to call the host. It must
+// be true exactly while a flow is running there — a completed one would
+// otherwise be "canceled" on the way out, and a phase with no flow at
+// all would produce a pointless call.
+func TestProviderAuth_HasLiveFlow(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		phase  providerAuthPhase
+		flowID string
+		want   bool
+	}{
+		{name: "awaiting a device authorization", phase: providerPhaseAwaiting, flowID: "f1", want: true},
+		{name: "waiting on a pasted auth code", phase: providerPhaseOAuthCode, flowID: "f1", want: true},
+		{name: "awaiting before a flow id exists", phase: providerPhaseAwaiting, want: false},
+		{name: "browsing the list", phase: providerPhaseList, flowID: "f1", want: false},
+		{name: "filling the key form", phase: providerPhaseAPIKey, flowID: "f1", want: false},
+		{name: "already succeeded", phase: providerPhaseSuccess, flowID: "f1", want: false},
+		{name: "already failed", phase: providerPhaseError, flowID: "f1", want: false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			m := newProviderAuthModel(nil, agent.BackendClaudeCode, "")
+			m.phase = c.phase
+			m.flow = agent.DeviceFlowStart{FlowID: c.flowID}
+			if got := m.hasLiveFlow(); got != c.want {
+				t.Errorf("hasLiveFlow() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// The screens that own a focused field must be the only ones that treat
+// a bare letter as content — that is what stops a host's "q quits" from
+// eating a keystroke meant for an API key.
+func TestProviderAuth_AcceptsTextInput(t *testing.T) {
+	t.Parallel()
+	typing := map[providerAuthPhase]bool{
+		providerPhaseAPIKey:    true,
+		providerPhaseOAuthCode: true,
+	}
+	for _, phase := range []providerAuthPhase{
+		providerPhaseLoading, providerPhaseList, providerPhaseConfirm,
+		providerPhaseAPIKey, providerPhaseOAuthCode, providerPhaseAwaiting,
+		providerPhaseSuccess, providerPhaseError,
+	} {
+		m := newProviderAuthModel(nil, agent.BackendOpenCode, "")
+		m.phase = phase
+		if got := m.acceptsTextInput(); got != typing[phase] {
+			t.Errorf("phase %v: acceptsTextInput() = %v, want %v", phase, got, typing[phase])
+		}
+	}
+}

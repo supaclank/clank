@@ -309,3 +309,93 @@ func TestConnectModel_NamedBackendHasNothingToGoBackTo(t *testing.T) {
 		t.Error("a named-backend run must quit when the provider list is left")
 	}
 }
+
+// q quits from anywhere — the picker, the provider list, a device-flow
+// wait — so there is always a one-key exit that isn't ctrl+c.
+func TestConnectModel_QQuitsFromEveryNonTextPhase(t *testing.T) {
+	t.Parallel()
+	loading := NewConnectModel(nil, "")
+
+	pickerModel, _ := NewConnectModel(nil, "").Update(connectProvidersLoadedMsg{})
+	picker := pickerModel.(*ConnectModel)
+
+	providerList := NewConnectModel(nil, agent.BackendOpenCode)
+	providerList.providerAuth.phase = providerPhaseList
+
+	confirm := NewConnectModel(nil, agent.BackendOpenCode)
+	confirm.providerAuth.phase = providerPhaseConfirm
+
+	awaiting := NewConnectModel(nil, agent.BackendOpenCode)
+	awaiting.providerAuth.phase = providerPhaseAwaiting
+
+	for name, m := range map[string]*ConnectModel{
+		"loading":        loading,
+		"backend picker": picker,
+		"provider list":  providerList,
+		"confirm gate":   confirm,
+		"awaiting":       awaiting,
+		"success":        reachedFlowSuccess(agent.BackendOpenCode),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, cmd := m.Update(keyPress("q")); !isQuitCmd(cmd) {
+				t.Errorf("q in the %s phase did not quit", name)
+			}
+		})
+	}
+}
+
+// …except while a field is focused, where q is a character. An API key
+// or a pasted auth code containing "q" must type, not quit.
+func TestConnectModel_QIsTypedIntoFocusedFields(t *testing.T) {
+	t.Parallel()
+	for _, phase := range []providerAuthPhase{providerPhaseAPIKey, providerPhaseOAuthCode} {
+		m := NewConnectModel(nil, agent.BackendOpenCode)
+		m.providerAuth.phase = phase
+		m.providerAuth.apiKey.Focus()
+
+		model, cmd := m.Update(keyPress("q"))
+		if isQuitCmd(cmd) {
+			t.Fatalf("q in phase %v quit instead of typing", phase)
+		}
+		if got := model.(*ConnectModel).providerAuth.apiKey.Value(); got != "q" {
+			t.Errorf("phase %v: field holds %q, want the typed \"q\"", phase, got)
+		}
+	}
+}
+
+// Quitting mid-flow must abort it on the host first: this process
+// exiting does not stop a device poll or a setup-token PTY that
+// clank-host started, so a bare tea.Quit would leak one.
+func TestConnectModel_QuittingMidFlowCancelsItOnTheHost(t *testing.T) {
+	t.Parallel()
+	m := NewConnectModel(nil, agent.BackendClaudeCode)
+	m.providerAuth.phase = providerPhaseAwaiting
+	m.providerAuth.flow = agent.DeviceFlowStart{FlowID: "flow-1"}
+
+	// A live flow must not resolve straight to Quit — the cancel has to
+	// run first. (Sequence resolves to its own internal message, so the
+	// assertion is that this is a command, and not a bare quit.)
+	_, cmd := m.Update(tea.KeyPressMsg(tea.Key{Code: 'c', Mod: tea.ModCtrl}))
+	if cmd == nil {
+		t.Fatal("ctrl+c mid-flow produced no command at all")
+	}
+	if isQuitCmd(cmd) {
+		t.Error("quitting mid-flow skipped the host-side cancel")
+	}
+
+	// A settled flow has nothing to cancel, so it quits directly — and
+	// must not "cancel" a connection that already succeeded.
+	settled := reachedFlowSuccess(agent.BackendClaudeCode)
+	settled.providerAuth.flow = agent.DeviceFlowStart{FlowID: "flow-1"}
+	model, cmd := settled.Update(keyPress("q"))
+	if !isQuitCmd(cmd) {
+		t.Error("a settled flow must quit directly")
+	}
+	if settled.providerAuth.hasLiveFlow() {
+		t.Error("a succeeded flow must not read as still running on the host")
+	}
+	if !model.(*ConnectModel).Result().IsConnected {
+		t.Error("quitting after success must still report the connection")
+	}
+}

@@ -176,6 +176,27 @@ type providerAuthModel struct {
 	loadingStartedAt time.Time
 }
 
+// acceptsTextInput reports whether the flow is on a screen where a
+// keystroke is content rather than a command. Hosts that bind bare
+// letters to program-level actions must not steal them here — "q"
+// belongs in an API key.
+func (m providerAuthModel) acceptsTextInput() bool {
+	return m.phase == providerPhaseAPIKey || m.phase == providerPhaseOAuthCode
+}
+
+// hasLiveFlow reports whether a flow is still running on the host —
+// a device poll or a `claude setup-token` PTY that outlives this
+// process unless it is canceled. False once the flow has settled, so a
+// completed connection is never "canceled" on the way out.
+func (m providerAuthModel) hasLiveFlow() bool {
+	switch m.phase {
+	case providerPhaseAwaiting, providerPhaseOAuthCode:
+		return m.flow.FlowID != ""
+	default:
+		return false
+	}
+}
+
 // providerSlowLoadAfter is how long providerPhaseLoading can sit
 // without finishing before we show the slowLoadHint (when set).
 const providerSlowLoadAfter = 2 * time.Second
