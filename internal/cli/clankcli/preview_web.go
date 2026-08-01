@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"time"
 
@@ -16,21 +17,16 @@ import (
 	"github.com/acksell/clank/internal/webpreview"
 )
 
-// runWebPreview is the KindWeb arm of `clank preview`: no QR, no LAN.
-// The overlay-injecting proxy (internal/webpreview) fronts the Vite dev
-// server on one loopback origin that also serves the overlay assets and
-// relays /__clank/api/* to the daemon — the browser twin of the phone
-// flow's front door + native overlay.
+// runWebPreview is the browser arm of `clank preview`: no QR, no LAN.
+// The overlay-injecting proxy (internal/webpreview) fronts an upstream
+// on one loopback origin that also serves the overlay assets and relays
+// /__clank/api/* to the daemon — the browser twin of the phone flow's
+// front door + native overlay. The upstream may be a daemon-managed dev
+// server or an explicitly attached local origin.
 //
-// sessionID is non-empty when a prompt argument already started an
-// agent; the overlay picks that session up instead of lazily creating
-// one on first message.
-func runWebPreview(sigCtx context.Context, projectDir, sockPath, sessionID, backend string, devPort, listenPort int) error {
-	fmt.Println("Waiting for the dev server to come up…")
-	if err := waitHTTPReady(sigCtx, devPort, 10*time.Minute); err != nil {
-		return fmt.Errorf("dev server on port %d never came up (first-run installs can be slow; re-run to retry): %w", devPort, err)
-	}
-
+// Daemon-managed callers wait for readiness first; explicit attach mode leaves
+// upstream readiness to its owner.
+func runWebPreview(sigCtx context.Context, projectDir, sockPath, backend string, upstreamURL *url.URL, listenPort int) error {
 	token, err := randomToken(32)
 	if err != nil {
 		return fmt.Errorf("generate overlay token: %w", err)
@@ -45,7 +41,7 @@ func runWebPreview(sigCtx context.Context, projectDir, sockPath, sessionID, back
 		return sigCtx.Err()
 	}
 	srv, err := webpreview.Start(webpreview.Options{
-		UpstreamPort:           devPort,
+		UpstreamURL:            upstreamURL,
 		DaemonSocketPath:       sockPath,
 		Token:                  token,
 		Engine:                 engine,
@@ -57,7 +53,6 @@ func runWebPreview(sigCtx context.Context, projectDir, sockPath, sessionID, back
 			"local_path": projectDir,
 			"backend":    backend,
 			"name":       filepath.Base(projectDir),
-			"session_id": sessionID,
 		},
 	})
 	if err != nil {
@@ -151,19 +146,18 @@ func printModelProgress(file string, index, count int, done, total int64) {
 	}
 }
 
-// waitHTTPReady polls the dev server's loopback port until it answers
-// HTTP at all. Any response counts — a SvelteKit error page mid-compile
-// still means Vite is up and the overlay can front it. The generous
-// timeout wraps the same first-run `bun install` the daemon's own
-// readiness probe allows for.
-func waitHTTPReady(ctx context.Context, port int, timeout time.Duration) error {
+// waitHTTPReady polls a daemon-managed web server until it answers HTTP.
+// Any response counts — an error page mid-compile still means the server
+// is up and the overlay can front it.
+func waitHTTPReady(ctx context.Context, target *url.URL, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	client := &http.Client{Timeout: 2 * time.Second}
-	url := fmt.Sprintf("http://127.0.0.1:%d/", port)
+	probeURL := *target
+	probeURL.Path = "/"
 	ticker := time.NewTicker(300 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if resp, err := client.Get(url); err == nil {
+		if resp, err := client.Get(probeURL.String()); err == nil {
 			resp.Body.Close()
 			return nil
 		}

@@ -15,11 +15,11 @@ func previewCmd() *cobra.Command {
 	var tunnel bool
 
 	cmd := &cobra.Command{
-		Use:   "preview [prompt]",
-		Short: "Preview the current folder on your phone (Expo) or in your browser (Vite)",
-		Long: `Make the current folder previewable, with a clank agent one gesture away.
+		Use:   "preview [<folder> <url-or-:port>]",
+		Short: "Preview an app with the Clank overlay",
+		Long: `Make a project previewable, with a clank agent one gesture away.
 
-Boots (or reuses) the local clank daemon and serves this folder's app:
+Boots (or reuses) the local clank daemon, then launches or attaches to a preview:
 
   - Expo app: exposes the daemon to your phone over the LAN behind a
     one-time pairing token and prints a QR. Scan it with the clank app
@@ -35,20 +35,36 @@ Boots (or reuses) the local clank daemon and serves this folder's app:
     speech service) — and can switch later via the chevron next to
     the mic. Highlight text or attach an element to pin an inline
     comment on it; several comments ride one submit.
+  - Existing web server (clank preview . :5173): fronts a server the
+    user already started. The folder and URL may appear in either order.
+    A :port target expands to http://127.0.0.1:port. Clank never starts
+    or stops the attached server; the folder supplies project context
+    to the overlay and agent.
 
-A prompt is optional: pass one to also start an agent on this folder and
-watch it work in the preview. Pairing/proxy, the dev server, and the agent
-are independent. Everything is torn down on Ctrl+C — including the daemon,
-if clank preview was the one that started it.`,
+Everything is torn down on Ctrl+C — including the daemon, if clank preview
+was the one that started it. An attached server is never stopped by Clank.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			if tunnel {
 				return fmt.Errorf("--tunnel isn't implemented yet; keep your phone and laptop on the same Wi-Fi for now")
 			}
+			attach, err := parsePreviewAttachArgs(args)
+			if err != nil {
+				return err
+			}
+			if attach != nil {
+				if projectDir != "" {
+					return fmt.Errorf("preview folder was provided both positionally and with --project")
+				}
+				return runAttachedPreview(attach.ProjectDir, attach.UpstreamURL, backend, port)
+			}
 			if err := rejectPathShapedArg(args); err != nil {
 				return err
 			}
-			return runPreview(projectDir, strings.Join(args, " "), backend, port)
+			if len(args) != 0 {
+				return fmt.Errorf("unexpected preview argument %q", args[0])
+			}
+			return runPreview(projectDir, backend, port)
 		},
 	}
 
@@ -63,8 +79,8 @@ if clank preview was the one that started it.`,
 // rejectPathShapedArg errors out on a single path-shaped argument
 // (contains a dot or separator) rather than letting it silently start
 // an agent — `clank preview <file>` opened that file until this
-// command dropped file mode, and args are now always joined into a
-// prompt.
+// command dropped file mode. This runs before the generic positional-argument
+// error so old file-preview invocations receive actionable guidance.
 func rejectPathShapedArg(args []string) error {
 	if len(args) != 1 {
 		return nil
@@ -73,5 +89,5 @@ func rejectPathShapedArg(args []string) error {
 	if !strings.ContainsAny(arg, "./"+string(os.PathSeparator)) {
 		return nil
 	}
-	return fmt.Errorf("%s looks like a file path — clank preview <file> was removed; pass a prompt in words instead, or run clank preview with no arguments to preview the project", arg)
+	return fmt.Errorf("%s looks like a file path — clank preview <file> was removed; run clank preview with no arguments to preview the project", arg)
 }

@@ -74,9 +74,8 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
   laptop — each host serves its own. **Golden:** `internal/host/presetstore.go`,
   `internal/host/mux/presets.go`; client side, headless flows apply the Default preset:
   `defaultPresetConfig` in `internal/webpreview/overlay/chat.js` (web overlay) and
-  `internal/cli/clankcli/session_create.go` (`please`, `preview <prompt>`); regressions
-  `TestPresets_CRUDOverHTTP`, `TestRunPlease_CreatesSessionAndRecordsLastSession`,
-  `TestStartPreviewAgent_AppliesDefaultPresetConfig`.
+  `internal/cli/clankcli/session_create.go` (`please`); regressions
+  `TestPresets_CRUDOverHTTP`, `TestRunPlease_CreatesSessionAndRecordsLastSession`.
 
 ### Send — `POST /sessions/{id}/message`
 
