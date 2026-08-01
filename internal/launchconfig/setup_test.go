@@ -133,6 +133,41 @@ func TestSetupTaskPromptWritesProjectConfigWhenShared(t *testing.T) {
 	}
 }
 
+func TestReadClaudeLaunchReferenceRejectsSymlinkEscapingProjectRoot(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	claudeDir := filepath.Join(root, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(t.TempDir(), "id_rsa")
+	if err := os.WriteFile(secret, []byte("PRIVATE KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(claudeDir, "launch.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := readClaudeLaunchReference(root); err == nil {
+		t.Fatal("expected error for launch.json symlink escaping project root")
+	}
+}
+
+func TestReadClaudeLaunchReferenceRejectsNonRegularFile(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	claudeDir := filepath.Join(root, ".claude")
+	if err := os.MkdirAll(filepath.Join(claudeDir, "launch.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := readClaudeLaunchReference(root); err == nil {
+		t.Fatal("expected error when launch.json is a directory")
+	}
+}
+
 func TestSetupTaskPromptRejectsUnknownScope(t *testing.T) {
 	t.Parallel()
 

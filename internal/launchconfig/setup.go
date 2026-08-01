@@ -121,10 +121,24 @@ Write only the selected configuration file. Do not commit, push, or open a pull 
 
 func readClaudeLaunchReference(projectRoot string) (string, error) {
 	path := filepath.Join(projectRoot, filepath.FromSlash(claudeLaunchRelativePath))
-	data, err := os.ReadFile(path)
+	resolved, err := filepath.EvalSymlinks(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return "No .claude/launch.json is present.", nil
 	}
+	if err != nil {
+		return "", fmt.Errorf("resolve Claude launch reference %s: %w", path, err)
+	}
+	if err := requireWithinRoot(projectRoot, resolved); err != nil {
+		return "", fmt.Errorf("validate Claude launch reference %s: %w", path, err)
+	}
+	info, err := os.Lstat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("stat Claude launch reference %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("Claude launch reference %s is not a regular file", path)
+	}
+	data, err := os.ReadFile(resolved)
 	if err != nil {
 		return "", fmt.Errorf("read Claude launch reference %s: %w", path, err)
 	}
