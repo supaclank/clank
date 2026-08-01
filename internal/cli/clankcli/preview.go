@@ -2,6 +2,7 @@ package clankcli
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -44,6 +45,9 @@ if clank preview was the one that started it.`,
 			if tunnel {
 				return fmt.Errorf("--tunnel isn't implemented yet; keep your phone and laptop on the same Wi-Fi for now")
 			}
+			if err := rejectPathShapedArg(args); err != nil {
+				return err
+			}
 			return runPreview(projectDir, strings.Join(args, " "), backend, port)
 		},
 	}
@@ -54,4 +58,20 @@ if clank preview was the one that started it.`,
 	cmd.Flags().BoolVar(&tunnel, "tunnel", false, "Expose over an encrypted tunnel for off-LAN phones (not yet implemented)")
 
 	return cmd
+}
+
+// rejectPathShapedArg errors out on a single path-shaped argument
+// (contains a dot or separator) rather than letting it silently start
+// an agent — `clank preview <file>` opened that file until this
+// command dropped file mode, and args are now always joined into a
+// prompt.
+func rejectPathShapedArg(args []string) error {
+	if len(args) != 1 {
+		return nil
+	}
+	arg := args[0]
+	if !strings.ContainsAny(arg, "./"+string(os.PathSeparator)) {
+		return nil
+	}
+	return fmt.Errorf("%s looks like a file path — clank preview <file> was removed; pass a prompt in words instead, or run clank preview with no arguments to preview the project", arg)
 }
