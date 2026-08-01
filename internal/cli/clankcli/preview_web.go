@@ -16,18 +16,21 @@ import (
 	"github.com/acksell/clank/internal/webpreview"
 )
 
-// runWebPreview is the browser arm of `clank preview`: no QR, no LAN.
-// The overlay-injecting proxy (internal/webpreview) fronts an upstream
-// on one loopback origin that also serves the overlay assets and relays
-// /__clank/api/* to the daemon — the browser twin of the phone flow's
-// front door + native overlay. The upstream is the Vite dev server for
-// project previews and the filepreview server for `clank preview
-// <file>`; callers ensure it answers HTTP before handing over.
+// runWebPreview is the KindWeb arm of `clank preview`: no QR, no LAN.
+// The overlay-injecting proxy (internal/webpreview) fronts the Vite dev
+// server on one loopback origin that also serves the overlay assets and
+// relays /__clank/api/* to the daemon — the browser twin of the phone
+// flow's front door + native overlay.
 //
 // sessionID is non-empty when a prompt argument already started an
 // agent; the overlay picks that session up instead of lazily creating
 // one on first message.
 func runWebPreview(sigCtx context.Context, projectDir, sockPath, sessionID, backend string, devPort, listenPort int) error {
+	fmt.Println("Waiting for the dev server to come up…")
+	if err := waitHTTPReady(sigCtx, devPort, 10*time.Minute); err != nil {
+		return fmt.Errorf("dev server on port %d never came up (first-run installs can be slow; re-run to retry): %w", devPort, err)
+	}
+
 	token, err := randomToken(32)
 	if err != nil {
 		return fmt.Errorf("generate overlay token: %w", err)
