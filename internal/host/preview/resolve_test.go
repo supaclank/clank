@@ -92,6 +92,33 @@ previews:
 	}
 }
 
+func TestResolveLaunchWrapsSetupTaskPromptFailure(t *testing.T) {
+	t.Setenv("CLANK_DIR", t.TempDir())
+	dir := t.TempDir()
+	writePreviewFiles(t, dir, map[string]string{
+		"package.json": `{"devDependencies":{"vite":"^7.0.0"}}`,
+	})
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(t.TempDir(), "id_rsa")
+	if err := os.WriteFile(secret, []byte("PRIVATE KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(claudeDir, "launch.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := resolveLaunch(dir, "")
+	if !errors.Is(err, ErrInvalidLaunchConfig) {
+		t.Fatalf("resolveLaunch: err = %v, want ErrInvalidLaunchConfig", err)
+	}
+	if !strings.Contains(err.Error(), "escapes project root") {
+		t.Fatalf("resolveLaunch: err = %v, want the SetupTaskPrompt failure cause preserved in the chain", err)
+	}
+}
+
 func realPreviewPath(t *testing.T, path string) string {
 	t.Helper()
 	real, err := filepath.EvalSymlinks(path)
