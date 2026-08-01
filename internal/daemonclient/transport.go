@@ -29,7 +29,6 @@ type APIError struct {
 	Message           string
 	SetupPrompt       string
 	ProjectConfigPath string
-	HostConfigPath    string
 }
 
 func (e *APIError) Error() string { return "daemon: " + e.Message }
@@ -80,7 +79,6 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 			Error             string `json:"error"`
 			SetupPrompt       string `json:"setup_prompt"`
 			ProjectConfigPath string `json:"project_config_path"`
-			HostConfigPath    string `json:"host_config_path"`
 		}
 		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error != "" {
 			return &APIError{
@@ -89,7 +87,6 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 				Message:           errResp.Error,
 				SetupPrompt:       errResp.SetupPrompt,
 				ProjectConfigPath: errResp.ProjectConfigPath,
-				HostConfigPath:    errResp.HostConfigPath,
 			}
 		}
 		return fmt.Errorf("daemon returned status %d: %s", resp.StatusCode, summarizeBody(resp.Header.Get("Content-Type"), respBody))

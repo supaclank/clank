@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/launchconfig"
 )
 
@@ -31,15 +30,4 @@ func managedPreviewProjectDir(invokedDir string, isProjectExplicit bool) (string
 		return "", err
 	}
 	return paths.ProjectRoot, nil
-}
-
-func previewSetupRequiredError(status *daemonclient.PreviewStatus) error {
-	if status == nil || !status.SetupRequired {
-		return fmt.Errorf("preview launch setup is required, but the daemon did not return setup instructions")
-	}
-	return fmt.Errorf(`preview launch setup is required
-
-Ask your connected agent to run the setup task below. It will ask whether to write the shared project config or this host's private config.
-
-%s`, status.SetupPrompt)
 }

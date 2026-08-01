@@ -80,7 +80,6 @@ type Status struct {
 	SetupRequired     bool       `json:"setup_required,omitempty"`
 	SetupPrompt       string     `json:"setup_prompt,omitempty"`
 	ProjectConfigPath string     `json:"project_config_path,omitempty"`
-	HostConfigPath    string     `json:"host_config_path,omitempty"`
 	Kind              Kind       `json:"kind,omitempty"`
 	ServiceName       string     `json:"service_name,omitempty"`
 	State             State      `json:"state"`

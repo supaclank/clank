@@ -18,12 +18,11 @@ var (
 // SetupRequiredError carries the one-time connected-agent setup contract.
 type SetupRequiredError struct {
 	ProjectConfigPath string
-	HostConfigPath    string
 	Prompt            string
 }
 
 func (e *SetupRequiredError) Error() string {
-	return fmt.Sprintf("%s: create %s (shared) or %s (this host)", ErrSetupRequired, e.ProjectConfigPath, e.HostConfigPath)
+	return fmt.Sprintf("%s: create %s", ErrSetupRequired, e.ProjectConfigPath)
 }
 
 func (e *SetupRequiredError) Unwrap() error {
@@ -57,7 +56,6 @@ func resolveLaunch(workDir, name string) (*resolvedLaunch, error) {
 		if errors.As(err, &missing) {
 			return nil, &SetupRequiredError{
 				ProjectConfigPath: missing.Paths.Project,
-				HostConfigPath:    missing.Paths.Host,
 				Prompt:            launchconfig.SetupPrompt(missing.Paths),
 			}
 		}
