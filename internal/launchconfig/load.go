@@ -14,23 +14,24 @@ func load(workDir string) (File, Source, Paths, error) {
 		return File{}, Source{}, Paths{}, err
 	}
 
-	sources := []Source{
-		{Scope: ScopeProject, Path: paths.Project},
-		{Scope: ScopeHost, Path: paths.Host},
+	file, _, err := readLaunchFile(paths.Project)
+	if errors.Is(err, os.ErrNotExist) {
+		return File{}, Source{}, paths, &NotFoundError{Paths: paths}
 	}
-	for _, source := range sources {
-		data, err := os.ReadFile(source.Path)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return File{}, Source{}, paths, fmt.Errorf("read %s launch config %s: %w", source.Scope, source.Path, err)
-		}
-		var file File
-		if err := yaml.UnmarshalStrict(data, &file); err != nil {
-			return File{}, Source{}, paths, fmt.Errorf("parse %s: %w", source.Path, err)
-		}
-		return file, source, paths, nil
+	if err != nil {
+		return File{}, Source{}, paths, fmt.Errorf("load project launch config: %w", err)
 	}
-	return File{}, Source{}, paths, &NotFoundError{Paths: paths}
+	return file, Source{Path: paths.Project}, paths, nil
+}
+
+func readLaunchFile(path string) (File, []byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return File{}, nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	var file File
+	if err := yaml.UnmarshalStrict(data, &file); err != nil {
+		return File{}, nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return file, data, nil
 }

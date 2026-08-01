@@ -121,7 +121,6 @@ func writePreviewError(w http.ResponseWriter, err error) {
 			Error:             err.Error(),
 			SetupPrompt:       setup.Prompt,
 			ProjectConfigPath: setup.ProjectConfigPath,
-			HostConfigPath:    setup.HostConfigPath,
 		})
 	case errors.Is(err, preview.ErrInvalidLaunchConfig):
 		writeJSON(w, http.StatusUnprocessableEntity, errResp{Code: codePreviewConfigInvalid, Error: err.Error()})

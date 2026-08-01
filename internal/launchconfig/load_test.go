@@ -40,7 +40,7 @@ func TestResolveProjectLaunch(t *testing.T) {
 	if got.Ready.Path != "/" || got.Ready.ExpectedSubstring != "" {
 		t.Errorf("Ready = %+v", got.Ready)
 	}
-	if got.Source.Scope != ScopeProject || got.Source.Path != filepath.Join(root, ProjectRelativePath) {
+	if got.Source.Path != filepath.Join(root, ProjectRelativePath) {
 		t.Errorf("Source = %+v", got.Source)
 	}
 }
@@ -79,75 +79,12 @@ previews:
 	}
 }
 
-func TestResolveUsesHostConfigWhenProjectConfigIsMissing(t *testing.T) {
+func TestResolveRejectsInvalidProjectConfig(t *testing.T) {
+	t.Parallel()
 	root := newLaunchRepo(t)
-	t.Setenv("CLANK_DIR", t.TempDir())
-
-	paths, err := ResolvePaths(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(paths.Host), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(paths.Host, []byte(validLaunchYAML), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := Resolve(root, "")
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if got.Source.Scope != ScopeHost || got.Source.Path != paths.Host {
-		t.Errorf("Source = %+v, want host path %q", got.Source, paths.Host)
-	}
-}
-
-func TestHostConfigPathIsSharedByLinkedWorktrees(t *testing.T) {
-	root := newLaunchRepo(t)
-	t.Setenv("CLANK_DIR", t.TempDir())
-	runGit(t, root, "config", "user.email", "preview@example.test")
-	runGit(t, root, "config", "user.name", "Preview Test")
-	runGit(t, root, "config", "commit.gpgsign", "false")
-	runGit(t, root, "add", "web")
-	runGit(t, root, "commit", "--allow-empty", "-m", "initial")
-
-	linked := filepath.Join(t.TempDir(), "linked")
-	runGit(t, root, "worktree", "add", "-b", "preview-linked", linked)
-
-	mainPaths, err := ResolvePaths(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	linkedPaths, err := ResolvePaths(linked)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if mainPaths.Host != linkedPaths.Host {
-		t.Errorf("host config paths differ across worktrees:\nmain:   %s\nlinked: %s", mainPaths.Host, linkedPaths.Host)
-	}
-	if mainPaths.Project == linkedPaths.Project {
-		t.Errorf("project config path must remain worktree-specific: %s", mainPaths.Project)
-	}
-}
-
-func TestInvalidProjectConfigNeverFallsThroughToHost(t *testing.T) {
-	root := newLaunchRepo(t)
-	t.Setenv("CLANK_DIR", t.TempDir())
 	writeProjectLaunch(t, root, "prevews: {}\n")
 
-	paths, err := ResolvePaths(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(paths.Host), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(paths.Host, []byte(validLaunchYAML), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = Resolve(root, "")
+	_, err := Resolve(root, "")
 	if err == nil || !strings.Contains(err.Error(), "field prevews not found") {
 		t.Fatalf("Resolve: err = %v, want strict project-config error", err)
 	}
@@ -155,8 +92,6 @@ func TestInvalidProjectConfigNeverFallsThroughToHost(t *testing.T) {
 
 func TestResolveMissingReturnsSetupPaths(t *testing.T) {
 	root := newLaunchRepo(t)
-	t.Setenv("CLANK_DIR", t.TempDir())
-
 	_, err := Resolve(root, "")
 	var missing *NotFoundError
 	if !errors.As(err, &missing) {
@@ -164,9 +99,6 @@ func TestResolveMissingReturnsSetupPaths(t *testing.T) {
 	}
 	if missing.Paths.Project != filepath.Join(root, ProjectRelativePath) {
 		t.Errorf("project setup path = %q", missing.Paths.Project)
-	}
-	if !strings.HasPrefix(missing.Paths.Host, os.Getenv("CLANK_DIR")+string(filepath.Separator)) {
-		t.Errorf("host setup path = %q, want under CLANK_DIR", missing.Paths.Host)
 	}
 }
 

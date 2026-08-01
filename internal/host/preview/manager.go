@@ -371,7 +371,6 @@ func (m *Manager) StatusNamed(_ context.Context, worktreeID, workDir, launchName
 				SetupRequired:     true,
 				SetupPrompt:       setup.Prompt,
 				ProjectConfigPath: setup.ProjectConfigPath,
-				HostConfigPath:    setup.HostConfigPath,
 			}, nil
 		}
 		return Status{}, fmt.Errorf("resolve launch: %w", err)

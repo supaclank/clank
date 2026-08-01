@@ -122,11 +122,11 @@ func TestPreviewStatus_NotAvailable(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	var body struct {
-		Available         bool   `json:"available"`
-		SetupRequired     bool   `json:"setup_required"`
-		SetupPrompt       string `json:"setup_prompt"`
-		ProjectConfigPath string `json:"project_config_path"`
-		HostConfigPath    string `json:"host_config_path"`
+		Available         bool            `json:"available"`
+		SetupRequired     bool            `json:"setup_required"`
+		SetupPrompt       string          `json:"setup_prompt"`
+		ProjectConfigPath string          `json:"project_config_path"`
+		HostConfigPath    json.RawMessage `json:"host_config_path"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -137,8 +137,11 @@ func TestPreviewStatus_NotAvailable(t *testing.T) {
 	if !body.SetupRequired {
 		t.Errorf("setup_required = false; want true for a project without launch config")
 	}
-	if body.SetupPrompt == "" || body.ProjectConfigPath == "" || body.HostConfigPath == "" {
+	if body.SetupPrompt == "" || body.ProjectConfigPath == "" {
 		t.Errorf("setup instructions are incomplete: %+v", body)
+	}
+	if len(body.HostConfigPath) != 0 {
+		t.Errorf("status exposes removed host_config_path: %s", body.HostConfigPath)
 	}
 }
 
@@ -251,15 +254,23 @@ func TestPreviewStart_SetupRequiredYields409(t *testing.T) {
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("status = %d, want 409 for missing launch setup", resp.StatusCode)
 	}
-	var body errResp
+	var body struct {
+		Code              string          `json:"code"`
+		SetupPrompt       string          `json:"setup_prompt"`
+		ProjectConfigPath string          `json:"project_config_path"`
+		HostConfigPath    json.RawMessage `json:"host_config_path"`
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if body.Code != "preview_setup_required" {
 		t.Errorf("code = %q; want preview_setup_required", body.Code)
 	}
-	if body.SetupPrompt == "" || body.ProjectConfigPath == "" || body.HostConfigPath == "" {
+	if body.SetupPrompt == "" || body.ProjectConfigPath == "" {
 		t.Errorf("setup error response is incomplete: %+v", body)
+	}
+	if len(body.HostConfigPath) != 0 {
+		t.Errorf("setup error exposes removed host_config_path: %s", body.HostConfigPath)
 	}
 }
 

@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"charm.land/lipgloss/v2"
+
+	"github.com/acksell/clank/internal/config"
 )
 
 // TestSchemeByName_Default verifies that an empty name resolves to the
@@ -106,6 +108,23 @@ func TestApplySchemeFromPreference_UnknownFallsBackToDefault(t *testing.T) {
 
 	if got, want := primaryColor, lipgloss.Color(builtInSchemes[0].Primary); got != want {
 		t.Errorf("primaryColor: got %v, want default %v", got, want)
+	}
+}
+
+func TestApplyPreferredThemeUsesPersistedScheme(t *testing.T) {
+	t.Setenv("CLANK_DIR", t.TempDir())
+	t.Cleanup(func() { applyColorScheme(builtInSchemes[0]) })
+	if err := config.UpdatePreferences(func(p *config.Preferences) {
+		p.ColorScheme = "tokyo-night"
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ApplyPreferredTheme()
+
+	target, _ := schemeByName("tokyo-night")
+	if got, want := primaryColor, lipgloss.Color(target.Primary); got != want {
+		t.Fatalf("primaryColor = %v, want persisted theme color %v", got, want)
 	}
 }
 

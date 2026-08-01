@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/acksell/clank/internal/daemonclient"
 )
 
 func TestPreviewLaunchName(t *testing.T) {
@@ -35,6 +33,33 @@ func TestPreviewLaunchName(t *testing.T) {
 			}
 			if err != nil || got != tt.want {
 				t.Fatalf("previewLaunchName(%q) = %q, %v; want %q, nil", tt.args, got, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestPreviewStartNameAfterSetup(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name             string
+		requested        string
+		generatedDefault string
+		wantStartName    string
+		wantNotice       bool
+	}{
+		{name: "no name requested", requested: "", generatedDefault: "web-app", wantStartName: "web-app"},
+		{name: "requested matches generated default", requested: "web-app", generatedDefault: "web-app", wantStartName: "web-app"},
+		{name: "requested name not in generated config", requested: "admin", generatedDefault: "web-app", wantStartName: "web-app", wantNotice: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			startName, notice := previewStartNameAfterSetup(tt.requested, tt.generatedDefault)
+			if startName != tt.wantStartName {
+				t.Errorf("startName = %q, want %q", startName, tt.wantStartName)
+			}
+			if (notice != "") != tt.wantNotice {
+				t.Errorf("notice = %q, want non-empty = %v", notice, tt.wantNotice)
 			}
 		})
 	}
@@ -70,17 +95,5 @@ func TestManagedPreviewProjectDir(t *testing.T) {
 	}
 	if explicit != subdir {
 		t.Errorf("explicit project dir = %q, want selected subdirectory %q", explicit, subdir)
-	}
-}
-
-func TestPreviewSetupRequiredErrorIncludesAgentPrompt(t *testing.T) {
-	t.Parallel()
-
-	err := previewSetupRequiredError(&daemonclient.PreviewStatus{
-		SetupRequired: true,
-		SetupPrompt:   "write one of two configs",
-	})
-	if !strings.Contains(err.Error(), "connected agent") || !strings.Contains(err.Error(), "write one of two configs") {
-		t.Fatalf("previewSetupRequiredError = %q", err)
 	}
 }

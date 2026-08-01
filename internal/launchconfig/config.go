@@ -8,16 +8,6 @@ const (
 	PortEnvironmentName = "PORT"
 )
 
-// Scope identifies whether configuration is shared with the project or host-only.
-type Scope string
-
-const (
-	// ScopeProject selects the repository-owned file.
-	ScopeProject Scope = "project"
-	// ScopeHost selects the persistent host-only file.
-	ScopeHost Scope = "host"
-)
-
 // File is the strict YAML launch schema.
 type File struct {
 	Default  string             `yaml:"default"`
@@ -37,17 +27,15 @@ type Ready struct {
 	ExpectedSubstring string `yaml:"expect"`
 }
 
-// Source identifies the selected project or host configuration file.
+// Source identifies the selected project configuration file.
 type Source struct {
-	Scope Scope
-	Path  string
+	Path string
 }
 
-// Paths contains the project identity and both supported config locations.
+// Paths contains the project identity and launch configuration location.
 type Paths struct {
 	ProjectRoot string
 	Project     string
-	Host        string
 }
 
 // Resolved is one validated launch entry with an absolute working directory.
