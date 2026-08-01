@@ -67,6 +67,11 @@ type ConnectModel struct {
 	backends []connectBackendRow
 	cursor   int
 
+	// hasPicker records that the run began at the backend picker, which
+	// is what makes stepping back out of the provider flow meaningful. A
+	// run started with a named backend has nothing behind it.
+	hasPicker bool
+
 	providerAuth providerAuthModel
 	result       ConnectResult
 
@@ -95,6 +100,7 @@ func NewConnectModel(caller ProviderAuthCaller, backend agent.BackendType) *Conn
 		return m
 	}
 	m.phase = connectPhaseLoading
+	m.hasPicker = true
 	return m
 }
 
@@ -119,9 +125,20 @@ func (m *ConnectModel) Init() tea.Cmd {
 
 func (m *ConnectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	// Both terminal messages end the program; Result() reads what was
-	// actually achieved off the flow's phase.
-	case providerAuthDoneMsg, providerAuthCancelMsg:
+	case providerAuthDoneMsg:
+		// Result() reads what was achieved off the flow's own phase.
+		return m, tea.Quit
+
+	case providerAuthCancelMsg:
+		// Leaving the provider list steps back to the backend picker
+		// when there is one — a user who picked the wrong agent wants
+		// the question again, not the program gone.
+		if m.hasPicker && m.phase == connectPhaseProvider {
+			m.phase = connectPhasePickBackend
+			m.providerAuth = providerAuthModel{}
+			m.result.Backend = ""
+			return m, nil
+		}
 		return m, tea.Quit
 
 	case connectProvidersLoadedMsg:

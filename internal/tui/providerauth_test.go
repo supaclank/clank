@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
 )
@@ -217,4 +219,118 @@ func equalIntSlice(a, b []int) bool {
 		}
 	}
 	return true
+}
+
+// esc means "back one screen", not "throw the flow away". The confirm
+// gate offers n to return to the list; esc used to dismiss the whole
+// modal instead, so a mis-picked provider cost you the entire flow.
+func TestProviderAuth_EscFromConfirmReturnsToList(t *testing.T) {
+	t.Parallel()
+	m := newProviderAuthModel(nil, agent.BackendOpenCode, "")
+	m.providers = []agent.ProviderAuthInfo{{ProviderID: "openai", Backend: agent.BackendOpenCode}}
+	m.phase = providerPhaseConfirm
+	m.activeProvider = m.providers[0]
+
+	m, cmd := m.Update(keyPress("esc"))
+	if m.phase != providerPhaseList {
+		t.Fatalf("phase = %v, want the provider list", m.phase)
+	}
+	if isCancelCmd(cmd) {
+		t.Error("esc at the confirm gate must not dismiss the modal")
+	}
+}
+
+// One screen back from the key form is the confirm gate — and the
+// half-filled form's error state must not follow you there.
+func TestProviderAuth_EscFromAPIKeyReturnsToConfirm(t *testing.T) {
+	t.Parallel()
+	m := newProviderAuthModel(nil, agent.BackendOpenCode, "")
+	m.phase = providerPhaseAPIKey
+	m.errMsg = "value cannot be empty"
+
+	m, cmd := m.Update(keyPress("esc"))
+	if m.phase != providerPhaseConfirm {
+		t.Fatalf("phase = %v, want the confirm gate", m.phase)
+	}
+	if m.errMsg != "" {
+		t.Errorf("stale error %q carried back", m.errMsg)
+	}
+	if isCancelCmd(cmd) {
+		t.Error("esc in the key form must not dismiss the modal")
+	}
+}
+
+// Backing out of a phase with a flow running on the host must abort it
+// — a `claude setup-token` PTY or a device poll would otherwise outlive
+// the screen that started it — and then land back on the list.
+func TestProviderAuth_EscFromLiveFlowCancelsItAndReturnsToList(t *testing.T) {
+	t.Parallel()
+	for _, phase := range []providerAuthPhase{providerPhaseAwaiting, providerPhaseOAuthCode} {
+		m := newProviderAuthModel(nil, agent.BackendClaudeCode, "")
+		m.providers = []agent.ProviderAuthInfo{{ProviderID: host.ProviderAnthropicClaudeCode}}
+		m.phase = phase
+		m.activeProvider = m.providers[0]
+
+		// No flow id: cancelFlowCmd short-circuits the host call, so the
+		// nil caller is never dialed and the message is what we assert.
+		_, cmd := m.Update(keyPress("esc"))
+		if cmd == nil {
+			t.Fatalf("phase %v: esc produced no command", phase)
+		}
+		if _, ok := cmd().(providerFlowCanceledMsg); !ok {
+			t.Fatalf("phase %v: esc did not cancel the flow and step back", phase)
+		}
+	}
+
+	// And the message itself returns to the list with the flow cleared.
+	m := newProviderAuthModel(nil, agent.BackendClaudeCode, "")
+	m.phase = providerPhaseAwaiting
+	m.flow = agent.DeviceFlowStart{FlowID: "flow-1", UserCode: "ABCD"}
+	m, _ = m.Update(providerFlowCanceledMsg{})
+	if m.phase != providerPhaseList {
+		t.Errorf("phase = %v, want the provider list", m.phase)
+	}
+	if m.flow.FlowID != "" {
+		t.Errorf("canceled flow %q still attached", m.flow.FlowID)
+	}
+}
+
+// A failure is when you most want to retry, so the error screen returns
+// to the list — unless the failure is what left the list empty (the
+// initial catalog load), where there is nothing to return to.
+func TestProviderAuth_ErrorScreenReturnsToListWhenThereIsOne(t *testing.T) {
+	t.Parallel()
+	m := newProviderAuthModel(nil, agent.BackendOpenCode, "")
+	m.providers = []agent.ProviderAuthInfo{{ProviderID: "openai", Backend: agent.BackendOpenCode}}
+	m.phase = providerPhaseError
+	m.errMsg = "invalid api key"
+
+	m, cmd := m.Update(keyPress("esc"))
+	if m.phase != providerPhaseList {
+		t.Fatalf("phase = %v, want the provider list", m.phase)
+	}
+	if m.errMsg != "" {
+		t.Errorf("stale error %q carried back", m.errMsg)
+	}
+	if isCancelCmd(cmd) {
+		t.Error("a retryable error must not dismiss the modal")
+	}
+
+	// Catalog load failed: no list exists, so dismiss.
+	empty := newProviderAuthModel(nil, agent.BackendOpenCode, "")
+	empty.phase = providerPhaseError
+	empty.errMsg = "connection refused"
+	_, cmd = empty.Update(keyPress("esc"))
+	if !isCancelCmd(cmd) {
+		t.Error("an error with no list behind it must dismiss the modal")
+	}
+}
+
+// isCancelCmd runs cmd and reports whether it dismisses the modal.
+func isCancelCmd(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	_, ok := cmd().(providerAuthCancelMsg)
+	return ok
 }

@@ -83,10 +83,12 @@ func TestConnectProgram_RendersPickerAndQuits(t *testing.T) {
 func TestConnectProgram_PickingABackendLoadsItsProviders(t *testing.T) {
 	client := newConnectTestClient(t)
 
-	// enter picks the first row; esc leaves the provider list it opens.
+	// enter picks the first row; ctrl+c ends the run from the provider
+	// list (esc would step back to the picker and release the choice —
+	// see TestConnectProgram_EscFromProvidersReturnsToPicker).
 	result, rendered := runConnectProgram(t, client, "",
 		keyStep{UntilVisible: backendLabelFor(agent.BackendCodex), Keys: "\r"},
-		keyStep{UntilVisible: "GitHub Copilot", Keys: "\x1b"})
+		keyStep{UntilVisible: "GitHub Copilot", Keys: "\x03"})
 
 	want := agent.AllBackends[0]
 	if result.Backend != want {
@@ -155,6 +157,12 @@ type gatedKeys struct {
 	next    int
 	visible func() string
 	done    <-chan struct{}
+
+	// mark is how much output had been written when the previous step
+	// fired. Each step matches only what was drawn after it, so a step
+	// can wait for a screen the flow has already shown once — returning
+	// to the picker renders the same text a second time.
+	mark int
 }
 
 func (g *gatedKeys) Read(p []byte) (int, error) {
@@ -163,7 +171,7 @@ func (g *gatedKeys) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 	step := g.steps[g.next]
-	for !strings.Contains(g.visible(), step.UntilVisible) {
+	for !strings.Contains(g.visible()[g.mark:], step.UntilVisible) {
 		select {
 		case <-g.done:
 			return 0, io.EOF
@@ -171,6 +179,7 @@ func (g *gatedKeys) Read(p []byte) (int, error) {
 		}
 	}
 	g.next++
+	g.mark = len(g.visible())
 	return copy(p, step.Keys), nil
 }
 
@@ -186,5 +195,29 @@ func backendLabelFor(bt agent.BackendType) string {
 		return "Codex"
 	default:
 		return string(bt)
+	}
+}
+
+// The full round trip a user makes after picking the wrong agent: pick a
+// backend, see its providers, back out, and land on the picker again
+// with the choice released. A cleared Backend is what distinguishes
+// "went back" from "esc quit the program" — a quit would leave the
+// picked backend on the result and never process the trailing key.
+func TestConnectProgram_EscFromProvidersReturnsToPicker(t *testing.T) {
+	client := newConnectTestClient(t)
+
+	result, rendered := runConnectProgram(t, client, "",
+		keyStep{UntilVisible: backendLabelFor(agent.BackendCodex), Keys: "\r"},
+		keyStep{UntilVisible: "GitHub Copilot", Keys: "\x1b"},
+		keyStep{UntilVisible: "Which agent do you want to use?", Keys: "q"})
+
+	if result.Backend != "" {
+		t.Errorf("Result().Backend = %q, want cleared — esc quit instead of going back", result.Backend)
+	}
+	if result.IsConnected {
+		t.Error("backing out must not report a connection")
+	}
+	if !strings.Contains(rendered, "GitHub Copilot") {
+		t.Errorf("setup: the provider list never rendered:\n%s", rendered)
 	}
 }

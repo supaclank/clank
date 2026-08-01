@@ -266,3 +266,46 @@ var errCatalogUnreachable = errTestString("dial unix /clank.sock: connect: conne
 type errTestString string
 
 func (e errTestString) Error() string { return string(e) }
+
+// Leaving the provider list must return to the backend picker, not end
+// the program: picking the wrong agent is a two-keystroke mistake and
+// should cost two keystrokes to undo.
+func TestConnectModel_LeavingProviderListReturnsToPicker(t *testing.T) {
+	t.Parallel()
+	m := NewConnectModel(nil, "")
+	model, _ := m.Update(connectProvidersLoadedMsg{providers: []agent.ProviderAuthInfo{
+		{ProviderID: "github-copilot", Backend: agent.BackendOpenCode},
+	}})
+	model, _ = model.(*ConnectModel).Update(keyPress("enter"))
+	if model.(*ConnectModel).phase != connectPhaseProvider {
+		t.Fatal("setup: enter did not open the provider flow")
+	}
+
+	model, cmd := model.(*ConnectModel).Update(providerAuthCancelMsg{})
+	m = model.(*ConnectModel)
+	if isQuitCmd(cmd) {
+		t.Fatal("backing out of the provider list must not quit")
+	}
+	if m.phase != connectPhasePickBackend {
+		t.Fatalf("phase = %v, want the backend picker", m.phase)
+	}
+	if m.Result().Backend != "" {
+		t.Errorf("Result().Backend = %q, want cleared after un-picking", m.Result().Backend)
+	}
+	// The picker still works: its rows survived the round trip.
+	if len(m.backends) != len(agent.AllBackends) {
+		t.Errorf("picker came back with %d rows, want %d", len(m.backends), len(agent.AllBackends))
+	}
+}
+
+// `clank connect claude` has no picker behind it, so backing out of the
+// provider list is the end of the program — not a jump to a screen the
+// user never asked for.
+func TestConnectModel_NamedBackendHasNothingToGoBackTo(t *testing.T) {
+	t.Parallel()
+	m := NewConnectModel(nil, agent.BackendClaudeCode)
+	_, cmd := m.Update(providerAuthCancelMsg{})
+	if !isQuitCmd(cmd) {
+		t.Error("a named-backend run must quit when the provider list is left")
+	}
+}
