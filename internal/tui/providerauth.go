@@ -35,7 +35,7 @@ import (
 )
 
 // ProviderAuthCaller is the call surface the modal needs to drive an
-// auth flow against a host. Three implementations exist today:
+// auth flow against a host. Two implementations exist today:
 //   - daemonclient.HostClient via hub.Host(hostname), used by the
 //     Settings entry to target the local clank-host through the hub,
 //     and by `clank connect` outside the inbox entirely.
