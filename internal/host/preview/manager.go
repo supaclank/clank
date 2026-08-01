@@ -7,8 +7,6 @@ import (
 	"log"
 	"sync"
 	"time"
-
-	"github.com/acksell/clank/pkg/preview/tokens"
 )
 
 // Default lifecycle timers. Bumpable via Options for tests.
@@ -396,9 +394,16 @@ func (m *Manager) StatusNamed(_ context.Context, worktreeID, workDir, launchName
 	}, nil
 }
 
-// LogTail returns the default Expo service's stdout/stderr tail.
-func (m *Manager) LogTail(worktreeID string) []byte {
-	return m.LogTailNamed(worktreeID, tokens.DefaultServiceName)
+// LogTail returns the default service's stdout/stderr tail: Expo's
+// fixed service, or a configured web project's default launch entry —
+// resolved the same way Start and StatusNamed pick the default, so an
+// unnamed configured preview's logs aren't silently empty.
+func (m *Manager) LogTail(worktreeID, workDir string) []byte {
+	launch, err := resolveLaunch(workDir, "")
+	if err != nil {
+		return nil
+	}
+	return m.LogTailNamed(worktreeID, launch.ServiceName)
 }
 
 // LogTailNamed returns one named service's stdout/stderr tail.

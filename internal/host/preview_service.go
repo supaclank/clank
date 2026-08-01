@@ -87,14 +87,19 @@ func (s *Service) PreviewStatus(ctx context.Context, worktreeID, launchName stri
 }
 
 // PreviewLogs returns the selected service's ANSI-stripped stdout/stderr tail.
-// An empty name retains the original Expo default. The result is bounded by the
-// preview package's ring capacity and needs no pagination.
-func (s *Service) PreviewLogs(worktreeID, serviceName string) []byte {
+// An empty name resolves Expo or the configured default, same as PreviewStatus.
+// The result is bounded by the preview package's ring capacity and needs no
+// pagination.
+func (s *Service) PreviewLogs(ctx context.Context, worktreeID, serviceName string) []byte {
 	if s.preview == nil {
 		return nil
 	}
-	if serviceName == "" {
-		return s.preview.LogTail(worktreeID)
+	if serviceName != "" {
+		return s.preview.LogTailNamed(worktreeID, serviceName)
 	}
-	return s.preview.LogTailNamed(worktreeID, serviceName)
+	workDir, err := s.previewWorkDirFor(ctx, worktreeID)
+	if err != nil {
+		return nil
+	}
+	return s.preview.LogTail(worktreeID, workDir)
 }

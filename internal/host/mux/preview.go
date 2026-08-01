@@ -100,7 +100,7 @@ func (m *Mux) handlePreviewLogs(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: codeInvalidRequest, Error: "worktree id missing"})
 		return
 	}
-	logs := m.svc.PreviewLogs(id, r.URL.Query().Get(previewNameQuery))
+	logs := m.svc.PreviewLogs(r.Context(), id, r.URL.Query().Get(previewNameQuery))
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(logs)

@@ -219,6 +219,64 @@ previews:
 	}
 }
 
+// TestManagerLogTailResolvesConfiguredDefault pins a regression: an
+// unnamed configured web preview registers under its launch name, but
+// LogTail used to always look up the Expo-only "default" key and
+// silently returned nothing for it. Regression for cubic review on #209.
+func TestManagerLogTailResolvesConfiguredDefault(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 is required for the managed-preview integration fixture")
+	}
+	t.Setenv("CLANK_DIR", t.TempDir())
+
+	dir := t.TempDir()
+	writePreviewLaunchConfig(t, dir, `default: web
+previews:
+  web:
+    directory: .
+    command: python3 -m http.server "$PORT" --bind 127.0.0.1
+    ready:
+      path: /
+`)
+
+	m := New(Options{StopGrace: time.Second})
+	defer m.Shutdown()
+
+	wid := "wt-logtail-default"
+	status, err := m.Start(context.Background(), wid, dir, "")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if status.ServiceName != "web" {
+		t.Fatalf("status.ServiceName = %q, want %q", status.ServiceName, "web")
+	}
+
+	key := serviceKey{WorktreeID: wid, ServiceName: "web"}
+	m.mu.Lock()
+	r := m.servers[key]
+	m.mu.Unlock()
+	if r == nil {
+		t.Fatal("configured server was not registered under its launch name")
+	}
+	waitForState(t, r, StateReady, 5*time.Second)
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", status.Port))
+	if err != nil {
+		t.Fatalf("GET configured preview: %v", err)
+	}
+	if closeErr := resp.Body.Close(); closeErr != nil {
+		t.Fatalf("close response body: %v", closeErr)
+	}
+
+	logs := m.LogTail(wid, dir)
+	if len(logs) == 0 {
+		t.Fatal("LogTail returned no output for an unnamed configured preview")
+	}
+	if string(logs) != string(m.LogTailNamed(wid, "web")) {
+		t.Fatal("LogTail did not resolve to the configured default service's logs")
+	}
+}
+
 // TestManagerStopErrNotRunning confirms Stop returns ErrNotRunning
 // when no server exists. Idempotent stop is what lets the mobile
 // "close preview" handler not care whether anything's actually running.
