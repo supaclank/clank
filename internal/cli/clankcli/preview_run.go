@@ -143,10 +143,6 @@ func runPreview(projectDir, prompt, backend string, port int) error {
 				}
 			}
 		}()
-		fmt.Println("Waiting for the dev server to come up…")
-		if err := waitHTTPReady(sigCtx, status.Port, 10*time.Minute); err != nil {
-			return fmt.Errorf("dev server on port %d never came up (first-run installs can be slow; re-run to retry): %w", status.Port, err)
-		}
 		return runWebPreview(sigCtx, projectDir, sockPath, sessionID, string(bt), status.Port, port)
 	}
 

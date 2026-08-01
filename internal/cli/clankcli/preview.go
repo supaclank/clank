@@ -2,6 +2,7 @@ package clankcli
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -14,8 +15,8 @@ func previewCmd() *cobra.Command {
 	var tunnel bool
 
 	cmd := &cobra.Command{
-		Use:   "preview [file | prompt]",
-		Short: "Preview the current folder on your phone (Expo) or in your browser (Vite), or open a single file",
+		Use:   "preview [prompt]",
+		Short: "Preview the current folder on your phone (Expo) or in your browser (Vite)",
 		Long: `Make the current folder previewable, with a clank agent one gesture away.
 
 Boots (or reuses) the local clank daemon and serves this folder's app:
@@ -32,15 +33,8 @@ Boots (or reuses) the local clank daemon and serves this folder's app:
     model on your machine, or ` + "CLANK_VOICE_ASR_CMD" + `) or the
     browser's Web Speech API (audio goes to the browser vendor's
     speech service) — and can switch later via the chevron next to
-    the mic.
-  - Single file (clank preview README.md): opens that file raw in the
-    browser behind the same overlay — no dev server, any folder.
-    Highlight text (or hold Cmd/Ctrl to point at parts of the page)
-    and leave inline comments; submit them and the agent edits the
-    file while the page live-reloads. Exactly one argument naming an
-    existing file selects this mode; a path-shaped argument that
-    doesn't exist is an error, never a prompt. File mode takes no
-    prompt argument.
+    the mic. Highlight text or attach an element to pin an inline
+    comment on it; several comments ride one submit.
 
 A prompt is optional: pass one to also start an agent on this folder and
 watch it work in the preview. Pairing/proxy, the dev server, and the agent
@@ -51,12 +45,8 @@ if clank preview was the one that started it.`,
 			if tunnel {
 				return fmt.Errorf("--tunnel isn't implemented yet; keep your phone and laptop on the same Wi-Fi for now")
 			}
-			file, isFile, err := previewFileArg(args)
-			if err != nil {
+			if err := rejectPathShapedArg(args); err != nil {
 				return err
-			}
-			if isFile {
-				return runFilePreview(projectDir, file, backend, port)
 			}
 			return runPreview(projectDir, strings.Join(args, " "), backend, port)
 		},
@@ -68,4 +58,20 @@ if clank preview was the one that started it.`,
 	cmd.Flags().BoolVar(&tunnel, "tunnel", false, "Expose over an encrypted tunnel for off-LAN phones (not yet implemented)")
 
 	return cmd
+}
+
+// rejectPathShapedArg errors out on a single path-shaped argument
+// (contains a dot or separator) rather than letting it silently start
+// an agent — `clank preview <file>` opened that file until this
+// command dropped file mode, and args are now always joined into a
+// prompt.
+func rejectPathShapedArg(args []string) error {
+	if len(args) != 1 {
+		return nil
+	}
+	arg := args[0]
+	if !strings.ContainsAny(arg, "./"+string(os.PathSeparator)) {
+		return nil
+	}
+	return fmt.Errorf("%s looks like a file path — clank preview <file> was removed; pass a prompt in words instead, or run clank preview with no arguments to preview the project", arg)
 }
