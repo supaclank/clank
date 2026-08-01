@@ -4,8 +4,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/acksell/clank/internal/launchconfig"
 	"github.com/acksell/clank/pkg/preview/tokens"
 )
 
@@ -43,6 +45,19 @@ func TestResolveLaunchRequiresConfigForWeb(t *testing.T) {
 	}
 	if setup.ProjectConfigPath != filepath.Join(realPreviewPath(t, dir), ".clank", "launch.yaml") {
 		t.Errorf("ProjectConfigPath = %q", setup.ProjectConfigPath)
+	}
+	for _, required := range []string{
+		"one-time setup task",
+		"non-interactive",
+		setup.ProjectConfigPath,
+		launchconfig.LaunchSchema(),
+	} {
+		if !strings.Contains(setup.Prompt, required) {
+			t.Errorf("Prompt missing %q", required)
+		}
+	}
+	if strings.Contains(setup.Prompt, "Run `clank preview`") {
+		t.Errorf("Prompt still redirects non-CLI clients to the CLI: %q", setup.Prompt)
 	}
 }
 

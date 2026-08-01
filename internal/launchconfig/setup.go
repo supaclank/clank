@@ -13,11 +13,6 @@ const (
 	claudeLaunchMaxBytes     = 64 << 10
 )
 
-// SetupPrompt gives non-CLI clients a concise route into interactive setup.
-func SetupPrompt(paths Paths) string {
-	return fmt.Sprintf("This project needs a one-time web preview setup. Run `clank preview` from %q in an interactive terminal to generate it.", paths.ProjectRoot)
-}
-
 // SetupTaskPrompt builds the bounded, non-interactive agent task.
 func SetupTaskPrompt(paths Paths) (string, error) {
 	claudeReference, err := readClaudeLaunchReference(paths.ProjectRoot)

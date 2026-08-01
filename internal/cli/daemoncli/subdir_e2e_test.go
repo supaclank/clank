@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +36,10 @@ func TestPreviewStart_SubdirSlug_SetupRequiredSurvivesGateway(t *testing.T) {
 	_, err := td.Client.Preview(host.LocalRepoSlug(sub)).Start(ctx)
 	if !errors.Is(err, daemonclient.ErrPreviewSetupRequired) {
 		t.Fatalf("want ErrPreviewSetupRequired, got %v", err)
+	}
+	var setup *daemonclient.PreviewSetupRequiredError
+	if !errors.As(err, &setup) || !strings.Contains(setup.SetupPrompt, "non-interactive task") {
+		t.Fatalf("setup task did not survive gateway: %#v", setup)
 	}
 }
 
