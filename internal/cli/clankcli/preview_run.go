@@ -102,6 +102,11 @@ func runPreview(projectDir, launchName, backend string, port int) error {
 			if err != nil {
 				return err
 			}
+			startName, substitutionNotice := previewStartNameAfterSetup(launchName, setupResult.Launch.Name)
+			if substitutionNotice != "" {
+				fmt.Println(substitutionNotice)
+			}
+			pv = client.Preview(previewKey).Named(startName)
 			fmt.Println("Starting the preview dev server with the generated configuration…")
 			status, err = pv.Start(startCtx)
 			if err != nil {
@@ -229,6 +234,18 @@ func runPreview(projectDir, launchName, backend string, port int) error {
 	}
 	fmt.Println("\nShutting down preview…")
 	return nil
+}
+
+// previewStartNameAfterSetup returns the preview entry to start once
+// one-time setup has run. Setup only guarantees its generated default
+// entry exists, so a requested name from before setup ran may not be
+// defined — startName always falls back to the generated default, and
+// notice is non-empty when that silently overrides the request.
+func previewStartNameAfterSetup(requested, generatedDefault string) (startName, notice string) {
+	if requested != "" && requested != generatedDefault {
+		notice = fmt.Sprintf("Generated configuration named this preview %q; starting it instead of %q.", generatedDefault, requested)
+	}
+	return generatedDefault, notice
 }
 
 // ensurePreviewDaemon reuses the running daemon or starts one, and

@@ -46,6 +46,9 @@ func waitPreviewReady(
 		case <-timer.C:
 			return nil, previewStartupError(client, fmt.Errorf("dev server did not satisfy its configured readiness probe within %s", timeout))
 		case <-ticker.C:
+			// TODO(ai-review): a status request straddling `timeout` can report
+			// ready after the deadline instead of timing out.
+			// https://github.com/Acksell/clank/pull/210#discussion_r3696464957
 			statusCtx, cancel := context.WithTimeout(ctx, previewStatusReadTimeout)
 			status, err = client.Status(statusCtx)
 			cancel()

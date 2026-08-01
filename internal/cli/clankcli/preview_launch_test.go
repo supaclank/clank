@@ -38,6 +38,33 @@ func TestPreviewLaunchName(t *testing.T) {
 	}
 }
 
+func TestPreviewStartNameAfterSetup(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name             string
+		requested        string
+		generatedDefault string
+		wantStartName    string
+		wantNotice       bool
+	}{
+		{name: "no name requested", requested: "", generatedDefault: "web-app", wantStartName: "web-app"},
+		{name: "requested matches generated default", requested: "web-app", generatedDefault: "web-app", wantStartName: "web-app"},
+		{name: "requested name not in generated config", requested: "admin", generatedDefault: "web-app", wantStartName: "web-app", wantNotice: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			startName, notice := previewStartNameAfterSetup(tt.requested, tt.generatedDefault)
+			if startName != tt.wantStartName {
+				t.Errorf("startName = %q, want %q", startName, tt.wantStartName)
+			}
+			if (notice != "") != tt.wantNotice {
+				t.Errorf("notice = %q, want non-empty = %v", notice, tt.wantNotice)
+			}
+		})
+	}
+}
+
 func TestManagedPreviewProjectDir(t *testing.T) {
 	t.Setenv("CLANK_DIR", t.TempDir())
 	repo := t.TempDir()
