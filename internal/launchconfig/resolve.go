@@ -101,6 +101,8 @@ func validatePreview(root, name string, preview Preview) (string, error) {
 	if strings.TrimSpace(preview.Command) == "" {
 		return "", fmt.Errorf("preview %q: command is required", name)
 	}
+	// TODO(ai-review): text match on $PORT doesn't confirm the launched
+	// server actually binds it https://github.com/Acksell/clank/pull/209#discussion_r3696030288
 	if !portVariablePattern.MatchString(preview.Command) {
 		return "", fmt.Errorf("preview %q: command must consume $%s", name, PortEnvironmentName)
 	}
