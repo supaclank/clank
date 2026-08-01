@@ -17,13 +17,12 @@ var ErrNotPreviewable = errors.New("preview: project is not previewable")
 // ErrPreviewSetupRequired classifies a missing web launch configuration.
 var ErrPreviewSetupRequired = errors.New("preview: launch setup is required")
 
-// PreviewSetupRequiredError carries the connected-agent setup task and both
-// supported output paths returned by a current host.
+// PreviewSetupRequiredError carries the connected-agent setup task and output
+// path returned by a current host.
 type PreviewSetupRequiredError struct {
 	Message           string
 	SetupPrompt       string
 	ProjectConfigPath string
-	HostConfigPath    string
 }
 
 func (e *PreviewSetupRequiredError) Error() string {
@@ -67,7 +66,6 @@ type PreviewStatus struct {
 	SetupRequired     bool   `json:"setup_required"`
 	SetupPrompt       string `json:"setup_prompt"`
 	ProjectConfigPath string `json:"project_config_path"`
-	HostConfigPath    string `json:"host_config_path"`
 	Kind              string `json:"kind"`
 	ServiceName       string `json:"service_name"`
 	State             string `json:"state"`
@@ -98,7 +96,6 @@ func (p *PreviewClient) Start(ctx context.Context) (*PreviewStatus, error) {
 				Message:           apiErr.Message,
 				SetupPrompt:       apiErr.SetupPrompt,
 				ProjectConfigPath: apiErr.ProjectConfigPath,
-				HostConfigPath:    apiErr.HostConfigPath,
 			}
 		}
 		return nil, err
@@ -155,7 +152,6 @@ func (p *PreviewClient) Logs(ctx context.Context) ([]byte, error) {
 			Error             string `json:"error"`
 			SetupPrompt       string `json:"setup_prompt"`
 			ProjectConfigPath string `json:"project_config_path"`
-			HostConfigPath    string `json:"host_config_path"`
 		}
 		if json.Unmarshal(body, &errResp) == nil && errResp.Error != "" {
 			return nil, &APIError{
@@ -164,7 +160,6 @@ func (p *PreviewClient) Logs(ctx context.Context) ([]byte, error) {
 				Message:           errResp.Error,
 				SetupPrompt:       errResp.SetupPrompt,
 				ProjectConfigPath: errResp.ProjectConfigPath,
-				HostConfigPath:    errResp.HostConfigPath,
 			}
 		}
 		return nil, fmt.Errorf("daemon returned status %d: %s", resp.StatusCode, summarizeBody(resp.Header.Get("Content-Type"), body))

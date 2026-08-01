@@ -36,12 +36,9 @@ func runPreviewSetup(
 	if err != nil {
 		return nil, err
 	}
-	scope, err := choosePreviewSetupScope(in, out)
-	if err != nil {
-		return nil, err
-	}
+	fmt.Fprintf(out, "\nOne-time setup: generating %s with your connected agent…\n\n", launchconfig.ProjectRelativePath)
 
-	info, events, cancelEvents, err := createPreviewSetupSession(ctx, client, backend, paths, scope)
+	info, events, cancelEvents, err := createPreviewSetupSession(ctx, client, backend, paths)
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +54,7 @@ func runPreviewSetup(
 		return nil, previewSetupSessionError(paths.ProjectRoot, info.ID, result.Err)
 	}
 
-	correction, resolved, err := inspectPreviewSetup(paths.ProjectRoot, scope, out)
+	correction, resolved, err := inspectPreviewSetup(paths.ProjectRoot, out)
 	if err != nil {
 		return nil, previewSetupSessionError(paths.ProjectRoot, info.ID, err)
 	}
@@ -69,7 +66,7 @@ func runPreviewSetup(
 		if result.Err != nil {
 			return nil, previewSetupSessionError(paths.ProjectRoot, info.ID, result.Err)
 		}
-		resolved, err = launchconfig.FinalizeSetup(paths.ProjectRoot, scope)
+		resolved, err = launchconfig.FinalizeSetup(paths.ProjectRoot)
 		if err != nil {
 			return nil, previewSetupSessionError(paths.ProjectRoot, info.ID, fmt.Errorf("generated configuration is still invalid after one correction: %w", err))
 		}

@@ -4,21 +4,8 @@ package launchconfig
 const (
 	// ProjectRelativePath is the repository-owned launch configuration path.
 	ProjectRelativePath = ".clank/launch.yaml"
-	// SetupRelativePath is the project-local candidate used before Clank
-	// installs a validated host-only configuration.
-	SetupRelativePath = ".clank/launch.setup.yaml"
 	// PortEnvironmentName is the allocated-port contract for every command.
 	PortEnvironmentName = "PORT"
-)
-
-// Scope identifies whether configuration is shared with the project or host-only.
-type Scope string
-
-const (
-	// ScopeProject selects the repository-owned file.
-	ScopeProject Scope = "project"
-	// ScopeHost selects the persistent host-only file.
-	ScopeHost Scope = "host"
 )
 
 // File is the strict YAML launch schema.
@@ -40,17 +27,15 @@ type Ready struct {
 	ExpectedSubstring string `yaml:"expect"`
 }
 
-// Source identifies the selected project or host configuration file.
+// Source identifies the selected project configuration file.
 type Source struct {
-	Scope Scope
-	Path  string
+	Path string
 }
 
-// Paths contains the project identity and both supported config locations.
+// Paths contains the project identity and launch configuration location.
 type Paths struct {
 	ProjectRoot string
 	Project     string
-	Host        string
 }
 
 // Resolved is one validated launch entry with an absolute working directory.

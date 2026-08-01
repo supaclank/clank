@@ -59,10 +59,13 @@ func TestLaunchSchemaKeysMatchGoYAMLTypes(t *testing.T) {
 	}
 }
 
-func TestSetupTaskPromptIncludesSelectedTargetAndContract(t *testing.T) {
+func TestSetupTaskPromptIncludesProjectTargetAndContract(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	claudeDir := filepath.Join(root, ".claude")
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -74,9 +77,8 @@ func TestSetupTaskPromptIncludesSelectedTargetAndContract(t *testing.T) {
 	paths := Paths{
 		ProjectRoot: root,
 		Project:     filepath.Join(root, ProjectRelativePath),
-		Host:        "/host/preview-launch/project.yaml",
 	}
-	prompt, err := SetupTaskPrompt(paths, ScopeHost)
+	prompt, err := SetupTaskPrompt(paths)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,8 +87,7 @@ func TestSetupTaskPromptIncludesSelectedTargetAndContract(t *testing.T) {
 		"non-interactive",
 		"Do not ask the user questions",
 		"three minutes",
-		filepath.Join(root, SetupRelativePath),
-		paths.Host,
+		paths.Project,
 		"hot module replacement",
 		"Fast Refresh",
 		"Do not configure or launch API servers",
@@ -110,26 +111,6 @@ func TestSetupTaskPromptIncludesSelectedTargetAndContract(t *testing.T) {
 		if strings.Contains(prompt, forbidden) {
 			t.Errorf("SetupTaskPrompt unexpectedly contains %q", forbidden)
 		}
-	}
-}
-
-func TestSetupTaskPromptWritesProjectConfigWhenShared(t *testing.T) {
-	t.Parallel()
-
-	paths := Paths{
-		ProjectRoot: t.TempDir(),
-		Project:     "/work/project/.clank/launch.yaml",
-		Host:        "/host/preview-launch/project.yaml",
-	}
-	prompt, err := SetupTaskPrompt(paths, ScopeProject)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(prompt, `Write the configuration to the shared project file "/work/project/.clank/launch.yaml"`) {
-		t.Fatalf("SetupTaskPrompt did not select project storage:\n%s", prompt)
-	}
-	if strings.Contains(prompt, SetupRelativePath) {
-		t.Fatalf("project setup prompt mentions private staging path:\n%s", prompt)
 	}
 }
 
@@ -165,15 +146,6 @@ func TestReadClaudeLaunchReferenceRejectsNonRegularFile(t *testing.T) {
 
 	if _, err := readClaudeLaunchReference(root); err == nil {
 		t.Fatal("expected error when launch.json is a directory")
-	}
-}
-
-func TestSetupTaskPromptRejectsUnknownScope(t *testing.T) {
-	t.Parallel()
-
-	_, err := SetupTaskPrompt(Paths{ProjectRoot: t.TempDir()}, Scope("other"))
-	if err == nil || !strings.Contains(err.Error(), "unknown launch config scope") {
-		t.Fatalf("SetupTaskPrompt error = %v", err)
 	}
 }
 

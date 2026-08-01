@@ -18,32 +18,8 @@ func SetupPrompt(paths Paths) string {
 	return fmt.Sprintf("This project needs a one-time web preview setup. Run `clank preview` from %q in an interactive terminal to generate it.", paths.ProjectRoot)
 }
 
-// SetupOutputPath returns the only path the setup agent may write.
-func SetupOutputPath(paths Paths, scope Scope) (string, error) {
-	switch scope {
-	case ScopeProject:
-		return paths.Project, nil
-	case ScopeHost:
-		return filepath.Join(paths.ProjectRoot, filepath.FromSlash(SetupRelativePath)), nil
-	default:
-		return "", fmt.Errorf("unknown launch config scope %q", scope)
-	}
-}
-
-// SetupTaskPrompt builds the bounded, non-interactive agent task for one
-// already-selected storage scope.
-func SetupTaskPrompt(paths Paths, scope Scope) (string, error) {
-	outputPath, err := SetupOutputPath(paths, scope)
-	if err != nil {
-		return "", err
-	}
-
-	storageInstruction := fmt.Sprintf("Write the configuration to the shared project file %q.", outputPath)
-	if scope == ScopeHost {
-		storageInstruction = fmt.Sprintf(`Write the configuration only to the staging file %q.
-Clank will validate it and install it as the private host file %q. Do not write the host file yourself.`, outputPath, paths.Host)
-	}
-
+// SetupTaskPrompt builds the bounded, non-interactive agent task.
+func SetupTaskPrompt(paths Paths) (string, error) {
 	claudeReference, err := readClaudeLaunchReference(paths.ProjectRoot)
 	if err != nil {
 		return "", err
@@ -56,7 +32,8 @@ wait for input. Finish within three minutes. If the repository is ambiguous,
 choose its primary browser frontend. If no web frontend can be configured,
 briefly explain why and finish without creating a file.
 
-%s
+Write the configuration to the project file %q. The user can commit or
+gitignore it.
 
 Inspect only what is useful for this decision: root entries, frontend manifests
 and scripts, the existing lockfile, relevant README sections, and existing
@@ -116,7 +93,7 @@ commands as hints.
 
 %s
 
-Write only the selected configuration file. Do not commit, push, or open a pull request. End with the path written and a one-line summary.`, paths.ProjectRoot, storageInstruction, LaunchSchema(), claudeReference), nil
+Write only that configuration file. Do not commit, push, or open a pull request. End with the path written and a one-line summary.`, paths.ProjectRoot, paths.Project, LaunchSchema(), claudeReference), nil
 }
 
 func readClaudeLaunchReference(projectRoot string) (string, error) {

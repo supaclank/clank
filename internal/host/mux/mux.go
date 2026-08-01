@@ -214,7 +214,6 @@ type errResp struct {
 	Error             string `json:"error"`
 	SetupPrompt       string `json:"setup_prompt,omitempty"`
 	ProjectConfigPath string `json:"project_config_path,omitempty"`
-	HostConfigPath    string `json:"host_config_path,omitempty"`
 }
 
 func decodeJSON(r io.Reader, v interface{}) error {

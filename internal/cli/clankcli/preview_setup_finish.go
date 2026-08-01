@@ -12,16 +12,12 @@ import (
 	"github.com/acksell/clank/internal/launchconfig"
 )
 
-func inspectPreviewSetup(projectRoot string, scope launchconfig.Scope, out io.Writer) (string, *launchconfig.Resolved, error) {
-	resolved, err := launchconfig.FinalizeSetup(projectRoot, scope)
+func inspectPreviewSetup(projectRoot string, out io.Writer) (string, *launchconfig.Resolved, error) {
+	resolved, err := launchconfig.FinalizeSetup(projectRoot)
 	if err == nil {
 		return "", resolved, nil
 	}
 	paths, pathErr := launchconfig.ResolvePaths(projectRoot)
-	if pathErr != nil {
-		return "", nil, pathErr
-	}
-	outputPath, pathErr := launchconfig.SetupOutputPath(paths, scope)
 	if pathErr != nil {
 		return "", nil, pathErr
 	}
@@ -33,7 +29,7 @@ func inspectPreviewSetup(projectRoot string, scope launchconfig.Scope, out io.Wr
 This remains a non-interactive task. Do not ask questions or wait for input.
 Correct only that configuration file, finish within one minute, and report the
 path written. Do not install dependencies, start services, commit, push, or open
-a pull request.`, outputPath, err), nil, nil
+a pull request.`, paths.Project, err), nil, nil
 }
 
 func previewSetupSessionError(projectRoot, sessionID string, setupErr error) error {

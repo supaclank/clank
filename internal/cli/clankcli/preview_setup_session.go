@@ -19,9 +19,8 @@ func createPreviewSetupSession(
 	client *daemonclient.Client,
 	backend agent.BackendType,
 	paths launchconfig.Paths,
-	scope launchconfig.Scope,
 ) (*agent.SessionInfo, <-chan agent.Event, context.CancelFunc, error) {
-	prompt, err := launchconfig.SetupTaskPrompt(paths, scope)
+	prompt, err := launchconfig.SetupTaskPrompt(paths)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -86,6 +85,7 @@ func runPreviewSetupTask(
 	out io.Writer,
 	options tui.TaskOptions,
 ) (tui.TaskResult, error) {
+	tui.ApplyPreferredTheme()
 	model, err := tui.NewSessionTaskModel(client, sessionID, options)
 	if err != nil {
 		cancelEvents()

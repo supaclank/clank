@@ -14,21 +14,14 @@ func load(workDir string) (File, Source, Paths, error) {
 		return File{}, Source{}, Paths{}, err
 	}
 
-	sources := []Source{
-		{Scope: ScopeProject, Path: paths.Project},
-		{Scope: ScopeHost, Path: paths.Host},
+	file, _, err := readLaunchFile(paths.Project)
+	if errors.Is(err, os.ErrNotExist) {
+		return File{}, Source{}, paths, &NotFoundError{Paths: paths}
 	}
-	for _, source := range sources {
-		file, _, err := readLaunchFile(source.Path)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return File{}, Source{}, paths, fmt.Errorf("load %s launch config: %w", source.Scope, err)
-		}
-		return file, source, paths, nil
+	if err != nil {
+		return File{}, Source{}, paths, fmt.Errorf("load project launch config: %w", err)
 	}
-	return File{}, Source{}, paths, &NotFoundError{Paths: paths}
+	return file, Source{Path: paths.Project}, paths, nil
 }
 
 func readLaunchFile(path string) (File, []byte, error) {

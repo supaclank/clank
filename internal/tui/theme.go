@@ -14,6 +14,8 @@ package tui
 
 import (
 	"charm.land/lipgloss/v2"
+
+	"github.com/acksell/clank/internal/config"
 )
 
 // ColorScheme is a named palette. All color fields are hex strings
@@ -114,4 +116,11 @@ func applySchemeFromPreference(name string) {
 		s = builtInSchemes[0]
 	}
 	applyColorScheme(s)
+}
+
+// ApplyPreferredTheme loads and applies the persisted TUI color scheme.
+// Missing or unreadable preferences use the default scheme.
+func ApplyPreferredTheme() {
+	prefs, _ := config.LoadPreferences()
+	applySchemeFromPreference(prefs.ColorScheme)
 }

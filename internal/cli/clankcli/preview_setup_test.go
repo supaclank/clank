@@ -15,57 +15,7 @@ import (
 	"github.com/acksell/clank/internal/launchconfig"
 )
 
-func TestChoosePreviewSetupScope(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		input string
-		want  launchconfig.Scope
-	}{
-		{name: "empty defaults private", input: "\n", want: launchconfig.ScopeHost},
-		{name: "eof defaults private", input: "", want: launchconfig.ScopeHost},
-		{name: "no is private", input: "no\n", want: launchconfig.ScopeHost},
-		{name: "yes is shared", input: "yes\n", want: launchconfig.ScopeProject},
-		{name: "case insensitive", input: "Y\n", want: launchconfig.ScopeProject},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			var out bytes.Buffer
-			got, err := choosePreviewSetupScope(strings.NewReader(tt.input), &out)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got != tt.want {
-				t.Fatalf("scope = %q, want %q", got, tt.want)
-			}
-			for _, required := range []string{"One-time setup", ".clank/launch.yaml", "[y/N]", "private to this machine"} {
-				if !strings.Contains(out.String(), required) {
-					t.Errorf("prompt missing %q: %s", required, out.String())
-				}
-			}
-		})
-	}
-}
-
-func TestChoosePreviewSetupScopeRepromptsInvalidAnswer(t *testing.T) {
-	t.Parallel()
-
-	var out bytes.Buffer
-	scope, err := choosePreviewSetupScope(strings.NewReader("maybe\ny\n"), &out)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if scope != launchconfig.ScopeProject {
-		t.Fatalf("scope = %q", scope)
-	}
-	if !strings.Contains(out.String(), "Please answer y or n") {
-		t.Fatalf("output = %q", out.String())
-	}
-}
-
-func TestCreatePreviewSetupSessionUsesSelectedPrompt(t *testing.T) {
+func TestCreatePreviewSetupSessionUsesProjectConfigPrompt(t *testing.T) {
 	t.Setenv("CLANK_DIR", t.TempDir())
 	client, stub := newTestHost(t)
 	repo := hosttest.InitGitRepo(t)
@@ -76,7 +26,7 @@ func TestCreatePreviewSetupSessionUsesSelectedPrompt(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	info, events, cancelEvents, err := createPreviewSetupSession(ctx, client, agent.BackendOpenCode, paths, launchconfig.ScopeHost)
+	info, events, cancelEvents, err := createPreviewSetupSession(ctx, client, agent.BackendOpenCode, paths)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,16 +39,15 @@ func TestCreatePreviewSetupSessionUsesSelectedPrompt(t *testing.T) {
 		t.Fatal("setup prompt was not dispatched")
 	}
 	prompt := last.LastSendOpts().Text
-	staging := filepath.Join(repo, filepath.FromSlash(launchconfig.SetupRelativePath))
-	if !strings.Contains(prompt, staging) || !strings.Contains(prompt, "non-interactive") {
+	if !strings.Contains(prompt, paths.Project) || !strings.Contains(prompt, "non-interactive") {
 		t.Fatalf("setup prompt = %q", prompt)
 	}
-	if strings.Contains(prompt, "ask whether") {
-		t.Fatalf("setup prompt asks agent to select storage: %q", prompt)
+	if strings.Contains(strings.ToLower(prompt), "private host") {
+		t.Fatalf("setup prompt mentions private storage: %q", prompt)
 	}
 }
 
-func TestRunPreviewSetupCompletesInlineAndInstallsPrivateConfig(t *testing.T) {
+func TestRunPreviewSetupCompletesInlineWithProjectConfig(t *testing.T) {
 	t.Setenv("CLANK_DIR", t.TempDir())
 	client, stub := newTestHost(t)
 	repo := hosttest.InitGitRepo(t)
@@ -106,29 +55,33 @@ func TestRunPreviewSetupCompletesInlineAndInstallsPrivateConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	staging, err := launchconfig.SetupOutputPath(paths, launchconfig.ScopeHost)
-	if err != nil {
+	if err := os.MkdirAll(filepath.Dir(paths.Project), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(staging), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(staging, []byte(validPreviewSetupYAML), 0o644); err != nil {
+	if err := os.WriteFile(paths.Project, []byte(validPreviewSetupYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var out bytes.Buffer
-	resolved, err := runPreviewSetup(ctx, client, agent.BackendOpenCode, repo, strings.NewReader("\n"), &out)
+	resolved, err := runPreviewSetup(ctx, client, agent.BackendOpenCode, repo, strings.NewReader("unused"), &out)
 	if err != nil {
 		t.Fatalf("runPreviewSetup: %v\noutput:\n%s", err, out.String())
 	}
-	if resolved.Launch.Source.Scope != launchconfig.ScopeHost || resolved.Launch.Source.Path != paths.Host {
+	if resolved.Launch.Source.Path != paths.Project {
 		t.Fatalf("resolved source = %+v", resolved.Launch.Source)
 	}
-	if !strings.Contains(out.String(), "Preview configuration generated") {
-		t.Fatalf("output lacks generated configuration: %q", out.String())
+	for _, required := range []string{
+		"\nOne-time setup: generating .clank/launch.yaml with your connected agent…\n\n",
+		"Preview configuration generated",
+	} {
+		if !strings.Contains(out.String(), required) {
+			t.Errorf("output missing %q: %q", required, out.String())
+		}
+	}
+	if strings.Contains(strings.ToLower(out.String()), "private storage") || strings.Contains(strings.ToLower(out.String()), "this machine") {
+		t.Fatalf("output mentions private storage: %q", out.String())
 	}
 	info, err := client.Session(resolved.SessionID).Get(ctx)
 	if err != nil {
@@ -151,32 +104,28 @@ func TestRunPreviewSetupCompletesInlineAndInstallsPrivateConfig(t *testing.T) {
 }
 
 func TestFinalizePreviewSetupRetriesOneInvalidGeneration(t *testing.T) {
-	t.Setenv("CLANK_DIR", t.TempDir())
+	t.Parallel()
 	repo := hosttest.InitGitRepo(t)
 	paths, err := launchconfig.ResolvePaths(repo)
 	if err != nil {
 		t.Fatal(err)
 	}
-	staging, err := launchconfig.SetupOutputPath(paths, launchconfig.ScopeHost)
-	if err != nil {
+	if err := os.MkdirAll(filepath.Dir(paths.Project), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(staging), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(staging, []byte("prevews: {}\n"), 0o644); err != nil {
+	if err := os.WriteFile(paths.Project, []byte("prevews: {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	var out bytes.Buffer
-	correction, resolved, err := inspectPreviewSetup(repo, launchconfig.ScopeHost, &out)
+	correction, resolved, err := inspectPreviewSetup(repo, &out)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resolved != nil || correction == "" {
 		t.Fatalf("correction = %q, resolved = %+v", correction, resolved)
 	}
-	for _, required := range []string{"validation failed", "field prevews not found", staging, "non-interactive", "one minute"} {
+	for _, required := range []string{"validation failed", "field prevews not found", paths.Project, "non-interactive", "one minute"} {
 		if !strings.Contains(correction, required) {
 			t.Errorf("correction missing %q: %s", required, correction)
 		}
@@ -185,14 +134,14 @@ func TestFinalizePreviewSetupRetriesOneInvalidGeneration(t *testing.T) {
 		t.Fatalf("output = %q", out.String())
 	}
 
-	if err := os.WriteFile(staging, []byte(validPreviewSetupYAML), 0o644); err != nil {
+	if err := os.WriteFile(paths.Project, []byte(validPreviewSetupYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	correction, resolved, err = inspectPreviewSetup(repo, launchconfig.ScopeHost, io.Discard)
+	correction, resolved, err = inspectPreviewSetup(repo, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if correction != "" || resolved == nil || resolved.Source.Scope != launchconfig.ScopeHost {
+	if correction != "" || resolved == nil || resolved.Source.Path != paths.Project {
 		t.Fatalf("correction = %q, resolved = %+v", correction, resolved)
 	}
 }
