@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -33,7 +34,7 @@ func TestParseDictationEngine(t *testing.T) {
 func TestStartRejectsUnknownDictationEngine(t *testing.T) {
 	t.Parallel()
 	_, err := Start(Options{
-		UpstreamPort:     1,
+		UpstreamURL:      &url.URL{Scheme: "http", Host: "127.0.0.1:1"},
 		DaemonSocketPath: "/tmp/nope.sock",
 		Token:            "t",
 		DictationEngine:  DictationEngine("cloudz"),

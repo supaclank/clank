@@ -49,9 +49,8 @@ const maxInjectHTMLBytes = 8 << 20
 
 // Options configures Start.
 type Options struct {
-	// UpstreamPort is the dev server (Vite) the proxy fronts, on
-	// 127.0.0.1. Required.
-	UpstreamPort int
+	// UpstreamURL is the HTTP(S) origin the proxy fronts. Required.
+	UpstreamURL *url.URL
 
 	// DaemonSocketPath is the clank daemon's unix socket; /__clank/api/*
 	// relays there. Required.
@@ -104,8 +103,9 @@ type Server struct {
 // Loopback-only on purpose: unlike the phone flow there's no LAN peer,
 // and not binding 0.0.0.0 keeps the daemon relay off the network.
 func Start(opts Options) (*Server, error) {
-	if opts.UpstreamPort == 0 {
-		return nil, fmt.Errorf("webpreview: upstream port is required")
+	target, err := validatedUpstreamURL(opts.UpstreamURL)
+	if err != nil {
+		return nil, err
 	}
 	if opts.DaemonSocketPath == "" {
 		return nil, fmt.Errorf("webpreview: daemon socket path is required")
@@ -147,7 +147,7 @@ func Start(opts Options) (*Server, error) {
 			`<script type="module" src="/__clank/overlay.js"></script>`)
 	}
 
-	upstream := newUpstreamProxy(opts.UpstreamPort, snippet, lg)
+	upstream := newUpstreamProxy(target, snippet, lg)
 	daemon := newDaemonProxy(opts.DaemonSocketPath)
 
 	mux := http.NewServeMux()
@@ -205,8 +205,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 // httputil.ReverseProxy's native upgrade handling; ModifyResponse
 // guards on 200+text/html so 101s are untouched. snippet is invoked
 // per injected response (its config reflects live state).
-func newUpstreamProxy(port int, snippet func() []byte, lg *log.Logger) *httputil.ReverseProxy {
-	target := &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", port)}
+func newUpstreamProxy(target *url.URL, snippet func() []byte, lg *log.Logger) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
@@ -259,6 +258,37 @@ func newUpstreamProxy(port int, snippet func() []byte, lg *log.Logger) *httputil
 		FlushInterval: -1, // stream non-HTML passthrough (SSE-style dev endpoints)
 		ErrorLog:      lg,
 	}
+}
+
+func validatedUpstreamURL(target *url.URL) (*url.URL, error) {
+	if target == nil {
+		return nil, fmt.Errorf("webpreview: upstream URL is required")
+	}
+	if !target.IsAbs() || target.Host == "" {
+		return nil, fmt.Errorf("webpreview: upstream URL must be absolute")
+	}
+	if target.Scheme != "http" && target.Scheme != "https" {
+		return nil, fmt.Errorf("webpreview: upstream URL must use http or https")
+	}
+	// Injected pages receive the daemon token. Never inject it into remote content.
+	if !isLoopbackHost(target.Hostname()) {
+		return nil, fmt.Errorf("webpreview: upstream URL must use a loopback host")
+	}
+	if target.User != nil || target.RawQuery != "" || target.ForceQuery || target.Fragment != "" || (target.Path != "" && target.Path != "/") {
+		return nil, fmt.Errorf("webpreview: upstream URL must be an origin only")
+	}
+	clone := *target
+	clone.Path = ""
+	clone.RawPath = ""
+	return &clone, nil
+}
+
+func isLoopbackHost(hostname string) bool {
+	if strings.EqualFold(hostname, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(hostname)
+	return ip != nil && ip.IsLoopback()
 }
 
 // newDaemonProxy relays to the daemon's unix socket — the same rewrite
