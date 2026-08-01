@@ -43,10 +43,8 @@ func (v Visibility) Valid() bool {
 }
 
 const (
-	// DefaultServiceName is the service_name registered when a worktree
-	// has a single implicit preview (today's Expo-only path). Future
-	// declarative multi-service via clank.preview.yaml will register
-	// named services instead.
+	// DefaultServiceName is the service_name registered for the implicit
+	// Expo launch. Configured web launches register their declared names.
 	DefaultServiceName = "default"
 
 	// DefaultTokenTTL is how long a freshly minted token stays valid

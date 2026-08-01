@@ -19,9 +19,10 @@ func TestSpawnReachesReady(t *testing.T) {
 	defer cancel()
 
 	spec := Spec{
-		Kind:        KindExpo,
-		CmdTemplate: fakeMetroScript(""),
-		ReadyProbe:  expoReadyProbe,
+		Kind:                 KindExpo,
+		CmdTemplate:          fakeMetroScript(""),
+		ShouldSubstitutePort: true,
+		ReadyProbe:           expoReadyProbe,
 	}
 	port, err := allocatePort()
 	if err != nil {
@@ -59,9 +60,10 @@ func TestSpawnAndOrphanCleanup(t *testing.T) {
 	// runs (so the readiness probe passes), and we observe both
 	// processes before tearing down.
 	spec := Spec{
-		Kind:        KindExpo,
-		CmdTemplate: fakeMetroScript("(sleep 30 &)"),
-		ReadyProbe:  expoReadyProbe,
+		Kind:                 KindExpo,
+		CmdTemplate:          fakeMetroScript("(sleep 30 &)"),
+		ShouldSubstitutePort: true,
+		ReadyProbe:           expoReadyProbe,
 	}
 	port, err := allocatePort()
 	if err != nil {
@@ -109,9 +111,10 @@ func TestSpawnReadinessTimeoutFails(t *testing.T) {
 	defer cancel()
 
 	spec := Spec{
-		Kind:        KindExpo,
-		CmdTemplate: []string{"sh", "-c", "sleep 30"}, // never serves /status
-		ReadyProbe:  expoReadyProbe,
+		Kind:                 KindExpo,
+		CmdTemplate:          []string{"sh", "-c", "sleep 30"}, // never serves /status
+		ShouldSubstitutePort: true,
+		ReadyProbe:           expoReadyProbe,
 	}
 	port, err := allocatePort()
 	if err != nil {
@@ -203,7 +206,7 @@ func waitForGroupEmpty(t *testing.T, pgid int, timeout time.Duration) int {
 // port half — see Expo's UrlCreator.ts).
 func TestBuildEnv_EmptyPublicURL_OmitsProxyVar(t *testing.T) {
 	t.Parallel()
-	env := buildEnv("/tmp/marker.bun", "", "", "")
+	env := buildEnv(KindExpo, "/tmp/marker.bun", "", "", "", 5173)
 	for _, e := range env {
 		if strings.HasPrefix(e, "REACT_NATIVE_PACKAGER_HOSTNAME=") {
 			t.Errorf("buildEnv set REACT_NATIVE_PACKAGER_HOSTNAME — overrides only the hostname half: %q", e)
@@ -226,6 +229,72 @@ func TestBuildEnv_EmptyPublicURL_OmitsProxyVar(t *testing.T) {
 	}
 }
 
+func TestBuildEnvPinsAllocatedPort(t *testing.T) {
+	t.Setenv("PORT", "9999")
+	env := buildEnv(KindExpo, "/tmp/marker.bun", "", "", "", 5173)
+	var ports []string
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "PORT=") {
+			ports = append(ports, entry)
+		}
+	}
+	if len(ports) != 1 || ports[0] != "PORT=5173" {
+		t.Fatalf("PORT entries = %q, want exactly [PORT=5173]", ports)
+	}
+}
+
+func TestBuildEnvOmitsExpoBootstrapMarkerForConfiguredWeb(t *testing.T) {
+	t.Parallel()
+
+	for _, entry := range buildEnv(KindWeb, "", "", "", "", 5173) {
+		if strings.HasPrefix(entry, bootstrapMarkerEnv+"=") {
+			t.Fatalf("configured web environment contains Expo bootstrap marker: %q", entry)
+		}
+	}
+}
+
+func TestBuildEnvPreservesWebEnvironmentWithoutExpoOverrides(t *testing.T) {
+	t.Setenv("CI", "preview-test")
+	t.Setenv("EXPO_NO_DOTENV", "parent")
+
+	env := buildEnv(KindWeb, "", "https://preview.example.test", "", "", 5173)
+	want := map[string]string{
+		"CI":             "preview-test",
+		"EXPO_NO_DOTENV": "parent",
+		"PORT":           "5173",
+	}
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			if expected, exists := want[key]; exists && value == expected {
+				delete(want, key)
+			}
+		}
+		if strings.HasPrefix(entry, "EXPO_PACKAGER_PROXY_URL=") {
+			t.Errorf("configured web environment received Expo proxy URL: %q", entry)
+		}
+	}
+	if len(want) != 0 {
+		t.Errorf("configured web environment missing inherited values: %v", want)
+	}
+}
+
+func TestRenderSpecArgsPreservesConfiguredPercentFormatting(t *testing.T) {
+	t.Parallel()
+
+	command := `printf '%d' 7; exec server --port "$PORT"`
+	args, err := renderSpecArgs(Spec{
+		Kind:        KindWeb,
+		CmdTemplate: []string{"sh", "-c", command},
+	}, 5173)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args[2] != command {
+		t.Fatalf("configured command = %q, want unchanged %q", args[2], command)
+	}
+}
+
 // TestBuildEnv_OmitsCI pins the lesson from a debugging session: setting
 // CI=true (or =1) in Metro's env makes Metro disable file watching +
 // HMR ("Metro is running in CI mode, reloads are disabled"). The
@@ -242,7 +311,7 @@ func TestBuildEnv_OmitsCI(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			for _, e := range buildEnv("/tmp/marker.bun", c.url, "", "") {
+			for _, e := range buildEnv(KindExpo, "/tmp/marker.bun", c.url, "", "", 5173) {
 				if strings.HasPrefix(e, "CI=") {
 					t.Errorf("buildEnv leaked CI to child process — disables Metro HMR: %q", e)
 				}
@@ -261,7 +330,7 @@ func TestBuildEnv_OmitsCI(t *testing.T) {
 func TestBuildEnv_PublicURL_SetsProxyVar(t *testing.T) {
 	t.Parallel()
 	publicURL := "http://preview-abc.localhost:7878"
-	env := buildEnv("/tmp/marker.bun", publicURL, "", "")
+	env := buildEnv(KindExpo, "/tmp/marker.bun", publicURL, "", "", 5173)
 	want := "EXPO_PACKAGER_PROXY_URL=" + publicURL
 	var saw bool
 	for _, e := range env {
@@ -280,7 +349,7 @@ func TestBuildEnv_PublicURL_SetsProxyVar(t *testing.T) {
 // carries the runtime path. Not parallel: mutates the process env.
 func TestBuildEnv_ShimRequireMergesNodeOptions(t *testing.T) {
 	t.Setenv("NODE_OPTIONS", "--max-old-space-size=4096")
-	env := buildEnv("/tmp/marker.bun", "", "/tmp/clank-preview/shim.js", "/tmp/clank-preview/runtime.js")
+	env := buildEnv(KindExpo, "/tmp/marker.bun", "", "/tmp/clank-preview/shim.js", "/tmp/clank-preview/runtime.js", 5173)
 
 	var nodeOpts, runtime string
 	nodeOptsCount := 0
@@ -321,7 +390,8 @@ func TestSpawnThreadsPublicURLToChild(t *testing.T) {
 	// disk then serves /status. The probe reads the file after Ready
 	// to confirm the var was inherited.
 	spec := Spec{
-		Kind: KindExpo,
+		Kind:                 KindExpo,
+		ShouldSubstitutePort: true,
 		CmdTemplate: []string{
 			"sh", "-c",
 			"printf '%s' \"${EXPO_PACKAGER_PROXY_URL}\" > " + envSentinel + " && " + fakeMetroBody(),

@@ -29,18 +29,19 @@ const (
 	StateFailed   State = "failed"
 )
 
-// Spec is the result of Detect: the recipe Manager uses to spawn the
-// dev server. Internal to this package — never wire-serialized. If the
-// shape ever escapes, that's the signal that v2's config-file work has
-// landed and Spec should be reborn as a typed wire schema.
+// Spec is the normalized recipe Manager uses to spawn a detected Expo or
+// configured web development server. It is internal and never serialized.
 type Spec struct {
-	// Kind identifies which client integration to use. Today: always
-	// KindExpo.
+	// Kind identifies which client integration to use.
 	Kind Kind
 
 	// CmdTemplate is the argv template. "%d" is replaced with the
-	// allocated port at spawn time.
+	// allocated port only when ShouldSubstitutePort is true.
 	CmdTemplate []string
+
+	// ShouldSubstitutePort enables the legacy Expo argv template. Configured
+	// web commands receive the port only through the PORT environment variable.
+	ShouldSubstitutePort bool
 
 	// ReadyProbe is the HTTP poll Manager runs after spawn to flip
 	// State from Starting to Ready. Concrete contract beats stdout-
@@ -75,13 +76,17 @@ type ReadyProbe struct {
 // route — when the sprite runs without a gateway integration (laptop
 // dev), they stay empty and clients fall back to status-only display.
 type Status struct {
-	Available   bool       `json:"available"`
-	Kind        Kind       `json:"kind,omitempty"`
-	ServiceName string     `json:"service_name,omitempty"`
-	State       State      `json:"state"`
-	Port        int        `json:"port,omitempty"`
-	StartedAt   *time.Time `json:"started_at,omitempty"`
-	LastErr     string     `json:"last_err,omitempty"`
+	Available         bool       `json:"available"`
+	SetupRequired     bool       `json:"setup_required,omitempty"`
+	SetupPrompt       string     `json:"setup_prompt,omitempty"`
+	ProjectConfigPath string     `json:"project_config_path,omitempty"`
+	HostConfigPath    string     `json:"host_config_path,omitempty"`
+	Kind              Kind       `json:"kind,omitempty"`
+	ServiceName       string     `json:"service_name,omitempty"`
+	State             State      `json:"state"`
+	Port              int        `json:"port,omitempty"`
+	StartedAt         *time.Time `json:"started_at,omitempty"`
+	LastErr           string     `json:"last_err,omitempty"`
 
 	// Token is the gateway-minted token for this preview's public URL.
 	// Empty when the manager's GWClient is disabled (laptop dev).

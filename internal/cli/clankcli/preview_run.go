@@ -25,13 +25,14 @@ const (
 
 // runPreview serves the current folder's app for live preview and tears
 // everything down on interrupt (stopping the daemon only if it started
-// it). What "preview" means depends on what Detect finds:
+// it). What "preview" means depends on the resolved launch:
 //
 //   - Expo: expose the daemon to the phone over the LAN behind a
 //     pairing token and print the QR (the original flow).
-//   - Vite web: front the dev server with the overlay-injecting proxy
-//     and open it in the browser (runWebPreview).
-func runPreview(projectDir, backend string, port int) error {
+//   - Configured web: front the dev server with the overlay-injecting
+//     proxy and open it in the browser (runWebPreview).
+func runPreview(projectDir, launchName, backend string, port int) error {
+	isProjectExplicit := projectDir != ""
 	projectDir, err := resolveProjectDir(projectDir)
 	if err != nil {
 		return err
@@ -80,30 +81,58 @@ func runPreview(projectDir, backend string, port int) error {
 	// through: same folder, same key, same running server.
 	previewKey := host.LocalRepoSlug(projectDir)
 
-	// Generous timeout: a cold preview start runs `bun install` first.
 	// Derives from sigCtx so Ctrl+C during startup aborts the wait.
 	startCtx, cancel := context.WithTimeout(sigCtx, previewStartupTimeout)
 	defer cancel()
 
-	fmt.Println("Starting the dev server on this folder (first run installs dependencies)…")
-	status, err := client.Preview(previewKey).Start(startCtx)
+	pv := client.Preview(previewKey)
+	if launchName != "" {
+		pv = pv.Named(launchName)
+	}
+	fmt.Println("Starting the preview dev server…")
+	status, err := pv.Start(startCtx)
 	if err != nil {
-		// The Expo/Vite hint is only true for the daemon's "no app
-		// detected here" answer; any other failure (path resolution,
-		// spawn error) surfaces verbatim so it isn't mislabeled.
-		if errors.Is(err, daemonclient.ErrNotPreviewable) {
-			return fmt.Errorf("start preview (is this an Expo or Vite project?): %w", err)
+		if errors.Is(err, daemonclient.ErrPreviewSetupRequired) {
+			var setupErr *daemonclient.PreviewSetupRequiredError
+			if errors.As(err, &setupErr) && setupErr.SetupPrompt != "" {
+				return previewSetupRequiredError(&daemonclient.PreviewStatus{
+					SetupRequired:     true,
+					SetupPrompt:       setupErr.SetupPrompt,
+					ProjectConfigPath: setupErr.ProjectConfigPath,
+					HostConfigPath:    setupErr.HostConfigPath,
+				})
+			}
+			setup, statusErr := pv.Status(startCtx)
+			if statusErr != nil {
+				return fmt.Errorf("load preview setup instructions: %w", statusErr)
+			}
+			return previewSetupRequiredError(setup)
 		}
 		return fmt.Errorf("start preview: %w", err)
-	}
-	if status.Port == 0 {
-		return fmt.Errorf("preview started but the dev server port is unknown (state=%s)", status.State)
 	}
 	defer func() {
 		sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer scancel()
-		_ = client.Preview(previewKey).Stop(sctx)
+		_ = pv.Stop(sctx)
 	}()
+	if status.ServiceName == "" {
+		return fmt.Errorf("preview started without a service name")
+	}
+	// Follow-up web operations target the resolved config entry. Expo keeps
+	// its historical unnamed selection because its service is also called
+	// "default", which may be an explicit web entry in an Expo repository.
+	if status.Kind == string(preview.KindWeb) {
+		pv = client.Preview(previewKey).Named(status.ServiceName)
+	}
+	if status.Kind == string(preview.KindWeb) {
+		projectDir, err = managedPreviewProjectDir(projectDir, isProjectExplicit)
+		if err != nil {
+			return fmt.Errorf("resolve managed preview project context: %w", err)
+		}
+	}
+	if status.Port == 0 {
+		return fmt.Errorf("preview started but the dev server port is unknown (state=%s)", status.State)
+	}
 
 	bt, err := resolveBackend(backend, os.Stderr)
 	if err != nil {
@@ -124,7 +153,7 @@ func runPreview(projectDir, backend string, port int) error {
 					return
 				case <-ticker.C:
 					tctx, tcancel := context.WithTimeout(sigCtx, 10*time.Second)
-					_, _ = client.Preview(previewKey).Status(tctx)
+					_, _ = pv.Status(tctx)
 					tcancel()
 				}
 			}
@@ -180,7 +209,7 @@ func runPreview(projectDir, backend string, port int) error {
 	// a new phone that scans shows a code the terminal prompts you to
 	// type. Returning phones just reconnect (probe path, no ceremony).
 	go pairingLoop(sigCtx, client, os.Stdin, os.Stdout)
-	if err := watchExpoPreview(sigCtx, client.Preview(previewKey), status.State); err != nil {
+	if err := watchExpoPreview(sigCtx, pv, status.State); err != nil {
 		return err
 	}
 	fmt.Println("\nShutting down preview…")

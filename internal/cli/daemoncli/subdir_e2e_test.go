@@ -1,10 +1,8 @@
 package daemoncli
 
 // End-to-end coverage for monorepo-subdir GitRefs: the daemon accepts a
-// local_path pointing inside a repo, sessions normalize to
-// {root, subdir}, and the preview no_preview code survives
-// CLI → gateway → host so only genuine "no app here" errors carry the
-// Expo/Vite hint.
+// local_path pointing inside a repo, sessions normalize to {root, subdir},
+// and preview setup-required errors survive CLI → gateway → host.
 
 import (
 	"context"
@@ -20,12 +18,9 @@ import (
 	"github.com/acksell/clank/internal/host/hosttest"
 )
 
-// TestPreviewStart_SubdirSlug_NoPreviewSurvivesGateway proves the
-// structured no_preview code crosses the whole stack intact: for a
-// folder-slug key naming a repo subdir with no detectable app, the
-// daemonclient surfaces ErrNotPreviewable — previously this path 500'd
-// with a misleading "local_path is not the repo root".
-func TestPreviewStart_SubdirSlug_NoPreviewSurvivesGateway(t *testing.T) {
+// TestPreviewStart_SubdirSlug_SetupRequiredSurvivesGateway proves the
+// structured response crosses the whole stack for a repository subdirectory.
+func TestPreviewStart_SubdirSlug_SetupRequiredSurvivesGateway(t *testing.T) {
 	t.Parallel()
 	td := newTestDaemon(t)
 
@@ -38,8 +33,8 @@ func TestPreviewStart_SubdirSlug_NoPreviewSurvivesGateway(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err := td.Client.Preview(host.LocalRepoSlug(sub)).Start(ctx)
-	if !errors.Is(err, daemonclient.ErrNotPreviewable) {
-		t.Fatalf("want ErrNotPreviewable, got %v", err)
+	if !errors.Is(err, daemonclient.ErrPreviewSetupRequired) {
+		t.Fatalf("want ErrPreviewSetupRequired, got %v", err)
 	}
 }
 

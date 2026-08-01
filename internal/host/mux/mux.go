@@ -210,8 +210,11 @@ func writeError(w http.ResponseWriter, err error) {
 // machine-readable identifier the client maps back to a sentinel error
 // (see hostclient/http.go: errorFromResp).
 type errResp struct {
-	Code  string `json:"code"`
-	Error string `json:"error"`
+	Code              string `json:"code"`
+	Error             string `json:"error"`
+	SetupPrompt       string `json:"setup_prompt,omitempty"`
+	ProjectConfigPath string `json:"project_config_path,omitempty"`
+	HostConfigPath    string `json:"host_config_path,omitempty"`
 }
 
 func decodeJSON(r io.Reader, v interface{}) error {

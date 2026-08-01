@@ -122,7 +122,11 @@ func TestPreviewStatus_NotAvailable(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	var body struct {
-		Available bool `json:"available"`
+		Available         bool   `json:"available"`
+		SetupRequired     bool   `json:"setup_required"`
+		SetupPrompt       string `json:"setup_prompt"`
+		ProjectConfigPath string `json:"project_config_path"`
+		HostConfigPath    string `json:"host_config_path"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -130,9 +134,110 @@ func TestPreviewStatus_NotAvailable(t *testing.T) {
 	if body.Available {
 		t.Errorf("available = true; want false for non-Expo dir")
 	}
+	if !body.SetupRequired {
+		t.Errorf("setup_required = false; want true for a project without launch config")
+	}
+	if body.SetupPrompt == "" || body.ProjectConfigPath == "" || body.HostConfigPath == "" {
+		t.Errorf("setup instructions are incomplete: %+v", body)
+	}
 }
 
-func TestPreviewStart_NotPreviewableYields404(t *testing.T) {
+func TestPreviewStatus_SelectsConfiguredName(t *testing.T) {
+	env := newPreviewTestEnv(t, map[string]string{
+		"web/package.json":   `{}`,
+		"admin/package.json": `{}`,
+		".clank/launch.yaml": `default: web
+previews:
+  web:
+    directory: web
+    command: npm run dev -- --port "$PORT"
+    ready:
+      path: /
+  admin:
+    directory: admin
+    command: npm run admin -- --port "$PORT"
+    ready:
+      path: /healthz
+`,
+	})
+
+	resp, err := http.Get(env.srv.URL + "/worktrees/" + env.worktreeID + "/preview/status?name=admin")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var body struct {
+		Available   bool   `json:"available"`
+		Kind        string `json:"kind"`
+		ServiceName string `json:"service_name"`
+		State       string `json:"state"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.Available || body.Kind != "web" || body.ServiceName != "admin" || body.State != "stopped" {
+		t.Errorf("status = %+v", body)
+	}
+}
+
+func TestPreviewStartRejectsUnknownSelectionField(t *testing.T) {
+	env := newPreviewTestEnv(t, expoFixture())
+	resp, err := http.Post(env.srv.URL+"/worktrees/"+env.worktreeID+"/preview/start",
+		"application/json", strings.NewReader(`{"service":"admin"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestDecodePreviewSelectionRejectsOversizedAndTrailingJSON(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
+		{name: "oversized", body: strings.Repeat(" ", previewSelectionMaxBytes+1)},
+		{name: "trailing object", body: `{"name":"web"} {"name":"admin"}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tt.body))
+			if _, err := decodePreviewSelection(req); err == nil {
+				t.Fatal("decodePreviewSelection: want error")
+			}
+		})
+	}
+}
+
+func TestPreviewStatus_InvalidLaunchConfigYields422(t *testing.T) {
+	env := newPreviewTestEnv(t, map[string]string{
+		".clank/launch.yaml": "prevews: {}\n",
+	})
+	resp, err := http.Get(env.srv.URL + "/worktrees/" + env.worktreeID + "/preview/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", resp.StatusCode)
+	}
+	var body errResp
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != codePreviewConfigInvalid {
+		t.Errorf("code = %q, want %q", body.Code, codePreviewConfigInvalid)
+	}
+}
+
+func TestPreviewStart_SetupRequiredYields409(t *testing.T) {
 	env := newPreviewTestEnv(t, nil) // no package.json
 
 	// No body — preview/start no longer takes one (the gateway mints
@@ -143,27 +248,25 @@ func TestPreviewStart_NotPreviewableYields404(t *testing.T) {
 		t.Fatalf("post: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404 for non-previewable worktree", resp.StatusCode)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 for missing launch setup", resp.StatusCode)
 	}
 	var body errResp
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.Code != "no_preview" {
-		t.Errorf("code = %q; want no_preview", body.Code)
+	if body.Code != "preview_setup_required" {
+		t.Errorf("code = %q; want preview_setup_required", body.Code)
+	}
+	if body.SetupPrompt == "" || body.ProjectConfigPath == "" || body.HostConfigPath == "" {
+		t.Errorf("setup error response is incomplete: %+v", body)
 	}
 }
 
-// TestPreviewStart_FolderSlug_DetectsAtSubdir pins monorepo support
-// for the laptop `clank preview` path: the preview key is the
-// base64url slug of the previewed FOLDER — which may be a subdirectory
-// of a repo — and Detect runs AT that folder. The fixture makes the
-// failure modes distinguishable: the repo ROOT is previewable (Vite)
-// while sub/ is not, so folder-precise Detect yields 404 no_preview,
-// whereas a regression that normalizes the slug to the repo root
-// (resolveRepoSlug semantics) would find the root's Vite app instead.
-func TestPreviewStart_FolderSlug_DetectsAtSubdir(t *testing.T) {
+// The laptop preview key preserves the exact folder used for project context,
+// including a repository subdirectory. Without a launch config, that folder
+// produces the setup-required contract instead of being normalized elsewhere.
+func TestPreviewStart_FolderSlugRequiresSetupAtSubdir(t *testing.T) {
 	env := newPreviewTestEnv(t, nil)
 	repo := hosttest.InitGitRepo(t)
 	files := map[string]string{
@@ -187,15 +290,15 @@ func TestPreviewStart_FolderSlug_DetectsAtSubdir(t *testing.T) {
 		t.Fatalf("post: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404 (no_preview at the subdir)", resp.StatusCode)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (setup required at the subdir)", resp.StatusCode)
 	}
 	var body errResp
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.Code != "no_preview" {
-		t.Errorf("code = %q; want no_preview (Detect must run at the slug's folder)", body.Code)
+	if body.Code != "preview_setup_required" {
+		t.Errorf("code = %q; want preview_setup_required", body.Code)
 	}
 }
 

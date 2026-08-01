@@ -54,32 +54,11 @@ func TestDetect(t *testing.T) {
 			want: &Spec{Kind: KindExpo, ReadyProbe: expoReadyProbe},
 		},
 		{
-			name: "next via dependencies",
-			files: map[string]string{
-				"package.json": `{"dependencies":{"next":"^15.0.0","react":"^19.0.0"}}`,
-			},
-			want: &Spec{Kind: KindWeb, ReadyProbe: webReadyProbe},
-		},
-		{
-			name: "next wins over vite when both are declared",
-			files: map[string]string{
-				"package.json": `{"dependencies":{"next":"^15.0.0"},"devDependencies":{"vite":"^6.0.0"}}`,
-			},
-			want: &Spec{Kind: KindWeb, ReadyProbe: webReadyProbe},
-		},
-		{
-			name: "vite via devDependencies",
+			name: "vite is not auto-detected",
 			files: map[string]string{
 				"package.json": `{"devDependencies":{"vite":"^6.0.0","svelte":"^5.0.0"}}`,
 			},
-			want: &Spec{Kind: KindWeb, ReadyProbe: webReadyProbe},
-		},
-		{
-			name: "vite via dependencies",
-			files: map[string]string{
-				"package.json": `{"dependencies":{"vite":"^6.0.0"}}`,
-			},
-			want: &Spec{Kind: KindWeb, ReadyProbe: webReadyProbe},
+			want: nil,
 		},
 		{
 			name: "expo wins over vite when both are declared",
@@ -90,11 +69,11 @@ func TestDetect(t *testing.T) {
 			want: &Spec{Kind: KindExpo, ReadyProbe: expoReadyProbe},
 		},
 		{
-			name: "expo dep without app config falls through to vite",
+			name: "expo dep without app config is not auto-detected",
 			files: map[string]string{
 				"package.json": `{"dependencies":{"expo":"~50.0.0"},"devDependencies":{"vite":"^6.0.0"}}`,
 			},
-			want: &Spec{Kind: KindWeb, ReadyProbe: webReadyProbe},
+			want: nil,
 		},
 		{
 			name:  "no package.json",
@@ -171,43 +150,6 @@ func TestDetect(t *testing.T) {
 				t.Errorf("CmdTemplate is empty; want non-empty argv with one %%d")
 			}
 		})
-	}
-}
-
-// TestDetect_MonorepoSubdir pins that Detect is directory-precise: a
-// monorepo root without a dev-server dep is not previewable while its
-// web-app/ subdir is — the contract subdir preview start relies on
-// (PreviewStartLocal hands Detect the requested subdir, not the root).
-func TestDetect_MonorepoSubdir(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	files := map[string]string{
-		"package.json":         `{"dependencies":{"react":"^18"}}`,
-		"web-app/package.json": `{"devDependencies":{"vite":"^6.0.0"}}`,
-	}
-	for rel, content := range files {
-		path := filepath.Join(root, rel)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", path, err)
-		}
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			t.Fatalf("write %s: %v", path, err)
-		}
-	}
-
-	rootSpec, err := Detect(root)
-	if err != nil {
-		t.Fatalf("Detect(root): %v", err)
-	}
-	if rootSpec != nil {
-		t.Errorf("Detect(root) = %+v, want nil (react-only root is not previewable)", rootSpec)
-	}
-	subSpec, err := Detect(filepath.Join(root, "web-app"))
-	if err != nil {
-		t.Fatalf("Detect(web-app): %v", err)
-	}
-	if subSpec == nil || subSpec.Kind != KindWeb {
-		t.Errorf("Detect(web-app) = %+v, want KindWeb", subSpec)
 	}
 }
 
@@ -327,8 +269,6 @@ func TestCmdTemplates_LaunchViaBun(t *testing.T) {
 	t.Parallel()
 	for name, tmpl := range map[string][]string{
 		"expo": expoCmdTemplate,
-		"vite": webCmdTemplate,
-		"next": nextCmdTemplate,
 	} {
 		if len(tmpl) < 3 {
 			t.Fatalf("%s template len = %d, want ≥ 3 (sh -c <cmd>)", name, len(tmpl))

@@ -24,9 +24,12 @@ import (
 // machine-readable classification (e.g. "no_preview") for errors.As
 // callers that need to branch on the kind rather than the prose.
 type APIError struct {
-	StatusCode int
-	Code       string
-	Message    string
+	StatusCode        int
+	Code              string
+	Message           string
+	SetupPrompt       string
+	ProjectConfigPath string
+	HostConfigPath    string
 }
 
 func (e *APIError) Error() string { return "daemon: " + e.Message }
@@ -73,11 +76,21 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 
 	if resp.StatusCode >= 400 {
 		var errResp struct {
-			Code  string `json:"code"`
-			Error string `json:"error"`
+			Code              string `json:"code"`
+			Error             string `json:"error"`
+			SetupPrompt       string `json:"setup_prompt"`
+			ProjectConfigPath string `json:"project_config_path"`
+			HostConfigPath    string `json:"host_config_path"`
 		}
 		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error != "" {
-			return &APIError{StatusCode: resp.StatusCode, Code: errResp.Code, Message: errResp.Error}
+			return &APIError{
+				StatusCode:        resp.StatusCode,
+				Code:              errResp.Code,
+				Message:           errResp.Error,
+				SetupPrompt:       errResp.SetupPrompt,
+				ProjectConfigPath: errResp.ProjectConfigPath,
+				HostConfigPath:    errResp.HostConfigPath,
+			}
 		}
 		return fmt.Errorf("daemon returned status %d: %s", resp.StatusCode, summarizeBody(resp.Header.Get("Content-Type"), respBody))
 	}
