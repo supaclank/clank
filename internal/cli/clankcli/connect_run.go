@@ -59,21 +59,22 @@ func showConnectUI(ctx context.Context, client *daemonclient.Client, backend age
 }
 
 // adoptDefaultBackend records backend as the default for future sessions
-// when preferences.json carries no choice yet.
+// when preferences.json carries no choice yet. The emptiness check runs
+// inside UpdatePreferences' lock so a concurrent writer can't set
+// DefaultBackend between the check and the save and have it clobbered.
 func adoptDefaultBackend(backend agent.BackendType, out io.Writer) error {
-	prefs, err := config.LoadPreferences()
-	if err != nil {
-		return fmt.Errorf("read preferences: %w", err)
-	}
-	if prefs.DefaultBackend != "" {
-		return nil
-	}
+	adopted := false
 	if err := config.UpdatePreferences(func(p *config.Preferences) {
-		p.DefaultBackend = string(backend)
+		if p.DefaultBackend == "" {
+			p.DefaultBackend = string(backend)
+			adopted = true
+		}
 	}); err != nil {
 		return fmt.Errorf("save default backend: %w", err)
 	}
-	fmt.Fprintf(out, "%s is now your default agent (change it in the inbox's settings).\n", backend)
+	if adopted {
+		fmt.Fprintf(out, "%s is now your default agent (change it in the inbox's settings).\n", backend)
+	}
 	return nil
 }
 

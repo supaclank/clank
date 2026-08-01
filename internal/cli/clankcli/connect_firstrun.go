@@ -52,7 +52,13 @@ func ensureAgentConnected(ctx context.Context, client *daemonclient.Client, back
 		// caller's own work with a far better error than a guess here.
 		return agentConnectUnknown
 	}
-	if agent.IsAnyProviderConnected(providers) {
+	// A named backend must itself be connected — some other backend
+	// being connected doesn't help a preview that's pinned to this one.
+	connected := agent.IsAnyProviderConnected(providers)
+	if backendFlag != "" {
+		connected = agent.IsBackendConnected(providers, backendFlag)
+	}
+	if connected {
 		return agentConnected
 	}
 

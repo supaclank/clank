@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -130,6 +131,25 @@ func TestEnsureAgentConnected_EnvCredentialIsEnough(t *testing.T) {
 	}
 }
 
+// `clank preview --backend X` must check that X specifically is
+// connected, not "is anything connected anywhere" — otherwise a preview
+// pinned to an unconnected backend skips the offer just because some
+// other backend already has a credential.
+func TestEnsureAgentConnected_BackendFlagChecksThatBackendSpecifically(t *testing.T) {
+	client := newConnectTestClient(t)
+	t.Setenv(host.EnvAnthropicAPIKey, "sk-ant-test") // connects claude-code, not opencode
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var out bytes.Buffer
+	got := ensureAgentConnected(ctx, client, agent.BackendOpenCode, strings.NewReader(""), &out)
+	if got != agentNotConnected {
+		t.Fatalf("state = %v, want agentNotConnected — claude-code being connected must not "+
+			"excuse an unconnected opencode. Output:\n%s", got, out.String())
+	}
+}
+
 // A host that can't be reached is "we don't know", not "you have no
 // agent" — guessing would print a fix for a problem the user doesn't
 // have while the real failure is about to surface elsewhere.
@@ -238,6 +258,39 @@ func TestAdoptDefaultBackend_NeverOverwritesAChoice(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Errorf("nothing changed, so nothing should have been announced:\n%s", out.String())
+	}
+}
+
+// Two connects racing to adopt an empty default must not both win: the
+// "is it still empty?" check has to run inside UpdatePreferences' own
+// lock, or a second caller's stale read clobbers the first's choice and
+// both callers report a successful adoption.
+func TestAdoptDefaultBackend_ConcurrentCallsAdoptExactlyOnce(t *testing.T) {
+	t.Setenv("CLANK_DIR", t.TempDir())
+
+	const n = 50
+	backends := []agent.BackendType{agent.BackendClaudeCode, agent.BackendOpenCode}
+	outs := make([]bytes.Buffer, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			if err := adoptDefaultBackend(backends[i%len(backends)], &outs[i]); err != nil {
+				t.Errorf("adoptDefaultBackend: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	adoptions := 0
+	for i := range outs {
+		if outs[i].Len() > 0 {
+			adoptions++
+		}
+	}
+	if adoptions != 1 {
+		t.Errorf("got %d concurrent callers announcing adoption, want exactly 1", adoptions)
 	}
 }
 
