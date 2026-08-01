@@ -4,8 +4,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/acksell/clank/internal/launchconfig"
 	"github.com/acksell/clank/pkg/preview/tokens"
 )
 
@@ -44,6 +46,19 @@ func TestResolveLaunchRequiresConfigForWeb(t *testing.T) {
 	if setup.ProjectConfigPath != filepath.Join(realPreviewPath(t, dir), ".clank", "launch.yaml") {
 		t.Errorf("ProjectConfigPath = %q", setup.ProjectConfigPath)
 	}
+	for _, required := range []string{
+		"one-time setup task",
+		"non-interactive",
+		setup.ProjectConfigPath,
+		launchconfig.LaunchSchema(),
+	} {
+		if !strings.Contains(setup.Prompt, required) {
+			t.Errorf("Prompt missing %q", required)
+		}
+	}
+	if strings.Contains(setup.Prompt, "Run `clank preview`") {
+		t.Errorf("Prompt still redirects non-CLI clients to the CLI: %q", setup.Prompt)
+	}
 }
 
 func TestResolveLaunchUsesDefaultConfigEntry(t *testing.T) {
@@ -74,6 +89,33 @@ previews:
 	}
 	if got.Spec.ReadyProbe.Path != "/healthz" || got.Spec.ReadyProbe.ExpectedSubstr != "ready" {
 		t.Errorf("ReadyProbe = %+v", got.Spec.ReadyProbe)
+	}
+}
+
+func TestResolveLaunchWrapsSetupTaskPromptFailure(t *testing.T) {
+	t.Setenv("CLANK_DIR", t.TempDir())
+	dir := t.TempDir()
+	writePreviewFiles(t, dir, map[string]string{
+		"package.json": `{"devDependencies":{"vite":"^7.0.0"}}`,
+	})
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(t.TempDir(), "id_rsa")
+	if err := os.WriteFile(secret, []byte("PRIVATE KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(claudeDir, "launch.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := resolveLaunch(dir, "")
+	if !errors.Is(err, ErrInvalidLaunchConfig) {
+		t.Fatalf("resolveLaunch: err = %v, want ErrInvalidLaunchConfig", err)
+	}
+	if !strings.Contains(err.Error(), "escapes project root") {
+		t.Fatalf("resolveLaunch: err = %v, want the SetupTaskPrompt failure cause preserved in the chain", err)
 	}
 }
 

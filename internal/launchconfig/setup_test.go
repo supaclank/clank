@@ -148,12 +148,3 @@ func TestReadClaudeLaunchReferenceRejectsNonRegularFile(t *testing.T) {
 		t.Fatal("expected error when launch.json is a directory")
 	}
 }
-
-func TestSetupPromptDirectsInteractiveOneTimeSetup(t *testing.T) {
-	t.Parallel()
-
-	prompt := SetupPrompt(Paths{ProjectRoot: "/work/project"})
-	if !strings.Contains(prompt, "one-time") || !strings.Contains(prompt, "clank preview") {
-		t.Fatalf("SetupPrompt = %q", prompt)
-	}
-}

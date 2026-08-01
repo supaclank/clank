@@ -140,6 +140,10 @@ func TestPreviewStatus_NotAvailable(t *testing.T) {
 	if body.SetupPrompt == "" || body.ProjectConfigPath == "" {
 		t.Errorf("setup instructions are incomplete: %+v", body)
 	}
+	if !strings.Contains(body.SetupPrompt, "non-interactive task") ||
+		!strings.Contains(body.SetupPrompt, body.ProjectConfigPath) {
+		t.Errorf("setup prompt is not directly dispatchable to an agent: %q", body.SetupPrompt)
+	}
 	if len(body.HostConfigPath) != 0 {
 		t.Errorf("status exposes removed host_config_path: %s", body.HostConfigPath)
 	}

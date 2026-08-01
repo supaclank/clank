@@ -54,9 +54,13 @@ func resolveLaunch(workDir, name string) (*resolvedLaunch, error) {
 	if err != nil {
 		var missing *launchconfig.NotFoundError
 		if errors.As(err, &missing) {
+			prompt, promptErr := launchconfig.SetupTaskPrompt(missing.Paths)
+			if promptErr != nil {
+				return nil, fmt.Errorf("%w: build setup task: %w", ErrInvalidLaunchConfig, promptErr)
+			}
 			return nil, &SetupRequiredError{
 				ProjectConfigPath: missing.Paths.Project,
-				Prompt:            launchconfig.SetupPrompt(missing.Paths),
+				Prompt:            prompt,
 			}
 		}
 		return nil, fmt.Errorf("%w: %v", ErrInvalidLaunchConfig, err)
