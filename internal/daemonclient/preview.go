@@ -71,6 +71,7 @@ type PreviewStatus struct {
 	Kind              string `json:"kind"`
 	ServiceName       string `json:"service_name"`
 	State             string `json:"state"`
+	LastError         string `json:"last_err"`
 	Port              int    `json:"port"`
 	URL               string `json:"url"`
 	Token             string `json:"token"`

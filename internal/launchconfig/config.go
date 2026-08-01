@@ -4,6 +4,9 @@ package launchconfig
 const (
 	// ProjectRelativePath is the repository-owned launch configuration path.
 	ProjectRelativePath = ".clank/launch.yaml"
+	// SetupRelativePath is the project-local candidate used before Clank
+	// installs a validated host-only configuration.
+	SetupRelativePath = ".clank/launch.setup.yaml"
 	// PortEnvironmentName is the allocated-port contract for every command.
 	PortEnvironmentName = "PORT"
 )

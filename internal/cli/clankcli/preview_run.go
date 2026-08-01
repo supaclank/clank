@@ -74,6 +74,10 @@ func runPreview(projectDir, launchName, backend string, port int) error {
 			stopLocalDaemon()
 		}()
 	}
+	bt, err := resolveBackend(backend, os.Stderr)
+	if err != nil {
+		return err
+	}
 
 	// The preview key is the folder's slug — the identity the daemon
 	// resolves back to projectDir (host.previewWorkDirFor), the phone
@@ -89,26 +93,23 @@ func runPreview(projectDir, launchName, backend string, port int) error {
 	if launchName != "" {
 		pv = pv.Named(launchName)
 	}
+	var setupResult *previewSetupResult
 	fmt.Println("Starting the preview dev server…")
 	status, err := pv.Start(startCtx)
 	if err != nil {
 		if errors.Is(err, daemonclient.ErrPreviewSetupRequired) {
-			var setupErr *daemonclient.PreviewSetupRequiredError
-			if errors.As(err, &setupErr) && setupErr.SetupPrompt != "" {
-				return previewSetupRequiredError(&daemonclient.PreviewStatus{
-					SetupRequired:     true,
-					SetupPrompt:       setupErr.SetupPrompt,
-					ProjectConfigPath: setupErr.ProjectConfigPath,
-					HostConfigPath:    setupErr.HostConfigPath,
-				})
+			setupResult, err = runPreviewSetup(startCtx, client, bt, projectDir, os.Stdin, os.Stdout)
+			if err != nil {
+				return err
 			}
-			setup, statusErr := pv.Status(startCtx)
-			if statusErr != nil {
-				return fmt.Errorf("load preview setup instructions: %w", statusErr)
+			fmt.Println("Starting the preview dev server with the generated configuration…")
+			status, err = pv.Start(startCtx)
+			if err != nil {
+				return previewSetupSessionError(setupResult.ProjectRoot, setupResult.SessionID, fmt.Errorf("start preview after one-time setup: %w", err))
 			}
-			return previewSetupRequiredError(setup)
+		} else {
+			return fmt.Errorf("start preview: %w", err)
 		}
-		return fmt.Errorf("start preview: %w", err)
 	}
 	defer func() {
 		sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -116,7 +117,11 @@ func runPreview(projectDir, launchName, backend string, port int) error {
 		_ = pv.Stop(sctx)
 	}()
 	if status.ServiceName == "" {
-		return fmt.Errorf("preview started without a service name")
+		err := fmt.Errorf("preview started without a service name")
+		if setupResult != nil {
+			return previewSetupSessionError(setupResult.ProjectRoot, setupResult.SessionID, err)
+		}
+		return err
 	}
 	// Follow-up web operations target the resolved config entry. Expo keeps
 	// its historical unnamed selection because its service is also called
@@ -130,12 +135,14 @@ func runPreview(projectDir, launchName, backend string, port int) error {
 			return fmt.Errorf("resolve managed preview project context: %w", err)
 		}
 	}
-	if status.Port == 0 {
-		return fmt.Errorf("preview started but the dev server port is unknown (state=%s)", status.State)
+	if setupResult != nil && status.Kind != string(preview.KindWeb) {
+		return previewSetupSessionError(setupResult.ProjectRoot, setupResult.SessionID, fmt.Errorf("generated launch resolved to unexpected preview kind %q", status.Kind))
 	}
-
-	bt, err := resolveBackend(backend, os.Stderr)
-	if err != nil {
+	if status.Port == 0 {
+		err := fmt.Errorf("preview started but the dev server port is unknown (state=%s)", status.State)
+		if setupResult != nil {
+			return previewSetupSessionError(setupResult.ProjectRoot, setupResult.SessionID, err)
+		}
 		return err
 	}
 
@@ -159,10 +166,18 @@ func runPreview(projectDir, launchName, backend string, port int) error {
 			}
 		}()
 		fmt.Println("Waiting for the dev server to come up…")
-		upstreamURL := previewLoopbackURL(status.Port)
-		if err := waitHTTPReady(sigCtx, upstreamURL, previewStartupTimeout); err != nil {
-			return fmt.Errorf("dev server on port %d never came up (first-run installs can be slow; re-run to retry): %w", status.Port, err)
+		status, err = waitPreviewReady(sigCtx, pv, status, previewStartupTimeout)
+		if err != nil {
+			if setupResult != nil {
+				return previewSetupSessionError(setupResult.ProjectRoot, setupResult.SessionID, err)
+			}
+			return err
 		}
+		if setupResult != nil {
+			completePreviewSetupSession(client, setupResult.SessionID, os.Stdout)
+			fmt.Println("One-time preview setup complete.")
+		}
+		upstreamURL := previewLoopbackURL(status.Port)
 		return runWebPreview(sigCtx, projectDir, sockPath, string(bt), upstreamURL, port)
 	}
 

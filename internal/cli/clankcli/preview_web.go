@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"net/url"
 	"path/filepath"
 	"time"
@@ -143,32 +142,6 @@ func printModelProgress(file string, index, count int, done, total int64) {
 		fmt.Printf("\r  [%d/%d] %-18s %3d%% (%d MB)", index, count, file, done*100/total, done>>20)
 	} else {
 		fmt.Printf("\r  [%d/%d] %-18s %d MB", index, count, file, done>>20)
-	}
-}
-
-// waitHTTPReady polls a daemon-managed web server until it answers HTTP.
-// Any response counts — an error page mid-compile still means the server
-// is up and the overlay can front it.
-func waitHTTPReady(ctx context.Context, target *url.URL, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	client := &http.Client{Timeout: 2 * time.Second}
-	probeURL := *target
-	probeURL.Path = "/"
-	ticker := time.NewTicker(300 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if resp, err := client.Get(probeURL.String()); err == nil {
-			resp.Body.Close()
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			if time.Now().After(deadline) {
-				return fmt.Errorf("timed out after %s", timeout)
-			}
-		}
 	}
 }
 

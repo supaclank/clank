@@ -27,8 +27,9 @@ Boots (or reuses) the local clank daemon, then launches or attaches to a preview
   - Configured web app: starts the default entry in .clank/launch.yaml,
     or a named entry with clank preview web-app, then fronts the dev
     server with a local proxy that injects the clank overlay and opens
-    your browser. If no config exists, Clank returns a one-time setup
-    task for the connected agent. Expo keeps its automatic launch flow.
+    your browser. If no config exists, Clank offers a one-time setup and
+    runs the connected agent inline to generate it. Expo keeps its
+    automatic launch flow.
     Cmd/Ctrl+E summons the prompt box, holding Cmd/Ctrl points at
     elements to attach them as context, and tapping Caps Lock starts
     and stops dictation. On first dictation you pick the engine —

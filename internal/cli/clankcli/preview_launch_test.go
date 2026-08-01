@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/acksell/clank/internal/daemonclient"
 )
 
 func TestPreviewLaunchName(t *testing.T) {
@@ -70,17 +68,5 @@ func TestManagedPreviewProjectDir(t *testing.T) {
 	}
 	if explicit != subdir {
 		t.Errorf("explicit project dir = %q, want selected subdirectory %q", explicit, subdir)
-	}
-}
-
-func TestPreviewSetupRequiredErrorIncludesAgentPrompt(t *testing.T) {
-	t.Parallel()
-
-	err := previewSetupRequiredError(&daemonclient.PreviewStatus{
-		SetupRequired: true,
-		SetupPrompt:   "write one of two configs",
-	})
-	if !strings.Contains(err.Error(), "connected agent") || !strings.Contains(err.Error(), "write one of two configs") {
-		t.Fatalf("previewSetupRequiredError = %q", err)
 	}
 }
