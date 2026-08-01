@@ -34,17 +34,18 @@ import (
 	"github.com/acksell/clank/internal/agent"
 )
 
-// providerAuthCaller is the call surface the modal needs to drive an
+// ProviderAuthCaller is the call surface the modal needs to drive an
 // auth flow against a host. Two implementations exist today:
 //   - daemonclient.HostClient via hub.Host(hostname), used by the
-//     Settings entry to target the local clank-host through the hub.
+//     Settings entry to target the local clank-host through the hub,
+//     and by `clank connect` outside the inbox entirely.
 //   - cloud.AuthCaller, used by the Cloud panel's
 //     "Connect provider (in sandbox)" entry to talk directly to the
 //     active remote gateway with the user's OAuth bearer.
 //
 // Mirrors the names on daemonclient.HostClient so existing call sites
 // satisfy the interface without changes.
-type providerAuthCaller interface {
+type ProviderAuthCaller interface {
 	ListAuthProviders(ctx context.Context, backend agent.BackendType) ([]agent.ProviderAuthInfo, error)
 	StartAuthDeviceFlow(ctx context.Context, providerID string) (agent.DeviceFlowStart, error)
 	SubmitAuthAPIKey(ctx context.Context, providerID, key string, metadata map[string]string) (agent.DeviceFlowStart, error)
@@ -60,6 +61,11 @@ type providerAuthCancelMsg struct{}
 // providerAuthDoneMsg signals the inbox the flow finished
 // successfully (any subsequent message would be informational only).
 type providerAuthDoneMsg struct{}
+
+// providerFlowCanceledMsg reports that an in-flight flow was aborted on
+// the host, so the modal can step back to the provider list. Distinct
+// from providerAuthCancelMsg, which dismisses the modal entirely.
+type providerFlowCanceledMsg struct{}
 
 // Internal messages: each is the result of a tea.Cmd. The model
 // processes them in Update to advance phase state.
@@ -112,7 +118,7 @@ const providerAuthPollInterval = 2 * time.Second
 // providerAuthModel is the modal's state. Constructed via
 // newProviderAuthModel; rendered through overlayCenter by the inbox.
 type providerAuthModel struct {
-	caller providerAuthCaller
+	caller ProviderAuthCaller
 
 	// backend, when non-empty, scopes the provider list to those
 	// consumed by that agent CLI (opencode | claude-code). The model
@@ -170,6 +176,27 @@ type providerAuthModel struct {
 	loadingStartedAt time.Time
 }
 
+// acceptsTextInput reports whether the flow is on a screen where a
+// keystroke is content rather than a command. Hosts that bind bare
+// letters to program-level actions must not steal them here — "q"
+// belongs in an API key.
+func (m providerAuthModel) acceptsTextInput() bool {
+	return m.phase == providerPhaseAPIKey || m.phase == providerPhaseOAuthCode
+}
+
+// hasLiveFlow reports whether a flow is still running on the host —
+// a device poll or a `claude setup-token` PTY that outlives this
+// process unless it is canceled. False once the flow has settled, so a
+// completed connection is never "canceled" on the way out.
+func (m providerAuthModel) hasLiveFlow() bool {
+	switch m.phase {
+	case providerPhaseAwaiting, providerPhaseOAuthCode:
+		return m.flow.FlowID != ""
+	default:
+		return false
+	}
+}
+
 // providerSlowLoadAfter is how long providerPhaseLoading can sit
 // without finishing before we show the slowLoadHint (when set).
 const providerSlowLoadAfter = 2 * time.Second
@@ -181,7 +208,7 @@ const providerSlowLoadAfter = 2 * time.Second
 // has no downside there.
 const providerListLoadTimeout = 30 * time.Second
 
-func newProviderAuthModel(caller providerAuthCaller, backend agent.BackendType, slowLoadHint string) providerAuthModel {
+func newProviderAuthModel(caller ProviderAuthCaller, backend agent.BackendType, slowLoadHint string) providerAuthModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(primaryColor)
@@ -233,6 +260,7 @@ func (m providerAuthModel) Update(msg tea.Msg) (providerAuthModel, tea.Cmd) {
 		return m, nil
 
 	case providerStartedMsg:
+		// TODO(ai-review): backing out of confirm while this is in flight doesn't cancel it — https://github.com/Acksell/clank/pull/213#discussion_r3696748680
 		if msg.err != nil {
 			m.phase = providerPhaseError
 			m.errMsg = msg.err.Error()
@@ -252,6 +280,12 @@ func (m providerAuthModel) Update(msg tea.Msg) (providerAuthModel, tea.Cmd) {
 		}
 		m.phase = providerPhaseAwaiting
 		return m, m.statusCmd()
+
+	case providerFlowCanceledMsg:
+		m.phase = providerPhaseList
+		m.flow = agent.DeviceFlowStart{}
+		m.errMsg = ""
+		return m, nil
 
 	case providerPollTickMsg:
 		// oauth-code polls during its own phase too, so a self-completing
@@ -304,18 +338,24 @@ func (m providerAuthModel) Update(msg tea.Msg) (providerAuthModel, tea.Cmd) {
 	return m, nil
 }
 
+// handleKey routes a keypress for the current phase.
+//
+// esc means "back one screen", never "throw the whole flow away": it
+// leaves the modal only from the phases with nothing behind them (the
+// list and its initial load). Phases with a live flow on the host abort
+// it on the way back, so stepping back can't leak a setup-token PTY.
 func (m providerAuthModel) handleKey(msg tea.KeyPressMsg) (providerAuthModel, tea.Cmd) {
 	msg = normalizeKeyCase(msg)
-	cancel := key.Matches(msg, key.NewBinding(key.WithKeys("esc")))
+	back := key.Matches(msg, key.NewBinding(key.WithKeys("esc")))
 
 	switch m.phase {
 	case providerPhaseLoading:
-		if cancel {
+		if back {
 			return m, func() tea.Msg { return providerAuthCancelMsg{} }
 		}
 
 	case providerPhaseList:
-		if cancel {
+		if back {
 			return m, func() tea.Msg { return providerAuthCancelMsg{} }
 		}
 		switch {
@@ -347,8 +387,9 @@ func (m providerAuthModel) handleKey(msg tea.KeyPressMsg) (providerAuthModel, te
 		}
 
 	case providerPhaseConfirm:
-		if cancel {
-			return m, func() tea.Msg { return providerAuthCancelMsg{} }
+		if back {
+			m.phase = providerPhaseList
+			return m, nil
 		}
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("y", "Y", "enter"))):
@@ -378,8 +419,11 @@ func (m providerAuthModel) handleKey(msg tea.KeyPressMsg) (providerAuthModel, te
 		}
 
 	case providerPhaseAPIKey:
-		if cancel {
-			return m, func() tea.Msg { return providerAuthCancelMsg{} }
+		if back {
+			// Back to the confirm gate, discarding the half-filled form.
+			m.phase = providerPhaseConfirm
+			m.errMsg = ""
+			return m, nil
 		}
 		if key.Matches(msg, key.NewBinding(key.WithKeys("enter"))) {
 			val := strings.TrimSpace(m.apiKey.Value())
@@ -406,7 +450,7 @@ func (m providerAuthModel) handleKey(msg tea.KeyPressMsg) (providerAuthModel, te
 		return m, cmd
 
 	case providerPhaseOAuthCode:
-		if cancel {
+		if back {
 			return m, m.cancelFlowCmd()
 		}
 		if key.Matches(msg, key.NewBinding(key.WithKeys("enter"))) {
@@ -427,7 +471,7 @@ func (m providerAuthModel) handleKey(msg tea.KeyPressMsg) (providerAuthModel, te
 		return m, cmd
 
 	case providerPhaseAwaiting:
-		if cancel {
+		if back {
 			return m, m.cancelFlowCmd()
 		}
 
@@ -436,8 +480,16 @@ func (m providerAuthModel) handleKey(msg tea.KeyPressMsg) (providerAuthModel, te
 		return m, func() tea.Msg { return providerAuthDoneMsg{} }
 
 	case providerPhaseError:
-		// Any key dismisses.
-		return m, func() tea.Msg { return providerAuthCancelMsg{} }
+		// Any key returns to the list so a rejected key or a denied
+		// authorization can be retried without reopening the modal. A
+		// failure that left no list to return to still dismisses.
+		if len(m.providers) == 0 {
+			return m, func() tea.Msg { return providerAuthCancelMsg{} }
+		}
+		m.phase = providerPhaseList
+		m.errMsg = ""
+		m.flow = agent.DeviceFlowStart{}
+		return m, nil
 	}
 
 	return m, nil
@@ -557,18 +609,21 @@ func (m providerAuthModel) pollTickCmd() tea.Cmd {
 	})
 }
 
+// cancelFlowCmd aborts the flow running on the host and steps back to
+// the provider list. The host call is what stops a `claude setup-token`
+// PTY or a device poll that would otherwise outlive the screen.
 func (m providerAuthModel) cancelFlowCmd() tea.Cmd {
 	caller := m.caller
 	provider := m.activeProvider.ProviderID
 	flowID := m.flow.FlowID
 	return func() tea.Msg {
 		if flowID == "" {
-			return providerAuthCancelMsg{}
+			return providerFlowCanceledMsg{}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = caller.CancelAuthFlow(ctx, provider, flowID)
-		return providerAuthCancelMsg{}
+		return providerFlowCanceledMsg{}
 	}
 }
 
@@ -645,9 +700,9 @@ func (m providerAuthModel) View() string {
 			}
 		}
 		sb.WriteString("\n")
-		hint := "↑↓ navigate · enter select · esc cancel"
+		hint := "↑↓ navigate · enter select · esc back"
 		if len(providerSectionBreakpoints(m.providers)) > 1 {
-			hint = "↑↓ navigate · shift+↑↓ jump section · enter select · esc cancel"
+			hint = "↑↓ navigate · shift+↑↓ jump section · enter select · esc back"
 		}
 		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).Render(hint))
 
@@ -678,7 +733,7 @@ func (m providerAuthModel) View() string {
 		sb.WriteString(lipgloss.NewStyle().Foreground(warningColor).Render(warn))
 		sb.WriteString("\n\n")
 		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
-			Render("y/enter to continue · n/esc to cancel"))
+			Render("y/enter to continue · n/esc to go back"))
 
 	case providerPhaseAPIKey:
 		// Show provider title.
@@ -718,9 +773,9 @@ func (m providerAuthModel) View() string {
 			sb.WriteString(lipgloss.NewStyle().Foreground(dangerColor).Render(m.errMsg))
 		}
 		sb.WriteString("\n\n")
-		hint := "enter to continue · esc to cancel"
+		hint := "enter to continue · esc to go back"
 		if m.promptIndex >= len(m.activeProvider.Prompts) {
-			hint = "enter to submit · esc to cancel"
+			hint = "enter to submit · esc to go back"
 		}
 		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).Render(hint))
 
@@ -745,7 +800,7 @@ func (m providerAuthModel) View() string {
 		}
 		sb.WriteString("\n\n")
 		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
-			Render("enter to submit code · esc to cancel"))
+			Render("enter to submit code · esc to cancel and go back"))
 
 	case providerPhaseAwaiting:
 		// Device flows show the URL + user_code; api-key + oauth-code
@@ -763,7 +818,7 @@ func (m providerAuthModel) View() string {
 		sb.WriteString(m.spinner.View() + " " + label)
 		sb.WriteString("\n\n")
 		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
-			Render("esc to cancel"))
+			Render("esc to cancel and go back"))
 
 	case providerPhaseSuccess:
 		sb.WriteString(lipgloss.NewStyle().Foreground(successColor).
@@ -776,8 +831,12 @@ func (m providerAuthModel) View() string {
 		sb.WriteString(lipgloss.NewStyle().Foreground(dangerColor).
 			Render("Error: " + m.errMsg))
 		sb.WriteString("\n\n")
+		dismiss := "press any key to dismiss"
+		if len(m.providers) > 0 {
+			dismiss = "press any key to go back"
+		}
 		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
-			Render("press any key to dismiss"))
+			Render(dismiss))
 	}
 
 	return lipgloss.NewStyle().

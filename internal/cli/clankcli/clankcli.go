@@ -41,6 +41,7 @@ func Command() *cobra.Command {
 		loginCmd(),
 		logoutCmd(),
 		githubCmd(),
+		connectCmd(),
 	)
 
 	return root
