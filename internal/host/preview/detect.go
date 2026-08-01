@@ -66,26 +66,6 @@ import (
 // escaping.
 var expoCmdTemplate = bootstrapTemplate(`bun expo start --port %d --non-interactive`)
 
-// webCmdTemplate spawns Vite for a detected web project behind the same
-// bun-install bootstrap as Expo (same marker file on purpose: the marker
-// records "this worktree's node_modules was installed by bun", which is
-// kind-independent). `--strictPort` because Manager allocated the port
-// and the readiness probe polls exactly it — Vite's default
-// auto-increment on a busy port would leave the probe polling a dead
-// socket until timeout. `--host 127.0.0.1` because Vite's default host
-// is "localhost", which Node ≥17 may resolve (and bind) as ::1 only —
-// observed on macOS — while probeReady and the webpreview proxy dial
-// IPv4 loopback. No --clearScreen wrangling needed: Vite only clears
-// when stdout is a TTY, and ours is the ring buffer.
-var webCmdTemplate = bootstrapTemplate(`bun vite --port %d --strictPort --host 127.0.0.1`)
-
-// nextCmdTemplate spawns Next.js's own dev server. `-H 127.0.0.1` for
-// the same reason as Vite's --host (loopback parity with the probe and
-// proxy, and no LAN exposure); Next binds the exact -p port or exits,
-// so no strict-port wrangling is needed. The client flow is the same
-// KindWeb browser proxy — only the spawn recipe differs.
-var nextCmdTemplate = bootstrapTemplate(`bun next dev -p %d -H 127.0.0.1`)
-
 // bootstrapMarkerEnv carries the bootstrap completion-marker path from
 // spawn into the bootstrapTemplate shell. Env rather than in-shell path
 // assembly: the Go side owns the location (config dir, hash key) and
@@ -142,15 +122,6 @@ var expoReadyProbe = ReadyProbe{
 	ExpectedSubstr: "packager-status:running",
 }
 
-// webReadyProbe: a bare 200 on / is the only signal Vite gives that's
-// framework-independent (a Vite SPA serves index.html; SvelteKit SSR
-// renders the page). No body substring — there's nothing stable to
-// match across frameworks, and Vite binds the port only when it's
-// actually able to serve.
-var webReadyProbe = ReadyProbe{
-	Path: "/",
-}
-
 // appConfigCandidates is the set of file names a project may use to
 // declare its Expo config. Any one of them, in addition to `expo` being
 // a (dev)dependency, marks the worktree as previewable.
@@ -160,8 +131,9 @@ var appConfigCandidates = []string{
 	"app.config.ts",
 }
 
-// Detect inspects workDir and returns a Spec if it looks like an Expo,
-// Next.js, or Vite web app. The contract:
+// Detect inspects workDir and returns a Spec if it looks like an Expo app.
+// Web launch behavior is intentionally not inferred here; it comes from the
+// strict launch configuration generated during one-time setup. The contract:
 //
 //   - (nil, nil) means "not previewable" — a normal answer, NOT an
 //     error. Surface it as preview_available: false / available: false
@@ -172,11 +144,7 @@ var appConfigCandidates = []string{
 //   - (*Spec, nil) means the dev server should be spawnable with the
 //     returned recipe.
 //
-// Expo wins over Vite when both match (an Expo app with a vite dep is
-// almost certainly an Expo app; a Vite web app never carries an Expo
-// app config), and Next wins over Vite (a Next project's dev server is
-// `next dev` even when vite appears as a transitive tool, e.g. for
-// vitest). Detection is intentionally cheap (one Stat for
+// Detection is intentionally cheap (one Stat for
 // package.json, one small JSON parse, up to three more Stats for
 // app.config files) so callers can run it per worktree-list row
 // without caching.
@@ -192,25 +160,10 @@ func Detect(workDir string) (*Spec, error) {
 
 	if packageHasExpo(data) && hasExpoAppConfig(workDir) {
 		return &Spec{
-			Kind:        KindExpo,
-			CmdTemplate: append([]string(nil), expoCmdTemplate...),
-			ReadyProbe:  expoReadyProbe,
-		}, nil
-	}
-
-	if packageHasDep(data, "next") {
-		return &Spec{
-			Kind:        KindWeb,
-			CmdTemplate: append([]string(nil), nextCmdTemplate...),
-			ReadyProbe:  webReadyProbe,
-		}, nil
-	}
-
-	if packageHasDep(data, "vite") {
-		return &Spec{
-			Kind:        KindWeb,
-			CmdTemplate: append([]string(nil), webCmdTemplate...),
-			ReadyProbe:  webReadyProbe,
+			Kind:                 KindExpo,
+			CmdTemplate:          append([]string(nil), expoCmdTemplate...),
+			ShouldSubstitutePort: true,
+			ReadyProbe:           expoReadyProbe,
 		}, nil
 	}
 
@@ -228,8 +181,7 @@ func packageHasExpo(data []byte) bool {
 }
 
 // packageHasDep reports whether the parsed package.json declares name
-// in either dependencies or devDependencies (vite lives in
-// devDependencies in virtually every template; expo templates split).
+// in either dependencies or devDependencies (Expo templates use both).
 //
 // Decoding into typed maps instead of map[string]any avoids the
 // any-walk for the common case where neither key exists.

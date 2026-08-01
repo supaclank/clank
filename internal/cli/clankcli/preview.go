@@ -15,7 +15,7 @@ func previewCmd() *cobra.Command {
 	var tunnel bool
 
 	cmd := &cobra.Command{
-		Use:   "preview [<folder> <url-or-:port>]",
+		Use:   "preview [name | <folder> <url-or-:port>]",
 		Short: "Preview an app with the Clank overlay",
 		Long: `Make a project previewable, with a clank agent one gesture away.
 
@@ -24,8 +24,11 @@ Boots (or reuses) the local clank daemon, then launches or attaches to a preview
   - Expo app: exposes the daemon to your phone over the LAN behind a
     one-time pairing token and prints a QR. Scan it with the clank app
     on the same Wi-Fi; shake to summon the prompt box.
-  - Vite app (Svelte, React, …): fronts the dev server with a local
-    proxy that injects the clank overlay, and opens your browser.
+  - Configured web app: starts the default entry in .clank/launch.yaml,
+    or a named entry with clank preview web-app, then fronts the dev
+    server with a local proxy that injects the clank overlay and opens
+    your browser. If no config exists, Clank returns a one-time setup
+    task for the connected agent. Expo keeps its automatic launch flow.
     Cmd/Ctrl+E summons the prompt box, holding Cmd/Ctrl points at
     elements to attach them as context, and tapping Caps Lock starts
     and stops dictation. On first dictation you pick the engine —
@@ -61,10 +64,11 @@ was the one that started it. An attached server is never stopped by Clank.`,
 			if err := rejectPathShapedArg(args); err != nil {
 				return err
 			}
-			if len(args) != 0 {
-				return fmt.Errorf("unexpected preview argument %q", args[0])
+			launchName, err := previewLaunchName(args)
+			if err != nil {
+				return err
 			}
-			return runPreview(projectDir, backend, port)
+			return runPreview(projectDir, launchName, backend, port)
 		},
 	}
 

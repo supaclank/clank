@@ -1,11 +1,27 @@
 package hostmux
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/acksell/clank/internal/host/preview"
 )
+
+const (
+	previewSelectionMaxBytes = 4 * 1024
+	previewNameQuery         = "name"
+	codeInvalidRequest       = "invalid_request"
+	codePreviewSetupNeeded   = "preview_setup_required"
+	codePreviewConfigInvalid = "preview_config_invalid"
+	codePreviewNotRunning    = "not_running"
+)
+
+type previewSelection struct {
+	Name string `json:"name"`
+}
 
 // handlePreviewStart spawns or returns the dev server for the URL's
 // preview key — a managed worktree ID or a folder slug (laptop
@@ -13,16 +29,20 @@ import (
 // from a slow-network mobile retry returns the existing snapshot, not
 // a second spawn.
 //
-// No request body: the workdir is fully determined by the key, and the
-// public URL is allocated by the gateway and surfaced in the
-// response's `url` field.
+// The optional body selects a configured preview name. An empty body resolves
+// Expo or the configured default.
 func (m *Mux) handlePreviewStart(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_request", Error: "worktree id missing"})
+		writeJSON(w, http.StatusBadRequest, errResp{Code: codeInvalidRequest, Error: "worktree id missing"})
 		return
 	}
-	status, err := m.svc.PreviewStart(r.Context(), id)
+	selection, err := decodePreviewSelection(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp{Code: codeInvalidRequest, Error: err.Error()})
+		return
+	}
+	status, err := m.svc.PreviewStart(r.Context(), id, selection.Name)
 	if err != nil {
 		writePreviewError(w, err)
 		return
@@ -36,10 +56,15 @@ func (m *Mux) handlePreviewStart(w http.ResponseWriter, r *http.Request) {
 func (m *Mux) handlePreviewStop(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_request", Error: "worktree id missing"})
+		writeJSON(w, http.StatusBadRequest, errResp{Code: codeInvalidRequest, Error: "worktree id missing"})
 		return
 	}
-	if err := m.svc.PreviewStop(r.Context(), id); err != nil {
+	selection, err := decodePreviewSelection(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp{Code: codeInvalidRequest, Error: err.Error()})
+		return
+	}
+	if err := m.svc.PreviewStop(r.Context(), id, selection.Name); err != nil {
 		writePreviewError(w, err)
 		return
 	}
@@ -47,16 +72,15 @@ func (m *Mux) handlePreviewStop(w http.ResponseWriter, r *http.Request) {
 }
 
 // handlePreviewStatus returns availability + running state for the
-// URL's worktree ID. Detect runs every call so the Available bit
-// reflects on-disk truth (the user might have just removed package.json
-// inside an agent session).
+// URL's worktree ID. Resolution runs every call so on-disk Expo and launch
+// configuration changes are reflected immediately.
 func (m *Mux) handlePreviewStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_request", Error: "worktree id missing"})
+		writeJSON(w, http.StatusBadRequest, errResp{Code: codeInvalidRequest, Error: "worktree id missing"})
 		return
 	}
-	status, err := m.svc.PreviewStatus(r.Context(), id)
+	status, err := m.svc.PreviewStatus(r.Context(), id, r.URL.Query().Get(previewNameQuery))
 	if err != nil {
 		writePreviewError(w, err)
 		return
@@ -73,26 +97,63 @@ func (m *Mux) handlePreviewStatus(w http.ResponseWriter, r *http.Request) {
 func (m *Mux) handlePreviewLogs(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_request", Error: "worktree id missing"})
+		writeJSON(w, http.StatusBadRequest, errResp{Code: codeInvalidRequest, Error: "worktree id missing"})
 		return
 	}
-	logs := m.svc.PreviewLogs(id)
+	logs := m.svc.PreviewLogs(id, r.URL.Query().Get(previewNameQuery))
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(logs)
 }
 
-// writePreviewError translates preview package sentinels into the wire
-// shape clients expect. ErrNotPreviewable → no_preview, ErrNotRunning
-// → not_running. Anything else (workdir resolution failures, etc.)
-// falls through to the existing host writeError.
+// writePreviewError translates preview package sentinels into stable wire
+// codes. Other failures fall through to the host's general error mapping.
 func writePreviewError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, preview.ErrNotPreviewable):
-		writeJSON(w, http.StatusNotFound, errResp{Code: "no_preview", Error: err.Error()})
+	case errors.Is(err, preview.ErrSetupRequired):
+		var setup *preview.SetupRequiredError
+		if !errors.As(err, &setup) {
+			writeJSON(w, http.StatusConflict, errResp{Code: codePreviewSetupNeeded, Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusConflict, errResp{
+			Code:              codePreviewSetupNeeded,
+			Error:             err.Error(),
+			SetupPrompt:       setup.Prompt,
+			ProjectConfigPath: setup.ProjectConfigPath,
+			HostConfigPath:    setup.HostConfigPath,
+		})
+	case errors.Is(err, preview.ErrInvalidLaunchConfig):
+		writeJSON(w, http.StatusUnprocessableEntity, errResp{Code: codePreviewConfigInvalid, Error: err.Error()})
 	case errors.Is(err, preview.ErrNotRunning):
-		writeJSON(w, http.StatusNotFound, errResp{Code: "not_running", Error: err.Error()})
+		writeJSON(w, http.StatusNotFound, errResp{Code: codePreviewNotRunning, Error: err.Error()})
 	default:
 		writeError(w, err)
 	}
+}
+
+func decodePreviewSelection(r *http.Request) (previewSelection, error) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, previewSelectionMaxBytes+1))
+	if err != nil {
+		return previewSelection{}, err
+	}
+	if len(body) > previewSelectionMaxBytes {
+		return previewSelection{}, errors.New("preview selection body is too large")
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return previewSelection{}, nil
+	}
+	var selection previewSelection
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&selection); err != nil {
+		return previewSelection{}, err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return previewSelection{}, errors.New("request body must contain one JSON object")
+		}
+		return previewSelection{}, err
+	}
+	return selection, nil
 }

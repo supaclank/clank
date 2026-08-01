@@ -115,6 +115,21 @@ func TestPreviewStart_NoPreviewMapsToErrNotPreviewable(t *testing.T) {
 	}
 }
 
+func TestPreviewStart_SetupRequiredMapsToSentinel(t *testing.T) {
+	t.Parallel()
+	srv := errServer(t, http.StatusConflict, "application/json",
+		`{"code":"preview_setup_required","error":"preview: launch setup is required","setup_prompt":"generate it","project_config_path":"/repo/.clank/launch.yaml","host_config_path":"/host/repo.yaml"}`)
+
+	_, err := NewTCPClient(srv.URL, "").Preview("01WT").Start(context.Background())
+	if !errors.Is(err, ErrPreviewSetupRequired) {
+		t.Fatalf("want ErrPreviewSetupRequired, got %v", err)
+	}
+	var setup *PreviewSetupRequiredError
+	if !errors.As(err, &setup) || setup.SetupPrompt != "generate it" || setup.ProjectConfigPath == "" || setup.HostConfigPath == "" {
+		t.Fatalf("setup error = %#v", setup)
+	}
+}
+
 // TestDo_NonJSONErrorKeepsStatusSummary pins the fallback for upstream
 // proxies that answer with plain text (502s from a dead host, etc).
 func TestDo_NonJSONErrorKeepsStatusSummary(t *testing.T) {

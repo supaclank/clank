@@ -1,9 +1,11 @@
 package preview
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -54,5 +56,42 @@ func TestEnsurePreviewShim(t *testing.T) {
 	}
 	if shimPath2 != shimPath || runtimePath2 != runtimePath {
 		t.Errorf("non-idempotent paths: (%q,%q) then (%q,%q)", shimPath, runtimePath, shimPath2, runtimePath2)
+	}
+}
+
+func TestEnsurePreviewShimConcurrent(t *testing.T) {
+	t.Parallel()
+
+	const workers = 32
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			shimPath, runtimePath, err := ensurePreviewShim()
+			if err != nil {
+				errs <- err
+				return
+			}
+			shim, err := os.ReadFile(shimPath)
+			if err != nil {
+				errs <- err
+				return
+			}
+			runtime, err := os.ReadFile(runtimePath)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if string(shim) != clankMetroShimJS || string(runtime) != previewRuntimeJS {
+				errs <- fmt.Errorf("observed partial preview runtime files")
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
 	}
 }

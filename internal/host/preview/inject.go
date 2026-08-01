@@ -48,11 +48,33 @@ func ensurePreviewShim() (shimPath, runtimePath string, err error) {
 	shimPath = filepath.Join(base, shimFileName)
 	runtimePath = filepath.Join(base, runtimeFileName)
 
-	if wErr := os.WriteFile(shimPath, []byte(clankMetroShimJS), 0o644); wErr != nil {
+	if wErr := writePreviewFileAtomically(shimPath, []byte(clankMetroShimJS)); wErr != nil {
 		return "", "", fmt.Errorf("write %s: %w", shimFileName, wErr)
 	}
-	if wErr := os.WriteFile(runtimePath, []byte(previewRuntimeJS), 0o644); wErr != nil {
+	if wErr := writePreviewFileAtomically(runtimePath, []byte(previewRuntimeJS)); wErr != nil {
 		return "", "", fmt.Errorf("write %s: %w", runtimeFileName, wErr)
 	}
 	return shimPath, runtimePath, nil
+}
+
+func writePreviewFileAtomically(path string, content []byte) (err error) {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".preview-runtime-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}()
+	if err := tmp.Chmod(0o644); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(content); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
