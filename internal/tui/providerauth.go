@@ -260,6 +260,7 @@ func (m providerAuthModel) Update(msg tea.Msg) (providerAuthModel, tea.Cmd) {
 		return m, nil
 
 	case providerStartedMsg:
+		// TODO(ai-review): backing out of confirm while this is in flight doesn't cancel it — https://github.com/Acksell/clank/pull/213#discussion_r3696748680
 		if msg.err != nil {
 			m.phase = providerPhaseError
 			m.errMsg = msg.err.Error()
