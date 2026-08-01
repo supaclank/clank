@@ -122,6 +122,8 @@ func (m *SessionTaskModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.historyLoaded = true
 	case pendingPermissionMsg:
 		m.permissionsLoaded = true
+	case pendingPermissionErrMsg:
+		m.permissionsLoaded = true
 	}
 
 	_, cmd := m.session.Update(msg)

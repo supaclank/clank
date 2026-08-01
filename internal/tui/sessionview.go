@@ -143,6 +143,13 @@ type pendingPermissionMsg struct {
 	perms []agent.PermissionData
 }
 
+// pendingPermissionErrMsg reports a failed fetch attempt — distinct from
+// pendingPermissionMsg so a bounded task view can still tell the attempt
+// happened and stop waiting on it.
+type pendingPermissionErrMsg struct {
+	err error
+}
+
 // backToInboxMsg signals navigation back to the inbox. Emitted after
 // flows that explicitly want to land the user on the inbox screen
 // (e.g. marking a session done / archived).
@@ -577,8 +584,10 @@ func (m *SessionViewModel) fetchPendingPermission() tea.Cmd {
 		defer cancel()
 		perms, err := m.client.Session(m.sessionID).PendingPermissions(ctx)
 		if err != nil {
-			// Non-critical; the live SSE stream will deliver new prompts.
-			return nil
+			// Non-critical for the full view; the live SSE stream will
+			// deliver new prompts. A bounded task view still needs to know
+			// the attempt happened, so this isn't just swallowed.
+			return pendingPermissionErrMsg{err: err}
 		}
 		return pendingPermissionMsg{perms: perms}
 	}

@@ -90,6 +90,27 @@ func TestSessionTaskExitsOnlyAfterInitialStateLoadsAndAgentSettles(t *testing.T)
 	}
 }
 
+func TestSessionTaskExitsWhenPendingPermissionFetchFails(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSessionTask(t)
+	idle := &agent.SessionInfo{
+		ID:             "session-1",
+		Status:         agent.StatusIdle,
+		CurrentModeID:  "build",
+		AvailableModes: []agent.SessionMode{{ID: "build", Name: "Build"}},
+	}
+	_, _ = m.Update(sessionInfoMsg{info: idle})
+	_, _ = m.Update(sessionMessagesMsg{})
+	// A failed fetch still must unblock settlement — otherwise a transient
+	// error strands the task until its outer timeout aborts it.
+	_, cmd := m.Update(pendingPermissionErrMsg{err: errors.New("fetch failed")})
+	assertQuitCommand(t, cmd)
+	if result := m.Result(); result.Status != agent.StatusIdle || result.Err != nil {
+		t.Fatalf("Result = %+v", result)
+	}
+}
+
 func TestSessionTaskTimeoutAbortsBeforeExit(t *testing.T) {
 	t.Parallel()
 
