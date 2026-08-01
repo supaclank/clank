@@ -74,6 +74,17 @@ func runPreview(projectDir, launchName, backend string, port int) error {
 			stopLocalDaemon()
 		}()
 	}
+
+	// Ask about connecting an agent BEFORE anything long-running starts:
+	// once the dev server is up we're printing install/bundler output for
+	// minutes, and a picker seizing the terminal after that is hostile.
+	// Runs after ensurePreviewDaemon because the catalog read needs the
+	// daemon, and before resolveBackend so a just-connected backend is the
+	// one this preview resolves.
+	if err := offerPreviewAgentConnect(sigCtx, client, backend, os.Stdin, os.Stdout); err != nil {
+		return err
+	}
+
 	bt, err := resolveBackend(backend, os.Stderr)
 	if err != nil {
 		return err

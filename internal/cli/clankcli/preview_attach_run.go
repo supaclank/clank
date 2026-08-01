@@ -15,7 +15,7 @@ func runAttachedPreview(projectDir string, upstreamURL *url.URL, backend string,
 	sigCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	_, sockPath, startedDaemon, err := ensurePreviewDaemon()
+	client, sockPath, startedDaemon, err := ensurePreviewDaemon()
 	if err != nil {
 		return err
 	}
@@ -24,6 +24,13 @@ func runAttachedPreview(projectDir string, upstreamURL *url.URL, backend string,
 			fmt.Println("Stopping the daemon clank preview started…")
 			stopLocalDaemon()
 		}()
+	}
+
+	// Same first-run question the launched-server path asks, and for the
+	// same reason: the overlay's agent is the point, so settle it before
+	// the proxy takes over the terminal.
+	if err := offerPreviewAgentConnect(sigCtx, client, backend, os.Stdin, os.Stdout); err != nil {
+		return err
 	}
 
 	bt, err := resolveBackend(backend, os.Stderr)
