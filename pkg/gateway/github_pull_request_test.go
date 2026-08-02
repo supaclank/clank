@@ -16,6 +16,8 @@ func TestGitHubPullRequestProxyRoutes(t *testing.T) {
 	}{
 		{name: "inspect", path: "/v1/github/pull-requests/inspect", hostPath: "/github/pull-requests/inspect"},
 		{name: "launch", path: "/v1/github/pull-requests/launch", hostPath: "/github/pull-requests/launch"},
+		{name: "inspect repository", path: "/v1/github/repositories/inspect", hostPath: "/github/repositories/inspect"},
+		{name: "launch repository", path: "/v1/github/repositories/launch", hostPath: "/github/repositories/launch"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

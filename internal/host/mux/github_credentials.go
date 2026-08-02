@@ -24,6 +24,7 @@ func (m *Mux) registerGitHub(mx *http.ServeMux) {
 	m.registerGitHubConnect(mx)
 	m.registerGitHubPR(mx)
 	m.registerGitHubPullRequests(mx)
+	m.registerGitHubRepositories(mx)
 }
 
 // requireGitHub fetches the Service-bound GitHub manager and returns

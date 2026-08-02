@@ -52,17 +52,8 @@ func SetGitHubCloneBaseForTest(base string) (prev string) {
 // The host builds the clone URL from owner/repo itself — it never accepts
 // a client-supplied URL — matching the template flow's gatekeeping.
 func (s *Service) ImportProjectFromGitHub(ctx context.Context, owner, repo, branch string) (CreateWorktreeResult, error) {
-	if !gitHubNamePattern.MatchString(owner) {
-		return CreateWorktreeResult{}, fmt.Errorf("%w: invalid owner %q", ErrInvalidArgument, owner)
-	}
-	if !gitHubNamePattern.MatchString(repo) {
-		return CreateWorktreeResult{}, fmt.Errorf("%w: invalid repo %q", ErrInvalidArgument, repo)
-	}
-	// Branch is optional (empty → the remote's default). Branch names allow
-	// "/", ".", "-" mid-name etc., so we don't pattern-match them, but a
-	// leading "-" could be misread as a git flag — reject it.
-	if strings.HasPrefix(branch, "-") {
-		return CreateWorktreeResult{}, fmt.Errorf("%w: invalid branch %q", ErrInvalidArgument, branch)
+	if err := validateGitHubImport(owner, repo, branch); err != nil {
+		return CreateWorktreeResult{}, err
 	}
 
 	gh := s.GitHub()
@@ -71,6 +62,29 @@ func (s *Service) ImportProjectFromGitHub(ctx context.Context, owner, repo, bran
 	}
 	token, err := gh.AccessToken()
 	if err != nil {
+		return CreateWorktreeResult{}, err
+	}
+	return s.importProjectFromGitHubWithAccess(ctx, owner, repo, branch, token, s.credentialHelperValue())
+}
+
+func validateGitHubImport(owner, repo, branch string) error {
+	if !gitHubNamePattern.MatchString(owner) {
+		return fmt.Errorf("%w: invalid owner %q", ErrInvalidArgument, owner)
+	}
+	if !gitHubNamePattern.MatchString(repo) {
+		return fmt.Errorf("%w: invalid repo %q", ErrInvalidArgument, repo)
+	}
+	// Branch is optional (empty → the remote's default). Branch names allow
+	// "/", ".", "-" mid-name etc., so we don't pattern-match them, but a
+	// leading "-" could be misread as a git flag — reject it.
+	if strings.HasPrefix(branch, "-") {
+		return fmt.Errorf("%w: invalid branch %q", ErrInvalidArgument, branch)
+	}
+	return nil
+}
+
+func (s *Service) importProjectFromGitHubWithAccess(ctx context.Context, owner, repo, branch, token, credentialHelper string) (CreateWorktreeResult, error) {
+	if err := validateGitHubImport(owner, repo, branch); err != nil {
 		return CreateWorktreeResult{}, err
 	}
 
@@ -90,7 +104,7 @@ func (s *Service) ImportProjectFromGitHub(ctx context.Context, owner, repo, bran
 	cloneURL := fmt.Sprintf("%s/%s/%s.git", gitHubCloneBase, owner, repo)
 	createdCanonical := false
 	if _, statErr := os.Stat(gitDir); os.IsNotExist(statErr) {
-		if err := s.cloneCanonical(ctx, cloneURL, gitDir, token, branch, owner+"/"+repo, s.credentialHelperValue()); err != nil {
+		if err := s.cloneCanonical(ctx, cloneURL, gitDir, token, branch, owner+"/"+repo, credentialHelper); err != nil {
 			return CreateWorktreeResult{}, err
 		}
 		createdCanonical = true
@@ -103,6 +117,9 @@ func (s *Service) ImportProjectFromGitHub(ctx context.Context, owner, repo, bran
 		remoteURL, urlErr := git.RemoteURL(gitDir, "origin")
 		if urlErr != nil || remoteURL != cloneURL {
 			return CreateWorktreeResult{}, fmt.Errorf("canonical %q origin mismatch (have %q, want %q)", slug, remoteURL, cloneURL)
+		}
+		if err := git.SetLocalConfig(gitDir, "credential.helper", credentialHelper); err != nil {
+			return CreateWorktreeResult{}, fmt.Errorf("set credential helper: %w", err)
 		}
 	}
 
@@ -120,7 +137,7 @@ func (s *Service) ImportProjectFromGitHub(ctx context.Context, owner, repo, bran
 	// into the remote-tracking namespace before the worktree add. A
 	// branch that's absent on the remote too falls through to
 	// addRepoWorktree's ErrNotFound.
-	if err := s.ensureRepoBranchAvailable(gitDir, branch); err != nil {
+	if err := ensureImportedBranchAvailable(gitDir, cloneURL, branch, token); err != nil {
 		return CreateWorktreeResult{}, s.rollbackCanonical(gitDir, createdCanonical, err)
 	}
 
@@ -132,6 +149,38 @@ func (s *Service) ImportProjectFromGitHub(ctx context.Context, owner, repo, bran
 		s.log.Printf("imported %s branch %q → worktree %s", slug, branch, result.WorktreeID)
 	}
 	return result.CreateWorktreeResult, nil
+}
+
+// ensureImportedBranchAvailable uses the access decision already made by the
+// repository inspector. In particular, an empty token remains anonymous for a
+// public repository instead of demanding a connected credential mid-import.
+func ensureImportedBranchAvailable(gitDir, cloneURL, branch, token string) error {
+	local, err := git.BranchExists(gitDir, branch)
+	if err != nil {
+		return fmt.Errorf("check branch: %w", err)
+	}
+	if local {
+		return nil
+	}
+	tracking, err := git.RemoteTrackingBranchExists(gitDir, "origin", branch)
+	if err != nil {
+		return fmt.Errorf("check remote branch: %w", err)
+	}
+	if tracking {
+		return nil
+	}
+	authHeader := ""
+	if token != "" {
+		authHeader = buildAuthHeader(token)
+	}
+	refspec := "+refs/heads/" + branch + ":refs/remotes/origin/" + branch
+	if err := git.Fetch(gitDir, cloneURL, refspec, git.PushOptions{ExtraHeader: authHeader}); err != nil {
+		if isNoRemoteRef(err) {
+			return nil
+		}
+		return fmt.Errorf("fetch branch %q: %w", branch, err)
+	}
+	return nil
 }
 
 // cloneCanonical creates the bare blobless canonical for a GitHub repo:
