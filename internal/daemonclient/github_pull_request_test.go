@@ -23,7 +23,7 @@ func TestGitHubPullRequestInspectAndLaunch(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/v1/github/pull-requests/inspect":
-			_, _ = w.Write([]byte(`{"owner":"acme","repo":"api","number":7,"head_sha":"abc"}`))
+			_, _ = w.Write([]byte(`{"owner":"acme","repo":"api","number":7,"head_owner":"contributor","head_repo":"api-fork","head_sha":"abc"}`))
 		case "/v1/github/pull-requests/launch":
 			if body["expected_head_sha"] != "abc" {
 				t.Errorf("expected_head_sha = %v", body["expected_head_sha"])
@@ -42,8 +42,8 @@ func TestGitHubPullRequestInspectAndLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inspection.HeadSHA != "abc" {
-		t.Errorf("HeadSHA = %q", inspection.HeadSHA)
+	if inspection.HeadOwner != "contributor" || inspection.HeadRepo != "api-fork" || inspection.HeadSHA != "abc" {
+		t.Errorf("inspection = %+v", inspection)
 	}
 	launched, err := c.GitHubPullRequestLaunch(context.Background(), GitHubPullRequestLaunchRequest{
 		GitHubPullRequestLocator: locator,

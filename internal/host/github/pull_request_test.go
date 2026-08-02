@@ -20,7 +20,7 @@ func TestGetPullRequestSupportsAnonymousPublicRepository(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"number":7,"title":"Ship it","html_url":"https://github.com/acme/api/pull/7",
-			"head":{"ref":"feature","sha":"0123456789abcdef0123456789abcdef01234567"},
+			"head":{"ref":"feature","sha":"0123456789abcdef0123456789abcdef01234567","repo":{"name":"api","owner":{"login":"acme"}}},
 			"base":{"ref":"main","repo":{"private":false}},"user":{"login":"octocat"}
 		}`))
 	}))
@@ -35,7 +35,7 @@ func TestGetPullRequestSupportsAnonymousPublicRepository(t *testing.T) {
 	if authorization != "" {
 		t.Errorf("Authorization = %q, want anonymous request", authorization)
 	}
-	if got.Number != 7 || got.Author != "octocat" || got.BaseBranch != "main" || got.HeadBranch != "feature" || got.IsPrivate {
+	if got.Number != 7 || got.Author != "octocat" || got.BaseBranch != "main" || got.HeadOwner != "acme" || got.HeadRepo != "api" || got.HeadBranch != "feature" || got.IsPrivate {
 		t.Errorf("inspection = %+v", got)
 	}
 }
@@ -60,7 +60,7 @@ func TestGetPullRequestAuthenticatesPrivateRepository(t *testing.T) {
 		authorization = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
-			"number":7,"head":{"ref":"feature","sha":"0123456789abcdef0123456789abcdef01234567"},
+			"number":7,"head":{"ref":"feature","sha":"0123456789abcdef0123456789abcdef01234567","repo":{"name":"private","owner":{"login":"acme"}}},
 			"base":{"ref":"main","repo":{"private":true}},"user":{"login":"octocat"}
 		}`))
 	}))

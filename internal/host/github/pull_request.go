@@ -17,6 +17,8 @@ type PullRequestDetails struct {
 	Number     int    `json:"number"`
 	Title      string `json:"title"`
 	HTMLURL    string `json:"html_url"`
+	HeadOwner  string `json:"head_owner"`
+	HeadRepo   string `json:"head_repo"`
 	HeadBranch string `json:"head_branch"`
 	HeadSHA    string `json:"head_sha"`
 	BaseBranch string `json:"base_branch"`
@@ -49,10 +51,16 @@ func (m *Manager) GetPullRequest(ctx context.Context, token, owner, repo string,
 }
 
 func wirePullRequest(pr *gogithub.PullRequest) PullRequestDetails {
+	headOwner := pr.GetHead().GetRepo().GetOwner().GetLogin()
+	if headOwner == "" {
+		headOwner = pr.GetHead().GetUser().GetLogin()
+	}
 	return PullRequestDetails{
 		Number:     pr.GetNumber(),
 		Title:      pr.GetTitle(),
 		HTMLURL:    pr.GetHTMLURL(),
+		HeadOwner:  headOwner,
+		HeadRepo:   pr.GetHead().GetRepo().GetName(),
 		HeadBranch: pr.GetHead().GetRef(),
 		HeadSHA:    pr.GetHead().GetSHA(),
 		BaseBranch: pr.GetBase().GetRef(),

@@ -50,6 +50,14 @@ func writeGitHubPullRequestError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusForbidden, errResp{Code: "github_connection_required", Error: err.Error()})
 	case errors.Is(err, host.ErrPullRequestChanged):
 		writeJSON(w, http.StatusConflict, errResp{Code: "pull_request_changed", Error: err.Error()})
+	case errors.Is(err, host.ErrWorktreeDirty):
+		writeJSON(w, http.StatusConflict, errResp{Code: "worktree_dirty", Error: err.Error()})
+	case errors.Is(err, host.ErrRemoteDiverged):
+		writeJSON(w, http.StatusConflict, errResp{Code: "remote_diverged", Error: err.Error()})
+	case errors.Is(err, host.ErrPullRequestLocalCommits):
+		writeJSON(w, http.StatusConflict, errResp{Code: "pull_request_local_commits", Error: err.Error()})
+	case errors.Is(err, host.ErrPullRequestRepoAmbiguous):
+		writeJSON(w, http.StatusConflict, errResp{Code: "pull_request_repo_ambiguous", Error: err.Error()})
 	case errors.Is(err, githubpkg.ErrPRTokenInvalid):
 		writeJSON(w, http.StatusForbidden, errResp{Code: "github_token_invalid", Error: err.Error()})
 	case errors.Is(err, githubpkg.ErrPRForbidden):

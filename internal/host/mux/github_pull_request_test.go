@@ -36,6 +36,10 @@ func TestWriteGitHubPullRequestError(t *testing.T) {
 	}{
 		{name: "connection required", err: host.ErrGitHubConnectionRequired, wantStatus: http.StatusForbidden, wantCode: "github_connection_required"},
 		{name: "head changed", err: host.ErrPullRequestChanged, wantStatus: http.StatusConflict, wantCode: "pull_request_changed"},
+		{name: "dirty checkout", err: host.ErrWorktreeDirty, wantStatus: http.StatusConflict, wantCode: "worktree_dirty"},
+		{name: "diverged checkout", err: host.ErrRemoteDiverged, wantStatus: http.StatusConflict, wantCode: "remote_diverged"},
+		{name: "local commits", err: host.ErrPullRequestLocalCommits, wantStatus: http.StatusConflict, wantCode: "pull_request_local_commits"},
+		{name: "ambiguous checkout", err: host.ErrPullRequestRepoAmbiguous, wantStatus: http.StatusConflict, wantCode: "pull_request_repo_ambiguous"},
 		{name: "invalid", err: host.ErrInvalidArgument, wantStatus: http.StatusBadRequest, wantCode: "invalid_argument"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

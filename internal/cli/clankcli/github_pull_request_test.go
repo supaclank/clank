@@ -157,3 +157,32 @@ func TestConfirmGitHubPullRequestTrustSanitizesTerminalControlCharacters(t *test
 		t.Errorf("sanitized prompt = %q", printed)
 	}
 }
+
+func TestPrintGitHubPullRequestCheckoutPrintsWorkingDirectoryOnOwnLine(t *testing.T) {
+	t.Parallel()
+	inspection := daemonclient.GitHubPullRequestInspection{
+		GitHubPullRequestLocator: daemonclient.GitHubPullRequestLocator{Owner: "acme", Repo: "api", Number: 7},
+		HeadSHA:                  "0123456789abcdef0123456789abcdef01234567",
+	}
+	launched := host.CreateWorktreeResult{
+		Branch:      "feature",
+		WorktreeDir: "/Users/alice/src/api-feature",
+	}
+	var out bytes.Buffer
+	printGitHubPullRequestCheckout(&out, inspection, launched)
+
+	printed := out.String()
+	if !strings.Contains(printed, "Branch: feature\nWorking directory:\n/Users/alice/src/api-feature\n") {
+		t.Fatalf("checkout output = %q", printed)
+	}
+}
+
+func TestPreviewOverlayNamePrefersPullRequestDisplayName(t *testing.T) {
+	t.Parallel()
+	if got := previewOverlayName("/Users/alice/.clank/work/01KZ1EE2ZGSDW2Z970WCS8CDM5", "api#7"); got != "api#7" {
+		t.Errorf("previewOverlayName = %q, want api#7", got)
+	}
+	if got := previewOverlayName("/Users/alice/src/api", ""); got != "api" {
+		t.Errorf("default previewOverlayName = %q, want api", got)
+	}
+}

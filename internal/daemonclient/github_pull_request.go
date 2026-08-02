@@ -19,6 +19,8 @@ type GitHubPullRequestInspection struct {
 	GitHubPullRequestLocator
 	Title      string `json:"title"`
 	HTMLURL    string `json:"html_url"`
+	HeadOwner  string `json:"head_owner"`
+	HeadRepo   string `json:"head_repo"`
 	HeadBranch string `json:"head_branch"`
 	HeadSHA    string `json:"head_sha"`
 	BaseBranch string `json:"base_branch"`

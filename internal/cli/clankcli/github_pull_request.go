@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/acksell/clank/internal/daemonclient"
+	"github.com/acksell/clank/internal/host"
 )
 
 const githubPullRequestLaunchTimeout = 10 * time.Minute
@@ -148,11 +149,11 @@ func runGitHubPullRequestPreview(locator daemonclient.GitHubPullRequestLocator, 
 	if err != nil {
 		return fmt.Errorf("launch GitHub pull request: %w", err)
 	}
-	_, _ = fmt.Fprintf(out, "Checked out %s/%s#%d at %s.\n", locator.Owner, locator.Repo, locator.Number, inspection.HeadSHA)
+	printGitHubPullRequestCheckout(out, inspection, launched)
 	_, statErr := os.Stat(launched.WorktreeDir)
 	switch {
 	case statErr == nil:
-		return runPreview(launched.WorktreeDir, launchName, backend, port)
+		return runPreviewWithDisplayName(launched.WorktreeDir, launchName, backend, port, launched.DisplayName)
 	case !os.IsNotExist(statErr):
 		return fmt.Errorf("inspect launched worktree: %w", statErr)
 	case port != 0:
@@ -160,4 +161,9 @@ func runGitHubPullRequestPreview(locator daemonclient.GitHubPullRequestLocator, 
 	default:
 		return runHostedGitHubPullRequestPreview(ctx, client, launched.WorktreeID, launchName, backend, in, out)
 	}
+}
+
+func printGitHubPullRequestCheckout(out io.Writer, inspection daemonclient.GitHubPullRequestInspection, launched host.CreateWorktreeResult) {
+	_, _ = fmt.Fprintf(out, "Checked out %s/%s#%d at %s.\nBranch: %s\nWorking directory:\n%s\n",
+		inspection.Owner, inspection.Repo, inspection.Number, inspection.HeadSHA, launched.Branch, launched.WorktreeDir)
 }

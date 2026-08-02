@@ -23,8 +23,10 @@ Boots (or reuses) the local clank daemon, then launches or attaches to a preview
 
   - GitHub pull request URL: resolves the PR without downloading it, shows
     its author and exact commit SHA for approval, then checks that revision
-    out into a managed worktree and starts its configured preview. Public
-    repos work anonymously; private repos require GitHub Connect.
+    out on its real branch for same-repository PRs and starts its configured
+    preview. An existing checkout is reused; otherwise Clank creates a managed
+    worktree. Fork PRs use an isolated exact-revision branch. Public repos work
+    anonymously; private repos require GitHub Connect.
   - Expo app: exposes the daemon to your phone over the LAN behind a
     one-time pairing token and prints a QR. Scan it with the clank app
     on the same Wi-Fi; shake to summon the prompt box.

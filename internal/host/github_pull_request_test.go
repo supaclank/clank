@@ -28,7 +28,7 @@ func TestInspectGitHubPullRequestUsesAnonymousAccessForPublicRepository(t *testi
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"number":51,"title":"Public preview","html_url":"https://github.com/acme/public/pull/51",
-			"head":{"ref":"feature","sha":"0123456789abcdef0123456789abcdef01234567"},
+			"head":{"ref":"feature","sha":"0123456789abcdef0123456789abcdef01234567","repo":{"name":"public","owner":{"login":"acme"}}},
 			"base":{"ref":"main","repo":{"private":false}},"user":{"login":"contributor"}
 		}`))
 	}))
@@ -50,7 +50,7 @@ func TestInspectGitHubPullRequestUsesAnonymousAccessForPublicRepository(t *testi
 	if err != nil {
 		t.Fatalf("InspectGitHubPullRequest: %v", err)
 	}
-	if inspection.Number != 51 || inspection.IsPrivate {
+	if inspection.Number != 51 || inspection.HeadOwner != "acme" || inspection.HeadRepo != "public" || inspection.IsPrivate {
 		t.Fatalf("inspection = %+v", inspection)
 	}
 }
@@ -81,7 +81,7 @@ func TestInspectGitHubPullRequestRequiresConnectionForAnonymousNotFound(t *testi
 }
 
 func TestLaunchGitHubPullRequestChecksOutApprovedPublicRevision(t *testing.T) {
-	svc, _, featureSHA, _ := setupGitHubPullRequestLaunch(t)
+	svc, _, featureSHA, _, _ := setupGitHubPullRequestLaunch(t)
 	ctx := context.Background()
 	req := host.GitHubPullRequestLaunchRequest{
 		GitHubPullRequestLocator: host.GitHubPullRequestLocator{Owner: "acme", Repo: "api", Number: 7},
@@ -95,8 +95,8 @@ func TestLaunchGitHubPullRequestChecksOutApprovedPublicRevision(t *testing.T) {
 	if first.WorktreeID == "" || first.DisplayName != "api#7" || first.OriginRepo != "acme/api" {
 		t.Errorf("result = %+v", first)
 	}
-	if !strings.HasPrefix(first.Branch, "clank/pr-7-") {
-		t.Errorf("branch = %q", first.Branch)
+	if first.Branch != "feature" {
+		t.Errorf("branch = %q, want feature", first.Branch)
 	}
 	gotSHA, err := git.HeadCommit(first.WorktreeDir)
 	if err != nil {
@@ -127,8 +127,36 @@ func TestLaunchGitHubPullRequestChecksOutApprovedPublicRevision(t *testing.T) {
 	}
 }
 
+func TestLaunchGitHubPullRequestUsesExactRevisionBranchForFork(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		headOwner string
+		headRepo  string
+	}{
+		{name: "named fork", headOwner: "contributor", headRepo: "api-fork"},
+		{name: "deleted fork"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, featureSHA, _, _ := setupGitHubPullRequestLaunchForHead(t, tc.headOwner, tc.headRepo)
+			result, err := svc.LaunchGitHubPullRequest(context.Background(), host.GitHubPullRequestLaunchRequest{
+				GitHubPullRequestLocator: host.GitHubPullRequestLocator{Owner: "acme", Repo: "api", Number: 7},
+				ExpectedHeadSHA:          featureSHA,
+			})
+			if err != nil {
+				t.Fatalf("LaunchGitHubPullRequest: %v", err)
+			}
+			if !strings.HasPrefix(result.Branch, "clank/pr-7-") {
+				t.Errorf("fork branch = %q, want exact-revision import", result.Branch)
+			}
+			if got, err := git.HeadCommit(result.WorktreeDir); err != nil || got != featureSHA {
+				t.Errorf("fork worktree HEAD = %q, %v; want %s", got, err, featureSHA)
+			}
+		})
+	}
+}
+
 func TestLaunchGitHubPullRequestRejectsRefThatMovedAfterApproval(t *testing.T) {
-	svc, bare, featureSHA, mainSHA := setupGitHubPullRequestLaunch(t)
+	svc, bare, featureSHA, mainSHA, _ := setupGitHubPullRequestLaunch(t)
 	runGitHubPRTestCommand(t, bare, "git", "update-ref", "refs/pull/7/head", mainSHA)
 
 	_, err := svc.LaunchGitHubPullRequest(context.Background(), host.GitHubPullRequestLaunchRequest{
@@ -140,7 +168,12 @@ func TestLaunchGitHubPullRequestRejectsRefThatMovedAfterApproval(t *testing.T) {
 	}
 }
 
-func setupGitHubPullRequestLaunch(t *testing.T) (*host.Service, string, string, string) {
+func setupGitHubPullRequestLaunch(t *testing.T) (*host.Service, string, string, string, string) {
+	t.Helper()
+	return setupGitHubPullRequestLaunchForHead(t, "acme", "api")
+}
+
+func setupGitHubPullRequestLaunchForHead(t *testing.T, headOwner, headRepo string) (*host.Service, string, string, string, string) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	src := t.TempDir()
@@ -178,9 +211,9 @@ func setupGitHubPullRequestLaunch(t *testing.T) (*host.Service, string, string, 
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{
 			"number":7,"title":"Feature","html_url":"https://github.com/acme/api/pull/7",
-			"head":{"ref":"feature","sha":%q},"base":{"ref":"main","repo":{"private":false}},
+			"head":{"ref":"feature","sha":%q,"repo":{"name":%q,"owner":{"login":%q}}},"base":{"ref":"main","repo":{"private":false}},
 			"user":{"login":"octocat"}
-		}`, featureSHA)
+		}`, featureSHA, headRepo, headOwner)
 	}))
 	t.Cleanup(api.Close)
 
@@ -192,7 +225,7 @@ func setupGitHubPullRequestLaunch(t *testing.T) (*host.Service, string, string, 
 	})
 	t.Cleanup(svc.Shutdown)
 	svc.GitHub().SetAPIBaseURL(api.URL)
-	return svc, bare, featureSHA, mainSHA
+	return svc, bare, featureSHA, mainSHA, api.URL
 }
 
 func runGitHubPRTestCommand(t *testing.T, dir string, args ...string) string {
