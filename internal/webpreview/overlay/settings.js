@@ -95,3 +95,33 @@ export const diffConfigAgainstOptions = (config, options) => {
   }
   return out;
 };
+
+// Materialize the live agent state from current values plus staged changes.
+// Unadvertised staged keys survive.
+export const effectiveSessionConfig = (options, pending) => {
+  const current = {};
+  for (const option of options || []) current[option.id] = option.current_value;
+  return { ...current, ...(pending || {}) };
+};
+
+const BUILTIN_ID_PREFIX = 'builtin-';
+
+const slugifyProfileID = (name) => name
+  .trim()
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-+|-+$/g, '');
+
+// profileSavePayload mirrors mobile savePayload: a stable URL-safe id from
+// the display name, with built-in ids reserved for host-shipped profiles.
+export const profileSavePayload = (name, backend, config) => {
+  const trimmed = name.trim();
+  const id = slugifyProfileID(trimmed);
+  if (!id) throw new Error('Give the profile a name first');
+  if (id.startsWith(BUILTIN_ID_PREFIX)) {
+    throw new Error('Profile names starting with "builtin-" are reserved');
+  }
+  if (!backend) throw new Error('Cannot save a profile without a backend');
+  if (!config || !Object.keys(config).length) throw new Error('Cannot save an empty profile');
+  return { id, name: trimmed, backend, config: { ...config } };
+};

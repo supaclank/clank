@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   resolvePreset, applyPresetOverrides, configRows, setConfigOverride,
-  diffConfigAgainstOptions, profileLabel,
+  diffConfigAgainstOptions, effectiveSessionConfig, profileLabel,
+  profileSavePayload,
 } from './settings.js';
 
 test('resolvePreset: exact pick, then builtin Build, without accepting another backend', () => {
@@ -55,4 +56,34 @@ test('diffConfigAgainstOptions: follow-up sends changes only', () => {
     { mode: 'auto', effort: 'high', unadvertised: 'kept' },
     options,
   ), { effort: 'high', unadvertised: 'kept' });
+});
+
+test('effectiveSessionConfig: current agent values plus staged and unadvertised changes', () => {
+  const options = [
+    { id: 'mode', current_value: 'auto' },
+    { id: 'effort', current_value: 'medium' },
+  ];
+  assert.deepEqual(effectiveSessionConfig(options, {
+    effort: 'high',
+    custom_key: 'kept',
+  }), {
+    mode: 'auto',
+    effort: 'high',
+    custom_key: 'kept',
+  });
+});
+
+test('profileSavePayload: slugifies the name and copies the effective config', () => {
+  const config = { mode: 'auto', effort: 'high' };
+  const payload = profileSavePayload('  Careful Review  ', 'claude-code', config);
+  assert.deepEqual(payload, {
+    id: 'careful-review',
+    name: 'Careful Review',
+    backend: 'claude-code',
+    config,
+  });
+  payload.config.mode = 'mutated';
+  assert.equal(config.mode, 'auto');
+  assert.throws(() => profileSavePayload('  ', 'claude-code', config), /name/);
+  assert.throws(() => profileSavePayload('builtin-secret', 'claude-code', config), /reserved/);
 });

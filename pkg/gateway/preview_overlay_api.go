@@ -126,6 +126,9 @@ func overlayAPIPathAllowed(method, path string) bool {
 	if method == http.MethodGet && (path == "/backends" || path == "/presets" || path == "/config-options") {
 		return true
 	}
+	if method == http.MethodPost && path == "/presets" {
+		return true
+	}
 	if method == http.MethodPost && path == "/sessions" {
 		return true
 	}

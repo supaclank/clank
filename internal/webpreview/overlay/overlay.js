@@ -35,7 +35,8 @@ import {
 } from './chat.js';
 import {
   resolvePreset, applyPresetOverrides, configRows, setConfigOverride,
-  diffConfigAgainstOptions, profileLabel,
+  diffConfigAgainstOptions, effectiveSessionConfig, profileLabel,
+  profileSavePayload,
 } from './settings.js';
 
 (() => {
@@ -152,6 +153,9 @@ import {
     configOptionsError: '',
     expandedConfigID: '',
     pendingConfig: {}, // live-session changes staged for the next send
+    saveProfileOpen: false,
+    saveProfileName: '',
+    profileSaving: false,
   };
   // Dictation engines. 'local' streams PCM to the preview process
   // (CFG.voice = that engine exists); 'webspeech' is the browser's own
@@ -565,6 +569,55 @@ import {
     store.settingsOpen = false;
     store.expandedConfigID = '';
     render();
+  };
+
+  const openSaveProfile = () => {
+    store.saveProfileName = '';
+    store.saveProfileOpen = true;
+    render();
+    setTimeout(() => {
+      ui.saveProfileName.value = '';
+      ui.saveProfileName.focus({ preventScroll: true });
+    }, 0);
+  };
+
+  const closeSaveProfile = () => {
+    if (store.profileSaving) return;
+    store.saveProfileOpen = false;
+    store.saveProfileName = '';
+    render();
+  };
+
+  const saveProfile = async () => {
+    if (store.profileSaving) return;
+    try {
+      const config = store.sessionId
+        ? effectiveSessionConfig(store.configOptions, store.pendingConfig)
+        : applyPresetOverrides(selectedCreateProfile(), store.profileOverrides);
+      const payload = profileSavePayload(store.saveProfileName, CFG.backend, config);
+      store.profileSaving = true;
+      render();
+      const saved = await apiJSON('/presets', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      if (!saved || !saved.id) throw new Error('profile save returned no id');
+      const index = store.profiles.findIndex((profile) => profile.id === saved.id);
+      if (index >= 0) store.profiles[index] = saved;
+      else store.profiles.push(saved);
+      store.profilesLoaded = true;
+      store.profilesError = '';
+      store.profileID = saved.id;
+      if (!store.sessionId) store.profileOverrides = {};
+      store.saveProfileOpen = false;
+      store.saveProfileName = '';
+      toast(`saved profile “${saved.name}”`);
+    } catch (err) {
+      toast('could not save profile: ' + err.message);
+    } finally {
+      store.profileSaving = false;
+      render();
+    }
   };
 
   // ---------- session ------------------------------------------------------
@@ -1376,13 +1429,30 @@ import {
   .knob-option.cur { color:#2563eb; }
   .settings-state { color:#6b7280; padding:9px 10px; border-top:1px solid #e5e7eb; }
   .settings-state.err { color:#dc2626; }
-  .settings-actions { display:flex; justify-content:flex-end; padding:4px 10px 9px; }
+  .settings-actions { display:flex; justify-content:flex-end; gap:7px; padding:4px 10px 9px; }
   .set-default { all:unset; cursor:pointer; color:#2563eb; font-weight:600; border:1px solid #e5e7eb;
+    border-radius:9px; padding:6px 10px; }
+  .save-new { all:unset; cursor:pointer; color:#fff; background:#111827; font-weight:600;
     border-radius:9px; padding:6px 10px; }
   .profile { all:unset; cursor:pointer; height:30px; max-width:125px; padding:0 7px; border-radius:9px;
     display:inline-flex; align-items:center; gap:5px; color:#6b7280; font-size:11px; font-weight:600; }
   .profile:hover, .profile.active { background:#00000010; color:#111827; }
   .profile span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .save-profile { position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+    padding:20px; pointer-events:auto; background:rgba(0,0,0,.48); }
+  .save-profile.show { display:flex; }
+  .save-card { width:320px; max-width:100%; background:#fff; color:#1f2937; border:1px solid #e5e7eb;
+    border-radius:14px; box-shadow:0 16px 48px rgba(0,0,0,.25); padding:14px; }
+  .save-card .t { font-size:14px; font-weight:650; margin-bottom:10px; }
+  .save-card input { width:100%; border:1px solid #d1d5db; border-radius:9px; background:#fff;
+    color:#111827; outline:0; padding:8px 10px; font-size:13px; }
+  .save-card input:focus { border-color:#3b82f6; box-shadow:0 0 0 2px #3b82f622; }
+  .save-actions { display:flex; justify-content:flex-end; gap:7px; margin-top:11px; }
+  .save-actions button { all:unset; cursor:pointer; font-size:12px; font-weight:600; padding:6px 10px; border-radius:8px; }
+  .save-actions .cancel { color:#6b7280; }
+  .save-actions .confirm { color:#fff; background:#111827; }
+  .save-actions button[disabled] { opacity:.4; cursor:not-allowed; }
+  .save-actions button:focus-visible { outline:2px solid #3b82f6; outline-offset:2px; }
   .send { background:#111827; color:#fff; font-weight:700; }
   .send:hover { background:#000; }
   .send.stop { background:#ef4444; color:#fff; }
@@ -1452,8 +1522,8 @@ import {
     <button class="ib att" title="Attach images (or paste into the box)">${ICONS.plus}</button>
     <button class="ib shot" title="Grab a screenshot area">${ICONS.shot}</button>
     <button class="ib sel" title="Select an element (hold ⌘)">${ICONS.select}</button>
-    <button class="profile" title="Agent settings">${ICONS.settings}<span>Settings</span></button>
     <span class="sp"></span>
+    <button class="profile" title="Agent settings">${ICONS.settings}<span>Settings</span></button>
     <button class="ib mic" title="Tap ⇪ to talk (or hold this button)">${ICONS.mic}</button>
     <button class="ib eng" title="Dictation engine">${ICONS.chevron}</button>
     <span class="micLevel" style="display:none"></span>
@@ -1461,6 +1531,13 @@ import {
   </div>
   <input type="file" class="file" multiple style="display:none">
   <div class="hint"><span><kbd>⇪ caps</kbd> talk</span><span><kbd>⇧</kbd> move</span><span><kbd>⌘</kbd> select</span><span><kbd>⌘E</kbd> toggle</span></div>
+</div>
+<div class="save-profile">
+  <div class="save-card" role="dialog" aria-modal="true" aria-labelledby="clank-save-profile-title">
+    <div class="t" id="clank-save-profile-title">Save as new profile</div>
+    <input class="save-profile-name" type="text" placeholder="Profile name" autocomplete="off">
+    <div class="save-actions"><button class="cancel">Cancel</button><button class="confirm" disabled>Save</button></div>
+  </div>
 </div>
 <div class="hl"></div><div class="hll"></div>
 <div class="cpop"><textarea class="cpop-in" rows="1"></textarea><div class="cpop-h"><kbd>Enter</kbd> add · <kbd>Esc</kbd> dismiss</div></div>
@@ -1481,6 +1558,8 @@ import {
     input: $('.compose'), sel: $('.sel'), mic: $('.mic'), micLevel: $('.micLevel'),
     eng: $('.eng'), engpick: $('.engpick'), engOpts: [...root.querySelectorAll('.engpick .opt')],
     settings: $('.settings'), profile: $('.profile'), profileLabel: $('.profile span'),
+    saveProfile: $('.save-profile'), saveProfileName: $('.save-profile-name'),
+    saveProfileCancel: $('.save-actions .cancel'), saveProfileConfirm: $('.save-actions .confirm'),
     send: $('.send'), hl: $('.hl'), hll: $('.hll'), toast: $('.toast'),
     cpop: $('.cpop'), cpopIn: $('.cpop-in'), cpopHint: $('.cpop-h'),
     shot: $('.shot'), att: $('.att'), file: $('.file'),
@@ -1740,19 +1819,29 @@ import {
       frag.append(node('div', 'settings-state', 'No agent settings are available.'));
     }
 
-    if (!live && preset && (!resolvedDefault || preset.id !== resolvedDefault.id)) {
+    const canSaveAsNew = live ? Object.keys(store.pendingConfig).length > 0 : custom;
+    const canSetDefault = !live && !custom && preset &&
+      (!resolvedDefault || preset.id !== resolvedDefault.id);
+    if (canSaveAsNew || canSetDefault) {
       const actions = node('div', 'settings-actions');
-      const makeDefault = node('button', 'set-default', 'Set as default');
-      makeDefault.onclick = () => {
-        try {
-          writeDefaultProfileID(CFG.backend, preset.id);
-          store.defaultProfileID = preset.id;
-          render();
-        } catch (err) {
-          toast('could not save the default profile: ' + err.message);
-        }
-      };
-      actions.append(makeDefault);
+      if (canSetDefault) {
+        const makeDefault = node('button', 'set-default', 'Set as default');
+        makeDefault.onclick = () => {
+          try {
+            writeDefaultProfileID(CFG.backend, preset.id);
+            store.defaultProfileID = preset.id;
+            render();
+          } catch (err) {
+            toast('could not save the default profile: ' + err.message);
+          }
+        };
+        actions.append(makeDefault);
+      }
+      if (canSaveAsNew) {
+        const saveNew = node('button', 'save-new', 'Save as new profile');
+        saveNew.onclick = openSaveProfile;
+        actions.append(saveNew);
+      }
       frag.append(actions);
     }
     ui.settings.replaceChildren(frag);
@@ -1839,6 +1928,10 @@ import {
     }
     renderQuestion();
     renderSettings();
+    ui.saveProfile.classList.toggle('show', store.saveProfileOpen);
+    ui.saveProfileCancel.disabled = store.profileSaving;
+    ui.saveProfileConfirm.disabled = store.profileSaving || !store.saveProfileName.trim();
+    ui.saveProfileConfirm.textContent = store.profileSaving ? 'Saving…' : 'Save';
 
     ui.sel.classList.toggle('active', store.inspect);
     ui.profile.style.display = CFG.backend ? '' : 'none';
@@ -1870,6 +1963,8 @@ import {
       store.enginePick = false;
       store.settingsOpen = false;
       store.expandedConfigID = '';
+      store.saveProfileOpen = false;
+      store.saveProfileName = '';
     }
     render();
     // Focus the CONTAINER, not the composer: typing focus on summon
@@ -2489,6 +2584,20 @@ import {
   // ---------- wiring -----------------------------------------------------------
   ui.send.onclick = () => { (store.agent === 'thinking' || store.agent === 'working') ? abort() : send(); };
   ui.profile.onclick = () => (store.settingsOpen ? closeSettings() : openSettings());
+  ui.saveProfileCancel.onclick = closeSaveProfile;
+  ui.saveProfileConfirm.onclick = saveProfile;
+  ui.saveProfile.onclick = (e) => { if (e.target === ui.saveProfile) closeSaveProfile(); };
+  ui.saveProfileName.addEventListener('input', () => {
+    store.saveProfileName = ui.saveProfileName.value;
+    ui.saveProfileConfirm.disabled = store.profileSaving || !store.saveProfileName.trim();
+  });
+  ui.saveProfileName.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter' && store.saveProfileName.trim()) {
+      e.preventDefault();
+      saveProfile();
+    }
+  });
   ui.sel.onclick = () => (store.inspect ? exitInspect() : enterInspect());
   ui.shot.onclick = beginShot;
   ui.cropAdd.onclick = confirmCrop;
@@ -2705,7 +2814,8 @@ import {
       return;
     }
     if (e.key === 'Escape') {
-      if (store.settingsOpen) { e.preventDefault(); e.stopPropagation(); closeSettings(); }
+      if (store.saveProfileOpen) { e.preventDefault(); e.stopPropagation(); closeSaveProfile(); }
+      else if (store.settingsOpen) { e.preventDefault(); e.stopPropagation(); closeSettings(); }
       else if (store.enginePick) { e.preventDefault(); e.stopPropagation(); closeEnginePick(); }
       else if (commentTarget) { e.preventDefault(); e.stopPropagation(); hideCommentPopover(); }
       else if (store.inspect) { e.preventDefault(); e.stopPropagation(); modInspect = false; exitInspect(); }
