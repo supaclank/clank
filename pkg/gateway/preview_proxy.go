@@ -273,6 +273,9 @@ func (s *previewState) serveProxy(w http.ResponseWriter, r *http.Request, tun *p
 	upstream := &url.URL{Scheme: "http", Host: "preview-upstream"}
 
 	var snippet []byte
+	// TODO(ai-review): built eagerly for every browser-UA request even when
+	// the response turns out non-HTML; move into ModifyResponse once
+	// Content-Type is known. https://github.com/Acksell/clank/pull/216#discussion_r3699214060
 	if webpreview.ShouldInjectOverlay(r.UserAgent()) {
 		overlayContext := previewOverlayContextFromRequest(r)
 		var err error
@@ -313,7 +316,12 @@ func (s *previewState) serveProxy(w http.ResponseWriter, r *http.Request, tun *p
 			pr.Out.Header.Del("X-Forwarded-Host")
 			pr.Out.Header.Del("X-Forwarded-For")
 			pr.Out.Header.Del("X-Forwarded-Proto")
-			pr.Out.Header.Set("Accept-Encoding", "identity")
+			// Only disable compression when we'll actually inject into the
+			// body (ModifyResponse below no-ops otherwise); native preview
+			// and other non-overlay requests keep their real encoding.
+			if len(snippet) > 0 {
+				pr.Out.Header.Set("Accept-Encoding", "identity")
+			}
 
 			// Strip signed-URL bearer params so Metro never sees the
 			// clank_sig/clank_exp credentials. SetURL above preserves

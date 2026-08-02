@@ -348,6 +348,39 @@ func TestPreviewProxy_DoesNotInjectBrowserOverlayIntoNativePreview(t *testing.T)
 	}
 }
 
+func TestPreviewProxy_PreservesAcceptEncodingWhenOverlayNotInjected(t *testing.T) {
+	t.Parallel()
+	gotEncoding := make(chan string, 1)
+	f := newPreviewProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotEncoding <- r.Header.Get("Accept-Encoding")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, "<!doctype html><html><body>preview</body></html>")
+	}))
+	route := f.seed(t, "alice", tokens.VisibilityPublic)
+	req, err := http.NewRequest(http.MethodGet, f.srv.URL+"/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Host = tokens.HostFor(route.Token, f.root)
+	req.Header.Set("User-Agent", "Android WebView "+webpreview.NativePreviewUserAgentToken)
+	req.Header.Set("Accept-Encoding", "gzip")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	select {
+	case got := <-gotEncoding:
+		if got != "gzip" {
+			t.Errorf("upstream Accept-Encoding = %q, want %q (native preview never gets overlay injection, so compression shouldn't be forced off)", got, "gzip")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream handler never invoked")
+	}
+}
+
 func TestPreviewProxy_ServesOverlayAssetsWithoutForwarding(t *testing.T) {
 	t.Parallel()
 	var upstreamHits atomic.Int64

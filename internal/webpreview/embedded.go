@@ -81,6 +81,9 @@ func InjectOverlayResponse(resp *http.Response, snippet []byte) error {
 	resp.Body = io.NopCloser(bytes.NewReader(injected))
 	resp.ContentLength = int64(len(injected))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(injected)))
+	// TODO(ai-review): strips CSP unconditionally, weakening the previewed
+	// app's own XSS defenses on public/shareable hosted previews; consider
+	// nonce-based injection instead. https://github.com/Acksell/clank/pull/216#discussion_r3699214068
 	resp.Header.Del("Content-Security-Policy")
 	resp.Header.Del("Content-Security-Policy-Report-Only")
 	resp.Header.Set("Cache-Control", "no-store")
