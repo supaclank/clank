@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -91,6 +92,29 @@ func TestCloneBare_BloblessSingleBranchWithConfigs(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(wt, "a.txt")); err != nil {
 		t.Errorf("checkout missing file: %v", err)
+	}
+}
+
+// TestCloneBareCredentialArgs_AlwaysResetsHelper pins the anonymous-clone
+// path: without a reset, an ambient system/global credential.helper could
+// answer with a stale/revoked token or de-anonymize what's meant to be a
+// tokenless (public) clone.
+func TestCloneBareCredentialArgs_AlwaysResetsHelper(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, token string
+		want        []string
+	}{
+		{"anonymous resets the helper and adds nothing else", "", []string{"-c", "credential.helper="}},
+		{"token resets then layers the inline token helper", "tok_secret", []string{"-c", "credential.helper=", "-c", "credential.helper=" + cloneCredentialHelper}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if got := cloneBareCredentialArgs(c.token); !slices.Equal(got, c.want) {
+				t.Errorf("cloneBareCredentialArgs(%q) = %v, want %v", c.token, got, c.want)
+			}
+		})
 	}
 }
 
