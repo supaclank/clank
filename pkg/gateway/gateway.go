@@ -238,6 +238,8 @@ func (g *Gateway) Handler() http.Handler {
 	mx.HandleFunc("POST /v1/worktrees/{id}/pr", g.handleGitHubCreatePR)
 	mx.HandleFunc("POST /v1/worktrees/{id}/pr/preview", g.handleGitHubPreviewPR)
 	mx.HandleFunc("POST /v1/worktrees/{id}/pr/ready", g.handleGitHubMarkPRReady)
+	mx.HandleFunc("POST /v1/github/pull-requests/inspect", g.handleGitHubPullRequestInspect)
+	mx.HandleFunc("POST /v1/github/pull-requests/launch", g.handleGitHubPullRequestLaunch)
 
 	// Repo-first surface: filesystem-derived listing, repo-scoped
 	// worktree creation, the branch∪PR overview, and whole-repo delete.

@@ -90,7 +90,7 @@ func (s *Service) ImportProjectFromGitHub(ctx context.Context, owner, repo, bran
 	cloneURL := fmt.Sprintf("%s/%s/%s.git", gitHubCloneBase, owner, repo)
 	createdCanonical := false
 	if _, statErr := os.Stat(gitDir); os.IsNotExist(statErr) {
-		if err := s.cloneCanonical(ctx, cloneURL, gitDir, token, branch, owner+"/"+repo); err != nil {
+		if err := s.cloneCanonical(ctx, cloneURL, gitDir, token, branch, owner+"/"+repo, s.credentialHelperValue()); err != nil {
 			return CreateWorktreeResult{}, err
 		}
 		createdCanonical = true
@@ -138,11 +138,11 @@ func (s *Service) ImportProjectFromGitHub(ctx context.Context, owner, repo, bran
 // clone, committer identity (worktree commits read config through the
 // shared git dir), display label, and the persistent credential helper
 // so lazy blob fetches + agent-run git can authenticate on their own.
-func (s *Service) cloneCanonical(ctx context.Context, cloneURL, gitDir, token, branch, label string) error {
+func (s *Service) cloneCanonical(ctx context.Context, cloneURL, gitDir, token, branch, label, credentialHelper string) error {
 	if err := os.MkdirAll(filepath.Dir(gitDir), 0o755); err != nil {
 		return fmt.Errorf("create canonical dir: %w", err)
 	}
-	if err := git.CloneBare(ctx, cloneURL, gitDir, token, branch, s.credentialHelperValue()); err != nil {
+	if err := git.CloneBare(ctx, cloneURL, gitDir, token, branch, credentialHelper); err != nil {
 		// A failed clone can leave a partial gitDir behind — remove it so a
 		// retry doesn't mistake it for an existing canonical.
 		if rmErr := os.RemoveAll(filepath.Dir(gitDir)); rmErr != nil {

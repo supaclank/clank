@@ -186,20 +186,25 @@ func buildFlySpritesProvisioner(opts ServerOptions, st *store.Store, prefs confi
 	if err != nil {
 		return nil, nil, err
 	}
-	prov, err := flyspritesprov.New(flyspritesprov.Options{
-		APIToken:            prefs.FlySprites.APIToken,
-		OrganizationSlug:    prefs.FlySprites.OrganizationSlug,
-		Region:              prefs.FlySprites.Region,
-		SpriteNamePrefix:    prefs.FlySprites.SpriteNamePrefix,
-		RamMB:               prefs.FlySprites.RamMB,
-		CPUs:                prefs.FlySprites.CPUs,
-		StorageGB:           prefs.FlySprites.StorageGB,
-		NotifierWebhookURL:  notifierWebhookURL(),
-		GitHubOAuthClientID: os.Getenv("CLANK_GITHUB_OAUTH_CLIENT_ID"),
-		Templates:           templates,
-	}, st, log.Default())
+	prov, err := flyspritesprov.New(flySpritesOptions(*prefs.FlySprites, templates), st, log.Default())
 	if err != nil {
 		return nil, nil, fmt.Errorf("build flysprites provisioner: %w", err)
 	}
 	return prov, prov.Stop, nil
+}
+
+func flySpritesOptions(prefs config.FlySpritesPreference, templates []provisioner.Template) flyspritesprov.Options {
+	return flyspritesprov.Options{
+		APIToken:            prefs.APIToken,
+		OrganizationSlug:    prefs.OrganizationSlug,
+		Region:              prefs.Region,
+		SpriteNamePrefix:    prefs.SpriteNamePrefix,
+		RamMB:               prefs.RamMB,
+		CPUs:                prefs.CPUs,
+		StorageGB:           prefs.StorageGB,
+		NotifierWebhookURL:  notifierWebhookURL(),
+		PreviewWebhookURL:   previewWebhookURL(),
+		GitHubOAuthClientID: os.Getenv("CLANK_GITHUB_OAUTH_CLIENT_ID"),
+		Templates:           templates,
+	}
 }

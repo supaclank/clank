@@ -32,6 +32,10 @@ const (
 //   - Configured web: front the dev server with the overlay-injecting
 //     proxy and open it in the browser (runWebPreview).
 func runPreview(projectDir, launchName, backend string, port int) error {
+	return runPreviewWithDisplayName(projectDir, launchName, backend, port, "")
+}
+
+func runPreviewWithDisplayName(projectDir, launchName, backend string, port int, displayName string) error {
 	isProjectExplicit := projectDir != ""
 	projectDir, err := resolveProjectDir(projectDir)
 	if err != nil {
@@ -194,7 +198,7 @@ func runPreview(projectDir, launchName, backend string, port int) error {
 			fmt.Println("One-time preview setup complete.")
 		}
 		upstreamURL := previewLoopbackURL(status.Port)
-		return runWebPreview(sigCtx, projectDir, sockPath, string(bt), upstreamURL, port)
+		return runWebPreview(sigCtx, projectDir, sockPath, string(bt), upstreamURL, port, displayName)
 	}
 
 	// Phone (Expo) path from here down. The daemon's bridge is the

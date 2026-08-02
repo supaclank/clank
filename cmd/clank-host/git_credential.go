@@ -16,10 +16,14 @@ import (
 const gitCredentialCommand = "git-credential"
 
 // runGitCredential executes one helper invocation and returns the
-// process exit code. args are argv[2:]; git always passes exactly one
-// action (get/store/erase). A missing action is treated as a no-op
-// rather than an error — helpers are expected to be forgiving.
+// process exit code. args are argv[2:] and may begin with the local-only
+// gh auth flag before git's action (get/store/erase). A missing action
+// is a no-op rather than an error — helpers are expected to be forgiving.
 func runGitCredential(args []string) int {
+	canUseGhCLIAuth := len(args) > 0 && args[0] == githubpkg.GitCredentialGhCLIAuthFlag
+	if canUseGhCLIAuth {
+		args = args[1:]
+	}
 	action := ""
 	if len(args) > 0 {
 		action = args[0]
@@ -29,7 +33,7 @@ func runGitCredential(args []string) int {
 		fmt.Fprintln(os.Stderr, "clank-host git-credential:", err)
 		return 1
 	}
-	if err := githubpkg.RunGitCredentialHelper(action, os.Stdin, os.Stdout, githubpkg.NewStore(home)); err != nil {
+	if err := githubpkg.RunGitCredentialHelper(action, os.Stdin, os.Stdout, githubpkg.NewStore(home), canUseGhCLIAuth); err != nil {
 		fmt.Fprintln(os.Stderr, "clank-host git-credential:", err)
 		return 1
 	}

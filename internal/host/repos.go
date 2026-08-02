@@ -151,7 +151,10 @@ func (s *Service) credentialHelperValue() string {
 		s.log.Printf("warning: resolve executable for credential helper: %v", err)
 		return ""
 	}
-	return githubpkg.GitCredentialHelperValue(exe)
+	// s.github is nil when New's os.UserHomeDir() lookup failed; treat that
+	// the same as gh CLI auth being unavailable rather than panic.
+	ghCLIAuth := s.github != nil && s.github.CanUseGhCLIAuth()
+	return githubpkg.GitCredentialHelperValue(exe, ghCLIAuth)
 }
 
 // lockRepo serializes canonical mutations (clone, fetch, worktree
