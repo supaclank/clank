@@ -13,7 +13,7 @@ func TestOverlayModulesJS(t *testing.T) {
 	t.Parallel()
 	node, err := exec.LookPath("node")
 	if err != nil {
-		t.Skip("node not installed; skipping overlay chat.js tests")
+		t.Skip("node not installed; skipping overlay module tests")
 	}
 	cmd := exec.Command(node, "--test", "chat_test.mjs", "settings_test.mjs")
 	cmd.Dir = "overlay"
