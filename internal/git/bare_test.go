@@ -95,6 +95,37 @@ func TestCloneBare_BloblessSingleBranchWithConfigs(t *testing.T) {
 	}
 }
 
+// TestCloneBare_EmptyCredentialHelperStillPersisted guards the anonymous
+// (public, no token) clone path: a repo-local credential.helper must be
+// written even when credentialHelper is "", so a later fetch (branch
+// materialization, lazy blob checkout) can't fall through to an ambient
+// system/global credential.helper and de-anonymize the repo.
+func TestCloneBare_EmptyCredentialHelperStillPersisted(t *testing.T) {
+	t.Parallel()
+	origin := makeBareTestOrigin(t)
+	gitDir := filepath.Join(t.TempDir(), "repo.git")
+
+	if err := CloneBare(context.Background(), origin, gitDir, "", "", ""); err != nil {
+		t.Fatalf("CloneBare: %v", err)
+	}
+
+	got, err := GetLocalConfig(gitDir, "credential.helper")
+	if err != nil {
+		t.Fatalf("GetLocalConfig(credential.helper): %v", err)
+	}
+	if got != "" {
+		t.Errorf("credential.helper = %q, want empty (explicitly reset)", got)
+	}
+
+	cfg, err := os.ReadFile(filepath.Join(gitDir, "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cfg), "helper =") {
+		t.Error("credential.helper key missing from repo-local config; an ambient global/system helper would apply on later fetches")
+	}
+}
+
 // TestCloneBareCredentialArgs_AlwaysResetsHelper pins the anonymous-clone
 // path: without a reset, an ambient system/global credential.helper could
 // answer with a stale/revoked token or de-anonymize what's meant to be a
