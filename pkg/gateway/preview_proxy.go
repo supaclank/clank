@@ -34,6 +34,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/acksell/clank/internal/webpreview"
 	"github.com/acksell/clank/pkg/auth"
 	"github.com/acksell/clank/pkg/gateway/previewtunnel"
 	"github.com/acksell/clank/pkg/preview/routestore"
@@ -106,7 +107,17 @@ func (s *previewState) serveToken(w http.ResponseWriter, r *http.Request, token 
 	// Visibility gate.
 	switch route.Visibility {
 	case tokens.VisibilityPublic:
-		// Anonymous access allowed.
+		// Anonymous access allowed. A public route can still be opened with a
+		// signed owner URL; bridge that bearer into cookies so its overlay API
+		// remains functional after the page fetch drops the query string.
+		if len(s.signingKey) > 0 &&
+			r.URL.Query().Get(tokens.SigParam) != "" &&
+			tokens.VerifyFromRequest(s.signingKey, token, r, s.now()) == nil {
+			if sig, exp, ok := signedQueryFromRequest(r); ok {
+				tokens.SetSignedCookies(w, sig, exp, tokens.RequestIsHTTPS(r))
+				setPreviewOverlayContextCookies(w, r, exp)
+			}
+		}
 	case tokens.VisibilityOwnerOnly:
 		if !s.authorizeOwnerOnly(w, r, route, token) {
 			return
@@ -114,6 +125,17 @@ func (s *previewState) serveToken(w http.ResponseWriter, r *http.Request, token 
 	default:
 		s.log.Printf("preview proxy: route %s has unknown visibility %q", route.Token, route.Visibility)
 		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	if webpreview.ServeOverlayAsset(w, r) {
+		return
+	}
+	if r.URL.Path == webpreview.APIPrefix || strings.HasPrefix(r.URL.Path, webpreview.APIPrefix+"/") {
+		if !s.authorizeOverlayAPI(w, r, route, token) {
+			return
+		}
+		s.serveOverlayAPI(w, r, route)
 		return
 	}
 
@@ -156,6 +178,7 @@ func (s *previewState) authorizeOwnerOnly(w http.ResponseWriter, r *http.Request
 					// cookies; production-TLS does. Either way the
 					// cookies are HttpOnly + SameSite=Strict.
 					tokens.SetSignedCookies(w, sig, exp, tokens.RequestIsHTTPS(r))
+					setPreviewOverlayContextCookies(w, r, exp)
 				}
 			}
 			return true
@@ -243,11 +266,33 @@ func (s *previewState) tunnelFor(route routestore.Route) (*previewtunnel.Tunnel,
 // request gets its own *httputil.ReverseProxy because the Director
 // closes over `route` for the upstream URL; the Tunnel (which holds
 // the connection pool) is shared.
-func (s *previewState) serveProxy(w http.ResponseWriter, r *http.Request, tun *previewtunnel.Tunnel, _ routestore.Route) {
+func (s *previewState) serveProxy(w http.ResponseWriter, r *http.Request, tun *previewtunnel.Tunnel, route routestore.Route) {
 	// upstream's Scheme/Host are placeholders — the Tunnel's
 	// DialContext ignores them. We still need a valid URL for
 	// ReverseProxy.Director to compose against.
 	upstream := &url.URL{Scheme: "http", Host: "preview-upstream"}
+
+	var snippet []byte
+	if webpreview.ShouldInjectOverlay(r.UserAgent()) {
+		overlayContext := previewOverlayContextFromRequest(r)
+		var err error
+		snippet, err = webpreview.OverlaySnippet(map[string]any{
+			"token":            "",
+			"voice":            false,
+			"voice_engine":     "",
+			"dictation_engine": "",
+			"hostname":         route.HostID,
+			"worktree_id":      route.WorktreeID,
+			"name":             route.ServiceName,
+			"session_id":       overlayContext.SessionID,
+			"backend":          overlayContext.Backend,
+		})
+		if err != nil {
+			s.log.Printf("preview proxy: build overlay config: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+	}
 
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -268,15 +313,27 @@ func (s *previewState) serveProxy(w http.ResponseWriter, r *http.Request, tun *p
 			pr.Out.Header.Del("X-Forwarded-Host")
 			pr.Out.Header.Del("X-Forwarded-For")
 			pr.Out.Header.Del("X-Forwarded-Proto")
+			pr.Out.Header.Set("Accept-Encoding", "identity")
 
 			// Strip signed-URL bearer params so Metro never sees the
 			// clank_sig/clank_exp credentials. SetURL above preserves
 			// the inbound query string verbatim, and stripRawQueryParams
 			// keeps it that way for every param we don't remove.
 			pr.Out.URL.RawQuery = stripRawQueryParams(
-				pr.Out.URL.RawQuery, tokens.SigParam, tokens.ExpParam)
+				pr.Out.URL.RawQuery,
+				tokens.SigParam,
+				tokens.ExpParam,
+				overlaySessionParam,
+				overlayBackendParam,
+			)
 		},
 		Transport: tun,
+		ModifyResponse: func(resp *http.Response) error {
+			if len(snippet) == 0 {
+				return nil
+			}
+			return webpreview.InjectOverlayResponse(resp, snippet)
+		},
 		// HMR + SSE both need byte-by-byte forwarding. -1 disables
 		// the proxy's buffering. The Phase 0 spike confirmed WS
 		// upgrade rides on this Transport unchanged.

@@ -8,8 +8,16 @@ import {
   pushPermission, dropPermission, customAllowed, toggleSelection,
   buildAnswers, collectPlanParts, planTextFor, textFromParts,
   defaultPresetConfig, buildPreviewContext, composerTextForSend,
+  previewGitRef,
   COMMENTS_DEFAULT_PROMPT,
 } from './chat.js';
+
+test('previewGitRef: cloud and local previews use their explicit identity', () => {
+  assert.deepEqual(previewGitRef({ worktree_id: 'wt-123' }), { worktree_id: 'wt-123' });
+  assert.deepEqual(previewGitRef({ local_path: '/repo' }), { local_path: '/repo' });
+  assert.equal(previewGitRef({}), null);
+  assert.equal(previewGitRef({ worktree_id: 'wt-123', local_path: '/repo' }), null);
+});
 
 const prompt = (id) => ({
   request_id: id,
