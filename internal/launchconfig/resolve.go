@@ -38,11 +38,12 @@ func Resolve(workDir, name string) (*Resolved, error) {
 		return nil, fmt.Errorf("preview %q is not defined in %s (available: %s)", selectedName, source.Path, strings.Join(names, ", "))
 	}
 	return &Resolved{
-		Name:    selectedName,
-		WorkDir: resolvedDirs[selectedName],
-		Command: preview.Command,
-		Ready:   preview.Ready,
-		Source:  source,
+		Name:        selectedName,
+		WorkDir:     resolvedDirs[selectedName],
+		Command:     preview.Command,
+		Environment: cloneEnvironment(preview.Environment),
+		Ready:       preview.Ready,
+		Source:      source,
 	}, nil
 }
 
@@ -105,6 +106,9 @@ func validatePreview(root, name string, preview Preview) (string, error) {
 	// server actually binds it https://github.com/Acksell/clank/pull/209#discussion_r3696030288
 	if !portVariablePattern.MatchString(preview.Command) {
 		return "", fmt.Errorf("preview %q: command must consume $%s", name, PortEnvironmentName)
+	}
+	if err := validateEnvironment(preview.Environment); err != nil {
+		return "", fmt.Errorf("preview %q: %w", name, err)
 	}
 	if err := validateReadyPath(preview.Ready.Path); err != nil {
 		return "", fmt.Errorf("preview %q: %w", name, err)

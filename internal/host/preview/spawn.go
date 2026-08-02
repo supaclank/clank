@@ -7,13 +7,9 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
-
-	"github.com/acksell/clank/internal/launchconfig"
 )
 
 // ringCapacity is the size of the per-server stdout/stderr ring. 64 KiB
@@ -53,10 +49,8 @@ type spawnRequest struct {
 
 	// PublicURL is the externally-reachable URL the gateway will route
 	// to this dev server, e.g. "http://preview-<token>.<root>:7878".
-	// When non-empty, spawn sets EXPO_PACKAGER_PROXY_URL so Metro
-	// advertises this URL in its manifest (hostUri + launchAsset.url)
-	// instead of its internal listen port. Empty disables the
-	// override — useful for tests + laptop dev without a gateway.
+	// Expo receives it as the packager proxy URL. Web previews derive their
+	// public hostname and readiness Host header from it. Empty selects local mode.
 	PublicURL string
 
 	// ReadyTimeout overrides readyTimeout for this spawn. Zero means
@@ -99,6 +93,18 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 			return nil, err
 		}
 	}
+	env, readinessHost, err := prepareEnvironment(environmentRequest{
+		Kind:            req.Spec.Kind,
+		MarkerPath:      markerPath,
+		PublicURL:       req.PublicURL,
+		ShimRequirePath: req.ShimRequirePath,
+		RuntimePath:     req.RuntimePath,
+		Port:            port,
+		Configured:      req.Spec.Environment,
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	// Tie the child to a per-spawn context so Stop's cancel() can kick
 	// in if the process is still in startup when the user bails out.
@@ -106,7 +112,7 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 
 	cmd := exec.CommandContext(childCtx, args[0], args[1:]...)
 	cmd.Dir = req.WorkDir
-	cmd.Env = buildEnv(req.Spec.Kind, markerPath, req.PublicURL, req.ShimRequirePath, req.RuntimePath, port)
+	cmd.Env = env
 	configureProcessGroup(cmd)
 
 	logs := newRingBuf(ringCapacity)
@@ -161,7 +167,7 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 	if timeout == 0 {
 		timeout = readyTimeout
 	}
-	go probeReady(r, req.Spec.ReadyProbe, timeout)
+	go probeReady(r, req.Spec.ReadyProbe, readinessHost, timeout)
 
 	return r, nil
 }
@@ -209,79 +215,8 @@ func renderArgs(tmpl []string, port int) ([]string, error) {
 	return out, nil
 }
 
-// buildEnv inherits the host environment and pins the allocated PORT for every
-// launch. Expo additionally receives its bootstrap, gateway, and runtime-shim
-// variables; configured web commands otherwise keep the user's environment.
-//
-// Expo CLI's prompts are skipped via `--non-interactive` on the argv
-// (see expoCmdTemplate). We deliberately do NOT set CI=true here: Metro
-// reads the CI env var and disables file-watching + HMR ("Metro is
-// running in CI mode, reloads are disabled"). Skipping prompts via
-// argv keeps HMR alive.
-//
-// EXPO_PACKAGER_PROXY_URL (when publicURL is non-empty) makes Expo
-// CLI advertise the gateway-facing URL in the manifest's hostUri and
-// launchAsset.url instead of Metro's internal listen port. Without
-// this Metro reads the Host header for the hostname but uses its own
-// :PORT in the manifest body — leaving the dev-launcher trying to
-// fetch the bundle from a port that isn't externally reachable.
-// REACT_NATIVE_PACKAGER_HOSTNAME would only fix the hostname half;
-// Metro still appends its internal port. See
-// packages/@expo/cli/src/start/server/UrlCreator.ts in expo/expo.
-// shimRequirePath / runtimePath (when set) preload the Metro shim via
-// NODE_OPTIONS=--require and pass the runtime path as CLANK_PREVIEW_RUNTIME, so
-// the guest-side preview runtime is injected into every bundle in-memory (no
-// files in the user's repo). The --require flag is MERGED into any inherited
-// NODE_OPTIONS rather than clobbering it.
-func buildEnv(kind Kind, markerPath, publicURL, shimRequirePath, runtimePath string, port int) []string {
-	parent := os.Environ()
-	env := make([]string, 0, len(parent)+4)
-
-	requireFlag := ""
-	if shimRequirePath != "" {
-		requireFlag = "--require " + shimRequirePath
-	}
-
-	nodeOptionsMerged := false
-	for _, e := range parent {
-		key, _, _ := strings.Cut(e, "=")
-		// Strip CI so Metro doesn't disable file-watching and HMR.
-		// Metro treats CI=true as a signal to run in non-interactive
-		// mode, which disables the hot-reload machinery we depend on.
-		if kind == KindExpo {
-			switch key {
-			case "CI", "EXPO_NO_DOTENV", bootstrapMarkerEnv, "CLANK_PREVIEW_RUNTIME", "EXPO_PACKAGER_PROXY_URL":
-				continue
-			}
-		}
-		if key == launchconfig.PortEnvironmentName {
-			continue
-		}
-		if requireFlag != "" && key == "NODE_OPTIONS" {
-			env = append(env, e+" "+requireFlag)
-			nodeOptionsMerged = true
-			continue
-		}
-		env = append(env, e)
-	}
-	env = append(env, launchconfig.PortEnvironmentName+"="+strconv.Itoa(port))
-	if kind == KindExpo {
-		env = append(env, "EXPO_NO_DOTENV=1", bootstrapMarkerEnv+"="+markerPath)
-	}
-	if requireFlag != "" && !nodeOptionsMerged {
-		env = append(env, "NODE_OPTIONS="+requireFlag)
-	}
-	if kind == KindExpo && runtimePath != "" {
-		env = append(env, "CLANK_PREVIEW_RUNTIME="+runtimePath)
-	}
-	if kind == KindExpo && publicURL != "" {
-		env = append(env, "EXPO_PACKAGER_PROXY_URL="+publicURL)
-	}
-	return env
-}
-
 // probeReady polls http://127.0.0.1:<r.port><probe.Path> every 200ms
-// until it returns 200 AND the body contains probe.ExpectedSubstr
+// using requestHost until it returns 200 AND the body contains probe.ExpectedSubstr
 // (when set). Flips r.state to Ready on success, to Failed on
 // timeout. Exits early if r.done closes (child died before we saw
 // readiness — leave state to the wait goroutine).
@@ -289,7 +224,7 @@ func buildEnv(kind Kind, markerPath, publicURL, shimRequirePath, runtimePath str
 // Mirrors OpenCodeServerManager.waitForReady's shape — concrete HTTP
 // check beats stdout scanning, which raced against Python's
 // print-before-bind and shifted between Expo SDK versions.
-func probeReady(r *running, probe ReadyProbe, timeout time.Duration) {
+func probeReady(r *running, probe ReadyProbe, requestHost string, timeout time.Duration) {
 	if probe.Path == "" {
 		// No probe configured — go straight to Ready. Defensive; today
 		// every Spec carries a probe.
@@ -307,7 +242,7 @@ func probeReady(r *running, probe ReadyProbe, timeout time.Duration) {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if probeOnce(client, url, expect) {
+		if probeOnce(client, url, expect, requestHost) {
 			r.mu.Lock()
 			if r.state == StateStarting {
 				r.state = StateReady
@@ -337,13 +272,20 @@ func probeReady(r *running, probe ReadyProbe, timeout time.Duration) {
 	}
 }
 
-// probeOnce returns true when the URL responds 200 and the body
-// contains expect. Empty expect makes the body check a no-op.
+// probeOnce returns true when the URL responds 200 for requestHost and the body
+// contains expect. An empty requestHost or expect leaves that check unchanged.
 //
 // Body read is capped at 1 KiB — enough for Metro's "packager-status:running"
 // without buffering an unbounded response from a misbehaving server.
-func probeOnce(client *http.Client, url string, expect []byte) bool {
-	resp, err := client.Get(url)
+func probeOnce(client *http.Client, url string, expect []byte, requestHost string) bool {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return false
+	}
+	if requestHost != "" {
+		req.Host = requestHost
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return false
 	}

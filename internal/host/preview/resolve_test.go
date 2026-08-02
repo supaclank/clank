@@ -69,6 +69,8 @@ previews:
   web:
     directory: app
     command: npm run dev -- --port "$PORT"
+    env:
+      __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: "${CLANK_PREVIEW_PUBLIC_HOSTNAME}"
     ready:
       path: /healthz
       expect: ready
@@ -89,6 +91,9 @@ previews:
 	}
 	if got.Spec.ReadyProbe.Path != "/healthz" || got.Spec.ReadyProbe.ExpectedSubstr != "ready" {
 		t.Errorf("ReadyProbe = %+v", got.Spec.ReadyProbe)
+	}
+	if got.Spec.Environment["__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS"] != "${CLANK_PREVIEW_PUBLIC_HOSTNAME}" {
+		t.Errorf("Environment = %v", got.Spec.Environment)
 	}
 }
 

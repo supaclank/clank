@@ -31,6 +31,11 @@ const launchSchema = `{
       "properties": {
         "directory": {"type": "string", "minLength": 1},
         "command": {"type": "string", "minLength": 1},
+        "env": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+          "additionalProperties": {"type": "string"}
+        },
         "ready": {"$ref": "#/$defs/ready"}
       }
     },
