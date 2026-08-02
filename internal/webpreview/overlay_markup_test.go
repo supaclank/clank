@@ -76,3 +76,24 @@ func TestOverlayInlineCommentWiring(t *testing.T) {
 		t.Error("overlay.js must reposition the comment popover on scroll")
 	}
 }
+
+// TestOverlayAgentSettingsWiring pins the mobile-parity settings surface:
+// the footer chip opens a profile/knob editor, and both create and follow-up
+// sends carry the staged config rather than silently reverting to Build.
+func TestOverlayAgentSettingsWiring(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	for _, want := range []string{
+		`<div class="settings"`,
+		`class="profile"`,
+		"$('.settings')",
+		"$('.profile')",
+		"loadConfigOptions",
+		"config: createConfig",
+		"config: pendingConfig",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("overlay.js agent settings wiring missing %q", want)
+		}
+	}
+}
