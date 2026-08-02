@@ -167,7 +167,9 @@ func (g *Gateway) handleSharePreviewToken(w http.ResponseWriter, r *http.Request
 // signRequest is the body of POST /v1/preview/tokens/{token}/sign.
 // TTL caps to tokens.MaxSigTTL; default tokens.DefaultSigTTL.
 type signRequest struct {
-	TTL string `json:"ttl,omitempty"` // Go duration string
+	TTL       string `json:"ttl,omitempty"` // Go duration string
+	SessionID string `json:"session_id,omitempty"`
+	Backend   string `json:"backend,omitempty"`
 }
 
 type signResponse struct {
@@ -251,6 +253,15 @@ func (g *Gateway) handleSignPreviewToken(w http.ResponseWriter, r *http.Request)
 	)
 	if err != nil {
 		g.log.Printf("preview sign: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	signedURL, err = appendPreviewOverlayContext(signedURL, previewOverlayContext{
+		SessionID: req.SessionID,
+		Backend:   req.Backend,
+	})
+	if err != nil {
+		g.log.Printf("preview sign overlay context: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -256,6 +257,37 @@ func TestPreviewTokens_Sign_OwnerGetsSignedURL(t *testing.T) {
 	}
 	if delta := time.Until(out.ExpiresAt); delta < 8*time.Minute || delta > 12*time.Minute {
 		t.Errorf("expires_at ~10m from now; got delta %v", delta)
+	}
+}
+
+func TestPreviewTokens_Sign_CarriesWebOverlayContext(t *testing.T) {
+	t.Parallel()
+	f := newPreviewTokensFixture(t, "alice")
+	r := f.seedRoute(t, "overlay-context", "alice")
+
+	resp := f.do(t, "POST", "/v1/preview/tokens/"+r.Token+"/sign", signRequest{
+		TTL:       "10m",
+		SessionID: "session-123",
+		Backend:   "claude-code",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%d body=%q", resp.StatusCode, body)
+	}
+	var out signResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	u, err := url.Parse(out.SignedURL)
+	if err != nil {
+		t.Fatalf("parse signed URL: %v", err)
+	}
+	if got := u.Query().Get(overlaySessionParam); got != "session-123" {
+		t.Errorf("%s = %q, want session-123", overlaySessionParam, got)
+	}
+	if got := u.Query().Get(overlayBackendParam); got != "claude-code" {
+		t.Errorf("%s = %q, want claude-code", overlayBackendParam, got)
 	}
 }
 

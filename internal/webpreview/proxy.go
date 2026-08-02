@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -144,18 +143,18 @@ func Start(opts Options) (*Server, error) {
 		m["dictation_engine"] = string(dictation.get())
 		cfgJSON, _ := json.Marshal(m) // encoding/json escapes <,>,& — safe inside <script>; validated above
 		return []byte("<script>window.__CLANK_PREVIEW = " + string(cfgJSON) + ";</script>\n" +
-			`<script type="module" src="/__clank/overlay.js"></script>`)
+			`<script type="module" src="` + OverlayPath + `"></script>`)
 	}
 
 	upstream := newUpstreamProxy(target, snippet, lg)
 	daemon := newDaemonProxy(opts.DaemonSocketPath)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /__clank/overlay.js", serveJS(overlayJS))
-	mux.HandleFunc("GET /__clank/chat.js", serveJS(chatJS))
-	mux.HandleFunc("GET /__clank/worklet.js", serveJS(workletJS))
-	mux.Handle("/__clank/api/", requireToken(opts.Token,
-		http.StripPrefix("/__clank/api", daemon)))
+	mux.HandleFunc("GET "+OverlayPath, serveJS(overlayJS))
+	mux.HandleFunc("GET "+ChatPath, serveJS(chatJS))
+	mux.HandleFunc("GET "+WorkletPath, serveJS(workletJS))
+	mux.Handle(APIPrefix+"/", requireToken(opts.Token,
+		http.StripPrefix(APIPrefix, daemon)))
 	mux.Handle("GET /__clank/voice", requireToken(opts.Token,
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if opts.Engine == nil {
@@ -216,44 +215,7 @@ func newUpstreamProxy(target *url.URL, snippet func() []byte, lg *log.Logger) *h
 			pr.Out.Header.Set("Accept-Encoding", "identity")
 		},
 		ModifyResponse: func(resp *http.Response) error {
-			if resp.StatusCode != http.StatusOK {
-				return nil
-			}
-			if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
-				return nil
-			}
-			// The Rewrite hook above requests identity encoding, but an
-			// upstream that ignores Accept-Encoding would otherwise get its
-			// compressed bytes searched and corrupted by injectHTML.
-			if ce := resp.Header.Get("Content-Encoding"); ce != "" && ce != "identity" {
-				return nil
-			}
-			body, overflow, err := readUpTo(resp.Body, maxInjectHTMLBytes)
-			if err != nil {
-				return err
-			}
-			if overflow != nil {
-				// Improbably large HTML: stream it through untouched.
-				resp.Body = overflow
-				return nil
-			}
-			injected := injectHTML(body, snippet())
-			resp.Body = io.NopCloser(bytes.NewReader(injected))
-			resp.ContentLength = int64(len(injected))
-			resp.Header.Set("Content-Length", strconv.Itoa(len(injected)))
-			// A dev-mode CSP (e.g. SvelteKit kit.csp) would block the
-			// injected inline config script; the overlay is a dev tool on
-			// a loopback origin, so drop it for injected pages only.
-			resp.Header.Del("Content-Security-Policy")
-			resp.Header.Del("Content-Security-Policy-Report-Only")
-			// The injected config embeds this run's token. A cached copy
-			// (or a 304 revalidation of one) would leave the page holding
-			// a dead token after a preview restart — every /__clank call
-			// 401s with no visible error. Never let injected HTML cache.
-			resp.Header.Set("Cache-Control", "no-store")
-			resp.Header.Del("ETag")
-			resp.Header.Del("Last-Modified")
-			return nil
+			return InjectOverlayResponse(resp, snippet())
 		},
 		FlushInterval: -1, // stream non-HTML passthrough (SSE-style dev endpoints)
 		ErrorLog:      lg,
