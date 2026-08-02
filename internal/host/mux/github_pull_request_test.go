@@ -16,7 +16,12 @@ func TestGitHubPullRequestRoutesAreRegistered(t *testing.T) {
 	svc := host.New(host.Options{BackendManagers: map[agent.BackendType]agent.BackendManager{}})
 	t.Cleanup(svc.Shutdown)
 	handler := New(svc, nil).Handler()
-	for _, path := range []string{"/github/pull-requests/inspect", "/github/pull-requests/launch"} {
+	for _, path := range []string{
+		"/github/pull-requests/inspect",
+		"/github/pull-requests/launch",
+		"/github/repositories/inspect",
+		"/github/repositories/launch",
+	} {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(`{}`))
 		handler.ServeHTTP(rec, req)
@@ -57,5 +62,21 @@ func TestWriteGitHubPullRequestError(t *testing.T) {
 				t.Errorf("code = %q, want %q", body.Code, tc.wantCode)
 			}
 		})
+	}
+}
+
+func TestWriteGitHubRepositoryError(t *testing.T) {
+	t.Parallel()
+	rec := httptest.NewRecorder()
+	writeGitHubRepositoryError(rec, host.ErrGitHubRepositoryConnectionRequired)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	var body errResp
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != "github_connection_required" {
+		t.Errorf("code = %q, want github_connection_required", body.Code)
 	}
 }
