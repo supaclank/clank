@@ -28,7 +28,9 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -269,11 +271,10 @@ func (s *previewState) serveProxy(w http.ResponseWriter, r *http.Request, tun *p
 
 			// Strip signed-URL bearer params so Metro never sees the
 			// clank_sig/clank_exp credentials. SetURL above preserves
-			// the inbound query string verbatim.
-			q := pr.Out.URL.Query()
-			q.Del(tokens.SigParam)
-			q.Del(tokens.ExpParam)
-			pr.Out.URL.RawQuery = q.Encode()
+			// the inbound query string verbatim, and stripRawQueryParams
+			// keeps it that way for every param we don't remove.
+			pr.Out.URL.RawQuery = stripRawQueryParams(
+				pr.Out.URL.RawQuery, tokens.SigParam, tokens.ExpParam)
 		},
 		Transport: tun,
 		// HMR + SSE both need byte-by-byte forwarding. -1 disables
@@ -286,4 +287,41 @@ func (s *previewState) serveProxy(w http.ResponseWriter, r *http.Request, tun *p
 		},
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// stripRawQueryParams removes the named params from a raw query string and
+// leaves every other param byte-identical: same order, same escaping, and a
+// key written without "=" stays written without "=".
+//
+// The obvious spelling of this (URL.Query, Values.Del, Values.Encode) is
+// lossy in both directions. url.Values is a map, so it cannot record that a
+// key arrived valueless ("?svelte" and "?svelte=" both parse to the same
+// entry) and it has no order to preserve, so Encode sorts the keys and writes
+// "=" after every one of them. URL.Query also silently drops any param that
+// fails to parse, which since Go 1.17 includes anything separated by ";".
+//
+// Dev servers care. Vite addresses a module's sub-resources by exact query,
+// so "?svelte&type=style&lang.css" is an identifier rather than a bag of
+// options: normalize it to "?lang.css=&svelte=&type=style" and the server
+// stops recognizing it as a style request and returns the component module
+// instead, with a 200 and no error anywhere. Signed upstream URLs whose
+// signature covers the literal query break the same way.
+func stripRawQueryParams(raw string, names ...string) string {
+	if raw == "" {
+		return ""
+	}
+	kept := make([]string, 0, strings.Count(raw, "&")+1)
+	for part := range strings.SplitSeq(raw, "&") {
+		key, _, _ := strings.Cut(part, "=")
+		// A key that fails to unescape cannot match a param we strip, so
+		// compare the raw form and keep it.
+		if decoded, err := url.QueryUnescape(key); err == nil {
+			key = decoded
+		}
+		if slices.Contains(names, key) {
+			continue
+		}
+		kept = append(kept, part)
+	}
+	return strings.Join(kept, "&")
 }
