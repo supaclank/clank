@@ -390,13 +390,15 @@ func TestPreviewProxy_ServesOverlayAssetsWithoutForwarding(t *testing.T) {
 	}))
 	r := f.seed(t, "alice", tokens.VisibilityPublic)
 
-	resp := f.do(t, tokens.HostFor(r.Token, f.root), "", "/__clank/overlay.js")
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-	if got := resp.Header.Get("Content-Type"); !strings.Contains(got, "javascript") {
-		t.Errorf("Content-Type = %q, want JavaScript", got)
+	for _, path := range []string{"/__clank/overlay.js", "/__clank/settings.js"} {
+		resp := f.do(t, tokens.HostFor(r.Token, f.root), "", path)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200", path, resp.StatusCode)
+		}
+		if got := resp.Header.Get("Content-Type"); !strings.Contains(got, "javascript") {
+			t.Errorf("%s Content-Type = %q, want JavaScript", path, got)
+		}
 	}
 	if hits := upstreamHits.Load(); hits != 0 {
 		t.Errorf("upstream hits = %d, want 0 for embedded overlay asset", hits)
@@ -458,6 +460,57 @@ func TestPreviewProxy_SignedOwnerCanReachScopedOverlayAPI(t *testing.T) {
 	}
 	if got, _ := upstreamPath.Load().(string); got != "/backends" {
 		t.Errorf("upstream path = %q, want /backends", got)
+	}
+}
+
+func TestPreviewProxy_SignedOwnerConfigOptionsStayInPreviewWorktree(t *testing.T) {
+	t.Parallel()
+	var upstreamQuery atomic.Value
+	f := newPreviewProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamQuery.Store(r.URL.Query().Get("git_worktree_id"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[]`)
+	}))
+	route := f.seed(t, "alice", tokens.VisibilityOwnerOnly)
+	exp := time.Now().Add(10 * time.Minute)
+	sig, err := tokens.Sign(f.signingKey, route.Token, exp)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodGet,
+		f.srv.URL+"/__clank/api/config-options?backend=claude-code&git_worktree_id="+route.WorktreeID, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Host = tokens.HostFor(route.Token, f.root)
+	req.Header.Set("Cookie", fmt.Sprintf("%s=%s; %s=%d", tokens.SigParam, sig, tokens.ExpParam, exp.Unix()))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got, _ := upstreamQuery.Load().(string); got != route.WorktreeID {
+		t.Errorf("upstream git_worktree_id = %q, want %q", got, route.WorktreeID)
+	}
+
+	req, err = http.NewRequest(http.MethodGet,
+		f.srv.URL+"/__clank/api/config-options?backend=claude-code&git_worktree_id=wt-other", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Host = tokens.HostFor(route.Token, f.root)
+	req.Header.Set("Cookie", fmt.Sprintf("%s=%s; %s=%d", tokens.SigParam, sig, tokens.ExpParam, exp.Unix()))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do cross-worktree: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("cross-worktree status = %d, want 403", resp.StatusCode)
 	}
 }
 
