@@ -680,6 +680,82 @@ func TestPreviewProxy_OwnerOnlyCrossTokenSignatureRejected(t *testing.T) {
 	}
 }
 
+func TestStripRawQueryParams(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"empty", "", ""},
+		{"nothing to strip", "a=1&b=2", "a=1&b=2"},
+		{"strips both credentials", "a=1&clank_sig=xy&clank_exp=99&b=2", "a=1&b=2"},
+		{"strips to empty", "clank_sig=xy&clank_exp=99", ""},
+
+		// The regression this function exists for. url.Values.Encode
+		// would return "lang.css=&svelte=&type=style" for each of these,
+		// which Vite no longer recognizes as a style request.
+		{"keeps valueless keys valueless", "svelte&type=style&lang.css", "svelte&type=style&lang.css"},
+		{"keeps key order", "z=1&a=2&m=3", "z=1&a=2&m=3"},
+		{"keeps empty values distinct from valueless", "a=&b", "a=&b"},
+		{"vite style request behind a signature",
+			"svelte&type=style&lang.css&clank_sig=xy&clank_exp=99",
+			"svelte&type=style&lang.css"},
+
+		// URL.Query drops semicolon-separated params outright (Go 1.17+).
+		{"keeps semicolons", "a=1;b=2&c=3", "a=1;b=2&c=3"},
+
+		// Encode would re-escape these into %2F, %3A, %5B%5D and "+".
+		{"keeps escaping verbatim", "url=https://x.test/a?b&ids[]=1&q=a+b", "url=https://x.test/a?b&ids[]=1&q=a+b"},
+
+		{"keeps duplicate keys", "a=1&a=2", "a=1&a=2"},
+		{"matches on the decoded key", "clank%5Fsig=xy&a=1", "a=1"},
+
+		// Only a whole key matches: a param that merely mentions the
+		// credential name in its value, or as a prefix, stays.
+		{"leaves lookalike keys", "clank_signature=xy&a=clank_sig", "clank_signature=xy&a=clank_sig"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := stripRawQueryParams(tc.raw, tokens.SigParam, tokens.ExpParam)
+			if got != tc.want {
+				t.Errorf("stripRawQueryParams(%q)\n got %q\nwant %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPreviewProxy_ForwardsRawQueryVerbatim(t *testing.T) {
+	t.Parallel()
+	// Vite addresses a module's sub-resources by exact query, so the proxy
+	// has to hand the dev server the same bytes the browser sent, minus the
+	// credentials. Sorting the keys or appending "=" to the valueless ones
+	// makes vite-plugin-svelte serve the component module in place of its
+	// CSS, which silently strips every scoped style from the page.
+	const want = "svelte&type=style&lang.css"
+	got := make(chan string, 1)
+	f := newPreviewProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- r.URL.RawQuery
+		_, _ = w.Write([]byte("k"))
+	}))
+	route := f.seed(t, "alice", tokens.VisibilityPublic)
+	host := tokens.HostFor(route.Token, f.root)
+
+	path := fmt.Sprintf("/src/lib/App.svelte?%s&%s=xy&%s=99", want, tokens.SigParam, tokens.ExpParam)
+	resp := f.do(t, host, "", path)
+	resp.Body.Close()
+
+	select {
+	case upstream := <-got:
+		if upstream != want {
+			t.Errorf("upstream saw query %q, want %q", upstream, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream handler was never invoked (proxy didn't forward the request)")
+	}
+}
+
 // Compile-time guard that the various test fakes still satisfy what
 // the test fixtures need, and that test errors surface in the right
 // spot if signatures drift.
