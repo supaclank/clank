@@ -73,7 +73,10 @@ func (m *Manager) oauth2Context(parent context.Context) context.Context {
 // m.apiBaseURL. Returns an error only when m.apiBaseURL is set to
 // something url.Parse rejects (test misconfiguration).
 func (m *Manager) apiClient(token string) (*gogithub.Client, error) {
-	c := gogithub.NewClient(m.httpc).WithAuthToken(token)
+	c := gogithub.NewClient(m.httpc)
+	if token != "" {
+		c = c.WithAuthToken(token)
+	}
 	c.UserAgent = userAgent
 	if m.apiBaseURL == defaultAPIBaseURL {
 		return c, nil

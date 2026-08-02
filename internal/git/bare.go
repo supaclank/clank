@@ -45,17 +45,23 @@ const allHeadsRefspec = "+refs/heads/*:refs/remotes/origin/*"
 // per loaded/forked branch, which is exactly the set the repo overview
 // reports.
 func CloneBare(ctx context.Context, url, gitDir, token, branch, credentialHelper string) error {
-	args := []string{
-		"-c", "credential.helper=",
-		"-c", "credential.helper=" + cloneCredentialHelper,
-		"clone", "--bare", "--filter=blob:none", "--single-branch",
+	args := []string{}
+	if token != "" {
+		args = append(args,
+			"-c", "credential.helper=",
+			"-c", "credential.helper="+cloneCredentialHelper,
+		)
 	}
+	args = append(args, "clone", "--bare", "--filter=blob:none", "--single-branch")
 	if branch != "" {
 		args = append(args, "--branch", branch)
 	}
 	args = append(args, "--", url, gitDir)
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = append(os.Environ(), cloneTokenEnv+"="+token, "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if token != "" {
+		cmd.Env = append(cmd.Env, cloneTokenEnv+"="+token)
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
