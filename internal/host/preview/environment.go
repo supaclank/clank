@@ -70,6 +70,9 @@ func resolvePreviewEndpoint(kind Kind, publicURL string, port int) (previewEndpo
 	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
 		return previewEndpoint{}, fmt.Errorf("preview public URL %q must be an absolute HTTP URL", publicURL)
 	}
+	// TODO(ai-review): ReadinessHost keeps PublicURL's port while PublicHostname
+	// strips it; an exact-match (non-port-stripping) host validator would reject
+	// readiness when PublicURL carries an explicit port. https://github.com/Acksell/clank/pull/214#discussion_r3697014299
 	return previewEndpoint{
 		PublicHostname: parsed.Hostname(),
 		ReadinessHost:  parsed.Host,
