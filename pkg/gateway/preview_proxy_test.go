@@ -746,8 +746,13 @@ func TestPreviewProxy_ForwardsRawQueryVerbatim(t *testing.T) {
 	resp := f.do(t, host, "", path)
 	resp.Body.Close()
 
-	if upstream := <-got; upstream != want {
-		t.Errorf("upstream saw query %q, want %q", upstream, want)
+	select {
+	case upstream := <-got:
+		if upstream != want {
+			t.Errorf("upstream saw query %q, want %q", upstream, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream handler was never invoked (proxy didn't forward the request)")
 	}
 }
 
