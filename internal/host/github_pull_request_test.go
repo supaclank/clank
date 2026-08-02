@@ -55,6 +55,52 @@ func TestInspectGitHubPullRequestUsesAnonymousAccessForPublicRepository(t *testi
 	}
 }
 
+func TestInspectGitHubPullRequestRetriesConnectedCredentialAfterAnonymousForbidden(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var anonymousCalls, authenticatedCalls int
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			anonymousCalls++
+			http.Error(w, "API rate limit exceeded", http.StatusForbidden)
+			return
+		}
+		authenticatedCalls++
+		if got := r.Header.Get("Authorization"); got != "Bearer gho_connected" {
+			t.Errorf("Authorization = %q, want stored credential", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"number":51,"title":"Private preview","html_url":"https://github.com/acme/private/pull/51",
+			"head":{"ref":"feature","sha":"0123456789abcdef0123456789abcdef01234567","repo":{"name":"private","owner":{"login":"acme"}}},
+			"base":{"ref":"main","repo":{"private":true}},"user":{"login":"contributor"}
+		}`))
+	}))
+	t.Cleanup(api.Close)
+
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{agent.BackendOpenCode: &noopBackendManager{}},
+		WorkRoot:        filepath.Join(t.TempDir(), "work"),
+	})
+	t.Cleanup(svc.Shutdown)
+	svc.GitHub().SetAPIBaseURL(api.URL)
+	if err := svc.GitHub().Store().Write(githubpkg.Credentials{AccessToken: "gho_connected"}); err != nil {
+		t.Fatal(err)
+	}
+
+	inspection, err := svc.InspectGitHubPullRequest(context.Background(), host.GitHubPullRequestLocator{
+		Owner: "acme", Repo: "private", Number: 51,
+	})
+	if err != nil {
+		t.Fatalf("InspectGitHubPullRequest: %v", err)
+	}
+	if !inspection.IsPrivate || inspection.HeadSHA != "0123456789abcdef0123456789abcdef01234567" {
+		t.Fatalf("inspection = %+v", inspection)
+	}
+	if anonymousCalls != 1 || authenticatedCalls != 1 {
+		t.Fatalf("calls = anonymous:%d authenticated:%d, want 1 each", anonymousCalls, authenticatedCalls)
+	}
+}
+
 func TestInspectGitHubPullRequestRequiresConnectionForAnonymousNotFound(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	api := httptest.NewServer(http.NotFoundHandler())

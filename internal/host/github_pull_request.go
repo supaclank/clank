@@ -66,10 +66,10 @@ func (s *Service) inspectGitHubPullRequest(ctx context.Context, locator GitHubPu
 	if s.github == nil {
 		return GitHubPullRequestInspection{}, "", ErrGitHubManagerUnavailable
 	}
-	pr, err := s.github.GetPullRequest(ctx, "", locator.Owner, locator.Repo, locator.Number)
-	if err != nil {
-		if !errors.Is(err, githubpkg.ErrPullRequestNotFound) {
-			return GitHubPullRequestInspection{}, "", err
+	pr, anonymousErr := s.github.GetPullRequest(ctx, "", locator.Owner, locator.Repo, locator.Number)
+	if anonymousErr != nil {
+		if !errors.Is(anonymousErr, githubpkg.ErrPullRequestNotFound) && !errors.Is(anonymousErr, githubpkg.ErrPRForbidden) {
+			return GitHubPullRequestInspection{}, "", anonymousErr
 		}
 	} else {
 		return inspectGitHubPullRequestResult(locator, pr, "")
@@ -77,6 +77,9 @@ func (s *Service) inspectGitHubPullRequest(ctx context.Context, locator GitHubPu
 
 	token, err := s.github.AccessToken()
 	if errors.Is(err, githubpkg.ErrNotConnected) {
+		if errors.Is(anonymousErr, githubpkg.ErrPRForbidden) {
+			return GitHubPullRequestInspection{}, "", anonymousErr
+		}
 		return GitHubPullRequestInspection{}, "", ErrGitHubConnectionRequired
 	}
 	if err != nil {
