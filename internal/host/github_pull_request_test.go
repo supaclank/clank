@@ -18,6 +18,43 @@ import (
 	githubpkg "github.com/acksell/clank/internal/host/github"
 )
 
+func TestInspectGitHubPullRequestUsesAnonymousAccessForPublicRepository(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			http.Error(w, "revoked token", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"number":51,"title":"Public preview","html_url":"https://github.com/acme/public/pull/51",
+			"head":{"ref":"feature","sha":"0123456789abcdef0123456789abcdef01234567"},
+			"base":{"ref":"main","repo":{"private":false}},"user":{"login":"contributor"}
+		}`))
+	}))
+	t.Cleanup(api.Close)
+
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{agent.BackendOpenCode: &noopBackendManager{}},
+		WorkRoot:        filepath.Join(t.TempDir(), "work"),
+	})
+	t.Cleanup(svc.Shutdown)
+	svc.GitHub().SetAPIBaseURL(api.URL)
+	if err := svc.GitHub().Store().Write(githubpkg.Credentials{AccessToken: "revoked"}); err != nil {
+		t.Fatal(err)
+	}
+
+	inspection, err := svc.InspectGitHubPullRequest(context.Background(), host.GitHubPullRequestLocator{
+		Owner: "acme", Repo: "public", Number: 51,
+	})
+	if err != nil {
+		t.Fatalf("InspectGitHubPullRequest: %v", err)
+	}
+	if inspection.Number != 51 || inspection.IsPrivate {
+		t.Fatalf("inspection = %+v", inspection)
+	}
+}
+
 func TestInspectGitHubPullRequestRequiresConnectionForAnonymousNotFound(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	api := httptest.NewServer(http.NotFoundHandler())

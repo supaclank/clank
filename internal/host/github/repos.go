@@ -62,19 +62,6 @@ func (m *Manager) AccessToken() (string, error) {
 	return "", ErrNotConnected
 }
 
-// OptionalAccessToken resolves the connected credential when one exists.
-// isConnected is false for the explicit anonymous mode used by public repos.
-func (m *Manager) OptionalAccessToken() (token string, isConnected bool, err error) {
-	token, err = m.AccessToken()
-	if errors.Is(err, ErrNotConnected) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-	return token, true, nil
-}
-
 // StoredLogin returns the connected account's login when clank knows
 // it, "" otherwise (no connection, or a gh CLI-borrowed token —
 // identity isn't part of gh's token handoff). Best-effort: callers use

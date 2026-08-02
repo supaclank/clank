@@ -79,25 +79,3 @@ func TestGetPullRequestAuthenticatesPrivateRepository(t *testing.T) {
 		t.Error("IsPrivate = false, want true")
 	}
 }
-
-func TestOptionalAccessToken(t *testing.T) {
-	t.Parallel()
-	m := NewManager(t.TempDir(), "")
-	token, isConnected, err := m.OptionalAccessToken()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if token != "" || isConnected {
-		t.Fatalf("token = %q, connected = %t, want anonymous", token, isConnected)
-	}
-	if err := m.Store().Write(Credentials{AccessToken: "gho_test"}); err != nil {
-		t.Fatal(err)
-	}
-	token, isConnected, err = m.OptionalAccessToken()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if token != "gho_test" || !isConnected {
-		t.Fatalf("token = %q, connected = %t, want stored token", token, isConnected)
-	}
-}

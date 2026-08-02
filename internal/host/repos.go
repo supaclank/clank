@@ -151,7 +151,7 @@ func (s *Service) credentialHelperValue() string {
 		s.log.Printf("warning: resolve executable for credential helper: %v", err)
 		return ""
 	}
-	return githubpkg.GitCredentialHelperValue(exe)
+	return githubpkg.GitCredentialHelperValue(exe, s.github.CanUseGhCLIAuth())
 }
 
 // lockRepo serializes canonical mutations (clone, fetch, worktree

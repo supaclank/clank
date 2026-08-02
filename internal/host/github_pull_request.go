@@ -63,20 +63,33 @@ func (s *Service) inspectGitHubPullRequest(ctx context.Context, locator GitHubPu
 	if s.github == nil {
 		return GitHubPullRequestInspection{}, "", ErrGitHubManagerUnavailable
 	}
-	token, isConnected, err := s.github.OptionalAccessToken()
+	pr, err := s.github.GetPullRequest(ctx, "", locator.Owner, locator.Repo, locator.Number)
+	if err != nil {
+		if !errors.Is(err, githubpkg.ErrPullRequestNotFound) {
+			return GitHubPullRequestInspection{}, "", err
+		}
+	} else {
+		return inspectGitHubPullRequestResult(locator, pr, "")
+	}
+
+	token, err := s.github.AccessToken()
+	if errors.Is(err, githubpkg.ErrNotConnected) {
+		return GitHubPullRequestInspection{}, "", ErrGitHubConnectionRequired
+	}
 	if err != nil {
 		return GitHubPullRequestInspection{}, "", fmt.Errorf("github token: %w", err)
 	}
-	pr, err := s.github.GetPullRequest(ctx, token, locator.Owner, locator.Repo, locator.Number)
+	pr, err = s.github.GetPullRequest(ctx, token, locator.Owner, locator.Repo, locator.Number)
+	if errors.Is(err, githubpkg.ErrPullRequestNotFound) {
+		return GitHubPullRequestInspection{}, "", fmt.Errorf("%w: %s/%s#%d", ErrNotFound, locator.Owner, locator.Repo, locator.Number)
+	}
 	if err != nil {
-		if errors.Is(err, githubpkg.ErrPullRequestNotFound) {
-			if !isConnected {
-				return GitHubPullRequestInspection{}, "", ErrGitHubConnectionRequired
-			}
-			return GitHubPullRequestInspection{}, "", fmt.Errorf("%w: %s/%s#%d", ErrNotFound, locator.Owner, locator.Repo, locator.Number)
-		}
 		return GitHubPullRequestInspection{}, "", err
 	}
+	return inspectGitHubPullRequestResult(locator, pr, token)
+}
+
+func inspectGitHubPullRequestResult(locator GitHubPullRequestLocator, pr githubpkg.PullRequestDetails, token string) (GitHubPullRequestInspection, string, error) {
 	if !validGitObjectID(pr.HeadSHA) || pr.BaseBranch == "" {
 		return GitHubPullRequestInspection{}, "", fmt.Errorf("GitHub returned incomplete pull request metadata")
 	}

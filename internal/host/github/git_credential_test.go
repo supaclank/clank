@@ -18,10 +18,44 @@ func TestRunGitCredentialHelper_AnswersGet(t *testing.T) {
 
 	var out strings.Builder
 	in := strings.NewReader("protocol=https\nhost=github.com\n\n")
-	if err := RunGitCredentialHelper("get", in, &out, store); err != nil {
+	if err := RunGitCredentialHelper("get", in, &out, store, false); err != nil {
 		t.Fatalf("RunGitCredentialHelper: %v", err)
 	}
 	want := "username=x-access-token\npassword=gho_secret\n"
+	if out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestRunGitCredentialHelper_AnswersGetFromGhCLI(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	putFakeGh(t, `[ "$1 $2" = "auth token" ] && { echo gho_fromcli; exit 0; }; exit 1`)
+
+	var out strings.Builder
+	in := strings.NewReader("protocol=https\nhost=github.com\n\n")
+	if err := RunGitCredentialHelper("get", in, &out, NewStore(os.Getenv("HOME")), true); err != nil {
+		t.Fatalf("RunGitCredentialHelper: %v", err)
+	}
+	want := "username=x-access-token\npassword=gho_fromcli\n"
+	if out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestRunGitCredentialHelper_PrefersStoreOverGhCLI(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	putFakeGh(t, `[ "$1 $2" = "auth token" ] && { echo gho_fromcli; exit 0; }; exit 1`)
+	store := NewStore(os.Getenv("HOME"))
+	if err := store.Write(Credentials{AccessToken: "gho_fromstore"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	in := strings.NewReader("protocol=https\nhost=github.com\n\n")
+	if err := RunGitCredentialHelper("get", in, &out, store, true); err != nil {
+		t.Fatal(err)
+	}
+	want := "username=x-access-token\npassword=gho_fromstore\n"
 	if out.String() != want {
 		t.Errorf("output = %q, want %q", out.String(), want)
 	}
@@ -52,7 +86,7 @@ func TestRunGitCredentialHelper_SilentCases(t *testing.T) {
 				}
 			}
 			var out strings.Builder
-			if err := RunGitCredentialHelper(tc.action, strings.NewReader(tc.input), &out, store); err != nil {
+			if err := RunGitCredentialHelper(tc.action, strings.NewReader(tc.input), &out, store, false); err != nil {
 				t.Fatalf("RunGitCredentialHelper: %v", err)
 			}
 			if out.String() != "" {
@@ -66,7 +100,7 @@ func TestRunGitCredentialHelper_MalformedInput(t *testing.T) {
 	t.Parallel()
 	store := NewStore(t.TempDir())
 	var out strings.Builder
-	err := RunGitCredentialHelper("get", strings.NewReader("not-a-key-value\n\n"), &out, store)
+	err := RunGitCredentialHelper("get", strings.NewReader("not-a-key-value\n\n"), &out, store, false)
 	if err == nil {
 		t.Fatal("RunGitCredentialHelper with malformed input: err = nil, want protocol violation")
 	}
@@ -78,7 +112,7 @@ func TestRunGitCredentialHelper_NonGetIgnoresMalformedInput(t *testing.T) {
 	t.Parallel()
 	store := NewStore(t.TempDir())
 	var out strings.Builder
-	err := RunGitCredentialHelper("store", strings.NewReader("not-a-key-value\n\n"), &out, store)
+	err := RunGitCredentialHelper("store", strings.NewReader("not-a-key-value\n\n"), &out, store, false)
 	if err != nil {
 		t.Fatalf("RunGitCredentialHelper(store) with malformed input: err = %v, want nil", err)
 	}
@@ -106,7 +140,7 @@ func TestRunGitCredentialHelper_RejectsInvalidTokenCharacters(t *testing.T) {
 			}
 			var out strings.Builder
 			in := strings.NewReader("protocol=https\nhost=github.com\n\n")
-			err := RunGitCredentialHelper("get", in, &out, store)
+			err := RunGitCredentialHelper("get", in, &out, store, false)
 			if err == nil {
 				t.Fatal("RunGitCredentialHelper with invalid token characters: err = nil, want error")
 			}
@@ -127,7 +161,7 @@ func TestRunGitCredentialHelper_CaseInsensitiveAttrs(t *testing.T) {
 
 	var out strings.Builder
 	in := strings.NewReader("protocol=HTTPS\nhost=GitHub.com\n\n")
-	if err := RunGitCredentialHelper("get", in, &out, store); err != nil {
+	if err := RunGitCredentialHelper("get", in, &out, store, false); err != nil {
 		t.Fatalf("RunGitCredentialHelper: %v", err)
 	}
 	want := "username=x-access-token\npassword=gho_secret\n"
@@ -138,8 +172,17 @@ func TestRunGitCredentialHelper_CaseInsensitiveAttrs(t *testing.T) {
 
 func TestGitCredentialHelperValue_QuotesPath(t *testing.T) {
 	t.Parallel()
-	got := GitCredentialHelperValue("/opt/my tools/clank-host")
+	got := GitCredentialHelperValue("/opt/my tools/clank-host", false)
 	want := `!"/opt/my tools/clank-host" git-credential`
+	if got != want {
+		t.Errorf("GitCredentialHelperValue = %q, want %q", got, want)
+	}
+}
+
+func TestGitCredentialHelperValue_EnablesGhCLIAuth(t *testing.T) {
+	t.Parallel()
+	got := GitCredentialHelperValue("/opt/clank-host", true)
+	want := `!"/opt/clank-host" git-credential --gh-cli-auth`
 	if got != want {
 		t.Errorf("GitCredentialHelperValue = %q, want %q", got, want)
 	}
@@ -174,7 +217,7 @@ func TestGitCredentialFill_EndToEnd(t *testing.T) {
 	// Temp repo with the helper configured exactly as canonicals get it.
 	repo := t.TempDir()
 	mustGit(t, repo, "init", "-q")
-	mustGit(t, repo, "config", "credential.helper", GitCredentialHelperValue(bin))
+	mustGit(t, repo, "config", "credential.helper", GitCredentialHelperValue(bin, false))
 
 	fill := exec.Command("git", "credential", "fill")
 	fill.Dir = repo
