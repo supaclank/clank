@@ -7,17 +7,17 @@ package github
 //
 // so that lazy blob fetches (and any git command an agent runs against
 // origin inside a session) can authenticate at moments clank isn't in
-// the loop to inject a token per-command. Reads the token from the
-// SAME store the rest of this package uses, at call time — single
-// source of truth, so a reconnect/rotation is picked up immediately
-// and no secret is ever written into a git config.
+// the loop to inject a token per-command. Resolves the token at call
+// time, so reconnects and rotations apply without writing a secret to
+// git config.
 //
 // Protocol (git-credential(1)): git invokes `<helper> <action>` with
 // `key=value` attribute lines on stdin, terminated by a blank line or
 // EOF. For `get` we answer with username/password lines; for anything
 // else (store/erase) we stay silent — the store is not git's to
-// mutate. Printing nothing is the protocol's "no answer": git moves on
-// to other helpers or fails auth cleanly under GIT_TERMINAL_PROMPT=0.
+// mutate. In laptop mode an explicit flag also permits the machine's gh
+// login when Clank has no stored token. Printing nothing is the
+// protocol's "no answer": git moves on or fails under GIT_TERMINAL_PROMPT=0.
 
 import (
 	"bufio"
@@ -31,22 +31,25 @@ import (
 // clone-time inline helper use.
 const credentialUsername = "x-access-token"
 
-// GitCredentialHelperValue renders the credential.helper config value
-// that routes a repo's auth prompts to this binary. executable is the
-// absolute path of the running clank-host (os.Executable()); quoted so
-// paths with spaces survive the shell that `!` implies.
-func GitCredentialHelperValue(executable string) string {
-	return fmt.Sprintf(`!"%s" git-credential`, executable)
+// GitCredentialGhCLIAuthFlag lets the helper borrow the machine's gh login.
+const GitCredentialGhCLIAuthFlag = "--gh-cli-auth"
+
+// GitCredentialHelperValue routes a repo's auth prompts to this binary.
+// The executable is quoted so paths with spaces survive the helper shell.
+func GitCredentialHelperValue(executable string, canUseGhCLIAuth bool) string {
+	helper := fmt.Sprintf(`!"%s" git-credential`, executable)
+	if canUseGhCLIAuth {
+		helper += " " + GitCredentialGhCLIAuthFlag
+	}
+	return helper
 }
 
 // RunGitCredentialHelper implements the helper protocol over in/out for
 // one invocation. Only `get` for protocol=https host=github.com is
-// answered, and only when the store holds a token; every other case
-// prints nothing and returns nil so git treats it as "no credential
-// here" rather than a helper failure. A store READ error (permission
-// fault, corrupt JSON) is returned — that's a real fault worth git's
-// stderr, not a silent miss.
-func RunGitCredentialHelper(action string, in io.Reader, out io.Writer, store *Store) error {
+// answered, and only when an allowed credential source has a token.
+// Every other case prints nothing so git treats it as "no credential".
+// Store read errors are returned rather than hidden as disconnection.
+func RunGitCredentialHelper(action string, in io.Reader, out io.Writer, store *Store, canUseGhCLIAuth bool) error {
 	if action != "get" {
 		return nil
 	}
@@ -61,13 +64,17 @@ func RunGitCredentialHelper(action string, in io.Reader, out io.Writer, store *S
 	if err != nil {
 		return err
 	}
-	if creds.AccessToken == "" {
+	token := creds.AccessToken
+	if token == "" && canUseGhCLIAuth {
+		token = ghCLIToken()
+	}
+	if token == "" {
 		return nil // not connected — clean no-answer
 	}
-	if strings.ContainsAny(creds.AccessToken, "\r\n\x00") {
-		return fmt.Errorf("git-credential: stored access token contains invalid characters")
+	if strings.ContainsAny(token, "\r\n\x00") {
+		return fmt.Errorf("git-credential: resolved access token contains invalid characters")
 	}
-	if _, err := fmt.Fprintf(out, "username=%s\npassword=%s\n", credentialUsername, creds.AccessToken); err != nil {
+	if _, err := fmt.Fprintf(out, "username=%s\npassword=%s\n", credentialUsername, token); err != nil {
 		return fmt.Errorf("write credential response: %w", err)
 	}
 	return nil

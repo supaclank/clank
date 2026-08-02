@@ -15,12 +15,18 @@ func previewCmd() *cobra.Command {
 	var tunnel bool
 
 	cmd := &cobra.Command{
-		Use:   "preview [name | <folder> <url-or-:port>]",
+		Use:   "preview [name | <github-pr-url> | <folder> <url-or-:port>]",
 		Short: "Preview an app with the Clank overlay",
 		Long: `Make a project previewable, with a clank agent one gesture away.
 
 Boots (or reuses) the local clank daemon, then launches or attaches to a preview:
 
+  - GitHub pull request URL: resolves the PR without downloading it, shows
+    its author and exact commit SHA for approval, then checks that revision
+    out on its real branch for same-repository PRs and starts its configured
+    preview. An existing checkout is reused; otherwise Clank creates a managed
+    worktree. Fork PRs use an isolated exact-revision branch. Public repos work
+    anonymously; private repos require GitHub Connect.
   - Expo app: exposes the daemon to your phone over the LAN behind a
     one-time pairing token and prints a QR. Scan it with the clank app
     on the same Wi-Fi; shake to summon the prompt box.
@@ -51,6 +57,16 @@ was the one that started it. An attached server is never stopped by Clank.`,
 			cmd.SilenceUsage = true
 			if tunnel {
 				return fmt.Errorf("--tunnel isn't implemented yet; keep your phone and laptop on the same Wi-Fi for now")
+			}
+			if len(args) == 1 && isWebURLArg(args[0]) {
+				if projectDir != "" {
+					return fmt.Errorf("--project cannot be used with a GitHub pull request URL")
+				}
+				locator, err := parseGitHubPullRequestURL(args[0])
+				if err != nil {
+					return err
+				}
+				return runGitHubPullRequestPreview(locator, "", backend, port, cmd.InOrStdin(), cmd.OutOrStdout())
 			}
 			attach, err := parsePreviewAttachArgs(args)
 			if err != nil {

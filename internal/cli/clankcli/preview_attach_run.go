@@ -37,5 +37,5 @@ func runAttachedPreview(projectDir string, upstreamURL *url.URL, backend string,
 	if err != nil {
 		return err
 	}
-	return runWebPreview(sigCtx, projectDir, sockPath, string(bt), upstreamURL, listenPort)
+	return runWebPreview(sigCtx, projectDir, sockPath, string(bt), upstreamURL, listenPort, "")
 }

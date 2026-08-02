@@ -96,6 +96,9 @@ func (t *userAgentTransport) RoundTrip(req *http.Request) (*http.Response, error
 // at wiring time, before the manager serves requests.
 func (m *Manager) EnableGhCLIFallback() { m.ghCLIFallback = true }
 
+// CanUseGhCLIAuth reports whether this host may borrow the machine's gh login.
+func (m *Manager) CanUseGhCLIAuth() bool { return m.ghCLIFallback }
+
 // SetPollSafetyMargin overrides the slack added to each device-flow
 // poll interval. Defaults to 3s (matches RFC 8628 §3.4 guidance);
 // tests set 0 so the flow polls at GitHub's returned cadence.

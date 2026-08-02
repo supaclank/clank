@@ -25,7 +25,7 @@ import (
 //
 // Daemon-managed callers wait for readiness first; explicit attach mode leaves
 // upstream readiness to its owner.
-func runWebPreview(sigCtx context.Context, projectDir, sockPath, backend string, upstreamURL *url.URL, listenPort int) error {
+func runWebPreview(sigCtx context.Context, projectDir, sockPath, backend string, upstreamURL *url.URL, listenPort int, displayName string) error {
 	token, err := randomToken(32)
 	if err != nil {
 		return fmt.Errorf("generate overlay token: %w", err)
@@ -51,7 +51,7 @@ func runWebPreview(sigCtx context.Context, projectDir, sockPath, backend string,
 			"hostname":   host.HostLocal,
 			"local_path": projectDir,
 			"backend":    backend,
-			"name":       filepath.Base(projectDir),
+			"name":       previewOverlayName(projectDir, displayName),
 		},
 	})
 	if err != nil {
@@ -68,6 +68,13 @@ func runWebPreview(sigCtx context.Context, projectDir, sockPath, backend string,
 	<-sigCtx.Done()
 	fmt.Println("\nShutting down preview…")
 	return nil
+}
+
+func previewOverlayName(projectDir, displayName string) string {
+	if displayName != "" {
+		return displayName
+	}
+	return filepath.Base(projectDir)
 }
 
 // loadDictationPreference reads the overlay's persisted local-vs-
