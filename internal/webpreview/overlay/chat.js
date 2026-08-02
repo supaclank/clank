@@ -141,6 +141,15 @@ export const defaultPresetConfig = (presetList, backend) => {
   return p && p.config ? { ...p.config } : null;
 };
 
+// previewGitRef builds the one explicit repo identity a headless session
+// create carries. Both-or-neither is invalid rather than silently preferred.
+export const previewGitRef = (config) => {
+  const worktreeID = config && config.worktree_id;
+  const localPath = config && config.local_path;
+  if (!!worktreeID === !!localPath) return null;
+  return worktreeID ? { worktree_id: worktreeID } : { local_path: localPath };
+};
+
 // planTextFor returns the plan text an ExitPlanMode permission prompt
 // gates: matched by tool_use id, falling back to the most recent plan
 // when the backend couldn't attribute one (mirrors the TUI golden ref).

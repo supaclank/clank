@@ -31,6 +31,7 @@ import {
   questionSuppressesPermission, pushPermission, dropPermission,
   customAllowed, toggleSelection, buildAnswers, collectPlanParts, planTextFor,
   defaultPresetConfig, buildPreviewContext, composerTextForSend,
+  previewGitRef,
 } from './chat.js';
 
 (() => {
@@ -66,7 +67,7 @@ import {
     const res = await fetch('/__clank/api' + path, {
       ...opts,
       headers: {
-        Authorization: 'Bearer ' + TOKEN,
+        ...(TOKEN ? { Authorization: 'Bearer ' + TOKEN } : {}),
         ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
         ...(opts.headers || {}),
       },
@@ -447,6 +448,8 @@ import {
         // verbatim — the host rejects a create missing any of its keys
         // (config_incomplete) and never fills values in.
         if (!CFG.backend) throw new Error('no backend in the preview config — restart clank preview');
+        const gitRef = previewGitRef(CFG);
+        if (!gitRef) throw new Error('preview config must identify exactly one worktree or local path');
         const presetList = await apiJSON('/presets?' + new URLSearchParams({ backend: CFG.backend, hostname: CFG.hostname || 'local' }));
         const config = defaultPresetConfig(presetList, CFG.backend);
         if (!config) throw new Error(`no Default preset for backend ${CFG.backend} — is the daemon up to date?`);
@@ -455,7 +458,7 @@ import {
           body: JSON.stringify({
             backend: CFG.backend,
             hostname: CFG.hostname || 'local',
-            git_ref: { local_path: CFG.local_path },
+            git_ref: gitRef,
             prompt: full,
             config,
             ...(attachments.length ? { attachments } : {}),

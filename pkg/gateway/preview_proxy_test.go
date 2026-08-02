@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/acksell/clank/internal/webpreview"
 	"github.com/acksell/clank/pkg/auth"
 	"github.com/acksell/clank/pkg/preview/routestore"
 	"github.com/acksell/clank/pkg/preview/routestore/memstore"
@@ -23,9 +25,8 @@ import (
 )
 
 // targetDialProvisioner is a real-Provisioner-shaped stub whose
-// OpenInternalConn dials a fixed (test) host:port. Other methods
-// panic since the preview-proxy code path doesn't call them. Tracks
-// dial count so tests can assert tunnel reuse.
+// OpenInternalConn dials a fixed (test) host:port; GetHostByID exposes the
+// same server as clank-host's control plane. Tracks tunnel dial count.
 type targetDialProvisioner struct {
 	target string
 	dials  atomic.Int64
@@ -44,7 +45,11 @@ func (d *targetDialProvisioner) DestroyHostsByUser(context.Context, string) erro
 	panic("targetDialProvisioner: DestroyHostsByUser")
 }
 func (d *targetDialProvisioner) GetHostByID(context.Context, string) (provisioner.HostRef, error) {
-	panic("targetDialProvisioner: GetHostByID")
+	return provisioner.HostRef{
+		HostID:    "fixture-host",
+		URL:       "http://" + d.target,
+		Transport: http.DefaultTransport,
+	}, nil
 }
 func (d *targetDialProvisioner) OpenInternalConn(ctx context.Context, _ string, _ int) (net.Conn, error) {
 	d.dials.Add(1)
@@ -293,6 +298,262 @@ func TestPreviewProxy_PublicAcceptsAnonymous(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if string(body) != "public ok" {
 		t.Errorf("body = %q", body)
+	}
+}
+
+func TestPreviewProxy_InjectsBrowserOverlayIntoHTML(t *testing.T) {
+	t.Parallel()
+	f := newPreviewProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, "<!doctype html><html><body>preview</body></html>")
+	}))
+	r := f.seed(t, "alice", tokens.VisibilityPublic)
+
+	resp := f.do(t, tokens.HostFor(r.Token, f.root), "", "/")
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	got := string(body)
+	for _, want := range []string{
+		`window.__CLANK_PREVIEW`,
+		`src="/__clank/overlay.js"`,
+		`"worktree_id":"wt"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("injected HTML missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestPreviewProxy_DoesNotInjectBrowserOverlayIntoNativePreview(t *testing.T) {
+	t.Parallel()
+	f := newPreviewProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, "<!doctype html><html><body>preview</body></html>")
+	}))
+	route := f.seed(t, "alice", tokens.VisibilityPublic)
+	req, err := http.NewRequest(http.MethodGet, f.srv.URL+"/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Host = tokens.HostFor(route.Token, f.root)
+	req.Header.Set("User-Agent", "Android WebView "+webpreview.NativePreviewUserAgentToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(body), "window.__CLANK_PREVIEW") {
+		t.Errorf("native preview received browser overlay injection: %s", body)
+	}
+}
+
+func TestPreviewProxy_PreservesAcceptEncodingWhenOverlayNotInjected(t *testing.T) {
+	t.Parallel()
+	gotEncoding := make(chan string, 1)
+	f := newPreviewProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotEncoding <- r.Header.Get("Accept-Encoding")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, "<!doctype html><html><body>preview</body></html>")
+	}))
+	route := f.seed(t, "alice", tokens.VisibilityPublic)
+	req, err := http.NewRequest(http.MethodGet, f.srv.URL+"/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Host = tokens.HostFor(route.Token, f.root)
+	req.Header.Set("User-Agent", "Android WebView "+webpreview.NativePreviewUserAgentToken)
+	req.Header.Set("Accept-Encoding", "gzip")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	select {
+	case got := <-gotEncoding:
+		if got != "gzip" {
+			t.Errorf("upstream Accept-Encoding = %q, want %q (native preview never gets overlay injection, so compression shouldn't be forced off)", got, "gzip")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream handler never invoked")
+	}
+}
+
+func TestPreviewProxy_ServesOverlayAssetsWithoutForwarding(t *testing.T) {
+	t.Parallel()
+	var upstreamHits atomic.Int64
+	f := newPreviewProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits.Add(1)
+		http.NotFound(w, nil)
+	}))
+	r := f.seed(t, "alice", tokens.VisibilityPublic)
+
+	resp := f.do(t, tokens.HostFor(r.Token, f.root), "", "/__clank/overlay.js")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.Contains(got, "javascript") {
+		t.Errorf("Content-Type = %q, want JavaScript", got)
+	}
+	if hits := upstreamHits.Load(); hits != 0 {
+		t.Errorf("upstream hits = %d, want 0 for embedded overlay asset", hits)
+	}
+}
+
+func TestPreviewProxy_PublicViewerCannotReachOverlayAPI(t *testing.T) {
+	t.Parallel()
+	var upstreamHits atomic.Int64
+	f := newPreviewProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits.Add(1)
+		_, _ = io.WriteString(w, "must not reach host API")
+	}))
+	r := f.seed(t, "alice", tokens.VisibilityPublic)
+
+	resp := f.do(t, tokens.HostFor(r.Token, f.root), "", "/__clank/api/backends")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+	if hits := upstreamHits.Load(); hits != 0 {
+		t.Errorf("upstream hits = %d, want 0 for unauthenticated overlay API", hits)
+	}
+}
+
+func TestPreviewProxy_SignedOwnerCanReachScopedOverlayAPI(t *testing.T) {
+	t.Parallel()
+	var upstreamPath atomic.Value
+	f := newPreviewProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamPath.Store(r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[{"id":"opencode"}]`)
+	}))
+	route := f.seed(t, "alice", tokens.VisibilityOwnerOnly)
+	exp := time.Now().Add(10 * time.Minute)
+	sig, err := tokens.Sign(f.signingKey, route.Token, exp)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, f.srv.URL+"/__clank/api/backends", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Host = tokens.HostFor(route.Token, f.root)
+	req.Header.Set("Cookie", fmt.Sprintf(
+		"%s=%s; %s=%d",
+		tokens.SigParam, sig,
+		tokens.ExpParam, exp.Unix(),
+	))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%q", resp.StatusCode, body)
+	}
+	if got, _ := upstreamPath.Load().(string); got != "/backends" {
+		t.Errorf("upstream path = %q, want /backends", got)
+	}
+}
+
+func TestPreviewProxy_SignedContextInjectedAndHiddenFromGuest(t *testing.T) {
+	t.Parallel()
+	var upstreamQuery atomic.Value
+	f := newPreviewProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamQuery.Store(r.URL.RawQuery)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, "<html><head></head><body></body></html>")
+	}))
+	route := f.seed(t, "alice", tokens.VisibilityOwnerOnly)
+	exp := time.Now().Add(10 * time.Minute)
+	sig, err := tokens.Sign(f.signingKey, route.Token, exp)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	q := url.Values{
+		tokens.SigParam:     {sig},
+		tokens.ExpParam:     {strconv.FormatInt(exp.Unix(), 10)},
+		overlaySessionParam: {"session-123"},
+		overlayBackendParam: {"claude-code"},
+		"guest":             {"kept"},
+	}
+	req, err := http.NewRequest(http.MethodGet, f.srv.URL+"/?"+q.Encode(), nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Host = tokens.HostFor(route.Token, f.root)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	for _, want := range []string{`"session_id":"session-123"`, `"backend":"claude-code"`} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("injected config missing %q: %s", want, body)
+		}
+	}
+	if got, _ := upstreamQuery.Load().(string); got != "guest=kept" {
+		t.Errorf("upstream query = %q, want only guest=kept", got)
+	}
+	setCookies := strings.Join(resp.Header.Values("Set-Cookie"), "\n")
+	for _, name := range []string{overlaySessionParam, overlayBackendParam} {
+		if !strings.Contains(setCookies, name+"=") {
+			t.Errorf("Set-Cookie missing %s: %s", name, setCookies)
+		}
+	}
+}
+
+func TestPreviewProxy_OverlayAPIRejectsSessionFromAnotherWorktree(t *testing.T) {
+	t.Parallel()
+	var messagePosts atomic.Int64
+	f := newPreviewProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/sessions/session-other" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"git_ref":{"worktree_id":"wt-other"}}`)
+			return
+		}
+		if r.Method == http.MethodPost {
+			messagePosts.Add(1)
+		}
+		http.NotFound(w, r)
+	}))
+	route := f.seed(t, "alice", tokens.VisibilityOwnerOnly)
+	exp := time.Now().Add(10 * time.Minute)
+	sig, err := tokens.Sign(f.signingKey, route.Token, exp)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	req, err := http.NewRequest(
+		http.MethodPost,
+		f.srv.URL+"/__clank/api/sessions/session-other/message",
+		strings.NewReader(`{"text":"change another worktree"}`),
+	)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Host = tokens.HostFor(route.Token, f.root)
+	req.Header.Set("Cookie", fmt.Sprintf(
+		"%s=%s; %s=%d",
+		tokens.SigParam, sig,
+		tokens.ExpParam, exp.Unix(),
+	))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+	if got := messagePosts.Load(); got != 0 {
+		t.Errorf("cross-worktree message POSTs = %d, want 0", got)
 	}
 }
 
