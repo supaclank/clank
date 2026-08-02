@@ -4,7 +4,11 @@ package preview
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -206,7 +210,10 @@ func waitForGroupEmpty(t *testing.T, pgid int, timeout time.Duration) int {
 // port half — see Expo's UrlCreator.ts).
 func TestBuildEnv_EmptyPublicURL_OmitsProxyVar(t *testing.T) {
 	t.Parallel()
-	env := buildEnv(KindExpo, "/tmp/marker.bun", "", "", "", 5173)
+	env, err := buildEnv(environmentRequest{Kind: KindExpo, MarkerPath: "/tmp/marker.bun", Port: 5173})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, e := range env {
 		if strings.HasPrefix(e, "REACT_NATIVE_PACKAGER_HOSTNAME=") {
 			t.Errorf("buildEnv set REACT_NATIVE_PACKAGER_HOSTNAME — overrides only the hostname half: %q", e)
@@ -231,7 +238,10 @@ func TestBuildEnv_EmptyPublicURL_OmitsProxyVar(t *testing.T) {
 
 func TestBuildEnvPinsAllocatedPort(t *testing.T) {
 	t.Setenv("PORT", "9999")
-	env := buildEnv(KindExpo, "/tmp/marker.bun", "", "", "", 5173)
+	env, err := buildEnv(environmentRequest{Kind: KindExpo, MarkerPath: "/tmp/marker.bun", Port: 5173})
+	if err != nil {
+		t.Fatal(err)
+	}
 	var ports []string
 	for _, entry := range env {
 		if strings.HasPrefix(entry, "PORT=") {
@@ -246,7 +256,11 @@ func TestBuildEnvPinsAllocatedPort(t *testing.T) {
 func TestBuildEnvOmitsExpoBootstrapMarkerForConfiguredWeb(t *testing.T) {
 	t.Parallel()
 
-	for _, entry := range buildEnv(KindWeb, "", "", "", "", 5173) {
+	env, err := buildEnv(environmentRequest{Kind: KindWeb, Port: 5173})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range env {
 		if strings.HasPrefix(entry, bootstrapMarkerEnv+"=") {
 			t.Fatalf("configured web environment contains Expo bootstrap marker: %q", entry)
 		}
@@ -257,7 +271,10 @@ func TestBuildEnvPreservesWebEnvironmentWithoutExpoOverrides(t *testing.T) {
 	t.Setenv("CI", "preview-test")
 	t.Setenv("EXPO_NO_DOTENV", "parent")
 
-	env := buildEnv(KindWeb, "", "https://preview.example.test", "", "", 5173)
+	env, err := buildEnv(environmentRequest{Kind: KindWeb, PublicURL: "https://preview.example.test", Port: 5173})
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := map[string]string{
 		"CI":             "preview-test",
 		"EXPO_NO_DOTENV": "parent",
@@ -276,6 +293,163 @@ func TestBuildEnvPreservesWebEnvironmentWithoutExpoOverrides(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Errorf("configured web environment missing inherited values: %v", want)
+	}
+}
+
+func TestBuildEnvRendersConfiguredWebEnvironmentWithPublicHostname(t *testing.T) {
+	t.Setenv("__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS", "inherited.example.test")
+	t.Setenv("CLANK_PREVIEW_PUBLIC_HOSTNAME", "inherited.example.test")
+
+	env, err := buildEnv(environmentRequest{
+		Kind:      KindWeb,
+		PublicURL: "https://preview-token.dev.supaclank.dev/path",
+		Port:      5173,
+		Configured: map[string]string{
+			"__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS": "${CLANK_PREVIEW_PUBLIC_HOSTNAME}",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"PORT":                                   "5173",
+		"CLANK_PREVIEW_PUBLIC_HOSTNAME":          "preview-token.dev.supaclank.dev",
+		"__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS": "preview-token.dev.supaclank.dev",
+	}
+	assertEnvironmentValues(t, env, want)
+}
+
+func TestBuildEnvUsesLoopbackHostnameWithoutGateway(t *testing.T) {
+	t.Parallel()
+
+	env, err := buildEnv(environmentRequest{Kind: KindWeb, Port: 5173})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEnvironmentValues(t, env, map[string]string{
+		"CLANK_PREVIEW_PUBLIC_HOSTNAME": "127.0.0.1",
+	})
+}
+
+func TestResolvePreviewEndpointKeepsPortOutOfPublicHostname(t *testing.T) {
+	t.Parallel()
+
+	endpoint, err := resolvePreviewEndpoint(KindWeb, "https://preview.example.test:8443/path", 5173)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint.PublicHostname != "preview.example.test" {
+		t.Errorf("PublicHostname = %q", endpoint.PublicHostname)
+	}
+	if endpoint.ReadinessHost != "preview.example.test:8443" {
+		t.Errorf("ReadinessHost = %q", endpoint.ReadinessHost)
+	}
+}
+
+func TestBuildEnvRejectsNonHTTPPublicURL(t *testing.T) {
+	t.Parallel()
+
+	_, err := buildEnv(environmentRequest{Kind: KindWeb, PublicURL: "preview.example.test", Port: 5173})
+	if err == nil || !strings.Contains(err.Error(), "absolute HTTP URL") {
+		t.Fatalf("buildEnv error = %v, want invalid public URL", err)
+	}
+}
+
+func TestProbeOnceSendsPublicHostHeader(t *testing.T) {
+	t.Parallel()
+
+	const publicHost = "preview-token.dev.supaclank.dev"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != publicHost {
+			http.Error(w, "blocked host", http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	if !probeOnce(server.Client(), server.URL, nil, publicHost) {
+		t.Fatal("probeOnce did not use the public Host header")
+	}
+}
+
+func TestSpawnConfiguredWebPassesPublicHostValidation(t *testing.T) {
+	t.Parallel()
+
+	const publicURL = "https://preview-token.dev.supaclank.dev/"
+	serverScript := filepath.Join(t.TempDir(), "host_validating_server.py")
+	if err := os.WriteFile(serverScript, []byte(`
+import http.server, os
+
+port = int(os.environ["PORT"])
+allowed_host = os.environ["__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS"]
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.headers.get("Host") != allowed_host:
+            self.send_response(403)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.end_headers()
+    def log_message(self, *args):
+        pass
+
+http.server.HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	port, err := allocatePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	running, err := spawn(ctx, spawnRequest{
+		WorkDir: t.TempDir(),
+		Spec: Spec{
+			Kind:        KindWeb,
+			CmdTemplate: []string{"python3", serverScript},
+			Environment: map[string]string{
+				"__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS": "${CLANK_PREVIEW_PUBLIC_HOSTNAME}",
+			},
+			ReadyProbe: ReadyProbe{Path: "/"},
+		},
+		ServiceName: "web",
+		Port:        port,
+		PublicURL:   publicURL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { running.stopWithGrace(2 * time.Second) })
+
+	waitForState(t, running, StateReady, 5*time.Second)
+}
+
+func assertEnvironmentValues(t *testing.T, env []string, want map[string]string) {
+	t.Helper()
+
+	counts := make(map[string]int, len(want))
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		expected, exists := want[key]
+		if !exists {
+			continue
+		}
+		counts[key]++
+		if value != expected {
+			t.Errorf("%s = %q, want %q", key, value, expected)
+		}
+	}
+	for key := range want {
+		if counts[key] != 1 {
+			t.Errorf("%s entries = %d, want exactly 1", key, counts[key])
+		}
 	}
 }
 
@@ -311,7 +485,11 @@ func TestBuildEnv_OmitsCI(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			for _, e := range buildEnv(KindExpo, "/tmp/marker.bun", c.url, "", "", 5173) {
+			env, err := buildEnv(environmentRequest{Kind: KindExpo, MarkerPath: "/tmp/marker.bun", PublicURL: c.url, Port: 5173})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range env {
 				if strings.HasPrefix(e, "CI=") {
 					t.Errorf("buildEnv leaked CI to child process — disables Metro HMR: %q", e)
 				}
@@ -330,7 +508,10 @@ func TestBuildEnv_OmitsCI(t *testing.T) {
 func TestBuildEnv_PublicURL_SetsProxyVar(t *testing.T) {
 	t.Parallel()
 	publicURL := "http://preview-abc.localhost:7878"
-	env := buildEnv(KindExpo, "/tmp/marker.bun", publicURL, "", "", 5173)
+	env, err := buildEnv(environmentRequest{Kind: KindExpo, MarkerPath: "/tmp/marker.bun", PublicURL: publicURL, Port: 5173})
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := "EXPO_PACKAGER_PROXY_URL=" + publicURL
 	var saw bool
 	for _, e := range env {
@@ -349,7 +530,16 @@ func TestBuildEnv_PublicURL_SetsProxyVar(t *testing.T) {
 // carries the runtime path. Not parallel: mutates the process env.
 func TestBuildEnv_ShimRequireMergesNodeOptions(t *testing.T) {
 	t.Setenv("NODE_OPTIONS", "--max-old-space-size=4096")
-	env := buildEnv(KindExpo, "/tmp/marker.bun", "", "/tmp/clank-preview/shim.js", "/tmp/clank-preview/runtime.js", 5173)
+	env, err := buildEnv(environmentRequest{
+		Kind:            KindExpo,
+		MarkerPath:      "/tmp/marker.bun",
+		ShimRequirePath: "/tmp/clank-preview/shim.js",
+		RuntimePath:     "/tmp/clank-preview/runtime.js",
+		Port:            5173,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var nodeOpts, runtime string
 	nodeOptsCount := 0

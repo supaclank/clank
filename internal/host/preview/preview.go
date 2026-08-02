@@ -43,6 +43,10 @@ type Spec struct {
 	// web commands receive the port only through the PORT environment variable.
 	ShouldSubstitutePort bool
 
+	// Environment contains configured web environment values. Clank expands its
+	// runtime placeholders immediately before spawning the child process.
+	Environment map[string]string
+
 	// ReadyProbe is the HTTP poll Manager runs after spawn to flip
 	// State from Starting to Ready. Concrete contract beats stdout-
 	// scanning: the probe only passes when the dev server is actually
@@ -52,8 +56,8 @@ type Spec struct {
 }
 
 // ReadyProbe describes the HTTP-readiness check. Manager.spawn polls
-// http://127.0.0.1:<port><Path> every 200ms until the response is 200
-// AND the body contains ExpectedSubstr (or always, if empty). The
+// http://127.0.0.1:<port><Path> with the eventual public Host header until the
+// response is 200 AND the body contains ExpectedSubstr (or always, if empty). The
 // probe times out at the package default unless overridden via
 // spawnRequest.ReadyTimeout.
 //

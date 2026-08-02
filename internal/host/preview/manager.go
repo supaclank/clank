@@ -174,10 +174,8 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 	}
 	m.mu.Unlock()
 
-	// Allocate the listen port BEFORE registering so the gateway can
-	// reserve a route to it AND we can thread the resulting public URL
-	// into Metro's EXPO_PACKAGER_PROXY_URL. Order matters: Metro reads
-	// the env var at startup, so we have to know the URL before spawn.
+	// Allocate and register before spawn so the child receives its port and public
+	// URL-derived environment before the framework reads either at startup.
 	port, err := allocatePort()
 	if err != nil {
 		return Status{}, fmt.Errorf("allocate port: %w", err)

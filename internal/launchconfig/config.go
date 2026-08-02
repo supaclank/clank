@@ -6,6 +6,8 @@ const (
 	ProjectRelativePath = ".clank/launch.yaml"
 	// PortEnvironmentName is the allocated-port contract for every command.
 	PortEnvironmentName = "PORT"
+	// PublicHostnameEnvironmentName is the hostname clients use to reach a preview.
+	PublicHostnameEnvironmentName = "CLANK_PREVIEW_PUBLIC_HOSTNAME"
 )
 
 // File is the strict YAML launch schema.
@@ -16,9 +18,10 @@ type File struct {
 
 // Preview declares one named web development server.
 type Preview struct {
-	Directory string `yaml:"directory"`
-	Command   string `yaml:"command"`
-	Ready     Ready  `yaml:"ready"`
+	Directory   string            `yaml:"directory"`
+	Command     string            `yaml:"command"`
+	Environment map[string]string `yaml:"env"`
+	Ready       Ready             `yaml:"ready"`
 }
 
 // Ready declares the HTTP response that marks a server ready.
@@ -40,11 +43,12 @@ type Paths struct {
 
 // Resolved is one validated launch entry with an absolute working directory.
 type Resolved struct {
-	Name    string
-	WorkDir string
-	Command string
-	Ready   Ready
-	Source  Source
+	Name        string
+	WorkDir     string
+	Command     string
+	Environment map[string]string
+	Ready       Ready
+	Source      Source
 }
 
 // NotFoundError carries the paths offered by one-time setup.
