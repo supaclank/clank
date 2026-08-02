@@ -51,6 +51,16 @@ func (s *previewState) serveOverlayAPI(w http.ResponseWriter, r *http.Request, r
 		http.NotFound(w, r)
 		return
 	}
+	if r.Method == http.MethodGet && apiPath == "/config-options" {
+		// The probe opens a short-lived agent in the requested worktree.
+		// Hosted previews must never turn that into a path oracle or let an
+		// owner-scoped overlay probe another route's checkout.
+		q := r.URL.Query()
+		if q.Get("git_worktree_id") != route.WorktreeID || q.Get("git_local_path") != "" {
+			http.Error(w, "config options worktree does not match preview", http.StatusForbidden)
+			return
+		}
+	}
 	if r.Method == http.MethodPost && apiPath == "/sessions" {
 		if !validateOverlaySessionCreate(w, r, route.WorktreeID) {
 			return
@@ -113,7 +123,10 @@ func (s *previewState) serveOverlayAPI(w http.ResponseWriter, r *http.Request, r
 }
 
 func overlayAPIPathAllowed(method, path string) bool {
-	if method == http.MethodGet && (path == "/backends" || path == "/presets") {
+	if method == http.MethodGet && (path == "/backends" || path == "/presets" || path == "/config-options") {
+		return true
+	}
+	if method == http.MethodPost && path == "/presets" {
 		return true
 	}
 	if method == http.MethodPost && path == "/sessions" {

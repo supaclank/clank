@@ -30,9 +30,14 @@ import {
   PLAN_TOOL, textFromParts, activeQuestionFromParts, chatFromMessages,
   questionSuppressesPermission, pushPermission, dropPermission,
   customAllowed, toggleSelection, buildAnswers, collectPlanParts, planTextFor,
-  defaultPresetConfig, buildPreviewContext, composerTextForSend,
+  buildPreviewContext, composerTextForSend,
   previewGitRef,
 } from './chat.js';
+import {
+  resolvePreset, applyPresetOverrides, configRows, setConfigOverride,
+  diffConfigAgainstOptions, effectiveSessionConfig, profileLabel,
+  profileSavePayload,
+} from './settings.js';
 
 (() => {
   'use strict';
@@ -42,6 +47,8 @@ import {
   const CFG = window.__CLANK_PREVIEW || {};
   const TOKEN = CFG.token || '';
   const DONE_LINGER_MS = 8000; // mobile: PreviewOverlayState.DONE_LINGER_MS
+  const DEFAULT_PROFILE_STORAGE_KEY = 'clank.defaultPresetByBackend';
+  const CONFIG_OPTION_MODE = 'mode';
   // macOS fires CapsLock keydown when the lock engages and keyup when it
   // disengages — one event per physical press, alternating type. Other
   // platforms fire a normal down/up pair per press.
@@ -90,6 +97,27 @@ import {
     return res.json().catch(() => null);
   };
 
+  const readDefaultProfiles = () => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(DEFAULT_PROFILE_STORAGE_KEY) || '{}');
+      return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {};
+    } catch {
+      return {};
+    }
+  };
+
+  const readDefaultProfileID = (backend) => {
+    if (!backend) return '';
+    const saved = readDefaultProfiles();
+    return typeof saved[backend] === 'string' ? saved[backend] : '';
+  };
+
+  const writeDefaultProfileID = (backend, profileID) => {
+    const saved = readDefaultProfiles();
+    saved[backend] = profileID;
+    localStorage.setItem(DEFAULT_PROFILE_STORAGE_KEY, JSON.stringify(saved));
+  };
+
   // ---------- state ------------------------------------------------------
   const store = {
     box: 'hidden', // hidden | prompt | chat
@@ -112,6 +140,22 @@ import {
     enginePick: false, // engine picker panel open
     sending: false,
     aborting: false,
+    profiles: [], // host-persisted built-in + user agent profiles
+    profilesLoaded: false,
+    profilesLoading: false,
+    profileID: '', // create-time profile; live sessions use pendingConfig
+    profileOverrides: {},
+    defaultProfileID: readDefaultProfileID(CFG.backend),
+    configOptions: null, // agent-advertised knobs; null until probed/fetched
+    settingsOpen: false,
+    settingsLoading: false,
+    profilesError: '',
+    configOptionsError: '',
+    expandedConfigID: '',
+    pendingConfig: {}, // live-session changes staged for the next send
+    saveProfileOpen: false,
+    saveProfileName: '',
+    profileSaving: false,
   };
   // Dictation engines. 'local' streams PCM to the preview process
   // (CFG.voice = that engine exists); 'webspeech' is the browser's own
@@ -423,6 +467,159 @@ import {
     errors: recentErrors,
   });
 
+  // ---------- agent profiles / settings ---------------------------------
+  // Profiles themselves live on the host (GET /presets). The browser only
+  // keeps the per-backend "use by default" pointer, matching mobile's
+  // phone-local SecureStore preference; unsent knob edits stay in memory.
+  let profilesPromise = null;
+  const loadProfiles = async () => {
+    if (store.profilesLoaded) return store.profiles;
+    if (profilesPromise) return profilesPromise;
+    store.profilesLoading = true;
+    render();
+    profilesPromise = apiJSON('/presets?' + new URLSearchParams({
+      backend: CFG.backend,
+      hostname: CFG.hostname || 'local',
+    })).then((profiles) => {
+      if (!Array.isArray(profiles)) throw new Error('profile list was not an array');
+      store.profiles = profiles.filter((p) => p && p.backend === CFG.backend && p.config);
+      store.profilesLoaded = true;
+      if (!store.sessionId) {
+        const selected = resolvePreset(store.profiles, CFG.backend, store.profileID || store.defaultProfileID);
+        store.profileID = selected ? selected.id : '';
+      }
+      store.profilesError = '';
+      return store.profiles;
+    }).catch((err) => {
+      store.profilesError = 'Could not load profiles: ' + err.message;
+      throw err;
+    }).finally(() => {
+      store.profilesLoading = false;
+      profilesPromise = null;
+      render();
+    });
+    return profilesPromise;
+  };
+
+  const configOptionsPath = () => {
+    if (!CFG.backend) throw new Error('no backend in the preview config — restart clank preview');
+    const ref = previewGitRef(CFG);
+    if (!ref) throw new Error('preview config must identify exactly one worktree or local path');
+    const q = new URLSearchParams({ backend: CFG.backend });
+    if (ref.worktree_id) q.set('git_worktree_id', ref.worktree_id);
+    else q.set('git_local_path', ref.local_path);
+    return '/config-options?' + q;
+  };
+
+  let configOptionsPromise = null;
+  let configOptionsScope = '';
+  let configOptionsRequestID = 0;
+  const loadConfigOptions = async () => {
+    const scope = store.sessionId ? `session:${store.sessionId}` : 'create';
+    if (configOptionsPromise && configOptionsScope === scope) return configOptionsPromise;
+    const requestID = ++configOptionsRequestID;
+    configOptionsScope = scope;
+    store.settingsLoading = true;
+    store.configOptionsError = '';
+    render();
+    const request = (store.sessionId
+      ? apiJSON(`/sessions/${store.sessionId}`).then((info) => {
+          if (!info) throw new Error('session settings were unavailable');
+          return info.config_options || [];
+        })
+      : apiJSON(configOptionsPath())
+    ).then((options) => {
+      if (!Array.isArray(options)) throw new Error('agent settings were not an array');
+      if (requestID === configOptionsRequestID) {
+        store.configOptions = options;
+        if (store.sessionId) {
+          store.pendingConfig = diffConfigAgainstOptions(store.pendingConfig, options);
+        }
+      }
+      return options;
+    }).catch((err) => {
+      if (requestID === configOptionsRequestID) {
+        store.configOptionsError = 'Could not load agent settings: ' + err.message;
+      }
+      throw err;
+    }).finally(() => {
+      if (configOptionsPromise === request) {
+        store.settingsLoading = false;
+        configOptionsPromise = null;
+        configOptionsScope = '';
+        render();
+      }
+    });
+    configOptionsPromise = request;
+    return request;
+  };
+
+  const selectedCreateProfile = () =>
+    resolvePreset(store.profiles, CFG.backend, store.profileID || store.defaultProfileID);
+
+  const openSettings = () => {
+    store.settingsOpen = true;
+    store.enginePick = false;
+    store.expandedConfigID = '';
+    render();
+    Promise.allSettled([loadProfiles(), loadConfigOptions()]);
+  };
+
+  const closeSettings = () => {
+    store.settingsOpen = false;
+    store.expandedConfigID = '';
+    render();
+  };
+
+  const openSaveProfile = () => {
+    store.saveProfileName = '';
+    store.saveProfileOpen = true;
+    render();
+    setTimeout(() => {
+      ui.saveProfileName.value = '';
+      ui.saveProfileName.focus({ preventScroll: true });
+    }, 0);
+  };
+
+  const closeSaveProfile = () => {
+    if (store.profileSaving) return;
+    store.saveProfileOpen = false;
+    store.saveProfileName = '';
+    render();
+  };
+
+  const saveProfile = async () => {
+    if (store.profileSaving) return;
+    try {
+      const config = store.sessionId
+        ? effectiveSessionConfig(store.configOptions, store.pendingConfig)
+        : applyPresetOverrides(selectedCreateProfile(), store.profileOverrides);
+      const payload = profileSavePayload(store.saveProfileName, CFG.backend, config);
+      store.profileSaving = true;
+      render();
+      const saved = await apiJSON('/presets', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      if (!saved || !saved.id) throw new Error('profile save returned no id');
+      const index = store.profiles.findIndex((profile) => profile.id === saved.id);
+      if (index >= 0) store.profiles[index] = saved;
+      else store.profiles.push(saved);
+      store.profilesLoaded = true;
+      store.profilesError = '';
+      store.profileID = saved.id;
+      if (!store.sessionId) store.profileOverrides = {};
+      store.saveProfileOpen = false;
+      store.saveProfileName = '';
+      toast(`saved profile “${saved.name}”`);
+    } catch (err) {
+      toast('could not save profile: ' + err.message);
+    } finally {
+      store.profileSaving = false;
+      render();
+    }
+  };
+
   // ---------- session ------------------------------------------------------
   const send = async () => {
     // Comment-only submits are real sends: the default instruction rides
@@ -444,15 +641,16 @@ import {
     setAgent('thinking');
     try {
       if (!store.sessionId) {
-        // Create-time config is the backend's Default preset, applied
-        // verbatim — the host rejects a create missing any of its keys
-        // (config_incomplete) and never fills values in.
+        // Create-time config is the selected host profile plus explicit
+        // knob edits. It still begins from a complete profile — the host
+        // rejects a create missing any Default-preset key.
         if (!CFG.backend) throw new Error('no backend in the preview config — restart clank preview');
         const gitRef = previewGitRef(CFG);
         if (!gitRef) throw new Error('preview config must identify exactly one worktree or local path');
-        const presetList = await apiJSON('/presets?' + new URLSearchParams({ backend: CFG.backend, hostname: CFG.hostname || 'local' }));
-        const config = defaultPresetConfig(presetList, CFG.backend);
-        if (!config) throw new Error(`no Default preset for backend ${CFG.backend} — is the daemon up to date?`);
+        const presetList = await loadProfiles();
+        const profile = resolvePreset(presetList, CFG.backend, store.profileID || store.defaultProfileID);
+        const createConfig = applyPresetOverrides(profile, store.profileOverrides);
+        if (!createConfig) throw new Error(`no agent profile for backend ${CFG.backend} — is the daemon up to date?`);
         const info = await apiJSON('/sessions', {
           method: 'POST',
           body: JSON.stringify({
@@ -460,19 +658,41 @@ import {
             hostname: CFG.hostname || 'local',
             git_ref: gitRef,
             prompt: full,
-            config,
+            config: createConfig,
             ...(attachments.length ? { attachments } : {}),
           }),
         });
         store.sessionId = (info && info.id) || '';
         if (!store.sessionId) throw new Error('session create returned no id');
         sessionStorage.setItem('clank.sessionId', store.sessionId);
+        if (store.configOptions) {
+          store.configOptions = store.configOptions.map((option) =>
+            Object.hasOwn(createConfig, option.id)
+              ? { ...option, current_value: createConfig[option.id] }
+              : option);
+        }
+        store.profileID = '';
+        store.profileOverrides = {};
         subscribe();
+        loadConfigOptions().catch(() => {});
       } else {
+        const pendingConfig = diffConfigAgainstOptions(store.pendingConfig, store.configOptions);
         await api(`/sessions/${store.sessionId}/message`, {
           method: 'POST',
-          body: JSON.stringify({ text: full, ...(attachments.length ? { attachments } : {}) }),
+          body: JSON.stringify({
+            text: full,
+            ...(Object.keys(pendingConfig).length ? { config: pendingConfig } : {}),
+            ...(attachments.length ? { attachments } : {}),
+          }),
         });
+        if (store.configOptions) {
+          store.configOptions = store.configOptions.map((option) =>
+            Object.hasOwn(pendingConfig, option.id)
+              ? { ...option, current_value: pendingConfig[option.id] }
+              : option);
+        }
+        store.pendingConfig = {};
+        store.profileID = '';
       }
     } catch (err) {
       toast('send failed: ' + err.message);
@@ -627,8 +847,13 @@ import {
           .then((r) => (r.ok ? r.json() : null))
           .then((info) => {
             if (!info || store.sessionId !== sid) return;
+            if (Array.isArray(info.config_options)) {
+              store.configOptions = info.config_options;
+              store.pendingConfig = diffConfigAgainstOptions(store.pendingConfig, info.config_options);
+            }
             if (info.status === 'busy' && (store.agent === 'idle' || store.agent === 'done')) setAgent('thinking');
             else if (info.status === 'idle' && (store.agent === 'thinking' || store.agent === 'working')) setAgent('done');
+            else render();
           })
           .catch(() => {});
         const reader = res.body.getReader();
@@ -749,6 +974,7 @@ import {
   const openEnginePick = (pending) => {
     enginePickPending = pending;
     store.enginePick = true;
+    store.settingsOpen = false;
     if (store.box === 'hidden') store.box = 'prompt';
     render();
   };
@@ -1038,6 +1264,7 @@ import {
     close: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
     plus: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>',
     chevron: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>',
+    settings: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"/></svg>',
     send: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>',
     stop: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="3"/></svg>',
     // 2×3 grid, 5px pitch on BOTH axes: adjacent dots equidistant, so
@@ -1168,6 +1395,64 @@ import {
   .engpick .opt[disabled] { opacity:.45; cursor:not-allowed; }
   .engpick .opt b { display:block; font-weight:600; }
   .engpick .opt .d { color:#6b7280; }
+  .settings { margin:6px 12px; border:1px solid #e5e7eb; background:rgba(255,255,255,.7);
+    border-radius:12px; font-size:12px; max-height:300px; overflow-y:auto; }
+  .settings-h { position:sticky; top:0; z-index:1; display:flex; align-items:center; gap:8px;
+    padding:9px 10px 7px; background:rgba(255,255,255,.96); border-bottom:1px solid #e5e7eb; }
+  .settings-h b { flex:1; font-size:13px; }
+  .settings-badge { color:#2563eb; background:#3b82f614; border-radius:999px; padding:2px 7px; }
+  .settings-badge.custom { color:#b45309; background:#f59e0b14; }
+  .settings-done { all:unset; cursor:pointer; color:#2563eb; font-weight:600; padding:3px 2px; }
+  .profiles { display:flex; gap:7px; padding:9px 10px; overflow-x:auto; }
+  .profile-card { all:unset; cursor:pointer; flex:none; min-width:66px; border:1px solid #e5e7eb;
+    border-radius:10px; padding:6px 10px; background:#f9fafb; }
+  .profile-card:hover { background:#f3f4f6; }
+  .profile-card.cur { border-color:#3b82f6; background:#3b82f60d; color:#2563eb; }
+  .profile-card b, .profile-card small { display:block; white-space:nowrap; }
+  .profile-card small { color:#9ca3af; font-size:9px; margin-top:1px; }
+  .knobs { padding:0 10px 6px; }
+  .knob { border-top:1px solid #e5e7eb; }
+  .knob-main { all:unset; width:100%; cursor:pointer; display:flex; align-items:center; gap:8px; padding:9px 0; }
+  .knob-main[disabled] { cursor:default; }
+  .knob-name { flex:1; font-weight:600; }
+  .knob-value { color:#2563eb; text-align:right; }
+  .knob-value.agent { color:#6b7280; }
+  .knob-values { padding:0 0 6px 6px; }
+  .knob-group { color:#9ca3af; font-size:9px; font-weight:600; text-transform:uppercase;
+    letter-spacing:.5px; padding:4px 0 2px; }
+  .knob-option { all:unset; cursor:pointer; width:100%; display:flex; align-items:center; gap:8px;
+    padding:6px 4px; border-radius:7px; }
+  .knob-option:hover { background:#00000008; }
+  .knob-option .copy { flex:1; }
+  .knob-option b, .knob-option small { display:block; }
+  .knob-option small { color:#6b7280; font-size:10px; }
+  .knob-option.cur { color:#2563eb; }
+  .settings-state { color:#6b7280; padding:9px 10px; border-top:1px solid #e5e7eb; }
+  .settings-state.err { color:#dc2626; }
+  .settings-actions { display:flex; justify-content:flex-end; gap:7px; padding:4px 10px 9px; }
+  .set-default { all:unset; cursor:pointer; color:#2563eb; font-weight:600; border:1px solid #e5e7eb;
+    border-radius:9px; padding:6px 10px; }
+  .save-new { all:unset; cursor:pointer; color:#fff; background:#111827; font-weight:600;
+    border-radius:9px; padding:6px 10px; }
+  .profile { all:unset; cursor:pointer; height:30px; max-width:125px; padding:0 7px; border-radius:9px;
+    display:inline-flex; align-items:center; gap:5px; color:#6b7280; font-size:11px; font-weight:600; }
+  .profile:hover, .profile.active { background:#00000010; color:#111827; }
+  .profile span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .save-profile { position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+    padding:20px; pointer-events:auto; background:rgba(0,0,0,.48); }
+  .save-profile.show { display:flex; }
+  .save-card { width:320px; max-width:100%; background:#fff; color:#1f2937; border:1px solid #e5e7eb;
+    border-radius:14px; box-shadow:0 16px 48px rgba(0,0,0,.25); padding:14px; }
+  .save-card .t { font-size:14px; font-weight:650; margin-bottom:10px; }
+  .save-card input { width:100%; border:1px solid #d1d5db; border-radius:9px; background:#fff;
+    color:#111827; outline:0; padding:8px 10px; font-size:13px; }
+  .save-card input:focus { border-color:#3b82f6; box-shadow:0 0 0 2px #3b82f622; }
+  .save-actions { display:flex; justify-content:flex-end; gap:7px; margin-top:11px; }
+  .save-actions button { all:unset; cursor:pointer; font-size:12px; font-weight:600; padding:6px 10px; border-radius:8px; }
+  .save-actions .cancel { color:#6b7280; }
+  .save-actions .confirm { color:#fff; background:#111827; }
+  .save-actions button[disabled] { opacity:.4; cursor:not-allowed; }
+  .save-actions button:focus-visible { outline:2px solid #3b82f6; outline-offset:2px; }
   .send { background:#111827; color:#fff; font-weight:700; }
   .send:hover { background:#000; }
   .send.stop { background:#ef4444; color:#fff; }
@@ -1231,12 +1516,14 @@ import {
     <button class="opt" data-eng="local"><b>Fully local</b><span class="d"></span></button>
     <button class="opt" data-eng="webspeech"><b>Web Speech API</b><span class="d"></span></button>
   </div>
+  <div class="settings" style="display:none"></div>
   <textarea class="compose" rows="1" placeholder="Ask anything…"></textarea>
   <div class="bar">
     <button class="ib att" title="Attach images (or paste into the box)">${ICONS.plus}</button>
     <button class="ib shot" title="Grab a screenshot area">${ICONS.shot}</button>
     <button class="ib sel" title="Select an element (hold ⌘)">${ICONS.select}</button>
     <span class="sp"></span>
+    <button class="profile" title="Agent settings">${ICONS.settings}<span>Settings</span></button>
     <button class="ib mic" title="Tap ⇪ to talk (or hold this button)">${ICONS.mic}</button>
     <button class="ib eng" title="Dictation engine">${ICONS.chevron}</button>
     <span class="micLevel" style="display:none"></span>
@@ -1244,6 +1531,13 @@ import {
   </div>
   <input type="file" class="file" multiple style="display:none">
   <div class="hint"><span><kbd>⇪ caps</kbd> talk</span><span><kbd>⇧</kbd> move</span><span><kbd>⌘</kbd> select</span><span><kbd>⌘E</kbd> toggle</span></div>
+</div>
+<div class="save-profile">
+  <div class="save-card" role="dialog" aria-modal="true" aria-labelledby="clank-save-profile-title">
+    <div class="t" id="clank-save-profile-title">Save as new profile</div>
+    <input class="save-profile-name" type="text" placeholder="Profile name" autocomplete="off">
+    <div class="save-actions"><button class="cancel">Cancel</button><button class="confirm" disabled>Save</button></div>
+  </div>
 </div>
 <div class="hl"></div><div class="hll"></div>
 <div class="cpop"><textarea class="cpop-in" rows="1"></textarea><div class="cpop-h"><kbd>Enter</kbd> add · <kbd>Esc</kbd> dismiss</div></div>
@@ -1263,6 +1557,9 @@ import {
     permAllow: $('.perm .allow'), permDeny: $('.perm .deny'), ques: $('.ques'),
     input: $('.compose'), sel: $('.sel'), mic: $('.mic'), micLevel: $('.micLevel'),
     eng: $('.eng'), engpick: $('.engpick'), engOpts: [...root.querySelectorAll('.engpick .opt')],
+    settings: $('.settings'), profile: $('.profile'), profileLabel: $('.profile span'),
+    saveProfile: $('.save-profile'), saveProfileName: $('.save-profile-name'),
+    saveProfileCancel: $('.save-actions .cancel'), saveProfileConfirm: $('.save-actions .confirm'),
     send: $('.send'), hl: $('.hl'), hll: $('.hll'), toast: $('.toast'),
     cpop: $('.cpop'), cpopIn: $('.cpop-in'), cpopHint: $('.cpop-h'),
     shot: $('.shot'), att: $('.att'), file: $('.file'),
@@ -1379,6 +1676,178 @@ import {
     }
   };
 
+  const backendLabel = (backend) => ({
+    'claude-code': 'Claude Code',
+    codex: 'Codex',
+    opencode: 'OpenCode',
+  })[backend] || backend;
+
+  const settingsChipLabel = () => {
+    if (!store.sessionId) {
+      return profileLabel(selectedCreateProfile(), store.profileOverrides) || 'Settings';
+    }
+    const mode = (store.configOptions || []).find((option) =>
+      option.category === CONFIG_OPTION_MODE || option.id === CONFIG_OPTION_MODE);
+    if (!mode) return Object.keys(store.pendingConfig).length ? 'Settings •' : 'Settings';
+    const value = Object.hasOwn(store.pendingConfig, mode.id)
+      ? store.pendingConfig[mode.id]
+      : mode.current_value;
+    const valueName = ((mode.values || []).find((v) => v.value === value) || {}).name || value || 'Settings';
+    return valueName + (Object.keys(store.pendingConfig).length ? ' •' : '');
+  };
+
+  // renderSettings builds the same two-level editor as mobile's
+  // PresetEditorSheet: profile cards first, then expandable agent-owned
+  // knobs. All text is assigned through textContent — profile names and
+  // adapter descriptions never become markup in the injected page.
+  const renderSettings = () => {
+    const scrollTop = ui.settings.scrollTop;
+    ui.settings.style.display = store.settingsOpen ? '' : 'none';
+    if (!store.settingsOpen) {
+      ui.settings.replaceChildren();
+      return;
+    }
+    const live = !!store.sessionId;
+    const preset = live ? null : selectedCreateProfile();
+    const rows = configRows(preset, live ? store.pendingConfig : store.profileOverrides, store.configOptions || []);
+    const custom = !live && profileLabel(preset, store.profileOverrides) === 'Custom';
+    const badgeText = live
+      ? (Object.keys(store.pendingConfig).length ? 'Modified' : '')
+      : profileLabel(preset, store.profileOverrides);
+    const resolvedDefault = resolvePreset(store.profiles, CFG.backend, store.defaultProfileID);
+    const node = (tag, cls, text) => {
+      const n = document.createElement(tag);
+      n.className = cls;
+      if (text !== undefined) n.textContent = text;
+      return n;
+    };
+
+    const frag = document.createDocumentFragment();
+    const header = node('div', 'settings-h');
+    header.append(node('b', '', live ? 'Session settings' : `${backendLabel(CFG.backend)} settings`));
+    if (badgeText) header.append(node('span', 'settings-badge' + (custom || live ? ' custom' : ''), badgeText));
+    const done = node('button', 'settings-done', 'Done');
+    done.onclick = closeSettings;
+    header.append(done);
+    frag.append(header);
+
+    if (store.profiles.length) {
+      const profiles = node('div', 'profiles');
+      for (const p of store.profiles) {
+        const selected = !live && p.id === (preset && preset.id) && !custom;
+        const card = node('button', 'profile-card' + (selected ? ' cur' : ''));
+        card.append(node('b', '', p.name));
+        if (resolvedDefault && p.id === resolvedDefault.id) card.append(node('small', '', 'default'));
+        card.onclick = () => {
+          store.expandedConfigID = '';
+          store.profileID = p.id;
+          if (live) store.pendingConfig = diffConfigAgainstOptions({ ...p.config }, store.configOptions);
+          else store.profileOverrides = {};
+          render();
+        };
+        profiles.append(card);
+      }
+      frag.append(profiles);
+    }
+
+    if (rows.length) {
+      const knobs = node('div', 'knobs');
+      for (const row of rows) {
+        const wrap = node('div', 'knob');
+        const main = node('button', 'knob-main');
+        main.disabled = !row.values.length;
+        main.append(node('span', 'knob-name', row.name));
+        main.append(node('span', 'knob-value' + (row.source === 'agent' ? ' agent' : ''), row.valueName));
+        if (row.values.length) {
+          main.append(node('span', '', store.expandedConfigID === row.id ? '▴' : '▾'));
+          main.onclick = () => {
+            store.expandedConfigID = store.expandedConfigID === row.id ? '' : row.id;
+            render();
+          };
+        }
+        wrap.append(main);
+        if (store.expandedConfigID === row.id) {
+          const values = node('div', 'knob-values');
+          const groups = new Map();
+          for (const value of row.values) {
+            const group = value.group || '';
+            if (!groups.has(group)) groups.set(group, []);
+            groups.get(group).push(value);
+          }
+          for (const [group, options] of groups) {
+            if (group) values.append(node('div', 'knob-group', group));
+            for (const value of options) {
+              const option = node('button', 'knob-option' + (value.value === row.value ? ' cur' : ''));
+              const copy = node('span', 'copy');
+              copy.append(node('b', '', value.name || value.value));
+              if (value.description) copy.append(node('small', '', value.description));
+              option.append(copy);
+              if (value.value === row.value) option.append(node('span', '', '✓'));
+              option.onclick = () => {
+                if (live) {
+                  store.pendingConfig = diffConfigAgainstOptions(
+                    { ...store.pendingConfig, [row.id]: value.value },
+                    store.configOptions,
+                  );
+                  store.profileID = '';
+                } else {
+                  store.profileOverrides = setConfigOverride(
+                    preset,
+                    store.profileOverrides,
+                    row.id,
+                    value.value,
+                  );
+                }
+                store.expandedConfigID = '';
+                render();
+              };
+              values.append(option);
+            }
+          }
+          wrap.append(values);
+        }
+        knobs.append(wrap);
+      }
+      frag.append(knobs);
+    }
+
+    if (store.profilesLoading || store.settingsLoading) {
+      frag.append(node('div', 'settings-state', 'Loading agent settings…'));
+    } else if (store.profilesError || store.configOptionsError) {
+      frag.append(node('div', 'settings-state err', store.profilesError || store.configOptionsError));
+    } else if (!store.profiles.length && !rows.length) {
+      frag.append(node('div', 'settings-state', 'No agent settings are available.'));
+    }
+
+    const canSaveAsNew = live ? Object.keys(store.pendingConfig).length > 0 : custom;
+    const canSetDefault = !live && !custom && preset &&
+      (!resolvedDefault || preset.id !== resolvedDefault.id);
+    if (canSaveAsNew || canSetDefault) {
+      const actions = node('div', 'settings-actions');
+      if (canSetDefault) {
+        const makeDefault = node('button', 'set-default', 'Set as default');
+        makeDefault.onclick = () => {
+          try {
+            writeDefaultProfileID(CFG.backend, preset.id);
+            store.defaultProfileID = preset.id;
+            render();
+          } catch (err) {
+            toast('could not save the default profile: ' + err.message);
+          }
+        };
+        actions.append(makeDefault);
+      }
+      if (canSaveAsNew) {
+        const saveNew = node('button', 'save-new', 'Save as new profile');
+        saveNew.onclick = openSaveProfile;
+        actions.append(saveNew);
+      }
+      frag.append(actions);
+    }
+    ui.settings.replaceChildren(frag);
+    ui.settings.scrollTop = scrollTop;
+  };
+
   const STATUS_TEXT = { idle: '', thinking: 'thinking…', working: 'working…', done: 'done', error: 'error' };
   const render = () => {
     ui.box.classList.toggle('visible', store.box !== 'hidden');
@@ -1458,8 +1927,16 @@ import {
       ui.permAllow.disabled = ui.permDeny.disabled = !!perm.sending;
     }
     renderQuestion();
+    renderSettings();
+    ui.saveProfile.classList.toggle('show', store.saveProfileOpen);
+    ui.saveProfileCancel.disabled = store.profileSaving;
+    ui.saveProfileConfirm.disabled = store.profileSaving || !store.saveProfileName.trim();
+    ui.saveProfileConfirm.textContent = store.profileSaving ? 'Saving…' : 'Save';
 
     ui.sel.classList.toggle('active', store.inspect);
+    ui.profile.style.display = CFG.backend ? '' : 'none';
+    ui.profile.classList.toggle('active', store.settingsOpen);
+    ui.profileLabel.textContent = settingsChipLabel();
     ui.mic.style.display = store.voice === 'off' ? 'none' : '';
     ui.mic.classList.toggle('rec', store.voice === 'recording');
     ui.mic.innerHTML = store.voice === 'transcribing' ? '…' : ICONS.mic;
@@ -1484,6 +1961,10 @@ import {
       exitInspect();
       enginePickPending = false;
       store.enginePick = false;
+      store.settingsOpen = false;
+      store.expandedConfigID = '';
+      store.saveProfileOpen = false;
+      store.saveProfileName = '';
     }
     render();
     // Focus the CONTAINER, not the composer: typing focus on summon
@@ -2102,6 +2583,21 @@ import {
 
   // ---------- wiring -----------------------------------------------------------
   ui.send.onclick = () => { (store.agent === 'thinking' || store.agent === 'working') ? abort() : send(); };
+  ui.profile.onclick = () => (store.settingsOpen ? closeSettings() : openSettings());
+  ui.saveProfileCancel.onclick = closeSaveProfile;
+  ui.saveProfileConfirm.onclick = saveProfile;
+  ui.saveProfile.onclick = (e) => { if (e.target === ui.saveProfile) closeSaveProfile(); };
+  ui.saveProfileName.addEventListener('input', () => {
+    store.saveProfileName = ui.saveProfileName.value;
+    ui.saveProfileConfirm.disabled = store.profileSaving || !store.saveProfileName.trim();
+  });
+  ui.saveProfileName.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter' && store.saveProfileName.trim()) {
+      e.preventDefault();
+      saveProfile();
+    }
+  });
   ui.sel.onclick = () => (store.inspect ? exitInspect() : enterInspect());
   ui.shot.onclick = beginShot;
   ui.cropAdd.onclick = confirmCrop;
@@ -2123,6 +2619,7 @@ import {
     if (store.enginePick) closeEnginePick();
     else openEnginePick(false);
   };
+  ui.settings.addEventListener('keydown', (e) => e.stopPropagation());
   // Engine picker copy. Availability is fixed for the page's lifetime,
   // and the descriptions double as the consent text — name where the
   // audio goes and what does the transcribing (CFG.voice_engine says
@@ -2317,7 +2814,9 @@ import {
       return;
     }
     if (e.key === 'Escape') {
-      if (store.enginePick) { e.preventDefault(); e.stopPropagation(); closeEnginePick(); }
+      if (store.saveProfileOpen) { e.preventDefault(); e.stopPropagation(); closeSaveProfile(); }
+      else if (store.settingsOpen) { e.preventDefault(); e.stopPropagation(); closeSettings(); }
+      else if (store.enginePick) { e.preventDefault(); e.stopPropagation(); closeEnginePick(); }
       else if (commentTarget) { e.preventDefault(); e.stopPropagation(); hideCommentPopover(); }
       else if (store.inspect) { e.preventDefault(); e.stopPropagation(); modInspect = false; exitInspect(); }
       else if (store.box !== 'hidden') { e.preventDefault(); e.stopPropagation(); setBox('hidden'); }
@@ -2343,5 +2842,6 @@ import {
   const mount = () => (document.body ? document.body.appendChild(host) : requestAnimationFrame(mount));
   mount();
   render();
+  if (CFG.backend) loadProfiles().catch(() => {});
   if (store.sessionId) subscribe(); // survive full reloads mid-turn
 })();

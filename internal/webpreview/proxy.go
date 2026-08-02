@@ -33,6 +33,11 @@ var overlayJS []byte
 //go:embed overlay/chat.js
 var chatJS []byte
 
+// settingsJS is the overlay's pure agent-profile selection module.
+//
+//go:embed overlay/settings.js
+var settingsJS []byte
+
 // workletJS is the AudioWorklet processor that batches mic PCM for the
 // dictation WebSocket. Served as its own module because AudioWorklets
 // load from a URL, not inline.
@@ -152,6 +157,7 @@ func Start(opts Options) (*Server, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+OverlayPath, serveJS(overlayJS))
 	mux.HandleFunc("GET "+ChatPath, serveJS(chatJS))
+	mux.HandleFunc("GET "+SettingsPath, serveJS(settingsJS))
 	mux.HandleFunc("GET "+WorkletPath, serveJS(workletJS))
 	mux.Handle(APIPrefix+"/", requireToken(opts.Token,
 		http.StripPrefix(APIPrefix, daemon)))
