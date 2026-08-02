@@ -64,9 +64,18 @@ Additional semantic rules enforced by Clank:
   after resolving symlinks.
 - command is a normal one-line command run by sh -c from directory. It must consume the literal shell variable $PORT or ${PORT}, and the frontend should
   bind to 127.0.0.1 rather than a LAN-facing address.
+- env is an optional env map applied to the command. Clank expands only the
+  exact ${PORT} and ${CLANK_PREVIEW_PUBLIC_HOSTNAME} placeholders in its values.
+  PORT and CLANK_PREVIEW_PUBLIC_HOSTNAME are managed by Clank and cannot be env
+  keys. Do not use shell fallback syntax or command substitution in env values.
+- CLANK_PREVIEW_PUBLIC_HOSTNAME is the hostname a browser uses to reach the
+  preview: the gateway hostname in cloud or self-hosted environments, and
+  127.0.0.1 for a local preview. If the frontend framework validates request
+  hosts, configure it to allow this exact value while keeping the server bound
+  to 127.0.0.1. For Vite, use the env example below; do not disable host checks.
 - ready.path is requested until it returns HTTP 200. When ready.expect is set,
   that response body must contain it.
-- Do not add version, url, env, port, or autoPort fields.
+- Do not add version, url, port, or autoPort fields.
 
 Valid minimal example:
 
@@ -78,6 +87,13 @@ previews:
     command: npm run dev -- --host 127.0.0.1 --port "$PORT"
     ready:
       path: /
+~~~
+
+Vite host-validation example:
+
+~~~yaml
+    env:
+      __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: "${CLANK_PREVIEW_PUBLIC_HOSTNAME}"
 ~~~
 
 Claude launch reference: Claude allocates a port, sets PORT, and may rewrite

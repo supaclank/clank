@@ -69,6 +69,7 @@ func resolveLaunch(workDir, name string) (*resolvedLaunch, error) {
 		Spec: Spec{
 			Kind:        KindWeb,
 			CmdTemplate: []string{"sh", "-c", configured.Command},
+			Environment: configured.Environment,
 			ReadyProbe: ReadyProbe{
 				Path:           configured.Ready.Path,
 				ExpectedSubstr: configured.Ready.ExpectedSubstring,

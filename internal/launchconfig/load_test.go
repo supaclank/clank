@@ -14,6 +14,8 @@ previews:
   web-app:
     directory: web
     command: npm run dev -- --port "$PORT"
+    env:
+      __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: "${CLANK_PREVIEW_PUBLIC_HOSTNAME}"
     ready:
       path: /
 `
@@ -36,6 +38,9 @@ func TestResolveProjectLaunch(t *testing.T) {
 	}
 	if got.Command != `npm run dev -- --port "$PORT"` {
 		t.Errorf("Command = %q", got.Command)
+	}
+	if got.Environment["__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS"] != "${CLANK_PREVIEW_PUBLIC_HOSTNAME}" {
+		t.Errorf("Environment = %v", got.Environment)
 	}
 	if got.Ready.Path != "/" || got.Ready.ExpectedSubstring != "" {
 		t.Errorf("Ready = %+v", got.Ready)
@@ -134,6 +139,12 @@ func TestLaunchConfigValidation(t *testing.T) {
 		{name: "missing command", yaml: strings.Replace(validLaunchYAML, "    command: npm run dev -- --port \"$PORT\"\n", "", 1), wantErr: "command is required"},
 		{name: "command ignores port", yaml: strings.Replace(validLaunchYAML, `npm run dev -- --port "$PORT"`, "npm run dev", 1), wantErr: "must consume $PORT"},
 		{name: "different variable with port prefix", yaml: strings.Replace(validLaunchYAML, `npm run dev -- --port "$PORT"`, `npm run dev -- --port "$PORTER"`, 1), wantErr: "must consume $PORT"},
+		{name: "invalid environment name", yaml: strings.Replace(validLaunchYAML, "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS:", "INVALID-NAME:", 1), wantErr: "invalid environment variable name"},
+		{name: "reserved port environment", yaml: strings.Replace(validLaunchYAML, "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS:", "PORT:", 1), wantErr: "managed by Clank"},
+		{name: "reserved public hostname environment", yaml: strings.Replace(validLaunchYAML, "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS:", "CLANK_PREVIEW_PUBLIC_HOSTNAME:", 1), wantErr: "managed by Clank"},
+		{name: "unknown environment placeholder", yaml: strings.Replace(validLaunchYAML, "${CLANK_PREVIEW_PUBLIC_HOSTNAME}", "${UNKNOWN}", 1), wantErr: "unsupported placeholder"},
+		{name: "malformed environment placeholder", yaml: strings.Replace(validLaunchYAML, "${CLANK_PREVIEW_PUBLIC_HOSTNAME}", "${PORT:-5173}", 1), wantErr: "unsupported placeholder"},
+		{name: "unterminated environment placeholder", yaml: strings.Replace(validLaunchYAML, "${CLANK_PREVIEW_PUBLIC_HOSTNAME}", "${PORT", 1), wantErr: "unterminated environment placeholder"},
 		{name: "missing readiness path", yaml: strings.Replace(validLaunchYAML, "      path: /\n", "", 1), wantErr: "ready.path is required"},
 		{name: "absolute readiness URL", yaml: strings.Replace(validLaunchYAML, "path: /", "path: http://127.0.0.1/", 1), wantErr: "absolute URL"},
 		{name: "readiness query", yaml: strings.Replace(validLaunchYAML, "path: /", "path: /health?full=1", 1), wantErr: "query or fragment"},
@@ -153,6 +164,30 @@ func TestLaunchConfigValidation(t *testing.T) {
 				t.Fatalf("Resolve: err = %v, want containing %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestRenderEnvironment(t *testing.T) {
+	t.Parallel()
+
+	got, err := RenderEnvironment(map[string]string{
+		"APP_ORIGIN": "http://${CLANK_PREVIEW_PUBLIC_HOSTNAME}:${PORT}",
+		"STATIC":     "literal",
+	}, 5173, "preview-token.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"APP_ORIGIN": "http://preview-token.example.test:5173",
+		"STATIC":     "literal",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("RenderEnvironment = %v, want %v", got, want)
+	}
+	for key, value := range want {
+		if got[key] != value {
+			t.Errorf("RenderEnvironment[%q] = %q, want %q", key, got[key], value)
+		}
 	}
 }
 
