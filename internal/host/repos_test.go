@@ -1,6 +1,7 @@
 package host
 
 import (
+	"log"
 	"os"
 	"path/filepath"
 	"testing"
@@ -54,6 +55,16 @@ func TestSlugForName_SuffixesOnCollision(t *testing.T) {
 
 	if _, err := s.slugForName("!!!"); err == nil {
 		t.Error("slugForName with unusable name: err = nil, want error")
+	}
+}
+
+func TestCredentialHelperValue_NilGitHubManager(t *testing.T) {
+	t.Parallel()
+	// s.github is nil when Service.New's os.UserHomeDir() lookup fails;
+	// credentialHelperValue must degrade rather than panic on that path.
+	s := &Service{log: log.New(os.Stderr, "", 0)}
+	if got := s.credentialHelperValue(); got == "" {
+		t.Error("credentialHelperValue with nil github manager = \"\", want a helper value")
 	}
 }
 
