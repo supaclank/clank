@@ -37,8 +37,8 @@ const allHeadsRefspec = "+refs/heads/*:refs/remotes/origin/*"
 //
 // token auths the clone itself like CloneShallowKeepRemote (env + inline
 // helper; never argv or config). credentialHelper is the persistent value
-// (see github.GitCredentialHelperValue); empty skips the config (tests,
-// public-only setups).
+// (see github.GitCredentialHelperValue); an empty value is still written,
+// resetting the repo-local helper so later fetches stay anonymous too.
 //
 // --single-branch keeps refs/heads/* = "branches clank manages": the
 // canonical starts with just the imported branch and grows one local ref
@@ -77,10 +77,14 @@ func CloneBare(ctx context.Context, url, gitDir, token, branch, credentialHelper
 	if err := SetLocalConfig(gitDir, "remote.origin.fetch", allHeadsRefspec); err != nil {
 		return err
 	}
-	if credentialHelper != "" {
-		if err := SetLocalConfig(gitDir, "credential.helper", credentialHelper); err != nil {
-			return err
-		}
+	// Set unconditionally, even when credentialHelper is "": the clone
+	// argv already reset credential.helper for the clone itself, but that
+	// reset doesn't persist. Without a repo-local entry, a later fetch
+	// (branch materialization, lazy blob checkout) would fall through to
+	// any ambient system/global credential.helper — de-anonymizing what's
+	// meant to be a tokenless (public) clone.
+	if err := SetLocalConfig(gitDir, "credential.helper", credentialHelper); err != nil {
+		return err
 	}
 	// A bare clone creates NO remote-tracking refs. Seed the cloned
 	// branch's tracking ref from its tip — truthful (the local tip IS
