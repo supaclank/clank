@@ -31,7 +31,7 @@ import {
   questionSuppressesPermission, pushPermission, dropPermission,
   customAllowed, toggleSelection, buildAnswers, collectPlanParts, planTextFor,
   defaultPresetConfig, buildPreviewContext, composerTextForSend,
-  previewGitRef,
+  previewGitRef, previewRouteForContext,
 } from './chat.js';
 
 (() => {
@@ -418,7 +418,7 @@ import {
   const buildContext = () => buildPreviewContext({
     chips: store.chips,
     images: store.images.map((s) => s.filename),
-    route: location.pathname + location.search,
+    route: previewRouteForContext(location.pathname, location.search),
     viewport: `${innerWidth}x${innerHeight}`,
     errors: recentErrors,
   });

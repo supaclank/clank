@@ -150,6 +150,22 @@ export const previewGitRef = (config) => {
   return worktreeID ? { worktree_id: worktreeID } : { local_path: localPath };
 };
 
+const PRIVATE_PREVIEW_QUERY_PARAMS = [
+  'clank_sig',
+  'clank_exp',
+  'clank_overlay_session',
+  'clank_overlay_backend',
+];
+
+// previewRouteForContext removes Clank's control credentials before the
+// browser route is attached to an agent prompt.
+export const previewRouteForContext = (pathname, search) => {
+  const query = new URLSearchParams(search);
+  for (const name of PRIVATE_PREVIEW_QUERY_PARAMS) query.delete(name);
+  const encoded = query.toString();
+  return pathname + (encoded ? `?${encoded}` : '');
+};
+
 // planTextFor returns the plan text an ExitPlanMode permission prompt
 // gates: matched by tool_use id, falling back to the most recent plan
 // when the backend couldn't attribute one (mirrors the TUI golden ref).
