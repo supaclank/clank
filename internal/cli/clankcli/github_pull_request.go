@@ -14,11 +14,11 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/host"
 )
 
-// TODO(ai-review): duplicated with gateway's githubPullRequestLaunchTimeout; centralize if they need to diverge or a third copy appears. https://github.com/Acksell/clank/pull/217
+// TODO(ai-review): duplicated with gateway's githubPullRequestLaunchTimeout; centralize if they need to diverge or a third copy appears. https://github.com/supaclank/clank/pull/217
 const githubPullRequestLaunchTimeout = 10 * time.Minute
 
 func parseGitHubPullRequestURL(rawURL string) (daemonclient.GitHubPullRequestLocator, error) {

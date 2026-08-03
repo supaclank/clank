@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/acksell/clank/internal/sqlmigrate"
-	"github.com/acksell/clank/internal/store"
+	"github.com/supaclank/clank/internal/sqlmigrate"
+	"github.com/supaclank/clank/internal/store"
 )
 
 // baselineVersion is the goose version id of the baseline migration.

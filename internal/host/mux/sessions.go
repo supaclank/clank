@@ -7,7 +7,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // SessionSnapshot is the runtime-fields shape returned by endpoints

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/acksell/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/auth"
 )
 
 // Auth mode selector env vars. Exactly one must be set in TCP mode

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // TestInboxSSE_MetaChangeReplacesCachedRow verifies an EventMetaChange

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/keepalive"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/keepalive"
 )
 
 // recordingListener is a real keepalive.Listener used as a test fixture

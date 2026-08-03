@@ -16,7 +16,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // maxPromptImageBytes caps a staged image, matching the host-side cap.

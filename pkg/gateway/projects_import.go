@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/acksell/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/auth"
 )
 
 // importProjectRequest is what mobile sends to POST /v1/projects/import:

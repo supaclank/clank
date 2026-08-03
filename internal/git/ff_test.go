@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/internal/git"
+	"github.com/supaclank/clank/internal/git"
 )
 
 // TestFetchBundleObjects_AndIsAncestor pins the fast-forward primitives

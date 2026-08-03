@@ -17,7 +17,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/acksell/clank/internal/git"
+	"github.com/supaclank/clank/internal/git"
 )
 
 // worktreePickerResultMsg is sent when the user selects a worktree.
@@ -178,7 +178,7 @@ func (m worktreePickerModel) View() string {
 
 	switch {
 	case m.err != nil:
-		// TODO(ai-review): render actual error (trimmed) instead of hard-coded message https://github.com/Acksell/clank/pull/73#discussion_r3449079132
+		// TODO(ai-review): render actual error (trimmed) instead of hard-coded message https://github.com/supaclank/clank/pull/73#discussion_r3449079132
 		sb.WriteString(lipgloss.NewStyle().Foreground(dangerColor).Width(innerWidth).Render("  not a git repo"))
 		sb.WriteString("\n")
 	case len(m.filtered) == 0:

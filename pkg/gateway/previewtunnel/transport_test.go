@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/pkg/provisioner"
+	"github.com/supaclank/clank/pkg/provisioner"
 )
 
 // dialProvisioner is a real Provisioner.OpenInternalConn that ignores

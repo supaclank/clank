@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/host/preview"
+	"github.com/supaclank/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/host/preview"
 )
 
 // previewStartPollInterval paces status polls while the dev server is

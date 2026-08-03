@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/agent/presets"
-	"github.com/acksell/clank/internal/host"
-	hostclient "github.com/acksell/clank/internal/host/client"
-	hostmux "github.com/acksell/clank/internal/host/mux"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent/presets"
+	"github.com/supaclank/clank/internal/host"
+	hostclient "github.com/supaclank/clank/internal/host/client"
+	hostmux "github.com/supaclank/clank/internal/host/mux"
 )
 
 // stubBackend is a programmable SessionBackend used only as a test
@@ -88,7 +88,7 @@ func (m *stubManager) CreateBackend(_ context.Context, _ agent.BackendInvocation
 }
 func (m *stubManager) Shutdown() {}
 
-const testRemoteURL = "git@github.com:acksell/clank.git"
+const testRemoteURL = "git@github.com:supaclank/clank.git"
 
 // initGitRepo creates a real git repo with an "origin" remote so the host
 // can resolve the RepoRef → RepoID and pass CreateSession's checks.

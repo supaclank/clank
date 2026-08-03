@@ -14,15 +14,15 @@ import (
 	"syscall"
 	"time"
 
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/socketutil"
-	"github.com/acksell/clank/internal/store"
-	"github.com/acksell/clank/pkg/auth"
-	"github.com/acksell/clank/pkg/gateway"
-	"github.com/acksell/clank/pkg/images"
-	"github.com/acksell/clank/pkg/notify"
-	"github.com/acksell/clank/pkg/preview/routestore/memstore"
-	"github.com/acksell/clank/pkg/provisioner"
+	daemonclient "github.com/supaclank/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/socketutil"
+	"github.com/supaclank/clank/internal/store"
+	"github.com/supaclank/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/gateway"
+	"github.com/supaclank/clank/pkg/images"
+	"github.com/supaclank/clank/pkg/notify"
+	"github.com/supaclank/clank/pkg/preview/routestore/memstore"
+	"github.com/supaclank/clank/pkg/provisioner"
 )
 
 // openHubListener creates the listener for the configured mode and a

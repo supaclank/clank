@@ -18,10 +18,10 @@ import (
 	"net"
 	"net/url"
 
-	"github.com/acksell/clank/pkg/provisioner"
-	"github.com/acksell/clank/pkg/provisioner/hoststore"
-	transportpkg "github.com/acksell/clank/pkg/provisioner/transport"
-	"github.com/acksell/clank/pkg/provisioner/tunnelclient"
+	"github.com/supaclank/clank/pkg/provisioner"
+	"github.com/supaclank/clank/pkg/provisioner/hoststore"
+	transportpkg "github.com/supaclank/clank/pkg/provisioner/transport"
+	"github.com/supaclank/clank/pkg/provisioner/tunnelclient"
 )
 
 // GetHostByID implements provisioner.Provisioner. Strictly a read —

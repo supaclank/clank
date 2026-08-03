@@ -6,7 +6,7 @@ import (
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 func TestDateLabel(t *testing.T) {

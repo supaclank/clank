@@ -1,4 +1,4 @@
-module github.com/acksell/clank
+module github.com/supaclank/clank
 
 go 1.26.0
 

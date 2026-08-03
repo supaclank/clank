@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/host"
 )
 
 // TestWriteRepoError_Mapping locks the repo-scoped error→(status, code)

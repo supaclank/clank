@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // ListAuthProviders returns the providers this host can authenticate

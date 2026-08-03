@@ -3,7 +3,7 @@ package hostmux_test
 import (
 	"context"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // noopBackendManager satisfies agent.BackendManager for tests that need

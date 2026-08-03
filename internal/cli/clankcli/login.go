@@ -7,9 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/acksell/clank/internal/cloud"
-	"github.com/acksell/clank/internal/config"
-	"github.com/acksell/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/cloud"
+	"github.com/supaclank/clank/internal/config"
+	"github.com/supaclank/clank/internal/daemonclient"
 )
 
 // loginCmd registers `clank login` — drive the OAuth 2.0 authorization

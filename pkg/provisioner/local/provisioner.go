@@ -29,8 +29,8 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"github.com/acksell/clank/pkg/provisioner"
-	transportpkg "github.com/acksell/clank/pkg/provisioner/transport"
+	"github.com/supaclank/clank/pkg/provisioner"
+	transportpkg "github.com/supaclank/clank/pkg/provisioner/transport"
 )
 
 // Options configures the local-subprocess provisioner.

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 	sdk "github.com/coder/acp-go-sdk"
 )
 

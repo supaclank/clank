@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/acksell/clank/internal/git"
-	githubpkg "github.com/acksell/clank/internal/host/github"
+	"github.com/supaclank/clank/internal/git"
+	githubpkg "github.com/supaclank/clank/internal/host/github"
 )
 
 // RemoteStatusResult is the wire shape for GET /worktrees/{id}/remote/status.

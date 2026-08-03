@@ -4,8 +4,8 @@ import (
 	"context"
 	"net/url"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/agent/presets"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent/presets"
 )
 
 // BackendClient is bound to a backend type. Backend selection on the wire

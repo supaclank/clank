@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/acksell/clank/internal/agent/guidance"
+	"github.com/supaclank/clank/internal/agent/guidance"
 )
 
 func writePackageJSON(t *testing.T, dir, contents string) {

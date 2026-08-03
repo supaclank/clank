@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/acksell/clank/internal/git"
+	"github.com/supaclank/clank/internal/git"
 )
 
 const (

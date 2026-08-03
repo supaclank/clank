@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host"
 )
 
 // slowBackendManager is a fixture (not a mock) whose CreateBackend blocks
@@ -71,7 +71,7 @@ func TestService_ShutdownDuringCreateSession_DoesNotLeakBackend(t *testing.T) {
 		},
 	})
 
-	dir := initGitRepo(t, "git@github.com:acksell/clank.git")
+	dir := initGitRepo(t, "git@github.com:supaclank/clank.git")
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
 		GitRef:  agent.GitRef{LocalPath: dir},

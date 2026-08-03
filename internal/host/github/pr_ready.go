@@ -41,7 +41,7 @@ func (m *Manager) MarkPRReadyForReview(ctx context.Context, accessToken, owner, 
 	if nodeID == "" {
 		return fmt.Errorf("pr %s/%s#%d: response carried no node_id", owner, repo, number)
 	}
-	// TODO(ai-review): a PR flipped to ready between this GET and the mutation below surfaces as a hard error instead of the idempotent no-op the doc comment promises. https://github.com/Acksell/clank/pull/165#discussion_r3598342520 https://github.com/Acksell/clank/pull/165#discussion_r3598342551
+	// TODO(ai-review): a PR flipped to ready between this GET and the mutation below surfaces as a hard error instead of the idempotent no-op the doc comment promises. https://github.com/supaclank/clank/pull/165#discussion_r3598342520 https://github.com/supaclank/clank/pull/165#discussion_r3598342551
 	return m.graphQL(ctx, accessToken, markReadyMutation, map[string]any{"id": nodeID})
 }
 

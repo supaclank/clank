@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // TestMain builds the fake claude binary once and points

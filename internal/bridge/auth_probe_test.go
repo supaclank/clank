@@ -15,7 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/acksell/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/auth"
 )
 
 // reqBuilder signs one request honestly, then optionally tampers with

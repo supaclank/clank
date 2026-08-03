@@ -15,7 +15,7 @@ const (
 
 // SetupTaskPrompt builds the bounded, non-interactive agent task.
 func SetupTaskPrompt(paths Paths) (string, error) {
-	// TODO(ai-review): an unreadable/escaping .claude/launch.json blocks the whole setup response instead of degrading gracefully https://github.com/Acksell/clank/pull/212
+	// TODO(ai-review): an unreadable/escaping .claude/launch.json blocks the whole setup response instead of degrading gracefully https://github.com/supaclank/clank/pull/212
 	claudeReference, err := readClaudeLaunchReference(paths.ProjectRoot)
 	if err != nil {
 		return "", err

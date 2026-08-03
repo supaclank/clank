@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/acksell/clank/internal/config"
+	"github.com/supaclank/clank/internal/config"
 )
 
 // TestToggleSidebar_InverseProperty guards the contract documented on

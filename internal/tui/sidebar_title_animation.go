@@ -1,6 +1,6 @@
 package tui
 
-import "github.com/acksell/clank/internal/agent"
+import "github.com/supaclank/clank/internal/agent"
 
 // Typewriter animation for session titles in the sidebar.
 //

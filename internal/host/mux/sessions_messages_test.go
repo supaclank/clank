@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/agent/presets"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent/presets"
+	"github.com/supaclank/clank/internal/host"
 )
 
 // GET /sessions/{id}/messages must serialize an empty history as `[]`,

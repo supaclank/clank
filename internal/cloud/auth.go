@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // AuthCaller wraps an *http.Client targeting the gateway, with the

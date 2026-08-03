@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
-	"github.com/acksell/clank/internal/host/hosttest"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host"
+	"github.com/supaclank/clank/internal/host/hosttest"
 )
 
 // previewTestEnv stands up a real *host.Service rooted at a temp

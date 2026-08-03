@@ -36,7 +36,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // ProviderGitHubCopilot is the OpenCode provider ID for the GitHub

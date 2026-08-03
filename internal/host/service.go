@@ -23,15 +23,15 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/agent/presets"
-	"github.com/acksell/clank/internal/git"
-	githubpkg "github.com/acksell/clank/internal/host/github"
-	"github.com/acksell/clank/internal/host/preview"
-	"github.com/acksell/clank/internal/host/store"
-	"github.com/acksell/clank/internal/keepalive"
-	"github.com/acksell/clank/internal/notifier"
-	"github.com/acksell/clank/internal/repolabel"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent/presets"
+	"github.com/supaclank/clank/internal/git"
+	githubpkg "github.com/supaclank/clank/internal/host/github"
+	"github.com/supaclank/clank/internal/host/preview"
+	"github.com/supaclank/clank/internal/host/store"
+	"github.com/supaclank/clank/internal/keepalive"
+	"github.com/supaclank/clank/internal/notifier"
+	"github.com/supaclank/clank/internal/repolabel"
 )
 
 // cryptoRand is the entropy source for worktree-ULID generation
@@ -1009,7 +1009,7 @@ func (s *Service) normalizeGitRef(ref agent.GitRef) (agent.GitRef, error) {
 // packages.
 //
 // TODO(coderabbit): add sync.RWMutex if any test ever runs SetWorkRootForTest with t.Parallel()
-// https://github.com/Acksell/clank/pull/16#discussion_r3213461979
+// https://github.com/supaclank/clank/pull/16#discussion_r3213461979
 var workRootForTest string
 
 // workRootDir returns the parent under which worktrees land at

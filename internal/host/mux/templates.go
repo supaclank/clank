@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 
-	githubpkg "github.com/acksell/clank/internal/host/github"
+	githubpkg "github.com/supaclank/clank/internal/host/github"
 )
 
 // Template sources. Builtin entries come from operator config

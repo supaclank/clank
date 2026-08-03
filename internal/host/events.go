@@ -3,7 +3,7 @@ package host
 import (
 	"sync"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 	"github.com/oklog/ulid/v2"
 )
 

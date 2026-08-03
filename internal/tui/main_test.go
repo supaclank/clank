@@ -22,7 +22,7 @@ func TestMain(m *testing.M) {
 
 // TODO(ai-review): all tests share this dir; if a future test writes prefs,
 // use t.Setenv("CLANK_DIR", t.TempDir()) per-test instead.
-// https://github.com/Acksell/clank/pull/76#discussion_r3449143069
+// https://github.com/supaclank/clank/pull/76#discussion_r3449143069
 func runTests(m *testing.M) int {
 	dir, err := os.MkdirTemp("", "clank-tui-test")
 	if err != nil {

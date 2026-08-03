@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"regexp"
 
-	githubpkg "github.com/acksell/clank/internal/host/github"
+	githubpkg "github.com/supaclank/clank/internal/host/github"
 )
 
 // listReposResponse wraps the repo slice so the shape can grow (cursors,

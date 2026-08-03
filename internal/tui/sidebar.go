@@ -24,9 +24,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/acksell/clank/internal/agent"
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/agent"
+	daemonclient "github.com/supaclank/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/host"
 )
 
 // sidebarWidth is the fallback width of the sidebar (including border)

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/pkg/provisioner/local"
+	"github.com/supaclank/clank/pkg/provisioner/local"
 )
 
 // realHostBin compiles the actual cmd/clank-host binary. Unlike
@@ -19,7 +19,7 @@ import (
 func realHostBin(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "clank-host")
-	cmd := exec.Command("go", "build", "-o", bin, "github.com/acksell/clank/cmd/clank-host")
+	cmd := exec.Command("go", "build", "-o", bin, "github.com/supaclank/clank/cmd/clank-host")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build clank-host: %v\n%s", err, out)
 	}

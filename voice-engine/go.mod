@@ -1,4 +1,4 @@
-module github.com/acksell/clank/voice-engine
+module github.com/supaclank/clank/voice-engine
 
 go 1.26
 

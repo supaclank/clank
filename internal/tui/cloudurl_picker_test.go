@@ -6,7 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/acksell/clank/internal/cloud"
+	"github.com/supaclank/clank/internal/cloud"
 )
 
 // TestCloudURLPicker_ListNavigation verifies cursor movement within the

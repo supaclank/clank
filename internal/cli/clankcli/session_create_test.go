@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/config"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/config"
+	"github.com/supaclank/clank/internal/host"
 )
 
 func TestResolveBackend_FlagWins(t *testing.T) {

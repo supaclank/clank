@@ -15,7 +15,7 @@ package tui
 import (
 	"charm.land/lipgloss/v2"
 
-	"github.com/acksell/clank/internal/config"
+	"github.com/supaclank/clank/internal/config"
 )
 
 // ColorScheme is a named palette. All color fields are hex strings

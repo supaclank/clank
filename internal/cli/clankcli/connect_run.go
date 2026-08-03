@@ -7,11 +7,11 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/config"
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/host"
-	"github.com/acksell/clank/internal/tui"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/config"
+	daemonclient "github.com/supaclank/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/host"
+	"github.com/supaclank/clank/internal/tui"
 )
 
 // runConnect boots the daemon if needed and hands the terminal to the

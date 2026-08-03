@@ -3,8 +3,8 @@ package tui
 import (
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/config"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/config"
 )
 
 // TestNextDefaultBackend_CyclesAndPersists verifies the settings-page

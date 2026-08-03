@@ -9,7 +9,7 @@ import (
 	"context"
 	"net/url"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // ListAuthProviders returns the auth-capable providers on this host

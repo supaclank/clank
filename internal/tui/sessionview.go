@@ -20,11 +20,11 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/agent/presets"
-	"github.com/acksell/clank/internal/config"
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent/presets"
+	"github.com/supaclank/clank/internal/config"
+	daemonclient "github.com/supaclank/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/host"
 )
 
 // sessionEventMsg wraps a daemon event delivered to the TUI. sourceCh
@@ -677,7 +677,7 @@ func (m *SessionViewModel) fetchPresets() tea.Cmd {
 		ps, err := client.Backend(backend).Presets(ctx, string(hostname))
 		if err != nil {
 			// Non-fatal for rendering; submit stays gated until it loads.
-			// TODO(ai-review): a failed fetch here never retries — compose is stuck on "presets still loading" until restart/backend switch. https://github.com/Acksell/clank/pull/191#discussion_r3661708435
+			// TODO(ai-review): a failed fetch here never retries — compose is stuck on "presets still loading" until restart/backend switch. https://github.com/supaclank/clank/pull/191#discussion_r3661708435
 			return presetsResultMsg{backend: backend}
 		}
 		return presetsResultMsg{backend: backend, presets: ps}
@@ -1494,7 +1494,7 @@ func (m *SessionViewModel) handleEvent(evt agent.Event) tea.Cmd {
 			}
 			// TODO(ai-review): revert marker is silently dropped when m.info == nil (early SSE race);
 			// fetchSessionMessages fires but handleSessionMessages reads revertID from m.info,
-			// so the filter doesn't apply. https://github.com/Acksell/clank/pull/75#discussion_r3449145809
+			// so the filter doesn't apply. https://github.com/supaclank/clank/pull/75#discussion_r3449145809
 			// A revert from another client must re-filter the open transcript
 			// now, not on the next unrelated reconcile. The refetch applies the
 			// revert filter in handleSessionMessages. See STATE-REVERT-001.

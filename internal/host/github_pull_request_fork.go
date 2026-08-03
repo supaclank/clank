@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/acksell/clank/internal/git"
+	"github.com/supaclank/clank/internal/git"
 )
 
 func (s *Service) launchForkPullRequest(

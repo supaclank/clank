@@ -11,9 +11,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host/store"
-	"github.com/acksell/clank/internal/notifier"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host/store"
+	"github.com/supaclank/clank/internal/notifier"
 )
 
 func TestClassifyEvent(t *testing.T) {

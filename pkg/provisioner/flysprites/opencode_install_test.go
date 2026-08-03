@@ -8,7 +8,7 @@ import (
 
 	sprites "github.com/superfly/sprites-go"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // opencodeStubs bundles the injected probe/install hooks and records

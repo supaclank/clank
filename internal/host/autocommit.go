@@ -3,7 +3,7 @@ package host
 import (
 	"fmt"
 
-	"github.com/acksell/clank/internal/git"
+	"github.com/supaclank/clank/internal/git"
 )
 
 // commitAllIfDirty stages everything in the worktree (incl. untracked —

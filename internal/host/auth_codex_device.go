@@ -23,7 +23,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // codexDeviceURLTimeout caps the wait for codex to print the

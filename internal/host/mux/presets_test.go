@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/agent/presets"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent/presets"
+	"github.com/supaclank/clank/internal/host"
 )
 
 func presetsService(t *testing.T) *host.Service {

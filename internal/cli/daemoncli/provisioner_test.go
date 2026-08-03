@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/acksell/clank/internal/host"
-	"github.com/acksell/clank/pkg/provisioner"
+	"github.com/supaclank/clank/internal/host"
+	"github.com/supaclank/clank/pkg/provisioner"
 )
 
 // Tests for builtinTemplates, the env→config edge feeding every

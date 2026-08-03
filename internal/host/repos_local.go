@@ -26,8 +26,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/acksell/clank/internal/git"
-	"github.com/acksell/clank/internal/repolabel"
+	"github.com/supaclank/clank/internal/git"
+	"github.com/supaclank/clank/internal/repolabel"
 )
 
 // maxRepoSlugLength bounds any repo slug at the HTTP boundary. Sized
@@ -157,7 +157,7 @@ func (s *Service) discoveredLocalRepos(ctx context.Context) ([]RepoInfo, error) 
 		// valid roots, but a host with many stale/scratch session dirs
 		// interleaved with real repos still pays one sequential spawn per
 		// dir scanned (not just per root kept) before hitting the cap.
-		// https://github.com/Acksell/clank/pull/161#discussion_r3599240729
+		// https://github.com/supaclank/clank/pull/161#discussion_r3599240729
 		root, rootErr := localCheckoutRoot(dir)
 		if rootErr != nil {
 			continue // sessions in non-repo scratch dirs (or bare repos) aren't checkouts

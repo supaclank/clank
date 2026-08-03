@@ -6,8 +6,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host"
 )
 
 // awaitingLabel must NOT mention "OpenCode server" for non-opencode

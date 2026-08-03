@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/acksell/clank/internal/config"
+	"github.com/supaclank/clank/internal/config"
 )
 
 // expoCmdTemplate is the argv that spawns Metro for a detected Expo

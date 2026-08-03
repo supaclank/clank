@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/internal/config"
+	"github.com/supaclank/clank/internal/config"
 )
 
 // seedPrefs writes a preferences.json with the given remote profiles into

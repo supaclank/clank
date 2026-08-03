@@ -9,7 +9,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/host"
 )
 
 func (m *Mux) registerRepos(mx *http.ServeMux) {

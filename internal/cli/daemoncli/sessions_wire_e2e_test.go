@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host/hosttest"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host/hosttest"
 )
 
 func TestWire_SendMessage(t *testing.T) {

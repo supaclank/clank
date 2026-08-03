@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/acksell/clank/pkg/blobstore"
-	"github.com/acksell/clank/pkg/images"
+	"github.com/supaclank/clank/pkg/blobstore"
+	"github.com/supaclank/clank/pkg/images"
 )
 
 // loadImagesFromEnv builds a *images.Server from CLANK_IMAGES_S3_* env

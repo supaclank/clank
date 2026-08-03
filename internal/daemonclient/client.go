@@ -43,8 +43,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/config"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/config"
 )
 
 // Client communicates with clankd's Hub API over either a Unix

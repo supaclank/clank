@@ -3,7 +3,7 @@ package hostmux
 import (
 	"net/http"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // HOST

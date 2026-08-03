@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/pkg/preview/tokens"
+	"github.com/supaclank/clank/pkg/preview/tokens"
 )
 
 // TestGWClient_DisabledIsNoop is the laptop-dev path. A nil-or-empty

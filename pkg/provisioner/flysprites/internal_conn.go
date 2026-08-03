@@ -23,9 +23,9 @@ import (
 	"net"
 	"net/url"
 
-	"github.com/acksell/clank/pkg/provisioner"
-	"github.com/acksell/clank/pkg/provisioner/hoststore"
-	transportpkg "github.com/acksell/clank/pkg/provisioner/transport"
+	"github.com/supaclank/clank/pkg/provisioner"
+	"github.com/supaclank/clank/pkg/provisioner/hoststore"
+	transportpkg "github.com/supaclank/clank/pkg/provisioner/transport"
 )
 
 // GetHostByID looks up a sprite by stored host_id and builds a

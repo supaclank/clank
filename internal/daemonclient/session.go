@@ -5,7 +5,7 @@ import (
 	"errors"
 	"net/url"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // errEmptySessionID is returned when a SessionClient is constructed

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/keepalive"
+	"github.com/supaclank/clank/internal/keepalive"
 )
 
 // recordingListener captures every Tick + Close call. A real

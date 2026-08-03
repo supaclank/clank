@@ -9,8 +9,8 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host"
 )
 
 // HTTP is a Client that talks to a Host over HTTP. The transport is

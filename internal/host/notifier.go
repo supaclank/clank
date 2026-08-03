@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host/store"
-	"github.com/acksell/clank/internal/notifier"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host/store"
+	"github.com/supaclank/clank/internal/notifier"
 )
 
 // pushContextTimeout bounds the per-notification session-metadata

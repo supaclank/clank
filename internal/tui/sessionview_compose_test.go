@@ -9,9 +9,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/agent/presets"
-	"github.com/acksell/clank/internal/config"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent/presets"
+	"github.com/supaclank/clank/internal/config"
 )
 
 // initGitRepoForCompose creates a real git repo with an "origin" remote
@@ -29,7 +29,7 @@ func initGitRepoForCompose(t *testing.T) string {
 	run("git", "init", "-b", "main")
 	run("git", "config", "user.email", "t@t")
 	run("git", "config", "user.name", "T")
-	run("git", "remote", "add", "origin", "git@github.com:acksell/clank.git")
+	run("git", "remote", "add", "origin", "git@github.com:supaclank/clank.git")
 	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
+	daemonclient "github.com/supaclank/clank/internal/daemonclient"
 )
 
 // fixPromptTemplate is the builtin "fix" command template, instantiated

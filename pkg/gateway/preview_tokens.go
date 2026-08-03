@@ -20,9 +20,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/acksell/clank/pkg/auth"
-	"github.com/acksell/clank/pkg/preview/routestore"
-	"github.com/acksell/clank/pkg/preview/tokens"
+	"github.com/supaclank/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/preview/routestore"
+	"github.com/supaclank/clank/pkg/preview/tokens"
 )
 
 // previewTokenView is the JSON shape returned to the owner. Omits

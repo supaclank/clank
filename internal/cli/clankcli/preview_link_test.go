@@ -1,7 +1,7 @@
 package clankcli
 
 import (
-	"github.com/acksell/clank/internal/lannet"
+	"github.com/supaclank/clank/internal/lannet"
 	"net"
 	"reflect"
 	"strings"

@@ -181,7 +181,7 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
   the two by message/part IDs ([OP-006], [INV-CREATE-RACE-001](08-invariants.md)) — there is
   no event replay to paper over a late subscribe. **Why:** the eager-open behavior this
   replaces spawned the claude CLI on every history read (~25s on a cold Fly rootfs, measured
-  in [clank#158](https://github.com/Acksell/clank/pull/158)) and registered a
+  in [clank#158](https://github.com/supaclank/clank/pull/158)) and registered a
   `starting`-status backend that clients rendered as a stuck "Starting…". Claude history is
   served straight from the on-disk transcript; OpenCode reads still boot its per-project
   server (an implementation detail, not a contract — do not rely on it). **Golden:**

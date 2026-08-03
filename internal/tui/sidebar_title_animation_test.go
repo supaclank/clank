@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // TestSidebar_TitleAnimation_StartsOnTitleChange verifies that an

@@ -3,7 +3,7 @@ package agent_test
 import (
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // The ACP floor comparator gates `opencode acp` on laptops.

@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/host"
 )
 
 // GitHubPullRequestLocator is the validated identity of a GitHub PR.

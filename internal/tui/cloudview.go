@@ -26,8 +26,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/acksell/clank/internal/cloud"
-	"github.com/acksell/clank/internal/config"
+	"github.com/supaclank/clank/internal/cloud"
+	"github.com/supaclank/clank/internal/config"
 )
 
 // cloudViewPhase walks the user through OAuth login + signed-in state.

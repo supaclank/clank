@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/acksell/clank/pkg/provisioner"
+	"github.com/supaclank/clank/pkg/provisioner"
 )
 
 // Defaults for the per-user machine. shared-cpu-8x keeps bundling

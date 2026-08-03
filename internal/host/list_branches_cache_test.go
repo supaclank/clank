@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host"
 )
 
 // TestListBranches_CachedWithinTTL is a regression test for a CPU spike

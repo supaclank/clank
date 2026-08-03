@@ -3,8 +3,8 @@ package presets_test
 import (
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/agent/presets"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent/presets"
 )
 
 var allBackends = []agent.BackendType{agent.BackendClaudeCode, agent.BackendCodex, agent.BackendOpenCode}

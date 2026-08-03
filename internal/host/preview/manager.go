@@ -261,7 +261,7 @@ func (m *Manager) startWithSpec(ctx context.Context, worktreeID, workDir, servic
 		m.mu.Unlock()
 		r.stopWithGrace(m.stopGrace)
 		if regErr == nil {
-			// TODO(ai-review): revoke here uses (worktreeID, serviceName) which may evict the winner's live route if the gateway resolves by service pair rather than token. https://github.com/Acksell/clank/pull/36#discussion_r3324139755
+			// TODO(ai-review): revoke here uses (worktreeID, serviceName) which may evict the winner's live route if the gateway resolves by service pair rather than token. https://github.com/supaclank/clank/pull/36#discussion_r3324139755
 			m.revokeBestEffort(worktreeID, serviceName)
 		}
 		m.log.Printf("preview: discarded duplicate spawn for %s/%s", worktreeID, serviceName)

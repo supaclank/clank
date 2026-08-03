@@ -22,10 +22,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/acksell/clank/pkg/auth"
-	"github.com/acksell/clank/pkg/preview/routestore"
-	"github.com/acksell/clank/pkg/preview/tokens"
-	"github.com/acksell/clank/pkg/provisioner/hoststore"
+	"github.com/supaclank/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/preview/routestore"
+	"github.com/supaclank/clank/pkg/preview/tokens"
+	"github.com/supaclank/clank/pkg/provisioner/hoststore"
 )
 
 // previewRegisterRequest is the JSON body for /webhooks/preview/register.

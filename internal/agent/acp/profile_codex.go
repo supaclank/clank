@@ -1,6 +1,6 @@
 package acp
 
-import "github.com/acksell/clank/internal/agent"
+import "github.com/supaclank/clank/internal/agent"
 
 // CodexProfile serves the codex backend through the codex-acp adapter
 // (npm @agentclientprotocol/codex-acp) run as plain JS under the pinned

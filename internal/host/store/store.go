@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"io/fs"
 
-	"github.com/acksell/clank/internal/host/store/hostsqlitedb"
-	"github.com/acksell/clank/internal/sqlmigrate"
+	"github.com/supaclank/clank/internal/host/store/hostsqlitedb"
+	"github.com/supaclank/clank/internal/sqlmigrate"
 
 	// Pure-Go SQLite driver (no CGo).
 	_ "modernc.org/sqlite"

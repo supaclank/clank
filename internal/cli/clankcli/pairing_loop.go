@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
+	daemonclient "github.com/supaclank/clank/internal/daemonclient"
 )
 
 // pairingLoop services the typed-code ceremony while a QR is on screen:

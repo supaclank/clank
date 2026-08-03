@@ -16,8 +16,8 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host"
 )
 
 // Mux wraps a *host.Service with an http.Handler.

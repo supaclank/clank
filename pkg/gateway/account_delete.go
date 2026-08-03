@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/acksell/clank/pkg/auth"
-	"github.com/acksell/clank/pkg/preview/routestore"
+	"github.com/supaclank/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/preview/routestore"
 )
 
 // handleDeleteAccount services DELETE /v1/account: self-service GDPR/app-store

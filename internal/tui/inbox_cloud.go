@@ -10,8 +10,8 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/acksell/clank/internal/cloud"
-	"github.com/acksell/clank/internal/config"
+	"github.com/supaclank/clank/internal/cloud"
+	"github.com/supaclank/clank/internal/config"
 )
 
 // showCloud renders the Cloud panel in the right pane without shifting

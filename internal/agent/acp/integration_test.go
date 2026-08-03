@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	acpx "github.com/acksell/clank/internal/agent/acp"
+	acpx "github.com/supaclank/clank/internal/agent/acp"
 	sdk "github.com/coder/acp-go-sdk"
 )
 

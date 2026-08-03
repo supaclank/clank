@@ -3,8 +3,8 @@ package daemoncli
 import (
 	"context"
 
-	"github.com/acksell/clank/internal/store"
-	"github.com/acksell/clank/pkg/notify"
+	"github.com/supaclank/clank/internal/store"
+	"github.com/supaclank/clank/pkg/notify"
 )
 
 // notifyDeviceAdapter bridges *store.Store (which speaks store.Device)

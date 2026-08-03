@@ -7,8 +7,8 @@ package tui
 import (
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/config"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/config"
 )
 
 // showSettings renders the Settings page in the right pane without

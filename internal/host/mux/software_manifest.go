@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // handleSoftwareManifest serves this host's agent.SoftwareManifest.

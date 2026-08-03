@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/acksell/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/auth"
 )
 
 // cryptoRandRead is rand.Read, named so MintSessionToken reads clearly.

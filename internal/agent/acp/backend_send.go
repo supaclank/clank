@@ -7,7 +7,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 	sdk "github.com/coder/acp-go-sdk"
 )
 
@@ -144,7 +144,7 @@ func (b *Backend) Abort(ctx context.Context) error {
 // to set StatusDead; if runTurns' Prompt error lands first, status flips
 // Busy->Error->Dead instead of Busy->Dead (transient, self-correcting, but
 // a spurious EventError reaches the caller). Closing it needs both sides
-// to key off conn.Closed() directly instead of lock-ordering. https://github.com/Acksell/clank/pull/185
+// to key off conn.Closed() directly instead of lock-ordering. https://github.com/supaclank/clank/pull/185
 func (b *Backend) shouldSwallowPromptErrLocked(aborting bool) bool {
 	return aborting || b.stopping || b.status == agent.StatusDead
 }
@@ -223,7 +223,7 @@ func (b *Backend) runTurns() {
 // gap with no updates of its own.
 //
 // TODO(ai-review): switch the 25ms poll below to a timer/cond-based wait
-// to cut wakeups during the drain window. https://github.com/Acksell/clank/pull/185
+// to cut wakeups during the drain window. https://github.com/supaclank/clank/pull/185
 func (b *Backend) drainLateUpdates(turnStart time.Time) {
 	deadline := time.Now().Add(drainCap)
 	for time.Now().Before(deadline) {

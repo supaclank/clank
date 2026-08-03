@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/acksell/clank/internal/config"
-	"github.com/acksell/clank/internal/host"
-	"github.com/acksell/clank/internal/webpreview"
+	"github.com/supaclank/clank/internal/config"
+	"github.com/supaclank/clank/internal/host"
+	"github.com/supaclank/clank/internal/webpreview"
 )
 
 // runWebPreview is the browser arm of `clank preview`: no QR, no LAN.

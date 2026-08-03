@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // makeBenchModel constructs a SessionViewModel populated with n synthetic

@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/git"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/git"
 )
 
 func (s *Service) launchSameRepoPullRequest(

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // TestPrintPins pins the shell-sourceable contract the host-image build

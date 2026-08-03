@@ -3,8 +3,8 @@ package tui
 import (
 	"testing"
 
-	"github.com/acksell/clank/internal/cloud"
-	"github.com/acksell/clank/internal/config"
+	"github.com/supaclank/clank/internal/cloud"
+	"github.com/supaclank/clank/internal/config"
 )
 
 // TestCloudView_LoginResult_FlipsToErrorOnPersistFailure pins the

@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // TestStubBackend_PushEventStopRace pins the PushEvent/Stop race: Stop

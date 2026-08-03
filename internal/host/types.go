@@ -6,7 +6,7 @@ package host
 import (
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // HostLocal is the canonical hostname for the laptop's supervised

@@ -11,15 +11,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/host"
-	"github.com/acksell/clank/internal/host/hosttest"
-	hostmux "github.com/acksell/clank/internal/host/mux"
-	hoststore "github.com/acksell/clank/internal/host/store"
-	"github.com/acksell/clank/pkg/auth"
-	"github.com/acksell/clank/pkg/gateway"
-	"github.com/acksell/clank/pkg/provisioner"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/host"
+	"github.com/supaclank/clank/internal/host/hosttest"
+	hostmux "github.com/supaclank/clank/internal/host/mux"
+	hoststore "github.com/supaclank/clank/internal/host/store"
+	"github.com/supaclank/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/gateway"
+	"github.com/supaclank/clank/pkg/provisioner"
 )
 
 // TestLocalE2E_TUICreatesSession_AndFetches drives the full local-mode

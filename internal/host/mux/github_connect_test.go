@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
-	githubpkg "github.com/acksell/clank/internal/host/github"
-	hostmux "github.com/acksell/clank/internal/host/mux"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host"
+	githubpkg "github.com/supaclank/clank/internal/host/github"
+	hostmux "github.com/supaclank/clank/internal/host/mux"
 )
 
 // TestGitHubConnect_StartNotConfigured asserts the 503 mapping for

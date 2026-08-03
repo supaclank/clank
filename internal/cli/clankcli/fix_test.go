@@ -9,8 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host/hosttest"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host/hosttest"
 )
 
 func TestShellQuoteJoin(t *testing.T) {

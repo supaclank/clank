@@ -26,7 +26,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/acksell/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/daemonclient"
 )
 
 func githubCmd() *cobra.Command {

@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host/hosttest"
-	"github.com/acksell/clank/internal/launchconfig"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host/hosttest"
+	"github.com/supaclank/clank/internal/launchconfig"
 )
 
 func TestCreatePreviewSetupSessionUsesProjectConfigPrompt(t *testing.T) {

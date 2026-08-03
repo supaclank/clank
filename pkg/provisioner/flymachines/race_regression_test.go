@@ -22,8 +22,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/acksell/clank/internal/store"
-	"github.com/acksell/clank/pkg/provisioner/hoststore"
+	"github.com/supaclank/clank/internal/store"
+	"github.com/supaclank/clank/pkg/provisioner/hoststore"
 )
 
 // newFakeFlyProvisioner builds a Provisioner whose flaps client talks

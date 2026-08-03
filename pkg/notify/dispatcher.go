@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/acksell/clank/internal/notifier"
-	"github.com/acksell/clank/pkg/auth"
-	"github.com/acksell/clank/pkg/provisioner/hoststore"
+	"github.com/supaclank/clank/internal/notifier"
+	"github.com/supaclank/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/provisioner/hoststore"
 )
 
 // HostLookup resolves a notifier bearer token to a host record. The

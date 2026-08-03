@@ -18,13 +18,13 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
-	hostmux "github.com/acksell/clank/internal/host/mux"
-	"github.com/acksell/clank/pkg/gateway/previewtunnel"
-	"github.com/acksell/clank/pkg/provisioner"
-	transportpkg "github.com/acksell/clank/pkg/provisioner/transport"
-	"github.com/acksell/clank/pkg/provisioner/tunnelclient"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host"
+	hostmux "github.com/supaclank/clank/internal/host/mux"
+	"github.com/supaclank/clank/pkg/gateway/previewtunnel"
+	"github.com/supaclank/clank/pkg/provisioner"
+	transportpkg "github.com/supaclank/clank/pkg/provisioner/transport"
+	"github.com/supaclank/clank/pkg/provisioner/tunnelclient"
 )
 
 const tunnelTestBearer = "tunnel-test-token"

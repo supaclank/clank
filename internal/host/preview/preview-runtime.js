@@ -219,7 +219,7 @@
       EU.setGlobalHandler(function clankGlobalErrorHandler(error, isFatal) {
         var msg = (error && (error.message || String(error))) || 'unknown error';
         // TODO(ai-review): sanitize/truncate msg before sending to native (raw messages can include module paths).
-        // https://github.com/Acksell/clank/pull/65#discussion_r3439529642
+        // https://github.com/supaclank/clank/pull/65#discussion_r3439529642
         reportError(msg, isFatal);
         if (error) console.log('[clank preview]', error.stack || error.message || error);
         // Deliberately do NOT call the previous handler: it re-enters LogBox

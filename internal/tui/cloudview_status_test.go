@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/acksell/clank/internal/cloud"
-	"github.com/acksell/clank/internal/config"
+	"github.com/supaclank/clank/internal/cloud"
+	"github.com/supaclank/clank/internal/config"
 )
 
 // TestCloudView_Status_DiskBaseline pins the rule that disk identity

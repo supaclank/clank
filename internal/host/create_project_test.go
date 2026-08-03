@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/git"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/git"
+	"github.com/supaclank/clank/internal/host"
 )
 
 // makeTemplateRepo builds a real git repo to act as a clone source (the

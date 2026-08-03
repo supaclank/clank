@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/acksell/clank/internal/lannet"
+	"github.com/supaclank/clank/internal/lannet"
 )
 
 // Tailnet describes the laptop's Tailscale presence, when any.

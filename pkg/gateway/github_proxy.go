@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/acksell/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/auth"
 )
 
 // hostGitHubTimeout caps the round-trip to the user's host for any

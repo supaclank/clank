@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/internal/store"
-	"github.com/acksell/clank/pkg/provisioner"
+	"github.com/supaclank/clank/internal/store"
+	"github.com/supaclank/clank/pkg/provisioner"
 )
 
 func mustOpenStore(t *testing.T) *store.Store {

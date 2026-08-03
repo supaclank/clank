@@ -9,8 +9,8 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/acksell/clank/internal/config"
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/config"
+	daemonclient "github.com/supaclank/clank/internal/daemonclient"
 )
 
 // daemonStartTimeout caps how long we wait for the spawned clankd to
@@ -108,5 +108,5 @@ func findClankdFor(self string) (string, error) {
 	if found, err := exec.LookPath("clankd"); err == nil {
 		return found, nil
 	}
-	return "", fmt.Errorf("clankd binary not found next to %s or on PATH (try `go install github.com/acksell/clank/cmd/clankd@latest`)", self)
+	return "", fmt.Errorf("clankd binary not found next to %s or on PATH (try `go install github.com/supaclank/clank/cmd/clankd@latest`)", self)
 }

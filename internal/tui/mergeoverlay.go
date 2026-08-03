@@ -11,9 +11,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/acksell/clank/internal/agent"
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/agent"
+	daemonclient "github.com/supaclank/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/host"
 )
 
 // mergeResultMsg is emitted when the merge overlay completes (success or cancel).

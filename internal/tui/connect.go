@@ -23,7 +23,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // ConnectResult is what the CLI reads off the model after the program
@@ -163,7 +163,7 @@ func (m *ConnectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.phase == connectPhaseProvider {
-		// TODO(ai-review): a stale async message from a previous backend's flow can leak into a freshly reselected one — https://github.com/Acksell/clank/pull/213#discussion_r3696748681
+		// TODO(ai-review): a stale async message from a previous backend's flow can leak into a freshly reselected one — https://github.com/supaclank/clank/pull/213#discussion_r3696748681
 		var cmd tea.Cmd
 		m.providerAuth, cmd = m.providerAuth.Update(msg)
 		return m, cmd

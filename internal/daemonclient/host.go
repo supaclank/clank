@@ -4,8 +4,8 @@ import (
 	"context"
 	"net/url"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host"
 )
 
 // HostClient is the hub-side handle for one host. Bound to a hostname.

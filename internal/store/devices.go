@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/acksell/clank/internal/store/sqlitedb"
+	"github.com/supaclank/clank/internal/store/sqlitedb"
 )
 
 // Device is the push-delivery address for one (user, app-install)

@@ -8,10 +8,10 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/acksell/clank/internal/agent"
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/launchconfig"
-	"github.com/acksell/clank/internal/tui"
+	"github.com/supaclank/clank/internal/agent"
+	daemonclient "github.com/supaclank/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/launchconfig"
+	"github.com/supaclank/clank/internal/tui"
 )
 
 func createPreviewSetupSession(

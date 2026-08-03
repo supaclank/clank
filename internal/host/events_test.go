@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 func TestSubscriberRegistry_Subscribe_ReceivesBroadcast(t *testing.T) {

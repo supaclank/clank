@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/acksell/clank/internal/cli/daemoncli"
+	"github.com/supaclank/clank/internal/cli/daemoncli"
 )
 
 func main() {
