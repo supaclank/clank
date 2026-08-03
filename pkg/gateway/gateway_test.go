@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/acksell/clank/pkg/auth"
-	"github.com/acksell/clank/pkg/provisioner"
+	"github.com/supaclank/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/provisioner"
 )
 
 func jsonDecode(r io.Reader, v any) error {

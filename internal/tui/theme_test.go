@@ -5,7 +5,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/acksell/clank/internal/config"
+	"github.com/supaclank/clank/internal/config"
 )
 
 // TestSchemeByName_Default verifies that an empty name resolves to the

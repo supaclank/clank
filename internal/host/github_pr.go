@@ -17,9 +17,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/git"
-	githubpkg "github.com/acksell/clank/internal/host/github"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/git"
+	githubpkg "github.com/supaclank/clank/internal/host/github"
 )
 
 // CreatePRRequest is the wire shape for POST /worktrees/{id}/pr.

@@ -50,13 +50,13 @@ A central context store (`~/.clank/context/`) lets you provide product roadmap, 
 ## Install
 
 ```
-go install github.com/acksell/clank/cmd/clank@latest
+go install github.com/supaclank/clank/cmd/clank@latest
 ```
 
 Or build from source:
 
 ```
-git clone https://github.com/acksell/clank.git
+git clone https://github.com/supaclank/clank.git
 cd clank
 go build ./cmd/clank
 ```

@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/webpreview"
-	"github.com/acksell/clank/pkg/auth"
-	"github.com/acksell/clank/pkg/preview/routestore"
-	"github.com/acksell/clank/pkg/preview/routestore/memstore"
-	"github.com/acksell/clank/pkg/preview/tokens"
-	"github.com/acksell/clank/pkg/provisioner"
+	"github.com/supaclank/clank/internal/webpreview"
+	"github.com/supaclank/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/preview/routestore"
+	"github.com/supaclank/clank/pkg/preview/routestore/memstore"
+	"github.com/supaclank/clank/pkg/preview/tokens"
+	"github.com/supaclank/clank/pkg/provisioner"
 	"github.com/coder/websocket"
 )
 

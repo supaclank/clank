@@ -4,8 +4,8 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host"
 )
 
 // Worktree/branch operations are GitRef-scoped (the host repo registry

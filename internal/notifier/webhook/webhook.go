@@ -17,7 +17,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/acksell/clank/internal/notifier"
+	"github.com/supaclank/clank/internal/notifier"
 )
 
 const (

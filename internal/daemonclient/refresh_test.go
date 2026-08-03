@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/cloud"
-	"github.com/acksell/clank/internal/config"
+	"github.com/supaclank/clank/internal/cloud"
+	"github.com/supaclank/clank/internal/config"
 )
 
 // startFakeIdP spins up a httptest server that mounts the OAuth surface

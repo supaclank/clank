@@ -3,7 +3,7 @@ package images
 import (
 	"path"
 
-	"github.com/acksell/clank/pkg/blobstore"
+	"github.com/supaclank/clank/pkg/blobstore"
 )
 
 // KeyForImage builds the storage key for a user's uploaded image:

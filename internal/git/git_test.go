@@ -100,7 +100,7 @@ func TestRemoteURL(t *testing.T) {
 		t.Errorf("IsRemoteNotConfigured(%v) = false, want true for an unconfigured remote", err)
 	}
 
-	const want = "git@github.com:acksell/clank.git"
+	const want = "git@github.com:supaclank/clank.git"
 	run(t, dir, "git", "remote", "add", "origin", want)
 
 	got, err := RemoteURL(dir, "origin")
@@ -118,7 +118,7 @@ func TestRemoteURL(t *testing.T) {
 func TestRemoteURL_CorruptConfigIsNotUnconfigured(t *testing.T) {
 	t.Parallel()
 	dir := initTestRepo(t)
-	run(t, dir, "git", "remote", "add", "origin", "git@github.com:acksell/clank.git")
+	run(t, dir, "git", "remote", "add", "origin", "git@github.com:supaclank/clank.git")
 
 	configPath := filepath.Join(dir, ".git", "config")
 	f, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0o644)

@@ -16,11 +16,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	acpx "github.com/acksell/clank/internal/agent/acp"
-	"github.com/acksell/clank/internal/agent/acp/acptest"
-	"github.com/acksell/clank/internal/host"
-	"github.com/acksell/clank/internal/host/hosttest"
+	"github.com/supaclank/clank/internal/agent"
+	acpx "github.com/supaclank/clank/internal/agent/acp"
+	"github.com/supaclank/clank/internal/agent/acp/acptest"
+	"github.com/supaclank/clank/internal/host"
+	"github.com/supaclank/clank/internal/host/hosttest"
 	sdk "github.com/coder/acp-go-sdk"
 )
 

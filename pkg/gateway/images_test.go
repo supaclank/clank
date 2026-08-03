@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/pkg/blobstore"
-	"github.com/acksell/clank/pkg/images"
-	"github.com/acksell/clank/pkg/provisioner"
+	"github.com/supaclank/clank/pkg/blobstore"
+	"github.com/supaclank/clank/pkg/images"
+	"github.com/supaclank/clank/pkg/provisioner"
 )
 
 // TestImagesRoute_PresignsThroughGateway verifies POST /v1/images is

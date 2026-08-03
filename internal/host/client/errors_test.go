@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // The "unsupported" wire code must round-trip back to agent.ErrUnsupported

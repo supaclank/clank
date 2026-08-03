@@ -11,9 +11,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/git"
-	githubpkg "github.com/acksell/clank/internal/host/github"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/git"
+	githubpkg "github.com/supaclank/clank/internal/host/github"
 )
 
 var (
@@ -52,7 +52,7 @@ type PublishResult struct {
 //
 // TODO(ai-review): only sanitizeRepoName is covered by tests; the orchestration
 // itself (create repo, add origin, commit, push, error mapping) has no
-// integration coverage yet. https://github.com/Acksell/clank/pull/90#discussion_r3508931108
+// integration coverage yet. https://github.com/supaclank/clank/pull/90#discussion_r3508931108
 func (s *Service) PublishToRemote(ctx context.Context, worktreeID string, req PublishRequest) (PublishResult, error) {
 	if s.github == nil {
 		return PublishResult{}, ErrGitHubManagerUnavailable

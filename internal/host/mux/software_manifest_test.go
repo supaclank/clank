@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
-	hostmux "github.com/acksell/clank/internal/host/mux"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host"
+	hostmux "github.com/supaclank/clank/internal/host/mux"
 )
 
 // TestSoftwareManifestEndpoint_ReturnsOpenCodeVersion smoke-tests

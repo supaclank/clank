@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/acksell/clank/internal/launchconfig"
+	"github.com/supaclank/clank/internal/launchconfig"
 )
 
 func previewLaunchName(args []string) (string, error) {

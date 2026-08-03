@@ -8,12 +8,12 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/acksell/clank/internal/config"
-	"github.com/acksell/clank/internal/store"
-	"github.com/acksell/clank/pkg/provisioner"
-	flymachinesprov "github.com/acksell/clank/pkg/provisioner/flymachines"
-	flyspritesprov "github.com/acksell/clank/pkg/provisioner/flysprites"
-	localprov "github.com/acksell/clank/pkg/provisioner/local"
+	"github.com/supaclank/clank/internal/config"
+	"github.com/supaclank/clank/internal/store"
+	"github.com/supaclank/clank/pkg/provisioner"
+	flymachinesprov "github.com/supaclank/clank/pkg/provisioner/flymachines"
+	flyspritesprov "github.com/supaclank/clank/pkg/provisioner/flysprites"
+	localprov "github.com/supaclank/clank/pkg/provisioner/local"
 )
 
 // notifierWebhookURL returns the URL clank-host should POST notification

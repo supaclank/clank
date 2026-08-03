@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/bridge"
-	"github.com/acksell/clank/pkg/blobstore"
+	"github.com/supaclank/clank/internal/bridge"
+	"github.com/supaclank/clank/pkg/blobstore"
 )
 
 // newDeviceKey mints a phone-side keypair for tests.

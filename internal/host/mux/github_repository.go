@@ -5,8 +5,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/acksell/clank/internal/host"
-	githubpkg "github.com/acksell/clank/internal/host/github"
+	"github.com/supaclank/clank/internal/host"
+	githubpkg "github.com/supaclank/clank/internal/host/github"
 )
 
 func (m *Mux) registerGitHubRepositories(mx *http.ServeMux) {

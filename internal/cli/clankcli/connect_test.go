@@ -17,15 +17,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/config"
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/host"
-	"github.com/acksell/clank/internal/host/hosttest"
-	hostmux "github.com/acksell/clank/internal/host/mux"
-	"github.com/acksell/clank/pkg/auth"
-	"github.com/acksell/clank/pkg/gateway"
-	"github.com/acksell/clank/pkg/provisioner"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/config"
+	daemonclient "github.com/supaclank/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/host"
+	"github.com/supaclank/clank/internal/host/hosttest"
+	hostmux "github.com/supaclank/clank/internal/host/mux"
+	"github.com/supaclank/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/gateway"
+	"github.com/supaclank/clank/pkg/provisioner"
 )
 
 // credentialEnvNames is every env var the host reads as a provider

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/pkg/preview/routestore"
-	"github.com/acksell/clank/pkg/preview/tokens"
+	"github.com/supaclank/clank/pkg/preview/routestore"
+	"github.com/supaclank/clank/pkg/preview/tokens"
 )
 
 func TestUpsert_NewAndConflict(t *testing.T) {

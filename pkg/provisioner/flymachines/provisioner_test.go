@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/store"
-	"github.com/acksell/clank/pkg/provisioner/hoststore"
+	"github.com/supaclank/clank/internal/store"
+	"github.com/supaclank/clank/pkg/provisioner/hoststore"
 )
 
 // mustOpenStore opens an empty real SQLite store (repo rule: no

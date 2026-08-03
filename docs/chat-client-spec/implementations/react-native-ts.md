@@ -45,7 +45,7 @@
 | INV-STREAM-SUPERVISE-001 | ✅ | `events.ts` supervised loop: capped 1s→30s full-jitter backoff, never gives up, 401→`forceRefresh`; clean-close delegated to the library re-poll (`CLEAN_CLOSE_REPOLL_MS`); foreground `restart()` in `useEventStream.ts` ([NFR-REL-001/002]). No liveness timer while foregrounded (heartbeat gap remains) |
 | INV-INTERACTIVE-001 | ✅ (reference) | `src/lib/{askQuestion,planReview,chatReview}.ts` + `AskQuestionCard.tsx`/`PlanReviewCard.tsx`. Tool-name sniffing (known hack); answer via `SendMessage` |
 | INV-SIDEBAR-META-001 | ⛔ | **gap**: no `meta` case in `dispatch.ts`; list patched from `status`/`title` + invalidation; `meta`-only changes (visibility/draft/follow-up) don't push live |
-| INV-DEAD-BACKEND-REHYDRATE-001 | ✅ | client is correct — it relies on lazy rehydration (only `/message`+`/abort`, no `/stop`/`/open`). The host wedge that surfaced here as a red **"Needs attention"** (the client's label for status `error`) with every send bouncing, after cancelling a turn almost instantly, was a host bug, fixed in [acksell/clank#80](https://github.com/Acksell/clank/pull/80). `format.ts` maps `dead`→"Stopped" / `error`→"Needs attention" |
+| INV-DEAD-BACKEND-REHYDRATE-001 | ✅ | client is correct — it relies on lazy rehydration (only `/message`+`/abort`, no `/stop`/`/open`). The host wedge that surfaced here as a red **"Needs attention"** (the client's label for status `error`) with every send bouncing, after cancelling a turn almost instantly, was a host bug, fixed in [supaclank/clank#80](https://github.com/supaclank/clank/pull/80). `format.ts` maps `dead`→"Stopped" / `error`→"Needs attention" |
 
 ## Conformance
 

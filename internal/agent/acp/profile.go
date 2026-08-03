@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // AdapterProfile is the per-adapter variance consumed by the supervisor

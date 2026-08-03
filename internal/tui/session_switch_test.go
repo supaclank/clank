@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // TestReplaceSessionView_CancelsPreviousSubscription is a regression test for

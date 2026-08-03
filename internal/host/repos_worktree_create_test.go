@@ -13,8 +13,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/acksell/clank/internal/git"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/git"
+	"github.com/supaclank/clank/internal/host"
 )
 
 func TestCreateRepoWorktree_Validation(t *testing.T) {

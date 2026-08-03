@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host/preview"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host/preview"
 )
 
 // ErrPreviewUnavailable is returned by every PreviewXxx method when

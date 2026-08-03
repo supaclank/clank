@@ -21,7 +21,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/acksell/clank/pkg/preview/tokens"
+	"github.com/supaclank/clank/pkg/preview/tokens"
 )
 
 // ErrNotFound is returned by GetByToken / Revoke when no live row

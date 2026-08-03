@@ -1,6 +1,6 @@
 package clankcli
 
-import "github.com/acksell/clank/internal/config"
+import "github.com/supaclank/clank/internal/config"
 
 // resolveRemoteTarget picks the remote a `--remote`-aware command
 // (login, logout) should operate on. Honors an explicit name when

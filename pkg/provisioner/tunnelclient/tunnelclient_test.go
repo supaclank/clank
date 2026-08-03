@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/pkg/provisioner/transport"
-	"github.com/acksell/clank/pkg/provisioner/tunnelclient"
+	"github.com/supaclank/clank/pkg/provisioner/transport"
+	"github.com/supaclank/clank/pkg/provisioner/tunnelclient"
 )
 
 // A relative baseURL (missing scheme and host) parses without error

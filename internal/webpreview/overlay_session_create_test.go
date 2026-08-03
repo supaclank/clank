@@ -9,12 +9,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/agent/presets"
-	"github.com/acksell/clank/internal/host"
-	"github.com/acksell/clank/internal/host/hosttest"
-	hostmux "github.com/acksell/clank/internal/host/mux"
-	hoststore "github.com/acksell/clank/internal/host/store"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent/presets"
+	"github.com/supaclank/clank/internal/host"
+	"github.com/supaclank/clank/internal/host/hosttest"
+	hostmux "github.com/supaclank/clank/internal/host/mux"
+	hoststore "github.com/supaclank/clank/internal/host/store"
 )
 
 // TestOverlayCreateFlow_DefaultPresetSatisfiesHostValidation replays the

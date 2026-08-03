@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // httpSessionBackend implements agent.SessionBackend by translating each

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // TestIsRunning_SelfReferentialPidfileIsStale is the regression for the dev

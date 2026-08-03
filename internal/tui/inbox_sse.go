@@ -6,7 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // Push-based sidebar updates. The inbox subscribes to the daemon's
@@ -193,6 +193,6 @@ func (m *InboxModel) persistCacheIfChanged() {
 	}
 	m.lastSessionsCacheSig = sig
 	snap := append([]agent.SessionInfo(nil), m.cachedSessions...)
-	// TODO(coderabbit): serialize cache writes so bursty SSE can't land an older snapshot last https://github.com/Acksell/clank/pull/33#discussion_r3293211742
+	// TODO(coderabbit): serialize cache writes so bursty SSE can't land an older snapshot last https://github.com/supaclank/clank/pull/33#discussion_r3293211742
 	go func() { _ = saveSessionsCache(snap) }()
 }

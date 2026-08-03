@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host/store/hostsqlitedb"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host/store/hostsqlitedb"
 )
 
 // ErrSessionNotFound is returned by GetSession when no session

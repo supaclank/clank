@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/store"
+	"github.com/supaclank/clank/internal/store"
 )
 
 func TestHosts_UpsertAndGet(t *testing.T) {

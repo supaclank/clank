@@ -14,9 +14,9 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/git"
-	"github.com/acksell/clank/internal/host/petname"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/git"
+	"github.com/supaclank/clank/internal/host/petname"
 )
 
 // RepoWorktreeRequest is the body of POST /repos/{slug}/worktrees.

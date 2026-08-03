@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/pkg/auth"
-	"github.com/acksell/clank/pkg/blobstore"
-	"github.com/acksell/clank/pkg/images"
+	"github.com/supaclank/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/blobstore"
+	"github.com/supaclank/clank/pkg/images"
 )
 
 func TestKeyForImage(t *testing.T) {

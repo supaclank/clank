@@ -7,12 +7,12 @@ import (
 	"io"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/host"
-	"github.com/acksell/clank/internal/host/preview"
-	"github.com/acksell/clank/internal/tui"
-	"github.com/acksell/clank/pkg/preview/tokens"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/host"
+	"github.com/supaclank/clank/internal/host/preview"
+	"github.com/supaclank/clank/internal/tui"
+	"github.com/supaclank/clank/pkg/preview/tokens"
 )
 
 func runHostedGitHubPullRequestPreview(

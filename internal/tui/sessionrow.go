@@ -3,7 +3,7 @@ package tui
 import (
 	"charm.land/lipgloss/v2"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // sessionTitle returns the canonical title text for a session, on a

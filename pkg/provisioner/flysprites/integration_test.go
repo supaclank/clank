@@ -20,11 +20,11 @@ import (
 
 	sprites "github.com/superfly/sprites-go"
 
-	"github.com/acksell/clank/internal/store"
-	"github.com/acksell/clank/pkg/auth"
-	"github.com/acksell/clank/pkg/gateway"
-	"github.com/acksell/clank/pkg/provisioner"
-	"github.com/acksell/clank/pkg/provisioner/flysprites"
+	"github.com/supaclank/clank/internal/store"
+	"github.com/supaclank/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/gateway"
+	"github.com/supaclank/clank/pkg/provisioner"
+	"github.com/supaclank/clank/pkg/provisioner/flysprites"
 )
 
 // newGatewayHandler builds a real gateway.Gateway in front of prov so

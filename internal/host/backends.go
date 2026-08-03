@@ -7,7 +7,7 @@ package host
 import (
 	"log"
 
-	"github.com/acksell/clank/internal/agent/guidance"
+	"github.com/supaclank/clank/internal/agent/guidance"
 )
 
 // installGuidanceSkills materializes the stack playbook the system prompt

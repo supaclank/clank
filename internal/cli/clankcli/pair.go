@@ -13,7 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
+	daemonclient "github.com/supaclank/clank/internal/daemonclient"
 )
 
 // pairCmd is the phone↔laptop connection surface. The bare command
@@ -333,7 +333,7 @@ func ensurePhoneReachable(ctx context.Context, client *daemonclient.Client, in i
 		// user, which must not eat into the RPC's own deadline.
 		// TODO(ai-review): context.Background() means Ctrl+C during this
 		// call can't cancel it — needs the signal-only ctx threaded in.
-		// https://github.com/Acksell/clank/pull/175#discussion_r3609121580
+		// https://github.com/supaclank/clank/pull/175#discussion_r3609121580
 		trustCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		st, err = client.Bridge().TrustNetwork(trustCtx, st.Network.Fingerprint, st.Network.Label)

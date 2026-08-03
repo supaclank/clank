@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // fakeCodexBin is the compiled fake codex CLI, built once in TestMain

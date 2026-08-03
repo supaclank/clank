@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/acksell/clank/internal/launchconfig"
-	"github.com/acksell/clank/pkg/preview/tokens"
+	"github.com/supaclank/clank/internal/launchconfig"
+	"github.com/supaclank/clank/pkg/preview/tokens"
 )
 
 var (

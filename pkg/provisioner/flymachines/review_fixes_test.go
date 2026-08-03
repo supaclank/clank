@@ -9,7 +9,7 @@ import (
 	fly "github.com/superfly/fly-go"
 	"github.com/superfly/fly-go/flaps"
 
-	"github.com/acksell/clank/pkg/provisioner"
+	"github.com/supaclank/clank/pkg/provisioner"
 )
 
 // TestIsNotFound_OnlyTrustsTypedError pins that a transport error whose

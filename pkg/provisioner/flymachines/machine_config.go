@@ -6,8 +6,8 @@ import (
 
 	fly "github.com/superfly/fly-go"
 
-	"github.com/acksell/clank/internal/agent/presets"
-	"github.com/acksell/clank/pkg/provisioner"
+	"github.com/supaclank/clank/internal/agent/presets"
+	"github.com/supaclank/clank/pkg/provisioner"
 )
 
 // buildMachineConfig assembles the desired config for a user's

@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/notifier"
-	"github.com/acksell/clank/pkg/auth"
-	"github.com/acksell/clank/pkg/provisioner/hoststore"
+	"github.com/supaclank/clank/internal/notifier"
+	"github.com/supaclank/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/provisioner/hoststore"
 )
 
 // fakeHostLookup is a real HostLookup implementation backed by an

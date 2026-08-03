@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	acpx "github.com/acksell/clank/internal/agent/acp"
-	"github.com/acksell/clank/internal/agent/acp/acptest"
+	"github.com/supaclank/clank/internal/agent"
+	acpx "github.com/supaclank/clank/internal/agent/acp"
+	"github.com/supaclank/clank/internal/agent/acp/acptest"
 	sdk "github.com/coder/acp-go-sdk"
 )
 

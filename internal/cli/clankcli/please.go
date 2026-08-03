@@ -9,9 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/config"
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/config"
+	daemonclient "github.com/supaclank/clank/internal/daemonclient"
 )
 
 // createSessionTimeout bounds Sessions().Create. Generous because

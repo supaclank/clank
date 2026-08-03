@@ -12,9 +12,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/git"
-	githubpkg "github.com/acksell/clank/internal/host/github"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/git"
+	githubpkg "github.com/supaclank/clank/internal/host/github"
 )
 
 // RepoOrigin identifies a repo's GitHub origin. Nil on RepoInfo means

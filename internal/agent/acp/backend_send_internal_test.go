@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // drainLateUpdates must not ride out the quiet window once bgCtx is

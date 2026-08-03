@@ -17,7 +17,7 @@ import (
 
 	cryptorand "crypto/rand"
 
-	"github.com/acksell/clank/pkg/blobstore"
+	"github.com/supaclank/clank/pkg/blobstore"
 )
 
 // DefaultPresignTTL is how long image presigned URLs stay valid when

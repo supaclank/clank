@@ -9,8 +9,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/acksell/clank/internal/agent"
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/agent"
+	daemonclient "github.com/supaclank/clank/internal/daemonclient"
 )
 
 // ErrSessionTaskTimeout classifies an inline task that exceeded its bound.

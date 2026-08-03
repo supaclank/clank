@@ -27,9 +27,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/git"
-	githubpkg "github.com/acksell/clank/internal/host/github"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/git"
+	githubpkg "github.com/supaclank/clank/internal/host/github"
 )
 
 // OverviewPRState is the lifecycle of an overview branch's PR. GitHub's
@@ -301,7 +301,7 @@ func (s *Service) attachRepoPRs(ctx context.Context, result *RepoOverviewResult)
 			Loaded: false,
 			// TODO(ai-review): PR-only entries stand in PR UpdatedAt (review/comment
 			// activity) for LastCommitAt (tip commit time) — sort/consumer contract
-			// says "commit time" but this can be neither. https://github.com/Acksell/clank/pull/95#discussion_r3512692389
+			// says "commit time" but this can be neither. https://github.com/supaclank/clank/pull/95#discussion_r3512692389
 			LastCommitAt: pr.UpdatedAt,
 			PR:           pr,
 		})

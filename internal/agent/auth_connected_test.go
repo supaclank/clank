@@ -3,7 +3,7 @@ package agent_test
 import (
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // A borrowed credential (the machine's own claude CLI login, an env var)

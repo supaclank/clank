@@ -26,9 +26,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/acksell/clank/pkg/provisioner"
-	"github.com/acksell/clank/pkg/provisioner/hoststore"
-	"github.com/acksell/clank/pkg/provisioner/tunnelclient"
+	"github.com/supaclank/clank/pkg/provisioner"
+	"github.com/supaclank/clank/pkg/provisioner/hoststore"
+	"github.com/supaclank/clank/pkg/provisioner/tunnelclient"
 )
 
 const internalDialTimeout = 5 * time.Second

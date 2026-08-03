@@ -3,7 +3,7 @@ package daemoncli
 import (
 	"testing"
 
-	"github.com/acksell/clank/internal/config"
+	"github.com/supaclank/clank/internal/config"
 )
 
 func TestFlySpritesOptionsForwardsPreviewWebhook(t *testing.T) {

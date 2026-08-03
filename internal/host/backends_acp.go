@@ -11,10 +11,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/agent/acp"
-	"github.com/acksell/clank/internal/agent/acptools"
-	"github.com/acksell/clank/internal/agent/guidance"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent/acp"
+	"github.com/supaclank/clank/internal/agent/acptools"
+	"github.com/supaclank/clank/internal/agent/guidance"
 	sdk "github.com/coder/acp-go-sdk"
 )
 

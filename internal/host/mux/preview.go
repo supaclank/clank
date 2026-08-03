@@ -7,7 +7,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/acksell/clank/internal/host/preview"
+	"github.com/supaclank/clank/internal/host/preview"
 )
 
 const (

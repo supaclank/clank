@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/acksell/clank/pkg/auth"
-	"github.com/acksell/clank/pkg/blobstore"
+	"github.com/supaclank/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/blobstore"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -49,7 +49,7 @@ func (s *Server) handlePresignImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO(ai-review): switch to presigned POST policies (content-length-range + signed Content-Type) if upload-time size/type enforcement is required https://github.com/Acksell/clank/pull/64#discussion_r3438446257
+	// TODO(ai-review): switch to presigned POST policies (content-length-range + signed Content-Type) if upload-time size/type enforcement is required https://github.com/supaclank/clank/pull/64#discussion_r3438446257
 	id, err := ulid.New(ulid.Now(), s.entropySource)
 	if err != nil {
 		http.Error(w, "generate image id", http.StatusInternalServerError)

@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/acksell/clank/internal/store"
+	"github.com/supaclank/clank/internal/store"
 )
 
 func tempDBPath(t *testing.T) string {

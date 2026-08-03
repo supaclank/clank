@@ -3,7 +3,7 @@ package tui
 import (
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // sidebarNodeKind discriminates the concrete kind of a sidebar node.

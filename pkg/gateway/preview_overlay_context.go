@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/acksell/clank/pkg/preview/tokens"
+	"github.com/supaclank/clank/pkg/preview/tokens"
 )
 
 const (

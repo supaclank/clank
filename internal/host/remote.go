@@ -14,9 +14,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/git"
-	githubpkg "github.com/acksell/clank/internal/host/github"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/git"
+	githubpkg "github.com/supaclank/clank/internal/host/github"
 )
 
 // RemoteState classifies a worktree's branch relative to origin/<branch>.
@@ -121,7 +121,7 @@ func (s *Service) remoteContextFor(_ context.Context, worktreeID string) (remote
 // fetchBranch refreshes origin/<branch> into FETCH_HEAD using the
 // context's auth. Returns ErrNoUpstream when the branch doesn't exist on
 // the remote (vs a transport/auth failure, which surfaces wrapped).
-// TODO(ai-review): no context.Context — git.Fetch can hang on bad network https://github.com/Acksell/clank/pull/84#discussion_r3486368618
+// TODO(ai-review): no context.Context — git.Fetch can hang on bad network https://github.com/supaclank/clank/pull/84#discussion_r3486368618
 func (rc remoteContext) fetchBranch() error {
 	err := git.Fetch(rc.workdir, rc.pushURL, rc.branch, git.PushOptions{ExtraHeader: rc.authHeader})
 	if err == nil {

@@ -8,8 +8,8 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host"
 )
 
 // configOptionsBackendManager fakes an ACP manager whose on-demand probe

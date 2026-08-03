@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/acksell/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/auth"
 )
 
 const (

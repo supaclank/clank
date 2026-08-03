@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // SessionsClient is the collection-level handle for sessions.

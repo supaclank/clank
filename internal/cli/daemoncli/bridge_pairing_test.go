@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/internal/bridge"
+	"github.com/supaclank/clank/internal/bridge"
 )
 
 // TestBridgePairingCeremony drives the full SAS handshake over the real

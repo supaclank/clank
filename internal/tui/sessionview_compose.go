@@ -18,12 +18,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/agent/presets"
-	"github.com/acksell/clank/internal/config"
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/host"
-	"github.com/acksell/clank/internal/host/petname"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent/presets"
+	"github.com/supaclank/clank/internal/config"
+	daemonclient "github.com/supaclank/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/host"
+	"github.com/supaclank/clank/internal/host/petname"
 )
 
 // sessionCreateResultMsg carries the result of creating a session from composing mode.
@@ -653,7 +653,7 @@ func (m *SessionViewModel) newWorktreeValue() string {
 // New-worktree toggle enabled and no explicit branch chosen, a fresh
 // petname is minted so the host's WorktreeBranch resolve path creates an
 // isolated worktree in the current project (off its default branch).
-// TODO(ai-review): generate petname once on toggle-on and store in worktreeBranch to prevent orphaned worktrees on retry https://github.com/Acksell/clank/pull/73#discussion_r3449079137
+// TODO(ai-review): generate petname once on toggle-on and store in worktreeBranch to prevent orphaned worktrees on retry https://github.com/supaclank/clank/pull/73#discussion_r3449079137
 func (m *SessionViewModel) effectiveWorktreeBranch() string {
 	if m.isNewWorktree && m.worktreeBranch == "" {
 		return petname.Generate()

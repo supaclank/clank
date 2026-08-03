@@ -10,7 +10,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // StubBackendManager spawns a StubBackend on every CreateBackend. Last()

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // softwareManifestRetries is the number of attempts (including the

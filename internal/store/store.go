@@ -15,9 +15,9 @@ import (
 	"fmt"
 	"io/fs"
 
-	"github.com/acksell/clank/internal/sqlmigrate"
-	"github.com/acksell/clank/internal/store/sqlitedb"
-	"github.com/acksell/clank/pkg/provisioner/hoststore"
+	"github.com/supaclank/clank/internal/sqlmigrate"
+	"github.com/supaclank/clank/internal/store/sqlitedb"
+	"github.com/supaclank/clank/pkg/provisioner/hoststore"
 
 	// Pure-Go SQLite driver (no CGo).
 	_ "modernc.org/sqlite"

@@ -1,6 +1,6 @@
 package acp
 
-import "github.com/acksell/clank/internal/agent"
+import "github.com/supaclank/clank/internal/agent"
 
 // OpenCodeProfile serves the opencode backend through `opencode acp`, one
 // process per project dir (the subcommand boots a full opencode server

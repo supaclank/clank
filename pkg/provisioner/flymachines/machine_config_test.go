@@ -5,7 +5,7 @@ import (
 
 	fly "github.com/superfly/fly-go"
 
-	"github.com/acksell/clank/internal/agent/presets"
+	"github.com/supaclank/clank/internal/agent/presets"
 )
 
 func testOptions(t *testing.T) Options {

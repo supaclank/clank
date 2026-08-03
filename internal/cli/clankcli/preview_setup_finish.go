@@ -6,10 +6,10 @@ import (
 	"io"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/config"
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/launchconfig"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/config"
+	daemonclient "github.com/supaclank/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/launchconfig"
 )
 
 func inspectPreviewSetup(projectRoot string, out io.Writer) (string, *launchconfig.Resolved, error) {

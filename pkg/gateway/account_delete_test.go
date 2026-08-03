@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/store"
-	"github.com/acksell/clank/pkg/auth"
-	"github.com/acksell/clank/pkg/notify"
-	"github.com/acksell/clank/pkg/preview/routestore"
-	"github.com/acksell/clank/pkg/preview/routestore/memstore"
-	"github.com/acksell/clank/pkg/preview/tokens"
-	"github.com/acksell/clank/pkg/provisioner/hoststore"
+	"github.com/supaclank/clank/internal/store"
+	"github.com/supaclank/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/notify"
+	"github.com/supaclank/clank/pkg/preview/routestore"
+	"github.com/supaclank/clank/pkg/preview/routestore/memstore"
+	"github.com/supaclank/clank/pkg/preview/tokens"
+	"github.com/supaclank/clank/pkg/provisioner/hoststore"
 )
 
 // --- real (non-mock) test fixtures for the optional gateway surfaces ---

@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
-	hoststore "github.com/acksell/clank/internal/host/store"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host"
+	hoststore "github.com/supaclank/clank/internal/host/store"
 )
 
 func TestLaunchGitHubPullRequestReusesAndFastForwardsLocalCheckout(t *testing.T) {

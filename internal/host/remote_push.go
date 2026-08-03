@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/acksell/clank/internal/git"
+	"github.com/supaclank/clank/internal/git"
 )
 
 // PushResult is the wire shape for POST /worktrees/{id}/remote/push.

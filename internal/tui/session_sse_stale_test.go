@@ -3,7 +3,7 @@ package tui
 import (
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // These regression tests cover the stuck-streaming-after-switch bug:

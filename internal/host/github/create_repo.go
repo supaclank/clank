@@ -69,7 +69,7 @@ func (m *Manager) CreateRepository(ctx context.Context, token string, in CreateR
 //
 // TODO(ai-review): any 422/name (not just "already taken", e.g. a reserved
 // name) is misreported as ErrRepoNameTaken; sanitizeRepoName's length cap
-// closes the most likely case but not all of them. https://github.com/Acksell/clank/pull/90#discussion_r3508931059
+// closes the most likely case but not all of them. https://github.com/supaclank/clank/pull/90#discussion_r3508931059
 func classifyCreateRepoError(err error) error {
 	var er *gogithub.ErrorResponse
 	if errors.As(err, &er) && er.Response != nil && er.Response.StatusCode == http.StatusUnprocessableEntity {

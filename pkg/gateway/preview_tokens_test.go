@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/pkg/auth"
-	"github.com/acksell/clank/pkg/preview/routestore"
-	"github.com/acksell/clank/pkg/preview/routestore/memstore"
-	"github.com/acksell/clank/pkg/preview/tokens"
+	"github.com/supaclank/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/preview/routestore"
+	"github.com/supaclank/clank/pkg/preview/routestore/memstore"
+	"github.com/supaclank/clank/pkg/preview/tokens"
 )
 
 // previewTokensFixture mounts Gateway.Handler() (which is where the

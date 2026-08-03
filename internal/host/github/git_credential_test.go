@@ -202,7 +202,7 @@ func TestGitCredentialFill_EndToEnd(t *testing.T) {
 	// Build the actual binary. `go build` from the package dir keeps this
 	// robust to running the test from any working directory.
 	bin := filepath.Join(t.TempDir(), "clank-host")
-	build := exec.Command("go", "build", "-o", bin, "github.com/acksell/clank/cmd/clank-host")
+	build := exec.Command("go", "build", "-o", bin, "github.com/supaclank/clank/cmd/clank-host")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build clank-host: %v\n%s", err, out)
 	}

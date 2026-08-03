@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 func TestBuildSidebarTree_SortsByLatestActivity(t *testing.T) {

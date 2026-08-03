@@ -11,9 +11,9 @@ import (
 	"io"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/agent"
+	daemonclient "github.com/supaclank/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/host"
 )
 
 // connectProviderListTimeout caps the catalog read that decides whether

@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/acksell/clank/internal/lannet"
+	"github.com/supaclank/clank/internal/lannet"
 )
 
 // DefaultPort is the bridge listener's fixed port — the phone's stored

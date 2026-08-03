@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/pkg/provisioner/hoststore"
-	"github.com/acksell/clank/pkg/provisioner/local"
+	"github.com/supaclank/clank/pkg/provisioner/hoststore"
+	"github.com/supaclank/clank/pkg/provisioner/local"
 )
 
 func TestGetHostByID_MatchingChild(t *testing.T) {

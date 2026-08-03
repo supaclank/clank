@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/host/preview"
+	daemonclient "github.com/supaclank/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/host/preview"
 )
 
 func TestPreviewReadyState(t *testing.T) {

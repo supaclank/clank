@@ -19,8 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/acksell/clank/pkg/preview/routestore"
-	"github.com/acksell/clank/pkg/preview/tokens"
+	"github.com/supaclank/clank/pkg/preview/routestore"
+	"github.com/supaclank/clank/pkg/preview/tokens"
 )
 
 // Store is safe for concurrent use.

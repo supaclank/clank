@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 func TestParseBackend(t *testing.T) {

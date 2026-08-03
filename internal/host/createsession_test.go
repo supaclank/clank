@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/git"
-	"github.com/acksell/clank/internal/host"
-	"github.com/acksell/clank/internal/host/store"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/git"
+	"github.com/supaclank/clank/internal/host"
+	"github.com/supaclank/clank/internal/host/store"
 )
 
 // TestCreateSession_LocalRef_Success exercises the §7 happy path: a
@@ -22,7 +22,7 @@ func TestCreateSession_LocalRef_Success(t *testing.T) {
 	t.Parallel()
 	svc := newTestService(t)
 
-	dir := initGitRepo(t, "git@github.com:acksell/clank.git")
+	dir := initGitRepo(t, "git@github.com:supaclank/clank.git")
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
 		GitRef:  agent.GitRef{LocalPath: dir},
@@ -90,7 +90,7 @@ func TestCreateSession_LocalRef_AcceptsSubdir(t *testing.T) {
 	})
 	t.Cleanup(svc.Shutdown)
 
-	root := initGitRepo(t, "git@github.com:acksell/clank.git")
+	root := initGitRepo(t, "git@github.com:supaclank/clank.git")
 	sub := filepath.Join(root, "web-app")
 	if err := os.Mkdir(sub, 0o755); err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func TestCreateSession_LocalRef_SubdirWithBranch(t *testing.T) {
 	})
 	t.Cleanup(svc.Shutdown)
 
-	root := initGitRepo(t, "git@github.com:acksell/clank.git")
+	root := initGitRepo(t, "git@github.com:supaclank/clank.git")
 	sub := filepath.Join(root, "web-app")
 	if err := os.Mkdir(sub, 0o755); err != nil {
 		t.Fatal(err)

@@ -23,9 +23,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/acksell/clank/internal/git"
-	githubpkg "github.com/acksell/clank/internal/host/github"
-	"github.com/acksell/clank/internal/repolabel"
+	"github.com/supaclank/clank/internal/git"
+	githubpkg "github.com/supaclank/clank/internal/host/github"
+	"github.com/supaclank/clank/internal/repolabel"
 )
 
 const (

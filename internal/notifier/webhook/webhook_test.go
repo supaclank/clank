@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/notifier"
+	"github.com/supaclank/clank/internal/notifier"
 )
 
 func newNotification(kind notifier.Kind) notifier.Notification {

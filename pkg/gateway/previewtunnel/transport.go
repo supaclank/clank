@@ -31,7 +31,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/acksell/clank/pkg/provisioner"
+	"github.com/supaclank/clank/pkg/provisioner"
 )
 
 // Defaults applied when Config fields are zero.

@@ -14,9 +14,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
-	githubpkg "github.com/acksell/clank/internal/host/github"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host"
+	githubpkg "github.com/supaclank/clank/internal/host/github"
 )
 
 // RemoteSyncStatus's PR half: the open PR's number/URL/base attach, and

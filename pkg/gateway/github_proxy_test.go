@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/acksell/clank/pkg/provisioner"
+	"github.com/supaclank/clank/pkg/provisioner"
 )
 
 // captureHost is a tiny fake host: every request it sees is

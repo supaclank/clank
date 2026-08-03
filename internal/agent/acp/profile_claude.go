@@ -3,7 +3,7 @@ package acp
 import (
 	"os"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // ClaudeProfile serves the claude-code backend through claude-agent-acp

@@ -1,7 +1,7 @@
 package tui
 
 import (
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // MaxRecentSessionsBeforeBucket is how many of the most-recent sessions

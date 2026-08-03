@@ -9,7 +9,7 @@
 // test matches production exactly.
 package hostclient
 
-import "github.com/acksell/clank/internal/agent"
+import "github.com/supaclank/clank/internal/agent"
 
 // Compile-time guarantee that the HTTP-side session adapter satisfies
 // the SessionBackend interface.

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 func TestPartitionWorktreesByActivityWindow_AllRecentStayVisible(t *testing.T) {

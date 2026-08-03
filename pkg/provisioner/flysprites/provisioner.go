@@ -26,10 +26,10 @@ import (
 	"github.com/oklog/ulid/v2"
 	sprites "github.com/superfly/sprites-go"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/pkg/provisioner"
-	"github.com/acksell/clank/pkg/provisioner/hoststore"
-	transportpkg "github.com/acksell/clank/pkg/provisioner/transport"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/pkg/provisioner"
+	"github.com/supaclank/clank/pkg/provisioner/hoststore"
+	transportpkg "github.com/supaclank/clank/pkg/provisioner/transport"
 )
 
 // clankHostHashHex is the SHA-256 of the embedded clank-host binary,

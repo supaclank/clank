@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/agent/presets"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent/presets"
 )
 
 // presetStore persists USER-created presets as one JSON file under the

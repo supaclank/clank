@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/host"
-	"github.com/acksell/clank/internal/host/hosttest"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/host"
+	"github.com/supaclank/clank/internal/host/hosttest"
 )
 
 // TestPreviewStart_SubdirSlug_SetupRequiredSurvivesGateway proves the

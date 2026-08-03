@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/acksell/clank/internal/git"
+	"github.com/supaclank/clank/internal/git"
 )
 
 // ResolveStrategy selects how a diverged worktree reconciles with its

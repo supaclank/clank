@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // TestEventRoundTrip_StatusChange verifies the host stamps a status

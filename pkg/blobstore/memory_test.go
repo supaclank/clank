@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/pkg/blobstore"
+	"github.com/supaclank/clank/pkg/blobstore"
 )
 
 const testKey = "user-A/checkpoints/wt/ck/uncommitted.bundle"

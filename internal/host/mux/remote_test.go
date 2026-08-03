@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/acksell/clank/internal/git"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/git"
+	"github.com/supaclank/clank/internal/host"
 )
 
 // TestWriteRemoteError_Mapping locks the error→(status, code) contract the

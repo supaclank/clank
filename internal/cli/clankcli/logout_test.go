@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/internal/config"
+	"github.com/supaclank/clank/internal/config"
 )
 
 func TestLogout_ClearsSessionKeepsGateway(t *testing.T) {

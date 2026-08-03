@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/pkg/blobstore"
+	"github.com/supaclank/clank/pkg/blobstore"
 )
 
 func TestValidateComponent(t *testing.T) {

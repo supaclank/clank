@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/acksell/clank/internal/git"
+	"github.com/supaclank/clank/internal/git"
 )
 
 // cloneAtC1 builds repoA with a single commit (f.txt=base, plus any extra

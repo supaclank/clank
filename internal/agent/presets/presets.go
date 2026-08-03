@@ -24,7 +24,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // validIDPattern is the id alphabet safe to route as a single URL path

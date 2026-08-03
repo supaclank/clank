@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"os"
 
-	githubpkg "github.com/acksell/clank/internal/host/github"
+	githubpkg "github.com/supaclank/clank/internal/host/github"
 )
 
 // gitCredentialCommand is the argv[1] that selects this subcommand.

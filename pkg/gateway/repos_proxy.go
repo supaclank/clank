@@ -36,7 +36,7 @@ func (g *Gateway) handleRepoWorktreeCreate(w http.ResponseWriter, r *http.Reques
 // handleRepoOverview proxies GET /v1/repos/{slug}/overview — the branch
 // ∪ open-PR feed. The ?fetch=1 query rides through on RawQuery.
 // TODO(ai-review): ?fetch=1 can run an unbounded host git fetch under
-// proxyHostGitHub's fixed hostGitHubTimeout. https://github.com/Acksell/clank/pull/97#discussion_r3512816237
+// proxyHostGitHub's fixed hostGitHubTimeout. https://github.com/supaclank/clank/pull/97#discussion_r3512816237
 func (g *Gateway) handleRepoOverview(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 	if !validRepoSlug(slug) {

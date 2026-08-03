@@ -9,14 +9,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/agent/presets"
-	"github.com/acksell/clank/internal/config"
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/host"
-	"github.com/acksell/clank/internal/host/hosttest"
-	hostmux "github.com/acksell/clank/internal/host/mux"
-	hoststore "github.com/acksell/clank/internal/host/store"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent/presets"
+	"github.com/supaclank/clank/internal/config"
+	daemonclient "github.com/supaclank/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/host"
+	"github.com/supaclank/clank/internal/host/hosttest"
+	hostmux "github.com/supaclank/clank/internal/host/mux"
+	hoststore "github.com/supaclank/clank/internal/host/store"
 )
 
 // newTestHost mounts a real host service (real store, real mux, stub

@@ -9,7 +9,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/acksell/clank/internal/notifier"
+	"github.com/supaclank/clank/internal/notifier"
 )
 
 // Provider satisfies notifier.Provider. Every Send is logged and

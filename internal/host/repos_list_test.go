@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/acksell/clank/internal/git"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/git"
+	"github.com/supaclank/clank/internal/host"
 )
 
 // Not parallel: mutates the work-root/clone-base globals via the fixture.

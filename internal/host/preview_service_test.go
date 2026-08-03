@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // TestPreviewWorkDirFor_CanceledContextSkipsDiskLookup pins the

@@ -34,11 +34,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/acksell/clank/internal/webpreview"
-	"github.com/acksell/clank/pkg/auth"
-	"github.com/acksell/clank/pkg/gateway/previewtunnel"
-	"github.com/acksell/clank/pkg/preview/routestore"
-	"github.com/acksell/clank/pkg/preview/tokens"
+	"github.com/supaclank/clank/internal/webpreview"
+	"github.com/supaclank/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/gateway/previewtunnel"
+	"github.com/supaclank/clank/pkg/preview/routestore"
+	"github.com/supaclank/clank/pkg/preview/tokens"
 )
 
 // previewSubdomainHandler returns the http.Handler that dispatches
@@ -275,7 +275,7 @@ func (s *previewState) serveProxy(w http.ResponseWriter, r *http.Request, tun *p
 	var snippet []byte
 	// TODO(ai-review): built eagerly for every browser-UA request even when
 	// the response turns out non-HTML; move into ModifyResponse once
-	// Content-Type is known. https://github.com/Acksell/clank/pull/216#discussion_r3699214060
+	// Content-Type is known. https://github.com/supaclank/clank/pull/216#discussion_r3699214060
 	if webpreview.ShouldInjectOverlay(r.UserAgent()) {
 		overlayContext := previewOverlayContextFromRequest(r)
 		var err error

@@ -9,10 +9,10 @@ import (
 	"syscall"
 	"time"
 
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/host"
-	"github.com/acksell/clank/internal/host/preview"
-	"github.com/acksell/clank/internal/lannet"
+	daemonclient "github.com/supaclank/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/host"
+	"github.com/supaclank/clank/internal/host/preview"
+	"github.com/supaclank/clank/internal/lannet"
 )
 
 // previewKeepaliveInterval paces the CLI's liveness pings against the

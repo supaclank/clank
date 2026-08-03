@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/host/preview"
+	daemonclient "github.com/supaclank/clank/internal/daemonclient"
+	"github.com/supaclank/clank/internal/host/preview"
 )
 
 const (
@@ -48,7 +48,7 @@ func waitPreviewReady(
 		case <-ticker.C:
 			// TODO(ai-review): a status request straddling `timeout` can report
 			// ready after the deadline instead of timing out.
-			// https://github.com/Acksell/clank/pull/210#discussion_r3696464957
+			// https://github.com/supaclank/clank/pull/210#discussion_r3696464957
 			statusCtx, cancel := context.WithTimeout(ctx, previewStatusReadTimeout)
 			status, err = client.Status(statusCtx)
 			cancel()

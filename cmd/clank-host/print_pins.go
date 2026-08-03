@@ -19,7 +19,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // printPinsCommand is the argv[1] that selects this subcommand.

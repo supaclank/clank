@@ -32,7 +32,7 @@ const netidCmdTimeout = 2 * time.Second
 // untrusted everywhere).
 // TODO(ai-review): no Windows branch — defaultGatewayIP/gatewayMAC only
 // know darwin/linux, so Windows always falls back to Tailscale-only.
-// https://github.com/Acksell/clank/pull/175#discussion_r3609121605
+// https://github.com/supaclank/clank/pull/175#discussion_r3609121605
 func CurrentNetwork(ctx context.Context) Network {
 	ctx, cancel := context.WithTimeout(ctx, netidCmdTimeout)
 	defer cancel()

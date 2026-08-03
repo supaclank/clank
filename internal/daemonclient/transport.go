@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // HTTP request helpers used by all sub-clients. The wire format is

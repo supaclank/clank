@@ -15,11 +15,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/acksell/clank/internal/bridge"
-	"github.com/acksell/clank/internal/config"
-	"github.com/acksell/clank/pkg/auth"
-	"github.com/acksell/clank/pkg/blobstore"
-	"github.com/acksell/clank/pkg/images"
+	"github.com/supaclank/clank/internal/bridge"
+	"github.com/supaclank/clank/internal/config"
+	"github.com/supaclank/clank/pkg/auth"
+	"github.com/supaclank/clank/pkg/blobstore"
+	"github.com/supaclank/clank/pkg/images"
 )
 
 // envBridgePort overrides the bridge listener port (default
@@ -226,7 +226,7 @@ func (b *bridgeRuntime) AdminHandler() http.Handler {
 	mux := http.NewServeMux()
 	// TODO(ai-review): throttle re-discovery — `clank pair`'s 1Hz poll
 	// currently forces a full tailscale/route/arp exec on every GET.
-	// https://github.com/Acksell/clank/pull/175#discussion_r3609118211
+	// https://github.com/supaclank/clank/pull/175#discussion_r3609118211
 	mux.HandleFunc("GET /v1/bridge/status", func(w http.ResponseWriter, r *http.Request) {
 		b.writeStatus(w, b.Refresh(r.Context()))
 	})

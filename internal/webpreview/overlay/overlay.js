@@ -294,7 +294,7 @@ import {
     return lines;
   };
 
-  // TODO(ai-review): unbounded across HMR edits within a session; add an eviction/size cap if it matters in practice. https://github.com/Acksell/clank/pull/142
+  // TODO(ai-review): unbounded across HMR edits within a session; add an eviction/size cap if it matters in practice. https://github.com/supaclank/clank/pull/142
   const sourceMapCache = new Map(); // module url → Promise<lookup fn | null>
   const moduleLookup = (url) => {
     let p = sourceMapCache.get(url);
@@ -1069,7 +1069,7 @@ import {
       if (vws && vws.readyState === WebSocket.OPEN) return resolve(vws);
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
       // TODO(ai-review): move TOKEN off the URL (browser WebSocket has no
-      // custom-header API) https://github.com/Acksell/clank/pull/135#discussion_r3571183477
+      // custom-header API) https://github.com/supaclank/clank/pull/135#discussion_r3571183477
       const w = new WebSocket(`${proto}://${location.host}/__clank/voice?t=${encodeURIComponent(TOKEN)}`);
       w.onopen = () => { vws = w; resolve(w); };
       w.onerror = () => {
@@ -1501,7 +1501,7 @@ import {
   .crop-x0 { position:absolute; top:12px; right:16px; }
 </style>
 <div class="box" part="box" tabindex="-1">
-  <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><a class="beta" href="https://github.com/Acksell/clank/issues/new?template=bug_report.yml" target="_blank" rel="noopener noreferrer" title="click to report an issue" tabindex="-1">beta</a><span class="grip">${ICONS.grip}</span></div>
+  <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><a class="beta" href="https://github.com/supaclank/clank/issues/new?template=bug_report.yml" target="_blank" rel="noopener noreferrer" title="click to report an issue" tabindex="-1">beta</a><span class="grip">${ICONS.grip}</span></div>
   <div class="chips"></div>
   <div class="chat"></div>
   <div class="perm" style="display:none">

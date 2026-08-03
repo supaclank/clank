@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/acksell/clank/internal/git"
-	"github.com/acksell/clank/internal/host"
-	githubpkg "github.com/acksell/clank/internal/host/github"
+	"github.com/supaclank/clank/internal/git"
+	"github.com/supaclank/clank/internal/host"
+	githubpkg "github.com/supaclank/clank/internal/host/github"
 )
 
 // The git half: loaded/dirty/ahead/behind derived locally, ?fetch=1

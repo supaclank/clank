@@ -75,7 +75,7 @@ func newFolderPicker(startDir string) folderPickerModel {
 	ti.Focus()
 
 	m := folderPickerModel{
-		// TODO(ai-review): filepath.ToSlash for Windows https://github.com/Acksell/clank/pull/73#discussion_r3449077175
+		// TODO(ai-review): filepath.ToSlash for Windows https://github.com/supaclank/clank/pull/73#discussion_r3449077175
 		current: filepath.Clean(startDir),
 		maxRows: 10,
 		search:  ti,
@@ -225,7 +225,7 @@ func (m *folderPickerModel) applyQuery(raw string) {
 			dirPart = "/"
 		}
 	}
-	// TODO(ai-review): filepath.ToSlash(dirPart) for Windows https://github.com/Acksell/clank/pull/73#discussion_r3449077180
+	// TODO(ai-review): filepath.ToSlash(dirPart) for Windows https://github.com/supaclank/clank/pull/73#discussion_r3449077180
 	if isDir(dirPart) && filepath.Clean(dirPart) != m.current {
 		m.current = filepath.Clean(dirPart)
 		m.load()
@@ -351,7 +351,7 @@ func (m folderPickerModel) activate() (folderPickerModel, tea.Cmd) {
 // you came from (a ←/→ round-trip is a no-op).
 func (m *folderPickerModel) navigateTo(dir string) {
 	m.rememberCursor()
-	// TODO(ai-review): filepath.ToSlash(target) for Windows https://github.com/Acksell/clank/pull/73#discussion_r3449077184
+	// TODO(ai-review): filepath.ToSlash(target) for Windows https://github.com/supaclank/clank/pull/73#discussion_r3449077184
 	target := filepath.Clean(dir)
 	// Going up: land on the folder we're leaving even if we never descended
 	// into it (e.g. the picker opened directly inside it).
@@ -505,7 +505,7 @@ func (m folderPickerModel) memorizedTrail() []string {
 	return trail
 }
 
-// TODO(ai-review): simplify to strings.Split(p,"/") once m.current is normalized via filepath.ToSlash https://github.com/Acksell/clank/pull/73#discussion_r3449077190
+// TODO(ai-review): simplify to strings.Split(p,"/") once m.current is normalized via filepath.ToSlash https://github.com/supaclank/clank/pull/73#discussion_r3449077190
 func splitPath(p string) []string {
 	var out []string
 	for _, s := range strings.Split(filepath.Clean(p), string(filepath.Separator)) {

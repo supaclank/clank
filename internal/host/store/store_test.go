@@ -9,8 +9,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host/store"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host/store"
 )
 
 func mustOpen(t *testing.T) *store.Store {

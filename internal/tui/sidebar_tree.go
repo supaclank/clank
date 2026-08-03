@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // sidebarTree is the conceptual tree the new IDE-style sidebar renders.

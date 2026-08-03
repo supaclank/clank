@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 func TestFlattenSidebar_CollapsedWorktreesYieldNoSessionRows(t *testing.T) {

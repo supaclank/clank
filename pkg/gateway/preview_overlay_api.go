@@ -11,9 +11,9 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/acksell/clank/internal/webpreview"
-	"github.com/acksell/clank/pkg/preview/routestore"
-	"github.com/acksell/clank/pkg/preview/tokens"
+	"github.com/supaclank/clank/internal/webpreview"
+	"github.com/supaclank/clank/pkg/preview/routestore"
+	"github.com/supaclank/clank/pkg/preview/tokens"
 )
 
 // authorizeOverlayAPI is deliberately stricter than preview visibility. A

@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/acksell/clank/internal/git"
+	"github.com/supaclank/clank/internal/git"
 )
 
 type remoteFixture struct {

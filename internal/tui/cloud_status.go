@@ -11,7 +11,7 @@ package tui
 // identity. The cloudView mixes in reachability via cloudView.Status().
 
 import (
-	"github.com/acksell/clank/internal/config"
+	"github.com/supaclank/clank/internal/config"
 )
 
 // cloudAuthStatus reflects the user's cloud connection state.

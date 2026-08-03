@@ -13,9 +13,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/agent/presets"
-	"github.com/acksell/clank/internal/host"
+	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/agent/presets"
+	"github.com/supaclank/clank/internal/host"
 )
 
 // captureBackend records the SendMessageOpts handed to OpenAndSend so a test
@@ -96,7 +96,7 @@ func initGitRepoMux(t *testing.T) string {
 	run("git", "config", "user.email", "t@t")
 	run("git", "config", "user.name", "T")
 	run("git", "config", "commit.gpgsign", "false")
-	run("git", "remote", "add", "origin", "git@github.com:acksell/clank.git")
+	run("git", "remote", "add", "origin", "git@github.com:supaclank/clank.git")
 	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
