@@ -1,11 +1,25 @@
 package acptools
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestEnsure_MissingBunReportsSharedACPRequirement(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	_, err := Ensure(context.Background(), filepath.Join(t.TempDir(), "tools"))
+	if err == nil {
+		t.Fatal("Ensure() error = nil, want missing bun error")
+	}
+	if !strings.Contains(err.Error(), "Claude Code and Codex backends need bun") {
+		t.Fatalf("Ensure() error = %q, want both affected backends named", err)
+	}
+}
 
 // The Go pin constants and the embedded manifest must agree — a pin
 // bump is a reviewed diff touching both.
