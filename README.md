@@ -1,163 +1,173 @@
-# Clank
+# clank
 
-Scans your AI coding sessions, extracts unfinished threads and improvement opportunities, and presents a backlog in an interactive TUI for triaging and delegation.
+## Visually editable previews for web & mobile
 
-Clank helps you focus on the high impact & high complexity work, while taking care of the low complexity & high impact work in the background.
+Clank injects an overlay into your web or mobile apps that allows you to edit them while you're using them.
 
-Developers using AI coding assistants generate many ideas, plans, and TODOs during sessions — but many are forgotten. Clank systematically recovers these lost threads and helps you prioritize them.
+The fastest way to iterate on apps is by just pointing and explaining. 
 
-Clank runs overnight. Wake up to PRs for different low-hanging fruits, and a daily digest of new tickets to triage based on yesterday's coding sessions.
+For the last 10% of human taste that AI can't solve.
 
-Clank understands your business and objective across repos. Configure this context to help Clank prioritise what needs your attention.
+Run `clank preview` to start your dev server with the clank overlay and connect to your agent of choice: Claude Code, OpenCode, and Codex (with Gemini, Hermes, and Pi support coming soon).
 
-You can't do 5 different things at the same time. Clank helps parallelize work whilst preventing context switching between different terminals by taking some of the smaller easy workloads off of your shoulders.
+### Phone + Expo app
+Preview and live-edit any Expo app, all from your phone; run `clank preview`. You will need [Clank's mobile app](https://play.google.com/store/apps/details?id=com.supaclank.clank).
 
-## How it works
+Scan the QR code with the Clank mobile app and your phone will connect to your laptop's agent with a session tied to this preview.
 
-1. **Scan** — Reads your [opencode](https://opencode.ai) session history (SQLite) and sends transcripts to an LLM
-2. **Extract** — The LLM identifies two kinds of items:
-   - **Unfinished threads**: plans discussed but never executed, abandoned ideas, TODOs left incomplete
-   - **Opportunities**: improvement suggestions, refactoring ideas, next steps mentioned by the assistant
-3. **Triage** — Review extracted tickets in an interactive TUI, edit fields, and use AI-assisted triage to score and classify them
+### Laptop + web apps
+Preview any frontend app and live edit with your agent. Run `clank preview` in your project directory.
 
-A central context store (`~/.clank/context/`) lets you provide product roadmap, strategy, and ideas as markdown files — the AI uses these during analysis for better relevance.
+Press <kbd>⌘ + E</kbd> to toggle the overlay and edit your app. Hold <kbd>⌘</kbd> to select at any element. 
 
-## Roadmap
+Press <kbd>⇪ Caps Lock</kbd> to toggle voice mode, with either Clank's fully local voice model (NVIDIA Parakeet v3) or the browser's built-in Web Speech API.
 
-**Done**
+### Mobile + web apps
+The mobile app can also preview and edit your web apps via a webview with the same intuitive overlay.
 
-- [x] Opencode session scanning
-- [x] LLM-powered ticket extraction (unfinished threads + opportunities)
-- [x] Interactive TUI (list, detail, inline editing)
-- [x] Central context store for product roadmap/strategy/ideas
-- [x] Impact/complexity quadrant scoring and sorting
-- [x] Pluggable scanner interface (ready for additional adapters)
-
-**Now** — Local open-source tool for individual developers. Locally run, bring your own API keys.
-
-- [ ] Good way to auto-close tickets.
-- [ ] Semantic search over coding sessions/tickets
-- [ ] Additional session source adapters (Claude Code, Cursor, etc.)
-- [ ] Automated overnight scanning (cron/daemon) with daily digest
-- [ ] Background agent that picks up low-complexity/high-impact tickets and opens PRs autonomously
-- [ ] Optional cloud-hosted analysis (sign in and trigger scans remotely, useful for nightly runs)
-
-**Later** — Team and organisation layer.
-
-- [ ] Shared state across developers — aggregate conversations from across the org
-- [ ] Hosted solution for orchestrating
-
-## Install
+## Get started
 
 ```
-go install github.com/supaclank/clank/cmd/clank@latest
+brew install supaclank/tap/clank
+clank preview
 ```
 
-Or build from source:
-
-```
-git clone https://github.com/supaclank/clank.git
-cd clank
-go build ./cmd/clank
-```
-
-Requires Go 1.25+. No CGO needed (uses pure-Go SQLite).
-
-## Setup
-
-```bash
-# Set your OpenAI API key (or any OpenAI-compatible provider)
-export OPENAI_API_KEY="sk-..."
-
-# Or configure via clank
-clank config set llm.api_key "sk-..."
-clank config set llm.model "gpt-4o-mini"        # default
-clank config set llm.base_url "https://api.openai.com/v1"  # default
-
-# Register a repo
-clank init          # registers current directory
-# or
-clank repo add /path/to/project
-```
-
-Configuration lives at `~/.clank/config.toml`.
-
-## Usage
-
-```bash
-# Scan sessions and extract tickets
-clank scan                    # auto-discovers projects from opencode DB
-clank scan /path/to/repo      # scan specific repo
-
-# Interactive triage TUI
-clank triage
-
-# List tickets (non-interactive)
-clank list
-clank list --status new --type unfinished_thread
-clank list --quadrant quickwin
-
-# Show a ticket (supports prefix matching on ID)
-clank show 01J5
-
-# Edit central context (roadmap, strategy, ideas)
-clank context
-
-# Backfill impact scores for unscored tickets
-clank backfill
-clank backfill --dry-run
-```
-
-## TUI keybindings
-
-**List view**
+The web overlay:
 
 | Key | Action |
 |-----|--------|
-| `enter` | Open ticket detail |
-| `b` | Move to backlog |
-| `x` | Discard |
-| `d` | Cycle status |
-| `a` | AI triage |
-| `q` | Quit |
+| <kbd>⌘E</kbd> / <kbd>Ctrl+E</kbd> | summon / hide the prompt box |
+| hold <kbd>⌘</kbd> / <kbd>⌃</kbd> | point at elements to attach them as context |
+| <kbd>⇪ Caps Lock</kbd> | tap to talk, tap again to transcribe |
+| hold <kbd>⇧</kbd> | prompt box snaps to the cursor |
 
-**Detail view**
-
-| Key | Action |
-|-----|--------|
-| `e` | Edit mode |
-| `tab` | Next field |
-| `enter` | Save / confirm |
-| `esc` | Cancel / back |
-
-## Data model
-
-Tickets are scored on two dimensions (1-10 each) and mapped to quadrants:
-
-| Quadrant | Impact | Complexity | Meaning |
-|----------|--------|------------|---------|
-| Quick Win | >= 6 | < 6 | High value, easy to do |
-| Value Bet | >= 6 | >= 6 | High value, significant effort |
-| Tidy Up | < 6 | < 6 | Low stakes, easy to do |
-| Distraction | < 6 | >= 6 | Low value, high effort |
-
-Tickets flow through statuses: `new` -> `triaged` -> `backlog` -> `doing` -> `done` (or `discarded`).
+The mobile overlay: Shake the phone to bring up the floating prompt box, shake again to see chat. The app remains active. Just move the box around, or hide it.
 
 ## Architecture
 
-```
-cmd/clank/main.go          Cobra CLI, command wiring
-internal/scanner/           Scanner interface + opencode adapter
-internal/analyzer/          LLM-powered ticket extraction and triage
-internal/store/             SQLite persistence (tickets, repos)
-internal/tui/               Bubble Tea TUI (list, detail, triage views)
-internal/llm/               OpenAI-compatible HTTP client
-internal/config/            TOML config management
-internal/context/           Central context file management
+```mermaid
+flowchart LR
+    subgraph clients["Your devices"]
+        browser["Browser overlay"]
+        terminal["Terminal (clank)"]
+        phone["Phone"]
+    end
+
+    subgraph gateway_box["Laptop or cloud"]
+        gateway["<b>Gateway (clankd)</b><br/>auth · provisioning<br>proxy · previews<br>images · notifications"]
+    end
+
+    subgraph host_box["Laptop or sandbox"]
+        host["<b>Host (clank-host)</b><br/>sessions · events<br/>credentials · git"]
+        agent["Your agent<br/>harness"]
+    end
+
+    browser --> gateway
+    terminal --> gateway
+    phone --> gateway
+    gateway --> host
+    host --> agent
 ```
 
-All state is stored locally in `~/.clank/`:
-- `clank.db` — SQLite database (tickets + repos)
-- `config.toml` — Configuration
-- `context/` — Markdown files for product context (fed to AI during analysis)
+On a laptop everything runs locally, using your existing agent and git setup. The laptop is your default "sandbox" environment, more info in [provisioning & sandboxes](#provisioning--sandboxes).
 
+A multi-tenant gateway provisions sandboxes for the user, authenticates and proxies requests, handles wake/sleep, and some coordination like notifications, images, previews. It's built to be a dumb relay with minimal user data stored.
+
+The host handles the coding agents, git operations, credentials, keepalive, webhooks. It connects to the agent harnesses via [ACP](https://agentclientprotocol.com), and needs a persistent dev environment where credentials and all the work is stored.
+
+In the future we may use something like https://github.com/superfly/tokenizer or an LLM proxy for people that don't want to give up real keys. Ephemeral one-off sandboxes are also on the roadmap for workflows that need the isolation.
+
+Worth noting about the diagram: Behind each arrow is actually two arrows; one for the laptop case and one for the cloud case. The gateway is configured slightly differently in each case. Let's dive deeper:
+
+### Gateway
+#### Multi-tenant
+The gateway routes requests by user ID, which it acquires via a simple `pkg/auth.Authenticator` interface.
+
+```go
+type Authenticator interface {
+    Verify(r *http.Request) (Principal, error)
+}
+
+type Principal struct {
+    UserID string
+    Claims map[string]any
+}
+```
+This allows the gateway to remain agnostic to your specific auth method. 
+
+The only contract is that the request context contains that auth.Principal after verification. Clank provides a simple middleware for that, calling Authenticator's Verify(r) and injecting the principal. The full contract itself is small: [auth.go](https://github.com/supaclank/clank/blob/main/pkg/auth/auth.go).
+
+Clank also bundles four Authenticators into the auth package.
+- AllowAll: no-op verifier for the Unix socket listener and tests.
+- OIDC:     RS256/ES256 JWT + JWKS verifier (production / SSO).
+- StaticBearer: fixed shared secret (opt-in CLANK_AUTH_TOKEN path).
+- JWTHS256: HS256 JWT verifier (dev / shared-secret deployments).
+
+#### Bridge auth
+Clank CLI itself implements a mobile<->laptop bridge auth.Authenticator, allowing you to pair your mobile app to your laptop and control your agents from the phone. 
+
+Most services today require a central server to mediate this pairing. Clank instead implemented a protocol for this.
+
+For the implementation and spec for this, see [docs/bridge-pairing.md](https://github.com/supaclank/clank/blob/main/docs/bridge-pairing.md). 
+
+<b>TLDR</b>: Mobile and laptop exchange their public keys and ensure there was no man-in-the-middle tampering, but they do not encrypt traffic to prevent eavesdropping. No secrets are transmitted over the wire. Encryption is left for your network transport to solve, by e.g. using Tailscale. The protocol is secured by entering a code displayed on the phone using the laptop keyboard, proving access to both devices and the intent to pair them. After pairing, the phone signs each control request, and the laptop accepts requests only from enrolled device keys.
+
+#### Provisioning & sandboxes
+Clank tries to be agnostic to the exact sandbox provider. Each sandbox provider implements a `Provisioner` interface. 
+
+The laptop implements a local.Provisioner, and the cloud currently uses flymachine.Provisioner (you own the image, we just require `clank-host` to be reachable). More implementations are coming, including self-hosted runners.
+
+##### Persistent sandboxes
+The philosophy: Agents should have access to a full development environment and the context for several projects over time. This is needed for a cloud agent that proactively prioritizes and does work, where you just steer and verify the work.
+
+An ephemeral sandbox becomes a persistent sandbox by mounting volumes that persist the disk state. Different sandbox providers work in different ways, either they have a snapshot API where you have to manage the snapshots yourself, or they do it for you. This is connected to auto-sleeping: Does the provider automatically snapshot disk and shut down? When does that trigger? No running processes? No open TCP connections? A hardcoded timeout? Heartbeat based timeout where you have to call an external API? 
+
+All of this requires a lot of complexity on the backend to do reliably because the risk of getting it wrong means:
+- Interrupting the user workflow at the wrong time
+- Letting sandboxes run 24/7 incurring extra cost.
+
+The `Provisioner` interface abstracts this away from the gateway. Each implementation is different.
+
+This is also set up well for a future where you spin up lightweight microVMs on your own laptop.
+
+> note: Clank originally started with Daytona, moved to Fly.io's Sprites, and then migrated to Fly.io Machines. Throughout this the interface hardened, but currently the exact interface is subject to change, since we haven't actually battle-tested it against multiple sandbox providers yet.
+
+#### End-to-end encryption
+<b>TLDR</b>: Self-hosting is the solution. Most commonly: Users that pair their laptop and use something like Tailscale.
+
+In a multi-tenant environment, having access to every sandbox is a liability. It's also unavoidable, because you have to provision the machines somehow and you can't really give the keys to your users without also keeping your master key (at least no compute provider allows this).
+
+That said, there is no central database for user session data or code. All of that is handled by the sandbox which you already trust with your credentials. You would have to SSH to each individual sandbox to acquire this data.
+
+#### Agent harnesses
+Clank supports Claude Code, Codex, OpenCode, via ACP. We're probably adding support for Hermes, Gemini, and Pi soon.
+
+We still need small adapters for each ACP server, due to versioning, auth, and slight differences.
+
+#### Previews
+Expo projects are detected automatically. For web projects, your connected agent generates .clank/launch.yaml on first run. 
+
+For web, `clank preview` starts or attaches to a dev server and injects the Clank overlay as a \<script\> tag without changing your source code.
+
+For Expo, `clank preview` injects a small script that hooks into various React Native APIs: https://github.com/supaclank/clank/blob/main/internal/host/preview/clank-metro-shim.js.
+
+Local previews stay on your laptop, while hosted previews use an owner-only URL that securely tunnels through the gateway and can be shared or revoked.
+
+Easy public tunnel links for your local previews coming soon
+
+The mobile app itself is similar to how Expo Go works under the hood. It loads user apps using the same pre-installed native components that Expo Go has, so Clank and Expo Go apps are compatible. Support for development builds is on the roadmap.
+
+For Expo apps we also append a system prompt, to avoid common pitfalls that agents seem to fall into when developing mobile apps: https://github.com/supaclank/clank/tree/main/internal/agent/guidance.
+
+#### Voice
+Voice is push-to-talk dictation for the preview overlay. Use the browser's Web Speech API or keep audio local with `clank-voice`, powered by Silero VAD and NVIDIA Parakeet v3. The mobile app runs the same speech-recognition stack on-device.
+
+#### Images & attachments
+Images and attachments are handled via a minimal blobstore interface, with S3 for cloud deployments, and an LAN one for mobile->laptop transfers.
+
+## Docs
+
+- [docs/chat-client-spec](docs/chat-client-spec/README.md). The spec every clank client is built against (the TUI is the golden reference; the mobile app tracks it too).
+- [docs/bridge-pairing.md](docs/bridge-pairing.md). The phone↔laptop pairing protocol
+- [docker/README.md](docker/README.md). Self-hosted gateway stack
+- [voice-engine/README.md](voice-engine/README.md). The local dictation engine.
