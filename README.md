@@ -1,4 +1,4 @@
-# clank
+# Clank
 
 ## Visually editable previews for web & mobile
 
@@ -18,7 +18,7 @@ Scan the QR code with the Clank mobile app and your phone will connect to your l
 ### Laptop + web apps
 Preview any frontend app and live edit with your agent. Run `clank preview` in your project directory.
 
-Press <kbd>⌘ + E</kbd> to toggle the overlay and edit your app. Hold <kbd>⌘</kbd> to select at any element. 
+Press <kbd>⌘ + E</kbd> to toggle the overlay and edit your app. Hold <kbd>⌘</kbd> to select any element.
 
 Press <kbd>⇪ Caps Lock</kbd> to toggle voice mode, with either Clank's fully local voice model (NVIDIA Parakeet v3) or the browser's built-in Web Speech API.
 
@@ -110,7 +110,7 @@ Most services today require a central server to mediate this pairing. Clank inst
 
 For the implementation and spec for this, see [docs/bridge-pairing.md](https://github.com/supaclank/clank/blob/main/docs/bridge-pairing.md). 
 
-<b>TLDR</b>: Mobile and laptop exchange their public keys and ensure there was no man-in-the-middle tampering, but they do not encrypt traffic to prevent eavesdropping. No secrets are transmitted over the wire. Encryption is left for your network transport to solve, by e.g. using Tailscale. The protocol is secured by entering a code displayed on the phone using the laptop keyboard, proving access to both devices and the intent to pair them. After pairing, the phone signs each control request, and the laptop accepts requests only from enrolled device keys.
+<b>TL;DR</b>: Mobile and laptop exchange their public keys and ensure there was no man-in-the-middle tampering, but they do not encrypt traffic to prevent eavesdropping. No secrets are transmitted over the wire. Encryption is left for your network transport to solve, by e.g. using Tailscale. The protocol is secured by entering a code displayed on the phone using the laptop keyboard, proving access to both devices and the intent to pair them. After pairing, the phone signs each control request, and the laptop accepts requests only from enrolled device keys.
 
 #### Provisioning & sandboxes
 Clank tries to be agnostic to the exact sandbox provider. Each sandbox provider implements a `Provisioner` interface. 
@@ -133,7 +133,7 @@ This is also set up well for a future where you spin up lightweight microVMs on 
 > note: Clank originally started with Daytona, moved to Fly.io's Sprites, and then migrated to Fly.io Machines. Throughout this the interface hardened, but currently the exact interface is subject to change, since we haven't actually battle-tested it against multiple sandbox providers yet.
 
 #### End-to-end encryption
-<b>TLDR</b>: Self-hosting is the solution. Most commonly: Users that pair their laptop and use something like Tailscale.
+<b>TL;DR</b>: Self-hosting is the solution. Most commonly: Users that pair their laptop and use something like Tailscale.
 
 In a multi-tenant environment, having access to every sandbox is a liability. It's also unavoidable, because you have to provision the machines somehow and you can't really give the keys to your users without also keeping your master key (at least no compute provider allows this).
 
@@ -163,7 +163,7 @@ For Expo apps we also append a system prompt, to avoid common pitfalls that agen
 Voice is push-to-talk dictation for the preview overlay. Use the browser's Web Speech API or keep audio local with `clank-voice`, powered by Silero VAD and NVIDIA Parakeet v3. The mobile app runs the same speech-recognition stack on-device.
 
 #### Images & attachments
-Images and attachments are handled via a minimal blobstore interface, with S3 for cloud deployments, and an LAN one for mobile->laptop transfers.
+Images and attachments are handled via a minimal blobstore interface, with S3 for cloud deployments, and a LAN one for mobile->laptop transfers.
 
 ## Docs
 
