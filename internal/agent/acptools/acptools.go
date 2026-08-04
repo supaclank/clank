@@ -63,7 +63,7 @@ func Ensure(ctx context.Context, toolsDir string) (Paths, error) {
 
 	bunBin, err := exec.LookPath("bun")
 	if err != nil {
-		return Paths{}, fmt.Errorf("the codex backend needs bun to run its ACP adapter: install bun (https://bun.sh) and retry: %w", err)
+		return Paths{}, fmt.Errorf("the Claude Code and Codex backends need bun to run their ACP adapters: install bun (https://bun.sh) and retry: %w", err)
 	}
 
 	changed, err := materializeManifest(toolsDir)
