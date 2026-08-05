@@ -160,11 +160,19 @@ func (r *reducer) onUserChunk(cb sdk.ContentBlock) []agent.Event {
 	if r.cur != nil {
 		r.commitTurn()
 	}
-	text := contentBlockText(cb)
 	if r.replayUser == nil {
 		r.replayUser = &agent.MessageData{Role: "user"}
 	}
-	r.replayUser.Content += text
+	// Text only. The live path records just the typed prompt as Content
+	// (attachments ride to the model as blocks — see Send), so replay must
+	// reconstruct the same: a replayed screenshot block used to land here as
+	// ~200k chars of marshaled base64, committed to the transcript forever
+	// (froze mobile clients per render; supaclank/clank-mobile#156). The
+	// chunk still opens/extends the message above so an attachment-only
+	// prompt keeps its message boundary.
+	if cb.Text != nil {
+		r.replayUser.Content += cb.Text.Text
+	}
 	return nil
 }
 
@@ -415,9 +423,21 @@ func (r *reducer) lastMessageID() string {
 
 // --- helpers ---
 
+// contentBlockText renders one block as transcript text. Only text passes
+// through verbatim. Blob variants (image/audio) become a short tag in the
+// existing "[terminal output]" idiom — marshaling them would inline their
+// base64 payload (~200k chars for one phone screenshot) into part text the
+// clients then lay out as one unbreakable word (supaclank/clank-mobile#156).
+// Unknown variants keep the marshal fallback as a debugging aid; they are
+// small (resource links, future metadata-bearing types).
 func contentBlockText(cb sdk.ContentBlock) string {
-	if cb.Text != nil {
+	switch {
+	case cb.Text != nil:
 		return cb.Text.Text
+	case cb.Image != nil:
+		return "[image]"
+	case cb.Audio != nil:
+		return "[audio]"
 	}
 	b, _ := json.Marshal(cb)
 	return string(b)
