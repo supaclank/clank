@@ -56,6 +56,14 @@ func (s *Service) inspectGitHubRepository(ctx context.Context, locator GitHubRep
 
 	token, err := s.github.AccessToken()
 	if errors.Is(err, githubpkg.ErrNotConnected) {
+		// An anonymous API miss doesn't prove credentials are needed: once a
+		// busy egress IP spends the tiny unauthenticated rate limit, GitHub
+		// answers with 403 for public repositories too. Anonymous git
+		// smart-HTTP carries no such limit, so let it decide whether the
+		// repository is publicly clonable before demanding a connection.
+		if inspection, isPublic := s.probePublicGitHubRepository(ctx, locator); isPublic {
+			return inspection, "", nil
+		}
 		return GitHubRepositoryInspection{}, "", ErrGitHubRepositoryConnectionRequired
 	}
 	if err != nil {
@@ -69,6 +77,26 @@ func (s *Service) inspectGitHubRepository(ctx context.Context, locator GitHubRep
 		return GitHubRepositoryInspection{}, "", err
 	}
 	return inspectGitHubRepositoryResult(locator, repository, token)
+}
+
+// probePublicGitHubRepository inspects a repository over anonymous git
+// smart-HTTP after the REST API refused anonymous access. It yields no
+// description — only the API serves that — but enough metadata to review
+// and launch a public repository without any GitHub connection.
+func (s *Service) probePublicGitHubRepository(ctx context.Context, locator GitHubRepositoryLocator) (GitHubRepositoryInspection, bool) {
+	cloneURL := fmt.Sprintf("%s/%s/%s.git", gitHubCloneBase, locator.Owner, locator.Repo)
+	defaultBranch, err := git.LsRemoteDefaultBranch(ctx, cloneURL)
+	if err != nil {
+		s.log.Printf("anonymous git probe of %s/%s failed: %v", locator.Owner, locator.Repo, err)
+		return GitHubRepositoryInspection{}, false
+	}
+	s.log.Printf("inspected public repository %s/%s via anonymous git (API refused anonymous access)", locator.Owner, locator.Repo)
+	return GitHubRepositoryInspection{
+		GitHubRepositoryLocator: locator,
+		HTMLURL:                 fmt.Sprintf("https://github.com/%s/%s", locator.Owner, locator.Repo),
+		DefaultBranch:           defaultBranch,
+		IsPrivate:               false,
+	}, true
 }
 
 func inspectGitHubRepositoryResult(locator GitHubRepositoryLocator, repository githubpkg.RepositoryDetails, token string) (GitHubRepositoryInspection, string, error) {
