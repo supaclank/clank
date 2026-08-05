@@ -160,11 +160,19 @@ func (r *reducer) onUserChunk(cb sdk.ContentBlock) []agent.Event {
 	if r.cur != nil {
 		r.commitTurn()
 	}
-	text := contentBlockText(cb)
 	if r.replayUser == nil {
 		r.replayUser = &agent.MessageData{Role: "user"}
 	}
-	r.replayUser.Content += text
+	// Text only. The live path records just the typed prompt as Content
+	// (attachments ride to the model as blocks — see Send), so replay must
+	// reconstruct the same: a replayed screenshot block used to land here as
+	// ~200k chars of marshaled base64, committed to the transcript forever
+	// (multi-second text-layout stalls in clients per render). The chunk
+	// still opens/extends the message above so an attachment-only prompt
+	// keeps its message boundary.
+	if cb.Text != nil {
+		r.replayUser.Content += cb.Text.Text
+	}
 	return nil
 }
 
@@ -415,12 +423,30 @@ func (r *reducer) lastMessageID() string {
 
 // --- helpers ---
 
+// contentBlockText renders one block as transcript text. Only text passes
+// through verbatim. Blob variants (image/audio) become a short tag in the
+// existing "[terminal output]" idiom — marshaling them would inline their
+// base64 payload (~200k chars for one phone screenshot) into part text the
+// clients then lay out as one unbreakable word (multi-second stalls).
+// Unknown variants keep the marshal fallback as a debugging aid; they are
+// small (resource links, future metadata-bearing types).
 func contentBlockText(cb sdk.ContentBlock) string {
-	if cb.Text != nil {
+	switch {
+	case cb.Text != nil:
 		return cb.Text.Text
+	case cb.Image != nil:
+		return "[image]"
+	case cb.Audio != nil:
+		return "[audio]"
 	}
-	b, _ := json.Marshal(cb)
-	return string(b)
+	// ContentBlock.MarshalJSON returns (nil, nil) — not an error — for a
+	// variant it doesn't recognize (e.g. a block type this SDK hasn't
+	// vendored yet), so guard the empty payload too or it silently
+	// collapses to "".
+	if b, err := json.Marshal(cb); err == nil && len(b) > 0 {
+		return string(b)
+	}
+	return "[unknown content]"
 }
 
 func toolName(title string, meta map[string]any) string {
@@ -458,6 +484,8 @@ func asMap(v any) map[string]any {
 
 // flattenToolOutput renders a tool result to text: content blocks joined,
 // else rawOutput (string or JSON).
+// TODO(ai-review): Diff/RawOutput marshal fallbacks below also ignore their
+// error, same as contentBlockText's did. https://github.com/supaclank/clank/pull/232
 func flattenToolOutput(up *sdk.SessionToolCallUpdate) string {
 	var parts []string
 	for _, c := range up.Content {
