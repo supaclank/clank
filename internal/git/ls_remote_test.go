@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -43,5 +44,22 @@ func TestLsRemoteDefaultBranchFailsForUnreachableRemote(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "absent.git")
 	if _, err := LsRemoteDefaultBranch(context.Background(), "file://"+missing); err == nil {
 		t.Fatal("expected an error for a nonexistent remote")
+	}
+}
+
+func TestEnvWithTerminalPromptDisabledOverridesInheritedValue(t *testing.T) {
+	// t.Setenv mutates the process environment; can't run alongside t.Parallel().
+	t.Setenv("GIT_TERMINAL_PROMPT", "1")
+
+	env := envWithTerminalPromptDisabled()
+
+	var matches []string
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "GIT_TERMINAL_PROMPT=") {
+			matches = append(matches, kv)
+		}
+	}
+	if want := []string{"GIT_TERMINAL_PROMPT=0"}; !slices.Equal(matches, want) {
+		t.Errorf("GIT_TERMINAL_PROMPT entries = %v, want %v", matches, want)
 	}
 }

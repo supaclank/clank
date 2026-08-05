@@ -17,7 +17,7 @@ import (
 // tiny unauthenticated per-IP rate limit.
 func LsRemoteDefaultBranch(ctx context.Context, url string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "-c", "credential.helper=", "ls-remote", "--symref", "--", url, "HEAD")
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = envWithTerminalPromptDisabled()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -35,4 +35,19 @@ func LsRemoteDefaultBranch(ctx context.Context, url string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("git ls-remote: %s advertised no default branch", url)
+}
+
+// envWithTerminalPromptDisabled returns os.Environ() with GIT_TERMINAL_PROMPT
+// forced to 0. A plain append can't override an inherited value: getenv
+// resolves duplicate keys to the first match, so a stray GIT_TERMINAL_PROMPT
+// already in the process environment would otherwise win over ours.
+func envWithTerminalPromptDisabled() []string {
+	env := os.Environ()
+	filtered := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, "GIT_TERMINAL_PROMPT=") {
+			filtered = append(filtered, kv)
+		}
+	}
+	return append(filtered, "GIT_TERMINAL_PROMPT=0")
 }
