@@ -62,7 +62,7 @@ func TestWriteThenRead_RoundTrip(t *testing.T) {
 		RefreshToken: "ghr_xyz789",
 		ExpiresAt:    expiresAt,
 		Scopes:       []string{"repo", "read:user"},
-		GitHubLogin:  "axelengstrom",
+		GitHubLogin:  "octocat",
 		GitHubUserID: 12345,
 		InstalledAt:  installedAt,
 	}

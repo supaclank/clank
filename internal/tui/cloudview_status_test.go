@@ -13,10 +13,10 @@ import (
 // in-memory reachability state. Reaching the server doesn't matter if
 // we don't know who we are.
 //
-// Not t.Parallel: HOME is process-global. Same constraint as
+// Not t.Parallel: CLANK_DIR is process-global. Same constraint as
 // internal/config tests.
 func TestCloudView_Status_DiskBaseline(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLANK_DIR", t.TempDir())
 
 	m := cloudView{hasCalled: true}
 	if got := m.Status(); got != cloudStatusNotConfigured {
@@ -50,7 +50,7 @@ func TestCloudView_Status_DiskBaseline(t *testing.T) {
 // Offline branch (clearSession would have already wiped the token in
 // production).
 func TestCloudView_Status_ReachabilityAxis(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLANK_DIR", t.TempDir())
 
 	if err := config.UpdatePreferences(func(p *config.Preferences) {
 		p.Remote = &config.RemoteConfig{

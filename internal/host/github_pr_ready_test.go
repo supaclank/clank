@@ -46,7 +46,7 @@ func markReadyFixture(t *testing.T, worktreeID string, api http.Handler) *host.S
 	store := githubpkg.NewStore(homeDir)
 	if err := store.Write(githubpkg.Credentials{
 		AccessToken: "gho_test",
-		GitHubLogin: "axelengstrom",
+		GitHubLogin: "octocat",
 		Scopes:      []string{"repo", "read:user"},
 	}); err != nil {
 		t.Fatalf("seed credential: %v", err)

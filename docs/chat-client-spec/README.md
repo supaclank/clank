@@ -95,10 +95,9 @@ external references (commit messages, checklists) never dangle.
 
 ### Golden references
 
-`file:line` pointers default to the **clank** repo; cross-repo paths are prefixed with the
-repo name (e.g. `clank-mobile/src/…`). Line numbers drift; the **symbol name** in each
-reference is the durable anchor. If a reference doesn't resolve, find the named symbol and
-update the line — and the rule, if behavior changed.
+`file:line` pointers resolve within the **clank** repo. Line numbers drift; the **symbol
+name** in each reference is the durable anchor. Platform-specific source mappings belong in
+the [implementation checklists](implementations/), not the normative specification.
 
 ## Maintenance
 

@@ -62,7 +62,6 @@ today.
   > `meta`-only changes (visibility/draft/follow-up from another client) don't push at all
   > (they reconcile on the next refetch). This works but is not the push-based golden
   > behavior — tracked in [react-native-ts.md](implementations/react-native-ts.md).
-  > **Golden contrast:** `clank-mobile/src/hooks/dispatch.ts` (no `meta` case).
 
 ## Create & delete
 

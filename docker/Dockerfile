@@ -1,8 +1,7 @@
 # syntax=docker/dockerfile:1.6
 #
 # Multi-stage build that produces /usr/local/bin/{clankd,clank-host,
-# clank-auth-stub} in a small runtime image. clankd embeds the sync
-# server in TCP mode when CLANK_SYNC_S3_* env vars are present.
+# clank-auth-stub} in a small runtime image.
 
 ARG GO_VERSION=1.26.0
 
@@ -85,10 +84,9 @@ RUN curl -fsSL https://bun.sh/install | bash -s -- bun-v1.3.14 \
     && opencode --version \
     && claude --version
 
-# Persistent state. clankd writes its embedded sync sqlite db here when
-# the gateway is in TCP mode with CLANK_SYNC_S3_* configured; its local
-# provisioner stores host.db here too. Mount as a named volume in
-# docker-compose so it survives container rebuilds.
+# Persistent state. clankd stores its databases and local-provisioner state
+# under /root/.clank. Mount it as a named volume in docker-compose so it
+# survives container rebuilds.
 RUN mkdir -p /var/lib/clank /root/.clank
 
 COPY --from=builder /out/clankd          /usr/local/bin/clankd

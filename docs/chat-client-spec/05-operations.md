@@ -142,8 +142,8 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
   UX must be driven by the status event, not the call return; pending permissions must be
   cleared, running tools must not spin forever, and a late idle must not masquerade as success. **Golden:**
   `internal/agent/claude_permissions.go:152` (`failPendingPermissions`),
-  `internal/tui/sessionview.go:2190`, `:2203` (`startAbort`);
-  `clank-mobile/…/PreviewOverlayContainer.kt` (settle-tools + `stoppedSinceLastSend`).
+  `internal/tui/sessionview.go:2190`, `:2203` (`startAbort`). **Conformance:**
+  `CONF-ABORT-PERM`, `CONF-ABORT-SETTLE-TOOLS`, `CONF-ABORT-DONE-SUPPRESS`.
 
 ### Revert / fork — backend-specific
 
@@ -168,7 +168,8 @@ This lazy rehydration MUST also recover a backend whose connection dropped *mid-
   state ([EVT-010](04-event-protocol.md), [INV-MONOTONIC-001](08-invariants.md)). The
   transcript is committed **asynchronously**, so a fetch fired mid-turn can lag the live
   stream — the client MUST NOT let the lagging snapshot erase streamed content. **Golden:**
-  `internal/tui/sessionview.go:1521` (`handleSessionMessages`), `clank-mobile/src/lib/mergeMessages.ts`.
+  `internal/tui/sessionview.go:1521` (`handleSessionMessages`). **Conformance:**
+  `CONF-MONOTONIC`, `CONF-RECONCILE`.
 
 #### The messages GET is a pure read
 

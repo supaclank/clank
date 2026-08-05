@@ -146,7 +146,7 @@ services:
       # in-container, /etc/hosts on the laptop).
       CLANK_IMAGES_S3_BUCKET: "${CLANK_IMAGES_BUCKET:-clank-images}"
       CLANK_IMAGES_S3_REGION: "us-east-1"
-      CLANK_IMAGES_S3_ENDPOINT: "http://clank-minio:9000"
+      CLANK_IMAGES_S3_ENDPOINT: "${CLANK_IMAGES_S3_ENDPOINT:-http://clank-minio:9000}"
       CLANK_IMAGES_S3_PUBLIC_ENDPOINT: "${CLANK_IMAGES_S3_PUBLIC_ENDPOINT:-}"
       CLANK_IMAGES_S3_ACCESS_KEY: "${MINIO_ROOT_USER:-clankadmin}"
       CLANK_IMAGES_S3_SECRET_KEY: "${MINIO_ROOT_PASSWORD:-clankadmin}"
@@ -188,7 +188,7 @@ services:
       - "${CLANKD_PORT:-7878}:7878"
     volumes:
       - clankd-data:/root/.clank
-      # Provide the prefs file with the bearer token + provisioner choice.
+      # Provide the prefs file with the provisioner choice and credentials.
       - ./preferences.json:/root/.clank/preferences.json:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:7878/ping || exit 1"]

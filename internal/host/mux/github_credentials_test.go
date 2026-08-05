@@ -70,7 +70,7 @@ func TestGitHubStatus_ConnectedAfterWrite(t *testing.T) {
 	store := githubpkg.NewStore(tmpHome)
 	if err := store.Write(githubpkg.Credentials{
 		AccessToken: "gho_test",
-		GitHubLogin: "axelengstrom",
+		GitHubLogin: "octocat",
 		Scopes:      []string{"repo", "read:user"},
 	}); err != nil {
 		t.Fatalf("seed credential: %v", err)
@@ -89,8 +89,8 @@ func TestGitHubStatus_ConnectedAfterWrite(t *testing.T) {
 	if !got.Connected {
 		t.Error("Connected should be true after a credential write")
 	}
-	if got.GitHubLogin != "axelengstrom" {
-		t.Errorf("GitHubLogin = %q, want axelengstrom", got.GitHubLogin)
+	if got.GitHubLogin != "octocat" {
+		t.Errorf("GitHubLogin = %q, want octocat", got.GitHubLogin)
 	}
 	if len(got.Scopes) != 2 {
 		t.Errorf("Scopes len = %d, want 2: %v", len(got.Scopes), got.Scopes)

@@ -8,7 +8,8 @@ the client-side mechanism for replying to specific parts of a message.
 
 > **Golden-reference note.** For the **question** flow the backend-tagged tool part below is
 > the contract, and the **TUI** implements it (`internal/tui/sessionview_question.go`).
-> For plan review and inline comments the **React Native client** remains the reference.
+> For plan review and inline comments, the rules and conformance scenarios below define the
+> reference behavior.
 
 ## The question tag (normalized path)
 
@@ -41,8 +42,7 @@ the tag is re-derived from the transcript).
   read-only. This is [ITOOL-002] generalized: no resolved event exists; answering elsewhere
   is observed as ordinary transcript movement (the gated part completes; a bypass answer
   arrives as the user's follow-up message).
-  **Golden:** `internal/tui/sessionview_question.go` (`activeQuestionPart`),
-  `clank-mobile/src/lib/activeToolCall.ts` (same heuristic, client-parsed).
+  **Golden:** `internal/tui/sessionview_question.go` (`activeQuestionPart`).
 
 - **~~[QST-003]~~ (retired 0.6.0 — M3) (MUST — permission suppression)** For a gated Claude question (default/plan
   mode) the backend still emits the `permission` event, with the **same `request_id`** as the
@@ -67,8 +67,7 @@ permission flow applies).
   **Why:** question parts now also carry the pre-parsed `part.question` tag ([QST-001]) —
   prefer that. This name-matching path remains the contract for **plans** and for clients
   that predate the tag.
-  **Golden:** `clank-mobile/src/lib/askQuestion.ts:12` (`parseAskUserQuestion`),
-  `clank-mobile/src/lib/planReview.ts:35` (`parsePlan`).
+  **Conformance:** `CONF-INTERACTIVE-ASK`, `CONF-INTERACTIVE-PLAN`.
 
 - **[ITOOL-002] (MUST)** A client MUST detect whether the prompt is **still awaiting an
   answer** versus the conversation having moved on. A **terminal** part `status`
@@ -76,9 +75,7 @@ permission flow applies).
   client) — the interactive card MUST clear, not reappear. The same tool re-emits as
   `completed` when the turn finishes.
   **Why:** without this the card flickers back after answering or after a refetch.
-  **Golden:** `clank-mobile/src/lib/activeToolCall.ts` (`findActiveToolCallPartId`),
-  `clank-mobile/src/lib/askQuestion.ts:52`, `clank-mobile/src/lib/planReview.ts:86`. **Conformance:** `CONF-INTERACTIVE-ASK`,
-  `CONF-INTERACTIVE-PLAN`.
+  **Conformance:** `CONF-INTERACTIVE-ASK`, `CONF-INTERACTIVE-PLAN`.
 
 - **[ITOOL-003] (MUST — gating)** When the session is in a prompting mode (`default`/`plan`),
   a `permission` prompt gates the interactive tool, correlated by `tool_use_id` == the part
@@ -86,8 +83,7 @@ permission flow applies).
   mode there is **no** permission — the tool auto-runs and the only channel is the answer
   itself. A client MUST handle both: present from the part, resolve the permission when one
   exists.
-  **Golden:** `clank-mobile/src/lib/askQuestion.ts:66` (`findQuestionPermission`), `clank-mobile/src/lib/planReview.ts:98`
-  (`findPlanPermission`).
+  **Conformance:** `CONF-INTERACTIVE-ASK`, `CONF-INTERACTIVE-PLAN`.
 
 ## How the answer goes back (current mechanism — flagged)
 
@@ -107,9 +103,7 @@ permission flow applies).
   **Why:** clank's permission-reply bridge can only allow/deny + a deny-reason string; it
   cannot return a structured tool result, so the answer rides a follow-up message instead.
   **This is the part whose robustness is uncertain** — see [Open questions](#open-design-questions-non-normative).
-  **Golden:** `clank-mobile/src/lib/askQuestion.ts:84` (`formatAnswers`),
-  `clank-mobile/src/lib/planReview.ts:78` (`formatPlanApproval`), `:69` (`formatPlanReview`),
-  `:30` (`APPROVAL_MESSAGE`). **Conformance:** `CONF-INTERACTIVE-ASK`, `CONF-INTERACTIVE-PLAN`.
+  **Conformance:** `CONF-INTERACTIVE-ASK`, `CONF-INTERACTIVE-PLAN`.
 
 - **~~[ITOOL-005]~~ (retired 0.6.0 — M3) (MUST)** Plan-mode posture follows [INV-PERMMODE-EXITPLAN-001](08-invariants.md):
   Approve = **reply `allow`** to the parked `ExitPlanMode` permission; the **backend** then
@@ -117,8 +111,8 @@ permission flow applies).
   client does **not** send a `config.mode` to switch to build — it simply omits `config` on
   ordinary follow-ups ([INV-PERMMODE-001](08-invariants.md)) until the
   user explicitly changes the mode. Revise = **reply `deny`** with the revision notes as the
-  deny-reason. **Golden:** `clank-mobile/src/lib/planReview.ts` (`formatPlanApproval`/`formatPlanReview`),
-  `internal/agent/claude_permissions.go:97` (backend mode reset on approval).
+  deny-reason. **Golden:** `internal/agent/claude_permissions.go:97` (backend mode reset on
+  approval).
 
 ## Inline comments (client-side structured reply)
 
@@ -133,9 +127,7 @@ comment.
   works on any message, so it covers OpenCode plans (plain messages, no `ExitPlanMode`) and
   general per-section feedback alike. **Why:** structured, located feedback without a
   protocol; the same splitter backs both the plan reviewer and general message comments.
-  **Golden:** `clank-mobile/src/lib/chatReview.ts` (`formatChatReply`),
-  `clank-mobile/src/lib/markdownBlocks.ts` (`splitMarkdownIntoBlocks`, `buildQuotedComments`, `quoteLines`),
-  `clank-mobile/src/lib/planReview.ts:48` (shared with plan reviewer). **Conformance:** `CONF-INLINE-COMMENT`.
+  **Conformance:** `CONF-INLINE-COMMENT`.
 
 ## Cross-backend mapping
 

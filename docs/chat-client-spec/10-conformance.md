@@ -113,14 +113,13 @@ Fixtures are not invented — they are captured or lifted:
 - **Lifted** from the golden tests that already encode the hard cases:
   `internal/tui/session_sse_stale_test.go` (stale-stream, doubled-reader),
   `internal/tui/sessionview_test.go` (pending-permission restore, optimistic backfill,
-  revert filter, abort), `internal/host/events_test.go` (buffer/close),
-  `clank-mobile/src/hooks/__tests__/dispatch.test.ts` and `…/lib/__tests__` (delta, monotonic
-  merge, shell drop).
+  revert filter, abort), `internal/host/events_test.go` (buffer/close).
 
 Fixtures live in `docs/chat-client-spec/fixtures/`. Checked in today (0.5.0):
-`fixtures/acp/` — verbatim frames captured from the real pinned ACP adapters, replayed
+`fixtures/acp/` — sanitized frames captured from the real pinned ACP adapters, replayed
 through the production reducer by `internal/agent/acp/fixtures_test.go` (see the fixture
-README for provenance and format). Per-scenario `<CONF-ID>.json` projections are still to
+tests for provenance and format). Personal paths, identifiers, command inventories,
+timestamps, and usage values are normalized. Per-scenario `<CONF-ID>.json` projections are still to
 come; each client's harness loads the same files.
 
 ## Scenario matrix

@@ -70,7 +70,7 @@ func TestPushToRemote_RefusesPushToUnrelatedRepo(t *testing.T) {
 	store := githubpkg.NewStore(homeDir)
 	if err := store.Write(githubpkg.Credentials{
 		AccessToken: "gho_test",
-		GitHubLogin: "axelengstrom",
+		GitHubLogin: "octocat",
 	}); err != nil {
 		t.Fatalf("seed credential: %v", err)
 	}

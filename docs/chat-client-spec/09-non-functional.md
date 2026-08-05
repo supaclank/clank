@@ -33,8 +33,7 @@ these are normative, not aspirational.
   suspendable platforms — is [EVT-006](04-event-protocol.md) /
   [INV-STREAM-SUPERVISE-001](08-invariants.md). (RN's old one-refresh-reconnect-then-give-up
   was the shipped counterexample: a session created after the stream died froze at
-  "Working…" forever.) **Golden:** `clank-mobile/src/api/events.ts` (`scheduleReconnect`:
-  1s→30s full-jitter backoff), `…/session/SessionEventStream.kt:121` (1s→15s backoff).
+  "Working…" forever.) **Conformance:** `CONF-STREAM-SUPERVISE`.
 - **[NFR-REL-002] (SHOULD)** Detect half-open connections (no heartbeat exists, [INV-HEARTBEAT-GAP-001])
   via transport keepalive or a liveness timeout, then treat as a drop. Where neither is
   available (RN), resubscribe on app foreground instead ([EVT-006]).
@@ -87,7 +86,7 @@ these are normative, not aspirational.
   Redact per [NFR-SEC-001].
 - **[NFR-OBS-002] (SHOULD)** Make the reducer pure and inspectable (state in, state out) so a
   fixture replay ([10](10-conformance.md)) can snapshot it. **Golden:**
-  `clank-mobile/src/hooks/dispatch.ts` (pure, unit-tested against a mock cache).
+  `internal/agent/acp/reducer.go`.
 
 ## Forward compatibility & testability
 

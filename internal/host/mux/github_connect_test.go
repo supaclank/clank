@@ -153,8 +153,8 @@ func TestGitHubConnect_EndToEnd(t *testing.T) {
 		}
 		if st.State == githubpkg.FlowSuccess {
 			gotSuccess = true
-			if st.GitHubLogin != "axelengstrom" {
-				t.Errorf("GitHubLogin = %q, want axelengstrom", st.GitHubLogin)
+			if st.GitHubLogin != "octocat" {
+				t.Errorf("GitHubLogin = %q, want octocat", st.GitHubLogin)
 			}
 			break
 		}
@@ -181,8 +181,8 @@ func TestGitHubConnect_EndToEnd(t *testing.T) {
 	if !status.Connected {
 		t.Errorf("status.Connected = false, want true after success")
 	}
-	if status.GitHubLogin != "axelengstrom" {
-		t.Errorf("status.GitHubLogin = %q, want axelengstrom", status.GitHubLogin)
+	if status.GitHubLogin != "octocat" {
+		t.Errorf("status.GitHubLogin = %q, want octocat", status.GitHubLogin)
 	}
 }
 
@@ -237,7 +237,7 @@ func (fa *fakeAuth) handleAPI(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/user":
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"login":"axelengstrom","id":12345}`))
+		_, _ = w.Write([]byte(`{"login":"octocat","id":12345}`))
 	default:
 		http.NotFound(w, r)
 	}

@@ -74,8 +74,7 @@ One transcript message. Returned in `GET /sessions/{id}/messages` and carried by
 
 - **[DATA-020] (MUST)** A client MUST handle `id == ""` on a message. User messages sent to
   the Claude backend echo back without an ID; the streaming assistant shell has none either.
-  See [INV-MSGID-001](08-invariants.md). **Golden:** `internal/agent/agent.go:215`,
-  `clank-mobile/src/hooks/dispatch.ts:51` (shell drop), `:73` (id-less user echo).
+  See [INV-MSGID-001](08-invariants.md). **Golden:** `internal/agent/agent.go:215`.
 
 ## `Part`
 
@@ -101,8 +100,8 @@ Source: `internal/agent/agent.go:224`.
   post-abort transcript refetch (which still carries the interrupted tool as `running`)
   monotonically "advances" it back to `running` and the spinner resumes. See
   [INV-ABORT-SETTLE-TOOLS-001](08-invariants.md). **Why:** out-of-order or re-fetched snapshots
-  otherwise flip a finished tool back to "running". **Golden:**
-  `clank-mobile/src/lib/mergeMessages.ts:25` (`STATUS_RANK`, `preferStatus`).
+  otherwise flip a finished tool back to "running". **Conformance:**
+  `CONF-ABORT-SETTLE-TOOLS`.
 - **[DATA-022] (MUST)** A tool is **two parts that share one part ID** (the `tool_use` id):
   the **call** (`type=tool_call`, carrying `tool` + `input`) and the **result**
   (`type=tool_result`, carrying `output`, with `tool` **empty**). A client MUST merge them by
@@ -124,9 +123,7 @@ Source: `internal/agent/agent.go:224`.
   (`assistant{tool_call toolu_X}` then `user{tool_result toolu_X}`). **Golden:**
   `internal/agent/claude.go:1167` (`coalesceSessionMessages`), `:1254` (`sessionBlockToPart`:
   tool_result `ID=ToolUseID`, no `tool`); `internal/tui/sessionview.go:1698` (`upsertPartEntry`,
-  merges by part id);
-  `clank-mobile/modules/preview-launcher/android/…/session/ChatTranscript.kt` (`foldToolResults`
-  — cross-message fold + carrier drop); `clank-mobile/src/lib/mergeMessages.ts:46`.
+  merges by part id). **Conformance:** `CONF-TOOL-MERGE-CROSSMSG`.
 
 ## Enums
 

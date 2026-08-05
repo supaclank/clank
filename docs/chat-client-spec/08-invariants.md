@@ -36,9 +36,6 @@ meanwhile, close the socket instead of leaving it live.
 **Why:** a teardown that runs while the token fetch is in flight sees a still-null socket
 and no-ops; the later-created socket then leaks → **two** live connections delivering every
 event **twice**.
-**Golden:** `clank-mobile/src/api/events.ts` (`connect()`: the double `closed`/generation
-guard around the token await and the socket assignment — the reconnect loop generalizes the
-original boolean to a generation counter so a superseded connect can also never attach).
 **Conformance:** `CONF-SINGLE-STREAM`.
 
 ### [INV-NO-END-001] (MUST) Detect end-of-stream from the closed connection, not an `end` frame
@@ -48,13 +45,11 @@ all. The **per-session** `/sessions/{id}/events` stream emits `event: end` — b
 shutdown — so a consumer of it MAY treat `end` as an explicit "host going away" signal yet
 MUST still tear down on the raw connection close.
 **Why:** a consumer that *waits* for `end` never tears down on a silent close (the common
-case). Note: the Kotlin preview consumer subscribes to the **per-session** stream, so its
-`"end"` branch is **live, correct code** (it fires on host shutdown) — *not* a phantom; an
-earlier draft wrongly called it dead by conflating the two endpoints.
+case). A consumer of the **per-session** stream may still use its `end` branch as an early
+host-shutdown signal; it just cannot rely on that branch for every disconnect.
 **Golden:** `internal/host/mux/events.go` (`handleEvents`: global loop returns on channel
 close, no terminal frame), `internal/host/mux/sessions.go` (`handleSessionEvents`: emits
-`event: end` on shutdown); `…/session/SessionEventStream.kt` (`"end"` branch — correct for the
-per-session stream). **Conformance:** `CONF-NO-END`.
+`event: end` on shutdown). **Conformance:** `CONF-NO-END`.
 
 ### [INV-STREAM-SUPERVISE-001] (MUST) The stream reconnects forever; a dead stream is never accepted
 Supervise the subscription: **every** termination path schedules a reconnect with capped
@@ -73,10 +68,6 @@ and a clean server close killed it with no callback at all. The app then looked 
 "Working…" (empty transcript, no `part`/`status` ever arriving), the session list stayed
 stale (`session.create`/`status`/`meta` all lost), and only pull-to-refresh + re-entering
 (plain HTTP refetch on mount) revealed the long-finished transcript.
-**Golden:** `clank-mobile/src/api/events.ts` (`openEventStream`: generation-guarded
-supervised loop, `scheduleReconnect`, `restart()`), `clank-mobile/src/hooks/useEventStream.ts`
-(AppState foreground `restart()`; `onReconnect` → `resyncAfterStreamGap`),
-`…/session/SessionEventStream.kt:121` (Kotlin 1s→15s backoff loop).
 **Conformance:** `CONF-STREAM-SUPERVISE`.
 
 ---
@@ -89,7 +80,7 @@ with the snapshot (and treat as settled). Apply this in the dispatch layer, befo
 length-based reconciliation.
 **Why:** treating a delta as a replace loses already-shown text; treating a snapshot as an
 append duplicates it. The snapshot is also the only self-heal after a dropped delta.
-**Golden:** `internal/tui/sessionview.go:1665`, `clank-mobile/src/hooks/dispatch.ts:134`.
+**Golden:** `internal/tui/sessionview.go:1665`.
 **Conformance:** `CONF-STREAM-DELTA`.
 
 ### [INV-TOOL-MERGE-001] (MUST) Merge tool `input` and `output`
@@ -100,8 +91,7 @@ separate updates for the **same part ID**. Merge them — preserve existing `inp
 "tool". The two parts arrive in **separate messages** — see [INV-TOOL-RESULT-CARRIER-001].
 **Why:** the result update carries no `input` (and no `tool`); a naive replace erases the
 arguments and the name, so the tool card loses what it ran.
-**Golden:** `internal/tui/sessionview.go:1698` (`upsertPartEntry`),
-`clank-mobile/src/lib/mergeMessages.ts:46`.
+**Golden:** `internal/tui/sessionview.go:1698` (`upsertPartEntry`).
 **Conformance:** `CONF-TOOL-MERGE`.
 
 ### [INV-TOOL-RESULT-CARRIER-001] (MUST) Fold the tool-result carrier across messages
@@ -116,11 +106,9 @@ shows the tool twice ("Edit" with the input, then a nameless "tool" with the out
 phantom user bubble. The **live** `part` stream hides this because the id-less `tool_result`
 part attaches to the current assistant message by [INV-MSGID-001]; but the **refetched**
 transcript ([INV-MONOTONIC-001]) re-introduces the split, so the fold MUST run on the merged
-transcript, not only on the live stream. Verified against the live gateway; the Kotlin
-preview client doubled tool cards in history until it folded across messages (two earlier
-"merge within one message" attempts were wrong — the split is cross-message).
-**Golden:** `clank-mobile/modules/preview-launcher/android/…/session/ChatTranscript.kt`
-(`foldToolResults`); the TUI folds by part id in its flat entry list
+transcript, not only on the live stream. Verified against the live gateway; folding only
+within one message is insufficient because the split is cross-message.
+**Golden:** the TUI folds by part id in its flat entry list
 (`internal/tui/sessionview.go:1698`, `upsertPartEntry`); the wire shape is built by
 `internal/agent/claude.go:1167` (`coalesceSessionMessages`) + `:1254` (`sessionBlockToPart`).
 **Conformance:** `CONF-TOOL-MERGE-CROSSMSG`.
@@ -132,7 +120,7 @@ wholesale replace.
 **Why:** the transcript is committed asynchronously, so a mid-turn refetch returns a state
 *behind* the stream (often just the empty assistant shell). A wholesale replace wipes
 streamed content — the "text/tool flashes then disappears" bug.
-**Golden:** `clank-mobile/src/lib/mergeMessages.ts` (whole file; `mergeMessageLists`).
+**Golden:** `internal/tui/sessionview.go:1638` (`upsertPartEntry`).
 **Conformance:** `CONF-MONOTONIC`.
 
 ### [INV-MSGID-001] (MUST) Parts may have no `message_id`; resolve the owner
@@ -141,8 +129,8 @@ text/thinking part id (`{assistantMsgID}-{idx}`); else the current (latest) assi
 message, creating one if needed. Tool parts attach to the current assistant message.
 **Why:** the Claude backend leaves `message_id` empty and streams parts before the message
 exists; without owner resolution, parts orphan or never render.
-**Golden:** `clank-mobile/src/hooks/dispatch.ts:104`, `clank-mobile/src/lib/mergeMessages.ts:106`
-(`apiMsgIdFromPartId`). **Conformance:** `CONF-MSGID-OWNER`.
+**Golden:** `internal/tui/sessionview.go:1622` (`upsertPartEntry`). **Conformance:**
+`CONF-MSGID-OWNER`.
 
 ### [INV-SHELL-001] (MUST) Drop the empty assistant shell; dedup replayed messages
 The streaming assistant "shell" (role=assistant, no id, no content, no parts) is a turn
@@ -150,7 +138,7 @@ marker — render nothing for it. After a full history load, suppress redundant 
 shells the stream re-delivers (parts arrive via `part`).
 **Why:** rendering the shell adds a blank assistant row; re-rendering post-history messages
 duplicates the transcript.
-**Golden:** `clank-mobile/src/hooks/dispatch.ts:51`, `internal/tui/sessionview.go:1489`
+**Golden:** `internal/tui/sessionview.go:1489`
 (`historyLoaded` skip). **Conformance:** `CONF-SHELL-DROP`.
 
 ### [INV-OPTIMISTIC-001] (MUST) Optimistic user echo + id backfill + dedup
@@ -165,10 +153,8 @@ recent user message, not just the transcript tail.
 (revert/fork) never enable; without **normalized + position-agnostic** dedup, the echo sticks
 to the bottom of the chat as a duplicate for the whole streaming turn (a shipped Kotlin bug,
 traced to a single trailing space the gateway preserved but the client trimmed).
-**Golden:** `internal/tui/sessionview.go:1165` (echo), `:1470` (backfill);
-`clank-mobile/src/hooks/dispatch.ts:73` (dedup);
-`clank-mobile/modules/preview-launcher/android/…/fab/PromptBoxContent.kt` (trimmed,
-any-user-message dedup of the optimistic overlay). **Conformance:**
+**Golden:** `internal/tui/sessionview.go:1165` (echo), `:1470` (backfill).
+**Conformance:**
 `CONF-OPTIMISTIC-BACKFILL`, `CONF-OPTIMISTIC-DEDUP-NORMALIZE`.
 
 ---
@@ -215,10 +201,6 @@ regress it.
 **Why:** a tool left `running` after Stop spins indefinitely; and a "canceled" marker that is
 not terminal-ranked is "advanced" back to `running` by the refetch's monotonic merge — a
 shipped Kotlin bug (the spinner resumed after a cancel).
-**Golden:** `clank-mobile/modules/preview-launcher/android/…/session/ChatTranscript.kt`
-(`cancelPendingParts`; `canceled` ranked terminal in `statusRank`/`preferStatus`). The TUI does
-the analogous settle on **deny** (`internal/tui/sessionview.go:1668` `markRunningToolsFailed`,
-called at `:924`) but not on abort — this native client leads the abort case.
 **Conformance:** `CONF-ABORT-SETTLE-TOOLS`.
 
 ### [INV-ABORT-DONE-001] (MUST) Suppress "turn complete" for idles that follow an abort
@@ -233,8 +215,7 @@ and gate the done affordance on it. (`[Request interrupted by user]` is written 
 transcript by the Claude CLI, **not** emitted by clank — don't treat it as a signal.)
 **Why:** a "Done" banner moments after the user pressed Stop misrepresents a canceled turn as
 a completed one (a shipped Kotlin bug, seen in PR #78 device testing).
-**Golden:** `clank-mobile/modules/preview-launcher/android/…/fab/PreviewOverlayState.kt`
-(`stoppedSinceLastSend`). **Conformance:** `CONF-ABORT-DONE-SUPPRESS`.
+**Conformance:** `CONF-ABORT-DONE-SUPPRESS`.
 
 ---
 
@@ -287,8 +268,7 @@ After every SSE (re)connection — first open, reconnect, foreground — refetch
 and reconcile monotonically. Drive this from your own transport state.
 **Why:** at-most-once + no replay ([EVT-010]) means a gap loses events; only a refetch
 recovers them.
-**Golden:** `internal/tui/sessionview.go:511`; `clank-mobile/src/hooks/useEventStream.ts`
-(`onReconnect` → `resyncAfterStreamGap`). **Conformance:** `CONF-RECONCILE`.
+**Golden:** `internal/tui/sessionview.go:511`. **Conformance:** `CONF-RECONCILE`.
 
 ### [INV-RECONNECT-SEMANTICS-001] (MUST) `reconnected` is the backend's link, not your socket
 The `reconnecting`/`reconnected` events describe the host↔backend link, delivered over your
@@ -296,9 +276,7 @@ stream. Do not treat `reconnected` as "my SSE came back" and do not rely on it t
 recovery after your own transport drop (which emits no event, since the socket was down).
 **Why:** conflating them means a real client-side blip never triggers a resync, leaving a
 stale transcript.
-**Golden:** `internal/agent/agent.go:297`; `clank-mobile/src/hooks/dispatch.ts`
-(`resyncAfterStreamGap` — run from the `reconnected` event *and*, separately, from the
-client's own transport reconnect via `useEventStream`'s `onReconnect`).
+**Golden:** `internal/agent/agent.go:297`.
 **Conformance:** `CONF-RECONNECT-SEMANTICS`.
 
 ### [INV-DEAD-BACKEND-REHYDRATE-001] (MUST, host) A dropped backend connection is `dead`, not reused
@@ -334,11 +312,9 @@ Render questions from the `part.question` tag ([QST-001](11-interactive-tools.md
 (`ExitPlanMode`) from the `tool_call` part `input`, and submit answers per
 [11](11-interactive-tools.md). A client MUST NOT present a question as a bare allow/deny
 permission when it understands the tag ([QST-003] suppression). Legacy clients that predate
-the tag fall back to tool-name matching on the part input (RN reference:
-`clank-mobile/src/lib/askQuestion.ts`, `…/planReview.ts`).
+the tag fall back to matching the observed tool name and parsing the part input.
 **Why:** a client that treats them as opaque tool cards loses the plan/question UX.
-**Golden:** `internal/tui/sessionview_question.go` (questions), `clank-mobile/src/lib/planReview.ts`
-(plan review), `…/chatReview.ts` (inline comments).
+**Golden:** `internal/tui/sessionview_question.go` (questions).
 **Conformance:** `CONF-QUESTION-TAG`, `CONF-INTERACTIVE-ASK`, `CONF-INTERACTIVE-PLAN`, `CONF-INLINE-COMMENT`.
 
 ### [INV-SIDEBAR-META-001] (MUST) Drive the session list from `meta`, not field-level events

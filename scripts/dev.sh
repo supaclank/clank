@@ -8,12 +8,12 @@
 # in-container sprite reaches it via docker DNS, and the laptop via the
 # `127.0.0.1 clank-minio` entry that `make docker-setup` adds to /etc/hosts.
 # Both dial the same hostname, so the SigV4 signature verifies and no public
-# tunnel is needed for local development. When CLANK_SYNC_S3_PUBLIC_ENDPOINT is
+# tunnel is needed for local development. When CLANK_IMAGES_S3_PUBLIC_ENDPOINT is
 # unset the gateway falls back to the internal endpoint automatically.
 #
 # Testing against a REAL remote sprite (fly.io etc.) needs a publicly-reachable
-# bucket — provision a real S3/R2 bucket and set CLANK_SYNC_S3_ENDPOINT +
-# CLANK_SYNC_S3_PUBLIC_ENDPOINT in docker/.env. Cloudflare quick-tunnels were
+# bucket — provision a real S3/R2 bucket and set CLANK_IMAGES_S3_ENDPOINT +
+# CLANK_IMAGES_S3_PUBLIC_ENDPOINT in docker/.env. Cloudflare quick-tunnels were
 # removed: they are not built for blob transfer (low throughput, and the
 # rotating URLs went stale and failed mid-sync with s3_unreachable).
 

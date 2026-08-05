@@ -21,12 +21,12 @@ backend is configured.
   unauthenticated discovery endpoint `GET /auth-config` (authorize endpoint, token
   endpoint, client ID, scopes, callback parameters). **Why:** endpoints and client IDs
   differ per deployment; hardcoding them breaks self-hosters. **Golden:**
-  `pkg/gateway/gateway.go` (`/auth-config`), `clank-mobile/src/auth/discovery.ts`.
+  `pkg/gateway/gateway.go` (`/auth-config`).
 - **[CONN-003] (MUST)** Sign-in MUST use OAuth 2.0 Authorization Code with **PKCE**. The
   redirect target is platform-specific (desktop: loopback `127.0.0.1:<port>` per RFC 8252;
   mobile: a custom URI scheme; web: a registered https redirect) but the PKCE exchange is
   identical. **Why:** PKCE is required for public clients; the redirect shape is the only
-  legitimate per-platform difference. **Golden:** `clank-mobile/src/auth/oauth.ts`.
+  legitimate per-platform difference. **Golden:** `internal/cloud/oauth.go`.
 - **[CONN-010] (MUST)** Every authenticated request — including the SSE connection — MUST
   carry `Authorization: Bearer <access_token>`. **Why:** the gateway gates every endpoint
   uniformly. **Golden:** `internal/daemonclient/transport.go:46` (JSON), `:136` (SSE);
@@ -37,7 +37,7 @@ backend is configured.
 - **[CONN-011] (SHOULD)** A client SHOULD refresh the access token *proactively*, shortly
   before expiry (the golden mobile skew is 30 s), rather than waiting for a 401. **Why:**
   proactive refresh avoids a guaranteed first-request failure on every cold open. **Golden:**
-  `clank-mobile/src/auth/session.ts` (`getValidAccessToken`).
+  `internal/daemonclient/refresh.go`.
 - **[CONN-012] (MUST)** On a `401` from any request, a client MUST attempt **exactly one**
   forced token refresh and retry the request once. It MUST sign the user out **only** when
   the refresh itself fails permanently (the token endpoint returns `invalid_grant`). Any
@@ -45,14 +45,12 @@ backend is configured.
   as transient: keep the session, surface a recoverable error.
   **Why:** signing out on a transient refresh failure (e.g. an OS-killed network during a
   backgrounded refresh) ejects the user for no reason; this was a recurring mobile
-  regression. **Golden:** `clank-mobile/src/auth/session.ts`,
-  `clank-mobile/src/api/events.ts` (a 401 on the stream sets `forceRefresh` for the next
-  reconnect attempt — note the *stream* retries forever per [EVT-006]; "exactly one refresh
-  retry" is the per-request rule).
+  regression. The *stream* still retries forever per [EVT-006]; "exactly one refresh retry"
+  is the per-request rule. **Golden:** `internal/daemonclient/refresh.go`.
 - **[CONN-013] (MUST)** Refresh tokens MUST be stored in the platform secure store
   (Keychain / Keystore / equivalent), never in plaintext or app-readable storage, and MUST
   NOT be logged. **Why:** a leaked refresh token is a long-lived credential. Cross-ref
-  [NFR-SEC-001](09-non-functional.md). **Golden:** `clank-mobile/src/auth/session.ts`.
+  [NFR-SEC-001](09-non-functional.md).
 - **[CONN-014] (MUST NOT)** A client MUST NOT possess or send the host's own bearer token;
   that token is injected by the gateway. **Why:** host credentials must never reach an
   end-user device. **Golden:** `pkg/provisioner/transport/bearer.go`.

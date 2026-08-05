@@ -55,9 +55,9 @@ func TestParseIPNeighMAC(t *testing.T) {
 
 func TestParseMagicDNSName(t *testing.T) {
 	t.Parallel()
-	status := `{"Self":{"DNSName":"axels-mbp.tail1234.ts.net.","TailscaleIPs":["100.123.16.31"]}}`
-	if got := parseMagicDNSName([]byte(status)); got != "axels-mbp.tail1234.ts.net" {
-		t.Errorf("dns name = %q, want axels-mbp.tail1234.ts.net", got)
+	status := `{"Self":{"DNSName":"laptop.tail1234.ts.net.","TailscaleIPs":["100.123.16.31"]}}`
+	if got := parseMagicDNSName([]byte(status)); got != "laptop.tail1234.ts.net" {
+		t.Errorf("dns name = %q, want laptop.tail1234.ts.net", got)
 	}
 	if got := parseMagicDNSName([]byte("not json")); got != "" {
 		t.Errorf("bad json must yield empty, got %q", got)
