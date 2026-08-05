@@ -1,10 +1,11 @@
 package acp
 
-// Replays captured real-adapter frames (docs/chat-client-spec/fixtures/acp)
+// Replays sanitized real-adapter frames (docs/chat-client-spec/fixtures/acp)
 // through the production reducer. These pin the adapter behaviors the
 // backend depends on — delta chunking, pre-merged replay, late/meta-only
 // updates dropping harmlessly — against the exact pinned adapter
-// versions the fixtures were captured from.
+// versions the fixtures were captured from. Personal paths, identifiers,
+// command inventories, timestamps, and usage values are normalized.
 
 import (
 	"bufio"
@@ -14,8 +15,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/supaclank/clank/internal/agent"
 	sdk "github.com/coder/acp-go-sdk"
+	"github.com/supaclank/clank/internal/agent"
 )
 
 const fixtureDir = "../../../docs/chat-client-spec/fixtures/acp"

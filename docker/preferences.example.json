@@ -1,7 +1,4 @@
 {
-  "remote_hub": {
-    "auth_token": "<set in local docker/preferences.json>"
-  },
   "default_launch_host_provider": "flysprites",
   "flysprites": {
     "api_token": "<set in local docker/preferences.json>",

@@ -35,7 +35,7 @@ type Client struct {
 }
 
 // New constructs a Client targeting the gateway base URL (e.g.
-// "https://clankgw.fly.dev"). httpClient may be nil for the default.
+// "https://gateway.example.com"). httpClient may be nil for the default.
 func New(gatewayURL string, httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}

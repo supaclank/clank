@@ -159,7 +159,7 @@ func waitForConnection(ctx context.Context, client *daemonclient.Client, shownAt
 }
 
 // shortHostname is the laptop's display name for phones: the hostname
-// with the domain suffix dropped ("Axels-MBP.lan" → "Axels-MBP") —
+// with the domain suffix dropped ("Laptop.lan" → "Laptop") —
 // full mDNS/DHCP suffixes read as noise in the picker.
 func shortHostname() string {
 	hostname, err := os.Hostname()

@@ -12,7 +12,7 @@ func TestPreviewLinkRoundTrip(t *testing.T) {
 	t.Parallel()
 	want := PreviewLink{
 		GatewayURL: "http://100.99.1.2:7880",
-		Alts:       []string{"http://axels-mbp.tail1234.ts.net:7880", "http://192.168.1.20:7880"},
+		Alts:       []string{"http://laptop.tail1234.ts.net:7880", "http://192.168.1.20:7880"},
 		HostKey:    "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w",
 		PreviewURL: "http://192.168.1.20:8081",
 		SessionID:  "01HSESSION",

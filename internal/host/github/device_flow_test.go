@@ -62,7 +62,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		deviceCode: "device-code-abc",
 		expiresIn:  900,
 		interval:   1, // make tests fast — minimum interval the helper allows
-		userLogin:  "axelengstrom",
+		userLogin:  "octocat",
 		userID:     12345,
 	}
 	fg.authSrv = httptest.NewServer(http.HandlerFunc(fg.handleAuth))
@@ -230,8 +230,8 @@ func TestDeviceFlow_PendingThenSuccess(t *testing.T) {
 	}
 
 	status := waitForState(t, m, start.FlowID, FlowSuccess, 5*time.Second)
-	if status.GitHubLogin != "axelengstrom" {
-		t.Errorf("GitHubLogin = %q, want axelengstrom", status.GitHubLogin)
+	if status.GitHubLogin != "octocat" {
+		t.Errorf("GitHubLogin = %q, want octocat", status.GitHubLogin)
 	}
 
 	// Verify the credential landed in the store.
@@ -242,7 +242,7 @@ func TestDeviceFlow_PendingThenSuccess(t *testing.T) {
 	if creds.AccessToken != "gho_abc123" {
 		t.Errorf("AccessToken = %q, want gho_abc123", creds.AccessToken)
 	}
-	if creds.GitHubLogin != "axelengstrom" || creds.GitHubUserID != 12345 {
+	if creds.GitHubLogin != "octocat" || creds.GitHubUserID != 12345 {
 		t.Errorf("user info not captured: login=%q id=%d", creds.GitHubLogin, creds.GitHubUserID)
 	}
 	if len(creds.Scopes) != 2 || creds.Scopes[0] != "repo" || creds.Scopes[1] != "read:user" {

@@ -15,13 +15,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/supaclank/clank/internal/webpreview"
 	"github.com/supaclank/clank/pkg/auth"
 	"github.com/supaclank/clank/pkg/preview/routestore"
 	"github.com/supaclank/clank/pkg/preview/routestore/memstore"
 	"github.com/supaclank/clank/pkg/preview/tokens"
 	"github.com/supaclank/clank/pkg/provisioner"
-	"github.com/coder/websocket"
 )
 
 // targetDialProvisioner is a real-Provisioner-shaped stub whose
@@ -767,7 +767,7 @@ func TestPreviewProxy_WebSocketUpgradeOwnerOnlyNoAuthRejected(t *testing.T) {
 }
 
 // TestPreviewProxy_WebSocketUpgradeOwnerOnlyWithSignedCookies is the
-// regression test for today's HMR break: the Android dev-launcher's
+// regression test for today's HMR break: the Android preview client's
 // HMR WebSocket client doesn't carry the signed bearer in the URL
 // (Metro's HMRClient hardcodes the WS path with no auth params), so
 // the only way for owner_only WS upgrades to succeed is via the
@@ -775,8 +775,7 @@ func TestPreviewProxy_WebSocketUpgradeOwnerOnlyNoAuthRejected(t *testing.T) {
 // fetch. Cookies → 101.
 //
 // If this test starts failing, HMR is broken for every Android
-// dev-launcher consumer regardless of whether the cookie-bridge in
-// clank-mobile/NetworkBundleLoader is still doing its job.
+// preview client regardless of whether its cookie bridge is still working.
 func TestPreviewProxy_WebSocketUpgradeOwnerOnlyWithSignedCookies(t *testing.T) {
 	t.Parallel()
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -816,9 +815,8 @@ func TestPreviewProxy_WebSocketUpgradeOwnerOnlyWithSignedCookies(t *testing.T) {
 	wsConn, _, err := websocket.Dial(ctx, u.String(), &websocket.DialOptions{
 		HTTPClient: httpc,
 		HTTPHeader: http.Header{
-			// Match exactly what NetworkBundleLoader.kt's cookie-bridge
-			// inserts into Android's WebView CookieManager after the
-			// signed-URL bundle fetch lands.
+			// Match the cookies the Android preview client preserves after
+			// the signed-URL bundle fetch lands.
 			"Cookie": []string{fmt.Sprintf(
 				"%s=%s; %s=%d",
 				tokens.SigParam, sig,

@@ -110,5 +110,4 @@ liveness channel — subscribe before/alongside the fetches, never instead of th
   (re)connection, not only the first, and MUST drive it from its own transport state — not
   from a `reconnected` event (that is the backend's link, [EVT-020]). Getting *back* to a
   connected stream in the first place is [EVT-006]'s supervised-reconnect duty. **Golden:**
-  `internal/tui/sessionview.go:511`, `clank-mobile/src/hooks/useEventStream.ts`
-  (`onReconnect` → `resyncAfterStreamGap`).
+  `internal/tui/sessionview.go:511`. **Conformance:** `CONF-RECONCILE`.

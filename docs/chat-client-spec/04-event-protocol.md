@@ -65,9 +65,7 @@ this is the wire.
   mobile client sets a small `pollingInterval` so the library's own re-poll covers exactly
   that invisible path, and closes the socket on every `error` (cancelling that re-poll) so
   all other paths route through its own backoff loop.
-  **Golden:** `clank-mobile/src/api/events.ts` (`openEventStream`: supervised loop,
-  `scheduleReconnect`, `restart()`), `clank-mobile/src/hooks/useEventStream.ts` (AppState
-  foreground restart), `…/session/SessionEventStream.kt:121` (Kotlin capped-backoff loop).
+  **Conformance:** `CONF-STREAM-SUPERVISE`.
 
 ## Envelope
 
@@ -98,8 +96,7 @@ single biggest source of cross-client divergence.
   history for a new or reconnecting subscriber. A client MUST therefore reconcile state from
   the transcript (`GET /sessions/{id}/messages`) after **every** (re)connection, not just the
   first. See [INV-RECONCILE-001](08-invariants.md). **Golden:**
-  `internal/host/events.go` (no per-subscriber backlog), `clank-mobile/src/hooks/dispatch.ts`
-  (`resyncAfterStreamGap`).
+  `internal/host/events.go` (no per-subscriber backlog). **Conformance:** `CONF-RECONCILE`.
 - **[EVT-011] (MUST)** Each subscriber has a bounded server-side buffer (256 events); when
   it fills, the server **silently drops** events for that subscriber rather than blocking. A
   client MUST drain its socket promptly (do no heavy work on the read path) and MUST rely on
@@ -118,7 +115,7 @@ single biggest source of cross-client divergence.
   a refetch that overlaps the stream, is a no-op. There is **no** global ordering across a
   reconnect. **Why:** idempotent-by-ID application is what makes stream + refetch reconciliation
   safe. **Golden:** `internal/tui/sessionview.go:1638` (`upsertPartEntry` idempotent by part
-  ID), `clank-mobile/src/lib/mergeMessages.ts:139` (`mergeMessageLists`).
+  ID). **Conformance:** `CONF-MONOTONIC`.
 
 ## Event catalog
 
@@ -161,9 +158,8 @@ single biggest source of cross-client divergence.
   backend may have changed state. **Why:** conflating the two means a real client-side
   transport blip (which emits no event, since the socket was down) never triggers a resync,
   leaving a stale transcript. See [INV-RECONNECT-SEMANTICS-001](08-invariants.md). **Golden:**
-  `internal/agent/agent.go:297`–`:309` (payloads describe the backend), `clank-mobile/src/hooks/dispatch.ts`
-  (`resyncAfterStreamGap` — run from both the `reconnected` event *and* the client's own
-  transport reconnect via `onReconnect`).
+  `internal/agent/agent.go:297`–`:309` (payloads describe the backend). **Conformance:**
+  `CONF-RECONCILE`.
 
 ### Voice events
 

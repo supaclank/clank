@@ -78,7 +78,7 @@ func TestCreatePR_EndToEnd(t *testing.T) {
 	store := githubpkg.NewStore(homeDir)
 	if err := store.Write(githubpkg.Credentials{
 		AccessToken: sentinel,
-		GitHubLogin: "axelengstrom",
+		GitHubLogin: "octocat",
 		Scopes:      []string{"repo", "read:user"},
 	}); err != nil {
 		t.Fatalf("seed credential: %v", err)
@@ -238,7 +238,7 @@ func TestCreatePR_CommitsUncommittedWork(t *testing.T) {
 	store := githubpkg.NewStore(homeDir)
 	if err := store.Write(githubpkg.Credentials{
 		AccessToken: "gho_test",
-		GitHubLogin: "axelengstrom",
+		GitHubLogin: "octocat",
 	}); err != nil {
 		t.Fatalf("seed credential: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestCreatePR_CleanAtBaseStillNothingToPush(t *testing.T) {
 	store := githubpkg.NewStore(homeDir)
 	if err := store.Write(githubpkg.Credentials{
 		AccessToken: "gho_test",
-		GitHubLogin: "axelengstrom",
+		GitHubLogin: "octocat",
 	}); err != nil {
 		t.Fatalf("seed credential: %v", err)
 	}
@@ -464,7 +464,7 @@ func TestCreatePR_RefusesPushToUnrelatedRepo(t *testing.T) {
 	store := githubpkg.NewStore(homeDir)
 	if err := store.Write(githubpkg.Credentials{
 		AccessToken: "gho_test",
-		GitHubLogin: "axelengstrom",
+		GitHubLogin: "octocat",
 	}); err != nil {
 		t.Fatalf("seed credential: %v", err)
 	}
@@ -553,7 +553,7 @@ func TestCreatePR_NoAutoCommitOnUnrelatedRepoRefusal(t *testing.T) {
 	store := githubpkg.NewStore(homeDir)
 	if err := store.Write(githubpkg.Credentials{
 		AccessToken: "gho_test",
-		GitHubLogin: "axelengstrom",
+		GitHubLogin: "octocat",
 	}); err != nil {
 		t.Fatalf("seed credential: %v", err)
 	}

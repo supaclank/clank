@@ -87,8 +87,8 @@ the spec calls each out where relevant:
 
 - **[ARCH-003] (SHOULD)** A client SHOULD be backend-agnostic: branch on observed wire
   shape (e.g. empty `message_id`), not on `backend == "claude-code"`. **Why:** backend
-  detection scatters special-cases and rots when a third backend appears. **Golden:**
-  `clank-mobile/src/hooks/dispatch.ts` (`ownerId = data.message_id || apiMsgIdFromPartId(...)`).
+  detection scatters special-cases and rots when a third backend appears. **Conformance:**
+  `CONF-MSGID-OWNER`.
 
 ## What a client connects to, concretely
 

@@ -1,7 +1,7 @@
 # Implementation Checklist — Android (Kotlin)
 
 > **Scope note.** The Kotlin client is the native **preview-overlay floating box**
-> (`clank-mobile/modules/preview-launcher/android/…/`) that floats over a running preview app.
+> that floats over a running preview app.
 > As of clank-mobile PR #78 it grew from a *subset* "agent working / last action / answer-this-question"
 > chip into a **near-full chat consumer**: a structured streaming transcript (text / thinking /
 > tool cards), monotonic merge, reconnect-reconcile, stop/abort, and revert. It is still a

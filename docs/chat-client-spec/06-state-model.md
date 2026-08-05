@@ -37,7 +37,7 @@ Each `Part` additionally carries a derived `streaming` flag (true while text is 
   part ID) and **monotonic**: an update may add a message/part, grow text, advance a tool
   status, or fill input/output — it MUST NEVER remove a message/part, shorten text, or
   regress a status. **Why:** stream and refetch race and overlap; monotonic-by-ID is the only
-  rule under which every interleaving converges. **Golden:** `clank-mobile/src/lib/mergeMessages.ts`,
+  rule under which every interleaving converges. **Golden:**
   `internal/tui/sessionview.go:1638`. Conformance: [CONF-MONOTONIC](10-conformance.md).
 - **[STATE-002] (MUST)** `session` (the host's `SessionInfo`) is authoritative for metadata;
   optimistic local edits MUST converge to it. **Why:** see [ARCH-002](01-architecture.md).
@@ -55,21 +55,22 @@ Each `Part` additionally carries a derived `streaming` flag (true while text is 
 ### `message` → [STATE-MSG-001]
 - **(MUST)** Upsert by `id`, monotonically ([STATE-001]). Specifically:
   - **Assistant "shell"** (role=assistant, no `id`, no `content`, no `parts`): a no-op. It is
-    a turn-boundary marker; streamed content arrives via `part`. **Golden:**
-    `clank-mobile/src/hooks/dispatch.ts:51`.
+    a turn-boundary marker; streamed content arrives via `part`. **Conformance:**
+    `CONF-SHELL-DROP`.
   - **Id-less user echo** (role=user, no `id`): if a recent user entry already holds the
     **same normalized text** (trim leading/trailing whitespace — the gateway preserves a typed trailing
     space the client trims), drop it (it is the echo of the optimistic local message);
     otherwise it is a genuine message — keep it. Compare against **any** recent user entry, not
     only the tail: once the agent streams, assistant parts follow the user message. See
-    [INV-OPTIMISTIC-001](08-invariants.md). **Golden:** `dispatch.ts:73`.
+    [INV-OPTIMISTIC-001](08-invariants.md). **Conformance:**
+    `CONF-OPTIMISTIC-DEDUP-NORMALIZE`.
   - **User message with `id`**: backfill that `id` onto the most recent local user entry that
     lacks one (enables revert/fork actions on it). **Golden:**
     `internal/tui/sessionview.go:1470`.
   - **Assistant message with content/parts and an `id`**: merge into the existing message by
     id (don't shrink). After a full history load, a client MAY skip assistant `message` events
     entirely and rely on `part` events, since history already holds the committed message.
-    **Golden:** `internal/tui/sessionview.go:1489` (post-history skip), `dispatch.ts:63`.
+    **Golden:** `internal/tui/sessionview.go:1489` (post-history skip).
 
 ### `part` → [STATE-PART-001]
 - **(MUST)** Resolve the owning message: use `message_id` if present; else, for Claude
@@ -84,8 +85,7 @@ Each `Part` additionally carries a derived `streaming` flag (true while text is 
     update omits them; advance `status` monotonically.
   **Why:** this is the exact union of the three delta/merge invariants; getting any leg wrong
   corrupts streaming text or loses tool I/O. See [INV-DELTA-001], [INV-TOOL-MERGE-001],
-  [INV-MSGID-001]. **Golden:** `internal/tui/sessionview.go:1622`–`:1681`,
-  `clank-mobile/src/hooks/dispatch.ts:93`–`:149`.
+  [INV-MSGID-001]. **Golden:** `internal/tui/sessionview.go:1622`–`:1681`.
 
   Owner resolution attaches a streamed id-less `tool_result` part to the assistant message that
   already holds its `tool_call` (same id), so the **live** stream renders one merged card. The
@@ -102,15 +102,14 @@ Each `Part` additionally carries a derived `streaming` flag (true while text is 
   prompt's context from that part. **Why:** an unlocked composer lets keystrokes leak past a
   blocking decision; the prompt context lives in the part. **Golden:**
   `internal/tui/sessionview.go:1374`, `internal/agent/claude_permissions.go:58` (pre-emitted
-  part), `:74` (permission), `dispatch.ts:152`.
+  part), `:74` (permission).
 
 ### `error` → [STATE-ERR-001]
 - **(MUST)** If `aborting`, **suppress** the error (it is abort noise, e.g.
   `MessageAbortedError`) — the cancel UX handles it. Otherwise record the error reason on the
   session for a recoverable banner ([VIEW-ERROR-001]). The reason MUST be cleared on the next
   non-error `status`. **Why:** surfacing abort errors as failures alarms the user; a stale
-  reason must not outlive recovery. **Golden:** `internal/tui/sessionview.go:1385`,
-  `dispatch.ts:33` (clear on recovery), `:180`.
+  reason must not outlive recovery. **Golden:** `internal/tui/sessionview.go:1385`.
 
 ### `title` / `meta` → [STATE-META-001 / STATE-META-002]
 - **[STATE-META-001] (MUST)** On `title`, set `session.title`. **Golden:** `sessionview.go:1409`.
@@ -128,14 +127,14 @@ Each `Part` additionally carries a derived `streaming` flag (true while text is 
   immediately in either case. **Why:** the reverted tail must vanish and stay gone across
   refetches. See [INV-REVERT-001]. **Golden:** `internal/tui/sessionview.go:1416` (SSE event
   sets the marker **and** refetches via `handleEvent` → `fetchSessionMessages`), `:1535` (the
-  filter, applied on refetch), `:938` (local revert refetches), `dispatch.ts:165`.
+  filter, applied on refetch), `:938` (local revert refetches).
 
 ### `session.create` / `session.delete` → [STATE-LIST-001]
 - **(MUST)** Refresh the session list — insert/remove the row, see [LIST-004](12-session-list.md).
   A client viewing the deleted session SHOULD additionally surface that it was deleted. These
   are accepted even on the global stream regardless of the open session
   ([EVT-005](04-event-protocol.md)). **Golden:** list refresh — `internal/tui/inbox_sse.go:118`
-  (create), `:136` (delete), `dispatch.ts:190`; surface open-session deletion —
+  (create), `:136` (delete); surface open-session deletion —
   `internal/tui/sessionview.go:1401` (the open *view* has no `session.create` handler; it only
   notes its own deletion).
 
@@ -160,8 +159,9 @@ Each `Part` additionally carries a derived `streaming` flag (true while text is 
   ([INV-ABORT-SETTLE-TOOLS-001](08-invariants.md)); and (c) **not** present a "done/complete"
   affordance for this idle *or any later, delayed idle* — `stoppedSinceLastSend` stays set until
   the next send ([INV-ABORT-DONE-001](08-invariants.md)). **Golden:** `sessionview.go:2203`
-  (`startAbort`), `handleStatusChange` (abort-settle clears `pendingPerms`), `:952` (error path);
-  `clank-mobile/…/PreviewOverlayContainer.kt` (settle-tools + `stoppedSinceLastSend` gating).
+  (`startAbort`), `handleStatusChange` (abort-settle clears `pendingPerms`), `:952` (error path).
+  **Conformance:** `CONF-ABORT-PERM`, `CONF-ABORT-SETTLE-TOOLS`,
+  `CONF-ABORT-DONE-SUPPRESS`.
 - **~~[STATE-REVERT-RESULT-001]~~ (retired 0.6.0 — M3) (MUST)** On revert success, set `session.revert_message_id`,
   prefill the composer with the reverted user prompt, activate + focus it, and refetch the
   filtered transcript. **Golden:** `sessionview.go:924`–`:938`.
@@ -186,9 +186,7 @@ Each `Part` additionally carries a derived `streaming` flag (true while text is 
   stays pinned to the latest content **as the last message grows** (streaming text/parts), not
   only when a new message is appended — keying auto-scroll on message *count* alone fails to
   tail a single growing turn. **Golden:** `internal/tui/sessionview.go:1517` (`handleStatusChange`
-  sets `follow` on busy; mouse handlers disable it on scroll-up);
-  `clank-mobile/…/fab/PromptBoxContent.kt` (follow toggled on a real scroll gesture; tail keyed
-  on a content-length signature).
+  sets `follow` on busy; mouse handlers disable it on scroll-up).
 
 ## Transitions — lifecycle
 
@@ -231,7 +229,7 @@ These are pure functions of the canonical state. Conformance asserts on them.
   `:2206`.
 - **[VIEW-ERROR-001] (MUST)** A non-abort error shows as a **recoverable** banner/reason on the
   session, cleared on the next non-error status; it MUST NOT look like a terminal crash and
-  MUST NOT appear during an abort. **Golden:** `dispatch.ts:180`, `:33`.
+  MUST NOT appear during an abort. **Golden:** `internal/tui/sessionview.go:1385`.
 - **~~[VIEW-REVERT-PREFILL-001]~~ (retired 0.6.0 — M3) (MUST)** After a revert, the composer is prefilled with the
   reverted user prompt and focused, and the reverted tail is hidden. **Golden:**
   `internal/tui/sessionview.go:934`.
