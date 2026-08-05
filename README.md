@@ -17,7 +17,7 @@ Run `clank preview` to start your dev server with the clank overlay and connect 
 
 Live AI edits with hot module reloading.
 
-[*] the Phone needs a clank gateway. Either connect to your laptop via `clank pair`, or a hosted cloud solution like [supaclank.com](https://supaclank.com) to build without a laptop.
+[*] The phone needs a clank gateway. Either connect to your laptop via `clank pair`, or a hosted cloud solution like [supaclank.com](https://supaclank.com) to build without a laptop.
 
 ## Get started
 
