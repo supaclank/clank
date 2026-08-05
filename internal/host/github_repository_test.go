@@ -173,11 +173,76 @@ func TestInspectGitHubRepositoryRequiresConnectionForPrivateRepository(t *testin
 	t.Setenv("HOME", t.TempDir())
 	api := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(api.Close)
+	// The anonymous git probe must also miss — locally, not against the
+	// real github.com.
+	previousCloneBase := host.SetGitHubCloneBaseForTest("file://" + t.TempDir())
+	t.Cleanup(func() { host.SetGitHubCloneBaseForTest(previousCloneBase) })
 	svc := newTestService(t)
 	svc.GitHub().SetAPIBaseURL(api.URL)
 
 	_, err := svc.InspectGitHubRepository(context.Background(), host.GitHubRepositoryLocator{Owner: "acme", Repo: "secret"})
 	if !errors.Is(err, host.ErrGitHubRepositoryConnectionRequired) {
 		t.Fatalf("error = %v, want ErrGitHubRepositoryConnectionRequired", err)
+	}
+}
+
+func TestInspectGitHubRepositoryFallsBackToAnonymousGitWhenAPIRefuses(t *testing.T) {
+	// Not parallel: the GitHub clone base override is package-global.
+	t.Setenv("HOME", t.TempDir())
+
+	source := t.TempDir()
+	runGitHubRepositoryTestCommand(t, source, "git", "init", "-b", "trunk")
+	runGitHubRepositoryTestCommand(t, source, "git", "config", "user.email", "test@example.com")
+	runGitHubRepositoryTestCommand(t, source, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitHubRepositoryTestCommand(t, source, "git", "add", ".")
+	runGitHubRepositoryTestCommand(t, source, "git", "commit", "-m", "initial")
+	wantSHA := strings.TrimSpace(runGitHubRepositoryTestCommand(t, source, "git", "rev-parse", "HEAD"))
+
+	repositories := t.TempDir()
+	bare := filepath.Join(repositories, "acme", "api.git")
+	if err := os.MkdirAll(filepath.Dir(bare), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGitHubRepositoryTestCommand(t, repositories, "git", "clone", "--bare", source, bare)
+	runGitHubRepositoryTestCommand(t, bare, "git", "config", "uploadpack.allowFilter", "true")
+	previousCloneBase := host.SetGitHubCloneBaseForTest("file://" + repositories)
+	t.Cleanup(func() { host.SetGitHubCloneBaseForTest(previousCloneBase) })
+
+	// A busy egress IP out of unauthenticated API quota: GitHub answers 403
+	// even though the repository is public.
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
+	}))
+	t.Cleanup(api.Close)
+
+	workRoot := filepath.Join(t.TempDir(), "work")
+	previousWorkRoot := host.SetWorkRootForTest(workRoot)
+	t.Cleanup(func() { host.SetWorkRootForTest(previousWorkRoot) })
+	svc := newTestService(t)
+	svc.GitHub().SetAPIBaseURL(api.URL)
+
+	inspection, err := svc.InspectGitHubRepository(context.Background(), host.GitHubRepositoryLocator{Owner: "acme", Repo: "api"})
+	if err != nil {
+		t.Fatalf("InspectGitHubRepository: %v", err)
+	}
+	if inspection.DefaultBranch != "trunk" || inspection.IsPrivate || inspection.Description != "" {
+		t.Fatalf("inspection = %+v", inspection)
+	}
+	if inspection.HTMLURL != "https://github.com/acme/api" {
+		t.Errorf("html url = %q", inspection.HTMLURL)
+	}
+
+	launch, err := svc.LaunchGitHubRepository(context.Background(), host.GitHubRepositoryLocator{Owner: "acme", Repo: "api"})
+	if err != nil {
+		t.Fatalf("LaunchGitHubRepository: %v", err)
+	}
+	if launch.DefaultBranch != "trunk" || launch.WorktreeID == "" {
+		t.Errorf("launch = %+v", launch)
+	}
+	if got, err := git.HeadCommit(launch.WorktreeDir); err != nil || got != wantSHA {
+		t.Errorf("editing worktree HEAD = %q, %v; want %s", got, err, wantSHA)
 	}
 }
