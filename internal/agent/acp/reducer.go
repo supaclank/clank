@@ -439,8 +439,14 @@ func contentBlockText(cb sdk.ContentBlock) string {
 	case cb.Audio != nil:
 		return "[audio]"
 	}
-	b, _ := json.Marshal(cb)
-	return string(b)
+	// ContentBlock.MarshalJSON returns (nil, nil) — not an error — for a
+	// variant it doesn't recognize (e.g. a block type this SDK hasn't
+	// vendored yet), so guard the empty payload too or it silently
+	// collapses to "".
+	if b, err := json.Marshal(cb); err == nil && len(b) > 0 {
+		return string(b)
+	}
+	return "[unknown content]"
 }
 
 func toolName(title string, meta map[string]any) string {
@@ -478,6 +484,8 @@ func asMap(v any) map[string]any {
 
 // flattenToolOutput renders a tool result to text: content blocks joined,
 // else rawOutput (string or JSON).
+// TODO(ai-review): Diff/RawOutput marshal fallbacks below also ignore their
+// error, same as contentBlockText's did. https://github.com/supaclank/clank/pull/232
 func flattenToolOutput(up *sdk.SessionToolCallUpdate) string {
 	var parts []string
 	for _, c := range up.Content {

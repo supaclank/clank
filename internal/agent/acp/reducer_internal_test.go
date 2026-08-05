@@ -96,3 +96,13 @@ func TestFlattenToolOutputTagsImageContent(t *testing.T) {
 		t.Fatalf("flattenToolOutput = %q", got)
 	}
 }
+
+// A ContentBlock with no known variant set (e.g. a future block type this
+// SDK hasn't vendored yet) marshals to an empty, non-error payload — the
+// fallback must not let that collapse silently to "".
+func TestContentBlockTextTagsUnknownVariant(t *testing.T) {
+	t.Parallel()
+	if got := contentBlockText(sdk.ContentBlock{}); got != "[unknown content]" {
+		t.Errorf("unknown block = %q, want [unknown content]", got)
+	}
+}
