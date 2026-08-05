@@ -136,7 +136,7 @@ That said, there is no central database for user session data or code. All of th
 Clank supports Claude Code, Codex, OpenCode, via ACP. We're probably adding support for Hermes, Gemini, and Pi soon. We still need small adapters for each ACP server, due to versioning, auth, and slight differences.
 
 ### Previews
-Expo projects are detected automatically. For web projects, your connected agent generates .`clank/launch.yaml` on first run. 
+Expo projects are detected automatically. For web projects, your connected agent generates `.clank/launch.yaml` on first run.
 
 For web, `clank preview` starts or attaches to a dev server and injects the Clank overlay as a \<script\> tag without changing your source code.
 
