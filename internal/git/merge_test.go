@@ -30,6 +30,8 @@ func cloneAtC1(t *testing.T, extra map[string]string) (repoA, repoB, c1 string) 
 
 	repoB = t.TempDir()
 	ffGit(t, "", "clone", "-q", repoA, repoB)
+	ffGit(t, repoB, "config", "user.email", "t@e.com")
+	ffGit(t, repoB, "config", "user.name", "t")
 	return repoA, repoB, c1
 }
 

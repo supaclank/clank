@@ -116,7 +116,7 @@ func TestPush_RejectedNotFastForward(t *testing.T) {
 	// Now create a sibling working tree, commit something different,
 	// and try to push it. Bare repo's main will diverge.
 	otherDir := filepath.Join(tmp, "other")
-	mustGit(t, "", "clone", bareDir, otherDir)
+	mustGit(t, "", "clone", "--branch", "main", bareDir, otherDir)
 	mustGit(t, otherDir, "config", "user.email", "test@example.com")
 	mustGit(t, otherDir, "config", "user.name", "test")
 	if err := os.WriteFile(filepath.Join(otherDir, "README"), []byte("v2"), 0o644); err != nil {
