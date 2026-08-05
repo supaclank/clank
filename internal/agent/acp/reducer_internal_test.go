@@ -23,9 +23,8 @@ func agentChunk(cb sdk.ContentBlock) sdk.SessionNotification {
 // The live path records only the typed text as Content (attachments go to the
 // model as blocks), so replay must reconstruct the same — an image chunk used
 // to marshal its full base64 payload (~200k chars per phone screenshot) into
-// the committed transcript, which mobile clients then laid out as a single
-// unbreakable word (multi-second main-thread stall per render;
-// supaclank/clank-mobile#156).
+// the committed transcript, which clients then laid out as a single
+// unbreakable word (multi-second main-thread stall per render).
 func TestReplayedImageAttachmentStaysOutOfUserContent(t *testing.T) {
 	t.Parallel()
 	r := newReducer(nil)

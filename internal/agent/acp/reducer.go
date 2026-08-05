@@ -167,9 +167,9 @@ func (r *reducer) onUserChunk(cb sdk.ContentBlock) []agent.Event {
 	// (attachments ride to the model as blocks — see Send), so replay must
 	// reconstruct the same: a replayed screenshot block used to land here as
 	// ~200k chars of marshaled base64, committed to the transcript forever
-	// (froze mobile clients per render; supaclank/clank-mobile#156). The
-	// chunk still opens/extends the message above so an attachment-only
-	// prompt keeps its message boundary.
+	// (multi-second text-layout stalls in clients per render). The chunk
+	// still opens/extends the message above so an attachment-only prompt
+	// keeps its message boundary.
 	if cb.Text != nil {
 		r.replayUser.Content += cb.Text.Text
 	}
@@ -427,7 +427,7 @@ func (r *reducer) lastMessageID() string {
 // through verbatim. Blob variants (image/audio) become a short tag in the
 // existing "[terminal output]" idiom — marshaling them would inline their
 // base64 payload (~200k chars for one phone screenshot) into part text the
-// clients then lay out as one unbreakable word (supaclank/clank-mobile#156).
+// clients then lay out as one unbreakable word (multi-second stalls).
 // Unknown variants keep the marshal fallback as a debugging aid; they are
 // small (resource links, future metadata-bearing types).
 func contentBlockText(cb sdk.ContentBlock) string {
