@@ -33,6 +33,8 @@ func TestFetchBundleObjects_AndIsAncestor(t *testing.T) {
 	// repoB clones A at commit1 (HEAD = commit1), before A advances.
 	repoB := t.TempDir()
 	ffGit(t, "", "clone", "-q", repoA, repoB)
+	ffGit(t, repoB, "config", "user.email", "t@e.com")
+	ffGit(t, repoB, "config", "user.name", "t")
 
 	// A advances to commit2 (not yet in repoB).
 	ffWrite(t, filepath.Join(repoA, "f.txt"), "v2")

@@ -62,6 +62,7 @@ func TestPushToRemote_RefusesPushToUnrelatedRepo(t *testing.T) {
 	mustGit(t, "", "init", "--bare", wrongBareDir)
 	mustGit(t, wrongStaging, "remote", "add", "wrongorigin", wrongBareDir)
 	mustGit(t, wrongStaging, "push", "wrongorigin", "main")
+	mustGit(t, wrongBareDir, "symbolic-ref", "HEAD", "refs/heads/main")
 
 	// Point origin at the wrong repo.
 	mustGit(t, workdir, "remote", "add", "origin", "https://github.com/wrong/repo.git")
