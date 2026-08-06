@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"sync"
@@ -11,10 +12,15 @@ import (
 	"testing"
 	"time"
 
+	sdk "github.com/coder/acp-go-sdk"
 	"github.com/supaclank/clank/internal/agent"
 	acpx "github.com/supaclank/clank/internal/agent/acp"
 	"github.com/supaclank/clank/internal/agent/acp/acptest"
-	sdk "github.com/coder/acp-go-sdk"
+)
+
+const (
+	acpHelperProcessEnv = "CLANK_TEST_ACP_HELPER_PROCESS"
+	preparedConfigEnv   = "CLANK_TEST_PREPARED_CONFIG"
 )
 
 // testLogf returns a logger that goes quiet once the test completes.
@@ -284,6 +290,59 @@ func TestSupervisor_EnvRotatedDuringSpawnTriggersRestart(t *testing.T) {
 	if got := spawns.Load(); got != 2 {
 		t.Errorf("spawns = %d, want 2 (restart once the rotated env is observed)", got)
 	}
+}
+
+// Prepare may materialize config that Env discovers, as OpenCode guidance
+// does. The spawned adapter already receives that prepared environment, so
+// reconcile must not mistake it for a post-spawn credential rotation.
+func TestSupervisor_PrepareEnvChangeDoesNotRestartSpawnedAdapter(t *testing.T) {
+	t.Parallel()
+	prepared := filepath.Join(t.TempDir(), "prepared")
+	profile := testProfile(acpx.ScopePerDir, func(string) map[string]string {
+		env := map[string]string{acpHelperProcessEnv: "1"}
+		if _, err := os.Stat(prepared); err == nil {
+			env[preparedConfigEnv] = prepared
+		}
+		return env
+	})
+	profile.Prepare = func(context.Context, string) error {
+		return os.WriteFile(prepared, nil, 0o600)
+	}
+	profile.Command = func(string) (string, []string) {
+		return os.Args[0], []string{"-test.run=^TestSupervisor_ACPHelperProcess$"}
+	}
+	sup, err := acpx.NewAdapterSupervisor(profile, testLogf(t))
+	if err != nil {
+		t.Fatalf("NewAdapterSupervisor: %v", err)
+	}
+	sup.SetReconcileInterval(20 * time.Millisecond)
+	runSupervisor(t, sup)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := sup.GetConn(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("GetConn: %v", err)
+	}
+
+	select {
+	case <-conn.Closed():
+		t.Fatal("adapter restarted even though it received Prepare's environment")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestSupervisor_ACPHelperProcess(_ *testing.T) {
+	if os.Getenv(acpHelperProcessEnv) != "1" {
+		return
+	}
+	if os.Getenv(preparedConfigEnv) == "" {
+		os.Exit(2)
+	}
+	agent := &acptest.ScriptedAgent{}
+	conn := sdk.NewAgentSideConnection(agent, os.Stdout, os.Stdin)
+	<-conn.Done()
+	os.Exit(0)
 }
 
 func TestSupervisor_SpawnErrorFailsWaiterThenRecovers(t *testing.T) {
