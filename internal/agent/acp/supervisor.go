@@ -17,9 +17,10 @@ type AdapterProc struct {
 	// Stop terminates the process: graceful first, then forceful after
 	// stopGrace. Must be safe to call more than once.
 	Stop func()
-	// envFP is the profile-env fingerprint at spawn time; reconcile
-	// restarts the proc when the current fingerprint differs.
-	envFP string
+	// envFP is the exact profile-env fingerprint used to spawn the process;
+	// reconcile restarts the proc when the current fingerprint differs.
+	envFP    string
+	hasEnvFP bool
 }
 
 // SpawnFunc launches one adapter for scopeDir. The default implementation
@@ -231,7 +232,9 @@ func (s *AdapterSupervisor) reconcile(ctx context.Context) {
 			// reconcile sees no change and never restarts onto it.
 			envFP := envFingerprint(s.profileEnv(key))
 			p, err := s.spawn(ctx, key)
-			if err == nil {
+			if err == nil && !p.hasEnvFP {
+				// Custom SpawnFuncs do not launch a process or report its env.
+				// Preserve their pre-spawn snapshot semantics for tests.
 				p.envFP = envFP
 			}
 			results <- started{key: key, proc: p, err: err}
@@ -315,8 +318,9 @@ func (s *AdapterSupervisor) execSpawn(ctx context.Context, scopeDir string) (*Ad
 	if scopeDir != "" {
 		cmd.Dir = scopeDir
 	}
+	spawnEnv := maps.Clone(s.profileEnv(scopeDir))
 	cmd.Env = os.Environ()
-	for k, v := range s.profileEnv(scopeDir) {
+	for k, v := range spawnEnv {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 	cmd.Stderr = os.Stderr
@@ -361,5 +365,10 @@ func (s *AdapterSupervisor) execSpawn(ctx context.Context, scopeDir string) (*Ad
 			}
 		})
 	}
-	return &AdapterProc{Conn: conn, Stop: stop}, nil
+	return &AdapterProc{
+		Conn:     conn,
+		Stop:     stop,
+		envFP:    envFingerprint(spawnEnv),
+		hasEnvFP: true,
+	}, nil
 }
