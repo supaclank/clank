@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"maps"
 	"path/filepath"
@@ -122,6 +123,36 @@ func TestUpsertAndGetSession_NoConfigStaysNil(t *testing.T) {
 	}
 	if got.Config != nil {
 		t.Errorf("config: got %v, want nil", got.Config)
+	}
+}
+
+// A nil Config must still store a JSON object, matching the column's
+// NOT NULL DEFAULT '{}' declaration in schema.sql — json.Marshal(nil map)
+// would otherwise write the literal `null`, a valid-but-wrong-shaped value.
+func TestUpsertSession_NilConfigStoresEmptyObject(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "host.db")
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	if err := s.UpsertSession(context.Background(), agent.SessionInfo{ID: "ses-nilcfg", Backend: agent.BackendClaudeCode}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	s.Close()
+
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	var config string
+	if err := raw.QueryRow(`SELECT config FROM sessions WHERE id = ?`, "ses-nilcfg").Scan(&config); err != nil {
+		t.Fatalf("read config column: %v", err)
+	}
+	if config != "{}" {
+		t.Errorf("config column: got %q, want %q", config, "{}")
 	}
 }
 

@@ -139,7 +139,11 @@ func (s *Store) UpsertSession(ctx context.Context, info agent.SessionInfo) error
 	if !info.LastReadAt.IsZero() {
 		lastReadAt = sql.NullInt64{Int64: timeToMs(info.LastReadAt), Valid: true}
 	}
-	config, err := json.Marshal(info.Config)
+	configSrc := info.Config
+	if configSrc == nil {
+		configSrc = map[string]string{}
+	}
+	config, err := json.Marshal(configSrc)
 	if err != nil {
 		return fmt.Errorf("upsert session %s: encode config: %w", info.ID, err)
 	}
