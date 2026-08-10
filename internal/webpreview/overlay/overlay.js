@@ -1826,9 +1826,10 @@ import {
     // external link (box + top-right arrow): marks every control that
     // leaves the page
     ext: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>',
-    // refresh: arc centered on the viewBox so a rotation spins in
-    // place (the ↻ text glyph orbits — its ink isn't box-centered)
-    refresh: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>',
+    // refresh: OPEN arc (gap at the top-right, arrowhead at the
+    // opening) centered on the viewBox so a rotation spins in place
+    // (the ↻ text glyph orbits — its ink isn't box-centered)
+    refresh: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>',
   };
 
   const host = document.createElement('div');
