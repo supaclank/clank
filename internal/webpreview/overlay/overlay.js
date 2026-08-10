@@ -1543,7 +1543,7 @@ import {
     <div class="save-actions"><button class="cancel">Cancel</button><button class="confirm" disabled>Save</button></div>
   </div>
 </div>
-<div class="hl"></div><div class="hll"></div>
+<div class="hl"></div><div class="hll"></div><div class="hla chiphl" style="display:none"></div>
 <div class="cpop"><textarea class="cpop-in" rows="1"></textarea><div class="cpop-h"><kbd>Enter</kbd> add · <kbd>Esc</kbd> dismiss</div></div>
 <div class="crop">
   <div class="crop-dim"></div>
@@ -1564,7 +1564,7 @@ import {
     settings: $('.settings'), profile: $('.profile'), profileLabel: $('.profile span'),
     saveProfile: $('.save-profile'), saveProfileName: $('.save-profile-name'),
     saveProfileCancel: $('.save-actions .cancel'), saveProfileConfirm: $('.save-actions .confirm'),
-    send: $('.send'), hl: $('.hl'), hll: $('.hll'), toast: $('.toast'),
+    send: $('.send'), hl: $('.hl'), hll: $('.hll'), chipHl: $('.chiphl'), toast: $('.toast'),
     cpop: $('.cpop'), cpopIn: $('.cpop-in'), cpopHint: $('.cpop-h'),
     shot: $('.shot'), att: $('.att'), file: $('.file'),
     crop: $('.crop'), cropDim: $('.crop-dim'), cropSel: $('.crop-sel'),
@@ -1865,6 +1865,8 @@ import {
       el.className = 'chip editable' + (c.comment ? ' cmt' : '');
       el.title = c.detail + (c.comment ? ' — ' + c.comment : '') + ' (click to edit the comment)';
       el.onclick = () => editChipComment(c, el.getBoundingClientRect());
+      el.onmouseenter = () => hoverChipCue(c);
+      el.onmouseleave = clearChipCue;
       const b = document.createElement('b');
       b.textContent = c.label;
       el.append(b);
@@ -1876,7 +1878,7 @@ import {
       }
       const x = document.createElement('button');
       x.textContent = '✕';
-      x.onclick = (e) => { e.stopPropagation(); store.chips.splice(i, 1); render(); };
+      x.onclick = (e) => { e.stopPropagation(); store.chips.splice(i, 1); clearChipCue(); render(); };
       el.append(x);
       ui.chips.appendChild(el);
     });
@@ -2134,6 +2136,35 @@ import {
     }
   };
 
+  // Chip → page affordance: hovering a chip shows where it points —
+  // element chips get their bounding-box outline, text chips re-light
+  // their selection. The open editor keeps the same cue, and owns it:
+  // hover is a no-op while the popover is up.
+  let chipHlNode = null; // element the .chiphl box tracks (repositioned on scroll)
+  const showChipBox = (node) => {
+    chipHlNode = node;
+    positionAttachedBox(ui.chipHl, node);
+    ui.chipHl.style.display = 'block';
+  };
+  const hideChipBox = () => {
+    chipHlNode = null;
+    ui.chipHl.style.display = 'none';
+  };
+  const hoverChipCue = (c) => {
+    if (commentTarget) return;
+    if (c.node && c.node.isConnected) showChipBox(c.node);
+    else if (c.range && pendingMark) {
+      ensureMarkStyle();
+      pendingMark.clear();
+      pendingMark.add(c.range);
+    }
+  };
+  const clearChipCue = () => {
+    if (commentTarget) return;
+    hideChipBox();
+    if (pendingMark) pendingMark.clear();
+  };
+
   // SELECTION_TEXT_CAP bounds the context block; the agent greps the
   // source for anything past it.
   const SELECTION_TEXT_CAP = 2000;
@@ -2189,6 +2220,7 @@ import {
     if (!commentTarget) return;
     commentTarget = null;
     if (pendingMark) pendingMark.clear();
+    hideChipBox();
     ui.cpop.classList.remove('show');
     ui.cpop.style.visibility = '';
   };
@@ -2214,15 +2246,12 @@ import {
   };
 
   // editChipComment reopens the popover on an existing chip, prefilled.
-  // The pending mark re-paints the chip's anchor when it's still live
-  // (its stored selection range, or the ⌘-selected element's contents).
+  // Its anchor stays cued while editing: a text chip's range through the
+  // pending mark, a ⌘-selected element through its bounding-box outline.
   const editChipComment = (c, rect) => {
-    let range = c.range || null;
-    if (!range && c.node && c.node.isConnected) {
-      range = document.createRange();
-      range.selectNodeContents(c.node);
-    }
-    showCommentPopover({ kind: 'edit', chip: c, range }, rect);
+    showCommentPopover({ kind: 'edit', chip: c, range: c.range || null }, rect);
+    if (!c.range && c.node && c.node.isConnected) showChipBox(c.node);
+    else hideChipBox();
   };
 
   const onSelectionMouseUp = (e) => {
@@ -2256,6 +2285,7 @@ import {
   // No rAF hop: scroll events are already frame-coalesced, and rAF
   // pauses entirely in non-rendered documents.
   const onAnchorScroll = () => {
+    if (chipHlNode) positionAttachedBox(ui.chipHl, chipHlNode);
     const t = commentTarget;
     if (!t || !t.range || t.kind === 'edit') return;
     const r = t.range.getBoundingClientRect();
