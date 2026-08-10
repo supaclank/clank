@@ -163,15 +163,16 @@
     if (!pendingReports.length) return; // nothing to retry — don't burn a background timer
     flushTimer = setTimeout(function () {
       flushTimer = null;
-      flushAttempts++;
       // A pending self-heal owns these reports: they describe the very
       // condition the reload fixes, so don't surface them (a ghost pill)
       // while the heal can still land. If the heal gives up, bootHealDone
-      // flips and delivery resumes here.
+      // flips and delivery resumes here. Don't burn the retry budget on
+      // reschedules — only real delivery attempts should count against it.
       if (bootHealPending()) {
         scheduleFlush();
         return;
       }
+      flushAttempts++;
       var pl = previewLauncher();
       if (!pl || !pl.reportPreviewError) {
         scheduleFlush();
