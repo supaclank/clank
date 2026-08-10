@@ -1,76 +1,145 @@
 /**
  * clank-preview-runtime — injected into EVERY guest preview project by the
- * clank backend (see inject.go). Embedded into the host binary and written to
- * the guest project root before `expo start` runs.
+ * clank backend. The backend embeds this file into the host binary and writes
+ * it next to the Metro shim before `expo start` runs; the shim appends
+ * `require(<this file>)` to react-native's InitializeCore during the Babel
+ * transform, so it runs right after InitializeCore on every bundle — before
+ * any app code can throw.
+ *
+ * SYNC MANDATE — this file exists in two repos and MUST stay byte-identical:
+ *   - supaclank/clank         internal/host/preview/preview-runtime.js (DEPLOYED)
+ *   - supaclank/clank-mobile  docs/preview-runtime/clank-preview-runtime.js
+ *     (reference copy, coupled to the PreviewLauncher native-module contract,
+ *     covered by clank-preview-runtime.test.js)
+ * The 2026-08 preview-bricking bug was exactly this drift: the boot-race
+ * hardening (clank-mobile PR #98) landed in the reference copy but never
+ * shipped in the backend. Diff against the other repo before changing either.
  *
  * This is the PRIMARY, user-facing half of "no scary error popups in the
- * preview". It runs as a Metro premodule (before the app's entry, on every
- * bundle — inject.go wires metro.config.js to do this), so it's installed
- * before any app code can throw.
- *
- * What it does, in a guest React Native runtime (no-op on web):
+ * preview". What it does, in a guest React Native runtime (no-op on web):
  *   1. LogBox.ignoreAllLogs(true) — kills the warning/error TOASTS.
  *   2. ErrorUtils.setGlobalHandler — swallows uncaught FATALS *before* they
  *      reach LogBox's fullscreen error inspector (ignoreAllLogs alone does
  *      NOT cover that), keeps the JS runtime alive so Fast Refresh can
  *      hot-replace the bad module, and forwards a friendly summary to native.
+ *      Installed unconditionally; the clank/not-clank decision happens at
+ *      error time (see the boot-race notes inline). Non-clank hosts get the
+ *      previous (stock) handler.
  *   3. global.__clankPreview — a bridge-ready namespace for a future
  *      "visual edits" tool.
+ *
+ * Boot-race hardening: `globalThis.expo` can be MISSING while the bundle
+ * evaluates — expo-modules-core's JSI install can lose the race against the
+ * initial bundle evaluation (both are JS-thread tasks; whichever was enqueued
+ * first wins), and it silently no-ops outright if the guest ReactContext is
+ * torn down mid-boot (e.g. the preview window was closed while bundling).
+ * This file must then (a) never import expo-modules-core — its EventEmitter
+ * module reads `globalThis.expo.EventEmitter` at import time, so importing it
+ * both throws AND permanently poisons Metro's module cache (every later
+ * import, including the app's own, replays the same error) — and (b) still
+ * swallow the resulting app-side fatal, which would otherwise take RN
+ * bridgeless's "[runtime not ready]" path and either brick the preview or
+ * SIGABRT the entire host process. Reports raised before the native module is
+ * reachable are queued and flushed on a bounded retry timer.
+ *
+ * Boot-race SELF-HEAL: when a fatal was swallowed while `globalThis.expo` was
+ * missing and expo then comes up moments later (the JSI install landed right
+ * after the failed evaluation — the common "opened a preview and it
+ * white-screened" case), the app's entry has already failed and nothing will
+ * re-evaluate it. Nothing is wrong with the guest's code, so the "Fix it"
+ * pill could only send the agent in circles. Instead: retract the queued
+ * boot-race report and reload the guest JS ONCE via RN-core DevSettings (no
+ * expo dependency). The fresh evaluation starts with expo installed, so the
+ * app just boots. One-shot per evaluation, gated on expo actually having come
+ * up (if the install never lands, e.g. torn-down context, we never reload —
+ * reports stay queued and the native overlay's restart affordances take
+ * over), and cancelled by a successful render (clearError).
  *
  * The clank-mobile native host suppresses the rest (the native redbox, the
  * "Loading from Metro…" banner) and renders a calm "Fixing a glitch…" pill in
  * its floating overlay, driven by the reportPreviewError call below.
  *
- * NOTE: keep this in sync with clank-mobile docs/preview-runtime/clank-preview-runtime.js
- * (the reference copy, coupled to the PreviewLauncher native module contract).
+ * Why no imports of app code: this must be dependency-free and side-effect
+ * isolated so it's safe to inject into an arbitrary project's bundle.
  *
  * Fast-Refresh safety: the install-once guard lives on `global`, which
  * survives HMR — so re-evaluating this module never double-wraps the handler.
  */
 (function installClankPreviewRuntime() {
-  var g = typeof globalThis !== 'undefined' ? globalThis : (typeof global !== 'undefined' ? global : null);
+  var g =
+    typeof globalThis !== 'undefined'
+      ? globalThis
+      : typeof global !== 'undefined'
+        ? global
+        : null;
   if (!g) return;
 
-  g.__clankPreview = g.__clankPreview || { version: 1, installed: false };
+  // Set up the namespace first so even the web/no-op path exposes it.
+  g.__clankPreview = g.__clankPreview || { version: 2, installed: false };
   if (g.__clankPreview.installed) return; // HMR-safe: install exactly once.
   g.__clankPreview.installed = true;
 
   // Smoke-test beacon: proves the shim actually injected + ran this module in
   // the guest bundle (independent of the RN/native checks below). If this line
   // shows in logcat (ReactNativeJS), the whole NODE_OPTIONS→Metro injection
-  // works. Cheap to keep; remove once the mechanism is trusted.
+  // works — and `expo=missing` is the boot-race tell. Cheap to keep.
   try {
     console.log(
-      '[clank-preview] runtime evaluated; require=' +
+      '[clank-preview] runtime v2 evaluated; require=' +
         (typeof require === 'function') +
         ' navigator=' +
-        (typeof navigator !== 'undefined' && navigator.product),
+        (typeof navigator !== 'undefined' && navigator.product) +
+        ' expo=' +
+        (g.expo ? 'installed' : 'missing'),
     );
   } catch (e) {}
 
+  // React Native sets navigator.product === 'ReactNative'. On web there's no
+  // native bridge and no LogBox redbox to suppress here, so bail after the
+  // namespace is in place.
   var isReactNative =
     typeof navigator !== 'undefined' && navigator.product === 'ReactNative';
-  if (!isReactNative) return; // web: namespace only, no-op.
+  if (!isReactNative) return;
+
+  // BOOT-RACE GUARD: is expo's native side actually installed in THIS runtime?
+  // See the header — the JSI install (global.expo) can land after the bundle
+  // has already evaluated, or never (torn-down ReactContext: expo-modules-core's
+  // MainRuntime.install() bails without logging when the context or its JS
+  // context holder is already gone — the tell is "✅ Constants were exported"
+  // with no "✅ JSI interop was installed").
+  function expoReady() {
+    return !!(g.expo && g.expo.EventEmitter);
+  }
 
   // Resolve the PreviewLauncher native module lazily. It's an Expo module, so
   // it lives in expo-modules-core's registry (requireNativeModule), NOT on
   // ReactNative.NativeModules — try that first, then fall back to the classic
   // bridge. Absent in a bare RN runtime → this is a no-op.
+  //
+  // NEVER touch expo-modules-core before expoReady(): its EventEmitter module
+  // reads `globalThis.expo.EventEmitter` at import time, so importing it
+  // during the boot race above both throws AND permanently poisons Metro's
+  // module cache — every later import (including the app's own) replays the
+  // same error. Skipping the import here keeps the module loadable for
+  // whoever imports it once expo is up, and later calls of ours retry.
   function previewLauncher() {
-    try {
-      var core = require('expo-modules-core');
-      if (core && typeof core.requireNativeModule === 'function') {
-        try {
-          return core.requireNativeModule('PreviewLauncher');
-        } catch (e) {
-          /* fall through */
+    if (expoReady()) {
+      try {
+        var core = require('expo-modules-core');
+        if (core && typeof core.requireNativeModule === 'function') {
+          // requireNativeModule throws if the module isn't registered.
+          try {
+            return core.requireNativeModule('PreviewLauncher');
+          } catch (e) {
+            /* fall through */
+          }
         }
+        if (core && core.NativeModulesProxy && core.NativeModulesProxy.PreviewLauncher) {
+          return core.NativeModulesProxy.PreviewLauncher;
+        }
+      } catch (e) {
+        /* expo-modules-core not present — fall through */
       }
-      if (core && core.NativeModulesProxy && core.NativeModulesProxy.PreviewLauncher) {
-        return core.NativeModulesProxy.PreviewLauncher;
-      }
-    } catch (e) {
-      /* expo-modules-core not present — fall through */
     }
     try {
       var nm = require('react-native').NativeModules;
@@ -81,18 +150,77 @@
     return null;
   }
 
-  function reportError(summary, fatal) {
-    var pl = previewLauncher();
-    if (pl && pl.reportPreviewError) {
-      try {
-        pl.reportPreviewError(String(summary == null ? 'error' : summary), !!fatal);
-      } catch (e) {
-        /* never let telemetry throw */
+  // Reports raised before PreviewLauncher is resolvable (the boot race) are
+  // queued and re-tried on a short timer, so the "Fixing a glitch…" pill still
+  // fires once expo comes up instead of the report being dropped. Bounded on
+  // both axes: a dead runtime must not leak a queue or tick forever.
+  var pendingReports = [];
+  var flushTimer = null;
+  var flushAttempts = 0;
+
+  function scheduleFlush() {
+    if (flushTimer || flushAttempts >= 20 || typeof setTimeout !== 'function') return;
+    if (!pendingReports.length) return; // nothing to retry — don't burn a background timer
+    flushTimer = setTimeout(function () {
+      flushTimer = null;
+      // A pending self-heal owns these reports: they describe the very
+      // condition the reload fixes, so don't surface them (a ghost pill)
+      // while the heal can still land. If the heal gives up, bootHealDone
+      // flips and delivery resumes here. Don't burn the retry budget on
+      // reschedules — only real delivery attempts should count against it.
+      if (bootHealPending()) {
+        scheduleFlush();
+        return;
       }
+      flushAttempts++;
+      var pl = previewLauncher();
+      if (!pl || !pl.reportPreviewError) {
+        scheduleFlush();
+        return;
+      }
+      // Host resolved late → the eager detection at install time was a false
+      // negative; apply the clank-only suppression it skipped.
+      onHostResolvedLate();
+      while (pendingReports.length) {
+        var r = pendingReports.shift();
+        try {
+          pl.reportPreviewError(r.m, r.f);
+        } catch (e) {
+          // Bridge call failed even though the module resolved — requeue and
+          // retry later instead of dropping (queue-never-silenced guarantee).
+          pendingReports.unshift(r);
+          break;
+        }
+      }
+      scheduleFlush();
+    }, 500);
+  }
+
+  function reportError(summary, fatal) {
+    var msg = String(summary == null ? 'error' : summary);
+    var pl = previewLauncher();
+    if (!pl || !pl.reportPreviewError || bootHealPending()) {
+      if (pendingReports.length < 20) pendingReports.push({ m: msg, f: !!fatal });
+      scheduleFlush();
+      return;
+    }
+    try {
+      pl.reportPreviewError(msg, !!fatal);
+    } catch (e) {
+      // Same requeue-never-drop guarantee as the queued path above.
+      if (pendingReports.length < 20) pendingReports.push({ m: msg, f: !!fatal });
+      scheduleFlush();
     }
   }
 
   function clearError() {
+    pendingReports.length = 0; // healthy again — stale queued errors are noise
+    if (flushTimer && typeof clearTimeout === 'function') {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    flushAttempts = 0; // give the next unrelated error its own full retry budget
+    cancelBootHeal(); // something rendered — the runtime is healthy, no reload needed
     var pl = previewLauncher();
     if (pl && pl.clearPreviewError) {
       try {
@@ -103,13 +231,91 @@
     }
   }
 
+  // --- Boot-race self-heal (see header) ------------------------------------
+  // Armed when a fatal is swallowed while expo isn't installed. Polls for the
+  // late JSI install on a bounded timer; when expo comes up, retracts the
+  // queued boot-race report and reloads the guest JS once so the fresh
+  // evaluation starts with expo present. If expo never comes up (torn-down
+  // context), the poll expires and normal (queued) reporting resumes.
+  var bootFatalSeen = false; // a fatal was swallowed while !expoReady()
+  var bootHealDone = false; // heal question settled: reloaded, gave up, or expired
+  var bootHealTimer = null;
+  var bootHealTicks = 0;
+
+  function bootHealPending() {
+    return bootFatalSeen && !bootHealDone;
+  }
+
+  function noteBootRaceFatal() {
+    bootFatalSeen = true;
+    scheduleBootHeal();
+  }
+
+  function scheduleBootHeal() {
+    if (!bootHealPending() || bootHealTimer) return;
+    if (bootHealTicks >= 40 || typeof setTimeout !== 'function') {
+      bootHealDone = true; // give up — unblock queued-report delivery
+      return;
+    }
+    bootHealTimer = setTimeout(function () {
+      bootHealTimer = null;
+      bootHealTicks++;
+      if (!expoReady()) {
+        scheduleBootHeal();
+        return;
+      }
+      attemptBootHeal();
+    }, 250);
+  }
+
+  function attemptBootHeal() {
+    if (bootHealDone) return;
+    bootHealDone = true;
+    try {
+      // Only heal inside the clank host (launcher resolvable now that expo is
+      // up). Elsewhere — Expo Go, plain `expo start` — leave stock behavior.
+      var pl = previewLauncher();
+      var DevSettings = null;
+      try {
+        DevSettings = require('react-native').DevSettings;
+      } catch (e) {}
+      if (!pl || !DevSettings || typeof DevSettings.reload !== 'function') return;
+      // The queued boot-race reports describe the very condition this reload
+      // fixes — retract them (and any pill already shown) so the agent isn't
+      // sent chasing an infra hiccup that no code change can fix.
+      pendingReports.length = 0;
+      if (pl.clearPreviewError) {
+        try {
+          pl.clearPreviewError();
+        } catch (e) {}
+      }
+      try {
+        console.log(
+          '[clank-preview] boot-race self-heal: expo installed after a boot fatal — reloading guest JS',
+        );
+      } catch (e) {}
+      DevSettings.reload('clank preview boot-race self-heal');
+    } catch (e) {
+      /* reload unavailable — queued reports flow through the flush path */
+    }
+  }
+
+  function cancelBootHeal() {
+    bootFatalSeen = false;
+    if (bootHealTimer && typeof clearTimeout === 'function') {
+      clearTimeout(bootHealTimer);
+      bootHealTimer = null;
+    }
+  }
+
   // --- Rich error formatting for the agent ---------------------------------
   // A LogBoxLog carries far more than the message: the code frame (syntax
   // errors), the React component stack (file:line of each component), and the
   // JS stack. We assemble those into one report so "Fix it" gives the agent the
   // same context a developer sees in the Expo error screen. Locations are the
   // un-symbolicated bundle positions (symbolication is async), but the file +
-  // message + approximate line are enough to pinpoint it. Capped to 4000 chars.
+  // message + approximate line are enough to pinpoint it.
+  //
   // NOTE on ANSI: Babel highlights the code frame with ANSI color codes
   // (ESC[..m). We deliberately KEEP them in the reported text — the
   // clank-mobile host parses them to render a syntax-highlighted code frame
@@ -193,50 +399,24 @@
   // Detect whether we're running INSIDE the clank-mobile host (the
   // PreviewLauncher native module is present). A normal Expo Go client — or
   // someone running plain `expo start` without our wrapper — won't have it.
+  // During the boot race this is a false negative (expo isn't queryable yet),
+  // so treat it as provisional: re-detect at error/flush time and apply the
+  // clank-only suppression late via onHostResolvedLate().
   var clankHost = previewLauncher();
-  console.log('[clank-preview] host=' + (clankHost ? 'clank-mobile' : 'other'));
+  console.log(
+    '[clank-preview] host=' +
+      (clankHost ? 'clank-mobile' : expoReady() ? 'other' : 'unknown (expo not installed yet)'),
+  );
 
-  // SUPPRESS the dev error UI ONLY inside the clank-mobile host, so a normal
-  // Expo Go client (or plain `expo start`) keeps stock error behavior. The
-  // DETECTION/reporting below (LogBoxData.observe) runs regardless — it drives
-  // the pill and no-ops without the native module, so the pill never depends on
-  // whether the module was resolvable this early.
-  if (clankHost) {
-    // Kill LogBox warning/error toasts. (Notifications only — the fullscreen
-    // inspector is handled by the global handler below; see RN LogBox.js.)
-    try {
-      var LogBox =
-        require('react-native/Libraries/LogBox/LogBox').default ||
-        require('react-native').LogBox;
-      if (LogBox && LogBox.ignoreAllLogs) LogBox.ignoreAllLogs(true);
-    } catch (e) {
-      /* LogBox absent (e.g. production) — nothing to silence */
-    }
-
-    // Swallow uncaught fatals before they open the fullscreen LogBox.
-    var EU = g.ErrorUtils;
-    if (EU && typeof EU.setGlobalHandler === 'function') {
-      EU.setGlobalHandler(function clankGlobalErrorHandler(error, isFatal) {
-        var msg = (error && (error.message || String(error))) || 'unknown error';
-        // TODO(ai-review): sanitize/truncate msg before sending to native (raw messages can include module paths).
-        // https://github.com/supaclank/clank/pull/65#discussion_r3439529642
-        reportError(msg, isFatal);
-        if (error) console.log('[clank preview]', error.stack || error.message || error);
-        // Deliberately do NOT call the previous handler: it re-enters LogBox
-        // (the very overlay we're suppressing) and can crash the app. We keep
-        // the runtime alive so the next Fast Refresh update can replace the bad
-        // module; the native overlay shows the calm "Fixing a glitch…" pill.
-      });
-    }
-  }
-
-  // 3) Catch EVERY error LogBox sees — fullscreen, syntax, AND the soft
-  //    toast/Fast-Refresh errors the native error surface can't see (those
-  //    keep the app alive and never present a surface). LogBoxData.observe
-  //    hands us the full log set on each change, so we get both the error (with
-  //    its message, for the pill's "Fix it" button) and a clean CLEAR when the
-  //    logs empty (a successful Fast Refresh). This is what makes the pill fire
-  //    for agent-introduced HMR errors. Dedup so we only report on change.
+  // DETECT + report every error LogBox sees — fullscreen, syntax, AND the soft
+  // toast/Fast-Refresh errors the native error surface can't see (those keep the
+  // app alive and never present a surface). This DRIVES the "Fixing a glitch…"
+  // pill, so it runs UNCONDITIONALLY: reportError resolves the native module
+  // lazily (and queues + retries without it), so the pill never depends on
+  // whether the module was resolvable this early. LogBoxData.observe hands us
+  // the full log set on each change → the error (with its message, for "Fix
+  // it") plus a clean CLEAR when the logs empty (a successful Fast Refresh).
+  // Dedup on change.
   try {
     var LogBoxData = require('react-native/Libraries/LogBox/Data/LogBoxData');
     if (LogBoxData && typeof LogBoxData.observe === 'function') {
@@ -308,7 +488,78 @@
     /* LogBoxData unavailable — fall back to the native surface + ErrorUtils */
   }
 
-  // 4) Bridge-ready hooks for a future "visual edits" tool.
+  // SUPPRESS LogBox toasts ONLY inside the clank-mobile host, so a normal
+  // Expo Go client (or plain `expo start`) keeps stock error behavior. When
+  // host detection was a boot-race false negative, this is applied late by
+  // onHostResolvedLate() (from the report-flush timer or the error handler).
+  var suppressionInstalled = false;
+  function installSuppression() {
+    if (suppressionInstalled) return;
+    suppressionInstalled = true;
+    // Kill LogBox warning/error toasts. (Notifications only — the fullscreen
+    // inspector is handled by the global handler below; see RN LogBox.js.)
+    try {
+      var LogBox =
+        require('react-native/Libraries/LogBox/LogBox').default ||
+        require('react-native').LogBox;
+      if (LogBox && LogBox.ignoreAllLogs) LogBox.ignoreAllLogs(true);
+    } catch (e) {
+      /* LogBox absent (e.g. production) — nothing to silence */
+    }
+  }
+
+  function onHostResolvedLate() {
+    if (!clankHost) clankHost = previewLauncher();
+    if (clankHost) installSuppression();
+  }
+
+  if (clankHost) installSuppression();
+
+  // Swallow uncaught fatals before they open the fullscreen LogBox — or worse.
+  // Installed UNCONDITIONALLY (not just when clankHost resolved): during the
+  // boot race, host detection is a false negative, and a fatal that reaches
+  // RN's default handler while the bridgeless runtime is still initializing
+  // takes the "[runtime not ready]" path — with dev support disengaged (the
+  // preview window closed) ExceptionsManagerModule.reportException THROWS, the
+  // exception crosses JNI uncaught, and std::terminate kills the ENTIRE host
+  // process. The clank/not-clank decision moves to error time, when it can
+  // actually be answered.
+  var EU = g.ErrorUtils;
+  if (EU && typeof EU.setGlobalHandler === 'function') {
+    var prevHandler =
+      typeof EU.getGlobalHandler === 'function' ? EU.getGlobalHandler() : null;
+    EU.setGlobalHandler(function clankGlobalErrorHandler(error, isFatal) {
+      var msg = (error && (error.message || String(error))) || 'unknown error';
+      onHostResolvedLate(); // detection may have been a boot-race false negative
+      if (clankHost) {
+        reportError(msg, isFatal);
+        // Deliberately do NOT call the previous handler: it re-enters LogBox
+        // (the very overlay we're suppressing) and can crash the app. We keep
+        // the runtime alive so the next Fast Refresh update can replace the bad
+        // module; the native overlay shows the calm "Fixing a glitch…" pill.
+        return;
+      }
+      if (!expoReady()) {
+        // Broken boot: global.expo never installed, so "are we inside clank?"
+        // is unanswerable — and letting the error through is what bricks the
+        // preview or aborts the process (see above). Swallow + queue, and arm
+        // the self-heal: if expo comes up moments later, one reload boots the
+        // app cleanly and the queued report is retracted. A healthy Expo Go
+        // always has global.expo before app code runs, so it never lands
+        // here; the worst case outside clank is a blank screen instead of a
+        // crash.
+        noteBootRaceFatal();
+        reportError(msg, isFatal);
+        return;
+      }
+      // Healthy expo runtime and genuinely no PreviewLauncher → not the clank
+      // host (Expo Go / plain `expo start`): stock error behavior.
+      if (typeof prevHandler === 'function') prevHandler(error, isFatal);
+    });
+  }
+
+  // Bridge-ready hooks for a future "visual edits" tool. No behavior today
+  // beyond the error funnel — just a stable, namespaced surface to build on.
   g.__clankPreview.reportError = function (m) {
     reportError(m, false);
   };
