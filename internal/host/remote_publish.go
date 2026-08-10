@@ -124,7 +124,7 @@ func (s *Service) PublishToRemote(ctx context.Context, ref agent.GitRef, req Pub
 	if err := git.Push(workdir, pushURL, branch+":refs/heads/"+branch, git.PushOptions{ExtraHeader: buildAuthHeader(token)}); err != nil {
 		return PublishResult{}, err
 	}
-	s.log.Printf("published %s to %s/%s (branch %s)", workdir, created.Owner, created.Name, branch)
+	s.log.Printf("published to %s/%s (branch %s)", created.Owner, created.Name, branch)
 	return PublishResult{
 		Owner:   created.Owner,
 		Repo:    created.Name,

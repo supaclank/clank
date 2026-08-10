@@ -270,7 +270,15 @@ func validateOverlayWorktreeRef(w http.ResponseWriter, r *http.Request, worktree
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return false
 	}
-	if req.GitRef.WorktreeID != worktreeID || req.GitRef.LocalPath != "" {
+	if req.GitRef.LocalPath != "" {
+		http.Error(w, "git ref worktree does not match preview", http.StatusForbidden)
+		return false
+	}
+	if req.GitRef.WorktreeID == "" {
+		http.Error(w, "git_ref.worktree_id is required", http.StatusBadRequest)
+		return false
+	}
+	if req.GitRef.WorktreeID != worktreeID {
 		http.Error(w, "git ref worktree does not match preview", http.StatusForbidden)
 		return false
 	}

@@ -1,7 +1,10 @@
 package gateway
 
 import (
+	"bytes"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -72,5 +75,57 @@ func TestOverlayWorktreeRoute(t *testing.T) {
 	}
 	if _, _, ok := overlayWorktreeRoute("/sessions/abc/messages"); ok {
 		t.Error("session route must not parse as a worktree route")
+	}
+}
+
+func TestValidateOverlayWorktreeRef(t *testing.T) {
+	t.Parallel()
+	newRequest := func(body string) *http.Request {
+		return httptest.NewRequest(http.MethodPost, "/worktrees/list-branches", bytes.NewBufferString(body))
+	}
+
+	// Missing git_ref.worktree_id is malformed input, distinct from an
+	// actual cross-worktree mismatch — must not collapse into 403.
+	w := httptest.NewRecorder()
+	if validateOverlayWorktreeRef(w, newRequest(`{}`), "wt1") {
+		t.Fatal("empty worktree_id must be rejected")
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("empty worktree_id status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+
+	w = httptest.NewRecorder()
+	if validateOverlayWorktreeRef(w, newRequest(`{"git_ref":{"worktree_id":"other"}}`), "wt1") {
+		t.Fatal("mismatched worktree_id must be rejected")
+	}
+	if w.Code != http.StatusForbidden {
+		t.Errorf("mismatched worktree_id status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+
+	w = httptest.NewRecorder()
+	if !validateOverlayWorktreeRef(w, newRequest(`{"git_ref":{"worktree_id":"wt1"}}`), "wt1") {
+		t.Fatal("matching worktree_id must be accepted")
+	}
+
+	// local_path set with no worktree_id is still the hosted-preview policy
+	// violation (403), not malformed input (400) — local_path is never valid here.
+	w = httptest.NewRecorder()
+	if validateOverlayWorktreeRef(w, newRequest(`{"git_ref":{"local_path":"/etc"}}`), "wt1") {
+		t.Fatal("local_path without worktree_id must be rejected")
+	}
+	if w.Code != http.StatusForbidden {
+		t.Errorf("local_path without worktree_id status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+}
+
+func TestValidateOverlayWorktreeRef_LocalPathRejected(t *testing.T) {
+	t.Parallel()
+	w := httptest.NewRecorder()
+	body := `{"git_ref":{"worktree_id":"wt1","local_path":"/tmp/x"}}`
+	if validateOverlayWorktreeRef(w, httptest.NewRequest(http.MethodPost, "/worktrees/list-branches", strings.NewReader(body)), "wt1") {
+		t.Fatal("body-addressed local_path must be rejected for hosted previews")
+	}
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusForbidden)
 	}
 }
