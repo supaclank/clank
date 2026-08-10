@@ -98,6 +98,18 @@ func TestOverlaySelectModeWiring(t *testing.T) {
 	}
 }
 
+// TestOverlayChipCueClearedBeforeRerender guards against a stuck hover
+// cue: removing a hovered chip node never fires mouseleave, so render()
+// rebuilding ui.chips without first clearing the cue leaves a page
+// outline (or pending mark) pointing at a chip that no longer exists.
+func TestOverlayChipCueClearedBeforeRerender(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	if !strings.Contains(js, "clearChipCue();\n    ui.chips.innerHTML = '';") {
+		t.Error("overlay.js render() must call clearChipCue() before wiping ui.chips, or a hovered chip's cue outlives its DOM node")
+	}
+}
+
 // TestOverlayAgentSettingsWiring pins the mobile-parity settings surface:
 // the footer chip opens a profile/knob editor, and both create and follow-up
 // sends carry the staged config rather than silently reverting to Build.

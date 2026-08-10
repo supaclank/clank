@@ -1467,8 +1467,8 @@ import {
     border-radius:3px; }
   .hll { position:fixed; pointer-events:none; background:#111318; color:#c7d2fe; font-size:11px;
     padding:2px 7px; border-radius:6px; border:1px solid #3a3b42; display:none; white-space:nowrap; }
-  /* inline comment popover — appears at a text selection (or a
-     ⌘-selected element) so the instruction lands where you look */
+  /* inline comment popover — appears at a text selection or a chip
+     click so the instruction lands where you look */
   .cpop { position:fixed; display:none; width:300px; max-width:calc(100vw - 16px); pointer-events:auto;
     background:rgba(255,255,255,.96); border:1.5px solid #e5e7eb; border-radius:12px;
     box-shadow:0 10px 36px rgba(0,0,0,.2); padding:12px 14px 10px; backdrop-filter:blur(14px); }
@@ -1859,6 +1859,9 @@ import {
     for (const s of ['thinking', 'working', 'done', 'error']) ui.box.classList.toggle(s, store.agent === s);
     ui.st.textContent = store.aborting ? 'stopping…' : STATUS_TEXT[store.agent] || '';
 
+    // Removing a hovered chip node doesn't fire mouseleave, so the cue
+    // would otherwise outlive the chip it points at.
+    clearChipCue();
     ui.chips.innerHTML = '';
     store.chips.forEach((c, i) => {
       const el = document.createElement('span');
