@@ -184,8 +184,14 @@ func (b *Backend) applyMode(ctx context.Context, conn *AdapterConn, modeID strin
 		return
 	}
 	b.mu.Lock()
-	b.currentMode = modeID
-	b.reflectAppliedModeLocked(modeID)
+	// Reflect only if the mode is untouched since the RPC started: an
+	// agent update handled mid-flight (HandleSessionUpdate) is newer
+	// truth — possibly a normalization or a self-initiated flip — and
+	// must not be clobbered by our echo of the requested id.
+	if b.currentMode == current {
+		b.currentMode = modeID
+		b.reflectAppliedModeLocked(modeID)
+	}
 	b.mu.Unlock()
 }
 
@@ -231,6 +237,17 @@ func optionHasCategory(co *agent.ConfigOption, category string) bool {
 		return co.Category == category
 	}
 	return co.ID == category
+}
+
+// retainedValueLocked returns the retained current value for a knob id.
+// Callers hold b.mu.
+func (b *Backend) retainedValueLocked(id string) (string, bool) {
+	for i := range b.configOptions {
+		if b.configOptions[i].ID == id {
+			return b.configOptions[i].CurrentValue, true
+		}
+	}
+	return "", false
 }
 
 // Modes implements agent.ModeReporter: the agent-advertised session

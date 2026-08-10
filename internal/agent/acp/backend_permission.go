@@ -33,6 +33,7 @@ func (b *Backend) HandleSessionUpdate(_ context.Context, n sdk.SessionNotificati
 		// session/load response carries the authoritative current mode.
 		if id := string(mu.CurrentModeId); id != "" && id != b.currentMode {
 			b.currentMode = id
+			b.reflectAppliedModeLocked(id)
 			b.recordConfigLocked(agent.ConfigOptionMode, id)
 			b.emitLocked(agent.Event{Type: agent.EventModeChange, Data: agent.ModeChangeData{ModeID: id}})
 		}

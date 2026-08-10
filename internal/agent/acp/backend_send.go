@@ -294,6 +294,7 @@ func (b *Backend) recordConfigLocked(id, value string) {
 func (b *Backend) setConfigValue(ctx context.Context, conn *AdapterConn, id, value string) {
 	b.mu.Lock()
 	sid := b.sessionID
+	prev, tracked := b.retainedValueLocked(id)
 	b.mu.Unlock()
 	if sid == "" {
 		return
@@ -311,6 +312,12 @@ func (b *Backend) setConfigValue(ctx context.Context, conn *AdapterConn, id, val
 		return
 	}
 	b.mu.Lock()
-	b.reflectAppliedValueLocked(id, value)
+	// Reflect only if the knob is untouched since the RPC started: an
+	// agent update handled mid-flight (config_option_update) is newer
+	// truth — possibly a normalized form of this very apply — and must
+	// not be clobbered by our echo of the requested value.
+	if cur, ok := b.retainedValueLocked(id); ok == tracked && cur == prev {
+		b.reflectAppliedValueLocked(id, value)
+	}
 	b.mu.Unlock()
 }

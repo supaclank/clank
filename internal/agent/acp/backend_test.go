@@ -1321,6 +1321,112 @@ func TestBackend_AppliedConfigReflectsInRetainedKnobs(t *testing.T) {
 	}
 }
 
+// An agent update racing an in-flight apply must win over the reflect:
+// the update is newer truth (here, a normalized form of the very value
+// being applied). The scripted agent pushes the notification from inside
+// the Set handler, before the RPC response — frame order guarantees the
+// client processes it first, deterministically exercising the window.
+func TestBackend_MidFlightAgentUpdateBeatsReflect(t *testing.T) {
+	t.Parallel()
+	modelCat := sdk.SessionConfigOptionCategory("model")
+	modelOption := func(current string) []sdk.SessionConfigOption {
+		return []sdk.SessionConfigOption{{Select: &sdk.SessionConfigOptionSelect{
+			Id: "model", Name: "Model", Category: &modelCat, CurrentValue: sdk.SessionConfigValueId(current),
+			Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+				{Value: "sonnet", Name: "Sonnet"},
+				{Value: "opus", Name: "Opus"},
+				{Value: "opus-2025", Name: "Opus (2025)"},
+			}},
+		}}}
+	}
+	scripted := &acptest.ScriptedAgent{}
+	scripted.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+		return sdk.NewSessionResponse{SessionId: "s-race", ConfigOptions: modelOption("sonnet")}, nil
+	}
+	scripted.SetConfigFn = func(ctx context.Context, p sdk.SetSessionConfigOptionRequest) (sdk.SetSessionConfigOptionResponse, error) {
+		// The agent applies a normalized value and announces it before
+		// acknowledging the RPC.
+		_ = scripted.Conn().SessionUpdate(ctx, sdk.SessionNotification{
+			SessionId: p.ValueId.SessionId,
+			Update: sdk.SessionUpdate{ConfigOptionUpdate: &sdk.SessionConfigOptionUpdate{
+				ConfigOptions: modelOption("opus-2025"),
+			}},
+		})
+		return sdk.SetSessionConfigOptionResponse{}, nil
+	}
+	scripted.PromptFn = func(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResponse, error) {
+		return sdk.PromptResponse{StopReason: sdk.StopReasonEndTurn}, nil
+	}
+	f := newBackendFixture(t, scripted, "")
+	ctx := context.Background()
+	if err := f.backend.Open(ctx); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "go", Config: map[string]string{"model": "opus"}}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	f.waitFor(10*time.Second, func(evts []agent.Event) bool { return settledTurns(evts) >= 1 })
+
+	if cur, _ := f.backend.Models(); cur != "opus-2025" {
+		t.Errorf("Models() current = %q, want the agent's mid-flight opus-2025 (reflect must not clobber it)", cur)
+	}
+	for _, co := range f.backend.ConfigOptions() {
+		if co.ID == "model" && co.CurrentValue != "opus-2025" {
+			t.Errorf("retained model = %q, want the agent's mid-flight opus-2025", co.CurrentValue)
+		}
+	}
+}
+
+// Same race, mode channel: a current_mode_update handled while set_mode
+// is in flight is the agent's newer decision; the reflect must yield.
+// The agent-initiated flip must also keep current_mode_id and the
+// retained mode knob in agreement.
+func TestBackend_MidFlightModeUpdateBeatsReflect(t *testing.T) {
+	t.Parallel()
+	scripted := &acptest.ScriptedAgent{}
+	scripted.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+		return sdk.NewSessionResponse{
+			SessionId: "s-mode-race",
+			Modes: &sdk.SessionModeState{
+				CurrentModeId: "default",
+				AvailableModes: []sdk.SessionMode{
+					{Id: "default", Name: "Manual"},
+					{Id: "plan", Name: "Plan"},
+					{Id: "bypassPermissions", Name: "Bypass"},
+				},
+			},
+		}, nil
+	}
+	scripted.SetModeFn = func(ctx context.Context, p sdk.SetSessionModeRequest) (sdk.SetSessionModeResponse, error) {
+		_ = scripted.Conn().SessionUpdate(ctx, sdk.SessionNotification{
+			SessionId: p.SessionId,
+			Update:    sdk.SessionUpdate{CurrentModeUpdate: &sdk.SessionCurrentModeUpdate{CurrentModeId: "plan"}},
+		})
+		return sdk.SetSessionModeResponse{}, nil
+	}
+	scripted.PromptFn = func(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResponse, error) {
+		return sdk.PromptResponse{StopReason: sdk.StopReasonEndTurn}, nil
+	}
+	f := newBackendFixture(t, scripted, "")
+	ctx := context.Background()
+	if err := f.backend.Open(ctx); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "go", Config: map[string]string{agent.ConfigOptionMode: "bypassPermissions"}}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	f.waitFor(10*time.Second, func(evts []agent.Event) bool { return settledTurns(evts) >= 1 })
+
+	if cur, _ := f.backend.Modes(); cur != "plan" {
+		t.Errorf("Modes() current = %q, want the agent's mid-flight plan (reflect must not clobber it)", cur)
+	}
+	for _, co := range f.backend.ConfigOptions() {
+		if co.ID == "mode" && co.CurrentValue != "plan" {
+			t.Errorf("retained mode knob = %q, want plan (agent flip must keep knob and current_mode_id agreeing)", co.CurrentValue)
+		}
+	}
+}
+
 // A failed set_config_option must NOT reflect: retained state keeps the
 // agent's last known truth rather than a value the agent refused.
 func TestBackend_FailedApplyDoesNotReflect(t *testing.T) {
