@@ -255,6 +255,9 @@ func (b *Backend) applyConfig(ctx context.Context, conn *AdapterConn, cfg map[st
 	if len(cfg) == 0 {
 		return
 	}
+	// TODO(ai-review): recorded before applyMode/setConfigValue confirm the RPC
+	// succeeded or was advertised, so lastConfig can claim an entry that was
+	// never actually applied. https://github.com/supaclank/clank/pull/238#discussion_r3747845506
 	b.mu.Lock()
 	for id, value := range cfg {
 		if id != "" && value != "" {
