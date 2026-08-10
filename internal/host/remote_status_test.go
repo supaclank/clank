@@ -102,7 +102,7 @@ func TestRemoteSyncStatus_PRMergeability(t *testing.T) {
 	svc.GitHub().SetAPIBaseURL(apiSrv.URL)
 
 	// Conflicting: mergeable=false lands on the wire.
-	result, err := svc.RemoteSyncStatus(context.Background(), worktreeID)
+	result, err := svc.RemoteSyncStatus(context.Background(), agent.GitRef{WorktreeID: worktreeID})
 	if err != nil {
 		t.Fatalf("RemoteSyncStatus: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestRemoteSyncStatus_PRMergeability(t *testing.T) {
 	mu.Lock()
 	detailBody = `{"number":7,"mergeable":null}`
 	mu.Unlock()
-	result, err = svc.RemoteSyncStatus(context.Background(), worktreeID)
+	result, err = svc.RemoteSyncStatus(context.Background(), agent.GitRef{WorktreeID: worktreeID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestRemoteSyncStatus_PRMergeability(t *testing.T) {
 	mu.Lock()
 	detailStatus = http.StatusInternalServerError
 	mu.Unlock()
-	result, err = svc.RemoteSyncStatus(context.Background(), worktreeID)
+	result, err = svc.RemoteSyncStatus(context.Background(), agent.GitRef{WorktreeID: worktreeID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestRemoteSyncStatus_AttachPRSwallowsContextCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	result, err := svc.RemoteSyncStatus(ctx, worktreeID)
+	result, err := svc.RemoteSyncStatus(ctx, agent.GitRef{WorktreeID: worktreeID})
 	if err != nil {
 		t.Fatalf("RemoteSyncStatus: %v", err)
 	}

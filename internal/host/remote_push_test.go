@@ -87,7 +87,7 @@ func TestPushToRemote_RefusesPushToUnrelatedRepo(t *testing.T) {
 	})
 	t.Cleanup(svc.Shutdown)
 
-	_, err := svc.PushToRemote(context.Background(), worktreeID)
+	_, err := svc.PushToRemote(context.Background(), agent.GitRef{WorktreeID: worktreeID})
 	if !errors.Is(err, host.ErrNoCommonAncestor) {
 		t.Fatalf("err = %v, want ErrNoCommonAncestor", err)
 	}

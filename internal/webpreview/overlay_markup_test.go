@@ -110,6 +110,40 @@ func TestOverlayChipCueClearedBeforeRerender(t *testing.T) {
 	}
 }
 
+// TestOverlaySourceControlWiring pins the shipping surface: the header
+// chip sits immediately left of the beta pill, opens the in-box panel,
+// and the flows go through sourcecontrol.js request builders (both
+// hosted {id} routes and local GitRef routes) with structured error
+// codes — no error-string parsing.
+func TestOverlaySourceControlWiring(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	for _, want := range []string{
+		`<button class="scchip`,
+		`<div class="sc" style="display:none"></div>`,
+		"$('.scchip')",
+		"$('.sc')",
+		"scRequest(op, scGitRef(), extra)",
+		"refreshSourceControl",
+		"renderSourceControl",
+		"branch_already_has_pr",
+		"scStartConnect",
+		"mergeInProgressPrompt",
+		"prConflictsPrompt",
+		`closest('.beta, .scchip')`, // chip clicks must not arm a header drag
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("overlay.js source-control wiring missing %q", want)
+		}
+	}
+	if !strings.Contains(js, `${ICONS.branch}<span class="sctext"></span></button><a class="beta"`) {
+		t.Error("overlay.js source-control chip must sit immediately left of the beta pill")
+	}
+	if !strings.Contains(js, "from './sourcecontrol.js'") {
+		t.Error("overlay.js must import the pure sourcecontrol.js module (node-tested logic stays out of the DOM file)")
+	}
+}
+
 // TestOverlayAgentSettingsWiring pins the mobile-parity settings surface:
 // the footer chip opens a profile/knob editor, and both create and follow-up
 // sends carry the staged config rather than silently reverting to Build.

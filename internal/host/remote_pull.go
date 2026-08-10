@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/supaclank/clank/internal/agent"
 	"github.com/supaclank/clank/internal/git"
 )
 
@@ -19,8 +20,8 @@ type PullResult struct {
 // when it's cleanly behind. Refuses on a dirty tree (ErrWorktreeDirty) or
 // when the histories diverged (ErrRemoteDiverged) — divergence routes to
 // the conflict-resolution flow. Also invoked by cold-start auto-pull.
-func (s *Service) PullFromRemote(ctx context.Context, worktreeID string) (PullResult, error) {
-	rc, err := s.remoteContextFor(ctx, worktreeID)
+func (s *Service) PullFromRemote(ctx context.Context, ref agent.GitRef) (PullResult, error) {
+	rc, err := s.remoteContextFor(ctx, ref)
 	if err != nil {
 		return PullResult{}, err
 	}

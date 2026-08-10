@@ -39,6 +39,12 @@ import {
   diffConfigAgainstOptions, effectiveSessionConfig, profileLabel,
   profileSavePayload,
 } from './settings.js';
+import {
+  scRequest, presentStatus, actionsFor, headerPRFor,
+  prConflictWarnFor, chipFor, diffstatParts,
+  currentBranchInfo, defaultBaseBranch, seedPRTitle, friendlyRemoteError,
+  mergeInProgressPrompt, divergedMergePrompt, prConflictsPrompt,
+} from './sourcecontrol.js';
 
 (() => {
   'use strict';
@@ -157,6 +163,21 @@ import {
     saveProfileOpen: false,
     saveProfileName: '',
     profileSaving: false,
+    // Source control (mobile SourceControlSheet parity). scView picks
+    // the panel body; the sc* results back the header chip.
+    scOpen: false,
+    scView: 'status', // status | create-pr | connect
+    scGh: null, // GET /credentials/github/status result
+    scStatus: null, // remote status result
+    scStatusErrorCode: '',
+    scStatusErrorMsg: '',
+    scBranches: null, // list-branches result (default branch + diff stats)
+    scLoading: false,
+    scBusy: '', // in-flight source-control op id
+    scError: '', // last action's friendly error
+    scPR: { title: '', body: '', base: '', draft: false, url: '', existingUrl: '' },
+    scPublish: { name: '', private: true },
+    scConnect: null, // device flow: {state, flow_id?, user_code?, verification_uri_complete?, github_login?, error?}
   };
   // Dictation engines. 'local' streams PCM to the preview process
   // (CFG.voice = that engine exists); 'webspeech' is the browser's own
@@ -562,6 +583,7 @@ import {
     store.settingsOpen = true;
     store.enginePick = false;
     store.expandedConfigID = '';
+    store.scOpen = false;
     render();
     Promise.allSettled([loadProfiles(), loadConfigOptions()]);
   };
@@ -621,7 +643,548 @@ import {
     }
   };
 
+  // ---------- source control (mobile SourceControlSheet parity) ----------
+  // Request shapes and state presentation live in sourcecontrol.js;
+  // this section owns fetches, the device-flow timer, and the DOM.
+  const scGitRef = () => previewGitRef(CFG);
+
+  // scFetch calls a source-control op and returns {ok, status, code,
+  // data} with the body decoded even on errors — the host's machine
+  // codes (and the 409 existing-PR URL) drive the UI, so unlike api()
+  // nothing is thrown away. (Mobile regexes the URL out of an error
+  // string; structured here on purpose.)
+  const scFetch = async (op, extra) => {
+    const req = scRequest(op, scGitRef(), extra);
+    const res = await fetch('/__clank/api' + req.path, {
+      method: req.method,
+      headers: {
+        ...(TOKEN ? { Authorization: 'Bearer ' + TOKEN } : {}),
+        ...(req.body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(req.body ? { body: JSON.stringify(req.body) } : {}),
+    });
+    if (res.status === 401) toast('preview restarted — reload this page to reconnect');
+    let data = null;
+    try { data = await res.json(); } catch {}
+    return { ok: res.ok, status: res.status, code: (data && data.code) || '', data };
+  };
+
+  let scLoadedOnce = false;
+  // refreshSourceControl re-reads connection + remote state. The remote
+  // status does a host-side network fetch, so it runs on demand (first
+  // box summon, panel open, after actions) — never on a poll.
+  const refreshSourceControl = async () => {
+    if (!scGitRef()) return;
+    scLoadedOnce = true;
+    store.scLoading = true;
+    render();
+    try {
+      const gh = await scFetch('github-status');
+      // An old daemon (404) or failed probe degrades to "no integration":
+      // the chip hides rather than dangling a dead panel. connected wins
+      // over available (laptop gh-CLI hosts report available:false).
+      store.scGh = gh.ok && gh.data ? gh.data : { available: false };
+      if (!gh.ok || !gh.data || !gh.data.connected) {
+        store.scStatus = null;
+        return;
+      }
+      const [st, br] = await Promise.all([scFetch('status'), scFetch('branches')]);
+      if (st.ok) {
+        store.scStatus = st.data;
+        store.scStatusErrorCode = '';
+        store.scStatusErrorMsg = '';
+      } else {
+        store.scStatus = null;
+        store.scStatusErrorCode = st.code;
+        store.scStatusErrorMsg = friendlyRemoteError(st.code, st.data && st.data.error);
+      }
+      store.scBranches = br.ok && Array.isArray(br.data) ? br.data : null;
+    } finally {
+      store.scLoading = false;
+      render();
+    }
+  };
+
+  const scCurrentBranch = () => {
+    if (store.scStatus && store.scStatus.branch) return store.scStatus.branch;
+    const info = currentBranchInfo(store.scBranches, '');
+    return (info && info.name) || '';
+  };
+
+  const scChipModel = () => {
+    if (!scGitRef()) return null;
+    return chipFor({
+      gh: store.scGh,
+      status: store.scStatus,
+      statusErrorCode: store.scStatusErrorCode,
+      branchInfo: currentBranchInfo(store.scBranches, store.scStatus && store.scStatus.branch),
+    });
+  };
+
+  let scConnectTimer = 0;
+  const scStopConnectPolling = () => {
+    if (scConnectTimer) { clearInterval(scConnectTimer); scConnectTimer = 0; }
+  };
+
+  const openSourceControl = (view) => {
+    store.scOpen = true;
+    store.scView = view || 'status';
+    store.settingsOpen = false;
+    store.enginePick = false;
+    store.scError = '';
+    if (store.box === 'hidden') store.box = 'prompt';
+    render();
+    refreshSourceControl();
+  };
+
+  const closeSourceControl = () => {
+    scStopConnectPolling();
+    if (store.scConnect && store.scConnect.state === 'pending' && store.scConnect.flow_id) {
+      scFetch('connect-cancel', { flow_id: store.scConnect.flow_id }).catch(() => {});
+    }
+    store.scOpen = false;
+    store.scView = 'status';
+    store.scConnect = null;
+    render();
+  };
+
+  // scStartConnect runs GitHub's device flow from the panel. The
+  // 1.5s poll matches mobile: connect-status is an in-memory read on
+  // the host (only the host's own poll against GitHub is throttled by
+  // the flow's interval), so a short cadence just flips the UI sooner.
+  const scStartConnect = async () => {
+    store.scView = 'connect';
+    store.scConnect = { state: 'starting' };
+    render();
+    const res = await scFetch('connect-start');
+    if (!res.ok || !res.data || !res.data.flow_id) {
+      store.scConnect = { state: 'error', error: friendlyRemoteError(res.code, (res.data && res.data.error) || 'could not start the GitHub connect flow') };
+      render();
+      return;
+    }
+    store.scConnect = { state: 'pending', ...res.data };
+    render();
+    let polling = false;
+    scStopConnectPolling();
+    scConnectTimer = setInterval(async () => {
+      if (polling || !store.scConnect || !store.scConnect.flow_id) return;
+      polling = true;
+      try {
+        const st = await scFetch('connect-status', { flow_id: store.scConnect.flow_id });
+        if (!st.ok || !st.data || st.data.state === 'pending') return; // transient errors keep polling
+        scStopConnectPolling();
+        store.scConnect = { ...store.scConnect, state: st.data.state, github_login: st.data.github_login || '', error: st.data.error || '' };
+        if (st.data.state === 'success') {
+          setTimeout(() => {
+            if (store.scView === 'connect') store.scView = 'status';
+            store.scConnect = null;
+            refreshSourceControl();
+          }, 1200);
+        }
+        render();
+      } finally {
+        polling = false;
+      }
+    }, 1500);
+  };
+
+  // scRun executes push/pull/resolve and re-reads the remote either
+  // way (mobile invalidates on settled — a failure often means the
+  // state moved under us).
+  const scRun = async (op, extra, okMsg) => {
+    store.scBusy = op;
+    store.scError = '';
+    render();
+    const res = await scFetch(op, extra);
+    store.scBusy = '';
+    if (!res.ok) {
+      store.scError = friendlyRemoteError(res.code, res.data && res.data.error);
+    } else if (okMsg) {
+      toast(okMsg);
+    }
+    await refreshSourceControl();
+  };
+
+  const scOpenCreatePR = () => {
+    const branch = scCurrentBranch();
+    store.scPR = {
+      title: seedPRTitle(branch),
+      body: '',
+      base: defaultBaseBranch(store.scBranches, branch),
+      draft: false,
+      url: '',
+      existingUrl: '',
+    };
+    store.scView = 'create-pr';
+    store.scError = '';
+    render();
+  };
+
+  const scSubmitPR = async () => {
+    const f = store.scPR;
+    if (!f.title.trim() || !f.base.trim() || store.scBusy) return;
+    store.scBusy = 'create-pr';
+    store.scError = '';
+    render();
+    const res = await scFetch('create-pr', {
+      title: f.title.trim(), body: f.body, base: f.base.trim(), draft: !!f.draft,
+    });
+    store.scBusy = '';
+    if (res.ok && res.data && res.data.pr_url) {
+      f.url = res.data.pr_url;
+      render();
+      refreshSourceControl();
+      return;
+    }
+    if (res.code === 'branch_already_has_pr') {
+      f.existingUrl = (res.data && res.data.existing_url) || '';
+      render();
+      refreshSourceControl();
+      return;
+    }
+    store.scError = friendlyRemoteError(res.code, res.data && res.data.error);
+    render();
+  };
+
+  const scSubmitPublish = async () => {
+    const f = store.scPublish;
+    if (!f.name.trim() || store.scBusy) return;
+    store.scBusy = 'publish';
+    store.scError = '';
+    render();
+    const res = await scFetch('publish', { name: f.name.trim(), private: !!f.private });
+    store.scBusy = '';
+    if (!res.ok) {
+      store.scError = friendlyRemoteError(res.code, res.data && res.data.error);
+      render();
+      return;
+    }
+    toast(`published to ${res.data.owner}/${res.data.repo}`);
+    store.scStatusErrorCode = '';
+    store.scStatusErrorMsg = '';
+    await refreshSourceControl();
+  };
+
+  // scAgentFix hands a reconcile job to the agent: the live session
+  // when one exists, otherwise a fresh one — then flips to the chat
+  // view so the turn is visible. Publishing stays manual (the prompts
+  // end with do-not-push).
+  const scAgentFix = async (prompt) => {
+    store.scBusy = 'fix-agent';
+    store.scError = '';
+    render();
+    try {
+      if (store.sessionId) {
+        await api(`/sessions/${store.sessionId}/message`, { method: 'POST', body: JSON.stringify({ text: prompt }) });
+      } else {
+        await createSession(prompt, []);
+      }
+      store.msgs.push({ role: 'user', text: prompt });
+      setAgent('thinking');
+      store.scOpen = false;
+      store.scView = 'status';
+      store.box = 'chat';
+    } catch (err) {
+      store.scError = 'could not hand off to the agent: ' + err.message;
+    } finally {
+      store.scBusy = '';
+      render();
+    }
+  };
+
+  const scAction = (id) => {
+    const st = store.scStatus || {};
+    switch (id) {
+      case 'push': return scRun('push', null, 'pushed to remote');
+      case 'pull': return scRun('pull', null, 'pulled from remote');
+      case 'open-pr': return scOpenCreatePR();
+      case 'fix-agent':
+        return scAgentFix(st.state === 'conflict' ? mergeInProgressPrompt() : divergedMergePrompt(st.branch));
+      case 'merge-keep': return scRun('resolve', { strategy: 'merge' }, '');
+      case 'take-remote':
+        if (!confirm('Discard local changes?\n\nLocal commits and uncommitted changes are replaced by the remote branch. They are saved to a recovery ref first.')) return;
+        return scRun('resolve', { strategy: 'take_remote' }, 'reset to remote');
+      case 'abort-merge': return scRun('resolve', { strategy: 'abort' }, 'merge aborted');
+      case 'pr-fix-agent':
+        return scAgentFix(prConflictsPrompt({ prNumber: st.pr_number, branch: st.branch, baseBranch: st.pr_base_branch }));
+      case 'pr-ready': return scRun('pr-ready', null, 'PR marked ready for review');
+      case 'merge-github':
+        if (st.pr_url) window.open(st.pr_url, '_blank', 'noopener');
+        return;
+    }
+  };
+
+  // renderSourceControl rebuilds the panel like renderSettings: all
+  // text through textContent (branch names, GitHub logins, and server
+  // errors never become markup), focus-holding inputs update the store
+  // without re-rendering.
+  const renderSourceControl = () => {
+    const scrollTop = ui.sc.scrollTop;
+    ui.sc.style.display = store.scOpen ? '' : 'none';
+    if (!store.scOpen) {
+      ui.sc.replaceChildren();
+      return;
+    }
+    const node = (tag, cls, text) => {
+      const n = document.createElement(tag);
+      n.className = cls;
+      if (text !== undefined) n.textContent = text;
+      return n;
+    };
+    const extIcon = () => {
+      const s = node('span', '');
+      s.style.display = 'inline-flex';
+      s.innerHTML = ICONS.ext;
+      return s;
+    };
+    const btn = (label, kind, onclick, disabled, ext) => {
+      const b = node('button', 'sc-btn ' + kind, label);
+      if (ext) b.append(extIcon());
+      b.disabled = !!disabled || !!store.scBusy;
+      b.onclick = onclick;
+      return b;
+    };
+    // refreshBtn sits bottom-left in every action row (not the header —
+    // the header is the branch's identity, the row is the verbs).
+    const refreshBtn = () => {
+      const b = node('button', 'sc-refresh' + (store.scLoading ? ' busy' : ''), '↻');
+      b.title = 'refresh';
+      b.onclick = () => refreshSourceControl();
+      return b;
+    };
+    const grow = () => node('span', 'grow');
+    const field = (labelText, value, oninput, opts = {}) => {
+      const wrap = node('div', 'sc-field');
+      wrap.append(node('label', '', labelText));
+      const input = document.createElement(opts.multiline ? 'textarea' : 'input');
+      if (!opts.multiline) input.type = 'text';
+      if (opts.multiline) input.rows = 3;
+      input.className = opts.mono ? 'mono' : '';
+      input.value = value;
+      if (opts.placeholder) input.placeholder = opts.placeholder;
+      input.addEventListener('input', () => oninput(input.value));
+      wrap.append(input);
+      return wrap;
+    };
+
+    const gh = store.scGh;
+    const st = store.scStatus;
+
+    const frag = document.createDocumentFragment();
+    const header = node('div', 'sc-h');
+    const bricon = node('span', 'bricon');
+    bricon.innerHTML = ICONS.branch;
+    header.append(bricon, node('span', 'br', scCurrentBranch()));
+    const headerPR = st ? headerPRFor(st) : null;
+    if (headerPR) {
+      const pill = node('button', 'sc-prlink' + (headerPR.conflicting ? ' confl' : ''), `PR #${headerPR.number}`);
+      if (headerPR.draft) pill.append(node('span', 'drafttag', '· draft'));
+      pill.append(extIcon());
+      pill.title = headerPR.conflicting ? 'pull request has conflicts with its base' : 'open the pull request on GitHub';
+      pill.onclick = () => headerPR.url && window.open(headerPR.url, '_blank', 'noopener');
+      header.append(pill);
+    }
+    const done = node('button', 'sc-done', 'Done');
+    done.onclick = closeSourceControl;
+    header.append(done);
+    frag.append(header);
+
+    if (store.scView === 'connect') {
+      const c = store.scConnect || { state: 'starting' };
+      if (c.state === 'starting') {
+        frag.append(node('div', 'sc-state', 'Asking GitHub for a device code…'));
+      } else if (c.state === 'pending') {
+        frag.append(node('div', 'sc-center', 'Enter this code on GitHub:'));
+        const code = node('div', 'sc-code', c.user_code || '');
+        code.title = 'click to copy';
+        code.onclick = () => {
+          navigator.clipboard && navigator.clipboard.writeText(c.user_code || '').then(() => toast('code copied'));
+        };
+        frag.append(code);
+        const actions = node('div', 'sc-actions');
+        actions.append(btn('Cancel', 'secondary', closeSourceControl), grow());
+        actions.append(btn('Open GitHub to authorize', 'primary', () => {
+          window.open(c.verification_uri_complete || c.verification_uri || '', '_blank', 'noopener');
+        }, false, true));
+        frag.append(actions);
+        frag.append(node('div', 'sc-center', 'Waiting for you to authorize…'));
+      } else if (c.state === 'success') {
+        frag.append(node('div', 'sc-center', `✓ Connected${c.github_login ? ' as @' + c.github_login : ''}`));
+      } else {
+        const msg = c.state === 'denied' ? 'Authorization was denied.'
+          : c.state === 'expired' ? 'The code expired.'
+          : c.error || 'Something went wrong.';
+        frag.append(node('div', 'sc-state err', msg));
+        const actions = node('div', 'sc-actions');
+        actions.append(btn('Back', 'secondary', () => { store.scView = 'status'; store.scConnect = null; render(); }), grow());
+        actions.append(btn('Try again', 'primary', scStartConnect));
+        frag.append(actions);
+      }
+    } else if (store.scView === 'create-pr') {
+      const f = store.scPR;
+      if (f.url) {
+        frag.append(node('div', 'sc-center', '✓ PR opened — your branch is pushed and the pull request is live.'));
+        const link = node('a', 'sc-link', f.url);
+        link.href = f.url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        frag.append(link);
+        const actions = node('div', 'sc-actions');
+        actions.append(grow(), btn('Done', 'secondary', () => { store.scView = 'status'; render(); }));
+        actions.append(btn('Open in GitHub', 'primary', () => window.open(f.url, '_blank', 'noopener'), false, true));
+        frag.append(actions);
+      } else if (f.existingUrl) {
+        frag.append(node('div', 'sc-center', 'This branch already has an open pull request.'));
+        const actions = node('div', 'sc-actions');
+        actions.append(grow(), btn('Back', 'secondary', () => { store.scView = 'status'; render(); }));
+        actions.append(btn('View existing PR', 'primary', () => window.open(f.existingUrl, '_blank', 'noopener'), false, true));
+        frag.append(actions);
+      } else {
+        frag.append(field('Title', f.title, (v) => { f.title = v; }));
+        frag.append(field('Description', f.body, (v) => { f.body = v; }, { multiline: true, placeholder: 'What changed and why (optional)' }));
+        const baseField = field('Base branch', f.base, (v) => { f.base = v; }, { mono: true });
+        const bases = (store.scBranches || []).map((b) => b.name).filter((n) => n && n !== scCurrentBranch());
+        if (bases.length) {
+          const pills = node('div', 'sc-pills');
+          for (const name of bases.slice(0, 6)) {
+            const p = node('button', 'sc-pill', name);
+            p.onclick = () => { f.base = name; render(); };
+            pills.append(p);
+          }
+          baseField.append(pills);
+        }
+        frag.append(baseField);
+        const draft = node('label', 'sc-check');
+        const check = document.createElement('input');
+        check.type = 'checkbox';
+        check.checked = f.draft;
+        check.addEventListener('change', () => { f.draft = check.checked; });
+        draft.append(check, document.createTextNode('Open as draft'));
+        frag.append(draft);
+        if (store.scError) frag.append(node('div', 'sc-state err', store.scError));
+        const actions = node('div', 'sc-actions');
+        actions.append(btn('Cancel', 'secondary', () => { store.scView = 'status'; store.scError = ''; render(); }), grow());
+        actions.append(btn(store.scBusy === 'create-pr' ? 'Pushing branch and opening PR…' : 'Open PR', 'primary', scSubmitPR, !f.title.trim() || !f.base.trim()));
+        frag.append(actions);
+      }
+    } else if (!gh && store.scLoading) {
+      frag.append(node('div', 'sc-state', 'Checking GitHub…'));
+    } else if (gh && gh.available === false && !gh.connected) {
+      frag.append(node('div', 'sc-state', 'GitHub integration is not enabled on this Clank instance.'));
+    } else if (gh && !gh.connected) {
+      frag.append(node('div', 'sc-state', 'Connect GitHub so Clank can push this branch and open pull requests.'));
+      const actions = node('div', 'sc-actions');
+      actions.append(grow(), btn('Connect GitHub', 'primary', scStartConnect));
+      frag.append(actions);
+    } else if (store.scStatusErrorCode === 'no_origin_remote') {
+      const f = store.scPublish;
+      if (!f.name) f.name = CFG.name || scCurrentBranch() || '';
+      frag.append(node('div', 'sc-state', 'Publish to GitHub — creates a repo from this app and pushes your work.'));
+      frag.append(field('Repository name', f.name, (v) => { f.name = v; }, { mono: true }));
+      const priv = node('label', 'sc-check');
+      const check = document.createElement('input');
+      check.type = 'checkbox';
+      check.checked = f.private;
+      check.addEventListener('change', () => { f.private = check.checked; });
+      priv.append(check, document.createTextNode('Private repository'));
+      frag.append(priv);
+      if (store.scError) frag.append(node('div', 'sc-state err', store.scError));
+      const actions = node('div', 'sc-actions');
+      actions.append(grow(), btn(store.scBusy === 'publish' ? 'Publishing…' : 'Publish to GitHub', 'primary', scSubmitPublish, !f.name.trim()));
+      frag.append(actions);
+    } else if (!st && store.scLoading) {
+      frag.append(node('div', 'sc-state', 'Checking the remote…'));
+    } else if (!st) {
+      frag.append(node('div', 'sc-state err', store.scStatusErrorMsg || 'Could not reach the remote for this branch.'));
+      const actions = node('div', 'sc-actions');
+      actions.append(refreshBtn(), grow(), btn('Retry', 'secondary', () => refreshSourceControl()));
+      frag.append(actions);
+    } else {
+      const p = presentStatus(st);
+      const ICON_GLYPH = { ok: '✓', up: '↑', cloud: '↥', down: '↓', diverged: '⇅', conflict: '!' };
+      const card = node('div', 'sc-card ' + p.tone);
+      card.append(node('span', 'ic', ICON_GLYPH[p.icon] || '·'));
+      const cp = node('span', 'cp');
+      cp.append(node('b', '', p.label));
+      cp.append(node('span', 'd', p.detail));
+      const stat = diffstatParts(currentBranchInfo(store.scBranches, st.branch));
+      if (stat || st.dirty) {
+        const mono = node('span', 'mono');
+        if (stat) {
+          mono.append(node('span', 'add', stat.added), document.createTextNode(' '), node('span', 'del', stat.removed));
+          mono.append(document.createTextNode(' vs ' + (defaultBaseBranch(store.scBranches, '') || 'default')));
+        }
+        if (st.dirty) mono.append(document.createTextNode((stat ? ' · ' : '') + 'uncommitted changes'));
+        cp.append(mono);
+      }
+      card.append(cp);
+      frag.append(card);
+
+      if (store.scBusy && store.scBusy !== 'create-pr') {
+        frag.append(node('div', 'sc-state', 'Working…'));
+      } else {
+        const warn = prConflictWarnFor(st);
+        if (warn) {
+          const box = node('div', 'sc-warnbox');
+          box.append(node('b', '', `PR #${warn.number} has merge conflicts with ${warn.baseBranch || 'its base branch'}`));
+          frag.append(box);
+        }
+        const row = node('div', 'sc-actions');
+        row.append(refreshBtn(), grow());
+        for (const a of actionsFor(st)) {
+          const b = btn(a.label, a.kind, () => scAction(a.id), false, a.ext);
+          if (a.id === 'merge-github') b.title = 'merging happens on GitHub — inherits branch protection and merge queues';
+          row.append(b);
+        }
+        frag.append(row);
+      }
+      if (store.scError) frag.append(node('div', 'sc-state err', store.scError));
+    }
+
+    ui.sc.replaceChildren(frag);
+    ui.sc.scrollTop = scrollTop;
+  };
+
   // ---------- session ------------------------------------------------------
+  // createSession opens the headless session every prompt path shares
+  // (composer sends and source-control agent hand-offs). Create-time
+  // config is the selected host profile plus explicit knob edits. It
+  // still begins from a complete profile — the host rejects a create
+  // missing any Default-preset key.
+  const createSession = async (full, attachments) => {
+    if (!CFG.backend) throw new Error('no backend in the preview config — restart clank preview');
+    const gitRef = previewGitRef(CFG);
+    if (!gitRef) throw new Error('preview config must identify exactly one worktree or local path');
+    const presetList = await loadProfiles();
+    const profile = resolvePreset(presetList, CFG.backend, store.profileID || store.defaultProfileID);
+    const createConfig = applyPresetOverrides(profile, store.profileOverrides);
+    if (!createConfig) throw new Error(`no agent profile for backend ${CFG.backend} — is the daemon up to date?`);
+    const info = await apiJSON('/sessions', {
+      method: 'POST',
+      body: JSON.stringify({
+        backend: CFG.backend,
+        hostname: CFG.hostname || 'local',
+        git_ref: gitRef,
+        prompt: full,
+        config: createConfig,
+        ...(attachments.length ? { attachments } : {}),
+      }),
+    });
+    store.sessionId = (info && info.id) || '';
+    if (!store.sessionId) throw new Error('session create returned no id');
+    sessionStorage.setItem('clank.sessionId', store.sessionId);
+    if (store.configOptions) {
+      store.configOptions = store.configOptions.map((option) =>
+        Object.hasOwn(createConfig, option.id)
+          ? { ...option, current_value: createConfig[option.id] }
+          : option);
+    }
+    store.profileID = '';
+    store.profileOverrides = {};
+    subscribe();
+    loadConfigOptions().catch(() => {});
+  };
+
   const send = async () => {
     // Comment-only submits are real sends: the default instruction rides
     // with the inline comments when the composer is empty.
@@ -642,40 +1205,7 @@ import {
     setAgent('thinking');
     try {
       if (!store.sessionId) {
-        // Create-time config is the selected host profile plus explicit
-        // knob edits. It still begins from a complete profile — the host
-        // rejects a create missing any Default-preset key.
-        if (!CFG.backend) throw new Error('no backend in the preview config — restart clank preview');
-        const gitRef = previewGitRef(CFG);
-        if (!gitRef) throw new Error('preview config must identify exactly one worktree or local path');
-        const presetList = await loadProfiles();
-        const profile = resolvePreset(presetList, CFG.backend, store.profileID || store.defaultProfileID);
-        const createConfig = applyPresetOverrides(profile, store.profileOverrides);
-        if (!createConfig) throw new Error(`no agent profile for backend ${CFG.backend} — is the daemon up to date?`);
-        const info = await apiJSON('/sessions', {
-          method: 'POST',
-          body: JSON.stringify({
-            backend: CFG.backend,
-            hostname: CFG.hostname || 'local',
-            git_ref: gitRef,
-            prompt: full,
-            config: createConfig,
-            ...(attachments.length ? { attachments } : {}),
-          }),
-        });
-        store.sessionId = (info && info.id) || '';
-        if (!store.sessionId) throw new Error('session create returned no id');
-        sessionStorage.setItem('clank.sessionId', store.sessionId);
-        if (store.configOptions) {
-          store.configOptions = store.configOptions.map((option) =>
-            Object.hasOwn(createConfig, option.id)
-              ? { ...option, current_value: createConfig[option.id] }
-              : option);
-        }
-        store.profileID = '';
-        store.profileOverrides = {};
-        subscribe();
-        loadConfigOptions().catch(() => {});
+        await createSession(full, attachments);
       } else {
         const pendingConfig = diffConfigAgainstOptions(store.pendingConfig, store.configOptions);
         await api(`/sessions/${store.sessionId}/message`, {
@@ -1271,6 +1801,11 @@ import {
     // 2×3 grid, 5px pitch on BOTH axes: adjacent dots equidistant, so
     // any four neighbors form a square and all six a rectangle
     grip: '<svg width="11" height="16" viewBox="0 0 11 16" fill="currentColor"><circle cx="3" cy="3" r="1.5"/><circle cx="8" cy="3" r="1.5"/><circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="3" cy="13" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>',
+    // git branch: two commits on a trunk, one forked ref merging in
+    branch: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2.6"/><circle cx="6" cy="19" r="2.6"/><circle cx="18" cy="7" r="2.6"/><path d="M6 7.6v8.8"/><path d="M18 9.6c0 4-4 5.4-8.2 5.4"/></svg>',
+    // external link (box + top-right arrow): marks every control that
+    // leaves the page
+    ext: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>',
   };
 
   const host = document.createElement('div');
@@ -1328,6 +1863,99 @@ import {
   .beta:hover { background:rgba(250,85,115,.22); }
   .grip { color:#9ca3af; display:flex; align-items:center; }
   .grip svg { display:block; pointer-events:none; }
+  /* source-control chip: same pill recipe as .beta, tone-tinted by
+     remote state; sits immediately left of the beta pill */
+  .scchip { all:unset; display:inline-flex; align-items:center; gap:4px; font-size:10px; font-weight:600;
+    letter-spacing:.3px; padding:2px 8px; border-radius:999px; line-height:1.4; cursor:pointer;
+    max-width:120px; white-space:nowrap; }
+  .scchip svg { flex:none; pointer-events:none; }
+  .scchip span { overflow:hidden; text-overflow:ellipsis; }
+  .scchip span:empty { display:none; }
+  .scchip.muted { color:#6b7280; background:#00000008; border:1px solid #e5e7eb; }
+  .scchip.muted:hover { background:#00000012; }
+  .scchip.neutral { color:#4338ca; background:rgba(99,102,241,.10); border:1px solid rgba(99,102,241,.3); }
+  .scchip.neutral:hover { background:rgba(99,102,241,.18); }
+  .scchip.accent { color:#1d4ed8; background:rgba(59,130,246,.12); border:1px solid rgba(59,130,246,.35); }
+  .scchip.accent:hover { background:rgba(59,130,246,.22); }
+  .scchip.warn { color:#b45309; background:rgba(245,158,11,.12); border:1px solid rgba(245,158,11,.35); }
+  .scchip.warn:hover { background:rgba(245,158,11,.22); }
+  .scchip.danger { color:#dc2626; background:rgba(239,68,68,.12); border:1px solid rgba(239,68,68,.35); }
+  .scchip.danger:hover { background:rgba(239,68,68,.22); }
+  .scchip.open { box-shadow:0 0 0 2px #3b82f622; }
+  /* source-control panel — same in-box expansion shell as .settings */
+  .sc { margin:6px 12px; border:1px solid #e5e7eb; background:rgba(255,255,255,.7);
+    border-radius:12px; font-size:12px; max-height:320px; overflow-y:auto; }
+  .sc-h { position:sticky; top:0; z-index:1; display:flex; align-items:center; gap:8px;
+    padding:9px 10px 7px; background:rgba(255,255,255,.96); border-bottom:1px solid #e5e7eb; }
+  /* branch identity IS the panel title; the PR pill rides beside it */
+  .sc-h .bricon { color:#6b7280; display:flex; flex:none; }
+  .sc-h .br { flex:1; min-width:0; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px;
+    font-weight:600; color:#374151; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .sc-prlink { all:unset; display:inline-flex; align-items:center; gap:4px; font-size:11px; font-weight:600;
+    color:#4338ca; background:rgba(99,102,241,.10); border:1px solid rgba(99,102,241,.3);
+    padding:2px 8px; border-radius:999px; white-space:nowrap; cursor:pointer; }
+  .sc-prlink:hover { background:rgba(99,102,241,.18); }
+  .sc-prlink.confl { color:#b45309; background:rgba(245,158,11,.12); border-color:rgba(245,158,11,.35); }
+  .sc-prlink .drafttag { font-weight:500; color:#6b7280; }
+  .sc-prlink svg { pointer-events:none; }
+  .sc-refresh { all:unset; cursor:pointer; width:29px; height:29px; border-radius:9px; flex:none;
+    border:1px solid #e5e7eb; color:#6b7280; display:inline-flex; align-items:center; justify-content:center; }
+  .sc-refresh:hover { background:#00000008; color:#111827; }
+  .sc-refresh.busy { animation:scspin 1s linear infinite; }
+  @keyframes scspin { to { transform:rotate(360deg); } }
+  .sc-done { all:unset; cursor:pointer; color:#2563eb; font-weight:600; padding:3px 2px; }
+  .sc-card { display:flex; gap:8px; margin:9px 10px; padding:8px 10px; border:1px solid #e5e7eb;
+    background:#f9fafb; border-radius:10px; align-items:flex-start; }
+  .sc-card .ic { font-size:13px; line-height:1.3; }
+  .sc-card .cp { flex:1; min-width:0; }
+  .sc-card b { display:block; }
+  .sc-card .d { display:block; color:#6b7280; }
+  .sc-card .mono { display:block; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:10.5px; color:#9ca3af; margin-top:2px; }
+  .sc-card .mono .add { color:#16a34a; font-weight:600; }
+  .sc-card .mono .del { color:#dc2626; font-weight:600; }
+  .sc-card.ok .ic, .sc-card.ok b { color:#16a34a; }
+  .sc-card.neutral .ic { color:#2563eb; }
+  .sc-card.neutral b { color:#1f2937; }
+  .sc-card.warn .ic, .sc-card.warn b { color:#b45309; }
+  .sc-card.accent .ic, .sc-card.accent b { color:#1d4ed8; }
+  .sc-card.danger .ic, .sc-card.danger b { color:#dc2626; }
+  .sc-state { color:#6b7280; padding:9px 10px; }
+  .sc-state.err { color:#dc2626; }
+  .sc-actions { display:flex; flex-wrap:wrap; align-items:center; gap:7px; padding:0 10px 9px; }
+  .sc-actions .grow { flex:1; }
+  .sc-btn { all:unset; cursor:pointer; font-size:12px; font-weight:600; padding:6px 10px;
+    border-radius:9px; text-align:center; display:inline-flex; align-items:center; gap:5px; }
+  .sc-btn svg { pointer-events:none; }
+  .sc-btn.primary { color:#fff; background:#111827; }
+  .sc-btn.primary:hover { background:#000; }
+  .sc-btn.secondary { color:#2563eb; border:1px solid #e5e7eb; }
+  .sc-btn.secondary:hover { background:#00000008; }
+  .sc-btn.danger { color:#dc2626; border:1px solid #ef444455; }
+  .sc-btn.danger:hover { background:#ef44440d; }
+  .sc-btn[disabled] { opacity:.45; cursor:default; }
+  .sc-warnbox { margin:0 10px 9px; padding:8px 10px; border:1px solid #ef444466; background:#ef44440d;
+    border-radius:10px; }
+  .sc-warnbox b { color:#dc2626; }
+  .sc-field { padding:0 10px 8px; }
+  .sc-field label { display:block; font-size:10px; font-weight:600; text-transform:uppercase;
+    letter-spacing:.5px; color:#9ca3af; margin-bottom:3px; }
+  .sc-field input[type=text], .sc-field textarea { width:100%; box-sizing:border-box; border:1px solid #d1d5db;
+    border-radius:9px; background:#fff; color:#111827; outline:0; padding:7px 9px; font-size:12.5px;
+    min-height:0; max-height:none; resize:none; }
+  .sc-field input:focus, .sc-field textarea:focus { border-color:#3b82f6; box-shadow:0 0 0 2px #3b82f622; }
+  .sc-field .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .sc-pills { display:flex; flex-wrap:wrap; gap:5px; margin-top:5px; }
+  .sc-pill { all:unset; cursor:pointer; font-size:10.5px; font-weight:600; color:#4338ca;
+    background:rgba(99,102,241,.08); border:1px solid rgba(99,102,241,.25); border-radius:999px; padding:2px 8px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .sc-pill:hover { background:rgba(99,102,241,.16); }
+  .sc-check { display:flex; align-items:center; gap:7px; padding:2px 10px 8px; color:#374151; cursor:pointer; }
+  .sc-check input { accent-color:#2563eb; margin:0; }
+  .sc-code { text-align:center; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:20px;
+    letter-spacing:4px; font-weight:700; color:#111827; padding:6px 10px; cursor:pointer; user-select:all; }
+  .sc-center { text-align:center; color:#6b7280; padding:2px 10px 8px; }
+  .sc-link { color:#2563eb; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px;
+    word-break:break-all; padding:0 10px 8px; display:block; text-decoration:none; }
   .chips { display:flex; flex-wrap:wrap; gap:6px; padding:6px 12px 0; }
   .chips:empty { display:none; }
   .chip { display:inline-flex; align-items:center; gap:6px; background:#f3f4f6; border:1px solid #e5e7eb;
@@ -1505,7 +2133,7 @@ import {
   .crop-x0 { position:absolute; top:12px; right:16px; }
 </style>
 <div class="box" part="box" tabindex="-1">
-  <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><a class="beta" href="https://github.com/supaclank/clank/issues/new?template=bug_report.yml" target="_blank" rel="noopener noreferrer" title="click to report an issue" tabindex="-1">beta</a><span class="grip">${ICONS.grip}</span></div>
+  <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><button class="scchip muted" style="display:none" title="source control" tabindex="-1">${ICONS.branch}<span class="sctext"></span></button><a class="beta" href="https://github.com/supaclank/clank/issues/new?template=bug_report.yml" target="_blank" rel="noopener noreferrer" title="click to report an issue" tabindex="-1">beta</a><span class="grip">${ICONS.grip}</span></div>
   <div class="chat"></div>
   <div class="perm" style="display:none">
     <div class="t"></div><div class="d"></div>
@@ -1520,6 +2148,7 @@ import {
     <button class="opt" data-eng="webspeech"><b>Web Speech API</b><span class="d"></span></button>
   </div>
   <div class="settings" style="display:none"></div>
+  <div class="sc" style="display:none"></div>
   <div class="chips"></div>
   <textarea class="compose" rows="1" placeholder="Ask anything…"></textarea>
   <div class="bar">
@@ -1562,6 +2191,7 @@ import {
     input: $('.compose'), sel: $('.sel'), mic: $('.mic'), micLevel: $('.micLevel'),
     eng: $('.eng'), engpick: $('.engpick'), engOpts: [...root.querySelectorAll('.engpick .opt')],
     settings: $('.settings'), profile: $('.profile'), profileLabel: $('.profile span'),
+    sc: $('.sc'), scChip: $('.scchip'), scText: $('.sctext'),
     saveProfile: $('.save-profile'), saveProfileName: $('.save-profile-name'),
     saveProfileCancel: $('.save-actions .cancel'), saveProfileConfirm: $('.save-actions .confirm'),
     send: $('.send'), hl: $('.hl'), hll: $('.hll'), chipHl: $('.chiphl'), toast: $('.toast'),
@@ -1938,6 +2568,14 @@ import {
     }
     renderQuestion();
     renderSettings();
+    renderSourceControl();
+    const scChip = scChipModel();
+    ui.scChip.style.display = scChip ? '' : 'none';
+    if (scChip) {
+      ui.scChip.className = 'scchip ' + scChip.tone + (store.scOpen ? ' open' : '');
+      ui.scChip.title = scChip.title;
+      ui.scText.textContent = scChip.text;
+    }
     ui.saveProfile.classList.toggle('show', store.saveProfileOpen);
     ui.saveProfileCancel.disabled = store.profileSaving;
     ui.saveProfileConfirm.disabled = store.profileSaving || !store.saveProfileName.trim();
@@ -1975,6 +2613,11 @@ import {
       store.expandedConfigID = '';
       store.saveProfileOpen = false;
       store.saveProfileName = '';
+      if (store.scOpen) closeSourceControl();
+    } else if (!scLoadedOnce) {
+      // First summon primes the source-control chip; on-demand only —
+      // the remote status costs a host-side fetch (never polled).
+      refreshSourceControl();
     }
     render();
     // Focus the CONTAINER, not the composer: typing focus on summon
@@ -2612,7 +3255,7 @@ import {
     const saved = sessionStorage.getItem('clank.boxPos');
     if (saved) { try { const p = JSON.parse(saved); ui.box.style.translate = `${p.x}px ${p.y}px`; ui.box.dataset.x = p.x; ui.box.dataset.y = p.y; } catch {} }
     hd.addEventListener('pointerdown', (e) => {
-      if (e.target.closest('.beta')) return; // the pill is a link, not a drag handle
+      if (e.target.closest('.beta, .scchip')) return; // the pills are controls, not drag handles
       endFollow(); // manual drag wins over a live shift-follow
       dragging = true;
       sx = e.clientX; sy = e.clientY;
@@ -2677,6 +3320,15 @@ import {
     else openEnginePick(false);
   };
   ui.settings.addEventListener('keydown', (e) => e.stopPropagation());
+  // The chip toggles the panel; a "Create PR" chip deep-links straight
+  // into the form (the CTA promises exactly that).
+  ui.scChip.onclick = () => {
+    if (store.scOpen) { closeSourceControl(); return; }
+    const chip = scChipModel();
+    openSourceControl();
+    if (chip && chip.text === 'Create PR') scOpenCreatePR();
+  };
+  ui.sc.addEventListener('keydown', (e) => e.stopPropagation());
   // Engine picker copy. Availability is fixed for the page's lifetime,
   // and the descriptions double as the consent text — name where the
   // audio goes and what does the transcribing (CFG.voice_engine says
@@ -2873,6 +3525,7 @@ import {
     if (e.key === 'Escape') {
       if (store.saveProfileOpen) { e.preventDefault(); e.stopPropagation(); closeSaveProfile(); }
       else if (store.settingsOpen) { e.preventDefault(); e.stopPropagation(); closeSettings(); }
+      else if (store.scOpen) { e.preventDefault(); e.stopPropagation(); closeSourceControl(); }
       else if (store.enginePick) { e.preventDefault(); e.stopPropagation(); closeEnginePick(); }
       else if (commentTarget) { e.preventDefault(); e.stopPropagation(); hideCommentPopover(); }
       else if (store.inspect) { e.preventDefault(); e.stopPropagation(); modInspect = false; exitInspect(); }

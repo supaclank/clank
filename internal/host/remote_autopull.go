@@ -12,6 +12,8 @@ import (
 	"errors"
 	"os"
 	"time"
+
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // startColdStartAutoPull kicks a one-shot best-effort fast-forward pass in
@@ -60,7 +62,7 @@ func (s *Service) coldStartAutoPull(ctx context.Context) {
 		// git.Fetch (exec.Command -> exec.CommandContext), not just a ctx
 		// wrap here (remoteContextFor/runPull don't honor ctx today).
 		// https://github.com/supaclank/clank/pull/158#discussion_r3596541125
-		res, err := s.PullFromRemote(ctx, id)
+		res, err := s.PullFromRemote(ctx, agent.GitRef{WorktreeID: id})
 		if err != nil {
 			// Expected skips (dirty, diverged, no upstream, no origin,
 			// detached HEAD) are silent — only unexpected errors are logged.

@@ -38,6 +38,12 @@ var chatJS []byte
 //go:embed overlay/settings.js
 var settingsJS []byte
 
+// sourceControlJS is the overlay's pure source-control module (remote
+// state presentation, PR request shapes, agent hand-off prompts).
+//
+//go:embed overlay/sourcecontrol.js
+var sourceControlJS []byte
+
 // workletJS is the AudioWorklet processor that batches mic PCM for the
 // dictation WebSocket. Served as its own module because AudioWorklets
 // load from a URL, not inline.
@@ -158,6 +164,7 @@ func Start(opts Options) (*Server, error) {
 	mux.HandleFunc("GET "+OverlayPath, serveJS(overlayJS))
 	mux.HandleFunc("GET "+ChatPath, serveJS(chatJS))
 	mux.HandleFunc("GET "+SettingsPath, serveJS(settingsJS))
+	mux.HandleFunc("GET "+SourceControlPath, serveJS(sourceControlJS))
 	mux.HandleFunc("GET "+WorkletPath, serveJS(workletJS))
 	mux.Handle(APIPrefix+"/", requireToken(opts.Token,
 		http.StripPrefix(APIPrefix, daemon)))

@@ -11,11 +11,12 @@ import (
 )
 
 const (
-	OverlayPath  = "/__clank/overlay.js"
-	ChatPath     = "/__clank/chat.js"
-	SettingsPath = "/__clank/settings.js"
-	WorkletPath  = "/__clank/worklet.js"
-	APIPrefix    = "/__clank/api"
+	OverlayPath       = "/__clank/overlay.js"
+	ChatPath          = "/__clank/chat.js"
+	SettingsPath      = "/__clank/settings.js"
+	SourceControlPath = "/__clank/sourcecontrol.js"
+	WorkletPath       = "/__clank/worklet.js"
+	APIPrefix         = "/__clank/api"
 
 	// NativePreviewUserAgentToken keeps the JS overlay out of clank-mobile's
 	// WebView, where the Kotlin prompt box owns the interaction surface.
@@ -51,6 +52,8 @@ func ServeOverlayAsset(w http.ResponseWriter, r *http.Request) bool {
 		body = chatJS
 	case SettingsPath:
 		body = settingsJS
+	case SourceControlPath:
+		body = sourceControlJS
 	case WorkletPath:
 		body = workletJS
 	default:

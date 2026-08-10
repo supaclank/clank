@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/supaclank/clank/internal/agent"
 	"github.com/supaclank/clank/internal/git"
 	"github.com/supaclank/clank/internal/host"
 	githubpkg "github.com/supaclank/clank/internal/host/github"
@@ -29,7 +30,7 @@ func (m *Mux) handleGitHubMarkPRReady(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "worktree id is required"})
 		return
 	}
-	result, err := m.svc.MarkPRReady(r.Context(), id)
+	result, err := m.svc.MarkPRReady(r.Context(), agent.GitRef{WorktreeID: id})
 	if err != nil {
 		writePRError(w, err)
 		return
@@ -48,7 +49,7 @@ func (m *Mux) handleGitHubPreviewPR(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "worktree id is required"})
 		return
 	}
-	result, err := m.svc.PreviewPR(r.Context(), id)
+	result, err := m.svc.PreviewPR(r.Context(), agent.GitRef{WorktreeID: id})
 	if err != nil {
 		writePRError(w, err)
 		return
@@ -67,7 +68,7 @@ func (m *Mux) handleGitHubCreatePR(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "decode body: " + err.Error()})
 		return
 	}
-	result, err := m.svc.CreatePR(r.Context(), id, req)
+	result, err := m.svc.CreatePR(r.Context(), agent.GitRef{WorktreeID: id}, req)
 	if err != nil {
 		writePRError(w, err)
 		return
