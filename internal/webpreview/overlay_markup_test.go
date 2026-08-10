@@ -54,8 +54,9 @@ func TestOverlayInlineCommentWiring(t *testing.T) {
 	if !strings.Contains(js, "editChipComment(c, el.getBoundingClientRect())") {
 		t.Error("overlay.js chips must open the prefilled comment editor on click")
 	}
-	// One chip per ⌘-selected element: a re-click edits, never duplicates.
-	if !strings.Contains(js, "store.chips.find((c) => c.node === hoverEl)") {
+	// One chip per ⌘-selected element: a re-click deselects (toggle),
+	// never duplicates.
+	if !strings.Contains(js, "store.chips.findIndex((c) => c.node === hoverEl)") {
 		t.Error("overlay.js inspector clicks must dedupe by anchored element node")
 	}
 	// The pending mark adopts the page's own ::selection color (with the
@@ -74,6 +75,38 @@ func TestOverlayInlineCommentWiring(t *testing.T) {
 	}
 	if !strings.Contains(js, "positionCommentPopover(r)") {
 		t.Error("overlay.js must reposition the comment popover on scroll")
+	}
+}
+
+// TestOverlaySelectModeWiring pins the select-mode affordances: elements
+// already in context outline their bounding boxes while ⌘ is held
+// (repositioned on scroll), and chips cue their page anchor on hover
+// and while their comment editor is open.
+func TestOverlaySelectModeWiring(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	for _, want := range []string{
+		"syncAttachedBoxes",
+		"repositionAttachedBoxes",
+		`<div class="hla chiphl"`,
+		"hoverChipCue(c)",
+		"showChipBox(c.node)",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("overlay.js select-mode wiring missing %q", want)
+		}
+	}
+}
+
+// TestOverlayChipCueClearedBeforeRerender guards against a stuck hover
+// cue: removing a hovered chip node never fires mouseleave, so render()
+// rebuilding ui.chips without first clearing the cue leaves a page
+// outline (or pending mark) pointing at a chip that no longer exists.
+func TestOverlayChipCueClearedBeforeRerender(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	if !strings.Contains(js, "clearChipCue();\n    ui.chips.innerHTML = '';") {
+		t.Error("overlay.js render() must call clearChipCue() before wiping ui.chips, or a hovered chip's cue outlives its DOM node")
 	}
 }
 
