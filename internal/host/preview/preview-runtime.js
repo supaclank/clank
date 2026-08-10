@@ -123,10 +123,10 @@
   // of the same path emits nothing anyway.
   //
   // Thunk shape is LOAD-BEARING: Metro's dependency collector only accepts
-  // `require(<string literal>)` — a `requireQuietly(name)` helper doing
-  // `require(name)` fails the WHOLE guest bundle build with
-  // "Invalid call: require(name)" (Metro serves it as an HTTP 500). The
-  // literal must sit inside the thunk at the call site.
+  // `require(<string literal>)` — a variable-argument `require(name)` fails
+  // the WHOLE guest bundle build with "Invalid call: require(name)" (Metro
+  // serves it as an HTTP 500). The literal must sit inside the thunk at the
+  // call site.
   function quietly(fn) {
     var origWarn = console.warn;
     try {
