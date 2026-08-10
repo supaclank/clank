@@ -87,13 +87,43 @@ func (s *stubSession) Close() error {
 	return nil
 }
 
+// testDeadlinePerStepCap bounds a genuine hang (not just a loaded CI
+// runner) to a fraction of the full test timeout, so it fails in
+// seconds instead of blocking until -timeout's ~10m default. It's set
+// well above the ~10s stall this package's flake exhibited under load.
+const testDeadlinePerStepCap = time.Minute
+
+// capDeadline is testDeadline's logic without the *testing.T dependency,
+// so it can be table-tested without varying the real -timeout flag.
+func capDeadline(now, deadline time.Time, hasDeadline bool, perStepCap time.Duration) time.Time {
+	capped := now.Add(perStepCap)
+	if hasDeadline {
+		if hard := deadline.Add(-5 * time.Second); hard.Before(capped) {
+			return hard
+		}
+	}
+	return capped
+}
+
+// testDeadline bounds any single blocking step (dial, read, slot poll)
+// by the test binary's own -timeout deadline instead of a small fixed
+// budget. Fixed budgets flake: a loaded CI runner can stall a "can't
+// possibly take 10s" step for exactly that long. The grace keeps a
+// failure inside the test, as a t.Fatalf with the step's context,
+// rather than the framework's global-timeout panic.
+func testDeadline(t *testing.T) time.Time {
+	t.Helper()
+	d, ok := t.Deadline()
+	return capDeadline(time.Now(), d, ok, testDeadlinePerStepCap)
+}
+
 // dialVoice spins a voice ws endpoint around engine and connects.
 func dialVoice(t *testing.T, engine Engine) (*websocket.Conn, func()) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		serveVoiceWS(w, r, engine, log.New(io.Discard, "", 0))
 	}))
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithDeadline(context.Background(), testDeadline(t))
 	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
 	if err != nil {
 		cancel()
@@ -109,7 +139,7 @@ func dialVoice(t *testing.T, engine Engine) (*websocket.Conn, func()) {
 
 func readVoiceMsg(t *testing.T, conn *websocket.Conn) voiceMsg {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithDeadline(context.Background(), testDeadline(t))
 	defer cancel()
 	_, data, err := conn.Read(ctx)
 	if err != nil {
@@ -120,6 +150,39 @@ func readVoiceMsg(t *testing.T, conn *websocket.Conn) voiceMsg {
 		t.Fatalf("ws message %q: %v", data, err)
 	}
 	return m
+}
+
+func TestCapDeadline(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	const cap = time.Minute
+
+	t.Run("no test deadline falls back to the cap", func(t *testing.T) {
+		t.Parallel()
+		got := capDeadline(now, time.Time{}, false, cap)
+		if !got.Equal(now.Add(cap)) {
+			t.Fatalf("got %v, want %v", got, now.Add(cap))
+		}
+	})
+
+	t.Run("far test deadline is capped, not used directly", func(t *testing.T) {
+		t.Parallel()
+		far := now.Add(10 * time.Minute)
+		got := capDeadline(now, far, true, cap)
+		if !got.Equal(now.Add(cap)) {
+			t.Fatalf("got %v, want the %v cap rather than the far deadline", got, cap)
+		}
+	})
+
+	t.Run("near test deadline wins over the cap", func(t *testing.T) {
+		t.Parallel()
+		near := now.Add(10 * time.Second)
+		got := capDeadline(now, near, true, cap)
+		want := near.Add(-5 * time.Second)
+		if !got.Equal(want) {
+			t.Fatalf("got %v, want %v (deadline - 5s)", got, want)
+		}
+	})
 }
 
 func TestVoiceWSStreamsPartialsAndFinal(t *testing.T) {
@@ -284,21 +347,10 @@ func TestVoiceWSReleasesSlotBetweenUtterances(t *testing.T) {
 	}
 
 	// conn1 stays connected (idle). conn2 must be able to dictate; the
-	// slot release is async after the final, so poll briefly.
+	// slot release is async after the final, so poll.
 	conn2, done2 := dialVoice(t, eng)
 	defer done2()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		_ = conn2.Write(ctx, websocket.MessageBinary, make([]byte, 4))
-		m := readVoiceMsg(t, conn2)
-		if m.Type == "partial" {
-			break // got the slot
-		}
-		if m.Type != "error" || time.Now().After(deadline) {
-			t.Fatalf("conn2 never acquired the slot, last = %+v", m)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	waitForSlot(t, conn2)
 	_ = conn2.Write(ctx, websocket.MessageText, []byte(`{"type":"end"}`))
 	got := []string{}
 	for len(got) < 2 {
@@ -310,12 +362,18 @@ func TestVoiceWSReleasesSlotBetweenUtterances(t *testing.T) {
 }
 
 // waitForSlot polls conn by writing audio until the engine slot is
-// acquired ("partial" comes back instead of "error"), mirroring
-// TestVoiceWSReleasesSlotBetweenUtterances's pattern for an async release.
+// acquired ("partial" comes back instead of "error"). The slot is
+// released asynchronously by the other connection (cancel has no ack;
+// the results pump writes the final before it Closes the session), so
+// early frames can lose the race and draw an "error". Every retry must
+// then start a fresh utterance with a cancel: one failed Open latches
+// openFailed, after which the handler drops the utterance's remaining
+// audio frames without replying (see openSess), so a same-utterance
+// retry would block on a reply that never comes until the read deadline.
 func waitForSlot(t *testing.T, conn *websocket.Conn) {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := testDeadline(t)
 	for {
 		_ = conn.Write(ctx, websocket.MessageBinary, make([]byte, 4))
 		m := readVoiceMsg(t, conn)
@@ -325,6 +383,7 @@ func waitForSlot(t *testing.T, conn *websocket.Conn) {
 		if m.Type != "error" || time.Now().After(deadline) {
 			t.Fatalf("slot never acquired, last message = %+v", m)
 		}
+		_ = conn.Write(ctx, websocket.MessageText, []byte(`{"type":"cancel"}`))
 		time.Sleep(50 * time.Millisecond)
 	}
 }
@@ -414,10 +473,13 @@ func TestVoiceWSUtteranceTooLongClosesConnection(t *testing.T) {
 		t.Fatalf("overflow message = %+v, want a 'too long' error", m)
 	}
 
-	rctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// The server must actively close the connection (a close frame, not
+	// just any read error): with the read budget now the whole test's, a
+	// bare err != nil check would let a deadline expiry pass vacuously.
+	rctx, cancel := context.WithDeadline(context.Background(), testDeadline(t))
 	defer cancel()
-	if _, _, err := conn.Read(rctx); err == nil {
-		t.Fatalf("conn.Read succeeded, want the server to have closed the connection")
+	if _, _, err := conn.Read(rctx); websocket.CloseStatus(err) == -1 {
+		t.Fatalf("conn.Read = %v, want the server to close the connection", err)
 	}
 }
 
