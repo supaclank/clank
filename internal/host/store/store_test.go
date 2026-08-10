@@ -2,7 +2,9 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"maps"
 	"path/filepath"
 	"testing"
 	"time"
@@ -71,6 +73,7 @@ func TestUpsertAndGetSession(t *testing.T) {
 		TicketID:   "TICKET-42",
 		Agent:      "plan",
 		Draft:      "wip",
+		Config:     map[string]string{"mode": "bypassPermissions", "effort": "default"},
 		CreatedAt:  now.Add(-2 * time.Hour),
 		UpdatedAt:  now,
 		LastReadAt: now,
@@ -98,6 +101,58 @@ func TestUpsertAndGetSession(t *testing.T) {
 	}
 	if !got.LastReadAt.Equal(now) {
 		t.Errorf("last_read_at: got %v, want %v", got.LastReadAt, now)
+	}
+	if !maps.Equal(got.Config, info.Config) {
+		t.Errorf("config: got %v, want %v", got.Config, info.Config)
+	}
+}
+
+// A session without config round-trips to a nil map (not an empty one),
+// keeping the wire field omitted and rehydrate's "nothing to re-assert"
+// check trivially false-y.
+func TestUpsertAndGetSession_NoConfigStaysNil(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t)
+	ctx := context.Background()
+	if err := s.UpsertSession(ctx, agent.SessionInfo{ID: "ses-nocfg", Backend: agent.BackendClaudeCode}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	got, err := s.GetSession(ctx, "ses-nocfg")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.Config != nil {
+		t.Errorf("config: got %v, want nil", got.Config)
+	}
+}
+
+// A nil Config must still store a JSON object, matching the column's
+// NOT NULL DEFAULT '{}' declaration in schema.sql — json.Marshal(nil map)
+// would otherwise write the literal `null`, a valid-but-wrong-shaped value.
+func TestUpsertSession_NilConfigStoresEmptyObject(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "host.db")
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	if err := s.UpsertSession(context.Background(), agent.SessionInfo{ID: "ses-nilcfg", Backend: agent.BackendClaudeCode}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	s.Close()
+
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	var config string
+	if err := raw.QueryRow(`SELECT config FROM sessions WHERE id = ?`, "ses-nilcfg").Scan(&config); err != nil {
+		t.Fatalf("read config column: %v", err)
+	}
+	if config != "{}" {
+		t.Errorf("config column: got %q, want %q", config, "{}")
 	}
 }
 

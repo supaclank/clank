@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +29,13 @@ type backendFixture struct {
 
 func newBackendFixture(t *testing.T, scripted *acptest.ScriptedAgent, resume string) *backendFixture {
 	t.Helper()
+	return newBackendFixtureWithConfig(t, scripted, resume, nil)
+}
+
+// newBackendFixtureWithConfig seeds the backend's last-applied config —
+// the BackendInvocation.Config a rehydrating host passes.
+func newBackendFixtureWithConfig(t *testing.T, scripted *acptest.ScriptedAgent, resume string, lastConfig map[string]string) *backendFixture {
+	t.Helper()
 	f := &backendFixture{t: t, agent: scripted, notify: make(chan struct{}, 256)}
 	profile := testProfile(acpx.ScopeHost, nil)
 	proc, err := acptest.Proc(context.Background(), profile, scripted, testLogf(t))
@@ -36,7 +44,7 @@ func newBackendFixture(t *testing.T, scripted *acptest.ScriptedAgent, resume str
 	}
 	t.Cleanup(proc.Stop)
 	resolver := func(context.Context) (*acpx.AdapterConn, error) { return proc.Conn, nil }
-	f.backend = acpx.NewBackend(profile, "/work", resume, "", resolver, testLogf(t))
+	f.backend = acpx.NewBackend(profile, "/work", resume, "", lastConfig, resolver, testLogf(t))
 	t.Cleanup(func() { _ = f.backend.Stop() })
 	go func() {
 		for e := range f.backend.Events() {
@@ -929,6 +937,253 @@ func TestBackend_ResumeCapturesModesAndModels(t *testing.T) {
 	curModel, models := f.backend.Models()
 	if curModel != "gpt-5.2-codex" || len(models) != 2 || models[0].ID != "gpt-5.2-codex" || models[0].Name != "GPT-5.2 Codex" {
 		t.Errorf("resumed models = %q / %+v, want the agent-advertised list", curModel, models)
+	}
+}
+
+// A resumed session must get its last-applied config re-asserted: the
+// loaded transcript is the session's memory, but the agent process
+// behind it is freshly spawned and boots in its own default mode.
+// Without the re-assert, every rehydrate (daemon restart, sprite
+// hibernate→wake, adapter respawn) silently downgraded the session —
+// e.g. bypassPermissions to prompt-mode, stalling unattended runs on
+// permission prompts nobody answers.
+func TestBackend_ResumeReassertsLastAppliedConfig(t *testing.T) {
+	t.Parallel()
+	calls := make(chan string, 8)
+	scripted := &acptest.ScriptedAgent{}
+	scripted.LoadSessionFn = func(ctx context.Context, p sdk.LoadSessionRequest) (sdk.LoadSessionResponse, error) {
+		calls <- "load"
+		return sdk.LoadSessionResponse{Modes: &sdk.SessionModeState{
+			CurrentModeId: "default",
+			AvailableModes: []sdk.SessionMode{
+				{Id: "default", Name: "Manual"},
+				{Id: "bypassPermissions", Name: "Bypass"},
+			},
+		}}, nil
+	}
+	scripted.SetModeFn = func(ctx context.Context, p sdk.SetSessionModeRequest) (sdk.SetSessionModeResponse, error) {
+		calls <- "set_mode:" + string(p.ModeId)
+		return sdk.SetSessionModeResponse{}, nil
+	}
+	scripted.SetConfigFn = func(ctx context.Context, p sdk.SetSessionConfigOptionRequest) (sdk.SetSessionConfigOptionResponse, error) {
+		calls <- "set_config:" + string(p.ValueId.ConfigId) + "=" + string(p.ValueId.Value)
+		return sdk.SetSessionConfigOptionResponse{}, nil
+	}
+	f := newBackendFixtureWithConfig(t, scripted, "ses-hibernated", map[string]string{
+		agent.ConfigOptionMode: "bypassPermissions",
+		"effort":               "high",
+	})
+	if err := f.backend.Open(context.Background()); err != nil {
+		t.Fatalf("Open (resume): %v", err)
+	}
+
+	for _, want := range []string{"load", "set_mode:bypassPermissions", "set_config:effort=high"} {
+		select {
+		case got := <-calls:
+			if got != want {
+				t.Fatalf("agent call = %q, want %q", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("agent never received %q", want)
+		}
+	}
+	if cur, _ := f.backend.Modes(); cur != "bypassPermissions" {
+		t.Errorf("Modes() after resume = %q, want the re-asserted bypassPermissions", cur)
+	}
+}
+
+// An agent whose load response already reports the desired mode (one
+// that persists mode itself) must not receive a redundant set_mode.
+func TestBackend_ResumeSkipsReassertWhenAgentAlreadyCurrent(t *testing.T) {
+	t.Parallel()
+	setModes := make(chan string, 4)
+	scripted := &acptest.ScriptedAgent{}
+	scripted.LoadSessionFn = func(ctx context.Context, p sdk.LoadSessionRequest) (sdk.LoadSessionResponse, error) {
+		return sdk.LoadSessionResponse{Modes: &sdk.SessionModeState{
+			CurrentModeId: "bypassPermissions",
+			AvailableModes: []sdk.SessionMode{
+				{Id: "default", Name: "Manual"},
+				{Id: "bypassPermissions", Name: "Bypass"},
+			},
+		}}, nil
+	}
+	scripted.SetModeFn = func(ctx context.Context, p sdk.SetSessionModeRequest) (sdk.SetSessionModeResponse, error) {
+		setModes <- string(p.ModeId)
+		return sdk.SetSessionModeResponse{}, nil
+	}
+	f := newBackendFixtureWithConfig(t, scripted, "ses-kept-mode", map[string]string{
+		agent.ConfigOptionMode: "bypassPermissions",
+	})
+	if err := f.backend.Open(context.Background()); err != nil {
+		t.Fatalf("Open (resume): %v", err)
+	}
+	select {
+	case got := <-setModes:
+		t.Fatalf("redundant set_mode %q sent for an already-current mode", got)
+	default:
+	}
+}
+
+// A live agent-initiated mode change (the ExitPlanMode-approval shape)
+// must surface as EventModeChange AND update the config the backend
+// re-asserts: after the agent flipped plan → default, a transport
+// re-establish that re-asserted the stale creation-time "plan" would
+// regress an approved build back into plan mode.
+func TestBackend_AgentModeChange_EmitsEventAndReassertsNewMode(t *testing.T) {
+	t.Parallel()
+	planModes := &sdk.SessionModeState{
+		CurrentModeId: "plan",
+		AvailableModes: []sdk.SessionMode{
+			{Id: "plan", Name: "Plan"},
+			{Id: "default", Name: "Manual"},
+		},
+	}
+	first := &acptest.ScriptedAgent{}
+	first.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+		return sdk.NewSessionResponse{SessionId: "ses-plan", Modes: planModes}, nil
+	}
+	first.PromptFn = func(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResponse, error) {
+		_ = first.Conn().SessionUpdate(ctx, sdk.SessionNotification{
+			SessionId: p.SessionId,
+			Update:    sdk.SessionUpdate{CurrentModeUpdate: &sdk.SessionCurrentModeUpdate{CurrentModeId: "default"}},
+		})
+		return sdk.PromptResponse{StopReason: sdk.StopReasonEndTurn}, nil
+	}
+
+	secondCalls := make(chan string, 8)
+	second := &acptest.ScriptedAgent{}
+	second.LoadSessionFn = func(ctx context.Context, p sdk.LoadSessionRequest) (sdk.LoadSessionResponse, error) {
+		secondCalls <- "load"
+		// A fresh agent process boots in its own default mode.
+		return sdk.LoadSessionResponse{Modes: &sdk.SessionModeState{
+			CurrentModeId:  "default",
+			AvailableModes: planModes.AvailableModes,
+		}}, nil
+	}
+	second.SetModeFn = func(ctx context.Context, p sdk.SetSessionModeRequest) (sdk.SetSessionModeResponse, error) {
+		secondCalls <- "set_mode:" + string(p.ModeId)
+		return sdk.SetSessionModeResponse{}, nil
+	}
+
+	profile := testProfile(acpx.ScopeHost, nil)
+	proc1, err := acptest.Proc(context.Background(), profile, first, testLogf(t))
+	if err != nil {
+		t.Fatalf("acptest.Proc: %v", err)
+	}
+	t.Cleanup(proc1.Stop)
+	var cur atomic.Pointer[acpx.AdapterProc]
+	cur.Store(proc1)
+	resolver := func(context.Context) (*acpx.AdapterConn, error) { return cur.Load().Conn, nil }
+	// Creation-time policy: plan (what the client sent on create).
+	b := acpx.NewBackend(profile, "/work", "", "", map[string]string{agent.ConfigOptionMode: "plan"}, resolver, testLogf(t))
+	t.Cleanup(func() { _ = b.Stop() })
+	f := &backendFixture{t: t, agent: first, backend: b, notify: make(chan struct{}, 256)}
+	go func() {
+		for e := range b.Events() {
+			f.mu.Lock()
+			f.events = append(f.events, e)
+			f.mu.Unlock()
+			select {
+			case f.notify <- struct{}{}:
+			default:
+			}
+		}
+	}()
+
+	ctx := context.Background()
+	if err := b.OpenAndSend(ctx, agent.SendMessageOpts{Text: "build it"}); err != nil {
+		t.Fatalf("OpenAndSend: %v", err)
+	}
+	evts := f.waitFor(10*time.Second, func(evts []agent.Event) bool {
+		return countType(evts, agent.EventModeChange) >= 1 && settledTurns(evts) >= 1
+	})
+	var mode agent.ModeChangeData
+	for _, e := range evts {
+		if e.Type == agent.EventModeChange {
+			mode = e.Data.(agent.ModeChangeData)
+		}
+	}
+	if mode.ModeID != "default" {
+		t.Fatalf("EventModeChange mode_id = %q, want default", mode.ModeID)
+	}
+	if curMode, _ := b.Modes(); curMode != "default" {
+		t.Fatalf("Modes() after agent flip = %q, want default", curMode)
+	}
+
+	// The adapter dies (hibernation, credential-rotation respawn); the
+	// wrapper re-establishes on a fresh process.
+	proc1.Stop()
+	proc2, err := acptest.Proc(context.Background(), profile, second, testLogf(t))
+	if err != nil {
+		t.Fatalf("acptest.Proc (second): %v", err)
+	}
+	t.Cleanup(proc2.Stop)
+	cur.Store(proc2)
+	if err := b.Open(ctx); err != nil {
+		t.Fatalf("Open (re-establish): %v", err)
+	}
+	select {
+	case got := <-secondCalls:
+		if got != "load" {
+			t.Fatalf("first call on re-established conn = %q, want load", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("re-established conn never received session/load")
+	}
+	select {
+	case got := <-secondCalls:
+		t.Fatalf("re-assert sent %q; the agent-initiated flip to default matches the fresh process, so nothing should be sent (a set_mode:plan here is the stale-config regression)", got)
+	default:
+	}
+}
+
+// Replayed current_mode_update notifications during session/load are
+// history, not truth: they must not emit EventModeChange and must not
+// leak into the re-asserted config — the load response's current mode
+// plus the stored config decide what happens next.
+func TestBackend_ReplayedModeUpdateDoesNotEmitOrRecord(t *testing.T) {
+	t.Parallel()
+	calls := make(chan string, 8)
+	scripted := &acptest.ScriptedAgent{}
+	scripted.LoadSessionFn = func(ctx context.Context, p sdk.LoadSessionRequest) (sdk.LoadSessionResponse, error) {
+		// Replay a historical flip into plan before responding.
+		_ = scripted.Conn().SessionUpdate(ctx, sdk.SessionNotification{
+			SessionId: p.SessionId,
+			Update:    sdk.SessionUpdate{CurrentModeUpdate: &sdk.SessionCurrentModeUpdate{CurrentModeId: "plan"}},
+		})
+		return sdk.LoadSessionResponse{Modes: &sdk.SessionModeState{
+			CurrentModeId: "default",
+			AvailableModes: []sdk.SessionMode{
+				{Id: "default", Name: "Manual"},
+				{Id: "plan", Name: "Plan"},
+				{Id: "bypassPermissions", Name: "Bypass"},
+			},
+		}}, nil
+	}
+	scripted.SetModeFn = func(ctx context.Context, p sdk.SetSessionModeRequest) (sdk.SetSessionModeResponse, error) {
+		calls <- "set_mode:" + string(p.ModeId)
+		return sdk.SetSessionModeResponse{}, nil
+	}
+	f := newBackendFixtureWithConfig(t, scripted, "ses-replayed-mode", map[string]string{
+		agent.ConfigOptionMode: "bypassPermissions",
+	})
+	if err := f.backend.Open(context.Background()); err != nil {
+		t.Fatalf("Open (resume): %v", err)
+	}
+
+	select {
+	case got := <-calls:
+		if got != "set_mode:bypassPermissions" {
+			t.Fatalf("re-assert sent %q, want set_mode:bypassPermissions (replayed plan must not win)", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("agent never received the re-asserted mode")
+	}
+	if cur, _ := f.backend.Modes(); cur != "bypassPermissions" {
+		t.Errorf("Modes() = %q, want bypassPermissions", cur)
+	}
+	if evts := f.snapshot(); countType(evts, agent.EventModeChange) != 0 {
+		t.Errorf("replayed mode update emitted EventModeChange; events: %s", eventTypes(evts))
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -690,6 +691,7 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	b, err := mgr.CreateBackend(ctx, agent.BackendInvocation{
 		WorkDir:          workDir,
 		ResumeExternalID: req.SessionID,
+		Config:           req.Config,
 	})
 	if err != nil {
 		return nil, agent.SessionInfo{}, err
@@ -725,6 +727,7 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 		GitRef:     req.GitRef,
 		Prompt:     req.Prompt,
 		TicketID:   req.TicketID,
+		Config:     req.Config,
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
@@ -796,13 +799,24 @@ func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
 			titleValue = d.Title
 		}
 	}
+	// An agent-initiated mode change (e.g. plan approval) folds into the
+	// persisted config so the next rehydrate re-asserts the effective
+	// mode, not the stale pre-approval one.
+	hasMode := false
+	var modeValue string
+	if evt.Type == agent.EventModeChange {
+		if d, ok := evt.Data.(agent.ModeChangeData); ok && d.ModeID != "" {
+			hasMode = true
+			modeValue = d.ModeID
+		}
+	}
 	// A new message is real activity even when the status doesn't move (e.g.
 	// the backend appends a message without an idle/busy flip), so it bumps
 	// UpdatedAt to keep recency sorting honest. Only the completed-message
 	// event counts — EventPart (per-token deltas) would churn UpdatedAt on
 	// every token, defeating the "user-visible change only" guarantee above.
 	hasMessage := evt.Type == agent.EventMessage
-	if !hasExternalID && !hasStatus && !hasTitle && !hasMessage {
+	if !hasExternalID && !hasStatus && !hasTitle && !hasMode && !hasMessage {
 		return
 	}
 
@@ -850,6 +864,13 @@ func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
 	}
 	if hasTitle && info.Title != titleValue {
 		info.Title = titleValue
+		dirty = true
+	}
+	if hasMode && info.Config[agent.ConfigOptionMode] != modeValue {
+		if info.Config == nil {
+			info.Config = make(map[string]string)
+		}
+		info.Config[agent.ConfigOptionMode] = modeValue
 		dirty = true
 	}
 	// A message carries no metadata field to diff against — its arrival is
@@ -1240,9 +1261,14 @@ func (s *Service) ensureBackend(ctx context.Context, id string) (agent.SessionBa
 	}
 	workDirDur := time.Since(rehydrateStart)
 	createStart := time.Now()
+	// info.Config is the session's last-applied config; the rebuilt
+	// backend re-asserts it after resuming, since the fresh agent
+	// process boots with its own defaults (a hibernate→wake otherwise
+	// silently downgrades e.g. bypassPermissions to prompt-mode).
 	b, err := mgr.CreateBackend(ctx, agent.BackendInvocation{
 		WorkDir:          workDir,
 		ResumeExternalID: info.ExternalID,
+		Config:           info.Config,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("ensure backend %s: %w", id, err)
@@ -1322,7 +1348,60 @@ func (s *Service) SendMessage(ctx context.Context, id string, opts agent.SendMes
 	if err != nil {
 		return err
 	}
-	return b.Send(ctx, opts)
+	if err := b.Send(ctx, opts); err != nil {
+		return err
+	}
+	s.recordSessionConfig(ctx, id, opts.Config)
+	return nil
+}
+
+// recordSessionConfig merges a dispatched config change into the
+// session row's last-applied config (DATA-040: omitted keys mean "no
+// change", so this merges by key rather than replacing). The stored map
+// is what a rehydrated backend re-asserts after resume. A no-op change
+// (create's OpenAndSend re-carrying the just-persisted config, a client
+// re-asserting the current mode) skips the write and its meta
+// broadcast. Best-effort by the same logic as CreateSession's persist:
+// the send already succeeded, so a store failure logs rather than
+// failing the request. Does not bump UpdatedAt — recording policy is
+// not agent activity, and the inbox sorts on UpdatedAt.
+func (s *Service) recordSessionConfig(ctx context.Context, id string, cfg map[string]string) {
+	if s.sessionsStore == nil {
+		return
+	}
+	changes := make(map[string]string, len(cfg))
+	for k, v := range cfg {
+		if k != "" && v != "" {
+			changes[k] = v
+		}
+	}
+	if len(changes) == 0 {
+		return
+	}
+	info, err := s.sessionsStore.GetSession(ctx, id)
+	if err != nil {
+		s.log.Printf("warning: record session %s config: %v", id, err)
+		return
+	}
+	dirty := false
+	for k, v := range changes {
+		if info.Config[k] != v {
+			dirty = true
+			break
+		}
+	}
+	if !dirty {
+		return
+	}
+	if info.Config == nil {
+		info.Config = make(map[string]string, len(changes))
+	}
+	maps.Copy(info.Config, changes)
+	if err := s.sessionsStore.UpsertSession(ctx, info); err != nil {
+		s.log.Printf("warning: record session %s config: %v", id, err)
+		return
+	}
+	s.broadcastMetaChange(info)
 }
 
 // AbortSession asks the agent to stop streaming.
@@ -1365,6 +1444,7 @@ func (s *Service) ForkSession(ctx context.Context, id, messageID string) (agent.
 		TicketID:   src.TicketID,
 		Agent:      src.Agent,
 		Title:      fork.Title,
+		Config:     maps.Clone(src.Config),
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
@@ -1418,6 +1498,7 @@ func (s *Service) OpenAndSend(ctx context.Context, id string, opts agent.SendMes
 	if err := b.OpenAndSend(ctx, opts); err != nil {
 		return "", "", err
 	}
+	s.recordSessionConfig(ctx, id, opts.Config)
 	return b.Status(), b.SessionID(), nil
 }
 

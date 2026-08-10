@@ -4,7 +4,11 @@
 //
 // The host serves presets and stores user-created ones; it NEVER applies
 // them to a request — the client is the only thing that sends config
-// (policy lives with the caller). Built-ins arrive via
+// (policy lives with the caller). The one thing the host does with config
+// is REMEMBER it: the session row keeps the last-applied config, and a
+// rehydrated backend re-asserts it after resume. That is restoration of
+// caller policy across an agent-process rebuild, not the host choosing
+// policy. Built-ins arrive via
 // $CLANK_BUILTIN_PRESETS, serialized from the typed sets below by whatever
 // provisioned the host — the one thing that knows the environment's blast
 // radius. Same pattern as CLANK_TEMPLATES: Go values in one file,

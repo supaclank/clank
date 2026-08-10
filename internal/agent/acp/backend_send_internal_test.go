@@ -80,7 +80,7 @@ func TestShouldSwallowPromptErrLocked_GenuineError(t *testing.T) {
 // stranding the host's rebuild contract (which is keyed on StatusDead).
 func TestBackend_Send_RejectsWhenTransportDead(t *testing.T) {
 	t.Parallel()
-	b := NewBackend(AdapterProfile{}, "/work", "", "", nil, nil)
+	b := NewBackend(AdapterProfile{}, "/work", "", "", nil, nil, nil)
 	b.opened = true
 	b.conn = &AdapterConn{}
 	b.status = agent.StatusDead

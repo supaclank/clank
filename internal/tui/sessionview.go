@@ -1487,6 +1487,23 @@ func (m *SessionViewModel) handleEvent(evt agent.Event) tea.Cmd {
 			}
 		}
 
+	case agent.EventModeChange:
+		// The agent changed its own mode (e.g. plan approval). Follow it
+		// in both the reported truth and the picker, so the mode
+		// indicator is honest and the next send doesn't diff a stale
+		// selection against a mode the agent already left.
+		if data, ok := evt.Data.(agent.ModeChangeData); ok {
+			if m.info != nil {
+				m.info.CurrentModeID = data.ModeID
+			}
+			for i, sm := range m.modes {
+				if string(sm.perm) == data.ModeID {
+					m.selectedMode = i
+					break
+				}
+			}
+		}
+
 	case agent.EventRevertChange:
 		if data, ok := evt.Data.(agent.RevertChangeData); ok {
 			if m.info != nil {

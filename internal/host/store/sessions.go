@@ -139,6 +139,14 @@ func (s *Store) UpsertSession(ctx context.Context, info agent.SessionInfo) error
 	if !info.LastReadAt.IsZero() {
 		lastReadAt = sql.NullInt64{Int64: timeToMs(info.LastReadAt), Valid: true}
 	}
+	configSrc := info.Config
+	if configSrc == nil {
+		configSrc = map[string]string{}
+	}
+	config, err := json.Marshal(configSrc)
+	if err != nil {
+		return fmt.Errorf("upsert session %s: encode config: %w", info.ID, err)
+	}
 	return s.q.UpsertSession(ctx, hostsqlitedb.UpsertSessionParams{
 		ID:             info.ID,
 		ExternalID:     info.ExternalID,
@@ -156,6 +164,7 @@ func (s *Store) UpsertSession(ctx context.Context, info agent.SessionInfo) error
 		TicketID:       info.TicketID,
 		Agent:          info.Agent,
 		Draft:          info.Draft,
+		Config:         string(config),
 		CreatedAt:      timeToMs(createdAt),
 		UpdatedAt:      timeToMs(now),
 		LastReadAt:     lastReadAt,
@@ -247,6 +256,13 @@ func sessionFromRow(r hostsqlitedb.Session) agent.SessionInfo {
 	}
 	if r.LastReadAt.Valid {
 		info.LastReadAt = msToTime(r.LastReadAt.Int64)
+	}
+	// Corrupt config JSON degrades to "no stored config" rather than
+	// failing the whole row: sessionFromRow feeds list endpoints, where
+	// one bad row must not take down the inbox.
+	var config map[string]string
+	if err := json.Unmarshal([]byte(r.Config), &config); err == nil && len(config) > 0 {
+		info.Config = config
 	}
 	return info
 }

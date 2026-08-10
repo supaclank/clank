@@ -32,8 +32,7 @@ type reducer struct {
 	turnSeq int
 	cur     *turnState
 
-	title  string
-	modeID string
+	title string
 
 	// replayUser accumulates consecutive user chunks during replay.
 	replayUser *agent.MessageData
@@ -98,13 +97,11 @@ func (r *reducer) reduce(n sdk.SessionNotification) []agent.Event {
 		return r.onToolCallUpdate(u.ToolCallUpdate)
 	case u.SessionInfoUpdate != nil:
 		return r.onSessionInfo(u.SessionInfoUpdate)
-	case u.CurrentModeUpdate != nil:
-		r.modeID = string(u.CurrentModeUpdate.CurrentModeId)
-		return nil
 	case u.Plan != nil, u.PlanUpdate != nil, u.PlanRemoved != nil,
-		u.AvailableCommandsUpdate != nil, u.ConfigOptionUpdate != nil:
+		u.AvailableCommandsUpdate != nil, u.ConfigOptionUpdate != nil,
+		u.CurrentModeUpdate != nil:
 		// Recognized but produce no transcript events (plan approval is
-		// cut; config updates refresh Backend.configOptions pre-reduce).
+		// cut; config and mode updates refresh backend state pre-reduce).
 		return nil
 	default:
 		b, _ := json.Marshal(u)

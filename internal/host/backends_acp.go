@@ -318,7 +318,7 @@ func (m *ACPBackendManager) CreateBackend(ctx context.Context, inv agent.Backend
 	resolver := func(ctx context.Context) (*acp.AdapterConn, error) {
 		return m.sup.GetConn(ctx, inv.WorkDir)
 	}
-	return acp.NewBackend(m.profile, inv.WorkDir, inv.ResumeExternalID, guidanceText, resolver, log.Printf), nil
+	return acp.NewBackend(m.profile, inv.WorkDir, inv.ResumeExternalID, guidanceText, inv.Config, resolver, log.Printf), nil
 }
 
 // configProbe is one in-flight on-demand config-options probe; waiters

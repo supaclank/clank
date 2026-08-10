@@ -34,7 +34,8 @@ CREATE TABLE sessions (
     updated_at      INTEGER NOT NULL,                  -- unix millis
     last_read_at    INTEGER,                           -- unix millis, null = unread
     subdir          TEXT NOT NULL DEFAULT '',          -- GitRef.Subdir: working dir relative to project_dir; '' = root
-    display_name    TEXT NOT NULL DEFAULT ''           -- GitRef.DisplayName: label; project_dir is root-normalized so not re-derivable
+    display_name    TEXT NOT NULL DEFAULT '',          -- GitRef.DisplayName: label; project_dir is root-normalized so not re-derivable
+    config          TEXT NOT NULL DEFAULT '{}'         -- last-applied session config, JSON option id → value id; re-asserted on rehydrate
 );
 
 CREATE INDEX idx_sessions_external_id ON sessions (external_id);

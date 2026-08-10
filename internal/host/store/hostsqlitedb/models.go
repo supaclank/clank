@@ -36,4 +36,5 @@ type Session struct {
 	LastReadAt     sql.NullInt64
 	Subdir         string
 	DisplayName    string
+	Config         string
 }
