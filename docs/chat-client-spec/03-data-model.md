@@ -33,6 +33,7 @@ The session metadata snapshot, returned by create/get/list/search and embedded i
 | TicketID | `ticket_id` | string | Optional backlog link. |
 | Agent | `agent` | string | Current OpenCode agent name. |
 | Draft | `draft` | string | Unsent follow-up text the user was composing. |
+| Config | `config` | map | (0.6.3) The session's **last-applied** config (option id → value id): create/send `config` merged with agent-initiated mode changes (`mode` event). Persisted; the host re-asserts it when a backend rehydrates, so a hibernate→wake cannot silently reset the session's mode. Unlike `config_options` this reflects what was *asked for*, not the live agent's advertisement — prefer `config_options`/`current_mode_id` for live display when the backend is live. |
 | RevertMessageID | `revert_message_id` | string | When set, messages from this ID onward are reverted (hidden). See [DATA-012]. |
 | ServerURL | `server_url` | string | **Runtime-only, not persisted.** |
 | IsRemote | `is_remote` | bool | **Runtime-only**, stamped by gateway routing. |
@@ -182,10 +183,20 @@ Source: `internal/agent/agent.go:565`.
   config_incomplete` naming the gaps. The host never fills values in — no fallbacks; clients
   take the keys from `GET /presets` ([OP-016](05-operations.md)) and overlay their own
   choices. **Retired with this rewrite:** the `permission_mode` and `agent` request fields.
+  **Across backend rehydrates** (0.6.3) "sessions remember their own state" is the host's
+  job to keep true: the session row stores the last-applied config (`SessionInfo.config`)
+  and a rebuilt backend re-asserts it after resuming, because the fresh agent process
+  otherwise boots with its own defaults — silently downgrading e.g. `bypassPermissions` to
+  prompt-mode on every hibernate→wake. Agent-initiated mode changes (plan approval) fold
+  into the stored map via the `mode` event so the restore is the *effective* mode, never a
+  stale pre-approval one. Clients need no part in this: omitted config on follow-ups stays
+  the contract.
   **Golden:** `internal/agent/acp/backend_send.go` (`applyConfig`),
+  `internal/agent/acp/backend_open.go` (`reassertConfig`),
   `internal/host/presetstore.go` (`ValidateCreateConfig`), `internal/agent/presets`;
   regressions `TestCreateSession_RejectsIncompleteConfig`,
-  `TestBackend_SendConfigAppliesModeFirstThenSortedOptions`.
+  `TestBackend_SendConfigAppliesModeFirstThenSortedOptions`,
+  `TestBackend_ResumeReassertsLastAppliedConfig`.
 
 - **[DATA-041] (SHOULD, 0.6.2)** `ConfigOption` is the uniform knob shape every editor
   reads: `{id, name, description?, category?, current_value, values: [{value, name,

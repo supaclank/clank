@@ -129,6 +129,7 @@ single biggest source of cross-client divergence.
 | `permission` | `{ request_id, tool, description, tool_use_id? }` | Agent is **blocked** awaiting a tool decision. Suppressed by a question tag with the same `request_id` ([QST-003](11-interactive-tools.md)). | [STATE-PERM-001](06-state-model.md) |
 | `error` | `{ message }` | An error occurred on the session. | [STATE-ERR-001](06-state-model.md) |
 | `title` | `{ title }` | AI-generated title set/changed. | [STATE-META-001](06-state-model.md) |
+| `mode` | `{ mode_id }` | (0.6.3) The **agent** changed its own session mode (e.g. plan approval flips `plan` → `default`). Client-requested changes ride send `config` and produce no `mode` event. A client MAY refresh its mode picker from it; the host also folds it into `SessionInfo.config` (followed by a `meta` event), so refetch-based clients converge without handling it. | ignore-safe |
 | `revert` | `{ message_id }` | Revert marker changed; empty = un-revert. | [STATE-REVERT-001](06-state-model.md) |
 | `meta` | `{ session: SessionInfo }` | Session metadata changed; carries the **whole** new `SessionInfo`. The row-sync signal for the list. | [STATE-META-002](06-state-model.md) · [12](12-session-list.md) |
 | `session.create` | `SessionInfo`* | A session was created (*may decode generically over SSE — refetch if unreadable). | [12](12-session-list.md) |

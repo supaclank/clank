@@ -58,6 +58,7 @@ const (
 	EventPermission    EventType = "permission"   // Agent requests permission for a tool
 	EventError         EventType = "error"        // Error occurred
 	EventTitleChange   EventType = "title"        // Session title updated
+	EventModeChange    EventType = "mode"         // Agent-initiated session mode change (e.g. plan approval)
 	EventRevertChange  EventType = "revert"       // Session revert state changed
 	EventReconnecting  EventType = "reconnecting" // Backend is reconnecting to server
 	EventReconnected   EventType = "reconnected"  // Backend successfully reconnected
@@ -144,6 +145,12 @@ func (e *Event) UnmarshalJSON(b []byte) error {
 		var d TitleChangeData
 		if err := json.Unmarshal(raw.Data, &d); err != nil {
 			return fmt.Errorf("unmarshal TitleChangeData: %w", err)
+		}
+		e.Data = d
+	case EventModeChange:
+		var d ModeChangeData
+		if err := json.Unmarshal(raw.Data, &d); err != nil {
+			return fmt.Errorf("unmarshal ModeChangeData: %w", err)
 		}
 		e.Data = d
 	case EventRevertChange:
@@ -340,6 +347,14 @@ type ErrorData struct {
 // TitleChangeData is the payload for EventTitleChange.
 type TitleChangeData struct {
 	Title string `json:"title"`
+}
+
+// ModeChangeData is the payload for EventModeChange: the agent changed
+// its own session mode (client-requested changes ride SendMessageOpts
+// Config instead). The host folds it into the session's persisted
+// Config so a rehydrate restores the effective mode, not a stale one.
+type ModeChangeData struct {
+	ModeID string `json:"mode_id"`
 }
 
 // ForkResult holds the result of a Fork operation.
@@ -560,6 +575,7 @@ type SessionInfo struct {
 	TicketID        string            `json:"ticket_id,omitempty"`
 	Agent           string            `json:"agent,omitempty"`             // Current OpenCode agent (e.g. "build", "plan")
 	Draft           string            `json:"draft,omitempty"`             // Unsent follow-up text the user was composing
+	Config          map[string]string `json:"config,omitempty"`            // Last-applied session config (option id → value id): create/send config merged with agent-initiated mode changes. Re-asserted on rehydrate so a backend rebuild can't reset the session's mode.
 	RevertMessageID string            `json:"revert_message_id,omitempty"` // When set, messages from this ID onward are reverted (hidden)
 	ServerURL       string            `json:"server_url,omitempty"`        // Runtime-only: backend server URL (e.g. OpenCode serve endpoint). Not persisted.
 	CurrentModeID   string            `json:"current_mode_id,omitempty"`   // Runtime-only: the agent-owned session mode currently active. Not persisted.
@@ -843,6 +859,14 @@ type BackendInvocation struct {
 	// StartRequest.SessionID (which doubles as the host-side session ID).
 	// A future split may decouple the two.
 	ResumeExternalID string
+
+	// Config is the session's last-applied config (option id → value id).
+	// A resumed backend re-asserts it after loading the session: agents
+	// boot fresh processes with their own defaults, so without this every
+	// rehydrate silently reset mode/model/effort to those defaults. Not an
+	// initial config for fresh sessions — those apply config via the first
+	// Send (DATA-040).
+	Config map[string]string
 }
 
 // BackendManager creates and manages SessionBackend instances for a specific

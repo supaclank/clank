@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 
@@ -58,6 +59,12 @@ type Backend struct {
 	currentModel    string
 	availableModels []agent.ModelInfo
 	configOptions   []agent.ConfigOption
+	// lastConfig accumulates the session's applied config (option id →
+	// value id): seeded from BackendInvocation.Config, merged on every
+	// client applyConfig, and following agent-initiated mode changes.
+	// Open re-asserts it after session/load — a respawned agent process
+	// boots with its own defaults, not the session's.
+	lastConfig map[string]string
 
 	lastUpdate atomicTime
 
@@ -84,7 +91,9 @@ type parkedPermission struct {
 // NewBackend builds a SessionBackend for one clank session.
 // resumeExternalID != "" resumes an existing ACP session via
 // session/load; guidance is injected only on fresh sessions.
-func NewBackend(profile AdapterProfile, workDir, resumeExternalID, guidance string, resolver ConnResolver, logf func(string, ...any)) *Backend {
+// lastConfig is the session's last-applied config, re-asserted on
+// resume (see Backend.lastConfig).
+func NewBackend(profile AdapterProfile, workDir, resumeExternalID, guidance string, lastConfig map[string]string, resolver ConnResolver, logf func(string, ...any)) *Backend {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
@@ -100,6 +109,7 @@ func NewBackend(profile AdapterProfile, workDir, resumeExternalID, guidance stri
 		red:          newReducer(logf),
 		events:       make(chan agent.Event, eventBufferSize),
 		pendingPerms: make(map[string]parkedPermission),
+		lastConfig:   maps.Clone(lastConfig),
 		bgCtx:        ctx,
 		bgCancel:     cancel,
 	}

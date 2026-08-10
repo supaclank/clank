@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"maps"
 	"path/filepath"
 	"testing"
 	"time"
@@ -71,6 +72,7 @@ func TestUpsertAndGetSession(t *testing.T) {
 		TicketID:   "TICKET-42",
 		Agent:      "plan",
 		Draft:      "wip",
+		Config:     map[string]string{"mode": "bypassPermissions", "effort": "default"},
 		CreatedAt:  now.Add(-2 * time.Hour),
 		UpdatedAt:  now,
 		LastReadAt: now,
@@ -98,6 +100,28 @@ func TestUpsertAndGetSession(t *testing.T) {
 	}
 	if !got.LastReadAt.Equal(now) {
 		t.Errorf("last_read_at: got %v, want %v", got.LastReadAt, now)
+	}
+	if !maps.Equal(got.Config, info.Config) {
+		t.Errorf("config: got %v, want %v", got.Config, info.Config)
+	}
+}
+
+// A session without config round-trips to a nil map (not an empty one),
+// keeping the wire field omitted and rehydrate's "nothing to re-assert"
+// check trivially false-y.
+func TestUpsertAndGetSession_NoConfigStaysNil(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t)
+	ctx := context.Background()
+	if err := s.UpsertSession(ctx, agent.SessionInfo{ID: "ses-nocfg", Backend: agent.BackendClaudeCode}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	got, err := s.GetSession(ctx, "ses-nocfg")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.Config != nil {
+		t.Errorf("config: got %v, want nil", got.Config)
 	}
 }
 

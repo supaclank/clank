@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"sync/atomic"
 	"time"
@@ -98,6 +99,12 @@ func (b *Backend) Open(ctx context.Context) error {
 			conn.Deregister(sdk.SessionId(resume))
 			return fmt.Errorf("acp %s: session/load %s: %w", b.profile.ID, resume, err)
 		}
+		// The loaded transcript is the session's memory, but the agent
+		// process behind it is freshly spawned with its own default
+		// mode/model/effort. Re-assert the last-applied config so a
+		// rehydrate can't silently downgrade the session's policy (e.g.
+		// bypassPermissions → prompt-mode, stalling unattended runs).
+		b.reassertConfig(ctx, conn)
 	}
 
 	b.mu.Lock()
@@ -117,6 +124,36 @@ func (b *Backend) OpenAndSend(ctx context.Context, opts agent.SendMessageOpts) e
 		return err
 	}
 	return b.Send(ctx, opts)
+}
+
+// reassertConfig re-applies the session's last-applied config after
+// session/load: mode first through applyMode (whose advertised-list and
+// already-current guards make an agent that preserved state a no-op),
+// the rest through session/set_config_option in sorted order — the same
+// channels and posture as applyConfig, and like it advisory-only:
+// failures log, never fail the Open.
+func (b *Backend) reassertConfig(ctx context.Context, conn *AdapterConn) {
+	b.mu.Lock()
+	cfg := maps.Clone(b.lastConfig)
+	b.mu.Unlock()
+	if len(cfg) == 0 {
+		return
+	}
+	if mode := cfg[agent.ConfigOptionMode]; mode != "" {
+		b.applyMode(ctx, conn, mode)
+	}
+	rest := make([]string, 0, len(cfg))
+	for id := range cfg {
+		if id != agent.ConfigOptionMode && id != "" {
+			rest = append(rest, id)
+		}
+	}
+	slices.Sort(rest)
+	for _, id := range rest {
+		if cfg[id] != "" {
+			b.setConfigValue(ctx, conn, id, cfg[id])
+		}
+	}
 }
 
 // applyMode sends session/set_mode with the agent-owned mode id as-is.
@@ -152,13 +189,12 @@ func (b *Backend) applyMode(ctx context.Context, conn *AdapterConn, modeID strin
 }
 
 // Modes implements agent.ModeReporter: the agent-advertised session
-// modes plus the currently active id, untranslated.
+// modes plus the currently active id, untranslated. currentMode is
+// maintained by session/new + session/load responses, applyMode, and
+// live current_mode_update notifications (HandleSessionUpdate).
 func (b *Backend) Modes() (string, []agent.SessionMode) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if m := b.red.modeID; m != "" {
-		b.currentMode = m
-	}
 	return b.currentMode, slices.Clone(b.availableModes)
 }
 

@@ -25,6 +25,18 @@ func (b *Backend) HandleSessionUpdate(_ context.Context, n sdk.SessionNotificati
 		// Carries the FULL option set; keep the retained knobs current.
 		b.applySessionStateLocked(nil, cu.ConfigOptions)
 	}
+	if mu := n.Update.CurrentModeUpdate; mu != nil && !b.red.replaying {
+		// A live agent-initiated mode change (e.g. plan approval flips
+		// plan → default). Folding it into lastConfig keeps the re-assert
+		// truthful: restoring the pre-approval mode would drop a built
+		// session back into plan. Replayed mode updates are history — the
+		// session/load response carries the authoritative current mode.
+		if id := string(mu.CurrentModeId); id != "" && id != b.currentMode {
+			b.currentMode = id
+			b.recordConfigLocked(agent.ConfigOptionMode, id)
+			b.emitLocked(agent.Event{Type: agent.EventModeChange, Data: agent.ModeChangeData{ModeID: id}})
+		}
+	}
 	for _, e := range b.red.reduce(n) {
 		b.emitLocked(e)
 	}

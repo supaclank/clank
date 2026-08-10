@@ -248,10 +248,20 @@ func (b *Backend) drainLateUpdates(turnStart time.Time) {
 // guard; everything else rides session/set_config_option. Values are the
 // agent's jurisdiction — ids it doesn't advertise are skipped and logged,
 // never a failed send. The host never adds entries of its own.
+//
+// Every applied entry is merged into lastConfig so a later resume
+// re-asserts the caller's latest policy, not creation-time state.
 func (b *Backend) applyConfig(ctx context.Context, conn *AdapterConn, cfg map[string]string) {
 	if len(cfg) == 0 {
 		return
 	}
+	b.mu.Lock()
+	for id, value := range cfg {
+		if id != "" && value != "" {
+			b.recordConfigLocked(id, value)
+		}
+	}
+	b.mu.Unlock()
 	if mode, ok := cfg[agent.ConfigOptionMode]; ok && mode != "" {
 		b.applyMode(ctx, conn, mode)
 	}
@@ -267,6 +277,15 @@ func (b *Backend) applyConfig(ctx context.Context, conn *AdapterConn, cfg map[st
 			b.setConfigValue(ctx, conn, id, cfg[id])
 		}
 	}
+}
+
+// recordConfigLocked merges one applied entry into lastConfig. Callers
+// hold b.mu.
+func (b *Backend) recordConfigLocked(id, value string) {
+	if b.lastConfig == nil {
+		b.lastConfig = make(map[string]string)
+	}
+	b.lastConfig[id] = value
 }
 
 func (b *Backend) setConfigValue(ctx context.Context, conn *AdapterConn, id, value string) {
