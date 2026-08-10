@@ -111,6 +111,32 @@
     return !!(g.expo && g.expo.EventEmitter);
   }
 
+  // require() an RN-internal (deep) module without letting RN 0.80+'s
+  // "Deep imports from the 'react-native' package are deprecated" warning —
+  // emitted via console.warn once, at module init — leak into the guest's
+  // LogBox as a user-visible toast badge. Those warnings are self-inflicted
+  // noise from THIS premodule, not the guest's code, so they must not surface
+  // in ANY client (clank host, Expo Go, plain `expo start`); the app's own
+  // deep imports still warn normally. Narrow by construction: console.warn is
+  // swapped only for the synchronous duration of the require, and the module
+  // registry caches the result, so a later app import of the same path emits
+  // nothing anyway.
+  function requireQuietly(name) {
+    var origWarn = console.warn;
+    try {
+      console.warn = function () {};
+    } catch (e) {
+      /* frozen console — the deprecation warning leaks, nothing worse */
+    }
+    try {
+      return require(name);
+    } finally {
+      try {
+        console.warn = origWarn;
+      } catch (e) {}
+    }
+  }
+
   // Resolve the PreviewLauncher native module lazily. It's an Expo module, so
   // it lives in expo-modules-core's registry (requireNativeModule), NOT on
   // ReactNative.NativeModules — try that first, then fall back to the classic
@@ -166,8 +192,10 @@
       // A pending self-heal owns these reports: they describe the very
       // condition the reload fixes, so don't surface them (a ghost pill)
       // while the heal can still land. If the heal gives up, bootHealDone
-      // flips and delivery resumes here. Don't burn the retry budget on
-      // reschedules — only real delivery attempts should count against it.
+      // flips and delivery resumes here. Don't spend retry budget on these
+      // gated cycles — they never attempt delivery, so counting them can
+      // exhaust the budget before the heal even finishes, permanently
+      // stranding a report that becomes deliverable the moment it's done.
       if (bootHealPending()) {
         scheduleFlush();
         return;
@@ -418,7 +446,7 @@
   // it") plus a clean CLEAR when the logs empty (a successful Fast Refresh).
   // Dedup on change.
   try {
-    var LogBoxData = require('react-native/Libraries/LogBox/Data/LogBoxData');
+    var LogBoxData = requireQuietly('react-native/Libraries/LogBox/Data/LogBoxData');
     if (LogBoxData && typeof LogBoxData.observe === 'function') {
       var lastReport = null; // null = healthy; string = last reported message
       LogBoxData.observe(function (state) {
@@ -499,12 +527,29 @@
     // Kill LogBox warning/error toasts. (Notifications only — the fullscreen
     // inspector is handled by the global handler below; see RN LogBox.js.)
     try {
+      // Public root export first — it has existed since RN 0.63, so the deep
+      // path is a legacy fallback only; on RN 0.80+ the deep require itself
+      // warns, which is why it goes through requireQuietly.
       var LogBox =
-        require('react-native/Libraries/LogBox/LogBox').default ||
-        require('react-native').LogBox;
+        require('react-native').LogBox ||
+        requireQuietly('react-native/Libraries/LogBox/LogBox').default;
       if (LogBox && LogBox.ignoreAllLogs) LogBox.ignoreAllLogs(true);
     } catch (e) {
       /* LogBox absent (e.g. production) — nothing to silence */
+    }
+    // ignoreAllLogs only filters logs ADDED from now on. Anything logged
+    // BEFORE suppression installed — app warnings during the boot-race window
+    // before host detection resolved late — is already in LogBoxData and would
+    // keep a toast badge up forever, un-tappable to boot (the host's nop
+    // surface delegate suppresses the LogBox inspector). Purge it. This goes
+    // through the wrapped clear() from the detection section above, so a
+    // pending error pill for a pre-suppression log is retracted too — correct:
+    // if the error is still real, the next render re-adds it and observe
+    // re-reports (the same clear-then-re-add contract Fast Refresh uses).
+    try {
+      if (LogBoxData && typeof LogBoxData.clear === 'function') LogBoxData.clear();
+    } catch (e) {
+      /* detection section didn't get LogBoxData — nothing to purge */
     }
   }
 
