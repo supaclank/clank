@@ -123,7 +123,7 @@ var (
 // classifies them into HTTP statuses; the github package's typed
 // errors (ErrPRAlreadyExists, ErrPushNotFastForward, etc.) pass
 // through.
-func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRRequest) (CreatePRResult, error) {
+func (s *Service) CreatePR(ctx context.Context, ref agent.GitRef, req CreatePRRequest) (CreatePRResult, error) {
 	if req.Title == "" {
 		return CreatePRResult{}, fmt.Errorf("%w: title", ErrPRMissingField)
 	}
@@ -134,10 +134,10 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 		return CreatePRResult{}, ErrGitHubManagerUnavailable
 	}
 
-	// Resolve the worktree to a working directory. Reuses the same
-	// resolver every other Service method uses — keeps the WorktreeID →
+	// Resolve the ref to a working directory. Reuses the same
+	// resolver every other Service method uses — keeps the GitRef →
 	// path mapping in one place.
-	workdir, err := s.repoRootFor(agent.GitRef{WorktreeID: worktreeID})
+	workdir, err := s.repoRootFor(ref)
 	if err != nil {
 		return CreatePRResult{}, fmt.Errorf("resolve worktree: %w", err)
 	}
@@ -283,8 +283,8 @@ func (s *Service) CreatePR(ctx context.Context, worktreeID string, req CreatePRR
 //
 // Cheap: no fetch, no network calls, no GitHub API requests. Just
 // resolves the worktree, reads HEAD, classifies origin.
-func (s *Service) PreviewPR(_ context.Context, worktreeID string) (PreviewPRResult, error) {
-	workdir, err := s.repoRootFor(agent.GitRef{WorktreeID: worktreeID})
+func (s *Service) PreviewPR(_ context.Context, ref agent.GitRef) (PreviewPRResult, error) {
+	workdir, err := s.repoRootFor(ref)
 	if err != nil {
 		return PreviewPRResult{}, fmt.Errorf("resolve worktree: %w", err)
 	}

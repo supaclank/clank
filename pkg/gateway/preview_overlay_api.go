@@ -66,6 +66,17 @@ func (s *previewState) serveOverlayAPI(w http.ResponseWriter, r *http.Request, r
 			return
 		}
 	}
+	// Source-control routes are keyed by worktree id in the path; an
+	// owner-scoped overlay must never reach past its route's checkout.
+	if worktreeID, ok := overlayWorktreeID(apiPath); ok && worktreeID != route.WorktreeID {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method == http.MethodPost && apiPath == "/worktrees/list-branches" {
+		if !validateOverlayWorktreeRef(w, r, route.WorktreeID) {
+			return
+		}
+	}
 
 	ref, err := s.gw.cfg.Provisioner.GetHostByID(r.Context(), route.HostID)
 	if err != nil {
@@ -132,6 +143,33 @@ func overlayAPIPathAllowed(method, path string) bool {
 	if method == http.MethodPost && path == "/sessions" {
 		return true
 	}
+	// GitHub connection status + device-flow connect. The overlay API
+	// already grants agent control (arbitrary code on the host), so a
+	// GitHub connect initiated here adds no authority beyond that.
+	if method == http.MethodGet && (path == "/credentials/github/status" || path == "/credentials/github/connect/status") {
+		return true
+	}
+	if method == http.MethodPost && (path == "/credentials/github/connect/start" || path == "/credentials/github/connect/cancel") {
+		return true
+	}
+	// Branch listing (default branch + diff stats for the source-control
+	// chip). Body git_ref is scoped in serveOverlayAPI.
+	if method == http.MethodPost && path == "/worktrees/list-branches" {
+		return true
+	}
+	if _, suffix, ok := overlayWorktreeRoute(path); ok {
+		switch {
+		case method == http.MethodGet && suffix == "/remote/status":
+			return true
+		case method == http.MethodPost && (suffix == "/remote/push" || suffix == "/remote/pull" ||
+			suffix == "/remote/resolve" || suffix == "/remote/publish"):
+			return true
+		case method == http.MethodPost && (suffix == "/pr" || suffix == "/pr/preview" || suffix == "/pr/ready"):
+			return true
+		default:
+			return false
+		}
+	}
 	_, suffix, ok := overlaySessionRoute(path)
 	if !ok {
 		return false
@@ -178,6 +216,70 @@ func validateOverlaySessionCreate(w http.ResponseWriter, r *http.Request, worktr
 	}
 	if req.GitRef.WorktreeID != worktreeID {
 		http.Error(w, "session worktree does not match preview", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+// overlayWorktreeRoute parses /worktrees/{id}/<suffix>. Body-addressed
+// routes like /worktrees/list-branches have no per-id segment and do
+// not match (their scoping is body-based, see validateOverlayWorktreeRef).
+func overlayWorktreeRoute(path string) (worktreeID, suffix string, ok bool) {
+	rest, ok := strings.CutPrefix(path, "/worktrees/")
+	if !ok {
+		return "", "", false
+	}
+	worktreeID, tail, hasTail := strings.Cut(rest, "/")
+	if worktreeID == "" || !hasTail {
+		return "", "", false
+	}
+	decoded, err := url.PathUnescape(worktreeID)
+	if err != nil || decoded == "" {
+		return "", "", false
+	}
+	return decoded, "/" + tail, true
+}
+
+func overlayWorktreeID(path string) (string, bool) {
+	worktreeID, _, ok := overlayWorktreeRoute(path)
+	return worktreeID, ok
+}
+
+// validateOverlayWorktreeRef enforces that a body-addressed git_ref
+// stays inside the preview's worktree — the same containment
+// validateOverlaySessionCreate applies to session creation.
+func validateOverlayWorktreeRef(w http.ResponseWriter, r *http.Request, worktreeID string) bool {
+	const maxRefBodyBytes = 1 << 20
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRefBodyBytes+1))
+	if err != nil {
+		http.Error(w, "read body", http.StatusBadRequest)
+		return false
+	}
+	if len(body) > maxRefBodyBytes {
+		http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
+		return false
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	var req struct {
+		GitRef struct {
+			WorktreeID string `json:"worktree_id"`
+			LocalPath  string `json:"local_path"`
+		} `json:"git_ref"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return false
+	}
+	if req.GitRef.LocalPath != "" {
+		http.Error(w, "git ref worktree does not match preview", http.StatusForbidden)
+		return false
+	}
+	if req.GitRef.WorktreeID == "" {
+		http.Error(w, "git_ref.worktree_id is required", http.StatusBadRequest)
+		return false
+	}
+	if req.GitRef.WorktreeID != worktreeID {
+		http.Error(w, "git ref worktree does not match preview", http.StatusForbidden)
 		return false
 	}
 	return true

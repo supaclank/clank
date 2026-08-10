@@ -53,7 +53,7 @@ type PublishResult struct {
 // TODO(ai-review): only sanitizeRepoName is covered by tests; the orchestration
 // itself (create repo, add origin, commit, push, error mapping) has no
 // integration coverage yet. https://github.com/supaclank/clank/pull/90#discussion_r3508931108
-func (s *Service) PublishToRemote(ctx context.Context, worktreeID string, req PublishRequest) (PublishResult, error) {
+func (s *Service) PublishToRemote(ctx context.Context, ref agent.GitRef, req PublishRequest) (PublishResult, error) {
 	if s.github == nil {
 		return PublishResult{}, ErrGitHubManagerUnavailable
 	}
@@ -61,7 +61,7 @@ func (s *Service) PublishToRemote(ctx context.Context, worktreeID string, req Pu
 	if name == "" {
 		return PublishResult{}, ErrInvalidRepoName
 	}
-	workdir, err := s.repoRootFor(agent.GitRef{WorktreeID: worktreeID})
+	workdir, err := s.repoRootFor(ref)
 	if err != nil {
 		return PublishResult{}, fmt.Errorf("resolve worktree: %w", err)
 	}
@@ -124,7 +124,7 @@ func (s *Service) PublishToRemote(ctx context.Context, worktreeID string, req Pu
 	if err := git.Push(workdir, pushURL, branch+":refs/heads/"+branch, git.PushOptions{ExtraHeader: buildAuthHeader(token)}); err != nil {
 		return PublishResult{}, err
 	}
-	s.log.Printf("published worktree %s to %s/%s (branch %s)", worktreeID, created.Owner, created.Name, branch)
+	s.log.Printf("published to %s/%s (branch %s)", created.Owner, created.Name, branch)
 	return PublishResult{
 		Owner:   created.Owner,
 		Repo:    created.Name,

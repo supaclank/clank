@@ -88,7 +88,7 @@ func TestMarkPRReady_EndToEnd(t *testing.T) {
 	})
 	svc := markReadyFixture(t, "01TESTWORKTREE0000000042", api)
 
-	result, err := svc.MarkPRReady(context.Background(), "01TESTWORKTREE0000000042")
+	result, err := svc.MarkPRReady(context.Background(), agent.GitRef{WorktreeID: "01TESTWORKTREE0000000042"})
 	if err != nil {
 		t.Fatalf("MarkPRReady: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestMarkPRReady_NoOpenPR(t *testing.T) {
 	})
 	svc := markReadyFixture(t, "01TESTWORKTREE0000000043", api)
 
-	_, err := svc.MarkPRReady(context.Background(), "01TESTWORKTREE0000000043")
+	_, err := svc.MarkPRReady(context.Background(), agent.GitRef{WorktreeID: "01TESTWORKTREE0000000043"})
 	if !errors.Is(err, host.ErrNoOpenPRForBranch) {
 		t.Fatalf("err = %v, want ErrNoOpenPRForBranch", err)
 	}

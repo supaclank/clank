@@ -125,7 +125,7 @@ func TestCreatePR_EndToEnd(t *testing.T) {
 	svc.GitHub().SetAPIBaseURL(apiSrv.URL)
 
 	// 6) Call CreatePR.
-	result, err := svc.CreatePR(context.Background(), worktreeID, host.CreatePRRequest{
+	result, err := svc.CreatePR(context.Background(), agent.GitRef{WorktreeID: worktreeID}, host.CreatePRRequest{
 		Title: "feat: add v2",
 		Body:  "bumps README to v2",
 		Base:  "main",
@@ -268,7 +268,7 @@ func TestCreatePR_CommitsUncommittedWork(t *testing.T) {
 	t.Cleanup(svc.Shutdown)
 	svc.GitHub().SetAPIBaseURL(apiSrv.URL)
 
-	result, err := svc.CreatePR(context.Background(), worktreeID, host.CreatePRRequest{
+	result, err := svc.CreatePR(context.Background(), agent.GitRef{WorktreeID: worktreeID}, host.CreatePRRequest{
 		Title: "feat: v2",
 		Body:  "uncommitted work should ride along",
 		Base:  "main",
@@ -346,7 +346,7 @@ func TestCreatePR_CleanAtBaseStillNothingToPush(t *testing.T) {
 	})
 	t.Cleanup(svc.Shutdown)
 
-	_, err := svc.CreatePR(context.Background(), worktreeID, host.CreatePRRequest{
+	_, err := svc.CreatePR(context.Background(), agent.GitRef{WorktreeID: worktreeID}, host.CreatePRRequest{
 		Title: "x", Body: "y", Base: "main",
 	})
 	if !errors.Is(err, host.ErrNothingToPush) {
@@ -381,7 +381,7 @@ func TestCreatePR_NotConnected(t *testing.T) {
 	})
 	t.Cleanup(svc.Shutdown)
 
-	_, err := svc.CreatePR(context.Background(), worktreeID, host.CreatePRRequest{
+	_, err := svc.CreatePR(context.Background(), agent.GitRef{WorktreeID: worktreeID}, host.CreatePRRequest{
 		Title: "x", Body: "y", Base: "main",
 	})
 	if !errors.Is(err, host.ErrGitHubNotConnected) {
@@ -398,11 +398,11 @@ func TestCreatePR_MissingFields(t *testing.T) {
 	})
 	t.Cleanup(svc.Shutdown)
 
-	_, err := svc.CreatePR(context.Background(), "any-id", host.CreatePRRequest{Title: ""})
+	_, err := svc.CreatePR(context.Background(), agent.GitRef{WorktreeID: "any-id"}, host.CreatePRRequest{Title: ""})
 	if !errors.Is(err, host.ErrPRMissingField) {
 		t.Errorf("missing title: err = %v, want ErrPRMissingField", err)
 	}
-	_, err = svc.CreatePR(context.Background(), "any-id", host.CreatePRRequest{Title: "x", Base: ""})
+	_, err = svc.CreatePR(context.Background(), agent.GitRef{WorktreeID: "any-id"}, host.CreatePRRequest{Title: "x", Base: ""})
 	if !errors.Is(err, host.ErrPRMissingField) {
 		t.Errorf("missing base: err = %v, want ErrPRMissingField", err)
 	}
@@ -482,7 +482,7 @@ func TestCreatePR_RefusesPushToUnrelatedRepo(t *testing.T) {
 	})
 	t.Cleanup(svc.Shutdown)
 
-	_, err := svc.CreatePR(context.Background(), worktreeID, host.CreatePRRequest{
+	_, err := svc.CreatePR(context.Background(), agent.GitRef{WorktreeID: worktreeID}, host.CreatePRRequest{
 		Title: "feat: leak attempt",
 		Body:  "this should not land",
 		Base:  "main",
@@ -569,7 +569,7 @@ func TestCreatePR_NoAutoCommitOnUnrelatedRepoRefusal(t *testing.T) {
 	})
 	t.Cleanup(svc.Shutdown)
 
-	_, err := svc.CreatePR(context.Background(), worktreeID, host.CreatePRRequest{
+	_, err := svc.CreatePR(context.Background(), agent.GitRef{WorktreeID: worktreeID}, host.CreatePRRequest{
 		Title: "feat: doomed", Body: "wrong origin", Base: "main",
 	})
 	if !errors.Is(err, host.ErrNoCommonAncestor) {
@@ -617,7 +617,7 @@ func TestPreviewPR_GitHubOrigin(t *testing.T) {
 	})
 	t.Cleanup(svc.Shutdown)
 
-	result, err := svc.PreviewPR(context.Background(), worktreeID)
+	result, err := svc.PreviewPR(context.Background(), agent.GitRef{WorktreeID: worktreeID})
 	if err != nil {
 		t.Fatalf("PreviewPR: %v", err)
 	}
@@ -665,7 +665,7 @@ func TestPreviewPR_NoOrigin(t *testing.T) {
 	})
 	t.Cleanup(svc.Shutdown)
 
-	result, err := svc.PreviewPR(context.Background(), worktreeID)
+	result, err := svc.PreviewPR(context.Background(), agent.GitRef{WorktreeID: worktreeID})
 	if err != nil {
 		t.Fatalf("PreviewPR: %v", err)
 	}
@@ -713,7 +713,7 @@ func TestPreviewPR_NonGitHubOrigin(t *testing.T) {
 	})
 	t.Cleanup(svc.Shutdown)
 
-	result, err := svc.PreviewPR(context.Background(), worktreeID)
+	result, err := svc.PreviewPR(context.Background(), agent.GitRef{WorktreeID: worktreeID})
 	if err != nil {
 		t.Fatalf("PreviewPR: %v", err)
 	}

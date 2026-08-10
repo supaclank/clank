@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/supaclank/clank/internal/agent"
 	"github.com/supaclank/clank/internal/git"
 	"github.com/supaclank/clank/internal/host"
 	githubpkg "github.com/supaclank/clank/internal/host/github"
@@ -29,7 +30,7 @@ func (m *Mux) handleRemoteStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "worktree id is required"})
 		return
 	}
-	result, err := m.svc.RemoteSyncStatus(r.Context(), id)
+	result, err := m.svc.RemoteSyncStatus(r.Context(), agent.GitRef{WorktreeID: id})
 	if err != nil {
 		writeRemoteError(w, err)
 		return
@@ -43,7 +44,7 @@ func (m *Mux) handleRemotePush(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "worktree id is required"})
 		return
 	}
-	result, err := m.svc.PushToRemote(r.Context(), id)
+	result, err := m.svc.PushToRemote(r.Context(), agent.GitRef{WorktreeID: id})
 	if err != nil {
 		writeRemoteError(w, err)
 		return
@@ -57,7 +58,7 @@ func (m *Mux) handleRemotePull(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "worktree id is required"})
 		return
 	}
-	result, err := m.svc.PullFromRemote(r.Context(), id)
+	result, err := m.svc.PullFromRemote(r.Context(), agent.GitRef{WorktreeID: id})
 	if err != nil {
 		writeRemoteError(w, err)
 		return
@@ -82,7 +83,7 @@ func (m *Mux) handleRemoteResolve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "missing_field", Error: "strategy is required"})
 		return
 	}
-	result, err := m.svc.ResolveRemote(r.Context(), id, req.Strategy)
+	result, err := m.svc.ResolveRemote(r.Context(), agent.GitRef{WorktreeID: id}, req.Strategy)
 	if err != nil {
 		writeRemoteError(w, err)
 		return
@@ -102,7 +103,7 @@ func (m *Mux) handleRemotePublish(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "decode body: " + err.Error()})
 		return
 	}
-	result, err := m.svc.PublishToRemote(r.Context(), id, req)
+	result, err := m.svc.PublishToRemote(r.Context(), agent.GitRef{WorktreeID: id}, req)
 	if err != nil {
 		writeRemoteError(w, err)
 		return

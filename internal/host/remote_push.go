@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/supaclank/clank/internal/agent"
 	"github.com/supaclank/clank/internal/git"
 )
 
@@ -22,8 +23,8 @@ type PushResult struct {
 // forward — the client then routes to the conflict-resolution flow.
 // ErrNoCommonAncestor when the remote shares no history with the
 // worktree (origin points at the wrong repo).
-func (s *Service) PushToRemote(ctx context.Context, worktreeID string) (PushResult, error) {
-	rc, err := s.remoteContextFor(ctx, worktreeID)
+func (s *Service) PushToRemote(ctx context.Context, ref agent.GitRef) (PushResult, error) {
+	rc, err := s.remoteContextFor(ctx, ref)
 	if err != nil {
 		return PushResult{}, err
 	}

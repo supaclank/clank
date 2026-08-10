@@ -514,6 +514,91 @@ func TestPreviewProxy_SignedOwnerConfigOptionsStayInPreviewWorktree(t *testing.T
 	}
 }
 
+func TestPreviewProxy_OverlaySourceControlScopedToWorktree(t *testing.T) {
+	t.Parallel()
+	var upstreamPath atomic.Value
+	f := newPreviewProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamPath.Store(r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	route := f.seed(t, "alice", tokens.VisibilityOwnerOnly)
+	exp := time.Now().Add(10 * time.Minute)
+	sig, err := tokens.Sign(f.signingKey, route.Token, exp)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	do := func(method, path, body string) *http.Response {
+		t.Helper()
+		var rd io.Reader
+		if body != "" {
+			rd = strings.NewReader(body)
+		}
+		req, err := http.NewRequest(method, f.srv.URL+path, rd)
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Host = tokens.HostFor(route.Token, f.root)
+		req.Header.Set("Cookie", fmt.Sprintf("%s=%s; %s=%d", tokens.SigParam, sig, tokens.ExpParam, exp.Unix()))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("Do %s %s: %v", method, path, err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+
+	if resp := do(http.MethodGet, "/__clank/api/worktrees/"+route.WorktreeID+"/remote/status", ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("own-worktree remote status = %d, want 200", resp.StatusCode)
+	}
+	if got, _ := upstreamPath.Load().(string); got != "/worktrees/"+route.WorktreeID+"/remote/status" {
+		t.Errorf("upstream path = %q", got)
+	}
+	if resp := do(http.MethodGet, "/__clank/api/worktrees/wt-other/remote/status", ""); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("cross-worktree remote status = %d, want 404", resp.StatusCode)
+	}
+	if resp := do(http.MethodPost, "/__clank/api/worktrees/wt-other/pr", `{"title":"t","base":"main"}`); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("cross-worktree create PR = %d, want 404", resp.StatusCode)
+	}
+	if resp := do(http.MethodPost, "/__clank/api/worktrees/list-branches",
+		`{"git_ref":{"worktree_id":"`+route.WorktreeID+`"}}`); resp.StatusCode != http.StatusOK {
+		t.Errorf("own-worktree list-branches = %d, want 200", resp.StatusCode)
+	}
+	if resp := do(http.MethodPost, "/__clank/api/worktrees/list-branches",
+		`{"git_ref":{"worktree_id":"wt-other"}}`); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("cross-worktree list-branches = %d, want 403", resp.StatusCode)
+	}
+	if resp := do(http.MethodPost, "/__clank/api/worktrees/list-branches",
+		`{"git_ref":{"local_path":"/etc"}}`); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("local-path list-branches = %d, want 403", resp.StatusCode)
+	}
+	if resp := do(http.MethodGet, "/__clank/api/credentials/github/status", ""); resp.StatusCode != http.StatusOK {
+		t.Errorf("github status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestPreviewProxy_PublicViewerCannotReachSourceControl(t *testing.T) {
+	t.Parallel()
+	f := newPreviewProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	route := f.seed(t, "alice", tokens.VisibilityPublic)
+	req, err := http.NewRequest(http.MethodGet, f.srv.URL+"/__clank/api/worktrees/"+route.WorktreeID+"/remote/status", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Host = tokens.HostFor(route.Token, f.root)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("anonymous remote status on public route = %d, want 401", resp.StatusCode)
+	}
+}
+
 func TestPreviewProxy_SignedContextInjectedAndHiddenFromGuest(t *testing.T) {
 	t.Parallel()
 	var upstreamQuery atomic.Value

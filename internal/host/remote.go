@@ -73,15 +73,15 @@ type remoteContext struct {
 	token      string // GitHub access token, for PR lookups
 }
 
-// remoteContextFor resolves a worktree to its working dir and GitHub
-// remote, reading the connected token. Mirrors CreatePR's resolution. The
-// github.com-origin requirement lives here so the run* helpers stay
-// transport-agnostic.
-func (s *Service) remoteContextFor(_ context.Context, worktreeID string) (remoteContext, error) {
+// remoteContextFor resolves a git ref (managed worktree id or local
+// path) to its working dir and GitHub remote, reading the connected
+// token. Mirrors CreatePR's resolution. The github.com-origin
+// requirement lives here so the run* helpers stay transport-agnostic.
+func (s *Service) remoteContextFor(_ context.Context, ref agent.GitRef) (remoteContext, error) {
 	if s.github == nil {
 		return remoteContext{}, ErrGitHubManagerUnavailable
 	}
-	workdir, err := s.repoRootFor(agent.GitRef{WorktreeID: worktreeID})
+	workdir, err := s.repoRootFor(ref)
 	if err != nil {
 		return remoteContext{}, fmt.Errorf("resolve worktree: %w", err)
 	}

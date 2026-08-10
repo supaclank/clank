@@ -29,11 +29,11 @@ var ErrNoOpenPRForBranch = errors.New("no open pull request for this branch")
 // MarkPRReady flips the open PR for the worktree's current branch
 // from draft to ready-for-review. Idempotent: an already-ready PR
 // succeeds without a mutation.
-func (s *Service) MarkPRReady(ctx context.Context, worktreeID string) (MarkPRReadyResult, error) {
+func (s *Service) MarkPRReady(ctx context.Context, ref agent.GitRef) (MarkPRReadyResult, error) {
 	if s.github == nil {
 		return MarkPRReadyResult{}, ErrGitHubManagerUnavailable
 	}
-	workdir, err := s.repoRootFor(agent.GitRef{WorktreeID: worktreeID})
+	workdir, err := s.repoRootFor(ref)
 	if err != nil {
 		return MarkPRReadyResult{}, fmt.Errorf("resolve worktree: %w", err)
 	}

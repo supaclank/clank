@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/supaclank/clank/internal/agent"
 	"github.com/supaclank/clank/internal/git"
 	githubpkg "github.com/supaclank/clank/internal/host/github"
 )
@@ -30,11 +31,11 @@ type RemoteStatusResult struct {
 	PRMergeable  githubpkg.MergeableState `json:"pr_mergeable,omitempty"`
 }
 
-// RemoteSyncStatus reports where the worktree's branch sits relative to
+// RemoteSyncStatus reports where the ref's branch sits relative to
 // its GitHub remote, plus the open PR (if any) for the branch. Does a
 // network fetch — callers should refresh on demand, not poll tightly.
-func (s *Service) RemoteSyncStatus(ctx context.Context, worktreeID string) (RemoteStatusResult, error) {
-	rc, err := s.remoteContextFor(ctx, worktreeID)
+func (s *Service) RemoteSyncStatus(ctx context.Context, ref agent.GitRef) (RemoteStatusResult, error) {
+	rc, err := s.remoteContextFor(ctx, ref)
 	if err != nil {
 		return RemoteStatusResult{}, err
 	}

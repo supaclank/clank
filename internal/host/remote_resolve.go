@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/supaclank/clank/internal/agent"
 	"github.com/supaclank/clank/internal/git"
 )
 
@@ -42,8 +43,8 @@ type ResolveResult struct {
 // on a conflict result the client starts a session seeded to resolve the
 // in-progress merge — so this method stays decoupled from session
 // creation and never has to guess a backend.
-func (s *Service) ResolveRemote(ctx context.Context, worktreeID string, strategy ResolveStrategy) (ResolveResult, error) {
-	rc, err := s.remoteContextFor(ctx, worktreeID)
+func (s *Service) ResolveRemote(ctx context.Context, ref agent.GitRef, strategy ResolveStrategy) (ResolveResult, error) {
+	rc, err := s.remoteContextFor(ctx, ref)
 	if err != nil {
 		return ResolveResult{}, err
 	}

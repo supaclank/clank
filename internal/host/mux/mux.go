@@ -157,6 +157,10 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// See internal/host/mux/remote.go.
 	m.registerRemote(mx)
 
+	// GitRef-addressed remote-sync + PR routes for callers without a
+	// managed worktree id. See internal/host/mux/remote_ref.go.
+	m.registerRemoteRef(mx)
+
 	// Repo-first surface (repo listing, repo-scoped worktree creation,
 	// overview, repo delete). See internal/host/mux/repos.go.
 	m.registerRepos(mx)
