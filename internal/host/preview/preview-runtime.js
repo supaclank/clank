@@ -111,17 +111,23 @@
     return !!(g.expo && g.expo.EventEmitter);
   }
 
-  // require() an RN-internal (deep) module without letting RN 0.80+'s
-  // "Deep imports from the 'react-native' package are deprecated" warning —
-  // emitted via console.warn once, at module init — leak into the guest's
-  // LogBox as a user-visible toast badge. Those warnings are self-inflicted
-  // noise from THIS premodule, not the guest's code, so they must not surface
-  // in ANY client (clank host, Expo Go, plain `expo start`); the app's own
-  // deep imports still warn normally. Narrow by construction: console.warn is
-  // swapped only for the synchronous duration of the require, and the module
-  // registry caches the result, so a later app import of the same path emits
-  // nothing anyway.
-  function requireQuietly(name) {
+  // Run fn() — a thunk containing a require of an RN-internal (deep) module —
+  // without letting RN 0.80+'s "Deep imports from the 'react-native' package
+  // are deprecated" warning (emitted via console.warn once, at module init)
+  // leak into the guest's LogBox as a user-visible toast badge. Those warnings
+  // are self-inflicted noise from THIS premodule, not the guest's code, so
+  // they must not surface in ANY client (clank host, Expo Go, plain
+  // `expo start`); the app's own deep imports still warn normally. Narrow by
+  // construction: console.warn is swapped only for the synchronous duration
+  // of fn(), and the module registry caches the result, so a later app import
+  // of the same path emits nothing anyway.
+  //
+  // Thunk shape is LOAD-BEARING: Metro's dependency collector only accepts
+  // `require(<string literal>)` — a `requireQuietly(name)` helper doing
+  // `require(name)` fails the WHOLE guest bundle build with
+  // "Invalid call: require(name)" (Metro serves it as an HTTP 500). The
+  // literal must sit inside the thunk at the call site.
+  function quietly(fn) {
     var origWarn = console.warn;
     try {
       console.warn = function () {};
@@ -129,7 +135,7 @@
       /* frozen console — the deprecation warning leaks, nothing worse */
     }
     try {
-      return require(name);
+      return fn();
     } finally {
       try {
         console.warn = origWarn;
@@ -446,7 +452,9 @@
   // it") plus a clean CLEAR when the logs empty (a successful Fast Refresh).
   // Dedup on change.
   try {
-    var LogBoxData = requireQuietly('react-native/Libraries/LogBox/Data/LogBoxData');
+    var LogBoxData = quietly(function () {
+      return require('react-native/Libraries/LogBox/Data/LogBoxData');
+    });
     if (LogBoxData && typeof LogBoxData.observe === 'function') {
       var lastReport = null; // null = healthy; string = last reported message
       LogBoxData.observe(function (state) {
@@ -529,10 +537,12 @@
     try {
       // Public root export first — it has existed since RN 0.63, so the deep
       // path is a legacy fallback only; on RN 0.80+ the deep require itself
-      // warns, which is why it goes through requireQuietly.
+      // warns, which is why it goes through quietly().
       var LogBox =
         require('react-native').LogBox ||
-        requireQuietly('react-native/Libraries/LogBox/LogBox').default;
+        quietly(function () {
+          return require('react-native/Libraries/LogBox/LogBox');
+        }).default;
       if (LogBox && LogBox.ignoreAllLogs) LogBox.ignoreAllLogs(true);
     } catch (e) {
       /* LogBox absent (e.g. production) — nothing to silence */
