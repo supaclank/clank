@@ -11,7 +11,8 @@
 //   Caps Lock      tap: start dictation, tap again: stop & transcribe
 //                  (first use picks local vs Web Speech; ▾ by the mic switches)
 //   hold ⇧         the box glides to the cursor (spring), settles on release
-//   hold ⌘ / ⌃     momentary element-select; click tags, release exits
+//   hold ⌘ / ⌃     momentary element-select; attached elements show
+//                  outlined, click tags (click again untags), release exits
 //   Esc            leave inspect mode, else hide
 //   header tap     expand / collapse the chat view
 //   ⛶ (toolbar)    grab a screenshot area — freeze a tab capture, crop
@@ -1462,6 +1463,8 @@ import {
   kbd { font-family:inherit; background:#f3f4f6; border:1px solid #e5e7eb; padding:0 4px; border-radius:4px; color:#6b7280; }
   .hl { position:fixed; pointer-events:none; border:1.5px solid #60a5fa; background:#3b82f61f;
     border-radius:3px; display:none; }
+  .hla { position:fixed; pointer-events:none; border:1.5px solid #6366f1; background:rgba(99,102,241,.10);
+    border-radius:3px; }
   .hll { position:fixed; pointer-events:none; background:#111318; color:#c7d2fe; font-size:11px;
     padding:2px 7px; border-radius:6px; border:1px solid #3a3b42; display:none; white-space:nowrap; }
   /* inline comment popover — appears at a text selection (or a
@@ -1878,6 +1881,7 @@ import {
       ui.chips.appendChild(el);
     });
     syncCommentMarks();
+    syncAttachedBoxes();
     store.images.forEach((s, i) => {
       const el = document.createElement('span');
       el.className = 'chip';
@@ -1979,6 +1983,30 @@ import {
 
   // ---------- inspector -----------------------------------------------------
   let hoverEl = null;
+  // Attached-element outlines: while select mode is held, every element
+  // already in context shows its bounding box, so the ⌘-hold doubles as
+  // a "what have I picked?" view — and clicking an outlined element
+  // deselects it. Rebuilt by render() (chip set changes), repositioned
+  // on scroll/resize while the mode is held.
+  let attachedBoxes = []; // [{el, node}] one fixed-position box per attached element
+  const positionAttachedBox = (box, node) => {
+    const r = node.getBoundingClientRect();
+    Object.assign(box.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
+  };
+  const repositionAttachedBoxes = () => { for (const b of attachedBoxes) positionAttachedBox(b.el, b.node); };
+  const syncAttachedBoxes = () => {
+    for (const b of attachedBoxes) b.el.remove();
+    attachedBoxes = [];
+    if (!store.inspect) return;
+    for (const c of store.chips) {
+      if (!c.node || !c.node.isConnected) continue;
+      const el = document.createElement('div');
+      el.className = 'hla';
+      positionAttachedBox(el, c.node);
+      root.appendChild(el);
+      attachedBoxes.push({ el, node: c.node });
+    }
+  };
   const enterInspect = () => {
     if (store.inspect) return;
     store.inspect = true;
@@ -1987,6 +2015,8 @@ import {
     document.addEventListener('click', onInspectClick, true);
     document.addEventListener('mousedown', squelch, true);
     document.addEventListener('mouseup', squelch, true);
+    window.addEventListener('scroll', repositionAttachedBoxes, true);
+    window.addEventListener('resize', repositionAttachedBoxes);
     document.body.style.cursor = 'crosshair';
     render();
   };
@@ -2000,6 +2030,8 @@ import {
     document.removeEventListener('click', onInspectClick, true);
     document.removeEventListener('mousedown', squelch, true);
     document.removeEventListener('mouseup', squelch, true);
+    window.removeEventListener('scroll', repositionAttachedBoxes, true);
+    window.removeEventListener('resize', repositionAttachedBoxes);
     document.body.style.cursor = '';
     render();
   };
@@ -2013,11 +2045,15 @@ import {
     const r = el.getBoundingClientRect();
     Object.assign(ui.hl.style, { display: 'block', left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
     const s = resolveSource(el);
-    ui.hll.textContent = s.file ? `${s.file}:${s.line}${s.approx ? '…' : ''}` : s.names.length ? s.names.join(' › ') : domPath(el);
+    const added = store.chips.some((c) => c.node === el) ? ' · added — click removes' : '';
+    ui.hll.textContent = (s.file ? `${s.file}:${s.line}${s.approx ? '…' : ''}` : s.names.length ? s.names.join(' › ') : domPath(el)) + added;
     if (s.resolve) {
       const target = el;
       s.resolve.then((orig) => {
-        if (orig && hoverEl === target && store.inspect) ui.hll.textContent = `${orig.file}:${orig.line}`;
+        if (orig && hoverEl === target && store.inspect) {
+          const stillAdded = store.chips.some((c) => c.node === target) ? ' · added — click removes' : '';
+          ui.hll.textContent = `${orig.file}:${orig.line}` + stillAdded;
+        }
       });
     }
     const ly = r.top > 28 ? r.top - 24 : r.bottom + 4;
@@ -2028,11 +2064,11 @@ import {
     e.preventDefault();
     e.stopPropagation();
     if (hoverEl) {
-      // One chip per element: re-clicking an attached element is a no-op
-      // nudge toward the chip, which opens the comment editor on click.
-      const existing = store.chips.find((c) => c.node === hoverEl);
-      if (existing) {
-        toast('already attached — click its chip to comment');
+      // One chip per element; re-clicking an attached element deselects it.
+      const existing = store.chips.findIndex((c) => c.node === hoverEl);
+      if (existing >= 0) {
+        store.chips.splice(existing, 1);
+        toast('removed from context');
       } else {
         const chip = chipFromElement(hoverEl);
         chip.node = hoverEl;
