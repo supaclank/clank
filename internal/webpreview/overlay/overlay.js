@@ -1113,7 +1113,8 @@ import {
         cp.append(mono);
       }
       crow.append(cp);
-      const rb = node('button', 'sc-cardrefr' + (store.scLoading || store.scBusy ? ' busy' : ''), '↻');
+      const rb = node('button', 'sc-cardrefr' + (store.scLoading || store.scBusy ? ' busy' : ''));
+      rb.innerHTML = ICONS.refresh;
       rb.title = 'refresh';
       rb.onclick = () => refreshSourceControl();
       crow.append(rb);
@@ -1825,6 +1826,9 @@ import {
     // external link (box + top-right arrow): marks every control that
     // leaves the page
     ext: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>',
+    // refresh: arc centered on the viewBox so a rotation spins in
+    // place (the ↻ text glyph orbits — its ink isn't box-centered)
+    refresh: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>',
   };
 
   const host = document.createElement('div');
@@ -1941,9 +1945,12 @@ import {
   .sc-card.accent .ic, .sc-card.accent b { color:#1d4ed8; }
   .sc-card.danger .ic, .sc-card.danger b { color:#dc2626; }
   .sc-cardrefr { all:unset; cursor:pointer; width:24px; height:24px; border-radius:7px; flex:none;
-    color:#9ca3af; display:inline-flex; align-items:center; justify-content:center; font-size:13px; }
+    color:#9ca3af; display:inline-flex; align-items:center; justify-content:center; }
   .sc-cardrefr:hover { background:#00000008; color:#111827; }
-  .sc-cardrefr.busy { animation:scspin 1s linear infinite; }
+  .sc-cardrefr svg { display:block; pointer-events:none; }
+  /* only the icon spins — animating the button rotates its rounded
+     box (and hover bg) along with it */
+  .sc-cardrefr.busy svg { animation:scspin .7s linear infinite; }
   .sc-btnrow { display:flex; gap:6px; justify-content:flex-end; margin-top:10px; }
   .sc-state { color:#6b7280; padding:9px 12px; }
   .sc-state.err { color:#dc2626; }
