@@ -286,9 +286,15 @@ func opencodeGuidanceEnv(scopeDir string) map[string]string {
 }
 
 // SetEnvResolver wires credential env for adapter spawns and nudges the
-// supervisor so the env-fingerprint restart picks up rotations.
+// supervisor so the env-fingerprint restart picks up rotations. A nil f
+// clears the resolver rather than wrapping a nil func in a non-nil
+// pointer, which the merge path would call and panic on.
 func (m *ACPBackendManager) SetEnvResolver(f func() map[string]string) {
-	m.envFn.Store(&f)
+	if f == nil {
+		m.envFn.Store(nil)
+	} else {
+		m.envFn.Store(&f)
+	}
 	m.sup.Nudge()
 }
 
@@ -297,9 +303,14 @@ func (m *ACPBackendManager) SetEnvResolver(f func() map[string]string) {
 // semantics as SetEnvResolver: the supervisor's env fingerprint restarts
 // adapters when the resolved value changes, which kills in-flight turns
 // in that scope — so resolvers wired here must return a STABLE value for
-// unchanged underlying state, or they restart adapters on a timer.
+// unchanged underlying state, or they restart adapters on a timer. A nil
+// f clears the resolver; see SetEnvResolver for why that's not just &f.
 func (m *ACPBackendManager) SetAmbientEnvResolver(f func() map[string]string) {
-	m.ambientFn.Store(&f)
+	if f == nil {
+		m.ambientFn.Store(nil)
+	} else {
+		m.ambientFn.Store(&f)
+	}
 	m.sup.Nudge()
 }
 

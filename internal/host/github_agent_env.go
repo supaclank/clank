@@ -8,6 +8,11 @@ package host
 //
 // Per-method file, matching CLAUDE.md's convention for Service methods.
 
+// EnvGHToken is the env var name gh (and this package's tests) key off
+// of, centralized to avoid drift/typos like the other Env* constants in
+// env_credentials.go.
+const EnvGHToken = "GH_TOKEN"
+
 // githubAgentEnv returns GH_TOKEN when clank holds its OWN GitHub
 // credential, nil otherwise. Resolved per adapter spawn and per
 // reconcile, so a connect or disconnect lands on the next tick without
@@ -36,5 +41,5 @@ func (s *Service) githubAgentEnv() map[string]string {
 	if err != nil || c.AccessToken == "" {
 		return nil
 	}
-	return map[string]string{"GH_TOKEN": c.AccessToken}
+	return map[string]string{EnvGHToken: c.AccessToken}
 }

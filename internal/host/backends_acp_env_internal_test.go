@@ -30,12 +30,12 @@ func TestAmbientEnv_ReachesBackendWithNoProviderResolver(t *testing.T) {
 		t.Fatalf("NewACPBackendManager: %v", err)
 	}
 	m.SetAmbientEnvResolver(func() map[string]string {
-		return map[string]string{"GH_TOKEN": "gho_ambient"}
+		return map[string]string{EnvGHToken: "gho_ambient"}
 	})
 
 	env := m.profile.Env("")
-	if got := env["GH_TOKEN"]; got != "gho_ambient" {
-		t.Fatalf("GH_TOKEN = %q, want %q (ambient env must not depend on a provider resolver)", got, "gho_ambient")
+	if got := env[EnvGHToken]; got != "gho_ambient" {
+		t.Fatalf("%s = %q, want %q (ambient env must not depend on a provider resolver)", EnvGHToken, got, "gho_ambient")
 	}
 }
 
@@ -51,7 +51,7 @@ func TestAmbientEnv_ProviderResolverWinsCollision(t *testing.T) {
 		t.Fatalf("NewACPBackendManager: %v", err)
 	}
 	m.SetAmbientEnvResolver(func() map[string]string {
-		return map[string]string{"GH_TOKEN": "gho_ambient", "SHARED": "from-ambient"}
+		return map[string]string{EnvGHToken: "gho_ambient", "SHARED": "from-ambient"}
 	})
 	m.SetEnvResolver(func() map[string]string {
 		return map[string]string{"ANTHROPIC_API_KEY": "sk-provider", "SHARED": "from-provider"}
@@ -60,7 +60,7 @@ func TestAmbientEnv_ProviderResolverWinsCollision(t *testing.T) {
 	env := m.profile.Env("")
 	for k, want := range map[string]string{
 		"SCOPED":            "from-profile",
-		"GH_TOKEN":          "gho_ambient",
+		EnvGHToken:          "gho_ambient",
 		"ANTHROPIC_API_KEY": "sk-provider",
 		"SHARED":            "from-provider",
 	} {
@@ -97,5 +97,39 @@ func TestGithubAgentEnv_NilManagerResolvesToNil(t *testing.T) {
 	s := &Service{}
 	if env := s.githubAgentEnv(); env != nil {
 		t.Fatalf("githubAgentEnv() = %v, want nil when the GitHub manager is unavailable", env)
+	}
+}
+
+// SetAmbientEnvResolver(nil) must clear the resolver, not wrap a nil
+// func in a non-nil pointer — the merge path only nil-checks the
+// pointer before calling through it.
+func TestSetAmbientEnvResolver_NilClearsResolverWithoutPanic(t *testing.T) {
+	t.Parallel()
+
+	m, err := NewACPBackendManager(envTestProfile(nil))
+	if err != nil {
+		t.Fatalf("NewACPBackendManager: %v", err)
+	}
+	m.SetAmbientEnvResolver(func() map[string]string { return map[string]string{EnvGHToken: "gho_x"} })
+	m.SetAmbientEnvResolver(nil)
+
+	if env := m.profile.Env(""); env[EnvGHToken] != "" {
+		t.Fatalf("env[%q] = %q, want unset after clearing the resolver", EnvGHToken, env[EnvGHToken])
+	}
+}
+
+// SetEnvResolver(nil) is the same hazard as SetAmbientEnvResolver(nil).
+func TestSetEnvResolver_NilClearsResolverWithoutPanic(t *testing.T) {
+	t.Parallel()
+
+	m, err := NewACPBackendManager(envTestProfile(nil))
+	if err != nil {
+		t.Fatalf("NewACPBackendManager: %v", err)
+	}
+	m.SetEnvResolver(func() map[string]string { return map[string]string{"ANTHROPIC_API_KEY": "sk-x"} })
+	m.SetEnvResolver(nil)
+
+	if env := m.profile.Env(""); env["ANTHROPIC_API_KEY"] != "" {
+		t.Fatalf("env[%q] = %q, want unset after clearing the resolver", "ANTHROPIC_API_KEY", env["ANTHROPIC_API_KEY"])
 	}
 }
