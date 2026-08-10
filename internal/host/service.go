@@ -374,6 +374,18 @@ func New(opts Options) *Service {
 		}
 	}
 
+	// Sandbox env is backend-agnostic: every ACP-served agent gets the
+	// same machine and the same tools, so this is wired by iterating the
+	// managers rather than at each provider's call site — a backend added
+	// later inherits it instead of silently missing it. Runs after
+	// s.github is assigned; the resolver closes over s and reads it at
+	// spawn time, so ordering only matters for the very first reconcile.
+	for _, mgr := range s.backendManagers {
+		if acpMgr, ok := mgr.(*ACPBackendManager); ok {
+			acpMgr.SetAmbientEnvResolver(s.githubAgentEnv)
+		}
+	}
+
 	return s
 }
 

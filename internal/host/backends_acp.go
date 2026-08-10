@@ -32,6 +32,13 @@ type ACPBackendManager struct {
 	sup     *acp.AdapterSupervisor
 	envFn   atomic.Pointer[func() map[string]string]
 
+	// ambientFn resolves env belonging to the sandbox rather than to a
+	// model provider (GH_TOKEN and anything like it). Kept separate from
+	// envFn so it can be wired once for every ACP backend instead of
+	// duplicated into each provider sink, which is how opencode — the one
+	// backend with no envFn at all — would silently miss it.
+	ambientFn atomic.Pointer[func() map[string]string]
+
 	// loginArgv resolves the argv for the adapter CLI's own login
 	// ceremony, provisioning tools on first use. Set by profile-specific
 	// constructors that have one (codex device auth); nil otherwise.
@@ -65,6 +72,13 @@ func NewACPBackendManager(profile acp.AdapterProfile) (*ACPBackendManager, error
 		merged := map[string]string{}
 		if scoped != nil {
 			for k, v := range scoped(scopeDir) {
+				merged[k] = v
+			}
+		}
+		// Ambient before envFn: a provider sink always wins a key
+		// collision, so sandbox env can never shadow a credential.
+		if f := m.ambientFn.Load(); f != nil {
+			for k, v := range (*f)() {
 				merged[k] = v
 			}
 		}
@@ -272,9 +286,31 @@ func opencodeGuidanceEnv(scopeDir string) map[string]string {
 }
 
 // SetEnvResolver wires credential env for adapter spawns and nudges the
-// supervisor so the env-fingerprint restart picks up rotations.
+// supervisor so the env-fingerprint restart picks up rotations. A nil f
+// clears the resolver rather than wrapping a nil func in a non-nil
+// pointer, which the merge path would call and panic on.
 func (m *ACPBackendManager) SetEnvResolver(f func() map[string]string) {
-	m.envFn.Store(&f)
+	if f == nil {
+		m.envFn.Store(nil)
+	} else {
+		m.envFn.Store(&f)
+	}
+	m.sup.Nudge()
+}
+
+// SetAmbientEnvResolver wires sandbox env that is not provider-specific,
+// for every ACP backend rather than one provider's. Same rotation
+// semantics as SetEnvResolver: the supervisor's env fingerprint restarts
+// adapters when the resolved value changes, which kills in-flight turns
+// in that scope — so resolvers wired here must return a STABLE value for
+// unchanged underlying state, or they restart adapters on a timer. A nil
+// f clears the resolver; see SetEnvResolver for why that's not just &f.
+func (m *ACPBackendManager) SetAmbientEnvResolver(f func() map[string]string) {
+	if f == nil {
+		m.ambientFn.Store(nil)
+	} else {
+		m.ambientFn.Store(&f)
+	}
 	m.sup.Nudge()
 }
 
