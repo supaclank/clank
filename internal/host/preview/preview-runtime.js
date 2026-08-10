@@ -111,36 +111,47 @@
     return !!(g.expo && g.expo.EventEmitter);
   }
 
-  // Run fn() — a thunk containing a require of an RN-internal (deep) module —
-  // without letting RN 0.80+'s "Deep imports from the 'react-native' package
-  // are deprecated" warning (emitted via console.warn once, at module init)
-  // leak into the guest's LogBox as a user-visible toast badge. Those warnings
-  // are self-inflicted noise from THIS premodule, not the guest's code, so
-  // they must not surface in ANY client (clank host, Expo Go, plain
-  // `expo start`); the app's own deep imports still warn normally. Narrow by
-  // construction: console.warn is swapped only for the synchronous duration
-  // of fn(), and the module registry caches the result, so a later app import
-  // of the same path emits nothing anyway.
+  // Drop THIS module's own "Deep imports from the 'react-native' package are
+  // deprecated" warnings before they reach the guest's LogBox as a toast
+  // badge. Mechanism matters: babel-preset-expo's warn-on-deep-rn-imports
+  // plugin (vendored from RN 0.80+) does NOT warn at require time — it
+  // statically collects deep imports and APPENDS `console.warn("Deep imports
+  // … deprecated ('<dep>'). Source: <this file> <line>:<col>")` statements to
+  // the END of the transformed module body. They fire when this module
+  // finishes evaluating, so no swap scoped around the require sites can catch
+  // them (a previous attempt did exactly that and the badge survived).
   //
-  // Thunk shape is LOAD-BEARING: Metro's dependency collector only accepts
-  // `require(<string literal>)` — a variable-argument `require(name)` fails
-  // the WHOLE guest bundle build with "Invalid call: require(name)" (Metro
-  // serves it as an HTTP 500). The literal must sit inside the thunk at the
-  // call site.
-  function quietly(fn) {
-    var origWarn = console.warn;
-    try {
-      console.warn = function () {};
-    } catch (e) {
-      /* frozen console — the deprecation warning leaks, nothing worse */
+  // Instead: a permanent pass-through console.warn filter that drops ONLY
+  // deprecation lines whose baked-in `Source:` is this very file. The app's
+  // own deep-import warnings carry their own filename and pass through
+  // untouched, as does every other warn. Ordering works in our favor:
+  // LogBox's console patch installed during InitializeCore — BEFORE this
+  // premodule ran — so our filter wraps it (we're outer), and dropped lines
+  // never reach LogBox's badge in any client. Install-once via a marker on
+  // the function, so a premodule re-evaluation (whose appended warns fire
+  // even under the IIFE's install-once guard) still hits an active filter
+  // without double-wrapping.
+  try {
+    if (!(console.warn && console.warn.__clankDeepImportFiltered)) {
+      var prevWarn = console.warn;
+      var filteredWarn = function () {
+        try {
+          var m = arguments[0];
+          if (
+            typeof m === 'string' &&
+            m.indexOf("Deep imports from the 'react-native' package are deprecated") === 0 &&
+            m.indexOf('clank-preview-runtime') !== -1
+          ) {
+            return; // self-inflicted premodule noise — not the app's warning
+          }
+        } catch (e) {}
+        return prevWarn.apply(console, arguments);
+      };
+      filteredWarn.__clankDeepImportFiltered = true;
+      console.warn = filteredWarn;
     }
-    try {
-      return fn();
-    } finally {
-      try {
-        console.warn = origWarn;
-      } catch (e) {}
-    }
+  } catch (e) {
+    /* frozen console — the two deprecation lines surface, nothing worse */
   }
 
   // Resolve the PreviewLauncher native module lazily. It's an Expo module, so
@@ -452,9 +463,9 @@
   // it") plus a clean CLEAR when the logs empty (a successful Fast Refresh).
   // Dedup on change.
   try {
-    var LogBoxData = quietly(function () {
-      return require('react-native/Libraries/LogBox/Data/LogBoxData');
-    });
+    // Deep import — internal-only module, no public export. Its build-time
+    // deprecation warning is dropped by the console.warn filter above.
+    var LogBoxData = require('react-native/Libraries/LogBox/Data/LogBoxData');
     if (LogBoxData && typeof LogBoxData.observe === 'function') {
       var lastReport = null; // null = healthy; string = last reported message
       LogBoxData.observe(function (state) {
@@ -536,13 +547,12 @@
     // inspector is handled by the global handler below; see RN LogBox.js.)
     try {
       // Public root export first — it has existed since RN 0.63, so the deep
-      // path is a legacy fallback only; on RN 0.80+ the deep require itself
-      // warns, which is why it goes through quietly().
+      // path is a legacy fallback only. (The deep literal is still collected
+      // at build time and warns regardless of the branch taken — the
+      // console.warn filter above covers it.)
       var LogBox =
         require('react-native').LogBox ||
-        quietly(function () {
-          return require('react-native/Libraries/LogBox/LogBox');
-        }).default;
+        require('react-native/Libraries/LogBox/LogBox').default;
       if (LogBox && LogBox.ignoreAllLogs) LogBox.ignoreAllLogs(true);
     } catch (e) {
       /* LogBox absent (e.g. production) — nothing to silence */
