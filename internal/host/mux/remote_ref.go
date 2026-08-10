@@ -9,6 +9,7 @@ package hostmux
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/supaclank/clank/internal/agent"
@@ -25,10 +26,21 @@ func (m *Mux) registerRemoteRef(mx *http.ServeMux) {
 	mx.HandleFunc("POST /worktrees/pr-ready", m.handleMarkPRReadyRef)
 }
 
+// maxRefBody caps inbound body size for GitRef-addressed routes — these
+// serve browser callers, so an unbounded decode is a resource-exhaustion
+// vector.
+const maxRefBody = 1 << 20
+
 // decodeRefBody decodes a JSON body into dst and validates the GitRef
 // returned by refOf. Writes the 400 itself and returns false on failure.
 func decodeRefBody[T any](w http.ResponseWriter, r *http.Request, dst *T, refOf func(*T) agent.GitRef) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRefBody)
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, errResp{Code: "request_too_large", Error: err.Error()})
+			return false
+		}
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "decode body: " + err.Error()})
 		return false
 	}

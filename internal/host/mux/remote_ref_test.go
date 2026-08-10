@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/supaclank/clank/internal/agent"
@@ -82,6 +83,32 @@ func TestRemoteResolveRefRequiresStrategy(t *testing.T) {
 	}
 	if body.Code != "missing_field" {
 		t.Errorf("code = %q, want missing_field", body.Code)
+	}
+}
+
+// decodeRefBody must reject an oversized body with 413 before decoding
+// it, not treat it as malformed JSON — these routes serve unauthenticated
+// browser callers, so an unbounded read is a resource-exhaustion vector.
+func TestRemoteRefRoutesRejectOversizedBody(t *testing.T) {
+	t.Parallel()
+	svc := host.New(host.Options{BackendManagers: map[agent.BackendType]agent.BackendManager{}})
+	t.Cleanup(svc.Shutdown)
+	handler := New(svc, nil).Handler()
+
+	oversized := `{"git_ref":{"worktree_id":"01TESTWORKTREE0000000000"},"padding":"` +
+		strings.Repeat("x", maxRefBody) + `"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/worktrees/remote-status", bytes.NewBufferString(oversized))
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", rec.Code)
+	}
+	var body errResp
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != "request_too_large" {
+		t.Errorf("code = %q, want request_too_large", body.Code)
 	}
 }
 
