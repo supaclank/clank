@@ -130,7 +130,9 @@ func TestOverlaySourceControlWiring(t *testing.T) {
 		"scStartConnect",
 		"mergeInProgressPrompt",
 		"prConflictsPrompt",
-		`closest('.beta, .scchip')`, // chip clicks must not arm a header drag
+		"actionLayout(actionsFor(st))", // ≤2 verbs side by side, 3+ collapse to ⋯
+		`node('div', 'sc-menu')`,       // the overflow menu grows vertically
+		`closest('.beta, .scchip')`,    // chip clicks must not arm a header drag
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("overlay.js source-control wiring missing %q", want)

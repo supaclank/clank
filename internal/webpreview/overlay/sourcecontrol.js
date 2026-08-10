@@ -100,9 +100,10 @@ export const actionsFor = (st) => {
     case 'behind':
       return [{ id: 'pull', label: 'Pull (fast-forward)', kind: 'primary' }];
     case 'diverged':
+      // Destructive last: this list renders as a vertical ⋯ menu.
       return [
-        { id: 'take-remote', label: 'Discard mine', kind: 'danger' },
         { id: 'merge-keep', label: 'Keep mine & merge', kind: 'secondary' },
+        { id: 'take-remote', label: 'Discard mine', kind: 'danger' },
         { id: 'fix-agent', label: '✦ Fix with agent', kind: 'primary' },
       ];
     case 'conflict':
@@ -120,6 +121,18 @@ export const actionsFor = (st) => {
     default:
       return [];
   }
+};
+
+// actionLayout splits an action list for the card's button row: two or
+// fewer verbs render side by side with full labels; three or more
+// collapse to the primary plus a ⋯ overflow menu (a vertical list, so
+// the collapsed verbs keep their full labels no matter how many).
+export const actionLayout = (actions) => {
+  if (actions.length <= 2) return { buttons: actions, overflow: [] };
+  return {
+    buttons: actions.filter((a) => a.kind === 'primary'),
+    overflow: actions.filter((a) => a.kind !== 'primary'),
+  };
 };
 
 // headerPRFor returns the header PR pill model — shown in EVERY state

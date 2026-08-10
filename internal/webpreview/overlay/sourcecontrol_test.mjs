@@ -4,6 +4,7 @@ import {
   scRequest,
   presentStatus,
   actionsFor,
+  actionLayout,
   headerPRFor,
   prConflictWarnFor,
   chipFor,
@@ -100,12 +101,24 @@ test('actionsFor drops the PR verb when a PR already exists (header pill covers 
 test('actionsFor covers pull, diverged, conflict, and synced flows', () => {
   assert.deepEqual(actionsFor({ state: 'behind' }).map((a) => a.id), ['pull']);
   const div = actionsFor({ state: 'diverged' });
-  assert.deepEqual(div.map((a) => a.id), ['take-remote', 'merge-keep', 'fix-agent']);
-  assert.equal(div[0].kind, 'danger');
+  assert.deepEqual(div.map((a) => a.id), ['merge-keep', 'take-remote', 'fix-agent']);
+  assert.equal(div[1].kind, 'danger');
   assert.equal(div[2].kind, 'primary'); // primary renders last (rightmost)
   assert.deepEqual(actionsFor({ state: 'conflict' }).map((a) => a.id), ['abort-merge', 'fix-agent']);
   assert.deepEqual(actionsFor({ state: 'synced' }).map((a) => a.id), ['open-pr']);
   assert.deepEqual(actionsFor({ state: 'synced', pr_number: 7, pr_draft: true }).map((a) => a.id), ['pr-ready']);
+});
+
+test('actionLayout keeps ≤2 verbs side by side and collapses 3+ behind the primary', () => {
+  const two = actionsFor({ state: 'unpushed' });
+  assert.deepEqual(actionLayout(two), { buttons: two, overflow: [] });
+  const three = actionsFor({ state: 'diverged' });
+  const layout = actionLayout(three);
+  assert.deepEqual(layout.buttons.map((a) => a.id), ['fix-agent']);
+  assert.deepEqual(layout.overflow.map((a) => a.id), ['merge-keep', 'take-remote']);
+  // Overflow entries keep their full labels and kinds for the menu.
+  assert.equal(layout.overflow[1].label, 'Discard mine');
+  assert.equal(layout.overflow[1].kind, 'danger');
 });
 
 test('actionsFor never leaves the refresh button alone: synced+PR gets the merge deep link', () => {

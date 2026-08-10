@@ -40,7 +40,7 @@ import {
   profileSavePayload,
 } from './settings.js';
 import {
-  scRequest, presentStatus, actionsFor, headerPRFor,
+  scRequest, presentStatus, actionsFor, actionLayout, headerPRFor,
   prConflictWarnFor, chipFor, diffstatParts,
   currentBranchInfo, defaultBaseBranch, seedPRTitle, friendlyRemoteError,
   mergeInProgressPrompt, divergedMergePrompt, prConflictsPrompt,
@@ -175,6 +175,7 @@ import {
     scLoading: false,
     scBusy: '', // in-flight source-control op id
     scError: '', // last action's friendly error
+    scMenuOpen: false, // ⋯ overflow menu on the status card
     scPR: { title: '', body: '', base: '', draft: false, url: '', existingUrl: '' },
     scPublish: { name: '', private: true },
     scConnect: null, // device flow: {state, flow_id?, user_code?, verification_uri_complete?, github_login?, error?}
@@ -745,6 +746,7 @@ import {
     store.scOpen = false;
     store.scView = 'status';
     store.scConnect = null;
+    store.scMenuOpen = false;
     render();
   };
 
@@ -944,14 +946,6 @@ import {
       b.onclick = onclick;
       return b;
     };
-    // refreshBtn sits bottom-left in every action row (not the header —
-    // the header is the branch's identity, the row is the verbs).
-    const refreshBtn = () => {
-      const b = node('button', 'sc-refresh' + (store.scLoading ? ' busy' : ''), '↻');
-      b.title = 'refresh';
-      b.onclick = () => refreshSourceControl();
-      return b;
-    };
     const grow = () => node('span', 'grow');
     const field = (labelText, value, oninput, opts = {}) => {
       const wrap = node('div', 'sc-field');
@@ -971,7 +965,7 @@ import {
     const st = store.scStatus;
 
     const frag = document.createDocumentFragment();
-    const header = node('div', 'sc-h');
+    const header = node('div', 'sc-h' + (scrollTop > 0 ? ' scrolled' : ''));
     const bricon = node('span', 'bricon');
     bricon.innerHTML = ICONS.branch;
     header.append(bricon, node('span', 'br', scCurrentBranch()));
@@ -1097,13 +1091,14 @@ import {
     } else if (!st) {
       frag.append(node('div', 'sc-state err', store.scStatusErrorMsg || 'Could not reach the remote for this branch.'));
       const actions = node('div', 'sc-actions');
-      actions.append(refreshBtn(), grow(), btn('Retry', 'secondary', () => refreshSourceControl()));
+      actions.append(grow(), btn('Retry', 'secondary', () => refreshSourceControl()));
       frag.append(actions);
     } else {
       const p = presentStatus(st);
       const ICON_GLYPH = { ok: '✓', up: '↑', cloud: '↥', down: '↓', diverged: '⇅', conflict: '!' };
       const card = node('div', 'sc-card ' + p.tone);
-      card.append(node('span', 'ic', ICON_GLYPH[p.icon] || '·'));
+      const crow = node('div', 'sc-crow');
+      crow.append(node('span', 'ic', ICON_GLYPH[p.icon] || '·'));
       const cp = node('span', 'cp');
       cp.append(node('b', '', p.label));
       cp.append(node('span', 'd', p.detail));
@@ -1117,26 +1112,50 @@ import {
         if (st.dirty) mono.append(document.createTextNode((stat ? ' · ' : '') + 'uncommitted changes'));
         cp.append(mono);
       }
-      card.append(cp);
-      frag.append(card);
+      crow.append(cp);
+      const rb = node('button', 'sc-cardrefr' + (store.scLoading || store.scBusy ? ' busy' : ''), '↻');
+      rb.title = 'refresh';
+      rb.onclick = () => refreshSourceControl();
+      crow.append(rb);
+      card.append(crow);
 
-      if (store.scBusy && store.scBusy !== 'create-pr') {
-        frag.append(node('div', 'sc-state', 'Working…'));
-      } else {
-        const warn = prConflictWarnFor(st);
-        if (warn) {
-          const box = node('div', 'sc-warnbox');
-          box.append(node('b', '', `PR #${warn.number} has merge conflicts with ${warn.baseBranch || 'its base branch'}`));
-          frag.append(box);
+      const layout = actionLayout(actionsFor(st));
+      if (layout.buttons.length || layout.overflow.length) {
+        const rowB = node('div', 'sc-btnrow');
+        if (layout.overflow.length) {
+          const wrap = node('span', 'sc-menuwrap');
+          const more = node('button', 'sc-btn sc-more', '⋯');
+          more.title = 'more options';
+          more.disabled = !!store.scBusy;
+          more.onclick = () => { store.scMenuOpen = !store.scMenuOpen; render(); };
+          wrap.append(more);
+          if (store.scMenuOpen) {
+            const menu = node('div', 'sc-menu');
+            for (const a of layout.overflow) {
+              const mi = node('button', 'sc-mi' + (a.kind === 'danger' ? ' danger' : ''), a.label);
+              mi.onclick = () => { store.scMenuOpen = false; scAction(a.id); };
+              menu.append(mi);
+            }
+            wrap.append(menu);
+          }
+          rowB.append(wrap);
         }
-        const row = node('div', 'sc-actions');
-        row.append(refreshBtn(), grow());
-        for (const a of actionsFor(st)) {
+        for (const a of layout.buttons) {
           const b = btn(a.label, a.kind, () => scAction(a.id), false, a.ext);
           if (a.id === 'merge-github') b.title = 'merging happens on GitHub — inherits branch protection and merge queues';
-          row.append(b);
+          // With an overflow menu the primary fills the rest of the row.
+          if (layout.overflow.length) b.style.flex = '1';
+          rowB.append(b);
         }
-        frag.append(row);
+        card.append(rowB);
+      }
+      frag.append(card);
+
+      const warn = prConflictWarnFor(st);
+      if (warn) {
+        const box = node('div', 'sc-warnbox');
+        box.append(node('b', '', `PR #${warn.number} has merge conflicts with ${warn.baseBranch || 'its base branch'}`));
+        frag.append(box);
       }
       if (store.scError) frag.append(node('div', 'sc-state err', store.scError));
     }
@@ -1882,11 +1901,14 @@ import {
   .scchip.danger { color:#dc2626; background:rgba(239,68,68,.12); border:1px solid rgba(239,68,68,.35); }
   .scchip.danger:hover { background:rgba(239,68,68,.22); }
   .scchip.open { box-shadow:0 0 0 2px #3b82f622; }
-  /* source-control panel — same in-box expansion shell as .settings */
-  .sc { margin:6px 12px; border:1px solid #e5e7eb; background:rgba(255,255,255,.7);
-    border-radius:12px; font-size:12px; max-height:320px; overflow-y:auto; }
+  /* source-control panel — flat: delimited by full-width hairlines, no
+     nested container card; content sits on the box's own gutter */
+  .sc { margin:4px 0 0; border-top:1px solid #e5e7eb; border-bottom:1px solid #e5e7eb;
+    font-size:12px; max-height:320px; overflow-y:auto; }
   .sc-h { position:sticky; top:0; z-index:1; display:flex; align-items:center; gap:8px;
-    padding:9px 10px 7px; background:rgba(255,255,255,.96); border-bottom:1px solid #e5e7eb; }
+    padding:10px 12px 8px; background:rgba(255,255,255,.96); }
+  /* the sticky header earns its hairline only once content scrolls under it */
+  .sc-h.scrolled { border-bottom:1px solid #e5e7eb; }
   /* branch identity IS the panel title; the PR pill rides beside it */
   .sc-h .bricon { color:#6b7280; display:flex; flex:none; }
   .sc-h .br { flex:1; min-width:0; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px;
@@ -1898,45 +1920,62 @@ import {
   .sc-prlink.confl { color:#b45309; background:rgba(245,158,11,.12); border-color:rgba(245,158,11,.35); }
   .sc-prlink .drafttag { font-weight:500; color:#6b7280; }
   .sc-prlink svg { pointer-events:none; }
-  .sc-refresh { all:unset; cursor:pointer; width:29px; height:29px; border-radius:9px; flex:none;
-    border:1px solid #e5e7eb; color:#6b7280; display:inline-flex; align-items:center; justify-content:center; }
-  .sc-refresh:hover { background:#00000008; color:#111827; }
-  .sc-refresh.busy { animation:scspin 1s linear infinite; }
   @keyframes scspin { to { transform:rotate(360deg); } }
   .sc-done { all:unset; cursor:pointer; color:#2563eb; font-weight:600; padding:3px 2px; }
-  .sc-card { display:flex; gap:8px; margin:9px 10px; padding:8px 10px; border:1px solid #e5e7eb;
-    background:#f9fafb; border-radius:10px; align-items:flex-start; }
-  .sc-card .ic { font-size:13px; line-height:1.3; }
-  .sc-card .cp { flex:1; min-width:0; }
-  .sc-card b { display:block; }
-  .sc-card .d { display:block; color:#6b7280; }
-  .sc-card .mono { display:block; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:10.5px; color:#9ca3af; margin-top:2px; }
-  .sc-card .mono .add { color:#16a34a; font-weight:600; }
-  .sc-card .mono .del { color:#dc2626; font-weight:600; }
+  /* the status card is the panel's one container: situation on top,
+     the verbs that act on it below, refresh ghost in the corner */
+  .sc-card { margin:9px 12px 12px; padding:10px 12px; border:1px solid #e5e7eb;
+    background:#f9fafb; border-radius:10px; }
+  .sc-crow { display:flex; gap:8px; align-items:flex-start; }
+  .sc-crow .ic { font-size:13px; line-height:1.3; }
+  .sc-crow .cp { flex:1; min-width:0; }
+  .sc-crow b { display:block; }
+  .sc-crow .d { display:block; color:#6b7280; }
+  .sc-crow .mono { display:block; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:10.5px; color:#9ca3af; margin-top:2px; }
+  .sc-crow .mono .add { color:#16a34a; font-weight:600; }
+  .sc-crow .mono .del { color:#dc2626; font-weight:600; }
   .sc-card.ok .ic, .sc-card.ok b { color:#16a34a; }
   .sc-card.neutral .ic { color:#2563eb; }
   .sc-card.neutral b { color:#1f2937; }
   .sc-card.warn .ic, .sc-card.warn b { color:#b45309; }
   .sc-card.accent .ic, .sc-card.accent b { color:#1d4ed8; }
   .sc-card.danger .ic, .sc-card.danger b { color:#dc2626; }
-  .sc-state { color:#6b7280; padding:9px 10px; }
+  .sc-cardrefr { all:unset; cursor:pointer; width:24px; height:24px; border-radius:7px; flex:none;
+    color:#9ca3af; display:inline-flex; align-items:center; justify-content:center; font-size:13px; }
+  .sc-cardrefr:hover { background:#00000008; color:#111827; }
+  .sc-cardrefr.busy { animation:scspin 1s linear infinite; }
+  .sc-btnrow { display:flex; gap:6px; justify-content:flex-end; margin-top:10px; }
+  .sc-state { color:#6b7280; padding:9px 12px; }
   .sc-state.err { color:#dc2626; }
-  .sc-actions { display:flex; flex-wrap:wrap; align-items:center; gap:7px; padding:0 10px 9px; }
+  .sc-actions { display:flex; flex-wrap:wrap; align-items:center; gap:7px; padding:0 12px 10px; }
   .sc-actions .grow { flex:1; }
   .sc-btn { all:unset; cursor:pointer; font-size:12px; font-weight:600; padding:6px 10px;
-    border-radius:9px; text-align:center; display:inline-flex; align-items:center; gap:5px; }
+    border-radius:9px; text-align:center; display:inline-flex; align-items:center;
+    justify-content:center; gap:5px; }
   .sc-btn svg { pointer-events:none; }
   .sc-btn.primary { color:#fff; background:#111827; }
   .sc-btn.primary:hover { background:#000; }
-  .sc-btn.secondary { color:#2563eb; border:1px solid #e5e7eb; }
-  .sc-btn.secondary:hover { background:#00000008; }
-  .sc-btn.danger { color:#dc2626; border:1px solid #ef444455; }
-  .sc-btn.danger:hover { background:#ef44440d; }
+  .sc-btn.secondary { color:#2563eb; border:1px solid #e5e7eb; background:#fff; }
+  .sc-btn.secondary:hover { background:#f3f4f6; }
+  .sc-btn.danger { color:#dc2626; border:1px solid #ef444455; background:#fff; }
+  .sc-btn.danger:hover { background:#fef2f2; }
   .sc-btn[disabled] { opacity:.45; cursor:default; }
-  .sc-warnbox { margin:0 10px 9px; padding:8px 10px; border:1px solid #ef444466; background:#ef44440d;
+  /* ⋯ overflow for 3+ verbs: the menu opens above and grows
+     VERTICALLY — one full-label row per verb */
+  .sc-more { width:29px; padding:6px 0; color:#6b7280; border:1px solid #e5e7eb; background:#fff; font-weight:700; }
+  .sc-more:hover { background:#f3f4f6; color:#111827; }
+  .sc-menuwrap { position:relative; display:inline-flex; }
+  .sc-menu { position:absolute; left:0; bottom:34px; display:flex; flex-direction:column; min-width:200px;
+    background:#fff; border:1px solid #e5e7eb; border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,.15);
+    padding:4px; z-index:3; }
+  .sc-mi { all:unset; cursor:pointer; display:block; padding:7px 10px; border-radius:7px;
+    font-size:12px; font-weight:600; color:#374151; white-space:nowrap; }
+  .sc-mi:hover { background:#00000006; }
+  .sc-mi.danger { color:#dc2626; }
+  .sc-warnbox { margin:0 12px 12px; padding:8px 10px; border:1px solid #ef444466; background:#ef44440d;
     border-radius:10px; }
   .sc-warnbox b { color:#dc2626; }
-  .sc-field { padding:0 10px 8px; }
+  .sc-field { padding:0 12px 8px; }
   .sc-field label { display:block; font-size:10px; font-weight:600; text-transform:uppercase;
     letter-spacing:.5px; color:#9ca3af; margin-bottom:3px; }
   .sc-field input[type=text], .sc-field textarea { width:100%; box-sizing:border-box; border:1px solid #d1d5db;
@@ -1949,13 +1988,13 @@ import {
     background:rgba(99,102,241,.08); border:1px solid rgba(99,102,241,.25); border-radius:999px; padding:2px 8px;
     font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
   .sc-pill:hover { background:rgba(99,102,241,.16); }
-  .sc-check { display:flex; align-items:center; gap:7px; padding:2px 10px 8px; color:#374151; cursor:pointer; }
+  .sc-check { display:flex; align-items:center; gap:7px; padding:2px 12px 8px; color:#374151; cursor:pointer; }
   .sc-check input { accent-color:#2563eb; margin:0; }
   .sc-code { text-align:center; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:20px;
     letter-spacing:4px; font-weight:700; color:#111827; padding:6px 10px; cursor:pointer; user-select:all; }
-  .sc-center { text-align:center; color:#6b7280; padding:2px 10px 8px; }
+  .sc-center { text-align:center; color:#6b7280; padding:2px 12px 8px; }
   .sc-link { color:#2563eb; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px;
-    word-break:break-all; padding:0 10px 8px; display:block; text-decoration:none; }
+    word-break:break-all; padding:0 12px 8px; display:block; text-decoration:none; }
   .chips { display:flex; flex-wrap:wrap; gap:6px; padding:6px 12px 0; }
   .chips:empty { display:none; }
   .chip { display:inline-flex; align-items:center; gap:6px; background:#f3f4f6; border:1px solid #e5e7eb;
@@ -3329,6 +3368,21 @@ import {
     if (chip && chip.text === 'Create PR') scOpenCreatePR();
   };
   ui.sc.addEventListener('keydown', (e) => e.stopPropagation());
+  // The sticky panel header earns its hairline only while content is
+  // scrolled underneath it.
+  ui.sc.addEventListener('scroll', () => {
+    const h = ui.sc.firstElementChild;
+    if (h && h.classList.contains('sc-h')) h.classList.toggle('scrolled', ui.sc.scrollTop > 0);
+  });
+  // ⋯ menu dismissal: any pointerdown outside the menu wrap closes it
+  // (Esc is handled in the global key chain).
+  window.addEventListener('pointerdown', (e) => {
+    if (!store.scMenuOpen) return;
+    const path = e.composedPath ? e.composedPath() : [];
+    if (path.some((el) => el.classList && el.classList.contains('sc-menuwrap'))) return;
+    store.scMenuOpen = false;
+    render();
+  }, true);
   // Engine picker copy. Availability is fixed for the page's lifetime,
   // and the descriptions double as the consent text — name where the
   // audio goes and what does the transcribing (CFG.voice_engine says
@@ -3525,6 +3579,7 @@ import {
     if (e.key === 'Escape') {
       if (store.saveProfileOpen) { e.preventDefault(); e.stopPropagation(); closeSaveProfile(); }
       else if (store.settingsOpen) { e.preventDefault(); e.stopPropagation(); closeSettings(); }
+      else if (store.scMenuOpen) { e.preventDefault(); e.stopPropagation(); store.scMenuOpen = false; render(); }
       else if (store.scOpen) { e.preventDefault(); e.stopPropagation(); closeSourceControl(); }
       else if (store.enginePick) { e.preventDefault(); e.stopPropagation(); closeEnginePick(); }
       else if (commentTarget) { e.preventDefault(); e.stopPropagation(); hideCommentPopover(); }
