@@ -1327,15 +1327,16 @@ import {
   .beta:hover { background:rgba(250,85,115,.22); }
   .grip { color:#9ca3af; display:flex; align-items:center; }
   .grip svg { display:block; pointer-events:none; }
-  .chips { display:flex; flex-wrap:wrap; gap:6px; padding:0 12px 4px; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; padding:6px 12px 0; }
+  .chips:empty { display:none; }
   .chip { display:inline-flex; align-items:center; gap:6px; background:#f3f4f6; border:1px solid #e5e7eb;
     color:#4338ca; font-size:11px; padding:3px 8px; border-radius:999px; max-width:100%; }
   .chip.editable { cursor:pointer; }
   .chip b { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .chip button { all:unset; cursor:pointer; color:#9ca3af; font-size:12px; line-height:1; }
   .chip img { width:18px; height:18px; object-fit:cover; border-radius:4px; }
-  .chat { max-height:240px; overflow-y:auto; padding:4px 12px; display:none; }
-  .box.expanded .chat { display:block; }
+  .chat { max-height:240px; overflow-y:auto; padding:4px 12px 8px; display:none; }
+  .box.expanded .chat { display:block; border-bottom:1px solid #e5e7eb; }
   .m { font-size:12.5px; line-height:1.45; margin:6px 0; white-space:pre-wrap; word-break:break-word; }
   .m.user { color:#2563eb; }
   .m.assistant { color:#374151; }
@@ -1467,12 +1468,12 @@ import {
      ⌘-selected element) so the instruction lands where you look */
   .cpop { position:fixed; display:none; width:300px; max-width:calc(100vw - 16px); pointer-events:auto;
     background:rgba(255,255,255,.96); border:1.5px solid #e5e7eb; border-radius:12px;
-    box-shadow:0 10px 36px rgba(0,0,0,.2); padding:8px 10px 6px; backdrop-filter:blur(14px); }
+    box-shadow:0 10px 36px rgba(0,0,0,.2); padding:12px 14px 10px; backdrop-filter:blur(14px); }
   .cpop.show { display:block; }
   /* overrides of the shared textarea rule: no inner padding (the popover
      pads), one-row start, grows with the comment like the composer */
   .cpop textarea { font-size:12.5px; padding:0; min-height:18px; max-height:96px; display:block; }
-  .cpop .cpop-h { font-size:10px; color:#9ca3af; margin-top:4px; }
+  .cpop .cpop-h { font-size:10px; color:#9ca3af; margin-top:6px; }
   .chip.cmt { background:#fffbeb; border-color:#f59e0bb3; color:#92400e; }
   .chip .ctext { font-weight:400; color:#6b7280; overflow:hidden; text-overflow:ellipsis;
     white-space:nowrap; max-width:150px; }
@@ -1502,7 +1503,6 @@ import {
 </style>
 <div class="box" part="box" tabindex="-1">
   <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><a class="beta" href="https://github.com/supaclank/clank/issues/new?template=bug_report.yml" target="_blank" rel="noopener noreferrer" title="click to report an issue" tabindex="-1">beta</a><span class="grip">${ICONS.grip}</span></div>
-  <div class="chips"></div>
   <div class="chat"></div>
   <div class="perm" style="display:none">
     <div class="t"></div><div class="d"></div>
@@ -1517,6 +1517,7 @@ import {
     <button class="opt" data-eng="webspeech"><b>Web Speech API</b><span class="d"></span></button>
   </div>
   <div class="settings" style="display:none"></div>
+  <div class="chips"></div>
   <textarea class="compose" rows="1" placeholder="Ask anything…"></textarea>
   <div class="bar">
     <button class="ib att" title="Attach images (or paste into the box)">${ICONS.plus}</button>
@@ -2027,24 +2028,16 @@ import {
     e.preventDefault();
     e.stopPropagation();
     if (hoverEl) {
-      // One chip per element: re-clicking an attached element edits its
-      // comment instead of duplicating the chip.
+      // One chip per element: re-clicking an attached element is a no-op
+      // nudge toward the chip, which opens the comment editor on click.
       const existing = store.chips.find((c) => c.node === hoverEl);
       if (existing) {
-        toast('already attached — edit its comment');
-        editChipComment(existing, hoverEl.getBoundingClientRect());
+        toast('already attached — click its chip to comment');
       } else {
         const chip = chipFromElement(hoverEl);
         chip.node = hoverEl;
         store.chips.push(chip);
         toast('added to context');
-        // The chip is attached either way (today's behavior); the popover
-        // just offers to pin an inline comment on it. The range keeps the
-        // element's text visibly marked after ⌘-release hides the inspect
-        // box.
-        const range = document.createRange();
-        range.selectNodeContents(hoverEl);
-        showCommentPopover({ kind: 'element', chip, range }, hoverEl.getBoundingClientRect());
       }
     }
     // Stay in select mode: it ends when the held modifier is released
@@ -2053,11 +2046,12 @@ import {
   };
 
   // ---------- inline comments -----------------------------------------------
-  // Highlight text (or ⌘-select an element) → a comment input appears at
-  // the anchor → Enter pins the instruction to it as a comment chip.
+  // Highlight text → a comment input appears at the anchor → Enter pins
+  // the instruction to it as a comment chip. ⌘-selected elements attach
+  // as plain chips; clicking a chip opens the same input to comment it.
   // Several comments then ride ONE submit, each unambiguously anchored —
   // no untangling "which part did you mean" in the composer.
-  let commentTarget = null; // {kind:'text', text, range} | {kind:'element', chip}
+  let commentTarget = null; // {kind:'text', text, range} | {kind:'edit', chip, range?}
 
   // Commented ranges get an in-page mark via the CSS Custom Highlight
   // API — no guest-DOM mutation, so framework hydration can't break.
@@ -2141,13 +2135,10 @@ import {
       }
     }
     ui.cpopIn.value = target.kind === 'edit' ? target.chip.comment || '' : '';
-    ui.cpopIn.placeholder = target.kind === 'text' ? 'Comment for the agent…'
-      : target.kind === 'edit' ? 'Comment…'
-      : 'Comment on this element…';
+    ui.cpopIn.placeholder = target.kind === 'text' ? 'Comment for the agent…' : 'Comment…';
     ui.cpopHint.innerHTML = target.kind === 'edit'
       ? '<kbd>Enter</kbd> save · <kbd>Esc</kbd> cancel'
-      : target.kind === 'text' ? '<kbd>Enter</kbd> add · <kbd>Esc</kbd> dismiss'
-      : '<kbd>Enter</kbd> add comment · <kbd>Esc</kbd> keep as plain context';
+      : '<kbd>Enter</kbd> add · <kbd>Esc</kbd> dismiss';
     ui.cpop.classList.add('show');
     ui.cpop.style.visibility = '';
     syncCpopHeight();
@@ -2175,14 +2166,11 @@ import {
       if (t.range) chip.range = t.range;
       store.chips.push(chip);
       toast(comment ? 'comment added' : 'added to context');
-    } else if (t.kind === 'edit') {
+    } else {
       // Saving empty clears the comment; the chip stays plain context.
       if (comment) t.chip.comment = comment;
       else delete t.chip.comment;
       toast(comment ? 'comment updated' : 'comment cleared');
-    } else if (comment) {
-      t.chip.comment = comment;
-      toast('comment added');
     }
     hideCommentPopover();
     if (store.box === 'hidden') store.box = 'prompt';
