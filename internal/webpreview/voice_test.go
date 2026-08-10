@@ -87,6 +87,24 @@ func (s *stubSession) Close() error {
 	return nil
 }
 
+// testDeadlinePerStepCap bounds a genuine hang (not just a loaded CI
+// runner) to a fraction of the full test timeout, so it fails in
+// seconds instead of blocking until -timeout's ~10m default. It's set
+// well above the ~10s stall this package's flake exhibited under load.
+const testDeadlinePerStepCap = time.Minute
+
+// capDeadline is testDeadline's logic without the *testing.T dependency,
+// so it can be table-tested without varying the real -timeout flag.
+func capDeadline(now, deadline time.Time, hasDeadline bool, perStepCap time.Duration) time.Time {
+	capped := now.Add(perStepCap)
+	if hasDeadline {
+		if hard := deadline.Add(-5 * time.Second); hard.Before(capped) {
+			return hard
+		}
+	}
+	return capped
+}
+
 // testDeadline bounds any single blocking step (dial, read, slot poll)
 // by the test binary's own -timeout deadline instead of a small fixed
 // budget. Fixed budgets flake: a loaded CI runner can stall a "can't
@@ -95,10 +113,8 @@ func (s *stubSession) Close() error {
 // rather than the framework's global-timeout panic.
 func testDeadline(t *testing.T) time.Time {
 	t.Helper()
-	if d, ok := t.Deadline(); ok {
-		return d.Add(-5 * time.Second)
-	}
-	return time.Now().Add(time.Minute) // -timeout=0: still cap runaway waits
+	d, ok := t.Deadline()
+	return capDeadline(time.Now(), d, ok, testDeadlinePerStepCap)
 }
 
 // dialVoice spins a voice ws endpoint around engine and connects.
@@ -134,6 +150,39 @@ func readVoiceMsg(t *testing.T, conn *websocket.Conn) voiceMsg {
 		t.Fatalf("ws message %q: %v", data, err)
 	}
 	return m
+}
+
+func TestCapDeadline(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	const cap = time.Minute
+
+	t.Run("no test deadline falls back to the cap", func(t *testing.T) {
+		t.Parallel()
+		got := capDeadline(now, time.Time{}, false, cap)
+		if !got.Equal(now.Add(cap)) {
+			t.Fatalf("got %v, want %v", got, now.Add(cap))
+		}
+	})
+
+	t.Run("far test deadline is capped, not used directly", func(t *testing.T) {
+		t.Parallel()
+		far := now.Add(10 * time.Minute)
+		got := capDeadline(now, far, true, cap)
+		if !got.Equal(now.Add(cap)) {
+			t.Fatalf("got %v, want the %v cap rather than the far deadline", got, cap)
+		}
+	})
+
+	t.Run("near test deadline wins over the cap", func(t *testing.T) {
+		t.Parallel()
+		near := now.Add(10 * time.Second)
+		got := capDeadline(now, near, true, cap)
+		want := near.Add(-5 * time.Second)
+		if !got.Equal(want) {
+			t.Fatalf("got %v, want %v (deadline - 5s)", got, want)
+		}
+	})
 }
 
 func TestVoiceWSStreamsPartialsAndFinal(t *testing.T) {
