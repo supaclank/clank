@@ -1248,6 +1248,123 @@ func TestBackend_RetainsConfigOptionsOnOpen(t *testing.T) {
 	}
 }
 
+// Config the backend itself successfully applies must reflect into the
+// retained knob state immediately: adapters differ in whether they
+// confirm applies with a config_option_update — claude-agent-acp sends
+// none — so without the reflect, GET /sessions/{id} kept advertising the
+// PRE-apply current values (model/effort stale, only current_mode_id
+// fresh), and any client deriving state from current values (the preset
+// chip/highlight match) could never verify what it had just applied.
+func TestBackend_AppliedConfigReflectsInRetainedKnobs(t *testing.T) {
+	t.Parallel()
+	modelCat := sdk.SessionConfigOptionCategory("model")
+	scripted := &acptest.ScriptedAgent{}
+	scripted.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+		return sdk.NewSessionResponse{
+			SessionId: "s-reflect",
+			Modes: &sdk.SessionModeState{
+				CurrentModeId: "default",
+				AvailableModes: []sdk.SessionMode{
+					{Id: "default", Name: "Manual"},
+					{Id: "bypassPermissions", Name: "Bypass"},
+				},
+			},
+			ConfigOptions: []sdk.SessionConfigOption{
+				{Select: &sdk.SessionConfigOptionSelect{
+					Id: "model", Name: "Model", Category: &modelCat, CurrentValue: "sonnet",
+					Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+						{Value: "sonnet", Name: "Sonnet"},
+						{Value: "opus", Name: "Opus"},
+					}},
+				}},
+				{Select: &sdk.SessionConfigOptionSelect{
+					Id: "effort", Name: "Effort", CurrentValue: "default",
+					Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+						{Value: "default", Name: "Default"},
+						{Value: "high", Name: "High"},
+					}},
+				}},
+			},
+		}, nil
+	}
+	scripted.PromptFn = func(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResponse, error) {
+		return sdk.PromptResponse{StopReason: sdk.StopReasonEndTurn}, nil
+	}
+	f := newBackendFixture(t, scripted, "")
+	ctx := context.Background()
+	if err := f.backend.Open(ctx); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "go", Config: map[string]string{
+		agent.ConfigOptionMode: "bypassPermissions",
+		"model":                "opus",
+		"effort":               "high",
+	}}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	f.waitFor(10*time.Second, func(evts []agent.Event) bool { return settledTurns(evts) >= 1 })
+
+	byID := map[string]string{}
+	for _, co := range f.backend.ConfigOptions() {
+		byID[co.ID] = co.CurrentValue
+	}
+	// The synthesized mode knob (claude shape: SessionModeState, no mode
+	// config option) must follow the applied mode too.
+	if byID["mode"] != "bypassPermissions" || byID["model"] != "opus" || byID["effort"] != "high" {
+		t.Errorf("retained current values after apply = %v, want mode/model/effort reflecting the applied config", byID)
+	}
+	if cur, _ := f.backend.Models(); cur != "opus" {
+		t.Errorf("Models() current after apply = %q, want opus", cur)
+	}
+	if cur, _ := f.backend.Modes(); cur != "bypassPermissions" {
+		t.Errorf("Modes() current after apply = %q, want bypassPermissions", cur)
+	}
+}
+
+// A failed set_config_option must NOT reflect: retained state keeps the
+// agent's last known truth rather than a value the agent refused.
+func TestBackend_FailedApplyDoesNotReflect(t *testing.T) {
+	t.Parallel()
+	modelCat := sdk.SessionConfigOptionCategory("model")
+	scripted := &acptest.ScriptedAgent{}
+	scripted.NewSessionFn = func(ctx context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
+		return sdk.NewSessionResponse{
+			SessionId: "s-reflect-fail",
+			ConfigOptions: []sdk.SessionConfigOption{{Select: &sdk.SessionConfigOptionSelect{
+				Id: "model", Name: "Model", Category: &modelCat, CurrentValue: "sonnet",
+				Options: sdk.SessionConfigSelectOptions{Ungrouped: &sdk.SessionConfigSelectOptionsUngrouped{
+					{Value: "sonnet", Name: "Sonnet"},
+					{Value: "opus", Name: "Opus"},
+				}},
+			}}},
+		}, nil
+	}
+	scripted.SetConfigFn = func(ctx context.Context, p sdk.SetSessionConfigOptionRequest) (sdk.SetSessionConfigOptionResponse, error) {
+		return sdk.SetSessionConfigOptionResponse{}, fmt.Errorf("agent refused")
+	}
+	scripted.PromptFn = func(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResponse, error) {
+		return sdk.PromptResponse{StopReason: sdk.StopReasonEndTurn}, nil
+	}
+	f := newBackendFixture(t, scripted, "")
+	ctx := context.Background()
+	if err := f.backend.Open(ctx); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := f.backend.Send(ctx, agent.SendMessageOpts{Text: "go", Config: map[string]string{"model": "opus"}}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	f.waitFor(10*time.Second, func(evts []agent.Event) bool { return settledTurns(evts) >= 1 })
+
+	if cur, _ := f.backend.Models(); cur != "sonnet" {
+		t.Errorf("Models() current after refused apply = %q, want sonnet unchanged", cur)
+	}
+	for _, co := range f.backend.ConfigOptions() {
+		if co.ID == "model" && co.CurrentValue != "sonnet" {
+			t.Errorf("retained model value after refused apply = %q, want sonnet unchanged", co.CurrentValue)
+		}
+	}
+}
+
 // config_option_update notifications carry the FULL replacement set; the
 // retained options must follow it, and the synthesized mode entry must
 // survive an update that carries no mode option — mode state rides a

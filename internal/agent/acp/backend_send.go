@@ -308,5 +308,9 @@ func (b *Backend) setConfigValue(ctx context.Context, conn *AdapterConn, id, val
 	if err != nil {
 		// Config is advisory (model pickers etc.) — log, don't fail the send.
 		b.logf("acp %s: set_config_option %s=%s: %v", b.profile.ID, id, value, err)
+		return
 	}
+	b.mu.Lock()
+	b.reflectAppliedValueLocked(id, value)
+	b.mu.Unlock()
 }

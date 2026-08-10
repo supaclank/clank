@@ -185,7 +185,52 @@ func (b *Backend) applyMode(ctx context.Context, conn *AdapterConn, modeID strin
 	}
 	b.mu.Lock()
 	b.currentMode = modeID
+	b.reflectAppliedModeLocked(modeID)
 	b.mu.Unlock()
+}
+
+// reflectAppliedModeLocked mirrors a successfully applied set_mode into
+// the retained mode knob (agent-advertised or synthesized). Adapters
+// differ in whether they confirm applies with notifications —
+// claude-agent-acp sends none — so without this the advertised mode knob
+// (and the preset matching clients build on current values) goes stale
+// the moment the caller changes it. An agent-pushed update still wins
+// later: it replaces the whole set. Callers hold b.mu.
+func (b *Backend) reflectAppliedModeLocked(modeID string) {
+	for i := range b.configOptions {
+		if optionHasCategory(&b.configOptions[i], modeConfigOptionID) {
+			b.configOptions[i].CurrentValue = modeID
+			return
+		}
+	}
+}
+
+// reflectAppliedValueLocked mirrors a successfully applied
+// set_config_option into the retained knob addressed by id (same
+// rationale as reflectAppliedModeLocked). The model-category knob also
+// feeds current_model_id, so it tracks too. Callers hold b.mu.
+func (b *Backend) reflectAppliedValueLocked(id, value string) {
+	for i := range b.configOptions {
+		if b.configOptions[i].ID != id {
+			continue
+		}
+		b.configOptions[i].CurrentValue = value
+		if optionHasCategory(&b.configOptions[i], modelConfigOptionID) {
+			b.currentModel = value
+		}
+		return
+	}
+}
+
+// optionHasCategory reports whether a retained knob belongs to a
+// semantic category ("mode", "model"), falling back to the conventional
+// id for agents that omit the category — the agent.ConfigOption analog
+// of selectByCategory.
+func optionHasCategory(co *agent.ConfigOption, category string) bool {
+	if co.Category != "" {
+		return co.Category == category
+	}
+	return co.ID == category
 }
 
 // Modes implements agent.ModeReporter: the agent-advertised session
