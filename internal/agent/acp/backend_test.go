@@ -1111,8 +1111,18 @@ func TestBackend_AgentModeChange_EmitsEventAndReassertsNewMode(t *testing.T) {
 	}
 
 	// The adapter dies (hibernation, credential-rotation respawn); the
-	// wrapper re-establishes on a fresh process.
+	// wrapper re-establishes on a fresh process. Wait for the conn to
+	// observe the death before reopening: markClosed fires from the SDK
+	// read loop asynchronously after Stop closes the pipes, and an Open
+	// inside that window sees the old conn as alive and no-ops (in
+	// production the next touch heals via StatusDead → rebuild; the test
+	// needs the re-establish deterministically).
 	proc1.Stop()
+	select {
+	case <-proc1.Conn.Closed():
+	case <-time.After(5 * time.Second):
+		t.Fatal("proc1 conn never observed closed after Stop")
+	}
 	proc2, err := acptest.Proc(context.Background(), profile, second, testLogf(t))
 	if err != nil {
 		t.Fatalf("acptest.Proc (second): %v", err)
