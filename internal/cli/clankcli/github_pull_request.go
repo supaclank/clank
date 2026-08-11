@@ -114,7 +114,7 @@ func terminalSafeGitHubText(value string) string {
 	return strings.Join(strings.Fields(value), " ")
 }
 
-func runGitHubPullRequestPreview(locator daemonclient.GitHubPullRequestLocator, launchName, backend string, port int, in io.Reader, out io.Writer) error {
+func runGitHubPullRequestPreview(locator daemonclient.GitHubPullRequestLocator, launchName, backend string, port int, share bool, in io.Reader, out io.Writer) error {
 	client, _, startedDaemon, err := ensurePreviewDaemon()
 	if err != nil {
 		return err
@@ -154,11 +154,13 @@ func runGitHubPullRequestPreview(locator daemonclient.GitHubPullRequestLocator, 
 	_, statErr := os.Stat(launched.WorktreeDir)
 	switch {
 	case statErr == nil:
-		return runPreviewWithDisplayName(launched.WorktreeDir, launchName, backend, port, launched.DisplayName)
+		return runPreviewWithDisplayName(launched.WorktreeDir, launchName, backend, port, share, launched.DisplayName)
 	case !os.IsNotExist(statErr):
 		return fmt.Errorf("inspect launched worktree: %w", statErr)
 	case port != 0:
 		return fmt.Errorf("--port only applies to previews running on this machine")
+	case share:
+		return fmt.Errorf("--share only applies to previews running on this machine; hosted previews mint shareable links through the gateway instead")
 	default:
 		return runHostedGitHubPullRequestPreview(ctx, client, launched.WorktreeID, launchName, backend, in, out)
 	}

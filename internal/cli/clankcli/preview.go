@@ -6,13 +6,14 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/supaclank/clank/internal/sharetunnel"
 )
 
 func previewCmd() *cobra.Command {
 	var projectDir string
 	var backend string
 	var port int
-	var tunnel bool
+	var share bool
 
 	cmd := &cobra.Command{
 		Use:   "preview [name | <github-pr-url> | <folder> <url-or-:port>]",
@@ -51,12 +52,23 @@ Boots (or reuses) the local clank daemon, then launches or attaches to a preview
     or stops the attached server; the folder supplies project context
     to the overlay and agent.
 
+--share additionally publishes web previews on a public Cloudflare
+quick-tunnel URL (requires the cloudflared binary) for view-only
+feedback: the link serves the plain app straight from the dev server,
+while the clank overlay, agent, and daemon stay on this machine's
+private preview URL. Anyone with the link can browse the dev server
+until the preview stops.
+
 Everything is torn down on Ctrl+C — including the daemon, if clank preview
 was the one that started it. An attached server is never stopped by Clank.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
-			if tunnel {
-				return fmt.Errorf("--tunnel isn't implemented yet; keep your phone and laptop on the same Wi-Fi for now")
+			if share {
+				// Fail before any daemon or dev-server work when the
+				// tunnel client is missing.
+				if _, err := sharetunnel.FindBinary(); err != nil {
+					return err
+				}
 			}
 			if len(args) == 1 && isWebURLArg(args[0]) {
 				if projectDir != "" {
@@ -66,7 +78,7 @@ was the one that started it. An attached server is never stopped by Clank.`,
 				if err != nil {
 					return err
 				}
-				return runGitHubPullRequestPreview(locator, "", backend, port, cmd.InOrStdin(), cmd.OutOrStdout())
+				return runGitHubPullRequestPreview(locator, "", backend, port, share, cmd.InOrStdin(), cmd.OutOrStdout())
 			}
 			attach, err := parsePreviewAttachArgs(args)
 			if err != nil {
@@ -76,7 +88,7 @@ was the one that started it. An attached server is never stopped by Clank.`,
 				if projectDir != "" {
 					return fmt.Errorf("preview folder was provided both positionally and with --project")
 				}
-				return runAttachedPreview(attach.ProjectDir, attach.UpstreamURL, backend, port)
+				return runAttachedPreview(attach.ProjectDir, attach.UpstreamURL, backend, port, share)
 			}
 			if err := rejectPathShapedArg(args); err != nil {
 				return err
@@ -85,14 +97,14 @@ was the one that started it. An attached server is never stopped by Clank.`,
 			if err != nil {
 				return err
 			}
-			return runPreview(projectDir, launchName, backend, port)
+			return runPreview(projectDir, launchName, backend, port, share)
 		},
 	}
 
 	cmd.Flags().StringVar(&projectDir, "project", "", "Project directory (default: current directory)")
 	cmd.Flags().StringVar(&backend, "backend", "", "Backend to use: opencode (default), claude")
 	cmd.Flags().IntVar(&port, "port", 0, "Browser-proxy port for web previews (default: auto-assigned). Phone previews use the daemon's bridge port.")
-	cmd.Flags().BoolVar(&tunnel, "tunnel", false, "Expose over an encrypted tunnel for off-LAN phones (not yet implemented)")
+	cmd.Flags().BoolVar(&share, "share", false, "Also publish the app on a public view-only tunnel URL (Cloudflare quick tunnel; requires cloudflared). Web previews only.")
 
 	return cmd
 }

@@ -31,11 +31,11 @@ const (
 //     pairing token and print the QR (the original flow).
 //   - Configured web: front the dev server with the overlay-injecting
 //     proxy and open it in the browser (runWebPreview).
-func runPreview(projectDir, launchName, backend string, port int) error {
-	return runPreviewWithDisplayName(projectDir, launchName, backend, port, "")
+func runPreview(projectDir, launchName, backend string, port int, share bool) error {
+	return runPreviewWithDisplayName(projectDir, launchName, backend, port, share, "")
 }
 
-func runPreviewWithDisplayName(projectDir, launchName, backend string, port int, displayName string) error {
+func runPreviewWithDisplayName(projectDir, launchName, backend string, port int, share bool, displayName string) error {
 	isProjectExplicit := projectDir != ""
 	projectDir, err := resolveProjectDir(projectDir)
 	if err != nil {
@@ -198,7 +198,11 @@ func runPreviewWithDisplayName(projectDir, launchName, backend string, port int,
 			fmt.Println("One-time preview setup complete.")
 		}
 		upstreamURL := previewLoopbackURL(status.Port)
-		return runWebPreview(sigCtx, projectDir, sockPath, string(bt), upstreamURL, port, displayName)
+		return runWebPreview(sigCtx, projectDir, sockPath, string(bt), upstreamURL, port, share, displayName)
+	}
+
+	if share {
+		return fmt.Errorf("--share applies to web previews only; this preview resolved to the phone (Expo) flow, which shares to your phone via the QR instead")
 	}
 
 	// Phone (Expo) path from here down. The daemon's bridge is the
