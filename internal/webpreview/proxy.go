@@ -65,6 +65,12 @@ var boxPosJS []byte
 //go:embed overlay/launcher.js
 var launcherJS []byte
 
+// resizeJS is the overlay's pure box-resize module (top-edge drag
+// arithmetic, composer autosize bounds).
+//
+//go:embed overlay/resize.js
+var resizeJS []byte
+
 // workletJS is the AudioWorklet processor that batches mic PCM for the
 // dictation WebSocket. Served as its own module because AudioWorklets
 // load from a URL, not inline.
@@ -197,6 +203,7 @@ func Start(opts Options) (*Server, error) {
 	mux.HandleFunc("GET "+SourceControlPath, serveJS(sourceControlJS))
 	mux.HandleFunc("GET "+BoxPosPath, serveJS(boxPosJS))
 	mux.HandleFunc("GET "+LauncherPath, serveJS(launcherJS))
+	mux.HandleFunc("GET "+ResizePath, serveJS(resizeJS))
 	mux.HandleFunc("GET "+WorkletPath, serveJS(workletJS))
 	mux.Handle(APIPrefix+"/", requireToken(opts.Token,
 		http.StripPrefix(APIPrefix, daemon)))

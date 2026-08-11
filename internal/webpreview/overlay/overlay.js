@@ -54,6 +54,10 @@ import {
   currentBranchInfo, defaultBaseBranch, seedPRTitle, friendlyRemoteError,
   mergeInProgressPrompt, divergedMergePrompt, prConflictsPrompt,
 } from './sourcecontrol.js';
+import {
+  boxExtraFromDrag, clampBoxExtra, chatRowCap,
+  BOX_TOP_MARGIN, CHAT_DEFAULT_MAX,
+} from './resize.js';
 
 (() => {
   'use strict';
@@ -64,6 +68,11 @@ import {
   const TOKEN = CFG.token || '';
   const DONE_LINGER_MS = 8000; // mobile: PreviewOverlayState.DONE_LINGER_MS
   const DEFAULT_PROFILE_STORAGE_KEY = 'clank.defaultPresetByBackend';
+  const BOX_POS_STORAGE_KEY = 'clank.boxPos';
+  const BOX_EXTRA_STORAGE_KEY = 'clank.boxExtra';
+  // Resize grip zone measured from the box's outer top: the 10px .rz
+  // strip plus the box border the strip cannot cover.
+  const RESIZE_GRIP_PX = 12;
   // macOS fires CapsLock keydown when the lock engages and keyup when it
   // disengages — one event per physical press, alternating type. Other
   // platforms fire a normal down/up pair per press.
@@ -1948,6 +1957,14 @@ import {
     .launcher.visible, .coachmark.visible, .launcher.busy::before, .activity-spinner,
     .tool-state.running, .tool-state.pending { animation:none; }
   }
+  /* top-edge resize strip, expanded chat view only: the drag raises
+     the chat log's height cap (--dh); the collapsed prompt view keeps
+     its default size. Double-click resets. */
+  .rz { display:none; position:absolute; top:0; left:0; right:0; height:10px; cursor:ns-resize; z-index:3; touch-action:none; }
+  .box.expanded .rz { display:block; }
+  .rz::after { content:''; position:absolute; left:50%; top:3px; width:36px; height:3px; margin-left:-18px;
+    border-radius:999px; background:#9ca3af; opacity:.25; transition:opacity .15s ease; }
+  .rz:hover::after, .rz.active::after { opacity:.55; }
   .hd { display:flex; align-items:center; gap:8px; padding:10px 12px 6px; cursor:grab; user-select:none; }
   .hd:active { cursor:grabbing; }
   .dot { width:8px; height:8px; border-radius:50%; background:#6b7280; flex:none; }
@@ -2094,7 +2111,10 @@ import {
   .chip b { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .chip button { all:unset; cursor:pointer; color:#9ca3af; font-size:12px; line-height:1; }
   .chip img { width:18px; height:18px; object-fit:cover; border-radius:4px; }
-  .chat { max-height:240px; overflow-y:auto; padding:4px 12px 8px; display:none; }
+  /* --chat-h pins the log to the user's dragged size (auto until they
+     resize) so the drag gives direct feedback even when the transcript
+     is short; the cap only matters in the unresized auto state. */
+  .chat { height:var(--chat-h, auto); max-height:calc(${CHAT_DEFAULT_MAX}px + var(--dh, 0px)); overflow-y:auto; padding:4px 12px 8px; display:none; }
   .box.expanded .chat { display:block; border-bottom:1px solid #e5e7eb; }
   .m { font-size:12.5px; line-height:1.45; margin:8px 0; word-break:break-word; }
   .m.user { color:#2563eb; }
@@ -2304,6 +2324,7 @@ import {
   .crop-x0 { position:absolute; top:12px; right:16px; }
 </style>
 <div class="box" part="box" tabindex="-1">
+  <div class="rz" title="Drag to resize — double-click to reset"></div>
   <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><button class="scchip muted" style="display:none" title="source control" tabindex="-1">${ICONS.branch}<span class="sctext"></span></button><a class="beta" href="https://github.com/supaclank/clank/issues/new?template=bug_report.yml" target="_blank" rel="noopener noreferrer" title="click to report an issue" tabindex="-1">beta</a><button class="chat-toggle" aria-label="Show conversation" aria-expanded="false" title="Show conversation (Cmd+Shift+E)"><span>Chat</span>${ICONS.chevron}</button><span class="grip">${ICONS.grip}</span></div>
   <div class="chat"></div>
   <div class="agent-progress"><span class="activity-spinner" aria-hidden="true"></span><span class="agent-progress-text"></span></div>
@@ -2360,7 +2381,7 @@ import {
 
   const $ = (sel) => root.querySelector(sel);
   const ui = {
-    box: $('.box'), name: $('.name'), st: $('.st'), chips: $('.chips'), chat: $('.chat'),
+    box: $('.box'), rz: $('.rz'), name: $('.name'), st: $('.st'), chips: $('.chips'), chat: $('.chat'),
     chatToggle: $('.chat-toggle'), chatToggleLabel: $('.chat-toggle span'),
     launcher: $('.launcher'), launcherSpinner: $('.launcher .activity-spinner'),
     coachmark: $('.coachmark'), coachDismiss: $('.coach-dismiss'), coachShortcut: $('.coach-shortcut'),
@@ -2393,6 +2414,24 @@ import {
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => ui.toast.classList.remove('show'), 3500);
   };
+
+  // boxExtra is the user's drag-set extra chat-log height (px),
+  // restored per tab like the box position; .chat reads it via --dh.
+  // Restore only sanitizes — no viewport clamp: innerHeight can read 0
+  // while a tab loads in the background, and the value was clamped
+  // against real geometry by the drag that stored it.
+  let boxExtra = 0;
+  try {
+    const saved = parseFloat(sessionStorage.getItem(BOX_EXTRA_STORAGE_KEY) || '0');
+    if (Number.isFinite(saved)) boxExtra = clampBoxExtra(saved, Infinity);
+  } catch {}
+  const applyBoxExtra = () => {
+    ui.box.style.setProperty('--dh', boxExtra + 'px');
+    // A dragged size pins the log's height outright — cap-only growth
+    // is invisible while the transcript is shorter than the cap.
+    ui.box.style.setProperty('--chat-h', boxExtra > 0 ? (CHAT_DEFAULT_MAX + boxExtra) + 'px' : 'auto');
+  };
+  applyBoxExtra();
 
   const syncComposerHeight = () => {
     ui.input.style.height = 'auto';
@@ -2787,7 +2826,7 @@ import {
     });
 
     const frag = document.createDocumentFragment();
-    store.msgs.slice(-12).forEach((row) => {
+    store.msgs.slice(-chatRowCap(boxExtra)).forEach((row) => {
       frag.append(renderTranscriptRow(row));
     });
     ui.chat.replaceChildren(frag);
@@ -3565,12 +3604,12 @@ import {
   };
   const commitBoxIntent = () => {
     boxIntent = { x: parseFloat(ui.box.dataset.x || '0'), y: parseFloat(ui.box.dataset.y || '0') };
-    sessionStorage.setItem('clank.boxPos', JSON.stringify(boxIntent));
+    sessionStorage.setItem(BOX_POS_STORAGE_KEY, JSON.stringify(boxIntent));
   };
   const clampBoxOnSummon = (() => {
     const hd = $('.hd');
     let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
-    const saved = parseStoredBoxIntent(sessionStorage.getItem('clank.boxPos'));
+    const saved = parseStoredBoxIntent(sessionStorage.getItem(BOX_POS_STORAGE_KEY));
     if (saved) { boxIntent = saved; applyBoxTranslate(saved.x, saved.y); }
 
     // Resize rescue: drags may park the box off-screen on purpose, but
@@ -3628,6 +3667,53 @@ import {
       owesClamp = false;
       clampIntoViewport();
     };
+  })();
+
+  // ---------- resize (top-edge drag, expanded chat view only) ---------------
+  // Handlers live on the box, gated to the top strip: a grab right on
+  // the edge lands on the box's own border pixels, which the .rz strip
+  // can't cover (overflow:hidden clips at the padding box) — both must
+  // resize. Capture + stopPropagation keeps the header's move-drag
+  // from arming underneath a strip grab.
+  (() => {
+    const inGrip = (e) => store.box === 'chat' && e.clientY <= ui.box.getBoundingClientRect().top + RESIZE_GRIP_PX;
+    let sy = 0, startExtra = 0, room = 0, resizing = false;
+    ui.box.addEventListener('pointerdown', (e) => {
+      if (!inGrip(e)) return;
+      e.stopPropagation();
+      e.preventDefault(); // no text selection under the drag
+      endFollow(); // manual resize wins over a live shift-follow
+      resizing = true;
+      sy = e.clientY;
+      startExtra = boxExtra;
+      // Growing moves the top edge up at most 1:1 — the room above the
+      // box now is the most the drag can add.
+      room = boxExtra + ui.box.getBoundingClientRect().top - BOX_TOP_MARGIN;
+      ui.rz.classList.add('active');
+      ui.box.setPointerCapture(e.pointerId);
+    }, true);
+    ui.box.addEventListener('pointermove', (e) => {
+      if (!resizing) return;
+      boxExtra = clampBoxExtra(boxExtraFromDrag(startExtra, sy, e.clientY), room);
+      applyBoxExtra();
+    }, true);
+    const settle = (e) => {
+      if (!resizing) return;
+      resizing = false;
+      ui.rz.classList.remove('active');
+      e.stopPropagation(); // the header must not read the release as its tap
+      sessionStorage.setItem(BOX_EXTRA_STORAGE_KEY, String(boxExtra));
+      render(); // the transcript window scales with the settled height
+    };
+    ui.box.addEventListener('pointerup', settle, true);
+    ui.box.addEventListener('pointercancel', settle, true);
+    ui.box.addEventListener('dblclick', (e) => {
+      if (!inGrip(e)) return;
+      boxExtra = 0;
+      applyBoxExtra();
+      sessionStorage.setItem(BOX_EXTRA_STORAGE_KEY, '0');
+      render();
+    }, true);
   })();
 
   // ---------- wiring -----------------------------------------------------------

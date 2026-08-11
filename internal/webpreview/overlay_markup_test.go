@@ -309,6 +309,43 @@ func TestOverlaySourceControlWiring(t *testing.T) {
 	}
 }
 
+// TestOverlayResizeWiring pins the top-edge height resize: the handle
+// exists above the header in the markup, arms only in the expanded
+// chat view, drag math goes through the pure resize.js module, and the
+// extra height raises ONLY the chat log's cap — the collapsed prompt
+// view and the composer keep their default content-driven sizes.
+func TestOverlayResizeWiring(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	for _, want := range []string{
+		`<div class="rz"`,
+		"$('.rz')",
+		"from './resize.js'",
+		// The strip shows and arms only while the chat view is expanded.
+		".box.expanded .rz { display:block; }",
+		"store.box === 'chat' && e.clientY",
+		// The drag applies pure math, never raw pointer deltas.
+		"clampBoxExtra(boxExtraFromDrag(startExtra, sy, e.clientY), room)",
+		// Only the chat log reads the extra height, and a dragged size
+		// pins its height outright — cap-only growth is invisible while
+		// the transcript is shorter than the cap ("stuck" drag).
+		"max-height:calc(${CHAT_DEFAULT_MAX}px + var(--dh, 0px))",
+		"height:var(--chat-h, auto)",
+		// The transcript window scales with the chosen height.
+		"store.msgs.slice(-chatRowCap(boxExtra))",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("overlay.js resize wiring missing %q", want)
+		}
+	}
+	if got := strings.Count(js, "var(--dh, 0px)"); got != 1 {
+		t.Errorf("var(--dh, 0px) appears %d times, want exactly 1 (chat log only — not the composer or panels)", got)
+	}
+	if !strings.Contains(js, "clank.boxExtra") {
+		t.Error("overlay.js must persist the resized height like the box position (sessionStorage clank.boxExtra)")
+	}
+}
+
 // TestOverlayAgentSettingsWiring pins the mobile-parity settings surface:
 // the footer chip opens a profile/knob editor, and both create and follow-up
 // sends carry the staged config rather than silently reverting to Build.
