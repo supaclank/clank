@@ -309,19 +309,22 @@ func TestOverlaySourceControlWiring(t *testing.T) {
 	}
 }
 
-// TestOverlayResizeWiring pins the top-edge height resize: the handle
-// exists above the header in the markup, arms only in the expanded
-// chat view, drag math goes through the pure resize.js module, and the
-// extra height raises ONLY the chat log's cap — the collapsed prompt
-// view and the composer keep their default content-driven sizes.
+// TestOverlayResizeWiring pins the edge resize: the top edge (expanded
+// chat view only) sets the chat log's height, the side edges (either
+// view) set the box width, drag math goes through the pure resize.js
+// module, and the sizes persist as a durable localStorage preference.
+// The collapsed prompt view's height and the composer keep their
+// default content-driven sizes.
 func TestOverlayResizeWiring(t *testing.T) {
 	t.Parallel()
 	js := string(overlayJS)
 	for _, want := range []string{
 		`<div class="rz"`,
+		`<div class="rzl"`,
+		`<div class="rzr"`,
 		"$('.rz')",
 		"from './resize.js'",
-		// The strip shows and arms only while the chat view is expanded.
+		// The top strip shows and arms only while the chat view is expanded.
 		".box.expanded .rz { display:block; }",
 		"store.box === 'chat' && e.clientY",
 		// The drag applies pure math, never raw pointer deltas.
@@ -333,6 +336,18 @@ func TestOverlayResizeWiring(t *testing.T) {
 		"height:var(--chat-h, auto)",
 		// The transcript window scales with the chosen height.
 		"store.msgs.slice(-chatRowCap(boxExtra))",
+		// Width flows through the box's --dw custom property.
+		"width: calc(${BOX_DEFAULT_WIDTH}px + var(--dw, 0px))",
+		// A west drag keeps the east edge planted by moving the box,
+		// through the drag section's translate helpers so the clamp
+		// model's applied-vs-intent split holds (boxpos.js).
+		"applyBoxTranslate(startTx - (boxWidthExtra - startExtra), startTy)",
+		"if (wasWest) commitBoxIntent()",
+		// A grab over a child's scrollbar keeps scrolling.
+		"overScrollbar(e)",
+		// Sizes are a durable preference; position stays per tab.
+		"localStorage.setItem(BOX_EXTRA_STORAGE_KEY",
+		"localStorage.setItem(BOX_WIDTH_STORAGE_KEY",
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("overlay.js resize wiring missing %q", want)
@@ -340,9 +355,6 @@ func TestOverlayResizeWiring(t *testing.T) {
 	}
 	if got := strings.Count(js, "var(--dh, 0px)"); got != 1 {
 		t.Errorf("var(--dh, 0px) appears %d times, want exactly 1 (chat log only — not the composer or panels)", got)
-	}
-	if !strings.Contains(js, "clank.boxExtra") {
-		t.Error("overlay.js must persist the resized height like the box position (sessionStorage clank.boxExtra)")
 	}
 }
 
