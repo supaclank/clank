@@ -36,8 +36,8 @@ import {
 } from './chat.js';
 import {
   resolvePreset, applyPresetOverrides, configRows, setConfigOverride,
-  diffConfigAgainstOptions, effectiveSessionConfig, profileLabel,
-  profileSavePayload,
+  diffConfigAgainstOptions, effectiveSessionConfig, mergeSessionConfig, profileLabel,
+  profileMatchingConfig, liveChipLabel, liveSettingsBadge, profileSavePayload,
 } from './settings.js';
 import {
   scRequest, presentStatus, actionsFor, actionLayout, headerPRFor,
@@ -55,7 +55,6 @@ import {
   const TOKEN = CFG.token || '';
   const DONE_LINGER_MS = 8000; // mobile: PreviewOverlayState.DONE_LINGER_MS
   const DEFAULT_PROFILE_STORAGE_KEY = 'clank.defaultPresetByBackend';
-  const CONFIG_OPTION_MODE = 'mode';
   // macOS fires CapsLock keydown when the lock engages and keyup when it
   // disengages — one event per physical press, alternating type. Other
   // platforms fire a normal down/up pair per press.
@@ -160,6 +159,13 @@ import {
     configOptionsError: '',
     expandedConfigID: '',
     pendingConfig: {}, // live-session changes staged for the next send
+    // clank-host's persisted last-applied config for the live session:
+    // the matching source that survives the backend being down, and what
+    // the host re-asserts on rehydrate.
+    sessionConfig: {},
+    // The "+ New" card is selected: authoring a profile draft seeded from
+    // the current effective state. Cleared by picking a card or saving.
+    profileDraft: false,
     saveProfileOpen: false,
     saveProfileName: '',
     profileSaving: false,
@@ -548,6 +554,7 @@ import {
     const request = (store.sessionId
       ? apiJSON(`/sessions/${store.sessionId}`).then((info) => {
           if (!info) throw new Error('session settings were unavailable');
+          if (requestID === configOptionsRequestID) store.sessionConfig = info.config || {};
           return info.config_options || [];
         })
       : apiJSON(configOptionsPath())
@@ -632,6 +639,7 @@ import {
       store.profilesLoaded = true;
       store.profilesError = '';
       store.profileID = saved.id;
+      store.profileDraft = false;
       if (!store.sessionId) store.profileOverrides = {};
       store.saveProfileOpen = false;
       store.saveProfileName = '';
@@ -1199,8 +1207,12 @@ import {
           ? { ...option, current_value: createConfig[option.id] }
           : option);
     }
+    // Mirror the host: CreateSession persists the create config as the
+    // session's last-applied config.
+    store.sessionConfig = { ...createConfig };
     store.profileID = '';
     store.profileOverrides = {};
+    store.profileDraft = false;
     subscribe();
     loadConfigOptions().catch(() => {});
   };
@@ -1242,6 +1254,9 @@ import {
               ? { ...option, current_value: pendingConfig[option.id] }
               : option);
         }
+        // Mirror the host's row merge (recordSessionConfig) so matching
+        // stays truthful before the next session fetch.
+        store.sessionConfig = mergeSessionConfig(store.sessionConfig, pendingConfig);
         store.pendingConfig = {};
         store.profileID = '';
       }
@@ -1398,6 +1413,7 @@ import {
           .then((r) => (r.ok ? r.json() : null))
           .then((info) => {
             if (!info || store.sessionId !== sid) return;
+            store.sessionConfig = info.config || {};
             if (Array.isArray(info.config_options)) {
               store.configOptions = info.config_options;
               store.pendingConfig = diffConfigAgainstOptions(store.pendingConfig, info.config_options);
@@ -2085,6 +2101,8 @@ import {
     border-radius:10px; padding:6px 10px; background:#f9fafb; }
   .profile-card:hover { background:#f3f4f6; }
   .profile-card.cur { border-color:#3b82f6; background:#3b82f60d; color:#2563eb; }
+  .profile-card.new { border-style:dashed; background:transparent; color:#6b7280; }
+  .profile-card.new:hover { background:#f3f4f6; }
   .profile-card b, .profile-card small { display:block; white-space:nowrap; }
   .profile-card small { color:#9ca3af; font-size:9px; margin-top:1px; }
   .knobs { padding:0 10px 6px; }
@@ -2367,14 +2385,12 @@ import {
     if (!store.sessionId) {
       return profileLabel(selectedCreateProfile(), store.profileOverrides) || 'Settings';
     }
-    const mode = (store.configOptions || []).find((option) =>
-      option.category === CONFIG_OPTION_MODE || option.id === CONFIG_OPTION_MODE);
-    if (!mode) return Object.keys(store.pendingConfig).length ? 'Settings •' : 'Settings';
-    const value = Object.hasOwn(store.pendingConfig, mode.id)
-      ? store.pendingConfig[mode.id]
-      : mode.current_value;
-    const valueName = ((mode.values || []).find((v) => v.value === value) || {}).name || value || 'Settings';
-    return valueName + (Object.keys(store.pendingConfig).length ? ' •' : '');
+    // Same vocabulary as the create chip: the profile the effective
+    // config embodies, with the raw mode name as the honest fallback.
+    const label = liveChipLabel(
+      store.profiles, store.configOptions, store.pendingConfig, store.sessionConfig,
+    ) || 'Settings';
+    return label + (Object.keys(store.pendingConfig).length ? ' •' : '');
   };
 
   // renderSettings builds the same two-level editor as mobile's
@@ -2383,6 +2399,11 @@ import {
   // adapter descriptions never become markup in the injected page.
   const renderSettings = () => {
     const scrollTop = ui.settings.scrollTop;
+    // The profiles strip scrolls horizontally; replaceChildren rebuilds it,
+    // so carry its scroll across renders like the panel's scrollTop — a
+    // card tap must not fling the strip back to the start.
+    const profilesEl = ui.settings.querySelector('.profiles');
+    const profilesScrollLeft = profilesEl ? profilesEl.scrollLeft : 0;
     ui.settings.style.display = store.settingsOpen ? '' : 'none';
     if (!store.settingsOpen) {
       ui.settings.replaceChildren();
@@ -2392,9 +2413,16 @@ import {
     const preset = live ? null : selectedCreateProfile();
     const rows = configRows(preset, live ? store.pendingConfig : store.profileOverrides, store.configOptions || []);
     const custom = !live && profileLabel(preset, store.profileOverrides) === 'Custom';
+    // Live sessions have no selected profile — the highlight derives from
+    // what the session EFFECTIVELY runs (staged changes included), so a
+    // tapped card lights up immediately and a wake-reset session
+    // truthfully highlights nothing (mobile PresetEditorSheet parity).
+    const liveMatch = live
+      ? profileMatchingConfig(store.profiles, store.configOptions, store.pendingConfig, store.sessionConfig)
+      : null;
     const badgeText = live
-      ? (Object.keys(store.pendingConfig).length ? 'Modified' : '')
-      : profileLabel(preset, store.profileOverrides);
+      ? liveSettingsBadge(store.pendingConfig, liveMatch, store.profileDraft)
+      : (store.profileDraft ? 'Draft' : profileLabel(preset, store.profileOverrides));
     const resolvedDefault = resolvePreset(store.profiles, CFG.backend, store.defaultProfileID);
     const node = (tag, cls, text) => {
       const n = document.createElement(tag);
@@ -2415,12 +2443,15 @@ import {
     if (store.profiles.length) {
       const profiles = node('div', 'profiles');
       for (const p of store.profiles) {
-        const selected = !live && p.id === (preset && preset.id) && !custom;
+        const selected = !store.profileDraft && (live
+          ? !!liveMatch && p.id === liveMatch.id
+          : p.id === (preset && preset.id) && !custom);
         const card = node('button', 'profile-card' + (selected ? ' cur' : ''));
         card.append(node('b', '', p.name));
         if (resolvedDefault && p.id === resolvedDefault.id) card.append(node('small', '', 'default'));
         card.onclick = () => {
           store.expandedConfigID = '';
+          store.profileDraft = false;
           store.profileID = p.id;
           if (live) store.pendingConfig = diffConfigAgainstOptions({ ...p.config }, store.configOptions);
           else store.profileOverrides = {};
@@ -2428,6 +2459,20 @@ import {
         };
         profiles.append(card);
       }
+      // "+ New" selects a profile DRAFT seeded from the current effective
+      // state (whatever profile/knobs were in play stays put) — knobs
+      // keep editing as usual under a Draft badge, and "Save as new
+      // profile" stays available until the draft is named or another
+      // card is picked. Duplicate-to-edit falls out: draft an existing
+      // profile's state and save it under a new name.
+      const newCard = node('button', 'profile-card new' + (store.profileDraft ? ' cur' : ''));
+      newCard.append(node('b', '', store.profileDraft ? 'New' : '+ New'));
+      newCard.onclick = () => {
+        store.profileDraft = true;
+        store.expandedConfigID = '';
+        render();
+      };
+      profiles.append(newCard);
       frag.append(profiles);
     }
 
@@ -2500,7 +2545,12 @@ import {
       frag.append(node('div', 'settings-state', 'No agent settings are available.'));
     }
 
-    const canSaveAsNew = live ? Object.keys(store.pendingConfig).length > 0 : custom;
+    // A draft can save at any time; otherwise staged state that embodies
+    // an existing profile isn't "new" — offer the save only for genuine
+    // divergence from every profile.
+    const canSaveAsNew = store.profileDraft || (live
+      ? Object.keys(store.pendingConfig).length > 0 && !liveMatch
+      : custom);
     const canSetDefault = !live && !custom && preset &&
       (!resolvedDefault || preset.id !== resolvedDefault.id);
     if (canSaveAsNew || canSetDefault) {
@@ -2527,6 +2577,8 @@ import {
     }
     ui.settings.replaceChildren(frag);
     ui.settings.scrollTop = scrollTop;
+    const nextProfiles = ui.settings.querySelector('.profiles');
+    if (nextProfiles) nextProfiles.scrollLeft = profilesScrollLeft;
   };
 
   const STATUS_TEXT = { idle: '', thinking: 'thinking…', working: 'working…', done: 'done', error: 'error' };

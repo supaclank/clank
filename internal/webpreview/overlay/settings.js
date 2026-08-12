@@ -85,6 +85,63 @@ export const configRows = (preset, overrides, options) => {
   return rows;
 };
 
+// The well-known option id every serving agent uses for its session mode.
+export const CONFIG_OPTION_MODE = 'mode';
+
+// profileMatchingConfig mirrors clank-mobile's presetMatchingConfig: the
+// profile the session's EFFECTIVE config verifiably embodies, or null.
+// Honesty rules: every key the profile promises must be verifiable and
+// equal; empty-config (instructions-only) profiles never match; first
+// match wins. Per-key precedence: staged override (tap feedback) →
+// advertised current value (live agent truth) → persisted (clank-host's
+// last-applied config, the only source an undecorated session has).
+// Advertised beats persisted by design: a value the agent refused must
+// not fake a match.
+export const profileMatchingConfig = (profiles, options, overrides, persisted) => {
+  const list = (Array.isArray(profiles) ? profiles : []).filter((p) => p && p.config);
+  return list.find((p) => {
+    const keys = Object.keys(p.config);
+    if (!keys.length) return false;
+    return keys.every((id) => {
+      let effective;
+      if (Object.hasOwn(overrides || {}, id)) {
+        effective = overrides[id];
+      } else {
+        const option = (options || []).find((o) => o.id === id);
+        effective = option ? option.current_value : undefined;
+        if (effective === undefined || effective === null) effective = (persisted || {})[id];
+      }
+      return effective !== undefined && effective === p.config[id];
+    });
+  }) || null;
+};
+
+// liveChipLabel is the in-session footer-chip label: the matched
+// profile's name — same vocabulary as the create chip — falling back to
+// the agent's mode value name, then to the persisted raw mode id
+// (undecorated session), then ''. The caller supplies the generic
+// fallback text and the staged-change dot.
+export const liveChipLabel = (profiles, options, pending, persisted) => {
+  const matched = profileMatchingConfig(profiles, options, pending, persisted);
+  if (matched) return matched.name;
+  const mode = (options || []).find((o) =>
+    o.category === CONFIG_OPTION_MODE || o.id === CONFIG_OPTION_MODE);
+  if (!mode) return (persisted || {})[CONFIG_OPTION_MODE] || '';
+  const value = Object.hasOwn(pending || {}, mode.id) ? pending[mode.id] : mode.current_value;
+  return ((mode.values || []).find((v) => v.value === value) || {}).name || value || '';
+};
+
+// liveSettingsBadge: the live-session header badge. "Draft" while the
+// "+ New" card is selected (authoring a profile from the current state);
+// otherwise "Modified" means the staged state diverges from every
+// profile (manual knob territory) — a staged profile pick is not a
+// modification: the card highlight and the chip name already carry
+// that, and the chip's dot owns "unsent".
+export const liveSettingsBadge = (pending, matched, draft) => {
+  if (draft) return 'Draft';
+  return Object.keys(pending || {}).length && !matched ? 'Modified' : '';
+};
+
 // diffConfigAgainstOptions enforces DATA-040 for a live session: omitted
 // means unchanged, so values already active on the agent must not be sent.
 export const diffConfigAgainstOptions = (config, options) => {
@@ -102,6 +159,16 @@ export const effectiveSessionConfig = (options, pending) => {
   const current = {};
   for (const option of options || []) current[option.id] = option.current_value;
   return { ...current, ...(pending || {}) };
+};
+
+// mergeSessionConfig mirrors internal/host.Service.recordSessionConfig's row
+// merge: empty key/value pairs are skipped, not persisted as "".
+export const mergeSessionConfig = (persisted, changes) => {
+  const merged = { ...(persisted || {}) };
+  for (const [k, v] of Object.entries(changes || {})) {
+    if (k !== '' && v !== '') merged[k] = v;
+  }
+  return merged;
 };
 
 const BUILTIN_ID_PREFIX = 'builtin-';
