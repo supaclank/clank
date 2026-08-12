@@ -241,6 +241,69 @@ re-flip the mode.
 
 ---
 
+## Presets in-session (0.6.3)
+
+Presets/profiles are client-side bundles ([DATA-040], [OP-016](05-operations.md)); a session
+never knows which preset it "is" — its config is the only truth. Every rule below was
+independently mis-invented at least twice (RN #172→#178, web overlay #249) before being
+written down; TUI and Kotlin implement from here.
+
+### [INV-PRESET-MATCH-001] (MUST) derive the selected preset by verifiable exact-match
+A client presenting presets in-session derives "which preset is this session running" by
+exact-match over **every** key the preset's config promises. Per-key precedence:
+**staged-unsent override** (tap feedback) → **advertised `current_value`**
+(`config_options`, live agent truth) → **persisted `SessionInfo.config`** (clank-host's
+last-applied map — the only source an undecorated row has). Advertised MUST beat persisted:
+a value the agent refused must not fake a match. A key with no source at all is
+unverifiable → no match. Empty-config (instructions-only) presets never match. First match
+wins (built-ins are served first). Never select by remembered preset id — after a wake or an
+agent-side change the id would lie; the config cannot.
+**Why:** id-based or partial matching produced "clicked a profile, nothing highlights" and
+false-Custom states on two clients; matching only advertised values goes blind on
+undecorated rows and (pre-#246 hosts) right after an apply.
+**Golden:** `internal/webpreview/overlay/settings.js` (`profileMatchingConfig`); RN
+counterpart `presetMatchingConfig` in clank-mobile `src/lib/presetEditor.ts`.
+**Conformance:** `CONF-PRESET-MATCH`.
+
+### [INV-PRESET-LABEL-001] (SHOULD) in-session affordances speak preset names, honestly
+The compose chip (and any "current preset" label) shows the matched preset's name — the same
+vocabulary as the create flow — falling back to the agent's mode display name, then the
+persisted raw mode id (undecorated row), then a generic label. An unmatched state MUST NOT
+masquerade as a preset name.
+**Why:** "created with Build, chip says Auto after the first send" reads as a reset even
+when nothing changed; a false preset name is worse — it hides real divergence.
+**Golden:** `internal/webpreview/overlay/settings.js` (`liveChipLabel`); RN
+`sessionChipLabel`.
+**Conformance:** `CONF-PRESET-LABEL`.
+
+### [INV-PRESET-BADGE-001] (SHOULD) "Modified" means divergence from every preset
+A staged preset pick is not a modification — the card highlight and the chip name already
+carry it, and the unsent dot owns "unsent". Reserve the Modified badge for staged state that
+embodies **no** preset. A client offering a draft flow ("+ New" card) shows "Draft" while
+the draft is selected and keeps save-as-preset available regardless of divergence; picking a
+card or saving clears the draft.
+**Why:** badging every staged change reads as "your config is custom/unsaved" right after
+the user picked an existing preset.
+**Golden:** `internal/webpreview/overlay/settings.js` (`liveSettingsBadge`); RN
+`sessionModeBadge`.
+**Conformance:** `CONF-PRESET-BADGE`.
+
+### [INV-CONFIG-REFRESH-001] (MUST) reconcile session config after a config-carrying send
+No SSE event carries `config_options`, so nothing pushes post-apply truth. After a
+successful config-carrying send a client MUST reconcile the session detail: refetch it —
+holding staged values until the fresh row lands, so the label never falls back to a stale
+cache — or equivalently patch advertised current values locally and mirror the host's
+config merge (empty keys/values skipped), reconciling on the next fetch. Hosts ≥ #246
+guarantee the refetched `config_options` reflect the apply.
+**Why:** the cached row goes stale the moment config applies; without this the label
+reverts to the pre-send mode until a remount (shipped on RN) or drifts from the row the
+host will re-assert on rehydrate.
+**Golden:** clank-mobile `src/hooks/useSessions.ts` (`refreshSessionAfterConfigSend`);
+`internal/webpreview/overlay/overlay.js` (send-path patch + `mergeSessionConfig`).
+**Conformance:** `CONF-CONFIG-REFRESH`.
+
+---
+
 ## Metadata & revert
 
 ### [INV-META-REPLACE-001] (MUST) `meta` replaces the whole `SessionInfo`

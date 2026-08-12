@@ -4,7 +4,7 @@
 > the mapping and the **known gaps** so they stop resurfacing as fresh bugs.
 
 **Platform:** React Native / Expo + react-query + Zustand · **Client kind:** full chat client ·
-**Spec version:** 0.6.1 · **Last updated:** 2026-07-25
+**Spec version:** 0.6.3 · **Last updated:** 2026-08-12 (clank-mobile#178/#181)
 
 ## Where the pieces live
 
@@ -37,6 +37,10 @@
 | INV-ABORT-PERM-001 | 🟡 | **verify** composer re-enables + queue clears after abort |
 | INV-PERMMODE-001 | ✅ | `sessions.ts` send omits mode unless changed |
 | ~~INV-PERMMODE-EXITPLAN-001~~ | ➖ | retired 0.6.0 — plan review is an ordinary permission prompt |
+| INV-PRESET-MATCH-001 | ✅ | `presetEditor.ts presetMatchingConfig` (staged → advertised → persisted `SessionInfo.config`); sheet highlight + chip share it (#172→#178) |
+| INV-PRESET-LABEL-001 | ✅ | `presetEditor.ts sessionChipLabel` in `ComposeBar` — preset name, mode-name fallback, persisted raw mode on undecorated rows |
+| INV-PRESET-BADGE-001 | ✅ | `presetEditor.ts sessionModeBadge` (#181); no draft flow on this surface yet |
+| INV-CONFIG-REFRESH-001 | ✅ | `useSessions.ts refreshSessionAfterConfigSend` — exact-match invalidation awaited before the staged config clears (no stale-label flash) |
 | INV-META-REPLACE-001 | 🟡 | uses `patchSessionInCache` per-field for title/status; **verify** `meta` does a full replace, not a field-merge |
 | INV-REVERT-001 | ✅ | `dispatch.ts:165` (revert marker + invalidate messages) |
 | INV-RECONCILE-001 | ✅ | `resyncAfterStreamGap` (`dispatch.ts`) runs on the backend `reconnected` event, on the client's own transport reconnect (`useEventStream.ts` `onReconnect`), and after every foreground `restart()` |
@@ -80,12 +84,10 @@ rows above.
 
 ### ACP migration follow-ups (0.6.x, not yet done)
 
-4. **Modes are hardcoded** — `src/lib/modes.ts` maps a binary Build/Plan toggle onto
-   claude-specific wire fields. Modes are agent-owned since 0.5.0 ([DATA-040](../03-data-model.md)):
-   the `agent` field is no longer read by any backend, and a claude mode id is silently
-   skipped by an agent that does not advertise it, so the picker is a **no-op on opencode
-   and codex**. Fix: build the create flow on `GET /presets` + the `config` map
-   ([DATA-040](../03-data-model.md), [OP-016](../05-operations.md)).
+4. ~~**Modes are hardcoded**~~ — resolved: the create flow is preset-first
+   (`GET /presets` + the `config` map) and `src/lib/modes.ts` renders agent-owned
+   `available_modes` only; in-session presets follow the
+   [Presets in-session](../08-invariants.md) rules (#172→#178, #181).
 5. **`revert` is gone** — the endpoint was removed in 0.6.0; the client still calls it and
    the affordance is user-reachable, so it 404s. Remove it.
 6. **Questions are retired** — `/questions/.../reply` and the `question` part tag no longer

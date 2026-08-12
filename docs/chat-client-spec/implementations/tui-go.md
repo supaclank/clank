@@ -40,6 +40,10 @@
 | INV-ABORT-PERM-001 | ✅ | host `failPendingPermissions` denies server-side; the TUI clears `pendingPerms`/`replyingPermID` on the abort-settle in `handleStatusChange`. Test: `TestAbortClearsPendingPermissions`. |
 | INV-PERMMODE-001 | ✅ | `sendMessage` `:2162` sends only the selected mode |
 | INV-PERMMODE-EXITPLAN-001 | ✅ | backend `claude_permissions.go:97`; TUI sends `""` on follow-ups |
+| INV-PRESET-MATCH-001 (0.6.3) | ⛔ | no preset UI — Tab cycles agent-advertised modes; implement from [08 · Presets in-session](../08-invariants.md) when the picker lands |
+| INV-PRESET-LABEL-001 (0.6.3) | ⛔ | mode names only on this surface; the picker does follow agent-initiated flips via the `mode` event (`sessionview.go handleEvent`) |
+| INV-PRESET-BADGE-001 (0.6.3) | N/A | no badge surface yet |
+| INV-CONFIG-REFRESH-001 (0.6.3) | 🟡 | mode-only UI hides staleness (picker diffs against `CurrentModeID` per send, `modeConfigForSend`); a real reconcile is needed with the preset UI |
 | INV-META-REPLACE-001 | ✅ | consumes `meta` as full `SessionInfo` (inbox view) |
 | INV-REVERT-001 | ✅ | `handleSessionMessages` `:1535` (filter), `:1162` (clear on send) |
 | INV-RECONCILE-001 | ✅ | `Init` `:511` fetches messages+pending+info; refetch on reopen |
