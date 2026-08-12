@@ -36,7 +36,7 @@ import {
 } from './chat.js';
 import {
   resolvePreset, applyPresetOverrides, configRows, setConfigOverride,
-  diffConfigAgainstOptions, effectiveSessionConfig, profileLabel,
+  diffConfigAgainstOptions, effectiveSessionConfig, mergeSessionConfig, profileLabel,
   profileMatchingConfig, liveChipLabel, profileSavePayload,
 } from './settings.js';
 import {
@@ -1251,7 +1251,7 @@ import {
         }
         // Mirror the host's row merge (recordSessionConfig) so matching
         // stays truthful before the next session fetch.
-        store.sessionConfig = { ...store.sessionConfig, ...pendingConfig };
+        store.sessionConfig = mergeSessionConfig(store.sessionConfig, pendingConfig);
         store.pendingConfig = {};
         store.profileID = '';
       }

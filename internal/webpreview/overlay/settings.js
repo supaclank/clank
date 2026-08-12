@@ -150,6 +150,16 @@ export const effectiveSessionConfig = (options, pending) => {
   return { ...current, ...(pending || {}) };
 };
 
+// mergeSessionConfig mirrors internal/host.Service.recordSessionConfig's row
+// merge: empty key/value pairs are skipped, not persisted as "".
+export const mergeSessionConfig = (persisted, changes) => {
+  const merged = { ...(persisted || {}) };
+  for (const [k, v] of Object.entries(changes || {})) {
+    if (k !== '' && v !== '') merged[k] = v;
+  }
+  return merged;
+};
+
 const BUILTIN_ID_PREFIX = 'builtin-';
 
 const slugifyProfileID = (name) => name

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   resolvePreset, applyPresetOverrides, configRows, setConfigOverride,
-  diffConfigAgainstOptions, effectiveSessionConfig, profileLabel,
+  diffConfigAgainstOptions, effectiveSessionConfig, mergeSessionConfig, profileLabel,
   profileMatchingConfig, liveChipLabel, profileSavePayload,
 } from './settings.js';
 
@@ -71,6 +71,18 @@ test('effectiveSessionConfig: current agent values plus staged and unadvertised 
     effort: 'high',
     custom_key: 'kept',
   });
+});
+
+test('mergeSessionConfig: empty-string changes are skipped, like the host', () => {
+  // The host's recordSessionConfig drops empty keys/values rather than
+  // persisting "" as a real value; the overlay must match or a cleared
+  // knob would read back as an empty-string current value instead of gone.
+  assert.deepEqual(
+    mergeSessionConfig({ mode: 'auto' }, { mode: 'plan', effort: '' }),
+    { mode: 'plan' },
+  );
+  assert.deepEqual(mergeSessionConfig({ mode: 'auto' }, { '': 'x' }), { mode: 'auto' });
+  assert.deepEqual(mergeSessionConfig(null, { mode: 'plan' }), { mode: 'plan' });
 });
 
 test('profileSavePayload: slugifies the name and copies the effective config', () => {
