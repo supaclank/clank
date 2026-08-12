@@ -2096,6 +2096,8 @@ import {
     border-radius:10px; padding:6px 10px; background:#f9fafb; }
   .profile-card:hover { background:#f3f4f6; }
   .profile-card.cur { border-color:#3b82f6; background:#3b82f60d; color:#2563eb; }
+  .profile-card.new { border-style:dashed; background:transparent; color:#6b7280; }
+  .profile-card.new:hover { background:#f3f4f6; }
   .profile-card b, .profile-card small { display:block; white-space:nowrap; }
   .profile-card small { color:#9ca3af; font-size:9px; margin-top:1px; }
   .knobs { padding:0 10px 6px; }
@@ -2392,6 +2394,11 @@ import {
   // adapter descriptions never become markup in the injected page.
   const renderSettings = () => {
     const scrollTop = ui.settings.scrollTop;
+    // The profiles strip scrolls horizontally; replaceChildren rebuilds it,
+    // so carry its scroll across renders like the panel's scrollTop — a
+    // card tap must not fling the strip back to the start.
+    const profilesEl = ui.settings.querySelector('.profiles');
+    const profilesScrollLeft = profilesEl ? profilesEl.scrollLeft : 0;
     ui.settings.style.display = store.settingsOpen ? '' : 'none';
     if (!store.settingsOpen) {
       ui.settings.replaceChildren();
@@ -2446,6 +2453,15 @@ import {
         };
         profiles.append(card);
       }
+      // "+ New" persists the CURRENT effective state under a fresh name —
+      // the staged knobs are the draft (the chip dot and Modified badge
+      // already report it), so no separate draft mode is needed. Unlike
+      // the divergence-gated action below, this also saves a copy when
+      // the state matches an existing profile (duplicate-to-edit).
+      const newCard = node('button', 'profile-card new');
+      newCard.append(node('b', '', '+ New'));
+      newCard.onclick = openSaveProfile;
+      profiles.append(newCard);
       frag.append(profiles);
     }
 
@@ -2549,6 +2565,8 @@ import {
     }
     ui.settings.replaceChildren(frag);
     ui.settings.scrollTop = scrollTop;
+    const nextProfiles = ui.settings.querySelector('.profiles');
+    if (nextProfiles) nextProfiles.scrollLeft = profilesScrollLeft;
   };
 
   const STATUS_TEXT = { idle: '', thinking: 'thinking…', working: 'working…', done: 'done', error: 'error' };
