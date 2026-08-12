@@ -131,6 +131,13 @@ export const liveChipLabel = (profiles, options, pending, persisted) => {
   return ((mode.values || []).find((v) => v.value === value) || {}).name || value || '';
 };
 
+// liveSettingsBadge: the live-session header badge. "Modified" means the
+// staged state diverges from every profile (manual knob territory) — a
+// staged profile pick is not a modification: the card highlight and the
+// chip name already carry that, and the chip's dot owns "unsent".
+export const liveSettingsBadge = (pending, matched) =>
+  Object.keys(pending || {}).length && !matched ? 'Modified' : '';
+
 // diffConfigAgainstOptions enforces DATA-040 for a live session: omitted
 // means unchanged, so values already active on the agent must not be sent.
 export const diffConfigAgainstOptions = (config, options) => {

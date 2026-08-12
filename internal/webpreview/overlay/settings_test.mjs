@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   resolvePreset, applyPresetOverrides, configRows, setConfigOverride,
   diffConfigAgainstOptions, effectiveSessionConfig, mergeSessionConfig, profileLabel,
-  profileMatchingConfig, liveChipLabel, profileSavePayload,
+  profileMatchingConfig, liveChipLabel, liveSettingsBadge, profileSavePayload,
 } from './settings.js';
 
 test('resolvePreset: exact pick, then builtin Build, without accepting another backend', () => {
@@ -163,4 +163,15 @@ test('liveChipLabel: profile name first, mode name fallback, persisted raw mode 
   assert.equal(liveChipLabel([build], null, {}, build.config), 'Build');
   assert.equal(liveChipLabel([build], null, {}, { mode: 'plan' }), 'plan');
   assert.equal(liveChipLabel([build], null, {}, {}), '');
+});
+
+test('liveSettingsBadge: profile picks are not modifications', () => {
+  const build = { id: 'b', name: 'Build', backend: 'claude-code', config: { mode: 'auto' } };
+  // A staged profile pick matches → no badge (card + chip carry it).
+  assert.equal(liveSettingsBadge({ mode: 'auto' }, build), '');
+  // Manual divergence from every profile → Modified.
+  assert.equal(liveSettingsBadge({ effort: 'max' }, null), 'Modified');
+  // Nothing staged → no badge, matched or not.
+  assert.equal(liveSettingsBadge({}, null), '');
+  assert.equal(liveSettingsBadge({}, build), '');
 });

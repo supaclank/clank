@@ -37,7 +37,7 @@ import {
 import {
   resolvePreset, applyPresetOverrides, configRows, setConfigOverride,
   diffConfigAgainstOptions, effectiveSessionConfig, mergeSessionConfig, profileLabel,
-  profileMatchingConfig, liveChipLabel, profileSavePayload,
+  profileMatchingConfig, liveChipLabel, liveSettingsBadge, profileSavePayload,
 } from './settings.js';
 import {
   scRequest, presentStatus, actionsFor, actionLayout, headerPRFor,
@@ -2409,7 +2409,7 @@ import {
       ? profileMatchingConfig(store.profiles, store.configOptions, store.pendingConfig, store.sessionConfig)
       : null;
     const badgeText = live
-      ? (Object.keys(store.pendingConfig).length ? 'Modified' : '')
+      ? liveSettingsBadge(store.pendingConfig, liveMatch)
       : profileLabel(preset, store.profileOverrides);
     const resolvedDefault = resolvePreset(store.profiles, CFG.backend, store.defaultProfileID);
     const node = (tag, cls, text) => {
