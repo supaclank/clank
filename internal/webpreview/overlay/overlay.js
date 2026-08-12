@@ -163,6 +163,9 @@ import {
     // the matching source that survives the backend being down, and what
     // the host re-asserts on rehydrate.
     sessionConfig: {},
+    // The "+ New" card is selected: authoring a profile draft seeded from
+    // the current effective state. Cleared by picking a card or saving.
+    profileDraft: false,
     saveProfileOpen: false,
     saveProfileName: '',
     profileSaving: false,
@@ -636,6 +639,7 @@ import {
       store.profilesLoaded = true;
       store.profilesError = '';
       store.profileID = saved.id;
+      store.profileDraft = false;
       if (!store.sessionId) store.profileOverrides = {};
       store.saveProfileOpen = false;
       store.saveProfileName = '';
@@ -1208,6 +1212,7 @@ import {
     store.sessionConfig = { ...createConfig };
     store.profileID = '';
     store.profileOverrides = {};
+    store.profileDraft = false;
     subscribe();
     loadConfigOptions().catch(() => {});
   };
@@ -2416,8 +2421,8 @@ import {
       ? profileMatchingConfig(store.profiles, store.configOptions, store.pendingConfig, store.sessionConfig)
       : null;
     const badgeText = live
-      ? liveSettingsBadge(store.pendingConfig, liveMatch)
-      : profileLabel(preset, store.profileOverrides);
+      ? liveSettingsBadge(store.pendingConfig, liveMatch, store.profileDraft)
+      : (store.profileDraft ? 'Draft' : profileLabel(preset, store.profileOverrides));
     const resolvedDefault = resolvePreset(store.profiles, CFG.backend, store.defaultProfileID);
     const node = (tag, cls, text) => {
       const n = document.createElement(tag);
@@ -2438,14 +2443,15 @@ import {
     if (store.profiles.length) {
       const profiles = node('div', 'profiles');
       for (const p of store.profiles) {
-        const selected = live
+        const selected = !store.profileDraft && (live
           ? !!liveMatch && p.id === liveMatch.id
-          : p.id === (preset && preset.id) && !custom;
+          : p.id === (preset && preset.id) && !custom);
         const card = node('button', 'profile-card' + (selected ? ' cur' : ''));
         card.append(node('b', '', p.name));
         if (resolvedDefault && p.id === resolvedDefault.id) card.append(node('small', '', 'default'));
         card.onclick = () => {
           store.expandedConfigID = '';
+          store.profileDraft = false;
           store.profileID = p.id;
           if (live) store.pendingConfig = diffConfigAgainstOptions({ ...p.config }, store.configOptions);
           else store.profileOverrides = {};
@@ -2453,14 +2459,19 @@ import {
         };
         profiles.append(card);
       }
-      // "+ New" persists the CURRENT effective state under a fresh name —
-      // the staged knobs are the draft (the chip dot and Modified badge
-      // already report it), so no separate draft mode is needed. Unlike
-      // the divergence-gated action below, this also saves a copy when
-      // the state matches an existing profile (duplicate-to-edit).
-      const newCard = node('button', 'profile-card new');
-      newCard.append(node('b', '', '+ New'));
-      newCard.onclick = openSaveProfile;
+      // "+ New" selects a profile DRAFT seeded from the current effective
+      // state (whatever profile/knobs were in play stays put) — knobs
+      // keep editing as usual under a Draft badge, and "Save as new
+      // profile" stays available until the draft is named or another
+      // card is picked. Duplicate-to-edit falls out: draft an existing
+      // profile's state and save it under a new name.
+      const newCard = node('button', 'profile-card new' + (store.profileDraft ? ' cur' : ''));
+      newCard.append(node('b', '', store.profileDraft ? 'New' : '+ New'));
+      newCard.onclick = () => {
+        store.profileDraft = true;
+        store.expandedConfigID = '';
+        render();
+      };
       profiles.append(newCard);
       frag.append(profiles);
     }
@@ -2534,11 +2545,12 @@ import {
       frag.append(node('div', 'settings-state', 'No agent settings are available.'));
     }
 
-    // Staged state that embodies an existing profile isn't "new" — offer
-    // the save only for genuine divergence from every profile.
-    const canSaveAsNew = live
+    // A draft can save at any time; otherwise staged state that embodies
+    // an existing profile isn't "new" — offer the save only for genuine
+    // divergence from every profile.
+    const canSaveAsNew = store.profileDraft || (live
       ? Object.keys(store.pendingConfig).length > 0 && !liveMatch
-      : custom;
+      : custom);
     const canSetDefault = !live && !custom && preset &&
       (!resolvedDefault || preset.id !== resolvedDefault.id);
     if (canSaveAsNew || canSetDefault) {

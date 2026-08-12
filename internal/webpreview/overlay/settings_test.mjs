@@ -175,3 +175,13 @@ test('liveSettingsBadge: profile picks are not modifications', () => {
   assert.equal(liveSettingsBadge({}, null), '');
   assert.equal(liveSettingsBadge({}, build), '');
 });
+
+test('liveSettingsBadge: Draft wins while the + New card is selected', () => {
+  const build = { id: 'b', name: 'Build', backend: 'claude-code', config: { mode: 'auto' } };
+  // Draft regardless of staged state or matches — the card is selected.
+  assert.equal(liveSettingsBadge({}, null, true), 'Draft');
+  assert.equal(liveSettingsBadge({ mode: 'auto' }, build, true), 'Draft');
+  // Without the draft the existing rules hold.
+  assert.equal(liveSettingsBadge({ effort: 'max' }, null, false), 'Modified');
+  assert.equal(liveSettingsBadge({ mode: 'auto' }, build, false), '');
+});
