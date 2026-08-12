@@ -143,6 +143,10 @@ come; each client's harness loads the same files.
 | `CONF-ABORT-PERM` | abort clears pending perms, unlocks composer, session survives | INV-ABORT-PERM-001 |
 | `CONF-ABORT-NOISE` | during abort, intermediate statuses/errors are suppressed; "Cancelling"→"Cancelled" | STATE-STATUS-001, VIEW-CANCELLING-001 |
 | `CONF-PERMMODE-NOCHANGE` | an unchanged-mode follow-up send omits `config` | INV-PERMMODE-001 |
+| `CONF-PRESET-MATCH` | the selected preset derives from verifiable exact-match (staged → advertised → persisted; advertised beats persisted; unverifiable = no match) | INV-PRESET-MATCH-001 |
+| `CONF-PRESET-LABEL` | in-session label speaks the matched preset's name; honest mode-name fallback, never a false preset name | INV-PRESET-LABEL-001 |
+| `CONF-PRESET-BADGE` | Modified only for divergence from every preset; a staged preset pick shows no badge | INV-PRESET-BADGE-001 |
+| `CONF-CONFIG-REFRESH` | after a config-carrying send the session detail reconciles without the label falling back to stale cache | INV-CONFIG-REFRESH-001 |
 | ~~`CONF-PLAN-EXIT`~~ (retired 0.6.0) | ExitPlanMode renders the plan + approve/reject; later sends stay `""` | INV-PERMMODE-EXITPLAN-001, FLOW-PLAN-001 |
 | `CONF-META-REPLACE` | a `meta` event replaces the whole SessionInfo (no field-merge) | INV-META-REPLACE-001 |
 | ~~`CONF-REVERT-FILTER`~~ (retired 0.6.0) | revert hides the tail; a new send un-hides it | INV-REVERT-001 |

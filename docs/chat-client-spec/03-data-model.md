@@ -33,7 +33,7 @@ The session metadata snapshot, returned by create/get/list/search and embedded i
 | TicketID | `ticket_id` | string | Optional backlog link. |
 | Agent | `agent` | string | Current OpenCode agent name. |
 | Draft | `draft` | string | Unsent follow-up text the user was composing. |
-| Config | `config` | map | (0.6.3) The session's **last-applied** config (option id → value id): create/send `config` merged with agent-initiated mode changes (`mode` event). Persisted; the host re-asserts it when a backend rehydrates, so a hibernate→wake cannot silently reset the session's mode. Unlike `config_options` this reflects what was *asked for*, not the live agent's advertisement — prefer `config_options`/`current_mode_id` for live display when the backend is live. |
+| Config | `config` | map | (0.6.3) The session's **last-applied** config (option id → value id): create/send `config` merged with agent-initiated mode changes (`mode` event). Persisted; the host re-asserts it when a backend rehydrates, so a hibernate→wake cannot silently reset the session's mode. Unlike `config_options` this reflects what was *asked for*, not the live agent's advertisement — prefer `config_options`/`current_mode_id` for live display when the backend is live. The last-resort source for in-session preset matching — see [INV-PRESET-MATCH-001](08-invariants.md). |
 | RevertMessageID | `revert_message_id` | string | When set, messages from this ID onward are reverted (hidden). See [DATA-012]. |
 | ServerURL | `server_url` | string | **Runtime-only, not persisted.** |
 | IsRemote | `is_remote` | bool | **Runtime-only**, stamped by gateway routing. |
