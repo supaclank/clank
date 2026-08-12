@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   resolvePreset, applyPresetOverrides, configRows, setConfigOverride,
   diffConfigAgainstOptions, effectiveSessionConfig, profileLabel,
-  profileSavePayload,
+  profileMatchingConfig, liveChipLabel, profileSavePayload,
 } from './settings.js';
 
 test('resolvePreset: exact pick, then builtin Build, without accepting another backend', () => {
@@ -86,4 +86,69 @@ test('profileSavePayload: slugifies the name and copies the effective config', (
   assert.equal(config.mode, 'auto');
   assert.throws(() => profileSavePayload('  ', 'claude-code', config), /name/);
   assert.throws(() => profileSavePayload('builtin-secret', 'claude-code', config), /reserved/);
+});
+
+test('profileMatchingConfig: staged and advertised sources, honesty rules', () => {
+  const build = { id: 'b', name: 'Build', backend: 'claude-code', config: { mode: 'auto', model: 'default', effort: 'default' } };
+  const opusHigh = { id: 'oh', name: 'Opus High', backend: 'claude-code', config: { mode: 'bypassPermissions', model: 'opus', effort: 'high' } };
+  const promptOnly = { id: 'p', name: 'Prompt only', backend: 'claude-code', config: {}, instructions: 'be terse' };
+  const options = [
+    { id: 'mode', category: 'mode', current_value: 'auto', values: [] },
+    { id: 'model', category: 'model', current_value: 'default', values: [] },
+    { id: 'effort', current_value: 'default', values: [] },
+  ];
+  // Advertised current values verify Build.
+  assert.equal(profileMatchingConfig([opusHigh, build], options, {}, {}).id, 'b');
+  // Staged overrides count — tapping Opus High relabels before the send.
+  assert.equal(
+    profileMatchingConfig([build, opusHigh], options,
+      { mode: 'bypassPermissions', model: 'opus', effort: 'high' }, {}).id,
+    'oh',
+  );
+  // An unverifiable key disqualifies; instructions-only never matches.
+  assert.equal(profileMatchingConfig([opusHigh], options, {}, {}), null);
+  assert.equal(profileMatchingConfig([promptOnly], options, {}, {}), null);
+});
+
+test('profileMatchingConfig: persisted is last resort, advertised beats it', () => {
+  const opusHigh = { id: 'oh', name: 'Opus High', backend: 'claude-code', config: { mode: 'bypassPermissions', model: 'opus', effort: 'high' } };
+  // Undecorated session (no advertised options): persisted alone matches.
+  assert.equal(profileMatchingConfig([opusHigh], null, {}, opusHigh.config).id, 'oh');
+  // A live agent that says sonnet must not be faked over by a persisted
+  // opus (e.g. a value the agent refused).
+  const live = [
+    { id: 'mode', category: 'mode', current_value: 'bypassPermissions', values: [] },
+    { id: 'model', category: 'model', current_value: 'sonnet', values: [] },
+    { id: 'effort', current_value: 'high', values: [] },
+  ];
+  assert.equal(profileMatchingConfig([opusHigh], live, {}, opusHigh.config), null);
+  // Persisted fills keys the live set does not advertise.
+  const partial = [{ id: 'model', category: 'model', current_value: 'opus', values: [] }];
+  assert.equal(
+    profileMatchingConfig([opusHigh], partial, {}, { mode: 'bypassPermissions', effort: 'high' }).id,
+    'oh',
+  );
+});
+
+test('liveChipLabel: profile name first, mode name fallback, persisted raw mode last', () => {
+  const build = { id: 'b', name: 'Build', backend: 'claude-code', config: { mode: 'auto', model: 'default', effort: 'default' } };
+  const options = [
+    { id: 'mode', category: 'mode', current_value: 'auto',
+      values: [{ value: 'auto', name: 'Auto' }, { value: 'plan', name: 'Plan Mode' }] },
+    { id: 'model', category: 'model', current_value: 'default', values: [] },
+    { id: 'effort', current_value: 'default', values: [] },
+  ];
+  // The regression: after sending with Build, the chip must keep saying
+  // Build — not flip to the mode's display name ("Auto").
+  assert.equal(liveChipLabel([build], options, {}, {}), 'Build');
+  // No profile verifiably matches → the honest mode-name fallback.
+  const drifted = options.map((o) => (o.id === 'effort' ? { ...o, current_value: 'high' } : o));
+  assert.equal(liveChipLabel([build], drifted, {}, {}), 'Auto');
+  // Staged mode wins the fallback value.
+  assert.equal(liveChipLabel([build], drifted, { mode: 'plan' }, {}), 'Plan Mode');
+  // Undecorated session: persisted names the profile; raw mode id when
+  // nothing matches; '' when nothing is known at all.
+  assert.equal(liveChipLabel([build], null, {}, build.config), 'Build');
+  assert.equal(liveChipLabel([build], null, {}, { mode: 'plan' }), 'plan');
+  assert.equal(liveChipLabel([build], null, {}, {}), '');
 });

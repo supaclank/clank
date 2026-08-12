@@ -37,7 +37,7 @@ import {
 import {
   resolvePreset, applyPresetOverrides, configRows, setConfigOverride,
   diffConfigAgainstOptions, effectiveSessionConfig, profileLabel,
-  profileSavePayload,
+  profileMatchingConfig, liveChipLabel, profileSavePayload,
 } from './settings.js';
 import {
   scRequest, presentStatus, actionsFor, actionLayout, headerPRFor,
@@ -55,7 +55,6 @@ import {
   const TOKEN = CFG.token || '';
   const DONE_LINGER_MS = 8000; // mobile: PreviewOverlayState.DONE_LINGER_MS
   const DEFAULT_PROFILE_STORAGE_KEY = 'clank.defaultPresetByBackend';
-  const CONFIG_OPTION_MODE = 'mode';
   // macOS fires CapsLock keydown when the lock engages and keyup when it
   // disengages — one event per physical press, alternating type. Other
   // platforms fire a normal down/up pair per press.
@@ -160,6 +159,10 @@ import {
     configOptionsError: '',
     expandedConfigID: '',
     pendingConfig: {}, // live-session changes staged for the next send
+    // clank-host's persisted last-applied config for the live session:
+    // the matching source that survives the backend being down, and what
+    // the host re-asserts on rehydrate.
+    sessionConfig: {},
     saveProfileOpen: false,
     saveProfileName: '',
     profileSaving: false,
@@ -548,6 +551,7 @@ import {
     const request = (store.sessionId
       ? apiJSON(`/sessions/${store.sessionId}`).then((info) => {
           if (!info) throw new Error('session settings were unavailable');
+          if (requestID === configOptionsRequestID) store.sessionConfig = info.config || {};
           return info.config_options || [];
         })
       : apiJSON(configOptionsPath())
@@ -1199,6 +1203,9 @@ import {
           ? { ...option, current_value: createConfig[option.id] }
           : option);
     }
+    // Mirror the host: CreateSession persists the create config as the
+    // session's last-applied config.
+    store.sessionConfig = { ...createConfig };
     store.profileID = '';
     store.profileOverrides = {};
     subscribe();
@@ -1242,6 +1249,9 @@ import {
               ? { ...option, current_value: pendingConfig[option.id] }
               : option);
         }
+        // Mirror the host's row merge (recordSessionConfig) so matching
+        // stays truthful before the next session fetch.
+        store.sessionConfig = { ...store.sessionConfig, ...pendingConfig };
         store.pendingConfig = {};
         store.profileID = '';
       }
@@ -1398,6 +1408,7 @@ import {
           .then((r) => (r.ok ? r.json() : null))
           .then((info) => {
             if (!info || store.sessionId !== sid) return;
+            store.sessionConfig = info.config || {};
             if (Array.isArray(info.config_options)) {
               store.configOptions = info.config_options;
               store.pendingConfig = diffConfigAgainstOptions(store.pendingConfig, info.config_options);
@@ -2367,14 +2378,12 @@ import {
     if (!store.sessionId) {
       return profileLabel(selectedCreateProfile(), store.profileOverrides) || 'Settings';
     }
-    const mode = (store.configOptions || []).find((option) =>
-      option.category === CONFIG_OPTION_MODE || option.id === CONFIG_OPTION_MODE);
-    if (!mode) return Object.keys(store.pendingConfig).length ? 'Settings •' : 'Settings';
-    const value = Object.hasOwn(store.pendingConfig, mode.id)
-      ? store.pendingConfig[mode.id]
-      : mode.current_value;
-    const valueName = ((mode.values || []).find((v) => v.value === value) || {}).name || value || 'Settings';
-    return valueName + (Object.keys(store.pendingConfig).length ? ' •' : '');
+    // Same vocabulary as the create chip: the profile the effective
+    // config embodies, with the raw mode name as the honest fallback.
+    const label = liveChipLabel(
+      store.profiles, store.configOptions, store.pendingConfig, store.sessionConfig,
+    ) || 'Settings';
+    return label + (Object.keys(store.pendingConfig).length ? ' •' : '');
   };
 
   // renderSettings builds the same two-level editor as mobile's
@@ -2392,6 +2401,13 @@ import {
     const preset = live ? null : selectedCreateProfile();
     const rows = configRows(preset, live ? store.pendingConfig : store.profileOverrides, store.configOptions || []);
     const custom = !live && profileLabel(preset, store.profileOverrides) === 'Custom';
+    // Live sessions have no selected profile — the highlight derives from
+    // what the session EFFECTIVELY runs (staged changes included), so a
+    // tapped card lights up immediately and a wake-reset session
+    // truthfully highlights nothing (mobile PresetEditorSheet parity).
+    const liveMatch = live
+      ? profileMatchingConfig(store.profiles, store.configOptions, store.pendingConfig, store.sessionConfig)
+      : null;
     const badgeText = live
       ? (Object.keys(store.pendingConfig).length ? 'Modified' : '')
       : profileLabel(preset, store.profileOverrides);
@@ -2415,7 +2431,9 @@ import {
     if (store.profiles.length) {
       const profiles = node('div', 'profiles');
       for (const p of store.profiles) {
-        const selected = !live && p.id === (preset && preset.id) && !custom;
+        const selected = live
+          ? !!liveMatch && p.id === liveMatch.id
+          : p.id === (preset && preset.id) && !custom;
         const card = node('button', 'profile-card' + (selected ? ' cur' : ''));
         card.append(node('b', '', p.name));
         if (resolvedDefault && p.id === resolvedDefault.id) card.append(node('small', '', 'default'));
@@ -2500,7 +2518,11 @@ import {
       frag.append(node('div', 'settings-state', 'No agent settings are available.'));
     }
 
-    const canSaveAsNew = live ? Object.keys(store.pendingConfig).length > 0 : custom;
+    // Staged state that embodies an existing profile isn't "new" — offer
+    // the save only for genuine divergence from every profile.
+    const canSaveAsNew = live
+      ? Object.keys(store.pendingConfig).length > 0 && !liveMatch
+      : custom;
     const canSetDefault = !live && !custom && preset &&
       (!resolvedDefault || preset.id !== resolvedDefault.id);
     if (canSaveAsNew || canSetDefault) {
