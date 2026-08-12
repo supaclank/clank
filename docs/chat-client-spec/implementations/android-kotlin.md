@@ -44,6 +44,7 @@
 | INV-OPTIMISTIC-001 | ✅ | optimistic echo + **trimmed, any-user-message** dedup — **found the trailing-space duplicate bug** |
 | INV-PERM-SINGLEFLIGHT-001 | 🟡 | AskUserQuestion answered via the parked permission (deny+message); generic tool permissions still deferred to the host |
 | INV-PERMMODE-* | N/A | overlay doesn't choose modes |
+| INV-PRESET-* / INV-CONFIG-REFRESH-001 (0.6.3) | ⛔ | no profile UI yet; planned (web-overlay-like UX) — implement from [08 · Presets in-session](../08-invariants.md), goldens in `internal/webpreview/overlay/settings.js` |
 | INV-INTERACTIVE-001 | 🟡 | AskUserQuestion inline card; ExitPlanMode plan card + inline comments deferred (vs [11](../11-interactive-tools.md)) |
 | INV-META-REPLACE-001 | N/A | ignores `meta` (no session list on this surface) |
 | INV-REVERT-001 | ✅ | `revertMessageId` filter on render; tap a user bubble → revert; cleared on next send. Works on **both** backends — `onRevert` is gated on session-presence, not backend (matches [OP-005](../05-operations.md)); only the doc-comments said "Claude-only" and are now fixed |

@@ -3,7 +3,7 @@
 **Platform:** Browser (vanilla JS, `internal/webpreview/overlay/`) ·
 **Client kind:** partial consumer — a lightweight chat box injected into the user's own app
 by the preview proxy; deliberately not a full chat client (no session list, no history view,
-rolling transcript window) · **Spec version targeted:** 0.2.0 · **Last updated:** 2026-07-18
+rolling transcript window) · **Spec version targeted:** 0.6.3 · **Last updated:** 2026-08-12 (#249/#250)
 
 > Not the greenfield web client ([web.md](web.md)) — that remains unbuilt. This documents what
 > the overlay consumes so gaps are explicit rather than discovered in the field.
@@ -18,15 +18,16 @@ rolling transcript window) · **Spec version targeted:** 0.2.0 · **Last updated
 | SSE stream | hand-rolled `fetch()` + `ReadableStream` frame parser (`subscribe`/`handleFrame`) — native `EventSource` can't set the header |
 | Reducer (apply event → state) | `handleFrame` switch in `overlay.js`; protocol decisions in `chat.js` (pure, DOM-free) |
 | Transcript merge / reconcile | `reconcile()` — messages refetch on every stream open, projected via `chat.js chatFromMessages` |
+| Profiles & session settings | `settings.js` (pure, node-tested: matching, chip labels, badges, DATA-040 diffs, host-mirroring config merge) + `renderSettings`/`settingsChipLabel` in `overlay.js`; profiles from `GET /presets`, live options + persisted config from `GET /sessions/{id}` |
 | Permission UI + reply | FIFO `store.perms` queue, head renders; plan prompts get the review card; allow/deny(+message) → permissions reply endpoint |
 | Question UI + reply | `store.question` + `renderQuestion()`; structured reply → questions reply endpoint |
 | Token storage / refresh | injected per-page-load by the proxy; no refresh (preview token, `pkg/preview/tokens`) |
-| Conformance harness | `chat_test.mjs` (`node --test`, wired into `go test` via `TestOverlayChatJS`) — covers the chat.js protocol logic, not the DOM |
+| Conformance harness | `chat_test.mjs` + `settings_test.mjs` + `sourcecontrol_test.mjs` (`node --test`, wired into `go test` via `TestOverlayChatJS`) — covers the pure-module protocol logic, not the DOM |
 
 ## Invariants ([08](../08-invariants.md))
 
 Only rules the overlay's surface touches are listed; the rest are N/A for a partial consumer
-(no sidebar, no optimistic backfill from refetch, no permission-mode UI).
+(no sidebar, no optimistic backfill from refetch).
 
 | Rule | Status | How / gap |
 |---|---|---|
@@ -39,8 +40,12 @@ Only rules the overlay's surface touches are listed; the rest are N/A for a part
 | INV-PERM-SINGLEFLIGHT-001 (lock + single reply) | ✅ | FIFO queue (`chat.js pushPermission`, dedup by request_id); reply pops the head, next prompt renders |
 | INV-DENY-SETTLE-001 (settle tools on deny) | N/A | tools not rendered |
 | INV-ABORT-PERM-001 (abort clears perms) | ✅ | abort clears the queue and the question card |
-| INV-PERMMODE-001 (`""` = no change) | ✅ | never sends `permission_mode` |
+| INV-PERMMODE-001 (`""` = no change) | ✅ | sends `config` only when staged; `diffConfigAgainstOptions` strips values the agent already runs |
 | INV-PERMMODE-EXITPLAN-001 (ExitPlanMode) | ✅ | plan review card: Approve = allow; Request changes = deny with notes as the reason |
+| INV-PRESET-MATCH-001 (verifiable exact-match) | ✅ | `settings.js profileMatchingConfig` (staged → advertised → persisted `store.sessionConfig`); card highlight, chip, and save-gate all derive from the one match |
+| INV-PRESET-LABEL-001 (preset vocabulary) | ✅ | `settings.js liveChipLabel`: matched profile name → mode value name → persisted raw mode id → "Settings" |
+| INV-PRESET-BADGE-001 (Modified = divergence) | ✅ | `settings.js liveSettingsBadge`; "+ New" draft card shows "Draft" and keeps save available |
+| INV-CONFIG-REFRESH-001 (post-send reconcile) | ✅ | `send()` patches advertised current values + `mergeSessionConfig` mirrors the host's row merge; server truth reconciles on the next session fetch |
 | INV-REVERT-001 (revert filter) | 🟡 | revert issued; `revert` event only toasts — the view catches up at the next reconcile (reconnect/reload) |
 | INV-RECONCILE-001 (reconcile on reconnect) | ✅ | `reconcile()` refetches messages on every stream open (reload, reconnect, first subscribe); point-in-time — it never clears a live question |
 | INV-INTERACTIVE-001 (render interactive tools) | ✅ | question card + plan review (below) |
