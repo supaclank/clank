@@ -101,7 +101,7 @@ type SessionPickerModel struct {
 // sessionPickerWheelDivisor tames trackpad scrolling: high-resolution
 // devices emit a burst of wheel events per gesture, so the cursor steps
 // once per this many same-direction events, not once per event.
-const sessionPickerWheelDivisor = 3
+const sessionPickerWheelDivisor = 2
 
 // NewSessionPickerModel returns the picker program. projectDir seeds
 // the rediscover action's backend scan.
