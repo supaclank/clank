@@ -122,6 +122,29 @@ func TestSessionPicker_EscClearsFilterThenCancels(t *testing.T) {
 	}
 }
 
+// Wheel events move the cursor — the picker captures the mouse inline,
+// so scrolling must do something or the terminal feels dead.
+func TestSessionPicker_MouseWheelMovesCursor(t *testing.T) {
+	t.Parallel()
+
+	m := loadPicker(t, []agent.SessionInfo{
+		pickerSession("a", "a", time.Minute),
+		pickerSession("b", "b", time.Hour),
+	})
+	start := m.cursor
+
+	updated, _ := m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	picker := updated.(*SessionPickerModel)
+	if picker.cursor != start+1 {
+		t.Errorf("wheel down: cursor = %d, want %d", picker.cursor, start+1)
+	}
+	updated, _ = picker.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	picker = updated.(*SessionPickerModel)
+	if picker.cursor != start {
+		t.Errorf("wheel up: cursor = %d, want %d", picker.cursor, start)
+	}
+}
+
 func TestSessionPicker_CtrlCAborts(t *testing.T) {
 	t.Parallel()
 

@@ -206,6 +206,26 @@ func (m *SessionPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.handleKey(normalizeKeyCase(msg))
 
+	case tea.MouseWheelMsg:
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			if m.cursor > 0 {
+				m.cursor--
+				m.ensureVisible()
+			}
+		case tea.MouseWheelDown:
+			if m.cursor < len(m.filtered)-1 {
+				m.cursor++
+				m.ensureVisible()
+			}
+		}
+		return m, nil
+
+	// Swallow other captured mouse events so clicks don't leak into the
+	// search input as stray updates.
+	case tea.MouseClickMsg, tea.MouseMotionMsg, tea.MouseReleaseMsg:
+		return m, nil
+
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -390,7 +410,12 @@ func (m *SessionPickerModel) View() tea.View {
 		// instead of leaving it in terminal history.
 		return connectView("")
 	}
-	return connectView(m.body())
+	v := connectView(m.body())
+	// Mouse capture works inline too (it's a terminal mode, not an
+	// alt-screen feature): wheel scrolls the cursor for the picker's
+	// lifetime, and the terminal gets its own scroll back on exit.
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
 }
 
 func (m *SessionPickerModel) body() string {
