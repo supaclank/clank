@@ -49,3 +49,28 @@ func TestPreviewCmdRejectsProjectFlagWithPullRequest(t *testing.T) {
 		t.Fatalf("Execute: err = %v, want --project conflict", err)
 	}
 }
+
+func TestPreviewCmdRejectsAttachWithPullRequest(t *testing.T) {
+	t.Parallel()
+
+	cmd := previewCmd()
+	cmd.SetArgs([]string{"--attach=ses_abc", "https://github.com/acme/api/pull/7"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--attach cannot be used") {
+		t.Fatalf("Execute: err = %v, want --attach conflict", err)
+	}
+}
+
+// `--attach ses_x` (space, not =) parses as bare --attach plus a
+// positional launch name — a session-id-shaped positional must get the
+// --attach=<id> hint instead of a baffling unknown-launch error later.
+func TestPreviewCmdHintsAttachEqualsForSpaceSeparatedSessionID(t *testing.T) {
+	t.Parallel()
+
+	cmd := previewCmd()
+	cmd.SetArgs([]string{"--attach", "ses_8gK2mQ"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--attach=ses_8gK2mQ") {
+		t.Fatalf("Execute: err = %v, want the --attach=<id> hint", err)
+	}
+}

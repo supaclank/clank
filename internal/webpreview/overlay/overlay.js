@@ -32,7 +32,7 @@ import {
   questionSuppressesPermission, pushPermission, dropPermission,
   customAllowed, toggleSelection, buildAnswers, collectPlanParts, planTextFor,
   buildPreviewContext, composerTextForSend,
-  previewGitRef,
+  previewGitRef, initialSessionId,
 } from './chat.js';
 import {
   resolvePreset, applyPresetOverrides, configRows, setConfigOverride,
@@ -139,7 +139,7 @@ import {
     // selection state. null when no question awaits an answer.
     question: null, // {request_id, partId, questions, idx, sel: [Set], custom: [string], sending}
     planParts: [], // recent ExitPlanMode plans [{id, plan}] for the review card
-    sessionId: sessionStorage.getItem('clank.sessionId') || CFG.session_id || '',
+    sessionId: initialSessionId(CFG.session_id || '', sessionStorage.getItem('clank.sessionId') || '', sessionStorage.getItem('clank.cfgSessionId') || ''),
     lastUserMsgId: '',
     voice: 'idle', // idle | recording | transcribing (or 'off' when unavailable)
     engine: CFG.dictation_engine || '', // '' (ask on first use) | 'local' | 'webspeech'
@@ -194,6 +194,9 @@ import {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const LOCAL_VOICE = !!CFG.voice;
   if (!LOCAL_VOICE && !SR) store.voice = 'off';
+  // Record which config session id this tab has adopted so a reload
+  // keeps the tab's own session choice instead of re-applying --attach.
+  if (CFG.session_id) sessionStorage.setItem('clank.cfgSessionId', CFG.session_id);
   if (store.sessionId) sessionStorage.setItem('clank.sessionId', store.sessionId);
   let doneTimer = 0;
 

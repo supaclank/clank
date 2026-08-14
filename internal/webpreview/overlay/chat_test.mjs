@@ -8,7 +8,7 @@ import {
   pushPermission, dropPermission, customAllowed, toggleSelection,
   buildAnswers, collectPlanParts, planTextFor, textFromParts,
   buildPreviewContext, composerTextForSend,
-  previewGitRef,
+  previewGitRef, initialSessionId,
   COMMENTS_DEFAULT_PROMPT,
 } from './chat.js';
 
@@ -226,4 +226,23 @@ test('composerTextForSend: typed text wins; comments alone get the default; plai
   assert.equal(composerTextForSend('  ', [{ comment: 'x' }]), COMMENTS_DEFAULT_PROMPT);
   assert.equal(composerTextForSend('', [{ label: 'plain' }]), '');
   assert.equal(composerTextForSend('', []), '');
+});
+
+// --attach regression: a stale tab's sessionStorage must not silently
+// swallow the session id the CLI injected via config.
+test('initialSessionId: an unadopted config session id beats a stale stored one', () => {
+  assert.equal(initialSessionId('cfg1', 'stale', ''), 'cfg1');
+  assert.equal(initialSessionId('cfg2', 'stale', 'cfg1'), 'cfg2');
+});
+
+test('initialSessionId: an adopted config id defers to the tab\'s own choice', () => {
+  // Same preview run, user switched sessions in the overlay, reload.
+  assert.equal(initialSessionId('cfg1', 'user-picked', 'cfg1'), 'user-picked');
+  // Adopted but nothing stored (storage cleared): fall back to the config id.
+  assert.equal(initialSessionId('cfg1', '', 'cfg1'), 'cfg1');
+});
+
+test('initialSessionId: no config id keeps the pre---attach behavior', () => {
+  assert.equal(initialSessionId('', 'stored', ''), 'stored');
+  assert.equal(initialSessionId('', '', ''), '');
 });

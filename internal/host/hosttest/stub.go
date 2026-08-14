@@ -18,8 +18,9 @@ import (
 // received (e.g. did handleCreateSession actually dispatch the initial
 // prompt via OpenAndSend?).
 type StubBackendManager struct {
-	mu   sync.Mutex
-	last *StubBackend
+	mu        sync.Mutex
+	last      *StubBackend
+	snapshots []agent.SessionSnapshot
 }
 
 func (m *StubBackendManager) Init(_ context.Context, _ func() ([]string, error)) error { return nil }
@@ -43,6 +44,22 @@ func (m *StubBackendManager) Last() *StubBackend {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.last
+}
+
+// SetDiscoverSnapshots seeds what DiscoverSessions returns — the stand-in
+// for a backend's on-disk session archive.
+func (m *StubBackendManager) SetDiscoverSnapshots(snaps []agent.SessionSnapshot) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.snapshots = slices.Clone(snaps)
+}
+
+// DiscoverSessions implements agent.SessionDiscoverer with the seeded
+// snapshots, regardless of seedDir.
+func (m *StubBackendManager) DiscoverSessions(_ context.Context, _ string) ([]agent.SessionSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.snapshots), nil
 }
 
 // StubBackend is a programmable agent.SessionBackend that records what the

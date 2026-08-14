@@ -16,6 +16,19 @@ import (
 	"github.com/supaclank/clank/internal/webpreview"
 )
 
+// webPreviewParams carries everything runWebPreview needs to front an
+// upstream. SessionID, when set, seeds the overlay with an existing
+// agent session (`--attach`) instead of creating one on first prompt.
+type webPreviewParams struct {
+	ProjectDir  string
+	SockPath    string
+	Backend     string
+	UpstreamURL *url.URL
+	ListenPort  int
+	DisplayName string
+	SessionID   string
+}
+
 // runWebPreview is the browser arm of `clank preview`: no QR, no LAN.
 // The overlay-injecting proxy (internal/webpreview) fronts an upstream
 // on one loopback origin that also serves the overlay assets and relays
@@ -25,7 +38,7 @@ import (
 //
 // Daemon-managed callers wait for readiness first; explicit attach mode leaves
 // upstream readiness to its owner.
-func runWebPreview(sigCtx context.Context, projectDir, sockPath, backend string, upstreamURL *url.URL, listenPort int, displayName string) error {
+func runWebPreview(sigCtx context.Context, p webPreviewParams) error {
 	token, err := randomToken(32)
 	if err != nil {
 		return fmt.Errorf("generate overlay token: %w", err)
@@ -39,20 +52,24 @@ func runWebPreview(sigCtx context.Context, projectDir, sockPath, backend string,
 		// not still spin up the proxy server and open a browser tab.
 		return sigCtx.Err()
 	}
+	overlayConfig := map[string]any{
+		"hostname":   host.HostLocal,
+		"local_path": p.ProjectDir,
+		"backend":    p.Backend,
+		"name":       previewOverlayName(p.ProjectDir, p.DisplayName),
+	}
+	if p.SessionID != "" {
+		overlayConfig["session_id"] = p.SessionID
+	}
 	srv, err := webpreview.Start(webpreview.Options{
-		UpstreamURL:            upstreamURL,
-		DaemonSocketPath:       sockPath,
+		UpstreamURL:            p.UpstreamURL,
+		DaemonSocketPath:       p.SockPath,
 		Token:                  token,
 		Engine:                 engine,
 		DictationEngine:        loadDictationPreference(),
 		PersistDictationEngine: persistDictationPreference,
-		ListenPort:             listenPort,
-		OverlayConfig: map[string]any{
-			"hostname":   host.HostLocal,
-			"local_path": projectDir,
-			"backend":    backend,
-			"name":       previewOverlayName(projectDir, displayName),
-		},
+		ListenPort:             p.ListenPort,
+		OverlayConfig:          overlayConfig,
 	})
 	if err != nil {
 		return fmt.Errorf("start overlay proxy: %w", err)

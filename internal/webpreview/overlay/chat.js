@@ -135,6 +135,17 @@ export const previewGitRef = (config) => {
   return worktreeID ? { worktree_id: worktreeID } : { local_path: localPath };
 };
 
+// initialSessionId picks the session the overlay boots into. A config
+// session id the tab hasn't adopted yet wins over sessionStorage — that
+// is `clank preview --attach` addressing a possibly-stale tab. Once
+// adopted (adoptedCfgSessionId matches), the tab's own choice rules
+// again, so switching or creating a session survives reloads within
+// the same preview run.
+export const initialSessionId = (cfgSessionId, storedSessionId, adoptedCfgSessionId) => {
+  if (cfgSessionId && cfgSessionId !== adoptedCfgSessionId) return cfgSessionId;
+  return storedSessionId || cfgSessionId || '';
+};
+
 // planTextFor returns the plan text an ExitPlanMode permission prompt
 // gates: matched by tool_use id, falling back to the most recent plan
 // when the backend couldn't attribute one (mirrors the TUI golden ref).
