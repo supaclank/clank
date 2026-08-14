@@ -3,7 +3,7 @@
 // there (overlay.js re-clamps on every resize with this math).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clampTranslateToViewport, BOX_EDGE_MARGIN } from './boxpos.js';
+import { clampTranslateToViewport, BOX_EDGE_MARGIN, parseStoredBoxIntent, resizeOwesClamp } from './boxpos.js';
 
 // Home geometry mirrors the .box CSS: left = max(16, 50vw - 190),
 // bottom-anchored 144px above the viewport floor.
@@ -73,4 +73,25 @@ test('growing the viewport back restores the original intent', () => {
 test('a custom margin overrides the default', () => {
   const clamped = clampTranslateToViewport({ x: -2000, y: 0 }, wideNatural, size, wide, 0);
   assert.equal(wideNatural.left + clamped.x, 0);
+});
+
+test('parseStoredBoxIntent: valid finite coordinates round-trip', () => {
+  assert.deepEqual(parseStoredBoxIntent(JSON.stringify({ x: -40, y: 12 })), { x: -40, y: 12 });
+});
+
+test('parseStoredBoxIntent: missing key, malformed JSON, or non-finite values are rejected', () => {
+  assert.equal(parseStoredBoxIntent(null), null);
+  assert.equal(parseStoredBoxIntent(''), null);
+  assert.equal(parseStoredBoxIntent('not json'), null);
+  assert.equal(parseStoredBoxIntent(JSON.stringify({})), null);
+  assert.equal(parseStoredBoxIntent(JSON.stringify({ x: 'abc', y: 0 })), null);
+  assert.equal(parseStoredBoxIntent(JSON.stringify({ x: NaN, y: 0 })), null);
+  assert.equal(parseStoredBoxIntent(JSON.stringify({ x: Infinity, y: 0 })), null);
+});
+
+test('resizeOwesClamp: hidden box or a bogus 0×0 viewport defers to next summon', () => {
+  assert.equal(resizeOwesClamp({ innerWidth: 0, innerHeight: 900, isHidden: false }), true);
+  assert.equal(resizeOwesClamp({ innerWidth: 1400, innerHeight: 0, isHidden: false }), true);
+  assert.equal(resizeOwesClamp({ innerWidth: 1400, innerHeight: 900, isHidden: true }), true);
+  assert.equal(resizeOwesClamp({ innerWidth: 1400, innerHeight: 900, isHidden: false }), false);
 });

@@ -39,7 +39,7 @@ import {
   diffConfigAgainstOptions, effectiveSessionConfig, mergeSessionConfig, profileLabel,
   profileMatchingConfig, liveChipLabel, liveSettingsBadge, profileSavePayload,
 } from './settings.js';
-import { clampTranslateToViewport } from './boxpos.js';
+import { clampTranslateToViewport, parseStoredBoxIntent, resizeOwesClamp } from './boxpos.js';
 import {
   scRequest, presentStatus, actionsFor, actionLayout, headerPRFor,
   prConflictWarnFor, chipFor, diffstatParts,
@@ -3367,8 +3367,8 @@ import {
   const clampBoxOnSummon = (() => {
     const hd = $('.hd');
     let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
-    const saved = sessionStorage.getItem('clank.boxPos');
-    if (saved) { try { const p = JSON.parse(saved); boxIntent = { x: p.x, y: p.y }; applyBoxTranslate(p.x, p.y); } catch {} }
+    const saved = parseStoredBoxIntent(sessionStorage.getItem('clank.boxPos'));
+    if (saved) { boxIntent = saved; applyBoxTranslate(saved.x, saved.y); }
 
     // Resize rescue: drags may park the box off-screen on purpose, but
     // a viewport resize must never strand it there. offsetLeft/Top are
@@ -3391,8 +3391,7 @@ import {
     // predate a between-loads resize.
     let owesClamp = true;
     window.addEventListener('resize', () => {
-      if (!innerWidth || !innerHeight) return; // backgrounded pane — bogus viewport, clamp later
-      if (store.box === 'hidden') { owesClamp = true; return; }
+      if (resizeOwesClamp({ innerWidth, innerHeight, isHidden: store.box === 'hidden' })) { owesClamp = true; return; }
       if (dragging || follow) return; // an active gesture owns the position
       clampIntoViewport();
     });

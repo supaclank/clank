@@ -22,3 +22,21 @@ export const clampTranslateToViewport = (translate, natural, size, viewport, mar
   x: clampAxis(translate.x, margin - natural.left, viewport.width - margin - size.width - natural.left),
   y: clampAxis(translate.y, margin - natural.top, viewport.height - margin - size.height - natural.top),
 });
+
+// Parses a persisted boxIntent, rejecting corrupt/non-finite values so a
+// bad sessionStorage entry can't apply a NaN translate.
+export const parseStoredBoxIntent = (raw) => {
+  if (!raw) return null;
+  try {
+    const p = JSON.parse(raw);
+    return Number.isFinite(p.x) && Number.isFinite(p.y) ? { x: p.x, y: p.y } : null;
+  } catch {
+    return null;
+  }
+};
+
+// Whether a resize event should mark a clamp as owed for the next summon
+// instead of clamping immediately: a hidden box has no offsets to read,
+// and a backgrounded pane can report a bogus 0×0 viewport.
+export const resizeOwesClamp = ({ innerWidth, innerHeight, isHidden }) =>
+  !innerWidth || !innerHeight || isHidden;
