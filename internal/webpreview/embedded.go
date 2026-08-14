@@ -15,6 +15,7 @@ const (
 	ChatPath          = "/__clank/chat.js"
 	SettingsPath      = "/__clank/settings.js"
 	SourceControlPath = "/__clank/sourcecontrol.js"
+	BoxPosPath        = "/__clank/boxpos.js"
 	WorkletPath       = "/__clank/worklet.js"
 	APIPrefix         = "/__clank/api"
 
@@ -54,6 +55,8 @@ func ServeOverlayAsset(w http.ResponseWriter, r *http.Request) bool {
 		body = settingsJS
 	case SourceControlPath:
 		body = sourceControlJS
+	case BoxPosPath:
+		body = boxPosJS
 	case WorkletPath:
 		body = workletJS
 	default:

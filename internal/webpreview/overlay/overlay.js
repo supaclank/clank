@@ -39,6 +39,7 @@ import {
   diffConfigAgainstOptions, effectiveSessionConfig, mergeSessionConfig, profileLabel,
   profileMatchingConfig, liveChipLabel, liveSettingsBadge, profileSavePayload,
 } from './settings.js';
+import { clampTranslateToViewport, parseStoredBoxIntent, resizeOwesClamp } from './boxpos.js';
 import {
   scRequest, presentStatus, actionsFor, actionLayout, headerPRFor,
   prConflictWarnFor, chipFor, diffstatParts,
@@ -2719,6 +2720,7 @@ import {
       refreshSourceControl();
     }
     render();
+    if (s !== 'hidden') clampBoxOnSummon(); // after render: offsets need display:block
     // Focus the CONTAINER, not the composer: typing focus on summon
     // fights shift-move (editable targets opt out of it) and isn't
     // wanted anyway. Anchoring focus here parks the tab cursor just
@@ -3348,11 +3350,51 @@ import {
   ui.crop.addEventListener('pointercancel', cropDragEnd);
 
   // ---------- drag -----------------------------------------------------------
-  (() => {
+  // Two translates: dataset.x/y is what's APPLIED to the box; boxIntent
+  // is the offset the user last chose (drag/follow drop, persisted).
+  // A resize clamp displaces only the applied translate and always
+  // recomputes from intent, so shrinking the viewport nudges the box
+  // in-bounds and growing it back returns the box to its chosen spot.
+  let boxIntent = { x: 0, y: 0 };
+  const applyBoxTranslate = (x, y) => {
+    ui.box.dataset.x = x; ui.box.dataset.y = y;
+    ui.box.style.translate = `${x}px ${y}px`;
+  };
+  const commitBoxIntent = () => {
+    boxIntent = { x: parseFloat(ui.box.dataset.x || '0'), y: parseFloat(ui.box.dataset.y || '0') };
+    sessionStorage.setItem('clank.boxPos', JSON.stringify(boxIntent));
+  };
+  const clampBoxOnSummon = (() => {
     const hd = $('.hd');
     let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
-    const saved = sessionStorage.getItem('clank.boxPos');
-    if (saved) { try { const p = JSON.parse(saved); ui.box.style.translate = `${p.x}px ${p.y}px`; ui.box.dataset.x = p.x; ui.box.dataset.y = p.y; } catch {} }
+    const saved = parseStoredBoxIntent(sessionStorage.getItem('clank.boxPos'));
+    if (saved) { boxIntent = saved; applyBoxTranslate(saved.x, saved.y); }
+
+    // Resize rescue: drags may park the box off-screen on purpose, but
+    // a viewport resize must never strand it there. offsetLeft/Top are
+    // layout values — immune to the entry animation's transform (gBCR
+    // isn't) and they track the CSS home position as 50% moves.
+    const clampIntoViewport = () => {
+      if (store.box === 'hidden') return; // display:none — offsets read 0
+      const next = clampTranslateToViewport(
+        boxIntent,
+        { left: ui.box.offsetLeft, top: ui.box.offsetTop },
+        { width: ui.box.offsetWidth, height: ui.box.offsetHeight },
+        { width: innerWidth, height: innerHeight },
+      );
+      if (next.x === parseFloat(ui.box.dataset.x || '0') && next.y === parseFloat(ui.box.dataset.y || '0')) return;
+      applyBoxTranslate(next.x, next.y);
+    };
+    // A resize the box can't react to yet (hidden, or a backgrounded
+    // pane reporting a 0×0 viewport) is owed a clamp at the next
+    // summon. Starts true: the restored sessionStorage position may
+    // predate a between-loads resize.
+    let owesClamp = true;
+    window.addEventListener('resize', () => {
+      if (resizeOwesClamp({ innerWidth, innerHeight, isHidden: store.box === 'hidden' })) { owesClamp = true; return; }
+      if (dragging || follow) return; // an active gesture owns the position
+      clampIntoViewport();
+    });
     hd.addEventListener('pointerdown', (e) => {
       if (e.target.closest('.beta, .scchip')) return; // the pills are controls, not drag handles
       endFollow(); // manual drag wins over a live shift-follow
@@ -3363,21 +3405,27 @@ import {
     });
     hd.addEventListener('pointermove', (e) => {
       if (!dragging) return;
-      const x = ox + e.clientX - sx, y = oy + e.clientY - sy;
-      ui.box.dataset.x = x; ui.box.dataset.y = y;
-      ui.box.style.translate = `${x}px ${y}px`;
+      applyBoxTranslate(ox + e.clientX - sx, oy + e.clientY - sy);
     });
     hd.addEventListener('pointerup', (e) => {
       if (!dragging) return; // e.g. a click on the pill link — no drag was armed
       dragging = false;
-      sessionStorage.setItem('clank.boxPos', JSON.stringify({ x: parseFloat(ui.box.dataset.x || '0'), y: parseFloat(ui.box.dataset.y || '0') }));
       // A drag that never really moved is a tap: toggle the chat view
       // (the old second-keypress cycle, now that ⇪ is a plain toggle).
+      // No position intent was expressed — a clamped applied offset
+      // must not overwrite the remembered one.
       if (Math.abs(e.clientX - sx) + Math.abs(e.clientY - sy) < 4) {
         store.box = store.box === 'chat' ? 'prompt' : 'chat';
         render();
+        return;
       }
+      commitBoxIntent();
     });
+    return () => {
+      if (!owesClamp || !innerWidth || !innerHeight) return;
+      owesClamp = false;
+      clampIntoViewport();
+    };
   })();
 
   // ---------- wiring -----------------------------------------------------------
@@ -3558,9 +3606,7 @@ import {
       f.x += f.vx * dt;
       f.y += f.vy * dt;
     }
-    ui.box.dataset.x = f.x;
-    ui.box.dataset.y = f.y;
-    ui.box.style.translate = `${f.x}px ${f.y}px`;
+    applyBoxTranslate(f.x, f.y);
     const settled = Math.abs(f.tx - f.x) + Math.abs(f.ty - f.y) < 0.5 && Math.abs(f.vx) + Math.abs(f.vy) < 5;
     if (!f.held && settled) { endFollow(); return; }
     f.raf = requestAnimationFrame(followStep);
@@ -3571,7 +3617,7 @@ import {
     cancelAnimationFrame(follow.raf);
     window.removeEventListener('mousemove', onFollowMove, true);
     follow = null;
-    sessionStorage.setItem('clank.boxPos', JSON.stringify({ x: parseFloat(ui.box.dataset.x || '0'), y: parseFloat(ui.box.dataset.y || '0') }));
+    commitBoxIntent();
   };
 
   // Release: detach the target-updater IMMEDIATELY — otherwise a moving
