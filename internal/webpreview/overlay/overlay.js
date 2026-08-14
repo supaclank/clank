@@ -75,6 +75,9 @@ import {
   // (10px top, 6px sides) plus the box border the strips cannot cover.
   const RESIZE_GRIP_PX = 12;
   const SIDE_GRIP_PX = 8;
+  // Corner zone (chat view): where top and side grips meet, a larger
+  // OS-window-style square drags both axes at once.
+  const CORNER_GRIP_PX = 16;
   // macOS fires CapsLock keydown when the lock engages and keyup when it
   // disengages — one event per physical press, alternating type. Other
   // platforms fire a normal down/up pair per press.
@@ -1960,9 +1963,9 @@ import {
     .launcher.visible, .coachmark.visible, .launcher.busy::before, .activity-spinner,
     .tool-state.running, .tool-state.pending { animation:none; }
   }
-  /* top-edge resize strip, expanded chat view only: the drag raises
-     the chat log's height cap (--dh); the collapsed prompt view keeps
-     its default size. Double-click resets. */
+  /* top-edge resize strip, expanded chat view only: the drag sets the
+     chat log's height (--dh); the collapsed prompt view keeps its
+     default size. Double-click resets. */
   .rz { display:none; position:absolute; top:0; left:0; right:0; height:10px; cursor:ns-resize; z-index:3; touch-action:none; }
   .box.expanded .rz { display:block; }
   .rz::after { content:''; position:absolute; left:50%; top:3px; width:36px; height:3px; margin-left:-18px;
@@ -1971,6 +1974,11 @@ import {
   /* side strips resize the width in either view */
   .rzl, .rzr { position:absolute; top:0; bottom:0; width:6px; cursor:ew-resize; z-index:3; touch-action:none; }
   .rzl { left:0; } .rzr { right:0; }
+  /* top corners (chat view) drag both axes, OS-window style — pure
+     cursor affordances; the box's gated handlers do the work */
+  .rznw, .rzne { display:none; position:absolute; top:0; width:16px; height:16px; z-index:4; touch-action:none; }
+  .box.expanded .rznw, .box.expanded .rzne { display:block; }
+  .rznw { left:0; cursor:nwse-resize; } .rzne { right:0; cursor:nesw-resize; }
   .hd { display:flex; align-items:center; gap:8px; padding:10px 12px 6px; cursor:grab; user-select:none; }
   .hd:active { cursor:grabbing; }
   .dot { width:8px; height:8px; border-radius:50%; background:#6b7280; flex:none; }
@@ -2117,10 +2125,10 @@ import {
   .chip b { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .chip button { all:unset; cursor:pointer; color:#9ca3af; font-size:12px; line-height:1; }
   .chip img { width:18px; height:18px; object-fit:cover; border-radius:4px; }
-  /* --chat-h pins the log to the user's dragged size (auto until they
-     resize) so the drag gives direct feedback even when the transcript
-     is short; the cap only matters in the unresized auto state. */
-  .chat { height:var(--chat-h, auto); max-height:calc(${CHAT_DEFAULT_MAX}px + var(--dh, 0px)); overflow-y:auto; padding:4px 12px 8px; display:none; }
+  /* The expanded log always renders at exactly default + extra, full
+     or empty: a content-fit height would snap ~240px on the first drag
+     pixel whenever the transcript is short. */
+  .chat { height:calc(${CHAT_DEFAULT_MAX}px + var(--dh, 0px)); overflow-y:auto; padding:4px 12px 8px; display:none; }
   .box.expanded .chat { display:block; border-bottom:1px solid #e5e7eb; }
   .m { font-size:12.5px; line-height:1.45; margin:8px 0; word-break:break-word; }
   .m.user { color:#2563eb; }
@@ -2333,6 +2341,8 @@ import {
   <div class="rz" title="Drag to resize — double-click to reset"></div>
   <div class="rzl" title="Drag to resize — double-click to reset"></div>
   <div class="rzr" title="Drag to resize — double-click to reset"></div>
+  <div class="rznw" title="Drag to resize — double-click to reset"></div>
+  <div class="rzne" title="Drag to resize — double-click to reset"></div>
   <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><button class="scchip muted" style="display:none" title="source control" tabindex="-1">${ICONS.branch}<span class="sctext"></span></button><a class="beta" href="https://github.com/supaclank/clank/issues/new?template=bug_report.yml" target="_blank" rel="noopener noreferrer" title="click to report an issue" tabindex="-1">beta</a><button class="chat-toggle" aria-label="Show conversation" aria-expanded="false" title="Show conversation (Cmd+Shift+E)"><span>Chat</span>${ICONS.chevron}</button><span class="grip">${ICONS.grip}</span></div>
   <div class="chat"></div>
   <div class="agent-progress"><span class="activity-spinner" aria-hidden="true"></span><span class="agent-progress-text"></span></div>
@@ -2439,9 +2449,6 @@ import {
   } catch {}
   const applyBoxSize = () => {
     ui.box.style.setProperty('--dh', boxExtra + 'px');
-    // A dragged size pins the log's height outright — cap-only growth
-    // is invisible while the transcript is shorter than the cap.
-    ui.box.style.setProperty('--chat-h', boxExtra > 0 ? (CHAT_DEFAULT_MAX + boxExtra) + 'px' : 'auto');
     ui.box.style.setProperty('--dw', boxWidthExtra + 'px');
   };
   applyBoxSize();
@@ -3688,12 +3695,13 @@ import {
     };
   })();
 
-  // ---------- resize (top edge = chat height, side edges = width) ------------
+  // ---------- resize (top edge = chat height, sides = width, corners = both) --
   // Handlers live on the box, gated to the edge strips: a grab right
-  // on an edge lands on the box's own border pixels, which the
-  // .rz/.rzl/.rzr strips can't cover (overflow:hidden clips at the
-  // padding box) — both must resize. Capture + stopPropagation keeps
-  // the header's move-drag from arming underneath a grip grab.
+  // on an edge lands on the box's own border pixels, which the strip
+  // divs can't cover (overflow:hidden clips at the padding box) — both
+  // must resize. Capture + stopPropagation keeps the header's
+  // move-drag from arming underneath a grip grab. Grips are compass
+  // strings ('n', 'w', 'e', 'nw', 'ne'): corners carry both axes.
   (() => {
     // A grab over a child's vertical scrollbar (chat log, panels, a
     // maxed composer) must keep scrolling, not resize.
@@ -3704,13 +3712,23 @@ import {
     };
     const gripAt = (e) => {
       const r = ui.box.getBoundingClientRect();
+      // Corners first: where the grips meet, a larger OS-window-style
+      // square wins over either plain edge.
+      if (store.box === 'chat' && e.clientY <= r.top + CORNER_GRIP_PX) {
+        if (e.clientX <= r.left + CORNER_GRIP_PX) return 'nw';
+        if (e.clientX >= r.right - CORNER_GRIP_PX && !overScrollbar(e)) return 'ne';
+      }
       if (e.clientX <= r.left + SIDE_GRIP_PX) return 'w';
       if (e.clientX >= r.right - SIDE_GRIP_PX) return overScrollbar(e) ? '' : 'e';
       if (store.box === 'chat' && e.clientY <= r.top + RESIZE_GRIP_PX) return 'n';
       return '';
     };
-    const stripFor = { n: () => ui.rz, w: () => ui.rzl, e: () => ui.rzr };
-    let grip = '', sx = 0, sy = 0, startExtra = 0, room = 0, startTx = 0, startTy = 0;
+    const stripsFor = (g) => [
+      ...(g.includes('n') ? [ui.rz] : []),
+      ...(g.includes('w') ? [ui.rzl] : []),
+      ...(g.includes('e') ? [ui.rzr] : []),
+    ];
+    let grip = '', sx = 0, sy = 0, startH = 0, startW = 0, roomH = 0, roomW = 0, startTx = 0, startTy = 0;
     ui.box.addEventListener('pointerdown', (e) => {
       grip = gripAt(e);
       if (!grip) return;
@@ -3718,38 +3736,37 @@ import {
       e.preventDefault(); // no text selection under the drag
       endFollow(); // manual resize wins over a live shift-follow
       sx = e.clientX; sy = e.clientY;
-      startExtra = grip === 'n' ? boxExtra : boxWidthExtra;
-      // The dragged edge can travel at most to the viewport margin —
+      startH = boxExtra; startW = boxWidthExtra;
+      // Each dragged edge can travel at most to the viewport margin —
       // the room beyond the current extra.
       const r = ui.box.getBoundingClientRect();
-      room = startExtra + (grip === 'n' ? r.top - BOX_EDGE_MARGIN
-        : grip === 'w' ? r.left - BOX_EDGE_MARGIN
+      roomH = startH + r.top - BOX_EDGE_MARGIN;
+      roomW = startW + (grip.includes('w') ? r.left - BOX_EDGE_MARGIN
         : innerWidth - r.right - BOX_EDGE_MARGIN);
       startTx = parseFloat(ui.box.dataset.x || '0');
       startTy = parseFloat(ui.box.dataset.y || '0');
-      stripFor[grip]().classList.add('active');
+      for (const s of stripsFor(grip)) s.classList.add('active');
       ui.box.setPointerCapture(e.pointerId);
     }, true);
     ui.box.addEventListener('pointermove', (e) => {
       if (!grip) return;
-      if (grip === 'n') {
-        boxExtra = clampBoxExtra(boxExtraFromDrag(startExtra, sy, e.clientY), room);
-      } else {
-        // boxExtraFromDrag grows toward smaller coordinates (up/left);
-        // the east edge grows toward larger ones, so its args swap.
-        boxWidthExtra = grip === 'w'
-          ? clampBoxExtra(boxExtraFromDrag(startExtra, sx, e.clientX), room)
-          : clampBoxExtra(boxExtraFromDrag(startExtra, e.clientX, sx), room);
-        if (grip === 'w') {
-          // Growing from the west edge keeps the east edge planted.
-          applyBoxTranslate(startTx - (boxWidthExtra - startExtra), startTy);
-        }
+      if (grip.includes('n')) {
+        boxExtra = clampBoxExtra(boxExtraFromDrag(startH, sy, e.clientY), roomH);
+      }
+      // boxExtraFromDrag grows toward smaller coordinates (up/left);
+      // the east edge grows toward larger ones, so its args swap.
+      if (grip.includes('w')) {
+        boxWidthExtra = clampBoxExtra(boxExtraFromDrag(startW, sx, e.clientX), roomW);
+        // Growing from the west edge keeps the east edge planted.
+        applyBoxTranslate(startTx - (boxWidthExtra - startW), startTy);
+      } else if (grip.includes('e')) {
+        boxWidthExtra = clampBoxExtra(boxExtraFromDrag(startW, e.clientX, sx), roomW);
       }
       applyBoxSize();
     }, true);
     const settle = (e) => {
       if (!grip) return;
-      const wasWest = grip === 'w';
+      const wasWest = grip.includes('w');
       grip = '';
       for (const s of [ui.rz, ui.rzl, ui.rzr]) s.classList.remove('active');
       e.stopPropagation(); // the header must not read the release as its tap
@@ -3764,7 +3781,8 @@ import {
     ui.box.addEventListener('dblclick', (e) => {
       const g = gripAt(e);
       if (!g) return;
-      if (g === 'n') boxExtra = 0; else boxWidthExtra = 0;
+      if (g.includes('n')) boxExtra = 0;
+      if (g.includes('w') || g.includes('e')) boxWidthExtra = 0;
       applyBoxSize();
       persistBoxSize();
       render();
