@@ -44,6 +44,12 @@ var settingsJS []byte
 //go:embed overlay/sourcecontrol.js
 var sourceControlJS []byte
 
+// boxPosJS is the overlay's pure box-position module (viewport-resize
+// clamping of the drag offset).
+//
+//go:embed overlay/boxpos.js
+var boxPosJS []byte
+
 // workletJS is the AudioWorklet processor that batches mic PCM for the
 // dictation WebSocket. Served as its own module because AudioWorklets
 // load from a URL, not inline.
@@ -165,6 +171,7 @@ func Start(opts Options) (*Server, error) {
 	mux.HandleFunc("GET "+ChatPath, serveJS(chatJS))
 	mux.HandleFunc("GET "+SettingsPath, serveJS(settingsJS))
 	mux.HandleFunc("GET "+SourceControlPath, serveJS(sourceControlJS))
+	mux.HandleFunc("GET "+BoxPosPath, serveJS(boxPosJS))
 	mux.HandleFunc("GET "+WorkletPath, serveJS(workletJS))
 	mux.Handle(APIPrefix+"/", requireToken(opts.Token,
 		http.StripPrefix(APIPrefix, daemon)))
