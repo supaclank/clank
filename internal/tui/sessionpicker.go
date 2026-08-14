@@ -92,10 +92,16 @@ type SessionPickerModel struct {
 	search    textinput.Model
 	lastQuery string
 
-	result   SessionPickerResult
-	quitting bool // render nothing after quit so the list leaves no scrollback
-	spinner  spinner.Model
+	result     SessionPickerResult
+	quitting   bool // render nothing after quit so the list leaves no scrollback
+	wheelAccum int  // same-direction wheel events toward the next cursor step (negative = up)
+	spinner    spinner.Model
 }
+
+// sessionPickerWheelDivisor tames trackpad scrolling: high-resolution
+// devices emit a burst of wheel events per gesture, so the cursor steps
+// once per this many same-direction events, not once per event.
+const sessionPickerWheelDivisor = 3
 
 // NewSessionPickerModel returns the picker program. projectDir seeds
 // the rediscover action's backend scan.
@@ -209,14 +215,28 @@ func (m *SessionPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseWheelMsg:
 		switch msg.Button {
 		case tea.MouseWheelUp:
-			if m.cursor > 0 {
-				m.cursor--
-				m.ensureVisible()
+			if m.wheelAccum > 0 {
+				m.wheelAccum = 0 // direction change starts a fresh burst
+			}
+			m.wheelAccum--
+			if m.wheelAccum <= -sessionPickerWheelDivisor {
+				m.wheelAccum = 0
+				if m.cursor > 0 {
+					m.cursor--
+					m.ensureVisible()
+				}
 			}
 		case tea.MouseWheelDown:
-			if m.cursor < len(m.filtered)-1 {
-				m.cursor++
-				m.ensureVisible()
+			if m.wheelAccum < 0 {
+				m.wheelAccum = 0
+			}
+			m.wheelAccum++
+			if m.wheelAccum >= sessionPickerWheelDivisor {
+				m.wheelAccum = 0
+				if m.cursor < len(m.filtered)-1 {
+					m.cursor++
+					m.ensureVisible()
+				}
 			}
 		}
 		return m, nil

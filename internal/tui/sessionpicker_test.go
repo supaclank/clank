@@ -122,9 +122,10 @@ func TestSessionPicker_EscClearsFilterThenCancels(t *testing.T) {
 	}
 }
 
-// Wheel events move the cursor — the picker captures the mouse inline,
-// so scrolling must do something or the terminal feels dead.
-func TestSessionPicker_MouseWheelMovesCursor(t *testing.T) {
+// Wheel events move the cursor, damped: trackpads emit event bursts, so
+// one cursor step takes sessionPickerWheelDivisor same-direction events
+// and a direction change resets the count.
+func TestSessionPicker_MouseWheelMovesCursorDamped(t *testing.T) {
 	t.Parallel()
 
 	m := loadPicker(t, []agent.SessionInfo{
@@ -133,15 +134,31 @@ func TestSessionPicker_MouseWheelMovesCursor(t *testing.T) {
 	})
 	start := m.cursor
 
-	updated, _ := m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
-	picker := updated.(*SessionPickerModel)
-	if picker.cursor != start+1 {
-		t.Errorf("wheel down: cursor = %d, want %d", picker.cursor, start+1)
+	wheel := func(button tea.MouseButton, times int) {
+		for range times {
+			updated, _ := m.Update(tea.MouseWheelMsg{Button: button})
+			m = updated.(*SessionPickerModel)
+		}
 	}
-	updated, _ = picker.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
-	picker = updated.(*SessionPickerModel)
-	if picker.cursor != start {
-		t.Errorf("wheel up: cursor = %d, want %d", picker.cursor, start)
+
+	wheel(tea.MouseWheelDown, sessionPickerWheelDivisor-1)
+	if m.cursor != start {
+		t.Errorf("cursor moved after %d events, want none before the divisor", sessionPickerWheelDivisor-1)
+	}
+	wheel(tea.MouseWheelDown, 1)
+	if m.cursor != start+1 {
+		t.Errorf("cursor = %d after %d wheel-down events, want %d", m.cursor, sessionPickerWheelDivisor, start+1)
+	}
+
+	// A direction change must not inherit the previous burst's progress.
+	wheel(tea.MouseWheelDown, sessionPickerWheelDivisor-1)
+	wheel(tea.MouseWheelUp, sessionPickerWheelDivisor-1)
+	if m.cursor != start+1 {
+		t.Errorf("cursor = %d mid-burst after direction change, want unchanged %d", m.cursor, start+1)
+	}
+	wheel(tea.MouseWheelUp, 1)
+	if m.cursor != start {
+		t.Errorf("wheel up: cursor = %d, want back at %d", m.cursor, start)
 	}
 }
 
