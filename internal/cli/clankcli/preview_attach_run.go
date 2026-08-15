@@ -11,7 +11,7 @@ import (
 
 // runAttachedPreview fronts a user-owned HTTP server. It owns the overlay
 // proxy and any daemon it starts, but never the upstream process.
-func runAttachedPreview(projectDir string, upstreamURL *url.URL, backend string, listenPort int) error {
+func runAttachedPreview(projectDir string, upstreamURL *url.URL, backend string, listenPort int, share bool) error {
 	sigCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -37,5 +37,5 @@ func runAttachedPreview(projectDir string, upstreamURL *url.URL, backend string,
 	if err != nil {
 		return err
 	}
-	return runWebPreview(sigCtx, projectDir, sockPath, string(bt), upstreamURL, listenPort, "")
+	return runWebPreview(sigCtx, projectDir, sockPath, string(bt), upstreamURL, listenPort, share, "")
 }

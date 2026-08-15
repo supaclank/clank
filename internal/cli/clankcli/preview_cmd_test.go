@@ -16,6 +16,28 @@ func TestPreviewCmdDoesNotExposePromptFlag(t *testing.T) {
 	}
 }
 
+func TestPreviewCmdShareRequiresCloudflared(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no t.Parallel: mutates process env
+
+	cmd := previewCmd()
+	cmd.SetArgs([]string{"--share"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "brew install cloudflared") {
+		t.Fatalf("Execute: err = %v, want cloudflared install guidance", err)
+	}
+}
+
+func TestPreviewCmdDroppedTunnelFlag(t *testing.T) {
+	t.Parallel()
+
+	cmd := previewCmd()
+	cmd.SetArgs([]string{"--tunnel"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "unknown flag: --tunnel") {
+		t.Fatalf("Execute: err = %v, want unknown tunnel flag (--share replaced the stub)", err)
+	}
+}
+
 func TestPreviewCmdRejectsProjectFlagWithAttachFolder(t *testing.T) {
 	t.Parallel()
 

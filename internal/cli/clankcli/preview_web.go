@@ -25,7 +25,7 @@ import (
 //
 // Daemon-managed callers wait for readiness first; explicit attach mode leaves
 // upstream readiness to its owner.
-func runWebPreview(sigCtx context.Context, projectDir, sockPath, backend string, upstreamURL *url.URL, listenPort int, displayName string) error {
+func runWebPreview(sigCtx context.Context, projectDir, sockPath, backend string, upstreamURL *url.URL, listenPort int, share bool, displayName string) error {
 	token, err := randomToken(32)
 	if err != nil {
 		return fmt.Errorf("generate overlay token: %w", err)
@@ -63,7 +63,18 @@ func runWebPreview(sigCtx context.Context, projectDir, sockPath, backend string,
 		srv.Shutdown(ctx)
 	}()
 
-	printWebPreviewBanner(srv.URL, engine)
+	shareURL := ""
+	if share {
+		tun, terr := startShareTunnel(sigCtx, upstreamURL)
+		if terr != nil {
+			return terr
+		}
+		defer tun.Stop()
+		shareURL = tun.PublicURL
+		go warnOnShareTunnelExit(sigCtx, tun)
+	}
+
+	printWebPreviewBanner(srv.URL, shareURL, engine)
 	_ = openBrowser(srv.URL) // best-effort; the banner printed the URL
 	<-sigCtx.Done()
 	fmt.Println("\nShutting down preview…")
@@ -152,9 +163,13 @@ func printModelProgress(file string, index, count int, done, total int64) {
 	}
 }
 
-func printWebPreviewBanner(url string, engine webpreview.Engine) {
+func printWebPreviewBanner(url, shareURL string, engine webpreview.Engine) {
 	fmt.Println()
 	fmt.Printf("  Preview:  %s\n", styleCmdHint.Render(url))
+	if shareURL != "" {
+		fmt.Printf("  Share:    %s  %s\n", styleCmdHint.Render(shareURL), styleDim.Render("(view-only: plain app, no overlay or agent)"))
+		fmt.Println(styleDim.Render("            may take a few seconds to come up; anyone with this link can browse your dev server until the preview stops"))
+	}
 	fmt.Println()
 	fmt.Println("  Use the app normally — the clank overlay is one hotkey away:")
 	fmt.Println("    ⌘E / Ctrl+E   summon / hide the prompt box (tap its header for chat)")
