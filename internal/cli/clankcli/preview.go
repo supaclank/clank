@@ -55,7 +55,7 @@ Boots (or reuses) the local clank daemon, then launches or attaches to a preview
     that already exists instead of creating one on the first prompt.
     Bare --attach opens a picker sorted by last activity with an in-list
     rediscover action for sessions clank hasn't registered yet;
-    --attach=<session-id> (clank or backend-external id) attaches
+    --attach <session-id> (clank or backend-external id) attaches
     directly, rediscovering the project's sessions if the id is unknown.
     Web previews only.
 
@@ -66,9 +66,7 @@ was the one that started it. An attached server is never stopped by Clank.`,
 			if tunnel {
 				return fmt.Errorf("--tunnel isn't implemented yet; keep your phone and laptop on the same Wi-Fi for now")
 			}
-			if attachSession == previewAttachSelect && len(args) == 1 && looksLikeSessionID(args[0]) {
-				return fmt.Errorf("%s looks like a session id — write it as --attach=%s (a space-separated value is read as a launch name)", args[0], args[0])
-			}
+			attachSession, args = routeAttachSessionArg(attachSession, args)
 			if len(args) == 1 && isWebURLArg(args[0]) {
 				if attachSession != "" {
 					return fmt.Errorf("--attach cannot be used with a GitHub pull request URL — its preview always drives a fresh session")
@@ -107,7 +105,7 @@ was the one that started it. An attached server is never stopped by Clank.`,
 	cmd.Flags().StringVar(&backend, "backend", "", "Backend to use: opencode (default), claude")
 	cmd.Flags().IntVar(&port, "port", 0, "Browser-proxy port for web previews (default: auto-assigned). Phone previews use the daemon's bridge port.")
 	cmd.Flags().BoolVar(&tunnel, "tunnel", false, "Expose over an encrypted tunnel for off-LAN phones (not yet implemented)")
-	cmd.Flags().StringVar(&attachSession, "attach", "", "Attach the overlay to an existing agent session: bare --attach picks from a list sorted by last activity; --attach=<session-id> (clank or backend-external id) attaches directly")
+	cmd.Flags().StringVar(&attachSession, "attach", "", "Attach the overlay to an existing agent session: bare --attach picks from a list sorted by last activity; --attach <session-id> (clank or backend-external id) attaches directly")
 	cmd.Flags().Lookup("attach").NoOptDefVal = previewAttachSelect
 
 	return cmd

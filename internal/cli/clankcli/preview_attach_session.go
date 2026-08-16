@@ -152,10 +152,23 @@ var (
 	previewUUIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$`)
 )
 
-// looksLikeSessionID reports whether arg has the shape of a session id
-// (opencode "ses_…", a UUID, or a 26-char ULID). Used only to catch
-// `--attach <id>` written with a space — pflag parses that as bare
-// --attach plus a positional launch name — and point at `--attach=<id>`.
+// routeAttachSessionArg supports `clank preview --attach <id>`. pflag
+// binds an optional-value flag only with `=`, so the spaced form arrives
+// as a bare --attach plus a positional — the same slot a launch name
+// occupies. Session ids are the three shapes clank and its backends
+// mint (opencode "ses_…", Claude's UUID, clank's ULID), none of which a
+// launch name from .clank/launch.yaml looks like, so an id-shaped
+// positional is claimed as the session and anything else stays a launch
+// name (`clank preview web-app --attach` keeps opening the picker).
+func routeAttachSessionArg(attachFlag string, args []string) (string, []string) {
+	if attachFlag != previewAttachSelect || len(args) != 1 || !looksLikeSessionID(args[0]) {
+		return attachFlag, args
+	}
+	return args[0], nil
+}
+
+// looksLikeSessionID reports whether arg has the shape of a session id:
+// opencode's "ses_…", a UUID (Claude), or a 26-char ULID (clank).
 func looksLikeSessionID(arg string) bool {
 	if strings.HasPrefix(arg, "ses_") {
 		return true
