@@ -10,7 +10,6 @@ The fastest way to iterate on apps is by just pointing and explaining.
 Clank is for iterating on that last 10% that AI can't solve.
 
 ## How - Get started
-<!-- TODO(ai-review): `--attach` isn't a registered CLI flag on main yet; pending PR #252. https://github.com/supaclank/clank/pull/253#issuecomment-5309770801 -->
 Attach to an existing Claude/Codex/OpenCode session with `clank preview --attach`. Or just run `clank preview` to start your dev server with a new agent session.
 
 - [The mobile app](https://play.google.com/store/apps/details?id=com.supaclank.clank)*: Expo Go but with agents. 
