@@ -24,8 +24,15 @@ Attach to an existing Claude/Codex/OpenCode session with `clank preview --attach
 [**] For running web overlays or local expo servers, you need the Clank CLI. See below
 
 ### Get started
+If you want a demo first:
+- Mobile: Watch the video below ([#mobile-demo](#mobile-demo))
+- Web: Play with supaclank.com's live web demo: https://supaclank.com/demo
+
+Once ready:
 1. Choose mobile or laptop, or both
 2. Follow the steps below
+3. Start building!
+4. Give feedback! :)
 
 #### Laptop
 ```bash
