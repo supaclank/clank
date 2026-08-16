@@ -1,41 +1,69 @@
 # Clank
+<img width="1774" height="887" alt="previews" src="https://github.com/user-attachments/assets/899b4fc9-96da-483d-9e97-d7b60b82c7e2"/>
 
 ## Visually editable previews for web & mobile
 
 Clank injects an overlay into your web or mobile apps that allows you to edit them while you're using them.
 
-The fastest way to iterate on apps is by just pointing and explaining. 
+The fastest way to iterate on apps is by just pointing and explaining.
 
 Clank is for iterating on that last 10% that AI can't solve.
 
-Run `clank preview` to start your dev server with the clank overlay and connect to your agent of choice: Claude Code, OpenCode, and Codex (with Gemini, Hermes, and Pi support coming soon).
+## How - Get started
+Attach to an existing Claude/Codex/OpenCode session with `clank preview --attach`. Or just run `clank preview` to start your dev server with a new agent session.
 
-- Phone + Expo app: Opens native app with agent overlay* (like Expo Go)
-- Phone + web app: Opens webview with agent overlay*
-- Laptop + web app: Opens browser with agent overlay
-- Laptop + Expo app: No preview yet, but dev server presents QR code for mobile app to scan.
+- [The mobile app](https://play.google.com/store/apps/details?id=com.supaclank.clank)*: Expo Go but with agents. 
+  - Expo apps: Build your native app with the Clank overlay
+  - Web apps: Same Clank overlay but on a webview of your web app.
+- The browser overlay**: Lovable-like edits but fully local and inline with your app:
+  - Web apps (Vite, Next.js, any webserver): Opens browser with agent overlay
+  - Expo apps on laptop, no preview yet, but dev server presents QR code for mobile app to scan.
 
-Live AI edits with hot module reloading.
+[*] The phone needs a clank gateway. Either connect to your laptop (via `clank pair`), or a hosted cloud solution like [supaclank.com](https://supaclank.com) to build without a laptop.
 
-[*] The phone needs a clank gateway. Either connect to your laptop via `clank pair`, or a hosted cloud solution like [supaclank.com](https://supaclank.com) to build without a laptop.
-
-## Get started
-
-```
+[**] For running web overlays or local expo servers, you need the Clank CLI:
+Local CLI/daemon:
+```bash
 brew install supaclank/tap/clank
-clank preview
+# cd to your project, and run
+clank preview # launches your project, onboards you if first time
 ```
 
+[Download Clank](https://play.google.com/store/apps/details?id=com.supaclank.clank)
+
+https://github.com/user-attachments/assets/e2a9b928-d861-442d-97e1-d1a81880f014
+
+
+### Usage
+
+#### Overlay UI
 | Key | Action |
 |-----|--------|
 | <kbd>⌘E</kbd> / <kbd>Ctrl+E</kbd> | summon / hide the prompt box |
-| hold <kbd>⌘</kbd> / <kbd>⌃</kbd> | point at elements to attach them as context |
+| hold <kbd>⌘</kbd> / <kbd>Ctrl</kbd> | point at elements to attach them as context |
 | <kbd>⇪ Caps Lock</kbd> | tap to talk, tap again to transcribe |
-| hold <kbd>⇧</kbd> | prompt box snaps to the cursor |
+| hold <kbd>⇧ Shift</kbd> | prompt box snaps to the cursor |
 
 For the mobile overlay: Shake the phone to bring up the floating prompt box, shake again to see chat. The app remains usable. Just move the box around, or hide it.
+#### CLI
+Tips & tricks:
 
-## Architecture
+Preview any pull request instantly. It reuses your local worktree on-disk if it finds it, otherwise creates one.
+```bash
+clank preview https://github.com/supaclank/web/pull/18
+```
+
+Specify the folder and your dev-server's port for clank preview to forward to it, while getting the correct context:
+```bash
+clank preview . :8080
+```
+
+Attach to an existing agent session
+```bash
+clank preview --attach # opens agent session picker, any of your harnesses
+```
+
+# Architecture
 
 ```mermaid
 flowchart LR
@@ -158,11 +186,12 @@ Images and attachments are handled via a minimal blobstore interface, with S3 fo
 - In the future we may use something like https://github.com/superfly/tokenizer (and/or an LLM proxy) for people that don't want to give up real keys, and for 3rd party connections.
 - Ephemeral one-off sandboxes are also on the roadmap for workflows that need the isolation.
 - Public tunnel links for your local previews
-- Support for development builds
+- Support for Expo development builds
+- [Create a feature request / suggestion!](https://github.com/supaclank/clank/issues/new?template=feature_request.yml)
 
 ## Docs
 
 - [docs/chat-client-spec](docs/chat-client-spec/README.md). The spec every clank client is built against (the TUI is the golden reference; the mobile app tracks it too).
 - [docs/bridge-pairing.md](docs/bridge-pairing.md). The phone↔laptop pairing protocol
-- [docker/README.md](docker/README.md). Self-hosted gateway stack
+- [docker/README.md](docker/README.md). Docker stack, but mainly for testing. Supaclank currently instantiates `pkg/gateway.Gateway` directly.
 - [voice-engine/README.md](voice-engine/README.md). The local dictation engine.
