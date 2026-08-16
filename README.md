@@ -35,13 +35,13 @@ clank preview # launches your project, onboards you if first time
 ```
 
 #### Mobile
-<img width="128" height="128" alt="image" src="https://github.com/user-attachments/assets/fdfdec13-cce0-4700-be94-b5c1149fbc48" />
-
+<img width="200" height="200" alt="image" src="https://github.com/user-attachments/assets/b2d959f3-04f6-4ba6-a2df-1eb31c3410ef" />
+<br>
 <a href="https://play.google.com/store/apps/details?id=com.supaclank.clank">
   <img
     alt="Get it on Google Play"
-    src="docs/assets/google-play-badge.png"
-    height="80"
+    src="docs/assets/google-play-badge.svg"
+    height="60"
   />
 </a>
 
