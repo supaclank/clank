@@ -9,7 +9,7 @@ The fastest way to iterate on apps is by just pointing and explaining.
 
 Clank is for iterating on that last 10% that AI can't solve.
 
-## How - Get started
+## How
 Attach to an existing Claude/Codex/OpenCode session with `clank preview --attach`. Or just run `clank preview` to start your dev server with a new agent session.
 
 - [The mobile app](https://play.google.com/store/apps/details?id=com.supaclank.clank)*: Expo Go but with agents. 
@@ -21,15 +21,39 @@ Attach to an existing Claude/Codex/OpenCode session with `clank preview --attach
 
 [*] The phone needs a clank gateway. Either connect to your laptop (via `clank pair`), or a hosted cloud solution like [supaclank.com](https://supaclank.com) to build without a laptop.
 
-[**] For running web overlays or local expo servers, you need the Clank CLI:
-Local CLI/daemon:
+[**] For running web overlays or local expo servers, you need the Clank CLI. See below
+
+### Get started
+If you want a demo first:
+- Mobile: Watch the video below ([#mobile-demo](#mobile-demo))
+- Web: Play with supaclank.com's live web demo: https://supaclank.com/demo
+
+Once ready:
+1. Choose mobile or laptop, or both
+2. Follow the steps below
+3. Start building!
+4. Give feedback! :)
+
+#### Laptop
 ```bash
 brew install supaclank/tap/clank
 # cd to your project, and run
 clank preview # launches your project, onboards you if first time
 ```
 
-[Download Clank](https://play.google.com/store/apps/details?id=com.supaclank.clank)
+#### Mobile
+<img width="200" height="200" alt="image" src="https://github.com/user-attachments/assets/b2d959f3-04f6-4ba6-a2df-1eb31c3410ef" />
+<br>
+<a href="https://play.google.com/store/apps/details?id=com.supaclank.clank">
+  <img
+    alt="Get it on Google Play"
+    src="docs/assets/google-play-badge.svg"
+    height="60"
+  />
+</a>
+
+
+#### Mobile demo
 
 https://github.com/user-attachments/assets/e2a9b928-d861-442d-97e1-d1a81880f014
 
