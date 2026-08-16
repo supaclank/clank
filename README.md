@@ -48,7 +48,7 @@ For the mobile overlay: Shake the phone to bring up the floating prompt box, sha
 #### CLI
 Tips & tricks:
 
-Preview any pull request instantly. It re-uses your local worktree on-disk if it finds it, otherwise creates one.
+Preview any pull request instantly. It reuses your local worktree on-disk if it finds it, otherwise creates one.
 ```bash
 clank preview https://github.com/supaclank/web/pull/18
 ```
