@@ -13,11 +13,11 @@ Clank is for iterating on that last 10% that AI can't solve.
 Attach to an existing Claude/Codex/Opencode session with `clank preview --attach`. Or just run `clank preview` to start your dev server with a new agent session.
 
 - [The mobile app](https://play.google.com/store/apps/details?id=com.supaclank.clank)*: Expo Go but with agents. 
-- - Expo apps: Build your native app with the Clank overlay
-- - Web apps: Same Clank overlay but on a webview of your web app.
+  - Expo apps: Build your native app with the Clank overlay
+  - Web apps: Same Clank overlay but on a webview of your web app.
 - The browser overlay**: Lovable-like edits but fully local and in-line with your app:
-- - Web apps (Vite, Next.js, any webserver): Opens browser with agent overlay
-- - Expo apps on laptop, no preview yet, but dev server presents QR code for mobile app to scan.
+  - Web apps (Vite, Next.js, any webserver): Opens browser with agent overlay
+  - Expo apps on laptop, no preview yet, but dev server presents QR code for mobile app to scan.
 
 [*] The phone needs a clank gateway. Either connect to your laptop (via `clank pair`), or a hosted cloud solution like [supaclank.com](https://supaclank.com) to build without a laptop.
 
@@ -68,7 +68,7 @@ Attach to an existing agent session
 clank preview --attach # opens agent session picker, any of your harness
 ```
 
-# Architecture
+## Architecture
 
 ```mermaid
 flowchart LR
@@ -187,14 +187,14 @@ Voice is push-to-talk dictation for the preview overlay. Use the browser's Web S
 ### Images & attachments
 Images and attachments are handled via a minimal blobstore interface, with S3 for cloud deployments, and a LAN one for mobile->laptop transfers.
 
-# Roadmap
+## Roadmap
 - In the future we may use something like https://github.com/superfly/tokenizer (and/or an LLM proxy) for people that don't want to give up real keys, and for 3rd party connections.
 - Ephemeral one-off sandboxes are also on the roadmap for workflows that need the isolation.
 - Public tunnel links for your local previews
 - Support for development builds
 - [Create a feature request / suggestion!](https://github.com/supaclank/clank/issues/new?template=feature_request.yml)
 
-# Docs
+## Docs
 
 - [docs/chat-client-spec](docs/chat-client-spec/README.md). The spec every clank client is built against (the TUI is the golden reference; the mobile app tracks it too).
 - [docs/bridge-pairing.md](docs/bridge-pairing.md). The phone↔laptop pairing protocol
