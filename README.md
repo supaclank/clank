@@ -42,7 +42,7 @@ https://github.com/user-attachments/assets/e2a9b928-d861-442d-97e1-d1a81880f014
 | <kbd>⌘E</kbd> / <kbd>Ctrl+E</kbd> | summon / hide the prompt box |
 | hold <kbd>⌘</kbd> / <kbd>Ctrl</kbd> | point at elements to attach them as context |
 | <kbd>⇪ Caps Lock</kbd> | tap to talk, tap again to transcribe |
-| hold <kbd>⇧</kbd> | prompt box snaps to the cursor |
+| hold <kbd>⇧ Shift</kbd> | prompt box snaps to the cursor |
 
 For the mobile overlay: Shake the phone to bring up the floating prompt box, shake again to see chat. The app remains usable. Just move the box around, or hide it.
 #### CLI
@@ -186,7 +186,7 @@ Images and attachments are handled via a minimal blobstore interface, with S3 fo
 - In the future we may use something like https://github.com/superfly/tokenizer (and/or an LLM proxy) for people that don't want to give up real keys, and for 3rd party connections.
 - Ephemeral one-off sandboxes are also on the roadmap for workflows that need the isolation.
 - Public tunnel links for your local previews
-- Support for development builds
+- Support for Expo development builds
 - [Create a feature request / suggestion!](https://github.com/supaclank/clank/issues/new?template=feature_request.yml)
 
 ## Docs
