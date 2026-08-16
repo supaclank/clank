@@ -154,7 +154,7 @@ func runGitHubPullRequestPreview(locator daemonclient.GitHubPullRequestLocator, 
 	_, statErr := os.Stat(launched.WorktreeDir)
 	switch {
 	case statErr == nil:
-		return runPreviewWithDisplayName(launched.WorktreeDir, launchName, backend, port, launched.DisplayName)
+		return runPreviewWithDisplayName(launched.WorktreeDir, launchName, backend, port, launched.DisplayName, "")
 	case !os.IsNotExist(statErr):
 		return fmt.Errorf("inspect launched worktree: %w", statErr)
 	case port != 0:

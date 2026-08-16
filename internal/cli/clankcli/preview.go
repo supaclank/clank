@@ -13,6 +13,7 @@ func previewCmd() *cobra.Command {
 	var backend string
 	var port int
 	var tunnel bool
+	var attachSession string
 
 	cmd := &cobra.Command{
 		Use:   "preview [name | <github-pr-url> | <folder> <url-or-:port>]",
@@ -50,6 +51,13 @@ Boots (or reuses) the local clank daemon, then launches or attaches to a preview
     A :port target expands to http://127.0.0.1:port. Clank never starts
     or stops the attached server; the folder supplies project context
     to the overlay and agent.
+  - Existing agent session (--attach): binds the overlay to a session
+    that already exists instead of creating one on the first prompt.
+    Bare --attach opens a picker sorted by last activity with an in-list
+    rediscover action for sessions clank hasn't registered yet;
+    --attach <session-id> (clank or backend-external id) attaches
+    directly, rediscovering the project's sessions if the id is unknown.
+    Web previews only.
 
 Everything is torn down on Ctrl+C — including the daemon, if clank preview
 was the one that started it. An attached server is never stopped by Clank.`,
@@ -58,7 +66,11 @@ was the one that started it. An attached server is never stopped by Clank.`,
 			if tunnel {
 				return fmt.Errorf("--tunnel isn't implemented yet; keep your phone and laptop on the same Wi-Fi for now")
 			}
+			attachSession, args = routeAttachSessionArg(attachSession, args)
 			if len(args) == 1 && isWebURLArg(args[0]) {
+				if attachSession != "" {
+					return fmt.Errorf("--attach cannot be used with a GitHub pull request URL — its preview always drives a fresh session")
+				}
 				if projectDir != "" {
 					return fmt.Errorf("--project cannot be used with a GitHub pull request URL")
 				}
@@ -76,7 +88,7 @@ was the one that started it. An attached server is never stopped by Clank.`,
 				if projectDir != "" {
 					return fmt.Errorf("preview folder was provided both positionally and with --project")
 				}
-				return runAttachedPreview(attach.ProjectDir, attach.UpstreamURL, backend, port)
+				return runAttachedPreview(attach.ProjectDir, attach.UpstreamURL, backend, port, attachSession)
 			}
 			if err := rejectPathShapedArg(args); err != nil {
 				return err
@@ -85,7 +97,7 @@ was the one that started it. An attached server is never stopped by Clank.`,
 			if err != nil {
 				return err
 			}
-			return runPreview(projectDir, launchName, backend, port)
+			return runPreview(projectDir, launchName, backend, port, attachSession)
 		},
 	}
 
@@ -93,6 +105,8 @@ was the one that started it. An attached server is never stopped by Clank.`,
 	cmd.Flags().StringVar(&backend, "backend", "", "Backend to use: opencode (default), claude")
 	cmd.Flags().IntVar(&port, "port", 0, "Browser-proxy port for web previews (default: auto-assigned). Phone previews use the daemon's bridge port.")
 	cmd.Flags().BoolVar(&tunnel, "tunnel", false, "Expose over an encrypted tunnel for off-LAN phones (not yet implemented)")
+	cmd.Flags().StringVar(&attachSession, "attach", "", "Attach the overlay to an existing agent session: bare --attach picks from a list sorted by last activity; --attach <session-id> (clank or backend-external id) attaches directly")
+	cmd.Flags().Lookup("attach").NoOptDefVal = previewAttachSelect
 
 	return cmd
 }

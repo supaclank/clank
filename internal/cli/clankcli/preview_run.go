@@ -31,11 +31,11 @@ const (
 //     pairing token and print the QR (the original flow).
 //   - Configured web: front the dev server with the overlay-injecting
 //     proxy and open it in the browser (runWebPreview).
-func runPreview(projectDir, launchName, backend string, port int) error {
-	return runPreviewWithDisplayName(projectDir, launchName, backend, port, "")
+func runPreview(projectDir, launchName, backend string, port int, attachSession string) error {
+	return runPreviewWithDisplayName(projectDir, launchName, backend, port, "", attachSession)
 }
 
-func runPreviewWithDisplayName(projectDir, launchName, backend string, port int, displayName string) error {
+func runPreviewWithDisplayName(projectDir, launchName, backend string, port int, displayName, attachSession string) error {
 	isProjectExplicit := projectDir != ""
 	projectDir, err := resolveProjectDir(projectDir)
 	if err != nil {
@@ -79,12 +79,29 @@ func runPreviewWithDisplayName(projectDir, launchName, backend string, port int,
 		}()
 	}
 
-	// Ask about connecting an agent BEFORE anything long-running starts:
-	// once the dev server is up we're printing install/bundler output for
-	// minutes, and a picker seizing the terminal after that is hostile.
-	// Runs after ensurePreviewDaemon because the catalog read needs the
-	// daemon, and before resolveBackend so a just-connected backend is the
-	// one this preview resolves.
+	// Settle the interactive questions BEFORE anything long-running
+	// starts: once the dev server is up we're printing install/bundler
+	// output for minutes, and a picker seizing the terminal after that is
+	// hostile. Both run after ensurePreviewDaemon because they need the
+	// daemon, and before resolveBackend so a just-connected backend (or
+	// the attached session's) is the one this preview resolves.
+	attachedSession, err := resolveAttachSession(sigCtx, client, attachSession, projectDir, os.Stdin, os.Stdout)
+	if errors.Is(err, errPreviewAttachAborted) {
+		fmt.Println("Preview canceled.")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if attachedSession != nil {
+		// The session pins the backend; the connect offer and backend
+		// resolution below must see it, not the flag's default chain.
+		bt, err := attachedSessionBackend(attachedSession, backend)
+		if err != nil {
+			return err
+		}
+		backend = string(bt)
+	}
 	if err := offerPreviewAgentConnect(sigCtx, client, backend, os.Stdin, os.Stdout); err != nil {
 		return err
 	}
@@ -155,6 +172,9 @@ func runPreviewWithDisplayName(projectDir, launchName, backend string, port int,
 			return fmt.Errorf("resolve managed preview project context: %w", err)
 		}
 	}
+	if attachedSession != nil && status.Kind != string(preview.KindWeb) {
+		return fmt.Errorf("--attach applies to web previews only; this launch resolved to preview kind %q", status.Kind)
+	}
 	if setupResult != nil && status.Kind != string(preview.KindWeb) {
 		return previewSetupSessionError(setupResult.ProjectRoot, setupResult.SessionID, fmt.Errorf("generated launch resolved to unexpected preview kind %q", status.Kind))
 	}
@@ -198,7 +218,15 @@ func runPreviewWithDisplayName(projectDir, launchName, backend string, port int,
 			fmt.Println("One-time preview setup complete.")
 		}
 		upstreamURL := previewLoopbackURL(status.Port)
-		return runWebPreview(sigCtx, projectDir, sockPath, string(bt), upstreamURL, port, displayName)
+		return runWebPreview(sigCtx, webPreviewParams{
+			ProjectDir:  projectDir,
+			SockPath:    sockPath,
+			Backend:     string(bt),
+			UpstreamURL: upstreamURL,
+			ListenPort:  port,
+			DisplayName: displayName,
+			SessionID:   attachedSessionID(attachedSession),
+		})
 	}
 
 	// Phone (Expo) path from here down. The daemon's bridge is the
