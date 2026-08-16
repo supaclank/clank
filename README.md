@@ -34,14 +34,20 @@ Once ready:
 3. Start building!
 4. Give feedback! :)
 
-#### Laptop
+#### Laptop (Clank CLI)
+For web development with browser overlay, or self-hosted/local mobile development via Clank's mobile app. 
+
 ```bash
 brew install supaclank/tap/clank
 # cd to your project, and run
-clank preview # launches your project, onboards you if first time
+clank preview # launches your project
 ```
 
+the CLI will onboard you the first time with agent preferences and synthesize an initial launch config for your project's dev server. 
+
 #### Mobile
+Connects to any Clank gateway, cloud hosted via e.g. [supaclank.com](https://supaclank.com), or your self-hosted one on the laptop.
+
 <img width="200" height="200" alt="image" src="https://github.com/user-attachments/assets/b2d959f3-04f6-4ba6-a2df-1eb31c3410ef" />
 <br>
 <a href="https://play.google.com/store/apps/details?id=com.supaclank.clank">
