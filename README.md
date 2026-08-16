@@ -53,11 +53,6 @@ Preview any pull request instantly. It re-uses your local worktree on-disk if it
 clank preview https://github.com/supaclank/web/pull/18
 ```
 
-Or just preview a repository:
-```bash
-clank preview https://github.com/supaclank/web
-```
-
 Specify the folder and your dev-server's port for clank preview to forward to it, while getting the correct context:
 ```bash
 clank preview . :8080
