@@ -7,7 +7,7 @@ Clank injects an overlay into your web or mobile apps that allows you to edit th
 
 The fastest way to iterate on apps is by just pointing and explaining.
 
-Clank is for iterating on that last 10% that AI can't solve. 
+Clank is for iterating on that last 10% that AI can't solve.
 
 ## How - Get started
 Attach to an existing Claude/Codex/OpenCode session with `clank preview --attach`. Or just run `clank preview` to start your dev server with a new agent session.
