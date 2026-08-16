@@ -10,7 +10,7 @@ The fastest way to iterate on apps is by just pointing and explaining.
 Clank is for iterating on that last 10% that AI can't solve. 
 
 ## How - Get started
-Attach to an existing Claude/Codex/Opencode session with `clank preview --attach`. Or just run `clank preview` to start your dev server with a new agent session.
+Attach to an existing Claude/Codex/OpenCode session with `clank preview --attach`. Or just run `clank preview` to start your dev server with a new agent session.
 
 - [The mobile app](https://play.google.com/store/apps/details?id=com.supaclank.clank)*: Expo Go but with agents. 
   - Expo apps: Build your native app with the Clank overlay
@@ -40,7 +40,7 @@ https://github.com/user-attachments/assets/e2a9b928-d861-442d-97e1-d1a81880f014
 | Key | Action |
 |-----|--------|
 | <kbd>⌘E</kbd> / <kbd>Ctrl+E</kbd> | summon / hide the prompt box |
-| hold <kbd>⌘</kbd> / <kbd>ctrl</kbd> | point at elements to attach them as context |
+| hold <kbd>⌘</kbd> / <kbd>Ctrl</kbd> | point at elements to attach them as context |
 | <kbd>⇪ Caps Lock</kbd> | tap to talk, tap again to transcribe |
 | hold <kbd>⇧</kbd> | prompt box snaps to the cursor |
 
@@ -59,13 +59,13 @@ clank preview https://github.com/supaclank/web
 ```
 
 Specify the folder and your dev-server's port for clank preview to forward to it, while getting the correct context:
-```
+```bash
 clank preview . :8080
 ```
 
 Attach to an existing agent session
-```
-clank preview --attach # opens agent session picker, any of your harness
+```bash
+clank preview --attach # opens agent session picker, any of your harnesses
 ```
 
 # Architecture
