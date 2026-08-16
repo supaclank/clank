@@ -68,7 +68,7 @@ Attach to an existing agent session
 clank preview --attach # opens agent session picker, any of your harness
 ```
 
-## Architecture
+# Architecture
 
 ```mermaid
 flowchart LR
