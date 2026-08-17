@@ -53,8 +53,8 @@ Connects to any Clank gateway, cloud hosted via e.g. [supaclank.com](https://sup
 <a href="https://play.google.com/store/apps/details?id=com.supaclank.clank">
   <img
     alt="Get it on Google Play"
-    src="docs/assets/google-play-badge.svg"
-    height="60"
+    src="https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png"
+    height="78"
   />
 </a>
 
