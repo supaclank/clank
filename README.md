@@ -25,7 +25,7 @@ Attach to an existing Claude/Codex/OpenCode session with `clank preview --attach
 
 ### Get started
 For web app development, start with the laptop.
-For mobile Expo app development, start with the mobile app. You can then pair with your laptop if you don't want to use a hosted solution.
+For mobile Expo app development, start with the mobile app.
 
 #### Laptop (Clank CLI)
 The `clank` CLI starts its own local Clank gateway, which the browser overlay (or mobile app) connects to.
