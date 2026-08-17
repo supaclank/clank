@@ -13,6 +13,7 @@ import (
 
 	daemonclient "github.com/supaclank/clank/internal/daemonclient"
 	"github.com/supaclank/clank/internal/tui"
+	"github.com/supaclank/clank/internal/version"
 )
 
 // Command returns the root cobra command for the clank binary with all subcommands.
@@ -21,6 +22,8 @@ func Command() *cobra.Command {
 		Use:   "clank",
 		Short: "AI-powered coding session manager",
 		Long:  "Clank manages your coding agent sessions and helps you track what's in flight.",
+		// Enables --version alongside the explicit `version` subcommand.
+		Version: version.String(),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			return runInbox()
@@ -42,6 +45,7 @@ func Command() *cobra.Command {
 		logoutCmd(),
 		githubCmd(),
 		connectCmd(),
+		versionCmd(),
 	)
 
 	return root

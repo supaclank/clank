@@ -6,35 +6,15 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"runtime/debug"
-	"sync"
-)
 
-var daemonVersion = sync.OnceValue(func() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "unknown"
-	}
-	v := info.Main.Version
-	if v == "" {
-		v = "unknown"
-	}
-	for _, s := range info.Settings {
-		if s.Key == "vcs.revision" && s.Value != "" {
-			if len(s.Value) > 12 {
-				return v + "+" + s.Value[:12]
-			}
-			return v + "+" + s.Value
-		}
-	}
-	return v
-})
+	"github.com/supaclank/clank/internal/version"
+)
 
 func (m *Mux) handlePing(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":  "ok",
 		"pid":     os.Getpid(),
-		"version": daemonVersion(),
+		"version": version.String(),
 	})
 }
 

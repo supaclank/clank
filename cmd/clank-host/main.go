@@ -49,6 +49,7 @@ import (
 	notifiernoop "github.com/supaclank/clank/internal/notifier/noop"
 	"github.com/supaclank/clank/internal/notifier/webhook"
 	"github.com/supaclank/clank/internal/socketutil"
+	"github.com/supaclank/clank/internal/version"
 )
 
 const (
@@ -96,7 +97,13 @@ func main() {
 	codexCLIAuth := flag.Bool("codex-cli-auth", false, "Report the machine's own codex CLI login ($CODEX_HOME/auth.json) as a connected ChatGPT subscription when clank didn't run the device-auth ceremony — presence detection only, the credential is never read. Set by the local laptop provisioner; off for remote sprites, which have no codex login to borrow.")
 	builtinPresets := flag.String("builtin-presets", os.Getenv("CLANK_BUILTIN_PRESETS"), "JSON array of built-in agent presets, serialized from internal/agent/presets by the provisioner (the environment knows its own blast radius: sandboxes ship the permissive set). Empty uses the conservative Workstation set. Each backend's Default preset also defines the REQUIRED config keys for session creation.")
 	acpBackends := flag.String("acp-backends", envDefault("CLANK_ACP_BACKENDS", "all"), "Backends this host serves, comma-separated (opencode, claude-code, codex; 'all', 'none'). Every backend runs as an ACP agent; omitting one disables it on this host (its sessions then fail to open rather than silently using something else). Defaults to $CLANK_ACP_BACKENDS, else 'all'.")
+	showVersion := flag.Bool("version", false, "Print the clank-host version and exit.")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version.String())
+		return
+	}
 
 	if *socket == "" && *listen == "" {
 		fmt.Fprintln(os.Stderr, "clank-host: --socket or --listen is required")

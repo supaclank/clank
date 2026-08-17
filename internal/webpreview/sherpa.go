@@ -431,5 +431,5 @@ func FindClankVoice() (string, error) {
 	if found, err := exec.LookPath("clank-voice"); err == nil {
 		return found, nil
 	}
-	return "", fmt.Errorf("clank-voice not installed (build it from voice-engine/ or set %s)", EngineEnvVar)
+	return "", fmt.Errorf("clank-voice not installed (`brew install supaclank/tap/clank-voice`, `make voice` from a checkout, or set %s)", EngineEnvVar)
 }

@@ -21,8 +21,17 @@ the cgo dependency back into every root build.
 
 ## Build & install
 
+    brew install supaclank/tap/clank-voice   # macOS; source build via the tap
+
+or from a checkout (`make voice` at the repo root, or):
+
     cd voice-engine
     go build -o $(dirname $(which clank))/clank-voice ./cmd/clank-voice
+
+The tap formula copies the sherpa-onnx dylibs out of the Go module cache
+and rewrites the binary's rpath, because the bindings link them via an
+absolute `${SRCDIR}` rpath — a prebuilt clank-voice can't be shipped as
+a Homebrew cask.
 
 Model files (~670 MB, one-time) are auto-downloaded by `clank preview`
 into `$CLANK_DIR/models/parakeet-tdt-0.6b-v3-int8` on first voice use.

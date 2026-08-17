@@ -1,0 +1,122 @@
+# Release pipeline: `git tag vX.Y.Z && git push --tags` triggers
+# .github/workflows/release.yml, which runs `goreleaser release`. It
+# builds clank + clankd + clank-host per platform, publishes the archives
+# to the GitHub Release, and rewrites Formula/clank.rb in
+# supaclank/homebrew-tap (needs HOMEBREW_TAP_GITHUB_TOKEN, a PAT with
+# contents:write on the tap; the workflow's own GITHUB_TOKEN can't cross
+# repos).
+#
+# clank-voice is NOT built here: its cgo sherpa-onnx dependency links
+# dylibs by absolute rpath, so it must be compiled on the user's machine.
+# The tap's Formula/clank-voice.rb builds it from the release's source
+# tarball (see voice-engine/README.md).
+#
+# Local dry run: `make release-snapshot`.
+version: 2
+
+project_name: clank
+
+before:
+  hooks:
+    # //go:embed in pkg/provisioner/flysprites needs the cross-built
+    # linux/amd64 clank-host on disk before anything else compiles.
+    - make embed-host
+
+builds:
+  - id: clank
+    main: ./cmd/clank
+    binary: clank
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/supaclank/clank/internal/version.Version={{ .Tag }}
+  - id: clankd
+    main: ./cmd/clankd
+    binary: clankd
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/supaclank/clank/internal/version.Version={{ .Tag }}
+  - id: clank-host
+    main: ./cmd/clank-host
+    binary: clank-host
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/supaclank/clank/internal/version.Version={{ .Tag }}
+
+# One archive per platform holding all three binaries: clank finds
+# clankd (and clankd finds clank-host) as siblings, so they must install
+# together.
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: supaclank
+    name: clank
+  draft: false
+  prerelease: auto
+
+# Homebrew ships prebuilt binaries as casks (formulas are for
+# source builds; goreleaser deprecated `brews` accordingly). Casks are
+# macOS-only — Linux users take the release tarball or `go install`.
+homebrew_casks:
+  - name: clank
+    ids: [default]
+    binaries: [clank, clankd, clank-host]
+    repository:
+      owner: supaclank
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    commit_author:
+      name: clank-release-bot
+      email: bot@supaclank.com
+    commit_msg_template: "clank {{ .Tag }}"
+    homepage: https://github.com/supaclank/clank
+    description: Visually editable previews for web & mobile, powered by your own coding agents
+    license: AGPL-3.0-only
+    # Pre-release tags (v1.2.3-rc1) publish to GitHub but skip the tap.
+    skip_upload: auto
+    # The binaries are ad-hoc signed by the Go linker but not notarized,
+    # so Gatekeeper would refuse the quarantined download. Drop the
+    # quarantine flag brew set on the archive (goreleaser's documented
+    # recipe until we notarize).
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", staged_path.to_s]
+          end
+    caveats: |
+      Push-to-talk dictation in `clank preview` needs the optional voice
+      engine, built from source on your machine:
+        brew install supaclank/tap/clank-voice

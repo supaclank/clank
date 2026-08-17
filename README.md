@@ -215,6 +215,12 @@ For Expo apps we also append a system prompt, to avoid common pitfalls that agen
 ### Voice
 Voice is push-to-talk dictation for the preview overlay. Use the browser's Web Speech API or keep audio local with `clank-voice`, powered by Silero VAD and NVIDIA Parakeet v3. The mobile app runs the same speech-recognition stack on-device.
 
+```bash
+brew install supaclank/tap/clank-voice # optional, macOS; builds from source (needs Xcode CLT)
+```
+
+Models (~670 MB) download on first use.
+
 ### Images & attachments
 Images and attachments are handled via a minimal blobstore interface, with S3 for cloud deployments, and a LAN one for mobile->laptop transfers.
 

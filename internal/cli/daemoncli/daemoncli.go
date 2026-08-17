@@ -18,6 +18,7 @@ import (
 	"github.com/supaclank/clank/internal/config"
 	daemonclient "github.com/supaclank/clank/internal/daemonclient"
 	"github.com/supaclank/clank/internal/store"
+	"github.com/supaclank/clank/internal/version"
 	"github.com/supaclank/clank/pkg/auth"
 )
 
@@ -27,6 +28,8 @@ func Command() *cobra.Command {
 		Use:   "clankd",
 		Short: "Clank daemon manager",
 		Long:  "clankd manages the Clank background daemon that runs coding agent sessions.",
+		// Enables --version; the daemon reports the same value on /ping.
+		Version: version.String(),
 	}
 
 	startCmd := &cobra.Command{
