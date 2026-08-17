@@ -84,3 +84,16 @@ jobs:
           go-version-file: go.mod
       - name: Race tests (internal/agent)
         run: go test -race ./internal/agent/...
+
+  # Catches .goreleaser.yaml drift before a tag push discovers it.
+  goreleaser-check:
+    name: goreleaser check
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check

@@ -108,5 +108,5 @@ func findClankdFor(self string) (string, error) {
 	if found, err := exec.LookPath("clankd"); err == nil {
 		return found, nil
 	}
-	return "", fmt.Errorf("clankd binary not found next to %s or on PATH (try `go install github.com/supaclank/clank/cmd/clankd@latest`)", self)
+	return "", fmt.Errorf("clankd binary not found next to %s or on PATH (install with `brew install supaclank/tap/clank`, or `make install` from a checkout)", self)
 }

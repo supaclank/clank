@@ -25,3 +25,6 @@ screenshots/
 # `make docker-up` copies preferences.example.json → preferences.json
 # on first run; edits stay per-developer instead of polluting diffs.
 docker/preferences.json
+
+# goreleaser output (`make release-snapshot`).
+dist/

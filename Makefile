@@ -11,6 +11,16 @@ EMBED_HOST_BIN := pkg/provisioner/flysprites/clank-host-linux-amd64
 install: embed-host
 	go install ./cmd/clank/ ./cmd/clankd/ ./cmd/clank-host/
 
+# ---- Release ---------------------------------------------------------
+#
+# Real releases run from .github/workflows/release.yml on tag push (see
+# .goreleaser.yaml). This builds every archive locally into dist/
+# without publishing anything. Requires goreleaser (`brew install
+# goreleaser`).
+.PHONY: release-snapshot
+release-snapshot:
+	goreleaser release --snapshot --clean
+
 # ---- Voice (opt-in) --------------------------------------------------
 #
 # clank-voice is the local dictation engine for `clank preview`'s
