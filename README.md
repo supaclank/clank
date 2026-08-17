@@ -24,18 +24,11 @@ Attach to an existing Claude/Codex/OpenCode session with `clank preview --attach
 [**] For running web overlays or local expo servers, you need the Clank CLI. See below
 
 ### Get started
-If you want a demo first:
-- Mobile: Watch the video below ([#mobile-demo](#mobile-demo))
-- Web: Play with supaclank.com's live web demo: https://supaclank.com/demo
-
-Once ready:
-1. Choose mobile or laptop, or both
-2. Follow the steps below
-3. Start building!
-4. Give feedback! :)
+For web app development, start with the laptop.
+For mobile Expo app development, start with the mobile app. You can then pair with your laptop if you don't want to use a hosted solution.
 
 #### Laptop (Clank CLI)
-For web development with browser overlay, or self-hosted/local mobile development via Clank's mobile app. 
+The `clank` CLI starts its own local Clank gateway, which the browser overlay (or mobile app) connects to.
 
 ```bash
 brew install supaclank/tap/clank
@@ -45,19 +38,19 @@ clank preview # launches your project
 
 the CLI will onboard you the first time with agent preferences and synthesize an initial launch config for your project's dev server. 
 
-#### Mobile
-Connects to any Clank gateway, cloud hosted via e.g. [supaclank.com](https://supaclank.com), or your self-hosted one on the laptop.
+#### Mobile app
+Connects to any Clank gateway: By default it connects to `api.supaclank.com` via OIDC, but you can also pair your laptop (`clank pair`), or just set the gateway URL/IP directly.
 
-<img width="200" height="200" alt="image" src="https://github.com/user-attachments/assets/b2d959f3-04f6-4ba6-a2df-1eb31c3410ef" />
-<br>
+
 <a href="https://play.google.com/store/apps/details?id=com.supaclank.clank">
+  <img width="200" height="200" alt="image" src="https://github.com/user-attachments/assets/b2d959f3-04f6-4ba6-a2df-1eb31c3410ef" />
+  <br>
   <img
     alt="Get it on Google Play"
     src="https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png"
     height="78"
   />
 </a>
-
 
 #### Mobile demo
 
