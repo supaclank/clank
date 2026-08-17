@@ -10,18 +10,31 @@ The fastest way to iterate on apps is by just pointing and explaining.
 Clank is for iterating on that last 10% that AI can't solve.
 
 ## How
-Attach to an existing Claude/Codex/OpenCode session with `clank preview --attach`. Or just run `clank preview` to start your dev server with a new agent session.
+Run `clank preview` to start your dev server with a new agent session, or `clank preview --attach` to connect an existing Claude, Codex, or OpenCode session.
 
-- [The mobile app](https://play.google.com/store/apps/details?id=com.supaclank.clank)*: Expo Go but with agents. 
-  - Expo apps: Build your native app with the Clank overlay
-  - Web apps: Same Clank overlay but on a webview of your web app.
-- The browser overlay**: Lovable-like edits but fully local and inline with your app:
-  - Web apps (Vite, Next.js, any webserver): Opens browser with agent overlay
-  - Expo apps on laptop, no preview yet, but dev server presents QR code for mobile app to scan.
+<table>
+  <thead>
+    <tr>
+      <th scope="col" align="left"></th>
+      <th scope="col" align="left"><a href="https://play.google.com/store/apps/details?id=com.supaclank.clank">Mobile app</a></th>
+      <th scope="col" align="left">Laptop</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th scope="row" align="left">Expo</th>
+      <td>Like Expo Go but with agents.</td>
+      <td>Run <code>clank preview</code>: Like <code>expo start</code>, needs mobile app</td>
+    </tr>
+    <tr>
+      <th scope="row" align="left">Web</th>
+      <td>Opens webview + Clank overlay</td>
+      <td>Run <code>clank preview</code>: Runs Next.js, Vite (React, Svelte, Vue, etc.), or any other web server. An editing overlay powered by your own agents, in your own browser.</td>
+    </tr>
+  </tbody>
+</table>
 
-[*] The phone needs a clank gateway. Either connect to your laptop (via `clank pair`), or a hosted cloud solution like [supaclank.com](https://supaclank.com) to build without a laptop.
-
-[**] For running web overlays or local expo servers, you need the Clank CLI. See below
+The mobile app needs a Clank gateway. Pair it with your laptop using `clank pair`, or use a hosted gateway such as [supaclank.com](https://supaclank.com) to build without a laptop. The browser overlay and local Expo dev servers require the Clank CLI.
 
 ### Get started
 For web app development, start with the laptop.
