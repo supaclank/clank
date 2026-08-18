@@ -1,6 +1,8 @@
 package webpreview
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -25,7 +27,7 @@ func TestLauncherAcknowledgementPersistsAndUpdatesInjectedConfig(t *testing.T) {
 	if body := htmlBody(t, s); !strings.Contains(body, `"launcher_seen":false`) {
 		t.Fatalf("initial config must identify first use, got: %s", body)
 	}
-	req, _ := http.NewRequest(http.MethodPost, s.URL+LauncherSeenPath, nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.URL+LauncherSeenPath, nil)
 	req.Header.Set("Authorization", "Bearer sekrit")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -46,12 +48,50 @@ func TestLauncherAcknowledgementPersistsAndUpdatesInjectedConfig(t *testing.T) {
 func TestLauncherAcknowledgementRequiresPreviewToken(t *testing.T) {
 	t.Parallel()
 	s := startTestStack(t, http.NotFoundHandler(), http.NotFoundHandler())
-	resp, err := http.Post(s.URL+LauncherSeenPath, "application/json", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.URL+LauncherSeenPath, nil)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+// A failed persist must not be latched as "seen" — the next request has
+// to retry the write instead of silently 204'ing off a stale flag.
+func TestLauncherAcknowledgementRetriesAfterFailedPersist(t *testing.T) {
+	t.Parallel()
+	var attempts atomic.Int32
+	s := startTestStackOpts(t, http.NotFoundHandler(), http.NotFoundHandler(), func(o *Options) {
+		o.PersistLauncherSeen = func() error {
+			if attempts.Add(1) == 1 {
+				return errors.New("disk full")
+			}
+			return nil
+		}
+	})
+
+	post := func() *http.Response {
+		t.Helper()
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.URL+LauncherSeenPath, nil)
+		req.Header.Set("Authorization", "Bearer sekrit")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+
+	if resp := post(); resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("first attempt status = %d, want 500", resp.StatusCode)
+	}
+	if resp := post(); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("retry status = %d, want 204", resp.StatusCode)
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("persist attempts = %d, want 2 (retry must not be skipped)", attempts.Load())
 	}
 }
