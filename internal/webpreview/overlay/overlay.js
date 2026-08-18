@@ -42,7 +42,8 @@ import {
 } from './settings.js';
 import { clampTranslateToViewport, parseStoredBoxIntent, resizeOwesClamp } from './boxpos.js';
 import {
-  LAUNCHER_SEEN_PATH, launcherActivity, launcherShortcut, shouldShowLauncherCoachmark,
+  LAUNCHER_SEEN_PATH, launcherActivity, launcherMorphGeometry, launcherShortcut,
+  shouldShowLauncherCoachmark,
 } from './launcher.js';
 import {
   scRequest, presentStatus, actionsFor, actionLayout, headerPRFor,
@@ -1855,7 +1856,7 @@ import {
     // opening) centered on the viewBox so a rotation spins in place
     // (the ↻ text glyph orbits — its ink isn't box-centered)
     refresh: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>',
-    launcher: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 7V4a1 1 0 0 1 1-1h3M17 3h3a1 1 0 0 1 1 1v3M21 17v3a1 1 0 0 1-1 1h-3M7 21H4a1 1 0 0 1-1-1v-3" stroke="currentColor" stroke-width="2.8" stroke-linecap="square"/><rect x="7.5" y="7.5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 2"/></svg>',
+    launcher: '<svg width="27" height="27" viewBox="0 0 24 24" fill="none" aria-hidden="true"><defs><linearGradient id="clank-mark" x1="2" y1="2" x2="22" y2="22"><stop stop-color="#ff315f"/><stop offset="1" stop-color="#e91973"/></linearGradient></defs><path d="M2 2h6v3H5v3H2V2Zm14 0h6v6h-3V5h-3V2Zm3 14h3v6h-6v-3h3v-3ZM2 16h3v3h3v3H2v-6Z" fill="url(#clank-mark)"/><rect x="6.5" y="6.5" width="11" height="11" rx="1" stroke="url(#clank-mark)" stroke-width="1.5" stroke-dasharray="2 2"/></svg>',
   };
 
   const host = document.createElement('div');
@@ -1885,6 +1886,7 @@ import {
     transform-origin: 50% 100%;
   }
   .box.visible { display: block; animation: boxIn 300ms cubic-bezier(0.26, 1.15, 0.44, 1); }
+  .box.morphing { animation: none; }
   .box:focus { outline: none; } /* focus ANCHOR (tabindex=-1), not a tab stop — no ring */
   /* buttons show a ring on KEYBOARD focus only (:focus-visible) — the
      Tab rotation must be visible; the composer's caret speaks for itself */
@@ -2810,6 +2812,39 @@ import {
     if (s !== 'hidden') setTimeout(() => ui.box.focus({ preventScroll: true }), 0);
   };
 
+  const animateLauncherIntoBox = (launcherRect) => {
+    const finish = () => ui.box.classList.remove('morphing');
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      finish();
+      return;
+    }
+    const morph = launcherMorphGeometry(launcherRect, ui.box.getBoundingClientRect());
+    const animation = ui.box.animate([
+      {
+        transformOrigin: '50% 50%',
+        transform: `translate(${morph.x}px, ${morph.y}px) scale(${morph.scaleX}, ${morph.scaleY})`,
+        borderRadius: '15px',
+        background: 'rgba(24,24,27,.94)',
+        opacity: .96,
+      },
+      {
+        transformOrigin: '50% 50%',
+        transform: 'translate(0, 0) scale(1, 1)',
+        borderRadius: '18px',
+        background: 'rgba(255,255,255,.92)',
+        opacity: 1,
+      },
+    ], { duration: 420, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'none' });
+    animation.finished.then(finish, finish);
+  };
+
+  const openFromLauncher = () => {
+    const launcherRect = ui.launcher.getBoundingClientRect();
+    ui.box.classList.add('morphing');
+    setBox('prompt');
+    animateLauncherIntoBox(launcherRect);
+  };
+
   // ---------- inspector -----------------------------------------------------
   let hoverEl = null;
   // Attached-element outlines: while select mode is held, every element
@@ -3509,7 +3544,7 @@ import {
   })();
 
   // ---------- wiring -----------------------------------------------------------
-  ui.launcher.onclick = () => setBox('prompt');
+  ui.launcher.onclick = openFromLauncher;
   ui.coachDismiss.onclick = () => { acknowledgeLauncher(); render(); };
   ui.send.onclick = () => { (store.agent === 'thinking' || store.agent === 'working') ? abort() : send(); };
   ui.profile.onclick = () => (store.settingsOpen ? closeSettings() : openSettings());

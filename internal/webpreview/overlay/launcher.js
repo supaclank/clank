@@ -4,6 +4,13 @@ export const shouldShowLauncherCoachmark = (hasSeenLauncher) => !hasSeenLauncher
 
 export const launcherShortcut = (isMac) => isMac ? '⌘E' : 'Ctrl E';
 
+export const launcherMorphGeometry = (launcherRect, boxRect) => ({
+  x: launcherRect.left + launcherRect.width / 2 - (boxRect.left + boxRect.width / 2),
+  y: launcherRect.top + launcherRect.height / 2 - (boxRect.top + boxRect.height / 2),
+  scaleX: launcherRect.width / boxRect.width,
+  scaleY: launcherRect.height / boxRect.height,
+});
+
 export const launcherActivity = (agent, aborting) => {
   if (aborting) return { state: 'stopping', label: 'Clank is stopping', isBusy: true };
   switch (agent) {

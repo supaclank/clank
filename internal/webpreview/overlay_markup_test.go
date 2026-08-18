@@ -14,6 +14,9 @@ func TestOverlayLauncherRemainsDiscoverableWhenPromptIsHidden(t *testing.T) {
 		"ui.launcher.classList.toggle('visible', store.box === 'hidden')",
 		"acknowledgeLauncher",
 		"launcherActivity(store.agent, store.aborting)",
+		"animateLauncherIntoBox",
+		"ui.box.animate(",
+		".box.morphing",
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("overlay.js launcher wiring missing %q", want)
