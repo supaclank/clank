@@ -92,7 +92,10 @@ export const createStreamPartTracker = () => {
   let open = { type: null, id: '' };
   return {
     resolve(rawPart, isDelta) {
-      if (rawPart.id) return rawPart;
+      if (rawPart.id) {
+        open = { type: null, id: '' }; // an explicit-id part interrupts any open id-less run
+        return rawPart;
+      }
       if (open.type !== rawPart.type) open = { type: rawPart.type, id: `stream:${rawPart.type}:${++seq}` };
       const p = { ...rawPart, id: open.id };
       if (!isDelta) open = { type: null, id: '' };

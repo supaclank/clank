@@ -1504,7 +1504,7 @@ import {
         break;
       }
       case 'message': {
-        streamPartTracker.boundary(); // a settled message ends any open id-less stream
+        if (d.role === 'assistant') streamPartTracker.boundary(); // the assistant shell settles the open id-less stream
         if (d.role === 'user') {
           const hasUserText = (d.parts || []).some((p) => p.type === 'text' && p.text) || !!d.content;
           if (d.id && hasUserText) store.lastUserMsgId = d.id; // skip tool-result-only carriers, matching chatFromMessages [DATA-022]

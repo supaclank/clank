@@ -178,6 +178,14 @@ test('createStreamPartTracker: boundary() starts a fresh id even mid-run (status
   assert.notEqual(first.id, second.id);
 });
 
+test('createStreamPartTracker: an explicit-id part interrupting an id-less run does not let a later id-less delta reuse the stale id', () => {
+  const tracker = createStreamPartTracker();
+  const first = tracker.resolve({ type: 'text', text: 'a' }, true); // opens an id-less 'text' run
+  tracker.resolve({ id: 'tool1', type: 'tool_call', tool: 'Read' }, false); // explicit-id part interrupts
+  const second = tracker.resolve({ type: 'text', text: 'b' }, true); // a new id-less run should start fresh
+  assert.notEqual(first.id, second.id);
+});
+
 test('toolSummary prefers paths, commands, then descriptions', () => {
   assert.equal(toolSummary({ input: { filePath: 'src/app.js' } }), 'src/app.js');
   assert.equal(toolSummary({ input: { command: 'go test ./...' } }), 'go test ./...');
