@@ -1,8 +1,9 @@
 package preview
 
 import (
-	"bytes"
 	"sync"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // ringBuf is a fixed-capacity append buffer that overwrites old bytes
@@ -10,11 +11,8 @@ import (
 // endpoint can return the last N KiB without an unbounded memory leak
 // from a chatty Metro process.
 //
-// All ANSI CSI sequences ("ESC [ ...") are stripped on write — Metro
-// emits color codes liberally and the consumer (mobile UI / curl) does
-// not render them. Stripping at write time keeps reads cheap and the
-// buffer's "last N bytes" guarantee meaningful (each retained byte is
-// a real character, not a noise prefix).
+// Terminal escape sequences and controls are stripped on write. Newlines,
+// carriage returns, and tabs remain so consumers can present readable logs.
 type ringBuf struct {
 	mu   sync.Mutex
 	buf  []byte // capacity == cap; len grows up to cap then wraps via overwrite
@@ -29,12 +27,12 @@ func newRingBuf(capacity int) *ringBuf {
 	return &ringBuf{buf: make([]byte, 0, capacity)}
 }
 
-// Write appends p (after ANSI stripping), discarding the oldest bytes
-// once the buffer is full. Always returns (len(p), nil) — the
+// Write appends p (after sanitizing terminal controls), discarding the oldest
+// bytes once the buffer is full. Always returns (len(p), nil) — the
 // io.Writer contract requires we report the unstripped count so callers
 // driving a Copy loop don't loop forever.
 func (r *ringBuf) Write(p []byte) (int, error) {
-	stripped := stripANSI(p)
+	stripped := sanitizeTerminalOutput(p)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	cap := cap(r.buf)
@@ -74,35 +72,16 @@ func (r *ringBuf) Snapshot() []byte {
 	return out
 }
 
-// stripANSI removes CSI escape sequences ("ESC[…m" and friends). Keeps
-// every other byte verbatim, including non-ASCII. This is the only
-// transformation applied to dev-server output before it lands in the
-// ring; if we ever want to strip OSC or other escape families we'd
-// extend here.
-func stripANSI(p []byte) []byte {
-	if !bytes.ContainsRune(p, 0x1b) {
-		return p
-	}
-	out := make([]byte, 0, len(p))
-	for i := 0; i < len(p); i++ {
-		if p[i] != 0x1b || i+1 >= len(p) || p[i+1] != '[' {
-			out = append(out, p[i])
+// sanitizeTerminalOutput removes escape sequences and non-layout controls.
+func sanitizeTerminalOutput(p []byte) []byte {
+	stripped := []byte(ansi.Strip(string(p)))
+	out := stripped[:0]
+	for _, b := range stripped {
+		isLayoutControl := b == '\n' || b == '\r' || b == '\t'
+		if (b < 0x20 && !isLayoutControl) || b == 0x7f {
 			continue
 		}
-		// Skip "ESC [" and consume until a final byte in the 0x40-0x7E
-		// range terminates the sequence.
-		i += 1 // points at '['
-		for j := i + 1; j < len(p); j++ {
-			b := p[j]
-			if b >= 0x40 && b <= 0x7e {
-				i = j
-				break
-			}
-			// Unterminated sequence at end of buffer — drop the rest.
-			if j == len(p)-1 {
-				return out
-			}
-		}
+		out = append(out, b)
 	}
 	return out
 }

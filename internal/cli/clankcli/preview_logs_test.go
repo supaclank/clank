@@ -8,7 +8,44 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
+
+func TestPreviewStartupLogStreamFramesChunkedOutput(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	stream := previewStartupLogStream{out: &out}
+	if err := stream.write([]byte("install")); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.write([]byte("ing dependencies\nstarting server\n")); err != nil {
+		t.Fatal(err)
+	}
+	stream.finish()
+
+	got := ansi.Strip(out.String())
+	want := "\n┌─ dev server output\n│ installing dependencies\n│ starting server\n└─ end dev server output\n"
+	if got != want {
+		t.Fatalf("framed output = %q, want %q", got, want)
+	}
+}
+
+func TestPreviewStartupLogStreamKeepsGutterAcrossCarriageReturn(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	stream := previewStartupLogStream{out: &out}
+	if err := stream.write([]byte("building 10%\rbuilding 20%")); err != nil {
+		t.Fatal(err)
+	}
+	stream.finish()
+
+	got := ansi.Strip(out.String())
+	want := "\n┌─ dev server output\n│ building 10%\r│ building 20%\n└─ end dev server output\n"
+	if got != want {
+		t.Fatalf("framed output = %q, want %q", got, want)
+	}
+}
 
 func TestPreviewLogDelta(t *testing.T) {
 	t.Parallel()

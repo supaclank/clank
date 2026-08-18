@@ -37,22 +37,33 @@ func TestRingBufStripsANSI(t *testing.T) {
 	}
 }
 
-func TestStripANSI_NoEscape_PassThrough(t *testing.T) {
+func TestRingBufStripsTerminalControlSequences(t *testing.T) {
 	t.Parallel()
-	in := []byte("plain text, no escape")
-	out := stripANSI(in)
-	if !bytes.Equal(in, out) {
-		t.Fatalf("stripANSI on plain input mutated bytes: in=%q out=%q", in, out)
+	r := newRingBuf(64)
+	r.Write([]byte("before\x1b]0;spoofed title\x07after\x07"))
+	got := string(r.Snapshot())
+	want := "beforeafter"
+	if got != want {
+		t.Fatalf("snapshot = %q, want %q (terminal controls should be stripped)", got, want)
 	}
 }
 
-func TestStripANSI_UnterminatedSequenceDropped(t *testing.T) {
+func TestSanitizeTerminalOutputPlainTextPassesThrough(t *testing.T) {
+	t.Parallel()
+	in := []byte("plain text, no escape")
+	out := sanitizeTerminalOutput(in)
+	if !bytes.Equal(in, out) {
+		t.Fatalf("sanitizeTerminalOutput on plain input mutated bytes: in=%q out=%q", in, out)
+	}
+}
+
+func TestSanitizeTerminalOutputDropsUnterminatedSequence(t *testing.T) {
 	t.Parallel()
 	// "\x1b[2" lacks the final byte (e.g. 'm') — genuinely unterminated.
-	// stripANSI should drop everything from ESC onward.
-	got := string(stripANSI([]byte("hello\x1b[2")))
+	// sanitizeTerminalOutput should drop everything from ESC onward.
+	got := string(sanitizeTerminalOutput([]byte("hello\x1b[2")))
 	want := "hello"
 	if got != want {
-		t.Fatalf("stripANSI unterminated = %q, want %q", got, want)
+		t.Fatalf("sanitizeTerminalOutput unterminated = %q, want %q", got, want)
 	}
 }

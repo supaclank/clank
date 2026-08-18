@@ -5,19 +5,24 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
 const (
 	previewLogPollInterval = 1 * time.Second
-	previewLogHeader       = "--- dev server output ---"
+	previewLogHeader       = "┌─ dev server output"
+	previewLogGutter       = "│ "
+	previewLogFooter       = "└─ end dev server output"
 )
 
 type previewStartupLogStream struct {
-	out       io.Writer
-	previous  []byte
-	hasOutput bool
-	lastByte  byte
+	out         io.Writer
+	previous    []byte
+	hasOutput   bool
+	isLineStart bool
+	lastWasCR   bool
+	lastByte    byte
 }
 
 // previewLogFetcher reads the current dev-server log snapshot. It's a plain
@@ -51,16 +56,41 @@ func (s *previewStartupLogStream) apply(res previewLogResult) error {
 	if len(delta) == 0 {
 		return nil
 	}
+	return s.write(delta)
+}
+
+func (s *previewStartupLogStream) write(chunk []byte) error {
+	if len(chunk) == 0 {
+		return nil
+	}
 	if !s.hasOutput {
-		if _, err := fmt.Fprintln(s.out, "\n"+previewLogHeader); err != nil {
+		if _, err := fmt.Fprintln(s.out, "\n"+styleCmdHint.Render(previewLogHeader)); err != nil {
 			return fmt.Errorf("write preview log heading: %w", err)
 		}
 		s.hasOutput = true
+		s.isLineStart = true
 	}
-	if _, err := s.out.Write(delta); err != nil {
+	framed := make([]byte, 0, len(chunk)+len(previewLogGutter))
+	for _, b := range chunk {
+		if s.isLineStart {
+			if b == '\n' && s.lastWasCR {
+				framed = append(framed, b)
+				s.lastWasCR = false
+				continue
+			}
+			framed = append(framed, previewLogGutter...)
+			s.isLineStart = false
+		}
+		framed = append(framed, b)
+		s.lastWasCR = b == '\r'
+		if b == '\n' || b == '\r' {
+			s.isLineStart = true
+		}
+	}
+	if _, err := io.WriteString(s.out, renderPreviewLog(framed)); err != nil {
 		return fmt.Errorf("write preview startup logs: %w", err)
 	}
-	s.lastByte = delta[len(delta)-1]
+	s.lastByte = chunk[len(chunk)-1]
 	return nil
 }
 
@@ -69,10 +99,33 @@ func (s *previewStartupLogStream) poll(ctx context.Context, fetch previewLogFetc
 	return s.apply(s.fetch(ctx, fetch))
 }
 
+func renderPreviewLog(log []byte) string {
+	var rendered strings.Builder
+	lineStart := 0
+	for i, b := range log {
+		if b != '\n' && b != '\r' {
+			continue
+		}
+		if lineStart < i {
+			rendered.WriteString(stylePreviewLog.Render(string(log[lineStart:i])))
+		}
+		rendered.WriteByte(b)
+		lineStart = i + 1
+	}
+	if lineStart < len(log) {
+		rendered.WriteString(stylePreviewLog.Render(string(log[lineStart:])))
+	}
+	return rendered.String()
+}
+
 func (s *previewStartupLogStream) finish() {
-	if s.hasOutput && s.lastByte != '\n' {
+	if !s.hasOutput {
+		return
+	}
+	if s.lastByte != '\n' {
 		_, _ = fmt.Fprintln(s.out)
 	}
+	_, _ = fmt.Fprintln(s.out, styleCmdHint.Render(previewLogFooter))
 }
 
 // previewLogPoller dispatches at most one in-flight log fetch at a time, so
