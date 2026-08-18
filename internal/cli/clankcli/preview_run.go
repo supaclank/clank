@@ -206,7 +206,7 @@ func runPreviewWithDisplayName(projectDir, launchName, backend string, port int,
 			}
 		}()
 		fmt.Println("Waiting for the dev server to come up…")
-		status, err = waitPreviewReady(sigCtx, pv, status, previewStartupTimeout)
+		status, err = waitPreviewReady(sigCtx, pv, status, previewStartupTimeout, os.Stdout)
 		if err != nil {
 			if setupResult != nil {
 				return previewSetupSessionError(setupResult.ProjectRoot, setupResult.SessionID, err)

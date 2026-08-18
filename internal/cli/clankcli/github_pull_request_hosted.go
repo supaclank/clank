@@ -57,7 +57,7 @@ func runHostedGitHubPullRequestPreview(
 
 	go keepHostedPreviewAlive(ctx, previewClient)
 	_, _ = fmt.Fprintln(out, "Waiting for the hosted dev server to come up…")
-	status, err = waitPreviewReady(ctx, previewClient, status, previewStartupTimeout)
+	status, err = waitPreviewReady(ctx, previewClient, status, previewStartupTimeout, out)
 	if err != nil {
 		return err
 	}
