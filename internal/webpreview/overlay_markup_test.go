@@ -55,6 +55,40 @@ func TestOverlayLauncherUsesCurrentClankMark(t *testing.T) {
 	}
 }
 
+// TestOverlayBusyDerivesFromActivityNotRawAgent guards against a regression
+// where busy was computed from store.agent alone: the Stop control and
+// progress row would then flip back to idle mid-abort, before abort()'s
+// request resolves, because launcherActivity's 'stopping' state (aborting
+// === true, agent already 'done') was never consulted.
+func TestOverlayBusyDerivesFromActivityNotRawAgent(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	if !strings.Contains(js, "const busy = activity.isBusy;") {
+		t.Error("overlay.js render() must derive busy from activity.isBusy, not store.agent alone")
+	}
+	if strings.Contains(js, "const busy = store.agent === 'thinking' || store.agent === 'working';") {
+		t.Error("overlay.js must not reintroduce the raw store.agent busy check that drops aborting")
+	}
+}
+
+// TestOverlayLauncherMorphDoesNotReplayEntryAnimation guards the morph→box
+// transition: removing .morphing without a follow-up suppressor lets
+// .box.visible's boxIn animation restart from opacity:0, so the box
+// flashes invisible right after the 420ms morph settles.
+func TestOverlayLauncherMorphDoesNotReplayEntryAnimation(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	for _, want := range []string{
+		".box.morphing, .box.morphed",
+		"classList.replace('morphing', 'morphed')",
+		"classList.remove('morphed')",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("overlay.js morph-settle wiring missing %q", want)
+		}
+	}
+}
+
 // TestOverlayComposerSelectorIsClassScoped guards the composer wiring:
 // ui.input was once selected with a bare $('textarea'), and adding the
 // plan-notes textarea earlier in the markup silently captured it —

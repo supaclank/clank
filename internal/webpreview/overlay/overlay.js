@@ -1856,6 +1856,7 @@ import {
     // opening) centered on the viewBox so a rotation spins in place
     // (the ↻ text glyph orbits — its ink isn't box-centered)
     refresh: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>',
+    // TODO(ai-review): icon uses a fixed gradient fill, so [data-state="done"/"error"] color rules don't recolor it. https://github.com/supaclank/clank/pull/263#discussion_r3807751159
     launcher: '<svg width="27" height="27" viewBox="0 0 24 24" fill="none" aria-hidden="true"><defs><linearGradient id="clank-mark" x1="2" y1="2" x2="22" y2="22"><stop stop-color="#ff315f"/><stop offset="1" stop-color="#ff4f83"/></linearGradient></defs><rect class="launcher-mark-field" x="5" y="5" width="14" height="14" fill="url(#clank-mark)" opacity=".48"/><rect x="5" y="5" width="14" height="14" stroke="url(#clank-mark)" stroke-width="2" stroke-dasharray="4 2.5"/><rect class="launcher-mark-corner" x="2" y="2" width="5.5" height="5.5" fill="url(#clank-mark)"/><rect class="launcher-mark-corner" x="16.5" y="2" width="5.5" height="5.5" fill="url(#clank-mark)"/><rect class="launcher-mark-corner" x="16.5" y="16.5" width="5.5" height="5.5" fill="url(#clank-mark)"/><rect class="launcher-mark-corner" x="2" y="16.5" width="5.5" height="5.5" fill="url(#clank-mark)"/></svg>',
   };
 
@@ -1886,7 +1887,9 @@ import {
     transform-origin: 50% 100%;
   }
   .box.visible { display: block; animation: boxIn 300ms cubic-bezier(0.26, 1.15, 0.44, 1); }
-  .box.morphing { animation: none; }
+  /* .morphed persists after the launcher morph settles so boxIn doesn't
+     replay (it would flash the box invisible right after the morph). */
+  .box.morphing, .box.morphed { animation: none; }
   .box:focus { outline: none; } /* focus ANCHOR (tabindex=-1), not a tab stop — no ring */
   /* buttons show a ring on KEYBOARD focus only (:focus-visible) — the
      Tab rotation must be visible; the composer's caret speaks for itself */
@@ -2639,8 +2642,8 @@ import {
 
   const STATUS_TEXT = { idle: '', thinking: 'thinking…', working: 'working…', done: 'done', error: 'error' };
   const render = () => {
-    const busy = store.agent === 'thinking' || store.agent === 'working';
     const activity = launcherActivity(store.agent, store.aborting);
+    const busy = activity.isBusy; // keeps Stop visible through 'stopping', not just 'thinking'/'working'
     ui.box.classList.toggle('visible', store.box !== 'hidden');
     ui.box.classList.toggle('expanded', store.box === 'chat');
     for (const s of ['thinking', 'working', 'done', 'error']) ui.box.classList.toggle(s, store.agent === s);
@@ -2788,6 +2791,7 @@ import {
     if (s !== 'hidden') acknowledgeLauncher();
     store.box = s;
     if (s === 'hidden') {
+      ui.box.classList.remove('morphed'); // next open (e.g. hotkey) should play boxIn normally
       exitInspect();
       enginePickPending = false;
       store.enginePick = false;
@@ -2813,7 +2817,7 @@ import {
   };
 
   const animateLauncherIntoBox = (launcherRect) => {
-    const finish = () => ui.box.classList.remove('morphing');
+    const finish = () => ui.box.classList.replace('morphing', 'morphed');
     if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
       finish();
       return;
