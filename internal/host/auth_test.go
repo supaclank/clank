@@ -858,6 +858,34 @@ func TestAuthManager_ListProviders_ClaudeCLIFallback(t *testing.T) {
 	}
 }
 
+// Ambient credentials must not even be probed before the user allows Clank
+// to control that harness. The allow decision is distinct from authentication.
+func TestAuthManager_ListProviders_HarnessNotAllowedHidesAmbientCredential(t *testing.T) {
+	// Not parallel: t.Setenv (PATH).
+	putFakeSecurity(t, `if [ "$1" = "find-generic-password" ] || [ "$1" = "show-keychain-info" ]; then exit 0; fi; exit 1`)
+	a, _ := newTestAuthManager(t)
+	a.EnableClaudeCLIFallback()
+	a.SetBackendAllowed(func(agent.BackendType) bool { return false })
+
+	sub, _ := listAnthropicProviders(t, a)
+	if sub.Connected || sub.Source != "" {
+		t.Errorf("disallowed harness exposed ambient auth: connected=%v source=%q", sub.Connected, sub.Source)
+	}
+}
+
+func TestAuthManager_DisallowedHarnessDoesNotExposeSpawnEnvironment(t *testing.T) {
+	t.Parallel()
+	a, _ := newTestAuthManager(t)
+	if err := a.SetOpenAIAPIKey("sk-test"); err != nil {
+		t.Fatalf("SetOpenAIAPIKey: %v", err)
+	}
+	a.SetBackendAllowed(func(agent.BackendType) bool { return false })
+
+	if env := a.OpenAIEnv(); env != nil {
+		t.Errorf("OpenAIEnv() = %v, want nil before Codex is allowed", env)
+	}
+}
+
 // The fallback is a wiring decision (local laptop provisioner). Left
 // disabled — the sprite default — a machine-local claude login must
 // not leak into provider status.

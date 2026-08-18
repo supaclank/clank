@@ -1,10 +1,9 @@
 package clankcli
 
-// `clank connect` — sign an agent backend in on this machine. Mirrors
-// the `clank github connect` naming, and reuses the inbox's provider-auth
-// flow verbatim (internal/tui.ConnectModel) rather than growing a second
-// implementation of device flows, API-key prompts, and the claude
-// setup-token relay.
+// `clank connect` allows and configures agent harnesses on this machine. It
+// reuses the inbox's provider-auth flow rather than growing a second
+// implementation of device flows, API-key prompts, and the Claude setup-token
+// relay.
 
 import (
 	"fmt"
@@ -18,12 +17,13 @@ import (
 func connectCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "connect [backend]",
-		Short: "Connect an agent backend (sign in a provider)",
-		Long: `Signs a coding agent in on this machine so clank can run it.
+		Short: "Allow and configure an agent harness",
+		Long: `Allows Clank to control a coding-agent harness through ACP, then
+detects or configures that harness's authentication.
 
-With no argument, shows every backend with its connection state and asks
-which one you want; with a backend name (opencode, claude, codex) it goes
-straight to that backend's providers.
+With no argument, shows every harness and its allow/auth state. With a
+harness name (opencode, claude, codex), it goes straight to that harness.
+Credential detection starts only after you approve the harness.
 
 Credentials are stored by this machine's clank-host process — nothing is
 sent to a gateway. Requires an interactive terminal.`,
@@ -45,7 +45,7 @@ sent to a gateway. Requires an interactive terminal.`,
 
 // connectHint is what non-interactive callers are told instead of being
 // dropped into a TUI they can't drive.
-const connectHint = "run `clank connect` in a terminal to sign an agent in"
+const connectHint = "run `clank connect` in a terminal to allow and configure an agent harness"
 
 // errConnectNeedsTTY is returned by every entry point that would open
 // the connect UI without a terminal to render it into.

@@ -28,6 +28,7 @@ func TestPreferences_RoundTrip(t *testing.T) {
 		},
 		ColorScheme:         "tokyo-night",
 		DefaultBackend:      "claude-code",
+		AllowedHarnesses:    map[string]bool{"claude-code": true},
 		WebPreviewDictation: "webspeech",
 	}
 	if err := SavePreferences(want); err != nil {
@@ -45,6 +46,9 @@ func TestPreferences_RoundTrip(t *testing.T) {
 	if got.DefaultBackend != want.DefaultBackend {
 		t.Errorf("DefaultBackend: got %q, want %q", got.DefaultBackend, want.DefaultBackend)
 	}
+	if !got.IsHarnessAllowed("claude-code") || got.IsHarnessAllowed("opencode") {
+		t.Errorf("AllowedHarnesses: got %v, want only claude-code allowed", got.AllowedHarnesses)
+	}
 	if got.WebPreviewDictation != want.WebPreviewDictation {
 		t.Errorf("WebPreviewDictation: got %q, want %q", got.WebPreviewDictation, want.WebPreviewDictation)
 	}
@@ -53,6 +57,22 @@ func TestPreferences_RoundTrip(t *testing.T) {
 	}
 	if got.ModelFor("opencode") != want.Models["opencode"] {
 		t.Errorf("Models[opencode]: got %+v, want %+v", got.ModelFor("opencode"), want.Models["opencode"])
+	}
+}
+
+func TestPreferences_SetHarnessAllowed(t *testing.T) {
+	t.Parallel()
+	var prefs Preferences
+	prefs.SetHarnessAllowed("claude-code", true)
+	if !prefs.IsHarnessAllowed("claude-code") {
+		t.Fatal("claude-code was not allowed")
+	}
+	prefs.SetHarnessAllowed("claude-code", false)
+	if prefs.IsHarnessAllowed("claude-code") {
+		t.Fatal("claude-code stayed allowed after revocation")
+	}
+	if len(prefs.AllowedHarnesses) != 0 {
+		t.Errorf("empty allow map was not cleaned up: %v", prefs.AllowedHarnesses)
 	}
 }
 

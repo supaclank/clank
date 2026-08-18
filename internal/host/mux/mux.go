@@ -178,6 +178,8 @@ func writeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, host.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, errResp{Code: "not_found", Error: err.Error()})
+	case errors.Is(err, host.ErrBackendNotAllowed):
+		writeJSON(w, http.StatusForbidden, errResp{Code: host.ErrorCodeHarnessNotAllowed, Error: err.Error()})
 	case errors.Is(err, host.ErrConfigIncomplete):
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "config_incomplete", Error: err.Error()})
 	case errors.Is(err, host.ErrWorktreeBusy):

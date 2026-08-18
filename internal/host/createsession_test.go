@@ -2,6 +2,7 @@ package host_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +31,52 @@ func TestCreateSession_LocalRef_Success(t *testing.T) {
 	}
 	if _, _, err := svc.CreateSession(context.Background(), "sid-local", req); err != nil {
 		t.Fatalf("CreateSession: %v", err)
+	}
+}
+
+func TestCreateSession_HarnessMustBeAllowed(t *testing.T) {
+	t.Parallel()
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+		BackendAllowed: func(agent.BackendType) bool { return false },
+	})
+	t.Cleanup(svc.Shutdown)
+
+	req := agent.StartRequest{
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{LocalPath: "/permission-check-happens-first"},
+		Prompt:  "hi",
+	}
+	if _, _, err := svc.CreateSession(context.Background(), "sid-disallowed", req); !errors.Is(err, host.ErrBackendNotAllowed) {
+		t.Fatalf("CreateSession error = %v, want ErrBackendNotAllowed", err)
+	}
+}
+
+func TestLiveSession_HarnessPermissionIsRechecked(t *testing.T) {
+	t.Parallel()
+	allowed := true
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+		BackendAllowed: func(agent.BackendType) bool { return allowed },
+	})
+	t.Cleanup(svc.Shutdown)
+
+	dir := initGitRepo(t, "git@github.com:supaclank/clank.git")
+	req := agent.StartRequest{
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{LocalPath: dir},
+		Prompt:  "hi",
+	}
+	if _, _, err := svc.CreateSession(context.Background(), "sid-revoked", req); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	allowed = false
+	if err := svc.SendMessage(context.Background(), "sid-revoked", agent.SendMessageOpts{Text: "hello"}); !errors.Is(err, host.ErrBackendNotAllowed) {
+		t.Fatalf("SendMessage error = %v, want ErrBackendNotAllowed", err)
 	}
 }
 

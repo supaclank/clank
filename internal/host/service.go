@@ -52,6 +52,7 @@ type Service struct {
 	id              string
 	startedAt       time.Time
 	backendManagers map[agent.BackendType]agent.BackendManager
+	backendAllowed  func(agent.BackendType) bool
 	auth            *AuthManager
 	github          *githubpkg.Manager
 	log             *log.Logger
@@ -66,8 +67,9 @@ type Service struct {
 	// canonicals. Empty resolves to $HOME/work per call; see workRootDir.
 	workRoot string
 
-	mu       sync.RWMutex
-	sessions map[string]agent.SessionBackend
+	mu                  sync.RWMutex
+	sessions            map[string]agent.SessionBackend
+	sessionBackendTypes map[string]agent.BackendType
 	// closed gates new registrations. CreateSession re-checks after
 	// the slow CreateBackend call to avoid leaking into a torn-down
 	// registry.
@@ -134,6 +136,11 @@ type Options struct {
 	ID string
 	// BackendManagers maps each backend type to its manager. Required.
 	BackendManagers map[agent.BackendType]agent.BackendManager
+	// BackendAllowed gates operations that start or inspect an agent harness.
+	// Nil allows every configured backend; laptop mode supplies a dynamic
+	// preferences-backed check so a newly granted permission applies without
+	// restarting clank-host.
+	BackendAllowed func(agent.BackendType) bool
 	// Log is the logger. Defaults to a logger writing to stderr with the
 	// "[clank-host]" prefix.
 	Log *log.Logger
@@ -236,6 +243,20 @@ type Options struct {
 	PresetsDir string
 }
 
+// ErrBackendNotAllowed means the user has not granted Clank permission to
+// control the requested agent harness.
+var ErrBackendNotAllowed = errors.New("agent harness not allowed")
+
+// ErrorCodeHarnessNotAllowed is the wire error code for ErrBackendNotAllowed.
+const ErrorCodeHarnessNotAllowed = "harness_not_allowed"
+
+func (s *Service) requireBackendAllowed(bt agent.BackendType) error {
+	if s.backendAllowed != nil && !s.backendAllowed(bt) {
+		return fmt.Errorf("%w: run clank connect %s", ErrBackendNotAllowed, bt)
+	}
+	return nil
+}
+
 // New creates a Service. Panics on missing BackendManagers — fast
 // failure beats a later nil deref.
 func New(opts Options) *Service {
@@ -266,12 +287,14 @@ func New(opts Options) *Service {
 		id:                    id,
 		startedAt:             time.Now(),
 		backendManagers:       opts.BackendManagers,
+		backendAllowed:        opts.BackendAllowed,
 		log:                   lg,
 		projectCommitterName:  committerName,
 		projectCommitterEmail: committerEmail,
 		templates:             opts.Templates,
 		workRoot:              opts.WorkRoot,
 		sessions:              make(map[string]agent.SessionBackend),
+		sessionBackendTypes:   make(map[string]agent.BackendType),
 		branches:              newBranchCache(opts.BranchCacheTTL, opts.Now),
 		sessionsStore:         opts.SessionsStore,
 		subscribers:           newSubscriberRegistry(),
@@ -329,6 +352,7 @@ func New(opts Options) *Service {
 		s.log.Printf("auth manager unavailable: %v", err)
 	} else {
 		s.auth = am
+		am.SetBackendAllowed(opts.BackendAllowed)
 		if opts.AnthropicClaudeCLIAuth {
 			am.EnableClaudeCLIFallback()
 		}
@@ -480,6 +504,7 @@ func (s *Service) Shutdown() {
 	s.closed = true
 	live := s.sessions
 	s.sessions = make(map[string]agent.SessionBackend)
+	s.sessionBackendTypes = make(map[string]agent.BackendType)
 	s.mu.Unlock()
 	for id, b := range live {
 		if err := b.Stop(); err != nil {
@@ -540,6 +565,9 @@ func (s *Service) ListBackends(_ context.Context) ([]BackendInfo, error) {
 // (nil, nil) means the backend is unknown or doesn't implement listing
 // — neither is an error.
 func (s *Service) ListAgents(ctx context.Context, bt agent.BackendType, ref agent.GitRef) ([]AgentInfo, error) {
+	if err := s.requireBackendAllowed(bt); err != nil {
+		return nil, err
+	}
 	mgr, ok := s.backendManagers[bt]
 	if !ok {
 		return nil, nil
@@ -560,6 +588,9 @@ func (s *Service) ListAgents(ctx context.Context, bt agent.BackendType, ref agen
 // exists (compose). On-demand and uncached — the caller shows a spinner
 // for exactly this call. Empty when the backend can't report them.
 func (s *Service) ConfigOptions(ctx context.Context, bt agent.BackendType, ref agent.GitRef) ([]agent.ConfigOption, error) {
+	if err := s.requireBackendAllowed(bt); err != nil {
+		return nil, err
+	}
 	mgr, ok := s.backendManagers[bt]
 	if !ok {
 		return nil, nil
@@ -580,6 +611,9 @@ func (s *Service) ConfigOptions(ctx context.Context, bt agent.BackendType, ref a
 // otherwise SessionDiscoverer(seedDir). nil, nil for managers that
 // implement neither.
 func (s *Service) DiscoverSessions(ctx context.Context, bt agent.BackendType, seedDir string) ([]agent.SessionSnapshot, error) {
+	if err := s.requireBackendAllowed(bt); err != nil {
+		return nil, err
+	}
 	mgr, ok := s.backendManagers[bt]
 	if !ok {
 		return nil, nil
@@ -664,6 +698,9 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	if req.Backend == "" {
 		return nil, agent.SessionInfo{}, fmt.Errorf("backend is required")
 	}
+	if err := s.requireBackendAllowed(req.Backend); err != nil {
+		return nil, agent.SessionInfo{}, err
+	}
 	mgr, ok := s.backendManagers[req.Backend]
 	if !ok {
 		return nil, agent.SessionInfo{}, fmt.Errorf("no backend manager for %s", req.Backend)
@@ -727,6 +764,7 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 		return nil, agent.SessionInfo{}, fmt.Errorf("session %s already registered", sessionID)
 	}
 	s.sessions[sessionID] = b
+	s.sessionBackendTypes[sessionID] = req.Backend
 	s.mu.Unlock()
 
 	now := time.Now()
@@ -1219,7 +1257,14 @@ func isActiveSessionStatus(st agent.SessionStatus) bool {
 // store. Real store errors (DB lock, disk full) are surfaced wrapped,
 // not coerced into ErrNotFound — same pattern as GetSessionMetadata.
 func (s *Service) ensureBackend(ctx context.Context, id string) (agent.SessionBackend, error) {
-	if b, ok := s.Session(id); ok {
+	s.mu.RLock()
+	b, ok := s.sessions[id]
+	bt := s.sessionBackendTypes[id]
+	s.mu.RUnlock()
+	if ok {
+		if err := s.requireBackendAllowed(bt); err != nil {
+			return nil, err
+		}
 		// A cached backend whose connection has died (StatusDead) would make
 		// every follow-up op fail forever — the "needs attention" wedge a user
 		// hits after cancelling a turn, since the dead CLI transport lingers in
@@ -1250,6 +1295,9 @@ func (s *Service) ensureBackend(ctx context.Context, id string) (agent.SessionBa
 	if err != nil {
 		return nil, fmt.Errorf("ensure backend %s: load session: %w", id, err)
 	}
+	if err := s.requireBackendAllowed(info.Backend); err != nil {
+		return nil, err
+	}
 
 	mgr, ok := s.backendManagers[info.Backend]
 	if !ok {
@@ -1277,7 +1325,7 @@ func (s *Service) ensureBackend(ctx context.Context, id string) (agent.SessionBa
 	// backend re-asserts it after resuming, since the fresh agent
 	// process boots with its own defaults (a hibernate→wake otherwise
 	// silently downgrades e.g. bypassPermissions to prompt-mode).
-	b, err := mgr.CreateBackend(ctx, agent.BackendInvocation{
+	b, err = mgr.CreateBackend(ctx, agent.BackendInvocation{
 		WorkDir:          workDir,
 		ResumeExternalID: info.ExternalID,
 		Config:           info.Config,
@@ -1304,6 +1352,7 @@ func (s *Service) ensureBackend(ctx context.Context, id string) (agent.SessionBa
 		return nil, fmt.Errorf("ensure backend %s: host is shut down", id)
 	}
 	s.sessions[id] = b
+	s.sessionBackendTypes[id] = info.Backend
 	s.mu.Unlock()
 
 	s.wg.Add(1)
@@ -1317,6 +1366,7 @@ func (s *Service) ensureBackend(ctx context.Context, id string) (agent.SessionBa
 	if err := b.Open(ctx); err != nil {
 		s.mu.Lock()
 		delete(s.sessions, id)
+		delete(s.sessionBackendTypes, id)
 		s.mu.Unlock()
 		if stopErr := b.Stop(); stopErr != nil {
 			s.log.Printf("warning: stop backend after open failure for %s: %v", id, stopErr)
@@ -1344,6 +1394,7 @@ func (s *Service) StopSession(id string) error {
 		return ErrNotFound
 	}
 	delete(s.sessions, id)
+	delete(s.sessionBackendTypes, id)
 	s.mu.Unlock()
 	return b.Stop()
 }

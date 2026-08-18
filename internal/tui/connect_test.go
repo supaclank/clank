@@ -59,51 +59,52 @@ func isQuitCmd(cmd tea.Cmd) bool {
 func TestConnectBackendRows_ListsEveryBackend(t *testing.T) {
 	t.Parallel()
 	rows := connectBackendRows([]agent.ProviderAuthInfo{
-		{ProviderID: "github-copilot", Backend: agent.BackendOpenCode, Connected: true},
+		{ProviderID: "github-copilot", DisplayName: "GitHub Copilot", Backend: agent.BackendOpenCode, Connected: true},
 		{ProviderID: "anthropic-api", Backend: agent.BackendClaudeCode},
-	})
+	}, map[agent.BackendType]bool{agent.BackendOpenCode: true})
 	if len(rows) != len(agent.AllBackends) {
 		t.Fatalf("got %d rows, want one per backend (%d)", len(rows), len(agent.AllBackends))
 	}
-	state := make(map[agent.BackendType]bool, len(rows))
+	state := make(map[agent.BackendType]connectBackendRow, len(rows))
 	for i, row := range rows {
 		if row.Backend != agent.AllBackends[i] {
 			t.Errorf("row %d = %s, want %s (display order must follow AllBackends)", i, row.Backend, agent.AllBackends[i])
 		}
-		state[row.Backend] = row.IsConnected
+		state[row.Backend] = row
 	}
-	if !state[agent.BackendOpenCode] {
-		t.Error("opencode has a connected provider but its row says not connected")
+	if !state[agent.BackendOpenCode].IsAllowed || state[agent.BackendOpenCode].ProviderName != "GitHub Copilot" {
+		t.Errorf("opencode row = %+v, want allowed with GitHub Copilot", state[agent.BackendOpenCode])
 	}
-	if state[agent.BackendClaudeCode] {
-		t.Error("claude-code has no connected provider but its row says connected")
+	if state[agent.BackendClaudeCode].IsAllowed {
+		t.Error("claude-code is not allowed")
 	}
-	if state[agent.BackendCodex] {
-		t.Error("codex is absent from the catalog and must not read as connected")
+	if state[agent.BackendCodex].IsAllowed {
+		t.Error("codex is absent from the allow map and must not read as allowed")
 	}
 }
 
-// Naming a backend skips the picker entirely — `clank connect claude`
-// should land in Anthropic's provider list, not ask which agent you
-// meant.
-func TestConnectModel_NamedBackendSkipsPicker(t *testing.T) {
+// A named, disallowed backend asks for control permission before any provider
+// catalog is loaded. This is the privacy boundary of `clank connect claude`.
+func TestConnectModel_NamedBackendAsksAllowBeforeDetection(t *testing.T) {
 	t.Parallel()
 	m := NewConnectModel(nil, agent.BackendClaudeCode)
-	if m.phase != connectPhaseProvider {
-		t.Fatalf("phase = %v, want provider phase", m.phase)
+	model, _ := m.Update(connectProvidersLoadedMsg{})
+	m = model.(*ConnectModel)
+	if m.phase != connectPhaseAllow {
+		t.Fatalf("phase = %v, want allow phase", m.phase)
 	}
 	if got := m.Result().Backend; got != agent.BackendClaudeCode {
 		t.Errorf("Result().Backend = %q, want %q before the flow even starts", got, agent.BackendClaudeCode)
 	}
-	if m.providerAuth.backend != agent.BackendClaudeCode {
-		t.Errorf("hosted flow scoped to %q, want %q", m.providerAuth.backend, agent.BackendClaudeCode)
+	if !strings.Contains(m.body(), "Allow Clank to control Claude Code?") || !strings.Contains(m.body(), "Agent Client Protocol") {
+		t.Errorf("allow prompt is missing its control boundary:\n%s", m.body())
 	}
 }
 
 // Picking a row hands off to the provider flow scoped to that backend,
 // and records the choice immediately — a run canceled mid-auth still
 // reports which backend the user was connecting.
-func TestConnectModel_PickingBackendEntersScopedProviderFlow(t *testing.T) {
+func TestConnectModel_PickingDisallowedBackendAsksAllow(t *testing.T) {
 	t.Parallel()
 	m := NewConnectModel(nil, "")
 	model, _ := m.Update(connectProvidersLoadedMsg{providers: []agent.ProviderAuthInfo{
@@ -119,21 +120,39 @@ func TestConnectModel_PickingBackendEntersScopedProviderFlow(t *testing.T) {
 	model, cmd := model.(*ConnectModel).Update(keyPress("enter"))
 	m = model.(*ConnectModel)
 
-	if m.phase != connectPhaseProvider {
-		t.Fatalf("phase = %v, want provider phase after enter", m.phase)
+	if m.phase != connectPhaseAllow {
+		t.Fatalf("phase = %v, want allow phase after enter", m.phase)
 	}
 	want := agent.AllBackends[1]
 	if m.Result().Backend != want {
 		t.Errorf("Result().Backend = %q, want %q", m.Result().Backend, want)
 	}
-	if m.providerAuth.backend != want {
-		t.Errorf("hosted flow scoped to %q, want %q", m.providerAuth.backend, want)
-	}
 	if m.Result().IsConnected {
 		t.Error("picking a backend is not connecting it")
 	}
-	if cmd == nil {
-		t.Error("entering the provider phase must start loading its providers")
+	if cmd != nil {
+		t.Error("opening the allow prompt must not detect providers yet")
+	}
+}
+
+func TestConnectModel_AllowThenDetectedAuthReturnsToPicker(t *testing.T) {
+	t.Parallel()
+	m := NewConnectModel(nil, "")
+	model, _ := m.Update(connectProvidersLoadedMsg{})
+	model, _ = model.(*ConnectModel).Update(keyPress("enter"))
+	m = model.(*ConnectModel)
+	model, _ = m.Update(connectHarnessAllowedMsg{
+		backend: agent.BackendOpenCode,
+		providers: []agent.ProviderAuthInfo{{
+			Backend: agent.BackendOpenCode, DisplayName: "GitHub Copilot", Connected: true,
+		}},
+	})
+	m = model.(*ConnectModel)
+	if m.phase != connectPhasePickBackend {
+		t.Fatalf("phase = %v, want picker after smooth detection", m.phase)
+	}
+	if got := m.backendRow(agent.BackendOpenCode); !got.IsAllowed || got.ProviderName != "GitHub Copilot" {
+		t.Errorf("refreshed row = %+v", got)
 	}
 }
 
@@ -187,7 +206,9 @@ func TestConnectModel_QuitAtSuccessStillReportsConnected(t *testing.T) {
 // its success phase — the state after a credential has been stored.
 func reachedFlowSuccess(backend agent.BackendType) *ConnectModel {
 	m := NewConnectModel(nil, backend)
+	m.phase = connectPhaseProvider
 	m.providerAuth.phase = providerPhaseSuccess
+	m.providerAuth.activeProvider = agent.ProviderAuthInfo{DisplayName: "Test Provider"}
 	return m
 }
 
@@ -197,7 +218,7 @@ func TestConnectModel_CtrlCQuitsFromEveryPhase(t *testing.T) {
 	t.Parallel()
 	phases := map[string]*ConnectModel{
 		"loading":  NewConnectModel(nil, ""),
-		"provider": NewConnectModel(nil, agent.BackendOpenCode),
+		"provider": reachedFlowSuccess(agent.BackendOpenCode),
 	}
 	picker := NewConnectModel(nil, "")
 	pickerModel, _ := picker.Update(connectProvidersLoadedMsg{})
@@ -229,20 +250,18 @@ func TestConnectModel_CatalogErrorIsShown(t *testing.T) {
 	}
 }
 
-// The picker must show connection state per row — it's the only reason
-// to render the screen rather than defaulting silently.
-func TestConnectModel_PickerViewShowsConnectionState(t *testing.T) {
+func TestConnectModel_PickerViewShowsAllowAndAuthState(t *testing.T) {
 	t.Parallel()
 	m := NewConnectModel(nil, "")
 	model, _ := m.Update(connectProvidersLoadedMsg{providers: []agent.ProviderAuthInfo{
-		{ProviderID: "github-copilot", Backend: agent.BackendOpenCode, Connected: true},
-	}})
+		{ProviderID: "github-copilot", DisplayName: "GitHub Copilot", Backend: agent.BackendOpenCode, Connected: true},
+	}, allowed: map[agent.BackendType]bool{agent.BackendOpenCode: true}})
 	body := model.(*ConnectModel).body()
-	if !strings.Contains(body, "connected") {
-		t.Errorf("picker view shows no connection state:\n%s", body)
+	if !strings.Contains(body, "GitHub Copilot") {
+		t.Errorf("picker view shows no configured auth:\n%s", body)
 	}
-	if !strings.Contains(body, "not connected") {
-		t.Errorf("picker view never says a backend is unconnected:\n%s", body)
+	if !strings.Contains(body, "allow") {
+		t.Errorf("picker view shows no allow action:\n%s", body)
 	}
 	for _, bt := range agent.AllBackends {
 		if !strings.Contains(body, backendDisplayName(bt)) {
@@ -275,7 +294,7 @@ func TestConnectModel_LeavingProviderListReturnsToPicker(t *testing.T) {
 	m := NewConnectModel(nil, "")
 	model, _ := m.Update(connectProvidersLoadedMsg{providers: []agent.ProviderAuthInfo{
 		{ProviderID: "github-copilot", Backend: agent.BackendOpenCode},
-	}})
+	}, allowed: map[agent.BackendType]bool{agent.BackendOpenCode: true}})
 	model, _ = model.(*ConnectModel).Update(keyPress("enter"))
 	if model.(*ConnectModel).phase != connectPhaseProvider {
 		t.Fatal("setup: enter did not open the provider flow")
@@ -289,9 +308,6 @@ func TestConnectModel_LeavingProviderListReturnsToPicker(t *testing.T) {
 	if m.phase != connectPhasePickBackend {
 		t.Fatalf("phase = %v, want the backend picker", m.phase)
 	}
-	if m.Result().Backend != "" {
-		t.Errorf("Result().Backend = %q, want cleared after un-picking", m.Result().Backend)
-	}
 	// The picker still works: its rows survived the round trip.
 	if len(m.backends) != len(agent.AllBackends) {
 		t.Errorf("picker came back with %d rows, want %d", len(m.backends), len(agent.AllBackends))
@@ -304,6 +320,7 @@ func TestConnectModel_LeavingProviderListReturnsToPicker(t *testing.T) {
 func TestConnectModel_NamedBackendHasNothingToGoBackTo(t *testing.T) {
 	t.Parallel()
 	m := NewConnectModel(nil, agent.BackendClaudeCode)
+	m.phase = connectPhaseProvider
 	_, cmd := m.Update(providerAuthCancelMsg{})
 	if !isQuitCmd(cmd) {
 		t.Error("a named-backend run must quit when the provider list is left")
@@ -320,12 +337,15 @@ func TestConnectModel_QQuitsFromEveryNonTextPhase(t *testing.T) {
 	picker := pickerModel.(*ConnectModel)
 
 	providerList := NewConnectModel(nil, agent.BackendOpenCode)
+	providerList.phase = connectPhaseProvider
 	providerList.providerAuth.phase = providerPhaseList
 
 	confirm := NewConnectModel(nil, agent.BackendOpenCode)
+	confirm.phase = connectPhaseProvider
 	confirm.providerAuth.phase = providerPhaseConfirm
 
 	awaiting := NewConnectModel(nil, agent.BackendOpenCode)
+	awaiting.phase = connectPhaseProvider
 	awaiting.providerAuth.phase = providerPhaseAwaiting
 
 	for name, m := range map[string]*ConnectModel{
@@ -351,6 +371,8 @@ func TestConnectModel_QIsTypedIntoFocusedFields(t *testing.T) {
 	t.Parallel()
 	for _, phase := range []providerAuthPhase{providerPhaseAPIKey, providerPhaseOAuthCode} {
 		m := NewConnectModel(nil, agent.BackendOpenCode)
+		m.phase = connectPhaseProvider
+		m.providerAuth = newProviderAuthModel(nil, agent.BackendOpenCode, "")
 		m.providerAuth.phase = phase
 		m.providerAuth.apiKey.Focus()
 
@@ -370,6 +392,7 @@ func TestConnectModel_QIsTypedIntoFocusedFields(t *testing.T) {
 func TestConnectModel_QuittingMidFlowCancelsItOnTheHost(t *testing.T) {
 	t.Parallel()
 	m := NewConnectModel(nil, agent.BackendClaudeCode)
+	m.phase = connectPhaseProvider
 	m.providerAuth.phase = providerPhaseAwaiting
 	m.providerAuth.flow = agent.DeviceFlowStart{FlowID: "flow-1"}
 

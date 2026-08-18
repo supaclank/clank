@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/host"
 )
 
 // The "unsupported" wire code must round-trip back to agent.ErrUnsupported
@@ -23,5 +24,19 @@ func TestErrorFromResp_Unsupported(t *testing.T) {
 	err := errorFromResp(resp)
 	if !errors.Is(err, agent.ErrUnsupported) {
 		t.Fatalf("errorFromResp = %v, want errors.Is(_, agent.ErrUnsupported)", err)
+	}
+}
+
+func TestErrorFromResp_BackendNotAllowed(t *testing.T) {
+	t.Parallel()
+
+	resp := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Status:     "403 Forbidden",
+		Body:       io.NopCloser(strings.NewReader(`{"code":"harness_not_allowed","error":"agent harness not allowed"}`)),
+	}
+	err := errorFromResp(resp)
+	if !errors.Is(err, host.ErrBackendNotAllowed) {
+		t.Fatalf("errorFromResp = %v, want errors.Is(_, host.ErrBackendNotAllowed)", err)
 	}
 }

@@ -234,6 +234,24 @@ type AuthManager struct {
 	// (see env_credentials.go). os.Getenv in production; tests inject
 	// a map lookup so a dev machine's exported keys can't leak in.
 	lookupEnv func(string) string
+
+	// backendAllowed gates every credential-status probe behind the user's
+	// explicit permission to let Clank control that harness. nil preserves
+	// the explicit-auth behavior of remote and embedded hosts.
+	backendAllowed func(agent.BackendType) bool
+}
+
+// SetBackendAllowed installs the harness permission check used before
+// credential detection. Call before serving requests.
+func (a *AuthManager) SetBackendAllowed(f func(agent.BackendType) bool) {
+	a.backendAllowed = f
+}
+
+func (a *AuthManager) requireProviderAllowed(info agent.ProviderAuthInfo) error {
+	if a.backendAllowed != nil && !a.backendAllowed(info.Backend) {
+		return fmt.Errorf("%w: %s", ErrBackendNotAllowed, info.Backend)
+	}
+	return nil
 }
 
 // NewAuthManager constructs an AuthManager. Resolves $HOME via
@@ -328,6 +346,9 @@ func (a *AuthManager) AnthropicAPIKey() string {
 // ListProviders' claude CLI fallback reports that borrowed login in
 // provider status (see claude_cli.go).
 func (a *AuthManager) AnthropicEnv() map[string]string {
+	if a.backendAllowed != nil && !a.backendAllowed(agent.BackendClaudeCode) {
+		return nil
+	}
 	sink, err := a.readAnthropicSink()
 	if err != nil || (sink.OAuthToken == "" && sink.APIKey == "") {
 		return nil
@@ -354,6 +375,15 @@ func (a *AuthManager) AnthropicEnv() map[string]string {
 // subscription)", and a claude-code-session flow doesn't surface
 // "GitHub Copilot"). Empty backend returns the full catalog.
 func (a *AuthManager) ListProviders(ctx context.Context, backend agent.BackendType) ([]agent.ProviderAuthInfo, error) {
+	if backend != "" && a.backendAllowed != nil && !a.backendAllowed(backend) {
+		infos := make([]agent.ProviderAuthInfo, 0, len(providerCatalog))
+		for _, p := range providerCatalog {
+			if p.Backend == backend {
+				infos = append(infos, p)
+			}
+		}
+		return infos, nil
+	}
 	store, err := a.readAuthJSON()
 	if err != nil {
 		return nil, err
@@ -365,6 +395,10 @@ func (a *AuthManager) ListProviders(ctx context.Context, backend agent.BackendTy
 	infos := make([]agent.ProviderAuthInfo, 0, len(providerCatalog))
 	for _, p := range providerCatalog {
 		if backend != "" && p.Backend != backend {
+			continue
+		}
+		if a.backendAllowed != nil && !a.backendAllowed(p.Backend) {
+			infos = append(infos, p)
 			continue
 		}
 		switch p.ProviderID {
@@ -412,6 +446,9 @@ func (a *AuthManager) StartDeviceFlow(ctx context.Context, providerID string) (a
 	info, ok := providerByID(providerID)
 	if !ok || info.AuthType != agent.AuthTypeDevice {
 		return agent.DeviceFlowStart{}, ErrUnknownProvider
+	}
+	if err := a.requireProviderAllowed(info); err != nil {
+		return agent.DeviceFlowStart{}, err
 	}
 	if providerID == ProviderOpenAICodexChatGPT {
 		return a.startCodexDeviceFlow(ctx)
@@ -465,6 +502,9 @@ func (a *AuthManager) SubmitAPIKey(_ context.Context, providerID, key string, me
 	info, ok := providerByID(providerID)
 	if !ok || info.AuthType != agent.AuthTypeAPI {
 		return "", ErrUnknownProvider
+	}
+	if err := a.requireProviderAllowed(info); err != nil {
+		return "", err
 	}
 	if strings.TrimSpace(key) == "" {
 		return "", ErrInvalidAPIKey
@@ -588,6 +628,9 @@ func (a *AuthManager) StartOAuthCodeFlow(ctx context.Context, providerID string)
 	if !ok || info.AuthType != agent.AuthTypeOAuthCode {
 		return agent.DeviceFlowStart{}, ErrUnknownProvider
 	}
+	if err := a.requireProviderAllowed(info); err != nil {
+		return agent.DeviceFlowStart{}, err
+	}
 
 	sess, err := startSetupToken(ctx)
 	if err != nil {
@@ -694,6 +737,9 @@ func (a *AuthManager) SubmitAuthCode(ctx context.Context, providerID, flowID, co
 	info, ok := providerByID(providerID)
 	if !ok || info.AuthType != agent.AuthTypeOAuthCode {
 		return ErrUnknownProvider
+	}
+	if err := a.requireProviderAllowed(info); err != nil {
+		return err
 	}
 	code = strings.TrimSpace(code)
 	if code == "" {
