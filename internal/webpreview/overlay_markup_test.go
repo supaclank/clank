@@ -294,3 +294,48 @@ func TestOverlayAgentSettingsWiring(t *testing.T) {
 		t.Error("overlay.js profile selector must sit in the right action cluster immediately left of the microphone")
 	}
 }
+
+// TestOverlaySendClickDerivesFromActivityNotRawAgent guards against a
+// regression where the Stop/Send click handler read store.agent alone: once
+// aborting flips isBusy true while agent has already moved on from
+// thinking/working (INV: server can settle agent before the abort request
+// resolves), the button still shows Stop but a click fell through to send(),
+// firing a new prompt mid-abort instead of leaving the in-flight abort alone.
+func TestOverlaySendClickDerivesFromActivityNotRawAgent(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	if !strings.Contains(js, "ui.send.onclick = () => { launcherActivity(store.agent, store.aborting).isBusy ? abort() : send(); };") {
+		t.Error("overlay.js send/stop click handler must derive its abort-vs-send branch from launcherActivity(...).isBusy, not a raw store.agent check")
+	}
+	if strings.Contains(js, "(store.agent === 'thinking' || store.agent === 'working') ? abort() : send();") {
+		t.Error("overlay.js must not reintroduce the raw store.agent check on the send/stop click handler")
+	}
+}
+
+// TestOverlayAcknowledgeLauncherRendersAfterPersist guards against a
+// regression where store.launcherCoachmark was cleared inside the
+// acknowledgement fetch's .then() but nothing re-rendered afterward: the
+// synchronous render() a caller (setBox, coachDismiss.onclick) ran before
+// the fetch settled still shows the coachmark, and it stays visually stuck
+// until an unrelated store mutation happens to trigger the next render().
+func TestOverlayAcknowledgeLauncherRendersAfterPersist(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	ackStart := strings.Index(js, "const acknowledgeLauncher = ()")
+	if ackStart < 0 {
+		t.Fatal("overlay.js acknowledgeLauncher definition not found")
+	}
+	ackEnd := strings.Index(js[ackStart:], "};")
+	if ackEnd < 0 {
+		t.Fatal("overlay.js acknowledgeLauncher definition not terminated")
+	}
+	ack := js[ackStart : ackStart+ackEnd]
+	clearIdx := strings.Index(ack, "store.launcherCoachmark = false;")
+	renderIdx := strings.Index(ack, "render();")
+	if clearIdx < 0 {
+		t.Fatal("overlay.js acknowledgeLauncher must clear store.launcherCoachmark once persisted")
+	}
+	if renderIdx < 0 || renderIdx < clearIdx {
+		t.Error("overlay.js acknowledgeLauncher must call render() after clearing store.launcherCoachmark, so the dismissed coachmark disappears as soon as the save succeeds")
+	}
+}

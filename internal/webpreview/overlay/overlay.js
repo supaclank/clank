@@ -2784,6 +2784,7 @@ import {
     }).then((res) => {
       if (!res.ok) throw new Error('launcher acknowledgement: ' + res.status);
       store.launcherCoachmark = false; // only clear once persisted, so a failed save retries next open
+      render(); // the fetch settles after any synchronous render() the caller already ran
     }).catch((err) => toast('could not save the Clank introduction: ' + err.message));
   };
 
@@ -3553,7 +3554,7 @@ import {
   // ---------- wiring -----------------------------------------------------------
   ui.launcher.onclick = openFromLauncher;
   ui.coachDismiss.onclick = () => { acknowledgeLauncher(); render(); };
-  ui.send.onclick = () => { (store.agent === 'thinking' || store.agent === 'working') ? abort() : send(); };
+  ui.send.onclick = () => { launcherActivity(store.agent, store.aborting).isBusy ? abort() : send(); };
   ui.profile.onclick = () => (store.settingsOpen ? closeSettings() : openSettings());
   ui.saveProfileCancel.onclick = closeSaveProfile;
   ui.saveProfileConfirm.onclick = saveProfile;
