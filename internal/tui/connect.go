@@ -54,6 +54,13 @@ const (
 	connectPhaseError
 )
 
+const (
+	connectPickerQuestion     = "Which harnesses should Clank be allowed to connect to?"
+	connectNeedsApprovalLabel = "needs approval"
+	connectPickerHelp         = "↑↓ navigate · enter review · q quit"
+	connectAllowQuestion      = "Allow Clank to connect to and control %s?\n"
+)
+
 // connectProvidersLoadedMsg carries the picker's own catalog read.
 // Distinct from providerListLoadedMsg so a late arrival can never be
 // mistaken for the hosted model's list load.
@@ -437,7 +444,7 @@ func (m *ConnectModel) body() string {
 
 	case connectPhaseAllow:
 		name := backendDisplayName(m.result.Backend)
-		sb.WriteString(fmt.Sprintf("Allow Clank to control %s?\n", name))
+		sb.WriteString(fmt.Sprintf(connectAllowQuestion, name))
 		sb.WriteString(lipgloss.NewStyle().Foreground(mutedColor).
 			Render("via Agent Client Protocol (ACP)"))
 		sb.WriteString("\n\n")
@@ -462,7 +469,7 @@ func (m *ConnectModel) body() string {
 
 	case connectPhasePickBackend:
 		sb.WriteString(lipgloss.NewStyle().Foreground(mutedColor).
-			Render("Which agent harness should Clank control?"))
+			Render(connectPickerQuestion))
 		sb.WriteString("\n\n")
 		for i, row := range m.backends {
 			prefix := "  "
@@ -471,7 +478,7 @@ func (m *ConnectModel) body() string {
 				prefix = "▶ "
 				labelStyle = labelStyle.Bold(true).Background(primaryColor)
 			}
-			status := lipgloss.NewStyle().Foreground(primaryColor).Render("allow")
+			status := lipgloss.NewStyle().Foreground(primaryColor).Render(connectNeedsApprovalLabel)
 			if row.IsAllowed && row.ProviderName == "" {
 				status = lipgloss.NewStyle().Foreground(dimColor).Render("configure auth")
 			} else if row.IsAllowed {
@@ -484,7 +491,7 @@ func (m *ConnectModel) body() string {
 		}
 		sb.WriteString("\n")
 		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
-			Render("↑↓ navigate · enter select · q quit"))
+			Render(connectPickerHelp))
 	}
 
 	return lipgloss.NewStyle().

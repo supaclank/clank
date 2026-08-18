@@ -96,7 +96,7 @@ func TestConnectModel_NamedBackendAsksAllowBeforeDetection(t *testing.T) {
 	if got := m.Result().Backend; got != agent.BackendClaudeCode {
 		t.Errorf("Result().Backend = %q, want %q before the flow even starts", got, agent.BackendClaudeCode)
 	}
-	if !strings.Contains(m.body(), "Allow Clank to control Claude Code?") || !strings.Contains(m.body(), "Agent Client Protocol") {
+	if !strings.Contains(m.body(), "Allow Clank to connect to and control Claude Code?") || !strings.Contains(m.body(), "Agent Client Protocol") {
 		t.Errorf("allow prompt is missing its control boundary:\n%s", m.body())
 	}
 }
@@ -250,7 +250,7 @@ func TestConnectModel_CatalogErrorIsShown(t *testing.T) {
 	}
 }
 
-func TestConnectModel_PickerViewShowsAllowAndAuthState(t *testing.T) {
+func TestConnectModel_PickerViewDistinguishesPendingApprovalFromAuthState(t *testing.T) {
 	t.Parallel()
 	m := NewConnectModel(nil, "")
 	model, _ := m.Update(connectProvidersLoadedMsg{providers: []agent.ProviderAuthInfo{
@@ -260,8 +260,17 @@ func TestConnectModel_PickerViewShowsAllowAndAuthState(t *testing.T) {
 	if !strings.Contains(body, "GitHub Copilot") {
 		t.Errorf("picker view shows no configured auth:\n%s", body)
 	}
-	if !strings.Contains(body, "allow") {
-		t.Errorf("picker view shows no allow action:\n%s", body)
+	if !strings.Contains(body, "Which harnesses should Clank be allowed to connect to?") {
+		t.Errorf("picker view does not frame the list as plural permissions:\n%s", body)
+	}
+	if !strings.Contains(body, "needs approval") {
+		t.Errorf("picker view does not identify pending approval:\n%s", body)
+	}
+	if strings.Contains(body, "  allow") {
+		t.Errorf("picker view presents an ambiguous allow status:\n%s", body)
+	}
+	if !strings.Contains(body, "enter review") {
+		t.Errorf("picker view does not explain that enter reviews permission:\n%s", body)
 	}
 	for _, bt := range agent.AllBackends {
 		if !strings.Contains(body, backendDisplayName(bt)) {
