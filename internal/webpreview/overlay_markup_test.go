@@ -93,6 +93,29 @@ func TestOverlayLauncherMorphDoesNotReplayEntryAnimation(t *testing.T) {
 	}
 }
 
+// TestOverlayLauncherRegainsFocusOnHide guards keyboard access: once the
+// persistent launcher shipped, hiding the box (Escape, ⌘E) left focus on a
+// now-invisible element instead of the launcher that replaces it.
+func TestOverlayLauncherRegainsFocusOnHide(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	if !strings.Contains(js, "setTimeout(() => ui.launcher.focus({ preventScroll: true }), 0);") {
+		t.Error("overlay.js setBox('hidden') must restore focus to ui.launcher")
+	}
+}
+
+// TestOverlayLauncherAcknowledgementRetriesOnFailure guards the client-side
+// mirror of the server-side persist-then-flip fix: clearing
+// store.launcherCoachmark before the POST resolves would drop the retry on
+// a failed save just like the Go handler did.
+func TestOverlayLauncherAcknowledgementRetriesOnFailure(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	if !strings.Contains(js, "store.launcherCoachmark = false; // only clear once persisted") {
+		t.Error("overlay.js acknowledgeLauncher must clear launcherCoachmark only after the POST succeeds")
+	}
+}
+
 // TestOverlayComposerSelectorIsClassScoped guards the composer wiring:
 // ui.input was once selected with a bare $('textarea'), and adding the
 // plan-notes textarea earlier in the markup silently captured it —

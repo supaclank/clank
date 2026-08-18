@@ -1927,7 +1927,7 @@ import {
     cursor:pointer; font-size:14px; line-height:1; }
   @keyframes coachIn { from { opacity:0; transform:translateX(8px); } }
   @media (prefers-reduced-motion: reduce) {
-    .launcher.visible, .coachmark.visible, .launcher.busy::before { animation:none; }
+    .launcher.visible, .coachmark.visible, .launcher.busy::before, .activity-spinner { animation:none; }
   }
   .hd { display:flex; align-items:center; gap:8px; padding:10px 12px 6px; cursor:grab; user-select:none; }
   .hd:active { cursor:grabbing; }
@@ -2778,12 +2778,12 @@ import {
   // ---------- box visibility (mobile shake state machine, hotkey-driven) --
   const acknowledgeLauncher = () => {
     if (!store.launcherCoachmark) return;
-    store.launcherCoachmark = false;
     fetch(LAUNCHER_SEEN_PATH, {
       method: 'POST',
       headers: TOKEN ? { Authorization: 'Bearer ' + TOKEN } : {},
     }).then((res) => {
       if (!res.ok) throw new Error('launcher acknowledgement: ' + res.status);
+      store.launcherCoachmark = false; // only clear once persisted, so a failed save retries next open
     }).catch((err) => toast('could not save the Clank introduction: ' + err.message));
   };
 
@@ -2800,6 +2800,9 @@ import {
       store.saveProfileOpen = false;
       store.saveProfileName = '';
       if (store.scOpen) closeSourceControl();
+      // Symmetric with the focus-into-box below: keyboard users must still
+      // reach the persistent entry point once the box disappears.
+      setTimeout(() => ui.launcher.focus({ preventScroll: true }), 0);
     } else if (!scLoadedOnce) {
       // First summon primes the source-control chip; on-demand only —
       // the remote status costs a host-side fetch (never polled).
