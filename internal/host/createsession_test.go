@@ -80,6 +80,64 @@ func TestLiveSession_HarnessPermissionIsRechecked(t *testing.T) {
 	}
 }
 
+// TestSessionMessages_HarnessPermissionIsRechecked pins the cached-backend
+// read path: revoking a harness must stop history reads even while the
+// backend stays warm in the registry, not just on the next rehydrate.
+func TestSessionMessages_HarnessPermissionIsRechecked(t *testing.T) {
+	t.Parallel()
+	allowed := true
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+		BackendAllowed: func(agent.BackendType) bool { return allowed },
+	})
+	t.Cleanup(svc.Shutdown)
+
+	dir := initGitRepo(t, "git@github.com:supaclank/clank.git")
+	req := agent.StartRequest{
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{LocalPath: dir},
+		Prompt:  "hi",
+	}
+	if _, _, err := svc.CreateSession(context.Background(), "sid-revoked-messages", req); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	allowed = false
+	if _, err := svc.SessionMessages(context.Background(), "sid-revoked-messages"); !errors.Is(err, host.ErrBackendNotAllowed) {
+		t.Fatalf("SessionMessages error = %v, want ErrBackendNotAllowed", err)
+	}
+}
+
+// TestPendingPermissions_HarnessPermissionIsRechecked mirrors
+// TestSessionMessages_HarnessPermissionIsRechecked for the pending-permission
+// read path.
+func TestPendingPermissions_HarnessPermissionIsRechecked(t *testing.T) {
+	t.Parallel()
+	allowed := true
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+		BackendAllowed: func(agent.BackendType) bool { return allowed },
+	})
+	t.Cleanup(svc.Shutdown)
+
+	dir := initGitRepo(t, "git@github.com:supaclank/clank.git")
+	req := agent.StartRequest{
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{LocalPath: dir},
+		Prompt:  "hi",
+	}
+	if _, _, err := svc.CreateSession(context.Background(), "sid-revoked-pending", req); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	allowed = false
+	if _, err := svc.PendingPermissions(context.Background(), "sid-revoked-pending"); !errors.Is(err, host.ErrBackendNotAllowed) {
+		t.Fatalf("PendingPermissions error = %v, want ErrBackendNotAllowed", err)
+	}
+}
+
 // TestCreateSession_LocalRef_RejectsNonGit verifies that a Local path
 // that isn't a git repo fails fast instead of silently registering bogus
 // state.

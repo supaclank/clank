@@ -1198,6 +1198,14 @@ func (s *Service) Session(id string) (agent.SessionBackend, bool) {
 	return b, ok
 }
 
+// sessionBackendType returns the registered backend type for id, or the
+// zero value if id isn't registered.
+func (s *Service) sessionBackendType(id string) agent.BackendType {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.sessionBackendTypes[id]
+}
+
 // lockWorktree acquires the per-worktree lock and returns its release
 // func. DeleteWorktree and CreateSession both take it so a destructive
 // removal and a session start on the same worktree never interleave.
@@ -1527,6 +1535,9 @@ func (s *Service) SessionMessages(ctx context.Context, id string) ([]agent.Messa
 	// A dead backend is skipped, not used: reads don't repair the
 	// registry — the next dispatching op (Send/Abort/…) rehydrates it.
 	if b, ok := s.Session(id); ok && b.Status() != agent.StatusDead {
+		if err := s.requireBackendAllowed(s.sessionBackendType(id)); err != nil {
+			return nil, err
+		}
 		return b.Messages(ctx)
 	}
 	b, err := s.ensureBackend(ctx, id)
@@ -1587,6 +1598,9 @@ func (s *Service) PendingPermissions(ctx context.Context, id string) ([]agent.Pe
 	// registry, and the disconnect sweep already cancelled its parked
 	// requests.
 	if b, ok := s.Session(id); ok && b.Status() != agent.StatusDead {
+		if err := s.requireBackendAllowed(s.sessionBackendType(id)); err != nil {
+			return nil, err
+		}
 		if r, ok := b.(agent.PendingPermissionsReporter); ok {
 			return r.PendingPermissions(), nil
 		}
