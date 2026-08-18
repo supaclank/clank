@@ -7,7 +7,7 @@ import {
   activeQuestionFromParts, chatFromMessages, questionSuppressesPermission,
   pushPermission, dropPermission, customAllowed, toggleSelection,
   buildAnswers, collectPlanParts, planTextFor, textFromParts,
-  upsertTranscriptPart, toolSummary,
+  upsertTranscriptPart, toolSummary, createStreamPartTracker,
   buildPreviewContext, composerTextForSend,
   previewGitRef, initialSessionId,
   COMMENTS_DEFAULT_PROMPT,
@@ -147,6 +147,35 @@ test('upsertTranscriptPart: a stale shorter snapshot does not shrink streamed te
   let rows = upsertTranscriptPart([], { id: 't1', type: 'text', text: 'complete' }, 'assistant', false, 30);
   rows = upsertTranscriptPart(rows, { id: 't1', type: 'text', text: 'comp' }, 'assistant', false, 30);
   assert.equal(rows[0].text, 'complete');
+});
+
+test('createStreamPartTracker: consecutive id-less deltas of the same type share one id', () => {
+  const tracker = createStreamPartTracker();
+  const first = tracker.resolve({ type: 'text', text: 'a' }, true);
+  const second = tracker.resolve({ type: 'text', text: 'ab' }, true);
+  assert.equal(first.id, second.id);
+});
+
+test('createStreamPartTracker: a part carrying its own id passes through unchanged', () => {
+  const tracker = createStreamPartTracker();
+  const part = { id: 'p1', type: 'text', text: 'a' };
+  assert.equal(tracker.resolve(part, true), part);
+});
+
+test('createStreamPartTracker: a non-delta chunk settles the run', () => {
+  const tracker = createStreamPartTracker();
+  const first = tracker.resolve({ type: 'text', text: 'a' }, true);
+  tracker.resolve({ type: 'text', text: 'ab' }, false); // settles
+  const next = tracker.resolve({ type: 'text', text: 'c' }, true); // new turn
+  assert.notEqual(first.id, next.id);
+});
+
+test('createStreamPartTracker: boundary() starts a fresh id even mid-run (status/message events)', () => {
+  const tracker = createStreamPartTracker();
+  const first = tracker.resolve({ type: 'text', text: 'a' }, true); // never settles via a non-delta chunk
+  tracker.boundary();
+  const second = tracker.resolve({ type: 'text', text: 'b' }, true);
+  assert.notEqual(first.id, second.id);
 });
 
 test('toolSummary prefers paths, commands, then descriptions', () => {

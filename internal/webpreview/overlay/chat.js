@@ -81,6 +81,27 @@ export const upsertTranscriptPart = (rows, part, role, isDelta, cap) => {
   return out;
 };
 
+// createStreamPartTracker synthesizes a stable id for a run of id-less
+// streaming parts of the same type, so consecutive delta chunks merge into
+// one row instead of each becoming its own [upsertTranscriptPart]. Call
+// boundary() on any status or message event that settles the turn, so a
+// later id-less stream starts a fresh id instead of reusing a stale one
+// left open by a turn that never sent a final non-delta chunk.
+export const createStreamPartTracker = () => {
+  let seq = 0;
+  let open = { type: null, id: '' };
+  return {
+    resolve(rawPart, isDelta) {
+      if (rawPart.id) return rawPart;
+      if (open.type !== rawPart.type) open = { type: rawPart.type, id: `stream:${rawPart.type}:${++seq}` };
+      const p = { ...rawPart, id: open.id };
+      if (!isDelta) open = { type: null, id: '' };
+      return p;
+    },
+    boundary() { open = { type: null, id: '' }; },
+  };
+};
+
 export const toolSummary = (tool) => {
   const input = tool && tool.input;
   if (input && typeof input === 'object') {

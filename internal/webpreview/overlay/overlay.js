@@ -31,6 +31,7 @@
 // unambiguous context.
 import {
   PLAN_TOOL, activeQuestionFromParts, chatFromMessages, upsertTranscriptPart,
+  createStreamPartTracker,
   questionSuppressesPermission, pushPermission, dropPermission,
   customAllowed, toggleSelection, buildAnswers, collectPlanParts, planTextFor,
   buildPreviewContext, composerTextForSend,
@@ -209,8 +210,7 @@ import {
   if (store.sessionId) sessionStorage.setItem('clank.sessionId', store.sessionId);
   let doneTimer = 0;
   let localMessageID = 0;
-  let streamPartSeq = 0;
-  let openStreamPart = { type: null, id: '' }; // synthetic id spanning a run of id-less delta chunks of the same type, so they merge instead of each becoming its own row
+  const streamPartTracker = createStreamPartTracker();
 
   const setAgent = (s) => {
     clearTimeout(doneTimer);
@@ -1474,6 +1474,7 @@ import {
     try { d = JSON.parse(datas.join('\n')).data || {}; } catch { return; }
     switch (ev) {
       case 'status': {
+        streamPartTracker.boundary(); // a status transition ends any open id-less stream
         const s = d.new_status;
         if (s === 'idle') setAgent('done');
         else if (s === 'error' || s === 'dead') setAgent('error');
@@ -1481,13 +1482,7 @@ import {
         break;
       }
       case 'part': {
-        const rawPart = d.part || {};
-        let p = rawPart;
-        if (!rawPart.id) {
-          if (openStreamPart.type !== rawPart.type) openStreamPart = { type: rawPart.type, id: `stream:${rawPart.type}:${++streamPartSeq}` };
-          p = { ...rawPart, id: openStreamPart.id };
-          if (!d.is_delta) openStreamPart = { type: null, id: '' }; // this run of chunks settled
-        }
+        const p = streamPartTracker.resolve(d.part || {}, !!d.is_delta);
         store.msgs = upsertTranscriptPart(store.msgs, p, 'assistant', !!d.is_delta, CHAT_CAP);
         if (p.type === 'tool_call') {
           setAgent('working');
@@ -1509,6 +1504,7 @@ import {
         break;
       }
       case 'message': {
+        streamPartTracker.boundary(); // a settled message ends any open id-less stream
         if (d.role === 'user') {
           const hasUserText = (d.parts || []).some((p) => p.type === 'text' && p.text) || !!d.content;
           if (d.id && hasUserText) store.lastUserMsgId = d.id; // skip tool-result-only carriers, matching chatFromMessages [DATA-022]
