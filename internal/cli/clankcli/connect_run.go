@@ -82,8 +82,12 @@ func adoptDefaultBackend(backend agent.BackendType, out io.Writer) error {
 // tears itself down. A canceled run is not an error — they said no.
 func reportConnectResult(result tui.ConnectResult, out io.Writer) {
 	if result.IsConnected {
-		fmt.Fprintf(out, "Connected %s.\n", result.Backend)
+		fmt.Fprintf(out, "Allowed %s; using %s.\n", result.Backend, result.ProviderName)
 		return
 	}
-	fmt.Fprintf(out, "Nothing connected — %s.\n", connectHint)
+	if result.IsAllowed {
+		fmt.Fprintf(out, "Allowed %s; authentication is not configured.\n", result.Backend)
+		return
+	}
+	fmt.Fprintf(out, "Nothing allowed — %s.\n", connectHint)
 }

@@ -49,6 +49,7 @@ func main() {
 	_ = flag.Bool("gh-cli-auth", false, "")
 	_ = flag.Bool("claude-cli-auth", false, "")
 	_ = flag.Bool("codex-cli-auth", false, "")
+	_ = flag.Bool("require-harness-allow", false, "")
 	flag.Parse()
 	if f := os.Getenv("FAKE_HOST_WORK_ROOT_FILE"); f != "" {
 		if err := os.WriteFile(f, []byte(*workRoot), 0o644); err != nil {

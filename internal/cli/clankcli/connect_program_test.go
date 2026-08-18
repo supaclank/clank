@@ -63,7 +63,7 @@ func runConnectProgram(t *testing.T, client *daemonclient.Client, backend agent.
 }
 
 // The picker must load the real catalog, render a row per backend with
-// its connection state, and quit on a keystroke.
+// its permission state, and quit on a keystroke.
 func TestConnectProgram_RendersPickerAndQuits(t *testing.T) {
 	client := newConnectTestClient(t)
 
@@ -78,8 +78,8 @@ func TestConnectProgram_RendersPickerAndQuits(t *testing.T) {
 			t.Errorf("picker never rendered a row for %s:\n%s", bt, rendered)
 		}
 	}
-	if !strings.Contains(rendered, "not connected") {
-		t.Errorf("picker rendered no connection state:\n%s", rendered)
+	if !strings.Contains(rendered, "needs approval") {
+		t.Errorf("picker rendered no pending-approval state:\n%s", rendered)
 	}
 }
 
@@ -94,6 +94,7 @@ func TestConnectProgram_PickingABackendLoadsItsProviders(t *testing.T) {
 	// see TestConnectProgram_EscFromProvidersReturnsToPicker).
 	result, rendered := runConnectProgram(t, client, "",
 		keyStep{UntilVisible: backendLabelFor(agent.BackendCodex), Keys: "\r"},
+		keyStep{UntilVisible: "Allow Clank to connect to and control OpenCode?", Keys: "y"},
 		keyStep{UntilVisible: "GitHub Copilot", Keys: "\x03"})
 
 	want := agent.AllBackends[0]
@@ -108,16 +109,19 @@ func TestConnectProgram_PickingABackendLoadsItsProviders(t *testing.T) {
 	}
 }
 
-// `clank connect claude` must land straight in Anthropic's providers —
-// no backend question, and no other backend's providers in the list.
-func TestConnectProgram_NamedBackendOpensItsProvidersDirectly(t *testing.T) {
+// `clank connect claude` skips the harness picker but never the allow gate.
+func TestConnectProgram_NamedBackendAllowsBeforeProviders(t *testing.T) {
 	client := newConnectTestClient(t)
 
 	_, rendered := runConnectProgram(t, client, agent.BackendClaudeCode,
+		keyStep{UntilVisible: "Allow Clank to connect to and control Claude Code?", Keys: "y"},
 		keyStep{UntilVisible: "Anthropic", Keys: "\x1b"})
 
-	if strings.Contains(rendered, "Which agent do you want to use?") {
+	if strings.Contains(rendered, "Which harnesses should Clank be allowed to connect to?") {
 		t.Errorf("naming a backend must skip the picker:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Agent Client Protocol") {
+		t.Errorf("named backend skipped the ACP allow explanation:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "Anthropic") {
 		t.Errorf("claude-code's providers were not listed:\n%s", rendered)
@@ -214,12 +218,10 @@ func TestConnectProgram_EscFromProvidersReturnsToPicker(t *testing.T) {
 
 	result, rendered := runConnectProgram(t, client, "",
 		keyStep{UntilVisible: backendLabelFor(agent.BackendCodex), Keys: "\r"},
+		keyStep{UntilVisible: "Allow Clank to connect to and control OpenCode?", Keys: "y"},
 		keyStep{UntilVisible: "GitHub Copilot", Keys: "\x1b"},
-		keyStep{UntilVisible: "Which agent do you want to use?", Keys: "q"})
+		keyStep{UntilVisible: "Which harnesses should Clank be allowed to connect to?", Keys: "q"})
 
-	if result.Backend != "" {
-		t.Errorf("Result().Backend = %q, want cleared — esc quit instead of going back", result.Backend)
-	}
 	if result.IsConnected {
 		t.Error("backing out must not report a connection")
 	}
@@ -234,6 +236,7 @@ func TestConnectProgram_QQuitsFromTheProviderList(t *testing.T) {
 	client := newConnectTestClient(t)
 
 	result, rendered := runConnectProgram(t, client, agent.BackendClaudeCode,
+		keyStep{UntilVisible: "Allow Clank to connect to and control Claude Code?", Keys: "y"},
 		keyStep{UntilVisible: "Anthropic", Keys: "q"})
 
 	if result.IsConnected {
@@ -253,6 +256,7 @@ func TestConnectProgram_QTypesInsideTheKeyForm(t *testing.T) {
 	// OpenAI is an api-key provider: enter opens the confirm gate, y
 	// opens the key form, then "q" must land in the field.
 	_, rendered := runConnectProgram(t, client, agent.BackendOpenCode,
+		keyStep{UntilVisible: "Allow Clank to connect to and control OpenCode?", Keys: "y"},
 		keyStep{UntilVisible: "OpenAI", Keys: "\x1b[B\r"},
 		keyStep{UntilVisible: "will restart the OpenCode server", Keys: "y"},
 		keyStep{UntilVisible: "API key", Keys: "q"},

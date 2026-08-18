@@ -199,6 +199,10 @@ func (p *Provisioner) EnsureHost(_ context.Context, _ string) (provisioner.HostR
 		// reads $CODEX_HOME/auth.json, so an existing `codex login`
 		// already authenticates sessions on this machine.
 		"--codex-cli-auth",
+		// Credential detection and ACP control are separate capabilities.
+		// The host reads the dynamic preference on each operation so a grant
+		// made by `clank connect` applies without restarting this process.
+		"--require-harness-allow",
 	}
 	if p.opts.DataDir != "" {
 		if err := os.MkdirAll(p.opts.DataDir, 0o700); err != nil {

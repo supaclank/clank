@@ -106,6 +106,8 @@ func errorFromResp(resp *http.Response) error {
 	switch e.Code {
 	case "not_found":
 		return fmt.Errorf("%s: %w", e.Error, host.ErrNotFound)
+	case host.ErrorCodeHarnessNotAllowed:
+		return fmt.Errorf("%s: %w", e.Error, host.ErrBackendNotAllowed)
 	case "cannot_merge_default":
 		return fmt.Errorf("%s: %w", e.Error, host.ErrCannotMergeDefault)
 	case "nothing_to_merge":

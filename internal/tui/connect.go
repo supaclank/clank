@@ -9,9 +9,10 @@ package tui
 // backend picker that precedes the flow when the user didn't name a
 // backend. The auth flow itself is providerAuthModel, unchanged.
 //
-//   pickBackend → provider auth (list → confirm → … → success)
+//   pickBackend → allow harness → detect auth → provider auth when needed
 //
-// A ConnectModel built with a backend skips the picker entirely.
+// A ConnectModel built with a backend skips the picker but still asks for
+// permission before it checks authentication.
 
 import (
 	"context"
@@ -24,33 +25,53 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/config"
 )
 
 // ConnectResult is what the CLI reads off the model after the program
 // exits. Backend is set as soon as the user picks one, so a canceled
 // run still reports what they were connecting.
 type ConnectResult struct {
-	Backend     agent.BackendType
-	IsConnected bool
+	Backend      agent.BackendType
+	IsAllowed    bool
+	IsConnected  bool
+	ProviderName string
 }
 
-// connectPhase tracks which of the two stages the model is in. The
+// connectPhase tracks the allow, detection, and authentication flow. The
 // provider phase delegates every message to providerAuthModel.
 type connectPhase int
 
 const (
-	// connectPhaseLoading fetches the unfiltered provider catalog that
-	// the backend picker renders connection state from.
+	// connectPhaseLoading reads permissions and fetches authentication status
+	// only for harnesses the user already allowed.
 	connectPhaseLoading connectPhase = iota
 	connectPhasePickBackend
+	connectPhaseAllow
+	connectPhaseDetecting
 	connectPhaseProvider
+	connectPhaseReady
 	connectPhaseError
+)
+
+const (
+	connectPickerQuestion     = "Which harnesses should Clank be allowed to connect to?"
+	connectNeedsApprovalLabel = "needs approval"
+	connectPickerHelp         = "↑↓ navigate · enter review · q quit"
+	connectAllowQuestion      = "Allow Clank to connect to and control %s?\n"
 )
 
 // connectProvidersLoadedMsg carries the picker's own catalog read.
 // Distinct from providerListLoadedMsg so a late arrival can never be
 // mistaken for the hosted model's list load.
 type connectProvidersLoadedMsg struct {
+	providers []agent.ProviderAuthInfo
+	allowed   map[agent.BackendType]bool
+	err       error
+}
+
+type connectHarnessAllowedMsg struct {
+	backend   agent.BackendType
 	providers []agent.ProviderAuthInfo
 	err       error
 }
@@ -62,8 +83,8 @@ type ConnectModel struct {
 	phase  connectPhase
 	errMsg string
 
-	// backends is the picker's row set: every backend clank can launch,
-	// paired with whether it already has a connected provider.
+	// backends is the picker's row set: every backend Clank can launch,
+	// paired with its permission and selected authentication provider.
 	backends []connectBackendRow
 	cursor   int
 
@@ -80,53 +101,53 @@ type ConnectModel struct {
 
 // connectBackendRow is one picker row.
 type connectBackendRow struct {
-	Backend     agent.BackendType
-	IsConnected bool
+	Backend      agent.BackendType
+	IsAllowed    bool
+	ProviderName string
 }
 
-// NewConnectModel returns the connect program. A non-empty backend
-// jumps straight into that backend's provider flow; an empty one shows
-// the backend picker first.
+// NewConnectModel returns the connect program. A non-empty backend skips the
+// picker; an empty one starts with the full harness list.
 func NewConnectModel(caller ProviderAuthCaller, backend agent.BackendType) *ConnectModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(primaryColor)
 
-	m := &ConnectModel{caller: caller, spinner: sp}
+	m := &ConnectModel{caller: caller, spinner: sp, phase: connectPhaseLoading}
 	if backend != "" {
-		m.phase = connectPhaseProvider
 		m.result.Backend = backend
-		m.providerAuth = newProviderAuthModel(caller, backend, "")
 		return m
 	}
-	m.phase = connectPhaseLoading
 	m.hasPicker = true
 	return m
 }
 
 // Result reports what the run achieved. Read after the program exits.
-//
-// IsConnected comes from the auth flow's own terminal state, not from
-// the message that dismisses it: the credential is written before the
-// success screen appears, so quitting at that screen instead of pressing
-// a key still connected the provider.
 func (m *ConnectModel) Result() ConnectResult {
-	result := m.result
-	result.IsConnected = m.providerAuth.phase == providerPhaseSuccess
-	return result
+	if m.providerAuth.phase == providerPhaseSuccess {
+		m.result.IsAllowed = true
+		m.result.IsConnected = true
+		m.result.ProviderName = m.providerAuth.activeProvider.DisplayName
+	}
+	return m.result
 }
 
 func (m *ConnectModel) Init() tea.Cmd {
-	if m.phase == connectPhaseProvider {
-		return m.providerAuth.Init()
-	}
 	return tea.Batch(m.spinner.Tick, m.loadBackendsCmd())
 }
 
 func (m *ConnectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case providerAuthDoneMsg:
-		// Result() reads what was achieved off the flow's own phase.
+		m.result.IsAllowed = true
+		m.result.IsConnected = true
+		m.result.ProviderName = m.providerAuth.activeProvider.DisplayName
+		m.updateBackendRow(m.result.Backend, true, m.result.ProviderName)
+		if m.hasPicker {
+			m.phase = connectPhasePickBackend
+			m.providerAuth = providerAuthModel{}
+			return m, nil
+		}
 		return m, tea.Quit
 
 	case providerAuthCancelMsg:
@@ -136,7 +157,6 @@ func (m *ConnectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.hasPicker && m.phase == connectPhaseProvider {
 			m.phase = connectPhasePickBackend
 			m.providerAuth = providerAuthModel{}
-			m.result.Backend = ""
 			return m, nil
 		}
 		return m, tea.Quit
@@ -147,9 +167,42 @@ func (m *ConnectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errMsg = msg.err.Error()
 			return m, nil
 		}
-		m.backends = connectBackendRows(msg.providers)
-		m.phase = connectPhasePickBackend
+		m.backends = connectBackendRows(msg.providers, msg.allowed)
+		if m.hasPicker {
+			m.phase = connectPhasePickBackend
+			return m, nil
+		}
+		row := m.backendRow(m.result.Backend)
+		m.result.IsAllowed = row.IsAllowed
+		m.result.ProviderName = row.ProviderName
+		m.result.IsConnected = row.ProviderName != ""
+		if row.IsAllowed {
+			return m.enterProvider(m.result.Backend)
+		}
+		m.phase = connectPhaseAllow
 		return m, nil
+
+	case connectHarnessAllowedMsg:
+		if msg.err != nil {
+			m.phase = connectPhaseError
+			m.errMsg = msg.err.Error()
+			return m, nil
+		}
+		providerName := connectedProviderName(msg.providers)
+		m.result.Backend = msg.backend
+		m.result.IsAllowed = true
+		m.result.IsConnected = providerName != ""
+		m.result.ProviderName = providerName
+		m.updateBackendRow(msg.backend, true, providerName)
+		if providerName != "" {
+			if m.hasPicker {
+				m.phase = connectPhasePickBackend
+				return m, nil
+			}
+			m.phase = connectPhaseReady
+			return m, nil
+		}
+		return m.enterProvider(msg.backend)
 
 	case tea.KeyPressMsg:
 		// Quitting is the root program's business — the inbox owned it
@@ -202,7 +255,7 @@ func (m *ConnectModel) quitCmd() tea.Cmd {
 
 func (m *ConnectModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	msg = normalizeKeyCase(msg)
-	if key.Matches(msg, key.NewBinding(key.WithKeys("esc"))) {
+	if key.Matches(msg, key.NewBinding(key.WithKeys("esc"))) && m.phase != connectPhaseAllow {
 		return m, tea.Quit
 	}
 
@@ -223,13 +276,34 @@ func (m *ConnectModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 			if m.cursor >= 0 && m.cursor < len(m.backends) {
-				backend := m.backends[m.cursor].Backend
+				row := m.backends[m.cursor]
+				backend := row.Backend
 				m.result.Backend = backend
-				m.phase = connectPhaseProvider
-				m.providerAuth = newProviderAuthModel(m.caller, backend, "")
-				return m, m.providerAuth.Init()
+				m.result.IsAllowed = row.IsAllowed
+				m.result.IsConnected = row.ProviderName != ""
+				m.result.ProviderName = row.ProviderName
+				if row.IsAllowed {
+					return m.enterProvider(backend)
+				}
+				m.phase = connectPhaseAllow
 			}
 		}
+
+	case connectPhaseAllow:
+		switch {
+		case key.Matches(msg, key.NewBinding(key.WithKeys("y", "Y", "enter"))):
+			m.phase = connectPhaseDetecting
+			return m, m.allowHarnessCmd(m.result.Backend)
+		case key.Matches(msg, key.NewBinding(key.WithKeys("n", "N", "esc"))):
+			if m.hasPicker {
+				m.phase = connectPhasePickBackend
+				return m, nil
+			}
+			return m, tea.Quit
+		}
+
+	case connectPhaseReady:
+		return m, tea.Quit
 	}
 	return m, nil
 }
@@ -237,27 +311,100 @@ func (m *ConnectModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m *ConnectModel) loadBackendsCmd() tea.Cmd {
 	caller := m.caller
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), providerListLoadTimeout)
-		defer cancel()
-		// Unfiltered: the picker needs every backend's state at once.
-		providers, err := caller.ListAuthProviders(ctx, "")
-		return connectProvidersLoadedMsg{providers: providers, err: err}
+		prefs, err := config.LoadPreferences()
+		if err != nil {
+			return connectProvidersLoadedMsg{err: fmt.Errorf("load harness permissions: %w", err)}
+		}
+		allowed := make(map[agent.BackendType]bool, len(agent.AllBackends))
+		var providers []agent.ProviderAuthInfo
+		for _, bt := range agent.AllBackends {
+			if !prefs.IsHarnessAllowed(string(bt)) {
+				continue
+			}
+			allowed[bt] = true
+			ctx, cancel := context.WithTimeout(context.Background(), providerListLoadTimeout)
+			found, listErr := caller.ListAuthProviders(ctx, bt)
+			cancel()
+			if listErr != nil {
+				return connectProvidersLoadedMsg{err: listErr}
+			}
+			providers = append(providers, found...)
+		}
+		return connectProvidersLoadedMsg{providers: providers, allowed: allowed}
 	}
 }
 
-// connectBackendRows pairs every launchable backend with its connection
-// state. Backends absent from the catalog list as not connected rather
-// than disappearing — "clank can run this, you just haven't connected
-// it" is exactly what the picker exists to say.
-func connectBackendRows(providers []agent.ProviderAuthInfo) []connectBackendRow {
+func (m *ConnectModel) allowHarnessCmd(backend agent.BackendType) tea.Cmd {
+	caller := m.caller
+	return func() tea.Msg {
+		if err := config.UpdatePreferences(func(p *config.Preferences) {
+			p.SetHarnessAllowed(string(backend), true)
+		}); err != nil {
+			return connectHarnessAllowedMsg{backend: backend, err: fmt.Errorf("allow %s: %w", backend, err)}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), providerListLoadTimeout)
+		defer cancel()
+		providers, err := caller.ListAuthProviders(ctx, backend)
+		return connectHarnessAllowedMsg{backend: backend, providers: providers, err: err}
+	}
+}
+
+func (m *ConnectModel) enterProvider(backend agent.BackendType) (*ConnectModel, tea.Cmd) {
+	m.phase = connectPhaseProvider
+	m.providerAuth = newProviderAuthModel(m.caller, backend, "")
+	m.providerAuth.shouldRenderBorder = false
+	return m, m.providerAuth.Init()
+}
+
+func (m *ConnectModel) backendRow(backend agent.BackendType) connectBackendRow {
+	for _, row := range m.backends {
+		if row.Backend == backend {
+			return row
+		}
+	}
+	return connectBackendRow{Backend: backend}
+}
+
+func (m *ConnectModel) updateBackendRow(backend agent.BackendType, allowed bool, providerName string) {
+	for i := range m.backends {
+		if m.backends[i].Backend == backend {
+			m.backends[i].IsAllowed = allowed
+			m.backends[i].ProviderName = providerName
+			return
+		}
+	}
+}
+
+// connectBackendRows pairs every launchable backend with its permission and
+// authentication state. Disallowed backends remain visible as allow actions.
+func connectBackendRows(providers []agent.ProviderAuthInfo, allowed map[agent.BackendType]bool) []connectBackendRow {
 	rows := make([]connectBackendRow, 0, len(agent.AllBackends))
 	for _, bt := range agent.AllBackends {
 		rows = append(rows, connectBackendRow{
-			Backend:     bt,
-			IsConnected: agent.IsBackendConnected(providers, bt),
+			Backend:      bt,
+			IsAllowed:    allowed[bt],
+			ProviderName: connectedProviderNameForBackend(providers, bt),
 		})
 	}
 	return rows
+}
+
+func connectedProviderName(providers []agent.ProviderAuthInfo) string {
+	for _, p := range providers {
+		if p.Connected {
+			return p.DisplayName
+		}
+	}
+	return ""
+}
+
+func connectedProviderNameForBackend(providers []agent.ProviderAuthInfo, backend agent.BackendType) string {
+	for _, p := range providers {
+		if p.Backend == backend && p.Connected {
+			return p.DisplayName
+		}
+	}
+	return ""
 }
 
 // View renders inline (no alt screen) so the connect flow stays in the
@@ -268,7 +415,7 @@ func (m *ConnectModel) View() tea.View {
 }
 
 // connectView wraps rendered body text in the inline, mouse-free
-// tea.View both phases share.
+// tea.View every phase shares.
 func connectView(body string) tea.View {
 	v := tea.NewView(strings.TrimRight(body, "\n"))
 	v.AltScreen = false
@@ -286,13 +433,33 @@ func (m *ConnectModel) body() string {
 
 	var sb strings.Builder
 	sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(textColor).
-		Width(innerWidth).Render("Connect an agent"))
+		Width(innerWidth).Render("Agent harnesses"))
 	sb.WriteString("\n\n")
 
 	switch m.phase {
 	case connectPhaseLoading:
-		sb.WriteString(m.spinner.View())
-		sb.WriteString(" Checking which agents are connected…")
+		sb.WriteString(m.spinner.View() + " Loading harness permissions…")
+
+	case connectPhaseDetecting:
+		sb.WriteString(m.spinner.View() + " Checking available authentication…")
+
+	case connectPhaseAllow:
+		name := backendDisplayName(m.result.Backend)
+		sb.WriteString(fmt.Sprintf(connectAllowQuestion, name))
+		sb.WriteString(lipgloss.NewStyle().Foreground(mutedColor).
+			Render("via Agent Client Protocol (ACP)"))
+		sb.WriteString("\n\n")
+		sb.WriteString("Authentication is checked only after you allow this harness.\n\n")
+		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
+			Render("y/enter allow · n/esc cancel"))
+
+	case connectPhaseReady:
+		sb.WriteString(lipgloss.NewStyle().Foreground(successColor).
+			Render("✓ Allowed " + backendDisplayName(m.result.Backend)))
+		sb.WriteString("\n\nUsing " + m.result.ProviderName)
+		sb.WriteString("\n\n")
+		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
+			Render("press any key to dismiss"))
 
 	case connectPhaseError:
 		sb.WriteString(lipgloss.NewStyle().Foreground(dangerColor).
@@ -303,7 +470,7 @@ func (m *ConnectModel) body() string {
 
 	case connectPhasePickBackend:
 		sb.WriteString(lipgloss.NewStyle().Foreground(mutedColor).
-			Render("Which agent do you want to use?"))
+			Render(connectPickerQuestion))
 		sb.WriteString("\n\n")
 		for i, row := range m.backends {
 			prefix := "  "
@@ -312,9 +479,11 @@ func (m *ConnectModel) body() string {
 				prefix = "▶ "
 				labelStyle = labelStyle.Bold(true).Background(primaryColor)
 			}
-			status := lipgloss.NewStyle().Foreground(dimColor).Render("not connected")
-			if row.IsConnected {
-				status = lipgloss.NewStyle().Foreground(successColor).Render("✓ connected")
+			status := lipgloss.NewStyle().Foreground(primaryColor).Render(connectNeedsApprovalLabel)
+			if row.IsAllowed && row.ProviderName == "" {
+				status = lipgloss.NewStyle().Foreground(dimColor).Render("configure auth")
+			} else if row.IsAllowed {
+				status = lipgloss.NewStyle().Foreground(successColor).Render("✓ " + row.ProviderName)
 			}
 			line := fmt.Sprintf("%s%s", prefix, labelStyle.Render(backendDisplayName(row.Backend)))
 			gap := max(innerWidth-lipgloss.Width(line)-lipgloss.Width(status)-2, 1)
@@ -323,12 +492,8 @@ func (m *ConnectModel) body() string {
 		}
 		sb.WriteString("\n")
 		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
-			Render("↑↓ navigate · enter select · q quit"))
+			Render(connectPickerHelp))
 	}
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(primaryColor).
-		Padding(1, 2).
-		Render(sb.String())
+	return lipgloss.NewStyle().Padding(1, 2).Render(sb.String())
 }

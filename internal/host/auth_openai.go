@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/supaclank/clank/internal/agent"
 )
 
 // OpenAISinkPath is where clank stores OpenAI/Codex connection state —
@@ -119,6 +121,9 @@ func (a *AuthManager) updateOpenAISink(mutate func(*openaiSink)) error {
 // $CODEX_HOME/auth.json (the device-auth ceremony's sink, or a laptop's
 // pre-existing `codex login`).
 func (a *AuthManager) OpenAIEnv() map[string]string {
+	if a.backendAllowed != nil && !a.backendAllowed(agent.BackendCodex) {
+		return nil
+	}
 	sink, err := a.readOpenAISink()
 	if err != nil || sink.APIKey == "" {
 		return nil

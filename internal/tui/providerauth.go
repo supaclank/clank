@@ -115,10 +115,14 @@ const (
 
 const providerAuthPollInterval = 2 * time.Second
 
-// providerAuthModel is the modal's state. Constructed via
-// newProviderAuthModel; rendered through overlayCenter by the inbox.
+// providerAuthModel owns the provider authentication flow. Callers can render
+// it inside an overlay or as a standalone terminal screen.
 type providerAuthModel struct {
 	caller ProviderAuthCaller
+
+	// shouldRenderBorder is true when a caller embeds this in an overlay.
+	// The standalone connect command reuses the flow without modal chrome.
+	shouldRenderBorder bool
 
 	// backend, when non-empty, scopes the provider list to those
 	// consumed by that agent CLI (opencode | claude-code). The model
@@ -227,13 +231,14 @@ func newProviderAuthModel(caller ProviderAuthCaller, backend agent.BackendType, 
 	ti.SetWidth(48)
 
 	return providerAuthModel{
-		caller:           caller,
-		backend:          backend,
-		phase:            providerPhaseLoading,
-		spinner:          sp,
-		apiKey:           ti,
-		slowLoadHint:     slowLoadHint,
-		loadingStartedAt: time.Now(),
+		caller:             caller,
+		shouldRenderBorder: true,
+		backend:            backend,
+		phase:              providerPhaseLoading,
+		spinner:            sp,
+		apiKey:             ti,
+		slowLoadHint:       slowLoadHint,
+		loadingStartedAt:   time.Now(),
 	}
 }
 
@@ -839,11 +844,11 @@ func (m providerAuthModel) View() string {
 			Render(dismiss))
 	}
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(primaryColor).
-		Padding(1, 2).
-		Render(sb.String())
+	style := lipgloss.NewStyle().Padding(1, 2)
+	if m.shouldRenderBorder {
+		style = style.Border(lipgloss.RoundedBorder()).BorderForeground(primaryColor)
+	}
+	return style.Render(sb.String())
 }
 
 // awaitingLabel chooses the spinner label based on flow state and the

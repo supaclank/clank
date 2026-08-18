@@ -139,6 +139,12 @@ type Preferences struct {
 	// Validate at the boundary via agent.ResolveBackendPreference.
 	DefaultBackend string `json:"default_backend,omitempty"`
 
+	// AllowedHarnesses records the coding-agent harnesses the user has
+	// explicitly allowed Clank to control. Keys are backend identifiers
+	// such as "claude-code" and "opencode". Authentication is configured
+	// separately after this capability is granted.
+	AllowedHarnesses map[string]bool `json:"allowed_harnesses,omitempty"`
+
 	// WebPreviewDictation is the dictation engine `clank preview`'s
 	// browser overlay uses: "local" (the clank-voice/exec engine on
 	// this machine) or "webspeech" (the browser's SpeechRecognition
@@ -423,6 +429,31 @@ func (p *Preferences) SetModelFor(backend string, pref ModelPreference) {
 		p.Models = make(map[string]ModelPreference, 1)
 	}
 	p.Models[backend] = pref
+}
+
+// IsHarnessAllowed reports whether the user explicitly allowed Clank to
+// control harness. Missing entries fail closed.
+func (p *Preferences) IsHarnessAllowed(harness string) bool {
+	return p != nil && p.AllowedHarnesses[harness]
+}
+
+// SetHarnessAllowed records or revokes the control capability for harness.
+// Revoked entries are removed so preferences.json contains only grants.
+func (p *Preferences) SetHarnessAllowed(harness string, allowed bool) {
+	if p == nil || harness == "" {
+		return
+	}
+	if !allowed {
+		delete(p.AllowedHarnesses, harness)
+		if len(p.AllowedHarnesses) == 0 {
+			p.AllowedHarnesses = nil
+		}
+		return
+	}
+	if p.AllowedHarnesses == nil {
+		p.AllowedHarnesses = make(map[string]bool, 1)
+	}
+	p.AllowedHarnesses[harness] = true
 }
 
 // preferencesPath returns the path to the preferences file.

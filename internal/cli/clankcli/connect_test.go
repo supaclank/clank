@@ -104,8 +104,8 @@ func TestEnsureAgentConnected_NoCredentials(t *testing.T) {
 		t.Fatalf("state = %v, want agentNotConnected. Either a credential env var leaked in "+
 			"(is one missing from credentialEnvNames?) or $HOME isolation broke. Output:\n%s", got, out.String())
 	}
-	if !strings.Contains(out.String(), "No coding agent is connected") {
-		t.Errorf("user was not told nothing is connected:\n%s", out.String())
+	if !strings.Contains(out.String(), "No allowed coding-agent harness") {
+		t.Errorf("user was not told nothing is allowed and authenticated:\n%s", out.String())
 	}
 	if !strings.Contains(out.String(), "clank connect") {
 		t.Errorf("output does not point at the fix:\n%s", out.String())
@@ -118,6 +118,11 @@ func TestEnsureAgentConnected_NoCredentials(t *testing.T) {
 func TestEnsureAgentConnected_EnvCredentialIsEnough(t *testing.T) {
 	client := newConnectTestClient(t)
 	t.Setenv(host.EnvAnthropicAPIKey, "sk-ant-test")
+	if err := config.UpdatePreferences(func(p *config.Preferences) {
+		p.SetHarnessAllowed(string(agent.BackendClaudeCode), true)
+	}); err != nil {
+		t.Fatalf("allow claude-code: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -131,6 +136,19 @@ func TestEnsureAgentConnected_EnvCredentialIsEnough(t *testing.T) {
 	}
 }
 
+func TestEnsureAgentConnected_EnvCredentialNeedsHarnessAllow(t *testing.T) {
+	client := newConnectTestClient(t)
+	t.Setenv(host.EnvAnthropicAPIKey, "sk-ant-test")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var out bytes.Buffer
+	if got := ensureAgentConnected(ctx, client, "", strings.NewReader(""), &out); got != agentNotConnected {
+		t.Fatalf("state = %v, want agentNotConnected before allow. Output:\n%s", got, out.String())
+	}
+}
+
 // `clank preview --backend X` must check that X specifically is
 // connected, not "is anything connected anywhere" — otherwise a preview
 // pinned to an unconnected backend skips the offer just because some
@@ -138,6 +156,12 @@ func TestEnsureAgentConnected_EnvCredentialIsEnough(t *testing.T) {
 func TestEnsureAgentConnected_BackendFlagChecksThatBackendSpecifically(t *testing.T) {
 	client := newConnectTestClient(t)
 	t.Setenv(host.EnvAnthropicAPIKey, "sk-ant-test") // connects claude-code, not opencode
+	if err := config.UpdatePreferences(func(p *config.Preferences) {
+		p.SetHarnessAllowed(string(agent.BackendClaudeCode), true)
+		p.SetHarnessAllowed(string(agent.BackendOpenCode), true)
+	}); err != nil {
+		t.Fatalf("allow harnesses: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -154,7 +178,12 @@ func TestEnsureAgentConnected_BackendFlagChecksThatBackendSpecifically(t *testin
 // agent" — guessing would print a fix for a problem the user doesn't
 // have while the real failure is about to surface elsewhere.
 func TestEnsureAgentConnected_UnreachableHostIsUnknown(t *testing.T) {
-	t.Parallel()
+	t.Setenv("CLANK_DIR", t.TempDir())
+	if err := config.UpdatePreferences(func(p *config.Preferences) {
+		p.SetHarnessAllowed(string(agent.BackendOpenCode), true)
+	}); err != nil {
+		t.Fatalf("allow opencode: %v", err)
+	}
 	// A gateway URL that refuses connections: the port is closed the
 	// instant the listener hands it back.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

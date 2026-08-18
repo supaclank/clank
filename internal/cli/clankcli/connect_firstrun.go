@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/supaclank/clank/internal/agent"
+	"github.com/supaclank/clank/internal/config"
 	daemonclient "github.com/supaclank/clank/internal/daemonclient"
 	"github.com/supaclank/clank/internal/host"
 )
@@ -46,23 +47,37 @@ const (
 func ensureAgentConnected(ctx context.Context, client *daemonclient.Client, backendFlag agent.BackendType, in io.Reader, out io.Writer) agentConnectState {
 	listCtx, cancel := context.WithTimeout(ctx, connectProviderListTimeout)
 	defer cancel()
-	providers, err := client.Host(host.HostLocal).ListAuthProviders(listCtx, "")
+	prefs, err := config.LoadPreferences()
 	if err != nil {
-		// Say nothing: whatever broke the host will surface through the
-		// caller's own work with a far better error than a guess here.
 		return agentConnectUnknown
 	}
-	// A named backend must itself be connected — some other backend
-	// being connected doesn't help a preview that's pinned to this one.
-	connected := agent.IsAnyProviderConnected(providers)
+	var backends []agent.BackendType
 	if backendFlag != "" {
-		connected = agent.IsBackendConnected(providers, backendFlag)
+		backends = []agent.BackendType{backendFlag}
+	} else {
+		backends = agent.AllBackends
+	}
+	connected := false
+	for _, bt := range backends {
+		if !prefs.IsHarnessAllowed(string(bt)) {
+			continue
+		}
+		providers, listErr := client.Host(host.HostLocal).ListAuthProviders(listCtx, bt)
+		if listErr != nil {
+			// Say nothing: whatever broke the host will surface through the
+			// caller's own work with a far better error than a guess here.
+			return agentConnectUnknown
+		}
+		if agent.IsBackendConnected(providers, bt) {
+			connected = true
+			break
+		}
 	}
 	if connected {
 		return agentConnected
 	}
 
-	fmt.Fprintln(out, "No coding agent is connected on this machine yet.")
+	fmt.Fprintln(out, "No allowed coding-agent harness has working authentication yet.")
 	if !isInteractiveTerminal(in, out) {
 		fmt.Fprintf(out, "To use one, %s.\n", connectHint)
 		return agentNotConnected
@@ -77,7 +92,7 @@ func ensureAgentConnected(ctx context.Context, client *daemonclient.Client, back
 		fmt.Fprintf(out, "Continuing without an agent — %s any time.\n", connectHint)
 		return agentNotConnected
 	}
-	fmt.Fprintf(out, "Connected %s.\n", result.Backend)
+	fmt.Fprintf(out, "Allowed %s.\n", result.Backend)
 	return agentConnected
 }
 
