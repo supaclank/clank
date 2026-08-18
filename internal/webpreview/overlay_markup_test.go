@@ -68,15 +68,15 @@ func TestOverlayCompletedLauncherHasGreenBorder(t *testing.T) {
 
 func TestOverlayStructuredTranscriptWiring(t *testing.T) {
 	t.Parallel()
-	js := string(overlayJS) + string(transcriptJS)
-	for _, want := range []string{
-		"upsertTranscriptPart",
-		"renderMarkdown",
-		"renderToolCall",
-		"renderThinking",
-	} {
+	js, tx := string(overlayJS), string(transcriptJS)
+	for _, want := range []string{"upsertTranscriptPart", "createTranscriptRenderer"} {
 		if !strings.Contains(js, want) {
 			t.Errorf("overlay.js structured transcript wiring missing %q", want)
+		}
+	}
+	for _, want := range []string{"renderMarkdown", "renderToolCall", "renderThinking"} {
+		if !strings.Contains(tx, want) {
+			t.Errorf("transcript.js missing %q", want)
 		}
 	}
 	if strings.Contains(js, "streamText") {

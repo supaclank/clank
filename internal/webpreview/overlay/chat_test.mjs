@@ -154,6 +154,9 @@ test('toolSummary prefers paths, commands, then descriptions', () => {
   assert.equal(toolSummary({ input: { command: 'go test ./...' } }), 'go test ./...');
   assert.equal(toolSummary({ input: { description: 'Inspect app state' } }), 'Inspect app state');
   assert.equal(toolSummary({}), '');
+  // when multiple keys are present, filePath wins over command wins over description
+  assert.equal(toolSummary({ input: { filePath: 'src/app.js', command: 'go test ./...', description: 'Inspect app state' } }), 'src/app.js');
+  assert.equal(toolSummary({ input: { command: 'go test ./...', description: 'Inspect app state' } }), 'go test ./...');
 });
 
 test('question suppresses its gating permission by request id and tool_use id (QST-003)', () => {
