@@ -79,6 +79,7 @@ export const markdownBlocks = (source) => {
       !/^(#{1,6})\s+/.test(lines[i]) && !/^\s*(?:(\d+)\.|[-+*])\s+/.test(lines[i]) && !/^>\s?/.test(lines[i])) {
       paragraph.push(lines[i++]);
     }
+    if (!paragraph.length) paragraph.push(lines[i++]); // malformed fence/heading/list opener: render as text, still advance
     blocks.push({ type: 'paragraph', text: paragraph.join('\n') });
   }
   return blocks;

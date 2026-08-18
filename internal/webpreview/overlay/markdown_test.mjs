@@ -42,3 +42,16 @@ test('inlineMarkdown leaves unsafe links as plain text', () => {
     { type: 'text', text: '[nope](javascript:alert(1))' },
   ]);
 });
+
+test('markdownBlocks projects ordered lists', () => {
+  assert.deepEqual(markdownBlocks('1. first\n2. second'), [
+    { type: 'list', ordered: true, items: ['first', 'second'] },
+  ]);
+});
+
+test('markdownBlocks does not hang on a malformed fence opener', { timeout: 2000 }, () => {
+  assert.deepEqual(markdownBlocks('```js extra\nnext line'), [
+    { type: 'paragraph', text: '```js extra' },
+    { type: 'paragraph', text: 'next line' },
+  ]);
+});
