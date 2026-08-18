@@ -352,6 +352,7 @@ func (m *ConnectModel) allowHarnessCmd(backend agent.BackendType) tea.Cmd {
 func (m *ConnectModel) enterProvider(backend agent.BackendType) (*ConnectModel, tea.Cmd) {
 	m.phase = connectPhaseProvider
 	m.providerAuth = newProviderAuthModel(m.caller, backend, "")
+	m.providerAuth.shouldRenderBorder = false
 	return m, m.providerAuth.Init()
 }
 
@@ -494,9 +495,5 @@ func (m *ConnectModel) body() string {
 			Render(connectPickerHelp))
 	}
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(primaryColor).
-		Padding(1, 2).
-		Render(sb.String())
+	return lipgloss.NewStyle().Padding(1, 2).Render(sb.String())
 }

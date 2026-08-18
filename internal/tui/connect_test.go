@@ -289,6 +289,21 @@ func TestConnectModel_RendersInline(t *testing.T) {
 	}
 }
 
+func TestConnectModel_RendersStandaloneFlowWithoutModalBorder(t *testing.T) {
+	t.Parallel()
+	m := NewConnectModel(nil, "")
+	model, _ := m.Update(connectProvidersLoadedMsg{})
+	m = model.(*ConnectModel)
+	if strings.ContainsAny(m.body(), "╭╮╰╯│─") {
+		t.Fatalf("harness picker rendered a modal border:\n%s", m.body())
+	}
+
+	m.enterProvider(agent.BackendOpenCode)
+	if strings.ContainsAny(m.body(), "╭╮╰╯│─") {
+		t.Fatalf("standalone provider flow rendered a modal border:\n%s", m.body())
+	}
+}
+
 var errCatalogUnreachable = errTestString("dial unix /clank.sock: connect: connection refused")
 
 type errTestString string
