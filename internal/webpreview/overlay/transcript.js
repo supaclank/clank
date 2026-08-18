@@ -57,6 +57,7 @@ const cardChevron = (icons) => {
 const renderThinking = (row, open, icons, onToggle) => {
   const card = document.createElement('div');
   card.className = 'transcript-card thinking-card' + (open ? ' open' : '');
+  card.dataset.rowId = row.id;
   const button = document.createElement('button');
   button.type = 'button';
   button.setAttribute('aria-expanded', String(open));
@@ -84,6 +85,7 @@ const toolValueText = (value) => {
 const renderToolCall = (row, open, icons, onToggle) => {
   const card = document.createElement('div');
   card.className = 'transcript-card tool-card' + (open ? ' open' : '');
+  card.dataset.rowId = row.id;
   const button = document.createElement('button');
   button.type = 'button';
   button.setAttribute('aria-expanded', String(open));

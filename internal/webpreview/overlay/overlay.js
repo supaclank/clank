@@ -209,6 +209,8 @@ import {
   if (store.sessionId) sessionStorage.setItem('clank.sessionId', store.sessionId);
   let doneTimer = 0;
   let localMessageID = 0;
+  let streamPartSeq = 0;
+  let openStreamPart = { type: null, id: '' }; // synthetic id spanning a run of id-less delta chunks of the same type, so they merge instead of each becoming its own row
 
   const setAgent = (s) => {
     clearTimeout(doneTimer);
@@ -1479,7 +1481,13 @@ import {
         break;
       }
       case 'part': {
-        const p = d.part || {};
+        const rawPart = d.part || {};
+        let p = rawPart;
+        if (!rawPart.id) {
+          if (openStreamPart.type !== rawPart.type) openStreamPart = { type: rawPart.type, id: `stream:${rawPart.type}:${++streamPartSeq}` };
+          p = { ...rawPart, id: openStreamPart.id };
+          if (!d.is_delta) openStreamPart = { type: null, id: '' }; // this run of chunks settled
+        }
         store.msgs = upsertTranscriptPart(store.msgs, p, 'assistant', !!d.is_delta, CHAT_CAP);
         if (p.type === 'tool_call') {
           setAgent('working');
@@ -1496,13 +1504,14 @@ import {
         if (p.type === 'text' && p.text) {
           if (store.question && p.id !== store.question.partId) store.question = null; // moved on [QST-002]
         }
-        if (p.type === 'thinking' && store.agent === 'idle') setAgent('thinking');
-        else render();
+        if (p.type === 'thinking' && store.agent === 'idle') setAgent('thinking'); // setAgent renders
+        else if (p.type !== 'tool_call') render(); // tool_call already rendered above
         break;
       }
       case 'message': {
         if (d.role === 'user') {
-          if (d.id) store.lastUserMsgId = d.id;
+          const hasUserText = (d.parts || []).some((p) => p.type === 'text' && p.text) || !!d.content;
+          if (d.id && hasUserText) store.lastUserMsgId = d.id; // skip tool-result-only carriers, matching chatFromMessages [DATA-022]
           store.question = null; // e.g. a bypass answer sent from another client [QST-002]
         }
         if (d.role === 'assistant') {
@@ -1514,6 +1523,7 @@ import {
           if (q) applyQuestion(q);
           else if (store.question && (d.parts || []).some((p) => p.id === store.question.partId)) store.question = null;
         }
+        // TODO(ai-review): also drops another connected client's user text, not just the local echo. https://github.com/supaclank/clank/pull/263#discussion_r3808254509
         for (const [partIndex, rawPart] of (d.parts || []).entries()) {
           if (d.role === 'user' && rawPart.type !== 'tool_result') continue;
           const part = rawPart.id ? rawPart : {
@@ -1939,7 +1949,8 @@ import {
     cursor:pointer; font-size:14px; line-height:1; }
   @keyframes coachIn { from { opacity:0; transform:translateX(8px); } }
   @media (prefers-reduced-motion: reduce) {
-    .launcher.visible, .coachmark.visible, .launcher.busy::before, .activity-spinner { animation:none; }
+    .launcher.visible, .coachmark.visible, .launcher.busy::before, .activity-spinner,
+    .tool-state.running, .tool-state.pending { animation:none; }
   }
   .hd { display:flex; align-items:center; gap:8px; padding:10px 12px 6px; cursor:grab; user-select:none; }
   .hd:active { cursor:grabbing; }
@@ -2693,7 +2704,14 @@ import {
   const toggleTranscriptCard = (id) => {
     if (store.expandedTranscript.has(id)) store.expandedTranscript.delete(id);
     else store.expandedTranscript.add(id);
+    // render() rebuilds every row from scratch (fresh <button>s, scrolled to
+    // bottom); restore focus and scroll position so toggling a card doesn't
+    // drop keyboard focus or hide the card the user just expanded.
+    const focusedRowId = root.activeElement && root.activeElement.closest('[data-row-id]')?.dataset.rowId;
+    const scrollTop = ui.chat.scrollTop;
     render();
+    ui.chat.scrollTop = scrollTop;
+    if (focusedRowId) ui.chat.querySelector(`[data-row-id="${CSS.escape(focusedRowId)}"] > button`)?.focus();
   };
   const renderTranscriptRow = createTranscriptRenderer({
     icons: ICONS,

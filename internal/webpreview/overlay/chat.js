@@ -94,6 +94,7 @@ export const toolSummary = (tool) => {
 // chatFromMessages projects a Messages() refetch into ordered transcript rows.
 // A user-role tool-result carrier contributes no user bubble: its result merges
 // into the earlier assistant tool card by part id [DATA-022].
+// TODO(ai-review): O(n^2) on reconnect (each part folds through an O(n) upsertTranscriptPart) — needs an ID-indexed merge for long-lived sessions. https://github.com/supaclank/clank/pull/263#discussion_r3808254503
 export const chatFromMessages = (messages, cap) => {
   let msgs = [];
   let lastUserMsgId = '';
