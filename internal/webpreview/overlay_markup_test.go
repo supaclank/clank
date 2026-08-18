@@ -48,10 +48,14 @@ func TestOverlayLauncherUsesCurrentClankMark(t *testing.T) {
 	if got := strings.Count(js, `class="launcher-mark-corner"`); got != 4 {
 		t.Errorf("launcher corner blocks = %d, want 4", got)
 	}
-	for _, want := range []string{`class="launcher-mark-field"`, `stroke-dasharray="4 2.5"`} {
-		if !strings.Contains(js, want) {
-			t.Errorf("overlay.js current Clank mark missing %q", want)
-		}
+	if got := strings.Count(js, `class="launcher-mark-dash"`); got != 8 {
+		t.Errorf("launcher edge dashes = %d, want 8 (two per edge)", got)
+	}
+	if !strings.Contains(js, `class="launcher-mark-field"`) {
+		t.Error("overlay.js current Clank mark missing its translucent field")
+	}
+	if strings.Contains(js, `stroke-dasharray=`) {
+		t.Error("continuous SVG dash phase misaligns the launcher's visible edge segments")
 	}
 }
 
