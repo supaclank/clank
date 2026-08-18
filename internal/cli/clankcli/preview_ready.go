@@ -3,6 +3,7 @@ package clankcli
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -22,21 +23,51 @@ func waitPreviewReady(
 	client *daemonclient.PreviewClient,
 	status *daemonclient.PreviewStatus,
 	timeout time.Duration,
+	out io.Writer,
 ) (*daemonclient.PreviewStatus, error) {
+	if out == nil {
+		return nil, fmt.Errorf("preview readiness output is required")
+	}
 	if timeout <= 0 {
 		return nil, fmt.Errorf("preview readiness timeout must be positive")
 	}
+	isReady, err := previewReadyState(status)
+	if err != nil {
+		return nil, previewStartupError(client, err)
+	}
+	if isReady {
+		return status, nil
+	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
-	ticker := time.NewTicker(previewReadyPollInterval)
-	defer ticker.Stop()
+	statusTicker := time.NewTicker(previewReadyPollInterval)
+	defer statusTicker.Stop()
+	logTicker := time.NewTicker(previewLogPollInterval)
+	defer logTicker.Stop()
+	logStream := previewStartupLogStream{out: out}
+	defer logStream.finish()
+
+	// Log reads run on their own goroutine (at most one in-flight) so a slow
+	// one can never stall statusTicker, which is the readiness source of
+	// truth.
+	logPoller := newPreviewLogPoller(&logStream, client.Logs)
+	logPoller.Poll(ctx)
 
 	for {
-		isReady, err := previewReadyState(status)
+		isReady, err = previewReadyState(status)
 		if err != nil {
+			if streamErr := logPoller.Flush(ctx); streamErr != nil {
+				return nil, streamErr
+			}
+			if logStream.hasOutput {
+				return nil, err
+			}
 			return nil, previewStartupError(client, err)
 		}
 		if isReady {
+			if err := logPoller.Flush(ctx); err != nil {
+				return nil, err
+			}
 			return status, nil
 		}
 
@@ -44,8 +75,22 @@ func waitPreviewReady(
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-timer.C:
-			return nil, previewStartupError(client, fmt.Errorf("dev server did not satisfy its configured readiness probe within %s", timeout))
-		case <-ticker.C:
+			err := fmt.Errorf("dev server did not satisfy its configured readiness probe within %s", timeout)
+			if streamErr := logPoller.Flush(ctx); streamErr != nil {
+				return nil, streamErr
+			}
+			if logStream.hasOutput {
+				return nil, err
+			}
+			return nil, previewStartupError(client, err)
+		case <-logTicker.C:
+			logPoller.Poll(ctx)
+		case res := <-logPoller.C:
+			logPoller.Ack()
+			if err := logStream.apply(res); err != nil {
+				return nil, err
+			}
+		case <-statusTicker.C:
 			// TODO(ai-review): a status request straddling `timeout` can report
 			// ready after the deadline instead of timing out.
 			// https://github.com/supaclank/clank/pull/210#discussion_r3696464957

@@ -3,6 +3,7 @@ package clankcli
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/supaclank/clank/internal/daemonclient"
@@ -77,5 +78,7 @@ func printPreviewLogsTail(ctx context.Context, pv *daemonclient.PreviewClient) {
 	if len(logs) > tailBytes {
 		logs = logs[len(logs)-tailBytes:]
 	}
-	fmt.Printf("\n--- dev server output (tail) ---\n%s\n", logs)
+	stream := previewStartupLogStream{out: os.Stdout}
+	_ = stream.write(logs)
+	stream.finish()
 }
