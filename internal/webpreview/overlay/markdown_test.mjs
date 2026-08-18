@@ -49,6 +49,7 @@ test('markdownBlocks projects ordered lists', () => {
   ]);
 });
 
+// TODO(ai-review): {timeout:2000} can't preempt a synchronous infinite-loop regression (single-threaded event loop) — the real backstop is overlay_chat_test.go's 60s context.WithTimeout around the whole `node --test` run. https://github.com/supaclank/clank/pull/263#discussion_r3808630678
 test('markdownBlocks does not hang on a malformed fence opener', { timeout: 2000 }, () => {
   assert.deepEqual(markdownBlocks('```js extra\nnext line'), [
     { type: 'paragraph', text: '```js extra' },

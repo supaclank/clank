@@ -36,9 +36,9 @@ Only rules the overlay's surface touches are listed; the rest are N/A for a part
 | INV-CREATE-RACE-001 (subscribe before create) | 🟡 | still subscribes **after** create returns (create carries the first prompt, so there is no id to subscribe with earlier); the reconcile refetch at stream open recovers settled content from the gap |
 | INV-SSE-DOUBLE-001 (exactly one stream) | ✅ | `sseAbort` aborts the old stream before opening a new one |
 | INV-NO-END-001 (no `end` frame) | ✅ | ends on socket close; capped-backoff resubscribe |
-| INV-DELTA-001 (is_delta append/replace) | 🟡 | live text/thinking parts merge monotonically through `chat.js upsertTranscriptPart`; `reconcile()` still replaces `store.msgs` wholesale from a point-in-time history fetch on every stream (re)open, so a refetch racing an in-flight delta can momentarily shrink the transcript until the next live event re-syncs it |
+| INV-DELTA-001 (is_delta append/replace) | 🟡 | live text/thinking parts merge monotonically through `chat.js upsertTranscriptPart`; `reconcile()` still replaces `store.msgs` wholesale from a point-in-time history fetch on every stream (re)open, so a refetch racing an in-flight delta can momentarily shrink the transcript — the next live event merges into whatever `store.msgs` currently holds and does not restore what the refetch dropped |
 | INV-TOOL-MERGE-001 (merge input+output) | ✅ | `chat.js upsertTranscriptPart` preserves the tool name/input/output and advances status monotonically; the overlay renders one expandable card |
-| INV-MONOTONIC-001 (refetch never shrinks) | N/A | rolling window is a deliberate cap; refetch replaces wholesale |
+| INV-MONOTONIC-001 (refetch never shrinks) | 🟡 | rolling window is a deliberate cap, not this gap: a refetch racing an in-flight delta (see INV-DELTA-001) can shrink below the window until the next `reconcile()` on stream (re)open, not the next live event |
 | INV-PERM-SINGLEFLIGHT-001 (lock + single reply) | ✅ | FIFO queue (`chat.js pushPermission`, dedup by request_id); reply pops the head, next prompt renders |
 | INV-DENY-SETTLE-001 (settle tools on deny) | 🟡 | tools render, but denial settlement still relies on the backend's following part/message update |
 | INV-ABORT-PERM-001 (abort clears perms) | ✅ | abort clears the queue and the question card |
