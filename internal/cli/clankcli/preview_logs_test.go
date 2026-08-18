@@ -159,11 +159,14 @@ func TestPreviewLogPollerAwaitAppliesPendingResult(t *testing.T) {
 	}
 }
 
-// TestFlushLogStreamSkipsRedundantPollAfterAwait pins the bug cubic flagged
-// on PR #261: flushLogStream must not issue a second synchronous fetch when
-// Await already delivered the freshest snapshot, or a final flush pays
-// previewLogReadTimeout twice for no new data.
-func TestFlushLogStreamSkipsRedundantPollAfterAwait(t *testing.T) {
+// TestPreviewLogPollerFlushSkipsRedundantPollAfterAwait pins the bug cubic
+// flagged on PR #261: Flush (used by waitPreviewReady) must not issue a
+// second synchronous fetch when Await already delivered the freshest
+// snapshot, or a final flush pays previewLogReadTimeout twice for no new
+// data. Exercising the production Flush method directly — rather than a
+// local reimplementation — means a regression in waitPreviewReady's actual
+// call path fails this test.
+func TestPreviewLogPollerFlushSkipsRedundantPollAfterAwait(t *testing.T) {
 	t.Parallel()
 	var calls int32
 	fetch := func(ctx context.Context) ([]byte, error) {
@@ -175,18 +178,8 @@ func TestFlushLogStreamSkipsRedundantPollAfterAwait(t *testing.T) {
 	poller := newPreviewLogPoller(stream, fetch)
 
 	poller.Poll(context.Background())
-	flushLogStream := func() error {
-		drained, err := poller.Await()
-		if err != nil {
-			return err
-		}
-		if drained {
-			return nil
-		}
-		return stream.poll(context.Background(), fetch)
-	}
-	if err := flushLogStream(); err != nil {
-		t.Fatalf("flushLogStream: %v", err)
+	if err := poller.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush: %v", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Fatalf("fetch invoked %d times by a single flush after an in-flight poll, want 1", got)

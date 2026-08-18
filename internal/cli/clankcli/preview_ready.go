@@ -51,25 +51,12 @@ func waitPreviewReady(
 	// one can never stall statusTicker, which is the readiness source of
 	// truth.
 	logPoller := newPreviewLogPoller(&logStream, client.Logs)
-	flushLogStream := func() error {
-		drained, err := logPoller.Await()
-		if err != nil {
-			return err
-		}
-		if drained {
-			// Await already applied the freshest available snapshot; a
-			// second synchronous read would just add another
-			// previewLogReadTimeout of latency for no new data.
-			return nil
-		}
-		return logStream.poll(ctx, client.Logs)
-	}
 	logPoller.Poll(ctx)
 
 	for {
 		isReady, err = previewReadyState(status)
 		if err != nil {
-			if streamErr := flushLogStream(); streamErr != nil {
+			if streamErr := logPoller.Flush(ctx); streamErr != nil {
 				return nil, streamErr
 			}
 			if logStream.hasOutput {
@@ -78,7 +65,7 @@ func waitPreviewReady(
 			return nil, previewStartupError(client, err)
 		}
 		if isReady {
-			if err := flushLogStream(); err != nil {
+			if err := logPoller.Flush(ctx); err != nil {
 				return nil, err
 			}
 			return status, nil
@@ -89,7 +76,7 @@ func waitPreviewReady(
 			return nil, ctx.Err()
 		case <-timer.C:
 			err := fmt.Errorf("dev server did not satisfy its configured readiness probe within %s", timeout)
-			if streamErr := flushLogStream(); streamErr != nil {
+			if streamErr := logPoller.Flush(ctx); streamErr != nil {
 				return nil, streamErr
 			}
 			if logStream.hasOutput {

@@ -168,6 +168,22 @@ func (p *previewLogPoller) Await() (drained bool, err error) {
 	return true, p.stream.apply(<-p.C)
 }
 
+// Flush applies the in-flight fetch if there is one, or otherwise issues a
+// synchronous poll so the stream reflects the latest available snapshot
+// before the caller exits. A redundant synchronous poll after Await already
+// drained a fresh result would just add another previewLogReadTimeout of
+// latency for no new data.
+func (p *previewLogPoller) Flush(ctx context.Context) error {
+	drained, err := p.Await()
+	if err != nil {
+		return err
+	}
+	if drained {
+		return nil
+	}
+	return p.stream.poll(ctx, p.fetch)
+}
+
 func previewLogDelta(previous, current []byte) []byte {
 	if len(previous) == 0 {
 		return current
