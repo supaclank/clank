@@ -42,6 +42,19 @@ func TestOverlayWorkingStateHasIndependentProgressIndicator(t *testing.T) {
 	}
 }
 
+func TestOverlayLauncherUsesCurrentClankMark(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	if got := strings.Count(js, `class="launcher-mark-corner"`); got != 4 {
+		t.Errorf("launcher corner blocks = %d, want 4", got)
+	}
+	for _, want := range []string{`class="launcher-mark-field"`, `stroke-dasharray="4 2.5"`} {
+		if !strings.Contains(js, want) {
+			t.Errorf("overlay.js current Clank mark missing %q", want)
+		}
+	}
+}
+
 // TestOverlayComposerSelectorIsClassScoped guards the composer wiring:
 // ui.input was once selected with a bare $('textarea'), and adding the
 // plan-notes textarea earlier in the markup silently captured it —
