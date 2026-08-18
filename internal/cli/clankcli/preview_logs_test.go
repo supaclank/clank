@@ -139,23 +139,54 @@ func TestPreviewLogPollerAwaitAppliesPendingResult(t *testing.T) {
 	poller := newPreviewLogPoller(stream, fetch)
 
 	poller.Poll(context.Background())
-	drained, err := poller.Await()
+	fresh, err := poller.Await()
 	if err != nil {
 		t.Fatalf("Await: %v", err)
 	}
-	if !drained {
-		t.Fatal("Await reported nothing drained despite an in-flight poll")
+	if !fresh {
+		t.Fatal("Await reported no fresh result despite a successful in-flight poll")
 	}
 	if !strings.Contains(out.String(), "hello") {
 		t.Fatalf("Await did not apply the in-flight result:\n%s", out.String())
 	}
 	// No poll in flight now; Await must be a no-op rather than blocking.
-	drained, err = poller.Await()
+	fresh, err = poller.Await()
 	if err != nil {
 		t.Fatalf("second Await: %v", err)
 	}
-	if drained {
-		t.Fatal("Await reported draining a result with no poll in flight")
+	if fresh {
+		t.Fatal("Await reported a fresh result with no poll in flight")
+	}
+}
+
+// TestPreviewLogPollerFlushRetriesAfterInFlightFetchError pins the cubic
+// finding on PR #261: apply() swallows fetch errors as best-effort, so Await
+// used to report a failed in-flight fetch as "drained" and Flush skipped its
+// fallback poll — silently forfeiting the caller's last chance at a final
+// snapshot. Flush must retry once when the in-flight fetch didn't actually
+// deliver fresh data.
+func TestPreviewLogPollerFlushRetriesAfterInFlightFetchError(t *testing.T) {
+	t.Parallel()
+	var calls int32
+	fetch := func(ctx context.Context) ([]byte, error) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			return nil, errors.New("transient fetch error")
+		}
+		return []byte("hello\n"), nil
+	}
+	var out bytes.Buffer
+	stream := &previewStartupLogStream{out: &out}
+	poller := newPreviewLogPoller(stream, fetch)
+
+	poller.Poll(context.Background())
+	if err := poller.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("fetch invoked %d times, want 2 (failed in-flight fetch + fallback poll)", got)
+	}
+	if !strings.Contains(out.String(), "hello") {
+		t.Fatalf("Flush did not recover a snapshot after a transient in-flight fetch error:\n%s", out.String())
 	}
 }
 

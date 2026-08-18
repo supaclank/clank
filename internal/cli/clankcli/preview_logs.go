@@ -157,28 +157,36 @@ func (p *previewLogPoller) Ack() {
 	p.inFlight = false
 }
 
-// Await blocks for the in-flight fetch, if any, and applies it, reporting
-// whether one was in fact drained. Call this before a final synchronous poll
-// so it never races the background fetch.
-func (p *previewLogPoller) Await() (drained bool, err error) {
+// Await blocks for the in-flight fetch, if any, applies it, and reports
+// whether a fresh snapshot was drained. A fetch that errored transiently
+// does not count as fresh — apply() treats fetch errors as best-effort and
+// swallows them, so the caller must still be told to retry. Call this before
+// a final synchronous poll so it never races the background fetch.
+func (p *previewLogPoller) Await() (fresh bool, err error) {
 	if !p.inFlight {
 		return false, nil
 	}
 	p.inFlight = false
-	return true, p.stream.apply(<-p.C)
+	res := <-p.C
+	if err := p.stream.apply(res); err != nil {
+		return false, err
+	}
+	return res.err == nil, nil
 }
 
 // Flush applies the in-flight fetch if there is one, or otherwise issues a
 // synchronous poll so the stream reflects the latest available snapshot
-// before the caller exits. A redundant synchronous poll after Await already
-// drained a fresh result would just add another previewLogReadTimeout of
-// latency for no new data.
+// before the caller exits. Skips the fallback poll only when Await already
+// delivered a fresh snapshot — a redundant synchronous poll in that case
+// would just add another previewLogReadTimeout of latency for no new data,
+// whereas skipping it after a failed in-flight fetch would silently forfeit
+// the caller's last chance at a final snapshot.
 func (p *previewLogPoller) Flush(ctx context.Context) error {
-	drained, err := p.Await()
+	fresh, err := p.Await()
 	if err != nil {
 		return err
 	}
-	if drained {
+	if fresh {
 		return nil
 	}
 	return p.stream.poll(ctx, p.fetch)
