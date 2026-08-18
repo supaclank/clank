@@ -55,6 +55,7 @@ func TestOverlayLauncherUsesCurrentClankMark(t *testing.T) {
 		t.Error("overlay.js current Clank mark missing its translucent field")
 	}
 	for _, want := range []string{
+		`<svg width="27" height="27" viewBox="2.5 2.5 19 19"`,
 		`class="launcher-mark-corner" x="2.5" y="2.5" width="4.5" height="4.5"`,
 		`class="launcher-mark-dash" x="8" y="4.25" width="3.5" height="1"`,
 		`class="launcher-mark-dash" x="4.25" y="8" width="1" height="3.5"`,
