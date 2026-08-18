@@ -139,14 +139,56 @@ func TestPreviewLogPollerAwaitAppliesPendingResult(t *testing.T) {
 	poller := newPreviewLogPoller(stream, fetch)
 
 	poller.Poll(context.Background())
-	if err := poller.Await(); err != nil {
+	drained, err := poller.Await()
+	if err != nil {
 		t.Fatalf("Await: %v", err)
+	}
+	if !drained {
+		t.Fatal("Await reported nothing drained despite an in-flight poll")
 	}
 	if !strings.Contains(out.String(), "hello") {
 		t.Fatalf("Await did not apply the in-flight result:\n%s", out.String())
 	}
 	// No poll in flight now; Await must be a no-op rather than blocking.
-	if err := poller.Await(); err != nil {
+	drained, err = poller.Await()
+	if err != nil {
 		t.Fatalf("second Await: %v", err)
+	}
+	if drained {
+		t.Fatal("Await reported draining a result with no poll in flight")
+	}
+}
+
+// TestFlushLogStreamSkipsRedundantPollAfterAwait pins the bug cubic flagged
+// on PR #261: flushLogStream must not issue a second synchronous fetch when
+// Await already delivered the freshest snapshot, or a final flush pays
+// previewLogReadTimeout twice for no new data.
+func TestFlushLogStreamSkipsRedundantPollAfterAwait(t *testing.T) {
+	t.Parallel()
+	var calls int32
+	fetch := func(ctx context.Context) ([]byte, error) {
+		atomic.AddInt32(&calls, 1)
+		return []byte("hello\n"), nil
+	}
+	var out bytes.Buffer
+	stream := &previewStartupLogStream{out: &out}
+	poller := newPreviewLogPoller(stream, fetch)
+
+	poller.Poll(context.Background())
+	flushLogStream := func() error {
+		drained, err := poller.Await()
+		if err != nil {
+			return err
+		}
+		if drained {
+			return nil
+		}
+		return stream.poll(context.Background(), fetch)
+	}
+	if err := flushLogStream(); err != nil {
+		t.Fatalf("flushLogStream: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("fetch invoked %d times by a single flush after an in-flight poll, want 1", got)
 	}
 }

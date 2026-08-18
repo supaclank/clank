@@ -52,8 +52,15 @@ func waitPreviewReady(
 	// truth.
 	logPoller := newPreviewLogPoller(&logStream, client.Logs)
 	flushLogStream := func() error {
-		if err := logPoller.Await(); err != nil {
+		drained, err := logPoller.Await()
+		if err != nil {
 			return err
+		}
+		if drained {
+			// Await already applied the freshest available snapshot; a
+			// second synchronous read would just add another
+			// previewLogReadTimeout of latency for no new data.
+			return nil
 		}
 		return logStream.poll(ctx, client.Logs)
 	}

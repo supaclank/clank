@@ -157,14 +157,15 @@ func (p *previewLogPoller) Ack() {
 	p.inFlight = false
 }
 
-// Await blocks for the in-flight fetch, if any, and applies it. Call this
-// before a final synchronous poll so it never races the background fetch.
-func (p *previewLogPoller) Await() error {
+// Await blocks for the in-flight fetch, if any, and applies it, reporting
+// whether one was in fact drained. Call this before a final synchronous poll
+// so it never races the background fetch.
+func (p *previewLogPoller) Await() (drained bool, err error) {
 	if !p.inFlight {
-		return nil
+		return false, nil
 	}
 	p.inFlight = false
-	return p.stream.apply(<-p.C)
+	return true, p.stream.apply(<-p.C)
 }
 
 func previewLogDelta(previous, current []byte) []byte {
