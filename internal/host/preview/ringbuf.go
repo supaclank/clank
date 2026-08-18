@@ -80,12 +80,27 @@ func sanitizeTerminalOutput(p []byte) []byte {
 	}
 	stripped := []byte(ansi.Strip(string(p)))
 	out := stripped[:0]
-	for _, b := range stripped {
-		isLayoutControl := b == '\n' || b == '\r' || b == '\t'
-		if (b < 0x20 && !isLayoutControl) || b == 0x7f || isRawC1Control(b) {
+	for i := 0; i < len(stripped); {
+		b := stripped[i]
+		if b < utf8.RuneSelf {
+			isLayoutControl := b == '\n' || b == '\r' || b == '\t'
+			if (b < 0x20 && !isLayoutControl) || b == 0x7f {
+				i++
+				continue
+			}
+			out = append(out, b)
+			i++
 			continue
 		}
-		out = append(out, b)
+		// Decode so a UTF-8 continuation byte in the C1 range (0x80-0x9F,
+		// e.g. 'ś' = 0xC5 0x9B) isn't mistaken for a raw C1 control.
+		r, size := utf8.DecodeRune(stripped[i:])
+		if r == utf8.RuneError && size <= 1 && isRawC1Control(b) {
+			i++
+			continue
+		}
+		out = append(out, stripped[i:i+size]...)
+		i += size
 	}
 	return out
 }

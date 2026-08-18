@@ -107,6 +107,23 @@ func TestSanitizeTerminalOutputPreservesUTF8ContinuationByteMatchingC1(t *testin
 	}
 }
 
+// TestSanitizeTerminalOutputPreservesUTF8WhenSanitizingElsewhere pins the
+// coderabbit finding on PR #261: the prior test only exercised the fast path
+// (no control byte anywhere in the input skips the sanitizing loop
+// entirely), so it never caught that the loop applies isRawC1Control to
+// every raw byte post-ansi.Strip — including UTF-8 continuation bytes in the
+// 0x80-0x9F range. Mixing a real control with non-ASCII text forces the
+// sanitizing path and would corrupt 'ś' if that bug were still present.
+func TestSanitizeTerminalOutputPreservesUTF8WhenSanitizingElsewhere(t *testing.T) {
+	t.Parallel()
+	in := []byte("stanśów\x07")
+	got := string(sanitizeTerminalOutput(in))
+	want := "stanśów"
+	if got != want {
+		t.Fatalf("sanitizeTerminalOutput(%q) = %q, want %q (valid UTF-8 corrupted)", in, got, want)
+	}
+}
+
 // TestSanitizeTerminalOutputStripsRawC1Controls pins the coderabbit/cubic
 // finding on PR #261: 0x84 (IND) and 0x8d (RI) are C1 controls per ECMA-48
 // that ansi.Strip doesn't recognize as escape introducers, but the doc
