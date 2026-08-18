@@ -3,7 +3,7 @@
 **Platform:** Browser (vanilla JS, `internal/webpreview/overlay/`) ·
 **Client kind:** partial consumer — a lightweight chat box injected into the user's own app
 by the preview proxy; deliberately not a full chat client (no session list, no history view,
-rolling transcript window) · **Spec version targeted:** 0.6.3 · **Last updated:** 2026-08-12 (#249/#250)
+rolling transcript window) · **Spec version targeted:** 0.6.3 · **Last updated:** 2026-08-18
 
 > Not the greenfield web client ([web.md](web.md)) — that remains unbuilt. This documents what
 > the overlay consumes so gaps are explicit rather than discovered in the field.
@@ -21,6 +21,7 @@ rolling transcript window) · **Spec version targeted:** 0.6.3 · **Last updated
 | Profiles & session settings | `settings.js` (pure, node-tested: matching, chip labels, badges, DATA-040 diffs, host-mirroring config merge) + `renderSettings`/`settingsChipLabel` in `overlay.js`; profiles from `GET /presets`, live options + persisted config from `GET /sessions/{id}` |
 | Permission UI + reply | FIFO `store.perms` queue, head renders; plan prompts get the review card; allow/deny(+message) → permissions reply endpoint |
 | Question UI + reply | `store.question` + `renderQuestion()`; structured reply → questions reply endpoint |
+| Discovery & activity | persistent Clank launcher; one-time coachmark persisted in host preferences; launcher and composer expose thinking, working, stopping, done, and error states |
 | Token storage / refresh | injected per-page-load by the proxy; no refresh (preview token, `pkg/preview/tokens`) |
 | Conformance harness | `chat_test.mjs` + `settings_test.mjs` + `sourcecontrol_test.mjs` (`node --test`, wired into `go test` via `TestOverlayChatJS`) — covers the pure-module protocol logic, not the DOM |
 
@@ -35,7 +36,7 @@ Only rules the overlay's surface touches are listed; the rest are N/A for a part
 | INV-SSE-DOUBLE-001 (exactly one stream) | ✅ | `sseAbort` aborts the old stream before opening a new one |
 | INV-NO-END-001 (no `end` frame) | ✅ | ends on socket close; capped-backoff resubscribe |
 | INV-DELTA-001 (is_delta append/replace) | ✅ | text parts only |
-| INV-TOOL-MERGE-001 (merge input+output) | 🟡 | tool calls flip the border to "working"; only question tags and ExitPlanMode plans get UI — generic tool cards are a non-goal for the box |
+| INV-TOOL-MERGE-001 (merge input+output) | 🟡 | tool calls flip the border to "working"; only question tags and ExitPlanMode plans get UI — merged generic tool cards are the next transcript-focused pass |
 | INV-MONOTONIC-001 (refetch never shrinks) | N/A | rolling window is a deliberate cap; refetch replaces wholesale |
 | INV-PERM-SINGLEFLIGHT-001 (lock + single reply) | ✅ | FIFO queue (`chat.js pushPermission`, dedup by request_id); reply pops the head, next prompt renders |
 | INV-DENY-SETTLE-001 (settle tools on deny) | N/A | tools not rendered |
@@ -78,7 +79,11 @@ Only rules the overlay's surface touches are listed; the rest are N/A for a part
 ## Platform gotchas
 
 - The overlay runs inside the *user's* app page: everything lives in a shadow root and must
-  not leak globals or styles; heavy chat UI is a non-goal.
+  not leak globals or styles; transcript additions must remain compact enough for the floating box.
+- The fixed Clank launcher is the browser-independent entry point. The `⌘E`/`Ctrl E` shortcut
+  remains an accelerator because browsers such as Brave may reserve it.
+- The launcher coachmark is acknowledged through the authenticated preview relay and persisted
+  in host preferences; it does not depend on storage owned by the user's app origin.
 - `EventSource` can't set `Authorization` — keep the hand-rolled fetch-stream parser.
 - Events are at-most-once with no replay (see comment at `subscribe`): the reconcile refetch,
   not the stream, is the recovery path. The refetch is point-in-time and may race a fresher
@@ -90,8 +95,9 @@ Only rules the overlay's surface touches are listed; the rest are N/A for a part
 
 ## Open gaps / deviations
 
-1. **Generic tool-call cards** — tool activity still renders as a border state only
-   (INV-TOOL-MERGE-001 🟡). Deliberate for now; revisit if users ask what the agent is doing.
+1. **Structured transcript** — Markdown, thinking activity, and merged generic tool-call cards
+   need a part-aware reducer before they can replace the current text-only projection
+   (INV-TOOL-MERGE-001 🟡).
 2. **Pending bare permission lost on reload** — now overlay work: the host serves the
    snapshot ([OP-007](../05-operations.md), 0.6.3), so the fix is fetching
    `/sessions/{id}/pending-permission` in `reconcile()` and replacing `state.perms`.

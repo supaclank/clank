@@ -7,7 +7,8 @@
 // credentials beyond the injected config.
 //
 // Interaction model (mobile parity, hotkeys instead of shake):
-//   ⌘E / ⌃E        toggle the prompt box (shake analog)
+//   Clank button   open the prompt box from any browser
+//   ⌘E / ⌃E        toggle the prompt box where the browser permits it
 //   Caps Lock      tap: start dictation, tap again: stop & transcribe
 //                  (first use picks local vs Web Speech; ▾ by the mic switches)
 //   hold ⇧         the box glides to the cursor (spring), settles on release
@@ -40,6 +41,9 @@ import {
   profileMatchingConfig, liveChipLabel, liveSettingsBadge, profileSavePayload,
 } from './settings.js';
 import { clampTranslateToViewport, parseStoredBoxIntent, resizeOwesClamp } from './boxpos.js';
+import {
+  LAUNCHER_SEEN_PATH, launcherActivity, launcherShortcut, shouldShowLauncherCoachmark,
+} from './launcher.js';
 import {
   scRequest, presentStatus, actionsFor, actionLayout, headerPRFor,
   prConflictWarnFor, chipFor, diffstatParts,
@@ -147,6 +151,7 @@ import {
     enginePick: false, // engine picker panel open
     sending: false,
     aborting: false,
+    launcherCoachmark: shouldShowLauncherCoachmark(CFG.launcher_seen),
     profiles: [], // host-persisted built-in + user agent profiles
     profilesLoaded: false,
     profilesLoading: false,
@@ -1850,6 +1855,7 @@ import {
     // opening) centered on the viewBox so a rotation spins in place
     // (the ↻ text glyph orbits — its ink isn't box-centered)
     refresh: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>',
+    launcher: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 7V4a1 1 0 0 1 1-1h3M17 3h3a1 1 0 0 1 1 1v3M21 17v3a1 1 0 0 1-1 1h-3M7 21H4a1 1 0 0 1-1-1v-3" stroke="currentColor" stroke-width="2.8" stroke-linecap="square"/><rect x="7.5" y="7.5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 2"/></svg>',
   };
 
   const host = document.createElement('div');
@@ -1885,11 +1891,39 @@ import {
   .box button:focus-visible { outline: 2px solid #3b82f6; outline-offset: 2px; }
   @keyframes boxIn { from { opacity: 0; transform: translateY(30px) scale(0.96); } }
   @media (prefers-reduced-motion: reduce) { .box.visible { animation: none; } }
-  .box.thinking { border-color: #f59e0b; animation: pulse 1.6s ease-in-out infinite; }
-  .box.working  { border-color: #3b82f6; }
+  .box.thinking { border-color: #f59e0b; box-shadow:0 0 0 3px #f59e0b33, 0 12px 40px rgba(0,0,0,.18); }
+  .box.working  { border-color: #FA5573; box-shadow:0 0 0 3px rgba(250,85,115,.24), 0 12px 40px rgba(0,0,0,.18); }
   .box.done     { border-color: #22c55e; }
   .box.error    { border-color: #ef4444; }
-  @keyframes pulse { 50% { border-color: #f59e0b44; } }
+  .launcher-wrap { position:fixed; right:16px; bottom:16px; display:flex; align-items:flex-end;
+    gap:10px; pointer-events:none; }
+  .launcher { all:unset; position:relative; width:46px; height:46px; border-radius:15px; display:none;
+    align-items:center; justify-content:center; color:#FA5573; background:rgba(24,24,27,.94);
+    border:1px solid rgba(255,255,255,.16); box-shadow:0 10px 30px rgba(0,0,0,.28);
+    backdrop-filter:blur(12px); cursor:pointer; pointer-events:auto; }
+  .launcher.visible { display:inline-flex; animation:launcherIn 240ms cubic-bezier(.2,.9,.3,1.15); }
+  .launcher:hover { transform:translateY(-1px); background:#18181b; }
+  .launcher:focus-visible { outline:3px solid #FA557366; outline-offset:3px; }
+  .launcher.busy::before { content:''; position:absolute; inset:-5px; border:2px solid #FA5573;
+    border-radius:19px; animation:launcherPulse 1.2s ease-in-out infinite; }
+  .launcher[data-state="done"] { color:#22c55e; }
+  .launcher[data-state="error"] { color:#ef4444; }
+  .launcher .activity-spinner { position:absolute; right:-3px; top:-3px; background:#18181b; }
+  @keyframes launcherIn { from { opacity:0; transform:translateY(10px) scale(.86); } }
+  @keyframes launcherPulse { 50% { opacity:.25; transform:scale(1.08); } }
+  .coachmark { display:none; width:220px; padding:10px 12px; color:#f4f4f5; background:rgba(24,24,27,.96);
+    border:1px solid rgba(255,255,255,.14); border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.28);
+    pointer-events:auto; backdrop-filter:blur(12px); }
+  .coachmark.visible { display:block; animation:coachIn 280ms ease-out; }
+  .coachmark strong { display:block; font-size:12px; margin-bottom:3px; }
+  .coachmark span { display:block; font-size:11px; line-height:1.4; color:#d4d4d8; }
+  .coachmark kbd { color:#f4f4f5; background:#ffffff12; border-color:#ffffff24; }
+  .coach-dismiss { all:unset; float:right; margin:-4px -4px 0 6px; padding:3px; color:#a1a1aa;
+    cursor:pointer; font-size:14px; line-height:1; }
+  @keyframes coachIn { from { opacity:0; transform:translateX(8px); } }
+  @media (prefers-reduced-motion: reduce) {
+    .launcher.visible, .coachmark.visible, .launcher.busy::before { animation:none; }
+  }
   .hd { display:flex; align-items:center; gap:8px; padding:10px 12px 6px; cursor:grab; user-select:none; }
   .hd:active { cursor:grabbing; }
   .dot { width:8px; height:8px; border-radius:50%; background:#6b7280; flex:none; }
@@ -2037,6 +2071,13 @@ import {
   .m.user { color:#2563eb; }
   .m.assistant { color:#374151; }
   .m .who { font-size:10px; text-transform:uppercase; letter-spacing:.6px; color:#9ca3af; display:block; }
+  .agent-progress { display:none; align-items:center; gap:8px; margin:5px 12px 7px; padding:7px 9px;
+    border-radius:9px; color:#6b7280; background:#00000008; font-size:11.5px; font-weight:600; }
+  .agent-progress.visible { display:flex; }
+  .activity-spinner { display:none; width:14px; height:14px; flex:none; border-radius:50%;
+    border:2px solid #FA557344; border-top-color:#FA5573; animation:activitySpin .75s linear infinite; }
+  .activity-spinner.visible { display:inline-block; }
+  @keyframes activitySpin { to { transform:rotate(360deg); } }
   .perm { margin:6px 12px; padding:8px 10px; border:1px solid #f59e0b66; background:#f59e0b14; border-radius:10px; font-size:12px; }
   .perm .t { font-weight:600; margin-bottom:2px; }
   .perm .d { color:#6b7280; margin-bottom:6px; word-break:break-word; }
@@ -2204,6 +2245,7 @@ import {
 <div class="box" part="box" tabindex="-1">
   <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><button class="scchip muted" style="display:none" title="source control" tabindex="-1">${ICONS.branch}<span class="sctext"></span></button><a class="beta" href="https://github.com/supaclank/clank/issues/new?template=bug_report.yml" target="_blank" rel="noopener noreferrer" title="click to report an issue" tabindex="-1">beta</a><span class="grip">${ICONS.grip}</span></div>
   <div class="chat"></div>
+  <div class="agent-progress"><span class="activity-spinner" aria-hidden="true"></span><span class="agent-progress-text"></span></div>
   <div class="perm" style="display:none">
     <div class="t"></div><div class="d"></div>
     <pre class="plan" style="display:none"></pre>
@@ -2232,7 +2274,11 @@ import {
     <button class="ib send" title="Send (Enter)">${ICONS.send}</button>
   </div>
   <input type="file" class="file" multiple style="display:none">
-  <div class="hint"><span><kbd>⇪ caps</kbd> talk</span><span><kbd>⇧</kbd> move</span><span><kbd>⌘</kbd> select</span><span><kbd>⌘E</kbd> toggle</span></div>
+  <div class="hint"><span><kbd>⇪ caps</kbd> talk</span><span><kbd>⇧</kbd> move</span><span><kbd>⌘</kbd> select</span><span><kbd class="toggle-key">⌘E</kbd> toggle</span></div>
+</div>
+<div class="launcher-wrap">
+  <div class="coachmark" role="status"><button class="coach-dismiss" aria-label="Dismiss Clank introduction">×</button><strong>Clank is ready</strong><span>Click the Clank button anytime. You can also press <kbd class="coach-shortcut">⌘E</kbd> where available.</span></div>
+  <button class="launcher" aria-label="Open Clank" title="Open Clank">${ICONS.launcher}<span class="activity-spinner" aria-hidden="true"></span></button>
 </div>
 <div class="save-profile">
   <div class="save-card" role="dialog" aria-modal="true" aria-labelledby="clank-save-profile-title">
@@ -2254,6 +2300,10 @@ import {
   const $ = (sel) => root.querySelector(sel);
   const ui = {
     box: $('.box'), name: $('.name'), st: $('.st'), chips: $('.chips'), chat: $('.chat'),
+    launcher: $('.launcher'), launcherSpinner: $('.launcher .activity-spinner'),
+    coachmark: $('.coachmark'), coachDismiss: $('.coach-dismiss'), coachShortcut: $('.coach-shortcut'),
+    progress: $('.agent-progress'), progressSpinner: $('.agent-progress .activity-spinner'),
+    progressText: $('.agent-progress-text'), toggleKey: $('.toggle-key'),
     perm: $('.perm'), permT: $('.perm .t'), permD: $('.perm .d'),
     plan: $('.perm .plan'), notes: $('.perm .notes'),
     permAllow: $('.perm .allow'), permDeny: $('.perm .deny'), ques: $('.ques'),
@@ -2587,10 +2637,26 @@ import {
 
   const STATUS_TEXT = { idle: '', thinking: 'thinking…', working: 'working…', done: 'done', error: 'error' };
   const render = () => {
+    const busy = store.agent === 'thinking' || store.agent === 'working';
+    const activity = launcherActivity(store.agent, store.aborting);
     ui.box.classList.toggle('visible', store.box !== 'hidden');
     ui.box.classList.toggle('expanded', store.box === 'chat');
     for (const s of ['thinking', 'working', 'done', 'error']) ui.box.classList.toggle(s, store.agent === s);
     ui.st.textContent = store.aborting ? 'stopping…' : STATUS_TEXT[store.agent] || '';
+    ui.launcher.classList.toggle('visible', store.box === 'hidden');
+    ui.launcher.classList.toggle('busy', activity.isBusy);
+    ui.launcher.dataset.state = activity.state;
+    ui.launcher.setAttribute('aria-label', activity.label);
+    ui.launcher.title = activity.label;
+    ui.launcherSpinner.classList.toggle('visible', activity.isBusy);
+    ui.coachmark.classList.toggle('visible', store.box === 'hidden' && store.launcherCoachmark);
+    ui.progress.classList.toggle('visible', busy);
+    ui.progressSpinner.classList.toggle('visible', busy);
+    ui.progressText.textContent = store.aborting ? 'Stopping the agent…' :
+      store.agent === 'working' ? 'Agent is working…' : 'Agent is thinking…';
+    const shortcut = launcherShortcut(IS_MAC);
+    ui.toggleKey.textContent = shortcut;
+    ui.coachShortcut.textContent = shortcut;
 
     // Removing a hovered chip node doesn't fire mouseleave, so the cue
     // would otherwise outlive the chip it points at.
@@ -2699,14 +2765,25 @@ import {
     ui.engpick.style.display = store.enginePick ? '' : 'none';
     ui.engOpts.forEach((b) => b.classList.toggle('cur', b.dataset.eng === store.engine));
 
-    const busy = store.agent === 'thinking' || store.agent === 'working';
     ui.send.classList.toggle('stop', busy);
     ui.send.innerHTML = busy ? ICONS.stop : ICONS.send;
     ui.send.title = busy ? 'Stop the agent' : 'Send (Enter)';
   };
 
   // ---------- box visibility (mobile shake state machine, hotkey-driven) --
+  const acknowledgeLauncher = () => {
+    if (!store.launcherCoachmark) return;
+    store.launcherCoachmark = false;
+    fetch(LAUNCHER_SEEN_PATH, {
+      method: 'POST',
+      headers: TOKEN ? { Authorization: 'Bearer ' + TOKEN } : {},
+    }).then((res) => {
+      if (!res.ok) throw new Error('launcher acknowledgement: ' + res.status);
+    }).catch((err) => toast('could not save the Clank introduction: ' + err.message));
+  };
+
   const setBox = (s) => {
+    if (s !== 'hidden') acknowledgeLauncher();
     store.box = s;
     if (s === 'hidden') {
       exitInspect();
@@ -3432,6 +3509,8 @@ import {
   })();
 
   // ---------- wiring -----------------------------------------------------------
+  ui.launcher.onclick = () => setBox('prompt');
+  ui.coachDismiss.onclick = () => { acknowledgeLauncher(); render(); };
   ui.send.onclick = () => { (store.agent === 'thinking' || store.agent === 'working') ? abort() : send(); };
   ui.profile.onclick = () => (store.settingsOpen ? closeSettings() : openSettings());
   ui.saveProfileCancel.onclick = closeSaveProfile;

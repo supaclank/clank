@@ -50,6 +50,11 @@ var sourceControlJS []byte
 //go:embed overlay/boxpos.js
 var boxPosJS []byte
 
+// launcherJS owns the overlay launcher's pure presentation state.
+//
+//go:embed overlay/launcher.js
+var launcherJS []byte
+
 // workletJS is the AudioWorklet processor that batches mic PCM for the
 // dictation WebSocket. Served as its own module because AudioWorklets
 // load from a URL, not inline.
@@ -98,6 +103,11 @@ type Options struct {
 	// engine picker so it survives preview restarts. nil means choices
 	// only last for this run.
 	PersistDictationEngine func(DictationEngine) error
+
+	// LauncherSeen suppresses the first-use coachmark. PersistLauncherSeen
+	// stores the acknowledgement across auto-assigned preview ports.
+	LauncherSeen        bool
+	PersistLauncherSeen func() error
 
 	// ListenPort for the proxy on 127.0.0.1; 0 picks a free port.
 	ListenPort int
@@ -152,12 +162,14 @@ func Start(opts Options) (*Server, error) {
 		return nil, fmt.Errorf("webpreview: marshal overlay config: %w", err)
 	}
 	dictation := &dictationState{engine: opts.DictationEngine}
+	launcher := newLauncherState(opts.LauncherSeen)
 	// Built per response, not once: the engine picker changes state
 	// mid-run and a reloaded page must see the current choice.
 	snippet := func() []byte {
 		m := make(map[string]any, len(cfg)+1)
 		maps.Copy(m, cfg)
 		m["dictation_engine"] = string(dictation.get())
+		m["launcher_seen"] = launcher.isSeen()
 		cfgJSON, _ := json.Marshal(m) // encoding/json escapes <,>,& — safe inside <script>; validated above
 		return []byte("<script>window.__CLANK_PREVIEW = " + string(cfgJSON) + ";</script>\n" +
 			`<script type="module" src="` + OverlayPath + `"></script>`)
@@ -172,6 +184,7 @@ func Start(opts Options) (*Server, error) {
 	mux.HandleFunc("GET "+SettingsPath, serveJS(settingsJS))
 	mux.HandleFunc("GET "+SourceControlPath, serveJS(sourceControlJS))
 	mux.HandleFunc("GET "+BoxPosPath, serveJS(boxPosJS))
+	mux.HandleFunc("GET "+LauncherPath, serveJS(launcherJS))
 	mux.HandleFunc("GET "+WorkletPath, serveJS(workletJS))
 	mux.Handle(APIPrefix+"/", requireToken(opts.Token,
 		http.StripPrefix(APIPrefix, daemon)))
@@ -185,6 +198,8 @@ func Start(opts Options) (*Server, error) {
 		})))
 	mux.Handle("POST /__clank/voice/engine", requireToken(opts.Token,
 		handleSetDictationEngine(dictation, opts.PersistDictationEngine, lg)))
+	mux.Handle("POST "+LauncherSeenPath, requireToken(opts.Token,
+		handleLauncherSeen(launcher, opts.PersistLauncherSeen, lg)))
 	mux.Handle("/", upstream)
 
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", opts.ListenPort))

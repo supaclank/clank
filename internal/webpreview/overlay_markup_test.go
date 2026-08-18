@@ -5,6 +5,40 @@ import (
 	"testing"
 )
 
+func TestOverlayLauncherRemainsDiscoverableWhenPromptIsHidden(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	for _, want := range []string{
+		`<button class="launcher"`,
+		`<div class="coachmark"`,
+		"ui.launcher.classList.toggle('visible', store.box === 'hidden')",
+		"acknowledgeLauncher",
+		"launcherActivity(store.agent, store.aborting)",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("overlay.js launcher wiring missing %q", want)
+		}
+	}
+	if strings.Contains(js, ".box.hidden") {
+		t.Error("the prompt box should minimize into the launcher through state, not a second hidden box mode")
+	}
+}
+
+func TestOverlayWorkingStateHasIndependentProgressIndicator(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	for _, want := range []string{
+		`<span class="activity-spinner"`,
+		`<div class="agent-progress"`,
+		"ui.progress.classList.toggle('visible', busy)",
+		"ui.send.innerHTML = busy ? ICONS.stop : ICONS.send",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("overlay.js explicit progress wiring missing %q", want)
+		}
+	}
+}
+
 // TestOverlayComposerSelectorIsClassScoped guards the composer wiring:
 // ui.input was once selected with a bare $('textarea'), and adding the
 // plan-notes textarea earlier in the markup silently captured it —
