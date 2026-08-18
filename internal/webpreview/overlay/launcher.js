@@ -1,6 +1,11 @@
 export const LAUNCHER_SEEN_PATH = '/__clank/launcher/seen';
 
-export const shouldShowLauncherCoachmark = (hasSeenLauncher) => !hasSeenLauncher;
+export const shouldShowLauncherCoachmark = (hasSeenLauncher) => {
+  if (typeof hasSeenLauncher !== 'boolean') {
+    throw new TypeError('launcher_seen must be a boolean');
+  }
+  return !hasSeenLauncher;
+};
 
 export const launcherShortcut = (isMac) => isMac ? '⌘E' : 'Ctrl E';
 
