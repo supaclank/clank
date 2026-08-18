@@ -92,6 +92,21 @@ func TestSanitizeTerminalOutputStripsC1Introducer(t *testing.T) {
 	}
 }
 
+// TestSanitizeTerminalOutputPreservesUTF8ContinuationByteMatchingC1 pins the
+// cubic finding on PR #261: 0x9b is both the CSI C1 introducer and a valid
+// UTF-8 continuation byte (e.g. in 'ś', U+015B = 0xC5 0x9B). The byte-level
+// C1 check must not treat that continuation byte as a raw escape
+// introducer, or ansi.Strip corrupts otherwise-valid non-ASCII text.
+func TestSanitizeTerminalOutputPreservesUTF8ContinuationByteMatchingC1(t *testing.T) {
+	t.Parallel()
+	in := []byte("stanśów")
+	got := string(sanitizeTerminalOutput(in))
+	want := "stanśów"
+	if got != want {
+		t.Fatalf("sanitizeTerminalOutput(%q) = %q, want %q (valid UTF-8 corrupted)", in, got, want)
+	}
+}
+
 func TestSanitizeTerminalOutputDropsUnterminatedSequence(t *testing.T) {
 	t.Parallel()
 	// "\x1b[2" lacks the final byte (e.g. 'm') — genuinely unterminated.

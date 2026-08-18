@@ -2,6 +2,7 @@ package preview
 
 import (
 	"sync"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
 )
@@ -104,20 +105,35 @@ const (
 // needsTerminalSanitizing reports whether p contains an escape sequence or a
 // stray control byte, so the common chatty-stdout case (plain text) can skip
 // ansi.Strip's allocation and copy on this hot capture path.
+//
+// The C1 bytes checked below (0x80-0x9F) double as UTF-8 continuation bytes,
+// so a raw byte scan would false-positive on legitimate non-ASCII text (and
+// ansi.Strip would then misparse that continuation byte as a real escape
+// introducer, corrupting the output). Decoding runes instead of bytes lets
+// valid multi-byte UTF-8 skip straight past them.
 func needsTerminalSanitizing(p []byte) bool {
-	for _, b := range p {
-		if b == 0x1b || b == 0x7f {
-			return true
+	for i := 0; i < len(p); {
+		b := p[i]
+		if b < utf8.RuneSelf {
+			if b == 0x1b || b == 0x7f {
+				return true
+			}
+			isLayoutControl := b == '\n' || b == '\r' || b == '\t'
+			if b < 0x20 && !isLayoutControl {
+				return true
+			}
+			i++
+			continue
 		}
-		switch b {
-		case c1DeviceControlString, c1StartOfString, c1ControlSequenceIntroducer,
-			c1OperatingSystemCommand, c1PrivacyMessage, c1ApplicationProgramCommand:
-			return true
+		r, size := utf8.DecodeRune(p[i:])
+		if r == utf8.RuneError && size <= 1 {
+			switch b {
+			case c1DeviceControlString, c1StartOfString, c1ControlSequenceIntroducer,
+				c1OperatingSystemCommand, c1PrivacyMessage, c1ApplicationProgramCommand:
+				return true
+			}
 		}
-		isLayoutControl := b == '\n' || b == '\r' || b == '\t'
-		if b < 0x20 && !isLayoutControl {
-			return true
-		}
+		i += size
 	}
 	return false
 }
