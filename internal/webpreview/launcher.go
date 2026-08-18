@@ -10,7 +10,7 @@ import (
 const LauncherSeenPath = "/__clank/launcher/seen"
 
 type launcherState struct {
-	mu   sync.Mutex // serializes acknowledgement attempts so persist runs at most once
+	mu   sync.Mutex // serializes acknowledgement attempts; a failed persist leaves seen false so the next attempt retries
 	seen atomic.Bool
 }
 
