@@ -1198,12 +1198,15 @@ func (s *Service) Session(id string) (agent.SessionBackend, bool) {
 	return b, ok
 }
 
-// sessionBackendType returns the registered backend type for id, or the
-// zero value if id isn't registered.
-func (s *Service) sessionBackendType(id string) agent.BackendType {
+// sessionAndType returns the registered backend and its backend type for
+// id in one lock acquisition, so a concurrent StopSession/rehydrate can't
+// swap the session between reading the two — which would let a permission
+// check pass for one backend while data is served from another.
+func (s *Service) sessionAndType(id string) (agent.SessionBackend, agent.BackendType, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.sessionBackendTypes[id]
+	b, ok := s.sessions[id]
+	return b, s.sessionBackendTypes[id], ok
 }
 
 // lockWorktree acquires the per-worktree lock and returns its release
@@ -1534,8 +1537,8 @@ func (s *Service) ForkSession(ctx context.Context, id, messageID string) (agent.
 func (s *Service) SessionMessages(ctx context.Context, id string) ([]agent.MessageData, error) {
 	// A dead backend is skipped, not used: reads don't repair the
 	// registry — the next dispatching op (Send/Abort/…) rehydrates it.
-	if b, ok := s.Session(id); ok && b.Status() != agent.StatusDead {
-		if err := s.requireBackendAllowed(s.sessionBackendType(id)); err != nil {
+	if b, bt, ok := s.sessionAndType(id); ok && b.Status() != agent.StatusDead {
+		if err := s.requireBackendAllowed(bt); err != nil {
 			return nil, err
 		}
 		return b.Messages(ctx)
@@ -1597,8 +1600,8 @@ func (s *Service) PendingPermissions(ctx context.Context, id string) ([]agent.Pe
 	// A dead backend is skipped, not repaired — reads don't touch the
 	// registry, and the disconnect sweep already cancelled its parked
 	// requests.
-	if b, ok := s.Session(id); ok && b.Status() != agent.StatusDead {
-		if err := s.requireBackendAllowed(s.sessionBackendType(id)); err != nil {
+	if b, bt, ok := s.sessionAndType(id); ok && b.Status() != agent.StatusDead {
+		if err := s.requireBackendAllowed(bt); err != nil {
 			return nil, err
 		}
 		if r, ok := b.(agent.PendingPermissionsReporter); ok {
