@@ -80,6 +80,18 @@ func TestSanitizeTerminalOutputStrayControlByteIsStripped(t *testing.T) {
 	}
 }
 
+// TestSanitizeTerminalOutputStripsC1Introducer pins the cubic finding on PR
+// #261: the fast path only checked for ESC (0x1b), so an 8-bit C1 CSI byte
+// (0x9b) with no literal ESC leaked its escape sequence into captured logs.
+func TestSanitizeTerminalOutputStripsC1Introducer(t *testing.T) {
+	t.Parallel()
+	got := string(sanitizeTerminalOutput([]byte("a\x9b[31mred\x9b[0m")))
+	want := "a31mred0m"
+	if got != want {
+		t.Fatalf("sanitizeTerminalOutput(%q) = %q, want %q", "a\x9b[31mred\x9b[0m", got, want)
+	}
+}
+
 func TestSanitizeTerminalOutputDropsUnterminatedSequence(t *testing.T) {
 	t.Parallel()
 	// "\x1b[2" lacks the final byte (e.g. 'm') — genuinely unterminated.

@@ -89,12 +89,29 @@ func sanitizeTerminalOutput(p []byte) []byte {
 	return out
 }
 
+// C1 control bytes that ansi.Strip treats as a raw 8-bit escape-sequence
+// introducer (DCS, SOS, CSI, OSC, PM, APC per ECMA-48) equivalent to the
+// more common ESC-prefixed form.
+const (
+	c1DeviceControlString       byte = 0x90
+	c1StartOfString             byte = 0x98
+	c1ControlSequenceIntroducer byte = 0x9b
+	c1OperatingSystemCommand    byte = 0x9d
+	c1PrivacyMessage            byte = 0x9e
+	c1ApplicationProgramCommand byte = 0x9f
+)
+
 // needsTerminalSanitizing reports whether p contains an escape sequence or a
 // stray control byte, so the common chatty-stdout case (plain text) can skip
 // ansi.Strip's allocation and copy on this hot capture path.
 func needsTerminalSanitizing(p []byte) bool {
 	for _, b := range p {
 		if b == 0x1b || b == 0x7f {
+			return true
+		}
+		switch b {
+		case c1DeviceControlString, c1StartOfString, c1ControlSequenceIntroducer,
+			c1OperatingSystemCommand, c1PrivacyMessage, c1ApplicationProgramCommand:
 			return true
 		}
 		isLayoutControl := b == '\n' || b == '\r' || b == '\t'
