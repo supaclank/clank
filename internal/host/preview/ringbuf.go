@@ -74,6 +74,9 @@ func (r *ringBuf) Snapshot() []byte {
 
 // sanitizeTerminalOutput removes escape sequences and non-layout controls.
 func sanitizeTerminalOutput(p []byte) []byte {
+	if !needsTerminalSanitizing(p) {
+		return p
+	}
 	stripped := []byte(ansi.Strip(string(p)))
 	out := stripped[:0]
 	for _, b := range stripped {
@@ -84,4 +87,20 @@ func sanitizeTerminalOutput(p []byte) []byte {
 		out = append(out, b)
 	}
 	return out
+}
+
+// needsTerminalSanitizing reports whether p contains an escape sequence or a
+// stray control byte, so the common chatty-stdout case (plain text) can skip
+// ansi.Strip's allocation and copy on this hot capture path.
+func needsTerminalSanitizing(p []byte) bool {
+	for _, b := range p {
+		if b == 0x1b || b == 0x7f {
+			return true
+		}
+		isLayoutControl := b == '\n' || b == '\r' || b == '\t'
+		if b < 0x20 && !isLayoutControl {
+			return true
+		}
+	}
+	return false
 }

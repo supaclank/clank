@@ -57,6 +57,29 @@ func TestSanitizeTerminalOutputPlainTextPassesThrough(t *testing.T) {
 	}
 }
 
+// TestSanitizeTerminalOutputPlainTextTakesFastPath pins the perf fix for the
+// cubic finding on PR #261: plain text (the common case on this hot capture
+// path) must return the same underlying array, not a stripped copy.
+func TestSanitizeTerminalOutputPlainTextTakesFastPath(t *testing.T) {
+	t.Parallel()
+	in := []byte("plain text, no escape")
+	out := sanitizeTerminalOutput(in)
+	if &out[0] != &in[0] {
+		t.Fatal("sanitizeTerminalOutput copied plain input instead of returning it unchanged")
+	}
+}
+
+func TestSanitizeTerminalOutputStrayControlByteIsStripped(t *testing.T) {
+	t.Parallel()
+	// A stray BEL with no preceding ESC must still be stripped, even though
+	// the ESC-absence fast path skips ansi.Strip.
+	got := string(sanitizeTerminalOutput([]byte("before\x07after")))
+	want := "beforeafter"
+	if got != want {
+		t.Fatalf("sanitizeTerminalOutput(%q) = %q, want %q", "before\x07after", got, want)
+	}
+}
+
 func TestSanitizeTerminalOutputDropsUnterminatedSequence(t *testing.T) {
 	t.Parallel()
 	// "\x1b[2" lacks the final byte (e.g. 'm') — genuinely unterminated.
