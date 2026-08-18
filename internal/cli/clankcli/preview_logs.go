@@ -130,7 +130,9 @@ func previewLogDelta(previous, current []byte) []byte {
 //
 // TODO(ai-review): a repeated-byte rollover boundary can make this textual
 // overlap longer than the bytes actually retained, silently dropping new
-// output. https://github.com/supaclank/clank/pull/261#discussion_r3803916265
+// output.
+// https://github.com/supaclank/clank/pull/261#discussion_r3803916265
+// https://github.com/supaclank/clank/pull/261#discussion_r3804004378
 func previewLogOverlap(previous, current []byte) int {
 	if len(current) == 0 {
 		return 0
