@@ -18,12 +18,13 @@ rolling transcript window) · **Spec version targeted:** 0.6.3 · **Last updated
 | SSE stream | hand-rolled `fetch()` + `ReadableStream` frame parser (`subscribe`/`handleFrame`) — native `EventSource` can't set the header |
 | Reducer (apply event → state) | `handleFrame` switch in `overlay.js`; protocol decisions in `chat.js` (pure, DOM-free) |
 | Transcript merge / reconcile | `reconcile()` — messages refetch on every stream open, projected via `chat.js chatFromMessages` |
+| Transcript rendering | `transcript.js` — assistant Markdown plus expandable thinking and merged tool-call cards; Markdown tokenization lives in `markdown.js` |
 | Profiles & session settings | `settings.js` (pure, node-tested: matching, chip labels, badges, DATA-040 diffs, host-mirroring config merge) + `renderSettings`/`settingsChipLabel` in `overlay.js`; profiles from `GET /presets`, live options + persisted config from `GET /sessions/{id}` |
 | Permission UI + reply | FIFO `store.perms` queue, head renders; plan prompts get the review card; allow/deny(+message) → permissions reply endpoint |
 | Question UI + reply | `store.question` + `renderQuestion()`; structured reply → questions reply endpoint |
 | Discovery & activity | persistent Clank launcher; one-time coachmark persisted in host preferences; launcher and composer expose thinking, working, stopping, done, and error states |
 | Token storage / refresh | injected per-page-load by the proxy; no refresh (preview token, `pkg/preview/tokens`) |
-| Conformance harness | `chat_test.mjs` + `settings_test.mjs` + `sourcecontrol_test.mjs` (`node --test`, wired into `go test` via `TestOverlayChatJS`) — covers the pure-module protocol logic, not the DOM |
+| Conformance harness | `chat_test.mjs` + `markdown_test.mjs` + `settings_test.mjs` + `sourcecontrol_test.mjs` (`node --test`, wired into `go test` via `TestOverlayModulesJS`) — covers the pure-module protocol logic, not the DOM |
 
 ## Invariants ([08](../08-invariants.md))
 
@@ -35,11 +36,11 @@ Only rules the overlay's surface touches are listed; the rest are N/A for a part
 | INV-CREATE-RACE-001 (subscribe before create) | 🟡 | still subscribes **after** create returns (create carries the first prompt, so there is no id to subscribe with earlier); the reconcile refetch at stream open recovers settled content from the gap |
 | INV-SSE-DOUBLE-001 (exactly one stream) | ✅ | `sseAbort` aborts the old stream before opening a new one |
 | INV-NO-END-001 (no `end` frame) | ✅ | ends on socket close; capped-backoff resubscribe |
-| INV-DELTA-001 (is_delta append/replace) | ✅ | text parts only |
-| INV-TOOL-MERGE-001 (merge input+output) | 🟡 | tool calls flip the border to "working"; only question tags and ExitPlanMode plans get UI — merged generic tool cards are the next transcript-focused pass |
+| INV-DELTA-001 (is_delta append/replace) | ✅ | text and thinking parts project through `chat.js upsertTranscriptPart`; stale shorter snapshots do not shrink streamed content |
+| INV-TOOL-MERGE-001 (merge input+output) | ✅ | `chat.js upsertTranscriptPart` preserves the tool name/input/output and advances status monotonically; the overlay renders one expandable card |
 | INV-MONOTONIC-001 (refetch never shrinks) | N/A | rolling window is a deliberate cap; refetch replaces wholesale |
 | INV-PERM-SINGLEFLIGHT-001 (lock + single reply) | ✅ | FIFO queue (`chat.js pushPermission`, dedup by request_id); reply pops the head, next prompt renders |
-| INV-DENY-SETTLE-001 (settle tools on deny) | N/A | tools not rendered |
+| INV-DENY-SETTLE-001 (settle tools on deny) | 🟡 | tools render, but denial settlement still relies on the backend's following part/message update |
 | INV-ABORT-PERM-001 (abort clears perms) | ✅ | abort clears the queue and the question card |
 | INV-PERMMODE-001 (`""` = no change) | ✅ | sends `config` only when staged; `diffConfigAgainstOptions` strips values the agent already runs |
 | INV-PERMMODE-EXITPLAN-001 (ExitPlanMode) | ✅ | plan review card: Approve = allow; Request changes = deny with notes as the reason |
@@ -61,7 +62,7 @@ Only rules the overlay's surface touches are listed; the rest are N/A for a part
 | QST-003 (suppress the paired permission) | ✅ | matched by `request_id` or `tool_use_id` at queue-ingress and when the tag activates; the question reply drops any queued copy |
 | ITOOL-00x (legacy part-sniffing) | N/A | tag path only; the overlay has no pre-tag installed base |
 | Plan review (ExitPlanMode) | ✅ | plan text located from the gated tool part (`chat.js planTextFor`: tool_use_id match, newest fallback); scrollable plan block + revision-notes field |
-| ICOMMENT-001 (inline comments) | N/A | no rendered assistant-markdown selection surface (SHOULD; out of scope for the box) |
+| ICOMMENT-001 (inline comments) | 🟡 | assistant Markdown is rendered safely; selecting transcript text does not yet create an inline-comment anchor inside the shadow root |
 
 ## Supporting layers (quick check)
 
@@ -90,16 +91,15 @@ Only rules the overlay's surface touches are listed; the rest are N/A for a part
   live event, so it only ever *adds* a question, never clears one.
 - `chat.js` is a separate ES module (overlay.js imports it) so `node --test` can execute the
   protocol logic without a DOM; the proxy serves it at `/__clank/chat.js`.
+- `markdown.js` returns blocks and inline tokens, never HTML; the overlay creates text-safe DOM
+  nodes so assistant Markdown cannot inject into the user's page.
 - Rebuilding the question card on render would steal focus from the "Other" input — the
   rebuild saves and restores focus + caret.
 
 ## Open gaps / deviations
 
-1. **Structured transcript** — Markdown, thinking activity, and merged generic tool-call cards
-   need a part-aware reducer before they can replace the current text-only projection
-   (INV-TOOL-MERGE-001 🟡).
-2. **Pending bare permission lost on reload** — now overlay work: the host serves the
+1. **Pending bare permission lost on reload** — now overlay work: the host serves the
    snapshot ([OP-007](../05-operations.md), 0.6.3), so the fix is fetching
    `/sessions/{id}/pending-permission` in `reconcile()` and replacing `state.perms`.
-3. **Revert view lag** (INV-REVERT-001 🟡) — reverted messages disappear at the next
+2. **Revert view lag** (INV-REVERT-001 🟡) — reverted messages disappear at the next
    reconcile, not on the `revert` event.

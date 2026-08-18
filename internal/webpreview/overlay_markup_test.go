@@ -42,6 +42,48 @@ func TestOverlayWorkingStateHasIndependentProgressIndicator(t *testing.T) {
 	}
 }
 
+func TestOverlayChatExpansionIsDiscoverableAndKeyboardAccessible(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	for _, want := range []string{
+		`<button class="chat-toggle"`,
+		`aria-label="Show conversation"`,
+		`Cmd+Shift+E`,
+		`e.code === 'KeyE' && (e.metaKey || e.ctrlKey) && e.shiftKey`,
+		`e.target.closest('.beta, .scchip, .chat-toggle')`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("overlay.js chat expansion affordance missing %q", want)
+		}
+	}
+}
+
+func TestOverlayCompletedLauncherHasGreenBorder(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	if !strings.Contains(js, `.launcher[data-state="done"] { border-color:#22c55e;`) {
+		t.Error("overlay.js completed launcher must carry an explicit green border")
+	}
+}
+
+func TestOverlayStructuredTranscriptWiring(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS) + string(transcriptJS)
+	for _, want := range []string{
+		"upsertTranscriptPart",
+		"renderMarkdown",
+		"renderToolCall",
+		"renderThinking",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("overlay.js structured transcript wiring missing %q", want)
+		}
+	}
+	if strings.Contains(js, "streamText") {
+		t.Error("overlay.js must project live parts by id instead of maintaining a separate text-only stream")
+	}
+}
+
 func TestOverlayLauncherUsesCurrentClankMark(t *testing.T) {
 	t.Parallel()
 	js := string(overlayJS)
@@ -251,9 +293,9 @@ func TestOverlaySourceControlWiring(t *testing.T) {
 		"scStartConnect",
 		"mergeInProgressPrompt",
 		"prConflictsPrompt",
-		"actionLayout(actionsFor(st))", // ≤2 verbs side by side, 3+ collapse to ⋯
-		`node('div', 'sc-menu')`,       // the overflow menu grows vertically
-		`closest('.beta, .scchip')`,    // chip clicks must not arm a header drag
+		"actionLayout(actionsFor(st))",            // ≤2 verbs side by side, 3+ collapse to ⋯
+		`node('div', 'sc-menu')`,                  // the overflow menu grows vertically
+		`closest('.beta, .scchip, .chat-toggle')`, // header controls must not arm a drag
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("overlay.js source-control wiring missing %q", want)

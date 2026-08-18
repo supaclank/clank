@@ -15,7 +15,7 @@ func TestOverlayModulesJS(t *testing.T) {
 	if err != nil {
 		t.Skip("node not installed; skipping overlay module tests")
 	}
-	cmd := exec.Command(node, "--test", "chat_test.mjs", "settings_test.mjs", "sourcecontrol_test.mjs", "boxpos_test.mjs", "launcher_test.mjs")
+	cmd := exec.Command(node, "--test", "chat_test.mjs", "markdown_test.mjs", "settings_test.mjs", "sourcecontrol_test.mjs", "boxpos_test.mjs", "launcher_test.mjs")
 	cmd.Dir = "overlay"
 	out, err := cmd.CombinedOutput()
 	if err != nil {

@@ -33,6 +33,16 @@ var overlayJS []byte
 //go:embed overlay/chat.js
 var chatJS []byte
 
+// markdownJS projects chat Markdown into a DOM-safe block/token model.
+//
+//go:embed overlay/markdown.js
+var markdownJS []byte
+
+// transcriptJS renders structured transcript rows into the overlay shadow DOM.
+//
+//go:embed overlay/transcript.js
+var transcriptJS []byte
+
 // settingsJS is the overlay's pure agent-profile selection module.
 //
 //go:embed overlay/settings.js
@@ -181,6 +191,8 @@ func Start(opts Options) (*Server, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+OverlayPath, serveJS(overlayJS))
 	mux.HandleFunc("GET "+ChatPath, serveJS(chatJS))
+	mux.HandleFunc("GET "+MarkdownPath, serveJS(markdownJS))
+	mux.HandleFunc("GET "+TranscriptPath, serveJS(transcriptJS))
 	mux.HandleFunc("GET "+SettingsPath, serveJS(settingsJS))
 	mux.HandleFunc("GET "+SourceControlPath, serveJS(sourceControlJS))
 	mux.HandleFunc("GET "+BoxPosPath, serveJS(boxPosJS))
