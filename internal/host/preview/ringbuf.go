@@ -82,7 +82,7 @@ func sanitizeTerminalOutput(p []byte) []byte {
 	out := stripped[:0]
 	for _, b := range stripped {
 		isLayoutControl := b == '\n' || b == '\r' || b == '\t'
-		if (b < 0x20 && !isLayoutControl) || b == 0x7f {
+		if (b < 0x20 && !isLayoutControl) || b == 0x7f || isRawC1Control(b) {
 			continue
 		}
 		out = append(out, b)
@@ -90,30 +90,27 @@ func sanitizeTerminalOutput(p []byte) []byte {
 	return out
 }
 
-// C1 control bytes that ansi.Strip treats as a raw 8-bit escape-sequence
-// introducer (DCS, SOS, CSI, OSC, PM, APC per ECMA-48) equivalent to the
-// more common ESC-prefixed form. ansi.Strip leaves every other raw C1
-// control (e.g. 0x84, 0x8d) and every UTF-8-encoded C1 code point (e.g. CSI
-// as `\xc2\x9b`) untouched — verified empirically — so this gate only needs
-// to match what ansi.Strip itself recognizes.
-const (
-	c1DeviceControlString       byte = 0x90
-	c1StartOfString             byte = 0x98
-	c1ControlSequenceIntroducer byte = 0x9b
-	c1OperatingSystemCommand    byte = 0x9d
-	c1PrivacyMessage            byte = 0x9e
-	c1ApplicationProgramCommand byte = 0x9f
-)
+// isRawC1Control reports whether b, taken as a standalone byte (not a UTF-8
+// continuation byte), is a C1 control per ECMA-48 (0x80-0x9F). ansi.Strip
+// only recognizes the subset of this range it treats as 8-bit escape
+// introducers (DCS, SOS, CSI, OSC, PM, APC) — verified empirically — leaving
+// the rest (e.g. 0x84 IND, 0x8d RI) to pass through untouched. The doc
+// comment on ringBuf promises all terminal controls are stripped, so this
+// checks the full range rather than just ansi.Strip's subset.
+func isRawC1Control(b byte) bool {
+	return b >= 0x80 && b <= 0x9f
+}
 
 // needsTerminalSanitizing reports whether p contains an escape sequence or a
 // stray control byte, so the common chatty-stdout case (plain text) can skip
 // ansi.Strip's allocation and copy on this hot capture path.
 //
-// The C1 bytes checked below (0x80-0x9F) double as UTF-8 continuation bytes,
-// so a raw byte scan would false-positive on legitimate non-ASCII text (and
+// The C1 range (0x80-0x9F) doubles as UTF-8 continuation bytes, so a raw
+// byte scan would false-positive on legitimate non-ASCII text (and
 // ansi.Strip would then misparse that continuation byte as a real escape
 // introducer, corrupting the output). Decoding runes instead of bytes lets
-// valid multi-byte UTF-8 skip straight past them.
+// valid multi-byte UTF-8 skip straight past them; only a byte that fails to
+// decode as a UTF-8 continuation (i.e. it stands alone) is a raw C1 control.
 func needsTerminalSanitizing(p []byte) bool {
 	for i := 0; i < len(p); {
 		b := p[i]
@@ -129,12 +126,8 @@ func needsTerminalSanitizing(p []byte) bool {
 			continue
 		}
 		r, size := utf8.DecodeRune(p[i:])
-		if r == utf8.RuneError && size <= 1 {
-			switch b {
-			case c1DeviceControlString, c1StartOfString, c1ControlSequenceIntroducer,
-				c1OperatingSystemCommand, c1PrivacyMessage, c1ApplicationProgramCommand:
-				return true
-			}
+		if r == utf8.RuneError && size <= 1 && isRawC1Control(b) {
+			return true
 		}
 		i += size
 	}

@@ -107,6 +107,20 @@ func TestSanitizeTerminalOutputPreservesUTF8ContinuationByteMatchingC1(t *testin
 	}
 }
 
+// TestSanitizeTerminalOutputStripsRawC1Controls pins the coderabbit/cubic
+// finding on PR #261: 0x84 (IND) and 0x8d (RI) are C1 controls per ECMA-48
+// that ansi.Strip doesn't recognize as escape introducers, but the doc
+// comment promises all terminal controls are stripped. They must not reach
+// the ring buffer as raw bytes.
+func TestSanitizeTerminalOutputStripsRawC1Controls(t *testing.T) {
+	t.Parallel()
+	got := string(sanitizeTerminalOutput([]byte("before\x84middle\x8dafter")))
+	want := "beforemiddleafter"
+	if got != want {
+		t.Fatalf("sanitizeTerminalOutput(%q) = %q, want %q", "before\x84middle\x8dafter", got, want)
+	}
+}
+
 func TestSanitizeTerminalOutputDropsUnterminatedSequence(t *testing.T) {
 	t.Parallel()
 	// "\x1b[2" lacks the final byte (e.g. 'm') — genuinely unterminated.
