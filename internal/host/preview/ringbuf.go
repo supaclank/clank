@@ -92,7 +92,10 @@ func sanitizeTerminalOutput(p []byte) []byte {
 
 // C1 control bytes that ansi.Strip treats as a raw 8-bit escape-sequence
 // introducer (DCS, SOS, CSI, OSC, PM, APC per ECMA-48) equivalent to the
-// more common ESC-prefixed form.
+// more common ESC-prefixed form. ansi.Strip leaves every other raw C1
+// control (e.g. 0x84, 0x8d) and every UTF-8-encoded C1 code point (e.g. CSI
+// as `\xc2\x9b`) untouched — verified empirically — so this gate only needs
+// to match what ansi.Strip itself recognizes.
 const (
 	c1DeviceControlString       byte = 0x90
 	c1StartOfString             byte = 0x98

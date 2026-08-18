@@ -13,7 +13,6 @@ import "github.com/charmbracelet/lipgloss"
 var (
 	styleOK          = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true) // green
 	styleWarn        = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))            // yellow
-	styleErr         = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)  // red
 	styleCmdHint     = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))            // bright blue
 	stylePreviewLog  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))             // grey
 	styleDim         = lipgloss.NewStyle().Faint(true)
