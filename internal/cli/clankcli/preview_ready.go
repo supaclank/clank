@@ -46,14 +46,23 @@ func waitPreviewReady(
 	defer logTicker.Stop()
 	logStream := previewStartupLogStream{out: out}
 	defer logStream.finish()
-	if err := logStream.poll(ctx, client); err != nil {
-		return nil, err
+
+	// Log reads run on their own goroutine (at most one in-flight) so a slow
+	// one can never stall statusTicker, which is the readiness source of
+	// truth.
+	logPoller := newPreviewLogPoller(&logStream, client.Logs)
+	flushLogStream := func() error {
+		if err := logPoller.Await(); err != nil {
+			return err
+		}
+		return logStream.poll(ctx, client.Logs)
 	}
+	logPoller.Poll(ctx)
 
 	for {
 		isReady, err = previewReadyState(status)
 		if err != nil {
-			if streamErr := logStream.poll(ctx, client); streamErr != nil {
+			if streamErr := flushLogStream(); streamErr != nil {
 				return nil, streamErr
 			}
 			if logStream.hasOutput {
@@ -62,7 +71,7 @@ func waitPreviewReady(
 			return nil, previewStartupError(client, err)
 		}
 		if isReady {
-			if err := logStream.poll(ctx, client); err != nil {
+			if err := flushLogStream(); err != nil {
 				return nil, err
 			}
 			return status, nil
@@ -73,7 +82,7 @@ func waitPreviewReady(
 			return nil, ctx.Err()
 		case <-timer.C:
 			err := fmt.Errorf("dev server did not satisfy its configured readiness probe within %s", timeout)
-			if streamErr := logStream.poll(ctx, client); streamErr != nil {
+			if streamErr := flushLogStream(); streamErr != nil {
 				return nil, streamErr
 			}
 			if logStream.hasOutput {
@@ -81,7 +90,10 @@ func waitPreviewReady(
 			}
 			return nil, previewStartupError(client, err)
 		case <-logTicker.C:
-			if err := logStream.poll(ctx, client); err != nil {
+			logPoller.Poll(ctx)
+		case res := <-logPoller.C:
+			logPoller.Ack()
+			if err := logStream.apply(res); err != nil {
 				return nil, err
 			}
 		case <-statusTicker.C:
