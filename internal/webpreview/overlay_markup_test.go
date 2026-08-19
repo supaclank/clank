@@ -373,6 +373,7 @@ func TestOverlayAgentSettingsWiring(t *testing.T) {
 	js := string(overlayJS)
 	for _, want := range []string{
 		`<div class="settings"`,
+		`.settings { margin:4px 0 0; border-top:1px solid #e5e7eb; border-bottom:1px solid #e5e7eb;`,
 		`<div class="save-profile"`,
 		`class="profile"`,
 		"$('.settings')",
@@ -390,6 +391,9 @@ func TestOverlayAgentSettingsWiring(t *testing.T) {
     <button class="profile"`) || !strings.Contains(js, `</button>
     <button class="ib mic"`) {
 		t.Error("overlay.js profile selector must sit in the right action cluster immediately left of the microphone")
+	}
+	if strings.Contains(js, `.settings { margin:6px 12px; border:1px solid`) {
+		t.Error("overlay.js agent settings must be a full-width flat panel, not a nested card")
 	}
 }
 

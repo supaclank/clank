@@ -2230,15 +2230,17 @@ import {
   .engpick .opt[disabled] { opacity:.45; cursor:not-allowed; }
   .engpick .opt b { display:block; font-weight:600; }
   .engpick .opt .d { color:#6b7280; }
-  .settings { margin:6px 12px; border:1px solid #e5e7eb; background:rgba(255,255,255,.7);
-    border-radius:12px; font-size:12px; max-height:300px; overflow-y:auto; }
+  /* agent settings use the same full-width flat panel language as source
+     control: the overlay is the container, so a second card is unnecessary. */
+  .settings { margin:4px 0 0; border-top:1px solid #e5e7eb; border-bottom:1px solid #e5e7eb;
+    font-size:12px; max-height:300px; overflow-y:auto; }
   .settings-h { position:sticky; top:0; z-index:1; display:flex; align-items:center; gap:8px;
-    padding:9px 10px 7px; background:rgba(255,255,255,.96); border-bottom:1px solid #e5e7eb; }
+    padding:10px 12px 8px; background:rgba(255,255,255,.96); border-bottom:1px solid #e5e7eb; }
   .settings-h b { flex:1; font-size:13px; }
   .settings-badge { color:#2563eb; background:#3b82f614; border-radius:999px; padding:2px 7px; }
   .settings-badge.custom { color:#b45309; background:#f59e0b14; }
   .settings-done { all:unset; cursor:pointer; color:#2563eb; font-weight:600; padding:3px 2px; }
-  .profiles { display:flex; gap:7px; padding:9px 10px; overflow-x:auto; }
+  .profiles { display:flex; gap:7px; padding:9px 12px; overflow-x:auto; }
   .profile-card { all:unset; cursor:pointer; flex:none; min-width:66px; border:1px solid #e5e7eb;
     border-radius:10px; padding:6px 10px; background:#f9fafb; }
   .profile-card:hover { background:#f3f4f6; }
@@ -2247,7 +2249,7 @@ import {
   .profile-card.new:hover { background:#f3f4f6; }
   .profile-card b, .profile-card small { display:block; white-space:nowrap; }
   .profile-card small { color:#9ca3af; font-size:9px; margin-top:1px; }
-  .knobs { padding:0 10px 6px; }
+  .knobs { padding:0 12px 6px; }
   .knob { border-top:1px solid #e5e7eb; }
   .knob-main { all:unset; width:100%; cursor:pointer; display:flex; align-items:center; gap:8px; padding:9px 0; }
   .knob-main[disabled] { cursor:default; }
@@ -2264,9 +2266,9 @@ import {
   .knob-option b, .knob-option small { display:block; }
   .knob-option small { color:#6b7280; font-size:10px; }
   .knob-option.cur { color:#2563eb; }
-  .settings-state { color:#6b7280; padding:9px 10px; border-top:1px solid #e5e7eb; }
+  .settings-state { color:#6b7280; padding:9px 12px; border-top:1px solid #e5e7eb; }
   .settings-state.err { color:#dc2626; }
-  .settings-actions { display:flex; justify-content:flex-end; gap:7px; padding:4px 10px 9px; }
+  .settings-actions { display:flex; justify-content:flex-end; gap:7px; padding:4px 12px 9px; }
   .set-default { all:unset; cursor:pointer; color:#2563eb; font-weight:600; border:1px solid #e5e7eb;
     border-radius:9px; padding:6px 10px; }
   .save-new { all:unset; cursor:pointer; color:#fff; background:#111827; font-weight:600;
