@@ -309,6 +309,62 @@ func TestOverlaySourceControlWiring(t *testing.T) {
 	}
 }
 
+// TestOverlayResizeWiring pins the edge resize: the top edge (expanded
+// chat view only) sets the chat log's height, the side edges (either
+// view) set the box width, the top corners drag both axes at once,
+// drag math goes through the pure resize.js module, and the sizes
+// persist as a durable localStorage preference. The collapsed prompt
+// view's height and the composer keep their default content-driven
+// sizes.
+func TestOverlayResizeWiring(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	for _, want := range []string{
+		`<div class="rz"`,
+		`<div class="rzl"`,
+		`<div class="rzr"`,
+		`<div class="rznw"`,
+		`<div class="rzne"`,
+		"$('.rz')",
+		"from './resize.js'",
+		// The top strip and corners show and arm only while the chat
+		// view is expanded.
+		".box.expanded .rz { display:block; }",
+		".box.expanded .rznw, .box.expanded .rzne { display:block; }",
+		// The drag applies pure math, never raw pointer deltas.
+		"clampBoxExtra(boxExtraFromDrag(startH, sy, e.clientY), roomH)",
+		// The expanded log renders at exactly default + extra, full or
+		// empty — a content-fit height snaps ~240px on the first drag
+		// pixel whenever the transcript is short (user-reported).
+		"height:calc(${CHAT_DEFAULT_MAX}px + var(--dh, 0px))",
+		// The transcript window scales with the chosen height.
+		"store.msgs.slice(-chatRowCap(boxExtra))",
+		// Width flows through the box's --dw custom property.
+		"width: calc(${BOX_DEFAULT_WIDTH}px + var(--dw, 0px))",
+		// Corners are compass strings carrying both axes.
+		"return 'nw'",
+		"return 'ne'",
+		"grip.includes('n')",
+		// A west drag keeps the east edge planted by moving the box,
+		// through the drag section's translate helpers so the clamp
+		// model's applied-vs-intent split holds (boxpos.js).
+		"applyBoxTranslate(startTx - (boxWidthExtra - startW), startTy)",
+		"if (wasWest) commitBoxIntent()",
+		// A grab over a child's scrollbar keeps scrolling.
+		"overScrollbar(e)",
+		// Sizes are a durable preference; position stays per tab.
+		"localStorage.setItem(BOX_EXTRA_STORAGE_KEY",
+		"localStorage.setItem(BOX_WIDTH_STORAGE_KEY",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("overlay.js resize wiring missing %q", want)
+		}
+	}
+	if got := strings.Count(js, "var(--dh, 0px)"); got != 1 {
+		t.Errorf("var(--dh, 0px) appears %d times, want exactly 1 (chat log only — not the composer or panels)", got)
+	}
+}
+
 // TestOverlayAgentSettingsWiring pins the mobile-parity settings surface:
 // the footer chip opens a profile/knob editor, and both create and follow-up
 // sends carry the staged config rather than silently reverting to Build.

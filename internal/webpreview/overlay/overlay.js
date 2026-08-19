@@ -54,6 +54,10 @@ import {
   currentBranchInfo, defaultBaseBranch, seedPRTitle, friendlyRemoteError,
   mergeInProgressPrompt, divergedMergePrompt, prConflictsPrompt,
 } from './sourcecontrol.js';
+import {
+  boxExtraFromDrag, clampBoxExtra, chatRowCap,
+  BOX_EDGE_MARGIN, BOX_DEFAULT_WIDTH, CHAT_DEFAULT_MAX,
+} from './resize.js';
 
 (() => {
   'use strict';
@@ -64,6 +68,16 @@ import {
   const TOKEN = CFG.token || '';
   const DONE_LINGER_MS = 8000; // mobile: PreviewOverlayState.DONE_LINGER_MS
   const DEFAULT_PROFILE_STORAGE_KEY = 'clank.defaultPresetByBackend';
+  const BOX_POS_STORAGE_KEY = 'clank.boxPos';
+  const BOX_EXTRA_STORAGE_KEY = 'clank.boxExtra';
+  const BOX_WIDTH_STORAGE_KEY = 'clank.boxWidth';
+  // Resize grip zones measured from the box's outer edges: the strip
+  // (10px top, 6px sides) plus the box border the strips cannot cover.
+  const RESIZE_GRIP_PX = 12;
+  const SIDE_GRIP_PX = 8;
+  // Corner zone (chat view): where top and side grips meet, a larger
+  // OS-window-style square drags both axes at once.
+  const CORNER_GRIP_PX = 16;
   // macOS fires CapsLock keydown when the lock engages and keyup when it
   // disengages — one event per physical press, alternating type. Other
   // platforms fire a normal down/up pair per press.
@@ -1897,7 +1911,8 @@ import {
        vertically (observed). With translate first and the animation
        last, nothing can scale the offset, and transform-origin
        anchors the entry scale to the box's own bottom edge. */
-    position: fixed; left: max(16px, calc(50% - 190px)); bottom: 144px; width: 380px; max-width: calc(100vw - 32px);
+    position: fixed; left: max(16px, calc(50% - 190px)); bottom: 144px;
+    width: calc(${BOX_DEFAULT_WIDTH}px + var(--dw, 0px)); max-width: calc(100vw - 32px);
     background: rgba(255,255,255,.92); color: #1f2937; border-radius: 18px;
     border: 1.5px solid #e5e7eb; box-shadow: 0 12px 40px rgba(0,0,0,.18);
     pointer-events: auto; backdrop-filter: blur(14px); display: none; overflow: hidden;
@@ -1948,6 +1963,22 @@ import {
     .launcher.visible, .coachmark.visible, .launcher.busy::before, .activity-spinner,
     .tool-state.running, .tool-state.pending { animation:none; }
   }
+  /* top-edge resize strip, expanded chat view only: the drag sets the
+     chat log's height (--dh); the collapsed prompt view keeps its
+     default size. Double-click resets. */
+  .rz { display:none; position:absolute; top:0; left:0; right:0; height:10px; cursor:ns-resize; z-index:3; touch-action:none; }
+  .box.expanded .rz { display:block; }
+  .rz::after { content:''; position:absolute; left:50%; top:3px; width:36px; height:3px; margin-left:-18px;
+    border-radius:999px; background:#9ca3af; opacity:.25; transition:opacity .15s ease; }
+  .rz:hover::after, .rz.active::after { opacity:.55; }
+  /* side strips resize the width in either view */
+  .rzl, .rzr { position:absolute; top:0; bottom:0; width:6px; cursor:ew-resize; z-index:3; touch-action:none; }
+  .rzl { left:0; } .rzr { right:0; }
+  /* top corners (chat view) drag both axes, OS-window style — pure
+     cursor affordances; the box's gated handlers do the work */
+  .rznw, .rzne { display:none; position:absolute; top:0; width:16px; height:16px; z-index:4; touch-action:none; }
+  .box.expanded .rznw, .box.expanded .rzne { display:block; }
+  .rznw { left:0; cursor:nwse-resize; } .rzne { right:0; cursor:nesw-resize; }
   .hd { display:flex; align-items:center; gap:8px; padding:10px 12px 6px; cursor:grab; user-select:none; }
   .hd:active { cursor:grabbing; }
   .dot { width:8px; height:8px; border-radius:50%; background:#6b7280; flex:none; }
@@ -2094,7 +2125,10 @@ import {
   .chip b { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .chip button { all:unset; cursor:pointer; color:#9ca3af; font-size:12px; line-height:1; }
   .chip img { width:18px; height:18px; object-fit:cover; border-radius:4px; }
-  .chat { max-height:240px; overflow-y:auto; padding:4px 12px 8px; display:none; }
+  /* The expanded log always renders at exactly default + extra, full
+     or empty: a content-fit height would snap ~240px on the first drag
+     pixel whenever the transcript is short. */
+  .chat { height:calc(${CHAT_DEFAULT_MAX}px + var(--dh, 0px)); overflow-y:auto; padding:4px 12px 8px; display:none; }
   .box.expanded .chat { display:block; border-bottom:1px solid #e5e7eb; }
   .m { font-size:12.5px; line-height:1.45; margin:8px 0; word-break:break-word; }
   .m.user { color:#2563eb; }
@@ -2304,6 +2338,11 @@ import {
   .crop-x0 { position:absolute; top:12px; right:16px; }
 </style>
 <div class="box" part="box" tabindex="-1">
+  <div class="rz" title="Drag to resize — double-click to reset"></div>
+  <div class="rzl" title="Drag to resize — double-click to reset"></div>
+  <div class="rzr" title="Drag to resize — double-click to reset"></div>
+  <div class="rznw" title="Drag to resize — double-click to reset"></div>
+  <div class="rzne" title="Drag to resize — double-click to reset"></div>
   <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><button class="scchip muted" style="display:none" title="source control" tabindex="-1">${ICONS.branch}<span class="sctext"></span></button><a class="beta" href="https://github.com/supaclank/clank/issues/new?template=bug_report.yml" target="_blank" rel="noopener noreferrer" title="click to report an issue" tabindex="-1">beta</a><button class="chat-toggle" aria-label="Show conversation" aria-expanded="false" title="Show conversation (Cmd+Shift+E)"><span>Chat</span>${ICONS.chevron}</button><span class="grip">${ICONS.grip}</span></div>
   <div class="chat"></div>
   <div class="agent-progress"><span class="activity-spinner" aria-hidden="true"></span><span class="agent-progress-text"></span></div>
@@ -2360,7 +2399,8 @@ import {
 
   const $ = (sel) => root.querySelector(sel);
   const ui = {
-    box: $('.box'), name: $('.name'), st: $('.st'), chips: $('.chips'), chat: $('.chat'),
+    box: $('.box'), rz: $('.rz'), rzl: $('.rzl'), rzr: $('.rzr'),
+    name: $('.name'), st: $('.st'), chips: $('.chips'), chat: $('.chat'),
     chatToggle: $('.chat-toggle'), chatToggleLabel: $('.chat-toggle span'),
     launcher: $('.launcher'), launcherSpinner: $('.launcher .activity-spinner'),
     coachmark: $('.coachmark'), coachDismiss: $('.coach-dismiss'), coachShortcut: $('.coach-shortcut'),
@@ -2392,6 +2432,31 @@ import {
     ui.toast.classList.add('show');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => ui.toast.classList.remove('show'), 3500);
+  };
+
+  // boxExtra / boxWidthExtra are the user's drag-set extra chat-log
+  // height and box width (px) — a durable preference, so localStorage
+  // (per preview origin), unlike the per-tab box position. Restore
+  // only sanitizes — no viewport clamp: innerHeight/innerWidth can
+  // read 0 while a tab loads in the background, and the values were
+  // clamped against real geometry by the drag that stored them.
+  let boxExtra = 0, boxWidthExtra = 0;
+  try {
+    const savedH = parseFloat(localStorage.getItem(BOX_EXTRA_STORAGE_KEY) || '0');
+    if (Number.isFinite(savedH)) boxExtra = clampBoxExtra(savedH, Infinity);
+    const savedW = parseFloat(localStorage.getItem(BOX_WIDTH_STORAGE_KEY) || '0');
+    if (Number.isFinite(savedW)) boxWidthExtra = clampBoxExtra(savedW, Infinity);
+  } catch {}
+  const applyBoxSize = () => {
+    ui.box.style.setProperty('--dh', boxExtra + 'px');
+    ui.box.style.setProperty('--dw', boxWidthExtra + 'px');
+  };
+  applyBoxSize();
+  const persistBoxSize = () => {
+    try {
+      localStorage.setItem(BOX_EXTRA_STORAGE_KEY, String(boxExtra));
+      localStorage.setItem(BOX_WIDTH_STORAGE_KEY, String(boxWidthExtra));
+    } catch {} // private-mode storage quotas must not kill the drag
   };
 
   const syncComposerHeight = () => {
@@ -2787,7 +2852,7 @@ import {
     });
 
     const frag = document.createDocumentFragment();
-    store.msgs.slice(-12).forEach((row) => {
+    store.msgs.slice(-chatRowCap(boxExtra)).forEach((row) => {
       frag.append(renderTranscriptRow(row));
     });
     ui.chat.replaceChildren(frag);
@@ -3565,12 +3630,12 @@ import {
   };
   const commitBoxIntent = () => {
     boxIntent = { x: parseFloat(ui.box.dataset.x || '0'), y: parseFloat(ui.box.dataset.y || '0') };
-    sessionStorage.setItem('clank.boxPos', JSON.stringify(boxIntent));
+    sessionStorage.setItem(BOX_POS_STORAGE_KEY, JSON.stringify(boxIntent));
   };
   const clampBoxOnSummon = (() => {
     const hd = $('.hd');
     let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
-    const saved = parseStoredBoxIntent(sessionStorage.getItem('clank.boxPos'));
+    const saved = parseStoredBoxIntent(sessionStorage.getItem(BOX_POS_STORAGE_KEY));
     if (saved) { boxIntent = saved; applyBoxTranslate(saved.x, saved.y); }
 
     // Resize rescue: drags may park the box off-screen on purpose, but
@@ -3628,6 +3693,100 @@ import {
       owesClamp = false;
       clampIntoViewport();
     };
+  })();
+
+  // ---------- resize (top edge = chat height, sides = width, corners = both) --
+  // Handlers live on the box, gated to the edge strips: a grab right
+  // on an edge lands on the box's own border pixels, which the strip
+  // divs can't cover (overflow:hidden clips at the padding box) — both
+  // must resize. Capture + stopPropagation keeps the header's
+  // move-drag from arming underneath a grip grab. Grips are compass
+  // strings ('n', 'w', 'e', 'nw', 'ne'): corners carry both axes.
+  (() => {
+    // A grab over a child's vertical scrollbar (chat log, panels, a
+    // maxed composer) must keep scrolling, not resize.
+    const overScrollbar = (e) => {
+      const t = e.composedPath()[0];
+      return t instanceof Element && t.scrollHeight > t.clientHeight
+        && e.clientX > t.getBoundingClientRect().left + t.clientWidth;
+    };
+    const gripAt = (e) => {
+      const r = ui.box.getBoundingClientRect();
+      // Corners first: where the grips meet, a larger OS-window-style
+      // square wins over either plain edge.
+      if (store.box === 'chat' && e.clientY <= r.top + CORNER_GRIP_PX) {
+        if (e.clientX <= r.left + CORNER_GRIP_PX) return 'nw';
+        if (e.clientX >= r.right - CORNER_GRIP_PX && !overScrollbar(e)) return 'ne';
+      }
+      if (e.clientX <= r.left + SIDE_GRIP_PX) return 'w';
+      if (e.clientX >= r.right - SIDE_GRIP_PX) return overScrollbar(e) ? '' : 'e';
+      if (store.box === 'chat' && e.clientY <= r.top + RESIZE_GRIP_PX) return 'n';
+      return '';
+    };
+    const stripsFor = (g) => [
+      ...(g.includes('n') ? [ui.rz] : []),
+      ...(g.includes('w') ? [ui.rzl] : []),
+      ...(g.includes('e') ? [ui.rzr] : []),
+    ];
+    let grip = '', sx = 0, sy = 0, startH = 0, startW = 0, roomH = 0, roomW = 0, startTx = 0, startTy = 0;
+    ui.box.addEventListener('pointerdown', (e) => {
+      grip = gripAt(e);
+      if (!grip) return;
+      e.stopPropagation();
+      e.preventDefault(); // no text selection under the drag
+      endFollow(); // manual resize wins over a live shift-follow
+      sx = e.clientX; sy = e.clientY;
+      startH = boxExtra; startW = boxWidthExtra;
+      // Each dragged edge can travel at most to the viewport margin —
+      // the room beyond the current extra.
+      const r = ui.box.getBoundingClientRect();
+      roomH = startH + r.top - BOX_EDGE_MARGIN;
+      roomW = startW + (grip.includes('w') ? r.left - BOX_EDGE_MARGIN
+        : innerWidth - r.right - BOX_EDGE_MARGIN);
+      startTx = parseFloat(ui.box.dataset.x || '0');
+      startTy = parseFloat(ui.box.dataset.y || '0');
+      for (const s of stripsFor(grip)) s.classList.add('active');
+      ui.box.setPointerCapture(e.pointerId);
+    }, true);
+    ui.box.addEventListener('pointermove', (e) => {
+      if (!grip) return;
+      if (grip.includes('n')) {
+        boxExtra = clampBoxExtra(boxExtraFromDrag(startH, sy, e.clientY), roomH);
+      }
+      // boxExtraFromDrag grows toward smaller coordinates (up/left);
+      // the east edge grows toward larger ones, so its args swap.
+      if (grip.includes('w')) {
+        boxWidthExtra = clampBoxExtra(boxExtraFromDrag(startW, sx, e.clientX), roomW);
+        // Growing from the west edge keeps the east edge planted.
+        applyBoxTranslate(startTx - (boxWidthExtra - startW), startTy);
+      } else if (grip.includes('e')) {
+        boxWidthExtra = clampBoxExtra(boxExtraFromDrag(startW, e.clientX, sx), roomW);
+      }
+      applyBoxSize();
+    }, true);
+    const settle = (e) => {
+      if (!grip) return;
+      const wasWest = grip.includes('w');
+      grip = '';
+      for (const s of [ui.rz, ui.rzl, ui.rzr]) s.classList.remove('active');
+      e.stopPropagation(); // the header must not read the release as its tap
+      persistBoxSize();
+      // A west drag moved the box to keep the east edge planted — that
+      // IS the user's new intended spot, so commit it.
+      if (wasWest) commitBoxIntent();
+      render(); // the transcript window scales with the settled height
+    };
+    ui.box.addEventListener('pointerup', settle, true);
+    ui.box.addEventListener('pointercancel', settle, true);
+    ui.box.addEventListener('dblclick', (e) => {
+      const g = gripAt(e);
+      if (!g) return;
+      if (g.includes('n')) boxExtra = 0;
+      if (g.includes('w') || g.includes('e')) boxWidthExtra = 0;
+      applyBoxSize();
+      persistBoxSize();
+      render();
+    }, true);
   })();
 
   // ---------- wiring -----------------------------------------------------------

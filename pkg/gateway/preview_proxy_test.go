@@ -390,7 +390,7 @@ func TestPreviewProxy_ServesOverlayAssetsWithoutForwarding(t *testing.T) {
 	}))
 	r := f.seed(t, "alice", tokens.VisibilityPublic)
 
-	for _, path := range []string{"/__clank/overlay.js", "/__clank/settings.js"} {
+	for _, path := range []string{"/__clank/overlay.js", "/__clank/settings.js", "/__clank/resize.js"} {
 		resp := f.do(t, tokens.HostFor(r.Token, f.root), "", path)
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
