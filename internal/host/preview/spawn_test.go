@@ -60,7 +60,7 @@ func TestSpawnLogsConfiguredCommandBeforeChildOutput(t *testing.T) {
 		WorkDir: t.TempDir(),
 		Spec: Spec{
 			Kind:              KindWeb,
-			CmdTemplate:       []string{"sh", "-c", "sleep 30"},
+			CmdTemplate:       []string{"sh", "-c", "echo child-boot; sleep 30"},
 			StartupLogCommand: configuredCommand,
 			ReadyProbe:        ReadyProbe{Path: "/"},
 		},
@@ -72,9 +72,8 @@ func TestSpawnLogsConfiguredCommandBeforeChildOutput(t *testing.T) {
 	}
 	t.Cleanup(func() { r.stopWithGrace(2 * time.Second) })
 
-	if got, want := string(r.logs.Snapshot()), "$ "+configuredCommand+"\n"; got != want {
-		t.Fatalf("initial logs = %q, want %q", got, want)
-	}
+	want := "$ " + configuredCommand + "\nchild-boot\n"
+	waitForLogs(t, r, want, 5*time.Second)
 }
 
 // TestSpawnAndOrphanCleanup is the regression test for Change 2 of the
@@ -178,6 +177,20 @@ func TestSpawnReadinessTimeoutFails(t *testing.T) {
 	if gotErr == "" {
 		t.Errorf("expected lastErr to be set on readiness timeout")
 	}
+}
+
+// waitForLogs polls r.logs until its snapshot equals want or deadline
+// expires — the child writes its boot line asynchronously after Start.
+func waitForLogs(t *testing.T, r *running, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if got := string(r.logs.Snapshot()); got == want {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("logs = %q, want %q", string(r.logs.Snapshot()), want)
 }
 
 // waitForState polls r.state until it matches want or deadline expires.

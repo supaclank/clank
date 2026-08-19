@@ -117,6 +117,7 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 
 	logs := newRingBuf(ringCapacity)
 	if req.Spec.StartupLogCommand != "" {
+		// TODO(ai-review): announce line can be evicted by ring wraparound on a long-lived, chatty child https://github.com/supaclank/clank/pull/265#discussion_r3812015678
 		_, _ = fmt.Fprintf(logs, "$ %s\n", strings.TrimSpace(req.Spec.StartupLogCommand))
 	}
 	cmd.Stdout = logs
