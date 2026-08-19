@@ -43,16 +43,17 @@ export const resizeOwesClamp = ({ innerWidth, innerHeight, isHidden }) =>
   !innerWidth || !innerHeight || isHidden;
 
 // Returns the translate that places the prompt header under the pointer.
-// Expanded conversation content sits above the prompt, so chatHeight shifts
-// the outer box while preserving the prompt's collapsed visual position.
-export const followTranslateTarget = ({ pointer, natural, size, viewport, chatHeight }) => {
+// `natural` is measured live via getBoundingClientRect, so it already
+// reflects the box's current height — expanded chat included, since the
+// box is bottom-anchored and grows upward — no extra offset needed here.
+export const followTranslateTarget = ({ pointer, natural, size, viewport }) => {
   const left = clampAxis(
     pointer.x - size.width / 2,
     BOX_EDGE_MARGIN,
     viewport.width - size.width - BOX_EDGE_MARGIN,
   );
   const top = clampAxis(
-    pointer.y - FOLLOW_POINTER_HEADER_INSET - chatHeight,
+    pointer.y - FOLLOW_POINTER_HEADER_INSET,
     BOX_EDGE_MARGIN,
     viewport.height - size.height - BOX_EDGE_MARGIN,
   );

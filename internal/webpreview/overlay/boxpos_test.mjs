@@ -102,24 +102,46 @@ test('resizeOwesClamp: hidden box or a bogus 0×0 viewport defers to next summon
   assert.equal(resizeOwesClamp({ innerWidth: 1400, innerHeight: 900, isHidden: false }), false);
 });
 
-test('shift-follow keeps the prompt anchored when conversation is expanded above it', () => {
+// FOLLOW_POINTER_HEADER_INSET mirrors overlay.js's private constant: the
+// pointer lands 12px into the header from its top edge.
+const FOLLOW_POINTER_HEADER_INSET = 12;
+
+test('shift-follow lands the header under the pointer regardless of expand state', () => {
+  // natural.top is a live getBoundingClientRect() read, so it already
+  // reflects the box's current height — bottom-anchored, it grows upward as
+  // the chat panel expands. Collapsed and expanded natural tops here differ
+  // by exactly the 240px the chat panel adds; the formula needs no separate
+  // correction for that.
   const pointer = { x: 720, y: 520 };
-  const viewport = { width: 1440, height: 900 };
+  const viewport = { width: 1440, height: 1200 }; // tall enough that neither case clamps
+  const collapsedNatural = { left: 530, top: 596 };
+  const expandedNatural = { left: 530, top: 356 };
   const collapsed = followTranslateTarget({
     pointer,
-    natural: { left: 530, top: 596 },
+    natural: collapsedNatural,
     size: { width: 380, height: 160 },
     viewport,
-    chatHeight: 0,
   });
   const expanded = followTranslateTarget({
     pointer,
-    natural: { left: 530, top: 356 },
+    natural: expandedNatural,
     size: { width: 380, height: 400 },
     viewport,
-    chatHeight: 240,
   });
 
-  assert.deepEqual(expanded, collapsed);
-  assert.equal(596 + collapsed.y, 356 + expanded.y + 240);
+  assert.equal(collapsedNatural.top + collapsed.y, pointer.y - FOLLOW_POINTER_HEADER_INSET);
+  assert.equal(expandedNatural.top + expanded.y, pointer.y - FOLLOW_POINTER_HEADER_INSET);
+});
+
+test('shift-follow clamps the header to the top margin near the viewport edge in expanded mode', () => {
+  const pointer = { x: 720, y: 5 }; // near the top of the viewport
+  const viewport = { width: 1440, height: 900 };
+  const natural = { left: 530, top: 356 };
+  const target = followTranslateTarget({
+    pointer,
+    natural,
+    size: { width: 380, height: 400 },
+    viewport,
+  });
+  assert.equal(natural.top + target.y, BOX_EDGE_MARGIN);
 });

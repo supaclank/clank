@@ -3931,7 +3931,6 @@ import {
       natural: { left: follow.natX, top: follow.natY },
       size: { width: follow.w, height: follow.h },
       viewport: { width: innerWidth, height: innerHeight },
-      chatHeight: follow.chatHeight,
     });
     follow.tx = target.x;
     follow.ty = target.y;
@@ -3954,7 +3953,6 @@ import {
     follow = {
       // natural (untranslated) top-left, so pointer coords → translate coords
       natX: r.left - x, natY: r.top - y, w: r.width, h: r.height,
-      chatHeight: store.box === 'chat' ? ui.chat.getBoundingClientRect().height : 0,
       x, y, vx: 0, vy: 0, tx: x, ty: y,
       held: true, lastT: 0, raf: 0,
     };
