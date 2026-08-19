@@ -2440,6 +2440,9 @@ import {
   // only sanitizes — no viewport clamp: innerHeight/innerWidth can
   // read 0 while a tab loads in the background, and the values were
   // clamped against real geometry by the drag that stored them.
+  // TODO(ai-review): restoring in a smaller viewport than where the size was
+  // saved leaves boxWidthExtra/boxExtra oversized (CSS caps the render, but
+  // the next drag must first "eat" the hidden excess) https://github.com/supaclank/clank/pull/247#discussion_r3811697538
   let boxExtra = 0, boxWidthExtra = 0;
   try {
     const savedH = parseFloat(localStorage.getItem(BOX_EXTRA_STORAGE_KEY) || '0');
@@ -3696,12 +3699,9 @@ import {
   })();
 
   // ---------- resize (top edge = chat height, sides = width, corners = both) --
-  // Handlers live on the box, gated to the edge strips: a grab right
-  // on an edge lands on the box's own border pixels, which the strip
-  // divs can't cover (overflow:hidden clips at the padding box) — both
-  // must resize. Capture + stopPropagation keeps the header's
-  // move-drag from arming underneath a grip grab. Grips are compass
-  // strings ('n', 'w', 'e', 'nw', 'ne'): corners carry both axes.
+  // Handlers live on the box: an edge grab lands on its own border pixels,
+  // which the strip divs' overflow:hidden can't cover. Capture +
+  // stopPropagation keep the header's move-drag from arming underneath.
   (() => {
     // A grab over a child's vertical scrollbar (chat log, panels, a
     // maxed composer) must keep scrolling, not resize.

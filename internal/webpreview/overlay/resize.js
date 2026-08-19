@@ -1,11 +1,6 @@
-// resize.js — pure resize math for the preview overlay box. The top
-// edge (chat view only) sets the chat log's height — the box is
-// bottom-anchored, so it grows upward; the side edges (either view)
-// set the box width; the top corners (chat view) drag both axes at
-// once, OS-window style. The collapsed prompt view's height and the
-// composer keep their defaults — the composer only autosizes with
-// typed content. No DOM: overlay.js owns pointer events and styles,
-// so `node --test resize_test.mjs` covers the arithmetic directly.
+// resize.js — pure resize math for the preview overlay box (top edge =
+// chat height, sides = width, corners = both). No DOM, so `node --test
+// resize_test.mjs` covers the arithmetic directly.
 
 // BOX_EDGE_MARGIN (px) keeps a dragged box edge inside the viewport.
 export const BOX_EDGE_MARGIN = 8;
