@@ -77,6 +77,42 @@ func TestSpawnLogsConfiguredCommandBeforeChildOutput(t *testing.T) {
 	waitForLogs(t, r, want, 5*time.Second)
 }
 
+// TestSpawnSanitizesStartupLogCommand pins a bug where the startup banner
+// bypassed the ring's terminal-control sanitization once it moved outside
+// the ring (running.startupLine): an ANSI-colored configured command would
+// leak escape sequences into LogSnapshot() instead of being stripped like
+// any other captured output.
+func TestSpawnSanitizesStartupLogCommand(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	port, err := allocatePort()
+	if err != nil {
+		t.Fatalf("allocatePort: %v", err)
+	}
+	r, err := spawn(ctx, spawnRequest{
+		WorkDir: t.TempDir(),
+		Spec: Spec{
+			Kind:              KindWeb,
+			CmdTemplate:       []string{"sh", "-c", "sleep 30"},
+			StartupLogCommand: "\x1b[31mnpm run dev\x1b[0m",
+			ReadyProbe:        ReadyProbe{Path: "/"},
+		},
+		ServiceName: "web",
+		Port:        port,
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	t.Cleanup(func() { r.stopWithGrace(2 * time.Second) })
+
+	want := "$ npm run dev\n"
+	if got := string(r.LogSnapshot()); got != want {
+		t.Fatalf("LogSnapshot() = %q, want %q", got, want)
+	}
+}
+
 // TestSpawnAndOrphanCleanup is the regression test for Change 2 of the
 // plan: Setpgid + group SIGTERM/SIGKILL.
 //

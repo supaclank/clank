@@ -127,7 +127,8 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 	// can't evict the announcement once combined output exceeds ringCapacity.
 	var startupLine []byte
 	if req.Spec.StartupLogCommand != "" {
-		startupLine = []byte(fmt.Sprintf(startupLogCommandFormat, strings.TrimSpace(req.Spec.StartupLogCommand)))
+		line := fmt.Sprintf(startupLogCommandFormat, strings.TrimSpace(req.Spec.StartupLogCommand))
+		startupLine = sanitizeTerminalOutput([]byte(line))
 	}
 
 	if err := cmd.Start(); err != nil {

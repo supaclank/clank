@@ -199,8 +199,26 @@ func previewLogDelta(previous, current []byte) []byte {
 	if bytes.HasPrefix(current, previous) {
 		return current[len(previous):]
 	}
-	overlap := previewLogOverlap(previous, current)
+	// A stable prefix shared by both snapshots (e.g. a startup banner kept
+	// outside the host's eviction window) was already emitted in an earlier
+	// delta; exclude it before hunting for the ring's own sliding-window
+	// overlap, or it swallows the whole prefix on every remaining poll.
+	prefixLen := commonPrefixLen(previous, current)
+	overlap := prefixLen + previewLogOverlap(previous[prefixLen:], current[prefixLen:])
 	return current[overlap:]
+}
+
+// commonPrefixLen returns the length of the longest shared prefix of a and b.
+func commonPrefixLen(a, b []byte) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	i := 0
+	for i < n && a[i] == b[i] {
+		i++
+	}
+	return i
 }
 
 // previewLogOverlap returns the longest suffix of previous that is also a
