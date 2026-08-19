@@ -261,8 +261,10 @@ func (s *Server) Shutdown(ctx context.Context) {
 func newUpstreamProxy(target *url.URL, snippet func() []byte, lg *log.Logger) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
+			inboundHost := pr.In.Host
 			pr.SetURL(target)
 			pr.Out.Host = target.Host
+			rewriteBrowserOrigin(pr.Out, inboundHost, target)
 			// Ask for identity encoding so the HTML rewrite below never
 			// has to gunzip. Vite dev serves uncompressed anyway; this
 			// pins it for frameworks that don't.
