@@ -63,7 +63,7 @@ func namesHost(raw, host string) bool {
 		return false
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
+	if err != nil || !u.IsAbs() || u.Host == "" {
 		return false
 	}
 	return strings.EqualFold(u.Host, host)

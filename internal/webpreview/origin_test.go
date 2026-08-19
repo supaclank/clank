@@ -101,6 +101,18 @@ func TestRewriteBrowserOriginTranslatesOnlyTheInboundHost(t *testing.T) {
 			referer:     "/app/page",
 			wantReferer: "/app/page",
 		},
+		{
+			name:        "scheme-relative origin is not an absolute URL",
+			inboundHost: inbound,
+			origin:      "//preview-abc.supaclank.dev",
+			wantOrigin:  "//preview-abc.supaclank.dev",
+		},
+		{
+			name:        "scheme-relative referer is not an absolute URL",
+			inboundHost: inbound,
+			referer:     "//preview-abc.supaclank.dev/app/page",
+			wantReferer: "//preview-abc.supaclank.dev/app/page",
+		},
 	}
 
 	for _, tc := range tests {
