@@ -3,7 +3,13 @@
 // there (overlay.js re-clamps on every resize with this math).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clampTranslateToViewport, BOX_EDGE_MARGIN, parseStoredBoxIntent, resizeOwesClamp } from './boxpos.js';
+import {
+  BOX_EDGE_MARGIN,
+  clampTranslateToViewport,
+  followTranslateTarget,
+  parseStoredBoxIntent,
+  resizeOwesClamp,
+} from './boxpos.js';
 
 // Home geometry mirrors the .box CSS: left = max(16, 50vw - 190),
 // bottom-anchored 144px above the viewport floor.
@@ -94,4 +100,46 @@ test('resizeOwesClamp: hidden box or a bogus 0×0 viewport defers to next summon
   assert.equal(resizeOwesClamp({ innerWidth: 1400, innerHeight: 0, isHidden: false }), true);
   assert.equal(resizeOwesClamp({ innerWidth: 1400, innerHeight: 900, isHidden: true }), true);
   assert.equal(resizeOwesClamp({ innerWidth: 1400, innerHeight: 900, isHidden: false }), false);
+});
+
+// FOLLOW_POINTER_HEADER_INSET mirrors overlay.js's private constant: the
+// pointer lands 12px into the header from its top edge.
+const FOLLOW_POINTER_HEADER_INSET = 12;
+
+test('shift-follow lands the header under the pointer regardless of expand state', () => {
+  // Collapsed/expanded natural.top differ by the 240px the chat panel adds —
+  // that's the bottom-anchored box's own live geometry, not something this
+  // formula needs to correct for separately.
+  const pointer = { x: 720, y: 520 };
+  const viewport = { width: 1440, height: 1200 }; // tall enough that neither case clamps
+  const collapsedNatural = { left: 530, top: 596 };
+  const expandedNatural = { left: 530, top: 356 };
+  const collapsed = followTranslateTarget({
+    pointer,
+    natural: collapsedNatural,
+    size: { width: 380, height: 160 },
+    viewport,
+  });
+  const expanded = followTranslateTarget({
+    pointer,
+    natural: expandedNatural,
+    size: { width: 380, height: 400 },
+    viewport,
+  });
+
+  assert.equal(collapsedNatural.top + collapsed.y, pointer.y - FOLLOW_POINTER_HEADER_INSET);
+  assert.equal(expandedNatural.top + expanded.y, pointer.y - FOLLOW_POINTER_HEADER_INSET);
+});
+
+test('shift-follow clamps the header to the top margin near the viewport edge in expanded mode', () => {
+  const pointer = { x: 720, y: 5 }; // near the top of the viewport
+  const viewport = { width: 1440, height: 900 };
+  const natural = { left: 530, top: 356 };
+  const target = followTranslateTarget({
+    pointer,
+    natural,
+    size: { width: 380, height: 400 },
+    viewport,
+  });
+  assert.equal(natural.top + target.y, BOX_EDGE_MARGIN);
 });

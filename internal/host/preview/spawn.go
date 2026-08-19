@@ -18,6 +18,10 @@ import (
 // turning a runaway dev server into a memory leak.
 const ringCapacity = 64 * 1024
 
+// startupLogCommandFormat is the announcement line format for a
+// configured preview's startup command (see running.startupLine).
+const startupLogCommandFormat = "$ %s\n"
+
 // readyTimeout caps how long Manager.Start waits for the dev server to
 // pass its readiness probe. On a freshly-materialized worktree the spawn
 // command runs `bun install` FIRST (node_modules is gitignored, so it's
@@ -119,6 +123,14 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 	cmd.Stdout = logs
 	cmd.Stderr = logs
 
+	// Kept outside the ring (see running.startupLine) so a chatty child
+	// can't evict the announcement once combined output exceeds ringCapacity.
+	var startupLine []byte
+	if req.Spec.StartupLogCommand != "" {
+		line := fmt.Sprintf(startupLogCommandFormat, strings.TrimSpace(req.Spec.StartupLogCommand))
+		startupLine = sanitizeTerminalOutput([]byte(line))
+	}
+
 	if err := cmd.Start(); err != nil {
 		cancel()
 		return nil, fmt.Errorf("start %s: %w", args[0], err)
@@ -132,6 +144,7 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 		startedAt:   time.Now(),
 		lastTouch:   time.Now(),
 		logs:        logs,
+		startupLine: startupLine,
 		pid:         cmd.Process.Pid,
 		pgid:        cmd.Process.Pid, // Setpgid: true → pgid == pid
 		done:        make(chan struct{}),

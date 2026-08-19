@@ -412,7 +412,7 @@ func (m *Manager) LogTailNamed(worktreeID, serviceName string) []byte {
 	if !ok || r.logs == nil {
 		return nil
 	}
-	return r.logs.Snapshot()
+	return r.LogSnapshot()
 }
 
 // Shutdown stops every running server (and revokes its token) plus

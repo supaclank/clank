@@ -7,6 +7,7 @@
 // Air kept between the clamped box and every viewport edge (matches
 // the shift-follow margin).
 export const BOX_EDGE_MARGIN = 8;
+const FOLLOW_POINTER_HEADER_INSET = 12;
 
 // lo wins on conflict: when the viewport is too small for both edges,
 // the top-left edge stays visible — that's where the drag header is,
@@ -40,3 +41,23 @@ export const parseStoredBoxIntent = (raw) => {
 // and a backgrounded pane can report a bogus 0×0 viewport.
 export const resizeOwesClamp = ({ innerWidth, innerHeight, isHidden }) =>
   !innerWidth || !innerHeight || isHidden;
+
+// Returns the translate that places the prompt header under the pointer.
+// `natural` is a live getBoundingClientRect() read, so it already accounts
+// for the box's bottom-anchored height (expanded chat included).
+export const followTranslateTarget = ({ pointer, natural, size, viewport }) => {
+  const left = clampAxis(
+    pointer.x - size.width / 2,
+    BOX_EDGE_MARGIN,
+    viewport.width - size.width - BOX_EDGE_MARGIN,
+  );
+  const top = clampAxis(
+    pointer.y - FOLLOW_POINTER_HEADER_INSET,
+    BOX_EDGE_MARGIN,
+    viewport.height - size.height - BOX_EDGE_MARGIN,
+  );
+  return {
+    x: left - natural.left,
+    y: top - natural.top,
+  };
+};

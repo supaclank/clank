@@ -3,6 +3,7 @@
 package preview
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -44,6 +45,72 @@ func TestSpawnReachesReady(t *testing.T) {
 	t.Cleanup(func() { r.stopWithGrace(2 * time.Second) })
 
 	waitForState(t, r, StateReady, 5*time.Second)
+}
+
+func TestSpawnLogsConfiguredCommandBeforeChildOutput(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const configuredCommand = "npm ci && npm run dev"
+	port, err := allocatePort()
+	if err != nil {
+		t.Fatalf("allocatePort: %v", err)
+	}
+	r, err := spawn(ctx, spawnRequest{
+		WorkDir: t.TempDir(),
+		Spec: Spec{
+			Kind:              KindWeb,
+			CmdTemplate:       []string{"sh", "-c", "echo child-boot; sleep 30"},
+			StartupLogCommand: configuredCommand,
+			ReadyProbe:        ReadyProbe{Path: "/"},
+		},
+		ServiceName: "web",
+		Port:        port,
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	t.Cleanup(func() { r.stopWithGrace(2 * time.Second) })
+
+	want := "$ " + configuredCommand + "\nchild-boot\n"
+	waitForLogs(t, r, want, 5*time.Second)
+}
+
+// TestSpawnSanitizesStartupLogCommand pins a bug where the startup banner
+// bypassed the ring's terminal-control sanitization once it moved outside
+// the ring (running.startupLine): an ANSI-colored configured command would
+// leak escape sequences into LogSnapshot() instead of being stripped like
+// any other captured output.
+func TestSpawnSanitizesStartupLogCommand(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	port, err := allocatePort()
+	if err != nil {
+		t.Fatalf("allocatePort: %v", err)
+	}
+	r, err := spawn(ctx, spawnRequest{
+		WorkDir: t.TempDir(),
+		Spec: Spec{
+			Kind:              KindWeb,
+			CmdTemplate:       []string{"sh", "-c", "sleep 30"},
+			StartupLogCommand: "\x1b[31mnpm run dev\x1b[0m",
+			ReadyProbe:        ReadyProbe{Path: "/"},
+		},
+		ServiceName: "web",
+		Port:        port,
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	t.Cleanup(func() { r.stopWithGrace(2 * time.Second) })
+
+	want := "$ npm run dev\n"
+	if got := string(r.LogSnapshot()); got != want {
+		t.Fatalf("LogSnapshot() = %q, want %q", got, want)
+	}
 }
 
 // TestSpawnAndOrphanCleanup is the regression test for Change 2 of the
@@ -146,6 +213,67 @@ func TestSpawnReadinessTimeoutFails(t *testing.T) {
 	r.mu.Unlock()
 	if gotErr == "" {
 		t.Errorf("expected lastErr to be set on readiness timeout")
+	}
+}
+
+// waitForLogs polls r.LogSnapshot() until it equals want or the deadline
+// expires — the child writes its boot line asynchronously after Start.
+func waitForLogs(t *testing.T, r *running, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if got := string(r.LogSnapshot()); got == want {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("logs = %q, want %q", string(r.LogSnapshot()), want)
+}
+
+// TestSpawnStartupLineSurvivesRingEviction verifies that LogSnapshot
+// retains the startup command after child output evicts the ring buffer.
+func TestSpawnStartupLineSurvivesRingEviction(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const configuredCommand = "npm ci && npm run dev"
+	port, err := allocatePort()
+	if err != nil {
+		t.Fatalf("allocatePort: %v", err)
+	}
+	r, err := spawn(ctx, spawnRequest{
+		WorkDir: t.TempDir(),
+		Spec: Spec{
+			Kind: KindWeb,
+			// ~162 KiB of output against a 64 KiB ring, so the ring
+			// fills and wraps well past where the announcement would sit.
+			CmdTemplate: []string{"sh", "-c",
+				`i=0; while [ $i -lt 2000 ]; do printf '%080d\n' $i; i=$((i+1)); done; sleep 30`},
+			StartupLogCommand: configuredCommand,
+		},
+		ServiceName: "web",
+		Port:        port,
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	t.Cleanup(func() { r.stopWithGrace(2 * time.Second) })
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && len(r.logs.Snapshot()) < ringCapacity {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got := len(r.logs.Snapshot()); got != ringCapacity {
+		t.Fatalf("ring did not fill within the deadline: got %d bytes, want %d", got, ringCapacity)
+	}
+	if bytes.Contains(r.logs.Snapshot(), []byte(configuredCommand)) {
+		t.Fatalf("configured command still present in the raw ring; test no longer exercises eviction")
+	}
+
+	want := "$ " + configuredCommand + "\n"
+	if full := r.LogSnapshot(); !bytes.HasPrefix(full, []byte(want)) {
+		t.Fatalf("LogSnapshot() = %q…, want prefix %q", full[:min(len(full), 40)], want)
 	}
 }
 

@@ -60,6 +60,11 @@ func TestPreviewLogDelta(t *testing.T) {
 		{name: "unchanged", previous: "installing\n", current: "installing\n"},
 		{name: "ring wrapped", previous: "abcdef", current: "defghi", want: "ghi"},
 		{name: "ring advanced beyond overlap", previous: "abcdef", current: "uvwxyz", want: "uvwxyz"},
+		// Regression: a stable prefix (the startup banner, kept outside
+		// the host's eviction window) must not be re-emitted once the
+		// ring portion behind it wraps.
+		{name: "startup banner survives ring wraparound",
+			previous: "$ npm run dev\nabcdef", current: "$ npm run dev\ndefghi", want: "ghi"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

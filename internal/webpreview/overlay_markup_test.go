@@ -373,12 +373,20 @@ func TestOverlayAgentSettingsWiring(t *testing.T) {
 	js := string(overlayJS)
 	for _, want := range []string{
 		`<div class="settings"`,
+		`.settings { margin:4px 0 0; border-top:1px solid #e5e7eb; border-bottom:1px solid #e5e7eb;`,
 		`<div class="save-profile"`,
 		`class="profile"`,
 		"$('.settings')",
 		"$('.profile')",
 		"loadConfigOptions",
 		"saveProfile",
+		"const settingsTitle = node('div', 'settings-title')",
+		// TODO(ai-review): these assert source fragments, not that the
+		// spinner is gated on isLoading or the button on canSetDefault
+		// https://github.com/supaclank/clank/pull/265#discussion_r3812108030
+		"settingsTitle.append(node('span', 'activity-spinner visible'))",
+		"const makeDefault = node('button', 'settings-default', 'Make default')",
+		"header.append(makeDefault)",
 		"config: createConfig",
 		"config: pendingConfig",
 	} {
@@ -390,6 +398,15 @@ func TestOverlayAgentSettingsWiring(t *testing.T) {
     <button class="profile"`) || !strings.Contains(js, `</button>
     <button class="ib mic"`) {
 		t.Error("overlay.js profile selector must sit in the right action cluster immediately left of the microphone")
+	}
+	if strings.Contains(js, `.settings { margin:6px 12px; border:1px solid`) {
+		t.Error("overlay.js agent settings must be a full-width flat panel, not a nested card")
+	}
+	if strings.Contains(js, "Loading agent settings…") {
+		t.Error("overlay.js agent settings loading state must stay inline in the title instead of adding a layout-shifting row")
+	}
+	if strings.Contains(js, "if (canSaveAsNew || canSetDefault)") || strings.Contains(js, "'set-default'") {
+		t.Error("overlay.js must keep the default-profile action in the fixed-height settings header, not a conditional footer")
 	}
 }
 
