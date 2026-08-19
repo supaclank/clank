@@ -7,7 +7,9 @@
 // credentials beyond the injected config.
 //
 // Interaction model (mobile parity, hotkeys instead of shake):
-//   ⌘E / ⌃E        toggle the prompt box (shake analog)
+//   Clank button   open the prompt box from any browser
+//   ⌘E / ⌃E        toggle the prompt box where the browser permits it
+//   ⌘⇧E / ⌃⇧E      expand / collapse the conversation
 //   Caps Lock      tap: start dictation, tap again: stop & transcribe
 //                  (first use picks local vs Web Speech; ▾ by the mic switches)
 //   hold ⇧         the box glides to the cursor (spring), settles on release
@@ -28,18 +30,24 @@
 // thesis, the agent does the edit — this overlay only has to hand it
 // unambiguous context.
 import {
-  PLAN_TOOL, textFromParts, activeQuestionFromParts, chatFromMessages,
+  PLAN_TOOL, activeQuestionFromParts, chatFromMessages, upsertTranscriptPart,
+  createStreamPartTracker,
   questionSuppressesPermission, pushPermission, dropPermission,
   customAllowed, toggleSelection, buildAnswers, collectPlanParts, planTextFor,
   buildPreviewContext, composerTextForSend,
   previewGitRef, initialSessionId,
 } from './chat.js';
+import { createTranscriptRenderer } from './transcript.js';
 import {
   resolvePreset, applyPresetOverrides, configRows, setConfigOverride,
   diffConfigAgainstOptions, effectiveSessionConfig, mergeSessionConfig, profileLabel,
   profileMatchingConfig, liveChipLabel, liveSettingsBadge, profileSavePayload,
 } from './settings.js';
 import { clampTranslateToViewport, parseStoredBoxIntent, resizeOwesClamp } from './boxpos.js';
+import {
+  LAUNCHER_SEEN_PATH, launcherActivity, launcherMorphGeometry, launcherShortcut,
+  shouldShowLauncherCoachmark,
+} from './launcher.js';
 import {
   scRequest, presentStatus, actionsFor, actionLayout, headerPRFor,
   prConflictWarnFor, chipFor, diffstatParts,
@@ -133,8 +141,8 @@ import {
     crop: false, // screenshot crop layer is up
     chips: [], // [{label, detail, html?, text?, comment?, range?, node?}] — comment = inline comment pinned to the anchor; node dedupes ⌘-selected elements
     images: [], // staged image attachments [{dataURL, mime, filename, label, w, h}]
-    msgs: [], // [{role, text}]
-    streamText: '', // in-flight assistant text
+    msgs: [], // ordered text, thinking, and merged tool transcript rows
+    expandedTranscript: new Set(), // ids of open thinking/tool detail cards
     perms: [], // pending permission queue [{request_id, tool, description, tool_use_id?}] — head renders
     // Active question card [QST-001]: prompt fields + per-question UI
     // selection state. null when no question awaits an answer.
@@ -147,6 +155,7 @@ import {
     enginePick: false, // engine picker panel open
     sending: false,
     aborting: false,
+    launcherCoachmark: shouldShowLauncherCoachmark(CFG.launcher_seen),
     profiles: [], // host-persisted built-in + user agent profiles
     profilesLoaded: false,
     profilesLoading: false,
@@ -200,6 +209,8 @@ import {
   if (CFG.session_id) sessionStorage.setItem('clank.cfgSessionId', CFG.session_id);
   if (store.sessionId) sessionStorage.setItem('clank.sessionId', store.sessionId);
   let doneTimer = 0;
+  let localMessageID = 0;
+  const streamPartTracker = createStreamPartTracker();
 
   const setAgent = (s) => {
     clearTimeout(doneTimer);
@@ -893,7 +904,7 @@ import {
       } else {
         await createSession(prompt, []);
       }
-      store.msgs.push({ role: 'user', text: prompt });
+      store.msgs.push({ kind: 'text', id: `local-${++localMessageID}`, role: 'user', text: prompt });
       setAgent('thinking');
       store.scOpen = false;
       store.scView = 'status';
@@ -1232,9 +1243,8 @@ import {
     // decodes them daemon-side, so no upload service is needed here.
     const attachments = store.images.map((s) => ({ mime: s.mime, filename: s.filename, source: s.dataURL }));
     store.sending = true;
-    store.msgs.push({ role: 'user', text });
+    store.msgs.push({ kind: 'text', id: `local-${++localMessageID}`, role: 'user', text });
     store.question = null; // a user message after the tagged part retires it [QST-002]
-    store.streamText = '';
     setComposer('');
     store.chips = [];
     store.images = [];
@@ -1464,14 +1474,16 @@ import {
     try { d = JSON.parse(datas.join('\n')).data || {}; } catch { return; }
     switch (ev) {
       case 'status': {
+        streamPartTracker.boundary(); // a status transition ends any open id-less stream
         const s = d.new_status;
-        if (s === 'idle') { store.streamText && store.msgs.push({ role: 'assistant', text: store.streamText }); store.streamText = ''; setAgent('done'); }
+        if (s === 'idle') setAgent('done');
         else if (s === 'error' || s === 'dead') setAgent('error');
         else if (s === 'busy' && store.agent === 'idle') setAgent('thinking');
         break;
       }
       case 'part': {
-        const p = d.part || {};
+        const p = streamPartTracker.resolve(d.part || {}, !!d.is_delta);
+        store.msgs = upsertTranscriptPart(store.msgs, p, 'assistant', !!d.is_delta, CHAT_CAP);
         if (p.type === 'tool_call') {
           setAgent('working');
           store.planParts = collectPlanParts(store.planParts, [p]);
@@ -1486,20 +1498,19 @@ import {
         }
         if (p.type === 'text' && p.text) {
           if (store.question && p.id !== store.question.partId) store.question = null; // moved on [QST-002]
-          if (d.is_delta) store.streamText += p.text;
-          else store.streamText = p.text;
-          render();
         }
+        if (p.type === 'thinking' && store.agent === 'idle') setAgent('thinking'); // setAgent renders
+        else if (p.type !== 'tool_call') render(); // tool_call already rendered above
         break;
       }
       case 'message': {
+        if (d.role === 'assistant') streamPartTracker.boundary(); // the assistant shell settles the open id-less stream
         if (d.role === 'user') {
-          if (d.id) store.lastUserMsgId = d.id;
+          const hasUserText = (d.parts || []).some((p) => p.type === 'text' && p.text) || !!d.content;
+          if (d.id && hasUserText) store.lastUserMsgId = d.id; // skip tool-result-only carriers, matching chatFromMessages [DATA-022]
           store.question = null; // e.g. a bypass answer sent from another client [QST-002]
         }
         if (d.role === 'assistant') {
-          const text = textFromParts(d.parts);
-          if (text) { store.msgs.push({ role: 'assistant', text }); store.streamText = ''; }
           store.planParts = collectPlanParts(store.planParts, d.parts);
           // The settled message is authoritative for its own parts: a
           // trailing tag (re)activates the card; a question part that is
@@ -1508,7 +1519,20 @@ import {
           if (q) applyQuestion(q);
           else if (store.question && (d.parts || []).some((p) => p.id === store.question.partId)) store.question = null;
         }
-        if (store.msgs.length > CHAT_CAP) store.msgs.splice(0, store.msgs.length - CHAT_CAP);
+        // TODO(ai-review): also drops another connected client's user text, not just the local echo. https://github.com/supaclank/clank/pull/263#discussion_r3808254509
+        for (const [partIndex, rawPart] of (d.parts || []).entries()) {
+          if (d.role === 'user' && rawPart.type !== 'tool_result') continue;
+          const part = rawPart.id ? rawPart : {
+            ...rawPart,
+            id: `${d.id || 'message'}:${rawPart.type}:${partIndex}`,
+          };
+          store.msgs = upsertTranscriptPart(store.msgs, part, d.role, false, CHAT_CAP);
+        }
+        if (d.role === 'assistant' && d.content && !(d.parts || []).some((p) => p.type === 'text')) {
+          store.msgs = upsertTranscriptPart(store.msgs, {
+            id: `${d.id || 'message'}:content`, type: 'text', text: d.content,
+          }, 'assistant', false, CHAT_CAP);
+        }
         render();
         break;
       }
@@ -1850,6 +1874,8 @@ import {
     // opening) centered on the viewBox so a rotation spins in place
     // (the ↻ text glyph orbits — its ink isn't box-centered)
     refresh: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>',
+    // TODO(ai-review): icon uses a fixed gradient fill, so [data-state="done"/"error"] color rules don't recolor it. https://github.com/supaclank/clank/pull/263#discussion_r3807751159
+    launcher: '<svg width="27" height="27" viewBox="2.5 2.5 19 19" fill="none" aria-hidden="true"><defs><linearGradient id="clank-mark" x1="2.5" y1="2.5" x2="21.5" y2="21.5"><stop stop-color="#ff315f"/><stop offset="1" stop-color="#ff4f83"/></linearGradient></defs><rect class="launcher-mark-field" x="4.75" y="4.75" width="14.5" height="14.5" fill="url(#clank-mark)" opacity=".48"/><rect class="launcher-mark-dash" x="8" y="4.25" width="3.5" height="1" fill="url(#clank-mark)"/><rect class="launcher-mark-dash" x="12.5" y="4.25" width="3.5" height="1" fill="url(#clank-mark)"/><rect class="launcher-mark-dash" x="8" y="18.75" width="3.5" height="1" fill="url(#clank-mark)"/><rect class="launcher-mark-dash" x="12.5" y="18.75" width="3.5" height="1" fill="url(#clank-mark)"/><rect class="launcher-mark-dash" x="4.25" y="8" width="1" height="3.5" fill="url(#clank-mark)"/><rect class="launcher-mark-dash" x="4.25" y="12.5" width="1" height="3.5" fill="url(#clank-mark)"/><rect class="launcher-mark-dash" x="18.75" y="8" width="1" height="3.5" fill="url(#clank-mark)"/><rect class="launcher-mark-dash" x="18.75" y="12.5" width="1" height="3.5" fill="url(#clank-mark)"/><rect class="launcher-mark-corner" x="2.5" y="2.5" width="4.5" height="4.5" fill="url(#clank-mark)"/><rect class="launcher-mark-corner" x="17" y="2.5" width="4.5" height="4.5" fill="url(#clank-mark)"/><rect class="launcher-mark-corner" x="17" y="17" width="4.5" height="4.5" fill="url(#clank-mark)"/><rect class="launcher-mark-corner" x="2.5" y="17" width="4.5" height="4.5" fill="url(#clank-mark)"/></svg>',
   };
 
   const host = document.createElement('div');
@@ -1879,17 +1905,49 @@ import {
     transform-origin: 50% 100%;
   }
   .box.visible { display: block; animation: boxIn 300ms cubic-bezier(0.26, 1.15, 0.44, 1); }
+  /* .morphed persists after the launcher morph settles so boxIn doesn't
+     replay (it would flash the box invisible right after the morph). */
+  .box.morphing, .box.morphed { animation: none; }
   .box:focus { outline: none; } /* focus ANCHOR (tabindex=-1), not a tab stop — no ring */
   /* buttons show a ring on KEYBOARD focus only (:focus-visible) — the
      Tab rotation must be visible; the composer's caret speaks for itself */
   .box button:focus-visible { outline: 2px solid #3b82f6; outline-offset: 2px; }
   @keyframes boxIn { from { opacity: 0; transform: translateY(30px) scale(0.96); } }
   @media (prefers-reduced-motion: reduce) { .box.visible { animation: none; } }
-  .box.thinking { border-color: #f59e0b; animation: pulse 1.6s ease-in-out infinite; }
-  .box.working  { border-color: #3b82f6; }
+  .box.thinking { border-color: #f59e0b; box-shadow:0 0 0 3px #f59e0b33, 0 12px 40px rgba(0,0,0,.18); }
+  .box.working  { border-color: #FA5573; box-shadow:0 0 0 3px rgba(250,85,115,.24), 0 12px 40px rgba(0,0,0,.18); }
   .box.done     { border-color: #22c55e; }
   .box.error    { border-color: #ef4444; }
-  @keyframes pulse { 50% { border-color: #f59e0b44; } }
+  .launcher-wrap { position:fixed; right:16px; bottom:16px; display:flex; align-items:flex-end;
+    gap:10px; pointer-events:none; }
+  .launcher { all:unset; position:relative; width:46px; height:46px; border-radius:15px; display:none;
+    align-items:center; justify-content:center; color:#FA5573; background:rgba(24,24,27,.94);
+    border:1px solid rgba(255,255,255,.16); box-shadow:0 10px 30px rgba(0,0,0,.28);
+    backdrop-filter:blur(12px); cursor:pointer; pointer-events:auto; }
+  .launcher.visible { display:inline-flex; animation:launcherIn 240ms cubic-bezier(.2,.9,.3,1.15); }
+  .launcher:hover { transform:translateY(-1px); background:#18181b; }
+  .launcher:focus-visible { outline:3px solid #FA557366; outline-offset:3px; }
+  .launcher.busy::before { content:''; position:absolute; inset:-5px; border:2px solid #FA5573;
+    border-radius:19px; animation:launcherPulse 1.2s ease-in-out infinite; }
+  .launcher[data-state="done"] { border-color:#22c55e; box-shadow:0 0 0 2px #22c55e33, 0 10px 30px rgba(0,0,0,.28); }
+  .launcher[data-state="error"] { color:#ef4444; }
+  .launcher .activity-spinner { position:absolute; right:-3px; top:-3px; background:#18181b; }
+  @keyframes launcherIn { from { opacity:0; transform:translateY(10px) scale(.86); } }
+  @keyframes launcherPulse { 50% { opacity:.25; transform:scale(1.08); } }
+  .coachmark { display:none; width:220px; padding:10px 12px; color:#f4f4f5; background:rgba(24,24,27,.96);
+    border:1px solid rgba(255,255,255,.14); border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.28);
+    pointer-events:auto; backdrop-filter:blur(12px); }
+  .coachmark.visible { display:block; animation:coachIn 280ms ease-out; }
+  .coachmark strong { display:block; font-size:12px; margin-bottom:3px; }
+  .coachmark span { display:block; font-size:11px; line-height:1.4; color:#d4d4d8; }
+  .coachmark kbd { color:#f4f4f5; background:#ffffff12; border-color:#ffffff24; }
+  .coach-dismiss { all:unset; float:right; margin:-4px -4px 0 6px; padding:3px; color:#a1a1aa;
+    cursor:pointer; font-size:14px; line-height:1; }
+  @keyframes coachIn { from { opacity:0; transform:translateX(8px); } }
+  @media (prefers-reduced-motion: reduce) {
+    .launcher.visible, .coachmark.visible, .launcher.busy::before, .activity-spinner,
+    .tool-state.running, .tool-state.pending { animation:none; }
+  }
   .hd { display:flex; align-items:center; gap:8px; padding:10px 12px 6px; cursor:grab; user-select:none; }
   .hd:active { cursor:grabbing; }
   .dot { width:8px; height:8px; border-radius:50%; background:#6b7280; flex:none; }
@@ -1907,6 +1965,11 @@ import {
   .beta:hover { background:rgba(250,85,115,.22); }
   .grip { color:#9ca3af; display:flex; align-items:center; }
   .grip svg { display:block; pointer-events:none; }
+  .chat-toggle { all:unset; display:inline-flex; align-items:center; gap:4px; cursor:pointer; color:#6b7280;
+    padding:3px 6px; border-radius:7px; font-size:10px; font-weight:600; }
+  .chat-toggle:hover { background:#0000000b; color:#374151; }
+  .chat-toggle svg { transition:transform .18s ease; pointer-events:none; }
+  .chat-toggle[aria-expanded="true"] svg { transform:rotate(180deg); }
   /* source-control chip: same pill recipe as .beta, tone-tinted by
      remote state; sits immediately left of the beta pill */
   .scchip { all:unset; display:inline-flex; align-items:center; gap:4px; font-size:10px; font-weight:600;
@@ -2033,10 +2096,49 @@ import {
   .chip img { width:18px; height:18px; object-fit:cover; border-radius:4px; }
   .chat { max-height:240px; overflow-y:auto; padding:4px 12px 8px; display:none; }
   .box.expanded .chat { display:block; border-bottom:1px solid #e5e7eb; }
-  .m { font-size:12.5px; line-height:1.45; margin:6px 0; white-space:pre-wrap; word-break:break-word; }
+  .m { font-size:12.5px; line-height:1.45; margin:8px 0; word-break:break-word; }
   .m.user { color:#2563eb; }
   .m.assistant { color:#374151; }
   .m .who { font-size:10px; text-transform:uppercase; letter-spacing:.6px; color:#9ca3af; display:block; }
+  .m.user .body { white-space:pre-wrap; }
+  .md > :first-child { margin-top:2px; }
+  .md > :last-child { margin-bottom:0; }
+  .md p, .md blockquote, .md ul, .md ol, .md pre { margin:5px 0; }
+  .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin:8px 0 4px; line-height:1.25; font-size:13px; }
+  .md ul, .md ol { padding-left:19px; }
+  .md blockquote { padding-left:8px; border-left:2px solid #d1d5db; color:#6b7280; white-space:pre-wrap; }
+  .md pre { max-height:180px; overflow:auto; padding:7px 8px; border-radius:8px; background:#111827; color:#e5e7eb;
+    white-space:pre; font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .md code { padding:1px 4px; border-radius:4px; background:#0000000a; font:11px ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .md pre code { padding:0; background:none; color:inherit; }
+  .md a { color:#2563eb; text-decoration:underline; }
+  .transcript-card { margin:7px 0; border:1px solid #e5e7eb; border-radius:9px; background:#00000005; overflow:hidden; }
+  .transcript-card > button { all:unset; box-sizing:border-box; width:100%; display:flex; align-items:center; gap:7px;
+    padding:6px 8px; cursor:pointer; color:#4b5563; font-size:11.5px; }
+  .transcript-card > button:hover { background:#00000008; }
+  .transcript-card .card-icon { width:14px; text-align:center; color:#9ca3af; flex:none; }
+  .transcript-card .card-name { font-weight:600; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .thinking-card .card-name { font-family:inherit; }
+  .transcript-card .card-summary { flex:1; min-width:0; color:#9ca3af; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .transcript-card .card-chevron { display:flex; transition:transform .18s ease; }
+  .transcript-card.open .card-chevron { transform:rotate(180deg); }
+  .tool-state { width:7px; height:7px; border-radius:50%; background:#9ca3af; flex:none; }
+  .tool-state.running, .tool-state.pending { border:1.5px solid #FA557344; border-top-color:#FA5573; background:none;
+    animation:activitySpin .75s linear infinite; }
+  .tool-state.completed { background:#22c55e; }
+  .tool-state.error, .tool-state.canceled { background:#ef4444; }
+  .card-details { padding:0 8px 8px; border-top:1px solid #e5e7eb; }
+  .card-details .md { padding-top:5px; }
+  .tool-section b { display:block; margin:7px 0 3px; color:#9ca3af; font-size:9px; text-transform:uppercase; letter-spacing:.5px; }
+  .tool-section pre { max-height:150px; overflow:auto; margin:0; padding:6px 7px; border-radius:7px; background:#111827;
+    color:#e5e7eb; white-space:pre-wrap; word-break:break-word; font:10.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .agent-progress { display:none; align-items:center; gap:8px; margin:5px 12px 7px; padding:7px 9px;
+    border-radius:9px; color:#6b7280; background:#00000008; font-size:11.5px; font-weight:600; }
+  .agent-progress.visible { display:flex; }
+  .activity-spinner { display:none; width:14px; height:14px; flex:none; border-radius:50%;
+    border:2px solid #FA557344; border-top-color:#FA5573; animation:activitySpin .75s linear infinite; }
+  .activity-spinner.visible { display:inline-block; }
+  @keyframes activitySpin { to { transform:rotate(360deg); } }
   .perm { margin:6px 12px; padding:8px 10px; border:1px solid #f59e0b66; background:#f59e0b14; border-radius:10px; font-size:12px; }
   .perm .t { font-weight:600; margin-bottom:2px; }
   .perm .d { color:#6b7280; margin-bottom:6px; word-break:break-word; }
@@ -2202,8 +2304,9 @@ import {
   .crop-x0 { position:absolute; top:12px; right:16px; }
 </style>
 <div class="box" part="box" tabindex="-1">
-  <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><button class="scchip muted" style="display:none" title="source control" tabindex="-1">${ICONS.branch}<span class="sctext"></span></button><a class="beta" href="https://github.com/supaclank/clank/issues/new?template=bug_report.yml" target="_blank" rel="noopener noreferrer" title="click to report an issue" tabindex="-1">beta</a><span class="grip">${ICONS.grip}</span></div>
+  <div class="hd"><span class="dot"></span><span class="name"></span><span class="st"></span><button class="scchip muted" style="display:none" title="source control" tabindex="-1">${ICONS.branch}<span class="sctext"></span></button><a class="beta" href="https://github.com/supaclank/clank/issues/new?template=bug_report.yml" target="_blank" rel="noopener noreferrer" title="click to report an issue" tabindex="-1">beta</a><button class="chat-toggle" aria-label="Show conversation" aria-expanded="false" title="Show conversation (Cmd+Shift+E)"><span>Chat</span>${ICONS.chevron}</button><span class="grip">${ICONS.grip}</span></div>
   <div class="chat"></div>
+  <div class="agent-progress"><span class="activity-spinner" aria-hidden="true"></span><span class="agent-progress-text"></span></div>
   <div class="perm" style="display:none">
     <div class="t"></div><div class="d"></div>
     <pre class="plan" style="display:none"></pre>
@@ -2232,7 +2335,11 @@ import {
     <button class="ib send" title="Send (Enter)">${ICONS.send}</button>
   </div>
   <input type="file" class="file" multiple style="display:none">
-  <div class="hint"><span><kbd>⇪ caps</kbd> talk</span><span><kbd>⇧</kbd> move</span><span><kbd>⌘</kbd> select</span><span><kbd>⌘E</kbd> toggle</span></div>
+  <div class="hint"><span><kbd>⇪ caps</kbd> talk</span><span><kbd>⇧</kbd> move</span><span><kbd>⌘</kbd> select</span><span><kbd class="toggle-key">⌘E</kbd> toggle</span></div>
+</div>
+<div class="launcher-wrap">
+  <div class="coachmark" role="status"><button class="coach-dismiss" aria-label="Dismiss Clank introduction">×</button><strong>Clank is ready</strong><span>Click the Clank button anytime. You can also press <kbd class="coach-shortcut">⌘E</kbd> where available.</span></div>
+  <button class="launcher" aria-label="Open Clank" title="Open Clank">${ICONS.launcher}<span class="activity-spinner" aria-hidden="true"></span></button>
 </div>
 <div class="save-profile">
   <div class="save-card" role="dialog" aria-modal="true" aria-labelledby="clank-save-profile-title">
@@ -2254,6 +2361,11 @@ import {
   const $ = (sel) => root.querySelector(sel);
   const ui = {
     box: $('.box'), name: $('.name'), st: $('.st'), chips: $('.chips'), chat: $('.chat'),
+    chatToggle: $('.chat-toggle'), chatToggleLabel: $('.chat-toggle span'),
+    launcher: $('.launcher'), launcherSpinner: $('.launcher .activity-spinner'),
+    coachmark: $('.coachmark'), coachDismiss: $('.coach-dismiss'), coachShortcut: $('.coach-shortcut'),
+    progress: $('.agent-progress'), progressSpinner: $('.agent-progress .activity-spinner'),
+    progressText: $('.agent-progress-text'), toggleKey: $('.toggle-key'),
     perm: $('.perm'), permT: $('.perm .t'), permD: $('.perm .d'),
     plan: $('.perm .plan'), notes: $('.perm .notes'),
     permAllow: $('.perm .allow'), permDeny: $('.perm .deny'), ques: $('.ques'),
@@ -2585,12 +2697,51 @@ import {
     if (nextProfiles) nextProfiles.scrollLeft = profilesScrollLeft;
   };
 
+  const toggleTranscriptCard = (id) => {
+    if (store.expandedTranscript.has(id)) store.expandedTranscript.delete(id);
+    else store.expandedTranscript.add(id);
+    // render() rebuilds every row from scratch (fresh <button>s, scrolled to
+    // bottom); restore focus and scroll position so toggling a card doesn't
+    // drop keyboard focus or hide the card the user just expanded.
+    const focusedRowId = root.activeElement && root.activeElement.closest('[data-row-id]')?.dataset.rowId;
+    const scrollTop = ui.chat.scrollTop;
+    render();
+    ui.chat.scrollTop = scrollTop;
+    if (focusedRowId) ui.chat.querySelector(`[data-row-id="${CSS.escape(focusedRowId)}"] > button`)?.focus();
+  };
+  const renderTranscriptRow = createTranscriptRenderer({
+    icons: ICONS,
+    isExpanded: (id) => store.expandedTranscript.has(id),
+    onToggle: toggleTranscriptCard,
+  });
+
   const STATUS_TEXT = { idle: '', thinking: 'thinking…', working: 'working…', done: 'done', error: 'error' };
   const render = () => {
+    const activity = launcherActivity(store.agent, store.aborting);
+    const busy = activity.isBusy; // keeps Stop visible through 'stopping', not just 'thinking'/'working'
     ui.box.classList.toggle('visible', store.box !== 'hidden');
     ui.box.classList.toggle('expanded', store.box === 'chat');
+    const chatExpanded = store.box === 'chat';
+    ui.chatToggle.setAttribute('aria-expanded', String(chatExpanded));
+    ui.chatToggle.setAttribute('aria-label', chatExpanded ? 'Hide conversation' : 'Show conversation');
+    ui.chatToggle.title = `${chatExpanded ? 'Hide' : 'Show'} conversation (${IS_MAC ? '⌘⇧E' : 'Ctrl+Shift+E'})`;
+    ui.chatToggleLabel.textContent = chatExpanded ? 'Collapse' : 'Chat';
     for (const s of ['thinking', 'working', 'done', 'error']) ui.box.classList.toggle(s, store.agent === s);
     ui.st.textContent = store.aborting ? 'stopping…' : STATUS_TEXT[store.agent] || '';
+    ui.launcher.classList.toggle('visible', store.box === 'hidden');
+    ui.launcher.classList.toggle('busy', activity.isBusy);
+    ui.launcher.dataset.state = activity.state;
+    ui.launcher.setAttribute('aria-label', activity.label);
+    ui.launcher.title = activity.label;
+    ui.launcherSpinner.classList.toggle('visible', activity.isBusy);
+    ui.coachmark.classList.toggle('visible', store.box === 'hidden' && store.launcherCoachmark);
+    ui.progress.classList.toggle('visible', busy);
+    ui.progressSpinner.classList.toggle('visible', busy);
+    ui.progressText.textContent = store.aborting ? 'Stopping the agent…' :
+      store.agent === 'working' ? 'Agent is working…' : 'Agent is thinking…';
+    const shortcut = launcherShortcut(IS_MAC);
+    ui.toggleKey.textContent = shortcut;
+    ui.coachShortcut.textContent = shortcut;
 
     // Removing a hovered chip node doesn't fire mouseleave, so the cue
     // would otherwise outlive the chip it points at.
@@ -2636,16 +2787,8 @@ import {
     });
 
     const frag = document.createDocumentFragment();
-    const rows = [...store.msgs];
-    if (store.streamText) rows.push({ role: 'assistant', text: store.streamText });
-    rows.slice(-8).forEach((m) => {
-      const el = document.createElement('div');
-      el.className = 'm ' + m.role;
-      const who = document.createElement('span');
-      who.className = 'who';
-      who.textContent = m.role === 'user' ? 'you' : 'clank';
-      el.append(who, document.createTextNode(m.text));
-      frag.appendChild(el);
+    store.msgs.slice(-12).forEach((row) => {
+      frag.append(renderTranscriptRow(row));
     });
     ui.chat.replaceChildren(frag);
     ui.chat.scrollTop = ui.chat.scrollHeight;
@@ -2699,16 +2842,29 @@ import {
     ui.engpick.style.display = store.enginePick ? '' : 'none';
     ui.engOpts.forEach((b) => b.classList.toggle('cur', b.dataset.eng === store.engine));
 
-    const busy = store.agent === 'thinking' || store.agent === 'working';
     ui.send.classList.toggle('stop', busy);
     ui.send.innerHTML = busy ? ICONS.stop : ICONS.send;
     ui.send.title = busy ? 'Stop the agent' : 'Send (Enter)';
   };
 
   // ---------- box visibility (mobile shake state machine, hotkey-driven) --
+  const acknowledgeLauncher = () => {
+    if (!store.launcherCoachmark) return;
+    fetch(LAUNCHER_SEEN_PATH, {
+      method: 'POST',
+      headers: TOKEN ? { Authorization: 'Bearer ' + TOKEN } : {},
+    }).then((res) => {
+      if (!res.ok) throw new Error('launcher acknowledgement: ' + res.status);
+      store.launcherCoachmark = false; // only clear once persisted, so a failed save retries next open
+      render(); // the fetch settles after any synchronous render() the caller already ran
+    }).catch((err) => toast('could not save the Clank introduction: ' + err.message));
+  };
+
   const setBox = (s) => {
+    if (s !== 'hidden') acknowledgeLauncher();
     store.box = s;
     if (s === 'hidden') {
+      ui.box.classList.remove('morphed'); // next open (e.g. hotkey) should play boxIn normally
       exitInspect();
       enginePickPending = false;
       store.enginePick = false;
@@ -2717,6 +2873,9 @@ import {
       store.saveProfileOpen = false;
       store.saveProfileName = '';
       if (store.scOpen) closeSourceControl();
+      // Symmetric with the focus-into-box below: keyboard users must still
+      // reach the persistent entry point once the box disappears.
+      setTimeout(() => ui.launcher.focus({ preventScroll: true }), 0);
     } else if (!scLoadedOnce) {
       // First summon primes the source-control chip; on-demand only —
       // the remote status costs a host-side fetch (never polled).
@@ -2731,6 +2890,47 @@ import {
     // buttons, then onward into the page — sequential navigation
     // always continues from the focused element.
     if (s !== 'hidden') setTimeout(() => ui.box.focus({ preventScroll: true }), 0);
+  };
+
+  const toggleChat = () => {
+    if (store.box === 'hidden') setBox('chat');
+    else {
+      store.box = store.box === 'chat' ? 'prompt' : 'chat';
+      render();
+    }
+  };
+
+  const animateLauncherIntoBox = (launcherRect) => {
+    const finish = () => ui.box.classList.replace('morphing', 'morphed');
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      finish();
+      return;
+    }
+    const morph = launcherMorphGeometry(launcherRect, ui.box.getBoundingClientRect());
+    const animation = ui.box.animate([
+      {
+        transformOrigin: '50% 50%',
+        transform: `translate(${morph.x}px, ${morph.y}px) scale(${morph.scaleX}, ${morph.scaleY})`,
+        borderRadius: '15px',
+        background: 'rgba(24,24,27,.94)',
+        opacity: .96,
+      },
+      {
+        transformOrigin: '50% 50%',
+        transform: 'translate(0, 0) scale(1, 1)',
+        borderRadius: '18px',
+        background: 'rgba(255,255,255,.92)',
+        opacity: 1,
+      },
+    ], { duration: 420, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'none' });
+    animation.finished.then(finish, finish);
+  };
+
+  const openFromLauncher = () => {
+    const launcherRect = ui.launcher.getBoundingClientRect();
+    ui.box.classList.add('morphing');
+    setBox('prompt');
+    animateLauncherIntoBox(launcherRect);
   };
 
   // ---------- inspector -----------------------------------------------------
@@ -3399,7 +3599,7 @@ import {
       clampIntoViewport();
     });
     hd.addEventListener('pointerdown', (e) => {
-      if (e.target.closest('.beta, .scchip')) return; // the pills are controls, not drag handles
+      if (e.target.closest('.beta, .scchip, .chat-toggle')) return; // controls are not drag handles
       endFollow(); // manual drag wins over a live shift-follow
       dragging = true;
       sx = e.clientX; sy = e.clientY;
@@ -3418,8 +3618,7 @@ import {
       // No position intent was expressed — a clamped applied offset
       // must not overwrite the remembered one.
       if (Math.abs(e.clientX - sx) + Math.abs(e.clientY - sy) < 4) {
-        store.box = store.box === 'chat' ? 'prompt' : 'chat';
-        render();
+        toggleChat();
         return;
       }
       commitBoxIntent();
@@ -3432,7 +3631,10 @@ import {
   })();
 
   // ---------- wiring -----------------------------------------------------------
-  ui.send.onclick = () => { (store.agent === 'thinking' || store.agent === 'working') ? abort() : send(); };
+  ui.launcher.onclick = openFromLauncher;
+  ui.chatToggle.onclick = (e) => { e.stopPropagation(); toggleChat(); };
+  ui.coachDismiss.onclick = () => { acknowledgeLauncher(); render(); };
+  ui.send.onclick = () => { launcherActivity(store.agent, store.aborting).isBusy ? abort() : send(); };
   ui.profile.onclick = () => (store.settingsOpen ? closeSettings() : openSettings());
   ui.saveProfileCancel.onclick = closeSaveProfile;
   ui.saveProfileConfirm.onclick = saveProfile;
@@ -3634,7 +3836,7 @@ import {
   };
   window.addEventListener('blur', endFollow); // ⇧-keyup can be lost to a cmd-tab
 
-  // Keybindings: ⌘E/⌃E toggles the box · ⇪ taps dictation on/off ·
+  // Keybindings: ⌘E/⌃E toggles the box · ⌘⇧E/⌃⇧E toggles chat · ⇪ taps dictation on/off ·
   // hold ⇧ = box follows the cursor · hold ⌘/⌃ = momentary element-
   // select · Esc leaves inspect / hides.
   const realTarget = (e) => (e.composedPath ? e.composedPath()[0] : e.target);
@@ -3678,6 +3880,13 @@ import {
       return; // never preventDefault a bare modifier — shortcuts must keep working
     }
     cancelModHold(); // some other key while the modifier was held: it's a shortcut
+
+    if (e.code === 'KeyE' && (e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!e.repeat) toggleChat();
+      return;
+    }
 
     if (e.code === 'KeyE' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
       e.preventDefault(); // ⌘E is the browser's "use selection for find" — expendable

@@ -26,10 +26,11 @@ func TestPreferences_RoundTrip(t *testing.T) {
 				ProviderID: "anthropic",
 			},
 		},
-		ColorScheme:         "tokyo-night",
-		DefaultBackend:      "claude-code",
-		AllowedHarnesses:    map[string]bool{"claude-code": true},
-		WebPreviewDictation: "webspeech",
+		ColorScheme:            "tokyo-night",
+		DefaultBackend:         "claude-code",
+		AllowedHarnesses:       map[string]bool{"claude-code": true},
+		WebPreviewDictation:    "webspeech",
+		WebPreviewLauncherSeen: true,
 	}
 	if err := SavePreferences(want); err != nil {
 		t.Fatalf("SavePreferences: %v", err)
@@ -51,6 +52,9 @@ func TestPreferences_RoundTrip(t *testing.T) {
 	}
 	if got.WebPreviewDictation != want.WebPreviewDictation {
 		t.Errorf("WebPreviewDictation: got %q, want %q", got.WebPreviewDictation, want.WebPreviewDictation)
+	}
+	if got.WebPreviewLauncherSeen != want.WebPreviewLauncherSeen {
+		t.Errorf("WebPreviewLauncherSeen: got %t, want %t", got.WebPreviewLauncherSeen, want.WebPreviewLauncherSeen)
 	}
 	if got.ModelFor("claude-code") != want.Models["claude-code"] {
 		t.Errorf("Models[claude-code]: got %+v, want %+v", got.ModelFor("claude-code"), want.Models["claude-code"])

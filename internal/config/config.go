@@ -155,6 +155,10 @@ type Preferences struct {
 	// validated at the boundary via webpreview.ParseDictationEngine.
 	WebPreviewDictation string `json:"web_preview_dictation,omitempty"`
 
+	// WebPreviewLauncherSeen records that the browser overlay's launcher
+	// coachmark has been acknowledged on this machine.
+	WebPreviewLauncherSeen bool `json:"web_preview_launcher_seen,omitempty"`
+
 	// SidebarWidthRatio is the sidebar width as a percentage of the terminal
 	// width, adjusted with +/- in the TUI. Zero means "use the built-in
 	// default" (defaultSidebarWidthRatio).

@@ -7,6 +7,7 @@ import {
   activeQuestionFromParts, chatFromMessages, questionSuppressesPermission,
   pushPermission, dropPermission, customAllowed, toggleSelection,
   buildAnswers, collectPlanParts, planTextFor, textFromParts,
+  upsertTranscriptPart, toolSummary, createStreamPartTracker,
   buildPreviewContext, composerTextForSend,
   previewGitRef, initialSessionId,
   COMMENTS_DEFAULT_PROMPT,
@@ -68,7 +69,11 @@ test('chatFromMessages: transcript, revert target, trailing question', () => {
     { id: 'u1', role: 'user', content: 'do the thing' },
     { id: 'a1', role: 'assistant', parts: [{ id: 't', type: 'text', text: 'which way?' }, qPart('p1', 'q-p1')] },
   ], 30);
-  assert.deepEqual(c.msgs, [{ role: 'user', text: 'do the thing' }, { role: 'assistant', text: 'which way?' }]);
+  assert.deepEqual(c.msgs, [
+    { kind: 'text', id: 'u1:content', role: 'user', text: 'do the thing' },
+    { kind: 'text', id: 't', role: 'assistant', text: 'which way?' },
+    { kind: 'tool', id: 'p1', tool: 'AskUserQuestion', status: 'completed', input: undefined, output: undefined },
+  ]);
   assert.equal(c.lastUserMsgId, 'u1');
   assert.equal(c.question.partId, 'p1');
 });
@@ -87,6 +92,108 @@ test('chatFromMessages: caps the transcript window', () => {
   assert.equal(c.msgs.length, 30);
   assert.equal(c.msgs[0].text, 'm10');
   assert.equal(c.lastUserMsgId, 'u39');
+});
+
+test('chatFromMessages: merges a cross-message tool result and drops its user carrier', () => {
+  const c = chatFromMessages([
+    { id: 'u1', role: 'user', content: 'list files' },
+    { id: 'a1', role: 'assistant', parts: [
+      { id: 'tool-1', type: 'tool_call', tool: 'Bash', status: 'running', input: { command: 'ls' } },
+    ] },
+    { id: 'carrier', role: 'user', parts: [
+      { id: 'tool-1', type: 'tool_result', status: 'completed', output: 'a.txt\nb.txt' },
+    ] },
+  ], 30);
+  assert.deepEqual(c.msgs, [
+    { kind: 'text', id: 'u1:content', role: 'user', text: 'list files' },
+    {
+      kind: 'tool', id: 'tool-1', tool: 'Bash', status: 'completed',
+      input: { command: 'ls' }, output: 'a.txt\nb.txt',
+    },
+  ]);
+  assert.equal(c.lastUserMsgId, 'u1');
+});
+
+test('chatFromMessages: keeps thinking in transcript order', () => {
+  const c = chatFromMessages([{ id: 'a1', role: 'assistant', parts: [
+    { id: 'r1', type: 'thinking', text: 'checking constraints' },
+    { id: 't1', type: 'text', text: '**Done.**' },
+  ] }], 30);
+  assert.deepEqual(c.msgs, [
+    { kind: 'thinking', id: 'r1', text: 'checking constraints' },
+    { kind: 'text', id: 't1', role: 'assistant', text: '**Done.**' },
+  ]);
+});
+
+test('upsertTranscriptPart: deltas append and tool updates merge monotonically', () => {
+  let rows = upsertTranscriptPart([], { id: 't1', type: 'text', text: 'hel' }, 'assistant', false, 30);
+  rows = upsertTranscriptPart(rows, { id: 't1', type: 'text', text: 'lo' }, 'assistant', true, 30);
+  rows = upsertTranscriptPart(rows, {
+    id: 'x', type: 'tool_call', tool: 'Read', status: 'running', input: { path: 'a.md' },
+  }, 'assistant', false, 30);
+  rows = upsertTranscriptPart(rows, {
+    id: 'x', type: 'tool_result', status: 'completed', output: 'contents',
+  }, 'user', false, 30);
+  rows = upsertTranscriptPart(rows, {
+    id: 'x', type: 'tool_call', tool: '', status: 'running',
+  }, 'assistant', false, 30);
+  assert.deepEqual(rows, [
+    { kind: 'text', id: 't1', role: 'assistant', text: 'hello' },
+    { kind: 'tool', id: 'x', tool: 'Read', status: 'completed', input: { path: 'a.md' }, output: 'contents' },
+  ]);
+});
+
+test('upsertTranscriptPart: a stale shorter snapshot does not shrink streamed text', () => {
+  let rows = upsertTranscriptPart([], { id: 't1', type: 'text', text: 'complete' }, 'assistant', false, 30);
+  rows = upsertTranscriptPart(rows, { id: 't1', type: 'text', text: 'comp' }, 'assistant', false, 30);
+  assert.equal(rows[0].text, 'complete');
+});
+
+test('createStreamPartTracker: consecutive id-less deltas of the same type share one id', () => {
+  const tracker = createStreamPartTracker();
+  const first = tracker.resolve({ type: 'text', text: 'a' }, true);
+  const second = tracker.resolve({ type: 'text', text: 'ab' }, true);
+  assert.equal(first.id, second.id);
+});
+
+test('createStreamPartTracker: a part carrying its own id passes through unchanged', () => {
+  const tracker = createStreamPartTracker();
+  const part = { id: 'p1', type: 'text', text: 'a' };
+  assert.equal(tracker.resolve(part, true), part);
+});
+
+test('createStreamPartTracker: a non-delta chunk settles the run', () => {
+  const tracker = createStreamPartTracker();
+  const first = tracker.resolve({ type: 'text', text: 'a' }, true);
+  tracker.resolve({ type: 'text', text: 'ab' }, false); // settles
+  const next = tracker.resolve({ type: 'text', text: 'c' }, true); // new turn
+  assert.notEqual(first.id, next.id);
+});
+
+test('createStreamPartTracker: boundary() starts a fresh id even mid-run (status/message events)', () => {
+  const tracker = createStreamPartTracker();
+  const first = tracker.resolve({ type: 'text', text: 'a' }, true); // never settles via a non-delta chunk
+  tracker.boundary();
+  const second = tracker.resolve({ type: 'text', text: 'b' }, true);
+  assert.notEqual(first.id, second.id);
+});
+
+test('createStreamPartTracker: an explicit-id part interrupting an id-less run does not let a later id-less delta reuse the stale id', () => {
+  const tracker = createStreamPartTracker();
+  const first = tracker.resolve({ type: 'text', text: 'a' }, true); // opens an id-less 'text' run
+  tracker.resolve({ id: 'tool1', type: 'tool_call', tool: 'Read' }, false); // explicit-id part interrupts
+  const second = tracker.resolve({ type: 'text', text: 'b' }, true); // a new id-less run should start fresh
+  assert.notEqual(first.id, second.id);
+});
+
+test('toolSummary prefers paths, commands, then descriptions', () => {
+  assert.equal(toolSummary({ input: { filePath: 'src/app.js' } }), 'src/app.js');
+  assert.equal(toolSummary({ input: { command: 'go test ./...' } }), 'go test ./...');
+  assert.equal(toolSummary({ input: { description: 'Inspect app state' } }), 'Inspect app state');
+  assert.equal(toolSummary({}), '');
+  // when multiple keys are present, filePath wins over command wins over description
+  assert.equal(toolSummary({ input: { filePath: 'src/app.js', command: 'go test ./...', description: 'Inspect app state' } }), 'src/app.js');
+  assert.equal(toolSummary({ input: { command: 'go test ./...', description: 'Inspect app state' } }), 'go test ./...');
 });
 
 test('question suppresses its gating permission by request id and tool_use id (QST-003)', () => {

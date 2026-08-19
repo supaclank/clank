@@ -33,23 +33,120 @@ export const activeQuestionFromParts = (parts) => {
   return null;
 };
 
-// chatFromMessages projects a Messages() refetch into overlay chat
-// state: rolling transcript, last user message id (revert target), the
-// pending question (only a trailing assistant message can carry one),
-// and any plan texts for ExitPlanMode permission prompts.
+const TOOL_STATUS_RANK = { pending: 0, running: 1, completed: 2, error: 2, canceled: 2 };
+
+const advancedToolStatus = (current, incoming) => {
+  if (!incoming) return current || 'pending';
+  if (!current) return incoming;
+  return (TOOL_STATUS_RANK[incoming] ?? 0) >= (TOOL_STATUS_RANK[current] ?? 0) ? incoming : current;
+};
+
+const capped = (rows, cap) => rows.length > cap ? rows.slice(-cap) : rows;
+
+// upsertTranscriptPart applies one live or settled part to the flat transcript.
+// Tool calls/results merge by id across message roles; text/thinking honor delta
+// vs snapshot semantics. The returned array never mutates the caller's state.
+export const upsertTranscriptPart = (rows, part, role, isDelta, cap) => {
+  if (!part || !part.type) return rows;
+  const id = part.id || '';
+  if (part.type === 'text' || part.type === 'thinking') {
+    if (!part.text) return rows;
+    const kind = part.type === 'text' ? 'text' : 'thinking';
+    const idx = id ? rows.findIndex((row) => row.kind === kind && row.id === id) : -1;
+    const prior = idx >= 0 ? rows[idx] : null;
+    const incomingText = isDelta && prior ? prior.text + part.text : part.text;
+    const text = prior && !isDelta && incomingText.length < prior.text.length ? prior.text : incomingText;
+    const next = kind === 'text'
+      ? { kind, id, role, text }
+      : { kind, id, text };
+    if (idx < 0) return capped(rows.concat(next), cap);
+    const out = rows.slice();
+    out[idx] = next;
+    return out;
+  }
+  if (part.type !== 'tool_call' && part.type !== 'tool_result') return rows;
+  const idx = id ? rows.findIndex((row) => row.kind === 'tool' && row.id === id) : -1;
+  const prior = idx >= 0 ? rows[idx] : null;
+  const next = {
+    kind: 'tool',
+    id,
+    tool: part.tool || (prior && prior.tool) || 'tool',
+    status: advancedToolStatus(prior && prior.status, part.status),
+    input: part.input !== undefined ? part.input : prior ? prior.input : undefined,
+    output: part.output !== undefined ? part.output : prior ? prior.output : undefined,
+  };
+  if (idx < 0) return capped(rows.concat(next), cap);
+  const out = rows.slice();
+  out[idx] = next;
+  return out;
+};
+
+// createStreamPartTracker synthesizes a stable id for a run of id-less
+// streaming parts of the same type, so consecutive delta chunks merge into
+// one row instead of each becoming its own [upsertTranscriptPart]. Call
+// boundary() on any status or message event that settles the turn, so a
+// later id-less stream starts a fresh id instead of reusing a stale one
+// left open by a turn that never sent a final non-delta chunk.
+export const createStreamPartTracker = () => {
+  let seq = 0;
+  let open = { type: null, id: '' };
+  return {
+    resolve(rawPart, isDelta) {
+      if (rawPart.id) {
+        open = { type: null, id: '' }; // an explicit-id part interrupts any open id-less run
+        return rawPart;
+      }
+      if (open.type !== rawPart.type) open = { type: rawPart.type, id: `stream:${rawPart.type}:${++seq}` };
+      const p = { ...rawPart, id: open.id };
+      if (!isDelta) open = { type: null, id: '' };
+      return p;
+    },
+    boundary() { open = { type: null, id: '' }; },
+  };
+};
+
+export const toolSummary = (tool) => {
+  const input = tool && tool.input;
+  if (input && typeof input === 'object') {
+    for (const key of ['filePath', 'file_path', 'path', 'file', 'command', 'description']) {
+      if (typeof input[key] === 'string') return input[key];
+    }
+  }
+  return tool && typeof tool.text === 'string' ? tool.text.slice(0, 100) : '';
+};
+
+// chatFromMessages projects a Messages() refetch into ordered transcript rows.
+// A user-role tool-result carrier contributes no user bubble: its result merges
+// into the earlier assistant tool card by part id [DATA-022].
+// TODO(ai-review): O(n^2) on reconnect (each part folds through an O(n) upsertTranscriptPart) — needs an ID-indexed merge for long-lived sessions. https://github.com/supaclank/clank/pull/263#discussion_r3808254503
 export const chatFromMessages = (messages, cap) => {
-  const msgs = [];
+  let msgs = [];
   let lastUserMsgId = '';
   let planParts = [];
-  for (const m of messages || []) {
-    const text = textFromParts(m.parts) || m.content || '';
-    if (text) msgs.push({ role: m.role, text });
-    if (m.role === 'user' && m.id) lastUserMsgId = m.id;
-    planParts = collectPlanParts(planParts, m.parts);
+  for (const [messageIndex, m] of (messages || []).entries()) {
+    const parts = m.parts || [];
+    let hasTextPart = false;
+    for (const [partIndex, rawPart] of parts.entries()) {
+      if (rawPart.type === 'text' && rawPart.text) hasTextPart = true;
+      if (!['text', 'thinking', 'tool_call', 'tool_result'].includes(rawPart.type)) continue;
+      const part = rawPart.id ? rawPart : {
+        ...rawPart,
+        id: `${m.id || `message-${messageIndex}`}:${rawPart.type}:${partIndex}`,
+      };
+      msgs = upsertTranscriptPart(msgs, part, m.role, false, Number.MAX_SAFE_INTEGER);
+    }
+    const fallbackText = !hasTextPart && m.content ? m.content : '';
+    if (fallbackText) {
+      msgs = upsertTranscriptPart(msgs, {
+        id: `${m.id || `message-${messageIndex}`}:content`, type: 'text', text: fallbackText,
+      }, m.role, false, Number.MAX_SAFE_INTEGER);
+    }
+    if (m.role === 'user' && m.id && (hasTextPart || fallbackText)) lastUserMsgId = m.id;
+    planParts = collectPlanParts(planParts, parts);
   }
   const last = (messages || [])[(messages || []).length - 1];
   const question = last && last.role === 'assistant' ? activeQuestionFromParts(last.parts) : null;
-  return { msgs: msgs.slice(-cap), lastUserMsgId, question, planParts };
+  return { msgs: capped(msgs, cap), lastUserMsgId, question, planParts };
 };
 
 // questionSuppressesPermission reports whether a permission prompt is

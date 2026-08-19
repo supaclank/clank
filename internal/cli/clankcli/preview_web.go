@@ -68,6 +68,8 @@ func runWebPreview(sigCtx context.Context, p webPreviewParams) error {
 		Engine:                 engine,
 		DictationEngine:        loadDictationPreference(),
 		PersistDictationEngine: persistDictationPreference,
+		LauncherSeen:           loadLauncherSeenPreference(),
+		PersistLauncherSeen:    persistLauncherSeenPreference,
 		ListenPort:             p.ListenPort,
 		OverlayConfig:          overlayConfig,
 	})
@@ -120,6 +122,21 @@ func loadDictationPreference() webpreview.DictationEngine {
 func persistDictationPreference(engine webpreview.DictationEngine) error {
 	return config.UpdatePreferences(func(p *config.Preferences) {
 		p.WebPreviewDictation = string(engine)
+	})
+}
+
+func loadLauncherSeenPreference() bool {
+	prefs, err := config.LoadPreferences()
+	if err != nil {
+		fmt.Println(styleWarn.Render("launcher introduction reset (couldn't read preferences): " + err.Error()))
+		return false
+	}
+	return prefs.WebPreviewLauncherSeen
+}
+
+func persistLauncherSeenPreference() error {
+	return config.UpdatePreferences(func(p *config.Preferences) {
+		p.WebPreviewLauncherSeen = true
 	})
 }
 
