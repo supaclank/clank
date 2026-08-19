@@ -194,12 +194,8 @@ func waitForLogs(t *testing.T, r *running, want string, timeout time.Duration) {
 	t.Fatalf("logs = %q, want %q", string(r.LogSnapshot()), want)
 }
 
-// TestSpawnStartupLineSurvivesRingEviction pins the fix for a chatty
-// child evicting the startup announcement: the ring only ever holds
-// ringCapacity bytes, so once the child's own output wraps the ring the
-// announcement — previously written first, into the ring itself — would
-// be the first thing discarded unless it's kept outside the ring
-// (running.startupLine, surfaced via LogSnapshot).
+// TestSpawnStartupLineSurvivesRingEviction verifies that LogSnapshot
+// retains the startup command after child output evicts the ring buffer.
 func TestSpawnStartupLineSurvivesRingEviction(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())

@@ -4,6 +4,7 @@ import {
   resolvePreset, applyPresetOverrides, configRows, setConfigOverride,
   diffConfigAgainstOptions, effectiveSessionConfig, mergeSessionConfig, profileLabel,
   profileMatchingConfig, liveChipLabel, liveSettingsBadge, profileSavePayload,
+  canSetDefaultProfile,
 } from './settings.js';
 
 test('resolvePreset: exact pick, then builtin Build, without accepting another backend', () => {
@@ -29,6 +30,18 @@ test('profile config: overrides stay normalized and label becomes Custom', () =>
   overrides = setConfigOverride(preset, overrides, 'effort', 'default');
   assert.deepEqual(overrides, {});
   assert.equal(profileLabel(preset, overrides), 'Build');
+});
+
+test('canSetDefaultProfile: false for live sessions, custom overrides, the current default, and a "+ New" draft', () => {
+  const preset = { id: 'mine', name: 'Careful', config: { mode: 'plan' } };
+  const otherDefault = { id: 'builtin-default-claude-code' };
+  assert.equal(canSetDefaultProfile(preset, otherDefault, { live: false, custom: false, draft: false }), true);
+  assert.equal(canSetDefaultProfile(preset, otherDefault, { live: true, custom: false, draft: false }), false);
+  assert.equal(canSetDefaultProfile(preset, otherDefault, { live: false, custom: true, draft: false }), false);
+  assert.equal(canSetDefaultProfile(preset, preset, { live: false, custom: false, draft: false }), false);
+  // "+ New" leaves `preset` pointing at the previously selected profile —
+  // without the draft check this would offer to save it as default.
+  assert.equal(canSetDefaultProfile(preset, otherDefault, { live: false, custom: false, draft: true }), false);
 });
 
 test('configRows: agent order, effective provenance, and preset-only keys', () => {

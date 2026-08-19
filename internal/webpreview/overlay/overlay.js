@@ -42,6 +42,7 @@ import {
   resolvePreset, applyPresetOverrides, configRows, setConfigOverride,
   diffConfigAgainstOptions, effectiveSessionConfig, mergeSessionConfig, profileLabel,
   profileMatchingConfig, liveChipLabel, liveSettingsBadge, profileSavePayload,
+  canSetDefaultProfile,
 } from './settings.js';
 import {
   clampTranslateToViewport, followTranslateTarget, parseStoredBoxIntent, resizeOwesClamp,
@@ -2617,8 +2618,8 @@ import {
       ? liveSettingsBadge(store.pendingConfig, liveMatch, store.profileDraft)
       : (store.profileDraft ? 'Draft' : profileLabel(preset, store.profileOverrides));
     const resolvedDefault = resolvePreset(store.profiles, CFG.backend, store.defaultProfileID);
-    const canSetDefault = !live && !custom && preset &&
-      (!resolvedDefault || preset.id !== resolvedDefault.id);
+    const canSetDefault = canSetDefaultProfile(preset, resolvedDefault,
+      { live, custom, draft: store.profileDraft });
     const node = (tag, cls, text) => {
       const n = document.createElement(tag);
       n.className = cls;

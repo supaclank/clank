@@ -40,6 +40,15 @@ export const profileLabel = (preset, overrides) => {
     : preset.name;
 };
 
+// canSetDefaultProfile: the header's "Make default" action is only valid
+// for a persisted, non-custom, non-default profile pick — never a live
+// session (no single profile to save) or an unsaved "+ New" draft (its
+// `preset` still resolves to the previously selected profile, which
+// "Make default" would silently save instead of the draft).
+export const canSetDefaultProfile = (preset, resolvedDefault, { live, custom, draft }) =>
+  !live && !custom && !draft && !!preset &&
+  (!resolvedDefault || preset.id !== resolvedDefault.id);
+
 // configRows merges live agent options with the selected profile. Agent
 // order wins; profile-only keys remain visible so nothing being sent is
 // hidden just because an adapter stopped advertising it.
