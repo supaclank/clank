@@ -2244,6 +2244,9 @@ import {
   .settings-default { all:unset; cursor:pointer; color:#2563eb; font-size:10.5px; font-weight:600;
     white-space:nowrap; padding:3px 5px; border-radius:7px; }
   .settings-default:hover { background:#3b82f614; }
+  .settings-default:focus-visible, .settings-done:focus-visible {
+    outline:2px solid #2563eb; outline-offset:2px;
+  }
   .settings-done { all:unset; cursor:pointer; color:#2563eb; font-weight:600; padding:3px 2px; }
   .profiles { display:flex; gap:7px; padding:9px 12px; overflow-x:auto; }
   .profile-card { all:unset; cursor:pointer; flex:none; min-width:66px; border:1px solid #e5e7eb;

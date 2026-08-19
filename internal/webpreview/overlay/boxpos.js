@@ -43,9 +43,8 @@ export const resizeOwesClamp = ({ innerWidth, innerHeight, isHidden }) =>
   !innerWidth || !innerHeight || isHidden;
 
 // Returns the translate that places the prompt header under the pointer.
-// `natural` is measured live via getBoundingClientRect, so it already
-// reflects the box's current height — expanded chat included, since the
-// box is bottom-anchored and grows upward — no extra offset needed here.
+// `natural` is a live getBoundingClientRect() read, so it already accounts
+// for the box's bottom-anchored height (expanded chat included).
 export const followTranslateTarget = ({ pointer, natural, size, viewport }) => {
   const left = clampAxis(
     pointer.x - size.width / 2,

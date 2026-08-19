@@ -107,11 +107,9 @@ test('resizeOwesClamp: hidden box or a bogus 0×0 viewport defers to next summon
 const FOLLOW_POINTER_HEADER_INSET = 12;
 
 test('shift-follow lands the header under the pointer regardless of expand state', () => {
-  // natural.top is a live getBoundingClientRect() read, so it already
-  // reflects the box's current height — bottom-anchored, it grows upward as
-  // the chat panel expands. Collapsed and expanded natural tops here differ
-  // by exactly the 240px the chat panel adds; the formula needs no separate
-  // correction for that.
+  // Collapsed/expanded natural.top differ by the 240px the chat panel adds —
+  // that's the bottom-anchored box's own live geometry, not something this
+  // formula needs to correct for separately.
   const pointer = { x: 720, y: 520 };
   const viewport = { width: 1440, height: 1200 }; // tall enough that neither case clamps
   const collapsedNatural = { left: 530, top: 596 };

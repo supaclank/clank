@@ -381,6 +381,9 @@ func TestOverlayAgentSettingsWiring(t *testing.T) {
 		"loadConfigOptions",
 		"saveProfile",
 		"const settingsTitle = node('div', 'settings-title')",
+		// TODO(ai-review): these assert source fragments, not that the
+		// spinner is gated on isLoading or the button on canSetDefault
+		// https://github.com/supaclank/clank/pull/265#discussion_r3812108030
 		"settingsTitle.append(node('span', 'activity-spinner visible'))",
 		"const makeDefault = node('button', 'settings-default', 'Make default')",
 		"header.append(makeDefault)",
