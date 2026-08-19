@@ -15,6 +15,24 @@ import (
 	"github.com/supaclank/clank/internal/launchconfig"
 )
 
+func TestWritePreviewSetupNoticeMentionsHostedWorktree(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	writePreviewSetupNotice(&out, true)
+	if !strings.Contains(out.String(), "on the hosted worktree") {
+		t.Errorf("hosted notice missing location: %q", out.String())
+	}
+}
+
+func TestWritePreviewSetupNoticeOmitsHostedWorktreeLocally(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	writePreviewSetupNotice(&out, false)
+	if strings.Contains(out.String(), "on the hosted worktree") {
+		t.Errorf("local notice mentions hosted worktree: %q", out.String())
+	}
+}
+
 func TestCreatePreviewSetupSessionUsesProjectConfigPrompt(t *testing.T) {
 	t.Setenv("CLANK_DIR", t.TempDir())
 	client, stub := newTestHost(t)
@@ -73,7 +91,10 @@ func TestRunPreviewSetupCompletesInlineWithProjectConfig(t *testing.T) {
 		t.Fatalf("resolved source = %+v", resolved.Launch.Source)
 	}
 	for _, required := range []string{
-		"\nOne-time setup: generating .clank/launch.yaml with your connected agent…\n\n",
+		"\nOne-time setup: configuring the web preview with your connected agent…\n",
+		"create .clank/launch.yaml",
+		"may update the frontend's development-server config",
+		"is instructed not to change production behavior",
 		"Preview configuration generated",
 	} {
 		if !strings.Contains(out.String(), required) {
