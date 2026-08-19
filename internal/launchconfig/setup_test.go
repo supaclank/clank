@@ -104,7 +104,7 @@ func TestSetupTaskPromptIncludesProjectTargetAndContract(t *testing.T) {
 		"preserve and merge any existing allowlist entries",
 		"framework development-server configuration",
 		"Do not change application runtime code",
-		"one-line summary of why each file changed",
+		"End with every path written and a\none-line summary of why each file changed",
 		"optional env map",
 		"Claude allocates a port",
 		"Clank does not rewrite command arguments",
