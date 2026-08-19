@@ -317,10 +317,71 @@ func TestPreviewProxy_InjectsBrowserOverlayIntoHTML(t *testing.T) {
 		`window.__CLANK_PREVIEW`,
 		`src="/__clank/overlay.js"`,
 		`"worktree_id":"wt"`,
+		`"launcher_seen":false`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("injected HTML missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestPreviewProxy_PersistsLauncherSeenAcrossPreviewSubdomains(t *testing.T) {
+	t.Parallel()
+	f := newPreviewProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, "<!doctype html><html><body>preview</body></html>")
+	}))
+	firstRoute := f.seed(t, "alice", tokens.VisibilityPublic)
+	secondRoute := f.seed(t, "bob", tokens.VisibilityPublic)
+
+	acknowledge, err := http.NewRequest(http.MethodPost, f.srv.URL+webpreview.LauncherSeenPath, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	acknowledge.Host = tokens.HostFor(firstRoute.Token, f.root)
+	acknowledged, err := http.DefaultClient.Do(acknowledge)
+	if err != nil {
+		t.Fatalf("acknowledge launcher: %v", err)
+	}
+	defer acknowledged.Body.Close()
+	if acknowledged.StatusCode != http.StatusNoContent {
+		t.Fatalf("acknowledge status = %d, want 204", acknowledged.StatusCode)
+	}
+
+	var seenCookie *http.Cookie
+	for _, cookie := range acknowledged.Cookies() {
+		if cookie.Name == previewLauncherSeenCookieName {
+			seenCookie = cookie
+			break
+		}
+	}
+	if seenCookie == nil {
+		t.Fatalf("response cookies = %v, want %s", acknowledged.Cookies(), previewLauncherSeenCookieName)
+	}
+	if seenCookie.Domain != f.root {
+		t.Errorf("cookie Domain = %q, want %q", seenCookie.Domain, f.root)
+	}
+	if !seenCookie.HttpOnly {
+		t.Error("launcher cookie is not HttpOnly")
+	}
+	if seenCookie.SameSite != http.SameSiteStrictMode {
+		t.Errorf("cookie SameSite = %v, want Strict", seenCookie.SameSite)
+	}
+
+	page, err := http.NewRequest(http.MethodGet, f.srv.URL+"/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	page.Host = tokens.HostFor(secondRoute.Token, f.root)
+	page.AddCookie(&http.Cookie{Name: seenCookie.Name, Value: seenCookie.Value})
+	resp, err := http.DefaultClient.Do(page)
+	if err != nil {
+		t.Fatalf("load second preview: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `"launcher_seen":true`) {
+		t.Errorf("second preview did not receive persisted launcher state:\n%s", body)
 	}
 }
 
