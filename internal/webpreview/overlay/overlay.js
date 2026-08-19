@@ -2237,10 +2237,13 @@ import {
   .settings-h { position:sticky; top:0; z-index:1; display:flex; align-items:center; gap:8px;
     padding:10px 12px 8px; background:rgba(255,255,255,.96); border-bottom:1px solid #e5e7eb; }
   .settings-title { flex:1; min-width:0; display:flex; align-items:center; gap:7px; }
-  .settings-title b { font-size:13px; }
+  .settings-title b { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
   .settings-title .activity-spinner { width:12px; height:12px; border-width:1.5px; }
   .settings-badge { color:#2563eb; background:#3b82f614; border-radius:999px; padding:2px 7px; }
   .settings-badge.custom { color:#b45309; background:#f59e0b14; }
+  .settings-default { all:unset; cursor:pointer; color:#2563eb; font-size:10.5px; font-weight:600;
+    white-space:nowrap; padding:3px 5px; border-radius:7px; }
+  .settings-default:hover { background:#3b82f614; }
   .settings-done { all:unset; cursor:pointer; color:#2563eb; font-weight:600; padding:3px 2px; }
   .profiles { display:flex; gap:7px; padding:9px 12px; overflow-x:auto; }
   .profile-card { all:unset; cursor:pointer; flex:none; min-width:66px; border:1px solid #e5e7eb;
@@ -2271,8 +2274,6 @@ import {
   .settings-state { color:#6b7280; padding:9px 12px; border-top:1px solid #e5e7eb; }
   .settings-state.err { color:#dc2626; }
   .settings-actions { display:flex; justify-content:flex-end; gap:7px; padding:4px 12px 9px; }
-  .set-default { all:unset; cursor:pointer; color:#2563eb; font-weight:600; border:1px solid #e5e7eb;
-    border-radius:9px; padding:6px 10px; }
   .save-new { all:unset; cursor:pointer; color:#fff; background:#111827; font-weight:600;
     border-radius:9px; padding:6px 10px; }
   .profile { all:unset; cursor:pointer; height:30px; max-width:125px; padding:0 7px; border-radius:9px;
@@ -2613,6 +2614,8 @@ import {
       ? liveSettingsBadge(store.pendingConfig, liveMatch, store.profileDraft)
       : (store.profileDraft ? 'Draft' : profileLabel(preset, store.profileOverrides));
     const resolvedDefault = resolvePreset(store.profiles, CFG.backend, store.defaultProfileID);
+    const canSetDefault = !live && !custom && preset &&
+      (!resolvedDefault || preset.id !== resolvedDefault.id);
     const node = (tag, cls, text) => {
       const n = document.createElement(tag);
       n.className = cls;
@@ -2627,6 +2630,19 @@ import {
     if (isLoading) settingsTitle.append(node('span', 'activity-spinner visible'));
     header.append(settingsTitle);
     if (badgeText) header.append(node('span', 'settings-badge' + (custom || live ? ' custom' : ''), badgeText));
+    if (canSetDefault) {
+      const makeDefault = node('button', 'settings-default', 'Make default');
+      makeDefault.onclick = () => {
+        try {
+          writeDefaultProfileID(CFG.backend, preset.id);
+          store.defaultProfileID = preset.id;
+          render();
+        } catch (err) {
+          toast('could not save the default profile: ' + err.message);
+        }
+      };
+      header.append(makeDefault);
+    }
     const done = node('button', 'settings-done', 'Done');
     done.onclick = closeSettings;
     header.append(done);
@@ -2741,28 +2757,11 @@ import {
     const canSaveAsNew = store.profileDraft || (live
       ? Object.keys(store.pendingConfig).length > 0 && !liveMatch
       : custom);
-    const canSetDefault = !live && !custom && preset &&
-      (!resolvedDefault || preset.id !== resolvedDefault.id);
-    if (canSaveAsNew || canSetDefault) {
+    if (canSaveAsNew) {
       const actions = node('div', 'settings-actions');
-      if (canSetDefault) {
-        const makeDefault = node('button', 'set-default', 'Set as default');
-        makeDefault.onclick = () => {
-          try {
-            writeDefaultProfileID(CFG.backend, preset.id);
-            store.defaultProfileID = preset.id;
-            render();
-          } catch (err) {
-            toast('could not save the default profile: ' + err.message);
-          }
-        };
-        actions.append(makeDefault);
-      }
-      if (canSaveAsNew) {
-        const saveNew = node('button', 'save-new', 'Save as new profile');
-        saveNew.onclick = openSaveProfile;
-        actions.append(saveNew);
-      }
+      const saveNew = node('button', 'save-new', 'Save as new profile');
+      saveNew.onclick = openSaveProfile;
+      actions.append(saveNew);
       frag.append(actions);
     }
     ui.settings.replaceChildren(frag);

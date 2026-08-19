@@ -382,6 +382,8 @@ func TestOverlayAgentSettingsWiring(t *testing.T) {
 		"saveProfile",
 		"const settingsTitle = node('div', 'settings-title')",
 		"settingsTitle.append(node('span', 'activity-spinner visible'))",
+		"const makeDefault = node('button', 'settings-default', 'Make default')",
+		"header.append(makeDefault)",
 		"config: createConfig",
 		"config: pendingConfig",
 	} {
@@ -399,6 +401,9 @@ func TestOverlayAgentSettingsWiring(t *testing.T) {
 	}
 	if strings.Contains(js, "Loading agent settings…") {
 		t.Error("overlay.js agent settings loading state must stay inline in the title instead of adding a layout-shifting row")
+	}
+	if strings.Contains(js, "if (canSaveAsNew || canSetDefault)") || strings.Contains(js, "'set-default'") {
+		t.Error("overlay.js must keep the default-profile action in the fixed-height settings header, not a conditional footer")
 	}
 }
 
