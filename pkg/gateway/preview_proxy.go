@@ -131,6 +131,10 @@ func (s *previewState) serveToken(w http.ResponseWriter, r *http.Request, token 
 	if webpreview.ServeOverlayAsset(w, r) {
 		return
 	}
+	if r.URL.Path == webpreview.LauncherSeenPath {
+		s.serveLauncherSeen(w, r)
+		return
+	}
 	if r.URL.Path == webpreview.APIPrefix || strings.HasPrefix(r.URL.Path, webpreview.APIPrefix+"/") {
 		if !s.authorizeOverlayAPI(w, r, route, token) {
 			return
@@ -284,6 +288,7 @@ func (s *previewState) serveProxy(w http.ResponseWriter, r *http.Request, tun *p
 			"voice":            false,
 			"voice_engine":     "",
 			"dictation_engine": "",
+			"launcher_seen":    s.hasSeenLauncher(r),
 			"hostname":         route.HostID,
 			"worktree_id":      route.WorktreeID,
 			"name":             route.ServiceName,
