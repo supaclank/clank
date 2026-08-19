@@ -89,6 +89,9 @@ previews:
 	if len(got.Spec.CmdTemplate) != 3 || got.Spec.CmdTemplate[0] != "sh" || got.Spec.CmdTemplate[1] != "-c" || got.Spec.CmdTemplate[2] != `npm run dev -- --port "$PORT"` {
 		t.Errorf("CmdTemplate = %q", got.Spec.CmdTemplate)
 	}
+	if got.Spec.StartupLogCommand != `npm run dev -- --port "$PORT"` {
+		t.Errorf("StartupLogCommand = %q", got.Spec.StartupLogCommand)
+	}
 	if got.Spec.ReadyProbe.Path != "/healthz" || got.Spec.ReadyProbe.ExpectedSubstr != "ready" {
 		t.Errorf("ReadyProbe = %+v", got.Spec.ReadyProbe)
 	}

@@ -43,7 +43,9 @@ import {
   diffConfigAgainstOptions, effectiveSessionConfig, mergeSessionConfig, profileLabel,
   profileMatchingConfig, liveChipLabel, liveSettingsBadge, profileSavePayload,
 } from './settings.js';
-import { clampTranslateToViewport, parseStoredBoxIntent, resizeOwesClamp } from './boxpos.js';
+import {
+  clampTranslateToViewport, followTranslateTarget, parseStoredBoxIntent, resizeOwesClamp,
+} from './boxpos.js';
 import {
   LAUNCHER_SEEN_PATH, launcherActivity, launcherMorphGeometry, launcherShortcut,
   shouldShowLauncherCoachmark,
@@ -3918,10 +3920,15 @@ import {
   // grab-cursor hover actually triggers, so a follow hands off straight
   // into click-drag.
   const followTargetFromPointer = (cx, cy) => {
-    const left = Math.min(Math.max(cx - follow.w / 2, 8), innerWidth - follow.w - 8);
-    const top = Math.min(Math.max(cy - 12, 8), innerHeight - follow.h - 8);
-    follow.tx = left - follow.natX;
-    follow.ty = top - follow.natY;
+    const target = followTranslateTarget({
+      pointer: { x: cx, y: cy },
+      natural: { left: follow.natX, top: follow.natY },
+      size: { width: follow.w, height: follow.h },
+      viewport: { width: innerWidth, height: innerHeight },
+      chatHeight: follow.chatHeight,
+    });
+    follow.tx = target.x;
+    follow.ty = target.y;
   };
 
   const startFollow = () => {
@@ -3941,6 +3948,7 @@ import {
     follow = {
       // natural (untranslated) top-left, so pointer coords → translate coords
       natX: r.left - x, natY: r.top - y, w: r.width, h: r.height,
+      chatHeight: store.box === 'chat' ? ui.chat.getBoundingClientRect().height : 0,
       x, y, vx: 0, vy: 0, tx: x, ty: y,
       held: true, lastT: 0, raf: 0,
     };

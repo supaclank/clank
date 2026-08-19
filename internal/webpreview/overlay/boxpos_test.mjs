@@ -3,7 +3,13 @@
 // there (overlay.js re-clamps on every resize with this math).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clampTranslateToViewport, BOX_EDGE_MARGIN, parseStoredBoxIntent, resizeOwesClamp } from './boxpos.js';
+import {
+  BOX_EDGE_MARGIN,
+  clampTranslateToViewport,
+  followTranslateTarget,
+  parseStoredBoxIntent,
+  resizeOwesClamp,
+} from './boxpos.js';
 
 // Home geometry mirrors the .box CSS: left = max(16, 50vw - 190),
 // bottom-anchored 144px above the viewport floor.
@@ -94,4 +100,26 @@ test('resizeOwesClamp: hidden box or a bogus 0×0 viewport defers to next summon
   assert.equal(resizeOwesClamp({ innerWidth: 1400, innerHeight: 0, isHidden: false }), true);
   assert.equal(resizeOwesClamp({ innerWidth: 1400, innerHeight: 900, isHidden: true }), true);
   assert.equal(resizeOwesClamp({ innerWidth: 1400, innerHeight: 900, isHidden: false }), false);
+});
+
+test('shift-follow keeps the prompt anchored when conversation is expanded above it', () => {
+  const pointer = { x: 720, y: 520 };
+  const viewport = { width: 1440, height: 900 };
+  const collapsed = followTranslateTarget({
+    pointer,
+    natural: { left: 530, top: 596 },
+    size: { width: 380, height: 160 },
+    viewport,
+    chatHeight: 0,
+  });
+  const expanded = followTranslateTarget({
+    pointer,
+    natural: { left: 530, top: 356 },
+    size: { width: 380, height: 400 },
+    viewport,
+    chatHeight: 240,
+  });
+
+  assert.deepEqual(expanded, collapsed);
+  assert.equal(596 + collapsed.y, 356 + expanded.y + 240);
 });

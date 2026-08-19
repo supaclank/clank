@@ -46,6 +46,37 @@ func TestSpawnReachesReady(t *testing.T) {
 	waitForState(t, r, StateReady, 5*time.Second)
 }
 
+func TestSpawnLogsConfiguredCommandBeforeChildOutput(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const configuredCommand = "npm ci && npm run dev"
+	port, err := allocatePort()
+	if err != nil {
+		t.Fatalf("allocatePort: %v", err)
+	}
+	r, err := spawn(ctx, spawnRequest{
+		WorkDir: t.TempDir(),
+		Spec: Spec{
+			Kind:              KindWeb,
+			CmdTemplate:       []string{"sh", "-c", "sleep 30"},
+			StartupLogCommand: configuredCommand,
+			ReadyProbe:        ReadyProbe{Path: "/"},
+		},
+		ServiceName: "web",
+		Port:        port,
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	t.Cleanup(func() { r.stopWithGrace(2 * time.Second) })
+
+	if got, want := string(r.logs.Snapshot()), "$ "+configuredCommand+"\n"; got != want {
+		t.Fatalf("initial logs = %q, want %q", got, want)
+	}
+}
+
 // TestSpawnAndOrphanCleanup is the regression test for Change 2 of the
 // plan: Setpgid + group SIGTERM/SIGKILL.
 //

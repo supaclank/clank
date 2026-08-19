@@ -39,6 +39,10 @@ type Spec struct {
 	// allocated port only when ShouldSubstitutePort is true.
 	CmdTemplate []string
 
+	// StartupLogCommand is the unexpanded configured command displayed before
+	// the child emits output. Empty for internally generated launch commands.
+	StartupLogCommand string
+
 	// ShouldSubstitutePort enables the legacy Expo argv template. Configured
 	// web commands receive the port only through the PORT environment variable.
 	ShouldSubstitutePort bool

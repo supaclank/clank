@@ -116,6 +116,9 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 	configureProcessGroup(cmd)
 
 	logs := newRingBuf(ringCapacity)
+	if req.Spec.StartupLogCommand != "" {
+		_, _ = fmt.Fprintf(logs, "$ %s\n", strings.TrimSpace(req.Spec.StartupLogCommand))
+	}
 	cmd.Stdout = logs
 	cmd.Stderr = logs
 

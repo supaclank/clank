@@ -54,10 +54,14 @@ previews:
 	if _, err := waitPreviewReady(ctx, pv, status, 4*time.Second, &out); err != nil {
 		t.Fatalf("waitPreviewReady: %v", err)
 	}
-	if !strings.Contains(out.String(), "installing dependencies") {
+	if !strings.Contains(out.String(), `$ printf 'installing dependencies\n'`) {
+		t.Fatalf("startup output did not announce the configured command:\n%s", out.String())
+	}
+	childProgress := previewLogGutter + "installing dependencies"
+	if !strings.Contains(out.String(), childProgress) {
 		t.Fatalf("startup output did not include dev-server progress:\n%s", out.String())
 	}
-	if strings.Count(out.String(), "installing dependencies") != 1 {
+	if strings.Count(out.String(), childProgress) != 1 {
 		t.Fatalf("startup progress was duplicated:\n%s", out.String())
 	}
 	if !strings.Contains(out.String(), previewLogHeader) {
