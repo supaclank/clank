@@ -3,6 +3,7 @@
 package preview
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -179,18 +180,69 @@ func TestSpawnReadinessTimeoutFails(t *testing.T) {
 	}
 }
 
-// waitForLogs polls r.logs until its snapshot equals want or deadline
+// waitForLogs polls r.LogSnapshot() until it equals want or the deadline
 // expires — the child writes its boot line asynchronously after Start.
 func waitForLogs(t *testing.T, r *running, want string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if got := string(r.logs.Snapshot()); got == want {
+		if got := string(r.LogSnapshot()); got == want {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("logs = %q, want %q", string(r.logs.Snapshot()), want)
+	t.Fatalf("logs = %q, want %q", string(r.LogSnapshot()), want)
+}
+
+// TestSpawnStartupLineSurvivesRingEviction pins the fix for a chatty
+// child evicting the startup announcement: the ring only ever holds
+// ringCapacity bytes, so once the child's own output wraps the ring the
+// announcement — previously written first, into the ring itself — would
+// be the first thing discarded unless it's kept outside the ring
+// (running.startupLine, surfaced via LogSnapshot).
+func TestSpawnStartupLineSurvivesRingEviction(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const configuredCommand = "npm ci && npm run dev"
+	port, err := allocatePort()
+	if err != nil {
+		t.Fatalf("allocatePort: %v", err)
+	}
+	r, err := spawn(ctx, spawnRequest{
+		WorkDir: t.TempDir(),
+		Spec: Spec{
+			Kind: KindWeb,
+			// ~162 KiB of output against a 64 KiB ring, so the ring
+			// fills and wraps well past where the announcement would sit.
+			CmdTemplate: []string{"sh", "-c",
+				`i=0; while [ $i -lt 2000 ]; do printf '%080d\n' $i; i=$((i+1)); done; sleep 30`},
+			StartupLogCommand: configuredCommand,
+		},
+		ServiceName: "web",
+		Port:        port,
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	t.Cleanup(func() { r.stopWithGrace(2 * time.Second) })
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && len(r.logs.Snapshot()) < ringCapacity {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got := len(r.logs.Snapshot()); got != ringCapacity {
+		t.Fatalf("ring did not fill within the deadline: got %d bytes, want %d", got, ringCapacity)
+	}
+	if bytes.Contains(r.logs.Snapshot(), []byte(configuredCommand)) {
+		t.Fatalf("configured command still present in the raw ring; test no longer exercises eviction")
+	}
+
+	want := "$ " + configuredCommand + "\n"
+	if full := r.LogSnapshot(); !bytes.HasPrefix(full, []byte(want)) {
+		t.Fatalf("LogSnapshot() = %q…, want prefix %q", full[:min(len(full), 40)], want)
+	}
 }
 
 // waitForState polls r.state until it matches want or deadline expires.

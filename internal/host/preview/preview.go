@@ -132,6 +132,11 @@ type running struct {
 
 	logs *ringBuf
 
+	// startupLine is the "$ <configured command>\n" banner captured at
+	// spawn time, kept outside logs so a chatty child can't evict it once
+	// combined output exceeds the ring's capacity. Immutable after spawn.
+	startupLine []byte
+
 	// pid is the spawned child's PID; pgid is its process group (set
 	// by procgroup_unix.go right after Start). Both are zero when no
 	// process is running.
@@ -156,6 +161,19 @@ func (r *running) touch() {
 	r.mu.Lock()
 	r.lastTouch = time.Now()
 	r.mu.Unlock()
+}
+
+// LogSnapshot returns the captured log: the startup announcement (if
+// any) followed by the ring buffer's current window of stdout/stderr.
+func (r *running) LogSnapshot() []byte {
+	snap := r.logs.Snapshot()
+	if len(r.startupLine) == 0 {
+		return snap
+	}
+	out := make([]byte, 0, len(r.startupLine)+len(snap))
+	out = append(out, r.startupLine...)
+	out = append(out, snap...)
+	return out
 }
 
 // snapshot copies the externally-visible fields under r.mu so callers

@@ -116,12 +116,15 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 	configureProcessGroup(cmd)
 
 	logs := newRingBuf(ringCapacity)
-	if req.Spec.StartupLogCommand != "" {
-		// TODO(ai-review): announce line can be evicted by ring wraparound on a long-lived, chatty child https://github.com/supaclank/clank/pull/265#discussion_r3812015678
-		_, _ = fmt.Fprintf(logs, "$ %s\n", strings.TrimSpace(req.Spec.StartupLogCommand))
-	}
 	cmd.Stdout = logs
 	cmd.Stderr = logs
+
+	// Kept outside the ring (see running.startupLine) so a chatty child
+	// can't evict the announcement once combined output exceeds ringCapacity.
+	var startupLine []byte
+	if req.Spec.StartupLogCommand != "" {
+		startupLine = []byte(fmt.Sprintf("$ %s\n", strings.TrimSpace(req.Spec.StartupLogCommand)))
+	}
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -136,6 +139,7 @@ func spawn(ctx context.Context, req spawnRequest) (*running, error) {
 		startedAt:   time.Now(),
 		lastTouch:   time.Now(),
 		logs:        logs,
+		startupLine: startupLine,
 		pid:         cmd.Process.Pid,
 		pgid:        cmd.Process.Pid, // Setpgid: true → pgid == pid
 		done:        make(chan struct{}),
