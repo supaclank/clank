@@ -380,6 +380,8 @@ func TestOverlayAgentSettingsWiring(t *testing.T) {
 		"$('.profile')",
 		"loadConfigOptions",
 		"saveProfile",
+		"const settingsTitle = node('div', 'settings-title')",
+		"settingsTitle.append(node('span', 'activity-spinner visible'))",
 		"config: createConfig",
 		"config: pendingConfig",
 	} {
@@ -394,6 +396,9 @@ func TestOverlayAgentSettingsWiring(t *testing.T) {
 	}
 	if strings.Contains(js, `.settings { margin:6px 12px; border:1px solid`) {
 		t.Error("overlay.js agent settings must be a full-width flat panel, not a nested card")
+	}
+	if strings.Contains(js, "Loading agent settings…") {
+		t.Error("overlay.js agent settings loading state must stay inline in the title instead of adding a layout-shifting row")
 	}
 }
 

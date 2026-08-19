@@ -2236,7 +2236,9 @@ import {
     font-size:12px; max-height:300px; overflow-y:auto; }
   .settings-h { position:sticky; top:0; z-index:1; display:flex; align-items:center; gap:8px;
     padding:10px 12px 8px; background:rgba(255,255,255,.96); border-bottom:1px solid #e5e7eb; }
-  .settings-h b { flex:1; font-size:13px; }
+  .settings-title { flex:1; min-width:0; display:flex; align-items:center; gap:7px; }
+  .settings-title b { font-size:13px; }
+  .settings-title .activity-spinner { width:12px; height:12px; border-width:1.5px; }
   .settings-badge { color:#2563eb; background:#3b82f614; border-radius:999px; padding:2px 7px; }
   .settings-badge.custom { color:#b45309; background:#f59e0b14; }
   .settings-done { all:unset; cursor:pointer; color:#2563eb; font-weight:600; padding:3px 2px; }
@@ -2605,6 +2607,8 @@ import {
     const liveMatch = live
       ? profileMatchingConfig(store.profiles, store.configOptions, store.pendingConfig, store.sessionConfig)
       : null;
+    const isLoading = store.profilesLoading || store.settingsLoading;
+    ui.settings.setAttribute('aria-busy', String(isLoading));
     const badgeText = live
       ? liveSettingsBadge(store.pendingConfig, liveMatch, store.profileDraft)
       : (store.profileDraft ? 'Draft' : profileLabel(preset, store.profileOverrides));
@@ -2618,7 +2622,10 @@ import {
 
     const frag = document.createDocumentFragment();
     const header = node('div', 'settings-h');
-    header.append(node('b', '', live ? 'Session settings' : `${backendLabel(CFG.backend)} settings`));
+    const settingsTitle = node('div', 'settings-title');
+    settingsTitle.append(node('b', '', live ? 'Session settings' : `${backendLabel(CFG.backend)} settings`));
+    if (isLoading) settingsTitle.append(node('span', 'activity-spinner visible'));
+    header.append(settingsTitle);
     if (badgeText) header.append(node('span', 'settings-badge' + (custom || live ? ' custom' : ''), badgeText));
     const done = node('button', 'settings-done', 'Done');
     done.onclick = closeSettings;
@@ -2722,11 +2729,9 @@ import {
       frag.append(knobs);
     }
 
-    if (store.profilesLoading || store.settingsLoading) {
-      frag.append(node('div', 'settings-state', 'Loading agent settings…'));
-    } else if (store.profilesError || store.configOptionsError) {
+    if (!isLoading && (store.profilesError || store.configOptionsError)) {
       frag.append(node('div', 'settings-state err', store.profilesError || store.configOptionsError));
-    } else if (!store.profiles.length && !rows.length) {
+    } else if (!isLoading && !store.profiles.length && !rows.length) {
       frag.append(node('div', 'settings-state', 'No agent settings are available.'));
     }
 
