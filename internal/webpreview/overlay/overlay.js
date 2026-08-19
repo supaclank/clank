@@ -2971,6 +2971,18 @@ import {
       store.box = store.box === 'chat' ? 'prompt' : 'chat';
       render();
     }
+    // An active Shift-follow cached box geometry at press time (e.g. via
+    // Ctrl/⌘+Shift+E, which fires Shift's keydown before E's); re-measure
+    // the bottom-anchored box so a mid-hold toggle doesn't keep following
+    // the pre-toggle height.
+    if (follow) {
+      const r = ui.box.getBoundingClientRect();
+      follow.natX = r.left - follow.x;
+      follow.natY = r.top - follow.y;
+      follow.w = r.width;
+      follow.h = r.height;
+      if (mouseSeen) followTargetFromPointer(mouseX, mouseY);
+    }
   };
 
   const animateLauncherIntoBox = (launcherRect) => {
