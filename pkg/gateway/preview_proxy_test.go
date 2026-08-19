@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
@@ -338,7 +339,8 @@ func TestPreviewProxy_PersistsLauncherSeenAcrossPreviewSubdomains(t *testing.T) 
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
-	acknowledge.Host = tokens.HostFor(firstRoute.Token, f.root)
+	firstHost := tokens.HostFor(firstRoute.Token, f.root)
+	acknowledge.Host = firstHost
 	acknowledged, err := http.DefaultClient.Do(acknowledge)
 	if err != nil {
 		t.Fatalf("acknowledge launcher: %v", err)
@@ -368,12 +370,30 @@ func TestPreviewProxy_PersistsLauncherSeenAcrossPreviewSubdomains(t *testing.T) 
 		t.Errorf("cookie SameSite = %v, want Strict", seenCookie.SameSite)
 	}
 
+	// http.DefaultClient has no CookieJar, so http.NewRequest+AddCookie alone
+	// would forward the cookie regardless of Domain; run it through a real
+	// cookiejar keyed on the virtual preview hosts to exercise the RFC 6265
+	// domain match that makes a Domain=root cookie apply to a sibling
+	// preview subdomain.
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar.New: %v", err)
+	}
+	jar.SetCookies(&url.URL{Scheme: "http", Host: firstHost}, acknowledged.Cookies())
+	secondHost := tokens.HostFor(secondRoute.Token, f.root)
+	forwarded := jar.Cookies(&url.URL{Scheme: "http", Host: secondHost})
+	if len(forwarded) == 0 {
+		t.Fatalf("jar has no cookies for sibling subdomain %s, want %s to domain-match", secondHost, previewLauncherSeenCookieName)
+	}
+
 	page, err := http.NewRequest(http.MethodGet, f.srv.URL+"/", nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
-	page.Host = tokens.HostFor(secondRoute.Token, f.root)
-	page.AddCookie(&http.Cookie{Name: seenCookie.Name, Value: seenCookie.Value})
+	page.Host = secondHost
+	for _, cookie := range forwarded {
+		page.AddCookie(cookie)
+	}
 	resp, err := http.DefaultClient.Do(page)
 	if err != nil {
 		t.Fatalf("load second preview: %v", err)
@@ -382,6 +402,35 @@ func TestPreviewProxy_PersistsLauncherSeenAcrossPreviewSubdomains(t *testing.T) 
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), `"launcher_seen":true`) {
 		t.Errorf("second preview did not receive persisted launcher state:\n%s", body)
+	}
+}
+
+func TestPreviewProxy_RejectsNonPOSTLauncherSeen(t *testing.T) {
+	t.Parallel()
+	f := newPreviewProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Errorf("upstream hit for non-POST launcher-seen request")
+	}))
+	route := f.seed(t, "alice", tokens.VisibilityPublic)
+
+	req, err := http.NewRequest(http.MethodGet, f.srv.URL+webpreview.LauncherSeenPath, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Host = tokens.HostFor(route.Token, f.root)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusMethodNotAllowed)
+	}
+	if allow := resp.Header.Get("Allow"); allow != http.MethodPost {
+		t.Errorf("Allow header = %q, want %q", allow, http.MethodPost)
+	}
+	if cookies := resp.Cookies(); len(cookies) != 0 {
+		t.Errorf("cookies = %v, want none", cookies)
 	}
 }
 
