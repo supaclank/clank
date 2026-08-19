@@ -203,6 +203,13 @@ func previewLogDelta(previous, current []byte) []byte {
 	// outside the host's eviction window) was already emitted in an earlier
 	// delta; exclude it before hunting for the ring's own sliding-window
 	// overlap, or it swallows the whole prefix on every remaining poll.
+	//
+	// TODO(ai-review): a coincidental ring-content prefix match (not the
+	// banner) would also get excluded here, silently dropping output —
+	// same class of risk as previewLogOverlap's own repeated-byte caveat
+	// below, and the real fix is the same one already deferred for it: a
+	// daemon-provided cursor/offset instead of content-based inference.
+	// https://github.com/supaclank/clank/pull/265#discussion_r3812350071
 	prefixLen := commonPrefixLen(previous, current)
 	overlap := prefixLen + previewLogOverlap(previous[prefixLen:], current[prefixLen:])
 	return current[overlap:]

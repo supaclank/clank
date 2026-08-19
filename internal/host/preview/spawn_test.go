@@ -113,6 +113,43 @@ func TestSpawnSanitizesStartupLogCommand(t *testing.T) {
 	}
 }
 
+// TestSpawnStartupLineKeepsTrailingNewlineAfterUnterminatedEscape pins a bug
+// where sanitizing the already-formatted "$ <command>\n" line let an
+// unterminated OSC/DCS escape in the configured command consume through to
+// the end of the string — including the banner's own trailing newline,
+// merging it with the child's first output line. Sanitizing the command
+// before formatting keeps the newline outside sanitization's reach.
+func TestSpawnStartupLineKeepsTrailingNewlineAfterUnterminatedEscape(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	port, err := allocatePort()
+	if err != nil {
+		t.Fatalf("allocatePort: %v", err)
+	}
+	r, err := spawn(ctx, spawnRequest{
+		WorkDir: t.TempDir(),
+		Spec: Spec{
+			Kind:              KindWeb,
+			CmdTemplate:       []string{"sh", "-c", "sleep 30"},
+			StartupLogCommand: "npm run dev\x1b]0;untitled", // unterminated OSC (no BEL/ST)
+			ReadyProbe:        ReadyProbe{Path: "/"},
+		},
+		ServiceName: "web",
+		Port:        port,
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	t.Cleanup(func() { r.stopWithGrace(2 * time.Second) })
+
+	want := "$ npm run dev\n"
+	if got := string(r.LogSnapshot()); got != want {
+		t.Fatalf("LogSnapshot() = %q, want %q", got, want)
+	}
+}
+
 // TestSpawnAndOrphanCleanup is the regression test for Change 2 of the
 // plan: Setpgid + group SIGTERM/SIGKILL.
 //
