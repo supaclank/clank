@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/supaclank/clank/internal/launchconfig"
 )
 
 // TestSpawnReachesReady spawns a fake-Metro stub and waits for the
@@ -427,7 +429,7 @@ func TestBuildEnvPreservesWebEnvironmentWithoutExpoOverrides(t *testing.T) {
 func TestBuildEnvRendersConfiguredWebEnvironmentWithPublicHostname(t *testing.T) {
 	t.Setenv("__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS", "inherited.example.test")
 	t.Setenv("CLANK_PREVIEW_PUBLIC_HOSTNAME", "inherited.example.test")
-	t.Setenv("CLANK_PREVIEW_PUBLIC_URL", "https://inherited.example.test")
+	t.Setenv(launchconfig.PublicURLEnvironmentName, "https://inherited.example.test")
 
 	env, err := buildEnv(environmentRequest{
 		Kind:      KindWeb,
@@ -443,14 +445,14 @@ func TestBuildEnvRendersConfiguredWebEnvironmentWithPublicHostname(t *testing.T)
 	want := map[string]string{
 		"PORT":                                   "5173",
 		"CLANK_PREVIEW_PUBLIC_HOSTNAME":          "preview-token.dev.supaclank.dev",
-		"CLANK_PREVIEW_PUBLIC_URL":               "https://preview-token.dev.supaclank.dev/path",
+		launchconfig.PublicURLEnvironmentName:    "https://preview-token.dev.supaclank.dev/path",
 		"__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS": "preview-token.dev.supaclank.dev",
 	}
 	assertEnvironmentValues(t, env, want)
 }
 
 func TestBuildEnvUsesLoopbackHostnameWithoutGateway(t *testing.T) {
-	t.Setenv("CLANK_PREVIEW_PUBLIC_URL", "https://inherited.example.test")
+	t.Setenv(launchconfig.PublicURLEnvironmentName, "https://inherited.example.test")
 
 	env, err := buildEnv(environmentRequest{Kind: KindWeb, Port: 5173})
 	if err != nil {
@@ -459,7 +461,7 @@ func TestBuildEnvUsesLoopbackHostnameWithoutGateway(t *testing.T) {
 	assertEnvironmentValues(t, env, map[string]string{
 		"CLANK_PREVIEW_PUBLIC_HOSTNAME": "127.0.0.1",
 	})
-	assertEnvironmentNameAbsent(t, env, "CLANK_PREVIEW_PUBLIC_URL")
+	assertEnvironmentNameAbsent(t, env, launchconfig.PublicURLEnvironmentName)
 }
 
 func TestResolvePreviewEndpointKeepsPortOutOfPublicHostname(t *testing.T) {

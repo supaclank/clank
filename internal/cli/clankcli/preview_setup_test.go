@@ -15,6 +15,24 @@ import (
 	"github.com/supaclank/clank/internal/launchconfig"
 )
 
+func TestWritePreviewSetupNoticeMentionsHostedWorktree(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	writePreviewSetupNotice(&out, true)
+	if !strings.Contains(out.String(), "on the hosted worktree") {
+		t.Errorf("hosted notice missing location: %q", out.String())
+	}
+}
+
+func TestWritePreviewSetupNoticeOmitsHostedWorktreeLocally(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	writePreviewSetupNotice(&out, false)
+	if strings.Contains(out.String(), "on the hosted worktree") {
+		t.Errorf("local notice mentions hosted worktree: %q", out.String())
+	}
+}
+
 func TestCreatePreviewSetupSessionUsesProjectConfigPrompt(t *testing.T) {
 	t.Setenv("CLANK_DIR", t.TempDir())
 	client, stub := newTestHost(t)
