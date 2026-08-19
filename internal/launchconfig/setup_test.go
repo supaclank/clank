@@ -95,7 +95,15 @@ func TestSetupTaskPromptIncludesProjectTargetAndContract(t *testing.T) {
 		"immutable or frozen install mode",
 		`must consume the literal shell variable $PORT or ${PORT}`,
 		"CLANK_PREVIEW_PUBLIC_HOSTNAME",
+		"CLANK_PREVIEW_PUBLIC_URL",
+		"absent for local previews",
 		"__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS",
+		"allowedDevOrigins",
+		"process.env.CLANK_PREVIEW_PUBLIC_HOSTNAME",
+		"When the variable is absent, omit the Clank-specific setting",
+		"preserve and merge any existing allowlist entries",
+		"framework development-server configuration",
+		"Do not change application runtime code",
 		"optional env map",
 		"Claude allocates a port",
 		"Clank does not rewrite command arguments",
@@ -110,6 +118,7 @@ func TestSetupTaskPromptIncludesProjectTargetAndContract(t *testing.T) {
 	for _, forbidden := range []string{
 		"ask whether",
 		"Start each configured command",
+		"Write only that configuration file",
 	} {
 		if strings.Contains(prompt, forbidden) {
 			t.Errorf("SetupTaskPrompt unexpectedly contains %q", forbidden)

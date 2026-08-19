@@ -28,12 +28,15 @@ wait for input. Finish within three minutes. If the repository is ambiguous,
 choose its primary browser frontend. If no web frontend can be configured,
 briefly explain why and finish without creating a file.
 
-Write the configuration to the project file %q. The user can commit or
-gitignore it.
+Write the launch configuration to the project file %q. The user can commit or
+gitignore it. You may also update or create the framework development-server
+configuration described below when the framework requires it to accept Clank's
+public preview origin.
 
 Inspect only what is useful for this decision: root entries, frontend manifests
-and scripts, the existing lockfile, relevant README sections, and existing
-launch configuration. Keep discovery narrow.
+and scripts, the existing lockfile, relevant README sections, existing launch
+configuration, and the selected frontend's framework configuration. Keep
+discovery narrow.
 
 Configure only a browser-facing frontend development server whose purpose is
 file watching and hot module replacement, Fast Refresh, or equivalent hot
@@ -66,16 +69,36 @@ Additional semantic rules enforced by Clank:
   bind to 127.0.0.1 rather than a LAN-facing address.
 - env is an optional env map applied to the command. Clank expands only the
   exact ${PORT} and ${CLANK_PREVIEW_PUBLIC_HOSTNAME} placeholders in its values.
-  PORT and CLANK_PREVIEW_PUBLIC_HOSTNAME are managed by Clank and cannot be env
-  keys. Do not use shell fallback syntax or command substitution in env values.
+  PORT, CLANK_PREVIEW_PUBLIC_HOSTNAME, and CLANK_PREVIEW_PUBLIC_URL are managed
+  by Clank and cannot be env keys. Do not use shell fallback syntax or command
+  substitution in env values.
 - CLANK_PREVIEW_PUBLIC_HOSTNAME is the hostname a browser uses to reach the
   preview: the gateway hostname in cloud or self-hosted environments, and
-  127.0.0.1 for a local preview. If the frontend framework validates request
-  hosts, configure it to allow this exact value while keeping the server bound
-  to 127.0.0.1. For Vite, use the env example below; do not disable host checks.
+  127.0.0.1 for a local preview. CLANK_PREVIEW_PUBLIC_URL is the absolute
+  browser-facing URL and is present when a gateway issued one; it is absent for local previews because the overlay proxy URL is created after the dev server.
 - ready.path is requested until it returns HTTP 200. When ready.expect is set,
   that response body must contain it.
 - Do not add version, url, port, or autoPort fields.
+
+Framework request validation:
+- Prefer a documented environment-only hook when the framework provides one.
+  For Vite, use the env example below; do not disable host checks.
+- If the framework requires code configuration, change only its conventional
+  framework development-server configuration (for example next.config.js,
+  next.config.mjs, or next.config.ts). Do not change application runtime code,
+  dependencies, lockfiles, build output, or production behavior.
+- Every Clank-specific framework setting must be conditional on
+  process.env.CLANK_PREVIEW_PUBLIC_HOSTNAME. When the variable is absent, omit the Clank-specific setting so ordinary development and production runs retain
+  their existing behavior. Never put a possibly undefined value in an allowlist.
+- Always preserve and merge any existing allowlist entries. Never hardcode a
+  supaclank.dev hostname, add a wildcard, or disable origin or host validation.
+- For Next.js, conditionally merge the exact hostname into allowedDevOrigins in
+  next.config.*. If the project uses Server Actions and its installed Next.js
+  version requires a separate allowed-origins setting, conditionally merge the
+  same hostname there using that version's documented configuration shape.
+- For another framework, inspect its installed documentation or types, then its
+  official documentation if necessary. If no narrow documented mechanism can
+  be verified, leave framework configuration unchanged and report that clearly.
 
 Valid minimal example:
 
@@ -105,7 +128,8 @@ commands as hints.
 
 %s
 
-Write only that configuration file. Do not commit, push, or open a pull request. End with the path written and a one-line summary.`, paths.ProjectRoot, paths.Project, LaunchSchema(), claudeReference), nil
+Do not commit, push, or open a pull request. End with every path written and a
+one-line summary of why each file changed.`, paths.ProjectRoot, paths.Project, LaunchSchema(), claudeReference), nil
 }
 
 func readClaudeLaunchReference(projectRoot string) (string, error) {

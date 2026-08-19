@@ -18,6 +18,15 @@ const (
 	previewSetupVisibleLines      = 14
 )
 
+func writePreviewSetupNotice(out io.Writer, isHosted bool) {
+	location := ""
+	if isHosted {
+		location = " on the hosted worktree"
+	}
+	fmt.Fprintf(out, "\nOne-time setup: configuring the web preview with your connected agent%s…\n", location)
+	fmt.Fprintf(out, "The agent will create %s and may update the frontend's development-server config to accept Clank's preview origin. It is instructed not to change production behavior.\n\n", launchconfig.ProjectRelativePath)
+}
+
 type previewSetupResult struct {
 	Launch      *launchconfig.Resolved
 	ProjectRoot string
@@ -36,7 +45,7 @@ func runPreviewSetup(
 	if err != nil {
 		return nil, err
 	}
-	fmt.Fprintf(out, "\nOne-time setup: generating %s with your connected agent…\n\n", launchconfig.ProjectRelativePath)
+	writePreviewSetupNotice(out, false)
 
 	info, events, cancelEvents, err := createPreviewSetupSession(ctx, client, backend, paths)
 	if err != nil {

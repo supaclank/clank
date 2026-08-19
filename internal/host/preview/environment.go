@@ -33,6 +33,7 @@ type environmentRequest struct {
 
 type previewEndpoint struct {
 	PublicHostname string
+	PublicURL      string
 	ReadinessHost  string
 }
 
@@ -58,9 +59,10 @@ func resolvePreviewEndpoint(kind Kind, publicURL string, port int) (previewEndpo
 		return previewEndpoint{}, nil
 	}
 	if publicURL == "" {
+		loopbackHost := net.JoinHostPort(localPreviewHostname, strconv.Itoa(port))
 		return previewEndpoint{
 			PublicHostname: localPreviewHostname,
-			ReadinessHost:  net.JoinHostPort(localPreviewHostname, strconv.Itoa(port)),
+			ReadinessHost:  loopbackHost,
 		}, nil
 	}
 	parsed, err := url.Parse(publicURL)
@@ -75,6 +77,7 @@ func resolvePreviewEndpoint(kind Kind, publicURL string, port int) (previewEndpo
 	// readiness when PublicURL carries an explicit port. https://github.com/supaclank/clank/pull/214#discussion_r3697014299
 	return previewEndpoint{
 		PublicHostname: parsed.Hostname(),
+		PublicURL:      publicURL,
 		ReadinessHost:  parsed.Host,
 	}, nil
 }
@@ -99,7 +102,7 @@ func buildEnvironment(req environmentRequest, endpoint previewEndpoint) ([]strin
 	}
 
 	parent := os.Environ()
-	env := make([]string, 0, len(parent)+len(configured)+5)
+	env := make([]string, 0, len(parent)+len(configured)+6)
 	requireFlag := ""
 	if req.ShimRequirePath != "" {
 		requireFlag = "--require " + req.ShimRequirePath
@@ -111,7 +114,7 @@ func buildEnvironment(req environmentRequest, endpoint previewEndpoint) ([]strin
 		if _, overridden := configured[key]; overridden {
 			continue
 		}
-		if key == launchconfig.PortEnvironmentName || key == launchconfig.PublicHostnameEnvironmentName {
+		if key == launchconfig.PortEnvironmentName || key == launchconfig.PublicHostnameEnvironmentName || key == launchconfig.PublicURLEnvironmentName {
 			continue
 		}
 		if req.Kind == KindExpo {
@@ -131,6 +134,9 @@ func buildEnvironment(req environmentRequest, endpoint previewEndpoint) ([]strin
 	env = append(env, launchconfig.PortEnvironmentName+"="+strconv.Itoa(req.Port))
 	if req.Kind == KindWeb {
 		env = append(env, launchconfig.PublicHostnameEnvironmentName+"="+endpoint.PublicHostname)
+		if endpoint.PublicURL != "" {
+			env = append(env, launchconfig.PublicURLEnvironmentName+"="+endpoint.PublicURL)
+		}
 	}
 	configuredNames := make([]string, 0, len(configured))
 	for name := range configured {

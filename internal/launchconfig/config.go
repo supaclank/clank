@@ -8,6 +8,8 @@ const (
 	PortEnvironmentName = "PORT"
 	// PublicHostnameEnvironmentName is the hostname clients use to reach a preview.
 	PublicHostnameEnvironmentName = "CLANK_PREVIEW_PUBLIC_HOSTNAME"
+	// PublicURLEnvironmentName is the externally reachable preview URL.
+	PublicURLEnvironmentName = "CLANK_PREVIEW_PUBLIC_URL"
 )
 
 // File is the strict YAML launch schema.

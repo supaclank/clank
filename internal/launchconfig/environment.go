@@ -13,6 +13,7 @@ var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var managedEnvironmentNames = map[string]struct{}{
 	PortEnvironmentName:           {},
 	PublicHostnameEnvironmentName: {},
+	PublicURLEnvironmentName:      {},
 }
 
 var supportedEnvironmentPlaceholders = map[string]struct{}{

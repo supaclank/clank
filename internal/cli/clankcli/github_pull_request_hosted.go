@@ -140,7 +140,7 @@ func runHostedPreviewSetup(
 	if prompt == "" {
 		return "", fmt.Errorf("host requested preview setup without a setup prompt")
 	}
-	_, _ = fmt.Fprintln(out, "\nOne-time setup: generating .clank/launch.yaml on the hosted worktree…")
+	writePreviewSetupNotice(out, true)
 	eventsCtx, cancelEvents := context.WithCancel(ctx)
 	events, err := client.Sessions().Subscribe(eventsCtx)
 	if err != nil {

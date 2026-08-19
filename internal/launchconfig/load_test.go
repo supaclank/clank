@@ -142,6 +142,8 @@ func TestLaunchConfigValidation(t *testing.T) {
 		{name: "invalid environment name", yaml: strings.Replace(validLaunchYAML, "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS:", "INVALID-NAME:", 1), wantErr: "invalid environment variable name"},
 		{name: "reserved port environment", yaml: strings.Replace(validLaunchYAML, "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS:", "PORT:", 1), wantErr: "managed by Clank"},
 		{name: "reserved public hostname environment", yaml: strings.Replace(validLaunchYAML, "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS:", "CLANK_PREVIEW_PUBLIC_HOSTNAME:", 1), wantErr: "managed by Clank"},
+		{name: "reserved public URL environment", yaml: strings.Replace(validLaunchYAML, "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS:", "CLANK_PREVIEW_PUBLIC_URL:", 1), wantErr: "managed by Clank"},
+		{name: "public URL environment placeholder", yaml: strings.Replace(validLaunchYAML, "${CLANK_PREVIEW_PUBLIC_HOSTNAME}", "${CLANK_PREVIEW_PUBLIC_URL}", 1), wantErr: "unsupported placeholder"},
 		{name: "unknown environment placeholder", yaml: strings.Replace(validLaunchYAML, "${CLANK_PREVIEW_PUBLIC_HOSTNAME}", "${UNKNOWN}", 1), wantErr: "unsupported placeholder"},
 		{name: "malformed environment placeholder", yaml: strings.Replace(validLaunchYAML, "${CLANK_PREVIEW_PUBLIC_HOSTNAME}", "${PORT:-5173}", 1), wantErr: "unsupported placeholder"},
 		{name: "unterminated environment placeholder", yaml: strings.Replace(validLaunchYAML, "${CLANK_PREVIEW_PUBLIC_HOSTNAME}", "${PORT", 1), wantErr: "unterminated environment placeholder"},

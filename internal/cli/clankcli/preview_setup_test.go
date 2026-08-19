@@ -73,7 +73,10 @@ func TestRunPreviewSetupCompletesInlineWithProjectConfig(t *testing.T) {
 		t.Fatalf("resolved source = %+v", resolved.Launch.Source)
 	}
 	for _, required := range []string{
-		"\nOne-time setup: generating .clank/launch.yaml with your connected agent…\n\n",
+		"\nOne-time setup: configuring the web preview with your connected agent…\n",
+		"create .clank/launch.yaml",
+		"may update the frontend's development-server config",
+		"is instructed not to change production behavior",
 		"Preview configuration generated",
 	} {
 		if !strings.Contains(out.String(), required) {
