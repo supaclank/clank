@@ -162,7 +162,7 @@ func (m *SessionPickerModel) discoverCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), sessionPickerDiscoverTimeout)
 		defer cancel()
-		backends := []agent.BackendType{agent.BackendOpenCode, agent.BackendClaudeCode}
+		backends := agent.AllBackends
 		var errs []string
 		for _, bt := range backends {
 			if err := client.Sessions().Discover(ctx, bt, projectDir); err != nil {

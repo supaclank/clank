@@ -25,7 +25,7 @@ var manifestFS embed.FS
 const (
 	PinnedCodexACPVersion  = "1.1.7"
 	PinnedCodexVersion     = "0.145.0"
-	PinnedClaudeACPVersion = "0.61.0"
+	PinnedClaudeACPVersion = "0.73.0"
 )
 
 // installTimeout bounds the cold-cache bun install (the codex platform

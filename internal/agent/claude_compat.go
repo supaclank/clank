@@ -8,41 +8,9 @@ import (
 	"strings"
 )
 
-// PinnedClaudeVersion is the Claude Code CLI version clank ships
-// against. Bumping this constant is a deliberate, reviewable change —
-// it determines what every fly.io provisioner installs onto a sprite.
-//
-// Why pin: the sprite base image bakes its own claude CLI with
-// auto-updates disabled, frozen at whatever was current when the
-// image was built. The CLI is not just a runtime: the family aliases
-// clank passes as models (sonnet / opus / haiku / fable — see
-// internal/host/backends.go) resolve to a CONCRETE model inside the
-// CLI binary, so a stale claude silently downgrades every session's
-// model. Seen 2026-07-05: an image-baked 2.1.168 resolved `sonnet`
-// to Sonnet 4.6 well after newer families shipped, and that CLI
-// vintage also retry-looped truncated thinking-only turns, burning
-// 32k output tokens per attempt without ever calling a tool.
-//
-// The pinned value must be a published @anthropic-ai/claude-code npm
-// version — the sprite-side installer feeds it to
-// `bun install -g @anthropic-ai/claude-code@<pin>` and hard-fails on
-// a version mismatch.
-//
-// Bumping this:
-//  1. Update the constant.
-//  2. `make install` — laptops get the new clank that knows the new pin.
-//  3. Sprites probe-and-reinstall on next EnsureHost.
-//
-// Since the ACP migration this pin governs the standalone claude CLI
-// used for AUTH ONLY (`claude setup-token`, borrowed-login probe) — the
-// agent runtime is the claude-agent-acp adapter's own bundled CLI,
-// pinned by acptools' lockfile. Keep this tracking the adapter's
-// bundled vintage so both paths agree on credential formats.
-//
-// Unlike PinnedOpencodeVersion there is no laptop-side compat gate:
-// claude session blobs never round-trip through clank migrations, so
-// drift is a quality problem, not a corruption problem.
-const PinnedClaudeVersion = "2.1.217"
+// PinnedClaudeVersion is the standalone authentication CLI installed on sprites.
+// Keep it aligned with the agent runtime bundled by acptools' locked Claude SDK.
+const PinnedClaudeVersion = "2.1.257"
 
 // ParseClaudeVersionOutput extracts the bare version from `claude
 // --version` output. The CLI prints a suffixed form ("2.1.201
@@ -58,14 +26,8 @@ func ParseClaudeVersionOutput(out string) string {
 	return fields[0]
 }
 
-// ClaudeVersion runs `claude --version` and returns the parsed bare
-// version (e.g. "2.1.201"). The binary is resolved via PATH — the
-// same lookup the claude-agent-sdk uses to spawn session CLIs — so
-// the reported version is the one sessions will actually run.
-//
-// The subprocess is called with no special env so it inherits
-// clank-host's environment (HOME etc.). Reading the version doesn't
-// touch session storage, so isolation isn't required.
+// ClaudeVersion returns the standalone authentication CLI version from PATH,
+// not the ACP adapter's bundled agent runtime version.
 func ClaudeVersion(ctx context.Context) (string, error) {
 	cmd := exec.CommandContext(ctx, "claude", "--version")
 	out, err := cmd.Output()

@@ -450,11 +450,7 @@ func (m *ACPBackendManager) DiscoverSessions(ctx context.Context, seedDir string
 	if err != nil {
 		return nil, err
 	}
-	lr, err := conn.Conn().ListSessions(ctx, sdk.ListSessionsRequest{Cwd: &seedDir})
-	if err != nil {
-		return nil, fmt.Errorf("acp %s: session/list: %w", m.profile.ID, err)
-	}
-	return m.snapshots(lr), nil
+	return m.discoverSessionPages(ctx, conn, sdk.ListSessionsRequest{Cwd: &seedDir})
 }
 
 // DiscoverAllSessions lists every session the agent knows about. Only
@@ -470,11 +466,7 @@ func (m *ACPBackendManager) DiscoverAllSessions(ctx context.Context) ([]agent.Se
 	if err != nil {
 		return nil, err
 	}
-	lr, err := conn.Conn().ListSessions(ctx, sdk.ListSessionsRequest{})
-	if err != nil {
-		return nil, fmt.Errorf("acp %s: session/list: %w", m.profile.ID, err)
-	}
-	return m.snapshots(lr), nil
+	return m.discoverSessionPages(ctx, conn, sdk.ListSessionsRequest{})
 }
 
 // snapshots maps ACP session infos onto clank snapshots, tagging the
