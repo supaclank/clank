@@ -2836,6 +2836,7 @@ import {
   let appliedEpoch = -1;
   let pointerOverOverlay = false;
   let escalatedFocus = null; // guest focus parked by a hover-only escalation
+  let lastPointer = null; // last window pointermove, tracked even off-overlay
 
   const overlayHitRects = () => (store.box === 'hidden'
     ? [ui.launcher, store.launcherCoachmark ? ui.coachmark : null]
@@ -2904,6 +2905,9 @@ import {
     if (active) foreignEpoch += 1; // we may now be under it — restack
     foreignTopLayer = active;
     if (!active) pointerOverOverlay = false;
+    // A pointer already resting on the overlay when the guest promotes
+    // something gets no further pointermove to react to — recompute now.
+    else if (lastPointer) pointerOverOverlay = isPointNearRects(lastPointer, overlayHitRects());
     applyHostLayer(entranceDue);
   };
   // Restacking is itself an `open` mutation and a toggle on our own frame.
@@ -2918,14 +2922,17 @@ import {
   document.addEventListener('toggle', (e) => {
     if (!isOwnRestack(e.target)) noteTopLayerChange();
   }, true);
-  document.addEventListener('fullscreenchange', noteTopLayerChange, true);
+  // Wrapped so the Event argument doesn't leak into noteTopLayerChange's
+  // entranceDue and skip the 'relayered' class on a silent restack.
+  document.addEventListener('fullscreenchange', () => noteTopLayerChange(), true);
 
   // Under a guest modal the launcher is inert, so its own pointer events
   // never fire — the escalation has to be driven from the guest's side of
   // the hit test, where pointermove still lands.
   window.addEventListener('pointermove', (e) => {
+    lastPointer = { x: e.clientX, y: e.clientY };
     if (!foreignTopLayer) return;
-    const over = isPointNearRects({ x: e.clientX, y: e.clientY }, overlayHitRects());
+    const over = isPointNearRects(lastPointer, overlayHitRects());
     if (over === pointerOverOverlay) return;
     pointerOverOverlay = over;
     applyHostLayer();

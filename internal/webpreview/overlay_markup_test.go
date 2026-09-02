@@ -455,11 +455,8 @@ func TestOverlayAcknowledgeLauncherRendersAfterPersist(t *testing.T) {
 	}
 }
 
-// A guest page's dialog.showModal() promotes its dialog to the top layer,
-// which paints above every z-index — the overlay used to sit behind the
-// modal's ::backdrop and get blurred along with the page. The policy lives
-// in toplayer.js (see toplayer_test.mjs); these are the DOM contact points
-// overlay.js has to keep for that policy to reach the screen.
+// TestOverlayHostJoinsTheTopLayer pins the DOM contact points that keep the
+// overlay above a guest's top-layer dialog, per the policy in toplayer.js.
 func TestOverlayHostJoinsTheTopLayer(t *testing.T) {
 	t.Parallel()
 	js := string(overlayJS)
@@ -592,5 +589,64 @@ func TestOverlayMountEntranceSurvivesPreexistingGuestTopLayer(t *testing.T) {
 	note := js[noteStart : noteStart+noteEnd]
 	if !strings.Contains(note, "applyHostLayer(entranceDue);") {
 		t.Error("overlay.js noteTopLayerChange must forward entranceDue to applyHostLayer")
+	}
+}
+
+// TestOverlayFullscreenChangeDoesNotLeakEventIntoEntranceDue guards a bug
+// found in review: addEventListener passes the fullscreenchange Event as
+// noteTopLayerChange's first argument, so the (always truthy) Event object
+// became entranceDue and a silent fullscreen restack skipped the
+// 'relayered' class, replaying the entrance animation it should suppress.
+func TestOverlayFullscreenChangeDoesNotLeakEventIntoEntranceDue(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	if strings.Contains(js, "document.addEventListener('fullscreenchange', noteTopLayerChange, true);") {
+		t.Error("overlay.js must not pass noteTopLayerChange directly as the fullscreenchange listener — the Event leaks into entranceDue")
+	}
+	if !strings.Contains(js, "document.addEventListener('fullscreenchange', () => noteTopLayerChange(), true);") {
+		t.Error("overlay.js fullscreenchange listener must wrap noteTopLayerChange so entranceDue keeps its false default")
+	}
+}
+
+// TestOverlayPointerOverOverlayRecomputedWhenGuestPromotes guards a bug
+// found in review: pointermove tracking returned early whenever
+// foreignTopLayer was false, so a pointer already resting on the launcher
+// when a guest modal/popover opened left pointerOverOverlay stale at
+// false — the host never escalated to modal until the pointer moved again.
+func TestOverlayPointerOverOverlayRecomputedWhenGuestPromotes(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	if !strings.Contains(js, "let lastPointer = null;") {
+		t.Fatal("overlay.js must track the last pointermove position outside the foreignTopLayer gate")
+	}
+	pmStart := strings.Index(js, "window.addEventListener('pointermove'")
+	if pmStart < 0 {
+		t.Fatal("overlay.js pointermove listener not found")
+	}
+	pmEnd := strings.Index(js[pmStart:], "}, true);")
+	if pmEnd < 0 {
+		t.Fatal("overlay.js pointermove listener not terminated")
+	}
+	pointermove := js[pmStart : pmStart+pmEnd]
+	trackIdx := strings.Index(pointermove, "lastPointer = { x: e.clientX, y: e.clientY };")
+	gateIdx := strings.Index(pointermove, "if (!foreignTopLayer) return;")
+	if trackIdx < 0 {
+		t.Fatal("overlay.js pointermove listener must record lastPointer unconditionally")
+	}
+	if gateIdx < 0 || trackIdx > gateIdx {
+		t.Error("overlay.js pointermove listener must track lastPointer before the foreignTopLayer early-return")
+	}
+
+	noteStart := strings.Index(js, "const noteTopLayerChange = (entranceDue = false) => {")
+	if noteStart < 0 {
+		t.Fatal("overlay.js noteTopLayerChange definition not found")
+	}
+	noteEnd := strings.Index(js[noteStart:], "};")
+	if noteEnd < 0 {
+		t.Fatal("overlay.js noteTopLayerChange definition not terminated")
+	}
+	note := js[noteStart : noteStart+noteEnd]
+	if !strings.Contains(note, "else if (lastPointer) pointerOverOverlay = isPointNearRects(lastPointer, overlayHitRects());") {
+		t.Error("overlay.js noteTopLayerChange must recompute pointerOverOverlay from lastPointer when a guest element is newly promoted")
 	}
 }
