@@ -244,7 +244,7 @@ func TestOverlayInlineCommentWiring(t *testing.T) {
 	cc := js[ccStart : ccStart+ccEnd]
 	renderIdx := strings.Index(cc, "render();")
 	focusIdx := strings.Index(cc, "ui.input.focus({ preventScroll: true })")
-	if focusIdx < 0 || focusIdx < renderIdx {
+	if renderIdx < 0 || focusIdx < 0 || focusIdx < renderIdx {
 		t.Error("confirmComment must focus the composer after render() so a second Enter sends")
 	}
 	// Scrolling must reposition the popover along its anchor, not dismiss
