@@ -21,7 +21,15 @@ import (
 
 func runSessionPickerProgram(t *testing.T, client *daemonclient.Client, projectDir string, steps ...keyStep) (tui.SessionPickerResult, string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), connectProgramTimeout)
+	return runSessionPickerProgramWithTimeout(t, client, projectDir, connectProgramTimeout, steps...)
+}
+
+// runSessionPickerProgramWithTimeout lets callers whose keySteps drive a
+// slower real action (e.g. live backend discovery) widen the program's
+// outer deadline beyond connectProgramTimeout.
+func runSessionPickerProgramWithTimeout(t *testing.T, client *daemonclient.Client, projectDir string, timeout time.Duration, steps ...keyStep) (tui.SessionPickerResult, string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	out := &syncBuffer{}

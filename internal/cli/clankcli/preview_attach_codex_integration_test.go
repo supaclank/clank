@@ -54,9 +54,15 @@ func TestIntegration_ResolveAttachSessionByID_RediscoversCodex(t *testing.T) {
 	}
 }
 
+// codexRediscoverProgramTimeout bounds the whole program, including a real
+// Codex ACP discovery call (up to sessionPickerDiscoverTimeout's 60s in
+// internal/tui) triggered by the "Rediscover sessions" keystep — wider than
+// connectProgramTimeout so that call isn't cut off mid-flight.
+const codexRediscoverProgramTimeout = 90 * time.Second
+
 func TestIntegration_SessionPickerProgram_RediscoversCodex(t *testing.T) {
 	client, want := newCodexAttachTestHost(t)
-	result, rendered := runSessionPickerProgram(t, client, want.Directory,
+	result, rendered := runSessionPickerProgramWithTimeout(t, client, want.Directory, codexRediscoverProgramTimeout,
 		keyStep{UntilVisible: "Rediscover sessions", Keys: "\r"},
 		keyStep{UntilVisible: want.Title, Keys: "\r"})
 	sessions, err := client.Sessions().List(t.Context())

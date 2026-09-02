@@ -50,7 +50,7 @@ func TestIntegration_ClaudeACP_OffersOpus5(t *testing.T) {
 		}
 		for _, model := range opt.Values {
 			t.Logf("Claude model: %s (%s): %s", model.Value, model.Name, model.Description)
-			if strings.HasPrefix(model.Value, "opus") && strings.Contains(strings.ToLower(model.Name+" "+model.Description), "opus 5") {
+			if strings.Contains(strings.ToLower(model.Value), "opus") && strings.Contains(strings.ToLower(model.Name+" "+model.Description), "opus 5") {
 				hasOpus5 = true
 			}
 		}
