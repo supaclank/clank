@@ -44,11 +44,8 @@ func OverlaySnippet(config map[string]any) ([]byte, error) {
 		`<script type="module" src="` + OverlayPath + `"></script>`), nil
 }
 
-// overlayModules routes every ES module the guest page can import, keyed by
-// its served path. Single source of truth on purpose: the standalone proxy
-// mux and the gateway both serve from here, and a module reachable from
-// overlay.js but absent from this table 404s its import, which fails the
-// whole module graph — the overlay then never renders at all.
+// overlayModules is the single source both the proxy mux and the gateway
+// serve from; a module missing here 404s its import and the overlay never renders.
 var overlayModules = map[string][]byte{
 	OverlayPath:       overlayJS,
 	ChatPath:          chatJS,

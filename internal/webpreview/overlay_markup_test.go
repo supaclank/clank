@@ -592,11 +592,9 @@ func TestOverlayMountEntranceSurvivesPreexistingGuestTopLayer(t *testing.T) {
 	}
 }
 
-// TestOverlayFullscreenChangeDoesNotLeakEventIntoEntranceDue guards a bug
-// found in review: addEventListener passes the fullscreenchange Event as
-// noteTopLayerChange's first argument, so the (always truthy) Event object
-// became entranceDue and a silent fullscreen restack skipped the
-// 'relayered' class, replaying the entrance animation it should suppress.
+// TestOverlayFullscreenChangeDoesNotLeakEventIntoEntranceDue pins that the
+// fullscreenchange listener wraps noteTopLayerChange, so its Event argument
+// can't leak into entranceDue and force-replay the entrance animation.
 func TestOverlayFullscreenChangeDoesNotLeakEventIntoEntranceDue(t *testing.T) {
 	t.Parallel()
 	js := string(overlayJS)

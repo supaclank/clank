@@ -13,9 +13,8 @@ import (
 
 const overlaySourceDir = "overlay"
 
-// relativeImport matches the `from './x.js'` specifiers overlay.js uses to
-// pull in its pure modules. The browser resolves each against the injected
-// script's own URL, so every one has to exist under /__clank/.
+// relativeImport matches overlay.js's `from './x.js'` specifiers, each of
+// which must exist under /__clank/.
 var relativeImport = regexp.MustCompile(`from '\./([A-Za-z0-9_.-]+\.js)'`)
 
 func serveOverlayPath(t *testing.T, path string) []byte {
@@ -30,9 +29,8 @@ func serveOverlayPath(t *testing.T, path string) []byte {
 	return rec.Body.Bytes()
 }
 
-// Every overlay module is embedded and routed by hand, so adding one and
-// forgetting either step ships an overlay whose first import 404s — the
-// whole module graph fails and nothing renders at all.
+// Every overlay module must be both embedded and routed by hand; missing
+// either step 404s the first import and the overlay never renders.
 func TestEveryOverlayModuleIsServed(t *testing.T) {
 	t.Parallel()
 	names := overlayModuleFilenames(t)
@@ -90,9 +88,8 @@ func TestRunningProxyServesEveryOverlayModule(t *testing.T) {
 			t.Errorf("the running proxy serves /__clank/%s as %d; the overlay's import of it would fail", name, res.StatusCode)
 			continue
 		}
-		// Unrouted /__clank paths fall through to the upstream app, which
-		// answers 200 with HTML — so status alone proves nothing. The body
-		// has to be the module itself.
+		// Unrouted paths fall through to the upstream app with a 200 HTML body,
+		// so status alone doesn't prove the module served — compare the body too.
 		onDisk, err := os.ReadFile(filepath.Join(overlaySourceDir, name))
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
@@ -103,9 +100,8 @@ func TestRunningProxyServesEveryOverlayModule(t *testing.T) {
 	}
 }
 
-// The import graph reached from overlay.js has to be servable end to end:
-// a specifier pointing at a module the proxy doesn't route breaks the
-// overlay just as completely as a missing file.
+// Every module reachable from overlay.js's import graph must be servable;
+// an unrouted specifier breaks the overlay as completely as a missing file.
 func TestOverlayImportsResolveToServedModules(t *testing.T) {
 	t.Parallel()
 	pending := []string{"overlay.js"}
@@ -126,8 +122,6 @@ func TestOverlayImportsResolveToServedModules(t *testing.T) {
 			pending = append(pending, string(m[1]))
 		}
 	}
-	// The bug this guards: toplayer.js was imported by overlay.js while
-	// being neither embedded nor routed, so the overlay never appeared.
 	if !visited["toplayer.js"] {
 		t.Error("overlay.js must import the top-layer policy module")
 	}
