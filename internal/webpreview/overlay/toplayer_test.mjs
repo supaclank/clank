@@ -1,7 +1,5 @@
-// Regression tests for the overlay's top-layer policy. The bug these
-// document: a guest page calling dialog.showModal() promotes its dialog
-// to the top layer, which paints above the overlay's z-index:2147483646
-// host — its ::backdrop blur landed on the clank box itself.
+// Regression tests for the overlay's top-layer policy: which host mode
+// (popover vs. modal) is needed, and when the overlay must re-enter the layer.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
