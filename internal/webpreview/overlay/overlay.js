@@ -2842,9 +2842,15 @@ import {
     : [ui.box]).filter(Boolean).map((el) => el.getBoundingClientRect());
 
   const enterTopLayer = (mode) => (mode === HOST_LAYER.modal ? layer.showModal() : layer.showPopover());
+  // close() fires 'close' synchronously; without this flag the handler's
+  // reentrant applyHostLayer() reopens the layer before the outer call's
+  // own enterTopLayer() runs, which then throws on an already-open layer.
+  let restacking = false;
   const leaveTopLayer = () => {
+    restacking = true;
     if (hostLayer === HOST_LAYER.modal) layer.close();
     else if (hostLayer === HOST_LAYER.popover) layer.hidePopover();
+    restacking = false;
   };
 
   // entranceDue: the box just changed visibility, so its entrance
@@ -2880,12 +2886,19 @@ import {
   // dismiss ladder; the UA's dialog cancel would close the host outright.
   layer.addEventListener('cancel', (e) => e.preventDefault());
   layer.addEventListener('close', () => {
-    if (!CAN_TOP_LAYER || layer.matches(TOP_LAYER_SELECTOR)) return;
+    if (!CAN_TOP_LAYER || restacking || layer.matches(TOP_LAYER_SELECTOR)) return;
     hostLayer = null; // closed from outside (UA, extension) — rejoin the layer
     applyHostLayer();
   });
 
   const noteTopLayerChange = () => {
+    // TOP_LAYER_SELECTOR includes ':popover-open', an unrecognized (and
+    // therefore selector-list-invalidating) pseudo-class on a browser
+    // without Popover API support.
+    if (!CAN_TOP_LAYER) return;
+    // TODO(ai-review): document.querySelectorAll doesn't pierce shadow
+    // boundaries, so a guest dialog/popover inside a shadow root stays
+    // undetected. https://github.com/supaclank/clank/pull/270#discussion_r3915146327
     const active = [...document.querySelectorAll(TOP_LAYER_SELECTOR)].some((el) => el !== layer);
     if (!active && !foreignTopLayer) return; // the common case: nothing promoted, nothing to do
     if (active) foreignEpoch += 1; // we may now be under it — restack
@@ -4256,6 +4269,7 @@ import {
     document.body.appendChild(layer);
     if (!CAN_TOP_LAYER) return;
     document.adoptedStyleSheets = [...document.adoptedStyleSheets, layerBackdropSheet()];
+    noteTopLayerChange(); // pick up a guest modal/popover already open before mount
     applyHostLayer(true); // first paint: let the launcher play its entrance
   };
   mount();

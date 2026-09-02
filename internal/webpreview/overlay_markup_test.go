@@ -502,3 +502,71 @@ func TestOverlayHostJoinsTheTopLayer(t *testing.T) {
 		t.Error("the overlay host must not rely on z-index alone; the top layer outranks it")
 	}
 }
+
+// TestOverlayTopLayerCloseGuardsAgainstReentrantRestack guards a hang found
+// in review: leaveTopLayer()'s layer.close() fires 'close' synchronously,
+// and the handler's own applyHostLayer() reopened the layer before the
+// outer restack's enterTopLayer() ran, throwing on an already-open layer.
+func TestOverlayTopLayerCloseGuardsAgainstReentrantRestack(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	if !strings.Contains(js, "let restacking = false;") {
+		t.Error("overlay.js must track a restacking flag around leaveTopLayer()'s close()/hidePopover()")
+	}
+	if !strings.Contains(js, "if (!CAN_TOP_LAYER || restacking || layer.matches(TOP_LAYER_SELECTOR)) return;") {
+		t.Error("overlay.js layer 'close' handler must skip reentry while our own leaveTopLayer() is closing it")
+	}
+}
+
+// TestOverlayTopLayerDiscoveryGuardsUnsupportedPopover guards against a
+// SyntaxError: TOP_LAYER_SELECTOR includes ':popover-open', an unrecognized
+// pseudo-class on a browser with <dialog> but no Popover API, which throws
+// out of document.querySelectorAll/matches instead of using the documented
+// plain-div fallback.
+func TestOverlayTopLayerDiscoveryGuardsUnsupportedPopover(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	noteStart := strings.Index(js, "const noteTopLayerChange = ()")
+	if noteStart < 0 {
+		t.Fatal("overlay.js noteTopLayerChange definition not found")
+	}
+	noteEnd := strings.Index(js[noteStart:], "};")
+	if noteEnd < 0 {
+		t.Fatal("overlay.js noteTopLayerChange definition not terminated")
+	}
+	note := js[noteStart : noteStart+noteEnd]
+	guardIdx := strings.Index(note, "if (!CAN_TOP_LAYER) return;")
+	queryIdx := strings.Index(note, "document.querySelectorAll(TOP_LAYER_SELECTOR)")
+	if guardIdx < 0 {
+		t.Fatal("overlay.js noteTopLayerChange must return early when !CAN_TOP_LAYER")
+	}
+	if queryIdx < 0 || queryIdx < guardIdx {
+		t.Error("overlay.js noteTopLayerChange must guard document.querySelectorAll(TOP_LAYER_SELECTOR) behind the CAN_TOP_LAYER check")
+	}
+}
+
+// TestOverlayMountDetectsPreexistingGuestTopLayer guards against the
+// overlay defaulting to popover mode on mount when a guest modal/popover is
+// already open (e.g. an onboarding dialog that shows itself on load): the
+// overlay must scan the current top layer before applying its initial mode.
+func TestOverlayMountDetectsPreexistingGuestTopLayer(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	mountStart := strings.Index(js, "const mount = ()")
+	if mountStart < 0 {
+		t.Fatal("overlay.js mount definition not found")
+	}
+	mountEnd := strings.Index(js[mountStart:], "mount();")
+	if mountEnd < 0 {
+		t.Fatal("overlay.js mount definition not terminated")
+	}
+	mount := js[mountStart : mountStart+mountEnd]
+	noteIdx := strings.Index(mount, "noteTopLayerChange();")
+	applyIdx := strings.Index(mount, "applyHostLayer(true);")
+	if noteIdx < 0 {
+		t.Fatal("overlay.js mount() must call noteTopLayerChange() to detect a guest top layer already present")
+	}
+	if applyIdx < 0 || applyIdx < noteIdx {
+		t.Error("overlay.js mount() must call noteTopLayerChange() before applyHostLayer(true)")
+	}
+}

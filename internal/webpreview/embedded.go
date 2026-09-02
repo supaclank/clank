@@ -21,6 +21,7 @@ const (
 	LauncherPath      = "/__clank/launcher.js"
 	ResizePath        = "/__clank/resize.js"
 	WorkletPath       = "/__clank/worklet.js"
+	TopLayerPath      = "/__clank/toplayer.js"
 	APIPrefix         = "/__clank/api"
 
 	// NativePreviewUserAgentToken keeps the JS overlay out of clank-mobile's
@@ -71,6 +72,8 @@ func ServeOverlayAsset(w http.ResponseWriter, r *http.Request) bool {
 		body = resizeJS
 	case WorkletPath:
 		body = workletJS
+	case TopLayerPath:
+		body = topLayerJS
 	default:
 		return false
 	}

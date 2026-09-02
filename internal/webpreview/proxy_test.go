@@ -305,7 +305,7 @@ func TestRequireTokenRejectsOversizedTokenWithoutMatching(t *testing.T) {
 func TestOverlayAssetsServed(t *testing.T) {
 	t.Parallel()
 	s := startTestStack(t, http.NotFoundHandler(), http.NotFoundHandler())
-	for _, path := range []string{"/__clank/overlay.js", "/__clank/chat.js", "/__clank/markdown.js", "/__clank/transcript.js", "/__clank/settings.js", "/__clank/resize.js", "/__clank/worklet.js", "/__clank/boxpos.js", "/__clank/launcher.js"} {
+	for _, path := range []string{"/__clank/overlay.js", "/__clank/chat.js", "/__clank/markdown.js", "/__clank/transcript.js", "/__clank/settings.js", "/__clank/resize.js", "/__clank/worklet.js", "/__clank/boxpos.js", "/__clank/launcher.js", "/__clank/toplayer.js"} {
 		resp, err := http.Get(s.URL + path)
 		if err != nil {
 			t.Fatalf("GET %s: %v", path, err)

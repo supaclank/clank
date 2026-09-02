@@ -71,6 +71,12 @@ var launcherJS []byte
 //go:embed overlay/resize.js
 var resizeJS []byte
 
+// topLayerJS is the overlay's pure top-layer policy module (host mode
+// selection, restack detection); overlay.js imports it.
+//
+//go:embed overlay/toplayer.js
+var topLayerJS []byte
+
 // workletJS is the AudioWorklet processor that batches mic PCM for the
 // dictation WebSocket. Served as its own module because AudioWorklets
 // load from a URL, not inline.
@@ -205,6 +211,7 @@ func Start(opts Options) (*Server, error) {
 	mux.HandleFunc("GET "+LauncherPath, serveJS(launcherJS))
 	mux.HandleFunc("GET "+ResizePath, serveJS(resizeJS))
 	mux.HandleFunc("GET "+WorkletPath, serveJS(workletJS))
+	mux.HandleFunc("GET "+TopLayerPath, serveJS(topLayerJS))
 	mux.Handle(APIPrefix+"/", requireToken(opts.Token,
 		http.StripPrefix(APIPrefix, daemon)))
 	mux.Handle("GET /__clank/voice", requireToken(opts.Token,
