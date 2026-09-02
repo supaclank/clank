@@ -201,17 +201,9 @@ func Start(opts Options) (*Server, error) {
 	daemon := newDaemonProxy(opts.DaemonSocketPath)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET "+OverlayPath, serveJS(overlayJS))
-	mux.HandleFunc("GET "+ChatPath, serveJS(chatJS))
-	mux.HandleFunc("GET "+MarkdownPath, serveJS(markdownJS))
-	mux.HandleFunc("GET "+TranscriptPath, serveJS(transcriptJS))
-	mux.HandleFunc("GET "+SettingsPath, serveJS(settingsJS))
-	mux.HandleFunc("GET "+SourceControlPath, serveJS(sourceControlJS))
-	mux.HandleFunc("GET "+BoxPosPath, serveJS(boxPosJS))
-	mux.HandleFunc("GET "+LauncherPath, serveJS(launcherJS))
-	mux.HandleFunc("GET "+ResizePath, serveJS(resizeJS))
-	mux.HandleFunc("GET "+WorkletPath, serveJS(workletJS))
-	mux.HandleFunc("GET "+TopLayerPath, serveJS(topLayerJS))
+	for path, body := range overlayModules {
+		mux.HandleFunc("GET "+path, serveJS(body))
+	}
 	mux.Handle(APIPrefix+"/", requireToken(opts.Token,
 		http.StripPrefix(APIPrefix, daemon)))
 	mux.Handle("GET /__clank/voice", requireToken(opts.Token,

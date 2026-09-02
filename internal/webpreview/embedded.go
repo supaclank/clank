@@ -44,37 +44,33 @@ func OverlaySnippet(config map[string]any) ([]byte, error) {
 		`<script type="module" src="` + OverlayPath + `"></script>`), nil
 }
 
+// overlayModules routes every ES module the guest page can import, keyed by
+// its served path. Single source of truth on purpose: the standalone proxy
+// mux and the gateway both serve from here, and a module reachable from
+// overlay.js but absent from this table 404s its import, which fails the
+// whole module graph — the overlay then never renders at all.
+var overlayModules = map[string][]byte{
+	OverlayPath:       overlayJS,
+	ChatPath:          chatJS,
+	MarkdownPath:      markdownJS,
+	TranscriptPath:    transcriptJS,
+	SettingsPath:      settingsJS,
+	SourceControlPath: sourceControlJS,
+	BoxPosPath:        boxPosJS,
+	LauncherPath:      launcherJS,
+	ResizePath:        resizeJS,
+	TopLayerPath:      topLayerJS,
+	WorkletPath:       workletJS,
+}
+
 // ServeOverlayAsset serves one embedded overlay module and reports whether the
 // request matched a reserved asset path.
 func ServeOverlayAsset(w http.ResponseWriter, r *http.Request) bool {
 	if r.Method != http.MethodGet {
 		return false
 	}
-	var body []byte
-	switch r.URL.Path {
-	case OverlayPath:
-		body = overlayJS
-	case ChatPath:
-		body = chatJS
-	case MarkdownPath:
-		body = markdownJS
-	case TranscriptPath:
-		body = transcriptJS
-	case SettingsPath:
-		body = settingsJS
-	case SourceControlPath:
-		body = sourceControlJS
-	case BoxPosPath:
-		body = boxPosJS
-	case LauncherPath:
-		body = launcherJS
-	case ResizePath:
-		body = resizeJS
-	case WorkletPath:
-		body = workletJS
-	case TopLayerPath:
-		body = topLayerJS
-	default:
+	body, ok := overlayModules[r.URL.Path]
+	if !ok {
 		return false
 	}
 	serveJS(body).ServeHTTP(w, r)
