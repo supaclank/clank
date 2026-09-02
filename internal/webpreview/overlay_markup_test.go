@@ -231,6 +231,13 @@ func TestOverlayInlineCommentWiring(t *testing.T) {
 	if !strings.Contains(js, "navigator.clipboard.writeText") {
 		t.Error("overlay.js popover must bridge ⌘C to copy the anchor text")
 	}
+	// Confirming a comment hands focus to the composer, so Enter-to-attach
+	// and Enter-to-send are one continuous gesture. Anywhere else — the box
+	// anchor a summon focuses, or nothing at all — costs a click or a Tab
+	// between the two presses.
+	if !strings.Contains(js, "ui.input.focus({ preventScroll: true })") {
+		t.Error("confirmComment must focus the composer so a second Enter sends")
+	}
 	// Scrolling must reposition the popover along its anchor, not dismiss
 	// it — highlight + input surviving a scroll is the point.
 	if strings.Contains(js, "window.addEventListener('scroll', () => hideCommentPopover()") {
