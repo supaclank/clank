@@ -152,6 +152,10 @@ func (m *SessionPickerModel) loadCmd() tea.Cmd {
 	}
 }
 
+// TODO(ai-review): add direct integration coverage of the imported count
+// and the all-backends error branch (only the happy path is covered today).
+// https://github.com/supaclank/clank/pull/269
+
 // discoverCmd re-runs backend session discovery for the project dir and
 // reports how many sessions it newly registered (the same sweep the
 // inbox's import action runs).

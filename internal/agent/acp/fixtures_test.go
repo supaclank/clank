@@ -142,6 +142,10 @@ func TestFixture_OpenCodeLoadReplay(t *testing.T) {
 	}
 }
 
+// TODO(ai-review): claude-agent-acp is pinned to 0.73.0 but these fixtures
+// (and the two below) are still captured at 0.61.0 — capture a 0.73.0 set.
+// https://github.com/supaclank/clank/pull/269#discussion_r3914738923
+
 // The claude turn fixture carries the late-update class (title after the
 // prompt resolved) and _meta-only update variants — both must pass or
 // drop harmlessly, never wedge the stream.
