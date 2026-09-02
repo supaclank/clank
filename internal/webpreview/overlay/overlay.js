@@ -3282,10 +3282,7 @@ import {
     hideCommentPopover();
     if (store.box === 'hidden') store.box = 'prompt';
     render();
-    // Hand typing focus to the composer, not the box anchor a summon
-    // would use: the user was already typing, so Enter here sends and
-    // the pair reads as one gesture — Enter to attach, Enter to send.
-    // After render(), which is what makes the box focusable.
+    // Focus the composer (not the box anchor a summon uses) so a second Enter sends — one gesture.
     ui.input.focus({ preventScroll: true });
     const end = ui.input.value.length; // caret past any draft, ready to keep typing
     ui.input.setSelectionRange(end, end);
