@@ -454,3 +454,51 @@ func TestOverlayAcknowledgeLauncherRendersAfterPersist(t *testing.T) {
 		t.Error("overlay.js acknowledgeLauncher must call render() after clearing store.launcherCoachmark, so the dismissed coachmark disappears as soon as the save succeeds")
 	}
 }
+
+// A guest page's dialog.showModal() promotes its dialog to the top layer,
+// which paints above every z-index — the overlay used to sit behind the
+// modal's ::backdrop and get blurred along with the page. The policy lives
+// in toplayer.js (see toplayer_test.mjs); these are the DOM contact points
+// overlay.js has to keep for that policy to reach the screen.
+func TestOverlayHostJoinsTheTopLayer(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	for _, want := range []string{
+		// A <dialog popover="manual"> is the only host that can be both
+		// non-modal (page stays clickable) and modal (overlay stays
+		// clickable under a guest modal) in the top layer.
+		`document.createElement(CAN_TOP_LAYER ? 'dialog' : 'div')`,
+		`layer.setAttribute('popover', 'manual')`,
+		"layer.showModal() : layer.showPopover()",
+		// attachShadow rejects <dialog>, so the shadow host stays a div
+		// nested inside the top-layer frame.
+		"layer.appendChild(host)",
+		// ::backdrop is the host's own pseudo-element: unreachable from
+		// inside its shadow root, so modal mode needs a document sheet.
+		"::backdrop{background:transparent;backdrop-filter:none;}",
+		// The UA's dialog cancel would close the host on Escape, taking
+		// the overlay off-screen instead of running its dismiss ladder.
+		"layer.addEventListener('cancel', (e) => e.preventDefault())",
+		// Order in the top layer is promotion order, so the overlay has to
+		// notice guest promotions and restack.
+		"attributeFilter: ['open']",
+		// Restacking mutates the frame's own `open` and fires its own
+		// toggle; feeding those back in hung the renderer outright
+		// (restack -> event -> restack), so both paths filter self-events.
+		"const isOwnRestack = (target) => target === layer;",
+		"if (records.every((r) => isOwnRestack(r.target))) return;",
+		"if (!isOwnRestack(e.target)) noteTopLayerChange();",
+		// Under a guest modal the launcher is inert and receives no pointer
+		// events of its own; escalation is driven from window pointermove.
+		"window.addEventListener('pointermove'",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("overlay.js top-layer wiring missing %q", want)
+		}
+	}
+	// The old host was a plain div trusting a z-index — the exact thing a
+	// top-layer element outranks.
+	if strings.Contains(js, "host.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;';") {
+		t.Error("the overlay host must not rely on z-index alone; the top layer outranks it")
+	}
+}

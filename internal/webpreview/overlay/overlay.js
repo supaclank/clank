@@ -61,6 +61,9 @@ import {
   boxExtraFromDrag, clampBoxExtra, chatRowCap,
   BOX_EDGE_MARGIN, BOX_DEFAULT_WIDTH, CHAT_DEFAULT_MAX,
 } from './resize.js';
+import {
+  HOST_LAYER, TOP_LAYER_ACTION, hostLayerFor, hostLayerTransition, isPointNearRects,
+} from './toplayer.js';
 
 (() => {
   'use strict';
@@ -70,6 +73,11 @@ import {
   const CFG = window.__CLANK_PREVIEW || {};
   const TOKEN = CFG.token || '';
   const DONE_LINGER_MS = 8000; // mobile: PreviewOverlayState.DONE_LINGER_MS
+  const HOST_ELEMENT_ID = 'clank-overlay-host';
+  // Everything the top layer can hold: modal dialogs and fullscreen
+  // (:modal) plus open popovers. Guest elements are the matches that
+  // aren't the overlay's own frame.
+  const TOP_LAYER_SELECTOR = ':modal, :popover-open';
   const DEFAULT_PROFILE_STORAGE_KEY = 'clank.defaultPresetByBackend';
   const BOX_POS_STORAGE_KEY = 'clank.boxPos';
   const BOX_EXTRA_STORAGE_KEY = 'clank.boxExtra';
@@ -1895,9 +1903,29 @@ import {
     launcher: '<svg width="27" height="27" viewBox="2.5 2.5 19 19" fill="none" aria-hidden="true"><defs><linearGradient id="clank-mark" x1="2.5" y1="2.5" x2="21.5" y2="21.5"><stop stop-color="#ff315f"/><stop offset="1" stop-color="#ff4f83"/></linearGradient></defs><rect class="launcher-mark-field" x="4.75" y="4.75" width="14.5" height="14.5" fill="url(#clank-mark)" opacity=".48"/><rect class="launcher-mark-dash" x="8" y="4.25" width="3.5" height="1" fill="url(#clank-mark)"/><rect class="launcher-mark-dash" x="12.5" y="4.25" width="3.5" height="1" fill="url(#clank-mark)"/><rect class="launcher-mark-dash" x="8" y="18.75" width="3.5" height="1" fill="url(#clank-mark)"/><rect class="launcher-mark-dash" x="12.5" y="18.75" width="3.5" height="1" fill="url(#clank-mark)"/><rect class="launcher-mark-dash" x="4.25" y="8" width="1" height="3.5" fill="url(#clank-mark)"/><rect class="launcher-mark-dash" x="4.25" y="12.5" width="1" height="3.5" fill="url(#clank-mark)"/><rect class="launcher-mark-dash" x="18.75" y="8" width="1" height="3.5" fill="url(#clank-mark)"/><rect class="launcher-mark-dash" x="18.75" y="12.5" width="1" height="3.5" fill="url(#clank-mark)"/><rect class="launcher-mark-corner" x="2.5" y="2.5" width="4.5" height="4.5" fill="url(#clank-mark)"/><rect class="launcher-mark-corner" x="17" y="2.5" width="4.5" height="4.5" fill="url(#clank-mark)"/><rect class="launcher-mark-corner" x="17" y="17" width="4.5" height="4.5" fill="url(#clank-mark)"/><rect class="launcher-mark-corner" x="2.5" y="17" width="4.5" height="4.5" fill="url(#clank-mark)"/></svg>',
   };
 
+  // A z-index — even the maximum — loses to anything the guest page puts
+  // in the top layer (dialog.showModal(), popover), so the overlay joins
+  // the top layer itself. toplayer.js owns the mode policy; `layer` is the
+  // element that carries it. Browsers without popover keep a plain div:
+  // the overlay still renders, it just can't outrank a guest modal.
+  const CAN_TOP_LAYER = typeof HTMLDialogElement === 'function' &&
+    typeof HTMLElement.prototype.showPopover === 'function';
+  // <dialog>, because only showModal() survives a guest modal's inertness
+  // — and popover="manual", because that reaches the top layer without
+  // inerting the guest page. Neither can be the shadow host: attachShadow
+  // rejects <dialog>, so the shadow lives on a div inside it.
+  const layer = document.createElement(CAN_TOP_LAYER ? 'dialog' : 'div');
+  layer.id = HOST_ELEMENT_ID;
+  if (CAN_TOP_LAYER) layer.setAttribute('popover', 'manual'); // manual: never light-dismisses
+  // The trailing resets are the frame-side twin of `all: initial` on the
+  // shadow root — <dialog>'s UA box (centered, bordered, sized to content,
+  // opaque) would otherwise show through.
+  layer.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;' +
+    'margin:0;padding:0;border:0;background:transparent;color:inherit;' +
+    'width:auto;height:auto;max-width:none;max-height:none;overflow:visible;';
   const host = document.createElement('div');
-  host.id = 'clank-overlay-host';
-  host.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;';
+  host.style.cssText = 'position:fixed;inset:0;pointer-events:none;';
+  layer.appendChild(host);
   const root = host.attachShadow({ mode: 'open' });
   root.innerHTML = `
 <style>
@@ -1926,6 +1954,9 @@ import {
   /* .morphed persists after the launcher morph settles so boxIn doesn't
      replay (it would flash the box invisible right after the morph). */
   .box.morphing, .box.morphed { animation: none; }
+  /* Re-entering the top layer flips the host through display:none, which
+     would replay the entrance animations on a pure restack. */
+  .box.relayered, .launcher.relayered, .coachmark.relayered { animation: none; }
   .box:focus { outline: none; } /* focus ANCHOR (tabindex=-1), not a tab stop — no ring */
   /* buttons show a ring on KEYBOARD focus only (:focus-visible) — the
      Tab rotation must be visible; the composer's caret speaks for itself */
@@ -2792,7 +2823,103 @@ import {
     onToggle: toggleTranscriptCard,
   });
 
+  // ---------- top layer ------------------------------------------------
+  // The guest page can promote its own elements above every z-index, so
+  // the overlay answers in kind. Two separate problems: order in the top
+  // layer is promotion order (a guest dialog opened after us paints over
+  // us), and showModal() inerts everything outside its own subtree (so
+  // painting on top still isn't clickable). toplayer.js decides; this
+  // makes the DOM calls.
+  let hostLayer = null; // HOST_LAYER value currently applied
+  let foreignTopLayer = false;
+  let foreignEpoch = 0; // bumped whenever the guest promotes something
+  let appliedEpoch = -1;
+  let pointerOverOverlay = false;
+  let escalatedFocus = null; // guest focus parked by a hover-only escalation
+
+  const overlayHitRects = () => (store.box === 'hidden'
+    ? [ui.launcher, store.launcherCoachmark ? ui.coachmark : null]
+    : [ui.box]).filter(Boolean).map((el) => el.getBoundingClientRect());
+
+  const enterTopLayer = (mode) => (mode === HOST_LAYER.modal ? layer.showModal() : layer.showPopover());
+  const leaveTopLayer = () => {
+    if (hostLayer === HOST_LAYER.modal) layer.close();
+    else if (hostLayer === HOST_LAYER.popover) layer.hidePopover();
+  };
+
+  // entranceDue: the box just changed visibility, so its entrance
+  // animation is wanted; every other restack has to stay silent.
+  const applyHostLayer = (entranceDue = false) => {
+    if (!CAN_TOP_LAYER || !layer.isConnected) return; // showPopover throws off-document
+    const desired = hostLayerFor({
+      hasForeignTopLayer: foreignTopLayer,
+      isBoxVisible: store.box !== 'hidden',
+      isPointerOverOverlay: pointerOverOverlay,
+      isInspecting: store.inspect,
+    });
+    const action = hostLayerTransition({ current: hostLayer, desired, foreignEpoch, appliedEpoch });
+    if (action === TOP_LAYER_ACTION.none) return;
+    // Escalating steals focus (showModal focuses into the dialog); a hover
+    // that never opened the box has to hand it back, or brushing past the
+    // launcher would pull the caret out of the guest's own modal.
+    if (desired === HOST_LAYER.modal && hostLayer !== HOST_LAYER.modal && store.box === 'hidden') {
+      escalatedFocus = document.activeElement;
+    }
+    for (const el of [ui.box, ui.launcher, ui.coachmark]) el.classList.toggle('relayered', !entranceDue);
+    leaveTopLayer();
+    enterTopLayer(desired);
+    hostLayer = desired;
+    appliedEpoch = foreignEpoch;
+    if (desired !== HOST_LAYER.modal && escalatedFocus) {
+      escalatedFocus.focus?.({ preventScroll: true });
+      escalatedFocus = null;
+    }
+  };
+
+  // Escape reaches the window handler, which owns the overlay's own
+  // dismiss ladder; the UA's dialog cancel would close the host outright.
+  layer.addEventListener('cancel', (e) => e.preventDefault());
+  layer.addEventListener('close', () => {
+    if (!CAN_TOP_LAYER || layer.matches(TOP_LAYER_SELECTOR)) return;
+    hostLayer = null; // closed from outside (UA, extension) — rejoin the layer
+    applyHostLayer();
+  });
+
+  const noteTopLayerChange = () => {
+    const active = [...document.querySelectorAll(TOP_LAYER_SELECTOR)].some((el) => el !== layer);
+    if (!active && !foreignTopLayer) return; // the common case: nothing promoted, nothing to do
+    if (active) foreignEpoch += 1; // we may now be under it — restack
+    foreignTopLayer = active;
+    if (!active) pointerOverOverlay = false;
+    applyHostLayer();
+  };
+  // Restacking is itself an `open` mutation and a toggle on our own frame.
+  // Feeding those back in spins forever: restack → event → restack.
+  const isOwnRestack = (target) => target === layer;
+  // showModal()/close() move the `open` attribute; popovers and <details>
+  // fire toggle; fullscreen does neither.
+  new MutationObserver((records) => {
+    if (records.every((r) => isOwnRestack(r.target))) return;
+    noteTopLayerChange();
+  }).observe(document.documentElement, { subtree: true, attributes: true, attributeFilter: ['open'] });
+  document.addEventListener('toggle', (e) => {
+    if (!isOwnRestack(e.target)) noteTopLayerChange();
+  }, true);
+  document.addEventListener('fullscreenchange', noteTopLayerChange, true);
+
+  // Under a guest modal the launcher is inert, so its own pointer events
+  // never fire — the escalation has to be driven from the guest's side of
+  // the hit test, where pointermove still lands.
+  window.addEventListener('pointermove', (e) => {
+    if (!foreignTopLayer) return;
+    const over = isPointNearRects({ x: e.clientX, y: e.clientY }, overlayHitRects());
+    if (over === pointerOverOverlay) return;
+    pointerOverOverlay = over;
+    applyHostLayer();
+  }, true);
+
   const STATUS_TEXT = { idle: '', thinking: 'thinking…', working: 'working…', done: 'done', error: 'error' };
+  let renderedBoxVisible = false;
   const render = () => {
     const activity = launcherActivity(store.agent, store.aborting);
     const busy = activity.isBusy; // keeps Stop visible through 'stopping', not just 'thinking'/'working'
@@ -2819,6 +2946,12 @@ import {
     const shortcut = launcherShortcut(IS_MAC);
     ui.toggleKey.textContent = shortcut;
     ui.coachShortcut.textContent = shortcut;
+
+    // After the visibility classes, before the box is measured: summoning
+    // under a guest modal has to escalate the host or the box is inert.
+    const boxVisible = store.box !== 'hidden';
+    applyHostLayer(boxVisible !== renderedBoxVisible);
+    renderedBoxVisible = boxVisible;
 
     // Removing a hovered chip node doesn't fire mouseleave, so the cue
     // would otherwise outlive the chip it points at.
@@ -4109,7 +4242,22 @@ import {
     }
   }, true);
 
-  const mount = () => (document.body ? document.body.appendChild(host) : requestAnimationFrame(mount));
+  // ::backdrop belongs to the frame, so it can't be reached from inside
+  // the shadow root nested in it — modal mode would otherwise paint the
+  // UA's dimming sheet over the guest page.
+  const layerBackdropSheet = () => {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(`#${HOST_ELEMENT_ID}::backdrop{background:transparent;backdrop-filter:none;}`);
+    return sheet;
+  };
+
+  const mount = () => {
+    if (!document.body) return requestAnimationFrame(mount);
+    document.body.appendChild(layer);
+    if (!CAN_TOP_LAYER) return;
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, layerBackdropSheet()];
+    applyHostLayer(true); // first paint: let the launcher play its entrance
+  };
   mount();
   render();
   if (CFG.backend) loadProfiles().catch(() => {});
