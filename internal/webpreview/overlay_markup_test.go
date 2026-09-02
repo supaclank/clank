@@ -526,7 +526,7 @@ func TestOverlayTopLayerCloseGuardsAgainstReentrantRestack(t *testing.T) {
 func TestOverlayTopLayerDiscoveryGuardsUnsupportedPopover(t *testing.T) {
 	t.Parallel()
 	js := string(overlayJS)
-	noteStart := strings.Index(js, "const noteTopLayerChange = ()")
+	noteStart := strings.Index(js, "const noteTopLayerChange = (entranceDue = false) => {")
 	if noteStart < 0 {
 		t.Fatal("overlay.js noteTopLayerChange definition not found")
 	}
@@ -561,12 +561,36 @@ func TestOverlayMountDetectsPreexistingGuestTopLayer(t *testing.T) {
 		t.Fatal("overlay.js mount definition not terminated")
 	}
 	mount := js[mountStart : mountStart+mountEnd]
-	noteIdx := strings.Index(mount, "noteTopLayerChange();")
+	noteIdx := strings.Index(mount, "noteTopLayerChange(true);")
 	applyIdx := strings.Index(mount, "applyHostLayer(true);")
 	if noteIdx < 0 {
 		t.Fatal("overlay.js mount() must call noteTopLayerChange() to detect a guest top layer already present")
 	}
 	if applyIdx < 0 || applyIdx < noteIdx {
 		t.Error("overlay.js mount() must call noteTopLayerChange() before applyHostLayer(true)")
+	}
+}
+
+// TestOverlayMountEntranceSurvivesPreexistingGuestTopLayer guards a
+// follow-up bug in the same fix: noteTopLayerChange() defaulted to
+// entranceDue=false, so when it detected a guest modal already open it
+// applied the restack itself (marking the 'relayered' class that disables
+// the entrance animation) and consumed the epoch — mount()'s own
+// applyHostLayer(true) call then no-opped (nothing changed since), so the
+// launcher's first-paint entrance never played.
+func TestOverlayMountEntranceSurvivesPreexistingGuestTopLayer(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	if !strings.Contains(js, "const noteTopLayerChange = (entranceDue = false) => {") {
+		t.Fatal("overlay.js noteTopLayerChange must accept entranceDue so callers can preserve the entrance animation")
+	}
+	noteStart := strings.Index(js, "const noteTopLayerChange = (entranceDue = false) => {")
+	noteEnd := strings.Index(js[noteStart:], "};")
+	if noteEnd < 0 {
+		t.Fatal("overlay.js noteTopLayerChange definition not terminated")
+	}
+	note := js[noteStart : noteStart+noteEnd]
+	if !strings.Contains(note, "applyHostLayer(entranceDue);") {
+		t.Error("overlay.js noteTopLayerChange must forward entranceDue to applyHostLayer")
 	}
 }

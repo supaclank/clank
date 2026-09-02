@@ -2891,7 +2891,7 @@ import {
     applyHostLayer();
   });
 
-  const noteTopLayerChange = () => {
+  const noteTopLayerChange = (entranceDue = false) => {
     // TOP_LAYER_SELECTOR includes ':popover-open', an unrecognized (and
     // therefore selector-list-invalidating) pseudo-class on a browser
     // without Popover API support.
@@ -2904,7 +2904,7 @@ import {
     if (active) foreignEpoch += 1; // we may now be under it — restack
     foreignTopLayer = active;
     if (!active) pointerOverOverlay = false;
-    applyHostLayer();
+    applyHostLayer(entranceDue);
   };
   // Restacking is itself an `open` mutation and a toggle on our own frame.
   // Feeding those back in spins forever: restack → event → restack.
@@ -4269,7 +4269,10 @@ import {
     document.body.appendChild(layer);
     if (!CAN_TOP_LAYER) return;
     document.adoptedStyleSheets = [...document.adoptedStyleSheets, layerBackdropSheet()];
-    noteTopLayerChange(); // pick up a guest modal/popover already open before mount
+    // pick up a guest modal/popover already open before mount; entranceDue
+    // carries through so the launcher still gets its first-paint animation
+    // instead of applyHostLayer(true) below no-opping on the epoch it just applied.
+    noteTopLayerChange(true);
     applyHostLayer(true); // first paint: let the launcher play its entrance
   };
   mount();
