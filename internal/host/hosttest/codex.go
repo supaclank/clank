@@ -57,19 +57,26 @@ func NewCodexDiscoveryManager(t *testing.T, sessions []agent.SessionSnapshot) *h
 	return mgr
 }
 
+// Codex rollout JSONL record types and event kinds, per Codex's own format.
+const (
+	codexRolloutTypeSessionMeta  = "session_meta"
+	codexRolloutTypeEventMsg     = "event_msg"
+	codexRolloutEventUserMessage = "user_message"
+)
+
 func writeCodexRollout(t *testing.T, codexHome string, session agent.SessionSnapshot) {
 	t.Helper()
 	stamp := session.UpdatedAt.UTC().Format(time.RFC3339Nano)
 	var data bytes.Buffer
 	enc := json.NewEncoder(&data)
 	for _, row := range []map[string]any{
-		{"timestamp": stamp, "type": "session_meta", "payload": map[string]any{
+		{"timestamp": stamp, "type": codexRolloutTypeSessionMeta, "payload": map[string]any{
 			"id": session.ID, "timestamp": stamp, "cwd": session.Directory,
 			"originator": "codex_vscode", "cli_version": acptools.PinnedCodexVersion,
 			"source": "vscode", "model_provider": "openai",
 		}},
-		{"timestamp": stamp, "type": "event_msg", "payload": map[string]any{
-			"type": "user_message", "message": session.Title, "images": []string{}, "local_images": []string{},
+		{"timestamp": stamp, "type": codexRolloutTypeEventMsg, "payload": map[string]any{
+			"type": codexRolloutEventUserMessage, "message": session.Title, "images": []string{}, "local_images": []string{},
 		}},
 	} {
 		if err := enc.Encode(row); err != nil {

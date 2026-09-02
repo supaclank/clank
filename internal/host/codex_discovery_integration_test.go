@@ -45,12 +45,18 @@ func TestIntegration_CodexACP_DiscoveryPaginates(t *testing.T) {
 	if len(first.Sessions) != 0 || first.NextCursor == nil {
 		t.Fatalf("fixture must have an empty filtered first page with more pages: %+v", first)
 	}
-	for _, scope := range []string{"global", "project"} {
-		t.Run(scope, func(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		isGlobal bool
+	}{
+		{name: "global", isGlobal: true},
+		{name: "project", isGlobal: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			var got []agent.SessionSnapshot
 			var err error
 			want := sessionCount
-			if scope == "global" {
+			if tc.isGlobal {
 				got, err = mgr.DiscoverAllSessions(ctx)
 			} else {
 				got, err = mgr.DiscoverSessions(ctx, projectDir)
