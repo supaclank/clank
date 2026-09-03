@@ -1917,11 +1917,10 @@ import {
   const layer = document.createElement(CAN_TOP_LAYER ? 'dialog' : 'div');
   layer.id = HOST_ELEMENT_ID;
   if (CAN_TOP_LAYER) layer.setAttribute('popover', 'manual'); // manual: never light-dismisses
-  // The trailing resets are the frame-side twin of `all: initial` on the
-  // shadow root — <dialog>'s UA box (centered, bordered, sized to content,
-  // opaque) would otherwise show through.
+  // Reset the UA dialog box and focus ring on the viewport-sized frame.
+  // Keyboard focus rings belong to the controls inside the shadow root.
   layer.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;' +
-    'margin:0;padding:0;border:0;background:transparent;color:inherit;' +
+    'margin:0;padding:0;border:0;outline:none;background:transparent;color:inherit;' +
     'width:auto;height:auto;max-width:none;max-height:none;overflow:visible;';
   const host = document.createElement('div');
   host.style.cssText = 'position:fixed;inset:0;pointer-events:none;';
