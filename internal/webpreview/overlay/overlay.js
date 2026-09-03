@@ -3282,6 +3282,10 @@ import {
     hideCommentPopover();
     if (store.box === 'hidden') store.box = 'prompt';
     render();
+    // Focus the composer (not the box anchor a summon uses) so a second Enter sends — one gesture.
+    ui.input.focus({ preventScroll: true });
+    const end = ui.input.value.length; // caret past any draft, ready to keep typing
+    ui.input.setSelectionRange(end, end);
   };
 
   // editChipComment reopens the popover on an existing chip, prefilled.

@@ -231,6 +231,22 @@ func TestOverlayInlineCommentWiring(t *testing.T) {
 	if !strings.Contains(js, "navigator.clipboard.writeText") {
 		t.Error("overlay.js popover must bridge ⌘C to copy the anchor text")
 	}
+	// Confirming a comment must focus the composer after render(), scoped to
+	// confirmComment so a refactor that moves the focus call elsewhere can't pass unnoticed.
+	ccStart := strings.Index(js, "const confirmComment = () => {")
+	if ccStart < 0 {
+		t.Fatal("overlay.js confirmComment definition not found")
+	}
+	ccEnd := strings.Index(js[ccStart:], "};")
+	if ccEnd < 0 {
+		t.Fatal("overlay.js confirmComment definition not terminated")
+	}
+	cc := js[ccStart : ccStart+ccEnd]
+	renderIdx := strings.Index(cc, "render();")
+	focusIdx := strings.Index(cc, "ui.input.focus({ preventScroll: true })")
+	if renderIdx < 0 || focusIdx < 0 || focusIdx < renderIdx {
+		t.Error("confirmComment must focus the composer after render() so a second Enter sends")
+	}
 	// Scrolling must reposition the popover along its anchor, not dismiss
 	// it — highlight + input surviving a scroll is the point.
 	if strings.Contains(js, "window.addEventListener('scroll', () => hideCommentPopover()") {
