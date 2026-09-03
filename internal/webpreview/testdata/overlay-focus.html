@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Overlay frame focus regression</title>
+<body>
+<button id="guest-button">Guest control</button>
+<script>window.__CLANK_PREVIEW = { launcher_seen: true };</script>
+<script type="module">
+  const errors = [];
+  const check = (condition, message) => {
+    if (!condition) errors.push(message);
+  };
+  const hasOutline = (element) => {
+    const style = getComputedStyle(element);
+    return style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) > 0;
+  };
+  try {
+    await import('/__clank/overlay.js');
+    const frame = document.getElementById('clank-overlay-host');
+    const root = frame.firstElementChild.shadowRoot;
+    const launcher = root.querySelector('.launcher');
+    const rect = frame.getBoundingClientRect();
+
+    check(frame.matches(':popover-open'), 'The overlay must mount in the top layer.');
+    check(document.activeElement === frame && frame.matches(':focus-visible'),
+      'Initial mounting must exercise the browser focusing the frame.');
+    check(rect.width === innerWidth && rect.height === innerHeight,
+      'The frame must cover the viewport.');
+    check(!hasOutline(frame), 'The focused popover frame must not outline the viewport.');
+
+    const guest = document.getElementById('guest-button');
+    guest.focus();
+    check(document.activeElement === guest && guest.matches(':focus-visible') && hasOutline(guest),
+      'Guest controls must remain focusable with a keyboard focus ring.');
+
+    launcher.focus();
+    check(root.activeElement === launcher && launcher.matches(':focus-visible') && hasOutline(launcher),
+      'The launcher must keep its keyboard focus ring.');
+
+    frame.hidePopover();
+    frame.showModal();
+    frame.focus();
+    check(frame.matches(':modal') && frame.matches(':focus-visible'),
+      'Modal mode must exercise the browser focusing the frame.');
+    check(!hasOutline(frame), 'The focused modal frame must not outline the viewport.');
+
+    launcher.focus();
+    check(root.activeElement === launcher && launcher.matches(':focus-visible') && hasOutline(launcher),
+      'The launcher must keep its keyboard focus ring in modal mode.');
+  } catch (error) {
+    errors.push(error.stack);
+  }
+  const result = document.createElement('pre');
+  result.id = 'test-result';
+  result.textContent = errors.length ? errors.join('\n') : 'PASS';
+  document.body.appendChild(result);
+  await fetch('/test-result', { method: 'POST', body: result.textContent });
+</script>
+</body>
+</html>
