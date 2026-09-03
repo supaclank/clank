@@ -19,7 +19,7 @@ func TestOverlayModulesJS(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, node, "--test", "chat_test.mjs", "markdown_test.mjs", "settings_test.mjs", "sourcecontrol_test.mjs", "boxpos_test.mjs", "launcher_test.mjs", "resize_test.mjs")
+	cmd := exec.CommandContext(ctx, node, "--test", "chat_test.mjs", "markdown_test.mjs", "settings_test.mjs", "sourcecontrol_test.mjs", "boxpos_test.mjs", "launcher_test.mjs", "resize_test.mjs", "toplayer_test.mjs")
 	cmd.Dir = "overlay"
 	out, err := cmd.CombinedOutput()
 	if err != nil {

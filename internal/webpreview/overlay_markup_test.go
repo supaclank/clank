@@ -470,3 +470,197 @@ func TestOverlayAcknowledgeLauncherRendersAfterPersist(t *testing.T) {
 		t.Error("overlay.js acknowledgeLauncher must call render() after clearing store.launcherCoachmark, so the dismissed coachmark disappears as soon as the save succeeds")
 	}
 }
+
+// TestOverlayHostJoinsTheTopLayer pins the DOM contact points that keep the
+// overlay above a guest's top-layer dialog, per the policy in toplayer.js.
+func TestOverlayHostJoinsTheTopLayer(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	for _, want := range []string{
+		// A <dialog popover="manual"> is the only host that can be both
+		// non-modal (page stays clickable) and modal (overlay stays
+		// clickable under a guest modal) in the top layer.
+		`document.createElement(CAN_TOP_LAYER ? 'dialog' : 'div')`,
+		`layer.setAttribute('popover', 'manual')`,
+		"layer.showModal() : layer.showPopover()",
+		// attachShadow rejects <dialog>, so the shadow host stays a div
+		// nested inside the top-layer frame.
+		"layer.appendChild(host)",
+		// ::backdrop is the host's own pseudo-element: unreachable from
+		// inside its shadow root, so modal mode needs a document sheet.
+		"::backdrop{background:transparent;backdrop-filter:none;}",
+		// The UA's dialog cancel would close the host on Escape, taking
+		// the overlay off-screen instead of running its dismiss ladder.
+		"layer.addEventListener('cancel', (e) => e.preventDefault())",
+		// Order in the top layer is promotion order, so the overlay has to
+		// notice guest promotions and restack.
+		"attributeFilter: ['open']",
+		// Restacking mutates the frame's own `open` and fires its own
+		// toggle; feeding those back in hung the renderer outright
+		// (restack -> event -> restack), so both paths filter self-events.
+		"const isOwnRestack = (target) => target === layer;",
+		"if (records.every((r) => isOwnRestack(r.target))) return;",
+		"if (!isOwnRestack(e.target)) noteTopLayerChange();",
+		// Under a guest modal the launcher is inert and receives no pointer
+		// events of its own; escalation is driven from window pointermove.
+		"window.addEventListener('pointermove'",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("overlay.js top-layer wiring missing %q", want)
+		}
+	}
+	// The old host was a plain div trusting a z-index — the exact thing a
+	// top-layer element outranks.
+	if strings.Contains(js, "host.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;';") {
+		t.Error("the overlay host must not rely on z-index alone; the top layer outranks it")
+	}
+}
+
+// TestOverlayTopLayerCloseGuardsAgainstReentrantRestack guards a hang found
+// in review: leaveTopLayer()'s layer.close() fires 'close' synchronously,
+// and the handler's own applyHostLayer() reopened the layer before the
+// outer restack's enterTopLayer() ran, throwing on an already-open layer.
+func TestOverlayTopLayerCloseGuardsAgainstReentrantRestack(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	if !strings.Contains(js, "let restacking = false;") {
+		t.Error("overlay.js must track a restacking flag around leaveTopLayer()'s close()/hidePopover()")
+	}
+	if !strings.Contains(js, "if (!CAN_TOP_LAYER || restacking || layer.matches(TOP_LAYER_SELECTOR)) return;") {
+		t.Error("overlay.js layer 'close' handler must skip reentry while our own leaveTopLayer() is closing it")
+	}
+}
+
+// TestOverlayTopLayerDiscoveryGuardsUnsupportedPopover guards against a
+// SyntaxError: TOP_LAYER_SELECTOR includes ':popover-open', an unrecognized
+// pseudo-class on a browser with <dialog> but no Popover API, which throws
+// out of document.querySelectorAll/matches instead of using the documented
+// plain-div fallback.
+func TestOverlayTopLayerDiscoveryGuardsUnsupportedPopover(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	noteStart := strings.Index(js, "const noteTopLayerChange = (entranceDue = false) => {")
+	if noteStart < 0 {
+		t.Fatal("overlay.js noteTopLayerChange definition not found")
+	}
+	noteEnd := strings.Index(js[noteStart:], "};")
+	if noteEnd < 0 {
+		t.Fatal("overlay.js noteTopLayerChange definition not terminated")
+	}
+	note := js[noteStart : noteStart+noteEnd]
+	guardIdx := strings.Index(note, "if (!CAN_TOP_LAYER) return;")
+	queryIdx := strings.Index(note, "document.querySelectorAll(TOP_LAYER_SELECTOR)")
+	if guardIdx < 0 {
+		t.Fatal("overlay.js noteTopLayerChange must return early when !CAN_TOP_LAYER")
+	}
+	if queryIdx < 0 || queryIdx < guardIdx {
+		t.Error("overlay.js noteTopLayerChange must guard document.querySelectorAll(TOP_LAYER_SELECTOR) behind the CAN_TOP_LAYER check")
+	}
+}
+
+// TestOverlayMountDetectsPreexistingGuestTopLayer guards against the
+// overlay defaulting to popover mode on mount when a guest modal/popover is
+// already open (e.g. an onboarding dialog that shows itself on load): the
+// overlay must scan the current top layer before applying its initial mode.
+func TestOverlayMountDetectsPreexistingGuestTopLayer(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	mountStart := strings.Index(js, "const mount = ()")
+	if mountStart < 0 {
+		t.Fatal("overlay.js mount definition not found")
+	}
+	mountEnd := strings.Index(js[mountStart:], "mount();")
+	if mountEnd < 0 {
+		t.Fatal("overlay.js mount definition not terminated")
+	}
+	mount := js[mountStart : mountStart+mountEnd]
+	noteIdx := strings.Index(mount, "noteTopLayerChange(true);")
+	applyIdx := strings.Index(mount, "applyHostLayer(true);")
+	if noteIdx < 0 {
+		t.Fatal("overlay.js mount() must call noteTopLayerChange() to detect a guest top layer already present")
+	}
+	if applyIdx < 0 || applyIdx < noteIdx {
+		t.Error("overlay.js mount() must call noteTopLayerChange() before applyHostLayer(true)")
+	}
+}
+
+// TestOverlayMountEntranceSurvivesPreexistingGuestTopLayer guards a
+// follow-up bug in the same fix: noteTopLayerChange() defaulted to
+// entranceDue=false, so when it detected a guest modal already open it
+// applied the restack itself (marking the 'relayered' class that disables
+// the entrance animation) and consumed the epoch — mount()'s own
+// applyHostLayer(true) call then no-opped (nothing changed since), so the
+// launcher's first-paint entrance never played.
+func TestOverlayMountEntranceSurvivesPreexistingGuestTopLayer(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	if !strings.Contains(js, "const noteTopLayerChange = (entranceDue = false) => {") {
+		t.Fatal("overlay.js noteTopLayerChange must accept entranceDue so callers can preserve the entrance animation")
+	}
+	noteStart := strings.Index(js, "const noteTopLayerChange = (entranceDue = false) => {")
+	noteEnd := strings.Index(js[noteStart:], "};")
+	if noteEnd < 0 {
+		t.Fatal("overlay.js noteTopLayerChange definition not terminated")
+	}
+	note := js[noteStart : noteStart+noteEnd]
+	if !strings.Contains(note, "applyHostLayer(entranceDue);") {
+		t.Error("overlay.js noteTopLayerChange must forward entranceDue to applyHostLayer")
+	}
+}
+
+// TestOverlayFullscreenChangeDoesNotLeakEventIntoEntranceDue pins that the
+// fullscreenchange listener wraps noteTopLayerChange, so its Event argument
+// can't leak into entranceDue and force-replay the entrance animation.
+func TestOverlayFullscreenChangeDoesNotLeakEventIntoEntranceDue(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	if strings.Contains(js, "document.addEventListener('fullscreenchange', noteTopLayerChange, true);") {
+		t.Error("overlay.js must not pass noteTopLayerChange directly as the fullscreenchange listener — the Event leaks into entranceDue")
+	}
+	if !strings.Contains(js, "document.addEventListener('fullscreenchange', () => noteTopLayerChange(), true);") {
+		t.Error("overlay.js fullscreenchange listener must wrap noteTopLayerChange so entranceDue keeps its false default")
+	}
+}
+
+// TestOverlayPointerOverOverlayRecomputedWhenGuestPromotes guards a bug
+// found in review: pointermove tracking returned early whenever
+// foreignTopLayer was false, so a pointer already resting on the launcher
+// when a guest modal/popover opened left pointerOverOverlay stale at
+// false — the host never escalated to modal until the pointer moved again.
+func TestOverlayPointerOverOverlayRecomputedWhenGuestPromotes(t *testing.T) {
+	t.Parallel()
+	js := string(overlayJS)
+	if !strings.Contains(js, "let lastPointer = null;") {
+		t.Fatal("overlay.js must track the last pointermove position outside the foreignTopLayer gate")
+	}
+	pmStart := strings.Index(js, "window.addEventListener('pointermove'")
+	if pmStart < 0 {
+		t.Fatal("overlay.js pointermove listener not found")
+	}
+	pmEnd := strings.Index(js[pmStart:], "}, true);")
+	if pmEnd < 0 {
+		t.Fatal("overlay.js pointermove listener not terminated")
+	}
+	pointermove := js[pmStart : pmStart+pmEnd]
+	trackIdx := strings.Index(pointermove, "lastPointer = { x: e.clientX, y: e.clientY };")
+	gateIdx := strings.Index(pointermove, "if (!foreignTopLayer) return;")
+	if trackIdx < 0 {
+		t.Fatal("overlay.js pointermove listener must record lastPointer unconditionally")
+	}
+	if gateIdx < 0 || trackIdx > gateIdx {
+		t.Error("overlay.js pointermove listener must track lastPointer before the foreignTopLayer early-return")
+	}
+
+	noteStart := strings.Index(js, "const noteTopLayerChange = (entranceDue = false) => {")
+	if noteStart < 0 {
+		t.Fatal("overlay.js noteTopLayerChange definition not found")
+	}
+	noteEnd := strings.Index(js[noteStart:], "};")
+	if noteEnd < 0 {
+		t.Fatal("overlay.js noteTopLayerChange definition not terminated")
+	}
+	note := js[noteStart : noteStart+noteEnd]
+	if !strings.Contains(note, "else if (lastPointer) pointerOverOverlay = isPointNearRects(lastPointer, overlayHitRects());") {
+		t.Error("overlay.js noteTopLayerChange must recompute pointerOverOverlay from lastPointer when a guest element is newly promoted")
+	}
+}
