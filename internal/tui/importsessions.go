@@ -2,7 +2,7 @@ package tui
 
 // importsessions.go — provider-selector modal for importing historical sessions.
 //
-// Shows a checklist of supported providers (Claude Code, OpenCode). The user
+// Shows a checklist of supported backends. The user
 // toggles providers with space, then confirms with Enter. Esc cancels.
 // On confirm, InboxModel runs discovery for the selected providers, then
 // shows a summary confirmation using the existing confirmDialogModel.
@@ -13,34 +13,13 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"github.com/supaclank/clank/internal/agent"
 )
-
-// importProvider identifies a session backend that supports discovery.
-type importProvider int
-
-const (
-	importProviderClaude   importProvider = iota
-	importProviderOpenCode importProvider = iota
-)
-
-// importProviderLabel returns the human-readable name for a provider.
-func importProviderLabel(p importProvider) string {
-	switch p {
-	case importProviderClaude:
-		return "Claude Code"
-	case importProviderOpenCode:
-		return "OpenCode"
-	default:
-		return "Unknown"
-	}
-}
-
-// allImportProviders is the ordered list of providers shown in the modal.
-var allImportProviders = []importProvider{importProviderClaude, importProviderOpenCode}
 
 // importSessionsConfirmMsg is sent when the user confirms the provider selection.
 type importSessionsConfirmMsg struct {
-	providers []importProvider // providers the user enabled
+	providers []agent.BackendType // providers the user enabled
 }
 
 // importSessionsCancelMsg is sent when the user dismisses the modal.
@@ -50,13 +29,13 @@ type importSessionsCancelMsg struct{}
 // sessions from.
 type importSessionsModel struct {
 	cursor  int
-	checked map[importProvider]bool
+	checked map[agent.BackendType]bool
 }
 
 func newImportSessionsModel() importSessionsModel {
 	// All providers are pre-checked for convenience.
-	checked := make(map[importProvider]bool, len(allImportProviders))
-	for _, p := range allImportProviders {
+	checked := make(map[agent.BackendType]bool, len(agent.AllBackends))
+	for _, p := range agent.AllBackends {
 		checked[p] = true
 	}
 	return importSessionsModel{
@@ -77,16 +56,16 @@ func (m importSessionsModel) Update(msg tea.Msg) (importSessionsModel, tea.Cmd) 
 				m.cursor--
 			}
 		case key.Matches(keyMsg, key.NewBinding(key.WithKeys("down", "j"))):
-			if m.cursor < len(allImportProviders)-1 {
+			if m.cursor < len(agent.AllBackends)-1 {
 				m.cursor++
 			}
 		case key.Matches(keyMsg, key.NewBinding(key.WithKeys("space"))):
-			p := allImportProviders[m.cursor]
+			p := agent.AllBackends[m.cursor]
 			m.checked[p] = !m.checked[p]
 
 		case key.Matches(keyMsg, key.NewBinding(key.WithKeys("enter"))):
-			var selected []importProvider
-			for _, p := range allImportProviders {
+			var selected []agent.BackendType
+			for _, p := range agent.AllBackends {
 				if m.checked[p] {
 					selected = append(selected, p)
 				}
@@ -112,7 +91,7 @@ func (m importSessionsModel) View() string {
 	sb.WriteString("\n\n")
 
 	// Provider checklist.
-	for i, p := range allImportProviders {
+	for i, p := range agent.AllBackends {
 		check := "[ ]"
 		if m.checked[p] {
 			check = "[x]"
@@ -129,7 +108,7 @@ func (m importSessionsModel) View() string {
 		if i == m.cursor {
 			prefix = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ")
 		}
-		line := prefix + checkStyle.Render(check) + " " + labelStyle.Render(importProviderLabel(p))
+		line := prefix + checkStyle.Render(check) + " " + labelStyle.Render(backendDisplayName(p))
 		sb.WriteString(line)
 		sb.WriteString("\n")
 	}

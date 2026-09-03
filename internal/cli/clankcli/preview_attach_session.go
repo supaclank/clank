@@ -29,10 +29,6 @@ const previewAttachSelect = "select"
 // catch it and exit cleanly instead of surfacing an error.
 var errPreviewAttachAborted = errors.New("preview canceled from the session picker")
 
-// previewAttachDiscoverBackends is the rediscovery sweep for an id that
-// isn't registered yet — the same pair the inbox's import action scans.
-var previewAttachDiscoverBackends = []agent.BackendType{agent.BackendOpenCode, agent.BackendClaudeCode}
-
 // resolveAttachSession maps the --attach flag onto a session. Returns
 // nil when the flag is unset, or when the user skipped the picker (the
 // preview then continues with a fresh session).
@@ -90,7 +86,7 @@ func resolveAttachSessionByID(ctx context.Context, client *daemonclient.Client, 
 	}
 
 	var discoverErrs []string
-	for _, bt := range previewAttachDiscoverBackends {
+	for _, bt := range agent.AllBackends {
 		if derr := client.Sessions().Discover(ctx, bt, projectDir); derr != nil {
 			discoverErrs = append(discoverErrs, fmt.Sprintf("%s: %v", bt, derr))
 		}

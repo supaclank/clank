@@ -318,9 +318,7 @@ func lastSessionForCwd(cwd string) string {
 	return prefs.LastSessionByCwd[cwd]
 }
 
-// discoverCmd asks the daemon to discover historical sessions from the
-// OpenCode backend. Runs asynchronously; when done it triggers a refresh
-// so newly-discovered sessions appear in the inbox.
+// discoverCmd refreshes historical sessions from every supported backend.
 func (m *InboxModel) discoverCmd() tea.Cmd {
 	return func() tea.Msg {
 		cwd, err := os.Getwd()
@@ -329,8 +327,9 @@ func (m *InboxModel) discoverCmd() tea.Cmd {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = m.client.Sessions().Discover(ctx, agent.BackendOpenCode, cwd)
-		_ = m.client.Sessions().Discover(ctx, agent.BackendClaudeCode, cwd)
+		for _, backend := range agent.AllBackends {
+			_ = m.client.Sessions().Discover(ctx, backend, cwd)
+		}
 		// After discovery completes, trigger a refresh to show new sessions.
 		return inboxRefreshMsg{}
 	}
@@ -344,7 +343,7 @@ type discoverResultMsg struct {
 
 // discoverForProvidersCmd runs discovery for the given providers and returns
 // a discoverResultMsg with the number of newly-imported sessions.
-func (m *InboxModel) discoverForProvidersCmd(providers []importProvider) tea.Cmd {
+func (m *InboxModel) discoverForProvidersCmd(providers []agent.BackendType) tea.Cmd {
 	client := m.client
 	return func() tea.Msg {
 		cwd, err := os.Getwd()
@@ -358,16 +357,7 @@ func (m *InboxModel) discoverForProvidersCmd(providers []importProvider) tea.Cmd
 		before, _ := client.Sessions().List(ctx)
 		beforeCount := len(before)
 
-		for _, p := range providers {
-			var backend agent.BackendType
-			switch p {
-			case importProviderClaude:
-				backend = agent.BackendClaudeCode
-			case importProviderOpenCode:
-				backend = agent.BackendOpenCode
-			default:
-				continue
-			}
+		for _, backend := range providers {
 			_ = client.Sessions().Discover(ctx, backend, cwd)
 		}
 
