@@ -33,7 +33,8 @@ const (
 // configured web development server. It is internal and never serialized.
 type Spec struct {
 	// Kind identifies which client integration to use.
-	Kind          Kind
+	Kind Kind
+	// CanPreviewWeb is true for web recipes and Expo projects with browser dependencies.
 	CanPreviewWeb bool
 
 	// CmdTemplate is the argv template. "%d" is replaced with the

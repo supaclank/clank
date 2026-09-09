@@ -12,7 +12,7 @@ import (
 	"github.com/supaclank/clank/internal/host"
 	githubpkg "github.com/supaclank/clank/internal/host/github"
 	hostmux "github.com/supaclank/clank/internal/host/mux"
-	"github.com/supaclank/clank/pkg/projecttemplate"
+	"github.com/supaclank/clank/pkg/provisioner"
 )
 
 var builtinTemplates = []host.Template{
@@ -163,8 +163,8 @@ func TestCreateProject_CloneFailureIsTypedAndSanitized(t *testing.T) {
 func TestListTemplates_ExposesBuildTargets(t *testing.T) {
 	t.Parallel()
 	svc := host.New(host.Options{BackendManagers: map[agent.BackendType]agent.BackendManager{}, WorkRoot: t.TempDir(), Templates: []host.Template{
-		{DisplayName: "Website", CloneURL: "https://github.com/supaclank/svelte-starter-template.git", BuildTarget: projecttemplate.Web},
-		{DisplayName: "Mobile app", CloneURL: "https://github.com/supaclank/expo-56-starter-template.git", BuildTarget: projecttemplate.Mobile},
+		{DisplayName: "Website", CloneURL: "https://github.com/supaclank/svelte-starter-template.git", BuildTarget: provisioner.TemplateTargetWeb},
+		{DisplayName: "Mobile app", CloneURL: "https://github.com/supaclank/expo-56-starter-template.git", BuildTarget: provisioner.TemplateTargetMobile},
 	}})
 	t.Cleanup(svc.Shutdown)
 	request := httptest.NewRequest(http.MethodGet, "/templates", nil)
@@ -174,12 +174,12 @@ func TestListTemplates_ExposesBuildTargets(t *testing.T) {
 		t.Fatalf("status %d: %s", response.Code, response.Body.String())
 	}
 	var entries []struct {
-		BuildTarget projecttemplate.Target `json:"build_target"`
+		BuildTarget provisioner.TemplateTarget `json:"build_target"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &entries); err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 2 || entries[0].BuildTarget != projecttemplate.Web || entries[1].BuildTarget != projecttemplate.Mobile {
+	if len(entries) != 2 || entries[0].BuildTarget != provisioner.TemplateTargetWeb || entries[1].BuildTarget != provisioner.TemplateTargetMobile {
 		t.Fatalf("targets lost in catalog: %+v", entries)
 	}
 }

@@ -14,6 +14,9 @@ func TestTemplateBuildTargetSurvivesProvisioning(t *testing.T) {
 	if err := json.Unmarshal([]byte(`[{"display_name":"Website","clone_url":"https://example.com/web.git","build_target":"web"}]`), &configured); err != nil {
 		t.Fatal(err)
 	}
+	if configured[0].BuildTarget != provisioner.TemplateTargetWeb {
+		t.Fatalf("configured target = %q", configured[0].BuildTarget)
+	}
 	var forwarded []map[string]any
 	if err := json.Unmarshal([]byte(provisioner.TemplatesEnvValue(configured)), &forwarded); err != nil {
 		t.Fatal(err)
@@ -24,6 +27,9 @@ func TestTemplateBuildTargetSurvivesProvisioning(t *testing.T) {
 	var hosted []host.Template
 	if err := json.Unmarshal([]byte(provisioner.TemplatesEnvValue(configured)), &hosted); err != nil {
 		t.Fatal(err)
+	}
+	if hosted[0].BuildTarget != configured[0].BuildTarget {
+		t.Fatalf("host target = %q, want %q", hosted[0].BuildTarget, configured[0].BuildTarget)
 	}
 	encoded, err := json.Marshal(hosted)
 	if err != nil {

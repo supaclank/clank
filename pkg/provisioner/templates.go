@@ -1,8 +1,13 @@
 package provisioner
 
-import (
-	"encoding/json"
-	"github.com/supaclank/clank/pkg/projecttemplate"
+import "encoding/json"
+
+// TemplateTarget identifies the kind of app a starter creates.
+type TemplateTarget string
+
+const (
+	TemplateTargetWeb    TemplateTarget = "web"
+	TemplateTargetMobile TemplateTarget = "mobile"
 )
 
 // Template is one operator-configured ("builtin") entry of the
@@ -20,9 +25,9 @@ import (
 // the JSON into []Template itself, then passes the strong type here.
 // The library API stays typed.
 type Template struct {
-	DisplayName string                 `json:"display_name"`
-	CloneURL    string                 `json:"clone_url"`
-	BuildTarget projecttemplate.Target `json:"build_target,omitempty"`
+	DisplayName string         `json:"display_name"`
+	CloneURL    string         `json:"clone_url"`
+	BuildTarget TemplateTarget `json:"build_target,omitempty"`
 }
 
 // TemplatesEnvValue marshals a catalog to the JSON string clank-host
