@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	githubpkg "github.com/supaclank/clank/internal/host/github"
-	"github.com/supaclank/clank/pkg/provisioner"
 )
 
 // Template sources. Builtin entries come from operator config
@@ -21,11 +20,11 @@ const (
 // identity IS its clone URL: clients pick an entry and pass clone_url
 // straight to POST /projects/create.
 type templateEntry struct {
-	DisplayName string                     `json:"display_name"`
-	CloneURL    string                     `json:"clone_url"`
-	Source      string                     `json:"source"`
-	Description string                     `json:"description,omitempty"`
-	BuildTarget provisioner.TemplateTarget `json:"build_target,omitempty"`
+	DisplayName string `json:"display_name"`
+	CloneURL    string `json:"clone_url"`
+	Source      string `json:"source"`
+	Description string `json:"description,omitempty"`
+	BuildTarget string `json:"build_target,omitempty"`
 }
 
 // handleListTemplates services GET /templates — the full create-project

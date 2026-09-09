@@ -2,14 +2,6 @@ package provisioner
 
 import "encoding/json"
 
-// TemplateTarget identifies the kind of app a starter creates.
-type TemplateTarget string
-
-const (
-	TemplateTargetWeb    TemplateTarget = "web"
-	TemplateTargetMobile TemplateTarget = "mobile"
-)
-
 // Template is one operator-configured ("builtin") entry of the
 // create-project catalog, passed to a provider via its Options. The
 // provider forwards these to the sandbox's clank-host, which serves
@@ -25,9 +17,9 @@ const (
 // the JSON into []Template itself, then passes the strong type here.
 // The library API stays typed.
 type Template struct {
-	DisplayName string         `json:"display_name"`
-	CloneURL    string         `json:"clone_url"`
-	BuildTarget TemplateTarget `json:"build_target,omitempty"`
+	DisplayName string `json:"display_name"`
+	CloneURL    string `json:"clone_url"`
+	BuildTarget string `json:"build_target,omitempty"`
 }
 
 // TemplatesEnvValue marshals a catalog to the JSON string clank-host
