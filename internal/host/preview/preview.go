@@ -34,8 +34,6 @@ const (
 type Spec struct {
 	// Kind identifies which client integration to use.
 	Kind Kind
-	// CanPreviewWeb is true for web recipes and Expo projects with browser dependencies.
-	CanPreviewWeb bool
 
 	// CmdTemplate is the argv template. "%d" is replaced with the
 	// allocated port only when ShouldSubstitutePort is true.
@@ -87,7 +85,6 @@ type ReadyProbe struct {
 // dev), they stay empty and clients fall back to status-only display.
 type Status struct {
 	Available         bool       `json:"available"`
-	CanPreviewWeb     bool       `json:"can_preview_web"`
 	SetupRequired     bool       `json:"setup_required,omitempty"`
 	SetupPrompt       string     `json:"setup_prompt,omitempty"`
 	ProjectConfigPath string     `json:"project_config_path,omitempty"`
@@ -185,15 +182,14 @@ func (r *running) snapshot() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := Status{
-		Available:     true,
-		CanPreviewWeb: r.spec.CanPreviewWeb,
-		Kind:          r.spec.Kind,
-		ServiceName:   r.serviceName,
-		State:         r.state,
-		Port:          r.port,
-		LastErr:       r.lastErr,
-		Token:         r.token,
-		URL:           r.url,
+		Available:   true,
+		Kind:        r.spec.Kind,
+		ServiceName: r.serviceName,
+		State:       r.state,
+		Port:        r.port,
+		LastErr:     r.lastErr,
+		Token:       r.token,
+		URL:         r.url,
 	}
 	if !r.startedAt.IsZero() {
 		started := r.startedAt

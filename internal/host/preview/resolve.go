@@ -68,7 +68,6 @@ func resolveLaunch(workDir, name string) (*resolvedLaunch, error) {
 	return &resolvedLaunch{
 		Spec: Spec{
 			Kind:              KindWeb,
-			CanPreviewWeb:     true,
 			CmdTemplate:       []string{"sh", "-c", configured.Command},
 			StartupLogCommand: configured.Command,
 			Environment:       configured.Environment,

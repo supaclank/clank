@@ -8,15 +8,14 @@ import (
 	"testing"
 )
 
-func TestExpoBrowserCapability(t *testing.T) {
+func TestExpoPreviewKindDoesNotDependOnWebSupport(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name, deps string
-		want       bool
 	}{
-		{"native only", `"expo":"56"`, false},
-		{"universal", `"expo":"56","react-dom":"19","react-native-web":"0.21"`, true},
-		{"missing DOM", `"expo":"56","react-native-web":"0.21"`, false},
+		{"native only", `"expo":"56"`},
+		{"universal", `"expo":"56","react-dom":"19","react-native-web":"0.21"`},
+		{"missing DOM", `"expo":"56","react-native-web":"0.21"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -29,7 +28,7 @@ func TestExpoBrowserCapability(t *testing.T) {
 			}
 			manager := New(Options{})
 			defer manager.Shutdown()
-			status, err := manager.Status(context.Background(), "browser-test", dir)
+			status, err := manager.Status(context.Background(), "kind-test", dir)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -41,8 +40,8 @@ func TestExpoBrowserCapability(t *testing.T) {
 			if err := json.Unmarshal(encoded, &response); err != nil {
 				t.Fatal(err)
 			}
-			if response["can_preview_web"] != tc.want {
-				t.Fatalf("can_preview_web = %v, want %v: %s", response["can_preview_web"], tc.want, encoded)
+			if response["kind"] != string(KindExpo) {
+				t.Fatalf("kind = %v, want %v: %s", response["kind"], KindExpo, encoded)
 			}
 		})
 	}

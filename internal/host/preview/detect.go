@@ -161,7 +161,6 @@ func Detect(workDir string) (*Spec, error) {
 	if packageHasExpo(data) && hasExpoAppConfig(workDir) {
 		return &Spec{
 			Kind:                 KindExpo,
-			CanPreviewWeb:        packageHasDep(data, "react-dom") && packageHasDep(data, "react-native-web"),
 			CmdTemplate:          append([]string(nil), expoCmdTemplate...),
 			ShouldSubstitutePort: true,
 			ReadyProbe:           expoReadyProbe,
