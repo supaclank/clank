@@ -1,5 +1,7 @@
 package host
 
+import "github.com/supaclank/clank/pkg/projecttemplate"
+
 // Template is one operator-configured ("builtin") entry of the
 // create-project catalog, injected at process start (clank-host
 // --templates-json / $CLANK_TEMPLATES). The host owns the whole
@@ -10,9 +12,10 @@ type Template struct {
 	// ID is tolerated for config compatibility (older catalogs carried
 	// ids) but no longer travels on the wire: a template's identity is
 	// its clone URL.
-	ID          string `json:"id,omitempty"`
-	DisplayName string `json:"display_name"`
-	CloneURL    string `json:"clone_url"`
+	ID          string                 `json:"id,omitempty"`
+	DisplayName string                 `json:"display_name"`
+	CloneURL    string                 `json:"clone_url"`
+	BuildTarget projecttemplate.Target `json:"build_target,omitempty"`
 }
 
 // Templates returns the operator-configured builtin templates.

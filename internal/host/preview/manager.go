@@ -384,10 +384,11 @@ func (m *Manager) StatusNamed(_ context.Context, worktreeID, workDir, launchName
 	}
 
 	return Status{
-		Available:   true,
-		Kind:        launch.Spec.Kind,
-		ServiceName: launch.ServiceName,
-		State:       StateStopped,
+		Available:     true,
+		Kind:          launch.Spec.Kind,
+		CanPreviewWeb: launch.Spec.CanPreviewWeb,
+		ServiceName:   launch.ServiceName,
+		State:         StateStopped,
 	}, nil
 }
 

@@ -1,6 +1,9 @@
 package provisioner
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"github.com/supaclank/clank/pkg/projecttemplate"
+)
 
 // Template is one operator-configured ("builtin") entry of the
 // create-project catalog, passed to a provider via its Options. The
@@ -17,8 +20,9 @@ import "encoding/json"
 // the JSON into []Template itself, then passes the strong type here.
 // The library API stays typed.
 type Template struct {
-	DisplayName string `json:"display_name"`
-	CloneURL    string `json:"clone_url"`
+	DisplayName string                 `json:"display_name"`
+	CloneURL    string                 `json:"clone_url"`
+	BuildTarget projecttemplate.Target `json:"build_target,omitempty"`
 }
 
 // TemplatesEnvValue marshals a catalog to the JSON string clank-host
