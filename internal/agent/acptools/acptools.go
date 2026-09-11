@@ -1,8 +1,8 @@
 // Package acptools provisions the pinned ACP adapter packages onto a
 // host. The embedded manifest (package.json + bun.lock) is materialized
 // into the tools dir and installed with bun --frozen-lockfile, so every
-// host runs exactly the reviewed dependency graph — including the exact
-// @openai/codex the adapter's caret range would otherwise float.
+// host runs exactly the reviewed dependency graph. The Codex override
+// keeps the adapter and login CLI on the same pinned runtime.
 package acptools
 
 import (
@@ -20,11 +20,10 @@ import (
 //go:embed manifest/package.json manifest/bun.lock
 var manifestFS embed.FS
 
-// Pinned adapter versions. A unit test asserts these match the embedded
-// manifest so a pin bump is always a reviewed two-file diff.
+// Pinned adapter versions. A unit test asserts these match the embedded manifest.
 const (
-	PinnedCodexACPVersion  = "1.1.7"
-	PinnedCodexVersion     = "0.145.0"
+	PinnedCodexACPVersion  = "1.11.0"
+	PinnedCodexVersion     = "0.154.0"
 	PinnedClaudeACPVersion = "0.73.0"
 )
 

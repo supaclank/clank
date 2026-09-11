@@ -9,6 +9,10 @@ import (
 	"testing"
 )
 
+// clankTestCodexACPEnv gates the real-runtime Codex integration tests below
+// (they spawn the actual Codex binary, so they're opt-in).
+const clankTestCodexACPEnv = "CLANK_TEST_CODEX_ACP"
+
 func TestEnsure_MissingBunReportsSharedACPRequirement(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
@@ -31,6 +35,7 @@ func TestPins_MatchEmbeddedManifest(t *testing.T) {
 	}
 	var m struct {
 		Dependencies map[string]string `json:"dependencies"`
+		Overrides    map[string]string `json:"overrides"`
 	}
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatalf("parse manifest: %v", err)
@@ -40,6 +45,9 @@ func TestPins_MatchEmbeddedManifest(t *testing.T) {
 	}
 	if got := m.Dependencies["@openai/codex"]; got != PinnedCodexVersion {
 		t.Errorf("codex pin: manifest %q, const %q", got, PinnedCodexVersion)
+	}
+	if got := m.Overrides["@openai/codex"]; got != PinnedCodexVersion {
+		t.Errorf("codex transitive pin: override %q, const %q", got, PinnedCodexVersion)
 	}
 	if got := m.Dependencies["@agentclientprotocol/claude-agent-acp"]; got != PinnedClaudeACPVersion {
 		t.Errorf("claude-agent-acp pin: manifest %q, const %q", got, PinnedClaudeACPVersion)
