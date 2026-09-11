@@ -12,7 +12,7 @@ import (
 
 // Read the bundled model catalog without credentials or a model prompt.
 func TestIntegration_CodexCatalogOffersAstra(t *testing.T) {
-	if os.Getenv("CLANK_TEST_CODEX_ACP") == "" {
+	if os.Getenv(clankTestCodexACPEnv) == "" {
 		t.Skip("set CLANK_TEST_CODEX_ACP=1 to verify the bundled Codex model catalog")
 	}
 	t.Parallel()

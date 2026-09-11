@@ -10,7 +10,7 @@ import (
 )
 
 func TestIntegration_CodexRuntimeSharedWithAdapter(t *testing.T) {
-	if os.Getenv("CLANK_TEST_CODEX_ACP") == "" {
+	if os.Getenv(clankTestCodexACPEnv) == "" {
 		t.Skip("set CLANK_TEST_CODEX_ACP=1 to verify the installed Codex runtime")
 	}
 	t.Parallel()

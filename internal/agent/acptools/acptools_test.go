@@ -9,6 +9,10 @@ import (
 	"testing"
 )
 
+// clankTestCodexACPEnv gates the real-runtime Codex integration tests below
+// (they spawn the actual Codex binary, so they're opt-in).
+const clankTestCodexACPEnv = "CLANK_TEST_CODEX_ACP"
+
 func TestEnsure_MissingBunReportsSharedACPRequirement(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
