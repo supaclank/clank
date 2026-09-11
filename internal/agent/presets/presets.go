@@ -15,7 +15,7 @@
 // marshaled only at the process boundary.
 //
 // Every config value below is a value id the agent ADVERTISES (measured
-// against claude-agent-acp 0.61.0, codex-acp 1.1.7, opencode 1.17.18 —
+// against claude-agent-acp 0.61.0, codex-acp 1.11.0, opencode 1.17.18 —
 // re-probe on adapter bumps). Keys a backend cannot express truthfully are
 // absent: codex and opencode advertise no "default" alias for model, so
 // their presets leave the model knob untouched and the agent's own config
