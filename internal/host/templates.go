@@ -13,7 +13,6 @@ type Template struct {
 	ID          string `json:"id,omitempty"`
 	DisplayName string `json:"display_name"`
 	CloneURL    string `json:"clone_url"`
-	BuildTarget string `json:"build_target,omitempty"`
 }
 
 // Templates returns the operator-configured builtin templates.

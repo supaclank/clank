@@ -19,7 +19,6 @@ import "encoding/json"
 type Template struct {
 	DisplayName string `json:"display_name"`
 	CloneURL    string `json:"clone_url"`
-	BuildTarget string `json:"build_target,omitempty"`
 }
 
 // TemplatesEnvValue marshals a catalog to the JSON string clank-host

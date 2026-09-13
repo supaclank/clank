@@ -24,7 +24,6 @@ type templateEntry struct {
 	CloneURL    string `json:"clone_url"`
 	Source      string `json:"source"`
 	Description string `json:"description,omitempty"`
-	BuildTarget string `json:"build_target,omitempty"`
 }
 
 // handleListTemplates services GET /templates — the full create-project
@@ -41,7 +40,6 @@ func (m *Mux) handleListTemplates(w http.ResponseWriter, r *http.Request) {
 			DisplayName: t.DisplayName,
 			CloneURL:    t.CloneURL,
 			Source:      templateSourceBuiltin,
-			BuildTarget: t.BuildTarget,
 		})
 	}
 	entries = append(entries, m.githubTemplateEntries(r)...)
