@@ -46,7 +46,7 @@ func TestRequestSignedCookieTransport(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			r := httptest.NewRequest(http.MethodGet, tc.url, nil)
-			r.Header.Set("Sec-Fetch-Dest", tc.destination)
+			r.Header.Set(secFetchDestHeader, tc.destination)
 			w := httptest.NewRecorder()
 			SetRequestSignedCookies(w, r, "signature", time.Now().Add(time.Hour))
 			cookies := w.Result().Cookies()

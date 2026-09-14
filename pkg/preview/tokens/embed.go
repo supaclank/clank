@@ -11,6 +11,10 @@ const (
 	EmbedParam        = "__clank_embed"
 	embeddedSigCookie = "__Host-clank_embed_sig"
 	embeddedExpCookie = "__Host-clank_embed_exp"
+
+	embeddedParamValue = "1"
+	secFetchDestHeader = "Sec-Fetch-Dest"
+	secFetchDestIframe = "iframe"
 )
 
 // SetEmbeddedSignedCookies authenticates subresources inside a cross-site iframe.
@@ -36,5 +40,5 @@ func SetRequestSignedCookies(w http.ResponseWriter, r *http.Request, sig string,
 
 // IsEmbeddedRequest reports a preview loaded inside another page.
 func IsEmbeddedRequest(r *http.Request) bool {
-	return r.URL.Query().Get(EmbedParam) == "1" || r.Header.Get("Sec-Fetch-Dest") == "iframe"
+	return r.URL.Query().Get(EmbedParam) == embeddedParamValue || r.Header.Get(secFetchDestHeader) == secFetchDestIframe
 }
