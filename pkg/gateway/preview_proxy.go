@@ -114,7 +114,7 @@ func (s *previewState) serveToken(w http.ResponseWriter, r *http.Request, token 
 			r.URL.Query().Get(tokens.SigParam) != "" &&
 			tokens.VerifyFromRequest(s.signingKey, token, r, s.now()) == nil {
 			if sig, exp, ok := signedQueryFromRequest(r); ok {
-				tokens.SetSignedCookies(w, sig, exp, tokens.RequestIsHTTPS(r))
+				tokens.SetRequestSignedCookies(w, r, sig, exp)
 				setPreviewOverlayContextCookies(w, r, exp)
 			}
 		}
@@ -180,8 +180,8 @@ func (s *previewState) authorizeOwnerOnly(w http.ResponseWriter, r *http.Request
 					// Secure should be set on the outgoing cookies.
 					// Plain-HTTP local dev wouldn't store Secure
 					// cookies; production-TLS does. Either way the
-					// cookies are HttpOnly + SameSite=Strict.
-					tokens.SetSignedCookies(w, sig, exp, tokens.RequestIsHTTPS(r))
+					// cookies are HttpOnly and isolated to this preview.
+					tokens.SetRequestSignedCookies(w, r, sig, exp)
 					setPreviewOverlayContextCookies(w, r, exp)
 				}
 			}
@@ -280,7 +280,7 @@ func (s *previewState) serveProxy(w http.ResponseWriter, r *http.Request, tun *p
 	// TODO(ai-review): built eagerly for every browser-UA request even when
 	// the response turns out non-HTML; move into ModifyResponse once
 	// Content-Type is known. https://github.com/supaclank/clank/pull/216#discussion_r3699214060
-	if webpreview.ShouldInjectOverlay(r.UserAgent()) {
+	if webpreview.ShouldInjectOverlay(r.UserAgent()) && !tokens.IsEmbeddedRequest(r) {
 		overlayContext := previewOverlayContextFromRequest(r)
 		var err error
 		snippet, err = webpreview.OverlaySnippet(map[string]any{
@@ -336,6 +336,7 @@ func (s *previewState) serveProxy(w http.ResponseWriter, r *http.Request, tun *p
 				pr.Out.URL.RawQuery,
 				tokens.SigParam,
 				tokens.ExpParam,
+				tokens.EmbedParam,
 				overlaySessionParam,
 				overlayBackendParam,
 			)

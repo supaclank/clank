@@ -160,11 +160,13 @@ func extractSignedParams(r *http.Request) (sig string, exp time.Time, ok bool) {
 			}
 		}
 	}
-	if c, err := r.Cookie(SigParam); err == nil && c.Value != "" {
-		if ec, err := r.Cookie(ExpParam); err == nil && ec.Value != "" {
-			t, err := parseUnix(ec.Value)
-			if err == nil {
-				return c.Value, t, true
+	for _, names := range [][2]string{{embeddedSigCookie, embeddedExpCookie}, {SigParam, ExpParam}} {
+		if c, err := r.Cookie(names[0]); err == nil && c.Value != "" {
+			if ec, err := r.Cookie(names[1]); err == nil && ec.Value != "" {
+				t, err := parseUnix(ec.Value)
+				if err == nil {
+					return c.Value, t, true
+				}
 			}
 		}
 	}
