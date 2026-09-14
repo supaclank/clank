@@ -1088,6 +1088,69 @@ func TestPreviewProxy_OwnerOnlySignedURLSucceeds(t *testing.T) {
 	}
 }
 
+// TestPreviewProxy_PublicSignedBearerEmbeddedGetsPartitionedCookiesAndSuppressesOverlay
+// covers the public-route signed-bearer bridge (serveToken's
+// tokens.VisibilityPublic branch): a valid HTTPS embedded signed request
+// must get request-aware (partitioned) cookies, no overlay injection, and
+// an upstream query with the embed param stripped.
+func TestPreviewProxy_PublicSignedBearerEmbeddedGetsPartitionedCookiesAndSuppressesOverlay(t *testing.T) {
+	t.Parallel()
+	var upstreamQuery string
+	f := newPreviewProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, "<!doctype html><html><body>preview</body></html>")
+	}))
+	route := f.seed(t, "alice", tokens.VisibilityPublic)
+	host := tokens.HostFor(route.Token, f.root)
+	query, _ := f.signedURLFor(t, route.Token, 10*time.Minute)
+
+	req, err := http.NewRequest(http.MethodGet, f.srv.URL+"/"+query+"&"+tokens.EmbedParam+"=1", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Host = host
+	req.Header.Set("X-Forwarded-Proto", "https")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d body=%q", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "window.__CLANK_PREVIEW") {
+		t.Errorf("embedded preview received browser overlay injection: %s", body)
+	}
+	if strings.Contains(upstreamQuery, tokens.EmbedParam) {
+		t.Errorf("upstream saw embed param in query %q", upstreamQuery)
+	}
+
+	var sawSig, sawExp bool
+	for _, c := range resp.Cookies() {
+		if c.Name == tokens.SigParam || c.Name == tokens.ExpParam {
+			t.Errorf("embedded request got a non-partitioned cookie %q", c.Name)
+			continue
+		}
+		if !strings.Contains(c.Name, "embed") {
+			continue // unrelated cookie (e.g. overlay-context), not the signed bearer
+		}
+		if !c.Partitioned || !c.Secure || !c.HttpOnly || c.SameSite != http.SameSiteNoneMode {
+			t.Errorf("unsafe embedded cookie: %+v", c)
+		}
+		switch {
+		case strings.Contains(c.Name, "sig"):
+			sawSig = true
+		case strings.Contains(c.Name, "exp"):
+			sawExp = true
+		}
+	}
+	if !sawSig || !sawExp {
+		t.Errorf("embedded signed-URL request should Set-Cookie partitioned sig+exp; got sig=%t exp=%t", sawSig, sawExp)
+	}
+}
+
 func TestPreviewProxy_OwnerOnlySignedCookieSucceedsOnSubsequentRequest(t *testing.T) {
 	t.Parallel()
 	f := newPreviewProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
